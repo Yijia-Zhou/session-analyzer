@@ -1,0 +1,14 @@
+{
+  "name": "session-analyzer",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Local interactive viewer for Codex session transcripts.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Codex Session Analyzer</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Codex Session Analyzer</h1>
+        <p id="stateLine">正在读取本地 sessions…</p>
+      </div>
+      <div class="searchbar">
+        <input id="searchInput" type="search" placeholder="搜索消息、命令、文件、输出">
+        <select id="layerSelect" aria-label="事件层">
+          <option value="main">Main timeline</option>
+          <option value="protocol">Protocol layer</option>
+          <option value="raw">Raw records</option>
+        </select>
+        <select id="profileSelect" aria-label="折叠策略"></select>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="sessionsPane">
+        <section class="filters" aria-label="筛选器">
+          <label>
+            类型
+            <select id="kindFilter">
+              <option value="">全部</option>
+              <option value="user_message">用户消息</option>
+              <option value="assistant_message">助手消息</option>
+              <option value="command">命令</option>
+              <option value="patch">Patch</option>
+              <option value="mcp">MCP</option>
+              <option value="js_repl">JS REPL</option>
+              <option value="tool_operation">Tool op</option>
+              <option value="plan_artifact">Plan</option>
+              <option value="protocol">Protocol</option>
+              <option value="error">错误</option>
+              <option value="compaction">压缩</option>
+            </select>
+          </label>
+          <label>
+            状态
+            <select id="statusFilter">
+              <option value="">全部</option>
+              <option value="failed">失败</option>
+              <option value="success">成功</option>
+            </select>
+          </label>
+          <label>
+            文件
+            <input id="fileFilter" type="search" placeholder="路径片段">
+          </label>
+          <label>
+            排序
+            <select id="sortSelect">
+              <option value="updated-desc">最近更新</option>
+              <option value="started-asc">开始时间</option>
+              <option value="events-desc">事件最多</option>
+              <option value="failures-desc">失败最多</option>
+            </select>
+          </label>
+        </section>
+        <div id="sessionList" class="sessionList"></div>
+      </aside>
+
+      <section class="timelinePane">
+        <div id="sessionHeader" class="sessionHeader">
+          <h2>选择一个 session</h2>
+          <p>左侧列表按当前仓库过滤。</p>
+        </div>
+        <div class="toolbar">
+          <button id="resetFoldsBtn" type="button">重置展开状态</button>
+          <button id="loadMoreBtn" type="button">加载更多</button>
+        </div>
+        <div id="analysisPanel" class="analysisPanel"></div>
+        <div id="timeline" class="timeline"></div>
+      </section>
+
+      <aside class="detailPane">
+        <div id="detail">
+          <h2>事件详情</h2>
+          <p>点击时间线事件查看原始 JSONL 记录。</p>
+        </div>
+      </aside>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
