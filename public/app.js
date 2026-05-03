@@ -1,5 +1,17 @@
 'use strict';
 
+const rendererApi = window.sessionRenderers || {};
+
+const escapeHtml = rendererApi.escapeHtml || ((value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+}[ch])));
+
+const renderSections = rendererApi.renderSections || (() => '');
+
 const state = {
   sessions: [],
   selectedSessionId: '',
@@ -10,6 +22,10 @@ const state = {
   profileId: localStorage.getItem('sessionAnalyzer.profile') || 'narrative',
   layerId: localStorage.getItem('sessionAnalyzer.layer') || 'main',
   overrides: JSON.parse(localStorage.getItem('sessionAnalyzer.overrides') || '{}'),
+  detailCache: {},
+  detailErrors: {},
+  detailPending: {},
+  detailViewportTimer: 0,
 };
 
 const el = {
@@ -65,16 +81,6 @@ function fmtBytes(bytes) {
   return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;',
-  }[ch]));
-}
-
 function currentQuery(extra = {}) {
   const params = new URLSearchParams();
   const q = el.searchInput.value.trim();
@@ -93,6 +99,14 @@ function currentQuery(extra = {}) {
   return text ? `?${text}` : '';
 }
 
+function detailKey(sessionId, layerId, eventId) {
+  return `${sessionId}:${layerId}:${eventId}`;
+}
+
+function resetDetailPane() {
+  el.detail.innerHTML = '<h2>Event detail</h2><p>Use Raw refs to inspect the original JSONL rows.</p>';
+}
+
 async function init() {
   const appState = await api('/api/state');
   state.profiles = appState.foldingProfiles || [];
@@ -106,6 +120,7 @@ async function init() {
     el.profileSelect.value = state.profileId;
   }
   el.layerSelect.value = state.layerId;
+  resetDetailPane();
   await loadSessions();
 }
 
@@ -121,6 +136,7 @@ async function loadSessions() {
     el.timeline.innerHTML = '';
     el.analysisPanel.innerHTML = '';
     el.sessionHeader.innerHTML = '<h2>No matching session</h2><p>Adjust the search or filters.</p>';
+    resetDetailPane();
   } else if (state.selectedSessionId) {
     await selectSession(state.selectedSessionId);
   }
@@ -147,6 +163,7 @@ async function selectSession(sessionId) {
   state.offset = 0;
   state.currentEvents = [];
   renderSessions();
+  resetDetailPane();
   const session = state.sessions.find((item) => item.id === sessionId);
   if (session) {
     el.sessionHeader.innerHTML = `<h2>${escapeHtml(session.title)}</h2>
@@ -240,6 +257,26 @@ function importantEvent(event) {
     || event.status === 'failed';
 }
 
+function renderEventBody(event, display) {
+  if (display !== 'expanded') return '';
+  const key = detailKey(state.selectedSessionId, state.layerId, event.id);
+  const detail = state.detailCache[key];
+  const error = state.detailErrors[key];
+  if (detail) {
+    return `<div class="eventBody">${renderSections(detail.sections)}</div>`;
+  }
+  if (error) {
+    return `<div class="eventBody"><div class="notice error"><p>${escapeHtml(error)}</p></div><button class="smallBtn" type="button" data-action="retry-detail">Retry detail</button></div>`;
+  }
+  return '<div class="eventBody"><div class="notice info"><p>Loading structured detail...</p></div></div>';
+}
+
+function renderEventPreview(event, display) {
+  if (display === 'expanded') return '';
+  const preview = event.snippet || event.preview || event.label;
+  return `<div class="eventPreview">${escapeHtml(preview)}</div>`;
+}
+
 function renderTimeline() {
   el.timeline.innerHTML = state.currentEvents.map((event) => {
     const ds = displayState(event);
@@ -252,7 +289,6 @@ function renderTimeline() {
       event.rawRefs?.length ? `<span class="chip">${event.rawRefs.length} raw</span>` : '',
       event.channels?.length ? `<span class="chip">${escapeHtml(event.channels.join(','))}</span>` : '',
     ].join('');
-    const preview = event.snippet || event.preview || event.label;
     const sourceText = event.source ? `${event.source.file}:${event.source.line}` : '';
     return `<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
       <div class="eventHeader">
@@ -260,7 +296,8 @@ function renderTimeline() {
         <span class="chips">${chips}</span>
         <span class="eventTime">${escapeHtml(fmtDate(event.timestamp))}</span>
       </div>
-      <div class="eventPreview">${escapeHtml(preview)}</div>
+      ${renderEventPreview(event, ds)}
+      ${renderEventBody(event, ds)}
       <div class="eventTools">
         <button class="smallBtn" type="button" data-action="toggle">${ds === 'expanded' ? 'Collapse' : 'Expand'}</button>
         <button class="smallBtn" type="button" data-action="raw">Raw refs</button>
@@ -268,12 +305,51 @@ function renderTimeline() {
       </div>
     </article>`;
   }).join('');
+  queueVisibleDetailLoad();
 }
 
 function setOverride(eventId, value) {
   if (!state.overrides[state.selectedSessionId]) state.overrides[state.selectedSessionId] = {};
   state.overrides[state.selectedSessionId][eventId] = value;
   localStorage.setItem('sessionAnalyzer.overrides', JSON.stringify(state.overrides));
+}
+
+async function ensureEventDetail(event) {
+  const key = detailKey(state.selectedSessionId, state.layerId, event.id);
+  if (state.detailCache[key] || state.detailPending[key] || state.detailErrors[key]) return;
+  state.detailPending[key] = api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(state.layerId)}`)
+    .then((detail) => {
+      state.detailCache[key] = detail;
+      delete state.detailErrors[key];
+    })
+    .catch((error) => {
+      state.detailErrors[key] = error.message;
+    })
+    .finally(() => {
+      delete state.detailPending[key];
+      renderTimeline();
+    });
+}
+
+function isInScrollport(element) {
+  const rect = element.getBoundingClientRect();
+  const scroller = element.closest('.timelinePane');
+  const bounds = scroller ? scroller.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+  return rect.bottom >= bounds.top && rect.top <= bounds.bottom;
+}
+
+function loadVisibleExpandedDetails() {
+  state.detailViewportTimer = 0;
+  for (const article of el.timeline.querySelectorAll('.event.expanded[data-event-id]')) {
+    if (!isInScrollport(article)) continue;
+    const item = state.currentEvents.find((candidate) => candidate.id === article.dataset.eventId);
+    if (item) ensureEventDetail(item);
+  }
+}
+
+function queueVisibleDetailLoad() {
+  if (state.detailViewportTimer) cancelAnimationFrame(state.detailViewportTimer);
+  state.detailViewportTimer = requestAnimationFrame(loadVisibleExpandedDetails);
 }
 
 async function showRaw(event) {
@@ -299,6 +375,12 @@ el.timeline.addEventListener('click', (event) => {
     const next = article.classList.contains('expanded') ? 'collapsed' : 'expanded';
     setOverride(item.id, next);
     renderTimeline();
+    if (next === 'expanded') ensureEventDetail(item);
+  } else if (action === 'retry-detail') {
+    const key = detailKey(state.selectedSessionId, state.layerId, item.id);
+    delete state.detailErrors[key];
+    delete state.detailCache[key];
+    ensureEventDetail(item);
   } else {
     showRaw(item).catch(showError);
   }
@@ -323,6 +405,8 @@ el.resetFoldsBtn.addEventListener('click', () => {
 });
 
 el.loadMoreBtn.addEventListener('click', () => loadTimeline(true).catch(showError));
+el.timeline.closest('.timelinePane')?.addEventListener('scroll', queueVisibleDetailLoad, { passive: true });
+window.addEventListener('resize', queueVisibleDetailLoad);
 
 const reload = debounce(() => {
   loadSessions().catch(showError);

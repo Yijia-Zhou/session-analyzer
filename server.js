@@ -7,7 +7,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const url = require('node:url');
-const { buildIndex, filterSessions, getTimeline, readRawLine } = require('./src/codex');
+const { buildIndex, buildEventDetail, filterSessions, getTimeline, readRawLine } = require('./src/codex');
 const { foldingProfiles } = require('./src/folding');
 
 const MIME = {
@@ -108,21 +108,8 @@ async function serveStatic(res, pathname) {
   }
 }
 
-async function main() {
-  const opts = parseArgs(process.argv);
-  if (opts.help) {
-    printHelp();
-    return;
-  }
-
-  const startedAt = Date.now();
-  const index = await buildIndex({
-    repoRoot: opts.repo,
-    codexHome: opts.codexHome,
-  });
-  const buildMs = Date.now() - startedAt;
-
-  const server = http.createServer(async (req, res) => {
+function createServer(index, buildMs = 0) {
+  return http.createServer(async (req, res) => {
     try {
       const { pathname, searchParams } = parseQuery(req.url);
       if (pathname === '/api/state') {
@@ -174,6 +161,23 @@ async function main() {
         return;
       }
 
+      const detailMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/events\/([^/]+)\/detail$/);
+      if (detailMatch) {
+        const session = index.sessionsById.get(decodeURIComponent(detailMatch[1]));
+        if (!session) {
+          sendError(res, 404, 'Unknown session');
+          return;
+        }
+        const layer = searchParams.get('layer') || 'main';
+        const detail = buildEventDetail(session, decodeURIComponent(detailMatch[2]), layer);
+        if (!detail) {
+          sendError(res, 404, 'Unknown event');
+          return;
+        }
+        sendJson(res, 200, detail);
+        return;
+      }
+
       const analysisMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/analysis$/);
       if (analysisMatch) {
         const session = index.sessionsById.get(decodeURIComponent(analysisMatch[1]));
@@ -206,6 +210,22 @@ async function main() {
       sendError(res, 500, 'Internal server error', error.stack || error.message);
     }
   });
+}
+
+async function main() {
+  const opts = parseArgs(process.argv);
+  if (opts.help) {
+    printHelp();
+    return;
+  }
+
+  const startedAt = Date.now();
+  const index = await buildIndex({
+    repoRoot: opts.repo,
+    codexHome: opts.codexHome,
+  });
+  const buildMs = Date.now() - startedAt;
+  const server = createServer(index, buildMs);
 
   server.listen(opts.port, opts.host, () => {
     console.log(`Codex Session Analyzer: http://${opts.host}:${opts.port}`);
@@ -221,3 +241,8 @@ if (require.main === module) {
     process.exitCode = 1;
   });
 }
+
+module.exports = {
+  createServer,
+  parseArgs,
+};

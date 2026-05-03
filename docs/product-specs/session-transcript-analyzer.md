@@ -55,13 +55,18 @@ Session Transcript Analyzer is a local web tool for reviewing Codex session tran
 4. Opening a session shows the main timeline by default.
 5. The user may switch between `Main timeline`, `Protocol layer`, and `Raw records`.
 6. The user may search, filter by kind/status/file, and inspect grouped tool operations.
-7. Clicking an event shows all underlying raw JSONL rows for verification.
+7. Expanding a timeline card replaces the preview with structured event detail inline, including markdown messages, command output, diffs, notices, and structured metadata.
+8. Raw JSON fallback sections remain available from expanded cards but stay visually secondary outside the raw layer.
+9. Clicking an event's `Raw refs` control shows all underlying raw JSONL rows for verification in the right-side panel.
 
 ## Acceptance criteria
 
 - [ ] Main timeline does not show duplicated user or assistant messages when mirrored transcript channels exist.
 - [ ] Protocol injections such as `AGENTS.md`, environment blocks, and developer instructions are accessible but not mixed into the default main timeline.
 - [ ] Tool calls are visible as logical operations with status, affected files, and raw drill-down.
+- [ ] Expanded timeline cards render structured event detail instead of only enlarging a truncated preview.
+- [ ] Expanded timeline cards do not duplicate truncated preview text above the full body.
+- [ ] Expanded detail remains available for `main`, `protocol`, and `raw` layers without hiding unknown transcript shapes.
 - [ ] Raw JSONL rows remain accessible for every logical event.
 - [ ] Filtering by keyword, file, status, and event kind works across the selected layer.
 - [ ] Repository filtering is case-insensitive on Windows paths.

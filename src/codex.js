@@ -4,8 +4,13 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
+const MarkdownIt = require('markdown-it');
 
 const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+
+const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'kv', 'notice', 'raw_json']);
+
+let markdownRenderer = null;
 
 function normalizeFsPath(input) {
   if (!input) return '';
@@ -79,6 +84,207 @@ function safeJsonParse(text) {
   } catch {
     return null;
   }
+}
+
+function ensureMarkdownRenderer() {
+  if (markdownRenderer) return markdownRenderer;
+  markdownRenderer = new MarkdownIt({
+    html: false,
+    linkify: true,
+    breaks: true,
+  });
+  markdownRenderer.validateLink = (link) => /^(https?:|mailto:)/i.test(String(link || ''));
+  return markdownRenderer;
+}
+
+function renderMarkdownToHtml(text) {
+  const source = String(text || '').trim();
+  if (!source) return '';
+  return ensureMarkdownRenderer().render(source);
+}
+
+function uniqueNonEmpty(values) {
+  return [...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value == null) continue;
+    if (typeof value === 'string' && value.trim()) return value;
+    if (Array.isArray(value) && value.length) return value;
+    if (typeof value === 'object' && Object.keys(value).length) return value;
+  }
+  return '';
+}
+
+function stringifyValue(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value, null, 2);
+}
+
+function coerceJsonValue(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return safeJsonParse(trimmed);
+}
+
+function looksLikeDiff(text) {
+  const source = String(text || '').trim();
+  if (!source) return false;
+  return source.startsWith('*** Begin Patch')
+    || source.startsWith('diff --git')
+    || /^@@/m.test(source)
+    || /^--- /m.test(source)
+    || /^\+\+\+ /m.test(source);
+}
+
+function stripProposedPlanWrapper(text) {
+  const source = String(text || '').trim();
+  if (!source) return '';
+  return source
+    .replace(/^<proposed_plan>\s*/i, '')
+    .replace(/\s*<\/proposed_plan>$/i, '')
+    .trim();
+}
+
+function taggedBlockEntries(text) {
+  const entries = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const match = line.trim().match(/^<([a-zA-Z0-9_]+)>(.*?)<\/\1>$/);
+    if (!match) continue;
+    if (match[1] === 'environment_context' || match[1] === 'proposed_plan') continue;
+    const value = String(match[2] || '').trim();
+    if (value) entries.push({ key: match[1], value });
+  }
+  return entries;
+}
+
+function toKvEntries(input, preferredKeys = []) {
+  if (!input || typeof input !== 'object') return [];
+  const used = new Set();
+  const keys = [];
+  for (const key of preferredKeys) {
+    if (Object.hasOwn(input, key)) {
+      keys.push(key);
+      used.add(key);
+    }
+  }
+  for (const key of Object.keys(input)) {
+    if (!used.has(key)) keys.push(key);
+  }
+  const entries = [];
+  for (const key of keys) {
+    const value = input[key];
+    if (value == null || value === '') continue;
+    if (typeof value === 'object') {
+      if (Array.isArray(value) && value.every((item) => typeof item !== 'object')) {
+        entries.push({ key, value: value.join(', ') });
+      }
+      continue;
+    }
+    entries.push({ key, value: String(value) });
+  }
+  return entries;
+}
+
+function diffStatsEntries(changes) {
+  if (!changes || typeof changes !== 'object') return [];
+  return Object.entries(changes).map(([file, stats]) => ({
+    key: file,
+    value: `+${Number(stats?.additions || 0)} / -${Number(stats?.deletions || 0)}`,
+  }));
+}
+
+function maybePushKvSection(sections, title, entries) {
+  const filtered = (entries || []).filter((entry) => entry && entry.key && entry.value !== '');
+  if (!filtered.length) return;
+  sections.push({ type: 'kv', title, entries: filtered });
+}
+
+function maybePushMarkdownSection(sections, title, text) {
+  const source = String(text || '').trim();
+  if (!source) return;
+  sections.push({
+    type: 'markdown',
+    title,
+    html: renderMarkdownToHtml(source),
+  });
+}
+
+function maybePushCodeSection(sections, title, code, language = '') {
+  const source = String(code || '').trim();
+  if (!source) return;
+  sections.push({ type: 'code', title, code: source, language });
+}
+
+function maybePushTerminalSection(sections, title, text, stream = 'stdout') {
+  const source = String(text || '');
+  if (!source.trim()) return;
+  sections.push({ type: 'terminal', title, text: source, stream });
+}
+
+function maybePushStructuredSection(sections, title, value, options = {}) {
+  const jsonValue = coerceJsonValue(value);
+  if (jsonValue) {
+    sections.push({ type: 'json', title, value: jsonValue });
+    return 'json';
+  }
+  const text = stringifyValue(value).trim();
+  if (!text) return '';
+  if (looksLikeDiff(text)) {
+    sections.push({ type: 'diff', title, text });
+    return 'diff';
+  }
+  sections.push({ type: options.rawType === 'raw_json'
+    ? 'raw_json'
+    : 'code', title, code: text, language: options.language || '' });
+  return options.rawType === 'raw_json' ? 'raw_json' : 'code';
+}
+
+function maybePushParsedOutputSection(sections, title, value) {
+  const jsonValue = coerceJsonValue(value);
+  if (jsonValue) {
+    sections.push({ type: 'json', title, value: jsonValue });
+    return true;
+  }
+  const text = stringifyValue(value).trim();
+  if (looksLikeDiff(text)) {
+    sections.push({ type: 'diff', title, text });
+    return true;
+  }
+  return false;
+}
+
+function makeNoticeSection(title, text, level = 'info') {
+  return {
+    type: 'notice',
+    title,
+    level,
+    text: String(text || '').trim(),
+  };
+}
+
+function hideSectionTitle(section) {
+  if (section) section.hideTitle = true;
+  return section;
+}
+
+function makeRawJsonSection(title, value, expanded = false) {
+  return {
+    type: 'raw_json',
+    title,
+    value,
+    expanded,
+  };
+}
+
+function filterDetailSections(sections) {
+  return sections.filter((section) => section && SECTION_TYPES.has(section.type));
 }
 
 function readSessionIndexEntry(line) {
@@ -418,6 +624,386 @@ function rawMatchesEvent(raw, event) {
   if (!raw) return false;
   if (!event) return false;
   return event.rawRefs.some((ref) => ref.rawId === raw.rawId);
+}
+
+function rawEventsForLogicalEvent(session, event) {
+  const byId = new Map(session.rawEvents.map((raw) => [raw.rawId, raw]));
+  return event.rawRefs.map((ref) => byId.get(ref.rawId)).filter(Boolean);
+}
+
+function commandArgsFromRaw(raw) {
+  const args = coerceJsonValue(raw?.output);
+  return args && typeof args === 'object' ? args : null;
+}
+
+function toolOutputEnvelope(raw) {
+  return parseOutputEnvelope(raw?.output);
+}
+
+function structuredOutputValue(value) {
+  const envelope = parseOutputEnvelope(value);
+  if (envelope && Object.hasOwn(envelope, 'output')) return envelope.output;
+  return value;
+}
+
+function rawMeta(raw) {
+  return {
+    timestamp: raw.timestamp || '',
+    turnId: raw.turnId || '',
+    status: raw.status || '',
+    severity: raw.payloadType === 'error' ? 'error' : 'normal',
+    toolName: raw.toolName || '',
+    touchedFiles: raw.touchedFiles || [],
+    outputStats: {
+      exitCode: raw.exitCode,
+      durationMs: raw.durationMs,
+    },
+    channels: [raw.recordType],
+    source: raw.source || null,
+  };
+}
+
+function logicalMeta(event) {
+  return {
+    timestamp: event.timestamp || '',
+    turnId: event.turnId || '',
+    status: event.status || '',
+    severity: event.severity || 'normal',
+    toolName: event.toolName || '',
+    touchedFiles: event.touchedFiles || [],
+    outputStats: event.outputStats || {},
+    channels: event.channels || [],
+    source: event.source || null,
+  };
+}
+
+function extractConversationSections(raws) {
+  const sections = [];
+  maybePushMarkdownSection(sections, 'Message', uniqueNonEmpty(raws.map((raw) => raw.messageText)).join('\n\n'));
+  hideSectionTitle(sections[0]);
+  if (!sections.length) sections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
+  return sections;
+}
+
+function extractReasoningSections(raws) {
+  const sections = [];
+  const text = uniqueNonEmpty(raws.map((raw) => raw.messageText)).join('\n\n');
+  if (text) {
+    maybePushMarkdownSection(sections, 'Reasoning', text);
+    hideSectionTitle(sections[0]);
+  } else {
+    sections.push(hideSectionTitle(makeNoticeSection('Reasoning', 'This reasoning record did not contain any text.', 'warning')));
+  }
+  return sections;
+}
+
+function extractPlanSections(raws) {
+  const sections = [];
+  const planText = stripProposedPlanWrapper(firstNonEmpty(
+    raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'message')?.messageText,
+    raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'item_completed')?.parsed?.payload?.item?.text,
+  ));
+  maybePushMarkdownSection(sections, 'Plan', planText);
+  hideSectionTitle(sections[0]);
+  sections.push(makeRawJsonSection('Plan raw JSON', raws.map((raw) => raw.parsed)));
+  return sections;
+}
+
+function extractCommandSections(raws, event) {
+  const sections = [];
+  const functionCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');
+  const functionOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
+  const execEnd = raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'exec_command_end');
+  const args = commandArgsFromRaw(functionCall);
+  const formatted = parseFormattedCommandOutput(functionOutput?.output);
+  const commandText = execEnd?.commandText || commandToText(args?.command);
+  maybePushCodeSection(sections, 'Command', commandText, 'shell');
+
+  maybePushKvSection(sections, 'Command metadata', [
+    { key: 'cwd', value: String(execEnd?.parsed?.payload?.cwd || args?.workdir || '') },
+    { key: 'status', value: String(event.status || execEnd?.status || '') },
+    { key: 'exitCode', value: event.outputStats.exitCode == null ? '' : String(event.outputStats.exitCode) },
+    { key: 'durationMs', value: event.outputStats.durationMs == null ? '' : String(event.outputStats.durationMs) },
+  ]);
+
+  if (args) {
+    sections.push({ type: 'json', title: 'Command arguments', value: args });
+  }
+
+  const stdout = firstNonEmpty(execEnd?.stdout, formatted?.output);
+  const stderr = execEnd?.stderr || '';
+  maybePushTerminalSection(sections, 'stdout', stdout, 'stdout');
+  maybePushTerminalSection(sections, 'stderr', stderr, 'stderr');
+
+  if (stdout) maybePushParsedOutputSection(sections, 'stdout (structured)', stdout);
+  if (stderr) maybePushParsedOutputSection(sections, 'stderr (structured)', stderr);
+  if (functionOutput?.output) maybePushParsedOutputSection(sections, 'Tool output', structuredOutputValue(functionOutput.output));
+
+  if (!sections.length) sections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
+  return sections;
+}
+
+function extractPatchSections(raws, event) {
+  const sections = [];
+  const customCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call');
+  const customOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output');
+  const patchEnd = raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'patch_apply_end');
+  const envelope = toolOutputEnvelope(customOutput);
+  const patchText = customCall?.output || '';
+  if (patchText.trim()) sections.push({ type: 'diff', title: 'Patch', text: patchText.trim() });
+
+  maybePushKvSection(sections, 'Patch files', diffStatsEntries(patchEnd?.parsed?.payload?.changes) || []);
+  if (!patchEnd?.parsed?.payload?.changes) {
+    maybePushKvSection(sections, 'Touched files', event.touchedFiles.map((file) => ({ key: file, value: 'updated' })));
+  }
+
+  const noticeText = firstNonEmpty(
+    envelope?.output,
+    patchEnd?.parsed?.payload?.stdout,
+    patchEnd?.parsed?.payload?.stderr,
+    event.status ? `Patch ${event.status}.` : '',
+  );
+  if (noticeText) {
+    sections.push(makeNoticeSection('Patch status', noticeText, event.status === 'failed' ? 'error' : 'info'));
+  }
+
+  maybePushKvSection(sections, 'Patch metadata', [
+    { key: 'status', value: String(event.status || '') },
+    { key: 'durationMs', value: event.outputStats.durationMs == null ? '' : String(event.outputStats.durationMs) },
+  ]);
+
+  if (!sections.some((section) => section.type === 'diff')) {
+    sections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
+  }
+  return sections;
+}
+
+function extractJsReplSections(raws, event) {
+  const sections = [];
+  const customCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call');
+  const customOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output');
+  const envelope = toolOutputEnvelope(customOutput);
+  maybePushCodeSection(sections, 'JavaScript', customCall?.output, 'javascript');
+  maybePushKvSection(sections, 'JS REPL metadata', [
+    { key: 'status', value: String(event.status || '') },
+    { key: 'exitCode', value: event.outputStats.exitCode == null ? '' : String(event.outputStats.exitCode) },
+    { key: 'durationMs', value: event.outputStats.durationMs == null ? '' : String(event.outputStats.durationMs) },
+  ]);
+  const outputValue = envelope && Object.hasOwn(envelope, 'output') ? envelope.output : customOutput?.output;
+  if (coerceJsonValue(outputValue)) {
+    sections.push({ type: 'json', title: 'Output', value: coerceJsonValue(outputValue) });
+  } else {
+    maybePushTerminalSection(sections, 'Output', stringifyValue(outputValue), event.status === 'failed' ? 'stderr' : 'stdout');
+  }
+  if (!sections.length) sections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
+  return sections;
+}
+
+function extractToolSections(raws, event) {
+  const sections = [];
+  const functionCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');
+  const functionOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
+  const customCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call');
+  const customOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output');
+  const requestValue = firstNonEmpty(commandArgsFromRaw(functionCall), coerceJsonValue(customCall?.output), functionCall?.output, customCall?.output);
+  const responseEnvelope = toolOutputEnvelope(customOutput);
+  const responseValue = firstNonEmpty(
+    raws.find((raw) => raw.recordType === 'event_msg' && /_end$/.test(raw.payloadType || ''))?.parsed?.payload,
+    responseEnvelope?.output,
+    parseOutputEnvelope(functionOutput?.output),
+    functionOutput?.output,
+    customOutput?.output,
+  );
+
+  maybePushKvSection(sections, 'Tool metadata', [
+    { key: 'tool', value: String(event.toolName || '') },
+    { key: 'status', value: String(event.status || '') },
+    { key: 'durationMs', value: event.outputStats.durationMs == null ? '' : String(event.outputStats.durationMs) },
+  ]);
+
+  if (requestValue) {
+    if (typeof requestValue === 'object') {
+      sections.push({ type: 'json', title: 'Request', value: requestValue });
+    } else {
+      maybePushStructuredSection(sections, 'Request', requestValue);
+    }
+  }
+
+  if (responseValue) {
+    if (typeof responseValue === 'object') {
+      sections.push({ type: 'json', title: 'Response', value: responseValue });
+    } else {
+      maybePushStructuredSection(sections, 'Response', responseValue);
+    }
+  }
+
+  if (!sections.length) sections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
+  return sections;
+}
+
+function extractWebSearchSections(raws, event) {
+  const sections = [];
+  const searchCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'web_search_call');
+  const searchEnd = raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'web_search_end');
+  const action = searchCall?.parsed?.payload?.action;
+
+  if (typeof action === 'string') {
+    maybePushMarkdownSection(sections, 'Search action', action);
+  } else if (action && typeof action === 'object') {
+    sections.push({ type: 'json', title: 'Search action', value: action });
+  }
+
+  maybePushKvSection(sections, 'Search metadata', [
+    { key: 'status', value: String(event.status || searchCall?.status || searchEnd?.status || '') },
+  ]);
+
+  if (searchEnd?.parsed?.payload) {
+    sections.push({ type: 'json', title: 'Search payload', value: searchEnd.parsed.payload });
+  } else if (searchCall?.parsed?.payload) {
+    sections.push({ type: 'json', title: 'Search payload', value: searchCall.parsed.payload });
+  }
+
+  if (!sections.length) sections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
+  return sections;
+}
+
+function extractProtocolSections(event, raws) {
+  const sections = [];
+  const primary = raws[0];
+  if (['agents_instructions', 'developer_instruction', 'developer_permissions', 'developer_collaboration_mode', 'skill_injection'].includes(event.subtype)) {
+    maybePushMarkdownSection(sections, 'Protocol text', primary.messageText);
+    hideSectionTitle(sections[0]);
+    return sections;
+  }
+  if (event.subtype === 'environment_context' || event.subtype === 'session_meta' || event.subtype === 'turn_context') {
+    const entries = event.subtype === 'environment_context'
+      ? taggedBlockEntries(primary.messageText)
+      : toKvEntries(primary.parsed?.payload, ['cwd', 'turn_id', 'model', 'id', 'originator']);
+    maybePushKvSection(sections, 'Protocol fields', entries);
+    sections.push(makeRawJsonSection('Protocol raw JSON', primary.parsed));
+    return sections;
+  }
+  if (event.subtype === 'user_shell_command') {
+    maybePushCodeSection(sections, 'Shell command wrapper', primary.messageText, 'shell');
+    return sections;
+  }
+  if (event.subtype === 'image_wrapper' || event.subtype === 'meta_block' || event.subtype === 'turn_aborted_marker') {
+    sections.push(makeNoticeSection('Protocol wrapper', primary.messageText || event.preview, 'warning'));
+    return sections;
+  }
+  if (primary.messageText) {
+    maybePushMarkdownSection(sections, 'Protocol text', primary.messageText);
+    hideSectionTitle(sections[0]);
+  }
+  if (!sections.length) sections.push(makeRawJsonSection('Protocol raw JSON', primary.parsed));
+  return sections;
+}
+
+function extractLifecycleSections(event, raws) {
+  const sections = [];
+  const primary = raws[0];
+  sections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info')));
+  maybePushKvSection(sections, 'Event fields', toKvEntries(primary.parsed?.payload, ['type', 'turn_id', 'thread_id', 'thread_name']));
+  if (primary.parsed?.payload && Object.keys(primary.parsed.payload).length) {
+    sections.push(makeRawJsonSection('Event raw JSON', primary.parsed));
+  }
+  return sections;
+}
+
+function extractRawSections(raw) {
+  const sections = [];
+  if (raw.messageText) {
+    const subtype = classifyProtocolText(raw.messageText, raw.role);
+    if (subtype === 'user_shell_command') {
+      maybePushCodeSection(sections, 'Message', raw.messageText, 'shell');
+    } else {
+      maybePushMarkdownSection(sections, 'Message', raw.messageText);
+    }
+  }
+  if (raw.commandText) {
+    maybePushCodeSection(sections, 'Command', raw.commandText, 'shell');
+    maybePushTerminalSection(sections, 'stdout', raw.stdout, 'stdout');
+    maybePushTerminalSection(sections, 'stderr', raw.stderr, 'stderr');
+    if (raw.stdout) maybePushStructuredSection(sections, 'stdout (structured)', raw.stdout);
+    if (raw.stderr) maybePushStructuredSection(sections, 'stderr (structured)', raw.stderr);
+  }
+  if (raw.output) {
+    maybePushStructuredSection(sections, 'Payload', structuredOutputValue(raw.output));
+  }
+  maybePushKvSection(sections, 'Record fields', toKvEntries(raw.parsed?.payload, ['type', 'role', 'name', 'call_id', 'status', 'cwd']));
+  sections.push(makeRawJsonSection('Raw JSON', raw.parsed));
+  return sections;
+}
+
+function extractLogicalDetailSections(event, raws) {
+  switch (event.kind) {
+    case 'user_message':
+    case 'assistant_message':
+      return extractConversationSections(raws);
+    case 'plan_artifact':
+      return extractPlanSections(raws);
+    case 'reasoning':
+      return extractReasoningSections(raws);
+    case 'command':
+      return extractCommandSections(raws, event);
+    case 'patch':
+      return extractPatchSections(raws, event);
+    case 'js_repl':
+      return extractJsReplSections(raws, event);
+    case 'mcp':
+    case 'tool_operation':
+      return extractToolSections(raws, event);
+    case 'web_search':
+      return extractWebSearchSections(raws, event);
+    case 'protocol':
+      return extractProtocolSections(event, raws);
+    case 'token':
+    case 'compaction':
+    case 'abort':
+    case 'rollback':
+    case 'error':
+    case 'subagent':
+    case 'turn':
+      return extractLifecycleSections(event, raws);
+    default:
+      return [makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed))];
+  }
+}
+
+function buildEventDetail(session, eventId, layer = 'main') {
+  if (layer === 'raw') {
+    const raw = session.rawEvents.find((candidate) => candidate.rawId === eventId);
+    if (!raw) return null;
+    const sections = filterDetailSections(extractRawSections(raw));
+    for (const section of sections) {
+      if (section.type === 'raw_json') section.expanded = true;
+    }
+    return {
+      id: raw.rawId,
+      kind: raw.payloadType || raw.recordType,
+      subtype: raw.role || '',
+      layer: 'raw',
+      title: raw.payloadType || raw.recordType,
+      meta: rawMeta(raw),
+      rawRefs: [rawRef(raw)],
+      sections,
+    };
+  }
+
+  const logical = session.logicalEvents.find((candidate) => candidate.id === eventId && candidate.layer === layer);
+  if (!logical) return null;
+  const raws = rawEventsForLogicalEvent(session, logical);
+  const sections = extractLogicalDetailSections(logical, raws);
+  return {
+    id: logical.id,
+    kind: logical.kind,
+    subtype: logical.subtype,
+    layer: logical.layer,
+    title: logical.label,
+    meta: logicalMeta(logical),
+    rawRefs: logical.rawRefs,
+    sections: filterDetailSections(sections.length ? sections : [makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed))]),
+  };
 }
 
 function rawEventDto(raw, q) {
@@ -1238,6 +1824,7 @@ async function readRawLine(index, relFile, lineNumber) {
 
 module.exports = {
   buildIndex,
+  buildEventDetail,
   filterSessions,
   getTimeline,
   readRawLine,

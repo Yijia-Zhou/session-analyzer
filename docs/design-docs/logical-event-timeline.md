@@ -95,9 +95,40 @@ Important fields:
 - `rawRefs[]`
 - `channels[]`
 
+### Event detail DTO
+
+Expanded cards do not reuse `preview` for rich rendering. The server derives an `EventDetailDto` from the underlying logical event plus its referenced raw rows:
+
+- `id`
+- `kind`
+- `subtype`
+- `layer`
+- `title`
+- `meta`
+- `rawRefs[]`
+- `sections[]`
+
+`meta` always includes `timestamp`, `turnId`, `status`, `severity`, `toolName`, `touchedFiles`, `outputStats`, `channels`, and `source`.
+
+`sections[]` is a discriminated union of:
+
+- `markdown`
+- `code`
+- `terminal`
+- `json`
+- `diff`
+- `kv`
+- `notice`
+- `raw_json`
+
+Expanded-card rendering treats `markdown-it` as a required server dependency. Markdown source is converted server-side with raw HTML disabled and dangerous link protocols rejected. In the main and protocol layers, `raw_json` sections are rendered as collapsible fallback material so the right-side raw refs panel remains the primary full-source view.
+
+Sections may set `hideTitle: true` when the section title only restates the event header, such as the primary `Message`, `Plan`, `Reasoning`, or protocol text body. Renderer implementations should keep titles visible for structural sections such as stdout/stderr, metadata tables, request/response payloads, patch files, and raw JSON summaries.
+
 ## API / contract changes
 
 - `/api/sessions/:id/timeline` accepts `layer=main|protocol|raw`
+- `/api/sessions/:id/events/:eventId/detail?layer=main|protocol|raw` returns the structured detail DTO for one event
 - Main and protocol layers return logical events
 - Raw layer returns raw-record DTOs
 - Event detail uses `rawRefs` so one logical event can expose multiple source rows
@@ -147,6 +178,8 @@ Important fields:
 
 - Parser tests covering mirrored message channels
 - Tests for protocol classification and old/new patch formats
+- Detail DTO tests covering structured sections for conversation, command, patch, plan, protocol, and raw fallback cases
+- Renderer tests covering markdown/code/terminal/json/diff/notice output and escaping
 - Manual verification against a real local `.codex` directory
 - Confirm that one logical event can reveal all underlying raw rows
 
@@ -155,3 +188,4 @@ Important fields:
 - 2026-04-21: Adopted the three-layer model (`main`, `protocol`, `raw`) instead of raw-only rendering.
 - 2026-04-21: Treated protocol injections as first-class events instead of hiding them permanently.
 - 2026-04-21: Grouped tool operations by `call_id` to make shell, patch, MCP, and JS REPL activity readable.
+- 2026-04-21: Added server-side event-detail extraction plus a frontend renderer registry so expanded cards show structured content without trusting raw HTML from transcripts.

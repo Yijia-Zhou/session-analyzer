@@ -2,9 +2,10 @@
 {"timestamp":"2026-04-20T01:00:05.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1","model_context_window":200000}}
 {"timestamp":"2026-04-20T01:00:06.000Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>\nFilesystem sandboxing defines which files can be read or written."}]}}
 {"timestamp":"2026-04-20T01:00:07.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for G:\\vibe\\term-agent"}]}}
+{"timestamp":"2026-04-20T01:00:07.500Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>G:\\vibe\\term-agent</cwd>\n  <shell>powershell</shell>\n</environment_context>"}]}}
 {"timestamp":"2026-04-20T01:00:08.000Z","type":"turn_context","payload":{"turn_id":"turn-1","cwd":"G:\\vibe\\term-agent","model":"gpt-5"}}
-{"timestamp":"2026-04-20T01:00:09.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fix the alpha parser regression"}]}}
-{"timestamp":"2026-04-20T01:00:09.100Z","type":"event_msg","payload":{"type":"user_message","message":"Fix the alpha parser regression","turn_id":"turn-1","images":[],"local_images":[],"text_elements":[]}}
+{"timestamp":"2026-04-20T01:00:09.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# Fix the alpha parser regression\n\n| area | action |\n| --- | --- |\n| parser | inspect |\n\n- keep raw refs\n- render markdown\n\n<script>alert(1)</script>\n[bad](javascript:alert(1))"}]}}
+{"timestamp":"2026-04-20T01:00:09.100Z","type":"event_msg","payload":{"type":"user_message","message":"# Fix the alpha parser regression\n\n| area | action |\n| --- | --- |\n| parser | inspect |\n\n- keep raw refs\n- render markdown\n\n<script>alert(1)</script>\n[bad](javascript:alert(1))","turn_id":"turn-1","images":[],"local_images":[],"text_elements":[]}}
 {"timestamp":"2026-04-20T01:00:10.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_tokens":1234}}}
 {"timestamp":"2026-04-20T01:00:11.000Z","type":"event_msg","payload":{"type":"agent_reasoning","text":"Plan parser fix","turn_id":"turn-1"}}
 {"timestamp":"2026-04-20T01:00:11.100Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Plan parser fix"}],"content":{"ignored":true}}}
