@@ -1,93 +1,95 @@
-# Session Transcript Analyzer
+# Session Transcript Analyzer / 会话转录分析器
 
-## Metadata
-- Owner: repository maintainers
-- Status: draft
-- Last updated: 2026-04-21
-- Related docs:
+## Metadata / 元数据
+- Owner: repository maintainers / 负责人：仓库维护者
+- Status: draft / 状态：草案
+- Last updated: 2026-04-21 / 最近更新：2026-04-21
+- Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/active/2026-04-21-transcript-normalization-followups.md`
 
-## Summary
+## Summary / 摘要
 
 Session Transcript Analyzer is a local web tool for reviewing Codex session transcripts for a specific repository. It helps a single developer move from raw transcript dumps to usable history: searchable sessions, layered timelines, tool-call analysis, and drill-down into the original JSONL when needed. The product is optimized for long sessions, repeated iterations, and mixed protocol noise inside Codex transcripts.
 
-## Problem
+Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓库的 Codex 会话转录。它帮助单个开发者把原始转录转储转化为可用历史：可搜索的会话、分层时间线、工具调用分析，以及在需要时下钻到原始 JSONL。该产品针对长会话、反复迭代，以及 Codex 转录中混杂的协议噪声进行了优化。
 
-- Raw Codex transcripts are long, repetitive, and hard to review after many sessions.
-- The same user or assistant content may appear through multiple channels, which makes naive viewers noisy.
-- Tool activity, protocol injections, and plan artifacts are useful for debugging but should not dominate normal reading.
-- Without a local review tool, repository-specific engineering history becomes hard to search and hard to trust.
+## Problem / 问题
 
-## Target users
+- Raw Codex transcripts are long, repetitive, and hard to review after many sessions. / 原始 Codex 转录又长又重复，在许多会话之后很难回顾。
+- The same user or assistant content may appear through multiple channels, which makes naive viewers noisy. / 同一用户或助手内容可能通过多个通道出现，这会让朴素查看器产生大量噪声。
+- Tool activity, protocol injections, and plan artifacts are useful for debugging but should not dominate normal reading. / 工具活动、协议注入和计划产物对调试有用，但不应主导正常阅读。
+- Without a local review tool, repository-specific engineering history becomes hard to search and hard to trust. / 如果没有本地查看工具，特定仓库的工程历史会变得难以搜索，也难以信任。
 
-- Primary users: individual developers using Codex across many sessions in the same repository
-- Secondary users: maintainers debugging transcript format changes or viewer behavior
-- Non-target users: multi-user hosted analytics or cloud reporting consumers
+## Target users / 目标用户
 
-## Goals
+- Primary users: individual developers using Codex across many sessions in the same repository / 主要用户：在同一仓库中跨多个会话使用 Codex 的个人开发者
+- Secondary users: maintainers debugging transcript format changes or viewer behavior / 次要用户：调试转录格式变化或查看器行为的维护者
+- Non-target users: multi-user hosted analytics or cloud reporting consumers / 非目标用户：多用户托管分析或云报告消费者
 
-- Make repository-scoped session history readable without opening raw JSONL files by hand.
-- Support fast search across messages, tool calls, files, and outputs.
-- Provide a main timeline that reflects logical work rather than raw duplicated transcript rows.
-- Preserve access to protocol and raw transcript detail for debugging and verification.
+## Goals / 目标
 
-## Non-goals
+- Make repository-scoped session history readable without opening raw JSONL files by hand. / 让仓库范围内的会话历史可读，而不需要手动打开原始 JSONL 文件。
+- Support fast search across messages, tool calls, files, and outputs. / 支持跨消息、工具调用、文件和输出的快速搜索。
+- Provide a main timeline that reflects logical work rather than raw duplicated transcript rows. / 提供反映逻辑工作的主时间线，而不是原始重复转录行。
+- Preserve access to protocol and raw transcript detail for debugging and verification. / 保留对协议和原始转录细节的访问，以便调试和验证。
 
-- Cloud sync, shared collaboration, or hosted dashboards
-- LLM-based summarization or semantic clustering
-- Editing or mutating Codex transcript files
-- Supporting every historical Codex transcript variant perfectly on day one
+## Non-goals / 非目标
 
-## User stories
+- Cloud sync, shared collaboration, or hosted dashboards / 云同步、共享协作或托管仪表板
+- LLM-based summarization or semantic clustering / 基于 LLM 的摘要或语义聚类
+- Editing or mutating Codex transcript files / 编辑或变更 Codex 转录文件
+- Supporting every historical Codex transcript variant perfectly on day one / 在第一天就完美支持每一种历史 Codex 转录变体
 
-- As a developer, I want to list only sessions that touched my current repository, so that unrelated Codex history stays out of the way.
-- As a developer, I want to search for a file path, command, or error string, so that I can jump back to the relevant work quickly.
-- As a developer, I want the default timeline to collapse protocol noise and duplicate message channels, so that I can follow the real flow of work.
-- As a maintainer, I want a protocol layer and a raw layer, so that I can verify how the logical timeline was derived.
-- As a maintainer, I want tool operations grouped by logical call, so that shell runs, patch applications, and MCP calls are easier to inspect.
+## User stories / 用户故事
 
-## User-facing behavior
+- As a developer, I want to list only sessions that touched my current repository, so that unrelated Codex history stays out of the way. / 作为开发者，我希望只列出触及当前仓库的会话，以便排除无关的 Codex 历史。
+- As a developer, I want to search for a file path, command, or error string, so that I can jump back to the relevant work quickly. / 作为开发者，我希望搜索文件路径、命令或错误字符串，以便快速跳回相关工作。
+- As a developer, I want the default timeline to collapse protocol noise and duplicate message channels, so that I can follow the real flow of work. / 作为开发者，我希望默认时间线折叠协议噪声和重复消息通道，以便跟随真实的工作流程。
+- As a maintainer, I want a protocol layer and a raw layer, so that I can verify how the logical timeline was derived. / 作为维护者，我希望有协议层和原始层，以便验证逻辑时间线是如何派生的。
+- As a maintainer, I want tool operations grouped by logical call, so that shell runs, patch applications, and MCP calls are easier to inspect. / 作为维护者，我希望按逻辑调用对工具操作分组，以便更容易检查 shell 运行、补丁应用和 MCP 调用。
 
-1. The user starts the local server with a repository root.
-2. The application scans the local Codex home and shows only matching sessions.
-3. The user sees a session list with counts, sizes, timestamps, and failure indicators.
-4. Opening a session shows the main timeline by default.
-5. The user may switch between `Main timeline`, `Protocol layer`, and `Raw records`.
-6. The user may search, filter by kind/status/file, and inspect grouped tool operations.
-7. Expanding a timeline card replaces the preview with structured event detail inline, including markdown messages, command output, diffs, notices, and structured metadata.
-8. Raw JSON fallback sections remain available from expanded cards but stay visually secondary outside the raw layer.
-9. Clicking an event's `Raw refs` control shows all underlying raw JSONL rows for verification in the right-side panel.
+## User-facing behavior / 面向用户的行为
 
-## Acceptance criteria
+1. The user starts the local server with a repository root. / 用户用一个仓库根目录启动本地服务器。
+2. The application scans the local Codex home and shows only matching sessions. / 应用扫描本地 Codex 主目录，并只显示匹配的会话。
+3. The user sees a session list with counts, sizes, timestamps, and failure indicators. / 用户看到包含计数、大小、时间戳和失败指示器的会话列表。
+4. Opening a session shows the main timeline by default. / 打开会话时默认显示主时间线。
+5. The user may switch between `Main timeline`, `Protocol layer`, and `Raw records`. / 用户可以在 `Main timeline`、`Protocol layer` 和 `Raw records` 之间切换。
+6. The user may search, filter by kind/status/file, and inspect grouped tool operations. / 用户可以搜索、按类型/状态/文件筛选，并检查分组后的工具操作。
+7. Expanding a timeline card replaces the preview with structured event detail inline, including markdown messages, command output, diffs, notices, and structured metadata. / 展开时间线卡片会以内联结构化事件详情替换预览，内容包括 Markdown 消息、命令输出、差异、通知和结构化元数据。
+8. Raw JSON fallback sections remain available from expanded cards but stay visually secondary outside the raw layer. / 原始 JSON 回退区段仍可从展开卡片访问，但在原始层之外保持视觉上的次要地位。
+9. Clicking an event's `Raw refs` control shows all underlying raw JSONL rows for verification in the right-side panel. / 点击事件的 `Raw refs` 控件会在右侧面板显示所有底层原始 JSONL 行以供验证。
 
-- [ ] Main timeline does not show duplicated user or assistant messages when mirrored transcript channels exist.
-- [ ] Protocol injections such as `AGENTS.md`, environment blocks, and developer instructions are accessible but not mixed into the default main timeline.
-- [ ] Tool calls are visible as logical operations with status, affected files, and raw drill-down.
-- [ ] Expanded timeline cards render structured event detail instead of only enlarging a truncated preview.
-- [ ] Expanded timeline cards do not duplicate truncated preview text above the full body.
-- [ ] Expanded detail remains available for `main`, `protocol`, and `raw` layers without hiding unknown transcript shapes.
-- [ ] Raw JSONL rows remain accessible for every logical event.
-- [ ] Filtering by keyword, file, status, and event kind works across the selected layer.
-- [ ] Repository filtering is case-insensitive on Windows paths.
+## Acceptance criteria / 验收标准
 
-## Edge cases
+- [ ] Main timeline does not show duplicated user or assistant messages when mirrored transcript channels exist. / 当存在镜像转录通道时，主时间线不显示重复的用户或助手消息。
+- [ ] Protocol injections such as `AGENTS.md`, environment blocks, and developer instructions are accessible but not mixed into the default main timeline. / `AGENTS.md`、环境块和开发者指令等协议注入可以访问，但不会混入默认主时间线。
+- [ ] Tool calls are visible as logical operations with status, affected files, and raw drill-down. / 工具调用以逻辑操作形式可见，并带有状态、受影响文件和原始下钻入口。
+- [ ] Expanded timeline cards render structured event detail instead of only enlarging a truncated preview. / 展开的时间线卡片渲染结构化事件详情，而不是只放大截断预览。
+- [ ] Expanded timeline cards do not duplicate truncated preview text above the full body. / 展开的时间线卡片不会在完整正文上方重复截断预览文本。
+- [ ] Expanded detail remains available for `main`, `protocol`, and `raw` layers without hiding unknown transcript shapes. / 展开详情在 `main`、`protocol` 和 `raw` 层都保持可用，并且不会隐藏未知转录形态。
+- [ ] Raw JSONL rows remain accessible for every logical event. / 每个逻辑事件都仍可访问原始 JSONL 行。
+- [ ] Filtering by keyword, file, status, and event kind works across the selected layer. / 按关键词、文件、状态和事件类型筛选可在所选层中正常工作。
+- [ ] Repository filtering is case-insensitive on Windows paths. / 在 Windows 路径上，仓库筛选不区分大小写。
 
-- Sessions with no `session_index.jsonl` entry
-- Sessions with partial or malformed JSONL rows
-- Old transcripts that only expose tool call plus output without an `event_msg:*_end` row
-- Empty reasoning records
-- Sessions that contain user-side protocol wrappers such as `<turn_aborted>` or `<user_shell_command>`
+## Edge cases / 边界情况
 
-## Metrics
+- Sessions with no `session_index.jsonl` entry / 没有 `session_index.jsonl` 条目的会话
+- Sessions with partial or malformed JSONL rows / 包含部分或格式错误 JSONL 行的会话
+- Old transcripts that only expose tool call plus output without an `event_msg:*_end` row / 只暴露工具调用及输出、但没有 `event_msg:*_end` 行的旧转录
+- Empty reasoning records / 空推理记录
+- Sessions that contain user-side protocol wrappers such as `<turn_aborted>` or `<user_shell_command>` / 包含 `<turn_aborted>` 或 `<user_shell_command>` 等用户侧协议包装器的会话
 
-- Adoption: number of repository sessions loaded and revisited locally
-- Success: time to locate a prior session or relevant command/file path
-- Failure: duplicate content still visible in main timeline, or important protocol data impossible to recover
-- Guardrail: raw row drill-down always remains available
+## Metrics / 指标
 
-## Open questions
+- Adoption: number of repository sessions loaded and revisited locally / 采用度：本地加载和再次访问的仓库会话数量
+- Success: time to locate a prior session or relevant command/file path / 成功指标：定位先前会话或相关命令/文件路径所需时间
+- Failure: duplicate content still visible in main timeline, or important protocol data impossible to recover / 失败指标：主时间线中仍可见重复内容，或重要协议数据无法恢复
+- Guardrail: raw row drill-down always remains available / 护栏：原始行下钻始终保持可用
 
-- Whether protocol subtypes should get custom icons and richer inline summaries
-- Whether session titles should be manually editable or inferred only
-- Whether future transcript indexing should remain in-memory only or allow an optional local cache
+## Open questions / 待解决问题
+
+- Whether protocol subtypes should get custom icons and richer inline summaries / 协议子类型是否应获得自定义图标和更丰富的内联摘要
+- Whether session titles should be manually editable or inferred only / 会话标题应允许手动编辑，还是只能推断
+- Whether future transcript indexing should remain in-memory only or allow an optional local cache / 未来转录索引应继续只保存在内存中，还是允许可选的本地缓存

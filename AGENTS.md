@@ -23,6 +23,7 @@ When changing product behavior or repository structure:
 2. Update the relevant design doc if the internal model, architecture, or tradeoff changes.
 3. Update the active exec plan if the work is still in progress.
 4. Move finished plans from `active/` to `completed/` only when the work is actually done.
+5. For bilingual docs, update the English and Chinese text together so they keep the same meaning. / 对双语文档，英文和中文要在同一次变更中同步更新，保持含义一致。
 
 ## Current anchors
 
