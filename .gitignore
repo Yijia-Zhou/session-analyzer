@@ -5,6 +5,10 @@ node_modules/
 coverage/
 .nyc_output/
 
+# Local browser automation artifacts
+.playwright-cli/
+output/playwright/
+
 # Runtime logs
 *.log
 npm-debug.log*
