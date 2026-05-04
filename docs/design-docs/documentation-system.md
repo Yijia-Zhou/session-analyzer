@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-05-03 / 最近更新：2026-05-03
+- Last updated: 2026-05-04 / 最近更新：2026-05-04
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -19,6 +19,7 @@ This repository started as a small local tool, but it already has user-facing be
 
 - Keep `AGENTS.md` short and navigational. / 让 `AGENTS.md` 保持简短，并专注于导航。
 - Separate external behavior from internal design from step-by-step execution. / 将外部行为、内部设计和逐步执行分离开来。
+- Keep unvalidated long-horizon ideas separate from accepted specs, design docs, and execution plans. / 将未经验证的远期想法与已接受的规格、设计文档和执行计划分离。
 - Make active implementation plans self-contained enough for a new executor to continue the work. / 让活跃实现计划足够自包含，使新的执行者可以继续工作。
 - Keep filenames searchable by topic and status. / 让文件名可按主题和状态搜索。
 - Keep bilingual docs synchronized when either language changes. / 当任一语言发生变更时，保持双语文档同步。
@@ -57,6 +58,12 @@ This repository started as a small local tool, but it already has user-facing be
 - Cross-plan debt that would otherwise be forgotten / 否则可能被遗忘的跨计划债务
 - Each entry should point back to the related spec or design doc where possible / 每个条目应尽可能指回相关规格或设计文档
 
+### `docs/backlog/` / 远期想法暂存目录
+
+- Parking lot for rough, uncommitted, long-horizon improvement ideas / 用于暂存粗略的、尚未承诺的、远期潜在改进想法
+- Not an accepted requirement, design decision, execution plan, or technical debt tracker / 不是已接受的需求、设计决策、执行计划或技术债跟踪器
+- Items should define promotion criteria before they can move into specs, design docs, or exec plans / 条目应先定义晋升标准，之后才能迁移到规格、设计文档或执行计划
+
 ## Alternatives considered / 已考虑的备选方案
 
 ### Keep everything in AGENTS.md / 将所有内容放在 AGENTS.md 中
@@ -77,20 +84,29 @@ This repository started as a small local tool, but it already has user-facing be
 - Cons: creates a structure without actual repository knowledge inside it / 缺点：创建了结构，但其中没有实际仓库知识
 - Rejected / 已拒绝
 
+### Put rough future ideas into active exec plans / 将粗略远期想法放入活跃执行计划
+
+- Pros: keeps all future work in one place / 优点：所有未来工作都在一个位置
+- Cons: makes speculative ideas look like committed near-term work / 缺点：会让推测性想法看起来像已经承诺的近期工作
+- Rejected / 已拒绝
+
 ## Risks / 风险
 
 - Empty document trees that look formal but do not guide implementation / 空文档树看起来正式，却无法指导实现
 - Specs drifting away from current UI behavior / 规格与当前 UI 行为脱节
 - Completed plans becoming the only place where important design decisions are recorded / 已完成计划成为记录重要设计决策的唯一位置
+- Backlog entries becoming a permanent dumping ground instead of being promoted, rejected, or refreshed / backlog 条目变成永久垃圾堆，而不是被晋升、拒绝或刷新
 
 ## Validation / 验证
 
 - Every major feature should be traceable from spec -> design -> active/completed plan / 每个主要功能都应能从规格 -> 设计 -> 活跃/已完成计划追踪
+- Backlog items should not be treated as accepted work until promoted into a formal document class. / backlog 条目在晋升到正式文档类别前，不应被视为已接受工作。
 - AGENTS should remain small enough to read quickly / AGENTS 应保持足够小，以便快速阅读
 - Bilingual docs should not leave English and Chinese text describing different behavior. / 双语文档不应让英文和中文描述不同的行为。
 - New contributors should be able to identify current product intent without replaying prior chats / 新贡献者应能在不回放先前聊天的情况下识别当前产品意图
 
 ## Decision log / 决策日志
 
+- 2026-05-04: Added `docs/backlog/` as a separate parking area for rough long-horizon ideas. / 2026-05-04：新增 `docs/backlog/`，作为粗略远期想法的独立暂存区。
 - 2026-05-03: Added a lightweight rule requiring translated docs to keep English and Chinese text synchronized. / 2026-05-03：添加轻量规则，要求已翻译文档保持英文和中文文本同步。
 - 2026-04-21: Chose a three-tier documentation system with repository-specific starter docs instead of template-only scaffolding. / 2026-04-21：选择带有仓库专属起始文档的三层文档系统，而不是只使用模板脚手架。
