@@ -25,6 +25,12 @@ When changing product behavior or repository structure:
 4. Move finished plans from `active/` to `completed/` only when the work is actually done.
 5. For bilingual docs, update the English and Chinese text together so they keep the same meaning. / 对双语文档，英文和中文要在同一次变更中同步更新，保持含义一致。
 
+## Local server startup
+
+- Start: `$process = Start-Process -FilePath 'C:\Program Files\nodejs\node.exe' -ArgumentList @('server.js', '--repo', 'G:\vibe\session-analyzer') -WorkingDirectory 'G:\vibe\session-analyzer' -WindowStyle Hidden -PassThru; $process.Id`
+- Verify: `Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:17890/' -TimeoutSec 10`
+- Use real `node.exe`; the `node` shim/background jobs exited or were cleaned up here.
+
 ## Current anchors
 
 - Product spec: `docs/product-specs/session-transcript-analyzer.md`
