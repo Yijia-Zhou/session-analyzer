@@ -75,6 +75,15 @@ test('timeline protocol layer exposes injected records and raw layer keeps all r
   assert.ok(protocolTimeline.events.some((event) => event.subtype === 'agents_instructions'));
   assert.ok(protocolTimeline.events.some((event) => event.subtype === 'developer_permissions'));
   assert.ok(protocolTimeline.events.some((event) => event.subtype === 'environment_context'));
+  const protocolBySubtype = new Map(protocolTimeline.events.map((event) => [event.subtype, event]));
+  assert.equal(protocolBySubtype.get('agents_instructions').label, 'AGENTS.md instructions');
+  assert.equal(protocolBySubtype.get('agents_instructions').preview, 'Repository instructions for G:\\vibe\\term-agent');
+  assert.equal(protocolBySubtype.get('developer_permissions').label, 'Developer permissions');
+  assert.equal(protocolBySubtype.get('developer_permissions').preview, 'Filesystem sandboxing defines which files can be read or written.');
+  assert.equal(protocolBySubtype.get('environment_context').label, 'Environment context');
+  assert.equal(protocolBySubtype.get('environment_context').preview, 'cwd: G:\\vibe\\term-agent; shell: powershell');
+  assert.equal(protocolBySubtype.get('session_meta').label, 'Session metadata');
+  assert.equal(protocolBySubtype.get('turn_context').preview, 'turn_id: turn-1; cwd: G:\\vibe\\term-agent; model: gpt-5');
 
   const rawTimeline = getTimeline(index, index.sessions[0].id, {
     offset: 0,
@@ -192,6 +201,38 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   const rawDetail = buildEventDetail(session, rawRecord.rawId, 'raw');
   assert.equal(rawDetail.sections.at(-1).type, 'raw_json');
   assert.equal(rawDetail.sections.at(-1).expanded, true);
+
+  const rawUserRecord = session.rawEvents.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'user_message');
+  const rawUserDetail = buildEventDetail(session, rawUserRecord.rawId, 'raw');
+  assert.equal(rawUserDetail.sections[0].type, 'markdown');
+  assert.equal(rawUserDetail.sections[0].hideTitle, true);
+  assert.match(rawUserDetail.sections[0].html, /<h1>Fix the alpha parser regression<\/h1>/);
+  assert.equal(rawUserDetail.sections.find((section) => section.type === 'kv').entries.some((entry) => entry.key === 'message'), false);
+  assert.equal(rawUserDetail.sections.at(-1).type, 'raw_json');
+  assert.equal(rawUserDetail.sections.at(-1).expanded, true);
+
+  const rawEnvironmentRecord = session.rawEvents.find((raw) => raw.messageText.startsWith('<environment_context>'));
+  const rawEnvironmentDetail = buildEventDetail(session, rawEnvironmentRecord.rawId, 'raw');
+  assert.equal(rawEnvironmentDetail.sections[0].type, 'kv');
+  assert.equal(rawEnvironmentDetail.sections[0].title, 'Protocol fields');
+  assert.equal(rawEnvironmentDetail.sections.some((section) => section.title === 'Message'), false);
+
+  const rawCommandCall = session.rawEvents.find((raw) => raw.payloadType === 'function_call' && raw.toolName === 'shell_command');
+  const rawCommandCallDetail = buildEventDetail(session, rawCommandCall.rawId, 'raw');
+  assert.equal(rawCommandCallDetail.sections[0].type, 'code');
+  assert.equal(rawCommandCallDetail.sections[0].title, 'Command');
+  assert.equal(rawCommandCallDetail.sections.some((section) => section.title === 'Payload'), false);
+
+  const rawPatchCall = session.rawEvents.find((raw) => raw.payloadType === 'custom_tool_call' && raw.toolName === 'apply_patch');
+  const rawPatchCallDetail = buildEventDetail(session, rawPatchCall.rawId, 'raw');
+  assert.equal(rawPatchCallDetail.sections[0].type, 'diff');
+  assert.equal(rawPatchCallDetail.sections[0].title, 'Patch');
+  assert.equal(rawPatchCallDetail.sections.some((section) => section.title === 'Payload'), false);
+
+  const rawPatchEnd = session.rawEvents.find((raw) => raw.payloadType === 'patch_apply_end');
+  const rawPatchEndDetail = buildEventDetail(session, rawPatchEnd.rawId, 'raw');
+  assert.equal(rawPatchEndDetail.sections[0].type, 'kv');
+  assert.equal(rawPatchEndDetail.sections[0].title, 'Patch files');
 });
 
 test('detail endpoint returns structured event detail with sections and raw refs', async () => {

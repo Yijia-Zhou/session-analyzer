@@ -140,6 +140,8 @@ Stabilize the new logical-event timeline so the main/protocol/raw layers are eas
 - 2026-05-03: Implemented preview/body separation, required `markdown-it` lockfile, Markdown fixture coverage, Markdown styles, command output de-duplication, collapsible `raw_json`, and visible-card detail loading. / 2026-05-03：实现预览/正文分离、必需的 `markdown-it` lockfile、Markdown fixture 覆盖、Markdown 样式、命令输出去重、可折叠 `raw_json` 和可见卡片详情加载。
 - 2026-05-03: Added `hideTitle` section rendering rule for redundant primary body titles such as Message, Plan, Reasoning, lifecycle notices, and protocol text. / 2026-05-03：为 Message、Plan、Reasoning、生命周期通知和协议文本等冗余主正文标题添加 `hideTitle` 区段渲染规则。
 - 2026-05-04: Split event-inspector, search-feedback, failure-navigation, and narrow-screen UX work into `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md`, keeping this plan focused on transcript normalization and structured detail extraction. / 2026-05-04：将事件检查器、搜索反馈、失败导航和窄屏 UX 工作拆分到 `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md`，使本计划继续聚焦转录归一化和结构化详情提取。
+- 2026-05-04: Added protocol subtype display metadata and fixture assertions for readable AGENTS.md, developer permissions, environment context, session metadata, and turn context labels/previews. / 2026-05-04：为协议子类型添加展示元数据，并为 AGENTS.md、开发者权限、环境上下文、会话元数据和 turn context 的可读标签/预览添加 fixture 断言。
+- 2026-05-04: Aligned raw semantic-row detail rendering with existing protocol, lifecycle, conversation, command, and patch structured sections, reducing generic `Message`/`Payload` fallback use when a specific renderer exists. / 2026-05-04：将原始语义行详情渲染与现有协议、生命周期、对话、命令和补丁结构化区段对齐，在存在专用渲染器时减少通用 `Message`/`Payload` 回退使用。
 
 ## Decision log / 决策日志
 

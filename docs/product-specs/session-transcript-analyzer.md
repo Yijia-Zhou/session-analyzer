@@ -71,10 +71,12 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 
 - [ ] Main timeline does not show duplicated user or assistant messages when mirrored transcript channels exist. / 当存在镜像转录通道时，主时间线不显示重复的用户或助手消息。
 - [ ] Protocol injections such as `AGENTS.md`, environment blocks, and developer instructions are accessible but not mixed into the default main timeline. / `AGENTS.md`、环境块和开发者指令等协议注入可以访问，但不会混入默认主时间线。
+- [ ] Protocol layer events use readable labels and concise summaries before users open raw JSON. / 协议层事件在用户打开原始 JSON 之前就使用可读标签和简洁摘要。
 - [ ] Tool calls are visible as logical operations with status, affected files, and raw drill-down. / 工具调用以逻辑操作形式可见，并带有状态、受影响文件和原始下钻入口。
 - [ ] Expanded timeline cards render structured event detail instead of only enlarging a truncated preview. / 展开的时间线卡片渲染结构化事件详情，而不是只放大截断预览。
 - [ ] Expanded timeline cards do not duplicate truncated preview text above the full body. / 展开的时间线卡片不会在完整正文上方重复截断预览文本。
 - [ ] Expanded detail remains available for `main`, `protocol`, and `raw` layers without hiding unknown transcript shapes. / 展开详情在 `main`、`protocol` 和 `raw` 层都保持可用，并且不会隐藏未知转录形态。
+- [ ] Raw records that map to known semantic events reuse the relevant structured detail sections, while keeping raw JSON available. / 映射到已知语义事件的原始记录会复用相关的结构化详情区段，同时保持原始 JSON 可用。
 - [ ] Raw JSONL rows remain accessible for every logical event. / 每个逻辑事件都仍可访问原始 JSONL 行。
 - [ ] Filtering by keyword, file, status, and event kind works across the selected layer. / 按关键词、文件、状态和事件类型筛选可在所选层中正常工作。
 - [ ] Search and filter result counts stay visible while browsing a selected session. / 浏览选中 session 时，搜索和筛选结果数量保持可见。
@@ -100,6 +102,6 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 
 ## Open questions / 待解决问题
 
-- Whether protocol subtypes should get custom icons and richer inline summaries / 协议子类型是否应获得自定义图标和更丰富的内联摘要
+- Whether protocol subtypes should get custom icons beyond current readable labels and summaries / 协议子类型是否应在当前可读标签和摘要之外获得自定义图标
 - Whether session titles should be manually editable or inferred only / 会话标题应允许手动编辑，还是只能推断
 - Whether future transcript indexing should remain in-memory only or allow an optional local cache / 未来转录索引应继续只保存在内存中，还是允许可选的本地缓存

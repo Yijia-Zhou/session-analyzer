@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-04-21 / 最近更新：2026-04-21
+- Last updated: 2026-05-04 / 最近更新：2026-05-04
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -103,6 +103,10 @@ Important fields:
 - `rawRefs[]`
 - `channels[]`
 
+Protocol logical events derive `label` and `preview` from subtype display metadata instead of raw subtype identifiers, while `searchText` and `rawRefs[]` keep the original transcript text discoverable and traceable.
+
+协议逻辑事件会从子类型展示元数据派生 `label` 和 `preview`，而不是直接使用原始子类型标识符；同时 `searchText` 和 `rawRefs[]` 会保留原始转录文本的可搜索性和可追踪性。
+
 ### Event detail DTO / 事件详情 DTO
 
 Expanded cards do not reuse `preview` for rich rendering. The server derives an `EventDetailDto` from the underlying logical event plus its referenced raw rows:
@@ -138,6 +142,10 @@ Expanded cards do not reuse `preview` for rich rendering. The server derives an 
 Expanded-card rendering treats `markdown-it` as a required server dependency. Markdown source is converted server-side with raw HTML disabled and dangerous link protocols rejected. In the main and protocol layers, `raw_json` sections are rendered as collapsible fallback material so the right-side raw refs panel remains the primary full-source view.
 
 展开卡片渲染将 `markdown-it` 视为必需的服务器依赖。Markdown 源内容在服务器端转换，禁用原始 HTML，并拒绝危险链接协议。在主层和协议层中，`raw_json` 区段渲染为可折叠的回退材料，从而让右侧原始引用面板保持主要的完整来源视图。
+
+Raw rows that map to known semantic events reuse the same primary structured section extraction as their logical event family, then add raw-record metadata and expanded raw JSON. Conversation rows reuse Markdown body sections, protocol rows reuse protocol text/field sections, lifecycle rows reuse notice sections, and tool rows reuse command or patch sections. This keeps raw inspection faithful without falling back to duplicated scalar fields or generic payload blocks when a more specific renderer exists.
+
+映射到已知语义事件的原始行会复用与其逻辑事件家族相同的主结构化区段提取，然后附加原始记录元数据和展开的原始 JSON。对话行复用 Markdown 正文区段，协议行复用协议文本/字段区段，生命周期行复用通知区段，工具行复用命令或补丁区段。这样原始检查既保持忠实，也不会在已有更具体渲染器时退回到重复标量字段或通用 payload 块。
 
 Sections may set `hideTitle: true` when the section title only restates the event header, such as the primary `Message`, `Plan`, `Reasoning`, or protocol text body. Renderer implementations should keep titles visible for structural sections such as stdout/stderr, metadata tables, request/response payloads, patch files, and raw JSON summaries.
 

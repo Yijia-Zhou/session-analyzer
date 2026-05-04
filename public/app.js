@@ -391,6 +391,9 @@ async function loadTimeline(append) {
 }
 
 function displayState(event) {
+  const sessionOverrides = state.overrides[state.selectedSessionId] || {};
+  if (sessionOverrides[event.id]) return sessionOverrides[event.id];
+
   if (state.layerId === 'protocol') {
     return event.kind === 'protocol' ? 'summary' : 'collapsed';
   }
@@ -398,8 +401,6 @@ function displayState(event) {
     return ['event_msg', 'response_item'].includes(event.recordType) ? 'collapsed' : 'summary';
   }
 
-  const sessionOverrides = state.overrides[state.selectedSessionId] || {};
-  if (sessionOverrides[event.id]) return sessionOverrides[event.id];
   const q = el.searchInput.value.trim();
   const profile = q && state.profileId !== 'compact' ? 'search' : state.profileId;
 

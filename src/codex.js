@@ -36,6 +36,21 @@ function truncate(value, limit = 240) {
   return `${text.slice(0, Math.max(0, limit - 3))}...`;
 }
 
+const PROTOCOL_LABELS = Object.freeze({
+  agents_instructions: 'AGENTS.md instructions',
+  developer_collaboration_mode: 'Collaboration mode',
+  developer_instruction: 'Developer instruction',
+  developer_permissions: 'Developer permissions',
+  environment_context: 'Environment context',
+  image_wrapper: 'Image attachment wrapper',
+  meta_block: 'Protocol metadata block',
+  session_meta: 'Session metadata',
+  skill_injection: 'Skill instructions',
+  turn_aborted_marker: 'Turn aborted marker',
+  turn_context: 'Turn context',
+  user_shell_command: 'User shell command',
+});
+
 function flattenText(value, budget = 8000) {
   const parts = [];
   let used = 0;
@@ -204,6 +219,17 @@ function maybePushKvSection(sections, title, entries) {
   const filtered = (entries || []).filter((entry) => entry && entry.key && entry.value !== '');
   if (!filtered.length) return;
   sections.push({ type: 'kv', title, entries: filtered });
+}
+
+function withoutKeys(input, keys) {
+  if (!input || typeof input !== 'object') return input;
+  const omitted = new Set(keys || []);
+  return Object.fromEntries(Object.entries(input).filter(([key]) => !omitted.has(key)));
+}
+
+function withoutSectionTypes(sections, types) {
+  const omitted = new Set(types || []);
+  return (sections || []).filter((section) => !omitted.has(section.type));
 }
 
 function maybePushMarkdownSection(sections, title, text) {
@@ -574,6 +600,98 @@ function touchFilesFromOutputText(text) {
   return [...new Set(files)];
 }
 
+function humanizeProtocolSubtype(subtype) {
+  const text = String(subtype || '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!text) return 'Protocol event';
+  return text.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function protocolLabelFor(subtype, fallback = '') {
+  return PROTOCOL_LABELS[subtype] || humanizeProtocolSubtype(fallback || subtype);
+}
+
+function readXmlTag(source, tagName) {
+  const pattern = new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, 'i');
+  const match = String(source || '').match(pattern);
+  return match ? match[1].replace(/\s+/g, ' ').trim() : '';
+}
+
+function protocolTagName(source) {
+  const match = String(source || '').trim().match(/^<([A-Za-z][\w:-]*)(?:\s|>)/);
+  return match ? match[1] : '';
+}
+
+function firstProtocolBodyLine(source) {
+  for (const line of String(source || '').split(/\r?\n/)) {
+    const cleaned = line.replace(/^#+\s*/, '').replace(/<\/?[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    if (cleaned) return cleaned;
+  }
+  return '';
+}
+
+function formatPreviewEntries(entries) {
+  return entries
+    .filter((entry) => entry && entry.key && entry.value !== '')
+    .map((entry) => `${entry.key}: ${String(entry.value).trim()}`)
+    .join('; ');
+}
+
+function payloadPreview(payload, keys) {
+  if (!payload || typeof payload !== 'object') return '';
+  return formatPreviewEntries(keys.map((key) => ({ key, value: payload[key] == null ? '' : String(payload[key]) })));
+}
+
+function protocolPreviewFor(raw, subtype) {
+  const source = String(raw.messageText || raw.searchText || raw.preview || '').trim();
+
+  if (subtype === 'session_meta') {
+    return payloadPreview(raw.parsed?.payload, ['id', 'cwd', 'originator']) || raw.preview;
+  }
+  if (subtype === 'turn_context') {
+    return payloadPreview(raw.parsed?.payload, ['turn_id', 'cwd', 'model']) || raw.preview;
+  }
+  if (subtype === 'agents_instructions') {
+    const target = source.match(/^#\s*AGENTS\.md instructions(?:\s+for\s+(.+))?/i)?.[1];
+    return target ? `Repository instructions for ${target.trim()}` : 'Repository AGENTS.md instructions';
+  }
+  if (subtype === 'environment_context') {
+    return formatPreviewEntries([
+      { key: 'cwd', value: readXmlTag(source, 'cwd') },
+      { key: 'shell', value: readXmlTag(source, 'shell') },
+      { key: 'current_date', value: readXmlTag(source, 'current_date') },
+      { key: 'timezone', value: readXmlTag(source, 'timezone') },
+    ]) || 'Environment context';
+  }
+  if (subtype === 'developer_collaboration_mode') {
+    const mode = source.match(/#\s*Collaboration Mode:\s*([^\n]+)/i)?.[1];
+    return mode ? `mode: ${mode.trim()}` : 'Collaboration-mode instructions';
+  }
+  if (subtype === 'developer_permissions') {
+    return firstProtocolBodyLine(source) || 'Filesystem and command permission policy';
+  }
+  if (subtype === 'developer_instruction') {
+    return firstProtocolBodyLine(source) || 'Developer instruction';
+  }
+  if (subtype === 'user_shell_command') {
+    return truncate(readXmlTag(source, 'user_shell_command') || firstProtocolBodyLine(source) || 'User shell command');
+  }
+  if (subtype === 'skill_injection') {
+    return firstProtocolBodyLine(source) || 'Skill instructions';
+  }
+  if (subtype === 'image_wrapper') {
+    return 'Image attachment metadata';
+  }
+  if (subtype === 'turn_aborted_marker') {
+    return 'Turn aborted marker';
+  }
+  if (subtype === 'meta_block') {
+    const tagName = protocolTagName(source);
+    return tagName ? `Protocol metadata block: <${tagName}>` : 'Protocol metadata block';
+  }
+
+  return truncate(firstProtocolBodyLine(source) || raw.preview || protocolLabelFor(subtype));
+}
+
 function classifyProtocolText(text, role) {
   const source = String(text || '');
   if (role === 'developer') {
@@ -910,9 +1028,153 @@ function extractLifecycleSections(event, raws) {
   return sections;
 }
 
-function extractRawSections(raw) {
+function rawConversationRole(raw) {
+  if (raw.recordType === 'event_msg' && raw.payloadType === 'user_message') return 'user';
+  if (raw.recordType === 'event_msg' && raw.payloadType === 'agent_message') return 'assistant';
+  if (raw.recordType === 'response_item' && raw.payloadType === 'message' && ['user', 'assistant'].includes(raw.role)) {
+    const subtype = classifyProtocolText(raw.messageText, raw.role);
+    if (!subtype && !raw.messageText.startsWith('<proposed_plan>')) return raw.role;
+  }
+  return '';
+}
+
+function rawToolSections(raw, relatedEvent) {
   const sections = [];
-  if (raw.messageText) {
+  const omitPayloadKeys = [];
+  const toolName = raw.toolName || relatedEvent?.toolName || relatedEvent?.subtype || '';
+
+  if (raw.recordType === 'response_item' && raw.payloadType === 'function_call' && toolName === 'shell_command') {
+    const args = commandArgsFromRaw(raw);
+    const commandText = commandToText(args?.command);
+    maybePushCodeSection(sections, 'Command', commandText, 'shell');
+    maybePushKvSection(sections, 'Command metadata', [
+      { key: 'cwd', value: String(args?.workdir || '') },
+      { key: 'timeoutMs', value: args?.timeout_ms == null ? '' : String(args.timeout_ms) },
+    ]);
+    if (args) sections.push({ type: 'json', title: 'Command arguments', value: args });
+    omitPayloadKeys.push('arguments');
+  } else if (raw.recordType === 'response_item' && raw.payloadType === 'function_call_output' && relatedEvent?.kind === 'command') {
+    const formatted = parseFormattedCommandOutput(raw.output);
+    if (formatted) {
+      maybePushKvSection(sections, 'Command output metadata', [
+        { key: 'exitCode', value: String(formatted.exitCode) },
+        { key: 'wallTime', value: formatted.wallTime },
+      ]);
+      maybePushTerminalSection(sections, 'stdout', formatted.output, formatted.exitCode === 0 ? 'stdout' : 'stderr');
+    } else {
+      maybePushStructuredSection(sections, 'Command output', structuredOutputValue(raw.output));
+    }
+    omitPayloadKeys.push('output');
+  } else if (raw.recordType === 'event_msg' && raw.payloadType === 'exec_command_end') {
+    maybePushCodeSection(sections, 'Command', raw.commandText, 'shell');
+    maybePushKvSection(sections, 'Command metadata', [
+      { key: 'cwd', value: String(raw.parsed?.payload?.cwd || '') },
+      { key: 'status', value: String(raw.status || '') },
+      { key: 'exitCode', value: raw.exitCode == null ? '' : String(raw.exitCode) },
+      { key: 'durationMs', value: raw.durationMs == null ? '' : String(raw.durationMs) },
+    ]);
+    maybePushTerminalSection(sections, 'stdout', raw.stdout, 'stdout');
+    maybePushTerminalSection(sections, 'stderr', raw.stderr, 'stderr');
+    if (raw.stdout) maybePushParsedOutputSection(sections, 'stdout (structured)', raw.stdout);
+    if (raw.stderr) maybePushParsedOutputSection(sections, 'stderr (structured)', raw.stderr);
+    omitPayloadKeys.push('command', 'cwd', 'stdout', 'stderr', 'aggregated_output', 'formatted_output', 'exit_code', 'duration', 'status');
+  } else if (raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call' && toolName === 'apply_patch') {
+    if (String(raw.output || '').trim()) sections.push({ type: 'diff', title: 'Patch', text: String(raw.output).trim() });
+    omitPayloadKeys.push('input');
+  } else if (raw.recordType === 'event_msg' && raw.payloadType === 'patch_apply_end') {
+    maybePushKvSection(sections, 'Patch files', diffStatsEntries(raw.parsed?.payload?.changes));
+    const noticeText = firstNonEmpty(raw.parsed?.payload?.stdout, raw.parsed?.payload?.stderr, raw.status ? `Patch ${raw.status}.` : '');
+    if (noticeText) sections.push(makeNoticeSection('Patch status', noticeText, raw.parsed?.payload?.success === false ? 'error' : 'info'));
+    maybePushKvSection(sections, 'Patch metadata', [
+      { key: 'status', value: String(raw.status || '') },
+      { key: 'durationMs', value: raw.durationMs == null ? '' : String(raw.durationMs) },
+    ]);
+    omitPayloadKeys.push('stdout', 'stderr', 'changes', 'duration', 'status', 'success');
+  } else if (raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output' && relatedEvent?.kind === 'patch') {
+    const envelope = toolOutputEnvelope(raw);
+    const output = firstNonEmpty(envelope?.output, raw.output);
+    if (output) sections.push(makeNoticeSection('Patch status', stringifyValue(output), Number(envelope?.metadata?.exit_code || 0) === 0 ? 'info' : 'error'));
+    maybePushKvSection(sections, 'Patch metadata', [
+      { key: 'exitCode', value: envelope?.metadata?.exit_code == null ? '' : String(envelope.metadata.exit_code) },
+      { key: 'durationMs', value: envelope?.metadata?.duration_seconds == null ? '' : String(Math.round(Number(envelope.metadata.duration_seconds) * 1000)) },
+    ]);
+    omitPayloadKeys.push('output');
+  } else if (raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call' && toolName === 'js_repl') {
+    maybePushCodeSection(sections, 'JavaScript', raw.output, 'javascript');
+    omitPayloadKeys.push('input');
+  } else if (raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output' && relatedEvent?.kind === 'js_repl') {
+    const envelope = toolOutputEnvelope(raw);
+    const outputValue = envelope && Object.hasOwn(envelope, 'output') ? envelope.output : raw.output;
+    if (coerceJsonValue(outputValue)) {
+      sections.push({ type: 'json', title: 'Output', value: coerceJsonValue(outputValue) });
+    } else {
+      maybePushTerminalSection(sections, 'Output', stringifyValue(outputValue), relatedEvent.status === 'failed' ? 'stderr' : 'stdout');
+    }
+    omitPayloadKeys.push('output');
+  }
+
+  return { sections, omitPayloadKeys };
+}
+
+function rawPrimarySections(raw, relatedEvent) {
+  if (relatedEvent?.kind === 'protocol') {
+    return {
+      sections: withoutSectionTypes(extractProtocolSections(relatedEvent, [raw]), ['raw_json']),
+      omitPayloadKeys: relatedEvent.subtype === 'session_meta'
+        ? ['id', 'cwd', 'originator']
+        : relatedEvent.subtype === 'turn_context'
+          ? ['turn_id', 'cwd', 'model']
+          : [],
+    };
+  }
+  if (['token', 'compaction', 'abort', 'rollback', 'error', 'subagent', 'turn'].includes(relatedEvent?.kind)) {
+    return {
+      sections: withoutSectionTypes(extractLifecycleSections(relatedEvent, [raw]), ['raw_json']),
+      omitPayloadKeys: ['type', 'turn_id', 'thread_id', 'thread_name', 'last_agent_message'],
+    };
+  }
+
+  const tool = rawToolSections(raw, relatedEvent);
+  if (tool.sections.length) return tool;
+
+  if (rawConversationRole(raw)) {
+    return {
+      sections: extractConversationSections([raw]),
+      omitPayloadKeys: ['message'],
+    };
+  }
+  if (raw.recordType === 'event_msg' && raw.payloadType === 'agent_reasoning') {
+    return {
+      sections: extractReasoningSections([raw]),
+      omitPayloadKeys: ['text'],
+    };
+  }
+  if (raw.recordType === 'response_item' && raw.payloadType === 'reasoning') {
+    return {
+      sections: extractReasoningSections([raw]),
+      omitPayloadKeys: [],
+    };
+  }
+  if (raw.recordType === 'event_msg' && raw.payloadType === 'item_completed' && raw.parsed?.payload?.item?.type === 'Plan') {
+    return {
+      sections: withoutSectionTypes(extractPlanSections([raw]), ['raw_json']),
+      omitPayloadKeys: [],
+    };
+  }
+  if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.messageText.startsWith('<proposed_plan>')) {
+    return {
+      sections: withoutSectionTypes(extractPlanSections([raw]), ['raw_json']),
+      omitPayloadKeys: [],
+    };
+  }
+  return { sections: [], omitPayloadKeys: [] };
+}
+
+function extractRawSections(raw, relatedEvent) {
+  const sections = [];
+  const primary = rawPrimarySections(raw, relatedEvent);
+  sections.push(...primary.sections);
+  if (!primary.sections.length && raw.messageText) {
     const subtype = classifyProtocolText(raw.messageText, raw.role);
     if (subtype === 'user_shell_command') {
       maybePushCodeSection(sections, 'Message', raw.messageText, 'shell');
@@ -920,17 +1182,18 @@ function extractRawSections(raw) {
       maybePushMarkdownSection(sections, 'Message', raw.messageText);
     }
   }
-  if (raw.commandText) {
+  if (!primary.sections.length && raw.commandText) {
     maybePushCodeSection(sections, 'Command', raw.commandText, 'shell');
     maybePushTerminalSection(sections, 'stdout', raw.stdout, 'stdout');
     maybePushTerminalSection(sections, 'stderr', raw.stderr, 'stderr');
     if (raw.stdout) maybePushStructuredSection(sections, 'stdout (structured)', raw.stdout);
     if (raw.stderr) maybePushStructuredSection(sections, 'stderr (structured)', raw.stderr);
   }
-  if (raw.output) {
+  if (!primary.sections.length && raw.output) {
     maybePushStructuredSection(sections, 'Payload', structuredOutputValue(raw.output));
   }
-  maybePushKvSection(sections, 'Record fields', toKvEntries(raw.parsed?.payload, ['type', 'role', 'name', 'call_id', 'status', 'cwd']));
+  const recordFields = withoutKeys(raw.parsed?.payload, primary.omitPayloadKeys);
+  maybePushKvSection(sections, 'Record fields', toKvEntries(recordFields, ['type', 'role', 'name', 'call_id', 'status', 'cwd']));
   sections.push(makeRawJsonSection('Raw JSON', raw.parsed));
   return sections;
 }
@@ -974,7 +1237,8 @@ function buildEventDetail(session, eventId, layer = 'main') {
   if (layer === 'raw') {
     const raw = session.rawEvents.find((candidate) => candidate.rawId === eventId);
     if (!raw) return null;
-    const sections = filterDetailSections(extractRawSections(raw));
+    const relatedLogical = session.logicalEvents.find((event) => rawMatchesEvent(raw, event));
+    const sections = filterDetailSections(extractRawSections(raw, relatedLogical));
     for (const section of sections) {
       if (section.type === 'raw_json') section.expanded = true;
     }
@@ -1172,17 +1436,20 @@ function buildWebSearchEvent(raw, next) {
 }
 
 function buildProtocolEvent(raw, subtype, label) {
+  const resolvedSubtype = subtype || raw.payloadType || raw.recordType || 'protocol_event';
+  const displayLabel = protocolLabelFor(resolvedSubtype, label);
+  const preview = protocolPreviewFor(raw, resolvedSubtype);
   return createLogicalEvent({
     id: `${raw.sessionId}:logical:protocol:${raw.line}`,
     timestamp: raw.timestamp,
     turnId: raw.turnId,
     kind: 'protocol',
-    subtype,
+    subtype: resolvedSubtype,
     layer: 'protocol',
     role: raw.role,
-    label,
-    preview: raw.preview,
-    searchText: raw.searchText,
+    label: displayLabel,
+    preview,
+    searchText: uniqueNonEmpty([displayLabel, preview, raw.searchText]).join('\n'),
     severity: 'normal',
     status: raw.status,
     rawRefs: [rawRef(raw)],
@@ -1297,7 +1564,7 @@ function buildLogicalEvents(rawEvents) {
     if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'user') {
       const protocolSubtype = classifyProtocolText(raw.messageText, raw.role);
       if (protocolSubtype) {
-        logicalEvents.push(buildProtocolEvent(raw, protocolSubtype, protocolSubtype.replace(/_/g, ' ')));
+        logicalEvents.push(buildProtocolEvent(raw, protocolSubtype));
         consumed.add(raw.rawId);
         continue;
       }
@@ -1323,7 +1590,7 @@ function buildLogicalEvents(rawEvents) {
     }
 
     if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'developer') {
-      logicalEvents.push(buildProtocolEvent(raw, classifyProtocolText(raw.messageText, 'developer') || 'developer_instruction', 'Developer instruction'));
+      logicalEvents.push(buildProtocolEvent(raw, classifyProtocolText(raw.messageText, 'developer') || 'developer_instruction'));
       consumed.add(raw.rawId);
       continue;
     }
@@ -1424,13 +1691,13 @@ function buildLogicalEvents(rawEvents) {
     }
 
     if (raw.recordType === 'session_meta') {
-      logicalEvents.push(buildProtocolEvent(raw, 'session_meta', 'Session metadata'));
+      logicalEvents.push(buildProtocolEvent(raw, 'session_meta'));
       consumed.add(raw.rawId);
       continue;
     }
 
     if (raw.recordType === 'turn_context') {
-      logicalEvents.push(buildProtocolEvent(raw, 'turn_context', 'Turn context'));
+      logicalEvents.push(buildProtocolEvent(raw, 'turn_context'));
       consumed.add(raw.rawId);
       continue;
     }
