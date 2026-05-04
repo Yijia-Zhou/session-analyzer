@@ -28,6 +28,7 @@ const state = {
   detailErrors: {},
   detailPending: {},
   detailViewportTimer: 0,
+  detailSelectionKey: '',
 };
 
 const el = {
@@ -107,7 +108,68 @@ function detailKey(sessionId, layerId, eventId) {
 }
 
 function resetDetailPane() {
-  el.detail.innerHTML = '<h2>事件详情</h2><p>点击 Raw refs 查看原始 JSONL 记录。</p>';
+  state.detailSelectionKey = '';
+  el.detail.innerHTML = '<div class="emptyDetail"><h2>Event inspector</h2><p>Select a timeline event to inspect its summary, metadata, and structured detail. Use Raw refs to verify the underlying JSONL rows.</p></div>';
+}
+
+function sourceRefs(event) {
+  const refs = event.rawRefs?.length ? event.rawRefs : [event.source];
+  return refs.filter((ref) => ref && ref.file && ref.line != null);
+}
+
+function sourceLabel(ref) {
+  return ref && ref.file && ref.line != null ? `${ref.file}:${ref.line}` : '';
+}
+
+function renderChips(values) {
+  return values.filter(Boolean).map((value) => `<span class="chip">${escapeHtml(value)}</span>`).join('');
+}
+
+function formatList(values, limit = 6) {
+  const items = (values || []).filter(Boolean);
+  if (!items.length) return '';
+  const visible = items.slice(0, limit).join(', ');
+  return items.length > limit ? `${visible}, +${items.length - limit} more` : visible;
+}
+
+function metadataRow(label, value) {
+  if (value == null || value === '') return '';
+  return `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`;
+}
+
+function renderInspectorMetadata(event, refs) {
+  return [
+    metadataRow('Time', fmtDate(event.timestamp)),
+    metadataRow('Source', sourceLabel(event.source || refs[0])),
+    metadataRow('Raw refs', refs.length ? String(refs.length) : 'None'),
+    metadataRow('Tool', event.toolName),
+    metadataRow('Record type', event.recordType),
+    metadataRow('Channels', formatList(event.channels)),
+    metadataRow('Touched files', formatList(event.touchedFiles)),
+  ].join('');
+}
+
+function renderInspectorDetail(event) {
+  const key = detailKey(state.selectedSessionId, state.layerId, event.id);
+  const detail = state.detailCache[key];
+  const error = state.detailErrors[key];
+  if (detail) {
+    return `<section class="inspectorSection">
+      <h3>Structured detail</h3>
+      <div class="inspectorDetailBody">${renderSections(detail.sections)}</div>
+    </section>`;
+  }
+  if (error) {
+    return `<section class="inspectorSection">
+      <h3>Structured detail</h3>
+      <div class="notice error"><p>${escapeHtml(error)}</p></div>
+      <button class="smallBtn" type="button" data-detail-action="retry-detail">Retry detail</button>
+    </section>`;
+  }
+  return `<section class="inspectorSection">
+    <h3>Structured detail</h3>
+    <div class="notice info"><p>Loading structured detail...</p></div>
+  </section>`;
 }
 
 function selectedOptionText(select) {
@@ -361,21 +423,29 @@ function setOverride(eventId, value) {
   localStorage.setItem('sessionAnalyzer.overrides', JSON.stringify(state.overrides));
 }
 
-async function ensureEventDetail(event) {
+function loadEventDetail(event) {
   const key = detailKey(state.selectedSessionId, state.layerId, event.id);
-  if (state.detailCache[key] || state.detailPending[key] || state.detailErrors[key]) return;
-  state.detailPending[key] = api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(state.layerId)}`)
-    .then((detail) => {
-      state.detailCache[key] = detail;
-      delete state.detailErrors[key];
-    })
-    .catch((error) => {
-      state.detailErrors[key] = error.message;
-    })
-    .finally(() => {
-      delete state.detailPending[key];
-      renderTimeline();
-    });
+  if (state.detailCache[key] || state.detailErrors[key]) return Promise.resolve();
+  if (!state.detailPending[key]) {
+    state.detailPending[key] = api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(state.layerId)}`)
+      .then((detail) => {
+        state.detailCache[key] = detail;
+        delete state.detailErrors[key];
+      })
+      .catch((error) => {
+        state.detailErrors[key] = error.message;
+      })
+      .finally(() => {
+        delete state.detailPending[key];
+      });
+  }
+  return state.detailPending[key];
+}
+
+function ensureEventDetail(event) {
+  const key = detailKey(state.selectedSessionId, state.layerId, event.id);
+  if (state.detailCache[key] || state.detailErrors[key]) return;
+  loadEventDetail(event).then(() => renderTimeline());
 }
 
 function isInScrollport(element) {
@@ -399,12 +469,74 @@ function queueVisibleDetailLoad() {
   state.detailViewportTimer = requestAnimationFrame(loadVisibleExpandedDetails);
 }
 
+function showInspector(event) {
+  const key = detailKey(state.selectedSessionId, state.layerId, event.id);
+  const refs = sourceRefs(event);
+  const preview = event.snippet || event.preview || '';
+  const chips = renderChips([
+    event.kind,
+    event.status,
+    event.severity && event.severity !== 'normal' ? event.severity : '',
+    event.layer || state.layerId,
+  ]);
+  state.detailSelectionKey = key;
+  el.detail.innerHTML = `<article class="inspector">
+    <header class="inspectorHeader">
+      <h2>${escapeHtml(event.label)}</h2>
+      <div class="chips">${chips}</div>
+    </header>
+    ${preview ? `<section class="inspectorSection"><h3>Preview</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
+    <section class="inspectorSection">
+      <h3>Metadata</h3>
+      <dl class="inspectorMeta">${renderInspectorMetadata(event, refs)}</dl>
+    </section>
+    <section class="inspectorSection">
+      <h3>Source</h3>
+      <div class="inspectorActions">
+        <button class="smallBtn" type="button" data-detail-action="raw">Raw refs</button>
+        <span class="rawMeta">${escapeHtml(refs.length ? `${refs.length} JSONL row${refs.length === 1 ? '' : 's'}` : 'No raw refs available')}</span>
+      </div>
+    </section>
+    ${renderInspectorDetail(event)}
+  </article>`;
+
+  if (!state.detailCache[key] && !state.detailErrors[key]) {
+    loadEventDetail(event).then(() => {
+      if (state.detailSelectionKey === key) showInspector(event);
+    });
+  }
+}
+
 async function showRaw(event) {
-  const refs = event.rawRefs?.length ? event.rawRefs : [event.source];
+  const refs = sourceRefs(event);
+  const rawKey = `raw:${detailKey(state.selectedSessionId, state.layerId, event.id)}`;
+  state.detailSelectionKey = rawKey;
+  if (!refs.length) {
+    el.detail.innerHTML = `<article class="rawRefsView">
+      <header class="inspectorHeader">
+        <h2>Raw refs</h2>
+        <div class="chips">${renderChips([event.label, event.layer || state.layerId, event.kind])}</div>
+      </header>
+      <div class="notice warning"><p>No raw source rows are available for this event.</p></div>
+      <div class="inspectorActions">
+        <button class="smallBtn" type="button" data-detail-action="inspect">Back to inspector</button>
+      </div>
+    </article>`;
+    return;
+  }
   const payloads = await Promise.all(refs.map((ref) => api(`/api/raw?file=${encodeURIComponent(ref.file)}&line=${encodeURIComponent(ref.line)}`)));
-  el.detail.innerHTML = `<h2>${escapeHtml(event.label)}</h2>
-    <p class="rawMeta">${escapeHtml(event.layer || 'main')} | ${escapeHtml(event.kind)}</p>
-    ${payloads.map((raw) => `<p class="rawMeta">${escapeHtml(raw.file)}:${raw.line}</p><pre>${escapeHtml(JSON.stringify(raw.parsed, null, 2) || raw.raw)}</pre>`).join('')}`;
+  if (state.detailSelectionKey !== rawKey) return;
+  el.detail.innerHTML = `<article class="rawRefsView">
+    <header class="inspectorHeader">
+      <h2>Raw refs</h2>
+      <div class="chips">${renderChips([event.label, event.layer || state.layerId, event.kind])}</div>
+    </header>
+    <p class="rawMeta">${escapeHtml(`${refs.length} JSONL row${refs.length === 1 ? '' : 's'} for ${event.id}`)}</p>
+    ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(raw.file)}:${raw.line}</p><pre>${escapeHtml(JSON.stringify(raw.parsed, null, 2) || raw.raw)}</pre></section>`).join('')}
+    <div class="inspectorActions">
+      <button class="smallBtn" type="button" data-detail-action="inspect">Back to inspector</button>
+    </div>
+  </article>`;
 }
 
 el.sessionList.addEventListener('click', (event) => {
@@ -417,7 +549,7 @@ el.timeline.addEventListener('click', (event) => {
   if (!article) return;
   const item = state.currentEvents.find((candidate) => candidate.id === article.dataset.eventId);
   if (!item) return;
-  const action = event.target.dataset.action || 'raw';
+  const action = event.target.closest('[data-action]')?.dataset.action || 'inspect';
   if (action === 'toggle') {
     const next = article.classList.contains('expanded') ? 'collapsed' : 'expanded';
     setOverride(item.id, next);
@@ -428,8 +560,27 @@ el.timeline.addEventListener('click', (event) => {
     delete state.detailErrors[key];
     delete state.detailCache[key];
     ensureEventDetail(item);
-  } else {
+  } else if (action === 'raw') {
     showRaw(item).catch(showError);
+  } else {
+    showInspector(item);
+  }
+});
+
+el.detail.addEventListener('click', (event) => {
+  const action = event.target.closest('[data-detail-action]')?.dataset.detailAction;
+  if (!action) return;
+  const key = state.detailSelectionKey.replace(/^raw:/, '');
+  const item = state.currentEvents.find((candidate) => detailKey(state.selectedSessionId, state.layerId, candidate.id) === key);
+  if (!item) return;
+  if (action === 'inspect') {
+    showInspector(item);
+  } else if (action === 'raw') {
+    showRaw(item).catch(showError);
+  } else if (action === 'retry-detail') {
+    delete state.detailErrors[key];
+    delete state.detailCache[key];
+    showInspector(item);
   }
 });
 

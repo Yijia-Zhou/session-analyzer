@@ -59,9 +59,10 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 6. The user may search, filter by kind/status/file, and inspect grouped tool operations. / 用户可以搜索、按类型/状态/文件筛选，并检查分组后的工具操作。
 7. Expanding a timeline card replaces the preview with structured event detail inline, including markdown messages, command output, diffs, notices, and structured metadata. / 展开时间线卡片会以内联结构化事件详情替换预览，内容包括 Markdown 消息、命令输出、差异、通知和结构化元数据。
 8. Raw JSON fallback sections remain available from expanded cards but stay visually secondary outside the raw layer. / 原始 JSON 回退区段仍可从展开卡片访问，但在原始层之外保持视觉上的次要地位。
-9. Clicking an event's `Raw refs` control shows all underlying raw JSONL rows for verification in the right-side panel. / 点击事件的 `Raw refs` 控件会在右侧面板显示所有底层原始 JSONL 行以供验证。
-10. The UI reports filtered session and event result counts while search, layer, and filter controls are active. / 当搜索、事件层和筛选控件生效时，界面会显示过滤后的会话和事件结果数量。
-11. Changing the folding strategy reapplies that strategy's defaults for the selected session instead of keeping stale manual fold overrides. / 切换折叠策略时，会对当前选中 session 重新应用该策略的默认展开规则，而不是保留过时的手动折叠覆盖。
+9. Clicking a timeline event shows a selected-event inspector in the right-side panel with summary, metadata, source context, and structured detail. / 点击时间线事件会在右侧面板显示选中事件检查器，包含概要、元数据、来源上下文和结构化详情。
+10. Clicking an event's `Raw refs` control shows all underlying raw JSONL rows for verification in the right-side panel, with a return path back to the selected-event inspector. / 点击事件的 `Raw refs` 控件会在右侧面板显示所有底层原始 JSONL 行以供验证，并提供返回选中事件检查器的入口。
+11. The UI reports filtered session and event result counts while search, layer, and filter controls are active. / 当搜索、事件层和筛选控件生效时，界面会显示过滤后的会话和事件结果数量。
+12. Changing the folding strategy reapplies that strategy's defaults for the selected session instead of keeping stale manual fold overrides. / 切换折叠策略时，会对当前选中 session 重新应用该策略的默认展开规则，而不是保留过时的手动折叠覆盖。
 
 ## Acceptance criteria / 验收标准
 

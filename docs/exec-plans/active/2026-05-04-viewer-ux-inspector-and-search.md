@@ -123,6 +123,8 @@ Improve the browser UX around event inspection, search feedback, failure navigat
 
 - 2026-05-04: Created this plan to separate viewer UX work from transcript normalization follow-ups. / 2026-05-04：创建本计划，将查看器 UX 工作从转录归一化后续工作中分离出来。
 - 2026-05-04: Seeded scope from manual Playwright exploration of the local viewer on a real session set. / 2026-05-04：基于对真实会话集上的本地查看器进行 Playwright 手动探索，初始化范围。
+- 2026-05-04: Implemented the Milestone 1 inspector foundation so ordinary event clicks show a selected-event inspector while `Raw refs` remains a separate raw JSONL view. / 2026-05-04：实现里程碑 1 的检查器基础，使普通事件点击显示选中事件检查器，同时保留 `Raw refs` 作为独立的原始 JSONL 视图。
+- 2026-05-04: Added a right-pane return action from `Raw refs` back to the selected-event inspector. / 2026-05-04：在右侧面板中为 `Raw refs` 增加返回选中事件检查器的操作。
 
 ## Decision log / 决策日志
 
