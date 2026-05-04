@@ -3,12 +3,14 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: active / 状态：活跃
-- Last updated: 2026-05-03 / 最近更新：2026-05-03
+- Last updated: 2026-05-04 / 最近更新：2026-05-04
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related design: / 相关设计：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/documentation-system.md`
+- Related active plan: / 相关活跃计划：
+  - `docs/exec-plans/active/2026-05-04-viewer-ux-inspector-and-search.md`
 
 ## Objective / 目标
 
@@ -30,6 +32,7 @@ Stabilize the new logical-event timeline so the main/protocol/raw layers are eas
 - LLM summarization / LLM 摘要
 - Persistent indexing / 持久索引
 - Multi-user deployment / 多用户部署
+- Event inspector UX, search result chrome, failure navigation, and narrow-screen layout work tracked by `docs/exec-plans/active/2026-05-04-viewer-ux-inspector-and-search.md` / 由 `docs/exec-plans/active/2026-05-04-viewer-ux-inspector-and-search.md` 跟踪的事件检查器 UX、搜索结果界面、失败导航和窄屏布局工作
 
 ## Repository context / 仓库背景
 
@@ -45,6 +48,14 @@ Stabilize the new logical-event timeline so the main/protocol/raw layers are eas
 - Main timeline must not regress into duplicate user/assistant messages / 主时间线不能退化为重复的用户/助手消息
 - Historical transcripts without newer `event_msg:*_end` rows must remain readable / 没有较新 `event_msg:*_end` 行的历史转录必须保持可读
 - No transcript files are mutated / 不变更任何转录文件
+
+## Current remaining focus / 当前剩余焦点
+
+- Finish protocol label and summary quality within the normalization model, especially protocol subtype names that should be understandable without opening raw JSON. / 在归一化模型内完成协议标签和摘要质量改进，尤其是无需打开原始 JSON 就能理解的协议子类型名称。
+- Finish session title and summary hygiene so fallback titles avoid protocol-heavy or malformed transcript text. / 完成会话标题和摘要卫生，使回退标题避免协议过重或格式异常的转录文本。
+- Reduce low-information empty reasoning rows in the protocol layer without hiding unknown transcript shapes. / 减少协议层中低信息量的空 reasoning 行，同时不隐藏未知转录形态。
+- Add historical fixtures for transcript shapes that affect normalization, not for purely visual UX behavior. / 为影响归一化的历史转录形态添加 fixture，而不是为纯视觉 UX 行为添加 fixture。
+- Keep expanded-detail structured rendering here only when it depends on `EventDetailDto` extraction or renderer correctness. / 只有当展开详情结构化渲染依赖 `EventDetailDto` 提取或渲染器正确性时，才继续在本计划中跟踪。
 
 ## Milestones / 里程碑
 
@@ -128,7 +139,7 @@ Stabilize the new logical-event timeline so the main/protocol/raw layers are eas
 - 2026-05-03: Tracking expanded-detail reading quality follow-up after finding preview/body duplication and silent Markdown fallback in the web UI. / 2026-05-03：在 Web UI 中发现预览/正文重复和 Markdown 静默回退后，跟踪展开详情阅读质量后续工作。
 - 2026-05-03: Implemented preview/body separation, required `markdown-it` lockfile, Markdown fixture coverage, Markdown styles, command output de-duplication, collapsible `raw_json`, and visible-card detail loading. / 2026-05-03：实现预览/正文分离、必需的 `markdown-it` lockfile、Markdown fixture 覆盖、Markdown 样式、命令输出去重、可折叠 `raw_json` 和可见卡片详情加载。
 - 2026-05-03: Added `hideTitle` section rendering rule for redundant primary body titles such as Message, Plan, Reasoning, lifecycle notices, and protocol text. / 2026-05-03：为 Message、Plan、Reasoning、生命周期通知和协议文本等冗余主正文标题添加 `hideTitle` 区段渲染规则。
-- 2026-05-04: Added immediate UX polish for result counts, timeline scroll reset, folding-strategy override reset, narrow-screen session list height, and favicon MIME handling. / 2026-05-04：添加即时 UX 打磨，包括结果数量显示、时间线滚动复位、折叠策略覆盖重置、窄屏会话列表高度限制和 favicon MIME 处理。
+- 2026-05-04: Split event-inspector, search-feedback, failure-navigation, and narrow-screen UX work into `docs/exec-plans/active/2026-05-04-viewer-ux-inspector-and-search.md`, keeping this plan focused on transcript normalization and structured detail extraction. / 2026-05-04：将事件检查器、搜索反馈、失败导航和窄屏 UX 工作拆分到 `docs/exec-plans/active/2026-05-04-viewer-ux-inspector-and-search.md`，使本计划继续聚焦转录归一化和结构化详情提取。
 
 ## Decision log / 决策日志
 
