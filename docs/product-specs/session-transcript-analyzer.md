@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-04-21 / 最近更新：2026-04-21
+- Last updated: 2026-05-04 / 最近更新：2026-05-04
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/active/2026-04-21-transcript-normalization-followups.md`
@@ -62,7 +62,8 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 9. Clicking a timeline event shows a selected-event inspector in the right-side panel with summary, metadata, source context, and structured detail. / 点击时间线事件会在右侧面板显示选中事件检查器，包含概要、元数据、来源上下文和结构化详情。
 10. Clicking an event's `Raw refs` control shows all underlying raw JSONL rows for verification in the right-side panel, with a return path back to the selected-event inspector. / 点击事件的 `Raw refs` 控件会在右侧面板显示所有底层原始 JSONL 行以供验证，并提供返回选中事件检查器的入口。
 11. The UI reports filtered session and event result counts while search, layer, and filter controls are active. / 当搜索、事件层和筛选控件生效时，界面会显示过滤后的会话和事件结果数量。
-12. Changing the folding strategy reapplies that strategy's defaults for the selected session instead of keeping stale manual fold overrides. / 切换折叠策略时，会对当前选中 session 重新应用该策略的默认展开规则，而不是保留过时的手动折叠覆盖。
+12. From the selected-event inspector, the user can jump to the previous or next event in the current filtered result set for useful reading categories such as user messages, assistant messages, plans, update_plan calls, failed commands, commands, patches, errors, MCP calls, and web searches. / 在选中事件检查器中，用户可以在当前过滤结果集内按有助于阅读的类别跳转到上一个或下一个事件，例如用户消息、助手消息、计划、update_plan 调用、失败命令、命令、patch、错误、MCP 调用和 web 搜索。
+13. Changing the folding strategy reapplies that strategy's defaults for the selected session instead of keeping stale manual fold overrides. / 切换折叠策略时，会对当前选中 session 重新应用该策略的默认展开规则，而不是保留过时的手动折叠覆盖。
 
 ## Acceptance criteria / 验收标准
 
@@ -75,6 +76,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - [ ] Raw JSONL rows remain accessible for every logical event. / 每个逻辑事件都仍可访问原始 JSONL 行。
 - [ ] Filtering by keyword, file, status, and event kind works across the selected layer. / 按关键词、文件、状态和事件类型筛选可在所选层中正常工作。
 - [ ] Search and filter result counts stay visible while browsing a selected session. / 浏览选中 session 时，搜索和筛选结果数量保持可见。
+- [ ] Selected-event quick navigation moves through matching events within the current session, layer, search query, and filters without losing raw drill-down access. / 选中事件快速跳转会在当前 session、事件层、搜索查询和筛选条件内的匹配事件之间移动，并且不会丢失原始下钻入口。
 - [ ] Folding strategy changes clear stale manual fold overrides for the selected session. / 折叠策略变更会清除当前选中 session 的过时手动折叠覆盖。
 - [ ] Repository filtering is case-insensitive on Windows paths. / 在 Windows 路径上，仓库筛选不区分大小写。
 

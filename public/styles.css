@@ -203,6 +203,57 @@ button:hover,
   padding-bottom: 0.75rem;
 }
 
+.inspectorTitleRow {
+  align-items: start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.inspectorTitleBlock {
+  display: grid;
+  flex: 1 1 150px;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.eventNavigator {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: flex-end;
+  max-width: 100%;
+}
+
+.navSelect {
+  background: #fff;
+  font-size: 0.78rem;
+  max-width: 170px;
+  min-height: 30px;
+  padding: 0.25rem 0.4rem;
+}
+
+.navBtn {
+  font-size: 0.76rem;
+  min-height: 30px;
+  padding: 0.25rem 0.45rem;
+}
+
+.navBtn:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.navPosition,
+.navStatus {
+  color: var(--muted);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
 .inspectorSection {
   display: grid;
   gap: 0.45rem;
@@ -366,6 +417,11 @@ button:hover,
 
 .event.searchHit {
   background: var(--soft);
+}
+
+.event.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .eventHeader {

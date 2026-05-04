@@ -12,9 +12,26 @@ const escapeHtml = rendererApi.escapeHtml || ((value) => String(value ?? '').rep
 
 const renderSections = rendererApi.renderSections || (() => '');
 
+const NAVIGATION_PAGE_LIMIT = 500;
+const NAVIGATION_CATEGORIES = [
+  { id: 'user_messages', label: 'User messages', matches: (event) => event.kind === 'user_message' },
+  { id: 'assistant_messages', label: 'Assistant messages', matches: (event) => event.kind === 'assistant_message' },
+  { id: 'update_plan', label: 'update_plan calls', matches: isUpdatePlanEvent },
+  { id: 'plans', label: 'Plans / update_plan', matches: (event) => event.kind === 'plan_artifact' || isUpdatePlanEvent(event) },
+  { id: 'failed_commands', label: 'Failed commands', matches: (event) => event.kind === 'command' && event.status === 'failed' },
+  { id: 'commands', label: 'Commands', matches: (event) => event.kind === 'command' },
+  { id: 'patch_applied', label: 'Patch applied', matches: (event) => event.kind === 'patch' && event.status === 'success' },
+  { id: 'patch_failed', label: 'Patch failed', matches: (event) => event.kind === 'patch' && event.status === 'failed' },
+  { id: 'patches', label: 'All patches', matches: (event) => event.kind === 'patch' },
+  { id: 'errors_warnings', label: 'Errors / warnings', matches: (event) => event.severity !== 'normal' || event.status === 'failed' || ['error', 'abort', 'rollback', 'compaction'].includes(event.kind) },
+  { id: 'mcp_calls', label: 'MCP calls', matches: (event) => event.kind === 'mcp' || String(event.toolName || '').startsWith('mcp__') },
+  { id: 'web_searches', label: 'Web searches', matches: (event) => event.kind === 'web_search' },
+];
+
 const state = {
   sessions: [],
   selectedSessionId: '',
+  selectedEventId: '',
   offset: 0,
   limit: 150,
   sessionGrandTotal: 0,
@@ -30,6 +47,8 @@ const state = {
   detailPending: {},
   detailViewportTimer: 0,
   detailSelectionKey: '',
+  navigationCategoryId: '',
+  navigationCache: { key: '', events: [], total: 0, pending: null },
 };
 
 const el = {
@@ -110,7 +129,10 @@ function detailKey(sessionId, layerId, eventId) {
 
 function resetDetailPane() {
   state.detailSelectionKey = '';
+  state.selectedEventId = '';
+  state.navigationCategoryId = '';
   el.detail.innerHTML = '<div class="emptyDetail"><h2>Event inspector</h2><p>Select a timeline event to inspect its summary, metadata, and structured detail. Use Raw refs to verify the underlying JSONL rows.</p></div>';
+  updateSelectedTimelineEvent();
 }
 
 function sourceRefs(event) {
@@ -131,6 +153,10 @@ function formatList(values, limit = 6) {
   if (!items.length) return '';
   const visible = items.slice(0, limit).join(', ');
   return items.length > limit ? `${visible}, +${items.length - limit} more` : visible;
+}
+
+function isUpdatePlanEvent(event) {
+  return event.toolName === 'update_plan' || event.subtype === 'update_plan' || event.label === 'update_plan';
 }
 
 function metadataRow(label, value) {
@@ -297,6 +323,7 @@ async function selectSession(sessionId) {
   state.selectedSessionId = sessionId;
   state.offset = 0;
   state.currentEvents = [];
+  invalidateNavigationCache();
   renderSessions();
   resetDetailPane();
   const session = state.sessions.find((item) => item.id === sessionId);
@@ -418,7 +445,7 @@ function renderEventPreview(event, display) {
 function renderTimeline() {
   el.timeline.innerHTML = state.currentEvents.map((event) => {
     const ds = displayState(event);
-    const classes = ['event', ds, event.severity, event.hasSearchHit ? 'searchHit' : '', ds === 'hidden' ? 'hiddenByProfile' : ''].filter(Boolean).join(' ');
+    const classes = ['event', ds, event.severity, event.id === state.selectedEventId ? 'selected' : '', event.hasSearchHit ? 'searchHit' : '', ds === 'hidden' ? 'hiddenByProfile' : ''].filter(Boolean).join(' ');
     const chips = [
       event.layer ? `<span class="chip">${escapeHtml(event.layer)}</span>` : '',
       event.status ? `<span class="chip">${escapeHtml(event.status)}</span>` : '',
@@ -498,6 +525,165 @@ function queueVisibleDetailLoad() {
   state.detailViewportTimer = requestAnimationFrame(loadVisibleExpandedDetails);
 }
 
+function updateSelectedTimelineEvent() {
+  for (const article of el.timeline.querySelectorAll('.event[data-event-id]')) {
+    article.classList.toggle('selected', article.dataset.eventId === state.selectedEventId);
+  }
+}
+
+function navigationCacheKey() {
+  return JSON.stringify({
+    sessionId: state.selectedSessionId,
+    layer: state.layerId,
+    q: el.searchInput.value.trim(),
+    kind: el.kindFilter.value,
+    status: el.statusFilter.value,
+    file: el.fileFilter.value.trim(),
+  });
+}
+
+function invalidateNavigationCache() {
+  state.navigationCache = { key: '', events: [], total: 0, pending: null };
+}
+
+function currentNavigationCache() {
+  const key = navigationCacheKey();
+  return state.navigationCache.key === key && !state.navigationCache.pending ? state.navigationCache : null;
+}
+
+function ensureNavigationEvents() {
+  const key = navigationCacheKey();
+  if (state.navigationCache.key === key && state.navigationCache.pending) return state.navigationCache.pending;
+  if (state.navigationCache.key === key && state.navigationCache.events.length === state.navigationCache.total) {
+    return Promise.resolve(state.navigationCache);
+  }
+
+  const pending = (async () => {
+    const events = [];
+    let total = 0;
+    while (events.length === 0 || events.length < total) {
+      if (navigationCacheKey() !== key) return null;
+      const data = await api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/timeline${currentQuery({
+        offset: events.length,
+        limit: NAVIGATION_PAGE_LIMIT,
+      })}`);
+      total = data.total;
+      events.push(...data.events);
+      if (!data.events.length) break;
+    }
+    if (navigationCacheKey() !== key) return null;
+    state.navigationCache = { key, events, total, pending: null };
+    return state.navigationCache;
+  })().finally(() => {
+    if (state.navigationCache.key === key) state.navigationCache.pending = null;
+  });
+
+  state.navigationCache = { key, events: [], total: 0, pending };
+  return pending;
+}
+
+function navigationCategoriesForEvent(event, events) {
+  return NAVIGATION_CATEGORIES
+    .map((category) => ({
+      ...category,
+      matchesInResult: events.filter((candidate) => category.matches(candidate)),
+    }))
+    .filter((category) => category.matches(event) && category.matchesInResult.length);
+}
+
+function defaultNavigationCategoryId(event, categories) {
+  const preferred = [
+    isUpdatePlanEvent(event) ? 'update_plan' : '',
+    event.kind === 'command' && event.status === 'failed' ? 'failed_commands' : '',
+    event.kind === 'patch' && event.status === 'success' ? 'patch_applied' : '',
+    event.kind === 'patch' && event.status === 'failed' ? 'patch_failed' : '',
+    event.severity !== 'normal' || event.status === 'failed' ? 'errors_warnings' : '',
+  ].filter(Boolean);
+  for (const id of preferred) {
+    if (categories.some((category) => category.id === id)) return id;
+  }
+  return categories[0]?.id || '';
+}
+
+function selectedNavigationCategoryId(event, categories) {
+  if (state.navigationCategoryId && categories.some((category) => category.id === state.navigationCategoryId)) {
+    return state.navigationCategoryId;
+  }
+  const next = defaultNavigationCategoryId(event, categories);
+  state.navigationCategoryId = next;
+  return next;
+}
+
+function renderInspectorNavigation(event) {
+  const cache = currentNavigationCache();
+  if (!cache) {
+    return '<nav class="eventNavigator" aria-label="Event quick navigation"><span class="navStatus">Loading navigation...</span></nav>';
+  }
+  const categories = navigationCategoriesForEvent(event, cache.events);
+  if (!categories.length) return '';
+
+  const categoryId = selectedNavigationCategoryId(event, categories);
+  const category = categories.find((item) => item.id === categoryId) || categories[0];
+  const matches = category.matchesInResult;
+  const index = matches.findIndex((candidate) => candidate.id === event.id);
+  const position = index >= 0 ? index + 1 : 0;
+  const options = categories.map((item) => (
+    `<option value="${escapeHtml(item.id)}"${item.id === category.id ? ' selected' : ''}>${escapeHtml(item.label)}</option>`
+  )).join('');
+  return `<nav class="eventNavigator" aria-label="Event quick navigation">
+    <select class="navSelect" data-navigation-category aria-label="Quick navigation category">${options}</select>
+    <button class="navBtn" type="button" data-detail-action="navigate-event" data-nav-direction="prev"${index <= 0 ? ' disabled' : ''}>Prev</button>
+    <span class="navPosition">${escapeHtml(`${position}/${matches.length}`)}</span>
+    <button class="navBtn" type="button" data-detail-action="navigate-event" data-nav-direction="next"${index < 0 || index >= matches.length - 1 ? ' disabled' : ''}>Next</button>
+  </nav>`;
+}
+
+function currentSelectedEvent() {
+  return state.currentEvents.find((candidate) => candidate.id === state.selectedEventId)
+    || state.navigationCache.events.find((candidate) => candidate.id === state.selectedEventId)
+    || null;
+}
+
+async function ensureEventLoaded(eventId) {
+  if (state.currentEvents.some((event) => event.id === eventId)) return;
+  while (state.offset < state.timelineTotal) {
+    await loadTimeline(true);
+    if (state.currentEvents.some((event) => event.id === eventId)) return;
+  }
+}
+
+function scrollToTimelineEvent(eventId) {
+  const article = el.timeline.querySelector(`[data-event-id="${CSS.escape(eventId)}"]`);
+  if (article) article.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+async function inspectAndRevealEvent(target) {
+  await ensureEventLoaded(target.id);
+  const loaded = state.currentEvents.find((event) => event.id === target.id) || target;
+  if (displayState(loaded) === 'hidden') {
+    setOverride(loaded.id, 'summary');
+    renderTimeline();
+  }
+  showInspector(loaded);
+  scrollToTimelineEvent(loaded.id);
+}
+
+async function navigateSelectedEvent(direction) {
+  const current = currentSelectedEvent();
+  if (!current) return;
+  const cache = await ensureNavigationEvents();
+  if (!cache) return;
+  const categories = navigationCategoriesForEvent(current, cache.events);
+  if (!categories.length) return;
+  const categoryId = selectedNavigationCategoryId(current, categories);
+  const category = categories.find((item) => item.id === categoryId) || categories[0];
+  const matches = category.matchesInResult;
+  const index = matches.findIndex((event) => event.id === current.id);
+  const nextIndex = direction === 'next' ? index + 1 : index - 1;
+  if (index < 0 || nextIndex < 0 || nextIndex >= matches.length) return;
+  await inspectAndRevealEvent(matches[nextIndex]);
+}
+
 function showInspector(event) {
   const key = detailKey(state.selectedSessionId, state.layerId, event.id);
   const refs = sourceRefs(event);
@@ -508,11 +694,23 @@ function showInspector(event) {
     event.severity && event.severity !== 'normal' ? event.severity : '',
     event.layer || state.layerId,
   ]);
+  state.selectedEventId = event.id;
   state.detailSelectionKey = key;
+  updateSelectedTimelineEvent();
+  if (!currentNavigationCache()) {
+    ensureNavigationEvents().then(() => {
+      if (state.detailSelectionKey === key && state.selectedEventId === event.id) showInspector(event);
+    }).catch(showError);
+  }
   el.detail.innerHTML = `<article class="inspector">
     <header class="inspectorHeader">
-      <h2>${escapeHtml(event.label)}</h2>
-      <div class="chips">${chips}</div>
+      <div class="inspectorTitleRow">
+        <div class="inspectorTitleBlock">
+          <h2>${escapeHtml(event.label)}</h2>
+          <div class="chips">${chips}</div>
+        </div>
+        ${renderInspectorNavigation(event)}
+      </div>
     </header>
     ${preview ? `<section class="inspectorSection"><h3>Preview</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
     <section class="inspectorSection">
@@ -539,7 +737,9 @@ function showInspector(event) {
 async function showRaw(event) {
   const refs = sourceRefs(event);
   const rawKey = `raw:${detailKey(state.selectedSessionId, state.layerId, event.id)}`;
+  state.selectedEventId = event.id;
   state.detailSelectionKey = rawKey;
+  updateSelectedTimelineEvent();
   if (!refs.length) {
     el.detail.innerHTML = `<article class="rawRefsView">
       <header class="inspectorHeader">
@@ -599,6 +799,10 @@ el.timeline.addEventListener('click', (event) => {
 el.detail.addEventListener('click', (event) => {
   const action = event.target.closest('[data-detail-action]')?.dataset.detailAction;
   if (!action) return;
+  if (action === 'navigate-event') {
+    navigateSelectedEvent(event.target.closest('[data-nav-direction]')?.dataset.navDirection || '').catch(showError);
+    return;
+  }
   const key = state.detailSelectionKey.replace(/^raw:/, '');
   const item = state.currentEvents.find((candidate) => detailKey(state.selectedSessionId, state.layerId, candidate.id) === key);
   if (!item) return;
@@ -611,6 +815,14 @@ el.detail.addEventListener('click', (event) => {
     delete state.detailCache[key];
     showInspector(item);
   }
+});
+
+el.detail.addEventListener('change', (event) => {
+  const select = event.target.closest('[data-navigation-category]');
+  if (!select) return;
+  state.navigationCategoryId = select.value;
+  const item = currentSelectedEvent();
+  if (item) showInspector(item);
 });
 
 el.profileSelect.addEventListener('change', () => {

@@ -14,16 +14,16 @@
 
 ## Objective / 目标
 
-Improve the browser UX around event inspection, search feedback, failure navigation, and narrow-screen use without changing the transcript normalization model.
+Improve the browser UX around event inspection, search feedback, same-category event navigation, and narrow-screen use without changing the transcript normalization model.
 
-在不改变转录归一化模型的前提下，改进浏览器中的事件检查、搜索反馈、失败导航和窄屏使用体验。
+在不改变转录归一化模型的前提下，改进浏览器中的事件检查、搜索反馈、同类事件导航和窄屏使用体验。
 
 ## Scope / 范围
 
 ### In scope / 范围内
 - Upgrade the right-side pane from raw-only detail into an event inspector that can show selected-event summary, metadata, structured sections, and raw refs. / 将右侧面板从仅显示原始详情升级为事件检查器，可显示选中事件摘要、元数据、结构化区段和原始引用。
 - Add clearer search and filter feedback, including result counts, active-filter state, and easier filter clearing. / 添加更清晰的搜索和筛选反馈，包括结果数量、当前筛选状态和更容易清空筛选的入口。
-- Improve failure-oriented navigation for debugging sessions, such as jumping between failed commands and exposing failure metadata more directly. / 改进面向失败排查的导航，例如在失败命令之间跳转，并更直接地暴露失败元数据。
+- Improve same-category event navigation for repeated reading and debugging workflows, including user messages, update_plan calls, patches, failed commands, and other useful event groups. / 改进面向连续阅读和排查工作流的同类事件导航，包括用户消息、update_plan 调用、patch、失败命令以及其他有用事件组。
 - Improve narrow-screen browsing so session selection, timeline reading, and event detail are not forced into one long document flow. / 改进窄屏浏览，使会话选择、时间线阅读和事件详情不再被迫挤进一个很长的文档流。
 - Keep existing raw JSONL drill-down behavior available. / 保持现有原始 JSONL 下钻行为可用。
 
@@ -80,18 +80,18 @@ Improve the browser UX around event inspection, search feedback, failure navigat
 #### Exit criteria / 退出标准
 - A user can tell how many sessions and events match the current query without inferring from list length. / 用户无需从列表长度推断，即可知道当前查询匹配多少会话和事件。
 
-### Milestone 3 - Failure navigation / 里程碑 3 - 失败导航
+### Milestone 3 - Same-category quick navigation / 里程碑 3 - 同类事件快速导航
 #### Changes / 变更
-- Add jump controls or keyboard-friendly navigation between failed events in the selected timeline. / 在选中时间线中添加失败事件之间的跳转控件或键盘友好导航。
-- Surface exit code, duration, stderr/stdout presence, and source refs near the failure header. / 在失败标题附近显示 exit code、duration、stderr/stdout 是否存在以及来源引用。
-- Avoid inventing failure explanations that are not present in transcript data. / 避免编造转录数据中不存在的失败解释。
+- Add right-side inspector controls to jump between events in useful reading categories within the current filtered result set. / 在右侧检查器中添加控件，用于在当前过滤结果集内按有用阅读类别跳转事件。
+- Cover user messages, assistant messages, plans/update_plan calls, commands, failed commands, patch applied/failed, errors/warnings, MCP calls, and web searches. / 覆盖用户消息、助手消息、计划/update_plan 调用、命令、失败命令、patch 成功/失败、错误/警告、MCP 调用和 web 搜索。
+- Keep navigation frontend-only by reusing existing timeline payload fields and loading additional timeline pages as needed. / 复用现有时间线载荷字段并在需要时加载额外时间线页，使导航保持前端实现。
 
 #### Validation / 验证
 - `node --test`
-- Manual verification using sessions with multiple failed commands / 使用包含多个失败命令的会话手动验证
+- Manual verification using sessions with multiple user messages, update_plan calls, patches, and failed commands / 使用包含多个用户消息、update_plan 调用、patch 和失败命令的会话手动验证
 
 #### Exit criteria / 退出标准
-- A debugging user can move through failures without repeatedly changing filters or scrolling manually. / 排查问题的用户无需反复调整筛选或手动滚动，即可在失败之间移动。
+- A user can move through repeated same-category events without repeatedly changing filters or scrolling manually. / 用户无需反复调整筛选或手动滚动，即可在重复出现的同类事件之间移动。
 
 ### Milestone 4 - Narrow-screen workflow / 里程碑 4 - 窄屏工作流
 #### Changes / 变更
@@ -109,8 +109,8 @@ Improve the browser UX around event inspection, search feedback, failure navigat
 ## Validation checklist / 验证清单
 - [x] Syntax checks pass / 语法检查通过
 - [x] Tests pass where API or renderer behavior changes / 当 API 或渲染器行为变化时测试通过
-- [ ] Raw refs still open all underlying JSONL rows / 原始引用仍能打开所有底层 JSONL 行
-- [ ] Main/protocol/raw layer switching still works / main/protocol/raw 层切换仍能工作
+- [x] Raw refs still open all underlying JSONL rows / 原始引用仍能打开所有底层 JSONL 行
+- [x] Main/protocol/raw layer switching still works / main/protocol/raw 层切换仍能工作
 - [ ] Narrow-screen manual verification completed / 已完成窄屏手动验证
 
 ## Rollback notes / 回滚说明
@@ -129,6 +129,8 @@ Improve the browser UX around event inspection, search feedback, failure navigat
 - 2026-05-04: Implemented Milestone 2 search/filter feedback with explicit matched session/event counts and clearable active-filter chips. / 2026-05-04：实现里程碑 2 的搜索/筛选反馈，显示明确的匹配会话/事件数量，并提供可逐项清除的当前筛选 chip。
 - 2026-05-04: Smoke-checked the local viewer with Playwright for rendered result counts and a clearable search chip. / 2026-05-04：使用 Playwright 对本地查看器进行冒烟检查，确认结果计数和可清除搜索 chip 已实际渲染。
 - 2026-05-04: Limited matched result counts to active search/filter states so the default browsing toolbar stays quiet. / 2026-05-04：将匹配结果计数限制为仅在搜索/筛选激活时显示，使默认浏览状态下的工具栏保持简洁。
+- 2026-05-04: Regression-checked raw refs and main/protocol/raw layer switching in the local viewer with Playwright. / 2026-05-04：使用 Playwright 在本地查看器中回归检查原始引用和 main/protocol/raw 层切换。
+- 2026-05-04: Implemented Milestone 3 as generalized same-category quick navigation from the selected-event inspector instead of a failed-command-only control. / 2026-05-04：将里程碑 3 实现为从选中事件检查器发起的通用同类事件快速导航，而不是仅面向失败命令的控件。
 
 ## Decision log / 决策日志
 
