@@ -17,6 +17,7 @@ const state = {
   selectedSessionId: '',
   offset: 0,
   limit: 150,
+  sessionGrandTotal: 0,
   sessionTotal: 0,
   timelineTotal: 0,
   currentEvents: [],
@@ -176,24 +177,51 @@ function selectedOptionText(select) {
   return select.selectedOptions[0]?.textContent?.trim() || '';
 }
 
-function activeFilterLabels() {
-  const labels = [];
+function activeFilters() {
+  const filters = [];
   const q = el.searchInput.value.trim();
   const file = el.fileFilter.value.trim();
-  if (q) labels.push(`搜索: ${q}`);
-  if (el.kindFilter.value) labels.push(`类型: ${selectedOptionText(el.kindFilter)}`);
-  if (el.statusFilter.value) labels.push(`状态: ${selectedOptionText(el.statusFilter)}`);
-  if (file) labels.push(`文件: ${file}`);
-  if (state.layerId !== 'main') labels.push(`层: ${selectedOptionText(el.layerSelect)}`);
-  return labels;
+  if (q) filters.push({ key: 'q', label: `Search: ${q}` });
+  if (el.kindFilter.value) filters.push({ key: 'kind', label: `Kind: ${selectedOptionText(el.kindFilter)}` });
+  if (el.statusFilter.value) filters.push({ key: 'status', label: `Status: ${selectedOptionText(el.statusFilter)}` });
+  if (file) filters.push({ key: 'file', label: `File: ${file}` });
+  if (state.layerId !== 'main') filters.push({ key: 'layer', label: `Layer: ${selectedOptionText(el.layerSelect)}` });
+  return filters;
 }
 
 function renderResultSummary() {
   if (!el.resultSummary) return;
-  const sessionText = `会话 ${state.sessions.length}/${state.sessionTotal}`;
-  const eventText = state.selectedSessionId ? `事件 ${state.offset}/${state.timelineTotal}` : '未选择 session';
-  const filters = activeFilterLabels();
-  el.resultSummary.textContent = filters.length ? `${sessionText} · ${eventText} · ${filters.join(' · ')}` : `${sessionText} · ${eventText}`;
+  const filters = activeFilters();
+  if (!filters.length) {
+    el.resultSummary.replaceChildren();
+    return;
+  }
+  const sessionTotal = state.sessionGrandTotal || state.sessionTotal;
+  const sessionText = sessionTotal
+    ? `Sessions: ${state.sessionTotal} match (${sessionTotal} total)`
+    : `Sessions: ${state.sessionTotal} match`;
+  const eventText = state.selectedSessionId
+    ? `Events: ${state.timelineTotal} match${state.offset < state.timelineTotal ? ` (${state.offset} loaded)` : ''}`
+    : 'Events: select a session';
+  const filterText = filters.map((filter) => (
+    `<button class="filterChip" type="button" data-clear-filter="${escapeHtml(filter.key)}" aria-label="Clear ${escapeHtml(filter.label)}">
+      <span>${escapeHtml(filter.label)}</span><span aria-hidden="true">&times;</span>
+    </button>`
+  )).join('') + '<button class="clearFiltersBtn" type="button" data-clear-filter="all">Clear all</button>';
+  el.resultSummary.innerHTML = `<div class="resultCounts">${escapeHtml(sessionText)} · ${escapeHtml(eventText)}</div><div class="activeFilters" aria-label="Active filters">${filterText}</div>`;
+}
+
+function clearActiveFilter(key) {
+  if (key === 'q' || key === 'all') el.searchInput.value = '';
+  if (key === 'kind' || key === 'all') el.kindFilter.value = '';
+  if (key === 'status' || key === 'all') el.statusFilter.value = '';
+  if (key === 'file' || key === 'all') el.fileFilter.value = '';
+  if (key === 'layer' || key === 'all') {
+    state.layerId = 'main';
+    el.layerSelect.value = state.layerId;
+    localStorage.setItem('sessionAnalyzer.layer', state.layerId);
+  }
+  loadSessions().catch(showError);
 }
 
 function resetTimelineScroll() {
@@ -210,6 +238,7 @@ function clearCurrentSessionOverrides() {
 async function init() {
   const appState = await api('/api/state');
   state.profiles = appState.foldingProfiles || [];
+  state.sessionGrandTotal = appState.totals.sessionCount || 0;
   el.stateLine.textContent = `${appState.repoRoot} | ${appState.totals.sessionCount} sessions | ${appState.totals.eventCount} logical events | ${appState.totals.rawEventCount} raw records`;
   el.profileSelect.innerHTML = state.profiles.map((profile) => (
     `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name)}</option>`
@@ -605,6 +634,10 @@ el.resetFoldsBtn.addEventListener('click', () => {
 });
 
 el.loadMoreBtn.addEventListener('click', () => loadTimeline(true).catch(showError));
+el.resultSummary?.addEventListener('click', (event) => {
+  const clear = event.target.closest('[data-clear-filter]')?.dataset.clearFilter;
+  if (clear) clearActiveFilter(clear);
+});
 el.timeline.closest('.timelinePane')?.addEventListener('scroll', queueVisibleDetailLoad, { passive: true });
 window.addEventListener('resize', queueVisibleDetailLoad);
 

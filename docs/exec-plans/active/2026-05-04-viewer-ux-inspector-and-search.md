@@ -107,8 +107,8 @@ Improve the browser UX around event inspection, search feedback, failure navigat
 - On a narrow screen, a user can select a session, inspect events, and open raw refs without scrolling through the full session list first. / 在窄屏上，用户可以选择会话、检查事件并打开原始引用，而不必先滚完整个会话列表。
 
 ## Validation checklist / 验证清单
-- [ ] Syntax checks pass / 语法检查通过
-- [ ] Tests pass where API or renderer behavior changes / 当 API 或渲染器行为变化时测试通过
+- [x] Syntax checks pass / 语法检查通过
+- [x] Tests pass where API or renderer behavior changes / 当 API 或渲染器行为变化时测试通过
 - [ ] Raw refs still open all underlying JSONL rows / 原始引用仍能打开所有底层 JSONL 行
 - [ ] Main/protocol/raw layer switching still works / main/protocol/raw 层切换仍能工作
 - [ ] Narrow-screen manual verification completed / 已完成窄屏手动验证
@@ -125,6 +125,10 @@ Improve the browser UX around event inspection, search feedback, failure navigat
 - 2026-05-04: Seeded scope from manual Playwright exploration of the local viewer on a real session set. / 2026-05-04：基于对真实会话集上的本地查看器进行 Playwright 手动探索，初始化范围。
 - 2026-05-04: Implemented the Milestone 1 inspector foundation so ordinary event clicks show a selected-event inspector while `Raw refs` remains a separate raw JSONL view. / 2026-05-04：实现里程碑 1 的检查器基础，使普通事件点击显示选中事件检查器，同时保留 `Raw refs` 作为独立的原始 JSONL 视图。
 - 2026-05-04: Added a right-pane return action from `Raw refs` back to the selected-event inspector. / 2026-05-04：在右侧面板中为 `Raw refs` 增加返回选中事件检查器的操作。
+
+- 2026-05-04: Implemented Milestone 2 search/filter feedback with explicit matched session/event counts and clearable active-filter chips. / 2026-05-04：实现里程碑 2 的搜索/筛选反馈，显示明确的匹配会话/事件数量，并提供可逐项清除的当前筛选 chip。
+- 2026-05-04: Smoke-checked the local viewer with Playwright for rendered result counts and a clearable search chip. / 2026-05-04：使用 Playwright 对本地查看器进行冒烟检查，确认结果计数和可清除搜索 chip 已实际渲染。
+- 2026-05-04: Limited matched result counts to active search/filter states so the default browsing toolbar stays quiet. / 2026-05-04：将匹配结果计数限制为仅在搜索/筛选激活时显示，使默认浏览状态下的工具栏保持简洁。
 
 ## Decision log / 决策日志
 

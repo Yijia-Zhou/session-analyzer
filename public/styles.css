@@ -271,10 +271,46 @@ button:hover,
 }
 
 .resultSummary {
+  align-items: center;
   color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
   font-size: 0.82rem;
+  gap: 0.45rem 0.65rem;
+  justify-content: flex-end;
   margin-left: auto;
   overflow-wrap: anywhere;
+}
+
+.activeFilters {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+
+.filterChip,
+.clearFiltersBtn {
+  align-items: center;
+  background: var(--soft);
+  border-color: #c7d9d3;
+  color: var(--accent);
+  display: inline-flex;
+  font-size: 0.76rem;
+  gap: 0.3rem;
+  min-height: 28px;
+  padding: 0.22rem 0.45rem;
+}
+
+.filterChip:hover,
+.clearFiltersBtn:hover {
+  border-color: var(--accent);
+}
+
+.clearFiltersBtn {
+  background: #fff;
+  color: var(--muted);
 }
 
 .analysisPanel {
