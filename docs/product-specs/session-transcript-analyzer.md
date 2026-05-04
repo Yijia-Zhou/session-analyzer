@@ -60,6 +60,8 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 7. Expanding a timeline card replaces the preview with structured event detail inline, including markdown messages, command output, diffs, notices, and structured metadata. / 展开时间线卡片会以内联结构化事件详情替换预览，内容包括 Markdown 消息、命令输出、差异、通知和结构化元数据。
 8. Raw JSON fallback sections remain available from expanded cards but stay visually secondary outside the raw layer. / 原始 JSON 回退区段仍可从展开卡片访问，但在原始层之外保持视觉上的次要地位。
 9. Clicking an event's `Raw refs` control shows all underlying raw JSONL rows for verification in the right-side panel. / 点击事件的 `Raw refs` 控件会在右侧面板显示所有底层原始 JSONL 行以供验证。
+10. The UI reports filtered session and event result counts while search, layer, and filter controls are active. / 当搜索、事件层和筛选控件生效时，界面会显示过滤后的会话和事件结果数量。
+11. Changing the folding strategy reapplies that strategy's defaults for the selected session instead of keeping stale manual fold overrides. / 切换折叠策略时，会对当前选中 session 重新应用该策略的默认展开规则，而不是保留过时的手动折叠覆盖。
 
 ## Acceptance criteria / 验收标准
 
@@ -71,6 +73,8 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - [ ] Expanded detail remains available for `main`, `protocol`, and `raw` layers without hiding unknown transcript shapes. / 展开详情在 `main`、`protocol` 和 `raw` 层都保持可用，并且不会隐藏未知转录形态。
 - [ ] Raw JSONL rows remain accessible for every logical event. / 每个逻辑事件都仍可访问原始 JSONL 行。
 - [ ] Filtering by keyword, file, status, and event kind works across the selected layer. / 按关键词、文件、状态和事件类型筛选可在所选层中正常工作。
+- [ ] Search and filter result counts stay visible while browsing a selected session. / 浏览选中 session 时，搜索和筛选结果数量保持可见。
+- [ ] Folding strategy changes clear stale manual fold overrides for the selected session. / 折叠策略变更会清除当前选中 session 的过时手动折叠覆盖。
 - [ ] Repository filtering is case-insensitive on Windows paths. / 在 Windows 路径上，仓库筛选不区分大小写。
 
 ## Edge cases / 边界情况

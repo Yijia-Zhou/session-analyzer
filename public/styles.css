@@ -190,9 +190,18 @@ button:hover,
 }
 
 .toolbar {
+  align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
   margin-bottom: 0.75rem;
+}
+
+.resultSummary {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-left: auto;
+  overflow-wrap: anywhere;
 }
 
 .analysisPanel {
@@ -602,6 +611,16 @@ pre {
   .sessionsPane,
   .timelinePane {
     max-height: none;
+  }
+
+  .sessionsPane {
+    border-bottom: 1px solid var(--line);
+    max-height: 58vh;
+  }
+
+  .resultSummary {
+    margin-left: 0;
+    width: 100%;
   }
 
   .analysisPanel {

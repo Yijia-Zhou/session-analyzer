@@ -128,6 +128,7 @@ Stabilize the new logical-event timeline so the main/protocol/raw layers are eas
 - 2026-05-03: Tracking expanded-detail reading quality follow-up after finding preview/body duplication and silent Markdown fallback in the web UI. / 2026-05-03：在 Web UI 中发现预览/正文重复和 Markdown 静默回退后，跟踪展开详情阅读质量后续工作。
 - 2026-05-03: Implemented preview/body separation, required `markdown-it` lockfile, Markdown fixture coverage, Markdown styles, command output de-duplication, collapsible `raw_json`, and visible-card detail loading. / 2026-05-03：实现预览/正文分离、必需的 `markdown-it` lockfile、Markdown fixture 覆盖、Markdown 样式、命令输出去重、可折叠 `raw_json` 和可见卡片详情加载。
 - 2026-05-03: Added `hideTitle` section rendering rule for redundant primary body titles such as Message, Plan, Reasoning, lifecycle notices, and protocol text. / 2026-05-03：为 Message、Plan、Reasoning、生命周期通知和协议文本等冗余主正文标题添加 `hideTitle` 区段渲染规则。
+- 2026-05-04: Added immediate UX polish for result counts, timeline scroll reset, folding-strategy override reset, narrow-screen session list height, and favicon MIME handling. / 2026-05-04：添加即时 UX 打磨，包括结果数量显示、时间线滚动复位、折叠策略覆盖重置、窄屏会话列表高度限制和 favicon MIME 处理。
 
 ## Decision log / 决策日志
 

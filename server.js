@@ -14,6 +14,7 @@ const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
+  '.ico': 'image/x-icon',
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
 };

@@ -17,6 +17,8 @@ const state = {
   selectedSessionId: '',
   offset: 0,
   limit: 150,
+  sessionTotal: 0,
+  timelineTotal: 0,
   currentEvents: [],
   profiles: [],
   profileId: localStorage.getItem('sessionAnalyzer.profile') || 'narrative',
@@ -44,6 +46,7 @@ const el = {
   detail: document.getElementById('detail'),
   resetFoldsBtn: document.getElementById('resetFoldsBtn'),
   loadMoreBtn: document.getElementById('loadMoreBtn'),
+  resultSummary: document.getElementById('resultSummary'),
 };
 
 function api(path) {
@@ -104,7 +107,42 @@ function detailKey(sessionId, layerId, eventId) {
 }
 
 function resetDetailPane() {
-  el.detail.innerHTML = '<h2>Event detail</h2><p>Use Raw refs to inspect the original JSONL rows.</p>';
+  el.detail.innerHTML = '<h2>事件详情</h2><p>点击 Raw refs 查看原始 JSONL 记录。</p>';
+}
+
+function selectedOptionText(select) {
+  return select.selectedOptions[0]?.textContent?.trim() || '';
+}
+
+function activeFilterLabels() {
+  const labels = [];
+  const q = el.searchInput.value.trim();
+  const file = el.fileFilter.value.trim();
+  if (q) labels.push(`搜索: ${q}`);
+  if (el.kindFilter.value) labels.push(`类型: ${selectedOptionText(el.kindFilter)}`);
+  if (el.statusFilter.value) labels.push(`状态: ${selectedOptionText(el.statusFilter)}`);
+  if (file) labels.push(`文件: ${file}`);
+  if (state.layerId !== 'main') labels.push(`层: ${selectedOptionText(el.layerSelect)}`);
+  return labels;
+}
+
+function renderResultSummary() {
+  if (!el.resultSummary) return;
+  const sessionText = `会话 ${state.sessions.length}/${state.sessionTotal}`;
+  const eventText = state.selectedSessionId ? `事件 ${state.offset}/${state.timelineTotal}` : '未选择 session';
+  const filters = activeFilterLabels();
+  el.resultSummary.textContent = filters.length ? `${sessionText} · ${eventText} · ${filters.join(' · ')}` : `${sessionText} · ${eventText}`;
+}
+
+function resetTimelineScroll() {
+  const pane = el.timeline.closest('.timelinePane');
+  if (pane) pane.scrollTop = 0;
+}
+
+function clearCurrentSessionOverrides() {
+  if (!state.selectedSessionId || !state.overrides[state.selectedSessionId]) return;
+  delete state.overrides[state.selectedSessionId];
+  localStorage.setItem('sessionAnalyzer.overrides', JSON.stringify(state.overrides));
 }
 
 async function init() {
@@ -127,18 +165,24 @@ async function init() {
 async function loadSessions() {
   const data = await api(`/api/sessions${currentQuery({ sort: el.sortSelect.value })}`);
   state.sessions = data.sessions;
+  state.sessionTotal = data.total;
   renderSessions();
   if (!state.selectedSessionId && data.sessions[0]) {
     await selectSession(data.sessions[0].id);
   } else if (state.selectedSessionId && !data.sessions.some((session) => session.id === state.selectedSessionId)) {
     state.selectedSessionId = '';
+    state.offset = 0;
+    state.timelineTotal = 0;
     state.currentEvents = [];
     el.timeline.innerHTML = '';
     el.analysisPanel.innerHTML = '';
     el.sessionHeader.innerHTML = '<h2>No matching session</h2><p>Adjust the search or filters.</p>';
     resetDetailPane();
+    renderResultSummary();
   } else if (state.selectedSessionId) {
     await selectSession(state.selectedSessionId);
+  } else {
+    renderResultSummary();
   }
 }
 
@@ -200,9 +244,12 @@ async function loadTimeline(append) {
     state.currentEvents = data.events;
   }
   state.offset = state.currentEvents.length;
+  state.timelineTotal = data.total;
   renderTimeline();
+  if (!append) resetTimelineScroll();
   el.loadMoreBtn.disabled = state.offset >= data.total;
   el.loadMoreBtn.textContent = state.offset >= data.total ? `Loaded ${state.offset}` : `Load more (${state.offset}/${data.total})`;
+  renderResultSummary();
 }
 
 function displayState(event) {
@@ -389,7 +436,9 @@ el.timeline.addEventListener('click', (event) => {
 el.profileSelect.addEventListener('change', () => {
   state.profileId = el.profileSelect.value;
   localStorage.setItem('sessionAnalyzer.profile', state.profileId);
+  clearCurrentSessionOverrides();
   renderTimeline();
+  resetTimelineScroll();
 });
 
 el.layerSelect.addEventListener('change', () => {
@@ -425,7 +474,9 @@ document.addEventListener('keydown', (event) => {
       state.profileId = next.id;
       el.profileSelect.value = next.id;
       localStorage.setItem('sessionAnalyzer.profile', state.profileId);
+      clearCurrentSessionOverrides();
       renderTimeline();
+      resetTimelineScroll();
     }
   }
   if (event.altKey && event.key === 'ArrowLeft') {
@@ -435,7 +486,9 @@ document.addEventListener('keydown', (event) => {
       state.profileId = next.id;
       el.profileSelect.value = next.id;
       localStorage.setItem('sessionAnalyzer.profile', state.profileId);
+      clearCurrentSessionOverrides();
       renderTimeline();
+      resetTimelineScroll();
     }
   }
 });
