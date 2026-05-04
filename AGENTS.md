@@ -32,5 +32,6 @@ When changing product behavior or repository structure:
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Active plans:
   - `docs/exec-plans/active/2026-04-21-transcript-normalization-followups.md`
-  - `docs/exec-plans/active/2026-05-04-viewer-ux-inspector-and-search.md`
-- Completed baseline plan: `docs/exec-plans/completed/2026-04-20-session-analyzer-v1.md`
+- Completed plans:
+  - `docs/exec-plans/completed/2026-04-20-session-analyzer-v1.md`
+  - `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md`

@@ -2,7 +2,7 @@
 
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
-- Status: active / 状态：活跃
+- Status: completed / 状态：已完成
 - Last updated: 2026-05-04 / 最近更新：2026-05-04
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
@@ -111,7 +111,7 @@ Improve the browser UX around event inspection, search feedback, same-category e
 - [x] Tests pass where API or renderer behavior changes / 当 API 或渲染器行为变化时测试通过
 - [x] Raw refs still open all underlying JSONL rows / 原始引用仍能打开所有底层 JSONL 行
 - [x] Main/protocol/raw layer switching still works / main/protocol/raw 层切换仍能工作
-- [ ] Narrow-screen manual verification completed / 已完成窄屏手动验证
+- [x] Narrow-screen manual verification completed / 已完成窄屏手动验证
 
 ## Rollback notes / 回滚说明
 
@@ -131,6 +131,7 @@ Improve the browser UX around event inspection, search feedback, same-category e
 - 2026-05-04: Limited matched result counts to active search/filter states so the default browsing toolbar stays quiet. / 2026-05-04：将匹配结果计数限制为仅在搜索/筛选激活时显示，使默认浏览状态下的工具栏保持简洁。
 - 2026-05-04: Regression-checked raw refs and main/protocol/raw layer switching in the local viewer with Playwright. / 2026-05-04：使用 Playwright 在本地查看器中回归检查原始引用和 main/protocol/raw 层切换。
 - 2026-05-04: Implemented Milestone 3 as generalized same-category quick navigation from the selected-event inspector instead of a failed-command-only control. / 2026-05-04：将里程碑 3 实现为从选中事件检查器发起的通用同类事件快速导航，而不是仅面向失败命令的控件。
+- 2026-05-04: Implemented and verified Milestone 4 with narrow-screen `Sessions`/`Events`/`Detail` tabs, automatic view transitions, reachable top-level controls, and raw refs access at 390 px. / 2026-05-04：实现并验证里程碑 4，提供窄屏 `Sessions`/`Events`/`Detail` 标签页、自动视图切换、可访问的顶层控件，以及 390 px 下的原始引用访问。
 
 ## Decision log / 决策日志
 
@@ -138,6 +139,6 @@ Improve the browser UX around event inspection, search feedback, same-category e
 
 ## Completion summary / 完成摘要
 
-Pending.
+Completed the viewer UX follow-up: selected-event inspection, raw refs drill-down, search/filter feedback, same-category quick navigation, and narrow-screen tabs are implemented and verified without changing transcript normalization.
 
-待完成。
+已完成查看器 UX 后续工作：选中事件检查、原始引用下钻、搜索/筛选反馈、同类事件快速导航和窄屏标签页均已实现并验证，且未改变转录归一化。

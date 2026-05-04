@@ -9,8 +9,8 @@
 - Related design: / 相关设计：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/documentation-system.md`
-- Related active plan: / 相关活跃计划：
-  - `docs/exec-plans/active/2026-05-04-viewer-ux-inspector-and-search.md`
+- Related completed plan: / 相关已完成计划：
+  - `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md`
 
 ## Objective / 目标
 
@@ -32,7 +32,7 @@ Stabilize the new logical-event timeline so the main/protocol/raw layers are eas
 - LLM summarization / LLM 摘要
 - Persistent indexing / 持久索引
 - Multi-user deployment / 多用户部署
-- Event inspector UX, search result chrome, failure navigation, and narrow-screen layout work tracked by `docs/exec-plans/active/2026-05-04-viewer-ux-inspector-and-search.md` / 由 `docs/exec-plans/active/2026-05-04-viewer-ux-inspector-and-search.md` 跟踪的事件检查器 UX、搜索结果界面、失败导航和窄屏布局工作
+- Event inspector UX, search result chrome, failure navigation, and narrow-screen layout work tracked by `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md` / 由 `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md` 跟踪的事件检查器 UX、搜索结果界面、失败导航和窄屏布局工作
 
 ## Repository context / 仓库背景
 
@@ -139,7 +139,7 @@ Stabilize the new logical-event timeline so the main/protocol/raw layers are eas
 - 2026-05-03: Tracking expanded-detail reading quality follow-up after finding preview/body duplication and silent Markdown fallback in the web UI. / 2026-05-03：在 Web UI 中发现预览/正文重复和 Markdown 静默回退后，跟踪展开详情阅读质量后续工作。
 - 2026-05-03: Implemented preview/body separation, required `markdown-it` lockfile, Markdown fixture coverage, Markdown styles, command output de-duplication, collapsible `raw_json`, and visible-card detail loading. / 2026-05-03：实现预览/正文分离、必需的 `markdown-it` lockfile、Markdown fixture 覆盖、Markdown 样式、命令输出去重、可折叠 `raw_json` 和可见卡片详情加载。
 - 2026-05-03: Added `hideTitle` section rendering rule for redundant primary body titles such as Message, Plan, Reasoning, lifecycle notices, and protocol text. / 2026-05-03：为 Message、Plan、Reasoning、生命周期通知和协议文本等冗余主正文标题添加 `hideTitle` 区段渲染规则。
-- 2026-05-04: Split event-inspector, search-feedback, failure-navigation, and narrow-screen UX work into `docs/exec-plans/active/2026-05-04-viewer-ux-inspector-and-search.md`, keeping this plan focused on transcript normalization and structured detail extraction. / 2026-05-04：将事件检查器、搜索反馈、失败导航和窄屏 UX 工作拆分到 `docs/exec-plans/active/2026-05-04-viewer-ux-inspector-and-search.md`，使本计划继续聚焦转录归一化和结构化详情提取。
+- 2026-05-04: Split event-inspector, search-feedback, failure-navigation, and narrow-screen UX work into `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md`, keeping this plan focused on transcript normalization and structured detail extraction. / 2026-05-04：将事件检查器、搜索反馈、失败导航和窄屏 UX 工作拆分到 `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md`，使本计划继续聚焦转录归一化和结构化详情提取。
 
 ## Decision log / 决策日志
 

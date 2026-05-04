@@ -49,6 +49,7 @@ const state = {
   detailSelectionKey: '',
   navigationCategoryId: '',
   navigationCache: { key: '', events: [], total: 0, pending: null },
+  mobileView: 'sessions',
 };
 
 const el = {
@@ -68,7 +69,24 @@ const el = {
   resetFoldsBtn: document.getElementById('resetFoldsBtn'),
   loadMoreBtn: document.getElementById('loadMoreBtn'),
   resultSummary: document.getElementById('resultSummary'),
+  mobileViewButtons: document.querySelectorAll('[data-mobile-view]'),
 };
+
+function setMobileView(view, options = {}) {
+  if (!['sessions', 'events', 'detail'].includes(view)) return;
+  const changed = state.mobileView !== view;
+  state.mobileView = view;
+  document.body.dataset.mobileView = view;
+  for (const button of el.mobileViewButtons) {
+    const active = button.dataset.mobileView === view;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+  if (view === 'events') queueVisibleDetailLoad();
+  if (changed && options.scroll !== false && window.matchMedia('(max-width: 760px)').matches) {
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }
+}
 
 function api(path) {
   return fetch(path).then(async (res) => {
@@ -262,6 +280,7 @@ function clearCurrentSessionOverrides() {
 }
 
 async function init() {
+  setMobileView(state.mobileView, { scroll: false });
   const appState = await api('/api/state');
   state.profiles = appState.foldingProfiles || [];
   state.sessionGrandTotal = appState.totals.sessionCount || 0;
@@ -319,7 +338,7 @@ function renderSessions() {
   }).join('');
 }
 
-async function selectSession(sessionId) {
+async function selectSession(sessionId, options = {}) {
   state.selectedSessionId = sessionId;
   state.offset = 0;
   state.currentEvents = [];
@@ -332,6 +351,7 @@ async function selectSession(sessionId) {
       <p>${escapeHtml(session.sourceFile)} | ${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</p>`;
   }
   await Promise.all([loadAnalysis(sessionId), loadTimeline(false)]);
+  if (options.mobileView) setMobileView(options.mobileView);
 }
 
 async function loadAnalysis(sessionId) {
@@ -696,6 +716,7 @@ function showInspector(event) {
   ]);
   state.selectedEventId = event.id;
   state.detailSelectionKey = key;
+  setMobileView('detail');
   updateSelectedTimelineEvent();
   if (!currentNavigationCache()) {
     ensureNavigationEvents().then(() => {
@@ -739,6 +760,7 @@ async function showRaw(event) {
   const rawKey = `raw:${detailKey(state.selectedSessionId, state.layerId, event.id)}`;
   state.selectedEventId = event.id;
   state.detailSelectionKey = rawKey;
+  setMobileView('detail');
   updateSelectedTimelineEvent();
   if (!refs.length) {
     el.detail.innerHTML = `<article class="rawRefsView">
@@ -770,8 +792,12 @@ async function showRaw(event) {
 
 el.sessionList.addEventListener('click', (event) => {
   const item = event.target.closest('[data-session-id]');
-  if (item) selectSession(item.dataset.sessionId).catch(showError);
+  if (item) selectSession(item.dataset.sessionId, { mobileView: 'events' }).catch(showError);
 });
+
+for (const button of el.mobileViewButtons) {
+  button.addEventListener('click', () => setMobileView(button.dataset.mobileView));
+}
 
 el.timeline.addEventListener('click', (event) => {
   const article = event.target.closest('[data-event-id]');

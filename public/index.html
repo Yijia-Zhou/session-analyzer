@@ -7,7 +7,7 @@
     <link rel="icon" href="/favicon.ico">
     <link rel="stylesheet" href="/styles.css">
   </head>
-  <body>
+  <body data-mobile-view="sessions">
     <header class="topbar">
       <div>
         <h1>Codex Session Analyzer</h1>
@@ -23,6 +23,12 @@
         <select id="profileSelect" aria-label="折叠策略"></select>
       </div>
     </header>
+
+    <nav class="mobileViewTabs" aria-label="Narrow screen sections">
+      <button class="mobileViewTab active" type="button" data-mobile-view="sessions">Sessions</button>
+      <button class="mobileViewTab" type="button" data-mobile-view="events">Events</button>
+      <button class="mobileViewTab" type="button" data-mobile-view="detail">Detail</button>
+    </nav>
 
     <main class="layout">
       <aside class="sessionsPane">
