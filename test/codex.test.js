@@ -20,8 +20,8 @@ test('buildIndex deduplicates mirrored messages and keeps protocol separately', 
   const index = await buildFixtureIndex();
   const session = index.sessions[0];
 
-  assert.equal(index.totals.fileCount, 3);
-  assert.equal(index.totals.sessionCount, 2);
+  assert.equal(index.totals.fileCount, 4);
+  assert.equal(index.totals.sessionCount, 3);
   assert.equal(session.id, '11111111-1111-1111-1111-111111111111');
   assert.equal(session.title, 'fixture repo session');
   assert.equal(session.counts.userMessages, 1);
@@ -54,6 +54,41 @@ test('buildIndex keeps forked subagent identity separate from embedded parent me
   const childSummary = summaries.find((session) => session.id === child.id);
   assert.equal(childSummary.parentSessionId, parent.id);
   assert.equal(childSummary.agentNickname, 'Fixture');
+});
+
+test('buildIndex infers fallback titles from real user tasks after protocol wrappers', async () => {
+  const index = await buildFixtureIndex();
+  const session = index.sessions.find((item) => item.id === '44444444-4444-4444-4444-444444444444');
+
+  assert.ok(session);
+  assert.equal(session.title, 'Repair fallback session titles');
+  assert.equal(session.counts.userMessages, 1);
+
+  const mainTimeline = getTimeline(index, session.id, {
+    offset: 0,
+    limit: 100,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(mainTimeline.events.some((event) => event.preview.includes('Get-ChildItem')), false);
+
+  const protocolTimeline = getTimeline(index, session.id, {
+    offset: 0,
+    limit: 100,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'protocol',
+  });
+  const shellWrapper = protocolTimeline.events.find((event) => event.subtype === 'user_shell_command');
+  assert.ok(shellWrapper);
+  assert.equal(shellWrapper.preview, 'Get-ChildItem -Force');
 });
 
 test('timeline main layer returns logical events without duplicate user or assistant messages', async () => {

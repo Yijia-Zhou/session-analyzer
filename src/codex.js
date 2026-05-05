@@ -9,6 +9,8 @@ const MarkdownIt = require('markdown-it');
 const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
 const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'kv', 'notice', 'raw_json']);
+const SESSION_TITLE_LIMIT = 120;
+const SUBAGENT_SESSION_TITLE_LIMIT = 160;
 
 let markdownRenderer = null;
 
@@ -1707,6 +1709,12 @@ function buildLogicalEvents(rawEvents) {
         consumed.add(raw.rawId);
         continue;
       }
+      const protocolSubtype = classifyProtocolText(raw.messageText, 'user');
+      if (protocolSubtype) {
+        logicalEvents.push(buildProtocolEvent(raw, protocolSubtype));
+        consumed.add(raw.rawId);
+        continue;
+      }
       logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:user:${raw.line}`, 'user_message', 'user', raw.messageText, [raw]));
       consumed.add(raw.rawId);
       continue;
@@ -1941,15 +1949,66 @@ function updateAnalysisDraft(session, event) {
   }
 }
 
-function inferSessionTitle(session) {
-  if (session.parentSessionId) {
-    const userEvents = session.logicalEvents.filter((event) => event.kind === 'user_message' && event.preview);
-    const taskPreview = userEvents.at(-1)?.preview || path.basename(session.sourceFile, '.jsonl');
-    const label = session.agentNickname ? `Subagent ${session.agentNickname}` : 'Subagent session';
-    return `${label}: ${taskPreview}`;
+function hasMalformedTitleText(text) {
+  const source = String(text || '');
+  if (!source) return true;
+  if (source.includes('\uFFFD')) return true;
+  const controlMatches = source.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g) || [];
+  return controlMatches.length > Math.max(2, Math.floor(source.length * 0.05));
+}
+
+function cleanTitleLine(line) {
+  return String(line || '')
+    .trim()
+    .replace(/^>\s*/, '')
+    .replace(/^#{1,6}\s*/, '')
+    .replace(/^[-*+]\s+/, '')
+    .replace(/^\d+[.)]\s+/, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/<\/?[^>]+>/g, ' ')
+    .replace(/[*_`~]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isLowInformationTitleLine(line) {
+  const text = String(line || '').trim();
+  if (!text) return true;
+  if (/^[-=*_`|:.\s]+$/.test(text)) return true;
+  return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(text);
+}
+
+function normalizeTitleCandidate(text) {
+  const source = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+  if (!source || hasMalformedTitleText(source)) return '';
+  if (classifyProtocolText(source, 'user')) return '';
+
+  const body = stripProposedPlanWrapper(source);
+  for (const line of body.split('\n')) {
+    const cleaned = cleanTitleLine(line);
+    if (isLowInformationTitleLine(cleaned)) continue;
+    return truncate(cleaned, SESSION_TITLE_LIMIT);
   }
-  const firstUserEvent = session.logicalEvents.find((event) => event.kind === 'user_message' && event.preview);
-  return firstUserEvent?.preview || path.basename(session.sourceFile, '.jsonl');
+  return '';
+}
+
+function titleFromUserEvents(events, preferLast = false) {
+  const ordered = preferLast ? [...events].reverse() : events;
+  for (const event of ordered) {
+    const title = normalizeTitleCandidate(event.searchText || event.preview);
+    if (title) return title;
+  }
+  return '';
+}
+
+function inferSessionTitle(session) {
+  const userEvents = session.logicalEvents.filter((event) => event.layer === 'main' && event.kind === 'user_message');
+  if (session.parentSessionId) {
+    const taskPreview = titleFromUserEvents(userEvents, true) || path.basename(session.sourceFile, '.jsonl');
+    const label = session.agentNickname ? `Subagent ${session.agentNickname}` : 'Subagent session';
+    return truncate(`${label}: ${taskPreview}`, SUBAGENT_SESSION_TITLE_LIMIT);
+  }
+  return titleFromUserEvents(userEvents) || path.basename(session.sourceFile, '.jsonl');
 }
 
 function finalizeSession(session, sessionIndexEntry) {

@@ -62,6 +62,10 @@ Session identity is fixed from the transcript file UUID or the first `session_me
 
 会话身份固定来自转录文件 UUID 或第一条 `session_meta` 行。后续嵌入的 `session_meta` 行，例如 fork 出来的子 agent 转录中复制进来的父会话元数据，仍然作为可检查的协议/原始记录保留，但不会替换所属会话 id 或选择 key。
 
+Session title inference prefers explicit `session_index.jsonl` or thread-name metadata. When no explicit title exists, fallback inference scans main-layer user messages, skips protocol-shaped wrappers such as `<user_shell_command>`, cleans lightweight Markdown title syntax, and uses the first valid task line. Forked subagent sessions use the last valid user task line so copied parent context does not dominate the child title.
+
+会话标题推断优先使用显式的 `session_index.jsonl` 或 thread-name 元数据。当不存在显式标题时，回退推断会扫描主层用户消息，跳过 `<user_shell_command>` 等协议形态包装，清理轻量 Markdown 标题语法，并使用第一条有效任务行。fork 出来的子 agent 会话会使用最后一条有效用户任务行，避免复制进来的父上下文主导子会话标题。
+
 ## Data model / schema / 数据模型 / 模式
 
 ### Raw event / 原始事件

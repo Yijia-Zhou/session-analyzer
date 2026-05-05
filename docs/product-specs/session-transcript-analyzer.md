@@ -85,6 +85,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - [ ] Folding strategy changes clear stale manual fold overrides for the selected session. / 折叠策略变更会清除当前选中 session 的过时手动折叠覆盖。
 - [ ] Forked subagent session files remain separately selectable even when they contain embedded parent session metadata. / 即使 fork 出来的子 agent 会话文件中包含嵌入的父会话元数据，它们也必须保持可单独选择。
 - [ ] Repository filtering is case-insensitive on Windows paths. / 在 Windows 路径上，仓库筛选不区分大小写。
+- [ ] Inferred fallback titles come from real user task text rather than protocol wrappers or malformed transcript scaffolding. / 推断出的回退标题来自真实用户任务文本，而不是协议包装或格式异常的转录脚手架。
 
 ## Edge cases / 边界情况
 
