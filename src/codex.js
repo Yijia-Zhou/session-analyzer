@@ -1530,21 +1530,48 @@ function buildToolLogicalEvent(callId, group) {
   });
 }
 
-function buildWebSearchEvent(raw, next) {
-  const refs = [rawRef(raw)];
-  const channels = [raw.recordType];
-  let preview = raw.preview;
-  let searchText = raw.searchText;
-  if (next && next.recordType === 'event_msg' && next.payloadType === 'web_search_end') {
-    refs.push(rawRef(next));
-    channels.push(next.recordType);
-    preview = next.preview || raw.preview;
-    searchText = `${raw.searchText}\n${next.searchText}`.trim();
-  }
+function isWebSearchCall(raw) {
+  return raw?.recordType === 'response_item' && raw.payloadType === 'web_search_call';
+}
+
+function isWebSearchEnd(raw) {
+  return raw?.recordType === 'event_msg' && raw.payloadType === 'web_search_end';
+}
+
+function webSearchActionKey(raw) {
+  const payload = raw?.parsed?.payload || {};
+  const action = payload.action && typeof payload.action === 'object' ? payload.action : {};
+  const type = action.type || '';
+  const query = action.query || (type === 'search' ? payload.query : '');
+  const url = action.url || payload.url || (type === 'open_page' ? payload.query : '');
+  const pattern = action.pattern || payload.pattern || '';
+  return [
+    type,
+    query,
+    url,
+    pattern,
+  ].filter(Boolean).join('\n');
+}
+
+function webSearchRowsMatch(searchEnd, searchCall) {
+  if (!isWebSearchEnd(searchEnd) || !isWebSearchCall(searchCall)) return false;
+  const endKey = webSearchActionKey(searchEnd);
+  const callKey = webSearchActionKey(searchCall);
+  if (endKey && callKey) return endKey === callKey;
+  if (!searchEnd.timestamp || !searchCall.timestamp) return true;
+  const deltaMs = Math.abs(Date.parse(searchEnd.timestamp) - Date.parse(searchCall.timestamp));
+  return Number.isFinite(deltaMs) && deltaMs <= 1000;
+}
+
+function buildWebSearchEvent(searchCall, searchEnd) {
+  const raws = [searchEnd, searchCall].filter(Boolean).sort((a, b) => a.line - b.line);
+  const first = raws[0];
+  const preview = searchEnd?.preview || searchCall?.preview || 'web_search';
+  const searchText = uniqueNonEmpty(raws.map((raw) => raw.searchText)).join('\n');
   return createLogicalEvent({
-    id: `${raw.sessionId}:logical:web_search:${raw.line}`,
-    timestamp: raw.timestamp,
-    turnId: raw.turnId,
+    id: `${first.sessionId}:logical:web_search:${first.line}`,
+    timestamp: first.timestamp,
+    turnId: searchEnd?.turnId || searchCall?.turnId || '',
     kind: 'web_search',
     subtype: 'web_search',
     layer: 'main',
@@ -1553,10 +1580,10 @@ function buildWebSearchEvent(raw, next) {
     preview,
     searchText,
     severity: 'normal',
-    status: raw.status || next?.status || 'completed',
+    status: searchEnd?.status || searchCall?.status || 'completed',
     toolName: 'web_search',
-    rawRefs: refs,
-    channels,
+    rawRefs: raws.map(rawRef),
+    channels: raws.map((raw) => raw.recordType),
   });
 }
 
@@ -1787,36 +1814,27 @@ function buildLogicalEvents(rawEvents) {
       continue;
     }
 
-    if (raw.recordType === 'response_item' && raw.payloadType === 'web_search_call') {
-      const event = buildWebSearchEvent(raw, next && next.payloadType === 'web_search_end' ? next : null);
+    if (isWebSearchCall(raw)) {
+      const pairedEnd = webSearchRowsMatch(next, raw) ? next : null;
+      const event = buildWebSearchEvent(raw, pairedEnd);
       logicalEvents.push(event);
       consumed.add(raw.rawId);
-      if (next && next.payloadType === 'web_search_end') consumed.add(next.rawId);
+      if (pairedEnd) consumed.add(pairedEnd.rawId);
       continue;
     }
 
-    if (raw.recordType === 'event_msg' && raw.payloadType === 'web_search_end') {
-      if (prev && prev.recordType === 'response_item' && prev.payloadType === 'web_search_call') {
+    if (isWebSearchEnd(raw)) {
+      if (webSearchRowsMatch(raw, prev)) {
         consumed.add(raw.rawId);
         continue;
       }
-      logicalEvents.push(createLogicalEvent({
-        id: `${raw.sessionId}:logical:web_search:${raw.line}`,
-        timestamp: raw.timestamp,
-        turnId: raw.turnId,
-        kind: 'web_search',
-        subtype: 'web_search',
-        layer: 'main',
-        role: 'assistant',
-        label: 'Web search',
-        preview: raw.preview,
-        searchText: raw.searchText,
-        severity: 'normal',
-        status: raw.status || 'completed',
-        toolName: 'web_search',
-        rawRefs: [rawRef(raw)],
-        channels: [raw.recordType],
-      }));
+      if (webSearchRowsMatch(raw, next)) {
+        logicalEvents.push(buildWebSearchEvent(next, raw));
+        consumed.add(raw.rawId);
+        consumed.add(next.rawId);
+        continue;
+      }
+      logicalEvents.push(buildWebSearchEvent(null, raw));
       consumed.add(raw.rawId);
       continue;
     }

@@ -236,6 +236,70 @@ test('tool logical events merge new and old format patch records and search stil
   ]);
 });
 
+test('web search logical events merge end/call rows and expose structured detail', async () => {
+  const index = await buildFixtureIndex();
+  const session = index.sessions[0];
+
+  const webTimeline = getTimeline(index, session.id, {
+    offset: 0,
+    limit: 100,
+    q: '',
+    kind: 'web_search',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(webTimeline.total, 3);
+
+  const completedSearch = webTimeline.events.find((event) => event.rawRefs.length === 2);
+  assert.ok(completedSearch);
+  assert.equal(completedSearch.label, 'Web search');
+  assert.equal(completedSearch.status, 'completed');
+  assert.equal(completedSearch.toolName, 'web_search');
+  assert.deepEqual(completedSearch.channels, ['event_msg', 'response_item']);
+
+  const openPageSearch = webTimeline.events.find((event) => event.preview.includes('https://example.test/docs'));
+  assert.ok(openPageSearch);
+  assert.deepEqual(openPageSearch.channels, ['event_msg', 'response_item']);
+  assert.deepEqual(openPageSearch.rawRefs.map((ref) => ref.line), [16, 17]);
+
+  const orphanSearch = webTimeline.events.find((event) => event.rawRefs.length === 1 && event.preview.includes('orphan web search end fixture'));
+  assert.ok(orphanSearch);
+  assert.equal(orphanSearch.status, 'completed');
+  assert.deepEqual(orphanSearch.channels, ['event_msg']);
+
+  const searchedTimeline = getTimeline(index, session.id, {
+    offset: 0,
+    limit: 100,
+    q: 'detail extraction',
+    kind: 'web_search',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(searchedTimeline.total, 1);
+  assert.equal(searchedTimeline.events[0].id, completedSearch.id);
+  assert.equal(searchedTimeline.events[0].hasSearchHit, true);
+  assert.match(searchedTimeline.events[0].snippet, /detail extraction/);
+
+  const detail = buildEventDetail(session, completedSearch.id, 'main');
+  const actionSection = detail.sections.find((section) => section.title === 'Search action');
+  assert.equal(actionSection.type, 'json');
+  assert.equal(actionSection.value.query, 'normalization web search fixture');
+
+  const metadataSection = detail.sections.find((section) => section.title === 'Search metadata');
+  assert.deepEqual(metadataSection.entries, [
+    { key: 'status', value: 'completed' },
+  ]);
+
+  const payloadSection = detail.sections.find((section) => section.title === 'Search payload');
+  assert.equal(payloadSection.type, 'json');
+  assert.equal(payloadSection.value.query, 'normalization web search fixture');
+  assert.equal(payloadSection.value.results[0].snippet, 'web search detail extraction result');
+});
+
 test('buildEventDetail extracts structured sections for messages, tools, protocol, empty reasoning, and raw records', async () => {
   const index = await buildFixtureIndex();
   const session = index.sessions[0];

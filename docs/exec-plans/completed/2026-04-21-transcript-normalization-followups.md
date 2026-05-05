@@ -2,7 +2,7 @@
 
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
-- Status: active / 状态：活跃
+- Status: completed / 状态：已完成
 - Last updated: 2026-05-05 / 最近更新：2026-05-05
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
@@ -146,6 +146,8 @@ Stabilize the new logical-event timeline so the main/protocol/raw layers are eas
 
 - 2026-05-05: Fixed forked subagent session identity so embedded parent `session_meta` rows no longer overwrite the child session id; added subagent metadata in session summaries and fixture coverage for separate selection. / 2026-05-05：修复 fork 子 agent 会话身份，使嵌入的父会话 `session_meta` 行不再覆盖子会话 id；在会话摘要中加入子 agent 元数据，并添加可单独选择的 fixture 覆盖。
 - 2026-05-05: Tightened fallback session title inference to skip protocol-shaped user wrappers, clean Markdown heading syntax, and use the first real task line; added fixture coverage for event_msg-only `<user_shell_command>` wrappers. / 2026-05-05：收紧回退会话标题推断，跳过协议形态的用户包装，清理 Markdown 标题语法，并使用第一条真实任务行；为仅通过 event_msg 出现的 `<user_shell_command>` 包装添加 fixture 覆盖。
+- 2026-05-05: Added web search fixture coverage for paired `web_search_call`/`web_search_end` records and end-only historical rows; detail tests now assert structured search action, metadata, and payload rendering. / 2026-05-05：为成对的 `web_search_call`/`web_search_end` 记录和只有结束行的历史形态添加 Web 搜索 fixture 覆盖；详情测试现在断言结构化搜索动作、元数据和载荷渲染。
+- 2026-05-05: Aligned web search normalization with real transcript ordering where `web_search_end` precedes the completed `web_search_call` response item; adjacent search and open-page rows now merge into one logical event with both raw refs. / 2026-05-05：将 Web 搜索归一化对齐到真实转录顺序，即 `web_search_end` 先于已完成的 `web_search_call` 响应项；相邻的搜索和打开页面记录现在会合并为一个带有两个原始引用的逻辑事件。
 
 ## Decision log / 决策日志
 
@@ -153,6 +155,6 @@ Stabilize the new logical-event timeline so the main/protocol/raw layers are eas
 
 ## Completion summary / 完成摘要
 
-Pending.
+Completed. The follow-up work stabilized the logical-event timeline across protocol labeling, fallback session titles, historical transcript compatibility, structured expanded-card detail rendering, raw semantic-row details, forked subagent identity, old and new patch formats, and real web search transcript ordering. The plan leaves raw JSONL drill-down intact while keeping main/protocol/raw layer behavior covered by focused fixtures and validation.
 
-待完成。
+已完成。该后续工作稳定了逻辑事件时间线，覆盖协议标签、回退会话标题、历史转录兼容性、结构化展开卡片详情渲染、原始语义行详情、fork 子 agent 身份、新旧补丁格式以及真实 Web 搜索转录顺序。计划在保留原始 JSONL 下钻能力的同时，通过有针对性的 fixture 和验证覆盖了 main/protocol/raw 三层行为。

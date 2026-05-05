@@ -3,11 +3,11 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-05-04 / 最近更新：2026-05-04
+- Last updated: 2026-05-05 / 最近更新：2026-05-05
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
-  - `docs/exec-plans/active/2026-04-21-transcript-normalization-followups.md`
+  - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
 
 ## Context / 背景
 

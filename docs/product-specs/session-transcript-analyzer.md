@@ -6,7 +6,7 @@
 - Last updated: 2026-05-05 / 最近更新：2026-05-05
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
-  - `docs/exec-plans/active/2026-04-21-transcript-normalization-followups.md`
+  - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
   - `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md`
 
 ## Summary / 摘要

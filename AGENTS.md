@@ -29,7 +29,7 @@ When changing product behavior or repository structure:
 
 - Start: `$process = Start-Process -FilePath 'C:\Program Files\nodejs\node.exe' -ArgumentList @('server.js', '--repo', 'G:\vibe\session-analyzer') -WorkingDirectory 'G:\vibe\session-analyzer' -WindowStyle Hidden -PassThru; $process.Id`
 - Verify: `Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:17890/' -TimeoutSec 10`
-- Use real `node.exe`; the `node` shim/background jobs exited or were cleaned up here.
+- In Codex sandboxed tool sessions, background `Start-Process` server launches may be cleaned up when the command finishes. For a persistent browser-verification server, start this command outside the sandbox / with escalated execution.
 
 ## Current anchors
 

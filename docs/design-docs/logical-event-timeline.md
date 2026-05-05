@@ -7,7 +7,7 @@
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
-  - `docs/exec-plans/active/2026-04-21-transcript-normalization-followups.md`
+  - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
 
 ## Context / 背景
 
@@ -57,6 +57,10 @@ The first version of this repository rendered raw records directly, which caused
 3. Group by `call_id` first for tool operations. / 对工具操作先按 `call_id` 分组。
 4. Walk the remaining rows in order and fold them into logical messages, reasoning entries, protocol events, lifecycle events, or plan artifacts. / 按顺序遍历剩余行，并折叠为逻辑消息、推理条目、协议事件、生命周期事件或计划产物。
 5. Expose logical events to the main and protocol layers; expose raw rows separately. / 向主层和协议层暴露逻辑事件；单独暴露原始行。
+
+Web search records are normalized as adjacent mirrored rows rather than normal `call_id` tool groups. Real transcripts may write `event_msg.web_search_end` before the completed `response_item.web_search_call` snapshot, often with matching action metadata and identical or near-identical timestamps. The logical builder merges adjacent search/open-page rows by canonical action target so the main timeline shows one web search event with both raw refs; call-only and end-only historical rows remain visible as single logical events.
+
+Web 搜索记录会按相邻镜像行归一化，而不是按普通 `call_id` 工具分组处理。真实转录可能先写入 `event_msg.web_search_end`，再写入已完成的 `response_item.web_search_call` 快照，二者通常带有匹配的 action 元数据，并且时间戳相同或非常接近。逻辑构建器会按规范化后的 action 目标合并相邻的搜索/打开页面记录，使主时间线只显示一个带有两个原始引用的 Web 搜索事件；只有 call 或只有 end 的历史行仍保留为单独逻辑事件。
 
 Session identity is fixed from the transcript file UUID or the first `session_meta` row. Later embedded `session_meta` rows, such as parent metadata copied into a forked subagent transcript, remain inspectable protocol/raw records but do not replace the owning session id or selection key.
 

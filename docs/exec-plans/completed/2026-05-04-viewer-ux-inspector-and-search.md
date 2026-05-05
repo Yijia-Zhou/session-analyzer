@@ -9,8 +9,8 @@
 - Related design: / 相关设计：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/documentation-system.md`
-- Related active plan: / 相关活跃计划：
-  - `docs/exec-plans/active/2026-04-21-transcript-normalization-followups.md`
+- Related completed plan: / 相关已完成计划：
+  - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
 
 ## Objective / 目标
 

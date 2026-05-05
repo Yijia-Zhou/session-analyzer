@@ -21,8 +21,8 @@ This repository uses three formal document classes plus one idea parking area:
 - `product-specs/session-transcript-analyzer.md` / 会话转录分析器产品规格
 - `design-docs/logical-event-timeline.md` / 逻辑事件时间线设计文档
 - `design-docs/documentation-system.md` / 文档系统设计文档
-- `exec-plans/active/2026-04-21-transcript-normalization-followups.md` / 转录归一化后续工作的活跃执行计划
 - `exec-plans/completed/2026-04-20-session-analyzer-v1.md` / 会话分析器 V1 已完成执行计划
+- `exec-plans/completed/2026-04-21-transcript-normalization-followups.md` / 转录归一化后续工作的已完成执行计划
 - `exec-plans/tech-debt-tracker.md` / 技术债跟踪器
 - `backlog/README.md` / 远期想法暂存区规则
 - `backlog/long-horizon-ideas.md` / 远期想法暂存清单
