@@ -36,8 +36,8 @@ When changing product behavior or repository structure:
 - Product spec: `docs/product-specs/session-transcript-analyzer.md`
 - Design doc: `docs/design-docs/logical-event-timeline.md`
 - Documentation system guide: `docs/design-docs/documentation-system.md`
-- Active plans:
-  - `docs/exec-plans/active/2026-04-21-transcript-normalization-followups.md`
+- Active plans: none
 - Completed plans:
   - `docs/exec-plans/completed/2026-04-20-session-analyzer-v1.md`
+  - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
   - `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md`
