@@ -207,12 +207,92 @@ function toKvEntries(input, preferredKeys = []) {
   return entries;
 }
 
+function isFiniteNumberValue(value) {
+  return value !== '' && Number.isFinite(Number(value));
+}
+
+function textLineCount(text) {
+  const source = String(text || '');
+  if (!source) return 0;
+  const normalized = source.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  return normalized.endsWith('\n') ? normalized.split('\n').length - 1 : normalized.split('\n').length;
+}
+
+function lineStatsFromUnifiedDiff(text) {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) additions += 1;
+    else if (line.startsWith('-')) deletions += 1;
+  }
+  return { additions, deletions };
+}
+
+function lineStatsFromPatchChange(stats) {
+  if (!stats || typeof stats !== 'object') return null;
+  if (isFiniteNumberValue(stats.additions) || isFiniteNumberValue(stats.deletions)) {
+    return {
+      additions: isFiniteNumberValue(stats.additions) ? Number(stats.additions) : 0,
+      deletions: isFiniteNumberValue(stats.deletions) ? Number(stats.deletions) : 0,
+    };
+  }
+  if (typeof stats.unified_diff === 'string') return lineStatsFromUnifiedDiff(stats.unified_diff);
+  if (stats.type === 'add' && typeof stats.content === 'string') {
+    return { additions: textLineCount(stats.content), deletions: 0 };
+  }
+  if (stats.type === 'delete' && typeof stats.content === 'string') {
+    return { additions: 0, deletions: textLineCount(stats.content) };
+  }
+  return null;
+}
+
+function lineStatsLabel(stats) {
+  return `+${Number(stats.additions || 0)} / -${Number(stats.deletions || 0)}`;
+}
+
+function patchInputStatsLabel(stats) {
+  if (stats.additions || stats.deletions) return lineStatsLabel(stats);
+  if (stats.action === 'Add') return 'added';
+  if (stats.action === 'Delete') return 'deleted';
+  return 'updated';
+}
+
 function diffStatsEntries(changes) {
   if (!changes || typeof changes !== 'object') return [];
-  return Object.entries(changes).map(([file, stats]) => ({
-    key: file,
-    value: `+${Number(stats?.additions || 0)} / -${Number(stats?.deletions || 0)}`,
-  }));
+  return Object.entries(changes).map(([file, stats]) => {
+    const lineStats = lineStatsFromPatchChange(stats);
+    return {
+      key: file,
+      value: lineStats ? lineStatsLabel(lineStats) : String(stats?.type || 'updated'),
+    };
+  });
+}
+
+function diffStatsEntriesFromPatchInput(input) {
+  const entries = [];
+  let current = null;
+
+  const flush = () => {
+    if (!current) return;
+    entries.push({ key: current.file, value: patchInputStatsLabel(current) });
+    current = null;
+  };
+
+  for (const line of String(input || '').split(/\r?\n/)) {
+    const fileMatch = line.match(/^\*\*\* (Add|Update|Delete) File: (.+)$/);
+    if (fileMatch) {
+      flush();
+      current = { file: fileMatch[2], action: fileMatch[1], additions: 0, deletions: 0 };
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith('*** ')) continue;
+    if (line.startsWith('+') && !line.startsWith('+++')) current.additions += 1;
+    else if (line.startsWith('-') && !line.startsWith('---')) current.deletions += 1;
+  }
+  flush();
+  return entries;
 }
 
 function maybePushKvSection(sections, title, entries) {
@@ -600,6 +680,28 @@ function touchFilesFromOutputText(text) {
   return [...new Set(files)];
 }
 
+function patchOutputText(envelope, rawOutput) {
+  return String(envelope && Object.hasOwn(envelope, 'output') ? envelope.output : rawOutput || '').trim();
+}
+
+function patchOutputHasFailure(text) {
+  return /(?:apply_patch verification failed|failed to find expected lines|invalid patch|error:)/i.test(String(text || ''));
+}
+
+function patchOutputHasSuccess(text) {
+  return /(?:success\. updated the following files|^done\b|patch applied)/i.test(String(text || '').trim());
+}
+
+function inferPatchSuccess(patchEnd, customOutputObj, rawOutput) {
+  if (patchEnd) return Boolean(patchEnd.parsed.payload.success);
+  const exitCode = customOutputObj?.metadata?.exit_code;
+  if (isFiniteNumberValue(exitCode)) return Number(exitCode) === 0;
+  const outputText = patchOutputText(customOutputObj, rawOutput);
+  if (patchOutputHasFailure(outputText)) return false;
+  if (patchOutputHasSuccess(outputText)) return true;
+  return true;
+}
+
 function humanizeProtocolSubtype(subtype) {
   const text = String(subtype || '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (!text) return 'Protocol event';
@@ -870,8 +972,10 @@ function extractPatchSections(raws, event) {
   const patchText = customCall?.output || '';
   if (patchText.trim()) sections.push({ type: 'diff', title: 'Patch', text: patchText.trim() });
 
-  maybePushKvSection(sections, 'Patch files', diffStatsEntries(patchEnd?.parsed?.payload?.changes) || []);
-  if (!patchEnd?.parsed?.payload?.changes) {
+  const patchFileEntries = diffStatsEntries(patchEnd?.parsed?.payload?.changes);
+  const fallbackPatchFileEntries = patchFileEntries.length ? [] : diffStatsEntriesFromPatchInput(patchText);
+  maybePushKvSection(sections, 'Patch files', patchFileEntries.length ? patchFileEntries : fallbackPatchFileEntries);
+  if (!patchFileEntries.length && !fallbackPatchFileEntries.length) {
     maybePushKvSection(sections, 'Touched files', event.touchedFiles.map((file) => ({ key: file, value: 'updated' })));
   }
 
@@ -1093,7 +1197,7 @@ function rawToolSections(raw, relatedEvent) {
   } else if (raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output' && relatedEvent?.kind === 'patch') {
     const envelope = toolOutputEnvelope(raw);
     const output = firstNonEmpty(envelope?.output, raw.output);
-    if (output) sections.push(makeNoticeSection('Patch status', stringifyValue(output), Number(envelope?.metadata?.exit_code || 0) === 0 ? 'info' : 'error'));
+    if (output) sections.push(makeNoticeSection('Patch status', stringifyValue(output), inferPatchSuccess(null, envelope, raw.output) ? 'info' : 'error'));
     maybePushKvSection(sections, 'Patch metadata', [
       { key: 'exitCode', value: envelope?.metadata?.exit_code == null ? '' : String(envelope.metadata.exit_code) },
       { key: 'durationMs', value: envelope?.metadata?.duration_seconds == null ? '' : String(Math.round(Number(envelope.metadata.duration_seconds) * 1000)) },
@@ -1352,11 +1456,16 @@ function buildToolLogicalEvent(callId, group) {
   } else if (toolName === 'apply_patch' || patchEnd) {
     kind = 'patch';
     touchedFiles = patchEnd?.touchedFiles?.length ? patchEnd.touchedFiles : patchFilesFromPatchInput(customCall?.output || '');
-    const patchSuccess = patchEnd ? Boolean(patchEnd.parsed.payload.success) : Number(customOutputObj?.metadata?.exit_code || 0) === 0;
+    const patchSuccess = inferPatchSuccess(patchEnd, customOutputObj, customOutput?.output);
     status = patchSuccess ? 'success' : 'failed';
     severity = patchSuccess ? 'normal' : 'error';
     label = patchSuccess ? 'Patch applied' : 'Patch failed';
     preview = truncate(touchedFiles.join(', ') || customOutputObj?.output || customCall?.output || 'apply_patch');
+    if (customOutputObj?.metadata && isFiniteNumberValue(customOutputObj.metadata.exit_code)) {
+      outputStats.exitCode = Number(customOutputObj.metadata.exit_code);
+    } else if (!patchSuccess) {
+      outputStats.exitCode = 1;
+    }
     if (customOutputObj?.metadata?.duration_seconds) {
       outputStats.durationMs = Math.round(Number(customOutputObj.metadata.duration_seconds) * 1000);
     }

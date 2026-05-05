@@ -29,7 +29,7 @@ test('buildIndex deduplicates mirrored messages and keeps protocol separately', 
   assert.equal(session.counts.messages, 2);
   assert.equal(session.counts.reasoning, 1);
   assert.equal(session.counts.failedCommands, 1);
-  assert.equal(session.counts.patches, 2);
+  assert.equal(session.counts.patches, 4);
   assert.equal(session.counts.compactions, 1);
   assert.equal(session.counts.planArtifacts, 1);
   assert.ok(session.counts.protocol >= 3);
@@ -101,6 +101,7 @@ test('timeline protocol layer exposes injected records and raw layer keeps all r
 
 test('tool logical events merge new and old format patch records and search still works', async () => {
   const index = await buildFixtureIndex();
+  const session = index.sessions[0];
 
   const searched = filterSessions(index, { q: 'alpha', sort: 'updated-desc', layer: 'main' });
   assert.equal(searched.total, 1);
@@ -117,6 +118,11 @@ test('tool logical events merge new and old format patch records and search stil
   });
   assert.equal(parserTimeline.total, 1);
   assert.equal(parserTimeline.events[0].kind, 'patch');
+  assert.equal(parserTimeline.events[0].status, 'success');
+  const parserDetail = buildEventDetail(session, parserTimeline.events[0].id, 'main');
+  assert.deepEqual(parserDetail.sections.find((section) => section.title === 'Patch files').entries, [
+    { key: 'G:\\vibe\\term-agent\\src\\parser.js', value: '+1 / -1' },
+  ]);
 
   const legacyTimeline = getTimeline(index, index.sessions[0].id, {
     offset: 0,
@@ -130,6 +136,48 @@ test('tool logical events merge new and old format patch records and search stil
   });
   assert.equal(legacyTimeline.total, 1);
   assert.equal(legacyTimeline.events[0].kind, 'patch');
+  assert.equal(legacyTimeline.events[0].status, 'success');
+  const legacyDetail = buildEventDetail(session, legacyTimeline.events[0].id, 'main');
+  assert.deepEqual(legacyDetail.sections.find((section) => section.title === 'Patch files').entries, [
+    { key: 'src/legacy.js', value: '+1 / -1' },
+  ]);
+
+  const statsTimeline = getTimeline(index, index.sessions[0].id, {
+    offset: 0,
+    limit: 100,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: 'stats.js',
+    layer: 'main',
+  });
+  assert.equal(statsTimeline.total, 1);
+  assert.equal(statsTimeline.events[0].kind, 'patch');
+  assert.equal(statsTimeline.events[0].status, 'success');
+  const statsDetail = buildEventDetail(session, statsTimeline.events[0].id, 'main');
+  assert.deepEqual(statsDetail.sections.find((section) => section.title === 'Patch files').entries, [
+    { key: 'G:\\vibe\\term-agent\\src\\stats.js', value: '+2 / -1' },
+  ]);
+
+  const failedTimeline = getTimeline(index, index.sessions[0].id, {
+    offset: 0,
+    limit: 100,
+    q: '',
+    kind: '',
+    status: 'failed',
+    tool: '',
+    file: 'failed.js',
+    layer: 'main',
+  });
+  assert.equal(failedTimeline.total, 1);
+  assert.equal(failedTimeline.events[0].kind, 'patch');
+  assert.equal(failedTimeline.events[0].label, 'Patch failed');
+  assert.equal(failedTimeline.events[0].status, 'failed');
+  const failedDetail = buildEventDetail(session, failedTimeline.events[0].id, 'main');
+  assert.deepEqual(failedDetail.sections.find((section) => section.title === 'Patch files').entries, [
+    { key: 'src/failed.js', value: '+1 / -1' },
+  ]);
 });
 
 test('buildEventDetail extracts structured sections for messages, tools, protocol, empty reasoning, and raw records', async () => {
