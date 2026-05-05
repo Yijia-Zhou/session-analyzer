@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-05-04 / 最近更新：2026-05-04
+- Last updated: 2026-05-05 / 最近更新：2026-05-05
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -57,6 +57,10 @@ The first version of this repository rendered raw records directly, which caused
 3. Group by `call_id` first for tool operations. / 对工具操作先按 `call_id` 分组。
 4. Walk the remaining rows in order and fold them into logical messages, reasoning entries, protocol events, lifecycle events, or plan artifacts. / 按顺序遍历剩余行，并折叠为逻辑消息、推理条目、协议事件、生命周期事件或计划产物。
 5. Expose logical events to the main and protocol layers; expose raw rows separately. / 向主层和协议层暴露逻辑事件；单独暴露原始行。
+
+Session identity is fixed from the transcript file UUID or the first `session_meta` row. Later embedded `session_meta` rows, such as parent metadata copied into a forked subagent transcript, remain inspectable protocol/raw records but do not replace the owning session id or selection key.
+
+会话身份固定来自转录文件 UUID 或第一条 `session_meta` 行。后续嵌入的 `session_meta` 行，例如 fork 出来的子 agent 转录中复制进来的父会话元数据，仍然作为可检查的协议/原始记录保留，但不会替换所属会话 id 或选择 key。
 
 ## Data model / schema / 数据模型 / 模式
 

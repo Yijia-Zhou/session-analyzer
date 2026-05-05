@@ -144,6 +144,7 @@ Stabilize the new logical-event timeline so the main/protocol/raw layers are eas
 - 2026-05-04: Aligned raw semantic-row detail rendering with existing protocol, lifecycle, conversation, command, and patch structured sections, reducing generic `Message`/`Payload` fallback use when a specific renderer exists. / 2026-05-04：将原始语义行详情渲染与现有协议、生命周期、对话、命令和补丁结构化区段对齐，在存在专用渲染器时减少通用 `Message`/`Payload` 回退使用。
 - 2026-05-05: Added compatible patch change-stat parsing for legacy `additions`/`deletions`, newer `unified_diff`/`content` change records, and old apply_patch output-only transcripts; fixed failed verification output being labeled as `Patch applied`. / 2026-05-05：为旧版 `additions`/`deletions`、新版 `unified_diff`/`content` 变更记录，以及只有 apply_patch 输出的旧转录添加兼容的补丁改动统计解析；修正校验失败输出被标记为 `Patch applied` 的问题。
 
+- 2026-05-05: Fixed forked subagent session identity so embedded parent `session_meta` rows no longer overwrite the child session id; added subagent metadata in session summaries and fixture coverage for separate selection. / 2026-05-05：修复 fork 子 agent 会话身份，使嵌入的父会话 `session_meta` 行不再覆盖子会话 id；在会话摘要中加入子 agent 元数据，并添加可单独选择的 fixture 覆盖。
 ## Decision log / 决策日志
 
 - 2026-04-21: Kept active follow-up work in a separate plan instead of rewriting the completed baseline plan. / 2026-04-21：将活跃后续工作保留在单独计划中，而不是重写已完成的基线计划。

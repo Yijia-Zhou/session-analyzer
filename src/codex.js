@@ -407,6 +407,18 @@ function readSessionIndexEntry(line) {
   }
 }
 
+function subagentSpawnSource(payload) {
+  return payload?.source?.subagent?.thread_spawn || null;
+}
+
+function parentSessionIdFromMeta(payload) {
+  return payload?.forked_from_id || subagentSpawnSource(payload)?.parent_thread_id || '';
+}
+
+function agentNicknameFromMeta(payload) {
+  return payload?.agent_nickname || subagentSpawnSource(payload)?.agent_nickname || '';
+}
+
 async function collectJsonlFiles(root) {
   const out = [];
   async function walk(dir) {
@@ -462,6 +474,8 @@ function makeEmptySession(filePath, relFile, stat) {
     startedAt: '',
     updatedAt: '',
     matchesRepo: false,
+    parentSessionId: '',
+    agentNickname: '',
     rawEvents: [],
     logicalEvents: [],
     searchText: '',
@@ -1927,6 +1941,17 @@ function updateAnalysisDraft(session, event) {
   }
 }
 
+function inferSessionTitle(session) {
+  if (session.parentSessionId) {
+    const userEvents = session.logicalEvents.filter((event) => event.kind === 'user_message' && event.preview);
+    const taskPreview = userEvents.at(-1)?.preview || path.basename(session.sourceFile, '.jsonl');
+    const label = session.agentNickname ? `Subagent ${session.agentNickname}` : 'Subagent session';
+    return `${label}: ${taskPreview}`;
+  }
+  const firstUserEvent = session.logicalEvents.find((event) => event.kind === 'user_message' && event.preview);
+  return firstUserEvent?.preview || path.basename(session.sourceFile, '.jsonl');
+}
+
 function finalizeSession(session, sessionIndexEntry) {
   session.counts.turns = session._turnIds.size;
   if (sessionIndexEntry?.title) session.title = sessionIndexEntry.title;
@@ -1934,8 +1959,7 @@ function finalizeSession(session, sessionIndexEntry) {
     session.updatedAt = sessionIndexEntry.updatedAt;
   }
   if (!session.title) {
-    const firstUserEvent = session.logicalEvents.find((event) => event.kind === 'user_message' && event.preview);
-    session.title = firstUserEvent?.preview || path.basename(session.sourceFile, '.jsonl');
+    session.title = inferSessionTitle(session);
   }
 
   session.searchText = [
@@ -1966,6 +1990,7 @@ function finalizeSession(session, sessionIndexEntry) {
 async function parseSessionFile(filePath, relFile, repoRoot) {
   const stat = await fsp.stat(filePath);
   const session = makeEmptySession(filePath, relFile, stat);
+  let primarySessionMetaSeen = false;
   session._turnIds = new Set();
   session._analysisDraft = {
     toolUsage: new Map(),
@@ -1987,13 +2012,18 @@ async function parseSessionFile(filePath, relFile, repoRoot) {
     if (!record) continue;
 
     if (record.type === 'session_meta' && record.payload) {
-      if (record.payload.id) session.id = record.payload.id;
+      if (!primarySessionMetaSeen) {
+        primarySessionMetaSeen = true;
+        if (record.payload.id) session.id = record.payload.id;
+        session.parentSessionId = parentSessionIdFromMeta(record.payload);
+        session.agentNickname = agentNicknameFromMeta(record.payload);
+      }
       if (record.payload.cwd) {
         session.cwdSet.add(record.payload.cwd);
         if (isPathInsideOrSame(record.payload.cwd, repoRoot)) session.matchesRepo = true;
       }
     }
-    if (record.type === 'event_msg' && record.payload?.type === 'thread_name_updated' && record.payload.thread_name) {
+    if (!session.parentSessionId && record.type === 'event_msg' && record.payload?.type === 'thread_name_updated' && record.payload.thread_name) {
       session.title = record.payload.thread_name;
     }
     updateTimeRange(session, record.timestamp);
@@ -2080,6 +2110,8 @@ function sessionSummary(session) {
     bytes: session.bytes,
     lineCount: session.lineCount,
     cwdSet: [...session.cwdSet],
+    parentSessionId: session.parentSessionId,
+    agentNickname: session.agentNickname,
     startedAt: session.startedAt,
     updatedAt: session.updatedAt,
     counts: session.counts,

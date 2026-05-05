@@ -20,8 +20,8 @@ test('buildIndex deduplicates mirrored messages and keeps protocol separately', 
   const index = await buildFixtureIndex();
   const session = index.sessions[0];
 
-  assert.equal(index.totals.fileCount, 2);
-  assert.equal(index.totals.sessionCount, 1);
+  assert.equal(index.totals.fileCount, 3);
+  assert.equal(index.totals.sessionCount, 2);
   assert.equal(session.id, '11111111-1111-1111-1111-111111111111');
   assert.equal(session.title, 'fixture repo session');
   assert.equal(session.counts.userMessages, 1);
@@ -33,6 +33,27 @@ test('buildIndex deduplicates mirrored messages and keeps protocol separately', 
   assert.equal(session.counts.compactions, 1);
   assert.equal(session.counts.planArtifacts, 1);
   assert.ok(session.counts.protocol >= 3);
+});
+
+test('buildIndex keeps forked subagent identity separate from embedded parent metadata', async () => {
+  const index = await buildFixtureIndex();
+  const parent = index.sessions.find((session) => session.id === '11111111-1111-1111-1111-111111111111');
+  const child = index.sessions.find((session) => session.id === '33333333-3333-3333-3333-333333333333');
+
+  assert.ok(parent);
+  assert.ok(child);
+  assert.equal(child.parentSessionId, parent.id);
+  assert.equal(child.agentNickname, 'Fixture');
+  assert.equal(child.title, 'Subagent Fixture: Check the fixture subagent path');
+  assert.equal(index.sessionsById.get(parent.id), parent);
+  assert.equal(index.sessionsById.get(child.id), child);
+  assert.ok(child.rawEvents.every((raw) => raw.sessionId === child.id));
+  assert.ok(child.logicalEvents.every((event) => event.id.startsWith(`${child.id}:logical:`)));
+
+  const summaries = filterSessions(index, { q: '', sort: 'updated-desc', layer: 'main' }).sessions;
+  const childSummary = summaries.find((session) => session.id === child.id);
+  assert.equal(childSummary.parentSessionId, parent.id);
+  assert.equal(childSummary.agentNickname, 'Fixture');
 });
 
 test('timeline main layer returns logical events without duplicate user or assistant messages', async () => {

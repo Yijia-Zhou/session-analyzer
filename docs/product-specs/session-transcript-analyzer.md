@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-05-04 / 最近更新：2026-05-04
+- Last updated: 2026-05-05 / 最近更新：2026-05-05
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/active/2026-04-21-transcript-normalization-followups.md`
@@ -83,6 +83,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - [ ] Selected-event quick navigation moves through matching events within the current session, layer, search query, and filters without losing raw drill-down access. / 选中事件快速跳转会在当前 session、事件层、搜索查询和筛选条件内的匹配事件之间移动，并且不会丢失原始下钻入口。
 - [ ] Narrow-screen browsing keeps session selection, timeline reading, event inspection, raw refs, and layer/profile controls reachable without forcing them into one long document flow. / 窄屏浏览会保持会话选择、时间线阅读、事件检查、原始引用和 layer/profile 控件可访问，而不会把它们挤进一个很长的文档流。
 - [ ] Folding strategy changes clear stale manual fold overrides for the selected session. / 折叠策略变更会清除当前选中 session 的过时手动折叠覆盖。
+- [ ] Forked subagent session files remain separately selectable even when they contain embedded parent session metadata. / 即使 fork 出来的子 agent 会话文件中包含嵌入的父会话元数据，它们也必须保持可单独选择。
 - [ ] Repository filtering is case-insensitive on Windows paths. / 在 Windows 路径上，仓库筛选不区分大小写。
 
 ## Edge cases / 边界情况
@@ -92,6 +93,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - Old transcripts that only expose tool call plus output without an `event_msg:*_end` row / 只暴露工具调用及输出、但没有 `event_msg:*_end` 行的旧转录
 - Empty reasoning records / 空推理记录
 - Sessions that contain user-side protocol wrappers such as `<turn_aborted>` or `<user_shell_command>` / 包含 `<turn_aborted>` 或 `<user_shell_command>` 等用户侧协议包装器的会话
+- Forked subagent sessions that start with child `session_meta` and then embed parent `session_meta` from forked context / fork 出来的子 agent 会话以子会话 `session_meta` 开头，随后又因 fork 上下文嵌入父会话 `session_meta`
 
 ## Metrics / 指标
 

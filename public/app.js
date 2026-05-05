@@ -173,6 +173,17 @@ function formatList(values, limit = 6) {
   return items.length > limit ? `${visible}, +${items.length - limit} more` : visible;
 }
 
+function shortId(value) {
+  return String(value || '').slice(0, 8);
+}
+
+function sessionRelationshipLabel(session) {
+  if (!session.parentSessionId) return '';
+  const nickname = session.agentNickname ? ` ${session.agentNickname}` : '';
+  const parent = shortId(session.parentSessionId);
+  return parent ? `Subagent${nickname} of ${parent}` : `Subagent${nickname}`;
+}
+
 function isUpdatePlanEvent(event) {
   return event.toolName === 'update_plan' || event.subtype === 'update_plan' || event.label === 'update_plan';
 }
@@ -325,10 +336,12 @@ async function loadSessions() {
 function renderSessions() {
   el.sessionList.innerHTML = state.sessions.map((session) => {
     const active = session.id === state.selectedSessionId ? ' active' : '';
+    const relationship = sessionRelationshipLabel(session);
     return `<button class="sessionItem${active}" type="button" data-session-id="${escapeHtml(session.id)}">
       <span class="sessionTitle">${escapeHtml(session.title)}</span>
       <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
       <span class="chips">
+        ${relationship ? `<span class="chip">${escapeHtml(relationship)}</span>` : ''}
         <span class="chip">${session.counts.messages} msgs</span>
         <span class="chip">${session.counts.toolCalls} tools</span>
         <span class="chip">${session.counts.failedCommands} failed</span>
@@ -347,8 +360,9 @@ async function selectSession(sessionId, options = {}) {
   resetDetailPane();
   const session = state.sessions.find((item) => item.id === sessionId);
   if (session) {
+    const relationship = sessionRelationshipLabel(session);
     el.sessionHeader.innerHTML = `<h2>${escapeHtml(session.title)}</h2>
-      <p>${escapeHtml(session.sourceFile)} | ${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</p>`;
+      <p>${relationship ? `${escapeHtml(relationship)} | ` : ''}${escapeHtml(session.sourceFile)} | ${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</p>`;
   }
   await Promise.all([loadAnalysis(sessionId), loadTimeline(false)]);
   if (options.mobileView) setMobileView(options.mobileView);
