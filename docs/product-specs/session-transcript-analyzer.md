@@ -57,7 +57,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 3. The user sees a session list with counts, sizes, timestamps, and failure indicators. / 用户看到包含计数、大小、时间戳和失败指示器的会话列表。
 4. Opening a session shows the main timeline by default. / 打开会话时默认显示主时间线。
 5. The user may switch between `Main timeline`, `Protocol layer`, and `Raw records`. / 用户可以在 `Main timeline`、`Protocol layer` 和 `Raw records` 之间切换。
-6. The user may search, filter by kind/status/file, and inspect grouped tool operations. / 用户可以搜索、按类型/状态/文件筛选，并检查分组后的工具操作。
+6. The user may search from the top search bar, use `file:`, `kind:`, `status:`, and `layer:` operators for structured narrowing, choose common analyzed-project files from suggestions, filter by kind/status controls, and inspect grouped tool operations. / 用户可以从顶部搜索栏搜索，使用 `file:`、`kind:`、`status:` 和 `layer:` 操作符进行结构化收窄，从候选中选择常见的被分析项目文件，通过类型/状态控件筛选，并检查分组后的工具操作。
 7. Expanding a timeline card replaces the preview with structured event detail inline, including markdown messages, command output, diffs, notices, and structured metadata. / 展开时间线卡片会以内联结构化事件详情替换预览，内容包括 Markdown 消息、命令输出、差异、通知和结构化元数据。
 8. Raw JSON fallback sections remain available from expanded cards but stay visually secondary outside the raw layer. / 原始 JSON 回退区段仍可从展开卡片访问，但在原始层之外保持视觉上的次要地位。
 9. Clicking a timeline event shows a selected-event inspector in the right-side panel with summary, metadata, source context, and structured detail. / 点击时间线事件会在右侧面板显示选中事件检查器，包含概要、元数据、来源上下文和结构化详情。
@@ -78,7 +78,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - [x] Expanded detail remains available for `main`, `protocol`, and `raw` layers without hiding unknown transcript shapes. / 展开详情在 `main`、`protocol` 和 `raw` 层都保持可用，并且不会隐藏未知转录形态。
 - [x] Raw records that map to known semantic events reuse the relevant structured detail sections, while keeping raw JSON available. / 映射到已知语义事件的原始记录会复用相关的结构化详情区段，同时保持原始 JSON 可用。
 - [x] Raw JSONL rows remain accessible for every logical event. / 每个逻辑事件都仍可访问原始 JSONL 行。
-- [x] Filtering by keyword, file, status, and event kind works across the selected layer. / 按关键词、文件、状态和事件类型筛选可在所选层中正常工作。
+- [x] Filtering by keyword, structured file operator, status, and event kind works across the selected layer. / 按关键词、结构化文件操作符、状态和事件类型筛选可在所选层中正常工作。
 - [x] Search and filter result counts stay visible while browsing a selected session. / 浏览选中 session 时，搜索和筛选结果数量保持可见。
 - [x] Selected-event quick navigation moves through matching events within the current session, layer, search query, and filters without losing raw drill-down access. / 选中事件快速跳转会在当前 session、事件层、搜索查询和筛选条件内的匹配事件之间移动，并且不会丢失原始下钻入口。
 - [x] Narrow-screen browsing keeps session selection, timeline reading, event inspection, raw refs, and layer/profile controls reachable without forcing them into one long document flow. / 窄屏浏览会保持会话选择、时间线阅读、事件检查、原始引用和 layer/profile 控件可访问，而不会把它们挤进一个很长的文档流。

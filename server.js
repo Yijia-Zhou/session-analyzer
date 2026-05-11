@@ -7,7 +7,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const url = require('node:url');
-const { buildIndex, buildEventDetail, filterSessions, getTimeline, readRawLine } = require('./src/codex');
+const { buildIndex, buildEventDetail, fileSuggestions, filterSessions, getTimeline, readRawLine } = require('./src/codex');
 const { foldingProfiles } = require('./src/folding');
 
 const MIME = {
@@ -138,6 +138,11 @@ function createServer(index, buildMs = 0) {
           sort: searchParams.get('sort') || 'updated-desc',
         });
         sendJson(res, 200, result);
+        return;
+      }
+
+      if (pathname === '/api/file-suggestions') {
+        sendJson(res, 200, { files: fileSuggestions(index) });
         return;
       }
 

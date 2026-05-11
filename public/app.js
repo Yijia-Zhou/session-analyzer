@@ -11,8 +11,38 @@ const escapeHtml = rendererApi.escapeHtml || ((value) => String(value ?? '').rep
 }[ch])));
 
 const renderSections = rendererApi.renderSections || (() => '');
+const searchQuery = window.sessionSearchQuery || {
+  parseSearchInput: (input) => ({ q: String(input || '').trim(), file: '', kind: '', status: '', layer: '', tokens: [] }),
+  removeFreeText: () => '',
+  removeOperator: (input) => String(input || ''),
+  upsertOperator: (input) => String(input || '').trim(),
+};
 
 const NAVIGATION_PAGE_LIMIT = 500;
+const KIND_LABELS = {
+  user_message: 'User message',
+  assistant_message: 'Assistant message',
+  command: 'Command',
+  patch: 'Patch',
+  mcp: 'MCP',
+  js_repl: 'JS REPL',
+  tool_operation: 'Tool op',
+  plan_artifact: 'Plan',
+  protocol: 'Protocol',
+  error: 'Error',
+  compaction: 'Compaction',
+  web_search: 'Web search',
+};
+const STATUS_LABELS = {
+  failed: 'Failed',
+  success: 'Success',
+  completed: 'Completed',
+};
+const LAYER_LABELS = {
+  main: 'Main timeline',
+  protocol: 'Protocol layer',
+  raw: 'Raw records',
+};
 const NAVIGATION_CATEGORIES = [
   { id: 'user_messages', label: 'User messages', matches: (event) => event.kind === 'user_message' },
   { id: 'assistant_messages', label: 'Assistant messages', matches: (event) => event.kind === 'assistant_message' },
@@ -38,6 +68,7 @@ const state = {
   sessionTotal: 0,
   timelineTotal: 0,
   currentEvents: [],
+  fileSuggestions: [],
   profiles: [],
   profileId: localStorage.getItem('sessionAnalyzer.profile') || 'narrative',
   layerId: localStorage.getItem('sessionAnalyzer.layer') || 'main',
@@ -55,11 +86,18 @@ const state = {
 const el = {
   stateLine: document.getElementById('stateLine'),
   searchInput: document.getElementById('searchInput'),
+  searchAssist: document.getElementById('searchAssist'),
+  searchAssistChips: document.getElementById('searchAssistChips'),
+  searchField: document.querySelector('.searchField'),
+  searchKindSelect: document.getElementById('searchKindSelect'),
+  searchStatusSelect: document.getElementById('searchStatusSelect'),
+  searchLayerSelect: document.getElementById('searchLayerSelect'),
+  searchFileInput: document.getElementById('searchFileInput'),
+  searchFileSuggestions: document.getElementById('searchFileSuggestions'),
   profileSelect: document.getElementById('profileSelect'),
   layerSelect: document.getElementById('layerSelect'),
   kindFilter: document.getElementById('kindFilter'),
   statusFilter: document.getElementById('statusFilter'),
-  fileFilter: document.getElementById('fileFilter'),
   sortSelect: document.getElementById('sortSelect'),
   sessionList: document.getElementById('sessionList'),
   sessionHeader: document.getElementById('sessionHeader'),
@@ -123,17 +161,34 @@ function fmtBytes(bytes) {
   return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+function parsedSearchInput() {
+  return searchQuery.parseSearchInput(el.searchInput.value);
+}
+
+function currentSearchState() {
+  const parsed = parsedSearchInput();
+  return {
+    q: parsed.q,
+    file: parsed.file,
+    kind: parsed.kind || el.kindFilter.value,
+    status: parsed.status || el.statusFilter.value,
+    layer: parsed.layer || state.layerId || 'main',
+    parsed,
+  };
+}
+
+function activeLayerId() {
+  return currentSearchState().layer || 'main';
+}
+
 function currentQuery(extra = {}) {
   const params = new URLSearchParams();
-  const q = el.searchInput.value.trim();
-  const kind = el.kindFilter.value;
-  const status = el.statusFilter.value;
-  const file = el.fileFilter.value.trim();
-  if (q) params.set('q', q);
-  if (kind) params.set('kind', kind);
-  if (status) params.set('status', status);
-  if (file) params.set('file', file);
-  if (state.layerId) params.set('layer', state.layerId);
+  const filters = currentSearchState();
+  if (filters.q) params.set('q', filters.q);
+  if (filters.kind) params.set('kind', filters.kind);
+  if (filters.status) params.set('status', filters.status);
+  if (filters.file) params.set('file', filters.file);
+  if (filters.layer) params.set('layer', filters.layer);
   for (const [key, value] of Object.entries(extra)) {
     if (value !== '' && value != null) params.set(key, value);
   }
@@ -206,7 +261,7 @@ function renderInspectorMetadata(event, refs) {
 }
 
 function renderInspectorDetail(event) {
-  const key = detailKey(state.selectedSessionId, state.layerId, event.id);
+  const key = detailKey(state.selectedSessionId, activeLayerId(), event.id);
   const detail = state.detailCache[key];
   const error = state.detailErrors[key];
   if (detail) {
@@ -232,21 +287,124 @@ function selectedOptionText(select) {
   return select.selectedOptions[0]?.textContent?.trim() || '';
 }
 
+function optionText(select, value, fallback = {}) {
+  const option = [...select.options].find((item) => item.value === value);
+  return fallback[value] || option?.textContent?.trim() || value;
+}
+
 function activeFilters() {
   const filters = [];
-  const q = el.searchInput.value.trim();
-  const file = el.fileFilter.value.trim();
-  if (q) filters.push({ key: 'q', label: `Search: ${q}` });
-  if (el.kindFilter.value) filters.push({ key: 'kind', label: `Kind: ${selectedOptionText(el.kindFilter)}` });
-  if (el.statusFilter.value) filters.push({ key: 'status', label: `Status: ${selectedOptionText(el.statusFilter)}` });
-  if (file) filters.push({ key: 'file', label: `File: ${file}` });
-  if (state.layerId !== 'main') filters.push({ key: 'layer', label: `Layer: ${selectedOptionText(el.layerSelect)}` });
+  const search = currentSearchState();
+  if (search.q) filters.push({ key: 'q', label: `Search: ${search.q}` });
+  if (search.kind) filters.push({ key: 'kind', label: `Kind: ${optionText(el.kindFilter, search.kind, KIND_LABELS)}` });
+  if (search.status) filters.push({ key: 'status', label: `Status: ${optionText(el.statusFilter, search.status, STATUS_LABELS)}` });
+  if (search.file) filters.push({ key: 'file', label: `File: ${search.file}` });
+  if (search.layer !== 'main') filters.push({ key: 'layer', label: `Layer: ${optionText(el.layerSelect, search.layer, LAYER_LABELS)}` });
   return filters;
+}
+
+function filterChipMarkup(filter) {
+  return `<button class="filterChip" type="button" data-clear-filter="${escapeHtml(filter.key)}" aria-label="Clear ${escapeHtml(filter.label)}">
+      <span>${escapeHtml(filter.label)}</span><span aria-hidden="true">&times;</span>
+    </button>`;
+}
+
+function renderFilterChips(filters) {
+  return filters.map(filterChipMarkup).join('');
+}
+
+function renderSearchAssistChips(filters = activeFilters()) {
+  if (!el.searchAssistChips) return;
+  if (!filters.length) {
+    el.searchAssistChips.innerHTML = '<span class="searchAssistEmpty">None</span>';
+    return;
+  }
+  el.searchAssistChips.innerHTML = `${renderFilterChips(filters)}<button class="clearFiltersBtn" type="button" data-clear-filter="all">Clear all</button>`;
+}
+
+function setSelectIfOption(select, value) {
+  if (!select) return;
+  const hasOption = [...select.options].some((option) => option.value === value);
+  select.value = hasOption ? value : '';
+}
+
+function syncSearchAssistControls() {
+  const search = currentSearchState();
+  setSelectIfOption(el.searchKindSelect, search.kind);
+  setSelectIfOption(el.searchStatusSelect, search.status);
+  setSelectIfOption(el.searchLayerSelect, search.parsed.layer);
+  if (el.searchFileInput) el.searchFileInput.value = search.file;
+}
+
+function showSearchAssist() {
+  if (!el.searchAssist) return;
+  el.searchAssist.hidden = false;
+  el.searchInput.setAttribute('aria-expanded', 'true');
+  syncSearchAssistControls();
+  renderSearchAssistChips();
+}
+
+function hideSearchAssist() {
+  if (!el.searchAssist) return;
+  el.searchAssist.hidden = true;
+  el.searchInput.setAttribute('aria-expanded', 'false');
+}
+
+function focusSearchEnd() {
+  el.searchInput.focus();
+  const end = el.searchInput.value.length;
+  el.searchInput.setSelectionRange(end, end);
+}
+
+function applySearchExpression(expression) {
+  const text = String(expression || '').trim();
+  const parsed = searchQuery.parseSearchInput(text);
+  const operatorTokens = parsed.tokens.filter((token) => token.valid);
+  if (operatorTokens.length === 1 && !parsed.q) {
+    const token = operatorTokens[0];
+    if (token.empty) {
+      el.searchInput.value = [searchQuery.removeOperator(el.searchInput.value, token.operator), `${token.operator}:`].filter(Boolean).join(' ').trim();
+    } else {
+      el.searchInput.value = searchQuery.upsertOperator(el.searchInput.value, token.operator, token.value);
+    }
+  } else {
+    el.searchInput.value = text;
+  }
+  showSearchAssist();
+  focusSearchEnd();
+  renderSearchAssistChips();
+  loadSessions().catch(showError);
+}
+
+function applySearchOperator(operator, value) {
+  if (!operator) return;
+  if (value) {
+    el.searchInput.value = searchQuery.upsertOperator(el.searchInput.value, operator, value);
+  } else {
+    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, operator);
+  }
+  syncSearchAssistControls();
+  renderSearchAssistChips();
+  focusSearchEnd();
+  loadSessions().catch(showError);
+}
+
+function renderFileSuggestions() {
+  if (!el.searchFileSuggestions) return;
+  el.searchFileSuggestions.innerHTML = state.fileSuggestions.map((item) => (
+    `<option value="${escapeHtml(item.file)}"></option>`
+  )).join('');
+}
+
+function isSuggestedFile(value) {
+  const text = String(value || '').trim();
+  return !!text && state.fileSuggestions.some((item) => item.file === text);
 }
 
 function renderResultSummary() {
   if (!el.resultSummary) return;
   const filters = activeFilters();
+  renderSearchAssistChips(filters);
   if (!filters.length) {
     el.resultSummary.replaceChildren();
     return;
@@ -258,24 +416,36 @@ function renderResultSummary() {
   const eventText = state.selectedSessionId
     ? `Events: ${state.timelineTotal} match${state.offset < state.timelineTotal ? ` (${state.offset} loaded)` : ''}`
     : 'Events: select a session';
-  const filterText = filters.map((filter) => (
-    `<button class="filterChip" type="button" data-clear-filter="${escapeHtml(filter.key)}" aria-label="Clear ${escapeHtml(filter.label)}">
-      <span>${escapeHtml(filter.label)}</span><span aria-hidden="true">&times;</span>
-    </button>`
-  )).join('') + '<button class="clearFiltersBtn" type="button" data-clear-filter="all">Clear all</button>';
+  const filterText = renderFilterChips(filters) + '<button class="clearFiltersBtn" type="button" data-clear-filter="all">Clear all</button>';
   el.resultSummary.innerHTML = `<div class="resultCounts">${escapeHtml(sessionText)} · ${escapeHtml(eventText)}</div><div class="activeFilters" aria-label="Active filters">${filterText}</div>`;
 }
 
 function clearActiveFilter(key) {
-  if (key === 'q' || key === 'all') el.searchInput.value = '';
-  if (key === 'kind' || key === 'all') el.kindFilter.value = '';
-  if (key === 'status' || key === 'all') el.statusFilter.value = '';
-  if (key === 'file' || key === 'all') el.fileFilter.value = '';
-  if (key === 'layer' || key === 'all') {
+  if (key === 'all') {
+    el.searchInput.value = '';
+    el.kindFilter.value = '';
+    el.statusFilter.value = '';
+    state.layerId = 'main';
+    el.layerSelect.value = state.layerId;
+    localStorage.setItem('sessionAnalyzer.layer', state.layerId);
+  } else if (key === 'q') {
+    el.searchInput.value = searchQuery.removeFreeText(el.searchInput.value);
+  } else if (key === 'file') {
+    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'file');
+  } else if (key === 'kind') {
+    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'kind');
+    el.kindFilter.value = '';
+  } else if (key === 'status') {
+    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'status');
+    el.statusFilter.value = '';
+  } else if (key === 'layer') {
+    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'layer');
     state.layerId = 'main';
     el.layerSelect.value = state.layerId;
     localStorage.setItem('sessionAnalyzer.layer', state.layerId);
   }
+  syncSearchAssistControls();
+  renderSearchAssistChips();
   loadSessions().catch(showError);
 }
 
@@ -292,8 +462,12 @@ function clearCurrentSessionOverrides() {
 
 async function init() {
   setMobileView(state.mobileView, { scroll: false });
-  const appState = await api('/api/state');
+  const [appState, suggestionState] = await Promise.all([
+    api('/api/state'),
+    api('/api/file-suggestions'),
+  ]);
   state.profiles = appState.foldingProfiles || [];
+  state.fileSuggestions = suggestionState.files || [];
   state.sessionGrandTotal = appState.totals.sessionCount || 0;
   el.stateLine.textContent = `${appState.repoRoot} | ${appState.totals.sessionCount} sessions | ${appState.totals.eventCount} logical events | ${appState.totals.rawEventCount} raw records`;
   el.profileSelect.innerHTML = state.profiles.map((profile) => (
@@ -305,6 +479,7 @@ async function init() {
     el.profileSelect.value = state.profileId;
   }
   el.layerSelect.value = state.layerId;
+  renderFileSuggestions();
   resetDetailPane();
   await loadSessions();
 }
@@ -323,6 +498,8 @@ async function loadSessions() {
     state.currentEvents = [];
     el.timeline.innerHTML = '';
     el.analysisPanel.innerHTML = '';
+    el.loadMoreBtn.disabled = true;
+    el.loadMoreBtn.textContent = 'Load more';
     el.sessionHeader.innerHTML = '<h2>No matching session</h2><p>Adjust the search or filters.</p>';
     resetDetailPane();
     renderResultSummary();
@@ -407,15 +584,16 @@ async function loadTimeline(append) {
 function displayState(event) {
   const sessionOverrides = state.overrides[state.selectedSessionId] || {};
   if (sessionOverrides[event.id]) return sessionOverrides[event.id];
+  const layer = activeLayerId();
 
-  if (state.layerId === 'protocol') {
+  if (layer === 'protocol') {
     return event.kind === 'protocol' ? 'summary' : 'collapsed';
   }
-  if (state.layerId === 'raw') {
+  if (layer === 'raw') {
     return ['event_msg', 'response_item'].includes(event.recordType) ? 'collapsed' : 'summary';
   }
 
-  const q = el.searchInput.value.trim();
+  const q = currentSearchState().q;
   const profile = q && state.profileId !== 'compact' ? 'search' : state.profileId;
 
   if (profile === 'compact') return 'collapsed';
@@ -459,7 +637,7 @@ function importantEvent(event) {
 
 function renderEventBody(event, display) {
   if (display !== 'expanded') return '';
-  const key = detailKey(state.selectedSessionId, state.layerId, event.id);
+  const key = detailKey(state.selectedSessionId, activeLayerId(), event.id);
   const detail = state.detailCache[key];
   const error = state.detailErrors[key];
   if (detail) {
@@ -515,10 +693,11 @@ function setOverride(eventId, value) {
 }
 
 function loadEventDetail(event) {
-  const key = detailKey(state.selectedSessionId, state.layerId, event.id);
+  const layer = activeLayerId();
+  const key = detailKey(state.selectedSessionId, layer, event.id);
   if (state.detailCache[key] || state.detailErrors[key]) return Promise.resolve();
   if (!state.detailPending[key]) {
-    state.detailPending[key] = api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(state.layerId)}`)
+    state.detailPending[key] = api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(layer)}`)
       .then((detail) => {
         state.detailCache[key] = detail;
         delete state.detailErrors[key];
@@ -534,7 +713,7 @@ function loadEventDetail(event) {
 }
 
 function ensureEventDetail(event) {
-  const key = detailKey(state.selectedSessionId, state.layerId, event.id);
+  const key = detailKey(state.selectedSessionId, activeLayerId(), event.id);
   if (state.detailCache[key] || state.detailErrors[key]) return;
   loadEventDetail(event).then(() => renderTimeline());
 }
@@ -567,13 +746,14 @@ function updateSelectedTimelineEvent() {
 }
 
 function navigationCacheKey() {
+  const search = currentSearchState();
   return JSON.stringify({
     sessionId: state.selectedSessionId,
-    layer: state.layerId,
-    q: el.searchInput.value.trim(),
-    kind: el.kindFilter.value,
-    status: el.statusFilter.value,
-    file: el.fileFilter.value.trim(),
+    layer: search.layer,
+    q: search.q,
+    kind: search.kind,
+    status: search.status,
+    file: search.file,
   });
 }
 
@@ -720,14 +900,15 @@ async function navigateSelectedEvent(direction) {
 }
 
 function showInspector(event) {
-  const key = detailKey(state.selectedSessionId, state.layerId, event.id);
+  const layer = activeLayerId();
+  const key = detailKey(state.selectedSessionId, layer, event.id);
   const refs = sourceRefs(event);
   const preview = event.snippet || event.preview || '';
   const chips = renderChips([
     event.kind,
     event.status,
     event.severity && event.severity !== 'normal' ? event.severity : '',
-    event.layer || state.layerId,
+    event.layer || layer,
   ]);
   state.selectedEventId = event.id;
   state.detailSelectionKey = key;
@@ -772,7 +953,8 @@ function showInspector(event) {
 
 async function showRaw(event) {
   const refs = sourceRefs(event);
-  const rawKey = `raw:${detailKey(state.selectedSessionId, state.layerId, event.id)}`;
+  const layer = activeLayerId();
+  const rawKey = `raw:${detailKey(state.selectedSessionId, layer, event.id)}`;
   state.selectedEventId = event.id;
   state.detailSelectionKey = rawKey;
   setMobileView('detail');
@@ -781,7 +963,7 @@ async function showRaw(event) {
     el.detail.innerHTML = `<article class="rawRefsView">
       <header class="inspectorHeader">
         <h2>Raw refs</h2>
-        <div class="chips">${renderChips([event.label, event.layer || state.layerId, event.kind])}</div>
+        <div class="chips">${renderChips([event.label, event.layer || layer, event.kind])}</div>
       </header>
       <div class="notice warning"><p>No raw source rows are available for this event.</p></div>
       <div class="inspectorActions">
@@ -795,7 +977,7 @@ async function showRaw(event) {
   el.detail.innerHTML = `<article class="rawRefsView">
     <header class="inspectorHeader">
       <h2>Raw refs</h2>
-      <div class="chips">${renderChips([event.label, event.layer || state.layerId, event.kind])}</div>
+      <div class="chips">${renderChips([event.label, event.layer || layer, event.kind])}</div>
     </header>
     <p class="rawMeta">${escapeHtml(`${refs.length} JSONL row${refs.length === 1 ? '' : 's'} for ${event.id}`)}</p>
     ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(raw.file)}:${raw.line}</p><pre>${escapeHtml(JSON.stringify(raw.parsed, null, 2) || raw.raw)}</pre></section>`).join('')}
@@ -826,7 +1008,7 @@ el.timeline.addEventListener('click', (event) => {
     renderTimeline();
     if (next === 'expanded') ensureEventDetail(item);
   } else if (action === 'retry-detail') {
-    const key = detailKey(state.selectedSessionId, state.layerId, item.id);
+    const key = detailKey(state.selectedSessionId, activeLayerId(), item.id);
     delete state.detailErrors[key];
     delete state.detailCache[key];
     ensureEventDetail(item);
@@ -845,7 +1027,7 @@ el.detail.addEventListener('click', (event) => {
     return;
   }
   const key = state.detailSelectionKey.replace(/^raw:/, '');
-  const item = state.currentEvents.find((candidate) => detailKey(state.selectedSessionId, state.layerId, candidate.id) === key);
+  const item = state.currentEvents.find((candidate) => detailKey(state.selectedSessionId, activeLayerId(), candidate.id) === key);
   if (!item) return;
   if (action === 'inspect') {
     showInspector(item);
@@ -876,6 +1058,7 @@ el.profileSelect.addEventListener('change', () => {
 
 el.layerSelect.addEventListener('change', () => {
   state.layerId = el.layerSelect.value;
+  el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'layer');
   localStorage.setItem('sessionAnalyzer.layer', state.layerId);
   loadSessions().catch(showError);
 });
@@ -895,15 +1078,87 @@ el.timeline.closest('.timelinePane')?.addEventListener('scroll', queueVisibleDet
 window.addEventListener('resize', queueVisibleDetailLoad);
 
 const reload = debounce(() => {
+  syncSearchAssistControls();
+  renderSearchAssistChips();
   loadSessions().catch(showError);
 }, 220);
 
-for (const input of [el.searchInput, el.kindFilter, el.statusFilter, el.fileFilter, el.sortSelect]) {
-  input.addEventListener('input', reload);
-  input.addEventListener('change', reload);
-}
+el.searchInput.addEventListener('focus', showSearchAssist);
+el.searchInput.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  event.preventDefault();
+  hideSearchAssist();
+});
+el.searchInput.addEventListener('input', () => {
+  showSearchAssist();
+  reload();
+});
+el.searchInput.addEventListener('change', reload);
+
+el.searchAssist?.addEventListener('click', (event) => {
+  const clear = event.target.closest('[data-clear-filter]')?.dataset.clearFilter;
+  if (clear) {
+    clearActiveFilter(clear);
+    return;
+  }
+  const example = event.target.closest('[data-search-example]')?.dataset.searchExample;
+  if (example) applySearchExpression(example);
+});
+
+el.searchAssist?.addEventListener('change', (event) => {
+  const control = event.target.closest('[data-search-operator]');
+  if (!control) return;
+  applySearchOperator(control.dataset.searchOperator, control.value.trim());
+});
+
+el.searchAssist?.addEventListener('input', (event) => {
+  const control = event.target.closest('[data-search-operator="file"]');
+  if (!control || !isSuggestedFile(control.value)) return;
+  applySearchOperator('file', control.value.trim());
+});
+
+el.searchAssist?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  const control = event.target.closest('[data-search-operator]');
+  if (!control) return;
+  event.preventDefault();
+  applySearchOperator(control.dataset.searchOperator, control.value.trim());
+});
+
+document.addEventListener('pointerdown', (event) => {
+  if (!el.searchField || el.searchField.contains(event.target)) return;
+  hideSearchAssist();
+});
+
+el.kindFilter.addEventListener('input', () => {
+  el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'kind');
+  renderSearchAssistChips();
+  reload();
+});
+el.kindFilter.addEventListener('change', () => {
+  el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'kind');
+  renderSearchAssistChips();
+  reload();
+});
+el.statusFilter.addEventListener('input', () => {
+  el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'status');
+  renderSearchAssistChips();
+  reload();
+});
+el.statusFilter.addEventListener('change', () => {
+  el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'status');
+  renderSearchAssistChips();
+  reload();
+});
+el.sortSelect.addEventListener('input', reload);
+el.sortSelect.addEventListener('change', reload);
 
 document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !el.searchAssist?.hidden) {
+    event.preventDefault();
+    hideSearchAssist();
+    return;
+  }
   if (event.altKey && event.key === 'ArrowRight') {
     const i = state.profiles.findIndex((profile) => profile.id === state.profileId);
     const next = state.profiles[(i + 1) % state.profiles.length];

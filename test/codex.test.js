@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { buildIndex, buildEventDetail, filterSessions, getTimeline, readRawLine, isPathInsideOrSame } = require('../src/codex');
+const { buildIndex, buildEventDetail, fileSuggestions, filterSessions, getTimeline, readRawLine, isPathInsideOrSame } = require('../src/codex');
 const { createServer } = require('../server');
 const { foldingProfiles } = require('../src/folding');
 
@@ -234,6 +234,15 @@ test('tool logical events merge new and old format patch records and search stil
   assert.deepEqual(failedDetail.sections.find((section) => section.title === 'Patch files').entries, [
     { key: 'src/failed.js', value: '+1 / -1' },
   ]);
+});
+
+test('file suggestions come from analyzed session touched files', async () => {
+  const index = await buildFixtureIndex();
+  const suggestions = fileSuggestions(index).map((item) => item.file);
+
+  assert.ok(suggestions.includes('src/parser.js'));
+  assert.ok(suggestions.includes('src/legacy.js'));
+  assert.equal(suggestions.includes('public/app.js'), false);
 });
 
 test('web search logical events merge end/call rows and expose structured detail', async () => {

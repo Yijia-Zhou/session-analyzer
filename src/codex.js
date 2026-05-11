@@ -26,6 +26,19 @@ function isPathInsideOrSame(child, parent) {
   return c === p || c.startsWith(`${p}${path.sep}`);
 }
 
+function normalizeSearchPath(input) {
+  return String(input || '').replace(/\\/g, '/').toLowerCase();
+}
+
+function displayProjectFile(file, repoRoot) {
+  const text = String(file || '').trim();
+  if (!text) return '';
+  if (path.isAbsolute(text) && repoRoot && isPathInsideOrSame(text, repoRoot)) {
+    return path.relative(repoRoot, text).replace(/\\/g, '/');
+  }
+  return text.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
 function safeIso(value) {
   if (!value) return '';
   const date = new Date(value);
@@ -2169,10 +2182,10 @@ function eventMatches(event, filters) {
   if (filters.status && event.status !== filters.status) return false;
   if (filters.tool && !String(event.toolName || '').toLowerCase().includes(filters.tool.toLowerCase())) return false;
   if (filters.file) {
-    const needle = filters.file.toLowerCase();
-    const sourceMatch = (event.source?.file || '').toLowerCase().includes(needle);
-    const touchedMatch = (event.touchedFiles || []).some((file) => file.toLowerCase().includes(needle));
-    const rawMatch = (event.rawRefs || []).some((ref) => ref.file.toLowerCase().includes(needle));
+    const needle = normalizeSearchPath(filters.file);
+    const sourceMatch = normalizeSearchPath(event.source?.file).includes(needle);
+    const touchedMatch = (event.touchedFiles || []).some((file) => normalizeSearchPath(file).includes(needle));
+    const rawMatch = (event.rawRefs || []).some((ref) => normalizeSearchPath(ref.file).includes(needle));
     if (!sourceMatch && !touchedMatch && !rawMatch) return false;
   }
   if (filters.q && !matchTerms(`${event.preview}\n${event.searchText}`, filters.q)) return false;
@@ -2226,6 +2239,29 @@ function filterSessions(index, filters) {
     total: sessions.length,
     sessions: sessions.map(sessionSummary),
   };
+}
+
+function fileSuggestions(index, limit = 80) {
+  const counts = new Map();
+  const add = (file, count = 1) => {
+    const display = displayProjectFile(file, index.repoRoot);
+    if (!display) return;
+    counts.set(display, (counts.get(display) || 0) + count);
+  };
+  for (const session of index.sessions || []) {
+    for (const item of session.analysis?.patchedFiles || []) {
+      add(item.file, item.count || 1);
+    }
+    for (const event of session.logicalEvents || []) {
+      for (const file of event.touchedFiles || []) {
+        add(file);
+      }
+    }
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([file, count]) => ({ file, count }));
 }
 
 function makeSnippet(text, q) {
@@ -2310,6 +2346,7 @@ async function readRawLine(index, relFile, lineNumber) {
 module.exports = {
   buildIndex,
   buildEventDetail,
+  fileSuggestions,
   filterSessions,
   getTimeline,
   readRawLine,

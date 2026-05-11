@@ -51,6 +51,8 @@ button:hover,
   justify-content: space-between;
   min-height: 84px;
   padding: 0.8rem 1rem;
+  position: relative;
+  z-index: 10;
 }
 
 .topbar h1 {
@@ -73,12 +75,92 @@ button:hover,
 
 .searchbar input,
 .searchbar select,
-.filters input,
 .filters select {
   background: #fff;
   min-height: 40px;
   padding: 0.5rem;
   width: 100%;
+}
+
+.searchField {
+  min-width: 0;
+  position: relative;
+}
+
+.searchAssist[hidden] {
+  display: none;
+}
+
+.searchAssist {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 14px 32px rgba(24, 32, 36, 0.16);
+  display: grid;
+  gap: 0.75rem;
+  left: 0;
+  padding: 0.75rem;
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  width: min(640px, calc(100vw - 2rem));
+  z-index: 30;
+}
+
+.searchAssistSection {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.searchAssistTitle {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.searchAssistControls,
+.searchAssistExamples,
+.searchAssistChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.searchAssistControls label {
+  color: var(--muted);
+  display: grid;
+  flex: 1 1 140px;
+  font-size: 0.76rem;
+  gap: 0.22rem;
+  min-width: 0;
+}
+
+.searchAssistControls input,
+.searchAssistControls select {
+  background: #fff;
+  color: var(--ink);
+  min-height: 32px;
+  padding: 0.25rem 0.4rem;
+  width: 100%;
+}
+
+.searchAssistExamples button {
+  background: var(--soft);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  min-height: 30px;
+  padding: 0.25rem 0.45rem;
+}
+
+.searchAssistExamples button {
+  background: #fff;
+  color: var(--ink);
+}
+
+.searchAssistEmpty {
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .mobileViewTabs {
@@ -796,6 +878,12 @@ pre {
 
   .searchbar {
     grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .searchAssist {
+    max-height: 58vh;
+    overflow: auto;
     width: 100%;
   }
 

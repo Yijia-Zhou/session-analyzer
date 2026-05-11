@@ -14,7 +14,66 @@
         <p id="stateLine">正在读取本地 sessions…</p>
       </div>
       <div class="searchbar">
-        <input id="searchInput" type="search" placeholder="搜索消息、命令、文件、输出">
+        <div class="searchField">
+          <input id="searchInput" type="search" placeholder="Search messages, commands, files, output" autocomplete="off" aria-controls="searchAssist" aria-expanded="false" aria-haspopup="dialog">
+          <div id="searchAssist" class="searchAssist" role="dialog" aria-label="Search options" hidden>
+            <div class="searchAssistSection">
+              <div class="searchAssistTitle">Search filters</div>
+              <div class="searchAssistControls">
+                <label>
+                  Kind
+                  <select id="searchKindSelect" data-search-operator="kind">
+                    <option value="">Any kind</option>
+                    <option value="patch">Patch</option>
+                    <option value="command">Command</option>
+                    <option value="mcp">MCP</option>
+                    <option value="web_search">Web search</option>
+                    <option value="user_message">User message</option>
+                    <option value="assistant_message">Assistant message</option>
+                    <option value="plan_artifact">Plan</option>
+                    <option value="error">Error</option>
+                  </select>
+                </label>
+                <label>
+                  Status
+                  <select id="searchStatusSelect" data-search-operator="status">
+                    <option value="">Any status</option>
+                    <option value="failed">Failed</option>
+                    <option value="success">Success</option>
+                    <option value="completed">Completed</option>
+                  </select>
+                </label>
+                <label>
+                  Layer
+                  <select id="searchLayerSelect" data-search-operator="layer">
+                    <option value="">Current layer</option>
+                    <option value="main">Main timeline</option>
+                    <option value="protocol">Protocol layer</option>
+                    <option value="raw">Raw records</option>
+                  </select>
+                </label>
+                <label>
+                  File
+                  <input id="searchFileInput" data-search-operator="file" list="searchFileSuggestions" placeholder="Any file">
+                  <datalist id="searchFileSuggestions"></datalist>
+                </label>
+              </div>
+            </div>
+            <div class="searchAssistSection">
+              <div class="searchAssistTitle">Examples</div>
+              <div class="searchAssistExamples">
+                <button type="button" data-search-example="file:public/app.js">file:public/app.js</button>
+                <button type="button" data-search-example="kind:patch file:public/app.js">kind:patch file:public/app.js</button>
+                <button type="button" data-search-example="status:failed file:server.js">status:failed file:server.js</button>
+                <button type="button" data-search-example="layer:raw error">layer:raw error</button>
+              </div>
+            </div>
+            <div class="searchAssistSection">
+              <div class="searchAssistTitle">Active</div>
+              <div id="searchAssistChips" class="searchAssistChips"></div>
+            </div>
+          </div>
+        </div>
         <select id="layerSelect" aria-label="事件层">
           <option value="main">Main timeline</option>
           <option value="protocol">Protocol layer</option>
@@ -59,10 +118,6 @@
             </select>
           </label>
           <label>
-            文件
-            <input id="fileFilter" type="search" placeholder="路径片段">
-          </label>
-          <label>
             排序
             <select id="sortSelect">
               <option value="updated-desc">最近更新</option>
@@ -98,6 +153,7 @@
     </main>
 
     <script src="/renderers.js"></script>
+    <script src="/search-query.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>
