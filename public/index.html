@@ -52,20 +52,13 @@
                     <option value="raw">Raw records</option>
                   </select>
                 </label>
-                <label>
+                <label class="fileFilterControl">
                   File
-                  <input id="searchFileInput" data-search-operator="file" list="searchFileSuggestions" placeholder="Any file">
-                  <datalist id="searchFileSuggestions"></datalist>
+                  <span class="fileSuggestControl">
+                    <input id="searchFileInput" data-search-operator="file" placeholder="Any file" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="searchFileSuggestions">
+                    <span id="searchFileSuggestions" class="searchFileSuggestions" role="listbox" hidden></span>
+                  </span>
                 </label>
-              </div>
-            </div>
-            <div class="searchAssistSection">
-              <div class="searchAssistTitle">Examples</div>
-              <div class="searchAssistExamples">
-                <button type="button" data-search-example="file:public/app.js">file:public/app.js</button>
-                <button type="button" data-search-example="kind:patch file:public/app.js">kind:patch file:public/app.js</button>
-                <button type="button" data-search-example="status:failed file:server.js">status:failed file:server.js</button>
-                <button type="button" data-search-example="layer:raw error">layer:raw error</button>
               </div>
             </div>
             <div class="searchAssistSection">

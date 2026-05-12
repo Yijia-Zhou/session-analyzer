@@ -19,6 +19,7 @@ const searchQuery = window.sessionSearchQuery || {
 };
 
 const NAVIGATION_PAGE_LIMIT = 500;
+const FILE_SUGGESTION_LIMIT = 12;
 const KIND_LABELS = {
   user_message: 'User message',
   assistant_message: 'Assistant message',
@@ -316,7 +317,7 @@ function renderFilterChips(filters) {
 function renderSearchAssistChips(filters = activeFilters()) {
   if (!el.searchAssistChips) return;
   if (!filters.length) {
-    el.searchAssistChips.innerHTML = '<span class="searchAssistEmpty">None</span>';
+    el.searchAssistChips.innerHTML = '<span class="searchAssistEmpty">No active filters</span>';
     return;
   }
   el.searchAssistChips.innerHTML = `${renderFilterChips(filters)}<button class="clearFiltersBtn" type="button" data-clear-filter="all">Clear all</button>`;
@@ -356,26 +357,6 @@ function focusSearchEnd() {
   el.searchInput.setSelectionRange(end, end);
 }
 
-function applySearchExpression(expression) {
-  const text = String(expression || '').trim();
-  const parsed = searchQuery.parseSearchInput(text);
-  const operatorTokens = parsed.tokens.filter((token) => token.valid);
-  if (operatorTokens.length === 1 && !parsed.q) {
-    const token = operatorTokens[0];
-    if (token.empty) {
-      el.searchInput.value = [searchQuery.removeOperator(el.searchInput.value, token.operator), `${token.operator}:`].filter(Boolean).join(' ').trim();
-    } else {
-      el.searchInput.value = searchQuery.upsertOperator(el.searchInput.value, token.operator, token.value);
-    }
-  } else {
-    el.searchInput.value = text;
-  }
-  showSearchAssist();
-  focusSearchEnd();
-  renderSearchAssistChips();
-  loadSessions().catch(showError);
-}
-
 function applySearchOperator(operator, value) {
   if (!operator) return;
   if (value) {
@@ -389,11 +370,40 @@ function applySearchOperator(operator, value) {
   loadSessions().catch(showError);
 }
 
+function normalizeFileSuggestionText(value) {
+  return String(value || '').trim().replace(/\\/g, '/').toLowerCase();
+}
+
+function visibleFileSuggestions() {
+  const text = normalizeFileSuggestionText(el.searchFileInput?.value);
+  const suggestions = text
+    ? state.fileSuggestions.filter((item) => normalizeFileSuggestionText(item.file).includes(text))
+    : state.fileSuggestions;
+  return suggestions.slice(0, FILE_SUGGESTION_LIMIT);
+}
+
+function setFileSuggestionsOpen(open) {
+  if (!el.searchFileSuggestions || !el.searchFileInput) return;
+  const suggestions = visibleFileSuggestions();
+  const shouldOpen = open && suggestions.length > 0;
+  el.searchFileSuggestions.hidden = !shouldOpen;
+  el.searchFileInput.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+}
+
+function hideFileSuggestions() {
+  setFileSuggestionsOpen(false);
+}
+
 function renderFileSuggestions() {
   if (!el.searchFileSuggestions) return;
-  el.searchFileSuggestions.innerHTML = state.fileSuggestions.map((item) => (
-    `<option value="${escapeHtml(item.file)}"></option>`
+  const suggestions = visibleFileSuggestions();
+  el.searchFileSuggestions.innerHTML = suggestions.map((item) => (
+    `<button class="fileSuggestion" type="button" role="option" data-search-file-suggestion="${escapeHtml(item.file)}">
+      <span class="fileSuggestionPath">${escapeHtml(item.file)}</span>
+      <span class="fileSuggestionHits">${escapeHtml(item.count)} hits</span>
+    </button>`
   )).join('');
+  setFileSuggestionsOpen(document.activeElement === el.searchFileInput);
 }
 
 function isSuggestedFile(value) {
@@ -1101,31 +1111,62 @@ el.searchAssist?.addEventListener('click', (event) => {
     clearActiveFilter(clear);
     return;
   }
-  const example = event.target.closest('[data-search-example]')?.dataset.searchExample;
-  if (example) applySearchExpression(example);
+  const suggestedFile = event.target.closest('[data-search-file-suggestion]')?.dataset.searchFileSuggestion;
+  if (suggestedFile) {
+    applySearchOperator('file', suggestedFile);
+    hideFileSuggestions();
+    return;
+  }
+});
+
+el.searchAssist?.addEventListener('focusin', (event) => {
+  if (event.target !== el.searchFileInput) return;
+  renderFileSuggestions();
+  setFileSuggestionsOpen(true);
 });
 
 el.searchAssist?.addEventListener('change', (event) => {
   const control = event.target.closest('[data-search-operator]');
   if (!control) return;
+  if (control.dataset.searchOperator === 'file') hideFileSuggestions();
   applySearchOperator(control.dataset.searchOperator, control.value.trim());
 });
 
 el.searchAssist?.addEventListener('input', (event) => {
   const control = event.target.closest('[data-search-operator="file"]');
-  if (!control || !isSuggestedFile(control.value)) return;
-  applySearchOperator('file', control.value.trim());
+  if (!control) return;
+  renderFileSuggestions();
+  setFileSuggestionsOpen(true);
+  if (isSuggestedFile(control.value)) {
+    hideFileSuggestions();
+    applySearchOperator('file', control.value.trim());
+  }
 });
 
 el.searchAssist?.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && event.target === el.searchFileInput && !el.searchFileSuggestions?.hidden) {
+    event.preventDefault();
+    hideFileSuggestions();
+    return;
+  }
+  if (event.key === 'ArrowDown' && event.target === el.searchFileInput && !el.searchFileSuggestions?.hidden) {
+    const firstSuggestion = el.searchFileSuggestions.querySelector('[data-search-file-suggestion]');
+    if (firstSuggestion) {
+      event.preventDefault();
+      firstSuggestion.focus();
+    }
+    return;
+  }
   if (event.key !== 'Enter') return;
   const control = event.target.closest('[data-search-operator]');
   if (!control) return;
   event.preventDefault();
+  hideFileSuggestions();
   applySearchOperator(control.dataset.searchOperator, control.value.trim());
 });
 
 document.addEventListener('pointerdown', (event) => {
+  if (el.searchFileInput && !event.target.closest('.fileSuggestControl')) hideFileSuggestions();
   if (!el.searchField || el.searchField.contains(event.target)) return;
   hideSearchAssist();
 });
