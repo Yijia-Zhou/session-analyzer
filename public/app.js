@@ -66,6 +66,7 @@ const state = {
   projects: [],
   projectSelected: false,
   selectingProject: false,
+  projectLoadingRoot: '',
   selectedSessionId: '',
   selectedEventId: '',
   offset: 0,
@@ -90,6 +91,8 @@ const state = {
 };
 
 const el = {
+  projectTitle: document.getElementById('projectTitle'),
+  projectSwitchControl: document.getElementById('projectSwitchControl'),
   stateLine: document.getElementById('stateLine'),
   searchInput: document.getElementById('searchInput'),
   searchAssist: document.getElementById('searchAssist'),
@@ -112,7 +115,6 @@ const el = {
   loadMoreBtn: document.getElementById('loadMoreBtn'),
   resultSummary: document.getElementById('resultSummary'),
   mobileViewButtons: document.querySelectorAll('[data-mobile-view]'),
-  switchProjectBtn: document.getElementById('switchProjectBtn'),
   projectChooser: document.getElementById('projectChooser'),
   projectStatus: document.getElementById('projectStatus'),
   projectList: document.getElementById('projectList'),
@@ -165,6 +167,20 @@ function fmtDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
+}
+
+function projectName(repoRoot) {
+  const text = String(repoRoot || '').replace(/[\\/]+$/, '');
+  if (!text) return 'Select project';
+  return text.split(/[\\/]/).filter(Boolean).pop() || text;
+}
+
+function setProjectHeader(repoRoot, summary) {
+  if (el.projectTitle) el.projectTitle.textContent = projectName(repoRoot);
+  if (el.projectSwitchControl) {
+    el.projectSwitchControl.title = repoRoot ? `Switch project: ${repoRoot}` : 'Select target project';
+  }
+  el.stateLine.textContent = summary || '';
 }
 
 function fmtBytes(bytes) {
@@ -523,29 +539,47 @@ function resetProjectViewState() {
 
 function renderProjects() {
   if (!el.projectList) return;
+  const loadingRoot = state.projectLoadingRoot;
+  el.projectList.setAttribute('aria-busy', loadingRoot ? 'true' : 'false');
+  if (el.projectChooser) el.projectChooser.dataset.loading = loadingRoot ? 'true' : 'false';
   if (!state.projects.length) {
     el.projectList.innerHTML = '<div class="notice warning"><p>No Codex projects were found in the configured sessions directory.</p></div>';
     return;
   }
   const saved = localStorage.getItem(REPO_STORAGE_KEY) || '';
   el.projectList.innerHTML = state.projects.map((project) => {
-    const selected = project.repoRoot === saved ? 'Last selected' : '';
-    const missing = project.exists ? '' : 'Missing directory';
-    const meta = [selected, `${project.sessionCount} session${project.sessionCount === 1 ? '' : 's'}`, fmtDate(project.updatedAt), missing].filter(Boolean).join(' | ');
-    return `<button class="projectItem" type="button" data-project-root="${escapeHtml(project.repoRoot)}">
-      <span>
+    const isSaved = project.repoRoot === saved;
+    const isLoading = project.repoRoot === loadingRoot;
+    const classes = [
+      'projectItem',
+      isSaved ? 'lastSelected' : '',
+      project.exists ? '' : 'missing',
+      isLoading ? 'loading' : '',
+    ].filter(Boolean).join(' ');
+    const badges = [
+      isSaved ? '<span class="projectBadge">Last selected</span>' : '',
+      project.exists ? '' : '<span class="projectBadge warning">Missing directory</span>',
+    ].join('');
+    const action = isLoading ? '<span class="projectSpinner" aria-hidden="true"></span><span>Indexing...</span>' : '<span>Open</span>';
+    return `<button class="${classes}" type="button" data-project-root="${escapeHtml(project.repoRoot)}"${loadingRoot ? ' disabled' : ''}>
+      <span class="projectMain">
+        <span class="projectName">${escapeHtml(projectName(project.repoRoot))}${badges}</span>
         <span class="projectPath">${escapeHtml(project.repoRoot)}</span>
-        <span class="projectMeta">${escapeHtml(meta)}</span>
       </span>
-      <span class="chip">Open</span>
+      <span class="projectFacts" aria-label="Project activity">
+        <span>${escapeHtml(project.sessionCount)} session${project.sessionCount === 1 ? '' : 's'}</span>
+        <span>${escapeHtml(fmtDate(project.updatedAt))}</span>
+      </span>
+      <span class="projectAction">${action}</span>
     </button>`;
   }).join('');
 }
 
 async function showProjectChooser(options = {}) {
   setProjectMode(true);
+  state.projectLoadingRoot = '';
   resetProjectViewState();
-  el.stateLine.textContent = 'Select a target project';
+  setProjectHeader('', 'Choose a target project to continue.');
   if (el.projectStatus) el.projectStatus.textContent = 'Loading project list...';
   const data = await api('/api/projects');
   state.projects = data.projects || [];
@@ -562,7 +596,10 @@ async function applyAppState(appState) {
   state.repoRoot = appState.repoRoot || '';
   state.profiles = appState.foldingProfiles || [];
   state.sessionGrandTotal = appState.totals.sessionCount || 0;
-  el.stateLine.textContent = `${appState.repoRoot} | ${appState.totals.sessionCount} sessions | ${appState.totals.eventCount} logical events | ${appState.totals.rawEventCount} raw records`;
+  setProjectHeader(
+    appState.repoRoot,
+    `${appState.totals.sessionCount} sessions | ${appState.totals.eventCount} logical events | ${appState.totals.rawEventCount} raw records`,
+  );
   el.profileSelect.innerHTML = state.profiles.map((profile) => (
     `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name)}</option>`
   )).join('');
@@ -580,18 +617,29 @@ async function applyAppState(appState) {
 
 async function selectProject(repoRoot, options = {}) {
   if (!repoRoot) return;
-  if (el.projectStatus) el.projectStatus.textContent = `Loading ${repoRoot}...`;
+  state.projectLoadingRoot = repoRoot;
+  renderProjects();
+  setProjectHeader('', `Indexing ${projectName(repoRoot)}...`);
+  if (el.projectStatus) el.projectStatus.textContent = `Reading matching sessions for ${repoRoot}. This can take a few seconds for large transcript history.`;
   setAnalyzerDisabled(true);
-  const appState = await api('/api/project', {
-    method: 'POST',
-    body: { repoRoot },
-  });
-  localStorage.setItem(REPO_STORAGE_KEY, appState.repoRoot);
-  resetProjectViewState();
-  await applyAppState(appState);
-  setProjectMode(false);
-  await loadSessions();
-  if (!options.restore && el.projectStatus) el.projectStatus.textContent = '';
+  try {
+    const appState = await api('/api/project', {
+      method: 'POST',
+      body: { repoRoot },
+    });
+    localStorage.setItem(REPO_STORAGE_KEY, appState.repoRoot);
+    state.projectLoadingRoot = '';
+    resetProjectViewState();
+    await applyAppState(appState);
+    setProjectMode(false);
+    await loadSessions();
+    if (!options.restore && el.projectStatus) el.projectStatus.textContent = '';
+  } catch (error) {
+    state.projectLoadingRoot = '';
+    renderProjects();
+    setAnalyzerDisabled(false);
+    throw error;
+  }
 }
 
 async function init() {
@@ -1117,7 +1165,7 @@ el.projectList?.addEventListener('click', (event) => {
   if (item) selectProject(item.dataset.projectRoot).catch(showError);
 });
 
-el.switchProjectBtn?.addEventListener('click', () => {
+el.projectSwitchControl?.addEventListener('click', () => {
   showProjectChooser({ autoRestore: false }).catch(showError);
 });
 
@@ -1331,7 +1379,11 @@ document.addEventListener('keydown', (event) => {
 });
 
 function showError(error) {
-  el.stateLine.textContent = error.message;
+  if (state.selectingProject) {
+    setProjectHeader('', error.message);
+  } else {
+    el.stateLine.textContent = error.message;
+  }
   if (state.selectingProject && el.projectStatus) el.projectStatus.textContent = error.message;
   console.error(error);
 }

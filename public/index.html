@@ -9,8 +9,13 @@
   </head>
   <body data-mobile-view="sessions">
     <header class="topbar">
-      <div>
-        <h1>Codex Session Analyzer</h1>
+      <div class="projectHeader">
+        <h1>
+          <button id="projectSwitchControl" class="projectSwitchControl" type="button" aria-label="Switch target project">
+            <span id="projectTitle">Select project</span>
+            <span class="projectSwitchHint">Change</span>
+          </button>
+        </h1>
         <p id="stateLine">正在读取本地 sessions…</p>
       </div>
       <div class="searchbar">
@@ -73,7 +78,6 @@
           <option value="raw">Raw records</option>
         </select>
         <select id="profileSelect" aria-label="折叠策略"></select>
-        <button id="switchProjectBtn" type="button">Project</button>
       </div>
     </header>
 
@@ -87,8 +91,8 @@
       <div class="projectChooserHeader">
         <h2>Select target project</h2>
         <p>Choose a Codex session working directory to analyze.</p>
+        <div id="projectStatus" class="projectStatus" aria-live="polite"></div>
       </div>
-      <div id="projectStatus" class="projectStatus" aria-live="polite"></div>
       <div id="projectList" class="projectList"></div>
     </section>
 

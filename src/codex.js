@@ -11,6 +11,7 @@ const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/
 const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'kv', 'notice', 'raw_json']);
 const SESSION_TITLE_LIMIT = 120;
 const SUBAGENT_SESSION_TITLE_LIMIT = 160;
+const PROJECT_DISCOVERY_LINE_LIMIT = 80;
 
 let markdownRenderer = null;
 
@@ -469,18 +470,22 @@ async function discoverProjects({ codexHome }) {
     const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
     const cwdSet = new Set();
-    let updatedAt = '';
+    const updatedAt = safeIso(stat.mtime);
+    let lineNumber = 0;
 
     for await (const line of rl) {
+      lineNumber += 1;
       if (!line.trim()) continue;
       const record = safeJsonParse(line);
       if (!record) continue;
-      const timestamp = safeIso(record.timestamp);
-      if (timestamp && timestamp > updatedAt) updatedAt = timestamp;
       const cwd = record.type === 'session_meta' ? record.payload?.cwd : '';
       if (cwd) cwdSet.add(path.resolve(cwd));
+      if (cwdSet.size || lineNumber >= PROJECT_DISCOVERY_LINE_LIMIT) {
+        rl.close();
+        stream.destroy();
+        break;
+      }
     }
-    if (!updatedAt) updatedAt = safeIso(stat.mtime);
 
     for (const repoRoot of cwdSet) {
       const key = normalizeFsPath(repoRoot);
