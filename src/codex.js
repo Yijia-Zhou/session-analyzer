@@ -612,6 +612,7 @@ function makeRawEvent(record, lineNumber, relFile, sessionId) {
     commandText: '',
     stdout: '',
     stderr: '',
+    aggregatedOutput: '',
     exitCode: null,
     durationMs: 0,
     touchedFiles: [],
@@ -677,10 +678,11 @@ function makeRawEvent(record, lineNumber, relFile, sessionId) {
         raw.commandText = commandToText(payload.command);
         raw.stdout = String(payload.stdout || '');
         raw.stderr = String(payload.stderr || '');
+        raw.aggregatedOutput = String(payload.aggregated_output || '');
         raw.exitCode = Number.isFinite(Number(payload.exit_code)) ? Number(payload.exit_code) : null;
         raw.durationMs = durationMs(payload.duration);
         raw.preview = truncate(raw.commandText || 'exec_command_end');
-        raw.searchText = [raw.commandText, raw.stdout, raw.stderr, payload.formatted_output || ''].join('\n');
+        raw.searchText = [raw.commandText, raw.stdout, raw.stderr, raw.aggregatedOutput, payload.formatted_output || ''].join('\n');
         return raw;
       case 'patch_apply_end':
         raw.touchedFiles = payload.changes && typeof payload.changes === 'object' ? Object.keys(payload.changes) : [];
@@ -745,6 +747,13 @@ function parseOutputEnvelope(text) {
   const obj = safeJsonParse(text);
   if (obj && typeof obj === 'object') return obj;
   return null;
+}
+
+function numericExitCode(...values) {
+  for (const value of values) {
+    if (isFiniteNumberValue(value)) return Number(value);
+  }
+  return 0;
 }
 
 function patchFilesFromPatchInput(input) {
@@ -1037,7 +1046,7 @@ function extractCommandSections(raws, event) {
     sections.push({ type: 'json', title: 'Command arguments', value: args });
   }
 
-  const stdout = firstNonEmpty(execEnd?.stdout, formatted?.output);
+  const stdout = firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, execEnd?.parsed?.payload?.formatted_output, formatted?.output);
   const stderr = execEnd?.stderr || '';
   maybePushTerminalSection(sections, 'stdout', stdout, 'stdout');
   maybePushTerminalSection(sections, 'stderr', stderr, 'stderr');
@@ -1246,7 +1255,7 @@ function rawToolSections(raw, relatedEvent) {
     omitPayloadKeys.push('arguments');
   } else if (raw.recordType === 'response_item' && raw.payloadType === 'function_call_output' && relatedEvent?.kind === 'command') {
     const formatted = parseFormattedCommandOutput(raw.output);
-    if (formatted) {
+  if (formatted) {
       maybePushKvSection(sections, 'Command output metadata', [
         { key: 'exitCode', value: String(formatted.exitCode) },
         { key: 'wallTime', value: formatted.wallTime },
@@ -1264,9 +1273,10 @@ function rawToolSections(raw, relatedEvent) {
       { key: 'exitCode', value: raw.exitCode == null ? '' : String(raw.exitCode) },
       { key: 'durationMs', value: raw.durationMs == null ? '' : String(raw.durationMs) },
     ]);
-    maybePushTerminalSection(sections, 'stdout', raw.stdout, 'stdout');
+    const stdout = firstNonEmpty(raw.stdout, raw.aggregatedOutput, raw.parsed?.payload?.formatted_output);
+    maybePushTerminalSection(sections, 'stdout', stdout, 'stdout');
     maybePushTerminalSection(sections, 'stderr', raw.stderr, 'stderr');
-    if (raw.stdout) maybePushParsedOutputSection(sections, 'stdout (structured)', raw.stdout);
+    if (stdout) maybePushParsedOutputSection(sections, 'stdout (structured)', stdout);
     if (raw.stderr) maybePushParsedOutputSection(sections, 'stderr (structured)', raw.stderr);
     omitPayloadKeys.push('command', 'cwd', 'stdout', 'stderr', 'aggregated_output', 'formatted_output', 'exit_code', 'duration', 'status');
   } else if (raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call' && toolName === 'apply_patch') {
@@ -1518,7 +1528,7 @@ function buildToolLogicalEvent(callId, group) {
   const parts = [];
 
   if (execEnd) {
-    parts.push(execEnd.commandText, execEnd.stdout, execEnd.stderr);
+    parts.push(execEnd.commandText, execEnd.stdout, execEnd.stderr, execEnd.aggregatedOutput);
     outputStats.exitCode = execEnd.exitCode;
     outputStats.durationMs = execEnd.durationMs;
   }
@@ -1530,16 +1540,17 @@ function buildToolLogicalEvent(callId, group) {
 
   if (toolName === 'shell_command' || execEnd) {
     kind = 'command';
-    label = execEnd?.exitCode === 0 ? 'Command' : 'Failed command';
-    preview = truncate(execEnd?.commandText || functionCall?.output || 'shell command');
-    const exitCode = execEnd?.exitCode ?? functionOutputInfo?.exitCode ?? customOutputObj?.metadata?.exit_code ?? 0;
+    const args = commandArgsFromRaw(functionCall);
+    const exitCode = numericExitCode(execEnd?.exitCode, functionOutputInfo?.exitCode, customOutputObj?.metadata?.exit_code);
+    label = exitCode === 0 ? 'Command' : 'Failed command';
+    preview = truncate(execEnd?.commandText || commandToText(args?.command) || functionCall?.output || 'shell command');
     status = exitCode === 0 ? 'success' : 'failed';
     severity = exitCode === 0 ? 'normal' : 'error';
     outputStats.exitCode = exitCode;
     if (!outputStats.durationMs && customOutputObj?.metadata?.duration_seconds) {
       outputStats.durationMs = Math.round(Number(customOutputObj.metadata.duration_seconds) * 1000);
     }
-    touchedFiles = touchFilesFromOutputText(execEnd?.stdout || functionOutputInfo?.output || '');
+    touchedFiles = touchFilesFromOutputText(firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, functionOutputInfo?.output));
   } else if (toolName === 'apply_patch' || patchEnd) {
     kind = 'patch';
     touchedFiles = patchEnd?.touchedFiles?.length ? patchEnd.touchedFiles : patchFilesFromPatchInput(customCall?.output || '');

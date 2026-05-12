@@ -248,6 +248,22 @@ test('tool logical events merge new and old format patch records and search stil
   assert.deepEqual(failedDetail.sections.find((section) => section.title === 'Patch files').entries, [
     { key: 'src/failed.js', value: '+1 / -1' },
   ]);
+
+  const outputOnlyCommandTimeline = getTimeline(index, index.sessions[0].id, {
+    offset: 0,
+    limit: 100,
+    q: 'rg -n -F',
+    kind: 'command',
+    status: 'success',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(outputOnlyCommandTimeline.total, 1);
+  assert.equal(outputOnlyCommandTimeline.events[0].label, 'Command');
+  assert.equal(outputOnlyCommandTimeline.events[0].status, 'success');
+  assert.equal(outputOnlyCommandTimeline.events[0].outputStats.exitCode, 0);
+  assert.match(outputOnlyCommandTimeline.events[0].preview, /rg -n -F 'alpha' 'src'/);
 });
 
 test('file suggestions come from analyzed session touched files', async () => {
