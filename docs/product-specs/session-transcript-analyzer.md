@@ -57,7 +57,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 3. The user sees a session list with counts, sizes, timestamps, and failure indicators. / 用户看到包含计数、大小、时间戳和失败指示器的会话列表。
 4. Opening a session shows the main timeline by default. / 打开会话时默认显示主时间线。
 5. The user may switch between `Main timeline`, `Protocol layer`, and `Raw records`. / 用户可以在 `Main timeline`、`Protocol layer` 和 `Raw records` 之间切换。
-6. The user may search from the top search bar, use `file:`, `kind:`, `status:`, and `layer:` operators for structured narrowing, choose common analyzed-project files from suggestions, filter by kind/status controls, and inspect grouped tool operations. / 用户可以从顶部搜索栏搜索，使用 `file:`、`kind:`、`status:` 和 `layer:` 操作符进行结构化收窄，从候选中选择常见的被分析项目文件，通过类型/状态控件筛选，并检查分组后的工具操作。
+6. The user may search from the top search bar, use `file:`, `kind:`, `status:`, and `layer:` operators for structured narrowing, choose common analyzed-project files from suggestions, and inspect grouped tool operations. / 用户可以从顶部搜索栏搜索，使用 `file:`、`kind:`、`status:` 和 `layer:` 操作符进行结构化收窄，从候选中选择常见的被分析项目文件，并检查分组后的工具操作。
 7. Expanding a timeline card replaces the preview with structured event detail inline, including markdown messages, command output, diffs, notices, and structured metadata. / 展开时间线卡片会以内联结构化事件详情替换预览，内容包括 Markdown 消息、命令输出、差异、通知和结构化元数据。
 8. Raw JSON fallback sections remain available from expanded cards but stay visually secondary outside the raw layer. / 原始 JSON 回退区段仍可从展开卡片访问，但在原始层之外保持视觉上的次要地位。
 9. Clicking a timeline event shows a selected-event inspector in the right-side panel with summary, metadata, source context, and structured detail. / 点击时间线事件会在右侧面板显示选中事件检查器，包含概要、元数据、来源上下文和结构化详情。

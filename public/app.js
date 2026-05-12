@@ -97,8 +97,6 @@ const el = {
   searchFileSuggestions: document.getElementById('searchFileSuggestions'),
   profileSelect: document.getElementById('profileSelect'),
   layerSelect: document.getElementById('layerSelect'),
-  kindFilter: document.getElementById('kindFilter'),
-  statusFilter: document.getElementById('statusFilter'),
   sortSelect: document.getElementById('sortSelect'),
   sessionList: document.getElementById('sessionList'),
   sessionHeader: document.getElementById('sessionHeader'),
@@ -171,8 +169,8 @@ function currentSearchState() {
   return {
     q: parsed.q,
     file: parsed.file,
-    kind: parsed.kind || el.kindFilter.value,
-    status: parsed.status || el.statusFilter.value,
+    kind: parsed.kind,
+    status: parsed.status,
     layer: parsed.layer || state.layerId || 'main',
     parsed,
   };
@@ -297,8 +295,8 @@ function activeFilters() {
   const filters = [];
   const search = currentSearchState();
   if (search.q) filters.push({ key: 'q', label: `Search: ${search.q}` });
-  if (search.kind) filters.push({ key: 'kind', label: `Kind: ${optionText(el.kindFilter, search.kind, KIND_LABELS)}` });
-  if (search.status) filters.push({ key: 'status', label: `Status: ${optionText(el.statusFilter, search.status, STATUS_LABELS)}` });
+  if (search.kind) filters.push({ key: 'kind', label: `Kind: ${optionText(el.searchKindSelect, search.kind, KIND_LABELS)}` });
+  if (search.status) filters.push({ key: 'status', label: `Status: ${optionText(el.searchStatusSelect, search.status, STATUS_LABELS)}` });
   if (search.file) filters.push({ key: 'file', label: `File: ${search.file}` });
   if (search.layer !== 'main') filters.push({ key: 'layer', label: `Layer: ${optionText(el.layerSelect, search.layer, LAYER_LABELS)}` });
   return filters;
@@ -433,8 +431,6 @@ function renderResultSummary() {
 function clearActiveFilter(key) {
   if (key === 'all') {
     el.searchInput.value = '';
-    el.kindFilter.value = '';
-    el.statusFilter.value = '';
     state.layerId = 'main';
     el.layerSelect.value = state.layerId;
     localStorage.setItem('sessionAnalyzer.layer', state.layerId);
@@ -444,10 +440,8 @@ function clearActiveFilter(key) {
     el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'file');
   } else if (key === 'kind') {
     el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'kind');
-    el.kindFilter.value = '';
   } else if (key === 'status') {
     el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'status');
-    el.statusFilter.value = '';
   } else if (key === 'layer') {
     el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'layer');
     state.layerId = 'main';
@@ -1171,26 +1165,6 @@ document.addEventListener('pointerdown', (event) => {
   hideSearchAssist();
 });
 
-el.kindFilter.addEventListener('input', () => {
-  el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'kind');
-  renderSearchAssistChips();
-  reload();
-});
-el.kindFilter.addEventListener('change', () => {
-  el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'kind');
-  renderSearchAssistChips();
-  reload();
-});
-el.statusFilter.addEventListener('input', () => {
-  el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'status');
-  renderSearchAssistChips();
-  reload();
-});
-el.statusFilter.addEventListener('change', () => {
-  el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'status');
-  renderSearchAssistChips();
-  reload();
-});
 el.sortSelect.addEventListener('input', reload);
 el.sortSelect.addEventListener('change', reload);
 

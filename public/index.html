@@ -84,34 +84,10 @@
 
     <main class="layout">
       <aside class="sessionsPane">
-        <section class="filters" aria-label="筛选器">
-          <label>
-            类型
-            <select id="kindFilter">
-              <option value="">全部</option>
-              <option value="user_message">用户消息</option>
-              <option value="assistant_message">助手消息</option>
-              <option value="command">命令</option>
-              <option value="patch">Patch</option>
-              <option value="mcp">MCP</option>
-              <option value="js_repl">JS REPL</option>
-              <option value="tool_operation">Tool op</option>
-              <option value="plan_artifact">Plan</option>
-              <option value="protocol">Protocol</option>
-              <option value="error">错误</option>
-              <option value="compaction">压缩</option>
-            </select>
-          </label>
-          <label>
-            状态
-            <select id="statusFilter">
-              <option value="">全部</option>
-              <option value="failed">失败</option>
-              <option value="success">成功</option>
-            </select>
-          </label>
-          <label>
-            排序
+        <div class="sessionListHeader">
+          <h2>Sessions</h2>
+          <label class="sortControl">
+            <span class="srOnly">排序</span>
             <select id="sortSelect">
               <option value="updated-desc">最近更新</option>
               <option value="started-asc">开始时间</option>
@@ -119,7 +95,7 @@
               <option value="failures-desc">失败最多</option>
             </select>
           </label>
-        </section>
+        </div>
         <div id="sessionList" class="sessionList"></div>
       </aside>
 
