@@ -57,8 +57,8 @@ function printHelp() {
     '',
     'Examples:',
     '  node server.js',
-    '  node server.js --repo G:\\vibe\\term-agent',
-    '  node server.js --repo G:\\vibe\\term-agent --codex-home C:\\Users\\Yijia\\.codex --port 17890',
+    '  node server.js --repo C:\\path\\to\\project',
+    '  node server.js --repo C:\\path\\to\\project --codex-home C:\\Users\\you\\.codex --port 17890',
   ].join('\n'));
 }
 
