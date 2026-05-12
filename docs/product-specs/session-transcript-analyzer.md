@@ -75,6 +75,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - [x] Protocol layer events use readable labels and concise summaries before users open raw JSON. / 协议层事件在用户打开原始 JSON 之前就使用可读标签和简洁摘要。
 - [x] Tool calls are visible as logical operations with status, affected files, and raw drill-down. / 工具调用以逻辑操作形式可见，并带有状态、受影响文件和原始下钻入口。
 - [x] Expanded timeline cards render structured event detail instead of only enlarging a truncated preview. / 展开的时间线卡片渲染结构化事件详情，而不是只放大截断预览。
+- [x] Command output display applies conservative mojibake repair for likely UTF-8-as-GB18030/GBK text and marks unrecoverable replacement placeholders as `□`, while preserving raw JSONL drill-down. / 命令输出显示会对疑似 UTF-8 被当作 GB18030/GBK 解码的文本做保守乱码修复，并用 `□` 标记不可恢复的替换占位，同时保留原始 JSONL 下钻。
 - [x] Expanded timeline cards do not duplicate truncated preview text above the full body. / 展开的时间线卡片不会在完整正文上方重复截断预览文本。
 - [x] Expanded detail remains available for `main`, `protocol`, and `raw` layers without hiding unknown transcript shapes. / 展开详情在 `main`、`protocol` 和 `raw` 层都保持可用，并且不会隐藏未知转录形态。
 - [x] Raw records that map to known semantic events reuse the relevant structured detail sections, while keeping raw JSON available. / 映射到已知语义事件的原始记录会复用相关的结构化详情区段，同时保持原始 JSON 可用。

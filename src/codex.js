@@ -14,6 +14,7 @@ const SUBAGENT_SESSION_TITLE_LIMIT = 160;
 const PROJECT_DISCOVERY_LINE_LIMIT = 80;
 
 let markdownRenderer = null;
+let gb18030ReverseMap = null;
 
 function normalizeFsPath(input) {
   if (!input) return '';
@@ -153,6 +154,122 @@ function stringifyValue(value) {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   return JSON.stringify(value, null, 2);
+}
+
+function ensureGb18030ReverseMap() {
+  if (gb18030ReverseMap) return gb18030ReverseMap;
+  const decoder = new TextDecoder('gb18030');
+  const map = new Map();
+  const add = (bytes) => {
+    const decoded = decoder.decode(Buffer.from(bytes));
+    if (!decoded || decoded.includes('\uFFFD')) return;
+    if (Array.from(decoded).length !== 1) return;
+    if (!map.has(decoded)) map.set(decoded, bytes);
+  };
+
+  for (let b = 0x00; b <= 0xff; b += 1) add([b]);
+  for (let lead = 0x81; lead <= 0xfe; lead += 1) {
+    for (let trail = 0x40; trail <= 0xfe; trail += 1) {
+      if (trail === 0x7f) continue;
+      add([lead, trail]);
+    }
+  }
+  map.set('\u20ac', [0x80]);
+
+  gb18030ReverseMap = map;
+  return gb18030ReverseMap;
+}
+
+function encodeGb18030FromDecodedText(text, options = {}) {
+  const map = ensureGb18030ReverseMap();
+  const bytes = [];
+  for (const char of String(text || '')) {
+    if (options.skipReplacement && char === '\uFFFD') continue;
+    if (options.skipSuspiciousQuestion && char === '?') continue;
+    const encoded = map.get(char);
+    if (!encoded) return null;
+    bytes.push(...encoded);
+  }
+  return Buffer.from(bytes);
+}
+
+function countMatches(text, pattern) {
+  return (String(text || '').match(pattern) || []).length;
+}
+
+function mojibakeScore(text) {
+  const source = String(text || '');
+  if (!source) return 0;
+  const markers = [
+    '\u947d', '\u741b', '\u93bb', '\u612c', '\u5f47', '\u7487', '\u67a1', '\u7ecb', '\u9366', '\u6d93',
+    '\u9286', '\u4e63', '\u9428', '\u9354', '\u59dd', '\u6e36', '\u5bee', '\u5fda', '\u68f0', '\u5815',
+    '\u93c3', '\u6d7c', '\u6c33', '\u763d', '\u9363', '\u8bf2', '\u5f5b', '\u71b7', '\u5bb3', '\u20ac?',
+  ];
+  let score = countMatches(source, /\uFFFD/g) * 10
+    + countMatches(source, /[€™œ¢£¥]/g) * 4
+    + countMatches(source, /[ÃÂÎÐÑÊµ]|[æçèé]/g) * 4;
+  for (const marker of markers) {
+    let index = source.indexOf(marker);
+    while (index !== -1) {
+      score += 2;
+      index = source.indexOf(marker, index + marker.length);
+    }
+  }
+  return score;
+}
+
+function countCjk(text) {
+  return countMatches(text, /[\u3400-\u9FFF]/g);
+}
+
+function looksUsefulMojibakeRepair(source, repaired, sourceScore) {
+  if (!repaired || repaired === source) return false;
+  const repairedScore = mojibakeScore(repaired);
+  const sourceReplacementCount = countMatches(source, /\uFFFD/g)
+    + (sourceScore > 0 || /[\uE000-\uF8FF]/.test(source) ? countMatches(source, /\?/g) : 0);
+  const repairedReplacementCount = countMatches(repaired, /\uFFFD/g);
+  if (repairedReplacementCount > sourceReplacementCount) return false;
+  if (repairedScore + 4 < sourceScore) return true;
+  if (repairedReplacementCount === 0 && /[^\x00-\x7F]/.test(source) && countCjk(repaired) > 0) return true;
+  return sourceReplacementCount > 0 && repairedReplacementCount <= sourceReplacementCount && countCjk(repaired) >= countCjk(source) / 2;
+}
+
+function repairLikelyMojibakeSegment(text, options = {}) {
+  const source = String(text || '');
+  if (!/[^\x00-\x7F]/.test(source)) return source;
+  const sourceScore = mojibakeScore(source);
+
+  const bytes = encodeGb18030FromDecodedText(source);
+  if (bytes) {
+    const repaired = bytes.toString('utf8');
+    if (looksUsefulMojibakeRepair(source, repaired, sourceScore)) return repaired;
+  }
+
+  if (options.allowLossy && (source.includes('\uFFFD') || source.includes('?'))) {
+    const lossyBytes = encodeGb18030FromDecodedText(source, {
+      skipReplacement: true,
+      skipSuspiciousQuestion: /[^\x00-\x7F]/.test(source),
+    });
+    if (lossyBytes) {
+      const lossyRepaired = lossyBytes.toString('utf8');
+      if (looksUsefulMojibakeRepair(source, lossyRepaired, sourceScore)) return lossyRepaired;
+    }
+  }
+  return source;
+}
+
+function repairLikelyMojibake(text) {
+  const source = String(text || '');
+  const repaired = repairLikelyMojibakeSegment(source, { allowLossy: true });
+  if (repaired !== source) return repaired;
+
+  return source.replace(/[^\s`|<>{}\[\]()]+/g, (segment) => repairLikelyMojibakeSegment(segment, { allowLossy: true }));
+}
+
+function normalizeTerminalReplacementPlaceholders(text) {
+  return String(text || '')
+    .replace(/\uFFFD\??/g, '\u25A1')
+    .replace(/[鍜銆鈥锛]\?/g, '\u25A1');
 }
 
 function coerceJsonValue(value) {
@@ -345,7 +462,7 @@ function maybePushCodeSection(sections, title, code, language = '') {
 }
 
 function maybePushTerminalSection(sections, title, text, stream = 'stdout') {
-  const source = String(text || '');
+  const source = normalizeTerminalReplacementPlaceholders(repairLikelyMojibake(text));
   if (!source.trim()) return;
   sections.push({ type: 'terminal', title, text: source, stream });
 }

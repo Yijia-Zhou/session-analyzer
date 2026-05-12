@@ -159,6 +159,10 @@ Raw rows that map to known semantic events reuse the same primary structured sec
 
 映射到已知语义事件的原始行会复用与其逻辑事件家族相同的主结构化区段提取，然后附加原始记录元数据和展开的原始 JSON。对话行复用 Markdown 正文区段，协议行复用协议文本/字段区段，生命周期行复用通知区段，工具行复用命令或补丁区段。这样原始检查既保持忠实，也不会在已有更具体渲染器时退回到重复标量字段或通用 payload 块。
 
+Terminal sections may apply display-only repair for text that looks like UTF-8 bytes decoded as GB18030/GBK before it was written to the transcript, such as Windows PowerShell `Get-Content` output from UTF-8 files without an explicit encoding. The repair is conservative and does not mutate raw rows; Raw refs continue to expose the original JSONL payload. When bytes were already lost and only replacement placeholders remain, terminal display uses `□` to mark unrecoverable characters.
+
+终端区段可以对看起来像“UTF-8 字节在写入转录前被当作 GB18030/GBK 解码”的文本做仅用于显示的修复，例如 Windows PowerShell `Get-Content` 在未显式指定编码时读取 UTF-8 文件产生的输出。该修复保持保守且不改变原始行；Raw refs 仍继续暴露原始 JSONL payload。当字节已经丢失、只剩替换占位时，终端显示使用 `□` 标记不可恢复字符。
+
 Sections may set `hideTitle: true` when the section title only restates the event header, such as the primary `Message`, `Plan`, `Reasoning`, or protocol text body. Renderer implementations should keep titles visible for structural sections such as stdout/stderr, metadata tables, request/response payloads, patch files, and raw JSON summaries.
 
 当区段标题只是重复事件标题时，例如主要的 `Message`、`Plan`、`Reasoning` 或协议文本正文，区段可以设置 `hideTitle: true`。渲染器实现应为 stdout/stderr、元数据表、请求/响应载荷、补丁文件和原始 JSON 摘要等结构性区段保留可见标题。

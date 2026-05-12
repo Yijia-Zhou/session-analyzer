@@ -442,6 +442,79 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   assert.equal(rawPatchEndDetail.sections[0].title, 'Patch files');
 });
 
+test('command terminal sections repair UTF-8 text decoded as GB18030', () => {
+  const decodeUtf8AsGb18030 = (text) => new TextDecoder('gb18030').decode(Buffer.from(text, 'utf8'));
+  const rawCall = {
+    rawId: 'fixture:raw:1',
+    recordType: 'response_item',
+    payloadType: 'function_call',
+    toolName: 'shell_command',
+    output: JSON.stringify({
+      command: "Get-Content -Path 'analysis_output\\fine_omni_events.py'",
+      workdir: 'G:\\vibe\\video-spotter',
+    }),
+    parsed: { payload: {} },
+    source: { file: 'fixture.jsonl', line: 1 },
+  };
+  const rawOutput = {
+    rawId: 'fixture:raw:2',
+    recordType: 'response_item',
+    payloadType: 'function_call_output',
+    output: [
+      'Exit code: 0',
+      'Wall time: 0.1 seconds',
+      'Output:',
+      `# AI ${decodeUtf8AsGb18030('功能测试视频事件定位工作流')}`,
+      '本文档总结 `荣耀-OCR表格提取` 和 `2-语音转文字` 两个场景。',
+      'ASCII question? stays as question.',
+      `## ${decodeUtf8AsGb18030('已验证场景')}`,
+      `VIDEO_DIR = ROOT / "test_videos" / "${decodeUtf8AsGb18030('荣耀-OCR表格提取')}"`,
+      `WINDOWS = {"${decodeUtf8AsGb18030('语料1.mp4')}": {"capture_done": (10.8, 12.4)}}`,
+      `- ${decodeUtf8AsGb18030('抽帧与 seek 策略')}`,
+      'Lost punctuation: 鍜? 銆? 锛? 鈥?',
+    ].join('\n'),
+    parsed: { payload: {} },
+    source: { file: 'fixture.jsonl', line: 2 },
+  };
+  const event = {
+    id: 'fixture:logical:call:1',
+    kind: 'command',
+    layer: 'main',
+    label: 'Command',
+    status: 'success',
+    severity: 'normal',
+    toolName: 'shell_command',
+    outputStats: { exitCode: 0 },
+    touchedFiles: [],
+    rawRefs: [
+      { rawId: rawCall.rawId, file: 'fixture.jsonl', line: 1 },
+      { rawId: rawOutput.rawId, file: 'fixture.jsonl', line: 2 },
+    ],
+    channels: ['response_item'],
+  };
+  const session = {
+    rawEvents: [rawCall, rawOutput],
+    logicalEvents: [event],
+  };
+
+  const detail = buildEventDetail(session, event.id, 'main');
+  const stdout = detail.sections.find((section) => section.type === 'terminal' && section.title === 'stdout');
+  assert.ok(stdout);
+  assert.match(stdout.text, /功能测试视频事件定位工作/);
+  assert.match(stdout.text, /功能测试视频事件定位工作□/);
+  assert.match(stdout.text, /本文档总结 `荣耀-OCR表格提取` 和 `2-语音转文字` 两个场景。/);
+  assert.match(stdout.text, /ASCII question\? stays as question\./);
+  assert.match(stdout.text, /已验证场/);
+  assert.match(stdout.text, /已验证场□/);
+  assert.match(stdout.text, /荣耀-OCR表格提取/);
+  assert.match(stdout.text, /语料1\.mp4/);
+  assert.match(stdout.text, /抽帧/);
+  assert.match(stdout.text, /策略/);
+  assert.match(stdout.text, /Lost punctuation: □ □ □ □/);
+  assert.doesNotMatch(stdout.text, /\uFFFD\?/);
+  assert.doesNotMatch(stdout.text, /鍔熻兘|鑽|璇枡|绛栫暐/);
+});
+
 test('detail endpoint returns structured event detail with sections and raw refs', async () => {
   const index = await buildFixtureIndex();
   const session = index.sessions[0];
