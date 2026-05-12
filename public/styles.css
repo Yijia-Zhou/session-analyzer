@@ -78,12 +78,13 @@ button:hover,
 .searchbar {
   display: grid;
   gap: 0.5rem;
-  grid-template-columns: minmax(220px, 1fr) minmax(150px, 190px) minmax(160px, 220px);
+  grid-template-columns: minmax(220px, 1fr) minmax(150px, 190px) minmax(160px, 220px) auto;
   width: min(940px, 68vw);
 }
 
 .searchbar input,
-.searchbar select {
+.searchbar select,
+.searchbar button {
   background: #fff;
   min-height: 40px;
   padding: 0.5rem;
@@ -223,6 +224,75 @@ button:hover,
 
 .mobileViewTabs {
   display: none;
+}
+
+.projectChooser[hidden] {
+  display: none;
+}
+
+.projectChooser {
+  display: grid;
+  gap: 1rem;
+  margin: 0 auto;
+  max-width: 980px;
+  padding: 2rem 1rem;
+}
+
+body[data-project-mode='selecting'] .layout,
+body[data-project-mode='selecting'] .mobileViewTabs {
+  display: none;
+}
+
+.projectChooserHeader {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.projectChooserHeader h2 {
+  font-size: 1.15rem;
+  margin: 0;
+}
+
+.projectChooserHeader p,
+.projectStatus,
+.projectMeta {
+  color: var(--muted);
+  margin: 0;
+}
+
+.projectList {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.projectItem {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: grid;
+  gap: 0.35rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 62px;
+  padding: 0.7rem 0.8rem;
+  text-align: left;
+}
+
+.projectItem:hover,
+.projectItem:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.projectPath {
+  font-family: var(--mono);
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
+.projectMeta {
+  display: block;
+  font-size: 0.78rem;
 }
 
 .mobileViewTab {

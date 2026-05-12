@@ -458,6 +458,59 @@ async function collectJsonlFiles(root) {
   return out;
 }
 
+async function discoverProjects({ codexHome }) {
+  const resolvedCodex = path.resolve(codexHome);
+  const sessionsRoot = path.join(resolvedCodex, 'sessions');
+  const files = await collectJsonlFiles(sessionsRoot);
+  const projects = new Map();
+
+  for (const filePath of files) {
+    const stat = await fsp.stat(filePath);
+    const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    const cwdSet = new Set();
+    let updatedAt = '';
+
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      const record = safeJsonParse(line);
+      if (!record) continue;
+      const timestamp = safeIso(record.timestamp);
+      if (timestamp && timestamp > updatedAt) updatedAt = timestamp;
+      const cwd = record.type === 'session_meta' ? record.payload?.cwd : '';
+      if (cwd) cwdSet.add(path.resolve(cwd));
+    }
+    if (!updatedAt) updatedAt = safeIso(stat.mtime);
+
+    for (const repoRoot of cwdSet) {
+      const key = normalizeFsPath(repoRoot);
+      const project = projects.get(key) || {
+        repoRoot,
+        sessionCount: 0,
+        updatedAt: '',
+        exists: false,
+      };
+      project.sessionCount += 1;
+      if (updatedAt && updatedAt > project.updatedAt) project.updatedAt = updatedAt;
+      projects.set(key, project);
+    }
+  }
+
+  for (const project of projects.values()) {
+    try {
+      project.exists = (await fsp.stat(project.repoRoot)).isDirectory();
+    } catch {
+      project.exists = false;
+    }
+  }
+
+  return [...projects.values()].sort((a, b) => (
+    String(b.updatedAt).localeCompare(String(a.updatedAt))
+    || b.sessionCount - a.sessionCount
+    || a.repoRoot.localeCompare(b.repoRoot)
+  ));
+}
+
 async function readSessionIndex(codexHome) {
   const indexPath = path.join(codexHome, 'session_index.jsonl');
   const map = new Map();
@@ -2345,6 +2398,7 @@ async function readRawLine(index, relFile, lineNumber) {
 
 module.exports = {
   buildIndex,
+  discoverProjects,
   buildEventDetail,
   fileSuggestions,
   filterSessions,

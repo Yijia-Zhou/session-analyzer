@@ -3,8 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { buildIndex, buildEventDetail, fileSuggestions, filterSessions, getTimeline, readRawLine, isPathInsideOrSame } = require('../src/codex');
-const { createServer } = require('../server');
+const { buildIndex, buildEventDetail, discoverProjects, fileSuggestions, filterSessions, getTimeline, readRawLine, isPathInsideOrSame } = require('../src/codex');
+const { createServer, parseArgs } = require('../server');
 const { foldingProfiles } = require('../src/folding');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
@@ -15,6 +15,20 @@ async function buildFixtureIndex() {
     codexHome: fixtureCodexHome,
   });
 }
+
+test('parseArgs leaves repo unset unless --repo is provided', () => {
+  assert.equal(parseArgs(['node', 'server.js']).repo, null);
+  assert.equal(parseArgs(['node', 'server.js', '--repo', 'G:\\vibe\\term-agent']).repo, 'G:\\vibe\\term-agent');
+});
+
+test('discoverProjects groups Codex sessions by cwd', async () => {
+  const projects = await discoverProjects({ codexHome: fixtureCodexHome });
+  const byRoot = new Map(projects.map((project) => [project.repoRoot, project]));
+
+  assert.equal(byRoot.get('G:\\vibe\\term-agent').sessionCount, 3);
+  assert.equal(byRoot.get('G:\\other\\repo').sessionCount, 1);
+  assert.equal(typeof byRoot.get('G:\\vibe\\term-agent').exists, 'boolean');
+});
 
 test('buildIndex deduplicates mirrored messages and keeps protocol separately', async () => {
   const index = await buildFixtureIndex();
@@ -429,6 +443,40 @@ test('detail endpoint returns structured event detail with sections and raw refs
     assert.equal(body.sections[0].type, 'markdown');
     assert.ok(body.rawRefs.length >= 1);
     assert.deepEqual(Object.keys(body.meta), ['timestamp', 'turnId', 'status', 'severity', 'toolName', 'touchedFiles', 'outputStats', 'channels', 'source']);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('project endpoints require and select a browser-chosen project', async () => {
+  const server = createServer(null, 0, { codexHome: fixtureCodexHome });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const stateBefore = await fetch(`${base}/api/state`);
+    assert.equal(stateBefore.status, 409);
+    assert.equal((await stateBefore.json()).error, 'Project not selected');
+
+    const projectsRes = await fetch(`${base}/api/projects`);
+    assert.equal(projectsRes.status, 200);
+    const projectsBody = await projectsRes.json();
+    assert.ok(projectsBody.projects.some((project) => project.repoRoot === 'G:\\vibe\\term-agent'));
+
+    const selectRes = await fetch(`${base}/api/project`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repoRoot: 'G:\\vibe\\term-agent' }),
+    });
+    assert.equal(selectRes.status, 200);
+    const selectBody = await selectRes.json();
+    assert.equal(selectBody.repoRoot, 'G:\\vibe\\term-agent');
+    assert.equal(selectBody.totals.sessionCount, 3);
+
+    const sessionsRes = await fetch(`${base}/api/sessions`);
+    assert.equal(sessionsRes.status, 200);
+    assert.equal((await sessionsRes.json()).total, 3);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }

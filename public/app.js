@@ -20,6 +20,7 @@ const searchQuery = window.sessionSearchQuery || {
 
 const NAVIGATION_PAGE_LIMIT = 500;
 const FILE_SUGGESTION_LIMIT = 12;
+const REPO_STORAGE_KEY = 'sessionAnalyzer.repoRoot';
 const KIND_LABELS = {
   user_message: 'User message',
   assistant_message: 'Assistant message',
@@ -61,6 +62,10 @@ const NAVIGATION_CATEGORIES = [
 
 const state = {
   sessions: [],
+  repoRoot: '',
+  projects: [],
+  projectSelected: false,
+  selectingProject: false,
   selectedSessionId: '',
   selectedEventId: '',
   offset: 0,
@@ -107,6 +112,10 @@ const el = {
   loadMoreBtn: document.getElementById('loadMoreBtn'),
   resultSummary: document.getElementById('resultSummary'),
   mobileViewButtons: document.querySelectorAll('[data-mobile-view]'),
+  switchProjectBtn: document.getElementById('switchProjectBtn'),
+  projectChooser: document.getElementById('projectChooser'),
+  projectStatus: document.getElementById('projectStatus'),
+  projectList: document.getElementById('projectList'),
 };
 
 function setMobileView(view, options = {}) {
@@ -125,10 +134,20 @@ function setMobileView(view, options = {}) {
   }
 }
 
-function api(path) {
-  return fetch(path).then(async (res) => {
+function api(path, options = {}) {
+  const init = { ...options };
+  if (options.body && typeof options.body !== 'string') {
+    init.body = JSON.stringify(options.body);
+    init.headers = { 'content-type': 'application/json', ...(options.headers || {}) };
+  }
+  return fetch(path, init).then(async (res) => {
     const body = await res.json();
-    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    if (!res.ok) {
+      const error = new Error(body.error || `HTTP ${res.status}`);
+      error.status = res.status;
+      error.details = body.details;
+      throw error;
+    }
     return body;
   });
 }
@@ -464,14 +483,84 @@ function clearCurrentSessionOverrides() {
   localStorage.setItem('sessionAnalyzer.overrides', JSON.stringify(state.overrides));
 }
 
-async function init() {
-  setMobileView(state.mobileView, { scroll: false });
-  const [appState, suggestionState] = await Promise.all([
-    api('/api/state'),
-    api('/api/file-suggestions'),
-  ]);
+function setAnalyzerDisabled(disabled) {
+  for (const control of [el.searchInput, el.layerSelect, el.profileSelect, el.sortSelect, el.resetFoldsBtn, el.loadMoreBtn]) {
+    if (control) control.disabled = disabled;
+  }
+}
+
+function setProjectMode(selecting) {
+  state.selectingProject = selecting;
+  state.projectSelected = !selecting;
+  document.body.dataset.projectMode = selecting ? 'selecting' : 'analyzing';
+  if (el.projectChooser) el.projectChooser.hidden = !selecting;
+  setAnalyzerDisabled(selecting);
+}
+
+function resetProjectViewState() {
+  state.sessions = [];
+  state.selectedSessionId = '';
+  state.selectedEventId = '';
+  state.offset = 0;
+  state.sessionGrandTotal = 0;
+  state.sessionTotal = 0;
+  state.timelineTotal = 0;
+  state.currentEvents = [];
+  state.fileSuggestions = [];
+  state.detailCache = {};
+  state.detailErrors = {};
+  state.detailPending = {};
+  invalidateNavigationCache();
+  el.sessionList.innerHTML = '';
+  el.analysisPanel.innerHTML = '';
+  el.timeline.innerHTML = '';
+  el.resultSummary.textContent = '';
+  el.sessionHeader.innerHTML = '<h2>Select a session</h2><p>Choose a target project first.</p>';
+  el.loadMoreBtn.disabled = true;
+  el.loadMoreBtn.textContent = 'Load more';
+  resetDetailPane();
+}
+
+function renderProjects() {
+  if (!el.projectList) return;
+  if (!state.projects.length) {
+    el.projectList.innerHTML = '<div class="notice warning"><p>No Codex projects were found in the configured sessions directory.</p></div>';
+    return;
+  }
+  const saved = localStorage.getItem(REPO_STORAGE_KEY) || '';
+  el.projectList.innerHTML = state.projects.map((project) => {
+    const selected = project.repoRoot === saved ? 'Last selected' : '';
+    const missing = project.exists ? '' : 'Missing directory';
+    const meta = [selected, `${project.sessionCount} session${project.sessionCount === 1 ? '' : 's'}`, fmtDate(project.updatedAt), missing].filter(Boolean).join(' | ');
+    return `<button class="projectItem" type="button" data-project-root="${escapeHtml(project.repoRoot)}">
+      <span>
+        <span class="projectPath">${escapeHtml(project.repoRoot)}</span>
+        <span class="projectMeta">${escapeHtml(meta)}</span>
+      </span>
+      <span class="chip">Open</span>
+    </button>`;
+  }).join('');
+}
+
+async function showProjectChooser(options = {}) {
+  setProjectMode(true);
+  resetProjectViewState();
+  el.stateLine.textContent = 'Select a target project';
+  if (el.projectStatus) el.projectStatus.textContent = 'Loading project list...';
+  const data = await api('/api/projects');
+  state.projects = data.projects || [];
+  renderProjects();
+  if (el.projectStatus) el.projectStatus.textContent = state.projects.length ? `${state.projects.length} project candidates from ${data.codexHome}` : `No project candidates from ${data.codexHome}`;
+
+  const saved = localStorage.getItem(REPO_STORAGE_KEY);
+  if (options.autoRestore && saved && state.projects.some((project) => project.repoRoot === saved)) {
+    await selectProject(saved, { restore: true });
+  }
+}
+
+async function applyAppState(appState) {
+  state.repoRoot = appState.repoRoot || '';
   state.profiles = appState.foldingProfiles || [];
-  state.fileSuggestions = suggestionState.files || [];
   state.sessionGrandTotal = appState.totals.sessionCount || 0;
   el.stateLine.textContent = `${appState.repoRoot} | ${appState.totals.sessionCount} sessions | ${appState.totals.eventCount} logical events | ${appState.totals.rawEventCount} raw records`;
   el.profileSelect.innerHTML = state.profiles.map((profile) => (
@@ -483,8 +572,40 @@ async function init() {
     el.profileSelect.value = state.profileId;
   }
   el.layerSelect.value = state.layerId;
+  const suggestionState = await api('/api/file-suggestions');
+  state.fileSuggestions = suggestionState.files || [];
   renderFileSuggestions();
   resetDetailPane();
+}
+
+async function selectProject(repoRoot, options = {}) {
+  if (!repoRoot) return;
+  if (el.projectStatus) el.projectStatus.textContent = `Loading ${repoRoot}...`;
+  setAnalyzerDisabled(true);
+  const appState = await api('/api/project', {
+    method: 'POST',
+    body: { repoRoot },
+  });
+  localStorage.setItem(REPO_STORAGE_KEY, appState.repoRoot);
+  resetProjectViewState();
+  await applyAppState(appState);
+  setProjectMode(false);
+  await loadSessions();
+  if (!options.restore && el.projectStatus) el.projectStatus.textContent = '';
+}
+
+async function init() {
+  setMobileView(state.mobileView, { scroll: false });
+  try {
+    const appState = await api('/api/state');
+    await applyAppState(appState);
+    setProjectMode(false);
+  } catch (error) {
+    if (error.status !== 409) throw error;
+    await showProjectChooser({ autoRestore: true });
+    if (state.projectSelected) return;
+    return;
+  }
   await loadSessions();
 }
 
@@ -991,6 +1112,15 @@ async function showRaw(event) {
   </article>`;
 }
 
+el.projectList?.addEventListener('click', (event) => {
+  const item = event.target.closest('[data-project-root]');
+  if (item) selectProject(item.dataset.projectRoot).catch(showError);
+});
+
+el.switchProjectBtn?.addEventListener('click', () => {
+  showProjectChooser({ autoRestore: false }).catch(showError);
+});
+
 el.sessionList.addEventListener('click', (event) => {
   const item = event.target.closest('[data-session-id]');
   if (item) selectSession(item.dataset.sessionId, { mobileView: 'events' }).catch(showError);
@@ -1202,6 +1332,7 @@ document.addEventListener('keydown', (event) => {
 
 function showError(error) {
   el.stateLine.textContent = error.message;
+  if (state.selectingProject && el.projectStatus) el.projectStatus.textContent = error.message;
   console.error(error);
 }
 

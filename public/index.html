@@ -73,6 +73,7 @@
           <option value="raw">Raw records</option>
         </select>
         <select id="profileSelect" aria-label="折叠策略"></select>
+        <button id="switchProjectBtn" type="button">Project</button>
       </div>
     </header>
 
@@ -81,6 +82,15 @@
       <button class="mobileViewTab" type="button" data-mobile-view="events">Events</button>
       <button class="mobileViewTab" type="button" data-mobile-view="detail">Detail</button>
     </nav>
+
+    <section id="projectChooser" class="projectChooser" hidden>
+      <div class="projectChooserHeader">
+        <h2>Select target project</h2>
+        <p>Choose a Codex session working directory to analyze.</p>
+      </div>
+      <div id="projectStatus" class="projectStatus" aria-live="polite"></div>
+      <div id="projectList" class="projectList"></div>
+    </section>
 
     <main class="layout">
       <aside class="sessionsPane">

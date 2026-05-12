@@ -7,7 +7,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const url = require('node:url');
-const { buildIndex, buildEventDetail, fileSuggestions, filterSessions, getTimeline, readRawLine } = require('./src/codex');
+const { buildIndex, buildEventDetail, discoverProjects, fileSuggestions, filterSessions, getTimeline, readRawLine } = require('./src/codex');
 const { foldingProfiles } = require('./src/folding');
 
 const MIME = {
@@ -21,7 +21,7 @@ const MIME = {
 
 function parseArgs(argv) {
   const opts = {
-    repo: process.cwd(),
+    repo: null,
     codexHome: path.join(os.homedir(), '.codex'),
     port: 17890,
     host: '127.0.0.1',
@@ -53,9 +53,10 @@ function printHelp() {
     'Codex Session Analyzer',
     '',
     'Usage:',
-    '  node server.js --repo <repo-path> [--codex-home <path>] [--port <port>]',
+    '  node server.js [--repo <repo-path>] [--codex-home <path>] [--port <port>]',
     '',
     'Examples:',
+    '  node server.js',
     '  node server.js --repo G:\\vibe\\term-agent',
     '  node server.js --repo G:\\vibe\\term-agent --codex-home C:\\Users\\Yijia\\.codex --port 17890',
   ].join('\n'));
@@ -85,6 +86,50 @@ function asNumber(value, fallback, min, max) {
   return Math.max(min, Math.min(max, Math.trunc(n)));
 }
 
+async function readJsonBody(req, limit = 64 * 1024) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) {
+      const error = new Error('Request body too large');
+      error.statusCode = 413;
+      throw error;
+    }
+    chunks.push(chunk);
+  }
+  const text = Buffer.concat(chunks).toString('utf8').trim();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    error.statusCode = 400;
+    error.message = 'Invalid JSON request body';
+    throw error;
+  }
+}
+
+function statePayload(state) {
+  return {
+    repoRoot: state.index.repoRoot,
+    codexHome: state.index.codexHome,
+    generatedAt: state.index.generatedAt,
+    buildMs: state.buildMs,
+    totals: state.index.totals,
+    foldingProfiles,
+    projectSelected: true,
+  };
+}
+
+function requireIndex(state, res) {
+  if (state.index) return state.index;
+  sendError(res, 409, 'Project not selected', {
+    codexHome: state.codexHome,
+    projectSelected: false,
+  });
+  return null;
+}
+
 async function serveStatic(res, pathname) {
   const publicRoot = path.join(__dirname, 'public');
   const safePath = pathname === '/' ? '/index.html' : pathname;
@@ -109,23 +154,48 @@ async function serveStatic(res, pathname) {
   }
 }
 
-function createServer(index, buildMs = 0) {
+function createServer(initialIndex = null, buildMs = 0, options = {}) {
+  const state = {
+    index: initialIndex?.repoRoot ? initialIndex : null,
+    buildMs: initialIndex?.repoRoot ? buildMs : 0,
+    codexHome: path.resolve(initialIndex?.codexHome || initialIndex?.codexHomePath || options.codexHome || path.join(os.homedir(), '.codex')),
+  };
+
   return http.createServer(async (req, res) => {
     try {
       const { pathname, searchParams } = parseQuery(req.url);
-      if (pathname === '/api/state') {
-        sendJson(res, 200, {
-          repoRoot: index.repoRoot,
-          codexHome: index.codexHome,
-          generatedAt: index.generatedAt,
-          buildMs,
-          totals: index.totals,
-          foldingProfiles,
+      if (pathname === '/api/projects') {
+        const projects = await discoverProjects({ codexHome: state.codexHome });
+        sendJson(res, 200, { codexHome: state.codexHome, projects });
+        return;
+      }
+
+      if (pathname === '/api/project' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const repoRoot = String(body.repoRoot || '').trim();
+        if (!repoRoot) {
+          sendError(res, 400, 'repoRoot is required');
+          return;
+        }
+        const startedAt = Date.now();
+        state.index = await buildIndex({
+          repoRoot,
+          codexHome: state.codexHome,
         });
+        state.buildMs = Date.now() - startedAt;
+        sendJson(res, 200, statePayload(state));
+        return;
+      }
+
+      if (pathname === '/api/state') {
+        if (!requireIndex(state, res)) return;
+        sendJson(res, 200, statePayload(state));
         return;
       }
 
       if (pathname === '/api/sessions') {
+        const index = requireIndex(state, res);
+        if (!index) return;
         const result = filterSessions(index, {
           q: searchParams.get('q') || '',
           from: searchParams.get('from') || '',
@@ -142,12 +212,16 @@ function createServer(index, buildMs = 0) {
       }
 
       if (pathname === '/api/file-suggestions') {
+        const index = requireIndex(state, res);
+        if (!index) return;
         sendJson(res, 200, { files: fileSuggestions(index) });
         return;
       }
 
       const timelineMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/timeline$/);
       if (timelineMatch) {
+        const index = requireIndex(state, res);
+        if (!index) return;
         const sessionId = decodeURIComponent(timelineMatch[1]);
         const result = getTimeline(index, sessionId, {
           offset: asNumber(searchParams.get('offset'), 0, 0, 1_000_000),
@@ -169,6 +243,8 @@ function createServer(index, buildMs = 0) {
 
       const detailMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/events\/([^/]+)\/detail$/);
       if (detailMatch) {
+        const index = requireIndex(state, res);
+        if (!index) return;
         const session = index.sessionsById.get(decodeURIComponent(detailMatch[1]));
         if (!session) {
           sendError(res, 404, 'Unknown session');
@@ -186,6 +262,8 @@ function createServer(index, buildMs = 0) {
 
       const analysisMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/analysis$/);
       if (analysisMatch) {
+        const index = requireIndex(state, res);
+        if (!index) return;
         const session = index.sessionsById.get(decodeURIComponent(analysisMatch[1]));
         if (!session) {
           sendError(res, 404, 'Unknown session');
@@ -196,6 +274,8 @@ function createServer(index, buildMs = 0) {
       }
 
       if (pathname === '/api/raw') {
+        const index = requireIndex(state, res);
+        if (!index) return;
         const file = searchParams.get('file') || '';
         const line = asNumber(searchParams.get('line'), 0, 1, 1_000_000_000);
         if (!file || !line) {
@@ -213,7 +293,7 @@ function createServer(index, buildMs = 0) {
 
       await serveStatic(res, pathname);
     } catch (error) {
-      sendError(res, 500, 'Internal server error', error.stack || error.message);
+      sendError(res, error.statusCode || 500, error.statusCode ? error.message : 'Internal server error', error.statusCode ? undefined : error.stack || error.message);
     }
   });
 }
@@ -225,19 +305,28 @@ async function main() {
     return;
   }
 
-  const startedAt = Date.now();
-  const index = await buildIndex({
-    repoRoot: opts.repo,
-    codexHome: opts.codexHome,
-  });
-  const buildMs = Date.now() - startedAt;
-  const server = createServer(index, buildMs);
+  let index = null;
+  let buildMs = 0;
+  if (opts.repo) {
+    const startedAt = Date.now();
+    index = await buildIndex({
+      repoRoot: opts.repo,
+      codexHome: opts.codexHome,
+    });
+    buildMs = Date.now() - startedAt;
+  }
+  const server = createServer(index, buildMs, { codexHome: opts.codexHome });
 
   server.listen(opts.port, opts.host, () => {
     console.log(`Codex Session Analyzer: http://${opts.host}:${opts.port}`);
-    console.log(`Repo: ${index.repoRoot}`);
-    console.log(`Codex home: ${index.codexHome}`);
-    console.log(`Indexed ${index.totals.sessionCount} sessions from ${index.totals.fileCount} files in ${buildMs}ms`);
+    if (index) {
+      console.log(`Repo: ${index.repoRoot}`);
+      console.log(`Codex home: ${index.codexHome}`);
+      console.log(`Indexed ${index.totals.sessionCount} sessions from ${index.totals.fileCount} files in ${buildMs}ms`);
+    } else {
+      console.log('Repo: select in browser');
+      console.log(`Codex home: ${path.resolve(opts.codexHome)}`);
+    }
   });
 }
 

@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-05-05 / 最近更新：2026-05-05
+- Last updated: 2026-05-12 / 最近更新：2026-05-12
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
@@ -52,8 +52,8 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 
 ## User-facing behavior / 面向用户的行为
 
-1. The user starts the local server with a repository root. / 用户用一个仓库根目录启动本地服务器。
-2. The application scans the local Codex home and shows only matching sessions. / 应用扫描本地 Codex 主目录，并只显示匹配的会话。
+1. The user starts the local server with an optional repository root; if omitted, the browser shows project candidates discovered from Codex session working directories. / 用户用可选的仓库根目录启动本地服务器；如果省略，浏览器会显示从 Codex 会话工作目录发现的项目候选。
+2. The application scans the local Codex home and shows only sessions matching the selected repository. / 应用扫描本地 Codex 主目录，并只显示与所选仓库匹配的会话。
 3. The user sees a session list with counts, sizes, timestamps, and failure indicators. / 用户看到包含计数、大小、时间戳和失败指示器的会话列表。
 4. Opening a session shows the main timeline by default. / 打开会话时默认显示主时间线。
 5. The user may switch between `Main timeline`, `Protocol layer`, and `Raw records`. / 用户可以在 `Main timeline`、`Protocol layer` 和 `Raw records` 之间切换。
@@ -66,6 +66,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 12. From the selected-event inspector, the user can jump to the previous or next event in the current filtered result set for useful reading categories such as user messages, assistant messages, plans, update_plan calls, failed commands, commands, patches, errors, MCP calls, and web searches. / 在选中事件检查器中，用户可以在当前过滤结果集内按有助于阅读的类别跳转到上一个或下一个事件，例如用户消息、助手消息、计划、update_plan 调用、失败命令、命令、patch、错误、MCP 调用和 web 搜索。
 13. On narrow screens, `Sessions`, `Events`, and `Detail` are available as top-level tabs; selecting a session switches to `Events`, and inspecting an event or opening `Raw refs` switches to `Detail`. / 在窄屏上，`Sessions`、`Events` 和 `Detail` 作为顶层标签页可用；选择会话会切换到 `Events`，检查事件或打开 `Raw refs` 会切换到 `Detail`。
 14. Changing the folding strategy reapplies that strategy's defaults for the selected session instead of keeping stale manual fold overrides. / 切换折叠策略时，会对当前选中 session 重新应用该策略的默认展开规则，而不是保留过时的手动折叠覆盖。
+15. When the server was started without `--repo`, the browser remembers the last selected target project locally and restores it on refresh when it is still available. / 当服务器未使用 `--repo` 启动时，浏览器会在本地记住上次选择的目标项目，并在刷新且该项目仍可用时恢复它。
 
 ## Acceptance criteria / 验收标准
 
@@ -86,6 +87,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - [x] Forked subagent session files remain separately selectable even when they contain embedded parent session metadata. / 即使 fork 出来的子 agent 会话文件中包含嵌入的父会话元数据，它们也必须保持可单独选择。
 - [x] Repository filtering is case-insensitive on Windows paths. / 在 Windows 路径上，仓库筛选不区分大小写。
 - [x] Inferred fallback titles come from real user task text rather than protocol wrappers or malformed transcript scaffolding. / 推断出的回退标题来自真实用户任务文本，而不是协议包装或格式异常的转录脚手架。
+- [x] Starting without `--repo` lets the user select a target project in the browser before repository-scoped indexing. / 不带 `--repo` 启动时，用户可以先在浏览器中选择目标项目，再进行仓库范围的索引。
 
 ## Edge cases / 边界情况
 
