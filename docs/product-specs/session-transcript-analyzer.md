@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-05-12 / 最近更新：2026-05-12
+- Last updated: 2026-05-13 / 最近更新：2026-05-13
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
@@ -84,7 +84,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - [x] Raw JSONL rows remain accessible for every logical event. / 每个逻辑事件都仍可访问原始 JSONL 行。
 - [x] Filtering by keyword, structured file operator, status, and event kind works across the selected layer. / 按关键词、结构化文件操作符、状态和事件类型筛选可在所选层中正常工作。
 - [x] Search and filter result counts stay visible while browsing a selected session. / 浏览选中 session 时，搜索和筛选结果数量保持可见。
-- [x] Selected-event quick navigation moves through matching events within the current session, layer, search query, and filters without losing raw drill-down access. / 选中事件快速跳转会在当前 session、事件层、搜索查询和筛选条件内的匹配事件之间移动，并且不会丢失原始下钻入口。
+- [x] Selected-event quick navigation moves through matching events within the current session, layer, search query, and filters without losing raw drill-down access, and hides the category selector when only one category is available. / 选中事件快速跳转会在当前 session、事件层、搜索查询和筛选条件内的匹配事件之间移动，并且不会丢失原始下钻入口；当只有一个可用类别时会隐藏类别选择器。
 - [x] Narrow-screen browsing keeps session selection, timeline reading, event inspection, raw refs, and layer/profile controls reachable without forcing them into one long document flow. / 窄屏浏览会保持会话选择、时间线阅读、事件检查、原始引用和 layer/profile 控件可访问，而不会把它们挤进一个很长的文档流。
 - [x] Folding strategy changes clear stale manual fold overrides for the selected session. / 折叠策略变更会清除当前选中 session 的过时手动折叠覆盖。
 - [x] Folding strategy rules are visible and editable in the empty detail panel, with immediate preview and browser-local custom saves. / 折叠策略规则会在空详情面板中可见且可编辑，并支持即时预览和浏览器本地自定义保存。

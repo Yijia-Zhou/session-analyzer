@@ -1251,11 +1251,13 @@ function renderInspectorNavigation(event) {
   const matches = category.matchesInResult;
   const index = matches.findIndex((candidate) => candidate.id === event.id);
   const position = index >= 0 ? index + 1 : 0;
-  const options = categories.map((item) => (
-    `<option value="${escapeHtml(item.id)}"${item.id === category.id ? ' selected' : ''}>${escapeHtml(item.label)}</option>`
-  )).join('');
+  const categorySelect = categories.length > 1
+    ? `<select class="navSelect" data-navigation-category aria-label="Quick navigation category">${categories.map((item) => (
+      `<option value="${escapeHtml(item.id)}"${item.id === category.id ? ' selected' : ''}>${escapeHtml(item.label)}</option>`
+    )).join('')}</select>`
+    : '';
   return `<nav class="eventNavigator" aria-label="Event quick navigation">
-    <select class="navSelect" data-navigation-category aria-label="Quick navigation category">${options}</select>
+    ${categorySelect}
     <button class="navBtn" type="button" data-detail-action="navigate-event" data-nav-direction="prev"${index <= 0 ? ' disabled' : ''}>Prev</button>
     <span class="navPosition">${escapeHtml(`${position}/${matches.length}`)}</span>
     <button class="navBtn" type="button" data-detail-action="navigate-event" data-nav-direction="next"${index < 0 || index >= matches.length - 1 ? ' disabled' : ''}>Next</button>
@@ -1351,17 +1353,23 @@ function renderCurrentDetailView() {
 
 function renderDetailShell({ title, subtitle = '', actions = '', body = '', closeable = true, backable = state.detailHistory.length > 0, headerClass = '' }) {
   updateDetailViewChrome();
-  const navActions = [
-    backable ? '<button class="smallBtn" type="button" data-detail-action="back">Back</button>' : '',
-    closeable ? '<button class="smallBtn" type="button" data-detail-action="close">Close</button>' : '',
-  ].join('');
+  const hasChromeControls = backable || closeable;
+  const resolvedHeaderClass = [headerClass, hasChromeControls ? 'detailChromeHeader' : ''].filter(Boolean).join(' ');
+  const backButton = backable
+    ? '<button class="detailIconBtn detailBackBtn" type="button" data-detail-action="back" aria-label="Back" title="Back">&larr;</button>'
+    : '';
+  const closeButton = closeable
+    ? '<button class="detailIconBtn detailCloseBtn" type="button" data-detail-action="close" aria-label="Close" title="Close">&times;</button>'
+    : '';
   el.detail.innerHTML = `<article class="detailView">
-    <header class="detailViewHeader ${escapeHtml(headerClass)}">
+    <header class="detailViewHeader ${escapeHtml(resolvedHeaderClass)}">
+      ${backButton}
       <div class="detailViewTitle">
         <h2>${escapeHtml(title)}</h2>
         ${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ''}
       </div>
-      <div class="detailViewActions">${actions}${navActions}</div>
+      ${closeButton}
+      ${actions ? `<div class="detailViewActions">${actions}</div>` : ''}
     </header>
     ${body}
   </article>`;
