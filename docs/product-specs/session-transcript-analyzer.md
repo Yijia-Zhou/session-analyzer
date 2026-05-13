@@ -66,7 +66,9 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 12. From the selected-event inspector, the user can jump to the previous or next event in the current filtered result set for useful reading categories such as user messages, assistant messages, plans, update_plan calls, failed commands, commands, patches, errors, MCP calls, and web searches. / 在选中事件检查器中，用户可以在当前过滤结果集内按有助于阅读的类别跳转到上一个或下一个事件，例如用户消息、助手消息、计划、update_plan 调用、失败命令、命令、patch、错误、MCP 调用和 web 搜索。
 13. On narrow screens, `Sessions`, `Events`, and `Detail` are available as top-level tabs; selecting a session switches to `Events`, and inspecting an event or opening `Raw refs` switches to `Detail`. / 在窄屏上，`Sessions`、`Events` 和 `Detail` 作为顶层标签页可用；选择会话会切换到 `Events`，检查事件或打开 `Raw refs` 会切换到 `Detail`。
 14. Changing the folding strategy reapplies that strategy's defaults for the selected session instead of keeping stale manual fold overrides. / 切换折叠策略时，会对当前选中 session 重新应用该策略的默认展开规则，而不是保留过时的手动折叠覆盖。
-15. When the server was started without `--repo`, the browser remembers the last selected target project locally and restores it on refresh when it is still available. / 当服务器未使用 `--repo` 启动时，浏览器会在本地记住上次选择的目标项目，并在刷新且该项目仍可用时恢复它。
+15. When no event is selected, the right-side detail panel shows the active folding strategy as editable rule groups; unsaved edits preview immediately, and Save stores a browser-local custom strategy while Cancel restores the saved strategy. / 未选中事件时，右侧详情面板会以可编辑规则组显示当前折叠策略；未保存修改会立即预览，Save 会保存为浏览器本地自定义策略，Cancel 会恢复已保存策略。
+16. The detail panel provides consistent Back and Close behavior across event inspectors and raw refs; Close returns to the folding strategy panel. / 详情面板在事件检查器和原始引用之间提供一致的 Back 和 Close 行为；Close 会返回折叠策略面板。
+17. When the server was started without `--repo`, the browser remembers the last selected target project locally and restores it on refresh when it is still available. / 当服务器未使用 `--repo` 启动时，浏览器会在本地记住上次选择的目标项目，并在刷新且该项目仍可用时恢复它。
 
 ## Acceptance criteria / 验收标准
 
@@ -85,6 +87,8 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - [x] Selected-event quick navigation moves through matching events within the current session, layer, search query, and filters without losing raw drill-down access. / 选中事件快速跳转会在当前 session、事件层、搜索查询和筛选条件内的匹配事件之间移动，并且不会丢失原始下钻入口。
 - [x] Narrow-screen browsing keeps session selection, timeline reading, event inspection, raw refs, and layer/profile controls reachable without forcing them into one long document flow. / 窄屏浏览会保持会话选择、时间线阅读、事件检查、原始引用和 layer/profile 控件可访问，而不会把它们挤进一个很长的文档流。
 - [x] Folding strategy changes clear stale manual fold overrides for the selected session. / 折叠策略变更会清除当前选中 session 的过时手动折叠覆盖。
+- [x] Folding strategy rules are visible and editable in the empty detail panel, with immediate preview and browser-local custom saves. / 折叠策略规则会在空详情面板中可见且可编辑，并支持即时预览和浏览器本地自定义保存。
+- [x] Detail panel Back and Close controls work consistently for inspector and raw refs views. / 详情面板的 Back 和 Close 控件在检查器和原始引用视图中保持一致。
 - [x] Forked subagent session files remain separately selectable even when they contain embedded parent session metadata. / 即使 fork 出来的子 agent 会话文件中包含嵌入的父会话元数据，它们也必须保持可单独选择。
 - [x] Repository filtering is case-insensitive on Windows paths. / 在 Windows 路径上，仓库筛选不区分大小写。
 - [x] Inferred fallback titles come from real user task text rather than protocol wrappers or malformed transcript scaffolding. / 推断出的回退标题来自真实用户任务文本，而不是协议包装或格式异常的转录脚手架。

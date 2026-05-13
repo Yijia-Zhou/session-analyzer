@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { buildIndex, buildEventDetail, discoverProjects, fileSuggestions, filterSessions, getTimeline, readRawLine, isPathInsideOrSame } = require('../src/codex');
 const { createServer, parseArgs } = require('../server');
-const { foldingProfiles } = require('../src/folding');
+const { DISPLAY_STATES, foldingProfiles } = require('../src/folding');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 
@@ -584,4 +584,20 @@ test('path containment and folding profiles expose expected presets', () => {
   assert.ok(foldingProfiles.some((profile) => profile.id === 'narrative'));
   assert.ok(foldingProfiles.some((profile) => profile.id === 'debug'));
   assert.ok(foldingProfiles.some((profile) => profile.id === 'compact'));
+  for (const profile of foldingProfiles) {
+    assert.ok(profile.rules, `${profile.id} has rule data`);
+    assert.ok(DISPLAY_STATES.includes(profile.rules.fallback), `${profile.id} has a valid fallback`);
+    for (const state of Object.values(profile.rules.kindStates || {})) {
+      assert.ok(DISPLAY_STATES.includes(state), `${profile.id} has a valid kind state`);
+    }
+    for (const condition of profile.rules.conditions || []) {
+      assert.ok(condition.id, `${profile.id} condition has an id`);
+      assert.ok(DISPLAY_STATES.includes(condition.state), `${profile.id} condition has a valid state`);
+    }
+  }
+  const narrative = foldingProfiles.find((profile) => profile.id === 'narrative');
+  assert.equal(narrative.rules.kindStates.user_message, 'expanded');
+  assert.equal(narrative.rules.kindStates.reasoning, 'collapsed');
+  const compact = foldingProfiles.find((profile) => profile.id === 'compact');
+  assert.equal(compact.rules.fallback, 'collapsed');
 });

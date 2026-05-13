@@ -21,6 +21,117 @@ const searchQuery = window.sessionSearchQuery || {
 const NAVIGATION_PAGE_LIMIT = 500;
 const FILE_SUGGESTION_LIMIT = 12;
 const REPO_STORAGE_KEY = 'sessionAnalyzer.repoRoot';
+const CUSTOM_PROFILES_KEY = 'sessionAnalyzer.customProfiles';
+const DISPLAY_STATES = ['expanded', 'summary', 'collapsed', 'hidden'];
+const DISPLAY_STATE_LABELS = {
+  expanded: '展开',
+  summary: '摘要',
+  collapsed: '折叠',
+  hidden: '隐藏',
+};
+const BUILTIN_PROFILE_RULES = {
+  narrative: {
+    kindStates: {
+      user_message: 'expanded',
+      assistant_message: 'expanded',
+      patch: 'expanded',
+      error: 'expanded',
+      abort: 'expanded',
+      rollback: 'expanded',
+      compaction: 'expanded',
+      plan_artifact: 'expanded',
+      reasoning: 'collapsed',
+      token: 'collapsed',
+    },
+    fallback: 'summary',
+    conditions: [
+      { id: 'abnormalSeverity', state: 'expanded' },
+      { id: 'failedStatus', state: 'expanded' },
+    ],
+  },
+  debug: {
+    kindStates: {
+      command: 'summary',
+      patch: 'summary',
+      mcp: 'summary',
+      js_repl: 'summary',
+      tool_operation: 'summary',
+      error: 'summary',
+      abort: 'summary',
+      rollback: 'summary',
+    },
+    fallback: 'collapsed',
+    conditions: [
+      { id: 'errorSeverity', state: 'expanded' },
+      { id: 'failedStatus', state: 'expanded' },
+    ],
+  },
+  changes: {
+    kindStates: {
+      patch: 'expanded',
+      plan_artifact: 'expanded',
+      user_message: 'collapsed',
+      assistant_message: 'collapsed',
+    },
+    fallback: 'hidden',
+    conditions: [
+      { id: 'reviewCommand', state: 'summary' },
+      { id: 'touchedFiles', state: 'summary' },
+    ],
+  },
+  search: {
+    kindStates: {},
+    fallback: 'hidden',
+    conditions: [
+      { id: 'searchHit', state: 'expanded' },
+      { id: 'importantEvent', state: 'summary' },
+    ],
+  },
+  conversation: {
+    kindStates: {
+      user_message: 'expanded',
+      assistant_message: 'expanded',
+      plan_artifact: 'expanded',
+      error: 'summary',
+      abort: 'summary',
+      rollback: 'summary',
+      compaction: 'summary',
+    },
+    fallback: 'hidden',
+    conditions: [],
+  },
+  tools: {
+    kindStates: {
+      command: 'summary',
+      patch: 'summary',
+      mcp: 'summary',
+      js_repl: 'summary',
+      tool_operation: 'summary',
+      web_search: 'summary',
+    },
+    fallback: 'collapsed',
+    conditions: [
+      { id: 'abnormalSeverity', state: 'summary' },
+    ],
+  },
+  context: {
+    kindStates: {
+      token: 'summary',
+      compaction: 'summary',
+      rollback: 'summary',
+      subagent: 'summary',
+      turn: 'summary',
+      abort: 'summary',
+    },
+    fallback: 'hidden',
+    conditions: [],
+  },
+  compact: {
+    kindStates: {},
+    fallback: 'collapsed',
+    conditions: [],
+  },
+};
 const KIND_LABELS = {
   user_message: 'User message',
   assistant_message: 'Assistant message',
@@ -32,8 +143,14 @@ const KIND_LABELS = {
   plan_artifact: 'Plan',
   protocol: 'Protocol',
   error: 'Error',
+  abort: 'Abort',
+  rollback: 'Rollback',
   compaction: 'Compaction',
+  token: 'Token',
+  subagent: 'Subagent',
+  turn: 'Turn',
   web_search: 'Web search',
+  event: 'Event',
 };
 const STATUS_LABELS = {
   failed: 'Failed',
@@ -77,13 +194,18 @@ const state = {
   currentEvents: [],
   fileSuggestions: [],
   profiles: [],
+  builtinProfiles: [],
+  customProfiles: readJsonStorage(CUSTOM_PROFILES_KEY, []),
   profileId: localStorage.getItem('sessionAnalyzer.profile') || 'narrative',
+  profileDraft: null,
   layerId: localStorage.getItem('sessionAnalyzer.layer') || 'main',
   overrides: JSON.parse(localStorage.getItem('sessionAnalyzer.overrides') || '{}'),
   detailCache: {},
   detailErrors: {},
   detailPending: {},
   detailViewportTimer: 0,
+  detailView: { type: 'profileRules' },
+  detailHistory: [],
   detailSelectionKey: '',
   navigationCategoryId: '',
   navigationCache: { key: '', events: [], total: 0, pending: null },
@@ -131,9 +253,27 @@ function setMobileView(view, options = {}) {
     button.setAttribute('aria-pressed', active ? 'true' : 'false');
   }
   if (view === 'events') queueVisibleDetailLoad();
+  updateDetailViewChrome();
   if (changed && options.scroll !== false && window.matchMedia('(max-width: 760px)').matches) {
     window.scrollTo({ top: 0, behavior: 'auto' });
   }
+}
+
+function updateDetailViewChrome() {
+  document.body.dataset.detailView = state.detailView?.type || 'profileRules';
+}
+
+function readJsonStorage(key, fallback) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || 'null');
+    return value == null ? fallback : value;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonStorage(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
 }
 
 function api(path, options = {}) {
@@ -238,8 +378,112 @@ function resetDetailPane() {
   state.detailSelectionKey = '';
   state.selectedEventId = '';
   state.navigationCategoryId = '';
-  el.detail.innerHTML = '<div class="emptyDetail"><h2>Event inspector</h2><p>Select a timeline event to inspect its summary, metadata, and structured detail. Use Raw refs to verify the underlying JSONL rows.</p></div>';
+  state.detailHistory = [];
+  state.detailView = { type: 'profileRules' };
+  renderProfileRulesPane();
   updateSelectedTimelineEvent();
+}
+
+function cloneProfile(profile) {
+  return JSON.parse(JSON.stringify(profile || {}));
+}
+
+function defaultRules() {
+  return { kindStates: {}, fallback: 'summary', conditions: [] };
+}
+
+function normalizeRules(rules) {
+  const source = rules || {};
+  const kindStates = {};
+  for (const [kind, display] of Object.entries(source.kindStates || {})) {
+    if (DISPLAY_STATES.includes(display)) kindStates[kind] = display;
+  }
+  const fallback = DISPLAY_STATES.includes(source.fallback) ? source.fallback : 'summary';
+  const conditions = (source.conditions || []).map((condition) => ({
+    id: String(condition.id || ''),
+    state: DISPLAY_STATES.includes(condition.state) ? condition.state : '',
+  })).filter((condition) => condition.id && condition.state);
+  return { kindStates, fallback, conditions };
+}
+
+function normalizeProfiles(profiles) {
+  return (Array.isArray(profiles) ? profiles : []).map((profile) => ({
+    ...profile,
+    rules: normalizeRules(profile.rules || BUILTIN_PROFILE_RULES[profile.id] || defaultRules()),
+  }));
+}
+
+function activeProfile() {
+  return state.profiles.find((profile) => profile.id === state.profileId)
+    || state.profiles.find((profile) => profile.id === 'narrative')
+    || state.profiles[0]
+    || { id: 'narrative', name: '叙事时间线', description: '', rules: defaultRules() };
+}
+
+function activeProfileRules() {
+  return state.profileDraft?.rules || activeProfile().rules || defaultRules();
+}
+
+function resetProfileDraft() {
+  state.profileDraft = cloneProfile(activeProfile());
+}
+
+function isBuiltinProfile(profileId) {
+  return state.builtinProfiles.some((profile) => profile.id === profileId);
+}
+
+function profileDirty() {
+  const base = activeProfile();
+  return JSON.stringify(state.profileDraft?.rules || {}) !== JSON.stringify(base.rules || {});
+}
+
+function saveCustomProfiles() {
+  state.customProfiles = normalizeProfiles(state.customProfiles);
+  writeJsonStorage(CUSTOM_PROFILES_KEY, state.customProfiles);
+  state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
+}
+
+function knownEventKinds() {
+  const kinds = new Set([
+    'user_message',
+    'assistant_message',
+    'plan_artifact',
+    'reasoning',
+    'command',
+    'patch',
+    'mcp',
+    'js_repl',
+    'tool_operation',
+    'web_search',
+    'error',
+    'abort',
+    'rollback',
+    'compaction',
+    'token',
+    'subagent',
+    'turn',
+    'protocol',
+    'event',
+  ]);
+  for (const profile of state.profiles) {
+    for (const kind of Object.keys(profile.rules?.kindStates || {})) kinds.add(kind);
+  }
+  for (const event of state.currentEvents) {
+    if (event.kind) kinds.add(event.kind);
+  }
+  return [...kinds].sort((a, b) => (KIND_LABELS[a] || a).localeCompare(KIND_LABELS[b] || b));
+}
+
+function conditionDefinitions() {
+  return [
+    { id: 'searchHit', name: 'Search hit', description: 'Events matching the current search query.' },
+    { id: 'importantEvent', name: 'Important event', description: 'User/assistant messages, patches, errors, aborts, rollbacks, compactions, plans, failed events, and abnormal severity.' },
+    { id: 'failedStatus', name: 'Failed status', description: 'Events whose status is failed.' },
+    { id: 'errorSeverity', name: 'Error severity', description: 'Events whose severity is error.' },
+    { id: 'abnormalSeverity', name: 'Abnormal severity', description: 'Events whose severity is not normal.' },
+    { id: 'reviewCommand', name: 'Review command', description: 'Command previews containing test, build, lint, typecheck, git, diff, or status.' },
+    { id: 'touchedFiles', name: 'Touched files', description: 'Events that reference changed or touched files.' },
+  ];
 }
 
 function sourceRefs(event) {
@@ -594,7 +838,8 @@ async function showProjectChooser(options = {}) {
 
 async function applyAppState(appState) {
   state.repoRoot = appState.repoRoot || '';
-  state.profiles = appState.foldingProfiles || [];
+  state.builtinProfiles = normalizeProfiles(appState.foldingProfiles || []);
+  state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
   state.sessionGrandTotal = appState.totals.sessionCount || 0;
   setProjectHeader(
     appState.repoRoot,
@@ -608,6 +853,7 @@ async function applyAppState(appState) {
     state.profileId = 'narrative';
     el.profileSelect.value = state.profileId;
   }
+  resetProfileDraft();
   el.layerSelect.value = state.layerId;
   const suggestionState = await api('/api/file-suggestions');
   state.fileSuggestions = suggestionState.files || [];
@@ -767,45 +1013,35 @@ function displayState(event) {
   }
 
   const q = currentSearchState().q;
-  const profile = q && state.profileId !== 'compact' ? 'search' : state.profileId;
-
-  if (profile === 'compact') return 'collapsed';
-  if (profile === 'search') return event.hasSearchHit ? 'expanded' : importantEvent(event) ? 'summary' : 'hidden';
-  if (profile === 'conversation') {
-    if (['user_message', 'assistant_message', 'plan_artifact'].includes(event.kind)) return 'expanded';
-    if (['error', 'abort', 'rollback', 'compaction'].includes(event.kind)) return 'summary';
-    return 'hidden';
-  }
-  if (profile === 'debug') {
-    if (event.severity === 'error' || event.status === 'failed') return 'expanded';
-    if (['command', 'patch', 'mcp', 'js_repl', 'tool_operation', 'error', 'abort', 'rollback'].includes(event.kind)) return 'summary';
-    return 'collapsed';
-  }
-  if (profile === 'changes') {
-    if (['patch', 'plan_artifact'].includes(event.kind)) return 'expanded';
-    if (event.kind === 'command' && /\b(test|build|lint|typecheck|git|diff|status)\b/i.test(event.preview)) return 'summary';
-    if (event.touchedFiles && event.touchedFiles.length) return 'summary';
-    if (['user_message', 'assistant_message'].includes(event.kind)) return 'collapsed';
-    return 'hidden';
-  }
-  if (profile === 'tools') {
-    if (['command', 'patch', 'mcp', 'js_repl', 'tool_operation', 'web_search'].includes(event.kind)) return 'summary';
-    if (event.severity !== 'normal') return 'summary';
-    return 'collapsed';
-  }
-  if (profile === 'context') {
-    if (['token', 'compaction', 'rollback', 'subagent', 'turn', 'abort'].includes(event.kind)) return 'summary';
-    return 'hidden';
-  }
-  if (importantEvent(event)) return 'expanded';
-  if (event.kind === 'reasoning' || event.kind === 'token') return 'collapsed';
-  return 'summary';
+  const profile = q && state.profileId !== 'compact'
+    ? state.profiles.find((candidate) => candidate.id === 'search')
+    : { ...activeProfile(), rules: activeProfileRules() };
+  return displayStateFromRules(event, profile?.rules || defaultRules());
 }
 
 function importantEvent(event) {
   return ['user_message', 'assistant_message', 'patch', 'error', 'abort', 'rollback', 'compaction', 'plan_artifact'].includes(event.kind)
     || event.severity !== 'normal'
     || event.status === 'failed';
+}
+
+function conditionMatches(conditionId, event) {
+  if (conditionId === 'searchHit') return Boolean(event.hasSearchHit);
+  if (conditionId === 'importantEvent') return importantEvent(event);
+  if (conditionId === 'failedStatus') return event.status === 'failed';
+  if (conditionId === 'errorSeverity') return event.severity === 'error';
+  if (conditionId === 'abnormalSeverity') return event.severity !== 'normal';
+  if (conditionId === 'reviewCommand') return event.kind === 'command' && /\b(test|build|lint|typecheck|git|diff|status)\b/i.test(event.preview || '');
+  if (conditionId === 'touchedFiles') return event.touchedFiles && event.touchedFiles.length;
+  return false;
+}
+
+function displayStateFromRules(event, rules) {
+  const normalized = normalizeRules(rules);
+  for (const condition of normalized.conditions) {
+    if (conditionMatches(condition.id, event)) return condition.state;
+  }
+  return normalized.kindStates[event.kind] || normalized.fallback;
 }
 
 function renderEventBody(event, display) {
@@ -1052,7 +1288,7 @@ async function inspectAndRevealEvent(target) {
     setOverride(loaded.id, 'summary');
     renderTimeline();
   }
-  showInspector(loaded);
+  showInspector(loaded, { replace: true });
   scrollToTimelineEvent(loaded.id);
 }
 
@@ -1072,7 +1308,173 @@ async function navigateSelectedEvent(direction) {
   await inspectAndRevealEvent(matches[nextIndex]);
 }
 
-function showInspector(event) {
+function pushDetailView(nextView) {
+  if (state.detailView) state.detailHistory.push(state.detailView);
+  state.detailView = nextView;
+}
+
+function replaceDetailView(nextView) {
+  state.detailView = nextView;
+}
+
+function closeDetailView() {
+  state.detailHistory = [];
+  state.detailSelectionKey = '';
+  state.selectedEventId = '';
+  state.navigationCategoryId = '';
+  state.detailView = { type: 'profileRules' };
+  renderProfileRulesPane();
+  updateSelectedTimelineEvent();
+}
+
+function backDetailView() {
+  const previous = state.detailHistory.pop() || { type: 'profileRules' };
+  state.detailView = previous;
+  renderCurrentDetailView();
+}
+
+function renderCurrentDetailView() {
+  if (state.detailView.type === 'inspector') {
+    const item = currentSelectedEvent();
+    if (item) showInspector(item, { replace: true });
+    else closeDetailView();
+    return;
+  }
+  if (state.detailView.type === 'rawRefs') {
+    const item = currentSelectedEvent();
+    if (item) showRaw(item, { replace: true }).catch(showError);
+    else closeDetailView();
+    return;
+  }
+  renderProfileRulesPane();
+}
+
+function renderDetailShell({ title, subtitle = '', actions = '', body = '', closeable = true, backable = state.detailHistory.length > 0, headerClass = '' }) {
+  updateDetailViewChrome();
+  const navActions = [
+    backable ? '<button class="smallBtn" type="button" data-detail-action="back">Back</button>' : '',
+    closeable ? '<button class="smallBtn" type="button" data-detail-action="close">Close</button>' : '',
+  ].join('');
+  el.detail.innerHTML = `<article class="detailView">
+    <header class="detailViewHeader ${escapeHtml(headerClass)}">
+      <div class="detailViewTitle">
+        <h2>${escapeHtml(title)}</h2>
+        ${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ''}
+      </div>
+      <div class="detailViewActions">${actions}${navActions}</div>
+    </header>
+    ${body}
+  </article>`;
+}
+
+function renderProfileRulesPane() {
+  state.detailView = { type: 'profileRules' };
+  state.detailSelectionKey = '';
+  state.selectedEventId = '';
+  state.navigationCategoryId = '';
+  setMobileView('detail', { scroll: false });
+  updateSelectedTimelineEvent();
+  if (!state.profileDraft) resetProfileDraft();
+  const profile = activeProfile();
+  const draft = state.profileDraft || cloneProfile(profile);
+  const dirty = profileDirty();
+  const status = dirty ? 'Unsaved preview' : '';
+  const profileOptions = state.profiles.map((item) => {
+    const name = dirty && item.id === state.profileId && isBuiltinProfile(item.id)
+      ? nextCustomProfileName(item.id)
+      : item.name;
+    return `<option value="${escapeHtml(item.id)}"${item.id === state.profileId ? ' selected' : ''}>${escapeHtml(name)}</option>`;
+  }).join('');
+  const stateOptions = (value, includeDisabled = false) => [
+    includeDisabled ? `<option value=""${value ? '' : ' selected'}>Disabled</option>` : '',
+    ...DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === value ? ' selected' : ''}>${DISPLAY_STATE_LABELS[stateId]}</option>`),
+  ].join('');
+  const rules = normalizeRules(draft.rules);
+  const conditionMap = new Map(rules.conditions.map((condition) => [condition.id, condition.state]));
+  const renderKindRow = (kind) => {
+    const display = rules.kindStates[kind] || '';
+    return `<label class="profileRuleRow">
+      <span>
+        <strong>${escapeHtml(KIND_LABELS[kind] || kind)}</strong>
+        <span>${escapeHtml(kind)}</span>
+      </span>
+      <select data-profile-kind="${escapeHtml(kind)}">
+        <option value=""${display ? '' : ' selected'}>${escapeHtml(DISPLAY_STATE_LABELS[rules.fallback])} (Default)</option>
+        ${DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === display ? ' selected' : ''}>${DISPLAY_STATE_LABELS[stateId]}</option>`).join('')}
+      </select>
+    </label>`;
+  };
+  const explicitKinds = knownEventKinds().filter((kind) => rules.kindStates[kind]);
+  const defaultKinds = knownEventKinds().filter((kind) => !rules.kindStates[kind]);
+  const explicitKindRows = explicitKinds.map(renderKindRow).join('');
+  const defaultKindRows = defaultKinds.map(renderKindRow).join('');
+  const activeConditionRows = conditionDefinitions().filter((condition) => conditionMap.has(condition.id)).map((condition) => (
+    `<label class="profileRuleRow">
+      <span>
+        <strong>${escapeHtml(condition.name)}</strong>
+        <span title="${escapeHtml(condition.description)}">${escapeHtml(condition.description)}</span>
+      </span>
+      <select data-profile-condition="${escapeHtml(condition.id)}">${stateOptions(conditionMap.get(condition.id) || '', true)}</select>
+    </label>`
+  )).join('');
+  const inactiveConditionRows = conditionDefinitions().filter((condition) => !conditionMap.has(condition.id)).map((condition) => (
+    `<label class="profileRuleRow">
+      <span>
+        <strong>${escapeHtml(condition.name)}</strong>
+        <span title="${escapeHtml(condition.description)}">${escapeHtml(condition.description)}</span>
+      </span>
+      <select data-profile-condition="${escapeHtml(condition.id)}">${stateOptions('', true)}</select>
+    </label>`
+  )).join('');
+  const defaultKindNames = defaultKinds.map((kind) => KIND_LABELS[kind] || kind).join(', ');
+  const editActions = dirty
+    ? `<button class="smallBtn" type="button" data-detail-action="save-profile">Save</button>
+    <button class="smallBtn" type="button" data-detail-action="cancel-profile">Cancel</button>`
+    : '';
+  const actions = `<div class="profileActionStack">
+      <label class="profilePickerCompact">
+      <select data-profile-picker aria-label="Strategy">${profileOptions}</select>
+      </label>
+      ${editActions}
+  </div>`;
+  renderDetailShell({
+    title: '折叠策略',
+    subtitle: [status, draft.description].filter(Boolean).join(' | '),
+    actions,
+    headerClass: 'profileDetailHeader',
+    closeable: false,
+    backable: false,
+    body: `<section class="profileRules">
+      <section class="profileRuleSection">
+        <div class="profileRuleSectionHeader">
+          <h3>Event kinds</h3>
+        </div>
+        <div class="profileRuleList">${explicitKindRows || '<div class="profileRuleEmpty">No explicit event-kind rules.</div>'}</div>
+      </section>
+      <details class="profileRuleDetails">
+        <summary>
+          <span>${escapeHtml(`${defaultKinds.length} event kinds use Default`)}</span>
+          <label class="profileDefaultInline">
+            <span>Default</span>
+            <select data-profile-fallback>${stateOptions(rules.fallback)}</select>
+          </label>
+        </summary>
+        <p>${escapeHtml(defaultKindNames)}</p>
+        <div class="profileRuleList">${defaultKindRows}</div>
+      </details>
+      <section class="profileRuleSection">
+        <h3>Conditions</h3>
+        <div class="profileRuleList">${activeConditionRows || '<div class="profileRuleEmpty">No active conditions.</div>'}</div>
+      </section>
+      <details class="profileRuleDetails">
+        <summary>${escapeHtml(`${conditionDefinitions().length - conditionMap.size} inactive conditions`)}</summary>
+        <div class="profileRuleList">${inactiveConditionRows}</div>
+      </details>
+    </section>`,
+  });
+}
+
+function showInspector(event, options = {}) {
   const layer = activeLayerId();
   const key = detailKey(state.selectedSessionId, layer, event.id);
   const refs = sourceRefs(event);
@@ -1085,23 +1487,20 @@ function showInspector(event) {
   ]);
   state.selectedEventId = event.id;
   state.detailSelectionKey = key;
+  if (options.replace) replaceDetailView({ type: 'inspector', eventId: event.id });
+  else pushDetailView({ type: 'inspector', eventId: event.id });
   setMobileView('detail');
   updateSelectedTimelineEvent();
   if (!currentNavigationCache()) {
     ensureNavigationEvents().then(() => {
-      if (state.detailSelectionKey === key && state.selectedEventId === event.id) showInspector(event);
+      if (state.detailSelectionKey === key && state.selectedEventId === event.id) showInspector(event, { replace: true });
     }).catch(showError);
   }
-  el.detail.innerHTML = `<article class="inspector">
-    <header class="inspectorHeader">
-      <div class="inspectorTitleRow">
-        <div class="inspectorTitleBlock">
-          <h2>${escapeHtml(event.label)}</h2>
-          <div class="chips">${chips}</div>
-        </div>
-        ${renderInspectorNavigation(event)}
-      </div>
-    </header>
+  renderDetailShell({
+    title: event.label,
+    actions: renderInspectorNavigation(event),
+    body: `<div class="inspector">
+    <div class="chips">${chips}</div>
     ${preview ? `<section class="inspectorSection"><h3>Preview</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
     <section class="inspectorSection">
       <h3>Metadata</h3>
@@ -1115,49 +1514,120 @@ function showInspector(event) {
       </div>
     </section>
     ${renderInspectorDetail(event)}
-  </article>`;
+  </div>`,
+  });
 
   if (!state.detailCache[key] && !state.detailErrors[key]) {
     loadEventDetail(event).then(() => {
-      if (state.detailSelectionKey === key) showInspector(event);
+      if (state.detailSelectionKey === key) showInspector(event, { replace: true });
     });
   }
 }
 
-async function showRaw(event) {
+async function showRaw(event, options = {}) {
   const refs = sourceRefs(event);
   const layer = activeLayerId();
   const rawKey = `raw:${detailKey(state.selectedSessionId, layer, event.id)}`;
   state.selectedEventId = event.id;
   state.detailSelectionKey = rawKey;
+  if (options.replace) replaceDetailView({ type: 'rawRefs', eventId: event.id });
+  else pushDetailView({ type: 'rawRefs', eventId: event.id });
   setMobileView('detail');
   updateSelectedTimelineEvent();
   if (!refs.length) {
-    el.detail.innerHTML = `<article class="rawRefsView">
-      <header class="inspectorHeader">
-        <h2>Raw refs</h2>
-        <div class="chips">${renderChips([event.label, event.layer || layer, event.kind])}</div>
-      </header>
+    renderDetailShell({
+      title: 'Raw refs',
+      subtitle: `${event.label} | ${event.layer || layer} | ${event.kind}`,
+      actions: '<button class="smallBtn" type="button" data-detail-action="inspect">Inspect event</button>',
+      body: `<div class="rawRefsView">
       <div class="notice warning"><p>No raw source rows are available for this event.</p></div>
-      <div class="inspectorActions">
-        <button class="smallBtn" type="button" data-detail-action="inspect">Back to inspector</button>
-      </div>
-    </article>`;
+    </div>`,
+    });
     return;
   }
   const payloads = await Promise.all(refs.map((ref) => api(`/api/raw?file=${encodeURIComponent(ref.file)}&line=${encodeURIComponent(ref.line)}`)));
   if (state.detailSelectionKey !== rawKey) return;
-  el.detail.innerHTML = `<article class="rawRefsView">
-    <header class="inspectorHeader">
-      <h2>Raw refs</h2>
-      <div class="chips">${renderChips([event.label, event.layer || layer, event.kind])}</div>
-    </header>
+  renderDetailShell({
+    title: 'Raw refs',
+    subtitle: `${event.label} | ${event.layer || layer} | ${event.kind}`,
+    actions: '<button class="smallBtn" type="button" data-detail-action="inspect">Inspect event</button>',
+    body: `<div class="rawRefsView">
     <p class="rawMeta">${escapeHtml(`${refs.length} JSONL row${refs.length === 1 ? '' : 's'} for ${event.id}`)}</p>
     ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(raw.file)}:${raw.line}</p><pre>${escapeHtml(JSON.stringify(raw.parsed, null, 2) || raw.raw)}</pre></section>`).join('')}
-    <div class="inspectorActions">
-      <button class="smallBtn" type="button" data-detail-action="inspect">Back to inspector</button>
-    </div>
-  </article>`;
+  </div>`,
+  });
+}
+
+function ensureProfileDraft() {
+  if (!state.profileDraft) resetProfileDraft();
+  state.profileDraft.rules = normalizeRules(state.profileDraft.rules || defaultRules());
+}
+
+function setProfileId(profileId, options = {}) {
+  state.profileId = profileId;
+  localStorage.setItem('sessionAnalyzer.profile', state.profileId);
+  el.profileSelect.value = state.profileId;
+  resetProfileDraft();
+  clearCurrentSessionOverrides();
+  renderTimeline();
+  if (!options.keepScroll) resetTimelineScroll();
+  if (state.detailView.type === 'profileRules') renderProfileRulesPane();
+}
+
+function changeProfile(profileId) {
+  if (!state.profiles.some((profile) => profile.id === profileId)) return;
+  if (profileDirty() && !window.confirm('Discard unsaved folding strategy changes?')) {
+    el.profileSelect.value = state.profileId;
+    renderProfileRulesPane();
+    return;
+  }
+  setProfileId(profileId);
+}
+
+function nextCustomProfileName(baseProfileId) {
+  const base = state.builtinProfiles.find((profile) => profile.id === baseProfileId)
+    || state.profiles.find((profile) => profile.id === baseProfileId)
+    || activeProfile();
+  const count = state.customProfiles.filter((profile) => profile.baseProfileId === baseProfileId).length + 1;
+  return `${base.name} (自定义${count})`;
+}
+
+function saveProfileDraft() {
+  ensureProfileDraft();
+  const draft = normalizeProfiles([state.profileDraft])[0];
+  if (isBuiltinProfile(state.profileId)) {
+    const baseProfileId = state.profileId;
+    const saved = {
+      ...draft,
+      id: `custom:${Date.now()}`,
+      baseProfileId,
+      name: nextCustomProfileName(baseProfileId),
+      description: `Custom strategy based on ${activeProfile().name}`,
+    };
+    state.customProfiles.push(saved);
+    saveCustomProfiles();
+    state.profileId = saved.id;
+  } else {
+    state.customProfiles = state.customProfiles.map((profile) => (
+      profile.id === state.profileId ? { ...draft, id: state.profileId, name: profile.name, baseProfileId: profile.baseProfileId } : profile
+    ));
+    saveCustomProfiles();
+  }
+  localStorage.setItem('sessionAnalyzer.profile', state.profileId);
+  el.profileSelect.innerHTML = state.profiles.map((profile) => (
+    `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name)}</option>`
+  )).join('');
+  el.profileSelect.value = state.profileId;
+  resetProfileDraft();
+  clearCurrentSessionOverrides();
+  renderTimeline();
+  renderProfileRulesPane();
+}
+
+function cancelProfileDraft() {
+  resetProfileDraft();
+  renderTimeline();
+  renderProfileRulesPane();
 }
 
 el.projectList?.addEventListener('click', (event) => {
@@ -1204,6 +1674,22 @@ el.timeline.addEventListener('click', (event) => {
 el.detail.addEventListener('click', (event) => {
   const action = event.target.closest('[data-detail-action]')?.dataset.detailAction;
   if (!action) return;
+  if (action === 'back') {
+    backDetailView();
+    return;
+  }
+  if (action === 'close') {
+    closeDetailView();
+    return;
+  }
+  if (action === 'save-profile') {
+    saveProfileDraft();
+    return;
+  }
+  if (action === 'cancel-profile') {
+    cancelProfileDraft();
+    return;
+  }
   if (action === 'navigate-event') {
     navigateSelectedEvent(event.target.closest('[data-nav-direction]')?.dataset.navDirection || '').catch(showError);
     return;
@@ -1212,30 +1698,59 @@ el.detail.addEventListener('click', (event) => {
   const item = state.currentEvents.find((candidate) => detailKey(state.selectedSessionId, activeLayerId(), candidate.id) === key);
   if (!item) return;
   if (action === 'inspect') {
-    showInspector(item);
+    showInspector(item, { replace: true });
   } else if (action === 'raw') {
     showRaw(item).catch(showError);
   } else if (action === 'retry-detail') {
     delete state.detailErrors[key];
     delete state.detailCache[key];
-    showInspector(item);
+    showInspector(item, { replace: true });
   }
 });
 
 el.detail.addEventListener('change', (event) => {
+  const profilePicker = event.target.closest('[data-profile-picker]');
+  if (profilePicker) {
+    changeProfile(profilePicker.value);
+    return;
+  }
+  const fallback = event.target.closest('[data-profile-fallback]');
+  if (fallback) {
+    ensureProfileDraft();
+    state.profileDraft.rules.fallback = fallback.value;
+    renderTimeline();
+    renderProfileRulesPane();
+    return;
+  }
+  const kindSelect = event.target.closest('[data-profile-kind]');
+  if (kindSelect) {
+    ensureProfileDraft();
+    const kind = kindSelect.dataset.profileKind;
+    if (kindSelect.value) state.profileDraft.rules.kindStates[kind] = kindSelect.value;
+    else delete state.profileDraft.rules.kindStates[kind];
+    renderTimeline();
+    renderProfileRulesPane();
+    return;
+  }
+  const conditionSelect = event.target.closest('[data-profile-condition]');
+  if (conditionSelect) {
+    ensureProfileDraft();
+    const conditionId = conditionSelect.dataset.profileCondition;
+    state.profileDraft.rules.conditions = state.profileDraft.rules.conditions.filter((condition) => condition.id !== conditionId);
+    if (conditionSelect.value) state.profileDraft.rules.conditions.push({ id: conditionId, state: conditionSelect.value });
+    renderTimeline();
+    renderProfileRulesPane();
+    return;
+  }
   const select = event.target.closest('[data-navigation-category]');
   if (!select) return;
   state.navigationCategoryId = select.value;
   const item = currentSelectedEvent();
-  if (item) showInspector(item);
+  if (item) showInspector(item, { replace: true });
 });
 
 el.profileSelect.addEventListener('change', () => {
-  state.profileId = el.profileSelect.value;
-  localStorage.setItem('sessionAnalyzer.profile', state.profileId);
-  clearCurrentSessionOverrides();
-  renderTimeline();
-  resetTimelineScroll();
+  changeProfile(el.profileSelect.value);
 });
 
 el.layerSelect.addEventListener('change', () => {
@@ -1356,24 +1871,14 @@ document.addEventListener('keydown', (event) => {
     const i = state.profiles.findIndex((profile) => profile.id === state.profileId);
     const next = state.profiles[(i + 1) % state.profiles.length];
     if (next) {
-      state.profileId = next.id;
-      el.profileSelect.value = next.id;
-      localStorage.setItem('sessionAnalyzer.profile', state.profileId);
-      clearCurrentSessionOverrides();
-      renderTimeline();
-      resetTimelineScroll();
+      changeProfile(next.id);
     }
   }
   if (event.altKey && event.key === 'ArrowLeft') {
     const i = state.profiles.findIndex((profile) => profile.id === state.profileId);
     const next = state.profiles[(i - 1 + state.profiles.length) % state.profiles.length];
     if (next) {
-      state.profileId = next.id;
-      el.profileSelect.value = next.id;
-      localStorage.setItem('sessionAnalyzer.profile', state.profileId);
-      clearCurrentSessionOverrides();
-      renderTimeline();
-      resetTimelineScroll();
+      changeProfile(next.id);
     }
   }
 });
