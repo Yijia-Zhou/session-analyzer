@@ -197,6 +197,8 @@ const state = {
   builtinProfiles: [],
   customProfiles: readJsonStorage(CUSTOM_PROFILES_KEY, []),
   profileId: localStorage.getItem('sessionAnalyzer.profile') || 'narrative',
+  previousProfileBeforeConversation: '',
+  dirtyProfileDecisionPending: null,
   profileDraft: null,
   layerId: localStorage.getItem('sessionAnalyzer.layer') || 'main',
   overrides: JSON.parse(localStorage.getItem('sessionAnalyzer.overrides') || '{}'),
@@ -236,6 +238,9 @@ const el = {
   resetFoldsBtn: document.getElementById('resetFoldsBtn'),
   loadMoreBtn: document.getElementById('loadMoreBtn'),
   resultSummary: document.getElementById('resultSummary'),
+  dirtyProfileDialog: document.getElementById('dirtyProfileDialog'),
+  dirtyProfileCurrentName: document.getElementById('dirtyProfileCurrentName'),
+  dirtyProfileSaveName: document.getElementById('dirtyProfileSaveName'),
   mobileViewButtons: document.querySelectorAll('[data-mobile-view]'),
   projectChooser: document.getElementById('projectChooser'),
   projectStatus: document.getElementById('projectStatus'),
@@ -968,16 +973,80 @@ async function loadAnalysis(sessionId) {
   const analysis = await api(`/api/sessions/${encodeURIComponent(sessionId)}/analysis`);
   el.analysisPanel.innerHTML = [
     metric('Turns', analysis.counts.turns),
-    metric('Messages', analysis.counts.messages),
-    metric('Failed commands', analysis.counts.failedCommands),
-    metric('Patched files', analysis.patchedFiles.length),
-    metric('Protocol', analysis.counts.protocol),
-    metric('Plans', analysis.counts.planArtifacts),
+    metric('Messages', analysis.counts.messages, { action: 'profile', value: 'conversation', label: '切换到对话阅读折叠策略' }),
+    metric('Failed', analysis.counts.failedCommands, { operator: 'status', value: 'failed', label: '筛选失败事件' }),
+    metric('Files', analysis.patchedFiles.length, { operator: 'kind', value: 'patch', label: '筛选文件改动事件' }),
+    metric('Protocol', analysis.counts.protocol, { operator: 'layer', value: 'protocol', label: '切换到协议层事件' }),
+    metric('Plans', analysis.counts.planArtifacts, { operator: 'kind', value: 'plan_artifact', label: '筛选计划事件' }),
   ].join('');
 }
 
-function metric(label, value) {
-  return `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`;
+function isMetricFilterActive(filter) {
+  if (!filter) return false;
+  const search = currentSearchState();
+  return search[filter.operator] === filter.value;
+}
+
+function isMetricActionActive(action) {
+  if (!action) return false;
+  if (action.action === 'profile') return state.profileId === action.value;
+  return isMetricFilterActive(action);
+}
+
+function metric(label, value, action = null) {
+  const isActionable = action && Number(value) > 0;
+  const actionLabel = action?.label ? `${action.label}：${value} ${label}` : '';
+  const actionAttrs = isActionable
+    ? ` role="button" tabindex="0" aria-pressed="${isMetricActionActive(action) ? 'true' : 'false'}" aria-label="${escapeHtml(actionLabel)}" title="${escapeHtml(actionLabel)}" data-metric-action="${escapeHtml(action.action || 'filter')}" data-metric-operator="${escapeHtml(action.operator || '')}" data-metric-value="${escapeHtml(action.value)}"`
+    : '';
+  const classes = ['metric', isActionable ? 'filterable' : '', isActionable && isMetricActionActive(action) ? 'active' : ''].filter(Boolean).join(' ');
+  return `<div class="${classes}"${actionAttrs}><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`;
+}
+
+function applyMetricFilter(operator, value) {
+  const search = currentSearchState();
+  if (search[operator] === value) {
+    clearActiveFilter(operator);
+    return;
+  }
+  applySearchOperator(operator, value);
+}
+
+async function applyMetricAction(metricEl) {
+  const action = metricEl.dataset.metricAction;
+  if (action === 'profile') {
+    const targetProfileId = metricEl.dataset.metricValue;
+    if (targetProfileId === 'conversation' && state.profileId === 'conversation') {
+      const previousProfileId = state.profiles.some((profile) => profile.id === state.previousProfileBeforeConversation && profile.id !== 'conversation')
+        ? state.previousProfileBeforeConversation
+        : 'narrative';
+      if (await changeProfile(previousProfileId)) state.previousProfileBeforeConversation = '';
+      updateMetricActionStates();
+      return;
+    }
+    if (state.profileId !== targetProfileId) {
+      const previousProfileId = state.profileId;
+      if (await changeProfile(targetProfileId) && targetProfileId === 'conversation') {
+        state.previousProfileBeforeConversation = previousProfileId;
+      }
+    }
+    updateMetricActionStates();
+    return;
+  }
+  applyMetricFilter(metricEl.dataset.metricOperator, metricEl.dataset.metricValue);
+}
+
+function updateMetricActionStates() {
+  el.analysisPanel?.querySelectorAll('[data-metric-action]').forEach((metricEl) => {
+    const action = {
+      action: metricEl.dataset.metricAction,
+      operator: metricEl.dataset.metricOperator,
+      value: metricEl.dataset.metricValue,
+    };
+    const active = isMetricActionActive(action);
+    metricEl.classList.toggle('active', active);
+    metricEl.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
 }
 
 async function loadTimeline(append) {
@@ -1578,18 +1647,78 @@ function setProfileId(profileId, options = {}) {
   resetProfileDraft();
   clearCurrentSessionOverrides();
   renderTimeline();
+  updateMetricActionStates();
   if (!options.keepScroll) resetTimelineScroll();
   if (state.detailView.type === 'profileRules') renderProfileRulesPane();
 }
 
-function changeProfile(profileId) {
-  if (!state.profiles.some((profile) => profile.id === profileId)) return;
-  if (profileDirty() && !window.confirm('Discard unsaved folding strategy changes?')) {
+async function changeProfile(profileId) {
+  if (!state.profiles.some((profile) => profile.id === profileId)) return false;
+  if (profileId === state.profileId) return true;
+  if (profileDirty() && !(await resolveDirtyProfileBeforeSwitch(profileId))) {
     el.profileSelect.value = state.profileId;
     renderProfileRulesPane();
-    return;
+    return false;
   }
   setProfileId(profileId);
+  return true;
+}
+
+async function resolveDirtyProfileBeforeSwitch(targetProfileId) {
+  const result = await dirtyProfileSwitchChoice(targetProfileId);
+  const choice = result.choice;
+  if (choice === 'cancel') return false;
+  if (choice === 'discard') return true;
+  if (choice === 'save') {
+    saveProfileDraft(result.name);
+    return true;
+  }
+  return false;
+}
+
+function dirtyProfileSwitchChoice(targetProfileId) {
+  if (state.dirtyProfileDecisionPending) return state.dirtyProfileDecisionPending;
+  if (!el.dirtyProfileDialog) return Promise.resolve({ choice: 'cancel', name: '' });
+
+  state.dirtyProfileDecisionPending = new Promise((resolve) => {
+    const previousFocus = document.activeElement;
+    const currentProfile = activeProfile();
+    const defaultName = isBuiltinProfile(state.profileId)
+      ? nextCustomProfileName(state.profileId)
+      : currentProfile.name;
+    if (el.dirtyProfileCurrentName) el.dirtyProfileCurrentName.textContent = currentProfile.name;
+    if (el.dirtyProfileSaveName) el.dirtyProfileSaveName.value = defaultName;
+    const finish = (choice) => {
+      el.dirtyProfileDialog.hidden = true;
+      el.dirtyProfileDialog.removeEventListener('click', onClick);
+      document.removeEventListener('keydown', onKeydown);
+      state.dirtyProfileDecisionPending = null;
+      if (previousFocus?.focus) previousFocus.focus();
+      resolve({ choice, name: el.dirtyProfileSaveName?.value.trim() || defaultName });
+    };
+    const onClick = (event) => {
+      const choice = event.target.closest('[data-dirty-profile-choice]')?.dataset.dirtyProfileChoice;
+      if (choice) finish(choice);
+    };
+    const onKeydown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        finish('cancel');
+        return;
+      }
+      if (event.key === 'Enter' && event.target === el.dirtyProfileSaveName) {
+        event.preventDefault();
+        finish('save');
+      }
+    };
+    el.dirtyProfileDialog.hidden = false;
+    el.dirtyProfileDialog.addEventListener('click', onClick);
+    document.addEventListener('keydown', onKeydown);
+    el.dirtyProfileSaveName?.focus();
+    el.dirtyProfileSaveName?.select();
+  });
+
+  return state.dirtyProfileDecisionPending;
 }
 
 function nextCustomProfileName(baseProfileId) {
@@ -1600,7 +1729,7 @@ function nextCustomProfileName(baseProfileId) {
   return `${base.name} (自定义${count})`;
 }
 
-function saveProfileDraft() {
+function saveProfileDraft(name = '') {
   ensureProfileDraft();
   const draft = normalizeProfiles([state.profileDraft])[0];
   if (isBuiltinProfile(state.profileId)) {
@@ -1609,7 +1738,7 @@ function saveProfileDraft() {
       ...draft,
       id: `custom:${Date.now()}`,
       baseProfileId,
-      name: nextCustomProfileName(baseProfileId),
+      name: String(name || '').trim() || nextCustomProfileName(baseProfileId),
       description: `Custom strategy based on ${activeProfile().name}`,
     };
     state.customProfiles.push(saved);
@@ -1617,7 +1746,9 @@ function saveProfileDraft() {
     state.profileId = saved.id;
   } else {
     state.customProfiles = state.customProfiles.map((profile) => (
-      profile.id === state.profileId ? { ...draft, id: state.profileId, name: profile.name, baseProfileId: profile.baseProfileId } : profile
+      profile.id === state.profileId
+        ? { ...draft, id: state.profileId, name: String(name || '').trim() || profile.name, baseProfileId: profile.baseProfileId }
+        : profile
     ));
     saveCustomProfiles();
   }
@@ -1719,7 +1850,7 @@ el.detail.addEventListener('click', (event) => {
 el.detail.addEventListener('change', (event) => {
   const profilePicker = event.target.closest('[data-profile-picker]');
   if (profilePicker) {
-    changeProfile(profilePicker.value);
+    changeProfile(profilePicker.value).catch(showError);
     return;
   }
   const fallback = event.target.closest('[data-profile-fallback]');
@@ -1758,7 +1889,7 @@ el.detail.addEventListener('change', (event) => {
 });
 
 el.profileSelect.addEventListener('change', () => {
-  changeProfile(el.profileSelect.value);
+  changeProfile(el.profileSelect.value).catch(showError);
 });
 
 el.layerSelect.addEventListener('change', () => {
@@ -1775,6 +1906,18 @@ el.resetFoldsBtn.addEventListener('click', () => {
 });
 
 el.loadMoreBtn.addEventListener('click', () => loadTimeline(true).catch(showError));
+el.analysisPanel?.addEventListener('click', (event) => {
+  const metricEl = event.target.closest('[data-metric-action]');
+  if (!metricEl) return;
+  applyMetricAction(metricEl).catch(showError);
+});
+el.analysisPanel?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const metricEl = event.target.closest('[data-metric-action]');
+  if (!metricEl) return;
+  event.preventDefault();
+  applyMetricAction(metricEl).catch(showError);
+});
 el.resultSummary?.addEventListener('click', (event) => {
   const clear = event.target.closest('[data-clear-filter]')?.dataset.clearFilter;
   if (clear) clearActiveFilter(clear);
@@ -1879,14 +2022,14 @@ document.addEventListener('keydown', (event) => {
     const i = state.profiles.findIndex((profile) => profile.id === state.profileId);
     const next = state.profiles[(i + 1) % state.profiles.length];
     if (next) {
-      changeProfile(next.id);
+      changeProfile(next.id).catch(showError);
     }
   }
   if (event.altKey && event.key === 'ArrowLeft') {
     const i = state.profiles.findIndex((profile) => profile.id === state.profileId);
     const next = state.profiles[(i - 1 + state.profiles.length) % state.profiles.length];
     if (next) {
-      changeProfile(next.id);
+      changeProfile(next.id).catch(showError);
     }
   }
 });
