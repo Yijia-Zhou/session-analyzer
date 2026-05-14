@@ -963,7 +963,11 @@ async function selectSession(sessionId, options = {}) {
   if (session) {
     const relationship = sessionRelationshipLabel(session);
     el.sessionHeader.innerHTML = `<h2>${escapeHtml(session.title)}</h2>
-      <p>${relationship ? `${escapeHtml(relationship)} | ` : ''}${escapeHtml(session.sourceFile)} | ${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</p>`;
+      <div class="sessionMeta" aria-label="Session metadata">
+        ${relationship ? `<span class="sessionMetaChip">${escapeHtml(relationship)}</span>` : ''}
+        <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
+        <span class="sessionMetaChip">${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</span>
+      </div>`;
   }
   await Promise.all([loadAnalysis(sessionId), loadTimeline(false)]);
   if (options.mobileView) setMobileView(options.mobileView);
