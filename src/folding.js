@@ -145,6 +145,28 @@ const foldingProfiles = [
     ),
   },
   {
+    id: 'planning',
+    name: '计划阅读',
+    description: '突出计划产物和计划相关对话，保留失败、错误和改动摘要。',
+    rules: profileRules(
+      {
+        plan_artifact: 'expanded',
+        user_message: 'summary',
+        assistant_message: 'summary',
+        patch: 'summary',
+        error: 'summary',
+        abort: 'summary',
+        rollback: 'summary',
+        compaction: 'summary',
+      },
+      'hidden',
+      [
+        { id: 'failedStatus', state: 'summary' },
+        { id: 'abnormalSeverity', state: 'summary' },
+      ],
+    ),
+  },
+  {
     id: 'conversation',
     name: '对话阅读',
     description: '展开用户与助手消息，弱化工具内部细节。',

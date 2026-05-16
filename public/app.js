@@ -87,6 +87,23 @@ const BUILTIN_PROFILE_RULES = {
       { id: 'importantEvent', state: 'summary' },
     ],
   },
+  planning: {
+    kindStates: {
+      plan_artifact: 'expanded',
+      user_message: 'summary',
+      assistant_message: 'summary',
+      patch: 'summary',
+      error: 'summary',
+      abort: 'summary',
+      rollback: 'summary',
+      compaction: 'summary',
+    },
+    fallback: 'hidden',
+    conditions: [
+      { id: 'failedStatus', state: 'summary' },
+      { id: 'abnormalSeverity', state: 'summary' },
+    ],
+  },
   conversation: {
     kindStates: {
       user_message: 'expanded',
@@ -197,7 +214,8 @@ const state = {
   builtinProfiles: [],
   customProfiles: readJsonStorage(CUSTOM_PROFILES_KEY, []),
   profileId: localStorage.getItem('sessionAnalyzer.profile') || 'narrative',
-  previousProfileBeforeConversation: '',
+  previousProfileBeforeMetric: '',
+  previousLayerBeforeProtocol: '',
   dirtyProfileDecisionPending: null,
   profileDraft: null,
   layerId: localStorage.getItem('sessionAnalyzer.layer') || 'main',
@@ -582,7 +600,7 @@ function activeFilters() {
   if (search.kind) filters.push({ key: 'kind', label: `Kind: ${optionText(el.searchKindSelect, search.kind, KIND_LABELS)}` });
   if (search.status) filters.push({ key: 'status', label: `Status: ${optionText(el.searchStatusSelect, search.status, STATUS_LABELS)}` });
   if (search.file) filters.push({ key: 'file', label: `File: ${search.file}` });
-  if (search.layer !== 'main') filters.push({ key: 'layer', label: `Layer: ${optionText(el.layerSelect, search.layer, LAYER_LABELS)}` });
+  if (search.parsed.layer && search.layer !== 'main') filters.push({ key: 'layer', label: `Layer: ${optionText(el.layerSelect, search.layer, LAYER_LABELS)}` });
   return filters;
 }
 
@@ -978,73 +996,82 @@ async function loadAnalysis(sessionId) {
   el.analysisPanel.innerHTML = [
     metric('Turns', analysis.counts.turns),
     metric('Messages', analysis.counts.messages, { action: 'profile', value: 'conversation', label: '切换到对话阅读折叠策略' }),
-    metric('Failed', analysis.counts.failedCommands, { operator: 'status', value: 'failed', label: '筛选失败事件' }),
-    metric('Files', analysis.patchedFiles.length, { operator: 'kind', value: 'patch', label: '筛选文件改动事件' }),
-    metric('Protocol', analysis.counts.protocol, { operator: 'layer', value: 'protocol', label: '切换到协议层事件' }),
-    metric('Plans', analysis.counts.planArtifacts, { operator: 'kind', value: 'plan_artifact', label: '筛选计划事件' }),
+    metric('Failed', analysis.counts.failedCommands, { action: 'profile', value: 'debug', label: '切换到问题排查折叠策略' }),
+    metric('Files', analysis.patchedFiles.length, { action: 'profile', value: 'changes', label: '切换到改动审查折叠策略' }),
+    metric('Protocol', analysis.counts.protocol, { action: 'layer', value: 'protocol', label: '切换到协议层事件' }),
+    metric('Plans', analysis.counts.planArtifacts, { action: 'profile', value: 'planning', label: '切换到计划阅读折叠策略' }),
   ].join('');
-}
-
-function isMetricFilterActive(filter) {
-  if (!filter) return false;
-  const search = currentSearchState();
-  return search[filter.operator] === filter.value;
 }
 
 function isMetricActionActive(action) {
   if (!action) return false;
   if (action.action === 'profile') return state.profileId === action.value;
-  return isMetricFilterActive(action);
+  if (action.action === 'layer') return activeLayerId() === action.value;
+  return false;
 }
 
 function metric(label, value, action = null) {
   const isActionable = action && Number(value) > 0;
   const actionLabel = action?.label ? `${action.label}：${value} ${label}` : '';
   const actionAttrs = isActionable
-    ? ` role="button" tabindex="0" aria-pressed="${isMetricActionActive(action) ? 'true' : 'false'}" aria-label="${escapeHtml(actionLabel)}" title="${escapeHtml(actionLabel)}" data-metric-action="${escapeHtml(action.action || 'filter')}" data-metric-operator="${escapeHtml(action.operator || '')}" data-metric-value="${escapeHtml(action.value)}"`
+    ? ` role="button" tabindex="0" aria-pressed="${isMetricActionActive(action) ? 'true' : 'false'}" aria-label="${escapeHtml(actionLabel)}" title="${escapeHtml(actionLabel)}" data-metric-action="${escapeHtml(action.action)}" data-metric-value="${escapeHtml(action.value)}"`
     : '';
   const classes = ['metric', isActionable ? 'filterable' : '', isActionable && isMetricActionActive(action) ? 'active' : ''].filter(Boolean).join(' ');
   return `<div class="${classes}"${actionAttrs}><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`;
-}
-
-function applyMetricFilter(operator, value) {
-  const search = currentSearchState();
-  if (search[operator] === value) {
-    clearActiveFilter(operator);
-    return;
-  }
-  applySearchOperator(operator, value);
 }
 
 async function applyMetricAction(metricEl) {
   const action = metricEl.dataset.metricAction;
   if (action === 'profile') {
     const targetProfileId = metricEl.dataset.metricValue;
-    if (targetProfileId === 'conversation' && state.profileId === 'conversation') {
-      const previousProfileId = state.profiles.some((profile) => profile.id === state.previousProfileBeforeConversation && profile.id !== 'conversation')
-        ? state.previousProfileBeforeConversation
+    if (state.profileId === targetProfileId) {
+      const previousProfileId = state.profiles.some((profile) => profile.id === state.previousProfileBeforeMetric && profile.id !== targetProfileId)
+        ? state.previousProfileBeforeMetric
         : 'narrative';
-      if (await changeProfile(previousProfileId)) state.previousProfileBeforeConversation = '';
+      if (await changeProfile(previousProfileId)) state.previousProfileBeforeMetric = '';
       updateMetricActionStates();
       return;
     }
-    if (state.profileId !== targetProfileId) {
-      const previousProfileId = state.profileId;
-      if (await changeProfile(targetProfileId) && targetProfileId === 'conversation') {
-        state.previousProfileBeforeConversation = previousProfileId;
-      }
+    const previousProfileId = state.profileId;
+    if (await changeProfile(targetProfileId)) {
+      state.previousProfileBeforeMetric = previousProfileId;
     }
     updateMetricActionStates();
     return;
   }
-  applyMetricFilter(metricEl.dataset.metricOperator, metricEl.dataset.metricValue);
+  if (action === 'layer') {
+    await applyMetricLayer(metricEl.dataset.metricValue);
+  }
+}
+
+async function applyMetricLayer(targetLayerId) {
+  const currentLayerId = activeLayerId();
+  if (currentLayerId === targetLayerId) {
+    const previousLayerId = ['main', 'protocol', 'raw'].includes(state.previousLayerBeforeProtocol) && state.previousLayerBeforeProtocol !== targetLayerId
+      ? state.previousLayerBeforeProtocol
+      : 'main';
+    await changeLayer(previousLayerId);
+    state.previousLayerBeforeProtocol = '';
+    return;
+  }
+  state.previousLayerBeforeProtocol = currentLayerId;
+  await changeLayer(targetLayerId);
+}
+
+async function changeLayer(layerId) {
+  if (!['main', 'protocol', 'raw'].includes(layerId)) return;
+  state.layerId = layerId;
+  el.layerSelect.value = state.layerId;
+  el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'layer');
+  localStorage.setItem('sessionAnalyzer.layer', state.layerId);
+  await loadSessions();
+  updateMetricActionStates();
 }
 
 function updateMetricActionStates() {
   el.analysisPanel?.querySelectorAll('[data-metric-action]').forEach((metricEl) => {
     const action = {
       action: metricEl.dataset.metricAction,
-      operator: metricEl.dataset.metricOperator,
       value: metricEl.dataset.metricValue,
     };
     const active = isMetricActionActive(action);
@@ -1897,10 +1924,7 @@ el.profileSelect.addEventListener('change', () => {
 });
 
 el.layerSelect.addEventListener('change', () => {
-  state.layerId = el.layerSelect.value;
-  el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'layer');
-  localStorage.setItem('sessionAnalyzer.layer', state.layerId);
-  loadSessions().catch(showError);
+  changeLayer(el.layerSelect.value).catch(showError);
 });
 
 el.resetFoldsBtn.addEventListener('click', () => {
