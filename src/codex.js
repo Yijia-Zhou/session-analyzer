@@ -683,6 +683,7 @@ function makeEmptySession(filePath, relFile, stat) {
       errors: 0,
       protocol: 0,
       planArtifacts: 0,
+      planEvents: 0,
     },
     analysis: null,
   };
@@ -2132,6 +2133,9 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'abort') session.counts.aborts += 1;
   if (logicalEvent.kind === 'error') session.counts.errors += 1;
   if (logicalEvent.kind === 'plan_artifact') session.counts.planArtifacts += 1;
+  if (logicalEvent.kind === 'plan_artifact' || logicalEvent.toolName === 'update_plan' || logicalEvent.subtype === 'update_plan') {
+    session.counts.planEvents += 1;
+  }
 }
 
 function updateAnalysisDraft(session, event) {

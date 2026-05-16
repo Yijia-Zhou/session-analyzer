@@ -33,7 +33,12 @@ const CONDITION_DEFINITIONS = [
   {
     id: 'importantEvent',
     name: 'Important event',
-    description: 'User/assistant messages, patches, errors, aborts, rollbacks, compactions, plans, failed events, and abnormal severity.',
+    description: 'User/assistant messages, patches, errors, aborts, rollbacks, compactions, plans, update_plan calls, failed events, and abnormal severity.',
+  },
+  {
+    id: 'updatePlanCall',
+    name: 'update_plan call',
+    description: 'Calls to the update_plan tool.',
   },
   {
     id: 'failedStatus',
@@ -161,6 +166,7 @@ const foldingProfiles = [
       },
       'hidden',
       [
+        { id: 'updatePlanCall', state: 'expanded' },
         { id: 'failedStatus', state: 'summary' },
         { id: 'abnormalSeverity', state: 'summary' },
       ],

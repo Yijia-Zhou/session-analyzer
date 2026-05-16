@@ -101,6 +101,7 @@ const BUILTIN_PROFILE_RULES = {
     },
     fallback: 'hidden',
     conditions: [
+      { id: 'updatePlanCall', state: 'expanded' },
       { id: 'failedStatus', state: 'summary' },
       { id: 'abnormalSeverity', state: 'summary' },
     ],
@@ -504,6 +505,7 @@ function conditionDefinitions() {
   return [
     { id: 'searchHit', name: 'Search hit', description: 'Events matching the current search query.' },
     { id: 'importantEvent', name: 'Important event', description: 'User/assistant messages, patches, errors, aborts, rollbacks, compactions, plans, failed events, and abnormal severity.' },
+    { id: 'updatePlanCall', name: 'update_plan call', description: 'Calls to the update_plan tool.' },
     { id: 'failedStatus', name: 'Failed status', description: 'Events whose status is failed.' },
     { id: 'errorSeverity', name: 'Error severity', description: 'Events whose severity is error.' },
     { id: 'abnormalSeverity', name: 'Abnormal severity', description: 'Events whose severity is not normal.' },
@@ -1017,13 +1019,14 @@ async function selectSession(sessionId, options = {}) {
 
 async function loadAnalysis(sessionId) {
   const analysis = await api(`/api/sessions/${encodeURIComponent(sessionId)}/analysis`);
+  const planCount = analysis.counts.planEvents ?? analysis.counts.planArtifacts;
   el.analysisPanel.innerHTML = [
     metric('Turns', analysis.counts.turns),
     metric('Messages', analysis.counts.messages, { action: 'profile', value: 'conversation', label: '切换到对话阅读折叠策略' }),
     metric('Failed', analysis.counts.failedCommands, { action: 'profile', value: 'debug', label: '切换到问题排查折叠策略' }),
     metric('Files', analysis.patchedFiles.length, { action: 'profile', value: 'changes', label: '切换到改动审查折叠策略' }),
     metric('Protocol', analysis.counts.protocol, { action: 'layer', value: 'protocol', label: '切换到协议层事件' }),
-    metric('Plans', analysis.counts.planArtifacts, { action: 'profile', value: 'planning', label: '切换到计划阅读折叠策略' }),
+    metric('Plans', planCount, { action: 'profile', value: 'planning', label: '切换到计划阅读折叠策略' }),
   ].join('');
 }
 
@@ -1168,6 +1171,7 @@ function displayState(event) {
 
 function importantEvent(event) {
   return ['user_message', 'assistant_message', 'patch', 'error', 'abort', 'rollback', 'compaction', 'plan_artifact'].includes(event.kind)
+    || isUpdatePlanEvent(event)
     || event.severity !== 'normal'
     || event.status === 'failed';
 }
@@ -1175,6 +1179,7 @@ function importantEvent(event) {
 function conditionMatches(conditionId, event) {
   if (conditionId === 'searchHit') return Boolean(event.hasSearchHit);
   if (conditionId === 'importantEvent') return importantEvent(event);
+  if (conditionId === 'updatePlanCall') return isUpdatePlanEvent(event);
   if (conditionId === 'failedStatus') return event.status === 'failed';
   if (conditionId === 'errorSeverity') return event.severity === 'error';
   if (conditionId === 'abnormalSeverity') return event.severity !== 'normal';

@@ -46,6 +46,7 @@ test('buildIndex deduplicates mirrored messages and keeps protocol separately', 
   assert.equal(session.counts.patches, 4);
   assert.equal(session.counts.compactions, 1);
   assert.equal(session.counts.planArtifacts, 1);
+  assert.equal(session.counts.planEvents, 2);
   assert.ok(session.counts.protocol >= 3);
 });
 
