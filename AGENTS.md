@@ -30,6 +30,7 @@ When changing product behavior or repository structure:
 - Start: `$repo = (git rev-parse --show-toplevel); $process = Start-Process -FilePath 'C:\Program Files\nodejs\node.exe' -ArgumentList @('server.js', '--repo', $repo) -WorkingDirectory $repo -WindowStyle Hidden -PassThru; $process.Id`
 - Verify: `Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:17890/' -TimeoutSec 10`
 - In Codex sandboxed tool sessions, background `Start-Process` server launches may be cleaned up when the command finishes. For a persistent browser-verification server, start this command outside the sandbox / with escalated execution.
+- 当代码修改完成但需要重启local server才能生效时，进行重启供用户验收。
 
 ## Current anchors
 
