@@ -1348,17 +1348,31 @@ function renderUsageLimitPreview(items) {
   return items.map((item) => `<div class="usageLimitMini"><strong>${escapeHtml(item.label || '')}</strong><span>${escapeHtml(item.remaining || '')} remaining</span><em>Resets ${escapeHtml(item.reset || '')}</em></div>`).join('');
 }
 
+function cssToken(value) {
+  return String(value || 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown';
+}
+
 function renderTimeline() {
   el.timeline.innerHTML = state.currentEvents.map((event) => {
     const ds = displayState(event);
-    const classes = ['event', ds, event.severity, event.id === state.selectedEventId ? 'selected' : '', event.hasSearchHit ? 'searchHit' : '', ds === 'hidden' ? 'hiddenByProfile' : ''].filter(Boolean).join(' ');
+    const classes = [
+      'event',
+      ds,
+      `state-${cssToken(ds)}`,
+      `kind-${cssToken(event.kind)}`,
+      event.severity,
+      event.status ? `status-${cssToken(event.status)}` : '',
+      event.id === state.selectedEventId ? 'selected' : '',
+      event.hasSearchHit ? 'searchHit' : '',
+      ds === 'hidden' ? 'hiddenByProfile' : '',
+    ].filter(Boolean).join(' ');
     const chips = [
-      event.layer ? `<span class="chip">${escapeHtml(event.layer)}</span>` : '',
-      event.status ? `<span class="chip">${escapeHtml(event.status)}</span>` : '',
-      event.toolName ? `<span class="chip">${escapeHtml(event.toolName)}</span>` : '',
-      event.touchedFiles?.length ? `<span class="chip">${event.touchedFiles.length} files</span>` : '',
-      event.rawRefs?.length ? `<span class="chip">${event.rawRefs.length} raw</span>` : '',
-      event.channels?.length ? `<span class="chip">${escapeHtml(event.channels.join(','))}</span>` : '',
+      event.layer ? `<span class="chip layerChip">${escapeHtml(event.layer)}</span>` : '',
+      event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
+      event.toolName ? `<span class="chip toolChip">${escapeHtml(event.toolName)}</span>` : '',
+      event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} files</span>` : '',
+      event.rawRefs?.length ? `<span class="chip countChip">${event.rawRefs.length} raw</span>` : '',
+      event.channels?.length ? `<span class="chip channelChip">${escapeHtml(event.channels.join(','))}</span>` : '',
     ].join('');
     const sourceText = event.source ? `${event.source.file}:${event.source.line}` : '';
     return `<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
