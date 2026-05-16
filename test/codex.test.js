@@ -108,6 +108,7 @@ test('buildIndex infers fallback titles from real user tasks after protocol wrap
 
 test('timeline main layer returns logical events without duplicate user or assistant messages', async () => {
   const index = await buildFixtureIndex();
+  const session = index.sessions[0];
   const timeline = getTimeline(index, index.sessions[0].id, {
     offset: 0,
     limit: 100,
@@ -129,6 +130,9 @@ test('timeline main layer returns logical events without duplicate user or assis
   assert.equal(userEvents[0].rawRefs.length, 2);
   assert.equal(assistantEvents[0].rawRefs.length, 2);
   assert.equal(planEvents[0].rawRefs.length, 2);
+
+  assert.equal(timeline.events.some((event) => event.kind === 'token'), false);
+  assert.equal(session.analysis.tokenStats.maxObserved, 0);
 });
 
 test('timeline protocol layer exposes injected records and raw layer keeps all rows', async () => {
@@ -155,6 +159,9 @@ test('timeline protocol layer exposes injected records and raw layer keeps all r
   assert.equal(protocolBySubtype.get('environment_context').preview, 'cwd: G:\\vibe\\term-agent; shell: powershell');
   assert.equal(protocolBySubtype.get('session_meta').label, 'Session metadata');
   assert.equal(protocolBySubtype.get('turn_context').preview, 'turn_id: turn-1; cwd: G:\\vibe\\term-agent; model: gpt-5');
+  assert.equal(protocolBySubtype.get('token_count').label, 'Token count');
+  assert.match(protocolBySubtype.get('token_count').preview, /5 hour usage limit: 12% remaining; Resets/);
+  assert.match(protocolBySubtype.get('token_count').preview, /Weekly usage limit: 67% remaining; Resets/);
 
   const rawTimeline = getTimeline(index, index.sessions[0].id, {
     offset: 0,
@@ -404,6 +411,15 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   const emptyReasoningDetail = buildEventDetail(session, emptyReasoningEvent.id, 'protocol');
   assert.equal(emptyReasoningDetail.sections[0].type, 'notice');
   assert.equal(emptyReasoningDetail.sections[0].hideTitle, true);
+
+  const tokenEvent = session.logicalEvents.find((event) => event.subtype === 'token_count');
+  const tokenDetail = buildEventDetail(session, tokenEvent.id, 'protocol');
+  const usageLimits = tokenDetail.sections.find((section) => section.title === 'Usage limits');
+  assert.equal(usageLimits.type, 'usage_limits');
+  assert.deepEqual(usageLimits.items.map((item) => [item.label, item.remaining]), [
+    ['5 hour usage limit', '12%'],
+    ['Weekly usage limit', '67%'],
+  ]);
 
   const rawRecord = session.rawEvents.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'task_started');
   const rawDetail = buildEventDetail(session, rawRecord.rawId, 'raw');

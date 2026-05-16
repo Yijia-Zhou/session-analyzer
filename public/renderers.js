@@ -58,6 +58,19 @@
     return `<section class="eventSection"><div class="kvWrap">${renderSectionTitle(section)}<table class="kvTable"><tbody>${rows}</tbody></table></div></section>`;
   }
 
+  function renderTokenUsage(section) {
+    const items = (section.items || []).map((item) => {
+      const primary = item.primary ? ' primary' : '';
+      return `<div class="tokenUsageItem${primary}"><span class="tokenUsageLabel">${escapeHtml(item.label || '')}</span><strong>${escapeHtml(item.formatted ?? item.value ?? '')}</strong></div>`;
+    }).join('');
+    return `<section class="eventSection"><div class="tokenUsageBlock">${renderSectionTitle(section)}<div class="tokenUsageGrid">${items}</div></div></section>`;
+  }
+
+  function renderUsageLimits(section) {
+    const items = (section.items || []).map((item) => `<div class="usageLimitItem"><strong>${escapeHtml(item.label || '')}</strong><span>${escapeHtml(item.remaining || '')} remaining</span><em>Resets ${escapeHtml(item.reset || '')}</em></div>`).join('');
+    return `<section class="eventSection"><div class="usageLimitBlock">${renderSectionTitle(section)}${items}</div></section>`;
+  }
+
   function renderNotice(section) {
     const level = section.level || 'info';
     return `<section class="eventSection"><div class="notice ${escapeHtml(level)}">${renderSectionTitle(section)}<p>${escapeHtml(section.text || '')}</p></div></section>`;
@@ -83,6 +96,10 @@
         return renderDiff(section);
       case 'kv':
         return renderKv(section);
+      case 'token_usage':
+        return renderTokenUsage(section);
+      case 'usage_limits':
+        return renderUsageLimits(section);
       case 'notice':
         return renderNotice(section);
       case 'raw_json':

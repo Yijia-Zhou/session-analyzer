@@ -13,6 +13,8 @@ test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv
   const diff = renderSection({ type: 'diff', title: 'Patch', text: '@@\n-old\n+new' });
   const notice = renderSection({ type: 'notice', title: 'Warning', text: '<script>', level: 'warning' });
   const kv = renderSection({ type: 'kv', title: 'Meta', entries: [{ key: 'cwd', value: 'G:\\repo' }] });
+  const tokenUsage = renderSection({ type: 'token_usage', title: 'Token usage', items: [{ label: 'Total', formatted: '1,234', primary: true }] });
+  const usageLimits = renderSection({ type: 'usage_limits', title: 'Usage limits', items: [{ label: 'Weekly usage limit', remaining: '67%', reset: 'May 20, 2026, 10:16 AM' }] });
   const rawJson = renderSection({ type: 'raw_json', title: 'Raw JSON', value: { raw: true } });
   const expandedRawJson = renderSection({ type: 'raw_json', title: 'Raw JSON', value: { raw: true }, expanded: true });
 
@@ -27,6 +29,10 @@ test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv
   assert.match(diff, /diffLine added/);
   assert.match(notice, /&lt;script&gt;/);
   assert.match(kv, /<table class="kvTable">/);
+  assert.match(tokenUsage, /class="tokenUsageItem primary"/);
+  assert.match(tokenUsage, /1,234/);
+  assert.match(usageLimits, /Weekly usage limit/);
+  assert.match(usageLimits, /67% remaining/);
   assert.match(rawJson, /<details class="rawJsonDetails">/);
   assert.match(expandedRawJson, /<details class="rawJsonDetails" open>/);
 });

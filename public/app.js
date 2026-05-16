@@ -1254,8 +1254,25 @@ function renderEventBody(event, display) {
 
 function renderEventPreview(event, display) {
   if (display === 'expanded') return '';
+  if (event.kind === 'token' && event.usageLimits?.length) {
+    return `<div class="eventPreview usageLimitPreview">${renderUsageLimitPreview(event.usageLimits)}</div>`;
+  }
+  if (event.kind === 'token' && event.tokenUsage?.length) {
+    return `<div class="eventPreview tokenPreview">${renderTokenUsageBadges(event.tokenUsage)}</div>`;
+  }
   const preview = event.snippet || event.preview || event.label;
   return `<div class="eventPreview">${escapeHtml(preview)}</div>`;
+}
+
+function renderTokenUsageBadges(items) {
+  return items.map((item) => {
+    const primary = item.primary ? ' primary' : '';
+    return `<span class="tokenBadge${primary}"><span>${escapeHtml(item.label || '')}</span><strong>${escapeHtml(item.formatted ?? item.value ?? '')}</strong></span>`;
+  }).join('');
+}
+
+function renderUsageLimitPreview(items) {
+  return items.map((item) => `<div class="usageLimitMini"><strong>${escapeHtml(item.label || '')}</strong><span>${escapeHtml(item.remaining || '')} remaining</span><em>Resets ${escapeHtml(item.reset || '')}</em></div>`).join('');
 }
 
 function renderTimeline() {

@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-05-13 / 最近更新：2026-05-13
+- Last updated: 2026-05-16 / 最近更新：2026-05-16
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
@@ -72,6 +72,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 18. The detail panel provides consistent Back and Close behavior across event inspectors and raw refs; Close returns to the folding strategy panel. / 详情面板在事件检查器和原始引用之间提供一致的 Back 和 Close 行为；Close 会返回折叠策略面板。
 19. When the server was started without `--repo`, the browser remembers the last selected target project locally and restores it on refresh when it is still available. / 当服务器未使用 `--repo` 启动时，浏览器会在本地记住上次选择的目标项目，并在刷新且该项目仍可用时恢复它。
 20. Timeline pagination remains available through the explicit load-more button and also attempts to load the next page when the user scrolls to the bottom of the timeline pane. / 时间线分页既可通过显式的“加载更多”按钮使用，也会在用户滚动到时间线面板底部时尝试加载下一页。
+21. Routine token count and rate-limit records live in the protocol layer because they describe Codex runtime state rather than the engineering workflow; when a transcript reports an actual reached usage limit, the main timeline shows a warning event. Raw JSON remains available for verification. / 常规 token count 和 rate-limit 记录位于 protocol layer，因为它们描述的是 Codex 运行时状态而不是工程工作流；当转录报告确实触达使用限额时，main timeline 会显示一个 warning 事件。原始 JSON 仍可用于验证。
 
 ## Acceptance criteria / 验收标准
 
@@ -99,6 +100,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - [x] Repository filtering is case-insensitive on Windows paths. / 在 Windows 路径上，仓库筛选不区分大小写。
 - [x] Inferred fallback titles come from real user task text rather than protocol wrappers or malformed transcript scaffolding. / 推断出的回退标题来自真实用户任务文本，而不是协议包装或格式异常的转录脚手架。
 - [x] Starting without `--repo` lets the user select a target project in the browser before repository-scoped indexing. / 不带 `--repo` 启动时，用户可以先在浏览器中选择目标项目，再进行仓库范围的索引。
+- [x] Routine token count events stay out of Main timeline, remain readable in Protocol layer, and only produce a Main timeline warning when a usage limit is reached. / 常规 token count 事件不会进入 Main timeline，会在 Protocol layer 中保持可读，并且只有在触达使用限额时才会产生 Main timeline warning。
 
 ## Edge cases / 边界情况
 

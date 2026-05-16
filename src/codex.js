@@ -8,7 +8,7 @@ const MarkdownIt = require('markdown-it');
 
 const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
-const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'kv', 'notice', 'raw_json']);
+const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'kv', 'notice', 'raw_json', 'token_usage', 'usage_limits']);
 const SESSION_TITLE_LIMIT = 120;
 const SUBAGENT_SESSION_TITLE_LIMIT = 160;
 const PROJECT_DISCOVERY_LINE_LIMIT = 80;
@@ -63,6 +63,7 @@ const PROTOCOL_LABELS = Object.freeze({
   meta_block: 'Protocol metadata block',
   session_meta: 'Session metadata',
   skill_injection: 'Skill instructions',
+  token_count: 'Token count',
   turn_aborted_marker: 'Turn aborted marker',
   turn_context: 'Turn context',
   user_shell_command: 'User shell command',
@@ -103,6 +104,260 @@ function flattenText(value, budget = 8000) {
 
   visit(value);
   return parts.join('\n').trim();
+}
+
+const TOKEN_USAGE_ORDER = [
+  'input_tokens',
+  'cached_input_tokens',
+  'cache_creation_input_tokens',
+  'cache_read_input_tokens',
+  'output_tokens',
+  'reasoning_output_tokens',
+  'total_tokens',
+];
+
+const TOKEN_USAGE_LABELS = Object.freeze({
+  input_tokens: 'Input',
+  cached_input_tokens: 'Cached input',
+  cache_creation_input_tokens: 'Cache creation',
+  cache_read_input_tokens: 'Cache read',
+  output_tokens: 'Output',
+  reasoning_output_tokens: 'Reasoning output',
+  total_tokens: 'Total',
+});
+
+const USAGE_LIMIT_ORDER = ['5h', 'weekly'];
+
+function humanizeTokenKey(key) {
+  return String(key || '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function humanizeUsageLimitKey(value) {
+  return String(value || '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function usageLimitKind(text) {
+  const source = String(text || '').toLowerCase().replace(/[_-]+/g, ' ');
+  if (/\bweekly\b|\bweek\b/.test(source)) return 'weekly';
+  if (/\b5\s*h\b|\b5\s*hour\b|\bfive\s*hour\b/.test(source)) return '5h';
+  return '';
+}
+
+function usageLimitKindFromWindowMinutes(value) {
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes)) return '';
+  if (minutes === 300) return '5h';
+  if (minutes === 10080) return 'weekly';
+  return '';
+}
+
+function usageLimitLabel(kind, fallback) {
+  if (kind === '5h') return '5 hour usage limit';
+  if (kind === 'weekly') return 'Weekly usage limit';
+  const base = humanizeUsageLimitKey(fallback || 'Usage');
+  return /\busage limit\b/i.test(base) ? base : `${base || 'Usage'} usage limit`;
+}
+
+function tokenUsageLabel(pathParts) {
+  const parts = pathParts.filter((part) => part !== 'info');
+  const key = parts.at(-1) || '';
+  if (TOKEN_USAGE_LABELS[key]) return TOKEN_USAGE_LABELS[key];
+  return parts.map(humanizeTokenKey).join(' ');
+}
+
+function collectTokenUsageEntries(payload) {
+  const root = payload?.info && typeof payload.info === 'object' ? payload.info : payload;
+  if (!root || typeof root !== 'object') return [];
+  const entries = [];
+
+  const visit = (node, pathParts) => {
+    if (!node || typeof node !== 'object') return;
+    for (const [key, value] of Object.entries(node)) {
+      const nextPath = [...pathParts, key];
+      if (nextPath.some((part) => /limit|quota|rate/i.test(part))) continue;
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        entries.push({
+          key: nextPath.join('.'),
+          field: key,
+          label: tokenUsageLabel(nextPath),
+          value,
+        });
+      } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+        visit(value, nextPath);
+      }
+    }
+  };
+
+  visit(root, root === payload ? [] : ['info']);
+  return entries.sort((a, b) => {
+    const aOrder = TOKEN_USAGE_ORDER.indexOf(a.field);
+    const bOrder = TOKEN_USAGE_ORDER.indexOf(b.field);
+    if (aOrder !== -1 || bOrder !== -1) return (aOrder === -1 ? 999 : aOrder) - (bOrder === -1 ? 999 : bOrder);
+    return a.key.localeCompare(b.key);
+  });
+}
+
+function tokenUsageItems(payload) {
+  const entries = collectTokenUsageEntries(payload);
+  const total = entries.find((entry) => entry.field === 'total_tokens');
+  const ordered = total ? [total, ...entries.filter((entry) => entry !== total)] : entries;
+  return ordered.map((entry) => ({
+    key: entry.key,
+    field: entry.field,
+    label: entry.label,
+    value: entry.value,
+    formatted: formatTokenValue(entry.value),
+    primary: entry.field === 'total_tokens',
+  }));
+}
+
+function formatPercentValue(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '';
+  const percent = number > 0 && number <= 1 ? number * 100 : number;
+  const rounded = Math.round(percent * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
+}
+
+function formatResetTime(value) {
+  if (value == null || value === '') return '';
+  const source = typeof value === 'number' ? (value < 10000000000 ? value * 1000 : value) : value;
+  const date = new Date(source);
+  if (Number.isNaN(date.getTime())) return String(value);
+  const now = new Date();
+  const sameYear = date.getFullYear() === now.getFullYear();
+  const sameDay = sameYear && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+  return date.toLocaleString('en-US', {
+    month: sameDay ? undefined : 'short',
+    day: sameDay ? undefined : 'numeric',
+    year: sameDay ? undefined : 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function isRemainingKey(key) {
+  const source = String(key || '').toLowerCase();
+  return /remaining/.test(source) && (/percent|percentage|pct|ratio|fraction/.test(source) || source === 'remaining');
+}
+
+function isUsedPercentKey(key) {
+  return /used.*percent|percent.*used|used_pct|usedPercent/.test(String(key || '').toLowerCase());
+}
+
+function isWindowMinutesKey(key) {
+  return /window.*minutes|minutes.*window/.test(String(key || '').toLowerCase());
+}
+
+function isResetKey(key) {
+  return /reset|resets|renew|renews/.test(String(key || '').toLowerCase());
+}
+
+function valueByKey(node, predicate) {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return undefined;
+  for (const [key, value] of Object.entries(node)) {
+    if (predicate(key) && (typeof value === 'number' || typeof value === 'string')) return value;
+  }
+  return undefined;
+}
+
+function firstStringByKey(node, keys) {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return '';
+  for (const key of keys) {
+    const value = node[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function collectUsageLimitItems(payload) {
+  const root = payload;
+  if (!root || typeof root !== 'object') return [];
+  const items = [];
+  const seen = new Set();
+
+  const pushCandidate = (pathParts, node, remainingValue, resetValue) => {
+    const remaining = formatPercentValue(remainingValue);
+    const reset = formatResetTime(resetValue);
+    if (!remaining || !reset) return;
+    const pathText = pathParts.join(' ');
+    const explicitLabel = firstStringByKey(node, ['label', 'name', 'title']);
+    const windowText = firstStringByKey(node, ['window', 'period', 'duration', 'interval']);
+    const windowMinutes = valueByKey(node, isWindowMinutesKey);
+    const kind = usageLimitKindFromWindowMinutes(windowMinutes) || usageLimitKind(`${pathText} ${explicitLabel} ${windowText}`);
+    const key = kind || pathParts.join('.') || explicitLabel || windowText;
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push({
+      key,
+      kind,
+      label: usageLimitLabel(kind, explicitLabel || windowText || pathParts.at(-1)),
+      remaining,
+      reset,
+      resetRaw: resetValue,
+    });
+  };
+
+  const visit = (node, pathParts) => {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return;
+    let remainingValue = valueByKey(node, isRemainingKey);
+    const usedPercentValue = valueByKey(node, isUsedPercentKey);
+    if (remainingValue === undefined && usedPercentValue !== undefined) remainingValue = 100 - Number(usedPercentValue);
+    const resetValue = valueByKey(node, isResetKey);
+    if (remainingValue !== undefined && resetValue !== undefined) pushCandidate(pathParts, node, remainingValue, resetValue);
+    for (const [key, value] of Object.entries(node)) {
+      if (value && typeof value === 'object' && !Array.isArray(value)) visit(value, [...pathParts, key]);
+    }
+  };
+
+  visit(root, []);
+  return items.sort((a, b) => {
+    const aOrder = USAGE_LIMIT_ORDER.indexOf(a.kind);
+    const bOrder = USAGE_LIMIT_ORDER.indexOf(b.kind);
+    if (aOrder !== -1 || bOrder !== -1) return (aOrder === -1 ? 999 : aOrder) - (bOrder === -1 ? 999 : bOrder);
+    return a.label.localeCompare(b.label);
+  });
+}
+
+function rateLimitReachedType(payload) {
+  const value = payload?.rate_limits?.rate_limit_reached_type ?? payload?.rate_limit_reached_type;
+  return typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim();
+}
+
+function formatTokenValue(value) {
+  return Number(value).toLocaleString('en-US');
+}
+
+function formatTokenUsagePreview(payload) {
+  const limits = collectUsageLimitItems(payload);
+  if (limits.length) return limits.map((item) => `${item.label}: ${item.remaining} remaining; Resets ${item.reset}`).join('; ');
+  const entries = collectTokenUsageEntries(payload);
+  if (!entries.length) return '';
+  const total = entries.find((entry) => entry.field === 'total_tokens');
+  const ordered = total ? [total, ...entries.filter((entry) => entry !== total)] : entries;
+  return ordered.map((entry) => `${entry.label}: ${formatTokenValue(entry.value)}`).join('; ');
+}
+
+function tokenUsageSearchText(payload) {
+  const entries = collectTokenUsageEntries(payload);
+  const limits = collectUsageLimitItems(payload).flatMap((item) => [
+    `${item.label}: ${item.remaining} remaining`,
+    `${item.label} resets: ${item.reset}`,
+  ]);
+  return [...limits, ...entries.map((entry) => `${entry.key}: ${entry.value}`)].join('\n');
+}
+
+function maxObservedTokenValue(payload) {
+  const entries = collectTokenUsageEntries(payload);
+  const total = entries.find((entry) => entry.field === 'total_tokens');
+  if (total) return total.value;
+  return entries.reduce((max, entry) => Math.max(max, entry.value), 0);
 }
 
 function extractContentText(content) {
@@ -807,9 +1062,12 @@ function makeRawEvent(record, lineNumber, relFile, sessionId) {
         raw.preview = truncate(raw.touchedFiles.join(', ') || String(payload.stdout || payload.stderr || 'patch_apply_end'));
         raw.searchText = [raw.touchedFiles.join('\n'), payload.stdout || '', payload.stderr || ''].join('\n');
         return raw;
+      case 'token_count':
+        raw.preview = truncate(formatTokenUsagePreview(payload) || flattenText(payload, 12000) || payload.type);
+        raw.searchText = [tokenUsageSearchText(payload), flattenText(payload, 16000)].filter(Boolean).join('\n');
+        return raw;
       case 'mcp_tool_call_end':
       case 'web_search_end':
-      case 'token_count':
       case 'context_compacted':
       case 'turn_aborted':
       case 'thread_rolled_back':
@@ -966,6 +1224,9 @@ function protocolPreviewFor(raw, subtype) {
   if (subtype === 'turn_context') {
     return payloadPreview(raw.parsed?.payload, ['turn_id', 'cwd', 'model']) || raw.preview;
   }
+  if (subtype === 'token_count') {
+    return formatTokenUsagePreview(raw.parsed?.payload) || raw.preview;
+  }
   if (subtype === 'agents_instructions') {
     const target = source.match(/^#\s*AGENTS\.md instructions(?:\s+for\s+(.+))?/i)?.[1];
     return target ? `Repository instructions for ${target.trim()}` : 'Repository AGENTS.md instructions';
@@ -1044,6 +1305,8 @@ function createLogicalEvent(fields) {
     hasLongOutput: (fields.preview || '').length > 800 || searchText.length > 1600,
     touchedFiles: fields.touchedFiles || [],
     outputStats: fields.outputStats || {},
+    tokenUsage: fields.tokenUsage || [],
+    usageLimits: fields.usageLimits || [],
     rawRefs: fields.rawRefs || [],
     channels: fields.channels || [],
     source: fields.rawRefs && fields.rawRefs[0] ? fields.rawRefs[0] : fields.source,
@@ -1319,6 +1582,15 @@ function extractProtocolSections(event, raws) {
     sections.push(makeRawJsonSection('Protocol raw JSON', primary.parsed));
     return sections;
   }
+  if (event.subtype === 'token_count') {
+    const usageLimits = collectUsageLimitItems(primary.parsed?.payload);
+    if (usageLimits.length) sections.push({ type: 'usage_limits', title: 'Usage limits', items: usageLimits });
+    const tokenItems = tokenUsageItems(primary.parsed?.payload);
+    if (tokenItems.length && !usageLimits.length) sections.push({ type: 'token_usage', title: 'Token usage', items: tokenItems });
+    maybePushKvSection(sections, 'Event fields', toKvEntries(primary.parsed?.payload, ['type', 'turn_id', 'thread_id', 'thread_name']));
+    sections.push(makeRawJsonSection('Protocol raw JSON', primary.parsed));
+    return sections;
+  }
   if (event.subtype === 'user_shell_command') {
     maybePushCodeSection(sections, 'Shell command wrapper', primary.messageText, 'shell');
     return sections;
@@ -1338,7 +1610,18 @@ function extractProtocolSections(event, raws) {
 function extractLifecycleSections(event, raws) {
   const sections = [];
   const primary = raws[0];
-  sections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info')));
+  if (event.kind === 'token') {
+    const usageLimits = collectUsageLimitItems(primary.parsed?.payload);
+    if (usageLimits.length) {
+      sections.push({ type: 'usage_limits', title: 'Usage limits', items: usageLimits });
+    } else {
+      sections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, 'info')));
+    }
+    const items = tokenUsageItems(primary.parsed?.payload);
+    if (items.length && !usageLimits.length) sections.push({ type: 'token_usage', title: 'Token usage', items });
+  } else {
+    sections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info')));
+  }
   maybePushKvSection(sections, 'Event fields', toKvEntries(primary.parsed?.payload, ['type', 'turn_id', 'thread_id', 'thread_name']));
   if (primary.parsed?.payload && Object.keys(primary.parsed.payload).length) {
     sections.push(makeRawJsonSection('Event raw JSON', primary.parsed));
@@ -1810,6 +2093,9 @@ function buildProtocolEvent(raw, subtype, label) {
 }
 
 function buildLifecycleEvent(raw, kind, label, severity) {
+  const tokenUsage = kind === 'token' ? tokenUsageItems(raw.parsed?.payload) : [];
+  const usageLimits = kind === 'token' ? collectUsageLimitItems(raw.parsed?.payload) : [];
+  const reachedType = kind === 'token' ? rateLimitReachedType(raw.parsed?.payload) : '';
   return createLogicalEvent({
     id: `${raw.sessionId}:logical:${kind}:${raw.line}`,
     timestamp: raw.timestamp,
@@ -1822,7 +2108,9 @@ function buildLifecycleEvent(raw, kind, label, severity) {
     preview: raw.preview || label,
     searchText: raw.searchText,
     severity,
-    status: raw.status,
+    status: raw.status || reachedType,
+    tokenUsage,
+    usageLimits,
     rawRefs: [rawRef(raw)],
     channels: [raw.recordType],
   });
@@ -2052,7 +2340,10 @@ function buildLogicalEvents(rawEvents) {
     }
 
     if (raw.recordType === 'event_msg' && raw.payloadType === 'token_count') {
-      logicalEvents.push(buildLifecycleEvent(raw, 'token', 'Token count', 'normal'));
+      logicalEvents.push(buildProtocolEvent(raw, 'token_count'));
+      if (rateLimitReachedType(raw.parsed?.payload)) {
+        logicalEvents.push(buildLifecycleEvent(raw, 'token', 'Usage limit reached', 'warning'));
+      }
       consumed.add(raw.rawId);
       continue;
     }
@@ -2163,10 +2454,9 @@ function updateAnalysisDraft(session, event) {
     }
   }
   if (event.kind === 'token') {
-    const numbers = event.searchText.match(/\b\d{3,}\b/g) || [];
-    for (const value of numbers.map(Number)) {
-      if (value > draft.tokenStats.maxObserved) draft.tokenStats.maxObserved = value;
-    }
+    const primaryRaw = event.rawRefs?.[0]?.rawId ? session.rawEvents.find((raw) => raw.rawId === event.rawRefs[0].rawId) : null;
+    const observed = maxObservedTokenValue(primaryRaw?.parsed?.payload);
+    if (observed > draft.tokenStats.maxObserved) draft.tokenStats.maxObserved = observed;
   }
 }
 
@@ -2489,6 +2779,8 @@ function logicalEventDto(event, q) {
     hasSearchHit,
     touchedFiles: event.touchedFiles,
     outputStats: event.outputStats,
+    tokenUsage: event.tokenUsage,
+    usageLimits: event.usageLimits,
     source: event.source,
     rawRefs: event.rawRefs,
     channels: event.channels,
