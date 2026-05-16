@@ -177,6 +177,10 @@ Folding profiles are data-driven presets with `kindStates`, a `fallback` display
 
 折叠策略是数据驱动预设，包含 `kindStates`、`fallback` 显示状态和固定条件规则。内置预设保持只读。编辑会创建草稿并立即在 Main timeline 中预览；Save 会把自定义策略写入浏览器 `localStorage`，Cancel 会恢复已保存策略。协议层和原始层覆盖规则不进入策略编辑，以保持事件层语义与折叠策略语义分离。当 protocol 或 raw 生效时，前端会禁用 profile 控件，在详情面板展示只读的固定规则说明，并禁用 profile 指标快捷入口。
 
+Before a folding-profile or layer switch, the frontend captures the selected event as a focus anchor. After the new timeline state is loaded, it restores the same event when it remains visible, otherwise selects the nearest visible event in the new timeline order; if no event was selected before the switch, it selects the first event that is naturally `expanded`, and leaves the folding-rules view open when no expanded event exists.
+
+在切换折叠策略或事件层之前，前端会把当前选中事件捕获为焦点锚点。新的时间线状态加载后，如果该事件仍可见就恢复同一事件，否则按新时间线顺序选择最近的可见事件；如果切换前没有选中事件，则选择第一个自然 `expanded` 的事件，若不存在展开事件则保持折叠规则视图打开。
+
 ## API / contract changes / API / 契约变更
 
 - `/api/sessions/:id/timeline` accepts `layer=main|protocol|raw` / `/api/sessions/:id/timeline` 接受 `layer=main|protocol|raw`

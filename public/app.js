@@ -775,6 +775,79 @@ function resetTimelineScroll() {
   if (pane) pane.scrollTop = 0;
 }
 
+function eventPrimaryLine(event) {
+  const line = event?.rawRefs?.[0]?.line ?? event?.source?.line ?? 0;
+  const number = Number(line);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function captureFocusAnchor() {
+  const event = currentSelectedEvent();
+  if (!event) return { hadSelection: false };
+  return {
+    hadSelection: true,
+    eventId: event.id,
+    timestamp: event.timestamp || '',
+    line: eventPrimaryLine(event),
+    detailType: state.detailView?.type === 'rawRefs' ? 'rawRefs' : 'inspector',
+  };
+}
+
+function compareEventToAnchor(event, anchor) {
+  const eventTime = event.timestamp || '';
+  const anchorTime = anchor.timestamp || '';
+  if (eventTime !== anchorTime) return eventTime < anchorTime ? -1 : 1;
+  return eventPrimaryLine(event) - (anchor.line || 0);
+}
+
+function isVisibleFocusCandidate(event) {
+  return displayState(event) !== 'hidden';
+}
+
+function isExpandedFocusCandidate(event) {
+  return displayState(event) === 'expanded';
+}
+
+async function allFocusEvents() {
+  const cache = await ensureNavigationEvents();
+  return cache?.events || state.currentEvents;
+}
+
+async function resolveFocusTarget(anchor) {
+  const events = await allFocusEvents();
+  if (!events.length) return null;
+  if (!anchor?.hadSelection) {
+    return events.find(isExpandedFocusCandidate) || null;
+  }
+
+  const sameEvent = events.find((event) => event.id === anchor.eventId);
+  if (sameEvent && isVisibleFocusCandidate(sameEvent)) return sameEvent;
+
+  const insertionIndex = events.findIndex((event) => compareEventToAnchor(event, anchor) >= 0);
+  const startIndex = insertionIndex >= 0 ? insertionIndex : events.length;
+  for (let index = startIndex; index < events.length; index += 1) {
+    if (isVisibleFocusCandidate(events[index])) return events[index];
+  }
+  for (let index = Math.min(startIndex - 1, events.length - 1); index >= 0; index -= 1) {
+    if (isVisibleFocusCandidate(events[index])) return events[index];
+  }
+  return null;
+}
+
+async function restoreFocus(anchor) {
+  if (!state.selectedSessionId) return;
+  const target = await resolveFocusTarget(anchor);
+  if (!target) {
+    if (anchor?.hadSelection) closeDetailView();
+    return;
+  }
+  await ensureEventLoaded(target.id);
+  const loaded = state.currentEvents.find((event) => event.id === target.id) || target;
+  if (anchor?.detailType === 'rawRefs') await showRaw(loaded, { replace: true });
+  else showInspector(loaded, { replace: true });
+  scrollToTimelineEvent(loaded.id);
+}
+
 function clearCurrentSessionOverrides() {
   if (!state.selectedSessionId || !state.overrides[state.selectedSessionId]) return;
   delete state.overrides[state.selectedSessionId];
@@ -1139,6 +1212,7 @@ async function applyMetricLayer(targetLayerId) {
 
 async function changeLayer(layerId) {
   if (!['main', 'protocol', 'raw'].includes(layerId)) return;
+  const focusAnchor = captureFocusAnchor();
   state.layerId = layerId;
   el.layerSelect.value = state.layerId;
   el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'layer');
@@ -1146,6 +1220,7 @@ async function changeLayer(layerId) {
   updateProfileApplicabilityUi();
   if (state.detailView.type === 'profileRules') renderProfileRulesPane();
   await loadSessions();
+  await restoreFocus(focusAnchor);
   updateMetricActionStates();
 }
 
@@ -1835,12 +1910,14 @@ function setProfileId(profileId, options = {}) {
 async function changeProfile(profileId) {
   if (!state.profiles.some((profile) => profile.id === profileId)) return false;
   if (profileId === state.profileId) return true;
+  const focusAnchor = captureFocusAnchor();
   if (profileDirty() && !(await resolveDirtyProfileBeforeSwitch(profileId))) {
     el.profileSelect.value = state.profileId;
     renderProfileRulesPane();
     return false;
   }
-  setProfileId(profileId);
+  setProfileId(profileId, { keepScroll: true });
+  await restoreFocus(focusAnchor);
   return true;
 }
 
