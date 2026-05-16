@@ -179,6 +179,10 @@ button:hover,
   width: auto;
 }
 
+.foldControls[data-profile-inactive] select {
+  color: var(--muted);
+}
+
 .searchField {
   min-width: 0;
   position: relative;
@@ -1353,6 +1357,11 @@ body[data-project-mode='selecting'] .searchAssist {
   color: var(--accent);
 }
 
+.metric.disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
 .timeline {
   display: grid;
   gap: 0.55rem;
@@ -1679,6 +1688,15 @@ body[data-project-mode='selecting'] .searchAssist {
 .notice.info {
   background: #eef5f7;
   border-left-color: var(--accent);
+}
+
+.profileRulesInactive {
+  gap: 0.8rem;
+}
+
+.profileInactiveText {
+  color: var(--text);
+  margin: 0;
 }
 
 .appDialogBackdrop[hidden] {

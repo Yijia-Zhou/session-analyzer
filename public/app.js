@@ -382,6 +382,14 @@ function activeLayerId() {
   return currentSearchState().layer || 'main';
 }
 
+function profileAppliesToActiveLayer() {
+  return activeLayerId() === 'main';
+}
+
+function activeLayerLabel() {
+  return LAYER_LABELS[activeLayerId()] || activeLayerId();
+}
+
 function currentQuery(extra = {}) {
   const params = new URLSearchParams();
   const filters = currentSearchState();
@@ -671,6 +679,7 @@ function applySearchOperator(operator, value) {
   }
   syncSearchAssistControls();
   renderSearchAssistChips();
+  updateProfileApplicabilityUi();
   focusSearchEnd();
   loadSessions().catch(showError);
 }
@@ -757,6 +766,7 @@ function clearActiveFilter(key) {
   }
   syncSearchAssistControls();
   renderSearchAssistChips();
+  updateProfileApplicabilityUi();
   loadSessions().catch(showError);
 }
 
@@ -784,10 +794,25 @@ function updateResetFoldsButton() {
   el.resetFoldsBtn.closest('.foldControls')?.toggleAttribute('data-has-reset-folds', visible);
 }
 
+function updateProfileApplicabilityUi(analyzerDisabled = false) {
+  const applies = profileAppliesToActiveLayer();
+  const controls = el.profileSelect?.closest('.foldControls');
+  if (el.profileSelect) {
+    el.profileSelect.disabled = analyzerDisabled || !applies;
+    const title = applies
+      ? 'Folding strategy'
+      : 'Folding strategies apply only to Main timeline. This layer uses fixed display rules.';
+    el.profileSelect.title = title;
+    el.profileSelect.setAttribute('aria-label', applies ? '折叠策略' : title);
+  }
+  controls?.toggleAttribute('data-profile-inactive', !applies);
+}
+
 function setAnalyzerDisabled(disabled) {
-  for (const control of [el.searchInput, el.layerSelect, el.profileSelect, el.sortSelect, el.resetFoldsBtn, el.loadMoreBtn]) {
+  for (const control of [el.searchInput, el.layerSelect, el.sortSelect, el.resetFoldsBtn, el.loadMoreBtn]) {
     if (control) control.disabled = disabled;
   }
+  updateProfileApplicabilityUi(disabled);
 }
 
 function setProjectMode(selecting) {
@@ -897,6 +922,7 @@ async function applyAppState(appState) {
     state.profileId = 'narrative';
     el.profileSelect.value = state.profileId;
   }
+  updateProfileApplicabilityUi();
   resetProfileDraft();
   el.layerSelect.value = state.layerId;
   const suggestionState = await api('/api/file-suggestions');
@@ -948,6 +974,7 @@ async function init() {
 }
 
 async function loadSessions() {
+  updateProfileApplicabilityUi();
   const data = await api(`/api/sessions${currentQuery({ sort: el.sortSelect.value })}`);
   state.sessions = data.sessions;
   state.sessionTotal = data.total;
@@ -1032,23 +1059,48 @@ async function loadAnalysis(sessionId) {
 
 function isMetricActionActive(action) {
   if (!action) return false;
+  if (action.action === 'profile' && !profileAppliesToActiveLayer()) return false;
   if (action.action === 'profile') return state.profileId === action.value;
   if (action.action === 'layer') return activeLayerId() === action.value;
   return false;
 }
 
 function metric(label, value, action = null) {
-  const isActionable = action && Number(value) > 0;
-  const actionLabel = action?.label ? `${action.label}：${value} ${label}` : '';
+  const hasValue = Number(value) > 0;
+  const disabledProfileAction = action?.action === 'profile' && !profileAppliesToActiveLayer() && hasValue;
+  const isActionable = action && hasValue && !disabledProfileAction;
+  const actionLabel = disabledProfileAction
+    ? `${label} shortcut is available on Main timeline only.`
+    : (action?.label ? `${action.label}：${value} ${label}` : '');
   const actionAttrs = isActionable
     ? ` role="button" tabindex="0" aria-pressed="${isMetricActionActive(action) ? 'true' : 'false'}" aria-label="${escapeHtml(actionLabel)}" title="${escapeHtml(actionLabel)}" data-metric-action="${escapeHtml(action.action)}" data-metric-value="${escapeHtml(action.value)}"`
-    : '';
-  const classes = ['metric', isActionable ? 'filterable' : '', isActionable && isMetricActionActive(action) ? 'active' : ''].filter(Boolean).join(' ');
+    : (disabledProfileAction ? ` aria-disabled="true" title="${escapeHtml(actionLabel)}"` : '');
+  const classes = [
+    'metric',
+    isActionable ? 'filterable' : '',
+    disabledProfileAction ? 'disabled' : '',
+    isActionable && isMetricActionActive(action) ? 'active' : '',
+  ].filter(Boolean).join(' ');
   return `<div class="${classes}"${actionAttrs}><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`;
+}
+
+function syncMetricAction(metricEl) {
+  const action = {
+    action: metricEl.dataset.metricAction,
+    value: metricEl.dataset.metricValue,
+  };
+  const active = isMetricActionActive(action);
+  metricEl.classList.toggle('active', active);
+  metricEl.setAttribute('aria-pressed', active ? 'true' : 'false');
+}
+
+function updateMetricActionStates() {
+  el.analysisPanel?.querySelectorAll('[data-metric-action]').forEach(syncMetricAction);
 }
 
 async function applyMetricAction(metricEl) {
   const action = metricEl.dataset.metricAction;
+  if (action === 'profile' && !profileAppliesToActiveLayer()) return;
   if (action === 'profile') {
     const targetProfileId = metricEl.dataset.metricValue;
     if (state.profileId === targetProfileId) {
@@ -1091,20 +1143,10 @@ async function changeLayer(layerId) {
   el.layerSelect.value = state.layerId;
   el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'layer');
   localStorage.setItem('sessionAnalyzer.layer', state.layerId);
+  updateProfileApplicabilityUi();
+  if (state.detailView.type === 'profileRules') renderProfileRulesPane();
   await loadSessions();
   updateMetricActionStates();
-}
-
-function updateMetricActionStates() {
-  el.analysisPanel?.querySelectorAll('[data-metric-action]').forEach((metricEl) => {
-    const action = {
-      action: metricEl.dataset.metricAction,
-      value: metricEl.dataset.metricValue,
-    };
-    const active = isMetricActionActive(action);
-    metricEl.classList.toggle('active', active);
-    metricEl.setAttribute('aria-pressed', active ? 'true' : 'false');
-  });
 }
 
 function updateLoadMoreButton() {
@@ -1548,6 +1590,30 @@ function renderProfileRulesPane() {
   state.navigationCategoryId = '';
   setMobileView('detail', { scroll: false });
   updateSelectedTimelineEvent();
+  if (!profileAppliesToActiveLayer()) {
+    const layer = activeLayerId();
+    const fixedRuleText = layer === 'protocol'
+      ? 'Protocol events are shown as summaries; non-protocol events stay collapsed.'
+      : 'Raw event_msg and response_item records stay collapsed; other raw records are shown as summaries.';
+    renderDetailShell({
+      title: '折叠策略',
+      subtitle: `${activeLayerLabel()} uses fixed display rules`,
+      actions: '<button class="smallBtn" type="button" data-detail-action="view-main-layer">View Main timeline</button>',
+      headerClass: 'profileDetailHeader',
+      closeable: false,
+      backable: false,
+      body: `<section class="profileRules profileRulesInactive">
+        <div class="notice info">
+          <p>Folding strategies apply only to Main timeline. This layer uses fixed display rules.</p>
+        </div>
+        <section class="profileRuleSection">
+          <h3>${escapeHtml(activeLayerLabel())}</h3>
+          <p class="profileInactiveText">${escapeHtml(fixedRuleText)}</p>
+        </section>
+      </section>`,
+    });
+    return;
+  }
   if (!state.profileDraft) resetProfileDraft();
   const profile = activeProfile();
   const draft = state.profileDraft || cloneProfile(profile);
@@ -1926,6 +1992,10 @@ el.detail.addEventListener('click', (event) => {
     cancelProfileDraft();
     return;
   }
+  if (action === 'view-main-layer') {
+    changeLayer('main').catch(showError);
+    return;
+  }
   if (action === 'navigate-event') {
     navigateSelectedEvent(event.target.closest('[data-nav-direction]')?.dataset.navDirection || '').catch(showError);
     return;
@@ -2023,6 +2093,8 @@ window.addEventListener('resize', queueVisibleDetailLoad);
 const reload = debounce(() => {
   syncSearchAssistControls();
   renderSearchAssistChips();
+  updateProfileApplicabilityUi();
+  if (state.detailView.type === 'profileRules') renderProfileRulesPane();
   loadSessions().catch(showError);
 }, 220);
 

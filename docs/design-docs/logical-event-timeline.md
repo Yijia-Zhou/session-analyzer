@@ -173,9 +173,9 @@ The right-side detail panel is a small view stack with three frontend-only views
 
 右侧详情面板是一个小型前端视图栈，包含三个仅前端视图：可编辑折叠规则、选中事件检查器和原始引用。未选中事件时默认显示折叠规则视图。检查事件或打开原始引用会压入视图；Back 恢复上一个视图，Close 清除选中事件并返回折叠规则。
 
-Folding profiles are data-driven presets with `kindStates`, a `fallback` display state, and fixed condition rules. Built-in presets remain read-only. Edits create a draft that immediately previews in the timeline; Save writes a custom profile to browser `localStorage`, and Cancel restores the saved profile. Protocol and raw layer overrides stay outside profile editing so layer semantics remain separate from folding strategy semantics.
+Folding profiles are data-driven presets with `kindStates`, a `fallback` display state, and fixed condition rules. Built-in presets remain read-only. Edits create a draft that immediately previews in the Main timeline; Save writes a custom profile to browser `localStorage`, and Cancel restores the saved profile. Protocol and raw layer overrides stay outside profile editing so layer semantics remain separate from folding strategy semantics. When protocol or raw is active, the frontend disables profile controls, renders a read-only fixed-rules explanation in the detail panel, and disables profile metric shortcuts.
 
-折叠策略是数据驱动预设，包含 `kindStates`、`fallback` 显示状态和固定条件规则。内置预设保持只读。编辑会创建草稿并立即在时间线中预览；Save 会把自定义策略写入浏览器 `localStorage`，Cancel 会恢复已保存策略。协议层和原始层覆盖规则不进入策略编辑，以保持事件层语义与折叠策略语义分离。
+折叠策略是数据驱动预设，包含 `kindStates`、`fallback` 显示状态和固定条件规则。内置预设保持只读。编辑会创建草稿并立即在 Main timeline 中预览；Save 会把自定义策略写入浏览器 `localStorage`，Cancel 会恢复已保存策略。协议层和原始层覆盖规则不进入策略编辑，以保持事件层语义与折叠策略语义分离。当 protocol 或 raw 生效时，前端会禁用 profile 控件，在详情面板展示只读的固定规则说明，并禁用 profile 指标快捷入口。
 
 ## API / contract changes / API / 契约变更
 
