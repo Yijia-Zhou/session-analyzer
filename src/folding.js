@@ -209,22 +209,6 @@ const foldingProfiles = [
     ),
   },
   {
-    id: 'context',
-    name: '上下文/成本',
-    description: '突出 token、compact、turn boundary、rollback 和 subagent 事件。',
-    rules: profileRules(
-      {
-        token: 'summary',
-        compaction: 'summary',
-        rollback: 'summary',
-        subagent: 'summary',
-        turn: 'summary',
-        abort: 'summary',
-      },
-      'hidden',
-    ),
-  },
-  {
     id: 'compact',
     name: '完整紧凑',
     description: '所有事件保留在时间线上，正文默认一行预览。',
