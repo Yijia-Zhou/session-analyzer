@@ -77,7 +77,10 @@
           <option value="protocol">Protocol layer</option>
           <option value="raw">Raw records</option>
         </select>
-        <select id="profileSelect" aria-label="折叠策略"></select>
+        <div class="foldControls">
+          <select id="profileSelect" aria-label="折叠策略"></select>
+          <button id="resetFoldsBtn" class="ghostBtn" type="button" hidden>重置展开状态</button>
+        </div>
       </div>
     </header>
 
@@ -118,13 +121,12 @@
           <h2>选择一个 session</h2>
           <p>左侧列表按当前仓库过滤。</p>
         </div>
-        <div class="toolbar">
-          <button id="resetFoldsBtn" type="button">重置展开状态</button>
-          <button id="loadMoreBtn" type="button">加载更多</button>
-          <div id="resultSummary" class="resultSummary" aria-live="polite"></div>
-        </div>
+        <div id="resultSummary" class="resultSummary" aria-live="polite"></div>
         <div id="analysisPanel" class="analysisPanel"></div>
         <div id="timeline" class="timeline"></div>
+        <div class="timelineFooter">
+          <button id="loadMoreBtn" type="button">加载更多</button>
+        </div>
       </section>
 
       <aside class="detailPane">

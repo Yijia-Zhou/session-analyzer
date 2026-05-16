@@ -19,6 +19,7 @@ const searchQuery = window.sessionSearchQuery || {
 };
 
 const NAVIGATION_PAGE_LIMIT = 500;
+const TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD = 96;
 const FILE_SUGGESTION_LIMIT = 12;
 const REPO_STORAGE_KEY = 'sessionAnalyzer.repoRoot';
 const CUSTOM_PROFILES_KEY = 'sessionAnalyzer.customProfiles';
@@ -205,6 +206,8 @@ const state = {
   selectedEventId: '',
   offset: 0,
   limit: 150,
+  timelineLoading: false,
+  timelineRequestId: 0,
   sessionGrandTotal: 0,
   sessionTotal: 0,
   timelineTotal: 0,
@@ -764,6 +767,19 @@ function clearCurrentSessionOverrides() {
   if (!state.selectedSessionId || !state.overrides[state.selectedSessionId]) return;
   delete state.overrides[state.selectedSessionId];
   localStorage.setItem('sessionAnalyzer.overrides', JSON.stringify(state.overrides));
+  updateResetFoldsButton();
+}
+
+function hasCurrentSessionOverrides() {
+  const sessionOverrides = state.overrides[state.selectedSessionId] || {};
+  return Object.keys(sessionOverrides).length > 0;
+}
+
+function updateResetFoldsButton() {
+  if (!el.resetFoldsBtn) return;
+  const visible = hasCurrentSessionOverrides();
+  el.resetFoldsBtn.hidden = !visible;
+  el.resetFoldsBtn.closest('.foldControls')?.toggleAttribute('data-has-reset-folds', visible);
 }
 
 function setAnalyzerDisabled(disabled) {
@@ -785,6 +801,8 @@ function resetProjectViewState() {
   state.selectedSessionId = '';
   state.selectedEventId = '';
   state.offset = 0;
+  state.timelineLoading = false;
+  state.timelineRequestId += 1;
   state.sessionGrandTotal = 0;
   state.sessionTotal = 0;
   state.timelineTotal = 0;
@@ -801,6 +819,7 @@ function resetProjectViewState() {
   el.sessionHeader.innerHTML = '<h2>Select a session</h2><p>Choose a target project first.</p>';
   el.loadMoreBtn.disabled = true;
   el.loadMoreBtn.textContent = 'Load more';
+  updateResetFoldsButton();
   resetDetailPane();
 }
 
@@ -936,12 +955,14 @@ async function loadSessions() {
   } else if (state.selectedSessionId && !data.sessions.some((session) => session.id === state.selectedSessionId)) {
     state.selectedSessionId = '';
     state.offset = 0;
+    state.timelineLoading = false;
+    state.timelineRequestId += 1;
     state.timelineTotal = 0;
     state.currentEvents = [];
     el.timeline.innerHTML = '';
     el.analysisPanel.innerHTML = '';
-    el.loadMoreBtn.disabled = true;
-    el.loadMoreBtn.textContent = 'Load more';
+    updateLoadMoreButton();
+    updateResetFoldsButton();
     el.sessionHeader.innerHTML = '<h2>No matching session</h2><p>Adjust the search or filters.</p>';
     resetDetailPane();
     renderResultSummary();
@@ -973,8 +994,11 @@ function renderSessions() {
 async function selectSession(sessionId, options = {}) {
   state.selectedSessionId = sessionId;
   state.offset = 0;
+  state.timelineLoading = false;
+  state.timelineRequestId += 1;
   state.currentEvents = [];
   invalidateNavigationCache();
+  updateResetFoldsButton();
   renderSessions();
   resetDetailPane();
   const session = state.sessions.find((item) => item.id === sessionId);
@@ -983,8 +1007,8 @@ async function selectSession(sessionId, options = {}) {
     el.sessionHeader.innerHTML = `<h2>${escapeHtml(session.title)}</h2>
       <div class="sessionMeta" aria-label="Session metadata">
         ${relationship ? `<span class="sessionMetaChip">${escapeHtml(relationship)}</span>` : ''}
-        <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
         <span class="sessionMetaChip">${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</span>
+        <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
       </div>`;
   }
   await Promise.all([loadAnalysis(sessionId), loadTimeline(false)]);
@@ -1080,24 +1104,47 @@ function updateMetricActionStates() {
   });
 }
 
+function updateLoadMoreButton() {
+  if (!el.loadMoreBtn) return;
+  const hasMore = state.offset < state.timelineTotal;
+  el.loadMoreBtn.disabled = !state.selectedSessionId || state.timelineLoading || !hasMore;
+  if (state.timelineLoading) {
+    el.loadMoreBtn.textContent = 'Loading...';
+  } else {
+    el.loadMoreBtn.textContent = hasMore ? `Load more (${state.offset}/${state.timelineTotal})` : `Loaded ${state.offset}`;
+  }
+}
+
 async function loadTimeline(append) {
   if (!state.selectedSessionId) return;
-  const data = await api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/timeline${currentQuery({
-    offset: append ? state.offset : 0,
-    limit: state.limit,
-  })}`);
-  if (append) {
-    state.currentEvents = state.currentEvents.concat(data.events);
-  } else {
-    state.currentEvents = data.events;
+  if (append && state.timelineLoading) return;
+  const sessionId = state.selectedSessionId;
+  const requestId = state.timelineRequestId + 1;
+  state.timelineRequestId = requestId;
+  state.timelineLoading = true;
+  updateLoadMoreButton();
+  try {
+    const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
+      offset: append ? state.offset : 0,
+      limit: state.limit,
+    })}`);
+    if (requestId !== state.timelineRequestId || sessionId !== state.selectedSessionId) return;
+    if (append) {
+      state.currentEvents = state.currentEvents.concat(data.events);
+    } else {
+      state.currentEvents = data.events;
+    }
+    state.offset = state.currentEvents.length;
+    state.timelineTotal = data.total;
+    renderTimeline();
+    if (!append) resetTimelineScroll();
+    renderResultSummary();
+  } finally {
+    if (requestId === state.timelineRequestId) {
+      state.timelineLoading = false;
+      updateLoadMoreButton();
+    }
   }
-  state.offset = state.currentEvents.length;
-  state.timelineTotal = data.total;
-  renderTimeline();
-  if (!append) resetTimelineScroll();
-  el.loadMoreBtn.disabled = state.offset >= data.total;
-  el.loadMoreBtn.textContent = state.offset >= data.total ? `Loaded ${state.offset}` : `Load more (${state.offset}/${data.total})`;
-  renderResultSummary();
 }
 
 function displayState(event) {
@@ -1199,6 +1246,7 @@ function setOverride(eventId, value) {
   if (!state.overrides[state.selectedSessionId]) state.overrides[state.selectedSessionId] = {};
   state.overrides[state.selectedSessionId][eventId] = value;
   localStorage.setItem('sessionAnalyzer.overrides', JSON.stringify(state.overrides));
+  updateResetFoldsButton();
 }
 
 function loadEventDetail(event) {
@@ -1246,6 +1294,19 @@ function loadVisibleExpandedDetails() {
 function queueVisibleDetailLoad() {
   if (state.detailViewportTimer) cancelAnimationFrame(state.detailViewportTimer);
   state.detailViewportTimer = requestAnimationFrame(loadVisibleExpandedDetails);
+}
+
+function maybeLoadMoreTimeline(scroller) {
+  if (!scroller || !state.selectedSessionId || state.timelineLoading || state.offset >= state.timelineTotal) return;
+  const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+  if (remaining <= TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD) {
+    loadTimeline(true).catch(showError);
+  }
+}
+
+function onTimelinePaneScroll(event) {
+  queueVisibleDetailLoad();
+  maybeLoadMoreTimeline(event.currentTarget);
 }
 
 function updateSelectedTimelineEvent() {
@@ -1930,6 +1991,7 @@ el.layerSelect.addEventListener('change', () => {
 el.resetFoldsBtn.addEventListener('click', () => {
   delete state.overrides[state.selectedSessionId];
   localStorage.setItem('sessionAnalyzer.overrides', JSON.stringify(state.overrides));
+  updateResetFoldsButton();
   renderTimeline();
 });
 
@@ -1950,7 +2012,7 @@ el.resultSummary?.addEventListener('click', (event) => {
   const clear = event.target.closest('[data-clear-filter]')?.dataset.clearFilter;
   if (clear) clearActiveFilter(clear);
 });
-el.timeline.closest('.timelinePane')?.addEventListener('scroll', queueVisibleDetailLoad, { passive: true });
+el.timeline.closest('.timelinePane')?.addEventListener('scroll', onTimelinePaneScroll, { passive: true });
 window.addEventListener('resize', queueVisibleDetailLoad);
 
 const reload = debounce(() => {
