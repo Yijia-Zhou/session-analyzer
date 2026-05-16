@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { buildIndex, buildEventDetail, discoverProjects, fileSuggestions, filterSessions, getTimeline, readRawLine, isPathInsideOrSame } = require('../src/codex');
 const { createServer, parseArgs } = require('../server');
-const { DISPLAY_STATES, foldingProfiles } = require('../src/folding');
+const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../src/folding');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 
@@ -601,6 +601,8 @@ test('path containment and folding profiles expose expected presets', () => {
   assert.ok(foldingProfiles.some((profile) => profile.id === 'narrative'));
   assert.ok(foldingProfiles.some((profile) => profile.id === 'debug'));
   assert.ok(foldingProfiles.some((profile) => profile.id === 'compact'));
+  assert.equal(EDITABLE_EVENT_KINDS.includes('protocol'), false);
+  assert.equal(EDITABLE_EVENT_KINDS.includes('event'), false);
   for (const profile of foldingProfiles) {
     assert.ok(profile.rules, `${profile.id} has rule data`);
     assert.ok(DISPLAY_STATES.includes(profile.rules.fallback), `${profile.id} has a valid fallback`);

@@ -497,8 +497,6 @@ function knownEventKinds() {
     'token',
     'subagent',
     'turn',
-    'protocol',
-    'event',
   ]);
   for (const profile of state.profiles) {
     for (const kind of Object.keys(profile.rules?.kindStates || {})) kinds.add(kind);

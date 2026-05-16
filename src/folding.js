@@ -20,8 +20,6 @@ const EDITABLE_EVENT_KINDS = [
   'token',
   'subagent',
   'turn',
-  'protocol',
-  'event',
 ];
 
 const CONDITION_DEFINITIONS = [
