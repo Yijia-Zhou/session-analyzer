@@ -1374,20 +1374,18 @@ function renderTimeline() {
       event.rawRefs?.length ? `<span class="chip countChip">${event.rawRefs.length} raw</span>` : '',
       event.channels?.length ? `<span class="chip channelChip">${escapeHtml(event.channels.join(','))}</span>` : '',
     ].join('');
-    const sourceText = event.source ? `${event.source.file}:${event.source.line}` : '';
+    const toggleLabel = ds === 'expanded' ? 'Collapse event' : 'Expand event';
     return `<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
       <div class="eventHeader">
+        <button class="eventToggle" type="button" data-action="toggle" aria-label="${toggleLabel}" title="${toggleLabel}">
+          <span class="srOnly">${toggleLabel}</span>
+        </button>
         <span class="eventKind">${escapeHtml(event.label)}</span>
         <span class="chips">${chips}</span>
         <span class="eventTime">${escapeHtml(fmtDate(event.timestamp))}</span>
       </div>
       ${renderEventPreview(event, ds)}
       ${renderEventBody(event, ds)}
-      <div class="eventTools">
-        <button class="smallBtn" type="button" data-action="toggle">${ds === 'expanded' ? 'Collapse' : 'Expand'}</button>
-        <button class="smallBtn" type="button" data-action="raw">Raw refs</button>
-        <span class="rawMeta">${escapeHtml(sourceText)}</span>
-      </div>
     </article>`;
   }).join('');
   queueVisibleDetailLoad();
@@ -2075,6 +2073,11 @@ el.timeline.addEventListener('click', (event) => {
   } else if (action === 'raw') {
     showRaw(item).catch(showError);
   } else {
+    if (!article.classList.contains('expanded')) {
+      setOverride(item.id, 'expanded');
+      renderTimeline();
+      ensureEventDetail(item);
+    }
     showInspector(item);
   }
 });

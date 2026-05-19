@@ -1402,7 +1402,53 @@ body[data-project-mode='selecting'] .searchAssist {
   align-items: center;
   display: grid;
   gap: 0.5rem;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto auto 1fr auto;
+}
+
+.eventToggle {
+  align-items: center;
+  align-self: start;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  display: inline-flex;
+  height: 1.35rem;
+  justify-content: center;
+  margin-top: 0.02rem;
+  padding: 0;
+  position: relative;
+  width: 1.35rem;
+}
+
+.eventToggle::before,
+.eventToggle::after {
+  background: currentColor;
+  border-radius: 999px;
+  content: '';
+  height: 2px;
+  opacity: 0;
+  position: absolute;
+  width: 0.58rem;
+}
+
+.eventToggle::after {
+  transform: rotate(90deg);
+}
+
+.event.expanded .eventToggle::after {
+  opacity: 0;
+}
+
+.event.expanded .eventToggle::before {
+  opacity: 1;
+}
+
+.eventToggle:hover,
+.eventToggle:focus-visible {
+  border-color: var(--event-kind, var(--accent));
+  color: var(--event-kind, var(--accent));
+  outline: none;
 }
 
 .eventKind {
@@ -1572,20 +1618,6 @@ body[data-project-mode='selecting'] .searchAssist {
   transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
 }
 
-.event::before {
-  background: var(--event-kind);
-  border: 2px solid var(--bg);
-  border-radius: 999px;
-  content: '';
-  height: 0.58rem;
-  left: 0;
-  position: absolute;
-  top: 0.82rem;
-  transform: translateX(-50%);
-  width: 0.58rem;
-  z-index: 1;
-}
-
 .event.kind-user-message {
   --event-kind: #166b5c;
   --event-kind-soft: #e6f2ee;
@@ -1641,13 +1673,6 @@ body[data-project-mode='selecting'] .searchAssist {
   padding: 0.78rem 0.84rem 0.74rem 1.08rem;
 }
 
-.event.expanded::before {
-  box-shadow: 0 0 0 4px var(--event-kind-soft);
-  height: 0.78rem;
-  top: 1rem;
-  width: 0.78rem;
-}
-
 .event.summary {
   background: linear-gradient(90deg, var(--event-kind-soft), #fff 28%);
 }
@@ -1662,13 +1687,6 @@ body[data-project-mode='selecting'] .searchAssist {
   padding-top: 0.3rem;
 }
 
-.event.collapsed::before {
-  height: 0.44rem;
-  opacity: 0.72;
-  top: 0.66rem;
-  width: 0.44rem;
-}
-
 .event.collapsed:hover {
   background: #fff;
   border-color: #e1e7ea;
@@ -1677,6 +1695,61 @@ body[data-project-mode='selecting'] .searchAssist {
 
 .eventHeader {
   gap: 0.42rem;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
+}
+
+.event .eventToggle {
+  background: var(--event-kind);
+  border: 2px solid var(--bg);
+  box-shadow: none;
+  color: #fff;
+  height: 0.58rem;
+  left: 0;
+  margin: 0;
+  position: absolute;
+  top: 0.82rem;
+  transform: translateX(-50%);
+  width: 0.58rem;
+  z-index: 2;
+}
+
+.event.expanded .eventToggle {
+  box-shadow: 0 0 0 4px var(--event-kind-soft);
+  height: 0.78rem;
+  top: 1rem;
+  width: 0.78rem;
+}
+
+.event.collapsed .eventToggle {
+  height: 0.44rem;
+  opacity: 0.72;
+  top: 0.66rem;
+  width: 0.44rem;
+}
+
+.event.summary::after,
+.event.collapsed::after {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0), #fff 68%);
+  border-radius: 0 0 6px 6px;
+  bottom: 0;
+  content: '';
+  height: 1.35rem;
+  left: 0.85rem;
+  opacity: 0.86;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+}
+
+.event.collapsed::after {
+  background: linear-gradient(180deg, rgba(251, 252, 252, 0), rgba(251, 252, 252, 0.96) 68%);
+  height: 0.95rem;
+  opacity: 0.72;
+}
+
+.event.summary:hover::after,
+.event.collapsed:hover::after {
+  opacity: 0.48;
 }
 
 .eventKind {
@@ -1715,27 +1788,10 @@ body[data-project-mode='selecting'] .searchAssist {
   display: none;
 }
 
-.event.summary .eventTools [data-action='raw'] {
-  display: none;
-}
-
-.event.summary.status-failed .eventTools [data-action='raw'],
-.event.summary.error .eventTools [data-action='raw'] {
-  display: inline-flex;
-}
-
-.event.summary .smallBtn {
-  padding: 0.27rem 0.44rem;
-}
-
 .event.collapsed .chips,
 .event.collapsed .eventTime,
-.event.collapsed .eventTools {
+.event.collapsed .eventToggle {
   opacity: 0.66;
-}
-
-.event.collapsed .smallBtn {
-  padding: 0.25rem 0.42rem;
 }
 
 .event.expanded .eventBody {
@@ -2316,6 +2372,7 @@ pre {
 
   .event .chips {
     grid-column: 1 / -1;
+    grid-row: 2;
     padding-left: 0;
   }
 

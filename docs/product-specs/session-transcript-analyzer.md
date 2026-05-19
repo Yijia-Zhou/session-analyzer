@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-05-16 / 最近更新：2026-05-16
+- Last updated: 2026-05-18 / 最近更新：2026-05-18
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
@@ -58,10 +58,10 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 4. Opening a session shows the main timeline by default. / 打开会话时默认显示主时间线。
 5. The user may switch between `Main timeline`, `Protocol layer`, and `Raw records`. / 用户可以在 `Main timeline`、`Protocol layer` 和 `Raw records` 之间切换。
 6. The user may search from the top search bar, use `file:`, `kind:`, `status:`, and `layer:` operators for structured narrowing, choose common analyzed-project files from suggestions, and inspect grouped tool operations. / 用户可以从顶部搜索栏搜索，使用 `file:`、`kind:`、`status:` 和 `layer:` 操作符进行结构化收窄，从候选中选择常见的被分析项目文件，并检查分组后的工具操作。
-7. Expanding a timeline card replaces the preview with structured event detail inline, including markdown messages, command output, diffs, notices, and structured metadata. / 展开时间线卡片会以内联结构化事件详情替换预览，内容包括 Markdown 消息、命令输出、差异、通知和结构化元数据。
+7. Expanding a timeline card through folding strategy, event selection, or the small spine control replaces the preview with structured event detail inline, including markdown messages, command output, diffs, notices, and structured metadata. / 通过折叠策略、事件选择或小型脊柱控件展开时间线卡片时，会以内联结构化事件详情替换预览，内容包括 Markdown 消息、命令输出、差异、通知和结构化元数据。
 8. Raw JSON fallback sections remain available from expanded cards but stay visually secondary outside the raw layer. / 原始 JSON 回退区段仍可从展开卡片访问，但在原始层之外保持视觉上的次要地位。
-9. Clicking a timeline event shows a selected-event inspector in the right-side panel with summary, metadata, source context, and structured detail. / 点击时间线事件会在右侧面板显示选中事件检查器，包含概要、元数据、来源上下文和结构化详情。
-10. Clicking an event's `Raw refs` control shows all underlying raw JSONL rows for verification in the right-side panel, with a return path back to the selected-event inspector. / 点击事件的 `Raw refs` 控件会在右侧面板显示所有底层原始 JSONL 行以供验证，并提供返回选中事件检查器的入口。
+9. Clicking a timeline event selects it, expands it when needed, and shows a selected-event inspector in the right-side panel with summary, metadata, source context, and structured detail. / 点击时间线事件会选中该事件，在需要时展开它，并在右侧面板显示选中事件检查器，包含概要、元数据、来源上下文和结构化详情。
+10. Clicking the selected-event inspector's `Raw refs` control shows all underlying raw JSONL rows for verification in the right-side panel, with a return path back to the selected-event inspector. / 点击选中事件检查器中的 `Raw refs` 控件会在右侧面板显示所有底层原始 JSONL 行以供验证，并提供返回选中事件检查器的入口。
 11. The UI reports filtered session and event result counts while search and structured filters are active. / 当搜索和结构化筛选生效时，界面会显示过滤后的会话和事件结果数量。
 12. Session analysis metrics use a compact display and provide reading-view shortcuts where the metric maps to a useful mode: on Main timeline, nonzero message, failed, file-change, and plan metrics toggle conversation, debugging, change-review, and planning folding strategies respectively and can return to the previous strategy; on protocol and raw layers, those folding-strategy shortcuts are disabled because profiles are not active there. The plan metric includes plan artifacts and `update_plan` calls. Nonzero protocol metrics toggle the protocol layer and can return to the previous layer. Zero-value metrics remain informational only. / Session 分析指标使用紧凑显示，并在指标能映射到有用模式时提供阅读视角快捷入口：在 Main timeline 上，非零的消息、失败、文件改动和计划指标会分别切换到对话阅读、问题排查、改动审查和计划阅读折叠策略，并可返回之前的策略；在 protocol 和 raw layer 上，这些折叠策略快捷入口会禁用，因为 profile 在这些层不生效。计划指标包含 plan artifact 和 `update_plan` 调用。非零协议指标会切换协议层，并可返回之前的事件层。零值指标仅作为信息展示。
 13. From the selected-event inspector, the user can jump to the previous or next event in the current filtered result set for useful reading categories such as user messages, assistant messages, plans, update_plan calls, failed commands, commands, patches, errors, MCP calls, and web searches. / 在选中事件检查器中，用户可以在当前过滤结果集内按有助于阅读的类别跳转到上一个或下一个事件，例如用户消息、助手消息、计划、update_plan 调用、失败命令、命令、patch、错误、MCP 调用和 web 搜索。
@@ -85,7 +85,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - [x] Expanded timeline cards do not duplicate truncated preview text above the full body. / 展开的时间线卡片不会在完整正文上方重复截断预览文本。
 - [x] Expanded detail remains available for `main`, `protocol`, and `raw` layers without hiding unknown transcript shapes. / 展开详情在 `main`、`protocol` 和 `raw` 层都保持可用，并且不会隐藏未知转录形态。
 - [x] Raw records that map to known semantic events reuse the relevant structured detail sections, while keeping raw JSON available. / 映射到已知语义事件的原始记录会复用相关的结构化详情区段，同时保持原始 JSON 可用。
-- [x] Raw JSONL rows remain accessible for every logical event. / 每个逻辑事件都仍可访问原始 JSONL 行。
+- [x] Raw JSONL rows remain accessible from the selected-event inspector for every logical event. / 每个逻辑事件都仍可从选中事件检查器访问原始 JSONL 行。
 - [x] Filtering by keyword, structured file operator, status, and event kind works across the selected layer. / 按关键词、结构化文件操作符、状态和事件类型筛选可在所选层中正常工作。
 - [x] Search and structured filter result counts stay visible while browsing a selected session. / 浏览选中 session 时，搜索和结构化筛选结果数量保持可见。
 - [x] Analysis metrics stay compact, expose only nonzero actionable shortcuts, and use reading-view shortcuts rather than adding search filters. / 分析指标保持紧凑，只对非零可操作指标提供快捷入口，并使用阅读视角快捷入口而不是添加搜索筛选。
