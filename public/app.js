@@ -1265,9 +1265,7 @@ async function loadTimeline(append) {
   }
 }
 
-function displayState(event) {
-  const sessionOverrides = state.overrides[state.selectedSessionId] || {};
-  if (sessionOverrides[event.id]) return sessionOverrides[event.id];
+function naturalDisplayState(event) {
   const layer = activeLayerId();
 
   if (layer === 'protocol') {
@@ -1282,6 +1280,17 @@ function displayState(event) {
     ? state.profiles.find((candidate) => candidate.id === 'search')
     : { ...activeProfile(), rules: activeProfileRules() };
   return displayStateFromRules(event, profile?.rules || defaultRules());
+}
+
+function displayState(event) {
+  const sessionOverrides = state.overrides[state.selectedSessionId] || {};
+  if (sessionOverrides[event.id]) return sessionOverrides[event.id];
+  return naturalDisplayState(event);
+}
+
+function foldedDisplayState(event) {
+  const natural = naturalDisplayState(event);
+  return ['summary', 'collapsed'].includes(natural) ? natural : 'collapsed';
 }
 
 function importantEvent(event) {
@@ -2061,7 +2070,7 @@ el.timeline.addEventListener('click', (event) => {
   if (!item) return;
   const action = event.target.closest('[data-action]')?.dataset.action || 'inspect';
   if (action === 'toggle') {
-    const next = article.classList.contains('expanded') ? 'collapsed' : 'expanded';
+    const next = article.classList.contains('expanded') ? foldedDisplayState(item) : 'expanded';
     setOverride(item.id, next);
     renderTimeline();
     if (next === 'expanded') ensureEventDetail(item);
