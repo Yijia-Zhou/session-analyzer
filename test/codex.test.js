@@ -25,7 +25,7 @@ test('discoverProjects groups Codex sessions by cwd', async () => {
   const projects = await discoverProjects({ codexHome: fixtureCodexHome });
   const byRoot = new Map(projects.map((project) => [project.repoRoot, project]));
 
-  assert.equal(byRoot.get('G:\\vibe\\term-agent').sessionCount, 3);
+  assert.equal(byRoot.get('G:\\vibe\\term-agent').sessionCount, 7);
   assert.equal(byRoot.get('G:\\other\\repo').sessionCount, 1);
   assert.equal(typeof byRoot.get('G:\\vibe\\term-agent').exists, 'boolean');
 });
@@ -34,8 +34,8 @@ test('buildIndex deduplicates mirrored messages and keeps protocol separately', 
   const index = await buildFixtureIndex();
   const session = index.sessions[0];
 
-  assert.equal(index.totals.fileCount, 4);
-  assert.equal(index.totals.sessionCount, 3);
+  assert.equal(index.totals.fileCount, 8);
+  assert.equal(index.totals.sessionCount, 7);
   assert.equal(session.id, '11111111-1111-1111-1111-111111111111');
   assert.equal(session.title, 'fixture repo session');
   assert.equal(session.counts.userMessages, 1);
@@ -54,21 +54,58 @@ test('buildIndex keeps forked subagent identity separate from embedded parent me
   const index = await buildFixtureIndex();
   const parent = index.sessions.find((session) => session.id === '11111111-1111-1111-1111-111111111111');
   const child = index.sessions.find((session) => session.id === '33333333-3333-3333-3333-333333333333');
+  const review = index.sessions.find((session) => session.id === '55555555-5555-5555-5555-555555555555');
+  const reviewWithoutParent = index.sessions.find((session) => session.id === '66666666-6666-6666-6666-666666666666');
+  const ambiguousReview = index.sessions.find((session) => session.id === '88888888-8888-8888-8888-888888888888');
 
   assert.ok(parent);
   assert.ok(child);
+  assert.ok(review);
+  assert.ok(reviewWithoutParent);
+  assert.ok(ambiguousReview);
   assert.equal(child.parentSessionId, parent.id);
   assert.equal(child.agentNickname, 'Fixture');
   assert.equal(child.title, 'Subagent Fixture: Check the fixture subagent path');
+  assert.equal(review.parentSessionId, parent.id);
+  assert.equal(review.agentNickname, 'Review');
+  assert.equal(review.title, 'Review session: Review Fixture: verify derived review session styling metadata');
+  assert.equal(reviewWithoutParent.parentSessionId, parent.id);
+  assert.equal(reviewWithoutParent.parentSessionInferred, true);
+  assert.equal(reviewWithoutParent.title, 'Review session: Review the fixture code changes and provide prioritized findings.');
+  assert.equal(ambiguousReview.parentSessionId, '');
+  assert.equal(ambiguousReview.parentSessionInferred, false);
   assert.equal(index.sessionsById.get(parent.id), parent);
   assert.equal(index.sessionsById.get(child.id), child);
+  assert.equal(index.sessionsById.get(review.id), review);
+  assert.equal(index.sessionsById.get(reviewWithoutParent.id), reviewWithoutParent);
   assert.ok(child.rawEvents.every((raw) => raw.sessionId === child.id));
   assert.ok(child.logicalEvents.every((event) => event.id.startsWith(`${child.id}:logical:`)));
 
   const summaries = filterSessions(index, { q: '', sort: 'updated-desc', layer: 'main' }).sessions;
   const childSummary = summaries.find((session) => session.id === child.id);
+  const reviewSummary = summaries.find((session) => session.id === review.id);
+  const reviewWithoutParentSummary = summaries.find((session) => session.id === reviewWithoutParent.id);
+  const ambiguousReviewSummary = summaries.find((session) => session.id === ambiguousReview.id);
   assert.equal(childSummary.parentSessionId, parent.id);
+  assert.equal(childSummary.parentSessionTitle, parent.title);
   assert.equal(childSummary.agentNickname, 'Fixture');
+  assert.equal(childSummary.isDerivedSession, true);
+  assert.equal(childSummary.derivedKind, 'subagent');
+  assert.equal(reviewSummary.parentSessionId, parent.id);
+  assert.equal(reviewSummary.parentSessionTitle, parent.title);
+  assert.equal(reviewSummary.agentNickname, 'Review');
+  assert.equal(reviewSummary.isDerivedSession, true);
+  assert.equal(reviewSummary.derivedKind, 'review');
+  assert.equal(reviewWithoutParentSummary.parentSessionId, parent.id);
+  assert.equal(reviewWithoutParentSummary.parentSessionInferred, true);
+  assert.equal(reviewWithoutParentSummary.parentSessionTitle, parent.title);
+  assert.equal(reviewWithoutParentSummary.isDerivedSession, true);
+  assert.equal(reviewWithoutParentSummary.derivedKind, 'review');
+  assert.equal(ambiguousReviewSummary.parentSessionId, '');
+  assert.equal(ambiguousReviewSummary.parentSessionInferred, false);
+  assert.equal(ambiguousReviewSummary.parentSessionTitle, '');
+  assert.equal(ambiguousReviewSummary.isDerivedSession, true);
+  assert.equal(ambiguousReviewSummary.derivedKind, 'review');
 });
 
 test('buildIndex infers fallback titles from real user tasks after protocol wrappers', async () => {
@@ -123,10 +160,40 @@ test('timeline main layer returns logical events without duplicate user or assis
   const userEvents = timeline.events.filter((event) => event.kind === 'user_message');
   const assistantEvents = timeline.events.filter((event) => event.kind === 'assistant_message');
   const planEvents = timeline.events.filter((event) => event.kind === 'plan_artifact');
+  const reviewEvents = timeline.events.filter((event) => event.kind === 'review');
 
   assert.equal(userEvents.length, 1);
   assert.equal(assistantEvents.length, 1);
   assert.equal(planEvents.length, 1);
+  assert.equal(reviewEvents.length, 4);
+  assert.equal(reviewEvents[0].label, 'Review started');
+  assert.equal(reviewEvents[0].preview, 'Review started: current changes');
+  assert.equal(reviewEvents[1].label, 'Review completed');
+  assert.match(reviewEvents[1].preview, /Review completed: patch is correct - 0 findings - No findings\./);
+  const reviewStartDetail = buildEventDetail(session, reviewEvents[0].id, 'main');
+  assert.deepEqual(reviewStartDetail.sections.find((section) => section.title === 'Review request').entries, [
+    { key: 'Status', value: 'Started' },
+    { key: 'Target', value: 'Uncommitted changes' },
+    { key: 'Hint', value: 'current changes' },
+  ]);
+  const reviewDoneDetail = buildEventDetail(session, reviewEvents[1].id, 'main');
+  assert.deepEqual(reviewDoneDetail.sections.find((section) => section.title === 'Review result').entries, [
+    { key: 'Status', value: 'Completed' },
+    { key: 'Correctness', value: 'patch is correct' },
+    { key: 'Findings', value: '0' },
+  ]);
+  assert.equal(reviewDoneDetail.sections.some((section) => section.title === 'Findings' && section.text === 'No findings were reported.'), true);
+  const reviewFindingDetail = buildEventDetail(session, reviewEvents[3].id, 'main');
+  const findingSummary = reviewFindingDetail.sections.find((section) => section.title === 'Review result');
+  assert.deepEqual(findingSummary.entries, [
+    { key: 'Status', value: 'Completed' },
+    { key: 'Correctness', value: 'patch has issue' },
+    { key: 'Confidence', value: '0.77' },
+    { key: 'Findings', value: '1' },
+  ]);
+  const findingsSection = reviewFindingDetail.sections.find((section) => section.title === 'Findings');
+  assert.match(findingsSection.html, /Guard duplicate rows/);
+  assert.match(findingsSection.html, /P2 \| confidence 0\.61 \| G:\\vibe\\term-agent\\src\\sessions\.js:lines 42-45/);
   assert.equal(userEvents[0].rawRefs.length, 2);
   assert.equal(assistantEvents[0].rawRefs.length, 2);
   assert.equal(planEvents[0].rawRefs.length, 2);
@@ -578,11 +645,11 @@ test('project endpoints require and select a browser-chosen project', async () =
     assert.equal(selectRes.status, 200);
     const selectBody = await selectRes.json();
     assert.equal(selectBody.repoRoot, 'G:\\vibe\\term-agent');
-    assert.equal(selectBody.totals.sessionCount, 3);
+    assert.equal(selectBody.totals.sessionCount, 7);
 
     const sessionsRes = await fetch(`${base}/api/sessions`);
     assert.equal(sessionsRes.status, 200);
-    assert.equal((await sessionsRes.json()).total, 3);
+    assert.equal((await sessionsRes.json()).total, 7);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
@@ -603,6 +670,7 @@ test('path containment and folding profiles expose expected presets', () => {
   assert.ok(foldingProfiles.some((profile) => profile.id === 'compact'));
   assert.equal(EDITABLE_EVENT_KINDS.includes('protocol'), false);
   assert.equal(EDITABLE_EVENT_KINDS.includes('event'), false);
+  assert.equal(EDITABLE_EVENT_KINDS.includes('review'), true);
   for (const profile of foldingProfiles) {
     assert.ok(profile.rules, `${profile.id} has rule data`);
     assert.ok(DISPLAY_STATES.includes(profile.rules.fallback), `${profile.id} has a valid fallback`);

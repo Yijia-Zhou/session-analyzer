@@ -1,0 +1,5 @@
+{"timestamp":"2026-04-20T01:00:15.000Z","type":"session_meta","payload":{"id":"77777777-7777-7777-7777-777777777777","cwd":"G:\\vibe\\term-agent","originator":"codex_cli"}}
+{"timestamp":"2026-04-20T01:00:16.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Parallel fixture parent candidate"}]}}
+{"timestamp":"2026-04-20T01:00:30.000Z","type":"event_msg","payload":{"type":"entered_review_mode","target":{"type":"uncommittedChanges"},"user_facing_hint":"current changes"}}
+{"timestamp":"2026-04-20T01:00:31.000Z","type":"event_msg","payload":{"type":"exited_review_mode","review_output":{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"Parallel marker."}}}
+{"timestamp":"2026-04-20T01:05:00.000Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Done."}}

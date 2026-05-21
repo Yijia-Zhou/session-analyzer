@@ -33,3 +33,11 @@
 - Related docs: / 相关文档：
   - `docs/product-specs/session-transcript-analyzer.md`
   - `docs/design-docs/logical-event-timeline.md`
+
+### 5. Review finding real-data validation / Review finding 真实数据验证
+- Status: open / 状态：开放
+- Problem: review lifecycle parsing is covered by official core protocol schema and artificial fixtures, but local real-world transcripts observed so far only include empty `review_output.findings` arrays. / 问题：review 生命周期解析已有官方 core protocol schema 和人工 fixture 覆盖，但目前观察到的本地真实转录只包含空的 `review_output.findings` 数组。
+- Residual risk: rendering of non-empty `review_output.findings[]` may need adjustment once a real transcript with findings is available, especially for field presence, priority/confidence formatting, and code location shapes. / 残余风险：一旦拿到包含 findings 的真实转录，非空 `review_output.findings[]` 的渲染可能仍需调整，尤其是字段存在性、priority/confidence 格式和代码位置形态。
+- Related docs: / 相关文档：
+  - `docs/design-docs/logical-event-timeline.md`
+  - `docs/product-specs/session-transcript-analyzer.md`

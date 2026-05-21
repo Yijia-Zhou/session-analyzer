@@ -19,6 +19,7 @@ const EDITABLE_EVENT_KINDS = [
   'compaction',
   'token',
   'subagent',
+  'review',
   'turn',
 ];
 
@@ -83,6 +84,7 @@ const foldingProfiles = [
         abort: 'expanded',
         rollback: 'expanded',
         compaction: 'expanded',
+        review: 'summary',
         plan_artifact: 'expanded',
         reasoning: 'collapsed',
         token: 'collapsed',
@@ -123,6 +125,7 @@ const foldingProfiles = [
     rules: profileRules(
       {
         patch: 'expanded',
+        review: 'summary',
         plan_artifact: 'expanded',
         user_message: 'collapsed',
         assistant_message: 'collapsed',

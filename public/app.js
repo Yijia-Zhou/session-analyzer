@@ -544,11 +544,37 @@ function shortId(value) {
   return String(value || '').slice(0, 8);
 }
 
+function shortSessionTitle(value, limit = 54) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text || text.length <= limit) return text;
+  return `${text.slice(0, limit - 1).trimEnd()}…`;
+}
+
 function sessionRelationshipLabel(session) {
-  if (!session.parentSessionId) return '';
-  const nickname = session.agentNickname ? ` ${session.agentNickname}` : '';
   const parent = shortId(session.parentSessionId);
-  return parent ? `Subagent${nickname} of ${parent}` : `Subagent${nickname}`;
+  const kind = session.derivedKind === 'review' ? 'Review' : 'Subagent';
+  const nickname = session.agentNickname && session.agentNickname.toLowerCase() !== kind.toLowerCase() ? ` ${session.agentNickname}` : '';
+  const parentLabel = shortSessionTitle(session.parentSessionTitle) || parent;
+  if (parentLabel) return `${kind}${nickname} · from ${parentLabel}`;
+  if (session.isDerivedSession) return `${kind}${nickname} session`;
+  return '';
+}
+
+function sessionItemClasses(session, active) {
+  const classes = ['sessionItem'];
+  if (session.isDerivedSession) {
+    classes.push('secondarySession');
+    classes.push(session.derivedKind === 'review' ? 'derived-review' : 'derived-subagent');
+  }
+  if (active) classes.push('active');
+  return classes.join(' ');
+}
+
+function setRelatedParentHighlight(parentSessionId, enabled) {
+  if (!parentSessionId) return;
+  const parent = el.sessionList.querySelector(`[data-session-id="${CSS.escape(parentSessionId)}"]`);
+  if (!parent) return;
+  parent.classList.toggle('relatedParentSession', enabled);
 }
 
 function isUpdatePlanEvent(event) {
@@ -1075,13 +1101,15 @@ async function loadSessions() {
 
 function renderSessions() {
   el.sessionList.innerHTML = state.sessions.map((session) => {
-    const active = session.id === state.selectedSessionId ? ' active' : '';
+    const active = session.id === state.selectedSessionId;
     const relationship = sessionRelationshipLabel(session);
-    return `<button class="sessionItem${active}" type="button" data-session-id="${escapeHtml(session.id)}">
+    const parentAttr = session.parentSessionId ? ` data-parent-session-id="${escapeHtml(session.parentSessionId)}"` : '';
+    const relationshipTitle = session.parentSessionTitle || session.parentSessionId || relationship;
+    return `<button class="${sessionItemClasses(session, active)}" type="button" data-session-id="${escapeHtml(session.id)}"${parentAttr}>
       <span class="sessionTitle">${escapeHtml(session.title)}</span>
       <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
       <span class="chips">
-        ${relationship ? `<span class="chip">${escapeHtml(relationship)}</span>` : ''}
+        ${relationship ? `<span class="chip relationshipChip" title="${escapeHtml(relationshipTitle)}">${escapeHtml(relationship)}</span>` : ''}
         <span class="chip">${session.counts.messages} msgs</span>
         <span class="chip">${session.counts.toolCalls} tools</span>
         <span class="chip">${session.counts.failedCommands} failed</span>
@@ -1294,7 +1322,7 @@ function foldedDisplayState(event) {
 }
 
 function importantEvent(event) {
-  return ['user_message', 'assistant_message', 'patch', 'error', 'abort', 'rollback', 'compaction', 'plan_artifact'].includes(event.kind)
+  return ['user_message', 'assistant_message', 'patch', 'error', 'abort', 'rollback', 'compaction', 'plan_artifact', 'review'].includes(event.kind)
     || isUpdatePlanEvent(event)
     || event.severity !== 'normal'
     || event.status === 'failed';
@@ -2057,6 +2085,29 @@ el.projectSwitchControl?.addEventListener('click', () => {
 el.sessionList.addEventListener('click', (event) => {
   const item = event.target.closest('[data-session-id]');
   if (item) selectSession(item.dataset.sessionId, { mobileView: 'events' }).catch(showError);
+});
+
+el.sessionList.addEventListener('pointerover', (event) => {
+  const item = event.target.closest('[data-parent-session-id]');
+  if (item && el.sessionList.contains(item)) setRelatedParentHighlight(item.dataset.parentSessionId, true);
+});
+
+el.sessionList.addEventListener('pointerout', (event) => {
+  const item = event.target.closest('[data-parent-session-id]');
+  if (!item || !el.sessionList.contains(item)) return;
+  if (item.contains(event.relatedTarget)) return;
+  setRelatedParentHighlight(item.dataset.parentSessionId, false);
+});
+
+el.sessionList.addEventListener('focusin', (event) => {
+  const item = event.target.closest('[data-parent-session-id]');
+  if (item && el.sessionList.contains(item)) setRelatedParentHighlight(item.dataset.parentSessionId, true);
+});
+
+el.sessionList.addEventListener('focusout', (event) => {
+  const item = event.target.closest('[data-parent-session-id]');
+  if (!item || !el.sessionList.contains(item)) return;
+  setRelatedParentHighlight(item.dataset.parentSessionId, false);
 });
 
 for (const button of el.mobileViewButtons) {

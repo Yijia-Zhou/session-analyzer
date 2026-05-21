@@ -70,6 +70,14 @@ Session title inference prefers explicit `session_index.jsonl` or thread-name me
 
 会话标题推断优先使用显式的 `session_index.jsonl` 或 thread-name 元数据。当不存在显式标题时，回退推断会扫描主层用户消息，跳过 `<user_shell_command>` 等协议形态包装，清理轻量 Markdown 标题语法，并使用第一条有效任务行。fork 出来的子 agent 会话会使用最后一条有效用户任务行，避免复制进来的父上下文主导子会话标题。
 
+Session summaries expose derived-session display metadata for forked and review children. A session with a parent id or subagent thread metadata is marked as derived, and review-like metadata is classified as `review`; otherwise the child remains `subagent`. Review transcripts may omit an explicit parent id, so the index infers one only when exactly one normal same-repo session records matching `entered_review_mode` / `exited_review_mode` lifecycle events around the review child. When the parent session is indexed, summaries include its title so the frontend can label the relationship as a source session and lightly highlight the parent while the child is hovered or focused. The frontend uses this metadata only for visual hierarchy and relationship labels, not for selection identity, filtering, or timeline construction.
+
+会话摘要会为 fork 出来的子会话和 review 子会话暴露派生会话展示元数据。带有父会话 id 或 subagent thread metadata 的会话会标记为派生会话，metadata 呈现 review 语义的子会话分类为 `review`；其他子会话保持为 `subagent`。review 转录可能缺少显式父会话 id，因此索引只会在恰好一个同仓库普通会话记录了与 review 子会话匹配的 `entered_review_mode` / `exited_review_mode` 生命周期事件时推断父会话。当父会话已被索引时，摘要会包含父会话标题，使前端能把关系标记为来源会话，并在子会话被悬停或聚焦时轻量高亮父会话。前端只用这些元数据呈现视觉层级和关系标签，不会用它改变选择身份、筛选或时间线构建。
+
+`entered_review_mode` and `exited_review_mode` raw records also produce Main timeline lifecycle events with kind `review`, so the parent session's readable timeline retains the point where review was requested and the point where review output returned.
+
+`entered_review_mode` 和 `exited_review_mode` 原始记录也会生成 Main timeline 中 kind 为 `review` 的生命周期事件，使父会话的可读时间线保留发起 review 和收到 review 输出的位置。
+
 ## Data model / schema / 数据模型 / 模式
 
 ### Raw event / 原始事件

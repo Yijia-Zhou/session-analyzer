@@ -807,6 +807,76 @@ function agentNicknameFromMeta(payload) {
   return payload?.agent_nickname || subagentSpawnSource(payload)?.agent_nickname || '';
 }
 
+function derivedSessionKindFromMeta(payload) {
+  const parentSessionId = parentSessionIdFromMeta(payload);
+  const nickname = agentNicknameFromMeta(payload);
+  const subagentSource = payload?.source?.subagent;
+  const subagentLabel = typeof subagentSource === 'string' ? subagentSource : '';
+  const isSubagent = Boolean(parentSessionId || subagentSource || payload?.thread_source === 'subagent');
+  if (/\breview\b/i.test(`${nickname}\n${subagentLabel}`)) return 'review';
+  return isSubagent ? 'subagent' : '';
+}
+
+function derivedSessionKind(session) {
+  if (session.primarySessionMetaKind) return session.primarySessionMetaKind;
+  if (/\breview\b/i.test(session.agentNickname || '')) return 'review';
+  if (session.parentSessionId) return 'subagent';
+  return '';
+}
+
+function parseTimestampMs(value) {
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function reviewMarkerMatchesSession(marker, session) {
+  const entered = parseTimestampMs(marker.enteredAt);
+  const exited = parseTimestampMs(marker.exitedAt);
+  const started = parseTimestampMs(session.startedAt);
+  const updated = parseTimestampMs(session.updatedAt || session.startedAt);
+  if (entered === null || started === null) return false;
+
+  const nearEntered = Math.abs(entered - started) <= 5_000;
+  const enclosesStart = entered <= started + 5_000 && (exited === null || exited >= started - 30_000);
+  const nearExited = exited !== null && updated !== null && Math.abs(exited - updated) <= 120_000;
+  return nearEntered || (enclosesStart && nearExited);
+}
+
+function sessionReviewMarkers(session) {
+  if (Array.isArray(session._reviewMarkers) && session._reviewMarkers.length) return session._reviewMarkers;
+  const markers = [];
+  for (const raw of session.rawEvents || []) {
+    if (raw.recordType !== 'event_msg') continue;
+    if (raw.payloadType === 'entered_review_mode') {
+      markers.push({ enteredAt: raw.timestamp, exitedAt: '' });
+    } else if (raw.payloadType === 'exited_review_mode') {
+      let marker = markers[markers.length - 1];
+      if (!marker || marker.exitedAt) {
+        marker = { enteredAt: '', exitedAt: '' };
+        markers.push(marker);
+      }
+      marker.exitedAt = raw.timestamp;
+    }
+  }
+  return markers;
+}
+
+function inferReviewParentSessions(sessions) {
+  const primarySessions = sessions.filter((session) => !derivedSessionKind(session));
+  for (const session of sessions) {
+    if (session.parentSessionId || derivedSessionKind(session) !== 'review') continue;
+    const candidates = new Map();
+    for (const candidate of primarySessions) {
+      if (sessionReviewMarkers(candidate).some((marker) => reviewMarkerMatchesSession(marker, session))) {
+        candidates.set(candidate.id, candidate);
+      }
+    }
+    if (candidates.size !== 1) continue;
+    session.parentSessionId = [...candidates.values()][0].id;
+    session.parentSessionInferred = true;
+  }
+}
+
 async function collectJsonlFiles(root) {
   const out = [];
   async function walk(dir) {
@@ -920,7 +990,10 @@ function makeEmptySession(filePath, relFile, stat) {
     updatedAt: '',
     matchesRepo: false,
     parentSessionId: '',
+    parentSessionInferred: false,
     agentNickname: '',
+    primarySessionMetaKind: '',
+    _reviewMarkers: [],
     rawEvents: [],
     logicalEvents: [],
     searchText: '',
@@ -1610,6 +1683,9 @@ function extractProtocolSections(event, raws) {
 function extractLifecycleSections(event, raws) {
   const sections = [];
   const primary = raws[0];
+  if (event.kind === 'review') {
+    return extractReviewLifecycleSections(event, raws);
+  }
   if (event.kind === 'token') {
     const usageLimits = collectUsageLimitItems(primary.parsed?.payload);
     if (usageLimits.length) {
@@ -1828,6 +1904,7 @@ function extractLogicalDetailSections(event, raws) {
     case 'rollback':
     case 'error':
     case 'subagent':
+    case 'review':
     case 'turn':
       return extractLifecycleSections(event, raws);
     default:
@@ -2092,7 +2169,7 @@ function buildProtocolEvent(raw, subtype, label) {
   });
 }
 
-function buildLifecycleEvent(raw, kind, label, severity) {
+function buildLifecycleEvent(raw, kind, label, severity, previewOverride = '') {
   const tokenUsage = kind === 'token' ? tokenUsageItems(raw.parsed?.payload) : [];
   const usageLimits = kind === 'token' ? collectUsageLimitItems(raw.parsed?.payload) : [];
   const reachedType = kind === 'token' ? rateLimitReachedType(raw.parsed?.payload) : '';
@@ -2105,7 +2182,7 @@ function buildLifecycleEvent(raw, kind, label, severity) {
     layer: 'main',
     role: raw.role,
     label,
-    preview: raw.preview || label,
+    preview: previewOverride || raw.preview || label,
     searchText: raw.searchText,
     severity,
     status: raw.status || reachedType,
@@ -2114,6 +2191,94 @@ function buildLifecycleEvent(raw, kind, label, severity) {
     rawRefs: [rawRef(raw)],
     channels: [raw.recordType],
   });
+}
+
+function reviewLifecyclePreview(raw) {
+  const payload = raw.parsed?.payload || {};
+  if (raw.payloadType === 'entered_review_mode') {
+    const hint = String(payload.user_facing_hint || flattenText(payload.target, 180) || '').trim();
+    return hint ? `Review started: ${hint}` : 'Review started';
+  }
+
+  const output = payload.review_output || {};
+  const findings = Array.isArray(output.findings) ? `${output.findings.length} findings` : '';
+  const correctness = String(output.overall_correctness || '').trim();
+  const explanation = String(output.overall_explanation || '').trim();
+  const summary = uniqueNonEmpty([correctness, findings, explanation]).join(' - ');
+  return truncate(summary ? `Review completed: ${summary}` : 'Review completed');
+}
+
+function reviewFindingMarkdown(finding, index) {
+  if (!finding || typeof finding !== 'object') return '';
+  const title = String(finding.title || finding.summary || `Finding ${index + 1}`).trim();
+  const body = String(finding.body || finding.description || finding.message || '').trim();
+  const priority = finding.priority == null ? String(finding.severity || '').trim() : `P${finding.priority}`;
+  const confidence = finding.confidence_score == null ? String(finding.confidence || '').trim() : `confidence ${finding.confidence_score}`;
+  const location = finding.location || finding.code_location || {};
+  const locationText = typeof location === 'object' && location
+    ? uniqueNonEmpty([
+      location.absolute_file_path || location.file_path || location.path,
+      location.line_range?.start ? `lines ${location.line_range.start}-${location.line_range.end || location.line_range.start}` : '',
+    ]).join(':')
+    : String(location || '').trim();
+  const meta = uniqueNonEmpty([priority, confidence, locationText]).join(' | ');
+  return [
+    `### ${title}`,
+    meta,
+    body,
+  ].filter(Boolean).join('\n\n');
+}
+
+function reviewTargetLabel(target) {
+  if (!target || typeof target !== 'object') return '';
+  switch (target.type) {
+    case 'uncommittedChanges':
+    case 'uncommitted_changes':
+      return 'Uncommitted changes';
+    case 'baseBranch':
+    case 'base_branch':
+      return target.branch ? `Base branch: ${target.branch}` : 'Base branch';
+    case 'commit':
+      return uniqueNonEmpty([target.sha ? `Commit ${target.sha}` : 'Commit', target.title]).join(' - ');
+    case 'custom':
+      return target.instructions ? `Custom: ${target.instructions}` : 'Custom';
+    default:
+      return flattenText(target, 1000);
+  }
+}
+
+function extractReviewLifecycleSections(event, raws) {
+  const sections = [];
+  const primary = raws[0];
+  const payload = primary.parsed?.payload || {};
+  const output = payload.review_output || {};
+
+  if (event.subtype === 'entered_review_mode') {
+    maybePushKvSection(sections, 'Review request', [
+      { key: 'Status', value: 'Started' },
+      { key: 'Target', value: reviewTargetLabel(payload.target) },
+      { key: 'Hint', value: payload.user_facing_hint || '' },
+    ]);
+  } else {
+    const findings = Array.isArray(output.findings) ? output.findings : [];
+    maybePushKvSection(sections, 'Review result', [
+      { key: 'Status', value: 'Completed' },
+      { key: 'Correctness', value: output.overall_correctness || '' },
+      { key: 'Confidence', value: output.overall_confidence_score == null ? output.confidence || '' : String(output.overall_confidence_score) },
+      { key: 'Findings', value: String(findings.length) },
+    ]);
+    maybePushMarkdownSection(sections, 'Overall explanation', output.overall_explanation || output.explanation || '');
+    if (findings.length) {
+      maybePushMarkdownSection(sections, 'Findings', findings.map(reviewFindingMarkdown).filter(Boolean).join('\n\n'));
+    } else {
+      sections.push(makeNoticeSection('Findings', 'No findings were reported.', 'info'));
+    }
+    if (Object.keys(output).length) sections.push(makeRawJsonSection('Review output JSON', output));
+  }
+
+  maybePushKvSection(sections, 'Event fields', toKvEntries(payload, ['type', 'turn_id', 'thread_id']));
+  if (payload && Object.keys(payload).length) sections.push(makeRawJsonSection('Event raw JSON', primary.parsed));
+  return sections;
 }
 
 function buildConversationEvent(id, kind, role, text, raws) {
@@ -2367,6 +2532,16 @@ function buildLogicalEvents(rawEvents) {
       consumed.add(raw.rawId);
       continue;
     }
+    if (raw.recordType === 'event_msg' && raw.payloadType === 'entered_review_mode') {
+      logicalEvents.push(buildLifecycleEvent(raw, 'review', 'Review started', 'normal', reviewLifecyclePreview(raw)));
+      consumed.add(raw.rawId);
+      continue;
+    }
+    if (raw.recordType === 'event_msg' && raw.payloadType === 'exited_review_mode') {
+      logicalEvents.push(buildLifecycleEvent(raw, 'review', 'Review completed', 'normal', reviewLifecyclePreview(raw)));
+      consumed.add(raw.rawId);
+      continue;
+    }
     if (raw.recordType === 'event_msg' && ['collab_agent_spawn_end', 'collab_agent_interaction_end', 'collab_waiting_end', 'collab_close_end'].includes(raw.payloadType)) {
       logicalEvents.push(buildLifecycleEvent(raw, 'subagent', 'Subagent', 'normal'));
       consumed.add(raw.rawId);
@@ -2514,9 +2689,12 @@ function titleFromUserEvents(events, preferLast = false) {
 
 function inferSessionTitle(session) {
   const userEvents = session.logicalEvents.filter((event) => event.layer === 'main' && event.kind === 'user_message');
-  if (session.parentSessionId) {
+  const kind = derivedSessionKind(session);
+  if (kind) {
     const taskPreview = titleFromUserEvents(userEvents, true) || path.basename(session.sourceFile, '.jsonl');
-    const label = session.agentNickname ? `Subagent ${session.agentNickname}` : 'Subagent session';
+    const baseLabel = kind === 'review' ? 'Review' : 'Subagent';
+    const nickname = session.agentNickname && session.agentNickname.toLowerCase() !== baseLabel.toLowerCase() ? ` ${session.agentNickname}` : '';
+    const label = nickname ? `${baseLabel}${nickname}` : `${baseLabel} session`;
     return truncate(`${label}: ${taskPreview}`, SUBAGENT_SESSION_TITLE_LIMIT);
   }
   return titleFromUserEvents(userEvents) || path.basename(session.sourceFile, '.jsonl');
@@ -2587,6 +2765,7 @@ async function parseSessionFile(filePath, relFile, repoRoot) {
         if (record.payload.id) session.id = record.payload.id;
         session.parentSessionId = parentSessionIdFromMeta(record.payload);
         session.agentNickname = agentNicknameFromMeta(record.payload);
+        session.primarySessionMetaKind = derivedSessionKindFromMeta(record.payload);
       }
       if (record.payload.cwd) {
         session.cwdSet.add(record.payload.cwd);
@@ -2595,6 +2774,19 @@ async function parseSessionFile(filePath, relFile, repoRoot) {
     }
     if (!session.parentSessionId && record.type === 'event_msg' && record.payload?.type === 'thread_name_updated' && record.payload.thread_name) {
       session.title = record.payload.thread_name;
+    }
+    if (record.type === 'event_msg' && record.payload?.type === 'entered_review_mode') {
+      session._reviewMarkers.push({
+        enteredAt: safeIso(record.timestamp),
+        exitedAt: '',
+      });
+    } else if (record.type === 'event_msg' && record.payload?.type === 'exited_review_mode') {
+      let marker = session._reviewMarkers[session._reviewMarkers.length - 1];
+      if (!marker || marker.exitedAt) {
+        marker = { enteredAt: '', exitedAt: '' };
+        session._reviewMarkers.push(marker);
+      }
+      marker.exitedAt = safeIso(record.timestamp);
     }
     updateTimeRange(session, record.timestamp);
     session.rawEvents.push(makeRawEvent(record, lineNumber, relFile, session.id));
@@ -2631,6 +2823,8 @@ async function buildIndex({ repoRoot, codexHome }) {
     rawEventCount += session.rawEvents.length;
   }
 
+  inferReviewParentSessions(sessions);
+  for (const session of sessions) delete session._reviewMarkers;
   sessions.sort((a, b) => String(b.updatedAt || b.startedAt).localeCompare(String(a.updatedAt || a.startedAt)));
   return {
     repoRoot: resolvedRepo,
@@ -2672,7 +2866,9 @@ function eventMatches(event, filters) {
   return true;
 }
 
-function sessionSummary(session) {
+function sessionSummary(session, index) {
+  const derivedKind = derivedSessionKind(session);
+  const parentSession = session.parentSessionId ? index?.sessionsById?.get(session.parentSessionId) : null;
   return {
     id: session.id,
     title: session.title,
@@ -2681,7 +2877,11 @@ function sessionSummary(session) {
     lineCount: session.lineCount,
     cwdSet: [...session.cwdSet],
     parentSessionId: session.parentSessionId,
+    parentSessionInferred: Boolean(session.parentSessionInferred),
+    parentSessionTitle: parentSession?.title || '',
     agentNickname: session.agentNickname,
+    isDerivedSession: Boolean(derivedKind),
+    derivedKind,
     startedAt: session.startedAt,
     updatedAt: session.updatedAt,
     counts: session.counts,
@@ -2717,7 +2917,7 @@ function filterSessions(index, filters) {
 
   return {
     total: sessions.length,
-    sessions: sessions.map(sessionSummary),
+    sessions: sessions.map((session) => sessionSummary(session, index)),
   };
 }
 

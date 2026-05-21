@@ -38,3 +38,7 @@
 {"timestamp":"2026-04-20T01:00:17.000Z","type":"response_item","payload":{"type":"reasoning","summary":[],"content":{"ignored":true}}}
 {"timestamp":"2026-04-20T01:00:18.000Z","type":"event_msg","payload":{"type":"context_compacted"}}
 {"timestamp":"2026-04-20T01:00:19.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":"Done."}}
+{"timestamp":"2026-04-20T01:00:20.000Z","type":"event_msg","payload":{"type":"entered_review_mode","target":{"type":"uncommittedChanges"},"user_facing_hint":"current changes"}}
+{"timestamp":"2026-04-20T01:00:22.000Z","type":"event_msg","payload":{"type":"exited_review_mode","review_output":{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"No findings."}}}
+{"timestamp":"2026-04-20T01:00:30.000Z","type":"event_msg","payload":{"type":"entered_review_mode","target":{"type":"uncommittedChanges"},"user_facing_hint":"current changes"}}
+{"timestamp":"2026-04-20T01:00:31.000Z","type":"event_msg","payload":{"type":"exited_review_mode","review_output":{"findings":[{"title":"Guard duplicate rows","body":"The session list can show duplicate review rows when parent metadata is missing.","priority":2,"confidence_score":0.61,"code_location":{"absolute_file_path":"G:\\vibe\\term-agent\\src\\sessions.js","line_range":{"start":42,"end":45}}}],"overall_correctness":"patch has issue","overall_explanation":"Ambiguous marker.","overall_confidence_score":0.77}}}
