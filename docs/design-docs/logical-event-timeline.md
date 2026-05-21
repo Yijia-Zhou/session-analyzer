@@ -3,11 +3,13 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-05-05 / 最近更新：2026-05-05
+- Last updated: 2026-05-21 / 最近更新：2026-05-21
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
+- Related design notes: / 相关设计说明：
+  - `docs/design-docs/codex-protocol-event-coverage.md`
 
 ## Context / 背景
 
@@ -126,6 +128,10 @@ Important fields:
 Protocol logical events derive `label` and `preview` from subtype display metadata instead of raw subtype identifiers, while `searchText` and `rawRefs[]` keep the original transcript text discoverable and traceable.
 
 协议逻辑事件会从子类型展示元数据派生 `label` 和 `preview`，而不是直接使用原始子类型标识符；同时 `searchText` 和 `rawRefs[]` 会保留原始转录文本的可搜索性和可追踪性。
+
+Protocol event coverage is intentionally open-ended. The parser should preserve unknown `event_msg` variants through protocol/raw layers, and only add dedicated normalization when an upstream event changes readable timeline placement, severity, metadata, tool grouping, search, metrics, or structured detail. Current event-family notes and update rules live in `docs/design-docs/codex-protocol-event-coverage.md`.
+
+协议事件覆盖有意保持开放。解析器应通过 protocol/raw 层保留未知 `event_msg` variant；只有当上游事件会改变可读时间线归属、严重级别、元数据、工具分组、搜索、指标或结构化详情时，才添加专门归一化。当前事件族记录和更新规则见 `docs/design-docs/codex-protocol-event-coverage.md`。
 
 ### Event detail DTO / 事件详情 DTO
 

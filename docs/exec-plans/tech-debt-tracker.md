@@ -8,6 +8,7 @@
 - Residual risk: future Codex protocol payloads can still fall back to mechanically derived labels until new subtype display metadata and fixtures are added. / 残余风险：未来 Codex 协议载荷仍可能回退到机械派生标签，直到为新的子类型补充展示元数据和 fixture。
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
+  - `docs/design-docs/codex-protocol-event-coverage.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
 
 ### 2. Historical transcript coverage / 历史转录覆盖
@@ -16,6 +17,7 @@
 - Residual risk: fixture coverage is targeted rather than exhaustive; older call-only web search records, missing `event_msg:*_end` rows, sparse tool metadata, malformed JSONL, and new MCP or collaboration shapes may still need new fixtures as they appear. / 残余风险：fixture 覆盖是针对性的而非穷尽式的；较旧的仅调用 web search 记录、缺少 `event_msg:*_end` 的行、稀疏工具元数据、格式异常 JSONL，以及新的 MCP 或协作形态出现时仍可能需要新增 fixture。
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
+  - `docs/design-docs/codex-protocol-event-coverage.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
 
 ### 3. Session title inference / 会话标题推断

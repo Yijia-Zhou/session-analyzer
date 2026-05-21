@@ -37,7 +37,8 @@ When changing product behavior or repository structure:
 - Product spec: `docs/product-specs/session-transcript-analyzer.md`
 - Design doc: `docs/design-docs/logical-event-timeline.md`
 - Documentation system guide: `docs/design-docs/documentation-system.md`
-- Active plans: none
+- Active plans:
+  - `docs/exec-plans/active/2026-05-21-codex-protocol-event-coverage-followup.md`
 - Completed plans:
   - `docs/exec-plans/completed/2026-04-20-session-analyzer-v1.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
