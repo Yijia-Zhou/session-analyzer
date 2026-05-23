@@ -758,13 +758,23 @@ function shortSessionTitle(value, limit = 54) {
 }
 
 function sessionRelationshipLabel(session) {
-  const parent = shortId(session.parentSessionId);
-  const kind = session.derivedKind === 'review' ? 'Review' : 'Subagent';
-  const nickname = session.agentNickname && session.agentNickname.toLowerCase() !== kind.toLowerCase() ? ` ${session.agentNickname}` : '';
-  const parentLabel = shortSessionTitle(session.parentSessionTitle) || parent;
-  if (parentLabel) return `${kind}${nickname} · from ${parentLabel}`;
-  if (session.isDerivedSession) return `${kind}${nickname} session`;
+  if (session.isDerivedSession) {
+    const parent = shortId(session.parentSessionId);
+    const kind = session.derivedKind === 'review' ? 'Review' : 'Subagent';
+    const nickname = session.agentNickname && session.agentNickname.toLowerCase() !== kind.toLowerCase() ? ` ${session.agentNickname}` : '';
+    const parentLabel = shortSessionTitle(session.parentSessionTitle) || parent;
+    if (parentLabel) return `${kind}${nickname} · from ${parentLabel}`;
+    return `${kind}${nickname} session`;
+  }
+  const forkedFrom = shortId(session.forkedFromSessionId);
+  const forkedFromLabel = shortSessionTitle(session.forkedFromSessionTitle) || forkedFrom;
+  if (forkedFromLabel) return `Fork · from ${forkedFromLabel}`;
   return '';
+}
+
+function sessionRelationshipTitle(session, fallback = '') {
+  if (session.isDerivedSession) return session.parentSessionTitle || session.parentSessionId || fallback;
+  return session.forkedFromSessionTitle || session.forkedFromSessionId || fallback;
 }
 
 function sessionItemClasses(session, active) {
@@ -1406,7 +1416,7 @@ function renderSessions() {
     const active = session.id === state.selectedSessionId;
     const relationship = sessionRelationshipLabel(session);
     const parentAttr = session.parentSessionId ? ` data-parent-session-id="${escapeHtml(session.parentSessionId)}"` : '';
-    const relationshipTitle = session.parentSessionTitle || session.parentSessionId || relationship;
+    const relationshipTitle = sessionRelationshipTitle(session, relationship);
     return `<button class="${sessionItemClasses(session, active)}" type="button" data-session-id="${escapeHtml(session.id)}"${parentAttr}>
       <span class="sessionTitle">${escapeHtml(session.title)}</span>
       <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>

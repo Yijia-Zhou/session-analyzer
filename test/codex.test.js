@@ -30,7 +30,7 @@ test('discoverProjects groups Codex sessions by cwd', async () => {
   const projects = await discoverProjects({ codexHome: fixtureCodexHome });
   const byRoot = new Map(projects.map((project) => [project.repoRoot, project]));
 
-  assert.equal(byRoot.get('G:\\vibe\\term-agent').sessionCount, 9);
+  assert.equal(byRoot.get('G:\\vibe\\term-agent').sessionCount, 10);
   assert.equal(byRoot.get('G:\\other\\repo').sessionCount, 3);
   assert.equal(typeof byRoot.get('G:\\vibe\\term-agent').exists, 'boolean');
 });
@@ -39,12 +39,12 @@ test('buildIndex deduplicates mirrored messages and keeps protocol separately', 
   const index = await buildFixtureIndex();
   const session = primaryFixtureSession(index);
 
-  assert.equal(index.totals.fileCount, 10);
-  assert.equal(index.totals.candidateFileCount, 9);
-  assert.equal(index.totals.indexedFileCount, 9);
+  assert.equal(index.totals.fileCount, 11);
+  assert.equal(index.totals.candidateFileCount, 10);
+  assert.equal(index.totals.indexedFileCount, 10);
   assert.equal(index.totals.skippedFileCount, 1);
   assert.equal(index.totals.unknownFileCount, 0);
-  assert.equal(index.totals.sessionCount, 9);
+  assert.equal(index.totals.sessionCount, 10);
   assert.equal(session.id, '11111111-1111-1111-1111-111111111111');
   assert.equal(session.title, 'fixture repo session');
   assert.equal(session.counts.userMessages, 1);
@@ -105,16 +105,20 @@ test('buildIndex keeps forked subagent identity separate from embedded parent me
   const review = index.sessions.find((session) => session.id === '55555555-5555-5555-5555-555555555555');
   const reviewWithoutParent = index.sessions.find((session) => session.id === '66666666-6666-6666-6666-666666666666');
   const ambiguousReview = index.sessions.find((session) => session.id === '88888888-8888-8888-8888-888888888888');
+  const normalFork = index.sessions.find((session) => session.id === 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
 
   assert.ok(parent);
   assert.ok(child);
   assert.ok(review);
   assert.ok(reviewWithoutParent);
   assert.ok(ambiguousReview);
+  assert.ok(normalFork);
   assert.equal(child.parentSessionId, parent.id);
+  assert.equal(child.forkedFromSessionId, parent.id);
   assert.equal(child.agentNickname, 'Fixture');
   assert.equal(child.title, 'Subagent Fixture: Check the fixture subagent path');
   assert.equal(review.parentSessionId, parent.id);
+  assert.equal(review.forkedFromSessionId, parent.id);
   assert.equal(review.agentNickname, 'Review');
   assert.equal(review.title, 'Review session: Review Fixture: verify derived review session styling metadata');
   assert.equal(reviewWithoutParent.parentSessionId, parent.id);
@@ -122,10 +126,15 @@ test('buildIndex keeps forked subagent identity separate from embedded parent me
   assert.equal(reviewWithoutParent.title, 'Review session: Review the fixture code changes and provide prioritized findings.');
   assert.equal(ambiguousReview.parentSessionId, '');
   assert.equal(ambiguousReview.parentSessionInferred, false);
+  assert.equal(normalFork.parentSessionId, '');
+  assert.equal(normalFork.parentSessionInferred, false);
+  assert.equal(normalFork.forkedFromSessionId, parent.id);
+  assert.equal(normalFork.title, 'Normal fork fixture should stay primary');
   assert.equal(index.sessionsById.get(parent.id), parent);
   assert.equal(index.sessionsById.get(child.id), child);
   assert.equal(index.sessionsById.get(review.id), review);
   assert.equal(index.sessionsById.get(reviewWithoutParent.id), reviewWithoutParent);
+  assert.equal(index.sessionsById.get(normalFork.id), normalFork);
   assert.ok(child.rawEvents.every((raw) => raw.sessionId === child.id));
   assert.ok(child.logicalEvents.every((event) => event.id.startsWith(`${child.id}:logical:`)));
 
@@ -134,13 +143,18 @@ test('buildIndex keeps forked subagent identity separate from embedded parent me
   const reviewSummary = summaries.find((session) => session.id === review.id);
   const reviewWithoutParentSummary = summaries.find((session) => session.id === reviewWithoutParent.id);
   const ambiguousReviewSummary = summaries.find((session) => session.id === ambiguousReview.id);
+  const normalForkSummary = summaries.find((session) => session.id === normalFork.id);
   assert.equal(childSummary.parentSessionId, parent.id);
   assert.equal(childSummary.parentSessionTitle, parent.title);
+  assert.equal(childSummary.forkedFromSessionId, parent.id);
+  assert.equal(childSummary.forkedFromSessionTitle, parent.title);
   assert.equal(childSummary.agentNickname, 'Fixture');
   assert.equal(childSummary.isDerivedSession, true);
   assert.equal(childSummary.derivedKind, 'subagent');
   assert.equal(reviewSummary.parentSessionId, parent.id);
   assert.equal(reviewSummary.parentSessionTitle, parent.title);
+  assert.equal(reviewSummary.forkedFromSessionId, parent.id);
+  assert.equal(reviewSummary.forkedFromSessionTitle, parent.title);
   assert.equal(reviewSummary.agentNickname, 'Review');
   assert.equal(reviewSummary.isDerivedSession, true);
   assert.equal(reviewSummary.derivedKind, 'review');
@@ -154,6 +168,13 @@ test('buildIndex keeps forked subagent identity separate from embedded parent me
   assert.equal(ambiguousReviewSummary.parentSessionTitle, '');
   assert.equal(ambiguousReviewSummary.isDerivedSession, true);
   assert.equal(ambiguousReviewSummary.derivedKind, 'review');
+  assert.equal(normalForkSummary.parentSessionId, '');
+  assert.equal(normalForkSummary.parentSessionInferred, false);
+  assert.equal(normalForkSummary.parentSessionTitle, '');
+  assert.equal(normalForkSummary.forkedFromSessionId, parent.id);
+  assert.equal(normalForkSummary.forkedFromSessionTitle, parent.title);
+  assert.equal(normalForkSummary.isDerivedSession, false);
+  assert.equal(normalForkSummary.derivedKind, '');
 });
 
 test('buildIndex infers fallback titles from real user tasks after protocol wrappers', async () => {
@@ -770,12 +791,12 @@ test('project endpoints require and select a browser-chosen project', async () =
     }
     assert.equal(statusBody.job.status, 'succeeded');
     assert.equal(statusBody.state.repoRoot, 'G:\\vibe\\term-agent');
-    assert.equal(statusBody.state.totals.sessionCount, 9);
+    assert.equal(statusBody.state.totals.sessionCount, 10);
     assert.equal(statusBody.state.totals.skippedFileCount, 1);
 
     const sessionsRes = await fetch(`${base}/api/sessions`);
     assert.equal(sessionsRes.status, 200);
-    assert.equal((await sessionsRes.json()).total, 9);
+    assert.equal((await sessionsRes.json()).total, 10);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
@@ -849,7 +870,7 @@ test('cancelling an active project job preserves the previous index', async () =
     assert.equal(stateRes.status, 200);
     const stateBody = await stateRes.json();
     assert.equal(stateBody.repoRoot, 'G:\\vibe\\term-agent');
-    assert.equal(stateBody.totals.sessionCount, 9);
+    assert.equal(stateBody.totals.sessionCount, 10);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }

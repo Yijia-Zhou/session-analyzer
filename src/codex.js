@@ -862,8 +862,12 @@ function subagentSpawnSource(payload) {
   return payload?.source?.subagent?.thread_spawn || null;
 }
 
+function forkedFromSessionIdFromMeta(payload) {
+  return payload?.forked_from_id || '';
+}
+
 function parentSessionIdFromMeta(payload) {
-  return payload?.forked_from_id || subagentSpawnSource(payload)?.parent_thread_id || '';
+  return subagentSpawnSource(payload)?.parent_thread_id || '';
 }
 
 function agentNicknameFromMeta(payload) {
@@ -871,11 +875,10 @@ function agentNicknameFromMeta(payload) {
 }
 
 function derivedSessionKindFromMeta(payload) {
-  const parentSessionId = parentSessionIdFromMeta(payload);
   const nickname = agentNicknameFromMeta(payload);
   const subagentSource = payload?.source?.subagent;
   const subagentLabel = typeof subagentSource === 'string' ? subagentSource : '';
-  const isSubagent = Boolean(parentSessionId || subagentSource || payload?.thread_source === 'subagent');
+  const isSubagent = Boolean(subagentSource || payload?.thread_source === 'subagent');
   if (/\breview\b/i.test(`${nickname}\n${subagentLabel}`)) return 'review';
   return isSubagent ? 'subagent' : '';
 }
@@ -1076,6 +1079,7 @@ function makeEmptySession(filePath, relFile, stat) {
     matchesRepo: false,
     parentSessionId: '',
     parentSessionInferred: false,
+    forkedFromSessionId: '',
     agentNickname: '',
     primarySessionMetaKind: '',
     _reviewMarkers: [],
@@ -2941,7 +2945,7 @@ function inferSessionTitle(session) {
     const label = nickname ? `${baseLabel}${nickname}` : `${baseLabel} session`;
     return truncate(`${label}: ${taskPreview}`, SUBAGENT_SESSION_TITLE_LIMIT);
   }
-  return titleFromUserEvents(userEvents) || path.basename(session.sourceFile, '.jsonl');
+  return titleFromUserEvents(userEvents, Boolean(session.forkedFromSessionId)) || path.basename(session.sourceFile, '.jsonl');
 }
 
 function finalizeSession(session, sessionIndexEntry) {
@@ -3010,6 +3014,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
         if (!primarySessionMetaSeen) {
           primarySessionMetaSeen = true;
           if (record.payload.id) session.id = record.payload.id;
+          session.forkedFromSessionId = forkedFromSessionIdFromMeta(record.payload);
           session.parentSessionId = parentSessionIdFromMeta(record.payload);
           session.agentNickname = agentNicknameFromMeta(record.payload);
           session.primarySessionMetaKind = derivedSessionKindFromMeta(record.payload);
@@ -3028,6 +3033,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
           session.title = record.payload.thread_name;
         }
         if (!primarySessionMetaSeen) {
+          if (!session.forkedFromSessionId) session.forkedFromSessionId = forkedFromSessionIdFromMeta(record.payload);
           if (!session.parentSessionId) session.parentSessionId = parentSessionIdFromMeta(record.payload);
           if (!session.agentNickname) session.agentNickname = agentNicknameFromMeta(record.payload);
           if (!session.primarySessionMetaKind) session.primarySessionMetaKind = derivedSessionKindFromMeta(record.payload);
@@ -3275,6 +3281,7 @@ function eventMatches(event, filters) {
 function sessionSummary(session, index) {
   const derivedKind = derivedSessionKind(session);
   const parentSession = session.parentSessionId ? index?.sessionsById?.get(session.parentSessionId) : null;
+  const forkedFromSession = session.forkedFromSessionId ? index?.sessionsById?.get(session.forkedFromSessionId) : null;
   return {
     id: session.id,
     title: session.title,
@@ -3285,6 +3292,8 @@ function sessionSummary(session, index) {
     parentSessionId: session.parentSessionId,
     parentSessionInferred: Boolean(session.parentSessionInferred),
     parentSessionTitle: parentSession?.title || '',
+    forkedFromSessionId: session.forkedFromSessionId,
+    forkedFromSessionTitle: forkedFromSession?.title || '',
     agentNickname: session.agentNickname,
     isDerivedSession: Boolean(derivedKind),
     derivedKind,
