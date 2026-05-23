@@ -140,17 +140,21 @@ Current protocol normalization includes lifecycle aliases (`turn_started` / `tur
 
 ### Search and highlighting / 搜索与高亮
 
-Backend search remains event-oriented. Session filtering uses the aggregated session `searchText`; timeline filtering uses each event's `preview` plus `searchText` so a concise preview can still make a match discoverable when full detail is not rendered. The `/timeline` response also returns `searchMatchCount`, counted from matched events' full `searchText` when available and from `preview` only as a fallback. This count represents the current session, layer, and structured filters, not only events currently loaded in the browser.
+Backend free-text search is event-oriented but not timeline-filtering. The `/timeline` response applies only layer and structured filters to decide which events are returned; its `q` parameter marks `hasSearchHit`, populates snippets, and returns `searchMatchCount` across that full structured result set. This keeps the main timeline readable as a continuous sequence while still letting the frontend jump between hits. Session filtering can still use the aggregated session `searchText` when explicitly requested by API callers, but the browser's primary search box treats free text as find-in-timeline and omits `q` from session-list requests.
 
-后端搜索仍以事件为单位。Session 筛选使用聚合后的 session `searchText`；时间线筛选使用每个事件的 `preview` 加 `searchText`，这样即使完整详情尚未渲染，简短预览也能让命中可发现。`/timeline` 响应还会返回 `searchMatchCount`，优先从匹配事件的完整 `searchText` 计数，只有没有 `searchText` 时才退回 `preview`。这个计数代表当前 session、事件层和结构化筛选条件下的全文命中总数，而不只限于浏览器当前已加载的事件。
+后端自由文本搜索仍以事件为单位，但不再过滤时间线。`/timeline` 响应只用事件层和结构化筛选决定返回哪些事件；它的 `q` 参数只负责标记 `hasSearchHit`、生成 snippet，并在完整结构化结果集上返回 `searchMatchCount`。这样 Main timeline 仍保持连续可读，同时前端仍可在命中之间跳转。Session 筛选在 API 调用方明确请求时仍可使用聚合后的 session `searchText`，但浏览器主搜索框会把自由文本视为时间线内查找，并在请求 session 列表时省略 `q`。
 
 Frontend highlighting is DOM-oriented. After HTML has been rendered, the browser walks text nodes under the session list, timeline, and detail panel, skips interactive or unsafe nodes such as inputs, buttons, links, scripts, styles, and existing marks, and inserts `<mark>` elements with `textContent` instead of rewriting HTML strings. The displayed position uses the currently rendered and jumpable marks, while the denominator uses the backend full-text `searchMatchCount`.
 
 前端高亮则以 DOM 为单位。HTML 渲染完成后，浏览器遍历 session 列表、时间线和详情面板下的文本节点，跳过 input、button、link、script、style 和已有 mark 等交互或不适合处理的节点，并用 `textContent` 插入 `<mark>`，而不是重写 HTML 字符串。界面显示的当前位置来自当前已渲染且可跳转的 mark，分母使用后端全文 `searchMatchCount`。
 
-Search-result preloading is intentionally bounded. When free-text search has too few rendered jump targets, the browser may append a few more filtered timeline pages so previous/next navigation has nearby real scroll targets. It does not force-expand every event or load every hidden command output; hidden detail becomes jumpable only after its event detail is rendered.
+`Read from here` bridges structured-filter and layer views back to normal reading. When a selected event is shown while structured filters, a `layer:` operator, or a non-main layer is active, the inspector and raw refs views expose a contextual action that clears the event filters, switches to `Main timeline`, and restores focus using the same timestamp/line anchor logic as layer switches. If the exact selected event is not visible in Main timeline, the frontend selects the nearest visible event in timeline order. On narrow screens the action returns the user to the Events tab after the anchor is restored.
 
-搜索结果预加载有意保持有限。当自由文本搜索下可渲染跳转目标过少时，浏览器可以追加加载少量已筛选的时间线分页，让上一个/下一个导航有附近的真实滚动目标。它不会强制展开每个事件，也不会加载每个隐藏的 command output；隐藏详情只有在该事件详情实际渲染后才会变成可跳转目标。
+`Read from here` 用来把结构化筛选或事件层视图带回常规阅读。当选中事件处在结构化筛选、`layer:` 操作符或非主时间线事件层下时，检查器和原始引用视图会显示上下文动作；该动作会清除事件筛选、切换到 `Main timeline`，并复用事件层切换所用的 timestamp/line 锚点逻辑恢复焦点。如果精确的选中事件在 Main timeline 中不可见，前端会按时间线顺序选择最近的可见事件。在窄屏上，锚点恢复后该动作会把用户带回 Events 标签页。
+
+Search-result preloading is intentionally bounded. When free-text search has too few rendered jump targets, the browser may append a few more timeline pages so previous/next navigation has nearby real scroll targets. It does not force-expand every event or load every hidden command output; hidden detail becomes jumpable only after its event detail is rendered.
+
+搜索结果预加载有意保持有限。当自由文本搜索下可渲染跳转目标过少时，浏览器可以追加加载少量时间线分页，让上一个/下一个导航有附近的真实滚动目标。它不会强制展开每个事件，也不会加载每个隐藏的 command output；隐藏详情只有在该事件详情实际渲染后才会变成可跳转目标。
 
 ### Event detail DTO / 事件详情 DTO
 

@@ -106,10 +106,23 @@
     return [cleaned, expression].filter(Boolean).join(' ').trim();
   }
 
+  function structuredSearchKey(filters, layerId = '', sortValue = '') {
+    const search = filters || {};
+    return [
+      search.kind || '',
+      search.status || '',
+      search.file || '',
+      search.layer || '',
+      layerId || '',
+      sortValue || '',
+    ].join('\u001f');
+  }
+
   return {
     parseSearchInput,
     removeFreeText,
     removeOperator,
+    structuredSearchKey,
     upsertOperator,
   };
 }));

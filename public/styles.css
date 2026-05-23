@@ -2404,6 +2404,19 @@ body[data-project-mode='selecting'] .searchAssist {
   padding: 0.25rem 0.45rem;
 }
 
+.readFromHereBtn {
+  background: #e8f5f0;
+  border-color: #9ec8ba;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.readFromHereBtn:hover,
+.readFromHereBtn:focus-visible {
+  background: #dff0e9;
+  border-color: var(--accent);
+}
+
 pre {
   background: #101719;
   border-radius: 6px;

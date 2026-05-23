@@ -35,3 +35,15 @@ test('search query helpers remove and upsert operators', () => {
   assert.equal(searchQuery.removeFreeText('alpha file:public/app.js kind:patch'), 'file:public/app.js kind:patch');
   assert.equal(searchQuery.upsertOperator('alpha file:old.js', 'file', 'public app.js'), 'alpha file:"public app.js"');
 });
+
+test('structuredSearchKey ignores free text and tracks structural filters', () => {
+  const base = searchQuery.structuredSearchKey({ q: 'alpha' }, 'main', 'mtime-desc');
+
+  assert.equal(searchQuery.structuredSearchKey({ q: 'beta' }, 'main', 'mtime-desc'), base);
+  assert.notEqual(searchQuery.structuredSearchKey({ q: 'alpha', kind: 'command' }, 'main', 'mtime-desc'), base);
+  assert.notEqual(searchQuery.structuredSearchKey({ q: 'alpha', status: 'failed' }, 'main', 'mtime-desc'), base);
+  assert.notEqual(searchQuery.structuredSearchKey({ q: 'alpha', file: 'src/app.js' }, 'main', 'mtime-desc'), base);
+  assert.notEqual(searchQuery.structuredSearchKey({ q: 'alpha', layer: 'raw' }, 'main', 'mtime-desc'), base);
+  assert.notEqual(searchQuery.structuredSearchKey({ q: 'alpha' }, 'protocol', 'mtime-desc'), base);
+  assert.notEqual(searchQuery.structuredSearchKey({ q: 'alpha' }, 'main', 'start-asc'), base);
+});

@@ -3410,7 +3410,8 @@ function getTimeline(index, sessionId, filters) {
   const sourceEvents = layer === 'raw'
     ? session.rawEvents.map((raw) => rawEventDto(raw, filters.q))
     : session.logicalEvents.filter((event) => event.layer === layer);
-  const matched = sourceEvents.filter((event) => eventMatches(event, { ...filters, layer }));
+  const structuralFilters = { ...filters, q: '', layer };
+  const matched = sourceEvents.filter((event) => eventMatches(event, structuralFilters));
   const searchMatchCount = filters.q
     ? matched.reduce((sum, event) => sum + countSearchMatches(eventSearchCountText(event), filters.q), 0)
     : 0;

@@ -15,6 +15,14 @@ const searchQuery = window.sessionSearchQuery || {
   parseSearchInput: (input) => ({ q: String(input || '').trim(), file: '', kind: '', status: '', layer: '', tokens: [] }),
   removeFreeText: () => '',
   removeOperator: (input) => String(input || ''),
+  structuredSearchKey: (filters, layerId = '', sortValue = '') => [
+    filters?.kind || '',
+    filters?.status || '',
+    filters?.file || '',
+    filters?.layer || '',
+    layerId || '',
+    sortValue || '',
+  ].join('\u001f'),
   upsertOperator: (input) => String(input || '').trim(),
 };
 const searchHighlighter = window.sessionSearchHighlighter || {
@@ -22,6 +30,7 @@ const searchHighlighter = window.sessionSearchHighlighter || {
   clear: () => {},
   searchTerms: () => [],
 };
+const navigationApi = window.sessionNavigation || {};
 
 const NAVIGATION_PAGE_LIMIT = 500;
 const TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD = 96;
@@ -197,7 +206,8 @@ const LAYER_LABELS = {
   protocol: 'Protocol layer',
   raw: 'Raw records',
 };
-const NAVIGATION_CATEGORIES = [
+const NAVIGATION_CATEGORIES = navigationApi.NAVIGATION_CATEGORIES || [
+  { id: 'search_hits', label: 'Search hits', matches: (event) => Boolean(event.hasSearchHit) },
   { id: 'user_messages', label: 'User messages', matches: (event) => event.kind === 'user_message' },
   { id: 'assistant_messages', label: 'Assistant messages', matches: (event) => event.kind === 'assistant_message' },
   { id: 'update_plan', label: 'Plan updates', matches: isUpdatePlanEvent },
@@ -251,10 +261,12 @@ const state = {
   detailHistory: [],
   detailSelectionKey: '',
   navigationCategoryId: '',
+  navigationCategoryManualId: '',
   navigationCache: { key: '', events: [], total: 0, pending: null },
   searchHighlight: { query: '', marks: [], activeIndex: -1 },
   searchHighlightTimer: 0,
   searchTargetPreload: { key: '', pages: 0, pending: false },
+  searchStructureKey: '',
   mobileView: 'sessions',
 };
 
@@ -347,10 +359,15 @@ function api(path, options = {}) {
 
 function debounce(fn, ms) {
   let timer = 0;
-  return (...args) => {
+  const debounced = (...args) => {
     clearTimeout(timer);
     timer = setTimeout(() => fn(...args), ms);
   };
+  debounced.cancel = () => {
+    clearTimeout(timer);
+    timer = 0;
+  };
+  return debounced;
 }
 
 function fmtDate(value) {
@@ -484,6 +501,15 @@ function searchTargetPreloadKey() {
   ].join('\u001f');
 }
 
+function structuredSearchKey() {
+  const search = currentSearchState();
+  return searchQuery.structuredSearchKey(
+    { kind: search.kind, status: search.status, file: search.file, layer: search.parsed.layer || '' },
+    state.layerId || '',
+    el.sortSelect?.value || '',
+  );
+}
+
 function currentSearchMarkLabel() {
   const { marks, activeIndex } = state.searchHighlight;
   const total = state.timelineSearchMatchCount;
@@ -543,13 +569,24 @@ function setActiveSearchMark(index, options = {}) {
   state.searchHighlight.activeIndex = normalized;
   const mark = marks[normalized];
   mark.classList.add('activeSearchMark');
-  if (options.scroll) {
-    mark.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+  let scrollTargetEventId = '';
+  if (options.scroll || options.syncDetail) {
     const article = mark.closest('[data-event-id]');
     if (article?.dataset.eventId) {
       state.selectedEventId = article.dataset.eventId;
       updateSelectedTimelineEvent();
+      if (options.syncDetail) {
+        const item = state.currentEvents.find((event) => event.id === article.dataset.eventId);
+        if (item) {
+          scrollTargetEventId = article.dataset.eventId;
+          showInspector(item, { replace: true });
+        }
+      }
     }
+  }
+  if (options.scroll) {
+    if (scrollTargetEventId) scrollToTimelineEvent(scrollTargetEventId);
+    else mark.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
   }
   updateSearchMatchControls();
   return true;
@@ -572,7 +609,10 @@ function refreshSearchHighlights(options = {}) {
 
   if (marks.length) {
     const keepIndex = options.preserveActive && query === previousQuery && previousIndex >= 0;
-    setActiveSearchMark(keepIndex ? Math.min(previousIndex, marks.length - 1) : 0, { scroll: false });
+    setActiveSearchMark(keepIndex ? Math.min(previousIndex, marks.length - 1) : 0, {
+      scroll: false,
+      syncDetail: options.syncDetail,
+    });
   } else {
     updateSearchMatchControls();
   }
@@ -580,11 +620,11 @@ function refreshSearchHighlights(options = {}) {
 }
 
 function navigateSearchMatch(direction) {
-  if (!state.searchHighlight.marks.length) refreshSearchHighlights({ preserveActive: true });
+  if (!state.searchHighlight.marks.length) refreshSearchHighlights({ preserveActive: true, syncDetail: true });
   const marks = state.searchHighlight.marks;
   if (!marks.length) return false;
   const current = state.searchHighlight.activeIndex >= 0 ? state.searchHighlight.activeIndex : 0;
-  return setActiveSearchMark(current + direction, { scroll: true });
+  return setActiveSearchMark(current + direction, { scroll: true, syncDetail: true });
 }
 
 function scheduleSearchHighlightRefresh(options = {}) {
@@ -596,10 +636,10 @@ function scheduleSearchHighlightRefresh(options = {}) {
   }, SEARCH_HIGHLIGHT_INPUT_DELAY_MS);
 }
 
-function currentQuery(extra = {}) {
+function currentQuery(extra = {}, options = {}) {
   const params = new URLSearchParams();
   const filters = currentSearchState();
-  if (filters.q) params.set('q', filters.q);
+  if (options.includeQ !== false && filters.q) params.set('q', filters.q);
   if (filters.kind) params.set('kind', filters.kind);
   if (filters.status) params.set('status', filters.status);
   if (filters.file) params.set('file', filters.file);
@@ -619,6 +659,7 @@ function resetDetailPane() {
   state.detailSelectionKey = '';
   state.selectedEventId = '';
   state.navigationCategoryId = '';
+  state.navigationCategoryManualId = '';
   state.detailHistory = [];
   state.searchTargetPreload = { key: '', pages: 0, pending: false };
   state.detailView = { type: 'profileRules' };
@@ -795,6 +836,7 @@ function setRelatedParentHighlight(parentSessionId, enabled) {
 }
 
 function isUpdatePlanEvent(event) {
+  if (navigationApi.isUpdatePlanEvent) return navigationApi.isUpdatePlanEvent(event);
   return event.kind === 'plan_update' || event.toolName === 'update_plan' || event.subtype === 'update_plan' || event.label === 'update_plan';
 }
 
@@ -850,12 +892,19 @@ function optionText(select, value, fallback = {}) {
 function activeFilters() {
   const filters = [];
   const search = currentSearchState();
-  if (search.q) filters.push({ key: 'q', label: `Search: ${search.q}` });
   if (search.kind) filters.push({ key: 'kind', label: `Kind: ${optionText(el.searchKindSelect, search.kind, KIND_LABELS)}` });
   if (search.status) filters.push({ key: 'status', label: `Status: ${optionText(el.searchStatusSelect, search.status, STATUS_LABELS)}` });
   if (search.file) filters.push({ key: 'file', label: `File: ${search.file}` });
   if (search.parsed.layer && search.layer !== 'main') filters.push({ key: 'layer', label: `Layer: ${optionText(el.layerSelect, search.layer, LAYER_LABELS)}` });
   return filters;
+}
+
+function activeFindAndFilters() {
+  const search = currentSearchState();
+  return [
+    search.q ? { key: 'q', label: `Find: ${search.q}` } : null,
+    ...activeFilters(),
+  ].filter(Boolean);
 }
 
 function filterChipMarkup(filter) {
@@ -868,10 +917,20 @@ function renderFilterChips(filters) {
   return filters.map(filterChipMarkup).join('');
 }
 
-function renderSearchAssistChips(filters = activeFilters()) {
+function hasFocusedTimelineContext() {
+  const search = currentSearchState();
+  return Boolean(search.kind || search.status || search.file || search.parsed.layer || activeLayerId() !== 'main');
+}
+
+function renderReadFromHereAction() {
+  if (!state.selectedSessionId || !state.selectedEventId || !hasFocusedTimelineContext()) return '';
+  return '<button class="smallBtn readFromHereBtn" type="button" data-detail-action="read-from-here" title="Clear event filters, switch to Main timeline, and keep this position">Read from here</button>';
+}
+
+function renderSearchAssistChips(filters = activeFindAndFilters()) {
   if (!el.searchAssistChips) return;
   if (!filters.length) {
-    el.searchAssistChips.innerHTML = '<span class="searchAssistEmpty">No active filters</span>';
+    el.searchAssistChips.innerHTML = '<span class="searchAssistEmpty">No active find or filters</span>';
     return;
   }
   el.searchAssistChips.innerHTML = `${renderFilterChips(filters)}<button class="clearFiltersBtn" type="button" data-clear-filter="all">Clear all</button>`;
@@ -969,29 +1028,33 @@ function isSuggestedFile(value) {
 function renderResultSummary() {
   if (!el.resultSummary) return;
   const filters = activeFilters();
-  renderSearchAssistChips(filters);
-  if (!filters.length) {
+  const controls = activeFindAndFilters();
+  const search = currentSearchState();
+  renderSearchAssistChips(controls);
+  if (!filters.length && !search.q) {
     el.resultSummary.replaceChildren();
     return;
   }
   const sessionTotal = state.sessionGrandTotal || state.sessionTotal;
-  const sessionText = sessionTotal
+  const countText = filters.length && sessionTotal
     ? `Sessions: ${state.sessionTotal} match (${sessionTotal} total)`
-    : `Sessions: ${state.sessionTotal} match`;
-  const eventText = state.selectedSessionId
+    : (filters.length ? `Sessions: ${state.sessionTotal} match` : '');
+  const eventText = filters.length && state.selectedSessionId
     ? `Events: ${state.timelineTotal} match${state.offset < state.timelineTotal ? ` (${state.offset} loaded)` : ''}`
-    : 'Events: select a session';
-  const matchControls = currentSearchState().q
+    : (filters.length ? 'Events: select a session' : '');
+  const matchControls = search.q
     ? `<div class="searchMatchControls" data-search-match-controls title="Visible matches in rendered content; total is current session, layer, and filters">
       <span class="searchMatchCount" data-search-match-count>${escapeHtml(currentSearchMarkLabel())}</span>
     </div>`
     : '';
-  const filterText = renderFilterChips(filters) + '<button class="clearFiltersBtn" type="button" data-clear-filter="all">Clear all</button>';
-  el.resultSummary.innerHTML = `<div class="resultCounts">${escapeHtml(sessionText)} · ${escapeHtml(eventText)}</div>${matchControls}<div class="activeFilters" aria-label="Active filters">${filterText}</div>`;
+  const countMarkup = [countText, eventText].filter(Boolean).join(' · ');
+  const filterText = renderFilterChips(controls) + '<button class="clearFiltersBtn" type="button" data-clear-filter="all">Clear all</button>';
+  el.resultSummary.innerHTML = `${countMarkup ? `<div class="resultCounts">${escapeHtml(countMarkup)}</div>` : ''}${matchControls}<div class="activeFilters" aria-label="Active find and filters">${filterText}</div>`;
   updateSearchMatchControls();
 }
 
 function clearActiveFilter(key) {
+  const structureBefore = structuredSearchKey();
   if (key === 'all') {
     el.searchInput.value = '';
     state.layerId = 'main';
@@ -1014,7 +1077,13 @@ function clearActiveFilter(key) {
   syncSearchAssistControls();
   renderSearchAssistChips();
   updateProfileApplicabilityUi();
-  loadSessions().catch(showError);
+  const structureAfter = structuredSearchKey();
+  state.searchStructureKey = structureAfter;
+  if (structureBefore === structureAfter) {
+    refreshTimelineFindState().catch(showError);
+  } else {
+    loadSessions().catch(showError);
+  }
 }
 
 function resetTimelineScroll() {
@@ -1082,17 +1151,18 @@ async function resolveFocusTarget(anchor) {
 }
 
 async function restoreFocus(anchor) {
-  if (!state.selectedSessionId) return;
+  if (!state.selectedSessionId) return null;
   const target = await resolveFocusTarget(anchor);
   if (!target) {
     if (anchor?.hadSelection) closeDetailView();
-    return;
+    return null;
   }
   await ensureEventLoaded(target.id);
   const loaded = state.currentEvents.find((event) => event.id === target.id) || target;
   if (anchor?.detailType === 'rawRefs') await showRaw(loaded, { replace: true });
   else showInspector(loaded, { replace: true });
   scrollToTimelineEvent(loaded.id);
+  return loaded;
 }
 
 function clearCurrentSessionOverrides() {
@@ -1384,7 +1454,8 @@ async function init() {
 
 async function loadSessions() {
   updateProfileApplicabilityUi();
-  const data = await api(`/api/sessions${currentQuery({ sort: el.sortSelect.value })}`);
+  state.searchStructureKey = structuredSearchKey();
+  const data = await api(`/api/sessions${currentQuery({ sort: el.sortSelect.value }, { includeQ: false })}`);
   state.sessions = data.sessions;
   state.sessionTotal = data.total;
   renderSessions();
@@ -1575,7 +1646,7 @@ function updateLoadMoreButton() {
   }
 }
 
-async function loadTimeline(append) {
+async function loadTimeline(append, options = {}) {
   if (!state.selectedSessionId) return;
   if (append && state.timelineLoading) return;
   const sessionId = state.selectedSessionId;
@@ -1598,7 +1669,52 @@ async function loadTimeline(append) {
     state.timelineTotal = data.total;
     state.timelineSearchMatchCount = data.searchMatchCount || 0;
     renderTimeline();
-    if (!append) resetTimelineScroll();
+    if (!append && !options.keepScroll) resetTimelineScroll();
+    renderResultSummary();
+    maybePreloadSearchTargets();
+  } finally {
+    if (requestId === state.timelineRequestId) {
+      state.timelineLoading = false;
+      updateLoadMoreButton();
+      maybePreloadSearchTargets();
+    }
+  }
+}
+
+async function refreshTimelineFindState(options = {}) {
+  if (!state.selectedSessionId) return;
+  const sessionId = state.selectedSessionId;
+  const targetCount = Math.max(state.currentEvents.length, state.offset, state.limit);
+  if (!targetCount) {
+    await loadTimeline(false, { keepScroll: true, ...options });
+    return;
+  }
+
+  const requestId = state.timelineRequestId + 1;
+  state.timelineRequestId = requestId;
+  state.timelineLoading = true;
+  updateLoadMoreButton();
+  try {
+    const events = [];
+    let total = 0;
+    let searchMatchCount = 0;
+    while (events.length < targetCount) {
+      const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
+        offset: events.length,
+        limit: Math.min(500, targetCount - events.length),
+      })}`);
+      if (requestId !== state.timelineRequestId || sessionId !== state.selectedSessionId) return;
+      total = data.total;
+      searchMatchCount = data.searchMatchCount || 0;
+      events.push(...data.events);
+      if (!data.events.length || events.length >= total) break;
+    }
+    state.currentEvents = events;
+    state.offset = events.length;
+    state.timelineTotal = total;
+    state.timelineSearchMatchCount = searchMatchCount;
+    renderTimeline();
+    refreshSearchSensitiveDetailView();
     renderResultSummary();
     maybePreloadSearchTargets();
   } finally {
@@ -1620,10 +1736,7 @@ function naturalDisplayState(event) {
     return ['event_msg', 'response_item'].includes(event.recordType) ? 'collapsed' : 'summary';
   }
 
-  const q = currentSearchState().q;
-  const profile = q && state.profileId !== 'compact'
-    ? state.profiles.find((candidate) => candidate.id === 'search')
-    : { ...activeProfile(), rules: activeProfileRules() };
+  const profile = { ...activeProfile(), rules: activeProfileRules() };
   return displayStateFromRules(event, profile?.rules || defaultRules());
 }
 
@@ -1876,6 +1989,9 @@ function ensureNavigationEvents() {
 }
 
 function navigationCategoriesForEvent(event, events) {
+  if (navigationApi.navigationCategoriesForEvent) {
+    return navigationApi.navigationCategoriesForEvent(event, events, NAVIGATION_CATEGORIES);
+  }
   return NAVIGATION_CATEGORIES
     .map((category) => ({
       ...category,
@@ -1886,6 +2002,7 @@ function navigationCategoriesForEvent(event, events) {
 
 function defaultNavigationCategoryId(event, categories) {
   const preferred = [
+    event.hasSearchHit ? 'search_hits' : '',
     isUpdatePlanEvent(event) ? 'update_plan' : '',
     event.kind === 'command' && event.status === 'failed' ? 'failed_commands' : '',
     event.kind === 'patch' && event.status === 'success' ? 'patch_applied' : '',
@@ -1899,8 +2016,9 @@ function defaultNavigationCategoryId(event, categories) {
 }
 
 function selectedNavigationCategoryId(event, categories) {
-  if (state.navigationCategoryId && categories.some((category) => category.id === state.navigationCategoryId)) {
-    return state.navigationCategoryId;
+  if (state.navigationCategoryManualId && categories.some((category) => category.id === state.navigationCategoryManualId)) {
+    state.navigationCategoryId = state.navigationCategoryManualId;
+    return state.navigationCategoryManualId;
   }
   const next = defaultNavigationCategoryId(event, categories);
   state.navigationCategoryId = next;
@@ -1993,6 +2111,7 @@ function closeDetailView() {
   state.detailSelectionKey = '';
   state.selectedEventId = '';
   state.navigationCategoryId = '';
+  state.navigationCategoryManualId = '';
   state.detailView = { type: 'profileRules' };
   renderProfileRulesPane();
   updateSelectedTimelineEvent();
@@ -2018,6 +2137,36 @@ function renderCurrentDetailView() {
     return;
   }
   renderProfileRulesPane();
+}
+
+function refreshSearchSensitiveDetailView() {
+  if (state.detailView.type === 'inspector' || state.detailView.type === 'rawRefs') {
+    renderCurrentDetailView();
+  }
+}
+
+async function readFromSelectedEvent() {
+  const anchor = { ...captureFocusAnchor(), detailType: 'inspector' };
+  if (!anchor.hadSelection) return;
+  hideSearchAssist();
+  el.searchInput.value = ['kind', 'status', 'file', 'layer'].reduce(
+    (input, operator) => searchQuery.removeOperator(input, operator),
+    el.searchInput.value,
+  );
+  state.layerId = 'main';
+  el.layerSelect.value = state.layerId;
+  localStorage.setItem('sessionAnalyzer.layer', state.layerId);
+  syncSearchAssistControls();
+  renderSearchAssistChips();
+  state.searchHighlight = { query: '', marks: [], activeIndex: -1 };
+  state.timelineSearchMatchCount = 0;
+  updateSearchMatchControls();
+  updateProfileApplicabilityUi();
+  await loadSessions();
+  const restored = await restoreFocus(anchor);
+  setMobileView('events');
+  if (restored?.id) scrollToTimelineEvent(restored.id);
+  updateMetricActionStates();
 }
 
 function renderDetailShell({ title, subtitle = '', actions = '', body = '', closeable = true, backable = state.detailHistory.length > 0, headerClass = '' }) {
@@ -2050,6 +2199,7 @@ function renderProfileRulesPane() {
   state.detailSelectionKey = '';
   state.selectedEventId = '';
   state.navigationCategoryId = '';
+  state.navigationCategoryManualId = '';
   setMobileView('detail', { scroll: false });
   updateSelectedTimelineEvent();
   if (!profileAppliesToActiveLayer()) {
@@ -2200,7 +2350,7 @@ function showInspector(event, options = {}) {
   }
   renderDetailShell({
     title: event.label,
-    actions: renderInspectorNavigation(event),
+    actions: [renderReadFromHereAction(), renderInspectorNavigation(event)].filter(Boolean).join(''),
     body: `<div class="inspector">
     <div class="chips">${chips}</div>
     ${preview ? `<section class="inspectorSection"><h3>Preview</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
@@ -2240,7 +2390,7 @@ async function showRaw(event, options = {}) {
     renderDetailShell({
       title: 'Raw refs',
       subtitle: `${event.label} | ${event.layer || layer} | ${event.kind}`,
-      actions: '<button class="smallBtn" type="button" data-detail-action="inspect">Inspect event</button>',
+      actions: [renderReadFromHereAction(), '<button class="smallBtn" type="button" data-detail-action="inspect">Inspect event</button>'].filter(Boolean).join(''),
       body: `<div class="rawRefsView">
       <div class="notice warning"><p>No raw source rows are available for this event.</p></div>
     </div>`,
@@ -2252,7 +2402,7 @@ async function showRaw(event, options = {}) {
   renderDetailShell({
     title: 'Raw refs',
     subtitle: `${event.label} | ${event.layer || layer} | ${event.kind}`,
-    actions: '<button class="smallBtn" type="button" data-detail-action="inspect">Inspect event</button>',
+    actions: [renderReadFromHereAction(), '<button class="smallBtn" type="button" data-detail-action="inspect">Inspect event</button>'].filter(Boolean).join(''),
     body: `<div class="rawRefsView">
     <p class="rawMeta">${escapeHtml(`${refs.length} JSONL row${refs.length === 1 ? '' : 's'} for ${event.id}`)}</p>
     ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(raw.file)}:${raw.line}</p><pre>${escapeHtml(JSON.stringify(raw.parsed, null, 2) || raw.raw)}</pre></section>`).join('')}
@@ -2498,6 +2648,10 @@ el.detail.addEventListener('click', (event) => {
     changeLayer('main').catch(showError);
     return;
   }
+  if (action === 'read-from-here') {
+    readFromSelectedEvent().catch(showError);
+    return;
+  }
   if (action === 'navigate-event') {
     navigateSelectedEvent(event.target.closest('[data-nav-direction]')?.dataset.navDirection || '').catch(showError);
     return;
@@ -2553,6 +2707,7 @@ el.detail.addEventListener('change', (event) => {
   const select = event.target.closest('[data-navigation-category]');
   if (!select) return;
   state.navigationCategoryId = select.value;
+  state.navigationCategoryManualId = select.value;
   const item = currentSelectedEvent();
   if (item) showInspector(item, { replace: true });
 });
@@ -2623,6 +2778,9 @@ const reload = debounce(() => {
   if (state.detailView.type === 'profileRules') renderProfileRulesPane();
   loadSessions().catch(showError);
 }, 220);
+const refreshFind = debounce(() => {
+  refreshTimelineFindState().catch(showError);
+}, SEARCH_HIGHLIGHT_INPUT_DELAY_MS);
 
 el.searchInput.addEventListener('focus', showSearchAssist);
 el.searchInput.addEventListener('keydown', (event) => {
@@ -2643,10 +2801,27 @@ el.searchInput.addEventListener('input', () => {
   state.searchHighlight = { query: currentSearchState().q, marks: [], activeIndex: -1 };
   state.timelineSearchMatchCount = 0;
   updateSearchMatchControls();
-  scheduleSearchHighlightRefresh({ allowPreload: false });
-  reload();
+  scheduleSearchHighlightRefresh({ allowPreload: false, syncDetail: true });
+  const nextStructureKey = structuredSearchKey();
+  const structureChanged = state.searchStructureKey && state.searchStructureKey !== nextStructureKey;
+  state.searchStructureKey = nextStructureKey;
+  if (structureChanged) {
+    refreshFind.cancel();
+    reload();
+  } else {
+    refreshFind();
+  }
 });
-el.searchInput.addEventListener('change', reload);
+el.searchInput.addEventListener('change', () => {
+  const nextStructureKey = structuredSearchKey();
+  if (nextStructureKey !== state.searchStructureKey) {
+    state.searchStructureKey = nextStructureKey;
+    refreshFind.cancel();
+    reload();
+  } else {
+    refreshFind();
+  }
+});
 
 el.searchAssist?.addEventListener('click', (event) => {
   const clear = event.target.closest('[data-clear-filter]')?.dataset.clearFilter;
