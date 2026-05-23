@@ -28,6 +28,19 @@
 {"timestamp":"2026-04-20T01:00:15.100Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"<proposed_plan>\n# Alpha parser plan\nUse a safer branch.\n</proposed_plan>"}]}}
 {"timestamp":"2026-04-20T01:00:15.200Z","type":"response_item","payload":{"type":"function_call","name":"update_plan","call_id":"call-plan-update","arguments":"{\"plan\":[{\"step\":\"Inspect parser\",\"status\":\"completed\"},{\"step\":\"Patch regression\",\"status\":\"in_progress\"}]}"}}
 {"timestamp":"2026-04-20T01:00:15.300Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-plan-update","output":"Plan updated"}}
+{"timestamp":"2026-04-20T01:00:15.350Z","type":"event_msg","payload":{"type":"session_configured","thread_id":"thread-1","thread_name":"configured fixture title","cwd":"G:\\vibe\\term-agent","model":"gpt-5.1"}}
+{"timestamp":"2026-04-20T01:00:15.360Z","type":"event_msg","payload":{"type":"thread_goal_updated","thread_id":"thread-1","thread_goal":"Keep protocol coverage readable."}}
+{"timestamp":"2026-04-20T01:00:15.370Z","type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-alias","model_context_window":200000}}
+{"timestamp":"2026-04-20T01:00:15.380Z","type":"event_msg","payload":{"type":"plan_update","turn_id":"turn-1","explanation":"Protocol plan update fixture","plan":[{"step":"Cover protocol plan updates","status":"completed"},{"step":"Verify folding","status":"in_progress"}]}}
+{"timestamp":"2026-04-20T01:00:15.390Z","type":"event_msg","payload":{"type":"plan_delta","turn_id":"turn-1","delta":{"step":"Verify folding","status":"completed"}}}
+{"timestamp":"2026-04-20T01:00:15.400Z","type":"event_msg","payload":{"type":"warning","turn_id":"turn-1","message":"Protocol warning fixture"}}
+{"timestamp":"2026-04-20T01:00:15.410Z","type":"event_msg","payload":{"type":"guardian_warning","turn_id":"turn-1","message":"Guardian warning fixture"}}
+{"timestamp":"2026-04-20T01:00:15.420Z","type":"event_msg","payload":{"type":"stream_error","turn_id":"turn-1","message":"Stream error fixture"}}
+{"timestamp":"2026-04-20T01:00:15.430Z","type":"event_msg","payload":{"type":"exec_command_begin","call_id":"call-shell-begin-only","turn_id":"turn-1","command":["powershell.exe","-Command","npm run watch"],"cwd":"G:\\vibe\\term-agent","status":"in_progress"}}
+{"timestamp":"2026-04-20T01:00:15.440Z","type":"event_msg","payload":{"type":"exec_command_declined","call_id":"call-shell-declined","turn_id":"turn-1","command":["powershell.exe","-Command","git commit"],"cwd":"G:\\vibe\\term-agent","status":"declined","reason":"user declined escalation"}}
+{"timestamp":"2026-04-20T01:00:15.450Z","type":"event_msg","payload":{"type":"patch_apply_begin","call_id":"call-patch-begin-only","turn_id":"turn-1","patch":"*** Begin Patch\n*** Update File: src/incomplete.js\n@@\n-old\n+new\n*** End Patch","status":"in_progress"}}
+{"timestamp":"2026-04-20T01:00:15.460Z","type":"event_msg","payload":{"type":"patch_apply_declined","call_id":"call-patch-declined","turn_id":"turn-1","patch":"*** Begin Patch\n*** Update File: src/declined.js\n@@\n-old\n+new\n*** End Patch","status":"declined","reason":"user declined patch"}}
+{"timestamp":"2026-04-20T01:00:15.470Z","type":"event_msg","payload":{"type":"mcp_tool_call_begin","call_id":"call-mcp-begin-only","turn_id":"turn-1","tool_name":"mcp__fixture__lookup","arguments":{"query":"fixture"},"status":"in_progress"}}
 {"timestamp":"2026-04-20T01:00:16.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"call-patch-old","input":"*** Begin Patch\n*** Update File: src/legacy.js\n@@\n-old\n+new\n*** End Patch"}}
 {"timestamp":"2026-04-20T01:00:16.100Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-patch-old","output":"{\"output\":\"Success. Updated the following files:\\nM G:\\\\vibe\\\\term-agent\\\\src\\\\legacy.js\\n\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":0.2}}"}}
 {"timestamp":"2026-04-20T01:00:16.200Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"call-patch-stats","input":"*** Begin Patch\n*** Update File: src/stats.js\n@@\n-old\n+new\n+extra\n*** End Patch"}}
@@ -37,6 +50,7 @@
 {"timestamp":"2026-04-20T01:00:16.450Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-patch-failed","output":"apply_patch verification failed: Failed to find expected lines in G:\\vibe\\term-agent\\src\\failed.js:\nbefore"}}
 {"timestamp":"2026-04-20T01:00:17.000Z","type":"response_item","payload":{"type":"reasoning","summary":[],"content":{"ignored":true}}}
 {"timestamp":"2026-04-20T01:00:18.000Z","type":"event_msg","payload":{"type":"context_compacted"}}
+{"timestamp":"2026-04-20T01:00:18.500Z","type":"event_msg","payload":{"type":"turn_complete","turn_id":"turn-alias","last_agent_message":"Alias done."}}
 {"timestamp":"2026-04-20T01:00:19.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":"Done."}}
 {"timestamp":"2026-04-20T01:00:20.000Z","type":"event_msg","payload":{"type":"entered_review_mode","target":{"type":"uncommittedChanges"},"user_facing_hint":"current changes"}}
 {"timestamp":"2026-04-20T01:00:22.000Z","type":"event_msg","payload":{"type":"exited_review_mode","review_output":{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"No findings."}}}

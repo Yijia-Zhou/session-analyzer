@@ -39,7 +39,7 @@ The parser does not need to model every field in these families. It should extra
 
 解析器不需要建模这些事件族中的每个字段。它只应提取面向用户摘要、搜索、分组和结构化详情所需的字段；其他内容继续以原始 JSON 作为事实来源。
 
-## Current Coverage Notes / 当前覆盖记录
+## Implemented Coverage Notes / 已实现覆盖记录
 
 - Existing parser behavior already matches the right compatibility posture: unknown `event_msg` rows fall back to protocol/raw visibility instead of being rejected. / 现有解析行为已经符合正确的兼容姿态：未知 `event_msg` 行会回退到 protocol/raw 可见性，而不是被拒绝。
 - `task_started` and `task_complete` are current v1 wire names. Upstream also accepts `turn_started` and `turn_complete` as aliases, so the viewer should normalize both aliases into the same lifecycle behavior. / `task_started` 和 `task_complete` 是当前 v1 wire 名称。上游也接受 `turn_started` 和 `turn_complete` 作为别名，因此查看器应把这两个别名归一到相同生命周期行为。
@@ -47,6 +47,10 @@ The parser does not need to model every field in these families. It should extra
 - Warning-like events should not be treated as neutral protocol noise when they communicate user-visible risk. `warning`, `guardian_warning`, and `stream_error` should surface warning/error severity, while `deprecation_notice` can remain protocol unless it affects the user's current work. / 当 warning 类事件传达用户可见风险时，不应把它们当作中性协议噪声。`warning`、`guardian_warning` 和 `stream_error` 应暴露 warning/error 严重级别；`deprecation_notice` 可继续留在 protocol，除非它影响用户当前工作。
 - Plan events currently arrive through both tool-call-shaped `update_plan` records and protocol-shaped `plan_update` / `plan_delta` records. Planning metrics and reading filters should count both plan artifacts and these plan update events. / 计划事件当前可能通过工具调用形态的 `update_plan` 记录和协议形态的 `plan_update` / `plan_delta` 记录出现。计划指标和阅读筛选应同时统计 plan artifact 和这些 plan update 事件。
 - Tool operations should prefer complete end events when present, but begin/update/delta rows must remain readable for incomplete or interrupted transcripts. Status values such as `declined` should not be inferred as success only because an exit code is absent. / 工具操作在存在完整 end 事件时应优先使用 end 事件，但 begin/update/delta 行必须在不完整或中断转录中保持可读。`declined` 等状态不应仅因为缺少 exit code 就被推断为成功。
+
+The 2026-05-21 implementation covers these notes with focused synthetic fixtures: lifecycle aliases are routed through the same lifecycle placement as task events; `session_configured` contributes current title and cwd/project metadata without overriding first-`session_meta` identity; `thread_goal_updated` remains goal metadata; `warning`, `guardian_warning`, and `stream_error` surface main-layer severity; `plan_update` and `plan_delta` become planning events; and tool-family begin/declined/incomplete rows are grouped by `call_id` when present.
+
+2026-05-21 的实现已用聚焦合成 fixture 覆盖上述记录：生命周期别名走与 task 事件相同的生命周期归属；`session_configured` 补充当前标题和 cwd/project metadata，但不覆盖第一条 `session_meta` 身份；`thread_goal_updated` 保持为 goal metadata；`warning`、`guardian_warning` 和 `stream_error` 暴露到 main 层并带严重级别；`plan_update` 和 `plan_delta` 成为计划事件；工具族 begin/declined/incomplete 行在存在 `call_id` 时按调用分组。
 
 ## Maintenance Rules / 维护规则
 
@@ -62,9 +66,5 @@ When Codex protocol changes or real transcripts expose new event shapes:
 
 ## Follow-up Candidates / 后续候选工作
 
-- Normalize lifecycle aliases: `turn_started` -> `task_started`, `turn_complete` -> `task_complete`. / 归一化生命周期别名：`turn_started` -> `task_started`，`turn_complete` -> `task_complete`。
-- Add `session_configured` metadata extraction for title, cwd, parent id, model, and thread source without replacing the established first-`session_meta` identity rule. / 为 `session_configured` 增加标题、cwd、父 id、model 和 thread source 元数据提取，但不替换既有的第一条 `session_meta` 身份规则。
-- Add `thread_goal_updated` display metadata using `goal.objective`, `goal.status`, token budget, tokens used, and time used. / 为 `thread_goal_updated` 增加展示元数据，使用 `goal.objective`、`goal.status`、token budget、tokens used 和 time used。
-- Surface warning/error variants with meaningful severity and details. / 以有意义的严重级别和详情展示 warning/error 类 variant。
-- Treat `plan_update` and `plan_delta` as planning events for metrics, filters, and detail rendering. / 在指标、筛选和详情渲染中把 `plan_update` 和 `plan_delta` 作为计划事件处理。
-- Improve tool-family coverage for begin/update/delta/declined shapes across exec, patch, MCP, image generation, dynamic tools, approvals, hooks, and collaboration. / 改进 exec、patch、MCP、图像生成、dynamic tools、approval、hook 和协作中 begin/update/delta/declined 形态的工具事件覆盖。
+- Broaden `thread_goal_updated` field-specific presentation if real transcripts expose nested goal objects beyond the current flat preview/detail fixture. / 如果真实转录暴露出超过当前扁平预览/详情 fixture 的嵌套 goal object，再扩展 `thread_goal_updated` 的字段级展示。
+- Add more real-data fixtures for newly observed MCP, dynamic tool, hook, approval, image generation, or collaboration payload variants; current behavior keeps them readable but intentionally does not model every payload field. / 为新观察到的 MCP、dynamic tool、hook、approval、图像生成或协作 payload variant 增加更多真实数据 fixture；当前行为保持它们可读，但有意不建模每个 payload 字段。

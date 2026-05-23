@@ -59,6 +59,8 @@ const PROTOCOL_LABELS = Object.freeze({
   developer_instruction: 'Developer instruction',
   developer_permissions: 'Developer permissions',
   environment_context: 'Environment context',
+  session_configured: 'Session configured',
+  thread_goal_updated: 'Thread goal updated',
   image_wrapper: 'Image attachment wrapper',
   meta_block: 'Protocol metadata block',
   session_meta: 'Session metadata',
@@ -68,6 +70,57 @@ const PROTOCOL_LABELS = Object.freeze({
   turn_context: 'Turn context',
   user_shell_command: 'User shell command',
 });
+
+const CANONICAL_EVENT_TYPES = Object.freeze({
+  turn_started: 'task_started',
+  turn_complete: 'task_complete',
+});
+
+const TOOL_EVENT_TYPES = new Set([
+  'exec_command_begin',
+  'exec_command_update',
+  'exec_command_delta',
+  'exec_command_end',
+  'exec_command_declined',
+  'patch_apply_begin',
+  'patch_apply_update',
+  'patch_apply_delta',
+  'patch_apply_end',
+  'patch_apply_declined',
+  'mcp_tool_call_begin',
+  'mcp_tool_call_update',
+  'mcp_tool_call_delta',
+  'mcp_tool_call_end',
+  'mcp_tool_call_declined',
+  'image_generation_call_begin',
+  'image_generation_call_update',
+  'image_generation_call_delta',
+  'image_generation_call_end',
+  'image_generation_call_declined',
+  'dynamic_tool_call_begin',
+  'dynamic_tool_call_update',
+  'dynamic_tool_call_delta',
+  'dynamic_tool_call_end',
+  'dynamic_tool_call_declined',
+  'approval_request_begin',
+  'approval_request_end',
+  'approval_request_declined',
+  'hook_begin',
+  'hook_end',
+  'hook_declined',
+  'collab_agent_spawn_begin',
+  'collab_agent_spawn_end',
+  'collab_agent_interaction_begin',
+  'collab_agent_interaction_end',
+  'collab_waiting_begin',
+  'collab_waiting_end',
+  'collab_close_begin',
+  'collab_close_end',
+]);
+
+function canonicalEventType(type) {
+  return CANONICAL_EVENT_TYPES[type] || type || '';
+}
 
 function flattenText(value, budget = 8000) {
   const parts = [];
@@ -920,7 +973,8 @@ async function discoverProjects({ codexHome }) {
       if (!line.trim()) continue;
       const record = safeJsonParse(line);
       if (!record) continue;
-      const cwd = record.type === 'session_meta' ? record.payload?.cwd : '';
+      const payloadType = record.type === 'event_msg' ? record.payload?.type : '';
+      const cwd = record.type === 'session_meta' || payloadType === 'session_configured' ? record.payload?.cwd : '';
       if (cwd) cwdSet.add(path.resolve(cwd));
       if (cwdSet.size || lineNumber >= PROJECT_DISCOVERY_LINE_LIMIT) {
         rl.close();
@@ -1047,10 +1101,11 @@ function makeRawEvent(record, lineNumber, relFile, sessionId) {
     turnId: payload.turn_id || '',
     recordType: record.type || '',
     payloadType: payload.type || '',
+    canonicalType: canonicalEventType(payload.type || ''),
     role: payload.role || '',
     typeKey: `${record.type}:${payload.type || ''}:${payload.role || ''}`,
-    callId: payload.call_id || '',
-    toolName: payload.name || '',
+    callId: payload.call_id || payload.callId || '',
+    toolName: payload.name || payload.tool_name || payload.tool || '',
     status: payload.status || '',
     messageText: '',
     searchText: '',
@@ -1121,38 +1176,80 @@ function makeRawEvent(record, lineNumber, relFile, sessionId) {
         raw.searchText = raw.messageText;
         return raw;
       case 'exec_command_end':
+      case 'exec_command_begin':
+      case 'exec_command_update':
+      case 'exec_command_delta':
+      case 'exec_command_declined':
         raw.commandText = commandToText(payload.command);
         raw.stdout = String(payload.stdout || '');
         raw.stderr = String(payload.stderr || '');
         raw.aggregatedOutput = String(payload.aggregated_output || '');
         raw.exitCode = Number.isFinite(Number(payload.exit_code)) ? Number(payload.exit_code) : null;
         raw.durationMs = durationMs(payload.duration);
-        raw.preview = truncate(raw.commandText || 'exec_command_end');
+        raw.preview = truncate(raw.commandText || payload.reason || payload.type);
         raw.searchText = [raw.commandText, raw.stdout, raw.stderr, raw.aggregatedOutput, payload.formatted_output || ''].join('\n');
         return raw;
       case 'patch_apply_end':
+      case 'patch_apply_begin':
+      case 'patch_apply_update':
+      case 'patch_apply_delta':
+      case 'patch_apply_declined':
         raw.touchedFiles = payload.changes && typeof payload.changes === 'object' ? Object.keys(payload.changes) : [];
-        raw.preview = truncate(raw.touchedFiles.join(', ') || String(payload.stdout || payload.stderr || 'patch_apply_end'));
-        raw.searchText = [raw.touchedFiles.join('\n'), payload.stdout || '', payload.stderr || ''].join('\n');
+        raw.output = String(payload.patch || payload.input || payload.diff || '');
+        raw.preview = truncate(raw.touchedFiles.join(', ') || raw.output || String(payload.stdout || payload.stderr || payload.reason || payload.type));
+        raw.searchText = [raw.touchedFiles.join('\n'), raw.output, payload.stdout || '', payload.stderr || '', payload.reason || ''].join('\n');
         return raw;
       case 'token_count':
         raw.preview = truncate(formatTokenUsagePreview(payload) || flattenText(payload, 12000) || payload.type);
         raw.searchText = [tokenUsageSearchText(payload), flattenText(payload, 16000)].filter(Boolean).join('\n');
         return raw;
       case 'mcp_tool_call_end':
+      case 'mcp_tool_call_begin':
+      case 'mcp_tool_call_update':
+      case 'mcp_tool_call_delta':
+      case 'mcp_tool_call_declined':
+      case 'image_generation_call_begin':
+      case 'image_generation_call_update':
+      case 'image_generation_call_delta':
+      case 'image_generation_call_end':
+      case 'image_generation_call_declined':
+      case 'dynamic_tool_call_begin':
+      case 'dynamic_tool_call_update':
+      case 'dynamic_tool_call_delta':
+      case 'dynamic_tool_call_end':
+      case 'dynamic_tool_call_declined':
+      case 'approval_request_begin':
+      case 'approval_request_end':
+      case 'approval_request_declined':
+      case 'hook_begin':
+      case 'hook_end':
+      case 'hook_declined':
       case 'web_search_end':
       case 'context_compacted':
       case 'turn_aborted':
       case 'thread_rolled_back':
       case 'error':
       case 'collab_agent_spawn_end':
+      case 'collab_agent_spawn_begin':
       case 'collab_agent_interaction_end':
+      case 'collab_agent_interaction_begin':
       case 'collab_waiting_end':
+      case 'collab_waiting_begin':
       case 'collab_close_end':
+      case 'collab_close_begin':
       case 'task_started':
       case 'task_complete':
+      case 'turn_started':
+      case 'turn_complete':
       case 'item_completed':
       case 'thread_name_updated':
+      case 'thread_goal_updated':
+      case 'session_configured':
+      case 'warning':
+      case 'guardian_warning':
+      case 'stream_error':
+      case 'plan_update':
+      case 'plan_delta':
         raw.preview = truncate(flattenText(payload, 12000) || payload.type);
         raw.searchText = flattenText(payload, 16000);
         return raw;
@@ -1202,7 +1299,7 @@ function numericExitCode(...values) {
   for (const value of values) {
     if (isFiniteNumberValue(value)) return Number(value);
   }
-  return 0;
+  return null;
 }
 
 function patchFilesFromPatchInput(input) {
@@ -1238,6 +1335,8 @@ function patchOutputHasSuccess(text) {
 }
 
 function inferPatchSuccess(patchEnd, customOutputObj, rawOutput) {
+  const explicitStatus = String(patchEnd?.status || customOutputObj?.metadata?.status || '').toLowerCase();
+  if (explicitStatus === 'failed' || explicitStatus === 'declined') return false;
   if (patchEnd) return Boolean(patchEnd.parsed.payload.success);
   const exitCode = customOutputObj?.metadata?.exit_code;
   if (isFiniteNumberValue(exitCode)) return Number(exitCode) === 0;
@@ -1293,6 +1392,12 @@ function protocolPreviewFor(raw, subtype) {
 
   if (subtype === 'session_meta') {
     return payloadPreview(raw.parsed?.payload, ['id', 'cwd', 'originator']) || raw.preview;
+  }
+  if (subtype === 'session_configured') {
+    return payloadPreview(raw.parsed?.payload, ['thread_name', 'cwd', 'model']) || raw.preview;
+  }
+  if (subtype === 'thread_goal_updated') {
+    return truncate(firstNonEmpty(raw.parsed?.payload?.thread_goal, raw.parsed?.payload?.goal, raw.preview, 'Thread goal updated'));
   }
   if (subtype === 'turn_context') {
     return payloadPreview(raw.parsed?.payload, ['turn_id', 'cwd', 'model']) || raw.preview;
@@ -1472,6 +1577,7 @@ function extractPlanSections(raws) {
   const planText = stripProposedPlanWrapper(firstNonEmpty(
     raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'message')?.messageText,
     raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'item_completed')?.parsed?.payload?.item?.text,
+    raws.find((raw) => raw.recordType === 'event_msg' && ['plan_update', 'plan_delta'].includes(raw.payloadType)) ? planUpdateText(raws.find((raw) => raw.recordType === 'event_msg' && ['plan_update', 'plan_delta'].includes(raw.payloadType))) : '',
   ));
   maybePushMarkdownSection(sections, 'Plan', planText);
   hideSectionTitle(sections[0]);
@@ -1484,14 +1590,15 @@ function extractCommandSections(raws, event) {
   const functionCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');
   const functionOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
   const execEnd = raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'exec_command_end');
+  const execAny = execEnd || raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('exec_command_'));
   const args = commandArgsFromRaw(functionCall);
   const formatted = parseFormattedCommandOutput(functionOutput?.output);
-  const commandText = execEnd?.commandText || commandToText(args?.command);
+  const commandText = execAny?.commandText || commandToText(args?.command);
   maybePushCodeSection(sections, 'Command', commandText, 'shell');
 
   maybePushKvSection(sections, 'Command metadata', [
-    { key: 'cwd', value: String(execEnd?.parsed?.payload?.cwd || args?.workdir || '') },
-    { key: 'status', value: String(event.status || execEnd?.status || '') },
+    { key: 'cwd', value: String(execAny?.parsed?.payload?.cwd || args?.workdir || '') },
+    { key: 'status', value: String(event.status || execAny?.status || '') },
     { key: 'exitCode', value: event.outputStats.exitCode == null ? '' : String(event.outputStats.exitCode) },
     { key: 'durationMs', value: event.outputStats.durationMs == null ? '' : String(event.outputStats.durationMs) },
   ]);
@@ -1501,7 +1608,7 @@ function extractCommandSections(raws, event) {
   }
 
   const stdout = firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, execEnd?.parsed?.payload?.formatted_output, formatted?.output);
-  const stderr = execEnd?.stderr || '';
+  const stderr = execEnd?.stderr || execAny?.stderr || '';
   maybePushTerminalSection(sections, 'stdout', stdout, 'stdout');
   maybePushTerminalSection(sections, 'stderr', stderr, 'stderr');
 
@@ -1518,8 +1625,9 @@ function extractPatchSections(raws, event) {
   const customCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call');
   const customOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output');
   const patchEnd = raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'patch_apply_end');
+  const patchAny = patchEnd || raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('patch_apply_'));
   const envelope = toolOutputEnvelope(customOutput);
-  const patchText = customCall?.output || '';
+  const patchText = customCall?.output || patchAny?.output || '';
   if (patchText.trim()) sections.push({ type: 'diff', title: 'Patch', text: patchText.trim() });
 
   const patchFileEntries = diffStatsEntries(patchEnd?.parsed?.payload?.changes);
@@ -1531,8 +1639,8 @@ function extractPatchSections(raws, event) {
 
   const noticeText = firstNonEmpty(
     envelope?.output,
-    patchEnd?.parsed?.payload?.stdout,
-    patchEnd?.parsed?.payload?.stderr,
+    patchAny?.parsed?.payload?.stdout,
+    patchAny?.parsed?.payload?.stderr,
     event.status ? `Patch ${event.status}.` : '',
   );
   if (noticeText) {
@@ -1647,10 +1755,10 @@ function extractProtocolSections(event, raws) {
     hideSectionTitle(sections[0]);
     return sections;
   }
-  if (event.subtype === 'environment_context' || event.subtype === 'session_meta' || event.subtype === 'turn_context') {
+  if (event.subtype === 'environment_context' || event.subtype === 'session_meta' || event.subtype === 'session_configured' || event.subtype === 'thread_goal_updated' || event.subtype === 'turn_context') {
     const entries = event.subtype === 'environment_context'
       ? taggedBlockEntries(primary.messageText)
-      : toKvEntries(primary.parsed?.payload, ['cwd', 'turn_id', 'model', 'id', 'originator']);
+      : toKvEntries(primary.parsed?.payload, ['cwd', 'turn_id', 'model', 'id', 'originator', 'thread_id', 'thread_name', 'thread_goal', 'goal']);
     maybePushKvSection(sections, 'Protocol fields', entries);
     sections.push(makeRawJsonSection('Protocol raw JSON', primary.parsed));
     return sections;
@@ -1882,6 +1990,7 @@ function extractLogicalDetailSections(event, raws) {
     case 'assistant_message':
       return extractConversationSections(raws);
     case 'plan_artifact':
+    case 'plan_update':
       return extractPlanSections(raws);
     case 'reasoning':
       return extractReasoningSections(raws);
@@ -1903,6 +2012,7 @@ function extractLogicalDetailSections(event, raws) {
     case 'abort':
     case 'rollback':
     case 'error':
+    case 'warning':
     case 'subagent':
     case 'review':
     case 'turn':
@@ -1990,11 +2100,20 @@ function buildToolLogicalEvent(callId, group) {
   const functionOutput = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
   const customCall = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call');
   const customOutput = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output');
-  const execEnd = group.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'exec_command_end');
-  const patchEnd = group.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'patch_apply_end');
-  const mcpEnd = group.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'mcp_tool_call_end');
+  const execRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('exec_command_'));
+  const patchRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('patch_apply_'));
+  const mcpRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('mcp_tool_call_'));
+  const imageRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('image_generation_call_'));
+  const dynamicRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('dynamic_tool_call_'));
+  const approvalRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('approval_request_'));
+  const hookRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('hook_'));
+  const collabRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('collab_'));
+  const execEnd = execRows.find((raw) => raw.payloadType === 'exec_command_end');
+  const patchEnd = patchRows.find((raw) => raw.payloadType === 'patch_apply_end');
+  const mcpEnd = mcpRows.find((raw) => raw.payloadType === 'mcp_tool_call_end');
 
-  const toolName = customCall?.toolName || functionCall?.toolName || '';
+  const protocolToolName = group.find((raw) => raw.toolName)?.toolName || '';
+  const toolName = customCall?.toolName || functionCall?.toolName || protocolToolName || '';
   const functionOutputInfo = parseFormattedCommandOutput(functionOutput?.output);
   const customOutputObj = parseOutputEnvelope(customOutput?.output);
 
@@ -2007,38 +2126,53 @@ function buildToolLogicalEvent(callId, group) {
   const outputStats = {};
   const parts = [];
 
-  if (execEnd) {
-    parts.push(execEnd.commandText, execEnd.stdout, execEnd.stderr, execEnd.aggregatedOutput);
-    outputStats.exitCode = execEnd.exitCode;
-    outputStats.durationMs = execEnd.durationMs;
+  const protocolStatus = String(group.find((raw) => raw.status)?.status || '').toLowerCase();
+  const declined = group.some((raw) => /_declined$/.test(raw.payloadType) || String(raw.status || '').toLowerCase() === 'declined');
+  const failed = group.some((raw) => String(raw.status || '').toLowerCase() === 'failed');
+  const completed = group.some((raw) => /_end$/.test(raw.payloadType)) || Boolean(functionOutput || customOutput);
+  const explicitIncomplete = !completed && !failed && !declined;
+
+  if (execRows.length) {
+    const execText = execRows.map((raw) => [raw.commandText, raw.stdout, raw.stderr, raw.aggregatedOutput, raw.searchText].filter(Boolean).join('\n')).join('\n');
+    parts.push(execText);
+    if (execEnd?.exitCode != null) outputStats.exitCode = execEnd.exitCode;
+    if (execEnd?.durationMs) outputStats.durationMs = execEnd.durationMs;
   }
   if (functionCall) parts.push(functionCall.output);
   if (functionOutput) parts.push(functionOutput.output);
   if (customCall) parts.push(customCall.output);
   if (customOutput) parts.push(customOutput.output);
-  if (mcpEnd) parts.push(mcpEnd.searchText);
+  if (mcpRows.length) parts.push(mcpRows.map((raw) => raw.searchText).join('\n'));
+  if (imageRows.length) parts.push(imageRows.map((raw) => raw.searchText).join('\n'));
+  if (dynamicRows.length) parts.push(dynamicRows.map((raw) => raw.searchText).join('\n'));
+  if (approvalRows.length) parts.push(approvalRows.map((raw) => raw.searchText).join('\n'));
+  if (hookRows.length) parts.push(hookRows.map((raw) => raw.searchText).join('\n'));
+  if (collabRows.length) parts.push(collabRows.map((raw) => raw.searchText).join('\n'));
 
-  if (toolName === 'shell_command' || execEnd) {
+  if (toolName === 'shell_command' || execRows.length) {
     kind = 'command';
     const args = commandArgsFromRaw(functionCall);
     const exitCode = numericExitCode(execEnd?.exitCode, functionOutputInfo?.exitCode, customOutputObj?.metadata?.exit_code);
-    label = exitCode === 0 ? 'Command' : 'Failed command';
-    preview = truncate(execEnd?.commandText || commandToText(args?.command) || functionCall?.output || 'shell command');
-    status = exitCode === 0 ? 'success' : 'failed';
-    severity = exitCode === 0 ? 'normal' : 'error';
-    outputStats.exitCode = exitCode;
+    const commandText = execRows.find((raw) => raw.commandText)?.commandText || commandToText(args?.command);
+    status = declined ? 'declined' : failed || (exitCode != null && exitCode !== 0) ? 'failed' : exitCode === 0 ? 'success' : explicitIncomplete ? 'incomplete' : protocolStatus || 'completed';
+    severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
+    label = status === 'failed' ? 'Failed command' : status === 'declined' ? 'Declined command' : status === 'incomplete' ? 'Incomplete command' : 'Command';
+    preview = truncate(commandText || functionCall?.output || group.find((raw) => raw.preview)?.preview || 'shell command');
+    if (exitCode != null) outputStats.exitCode = exitCode;
     if (!outputStats.durationMs && customOutputObj?.metadata?.duration_seconds) {
       outputStats.durationMs = Math.round(Number(customOutputObj.metadata.duration_seconds) * 1000);
     }
     touchedFiles = touchFilesFromOutputText(firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, functionOutputInfo?.output));
-  } else if (toolName === 'apply_patch' || patchEnd) {
+  } else if (toolName === 'apply_patch' || patchRows.length) {
     kind = 'patch';
-    touchedFiles = patchEnd?.touchedFiles?.length ? patchEnd.touchedFiles : patchFilesFromPatchInput(customCall?.output || '');
+    const patchInput = firstNonEmpty(customCall?.output, patchRows.find((raw) => raw.output)?.output);
+    touchedFiles = patchEnd?.touchedFiles?.length ? patchEnd.touchedFiles : patchFilesFromPatchInput(patchInput || '');
     const patchSuccess = inferPatchSuccess(patchEnd, customOutputObj, customOutput?.output);
-    status = patchSuccess ? 'success' : 'failed';
+    status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : patchSuccess ? 'success' : 'failed';
     severity = patchSuccess ? 'normal' : 'error';
-    label = patchSuccess ? 'Patch applied' : 'Patch failed';
-    preview = truncate(touchedFiles.join(', ') || customOutputObj?.output || customCall?.output || 'apply_patch');
+    if (status === 'declined' || status === 'incomplete') severity = 'warning';
+    label = status === 'success' ? 'Patch applied' : status === 'declined' ? 'Patch declined' : status === 'incomplete' ? 'Incomplete patch' : 'Patch failed';
+    preview = truncate(touchedFiles.join(', ') || customOutputObj?.output || patchInput || group.find((raw) => raw.preview)?.preview || 'apply_patch');
     if (customOutputObj?.metadata && isFiniteNumberValue(customOutputObj.metadata.exit_code)) {
       outputStats.exitCode = Number(customOutputObj.metadata.exit_code);
     } else if (!patchSuccess) {
@@ -2056,12 +2190,19 @@ function buildToolLogicalEvent(callId, group) {
     preview = truncate(customCall?.output || customOutputObj?.output || 'js_repl');
     outputStats.exitCode = exitCode;
     outputStats.durationMs = execEnd?.durationMs || Math.round(Number(customOutputObj?.metadata?.duration_seconds || 0) * 1000);
-  } else if (mcpEnd || toolName.startsWith('mcp__')) {
+  } else if (mcpRows.length || toolName.startsWith('mcp__')) {
     kind = 'mcp';
     label = 'MCP tool';
-    preview = truncate(mcpEnd?.preview || toolName);
-    status = 'success';
+    preview = truncate(mcpEnd?.preview || group.find((raw) => raw.preview)?.preview || toolName);
+    status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
+    severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
     outputStats.durationMs = mcpEnd?.durationMs || 0;
+  } else if (imageRows.length || dynamicRows.length || approvalRows.length || hookRows.length || collabRows.length) {
+    kind = 'tool_operation';
+    label = humanizeProtocolSubtype(group.find((raw) => raw.payloadType)?.payloadType || toolName || 'Tool operation');
+    preview = truncate(group.find((raw) => raw.preview)?.preview || toolName || label);
+    status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
+    severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
   } else if (toolName === 'request_user_input' || toolName === 'update_plan' || toolName === 'view_image' || toolName === 'spawn_agent' || toolName === 'wait_agent' || toolName === 'send_input' || toolName === 'close_agent' || toolName === 'js_repl_reset') {
     kind = 'tool_operation';
     label = toolName;
@@ -2341,6 +2482,65 @@ function buildPlanArtifact(itemRaw, messageRaw, text) {
   });
 }
 
+function planUpdateText(raw) {
+  const payload = raw.parsed?.payload || {};
+  if (payload.explanation) return String(payload.explanation);
+  if (payload.delta) return flattenText(payload.delta, 8000);
+  if (Array.isArray(payload.plan)) {
+    return payload.plan.map((item) => {
+      if (!item || typeof item !== 'object') return String(item || '');
+      return `${item.status || 'pending'}: ${item.step || item.text || ''}`.trim();
+    }).filter(Boolean).join('\n');
+  }
+  return flattenText(payload, 8000);
+}
+
+function buildPlanUpdateEvent(raw) {
+  const text = planUpdateText(raw);
+  return createLogicalEvent({
+    id: `${raw.sessionId}:logical:plan-update:${raw.line}`,
+    timestamp: raw.timestamp,
+    turnId: raw.turnId || '',
+    kind: 'plan_update',
+    subtype: raw.payloadType,
+    layer: 'main',
+    role: 'assistant',
+    label: raw.payloadType === 'plan_delta' ? 'Plan delta' : 'Plan update',
+    preview: truncate(text || raw.preview || raw.payloadType),
+    searchText: text || raw.searchText,
+    severity: 'normal',
+    status: raw.status || '',
+    rawRefs: [rawRef(raw)],
+    channels: [raw.recordType],
+  });
+}
+
+function protocolWarningLabel(type) {
+  if (type === 'stream_error') return 'Stream error';
+  if (type === 'guardian_warning') return 'Guardian warning';
+  return 'Warning';
+}
+
+function buildProtocolWarningEvent(raw) {
+  const isError = raw.payloadType === 'stream_error';
+  return createLogicalEvent({
+    id: `${raw.sessionId}:logical:${raw.payloadType}:${raw.line}`,
+    timestamp: raw.timestamp,
+    turnId: raw.turnId || '',
+    kind: isError ? 'error' : 'warning',
+    subtype: raw.payloadType,
+    layer: 'main',
+    role: 'system',
+    label: protocolWarningLabel(raw.payloadType),
+    preview: truncate(firstNonEmpty(raw.parsed?.payload?.message, raw.parsed?.payload?.reason, raw.preview, raw.payloadType)),
+    searchText: raw.searchText,
+    severity: isError ? 'error' : 'warning',
+    status: raw.status || '',
+    rawRefs: [rawRef(raw)],
+    channels: [raw.recordType],
+  });
+}
+
 function buildLogicalEvents(rawEvents) {
   const logicalEvents = [];
   const consumed = new Set();
@@ -2356,7 +2556,7 @@ function buildLogicalEvents(rawEvents) {
   for (const [callId, group] of byCallId.entries()) {
     group.sort((a, b) => a.line - b.line);
     const hasToolShape = group.some((raw) => raw.recordType === 'response_item' && ['function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output'].includes(raw.payloadType))
-      || group.some((raw) => raw.recordType === 'event_msg' && ['exec_command_end', 'patch_apply_end', 'mcp_tool_call_end'].includes(raw.payloadType));
+      || group.some((raw) => raw.recordType === 'event_msg' && TOOL_EVENT_TYPES.has(raw.payloadType));
     if (!hasToolShape) continue;
     logicalEvents.push(buildToolLogicalEvent(callId, group));
     for (const raw of group) consumed.add(raw.rawId);
@@ -2469,6 +2669,12 @@ function buildLogicalEvents(rawEvents) {
       continue;
     }
 
+    if (raw.recordType === 'event_msg' && ['plan_update', 'plan_delta'].includes(raw.payloadType)) {
+      logicalEvents.push(buildPlanUpdateEvent(raw));
+      consumed.add(raw.rawId);
+      continue;
+    }
+
     if (isWebSearchCall(raw)) {
       const pairedEnd = webSearchRowsMatch(next, raw) ? next : null;
       const event = buildWebSearchEvent(raw, pairedEnd);
@@ -2529,6 +2735,11 @@ function buildLogicalEvents(rawEvents) {
       consumed.add(raw.rawId);
       continue;
     }
+    if (raw.recordType === 'event_msg' && ['warning', 'guardian_warning', 'stream_error'].includes(raw.payloadType)) {
+      logicalEvents.push(buildProtocolWarningEvent(raw));
+      consumed.add(raw.rawId);
+      continue;
+    }
     if (raw.recordType === 'event_msg' && raw.payloadType === 'error') {
       logicalEvents.push(buildLifecycleEvent(raw, 'error', 'Error', 'error'));
       consumed.add(raw.rawId);
@@ -2549,8 +2760,8 @@ function buildLogicalEvents(rawEvents) {
       consumed.add(raw.rawId);
       continue;
     }
-    if (raw.recordType === 'event_msg' && ['task_started', 'task_complete', 'thread_name_updated', 'item_completed'].includes(raw.payloadType)) {
-      logicalEvents.push(buildLifecycleEvent(raw, 'turn', raw.payloadType, 'normal'));
+    if (raw.recordType === 'event_msg' && ['task_started', 'task_complete', 'thread_name_updated', 'item_completed'].includes(raw.canonicalType)) {
+      logicalEvents.push(buildLifecycleEvent(raw, 'turn', raw.canonicalType, 'normal'));
       consumed.add(raw.rawId);
       continue;
     }
@@ -2601,7 +2812,7 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'abort') session.counts.aborts += 1;
   if (logicalEvent.kind === 'error') session.counts.errors += 1;
   if (logicalEvent.kind === 'plan_artifact') session.counts.planArtifacts += 1;
-  if (logicalEvent.kind === 'plan_artifact' || logicalEvent.toolName === 'update_plan' || logicalEvent.subtype === 'update_plan') {
+  if (logicalEvent.kind === 'plan_artifact' || logicalEvent.kind === 'plan_update' || logicalEvent.toolName === 'update_plan' || logicalEvent.subtype === 'update_plan') {
     session.counts.planEvents += 1;
   }
 }
@@ -2772,6 +2983,20 @@ async function parseSessionFile(filePath, relFile, repoRoot) {
       if (record.payload.cwd) {
         session.cwdSet.add(record.payload.cwd);
         if (isPathInsideOrSame(record.payload.cwd, repoRoot)) session.matchesRepo = true;
+      }
+    }
+    if (record.type === 'event_msg' && record.payload?.type === 'session_configured') {
+      if (record.payload.cwd) {
+        session.cwdSet.add(record.payload.cwd);
+        if (isPathInsideOrSame(record.payload.cwd, repoRoot)) session.matchesRepo = true;
+      }
+      if (!session.title && record.payload.thread_name) {
+        session.title = record.payload.thread_name;
+      }
+      if (!primarySessionMetaSeen) {
+        if (!session.parentSessionId) session.parentSessionId = parentSessionIdFromMeta(record.payload);
+        if (!session.agentNickname) session.agentNickname = agentNicknameFromMeta(record.payload);
+        if (!session.primarySessionMetaKind) session.primarySessionMetaKind = derivedSessionKindFromMeta(record.payload);
       }
     }
     if (!session.parentSessionId && record.type === 'event_msg' && record.payload?.type === 'thread_name_updated' && record.payload.thread_name) {

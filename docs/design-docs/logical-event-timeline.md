@@ -133,6 +133,10 @@ Protocol event coverage is intentionally open-ended. The parser should preserve 
 
 协议事件覆盖有意保持开放。解析器应通过 protocol/raw 层保留未知 `event_msg` variant；只有当上游事件会改变可读时间线归属、严重级别、元数据、工具分组、搜索、指标或结构化详情时，才添加专门归一化。当前事件族记录和更新规则见 `docs/design-docs/codex-protocol-event-coverage.md`。
 
+Current protocol normalization includes lifecycle aliases (`turn_started` / `turn_complete`), `session_configured` metadata, `thread_goal_updated` protocol details, main-layer warning/error events, protocol-shaped plan updates, and incomplete tool-family records grouped by `call_id` when available. These records remain traceable through raw refs and unknown future variants still fall back to protocol/raw visibility.
+
+当前协议归一化包括生命周期别名（`turn_started` / `turn_complete`）、`session_configured` metadata、`thread_goal_updated` 协议详情、main 层 warning/error 事件、协议形态计划更新，以及在可用时按 `call_id` 分组的不完整工具族记录。这些记录仍可通过 raw refs 追踪，未知未来 variant 仍回退到 protocol/raw 可见性。
+
 ### Search and highlighting / 搜索与高亮
 
 Backend search remains event-oriented. Session filtering uses the aggregated session `searchText`; timeline filtering uses each event's `preview` plus `searchText` so a concise preview can still make a match discoverable when full detail is not rendered. The `/timeline` response also returns `searchMatchCount`, counted from matched events' full `searchText` when available and from `preview` only as a fallback. This count represents the current session, layer, and structured filters, not only events currently loaded in the browser.
@@ -274,3 +278,4 @@ Before a folding-profile or layer switch, the frontend captures the selected eve
 - 2026-04-21: Treated protocol injections as first-class events instead of hiding them permanently. / 2026-04-21：将协议注入视为一等事件，而不是永久隐藏它们。
 - 2026-04-21: Grouped tool operations by `call_id` to make shell, patch, MCP, and JS REPL activity readable. / 2026-04-21：按 `call_id` 对工具操作分组，使 shell、补丁、MCP 和 JS REPL 活动可读。
 - 2026-04-21: Added server-side event-detail extraction plus a frontend renderer registry so expanded cards show structured content without trusting raw HTML from transcripts. / 2026-04-21：添加服务器端事件详情提取和前端渲染器注册表，让展开卡片在不信任转录原始 HTML 的情况下显示结构化内容。
+- 2026-05-21: Added current Codex protocol event coverage for lifecycle aliases, session configuration metadata, goal metadata, warnings/errors, protocol plan updates, and incomplete tool-family records while keeping unknown variants lossless in protocol/raw layers. / 2026-05-21：增加当前 Codex 协议事件覆盖，包含生命周期别名、session configuration metadata、goal metadata、warning/error、协议计划更新和不完整工具族记录，同时让未知 variant 继续在 protocol/raw 层无损保留。

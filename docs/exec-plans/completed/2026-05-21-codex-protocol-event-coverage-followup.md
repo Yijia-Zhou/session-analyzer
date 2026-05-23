@@ -101,12 +101,12 @@ Improve parser coverage for the highest-value Codex `event_msg` variants while k
 - The design docs, active/completed plan state, and tech-debt tracker accurately describe the shipped behavior. / 设计文档、active/completed 计划状态和技术债跟踪器准确描述已交付行为。
 
 ## Validation Checklist / 验证清单
-- [ ] `node --test`
-- [ ] `node --check src\codex.js`
-- [ ] `node --check public\app.js`
-- [ ] `node --check public\renderers.js`
-- [ ] `git diff --check`
-- [ ] Manual browser spot-check against the synthetic fixture session if UI labels or folding behavior change. / 如果 UI 标签或折叠行为变化，针对合成 fixture session 做浏览器人工抽查。
+- [x] `node --test`
+- [x] `node --check src\codex.js`
+- [x] `node --check public\app.js`
+- [x] `node --check public\renderers.js`
+- [x] `git diff --check`
+- [x] Manual browser spot-check against the synthetic fixture session if UI labels or folding behavior change. / 如果 UI 标签或折叠行为变化，针对合成 fixture session 做浏览器人工抽查。
 
 ## Rollback Notes / 回滚说明
 
@@ -116,4 +116,5 @@ Improve parser coverage for the highest-value Codex `event_msg` variants while k
 
 ## Progress Log / 进度日志
 
-- 2026-05-21: Created this active plan from the protocol event coverage design notes. No implementation changes have been started. / 2026-05-21：根据协议事件覆盖设计说明创建本 active plan。尚未开始实现改动。
+- 2026-05-21: Created this active plan from the protocol event coverage design notes. No implementation changes had been started. / 2026-05-21：根据协议事件覆盖设计说明创建本 active plan。当时尚未开始实现改动。
+- 2026-05-21: Implemented lifecycle alias normalization, `session_configured` and `thread_goal_updated` metadata, warning/error surfacing, protocol plan updates, incomplete tool-family grouping/status handling, fixture coverage, frontend folding/labels, and bilingual documentation updates. / 2026-05-21：已实现生命周期别名归一化、`session_configured` 与 `thread_goal_updated` metadata、warning/error 展示、协议计划更新、不完整工具族分组/状态处理、fixture 覆盖、前端折叠/标签，以及双语文档更新。

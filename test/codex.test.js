@@ -43,10 +43,10 @@ test('buildIndex deduplicates mirrored messages and keeps protocol separately', 
   assert.equal(session.counts.messages, 2);
   assert.equal(session.counts.reasoning, 1);
   assert.equal(session.counts.failedCommands, 1);
-  assert.equal(session.counts.patches, 4);
+  assert.equal(session.counts.patches, 6);
   assert.equal(session.counts.compactions, 1);
   assert.equal(session.counts.planArtifacts, 1);
-  assert.equal(session.counts.planEvents, 2);
+  assert.equal(session.counts.planEvents, 4);
   assert.ok(session.counts.protocol >= 3);
 });
 
@@ -229,6 +229,10 @@ test('timeline protocol layer exposes injected records and raw layer keeps all r
   assert.equal(protocolBySubtype.get('token_count').label, 'Token count');
   assert.match(protocolBySubtype.get('token_count').preview, /5 hour usage limit: 12% remaining; Resets/);
   assert.match(protocolBySubtype.get('token_count').preview, /Weekly usage limit: 67% remaining; Resets/);
+  assert.equal(protocolBySubtype.get('session_configured').label, 'Session configured');
+  assert.equal(protocolBySubtype.get('session_configured').preview, 'thread_name: configured fixture title; cwd: G:\\vibe\\term-agent; model: gpt-5.1');
+  assert.equal(protocolBySubtype.get('thread_goal_updated').label, 'Thread goal updated');
+  assert.equal(protocolBySubtype.get('thread_goal_updated').preview, 'Keep protocol coverage readable.');
 
   const rawTimeline = getTimeline(index, index.sessions[0].id, {
     offset: 0,
@@ -242,6 +246,66 @@ test('timeline protocol layer exposes injected records and raw layer keeps all r
   });
   assert.ok(rawTimeline.total > protocolTimeline.total);
   assert.ok(rawTimeline.events.some((event) => event.recordType === 'response_item'));
+});
+
+test('current protocol plan, severity, lifecycle aliases, and incomplete tool records are readable', async () => {
+  const index = await buildFixtureIndex();
+  const session = index.sessions[0];
+  const timeline = getTimeline(index, session.id, {
+    offset: 0,
+    limit: 200,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+
+  const planUpdates = timeline.events.filter((event) => event.kind === 'plan_update');
+  assert.equal(planUpdates.length, 2);
+  assert.deepEqual(planUpdates.map((event) => event.label), ['Plan update', 'Plan delta']);
+  assert.equal(planUpdates[0].preview, 'Protocol plan update fixture');
+  assert.equal(planUpdates[1].preview, 'Verify folding completed');
+
+  const warningEvents = timeline.events.filter((event) => event.kind === 'warning');
+  assert.deepEqual(warningEvents.map((event) => [event.subtype, event.severity]), [
+    ['warning', 'warning'],
+    ['guardian_warning', 'warning'],
+  ]);
+  const streamError = timeline.events.find((event) => event.subtype === 'stream_error');
+  assert.equal(streamError.kind, 'error');
+  assert.equal(streamError.severity, 'error');
+
+  const aliasTurns = timeline.events.filter((event) => event.kind === 'turn' && event.turnId === 'turn-alias');
+  assert.deepEqual(aliasTurns.map((event) => event.label), ['task_started', 'task_complete']);
+
+  const incompleteCommand = timeline.events.find((event) => event.preview.includes('npm run watch'));
+  assert.equal(incompleteCommand.kind, 'command');
+  assert.equal(incompleteCommand.status, 'incomplete');
+  assert.equal(incompleteCommand.severity, 'warning');
+
+  const declinedCommand = timeline.events.find((event) => event.preview.includes('git commit'));
+  assert.equal(declinedCommand.status, 'declined');
+  assert.equal(declinedCommand.severity, 'warning');
+
+  const incompletePatch = timeline.events.find((event) => event.preview.includes('src/incomplete.js'));
+  assert.equal(incompletePatch.kind, 'patch');
+  assert.equal(incompletePatch.status, 'incomplete');
+  assert.deepEqual(incompletePatch.rawRefs.map((ref) => ref.line), [41]);
+
+  const declinedPatch = timeline.events.find((event) => event.preview.includes('src/declined.js'));
+  assert.equal(declinedPatch.status, 'declined');
+  assert.equal(declinedPatch.severity, 'warning');
+
+  const mcpBegin = timeline.events.find((event) => event.toolName === 'mcp__fixture__lookup');
+  assert.equal(mcpBegin.kind, 'mcp');
+  assert.equal(mcpBegin.status, 'incomplete');
+  assert.equal(mcpBegin.rawRefs.length, 1);
+
+  const planDetail = buildEventDetail(session, planUpdates[0].id, 'main');
+  assert.equal(planDetail.sections[0].type, 'markdown');
+  assert.match(planDetail.sections[0].html, /Protocol plan update fixture/);
 });
 
 test('tool logical events merge new and old format patch records and search still works', async () => {

@@ -22,7 +22,7 @@ This repository uses three formal document classes plus one idea parking area:
 - `design-docs/logical-event-timeline.md` / 逻辑事件时间线设计文档
 - `design-docs/codex-protocol-event-coverage.md` / Codex 协议事件覆盖设计文档
 - `design-docs/documentation-system.md` / 文档系统设计文档
-- `exec-plans/active/2026-05-21-codex-protocol-event-coverage-followup.md` / Codex 协议事件覆盖后续 active 执行计划
+- `exec-plans/completed/2026-05-21-codex-protocol-event-coverage-followup.md` / Codex 协议事件覆盖后续已完成执行计划
 - `exec-plans/completed/2026-04-20-session-analyzer-v1.md` / 会话分析器 V1 已完成执行计划
 - `exec-plans/completed/2026-04-21-transcript-normalization-followups.md` / 转录归一化后续工作的已完成执行计划
 - `exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md` / 查看器 UX 检查器与搜索已完成执行计划

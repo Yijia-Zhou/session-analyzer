@@ -45,10 +45,12 @@ const BUILTIN_PROFILE_RULES = {
       assistant_message: 'expanded',
       patch: 'expanded',
       error: 'expanded',
+      warning: 'expanded',
       abort: 'expanded',
       rollback: 'expanded',
       compaction: 'expanded',
       plan_artifact: 'expanded',
+      plan_update: 'expanded',
       reasoning: 'collapsed',
       token: 'collapsed',
     },
@@ -66,6 +68,7 @@ const BUILTIN_PROFILE_RULES = {
       js_repl: 'summary',
       tool_operation: 'summary',
       error: 'summary',
+      warning: 'summary',
       abort: 'summary',
       rollback: 'summary',
     },
@@ -79,6 +82,7 @@ const BUILTIN_PROFILE_RULES = {
     kindStates: {
       patch: 'expanded',
       plan_artifact: 'expanded',
+      plan_update: 'expanded',
       user_message: 'collapsed',
       assistant_message: 'collapsed',
     },
@@ -103,6 +107,7 @@ const BUILTIN_PROFILE_RULES = {
       assistant_message: 'summary',
       patch: 'summary',
       error: 'summary',
+      warning: 'summary',
       abort: 'summary',
       rollback: 'summary',
       compaction: 'summary',
@@ -119,6 +124,7 @@ const BUILTIN_PROFILE_RULES = {
       user_message: 'expanded',
       assistant_message: 'expanded',
       plan_artifact: 'expanded',
+      plan_update: 'expanded',
       error: 'summary',
       abort: 'summary',
       rollback: 'summary',
@@ -168,8 +174,10 @@ const KIND_LABELS = {
   js_repl: 'JS REPL',
   tool_operation: 'Tool op',
   plan_artifact: 'Plan',
+  plan_update: 'Plan update',
   protocol: 'Protocol',
   error: 'Error',
+  warning: 'Warning',
   abort: 'Abort',
   rollback: 'Rollback',
   compaction: 'Compaction',
@@ -192,8 +200,8 @@ const LAYER_LABELS = {
 const NAVIGATION_CATEGORIES = [
   { id: 'user_messages', label: 'User messages', matches: (event) => event.kind === 'user_message' },
   { id: 'assistant_messages', label: 'Assistant messages', matches: (event) => event.kind === 'assistant_message' },
-  { id: 'update_plan', label: 'update_plan calls', matches: isUpdatePlanEvent },
-  { id: 'plans', label: 'Plans / update_plan', matches: (event) => event.kind === 'plan_artifact' || isUpdatePlanEvent(event) },
+  { id: 'update_plan', label: 'Plan updates', matches: isUpdatePlanEvent },
+  { id: 'plans', label: 'Plans / updates', matches: (event) => event.kind === 'plan_artifact' || isUpdatePlanEvent(event) },
   { id: 'failed_commands', label: 'Failed commands', matches: (event) => event.kind === 'command' && event.status === 'failed' },
   { id: 'commands', label: 'Commands', matches: (event) => event.kind === 'command' },
   { id: 'patch_applied', label: 'Patch applied', matches: (event) => event.kind === 'patch' && event.status === 'success' },
@@ -723,7 +731,7 @@ function setRelatedParentHighlight(parentSessionId, enabled) {
 }
 
 function isUpdatePlanEvent(event) {
-  return event.toolName === 'update_plan' || event.subtype === 'update_plan' || event.label === 'update_plan';
+  return event.kind === 'plan_update' || event.toolName === 'update_plan' || event.subtype === 'update_plan' || event.label === 'update_plan';
 }
 
 function metadataRow(label, value) {
@@ -1480,7 +1488,7 @@ function foldedDisplayState(event) {
 }
 
 function importantEvent(event) {
-  return ['user_message', 'assistant_message', 'patch', 'error', 'abort', 'rollback', 'compaction', 'plan_artifact', 'review'].includes(event.kind)
+  return ['user_message', 'assistant_message', 'patch', 'error', 'warning', 'abort', 'rollback', 'compaction', 'plan_artifact', 'plan_update', 'review'].includes(event.kind)
     || isUpdatePlanEvent(event)
     || event.severity !== 'normal'
     || event.status === 'failed';
