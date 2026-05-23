@@ -133,6 +133,20 @@ Protocol event coverage is intentionally open-ended. The parser should preserve 
 
 协议事件覆盖有意保持开放。解析器应通过 protocol/raw 层保留未知 `event_msg` variant；只有当上游事件会改变可读时间线归属、严重级别、元数据、工具分组、搜索、指标或结构化详情时，才添加专门归一化。当前事件族记录和更新规则见 `docs/design-docs/codex-protocol-event-coverage.md`。
 
+### Search and highlighting / 搜索与高亮
+
+Backend search remains event-oriented. Session filtering uses the aggregated session `searchText`; timeline filtering uses each event's `preview` plus `searchText` so a concise preview can still make a match discoverable when full detail is not rendered. The `/timeline` response also returns `searchMatchCount`, counted from matched events' full `searchText` when available and from `preview` only as a fallback. This count represents the current session, layer, and structured filters, not only events currently loaded in the browser.
+
+后端搜索仍以事件为单位。Session 筛选使用聚合后的 session `searchText`；时间线筛选使用每个事件的 `preview` 加 `searchText`，这样即使完整详情尚未渲染，简短预览也能让命中可发现。`/timeline` 响应还会返回 `searchMatchCount`，优先从匹配事件的完整 `searchText` 计数，只有没有 `searchText` 时才退回 `preview`。这个计数代表当前 session、事件层和结构化筛选条件下的全文命中总数，而不只限于浏览器当前已加载的事件。
+
+Frontend highlighting is DOM-oriented. After HTML has been rendered, the browser walks text nodes under the session list, timeline, and detail panel, skips interactive or unsafe nodes such as inputs, buttons, links, scripts, styles, and existing marks, and inserts `<mark>` elements with `textContent` instead of rewriting HTML strings. The displayed position uses the currently rendered and jumpable marks, while the denominator uses the backend full-text `searchMatchCount`.
+
+前端高亮则以 DOM 为单位。HTML 渲染完成后，浏览器遍历 session 列表、时间线和详情面板下的文本节点，跳过 input、button、link、script、style 和已有 mark 等交互或不适合处理的节点，并用 `textContent` 插入 `<mark>`，而不是重写 HTML 字符串。界面显示的当前位置来自当前已渲染且可跳转的 mark，分母使用后端全文 `searchMatchCount`。
+
+Search-result preloading is intentionally bounded. When free-text search has too few rendered jump targets, the browser may append a few more filtered timeline pages so previous/next navigation has nearby real scroll targets. It does not force-expand every event or load every hidden command output; hidden detail becomes jumpable only after its event detail is rendered.
+
+搜索结果预加载有意保持有限。当自由文本搜索下可渲染跳转目标过少时，浏览器可以追加加载少量已筛选的时间线分页，让上一个/下一个导航有附近的真实滚动目标。它不会强制展开每个事件，也不会加载每个隐藏的 command output；隐藏详情只有在该事件详情实际渲染后才会变成可跳转目标。
+
 ### Event detail DTO / 事件详情 DTO
 
 Expanded cards do not reuse `preview` for rich rendering. The server derives an `EventDetailDto` from the underlying logical event plus its referenced raw rows:

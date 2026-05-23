@@ -394,6 +394,7 @@ test('web search logical events merge end/call rows and expose structured detail
     layer: 'main',
   });
   assert.equal(searchedTimeline.total, 1);
+  assert.equal(searchedTimeline.searchMatchCount, 2);
   assert.equal(searchedTimeline.events[0].id, completedSearch.id);
   assert.equal(searchedTimeline.events[0].hasSearchHit, true);
   assert.match(searchedTimeline.events[0].snippet, /detail extraction/);

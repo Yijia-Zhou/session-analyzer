@@ -17,10 +17,18 @@ const searchQuery = window.sessionSearchQuery || {
   removeOperator: (input) => String(input || ''),
   upsertOperator: (input) => String(input || '').trim(),
 };
+const searchHighlighter = window.sessionSearchHighlighter || {
+  apply: () => [],
+  clear: () => {},
+  searchTerms: () => [],
+};
 
 const NAVIGATION_PAGE_LIMIT = 500;
 const TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD = 96;
+const SEARCH_TARGET_PRELOAD_MIN = 5;
+const SEARCH_TARGET_PRELOAD_MAX_PAGES = 3;
 const FILE_SUGGESTION_LIMIT = 12;
+const SEARCH_HIGHLIGHT_INPUT_DELAY_MS = 300;
 const REPO_STORAGE_KEY = 'sessionAnalyzer.repoRoot';
 const CUSTOM_PROFILES_KEY = 'sessionAnalyzer.customProfiles';
 const DISPLAY_STATES = ['expanded', 'summary', 'collapsed', 'hidden'];
@@ -212,6 +220,7 @@ const state = {
   sessionGrandTotal: 0,
   sessionTotal: 0,
   timelineTotal: 0,
+  timelineSearchMatchCount: 0,
   currentEvents: [],
   fileSuggestions: [],
   profiles: [],
@@ -233,6 +242,9 @@ const state = {
   detailSelectionKey: '',
   navigationCategoryId: '',
   navigationCache: { key: '', events: [], total: 0, pending: null },
+  searchHighlight: { query: '', marks: [], activeIndex: -1 },
+  searchHighlightTimer: 0,
+  searchTargetPreload: { key: '', pages: 0, pending: false },
   mobileView: 'sessions',
 };
 
@@ -390,6 +402,138 @@ function activeLayerLabel() {
   return LAYER_LABELS[activeLayerId()] || activeLayerId();
 }
 
+function highlightTerms() {
+  return searchHighlighter.searchTerms(currentSearchState().q);
+}
+
+function highlightRoots() {
+  return [el.sessionList, el.timeline, el.detail].filter(Boolean);
+}
+
+function searchTargetPreloadKey() {
+  const search = currentSearchState();
+  return [
+    state.selectedSessionId,
+    search.layer,
+    search.q,
+    search.kind,
+    search.status,
+    search.file,
+  ].join('\u001f');
+}
+
+function currentSearchMarkLabel() {
+  const { marks, activeIndex } = state.searchHighlight;
+  const total = state.timelineSearchMatchCount;
+  if (!total) return 'No matches';
+  const current = marks.length && activeIndex >= 0 ? activeIndex + 1 : 0;
+  return `${current} / ${total} matches`;
+}
+
+function updateSearchMatchControls() {
+  const controls = document.querySelectorAll('[data-search-match-controls]');
+  const { marks } = state.searchHighlight;
+  const visible = Boolean(currentSearchState().q);
+  controls.forEach((control) => {
+    control.hidden = !visible;
+    const label = control.querySelector('[data-search-match-count]');
+    if (label) label.textContent = currentSearchMarkLabel();
+    control.querySelectorAll('[data-search-match-nav]').forEach((button) => {
+      button.disabled = marks.length === 0;
+    });
+  });
+}
+
+function maybePreloadSearchTargets() {
+  const search = currentSearchState();
+  if (!search.q || !state.selectedSessionId) return;
+  if (state.searchHighlight.marks.length >= SEARCH_TARGET_PRELOAD_MIN) return;
+  if (state.offset >= state.timelineTotal) return;
+  if (state.timelineLoading || state.searchTargetPreload.pending) return;
+
+  const key = searchTargetPreloadKey();
+  if (state.searchTargetPreload.key !== key) {
+    state.searchTargetPreload = { key, pages: 0, pending: false };
+  }
+  if (state.searchTargetPreload.pages >= SEARCH_TARGET_PRELOAD_MAX_PAGES) return;
+
+  state.searchTargetPreload.pages += 1;
+  state.searchTargetPreload.pending = true;
+  loadTimeline(true)
+    .catch(showError)
+    .finally(() => {
+      state.searchTargetPreload.pending = false;
+      if (state.searchHighlight.marks.length < SEARCH_TARGET_PRELOAD_MIN) {
+        maybePreloadSearchTargets();
+      }
+    });
+}
+
+function setActiveSearchMark(index, options = {}) {
+  const marks = state.searchHighlight.marks;
+  marks.forEach((mark) => mark.classList.remove('activeSearchMark'));
+  if (!marks.length) {
+    state.searchHighlight.activeIndex = -1;
+    updateSearchMatchControls();
+    return false;
+  }
+  const normalized = ((index % marks.length) + marks.length) % marks.length;
+  state.searchHighlight.activeIndex = normalized;
+  const mark = marks[normalized];
+  mark.classList.add('activeSearchMark');
+  if (options.scroll) {
+    mark.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+    const article = mark.closest('[data-event-id]');
+    if (article?.dataset.eventId) {
+      state.selectedEventId = article.dataset.eventId;
+      updateSelectedTimelineEvent();
+    }
+  }
+  updateSearchMatchControls();
+  return true;
+}
+
+function refreshSearchHighlights(options = {}) {
+  const roots = highlightRoots();
+  const previousQuery = state.searchHighlight.query;
+  const previousIndex = state.searchHighlight.activeIndex;
+  roots.forEach((root) => searchHighlighter.clear(root));
+
+  const query = currentSearchState().q;
+  const terms = highlightTerms();
+  const marks = terms.length ? roots.flatMap((root) => searchHighlighter.apply(root, terms)) : [];
+  state.searchHighlight = {
+    query,
+    marks,
+    activeIndex: -1,
+  };
+
+  if (marks.length) {
+    const keepIndex = options.preserveActive && query === previousQuery && previousIndex >= 0;
+    setActiveSearchMark(keepIndex ? Math.min(previousIndex, marks.length - 1) : 0, { scroll: false });
+  } else {
+    updateSearchMatchControls();
+  }
+  if (options.allowPreload !== false) maybePreloadSearchTargets();
+}
+
+function navigateSearchMatch(direction) {
+  if (!state.searchHighlight.marks.length) refreshSearchHighlights({ preserveActive: true });
+  const marks = state.searchHighlight.marks;
+  if (!marks.length) return false;
+  const current = state.searchHighlight.activeIndex >= 0 ? state.searchHighlight.activeIndex : 0;
+  return setActiveSearchMark(current + direction, { scroll: true });
+}
+
+function scheduleSearchHighlightRefresh(options = {}) {
+  if (state.searchHighlightTimer) clearTimeout(state.searchHighlightTimer);
+  state.searchHighlightTimer = setTimeout(() => {
+    state.searchHighlightTimer = 0;
+    refreshSearchHighlights(options);
+    renderResultSummary();
+  }, SEARCH_HIGHLIGHT_INPUT_DELAY_MS);
+}
+
 function currentQuery(extra = {}) {
   const params = new URLSearchParams();
   const filters = currentSearchState();
@@ -414,6 +558,7 @@ function resetDetailPane() {
   state.selectedEventId = '';
   state.navigationCategoryId = '';
   state.detailHistory = [];
+  state.searchTargetPreload = { key: '', pages: 0, pending: false };
   state.detailView = { type: 'profileRules' };
   renderProfileRulesPane();
   updateSelectedTimelineEvent();
@@ -764,8 +909,14 @@ function renderResultSummary() {
   const eventText = state.selectedSessionId
     ? `Events: ${state.timelineTotal} match${state.offset < state.timelineTotal ? ` (${state.offset} loaded)` : ''}`
     : 'Events: select a session';
+  const matchControls = currentSearchState().q
+    ? `<div class="searchMatchControls" data-search-match-controls title="Visible matches in rendered content; total is current session, layer, and filters">
+      <span class="searchMatchCount" data-search-match-count>${escapeHtml(currentSearchMarkLabel())}</span>
+    </div>`
+    : '';
   const filterText = renderFilterChips(filters) + '<button class="clearFiltersBtn" type="button" data-clear-filter="all">Clear all</button>';
-  el.resultSummary.innerHTML = `<div class="resultCounts">${escapeHtml(sessionText)} · ${escapeHtml(eventText)}</div><div class="activeFilters" aria-label="Active filters">${filterText}</div>`;
+  el.resultSummary.innerHTML = `<div class="resultCounts">${escapeHtml(sessionText)} · ${escapeHtml(eventText)}</div>${matchControls}<div class="activeFilters" aria-label="Active filters">${filterText}</div>`;
+  updateSearchMatchControls();
 }
 
 function clearActiveFilter(key) {
@@ -930,7 +1081,9 @@ function resetProjectViewState() {
   state.sessionGrandTotal = 0;
   state.sessionTotal = 0;
   state.timelineTotal = 0;
+  state.timelineSearchMatchCount = 0;
   state.currentEvents = [];
+  state.searchTargetPreload = { key: '', pages: 0, pending: false };
   state.fileSuggestions = [];
   state.detailCache = {};
   state.detailErrors = {};
@@ -1117,6 +1270,7 @@ function renderSessions() {
       </span>
     </button>`;
   }).join('');
+  refreshSearchHighlights({ preserveActive: true });
 }
 
 async function selectSession(sessionId, options = {}) {
@@ -1125,6 +1279,7 @@ async function selectSession(sessionId, options = {}) {
   state.timelineLoading = false;
   state.timelineRequestId += 1;
   state.currentEvents = [];
+  state.searchTargetPreload = { key: '', pages: 0, pending: false };
   invalidateNavigationCache();
   updateResetFoldsButton();
   renderSessions();
@@ -1282,13 +1437,16 @@ async function loadTimeline(append) {
     }
     state.offset = state.currentEvents.length;
     state.timelineTotal = data.total;
+    state.timelineSearchMatchCount = data.searchMatchCount || 0;
     renderTimeline();
     if (!append) resetTimelineScroll();
     renderResultSummary();
+    maybePreloadSearchTargets();
   } finally {
     if (requestId === state.timelineRequestId) {
       state.timelineLoading = false;
       updateLoadMoreButton();
+      maybePreloadSearchTargets();
     }
   }
 }
@@ -1359,7 +1517,10 @@ function renderEventBody(event, display) {
   if (error) {
     return `<div class="eventBody"><div class="notice error"><p>${escapeHtml(error)}</p></div><button class="smallBtn" type="button" data-action="retry-detail">Retry detail</button></div>`;
   }
-  return '<div class="eventBody"><div class="notice info"><p>Loading structured detail...</p></div></div>';
+  const snippet = event.hasSearchHit && event.snippet
+    ? `<div class="eventPreview eventLoadingSnippet">${escapeHtml(event.snippet)}</div>`
+    : '';
+  return `<div class="eventBody">${snippet}<div class="notice info"><p>Loading structured detail...</p></div></div>`;
 }
 
 function renderEventPreview(event, display) {
@@ -1426,6 +1587,7 @@ function renderTimeline() {
     </article>`;
   }).join('');
   queueVisibleDetailLoad();
+  refreshSearchHighlights({ preserveActive: true });
 }
 
 function setOverride(eventId, value) {
@@ -1491,6 +1653,7 @@ function maybeLoadMoreTimeline(scroller) {
 }
 
 function onTimelinePaneScroll(event) {
+  hideSearchAssist();
   queueVisibleDetailLoad();
   maybeLoadMoreTimeline(event.currentTarget);
 }
@@ -1720,6 +1883,7 @@ function renderDetailShell({ title, subtitle = '', actions = '', body = '', clos
     </header>
     ${body}
   </article>`;
+  refreshSearchHighlights({ preserveActive: true });
 }
 
 function renderProfileRulesPane() {
@@ -2117,6 +2281,7 @@ for (const button of el.mobileViewButtons) {
 el.timeline.addEventListener('click', (event) => {
   const article = event.target.closest('[data-event-id]');
   if (!article) return;
+  hideSearchAssist();
   const item = state.currentEvents.find((candidate) => candidate.id === article.dataset.eventId);
   if (!item) return;
   const action = event.target.closest('[data-action]')?.dataset.action || 'inspect';
@@ -2239,7 +2404,10 @@ el.resetFoldsBtn.addEventListener('click', () => {
   renderTimeline();
 });
 
-el.loadMoreBtn.addEventListener('click', () => loadTimeline(true).catch(showError));
+el.loadMoreBtn.addEventListener('click', () => {
+  hideSearchAssist();
+  loadTimeline(true).catch(showError);
+});
 el.analysisPanel?.addEventListener('click', (event) => {
   const metricEl = event.target.closest('[data-metric-action]');
   if (!metricEl) return;
@@ -2254,7 +2422,28 @@ el.analysisPanel?.addEventListener('keydown', (event) => {
 });
 el.resultSummary?.addEventListener('click', (event) => {
   const clear = event.target.closest('[data-clear-filter]')?.dataset.clearFilter;
-  if (clear) clearActiveFilter(clear);
+  if (clear) {
+    clearActiveFilter(clear);
+    return;
+  }
+  const nav = event.target.closest('[data-search-match-nav]')?.dataset.searchMatchNav;
+  if (nav === 'previous') {
+    hideSearchAssist();
+    navigateSearchMatch(-1);
+  } else if (nav === 'next') {
+    hideSearchAssist();
+    navigateSearchMatch(1);
+  }
+});
+el.searchField?.addEventListener('click', (event) => {
+  const nav = event.target.closest('[data-search-match-nav]')?.dataset.searchMatchNav;
+  if (nav === 'previous') {
+    hideSearchAssist();
+    navigateSearchMatch(-1);
+  } else if (nav === 'next') {
+    hideSearchAssist();
+    navigateSearchMatch(1);
+  }
 });
 el.timeline.closest('.timelinePane')?.addEventListener('scroll', onTimelinePaneScroll, { passive: true });
 window.addEventListener('resize', queueVisibleDetailLoad);
@@ -2269,12 +2458,24 @@ const reload = debounce(() => {
 
 el.searchInput.addEventListener('focus', showSearchAssist);
 el.searchInput.addEventListener('keydown', (event) => {
-  if (event.key !== 'Escape') return;
-  event.preventDefault();
-  hideSearchAssist();
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    hideSearchAssist();
+    return;
+  }
+  if (event.key === 'Enter' && currentSearchState().q) {
+    event.preventDefault();
+    hideSearchAssist();
+    navigateSearchMatch(event.shiftKey ? -1 : 1);
+  }
 });
 el.searchInput.addEventListener('input', () => {
   showSearchAssist();
+  state.searchTargetPreload = { key: '', pages: 0, pending: false };
+  state.searchHighlight = { query: currentSearchState().q, marks: [], activeIndex: -1 };
+  state.timelineSearchMatchCount = 0;
+  updateSearchMatchControls();
+  scheduleSearchHighlightRefresh({ allowPreload: false });
   reload();
 });
 el.searchInput.addEventListener('change', reload);
