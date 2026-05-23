@@ -100,6 +100,8 @@
         <h2>Select target project</h2>
         <p>Choose a Codex session working directory to analyze.</p>
         <div id="projectStatus" class="projectStatus" aria-live="polite"></div>
+        <progress id="projectProgress" class="projectProgress" max="100" value="0" hidden></progress>
+        <button id="projectCancelBtn" class="ghostBtn projectCancelBtn" type="button" hidden>Cancel indexing</button>
       </div>
       <div id="projectList" class="projectList"></div>
     </section>

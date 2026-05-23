@@ -55,10 +55,11 @@ The first version of this repository rendered raw records directly, which caused
 ### Data flow / 数据流
 
 1. Load session metadata and raw JSONL rows. / 加载会话元数据和原始 JSONL 行。
-2. Annotate each raw row with extracted text, call IDs, command text, outputs, and touched files when available. / 在可用时，为每个原始行标注提取文本、调用 ID、命令文本、输出和触及文件。
-3. Group by `call_id` first for tool operations. / 对工具操作先按 `call_id` 分组。
-4. Walk the remaining rows in order and fold them into logical messages, reasoning entries, protocol events, lifecycle events, or plan artifacts. / 按顺序遍历剩余行，并折叠为逻辑消息、推理条目、协议事件、生命周期事件或计划产物。
-5. Expose logical events to the main and protocol layers; expose raw rows separately. / 向主层和协议层暴露逻辑事件；单独暴露原始行。
+2. Before full parsing, scan early session metadata rows to select candidate files for the target repository. Files known to belong only to other repositories are skipped; files without early repository metadata remain candidates. / 在完整解析前，先扫描早期 session metadata 行，为目标仓库选择候选文件。已知只属于其他仓库的文件会被跳过；缺少早期仓库 metadata 的文件仍保留为候选。
+3. Annotate each raw row with extracted text, call IDs, command text, outputs, and touched files when available. / 在可用时，为每个原始行标注提取文本、调用 ID、命令文本、输出和触及文件。
+4. Group by `call_id` first for tool operations. / 对工具操作先按 `call_id` 分组。
+5. Walk the remaining rows in order and fold them into logical messages, reasoning entries, protocol events, lifecycle events, or plan artifacts. / 按顺序遍历剩余行，并折叠为逻辑消息、推理条目、协议事件、生命周期事件或计划产物。
+6. Expose logical events to the main and protocol layers; expose raw rows separately. / 向主层和协议层暴露逻辑事件；单独暴露原始行。
 
 Web search records are normalized as adjacent mirrored rows rather than normal `call_id` tool groups. Real transcripts may write `event_msg.web_search_end` before the completed `response_item.web_search_call` snapshot, often with matching action metadata and identical or near-identical timestamps. The logical builder merges adjacent search/open-page rows by canonical action target so the main timeline shows one web search event with both raw refs; call-only and end-only historical rows remain visible as single logical events.
 
@@ -215,6 +216,7 @@ Before a folding-profile or layer switch, the frontend captures the selected eve
 
 ## API / contract changes / API / 契约变更
 
+- `POST /api/project` starts an asynchronous indexing job and returns `202 { job }`; `GET /api/project/status?jobId=...` returns progress and includes the app state when the job succeeds; `DELETE /api/project/status?jobId=...` cancels an active job. / `POST /api/project` 启动异步索引任务并返回 `202 { job }`；`GET /api/project/status?jobId=...` 返回进度，并在任务成功时包含应用状态；`DELETE /api/project/status?jobId=...` 取消活动任务。
 - `/api/sessions/:id/timeline` accepts `layer=main|protocol|raw` / `/api/sessions/:id/timeline` 接受 `layer=main|protocol|raw`
 - `/api/sessions/:id/events/:eventId/detail?layer=main|protocol|raw` returns the structured detail DTO for one event / `/api/sessions/:id/events/:eventId/detail?layer=main|protocol|raw` 返回单个事件的结构化详情 DTO
 - Main and protocol layers return logical events / 主层和协议层返回逻辑事件

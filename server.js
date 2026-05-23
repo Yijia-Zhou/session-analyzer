@@ -121,6 +121,11 @@ function statePayload(state) {
   };
 }
 
+function activeProjectJob(state) {
+  const job = state.activeProjectJob;
+  return job && ['queued', 'running'].includes(job.status) ? job : null;
+}
+
 function requireIndex(state, res) {
   if (state.index) return state.index;
   sendError(res, 409, 'Project not selected', {
@@ -128,6 +133,85 @@ function requireIndex(state, res) {
     projectSelected: false,
   });
   return null;
+}
+
+function projectJobPayload(job) {
+  if (!job) return null;
+  return {
+    id: job.id,
+    repoRoot: job.repoRoot,
+    status: job.status,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt,
+    buildMs: job.buildMs,
+    error: job.error,
+    progress: job.progress,
+  };
+}
+
+function startProjectJob(state, repoRoot) {
+  if (state.activeProjectJob && ['queued', 'running'].includes(state.activeProjectJob.status)) {
+    state.activeProjectJob.controller.abort();
+  }
+
+  const id = String(state.nextProjectJobId++);
+  const controller = new AbortController();
+  const job = {
+    id,
+    repoRoot,
+    controller,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    completedAt: '',
+    buildMs: 0,
+    error: '',
+    progress: {
+      phase: 'queued',
+      repoRoot,
+      filesTotal: 0,
+      filesScanned: 0,
+      candidateFileCount: 0,
+      skippedFileCount: 0,
+      unknownFileCount: 0,
+      indexedFileCount: 0,
+      indexedBytes: 0,
+      elapsedMs: 0,
+    },
+  };
+  state.activeProjectJob = job;
+
+  const startedAt = Date.now();
+  job.promise = state.buildIndex({
+    repoRoot,
+    codexHome: state.codexHome,
+    signal: controller.signal,
+    onProgress: (progress) => {
+      job.progress = { ...job.progress, ...progress };
+    },
+  }).then((index) => {
+    if (controller.signal.aborted) {
+      job.status = 'cancelled';
+      job.error = 'Indexing cancelled';
+      return;
+    }
+    job.status = 'succeeded';
+    job.completedAt = new Date().toISOString();
+    job.buildMs = Date.now() - startedAt;
+    state.index = index;
+    state.buildMs = job.buildMs;
+  }).catch((error) => {
+    job.completedAt = new Date().toISOString();
+    job.buildMs = Date.now() - startedAt;
+    if (error.name === 'AbortError') {
+      job.status = 'cancelled';
+      job.error = 'Indexing cancelled';
+      return;
+    }
+    job.status = 'failed';
+    job.error = error.message || 'Indexing failed';
+  });
+
+  return job;
 }
 
 async function serveStatic(res, pathname) {
@@ -159,7 +243,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     index: initialIndex?.repoRoot ? initialIndex : null,
     buildMs: initialIndex?.repoRoot ? buildMs : 0,
     codexHome: path.resolve(initialIndex?.codexHome || initialIndex?.codexHomePath || options.codexHome || path.join(os.homedir(), '.codex')),
+    nextProjectJobId: 1,
+    activeProjectJob: null,
+    buildIndex: options.buildIndex || buildIndex,
   };
+  if (options.repo) startProjectJob(state, options.repo);
 
   return http.createServer(async (req, res) => {
     try {
@@ -177,17 +265,57 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sendError(res, 400, 'repoRoot is required');
           return;
         }
-        const startedAt = Date.now();
-        state.index = await buildIndex({
-          repoRoot,
-          codexHome: state.codexHome,
-        });
-        state.buildMs = Date.now() - startedAt;
-        sendJson(res, 200, statePayload(state));
+        const job = startProjectJob(state, repoRoot);
+        sendJson(res, 202, { job: projectJobPayload(job) });
+        return;
+      }
+
+      if (pathname === '/api/project/status' && req.method === 'GET') {
+        const job = state.activeProjectJob;
+        const jobId = searchParams.get('jobId') || '';
+        if (!job || (jobId && job.id !== jobId)) {
+          sendError(res, 404, 'Project indexing job not found');
+          return;
+        }
+        const payload = { job: projectJobPayload(job) };
+        if (job.status === 'succeeded' && state.index?.repoRoot === path.resolve(job.repoRoot)) {
+          payload.state = statePayload(state);
+        }
+        sendJson(res, 200, payload);
+        return;
+      }
+
+      if (pathname === '/api/project/status' && req.method === 'DELETE') {
+        const job = state.activeProjectJob;
+        const jobId = searchParams.get('jobId') || '';
+        if (!job || (jobId && job.id !== jobId)) {
+          sendError(res, 404, 'Project indexing job not found');
+          return;
+        }
+        if (['queued', 'running'].includes(job.status)) {
+          job.controller.abort();
+          job.status = 'cancelled';
+          job.completedAt = new Date().toISOString();
+          job.error = 'Indexing cancelled';
+        }
+        sendJson(res, 200, { job: projectJobPayload(job) });
         return;
       }
 
       if (pathname === '/api/state') {
+        const activeJob = activeProjectJob(state);
+        if (activeJob) {
+          const payload = {
+            projectSelected: false,
+            codexHome: state.codexHome,
+            job: projectJobPayload(activeJob),
+          };
+          if (state.index) {
+            payload.currentState = statePayload(state);
+          }
+          sendJson(res, 202, payload);
+          return;
+        }
         if (!requireIndex(state, res)) return;
         sendJson(res, 200, statePayload(state));
         return;
@@ -305,24 +433,13 @@ async function main() {
     return;
   }
 
-  let index = null;
-  let buildMs = 0;
-  if (opts.repo) {
-    const startedAt = Date.now();
-    index = await buildIndex({
-      repoRoot: opts.repo,
-      codexHome: opts.codexHome,
-    });
-    buildMs = Date.now() - startedAt;
-  }
-  const server = createServer(index, buildMs, { codexHome: opts.codexHome });
+  const server = createServer(null, 0, { codexHome: opts.codexHome, repo: opts.repo });
 
   server.listen(opts.port, opts.host, () => {
     console.log(`Codex Session Analyzer: http://${opts.host}:${opts.port}`);
-    if (index) {
-      console.log(`Repo: ${index.repoRoot}`);
-      console.log(`Codex home: ${index.codexHome}`);
-      console.log(`Indexed ${index.totals.sessionCount} sessions from ${index.totals.fileCount} files in ${buildMs}ms`);
+    if (opts.repo) {
+      console.log(`Repo: indexing ${path.resolve(opts.repo)}`);
+      console.log(`Codex home: ${path.resolve(opts.codexHome)}`);
     } else {
       console.log('Repo: select in browser');
       console.log(`Codex home: ${path.resolve(opts.codexHome)}`);

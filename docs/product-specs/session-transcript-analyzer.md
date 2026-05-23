@@ -73,6 +73,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 19. When the server was started without `--repo`, the browser remembers the last selected target project locally and restores it on refresh when it is still available. / 当服务器未使用 `--repo` 启动时，浏览器会在本地记住上次选择的目标项目，并在刷新且该项目仍可用时恢复它。
 20. Timeline pagination remains available through the explicit load-more button and also attempts to load the next page when the user scrolls to the bottom of the timeline pane. / 时间线分页既可通过显式的“加载更多”按钮使用，也会在用户滚动到时间线面板底部时尝试加载下一页。
 21. Routine token count and rate-limit records live in the protocol layer because they describe Codex runtime state rather than the engineering workflow; when a transcript reports an actual reached usage limit, the main timeline shows a warning event. Raw JSON remains available for verification. / 常规 token count 和 rate-limit 记录位于 protocol layer，因为它们描述的是 Codex 运行时状态而不是工程工作流；当转录报告确实触达使用限额时，main timeline 会显示一个 warning 事件。原始 JSON 仍可用于验证。
+22. Project indexing shows progress while it scans and parses transcript files, can be cancelled from the project chooser, and avoids fully parsing transcript files that are clearly associated with a different repository. Files whose repository cannot be identified from early metadata are still parsed as a conservative fallback. / 项目索引在扫描和解析转录文件时会显示进度，可从项目选择器取消，并避免完整解析明确属于其他仓库的转录文件。无法从早期 metadata 识别仓库的文件仍会作为保守回退被解析。
 
 ## Acceptance criteria / 验收标准
 
@@ -103,6 +104,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - [x] Inferred fallback titles come from real user task text rather than protocol wrappers or malformed transcript scaffolding. / 推断出的回退标题来自真实用户任务文本，而不是协议包装或格式异常的转录脚手架。
 - [x] Starting without `--repo` lets the user select a target project in the browser before repository-scoped indexing. / 不带 `--repo` 启动时，用户可以先在浏览器中选择目标项目，再进行仓库范围的索引。
 - [x] Routine token count events stay out of Main timeline, remain readable in Protocol layer, and only produce a Main timeline warning when a usage limit is reached. / 常规 token count 事件不会进入 Main timeline，会在 Protocol layer 中保持可读，并且只有在触达使用限额时才会产生 Main timeline warning。
+- [x] Project indexing reports visible progress, can be cancelled before completion, and preserves correctness by parsing unknown-repository transcript files while skipping only files known to belong to other repositories. / 项目索引会报告可见进度，可在完成前取消，并通过解析未知仓库归属的转录文件、只跳过已知属于其他仓库的文件来保持正确性。
 
 ## Edge cases / 边界情况
 

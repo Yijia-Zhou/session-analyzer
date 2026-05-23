@@ -1,2 +1,4 @@
 {"id":"11111111-1111-1111-1111-111111111111","thread_name":"fixture repo session","updated_at":"2026-04-20T02:20:00.000Z"}
 {"id":"22222222-2222-2222-2222-222222222222","thread_name":"outside repo session","updated_at":"2026-04-19T02:20:00.000Z"}
+{"id":"99999999-9999-9999-9999-999999999999","thread_name":"late matching cwd fixture","updated_at":"2026-04-20T03:05:02.000Z"}
+{"id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","thread_name":"late matching cwd after scan window fixture","updated_at":"2026-04-20T03:10:03.000Z"}

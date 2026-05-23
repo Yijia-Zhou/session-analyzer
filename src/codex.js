@@ -11,7 +11,6 @@ const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/
 const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'kv', 'notice', 'raw_json', 'token_usage', 'usage_limits']);
 const SESSION_TITLE_LIMIT = 120;
 const SUBAGENT_SESSION_TITLE_LIMIT = 160;
-const PROJECT_DISCOVERY_LINE_LIMIT = 80;
 
 let markdownRenderer = null;
 let gb18030ReverseMap = null;
@@ -26,6 +25,17 @@ function isPathInsideOrSame(child, parent) {
   const c = normalizeFsPath(child);
   const p = normalizeFsPath(parent);
   return c === p || c.startsWith(`${p}${path.sep}`);
+}
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error('Indexing cancelled');
+  error.name = 'AbortError';
+  throw error;
+}
+
+function emitProgress(onProgress, progress) {
+  if (typeof onProgress === 'function') onProgress(progress);
 }
 
 function normalizeSearchPath(input) {
@@ -954,6 +964,46 @@ async function collectJsonlFiles(root) {
   return out;
 }
 
+async function inspectSessionFile(filePath, options = {}) {
+  const signal = options.signal;
+  const repoRoot = options.repoRoot ? path.resolve(options.repoRoot) : '';
+  throwIfAborted(signal);
+  const stat = await fsp.stat(filePath);
+  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const cwdSet = new Set();
+
+  try {
+    for await (const line of rl) {
+      throwIfAborted(signal);
+      if (!line.trim()) continue;
+      if (!line.includes('"cwd"')) continue;
+      const record = safeJsonParse(line);
+      if (!record) continue;
+      const payloadType = record.type === 'event_msg' ? record.payload?.type : '';
+      const cwd = record.type === 'session_meta' || payloadType === 'session_configured' ? record.payload?.cwd : '';
+      if (cwd) {
+        const resolvedCwd = path.resolve(cwd);
+        cwdSet.add(resolvedCwd);
+        if (repoRoot && isPathInsideOrSame(resolvedCwd, repoRoot)) {
+          rl.close();
+          stream.destroy();
+          break;
+        }
+      }
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+
+  return {
+    bytes: stat.size,
+    updatedAt: safeIso(stat.mtime),
+    cwdSet,
+  };
+}
+
 async function discoverProjects({ codexHome }) {
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
@@ -961,27 +1011,7 @@ async function discoverProjects({ codexHome }) {
   const projects = new Map();
 
   for (const filePath of files) {
-    const stat = await fsp.stat(filePath);
-    const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
-    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-    const cwdSet = new Set();
-    const updatedAt = safeIso(stat.mtime);
-    let lineNumber = 0;
-
-    for await (const line of rl) {
-      lineNumber += 1;
-      if (!line.trim()) continue;
-      const record = safeJsonParse(line);
-      if (!record) continue;
-      const payloadType = record.type === 'event_msg' ? record.payload?.type : '';
-      const cwd = record.type === 'session_meta' || payloadType === 'session_configured' ? record.payload?.cwd : '';
-      if (cwd) cwdSet.add(path.resolve(cwd));
-      if (cwdSet.size || lineNumber >= PROJECT_DISCOVERY_LINE_LIMIT) {
-        rl.close();
-        stream.destroy();
-        break;
-      }
-    }
+    const { bytes, cwdSet, updatedAt } = await inspectSessionFile(filePath);
 
     for (const repoRoot of cwdSet) {
       const key = normalizeFsPath(repoRoot);
@@ -992,6 +1022,7 @@ async function discoverProjects({ codexHome }) {
         exists: false,
       };
       project.sessionCount += 1;
+      project.bytes = (project.bytes || 0) + bytes;
       if (updatedAt && updatedAt > project.updatedAt) project.updatedAt = updatedAt;
       projects.set(key, project);
     }
@@ -2948,7 +2979,8 @@ function finalizeSession(session, sessionIndexEntry) {
   return session;
 }
 
-async function parseSessionFile(filePath, relFile, repoRoot) {
+async function parseSessionFile(filePath, relFile, repoRoot, signal) {
+  throwIfAborted(signal);
   const stat = await fsp.stat(filePath);
   const session = makeEmptySession(filePath, relFile, stat);
   let primarySessionMetaSeen = false;
@@ -2965,60 +2997,67 @@ async function parseSessionFile(filePath, relFile, repoRoot) {
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   let lineNumber = 0;
 
-  for await (const line of rl) {
-    lineNumber += 1;
-    if (!line.trim()) continue;
-    session.lineCount += 1;
-    const record = safeJsonParse(line);
-    if (!record) continue;
+  try {
+    for await (const line of rl) {
+      throwIfAborted(signal);
+      lineNumber += 1;
+      if (!line.trim()) continue;
+      session.lineCount += 1;
+      const record = safeJsonParse(line);
+      if (!record) continue;
 
-    if (record.type === 'session_meta' && record.payload) {
-      if (!primarySessionMetaSeen) {
-        primarySessionMetaSeen = true;
-        if (record.payload.id) session.id = record.payload.id;
-        session.parentSessionId = parentSessionIdFromMeta(record.payload);
-        session.agentNickname = agentNicknameFromMeta(record.payload);
-        session.primarySessionMetaKind = derivedSessionKindFromMeta(record.payload);
+      if (record.type === 'session_meta' && record.payload) {
+        if (!primarySessionMetaSeen) {
+          primarySessionMetaSeen = true;
+          if (record.payload.id) session.id = record.payload.id;
+          session.parentSessionId = parentSessionIdFromMeta(record.payload);
+          session.agentNickname = agentNicknameFromMeta(record.payload);
+          session.primarySessionMetaKind = derivedSessionKindFromMeta(record.payload);
+        }
+        if (record.payload.cwd) {
+          session.cwdSet.add(record.payload.cwd);
+          if (isPathInsideOrSame(record.payload.cwd, repoRoot)) session.matchesRepo = true;
+        }
       }
-      if (record.payload.cwd) {
-        session.cwdSet.add(record.payload.cwd);
-        if (isPathInsideOrSame(record.payload.cwd, repoRoot)) session.matchesRepo = true;
+      if (record.type === 'event_msg' && record.payload?.type === 'session_configured') {
+        if (record.payload.cwd) {
+          session.cwdSet.add(record.payload.cwd);
+          if (isPathInsideOrSame(record.payload.cwd, repoRoot)) session.matchesRepo = true;
+        }
+        if (!session.title && record.payload.thread_name) {
+          session.title = record.payload.thread_name;
+        }
+        if (!primarySessionMetaSeen) {
+          if (!session.parentSessionId) session.parentSessionId = parentSessionIdFromMeta(record.payload);
+          if (!session.agentNickname) session.agentNickname = agentNicknameFromMeta(record.payload);
+          if (!session.primarySessionMetaKind) session.primarySessionMetaKind = derivedSessionKindFromMeta(record.payload);
+        }
       }
-    }
-    if (record.type === 'event_msg' && record.payload?.type === 'session_configured') {
-      if (record.payload.cwd) {
-        session.cwdSet.add(record.payload.cwd);
-        if (isPathInsideOrSame(record.payload.cwd, repoRoot)) session.matchesRepo = true;
-      }
-      if (!session.title && record.payload.thread_name) {
+      if (!session.parentSessionId && record.type === 'event_msg' && record.payload?.type === 'thread_name_updated' && record.payload.thread_name) {
         session.title = record.payload.thread_name;
       }
-      if (!primarySessionMetaSeen) {
-        if (!session.parentSessionId) session.parentSessionId = parentSessionIdFromMeta(record.payload);
-        if (!session.agentNickname) session.agentNickname = agentNicknameFromMeta(record.payload);
-        if (!session.primarySessionMetaKind) session.primarySessionMetaKind = derivedSessionKindFromMeta(record.payload);
+      if (record.type === 'event_msg' && record.payload?.type === 'entered_review_mode') {
+        session._reviewMarkers.push({
+          enteredAt: safeIso(record.timestamp),
+          exitedAt: '',
+        });
+      } else if (record.type === 'event_msg' && record.payload?.type === 'exited_review_mode') {
+        let marker = session._reviewMarkers[session._reviewMarkers.length - 1];
+        if (!marker || marker.exitedAt) {
+          marker = { enteredAt: '', exitedAt: '' };
+          session._reviewMarkers.push(marker);
+        }
+        marker.exitedAt = safeIso(record.timestamp);
       }
+      updateTimeRange(session, record.timestamp);
+      session.rawEvents.push(makeRawEvent(record, lineNumber, relFile, session.id));
     }
-    if (!session.parentSessionId && record.type === 'event_msg' && record.payload?.type === 'thread_name_updated' && record.payload.thread_name) {
-      session.title = record.payload.thread_name;
-    }
-    if (record.type === 'event_msg' && record.payload?.type === 'entered_review_mode') {
-      session._reviewMarkers.push({
-        enteredAt: safeIso(record.timestamp),
-        exitedAt: '',
-      });
-    } else if (record.type === 'event_msg' && record.payload?.type === 'exited_review_mode') {
-      let marker = session._reviewMarkers[session._reviewMarkers.length - 1];
-      if (!marker || marker.exitedAt) {
-        marker = { enteredAt: '', exitedAt: '' };
-        session._reviewMarkers.push(marker);
-      }
-      marker.exitedAt = safeIso(record.timestamp);
-    }
-    updateTimeRange(session, record.timestamp);
-    session.rawEvents.push(makeRawEvent(record, lineNumber, relFile, session.id));
+  } finally {
+    rl.close();
+    stream.destroy();
   }
 
+  throwIfAborted(signal);
   session.logicalEvents = buildLogicalEvents(session.rawEvents);
   for (const event of session.logicalEvents) {
     addCounts(session, event);
@@ -3027,32 +3066,144 @@ async function parseSessionFile(filePath, relFile, repoRoot) {
   return session;
 }
 
-async function buildIndex({ repoRoot, codexHome }) {
+async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
   const resolvedRepo = path.resolve(repoRoot);
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
+  const startedAt = Date.now();
+  throwIfAborted(signal);
+  emitProgress(onProgress, {
+    phase: 'scanning',
+    repoRoot: resolvedRepo,
+    filesTotal: 0,
+    filesScanned: 0,
+    candidateFileCount: 0,
+    skippedFileCount: 0,
+    unknownFileCount: 0,
+    indexedFileCount: 0,
+    indexedBytes: 0,
+    elapsedMs: 0,
+  });
   const sessionIndex = await readSessionIndex(resolvedCodex);
   const files = await collectJsonlFiles(sessionsRoot);
+  const candidates = [];
+  let skippedFileCount = 0;
+  let unknownFileCount = 0;
+  let candidateBytes = 0;
+
+  emitProgress(onProgress, {
+    phase: 'selecting',
+    repoRoot: resolvedRepo,
+    filesTotal: files.length,
+    filesScanned: 0,
+    candidateFileCount: 0,
+    skippedFileCount,
+    unknownFileCount,
+    indexedFileCount: 0,
+    indexedBytes: 0,
+    elapsedMs: Date.now() - startedAt,
+  });
+
+  for (const filePath of files) {
+    throwIfAborted(signal);
+    const inspected = await inspectSessionFile(filePath, { repoRoot: resolvedRepo, signal });
+    const hasCwd = inspected.cwdSet.size > 0;
+    const matchesRepo = [...inspected.cwdSet].some((cwd) => isPathInsideOrSame(cwd, resolvedRepo));
+    if (matchesRepo || !hasCwd) {
+      candidates.push(filePath);
+      candidateBytes += inspected.bytes;
+      if (!hasCwd) unknownFileCount += 1;
+    } else {
+      skippedFileCount += 1;
+    }
+    emitProgress(onProgress, {
+      phase: 'selecting',
+      repoRoot: resolvedRepo,
+      filesTotal: files.length,
+      filesScanned: skippedFileCount + candidates.length,
+      candidateFileCount: candidates.length,
+      skippedFileCount,
+      unknownFileCount,
+      indexedFileCount: 0,
+      indexedBytes: 0,
+      candidateBytes,
+      elapsedMs: Date.now() - startedAt,
+    });
+  }
+
   const sessions = [];
   const sessionsById = new Map();
   let logicalEventCount = 0;
   let rawEventCount = 0;
+  let indexedFileCount = 0;
+  let parsedBytes = 0;
 
-  for (const filePath of files) {
+  emitProgress(onProgress, {
+    phase: 'parsing',
+    repoRoot: resolvedRepo,
+    filesTotal: files.length,
+    filesScanned: files.length,
+    candidateFileCount: candidates.length,
+    skippedFileCount,
+    unknownFileCount,
+    indexedFileCount,
+    indexedBytes: 0,
+    candidateBytes,
+    elapsedMs: Date.now() - startedAt,
+  });
+
+  for (const filePath of candidates) {
+    throwIfAborted(signal);
     const relFile = path.relative(sessionsRoot, filePath);
-    const session = await parseSessionFile(filePath, relFile, resolvedRepo);
+    const session = await parseSessionFile(filePath, relFile, resolvedRepo, signal);
+    indexedFileCount += 1;
+    parsedBytes += session.bytes;
     const indexEntry = sessionIndex.get(session.id);
     finalizeSession(session, indexEntry);
-    if (!session.matchesRepo) continue;
-    sessions.push(session);
-    sessionsById.set(session.id, session);
-    logicalEventCount += session.logicalEvents.length;
-    rawEventCount += session.rawEvents.length;
+    if (session.matchesRepo) {
+      sessions.push(session);
+      sessionsById.set(session.id, session);
+      logicalEventCount += session.logicalEvents.length;
+      rawEventCount += session.rawEvents.length;
+    }
+    emitProgress(onProgress, {
+      phase: 'parsing',
+      repoRoot: resolvedRepo,
+      filesTotal: files.length,
+      filesScanned: files.length,
+      candidateFileCount: candidates.length,
+      skippedFileCount,
+      unknownFileCount,
+      indexedFileCount,
+      indexedBytes: parsedBytes,
+      candidateBytes,
+      sessionCount: sessions.length,
+      eventCount: logicalEventCount,
+      rawEventCount,
+      elapsedMs: Date.now() - startedAt,
+    });
   }
 
+  throwIfAborted(signal);
   inferReviewParentSessions(sessions);
   for (const session of sessions) delete session._reviewMarkers;
   sessions.sort((a, b) => String(b.updatedAt || b.startedAt).localeCompare(String(a.updatedAt || a.startedAt)));
+  emitProgress(onProgress, {
+    phase: 'complete',
+    repoRoot: resolvedRepo,
+    filesTotal: files.length,
+    filesScanned: files.length,
+    candidateFileCount: candidates.length,
+    skippedFileCount,
+    unknownFileCount,
+    indexedFileCount,
+    indexedBytes: parsedBytes,
+    candidateBytes,
+    sessionCount: sessions.length,
+    eventCount: logicalEventCount,
+    rawEventCount,
+    elapsedMs: Date.now() - startedAt,
+  });
   return {
     repoRoot: resolvedRepo,
     codexHome: resolvedCodex,
@@ -3062,10 +3213,15 @@ async function buildIndex({ repoRoot, codexHome }) {
     sessionsById,
     totals: {
       fileCount: files.length,
+      candidateFileCount: candidates.length,
+      indexedFileCount,
+      skippedFileCount,
+      unknownFileCount,
       sessionCount: sessions.length,
       eventCount: logicalEventCount,
       rawEventCount,
       indexedBytes: sessions.reduce((sum, session) => sum + session.bytes, 0),
+      candidateBytes,
     },
   };
 }

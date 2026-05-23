@@ -8,12 +8,17 @@ const { createServer, parseArgs } = require('../server');
 const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../src/folding');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
+const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 
 async function buildFixtureIndex() {
   return buildIndex({
     repoRoot: 'G:\\vibe\\term-agent',
     codexHome: fixtureCodexHome,
   });
+}
+
+function primaryFixtureSession(index) {
+  return index.sessionsById.get(primaryFixtureSessionId);
 }
 
 test('parseArgs leaves repo unset unless --repo is provided', () => {
@@ -25,17 +30,21 @@ test('discoverProjects groups Codex sessions by cwd', async () => {
   const projects = await discoverProjects({ codexHome: fixtureCodexHome });
   const byRoot = new Map(projects.map((project) => [project.repoRoot, project]));
 
-  assert.equal(byRoot.get('G:\\vibe\\term-agent').sessionCount, 7);
-  assert.equal(byRoot.get('G:\\other\\repo').sessionCount, 1);
+  assert.equal(byRoot.get('G:\\vibe\\term-agent').sessionCount, 9);
+  assert.equal(byRoot.get('G:\\other\\repo').sessionCount, 3);
   assert.equal(typeof byRoot.get('G:\\vibe\\term-agent').exists, 'boolean');
 });
 
 test('buildIndex deduplicates mirrored messages and keeps protocol separately', async () => {
   const index = await buildFixtureIndex();
-  const session = index.sessions[0];
+  const session = primaryFixtureSession(index);
 
-  assert.equal(index.totals.fileCount, 8);
-  assert.equal(index.totals.sessionCount, 7);
+  assert.equal(index.totals.fileCount, 10);
+  assert.equal(index.totals.candidateFileCount, 9);
+  assert.equal(index.totals.indexedFileCount, 9);
+  assert.equal(index.totals.skippedFileCount, 1);
+  assert.equal(index.totals.unknownFileCount, 0);
+  assert.equal(index.totals.sessionCount, 9);
   assert.equal(session.id, '11111111-1111-1111-1111-111111111111');
   assert.equal(session.title, 'fixture repo session');
   assert.equal(session.counts.userMessages, 1);
@@ -48,6 +57,45 @@ test('buildIndex deduplicates mirrored messages and keeps protocol separately', 
   assert.equal(session.counts.planArtifacts, 1);
   assert.equal(session.counts.planEvents, 4);
   assert.ok(session.counts.protocol >= 3);
+});
+
+test('buildIndex keeps files whose later metadata cwd matches the repo', async () => {
+  const index = await buildFixtureIndex();
+  const session = index.sessionsById.get('99999999-9999-9999-9999-999999999999');
+  const afterWindowSession = index.sessionsById.get('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+
+  assert.ok(session);
+  assert.equal(session.title, 'late matching cwd fixture');
+  assert.equal(session.matchesRepo, true);
+  assert.deepEqual([...session.cwdSet].sort(), ['G:\\other\\repo', 'G:\\vibe\\term-agent'].sort());
+  assert.ok(afterWindowSession);
+  assert.equal(afterWindowSession.title, 'late matching cwd after scan window fixture');
+  assert.equal(afterWindowSession.matchesRepo, true);
+  assert.deepEqual([...afterWindowSession.cwdSet].sort(), ['G:\\other\\repo', 'G:\\vibe\\term-agent'].sort());
+});
+
+test('buildIndex reports progress and supports cancellation', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    buildIndex({
+      repoRoot: 'G:\\vibe\\term-agent',
+      codexHome: fixtureCodexHome,
+      signal: controller.signal,
+      onProgress: () => {},
+    }),
+    { name: 'AbortError' },
+  );
+
+  const phases = [];
+  await buildIndex({
+    repoRoot: 'G:\\vibe\\term-agent',
+    codexHome: fixtureCodexHome,
+    onProgress: (progress) => phases.push(progress.phase),
+  });
+  assert.ok(phases.includes('selecting'));
+  assert.ok(phases.includes('parsing'));
+  assert.equal(phases.at(-1), 'complete');
 });
 
 test('buildIndex keeps forked subagent identity separate from embedded parent metadata', async () => {
@@ -145,8 +193,8 @@ test('buildIndex infers fallback titles from real user tasks after protocol wrap
 
 test('timeline main layer returns logical events without duplicate user or assistant messages', async () => {
   const index = await buildFixtureIndex();
-  const session = index.sessions[0];
-  const timeline = getTimeline(index, index.sessions[0].id, {
+  const session = primaryFixtureSession(index);
+  const timeline = getTimeline(index, primaryFixtureSessionId, {
     offset: 0,
     limit: 100,
     q: '',
@@ -204,7 +252,7 @@ test('timeline main layer returns logical events without duplicate user or assis
 
 test('timeline protocol layer exposes injected records and raw layer keeps all rows', async () => {
   const index = await buildFixtureIndex();
-  const protocolTimeline = getTimeline(index, index.sessions[0].id, {
+  const protocolTimeline = getTimeline(index, primaryFixtureSessionId, {
     offset: 0,
     limit: 100,
     q: '',
@@ -234,7 +282,7 @@ test('timeline protocol layer exposes injected records and raw layer keeps all r
   assert.equal(protocolBySubtype.get('thread_goal_updated').label, 'Thread goal updated');
   assert.equal(protocolBySubtype.get('thread_goal_updated').preview, 'Keep protocol coverage readable.');
 
-  const rawTimeline = getTimeline(index, index.sessions[0].id, {
+  const rawTimeline = getTimeline(index, primaryFixtureSessionId, {
     offset: 0,
     limit: 100,
     q: '',
@@ -250,7 +298,7 @@ test('timeline protocol layer exposes injected records and raw layer keeps all r
 
 test('current protocol plan, severity, lifecycle aliases, and incomplete tool records are readable', async () => {
   const index = await buildFixtureIndex();
-  const session = index.sessions[0];
+  const session = primaryFixtureSession(index);
   const timeline = getTimeline(index, session.id, {
     offset: 0,
     limit: 200,
@@ -310,12 +358,12 @@ test('current protocol plan, severity, lifecycle aliases, and incomplete tool re
 
 test('tool logical events merge new and old format patch records and search still works', async () => {
   const index = await buildFixtureIndex();
-  const session = index.sessions[0];
+  const session = primaryFixtureSession(index);
 
   const searched = filterSessions(index, { q: 'alpha', sort: 'updated-desc', layer: 'main' });
   assert.equal(searched.total, 1);
 
-  const parserTimeline = getTimeline(index, index.sessions[0].id, {
+  const parserTimeline = getTimeline(index, primaryFixtureSessionId, {
     offset: 0,
     limit: 100,
     q: '',
@@ -333,7 +381,7 @@ test('tool logical events merge new and old format patch records and search stil
     { key: 'G:\\vibe\\term-agent\\src\\parser.js', value: '+1 / -1' },
   ]);
 
-  const legacyTimeline = getTimeline(index, index.sessions[0].id, {
+  const legacyTimeline = getTimeline(index, primaryFixtureSessionId, {
     offset: 0,
     limit: 100,
     q: '',
@@ -351,7 +399,7 @@ test('tool logical events merge new and old format patch records and search stil
     { key: 'src/legacy.js', value: '+1 / -1' },
   ]);
 
-  const statsTimeline = getTimeline(index, index.sessions[0].id, {
+  const statsTimeline = getTimeline(index, primaryFixtureSessionId, {
     offset: 0,
     limit: 100,
     q: '',
@@ -369,7 +417,7 @@ test('tool logical events merge new and old format patch records and search stil
     { key: 'G:\\vibe\\term-agent\\src\\stats.js', value: '+2 / -1' },
   ]);
 
-  const failedTimeline = getTimeline(index, index.sessions[0].id, {
+  const failedTimeline = getTimeline(index, primaryFixtureSessionId, {
     offset: 0,
     limit: 100,
     q: '',
@@ -388,7 +436,7 @@ test('tool logical events merge new and old format patch records and search stil
     { key: 'src/failed.js', value: '+1 / -1' },
   ]);
 
-  const outputOnlyCommandTimeline = getTimeline(index, index.sessions[0].id, {
+  const outputOnlyCommandTimeline = getTimeline(index, primaryFixtureSessionId, {
     offset: 0,
     limit: 100,
     q: 'rg -n -F',
@@ -416,7 +464,7 @@ test('file suggestions come from analyzed session touched files', async () => {
 
 test('web search logical events merge end/call rows and expose structured detail', async () => {
   const index = await buildFixtureIndex();
-  const session = index.sessions[0];
+  const session = primaryFixtureSession(index);
 
   const webTimeline = getTimeline(index, session.id, {
     offset: 0,
@@ -481,7 +529,7 @@ test('web search logical events merge end/call rows and expose structured detail
 
 test('buildEventDetail extracts structured sections for messages, tools, protocol, empty reasoning, and raw records', async () => {
   const index = await buildFixtureIndex();
-  const session = index.sessions[0];
+  const session = primaryFixtureSession(index);
 
   const userEvent = session.logicalEvents.find((event) => event.kind === 'user_message');
   const userDetail = buildEventDetail(session, userEvent.id, 'main');
@@ -666,7 +714,7 @@ test('command terminal sections repair UTF-8 text decoded as GB18030', () => {
 
 test('detail endpoint returns structured event detail with sections and raw refs', async () => {
   const index = await buildFixtureIndex();
-  const session = index.sessions[0];
+  const session = primaryFixtureSession(index);
   const planEvent = session.logicalEvents.find((event) => event.kind === 'plan_artifact');
   const server = createServer(index, 1);
 
@@ -707,14 +755,101 @@ test('project endpoints require and select a browser-chosen project', async () =
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ repoRoot: 'G:\\vibe\\term-agent' }),
     });
-    assert.equal(selectRes.status, 200);
+    assert.equal(selectRes.status, 202);
     const selectBody = await selectRes.json();
-    assert.equal(selectBody.repoRoot, 'G:\\vibe\\term-agent');
-    assert.equal(selectBody.totals.sessionCount, 7);
+    assert.equal(selectBody.job.repoRoot, 'G:\\vibe\\term-agent');
+    assert.equal(selectBody.job.status, 'running');
+
+    let statusBody = null;
+    for (let i = 0; i < 20; i += 1) {
+      const statusRes = await fetch(`${base}/api/project/status?jobId=${encodeURIComponent(selectBody.job.id)}`);
+      assert.equal(statusRes.status, 200);
+      statusBody = await statusRes.json();
+      if (statusBody.job.status === 'succeeded') break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(statusBody.job.status, 'succeeded');
+    assert.equal(statusBody.state.repoRoot, 'G:\\vibe\\term-agent');
+    assert.equal(statusBody.state.totals.sessionCount, 9);
+    assert.equal(statusBody.state.totals.skippedFileCount, 1);
 
     const sessionsRes = await fetch(`${base}/api/sessions`);
     assert.equal(sessionsRes.status, 200);
-    assert.equal((await sessionsRes.json()).total, 7);
+    assert.equal((await sessionsRes.json()).total, 9);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('state reports active project job even when an old index exists', async () => {
+  const index = await buildFixtureIndex();
+  let releaseIndex = null;
+  const server = createServer(index, 1, {
+    codexHome: fixtureCodexHome,
+    buildIndex: () => new Promise((resolve) => {
+      releaseIndex = () => resolve(index);
+    }),
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const selectRes = await fetch(`${base}/api/project`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repoRoot: 'G:\\vibe\\term-agent' }),
+    });
+    assert.equal(selectRes.status, 202);
+    const selectBody = await selectRes.json();
+
+    const stateRes = await fetch(`${base}/api/state`);
+    assert.equal(stateRes.status, 202);
+    const stateBody = await stateRes.json();
+    assert.equal(stateBody.job.id, selectBody.job.id);
+    assert.equal(stateBody.currentState.repoRoot, 'G:\\vibe\\term-agent');
+    releaseIndex();
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('cancelling an active project job preserves the previous index', async () => {
+  const index = await buildFixtureIndex();
+  const server = createServer(index, 1, {
+    codexHome: fixtureCodexHome,
+    buildIndex: ({ signal }) => new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        const error = new Error('Indexing cancelled');
+        error.name = 'AbortError';
+        reject(error);
+      });
+    }),
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const selectRes = await fetch(`${base}/api/project`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repoRoot: 'G:\\vibe\\term-agent' }),
+    });
+    assert.equal(selectRes.status, 202);
+    const selectBody = await selectRes.json();
+
+    const cancelRes = await fetch(`${base}/api/project/status?jobId=${encodeURIComponent(selectBody.job.id)}`, {
+      method: 'DELETE',
+    });
+    assert.equal(cancelRes.status, 200);
+    assert.equal((await cancelRes.json()).job.status, 'cancelled');
+
+    const stateRes = await fetch(`${base}/api/state`);
+    assert.equal(stateRes.status, 200);
+    const stateBody = await stateRes.json();
+    assert.equal(stateBody.repoRoot, 'G:\\vibe\\term-agent');
+    assert.equal(stateBody.totals.sessionCount, 9);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
@@ -722,7 +857,7 @@ test('project endpoints require and select a browser-chosen project', async () =
 
 test('readRawLine returns the original JSONL row for drill-down', async () => {
   const index = await buildFixtureIndex();
-  const raw = await readRawLine(index, index.sessions[0].sourceFile, 12);
+  const raw = await readRawLine(index, primaryFixtureSession(index).sourceFile, 12);
   assert.equal(raw.parsed.type, 'event_msg');
   assert.equal(raw.parsed.payload.type, 'agent_message');
 });

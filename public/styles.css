@@ -437,6 +437,17 @@ body[data-project-mode='selecting'] .searchAssist {
   padding-top: 0.2rem;
 }
 
+.projectProgress {
+  accent-color: var(--accent);
+  height: 0.45rem;
+  width: min(28rem, 100%);
+}
+
+.projectCancelBtn {
+  justify-self: start;
+  width: auto;
+}
+
 .projectChooser[data-loading='true'] .projectStatus::after {
   animation: projectDots 1.2s steps(4, end) infinite;
   content: '';

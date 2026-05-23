@@ -219,6 +219,8 @@ const state = {
   projectSelected: false,
   selectingProject: false,
   projectLoadingRoot: '',
+  projectJobId: '',
+  projectPollTimer: 0,
   selectedSessionId: '',
   selectedEventId: '',
   offset: 0,
@@ -286,6 +288,8 @@ const el = {
   mobileViewButtons: document.querySelectorAll('[data-mobile-view]'),
   projectChooser: document.getElementById('projectChooser'),
   projectStatus: document.getElementById('projectStatus'),
+  projectProgress: document.getElementById('projectProgress'),
+  projectCancelBtn: document.getElementById('projectCancelBtn'),
   projectList: document.getElementById('projectList'),
 };
 
@@ -380,6 +384,56 @@ function fmtBytes(bytes) {
     i += 1;
   }
   return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function fmtDuration(ms) {
+  const n = Number(ms || 0);
+  if (!Number.isFinite(n) || n <= 0) return '0s';
+  if (n < 1000) return `${Math.round(n)}ms`;
+  return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}s`;
+}
+
+function projectProgressPercent(progress) {
+  const phase = progress?.phase || '';
+  if (phase === 'complete') return 100;
+  if (phase === 'parsing') {
+    const total = Number(progress.candidateFileCount || 0);
+    const done = Number(progress.indexedFileCount || 0);
+    return total ? Math.max(5, Math.min(99, Math.round((done / total) * 100))) : 5;
+  }
+  const total = Number(progress?.filesTotal || 0);
+  const done = Number(progress?.filesScanned || 0);
+  return total ? Math.max(1, Math.min(95, Math.round((done / total) * 100))) : 0;
+}
+
+function renderProjectJob(job) {
+  const progress = job?.progress || {};
+  const phase = progress.phase || job?.status || 'queued';
+  const parts = [];
+  if (phase === 'selecting') {
+    parts.push(`Scanning ${progress.filesScanned || 0}/${progress.filesTotal || 0} transcript files`);
+    parts.push(`${progress.candidateFileCount || 0} candidates`);
+    parts.push(`${progress.skippedFileCount || 0} skipped`);
+  } else if (phase === 'parsing') {
+    parts.push(`Parsing ${progress.indexedFileCount || 0}/${progress.candidateFileCount || 0} candidate files`);
+    parts.push(`${progress.sessionCount || 0} sessions`);
+    parts.push(fmtBytes(progress.indexedBytes || 0));
+  } else if (job?.status === 'cancelled') {
+    parts.push('Indexing cancelled');
+  } else if (job?.status === 'failed') {
+    parts.push(job.error || 'Indexing failed');
+  } else {
+    parts.push(`Preparing index for ${projectName(job?.repoRoot || progress.repoRoot || '')}`);
+  }
+  if (progress.elapsedMs || job?.buildMs) parts.push(fmtDuration(progress.elapsedMs || job.buildMs));
+  if (el.projectStatus) el.projectStatus.textContent = parts.join(' | ');
+  if (el.projectProgress) {
+    el.projectProgress.hidden = !job || ['failed', 'cancelled'].includes(job.status);
+    el.projectProgress.value = projectProgressPercent(progress);
+  }
+  if (el.projectCancelBtn) {
+    el.projectCancelBtn.hidden = !job || !['queued', 'running'].includes(job.status);
+  }
 }
 
 function parsedSearchInput() {
@@ -1114,7 +1168,9 @@ function renderProjects() {
   el.projectList.setAttribute('aria-busy', loadingRoot ? 'true' : 'false');
   if (el.projectChooser) el.projectChooser.dataset.loading = loadingRoot ? 'true' : 'false';
   if (!state.projects.length) {
-    el.projectList.innerHTML = '<div class="notice warning"><p>No Codex projects were found in the configured sessions directory.</p></div>';
+    el.projectList.innerHTML = loadingRoot
+      ? ''
+      : '<div class="notice warning"><p>No Codex projects were found in the configured sessions directory.</p></div>';
     return;
   }
   const saved = localStorage.getItem(REPO_STORAGE_KEY) || '';
@@ -1146,12 +1202,22 @@ function renderProjects() {
   }).join('');
 }
 
+function clearProjectPollTimer() {
+  if (!state.projectPollTimer) return;
+  clearTimeout(state.projectPollTimer);
+  state.projectPollTimer = 0;
+}
+
 async function showProjectChooser(options = {}) {
   setProjectMode(true);
   state.projectLoadingRoot = '';
+  state.projectJobId = '';
+  clearProjectPollTimer();
   resetProjectViewState();
   setProjectHeader('', 'Choose a target project to continue.');
   if (el.projectStatus) el.projectStatus.textContent = 'Loading project list...';
+  if (el.projectProgress) el.projectProgress.hidden = true;
+  if (el.projectCancelBtn) el.projectCancelBtn.hidden = true;
   const data = await api('/api/projects');
   state.projects = data.projects || [];
   renderProjects();
@@ -1189,26 +1255,89 @@ async function applyAppState(appState) {
   resetDetailPane();
 }
 
+async function finishProjectSelection(appState, options = {}) {
+  localStorage.setItem(REPO_STORAGE_KEY, appState.repoRoot);
+  state.projectLoadingRoot = '';
+  state.projectJobId = '';
+  clearProjectPollTimer();
+  resetProjectViewState();
+  await applyAppState(appState);
+  setProjectMode(false);
+  await loadSessions();
+  if (!options.restore && el.projectStatus) el.projectStatus.textContent = '';
+  if (el.projectProgress) el.projectProgress.hidden = true;
+  if (el.projectCancelBtn) el.projectCancelBtn.hidden = true;
+}
+
+async function handleProjectJobResponse(data, options = {}) {
+  const job = data.job || {};
+  if (job.id !== state.projectJobId) return;
+  renderProjectJob(job);
+  if (job.status === 'succeeded') {
+    let appState = data.state;
+    if (!appState) appState = (await api(`/api/project/status?jobId=${encodeURIComponent(job.id)}`)).state;
+    if (!appState) {
+      const current = await api('/api/state');
+      if (!current.job) appState = current;
+    }
+    if (!appState) throw new Error('Project index completed but state is not available');
+    await finishProjectSelection(appState, options);
+    return;
+  }
+  if (job.status === 'failed') throw new Error(job.error || 'Indexing failed');
+  if (job.status === 'cancelled') {
+    state.projectLoadingRoot = '';
+    state.projectJobId = '';
+    setAnalyzerDisabled(false);
+    if (el.projectStatus) el.projectStatus.textContent = 'Indexing cancelled.';
+    if (el.projectProgress) el.projectProgress.hidden = true;
+    if (el.projectCancelBtn) el.projectCancelBtn.hidden = true;
+    if (state.projects.length) renderProjects();
+    else await showProjectChooser({ autoRestore: false });
+    return;
+  }
+  scheduleProjectJobPoll(job.id, options);
+}
+
+async function pollProjectJob(jobId, options = {}) {
+  clearProjectPollTimer();
+  const data = await api(`/api/project/status?jobId=${encodeURIComponent(jobId)}`);
+  if (jobId !== state.projectJobId) return;
+  await handleProjectJobResponse(data, options);
+}
+
+function handleProjectJobError(jobId, error) {
+  if (jobId !== state.projectJobId) return;
+  showError(error);
+}
+
+function scheduleProjectJobPoll(jobId, options = {}) {
+  state.projectPollTimer = setTimeout(() => {
+    pollProjectJob(jobId, options).catch((error) => handleProjectJobError(jobId, error));
+  }, 400);
+}
+
 async function selectProject(repoRoot, options = {}) {
   if (!repoRoot) return;
   state.projectLoadingRoot = repoRoot;
+  state.projectJobId = '';
+  clearProjectPollTimer();
   renderProjects();
   setProjectHeader('', `Indexing ${projectName(repoRoot)}...`);
   if (el.projectStatus) el.projectStatus.textContent = `Reading matching sessions for ${repoRoot}. This can take a few seconds for large transcript history.`;
   setAnalyzerDisabled(true);
   try {
-    const appState = await api('/api/project', {
+    const started = await api('/api/project', {
       method: 'POST',
       body: { repoRoot },
     });
-    localStorage.setItem(REPO_STORAGE_KEY, appState.repoRoot);
-    state.projectLoadingRoot = '';
-    resetProjectViewState();
-    await applyAppState(appState);
-    setProjectMode(false);
-    await loadSessions();
-    if (!options.restore && el.projectStatus) el.projectStatus.textContent = '';
+    const job = started.job || {};
+    state.projectJobId = job.id || '';
+    renderProjectJob(job);
+    if (state.projectJobId) await pollProjectJob(state.projectJobId, options);
   } catch (error) {
+    clearProjectPollTimer();
+    state.projectJobId = '';
     state.projectLoadingRoot = '';
     renderProjects();
     setAnalyzerDisabled(false);
@@ -1220,6 +1349,18 @@ async function init() {
   setMobileView(state.mobileView, { scroll: false });
   try {
     const appState = await api('/api/state');
+    if (appState.job) {
+      const job = appState.job;
+      setProjectMode(true);
+      state.projectLoadingRoot = job.repoRoot || '';
+      state.projectJobId = job.id || '';
+      resetProjectViewState();
+      setProjectHeader('', `Indexing ${projectName(job.repoRoot)}...`);
+      renderProjectJob(job);
+      renderProjects();
+      if (state.projectJobId) await pollProjectJob(state.projectJobId, { restore: true });
+      return;
+    }
     await applyAppState(appState);
     setProjectMode(false);
   } catch (error) {
@@ -2252,6 +2393,15 @@ el.projectList?.addEventListener('click', (event) => {
 
 el.projectSwitchControl?.addEventListener('click', () => {
   showProjectChooser({ autoRestore: false }).catch(showError);
+});
+
+el.projectCancelBtn?.addEventListener('click', () => {
+  const jobId = state.projectJobId;
+  if (!jobId) return;
+  clearProjectPollTimer();
+  api(`/api/project/status?jobId=${encodeURIComponent(jobId)}`, { method: 'DELETE' })
+    .then((data) => handleProjectJobResponse(data))
+    .catch((error) => handleProjectJobError(jobId, error));
 });
 
 el.sessionList.addEventListener('click', (event) => {
