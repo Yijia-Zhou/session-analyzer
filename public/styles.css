@@ -97,6 +97,10 @@ button:hover,
   z-index: 10;
 }
 
+.topbar[hidden] {
+  display: none !important;
+}
+
 .topbar h1 {
   font-size: 1.25rem;
   line-height: 1.2;
