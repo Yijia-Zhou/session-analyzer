@@ -7,7 +7,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const url = require('node:url');
-const { buildIndex, buildEventDetail, discoverProjects, fileSuggestions, filterSessions, getTimeline, readRawLine } = require('./src/codex');
+const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, normalizeFsPath, readRawLine } = require('./src/codex');
 const { foldingProfiles } = require('./src/folding');
 
 const MIME = {
@@ -149,6 +149,54 @@ function projectJobPayload(job) {
   };
 }
 
+function projectCachePayload(projects) {
+  return (projects || []).map((project) => ({ ...project }));
+}
+
+function mergeProjectLists(configProjects = [], scannedProjects = [], options = {}) {
+  const map = new Map();
+  const order = [];
+  const put = (project, override = true) => {
+    const key = normalizeFsPath(project.repoRoot);
+    if (!key) return;
+    if (!map.has(key)) order.push(key);
+    if (!override && map.has(key)) return;
+    map.set(key, { ...project });
+  };
+
+  const putScanned = (project) => {
+    put({
+      ...project,
+      statsPending: false,
+      source: project.source || 'transcripts',
+    });
+  };
+
+  if (options.full) {
+    for (const project of scannedProjects) putScanned(project);
+    for (const project of configProjects) put(project, false);
+  } else {
+    for (const project of configProjects) put(project);
+    for (const project of scannedProjects) putScanned(project);
+  }
+
+  if (options.full) {
+    for (const key of order) {
+      const project = map.get(key);
+      if (project.statsPending) {
+        map.set(key, {
+          ...project,
+          sessionCount: 0,
+          updatedAt: '',
+          statsPending: false,
+        });
+      }
+    }
+  }
+
+  return order.map((key) => map.get(key));
+}
+
 function startProjectJob(state, repoRoot) {
   if (state.activeProjectJob && ['queued', 'running'].includes(state.activeProjectJob.status)) {
     state.activeProjectJob.controller.abort();
@@ -245,6 +293,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     codexHome: path.resolve(initialIndex?.codexHome || initialIndex?.codexHomePath || options.codexHome || path.join(os.homedir(), '.codex')),
     nextProjectJobId: 1,
     activeProjectJob: null,
+    projectCache: null,
     buildIndex: options.buildIndex || buildIndex,
   };
   if (options.repo) startProjectJob(state, options.repo);
@@ -253,7 +302,18 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     try {
       const { pathname, searchParams } = parseQuery(req.url);
       if (pathname === '/api/projects') {
-        const projects = await discoverProjects({ codexHome: state.codexHome });
+        const configuredProjects = await discoverConfiguredProjects({ codexHome: state.codexHome });
+        if (searchParams.get('summary') === '1') {
+          const projects = mergeProjectLists(configuredProjects, state.projectCache?.projects || []);
+          sendJson(res, 200, { codexHome: state.codexHome, projects, summary: true, cached: Boolean(state.projectCache) });
+          return;
+        }
+        const scannedProjects = await discoverProjects({ codexHome: state.codexHome });
+        const projects = mergeProjectLists(configuredProjects, scannedProjects, { full: true });
+        state.projectCache = {
+          generatedAt: new Date().toISOString(),
+          projects: projectCachePayload(projects),
+        };
         sendJson(res, 200, { codexHome: state.codexHome, projects });
         return;
       }

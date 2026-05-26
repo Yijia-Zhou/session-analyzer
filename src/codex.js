@@ -967,6 +967,145 @@ async function collectJsonlFiles(root) {
   return out;
 }
 
+function stripExtendedPathPrefix(value) {
+  const text = String(value || '');
+  return text.startsWith('\\\\?\\') ? text.slice(4) : text;
+}
+
+function expandEnvironmentVariables(value) {
+  return String(value || '')
+    .replace(/%([^%]+)%/g, (match, name) => process.env[name] ?? match)
+    .replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name) => process.env[name] ?? match)
+    .replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (match, name) => process.env[name] ?? match);
+}
+
+function readTomlQuotedKey(text, start) {
+  const quote = text[start];
+  if (quote !== '\'' && quote !== '"') return null;
+  let value = '';
+  let i = start + 1;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === quote) return { value, next: i + 1, quoted: true };
+    if (quote === '"' && ch === '\\' && i + 1 < text.length) {
+      const next = text[i + 1];
+      const escapes = {
+        b: '\b',
+        t: '\t',
+        n: '\n',
+        f: '\f',
+        r: '\r',
+        '"': '"',
+        '\\': '\\',
+      };
+      value += Object.hasOwn(escapes, next) ? escapes[next] : `\\${next}`;
+      i += 2;
+      continue;
+    }
+    value += ch;
+    i += 1;
+  }
+  return null;
+}
+
+function readTomlBareKey(text, start) {
+  let i = start;
+  while (i < text.length && /[A-Za-z0-9_-]/.test(text[i])) i += 1;
+  if (i === start) return null;
+  return { value: text.slice(start, i), next: i, quoted: false };
+}
+
+function parseTomlDottedKey(text) {
+  const parts = [];
+  let i = 0;
+  while (i < text.length) {
+    while (i < text.length && /\s/.test(text[i])) i += 1;
+    const part = text[i] === '\'' || text[i] === '"'
+      ? readTomlQuotedKey(text, i)
+      : readTomlBareKey(text, i);
+    if (!part) return null;
+    parts.push(part);
+    i = part.next;
+    while (i < text.length && /\s/.test(text[i])) i += 1;
+    if (i >= text.length) break;
+    if (text[i] !== '.') return null;
+    i += 1;
+  }
+  return parts;
+}
+
+function parseProjectConfigHeader(line) {
+  const text = String(line || '').trim();
+  if (!text.startsWith('[')) return '';
+  let quote = '';
+  let escaped = false;
+  let close = -1;
+  for (let i = 1; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (quote === '"' && ch === '\\' && !escaped) {
+        escaped = true;
+        continue;
+      }
+      if (ch === quote && !escaped) quote = '';
+      escaped = false;
+      continue;
+    }
+    if (ch === '\'' || ch === '"') {
+      quote = ch;
+    } else if (ch === ']') {
+      close = i;
+      break;
+    }
+  }
+  if (close < 0) return '';
+  const suffix = text.slice(close + 1).trim();
+  if (suffix && !suffix.startsWith('#')) return '';
+  const parts = parseTomlDottedKey(text.slice(1, close));
+  if (!parts || parts.length !== 2) return '';
+  if (parts[0].value !== 'projects' || !parts[1].quoted) return '';
+  return parts[1].value;
+}
+
+async function discoverConfiguredProjects({ codexHome }) {
+  const configPath = path.join(path.resolve(codexHome), 'config.toml');
+  let text = '';
+  try {
+    text = await fsp.readFile(configPath, 'utf8');
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.warn(`Unable to read Codex config for project summary: ${error.message}`);
+    }
+    return [];
+  }
+
+  const projects = new Map();
+  for (const line of text.split(/\r?\n/)) {
+    const parsed = parseProjectConfigHeader(line);
+    if (!parsed) continue;
+    const repoRoot = path.resolve(stripExtendedPathPrefix(expandEnvironmentVariables(parsed)));
+    const key = normalizeFsPath(repoRoot);
+    if (!key || projects.has(key)) continue;
+    projects.set(key, {
+      repoRoot,
+      sessionCount: null,
+      updatedAt: '',
+      exists: false,
+      statsPending: true,
+      source: 'config',
+    });
+  }
+
+  for (const project of projects.values()) {
+    try {
+      project.exists = (await fsp.stat(project.repoRoot)).isDirectory();
+    } catch {
+      project.exists = false;
+    }
+  }
+  return [...projects.values()];
+}
+
 async function inspectSessionFile(filePath, options = {}) {
   const signal = options.signal;
   const repoRoot = options.repoRoot ? path.resolve(options.repoRoot) : '';
@@ -3448,6 +3587,7 @@ async function readRawLine(index, relFile, lineNumber) {
 module.exports = {
   buildIndex,
   discoverProjects,
+  discoverConfiguredProjects,
   buildEventDetail,
   fileSuggestions,
   filterSessions,

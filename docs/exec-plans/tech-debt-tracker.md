@@ -32,6 +32,7 @@
 - Status: deferred / 状态：已推迟
 - Problem: startup cost may grow once the local transcript corpus becomes much larger / 问题：一旦本地转录语料变得大得多，启动成本可能增长
 - Residual risk: startup remains in-memory, though repository selection now skips transcript files known to belong to other repositories and reports progress while indexing. Larger transcript corpora may still need a local cache with invalidation, versioning, and migration rules. / 残余风险：启动仍基于内存，不过仓库选择现在会跳过已知属于其他仓库的转录文件，并在索引时报告进度。更大的转录语料仍可能需要带失效、版本和迁移规则的本地缓存。
+- Add browser-level regression coverage for project chooser two-phase loading: stale `/api/projects` full-scan responses must not overwrite a user selection or trigger old auto-restore after summary rows are rendered. / 为项目选择器两阶段加载添加浏览器级回归覆盖：过期的 `/api/projects` 完整扫描响应不得覆盖用户选择，也不得在 summary 行渲染后触发旧的自动恢复。
 - Related docs: / 相关文档：
   - `docs/product-specs/session-transcript-analyzer.md`
   - `docs/design-docs/logical-event-timeline.md`

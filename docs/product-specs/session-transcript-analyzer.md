@@ -52,7 +52,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 
 ## User-facing behavior / 面向用户的行为
 
-1. The user starts the local server with an optional repository root; if omitted, the browser shows project candidates discovered from Codex session working directories. / 用户用可选的仓库根目录启动本地服务器；如果省略，浏览器会显示从 Codex 会话工作目录发现的项目候选。
+1. The user starts the local server with an optional repository root; if omitted, the browser can show configured Codex workspaces immediately, then update project activity after transcript scanning discovers session working directories. / 用户用可选的仓库根目录启动本地服务器；如果省略，浏览器可以先立即显示已配置的 Codex 工作区，然后在转录扫描发现会话工作目录后更新项目活动信息。
 2. The application scans the local Codex home and shows only sessions matching the selected repository. / 应用扫描本地 Codex 主目录，并只显示与所选仓库匹配的会话。
 3. The user sees a session list with counts, sizes, timestamps, and failure indicators; long rows are height-limited by default and reveal their full content on hover or keyboard focus. Forked subagent and review sessions remain selectable but render as visually secondary derived sessions with their source session title when available, and hovering or focusing a derived session lightly highlights its visible parent. Plain user-created `/fork` sessions remain normal primary rows but show a `Fork · from ...` relationship tag when the source session is known. / 用户看到包含计数、大小、时间戳和失败指示器的会话列表；较长的条目默认限制高度，并在鼠标悬停或键盘聚焦时显示完整内容。fork 出来的子 agent 和 review 会话仍可选择，但会以视觉上次级的派生会话呈现，并在可用时显示来源会话标题；悬停或聚焦派生会话时，会轻量高亮当前可见的父会话。普通用户发起的 `/fork` 会话仍作为普通主会话行展示，但在已知来源会话时显示 `Fork · from ...` 关系标签。
 4. Opening a session shows the main timeline by default, including visible review start/completion lifecycle markers when the transcript records review mode. / 打开会话时默认显示主时间线；当转录记录了 review mode 时，主时间线会显示 review 开始和完成的生命周期标记。

@@ -2,8 +2,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fsp = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
-const { buildIndex, buildEventDetail, discoverProjects, fileSuggestions, filterSessions, getTimeline, readRawLine, isPathInsideOrSame } = require('../src/codex');
+const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, readRawLine, isPathInsideOrSame } = require('../src/codex');
 const { createServer, parseArgs } = require('../server');
 const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../src/folding');
 
@@ -21,6 +23,23 @@ function primaryFixtureSession(index) {
   return index.sessionsById.get(primaryFixtureSessionId);
 }
 
+async function makeTempCodexHome(t) {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  return root;
+}
+
+async function writeFixtureTranscript(codexHome, cwd, id = 'cccccccc-cccc-cccc-cccc-cccccccccccc') {
+  const dir = path.join(codexHome, 'sessions', '2026', '05', '25');
+  await fsp.mkdir(dir, { recursive: true });
+  const file = path.join(dir, `rollout-2026-05-25T10-00-00-${id}.jsonl`);
+  await fsp.writeFile(file, `${JSON.stringify({
+    type: 'session_meta',
+    timestamp: '2026-05-25T10:00:00.000Z',
+    payload: { id, cwd },
+  })}\n`, 'utf8');
+}
+
 test('parseArgs leaves repo unset unless --repo is provided', () => {
   assert.equal(parseArgs(['node', 'server.js']).repo, null);
   assert.equal(parseArgs(['node', 'server.js', '--repo', 'G:\\vibe\\term-agent']).repo, 'G:\\vibe\\term-agent');
@@ -33,6 +52,39 @@ test('discoverProjects groups Codex sessions by cwd', async () => {
   assert.equal(byRoot.get('G:\\vibe\\term-agent').sessionCount, 10);
   assert.equal(byRoot.get('G:\\other\\repo').sessionCount, 3);
   assert.equal(typeof byRoot.get('G:\\vibe\\term-agent').exists, 'boolean');
+});
+
+test('discoverConfiguredProjects reads Codex config project headers', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const projectA = path.join(codexHome, 'project-a');
+  const projectB = path.join(codexHome, 'project-b');
+  const missing = path.join(codexHome, 'missing-project');
+  await fsp.mkdir(projectA, { recursive: true });
+  await fsp.mkdir(projectB, { recursive: true });
+
+  await fsp.writeFile(path.join(codexHome, 'config.toml'), [
+    `[projects.'${projectA}']`,
+    `[projects.'\\\\?\\${projectA}'] # duplicate with Windows extended prefix`,
+    `[projects."${projectB.replace(/\\/g, '\\\\')}"]`,
+    `[projects.'${missing}']`,
+    '[not_projects.\'ignored\']',
+    '',
+  ].join('\n'), 'utf8');
+
+  const projects = await discoverConfiguredProjects({ codexHome });
+  const byRoot = new Map(projects.map((project) => [project.repoRoot, project]));
+
+  assert.equal(projects.length, 3);
+  assert.equal(byRoot.get(path.resolve(projectA)).exists, true);
+  assert.equal(byRoot.get(path.resolve(projectB)).exists, true);
+  assert.equal(byRoot.get(path.resolve(missing)).exists, false);
+  assert.equal(byRoot.get(path.resolve(projectA)).statsPending, true);
+  assert.equal(byRoot.get(path.resolve(projectA)).sessionCount, null);
+});
+
+test('discoverConfiguredProjects returns empty list when config is absent', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  assert.deepEqual(await discoverConfiguredProjects({ codexHome }), []);
 });
 
 test('buildIndex deduplicates mirrored messages and keeps protocol separately', async () => {
@@ -797,6 +849,50 @@ test('project endpoints require and select a browser-chosen project', async () =
     const sessionsRes = await fetch(`${base}/api/sessions`);
     assert.equal(sessionsRes.status, 200);
     assert.equal((await sessionsRes.json()).total, 10);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('project summary endpoint returns fast config rows and later cached activity', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const configProject = path.join(codexHome, 'configured-project');
+  const transcriptProject = path.join(codexHome, 'transcript-project');
+  await fsp.mkdir(configProject, { recursive: true });
+  await fsp.mkdir(transcriptProject, { recursive: true });
+  await fsp.writeFile(path.join(codexHome, 'config.toml'), `[projects.'${configProject}']\n`, 'utf8');
+  await writeFixtureTranscript(codexHome, transcriptProject);
+
+  const server = createServer(null, 0, { codexHome });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const summaryRes = await fetch(`${base}/api/projects?summary=1`);
+    assert.equal(summaryRes.status, 200);
+    const summaryBody = await summaryRes.json();
+    assert.equal(summaryBody.summary, true);
+    assert.equal(summaryBody.cached, false);
+    assert.equal(summaryBody.projects.length, 1);
+    assert.equal(summaryBody.projects[0].repoRoot, path.resolve(configProject));
+    assert.equal(summaryBody.projects[0].statsPending, true);
+    assert.equal(summaryBody.projects[0].sessionCount, null);
+
+    const fullRes = await fetch(`${base}/api/projects`);
+    assert.equal(fullRes.status, 200);
+    const fullBody = await fullRes.json();
+    const fullByRoot = new Map(fullBody.projects.map((project) => [project.repoRoot, project]));
+    assert.equal(fullByRoot.get(path.resolve(configProject)).sessionCount, 0);
+    assert.equal(fullByRoot.get(path.resolve(configProject)).statsPending, false);
+    assert.equal(fullByRoot.get(path.resolve(transcriptProject)).sessionCount, 1);
+
+    const cachedSummaryRes = await fetch(`${base}/api/projects?summary=1`);
+    assert.equal(cachedSummaryRes.status, 200);
+    const cachedSummaryBody = await cachedSummaryRes.json();
+    const cachedByRoot = new Map(cachedSummaryBody.projects.map((project) => [project.repoRoot, project]));
+    assert.equal(cachedSummaryBody.cached, true);
+    assert.equal(cachedByRoot.get(path.resolve(configProject)).sessionCount, 0);
+    assert.equal(cachedByRoot.get(path.resolve(transcriptProject)).sessionCount, 1);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }

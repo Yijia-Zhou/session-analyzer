@@ -231,6 +231,7 @@ const state = {
   projectLoadingRoot: '',
   projectJobId: '',
   projectPollTimer: 0,
+  projectChooserRequestId: 0,
   selectedSessionId: '',
   selectedEventId: '',
   offset: 0,
@@ -1257,6 +1258,8 @@ function renderProjects() {
   el.projectList.innerHTML = state.projects.map((project) => {
     const isSaved = project.repoRoot === saved;
     const isLoading = project.repoRoot === loadingRoot;
+    const statsPending = Boolean(project.statsPending);
+    const sessionCount = Number(project.sessionCount || 0);
     const classes = [
       'projectItem',
       isSaved ? 'lastSelected' : '',
@@ -1268,14 +1271,16 @@ function renderProjects() {
       project.exists ? '' : '<span class="projectBadge warning">Missing directory</span>',
     ].join('');
     const action = isLoading ? '<span class="projectSpinner" aria-hidden="true"></span><span>Indexing...</span>' : '<span>Open</span>';
+    const facts = statsPending
+      ? '<span>Activity loading...</span>'
+      : `<span>${escapeHtml(sessionCount)} session${sessionCount === 1 ? '' : 's'}</span><span>${escapeHtml(project.updatedAt ? fmtDate(project.updatedAt) : 'No transcript activity')}</span>`;
     return `<button class="${classes}" type="button" data-project-root="${escapeHtml(project.repoRoot)}"${loadingRoot ? ' disabled' : ''}>
       <span class="projectMain">
         <span class="projectName">${escapeHtml(projectName(project.repoRoot))}${badges}</span>
         <span class="projectPath">${escapeHtml(project.repoRoot)}</span>
       </span>
       <span class="projectFacts" aria-label="Project activity">
-        <span>${escapeHtml(project.sessionCount)} session${project.sessionCount === 1 ? '' : 's'}</span>
-        <span>${escapeHtml(fmtDate(project.updatedAt))}</span>
+        ${facts}
       </span>
       <span class="projectAction">${action}</span>
     </button>`;
@@ -1288,7 +1293,16 @@ function clearProjectPollTimer() {
   state.projectPollTimer = 0;
 }
 
+function isActiveProjectChooserRequest(requestId) {
+  return requestId === state.projectChooserRequestId
+    && state.selectingProject
+    && !state.projectLoadingRoot
+    && !state.projectJobId;
+}
+
 async function showProjectChooser(options = {}) {
+  const requestId = state.projectChooserRequestId + 1;
+  state.projectChooserRequestId = requestId;
   setProjectMode(true);
   state.projectLoadingRoot = '';
   state.projectJobId = '';
@@ -1298,7 +1312,25 @@ async function showProjectChooser(options = {}) {
   if (el.projectStatus) el.projectStatus.textContent = 'Loading project list...';
   if (el.projectProgress) el.projectProgress.hidden = true;
   if (el.projectCancelBtn) el.projectCancelBtn.hidden = true;
+  if (el.projectList) el.projectList.innerHTML = '';
+  let renderedSummary = false;
+  try {
+    const summary = await api('/api/projects?summary=1');
+    if (!isActiveProjectChooserRequest(requestId)) return;
+    state.projects = summary.projects || [];
+    renderedSummary = state.projects.length > 0;
+    if (renderedSummary) renderProjects();
+    if (el.projectStatus) {
+      el.projectStatus.textContent = renderedSummary
+        ? `Loading project activity from ${summary.codexHome}...`
+        : 'Discovering transcript projects...';
+    }
+  } catch (error) {
+    console.warn('Unable to load project summary', error);
+  }
+  if (!isActiveProjectChooserRequest(requestId)) return;
   const data = await api('/api/projects');
+  if (!isActiveProjectChooserRequest(requestId)) return;
   state.projects = data.projects || [];
   renderProjects();
   if (el.projectStatus) el.projectStatus.textContent = state.projects.length ? `${state.projects.length} project candidates from ${data.codexHome}` : `No project candidates from ${data.codexHome}`;
@@ -1340,6 +1372,7 @@ async function finishProjectSelection(appState, options = {}) {
   state.projectLoadingRoot = '';
   state.projectJobId = '';
   clearProjectPollTimer();
+  renderProjects();
   resetProjectViewState();
   await applyAppState(appState);
   setProjectMode(false);
@@ -1399,6 +1432,7 @@ function scheduleProjectJobPoll(jobId, options = {}) {
 
 async function selectProject(repoRoot, options = {}) {
   if (!repoRoot) return;
+  state.projectChooserRequestId += 1;
   state.projectLoadingRoot = repoRoot;
   state.projectJobId = '';
   clearProjectPollTimer();
