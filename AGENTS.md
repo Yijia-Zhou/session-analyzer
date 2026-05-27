@@ -40,6 +40,7 @@ When changing product behavior or repository structure:
 - Active plans:
   - None / 无
 - Completed plans:
+  - `docs/exec-plans/completed/2026-05-26-event-body-inspector-responsibility-split.md`
   - `docs/exec-plans/completed/2026-05-21-codex-protocol-event-coverage-followup.md`
   - `docs/exec-plans/completed/2026-04-20-session-analyzer-v1.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`

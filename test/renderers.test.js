@@ -23,7 +23,10 @@ test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv
   assert.doesNotMatch(hiddenTitleMarkdown, /sectionTitle/);
   assert.match(hiddenTitleMarkdown, /<p>body<\/p>/);
   assert.match(code, /echo &quot;&lt;x&gt;&quot;/);
+  assert.match(code, /class="codeFence"/);
+  assert.match(code, /<code>shell<\/code>/);
   assert.match(terminal, /terminalBlock stderr/);
+  assert.match(terminal, /<code>text<\/code>/);
   assert.match(json, /&quot;ok&quot;: true/);
   assert.match(diff, /diffLine removed/);
   assert.match(diff, /diffLine added/);
@@ -35,4 +38,32 @@ test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv
   assert.match(usageLimits, /67% remaining/);
   assert.match(rawJson, /<details class="rawJsonDetails">/);
   assert.match(expandedRawJson, /<details class="rawJsonDetails" open>/);
+});
+
+test('renderer outputs patch sections with file summaries, line numbers, and escaped code', () => {
+  const patch = renderSection({
+    type: 'patch',
+    title: 'Patch',
+    files: [{
+      path: 'src/app.js',
+      changeType: 'update',
+      additions: 1,
+      deletions: 1,
+      hunks: [{
+        header: '@@',
+        lines: [
+          { kind: 'context', oldLine: 1, newLine: 1, content: 'const ok = true;' },
+          { kind: 'removed', oldLine: 2, newLine: null, content: '<old>' },
+          { kind: 'added', oldLine: null, newLine: 2, content: '<new>' },
+        ],
+      }],
+    }],
+  });
+
+  assert.match(patch, /src\/app\.js/);
+  assert.match(patch, /\+1 \/ -1/);
+  assert.match(patch, /patchLine context/);
+  assert.match(patch, /patchLine removed/);
+  assert.match(patch, /patchLine added/);
+  assert.match(patch, /&lt;new&gt;/);
 });

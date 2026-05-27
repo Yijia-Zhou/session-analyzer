@@ -169,28 +169,42 @@ Expanded cards do not reuse `preview` for rich rendering. The server derives an 
 - `title`
 - `meta`
 - `rawRefs[]`
-- `sections[]`
+- `timelineSections[]`
+- `inspectorSections[]`
 
 `meta` always includes `timestamp`, `turnId`, `status`, `severity`, `toolName`, `touchedFiles`, `outputStats`, `channels`, and `source`.
 
 `meta` 始终包含 `timestamp`、`turnId`、`status`、`severity`、`toolName`、`touchedFiles`、`outputStats`、`channels` 和 `source`。
 
-`sections[]` is a discriminated union of:
+The old single `sections[]` field is intentionally not emitted. Timeline cards render only `timelineSections[]`; the right-side inspector renders only `inspectorSections[]` and uses `meta` for its metadata table.
 
-`sections[]` 是以下类型的可辨识联合：
+旧的单一 `sections[]` 字段有意不再输出。时间线卡片只渲染 `timelineSections[]`；右侧 inspector 只渲染 `inspectorSections[]`，并使用 `meta` 渲染元数据表。
+
+Both section arrays use the same discriminated union:
+
+两个 section 数组使用同一套可辨识联合：
 
 - `markdown`
 - `code`
 - `terminal`
 - `json`
 - `diff`
+- `patch`
 - `kv`
 - `notice`
 - `raw_json`
 
-Expanded-card rendering treats `markdown-it` as a required server dependency. Markdown source is converted server-side with raw HTML disabled and dangerous link protocols rejected. In the main and protocol layers, `raw_json` sections are rendered as collapsible fallback material so the right-side raw refs panel remains the primary full-source view.
+`code` sections always include a `language` badge. Command sections infer shell language from the command wrapper or command shape, including PowerShell, cmd/batch, bash, sh, zsh, and fish. `terminal` sections may include a `language`; stdout/stderr default to `text` unless their content is detected as JSON or diff-like output.
 
-展开卡片渲染将 `markdown-it` 视为必需的服务器依赖。Markdown 源内容在服务器端转换，禁用原始 HTML，并拒绝危险链接协议。在主层和协议层中，`raw_json` 区段渲染为可折叠的回退材料，从而让右侧原始引用面板保持主要的完整来源视图。
+`code` section 始终包含 `language` badge。Command section 会从命令包装器或命令形态推断 shell 语言，包括 PowerShell、cmd/batch、bash、sh、zsh 和 fish。`terminal` section 可以包含 `language`；stdout/stderr 默认是 `text`，除非内容被检测为 JSON 或类似 diff 的输出。
+
+`patch` sections carry file summaries, change type, addition/deletion counts, hunks, and old/new line numbers so the frontend can render Codex CLI-like patch bodies with gutters and red/green changed lines. If patch input is not parseable, the detail builder falls back to a `diff` timeline section.
+
+`patch` section 携带文件摘要、变更类型、加减行统计、hunk 以及 old/new 行号，让前端可以渲染接近 Codex CLI 的 patch 正文，包括 gutter 和红/绿变更行。如果 patch 输入无法解析，详情构建器会回退为 timeline 中的 `diff` section。
+
+Expanded-card rendering treats `markdown-it` as a required server dependency. Markdown source is converted server-side with raw HTML disabled and dangerous link protocols rejected. In the main and protocol layers, `raw_json` sections stay in the inspector as collapsible fallback material so the right-side raw refs panel remains the primary full-source view.
+
+展开卡片渲染将 `markdown-it` 视为必需的服务器依赖。Markdown 源内容在服务器端转换，禁用原始 HTML，并拒绝危险链接协议。在主层和协议层中，`raw_json` 区段作为可折叠回退材料保留在 inspector 中，从而让右侧原始引用面板保持主要的完整来源视图。
 
 Raw rows that map to known semantic events reuse the same primary structured section extraction as their logical event family, then add raw-record metadata and expanded raw JSON. Conversation rows reuse Markdown body sections, protocol rows reuse protocol text/field sections, lifecycle rows reuse notice sections, and tool rows reuse command or patch sections. This keeps raw inspection faithful without falling back to duplicated scalar fields or generic payload blocks when a more specific renderer exists.
 
@@ -209,6 +223,10 @@ Sections may set `hideTitle: true` when the section title only restates the even
 The right-side detail panel is a small view stack with three frontend-only views: editable folding rules, selected-event inspector, and raw refs. The folding rules view is the default when no event is selected. Inspecting an event or opening raw refs pushes a view; Back restores the previous view, while Close clears the selected event and returns to folding rules.
 
 右侧详情面板是一个小型前端视图栈，包含三个仅前端视图：可编辑折叠规则、选中事件检查器和原始引用。未选中事件时默认显示折叠规则视图。检查事件或打开原始引用会压入视图；Back 恢复上一个视图，Close 清除选中事件并返回折叠规则。
+
+The selected-event inspector is optimized for fast triage rather than repeating the expanded timeline body. It renders Summary only for events whose preview adds context beyond the timeline body, then Metadata, Source, and Details. Metadata contains compact scalar facts such as time, status, tool, exit code, duration, channels, and touched files. Source owns the JSONL location and Raw refs action. Detail section titles should describe user intent, such as `Files`, `Result`, `Run context`, `Arguments`, `Request`, and `Response`, rather than repeating generic `metadata` names.
+
+选中事件 inspector 面向快速判断事件状况，而不是重复展开后的 timeline 正文。只有当 preview 能补充 timeline 正文之外的上下文时才渲染 Summary，之后依次渲染 Metadata、Source 和 Details。Metadata 只放紧凑标量事实，例如时间、状态、工具、退出码、耗时、通道和涉及文件。Source 负责 JSONL 位置和 Raw refs 动作。详情区段标题应描述用户意图，例如 `Files`、`Result`、`Run context`、`Arguments`、`Request` 和 `Response`，而不是重复通用的 `metadata` 名称。
 
 Folding profiles are data-driven presets with `kindStates`, a `fallback` display state, and fixed condition rules. Built-in presets remain read-only. Edits create a draft that immediately previews in the Main timeline; Save writes a custom profile to browser `localStorage`, and Cancel restores the saved profile. Editable kind rules cover Main timeline kinds only, so protocol-only `protocol` events and raw fallback `event` kinds are not exposed as folding controls. Protocol and raw layer overrides stay outside profile editing so layer semantics remain separate from folding strategy semantics. When protocol or raw is active, the frontend disables profile controls, renders a read-only fixed-rules explanation in the detail panel, and disables profile metric shortcuts.
 

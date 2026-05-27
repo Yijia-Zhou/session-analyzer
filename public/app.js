@@ -888,16 +888,33 @@ function metadataRow(label, value) {
   return `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`;
 }
 
-function renderInspectorMetadata(event, refs) {
+function renderInspectorMetadata(event, refs, detail = null) {
+  const meta = detail?.meta || event;
+  const outputStats = meta.outputStats || event.outputStats || {};
   return [
-    metadataRow('Time', fmtDate(event.timestamp)),
-    metadataRow('Source', sourceLabel(event.source || refs[0])),
-    metadataRow('Raw refs', refs.length ? String(refs.length) : 'None'),
-    metadataRow('Tool', event.toolName),
+    metadataRow('Time', fmtDate(meta.timestamp || event.timestamp)),
+    metadataRow('Status', meta.status || event.status),
+    metadataRow('Severity', meta.severity && meta.severity !== 'normal' ? meta.severity : ''),
+    metadataRow('Tool', meta.toolName || event.toolName),
+    metadataRow('Exit code', outputStats.exitCode == null ? '' : String(outputStats.exitCode)),
+    metadataRow('Duration', outputStats.durationMs == null ? '' : `${outputStats.durationMs} ms`),
     metadataRow('Record type', event.recordType),
-    metadataRow('Channels', formatList(event.channels)),
-    metadataRow('Touched files', formatList(event.touchedFiles)),
+    metadataRow('Channels', formatList(meta.channels || event.channels)),
+    metadataRow('Touched files', formatList(meta.touchedFiles || event.touchedFiles)),
   ].join('');
+}
+
+function renderInspectorSource(event, refs, detail = null) {
+  const meta = detail?.meta || event;
+  const source = sourceLabel(meta.source || event.source || refs[0]);
+  return `<section class="inspectorSection">
+    <h3>Source</h3>
+    ${source ? `<div class="inspectorSourcePath">${escapeHtml(source)}</div>` : ''}
+    <div class="inspectorActions">
+      <button class="smallBtn" type="button" data-detail-action="raw">Raw refs</button>
+      <span class="rawMeta">${escapeHtml(refs.length ? `${refs.length} JSONL row${refs.length === 1 ? '' : 's'}` : 'No raw refs available')}</span>
+    </div>
+  </section>`;
 }
 
 function renderInspectorDetail(event) {
@@ -905,22 +922,43 @@ function renderInspectorDetail(event) {
   const detail = state.detailCache[key];
   const error = state.detailErrors[key];
   if (detail) {
+    if (!detail.inspectorSections?.length) return '';
     return `<section class="inspectorSection">
-      <h3>Structured detail</h3>
-      <div class="inspectorDetailBody">${renderSections(detail.sections)}</div>
+      <h3>Details</h3>
+      <div class="inspectorDetailBody">${renderSections(detail.inspectorSections)}</div>
     </section>`;
   }
   if (error) {
     return `<section class="inspectorSection">
-      <h3>Structured detail</h3>
+      <h3>Details</h3>
       <div class="notice error"><p>${escapeHtml(error)}</p></div>
       <button class="smallBtn" type="button" data-detail-action="retry-detail">Retry detail</button>
     </section>`;
   }
   return `<section class="inspectorSection">
-    <h3>Structured detail</h3>
+    <h3>Details</h3>
     <div class="notice info"><p>Loading structured detail...</p></div>
   </section>`;
+}
+
+function shouldShowInspectorSummary(event, preview, detail = null) {
+  const source = String(preview || '').trim();
+  if (!source) return false;
+  if (source === String(event.label || '').trim()) return false;
+  if (event.layer === 'raw') return true;
+  const bodyOwnedKinds = new Set([
+    'user_message',
+    'assistant_message',
+    'plan_artifact',
+    'plan_update',
+    'reasoning',
+    'command',
+    'patch',
+    'js_repl',
+  ]);
+  if (bodyOwnedKinds.has(event.kind)) return false;
+  if (detail?.timelineSections?.some((section) => ['markdown', 'code', 'terminal', 'patch', 'diff'].includes(section.type))) return false;
+  return true;
 }
 
 function selectedOptionText(select) {
@@ -1906,7 +1944,7 @@ function renderEventBody(event, display) {
   const detail = state.detailCache[key];
   const error = state.detailErrors[key];
   if (detail) {
-    return `<div class="eventBody">${renderSections(detail.sections)}</div>`;
+    return `<div class="eventBody">${renderSections(detail.timelineSections)}</div>`;
   }
   if (error) {
     return `<div class="eventBody"><div class="notice error"><p>${escapeHtml(error)}</p></div><button class="smallBtn" type="button" data-action="retry-detail">Retry detail</button></div>`;
@@ -2453,6 +2491,7 @@ function showInspector(event, options = {}) {
   const key = detailKey(state.selectedSessionId, layer, event.id);
   const refs = sourceRefs(event);
   const preview = event.snippet || event.preview || '';
+  const detail = state.detailCache[key];
   const chips = renderChips([
     event.kind,
     event.status,
@@ -2475,18 +2514,12 @@ function showInspector(event, options = {}) {
     actions: [renderReadFromHereAction(), renderInspectorNavigation(event)].filter(Boolean).join(''),
     body: `<div class="inspector">
     <div class="chips">${chips}</div>
-    ${preview ? `<section class="inspectorSection"><h3>Preview</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
+    ${shouldShowInspectorSummary(event, preview, detail) ? `<section class="inspectorSection"><h3>Summary</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
     <section class="inspectorSection">
       <h3>Metadata</h3>
-      <dl class="inspectorMeta">${renderInspectorMetadata(event, refs)}</dl>
+      <dl class="inspectorMeta">${renderInspectorMetadata(event, refs, detail)}</dl>
     </section>
-    <section class="inspectorSection">
-      <h3>Source</h3>
-      <div class="inspectorActions">
-        <button class="smallBtn" type="button" data-detail-action="raw">Raw refs</button>
-        <span class="rawMeta">${escapeHtml(refs.length ? `${refs.length} JSONL row${refs.length === 1 ? '' : 's'}` : 'No raw refs available')}</span>
-      </div>
-    </section>
+    ${renderInspectorSource(event, refs, detail)}
     ${renderInspectorDetail(event)}
   </div>`,
   });
@@ -2913,10 +2946,17 @@ el.searchInput.addEventListener('keydown', (event) => {
     hideSearchAssist();
     return;
   }
-  if (event.key === 'Enter' && currentSearchState().q) {
-    event.preventDefault();
-    hideSearchAssist();
-    navigateSearchMatch(event.shiftKey ? -1 : 1);
+  if (event.key === 'Enter') {
+    const search = currentSearchState();
+    if (search.q) {
+      event.preventDefault();
+      hideSearchAssist();
+      navigateSearchMatch(event.shiftKey ? -1 : 1);
+    } else if (!el.searchAssist?.hidden) {
+      event.preventDefault();
+      hideSearchAssist();
+      el.searchInput.blur();
+    }
   }
 });
 el.searchInput.addEventListener('input', () => {

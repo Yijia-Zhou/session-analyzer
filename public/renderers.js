@@ -28,14 +28,17 @@
   }
 
   function renderCode(section) {
-    const languageClass = section.language ? ` language-${escapeHtml(section.language)}` : '';
-    const title = section.title ? `<div class="codeHead">${escapeHtml(section.title)}</div>` : '';
-    return `<section class="eventSection"><div class="codeBlock">${title}<pre><code class="${languageClass.trim()}">${escapeHtml(section.code || '')}</code></pre></div></section>`;
+    const language = section.language || 'text';
+    const languageClass = `language-${escapeHtml(language)}`;
+    const title = section.title ? `<span>${escapeHtml(section.title)}</span>` : '<span>Code</span>';
+    return `<section class="eventSection"><div class="codeFence"><div class="codeFenceHead">${title}<code>${escapeHtml(language)}</code></div><pre><code class="${languageClass}">${escapeHtml(section.code || '')}</code></pre></div></section>`;
   }
 
   function renderTerminal(section) {
     const stream = section.stream === 'stderr' ? 'stderr' : 'stdout';
-    return `<section class="eventSection"><div class="terminalBlock ${stream}">${renderSectionTitle(section)}<pre>${escapeHtml(section.text || '')}</pre></div></section>`;
+    const language = section.language || 'text';
+    const title = section.title || stream;
+    return `<section class="eventSection"><div class="codeFence terminalBlock ${stream}"><div class="codeFenceHead"><span>${escapeHtml(title)}</span><code>${escapeHtml(language)}</code></div><pre><code class="language-${escapeHtml(language)}">${escapeHtml(section.text || '')}</code></pre></div></section>`;
   }
 
   function renderJson(section) {
@@ -51,6 +54,23 @@
       return `<span class="diffLine ${cls}">${escapeHtml(line)}</span>`;
     }).join('');
     return `<section class="eventSection"><div class="diffBlock">${renderSectionTitle(section)}<pre>${lines}</pre></div></section>`;
+  }
+
+  function renderPatch(section) {
+    const files = (section.files || []).map((file) => {
+      const hunks = (file.hunks || []).map((hunk) => {
+        const header = hunk.header ? `<div class="patchHunkHeader">${escapeHtml(hunk.header)}</div>` : '';
+        const lines = (hunk.lines || []).map((line) => {
+          const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
+          const oldNo = line.oldLine == null ? '' : String(line.oldLine);
+          const newNo = line.newLine == null ? '' : String(line.newLine);
+          return `<div class="patchLine ${escapeHtml(line.kind || 'context')}"><span class="patchOldNo">${escapeHtml(oldNo)}</span><span class="patchNewNo">${escapeHtml(newNo)}</span><span class="patchSign">${sign}</span><code>${escapeHtml(line.content || '')}</code></div>`;
+        }).join('');
+        return `<div class="patchHunk">${header}${lines}</div>`;
+      }).join('');
+      return `<article class="patchFile"><header><strong>${escapeHtml(file.path || '')}</strong><span>${escapeHtml(file.changeType || 'update')}</span><em>+${escapeHtml(file.additions || 0)} / -${escapeHtml(file.deletions || 0)}</em></header>${hunks}</article>`;
+    }).join('');
+    return `<section class="eventSection"><div class="patchBlock">${renderSectionTitle(section)}${files}</div></section>`;
   }
 
   function renderKv(section) {
@@ -94,6 +114,8 @@
         return renderJson(section);
       case 'diff':
         return renderDiff(section);
+      case 'patch':
+        return renderPatch(section);
       case 'kv':
         return renderKv(section);
       case 'token_usage':
