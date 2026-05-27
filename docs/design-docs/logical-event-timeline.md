@@ -152,6 +152,10 @@ Frontend highlighting is DOM-oriented. After HTML has been rendered, the browser
 
 `Read from here` 用来把结构化筛选或事件层视图带回常规阅读。当选中事件处在结构化筛选、`layer:` 操作符或非主时间线事件层下时，检查器和原始引用视图会显示上下文动作；该动作会清除事件筛选、切换到 `Main timeline`，并复用事件层切换所用的 timestamp/line 锚点逻辑恢复焦点。如果精确的选中事件在 Main timeline 中不可见，前端会按时间线顺序选择最近的可见事件。在窄屏上，锚点恢复后该动作会把用户带回 Events 标签页。
 
+The state and timeline payloads include `eventKinds` grouped by `main`, `protocol`, and `raw` layers. Main options are logical `kind` values, protocol options are logical `subtype` values, and raw options are `payloadType || recordType` values. The browser uses the selected session's timeline payload to populate the `kind:` filter picker and counts; the project-level state payload remains a fallback before a session is selected. Typed `kind:` values remain open-ended and are matched by the backend against event `kind` or `subtype`.
+
+状态载荷和时间线载荷包含按 `main`、`protocol` 和 `raw` 分组的 `eventKinds`。Main 选项使用逻辑事件 `kind`，protocol 选项使用逻辑事件 `subtype`，raw 选项使用 `payloadType || recordType`。浏览器使用选中 session 的时间线载荷填充 `kind:` 筛选选择器及计数；项目级状态载荷仅作为尚未选中 session 前的回退。手输的 `kind:` 值保持开放，并由后端按事件 `kind` 或 `subtype` 匹配。
+
 Search-result preloading is intentionally bounded. When free-text search has too few rendered jump targets, the browser may append a few more timeline pages so previous/next navigation has nearby real scroll targets. It does not force-expand every event or load every hidden command output; hidden detail becomes jumpable only after its event detail is rendered.
 
 搜索结果预加载有意保持有限。当自由文本搜索下可渲染跳转目标过少时，浏览器可以追加加载少量时间线分页，让上一个/下一个导航有附近的真实滚动目标。它不会强制展开每个事件，也不会加载每个隐藏的 command output；隐藏详情只有在该事件详情实际渲染后才会变成可跳转目标。

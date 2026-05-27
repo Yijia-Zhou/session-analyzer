@@ -91,6 +91,44 @@ test('discoverConfiguredProjects returns empty list when config is absent', asyn
   assert.deepEqual(await discoverConfiguredProjects({ codexHome }), []);
 });
 
+test('buildIndex exposes dynamic event kind options by layer', async () => {
+  const index = await buildFixtureIndex();
+  const session = primaryFixtureSession(index);
+  const mainKinds = new Set(index.eventKinds.main.map((item) => item.value));
+  const protocolKinds = new Set(index.eventKinds.protocol.map((item) => item.value));
+  const rawKinds = new Set(index.eventKinds.raw.map((item) => item.value));
+  const sessionMainKinds = new Set(session.eventKinds.main.map((item) => item.value));
+
+  assert.ok(mainKinds.has('review'));
+  assert.ok(mainKinds.has('plan_update'));
+  assert.ok(mainKinds.has('warning'));
+  assert.ok(mainKinds.has('turn'));
+  assert.ok(protocolKinds.has('session_meta'));
+  assert.ok(rawKinds.has('exec_command_begin'));
+  assert.ok(index.eventKinds.main.find((item) => item.value === 'review').label);
+  assert.ok(index.eventKinds.raw.find((item) => item.value === 'exec_command_begin').count > 0);
+  assert.ok(sessionMainKinds.has('review'));
+  assert.ok(session.eventKinds.raw.find((item) => item.value === 'exec_command_begin').count > 0);
+});
+
+test('state endpoint includes dynamic event kind options', async () => {
+  const index = await buildFixtureIndex();
+  const server = createServer(index, 1, { codexHome: fixtureCodexHome });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  try {
+    const res = await fetch(`http://127.0.0.1:${address.port}/api/state`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.eventKinds.main.some((item) => item.value === 'review'));
+    assert.ok(body.eventKinds.protocol.some((item) => item.value === 'session_meta'));
+    assert.ok(body.eventKinds.raw.some((item) => item.value === 'exec_command_begin'));
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
 test('buildIndex deduplicates mirrored messages and keeps protocol separately', async () => {
   const index = await buildFixtureIndex();
   const session = primaryFixtureSession(index);
@@ -252,6 +290,9 @@ test('buildIndex infers fallback titles from real user tasks after protocol wrap
     layer: 'main',
   });
   assert.equal(mainTimeline.events.some((event) => event.preview.includes('Get-ChildItem')), false);
+  assert.ok(mainTimeline.eventKinds.main.some((item) => item.value === 'user_message' && item.count === 1));
+  assert.ok(mainTimeline.eventKinds.protocol.some((item) => item.value === 'user_shell_command'));
+  assert.deepEqual(mainTimeline.eventKinds, session.eventKinds);
 
   const protocolTimeline = getTimeline(index, session.id, {
     offset: 0,

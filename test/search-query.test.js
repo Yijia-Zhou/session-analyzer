@@ -22,10 +22,17 @@ test('parseSearchInput supports quoted operator values and last operator wins', 
   assert.equal(parsed.status, 'failed');
 });
 
-test('parseSearchInput keeps unknown or invalid operators as text', () => {
-  const parsed = searchQuery.parseSearchInput('kind:nope owner:me error file:');
+test('parseSearchInput accepts open-ended kind values', () => {
+  const parsed = searchQuery.parseSearchInput('kind:review kind:plan_update kind:exec_command_begin');
 
-  assert.equal(parsed.q, 'kind:nope owner:me error');
+  assert.equal(parsed.q, '');
+  assert.equal(parsed.kind, 'exec_command_begin');
+});
+
+test('parseSearchInput keeps unknown operators and invalid enumerated operators as text', () => {
+  const parsed = searchQuery.parseSearchInput('layer:nope owner:me error file:');
+
+  assert.equal(parsed.q, 'layer:nope owner:me error');
   assert.equal(parsed.kind, '');
   assert.equal(parsed.file, '');
 });

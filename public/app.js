@@ -192,6 +192,8 @@ const KIND_LABELS = {
   compaction: 'Compaction',
   token: 'Token',
   subagent: 'Subagent',
+  review: 'Review',
+  reasoning: 'Reasoning',
   turn: 'Turn',
   web_search: 'Web search',
   event: 'Event',
@@ -245,6 +247,8 @@ const state = {
   timelineSearchMatchCount: 0,
   currentEvents: [],
   fileSuggestions: [],
+  eventKinds: { main: [], protocol: [], raw: [] },
+  sessionEventKinds: { main: [], protocol: [], raw: [] },
   profiles: [],
   builtinProfiles: [],
   customProfiles: readJsonStorage(CUSTOM_PROFILES_KEY, []),
@@ -451,6 +455,23 @@ function fmtDuration(ms) {
   if (!Number.isFinite(n) || n <= 0) return '0s';
   if (n < 1000) return `${Math.round(n)}ms`;
   return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}s`;
+}
+
+function humanizeKind(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (/^mcp\b/i.test(text)) return text.replace(/_/g, ' ').replace(/^mcp/i, 'MCP');
+  return text
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .replace(/\bJs\b/g, 'JS');
+}
+
+function kindLabel(value) {
+  return KIND_LABELS[value] || humanizeKind(value) || value;
 }
 
 function projectProgressPercent(progress) {
@@ -795,7 +816,7 @@ function knownEventKinds() {
   for (const event of state.currentEvents) {
     if (event.kind) kinds.add(event.kind);
   }
-  return [...kinds].sort((a, b) => (KIND_LABELS[a] || a).localeCompare(KIND_LABELS[b] || b));
+  return [...kinds].sort((a, b) => kindLabel(a).localeCompare(kindLabel(b)) || a.localeCompare(b));
 }
 
 function conditionDefinitions() {
@@ -973,7 +994,7 @@ function optionText(select, value, fallback = {}) {
 function activeFilters() {
   const filters = [];
   const search = currentSearchState();
-  if (search.kind) filters.push({ key: 'kind', label: `Kind: ${optionText(el.searchKindSelect, search.kind, KIND_LABELS)}` });
+  if (search.kind) filters.push({ key: 'kind', label: `Kind: ${optionText(el.searchKindSelect, search.kind) || kindLabel(search.kind)}` });
   if (search.status) filters.push({ key: 'status', label: `Status: ${optionText(el.searchStatusSelect, search.status, STATUS_LABELS)}` });
   if (search.file) filters.push({ key: 'file', label: `File: ${search.file}` });
   if (search.parsed.layer && search.layer !== 'main') filters.push({ key: 'layer', label: `Layer: ${optionText(el.layerSelect, search.layer, LAYER_LABELS)}` });
@@ -1023,8 +1044,43 @@ function setSelectIfOption(select, value) {
   select.value = hasOption ? value : '';
 }
 
+function normalizedKindOptions(layerId = activeLayerId()) {
+  const seen = new Set();
+  const options = [];
+  const source = state.selectedSessionId ? state.sessionEventKinds : state.eventKinds;
+  for (const item of source?.[layerId] || []) {
+    const value = String(item?.value || '').trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    options.push({
+      value,
+      label: item.label || kindLabel(value),
+      count: Number(item.count || 0),
+    });
+  }
+  return options.sort((a, b) => a.label.localeCompare(b.label) || a.value.localeCompare(b.value));
+}
+
+function renderKindOptions() {
+  if (!el.searchKindSelect) return;
+  const search = currentSearchState();
+  const options = normalizedKindOptions(search.layer);
+  const values = new Set(options.map((option) => option.value));
+  const rows = ['<option value="">Any kind</option>'];
+  if (search.kind && !values.has(search.kind)) {
+    rows.push(`<option value="${escapeHtml(search.kind)}">${escapeHtml(`${kindLabel(search.kind)} (${search.kind})`)}</option>`);
+  }
+  rows.push(...options.map((option) => {
+    const label = option.count ? `${option.label} (${option.count})` : option.label;
+    return `<option value="${escapeHtml(option.value)}">${escapeHtml(label)}</option>`;
+  }));
+  el.searchKindSelect.innerHTML = rows.join('');
+  el.searchKindSelect.value = search.kind;
+}
+
 function syncSearchAssistControls() {
   const search = currentSearchState();
+  renderKindOptions();
   setSelectIfOption(el.searchKindSelect, search.kind);
   setSelectIfOption(el.searchStatusSelect, search.status);
   setSelectIfOption(el.searchLayerSelect, search.parsed.layer);
@@ -1309,6 +1365,8 @@ function resetProjectViewState() {
   state.currentEvents = [];
   state.searchTargetPreload = { key: '', pages: 0, pending: false };
   state.fileSuggestions = [];
+  state.eventKinds = { main: [], protocol: [], raw: [] };
+  state.sessionEventKinds = { main: [], protocol: [], raw: [] };
   state.detailCache = {};
   state.detailErrors = {};
   state.detailPending = {};
@@ -1458,6 +1516,7 @@ async function applyAppState(appState) {
   state.repoRoot = appState.repoRoot || '';
   state.builtinProfiles = normalizeProfiles(appState.foldingProfiles || []);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
+  state.eventKinds = appState.eventKinds || { main: [], protocol: [], raw: [] };
   state.sessionGrandTotal = appState.totals.sessionCount || 0;
   setProjectHeader(
     appState.repoRoot,
@@ -1474,6 +1533,7 @@ async function applyAppState(appState) {
   updateProfileApplicabilityUi();
   resetProfileDraft();
   el.layerSelect.value = state.layerId;
+  syncSearchAssistControls();
   const suggestionState = await api('/api/file-suggestions');
   state.fileSuggestions = suggestionState.files || [];
   renderFileSuggestions();
@@ -1628,6 +1688,8 @@ async function loadSessions() {
     state.timelineRequestId += 1;
     state.timelineTotal = 0;
     state.currentEvents = [];
+    state.sessionEventKinds = { main: [], protocol: [], raw: [] };
+    syncSearchAssistControls();
     el.timeline.innerHTML = '';
     el.analysisPanel.innerHTML = '';
     updateLoadMoreButton();
@@ -1669,6 +1731,7 @@ async function selectSession(sessionId, options = {}) {
   state.timelineLoading = false;
   state.timelineRequestId += 1;
   state.currentEvents = [];
+  state.sessionEventKinds = { main: [], protocol: [], raw: [] };
   state.searchTargetPreload = { key: '', pages: 0, pending: false };
   invalidateNavigationCache();
   updateResetFoldsButton();
@@ -1788,6 +1851,7 @@ async function changeLayer(layerId) {
   el.layerSelect.value = state.layerId;
   el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'layer');
   localStorage.setItem('sessionAnalyzer.layer', state.layerId);
+  syncSearchAssistControls();
   updateProfileApplicabilityUi();
   if (state.detailView.type === 'profileRules') renderProfileRulesPane();
   await loadSessions();
@@ -1828,6 +1892,8 @@ async function loadTimeline(append, options = {}) {
     state.offset = state.currentEvents.length;
     state.timelineTotal = data.total;
     state.timelineSearchMatchCount = data.searchMatchCount || 0;
+    state.sessionEventKinds = data.eventKinds || state.sessionEventKinds;
+    syncSearchAssistControls();
     renderTimeline();
     if (!append && !options.keepScroll) resetTimelineScroll();
     renderResultSummary();
@@ -1858,6 +1924,7 @@ async function refreshTimelineFindState(options = {}) {
     const events = [];
     let total = 0;
     let searchMatchCount = 0;
+    let eventKinds = null;
     while (events.length < targetCount) {
       const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
         offset: events.length,
@@ -1866,6 +1933,7 @@ async function refreshTimelineFindState(options = {}) {
       if (requestId !== state.timelineRequestId || sessionId !== state.selectedSessionId) return;
       total = data.total;
       searchMatchCount = data.searchMatchCount || 0;
+      eventKinds = data.eventKinds || eventKinds;
       events.push(...data.events);
       if (!data.events.length || events.length >= total) break;
     }
@@ -1873,6 +1941,8 @@ async function refreshTimelineFindState(options = {}) {
     state.offset = events.length;
     state.timelineTotal = total;
     state.timelineSearchMatchCount = searchMatchCount;
+    state.sessionEventKinds = eventKinds || state.sessionEventKinds;
+    syncSearchAssistControls();
     renderTimeline();
     refreshSearchSensitiveDetailView();
     renderResultSummary();
@@ -2407,7 +2477,7 @@ function renderProfileRulesPane() {
     const display = rules.kindStates[kind] || '';
     return `<label class="profileRuleRow">
       <span>
-        <strong>${escapeHtml(KIND_LABELS[kind] || kind)}</strong>
+        <strong>${escapeHtml(kindLabel(kind))}</strong>
         <span>${escapeHtml(kind)}</span>
       </span>
       <select data-profile-kind="${escapeHtml(kind)}">
@@ -2438,7 +2508,7 @@ function renderProfileRulesPane() {
       <select data-profile-condition="${escapeHtml(condition.id)}">${stateOptions('', true)}</select>
     </label>`
   )).join('');
-  const defaultKindNames = defaultKinds.map((kind) => KIND_LABELS[kind] || kind).join(', ');
+  const defaultKindNames = defaultKinds.map((kind) => kindLabel(kind)).join(', ');
   const editActions = dirty
     ? `<button class="smallBtn" type="button" data-detail-action="save-profile">Save</button>
     <button class="smallBtn" type="button" data-detail-action="cancel-profile">Cancel</button>`

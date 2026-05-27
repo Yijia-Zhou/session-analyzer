@@ -6,20 +6,6 @@
   'use strict';
 
   const OPERATOR_VALUES = {
-    kind: new Set([
-      'user_message',
-      'assistant_message',
-      'command',
-      'patch',
-      'mcp',
-      'js_repl',
-      'tool_operation',
-      'plan_artifact',
-      'protocol',
-      'error',
-      'compaction',
-      'web_search',
-    ]),
     layer: new Set(['main', 'protocol', 'raw']),
     status: new Set(['failed', 'success', 'completed']),
   };

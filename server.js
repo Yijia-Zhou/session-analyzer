@@ -116,6 +116,7 @@ function statePayload(state) {
     generatedAt: state.index.generatedAt,
     buildMs: state.buildMs,
     totals: state.index.totals,
+    eventKinds: state.index.eventKinds,
     foldingProfiles,
     projectSelected: true,
   };

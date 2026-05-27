@@ -81,6 +81,31 @@ const PROTOCOL_LABELS = Object.freeze({
   user_shell_command: 'User shell command',
 });
 
+const EVENT_KIND_LABELS = Object.freeze({
+  user_message: 'User message',
+  assistant_message: 'Assistant message',
+  command: 'Command',
+  patch: 'Patch',
+  mcp: 'MCP',
+  js_repl: 'JS REPL',
+  tool_operation: 'Tool op',
+  plan_artifact: 'Plan',
+  plan_update: 'Plan update',
+  protocol: 'Protocol',
+  error: 'Error',
+  warning: 'Warning',
+  abort: 'Abort',
+  rollback: 'Rollback',
+  compaction: 'Compaction',
+  token: 'Token',
+  subagent: 'Subagent',
+  review: 'Review',
+  reasoning: 'Reasoning',
+  turn: 'Turn',
+  web_search: 'Web search',
+  event: 'Event',
+});
+
 const CANONICAL_EVENT_TYPES = Object.freeze({
   turn_started: 'task_started',
   turn_complete: 'task_complete',
@@ -203,6 +228,24 @@ function humanizeUsageLimitKey(value) {
     .replace(/[_-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function humanizeEventKind(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (/^mcp\b/i.test(text)) return text.replace(/_/g, ' ').replace(/^mcp/i, 'MCP');
+  return text
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .replace(/\bJs\b/g, 'JS');
+}
+
+function eventKindLabel(value) {
+  const key = String(value || '').trim();
+  return EVENT_KIND_LABELS[key] || PROTOCOL_LABELS[key] || humanizeEventKind(key) || key;
 }
 
 function usageLimitKind(text) {
@@ -3196,6 +3239,39 @@ function countBy(items, fn) {
   return [...map.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
 }
 
+function eventKindOptionsFromCounts(counts) {
+  return [...counts.entries()]
+    .sort((a, b) => eventKindLabel(a[0]).localeCompare(eventKindLabel(b[0])) || a[0].localeCompare(b[0]))
+    .map(([value, count]) => ({ value, label: eventKindLabel(value), count }));
+}
+
+function eventKindCatalog(sessions) {
+  const counts = {
+    main: new Map(),
+    protocol: new Map(),
+    raw: new Map(),
+  };
+  const add = (layer, value) => {
+    const key = String(value || '').trim();
+    if (!key) return;
+    counts[layer].set(key, (counts[layer].get(key) || 0) + 1);
+  };
+  for (const session of sessions || []) {
+    for (const event of session.logicalEvents || []) {
+      if (event.layer === 'protocol') add('protocol', event.subtype || event.kind);
+      else add('main', event.kind);
+    }
+    for (const raw of session.rawEvents || []) {
+      add('raw', raw.payloadType || raw.recordType);
+    }
+  }
+  return {
+    main: eventKindOptionsFromCounts(counts.main),
+    protocol: eventKindOptionsFromCounts(counts.protocol),
+    raw: eventKindOptionsFromCounts(counts.raw),
+  };
+}
+
 function addCounts(session, logicalEvent) {
   if (logicalEvent.turnId) session._turnIds.add(logicalEvent.turnId);
   if (logicalEvent.layer === 'protocol') {
@@ -3347,6 +3423,7 @@ function finalizeSession(session, sessionIndexEntry) {
     timelineStats: countBy(session.logicalEvents.filter((event) => event.layer !== 'protocol'), (event) => event.kind),
     protocolStats: countBy(session.logicalEvents.filter((event) => event.layer === 'protocol'), (event) => event.subtype),
   };
+  session.eventKinds = eventKindCatalog([session]);
 
   delete session._turnIds;
   delete session._analysisDraft;
@@ -3587,6 +3664,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
     generatedAt: new Date().toISOString(),
     sessions,
     sessionsById,
+    eventKinds: eventKindCatalog(sessions),
     totals: {
       fileCount: files.length,
       candidateFileCount: candidates.length,
@@ -3793,6 +3871,7 @@ function getTimeline(index, sessionId, filters) {
     offset: filters.offset,
     limit: filters.limit,
     layer,
+    eventKinds: session.eventKinds || eventKindCatalog([session]),
     events: layer === 'raw' ? page : page.map((event) => logicalEventDto(event, filters.q)),
   };
 }
@@ -3823,6 +3902,7 @@ module.exports = {
   fileSuggestions,
   filterSessions,
   getTimeline,
+  eventKindCatalog,
   readRawLine,
   normalizeFsPath,
   isPathInsideOrSame,
