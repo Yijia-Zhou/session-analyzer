@@ -6,9 +6,11 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "vendor:highlight": "npx --yes --package esbuild esbuild ./scripts/highlight-vendor-entry.js --bundle --format=iife --global-name=sessionHighlightVendor --outfile=./public/vendor/highlightjs/highlight.min.js --minify"
   },
   "dependencies": {
+    "highlight.js": "^11.11.1",
     "markdown-it": "^14.1.0"
   },
   "engines": {

@@ -672,8 +672,14 @@ function textLineCount(text) {
 function lineStatsFromUnifiedDiff(text) {
   let additions = 0;
   let deletions = 0;
+  let inHunk = false;
   for (const line of String(text || '').split(/\r?\n/)) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (isDiffMetadataLine(line)) continue;
+    if (line.startsWith('@@')) {
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk && (line.startsWith('+++') || line.startsWith('---'))) continue;
     if (line.startsWith('+')) additions += 1;
     else if (line.startsWith('-')) deletions += 1;
   }
@@ -682,6 +688,7 @@ function lineStatsFromUnifiedDiff(text) {
 
 function lineStatsFromPatchChange(stats) {
   if (!stats || typeof stats !== 'object') return null;
+  const changeType = String(stats.type || '').toLowerCase();
   if (isFiniteNumberValue(stats.additions) || isFiniteNumberValue(stats.deletions)) {
     return {
       additions: isFiniteNumberValue(stats.additions) ? Number(stats.additions) : 0,
@@ -689,10 +696,10 @@ function lineStatsFromPatchChange(stats) {
     };
   }
   if (typeof stats.unified_diff === 'string') return lineStatsFromUnifiedDiff(stats.unified_diff);
-  if (stats.type === 'add' && typeof stats.content === 'string') {
+  if (changeType === 'add' && typeof stats.content === 'string') {
     return { additions: textLineCount(stats.content), deletions: 0 };
   }
-  if (stats.type === 'delete' && typeof stats.content === 'string') {
+  if (changeType === 'delete' && typeof stats.content === 'string') {
     return { additions: 0, deletions: textLineCount(stats.content) };
   }
   return null;
@@ -709,12 +716,12 @@ function patchInputStatsLabel(stats) {
   return 'updated';
 }
 
-function diffStatsEntries(changes) {
+function diffStatsEntries(changes, repoRoot = '') {
   if (!changes || typeof changes !== 'object') return [];
   return Object.entries(changes).map(([file, stats]) => {
     const lineStats = lineStatsFromPatchChange(stats);
     return {
-      key: file,
+      key: displayProjectFile(file, repoRoot),
       value: lineStats ? lineStatsLabel(lineStats) : String(stats?.type || 'updated'),
     };
   });
@@ -772,6 +779,84 @@ function makePatchFile(pathname, changeType) {
   };
 }
 
+function patchContentLines(content) {
+  const text = String(content || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (!text) return [];
+  const trimmed = text.endsWith('\n') ? text.slice(0, -1) : text;
+  return trimmed ? trimmed.split('\n') : [''];
+}
+
+function isDiffMetadataLine(line) {
+  return line === '\\ No newline at end of file';
+}
+
+function parseUnifiedDiffPatchSection(changes, repoRoot = '') {
+  if (!changes || typeof changes !== 'object') return null;
+  const files = [];
+  for (const [pathname, stats] of Object.entries(changes)) {
+    const file = makePatchFile(displayProjectFile(pathname, repoRoot), stats?.type || 'update');
+    const diff = typeof stats?.unified_diff === 'string' ? stats.unified_diff.trim() : '';
+    let hunk = null;
+    let oldLine = 1;
+    let newLine = 1;
+    let hasLineNumbers = false;
+    const flushHunk = () => {
+      if (hunk) file.hunks.push(hunk);
+      hunk = null;
+    };
+    for (const line of diff ? diff.split(/\r?\n/) : []) {
+      if (isDiffMetadataLine(line)) continue;
+      if (!hunk && (line.startsWith('---') || line.startsWith('+++'))) continue;
+      if (line.startsWith('@@')) {
+        flushHunk();
+        const range = line.match(/@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
+        if (range) {
+          oldLine = Number(range[1]);
+          newLine = Number(range[2]);
+          hasLineNumbers = true;
+        }
+        hunk = { header: line, lineNumbers: Boolean(range), lines: [] };
+        continue;
+      }
+      if (!hunk) hunk = { header: '', lineNumbers: false, lines: [] };
+      if (line.startsWith('+')) {
+        file.additions += 1;
+        hunk.lines.push({ kind: 'added', content: line.slice(1), oldLine: null, newLine, lineNumberReliable: hunk.lineNumbers });
+        newLine += 1;
+      } else if (line.startsWith('-')) {
+        file.deletions += 1;
+        hunk.lines.push({ kind: 'removed', content: line.slice(1), oldLine, newLine: null, lineNumberReliable: hunk.lineNumbers });
+        oldLine += 1;
+      } else {
+        const content = line.startsWith(' ') ? line.slice(1) : line;
+        hunk.lines.push({ kind: 'context', content, oldLine, newLine, lineNumberReliable: hunk.lineNumbers });
+        oldLine += 1;
+        newLine += 1;
+      }
+    }
+    const contentLines = patchContentLines(stats?.content);
+    if (!file.hunks.length && contentLines.length && ['add', 'delete'].includes(String(stats?.type || '').toLowerCase())) {
+      const deleted = String(stats.type).toLowerCase() === 'delete';
+      hunk = { header: '', lineNumbers: false, lines: [] };
+      for (const [index, content] of contentLines.entries()) {
+        if (deleted) {
+          file.deletions += 1;
+          hunk.lines.push({ kind: 'removed', content, oldLine: index + 1, newLine: null, lineNumberReliable: false });
+        } else {
+          file.additions += 1;
+          hunk.lines.push({ kind: 'added', content, oldLine: null, newLine: index + 1, lineNumberReliable: false });
+        }
+      }
+    }
+    flushHunk();
+    if (file.hunks.length) {
+      file.lineNumbers = hasLineNumbers;
+      files.push(file);
+    }
+  }
+  return files.length ? { type: 'patch', title: 'Patch', files, lineNumbers: files.some((file) => file.lineNumbers) } : null;
+}
+
 function parsePatchSection(text) {
   const source = String(text || '').trim();
   if (!source) return null;
@@ -792,6 +877,7 @@ function parsePatchSection(text) {
   };
 
   for (const line of source.split(/\r?\n/)) {
+    if (isDiffMetadataLine(line)) continue;
     const fileMatch = line.match(/^\*\*\* (Add|Update|Delete) File: (.+)$/);
     if (fileMatch) {
       flushFile();
@@ -805,32 +891,34 @@ function parsePatchSection(text) {
     if (line.startsWith('@@')) {
       flushHunk();
       const range = line.match(/@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
+      const hasLineNumbers = Boolean(range);
       if (range) {
         oldLine = Number(range[1]);
         newLine = Number(range[2]);
       }
-      hunk = { header: line, lines: [] };
+      hunk = { header: line, lineNumbers: hasLineNumbers, lines: [] };
       continue;
     }
-    if (!hunk) hunk = { header: '', lines: [] };
+    if (!hunk) hunk = { header: '', lineNumbers: false, lines: [] };
     if (line.startsWith('+')) {
       file.additions += 1;
-      hunk.lines.push({ kind: 'added', content: line.slice(1), oldLine: null, newLine });
+      hunk.lines.push({ kind: 'added', content: line.slice(1), oldLine: null, newLine, lineNumberReliable: hunk.lineNumbers });
       newLine += 1;
     } else if (line.startsWith('-')) {
       file.deletions += 1;
-      hunk.lines.push({ kind: 'removed', content: line.slice(1), oldLine, newLine: null });
+      hunk.lines.push({ kind: 'removed', content: line.slice(1), oldLine, newLine: null, lineNumberReliable: hunk.lineNumbers });
       oldLine += 1;
     } else {
       const content = line.startsWith(' ') ? line.slice(1) : line;
-      hunk.lines.push({ kind: 'context', content, oldLine, newLine });
+      hunk.lines.push({ kind: 'context', content, oldLine, newLine, lineNumberReliable: hunk.lineNumbers });
       oldLine += 1;
       newLine += 1;
     }
   }
   flushFile();
   if (!files.length) return null;
-  return { type: 'patch', title: 'Patch', files };
+  for (const item of files) item.lineNumbers = item.hunks.some((hunk) => hunk.lineNumbers);
+  return { type: 'patch', title: 'Patch', files, lineNumbers: files.some((item) => item.lineNumbers) };
 }
 
 function maybePushPatchSection(sections, title, text) {
@@ -1900,7 +1988,7 @@ function extractCommandSections(raws, event) {
   return { timelineSections, inspectorSections };
 }
 
-function extractPatchSections(raws, event) {
+function extractPatchSections(raws, event, session = {}) {
   const timelineSections = [];
   const inspectorSections = [];
   const customCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call');
@@ -1908,12 +1996,16 @@ function extractPatchSections(raws, event) {
   const patchEnd = raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'patch_apply_end');
   const patchAny = patchEnd || raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('patch_apply_'));
   const envelope = toolOutputEnvelope(customOutput);
+  const resultPatchSection = parseUnifiedDiffPatchSection(patchEnd?.parsed?.payload?.changes, session.repoRoot);
+  if (resultPatchSection) {
+    timelineSections.push(resultPatchSection);
+  }
   const patchText = customCall?.output || patchAny?.output || '';
-  if (patchText.trim() && !maybePushPatchSection(timelineSections, 'Patch', patchText)) {
+  if (!timelineSections.length && patchText.trim() && !maybePushPatchSection(timelineSections, 'Patch', patchText)) {
     timelineSections.push({ type: 'diff', title: 'Patch', text: patchText.trim() });
   }
 
-  const patchFileEntries = diffStatsEntries(patchEnd?.parsed?.payload?.changes);
+  const patchFileEntries = diffStatsEntries(patchEnd?.parsed?.payload?.changes, session.repoRoot);
   const fallbackPatchFileEntries = patchFileEntries.length ? [] : diffStatsEntriesFromPatchInput(patchText);
   maybePushKvSection(inspectorSections, 'Files', patchFileEntries.length ? patchFileEntries : fallbackPatchFileEntries);
   if (!patchFileEntries.length && !fallbackPatchFileEntries.length) {
@@ -2101,7 +2193,7 @@ function rawConversationRole(raw) {
   return '';
 }
 
-function rawToolSections(raw, relatedEvent) {
+function rawToolSections(raw, relatedEvent, session = {}) {
   const sections = [];
   const omitPayloadKeys = [];
   const toolName = raw.toolName || relatedEvent?.toolName || relatedEvent?.subtype || '';
@@ -2146,7 +2238,9 @@ function rawToolSections(raw, relatedEvent) {
     if (String(raw.output || '').trim() && !maybePushPatchSection(sections, 'Patch', raw.output)) sections.push({ type: 'diff', title: 'Patch', text: String(raw.output).trim() });
     omitPayloadKeys.push('input');
   } else if (raw.recordType === 'event_msg' && raw.payloadType === 'patch_apply_end') {
-    maybePushKvSection(sections, 'Files', diffStatsEntries(raw.parsed?.payload?.changes));
+    const patchSection = parseUnifiedDiffPatchSection(raw.parsed?.payload?.changes, session.repoRoot);
+    if (patchSection) sections.push(patchSection);
+    maybePushKvSection(sections, 'Files', diffStatsEntries(raw.parsed?.payload?.changes, session.repoRoot));
     const noticeText = firstNonEmpty(raw.parsed?.payload?.stdout, raw.parsed?.payload?.stderr, raw.status ? `Patch ${raw.status}.` : '');
     if (noticeText) sections.push(makeNoticeSection('Result', noticeText, raw.parsed?.payload?.success === false ? 'error' : 'info'));
     maybePushKvSection(sections, 'Apply result', [
@@ -2180,7 +2274,7 @@ function rawToolSections(raw, relatedEvent) {
   return { sections, omitPayloadKeys };
 }
 
-function rawPrimarySections(raw, relatedEvent) {
+function rawPrimarySections(raw, relatedEvent, session = {}) {
   if (relatedEvent?.kind === 'protocol') {
     return {
       sections: withoutSectionTypes(extractProtocolSections(relatedEvent, [raw]), ['raw_json']),
@@ -2198,7 +2292,7 @@ function rawPrimarySections(raw, relatedEvent) {
     };
   }
 
-  const tool = rawToolSections(raw, relatedEvent);
+  const tool = rawToolSections(raw, relatedEvent, session);
   if (tool.sections.length) return tool;
 
   if (rawConversationRole(raw)) {
@@ -2251,9 +2345,9 @@ function splitSectionsForDetail(sections) {
   return { timelineSections, inspectorSections };
 }
 
-function extractRawSections(raw, relatedEvent) {
+function extractRawSections(raw, relatedEvent, session = {}) {
   const sections = [];
-  const primary = rawPrimarySections(raw, relatedEvent);
+  const primary = rawPrimarySections(raw, relatedEvent, session);
   sections.push(...primary.sections);
   if (!primary.sections.length && raw.messageText) {
     const subtype = classifyProtocolText(raw.messageText, raw.role);
@@ -2279,7 +2373,7 @@ function extractRawSections(raw, relatedEvent) {
   return sections;
 }
 
-function extractLogicalDetailSections(event, raws) {
+function extractLogicalDetailSections(event, raws, session = {}) {
   switch (event.kind) {
     case 'user_message':
     case 'assistant_message':
@@ -2292,7 +2386,7 @@ function extractLogicalDetailSections(event, raws) {
     case 'command':
       return extractCommandSections(raws, event);
     case 'patch':
-      return extractPatchSections(raws, event);
+      return extractPatchSections(raws, event, session);
     case 'js_repl':
       return splitSectionsForDetail(extractJsReplSections(raws, event));
     case 'mcp':
@@ -2322,7 +2416,7 @@ function buildEventDetail(session, eventId, layer = 'main') {
     const raw = session.rawEvents.find((candidate) => candidate.rawId === eventId);
     if (!raw) return null;
     const relatedLogical = session.logicalEvents.find((event) => rawMatchesEvent(raw, event));
-    const sections = filterDetailSections(extractRawSections(raw, relatedLogical));
+    const sections = filterDetailSections(extractRawSections(raw, relatedLogical, session));
     for (const section of sections) {
       if (section.type === 'raw_json') section.expanded = true;
     }
@@ -2343,7 +2437,7 @@ function buildEventDetail(session, eventId, layer = 'main') {
   const logical = session.logicalEvents.find((candidate) => candidate.id === eventId && candidate.layer === layer);
   if (!logical) return null;
   const raws = rawEventsForLogicalEvent(session, logical);
-  const detailSections = extractLogicalDetailSections(logical, raws);
+  const detailSections = extractLogicalDetailSections(logical, raws, session);
   if (!detailSections.timelineSections.length && !detailSections.inspectorSections.length) {
     detailSections.inspectorSections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
   }

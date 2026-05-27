@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { renderSection } = require('../public/renderers');
+const { renderSection, renderSections } = require('../public/renderers');
 
 test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv fragments', () => {
   const markdown = renderSection({ type: 'markdown', title: 'Message', html: '<p><strong>safe</strong></p>' });
@@ -22,11 +22,12 @@ test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv
   assert.match(markdown, /class="sectionTitle">Message/);
   assert.doesNotMatch(hiddenTitleMarkdown, /sectionTitle/);
   assert.match(hiddenTitleMarkdown, /<p>body<\/p>/);
-  assert.match(code, /echo &quot;&lt;x&gt;&quot;/);
+  assert.match(code, /echo/);
+  assert.match(code, /&quot;&lt;x&gt;&quot;/);
   assert.match(code, /class="codeFence"/);
-  assert.match(code, /<code>shell<\/code>/);
+  assert.match(code, /class="language-shell hljs"/);
   assert.match(terminal, /terminalBlock stderr/);
-  assert.match(terminal, /<code>text<\/code>/);
+  assert.match(terminal, /class="language-text"/);
   assert.match(json, /&quot;ok&quot;: true/);
   assert.match(diff, /diffLine removed/);
   assert.match(diff, /diffLine added/);
@@ -51,19 +52,105 @@ test('renderer outputs patch sections with file summaries, line numbers, and esc
       deletions: 1,
       hunks: [{
         header: '@@',
+        lineNumbers: false,
         lines: [
-          { kind: 'context', oldLine: 1, newLine: 1, content: 'const ok = true;' },
-          { kind: 'removed', oldLine: 2, newLine: null, content: '<old>' },
-          { kind: 'added', oldLine: null, newLine: 2, content: '<new>' },
+          { kind: 'context', oldLine: 1, newLine: 1, lineNumberReliable: false, content: 'const ok = true;' },
+          { kind: 'removed', oldLine: 2, newLine: null, lineNumberReliable: false, content: '<old>' },
+          { kind: 'added', oldLine: null, newLine: 2, lineNumberReliable: false, content: '<new>' },
+        ],
+      }],
+      lineNumbers: false,
+    }],
+  });
+
+  assert.match(patch, /src\/app\.js/);
+  assert.match(patch, /class="eventSection patchBlock"/);
+  assert.doesNotMatch(patch, /<div class="patchBlock"/);
+  assert.doesNotMatch(patch, /class="sectionTitle">Patch/);
+  assert.match(patch, /\+1 \/ -1/);
+  assert.match(patch, /patchLine context/);
+  assert.match(patch, /patchLine removed/);
+  assert.match(patch, /patchLine added/);
+  assert.match(patch, /patchLineNo muted/);
+  assert.match(patch, /&lt;new&gt;/);
+});
+
+test('renderer shows reliable patch line numbers when available', () => {
+  const patch = renderSection({
+    type: 'patch',
+    files: [{
+      path: 'src/app.js',
+      changeType: 'update',
+      additions: 1,
+      deletions: 1,
+      lineNumbers: true,
+      hunks: [{
+        header: '@@ -9,1 +9,1 @@',
+        lineNumbers: true,
+        lines: [
+          { kind: 'removed', oldLine: 9, newLine: null, lineNumberReliable: true, content: 'old();' },
+          { kind: 'added', oldLine: null, newLine: 9, lineNumberReliable: true, content: 'newCall();' },
         ],
       }],
     }],
   });
 
-  assert.match(patch, /src\/app\.js/);
-  assert.match(patch, /\+1 \/ -1/);
-  assert.match(patch, /patchLine context/);
-  assert.match(patch, /patchLine removed/);
-  assert.match(patch, /patchLine added/);
-  assert.match(patch, /&lt;new&gt;/);
+  assert.match(patch, /patchLineNo">9/);
+  assert.doesNotMatch(patch, /patchLineNo muted/);
+});
+
+test('renderer groups command and terminal sections as one command run', () => {
+  const html = renderSections([
+    { type: 'code', title: 'Command', code: 'echo "<x>"', language: 'shell' },
+    { type: 'terminal', title: 'stdout', text: 'ok', stream: 'stdout', language: 'text' },
+    { type: 'terminal', title: 'stderr', text: '<boom>', stream: 'stderr', language: 'text' },
+  ]);
+
+  assert.match(html, /class="eventSection commandRun"/);
+  assert.match(html, /commandRunSegment commandRunCommand/);
+  assert.match(html, /commandRunOutput stdout/);
+  assert.match(html, /commandRunOutput stderr/);
+  assert.match(html, /echo/);
+  assert.match(html, /&quot;&lt;x&gt;&quot;/);
+  assert.match(html, /&lt;boom&gt;/);
+  assert.doesNotMatch(html, /class="codeFence"/);
+});
+
+test('renderer applies highlight.js syntax highlighting when available', () => {
+  const previous = globalThis.hljs;
+  globalThis.hljs = {
+    getLanguage: (language) => language === 'powershell' || language === 'javascript',
+    highlight: (source, options) => ({
+      value: `<span class="hljs-title">${source.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span><span class="hljs-language">${options.language}</span>`,
+    }),
+  };
+  try {
+    const command = renderSections([
+      {
+        type: 'code',
+        title: 'Command',
+        code: 'powershell.exe -Command "Get-ChildItem <x>" $env:Path',
+        language: 'powershell',
+      },
+    ]);
+    const patch = renderSection({
+      type: 'patch',
+      files: [{
+        path: 'src/app.js',
+        changeType: 'update',
+        additions: 1,
+        deletions: 0,
+        hunks: [{ lines: [{ kind: 'added', oldLine: null, newLine: 1, content: 'const ok = true;' }] }],
+      }],
+    });
+
+    assert.match(command, /hljs-title/);
+    assert.match(command, /hljs-language">powershell/);
+    assert.match(command, /&lt;x&gt;/);
+    assert.doesNotMatch(command, /<x>/);
+    assert.match(patch, /language-javascript hljs/);
+    assert.match(patch, /const ok = true/);
+  } finally {
+    globalThis.hljs = previous;
+  }
 });

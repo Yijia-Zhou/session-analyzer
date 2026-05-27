@@ -23,6 +23,68 @@
     return escapeHtml(section.title || 'Details');
   }
 
+  function normalizeHighlightLanguage(language) {
+    const normalized = String(language || '').trim().toLowerCase();
+    const aliases = {
+      ps1: 'powershell',
+      pwsh: 'powershell',
+      shell: 'bash',
+      sh: 'bash',
+      zsh: 'bash',
+      fish: 'bash',
+      cmd: 'bash',
+      batch: 'bash',
+      js: 'javascript',
+      jsx: 'javascript',
+      ts: 'typescript',
+      tsx: 'typescript',
+      py: 'python',
+      html: 'xml',
+      htm: 'xml',
+      md: 'markdown',
+    };
+    return aliases[normalized] || normalized;
+  }
+
+  function languageForPath(filePath) {
+    const ext = String(filePath || '').toLowerCase().split(/[\\/]/).pop().split('.').pop();
+    const languages = {
+      js: 'javascript',
+      jsx: 'javascript',
+      mjs: 'javascript',
+      cjs: 'javascript',
+      ts: 'typescript',
+      tsx: 'typescript',
+      json: 'json',
+      py: 'python',
+      ps1: 'powershell',
+      sh: 'bash',
+      bash: 'bash',
+      zsh: 'bash',
+      css: 'css',
+      scss: 'css',
+      html: 'xml',
+      htm: 'xml',
+      xml: 'xml',
+      svg: 'xml',
+      diff: 'diff',
+      patch: 'diff',
+    };
+    return languages[ext] || '';
+  }
+
+  function highlightCode(value, language) {
+    const source = String(value || '');
+    const hljs = globalThis.hljs;
+    const normalized = normalizeHighlightLanguage(language);
+    if (!hljs || !normalized || !hljs.getLanguage?.(normalized)) return escapeHtml(source);
+    try {
+      return hljs.highlight(source, { language: normalized, ignoreIllegals: true }).value;
+    } catch {
+      return escapeHtml(source);
+    }
+  }
+
   function renderMarkdown(section) {
     return `<section class="eventSection mdBlock">${renderSectionTitle(section)}${section.html || ''}</section>`;
   }
@@ -31,7 +93,7 @@
     const language = section.language || 'text';
     const languageClass = `language-${escapeHtml(language)}`;
     const title = section.title ? `<span>${escapeHtml(section.title)}</span>` : '<span>Code</span>';
-    return `<section class="eventSection"><div class="codeFence"><div class="codeFenceHead">${title}<code>${escapeHtml(language)}</code></div><pre><code class="${languageClass}">${escapeHtml(section.code || '')}</code></pre></div></section>`;
+    return `<section class="eventSection"><div class="codeFence"><div class="codeFenceHead">${title}<code>${escapeHtml(language)}</code></div><pre><code class="${languageClass} hljs">${highlightCode(section.code || '', language)}</code></pre></div></section>`;
   }
 
   function renderTerminal(section) {
@@ -39,6 +101,30 @@
     const language = section.language || 'text';
     const title = section.title || stream;
     return `<section class="eventSection"><div class="codeFence terminalBlock ${stream}"><div class="codeFenceHead"><span>${escapeHtml(title)}</span><code>${escapeHtml(language)}</code></div><pre><code class="language-${escapeHtml(language)}">${escapeHtml(section.text || '')}</code></pre></div></section>`;
+  }
+
+  function isCommandSection(section) {
+    return section?.type === 'code' && String(section.title || '').toLowerCase() === 'command';
+  }
+
+  function isTerminalOutputSection(section) {
+    return section?.type === 'terminal' && ['stdout', 'stderr'].includes(section.stream || section.title);
+  }
+
+  function renderCommandRunSegment(section, role) {
+    const stream = section.stream === 'stderr' ? 'stderr' : 'stdout';
+    const language = section.language || 'text';
+    const title = section.title || (role === 'command' ? 'Command' : stream);
+    const source = role === 'command' ? section.code : section.text;
+    const roleClass = role === 'command' ? 'commandRunCommand' : `commandRunOutput ${stream}`;
+    const code = role === 'command' ? highlightCode(source || '', language) : escapeHtml(source || '');
+    const highlightClass = role === 'command' ? ' hljs' : '';
+    return `<div class="commandRunSegment ${roleClass}"><div class="commandRunHead"><span>${escapeHtml(title)}</span><code>${escapeHtml(language)}</code></div><pre><code class="language-${escapeHtml(language)}${highlightClass}">${code}</code></pre></div>`;
+  }
+
+  function renderCommandRun(sections) {
+    const body = sections.map((section, index) => renderCommandRunSegment(section, index === 0 ? 'command' : 'output')).join('');
+    return `<section class="eventSection commandRun">${body}</section>`;
   }
 
   function renderJson(section) {
@@ -58,19 +144,23 @@
 
   function renderPatch(section) {
     const files = (section.files || []).map((file) => {
+      const language = languageForPath(file.path);
       const hunks = (file.hunks || []).map((hunk) => {
         const header = hunk.header ? `<div class="patchHunkHeader">${escapeHtml(hunk.header)}</div>` : '';
         const lines = (hunk.lines || []).map((line) => {
           const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
           const oldNo = line.oldLine == null ? '' : String(line.oldLine);
           const newNo = line.newLine == null ? '' : String(line.newLine);
-          return `<div class="patchLine ${escapeHtml(line.kind || 'context')}"><span class="patchOldNo">${escapeHtml(oldNo)}</span><span class="patchNewNo">${escapeHtml(newNo)}</span><span class="patchSign">${sign}</span><code>${escapeHtml(line.content || '')}</code></div>`;
+          const reliableLineNumber = line.lineNumberReliable !== false && hunk.lineNumbers !== false && file.lineNumbers !== false;
+          const lineNo = reliableLineNumber ? (line.kind === 'added' ? newNo : line.kind === 'removed' ? oldNo : (newNo || oldNo)) : '';
+          const lineNoClass = reliableLineNumber ? 'patchLineNo' : 'patchLineNo muted';
+          return `<div class="patchLine ${escapeHtml(line.kind || 'context')}"><span class="${lineNoClass}">${escapeHtml(lineNo)}</span><span class="patchSign">${sign}</span><code class="${language ? `language-${escapeHtml(language)} hljs` : ''}">${highlightCode(line.content || '', language)}</code></div>`;
         }).join('');
         return `<div class="patchHunk">${header}${lines}</div>`;
       }).join('');
       return `<article class="patchFile"><header><strong>${escapeHtml(file.path || '')}</strong><span>${escapeHtml(file.changeType || 'update')}</span><em>+${escapeHtml(file.additions || 0)} / -${escapeHtml(file.deletions || 0)}</em></header>${hunks}</article>`;
     }).join('');
-    return `<section class="eventSection"><div class="patchBlock">${renderSectionTitle(section)}${files}</div></section>`;
+    return `<section class="eventSection patchBlock">${files}</section>`;
   }
 
   function renderKv(section) {
@@ -132,7 +222,24 @@
   }
 
   function renderSections(sections) {
-    return (sections || []).map(renderSection).join('');
+    const output = [];
+    const items = sections || [];
+    for (let index = 0; index < items.length; index += 1) {
+      const section = items[index];
+      if (isCommandSection(section)) {
+        const commandSections = [section];
+        let cursor = index + 1;
+        while (cursor < items.length && isTerminalOutputSection(items[cursor])) {
+          commandSections.push(items[cursor]);
+          cursor += 1;
+        }
+        output.push(renderCommandRun(commandSections));
+        index = cursor - 1;
+      } else {
+        output.push(renderSection(section));
+      }
+    }
+    return output.join('');
   }
 
   return {

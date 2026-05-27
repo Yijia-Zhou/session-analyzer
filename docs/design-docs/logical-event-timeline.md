@@ -194,13 +194,17 @@ Both section arrays use the same discriminated union:
 - `notice`
 - `raw_json`
 
-`code` sections always include a `language` badge. Command sections infer shell language from the command wrapper or command shape, including PowerShell, cmd/batch, bash, sh, zsh, and fish. `terminal` sections may include a `language`; stdout/stderr default to `text` unless their content is detected as JSON or diff-like output.
+`code` sections carry language metadata for highlighting, but timeline bodies do not show a user-facing language badge by default. Command sections infer shell language from the command wrapper or command shape, including PowerShell, cmd/batch, bash, sh, zsh, and fish. In timeline bodies, a command `code` section followed by stdout/stderr `terminal` sections is rendered as one command run region rather than as nested standalone blocks. `terminal` sections may include a `language`; stdout/stderr default to `text` unless their content is detected as JSON or diff-like output.
 
-`code` section 始终包含 `language` badge。Command section 会从命令包装器或命令形态推断 shell 语言，包括 PowerShell、cmd/batch、bash、sh、zsh 和 fish。`terminal` section 可以包含 `language`；stdout/stderr 默认是 `text`，除非内容被检测为 JSON 或类似 diff 的输出。
+`code` section 会携带用于高亮的 language metadata，但 timeline 正文默认不展示面向用户的 language badge。Command section 会从命令包装器或命令形态推断 shell 语言，包括 PowerShell、cmd/batch、bash、sh、zsh 和 fish。在 timeline 正文中，command `code` section 后接 stdout/stderr `terminal` section 时会被渲染为同一个命令执行区域，而不是嵌套的独立块。`terminal` section 可以包含 `language`；stdout/stderr 默认是 `text`，除非内容被检测为 JSON 或类似 diff 的输出。
 
-`patch` sections carry file summaries, change type, addition/deletion counts, hunks, and old/new line numbers so the frontend can render Codex CLI-like patch bodies with gutters and red/green changed lines. If patch input is not parseable, the detail builder falls back to a `diff` timeline section.
+`patch` sections carry file summaries, change type, addition/deletion counts, hunks, and old/new line numbers so the frontend can render Codex CLI-like patch bodies with gutters and red/green changed lines without an extra outer visual block. Applied patch result diffs from `patch_apply_end.payload.changes[*].unified_diff` are preferred over `apply_patch` input because result diffs are more likely to include reliable file line numbers. When a patch hunk has no real unified-diff range, line numbers are marked unreliable and the frontend hides them instead of presenting inferred numbers as file positions. If patch input is not parseable, the detail builder falls back to a `diff` timeline section.
 
-`patch` section 携带文件摘要、变更类型、加减行统计、hunk 以及 old/new 行号，让前端可以渲染接近 Codex CLI 的 patch 正文，包括 gutter 和红/绿变更行。如果 patch 输入无法解析，详情构建器会回退为 timeline 中的 `diff` section。
+`patch` section 携带文件摘要、变更类型、加减行统计、hunk 以及 old/new 行号，让前端可以渲染接近 Codex CLI 的 patch 正文，包括 gutter 和红/绿变更行，同时不再添加额外的外层视觉块。详情构建器优先使用 `patch_apply_end.payload.changes[*].unified_diff` 中的已应用 patch 结果 diff，而不是 `apply_patch` 输入，因为结果 diff 更可能包含可靠的文件行号。当 patch hunk 没有真实 unified-diff range 时，行号会被标记为不可靠，前端会隐藏它们，而不是把推断数字展示成文件位置。如果 patch 输入无法解析，详情构建器会回退为 timeline 中的 `diff` section。
+
+Timeline code and patch content use a vendored `highlight.js` browser bundle for common languages such as PowerShell, shell, JavaScript/TypeScript, JSON, Python, CSS, XML/HTML, and diff. Patch highlighting is applied only to line content after the patch gutter is rendered. If a language or highlighter is unavailable, rendering falls back to escaped plain text.
+
+Timeline 中的 code 和 patch 内容使用 vendored `highlight.js` 浏览器 bundle，为 PowerShell、shell、JavaScript/TypeScript、JSON、Python、CSS、XML/HTML 和 diff 等常见语言提供高亮。Patch 高亮只应用在 patch gutter 之后的行内容上。如果语言或高亮器不可用，渲染会回退为已转义的纯文本。
 
 Expanded-card rendering treats `markdown-it` as a required server dependency. Markdown source is converted server-side with raw HTML disabled and dangerous link protocols rejected. In the main and protocol layers, `raw_json` sections stay in the inspector as collapsible fallback material so the right-side raw refs panel remains the primary full-source view.
 
@@ -214,9 +218,9 @@ Terminal sections may apply display-only repair for text that looks like UTF-8 b
 
 终端区段可以对看起来像“UTF-8 字节在写入转录前被当作 GB18030/GBK 解码”的文本做仅用于显示的修复，例如 Windows PowerShell `Get-Content` 在未显式指定编码时读取 UTF-8 文件产生的输出。该修复保持保守且不改变原始行；Raw refs 仍继续暴露原始 JSONL payload。当字节已经丢失、只剩替换占位时，终端显示使用 `□` 标记不可恢复字符。
 
-Sections may set `hideTitle: true` when the section title only restates the event header, such as the primary `Message`, `Plan`, `Reasoning`, or protocol text body. Renderer implementations should keep titles visible for structural sections such as stdout/stderr, metadata tables, request/response payloads, patch files, and raw JSON summaries.
+Sections may set `hideTitle: true` when the section title only restates the event header, such as the primary `Message`, `Plan`, `Reasoning`, or protocol text body. Renderer implementations should keep titles visible for structural sections such as stdout/stderr, metadata tables, request/response payloads, and raw JSON summaries. Patch sections omit the redundant outer `Patch` title and rely on per-file headers for structure.
 
-当区段标题只是重复事件标题时，例如主要的 `Message`、`Plan`、`Reasoning` 或协议文本正文，区段可以设置 `hideTitle: true`。渲染器实现应为 stdout/stderr、元数据表、请求/响应载荷、补丁文件和原始 JSON 摘要等结构性区段保留可见标题。
+当区段标题只是重复事件标题时，例如主要的 `Message`、`Plan`、`Reasoning` 或协议文本正文，区段可以设置 `hideTitle: true`。渲染器实现应为 stdout/stderr、元数据表、请求/响应载荷和原始 JSON 摘要等结构性区段保留可见标题。Patch section 会省略重复的外层 `Patch` 标题，并依赖每个文件自己的 header 保持结构。
 
 ## Detail panel and folding profiles / 详情面板与折叠策略
 

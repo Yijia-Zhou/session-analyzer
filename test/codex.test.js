@@ -455,7 +455,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(parserTimeline.events[0].status, 'success');
   const parserDetail = buildEventDetail(session, parserTimeline.events[0].id, 'main');
   assert.deepEqual(allSections(parserDetail).find((section) => section.title === 'Files').entries, [
-    { key: 'G:\\vibe\\term-agent\\src\\parser.js', value: '+1 / -1' },
+    { key: 'G:/vibe/term-agent/src/parser.js', value: '+1 / -1' },
   ]);
 
   const legacyTimeline = getTimeline(index, primaryFixtureSessionId, {
@@ -491,7 +491,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(statsTimeline.events[0].status, 'success');
   const statsDetail = buildEventDetail(session, statsTimeline.events[0].id, 'main');
   assert.deepEqual(allSections(statsDetail).find((section) => section.title === 'Files').entries, [
-    { key: 'G:\\vibe\\term-agent\\src\\stats.js', value: '+2 / -1' },
+    { key: 'G:/vibe/term-agent/src/stats.js', value: '+2 / -1' },
   ]);
 
   const failedTimeline = getTimeline(index, primaryFixtureSessionId, {
@@ -569,6 +569,8 @@ test('patch detail preserves changed lines that begin with diff marker character
   const file = patch.files[0];
   const lines = file.hunks[0].lines;
 
+  assert.equal(patch.lineNumbers, false);
+  assert.equal(file.lineNumbers, false);
   assert.equal(file.additions, 1);
   assert.equal(file.deletions, 1);
   assert.deepEqual(lines.map((line) => [line.kind, line.content, line.oldLine, line.newLine]), [
@@ -580,6 +582,207 @@ test('patch detail preserves changed lines that begin with diff marker character
   assert.deepEqual(detail.inspectorSections.find((section) => section.title === 'Files').entries, [
     { key: 'sample.md', value: '+1 / -1' },
   ]);
+});
+
+test('patch detail prefers applied unified diff with reliable file line numbers', () => {
+  const raw = {
+    rawId: 'fixture:patch-end:1',
+    recordType: 'event_msg',
+    payloadType: 'patch_apply_end',
+    toolName: 'apply_patch',
+    output: '',
+    parsed: {
+      payload: {
+        type: 'patch_apply_end',
+        changes: {
+          'src/app.js': {
+            type: 'update',
+            unified_diff: '@@ -9,3 +9,4 @@\n const before = true;\n-old();\n+newCall();\n+extra();\n const after = true;\n',
+          },
+        },
+      },
+    },
+    source: { file: 'fixture.jsonl', line: 2 },
+  };
+  const event = {
+    id: 'logical:patch-end',
+    kind: 'patch',
+    subtype: 'apply_patch',
+    layer: 'main',
+    label: 'Patch applied',
+    status: 'success',
+    severity: 'normal',
+    toolName: 'apply_patch',
+    touchedFiles: ['src/app.js'],
+    outputStats: {},
+    channels: ['event_msg'],
+    rawRefs: [{ rawId: raw.rawId, file: 'fixture.jsonl', line: 2 }],
+  };
+  const detail = buildEventDetail({ rawEvents: [raw], logicalEvents: [event] }, event.id, 'main');
+  const patch = detail.timelineSections.find((section) => section.type === 'patch');
+  const file = patch.files[0];
+  const lines = file.hunks[0].lines;
+
+  assert.equal(patch.lineNumbers, true);
+  assert.equal(file.lineNumbers, true);
+  assert.equal(file.path, 'src/app.js');
+  assert.deepEqual(lines.map((line) => [line.kind, line.oldLine, line.newLine, line.lineNumberReliable]), [
+    ['context', 9, 9, true],
+    ['removed', 10, null, true],
+    ['added', null, 10, true],
+    ['added', null, 11, true],
+    ['context', 11, 12, true],
+  ]);
+});
+
+test('patch detail preserves applied unified diff lines that look like file headers', () => {
+  const raw = {
+    rawId: 'fixture:patch-header-like:1',
+    recordType: 'event_msg',
+    payloadType: 'patch_apply_end',
+    toolName: 'apply_patch',
+    output: '',
+    parsed: {
+      payload: {
+        type: 'patch_apply_end',
+        changes: {
+          'src/markers.txt': {
+            type: 'update',
+            unified_diff: '--- a/src/markers.txt\n+++ b/src/markers.txt\n@@ -1,2 +1,2 @@\n---removed marker\n+++added marker\n context\n',
+          },
+        },
+      },
+    },
+    source: { file: 'fixture.jsonl', line: 3 },
+  };
+  const event = {
+    id: 'logical:patch-header-like',
+    kind: 'patch',
+    subtype: 'apply_patch',
+    layer: 'main',
+    label: 'Patch applied',
+    status: 'success',
+    severity: 'normal',
+    toolName: 'apply_patch',
+    touchedFiles: ['src/markers.txt'],
+    outputStats: {},
+    channels: ['event_msg'],
+    rawRefs: [{ rawId: raw.rawId, file: 'fixture.jsonl', line: 3 }],
+  };
+  const detail = buildEventDetail({ rawEvents: [raw], logicalEvents: [event] }, event.id, 'main');
+  const patch = detail.timelineSections.find((section) => section.type === 'patch');
+  const lines = patch.files[0].hunks[0].lines;
+
+  assert.equal(patch.files[0].additions, 1);
+  assert.equal(patch.files[0].deletions, 1);
+  assert.deepEqual(lines.map((line) => [line.kind, line.content, line.oldLine, line.newLine]), [
+    ['removed', '--removed marker', 1, null],
+    ['added', '++added marker', null, 1],
+    ['context', 'context', 2, 2],
+  ]);
+  assert.deepEqual(detail.inspectorSections.find((section) => section.title === 'Files').entries, [
+    { key: 'src/markers.txt', value: '+1 / -1' },
+  ]);
+});
+
+test('patch detail keeps mixed applied diff and content changes with display paths', () => {
+  const raw = {
+    rawId: 'fixture:patch-mixed:1',
+    recordType: 'event_msg',
+    payloadType: 'patch_apply_end',
+    toolName: 'apply_patch',
+    output: '',
+    parsed: {
+      payload: {
+        type: 'patch_apply_end',
+        changes: {
+          'G:\\vibe\\session-analyzer\\src\\app.js': {
+            type: 'update',
+            unified_diff: '@@ -4,1 +4,1 @@\n-old();\n+newCall();\n',
+          },
+          'G:\\vibe\\session-analyzer\\src\\created.js': {
+            type: 'Add',
+            content: 'const created = true;\nexport default created;\n',
+          },
+        },
+      },
+    },
+    source: { file: 'fixture.jsonl', line: 3 },
+  };
+  const event = {
+    id: 'logical:patch-mixed',
+    kind: 'patch',
+    subtype: 'apply_patch',
+    layer: 'main',
+    label: 'Patch applied',
+    status: 'success',
+    severity: 'normal',
+    toolName: 'apply_patch',
+    touchedFiles: ['src/app.js', 'src/created.js'],
+    outputStats: {},
+    channels: ['event_msg'],
+    rawRefs: [{ rawId: raw.rawId, file: 'fixture.jsonl', line: 3 }],
+  };
+  const detail = buildEventDetail({ repoRoot: 'G:\\vibe\\session-analyzer', rawEvents: [raw], logicalEvents: [event] }, event.id, 'main');
+  const patch = detail.timelineSections.find((section) => section.type === 'patch');
+
+  assert.deepEqual(patch.files.map((file) => file.path), ['src/app.js', 'src/created.js']);
+  assert.equal(patch.files[0].lineNumbers, true);
+  assert.equal(patch.files[1].lineNumbers, false);
+  assert.deepEqual(patch.files[1].hunks[0].lines.map((line) => [line.kind, line.content, line.lineNumberReliable]), [
+    ['added', 'const created = true;', false],
+    ['added', 'export default created;', false],
+  ]);
+  assert.deepEqual(detail.inspectorSections.find((section) => section.title === 'Files').entries, [
+    { key: 'src/app.js', value: '+1 / -1' },
+    { key: 'src/created.js', value: '+2 / -0' },
+  ]);
+});
+
+test('patch detail skips unified diff no-newline metadata lines', () => {
+  const raw = {
+    rawId: 'fixture:patch-newline:1',
+    recordType: 'event_msg',
+    payloadType: 'patch_apply_end',
+    toolName: 'apply_patch',
+    output: '',
+    parsed: {
+      payload: {
+        type: 'patch_apply_end',
+        changes: {
+          'src/app.js': {
+            type: 'update',
+            unified_diff: '@@ -1,2 +1,2 @@\n const before = true;\n-old();\n\\ No newline at end of file\n+newCall();\n\\ No newline at end of file\n',
+          },
+        },
+      },
+    },
+    source: { file: 'fixture.jsonl', line: 4 },
+  };
+  const event = {
+    id: 'logical:patch-newline',
+    kind: 'patch',
+    subtype: 'apply_patch',
+    layer: 'main',
+    label: 'Patch applied',
+    status: 'success',
+    severity: 'normal',
+    toolName: 'apply_patch',
+    touchedFiles: ['src/app.js'],
+    outputStats: {},
+    channels: ['event_msg'],
+    rawRefs: [{ rawId: raw.rawId, file: 'fixture.jsonl', line: 4 }],
+  };
+  const detail = buildEventDetail({ rawEvents: [raw], logicalEvents: [event] }, event.id, 'main');
+  const patch = detail.timelineSections.find((section) => section.type === 'patch');
+  const lines = patch.files[0].hunks[0].lines;
+
+  assert.deepEqual(lines.map((line) => [line.kind, line.content, line.oldLine, line.newLine]), [
+    ['context', 'const before = true;', 1, 1],
+    ['removed', 'old();', 2, null],
+    ['added', 'newCall();', null, 2],
+  ]);
+  assert.equal(lines.some((line) => line.content.includes('No newline')), false);
 });
 
 test('file suggestions come from analyzed session touched files', async () => {
@@ -767,6 +970,7 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
 
   const rawPatchEnd = session.rawEvents.find((raw) => raw.payloadType === 'patch_apply_end');
   const rawPatchEndDetail = buildEventDetail(session, rawPatchEnd.rawId, 'raw');
+  assert.equal(allSections(rawPatchEndDetail)[0].type, 'patch');
   assert.equal(allSections(rawPatchEndDetail).some((section) => section.title === 'Result'), true);
 });
 

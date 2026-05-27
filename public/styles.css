@@ -2148,6 +2148,7 @@ body[data-project-mode='selecting'] .searchAssist {
 
 .codeFence pre,
 .terminalBlock pre,
+.commandRun pre,
 .jsonBlock pre,
 .diffBlock pre {
   margin: 0;
@@ -2157,7 +2158,6 @@ body[data-project-mode='selecting'] .searchAssist {
 .jsonBlock,
 .diffBlock,
 .codeFence,
-.patchBlock,
 .kvWrap,
 .tokenUsageBlock,
 .usageLimitBlock {
@@ -2191,13 +2191,52 @@ body[data-project-mode='selecting'] .searchAssist {
 }
 
 .codeFenceHead code {
-  background: var(--code-bg);
-  border: 1px solid var(--code-border);
-  border-radius: 4px;
+  display: none;
+}
+
+.commandRun {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  display: grid;
+  gap: 0.6rem;
+  overflow: visible;
+}
+
+.commandRunSegment + .commandRunSegment {
+  border-top: 0;
+}
+
+.commandRunHead {
+  align-items: baseline;
+  background: transparent;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-start;
+  padding: 0 0 0.24rem;
+}
+
+.commandRunHead span {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.commandRunCommand .commandRunHead span::before {
   color: var(--code-muted);
   font-family: var(--mono);
-  font-size: 0.68rem;
-  padding: 0.1rem 0.35rem;
+  content: '$ ';
+  font-weight: 700;
+  text-transform: none;
+}
+
+.commandRunOutput.stderr .commandRunHead span {
+  color: #b42318;
+}
+
+.commandRunHead code {
+  display: none;
 }
 
 .terminalBlock.stdout {
@@ -2212,7 +2251,8 @@ body[data-project-mode='selecting'] .searchAssist {
 .jsonBlock pre,
 .diffBlock pre,
 .codeFence pre,
-.terminalBlock pre {
+.terminalBlock pre,
+.commandRun pre {
   background: var(--code-bg);
   border-radius: 6px;
   color: var(--code-ink);
@@ -2227,6 +2267,32 @@ body[data-project-mode='selecting'] .searchAssist {
 
 .codeFence pre {
   border-radius: 0;
+}
+
+.commandRun pre {
+  background: #fbfcfd;
+  border: 1px solid #e4eaed;
+  border-radius: 4px;
+  padding: 0.58rem 0.65rem;
+}
+
+.commandRunCommand pre {
+  background: #f5f7f8;
+}
+
+.commandRunOutput.stdout pre {
+  background: #fbfcfd;
+}
+
+.commandRunOutput.stderr pre {
+  background: #fff8f7;
+}
+
+.codeFence pre code.hljs,
+.commandRun pre code.hljs,
+.patchLine code.hljs {
+  background: transparent;
+  padding: 0;
 }
 
 .rawJsonDetails {
@@ -2260,21 +2326,18 @@ body[data-project-mode='selecting'] .searchAssist {
 }
 
 .patchBlock {
-  padding: 0;
-  overflow: hidden;
+  display: grid;
+  gap: 0.55rem;
 }
 
 .patchBlock > .sectionTitle {
-  padding: 0.65rem 0.75rem 0;
+  padding: 0;
 }
 
 .patchFile {
-  border-top: 1px solid var(--line);
-}
-
-.patchFile:first-child,
-.patchBlock > .sectionTitle + .patchFile {
-  border-top: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
 }
 
 .patchFile header {
@@ -2317,7 +2380,7 @@ body[data-project-mode='selecting'] .searchAssist {
 
 .patchLine {
   display: grid;
-  grid-template-columns: 3.25rem 3.25rem 1.25rem minmax(0, 1fr);
+  grid-template-columns: 4rem 1.25rem minmax(0, 1fr);
   min-width: max-content;
 }
 
@@ -2326,11 +2389,14 @@ body[data-project-mode='selecting'] .searchAssist {
   padding: 0 0.4rem;
 }
 
-.patchOldNo,
-.patchNewNo {
+.patchLineNo {
   color: var(--code-muted);
   text-align: right;
   user-select: none;
+}
+
+.patchLineNo.muted {
+  color: transparent;
 }
 
 .patchSign {
@@ -2341,8 +2407,24 @@ body[data-project-mode='selecting'] .searchAssist {
 .patchLine code {
   background: transparent;
   color: inherit;
+  display: block;
   font-family: inherit;
+  min-width: 0;
+  overflow: visible;
   white-space: pre;
+}
+
+.patchLine code.hljs {
+  background: transparent;
+  color: inherit;
+  display: block;
+  overflow: visible;
+  padding: 0 0.4rem;
+}
+
+.patchLine code.hljs .hljs-addition,
+.patchLine code.hljs .hljs-deletion {
+  background: transparent;
 }
 
 .patchLine.added {
