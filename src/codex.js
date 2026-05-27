@@ -474,6 +474,13 @@ function stringifyValue(value) {
   return JSON.stringify(value, null, 2);
 }
 
+function displayValue(value, budget = 8000) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return flattenText(value, budget) || stringifyValue(value);
+}
+
 function ensureGb18030ReverseMap() {
   if (gb18030ReverseMap) return gb18030ReverseMap;
   const decoder = new TextDecoder('gb18030');
@@ -1449,8 +1456,8 @@ function updateTimeRange(session, timestamp) {
 }
 
 function commandToText(command) {
-  if (Array.isArray(command)) return command.map(String).join(' ');
-  return String(command || '');
+  if (Array.isArray(command)) return command.map((part) => displayValue(part, 1000)).join(' ');
+  return displayValue(command, 2000);
 }
 
 function durationMs(duration) {
@@ -1506,25 +1513,25 @@ function makeRawEvent(record, lineNumber, relFile, sessionId) {
       return raw;
     }
     if (payload.type === 'function_call') {
-      raw.output = String(payload.arguments || '');
+      raw.output = stringifyValue(payload.arguments);
       raw.preview = truncate(`${payload.name || 'function_call'} ${raw.output}`);
       raw.searchText = `${payload.name || ''}\n${raw.output}`;
       return raw;
     }
     if (payload.type === 'function_call_output') {
-      raw.output = String(payload.output || '');
+      raw.output = stringifyValue(payload.output);
       raw.preview = truncate(raw.output || payload.call_id || 'function_call_output');
       raw.searchText = raw.output;
       return raw;
     }
     if (payload.type === 'custom_tool_call') {
-      raw.output = String(payload.input || '');
+      raw.output = stringifyValue(payload.input);
       raw.preview = truncate(`${payload.name || 'custom_tool_call'} ${raw.output}`);
       raw.searchText = `${payload.name || ''}\n${raw.output}`;
       return raw;
     }
     if (payload.type === 'custom_tool_call_output') {
-      raw.output = String(payload.output || '');
+      raw.output = stringifyValue(payload.output);
       raw.preview = truncate(raw.output || payload.call_id || 'custom_tool_call_output');
       raw.searchText = raw.output;
       return raw;
@@ -1541,7 +1548,7 @@ function makeRawEvent(record, lineNumber, relFile, sessionId) {
       case 'user_message':
       case 'agent_message':
       case 'agent_reasoning':
-        raw.messageText = String(payload.message || payload.text || '');
+        raw.messageText = displayValue(firstNonEmpty(payload.message, payload.text), 16000);
         raw.preview = truncate(raw.messageText || payload.type);
         raw.searchText = raw.messageText;
         return raw;
@@ -1551,13 +1558,13 @@ function makeRawEvent(record, lineNumber, relFile, sessionId) {
       case 'exec_command_delta':
       case 'exec_command_declined':
         raw.commandText = commandToText(payload.command);
-        raw.stdout = String(payload.stdout || '');
-        raw.stderr = String(payload.stderr || '');
-        raw.aggregatedOutput = String(payload.aggregated_output || '');
+        raw.stdout = stringifyValue(payload.stdout);
+        raw.stderr = stringifyValue(payload.stderr);
+        raw.aggregatedOutput = stringifyValue(payload.aggregated_output);
         raw.exitCode = Number.isFinite(Number(payload.exit_code)) ? Number(payload.exit_code) : null;
         raw.durationMs = durationMs(payload.duration);
-        raw.preview = truncate(raw.commandText || payload.reason || payload.type);
-        raw.searchText = [raw.commandText, raw.stdout, raw.stderr, raw.aggregatedOutput, payload.formatted_output || ''].join('\n');
+        raw.preview = truncate(raw.commandText || displayValue(payload.reason, 1000) || payload.type);
+        raw.searchText = [raw.commandText, raw.stdout, raw.stderr, raw.aggregatedOutput, stringifyValue(payload.formatted_output)].join('\n');
         return raw;
       case 'patch_apply_end':
       case 'patch_apply_begin':
@@ -1565,9 +1572,9 @@ function makeRawEvent(record, lineNumber, relFile, sessionId) {
       case 'patch_apply_delta':
       case 'patch_apply_declined':
         raw.touchedFiles = payload.changes && typeof payload.changes === 'object' ? Object.keys(payload.changes) : [];
-        raw.output = String(payload.patch || payload.input || payload.diff || '');
-        raw.preview = truncate(raw.touchedFiles.join(', ') || raw.output || String(payload.stdout || payload.stderr || payload.reason || payload.type));
-        raw.searchText = [raw.touchedFiles.join('\n'), raw.output, payload.stdout || '', payload.stderr || '', payload.reason || ''].join('\n');
+        raw.output = stringifyValue(firstNonEmpty(payload.patch, payload.input, payload.diff));
+        raw.preview = truncate(raw.touchedFiles.join(', ') || raw.output || displayValue(firstNonEmpty(payload.stdout, payload.stderr, payload.reason, payload.type), 1000));
+        raw.searchText = [raw.touchedFiles.join('\n'), raw.output, stringifyValue(payload.stdout), stringifyValue(payload.stderr), displayValue(payload.reason, 4000)].join('\n');
         return raw;
       case 'token_count':
         raw.preview = truncate(formatTokenUsagePreview(payload) || flattenText(payload, 12000) || payload.type);
@@ -1693,7 +1700,7 @@ function touchFilesFromOutputText(text) {
 }
 
 function patchOutputText(envelope, rawOutput) {
-  return String(envelope && Object.hasOwn(envelope, 'output') ? envelope.output : rawOutput || '').trim();
+  return stringifyValue(envelope && Object.hasOwn(envelope, 'output') ? envelope.output : rawOutput).trim();
 }
 
 function patchOutputHasFailure(text) {
@@ -1748,13 +1755,13 @@ function firstProtocolBodyLine(source) {
 function formatPreviewEntries(entries) {
   return entries
     .filter((entry) => entry && entry.key && entry.value !== '')
-    .map((entry) => `${entry.key}: ${String(entry.value).trim()}`)
+    .map((entry) => `${entry.key}: ${displayValue(entry.value, 1000).trim()}`)
     .join('; ');
 }
 
 function payloadPreview(payload, keys) {
   if (!payload || typeof payload !== 'object') return '';
-  return formatPreviewEntries(keys.map((key) => ({ key, value: payload[key] == null ? '' : String(payload[key]) })));
+  return formatPreviewEntries(keys.map((key) => ({ key, value: payload[key] == null ? '' : payload[key] })));
 }
 
 function protocolPreviewFor(raw, subtype) {
@@ -1767,7 +1774,7 @@ function protocolPreviewFor(raw, subtype) {
     return payloadPreview(raw.parsed?.payload, ['thread_name', 'cwd', 'model']) || raw.preview;
   }
   if (subtype === 'thread_goal_updated') {
-    return truncate(firstNonEmpty(raw.parsed?.payload?.thread_goal, raw.parsed?.payload?.goal, raw.preview, 'Thread goal updated'));
+    return truncate(displayValue(firstNonEmpty(raw.parsed?.payload?.thread_goal, raw.parsed?.payload?.goal, raw.preview, 'Thread goal updated'), 1000));
   }
   if (subtype === 'turn_context') {
     return payloadPreview(raw.parsed?.payload, ['turn_id', 'cwd', 'model']) || raw.preview;
@@ -2734,31 +2741,31 @@ function buildLifecycleEvent(raw, kind, label, severity, previewOverride = '') {
 function reviewLifecyclePreview(raw) {
   const payload = raw.parsed?.payload || {};
   if (raw.payloadType === 'entered_review_mode') {
-    const hint = String(payload.user_facing_hint || flattenText(payload.target, 180) || '').trim();
+    const hint = displayValue(firstNonEmpty(payload.user_facing_hint, payload.target), 180).trim();
     return hint ? `Review started: ${hint}` : 'Review started';
   }
 
   const output = payload.review_output || {};
   const findings = Array.isArray(output.findings) ? `${output.findings.length} findings` : '';
-  const correctness = String(output.overall_correctness || '').trim();
-  const explanation = String(output.overall_explanation || '').trim();
+  const correctness = displayValue(output.overall_correctness, 200).trim();
+  const explanation = displayValue(output.overall_explanation, 400).trim();
   const summary = uniqueNonEmpty([correctness, findings, explanation]).join(' - ');
   return truncate(summary ? `Review completed: ${summary}` : 'Review completed');
 }
 
 function reviewFindingMarkdown(finding, index) {
   if (!finding || typeof finding !== 'object') return '';
-  const title = String(finding.title || finding.summary || `Finding ${index + 1}`).trim();
-  const body = String(finding.body || finding.description || finding.message || '').trim();
-  const priority = finding.priority == null ? String(finding.severity || '').trim() : `P${finding.priority}`;
-  const confidence = finding.confidence_score == null ? String(finding.confidence || '').trim() : `confidence ${finding.confidence_score}`;
+  const title = displayValue(firstNonEmpty(finding.title, finding.summary, `Finding ${index + 1}`), 400).trim();
+  const body = displayValue(firstNonEmpty(finding.body, finding.description, finding.message), 4000).trim();
+  const priority = finding.priority == null ? displayValue(finding.severity, 100).trim() : `P${displayValue(finding.priority, 100)}`;
+  const confidence = finding.confidence_score == null ? displayValue(finding.confidence, 100).trim() : `confidence ${displayValue(finding.confidence_score, 100)}`;
   const location = finding.location || finding.code_location || {};
   const locationText = typeof location === 'object' && location
     ? uniqueNonEmpty([
-      location.absolute_file_path || location.file_path || location.path,
+      displayValue(firstNonEmpty(location.absolute_file_path, location.file_path, location.path), 1000),
       location.line_range?.start ? `lines ${location.line_range.start}-${location.line_range.end || location.line_range.start}` : '',
     ]).join(':')
-    : String(location || '').trim();
+    : displayValue(location, 400).trim();
   const meta = uniqueNonEmpty([priority, confidence, locationText]).join(' | ');
   return [
     `### ${title}`,
@@ -2775,11 +2782,14 @@ function reviewTargetLabel(target) {
       return 'Uncommitted changes';
     case 'baseBranch':
     case 'base_branch':
-      return target.branch ? `Base branch: ${target.branch}` : 'Base branch';
+      return target.branch ? `Base branch: ${displayValue(target.branch, 400)}` : 'Base branch';
     case 'commit':
-      return uniqueNonEmpty([target.sha ? `Commit ${target.sha}` : 'Commit', target.title]).join(' - ');
+      return uniqueNonEmpty([
+        target.sha ? `Commit ${displayValue(target.sha, 200)}` : 'Commit',
+        displayValue(target.title, 400),
+      ]).join(' - ');
     case 'custom':
-      return target.instructions ? `Custom: ${target.instructions}` : 'Custom';
+      return target.instructions ? `Custom: ${displayValue(target.instructions, 1000)}` : 'Custom';
     default:
       return flattenText(target, 1000);
   }
@@ -2795,17 +2805,17 @@ function extractReviewLifecycleSections(event, raws) {
     maybePushKvSection(sections, 'Review request', [
       { key: 'Status', value: 'Started' },
       { key: 'Target', value: reviewTargetLabel(payload.target) },
-      { key: 'Hint', value: payload.user_facing_hint || '' },
+      { key: 'Hint', value: displayValue(payload.user_facing_hint, 400) },
     ]);
   } else {
     const findings = Array.isArray(output.findings) ? output.findings : [];
     maybePushKvSection(sections, 'Review result', [
       { key: 'Status', value: 'Completed' },
-      { key: 'Correctness', value: output.overall_correctness || '' },
-      { key: 'Confidence', value: output.overall_confidence_score == null ? output.confidence || '' : String(output.overall_confidence_score) },
+      { key: 'Correctness', value: displayValue(output.overall_correctness, 400) },
+      { key: 'Confidence', value: output.overall_confidence_score == null ? displayValue(output.confidence, 400) : displayValue(output.overall_confidence_score, 400) },
       { key: 'Findings', value: String(findings.length) },
     ]);
-    maybePushMarkdownSection(sections, 'Overall explanation', output.overall_explanation || output.explanation || '');
+    maybePushMarkdownSection(sections, 'Overall explanation', displayValue(firstNonEmpty(output.overall_explanation, output.explanation), 4000));
     if (findings.length) {
       maybePushMarkdownSection(sections, 'Findings', findings.map(reviewFindingMarkdown).filter(Boolean).join('\n\n'));
     } else {
@@ -2879,12 +2889,12 @@ function buildPlanArtifact(itemRaw, messageRaw, text) {
 
 function planUpdateText(raw) {
   const payload = raw.parsed?.payload || {};
-  if (payload.explanation) return String(payload.explanation);
+  if (payload.explanation) return displayValue(payload.explanation, 8000);
   if (payload.delta) return flattenText(payload.delta, 8000);
   if (Array.isArray(payload.plan)) {
     return payload.plan.map((item) => {
-      if (!item || typeof item !== 'object') return String(item || '');
-      return `${item.status || 'pending'}: ${item.step || item.text || ''}`.trim();
+      if (!item || typeof item !== 'object') return displayValue(item, 1000);
+      return `${displayValue(item.status || 'pending', 100)}: ${displayValue(firstNonEmpty(item.step, item.text), 1000)}`.trim();
     }).filter(Boolean).join('\n');
   }
   return flattenText(payload, 8000);

@@ -974,6 +974,127 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   assert.equal(allSections(rawPatchEndDetail).some((section) => section.title === 'Result'), true);
 });
 
+test('object-shaped protocol and tool fields stay readable', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+  const dir = path.join(codexHome, 'sessions', '2026', '05', '27');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const file = path.join(dir, `rollout-2026-05-27T10-00-00-${id}.jsonl`);
+  const records = [
+    {
+      type: 'session_meta',
+      timestamp: '2026-05-27T10:00:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-05-27T10:00:00.500Z',
+      payload: {
+        type: 'thread_goal_updated',
+        thread_id: 'thread-1',
+        goal: { objective: 'Analyze object-shaped events', status: 'active' },
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-05-27T10:00:00.700Z',
+      payload: {
+        type: 'entered_review_mode',
+        target: {
+          type: 'custom',
+          instructions: { text: 'Review structured target' },
+        },
+        user_facing_hint: { text: 'Check object fields' },
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-05-27T10:00:00.800Z',
+      payload: {
+        type: 'exited_review_mode',
+        review_output: {
+          overall_correctness: { text: 'patch is correct' },
+          overall_confidence_score: { text: 'high' },
+          overall_explanation: { text: 'No object coercion remains.' },
+          findings: [{
+            title: { text: 'Structured finding' },
+            body: { text: 'Finding body is readable.' },
+            priority: { text: '1' },
+            confidence_score: { text: '0.95' },
+            location: {
+              path: { text: 'src/codex.js' },
+              line_range: { start: 10, end: 12 },
+            },
+          }],
+        },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-27T10:00:01.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'view_image',
+        call_id: 'call-view-image',
+        arguments: { path: 'G:\\vibe\\session-analyzer\\output\\image.png' },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-27T10:00:01.100Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-view-image',
+        output: { width: 640, height: 480, mimeType: 'image/png' },
+      },
+    },
+  ];
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const event = session.logicalEvents.find((candidate) => candidate.toolName === 'view_image');
+  const goalEvent = session.logicalEvents.find((candidate) => candidate.subtype === 'thread_goal_updated');
+  const reviewStarted = session.logicalEvents.find((candidate) => candidate.subtype === 'entered_review_mode');
+  const reviewFinished = session.logicalEvents.find((candidate) => candidate.subtype === 'exited_review_mode');
+  const detail = buildEventDetail(session, event.id, 'main');
+  const request = detail.inspectorSections.find((section) => section.title === 'Request');
+  const response = detail.inspectorSections.find((section) => section.title === 'Response');
+  const reviewStartedDetail = buildEventDetail(session, reviewStarted.id, 'main');
+  const reviewFinishedDetail = buildEventDetail(session, reviewFinished.id, 'main');
+  const reviewRequest = allSections(reviewStartedDetail).find((section) => section.title === 'Review request');
+  const reviewResult = allSections(reviewFinishedDetail).find((section) => section.title === 'Review result');
+  const reviewFindings = allSections(reviewFinishedDetail).find((section) => section.title === 'Findings');
+
+  assert.equal(event.preview.includes('[object Object]'), false);
+  assert.equal(goalEvent.preview.includes('[object Object]'), false);
+  assert.equal(reviewStarted.preview.includes('[object Object]'), false);
+  assert.equal(reviewFinished.preview.includes('[object Object]'), false);
+  assert.match(goalEvent.preview, /Analyze object-shaped events/);
+  assert.equal(request.type, 'json');
+  assert.equal(request.value.path, 'G:\\vibe\\session-analyzer\\output\\image.png');
+  assert.equal(response.type, 'json');
+  assert.deepEqual(response.value, { width: 640, height: 480, mimeType: 'image/png' });
+  assert.deepEqual(reviewRequest.entries, [
+    { key: 'Status', value: 'Started' },
+    { key: 'Target', value: 'Custom: Review structured target' },
+    { key: 'Hint', value: 'Check object fields' },
+  ]);
+  assert.equal(reviewResult.entries.some((entry) => String(entry.value).includes('[object Object]')), false);
+  assert.deepEqual(reviewResult.entries.slice(0, 3), [
+    { key: 'Status', value: 'Completed' },
+    { key: 'Correctness', value: 'patch is correct' },
+    { key: 'Confidence', value: 'high' },
+  ]);
+  assert.equal(reviewFindings.html.includes('[object Object]'), false);
+  assert.match(reviewFindings.html, /Structured finding/);
+  assert.match(reviewFindings.html, /P1/);
+  assert.match(reviewFindings.html, /confidence 0\.95/);
+  assert.match(reviewFindings.html, /src\/codex\.js:lines 10-12/);
+});
+
 test('command terminal sections repair UTF-8 text decoded as GB18030', () => {
   const decodeUtf8AsGb18030 = (text) => new TextDecoder('gb18030').decode(Buffer.from(text, 'utf8'));
   const rawCall = {
