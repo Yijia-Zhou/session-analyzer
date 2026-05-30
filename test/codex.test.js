@@ -102,8 +102,10 @@ test('buildIndex exposes dynamic event kind options by layer', async () => {
   assert.ok(mainKinds.has('review'));
   assert.ok(mainKinds.has('plan_update'));
   assert.ok(mainKinds.has('warning'));
-  assert.ok(mainKinds.has('turn'));
+  assert.equal(mainKinds.has('turn'), false);
   assert.ok(protocolKinds.has('session_meta'));
+  assert.ok(protocolKinds.has('task_started'));
+  assert.ok(protocolKinds.has('task_complete'));
   assert.ok(rawKinds.has('exec_command_begin'));
   assert.ok(index.eventKinds.main.find((item) => item.value === 'review').label);
   assert.ok(index.eventKinds.raw.find((item) => item.value === 'exec_command_begin').count > 0);
@@ -443,8 +445,19 @@ test('current protocol plan, severity, lifecycle aliases, and incomplete tool re
   assert.equal(streamError.kind, 'error');
   assert.equal(streamError.severity, 'error');
 
-  const aliasTurns = timeline.events.filter((event) => event.kind === 'turn' && event.turnId === 'turn-alias');
-  assert.deepEqual(aliasTurns.map((event) => event.label), ['task_started', 'task_complete']);
+  assert.equal(timeline.events.some((event) => event.turnId === 'turn-alias'), false);
+  const protocolTimeline = getTimeline(index, session.id, {
+    offset: 0,
+    limit: 200,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'protocol',
+  });
+  const aliasTurns = protocolTimeline.events.filter((event) => event.turnId === 'turn-alias');
+  assert.deepEqual(aliasTurns.map((event) => event.subtype), ['task_started', 'task_complete']);
 
   const incompleteCommand = timeline.events.find((event) => event.preview.includes('npm run watch'));
   assert.equal(incompleteCommand.kind, 'command');
@@ -976,6 +989,11 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
     ['5 hour usage limit', '12%'],
     ['Weekly usage limit', '67%'],
   ]);
+
+  const taskStartedEvent = session.logicalEvents.find((event) => event.layer === 'protocol' && event.subtype === 'task_started');
+  const taskStartedDetail = buildEventDetail(session, taskStartedEvent.id, 'protocol');
+  assert.deepEqual(taskStartedDetail.timelineSections, []);
+  assert.equal(taskStartedDetail.inspectorSections[0].type, 'raw_json');
 
   const rawRecord = session.rawEvents.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'task_started');
   const rawDetail = buildEventDetail(session, rawRecord.rawId, 'raw');

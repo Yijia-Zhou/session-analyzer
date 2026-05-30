@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-05-18 / 最近更新：2026-05-18
+- Last updated: 2026-05-30 / 最近更新：2026-05-30
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
@@ -73,7 +73,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 18. The detail panel provides consistent Back and Close behavior across event inspectors and raw refs; Close returns to the folding strategy panel. / 详情面板在事件检查器和原始引用之间提供一致的 Back 和 Close 行为；Close 会返回折叠策略面板。
 19. When the server was started without `--repo`, the browser remembers the last selected target project locally and restores it on refresh when it is still available. / 当服务器未使用 `--repo` 启动时，浏览器会在本地记住上次选择的目标项目，并在刷新且该项目仍可用时恢复它。
 20. Timeline pagination remains available through the explicit load-more button and also attempts to load the next page when the user scrolls to the bottom of the timeline pane. / 时间线分页既可通过显式的“加载更多”按钮使用，也会在用户滚动到时间线面板底部时尝试加载下一页。
-21. Routine token count and rate-limit records live in the protocol layer because they describe Codex runtime state rather than the engineering workflow; when a transcript reports an actual reached usage limit, the main timeline shows a warning event. Raw JSON remains available for verification. / 常规 token count 和 rate-limit 记录位于 protocol layer，因为它们描述的是 Codex 运行时状态而不是工程工作流；当转录报告确实触达使用限额时，main timeline 会显示一个 warning 事件。原始 JSON 仍可用于验证。
+21. Routine task start/completion, token count, and rate-limit records live in the protocol layer because they describe Codex runtime state rather than the engineering workflow; when a transcript reports an actual reached usage limit, the main timeline shows a warning event. Raw JSON remains available for verification. / 常规 task 开始/完成、token count 和 rate-limit 记录位于 protocol layer，因为它们描述的是 Codex 运行时状态而不是工程工作流；当转录报告确实触达使用限额时，main timeline 会显示一个 warning 事件。原始 JSON 仍可用于验证。
 22. Project indexing shows progress while it scans and parses transcript files, can be cancelled from the project chooser, and avoids fully parsing transcript files that are clearly associated with a different repository. Files whose repository cannot be identified from early metadata are still parsed as a conservative fallback. / 项目索引在扫描和解析转录文件时会显示进度，可从项目选择器取消，并避免完整解析明确属于其他仓库的转录文件。无法从早期 metadata 识别仓库的文件仍会作为保守回退被解析。
 
 ## Acceptance criteria / 验收标准
@@ -82,7 +82,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - [x] Protocol injections such as `AGENTS.md`, environment blocks, and developer instructions are accessible but not mixed into the default main timeline. / `AGENTS.md`、环境块和开发者指令等协议注入可以访问，但不会混入默认主时间线。
 - [x] Protocol layer events use readable labels and concise summaries before users open raw JSON. / 协议层事件在用户打开原始 JSON 之前就使用可读标签和简洁摘要。
 - [x] Tool calls are visible as logical operations with status, affected files, and raw drill-down. / 工具调用以逻辑操作形式可见，并带有状态、受影响文件和原始下钻入口。
-- [x] Expanded timeline cards render structured event detail instead of only enlarging a truncated preview. / 展开的时间线卡片渲染结构化事件详情，而不是只放大截断预览。
+- [x] Expanded timeline cards render structured event detail when timeline-owned sections exist; inspector-only events keep their readable preview instead of expanding into an empty body. / 当存在 timeline 所属区段时，展开的时间线卡片会渲染结构化事件详情；只有 inspector 内容的事件会保留可读摘要，而不是展开成空白正文。
 - [x] Command output display applies conservative mojibake repair for likely UTF-8-as-GB18030/GBK text and marks unrecoverable replacement placeholders as `□`, while preserving raw JSONL drill-down. / 命令输出显示会对疑似 UTF-8 被当作 GB18030/GBK 解码的文本做保守乱码修复，并用 `□` 标记不可恢复的替换占位，同时保留原始 JSONL 下钻。
 - [x] Command and patch expanded bodies keep primary work content in the timeline while moving metadata, structured payloads, and raw JSON to the inspector. / command 和 patch 展开正文会把主要工作内容保留在 timeline 中，并把 metadata、结构化 payload 和原始 JSON 移到 inspector。
 - [x] Expanded timeline cards do not duplicate truncated preview text above the full body. / 展开的时间线卡片不会在完整正文上方重复截断预览文本。

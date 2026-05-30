@@ -11,6 +11,9 @@ const escapeHtml = rendererApi.escapeHtml || ((value) => String(value ?? '').rep
 }[ch])));
 
 const renderSections = rendererApi.renderSections || (() => '');
+const renderTimelineSections = rendererApi.renderTimelineSections || ((sections, fallbackPreview = '') => (
+  renderSections(sections) || (fallbackPreview ? `<div class="eventPreview eventExpandedFallback">${escapeHtml(fallbackPreview)}</div>` : '')
+));
 const searchQuery = window.sessionSearchQuery || {
   parseSearchInput: (input) => ({ q: String(input || '').trim(), file: '', kind: '', status: '', layer: '', tokens: [] }),
   removeFreeText: () => '',
@@ -2014,7 +2017,8 @@ function renderEventBody(event, display) {
   const detail = state.detailCache[key];
   const error = state.detailErrors[key];
   if (detail) {
-    return `<div class="eventBody">${renderSections(detail.timelineSections)}</div>`;
+    const preview = event.snippet || event.preview || event.label;
+    return `<div class="eventBody">${renderTimelineSections(detail.timelineSections, preview)}</div>`;
   }
   if (error) {
     return `<div class="eventBody"><div class="notice error"><p>${escapeHtml(error)}</p></div><button class="smallBtn" type="button" data-action="retry-detail">Retry detail</button></div>`;

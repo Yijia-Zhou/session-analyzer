@@ -242,9 +242,17 @@
     return output.join('');
   }
 
+  function renderTimelineSections(sections, fallbackPreview = '') {
+    const body = renderSections(sections);
+    if (body) return body;
+    const preview = String(fallbackPreview || '').trim();
+    return preview ? `<div class="eventPreview eventExpandedFallback">${escapeHtml(preview)}</div>` : '';
+  }
+
   return {
     escapeHtml,
     renderSection,
     renderSections,
+    renderTimelineSections,
   };
 }));

@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { renderSection, renderSections } = require('../public/renderers');
+const { renderSection, renderSections, renderTimelineSections } = require('../public/renderers');
 
 test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv fragments', () => {
   const markdown = renderSection({ type: 'markdown', title: 'Message', html: '<p><strong>safe</strong></p>' });
@@ -114,6 +114,17 @@ test('renderer groups command and terminal sections as one command run', () => {
   assert.match(html, /&quot;&lt;x&gt;&quot;/);
   assert.match(html, /&lt;boom&gt;/);
   assert.doesNotMatch(html, /class="codeFence"/);
+});
+
+test('renderer keeps an escaped preview when expanded timeline detail is inspector-only', () => {
+  const fallback = renderTimelineSections([], 'cwd: G:\\repo <unsafe>');
+  const body = renderTimelineSections([{ type: 'notice', title: 'Status', text: 'Done.' }], 'duplicate preview');
+
+  assert.match(fallback, /eventExpandedFallback/);
+  assert.match(fallback, /cwd: G:\\repo &lt;unsafe&gt;/);
+  assert.doesNotMatch(fallback, /<unsafe>/);
+  assert.match(body, /Done\./);
+  assert.doesNotMatch(body, /duplicate preview/);
 });
 
 test('renderer applies highlight.js syntax highlighting when available', () => {

@@ -3208,7 +3208,12 @@ function buildLogicalEvents(rawEvents) {
       consumed.add(raw.rawId);
       continue;
     }
-    if (raw.recordType === 'event_msg' && ['task_started', 'task_complete', 'thread_name_updated', 'item_completed'].includes(raw.canonicalType)) {
+    if (raw.recordType === 'event_msg' && ['task_started', 'task_complete'].includes(raw.canonicalType)) {
+      logicalEvents.push(buildProtocolEvent(raw, raw.canonicalType));
+      consumed.add(raw.rawId);
+      continue;
+    }
+    if (raw.recordType === 'event_msg' && ['thread_name_updated', 'item_completed'].includes(raw.canonicalType)) {
       logicalEvents.push(buildLifecycleEvent(raw, 'turn', raw.canonicalType, 'normal'));
       consumed.add(raw.rawId);
       continue;

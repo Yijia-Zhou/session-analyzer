@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-05-21 / 最近更新：2026-05-21
+- Last updated: 2026-05-30 / 最近更新：2026-05-30
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related design: / 相关设计：
@@ -42,15 +42,15 @@ The parser does not need to model every field in these families. It should extra
 ## Implemented Coverage Notes / 已实现覆盖记录
 
 - Existing parser behavior already matches the right compatibility posture: unknown `event_msg` rows fall back to protocol/raw visibility instead of being rejected. / 现有解析行为已经符合正确的兼容姿态：未知 `event_msg` 行会回退到 protocol/raw 可见性，而不是被拒绝。
-- `task_started` and `task_complete` are current v1 wire names. Upstream also accepts `turn_started` and `turn_complete` as aliases, so the viewer should normalize both aliases into the same lifecycle behavior. / `task_started` 和 `task_complete` 是当前 v1 wire 名称。上游也接受 `turn_started` 和 `turn_complete` 作为别名，因此查看器应把这两个别名归一到相同生命周期行为。
+- `task_started` and `task_complete` are current v1 wire names. Upstream also accepts `turn_started` and `turn_complete` as aliases, so the viewer should normalize both aliases into the same protocol-layer lifecycle behavior. These routine runtime markers should not add noise to the Main timeline. / `task_started` 和 `task_complete` 是当前 v1 wire 名称。上游也接受 `turn_started` 和 `turn_complete` 作为别名，因此查看器应把这两个别名归一到相同的 protocol 层生命周期行为。这些常规运行时标记不应给主时间线增加噪声。
 - `thread_name_updated` is not the same wire event as current `thread_goal_updated`. Keep `thread_name_updated` only as legacy transcript compatibility for `payload.thread_name`. Current protocol title metadata should come from `session_configured.thread_name`; `thread_goal_updated.goal.objective` is long-running goal metadata and should be preview/search content, not a thread-name replacement. / `thread_name_updated` 不是当前 `thread_goal_updated` 的同一个 wire 事件。`thread_name_updated` 只应作为旧转录兼容，用于 `payload.thread_name`。当前协议下的标题元数据应来自 `session_configured.thread_name`；`thread_goal_updated.goal.objective` 是长期目标元数据，应作为预览和搜索内容，而不是 thread name 替代品。
 - Warning-like events should not be treated as neutral protocol noise when they communicate user-visible risk. `warning`, `guardian_warning`, and `stream_error` should surface warning/error severity, while `deprecation_notice` can remain protocol unless it affects the user's current work. / 当 warning 类事件传达用户可见风险时，不应把它们当作中性协议噪声。`warning`、`guardian_warning` 和 `stream_error` 应暴露 warning/error 严重级别；`deprecation_notice` 可继续留在 protocol，除非它影响用户当前工作。
 - Plan events currently arrive through both tool-call-shaped `update_plan` records and protocol-shaped `plan_update` / `plan_delta` records. Planning metrics and reading filters should count both plan artifacts and these plan update events. / 计划事件当前可能通过工具调用形态的 `update_plan` 记录和协议形态的 `plan_update` / `plan_delta` 记录出现。计划指标和阅读筛选应同时统计 plan artifact 和这些 plan update 事件。
 - Tool operations should prefer complete end events when present, but begin/update/delta rows must remain readable for incomplete or interrupted transcripts. Status values such as `declined` should not be inferred as success only because an exit code is absent. / 工具操作在存在完整 end 事件时应优先使用 end 事件，但 begin/update/delta 行必须在不完整或中断转录中保持可读。`declined` 等状态不应仅因为缺少 exit code 就被推断为成功。
 
-The 2026-05-21 implementation covers these notes with focused synthetic fixtures: lifecycle aliases are routed through the same lifecycle placement as task events; `session_configured` contributes current title and cwd/project metadata without overriding first-`session_meta` identity; `thread_goal_updated` remains goal metadata; `warning`, `guardian_warning`, and `stream_error` surface main-layer severity; `plan_update` and `plan_delta` become planning events; and tool-family begin/declined/incomplete rows are grouped by `call_id` when present.
+The implementation covers these notes with focused synthetic fixtures: task lifecycle events and their aliases are routed through the protocol layer; `session_configured` contributes current title and cwd/project metadata without overriding first-`session_meta` identity; `thread_goal_updated` remains goal metadata; `warning`, `guardian_warning`, and `stream_error` surface main-layer severity; `plan_update` and `plan_delta` become planning events; and tool-family begin/declined/incomplete rows are grouped by `call_id` when present.
 
-2026-05-21 的实现已用聚焦合成 fixture 覆盖上述记录：生命周期别名走与 task 事件相同的生命周期归属；`session_configured` 补充当前标题和 cwd/project metadata，但不覆盖第一条 `session_meta` 身份；`thread_goal_updated` 保持为 goal metadata；`warning`、`guardian_warning` 和 `stream_error` 暴露到 main 层并带严重级别；`plan_update` 和 `plan_delta` 成为计划事件；工具族 begin/declined/incomplete 行在存在 `call_id` 时按调用分组。
+实现已用聚焦合成 fixture 覆盖上述记录：task 生命周期事件及其别名归入 protocol 层；`session_configured` 补充当前标题和 cwd/project metadata，但不覆盖第一条 `session_meta` 身份；`thread_goal_updated` 保持为 goal metadata；`warning`、`guardian_warning` 和 `stream_error` 暴露到 main 层并带严重级别；`plan_update` 和 `plan_delta` 成为计划事件；工具族 begin/declined/incomplete 行在存在 `call_id` 时按调用分组。
 
 ## Maintenance Rules / 维护规则
 

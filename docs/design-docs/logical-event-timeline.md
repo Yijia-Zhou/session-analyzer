@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-05-21 / 最近更新：2026-05-21
+- Last updated: 2026-05-30 / 最近更新：2026-05-30
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -134,9 +134,9 @@ Protocol event coverage is intentionally open-ended. The parser should preserve 
 
 协议事件覆盖有意保持开放。解析器应通过 protocol/raw 层保留未知 `event_msg` variant；只有当上游事件会改变可读时间线归属、严重级别、元数据、工具分组、搜索、指标或结构化详情时，才添加专门归一化。当前事件族记录和更新规则见 `docs/design-docs/codex-protocol-event-coverage.md`。
 
-Current protocol normalization includes lifecycle aliases (`turn_started` / `turn_complete`), `session_configured` metadata, `thread_goal_updated` protocol details, main-layer warning/error events, protocol-shaped plan updates, and incomplete tool-family records grouped by `call_id` when available. These records remain traceable through raw refs and unknown future variants still fall back to protocol/raw visibility.
+Current protocol normalization includes task lifecycle events and their aliases (`task_started` / `task_complete` and `turn_started` / `turn_complete`) in the protocol layer, `session_configured` metadata, `thread_goal_updated` protocol details, main-layer warning/error events, protocol-shaped plan updates, and incomplete tool-family records grouped by `call_id` when available. These records remain traceable through raw refs and unknown future variants still fall back to protocol/raw visibility.
 
-当前协议归一化包括生命周期别名（`turn_started` / `turn_complete`）、`session_configured` metadata、`thread_goal_updated` 协议详情、main 层 warning/error 事件、协议形态计划更新，以及在可用时按 `call_id` 分组的不完整工具族记录。这些记录仍可通过 raw refs 追踪，未知未来 variant 仍回退到 protocol/raw 可见性。
+当前协议归一化包括位于 protocol 层的 task 生命周期事件及其别名（`task_started` / `task_complete` 与 `turn_started` / `turn_complete`）、`session_configured` metadata、`thread_goal_updated` 协议详情、main 层 warning/error 事件、协议形态计划更新，以及在可用时按 `call_id` 分组的不完整工具族记录。这些记录仍可通过 raw refs 追踪，未知未来 variant 仍回退到 protocol/raw 可见性。
 
 ### Search and highlighting / 搜索与高亮
 
@@ -180,9 +180,9 @@ Expanded cards do not reuse `preview` for rich rendering. The server derives an 
 
 `meta` 始终包含 `timestamp`、`turnId`、`status`、`severity`、`toolName`、`touchedFiles`、`outputStats`、`channels` 和 `source`。
 
-The old single `sections[]` field is intentionally not emitted. Timeline cards render only `timelineSections[]`; the right-side inspector renders only `inspectorSections[]` and uses `meta` for its metadata table.
+The old single `sections[]` field is intentionally not emitted. Timeline cards render only `timelineSections[]`; the right-side inspector renders only `inspectorSections[]` and uses `meta` for its metadata table. When an expanded event has no timeline-owned sections, the card keeps its readable preview instead of rendering an empty body.
 
-旧的单一 `sections[]` 字段有意不再输出。时间线卡片只渲染 `timelineSections[]`；右侧 inspector 只渲染 `inspectorSections[]`，并使用 `meta` 渲染元数据表。
+旧的单一 `sections[]` 字段有意不再输出。时间线卡片只渲染 `timelineSections[]`；右侧 inspector 只渲染 `inspectorSections[]`，并使用 `meta` 渲染元数据表。当展开事件没有 timeline 所属区段时，卡片会保留可读摘要，而不是渲染空白正文。
 
 Both section arrays use the same discriminated union:
 
@@ -311,3 +311,5 @@ Before a folding-profile or layer switch, the frontend captures the selected eve
 - 2026-04-21: Grouped tool operations by `call_id` to make shell, patch, MCP, and JS REPL activity readable. / 2026-04-21：按 `call_id` 对工具操作分组，使 shell、补丁、MCP 和 JS REPL 活动可读。
 - 2026-04-21: Added server-side event-detail extraction plus a frontend renderer registry so expanded cards show structured content without trusting raw HTML from transcripts. / 2026-04-21：添加服务器端事件详情提取和前端渲染器注册表，让展开卡片在不信任转录原始 HTML 的情况下显示结构化内容。
 - 2026-05-21: Added current Codex protocol event coverage for lifecycle aliases, session configuration metadata, goal metadata, warnings/errors, protocol plan updates, and incomplete tool-family records while keeping unknown variants lossless in protocol/raw layers. / 2026-05-21：增加当前 Codex 协议事件覆盖，包含生命周期别名、session configuration metadata、goal metadata、warning/error、协议计划更新和不完整工具族记录，同时让未知 variant 继续在 protocol/raw 层无损保留。
+- 2026-05-30: Moved routine task start/completion lifecycle events and their aliases from the Main timeline to the protocol layer because they describe runtime state rather than engineering workflow. / 2026-05-30：将常规 task 开始/完成生命周期事件及其别名从主时间线移到 protocol 层，因为它们描述的是运行时状态而不是工程工作流。
+- 2026-05-30: Kept readable previews visible when expanded cards have inspector-only detail, avoiding empty timeline bodies for protocol metadata events. / 2026-05-30：当展开卡片只有 inspector 详情时保留可读摘要，避免 protocol metadata 事件出现空白时间线正文。
