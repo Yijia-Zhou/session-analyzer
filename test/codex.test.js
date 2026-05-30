@@ -961,6 +961,16 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   assert.ok(allSections(planDetail).some((section) => section.type === 'raw_json'));
   assert.equal(allSections(planDetail).find((section) => section.type === 'raw_json').expanded, false);
 
+  const updatePlanEvent = session.logicalEvents.find((event) => event.toolName === 'update_plan');
+  const updatePlanDetail = buildEventDetail(session, updatePlanEvent.id, 'main');
+  assert.equal(updatePlanDetail.timelineSections.length, 1);
+  assert.equal(updatePlanDetail.timelineSections[0].type, 'markdown');
+  assert.equal(updatePlanDetail.timelineSections[0].title, 'Plan update');
+  assert.match(updatePlanDetail.timelineSections[0].html, /Parser inspection is complete/);
+  assert.match(updatePlanDetail.timelineSections[0].html, /<code>completed<\/code> Inspect parser/);
+  assert.match(updatePlanDetail.timelineSections[0].html, /<code>in_progress<\/code> Patch regression/);
+  assert.ok(updatePlanDetail.inspectorSections.some((section) => section.type === 'json' && section.title === 'Request'));
+
   const protocolEvent = session.logicalEvents.find((event) => event.subtype === 'agents_instructions');
   const protocolDetail = buildEventDetail(session, protocolEvent.id, 'protocol');
   assert.equal(allSections(protocolDetail)[0].type, 'markdown');

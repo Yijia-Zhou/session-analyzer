@@ -2141,6 +2141,34 @@ function extractToolSections(raws, event) {
   return sections;
 }
 
+function updatePlanMarkdown(requestValue) {
+  if (!requestValue || typeof requestValue !== 'object') return '';
+  const explanation = displayValue(requestValue.explanation, 4000).trim();
+  const steps = Array.isArray(requestValue.plan) ? requestValue.plan : [];
+  const stepLines = steps.map((item) => {
+    if (!item || typeof item !== 'object') return '';
+    const step = displayValue(item.step, 2000).trim();
+    const status = displayValue(item.status, 200).trim();
+    if (!step && !status) return '';
+    return `- ${status ? `\`${status}\` ` : ''}${step || '(unnamed step)'}`;
+  }).filter(Boolean);
+  return [
+    explanation ? `### Explanation\n\n${explanation}` : '',
+    stepLines.length ? `### Steps\n\n${stepLines.join('\n')}` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+function extractUpdatePlanSections(raws, event) {
+  const functionCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');
+  const requestValue = commandArgsFromRaw(functionCall);
+  const timelineSections = [];
+  maybePushMarkdownSection(timelineSections, 'Plan update', updatePlanMarkdown(requestValue));
+  return {
+    timelineSections,
+    inspectorSections: splitSectionsForDetail(extractToolSections(raws, event)).inspectorSections,
+  };
+}
+
 function extractWebSearchSections(raws, event) {
   const sections = [];
   const searchCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'web_search_call');
@@ -2441,6 +2469,7 @@ function extractLogicalDetailSections(event, raws, session = {}) {
       return splitSectionsForDetail(extractJsReplSections(raws, event));
     case 'mcp':
     case 'tool_operation':
+      if (event.toolName === 'update_plan') return extractUpdatePlanSections(raws, event);
       return splitSectionsForDetail(extractToolSections(raws, event));
     case 'web_search':
       return splitSectionsForDetail(extractWebSearchSections(raws, event));

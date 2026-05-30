@@ -184,6 +184,10 @@ The old single `sections[]` field is intentionally not emitted. Timeline cards r
 
 旧的单一 `sections[]` 字段有意不再输出。时间线卡片只渲染 `timelineSections[]`；右侧 inspector 只渲染 `inspectorSections[]`，并使用 `meta` 渲染元数据表。当展开事件没有 timeline 所属区段时，卡片会保留可读摘要，而不是渲染空白正文。
 
+`update_plan` tool calls receive dedicated detail extraction: the main timeline gets a Markdown body with the optional explanation and each step's explicit status, while the inspector keeps the generic tool context and original Request JSON for verification.
+
+`update_plan` 工具调用使用专用详情提取：Main timeline 会获得包含可选说明和每一步明确状态的 Markdown 正文，而 inspector 会保留通用工具上下文和原始 Request JSON 以供核验。
+
 Both section arrays use the same discriminated union:
 
 两个 section 数组使用同一套可辨识联合：
