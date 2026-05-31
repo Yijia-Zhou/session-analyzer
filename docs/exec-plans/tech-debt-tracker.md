@@ -6,6 +6,7 @@
 - Status: open / 状态：开放
 - Problem: some future protocol event labels can still be generic or mechanically derived / 问题：一些未来协议事件标签仍可能很泛化，或是机械派生出来的
 - Residual risk: current high-value protocol events now have focused labels and fixtures, but future Codex protocol payloads can still fall back to mechanically derived labels until new subtype display metadata is added. / 残余风险：当前高价值协议事件已有聚焦标签和 fixture，但未来 Codex 协议载荷仍可能回退到机械派生标签，直到为新的子类型补充展示元数据。
+- Deferred lifecycle-label rule: grouped Main timeline tool events currently derive their label from the first protocol `event_msg`. For unobserved families such as dynamic tool, approval, hook, and image generation, a grouped `*_begin` + `*_end` operation may therefore keep a `Begin` label after completion. Once real payloads appear, prefer `*_declined`, then `*_end`, then the latest update row, and finally `*_begin`; keep Raw records unchanged because their one-row labels intentionally expose the original protocol subtype. / 已推迟的生命周期标签规则：归并后的 Main timeline 工具事件目前从第一条协议 `event_msg` 派生 label。对于尚未观察到的 dynamic tool、approval、hook 和图像生成类型，一个已归并的 `*_begin` + `*_end` 操作可能因此在完成后仍保留 `Begin` 标签。真实 payload 出现后，应依次优先使用 `*_declined`、`*_end`、最后一条 update 行，最后才回退到 `*_begin`；Raw records 保持不变，因为其逐行 label 有意暴露原始协议 subtype。
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/codex-protocol-event-coverage.md`
@@ -15,6 +16,7 @@
 - Status: open / 状态：开放
 - Problem: many older transcript shapes are only partially represented in fixtures / 问题：许多较旧的转录形态在 fixture 中只有部分表示
 - Residual risk: fixture coverage is targeted rather than exhaustive; current incomplete tool begin/declined rows are covered, but sparse metadata, malformed JSONL, and new MCP, collaboration, hook, approval, dynamic tool, or image generation shapes may still need new fixtures as they appear. / 残余风险：fixture 覆盖是针对性的而非穷尽式的；当前不完整工具 begin/declined 行已有覆盖，但稀疏 metadata、格式异常 JSONL，以及新的 MCP、协作、hook、approval、dynamic tool 或图像生成形态出现时仍可能需要新增 fixture。
+- Current observation: the local corpus contains collaboration lifecycle variants but no dynamic tool, approval, hook, or image-generation protocol rows. Those unobserved families intentionally retain bounded generic summaries until real payloads are available. / 当前观察：本地语料包含协作生命周期 variant，但没有 dynamic tool、approval、hook 或图像生成协议行。这些尚未观察到的类型会有意保留受限通用摘要，直到出现真实 payload。
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/codex-protocol-event-coverage.md`
@@ -59,3 +61,12 @@
   - `docs/product-specs/session-transcript-analyzer.md`
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md`
+
+### 7. Generic large-section deferred loading / 通用大型 section 延迟加载
+- Status: deferred / 状态：已推迟
+- Problem: supported raster image payloads are now externalized before long-lived indexing and loaded through controlled preview URLs, but non-image large fields still use the regular retained model and detail-response path. / 问题：受支持的 raster 图片 payload 现在会在长期索引前外置，并通过受控预览 URL 加载，但非图片大型字段仍使用常规的常驻模型和 detail 响应路径。
+- Current measurement: after image externalization, the 2026-05-31 development corpus retained no supported inline image data URLs, built its repository-scoped index in approximately `8.2 s`, retained approximately `304 MB` of serialized session-model proxy data, and produced approximately `74.3 MB` when all logical details were serialized. A separate pre-change classification found `30` non-image logical details above `64 KiB`: `27` shell-command events and `3` patch events. / 当前测量：完成图片外置后，2026-05-31 开发语料中不再保留受支持的内联图片 data URL；仓库范围索引构建约耗时 `8.2 s`，序列化 session-model 代理数据约为 `304 MB`，序列化全部 logical detail 时约为 `74.3 MB`。独立的变更前分类发现 `30` 个超过 `64 KiB` 的非图片 logical detail：其中 `27` 个 shell-command event，`3` 个 patch event。
+- Residual risk: ordinary text output, diffs, and compacted or protocol payloads can still dominate memory or detail-response size as the corpus grows. A future generic mechanism should start with measured section-level truncation, paging, or load-on-demand semantics rather than moving every event behind a deferred loader. / 残余风险：随着语料增长，普通文本输出、diff 以及 compacted 或协议 payload 仍可能主导内存或 detail 响应体积。未来的通用机制应从经过测量支持的 section 级截断、分页或按需加载语义开始，而不是把所有 event 都放到 deferred loader 后面。
+- Related docs: / 相关文档：
+  - `docs/design-docs/logical-event-timeline.md`
+  - `docs/exec-plans/completed/2026-05-31-lazy-image-preview-payload-externalization.md`
