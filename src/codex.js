@@ -8,7 +8,13 @@ const MarkdownIt = require('markdown-it');
 
 const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
-const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'patch', 'kv', 'notice', 'raw_json', 'token_usage', 'usage_limits']);
+const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'patch', 'kv', 'notice', 'raw_json', 'token_usage', 'usage_limits', 'user_input', 'plan_update', 'collaboration', 'image_preview']);
+const TOOL_DATA_URL_MARKER = '[embedded data URL omitted; see raw refs]';
+const TIMELINE_DATA_URL_MARKER = '[data URL omitted]';
+const EMBEDDED_IMAGE_EXTERNALIZED_MARKER = '[embedded image payload externalized; open raw refs for source]';
+const IMAGE_PREVIEW_LIMIT = 8;
+const IMAGE_PREVIEW_MAX_ENCODED_CHARS = 16 * 1024 * 1024;
+const IMAGE_PREVIEW_MAX_DECODED_BYTES = 12 * 1024 * 1024;
 const SESSION_TITLE_LIMIT = 120;
 const SUBAGENT_SESSION_TITLE_LIMIT = 160;
 
@@ -59,6 +65,12 @@ function safeIso(value) {
 
 function truncate(value, limit = 240) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3))}...`;
+}
+
+function truncatePreservingWhitespace(value, limit = 4000) {
+  const text = String(value || '');
   if (text.length <= limit) return text;
   return `${text.slice(0, Math.max(0, limit - 3))}...`;
 }
@@ -1510,7 +1522,7 @@ function durationMs(duration) {
   return Math.round(secs * 1000 + nanos / 1e6);
 }
 
-function makeRawEvent(record, lineNumber, relFile, sessionId) {
+function makeRawEvent(record, lineNumber, relFile, sessionId, embeddedImages = []) {
   const payload = record.payload || {};
   const raw = {
     rawId: `${sessionId}:raw:${lineNumber}`,
@@ -1537,6 +1549,7 @@ function makeRawEvent(record, lineNumber, relFile, sessionId) {
     exitCode: null,
     durationMs: 0,
     touchedFiles: [],
+    embeddedImages,
     parsed: record,
     output: '',
     rawIndex: lineNumber,
@@ -1885,28 +1898,29 @@ function classifyProtocolText(text, role) {
 }
 
 function createLogicalEvent(fields) {
-  const searchText = String(fields.searchText || '').trim();
+  const preview = sanitizeLogicalEnvelopeValue(fields.preview || '');
+  const searchText = sanitizeLogicalEnvelopeValue(fields.searchText || '').trim();
   return {
     id: fields.id,
-    timestamp: fields.timestamp || '',
-    turnId: fields.turnId || '',
-    kind: fields.kind || 'event',
-    subtype: fields.subtype || '',
-    layer: fields.layer || 'main',
-    role: fields.role || '',
-    label: fields.label || fields.kind || 'event',
-    preview: fields.preview || '',
+    timestamp: sanitizeLogicalEnvelopeValue(fields.timestamp || ''),
+    turnId: sanitizeLogicalEnvelopeValue(fields.turnId || ''),
+    kind: sanitizeLogicalEnvelopeValue(fields.kind || 'event'),
+    subtype: sanitizeLogicalEnvelopeValue(fields.subtype || ''),
+    layer: sanitizeLogicalEnvelopeValue(fields.layer || 'main'),
+    role: sanitizeLogicalEnvelopeValue(fields.role || ''),
+    label: sanitizeLogicalEnvelopeValue(fields.label || fields.kind || 'event'),
+    preview,
     searchText,
-    severity: fields.severity || 'normal',
-    status: fields.status || '',
-    toolName: fields.toolName || '',
-    hasLongOutput: (fields.preview || '').length > 800 || searchText.length > 1600,
-    touchedFiles: fields.touchedFiles || [],
-    outputStats: fields.outputStats || {},
-    tokenUsage: fields.tokenUsage || [],
-    usageLimits: fields.usageLimits || [],
+    severity: sanitizeLogicalEnvelopeValue(fields.severity || 'normal'),
+    status: sanitizeLogicalEnvelopeValue(fields.status || ''),
+    toolName: sanitizeLogicalEnvelopeValue(fields.toolName || ''),
+    hasLongOutput: preview.length > 800 || searchText.length > 1600,
+    touchedFiles: sanitizeLogicalEnvelopeValue(fields.touchedFiles || []),
+    outputStats: sanitizeLogicalEnvelopeValue(fields.outputStats || {}),
+    tokenUsage: sanitizeLogicalEnvelopeValue(fields.tokenUsage || []),
+    usageLimits: sanitizeLogicalEnvelopeValue(fields.usageLimits || []),
     rawRefs: fields.rawRefs || [],
-    channels: fields.channels || [],
+    channels: sanitizeLogicalEnvelopeValue(fields.channels || []),
     source: fields.rawRefs && fields.rawRefs[0] ? fields.rawRefs[0] : fields.source,
   };
 }
@@ -1960,14 +1974,14 @@ function rawMeta(raw) {
 
 function logicalMeta(event) {
   return {
-    timestamp: event.timestamp || '',
-    turnId: event.turnId || '',
-    status: event.status || '',
-    severity: event.severity || 'normal',
-    toolName: event.toolName || '',
-    touchedFiles: event.touchedFiles || [],
-    outputStats: event.outputStats || {},
-    channels: event.channels || [],
+    timestamp: sanitizeLogicalEnvelopeValue(event.timestamp || ''),
+    turnId: sanitizeLogicalEnvelopeValue(event.turnId || ''),
+    status: sanitizeLogicalEnvelopeValue(event.status || ''),
+    severity: sanitizeLogicalEnvelopeValue(event.severity || 'normal'),
+    toolName: sanitizeLogicalEnvelopeValue(event.toolName || ''),
+    touchedFiles: sanitizeLogicalEnvelopeValue(event.touchedFiles || []),
+    outputStats: sanitizeLogicalEnvelopeValue(event.outputStats || {}),
+    channels: sanitizeLogicalEnvelopeValue(event.channels || []),
     source: event.source || null,
   };
 }
@@ -2099,13 +2113,18 @@ function extractJsReplSections(raws, event) {
   return sections;
 }
 
-function extractToolSections(raws, event) {
-  const sections = [];
+function toolDetailValues(raws) {
   const functionCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');
   const functionOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
   const customCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call');
   const customOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output');
-  const requestValue = firstNonEmpty(commandArgsFromRaw(functionCall), coerceJsonValue(customCall?.output), functionCall?.output, customCall?.output);
+  const requestValue = firstNonEmpty(
+    commandArgsFromRaw(functionCall),
+    coerceJsonValue(customCall?.output),
+    functionCall?.output,
+    customCall?.output,
+    raws.find((raw) => raw.recordType === 'event_msg' && /_begin$/.test(raw.payloadType || ''))?.parsed?.payload,
+  );
   const responseEnvelope = toolOutputEnvelope(customOutput);
   const responseValue = firstNonEmpty(
     raws.find((raw) => raw.recordType === 'event_msg' && /_end$/.test(raw.payloadType || ''))?.parsed?.payload,
@@ -2114,6 +2133,12 @@ function extractToolSections(raws, event) {
     functionOutput?.output,
     customOutput?.output,
   );
+  return { requestValue, responseValue };
+}
+
+function extractToolSections(raws, event) {
+  const sections = [];
+  const { requestValue, responseValue } = toolDetailValues(raws);
 
   maybePushKvSection(sections, 'Tool context', [
     { key: 'tool', value: String(event.toolName || '') },
@@ -2141,31 +2166,495 @@ function extractToolSections(raws, event) {
   return sections;
 }
 
-function updatePlanMarkdown(requestValue) {
-  if (!requestValue || typeof requestValue !== 'object') return '';
-  const explanation = displayValue(requestValue.explanation, 4000).trim();
-  const steps = Array.isArray(requestValue.plan) ? requestValue.plan : [];
-  const stepLines = steps.map((item) => {
-    if (!item || typeof item !== 'object') return '';
-    const step = displayValue(item.step, 2000).trim();
-    const status = displayValue(item.status, 200).trim();
-    if (!step && !status) return '';
-    return `- ${status ? `\`${status}\` ` : ''}${step || '(unnamed step)'}`;
+function conciseToolValue(value, budget = 4000) {
+  return truncate(redactEmbeddedDataUrls(displayValue(value, budget).trim()), budget);
+}
+
+function markdownField(label, value, budget = 4000) {
+  const text = conciseToolValue(value, budget);
+  if (!text) return '';
+  return text.includes('\n') ? `**${label}:**\n\n${text}` : `**${label}:** ${text}`;
+}
+
+function requestUserInputSection(requestValue, responseValue) {
+  const questions = Array.isArray(requestValue?.questions) ? requestValue.questions : [];
+  const answers = responseValue?.answers && typeof responseValue.answers === 'object' ? responseValue.answers : {};
+  const items = questions.map((question, index) => {
+    if (!question || typeof question !== 'object') return '';
+    const sourceId = String(question.id || '');
+    const id = conciseToolValue(sourceId, 500);
+    const title = conciseToolValue(firstNonEmpty(question.header, id, `Question ${index + 1}`), 200);
+    const prompt = conciseToolValue(question.question, 2000);
+    const answerValue = answers[sourceId]?.answers || answers[sourceId];
+    const answerValues = (Array.isArray(answerValue) ? answerValue : [answerValue]).map((answer) => conciseToolValue(answer, 1000)).filter(Boolean);
+    const options = Array.isArray(question.options) ? question.options.map((option) => {
+      if (!option || typeof option !== 'object') return null;
+      const label = conciseToolValue(option.label, 500);
+      if (!label) return null;
+      return {
+        label,
+        description: conciseToolValue(option.description, 1200),
+        selected: answerValues.includes(label),
+      };
+    }).filter(Boolean) : [];
+    return { id, title, prompt, options, answers: answerValues };
   }).filter(Boolean);
+  return items.length ? { type: 'user_input', title: 'User input', questions: items } : null;
+}
+
+function viewImageMarkdown(requestValue, responseValue) {
+  const dimensions = responseValue && !Array.isArray(responseValue) && typeof responseValue === 'object'
+    ? [responseValue.width, responseValue.height].filter((value) => value != null).join(' x ')
+    : '';
   return [
-    explanation ? `### Explanation\n\n${explanation}` : '',
-    stepLines.length ? `### Steps\n\n${stepLines.join('\n')}` : '',
+    '### Image inspection',
+    markdownField('Path', requestValue?.path, 2000),
+    markdownField('Detail', requestValue?.detail, 200),
+    markdownField('Dimensions', dimensions, 200),
+    markdownField('MIME type', responseValue?.mimeType, 200),
   ].filter(Boolean).join('\n\n');
 }
 
-function extractUpdatePlanSections(raws, event) {
-  const functionCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');
-  const requestValue = commandArgsFromRaw(functionCall);
+function inspectSupportedImageDataUrl(value) {
+  const source = String(value || '');
+  const match = source.match(/^data:image\/(png|jpeg|gif|webp|avif);base64,([\s\S]*)$/i);
+  if (!match) return null;
+  const payload = match[2];
+  let encodedLength = 0;
+  let padding = 0;
+  for (let index = 0; index < payload.length; index += 1) {
+    const char = payload[index];
+    if (/\s/.test(char)) continue;
+    encodedLength += 1;
+    padding = char === '=' ? padding + 1 : 0;
+  }
+  return {
+    mimeType: `image/${match[1].toLowerCase()}`,
+    payload,
+    encodedLength,
+    estimatedBytes: Math.max(0, Math.floor(encodedLength * 3 / 4) - Math.min(padding, 2)),
+  };
+}
+
+function imagePresentationKey(value, mimeType) {
+  const source = String(value || '');
+  let first = 2166136261;
+  let second = 2246822519;
+  for (let index = 0; index < source.length; index += 1) {
+    const code = source.charCodeAt(index);
+    first = Math.imul(first ^ code, 16777619);
+    second = Math.imul(second ^ code, 3266489917);
+  }
+  return `${mimeType}:${source.length}:${(first >>> 0).toString(36)}:${(second >>> 0).toString(36)}`;
+}
+
+function embeddedBase64PayloadEnd(source, start) {
+  let index = start;
+  let malformed = false;
+  while (index < source.length) {
+    if (/["'<>`()\[\]{}]/.test(source[index])) break;
+    if (/\s/.test(source[index])) {
+      if (malformed) break;
+      let next = index;
+      while (next < source.length && /\s/.test(source[next])) next += 1;
+      let tokenEnd = next;
+      while (tokenEnd < source.length && !/[\s"'<>`()\[\]{}]/.test(source[tokenEnd])) tokenEnd += 1;
+      if (tokenEnd === next) break;
+      const token = source.slice(next, tokenEnd);
+      index = tokenEnd;
+      if (!/^[a-z0-9+/=_-]+$/i.test(token)) malformed = true;
+      continue;
+    }
+    if (!/[a-z0-9+/=_-]/i.test(source[index])) malformed = true;
+    index += 1;
+  }
+  return index;
+}
+
+function redactEmbeddedBase64DataUrls(value, headerPattern, marker, prefixGroup = 0) {
+  const source = String(value || '');
+  let cursor = 0;
+  let redacted = '';
+  headerPattern.lastIndex = 0;
+  for (let match = headerPattern.exec(source); match; match = headerPattern.exec(source)) {
+    redacted += source.slice(cursor, match.index);
+    if (prefixGroup) redacted += match[prefixGroup];
+    redacted += marker;
+    cursor = embeddedBase64PayloadEnd(source, headerPattern.lastIndex);
+    headerPattern.lastIndex = cursor;
+  }
+  return cursor ? redacted + source.slice(cursor) : source;
+}
+
+function externalizeEmbeddedImages(value, source, images = [], jsonPath = [], seen = new WeakSet()) {
+  if (typeof value === 'string') {
+    const inspected = inspectSupportedImageDataUrl(value);
+    if (inspected) {
+      images.push({
+        previewId: `image-${source.line}-${images.length}`,
+        source: {
+          file: source.file,
+          line: source.line,
+          jsonPath,
+        },
+        mimeType: inspected.mimeType,
+        estimatedBytes: inspected.estimatedBytes,
+        dedupeKey: imagePresentationKey(value, inspected.mimeType),
+      });
+      return EMBEDDED_IMAGE_EXTERNALIZED_MARKER;
+    }
+    if (!/data:image\/(?:png|jpeg|gif|webp|avif);base64,/i.test(value)) return value;
+    return redactEmbeddedBase64DataUrls(
+      value,
+      /data:image\/(?:png|jpeg|gif|webp|avif);base64,/gi,
+      EMBEDDED_IMAGE_EXTERNALIZED_MARKER,
+    );
+  }
+  if (!value || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      value[index] = externalizeEmbeddedImages(value[index], source, images, [...jsonPath, index], seen);
+    }
+    return value;
+  }
+  for (const [key, item] of Object.entries(value)) {
+    value[key] = externalizeEmbeddedImages(item, source, images, [...jsonPath, key], seen);
+  }
+  return value;
+}
+
+function imagePreviewUrl(sessionId, eventId, previewId) {
+  return `/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(eventId)}/image-previews/${encodeURIComponent(previewId)}`;
+}
+
+function safeImagePreviewUrl(value) {
+  const source = String(value || '');
+  return /^\/api\/sessions\/[^/?#]+\/events\/[^/?#]+\/image-previews\/[^/?#]+$/.test(source) ? source : '';
+}
+
+function redactEmbeddedDataUrls(value, marker = TOOL_DATA_URL_MARKER) {
+  const source = String(value || '');
+  if (!/data:/i.test(source)) return source;
+  if (/^\s*data:[^,\s"'<>`]*,[\s\S]*$/i.test(source)) return marker;
+  return redactEmbeddedBase64DataUrls(source, /(^|[^a-z0-9_])data:[^,\s"'<>`]*;base64,/gi, marker, 1)
+    .replace(/(^|[^a-z0-9_])data:[^,\s"'<>`]*,[^\s"'<>`]*/gi, (match, prefix) => `${prefix}${marker}`);
+}
+
+function uniqueSanitizedObjectKey(key, usedKeys, marker) {
+  const sanitized = redactEmbeddedDataUrls(key, marker);
+  if (!usedKeys.has(sanitized)) {
+    usedKeys.add(sanitized);
+    return sanitized;
+  }
+  let suffix = 2;
+  while (usedKeys.has(`${sanitized} #${suffix}`)) suffix += 1;
+  const unique = `${sanitized} #${suffix}`;
+  usedKeys.add(unique);
+  return unique;
+}
+
+function sanitizeToolValue(value, options = {}, seen = new WeakMap()) {
+  const marker = options.marker || TOOL_DATA_URL_MARKER;
+  if (typeof value === 'string') {
+    if (options.previewSources?.has(value)) return '[embedded image available in preview]';
+    return redactEmbeddedDataUrls(value, marker);
+  }
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return '[circular value omitted]';
+  if (Array.isArray(value)) {
+    const sanitized = [];
+    seen.set(value, sanitized);
+    sanitized.push(...value.map((item) => sanitizeToolValue(item, options, seen)));
+    return sanitized;
+  }
+  const sanitized = {};
+  const usedKeys = new Set();
+  seen.set(value, sanitized);
+  for (const [key, item] of Object.entries(value)) {
+    Object.defineProperty(sanitized, uniqueSanitizedObjectKey(key, usedKeys, marker), {
+      value: sanitizeToolValue(item, options, seen),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return sanitized;
+}
+
+function imagePreviewSection(raws, event, requestValue) {
+  const items = raws.flatMap((raw) => raw.embeddedImages || []);
+  const seen = new Set();
+  const images = items.map((item, index) => {
+    if (!item || seen.has(item.dedupeKey) || seen.size >= IMAGE_PREVIEW_LIMIT) return null;
+    seen.add(item.dedupeKey);
+    return {
+      previewId: item.previewId,
+      src: imagePreviewUrl(raws[0]?.sessionId, event.id, item.previewId),
+      mimeType: item.mimeType,
+      estimatedBytes: item.estimatedBytes,
+      detail: conciseToolValue(firstNonEmpty(item.detail, requestValue?.detail), 200),
+      alt: `Image preview ${index + 1}`,
+    };
+  }).filter(Boolean);
+  const supportedCount = new Set(items.map((item) => item.dedupeKey).filter(Boolean)).size;
+  return {
+    type: 'image_preview',
+    title: 'Image preview',
+    images,
+    notice: supportedCount > images.length
+      ? `Showing ${images.length} image previews. ${supportedCount - images.length} additional embedded images remain available through raw refs.`
+      : images.length ? '' : 'Image preview is unavailable. The transcript did not retain a supported embedded image.',
+  };
+}
+
+function sanitizeToolInspectorValue(value, options = {}) {
+  return sanitizeToolValue(value, { ...options, marker: TOOL_DATA_URL_MARKER });
+}
+
+function sanitizeLogicalEnvelopeValue(value) {
+  return sanitizeToolValue(value, { marker: TOOL_DATA_URL_MARKER });
+}
+
+function sanitizeLogicalEventDto(dto) {
+  const {
+    id,
+    source,
+    rawRefs,
+    ...rest
+  } = dto;
+  return {
+    id,
+    ...sanitizeLogicalEnvelopeValue(rest),
+    source,
+    rawRefs,
+  };
+}
+
+function sanitizeLogicalDetailSection(section) {
+  if (section?.type !== 'image_preview') return sanitizeToolInspectorValue(section);
+  const sanitized = sanitizeToolInspectorValue(section);
+  sanitized.images = (section.images || []).map((image) => {
+    const src = safeImagePreviewUrl(image?.src);
+    return src ? { ...sanitizeToolInspectorValue(image), src } : null;
+  }).filter(Boolean);
+  return sanitized;
+}
+
+function sanitizeLogicalDetailSections(detailSections) {
+  return {
+    timelineSections: (detailSections.timelineSections || []).map(sanitizeLogicalDetailSection),
+    inspectorSections: (detailSections.inspectorSections || []).map(sanitizeLogicalDetailSection),
+  };
+}
+
+function statusName(value) {
+  const source = String(value || '').trim().toLowerCase();
+  return ['completed', 'success', 'running', 'in_progress', 'pending', 'pending_init', 'failed', 'blocked', 'declined'].includes(source) ? source : '';
+}
+
+function collaborationStatusEntries(value, fallbackLabel = 'Status') {
+  if (!value) return [];
+  if (typeof value === 'string') return [{ label: fallbackLabel, status: value }];
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collaborationStatusEntries(item?.status, firstNonEmpty(item?.agent_nickname, item?.thread_id, fallbackLabel)));
+  }
+  if (typeof value !== 'object') return [];
+  return Object.entries(value).flatMap(([key, item]) => {
+    if (statusName(key)) return [{ label: fallbackLabel, status: key }];
+    return collaborationStatusEntries(item, key);
+  });
+}
+
+function collaborationStatusItems(responseValue) {
+  if (!responseValue || typeof responseValue !== 'object') return [];
+  const source = firstNonEmpty(responseValue.agent_statuses, responseValue.statuses, responseValue.previous_status, responseValue.status);
+  const fallbackLabel = source === responseValue.previous_status ? 'Previous status' : 'Status';
+  const items = collaborationStatusEntries(source, fallbackLabel).map((item) => ({
+    label: conciseToolValue(item.label, 500),
+    status: conciseToolValue(item.status, 1000),
+  })).filter((item) => item.label && item.status);
+  return [...new Map(items.map((item) => [`${item.label}\n${item.status}`, item])).values()];
+}
+
+function collaborationResultEntries(value, label = '') {
+  if (!value) return [];
+  if (typeof value === 'string') return statusName(label) ? [{ label, value }] : [];
+  if (Array.isArray(value)) return value.flatMap((item) => collaborationResultEntries(item?.status, firstNonEmpty(item?.agent_nickname, item?.thread_id, label)));
+  if (typeof value !== 'object') return [];
+  return Object.entries(value).flatMap(([key, item]) => {
+    if (typeof item === 'string' && statusName(key)) return [{ label: label ? `${label} · ${key}` : key, value: item }];
+    return collaborationResultEntries(item, key);
+  });
+}
+
+function collaborationResultMarkdown(responseValue) {
+  if (!responseValue || typeof responseValue !== 'object') return '';
+  const direct = firstNonEmpty(responseValue.result, responseValue.output, responseValue.message);
+  if (direct) return stringifyValue(direct);
+  const source = firstNonEmpty(responseValue.agent_statuses, responseValue.statuses, responseValue.previous_status, responseValue.status);
+  const entries = collaborationResultEntries(source);
+  return [...new Map(entries.map((item) => [`${item.label}\n${item.value}`, item])).values()].map(({ label, value }) => [
+    label ? `### ${label}` : '',
+    stringifyValue(value),
+  ].filter(Boolean).join('\n\n')).join('\n\n');
+}
+
+function collaborationToolSection(toolName, requestValue, responseValue) {
+  const title = {
+    spawn_agent: 'Spawn subagent',
+    wait_agent: 'Wait for subagent',
+    send_input: 'Send input to subagent',
+    close_agent: 'Close subagent',
+  }[toolName];
+  if (!title) return null;
+  const spawnedAgentId = firstNonEmpty(responseValue?.agent_id, responseValue?.new_thread_id);
+  const targets = uniqueNonEmpty([
+    ...(Array.isArray(requestValue?.targets) ? requestValue.targets : [requestValue?.target]),
+    spawnedAgentId,
+  ]).map((target) => conciseToolValue(target, 1000));
+  const fields = [
+    { key: 'Timeout ms', value: requestValue?.timeout_ms },
+    { key: 'Agent type', value: requestValue?.agent_type },
+    { key: 'Model', value: requestValue?.model },
+    { key: 'Reasoning effort', value: requestValue?.reasoning_effort },
+    { key: 'Fork context', value: requestValue?.fork_context },
+    { key: 'Nickname', value: firstNonEmpty(responseValue?.nickname, responseValue?.new_agent_nickname) },
+    { key: 'Receiver', value: firstNonEmpty(responseValue?.receiver_agent_nickname, responseValue?.receiver_thread_id) },
+  ].filter((entry) => entry.value != null && entry.value !== '').map((entry) => ({
+    key: entry.key,
+    value: conciseToolValue(entry.value, 1000),
+  }));
+  const message = redactEmbeddedDataUrls(stringifyValue(firstNonEmpty(requestValue?.message, responseValue?.prompt)));
+  const result = redactEmbeddedDataUrls(collaborationResultMarkdown(responseValue));
+  return {
+    type: 'collaboration',
+    title,
+    action: toolName,
+    targets,
+    fields,
+    statuses: collaborationStatusItems(responseValue),
+    timedOut: responseValue?.timed_out === true,
+    messageHtml: message ? renderMarkdownToHtml(message) : '',
+    resultHtml: result ? renderMarkdownToHtml(result) : '',
+  };
+}
+
+function sanitizeToolTimelineValue(value, depth = 0) {
+  if (depth > 5) return '[nested value omitted]';
+  if (typeof value === 'string') {
+    return truncate(redactEmbeddedDataUrls(value, TIMELINE_DATA_URL_MARKER), 4000);
+  }
+  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 12).map((item) => sanitizeToolTimelineValue(item, depth + 1));
+    if (value.length > items.length) items.push(`[${value.length - items.length} more items omitted]`);
+    return items;
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value);
+    const usedKeys = new Set();
+    const summarized = Object.fromEntries(entries.slice(0, 24).map(([key, item]) => [
+      uniqueSanitizedObjectKey(key, usedKeys, TIMELINE_DATA_URL_MARKER),
+      sanitizeToolTimelineValue(item, depth + 1),
+    ]));
+    if (entries.length > 24) summarized['[additional fields omitted]'] = entries.length - 24;
+    return summarized;
+  }
+  return String(value);
+}
+
+function maybePushToolSummaryCodeSection(sections, title, value) {
+  if (value == null || value === '') return;
+  const summarized = sanitizeToolTimelineValue(value);
+  maybePushCodeSection(sections, title, stringifyValue(summarized), typeof summarized === 'object' ? 'json' : 'text');
+}
+
+function sanitizeUnmodeledToolTimelineSection(section) {
+  const sanitized = sanitizeToolValue(section, { marker: TIMELINE_DATA_URL_MARKER });
+  if (sanitized.type === 'code') sanitized.code = truncatePreservingWhitespace(sanitized.code, 4000);
+  if (sanitized.type === 'diff' || sanitized.type === 'terminal') sanitized.text = truncatePreservingWhitespace(sanitized.text, 4000);
+  if (sanitized.type === 'notice') sanitized.text = truncatePreservingWhitespace(sanitized.text, 4000);
+  return sanitized;
+}
+
+function sanitizeUnmodeledToolTimelineSections(sections) {
+  return (sections || []).map(sanitizeUnmodeledToolTimelineSection);
+}
+
+function sanitizeToolInspectorSections(sections, imagePreview = null) {
+  const previewSources = new Set((imagePreview?.images || []).map((image) => image.src));
+  return (sections || []).map((section) => sanitizeToolInspectorValue(section, {
+    previewSources: section.title === 'Response' ? previewSources : new Set(),
+  }));
+}
+
+function extractToolOperationSections(raws, event) {
+  const split = splitSectionsForDetail(extractToolSections(raws, event));
+  const { requestValue, responseValue } = toolDetailValues(raws);
   const timelineSections = [];
-  maybePushMarkdownSection(timelineSections, 'Plan update', updatePlanMarkdown(requestValue));
+  const userInput = event.toolName === 'request_user_input' ? requestUserInputSection(requestValue, responseValue) : null;
+  if (userInput) timelineSections.push(userInput);
+  const collaboration = collaborationToolSection(event.toolName, requestValue, responseValue);
+  if (collaboration) timelineSections.push(collaboration);
+  const markdown = event.toolName === 'view_image' ? viewImageMarkdown(requestValue, responseValue) : '';
+  maybePushMarkdownSection(timelineSections, 'Tool operation', markdown);
+  const hasSpecializedTimeline = timelineSections.length > 0;
+  if (!timelineSections.length) {
+    maybePushToolSummaryCodeSection(timelineSections, 'Request summary', requestValue);
+    maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue);
+  }
+  if (hasSpecializedTimeline) timelineSections.push(...sanitizeUnmodeledToolTimelineSections(split.timelineSections));
+  if (!timelineSections.length) timelineSections.push(...sanitizeUnmodeledToolTimelineSections(split.timelineSections));
+  if (!timelineSections.length) {
+    timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info')));
+  }
+  const imagePreview = event.toolName === 'view_image' ? imagePreviewSection(raws, event, requestValue) : null;
+  const inspectorSections = sanitizeToolInspectorSections(split.inspectorSections, imagePreview);
   return {
     timelineSections,
-    inspectorSections: splitSectionsForDetail(extractToolSections(raws, event)).inspectorSections,
+    inspectorSections: imagePreview ? [imagePreview, ...inspectorSections] : inspectorSections,
+  };
+}
+
+function updatePlanSection(requestValue) {
+  if (!requestValue || typeof requestValue !== 'object') return null;
+  const explanation = truncatePreservingWhitespace(redactEmbeddedDataUrls(displayValue(requestValue.explanation, 4000).trim()), 4000);
+  const steps = Array.isArray(requestValue.plan) ? requestValue.plan : [];
+  const items = steps.map((item) => {
+    if (!item || typeof item !== 'object') return null;
+    const step = conciseToolValue(item.step, 2000);
+    const status = conciseToolValue(item.status, 200);
+    if (!step && !status) return null;
+    return { step: step || '(unnamed step)', status };
+  }).filter(Boolean);
+  if (!explanation && !items.length) return null;
+  return {
+    type: 'plan_update',
+    title: 'Plan update',
+    explanationHtml: explanation ? renderMarkdownToHtml(explanation) : '',
+    steps: items,
+  };
+}
+
+function extractUpdatePlanSections(raws, event) {
+  const split = splitSectionsForDetail(extractToolSections(raws, event));
+  const { requestValue, responseValue } = toolDetailValues(raws);
+  const timelineSections = [];
+  const planUpdate = updatePlanSection(requestValue);
+  if (planUpdate) timelineSections.push(planUpdate);
+  if (planUpdate) timelineSections.push(...sanitizeUnmodeledToolTimelineSections(split.timelineSections));
+  if (!timelineSections.length) {
+    maybePushToolSummaryCodeSection(timelineSections, 'Request summary', requestValue);
+    maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue);
+  }
+  if (!timelineSections.length) timelineSections.push(...sanitizeUnmodeledToolTimelineSections(split.timelineSections));
+  if (!timelineSections.length) {
+    timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info')));
+  }
+  return {
+    timelineSections,
+    inspectorSections: sanitizeToolInspectorSections(split.inspectorSections),
   };
 }
 
@@ -2447,7 +2936,10 @@ function extractRawSections(raw, relatedEvent, session = {}) {
   }
   const recordFields = withoutKeys(raw.parsed?.payload, primary.omitPayloadKeys);
   maybePushKvSection(sections, 'Record fields', toKvEntries(recordFields, ['type', 'role', 'name', 'call_id', 'status', 'cwd']));
-  sections.push(makeRawJsonSection('Raw JSON', raw.parsed));
+  if (raw.embeddedImages?.length) {
+    sections.push(makeNoticeSection('Externalized image payloads', 'This indexed raw view omits embedded image bytes. Open Raw refs to load the original lossless JSONL row.', 'info'));
+  }
+  sections.push(makeRawJsonSection(raw.embeddedImages?.length ? 'Indexed raw JSON' : 'Raw JSON', raw.parsed));
   return sections;
 }
 
@@ -2468,9 +2960,10 @@ function extractLogicalDetailSections(event, raws, session = {}) {
     case 'js_repl':
       return splitSectionsForDetail(extractJsReplSections(raws, event));
     case 'mcp':
+      return splitSectionsForDetail(extractToolSections(raws, event));
     case 'tool_operation':
       if (event.toolName === 'update_plan') return extractUpdatePlanSections(raws, event);
-      return splitSectionsForDetail(extractToolSections(raws, event));
+      return extractToolOperationSections(raws, event);
     case 'web_search':
       return splitSectionsForDetail(extractWebSearchSections(raws, event));
     case 'protocol':
@@ -2520,16 +3013,17 @@ function buildEventDetail(session, eventId, layer = 'main') {
   if (!detailSections.timelineSections.length && !detailSections.inspectorSections.length) {
     detailSections.inspectorSections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
   }
+  const sanitizedDetailSections = sanitizeLogicalDetailSections(detailSections);
   return {
     id: logical.id,
-    kind: logical.kind,
-    subtype: logical.subtype,
-    layer: logical.layer,
-    title: logical.label,
+    kind: sanitizeLogicalEnvelopeValue(logical.kind),
+    subtype: sanitizeLogicalEnvelopeValue(logical.subtype),
+    layer: sanitizeLogicalEnvelopeValue(logical.layer),
+    title: sanitizeLogicalEnvelopeValue(logical.label),
     meta: logicalMeta(logical),
     rawRefs: logical.rawRefs,
-    timelineSections: filterDetailSections(detailSections.timelineSections),
-    inspectorSections: filterDetailSections(detailSections.inspectorSections),
+    timelineSections: filterDetailSections(sanitizedDetailSections.timelineSections),
+    inspectorSections: filterDetailSections(sanitizedDetailSections.inspectorSections),
   };
 }
 
@@ -2673,7 +3167,7 @@ function buildToolLogicalEvent(callId, group) {
     outputStats.durationMs = mcpEnd?.durationMs || 0;
   } else if (imageRows.length || dynamicRows.length || approvalRows.length || hookRows.length || collabRows.length) {
     kind = 'tool_operation';
-    label = humanizeProtocolSubtype(group.find((raw) => raw.payloadType)?.payloadType || toolName || 'Tool operation');
+    label = humanizeProtocolSubtype(group.find((raw) => raw.recordType === 'event_msg' && raw.payloadType)?.payloadType || toolName || 'Tool operation');
     preview = truncate(group.find((raw) => raw.preview)?.preview || toolName || label);
     status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
     severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
@@ -3537,7 +4031,9 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
         marker.exitedAt = safeIso(record.timestamp);
       }
       updateTimeRange(session, record.timestamp);
-      session.rawEvents.push(makeRawEvent(record, lineNumber, relFile, session.id));
+      const embeddedImages = [];
+      externalizeEmbeddedImages(record, { file: relFile, line: lineNumber }, embeddedImages);
+      session.rawEvents.push(makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages));
     }
   } finally {
     rl.close();
@@ -3766,17 +4262,17 @@ function sessionSummary(session, index) {
   const forkedFromSession = session.forkedFromSessionId ? index?.sessionsById?.get(session.forkedFromSessionId) : null;
   return {
     id: session.id,
-    title: session.title,
+    title: sanitizeLogicalEnvelopeValue(session.title),
     sourceFile: session.sourceFile,
     bytes: session.bytes,
     lineCount: session.lineCount,
     cwdSet: [...session.cwdSet],
     parentSessionId: session.parentSessionId,
     parentSessionInferred: Boolean(session.parentSessionInferred),
-    parentSessionTitle: parentSession?.title || '',
+    parentSessionTitle: sanitizeLogicalEnvelopeValue(parentSession?.title || ''),
     forkedFromSessionId: session.forkedFromSessionId,
-    forkedFromSessionTitle: forkedFromSession?.title || '',
-    agentNickname: session.agentNickname,
+    forkedFromSessionTitle: sanitizeLogicalEnvelopeValue(forkedFromSession?.title || ''),
+    agentNickname: sanitizeLogicalEnvelopeValue(session.agentNickname),
     isDerivedSession: Boolean(derivedKind),
     derivedKind,
     startedAt: session.startedAt,
@@ -3857,7 +4353,7 @@ function makeSnippet(text, q) {
 
 function logicalEventDto(event, q) {
   const hasSearchHit = q ? matchTerms(eventSearchText(event), q) : false;
-  return {
+  return sanitizeLogicalEventDto({
     id: event.id,
     timestamp: event.timestamp,
     turnId: event.turnId,
@@ -3882,7 +4378,7 @@ function logicalEventDto(event, q) {
     rawRefs: event.rawRefs,
     channels: event.channels,
     snippet: hasSearchHit ? makeSnippet(eventSearchText(event), q) : '',
-  };
+  });
 }
 
 function getTimeline(index, sessionId, filters) {
@@ -3928,15 +4424,92 @@ async function readRawLine(index, relFile, lineNumber) {
   return null;
 }
 
+function jsonPathValue(value, jsonPath) {
+  let current = value;
+  for (const key of jsonPath || []) {
+    if (!current || typeof current !== 'object' || !Object.hasOwn(current, key)) return undefined;
+    current = current[key];
+  }
+  return current;
+}
+
+function imagePreviewError(statusCode, error) {
+  return { statusCode, error };
+}
+
+function decodeImagePreviewDataUrl(value, options = {}) {
+  const maxEncodedChars = options.maxEncodedChars ?? IMAGE_PREVIEW_MAX_ENCODED_CHARS;
+  const maxDecodedBytes = options.maxDecodedBytes ?? IMAGE_PREVIEW_MAX_DECODED_BYTES;
+  const inspected = inspectSupportedImageDataUrl(value);
+  if (!inspected) return imagePreviewError(422, 'Image preview payload is malformed');
+  if (inspected.encodedLength > maxEncodedChars || inspected.estimatedBytes > maxDecodedBytes) {
+    return imagePreviewError(413, 'Image preview is too large');
+  }
+  const compact = inspected.payload.replace(/\s+/g, '');
+  if (!compact || compact.length % 4 !== 0 || !/^(?:[a-z0-9+/]{4})*(?:[a-z0-9+/]{2}==|[a-z0-9+/]{3}=)?$/i.test(compact)) {
+    return imagePreviewError(422, 'Image preview payload is malformed');
+  }
+  const bytes = Buffer.from(compact, 'base64');
+  if (bytes.length > maxDecodedBytes) return imagePreviewError(413, 'Image preview is too large');
+  return {
+    bytes,
+    mimeType: inspected.mimeType,
+  };
+}
+
+async function readImagePreview(index, sessionId, eventId, previewId) {
+  const session = index.sessionsById.get(sessionId);
+  if (!session) return imagePreviewError(404, 'Unknown session');
+  const event = session.logicalEvents.find((candidate) => candidate.id === eventId);
+  if (!event) return imagePreviewError(404, 'Unknown event');
+  const raws = rawEventsForLogicalEvent(session, event);
+  let selectedRaw = null;
+  let descriptor = null;
+  for (const raw of raws) {
+    const match = (raw.embeddedImages || []).find((image) => image.previewId === previewId);
+    if (!match) continue;
+    selectedRaw = raw;
+    descriptor = match;
+    break;
+  }
+  if (!descriptor || !selectedRaw) return imagePreviewError(404, 'Unknown image preview');
+  if (descriptor.source.file !== selectedRaw.source.file || descriptor.source.line !== selectedRaw.source.line) {
+    return imagePreviewError(409, 'Image preview source is stale');
+  }
+  let sourceRow;
+  try {
+    sourceRow = await readRawLine(index, descriptor.source.file, descriptor.source.line);
+  } catch (error) {
+    if (error.code === 'ENOENT') return imagePreviewError(404, 'Image preview source is missing');
+    throw error;
+  }
+  if (!sourceRow?.parsed) return imagePreviewError(409, 'Image preview source is stale');
+  const value = jsonPathValue(sourceRow.parsed, descriptor.source.jsonPath);
+  const inspected = inspectSupportedImageDataUrl(value);
+  if (!inspected || inspected.mimeType !== descriptor.mimeType) {
+    return imagePreviewError(409, 'Image preview source is stale');
+  }
+  if (inspected.encodedLength > IMAGE_PREVIEW_MAX_ENCODED_CHARS
+      || inspected.estimatedBytes > IMAGE_PREVIEW_MAX_DECODED_BYTES) {
+    return imagePreviewError(413, 'Image preview payload is too large');
+  }
+  if (imagePresentationKey(value, inspected.mimeType) !== descriptor.dedupeKey) {
+    return imagePreviewError(409, 'Image preview source is stale');
+  }
+  return decodeImagePreviewDataUrl(value);
+}
+
 module.exports = {
   buildIndex,
   discoverProjects,
+  decodeImagePreviewDataUrl,
   discoverConfiguredProjects,
   buildEventDetail,
   fileSuggestions,
   filterSessions,
   getTimeline,
   eventKindCatalog,
+  readImagePreview,
   readRawLine,
   normalizeFsPath,
   isPathInsideOrSame,

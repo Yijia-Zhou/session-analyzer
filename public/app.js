@@ -265,6 +265,7 @@ const state = {
   detailCache: {},
   detailErrors: {},
   detailPending: {},
+  detailCacheGeneration: 0,
   detailViewportTimer: 0,
   detailView: { type: 'profileRules' },
   detailHistory: [],
@@ -981,7 +982,7 @@ function shouldShowInspectorSummary(event, preview, detail = null) {
     'js_repl',
   ]);
   if (bodyOwnedKinds.has(event.kind)) return false;
-  if (detail?.timelineSections?.some((section) => ['markdown', 'code', 'terminal', 'patch', 'diff'].includes(section.type))) return false;
+  if (detail?.timelineSections?.some((section) => ['markdown', 'code', 'terminal', 'patch', 'diff', 'user_input', 'plan_update', 'collaboration'].includes(section.type))) return false;
   return true;
 }
 
@@ -1370,9 +1371,7 @@ function resetProjectViewState() {
   state.fileSuggestions = [];
   state.eventKinds = { main: [], protocol: [], raw: [] };
   state.sessionEventKinds = { main: [], protocol: [], raw: [] };
-  state.detailCache = {};
-  state.detailErrors = {};
-  state.detailPending = {};
+  resetSessionDetailCache();
   invalidateNavigationCache();
   el.sessionList.innerHTML = '';
   el.analysisPanel.innerHTML = '';
@@ -1440,6 +1439,13 @@ function isActiveProjectChooserRequest(requestId) {
     && state.selectingProject
     && !state.projectLoadingRoot
     && !state.projectJobId;
+}
+
+function resetSessionDetailCache() {
+  state.detailCache = {};
+  state.detailErrors = {};
+  state.detailPending = {};
+  state.detailCacheGeneration += 1;
 }
 
 async function cancelProjectJob(jobId) {
@@ -1729,6 +1735,7 @@ function renderSessions() {
 }
 
 async function selectSession(sessionId, options = {}) {
+  if (state.selectedSessionId !== sessionId) resetSessionDetailCache();
   state.selectedSessionId = sessionId;
   state.offset = 0;
   state.timelineLoading = false;
@@ -2105,20 +2112,25 @@ function setOverride(eventId, value) {
 
 function loadEventDetail(event) {
   const layer = activeLayerId();
-  const key = detailKey(state.selectedSessionId, layer, event.id);
+  const sessionId = state.selectedSessionId;
+  const generation = state.detailCacheGeneration;
+  const key = detailKey(sessionId, layer, event.id);
   if (state.detailCache[key] || state.detailErrors[key]) return Promise.resolve();
   if (!state.detailPending[key]) {
-    state.detailPending[key] = api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(layer)}`)
+    const pending = api(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(layer)}`)
       .then((detail) => {
+        if (state.selectedSessionId !== sessionId || state.detailCacheGeneration !== generation) return;
         state.detailCache[key] = detail;
         delete state.detailErrors[key];
       })
       .catch((error) => {
+        if (state.selectedSessionId !== sessionId || state.detailCacheGeneration !== generation) return;
         state.detailErrors[key] = error.message;
       })
       .finally(() => {
-        delete state.detailPending[key];
+        if (state.detailPending[key] === pending) delete state.detailPending[key];
       });
+    state.detailPending[key] = pending;
   }
   return state.detailPending[key];
 }
@@ -2855,6 +2867,15 @@ el.timeline.addEventListener('click', (event) => {
     showInspector(item);
   }
 });
+
+function showImagePreviewError(event) {
+  const image = event.target.closest?.('.imagePreviewGrid img');
+  if (!image) return;
+  image.closest('figure')?.classList.add('failed');
+}
+
+el.timeline.addEventListener('error', showImagePreviewError, true);
+el.detail.addEventListener('error', showImagePreviewError, true);
 
 el.detail.addEventListener('click', (event) => {
   const action = event.target.closest('[data-detail-action]')?.dataset.detailAction;

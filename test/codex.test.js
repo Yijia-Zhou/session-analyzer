@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, readRawLine, isPathInsideOrSame } = require('../src/codex');
+const { buildIndex, buildEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, readRawLine, isPathInsideOrSame } = require('../src/codex');
 const { createServer, parseArgs } = require('../server');
 const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../src/folding');
 
@@ -963,12 +963,16 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
 
   const updatePlanEvent = session.logicalEvents.find((event) => event.toolName === 'update_plan');
   const updatePlanDetail = buildEventDetail(session, updatePlanEvent.id, 'main');
-  assert.equal(updatePlanDetail.timelineSections.length, 1);
-  assert.equal(updatePlanDetail.timelineSections[0].type, 'markdown');
+  assert.equal(updatePlanDetail.timelineSections.length, 2);
+  assert.equal(updatePlanDetail.timelineSections[0].type, 'plan_update');
   assert.equal(updatePlanDetail.timelineSections[0].title, 'Plan update');
-  assert.match(updatePlanDetail.timelineSections[0].html, /Parser inspection is complete/);
-  assert.match(updatePlanDetail.timelineSections[0].html, /<code>completed<\/code> Inspect parser/);
-  assert.match(updatePlanDetail.timelineSections[0].html, /<code>in_progress<\/code> Patch regression/);
+  assert.match(updatePlanDetail.timelineSections[0].explanationHtml, /Parser inspection is complete/);
+  assert.deepEqual(updatePlanDetail.timelineSections[0].steps, [
+    { step: 'Inspect parser', status: 'completed' },
+    { step: 'Patch regression', status: 'in_progress' },
+  ]);
+  assert.equal(updatePlanDetail.timelineSections[1].type, 'code');
+  assert.match(updatePlanDetail.timelineSections[1].code, /Plan updated/);
   assert.ok(updatePlanDetail.inspectorSections.some((section) => section.type === 'json' && section.title === 'Request'));
 
   const protocolEvent = session.logicalEvents.find((event) => event.subtype === 'agents_instructions');
@@ -1131,6 +1135,7 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
   const detail = buildEventDetail(session, event.id, 'main');
   const request = detail.inspectorSections.find((section) => section.title === 'Request');
   const response = detail.inspectorSections.find((section) => section.title === 'Response');
+  const imagePreview = detail.inspectorSections.find((section) => section.type === 'image_preview');
   const reviewStartedDetail = buildEventDetail(session, reviewStarted.id, 'main');
   const reviewFinishedDetail = buildEventDetail(session, reviewFinished.id, 'main');
   const reviewRequest = allSections(reviewStartedDetail).find((section) => section.title === 'Review request');
@@ -1146,6 +1151,13 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
   assert.equal(request.value.path, 'G:\\vibe\\session-analyzer\\output\\image.png');
   assert.equal(response.type, 'json');
   assert.deepEqual(response.value, { width: 640, height: 480, mimeType: 'image/png' });
+  assert.deepEqual(imagePreview.images, []);
+  assert.match(imagePreview.notice, /unavailable/);
+  assert.equal(detail.timelineSections[0].type, 'markdown');
+  assert.match(detail.timelineSections[0].html, /Image inspection/);
+  assert.match(detail.timelineSections[0].html, /G:\\vibe\\session-analyzer\\output\\image\.png/);
+  assert.match(detail.timelineSections[0].html, /640 x 480/);
+  assert.match(detail.timelineSections[0].html, /image\/png/);
   assert.deepEqual(reviewRequest.entries, [
     { key: 'Status', value: 'Started' },
     { key: 'Target', value: 'Custom: Review structured target' },
@@ -1162,6 +1174,694 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
   assert.match(reviewFindings.html, /P1/);
   assert.match(reviewFindings.html, /confidence 0\.95/);
   assert.match(reviewFindings.html, /src\/codex\.js:lines 10-12/);
+});
+
+test('tool operation detail renders readable summaries and omits large data URLs', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+  const longPrompt = `Start prompt ${'x'.repeat(5000)} End prompt`;
+  const longResult = `Start result ${'y'.repeat(5000)} End result`;
+  const dir = path.join(codexHome, 'sessions', '2026', '05', '28');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const file = path.join(dir, `rollout-2026-05-28T10-00-00-${id}.jsonl`);
+  const records = [
+    {
+      type: 'session_meta',
+      timestamp: '2026-05-28T10:00:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:01.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'request_user_input',
+        call_id: 'call-question',
+        arguments: {
+          questions: [{
+            id: 'display_mode',
+            header: 'Display',
+            question: 'Which display mode should be used?',
+            options: [{ label: 'Timeline', description: 'Show readable timeline detail.' }],
+          }],
+        },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:01.100Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-question',
+        output: { answers: { display_mode: { answers: ['Timeline'] } } },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'wait_agent',
+        call_id: 'call-wait',
+        arguments: { targets: ['agent-1'], timeout_ms: 120000 },
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-05-28T10:00:02.100Z',
+      payload: {
+        type: 'collab_waiting_end',
+        call_id: 'call-wait',
+        agent_statuses: [{ thread_id: 'agent-1', agent_nickname: 'Builder', status: { completed: longResult } }],
+        statuses: { 'agent-1': { completed: longResult } },
+        timed_out: true,
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.200Z',
+      payload: {
+        type: 'function_call',
+        name: 'spawn_agent',
+        call_id: 'call-spawn',
+        arguments: { agent_type: 'worker', model: 'gpt-test', reasoning_effort: 'medium', fork_context: true, message: longPrompt },
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-05-28T10:00:02.300Z',
+      payload: {
+        type: 'collab_agent_spawn_end',
+        call_id: 'call-spawn',
+        new_thread_id: 'agent-2',
+        new_agent_nickname: 'Builder',
+        status: 'pending_init',
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.400Z',
+      payload: {
+        type: 'function_call',
+        name: 'send_input',
+        call_id: 'call-send',
+        arguments: { target: 'agent-2', message: longPrompt },
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-05-28T10:00:02.500Z',
+      payload: {
+        type: 'collab_agent_interaction_end',
+        call_id: 'call-send',
+        receiver_thread_id: 'agent-2',
+        receiver_agent_nickname: 'Builder',
+        status: 'running',
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.600Z',
+      payload: {
+        type: 'function_call',
+        name: 'close_agent',
+        call_id: 'call-close',
+        arguments: { target: 'agent-2' },
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-05-28T10:00:02.700Z',
+      payload: {
+        type: 'collab_close_end',
+        call_id: 'call-close',
+        status: { completed: longResult },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.710Z',
+      payload: {
+        type: 'function_call',
+        name: 'spawn_agent',
+        call_id: 'call-spawn-output',
+        arguments: { agent_type: 'reviewer', message: 'Review the patch.' },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.720Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-spawn-output',
+        output: { agent_id: 'agent-3', nickname: 'Reviewer' },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.730Z',
+      payload: {
+        type: 'function_call',
+        name: 'wait_agent',
+        call_id: 'call-wait-output',
+        arguments: { targets: ['agent-3'], timeout_ms: 60000 },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.740Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-wait-output',
+        output: { status: { 'agent-3': { completed: 'Function result' } }, timed_out: false },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.750Z',
+      payload: {
+        type: 'function_call',
+        name: 'close_agent',
+        call_id: 'call-close-output',
+        arguments: { target: 'agent-3' },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.760Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-close-output',
+        output: { previous_status: { completed: 'Previous result' } },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.800Z',
+      payload: {
+        type: 'function_call',
+        name: 'view_image',
+        call_id: 'call-image',
+        arguments: { path: 'G:\\repo\\preview.png', detail: 'high' },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.900Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-image',
+        output: [
+          { type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8=', detail: 'high' },
+          { type: 'input_image', image_url: 'data:text/html;base64,PHNjcmlwdD4=', detail: 'high' },
+        ],
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-05-28T10:00:03.000Z',
+      payload: {
+        type: 'dynamic_tool_call_begin',
+        call_id: 'call-dynamic',
+        tool_name: 'asset_lookup',
+        request: { query: 'timeline image', image_url: 'data:image/png;base64,request-image-payload' },
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-05-28T10:00:03.100Z',
+      payload: {
+        type: 'dynamic_tool_call_end',
+        call_id: 'call-dynamic',
+        tool_name: 'asset_lookup',
+        result: { image_url: 'data:image/png;base64,very-large-image-payload', count: 1 },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:03.200Z',
+      payload: {
+        type: 'function_call',
+        name: 'view_image',
+        call_id: 'call-image-error',
+        arguments: { path: 'G:\\repo\\missing.png' },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:03.300Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-image-error',
+        output: 'image decode failed',
+      },
+    },
+  ];
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const question = session.logicalEvents.find((event) => event.toolName === 'request_user_input');
+  const wait = session.logicalEvents.find((event) => event.toolName === 'wait_agent');
+  const spawn = session.logicalEvents.find((event) => event.toolName === 'spawn_agent');
+  const send = session.logicalEvents.find((event) => event.toolName === 'send_input');
+  const close = session.logicalEvents.find((event) => event.toolName === 'close_agent');
+  const image = session.logicalEvents.find((event) => event.toolName === 'view_image');
+  const dynamic = session.logicalEvents.find((event) => event.toolName === 'asset_lookup');
+  const imageError = session.logicalEvents.find((event) => event.id.includes('call-image-error'));
+  const spawnOutput = session.logicalEvents.find((event) => event.id.includes('call-spawn-output'));
+  const waitOutput = session.logicalEvents.find((event) => event.id.includes('call-wait-output'));
+  const closeOutput = session.logicalEvents.find((event) => event.id.includes('call-close-output'));
+  const questionDetail = buildEventDetail(session, question.id, 'main');
+  const waitDetail = buildEventDetail(session, wait.id, 'main');
+  const spawnDetail = buildEventDetail(session, spawn.id, 'main');
+  const sendDetail = buildEventDetail(session, send.id, 'main');
+  const closeDetail = buildEventDetail(session, close.id, 'main');
+  const imageDetail = buildEventDetail(session, image.id, 'main');
+  const dynamicDetail = buildEventDetail(session, dynamic.id, 'main');
+  const imageErrorDetail = buildEventDetail(session, imageError.id, 'main');
+  const spawnOutputDetail = buildEventDetail(session, spawnOutput.id, 'main');
+  const waitOutputDetail = buildEventDetail(session, waitOutput.id, 'main');
+  const closeOutputDetail = buildEventDetail(session, closeOutput.id, 'main');
+
+  assert.equal(questionDetail.timelineSections[0].type, 'user_input');
+  assert.equal(questionDetail.timelineSections[0].questions[0].prompt, 'Which display mode should be used?');
+  assert.deepEqual(questionDetail.timelineSections[0].questions[0].options, [
+    { label: 'Timeline', description: 'Show readable timeline detail.', selected: true },
+  ]);
+  assert.deepEqual(questionDetail.timelineSections[0].questions[0].answers, ['Timeline']);
+  assert.equal(wait.label, 'Collab Waiting End');
+  assert.equal(waitDetail.timelineSections[0].type, 'collaboration');
+  assert.deepEqual(waitDetail.timelineSections[0].targets, ['agent-1']);
+  assert.deepEqual(waitDetail.timelineSections[0].statuses, [{ label: 'Builder', status: 'completed' }]);
+  assert.equal(waitDetail.timelineSections[0].timedOut, true);
+  assert.match(waitDetail.timelineSections[0].resultHtml, /Builder · completed/);
+  assert.match(waitDetail.timelineSections[0].resultHtml, /End result/);
+  assert.equal(spawnDetail.timelineSections[0].type, 'collaboration');
+  assert.match(spawnDetail.timelineSections[0].messageHtml, /End prompt/);
+  assert.deepEqual(spawnDetail.timelineSections[0].targets, ['agent-2']);
+  assert.deepEqual(spawnDetail.timelineSections[0].fields.find((field) => field.key === 'Nickname'), { key: 'Nickname', value: 'Builder' });
+  assert.deepEqual(spawnDetail.timelineSections[0].statuses, [{ label: 'Status', status: 'pending_init' }]);
+  assert.equal(sendDetail.timelineSections[0].type, 'collaboration');
+  assert.match(sendDetail.timelineSections[0].messageHtml, /End prompt/);
+  assert.deepEqual(sendDetail.timelineSections[0].statuses, [{ label: 'Status', status: 'running' }]);
+  assert.equal(closeDetail.timelineSections[0].type, 'collaboration');
+  assert.match(closeDetail.timelineSections[0].resultHtml, /End result/);
+  assert.deepEqual(closeDetail.timelineSections[0].statuses, [{ label: 'Status', status: 'completed' }]);
+  assert.deepEqual(spawnOutputDetail.timelineSections[0].targets, ['agent-3']);
+  assert.deepEqual(spawnOutputDetail.timelineSections[0].fields.find((field) => field.key === 'Nickname'), { key: 'Nickname', value: 'Reviewer' });
+  assert.deepEqual(waitOutputDetail.timelineSections[0].statuses, [{ label: 'agent-3', status: 'completed' }]);
+  assert.match(waitOutputDetail.timelineSections[0].resultHtml, /agent-3 · completed/);
+  assert.match(waitOutputDetail.timelineSections[0].resultHtml, /Function result/);
+  assert.deepEqual(closeOutputDetail.timelineSections[0].statuses, [{ label: 'Previous status', status: 'completed' }]);
+  assert.match(closeOutputDetail.timelineSections[0].resultHtml, /Previous result/);
+  assert.equal(imageDetail.timelineSections[0].type, 'markdown');
+  assert.match(imageDetail.timelineSections[0].html, /Image inspection/);
+  assert.deepEqual(imageDetail.inspectorSections.find((section) => section.type === 'image_preview').images, [
+    {
+      previewId: 'image-19-0',
+      src: `/api/sessions/${id}/events/${encodeURIComponent(image.id)}/image-previews/image-19-0`,
+      mimeType: 'image/png',
+      estimatedBytes: 5,
+      detail: 'high',
+      alt: 'Image preview 1',
+    },
+  ]);
+  assert.deepEqual(imageDetail.inspectorSections.find((section) => section.title === 'Response').value, [
+    { type: 'input_image', image_url: '[embedded image payload externalized; open raw refs for source]', detail: 'high' },
+    { type: 'input_image', image_url: '[embedded data URL omitted; see raw refs]', detail: 'high' },
+  ]);
+  assert.deepEqual(dynamicDetail.timelineSections.map((section) => section.title), ['Request summary', 'Response summary']);
+  assert.equal(dynamicDetail.timelineSections[0].type, 'code');
+  assert.match(dynamicDetail.timelineSections[0].code, /timeline image/);
+  assert.match(dynamicDetail.timelineSections[1].code, /\[embedded image payload externalized; open raw refs for source\]/);
+  assert.doesNotMatch(dynamicDetail.timelineSections[1].code, /very-large-image-payload/);
+  assert.equal(dynamicDetail.inspectorSections.find((section) => section.title === 'Request').value.request.image_url, '[embedded image payload externalized; open raw refs for source]');
+  assert.equal(dynamicDetail.inspectorSections.find((section) => section.title === 'Response').value.result.image_url, '[embedded image payload externalized; open raw refs for source]');
+  assert.deepEqual(imageErrorDetail.timelineSections.map((section) => section.type), ['markdown', 'code']);
+  assert.match(imageErrorDetail.timelineSections[1].code, /image decode failed/);
+});
+
+test('tool operation sanitization covers structured cards, embedded URLs, object keys, and preview limits', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+  const embeddedUrl = 'data:text/plain,private-payload';
+  const encodedUrl = 'data:text/plain,encoded%20private%20payload';
+  const multilineBase64Url = 'data:image/png;base64,AAAA\nBBBB\nCCCC';
+  const spacedBase64Url = 'data:image/png;base64,DDDD EEEE\tFFFF';
+  const malformedRasterUrl = 'data:image/png;base64,AAAA%%%%malformed-image-secret';
+  const malformedLeadingRasterUrl = 'data:image/png;base64,%%%%leading-image-secret';
+  const malformedGenericUrl = 'data:text/plain;base64,%%%%generic-secret';
+  const previewUrls = Array.from({ length: 10 }, (_, index) => `data:image/png;base64,${Buffer.from(`image-${index}`).toString('base64')}`);
+  const dir = path.join(codexHome, 'sessions', '2026', '05', '29');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const file = path.join(dir, `rollout-2026-05-29T10-00-00-${id}.jsonl`);
+  const records = [
+    {
+      type: 'session_meta',
+      timestamp: '2026-05-29T10:00:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-29T10:00:01.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'request_user_input',
+        call_id: 'call-question-sensitive',
+        arguments: {
+          questions: [{
+            id: 'display_mode',
+            header: `Display ${embeddedUrl} after`,
+            question: `Choose before ${embeddedUrl} after`,
+            options: [{ label: 'Timeline', description: `Readable ${embeddedUrl} after` }],
+          }],
+        },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-29T10:00:01.100Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-question-sensitive',
+        output: { answers: { display_mode: { answers: ['Timeline'] } } },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-29T10:00:02.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'send_input',
+        call_id: 'call-send-sensitive',
+        arguments: { target: 'agent-sensitive', message: `Message before ${embeddedUrl} after` },
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-05-29T10:00:02.100Z',
+      payload: {
+        type: 'collab_agent_interaction_end',
+        call_id: 'call-send-sensitive',
+        receiver_thread_id: 'agent-sensitive',
+        status: 'running',
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-29T10:00:03.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'update_plan',
+        call_id: 'call-plan-sensitive',
+        arguments: {
+          explanation: `Plan before ${embeddedUrl} after`,
+          plan: [{ step: `Inspect ${embeddedUrl} after`, status: 'in_progress' }],
+        },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-29T10:00:03.100Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-plan-sensitive',
+        output: `Plan response before ${embeddedUrl} after`,
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-05-29T10:00:04.000Z',
+      payload: {
+        type: 'dynamic_tool_call_begin',
+        call_id: 'call-dynamic-sensitive',
+        tool_name: 'asset_lookup',
+        request: {
+          [`field-${embeddedUrl}`]: `Request before ${embeddedUrl} after`,
+          [embeddedUrl]: 'first redacted-key value',
+          'data:text/plain,second-private-payload': 'second redacted-key value',
+          multiline: `Request before (${multilineBase64Url}) after`,
+          spaced: `Request before (${spacedBase64Url}) after`,
+          malformedRaster: `Request before (${malformedRasterUrl}) after`,
+          malformedLeadingRaster: `Request before ${malformedLeadingRasterUrl} after`,
+          malformedGeneric: `Request before ${malformedGenericUrl} after`,
+          encoded: `Request before ${encodedUrl} after`,
+          multiple: `Request before ${embeddedUrl} middle ${encodedUrl} after`,
+          ordinary: 'metadata:value',
+        },
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-05-29T10:00:04.100Z',
+      payload: {
+        type: 'dynamic_tool_call_end',
+        call_id: 'call-dynamic-sensitive',
+        tool_name: 'asset_lookup',
+        result: { message: `Response before (${multilineBase64Url}) after`, ordinary: 'metadata:value' },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-29T10:00:05.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'view_image',
+        call_id: 'call-image-sensitive',
+        arguments: { path: 'G:\\repo\\missing.png' },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-29T10:00:05.100Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-image-sensitive',
+        output: `Decode failed before ${embeddedUrl} after ${'x'.repeat(5000)}`,
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-29T10:00:06.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'view_image',
+        call_id: 'call-image-many',
+        arguments: { path: 'G:\\repo\\many.png', detail: 'high' },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-29T10:00:06.100Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-image-many',
+        output: [...previewUrls.map((image_url) => ({ type: 'input_image', image_url })), { type: 'input_image', image_url: previewUrls[0] }],
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-05-29T10:00:07.000Z',
+      payload: {
+        type: 'dynamic_tool_call_begin',
+        call_id: 'call-envelope-sensitive',
+        tool_name: 'data:text/plain,tool-secret',
+        turn_id: 'data:text/plain,turn-secret',
+        request: { ok: true },
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-05-29T10:00:07.100Z',
+      payload: {
+        type: 'dynamic_tool_call_end',
+        call_id: 'call-envelope-sensitive',
+        tool_name: 'data:text/plain,tool-secret',
+        turn_id: 'data:text/plain,turn-secret',
+        result: { ok: true },
+      },
+    },
+  ];
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const detailFor = (callId) => {
+    const event = session.logicalEvents.find((candidate) => candidate.id.includes(callId));
+    return { event, detail: buildEventDetail(session, event.id, 'main') };
+  };
+  const question = detailFor('call-question-sensitive');
+  const send = detailFor('call-send-sensitive');
+  const plan = detailFor('call-plan-sensitive');
+  const dynamic = detailFor('call-dynamic-sensitive');
+  const image = detailFor('call-image-sensitive');
+  const manyImages = detailFor('call-image-many');
+  const envelope = detailFor('call-envelope-sensitive');
+
+  for (const { event, detail } of [question, send, plan, dynamic, image, envelope]) {
+    assert.doesNotMatch(JSON.stringify(event), /private-payload/);
+    assert.doesNotMatch(JSON.stringify(detail), /private-payload/);
+  }
+  assert.match(question.detail.timelineSections[0].questions[0].prompt, /before \[embedded data URL omitted; see raw refs\] after/);
+  assert.match(send.detail.timelineSections[0].messageHtml, /before \[embedded data URL omitted; see raw refs\] after/);
+  assert.deepEqual(plan.detail.timelineSections.map((section) => section.type), ['plan_update', 'code']);
+  assert.match(plan.detail.timelineSections[0].explanationHtml, /before \[embedded data URL omitted; see raw refs\] after/);
+  assert.match(plan.detail.timelineSections[0].steps[0].step, /Inspect \[embedded data URL omitted; see raw refs\] after/);
+  assert.match(plan.detail.timelineSections[1].code, /response before \[data URL omitted\] after/);
+  assert.match(JSON.stringify(plan.detail.inspectorSections), /\[embedded data URL omitted; see raw refs\]/);
+  assert.match(JSON.stringify(dynamic.detail.timelineSections), /\[data URL omitted\]/);
+  assert.match(JSON.stringify(dynamic.detail.inspectorSections), /field-\[embedded data URL omitted; see raw refs\]/);
+  assert.match(JSON.stringify(dynamic.detail.inspectorSections), /metadata:value/);
+  const dynamicRequest = dynamic.detail.inspectorSections.find((section) => section.title === 'Request').value.request;
+  assert.equal(dynamicRequest['[embedded data URL omitted; see raw refs]'], 'first redacted-key value');
+  assert.equal(dynamicRequest['[embedded data URL omitted; see raw refs] #2'], 'second redacted-key value');
+  assert.equal(dynamicRequest.multiline, 'Request before ([embedded image payload externalized; open raw refs for source]) after');
+  assert.equal(dynamicRequest.spaced, 'Request before ([embedded image payload externalized; open raw refs for source]) after');
+  assert.equal(dynamicRequest.malformedRaster, 'Request before ([embedded image payload externalized; open raw refs for source]) after');
+  assert.equal(dynamicRequest.malformedLeadingRaster, 'Request before [embedded image payload externalized; open raw refs for source] after');
+  assert.equal(dynamicRequest.malformedGeneric, 'Request before [embedded data URL omitted; see raw refs] after');
+  assert.equal(dynamicRequest.encoded, 'Request before [embedded data URL omitted; see raw refs] after');
+  assert.equal(dynamicRequest.multiple, 'Request before [embedded data URL omitted; see raw refs] middle [embedded data URL omitted; see raw refs] after');
+  assert.doesNotMatch(JSON.stringify(dynamic.detail), /AAAA|BBBB|CCCC|DDDD|EEEE|FFFF|encoded%20private/);
+  assert.equal(image.detail.timelineSections[1].code.length, 4000);
+  assert.match(image.detail.timelineSections[1].code, /Decode failed before \[data URL omitted\] after/);
+  const imagePreview = manyImages.detail.inspectorSections.find((section) => section.type === 'image_preview');
+  assert.equal(imagePreview.images.length, 8);
+  assert.equal(new Set(imagePreview.images.map((item) => item.src)).size, 8);
+  assert.match(imagePreview.notice, /2 additional embedded images/);
+  const manyImageResponse = manyImages.detail.inspectorSections.find((section) => section.title === 'Response');
+  assert.equal(manyImageResponse.value.filter((item) => item.image_url === '[embedded image payload externalized; open raw refs for source]').length, 11);
+  assert.doesNotMatch(JSON.stringify(session.rawEvents), /data:image\/png;base64|malformed-image-secret|leading-image-secret/);
+  assert.doesNotMatch(JSON.stringify(dynamic.detail), /malformed-image-secret|leading-image-secret|generic-secret/);
+  const envelopeTimeline = getTimeline(index, id, { layer: 'main', q: '', offset: 0, limit: 100 }).events.find((event) => event.id === envelope.event.id);
+  assert.equal(envelope.event.turnId, '[embedded data URL omitted; see raw refs]');
+  assert.equal(envelope.event.subtype, '[embedded data URL omitted; see raw refs]');
+  assert.equal(envelope.event.toolName, '[embedded data URL omitted; see raw refs]');
+  assert.equal(envelopeTimeline.turnId, '[embedded data URL omitted; see raw refs]');
+  assert.equal(envelopeTimeline.payloadType, '[embedded data URL omitted; see raw refs]');
+  assert.equal(envelopeTimeline.subtype, '[embedded data URL omitted; see raw refs]');
+  assert.equal(envelopeTimeline.toolName, '[embedded data URL omitted; see raw refs]');
+  assert.equal(envelope.detail.subtype, '[embedded data URL omitted; see raw refs]');
+  assert.equal(envelope.detail.meta.turnId, '[embedded data URL omitted; see raw refs]');
+  assert.equal(envelope.detail.meta.toolName, '[embedded data URL omitted; see raw refs]');
+  session.title = `Session before ${encodedUrl} after`;
+  const summary = filterSessions(index, { sort: 'updated-desc' }).sessions.find((item) => item.id === id);
+  assert.equal(summary.title, 'Session before [embedded data URL omitted; see raw refs] after');
+  const rawDetail = buildEventDetail(session, session.rawEvents.find((raw) => raw.callId === 'call-plan-sensitive').rawId, 'raw');
+  assert.match(JSON.stringify(rawDetail), /private-payload/);
+  const rawEnvelopeDetail = buildEventDetail(session, session.rawEvents.find((raw) => raw.callId === 'call-envelope-sensitive').rawId, 'raw');
+  assert.match(JSON.stringify(rawEnvelopeDetail), /tool-secret/);
+  assert.match(JSON.stringify(rawEnvelopeDetail), /turn-secret/);
+});
+
+test('image preview decoder validates supported base64 and bounded sizes', () => {
+  const valid = decodeImagePreviewDataUrl('data:image/png;base64,aGVs\nbG8=');
+  assert.equal(valid.error, undefined);
+  assert.equal(valid.mimeType, 'image/png');
+  assert.equal(valid.bytes.toString('utf8'), 'hello');
+  assert.deepEqual(decodeImagePreviewDataUrl('data:image/svg+xml;base64,aGVsbG8='), { statusCode: 422, error: 'Image preview payload is malformed' });
+  assert.deepEqual(decodeImagePreviewDataUrl('data:image/png;base64,%%%%'), { statusCode: 422, error: 'Image preview payload is malformed' });
+  assert.deepEqual(decodeImagePreviewDataUrl('data:image/png;base64,aGVsbG8=', { maxEncodedChars: 4 }), { statusCode: 413, error: 'Image preview is too large' });
+  assert.deepEqual(decodeImagePreviewDataUrl('data:image/png;base64,aGVsbG8=', { maxDecodedBytes: 4 }), { statusCode: 413, error: 'Image preview is too large' });
+});
+
+test('image preview endpoint rehydrates only indexed server-owned image locators', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = '12121212-1212-1212-1212-121212121212';
+  const dir = path.join(codexHome, 'sessions', '2026', '05', '30');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const file = path.join(dir, `rollout-2026-05-30T10-00-00-${id}.jsonl`);
+  const records = [
+    {
+      type: 'session_meta',
+      timestamp: '2026-05-30T10:00:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-30T10:00:01.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'view_image',
+        call_id: 'call-image-endpoint',
+        arguments: { path: 'G:\\repo\\preview.png', detail: 'high' },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-30T10:00:01.100Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-image-endpoint',
+        output: [
+          { type: 'input_image', image_url: 'data:image/png;base64,aGVs\nbG8=', detail: 'high' },
+          { type: 'input_image', image_url: 'data:image/png;base64,%%%%', detail: 'high' },
+          { type: 'input_image', image_url: 'data:image/svg+xml;base64,aGVsbG8=', detail: 'high' },
+        ],
+      },
+    },
+  ];
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const event = session.logicalEvents.find((candidate) => candidate.toolName === 'view_image');
+  const detail = buildEventDetail(session, event.id, 'main');
+  const previews = detail.inspectorSections.find((section) => section.type === 'image_preview').images;
+  const outputRaw = session.rawEvents.find((raw) => raw.callId === 'call-image-endpoint' && raw.payloadType === 'function_call_output');
+  assert.equal(previews.length, 2);
+  assert.doesNotMatch(JSON.stringify(session), /data:image\/png;base64/);
+  assert.equal(outputRaw.embeddedImages.length, 2);
+
+  const server = createServer(index, 1, { codexHome });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const valid = await fetch(`${base}${previews[0].src}?file=..%2Foutside.jsonl`);
+    assert.equal(valid.status, 200);
+    assert.equal(valid.headers.get('content-type'), 'image/png');
+    assert.equal(valid.headers.get('content-length'), '5');
+    assert.equal(valid.headers.get('cache-control'), 'no-store');
+    assert.equal(valid.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(Buffer.from(await valid.arrayBuffer()).toString('utf8'), 'hello');
+
+    const malformed = await fetch(`${base}${previews[1].src}`);
+    assert.equal(malformed.status, 422);
+    assert.equal((await malformed.json()).error, 'Image preview payload is malformed');
+
+    const unknown = await fetch(`${base}${previews[0].src.replace(/image-3-0$/, 'unknown-preview')}`);
+    assert.equal(unknown.status, 404);
+    assert.equal((await unknown.json()).error, 'Unknown image preview');
+
+    const malformedIdentifier = await fetch(`${base}/api/sessions/%ZZ/events/event/image-previews/preview`);
+    assert.equal(malformedIdentifier.status, 400);
+
+    const raw = await fetch(`${base}/api/raw?file=${encodeURIComponent(outputRaw.source.file)}&line=${outputRaw.source.line}`);
+    assert.equal(raw.status, 200);
+    assert.match((await raw.json()).raw, /data:image\/png;base64,aGVs\\nbG8=/);
+
+    const originalFile = outputRaw.embeddedImages[0].source.file;
+    outputRaw.embeddedImages[0].source.file = '..\\outside.jsonl';
+    const outside = await fetch(`${base}${previews[0].src}`);
+    assert.equal(outside.status, 409);
+    outputRaw.embeddedImages[0].source.file = originalFile;
+
+    records[2].payload.output[0].image_url = 'data:image/png;base64,d29ybGQ=';
+    await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+    const stale = await fetch(`${base}${previews[0].src}`);
+    assert.equal(stale.status, 409);
+    assert.equal((await stale.json()).error, 'Image preview source is stale');
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
 });
 
 test('command terminal sections repair UTF-8 text decoded as GB18030', () => {

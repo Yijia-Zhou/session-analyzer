@@ -181,6 +181,64 @@
     return `<section class="eventSection"><div class="usageLimitBlock">${renderSectionTitle(section)}${items}</div></section>`;
   }
 
+  function renderUserInput(section) {
+    const questions = (section.questions || []).map((question) => {
+      const options = (question.options || []).map((option) => {
+        const selected = option.selected ? ' selected' : '';
+        const selectedLabel = option.selected ? '<span class="userInputSelected">Selected</span>' : '';
+        return `<li class="userInputOption${selected}"><div><strong>${escapeHtml(option.label || '')}</strong>${selectedLabel}</div>${option.description ? `<p>${escapeHtml(option.description)}</p>` : ''}</li>`;
+      }).join('');
+      const answers = (question.answers || []).map((answer) => `<span>${escapeHtml(answer)}</span>`).join('');
+      return `<article class="userInputQuestion"><header><strong>${escapeHtml(question.title || 'Question')}</strong></header>${question.prompt ? `<p class="userInputPrompt">${escapeHtml(question.prompt)}</p>` : ''}${options ? `<ul class="userInputOptions">${options}</ul>` : ''}${answers ? `<div class="userInputAnswer"><strong>Answer</strong>${answers}</div>` : ''}</article>`;
+    }).join('');
+    return `<section class="eventSection"><div class="userInputBlock">${renderSectionTitle(section)}${questions}</div></section>`;
+  }
+
+  function planStatusClass(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'completed') return ' completed';
+    if (normalized === 'in_progress') return ' inProgress';
+    if (normalized === 'pending') return ' pending';
+    if (normalized === 'failed' || normalized === 'blocked') return ' blocked';
+    return ' unknown';
+  }
+
+  function renderPlanUpdate(section) {
+    const explanation = section.explanationHtml ? `<div class="planUpdateExplanation">${section.explanationHtml}</div>` : '';
+    const steps = (section.steps || []).map((item) => `<li class="planUpdateStep"><span class="planStatus${planStatusClass(item.status)}">${escapeHtml(item.status || 'unknown')}</span><span>${escapeHtml(item.step || '')}</span></li>`).join('');
+    return `<section class="eventSection"><div class="planUpdateBlock">${renderSectionTitle(section)}${explanation}${steps ? `<ol class="planUpdateSteps">${steps}</ol>` : ''}</div></section>`;
+  }
+
+  function collaborationStatusClass(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'completed' || normalized === 'success') return ' completed';
+    if (normalized === 'running' || normalized === 'in_progress') return ' running';
+    if (normalized === 'pending' || normalized === 'pending_init') return ' pending';
+    if (normalized === 'failed' || normalized === 'blocked' || normalized === 'declined') return ' failed';
+    return ' unknown';
+  }
+
+  function renderCollaboration(section) {
+    const targets = (section.targets || []).map((target) => `<span>${escapeHtml(target)}</span>`).join('');
+    const fields = (section.fields || []).map((entry) => `<div><dt>${escapeHtml(entry.key || '')}</dt><dd>${escapeHtml(entry.value || '')}</dd></div>`).join('');
+    const statuses = (section.statuses || []).map((item) => `<li><span>${escapeHtml(item.label || '')}</span><strong class="collaborationStatus${collaborationStatusClass(item.status)}">${escapeHtml(item.status || 'unknown')}</strong></li>`).join('');
+    const timedOut = section.timedOut ? '<span class="collaborationStatus failed">timed out</span>' : '';
+    const message = section.messageHtml ? `<article class="collaborationBody"><h4>Message</h4><div>${section.messageHtml}</div></article>` : '';
+    const result = section.resultHtml ? `<article class="collaborationBody"><h4>Result</h4><div>${section.resultHtml}</div></article>` : '';
+    return `<section class="eventSection"><div class="collaborationBlock">${renderSectionTitle(section)}${targets ? `<div class="collaborationTargets"><strong>Targets</strong>${targets}</div>` : ''}${fields ? `<dl class="collaborationFields">${fields}</dl>` : ''}${statuses || timedOut ? `<div class="collaborationStatuses">${timedOut}${statuses ? `<ul>${statuses}</ul>` : ''}</div>` : ''}${message}${result}</div></section>`;
+  }
+
+  function isSafeImagePreviewUrl(value) {
+    return /^\/api\/sessions\/[^/?#]+\/events\/[^/?#]+\/image-previews\/[^/?#]+$/.test(String(value || ''));
+  }
+
+  function renderImagePreview(section) {
+    const images = (section.images || []).filter((image) => isSafeImagePreviewUrl(image.src)).map((image) => `<figure><img src="${escapeHtml(image.src)}" alt="${escapeHtml(image.alt || 'Image preview')}" loading="lazy" decoding="async"><p class="imagePreviewError">Image preview could not be loaded.</p>${image.detail ? `<figcaption>${escapeHtml(image.detail)}</figcaption>` : ''}</figure>`).join('');
+    const notice = section.notice || (!images ? 'Image preview is unavailable.' : '');
+    const noticeHtml = notice ? `<div class="notice info"><p>${escapeHtml(notice)}</p></div>` : '';
+    return `<section class="eventSection"><div class="imagePreviewBlock">${renderSectionTitle(section)}${images ? `<div class="imagePreviewGrid">${images}</div>` : ''}${noticeHtml}</div></section>`;
+  }
+
   function renderNotice(section) {
     const level = section.level || 'info';
     return `<section class="eventSection"><div class="notice ${escapeHtml(level)}">${renderSectionTitle(section)}<p>${escapeHtml(section.text || '')}</p></div></section>`;
@@ -212,6 +270,14 @@
         return renderTokenUsage(section);
       case 'usage_limits':
         return renderUsageLimits(section);
+      case 'user_input':
+        return renderUserInput(section);
+      case 'plan_update':
+        return renderPlanUpdate(section);
+      case 'collaboration':
+        return renderCollaboration(section);
+      case 'image_preview':
+        return renderImagePreview(section);
       case 'notice':
         return renderNotice(section);
       case 'raw_json':

@@ -7,7 +7,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const url = require('node:url');
-const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, normalizeFsPath, readRawLine } = require('./src/codex');
+const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, normalizeFsPath, readImagePreview, readRawLine } = require('./src/codex');
 const { foldingProfiles } = require('./src/folding');
 
 const MIME = {
@@ -75,9 +75,29 @@ function sendError(res, status, message, details) {
   sendJson(res, status, { error: message, details });
 }
 
+function sendImage(res, image) {
+  res.writeHead(200, {
+    'content-type': image.mimeType,
+    'content-length': String(image.bytes.length),
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  });
+  res.end(image.bytes);
+}
+
 function parseQuery(reqUrl) {
   const parsed = new url.URL(reqUrl, 'http://localhost');
   return { pathname: parsed.pathname, searchParams: parsed.searchParams };
+}
+
+function decodePathSegment(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    const error = new Error('Malformed URL path segment');
+    error.statusCode = 400;
+    throw error;
+  }
 }
 
 function asNumber(value, fallback, min, max) {
@@ -411,7 +431,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       if (timelineMatch) {
         const index = requireIndex(state, res);
         if (!index) return;
-        const sessionId = decodeURIComponent(timelineMatch[1]);
+        const sessionId = decodePathSegment(timelineMatch[1]);
         const result = getTimeline(index, sessionId, {
           offset: asNumber(searchParams.get('offset'), 0, 0, 1_000_000),
           limit: asNumber(searchParams.get('limit'), 150, 1, 500),
@@ -434,13 +454,13 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       if (detailMatch) {
         const index = requireIndex(state, res);
         if (!index) return;
-        const session = index.sessionsById.get(decodeURIComponent(detailMatch[1]));
+        const session = index.sessionsById.get(decodePathSegment(detailMatch[1]));
         if (!session) {
           sendError(res, 404, 'Unknown session');
           return;
         }
         const layer = searchParams.get('layer') || 'main';
-        const detail = buildEventDetail(session, decodeURIComponent(detailMatch[2]), layer);
+        const detail = buildEventDetail(session, decodePathSegment(detailMatch[2]), layer);
         if (!detail) {
           sendError(res, 404, 'Unknown event');
           return;
@@ -449,11 +469,29 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         return;
       }
 
+      const imagePreviewMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/events\/([^/]+)\/image-previews\/([^/]+)$/);
+      if (imagePreviewMatch) {
+        const index = requireIndex(state, res);
+        if (!index) return;
+        const image = await readImagePreview(
+          index,
+          decodePathSegment(imagePreviewMatch[1]),
+          decodePathSegment(imagePreviewMatch[2]),
+          decodePathSegment(imagePreviewMatch[3]),
+        );
+        if (image.error) {
+          sendError(res, image.statusCode, image.error);
+          return;
+        }
+        sendImage(res, image);
+        return;
+      }
+
       const analysisMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/analysis$/);
       if (analysisMatch) {
         const index = requireIndex(state, res);
         if (!index) return;
-        const session = index.sessionsById.get(decodeURIComponent(analysisMatch[1]));
+        const session = index.sessionsById.get(decodePathSegment(analysisMatch[1]));
         if (!session) {
           sendError(res, 404, 'Unknown session');
           return;
