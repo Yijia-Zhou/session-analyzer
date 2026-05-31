@@ -1,72 +1,6 @@
 'use strict';
 
-const DISPLAY_STATES = ['expanded', 'summary', 'collapsed', 'hidden'];
-
-const EDITABLE_EVENT_KINDS = [
-  'user_message',
-  'assistant_message',
-  'plan_artifact',
-  'plan_update',
-  'reasoning',
-  'command',
-  'patch',
-  'mcp',
-  'js_repl',
-  'tool_operation',
-  'web_search',
-  'error',
-  'warning',
-  'abort',
-  'rollback',
-  'compaction',
-  'token',
-  'subagent',
-  'review',
-  'turn',
-];
-
-const CONDITION_DEFINITIONS = [
-  {
-    id: 'searchHit',
-    name: 'Search hit',
-    description: 'Events matching the current search query.',
-  },
-  {
-    id: 'importantEvent',
-    name: 'Important event',
-    description: 'User/assistant messages, patches, errors, aborts, rollbacks, compactions, plans, plan updates, update_plan calls, failed events, and abnormal severity.',
-  },
-  {
-    id: 'updatePlanCall',
-    name: 'update_plan call',
-    description: 'Calls to the update_plan tool and protocol plan updates.',
-  },
-  {
-    id: 'failedStatus',
-    name: 'Failed status',
-    description: 'Events whose status is failed.',
-  },
-  {
-    id: 'errorSeverity',
-    name: 'Error severity',
-    description: 'Events whose severity is error.',
-  },
-  {
-    id: 'abnormalSeverity',
-    name: 'Abnormal severity',
-    description: 'Events whose severity is not normal.',
-  },
-  {
-    id: 'reviewCommand',
-    name: 'Review command',
-    description: 'Command previews containing test, build, lint, typecheck, git, diff, or status.',
-  },
-  {
-    id: 'touchedFiles',
-    name: 'Touched files',
-    description: 'Events that reference changed or touched files.',
-  },
-];
+const folding = require('../public/folding');
 
 function profileRules(kindStates, fallback, conditions = []) {
   return { kindStates, fallback, conditions };
@@ -222,11 +156,12 @@ const foldingProfiles = [
     description: '所有事件保留在时间线上，正文默认一行预览。',
     rules: profileRules({}, 'collapsed'),
   },
-];
+].map((profile) => ({
+  ...profile,
+  rules: folding.normalizeRules(profile.rules),
+}));
 
 module.exports = {
-  CONDITION_DEFINITIONS,
-  DISPLAY_STATES,
-  EDITABLE_EVENT_KINDS,
+  ...folding,
   foldingProfiles,
 };

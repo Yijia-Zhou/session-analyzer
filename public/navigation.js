@@ -1,16 +1,11 @@
 (function initNavigation(root, factory) {
-  const api = factory();
+  const api = factory(root.sessionFolding || (typeof require === 'function' ? require('./folding') : {}));
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionNavigation = api;
-}(typeof globalThis !== 'undefined' ? globalThis : window, function createNavigationApi() {
+}(typeof globalThis !== 'undefined' ? globalThis : window, function createNavigationApi(folding) {
   'use strict';
 
-  function isUpdatePlanEvent(event) {
-    return event.kind === 'plan_update'
-      || event.toolName === 'update_plan'
-      || event.subtype === 'update_plan'
-      || event.label === 'update_plan';
-  }
+  const isUpdatePlanEvent = folding.isUpdatePlanEvent || (() => false);
 
   const NAVIGATION_CATEGORIES = [
     { id: 'search_hits', label: 'Search hits', matches: (event) => Boolean(event.hasSearchHit) },

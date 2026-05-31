@@ -33,6 +33,7 @@ const searchHighlighter = window.sessionSearchHighlighter || {
   clear: () => {},
   searchTerms: () => [],
 };
+const foldingApi = window.sessionFolding || {};
 const navigationApi = window.sessionNavigation || {};
 
 const NAVIGATION_PAGE_LIMIT = 500;
@@ -43,139 +44,19 @@ const FILE_SUGGESTION_LIMIT = 12;
 const SEARCH_HIGHLIGHT_INPUT_DELAY_MS = 300;
 const REPO_STORAGE_KEY = 'sessionAnalyzer.repoRoot';
 const CUSTOM_PROFILES_KEY = 'sessionAnalyzer.customProfiles';
-const DISPLAY_STATES = ['expanded', 'summary', 'collapsed', 'hidden'];
+const OVERRIDES_KEY = 'sessionAnalyzer.overrides';
+const DISPLAY_STATES = foldingApi.DISPLAY_STATES || ['expanded', 'summary', 'collapsed', 'hidden'];
+const CONDITION_DISPLAY_STATES = foldingApi.CONDITION_DISPLAY_STATES || ['expanded', 'summary'];
+const EDITABLE_EVENT_KINDS = foldingApi.EDITABLE_EVENT_KINDS || [];
+const CONDITION_DEFINITIONS = foldingApi.CONDITION_DEFINITIONS || [];
+const normalizeRules = foldingApi.normalizeRules || ((rules) => rules);
+const normalizeOverrides = foldingApi.normalizeOverrides || (() => ({}));
+const evaluateDisplayStateFromRules = foldingApi.displayStateFromRules || (() => 'summary');
 const DISPLAY_STATE_LABELS = {
   expanded: '展开',
   summary: '摘要',
   collapsed: '折叠',
   hidden: '隐藏',
-};
-const BUILTIN_PROFILE_RULES = {
-  narrative: {
-    kindStates: {
-      user_message: 'expanded',
-      assistant_message: 'expanded',
-      patch: 'expanded',
-      error: 'expanded',
-      warning: 'expanded',
-      abort: 'expanded',
-      rollback: 'expanded',
-      compaction: 'expanded',
-      plan_artifact: 'expanded',
-      plan_update: 'expanded',
-      reasoning: 'collapsed',
-      token: 'collapsed',
-    },
-    fallback: 'summary',
-    conditions: [
-      { id: 'abnormalSeverity', state: 'expanded' },
-      { id: 'failedStatus', state: 'expanded' },
-    ],
-  },
-  debug: {
-    kindStates: {
-      command: 'summary',
-      patch: 'summary',
-      mcp: 'summary',
-      js_repl: 'summary',
-      tool_operation: 'summary',
-      error: 'summary',
-      warning: 'summary',
-      abort: 'summary',
-      rollback: 'summary',
-    },
-    fallback: 'collapsed',
-    conditions: [
-      { id: 'errorSeverity', state: 'expanded' },
-      { id: 'failedStatus', state: 'expanded' },
-    ],
-  },
-  changes: {
-    kindStates: {
-      patch: 'expanded',
-      plan_artifact: 'expanded',
-      plan_update: 'expanded',
-      user_message: 'collapsed',
-      assistant_message: 'collapsed',
-    },
-    fallback: 'hidden',
-    conditions: [
-      { id: 'reviewCommand', state: 'summary' },
-      { id: 'touchedFiles', state: 'summary' },
-    ],
-  },
-  search: {
-    kindStates: {},
-    fallback: 'hidden',
-    conditions: [
-      { id: 'searchHit', state: 'expanded' },
-      { id: 'importantEvent', state: 'summary' },
-    ],
-  },
-  planning: {
-    kindStates: {
-      plan_artifact: 'expanded',
-      user_message: 'summary',
-      assistant_message: 'summary',
-      patch: 'summary',
-      error: 'summary',
-      warning: 'summary',
-      abort: 'summary',
-      rollback: 'summary',
-      compaction: 'summary',
-    },
-    fallback: 'hidden',
-    conditions: [
-      { id: 'updatePlanCall', state: 'expanded' },
-      { id: 'failedStatus', state: 'summary' },
-      { id: 'abnormalSeverity', state: 'summary' },
-    ],
-  },
-  conversation: {
-    kindStates: {
-      user_message: 'expanded',
-      assistant_message: 'expanded',
-      plan_artifact: 'expanded',
-      plan_update: 'expanded',
-      error: 'summary',
-      abort: 'summary',
-      rollback: 'summary',
-      compaction: 'summary',
-    },
-    fallback: 'hidden',
-    conditions: [],
-  },
-  tools: {
-    kindStates: {
-      command: 'summary',
-      patch: 'summary',
-      mcp: 'summary',
-      js_repl: 'summary',
-      tool_operation: 'summary',
-      web_search: 'summary',
-    },
-    fallback: 'collapsed',
-    conditions: [
-      { id: 'abnormalSeverity', state: 'summary' },
-    ],
-  },
-  context: {
-    kindStates: {
-      token: 'summary',
-      compaction: 'summary',
-      rollback: 'summary',
-      subagent: 'summary',
-      turn: 'summary',
-      abort: 'summary',
-    },
-    fallback: 'hidden',
-    conditions: [],
-  },
-  compact: {
-    kindStates: {},
-    fallback: 'collapsed',
-    conditions: [],
-  },
 };
 const KIND_LABELS = {
   user_message: 'User message',
@@ -261,7 +142,7 @@ const state = {
   dirtyProfileDecisionPending: null,
   profileDraft: null,
   layerId: localStorage.getItem('sessionAnalyzer.layer') || 'main',
-  overrides: JSON.parse(localStorage.getItem('sessionAnalyzer.overrides') || '{}'),
+  overrides: normalizeOverrides(readJsonStorage(OVERRIDES_KEY, {})),
   detailCache: {},
   detailErrors: {},
   detailPending: {},
@@ -743,24 +624,10 @@ function defaultRules() {
   return { kindStates: {}, fallback: 'summary', conditions: [] };
 }
 
-function normalizeRules(rules) {
-  const source = rules || {};
-  const kindStates = {};
-  for (const [kind, display] of Object.entries(source.kindStates || {})) {
-    if (DISPLAY_STATES.includes(display)) kindStates[kind] = display;
-  }
-  const fallback = DISPLAY_STATES.includes(source.fallback) ? source.fallback : 'summary';
-  const conditions = (source.conditions || []).map((condition) => ({
-    id: String(condition.id || ''),
-    state: DISPLAY_STATES.includes(condition.state) ? condition.state : '',
-  })).filter((condition) => condition.id && condition.state);
-  return { kindStates, fallback, conditions };
-}
-
 function normalizeProfiles(profiles) {
   return (Array.isArray(profiles) ? profiles : []).map((profile) => ({
     ...profile,
-    rules: normalizeRules(profile.rules || BUILTIN_PROFILE_RULES[profile.id] || defaultRules()),
+    rules: normalizeRules(profile.rules || defaultRules()),
   }));
 }
 
@@ -795,25 +662,7 @@ function saveCustomProfiles() {
 }
 
 function knownEventKinds() {
-  const kinds = new Set([
-    'user_message',
-    'assistant_message',
-    'plan_artifact',
-    'reasoning',
-    'command',
-    'patch',
-    'mcp',
-    'js_repl',
-    'tool_operation',
-    'web_search',
-    'error',
-    'abort',
-    'rollback',
-    'compaction',
-    'token',
-    'subagent',
-    'turn',
-  ]);
+  const kinds = new Set(EDITABLE_EVENT_KINDS);
   for (const profile of state.profiles) {
     for (const kind of Object.keys(profile.rules?.kindStates || {})) kinds.add(kind);
   }
@@ -824,16 +673,7 @@ function knownEventKinds() {
 }
 
 function conditionDefinitions() {
-  return [
-    { id: 'searchHit', name: 'Search hit', description: 'Events matching the current search query.' },
-    { id: 'importantEvent', name: 'Important event', description: 'User/assistant messages, patches, errors, aborts, rollbacks, compactions, plans, failed events, and abnormal severity.' },
-    { id: 'updatePlanCall', name: 'update_plan call', description: 'Calls to the update_plan tool.' },
-    { id: 'failedStatus', name: 'Failed status', description: 'Events whose status is failed.' },
-    { id: 'errorSeverity', name: 'Error severity', description: 'Events whose severity is error.' },
-    { id: 'abnormalSeverity', name: 'Abnormal severity', description: 'Events whose severity is not normal.' },
-    { id: 'reviewCommand', name: 'Review command', description: 'Command previews containing test, build, lint, typecheck, git, diff, or status.' },
-    { id: 'touchedFiles', name: 'Touched files', description: 'Events that reference changed or touched files.' },
-  ];
+  return CONDITION_DEFINITIONS;
 }
 
 function sourceRefs(event) {
@@ -904,8 +744,7 @@ function setRelatedParentHighlight(parentSessionId, enabled) {
 }
 
 function isUpdatePlanEvent(event) {
-  if (navigationApi.isUpdatePlanEvent) return navigationApi.isUpdatePlanEvent(event);
-  return event.kind === 'plan_update' || event.toolName === 'update_plan' || event.subtype === 'update_plan' || event.label === 'update_plan';
+  return foldingApi.isUpdatePlanEvent ? foldingApi.isUpdatePlanEvent(event) : navigationApi.isUpdatePlanEvent?.(event);
 }
 
 function metadataRow(label, value) {
@@ -1309,8 +1148,13 @@ async function restoreFocus(anchor) {
 function clearCurrentSessionOverrides() {
   if (!state.selectedSessionId || !state.overrides[state.selectedSessionId]) return;
   delete state.overrides[state.selectedSessionId];
-  localStorage.setItem('sessionAnalyzer.overrides', JSON.stringify(state.overrides));
+  saveOverrides();
   updateResetFoldsButton();
+}
+
+function saveOverrides() {
+  state.overrides = normalizeOverrides(state.overrides);
+  writeJsonStorage(OVERRIDES_KEY, state.overrides);
 }
 
 function hasCurrentSessionOverrides() {
@@ -1977,7 +1821,7 @@ function naturalDisplayState(event) {
   }
 
   const profile = { ...activeProfile(), rules: activeProfileRules() };
-  return displayStateFromRules(event, profile?.rules || defaultRules());
+  return evaluateDisplayStateFromRules(event, profile?.rules || defaultRules());
 }
 
 function displayState(event) {
@@ -1989,33 +1833,6 @@ function displayState(event) {
 function foldedDisplayState(event) {
   const natural = naturalDisplayState(event);
   return ['summary', 'collapsed'].includes(natural) ? natural : 'collapsed';
-}
-
-function importantEvent(event) {
-  return ['user_message', 'assistant_message', 'patch', 'error', 'warning', 'abort', 'rollback', 'compaction', 'plan_artifact', 'plan_update', 'review'].includes(event.kind)
-    || isUpdatePlanEvent(event)
-    || event.severity !== 'normal'
-    || event.status === 'failed';
-}
-
-function conditionMatches(conditionId, event) {
-  if (conditionId === 'searchHit') return Boolean(event.hasSearchHit);
-  if (conditionId === 'importantEvent') return importantEvent(event);
-  if (conditionId === 'updatePlanCall') return isUpdatePlanEvent(event);
-  if (conditionId === 'failedStatus') return event.status === 'failed';
-  if (conditionId === 'errorSeverity') return event.severity === 'error';
-  if (conditionId === 'abnormalSeverity') return event.severity !== 'normal';
-  if (conditionId === 'reviewCommand') return event.kind === 'command' && /\b(test|build|lint|typecheck|git|diff|status)\b/i.test(event.preview || '');
-  if (conditionId === 'touchedFiles') return event.touchedFiles && event.touchedFiles.length;
-  return false;
-}
-
-function displayStateFromRules(event, rules) {
-  const normalized = normalizeRules(rules);
-  for (const condition of normalized.conditions) {
-    if (conditionMatches(condition.id, event)) return condition.state;
-  }
-  return normalized.kindStates[event.kind] || normalized.fallback;
 }
 
 function renderEventBody(event, display) {
@@ -2106,7 +1923,7 @@ function renderTimeline() {
 function setOverride(eventId, value) {
   if (!state.overrides[state.selectedSessionId]) state.overrides[state.selectedSessionId] = {};
   state.overrides[state.selectedSessionId][eventId] = value;
-  localStorage.setItem('sessionAnalyzer.overrides', JSON.stringify(state.overrides));
+  saveOverrides();
   updateResetFoldsButton();
 }
 
@@ -2483,9 +2300,9 @@ function renderProfileRulesPane() {
       : item.name;
     return `<option value="${escapeHtml(item.id)}"${item.id === state.profileId ? ' selected' : ''}>${escapeHtml(name)}</option>`;
   }).join('');
-  const stateOptions = (value, includeDisabled = false) => [
+  const stateOptions = (value, includeDisabled = false, states = DISPLAY_STATES) => [
     includeDisabled ? `<option value=""${value ? '' : ' selected'}>Disabled</option>` : '',
-    ...DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === value ? ' selected' : ''}>${DISPLAY_STATE_LABELS[stateId]}</option>`),
+    ...states.map((stateId) => `<option value="${stateId}"${stateId === value ? ' selected' : ''}>${DISPLAY_STATE_LABELS[stateId]}</option>`),
   ].join('');
   const rules = normalizeRules(draft.rules);
   const conditionMap = new Map(rules.conditions.map((condition) => [condition.id, condition.state]));
@@ -2512,7 +2329,7 @@ function renderProfileRulesPane() {
         <strong>${escapeHtml(condition.name)}</strong>
         <span title="${escapeHtml(condition.description)}">${escapeHtml(condition.description)}</span>
       </span>
-      <select data-profile-condition="${escapeHtml(condition.id)}">${stateOptions(conditionMap.get(condition.id) || '', true)}</select>
+      <select data-profile-condition="${escapeHtml(condition.id)}">${stateOptions(conditionMap.get(condition.id) || '', true, CONDITION_DISPLAY_STATES)}</select>
     </label>`
   )).join('');
   const inactiveConditionRows = conditionDefinitions().filter((condition) => !conditionMap.has(condition.id)).map((condition) => (
@@ -2521,7 +2338,7 @@ function renderProfileRulesPane() {
         <strong>${escapeHtml(condition.name)}</strong>
         <span title="${escapeHtml(condition.description)}">${escapeHtml(condition.description)}</span>
       </span>
-      <select data-profile-condition="${escapeHtml(condition.id)}">${stateOptions('', true)}</select>
+      <select data-profile-condition="${escapeHtml(condition.id)}">${stateOptions('', true, CONDITION_DISPLAY_STATES)}</select>
     </label>`
   )).join('');
   const defaultKindNames = defaultKinds.map((kind) => kindLabel(kind)).join(', ');
@@ -2932,6 +2749,7 @@ el.detail.addEventListener('change', (event) => {
   if (fallback) {
     ensureProfileDraft();
     state.profileDraft.rules.fallback = fallback.value;
+    state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
     renderTimeline();
     renderProfileRulesPane();
     return;
@@ -2942,6 +2760,7 @@ el.detail.addEventListener('change', (event) => {
     const kind = kindSelect.dataset.profileKind;
     if (kindSelect.value) state.profileDraft.rules.kindStates[kind] = kindSelect.value;
     else delete state.profileDraft.rules.kindStates[kind];
+    state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
     renderTimeline();
     renderProfileRulesPane();
     return;
@@ -2952,6 +2771,7 @@ el.detail.addEventListener('change', (event) => {
     const conditionId = conditionSelect.dataset.profileCondition;
     state.profileDraft.rules.conditions = state.profileDraft.rules.conditions.filter((condition) => condition.id !== conditionId);
     if (conditionSelect.value) state.profileDraft.rules.conditions.push({ id: conditionId, state: conditionSelect.value });
+    state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
     renderTimeline();
     renderProfileRulesPane();
     return;
@@ -2974,7 +2794,7 @@ el.layerSelect.addEventListener('change', () => {
 
 el.resetFoldsBtn.addEventListener('click', () => {
   delete state.overrides[state.selectedSessionId];
-  localStorage.setItem('sessionAnalyzer.overrides', JSON.stringify(state.overrides));
+  saveOverrides();
   updateResetFoldsButton();
   renderTimeline();
 });

@@ -91,7 +91,8 @@ npm test
 
 - `server.js`：本地 HTTP 服务器和 API 路由。
 - `src/codex.js`：转录解析、项目发现、索引、逻辑时间线构建和事件详情提取。
-- `src/folding.js`：时间线折叠策略。
+- `src/folding.js`：内置时间线折叠策略。
+- `public/folding.js`：浏览器与 Node 共用的折叠规则求值。
 - `public/`：浏览器 UI、搜索解析、渲染器和样式。
 - `test/`：Node 测试套件和合成转录 fixture。
 - `docs/`：产品规格、设计文档、执行计划和 backlog 笔记。

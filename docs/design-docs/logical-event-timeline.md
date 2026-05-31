@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-05-30 / 最近更新：2026-05-30
+- Last updated: 2026-05-31 / 最近更新：2026-05-31
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -259,6 +259,10 @@ The selected-event inspector is optimized for fast triage rather than repeating 
 Folding profiles are data-driven presets with `kindStates`, a `fallback` display state, and fixed condition rules. Built-in presets remain read-only. Edits create a draft that immediately previews in the Main timeline; Save writes a custom profile to browser `localStorage`, and Cancel restores the saved profile. Editable kind rules cover Main timeline kinds only, so protocol-only `protocol` events and raw fallback `event` kinds are not exposed as folding controls. Protocol and raw layer overrides stay outside profile editing so layer semantics remain separate from folding strategy semantics. When protocol or raw is active, the frontend disables profile controls, renders a read-only fixed-rules explanation in the detail panel, and disables profile metric shortcuts.
 
 折叠策略是数据驱动预设，包含 `kindStates`、`fallback` 显示状态和固定条件规则。内置预设保持只读。编辑会创建草稿并立即在 Main timeline 中预览；Save 会把自定义策略写入浏览器 `localStorage`，Cancel 会恢复已保存策略。可编辑 kind 规则只覆盖 Main timeline kind，因此只存在于 protocol layer 的 `protocol` 事件和 raw fallback `event` kind 不会暴露为折叠控件。协议层和原始层覆盖规则不进入策略编辑，以保持事件层语义与折叠策略语义分离。当 protocol 或 raw 生效时，前端会禁用 profile 控件，在详情面板展示只读的固定规则说明，并禁用 profile 指标快捷入口。
+
+Natural Main-timeline folding uses a deterministic visibility merge: `max(kind rule, every matching condition rule)` under `expanded > summary > collapsed > hidden`, with fallback used only when no rule matches. A valid manual event override remains above that natural result. Conditions intentionally support only `expanded` and `summary`, so they promote visibility rather than forcing degradation, hiding, or exclusion. `public/folding.js` is the shared UMD implementation for browser and Node consumers; `src/folding.js` owns built-in profile data and re-exports the shared contract. Because this local-only project has not been released, the change intentionally does not add runtime browser-storage migration code; stale development storage is cleared manually once during rollout.
+
+Main timeline 的自然折叠状态使用确定性的可见性合并：在 `expanded > summary > collapsed > hidden` 顺序下求 `max(kind rule, 所有命中 condition rule)`，只有没有规则命中时才使用 fallback。合法的事件手动覆盖仍高于该自然结果。Condition 有意只支持 `expanded` 和 `summary`，因此它们用于提升可见性，而不是强制降级、隐藏或排除。`public/folding.js` 是浏览器与 Node 消费者共用的 UMD 实现；`src/folding.js` 负责内置 profile 数据并重新导出共享契约。由于这个仅限本地使用的项目尚未发布，本次变更有意不添加浏览器存储运行时迁移代码；发布实施时手动清理一次陈旧开发存储。
 
 Before a folding-profile or layer switch, the frontend captures the selected event as a focus anchor. After the new timeline state is loaded, it restores the same event when it remains visible, otherwise selects the nearest visible event in the new timeline order; if no event was selected before the switch, it selects the first event that is naturally `expanded`, and leaves the folding-rules view open when no expanded event exists.
 

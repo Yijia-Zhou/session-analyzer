@@ -91,7 +91,8 @@ The test fixtures under `test/fixtures/codex-home` are synthetic transcript data
 
 - `server.js`: local HTTP server and API routes.
 - `src/codex.js`: transcript parsing, project discovery, indexing, logical timeline construction, and event-detail extraction.
-- `src/folding.js`: timeline folding profiles.
+- `src/folding.js`: built-in timeline folding profiles.
+- `public/folding.js`: shared browser-and-Node folding rule evaluation.
 - `public/`: browser UI, search parsing, renderers, and styles.
 - `test/`: Node test suite and synthetic transcript fixtures.
 - `docs/`: product specs, design docs, execution plans, and backlog notes.
