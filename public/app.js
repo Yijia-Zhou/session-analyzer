@@ -35,6 +35,7 @@ const searchHighlighter = window.sessionSearchHighlighter || {
 };
 const foldingApi = window.sessionFolding || {};
 const navigationApi = window.sessionNavigation || {};
+const eventChipsApi = window.sessionEventChips || {};
 
 const NAVIGATION_PAGE_LIMIT = 500;
 const TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD = 96;
@@ -52,6 +53,12 @@ const CONDITION_DEFINITIONS = foldingApi.CONDITION_DEFINITIONS || [];
 const normalizeRules = foldingApi.normalizeRules || ((rules) => rules);
 const normalizeOverrides = foldingApi.normalizeOverrides || (() => ({}));
 const evaluateDisplayStateFromRules = foldingApi.displayStateFromRules || (() => 'summary');
+const inspectorChipValues = eventChipsApi.inspectorChipValues || ((event) => [
+  event.kind === 'protocol' ? '' : event.kind,
+  event.status,
+  event.severity && event.severity !== 'normal' ? event.severity : '',
+]);
+const rawRefsSubtitle = eventChipsApi.rawRefsSubtitle || ((event) => String(event.label || (event.kind === 'protocol' ? '' : event.kind) || '').trim());
 const DISPLAY_STATE_LABELS = {
   expanded: '展开',
   summary: '摘要',
@@ -1895,7 +1902,6 @@ function renderTimeline() {
       ds === 'hidden' ? 'hiddenByProfile' : '',
     ].filter(Boolean).join(' ');
     const chips = [
-      event.layer ? `<span class="chip layerChip">${escapeHtml(event.layer)}</span>` : '',
       event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
       event.toolName ? `<span class="chip toolChip">${escapeHtml(event.toolName)}</span>` : '',
       event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} files</span>` : '',
@@ -1909,7 +1915,7 @@ function renderTimeline() {
           <span class="srOnly">${toggleLabel}</span>
         </button>
         <span class="eventKind">${escapeHtml(event.label)}</span>
-        <span class="chips">${chips}</span>
+        ${chips ? `<span class="chips">${chips}</span>` : ''}
         <span class="eventTime">${escapeHtml(fmtDate(event.timestamp))}</span>
       </div>
       ${renderEventPreview(event, ds)}
@@ -2395,12 +2401,7 @@ function showInspector(event, options = {}) {
   const refs = sourceRefs(event);
   const preview = event.snippet || event.preview || '';
   const detail = state.detailCache[key];
-  const chips = renderChips([
-    event.kind,
-    event.status,
-    event.severity && event.severity !== 'normal' ? event.severity : '',
-    event.layer || layer,
-  ]);
+  const chips = renderChips(inspectorChipValues(event));
   state.selectedEventId = event.id;
   state.detailSelectionKey = key;
   if (options.replace) replaceDetailView({ type: 'inspector', eventId: event.id });
@@ -2416,7 +2417,7 @@ function showInspector(event, options = {}) {
     title: event.label,
     actions: [renderReadFromHereAction(), renderInspectorNavigation(event)].filter(Boolean).join(''),
     body: `<div class="inspector">
-    <div class="chips">${chips}</div>
+    ${chips ? `<div class="chips">${chips}</div>` : ''}
     ${shouldShowInspectorSummary(event, preview, detail) ? `<section class="inspectorSection"><h3>Summary</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
     <section class="inspectorSection">
       <h3>Metadata</h3>
@@ -2447,7 +2448,7 @@ async function showRaw(event, options = {}) {
   if (!refs.length) {
     renderDetailShell({
       title: 'Raw refs',
-      subtitle: `${event.label} | ${event.layer || layer} | ${event.kind}`,
+      subtitle: rawRefsSubtitle(event),
       actions: [renderReadFromHereAction(), '<button class="smallBtn" type="button" data-detail-action="inspect">Inspect event</button>'].filter(Boolean).join(''),
       body: `<div class="rawRefsView">
       <div class="notice warning"><p>No raw source rows are available for this event.</p></div>
@@ -2459,7 +2460,7 @@ async function showRaw(event, options = {}) {
   if (state.detailSelectionKey !== rawKey) return;
   renderDetailShell({
     title: 'Raw refs',
-    subtitle: `${event.label} | ${event.layer || layer} | ${event.kind}`,
+    subtitle: rawRefsSubtitle(event),
     actions: [renderReadFromHereAction(), '<button class="smallBtn" type="button" data-detail-action="inspect">Inspect event</button>'].filter(Boolean).join(''),
     body: `<div class="rawRefsView">
     <p class="rawMeta">${escapeHtml(`${refs.length} JSONL row${refs.length === 1 ? '' : 's'} for ${event.id}`)}</p>
