@@ -76,7 +76,7 @@ http://127.0.0.1:17890/
 1. Select a target project, or pass `--repo` when starting the server.
 2. Pick a session from the left pane.
 3. Use `Main timeline` for normal reading, `Protocol layer` for injected context and lifecycle records, or `Raw records` for exact transcript rows.
-4. Search with plain text or filters such as `file:src/parser.js`, `kind:command`, `status:failed`, and `layer:raw`.
+4. Search with a case-insensitive plain-text phrase or filters such as `file:src/parser.js`, `kind:command`, `status:failed`, and `layer:raw`. Whitespace inside a phrase matches spaces, tabs, or newlines.
 5. Open an event to inspect structured detail and raw references.
 
 ## Test

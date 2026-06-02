@@ -31,6 +31,10 @@ const searchQuery = window.sessionSearchQuery || {
 const searchHighlighter = window.sessionSearchHighlighter || {
   apply: () => [],
   clear: () => {},
+  displayedMatchTotal: (fullTextTotal, renderedMarkCount) => Math.max(
+    Number.isFinite(Number(fullTextTotal)) ? Math.max(0, Number(fullTextTotal)) : 0,
+    Number.isFinite(Number(renderedMarkCount)) ? Math.max(0, Number(renderedMarkCount)) : 0,
+  ),
   searchTerms: () => [],
 };
 const foldingApi = window.sessionFolding || {};
@@ -468,7 +472,7 @@ function structuredSearchKey() {
 
 function currentSearchMarkLabel() {
   const { marks, activeIndex } = state.searchHighlight;
-  const total = state.timelineSearchMatchCount;
+  const total = searchHighlighter.displayedMatchTotal(state.timelineSearchMatchCount, marks.length);
   if (!total) return 'No matches';
   const current = marks.length && activeIndex >= 0 ? activeIndex + 1 : 0;
   return `${current} / ${total} matches`;
@@ -1030,7 +1034,7 @@ function renderResultSummary() {
     ? `Events: ${state.timelineTotal} match${state.offset < state.timelineTotal ? ` (${state.offset} loaded)` : ''}`
     : (filters.length ? 'Events: select a session' : '');
   const matchControls = search.q
-    ? `<div class="searchMatchControls" data-search-match-controls title="Visible matches in rendered content; total is current session, layer, and filters">
+    ? `<div class="searchMatchControls" data-search-match-controls title="Rendered jump targets; total keeps the full-text count and is raised when more rendered targets are visible">
       <span class="searchMatchCount" data-search-match-count>${escapeHtml(currentSearchMarkLabel())}</span>
     </div>`
     : '';

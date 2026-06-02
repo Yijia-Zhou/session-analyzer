@@ -40,6 +40,7 @@ When changing product behavior or repository structure:
 - Active plans:
   - None / 无
 - Completed plans:
+  - `docs/exec-plans/completed/2026-06-02-find-in-page-phrase-search.md`
   - `docs/exec-plans/completed/2026-05-31-folding-rule-priority-governance.md`
   - `docs/exec-plans/completed/2026-05-31-lazy-image-preview-payload-externalization.md`
   - `docs/exec-plans/completed/2026-05-26-event-body-inspector-responsibility-split.md`

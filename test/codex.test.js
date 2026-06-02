@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { buildIndex, buildEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, readRawLine, isPathInsideOrSame } = require('../src/codex');
+const { buildIndex, buildEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readRawLine, isPathInsideOrSame } = require('../src/codex');
 const { createServer, parseArgs } = require('../server');
 const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../src/folding');
 
@@ -511,6 +511,19 @@ test('tool logical events merge new and old format patch records and search stil
   assert.deepEqual(allSections(parserDetail).find((section) => section.title === 'Files').entries, [
     { key: 'G:/vibe/term-agent/src/parser.js', value: '+1 / -1' },
   ]);
+  const parserPreviewSearch = getTimeline(index, primaryFixtureSessionId, {
+    offset: 0,
+    limit: 100,
+    q: 'G:\\vibe\\term-agent\\src\\parser.js',
+    kind: 'patch',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(parserPreviewSearch.searchMatchCount, 1);
+  assert.equal(parserPreviewSearch.events[0].hasSearchHit, true);
+  assert.equal(parserPreviewSearch.events[0].snippet, 'G:\\vibe\\term-agent\\src\\parser.js');
 
   const legacyTimeline = getTimeline(index, primaryFixtureSessionId, {
     offset: 0,
@@ -582,6 +595,23 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(outputOnlyCommandTimeline.events[0].status, 'success');
   assert.equal(outputOnlyCommandTimeline.events[0].outputStats.exitCode, 0);
   assert.match(outputOnlyCommandTimeline.events[0].preview, /rg -n -F 'alpha' 'src'/);
+});
+
+test('free-text search matches one case-insensitive phrase with flexible whitespace', () => {
+  assert.equal(matchTerms('before Foo \n\t bar after', 'foo bar'), true);
+  assert.equal(matchTerms('before foo unrelated bar after', 'foo bar'), false);
+  assert.equal(matchTerms('before a+b after', 'a+b'), true);
+  assert.equal(matchTerms('before aaab after', 'a+b'), false);
+});
+
+test('filterSessions uses contiguous phrase semantics for direct q API filtering', async () => {
+  const index = await buildFixtureIndex();
+  const session = primaryFixtureSession(index);
+  session.searchText = 'before Foo \n\t bar after; alpha unrelated beta';
+  index.sessions = [session];
+
+  assert.equal(filterSessions(index, { q: 'foo bar', sort: 'updated-desc' }).total, 1);
+  assert.equal(filterSessions(index, { q: 'alpha beta', sort: 'updated-desc' }).total, 0);
 });
 
 test('patch detail preserves changed lines that begin with diff marker characters', () => {
@@ -892,7 +922,7 @@ test('web search logical events merge end/call rows and expose structured detail
     layer: 'main',
   });
   assert.equal(searchedTimeline.total, 3);
-  assert.equal(searchedTimeline.searchMatchCount, 2);
+  assert.equal(searchedTimeline.searchMatchCount, 1);
   assert.equal(searchedTimeline.events[0].id, completedSearch.id);
   assert.equal(searchedTimeline.events[0].hasSearchHit, true);
   assert.match(searchedTimeline.events[0].snippet, /detail extraction/);

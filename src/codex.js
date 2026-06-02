@@ -3028,8 +3028,7 @@ function buildEventDetail(session, eventId, layer = 'main') {
 }
 
 function rawEventDto(raw, q) {
-  const searchableText = `${raw.preview}\n${raw.searchText}`;
-  const hasSearchHit = q ? matchTerms(searchableText, q) : false;
+  const hasSearchHit = q ? eventHasSearchHit(raw, q) : false;
   return {
     id: raw.rawId,
     timestamp: raw.timestamp,
@@ -3056,7 +3055,7 @@ function rawEventDto(raw, q) {
     rawRefs: [rawRef(raw)],
     channels: [raw.recordType],
     searchText: raw.searchText,
-    snippet: hasSearchHit ? makeSnippet(searchableText, q) : '',
+    snippet: hasSearchHit ? eventSearchSnippet(raw, q) : '',
   };
 }
 
@@ -4210,34 +4209,39 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
   };
 }
 
+function searchPhraseRegex(q, flags = '') {
+  const phrase = String(q || '').trim();
+  if (!phrase) return null;
+  const pattern = phrase
+    .split(/\s+/)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('\\s+');
+  return new RegExp(pattern, flags.includes('i') ? flags : `${flags}i`);
+}
+
 function matchTerms(text, q) {
-  const terms = String(q || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (!terms.length) return true;
-  const haystack = String(text || '').toLowerCase();
-  return terms.every((term) => haystack.includes(term));
+  const regex = searchPhraseRegex(q);
+  return regex ? regex.test(String(text || '')) : true;
 }
 
 function countSearchMatches(text, q) {
-  const terms = [...new Set(String(q || '').trim().toLowerCase().split(/\s+/).filter(Boolean))];
-  if (!terms.length) return 0;
-  const haystack = String(text || '').toLowerCase();
-  let total = 0;
-  for (const term of terms) {
-    let index = haystack.indexOf(term);
-    while (index >= 0) {
-      total += 1;
-      index = haystack.indexOf(term, index + term.length);
-    }
-  }
-  return total;
+  const regex = searchPhraseRegex(q, 'g');
+  return regex ? [...String(text || '').matchAll(regex)].length : 0;
 }
 
-function eventSearchText(event) {
-  return `${event.preview || ''}\n${event.searchText || ''}`;
+function eventSearchMatchCount(event, q) {
+  return Math.max(
+    countSearchMatches(event.preview, q),
+    countSearchMatches(event.searchText, q),
+  );
 }
 
-function eventSearchCountText(event) {
-  return event.searchText || event.preview || '';
+function eventHasSearchHit(event, q) {
+  return eventSearchMatchCount(event, q) > 0;
+}
+
+function eventSearchSnippet(event, q) {
+  return makeSnippet(event.preview, q) || makeSnippet(event.searchText, q);
 }
 
 function eventMatches(event, filters) {
@@ -4252,7 +4256,7 @@ function eventMatches(event, filters) {
     const rawMatch = (event.rawRefs || []).some((ref) => normalizeSearchPath(ref.file).includes(needle));
     if (!sourceMatch && !touchedMatch && !rawMatch) return false;
   }
-  if (filters.q && !matchTerms(eventSearchText(event), filters.q)) return false;
+  if (filters.q && !eventHasSearchHit(event, filters.q)) return false;
   return true;
 }
 
@@ -4338,12 +4342,12 @@ function fileSuggestions(index, limit = 80) {
 }
 
 function makeSnippet(text, q) {
-  const terms = String(q || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (!terms.length) return '';
+  const regex = searchPhraseRegex(q);
+  if (!regex) return '';
   const source = String(text || '');
-  const lower = source.toLowerCase();
-  const first = terms.map((term) => lower.indexOf(term)).filter((pos) => pos >= 0).sort((a, b) => a - b)[0];
-  if (first == null) return '';
+  const match = regex.exec(source);
+  if (!match) return '';
+  const first = match.index;
   const start = Math.max(0, first - 80);
   const end = Math.min(source.length, first + 180);
   const prefix = start > 0 ? '...' : '';
@@ -4352,7 +4356,7 @@ function makeSnippet(text, q) {
 }
 
 function logicalEventDto(event, q) {
-  const hasSearchHit = q ? matchTerms(eventSearchText(event), q) : false;
+  const hasSearchHit = q ? eventHasSearchHit(event, q) : false;
   return sanitizeLogicalEventDto({
     id: event.id,
     timestamp: event.timestamp,
@@ -4377,7 +4381,7 @@ function logicalEventDto(event, q) {
     source: event.source,
     rawRefs: event.rawRefs,
     channels: event.channels,
-    snippet: hasSearchHit ? makeSnippet(eventSearchText(event), q) : '',
+    snippet: hasSearchHit ? eventSearchSnippet(event, q) : '',
   });
 }
 
@@ -4391,7 +4395,7 @@ function getTimeline(index, sessionId, filters) {
   const structuralFilters = { ...filters, q: '', layer };
   const matched = sourceEvents.filter((event) => eventMatches(event, structuralFilters));
   const searchMatchCount = filters.q
-    ? matched.reduce((sum, event) => sum + countSearchMatches(eventSearchCountText(event), filters.q), 0)
+    ? matched.reduce((sum, event) => sum + eventSearchMatchCount(event, filters.q), 0)
     : 0;
   const page = matched.slice(filters.offset, filters.offset + filters.limit);
   return {

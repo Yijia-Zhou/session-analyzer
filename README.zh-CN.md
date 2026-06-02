@@ -76,7 +76,7 @@ http://127.0.0.1:17890/
 1. 选择目标项目，或在启动服务器时传入 `--repo`。
 2. 从左侧面板选择一个会话。
 3. 使用 `Main timeline` 进行日常阅读，使用 `Protocol layer` 查看注入上下文和生命周期记录，使用 `Raw records` 查看精确转录行。
-4. 使用普通文本或筛选条件搜索，例如 `file:src/parser.js`、`kind:command`、`status:failed` 和 `layer:raw`。
+4. 使用忽略大小写的普通文本短语或筛选条件搜索，例如 `file:src/parser.js`、`kind:command`、`status:failed` 和 `layer:raw`。短语中的空白可以匹配空格、Tab 或换行。
 5. 打开事件以检查结构化详情和原始引用。
 
 ## 测试
