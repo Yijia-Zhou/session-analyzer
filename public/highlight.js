@@ -95,11 +95,28 @@
     return marks;
   }
 
+  function reveal(mark, options = {}) {
+    if (!mark?.scrollIntoView) return false;
+    let details = mark.closest?.('details');
+    while (details) {
+      details.open = true;
+      details = details.parentElement?.closest?.('details');
+    }
+    mark.scrollIntoView({
+      block: 'center',
+      inline: 'nearest',
+      behavior: 'smooth',
+      ...options,
+    });
+    return true;
+  }
+
   return {
     apply,
     clear,
     displayedMatchTotal,
     highlightedParts,
+    reveal,
     searchTerms,
   };
 }));

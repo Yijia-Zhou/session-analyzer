@@ -38,3 +38,42 @@ test('highlightedParts treats regex characters literally and counts non-overlapp
 test('highlightedParts leaves text unchanged without query terms', () => {
   assert.deepEqual(highlighter.highlightedParts('plain text', []), [{ text: 'plain text', match: false }]);
 });
+
+test('reveal opens nested details before scrolling the target with centered defaults', () => {
+  const calls = [];
+  const outer = {
+    open: false,
+    parentElement: null,
+  };
+  const inner = {
+    open: false,
+    parentElement: {
+      closest(selector) {
+        assert.equal(selector, 'details');
+        calls.push('find outer');
+        return outer;
+      },
+    },
+  };
+  const mark = {
+    closest(selector) {
+      assert.equal(selector, 'details');
+      calls.push('find inner');
+      return inner;
+    },
+    scrollIntoView(options) {
+      calls.push({ scroll: options, outerOpen: outer.open, innerOpen: inner.open });
+    },
+  };
+
+  assert.equal(highlighter.reveal(mark), true);
+  assert.deepEqual(calls, [
+    'find inner',
+    'find outer',
+    {
+      scroll: { block: 'center', inline: 'nearest', behavior: 'smooth' },
+      outerOpen: true,
+      innerOpen: true,
+    },
+  ]);
+});

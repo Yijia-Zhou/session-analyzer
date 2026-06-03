@@ -55,6 +55,7 @@
   - Free-text find keeps the currently loaded timeline range when the user has loaded additional pages. / 用户已加载更多时间线页后，自由文本查找应保留当前已加载范围。
   - Clearing the `Find:` chip removes highlights and match navigation without reloading the selected session back to the first page. / 清除 `Find:` chip 应移除高亮和命中导航，但不把当前 session 重新加载回第一页。
   - `Search hits` appears in selected-event quick navigation only when free-text search is active and the selected event is a hit, then Prev/Next moves between hit events. / `Search hits` 只应在自由文本搜索生效且选中事件命中时出现在选中事件快速跳转中，并且 Prev/Next 会在命中事件之间移动。
+  - Inspector search navigation reacquires the live active mark after detail-panel redraw, opens closed raw JSON `<details>` ancestors only when navigating to that target, and scrolls the concrete mark into the right-side viewport. / Inspector 搜索导航应在详情面板重绘后重新获取实际存在的 active mark，只在导航到该目标时展开关闭的 raw JSON `<details>` 祖先，并将具体 mark 滚动到右侧视口内。
   - `Read from here` clears structured filters, switches to Main timeline, preserves free-text find text, and restores the focused event position. / `Read from here` 应清除结构化筛选、切回 Main timeline、保留自由文本查找文本，并恢复焦点事件位置。
   - Folding profile edits preview immediately, survive Save through browser-local storage, and Cancel restores the saved profile without leaking protocol/raw-layer rules. / 折叠策略编辑应即时预览，Save 后通过浏览器本地存储保留，Cancel 会恢复已保存策略，并且不会泄漏 protocol/raw layer 规则。
 - Related docs: / 相关文档：

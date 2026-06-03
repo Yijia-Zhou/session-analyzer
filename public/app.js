@@ -35,6 +35,14 @@ const searchHighlighter = window.sessionSearchHighlighter || {
     Number.isFinite(Number(fullTextTotal)) ? Math.max(0, Number(fullTextTotal)) : 0,
     Number.isFinite(Number(renderedMarkCount)) ? Math.max(0, Number(renderedMarkCount)) : 0,
   ),
+  reveal: (mark, options = {}) => {
+    mark?.scrollIntoView?.({
+      block: 'center',
+      inline: 'nearest',
+      behavior: 'smooth',
+      ...options,
+    });
+  },
   searchTerms: () => [],
 };
 const foldingApi = window.sessionFolding || {};
@@ -529,7 +537,6 @@ function setActiveSearchMark(index, options = {}) {
   state.searchHighlight.activeIndex = normalized;
   const mark = marks[normalized];
   mark.classList.add('activeSearchMark');
-  let scrollTargetEventId = '';
   if (options.scroll || options.syncDetail) {
     const article = mark.closest('[data-event-id]');
     if (article?.dataset.eventId) {
@@ -538,15 +545,14 @@ function setActiveSearchMark(index, options = {}) {
       if (options.syncDetail) {
         const item = state.currentEvents.find((event) => event.id === article.dataset.eventId);
         if (item) {
-          scrollTargetEventId = article.dataset.eventId;
           showInspector(item, { replace: true });
         }
       }
     }
   }
   if (options.scroll) {
-    if (scrollTargetEventId) scrollToTimelineEvent(scrollTargetEventId);
-    else mark.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+    const liveMark = state.searchHighlight.marks[state.searchHighlight.activeIndex];
+    searchHighlighter.reveal(liveMark);
   }
   updateSearchMatchControls();
   return true;
