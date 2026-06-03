@@ -116,7 +116,7 @@ const foldingProfiles = [
   {
     id: 'conversation',
     name: '对话阅读',
-    description: '展开用户与助手消息，弱化工具内部细节。',
+    description: '展开用户与助手消息、计划上下文和用户输入请求，弱化工具内部细节。',
     rules: profileRules(
       {
         user_message: 'expanded',
@@ -129,6 +129,10 @@ const foldingProfiles = [
         compaction: 'summary',
       },
       'hidden',
+      [
+        { id: 'updatePlanCall', state: 'expanded' },
+        { id: 'userInputRequest', state: 'expanded' },
+      ],
     ),
   },
   {

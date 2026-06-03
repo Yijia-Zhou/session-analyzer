@@ -91,6 +91,13 @@ test('planning condition matches update_plan calls and protocol plan updates', (
   assert.equal(folding.displayStateFromRules({ kind: 'plan_update', severity: 'normal' }, profileRules('planning')), 'expanded');
 });
 
+test('conversation profile keeps plan updates and user input requests expanded', () => {
+  const rules = profileRules('conversation');
+  assert.equal(folding.displayStateFromRules({ kind: 'tool_operation', toolName: 'update_plan', severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'tool_operation', toolName: 'request_user_input', severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'tool_operation', toolName: 'view_image', severity: 'normal' }, rules), 'hidden');
+});
+
 test('override normalization drops malformed branches and retains valid manual states', () => {
   assert.deepEqual(plain(folding.normalizeOverrides({
     sessionA: { event1: 'expanded', event2: 'invalid', event3: 'collapsed' },

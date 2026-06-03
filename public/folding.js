@@ -54,6 +54,11 @@
       description: 'Calls to the update_plan tool and protocol plan updates.',
     },
     {
+      id: 'userInputRequest',
+      name: 'User input request',
+      description: 'Calls to request_user_input that collect user choices during a conversation.',
+    },
+    {
       id: 'failedStatus',
       name: 'Failed status',
       description: 'Events whose status is failed.',
@@ -87,6 +92,12 @@
       || event.toolName === 'update_plan'
       || event.subtype === 'update_plan'
       || event.label === 'update_plan';
+  }
+
+  function isUserInputRequestEvent(event = {}) {
+    return event.toolName === 'request_user_input'
+      || event.subtype === 'request_user_input'
+      || event.label === 'request_user_input';
   }
 
   function moreVisibleState(left, right) {
@@ -124,6 +135,7 @@
     if (conditionId === 'searchHit') return Boolean(event.hasSearchHit);
     if (conditionId === 'importantEvent') return importantEvent(event);
     if (conditionId === 'updatePlanCall') return isUpdatePlanEvent(event);
+    if (conditionId === 'userInputRequest') return isUserInputRequestEvent(event);
     if (conditionId === 'failedStatus') return event.status === 'failed';
     if (conditionId === 'errorSeverity') return event.severity === 'error';
     if (conditionId === 'abnormalSeverity') return event.severity !== 'normal';
@@ -163,6 +175,7 @@
     EDITABLE_EVENT_KINDS,
     CONDITION_DEFINITIONS,
     isUpdatePlanEvent,
+    isUserInputRequestEvent,
     normalizeRules,
     conditionMatches,
     displayStateFromRules,
