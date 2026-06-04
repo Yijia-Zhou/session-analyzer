@@ -42,6 +42,21 @@ test('changes profile summarizes ordinary touched-file events', () => {
   }, profileRules('changes')), 'summary');
 });
 
+test('changes profile summarizes failed events even without touched files', () => {
+  assert.equal(folding.displayStateFromRules({
+    kind: 'mcp',
+    status: 'failed',
+    severity: 'normal',
+  }, profileRules('changes')), 'summary');
+});
+
+test('narrative profile collapses ordinary high-frequency tool events', () => {
+  const rules = profileRules('narrative');
+  for (const kind of ['command', 'mcp', 'js_repl', 'tool_operation', 'web_search']) {
+    assert.equal(folding.displayStateFromRules({ kind, status: 'success', severity: 'normal' }, rules), 'collapsed', kind);
+  }
+});
+
 test('matching condition order does not change the most visible result', () => {
   const event = { kind: 'tool_operation', hasSearchHit: true, severity: 'error' };
   const conditions = [
@@ -95,6 +110,8 @@ test('conversation profile keeps plan updates and user input requests expanded',
   const rules = profileRules('conversation');
   assert.equal(folding.displayStateFromRules({ kind: 'tool_operation', toolName: 'update_plan', severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'tool_operation', toolName: 'request_user_input', severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'reasoning', hasReadableReasoning: true, severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'reasoning', hasReadableReasoning: false, severity: 'normal' }, rules), 'hidden');
   assert.equal(folding.displayStateFromRules({ kind: 'tool_operation', toolName: 'view_image', severity: 'normal' }, rules), 'hidden');
 });
 

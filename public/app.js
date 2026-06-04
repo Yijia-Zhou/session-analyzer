@@ -1399,6 +1399,7 @@ async function applyAppState(appState) {
   if (!el.profileSelect.value) {
     state.profileId = 'narrative';
     el.profileSelect.value = state.profileId;
+    localStorage.setItem('sessionAnalyzer.profile', state.profileId);
   }
   updateProfileApplicabilityUi();
   resetProfileDraft();
@@ -1625,10 +1626,11 @@ async function selectSession(sessionId, options = {}) {
 async function loadAnalysis(sessionId) {
   const analysis = await api(`/api/sessions/${encodeURIComponent(sessionId)}/analysis`);
   const planCount = analysis.counts.planEvents ?? analysis.counts.planArtifacts;
+  const issueCount = analysis.counts.issueEvents ?? analysis.counts.failedCommands;
   el.analysisPanel.innerHTML = [
     metric('Turns', analysis.counts.turns),
     metric('Messages', analysis.counts.messages, { action: 'profile', value: 'conversation', label: '切换到对话阅读折叠策略' }),
-    metric('Failed', analysis.counts.failedCommands, { action: 'profile', value: 'debug', label: '切换到问题排查折叠策略' }),
+    metric('Issues', issueCount, { action: 'profile', value: 'debug', label: '切换到错误聚焦折叠策略' }),
     metric('Files', analysis.patchedFiles.length, { action: 'profile', value: 'changes', label: '切换到改动审查折叠策略' }),
     metric('Protocol', analysis.counts.protocol, { action: 'layer', value: 'protocol', label: '切换到协议层事件' }),
     metric('Plans', planCount, { action: 'profile', value: 'planning', label: '切换到计划阅读折叠策略' }),

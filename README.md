@@ -14,7 +14,7 @@ The app is designed for local use. It reads transcript files from your own Codex
 - Search messages, commands, files, outputs, status, event kinds, and layers.
 - Inspect structured details for messages, commands, patches, plans, MCP/tool calls, web searches, lifecycle events, and raw records.
 - Jump from logical events back to the exact source JSONL rows.
-- Use folding profiles for narrative reading, debugging, change review, tool inspection, and compact browsing.
+- Use folding profiles for narrative reading, conversation review, error focus, change review, planning, search focus, and compact browsing.
 - Render transcript Markdown safely with raw HTML disabled and dangerous link protocols rejected.
 
 ## Privacy Model

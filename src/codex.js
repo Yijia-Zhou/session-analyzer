@@ -483,6 +483,29 @@ function extractContentText(content) {
   return content.map((item) => item && typeof item.text === 'string' ? item.text : '').join('\n').trim();
 }
 
+function extractTypedContentText(content, type, budget = 16000) {
+  if (!Array.isArray(content)) return '';
+  const parts = [];
+  let used = 0;
+  for (const item of content) {
+    if (used >= budget) break;
+    if (!item || item.type !== type || typeof item.text !== 'string' || !item.text.trim()) continue;
+    const separatorLength = parts.length ? 1 : 0;
+    const remaining = budget - used - separatorLength;
+    if (remaining <= 0) break;
+    const text = item.text.slice(0, remaining);
+    parts.push(text);
+    used += separatorLength + text.length;
+  }
+  return parts.join('\n').trim();
+}
+
+function extractReasoningText(payload, budget = 16000) {
+  const summaryText = extractTypedContentText(payload?.summary, 'summary_text', budget);
+  if (summaryText) return summaryText;
+  return extractTypedContentText(payload?.content, 'reasoning_text', budget);
+}
+
 function safeJsonParse(text) {
   try {
     return JSON.parse(text);
@@ -1491,6 +1514,7 @@ function makeEmptySession(filePath, relFile, stat) {
       reasoning: 0,
       toolCalls: 0,
       failedCommands: 0,
+      issueEvents: 0,
       patches: 0,
       compactions: 0,
       aborts: 0,
@@ -1563,7 +1587,7 @@ function makeRawEvent(record, lineNumber, relFile, sessionId, embeddedImages = [
       return raw;
     }
     if (payload.type === 'reasoning') {
-      raw.messageText = flattenText(payload.summary || payload.content, 16000);
+      raw.messageText = extractReasoningText(payload);
       raw.preview = truncate(raw.messageText || 'reasoning');
       raw.searchText = raw.messageText;
       return raw;
@@ -1915,6 +1939,7 @@ function createLogicalEvent(fields) {
     status: sanitizeLogicalEnvelopeValue(fields.status || ''),
     toolName: sanitizeLogicalEnvelopeValue(fields.toolName || ''),
     hasLongOutput: preview.length > 800 || searchText.length > 1600,
+    hasReadableReasoning: Boolean(fields.hasReadableReasoning),
     touchedFiles: sanitizeLogicalEnvelopeValue(fields.touchedFiles || []),
     outputStats: sanitizeLogicalEnvelopeValue(fields.outputStats || {}),
     tokenUsage: sanitizeLogicalEnvelopeValue(fields.tokenUsage || []),
@@ -3425,6 +3450,7 @@ function buildReasoningEvent(raws, text) {
     label: text ? 'Reasoning' : 'Empty reasoning',
     preview: truncate(text || raws[0].preview || 'reasoning'),
     searchText: text,
+    hasReadableReasoning: Boolean(text),
     severity: 'normal',
     status: '',
     rawRefs: raws.map(rawRef),
@@ -3815,6 +3841,7 @@ function addCounts(session, logicalEvent) {
     session.counts.toolCalls += 1;
   }
   if (logicalEvent.kind === 'command' && logicalEvent.status === 'failed') session.counts.failedCommands += 1;
+  if (logicalEvent.status === 'failed' || logicalEvent.severity !== 'normal') session.counts.issueEvents += 1;
   if (logicalEvent.kind === 'patch') session.counts.patches += 1;
   if (logicalEvent.kind === 'compaction') session.counts.compactions += 1;
   if (logicalEvent.kind === 'abort') session.counts.aborts += 1;
@@ -4373,6 +4400,7 @@ function logicalEventDto(event, q) {
     status: event.status,
     toolName: event.toolName,
     hasLongOutput: event.hasLongOutput,
+    hasReadableReasoning: event.hasReadableReasoning,
     hasSearchHit,
     touchedFiles: event.touchedFiles,
     outputStats: event.outputStats,

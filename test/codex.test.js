@@ -148,6 +148,7 @@ test('buildIndex deduplicates mirrored messages and keeps protocol separately', 
   assert.equal(session.counts.messages, 2);
   assert.equal(session.counts.reasoning, 1);
   assert.equal(session.counts.failedCommands, 1);
+  assert.equal(session.counts.issueEvents, 11);
   assert.equal(session.counts.patches, 6);
   assert.equal(session.counts.compactions, 1);
   assert.equal(session.counts.planArtifacts, 1);
@@ -327,11 +328,14 @@ test('timeline main layer returns logical events without duplicate user or assis
 
   const userEvents = timeline.events.filter((event) => event.kind === 'user_message');
   const assistantEvents = timeline.events.filter((event) => event.kind === 'assistant_message');
+  const reasoningEvents = timeline.events.filter((event) => event.kind === 'reasoning');
   const planEvents = timeline.events.filter((event) => event.kind === 'plan_artifact');
   const reviewEvents = timeline.events.filter((event) => event.kind === 'review');
 
   assert.equal(userEvents.length, 1);
   assert.equal(assistantEvents.length, 1);
+  assert.equal(reasoningEvents.length, 1);
+  assert.equal(reasoningEvents[0].hasReadableReasoning, true);
   assert.equal(planEvents.length, 1);
   assert.equal(reviewEvents.length, 4);
   assert.equal(reviewEvents[0].label, 'Review started');
@@ -368,6 +372,80 @@ test('timeline main layer returns logical events without duplicate user or assis
 
   assert.equal(timeline.events.some((event) => event.kind === 'token'), false);
   assert.equal(session.analysis.tokenStats.maxObserved, 0);
+});
+
+test('reasoning text extraction accepts readable fields without exposing encrypted or unknown content', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'reasoning-project');
+  const id = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '04');
+  const file = path.join(dir, `rollout-2026-06-04T10-00-00-${id}.jsonl`);
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  const longReasoningText = 'x'.repeat(16050);
+  const records = [
+    {
+      timestamp: '2026-06-04T10:00:00.000Z',
+      type: 'session_meta',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      timestamp: '2026-06-04T10:00:01.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'reasoning',
+        summary: [{ type: 'summary_text', text: 'Readable summary' }],
+        content: [{ type: 'reasoning_text', text: 'Content should not replace summary' }],
+        encrypted_content: 'encrypted-summary',
+      },
+    },
+    {
+      timestamp: '2026-06-04T10:00:02.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'reasoning',
+        summary: [],
+        content: [{ type: 'reasoning_text', text: 'Readable content fallback' }],
+        encrypted_content: 'encrypted-content',
+      },
+    },
+    {
+      timestamp: '2026-06-04T10:00:03.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'reasoning',
+        summary: [],
+        content: [{ type: 'unknown_reasoning_text', text: 'Unknown text must stay hidden' }],
+        encrypted_content: 'encrypted-only',
+      },
+    },
+    {
+      timestamp: '2026-06-04T10:00:04.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'reasoning',
+        summary: [],
+        content: [{ type: 'reasoning_text', text: longReasoningText }],
+      },
+    },
+  ];
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const reasoningEvents = session.logicalEvents.filter((event) => event.kind === 'reasoning');
+  const mainReasoning = reasoningEvents.filter((event) => event.layer === 'main');
+  const emptyReasoning = reasoningEvents.find((event) => event.layer === 'protocol');
+  const longReasoning = mainReasoning.find((event) => event.searchText.startsWith('x'));
+
+  assert.deepEqual(mainReasoning.slice(0, 2).map((event) => event.searchText), ['Readable summary', 'Readable content fallback']);
+  assert.equal(longReasoning.searchText, longReasoningText.slice(0, 16000));
+  assert.equal(longReasoning.searchText.length, 16000);
+  assert.ok(mainReasoning.every((event) => event.hasReadableReasoning));
+  assert.equal(emptyReasoning.label, 'Empty reasoning');
+  assert.equal(emptyReasoning.hasReadableReasoning, false);
+  assert.equal(reasoningEvents.some((event) => event.searchText.includes('encrypted')), false);
+  assert.equal(reasoningEvents.some((event) => event.searchText.includes('Unknown text')), false);
 });
 
 test('timeline protocol layer exposes injected records and raw layer keeps all rows', async () => {
