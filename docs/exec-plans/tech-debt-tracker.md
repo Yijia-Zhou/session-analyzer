@@ -58,6 +58,8 @@
   - Inspector search navigation reacquires the live active mark after detail-panel redraw, opens closed raw JSON `<details>` ancestors only when navigating to that target, and scrolls the concrete mark into the right-side viewport. / Inspector 搜索导航应在详情面板重绘后重新获取实际存在的 active mark，只在导航到该目标时展开关闭的 raw JSON `<details>` 祖先，并将具体 mark 滚动到右侧视口内。
   - `Read from here` clears structured filters, switches to Main timeline, preserves free-text find text, and restores the focused event position. / `Read from here` 应清除结构化筛选、切回 Main timeline、保留自由文本查找文本，并恢复焦点事件位置。
   - Folding profile edits preview immediately, survive Save through browser-local storage, and Cancel restores the saved profile without leaking protocol/raw-layer rules. / 折叠策略编辑应即时预览，Save 后通过浏览器本地存储保留，Cancel 会恢复已保存策略，并且不会泄漏 protocol/raw layer 规则。
+  - A removed or renamed built-in folding profile stored in `localStorage` falls back to `narrative`, persists the repaired selection, and does not leave the profile picker in an invalid state. / 当 `localStorage` 中保存的内置折叠策略已被移除或重命名时，应用应回退到 `narrative`、持久化修复后的选择，并且不让策略选择器停留在无效状态。
+  - The nonzero Issues metric reflects broad Main-timeline issue counts and toggles the error-focus profile without adding search filters or losing the selected session. / 非零 Issues 指标应反映广义 Main timeline 问题计数，并切换到错误聚焦策略，同时不添加搜索筛选或丢失当前选中 session。
 - Related docs: / 相关文档：
   - `docs/product-specs/session-transcript-analyzer.md`
   - `docs/design-docs/logical-event-timeline.md`
@@ -71,3 +73,22 @@
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/completed/2026-05-31-lazy-image-preview-payload-externalization.md`
+
+### 8. Core module responsibility concentration / 核心模块职责集中
+- Status: open / 状态：开放
+- Problem: several core files now own multiple independent change axes. `src/codex.js` combines project discovery, raw parsing, protocol interpretation, logical-event construction, detail extraction, search, image handling, and index assembly; `public/app.js` combines project selection, timeline loading, search highlighting, detail navigation, folding-profile editing, caches, and DOM event wiring; `server.js` combines project-job state, API route dispatch, parameter handling, and static serving. / 问题：若干核心文件已经承担多个彼此独立的变化轴。`src/codex.js` 同时负责项目发现、原始解析、协议解释、逻辑事件构建、详情提取、搜索、图片处理和索引组装；`public/app.js` 同时负责项目选择、时间线加载、搜索高亮、详情导航、折叠策略编辑、缓存和 DOM 事件绑定；`server.js` 同时负责项目 job 状态、API 路由分发、参数处理和静态文件服务。
+- Current observation: after the 2026-06-04 folding-profile and issue-visibility change, `src/codex.js` is approximately `4,549` lines, `public/app.js` approximately `3,019` lines, `server.js` approximately `559` lines, and the coupled `test/codex.test.js` approximately `2,269` lines. High-change functions such as `makeRawEvent`, `buildToolLogicalEvent`, `buildLogicalEvents`, `buildIndex`, and `createServer` remain concentrated in those files. / 当前观察：在 2026-06-04 的折叠策略与问题可见性变更后，`src/codex.js` 约为 `4,549` 行，`public/app.js` 约为 `3,019` 行，`server.js` 约为 `559` 行，与其耦合的 `test/codex.test.js` 约为 `2,269` 行。`makeRawEvent`、`buildToolLogicalEvent`、`buildLogicalEvents`、`buildIndex` 和 `createServer` 等高频变化函数仍集中在这些文件中。
+- Residual risk: small feature changes can cross parsing, DTO, UI-state, route, and test concerns in one patch; review scope, merge-conflict probability, and test placement ambiguity will increase as transcript and viewer behavior continue to evolve. / 残余风险：小型功能变更也可能在同一补丁中跨越解析、DTO、UI 状态、路由和测试关注点；随着转录和查看器行为继续演进，审查范围、合并冲突概率和测试放置歧义都会增加。
+- Preferred direction: extract incrementally behind the current public APIs instead of performing a broad rewrite. Stable candidate boundaries include indexing, raw-event parsing, logical-event construction, detail-section extraction, frontend project selection, timeline find, detail-stack navigation, folding-profile editing, route handlers, and project-job management. Split tests along the same responsibility boundaries as code moves. / 建议方向：在保持当前公开 API 的前提下渐进提取，而不是进行大范围重写。较稳定的候选边界包括索引、原始事件解析、逻辑事件构建、详情 section 提取、前端项目选择、时间线查找、详情栈导航、折叠策略编辑、路由 handler 和项目 job 管理。代码移动时，测试也应按相同职责边界拆分。
+- Related docs: / 相关文档：
+  - `docs/design-docs/logical-event-timeline.md`
+  - `docs/design-docs/documentation-system.md`
+
+### 9. Shared browser-and-Node module ownership boundary / 浏览器与 Node 共享模块归属边界
+- Status: deferred / 状态：已推迟
+- Problem: `public/folding.js` is intentionally both a browser static asset and a Node runtime dependency through `src/folding.js`, so the `public/` tree is no longer only a delivery surface. Browser correctness also depends on manual script ordering in `public/index.html`. / 问题：`public/folding.js` 被有意同时用作浏览器静态资源，并通过 `src/folding.js` 成为 Node 运行时依赖，因此 `public/` 目录不再只是交付表面。浏览器正确性还依赖 `public/index.html` 中的手动脚本顺序。
+- Residual risk: if more domain logic follows this pattern, source ownership, dependency direction, UMD wrapper maintenance, and future build or module migration work will become less clear. / 残余风险：如果更多领域逻辑沿用这一模式，源码归属、依赖方向、UMD 包装维护，以及未来构建或模块迁移工作都会变得更不清晰。
+- Trigger for action: decide a canonical shared-source location and browser publication strategy before adding another substantial browser-and-Node shared domain module or introducing a frontend build step. Avoid moving the existing small module only for cosmetic directory purity. / 行动触发条件：在新增另一个重要的浏览器与 Node 共享领域模块，或引入前端构建步骤之前，确定规范的共享源码位置和浏览器发布策略。不要仅为了目录表面纯净而移动现有的小模块。
+- Related docs: / 相关文档：
+  - `docs/design-docs/logical-event-timeline.md`
+  - `docs/exec-plans/completed/2026-05-31-folding-rule-priority-governance.md`

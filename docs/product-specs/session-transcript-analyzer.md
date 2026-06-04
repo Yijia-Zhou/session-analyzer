@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-05-31 / 最近更新：2026-05-31
+- Last updated: 2026-06-04 / 最近更新：2026-06-04
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
