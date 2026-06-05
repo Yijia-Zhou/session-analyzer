@@ -1865,7 +1865,7 @@ body[data-project-mode='selecting'] .searchAssist {
 
 .event.kind-command,
 .event.kind-js-repl,
-.event.kind-tool-operation {
+.event.kind-other-tool-call {
   --event-kind: #516a93;
   --event-kind-soft: #eaf0f8;
 }
@@ -1875,12 +1875,12 @@ body[data-project-mode='selecting'] .searchAssist {
   --event-kind-soft: #eef3df;
 }
 
-.event.kind-plan-artifact {
+.event.kind-proposed-plan {
   --event-kind: #7a5b14;
   --event-kind-soft: #f6f0df;
 }
 
-.event.kind-mcp,
+.event.kind-mcp-call,
 .event.kind-web-search,
 .event.kind-subagent,
 .event.kind-review {

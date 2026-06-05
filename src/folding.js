@@ -21,15 +21,14 @@ const foldingProfiles = [
         rollback: 'expanded',
         compaction: 'expanded',
         review: 'summary',
-        plan_artifact: 'expanded',
-        plan_update: 'expanded',
+        proposed_plan: 'expanded',
         reasoning: 'collapsed',
         command: 'collapsed',
-        mcp: 'collapsed',
+        mcp_call: 'collapsed',
         js_repl: 'collapsed',
-        tool_operation: 'collapsed',
+        other_tool_call: 'collapsed',
         web_search: 'collapsed',
-        token: 'collapsed',
+        usage_limit_warning: 'collapsed',
       },
       'summary',
       [
@@ -46,8 +45,7 @@ const foldingProfiles = [
       {
         user_message: 'expanded',
         assistant_message: 'expanded',
-        plan_artifact: 'expanded',
-        plan_update: 'expanded',
+        proposed_plan: 'expanded',
         error: 'summary',
         abort: 'summary',
         rollback: 'summary',
@@ -69,8 +67,7 @@ const foldingProfiles = [
       {
         patch: 'expanded',
         review: 'summary',
-        plan_artifact: 'summary',
-        plan_update: 'summary',
+        proposed_plan: 'summary',
         user_message: 'collapsed',
         assistant_message: 'collapsed',
       },
@@ -107,7 +104,7 @@ const foldingProfiles = [
     description: '适合检查任务是否按预期推进：计划是怎样的、执行到哪一步、哪些意外情况可能改变了下一步。',
     rules: profileRules(
       {
-        plan_artifact: 'expanded',
+        proposed_plan: 'expanded',
         user_message: 'summary',
         assistant_message: 'summary',
         patch: 'summary',

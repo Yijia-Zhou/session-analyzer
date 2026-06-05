@@ -36,7 +36,7 @@ test('changes profile keeps successful and failed patches with files expanded', 
 
 test('changes profile summarizes ordinary touched-file events', () => {
   assert.equal(folding.displayStateFromRules({
-    kind: 'tool_operation',
+    kind: 'other_tool_call',
     touchedFiles: ['a.js'],
     severity: 'normal',
   }, profileRules('changes')), 'summary');
@@ -44,7 +44,7 @@ test('changes profile summarizes ordinary touched-file events', () => {
 
 test('changes profile summarizes failed events even without touched files', () => {
   assert.equal(folding.displayStateFromRules({
-    kind: 'mcp',
+    kind: 'mcp_call',
     status: 'failed',
     severity: 'normal',
   }, profileRules('changes')), 'summary');
@@ -60,13 +60,13 @@ test('changes profile recognizes common verification commands', () => {
 
 test('narrative profile collapses ordinary high-frequency tool events', () => {
   const rules = profileRules('narrative');
-  for (const kind of ['command', 'mcp', 'js_repl', 'tool_operation', 'web_search']) {
+  for (const kind of ['command', 'mcp_call', 'js_repl', 'other_tool_call', 'web_search']) {
     assert.equal(folding.displayStateFromRules({ kind, status: 'success', severity: 'normal' }, rules), 'collapsed', kind);
   }
 });
 
 test('matching condition order does not change the most visible result', () => {
-  const event = { kind: 'tool_operation', hasSearchHit: true, severity: 'error' };
+  const event = { kind: 'other_tool_call', hasSearchHit: true, severity: 'error' };
   const conditions = [
     { id: 'searchHit', state: 'expanded' },
     { id: 'importantEvent', state: 'summary' },
@@ -109,18 +109,19 @@ test('rule normalization rejects invalid conditions and stabilizes duplicates', 
 });
 
 test('planning condition matches update_plan calls and protocol plan updates', () => {
-  assert.equal(folding.conditionMatches('updatePlanCall', { kind: 'tool_operation', toolName: 'update_plan' }), true);
+  assert.equal(folding.conditionMatches('updatePlanCall', { kind: 'other_tool_call', toolName: 'update_plan' }), true);
   assert.equal(folding.conditionMatches('updatePlanCall', { kind: 'plan_update' }), true);
   assert.equal(folding.displayStateFromRules({ kind: 'plan_update', severity: 'normal' }, profileRules('planning')), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'update_plan', severity: 'normal' }, profileRules('planning')), 'expanded');
 });
 
 test('conversation profile keeps plan updates and user input requests expanded', () => {
   const rules = profileRules('conversation');
-  assert.equal(folding.displayStateFromRules({ kind: 'tool_operation', toolName: 'update_plan', severity: 'normal' }, rules), 'expanded');
-  assert.equal(folding.displayStateFromRules({ kind: 'tool_operation', toolName: 'request_user_input', severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'update_plan', severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'request_user_input', severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'reasoning', hasReadableReasoning: true, severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'reasoning', hasReadableReasoning: false, severity: 'normal' }, rules), 'hidden');
-  assert.equal(folding.displayStateFromRules({ kind: 'tool_operation', toolName: 'view_image', severity: 'normal' }, rules), 'hidden');
+  assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'view_image', severity: 'normal' }, rules), 'hidden');
 });
 
 test('override normalization drops malformed branches and retains valid manual states', () => {

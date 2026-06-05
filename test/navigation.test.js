@@ -24,7 +24,7 @@ test('navigation category helpers keep existing event categories', () => {
   const events = [
     { id: 'cmd-ok', kind: 'command', status: 'success', severity: 'normal' },
     { id: 'cmd-fail', kind: 'command', status: 'failed', severity: 'normal' },
-    { id: 'plan', kind: 'tool_operation', toolName: 'update_plan', severity: 'normal' },
+    { id: 'plan', kind: 'other_tool_call', toolName: 'update_plan', severity: 'normal' },
   ];
 
   const failedCommandCategories = navigation.navigationCategoriesForEvent(events[1], events).map((category) => category.id);

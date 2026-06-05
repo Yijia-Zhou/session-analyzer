@@ -17,24 +17,22 @@
   const EDITABLE_EVENT_KINDS = [
     'user_message',
     'assistant_message',
-    'plan_artifact',
-    'plan_update',
+    'proposed_plan',
     'reasoning',
     'command',
     'patch',
-    'mcp',
+    'mcp_call',
     'js_repl',
-    'tool_operation',
+    'other_tool_call',
     'web_search',
     'error',
     'warning',
     'abort',
     'rollback',
     'compaction',
-    'token',
+    'usage_limit_warning',
     'subagent',
     'review',
-    'turn',
   ];
 
   const CONDITION_DEFINITIONS = [
@@ -130,7 +128,7 @@
   }
 
   function importantEvent(event = {}) {
-    return ['user_message', 'assistant_message', 'patch', 'error', 'warning', 'abort', 'rollback', 'compaction', 'plan_artifact', 'plan_update', 'review'].includes(event.kind)
+    return ['user_message', 'assistant_message', 'patch', 'error', 'warning', 'abort', 'rollback', 'compaction', 'proposed_plan', 'review'].includes(event.kind)
       || isUpdatePlanEvent(event)
       || event.severity !== 'normal'
       || event.status === 'failed';

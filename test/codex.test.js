@@ -113,6 +113,33 @@ test('buildIndex exposes dynamic event kind options by layer', async () => {
   assert.ok(session.eventKinds.raw.find((item) => item.value === 'exec_command_begin').count > 0);
 });
 
+test('thread and unmodeled item lifecycle records stay in protocol layer', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'lifecycle-project');
+  const id = '12121212-1212-1212-1212-121212121212';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '05');
+  const file = path.join(dir, `rollout-2026-06-05T10-00-00-${id}.jsonl`);
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.writeFile(file, [
+    JSON.stringify({ timestamp: '2026-06-05T10:00:00.000Z', type: 'session_meta', payload: { id, cwd: repoRoot } }),
+    JSON.stringify({ timestamp: '2026-06-05T10:00:01.000Z', type: 'event_msg', payload: { type: 'thread_name_updated', thread_name: 'Renamed session' } }),
+    JSON.stringify({ timestamp: '2026-06-05T10:00:02.000Z', type: 'event_msg', payload: { type: 'item_completed', turn_id: 'turn-1', item: { type: 'Message', text: 'Internal response item completed.' } } }),
+    '',
+  ].join('\n'), 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const mainTimeline = getTimeline(index, id, { offset: 0, limit: 100, layer: 'main' });
+  const protocolTimeline = getTimeline(index, id, { offset: 0, limit: 100, layer: 'protocol' });
+  const protocolSubtypes = new Set(protocolTimeline.events.map((event) => event.subtype));
+
+  assert.equal(mainTimeline.events.some((event) => event.kind === 'turn'), false);
+  assert.equal(mainTimeline.events.some((event) => event.subtype === 'thread_name_updated'), false);
+  assert.equal(mainTimeline.events.some((event) => event.subtype === 'item_completed'), false);
+  assert.ok(protocolSubtypes.has('thread_name_updated'));
+  assert.ok(protocolSubtypes.has('item_completed'));
+});
+
 test('state endpoint includes dynamic event kind options', async () => {
   const index = await buildFixtureIndex();
   const server = createServer(index, 1, { codexHome: fixtureCodexHome });
@@ -329,7 +356,7 @@ test('timeline main layer returns logical events without duplicate user or assis
   const userEvents = timeline.events.filter((event) => event.kind === 'user_message');
   const assistantEvents = timeline.events.filter((event) => event.kind === 'assistant_message');
   const reasoningEvents = timeline.events.filter((event) => event.kind === 'reasoning');
-  const planEvents = timeline.events.filter((event) => event.kind === 'plan_artifact');
+  const planEvents = timeline.events.filter((event) => event.kind === 'proposed_plan');
   const reviewEvents = timeline.events.filter((event) => event.kind === 'review');
 
   assert.equal(userEvents.length, 1);
@@ -370,7 +397,7 @@ test('timeline main layer returns logical events without duplicate user or assis
   assert.equal(assistantEvents[0].rawRefs.length, 2);
   assert.equal(planEvents[0].rawRefs.length, 2);
 
-  assert.equal(timeline.events.some((event) => event.kind === 'token'), false);
+  assert.equal(timeline.events.some((event) => event.kind === 'usage_limit_warning'), false);
   assert.equal(session.analysis.tokenStats.maxObserved, 0);
 });
 
@@ -621,7 +648,7 @@ test('current protocol plan, severity, lifecycle aliases, and incomplete tool re
   assert.equal(declinedPatch.severity, 'warning');
 
   const mcpBegin = timeline.events.find((event) => event.toolName === 'mcp__fixture__lookup');
-  assert.equal(mcpBegin.kind, 'mcp');
+  assert.equal(mcpBegin.kind, 'mcp_call');
   assert.equal(mcpBegin.status, 'incomplete');
   assert.equal(mcpBegin.rawRefs.length, 1);
 
@@ -1126,7 +1153,7 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   assert.equal(oldPatchDetail.timelineSections[0].type, 'patch');
   assert.ok(newPatchDetail.inspectorSections.some((section) => section.title === 'Files'));
 
-  const planEvent = session.logicalEvents.find((event) => event.kind === 'plan_artifact');
+  const planEvent = session.logicalEvents.find((event) => event.kind === 'proposed_plan');
   const planDetail = buildEventDetail(session, planEvent.id, 'main');
   assert.equal(allSections(planDetail)[0].type, 'markdown');
   assert.equal(allSections(planDetail)[0].hideTitle, true);
@@ -1349,7 +1376,7 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
   assert.match(reviewFindings.html, /src\/codex\.js:lines 10-12/);
 });
 
-test('tool operation detail renders readable summaries and omits large data URLs', async (t) => {
+test('other tool call detail renders readable summaries and omits large data URLs', async (t) => {
   const codexHome = await makeTempCodexHome(t);
   const repoRoot = path.join(codexHome, 'repo');
   const id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
@@ -1677,7 +1704,7 @@ test('tool operation detail renders readable summaries and omits large data URLs
   assert.match(imageErrorDetail.timelineSections[1].code, /image decode failed/);
 });
 
-test('tool operation sanitization covers structured cards, embedded URLs, object keys, and preview limits', async (t) => {
+test('other tool call sanitization covers structured cards, embedded URLs, object keys, and preview limits', async (t) => {
   const codexHome = await makeTempCodexHome(t);
   const repoRoot = path.join(codexHome, 'repo');
   const id = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
@@ -2113,7 +2140,7 @@ test('command terminal sections repair UTF-8 text decoded as GB18030', () => {
 test('detail endpoint returns structured event detail with split sections and raw refs', async () => {
   const index = await buildFixtureIndex();
   const session = primaryFixtureSession(index);
-  const planEvent = session.logicalEvents.find((event) => event.kind === 'plan_artifact');
+  const planEvent = session.logicalEvents.find((event) => event.kind === 'proposed_plan');
   const server = createServer(index, 1);
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -2314,6 +2341,7 @@ test('path containment and folding profiles expose expected presets', () => {
   assert.ok(foldingProfiles.some((profile) => profile.id === 'compact'));
   assert.equal(EDITABLE_EVENT_KINDS.includes('protocol'), false);
   assert.equal(EDITABLE_EVENT_KINDS.includes('event'), false);
+  assert.equal(EDITABLE_EVENT_KINDS.includes('plan_update'), false);
   assert.equal(EDITABLE_EVENT_KINDS.includes('review'), true);
   for (const profile of foldingProfiles) {
     assert.ok(profile.rules, `${profile.id} has rule data`);

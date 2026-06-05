@@ -82,22 +82,21 @@ const KIND_LABELS = {
   assistant_message: 'Assistant message',
   command: 'Command',
   patch: 'Patch',
-  mcp: 'MCP',
+  mcp_call: 'MCP call',
   js_repl: 'JS REPL',
-  tool_operation: 'Tool op',
-  plan_artifact: 'Plan',
+  other_tool_call: 'Other tool call',
+  proposed_plan: 'Proposed plan',
   plan_update: 'Plan update',
   protocol: 'Protocol',
   error: 'Error',
   warning: 'Warning',
-  abort: 'Abort',
-  rollback: 'Rollback',
-  compaction: 'Compaction',
-  token: 'Token',
-  subagent: 'Subagent',
+  abort: 'Turn aborted',
+  rollback: 'Thread rollback',
+  compaction: 'Context compaction',
+  usage_limit_warning: 'Usage limit warning',
+  subagent: 'Subagent activity',
   review: 'Review',
   reasoning: 'Reasoning',
-  turn: 'Turn',
   web_search: 'Web search',
   event: 'Event',
 };
@@ -116,14 +115,14 @@ const NAVIGATION_CATEGORIES = navigationApi.NAVIGATION_CATEGORIES || [
   { id: 'user_messages', label: 'User messages', matches: (event) => event.kind === 'user_message' },
   { id: 'assistant_messages', label: 'Assistant messages', matches: (event) => event.kind === 'assistant_message' },
   { id: 'update_plan', label: 'Plan updates', matches: isUpdatePlanEvent },
-  { id: 'plans', label: 'Plans / updates', matches: (event) => event.kind === 'plan_artifact' || isUpdatePlanEvent(event) },
+  { id: 'plans', label: 'Plans / updates', matches: (event) => event.kind === 'proposed_plan' || isUpdatePlanEvent(event) },
   { id: 'failed_commands', label: 'Failed commands', matches: (event) => event.kind === 'command' && event.status === 'failed' },
   { id: 'commands', label: 'Commands', matches: (event) => event.kind === 'command' },
   { id: 'patch_applied', label: 'Patch applied', matches: (event) => event.kind === 'patch' && event.status === 'success' },
   { id: 'patch_failed', label: 'Patch failed', matches: (event) => event.kind === 'patch' && event.status === 'failed' },
   { id: 'patches', label: 'All patches', matches: (event) => event.kind === 'patch' },
   { id: 'errors_warnings', label: 'Errors / warnings', matches: (event) => event.severity !== 'normal' || event.status === 'failed' || ['error', 'abort', 'rollback', 'compaction'].includes(event.kind) },
-  { id: 'mcp_calls', label: 'MCP calls', matches: (event) => event.kind === 'mcp' || String(event.toolName || '').startsWith('mcp__') },
+  { id: 'mcp_calls', label: 'MCP calls', matches: (event) => event.kind === 'mcp_call' || String(event.toolName || '').startsWith('mcp__') },
   { id: 'web_searches', label: 'Web searches', matches: (event) => event.kind === 'web_search' },
 ];
 
@@ -830,7 +829,7 @@ function shouldShowInspectorSummary(event, preview, detail = null) {
   const bodyOwnedKinds = new Set([
     'user_message',
     'assistant_message',
-    'plan_artifact',
+    'proposed_plan',
     'plan_update',
     'reasoning',
     'command',
@@ -1874,10 +1873,10 @@ function renderEventBody(event, display) {
 
 function renderEventPreview(event, display) {
   if (display === 'expanded') return '';
-  if (event.kind === 'token' && event.usageLimits?.length) {
+  if (event.kind === 'usage_limit_warning' && event.usageLimits?.length) {
     return `<div class="eventPreview usageLimitPreview">${renderUsageLimitPreview(event.usageLimits)}</div>`;
   }
-  if (event.kind === 'token' && event.tokenUsage?.length) {
+  if (event.kind === 'usage_limit_warning' && event.tokenUsage?.length) {
     return `<div class="eventPreview tokenPreview">${renderTokenUsageBadges(event.tokenUsage)}</div>`;
   }
   const preview = event.snippet || event.preview || event.label;

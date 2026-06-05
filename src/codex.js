@@ -99,22 +99,21 @@ const EVENT_KIND_LABELS = Object.freeze({
   assistant_message: 'Assistant message',
   command: 'Command',
   patch: 'Patch',
-  mcp: 'MCP',
+  mcp_call: 'MCP call',
   js_repl: 'JS REPL',
-  tool_operation: 'Tool op',
-  plan_artifact: 'Plan',
+  other_tool_call: 'Other tool call',
+  proposed_plan: 'Proposed plan',
   plan_update: 'Plan update',
   protocol: 'Protocol',
   error: 'Error',
   warning: 'Warning',
-  abort: 'Abort',
-  rollback: 'Rollback',
-  compaction: 'Compaction',
-  token: 'Token',
-  subagent: 'Subagent',
+  abort: 'Turn aborted',
+  rollback: 'Thread rollback',
+  compaction: 'Context compaction',
+  usage_limit_warning: 'Usage limit warning',
+  subagent: 'Subagent activity',
   review: 'Review',
   reasoning: 'Reasoning',
-  turn: 'Turn',
   web_search: 'Web search',
   event: 'Event',
 });
@@ -2652,7 +2651,7 @@ function extractToolOperationSections(raws, event) {
   const collaboration = collaborationToolSection(event.toolName, requestValue, responseValue);
   if (collaboration) timelineSections.push(collaboration);
   const markdown = event.toolName === 'view_image' ? viewImageMarkdown(requestValue, responseValue) : '';
-  maybePushMarkdownSection(timelineSections, 'Tool operation', markdown);
+  maybePushMarkdownSection(timelineSections, 'Other tool call', markdown);
   const hasSpecializedTimeline = timelineSections.length > 0;
   if (!timelineSections.length) {
     maybePushToolSummaryCodeSection(timelineSections, 'Request summary', requestValue);
@@ -2785,7 +2784,7 @@ function extractLifecycleSections(event, raws) {
   if (event.kind === 'review') {
     return extractReviewLifecycleSections(event, raws);
   }
-  if (event.kind === 'token') {
+  if (event.kind === 'usage_limit_warning') {
     const usageLimits = collectUsageLimitItems(primary.parsed?.payload);
     if (usageLimits.length) {
       sections.push({ type: 'usage_limits', title: 'Usage limits', items: usageLimits });
@@ -2906,7 +2905,7 @@ function rawPrimarySections(raw, relatedEvent, session = {}) {
           : [],
     };
   }
-  if (['token', 'compaction', 'abort', 'rollback', 'error', 'subagent', 'turn'].includes(relatedEvent?.kind)) {
+  if (['usage_limit_warning', 'compaction', 'abort', 'rollback', 'error', 'subagent'].includes(relatedEvent?.kind)) {
     return {
       sections: withoutSectionTypes(extractLifecycleSections(relatedEvent, [raw]), ['raw_json']),
       omitPayloadKeys: ['type', 'turn_id', 'thread_id', 'thread_name', 'last_agent_message'],
@@ -3002,7 +3001,7 @@ function extractLogicalDetailSections(event, raws, session = {}) {
     case 'user_message':
     case 'assistant_message':
       return splitSectionsForDetail(extractConversationSections(raws));
-    case 'plan_artifact':
+    case 'proposed_plan':
     case 'plan_update':
       return splitSectionsForDetail(extractPlanSections(raws));
     case 'reasoning':
@@ -3013,16 +3012,16 @@ function extractLogicalDetailSections(event, raws, session = {}) {
       return extractPatchSections(raws, event, session);
     case 'js_repl':
       return splitSectionsForDetail(extractJsReplSections(raws, event));
-    case 'mcp':
+    case 'mcp_call':
       return splitSectionsForDetail(extractToolSections(raws, event));
-    case 'tool_operation':
+    case 'other_tool_call':
       if (event.toolName === 'update_plan') return extractUpdatePlanSections(raws, event);
       return extractToolOperationSections(raws, event);
     case 'web_search':
       return splitSectionsForDetail(extractWebSearchSections(raws, event));
     case 'protocol':
       return splitSectionsForDetail(extractProtocolSections(event, raws));
-    case 'token':
+    case 'usage_limit_warning':
     case 'compaction':
     case 'abort':
     case 'rollback':
@@ -3030,7 +3029,6 @@ function extractLogicalDetailSections(event, raws, session = {}) {
     case 'warning':
     case 'subagent':
     case 'review':
-    case 'turn':
       return splitSectionsForDetail(extractLifecycleSections(event, raws));
     default:
       return { timelineSections: [], inspectorSections: [makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed))] };
@@ -3138,9 +3136,9 @@ function buildToolLogicalEvent(callId, group) {
   const functionOutputInfo = parseFormattedCommandOutput(functionOutput?.output);
   const customOutputObj = parseOutputEnvelope(customOutput?.output);
 
-  let kind = 'tool_operation';
-  let label = toolName || 'Tool operation';
-  let preview = truncate(toolName || 'Tool operation');
+  let kind = 'other_tool_call';
+  let label = toolName || 'Other tool call';
+  let preview = truncate(toolName || 'Other tool call');
   let status = 'completed';
   let severity = 'normal';
   let touchedFiles = [];
@@ -3212,25 +3210,25 @@ function buildToolLogicalEvent(callId, group) {
     outputStats.exitCode = exitCode;
     outputStats.durationMs = execEnd?.durationMs || Math.round(Number(customOutputObj?.metadata?.duration_seconds || 0) * 1000);
   } else if (mcpRows.length || toolName.startsWith('mcp__')) {
-    kind = 'mcp';
+    kind = 'mcp_call';
     label = 'MCP tool';
     preview = truncate(mcpEnd?.preview || group.find((raw) => raw.preview)?.preview || toolName);
     status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
     severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
     outputStats.durationMs = mcpEnd?.durationMs || 0;
   } else if (imageRows.length || dynamicRows.length || approvalRows.length || hookRows.length || collabRows.length) {
-    kind = 'tool_operation';
-    label = humanizeProtocolSubtype(group.find((raw) => raw.recordType === 'event_msg' && raw.payloadType)?.payloadType || toolName || 'Tool operation');
+    kind = 'other_tool_call';
+    label = humanizeProtocolSubtype(group.find((raw) => raw.recordType === 'event_msg' && raw.payloadType)?.payloadType || toolName || 'Other tool call');
     preview = truncate(group.find((raw) => raw.preview)?.preview || toolName || label);
     status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
     severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
   } else if (toolName === 'request_user_input' || toolName === 'update_plan' || toolName === 'view_image' || toolName === 'spawn_agent' || toolName === 'wait_agent' || toolName === 'send_input' || toolName === 'close_agent' || toolName === 'js_repl_reset') {
-    kind = 'tool_operation';
+    kind = 'other_tool_call';
     label = toolName;
     preview = truncate(functionCall?.output || functionOutput?.output || toolName);
     status = 'success';
   } else {
-    preview = truncate(first.preview || toolName || 'tool operation');
+    preview = truncate(first.preview || toolName || 'Other tool call');
   }
 
   return createLogicalEvent({
@@ -3334,9 +3332,9 @@ function buildProtocolEvent(raw, subtype, label) {
 }
 
 function buildLifecycleEvent(raw, kind, label, severity, previewOverride = '') {
-  const tokenUsage = kind === 'token' ? tokenUsageItems(raw.parsed?.payload) : [];
-  const usageLimits = kind === 'token' ? collectUsageLimitItems(raw.parsed?.payload) : [];
-  const reachedType = kind === 'token' ? rateLimitReachedType(raw.parsed?.payload) : '';
+  const tokenUsage = kind === 'usage_limit_warning' ? tokenUsageItems(raw.parsed?.payload) : [];
+  const usageLimits = kind === 'usage_limit_warning' ? collectUsageLimitItems(raw.parsed?.payload) : [];
+  const reachedType = kind === 'usage_limit_warning' ? rateLimitReachedType(raw.parsed?.payload) : '';
   return createLogicalEvent({
     id: `${raw.sessionId}:logical:${kind}:${raw.line}`,
     timestamp: raw.timestamp,
@@ -3493,7 +3491,7 @@ function buildPlanArtifact(itemRaw, messageRaw, text) {
     id: `${itemRaw.sessionId}:logical:plan:${itemRaw.line}`,
     timestamp: itemRaw.timestamp,
     turnId: itemRaw.turnId || messageRaw?.turnId || '',
-    kind: 'plan_artifact',
+    kind: 'proposed_plan',
     subtype: 'proposed_plan',
     layer: 'main',
     role: 'assistant',
@@ -3740,7 +3738,7 @@ function buildLogicalEvents(rawEvents) {
     if (raw.recordType === 'event_msg' && raw.payloadType === 'token_count') {
       logicalEvents.push(buildProtocolEvent(raw, 'token_count'));
       if (rateLimitReachedType(raw.parsed?.payload)) {
-        logicalEvents.push(buildLifecycleEvent(raw, 'token', 'Usage limit reached', 'warning'));
+        logicalEvents.push(buildLifecycleEvent(raw, 'usage_limit_warning', 'Usage limit reached', 'warning'));
       }
       consumed.add(raw.rawId);
       continue;
@@ -3791,7 +3789,7 @@ function buildLogicalEvents(rawEvents) {
       continue;
     }
     if (raw.recordType === 'event_msg' && ['thread_name_updated', 'item_completed'].includes(raw.canonicalType)) {
-      logicalEvents.push(buildLifecycleEvent(raw, 'turn', raw.canonicalType, 'normal'));
+      logicalEvents.push(buildProtocolEvent(raw, raw.canonicalType));
       consumed.add(raw.rawId);
       continue;
     }
@@ -3866,7 +3864,7 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'user_message') session.counts.userMessages += 1;
   if (logicalEvent.kind === 'assistant_message') session.counts.assistantMessages += 1;
   if (logicalEvent.kind === 'reasoning') session.counts.reasoning += 1;
-  if (['command', 'patch', 'mcp', 'web_search', 'tool_operation', 'js_repl'].includes(logicalEvent.kind)) {
+  if (['command', 'patch', 'mcp_call', 'web_search', 'other_tool_call', 'js_repl'].includes(logicalEvent.kind)) {
     session.counts.toolCalls += 1;
   }
   if (logicalEvent.kind === 'command' && logicalEvent.status === 'failed') session.counts.failedCommands += 1;
@@ -3875,8 +3873,8 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'compaction') session.counts.compactions += 1;
   if (logicalEvent.kind === 'abort') session.counts.aborts += 1;
   if (logicalEvent.kind === 'error') session.counts.errors += 1;
-  if (logicalEvent.kind === 'plan_artifact') session.counts.planArtifacts += 1;
-  if (logicalEvent.kind === 'plan_artifact' || logicalEvent.kind === 'plan_update' || logicalEvent.toolName === 'update_plan' || logicalEvent.subtype === 'update_plan') {
+  if (logicalEvent.kind === 'proposed_plan') session.counts.planArtifacts += 1;
+  if (logicalEvent.kind === 'proposed_plan' || logicalEvent.kind === 'plan_update' || logicalEvent.toolName === 'update_plan' || logicalEvent.subtype === 'update_plan') {
     session.counts.planEvents += 1;
   }
 }
@@ -3905,7 +3903,7 @@ function updateAnalysisDraft(session, event) {
       draft.patchedFiles.set(file, (draft.patchedFiles.get(file) || 0) + 1);
     }
   }
-  if (event.kind === 'token') {
+  if (event.kind === 'usage_limit_warning') {
     const primaryRaw = event.rawRefs?.[0]?.rawId ? session.rawEvents.find((raw) => raw.rawId === event.rawRefs[0].rawId) : null;
     const observed = maxObservedTokenValue(primaryRaw?.parsed?.payload);
     if (observed > draft.tokenStats.maxObserved) draft.tokenStats.maxObserved = observed;
