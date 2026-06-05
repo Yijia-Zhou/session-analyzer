@@ -81,7 +81,7 @@
     {
       id: 'reviewCommand',
       name: 'Review command',
-      description: 'Command previews containing test, build, lint, typecheck, git, diff, or status.',
+      description: 'Command previews containing common verification or source-control review terms.',
     },
     {
       id: 'touchedFiles',
@@ -145,7 +145,7 @@
     if (conditionId === 'failedStatus') return event.status === 'failed';
     if (conditionId === 'errorSeverity') return event.severity === 'error';
     if (conditionId === 'abnormalSeverity') return event.severity !== 'normal';
-    if (conditionId === 'reviewCommand') return event.kind === 'command' && /\b(test|build|lint|typecheck|git|diff|status)\b/i.test(event.preview || '');
+    if (conditionId === 'reviewCommand') return event.kind === 'command' && /\b(test|tests|build|lint|typecheck|check|compile|compileall|pytest|unittest|vitest|jest|mocha|ruff|eslint|biome|tsc|mypy|pyright|clippy|vet|git|diff|status)\b/i.test(event.preview || '');
     if (conditionId === 'touchedFiles') return Boolean(event.touchedFiles?.length);
     return false;
   }

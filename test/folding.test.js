@@ -50,6 +50,14 @@ test('changes profile summarizes failed events even without touched files', () =
   }, profileRules('changes')), 'summary');
 });
 
+test('changes profile recognizes common verification commands', () => {
+  const rules = profileRules('changes');
+  for (const preview of ['pytest -q', 'npx eslint .', 'node --check public/app.js', 'cargo clippy', 'go vet ./...']) {
+    assert.equal(folding.displayStateFromRules({ kind: 'command', preview, severity: 'normal' }, rules), 'summary', preview);
+  }
+  assert.equal(folding.displayStateFromRules({ kind: 'command', preview: 'node server.js', severity: 'normal' }, rules), 'hidden');
+});
+
 test('narrative profile collapses ordinary high-frequency tool events', () => {
   const rules = profileRules('narrative');
   for (const kind of ['command', 'mcp', 'js_repl', 'tool_operation', 'web_search']) {

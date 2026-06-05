@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-06-04 / 最近更新：2026-06-04
+- Last updated: 2026-06-05 / 最近更新：2026-06-05
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -61,9 +61,9 @@ The first version of this repository rendered raw records directly, which caused
 5. Walk the remaining rows in order and fold them into logical messages, reasoning entries, protocol events, lifecycle events, or plan artifacts. / 按顺序遍历剩余行，并折叠为逻辑消息、推理条目、协议事件、生命周期事件或计划产物。
 6. Expose logical events to the main and protocol layers; expose raw rows separately. / 向主层和协议层暴露逻辑事件；单独暴露原始行。
 
-Reasoning text extraction is intentionally narrower than generic raw-field text flattening. A `response_item.reasoning` row uses `summary_text` entries first, then falls back to `reasoning_text` content entries when the summary is empty, with the retained text capped at 16,000 characters. Unknown content types or shapes and `encrypted_content` are not promoted into Main timeline text or the readable-reasoning folding condition.
+Reasoning text extraction is intentionally narrower than generic raw-field text flattening. A `response_item.reasoning` row uses `summary_text` entries first, then falls back to `reasoning_text` content entries when the summary is empty. An `event_msg.agent_reasoning` row accepts only string `message` or `text` fields. Retained reasoning text, including detail text assembled from mirrored rows, is capped at 16,000 characters; unknown content types or shapes and `encrypted_content` are not promoted into Main timeline text or the readable-reasoning folding condition.
 
-Reasoning 文本提取有意比通用原始字段文本扁平化更严格。`response_item.reasoning` 行会优先使用 `summary_text` 条目，当 summary 为空时再回退到 `reasoning_text` content 条目，并将保留文本限制在 16,000 个字符以内。未知 content 类型或形态和 `encrypted_content` 不会被提升为 Main timeline 文本，也不会命中可读 reasoning 折叠条件。
+Reasoning 文本提取有意比通用原始字段文本扁平化更严格。`response_item.reasoning` 行会优先使用 `summary_text` 条目，当 summary 为空时再回退到 `reasoning_text` content 条目。`event_msg.agent_reasoning` 行只接受字符串类型的 `message` 或 `text` 字段。保留的 reasoning 文本（包括从镜像行组合出的详情文本）会限制在 16,000 个字符以内；未知 content 类型或形态和 `encrypted_content` 不会被提升为 Main timeline 文本，也不会命中可读 reasoning 折叠条件。
 
 Web search records are normalized as adjacent mirrored rows rather than normal `call_id` tool groups. Real transcripts may write `event_msg.web_search_end` before the completed `response_item.web_search_call` snapshot, often with matching action metadata and identical or near-identical timestamps. The logical builder merges adjacent search/open-page rows by canonical action target so the main timeline shows one web search event with both raw refs; call-only and end-only historical rows remain visible as single logical events.
 

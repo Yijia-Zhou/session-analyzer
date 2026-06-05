@@ -1588,7 +1588,7 @@ function renderSessions() {
         ${relationship ? `<span class="chip relationshipChip" title="${escapeHtml(relationshipTitle)}">${escapeHtml(relationship)}</span>` : ''}
         <span class="chip">${session.counts.messages} msgs</span>
         <span class="chip">${session.counts.toolCalls} tools</span>
-        <span class="chip">${session.counts.failedCommands} failed</span>
+        <span class="chip">${session.counts.failedCommands} failed cmds</span>
         <span class="chip">${session.protocolCount} protocol</span>
       </span>
     </button>`;

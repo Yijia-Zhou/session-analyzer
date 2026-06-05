@@ -374,7 +374,7 @@ test('timeline main layer returns logical events without duplicate user or assis
   assert.equal(session.analysis.tokenStats.maxObserved, 0);
 });
 
-test('reasoning text extraction accepts readable fields without exposing encrypted or unknown content', async (t) => {
+test('reasoning row extraction accepts readable fields without exposing encrypted or unknown content', async (t) => {
   const codexHome = await makeTempCodexHome(t);
   const repoRoot = path.join(codexHome, 'reasoning-project');
   const id = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
@@ -383,6 +383,8 @@ test('reasoning text extraction accepts readable fields without exposing encrypt
   await fsp.mkdir(repoRoot, { recursive: true });
   await fsp.mkdir(dir, { recursive: true });
   const longReasoningText = 'x'.repeat(16050);
+  const longEventReasoningText = 'y'.repeat(16050);
+  const mirroredReasoningText = `Mirror prefix ${'z'.repeat(15970)}TAIL`;
   const records = [
     {
       timestamp: '2026-06-04T10:00:00.000Z',
@@ -428,6 +430,56 @@ test('reasoning text extraction accepts readable fields without exposing encrypt
         content: [{ type: 'reasoning_text', text: longReasoningText }],
       },
     },
+    {
+      timestamp: '2026-06-04T10:00:05.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'agent_reasoning',
+        message: 'Readable event message reasoning',
+      },
+    },
+    {
+      timestamp: '2026-06-04T10:00:06.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'agent_reasoning',
+        message: { text: 'Object-shaped message must stay hidden' },
+        text: 'Readable event text fallback',
+      },
+    },
+    {
+      timestamp: '2026-06-04T10:00:07.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'agent_reasoning',
+        text: longEventReasoningText,
+      },
+    },
+    {
+      timestamp: '2026-06-04T10:00:08.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'agent_reasoning',
+        text: { text: 'Object-shaped event reasoning must stay hidden' },
+      },
+    },
+    {
+      timestamp: '2026-06-04T10:00:09.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'agent_reasoning',
+        text: 'Mirror prefix',
+      },
+    },
+    {
+      timestamp: '2026-06-04T10:00:10.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'reasoning',
+        summary: [{ type: 'summary_text', text: mirroredReasoningText }],
+        content: [],
+      },
+    },
   ];
   await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
 
@@ -435,17 +487,30 @@ test('reasoning text extraction accepts readable fields without exposing encrypt
   const session = index.sessionsById.get(id);
   const reasoningEvents = session.logicalEvents.filter((event) => event.kind === 'reasoning');
   const mainReasoning = reasoningEvents.filter((event) => event.layer === 'main');
-  const emptyReasoning = reasoningEvents.find((event) => event.layer === 'protocol');
+  const emptyReasoning = reasoningEvents.filter((event) => event.layer === 'protocol');
   const longReasoning = mainReasoning.find((event) => event.searchText.startsWith('x'));
+  const longEventReasoning = mainReasoning.find((event) => event.searchText.startsWith('y'));
+  const mirroredReasoning = mainReasoning.find((event) => event.searchText.includes('TAIL'));
+  const mirroredDetail = buildEventDetail(session, mirroredReasoning.id);
+  const mirroredSection = allSections(mirroredDetail).find((section) => section.title === 'Reasoning');
 
   assert.deepEqual(mainReasoning.slice(0, 2).map((event) => event.searchText), ['Readable summary', 'Readable content fallback']);
+  assert.ok(mainReasoning.some((event) => event.searchText === 'Readable event message reasoning'));
+  assert.ok(mainReasoning.some((event) => event.searchText === 'Readable event text fallback'));
   assert.equal(longReasoning.searchText, longReasoningText.slice(0, 16000));
   assert.equal(longReasoning.searchText.length, 16000);
+  assert.equal(longEventReasoning.searchText, longEventReasoningText.slice(0, 16000));
+  assert.equal(longEventReasoning.searchText.length, 16000);
+  assert.equal(mirroredReasoning.rawRefs.length, 2);
+  assert.doesNotMatch(mirroredSection.html, /TAIL/);
   assert.ok(mainReasoning.every((event) => event.hasReadableReasoning));
-  assert.equal(emptyReasoning.label, 'Empty reasoning');
-  assert.equal(emptyReasoning.hasReadableReasoning, false);
+  assert.equal(emptyReasoning.length, 2);
+  assert.ok(emptyReasoning.every((event) => event.label === 'Empty reasoning'));
+  assert.ok(emptyReasoning.every((event) => event.hasReadableReasoning === false));
   assert.equal(reasoningEvents.some((event) => event.searchText.includes('encrypted')), false);
   assert.equal(reasoningEvents.some((event) => event.searchText.includes('Unknown text')), false);
+  assert.equal(reasoningEvents.some((event) => event.searchText.includes('Object-shaped message')), false);
+  assert.equal(reasoningEvents.some((event) => event.searchText.includes('Object-shaped event reasoning')), false);
 });
 
 test('timeline protocol layer exposes injected records and raw layer keeps all rows', async () => {

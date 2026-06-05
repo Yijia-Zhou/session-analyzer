@@ -17,6 +17,7 @@ const IMAGE_PREVIEW_MAX_ENCODED_CHARS = 16 * 1024 * 1024;
 const IMAGE_PREVIEW_MAX_DECODED_BYTES = 12 * 1024 * 1024;
 const SESSION_TITLE_LIMIT = 120;
 const SUBAGENT_SESSION_TITLE_LIMIT = 160;
+const REASONING_TEXT_LIMIT = 16000;
 
 let markdownRenderer = null;
 let gb18030ReverseMap = null;
@@ -483,7 +484,7 @@ function extractContentText(content) {
   return content.map((item) => item && typeof item.text === 'string' ? item.text : '').join('\n').trim();
 }
 
-function extractTypedContentText(content, type, budget = 16000) {
+function extractTypedContentText(content, type, budget = REASONING_TEXT_LIMIT) {
   if (!Array.isArray(content)) return '';
   const parts = [];
   let used = 0;
@@ -500,10 +501,19 @@ function extractTypedContentText(content, type, budget = 16000) {
   return parts.join('\n').trim();
 }
 
-function extractReasoningText(payload, budget = 16000) {
+function extractReasoningText(payload, budget = REASONING_TEXT_LIMIT) {
   const summaryText = extractTypedContentText(payload?.summary, 'summary_text', budget);
   if (summaryText) return summaryText;
   return extractTypedContentText(payload?.content, 'reasoning_text', budget);
+}
+
+function extractEventReasoningText(payload, budget = REASONING_TEXT_LIMIT) {
+  for (const value of [payload?.message, payload?.text]) {
+    if (typeof value !== 'string' || !value.trim()) continue;
+    const text = value.slice(0, budget).trim();
+    if (text) return text;
+  }
+  return '';
 }
 
 function safeJsonParse(text) {
@@ -533,6 +543,21 @@ function renderMarkdownToHtml(text) {
 
 function uniqueNonEmpty(values) {
   return [...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function joinBoundedUniqueText(values, separator = '\n\n', budget = REASONING_TEXT_LIMIT) {
+  const parts = [];
+  let used = 0;
+  for (const value of uniqueNonEmpty(values)) {
+    const separatorLength = parts.length ? separator.length : 0;
+    const remaining = budget - used - separatorLength;
+    if (remaining <= 0) break;
+    const text = value.slice(0, remaining);
+    if (!text) continue;
+    parts.push(text);
+    used += separatorLength + text.length;
+  }
+  return parts.join(separator);
 }
 
 function firstNonEmpty(...values) {
@@ -1627,8 +1652,12 @@ function makeRawEvent(record, lineNumber, relFile, sessionId, embeddedImages = [
     switch (payload.type) {
       case 'user_message':
       case 'agent_message':
-      case 'agent_reasoning':
         raw.messageText = displayValue(firstNonEmpty(payload.message, payload.text), 16000);
+        raw.preview = truncate(raw.messageText || payload.type);
+        raw.searchText = raw.messageText;
+        return raw;
+      case 'agent_reasoning':
+        raw.messageText = extractEventReasoningText(payload);
         raw.preview = truncate(raw.messageText || payload.type);
         raw.searchText = raw.messageText;
         return raw;
@@ -2021,7 +2050,7 @@ function extractConversationSections(raws) {
 
 function extractReasoningSections(raws) {
   const sections = [];
-  const text = uniqueNonEmpty(raws.map((raw) => raw.messageText)).join('\n\n');
+  const text = joinBoundedUniqueText(raws.map((raw) => raw.messageText), '\n\n', REASONING_TEXT_LIMIT);
   if (text) {
     maybePushMarkdownSection(sections, 'Reasoning', text);
     hideSectionTitle(sections[0]);
