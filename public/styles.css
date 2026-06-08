@@ -195,6 +195,124 @@ button:hover,
   color: var(--muted);
 }
 
+.foldControls[data-profile-inactive] .profileInfoBtn {
+  color: var(--muted);
+}
+
+.profileInfoBtn {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: var(--accent);
+  display: inline-flex;
+  font-weight: 800;
+  height: 40px;
+  justify-content: center;
+  padding: 0;
+  text-align: center;
+  width: 26px;
+}
+
+.profileInfoBtn:hover,
+.profileInfoBtn:focus-visible {
+  background: var(--soft);
+  outline: none;
+}
+
+.profileInfoBtn:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.profileInfoPopover {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 18px 40px rgba(24, 32, 36, 0.18);
+  max-height: min(420px, 70vh);
+  opacity: 0;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 0.75rem;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.4rem);
+  transition: opacity 120ms ease, visibility 0ms linear 160ms;
+  visibility: hidden;
+  width: min(520px, 88vw);
+  z-index: 30;
+}
+
+.detailPane .profileInfoPopover {
+  width: min(280px, calc(100vw - 2rem));
+}
+
+@supports (width: 100cqw) {
+  .detailPane .profileInfoPopover {
+    width: min(320px, calc(100cqw - 2rem));
+  }
+}
+
+.profileInfoSlot {
+  display: inline-flex;
+  position: relative;
+}
+
+.profilePickerCompact {
+  position: relative;
+}
+
+.profilePickerTopbar {
+  width: 100%;
+}
+
+.profilePickerCompact .profileInfoPopover {
+  top: calc(100% + 0.35rem);
+}
+
+.profilePickerCompact:not(.profilePickerTopbar) .profileInfoBtn {
+  height: 34px;
+}
+
+.profileInfoSlot:hover .profileInfoPopover,
+.profileInfoSlot:focus-within .profileInfoPopover {
+  opacity: 1;
+  transition-delay: 0ms;
+  visibility: visible;
+}
+
+.profileInfoItem {
+  border-bottom: 1px solid var(--line);
+  padding: 0.55rem 0;
+}
+
+.profileInfoItem:first-child {
+  padding-top: 0;
+}
+
+.profileInfoItem:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.profileInfoItem strong {
+  display: block;
+  font-size: 0.86rem;
+  line-height: 1.25;
+}
+
+.profileInfoItem p {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  margin: 0.2rem 0 0;
+}
+
+.profileInfoItem.active strong {
+  color: var(--accent);
+}
+
 .searchField {
   min-width: 0;
   position: relative;
@@ -741,6 +859,7 @@ body[data-project-mode='selecting'] .searchAssist {
 
 .detailPane {
   border-left: 1px solid var(--line);
+  container-type: inline-size;
   padding: 1rem;
 }
 
@@ -1125,7 +1244,14 @@ body[data-project-mode='selecting'] .searchAssist {
 
 .profilePickerCompact {
   align-items: center;
-  display: flex;
+  display: grid;
+  gap: 0.25rem;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.profilePickerCompact.hasProfileInfo {
+  grid-template-columns: minmax(0, 1fr) 26px;
 }
 
 .profileActionStack {
@@ -1152,7 +1278,12 @@ body[data-project-mode='selecting'] .searchAssist {
   font-weight: 700;
   max-width: 180px;
   min-height: 34px;
+  min-width: 0;
   padding: 0.32rem 1.5rem 0.32rem 0.55rem;
+}
+
+.profilePickerTopbar select {
+  max-width: none;
 }
 
 .inspectorHeader {
@@ -3033,7 +3164,7 @@ pre {
 }
 
 @media (min-width: 761px) {
-  body[data-detail-view='profileRules'] #profileSelect {
+  body[data-detail-view='profileRules'] .profilePickerTopbar {
     display: none;
   }
 
@@ -3057,7 +3188,7 @@ pre {
 }
 
 @media (max-width: 760px) {
-  body[data-detail-view='profileRules'][data-mobile-view='detail'] #profileSelect {
+  body[data-detail-view='profileRules'][data-mobile-view='detail'] .profilePickerTopbar {
     display: none;
   }
 

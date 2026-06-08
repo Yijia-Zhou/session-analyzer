@@ -264,6 +264,10 @@ Folding profiles are data-driven presets with `kindStates`, a `fallback` display
 
 折叠策略是数据驱动预设，包含 `kindStates`、`fallback` 显示状态和固定条件规则。内置预设保持只读。编辑会创建草稿并立即在 Main timeline 中预览；Save 会把自定义策略写入浏览器 `localStorage`，Cancel 会恢复已保存策略。可编辑 kind 规则只覆盖 Main timeline kind，因此只存在于 protocol layer 的 `protocol` 事件和 raw fallback `event` kind 不会暴露为折叠控件。协议层和原始层覆盖规则不进入策略编辑，以保持事件层语义与折叠策略语义分离。当 protocol 或 raw 生效时，前端会禁用 profile 控件，在详情面板展示只读的固定规则说明，并禁用 profile 指标快捷入口。
 
+The profile description affordance is a single movable frontend slot rather than duplicated controls. It attaches to the right-side profile picker when the folding-rules view is visible, otherwise it attaches to the topbar profile picker, and its popover lists all strategy names and descriptions. The detail-pane popover is width-constrained to the pane so long descriptions wrap instead of being clipped by the scroll container.
+
+折叠策略说明入口是一个可移动的前端 slot，而不是复制出的多个控件。折叠规则视图可见时，它挂载到右侧 profile 选择器；否则挂载到顶部栏 profile 选择器；弹层会列出所有策略名称和说明。右侧详情面板中的弹层会按面板宽度约束，使较长说明自动换行，而不是被滚动容器裁切。
+
 The conversation profile treats some non-message events as conversation continuity: proposed plans, protocol plan updates, `update_plan` calls, `request_user_input` calls, and readable reasoning entries are expanded so reading user and assistant messages does not skip over the decision or planning context that shaped the next message. Empty reasoning remains outside this promotion. Other ordinary tool calls remain hidden by that profile unless another condition promotes them.
 
 对话阅读策略会把部分非消息事件视为对话连续性上下文：proposed plan、协议 plan update、`update_plan` 调用、`request_user_input` 调用和可读 reasoning 条目会展开，避免阅读用户与助手消息时跳过影响下一条消息的决策或计划上下文。空 reasoning 不会被该条件提升。其他普通工具调用在该策略下仍保持隐藏，除非被其他 condition 提升可见性。

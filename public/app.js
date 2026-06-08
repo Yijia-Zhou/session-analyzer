@@ -218,6 +218,8 @@ const el = {
   projectChooserDescription: document.querySelector('.projectChooserHeader p'),
 };
 
+let profileInfoSlot = null;
+
 function setMobileView(view, options = {}) {
   if (!['sessions', 'events', 'detail'].includes(view)) return;
   const changed = state.mobileView !== view;
@@ -233,6 +235,7 @@ function setMobileView(view, options = {}) {
   if (changed && options.scroll !== false && window.matchMedia('(max-width: 760px)').matches) {
     window.scrollTo({ top: 0, behavior: 'auto' });
   }
+  syncProfileInfoSlot();
 }
 
 function updateDetailViewChrome() {
@@ -652,6 +655,77 @@ function activeProfile() {
     || state.profiles.find((profile) => profile.id === 'narrative')
     || state.profiles[0]
     || { id: 'narrative', name: '叙事时间线', description: '', rules: defaultRules() };
+}
+
+function renderProfileOptions() {
+  return state.profiles.map((profile) => (
+    `<option value="${escapeHtml(profile.id)}" title="${escapeHtml(profile.description || '')}">${escapeHtml(profile.name || profile.id)}</option>`
+  )).join('');
+}
+
+function renderProfileInfoItems() {
+  const rows = state.profiles.map((profile) => {
+    const active = profile.id === state.profileId ? ' active' : '';
+    const description = profile.description || '暂无说明。';
+    return `<div class="profileInfoItem${active}">
+      <strong>${escapeHtml(profile.name || profile.id)}</strong>
+      <p>${escapeHtml(description)}</p>
+    </div>`;
+  }).join('');
+  return rows || '<div class="profileInfoItem"><p>暂无折叠策略说明。</p></div>';
+}
+
+function profileInfoLabel() {
+  const profile = activeProfile();
+  const description = profile.description || '暂无说明。';
+  return `查看折叠策略说明，当前策略：${profile.name || profile.id}。${description}`;
+}
+
+function ensureProfileInfoSlot() {
+  if (profileInfoSlot) return profileInfoSlot;
+  profileInfoSlot = document.createElement('span');
+  profileInfoSlot.className = 'profileInfoSlot';
+  profileInfoSlot.innerHTML = '<button class="profileInfoBtn" type="button">ⓘ</button><div id="profileInfoPopover" class="profileInfoPopover" role="tooltip"></div>';
+  return profileInfoSlot;
+}
+
+function elementVisible(element) {
+  if (!element) return false;
+  const style = window.getComputedStyle(element);
+  return style.display !== 'none'
+    && style.visibility !== 'hidden'
+    && element.getClientRects().length > 0;
+}
+
+function visibleProfilePickerHost(host) {
+  if (!host || !elementVisible(host)) return null;
+  const select = host.querySelector('select');
+  return elementVisible(select) ? host : null;
+}
+
+// Keep exactly one strategy info control and move it to the visible profile picker.
+function syncProfileInfoSlot(analyzerDisabled = false) {
+  const detailHost = el.detail?.querySelector('[data-profile-picker-host="detail"]');
+  const topbarHost = el.profileSelect?.closest('[data-profile-picker-host="topbar"]');
+  const host = !analyzerDisabled && profileAppliesToActiveLayer()
+    ? visibleProfilePickerHost(detailHost) || visibleProfilePickerHost(topbarHost)
+    : null;
+  const slot = ensureProfileInfoSlot();
+  const previousHost = slot.closest('[data-profile-picker-host]');
+  if (previousHost && previousHost !== host) previousHost.classList.remove('hasProfileInfo');
+  if (!host) {
+    if (previousHost) previousHost.classList.remove('hasProfileInfo');
+    slot.remove();
+    return;
+  }
+  host.appendChild(slot);
+  host.classList.add('hasProfileInfo');
+  const button = slot.querySelector('.profileInfoBtn');
+  const popover = slot.querySelector('.profileInfoPopover');
+  button.disabled = false;
+  button.setAttribute('aria-label', profileInfoLabel());
+  button.setAttribute('aria-describedby', popover.id);
+  popover.innerHTML = renderProfileInfoItems();
 }
 
 function activeProfileRules() {
@@ -1190,12 +1264,13 @@ function updateProfileApplicabilityUi(analyzerDisabled = false) {
   const controls = el.profileSelect?.closest('.foldControls');
   if (el.profileSelect) {
     el.profileSelect.disabled = analyzerDisabled || !applies;
-    const title = applies
-      ? 'Folding strategy'
+    const label = applies
+      ? '折叠策略'
       : 'Folding strategies apply only to Main timeline. This layer uses fixed display rules.';
-    el.profileSelect.title = title;
-    el.profileSelect.setAttribute('aria-label', applies ? '折叠策略' : title);
+    el.profileSelect.removeAttribute('title');
+    el.profileSelect.setAttribute('aria-label', label);
   }
+  syncProfileInfoSlot(analyzerDisabled);
   controls?.toggleAttribute('data-profile-inactive', !applies);
 }
 
@@ -1391,15 +1466,14 @@ async function applyAppState(appState) {
     appState.repoRoot,
     `${appState.totals.sessionCount} sessions | ${appState.totals.eventCount} logical events | ${appState.totals.rawEventCount} raw records`,
   );
-  el.profileSelect.innerHTML = state.profiles.map((profile) => (
-    `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name)}</option>`
-  )).join('');
+  el.profileSelect.innerHTML = renderProfileOptions();
   el.profileSelect.value = state.profileId;
   if (!el.profileSelect.value) {
     state.profileId = 'narrative';
     el.profileSelect.value = state.profileId;
     localStorage.setItem('sessionAnalyzer.profile', state.profileId);
   }
+  syncProfileInfoSlot();
   updateProfileApplicabilityUi();
   resetProfileDraft();
   el.layerSelect.value = state.layerId;
@@ -2271,6 +2345,7 @@ function renderDetailShell({ title, subtitle = '', actions = '', body = '', clos
     </header>
     ${body}
   </article>`;
+  syncProfileInfoSlot();
   refreshSearchHighlights({ preserveActive: true });
 }
 
@@ -2364,9 +2439,9 @@ function renderProfileRulesPane() {
     <button class="smallBtn" type="button" data-detail-action="cancel-profile">Cancel</button>`
     : '';
   const actions = `<div class="profileActionStack">
-      <label class="profilePickerCompact">
-      <select data-profile-picker aria-label="Strategy">${profileOptions}</select>
-      </label>
+      <div class="profilePickerCompact" data-profile-picker-host="detail">
+        <select data-profile-picker aria-label="Strategy">${profileOptions}</select>
+      </div>
       ${editActions}
   </div>`;
   renderDetailShell({
@@ -2489,6 +2564,7 @@ function setProfileId(profileId, options = {}) {
   state.profileId = profileId;
   localStorage.setItem('sessionAnalyzer.profile', state.profileId);
   el.profileSelect.value = state.profileId;
+  syncProfileInfoSlot();
   resetProfileDraft();
   clearCurrentSessionOverrides();
   renderTimeline();
@@ -2600,10 +2676,9 @@ function saveProfileDraft(name = '') {
     saveCustomProfiles();
   }
   localStorage.setItem('sessionAnalyzer.profile', state.profileId);
-  el.profileSelect.innerHTML = state.profiles.map((profile) => (
-    `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name)}</option>`
-  )).join('');
+  el.profileSelect.innerHTML = renderProfileOptions();
   el.profileSelect.value = state.profileId;
+  syncProfileInfoSlot();
   resetProfileDraft();
   clearCurrentSessionOverrides();
   renderTimeline();
@@ -2853,7 +2928,10 @@ el.searchField?.addEventListener('click', (event) => {
   }
 });
 el.timeline.closest('.timelinePane')?.addEventListener('scroll', onTimelinePaneScroll, { passive: true });
-window.addEventListener('resize', queueVisibleDetailLoad);
+window.addEventListener('resize', () => {
+  queueVisibleDetailLoad();
+  syncProfileInfoSlot();
+});
 
 const reload = debounce(() => {
   syncSearchAssistControls();
