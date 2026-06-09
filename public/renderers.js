@@ -1,8 +1,11 @@
 (function initSessionRenderers(root, factory) {
-  const api = factory();
+  const commandHighlighting = typeof module === 'object' && module.exports
+    ? require('./command-highlighting')
+    : root.sessionCommandHighlighting;
+  const api = factory(commandHighlighting || {});
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionRenderers = api;
-}(typeof globalThis !== 'undefined' ? globalThis : this, () => {
+}(typeof globalThis !== 'undefined' ? globalThis : this, (commandHighlighting) => {
   'use strict';
 
   function escapeHtml(value) {
@@ -46,6 +49,96 @@
     return aliases[normalized] || normalized;
   }
 
+  function escapeRegExp(value) {
+    return String(value || '').replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+  }
+
+  const SHELL_EXTERNAL_COMMAND_WORDS = commandHighlighting.SHELL_EXTERNAL_COMMAND_WORDS || commandHighlighting.POWERSHELL_EXTERNAL_COMMAND_WORDS || [];
+  const SHELL_EXTERNAL_COMMAND_REGEX_SOURCE = SHELL_EXTERNAL_COMMAND_WORDS.map(escapeRegExp).join('|');
+  const SHELL_EXTERNAL_COMMAND_PATTERN = SHELL_EXTERNAL_COMMAND_WORDS.length
+    ? new RegExp(`([\\r\\n;|{}()]|&amp;)([ \\t]*)(${SHELL_EXTERNAL_COMMAND_REGEX_SOURCE})(\\.exe)?(?=\\s|$)`, 'gi')
+    : null;
+  const SHELL_EXTERNAL_COMMAND_LINE_START_PATTERN = SHELL_EXTERNAL_COMMAND_WORDS.length
+    ? new RegExp(`^([ \\t]*)(${SHELL_EXTERNAL_COMMAND_REGEX_SOURCE})(\\.exe)?(?=\\s|$)`, 'i')
+    : null;
+  const BASH_OPTION_PATTERN = /(^|[\s])(-{1,2}[A-Za-z0-9][A-Za-z0-9-]*)(?=\s|$)/g;
+  const HLJS_SPAN_CLASS_PATTERN = /\bclass=(["'])[^"']*\bhljs-[^"']*\1/i;
+
+  function textEndsAtLineStart(text, startsAtLineStart = false) {
+    const source = String(text || '');
+    const index = Math.max(source.lastIndexOf('\n'), source.lastIndexOf('\r'));
+    if (index < 0) return startsAtLineStart && /^[ \t]*$/.test(source);
+    return /^[ \t]*$/.test(source.slice(index + 1));
+  }
+
+  function highlightExternalCommandWordsInText(htmlText, startsAtLineStart = false) {
+    if (!SHELL_EXTERNAL_COMMAND_PATTERN) return String(htmlText || '');
+    let output = String(htmlText || '').replace(SHELL_EXTERNAL_COMMAND_PATTERN, (_match, prefix, spacing, command, extension = '') => (
+      `${prefix}${spacing}<span class="hljs-built_in">${command}${extension}</span>`
+    ));
+    if (startsAtLineStart && SHELL_EXTERNAL_COMMAND_LINE_START_PATTERN) {
+      output = output.replace(SHELL_EXTERNAL_COMMAND_LINE_START_PATTERN, (_match, spacing, command, extension = '') => (
+        `${spacing}<span class="hljs-built_in">${command}${extension}</span>`
+      ));
+    }
+    return output;
+  }
+
+  function mapHighlightTextSegments(html, mapper, initialState = {}, protectedMapper = null) {
+    const source = String(html || '');
+    let output = '';
+    let cursor = 0;
+    let hljsSpanDepth = 0;
+    const state = { ...initialState };
+    const tagPattern = /<\/?span\b[^>]*>|<[^>]*>/gi;
+    for (const match of source.matchAll(tagPattern)) {
+      const text = source.slice(cursor, match.index);
+      if (hljsSpanDepth) {
+        if (protectedMapper) protectedMapper(text, state);
+        output += text;
+      } else {
+        output += mapper(text, state);
+      }
+      const tag = match[0];
+      output += tag;
+      if (/^<span\b/i.test(tag) && HLJS_SPAN_CLASS_PATTERN.test(tag)) hljsSpanDepth += 1;
+      else if (/^<\/span\b/i.test(tag) && hljsSpanDepth > 0) hljsSpanDepth -= 1;
+      cursor = match.index + tag.length;
+    }
+    const tail = source.slice(cursor);
+    if (hljsSpanDepth) {
+      if (protectedMapper) protectedMapper(tail, state);
+      output += tail;
+    } else {
+      output += mapper(tail, state);
+    }
+    return output;
+  }
+
+  function highlightExternalCommandWords(html) {
+    return mapHighlightTextSegments(html, (text, state) => {
+      const output = highlightExternalCommandWordsInText(text, state.atLineStart);
+      if (text) state.atLineStart = textEndsAtLineStart(text, state.atLineStart);
+      return output;
+    }, { atLineStart: true }, (text, state) => {
+      if (text) state.atLineStart = textEndsAtLineStart(text, state.atLineStart);
+    });
+  }
+
+  function unhighlightBashBuiltinsInWindowsPaths(html) {
+    return String(html || '').replace(/<span class="hljs-built_in">([^<]+)<\/span>(\\[^\s<]*)/g, '$1$2');
+  }
+
+  function highlightBashOptionsInText(htmlText) {
+    return String(htmlText || '').replace(BASH_OPTION_PATTERN, (_match, prefix, option) => (
+      `${prefix}<span class="hljs-literal">${option}</span>`
+    ));
+  }
+
+  function highlightBashOptions(html) {
+    return mapHighlightTextSegments(html, (text) => highlightBashOptionsInText(text));
+  }
+
   function languageForPath(filePath) {
     const ext = String(filePath || '').toLowerCase().split(/[\\/]/).pop().split('.').pop();
     const languages = {
@@ -79,7 +172,10 @@
     const normalized = normalizeHighlightLanguage(language);
     if (!hljs || !normalized || !hljs.getLanguage?.(normalized)) return escapeHtml(source);
     try {
-      return hljs.highlight(source, { language: normalized, ignoreIllegals: true }).value;
+      const highlighted = hljs.highlight(source, { language: normalized, ignoreIllegals: true }).value;
+      if (normalized === 'powershell') return highlightExternalCommandWords(highlighted);
+      if (normalized === 'bash') return unhighlightBashBuiltinsInWindowsPaths(highlightBashOptions(highlightExternalCommandWords(highlighted)));
+      return highlighted;
     } catch {
       return escapeHtml(source);
     }

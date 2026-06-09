@@ -194,3 +194,156 @@ test('renderer applies highlight.js syntax highlighting when available', () => {
     globalThis.hljs = previous;
   }
 });
+
+test('renderer enhances shell command highlighting without touching protected spans', () => {
+  const previous = globalThis.hljs;
+  globalThis.hljs = {
+    getLanguage: (language) => language === 'bash' || language === 'powershell',
+    highlight: (source) => ({
+      value: source === 'ignored by mock'
+        ? '<span class="hljs-comment"># git status; rg TODO</span>\n<span class="hljs-string">&quot;git status; rg TODO&quot;</span>\npython3 -m <span class="hljs-params">-m</span> pytest\n; rg live\nWrite-Output <span class="hljs-comment"># still protected\n</span>rg after-comment'
+        : source.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+    }),
+  };
+  try {
+    const bashCommand = renderSections([
+      {
+        type: 'code',
+        title: 'Command',
+        code: 'rg -n -F "TODO" src | git grep "highlight"',
+        language: 'shell',
+      },
+    ]);
+    const powershellCommand = renderSections([
+      {
+        type: 'code',
+        title: 'Command',
+        code: 'Write-Output git; Git.EXE status --short; pip3 install tox; python3 -m pytest',
+        language: 'powershell',
+      },
+    ]);
+    const protectedTokens = renderSections([
+      {
+        type: 'code',
+        title: 'Command',
+        code: 'ignored by mock',
+        language: 'powershell',
+      },
+    ]);
+
+    assert.match(bashCommand, /<span class="hljs-built_in">rg<\/span>/);
+    assert.match(bashCommand, /<span class="hljs-literal">-n<\/span>/);
+    assert.match(bashCommand, /<span class="hljs-literal">-F<\/span>/);
+    assert.match(bashCommand, /<span class="hljs-built_in">git<\/span> grep/);
+    assert.match(powershellCommand, /Write-Output git; <span class="hljs-built_in">Git\.EXE<\/span> status/);
+    assert.match(powershellCommand, /; <span class="hljs-built_in">pip3<\/span> install tox/);
+    assert.match(powershellCommand, /; <span class="hljs-built_in">python3<\/span> -m pytest/);
+    assert.doesNotMatch(powershellCommand, /Write-Output <span class="hljs-built_in">git<\/span>/);
+    assert.match(protectedTokens, /<span class="hljs-comment"># git status; rg TODO<\/span>/);
+    assert.match(protectedTokens, /<span class="hljs-string">&quot;git status; rg TODO&quot;<\/span>/);
+    assert.match(protectedTokens, /<span class="hljs-built_in">python3<\/span> -m <span class="hljs-params">-m<\/span> pytest/);
+    assert.doesNotMatch(protectedTokens, /<span class="hljs-built_in">pytest<\/span>/);
+    assert.match(protectedTokens, /; <span class="hljs-built_in">rg<\/span> live/);
+    assert.match(protectedTokens, /Write-Output <span class="hljs-comment"># still protected\n<\/span><span class="hljs-built_in">rg<\/span> after-comment/);
+    assert.doesNotMatch(protectedTokens, /hljs-comment"># <span class="hljs-built_in">git<\/span>/);
+    assert.doesNotMatch(protectedTokens, /hljs-string">&quot;<span class="hljs-built_in">git<\/span>/);
+  } finally {
+    globalThis.hljs = previous;
+  }
+});
+
+test('renderer does not highlight bash built-ins inside Windows path arguments', () => {
+  const previous = globalThis.hljs;
+  globalThis.hljs = {
+    getLanguage: (language) => language === 'bash',
+    highlight: () => ({
+      value: 'rg -n <span class="hljs-built_in">test</span>\\codex.test.js <span class="hljs-string">"-F"</span> <span class="hljs-built_in">echo</span> ok',
+    }),
+  };
+  try {
+    const html = renderSections([
+      {
+        type: 'code',
+        title: 'Command',
+        code: 'ignored by mock',
+        language: 'shell',
+      },
+    ]);
+
+    assert.match(html, /<span class="hljs-built_in">rg<\/span> <span class="hljs-literal">-n<\/span> test\\codex\.test\.js <span class="hljs-string">"-F"<\/span> <span class="hljs-built_in">echo<\/span> ok/);
+    assert.doesNotMatch(html, /<span class="hljs-built_in">test<\/span>\\codex\.test\.js/);
+    assert.doesNotMatch(html, /<span class="hljs-string">"<span class="hljs-literal">-F<\/span>"<\/span>/);
+  } finally {
+    globalThis.hljs = previous;
+  }
+});
+
+test('renderer tolerates a missing command highlighting word list', () => {
+  const rendererPath = require.resolve('../public/renderers');
+  const commandHighlightingPath = require.resolve('../public/command-highlighting');
+  const previousRenderer = require.cache[rendererPath];
+  const previousCommandHighlighting = require.cache[commandHighlightingPath];
+  const previousHljs = globalThis.hljs;
+  try {
+    delete require.cache[rendererPath];
+    require.cache[commandHighlightingPath] = {
+      id: commandHighlightingPath,
+      filename: commandHighlightingPath,
+      loaded: true,
+      exports: {},
+    };
+    globalThis.hljs = {
+      getLanguage: (language) => language === 'powershell',
+      highlight: (source) => ({ value: source }),
+    };
+    const isolatedRenderers = require('../public/renderers');
+    const html = isolatedRenderers.renderSections([
+      { type: 'code', title: 'Command', code: 'rg -n TODO', language: 'powershell' },
+    ]);
+
+    assert.match(html, /rg -n TODO/);
+    assert.doesNotMatch(html, /hljs-built_in">rg/);
+  } finally {
+    globalThis.hljs = previousHljs;
+    delete require.cache[rendererPath];
+    if (previousRenderer) require.cache[rendererPath] = previousRenderer;
+    else delete require.cache[rendererPath];
+    if (previousCommandHighlighting) require.cache[commandHighlightingPath] = previousCommandHighlighting;
+    else delete require.cache[commandHighlightingPath];
+  }
+});
+
+test('renderer treats shared command words as regex literals', () => {
+  const rendererPath = require.resolve('../public/renderers');
+  const commandHighlightingPath = require.resolve('../public/command-highlighting');
+  const previousRenderer = require.cache[rendererPath];
+  const previousCommandHighlighting = require.cache[commandHighlightingPath];
+  const previousHljs = globalThis.hljs;
+  try {
+    delete require.cache[rendererPath];
+    require.cache[commandHighlightingPath] = {
+      id: commandHighlightingPath,
+      filename: commandHighlightingPath,
+      loaded: true,
+      exports: { SHELL_EXTERNAL_COMMAND_WORDS: ['foo.bar', 'tool+'] },
+    };
+    globalThis.hljs = {
+      getLanguage: (language) => language === 'powershell',
+      highlight: (source) => ({ value: source }),
+    };
+    const isolatedRenderers = require('../public/renderers');
+    const html = isolatedRenderers.renderSections([
+      { type: 'code', title: 'Command', code: 'fooXbar ok; foo.bar ok; tool+ ok', language: 'powershell' },
+    ]);
+
+    assert.match(html, /fooXbar ok; <span class="hljs-built_in">foo\.bar<\/span> ok; <span class="hljs-built_in">tool\+<\/span> ok/);
+    assert.doesNotMatch(html, /<span class="hljs-built_in">fooXbar<\/span>/);
+  } finally {
+    globalThis.hljs = previousHljs;
+    delete require.cache[rendererPath];
+    if (previousRenderer) require.cache[rendererPath] = previousRenderer;
+    else delete require.cache[rendererPath];
+    if (previousCommandHighlighting) require.cache[commandHighlightingPath] = previousCommandHighlighting;
+    else delete require.cache[commandHighlightingPath];
+  }
+});

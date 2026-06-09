@@ -765,6 +765,8 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(outputOnlyCommandTimeline.events[0].status, 'success');
   assert.equal(outputOnlyCommandTimeline.events[0].outputStats.exitCode, 0);
   assert.match(outputOnlyCommandTimeline.events[0].preview, /rg -n -F 'alpha' 'src'/);
+  const outputOnlyCommandDetail = buildEventDetail(session, outputOnlyCommandTimeline.events[0].id, 'main');
+  assert.equal(outputOnlyCommandDetail.timelineSections[0].language, 'powershell');
 });
 
 test('free-text search matches one case-insensitive phrase with flexible whitespace', () => {
@@ -772,6 +774,59 @@ test('free-text search matches one case-insensitive phrase with flexible whitesp
   assert.equal(matchTerms('before foo unrelated bar after', 'foo bar'), false);
   assert.equal(matchTerms('before a+b after', 'a+b'), true);
   assert.equal(matchTerms('before aaab after', 'a+b'), false);
+});
+
+test('command language inference uses session shell context for bare external commands', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '08');
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+
+  async function writeShellSession(id, shell, command, callId) {
+    await fsp.writeFile(path.join(dir, `rollout-2026-06-08T10-00-00-${id}.jsonl`), [
+      JSON.stringify({ timestamp: '2026-06-08T10:00:00.000Z', type: 'session_meta', payload: { id, cwd: repoRoot } }),
+      JSON.stringify({
+        timestamp: '2026-06-08T10:00:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: `<environment_context>\n  <cwd>${repoRoot}</cwd>\n  <shell>${shell}</shell>\n</environment_context>` }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-08T10:00:02.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          name: 'shell_command',
+          call_id: callId,
+          arguments: JSON.stringify({ command, workdir: repoRoot }),
+        },
+      }),
+      '',
+    ].join('\n'), 'utf8');
+  }
+
+  const bashId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const powershellId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const wrappedBashId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+  await writeShellSession(bashId, 'bash', 'rg -n TODO src', 'call-bash');
+  await writeShellSession(powershellId, 'powershell', 'pip3 install tox; python3 -m pytest', 'call-powershell');
+  await writeShellSession(wrappedBashId, 'powershell', ['bash', '-lc', 'pwsh -Command "rg -n TODO src"'], 'call-wrapped-bash');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const bashSession = index.sessionsById.get(bashId);
+  const powershellSession = index.sessionsById.get(powershellId);
+  const wrappedBashSession = index.sessionsById.get(wrappedBashId);
+  const bashEvent = bashSession.logicalEvents.find((event) => event.kind === 'command');
+  const powershellEvent = powershellSession.logicalEvents.find((event) => event.kind === 'command');
+  const wrappedBashEvent = wrappedBashSession.logicalEvents.find((event) => event.kind === 'command');
+
+  assert.equal(buildEventDetail(bashSession, bashEvent.id, 'main').timelineSections[0].language, 'shell');
+  assert.equal(buildEventDetail(powershellSession, powershellEvent.id, 'main').timelineSections[0].language, 'powershell');
+  assert.equal(buildEventDetail(wrappedBashSession, wrappedBashEvent.id, 'main').timelineSections[0].language, 'bash');
 });
 
 test('filterSessions uses contiguous phrase semantics for direct q API filtering', async () => {

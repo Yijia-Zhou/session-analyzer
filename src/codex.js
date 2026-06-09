@@ -5,6 +5,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
 const MarkdownIt = require('markdown-it');
+const { SHELL_EXTERNAL_COMMAND_WORDS } = require('../public/command-highlighting');
 
 const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
@@ -862,18 +863,46 @@ function diffStatsEntriesFromPatchInput(input) {
   return entries;
 }
 
-function inferCommandLanguage(commandText, args = {}) {
+const COMMON_POWERSHELL_EXTERNAL_COMMANDS = new Set(SHELL_EXTERNAL_COMMAND_WORDS);
+
+function commandHead(commandText) {
+  const match = String(commandText || '').trim().match(/^(?:&\s*)?(?:"([^"]+)"|'([^']+)'|([^\s|;&(){}]+))/);
+  const token = match ? (match[1] || match[2] || match[3] || '') : '';
+  return executableName(token);
+}
+
+function executableName(value) {
+  return String(value || '').toLowerCase().replace(/\\/g, '/').split('/').pop().replace(/\.exe$/, '');
+}
+
+function normalizedSessionShell(value) {
+  return executableName(value);
+}
+
+function sessionUsesPowerShell(value) {
+  const shell = normalizedSessionShell(value);
+  return shell === 'powershell' || shell === 'pwsh';
+}
+
+function commandLanguageContext(session = {}) {
+  return { sessionShell: session.shell || '' };
+}
+
+function inferCommandLanguage(commandText, args = {}, context = {}) {
   const commandArray = Array.isArray(args?.command) ? args.command : [];
   const joined = commandArray.length ? commandArray.join(' ') : String(commandText || '');
   const lower = joined.toLowerCase();
-  const executable = String(commandArray[0] || '').toLowerCase().replace(/\\/g, '/').split('/').pop();
+  const executable = executableName(commandArray[0] || '');
+  const head = executable || commandHead(joined);
+  if (head === 'powershell' || head === 'pwsh') return 'powershell';
+  if (head === 'cmd' || /\bcmd(?:\.exe)?\s+\/c\b/.test(lower)) return 'batch';
+  if (head === 'bash') return 'bash';
+  if (head === 'sh') return 'sh';
+  if (head === 'zsh') return 'zsh';
+  if (head === 'fish') return 'fish';
   if (/\b(powershell(?:\.exe)?|pwsh(?:\.exe)?)\b/.test(lower) || lower.includes(' -command ')) return 'powershell';
   if (/\b(get-content|set-content|select-object|where-object|start-process|invoke-webrequest|remove-item|copy-item|move-item)\b/.test(lower)) return 'powershell';
-  if (executable === 'cmd.exe' || executable === 'cmd' || /\bcmd(?:\.exe)?\s+\/c\b/.test(lower)) return 'batch';
-  if (executable === 'bash') return 'bash';
-  if (executable === 'sh') return 'sh';
-  if (executable === 'zsh') return 'zsh';
-  if (executable === 'fish') return 'fish';
+  if (sessionUsesPowerShell(context.sessionShell) && COMMON_POWERSHELL_EXTERNAL_COMMANDS.has(head)) return 'powershell';
   if (/\b(bash|zsh|fish|sh)\b/.test(lower)) return 'shell';
   return 'shell';
 }
@@ -1525,6 +1554,7 @@ function makeEmptySession(filePath, relFile, stat) {
     parentSessionInferred: false,
     forkedFromSessionId: '',
     agentNickname: '',
+    shell: '',
     primarySessionMetaKind: '',
     _reviewMarkers: [],
     rawEvents: [],
@@ -2072,7 +2102,7 @@ function extractPlanSections(raws) {
   return sections;
 }
 
-function extractCommandSections(raws, event) {
+function extractCommandSections(raws, event, session = {}) {
   const timelineSections = [];
   const inspectorSections = [];
   const functionCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');
@@ -2082,7 +2112,7 @@ function extractCommandSections(raws, event) {
   const args = commandArgsFromRaw(functionCall);
   const formatted = parseFormattedCommandOutput(functionOutput?.output);
   const commandText = execAny?.commandText || commandToText(args?.command);
-  maybePushCodeSection(timelineSections, 'Command', commandText, inferCommandLanguage(commandText, args));
+  maybePushCodeSection(timelineSections, 'Command', commandText, inferCommandLanguage(commandText, args, commandLanguageContext(session)));
 
   maybePushKvSection(inspectorSections, 'Run context', [
     { key: 'cwd', value: String(execAny?.parsed?.payload?.cwd || args?.workdir || '') },
@@ -2821,7 +2851,7 @@ function rawToolSections(raw, relatedEvent, session = {}) {
   if (raw.recordType === 'response_item' && raw.payloadType === 'function_call' && toolName === 'shell_command') {
     const args = commandArgsFromRaw(raw);
     const commandText = commandToText(args?.command);
-    maybePushCodeSection(sections, 'Command', commandText, inferCommandLanguage(commandText, args));
+    maybePushCodeSection(sections, 'Command', commandText, inferCommandLanguage(commandText, args, commandLanguageContext(session)));
     maybePushKvSection(sections, 'Run context', [
       { key: 'cwd', value: String(args?.workdir || '') },
       { key: 'timeoutMs', value: args?.timeout_ms == null ? '' : String(args.timeout_ms) },
@@ -2841,7 +2871,7 @@ function rawToolSections(raw, relatedEvent, session = {}) {
     }
     omitPayloadKeys.push('output');
   } else if (raw.recordType === 'event_msg' && raw.payloadType === 'exec_command_end') {
-    maybePushCodeSection(sections, 'Command', raw.commandText, inferCommandLanguage(raw.commandText));
+    maybePushCodeSection(sections, 'Command', raw.commandText, inferCommandLanguage(raw.commandText, {}, commandLanguageContext(session)));
     maybePushKvSection(sections, 'Run context', [
       { key: 'cwd', value: String(raw.parsed?.payload?.cwd || '') },
       { key: 'status', value: String(raw.status || '') },
@@ -2978,7 +3008,7 @@ function extractRawSections(raw, relatedEvent, session = {}) {
     }
   }
   if (!primary.sections.length && raw.commandText) {
-    maybePushCodeSection(sections, 'Command', raw.commandText, inferCommandLanguage(raw.commandText));
+    maybePushCodeSection(sections, 'Command', raw.commandText, inferCommandLanguage(raw.commandText, {}, commandLanguageContext(session)));
     maybePushTerminalSection(sections, 'stdout', raw.stdout, 'stdout');
     maybePushTerminalSection(sections, 'stderr', raw.stderr, 'stderr');
     if (raw.stdout) maybePushStructuredSection(sections, 'stdout (structured)', raw.stdout);
@@ -3007,7 +3037,7 @@ function extractLogicalDetailSections(event, raws, session = {}) {
     case 'reasoning':
       return splitSectionsForDetail(extractReasoningSections(raws));
     case 'command':
-      return extractCommandSections(raws, event);
+      return extractCommandSections(raws, event, session);
     case 'patch':
       return extractPatchSections(raws, event, session);
     case 'js_repl':
@@ -4086,7 +4116,11 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
       updateTimeRange(session, record.timestamp);
       const embeddedImages = [];
       externalizeEmbeddedImages(record, { file: relFile, line: lineNumber }, embeddedImages);
-      session.rawEvents.push(makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages));
+      const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages);
+      if (!session.shell && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
+        session.shell = readXmlTag(raw.messageText, 'shell');
+      }
+      session.rawEvents.push(raw);
     }
   } finally {
     rl.close();
