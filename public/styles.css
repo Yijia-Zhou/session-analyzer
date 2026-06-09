@@ -1949,6 +1949,82 @@ body[data-project-mode='selecting'] .searchAssist {
   padding-top: 0.75rem;
 }
 
+.eventFooterActions {
+  bottom: 0;
+  position: absolute;
+  right: 0.36rem;
+  z-index: 3;
+}
+
+.eventCollapseBtn {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  box-sizing: border-box;
+  color: color-mix(in srgb, var(--event-kind) 45%, #9caab0);
+  display: inline-flex;
+  height: 1.5rem;
+  justify-content: center;
+  opacity: 0.34;
+  padding: 0;
+  position: relative;
+  transition: color 120ms ease, opacity 120ms ease;
+  width: 1.5rem;
+}
+
+.eventCollapseBtn::before {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  box-sizing: border-box;
+  content: '';
+  height: 1.18rem;
+  left: 50%;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+  width: 1.18rem;
+}
+
+.eventCollapseIcon {
+  display: block;
+  fill: none;
+  height: 0.82rem;
+  position: relative;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.1;
+  width: 0.82rem;
+  z-index: 1;
+}
+
+.event.expanded.selected .eventCollapseBtn,
+.event.expanded:hover .eventCollapseBtn,
+.eventCollapseBtn:hover,
+.eventCollapseBtn:focus-visible {
+  color: var(--event-kind);
+  opacity: 1;
+}
+
+.event.expanded.selected .eventCollapseBtn::before,
+.event.expanded:hover .eventCollapseBtn::before,
+.eventCollapseBtn:hover::before,
+.eventCollapseBtn:focus-visible::before {
+  background: #fff;
+  border-color: color-mix(in srgb, var(--event-kind) 32%, #d7dee2);
+}
+
+.eventCollapseBtn:focus-visible {
+  outline: none;
+}
+
+.eventCollapseBtn:focus-visible::before {
+  box-shadow: inset 0 0 0 3px var(--event-kind-soft);
+}
+
 .eventSection {
   min-width: 0;
 }

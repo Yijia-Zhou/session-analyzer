@@ -61,6 +61,7 @@
   - A removed or renamed built-in folding profile stored in `localStorage` falls back to `narrative`, persists the repaired selection, and does not leave the profile picker in an invalid state. / 当 `localStorage` 中保存的内置折叠策略已被移除或重命名时，应用应回退到 `narrative`、持久化修复后的选择，并且不让策略选择器停留在无效状态。
   - The folding profile info control remains a single movable slot that follows the currently visible profile picker between the detail pane and topbar, disappears on layers where folding profiles do not apply, and keeps its comparison popover within the visible detail pane or viewport. / 折叠策略信息控件应保持为单个可移动 slot，在 detail pane 与 topbar 之间跟随当前可见的策略选择器，在不适用折叠策略的 layer 上消失，并让对比 popover 保持在可见 detail pane 或 viewport 内。
   - The nonzero Issues metric reflects broad Main-timeline issue counts and toggles the error-focus profile without adding search filters or losing the selected session. / 非零 Issues 指标应反映广义 Main timeline 问题计数，并切换到错误聚焦策略，同时不添加搜索筛选或丢失当前选中 session。
+  - Expanded-event bottom collapse control coverage: mouse and keyboard activation, natural `summary` versus `collapsed` fallback, non-flow layout without added body whitespace, focused-control geometry, short-message events, code/terminal events, and narrow viewport placement. / 展开事件底部收起控件覆盖：鼠标和键盘触发、自然 `summary` 与 `collapsed` 回退、不会增加正文空白的非文档流布局、聚焦控件几何位置、短消息事件、代码/terminal 事件，以及窄视口位置。
 - Related docs: / 相关文档：
   - `docs/product-specs/session-transcript-analyzer.md`
   - `docs/design-docs/logical-event-timeline.md`

@@ -1945,6 +1945,19 @@ function renderEventBody(event, display) {
   return `<div class="eventBody">${snippet}<div class="notice info"><p>Loading structured detail...</p></div></div>`;
 }
 
+function renderEventFooterActions(display) {
+  if (display !== 'expanded') return '';
+  const label = 'Collapse event';
+  return `<div class="eventFooterActions">
+    <button class="eventCollapseBtn" type="button" data-action="toggle" aria-label="${label}" title="${label}">
+      <svg class="eventCollapseIcon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M6 15l6-6 6 6"></path>
+      </svg>
+      <span class="srOnly">${label}</span>
+    </button>
+  </div>`;
+}
+
 function renderEventPreview(event, display) {
   if (display === 'expanded') return '';
   if (event.kind === 'usage_limit_warning' && event.usageLimits?.length) {
@@ -2005,6 +2018,7 @@ function renderTimeline() {
       </div>
       ${renderEventPreview(event, ds)}
       ${renderEventBody(event, ds)}
+      ${renderEventFooterActions(ds)}
     </article>`;
   }).join('');
   queueVisibleDetailLoad();
