@@ -707,7 +707,7 @@ function visibleProfilePickerHost(host) {
 function syncProfileInfoSlot(analyzerDisabled = false) {
   const detailHost = el.detail?.querySelector('[data-profile-picker-host="detail"]');
   const topbarHost = el.profileSelect?.closest('[data-profile-picker-host="topbar"]');
-  const host = !analyzerDisabled && profileAppliesToActiveLayer()
+  const host = !analyzerDisabled && profileAppliesToActiveLayer() && isBuiltinProfile(state.profileId) && !profileDirty()
     ? visibleProfilePickerHost(detailHost) || visibleProfilePickerHost(topbarHost)
     : null;
   const slot = ensureProfileInfoSlot();
@@ -2448,9 +2448,20 @@ function renderProfileRulesPane() {
     </label>`
   )).join('');
   const defaultKindNames = defaultKinds.map((kind) => kindLabel(kind)).join(', ');
+  const saveIcon = `<svg class="profileActionIcon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path d="M5 3h12l2 2v16H5z"></path>
+    <path d="M8 3v6h8V3"></path>
+    <path d="M8 21v-7h8v7"></path>
+  </svg>`;
+  const cancelIcon = `<svg class="profileActionIcon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path d="M6 6l12 12"></path>
+    <path d="M18 6L6 18"></path>
+  </svg>`;
   const editActions = dirty
-    ? `<button class="smallBtn" type="button" data-detail-action="save-profile">Save</button>
-    <button class="smallBtn" type="button" data-detail-action="cancel-profile">Cancel</button>`
+    ? `<span class="profileActionButtons">
+      <button class="smallBtn profileActionIconBtn" type="button" data-detail-action="save-profile" aria-label="Save profile changes" title="Save">${saveIcon}</button>
+      <button class="smallBtn profileActionIconBtn" type="button" data-detail-action="cancel-profile" aria-label="Cancel profile changes" title="Cancel">${cancelIcon}</button>
+    </span>`
     : '';
   const actions = `<div class="profileActionStack">
       <div class="profilePickerCompact" data-profile-picker-host="detail">
@@ -2578,8 +2589,8 @@ function setProfileId(profileId, options = {}) {
   state.profileId = profileId;
   localStorage.setItem('sessionAnalyzer.profile', state.profileId);
   el.profileSelect.value = state.profileId;
-  syncProfileInfoSlot();
   resetProfileDraft();
+  syncProfileInfoSlot();
   clearCurrentSessionOverrides();
   renderTimeline();
   updateMetricActionStates();

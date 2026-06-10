@@ -1214,8 +1214,10 @@ body[data-project-mode='selecting'] .searchAssist {
 }
 
 .profileDetailHeader {
+  column-gap: 0.75rem;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(5.5rem, max-content) minmax(0, 1fr);
+  row-gap: 0.45rem;
 }
 
 .profileDetailHeader .detailViewTitle {
@@ -1227,6 +1229,8 @@ body[data-project-mode='selecting'] .searchAssist {
   grid-column: 1;
   grid-row: 1;
   margin-bottom: 0;
+  overflow-wrap: normal;
+  word-break: keep-all;
 }
 
 .profileDetailHeader .detailViewTitle p {
@@ -1240,6 +1244,7 @@ body[data-project-mode='selecting'] .searchAssist {
   grid-column: 2;
   grid-row: 1;
   justify-content: end;
+  min-width: 0;
 }
 
 .profilePickerCompact {
@@ -1259,7 +1264,10 @@ body[data-project-mode='selecting'] .searchAssist {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
+  justify-content: flex-end;
   max-width: 100%;
+  min-width: 0;
+  width: 100%;
 }
 
 .profileActionRow {
@@ -1268,6 +1276,32 @@ body[data-project-mode='selecting'] .searchAssist {
   flex-wrap: wrap;
   gap: 0.4rem;
   justify-content: flex-end;
+}
+
+.profileActionButtons {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.profileActionIconBtn {
+  align-items: center;
+  display: inline-flex;
+  height: 34px;
+  justify-content: center;
+  padding: 0;
+  width: 34px;
+}
+
+.profileActionIcon {
+  fill: none;
+  height: 17px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  width: 17px;
 }
 
 .profilePickerCompact select {
@@ -1280,6 +1314,16 @@ body[data-project-mode='selecting'] .searchAssist {
   min-height: 34px;
   min-width: 0;
   padding: 0.32rem 1.5rem 0.32rem 0.55rem;
+}
+
+.profilePickerCompact[data-profile-picker-host='detail'] {
+  flex: 1 1 170px;
+  max-width: min(100%, 230px);
+}
+
+.profilePickerCompact[data-profile-picker-host='detail'] select {
+  max-width: 100%;
+  width: 100%;
 }
 
 .profilePickerTopbar select {
@@ -1379,7 +1423,9 @@ body[data-project-mode='selecting'] .searchAssist {
 .profileDefaultInline {
   align-items: center;
   display: flex;
+  flex: 0 0 auto;
   gap: 0.35rem;
+  min-width: 0;
 }
 
 .profileDefaultInline span {
@@ -1431,11 +1477,16 @@ body[data-project-mode='selecting'] .searchAssist {
   align-items: center;
   color: var(--muted);
   cursor: pointer;
-  display: flex;
+  display: grid;
   font-size: 0.8rem;
   font-weight: 700;
   gap: 0.5rem;
-  justify-content: space-between;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.profileRuleDetails summary > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .profileRuleDetails p {
