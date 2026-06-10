@@ -124,6 +124,10 @@ const CANONICAL_EVENT_TYPES = Object.freeze({
   turn_complete: 'task_complete',
 });
 
+const CANONICAL_SCHEMA_VERSION = 1;
+const CODEX_SOURCE_KIND = 'codex';
+const CODEX_JSONL_LINE_LOCATOR_TYPE = 'jsonl_line';
+
 const TOOL_EVENT_TYPES = new Set([
   'exec_command_begin',
   'exec_command_update',
@@ -1982,8 +1986,11 @@ function classifyProtocolText(text, role) {
 function createLogicalEvent(fields) {
   const preview = sanitizeLogicalEnvelopeValue(fields.preview || '');
   const searchText = sanitizeLogicalEnvelopeValue(fields.searchText || '').trim();
+  const rawRefs = fields.rawRefs || [];
   return {
     id: fields.id,
+    schemaVersion: CANONICAL_SCHEMA_VERSION,
+    sourceKind: CODEX_SOURCE_KIND,
     timestamp: sanitizeLogicalEnvelopeValue(fields.timestamp || ''),
     turnId: sanitizeLogicalEnvelopeValue(fields.turnId || ''),
     kind: sanitizeLogicalEnvelopeValue(fields.kind || 'event'),
@@ -2002,14 +2009,31 @@ function createLogicalEvent(fields) {
     outputStats: sanitizeLogicalEnvelopeValue(fields.outputStats || {}),
     tokenUsage: sanitizeLogicalEnvelopeValue(fields.tokenUsage || []),
     usageLimits: sanitizeLogicalEnvelopeValue(fields.usageLimits || []),
-    rawRefs: fields.rawRefs || [],
+    rawRefs,
     channels: sanitizeLogicalEnvelopeValue(fields.channels || []),
-    source: fields.rawRefs && fields.rawRefs[0] ? fields.rawRefs[0] : fields.source,
+    source: rawRefs[0] || fields.source,
+    sourceLocator: rawRefs[0]?.sourceLocator || fields.sourceLocator || null,
+  };
+}
+
+function codexSourceLocator(source) {
+  if (!source || !source.file || source.line == null) return null;
+  return {
+    type: CODEX_JSONL_LINE_LOCATOR_TYPE,
+    file: source.file,
+    line: source.line,
   };
 }
 
 function rawRef(raw) {
-  return { file: raw.source.file, line: raw.source.line, rawId: raw.rawId };
+  return {
+    file: raw.source.file,
+    line: raw.source.line,
+    rawId: raw.rawId,
+    sourceLocator: codexSourceLocator(raw.source),
+    sourceRecordType: raw.recordType || '',
+    sourceEventType: raw.payloadType || '',
+  };
 }
 
 function rawMatchesEvent(raw, event) {
@@ -3077,10 +3101,15 @@ function buildEventDetail(session, eventId, layer = 'main') {
     const split = splitSectionsForDetail(sections);
     return {
       id: raw.rawId,
+      schemaVersion: CANONICAL_SCHEMA_VERSION,
+      sourceKind: CODEX_SOURCE_KIND,
       kind: raw.payloadType || raw.recordType,
       subtype: raw.role || '',
       layer: 'raw',
       title: raw.payloadType || raw.recordType,
+      sourceLocator: codexSourceLocator(raw.source),
+      sourceRecordType: raw.recordType || '',
+      sourceEventType: raw.payloadType || '',
       meta: rawMeta(raw),
       rawRefs: [rawRef(raw)],
       timelineSections: filterDetailSections(split.timelineSections),
@@ -3098,10 +3127,13 @@ function buildEventDetail(session, eventId, layer = 'main') {
   const sanitizedDetailSections = sanitizeLogicalDetailSections(detailSections);
   return {
     id: logical.id,
+    schemaVersion: CANONICAL_SCHEMA_VERSION,
+    sourceKind: CODEX_SOURCE_KIND,
     kind: sanitizeLogicalEnvelopeValue(logical.kind),
     subtype: sanitizeLogicalEnvelopeValue(logical.subtype),
     layer: sanitizeLogicalEnvelopeValue(logical.layer),
     title: sanitizeLogicalEnvelopeValue(logical.label),
+    sourceLocator: logical.sourceLocator,
     meta: logicalMeta(logical),
     rawRefs: logical.rawRefs,
     timelineSections: filterDetailSections(sanitizedDetailSections.timelineSections),
@@ -3113,10 +3145,14 @@ function rawEventDto(raw, q) {
   const hasSearchHit = q ? eventHasSearchHit(raw, q) : false;
   return {
     id: raw.rawId,
+    schemaVersion: CANONICAL_SCHEMA_VERSION,
+    sourceKind: CODEX_SOURCE_KIND,
     timestamp: raw.timestamp,
     turnId: raw.turnId,
     recordType: raw.recordType,
     payloadType: raw.payloadType,
+    sourceRecordType: raw.recordType || '',
+    sourceEventType: raw.payloadType || '',
     kind: raw.payloadType || raw.recordType,
     subtype: raw.role || '',
     layer: 'raw',
@@ -3134,6 +3170,7 @@ function rawEventDto(raw, q) {
       durationMs: raw.durationMs,
     },
     source: raw.source,
+    sourceLocator: codexSourceLocator(raw.source),
     rawRefs: [rawRef(raw)],
     channels: [raw.recordType],
     searchText: raw.searchText,
@@ -4447,6 +4484,8 @@ function logicalEventDto(event, q) {
   const hasSearchHit = q ? eventHasSearchHit(event, q) : false;
   return sanitizeLogicalEventDto({
     id: event.id,
+    schemaVersion: event.schemaVersion,
+    sourceKind: event.sourceKind,
     timestamp: event.timestamp,
     turnId: event.turnId,
     recordType: '',
@@ -4468,6 +4507,7 @@ function logicalEventDto(event, q) {
     tokenUsage: event.tokenUsage,
     usageLimits: event.usageLimits,
     source: event.source,
+    sourceLocator: event.sourceLocator,
     rawRefs: event.rawRefs,
     channels: event.channels,
     snippet: hasSearchHit ? eventSearchSnippet(event, q) : '',

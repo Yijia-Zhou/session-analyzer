@@ -20,6 +20,31 @@ function rawRefLines(eventOrDetail) {
   return (eventOrDetail.rawRefs || []).map((ref) => ref.line);
 }
 
+function stableRawRefEnvelope(ref) {
+  return {
+    file: ref.file,
+    line: ref.line,
+    rawIdSuffix: String(ref.rawId || '').split(':').slice(-2).join(':'),
+    sourceLocator: ref.sourceLocator,
+    sourceRecordType: ref.sourceRecordType,
+    sourceEventType: ref.sourceEventType,
+  };
+}
+
+function stableEnvelope(dto) {
+  return {
+    schemaVersion: dto.schemaVersion,
+    sourceKind: dto.sourceKind,
+    hasSourceSchemaVersion: Object.hasOwn(dto, 'sourceSchemaVersion'),
+    sourceLocator: dto.sourceLocator,
+    hasSourceRecordType: Object.hasOwn(dto, 'sourceRecordType'),
+    sourceRecordType: dto.sourceRecordType,
+    hasSourceEventType: Object.hasOwn(dto, 'sourceEventType'),
+    sourceEventType: dto.sourceEventType,
+    rawRefs: (dto.rawRefs || []).map(stableRawRefEnvelope),
+  };
+}
+
 function stableTimelineEvent(event) {
   return {
     kind: event.kind,
@@ -117,6 +142,121 @@ test('Codex fixture replay keeps stable session and timeline machine fields', as
       { kind: 'protocol', subtype: 'session_configured', status: '', severity: 'normal', toolName: '', rawRefLines: [31] },
     ],
   });
+});
+
+test('Codex fixture replay exposes minimal canonical envelope fields', async () => {
+  const index = await buildFixtureIndex();
+  const session = index.sessionsById.get(primaryFixtureSessionId);
+  const mainTimeline = getTimeline(index, primaryFixtureSessionId, { layer: 'main', offset: 0, limit: 20, q: '' });
+  const protocolTimeline = getTimeline(index, primaryFixtureSessionId, { layer: 'protocol', offset: 0, limit: 8, q: '' });
+  const rawTimeline = getTimeline(index, primaryFixtureSessionId, { layer: 'raw', offset: 0, limit: 3, q: '' });
+  const mainEvent = mainTimeline.events[0];
+  const protocolEvent = protocolTimeline.events[1];
+  const rawEvent = rawTimeline.events[1];
+  const mainDetail = buildEventDetail(session, mainEvent.id, 'main');
+  const rawDetail = buildEventDetail(session, rawEvent.id, 'raw');
+
+  assert.deepEqual(stableEnvelope(mainEvent), {
+    schemaVersion: 1,
+    sourceKind: 'codex',
+    hasSourceSchemaVersion: false,
+    sourceLocator: {
+      type: 'jsonl_line',
+      file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+      line: 7,
+    },
+    hasSourceRecordType: false,
+    sourceRecordType: undefined,
+    hasSourceEventType: false,
+    sourceEventType: undefined,
+    rawRefs: [
+      {
+        file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+        line: 7,
+        rawIdSuffix: 'raw:7',
+        sourceLocator: {
+          type: 'jsonl_line',
+          file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+          line: 7,
+        },
+        sourceRecordType: 'response_item',
+        sourceEventType: 'message',
+      },
+      {
+        file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+        line: 8,
+        rawIdSuffix: 'raw:8',
+        sourceLocator: {
+          type: 'jsonl_line',
+          file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+          line: 8,
+        },
+        sourceRecordType: 'event_msg',
+        sourceEventType: 'user_message',
+      },
+    ],
+  });
+
+  assert.deepEqual(stableEnvelope(protocolEvent), {
+    schemaVersion: 1,
+    sourceKind: 'codex',
+    hasSourceSchemaVersion: false,
+    sourceLocator: {
+      type: 'jsonl_line',
+      file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+      line: 2,
+    },
+    hasSourceRecordType: false,
+    sourceRecordType: undefined,
+    hasSourceEventType: false,
+    sourceEventType: undefined,
+    rawRefs: [
+      {
+        file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+        line: 2,
+        rawIdSuffix: 'raw:2',
+        sourceLocator: {
+          type: 'jsonl_line',
+          file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+          line: 2,
+        },
+        sourceRecordType: 'event_msg',
+        sourceEventType: 'task_started',
+      },
+    ],
+  });
+
+  assert.deepEqual(stableEnvelope(rawEvent), {
+    schemaVersion: 1,
+    sourceKind: 'codex',
+    hasSourceSchemaVersion: false,
+    sourceLocator: {
+      type: 'jsonl_line',
+      file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+      line: 2,
+    },
+    hasSourceRecordType: true,
+    sourceRecordType: 'event_msg',
+    hasSourceEventType: true,
+    sourceEventType: 'task_started',
+    rawRefs: [
+      {
+        file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+        line: 2,
+        rawIdSuffix: 'raw:2',
+        sourceLocator: {
+          type: 'jsonl_line',
+          file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+          line: 2,
+        },
+        sourceRecordType: 'event_msg',
+        sourceEventType: 'task_started',
+      },
+    ],
+  });
+
+  assert.deepEqual(stableEnvelope(mainDetail), stableEnvelope(mainEvent));
+  assert.deepEqual(stableEnvelope(rawDetail), stableEnvelope(rawEvent));
 });
 
 test('Codex fixture replay keeps stable representative detail DTO sections', async () => {
