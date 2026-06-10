@@ -657,6 +657,151 @@ test('current protocol plan, severity, lifecycle aliases, and incomplete tool re
   assert.match(allSections(planDetail)[0].html, /Protocol plan update fixture/);
 });
 
+test('grouped generic protocol tool labels prefer terminal lifecycle rows', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'eeeeeeee-1111-4444-8888-eeeeeeeeeeee';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '10');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const file = path.join(dir, `rollout-2026-06-10T12-00-00-${id}.jsonl`);
+  const records = [
+    {
+      type: 'session_meta',
+      timestamp: '2026-06-10T12:00:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:01.000Z',
+      payload: { type: 'dynamic_tool_call_begin', call_id: 'call-dynamic', tool_name: 'asset_lookup', request: { query: 'begin query' } },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:01.100Z',
+      payload: { type: 'dynamic_tool_call_end', call_id: 'call-dynamic', tool_name: 'asset_lookup', result: { count: 1 } },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:02.000Z',
+      payload: { type: 'image_generation_call_begin', call_id: 'call-image', tool_name: 'image_generation', prompt: 'draw a release icon' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:02.100Z',
+      payload: { type: 'image_generation_call_end', call_id: 'call-image', tool_name: 'image_generation', output: { image_count: 1 } },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:03.000Z',
+      payload: { type: 'approval_request_begin', call_id: 'call-approval', tool_name: 'approval', action: 'run command' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:03.100Z',
+      payload: { type: 'approval_request_declined', call_id: 'call-approval', tool_name: 'approval', status: 'declined', reason: 'not allowed' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:04.000Z',
+      payload: { type: 'hook_begin', call_id: 'call-hook', tool_name: 'pre_apply_hook', hook: 'pre-apply' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:04.100Z',
+      payload: { type: 'hook_end', call_id: 'call-hook', tool_name: 'pre_apply_hook', status: 'completed' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:05.000Z',
+      payload: { type: 'collab_agent_spawn_begin', call_id: 'call-collab', new_thread_id: 'agent-1', message: 'start helper' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:05.100Z',
+      payload: { type: 'collab_agent_spawn_end', call_id: 'call-collab', new_thread_id: 'agent-1', status: 'pending_init' },
+    },
+  ];
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const timeline = getTimeline(index, id, {
+    offset: 0,
+    limit: 20,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  const byCall = new Map(timeline.events.map((event) => [event.id.split(':call:')[1], event]));
+
+  assert.deepEqual({
+    dynamic: {
+      label: byCall.get('call-dynamic').label,
+      status: byCall.get('call-dynamic').status,
+      severity: byCall.get('call-dynamic').severity,
+      rawLines: byCall.get('call-dynamic').rawRefs.map((ref) => ref.line),
+    },
+    image: {
+      label: byCall.get('call-image').label,
+      status: byCall.get('call-image').status,
+      severity: byCall.get('call-image').severity,
+      rawLines: byCall.get('call-image').rawRefs.map((ref) => ref.line),
+    },
+    approval: {
+      label: byCall.get('call-approval').label,
+      status: byCall.get('call-approval').status,
+      severity: byCall.get('call-approval').severity,
+      rawLines: byCall.get('call-approval').rawRefs.map((ref) => ref.line),
+    },
+    hook: {
+      label: byCall.get('call-hook').label,
+      status: byCall.get('call-hook').status,
+      severity: byCall.get('call-hook').severity,
+      rawLines: byCall.get('call-hook').rawRefs.map((ref) => ref.line),
+    },
+    collab: {
+      label: byCall.get('call-collab').label,
+      status: byCall.get('call-collab').status,
+      severity: byCall.get('call-collab').severity,
+      rawLines: byCall.get('call-collab').rawRefs.map((ref) => ref.line),
+    },
+  }, {
+    dynamic: {
+      label: 'Dynamic Tool Call End',
+      status: 'success',
+      severity: 'normal',
+      rawLines: [2, 3],
+    },
+    image: {
+      label: 'Image Generation Call End',
+      status: 'success',
+      severity: 'normal',
+      rawLines: [4, 5],
+    },
+    approval: {
+      label: 'Approval Request Declined',
+      status: 'declined',
+      severity: 'warning',
+      rawLines: [6, 7],
+    },
+    hook: {
+      label: 'Hook End',
+      status: 'success',
+      severity: 'normal',
+      rawLines: [8, 9],
+    },
+    collab: {
+      label: 'Collab Agent Spawn End',
+      status: 'success',
+      severity: 'normal',
+      rawLines: [10, 11],
+    },
+  });
+});
+
 test('tool logical events merge new and old format patch records and search still works', async () => {
   const index = await buildFixtureIndex();
   const session = primaryFixtureSession(index);

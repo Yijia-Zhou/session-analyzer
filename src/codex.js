@@ -2973,6 +2973,29 @@ function rawEventDto(raw, q) {
   };
 }
 
+function toolLifecycleRank(raw) {
+  const type = String(raw?.payloadType || '');
+  if (/_declined$/.test(type)) return 4;
+  if (/_end$/.test(type)) return 3;
+  if (/(?:_update|_delta)$/.test(type)) return 2;
+  if (/_begin$/.test(type)) return 1;
+  return 0;
+}
+
+function representativeToolLifecycleRow(rows) {
+  let best = null;
+  for (const row of rows) {
+    if (!best) {
+      best = row;
+      continue;
+    }
+    const rank = toolLifecycleRank(row);
+    const bestRank = toolLifecycleRank(best);
+    if (rank > bestRank || (rank === bestRank && row.line > best.line)) best = row;
+  }
+  return best;
+}
+
 function buildToolLogicalEvent(callId, group) {
   const rawRefs = group.map(rawRef);
   const channels = [...new Set(group.map((raw) => raw.recordType))];
@@ -3080,8 +3103,9 @@ function buildToolLogicalEvent(callId, group) {
     outputStats.durationMs = mcpEnd?.durationMs || 0;
   } else if (imageRows.length || dynamicRows.length || approvalRows.length || hookRows.length || collabRows.length) {
     kind = 'other_tool_call';
-    label = humanizeProtocolSubtype(group.find((raw) => raw.recordType === 'event_msg' && raw.payloadType)?.payloadType || toolName || 'Other tool call');
-    preview = truncate(group.find((raw) => raw.preview)?.preview || toolName || label);
+    const representativeRow = representativeToolLifecycleRow([...imageRows, ...dynamicRows, ...approvalRows, ...hookRows, ...collabRows]);
+    label = humanizeProtocolSubtype(representativeRow?.payloadType || toolName || 'Other tool call');
+    preview = truncate(representativeRow?.preview || group.find((raw) => raw.preview)?.preview || toolName || label);
     status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
     severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
   } else if (toolName === 'request_user_input' || toolName === 'update_plan' || toolName === 'view_image' || toolName === 'spawn_agent' || toolName === 'wait_agent' || toolName === 'send_input' || toolName === 'close_agent' || toolName === 'js_repl_reset') {
