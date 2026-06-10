@@ -38,7 +38,7 @@ When changing product behavior or repository structure:
 - Design doc: `docs/design-docs/logical-event-timeline.md`
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Active plans:
-  - None / 无
+  - `docs/exec-plans/active/2026-06-10-v0.1-release-hardening.md`
 - Completed plans:
   - `docs/exec-plans/completed/2026-06-02-inspector-search-target-reveal.md`
   - `docs/exec-plans/completed/2026-06-02-find-in-page-phrase-search.md`
