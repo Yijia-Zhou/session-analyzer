@@ -1,53 +1,14 @@
 'use strict';
 
-const rendererApi = window.sessionRenderers || {};
-
-const escapeHtml = rendererApi.escapeHtml || ((value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({
-  '&': '&amp;',
-  '<': '&lt;',
-  '>': '&gt;',
-  '"': '&quot;',
-  "'": '&#39;',
-}[ch])));
-
-const renderSections = rendererApi.renderSections || (() => '');
-const renderTimelineSections = rendererApi.renderTimelineSections || ((sections, fallbackPreview = '') => (
-  renderSections(sections) || (fallbackPreview ? `<div class="eventPreview eventExpandedFallback">${escapeHtml(fallbackPreview)}</div>` : '')
-));
-const searchQuery = window.sessionSearchQuery || {
-  parseSearchInput: (input) => ({ q: String(input || '').trim(), file: '', kind: '', status: '', layer: '', tokens: [] }),
-  removeFreeText: () => '',
-  removeOperator: (input) => String(input || ''),
-  structuredSearchKey: (filters, layerId = '', sortValue = '') => [
-    filters?.kind || '',
-    filters?.status || '',
-    filters?.file || '',
-    filters?.layer || '',
-    layerId || '',
-    sortValue || '',
-  ].join('\u001f'),
-  upsertOperator: (input) => String(input || '').trim(),
-};
-const searchHighlighter = window.sessionSearchHighlighter || {
-  apply: () => [],
-  clear: () => {},
-  displayedMatchTotal: (fullTextTotal, renderedMarkCount) => Math.max(
-    Number.isFinite(Number(fullTextTotal)) ? Math.max(0, Number(fullTextTotal)) : 0,
-    Number.isFinite(Number(renderedMarkCount)) ? Math.max(0, Number(renderedMarkCount)) : 0,
-  ),
-  reveal: (mark, options = {}) => {
-    mark?.scrollIntoView?.({
-      block: 'center',
-      inline: 'nearest',
-      behavior: 'smooth',
-      ...options,
-    });
-  },
-  searchTerms: () => [],
-};
-const foldingApi = window.sessionFolding || {};
-const navigationApi = window.sessionNavigation || {};
-const eventChipsApi = window.sessionEventChips || {};
+const rendererApi = window.sessionRenderers;
+const escapeHtml = rendererApi.escapeHtml;
+const renderSections = rendererApi.renderSections;
+const renderTimelineSections = rendererApi.renderTimelineSections;
+const searchQuery = window.sessionSearchQuery;
+const searchHighlighter = window.sessionSearchHighlighter;
+const foldingApi = window.sessionFolding;
+const navigationApi = window.sessionNavigation;
+const eventChipsApi = window.sessionEventChips;
 
 const NAVIGATION_PAGE_LIMIT = 500;
 const TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD = 96;
@@ -58,19 +19,15 @@ const SEARCH_HIGHLIGHT_INPUT_DELAY_MS = 300;
 const REPO_STORAGE_KEY = 'sessionAnalyzer.repoRoot';
 const CUSTOM_PROFILES_KEY = 'sessionAnalyzer.customProfiles';
 const OVERRIDES_KEY = 'sessionAnalyzer.overrides';
-const DISPLAY_STATES = foldingApi.DISPLAY_STATES || ['expanded', 'summary', 'collapsed', 'hidden'];
-const CONDITION_DISPLAY_STATES = foldingApi.CONDITION_DISPLAY_STATES || ['expanded', 'summary'];
-const EDITABLE_EVENT_KINDS = foldingApi.EDITABLE_EVENT_KINDS || [];
-const CONDITION_DEFINITIONS = foldingApi.CONDITION_DEFINITIONS || [];
-const normalizeRules = foldingApi.normalizeRules || ((rules) => rules);
-const normalizeOverrides = foldingApi.normalizeOverrides || (() => ({}));
-const evaluateDisplayStateFromRules = foldingApi.displayStateFromRules || (() => 'summary');
-const inspectorChipValues = eventChipsApi.inspectorChipValues || ((event) => [
-  event.kind === 'protocol' ? '' : event.kind,
-  event.status,
-  event.severity && event.severity !== 'normal' ? event.severity : '',
-]);
-const rawRefsSubtitle = eventChipsApi.rawRefsSubtitle || ((event) => String(event.label || (event.kind === 'protocol' ? '' : event.kind) || '').trim());
+const DISPLAY_STATES = foldingApi.DISPLAY_STATES;
+const CONDITION_DISPLAY_STATES = foldingApi.CONDITION_DISPLAY_STATES;
+const EDITABLE_EVENT_KINDS = foldingApi.EDITABLE_EVENT_KINDS;
+const CONDITION_DEFINITIONS = foldingApi.CONDITION_DEFINITIONS;
+const normalizeRules = foldingApi.normalizeRules;
+const normalizeOverrides = foldingApi.normalizeOverrides;
+const evaluateDisplayStateFromRules = foldingApi.displayStateFromRules;
+const inspectorChipValues = eventChipsApi.inspectorChipValues;
+const rawRefsSubtitle = eventChipsApi.rawRefsSubtitle;
 const DISPLAY_STATE_LABELS = {
   expanded: '展开',
   summary: '摘要',
@@ -110,21 +67,7 @@ const LAYER_LABELS = {
   protocol: 'Protocol layer',
   raw: 'Raw records',
 };
-const NAVIGATION_CATEGORIES = navigationApi.NAVIGATION_CATEGORIES || [
-  { id: 'search_hits', label: 'Search hits', matches: (event) => Boolean(event.hasSearchHit) },
-  { id: 'user_messages', label: 'User messages', matches: (event) => event.kind === 'user_message' },
-  { id: 'assistant_messages', label: 'Assistant messages', matches: (event) => event.kind === 'assistant_message' },
-  { id: 'update_plan', label: 'Plan updates', matches: isUpdatePlanEvent },
-  { id: 'plans', label: 'Plans / updates', matches: (event) => event.kind === 'proposed_plan' || isUpdatePlanEvent(event) },
-  { id: 'failed_commands', label: 'Failed commands', matches: (event) => event.kind === 'command' && event.status === 'failed' },
-  { id: 'commands', label: 'Commands', matches: (event) => event.kind === 'command' },
-  { id: 'patch_applied', label: 'Patch applied', matches: (event) => event.kind === 'patch' && event.status === 'success' },
-  { id: 'patch_failed', label: 'Patch failed', matches: (event) => event.kind === 'patch' && event.status === 'failed' },
-  { id: 'patches', label: 'All patches', matches: (event) => event.kind === 'patch' },
-  { id: 'errors_warnings', label: 'Errors / warnings', matches: (event) => event.severity !== 'normal' || event.status === 'failed' || ['error', 'abort', 'rollback', 'compaction'].includes(event.kind) },
-  { id: 'mcp_calls', label: 'MCP calls', matches: (event) => event.kind === 'mcp_call' || String(event.toolName || '').startsWith('mcp__') },
-  { id: 'web_searches', label: 'Web searches', matches: (event) => event.kind === 'web_search' },
-];
+const NAVIGATION_CATEGORIES = navigationApi.NAVIGATION_CATEGORIES;
 
 const state = {
   sessions: [],
@@ -834,7 +777,7 @@ function setRelatedParentHighlight(parentSessionId, enabled) {
 }
 
 function isUpdatePlanEvent(event) {
-  return foldingApi.isUpdatePlanEvent ? foldingApi.isUpdatePlanEvent(event) : navigationApi.isUpdatePlanEvent?.(event);
+  return foldingApi.isUpdatePlanEvent(event);
 }
 
 function metadataRow(label, value) {
@@ -1411,7 +1354,7 @@ async function showProjectChooser(options = {}) {
   try {
     const summary = await api('/api/projects?summary=1');
     if (!isActiveProjectChooserRequest(requestId)) return;
-    state.projects = summary.projects || [];
+    state.projects = summary.projects;
     renderedSummary = state.projects.length > 0;
     if (renderedSummary) renderProjects();
     if (el.projectStatus) {
@@ -1425,7 +1368,7 @@ async function showProjectChooser(options = {}) {
   if (!isActiveProjectChooserRequest(requestId)) return;
   const data = await api('/api/projects');
   if (!isActiveProjectChooserRequest(requestId)) return;
-  state.projects = data.projects || [];
+  state.projects = data.projects;
   renderProjects();
   if (el.projectStatus) el.projectStatus.textContent = state.projects.length ? `${state.projects.length} project candidates from ${data.codexHome}` : `No project candidates from ${data.codexHome}`;
 
@@ -1458,9 +1401,9 @@ async function exitProjectChooser() {
 
 async function applyAppState(appState) {
   state.repoRoot = appState.repoRoot || '';
-  state.builtinProfiles = normalizeProfiles(appState.foldingProfiles || []);
+  state.builtinProfiles = normalizeProfiles(appState.foldingProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
-  state.eventKinds = appState.eventKinds || { main: [], protocol: [], raw: [] };
+  state.eventKinds = appState.eventKinds;
   state.sessionGrandTotal = appState.totals.sessionCount || 0;
   setProjectHeader(
     appState.repoRoot,
@@ -1479,7 +1422,7 @@ async function applyAppState(appState) {
   el.layerSelect.value = state.layerId;
   syncSearchAssistControls();
   const suggestionState = await api('/api/file-suggestions');
-  state.fileSuggestions = suggestionState.files || [];
+  state.fileSuggestions = suggestionState.files;
   renderFileSuggestions();
   resetDetailPane();
 }
@@ -1838,7 +1781,7 @@ async function loadTimeline(append, options = {}) {
     state.offset = state.currentEvents.length;
     state.timelineTotal = data.total;
     state.timelineSearchMatchCount = data.searchMatchCount || 0;
-    state.sessionEventKinds = data.eventKinds || state.sessionEventKinds;
+    state.sessionEventKinds = data.eventKinds;
     syncSearchAssistControls();
     renderTimeline();
     if (!append && !options.keepScroll) resetTimelineScroll();
@@ -1879,7 +1822,7 @@ async function refreshTimelineFindState(options = {}) {
       if (requestId !== state.timelineRequestId || sessionId !== state.selectedSessionId) return;
       total = data.total;
       searchMatchCount = data.searchMatchCount || 0;
-      eventKinds = data.eventKinds || eventKinds;
+      eventKinds = data.eventKinds;
       events.push(...data.events);
       if (!data.events.length || events.length >= total) break;
     }
@@ -1887,7 +1830,7 @@ async function refreshTimelineFindState(options = {}) {
     state.offset = events.length;
     state.timelineTotal = total;
     state.timelineSearchMatchCount = searchMatchCount;
-    state.sessionEventKinds = eventKinds || state.sessionEventKinds;
+    state.sessionEventKinds = eventKinds;
     syncSearchAssistControls();
     renderTimeline();
     refreshSearchSensitiveDetailView();
@@ -2157,15 +2100,7 @@ function ensureNavigationEvents() {
 }
 
 function navigationCategoriesForEvent(event, events) {
-  if (navigationApi.navigationCategoriesForEvent) {
-    return navigationApi.navigationCategoriesForEvent(event, events, NAVIGATION_CATEGORIES);
-  }
-  return NAVIGATION_CATEGORIES
-    .map((category) => ({
-      ...category,
-      matchesInResult: events.filter((candidate) => category.matches(candidate)),
-    }))
-    .filter((category) => category.matches(event) && category.matchesInResult.length);
+  return navigationApi.navigationCategoriesForEvent(event, events, NAVIGATION_CATEGORIES);
 }
 
 function defaultNavigationCategoryId(event, categories) {

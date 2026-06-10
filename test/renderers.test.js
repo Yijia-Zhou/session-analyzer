@@ -278,41 +278,6 @@ test('renderer does not highlight bash built-ins inside Windows path arguments',
   }
 });
 
-test('renderer tolerates a missing command highlighting word list', () => {
-  const rendererPath = require.resolve('../public/renderers');
-  const commandHighlightingPath = require.resolve('../public/command-highlighting');
-  const previousRenderer = require.cache[rendererPath];
-  const previousCommandHighlighting = require.cache[commandHighlightingPath];
-  const previousHljs = globalThis.hljs;
-  try {
-    delete require.cache[rendererPath];
-    require.cache[commandHighlightingPath] = {
-      id: commandHighlightingPath,
-      filename: commandHighlightingPath,
-      loaded: true,
-      exports: {},
-    };
-    globalThis.hljs = {
-      getLanguage: (language) => language === 'powershell',
-      highlight: (source) => ({ value: source }),
-    };
-    const isolatedRenderers = require('../public/renderers');
-    const html = isolatedRenderers.renderSections([
-      { type: 'code', title: 'Command', code: 'rg -n TODO', language: 'powershell' },
-    ]);
-
-    assert.match(html, /rg -n TODO/);
-    assert.doesNotMatch(html, /hljs-built_in">rg/);
-  } finally {
-    globalThis.hljs = previousHljs;
-    delete require.cache[rendererPath];
-    if (previousRenderer) require.cache[rendererPath] = previousRenderer;
-    else delete require.cache[rendererPath];
-    if (previousCommandHighlighting) require.cache[commandHighlightingPath] = previousCommandHighlighting;
-    else delete require.cache[commandHighlightingPath];
-  }
-});
-
 test('renderer treats shared command words as regex literals', () => {
   const rendererPath = require.resolve('../public/renderers');
   const commandHighlightingPath = require.resolve('../public/command-highlighting');

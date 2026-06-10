@@ -1,11 +1,14 @@
 (function initNavigation(root, factory) {
-  const api = factory(root.sessionFolding || (typeof require === 'function' ? require('./folding') : {}));
+  const folding = typeof module === 'object' && module.exports
+    ? require('./folding')
+    : root.sessionFolding;
+  const api = factory(folding);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionNavigation = api;
 }(typeof globalThis !== 'undefined' ? globalThis : window, function createNavigationApi(folding) {
   'use strict';
 
-  const isUpdatePlanEvent = folding.isUpdatePlanEvent || (() => false);
+  const isUpdatePlanEvent = folding.isUpdatePlanEvent;
 
   const NAVIGATION_CATEGORIES = [
     { id: 'search_hits', label: 'Search hits', matches: (event) => Boolean(event.hasSearchHit) },

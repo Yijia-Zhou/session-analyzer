@@ -2,7 +2,7 @@
   const commandHighlighting = typeof module === 'object' && module.exports
     ? require('./command-highlighting')
     : root.sessionCommandHighlighting;
-  const api = factory(commandHighlighting || {});
+  const api = factory(commandHighlighting);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionRenderers = api;
 }(typeof globalThis !== 'undefined' ? globalThis : this, (commandHighlighting) => {
@@ -53,7 +53,7 @@
     return String(value || '').replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
   }
 
-  const SHELL_EXTERNAL_COMMAND_WORDS = commandHighlighting.SHELL_EXTERNAL_COMMAND_WORDS || commandHighlighting.POWERSHELL_EXTERNAL_COMMAND_WORDS || [];
+  const SHELL_EXTERNAL_COMMAND_WORDS = commandHighlighting.SHELL_EXTERNAL_COMMAND_WORDS;
   const SHELL_EXTERNAL_COMMAND_REGEX_SOURCE = SHELL_EXTERNAL_COMMAND_WORDS.map(escapeRegExp).join('|');
   const SHELL_EXTERNAL_COMMAND_PATTERN = SHELL_EXTERNAL_COMMAND_WORDS.length
     ? new RegExp(`([\\r\\n;|{}()]|&amp;)([ \\t]*)(${SHELL_EXTERNAL_COMMAND_REGEX_SOURCE})(\\.exe)?(?=\\s|$)`, 'gi')
