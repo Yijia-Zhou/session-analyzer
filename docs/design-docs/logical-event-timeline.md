@@ -87,15 +87,32 @@ Session summaries expose derived-session display metadata for subagent and revie
 
 ## Data model / schema / 数据模型 / 模式
 
+Canonical DTOs use a small source envelope so raw, logical, and detail payloads can be interpreted without assuming Codex JSONL implementation details. `schemaVersion` is the Session Analyzer canonical DTO version, starts at `1`, and is independent from any upstream protocol version. `sourceKind` is a stable machine identifier for the source system; v0.1 emits only `codex`, while future adapters may add other values without localizing this field. `sourceSchemaVersion` is optional and should be populated only when the source provides a trustworthy schema or protocol version.
+
+规范 DTO 使用一个小型 source envelope，使 raw、logical 和 detail payload 可以被解释，而不需要假设 Codex JSONL 实现细节。`schemaVersion` 是 Session Analyzer 自己的规范 DTO 版本，初始为 `1`，与任何上游协议版本相互独立。`sourceKind` 是来源系统的稳定机器标识；v0.1 只输出 `codex`，未来 adapter 可以增加其他值，但该字段不得本地化。`sourceSchemaVersion` 是可选字段，只应在来源提供可信 schema 或协议版本时填充。
+
+Source locations use typed locators instead of assuming every source can be addressed by file and line. Current Codex rows use `sourceLocator: { type: "jsonl_line", file, line }`. Future sources may use different locator types such as database rows or stream offsets. During compatibility migration, existing Codex `source`, `rawRefs[].file`, `rawRefs[].line`, and `rawRefs[].rawId` fields remain available, but new code should use `sourceLocator` when it needs source identity and must not assume every locator has file and line properties.
+
+来源位置使用 typed locator，而不是假设每种来源都能用文件和行号寻址。当前 Codex 行使用 `sourceLocator: { type: "jsonl_line", file, line }`。未来来源可以使用其他 locator 类型，例如数据库行或流 offset。在兼容迁移期间，现有 Codex `source`、`rawRefs[].file`、`rawRefs[].line` 和 `rawRefs[].rawId` 字段继续可用，但新代码在需要来源身份时应使用 `sourceLocator`，并且不得假设每个 locator 都有 file 和 line 属性。
+
+`sourceRecordType` and `sourceEventType` use refs-only semantics. Raw DTOs may expose the precise source row types at the top level. Logical and detail DTOs do not expose potentially misleading aggregate `sourceRecordType` or `sourceEventType` fields; each `rawRefs[]` entry carries the precise row-level types instead, and `rawRefs[]` remains the authoritative traceability surface for multi-row logical events.
+
+`sourceRecordType` 和 `sourceEventType` 采用 refs-only 语义。Raw DTO 可以在顶层暴露精确的来源行类型。Logical 和 detail DTO 不在顶层暴露可能误导的聚合 `sourceRecordType` 或 `sourceEventType` 字段；每个 `rawRefs[]` 条目会携带精确的逐行类型，`rawRefs[]` 仍是多行 logical event 的权威可追踪表面。
+
 ### Raw event / 原始事件
 
 Important fields:
 
 重要字段：
 
+- `schemaVersion`
+- `sourceKind`
+- `sourceSchemaVersion`
 - `rawId`
 - `recordType`
 - `payloadType`
+- `sourceRecordType`
+- `sourceEventType`
 - `role`
 - `timestamp`
 - `turnId`
@@ -107,6 +124,7 @@ Important fields:
 - `stderr`
 - `touchedFiles`
 - `source`
+- `sourceLocator`
 
 ### Logical event / 逻辑事件
 
@@ -115,6 +133,9 @@ Important fields:
 重要字段：
 
 - `id`
+- `schemaVersion`
+- `sourceKind`
+- `sourceSchemaVersion`
 - `kind`
 - `subtype`
 - `layer`
@@ -127,6 +148,7 @@ Important fields:
 - `status`
 - `toolName`
 - `touchedFiles`
+- `sourceLocator`
 - `rawRefs[]`
 - `channels[]`
 
@@ -171,11 +193,15 @@ Expanded cards do not reuse `preview` for rich rendering. The server derives an 
 展开卡片不会复用 `preview` 进行富渲染。服务器会根据底层逻辑事件及其引用的原始行派生 `EventDetailDto`：
 
 - `id`
+- `schemaVersion`
+- `sourceKind`
+- `sourceSchemaVersion`
 - `kind`
 - `subtype`
 - `layer`
 - `title`
 - `meta`
+- `sourceLocator`
 - `rawRefs[]`
 - `timelineSections[]`
 - `inspectorSections[]`
