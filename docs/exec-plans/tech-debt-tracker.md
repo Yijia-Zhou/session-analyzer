@@ -89,10 +89,10 @@
   - `docs/design-docs/documentation-system.md`
 
 ### 9. Shared browser-and-Node module ownership boundary / 浏览器与 Node 共享模块归属边界
-- Status: deferred / 状态：已推迟
-- Problem: `public/folding.js` is intentionally both a browser static asset and a Node runtime dependency through `src/folding.js`, so the `public/` tree is no longer only a delivery surface. Browser correctness also depends on manual script ordering in `public/index.html`. / 问题：`public/folding.js` 被有意同时用作浏览器静态资源，并通过 `src/folding.js` 成为 Node 运行时依赖，因此 `public/` 目录不再只是交付表面。浏览器正确性还依赖 `public/index.html` 中的手动脚本顺序。
-- Residual risk: if more domain logic follows this pattern, source ownership, dependency direction, UMD wrapper maintenance, and future build or module migration work will become less clear. / 残余风险：如果更多领域逻辑沿用这一模式，源码归属、依赖方向、UMD 包装维护，以及未来构建或模块迁移工作都会变得更不清晰。
-- Trigger for action: decide a canonical shared-source location and browser publication strategy before adding another substantial browser-and-Node shared domain module or introducing a frontend build step. Avoid moving the existing small module only for cosmetic directory purity. / 行动触发条件：在新增另一个重要的浏览器与 Node 共享领域模块，或引入前端构建步骤之前，确定规范的共享源码位置和浏览器发布策略。不要仅为了目录表面纯净而移动现有的小模块。
+- Status: resolved for v0.1 build boundary / 状态：已针对 v0.1 构建边界解决
+- Problem: `public/folding.js` was intentionally both a browser static asset and a Node runtime dependency through `src/folding.js`, so the `public/` tree was no longer only a delivery surface. Browser correctness also depended on manual script ordering in `public/index.html`. / 问题：`public/folding.js` 曾被有意同时用作浏览器静态资源，并通过 `src/folding.js` 成为 Node 运行时依赖，因此 `public/` 目录不再只是交付表面。浏览器正确性也依赖 `public/index.html` 中的手动脚本顺序。
+- Resolution: Stage 6A moved shared browser-and-Node logic to `src/shared/`, browser source to `src/browser/`, and browser delivery to checked-in generated assets under `public/assets/`; `npm run build:check` now guards against stale generated bundles. / 解决方式：阶段 6A 已将浏览器与 Node 共用逻辑移到 `src/shared/`，将浏览器源码移到 `src/browser/`，并通过 `public/assets/` 下已提交的生成资产进行浏览器交付；`npm run build:check` 现在会防止生成 bundle 过期。
+- Residual risk: the browser bundle is intentionally minimal and UMD-compatible for v0.1; a future broader frontend module migration may still be useful, but new shared display resources should follow the `src/shared/` plus generated bundle boundary. / 残余风险：v0.1 的浏览器 bundle 有意保持最小且兼容 UMD；未来更完整的前端模块迁移仍可能有价值，但新的共享展示资源应沿用 `src/shared/` 加生成 bundle 的边界。
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/completed/2026-05-31-folding-rule-priority-governance.md`

@@ -5,7 +5,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
 const MarkdownIt = require('markdown-it');
-const { SHELL_EXTERNAL_COMMAND_WORDS } = require('../public/command-highlighting');
+const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
 const {
   CANONICAL_SCHEMA_VERSION,
   CODEX_SOURCE_KIND,

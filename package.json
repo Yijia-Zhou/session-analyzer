@@ -6,10 +6,13 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "build": "npm run build:client",
+    "build:check": "node scripts/build-client.js --check",
+    "build:client": "node scripts/build-client.js",
     "test": "node --test \"test/*.test.js\"",
     "test:browser": "node --test e2e/browser.test.js",
     "browser:install": "playwright install chromium",
-    "vendor:highlight": "npx --yes --package esbuild esbuild ./scripts/highlight-vendor-entry.js --bundle --format=iife --global-name=sessionHighlightVendor --outfile=./public/vendor/highlightjs/highlight.min.js --minify"
+    "vendor:highlight": "node scripts/build-client.js --vendor-highlight-only"
   },
   "dependencies": {
     "highlight.js": "^11.11.1",
@@ -19,6 +22,7 @@
     "node": ">=18"
   },
   "devDependencies": {
+    "esbuild": "^0.28.0",
     "playwright": "^1.60.0"
   }
 }

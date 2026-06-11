@@ -1,6 +1,6 @@
 (function initSessionRenderers(root, factory) {
   const commandHighlighting = typeof module === 'object' && module.exports
-    ? require('./command-highlighting')
+    ? require('../shared/command-highlighting')
     : root.sessionCommandHighlighting;
   const api = factory(commandHighlighting);
   if (typeof module === 'object' && module.exports) module.exports = api;

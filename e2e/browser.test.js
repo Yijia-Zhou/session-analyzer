@@ -20,7 +20,10 @@ async function buildFixtureIndex() {
 async function startServer(t, index) {
   const server = createServer(index, 1, { codexHome: index.codexHome, repo: index.repoRoot });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))));
+  t.after(() => new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+    server.closeAllConnections?.();
+  }));
   return `http://127.0.0.1:${server.address().port}`;
 }
 
@@ -29,12 +32,22 @@ async function openApp(t, index, options = {}) {
   const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: options.viewport || { width: 1280, height: 900 } });
   const page = await context.newPage();
+  const requestedPaths = [];
+  page.on('request', (request) => {
+    const parsed = new URL(request.url());
+    if (parsed.origin === baseUrl) requestedPaths.push(parsed.pathname);
+  });
   page.on('pageerror', (error) => assert.fail(error.stack || error.message));
   t.after(async () => {
     await context.close();
     await browser.close();
   });
   await page.goto(baseUrl);
+  assert.ok(requestedPaths.includes('/assets/app.js'), 'browser should load the generated app bundle');
+  for (const oldScript of ['/app.js', '/renderers.js', '/folding.js', '/command-highlighting.js', '/search-query.js', '/highlight.js', '/navigation.js', '/event-chips.js']) {
+    assert.equal(requestedPaths.includes(oldScript), false, `browser should not load old source script ${oldScript}`);
+  }
+  await page.waitForFunction(() => window.sessionFolding && window.sessionRenderers && window.sessionSearchQuery);
   await page.waitForSelector('.sessionItem.active');
   await page.waitForFunction(() => document.querySelectorAll('#timeline .event[data-event-id]').length > 0);
   return { page, baseUrl };

@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { inspectorChipValues, rawRefsSubtitle } = require('../public/event-chips');
+const { inspectorChipValues, rawRefsSubtitle } = require('../src/browser/event-chips');
 
 test('inspector chips omit generic protocol kind while retaining useful event state', () => {
   assert.deepEqual(inspectorChipValues({ kind: 'protocol', status: 'completed', severity: 'warning' }), ['', 'completed', 'warning']);

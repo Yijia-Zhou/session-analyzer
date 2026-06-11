@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const navigation = require('../public/navigation');
+const navigation = require('../src/browser/navigation');
 
 test('search hits navigation category only appears for selected search hit events', () => {
   const events = [

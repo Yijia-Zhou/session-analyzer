@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { renderSection, renderSections, renderTimelineSections } = require('../public/renderers');
+const { renderSection, renderSections, renderTimelineSections } = require('../src/browser/renderers');
 
 test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv fragments', () => {
   const markdown = renderSection({ type: 'markdown', title: 'Message', html: '<p><strong>safe</strong></p>' });
@@ -279,8 +279,8 @@ test('renderer does not highlight bash built-ins inside Windows path arguments',
 });
 
 test('renderer treats shared command words as regex literals', () => {
-  const rendererPath = require.resolve('../public/renderers');
-  const commandHighlightingPath = require.resolve('../public/command-highlighting');
+  const rendererPath = require.resolve('../src/browser/renderers');
+  const commandHighlightingPath = require.resolve('../src/shared/command-highlighting');
   const previousRenderer = require.cache[rendererPath];
   const previousCommandHighlighting = require.cache[commandHighlightingPath];
   const previousHljs = globalThis.hljs;
@@ -296,7 +296,7 @@ test('renderer treats shared command words as regex literals', () => {
       getLanguage: (language) => language === 'powershell',
       highlight: (source) => ({ value: source }),
     };
-    const isolatedRenderers = require('../public/renderers');
+    const isolatedRenderers = require('../src/browser/renderers');
     const html = isolatedRenderers.renderSections([
       { type: 'code', title: 'Command', code: 'fooXbar ok; foo.bar ok; tool+ ok', language: 'powershell' },
     ]);

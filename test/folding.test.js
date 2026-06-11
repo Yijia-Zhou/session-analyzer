@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const folding = require('../public/folding');
+const folding = require('../src/shared/folding');
 const { foldingProfiles } = require('../src/folding');
 
 function profileRules(id) {

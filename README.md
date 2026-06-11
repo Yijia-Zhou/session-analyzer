@@ -87,13 +87,22 @@ npm test
 
 The test fixtures under `test/fixtures/codex-home` are synthetic transcript data. They intentionally include fake Windows paths and sample transcript shapes for parser coverage.
 
+## Build
+
+```sh
+npm run build
+```
+
+Browser JavaScript source lives in `src/browser/`, and browser-and-Node shared logic lives in `src/shared/`. The generated runtime bundle is `public/assets/app.js`; do not edit it directly.
+
 ## Repository Layout
 
 - `server.js`: local HTTP server and API routes.
 - `src/codex.js`: transcript parsing, project discovery, indexing, logical timeline construction, and event-detail extraction.
 - `src/folding.js`: built-in timeline folding profiles.
-- `public/folding.js`: shared browser-and-Node folding rule evaluation.
-- `public/`: browser UI, search parsing, renderers, and styles.
+- `src/shared/`: browser-and-Node shared logic such as folding rule evaluation and command highlighting metadata.
+- `src/browser/`: browser UI source, search parsing, renderers, navigation, and app wiring.
+- `public/`: static HTML/CSS and generated browser runtime assets.
 - `test/`: Node test suite and synthetic transcript fixtures.
 - `docs/`: product specs, design docs, execution plans, and backlog notes.
 

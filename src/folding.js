@@ -1,6 +1,6 @@
 'use strict';
 
-const folding = require('../public/folding');
+const folding = require('./shared/folding');
 
 function profileRules(kindStates, fallback, conditions = []) {
   return { kindStates, fallback, conditions };

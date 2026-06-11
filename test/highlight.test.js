@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const highlighter = require('../public/highlight');
+const highlighter = require('../src/browser/highlight');
 
 test('searchTerms preserves one trimmed free-text phrase', () => {
   assert.deepEqual(highlighter.searchTerms('  alpha ALPHA alphabet beta  '), ['alpha ALPHA alphabet beta']);

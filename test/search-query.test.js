@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const searchQuery = require('../public/search-query');
+const searchQuery = require('../src/browser/search-query');
 
 test('parseSearchInput separates free text from supported operators', () => {
   const parsed = searchQuery.parseSearchInput('detail extraction kind:patch status:failed file:public/app.js layer:raw');

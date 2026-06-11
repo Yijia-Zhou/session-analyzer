@@ -87,13 +87,22 @@ npm test
 
 `test/fixtures/codex-home` 下的测试 fixture 是合成转录数据。它们有意包含假的 Windows 路径和示例转录形态，用于覆盖解析器行为。
 
+## 构建
+
+```sh
+npm run build
+```
+
+浏览器 JavaScript 源码位于 `src/browser/`，浏览器与 Node 共用逻辑位于 `src/shared/`。生成的运行时 bundle 是 `public/assets/app.js`；不要直接编辑它。
+
 ## 仓库结构
 
 - `server.js`：本地 HTTP 服务器和 API 路由。
 - `src/codex.js`：转录解析、项目发现、索引、逻辑时间线构建和事件详情提取。
 - `src/folding.js`：内置时间线折叠策略。
-- `public/folding.js`：浏览器与 Node 共用的折叠规则求值。
-- `public/`：浏览器 UI、搜索解析、渲染器和样式。
+- `src/shared/`：浏览器与 Node 共用逻辑，例如折叠规则求值和命令高亮元数据。
+- `src/browser/`：浏览器 UI 源码、搜索解析、渲染器、导航和应用接线。
+- `public/`：静态 HTML/CSS 和生成的浏览器运行时资产。
 - `test/`：Node 测试套件和合成转录 fixture。
 - `docs/`：产品规格、设计文档、执行计划和 backlog 笔记。
 
