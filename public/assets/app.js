@@ -43,16 +43,761 @@
     }
   });
 
+  // src/shared/i18n.js
+  var require_i18n = __commonJS({
+    "src/shared/i18n.js"(exports, module) {
+      (function initI18n(root, factory) {
+        const api = factory();
+        if (typeof module === "object" && module.exports) module.exports = api;
+        root.sessionI18n = api;
+      })(typeof globalThis !== "undefined" ? globalThis : exports, function createI18nApi() {
+        "use strict";
+        const DEFAULT_LOCALE = "en";
+        const SUPPORTED_LOCALES = ["en", "zh-CN"];
+        const catalogs = {
+          en: {
+            ui: {
+              localeLabel: "Language",
+              selectProject: "Select project",
+              select: "Select",
+              change: "Change",
+              return: "Return",
+              returning: "Returning",
+              stateLoading: "Reading local sessions...",
+              chooseTargetProjectContinue: "Choose a target project to continue.",
+              loadingProjectList: "Loading project list...",
+              searchPlaceholder: "Search messages, commands, files, output",
+              searchOptions: "Search options",
+              searchFilters: "Search filters",
+              kind: "Kind",
+              status: "Status",
+              layer: "Layer",
+              file: "File",
+              anyKind: "Any kind",
+              anyStatus: "Any status",
+              currentLayer: "Current layer",
+              anyFile: "Any file",
+              active: "Active",
+              mainTimeline: "Main timeline",
+              protocolLayer: "Protocol layer",
+              rawRecords: "Raw records",
+              projectUnavailable: "No project is available to return to",
+              projectIndexUnavailable: "Project index completed but state is not available",
+              resetFolds: "Reset folds",
+              sessions: "Sessions",
+              events: "Events",
+              detail: "Detail",
+              chooseProject: "Choose a Codex session working directory to analyze.",
+              cancelIndexing: "Cancel indexing",
+              sort: "Sort",
+              updatedDesc: "Recently updated",
+              startedAsc: "Start time",
+              eventsDesc: "Most events",
+              failuresDesc: "Most failed commands",
+              chooseSession: "Select a session",
+              leftListFiltered: "The left list is filtered by the current repository.",
+              eventDetail: "Event detail",
+              clickTimelineEvent: "Click a timeline event to inspect the original JSONL records.",
+              loadMore: "Load more",
+              loadMoreCount: "Load more ({loaded}/{total})",
+              loadedCount: "Loaded {loaded}",
+              dirtyProfileTitle: "Unsaved folding strategy changes",
+              dirtyProfileMessage: "Before switching strategies, save the current changes, discard them, or stay on the current strategy.",
+              currentStrategy: "Current strategy",
+              saveAs: "Save as",
+              saveAndSwitch: "Save and switch",
+              discardAndSwitch: "Discard and switch",
+              cancel: "Cancel",
+              customProfileName: "{name} (custom {count})",
+              openingProject: "Opening {name}",
+              indexingProject: "Indexing matching Codex sessions before showing the project timeline.",
+              switchProject: "Switch project: {root}",
+              switchTargetProject: "Switch target project: {root}",
+              returnToProject: "Return to project: {root}",
+              returnToCurrentProject: "Return to current project: {root}",
+              returningToProject: "Returning to project: {root}",
+              returningToCurrentProject: "Returning to current project: {root}",
+              indexingCancelled: "Indexing cancelled",
+              indexingFailed: "Indexing failed",
+              indexingCancelledSentence: "Indexing cancelled.",
+              readingMatchingSessions: "Reading matching sessions for {repoRoot}. This can take a few seconds for large transcript history.",
+              preparingIndex: "Preparing index for {name}",
+              scanningFiles: "Scanning {done}/{total} transcript files",
+              parsingFiles: "Parsing {done}/{total} candidate files",
+              candidates: "{count} candidates",
+              skipped: "{count} skipped",
+              sessionCount: "{count} sessions",
+              logicalEventCount: "{count} logical events",
+              rawRecordCount: "{count} raw records",
+              messageCountShort: "{count} msgs",
+              toolCountShort: "{count} tools",
+              failedCommandCountShort: "{count} failed cmds",
+              protocolCountShort: "{count} protocol",
+              projectActivityLoading: "Loading project activity from {codexHome}...",
+              projectActivity: "Project activity",
+              discoveringProjects: "Discovering transcript projects...",
+              projectCandidates: "{count} project candidates from {codexHome}",
+              noProjectCandidates: "No project candidates from {codexHome}",
+              noCodexProjects: "No Codex projects were found in the configured sessions directory.",
+              lastSelected: "Last selected",
+              missingDirectory: "Missing directory",
+              indexing: "Indexing...",
+              open: "Open",
+              activityLoading: "Activity loading...",
+              noTranscriptActivity: "No transcript activity",
+              selectSessionFirst: "Choose a target project first.",
+              noMatchingSession: "No matching session",
+              adjustSearchFilters: "Adjust the search or filters.",
+              loading: "Loading...",
+              noMatches: "No matches",
+              matchCount: "{current} / {total} matches",
+              sessionsMatchTotal: "Sessions: {count} match ({total} total)",
+              sessionsMatch: "Sessions: {count} match",
+              eventsMatchLoaded: "Events: {count} match ({loaded} loaded)",
+              eventsMatch: "Events: {count} match",
+              eventsSelectSession: "Events: select a session",
+              searchMatchTitle: "Rendered jump targets; total keeps the full-text count and is raised when more rendered targets are visible",
+              activeFindFilters: "Active find and filters",
+              clearAll: "Clear all",
+              clear: "Clear {label}",
+              find: "Find",
+              readFromHere: "Read from here",
+              readFromHereTitle: "Clear event filters, switch to Main timeline, and keep this position",
+              noActiveFilters: "No active find or filters",
+              foldingStrategy: "Folding strategy",
+              strategy: "Strategy",
+              fixedProfileRules: "Folding strategies apply only to Main timeline. This layer uses fixed display rules.",
+              protocolFixedRules: "Protocol events are shown as summaries; non-protocol events stay collapsed.",
+              rawFixedRules: "Raw event_msg and response_item records stay collapsed; other raw records are shown as summaries.",
+              viewMainTimeline: "View Main timeline",
+              unsavedPreview: "Unsaved preview",
+              disabled: "Disabled",
+              default: "Default",
+              eventKinds: "Event kinds",
+              noExplicitKindRules: "No explicit event-kind rules.",
+              defaultKindCount: "{count} event kinds use Default",
+              conditions: "Conditions",
+              noActiveConditions: "No active conditions.",
+              inactiveConditions: "{count} inactive conditions",
+              saveProfileChanges: "Save profile changes",
+              cancelProfileChanges: "Cancel profile changes",
+              save: "Save",
+              back: "Back",
+              close: "Close",
+              inspectEvent: "Inspect event",
+              rawRefs: "Raw refs",
+              noRawRows: "No raw source rows are available for this event.",
+              rawRowsForEvent: "{count} JSONL row{plural} for {eventId}",
+              rawRows: "{count} JSONL row{plural}",
+              noRawRefs: "No raw refs available",
+              inspect: "Inspect event",
+              severity: "Severity",
+              summary: "Summary",
+              metadata: "Metadata",
+              source: "Source",
+              time: "Time",
+              tool: "Tool",
+              exitCode: "Exit code",
+              duration: "Duration",
+              recordType: "Record type",
+              channels: "Channels",
+              touchedFiles: "Touched files",
+              details: "Details",
+              loadingStructuredDetail: "Loading structured detail...",
+              retryDetail: "Retry detail",
+              previousSearchMatch: "Previous search match",
+              nextSearchMatch: "Next search match",
+              collapseEvent: "Collapse event",
+              expandEvent: "Expand event",
+              previous: "Prev",
+              next: "Next",
+              loadingNavigation: "Loading navigation...",
+              eventQuickNavigation: "Event quick navigation",
+              quickNavigationCategory: "Quick navigation category",
+              fixedRuleSubtitle: "{layer} uses fixed display rules",
+              remaining: "remaining",
+              resets: "Resets",
+              files: "files",
+              raw: "raw",
+              sessionMetadata: "Session metadata",
+              reviewKind: "Review",
+              subagentKind: "Subagent",
+              derivedFrom: "{kind}{nickname} \xB7 from {parent}",
+              derivedSession: "{kind}{nickname} session",
+              forkFrom: "Fork \xB7 from {parent}",
+              metricTurns: "Turns",
+              metricMessages: "Messages",
+              metricIssues: "Issues",
+              metricFiles: "Files",
+              metricProtocol: "Protocol",
+              metricPlans: "Plans",
+              switchToConversationProfile: "Switch to conversation reading folding strategy",
+              switchToIssueProfile: "Switch to issue-focused folding strategy",
+              switchToChangesProfile: "Switch to change review folding strategy",
+              switchToProtocolLayer: "Switch to protocol layer events",
+              switchToPlanningProfile: "Switch to planning reading folding strategy",
+              metricShortcutMainOnly: "{label} shortcut is available on Main timeline only.",
+              metricActionCount: "{action}: {value} {label}",
+              profileInfoEmpty: "No folding strategy descriptions.",
+              profileInfoMissingDescription: "No description.",
+              profileInfoLabel: "View folding strategy descriptions. Current strategy: {name}. {description}"
+            },
+            displayState: {
+              expanded: "Expanded",
+              summary: "Summary",
+              collapsed: "Collapsed",
+              hidden: "Hidden"
+            },
+            kind: {
+              user_message: "User message",
+              assistant_message: "Assistant message",
+              command: "Command",
+              patch: "Patch",
+              mcp_call: "MCP call",
+              js_repl: "JS REPL",
+              other_tool_call: "Other tool call",
+              proposed_plan: "Proposed plan",
+              plan_update: "Plan update",
+              protocol: "Protocol",
+              error: "Error",
+              warning: "Warning",
+              abort: "Turn aborted",
+              rollback: "Thread rollback",
+              compaction: "Context compaction",
+              usage_limit_warning: "Usage limit warning",
+              subagent: "Subagent activity",
+              review: "Review",
+              reasoning: "Reasoning",
+              web_search: "Web search",
+              event: "Event"
+            },
+            protocol: {
+              agents_instructions: "AGENTS.md instructions",
+              developer_collaboration_mode: "Collaboration mode",
+              developer_instruction: "Developer instruction",
+              developer_permissions: "Developer permissions",
+              environment_context: "Environment context",
+              session_configured: "Session configured",
+              thread_goal_updated: "Thread goal updated",
+              image_wrapper: "Image attachment wrapper",
+              meta_block: "Protocol metadata block",
+              session_meta: "Session metadata",
+              skill_injection: "Skill instructions",
+              token_count: "Token count",
+              turn_aborted_marker: "Turn aborted marker",
+              turn_context: "Turn context",
+              user_shell_command: "User shell command"
+            },
+            status: {
+              failed: "Failed",
+              success: "Success",
+              completed: "Completed"
+            },
+            section: {
+              Arguments: "Arguments",
+              Patch: "Patch",
+              Output: "Output",
+              Request: "Request",
+              Response: "Response",
+              "User input": "User input",
+              "Image preview": "Image preview",
+              "Plan update": "Plan update",
+              "Search action": "Search action",
+              "Search payload": "Search payload",
+              "Usage limits": "Usage limits",
+              "Token usage": "Token usage",
+              "Command arguments": "Command arguments",
+              "Raw JSON": "Raw JSON",
+              "Review request": "Review request",
+              "Review result": "Review result",
+              "Overall explanation": "Overall explanation",
+              Findings: "Findings",
+              "Review output JSON": "Review output JSON",
+              "Event fields": "Event fields",
+              "Event raw JSON": "Event raw JSON",
+              Message: "Message",
+              Plan: "Plan",
+              Reasoning: "Reasoning",
+              Details: "Details",
+              Code: "Code",
+              Question: "Question",
+              Answer: "Answer",
+              Selected: "Selected",
+              Targets: "Targets",
+              Result: "Result"
+            },
+            foldingCondition: {
+              searchHit: ["Search hit", "Events matching the current search query."],
+              importantEvent: ["Important event", "User/assistant messages, patches, errors, aborts, rollbacks, compactions, plans, plan updates, update_plan calls, failed events, and abnormal severity."],
+              updatePlanCall: ["update_plan call", "Calls to the update_plan tool and protocol plan updates."],
+              userInputRequest: ["User input request", "Calls to request_user_input that collect user choices during a conversation."],
+              readableReasoning: ["Readable reasoning", "Reasoning entries that contain readable text in the Main timeline."],
+              failedStatus: ["Failed status", "Events whose status is failed."],
+              errorSeverity: ["Error severity", "Events whose severity is error."],
+              abnormalSeverity: ["Abnormal severity", "Events whose severity is not normal."],
+              reviewCommand: ["Review command", "Command previews containing common verification or source-control review terms."],
+              touchedFiles: ["Touched files", "Events that reference changed or touched files."]
+            },
+            foldingProfile: {
+              narrative: ["Narrative timeline", "Close to what you saw while developing: the goal, how the work moved, and what result came out."],
+              conversation: ["Conversation reading", "Read natural-language continuity first: requirements, plan reports, and outcomes, while temporarily skipping tool and code details."],
+              changes: ["Change review", "Focus on file changes: what changed, which files were touched, and whether review or validation happened."],
+              debug: ["Error focus", "Focus on failures, errors, and interruption points in tool-driven flows."],
+              planning: ["Planning review", "Inspect whether the task moved as expected: the plan, current progress, and surprises that changed next steps."],
+              search: ["Search focus", "Read with keywords in mind; when search results exist, prioritize matching fragments."],
+              compact: ["Full compact", "Scan the entire process without dropping events, with everything compact by default."]
+            },
+            navigation: {
+              search_hits: "Search hits",
+              user_messages: "User messages",
+              assistant_messages: "Assistant messages",
+              update_plan: "Plan updates",
+              plans: "Plans / updates",
+              failed_commands: "Failed commands",
+              commands: "Commands",
+              patch_applied: "Patch applied",
+              patch_failed: "Patch failed",
+              patches: "All patches",
+              errors_warnings: "Errors / warnings",
+              mcp_calls: "MCP calls",
+              web_searches: "Web searches"
+            },
+            renderer: {
+              remaining: "remaining",
+              resets: "Resets",
+              selected: "Selected",
+              question: "Question",
+              answer: "Answer",
+              unknown: "unknown",
+              timedOut: "timed out",
+              message: "Message",
+              result: "Result",
+              targets: "Targets",
+              imageAlt: "Image preview",
+              imageError: "Image preview could not be loaded.",
+              imageUnavailable: "Image preview is unavailable."
+            }
+          },
+          "zh-CN": {
+            ui: {
+              localeLabel: "\u8BED\u8A00",
+              selectProject: "\u9009\u62E9 project",
+              select: "\u9009\u62E9",
+              change: "\u5207\u6362",
+              return: "\u8FD4\u56DE",
+              returning: "\u8FD4\u56DE\u4E2D",
+              stateLoading: "\u6B63\u5728\u8BFB\u53D6\u672C\u5730 sessions...",
+              chooseTargetProjectContinue: "\u8BF7\u9009\u62E9\u76EE\u6807 project \u7EE7\u7EED\u3002",
+              loadingProjectList: "Project list \u52A0\u8F7D\u4E2D...",
+              searchPlaceholder: "\u641C\u7D22 message\u3001command\u3001file\u3001output",
+              searchOptions: "\u641C\u7D22\u9009\u9879",
+              searchFilters: "\u641C\u7D22\u7B5B\u9009",
+              kind: "Kind",
+              status: "Status",
+              layer: "Layer",
+              file: "File",
+              anyKind: "\u4EFB\u610F kind",
+              anyStatus: "\u4EFB\u610F status",
+              currentLayer: "\u5F53\u524D layer",
+              anyFile: "\u4EFB\u610F file",
+              active: "\u5DF2\u542F\u7528",
+              mainTimeline: "Main timeline",
+              protocolLayer: "Protocol layer",
+              rawRecords: "Raw records",
+              projectUnavailable: "\u6CA1\u6709\u53EF\u8FD4\u56DE\u7684 project",
+              projectIndexUnavailable: "Project index \u5DF2\u5B8C\u6210\uFF0C\u4F46 state \u4E0D\u53EF\u7528",
+              resetFolds: "\u91CD\u7F6E\u5C55\u5F00\u72B6\u6001",
+              sessions: "Sessions",
+              events: "Events",
+              detail: "Detail",
+              chooseProject: "\u9009\u62E9\u4E00\u4E2A Codex session \u5DE5\u4F5C\u76EE\u5F55\u8FDB\u884C\u5206\u6790\u3002",
+              cancelIndexing: "\u53D6\u6D88 indexing",
+              sort: "\u6392\u5E8F",
+              updatedDesc: "\u6700\u8FD1\u66F4\u65B0",
+              startedAsc: "\u5F00\u59CB\u65F6\u95F4",
+              eventsDesc: "\u4E8B\u4EF6\u6700\u591A",
+              failuresDesc: "\u5931\u8D25 command \u6700\u591A",
+              chooseSession: "\u9009\u62E9\u4E00\u4E2A session",
+              leftListFiltered: "\u5DE6\u4FA7\u5217\u8868\u6309\u5F53\u524D\u4ED3\u5E93\u8FC7\u6EE4\u3002",
+              eventDetail: "\u4E8B\u4EF6\u8BE6\u60C5",
+              clickTimelineEvent: "\u70B9\u51FB timeline \u4E8B\u4EF6\u67E5\u770B\u539F\u59CB JSONL \u8BB0\u5F55\u3002",
+              loadMore: "\u52A0\u8F7D\u66F4\u591A",
+              loadMoreCount: "\u52A0\u8F7D\u66F4\u591A\uFF08{loaded}/{total}\uFF09",
+              loadedCount: "\u5DF2\u52A0\u8F7D {loaded}",
+              dirtyProfileTitle: "\u6298\u53E0\u7B56\u7565\u6709\u672A\u4FDD\u5B58\u4FEE\u6539",
+              dirtyProfileMessage: "\u5207\u6362\u7B56\u7565\u524D\uFF0C\u8BF7\u9009\u62E9\u4FDD\u5B58\u5F53\u524D\u4FEE\u6539\u3001\u653E\u5F03\u4FEE\u6539\uFF0C\u6216\u7559\u5728\u5F53\u524D\u7B56\u7565\u7EE7\u7EED\u7F16\u8F91\u3002",
+              currentStrategy: "\u5F53\u524D\u7B56\u7565",
+              saveAs: "\u4FDD\u5B58\u4E3A",
+              saveAndSwitch: "\u4FDD\u5B58\u5E76\u5207\u6362",
+              discardAndSwitch: "\u4E0D\u4FDD\u5B58\u5E76\u5207\u6362",
+              cancel: "\u53D6\u6D88",
+              customProfileName: "{name}\uFF08\u81EA\u5B9A\u4E49{count}\uFF09",
+              openingProject: "\u6B63\u5728\u6253\u5F00 {name}",
+              indexingProject: "\u6B63\u5728 index \u5339\u914D\u7684 Codex sessions\uFF0C\u7136\u540E\u663E\u793A project timeline\u3002",
+              switchProject: "\u5207\u6362 project\uFF1A{root}",
+              switchTargetProject: "\u5207\u6362\u76EE\u6807 project\uFF1A{root}",
+              returnToProject: "\u8FD4\u56DE project\uFF1A{root}",
+              returnToCurrentProject: "\u8FD4\u56DE\u5F53\u524D project\uFF1A{root}",
+              returningToProject: "\u6B63\u5728\u8FD4\u56DE project\uFF1A{root}",
+              returningToCurrentProject: "\u6B63\u5728\u8FD4\u56DE\u5F53\u524D project\uFF1A{root}",
+              indexingCancelled: "Indexing \u5DF2\u53D6\u6D88",
+              indexingFailed: "Indexing \u5931\u8D25",
+              indexingCancelledSentence: "Indexing \u5DF2\u53D6\u6D88\u3002",
+              readingMatchingSessions: "\u6B63\u5728\u8BFB\u53D6 {repoRoot} \u7684\u5339\u914D sessions\u3002transcript history \u8F83\u5927\u65F6\u53EF\u80FD\u9700\u8981\u51E0\u79D2\u3002",
+              preparingIndex: "\u6B63\u5728\u4E3A {name} \u51C6\u5907 index",
+              scanningFiles: "\u6B63\u5728\u626B\u63CF {done}/{total} \u4E2A transcript files",
+              parsingFiles: "\u6B63\u5728\u89E3\u6790 {done}/{total} \u4E2A\u5019\u9009 files",
+              candidates: "{count} \u4E2A\u5019\u9009",
+              skipped: "\u8DF3\u8FC7 {count} \u4E2A",
+              sessionCount: "{count} \u4E2A sessions",
+              logicalEventCount: "{count} \u4E2A logical events",
+              rawRecordCount: "{count} \u4E2A raw records",
+              messageCountShort: "{count} msgs",
+              toolCountShort: "{count} tools",
+              failedCommandCountShort: "{count} failed cmds",
+              protocolCountShort: "{count} protocol",
+              projectActivityLoading: "\u6B63\u5728\u4ECE {codexHome} \u52A0\u8F7D project activity...",
+              projectActivity: "Project activity",
+              discoveringProjects: "\u6B63\u5728\u53D1\u73B0 transcript projects...",
+              projectCandidates: "\u6765\u81EA {codexHome} \u7684 {count} \u4E2A project \u5019\u9009",
+              noProjectCandidates: "{codexHome} \u4E2D\u6CA1\u6709 project \u5019\u9009",
+              noCodexProjects: "\u914D\u7F6E\u7684 sessions \u76EE\u5F55\u4E2D\u6CA1\u6709\u53D1\u73B0 Codex projects\u3002",
+              lastSelected: "\u4E0A\u6B21\u9009\u62E9",
+              missingDirectory: "\u76EE\u5F55\u7F3A\u5931",
+              indexing: "Indexing...",
+              open: "\u6253\u5F00",
+              activityLoading: "Activity \u52A0\u8F7D\u4E2D...",
+              noTranscriptActivity: "\u6CA1\u6709 transcript activity",
+              selectSessionFirst: "\u8BF7\u5148\u9009\u62E9\u76EE\u6807 project\u3002",
+              noMatchingSession: "\u6CA1\u6709\u5339\u914D\u7684 session",
+              adjustSearchFilters: "\u8C03\u6574 search \u6216 filters\u3002",
+              loading: "\u52A0\u8F7D\u4E2D...",
+              noMatches: "\u65E0\u5339\u914D",
+              matchCount: "{current} / {total} \u4E2A\u547D\u4E2D",
+              sessionsMatchTotal: "Sessions\uFF1A{count} \u4E2A\u5339\u914D\uFF08\u5171 {total}\uFF09",
+              sessionsMatch: "Sessions\uFF1A{count} \u4E2A\u5339\u914D",
+              eventsMatchLoaded: "Events\uFF1A{count} \u4E2A\u5339\u914D\uFF08\u5DF2\u52A0\u8F7D {loaded}\uFF09",
+              eventsMatch: "Events\uFF1A{count} \u4E2A\u5339\u914D",
+              eventsSelectSession: "Events\uFF1A\u8BF7\u9009\u62E9 session",
+              searchMatchTitle: "\u5DF2\u6E32\u67D3\u7684\u8DF3\u8F6C\u76EE\u6807\uFF1B\u603B\u6570\u4FDD\u7559\u5168\u6587\u547D\u4E2D\u6570\uFF0C\u5E76\u5728\u53EF\u89C1\u76EE\u6807\u66F4\u591A\u65F6\u4E0A\u8C03",
+              activeFindFilters: "\u5DF2\u542F\u7528\u7684 find \u548C filters",
+              clearAll: "\u5168\u90E8\u6E05\u9664",
+              clear: "\u6E05\u9664 {label}",
+              find: "Find",
+              readFromHere: "\u4ECE\u8FD9\u91CC\u8BFB",
+              readFromHereTitle: "\u6E05\u9664\u4E8B\u4EF6 filters\u3001\u5207\u56DE Main timeline\uFF0C\u5E76\u4FDD\u6301\u5F53\u524D\u4F4D\u7F6E",
+              noActiveFilters: "\u6CA1\u6709\u542F\u7528 find \u6216 filters",
+              foldingStrategy: "\u6298\u53E0\u7B56\u7565",
+              strategy: "Strategy",
+              fixedProfileRules: "\u6298\u53E0\u7B56\u7565\u53EA\u4F5C\u7528\u4E8E Main timeline\u3002\u5F53\u524D layer \u4F7F\u7528\u56FA\u5B9A\u663E\u793A\u89C4\u5219\u3002",
+              protocolFixedRules: "Protocol events \u663E\u793A\u4E3A\u6458\u8981\uFF1B\u975E protocol events \u4FDD\u6301\u6298\u53E0\u3002",
+              rawFixedRules: "Raw event_msg \u548C response_item records \u4FDD\u6301\u6298\u53E0\uFF1B\u5176\u4ED6 raw records \u663E\u793A\u4E3A\u6458\u8981\u3002",
+              viewMainTimeline: "\u67E5\u770B Main timeline",
+              unsavedPreview: "\u672A\u4FDD\u5B58\u9884\u89C8",
+              disabled: "\u7981\u7528",
+              default: "Default",
+              eventKinds: "Event kinds",
+              noExplicitKindRules: "\u6CA1\u6709\u663E\u5F0F event-kind \u89C4\u5219\u3002",
+              defaultKindCount: "{count} \u4E2A event kinds \u4F7F\u7528 Default",
+              conditions: "Conditions",
+              noActiveConditions: "\u6CA1\u6709\u542F\u7528\u7684 conditions\u3002",
+              inactiveConditions: "{count} \u4E2A\u672A\u542F\u7528 conditions",
+              saveProfileChanges: "\u4FDD\u5B58 profile \u4FEE\u6539",
+              cancelProfileChanges: "\u53D6\u6D88 profile \u4FEE\u6539",
+              save: "\u4FDD\u5B58",
+              back: "\u8FD4\u56DE",
+              close: "\u5173\u95ED",
+              inspectEvent: "Inspect event",
+              rawRefs: "Raw refs",
+              noRawRows: "\u6B64\u4E8B\u4EF6\u6CA1\u6709\u53EF\u7528\u7684 raw source rows\u3002",
+              rawRowsForEvent: "{count} \u6761 JSONL row{plural} for {eventId}",
+              rawRows: "{count} \u6761 JSONL row{plural}",
+              noRawRefs: "\u6CA1\u6709\u53EF\u7528 raw refs",
+              inspect: "Inspect event",
+              severity: "Severity",
+              summary: "Summary",
+              metadata: "Metadata",
+              source: "Source",
+              time: "\u65F6\u95F4",
+              tool: "Tool",
+              exitCode: "Exit code",
+              duration: "\u8017\u65F6",
+              recordType: "Record type",
+              channels: "Channels",
+              touchedFiles: "Touched files",
+              details: "Details",
+              loadingStructuredDetail: "Structured detail \u52A0\u8F7D\u4E2D...",
+              retryDetail: "\u91CD\u8BD5 detail",
+              previousSearchMatch: "\u4E0A\u4E00\u4E2A\u641C\u7D22\u547D\u4E2D",
+              nextSearchMatch: "\u4E0B\u4E00\u4E2A\u641C\u7D22\u547D\u4E2D",
+              collapseEvent: "\u6536\u8D77\u4E8B\u4EF6",
+              expandEvent: "\u5C55\u5F00\u4E8B\u4EF6",
+              previous: "Prev",
+              next: "Next",
+              loadingNavigation: "Navigation \u52A0\u8F7D\u4E2D...",
+              eventQuickNavigation: "Event quick navigation",
+              quickNavigationCategory: "Quick navigation category",
+              fixedRuleSubtitle: "{layer} \u4F7F\u7528\u56FA\u5B9A\u663E\u793A\u89C4\u5219",
+              remaining: "remaining",
+              resets: "Resets",
+              files: "files",
+              raw: "raw",
+              sessionMetadata: "Session metadata",
+              reviewKind: "Review",
+              subagentKind: "Subagent",
+              derivedFrom: "{kind}{nickname} \xB7 \u6765\u81EA {parent}",
+              derivedSession: "{kind}{nickname} session",
+              forkFrom: "Fork \xB7 \u6765\u81EA {parent}",
+              metricTurns: "Turns",
+              metricMessages: "Messages",
+              metricIssues: "Issues",
+              metricFiles: "Files",
+              metricProtocol: "Protocol",
+              metricPlans: "Plans",
+              switchToConversationProfile: "\u5207\u6362\u5230\u5BF9\u8BDD\u9605\u8BFB\u6298\u53E0\u7B56\u7565",
+              switchToIssueProfile: "\u5207\u6362\u5230\u9519\u8BEF\u805A\u7126\u6298\u53E0\u7B56\u7565",
+              switchToChangesProfile: "\u5207\u6362\u5230\u6539\u52A8\u5BA1\u67E5\u6298\u53E0\u7B56\u7565",
+              switchToProtocolLayer: "\u5207\u6362\u5230 protocol layer events",
+              switchToPlanningProfile: "\u5207\u6362\u5230\u8BA1\u5212\u9605\u8BFB\u6298\u53E0\u7B56\u7565",
+              metricShortcutMainOnly: "{label} \u5FEB\u6377\u5165\u53E3\u53EA\u5728 Main timeline \u53EF\u7528\u3002",
+              metricActionCount: "{action}\uFF1A{value} {label}",
+              profileInfoEmpty: "\u6682\u65E0\u6298\u53E0\u7B56\u7565\u8BF4\u660E\u3002",
+              profileInfoMissingDescription: "\u6682\u65E0\u8BF4\u660E\u3002",
+              profileInfoLabel: "\u67E5\u770B\u6298\u53E0\u7B56\u7565\u8BF4\u660E\uFF0C\u5F53\u524D\u7B56\u7565\uFF1A{name}\u3002{description}"
+            },
+            displayState: {
+              expanded: "\u5C55\u5F00",
+              summary: "\u6458\u8981",
+              collapsed: "\u6298\u53E0",
+              hidden: "\u9690\u85CF"
+            },
+            kind: {
+              user_message: "User message",
+              assistant_message: "Assistant message",
+              command: "Command",
+              patch: "Patch",
+              mcp_call: "MCP call",
+              js_repl: "JS REPL",
+              other_tool_call: "Other tool call",
+              proposed_plan: "Proposed plan",
+              plan_update: "Plan update",
+              protocol: "Protocol",
+              error: "Error",
+              warning: "Warning",
+              abort: "Turn aborted",
+              rollback: "Thread rollback",
+              compaction: "Context compaction",
+              usage_limit_warning: "Usage limit warning",
+              subagent: "Subagent activity",
+              review: "Review",
+              reasoning: "Reasoning",
+              web_search: "Web search",
+              event: "Event"
+            },
+            protocol: {
+              agents_instructions: "AGENTS.md instructions",
+              developer_collaboration_mode: "Collaboration mode",
+              developer_instruction: "Developer instruction",
+              developer_permissions: "Developer permissions",
+              environment_context: "Environment context",
+              session_configured: "Session configured",
+              thread_goal_updated: "Thread goal updated",
+              image_wrapper: "Image attachment wrapper",
+              meta_block: "Protocol metadata block",
+              session_meta: "Session metadata",
+              skill_injection: "Skill instructions",
+              token_count: "Token count",
+              turn_aborted_marker: "Turn aborted marker",
+              turn_context: "Turn context",
+              user_shell_command: "User shell command"
+            },
+            status: {
+              failed: "Failed",
+              success: "Success",
+              completed: "Completed"
+            },
+            section: {
+              Arguments: "Arguments",
+              Patch: "Patch",
+              Output: "Output",
+              Request: "Request",
+              Response: "Response",
+              "User input": "User input",
+              "Image preview": "Image preview",
+              "Plan update": "Plan update",
+              "Search action": "Search action",
+              "Search payload": "Search payload",
+              "Usage limits": "Usage limits",
+              "Token usage": "Token usage",
+              "Command arguments": "Command arguments",
+              "Raw JSON": "Raw JSON",
+              "Review request": "Review request",
+              "Review result": "Review result",
+              "Overall explanation": "Overall explanation",
+              Findings: "Findings",
+              "Review output JSON": "Review output JSON",
+              "Event fields": "Event fields",
+              "Event raw JSON": "Event raw JSON",
+              Message: "Message",
+              Plan: "Plan",
+              Reasoning: "Reasoning",
+              Details: "Details",
+              Code: "Code",
+              Question: "Question",
+              Answer: "Answer",
+              Selected: "Selected",
+              Targets: "Targets",
+              Result: "Result"
+            },
+            foldingCondition: {
+              searchHit: ["Search hit", "\u5339\u914D\u5F53\u524D\u641C\u7D22 query \u7684 events\u3002"],
+              importantEvent: ["Important event", "User/assistant messages\u3001patches\u3001errors\u3001aborts\u3001rollbacks\u3001compactions\u3001plans\u3001plan updates\u3001update_plan calls\u3001failed events \u548C abnormal severity\u3002"],
+              updatePlanCall: ["update_plan call", "update_plan tool \u8C03\u7528\u548C protocol plan updates\u3002"],
+              userInputRequest: ["User input request", "\u5BF9\u8BDD\u4E2D\u6536\u96C6\u7528\u6237\u9009\u62E9\u7684 request_user_input \u8C03\u7528\u3002"],
+              readableReasoning: ["Readable reasoning", "Main timeline \u4E2D\u5305\u542B\u53EF\u8BFB\u6587\u672C\u7684 reasoning entries\u3002"],
+              failedStatus: ["Failed status", "status \u4E3A failed \u7684 events\u3002"],
+              errorSeverity: ["Error severity", "severity \u4E3A error \u7684 events\u3002"],
+              abnormalSeverity: ["Abnormal severity", "severity \u4E0D\u662F normal \u7684 events\u3002"],
+              reviewCommand: ["Review command", "Command preview \u4E2D\u5305\u542B\u5E38\u89C1\u9A8C\u8BC1\u6216 source-control review \u8BCD\u3002"],
+              touchedFiles: ["Touched files", "\u5F15\u7528 changed \u6216 touched files \u7684 events\u3002"]
+            },
+            foldingProfile: {
+              narrative: ["\u53D9\u4E8B\u65F6\u95F4\u7EBF", "\u7C7B\u4F3C\u5F00\u53D1\u65F6\u770B\u5230\u7684\u5185\u5BB9\uFF0C\u9002\u5408\u5FEB\u901F\u56DE\u5FC6\u8FD9\u6BB5\u5F00\u53D1\u5230\u5E95\u53D1\u751F\u4E86\u4EC0\u4E48\uFF1A\u76EE\u6807\u600E\u4E48\u63D0\u51FA\u3001\u8FC7\u7A0B\u5982\u4F55\u63A8\u8FDB\u3001\u6700\u540E\u5F97\u5230\u4EC0\u4E48\u7ED3\u679C\u3002"],
+              conversation: ["\u5BF9\u8BDD\u9605\u8BFB", "\u5148\u53EA\u770B\u81EA\u7136\u8BED\u8A00\u5185\u5BB9\uFF1A\u9700\u6C42\u63D0\u51FA\u548C\u7EC6\u5316\u8FC7\u7A0B\u3001agent \u62A5\u544A\u7684\u6267\u884C\u8BA1\u5212\u548C\u7ED3\u679C\uFF0C\u6682\u65F6\u8DF3\u8FC7 tool \u53CA code \u7EC6\u8282\u3002"],
+              changes: ["\u6539\u52A8\u5BA1\u67E5", "\u805A\u7126\u6587\u4EF6\u6539\u52A8\uFF1A\u52A8\u4E86\u54EA\u4E9B files\u3001\u505A\u4E86\u54EA\u4E9B\u4FEE\u6539\u3001\u6709\u6CA1\u6709\u8FDB\u884C\u76F8\u5E94 review \u548C\u9A8C\u8BC1\u3002"],
+              debug: ["\u9519\u8BEF\u805A\u7126", "\u805A\u7126 tool \u8C03\u7528\u7B49\u6D41\u7A0B\u4E2D\u7684\u5931\u8D25\u3001\u62A5\u9519\u548C\u4E2D\u65AD\u70B9\uFF0C\u770B\u5F53\u524D workflow \u662F\u5426\u5B58\u5728\u6613\u9519\u6A21\u5F0F\u3002"],
+              planning: ["\u8BA1\u5212\u9605\u8BFB", "\u9002\u5408\u68C0\u67E5\u4EFB\u52A1\u662F\u5426\u6309\u9884\u671F\u63A8\u8FDB\uFF1A\u8BA1\u5212\u662F\u600E\u6837\u7684\u3001\u6267\u884C\u5230\u54EA\u4E00\u6B65\u3001\u54EA\u4E9B\u610F\u5916\u60C5\u51B5\u53EF\u80FD\u6539\u53D8\u4E86\u4E0B\u4E00\u6B65\u3002"],
+              search: ["\u641C\u7D22\u805A\u7126", "\u9002\u5408\u5E26\u7740\u5173\u952E\u8BCD\u9605\u8BFB\uFF1B\u6709\u641C\u7D22\u7ED3\u679C\u65F6\u4F18\u5148\u805A\u7126\u547D\u4E2D\u7247\u6BB5\uFF0C\u907F\u514D\u88AB\u5176\u5B83\u5185\u5BB9\u5E72\u6270\u3002"],
+              compact: ["\u5B8C\u6574\u7D27\u51D1", "\u9002\u5408\u62C5\u5FC3\u6F0F\u6389\u7EC6\u8282\u65F6\u626B\u5B8C\u6574\u4E2A\u8FC7\u7A0B\uFF0C\u6240\u6709 events \u90FD\u4FDD\u7559\uFF0C\u4F46\u9ED8\u8BA4\u6298\u53E0\u5230\u6700\u7701\u7A7A\u95F4\u3002"]
+            },
+            navigation: {
+              search_hits: "Search hits",
+              user_messages: "User messages",
+              assistant_messages: "Assistant messages",
+              update_plan: "Plan updates",
+              plans: "Plans / updates",
+              failed_commands: "Failed commands",
+              commands: "Commands",
+              patch_applied: "Patch applied",
+              patch_failed: "Patch failed",
+              patches: "All patches",
+              errors_warnings: "Errors / warnings",
+              mcp_calls: "MCP calls",
+              web_searches: "Web searches"
+            },
+            renderer: {
+              remaining: "remaining",
+              resets: "Resets",
+              selected: "Selected",
+              question: "Question",
+              answer: "Answer",
+              unknown: "unknown",
+              timedOut: "timed out",
+              message: "Message",
+              result: "Result",
+              targets: "Targets",
+              imageAlt: "Image preview",
+              imageError: "Image preview could not be loaded.",
+              imageUnavailable: "Image preview is unavailable."
+            }
+          }
+        };
+        function resolveLocale(input) {
+          const source = String(input || "").split(",")[0].split(";")[0].trim();
+          if (!source) return DEFAULT_LOCALE;
+          const normalized = source.replace("_", "-").toLowerCase();
+          if (normalized === "zh" || normalized === "zh-cn" || normalized.startsWith("zh-hans")) return "zh-CN";
+          if (normalized === "en" || normalized.startsWith("en-")) return "en";
+          return DEFAULT_LOCALE;
+        }
+        function readPath(locale, namespace, key) {
+          return catalogs[locale]?.[namespace]?.[key];
+        }
+        function interpolate(text, vars = {}) {
+          return String(text).replace(/\{([a-zA-Z0-9_]+)\}/g, (match, name) => Object.hasOwn(vars, name) ? String(vars[name]) : match);
+        }
+        function t(locale, namespace, key, vars = {}) {
+          const resolved = resolveLocale(locale);
+          const value = readPath(resolved, namespace, key) ?? readPath(DEFAULT_LOCALE, namespace, key);
+          if (value == null) return "";
+          return interpolate(value, vars);
+        }
+        function humanize(value) {
+          const text = String(value || "").trim();
+          if (!text) return "";
+          if (/^mcp\b/i.test(text)) return text.replace(/_/g, " ").replace(/^mcp/i, "MCP");
+          return text.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().replace(/\b\w/g, (letter) => letter.toUpperCase()).replace(/\bJs\b/g, "JS");
+        }
+        function eventKindLabel(value, locale) {
+          const key = String(value || "").trim();
+          return t(locale, "kind", key) || t(locale, "protocol", key) || humanize(key) || key;
+        }
+        function displayStateLabel(value, locale) {
+          const key = String(value || "").trim();
+          return t(locale, "displayState", key) || key;
+        }
+        function statusLabel(value, locale) {
+          const key = String(value || "").trim();
+          return t(locale, "status", key) || key;
+        }
+        function sectionTitle(title, locale) {
+          const key = String(title || "").trim();
+          return t(locale, "section", key) || key;
+        }
+        function knownLabel(label, locale) {
+          const key = String(label || "").trim();
+          return t(locale, "kind", key) || t(locale, "protocol", key) || t(locale, "section", key) || key;
+        }
+        function localizeCondition(condition, locale) {
+          const entry = catalogs[resolveLocale(locale)]?.foldingCondition?.[condition.id] || catalogs[DEFAULT_LOCALE].foldingCondition?.[condition.id];
+          return entry ? { ...condition, name: entry[0], description: entry[1] } : { ...condition };
+        }
+        function localizeProfile(profile, locale) {
+          const entry = catalogs[resolveLocale(locale)]?.foldingProfile?.[profile.id] || catalogs[DEFAULT_LOCALE].foldingProfile?.[profile.id];
+          return entry ? { ...profile, name: entry[0], description: entry[1] } : { ...profile };
+        }
+        function localizeSection(section, locale) {
+          if (!section || typeof section !== "object") return section;
+          const next = { ...section };
+          if (next.title) next.title = sectionTitle(next.title, locale);
+          return next;
+        }
+        return {
+          DEFAULT_LOCALE,
+          SUPPORTED_LOCALES,
+          catalogs,
+          resolveLocale,
+          t,
+          eventKindLabel,
+          displayStateLabel,
+          statusLabel,
+          sectionTitle,
+          knownLabel,
+          localizeCondition,
+          localizeProfile,
+          localizeSection
+        };
+      });
+    }
+  });
+
   // src/browser/renderers.js
   var require_renderers = __commonJS({
     "src/browser/renderers.js"(exports, module) {
       (function initSessionRenderers(root, factory) {
         const commandHighlighting = typeof module === "object" && module.exports ? require_command_highlighting() : root.sessionCommandHighlighting;
-        const api = factory(commandHighlighting);
+        const i18n = typeof module === "object" && module.exports ? require_i18n() : root.sessionI18n;
+        const api = factory(commandHighlighting, i18n);
         if (typeof module === "object" && module.exports) module.exports = api;
         root.sessionRenderers = api;
-      })(typeof globalThis !== "undefined" ? globalThis : exports, (commandHighlighting) => {
+      })(typeof globalThis !== "undefined" ? globalThis : exports, (commandHighlighting, i18n) => {
         "use strict";
+        function locale() {
+          return globalThis.sessionAnalyzerLocale || i18n.DEFAULT_LOCALE;
+        }
+        function tr(key, vars = {}) {
+          return i18n.t(locale(), "renderer", key, vars);
+        }
         function escapeHtml(value) {
           return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
             "&": "&amp;",
@@ -281,18 +1026,18 @@
           return `<section class="eventSection"><div class="tokenUsageBlock">${renderSectionTitle(section)}<div class="tokenUsageGrid">${items}</div></div></section>`;
         }
         function renderUsageLimits(section) {
-          const items = (section.items || []).map((item) => `<div class="usageLimitItem"><strong>${escapeHtml(item.label || "")}</strong><span>${escapeHtml(item.remaining || "")} remaining</span><em>Resets ${escapeHtml(item.reset || "")}</em></div>`).join("");
+          const items = (section.items || []).map((item) => `<div class="usageLimitItem"><strong>${escapeHtml(item.label || "")}</strong><span>${escapeHtml(item.remaining || "")} ${escapeHtml(tr("remaining"))}</span><em>${escapeHtml(tr("resets"))} ${escapeHtml(item.reset || "")}</em></div>`).join("");
           return `<section class="eventSection"><div class="usageLimitBlock">${renderSectionTitle(section)}${items}</div></section>`;
         }
         function renderUserInput(section) {
           const questions = (section.questions || []).map((question) => {
             const options = (question.options || []).map((option) => {
               const selected = option.selected ? " selected" : "";
-              const selectedLabel = option.selected ? '<span class="userInputSelected">Selected</span>' : "";
+              const selectedLabel = option.selected ? `<span class="userInputSelected">${escapeHtml(tr("selected"))}</span>` : "";
               return `<li class="userInputOption${selected}"><div><strong>${escapeHtml(option.label || "")}</strong>${selectedLabel}</div>${option.description ? `<p>${escapeHtml(option.description)}</p>` : ""}</li>`;
             }).join("");
             const answers = (question.answers || []).map((answer) => `<span>${escapeHtml(answer)}</span>`).join("");
-            return `<article class="userInputQuestion"><header><strong>${escapeHtml(question.title || "Question")}</strong></header>${question.prompt ? `<p class="userInputPrompt">${escapeHtml(question.prompt)}</p>` : ""}${options ? `<ul class="userInputOptions">${options}</ul>` : ""}${answers ? `<div class="userInputAnswer"><strong>Answer</strong>${answers}</div>` : ""}</article>`;
+            return `<article class="userInputQuestion"><header><strong>${escapeHtml(question.title || tr("question"))}</strong></header>${question.prompt ? `<p class="userInputPrompt">${escapeHtml(question.prompt)}</p>` : ""}${options ? `<ul class="userInputOptions">${options}</ul>` : ""}${answers ? `<div class="userInputAnswer"><strong>${escapeHtml(tr("answer"))}</strong>${answers}</div>` : ""}</article>`;
           }).join("");
           return `<section class="eventSection"><div class="userInputBlock">${renderSectionTitle(section)}${questions}</div></section>`;
         }
@@ -306,7 +1051,7 @@
         }
         function renderPlanUpdate(section) {
           const explanation = section.explanationHtml ? `<div class="planUpdateExplanation">${section.explanationHtml}</div>` : "";
-          const steps = (section.steps || []).map((item) => `<li class="planUpdateStep"><span class="planStatus${planStatusClass(item.status)}">${escapeHtml(item.status || "unknown")}</span><span>${escapeHtml(item.step || "")}</span></li>`).join("");
+          const steps = (section.steps || []).map((item) => `<li class="planUpdateStep"><span class="planStatus${planStatusClass(item.status)}">${escapeHtml(item.status || tr("unknown"))}</span><span>${escapeHtml(item.step || "")}</span></li>`).join("");
           return `<section class="eventSection"><div class="planUpdateBlock">${renderSectionTitle(section)}${explanation}${steps ? `<ol class="planUpdateSteps">${steps}</ol>` : ""}</div></section>`;
         }
         function collaborationStatusClass(status) {
@@ -320,18 +1065,18 @@
         function renderCollaboration(section) {
           const targets = (section.targets || []).map((target) => `<span>${escapeHtml(target)}</span>`).join("");
           const fields = (section.fields || []).map((entry) => `<div><dt>${escapeHtml(entry.key || "")}</dt><dd>${escapeHtml(entry.value || "")}</dd></div>`).join("");
-          const statuses = (section.statuses || []).map((item) => `<li><span>${escapeHtml(item.label || "")}</span><strong class="collaborationStatus${collaborationStatusClass(item.status)}">${escapeHtml(item.status || "unknown")}</strong></li>`).join("");
-          const timedOut = section.timedOut ? '<span class="collaborationStatus failed">timed out</span>' : "";
-          const message = section.messageHtml ? `<article class="collaborationBody"><h4>Message</h4><div>${section.messageHtml}</div></article>` : "";
-          const result = section.resultHtml ? `<article class="collaborationBody"><h4>Result</h4><div>${section.resultHtml}</div></article>` : "";
-          return `<section class="eventSection"><div class="collaborationBlock">${renderSectionTitle(section)}${targets ? `<div class="collaborationTargets"><strong>Targets</strong>${targets}</div>` : ""}${fields ? `<dl class="collaborationFields">${fields}</dl>` : ""}${statuses || timedOut ? `<div class="collaborationStatuses">${timedOut}${statuses ? `<ul>${statuses}</ul>` : ""}</div>` : ""}${message}${result}</div></section>`;
+          const statuses = (section.statuses || []).map((item) => `<li><span>${escapeHtml(item.label || "")}</span><strong class="collaborationStatus${collaborationStatusClass(item.status)}">${escapeHtml(item.status || tr("unknown"))}</strong></li>`).join("");
+          const timedOut = section.timedOut ? `<span class="collaborationStatus failed">${escapeHtml(tr("timedOut"))}</span>` : "";
+          const message = section.messageHtml ? `<article class="collaborationBody"><h4>${escapeHtml(tr("message"))}</h4><div>${section.messageHtml}</div></article>` : "";
+          const result = section.resultHtml ? `<article class="collaborationBody"><h4>${escapeHtml(tr("result"))}</h4><div>${section.resultHtml}</div></article>` : "";
+          return `<section class="eventSection"><div class="collaborationBlock">${renderSectionTitle(section)}${targets ? `<div class="collaborationTargets"><strong>${escapeHtml(tr("targets"))}</strong>${targets}</div>` : ""}${fields ? `<dl class="collaborationFields">${fields}</dl>` : ""}${statuses || timedOut ? `<div class="collaborationStatuses">${timedOut}${statuses ? `<ul>${statuses}</ul>` : ""}</div>` : ""}${message}${result}</div></section>`;
         }
         function isSafeImagePreviewUrl(value) {
           return /^\/api\/sessions\/[^/?#]+\/events\/[^/?#]+\/image-previews\/[^/?#]+$/.test(String(value || ""));
         }
         function renderImagePreview(section) {
-          const images = (section.images || []).filter((image) => isSafeImagePreviewUrl(image.src)).map((image) => `<figure><img src="${escapeHtml(image.src)}" alt="${escapeHtml(image.alt || "Image preview")}" loading="lazy" decoding="async"><p class="imagePreviewError">Image preview could not be loaded.</p>${image.detail ? `<figcaption>${escapeHtml(image.detail)}</figcaption>` : ""}</figure>`).join("");
-          const notice = section.notice || (!images ? "Image preview is unavailable." : "");
+          const images = (section.images || []).filter((image) => isSafeImagePreviewUrl(image.src)).map((image) => `<figure><img src="${escapeHtml(image.src)}" alt="${escapeHtml(image.alt || tr("imageAlt"))}" loading="lazy" decoding="async"><p class="imagePreviewError">${escapeHtml(tr("imageError"))}</p>${image.detail ? `<figcaption>${escapeHtml(image.detail)}</figcaption>` : ""}</figure>`).join("");
+          const notice = section.notice || (!images ? tr("imageUnavailable") : "");
           const noticeHtml = notice ? `<div class="notice info"><p>${escapeHtml(notice)}</p></div>` : "";
           return `<section class="eventSection"><div class="imagePreviewBlock">${renderSectionTitle(section)}${images ? `<div class="imagePreviewGrid">${images}</div>` : ""}${noticeHtml}</div></section>`;
         }
@@ -888,6 +1633,7 @@
       var searchQuery = window.sessionSearchQuery;
       var searchHighlighter = window.sessionSearchHighlighter;
       var foldingApi = window.sessionFolding;
+      var i18n = window.sessionI18n;
       var navigationApi = window.sessionNavigation;
       var eventChipsApi = window.sessionEventChips;
       var NAVIGATION_PAGE_LIMIT = 500;
@@ -899,6 +1645,7 @@
       var REPO_STORAGE_KEY = "sessionAnalyzer.repoRoot";
       var CUSTOM_PROFILES_KEY = "sessionAnalyzer.customProfiles";
       var OVERRIDES_KEY = "sessionAnalyzer.overrides";
+      var LOCALE_STORAGE_KEY = "sessionAnalyzer.locale";
       var DISPLAY_STATES = foldingApi.DISPLAY_STATES;
       var CONDITION_DISPLAY_STATES = foldingApi.CONDITION_DISPLAY_STATES;
       var EDITABLE_EVENT_KINDS = foldingApi.EDITABLE_EVENT_KINDS;
@@ -908,12 +1655,6 @@
       var evaluateDisplayStateFromRules = foldingApi.displayStateFromRules;
       var inspectorChipValues = eventChipsApi.inspectorChipValues;
       var rawRefsSubtitle = eventChipsApi.rawRefsSubtitle;
-      var DISPLAY_STATE_LABELS = {
-        expanded: "\u5C55\u5F00",
-        summary: "\u6458\u8981",
-        collapsed: "\u6298\u53E0",
-        hidden: "\u9690\u85CF"
-      };
       var KIND_LABELS = {
         user_message: "User message",
         assistant_message: "Assistant message",
@@ -948,7 +1689,22 @@
         raw: "Raw records"
       };
       var NAVIGATION_CATEGORIES = navigationApi.NAVIGATION_CATEGORIES;
+      function browserLocale() {
+        const saved = localStorage.getItem(LOCALE_STORAGE_KEY);
+        if (saved) return i18n.resolveLocale(saved);
+        return i18n.resolveLocale(navigator.languages?.[0] || navigator.language || "");
+      }
+      function t(key, vars = {}) {
+        return i18n.t(state?.locale || browserLocale(), "ui", key, vars);
+      }
+      function displayStateLabel(value) {
+        return i18n.displayStateLabel(value, state?.locale || browserLocale());
+      }
+      function statusLabel(value) {
+        return i18n.statusLabel(value, state?.locale || browserLocale());
+      }
       var state = {
+        locale: browserLocale(),
         sessions: [],
         repoRoot: "",
         projects: [],
@@ -1007,6 +1763,7 @@
         projectSwitchHint: document.querySelector(".projectSwitchHint"),
         stateLine: document.getElementById("stateLine"),
         searchInput: document.getElementById("searchInput"),
+        localeSelect: document.getElementById("localeSelect"),
         searchAssist: document.getElementById("searchAssist"),
         searchAssistChips: document.getElementById("searchAssistChips"),
         searchField: document.querySelector(".searchField"),
@@ -1059,6 +1816,79 @@
       function updateDetailViewChrome() {
         document.body.dataset.detailView = state.detailView?.type || "profileRules";
       }
+      function setText(node, text) {
+        if (node) node.textContent = text;
+      }
+      function setSelectOptionText(select, value, text) {
+        const option = select ? [...select.options].find((item) => item.value === value) : null;
+        if (option) option.textContent = text;
+      }
+      function applyStaticLocale() {
+        window.sessionAnalyzerLocale = state.locale;
+        document.documentElement.lang = state.locale;
+        if (el.localeSelect) el.localeSelect.value = state.locale;
+        document.querySelector(".localeControl .srOnly") && setText(document.querySelector(".localeControl .srOnly"), t("localeLabel"));
+        if (el.localeSelect) el.localeSelect.setAttribute("aria-label", t("localeLabel"));
+        if (!state.repoRoot && !state.projectLoadingRoot) setText(el.stateLine, t("stateLoading"));
+        if (el.searchInput) el.searchInput.placeholder = t("searchPlaceholder");
+        if (el.searchAssist) el.searchAssist.setAttribute("aria-label", t("searchOptions"));
+        document.querySelector("[data-search-match-controls]")?.setAttribute("title", t("searchMatchTitle"));
+        document.querySelector('[data-search-match-nav="previous"]')?.setAttribute("aria-label", t("previousSearchMatch"));
+        document.querySelector('[data-search-match-nav="previous"]')?.setAttribute("title", t("previousSearchMatch"));
+        document.querySelector('[data-search-match-nav="next"]')?.setAttribute("aria-label", t("nextSearchMatch"));
+        document.querySelector('[data-search-match-nav="next"]')?.setAttribute("title", t("nextSearchMatch"));
+        document.querySelectorAll(".searchAssistTitle")[0] && setText(document.querySelectorAll(".searchAssistTitle")[0], t("searchFilters"));
+        document.querySelectorAll(".searchAssistTitle")[1] && setText(document.querySelectorAll(".searchAssistTitle")[1], t("active"));
+        setSelectOptionText(el.searchKindSelect, "", t("anyKind"));
+        setSelectOptionText(el.searchStatusSelect, "", t("anyStatus"));
+        setSelectOptionText(el.searchStatusSelect, "failed", statusLabel("failed"));
+        setSelectOptionText(el.searchStatusSelect, "success", statusLabel("success"));
+        setSelectOptionText(el.searchStatusSelect, "completed", statusLabel("completed"));
+        setSelectOptionText(el.searchLayerSelect, "", t("currentLayer"));
+        setSelectOptionText(el.searchLayerSelect, "main", t("mainTimeline"));
+        setSelectOptionText(el.searchLayerSelect, "protocol", t("protocolLayer"));
+        setSelectOptionText(el.searchLayerSelect, "raw", t("rawRecords"));
+        setSelectOptionText(el.layerSelect, "main", t("mainTimeline"));
+        setSelectOptionText(el.layerSelect, "protocol", t("protocolLayer"));
+        setSelectOptionText(el.layerSelect, "raw", t("rawRecords"));
+        setSelectOptionText(el.sortSelect, "updated-desc", t("updatedDesc"));
+        setSelectOptionText(el.sortSelect, "started-asc", t("startedAsc"));
+        setSelectOptionText(el.sortSelect, "events-desc", t("eventsDesc"));
+        setSelectOptionText(el.sortSelect, "failures-desc", t("failuresDesc"));
+        setText(document.querySelector('.mobileViewTab[data-mobile-view="sessions"]'), t("sessions"));
+        setText(document.querySelector('.mobileViewTab[data-mobile-view="events"]'), t("events"));
+        setText(document.querySelector('.mobileViewTab[data-mobile-view="detail"]'), t("detail"));
+        setText(el.resetFoldsBtn, t("resetFolds"));
+        setText(el.loadMoreBtn, t("loadMore"));
+        setText(document.querySelector(".projectChooserHeader h2"), t("selectProject"));
+        setText(document.querySelector(".projectChooserHeader p"), t("chooseProject"));
+        setText(el.projectCancelBtn, t("cancelIndexing"));
+        setText(document.querySelector(".sessionsPane .sessionListHeader h2"), t("sessions"));
+        setText(document.querySelector(".sortControl .srOnly"), t("sort"));
+        el.layerSelect?.setAttribute("aria-label", t("layer"));
+        el.profileSelect?.setAttribute("aria-label", t("foldingStrategy"));
+        setText(document.getElementById("dirtyProfileTitle"), t("dirtyProfileTitle"));
+        setText(document.getElementById("dirtyProfileMessage"), t("dirtyProfileMessage"));
+        setText(document.querySelector(".appDialogMeta dt"), t("currentStrategy"));
+        setText(document.querySelector(".appDialogField span"), t("saveAs"));
+        setText(document.querySelector('[data-dirty-profile-choice="save"]'), t("saveAndSwitch"));
+        setText(document.querySelector('[data-dirty-profile-choice="discard"]'), t("discardAndSwitch"));
+        setText(document.querySelector('[data-dirty-profile-choice="cancel"]'), t("cancel"));
+        const sessionHeaderTitle = el.sessionHeader?.querySelector("h2");
+        const sessionHeaderText = el.sessionHeader?.querySelector("p");
+        if (!state.selectedSessionId) {
+          setText(sessionHeaderTitle, t("chooseSession"));
+          setText(sessionHeaderText, t("leftListFiltered"));
+        }
+        if (!state.selectedEventId && !el.detail?.querySelector(".detailView")) {
+          const detailTitle = el.detail?.querySelector("h2");
+          const detailText = el.detail?.querySelector("p");
+          setText(detailTitle, t("eventDetail"));
+          setText(detailText, t("clickTimelineEvent"));
+        }
+        updateProjectChooserHeader();
+        updateProjectSwitchControl();
+      }
       function readJsonStorage(key, fallback) {
         try {
           const value = JSON.parse(localStorage.getItem(key) || "null");
@@ -1072,11 +1902,18 @@
       }
       function api(path, options = {}) {
         const init2 = { ...options };
+        let requestPath = path;
+        const method = String(init2.method || "GET").toUpperCase();
+        if (method === "GET") {
+          const url = new URL(path, window.location.origin);
+          url.searchParams.set("locale", state.locale);
+          requestPath = `${url.pathname}${url.search}${url.hash}`;
+        }
         if (options.body && typeof options.body !== "string") {
           init2.body = JSON.stringify(options.body);
           init2.headers = { "content-type": "application/json", ...options.headers || {} };
         }
-        return fetch(path, init2).then(async (res) => {
+        return fetch(requestPath, init2).then(async (res) => {
           const body = await res.json();
           if (!res.ok) {
             const error = new Error(body.error || `HTTP ${res.status}`);
@@ -1107,7 +1944,7 @@
       }
       function projectName(repoRoot) {
         const text = String(repoRoot || "").replace(/[\\/]+$/, "");
-        if (!text) return "Select project";
+        if (!text) return t("selectProject");
         return text.split(/[\\/]/).filter(Boolean).pop() || text;
       }
       function setProjectHeader(repoRoot, summary) {
@@ -1122,11 +1959,11 @@
       function updateProjectChooserHeader() {
         if (!el.projectChooserTitle || !el.projectChooserDescription) return;
         if (state.projectLoadingRoot) {
-          el.projectChooserTitle.textContent = `Opening ${projectName(state.projectLoadingRoot)}`;
-          el.projectChooserDescription.textContent = "Indexing matching Codex sessions before showing the project timeline.";
+          el.projectChooserTitle.textContent = t("openingProject", { name: projectName(state.projectLoadingRoot) });
+          el.projectChooserDescription.textContent = t("indexingProject");
         } else {
-          el.projectChooserTitle.textContent = "Select target project";
-          el.projectChooserDescription.textContent = "Choose a Codex session working directory to analyze.";
+          el.projectChooserTitle.textContent = t("selectProject");
+          el.projectChooserDescription.textContent = t("chooseProject");
         }
       }
       function updateProjectSwitchControl(options = {}) {
@@ -1136,19 +1973,19 @@
         const labelRoot = canReturn ? returnRoot : displayRoot;
         if (el.projectTitle) el.projectTitle.textContent = projectName(labelRoot);
         if (el.projectSwitchHint) {
-          el.projectSwitchHint.textContent = state.projectReturning ? "Returning" : canReturn ? "Return" : displayRoot ? "Change" : "Select";
+          el.projectSwitchHint.textContent = state.projectReturning ? t("returning") : canReturn ? t("return") : displayRoot ? t("change") : t("select");
         }
         if (!el.projectSwitchControl) return;
         el.projectSwitchControl.disabled = state.projectReturning || Boolean(state.projectLoadingRoot || state.projectJobId);
         if (state.projectReturning && returnRoot) {
-          el.projectSwitchControl.title = `Returning to project: ${returnRoot}`;
-          el.projectSwitchControl.setAttribute("aria-label", `Returning to current project: ${returnRoot}`);
+          el.projectSwitchControl.title = t("returningToProject", { root: returnRoot });
+          el.projectSwitchControl.setAttribute("aria-label", t("returningToCurrentProject", { root: returnRoot }));
         } else if (canReturn) {
-          el.projectSwitchControl.title = `Return to project: ${returnRoot}`;
-          el.projectSwitchControl.setAttribute("aria-label", `Return to current project: ${returnRoot}`);
+          el.projectSwitchControl.title = t("returnToProject", { root: returnRoot });
+          el.projectSwitchControl.setAttribute("aria-label", t("returnToCurrentProject", { root: returnRoot }));
         } else {
-          el.projectSwitchControl.title = displayRoot ? `Switch project: ${displayRoot}` : "Select target project";
-          el.projectSwitchControl.setAttribute("aria-label", displayRoot ? `Switch target project: ${displayRoot}` : "Select target project");
+          el.projectSwitchControl.title = displayRoot ? t("switchProject", { root: displayRoot }) : t("selectProject");
+          el.projectSwitchControl.setAttribute("aria-label", displayRoot ? t("switchTargetProject", { root: displayRoot }) : t("selectProject"));
         }
       }
       function fmtBytes(bytes) {
@@ -1175,7 +2012,7 @@
         return text.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().replace(/\b\w/g, (letter) => letter.toUpperCase()).replace(/\bJs\b/g, "JS");
       }
       function kindLabel(value) {
-        return KIND_LABELS[value] || humanizeKind(value) || value;
+        return i18n.eventKindLabel(value, state.locale) || KIND_LABELS[value] || humanizeKind(value) || value;
       }
       function projectProgressPercent(progress) {
         const phase = progress?.phase || "";
@@ -1194,19 +2031,19 @@
         const phase = progress.phase || job?.status || "queued";
         const parts = [];
         if (phase === "selecting") {
-          parts.push(`Scanning ${progress.filesScanned || 0}/${progress.filesTotal || 0} transcript files`);
-          parts.push(`${progress.candidateFileCount || 0} candidates`);
-          parts.push(`${progress.skippedFileCount || 0} skipped`);
+          parts.push(t("scanningFiles", { done: progress.filesScanned || 0, total: progress.filesTotal || 0 }));
+          parts.push(t("candidates", { count: progress.candidateFileCount || 0 }));
+          parts.push(t("skipped", { count: progress.skippedFileCount || 0 }));
         } else if (phase === "parsing") {
-          parts.push(`Parsing ${progress.indexedFileCount || 0}/${progress.candidateFileCount || 0} candidate files`);
-          parts.push(`${progress.sessionCount || 0} sessions`);
+          parts.push(t("parsingFiles", { done: progress.indexedFileCount || 0, total: progress.candidateFileCount || 0 }));
+          parts.push(t("sessionCount", { count: progress.sessionCount || 0 }));
           parts.push(fmtBytes(progress.indexedBytes || 0));
         } else if (job?.status === "cancelled") {
-          parts.push("Indexing cancelled");
+          parts.push(t("indexingCancelled"));
         } else if (job?.status === "failed") {
-          parts.push(job.error || "Indexing failed");
+          parts.push(job.error || t("indexingFailed"));
         } else {
-          parts.push(`Preparing index for ${projectName(job?.repoRoot || progress.repoRoot || "")}`);
+          parts.push(t("preparingIndex", { name: projectName(job?.repoRoot || progress.repoRoot || "") }));
         }
         if (progress.elapsedMs || job?.buildMs) parts.push(fmtDuration(progress.elapsedMs || job.buildMs));
         if (el.projectStatus) el.projectStatus.textContent = parts.join(" | ");
@@ -1239,7 +2076,11 @@
         return activeLayerId() === "main";
       }
       function activeLayerLabel() {
-        return LAYER_LABELS[activeLayerId()] || activeLayerId();
+        const layer = activeLayerId();
+        if (layer === "main") return t("mainTimeline");
+        if (layer === "protocol") return t("protocolLayer");
+        if (layer === "raw") return t("rawRecords");
+        return LAYER_LABELS[layer] || layer;
       }
       function highlightTerms() {
         return searchHighlighter.searchTerms(currentSearchState().q);
@@ -1269,9 +2110,9 @@
       function currentSearchMarkLabel() {
         const { marks, activeIndex } = state.searchHighlight;
         const total = searchHighlighter.displayedMatchTotal(state.timelineSearchMatchCount, marks.length);
-        if (!total) return "No matches";
+        if (!total) return t("noMatches");
         const current = marks.length && activeIndex >= 0 ? activeIndex + 1 : 0;
-        return `${current} / ${total} matches`;
+        return t("matchCount", { current, total });
       }
       function updateSearchMatchControls() {
         const controls = document.querySelectorAll("[data-search-match-controls]");
@@ -1402,7 +2243,7 @@
         state.detailHistory = [];
         state.searchTargetPreload = { key: "", pages: 0, pending: false };
         state.detailView = { type: "profileRules" };
-        renderProfileRulesPane();
+        renderProfileRulesPane({ reveal: false });
         updateSelectedTimelineEvent();
       }
       function cloneProfile(profile) {
@@ -1418,7 +2259,7 @@
         }));
       }
       function activeProfile() {
-        return state.profiles.find((profile) => profile.id === state.profileId) || state.profiles.find((profile) => profile.id === "narrative") || state.profiles[0] || { id: "narrative", name: "\u53D9\u4E8B\u65F6\u95F4\u7EBF", description: "", rules: defaultRules() };
+        return state.profiles.find((profile) => profile.id === state.profileId) || state.profiles.find((profile) => profile.id === "narrative") || state.profiles[0] || i18n.localizeProfile({ id: "narrative", name: "narrative", description: "", rules: defaultRules() }, state.locale);
       }
       function renderProfileOptions() {
         return state.profiles.map((profile) => `<option value="${escapeHtml(profile.id)}" title="${escapeHtml(profile.description || "")}">${escapeHtml(profile.name || profile.id)}</option>`).join("");
@@ -1426,18 +2267,18 @@
       function renderProfileInfoItems() {
         const rows = state.profiles.map((profile) => {
           const active = profile.id === state.profileId ? " active" : "";
-          const description = profile.description || "\u6682\u65E0\u8BF4\u660E\u3002";
+          const description = profile.description || t("profileInfoMissingDescription");
           return `<div class="profileInfoItem${active}">
       <strong>${escapeHtml(profile.name || profile.id)}</strong>
       <p>${escapeHtml(description)}</p>
     </div>`;
         }).join("");
-        return rows || '<div class="profileInfoItem"><p>\u6682\u65E0\u6298\u53E0\u7B56\u7565\u8BF4\u660E\u3002</p></div>';
+        return rows || `<div class="profileInfoItem"><p>${escapeHtml(t("profileInfoEmpty"))}</p></div>`;
       }
       function profileInfoLabel() {
         const profile = activeProfile();
-        const description = profile.description || "\u6682\u65E0\u8BF4\u660E\u3002";
-        return `\u67E5\u770B\u6298\u53E0\u7B56\u7565\u8BF4\u660E\uFF0C\u5F53\u524D\u7B56\u7565\uFF1A${profile.name || profile.id}\u3002${description}`;
+        const description = profile.description || t("profileInfoMissingDescription");
+        return t("profileInfoLabel", { name: profile.name || profile.id, description });
       }
       function ensureProfileInfoSlot() {
         if (profileInfoSlot) return profileInfoSlot;
@@ -1506,7 +2347,7 @@
         return [...kinds].sort((a, b) => kindLabel(a).localeCompare(kindLabel(b)) || a.localeCompare(b));
       }
       function conditionDefinitions() {
-        return CONDITION_DEFINITIONS;
+        return CONDITION_DEFINITIONS.map((condition) => i18n.localizeCondition(condition, state.locale));
       }
       function sourceRefs(event) {
         const refs = event.rawRefs?.length ? event.rawRefs : [event.source];
@@ -1535,15 +2376,15 @@
       function sessionRelationshipLabel(session) {
         if (session.isDerivedSession) {
           const parent = shortId(session.parentSessionId);
-          const kind = session.derivedKind === "review" ? "Review" : "Subagent";
+          const kind = session.derivedKind === "review" ? t("reviewKind") : t("subagentKind");
           const nickname = session.agentNickname && session.agentNickname.toLowerCase() !== kind.toLowerCase() ? ` ${session.agentNickname}` : "";
           const parentLabel = shortSessionTitle(session.parentSessionTitle) || parent;
-          if (parentLabel) return `${kind}${nickname} \xB7 from ${parentLabel}`;
-          return `${kind}${nickname} session`;
+          if (parentLabel) return t("derivedFrom", { kind, nickname, parent: parentLabel });
+          return t("derivedSession", { kind, nickname });
         }
         const forkedFrom = shortId(session.forkedFromSessionId);
         const forkedFromLabel = shortSessionTitle(session.forkedFromSessionTitle) || forkedFrom;
-        if (forkedFromLabel) return `Fork \xB7 from ${forkedFromLabel}`;
+        if (forkedFromLabel) return t("forkFrom", { parent: forkedFromLabel });
         return "";
       }
       function sessionRelationshipTitle(session, fallback = "") {
@@ -1576,26 +2417,26 @@
         const meta = detail?.meta || event;
         const outputStats = meta.outputStats || event.outputStats || {};
         return [
-          metadataRow("Time", fmtDate(meta.timestamp || event.timestamp)),
-          metadataRow("Status", meta.status || event.status),
-          metadataRow("Severity", meta.severity && meta.severity !== "normal" ? meta.severity : ""),
-          metadataRow("Tool", meta.toolName || event.toolName),
-          metadataRow("Exit code", outputStats.exitCode == null ? "" : String(outputStats.exitCode)),
-          metadataRow("Duration", outputStats.durationMs == null ? "" : `${outputStats.durationMs} ms`),
-          metadataRow("Record type", event.recordType),
-          metadataRow("Channels", formatList(meta.channels || event.channels)),
-          metadataRow("Touched files", formatList(meta.touchedFiles || event.touchedFiles))
+          metadataRow(t("time"), fmtDate(meta.timestamp || event.timestamp)),
+          metadataRow(t("status"), meta.status || event.status),
+          metadataRow(t("severity"), meta.severity && meta.severity !== "normal" ? meta.severity : ""),
+          metadataRow(t("tool"), meta.toolName || event.toolName),
+          metadataRow(t("exitCode"), outputStats.exitCode == null ? "" : String(outputStats.exitCode)),
+          metadataRow(t("duration"), outputStats.durationMs == null ? "" : `${outputStats.durationMs} ms`),
+          metadataRow(t("recordType"), event.recordType),
+          metadataRow(t("channels"), formatList(meta.channels || event.channels)),
+          metadataRow(t("touchedFiles"), formatList(meta.touchedFiles || event.touchedFiles))
         ].join("");
       }
       function renderInspectorSource(event, refs, detail = null) {
         const meta = detail?.meta || event;
         const source = sourceLabel(meta.source || event.source || refs[0]);
         return `<section class="inspectorSection">
-    <h3>Source</h3>
+    <h3>${escapeHtml(t("source"))}</h3>
     ${source ? `<div class="inspectorSourcePath">${escapeHtml(source)}</div>` : ""}
     <div class="inspectorActions">
-      <button class="smallBtn" type="button" data-detail-action="raw">Raw refs</button>
-      <span class="rawMeta">${escapeHtml(refs.length ? `${refs.length} JSONL row${refs.length === 1 ? "" : "s"}` : "No raw refs available")}</span>
+      <button class="smallBtn" type="button" data-detail-action="raw">${escapeHtml(t("rawRefs"))}</button>
+      <span class="rawMeta">${escapeHtml(refs.length ? t("rawRows", { count: refs.length, plural: refs.length === 1 ? "" : "s" }) : t("noRawRefs"))}</span>
     </div>
   </section>`;
       }
@@ -1606,20 +2447,20 @@
         if (detail) {
           if (!detail.inspectorSections?.length) return "";
           return `<section class="inspectorSection">
-      <h3>Details</h3>
+      <h3>${escapeHtml(t("details"))}</h3>
       <div class="inspectorDetailBody">${renderSections(detail.inspectorSections)}</div>
     </section>`;
         }
         if (error) {
           return `<section class="inspectorSection">
-      <h3>Details</h3>
+      <h3>${escapeHtml(t("details"))}</h3>
       <div class="notice error"><p>${escapeHtml(error)}</p></div>
-      <button class="smallBtn" type="button" data-detail-action="retry-detail">Retry detail</button>
+      <button class="smallBtn" type="button" data-detail-action="retry-detail">${escapeHtml(t("retryDetail"))}</button>
     </section>`;
         }
         return `<section class="inspectorSection">
-    <h3>Details</h3>
-    <div class="notice info"><p>Loading structured detail...</p></div>
+    <h3>${escapeHtml(t("details"))}</h3>
+    <div class="notice info"><p>${escapeHtml(t("loadingStructuredDetail"))}</p></div>
   </section>`;
       }
       function shouldShowInspectorSummary(event, preview, detail = null) {
@@ -1648,21 +2489,21 @@
       function activeFilters() {
         const filters = [];
         const search = currentSearchState();
-        if (search.kind) filters.push({ key: "kind", label: `Kind: ${optionText(el.searchKindSelect, search.kind) || kindLabel(search.kind)}` });
-        if (search.status) filters.push({ key: "status", label: `Status: ${optionText(el.searchStatusSelect, search.status, STATUS_LABELS)}` });
-        if (search.file) filters.push({ key: "file", label: `File: ${search.file}` });
-        if (search.parsed.layer && search.layer !== "main") filters.push({ key: "layer", label: `Layer: ${optionText(el.layerSelect, search.layer, LAYER_LABELS)}` });
+        if (search.kind) filters.push({ key: "kind", label: `${t("kind")}: ${optionText(el.searchKindSelect, search.kind) || kindLabel(search.kind)}` });
+        if (search.status) filters.push({ key: "status", label: `${t("status")}: ${optionText(el.searchStatusSelect, search.status, STATUS_LABELS)}` });
+        if (search.file) filters.push({ key: "file", label: `${t("file")}: ${search.file}` });
+        if (search.parsed.layer && search.layer !== "main") filters.push({ key: "layer", label: `${t("layer")}: ${optionText(el.layerSelect, search.layer, LAYER_LABELS)}` });
         return filters;
       }
       function activeFindAndFilters() {
         const search = currentSearchState();
         return [
-          search.q ? { key: "q", label: `Find: ${search.q}` } : null,
+          search.q ? { key: "q", label: `${t("find")}: ${search.q}` } : null,
           ...activeFilters()
         ].filter(Boolean);
       }
       function filterChipMarkup(filter) {
-        return `<button class="filterChip" type="button" data-clear-filter="${escapeHtml(filter.key)}" aria-label="Clear ${escapeHtml(filter.label)}">
+        return `<button class="filterChip" type="button" data-clear-filter="${escapeHtml(filter.key)}" aria-label="${escapeHtml(t("clear", { label: filter.label }))}">
       <span>${escapeHtml(filter.label)}</span><span aria-hidden="true">&times;</span>
     </button>`;
       }
@@ -1675,15 +2516,15 @@
       }
       function renderReadFromHereAction() {
         if (!state.selectedSessionId || !state.selectedEventId || !hasFocusedTimelineContext()) return "";
-        return '<button class="smallBtn readFromHereBtn" type="button" data-detail-action="read-from-here" title="Clear event filters, switch to Main timeline, and keep this position">Read from here</button>';
+        return `<button class="smallBtn readFromHereBtn" type="button" data-detail-action="read-from-here" title="${escapeHtml(t("readFromHereTitle"))}">${escapeHtml(t("readFromHere"))}</button>`;
       }
       function renderSearchAssistChips(filters = activeFindAndFilters()) {
         if (!el.searchAssistChips) return;
         if (!filters.length) {
-          el.searchAssistChips.innerHTML = '<span class="searchAssistEmpty">No active find or filters</span>';
+          el.searchAssistChips.innerHTML = `<span class="searchAssistEmpty">${escapeHtml(t("noActiveFilters"))}</span>`;
           return;
         }
-        el.searchAssistChips.innerHTML = `${renderFilterChips(filters)}<button class="clearFiltersBtn" type="button" data-clear-filter="all">Clear all</button>`;
+        el.searchAssistChips.innerHTML = `${renderFilterChips(filters)}<button class="clearFiltersBtn" type="button" data-clear-filter="all">${escapeHtml(t("clearAll"))}</button>`;
       }
       function setSelectIfOption(select, value) {
         if (!select) return;
@@ -1711,7 +2552,7 @@
         const search = currentSearchState();
         const options = normalizedKindOptions(search.layer);
         const values = new Set(options.map((option) => option.value));
-        const rows = ['<option value="">Any kind</option>'];
+        const rows = [`<option value="">${escapeHtml(t("anyKind"))}</option>`];
         if (search.kind && !values.has(search.kind)) {
           rows.push(`<option value="${escapeHtml(search.kind)}">${escapeHtml(`${kindLabel(search.kind)} (${search.kind})`)}</option>`);
         }
@@ -1802,14 +2643,14 @@
           return;
         }
         const sessionTotal = state.sessionGrandTotal || state.sessionTotal;
-        const countText = filters.length && sessionTotal ? `Sessions: ${state.sessionTotal} match (${sessionTotal} total)` : filters.length ? `Sessions: ${state.sessionTotal} match` : "";
-        const eventText = filters.length && state.selectedSessionId ? `Events: ${state.timelineTotal} match${state.offset < state.timelineTotal ? ` (${state.offset} loaded)` : ""}` : filters.length ? "Events: select a session" : "";
-        const matchControls = search.q ? `<div class="searchMatchControls" data-search-match-controls title="Rendered jump targets; total keeps the full-text count and is raised when more rendered targets are visible">
+        const countText = filters.length && sessionTotal ? t("sessionsMatchTotal", { count: state.sessionTotal, total: sessionTotal }) : filters.length ? t("sessionsMatch", { count: state.sessionTotal }) : "";
+        const eventText = filters.length && state.selectedSessionId ? state.offset < state.timelineTotal ? t("eventsMatchLoaded", { count: state.timelineTotal, loaded: state.offset }) : t("eventsMatch", { count: state.timelineTotal }) : filters.length ? t("eventsSelectSession") : "";
+        const matchControls = search.q ? `<div class="searchMatchControls" data-search-match-controls title="${escapeHtml(t("searchMatchTitle"))}">
       <span class="searchMatchCount" data-search-match-count>${escapeHtml(currentSearchMarkLabel())}</span>
     </div>` : "";
         const countMarkup = [countText, eventText].filter(Boolean).join(" \xB7 ");
-        const filterText = renderFilterChips(controls) + '<button class="clearFiltersBtn" type="button" data-clear-filter="all">Clear all</button>';
-        el.resultSummary.innerHTML = `${countMarkup ? `<div class="resultCounts">${escapeHtml(countMarkup)}</div>` : ""}${matchControls}<div class="activeFilters" aria-label="Active find and filters">${filterText}</div>`;
+        const filterText = renderFilterChips(controls) + `<button class="clearFiltersBtn" type="button" data-clear-filter="all">${escapeHtml(t("clearAll"))}</button>`;
+        el.resultSummary.innerHTML = `${countMarkup ? `<div class="resultCounts">${escapeHtml(countMarkup)}</div>` : ""}${matchControls}<div class="activeFilters" aria-label="${escapeHtml(t("activeFindFilters"))}">${filterText}</div>`;
         updateSearchMatchControls();
       }
       function clearActiveFilter(key) {
@@ -1937,7 +2778,7 @@
         const controls = el.profileSelect?.closest(".foldControls");
         if (el.profileSelect) {
           el.profileSelect.disabled = analyzerDisabled || !applies;
-          const label = applies ? "\u6298\u53E0\u7B56\u7565" : "Folding strategies apply only to Main timeline. This layer uses fixed display rules.";
+          const label = applies ? t("foldingStrategy") : t("fixedProfileRules");
           el.profileSelect.removeAttribute("title");
           el.profileSelect.setAttribute("aria-label", label);
         }
@@ -1980,9 +2821,9 @@
         el.analysisPanel.innerHTML = "";
         el.timeline.innerHTML = "";
         el.resultSummary.textContent = "";
-        el.sessionHeader.innerHTML = "<h2>Select a session</h2><p>Choose a target project first.</p>";
+        el.sessionHeader.innerHTML = `<h2>${escapeHtml(t("chooseSession"))}</h2><p>${escapeHtml(t("selectSessionFirst"))}</p>`;
         el.loadMoreBtn.disabled = true;
-        el.loadMoreBtn.textContent = "Load more";
+        el.loadMoreBtn.textContent = t("loadMore");
         updateResetFoldsButton();
         resetDetailPane();
       }
@@ -1992,7 +2833,7 @@
         el.projectList.setAttribute("aria-busy", loadingRoot ? "true" : "false");
         if (el.projectChooser) el.projectChooser.dataset.loading = loadingRoot ? "true" : "false";
         if (!state.projects.length) {
-          el.projectList.innerHTML = loadingRoot ? "" : '<div class="notice warning"><p>No Codex projects were found in the configured sessions directory.</p></div>';
+          el.projectList.innerHTML = loadingRoot ? "" : `<div class="notice warning"><p>${escapeHtml(t("noCodexProjects"))}</p></div>`;
           return;
         }
         const saved = localStorage.getItem(REPO_STORAGE_KEY) || "";
@@ -2008,17 +2849,17 @@
             isLoading ? "loading" : ""
           ].filter(Boolean).join(" ");
           const badges = [
-            isSaved ? '<span class="projectBadge">Last selected</span>' : "",
-            project.exists ? "" : '<span class="projectBadge warning">Missing directory</span>'
+            isSaved ? `<span class="projectBadge">${escapeHtml(t("lastSelected"))}</span>` : "",
+            project.exists ? "" : `<span class="projectBadge warning">${escapeHtml(t("missingDirectory"))}</span>`
           ].join("");
-          const action = isLoading ? '<span class="projectSpinner" aria-hidden="true"></span><span>Indexing...</span>' : "<span>Open</span>";
-          const facts = statsPending ? "<span>Activity loading...</span>" : `<span>${escapeHtml(sessionCount)} session${sessionCount === 1 ? "" : "s"}</span><span>${escapeHtml(project.updatedAt ? fmtDate(project.updatedAt) : "No transcript activity")}</span>`;
+          const action = isLoading ? `<span class="projectSpinner" aria-hidden="true"></span><span>${escapeHtml(t("indexing"))}</span>` : `<span>${escapeHtml(t("open"))}</span>`;
+          const facts = statsPending ? `<span>${escapeHtml(t("activityLoading"))}</span>` : `<span>${escapeHtml(t("sessionCount", { count: sessionCount }))}</span><span>${escapeHtml(project.updatedAt ? fmtDate(project.updatedAt) : t("noTranscriptActivity"))}</span>`;
           return `<button class="${classes}" type="button" data-project-root="${escapeHtml(project.repoRoot)}"${loadingRoot ? " disabled" : ""}>
       <span class="projectMain">
         <span class="projectName">${escapeHtml(projectName(project.repoRoot))}${badges}</span>
         <span class="projectPath">${escapeHtml(project.repoRoot)}</span>
       </span>
-      <span class="projectFacts" aria-label="Project activity">
+      <span class="projectFacts" aria-label="${escapeHtml(t("projectActivity"))}">
         ${facts}
       </span>
       <span class="projectAction">${action}</span>
@@ -2057,8 +2898,8 @@
         updateProjectChrome({ displayRoot: "", returnRoot: state.repoRoot });
         clearProjectPollTimer();
         resetProjectViewState();
-        setProjectHeader("", "Choose a target project to continue.");
-        if (el.projectStatus) el.projectStatus.textContent = "Loading project list...";
+        setProjectHeader("", t("chooseTargetProjectContinue"));
+        if (el.projectStatus) el.projectStatus.textContent = t("loadingProjectList");
         if (el.projectProgress) el.projectProgress.hidden = true;
         if (el.projectCancelBtn) el.projectCancelBtn.hidden = true;
         if (el.projectList) el.projectList.innerHTML = "";
@@ -2070,7 +2911,7 @@
           renderedSummary = state.projects.length > 0;
           if (renderedSummary) renderProjects();
           if (el.projectStatus) {
-            el.projectStatus.textContent = renderedSummary ? `Loading project activity from ${summary.codexHome}...` : "Discovering transcript projects...";
+            el.projectStatus.textContent = renderedSummary ? t("projectActivityLoading", { codexHome: summary.codexHome }) : t("discoveringProjects");
           }
         } catch (error) {
           console.warn("Unable to load project summary", error);
@@ -2080,7 +2921,7 @@
         if (!isActiveProjectChooserRequest(requestId)) return;
         state.projects = data.projects;
         renderProjects();
-        if (el.projectStatus) el.projectStatus.textContent = state.projects.length ? `${state.projects.length} project candidates from ${data.codexHome}` : `No project candidates from ${data.codexHome}`;
+        if (el.projectStatus) el.projectStatus.textContent = state.projects.length ? t("projectCandidates", { count: state.projects.length, codexHome: data.codexHome }) : t("noProjectCandidates", { codexHome: data.codexHome });
         const saved = localStorage.getItem(REPO_STORAGE_KEY);
         if (options.autoRestore && saved && state.projects.some((project) => project.repoRoot === saved)) {
           await selectProject(saved, { restore: true });
@@ -2098,7 +2939,7 @@
           await cancelProjectJob(jobId);
           const appState = await api("/api/state");
           const currentState = appState.currentState || (!appState.job ? appState : null);
-          if (!currentState?.projectSelected) throw new Error("No project is available to return to");
+          if (!currentState?.projectSelected) throw new Error(t("projectUnavailable"));
           await finishProjectSelection(currentState, { restore: true });
         } catch (error) {
           state.projectReturning = false;
@@ -2107,6 +2948,8 @@
         }
       }
       async function applyAppState(appState) {
+        if (appState.locale) state.locale = i18n.resolveLocale(appState.locale);
+        applyStaticLocale();
         state.repoRoot = appState.repoRoot || "";
         state.builtinProfiles = normalizeProfiles(appState.foldingProfiles);
         state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
@@ -2114,7 +2957,11 @@
         state.sessionGrandTotal = appState.totals.sessionCount || 0;
         setProjectHeader(
           appState.repoRoot,
-          `${appState.totals.sessionCount} sessions | ${appState.totals.eventCount} logical events | ${appState.totals.rawEventCount} raw records`
+          [
+            t("sessionCount", { count: appState.totals.sessionCount }),
+            t("logicalEventCount", { count: appState.totals.eventCount }),
+            t("rawRecordCount", { count: appState.totals.rawEventCount })
+          ].join(" | ")
         );
         el.profileSelect.innerHTML = renderProfileOptions();
         el.profileSelect.value = state.profileId;
@@ -2149,6 +2996,29 @@
         if (el.projectProgress) el.projectProgress.hidden = true;
         if (el.projectCancelBtn) el.projectCancelBtn.hidden = true;
       }
+      async function changeLocale(locale) {
+        const next = i18n.resolveLocale(locale);
+        if (next === state.locale) return;
+        const dirtyDraft = profileDirty() ? { profileId: state.profileId, rules: normalizeRules(cloneProfile(state.profileDraft).rules || defaultRules()) } : null;
+        state.locale = next;
+        localStorage.setItem(LOCALE_STORAGE_KEY, state.locale);
+        resetSessionDetailCache();
+        applyStaticLocale();
+        if (state.projectSelected) {
+          const appState = await api("/api/state");
+          await applyAppState(appState.currentState || appState);
+          await loadSessions();
+          if (dirtyDraft && state.profileId === dirtyDraft.profileId && state.profiles.some((profile) => profile.id === dirtyDraft.profileId)) {
+            state.profileDraft = cloneProfile(activeProfile());
+            state.profileDraft.rules = normalizeRules(dirtyDraft.rules);
+            renderTimeline();
+            updateMetricActionStates();
+            if (state.detailView.type === "profileRules") renderProfileRulesPane();
+          }
+        } else {
+          renderProjects();
+        }
+      }
       async function handleProjectJobResponse(data, options = {}) {
         const job = data.job || {};
         if (job.id !== state.projectJobId) return;
@@ -2160,18 +3030,18 @@
             const current = await api("/api/state");
             if (!current.job) appState = current;
           }
-          if (!appState) throw new Error("Project index completed but state is not available");
+          if (!appState) throw new Error(t("projectIndexUnavailable"));
           await finishProjectSelection(appState, options);
           return;
         }
-        if (job.status === "failed") throw new Error(job.error || "Indexing failed");
+        if (job.status === "failed") throw new Error(job.error || t("indexingFailed"));
         if (job.status === "cancelled") {
           state.projectLoadingRoot = "";
           state.projectJobId = "";
           state.projectReturning = false;
           setAnalyzerDisabled(false);
           updateProjectChrome({ displayRoot: state.repoRoot, returnRoot: state.repoRoot });
-          if (el.projectStatus) el.projectStatus.textContent = "Indexing cancelled.";
+          if (el.projectStatus) el.projectStatus.textContent = t("indexingCancelledSentence");
           if (el.projectProgress) el.projectProgress.hidden = true;
           if (el.projectCancelBtn) el.projectCancelBtn.hidden = true;
           if (state.projects.length) renderProjects();
@@ -2205,7 +3075,7 @@
         clearProjectPollTimer();
         updateProjectChrome({ displayRoot: state.repoRoot, returnRoot: state.repoRoot });
         renderProjects();
-        if (el.projectStatus) el.projectStatus.textContent = `Reading matching sessions for ${repoRoot}. This can take a few seconds for large transcript history.`;
+        if (el.projectStatus) el.projectStatus.textContent = t("readingMatchingSessions", { repoRoot });
         setAnalyzerDisabled(true);
         try {
           const started = await api("/api/project", {
@@ -2280,7 +3150,7 @@
           el.analysisPanel.innerHTML = "";
           updateLoadMoreButton();
           updateResetFoldsButton();
-          el.sessionHeader.innerHTML = "<h2>No matching session</h2><p>Adjust the search or filters.</p>";
+          el.sessionHeader.innerHTML = `<h2>${escapeHtml(t("noMatchingSession"))}</h2><p>${escapeHtml(t("adjustSearchFilters"))}</p>`;
           resetDetailPane();
           renderResultSummary();
         } else if (state.selectedSessionId) {
@@ -2300,10 +3170,10 @@
       <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
       <span class="chips">
         ${relationship ? `<span class="chip relationshipChip" title="${escapeHtml(relationshipTitle)}">${escapeHtml(relationship)}</span>` : ""}
-        <span class="chip">${session.counts.messages} msgs</span>
-        <span class="chip">${session.counts.toolCalls} tools</span>
-        <span class="chip">${session.counts.failedCommands} failed cmds</span>
-        <span class="chip">${session.protocolCount} protocol</span>
+        <span class="chip">${escapeHtml(t("messageCountShort", { count: session.counts.messages }))}</span>
+        <span class="chip">${escapeHtml(t("toolCountShort", { count: session.counts.toolCalls }))}</span>
+        <span class="chip">${escapeHtml(t("failedCommandCountShort", { count: session.counts.failedCommands }))}</span>
+        <span class="chip">${escapeHtml(t("protocolCountShort", { count: session.protocolCount }))}</span>
       </span>
     </button>`;
         }).join("");
@@ -2326,7 +3196,7 @@
         if (session) {
           const relationship = sessionRelationshipLabel(session);
           el.sessionHeader.innerHTML = `<h2>${escapeHtml(session.title)}</h2>
-      <div class="sessionMeta" aria-label="Session metadata">
+      <div class="sessionMeta" aria-label="${escapeHtml(t("sessionMetadata"))}">
         ${relationship ? `<span class="sessionMetaChip">${escapeHtml(relationship)}</span>` : ""}
         <span class="sessionMetaChip">${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</span>
         <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
@@ -2340,12 +3210,12 @@
         const planCount = analysis.counts.planEvents ?? analysis.counts.planArtifacts;
         const issueCount = analysis.counts.issueEvents ?? analysis.counts.failedCommands;
         el.analysisPanel.innerHTML = [
-          metric("Turns", analysis.counts.turns),
-          metric("Messages", analysis.counts.messages, { action: "profile", value: "conversation", label: "\u5207\u6362\u5230\u5BF9\u8BDD\u9605\u8BFB\u6298\u53E0\u7B56\u7565" }),
-          metric("Issues", issueCount, { action: "profile", value: "debug", label: "\u5207\u6362\u5230\u9519\u8BEF\u805A\u7126\u6298\u53E0\u7B56\u7565" }),
-          metric("Files", analysis.patchedFiles.length, { action: "profile", value: "changes", label: "\u5207\u6362\u5230\u6539\u52A8\u5BA1\u67E5\u6298\u53E0\u7B56\u7565" }),
-          metric("Protocol", analysis.counts.protocol, { action: "layer", value: "protocol", label: "\u5207\u6362\u5230\u534F\u8BAE\u5C42\u4E8B\u4EF6" }),
-          metric("Plans", planCount, { action: "profile", value: "planning", label: "\u5207\u6362\u5230\u8BA1\u5212\u9605\u8BFB\u6298\u53E0\u7B56\u7565" })
+          metric(t("metricTurns"), analysis.counts.turns),
+          metric(t("metricMessages"), analysis.counts.messages, { action: "profile", value: "conversation", label: t("switchToConversationProfile") }),
+          metric(t("metricIssues"), issueCount, { action: "profile", value: "debug", label: t("switchToIssueProfile") }),
+          metric(t("metricFiles"), analysis.patchedFiles.length, { action: "profile", value: "changes", label: t("switchToChangesProfile") }),
+          metric(t("metricProtocol"), analysis.counts.protocol, { action: "layer", value: "protocol", label: t("switchToProtocolLayer") }),
+          metric(t("metricPlans"), planCount, { action: "profile", value: "planning", label: t("switchToPlanningProfile") })
         ].join("");
       }
       function isMetricActionActive(action) {
@@ -2359,7 +3229,7 @@
         const hasValue = Number(value) > 0;
         const disabledProfileAction = action?.action === "profile" && !profileAppliesToActiveLayer() && hasValue;
         const isActionable = action && hasValue && !disabledProfileAction;
-        const actionLabel = disabledProfileAction ? `${label} shortcut is available on Main timeline only.` : action?.label ? `${action.label}\uFF1A${value} ${label}` : "";
+        const actionLabel = disabledProfileAction ? t("metricShortcutMainOnly", { label }) : action?.label ? t("metricActionCount", { action: action.label, value, label }) : "";
         const actionAttrs = isActionable ? ` role="button" tabindex="0" aria-pressed="${isMetricActionActive(action) ? "true" : "false"}" aria-label="${escapeHtml(actionLabel)}" title="${escapeHtml(actionLabel)}" data-metric-action="${escapeHtml(action.action)}" data-metric-value="${escapeHtml(action.value)}"` : disabledProfileAction ? ` aria-disabled="true" title="${escapeHtml(actionLabel)}"` : "";
         const classes = [
           "metric",
@@ -2433,9 +3303,9 @@
         const hasMore = state.offset < state.timelineTotal;
         el.loadMoreBtn.disabled = !state.selectedSessionId || state.timelineLoading || !hasMore;
         if (state.timelineLoading) {
-          el.loadMoreBtn.textContent = "Loading...";
+          el.loadMoreBtn.textContent = t("loading");
         } else {
-          el.loadMoreBtn.textContent = hasMore ? `Load more (${state.offset}/${state.timelineTotal})` : `Loaded ${state.offset}`;
+          el.loadMoreBtn.textContent = hasMore ? t("loadMoreCount", { loaded: state.offset, total: state.timelineTotal }) : t("loadedCount", { loaded: state.offset });
         }
       }
       async function loadTimeline(append, options = {}) {
@@ -2551,14 +3421,14 @@
           return `<div class="eventBody">${renderTimelineSections(detail.timelineSections, preview)}</div>`;
         }
         if (error) {
-          return `<div class="eventBody"><div class="notice error"><p>${escapeHtml(error)}</p></div><button class="smallBtn" type="button" data-action="retry-detail">Retry detail</button></div>`;
+          return `<div class="eventBody"><div class="notice error"><p>${escapeHtml(error)}</p></div><button class="smallBtn" type="button" data-action="retry-detail">${escapeHtml(t("retryDetail"))}</button></div>`;
         }
         const snippet = event.hasSearchHit && event.snippet ? `<div class="eventPreview eventLoadingSnippet">${escapeHtml(event.snippet)}</div>` : "";
-        return `<div class="eventBody">${snippet}<div class="notice info"><p>Loading structured detail...</p></div></div>`;
+        return `<div class="eventBody">${snippet}<div class="notice info"><p>${escapeHtml(t("loadingStructuredDetail"))}</p></div></div>`;
       }
       function renderEventFooterActions(display) {
         if (display !== "expanded") return "";
-        const label = "Collapse event";
+        const label = t("collapseEvent");
         return `<div class="eventFooterActions">
     <button class="eventCollapseBtn" type="button" data-action="toggle" aria-label="${label}" title="${label}">
       <svg class="eventCollapseIcon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -2586,7 +3456,7 @@
         }).join("");
       }
       function renderUsageLimitPreview(items) {
-        return items.map((item) => `<div class="usageLimitMini"><strong>${escapeHtml(item.label || "")}</strong><span>${escapeHtml(item.remaining || "")} remaining</span><em>Resets ${escapeHtml(item.reset || "")}</em></div>`).join("");
+        return items.map((item) => `<div class="usageLimitMini"><strong>${escapeHtml(item.label || "")}</strong><span>${escapeHtml(item.remaining || "")} ${escapeHtml(t("remaining"))}</span><em>${escapeHtml(t("resets"))} ${escapeHtml(item.reset || "")}</em></div>`).join("");
       }
       function cssToken(value) {
         return String(value || "unknown").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "unknown";
@@ -2608,11 +3478,11 @@
           const chips = [
             event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : "",
             event.toolName ? `<span class="chip toolChip">${escapeHtml(event.toolName)}</span>` : "",
-            event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} files</span>` : "",
-            event.rawRefs?.length ? `<span class="chip countChip">${event.rawRefs.length} raw</span>` : "",
+            event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t("files"))}</span>` : "",
+            event.rawRefs?.length ? `<span class="chip countChip">${event.rawRefs.length} ${escapeHtml(t("raw"))}</span>` : "",
             event.channels?.length ? `<span class="chip channelChip">${escapeHtml(event.channels.join(","))}</span>` : ""
           ].join("");
-          const toggleLabel = ds === "expanded" ? "Collapse event" : "Expand event";
+          const toggleLabel = ds === "expanded" ? t("collapseEvent") : t("expandEvent");
           return `<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
       <div class="eventHeader">
         <button class="eventToggle" type="button" data-action="toggle" aria-label="${toggleLabel}" title="${toggleLabel}">
@@ -2772,7 +3642,7 @@
       function renderInspectorNavigation(event) {
         const cache = currentNavigationCache();
         if (!cache) {
-          return '<nav class="eventNavigator" aria-label="Event quick navigation"><span class="navStatus">Loading navigation...</span></nav>';
+          return `<nav class="eventNavigator" aria-label="${escapeHtml(t("eventQuickNavigation"))}"><span class="navStatus">${escapeHtml(t("loadingNavigation"))}</span></nav>`;
         }
         const categories = navigationCategoriesForEvent(event, cache.events);
         if (!categories.length) return "";
@@ -2781,12 +3651,12 @@
         const matches = category.matchesInResult;
         const index = matches.findIndex((candidate) => candidate.id === event.id);
         const position = index >= 0 ? index + 1 : 0;
-        const categorySelect = categories.length > 1 ? `<select class="navSelect" data-navigation-category aria-label="Quick navigation category">${categories.map((item) => `<option value="${escapeHtml(item.id)}"${item.id === category.id ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}</select>` : "";
-        return `<nav class="eventNavigator" aria-label="Event quick navigation">
+        const categorySelect = categories.length > 1 ? `<select class="navSelect" data-navigation-category aria-label="${escapeHtml(t("quickNavigationCategory"))}">${categories.map((item) => `<option value="${escapeHtml(item.id)}"${item.id === category.id ? " selected" : ""}>${escapeHtml(i18n.t(state.locale, "navigation", item.id) || item.label)}</option>`).join("")}</select>` : "";
+        return `<nav class="eventNavigator" aria-label="${escapeHtml(t("eventQuickNavigation"))}">
     ${categorySelect}
-    <button class="navBtn" type="button" data-detail-action="navigate-event" data-nav-direction="prev"${index <= 0 ? " disabled" : ""}>Prev</button>
+    <button class="navBtn" type="button" data-detail-action="navigate-event" data-nav-direction="prev"${index <= 0 ? " disabled" : ""}>${escapeHtml(t("previous"))}</button>
     <span class="navPosition">${escapeHtml(`${position}/${matches.length}`)}</span>
-    <button class="navBtn" type="button" data-detail-action="navigate-event" data-nav-direction="next"${index < 0 || index >= matches.length - 1 ? " disabled" : ""}>Next</button>
+    <button class="navBtn" type="button" data-detail-action="navigate-event" data-nav-direction="next"${index < 0 || index >= matches.length - 1 ? " disabled" : ""}>${escapeHtml(t("next"))}</button>
   </nav>`;
       }
       function currentSelectedEvent() {
@@ -2897,8 +3767,8 @@
         updateDetailViewChrome();
         const hasChromeControls = backable || closeable;
         const resolvedHeaderClass = [headerClass, hasChromeControls ? "detailChromeHeader" : ""].filter(Boolean).join(" ");
-        const backButton = backable ? '<button class="detailIconBtn detailBackBtn" type="button" data-detail-action="back" aria-label="Back" title="Back">&larr;</button>' : "";
-        const closeButton = closeable ? '<button class="detailIconBtn detailCloseBtn" type="button" data-detail-action="close" aria-label="Close" title="Close">&times;</button>' : "";
+        const backButton = backable ? `<button class="detailIconBtn detailBackBtn" type="button" data-detail-action="back" aria-label="${escapeHtml(t("back"))}" title="${escapeHtml(t("back"))}">&larr;</button>` : "";
+        const closeButton = closeable ? `<button class="detailIconBtn detailCloseBtn" type="button" data-detail-action="close" aria-label="${escapeHtml(t("close"))}" title="${escapeHtml(t("close"))}">&times;</button>` : "";
         el.detail.innerHTML = `<article class="detailView">
     <header class="detailViewHeader ${escapeHtml(resolvedHeaderClass)}">
       ${backButton}
@@ -2914,27 +3784,27 @@
         syncProfileInfoSlot();
         refreshSearchHighlights({ preserveActive: true });
       }
-      function renderProfileRulesPane() {
+      function renderProfileRulesPane(options = {}) {
         state.detailView = { type: "profileRules" };
         state.detailSelectionKey = "";
         state.selectedEventId = "";
         state.navigationCategoryId = "";
         state.navigationCategoryManualId = "";
-        setMobileView("detail", { scroll: false });
+        if (options.reveal === true) setMobileView("detail", { scroll: false });
         updateSelectedTimelineEvent();
         if (!profileAppliesToActiveLayer()) {
           const layer = activeLayerId();
-          const fixedRuleText = layer === "protocol" ? "Protocol events are shown as summaries; non-protocol events stay collapsed." : "Raw event_msg and response_item records stay collapsed; other raw records are shown as summaries.";
+          const fixedRuleText = layer === "protocol" ? t("protocolFixedRules") : t("rawFixedRules");
           renderDetailShell({
-            title: "\u6298\u53E0\u7B56\u7565",
-            subtitle: `${activeLayerLabel()} uses fixed display rules`,
-            actions: '<button class="smallBtn" type="button" data-detail-action="view-main-layer">View Main timeline</button>',
+            title: t("foldingStrategy"),
+            subtitle: t("fixedRuleSubtitle", { layer: activeLayerLabel() }),
+            actions: `<button class="smallBtn" type="button" data-detail-action="view-main-layer">${escapeHtml(t("viewMainTimeline"))}</button>`,
             headerClass: "profileDetailHeader",
             closeable: false,
             backable: false,
             body: `<section class="profileRules profileRulesInactive">
         <div class="notice info">
-          <p>Folding strategies apply only to Main timeline. This layer uses fixed display rules.</p>
+          <p>${escapeHtml(t("fixedProfileRules"))}</p>
         </div>
         <section class="profileRuleSection">
           <h3>${escapeHtml(activeLayerLabel())}</h3>
@@ -2948,14 +3818,14 @@
         const profile = activeProfile();
         const draft = state.profileDraft || cloneProfile(profile);
         const dirty = profileDirty();
-        const status = dirty ? "Unsaved preview" : "";
+        const status = dirty ? t("unsavedPreview") : "";
         const profileOptions = state.profiles.map((item) => {
           const name = dirty && item.id === state.profileId && isBuiltinProfile(item.id) ? nextCustomProfileName(item.id) : item.name;
           return `<option value="${escapeHtml(item.id)}"${item.id === state.profileId ? " selected" : ""}>${escapeHtml(name)}</option>`;
         }).join("");
         const stateOptions = (value, includeDisabled = false, states = DISPLAY_STATES) => [
-          includeDisabled ? `<option value=""${value ? "" : " selected"}>Disabled</option>` : "",
-          ...states.map((stateId) => `<option value="${stateId}"${stateId === value ? " selected" : ""}>${DISPLAY_STATE_LABELS[stateId]}</option>`)
+          includeDisabled ? `<option value=""${value ? "" : " selected"}>${escapeHtml(t("disabled"))}</option>` : "",
+          ...states.map((stateId) => `<option value="${stateId}"${stateId === value ? " selected" : ""}>${escapeHtml(displayStateLabel(stateId))}</option>`)
         ].join("");
         const rules = normalizeRules(draft.rules);
         const conditionMap = new Map(rules.conditions.map((condition) => [condition.id, condition.state]));
@@ -2967,8 +3837,8 @@
         <span>${escapeHtml(kind)}</span>
       </span>
       <select data-profile-kind="${escapeHtml(kind)}">
-        <option value=""${display ? "" : " selected"}>${escapeHtml(DISPLAY_STATE_LABELS[rules.fallback])} (Default)</option>
-        ${DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === display ? " selected" : ""}>${DISPLAY_STATE_LABELS[stateId]}</option>`).join("")}
+        <option value=""${display ? "" : " selected"}>${escapeHtml(displayStateLabel(rules.fallback))} (${escapeHtml(t("default"))})</option>
+        ${DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === display ? " selected" : ""}>${escapeHtml(displayStateLabel(stateId))}</option>`).join("")}
       </select>
     </label>`;
         };
@@ -3001,17 +3871,17 @@
     <path d="M18 6L6 18"></path>
   </svg>`;
         const editActions = dirty ? `<span class="profileActionButtons">
-      <button class="smallBtn profileActionIconBtn" type="button" data-detail-action="save-profile" aria-label="Save profile changes" title="Save">${saveIcon}</button>
-      <button class="smallBtn profileActionIconBtn" type="button" data-detail-action="cancel-profile" aria-label="Cancel profile changes" title="Cancel">${cancelIcon}</button>
+      <button class="smallBtn profileActionIconBtn" type="button" data-detail-action="save-profile" aria-label="${escapeHtml(t("saveProfileChanges"))}" title="${escapeHtml(t("save"))}">${saveIcon}</button>
+      <button class="smallBtn profileActionIconBtn" type="button" data-detail-action="cancel-profile" aria-label="${escapeHtml(t("cancelProfileChanges"))}" title="${escapeHtml(t("cancel"))}">${cancelIcon}</button>
     </span>` : "";
         const actions = `<div class="profileActionStack">
       <div class="profilePickerCompact" data-profile-picker-host="detail">
-        <select data-profile-picker aria-label="Strategy">${profileOptions}</select>
+        <select data-profile-picker aria-label="${escapeHtml(t("strategy"))}">${profileOptions}</select>
       </div>
       ${editActions}
   </div>`;
         renderDetailShell({
-          title: "\u6298\u53E0\u7B56\u7565",
+          title: t("foldingStrategy"),
           subtitle: [status, draft.description].filter(Boolean).join(" | "),
           actions,
           headerClass: "profileDetailHeader",
@@ -3020,15 +3890,15 @@
           body: `<section class="profileRules">
       <section class="profileRuleSection">
         <div class="profileRuleSectionHeader">
-          <h3>Event kinds</h3>
+          <h3>${escapeHtml(t("eventKinds"))}</h3>
         </div>
-        <div class="profileRuleList">${explicitKindRows || '<div class="profileRuleEmpty">No explicit event-kind rules.</div>'}</div>
+        <div class="profileRuleList">${explicitKindRows || `<div class="profileRuleEmpty">${escapeHtml(t("noExplicitKindRules"))}</div>`}</div>
       </section>
       <details class="profileRuleDetails">
         <summary>
-          <span>${escapeHtml(`${defaultKinds.length} event kinds use Default`)}</span>
+          <span>${escapeHtml(t("defaultKindCount", { count: defaultKinds.length }))}</span>
           <label class="profileDefaultInline">
-            <span>Default</span>
+            <span>${escapeHtml(t("default"))}</span>
             <select data-profile-fallback>${stateOptions(rules.fallback)}</select>
           </label>
         </summary>
@@ -3036,11 +3906,11 @@
         <div class="profileRuleList">${defaultKindRows}</div>
       </details>
       <section class="profileRuleSection">
-        <h3>Conditions</h3>
-        <div class="profileRuleList">${activeConditionRows || '<div class="profileRuleEmpty">No active conditions.</div>'}</div>
+        <h3>${escapeHtml(t("conditions"))}</h3>
+        <div class="profileRuleList">${activeConditionRows || `<div class="profileRuleEmpty">${escapeHtml(t("noActiveConditions"))}</div>`}</div>
       </section>
       <details class="profileRuleDetails">
-        <summary>${escapeHtml(`${conditionDefinitions().length - conditionMap.size} inactive conditions`)}</summary>
+        <summary>${escapeHtml(t("inactiveConditions", { count: conditionDefinitions().length - conditionMap.size }))}</summary>
         <div class="profileRuleList">${inactiveConditionRows}</div>
       </details>
     </section>`
@@ -3096,11 +3966,11 @@
         updateSelectedTimelineEvent();
         if (!refs.length) {
           renderDetailShell({
-            title: "Raw refs",
+            title: t("rawRefs"),
             subtitle: rawRefsSubtitle(event),
-            actions: [renderReadFromHereAction(), '<button class="smallBtn" type="button" data-detail-action="inspect">Inspect event</button>'].filter(Boolean).join(""),
+            actions: [renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t("inspectEvent"))}</button>`].filter(Boolean).join(""),
             body: `<div class="rawRefsView">
-      <div class="notice warning"><p>No raw source rows are available for this event.</p></div>
+      <div class="notice warning"><p>${escapeHtml(t("noRawRows"))}</p></div>
     </div>`
           });
           return;
@@ -3108,11 +3978,11 @@
         const payloads = await Promise.all(refs.map((ref) => api(`/api/raw?file=${encodeURIComponent(ref.file)}&line=${encodeURIComponent(ref.line)}`)));
         if (state.detailSelectionKey !== rawKey) return;
         renderDetailShell({
-          title: "Raw refs",
+          title: t("rawRefs"),
           subtitle: rawRefsSubtitle(event),
-          actions: [renderReadFromHereAction(), '<button class="smallBtn" type="button" data-detail-action="inspect">Inspect event</button>'].filter(Boolean).join(""),
+          actions: [renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t("inspectEvent"))}</button>`].filter(Boolean).join(""),
           body: `<div class="rawRefsView">
-    <p class="rawMeta">${escapeHtml(`${refs.length} JSONL row${refs.length === 1 ? "" : "s"} for ${event.id}`)}</p>
+    <p class="rawMeta">${escapeHtml(t("rawRowsForEvent", { count: refs.length, plural: refs.length === 1 ? "" : "s", eventId: event.id }))}</p>
     ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(raw.file)}:${raw.line}</p><pre>${escapeHtml(JSON.stringify(raw.parsed, null, 2) || raw.raw)}</pre></section>`).join("")}
   </div>`
         });
@@ -3200,7 +4070,7 @@
       function nextCustomProfileName(baseProfileId) {
         const base = state.builtinProfiles.find((profile) => profile.id === baseProfileId) || state.profiles.find((profile) => profile.id === baseProfileId) || activeProfile();
         const count = state.customProfiles.filter((profile) => profile.baseProfileId === baseProfileId).length + 1;
-        return `${base.name} (\u81EA\u5B9A\u4E49${count})`;
+        return t("customProfileName", { name: base.name, count });
       }
       function saveProfileDraft(name = "") {
         ensureProfileDraft();
@@ -3243,6 +4113,9 @@
         if (state.projectLoadingRoot || state.projectJobId) return;
         const action = state.selectingProject && state.repoRoot ? exitProjectChooser : showProjectChooser;
         action({ autoRestore: false }).catch(showError);
+      });
+      el.localeSelect?.addEventListener("change", () => {
+        changeLocale(el.localeSelect.value).catch(showError);
       });
       el.projectCancelBtn?.addEventListener("click", () => {
         const jobId = state.projectJobId;
@@ -3606,12 +4479,14 @@
         if (state.selectingProject && el.projectStatus) el.projectStatus.textContent = error.message;
         console.error(error);
       }
+      applyStaticLocale();
       init().catch(showError);
     }
   });
 
   // src/browser/entry.js
   require_command_highlighting();
+  require_i18n();
   require_renderers();
   require_search_query();
   require_highlight();

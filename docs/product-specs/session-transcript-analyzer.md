@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-06-04 / 最近更新：2026-06-04
+- Last updated: 2026-06-11 / 最近更新：2026-06-11
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
@@ -76,6 +76,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 21. Timeline pagination remains available through the explicit load-more button and also attempts to load the next page when the user scrolls to the bottom of the timeline pane. / 时间线分页既可通过显式的“加载更多”按钮使用，也会在用户滚动到时间线面板底部时尝试加载下一页。
 22. Routine task start/completion, thread-name, unmodeled item-completion, token count, and rate-limit records live in the protocol layer because they describe Codex runtime state rather than the engineering workflow; when a transcript reports an actual reached usage limit, the main timeline shows a warning event. Raw JSON remains available for verification. / 常规 task 开始/完成、thread-name、未建模的 item-completion、token count 和 rate-limit 记录位于 protocol layer，因为它们描述的是 Codex 运行时状态而不是工程工作流；当转录报告确实触达使用限额时，main timeline 会显示一个 warning 事件。原始 JSON 仍可用于验证。
 23. Project indexing shows progress while it scans and parses transcript files, can be cancelled from the project chooser, and avoids fully parsing transcript files that are clearly associated with a different repository. Files whose repository cannot be identified from early metadata are still parsed as a conservative fallback. / 项目索引在扫描和解析转录文件时会显示进度，可从项目选择器取消，并避免完整解析明确属于其他仓库的转录文件。无法从早期 metadata 识别仓库的文件仍会作为保守回退被解析。
+24. The UI supports English and Simplified Chinese display catalogs. The selected language is stored in browser localStorage, defaults from the browser language when no preference exists, and is sent to read APIs so event labels, detail section titles, folding strategy names, and UI chrome use the same locale. Stable machine identifiers such as `kind`, `status`, `layer`, folding condition IDs, source locators, and raw JSONL content remain unchanged. / UI 支持英文和简体中文展示 catalog。所选语言保存在浏览器 localStorage 中；没有偏好时会根据浏览器语言决定，并会传给只读 API，使 event label、detail section title、folding strategy 名称和 UI chrome 使用同一 locale。`kind`、`status`、`layer`、folding condition ID、source locator 和 raw JSONL 内容等稳定机器标识保持不变。
 
 ## Acceptance criteria / 验收标准
 
@@ -112,6 +113,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - [x] Starting without `--repo` lets the user select a target project in the browser before repository-scoped indexing. / 不带 `--repo` 启动时，用户可以先在浏览器中选择目标项目，再进行仓库范围的索引。
 - [x] Routine token count and lifecycle metadata events stay out of Main timeline, remain readable in Protocol layer, and only produce a Main timeline warning when a usage limit is reached. / 常规 token count 和生命周期 metadata 事件不会进入 Main timeline，会在 Protocol layer 中保持可读，并且只有在触达使用限额时才会产生 Main timeline warning。
 - [x] Project indexing reports visible progress, can be cancelled before completion, and preserves correctness by parsing unknown-repository transcript files while skipping only files known to belong to other repositories. / 项目索引会报告可见进度，可在完成前取消，并通过解析未知仓库归属的转录文件、只跳过已知属于其他仓库的文件来保持正确性。
+- [x] English and Simplified Chinese UI catalogs localize display text without localizing API/filter/storage identifiers or raw transcript content. / 英文和简体中文 UI catalog 会本地化展示文本，但不会本地化 API/filter/storage 标识或原始 transcript 内容。
 
 ## Edge cases / 边界情况
 

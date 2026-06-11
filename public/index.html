@@ -20,6 +20,13 @@
         <p id="stateLine">正在读取本地 sessions…</p>
       </div>
       <div class="searchbar">
+        <label class="localeControl">
+          <span class="srOnly">Language</span>
+          <select id="localeSelect" aria-label="Language">
+            <option value="en">English</option>
+            <option value="zh-CN">简体中文</option>
+          </select>
+        </label>
         <div class="searchField">
           <input id="searchInput" type="search" placeholder="Search messages, commands, files, output" autocomplete="off" aria-controls="searchAssist" aria-expanded="false" aria-haspopup="dialog">
           <div class="searchInlineMatches" data-search-match-controls title="Rendered jump targets; total keeps the full-text count and is raised when more rendered targets are visible" hidden>

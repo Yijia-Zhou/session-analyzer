@@ -9,6 +9,7 @@ const os = require('node:os');
 const url = require('node:url');
 const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, normalizeFsPath, readImagePreview, readRawLine } = require('./src/codex');
 const { foldingProfiles } = require('./src/folding');
+const i18n = require('./src/shared/i18n');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -129,15 +130,24 @@ async function readJsonBody(req, limit = 64 * 1024) {
   }
 }
 
-function statePayload(state) {
+function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
+  const resolvedLocale = i18n.resolveLocale(locale);
   return {
+    locale: resolvedLocale,
+    supportedLocales: i18n.SUPPORTED_LOCALES,
     repoRoot: state.index.repoRoot,
     codexHome: state.index.codexHome,
     generatedAt: state.index.generatedAt,
     buildMs: state.buildMs,
     totals: state.index.totals,
-    eventKinds: state.index.eventKinds,
-    foldingProfiles,
+    eventKinds: state.index.eventKinds
+      ? {
+        main: state.index.eventKinds.main.map((item) => ({ ...item, label: i18n.eventKindLabel(item.value, resolvedLocale) })),
+        protocol: state.index.eventKinds.protocol.map((item) => ({ ...item, label: i18n.eventKindLabel(item.value, resolvedLocale) })),
+        raw: state.index.eventKinds.raw.map((item) => ({ ...item, label: i18n.eventKindLabel(item.value, resolvedLocale) })),
+      }
+      : state.index.eventKinds,
+    foldingProfiles: foldingProfiles.map((profile) => i18n.localizeProfile(profile, resolvedLocale)),
     projectSelected: true,
   };
 }
@@ -322,6 +332,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
   return http.createServer(async (req, res) => {
     try {
       const { pathname, searchParams } = parseQuery(req.url);
+      const locale = i18n.resolveLocale(searchParams.get('locale') || req.headers['accept-language']);
       if (pathname === '/api/projects') {
         const configuredProjects = await discoverConfiguredProjects({ codexHome: state.codexHome });
         if (searchParams.get('summary') === '1') {
@@ -360,7 +371,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         }
         const payload = { job: projectJobPayload(job) };
         if (job.status === 'succeeded' && state.index?.repoRoot === path.resolve(job.repoRoot)) {
-          payload.state = statePayload(state);
+          payload.state = statePayload(state, locale);
         }
         sendJson(res, 200, payload);
         return;
@@ -392,13 +403,13 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
             job: projectJobPayload(activeJob),
           };
           if (state.index) {
-            payload.currentState = statePayload(state);
+            payload.currentState = statePayload(state, locale);
           }
           sendJson(res, 202, payload);
           return;
         }
         if (!requireIndex(state, res)) return;
-        sendJson(res, 200, statePayload(state));
+        sendJson(res, 200, statePayload(state, locale));
         return;
       }
 
@@ -415,6 +426,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           tool: searchParams.get('tool') || '',
           file: searchParams.get('file') || '',
           sort: searchParams.get('sort') || 'updated-desc',
+          locale,
         });
         sendJson(res, 200, result);
         return;
@@ -441,6 +453,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           status: searchParams.get('status') || '',
           tool: searchParams.get('tool') || '',
           file: searchParams.get('file') || '',
+          locale,
         });
         if (!result) {
           sendError(res, 404, 'Unknown session');
@@ -460,7 +473,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           return;
         }
         const layer = searchParams.get('layer') || 'main';
-        const detail = buildEventDetail(session, decodePathSegment(detailMatch[2]), layer);
+        const detail = buildEventDetail(session, decodePathSegment(detailMatch[2]), layer, { locale });
         if (!detail) {
           sendError(res, 404, 'Unknown event');
           return;

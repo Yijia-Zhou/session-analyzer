@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-06-05 / 最近更新：2026-06-05
+- Last updated: 2026-06-11 / 最近更新：2026-06-11
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -286,6 +286,10 @@ The selected-event inspector is optimized for fast triage rather than repeating 
 
 选中事件 inspector 面向快速判断事件状况，而不是重复展开后的 timeline 正文。只有当 preview 能补充 timeline 正文之外的上下文时才渲染 Summary，之后依次渲染 Metadata、Source 和 Details。Metadata 只放紧凑标量事实，例如时间、状态、工具、退出码、耗时、通道和涉及文件。Source 负责 JSONL 位置和 Raw refs 动作。详情区段标题应描述用户意图，例如 `Files`、`Result`、`Run context`、`Arguments`、`Request` 和 `Response`，而不是重复通用的 `metadata` 名称。
 
+Display text is localized through the shared `src/shared/i18n.js` catalog at DTO response and browser-rendering boundaries. Locale affects labels, section titles, folding profile names/descriptions, condition names/descriptions, renderer fallback copy, and UI chrome. Locale must not affect canonical machine fields, filtering/storage identifiers, raw refs, source locators, raw JSONL content, or search semantics.
+
+展示文本通过共享的 `src/shared/i18n.js` catalog 在 DTO 响应边界和浏览器渲染边界本地化。Locale 会影响 label、section title、folding profile 名称/说明、condition 名称/说明、renderer fallback 文案和 UI chrome。Locale 不得影响 canonical machine field、filter/storage 标识、raw refs、source locator、raw JSONL 内容或搜索语义。
+
 Folding profiles are data-driven presets with `kindStates`, a `fallback` display state, and fixed condition rules. Built-in presets remain read-only. Edits create a draft that immediately previews in the Main timeline; Save writes a custom profile to browser `localStorage`, and Cancel restores the saved profile. Editable kind rules cover Main timeline kinds only, so protocol-only `protocol` events and raw fallback `event` kinds are not exposed as folding controls. Protocol and raw layer overrides stay outside profile editing so layer semantics remain separate from folding strategy semantics. When protocol or raw is active, the frontend disables profile controls, renders a read-only fixed-rules explanation in the detail panel, and disables profile metric shortcuts.
 
 折叠策略是数据驱动预设，包含 `kindStates`、`fallback` 显示状态和固定条件规则。内置预设保持只读。编辑会创建草稿并立即在 Main timeline 中预览；Save 会把自定义策略写入浏览器 `localStorage`，Cancel 会恢复已保存策略。可编辑 kind 规则只覆盖 Main timeline kind，因此只存在于 protocol layer 的 `protocol` 事件和 raw fallback `event` kind 不会暴露为折叠控件。协议层和原始层覆盖规则不进入策略编辑，以保持事件层语义与折叠策略语义分离。当 protocol 或 raw 生效时，前端会禁用 profile 控件，在详情面板展示只读的固定规则说明，并禁用 profile 指标快捷入口。
@@ -311,6 +315,7 @@ Before a folding-profile or layer switch, the frontend captures the selected eve
 - `POST /api/project` starts an asynchronous indexing job and returns `202 { job }`; `GET /api/project/status?jobId=...` returns progress and includes the app state when the job succeeds; `DELETE /api/project/status?jobId=...` cancels an active job. / `POST /api/project` 启动异步索引任务并返回 `202 { job }`；`GET /api/project/status?jobId=...` 返回进度，并在任务成功时包含应用状态；`DELETE /api/project/status?jobId=...` 取消活动任务。
 - `/api/sessions/:id/timeline` accepts `layer=main|protocol|raw` / `/api/sessions/:id/timeline` 接受 `layer=main|protocol|raw`
 - `/api/sessions/:id/events/:eventId/detail?layer=main|protocol|raw` returns the structured detail DTO for one event / `/api/sessions/:id/events/:eventId/detail?layer=main|protocol|raw` 返回单个事件的结构化详情 DTO
+- Read APIs accept optional `locale=en|zh-CN|zh`; unsupported values fall back to English. Localized fields are display-only and do not change filtering identifiers or raw/source traceability. / 只读 API 接受可选的 `locale=en|zh-CN|zh`；不支持的值回退到英文。被本地化的字段仅用于展示，不改变筛选标识或 raw/source 可追踪性。
 - Main and protocol layers return logical events / 主层和协议层返回逻辑事件
 - Raw layer returns raw-record DTOs / 原始层返回原始记录 DTO
 - Event detail uses `rawRefs` so one logical event can expose multiple source rows / 事件详情使用 `rawRefs`，因此一个逻辑事件可以暴露多个来源行

@@ -31,6 +31,11 @@ async function openApp(t, index, options = {}) {
   const baseUrl = await startServer(t, index);
   const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: options.viewport || { width: 1280, height: 900 } });
+  if (options.locale) {
+    await context.addInitScript((locale) => {
+      localStorage.setItem('sessionAnalyzer.locale', locale);
+    }, options.locale);
+  }
   const page = await context.newPage();
   const requestedPaths = [];
   page.on('request', (request) => {
@@ -48,9 +53,9 @@ async function openApp(t, index, options = {}) {
     assert.equal(requestedPaths.includes(oldScript), false, `browser should not load old source script ${oldScript}`);
   }
   await page.waitForFunction(() => window.sessionFolding && window.sessionRenderers && window.sessionSearchQuery);
-  await page.waitForSelector('.sessionItem.active');
+  await page.waitForSelector('.sessionItem.active', { state: options.activeSessionState || 'visible' });
   await page.waitForFunction(() => document.querySelectorAll('#timeline .event[data-event-id]').length > 0);
-  return { page, baseUrl };
+  return { page, baseUrl, requestedPaths };
 }
 
 async function selectPrimarySession(page) {
@@ -114,6 +119,83 @@ async function makeLongCodexHome(t) {
   t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
   return { codexHome, repoRoot: longRepoRoot };
 }
+
+test('browser locale bootstrap keeps narrow screens on sessions view', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { viewport: { width: 390, height: 760 }, locale: 'zh-CN', activeSessionState: 'attached' });
+
+  await page.waitForFunction(() => document.body.dataset.mobileView === 'sessions');
+  assert.equal(await page.locator('body').getAttribute('data-mobile-view'), 'sessions');
+
+  await fillSearch(page, 'patch');
+  await page.waitForFunction(() => document.querySelector('#resultSummary')?.textContent.includes('patch'));
+  assert.equal(await page.locator('body').getAttribute('data-mobile-view'), 'sessions');
+});
+
+test('browser locale localizes static shell and dirty profile dialog', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await page.waitForFunction(() => document.documentElement.lang === 'en');
+  await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('logical events'));
+  assert.equal(await page.locator('#dirtyProfileTitle').textContent(), 'Unsaved folding strategy changes');
+
+  await selectPrimarySession(page);
+  const messagesMetricTitle = await page.locator('.metric', { hasText: 'Messages' }).getAttribute('title');
+  assert.match(messagesMetricTitle || '', /Switch to conversation reading folding strategy/);
+  assert.equal((messagesMetricTitle || '').includes('切换到'), false);
+  await page.locator('[data-profile-kind="command"]').selectOption('expanded');
+  await page.locator('#detail [data-profile-picker]').selectOption('conversation');
+  await page.waitForSelector('#dirtyProfileDialog:not([hidden])');
+
+  assert.equal(await page.locator('#dirtyProfileTitle').textContent(), 'Unsaved folding strategy changes');
+  assert.equal(await page.locator('#dirtyProfileMessage').textContent(), 'Before switching strategies, save the current changes, discard them, or stay on the current strategy.');
+  assert.equal(await page.locator('[data-dirty-profile-choice="save"]').textContent(), 'Save and switch');
+  assert.equal(await page.locator('[data-dirty-profile-choice="discard"]').textContent(), 'Discard and switch');
+  assert.equal(await page.locator('[data-dirty-profile-choice="cancel"]').textContent(), 'Cancel');
+});
+
+test('browser locale switch preserves unsaved folding draft', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await selectPrimarySession(page);
+
+  await page.locator('[data-profile-kind="command"]').selectOption('expanded');
+  await page.waitForSelector('#detail [data-detail-action="save-profile"]');
+
+  await page.locator('#localeSelect').selectOption('zh-CN');
+  await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
+
+  await expectInputValue(page, '#detail [data-profile-kind="command"]', 'expanded');
+  await page.waitForSelector('#detail [data-detail-action="save-profile"]');
+  await page.waitForFunction(() => [...document.querySelectorAll('#timeline .event.kind-command')].some((event) => event.classList.contains('expanded')));
+});
+
+test('browser locale switch reloads cached expanded event detail', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await selectPrimarySession(page);
+
+  const detailResponseFor = (locale) => (response) => {
+    const parsed = new URL(response.url());
+    return parsed.pathname.includes('/events/')
+      && parsed.pathname.endsWith('/detail')
+      && parsed.searchParams.get('locale') === locale
+      && response.status() === 200;
+  };
+
+  const event = page.locator('#timeline .event.kind-command').first();
+  await Promise.all([
+    page.waitForResponse(detailResponseFor('en')),
+    event.click(),
+  ]);
+  await page.waitForSelector('#timeline .event.kind-command.expanded .eventBody');
+
+  await Promise.all([
+    page.waitForResponse(detailResponseFor('zh-CN')),
+    page.locator('#localeSelect').selectOption('zh-CN'),
+  ]);
+  await page.waitForSelector('#timeline .event.kind-command.expanded .eventBody');
+});
 
 test('browser find keeps loaded timeline range and clearing find does not reset pagination', async (t) => {
   const longFixture = await makeLongCodexHome(t);

@@ -6,6 +6,7 @@ const path = require('node:path');
 const readline = require('node:readline');
 const MarkdownIt = require('markdown-it');
 const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
+const i18n = require('./shared/i18n');
 const {
   CANONICAL_SCHEMA_VERSION,
   CODEX_SOURCE_KIND,
@@ -256,9 +257,9 @@ function humanizeEventKind(value) {
     .replace(/\bJs\b/g, 'JS');
 }
 
-function eventKindLabel(value) {
+function eventKindLabel(value, locale = i18n.DEFAULT_LOCALE) {
   const key = String(value || '').trim();
-  return EVENT_KIND_LABELS[key] || PROTOCOL_LABELS[key] || humanizeEventKind(key) || key;
+  return i18n.eventKindLabel(key, locale) || EVENT_KIND_LABELS[key] || PROTOCOL_LABELS[key] || humanizeEventKind(key) || key;
 }
 
 function usageLimitKind(text) {
@@ -1176,6 +1177,19 @@ function makeRawJsonSection(title, value, expanded = false) {
 
 function filterDetailSections(sections) {
   return sections.filter((section) => section && SECTION_TYPES.has(section.type));
+}
+
+function localizeDetailSections(sections, locale) {
+  return filterDetailSections(sections).map((section) => i18n.localizeSection(section, locale));
+}
+
+function localizedLogicalLabel(logical, locale) {
+  if (!logical) return '';
+  const label = sanitizeLogicalEnvelopeValue(logical.label);
+  const translated = i18n.knownLabel(label, locale);
+  if (translated || label) return translated || label;
+  if (logical.layer === 'protocol') return eventKindLabel(logical.subtype || logical.kind, locale);
+  return '';
 }
 
 function readSessionIndexEntry(line) {
@@ -2884,7 +2898,8 @@ function extractLogicalDetailSections(event, raws, session = {}) {
   }
 }
 
-function buildEventDetail(session, eventId, layer = 'main') {
+function buildEventDetail(session, eventId, layer = 'main', options = {}) {
+  const locale = i18n.resolveLocale(options.locale);
   if (layer === 'raw') {
     const raw = session.rawEvents.find((candidate) => candidate.rawId === eventId);
     if (!raw) return null;
@@ -2901,14 +2916,14 @@ function buildEventDetail(session, eventId, layer = 'main') {
       kind: raw.payloadType || raw.recordType,
       subtype: raw.role || '',
       layer: 'raw',
-      title: raw.payloadType || raw.recordType,
+      title: eventKindLabel(raw.payloadType || raw.recordType, locale),
       sourceLocator: codexSourceLocator(raw.source),
       sourceRecordType: raw.recordType || '',
       sourceEventType: raw.payloadType || '',
       meta: rawMeta(raw),
       rawRefs: [rawRef(raw)],
-      timelineSections: filterDetailSections(split.timelineSections),
-      inspectorSections: filterDetailSections(split.inspectorSections),
+      timelineSections: localizeDetailSections(split.timelineSections, locale),
+      inspectorSections: localizeDetailSections(split.inspectorSections, locale),
     };
   }
 
@@ -2927,16 +2942,16 @@ function buildEventDetail(session, eventId, layer = 'main') {
     kind: sanitizeLogicalEnvelopeValue(logical.kind),
     subtype: sanitizeLogicalEnvelopeValue(logical.subtype),
     layer: sanitizeLogicalEnvelopeValue(logical.layer),
-    title: sanitizeLogicalEnvelopeValue(logical.label),
+    title: localizedLogicalLabel(logical, locale),
     sourceLocator: logical.sourceLocator,
     meta: logicalMeta(logical),
     rawRefs: logical.rawRefs,
-    timelineSections: filterDetailSections(sanitizedDetailSections.timelineSections),
-    inspectorSections: filterDetailSections(sanitizedDetailSections.inspectorSections),
+    timelineSections: localizeDetailSections(sanitizedDetailSections.timelineSections, locale),
+    inspectorSections: localizeDetailSections(sanitizedDetailSections.inspectorSections, locale),
   };
 }
 
-function rawEventDto(raw, q) {
+function rawEventDto(raw, q, locale = i18n.DEFAULT_LOCALE) {
   const hasSearchHit = q ? eventHasSearchHit(raw, q) : false;
   return {
     id: raw.rawId,
@@ -2952,7 +2967,7 @@ function rawEventDto(raw, q) {
     subtype: raw.role || '',
     layer: 'raw',
     role: raw.role,
-    label: raw.payloadType || raw.recordType,
+    label: eventKindLabel(raw.payloadType || raw.recordType, locale),
     preview: raw.preview,
     severity: raw.payloadType === 'error' ? 'error' : 'normal',
     status: raw.status,
@@ -3705,13 +3720,14 @@ function countBy(items, fn) {
   return [...map.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
 }
 
-function eventKindOptionsFromCounts(counts) {
+function eventKindOptionsFromCounts(counts, locale = i18n.DEFAULT_LOCALE) {
   return [...counts.entries()]
-    .sort((a, b) => eventKindLabel(a[0]).localeCompare(eventKindLabel(b[0])) || a[0].localeCompare(b[0]))
-    .map(([value, count]) => ({ value, label: eventKindLabel(value), count }));
+    .sort((a, b) => eventKindLabel(a[0], locale).localeCompare(eventKindLabel(b[0], locale)) || a[0].localeCompare(b[0]))
+    .map(([value, count]) => ({ value, label: eventKindLabel(value, locale), count }));
 }
 
-function eventKindCatalog(sessions) {
+function eventKindCatalog(sessions, options = {}) {
+  const locale = i18n.resolveLocale(options.locale);
   const counts = {
     main: new Map(),
     protocol: new Map(),
@@ -3732,9 +3748,9 @@ function eventKindCatalog(sessions) {
     }
   }
   return {
-    main: eventKindOptionsFromCounts(counts.main),
-    protocol: eventKindOptionsFromCounts(counts.protocol),
-    raw: eventKindOptionsFromCounts(counts.raw),
+    main: eventKindOptionsFromCounts(counts.main, locale),
+    protocol: eventKindOptionsFromCounts(counts.protocol, locale),
+    raw: eventKindOptionsFromCounts(counts.raw, locale),
   };
 }
 
@@ -4235,12 +4251,13 @@ function sessionSummary(session, index) {
 }
 
 function filterSessions(index, filters) {
+  const locale = i18n.resolveLocale(filters.locale);
   let sessions = index.sessions.filter((session) => {
     if (filters.from && String(session.updatedAt || session.startedAt) < `${filters.from}T00:00:00.000Z`) return false;
     if (filters.to && String(session.startedAt || session.updatedAt) > `${filters.to}T23:59:59.999Z`) return false;
     if (filters.q && !matchTerms(session.searchText, filters.q)) return false;
     if (filters.kind || filters.status || filters.tool || filters.file || filters.layer) {
-      const haystack = filters.layer === 'raw' ? session.rawEvents.map((raw) => rawEventDto(raw, '')).filter((event) => eventMatches(event, filters)) : session.logicalEvents.filter((event) => eventMatches(event, filters));
+      const haystack = filters.layer === 'raw' ? session.rawEvents.map((raw) => rawEventDto(raw, '', locale)).filter((event) => eventMatches(event, filters)) : session.logicalEvents.filter((event) => eventMatches(event, filters));
       return haystack.length > 0;
     }
     return true;
@@ -4299,7 +4316,7 @@ function makeSnippet(text, q) {
   return `${prefix}${source.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
 }
 
-function logicalEventDto(event, q) {
+function logicalEventDto(event, q, locale = i18n.DEFAULT_LOCALE) {
   const hasSearchHit = q ? eventHasSearchHit(event, q) : false;
   return sanitizeLogicalEventDto({
     id: event.id,
@@ -4313,7 +4330,7 @@ function logicalEventDto(event, q) {
     subtype: event.subtype,
     layer: event.layer,
     role: event.role,
-    label: event.label,
+    label: localizedLogicalLabel(event, locale),
     preview: event.preview,
     severity: event.severity,
     status: event.status,
@@ -4334,11 +4351,12 @@ function logicalEventDto(event, q) {
 }
 
 function getTimeline(index, sessionId, filters) {
+  const locale = i18n.resolveLocale(filters.locale);
   const session = index.sessionsById.get(sessionId);
   if (!session) return null;
   const layer = filters.layer || 'main';
   const sourceEvents = layer === 'raw'
-    ? session.rawEvents.map((raw) => rawEventDto(raw, filters.q))
+    ? session.rawEvents.map((raw) => rawEventDto(raw, filters.q, locale))
     : session.logicalEvents.filter((event) => event.layer === layer);
   const structuralFilters = { ...filters, q: '', layer };
   const matched = sourceEvents.filter((event) => eventMatches(event, structuralFilters));
@@ -4353,8 +4371,8 @@ function getTimeline(index, sessionId, filters) {
     offset: filters.offset,
     limit: filters.limit,
     layer,
-    eventKinds: session.eventKinds || eventKindCatalog([session]),
-    events: layer === 'raw' ? page : page.map((event) => logicalEventDto(event, filters.q)),
+    eventKinds: eventKindCatalog([session], { locale }),
+    events: layer === 'raw' ? page : page.map((event) => logicalEventDto(event, filters.q, locale)),
   };
 }
 

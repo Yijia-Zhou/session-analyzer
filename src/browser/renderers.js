@@ -2,11 +2,22 @@
   const commandHighlighting = typeof module === 'object' && module.exports
     ? require('../shared/command-highlighting')
     : root.sessionCommandHighlighting;
-  const api = factory(commandHighlighting);
+  const i18n = typeof module === 'object' && module.exports
+    ? require('../shared/i18n')
+    : root.sessionI18n;
+  const api = factory(commandHighlighting, i18n);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionRenderers = api;
-}(typeof globalThis !== 'undefined' ? globalThis : this, (commandHighlighting) => {
+}(typeof globalThis !== 'undefined' ? globalThis : this, (commandHighlighting, i18n) => {
   'use strict';
+
+  function locale() {
+    return globalThis.sessionAnalyzerLocale || i18n.DEFAULT_LOCALE;
+  }
+
+  function tr(key, vars = {}) {
+    return i18n.t(locale(), 'renderer', key, vars);
+  }
 
   function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -273,7 +284,7 @@
   }
 
   function renderUsageLimits(section) {
-    const items = (section.items || []).map((item) => `<div class="usageLimitItem"><strong>${escapeHtml(item.label || '')}</strong><span>${escapeHtml(item.remaining || '')} remaining</span><em>Resets ${escapeHtml(item.reset || '')}</em></div>`).join('');
+    const items = (section.items || []).map((item) => `<div class="usageLimitItem"><strong>${escapeHtml(item.label || '')}</strong><span>${escapeHtml(item.remaining || '')} ${escapeHtml(tr('remaining'))}</span><em>${escapeHtml(tr('resets'))} ${escapeHtml(item.reset || '')}</em></div>`).join('');
     return `<section class="eventSection"><div class="usageLimitBlock">${renderSectionTitle(section)}${items}</div></section>`;
   }
 
@@ -281,11 +292,11 @@
     const questions = (section.questions || []).map((question) => {
       const options = (question.options || []).map((option) => {
         const selected = option.selected ? ' selected' : '';
-        const selectedLabel = option.selected ? '<span class="userInputSelected">Selected</span>' : '';
+        const selectedLabel = option.selected ? `<span class="userInputSelected">${escapeHtml(tr('selected'))}</span>` : '';
         return `<li class="userInputOption${selected}"><div><strong>${escapeHtml(option.label || '')}</strong>${selectedLabel}</div>${option.description ? `<p>${escapeHtml(option.description)}</p>` : ''}</li>`;
       }).join('');
       const answers = (question.answers || []).map((answer) => `<span>${escapeHtml(answer)}</span>`).join('');
-      return `<article class="userInputQuestion"><header><strong>${escapeHtml(question.title || 'Question')}</strong></header>${question.prompt ? `<p class="userInputPrompt">${escapeHtml(question.prompt)}</p>` : ''}${options ? `<ul class="userInputOptions">${options}</ul>` : ''}${answers ? `<div class="userInputAnswer"><strong>Answer</strong>${answers}</div>` : ''}</article>`;
+      return `<article class="userInputQuestion"><header><strong>${escapeHtml(question.title || tr('question'))}</strong></header>${question.prompt ? `<p class="userInputPrompt">${escapeHtml(question.prompt)}</p>` : ''}${options ? `<ul class="userInputOptions">${options}</ul>` : ''}${answers ? `<div class="userInputAnswer"><strong>${escapeHtml(tr('answer'))}</strong>${answers}</div>` : ''}</article>`;
     }).join('');
     return `<section class="eventSection"><div class="userInputBlock">${renderSectionTitle(section)}${questions}</div></section>`;
   }
@@ -301,7 +312,7 @@
 
   function renderPlanUpdate(section) {
     const explanation = section.explanationHtml ? `<div class="planUpdateExplanation">${section.explanationHtml}</div>` : '';
-    const steps = (section.steps || []).map((item) => `<li class="planUpdateStep"><span class="planStatus${planStatusClass(item.status)}">${escapeHtml(item.status || 'unknown')}</span><span>${escapeHtml(item.step || '')}</span></li>`).join('');
+    const steps = (section.steps || []).map((item) => `<li class="planUpdateStep"><span class="planStatus${planStatusClass(item.status)}">${escapeHtml(item.status || tr('unknown'))}</span><span>${escapeHtml(item.step || '')}</span></li>`).join('');
     return `<section class="eventSection"><div class="planUpdateBlock">${renderSectionTitle(section)}${explanation}${steps ? `<ol class="planUpdateSteps">${steps}</ol>` : ''}</div></section>`;
   }
 
@@ -317,11 +328,11 @@
   function renderCollaboration(section) {
     const targets = (section.targets || []).map((target) => `<span>${escapeHtml(target)}</span>`).join('');
     const fields = (section.fields || []).map((entry) => `<div><dt>${escapeHtml(entry.key || '')}</dt><dd>${escapeHtml(entry.value || '')}</dd></div>`).join('');
-    const statuses = (section.statuses || []).map((item) => `<li><span>${escapeHtml(item.label || '')}</span><strong class="collaborationStatus${collaborationStatusClass(item.status)}">${escapeHtml(item.status || 'unknown')}</strong></li>`).join('');
-    const timedOut = section.timedOut ? '<span class="collaborationStatus failed">timed out</span>' : '';
-    const message = section.messageHtml ? `<article class="collaborationBody"><h4>Message</h4><div>${section.messageHtml}</div></article>` : '';
-    const result = section.resultHtml ? `<article class="collaborationBody"><h4>Result</h4><div>${section.resultHtml}</div></article>` : '';
-    return `<section class="eventSection"><div class="collaborationBlock">${renderSectionTitle(section)}${targets ? `<div class="collaborationTargets"><strong>Targets</strong>${targets}</div>` : ''}${fields ? `<dl class="collaborationFields">${fields}</dl>` : ''}${statuses || timedOut ? `<div class="collaborationStatuses">${timedOut}${statuses ? `<ul>${statuses}</ul>` : ''}</div>` : ''}${message}${result}</div></section>`;
+    const statuses = (section.statuses || []).map((item) => `<li><span>${escapeHtml(item.label || '')}</span><strong class="collaborationStatus${collaborationStatusClass(item.status)}">${escapeHtml(item.status || tr('unknown'))}</strong></li>`).join('');
+    const timedOut = section.timedOut ? `<span class="collaborationStatus failed">${escapeHtml(tr('timedOut'))}</span>` : '';
+    const message = section.messageHtml ? `<article class="collaborationBody"><h4>${escapeHtml(tr('message'))}</h4><div>${section.messageHtml}</div></article>` : '';
+    const result = section.resultHtml ? `<article class="collaborationBody"><h4>${escapeHtml(tr('result'))}</h4><div>${section.resultHtml}</div></article>` : '';
+    return `<section class="eventSection"><div class="collaborationBlock">${renderSectionTitle(section)}${targets ? `<div class="collaborationTargets"><strong>${escapeHtml(tr('targets'))}</strong>${targets}</div>` : ''}${fields ? `<dl class="collaborationFields">${fields}</dl>` : ''}${statuses || timedOut ? `<div class="collaborationStatuses">${timedOut}${statuses ? `<ul>${statuses}</ul>` : ''}</div>` : ''}${message}${result}</div></section>`;
   }
 
   function isSafeImagePreviewUrl(value) {
@@ -329,8 +340,8 @@
   }
 
   function renderImagePreview(section) {
-    const images = (section.images || []).filter((image) => isSafeImagePreviewUrl(image.src)).map((image) => `<figure><img src="${escapeHtml(image.src)}" alt="${escapeHtml(image.alt || 'Image preview')}" loading="lazy" decoding="async"><p class="imagePreviewError">Image preview could not be loaded.</p>${image.detail ? `<figcaption>${escapeHtml(image.detail)}</figcaption>` : ''}</figure>`).join('');
-    const notice = section.notice || (!images ? 'Image preview is unavailable.' : '');
+    const images = (section.images || []).filter((image) => isSafeImagePreviewUrl(image.src)).map((image) => `<figure><img src="${escapeHtml(image.src)}" alt="${escapeHtml(image.alt || tr('imageAlt'))}" loading="lazy" decoding="async"><p class="imagePreviewError">${escapeHtml(tr('imageError'))}</p>${image.detail ? `<figcaption>${escapeHtml(image.detail)}</figcaption>` : ''}</figure>`).join('');
+    const notice = section.notice || (!images ? tr('imageUnavailable') : '');
     const noticeHtml = notice ? `<div class="notice info"><p>${escapeHtml(notice)}</p></div>` : '';
     return `<section class="eventSection"><div class="imagePreviewBlock">${renderSectionTitle(section)}${images ? `<div class="imagePreviewGrid">${images}</div>` : ''}${noticeHtml}</div></section>`;
   }
