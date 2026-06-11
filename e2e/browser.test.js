@@ -212,15 +212,17 @@ test('browser expanded event collapse works with mouse and keyboard controls', a
   await selectPrimarySession(page);
 
   const firstEvent = page.locator('#timeline .event[data-event-id]').first();
+  const headerToggle = firstEvent.locator('.eventHeader [data-action="toggle"]');
+  const footerToggle = firstEvent.locator('.eventFooterActions [data-action="toggle"]');
   await firstEvent.click();
   await page.waitForFunction(() => document.querySelector('#timeline .event[data-event-id]')?.classList.contains('expanded'));
-  await firstEvent.locator('.eventCollapseBtn').click();
+  await footerToggle.click();
   await page.waitForFunction(() => !document.querySelector('#timeline .event[data-event-id]')?.classList.contains('expanded'));
 
-  await firstEvent.locator('.eventToggle').focus();
+  await headerToggle.focus();
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => document.querySelector('#timeline .event[data-event-id]')?.classList.contains('expanded'));
-  await firstEvent.locator('.eventCollapseBtn').focus();
+  await footerToggle.focus();
   await page.keyboard.press('Space');
   await page.waitForFunction(() => !document.querySelector('#timeline .event[data-event-id]')?.classList.contains('expanded'));
 });
