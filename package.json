@@ -6,7 +6,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test",
+    "test": "node --test \"test/*.test.js\"",
+    "test:browser": "node --test e2e/browser.test.js",
+    "browser:install": "playwright install chromium",
     "vendor:highlight": "npx --yes --package esbuild esbuild ./scripts/highlight-vendor-entry.js --bundle --format=iife --global-name=sessionHighlightVendor --outfile=./public/vendor/highlightjs/highlight.min.js --minify"
   },
   "dependencies": {
@@ -15,5 +17,8 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "playwright": "^1.60.0"
   }
 }
