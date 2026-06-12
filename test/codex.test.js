@@ -721,6 +721,11 @@ test('grouped generic protocol tool labels prefer terminal lifecycle rows', asyn
       timestamp: '2026-06-10T12:00:05.100Z',
       payload: { type: 'collab_agent_spawn_end', call_id: 'call-collab', new_thread_id: 'agent-1', status: 'pending_init' },
     },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:06.000Z',
+      payload: { type: 'dynamic_tool_call_declined', call_id: 'call-dynamic-declined', tool_name: 'asset_lookup', status: 'declined', reason: 'not allowed' },
+    },
   ];
   await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
 
@@ -800,6 +805,25 @@ test('grouped generic protocol tool labels prefer terminal lifecycle rows', asyn
       rawLines: [10, 11],
     },
   });
+
+  const rawTimeline = getTimeline(index, id, {
+    offset: 0,
+    limit: 20,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'raw',
+  });
+  const rawDeclined = rawTimeline.events.find((event) => event.payloadType === 'dynamic_tool_call_declined');
+  assert.ok(rawDeclined);
+  assert.equal(rawDeclined.label, 'dynamic_tool_call_declined');
+
+  const session = index.sessionsById.get(id);
+  assert.ok(session);
+  const rawDetail = buildEventDetail(session, rawDeclined.id, 'raw');
+  assert.equal(rawDetail.title, 'dynamic_tool_call_declined');
 });
 
 test('tool logical events merge new and old format patch records and search still works', async () => {

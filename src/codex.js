@@ -262,6 +262,10 @@ function eventKindLabel(value, locale = i18n.DEFAULT_LOCALE) {
   return i18n.eventKindLabel(key, locale) || EVENT_KIND_LABELS[key] || PROTOCOL_LABELS[key] || humanizeEventKind(key) || key;
 }
 
+function rawRecordLabel(raw) {
+  return raw.payloadType || raw.recordType || '';
+}
+
 function usageLimitKind(text) {
   const source = String(text || '').toLowerCase().replace(/[_-]+/g, ' ');
   if (/\bweekly\b|\bweek\b/.test(source)) return 'weekly';
@@ -2916,7 +2920,7 @@ function buildEventDetail(session, eventId, layer = 'main', options = {}) {
       kind: raw.payloadType || raw.recordType,
       subtype: raw.role || '',
       layer: 'raw',
-      title: eventKindLabel(raw.payloadType || raw.recordType, locale),
+      title: rawRecordLabel(raw),
       sourceLocator: codexSourceLocator(raw.source),
       sourceRecordType: raw.recordType || '',
       sourceEventType: raw.payloadType || '',
@@ -2967,7 +2971,7 @@ function rawEventDto(raw, q, locale = i18n.DEFAULT_LOCALE) {
     subtype: raw.role || '',
     layer: 'raw',
     role: raw.role,
-    label: eventKindLabel(raw.payloadType || raw.recordType, locale),
+    label: rawRecordLabel(raw),
     preview: raw.preview,
     severity: raw.payloadType === 'error' ? 'error' : 'normal',
     status: raw.status,
