@@ -96,3 +96,12 @@
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/completed/2026-05-31-folding-rule-priority-governance.md`
+
+### 10. Release workflow and trusted publishing / 发布流程与 trusted publishing
+- Status: deferred / 状态：已推迟
+- Problem: Stage 7 makes the package pack-ready and smoke-verified, but it intentionally does not decide how maintainers publish to npm. Adding a CI publish workflow later needs an authentication model, provenance expectations, package-name availability check, and release approval boundary. / 问题：阶段 7 只让 package 达到可打包并通过 smoke 验证的状态，但有意不决定维护者如何发布到 npm。后续添加 CI 发布流程时，需要决定认证模型、provenance 预期、包名可用性检查和发布审批边界。
+- Preferred direction: evaluate npm trusted publishing/OIDC for CI-based npm releases before introducing any long-lived npm automation token; if manual publish remains the first release path, document the exact `npm pack` smoke, `npm publish` command, 2FA expectations, and rollback/deprecate policy. / 建议方向：在为 npm 发布引入任何长期自动化 token 前，先评估 npm trusted publishing/OIDC；如果首个发布路径仍采用手动发布，则记录精确的 `npm pack` smoke、`npm publish` 命令、2FA 预期，以及回滚/deprecate 策略。
+- Reference: npm trusted publishing documentation, `https://docs.npmjs.com/trusted-publishers/`. / 参考：npm trusted publishing 文档，`https://docs.npmjs.com/trusted-publishers/`。
+- Related docs: / 相关文档：
+  - `docs/exec-plans/active/2026-06-10-v0.1-release-hardening.md`
+  - `CHANGELOG.md`

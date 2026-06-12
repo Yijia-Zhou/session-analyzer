@@ -33,36 +33,30 @@ Codex 转录可能包含提示词、命令输出、文件路径、环境详情�
 - Node.js 18 或更高版本
 - npm
 
-## 安装
-
-```sh
-npm install
-```
-
-## 运行
+## 通过 npm 运行
 
 不指定仓库启动，然后在浏览器中从发现的项目里选择：
 
 ```sh
-npm start
+npx session-analyzer
 ```
 
 或者启动时显式指定仓库：
 
 ```sh
-node server.js --repo /path/to/project
+npx session-analyzer --repo /path/to/project
 ```
 
 Windows 示例：
 
 ```powershell
-node server.js --repo 'C:\path\to\project'
+npx session-analyzer --repo 'C:\path\to\project'
 ```
 
-默认情况下，应用会从 `~/.codex` 读取 Codex 转录。如果你的转录在其他位置，可以使用 `--codex-home`：
+默认情况下，应用会从 `~/.codex` 读取 Codex transcript。如果你的 transcript 在其他位置，可以使用 `--codex-home`：
 
 ```sh
-node server.js --repo /path/to/project --codex-home /path/to/.codex --port 17890
+npx session-analyzer --repo /path/to/project --codex-home /path/to/.codex --port 17890
 ```
 
 然后打开：
@@ -70,6 +64,51 @@ node server.js --repo /path/to/project --codex-home /path/to/.codex --port 17890
 ```text
 http://127.0.0.1:17890/
 ```
+
+也可以全局安装 CLI：
+
+```sh
+npm install -g session-analyzer
+session-analyzer --repo /path/to/project
+```
+
+默认 host 是 `127.0.0.1`。`--host` 是高级选项；绑定到 localhost 之外可能让网络上的其他机器读取当前进程可访问的 transcript 内容。
+
+## 从源码开发
+
+安装依赖：
+
+```sh
+npm install
+```
+
+从源码仓库启动：
+
+```sh
+npm start
+```
+
+或者直接运行 server 文件：
+
+```powershell
+node server.js --repo 'C:\path\to\project'
+```
+
+构建浏览器 bundle：
+
+```sh
+npm run build
+```
+
+运行测试：
+
+```sh
+npm test
+```
+
+`test/fixtures/codex-home` 下的测试 fixture 是合成转录数据。它们有意包含假的 Windows 路径和示例转录形态，用于覆盖解析器行为。
+
+浏览器 JavaScript 源码位于 `src/browser/`，浏览器与 Node 共用逻辑位于 `src/shared/`。生成的运行时 bundle 是 `public/assets/app.js`；不要直接编辑它。
 
 ## 使用方式
 
@@ -79,21 +118,7 @@ http://127.0.0.1:17890/
 4. 使用忽略大小写的普通文本短语或筛选条件搜索，例如 `file:src/parser.js`、`kind:command`、`status:failed` 和 `layer:raw`。短语中的空白可以匹配空格、Tab 或换行。
 5. 打开事件以检查结构化详情和原始引用。
 
-## 测试
-
-```sh
-npm test
-```
-
-`test/fixtures/codex-home` 下的测试 fixture 是合成转录数据。它们有意包含假的 Windows 路径和示例转录形态，用于覆盖解析器行为。
-
-## 构建
-
-```sh
-npm run build
-```
-
-浏览器 JavaScript 源码位于 `src/browser/`，浏览器与 Node 共用逻辑位于 `src/shared/`。生成的运行时 bundle 是 `public/assets/app.js`；不要直接编辑它。
+npm 包不承诺稳定的程序接口。v0.1 支持的接口是 `session-analyzer` CLI。
 
 ## 仓库结构
 

@@ -33,36 +33,30 @@ Codex transcripts can contain prompts, command output, file paths, environment d
 - Node.js 18 or newer
 - npm
 
-## Install
-
-```sh
-npm install
-```
-
-## Run
+## Run With npm
 
 Start without a repository to choose from discovered projects in the browser:
 
 ```sh
-npm start
+npx session-analyzer
 ```
 
 Or start with an explicit repository:
 
 ```sh
-node server.js --repo /path/to/project
+npx session-analyzer --repo /path/to/project
 ```
 
 On Windows:
 
 ```powershell
-node server.js --repo 'C:\path\to\project'
+npx session-analyzer --repo 'C:\path\to\project'
 ```
 
 By default the app reads Codex transcripts from `~/.codex`. Use `--codex-home` if your transcripts live elsewhere:
 
 ```sh
-node server.js --repo /path/to/project --codex-home /path/to/.codex --port 17890
+npx session-analyzer --repo /path/to/project --codex-home /path/to/.codex --port 17890
 ```
 
 Then open:
@@ -70,6 +64,51 @@ Then open:
 ```text
 http://127.0.0.1:17890/
 ```
+
+You can also install the CLI globally:
+
+```sh
+npm install -g session-analyzer
+session-analyzer --repo /path/to/project
+```
+
+The default host is `127.0.0.1`. `--host` is an advanced option; binding outside localhost can expose transcript content available to this process to other machines on the network.
+
+## Develop From Source
+
+Install dependencies:
+
+```sh
+npm install
+```
+
+Start from a source checkout:
+
+```sh
+npm start
+```
+
+Or run the server file directly:
+
+```powershell
+node server.js --repo 'C:\path\to\project'
+```
+
+Build the browser bundle:
+
+```sh
+npm run build
+```
+
+Run tests:
+
+```sh
+npm test
+```
+
+The test fixtures under `test/fixtures/codex-home` are synthetic transcript data. They intentionally include fake Windows paths and sample transcript shapes for parser coverage.
+
+Browser JavaScript source lives in `src/browser/`, and browser-and-Node shared logic lives in `src/shared/`. The generated runtime bundle is `public/assets/app.js`; do not edit it directly.
 
 ## Usage
 
@@ -79,21 +118,7 @@ http://127.0.0.1:17890/
 4. Search with a case-insensitive plain-text phrase or filters such as `file:src/parser.js`, `kind:command`, `status:failed`, and `layer:raw`. Whitespace inside a phrase matches spaces, tabs, or newlines.
 5. Open an event to inspect structured detail and raw references.
 
-## Test
-
-```sh
-npm test
-```
-
-The test fixtures under `test/fixtures/codex-home` are synthetic transcript data. They intentionally include fake Windows paths and sample transcript shapes for parser coverage.
-
-## Build
-
-```sh
-npm run build
-```
-
-Browser JavaScript source lives in `src/browser/`, and browser-and-Node shared logic lives in `src/shared/`. The generated runtime bundle is `public/assets/app.js`; do not edit it directly.
+The npm package does not promise a stable programmatic API. The supported v0.1 interface is the `session-analyzer` CLI.
 
 ## Repository Layout
 

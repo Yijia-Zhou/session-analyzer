@@ -1,9 +1,39 @@
 {
   "name": "session-analyzer",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.1.0",
   "description": "Local interactive viewer for Codex session transcripts.",
+  "keywords": [
+    "codex",
+    "transcript",
+    "viewer",
+    "session",
+    "local"
+  ],
+  "homepage": "https://github.com/Yijia-Zhou/session-analyzer#readme",
+  "bugs": {
+    "url": "https://github.com/Yijia-Zhou/session-analyzer/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yijia-Zhou/session-analyzer.git"
+  },
+  "license": "BSD-3-Clause",
   "main": "server.js",
+  "bin": {
+    "session-analyzer": "./server.js"
+  },
+  "files": [
+    "server.js",
+    "src/codex.js",
+    "src/codex-source.js",
+    "src/folding.js",
+    "src/shared/",
+    "public/",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node server.js",
     "build": "npm run build:client",
