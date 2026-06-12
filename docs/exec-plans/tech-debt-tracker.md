@@ -103,5 +103,5 @@
 - Preferred direction: evaluate npm trusted publishing/OIDC for CI-based npm releases before introducing any long-lived npm automation token; if manual publish remains the first release path, document the exact `npm pack` smoke, `npm publish` command, 2FA expectations, and rollback/deprecate policy. / 建议方向：在为 npm 发布引入任何长期自动化 token 前，先评估 npm trusted publishing/OIDC；如果首个发布路径仍采用手动发布，则记录精确的 `npm pack` smoke、`npm publish` 命令、2FA 预期，以及回滚/deprecate 策略。
 - Reference: npm trusted publishing documentation, `https://docs.npmjs.com/trusted-publishers/`. / 参考：npm trusted publishing 文档，`https://docs.npmjs.com/trusted-publishers/`。
 - Related docs: / 相关文档：
-  - `docs/exec-plans/active/2026-06-10-v0.1-release-hardening.md`
+  - `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`
   - `CHANGELOG.md`

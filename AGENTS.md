@@ -36,10 +36,12 @@ When changing product behavior or repository structure:
 
 - Product spec: `docs/product-specs/session-transcript-analyzer.md`
 - Design doc: `docs/design-docs/logical-event-timeline.md`
+- Schema update runbook: `docs/design-docs/schema-update-runbook.md`
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Active plans:
-  - `docs/exec-plans/active/2026-06-10-v0.1-release-hardening.md`
+  - None currently / 当前暂无
 - Completed plans:
+  - `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`
   - `docs/exec-plans/completed/2026-06-02-inspector-search-target-reveal.md`
   - `docs/exec-plans/completed/2026-06-02-find-in-page-phrase-search.md`
   - `docs/exec-plans/completed/2026-05-31-folding-rule-priority-governance.md`

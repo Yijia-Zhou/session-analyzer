@@ -7,7 +7,7 @@
 - Last updated: 2026-06-11 / 最近更新：2026-06-11
 - Scope: design pressure tests only; no non-Codex importer commitment for v0.1 / 范围：仅设计压力测试；v0.1 不承诺非 Codex importer
 - Related design doc: `docs/design-docs/logical-event-timeline.md`
-- Related plan: `docs/exec-plans/active/2026-06-10-v0.1-release-hardening.md`
+- Related plan: `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`
 
 ## Summary / 摘要
 

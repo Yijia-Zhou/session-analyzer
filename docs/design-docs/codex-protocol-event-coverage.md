@@ -3,12 +3,14 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-06-10 / 最近更新：2026-06-10
+- Last updated: 2026-06-12 / 最近更新：2026-06-12
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related design: / 相关设计：
   - `docs/design-docs/logical-event-timeline.md`
-- Upstream references checked on 2026-05-21: / 2026-05-21 检查的上游参考：
+- Related runbook: / 相关运行手册：
+  - `docs/design-docs/schema-update-runbook.md`
+- Upstream references checked on 2026-06-12: / 2026-06-12 检查的上游参考：
   - `https://github.com/openai/codex/blob/main/codex-rs/docs/protocol_v1.md`
   - `https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs`
 
@@ -52,6 +54,43 @@ The implementation covers these notes with focused synthetic fixtures: task life
 
 实现已用聚焦合成 fixture 覆盖上述记录：task 生命周期事件及其别名归入 protocol 层；`session_configured` 补充当前标题和 cwd/project metadata，但不覆盖第一条 `session_meta` 身份；`thread_goal_updated` 保持为 goal metadata；`warning`、`guardian_warning` 和 `stream_error` 暴露到 main 层并带严重级别；`plan_update` 和 `plan_delta` 成为计划事件；工具族 begin/declined/incomplete 行在存在 `call_id` 时按调用分组；dynamic tool、image generation、approval、hook 和 collaboration 的 begin/end 或 declined 配对会选择终态分组 label，同时不改变 raw-row 可追踪性。
 
+## Schema review notes / Schema 审查记录
+
+2026-06-12 runbook pass: checked upstream `protocol.rs` and `protocol_v1.md`. The protocol doc continues to identify `protocol.rs` as the complete `EventMsg` reference and marks the enum as non-exhaustive, so this repository should still expect new variants over time. The current pass found no reason to change parser behavior; it only updates the coverage matrix to make fallback or partial coverage explicit for routine metadata, token count, raw/item/delta, realtime, model-routing, moderation, diff, and subagent activity event families.
+
+2026-06-12 运行手册检查：已检查上游 `protocol.rs` 和 `protocol_v1.md`。协议文档仍将 `protocol.rs` 标为完整 `EventMsg` 参考，并说明该 enum 非穷尽，因此本仓库仍应预期未来会新增 variant。本次检查没有发现需要改变 parser 行为的理由；仅更新覆盖矩阵，明确 routine metadata、token count、raw/item/delta、realtime、model-routing、moderation、diff 和 subagent activity 事件族的 fallback 或部分覆盖状态。
+
+## Coverage matrix / 覆盖矩阵
+
+This compact matrix summarizes Codex event shapes already discussed in this document and high-risk ambiguous families. It is not an exhaustive closed protocol schema. Support status values are `supported`, `partially supported`, `raw-only`, `unsupported by design`, and `unknown / needs fixture`.
+
+本紧凑矩阵总结本文已讨论的 Codex event shape 以及高风险、易混淆事件族。它不是穷尽且闭合的协议 schema。支持状态值为 `supported`、`partially supported`、`raw-only`、`unsupported by design` 和 `unknown / needs fixture`。
+
+| Protocol record / event shape | Current support status | Raw event outcome | Logical event kind / subtype | Layer | Detail rendering | Raw refs / traceability | Search / filter relevance | Folding relevance | Fixture coverage | Docs status | Notes / TODO |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `task_started`, `task_complete`, `turn_started`, `turn_complete` | supported | Preserved as raw rows | `protocol` lifecycle subtype | protocol | Protocol text/metadata fallback | Raw refs preserved | Searchable protocol text | Not profile-editable | Synthetic fixture coverage | Documented | Runtime lifecycle only; excluded from Main timeline |
+| `session_configured` | supported | Preserved as metadata row | `protocol` session metadata subtype | protocol | Metadata fields and protocol text | Raw refs preserved | Title/cwd/project metadata searchable | Not profile-editable | Synthetic fixture coverage | Documented | Contributes current title/cwd metadata without replacing session identity |
+| `context_compacted`, `turn_aborted`, `thread_rolled_back` | supported | Preserved as raw rows | Lifecycle warning/error subtypes | main with protocol/raw traceability | Notice/protocol fallback | Raw refs preserved | Searchable lifecycle text | Error-focus relevance when warning/error | Fixture coverage for compacted and rollback paths; abort path relies on parser coverage | Documented | Main timeline only when the event communicates reading-impacting lifecycle state |
+| `thread_settings_applied`, `shutdown_complete` | raw-only | Preserved as raw/protocol rows | Generic `protocol` subtype | protocol and raw | Bounded protocol fallback | Raw refs preserved | Searchable flattened text | Not profile-editable | Generic fallback coverage | Matrix documented | Add stronger behavior only if observed payloads affect session metadata or user-visible state |
+| `thread_name_updated` legacy rows | partially supported | Preserved as raw rows | `protocol` legacy metadata subtype | protocol | Metadata fallback | Raw refs preserved | Searchable legacy title text | Not profile-editable | Legacy-focused coverage through parser tests | Documented | Legacy compatibility only; current title metadata should prefer `session_configured.thread_name` |
+| `thread_goal_updated` | supported | Preserved as goal metadata row | `protocol` goal subtype | protocol | Flat goal metadata fallback | Raw refs preserved | Goal objective searchable | Not profile-editable | Synthetic fixture coverage | Documented | Broaden field-specific rendering only if real nested goal payloads appear |
+| `token_count` | supported | Preserved as raw row | `protocol` token count subtype; Main warning only if a usage limit is reached | protocol plus conditional main warning | Token/rate-limit preview and protocol fallback | Raw refs preserved | Usage/rate-limit text searchable | Error-focus relevance only for reached usage limits | Synthetic fixture and replay coverage | Documented in product/logical docs | Routine token counts stay out of Main timeline |
+| `warning`, `guardian_warning`, `stream_error` | supported | Preserved as raw rows | Warning/error event subtype | main and protocol/raw traceability | Notice/protocol fallback | Raw refs preserved | Affects issue search/filter and metrics | Error-focus folding relevance | Synthetic fixture coverage | Documented | User-visible risk should not remain neutral protocol noise |
+| `deprecation_notice` | raw-only | Preserved as raw/protocol row | `protocol` notice subtype | protocol | Protocol fallback | Raw refs preserved | Searchable protocol text | Not profile-editable | Generic fallback coverage | Documented | Promote only if it affects current user work |
+| `model_reroute`, `model_verification`, `turn_moderation_metadata` | raw-only | Preserved as raw/protocol rows | Generic `protocol` subtype | protocol and raw | Bounded protocol fallback | Raw refs preserved | Searchable flattened text when present | Not profile-editable | Needs focused synthetic fixture if product semantics emerge | Matrix documented | Fixture TODO only; no parser proposal until real payloads show UI/search/metrics impact |
+| Proposed plan records, `update_plan`, `plan_update`, `plan_delta` | supported | Preserved through raw refs | `proposed_plan` / planning subtypes | main when planning context matters; protocol/raw traceability | Plan/update sections or protocol fallback | Multi-row raw refs preserved where applicable | Planning metrics and filters | Conversation/planning folding relevance | Synthetic and replay coverage | Documented | Count planning context across tool-shaped and protocol-shaped records |
+| `raw_response_item`, `item_started`, `item_completed`, streaming content/reasoning delta rows | partially supported | Preserved as raw rows | Generic protocol or conversation/reasoning-derived subtype when text is promoted | protocol by default; main only for promoted readable content | Bounded protocol/text fallback | Raw refs preserved | Extracted text searchable when available | Conversation folding only for promoted readable content | Generic fallback plus item-completed parser coverage | Matrix documented | Keep deltas bounded; add behavior only for stable readable content or traceability needs |
+| Exec command begin/output/interaction/end | supported | Preserved as raw rows | `command` or generic tool subtype | main with protocol/raw traceability | Command/stdout/stderr sections | Grouped raw refs preserved by call id | Command text/output searchable; status filters | Narrative/error/change-review relevance | Existing fixture coverage | Documented | End rows preferred when available; incomplete rows remain visible |
+| Patch apply begin/update/end | supported | Preserved as raw rows | `patch` subtype | main with protocol/raw traceability | Patch sections with file summaries | Grouped raw refs preserved by call id | Touched-file and patch text searchable | Change-review folding relevance | Existing fixture coverage | Documented | Supports old and new patch row shapes |
+| `turn_diff` | raw-only | Preserved as raw/protocol row | Generic `protocol` subtype | protocol and raw | Bounded protocol fallback | Raw refs preserved | Searchable flattened diff text when present | Not profile-editable | Needs focused fixture if observed | Matrix documented | Potential future change-review relevance, but no parser proposal without observed payloads |
+| MCP startup/tool events | partially supported | Preserved as raw rows | `mcp_call` or generic protocol/tool subtype | main when action-like; otherwise protocol | Bounded request/response fallback | Raw refs preserved | Tool/search text when available | Narrative/error relevance | Existing plus generic fallback coverage | Documented | Add field-specific detail only for observed payloads that affect behavior |
+| Web search/open-page rows | supported | Preserved as raw rows | Web search subtype | main with protocol/raw traceability | Structured web search detail | Adjacent mirrored raw refs merged when appropriate | Search target searchable | Narrative relevance | Existing fixture coverage | Documented in logical timeline | Adjacent end/call snapshots merge by canonical action target |
+| Dynamic tool, image generation, approval, hook, collaboration lifecycle rows | partially supported | Preserved as raw rows | Generic tool-family subtype with terminal label | main when action-like; protocol/raw traceability | Bounded request/response fallback | Grouped raw refs preserved by call id when available | Generic payload text searchable | Narrative/error relevance | Synthetic lifecycle fixture coverage | Documented | Real payload fixtures still needed for field-specific detail |
+| Realtime conversation/list-voices rows | raw-only | Preserved as raw/protocol rows | Generic `protocol` subtype | protocol and raw | Bounded protocol fallback | Raw refs preserved | Searchable flattened text when present | Not profile-editable | Needs fixture if real transcript rows appear | Matrix documented | Keep as observation target until user-visible transcript semantics are clear |
+| `sub_agent_activity` | raw-only | Preserved as raw/protocol row | Generic `protocol` subtype | protocol and raw | Bounded protocol fallback | Raw refs preserved | Searchable flattened text when present | Not profile-editable | Needs fixture if real transcript rows appear | Matrix documented | Separate from existing derived-session metadata; add behavior only if it affects grouping/detail |
+| Review mode enter/exit and review output | partially supported | Preserved as raw rows | `review` lifecycle subtype | main lifecycle plus protocol/raw traceability | Review lifecycle/detail fallback | Raw refs preserved | Review text/findings searchable when present | Conversation/planning relevance when applicable | Lifecycle fixture coverage; non-empty findings need real-data validation | Documented | Non-empty `review_output.findings[]` remains a real-data validation gap |
+| Unknown future `event_msg` variants | supported as fallback | Preserved losslessly | Generic `protocol` / raw fallback | protocol and raw | Bounded generic protocol/raw fallback | Raw refs preserved | Searchable flattened text where extracted | Not profile-editable unless later modeled | Generic fallback coverage | Documented | Add parser behavior only when product semantics require it |
+
 ## Maintenance Rules / 维护规则
 
 When Codex protocol changes or real transcripts expose new event shapes:
@@ -62,7 +101,8 @@ When Codex protocol changes or real transcripts expose new event shapes:
 2. Do not hard-code an exhaustive closed `EventMsg` schema in this repository. If an exact schema is needed for investigation, generate it locally from upstream Rust types with `schemars::schema_for!(RolloutLine)`. / 不要在本仓库中硬编码穷尽且闭合的 `EventMsg` schema。如果调查需要精确 schema，应从上游 Rust 类型用 `schemars::schema_for!(RolloutLine)` 本地生成。
 3. Add parser behavior only when an event changes the main/protocol layer choice, severity, session metadata, tool grouping, search text, metrics, or structured details. / 只有当某个事件会改变 main/protocol 层归属、严重级别、session 元数据、工具分组、搜索文本、指标或结构化详情时，才新增解析行为。
 4. Keep raw fallback lossless for every row and add focused fixtures before broadening normalization rules. / 对每一行保持无损 raw fallback，并在扩大归一化规则前添加聚焦 fixture。
-5. Update bilingual docs together: this document for protocol coverage, `logical-event-timeline.md` for model changes, product specs only for changed user-visible behavior, and `tech-debt-tracker.md` for known gaps left intentionally open. / 双语文档要同步更新：协议覆盖写入本文；模型变化写入 `logical-event-timeline.md`；只有用户可见行为变化才更新产品规格；有意保留的已知缺口写入 `tech-debt-tracker.md`。
+5. Use `docs/design-docs/schema-update-runbook.md` for source trust, decision tiers, fixture privacy rules, and the schema-review output template. / 使用 `docs/design-docs/schema-update-runbook.md` 获取来源信任等级、决策分层、fixture 隐私规则和 schema 审查输出模板。
+6. Update bilingual docs together: this document for protocol coverage, `logical-event-timeline.md` for model changes, product specs only for changed user-visible behavior, and `tech-debt-tracker.md` for known gaps left intentionally open. / 双语文档要同步更新：协议覆盖写入本文；模型变化写入 `logical-event-timeline.md`；只有用户可见行为变化才更新产品规格；有意保留的已知缺口写入 `tech-debt-tracker.md`。
 
 ## Follow-up Candidates / 后续候选工作
 
