@@ -1,0 +1,258 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { createCodexLogicalBuilder } = require('../src/codex-logical');
+const { CANONICAL_SCHEMA_VERSION, CODEX_SOURCE_KIND, rawRef } = require('../src/codex-source');
+
+const TOOL_EVENT_TYPES = new Set([
+  'exec_command_begin',
+  'exec_command_end',
+  'patch_apply_begin',
+  'patch_apply_end',
+  'mcp_tool_call_begin',
+  'mcp_tool_call_end',
+  'image_generation_call_begin',
+  'image_generation_call_end',
+  'dynamic_tool_call_begin',
+  'dynamic_tool_call_end',
+  'dynamic_tool_call_declined',
+  'approval_request_begin',
+  'approval_request_declined',
+  'hook_begin',
+  'hook_end',
+  'collab_agent_spawn_begin',
+  'collab_agent_spawn_end',
+]);
+
+function titleCaseProtocolSubtype(value) {
+  return String(value || '')
+    .split('_')
+    .filter(Boolean)
+    .map((part) => `${part[0].toUpperCase()}${part.slice(1)}`)
+    .join(' ');
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return '';
+}
+
+function displayValue(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+}
+
+function truncate(value, limit = 240) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 3))}...`;
+}
+
+function uniqueNonEmpty(values) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+const logicalBuilder = createCodexLogicalBuilder({
+  envelope: {
+    CANONICAL_SCHEMA_VERSION,
+    CODEX_SOURCE_KIND,
+    sanitizeLogicalEnvelopeValue: (value) => value,
+    rawRef,
+  },
+  protocol: {
+    classifyProtocolText: (text, role) => {
+      if (role === 'developer') return 'developer_instruction';
+      if (String(text || '').startsWith('# AGENTS.md instructions')) return 'agents_instructions';
+      return '';
+    },
+    humanizeProtocolSubtype: titleCaseProtocolSubtype,
+    protocolLabelFor: (subtype, fallback = '') => fallback || titleCaseProtocolSubtype(subtype),
+    protocolPreviewFor: (raw, subtype) => raw.preview || subtype,
+  },
+  tool: {
+    TOOL_EVENT_TYPES,
+    commandArgsFromRaw: (raw) => raw?.commandArgs || null,
+    commandToText: (command) => Array.isArray(command) ? command.join(' ') : String(command || ''),
+    inferPatchSuccess: () => true,
+    isFiniteNumberValue: (value) => Number.isFinite(Number(value)),
+    numericExitCode: (...values) => {
+      const value = values.find((candidate) => candidate != null && Number.isFinite(Number(candidate)));
+      return value == null ? null : Number(value);
+    },
+    parseFormattedCommandOutput: () => null,
+    parseOutputEnvelope: () => null,
+    patchFilesFromPatchInput: () => [],
+    touchFilesFromOutputText: () => [],
+  },
+  text: {
+    displayValue,
+    firstNonEmpty,
+    planUpdateText: (raw) => raw.searchText,
+    relatedReasoning: (left, right) => Boolean(left && right && (left.includes(right) || right.includes(left))),
+    truncate,
+    uniqueNonEmpty,
+  },
+  usage: {
+    tokenUsageItems: () => [],
+    collectUsageLimitItems: () => [],
+    rateLimitReachedType: () => '',
+  },
+});
+
+function raw(line, fields = {}) {
+  const payloadType = fields.payloadType || '';
+  const recordType = fields.recordType || 'event_msg';
+  const role = fields.role || '';
+  const parsedPayload = {
+    type: payloadType,
+    ...(fields.payload || {}),
+  };
+  return {
+    rawId: `session-1:raw:${line}`,
+    sessionId: 'session-1',
+    line,
+    source: { file: '2026/06/10/session.jsonl', line },
+    timestamp: fields.timestamp || `2026-06-10T12:00:${String(line).padStart(2, '0')}.000Z`,
+    turnId: fields.turnId || '',
+    recordType,
+    payloadType,
+    canonicalType: fields.canonicalType || payloadType,
+    role,
+    callId: fields.callId || '',
+    toolName: fields.toolName || '',
+    status: fields.status || '',
+    messageText: fields.messageText || '',
+    searchText: fields.searchText || fields.messageText || fields.preview || payloadType,
+    preview: fields.preview || fields.messageText || payloadType,
+    commandText: fields.commandText || '',
+    stdout: fields.stdout || '',
+    stderr: fields.stderr || '',
+    aggregatedOutput: fields.aggregatedOutput || '',
+    exitCode: fields.exitCode ?? null,
+    durationMs: fields.durationMs || 0,
+    touchedFiles: fields.touchedFiles || [],
+    output: fields.output || '',
+    parsed: { payload: parsedPayload },
+  };
+}
+
+test('logical builder folds raw rows into message, reasoning, protocol, and fallback events', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: 'hello' }),
+    raw(2, { payloadType: 'user_message', messageText: 'hello' }),
+    raw(3, { payloadType: 'agent_reasoning', messageText: '' }),
+    raw(4, { recordType: 'response_item', payloadType: 'message', role: 'developer', messageText: '# AGENTS.md instructions\nUse tests.' }),
+    raw(5, { payloadType: 'thread_goal_updated', canonicalType: 'thread_goal_updated', preview: 'goal changed' }),
+  ]);
+
+  const user = logicalEvents.find((event) => event.kind === 'user_message');
+  const reasoning = logicalEvents.find((event) => event.kind === 'reasoning');
+  const developer = logicalEvents.find((event) => event.subtype === 'developer_instruction');
+  const fallback = logicalEvents.find((event) => event.subtype === 'thread_goal_updated');
+
+  assert.equal(user.schemaVersion, 1);
+  assert.equal(user.sourceKind, 'codex');
+  assert.deepEqual(user.rawRefs.map((ref) => ref.line), [1, 2]);
+  assert.equal(reasoning.layer, 'protocol');
+  assert.equal(reasoning.hasReadableReasoning, false);
+  assert.equal(developer.layer, 'protocol');
+  assert.equal(fallback.kind, 'protocol');
+  assert.equal(fallback.sourceLocator.type, 'jsonl_line');
+});
+
+test('logical builder uses terminal lifecycle rows for generic protocol tool labels', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { payloadType: 'dynamic_tool_call_begin', callId: 'call-dynamic', toolName: 'asset_lookup', preview: 'begin query' }),
+    raw(2, { payloadType: 'dynamic_tool_call_end', callId: 'call-dynamic', toolName: 'asset_lookup', preview: 'done' }),
+    raw(3, { payloadType: 'image_generation_call_begin', callId: 'call-image', toolName: 'image_generation', preview: 'draw' }),
+    raw(4, { payloadType: 'image_generation_call_end', callId: 'call-image', toolName: 'image_generation', preview: 'image done' }),
+    raw(5, { payloadType: 'approval_request_begin', callId: 'call-approval', toolName: 'approval', preview: 'approve' }),
+    raw(6, { payloadType: 'approval_request_declined', callId: 'call-approval', toolName: 'approval', status: 'declined', preview: 'declined' }),
+    raw(7, { payloadType: 'hook_begin', callId: 'call-hook', toolName: 'pre_apply_hook', preview: 'hook' }),
+    raw(8, { payloadType: 'hook_end', callId: 'call-hook', toolName: 'pre_apply_hook', preview: 'hook done' }),
+    raw(9, { payloadType: 'collab_agent_spawn_begin', callId: 'call-collab', preview: 'spawn' }),
+    raw(10, { payloadType: 'collab_agent_spawn_end', callId: 'call-collab', status: 'pending_init', preview: 'spawned' }),
+  ]);
+  const byCall = new Map(logicalEvents.map((event) => [event.id.split(':call:')[1], event]));
+
+  assert.deepEqual({
+    dynamic: {
+      label: byCall.get('call-dynamic').label,
+      status: byCall.get('call-dynamic').status,
+      severity: byCall.get('call-dynamic').severity,
+      rawLines: byCall.get('call-dynamic').rawRefs.map((ref) => ref.line),
+    },
+    image: {
+      label: byCall.get('call-image').label,
+      status: byCall.get('call-image').status,
+      severity: byCall.get('call-image').severity,
+      rawLines: byCall.get('call-image').rawRefs.map((ref) => ref.line),
+    },
+    approval: {
+      label: byCall.get('call-approval').label,
+      status: byCall.get('call-approval').status,
+      severity: byCall.get('call-approval').severity,
+      rawLines: byCall.get('call-approval').rawRefs.map((ref) => ref.line),
+    },
+    hook: {
+      label: byCall.get('call-hook').label,
+      status: byCall.get('call-hook').status,
+      severity: byCall.get('call-hook').severity,
+      rawLines: byCall.get('call-hook').rawRefs.map((ref) => ref.line),
+    },
+    collab: {
+      label: byCall.get('call-collab').label,
+      status: byCall.get('call-collab').status,
+      severity: byCall.get('call-collab').severity,
+      rawLines: byCall.get('call-collab').rawRefs.map((ref) => ref.line),
+    },
+  }, {
+    dynamic: { label: 'Dynamic Tool Call End', status: 'success', severity: 'normal', rawLines: [1, 2] },
+    image: { label: 'Image Generation Call End', status: 'success', severity: 'normal', rawLines: [3, 4] },
+    approval: { label: 'Approval Request Declined', status: 'declined', severity: 'warning', rawLines: [5, 6] },
+    hook: { label: 'Hook End', status: 'success', severity: 'normal', rawLines: [7, 8] },
+    collab: { label: 'Collab Agent Spawn End', status: 'success', severity: 'normal', rawLines: [9, 10] },
+  });
+});
+
+test('logical builder pairs web search rows without changing ids, refs, status, or search text', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      payloadType: 'web_search_end',
+      parsed: {},
+      payload: { action: { type: 'search', query: 'release hardening' } },
+      searchText: 'release hardening result',
+      preview: 'search end',
+      status: 'completed',
+    }),
+    raw(2, {
+      recordType: 'response_item',
+      payloadType: 'web_search_call',
+      payload: { action: { type: 'search', query: 'release hardening' } },
+      searchText: 'release hardening call',
+      preview: 'search call',
+    }),
+    raw(3, {
+      payloadType: 'web_search_end',
+      payload: { action: { type: 'search', query: 'orphan' } },
+      searchText: 'orphan web search end fixture',
+      preview: 'orphan web search end fixture',
+      status: 'completed',
+    }),
+  ]);
+
+  const paired = logicalEvents.find((event) => event.kind === 'web_search' && event.rawRefs.length === 2);
+  const orphan = logicalEvents.find((event) => event.kind === 'web_search' && event.rawRefs.length === 1);
+
+  assert.equal(paired.id, 'session-1:logical:web_search:1');
+  assert.deepEqual(paired.rawRefs.map((ref) => ref.line), [1, 2]);
+  assert.deepEqual(paired.channels, ['event_msg', 'response_item']);
+  assert.equal(paired.status, 'completed');
+  assert.match(paired.searchText, /release hardening result/);
+  assert.match(paired.searchText, /release hardening call/);
+  assert.equal(orphan.preview, 'orphan web search end fixture');
+  assert.deepEqual(orphan.rawRefs.map((ref) => ref.line), [3]);
+});

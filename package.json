@@ -25,6 +25,7 @@
   "files": [
     "server.js",
     "src/codex.js",
+    "src/codex-logical.js",
     "src/codex-source.js",
     "src/folding.js",
     "src/shared/",

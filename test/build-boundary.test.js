@@ -58,3 +58,26 @@ test('source modules no longer depend on public as a source tree', () => {
   }
   assert.deepEqual(offenders, []);
 });
+
+test('codex logical builder stays a pure logical-construction boundary', () => {
+  const logicalModule = require('../src/codex-logical');
+  const text = readText(path.join('src', 'codex-logical.js'));
+  const forbiddenPatterns = [
+    /\brequire\s*\(/,
+    /\bimport\s+/,
+    /server\.js/,
+    /src[\\/]browser/,
+    /public[\\/]/,
+    /assets[\\/]/,
+    /node:fs/,
+    /\bfs\./,
+    /\breadFile\b/,
+    /\bwriteFile\b/,
+    /\bcreateReadStream\b/,
+  ];
+
+  assert.deepEqual(Object.keys(logicalModule), ['createCodexLogicalBuilder']);
+  for (const pattern of forbiddenPatterns) {
+    assert.doesNotMatch(text, pattern);
+  }
+});

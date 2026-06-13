@@ -48,7 +48,7 @@ The first version of this repository rendered raw records directly, which caused
 ### Main components / 主要组件
 
 - Codex source/raw parser in `src/codex-source.js`, assembled by `src/codex.js` / `src/codex-source.js` 中的 Codex source/raw 解析器，并由 `src/codex.js` 组装
-- Logical-event builder in `src/codex.js` / `src/codex.js` 中的逻辑事件构建器
+- Codex logical-event builder in `src/codex-logical.js`, assembled by `src/codex.js` / `src/codex-logical.js` 中的 Codex 逻辑事件构建器，并由 `src/codex.js` 组装
 - HTTP API in `server.js` / `server.js` 中的 HTTP API
 - Layer-aware UI rendering in `public/app.js` / `public/app.js` 中的层感知 UI 渲染
 
