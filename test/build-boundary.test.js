@@ -81,3 +81,26 @@ test('codex logical builder stays a pure logical-construction boundary', () => {
     assert.doesNotMatch(text, pattern);
   }
 });
+
+test('codex detail builder stays a detail-construction boundary', () => {
+  const detailModule = require('../src/codex-detail');
+  const text = readText(path.join('src', 'codex-detail.js'));
+  const forbiddenPatterns = [
+    /\brequire\s*\(/,
+    /\bimport\s+/,
+    /server\.js/,
+    /src[\\/]browser/,
+    /public[\\/]/,
+    /assets[\\/]/,
+    /node:fs/,
+    /\bfs\./,
+    /\breadFile\b/,
+    /\bwriteFile\b/,
+    /\bcreateReadStream\b/,
+  ];
+
+  assert.deepEqual(Object.keys(detailModule), ['createCodexDetailBuilder']);
+  for (const pattern of forbiddenPatterns) {
+    assert.doesNotMatch(text, pattern);
+  }
+});

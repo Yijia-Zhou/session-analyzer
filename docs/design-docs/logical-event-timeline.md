@@ -99,6 +99,10 @@ Source locations use typed locators instead of assuming every source can be addr
 
 `sourceRecordType` 和 `sourceEventType` 采用 refs-only 语义。Raw DTO 可以在顶层暴露精确的来源行类型。Logical 和 detail DTO 不在顶层暴露可能误导的聚合 `sourceRecordType` 或 `sourceEventType` 字段；每个 `rawRefs[]` 条目会携带精确的逐行类型，`rawRefs[]` 仍是多行 logical event 的权威可追踪表面。
 
+Implementation boundary: detail DTO assembly plus timeline/inspector section selection and splitting orchestration now live in `src/codex-detail.js` behind `createCodexDetailBuilder(deps)`. `src/codex.js` remains the public assembly/API layer and injects lower-level formatting, parsing, sanitization, and raw/logical source helpers. This is an implementation-only split: the canonical DTO shape and raw traceability semantics above are unchanged.
+
+实现边界：detail DTO 组装，以及 timeline/inspector section 的选择和拆分编排现在位于 `src/codex-detail.js`，并通过 `createCodexDetailBuilder(deps)` 接入。`src/codex.js` 仍是公开组装/API 层，并注入较低层的格式化、解析、清理以及 raw/logical source helper。这只是实现层拆分：上文的 canonical DTO 形状和 raw 可追踪语义保持不变。
+
 ### Raw event / 原始事件
 
 Important fields:
