@@ -106,6 +106,14 @@ Run tests:
 npm test
 ```
 
+Run package smoke verification before release packaging:
+
+```sh
+npm run test:package
+```
+
+The package smoke command runs `npm pack`, installs the tarball into a fresh temporary project, checks installed CLI help, and starts the packaged server.
+
 The test fixtures under `test/fixtures/codex-home` are synthetic transcript data. They intentionally include fake Windows paths and sample transcript shapes for parser coverage.
 
 Browser JavaScript source lives in `src/browser/`, and browser-and-Node shared logic lives in `src/shared/`. The generated runtime bundle is `public/assets/app.js`; do not edit it directly.

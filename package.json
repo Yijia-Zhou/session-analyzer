@@ -41,6 +41,7 @@
     "build:client": "node scripts/build-client.js",
     "test": "node --test \"test/*.test.js\"",
     "test:browser": "node --test e2e/browser.test.js",
+    "test:package": "node scripts/package-smoke.js",
     "browser:install": "playwright install chromium",
     "vendor:highlight": "node scripts/build-client.js --vendor-highlight-only"
   },

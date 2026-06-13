@@ -106,6 +106,14 @@ npm run build
 npm test
 ```
 
+发布打包前运行 package smoke 验证：
+
+```sh
+npm run test:package
+```
+
+package smoke 命令会执行 `npm pack`，把 tarball 安装到全新的临时项目中，检查已安装 CLI 的 help，并启动打包后的 server。
+
 `test/fixtures/codex-home` 下的测试 fixture 是合成转录数据。它们有意包含假的 Windows 路径和示例转录形态，用于覆盖解析器行为。
 
 浏览器 JavaScript 源码位于 `src/browser/`，浏览器与 Node 共用逻辑位于 `src/shared/`。生成的运行时 bundle 是 `public/assets/app.js`；不要直接编辑它。
