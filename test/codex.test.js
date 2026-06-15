@@ -2404,7 +2404,7 @@ test('project endpoints require and select a browser-chosen project', async () =
     const selectRes = await fetch(`${base}/api/project`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ repoRoot: 'G:\\vibe\\term-agent' }),
+      body: JSON.stringify({ repoRoot: 'G:\\vibe\\term-agent', locale: 'zh-CN' }),
     });
     assert.equal(selectRes.status, 202);
     const selectBody = await selectRes.json();
@@ -2420,6 +2420,7 @@ test('project endpoints require and select a browser-chosen project', async () =
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     assert.equal(statusBody.job.status, 'succeeded');
+    assert.equal(statusBody.state.locale, 'zh-CN');
     assert.equal(statusBody.state.repoRoot, 'G:\\vibe\\term-agent');
     assert.equal(statusBody.state.totals.sessionCount, 10);
     assert.equal(statusBody.state.totals.skippedFileCount, 1);
@@ -2493,7 +2494,7 @@ test('state reports active project job even when an old index exists', async () 
     const selectRes = await fetch(`${base}/api/project`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ repoRoot: 'G:\\vibe\\term-agent' }),
+      body: JSON.stringify({ repoRoot: 'G:\\vibe\\term-agent', locale: 'zh-CN' }),
     });
     assert.equal(selectRes.status, 202);
     const selectBody = await selectRes.json();
@@ -2502,6 +2503,7 @@ test('state reports active project job even when an old index exists', async () 
     assert.equal(stateRes.status, 202);
     const stateBody = await stateRes.json();
     assert.equal(stateBody.job.id, selectBody.job.id);
+    assert.equal(stateBody.currentState.locale, 'zh-CN');
     assert.equal(stateBody.currentState.repoRoot, 'G:\\vibe\\term-agent');
     releaseIndex();
   } finally {

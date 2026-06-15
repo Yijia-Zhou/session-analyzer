@@ -107,10 +107,10 @@
   - `CHANGELOG.md`
 
 ### 11. Locale display completeness and propagation / Locale 展示完整性与传递
-- Status: open / 状态：开放
-- Problem: the accepted i18n contract says display labels, detail titles, folding names, renderer fallbacks, and UI chrome should follow the selected locale, but zh-CN still has several namespaces whose values remain English, raw-record labels do not consistently use locale, and project-selection POST responses can fall back to request language instead of the in-app selection. / 问题：已接受的 i18n 契约要求展示 label、detail title、folding 名称、renderer fallback 和 UI chrome 跟随所选 locale，但 zh-CN 仍有多个 namespace 的值保持英文，raw-record label 尚未一致使用 locale，project-selection POST 响应可能回退到请求语言而非应用内选择。
-- Residual risk: users who switch to zh-CN can see mixed-language timeline labels, quick-navigation labels, renderer fallbacks, and project-selection state payloads; tests can pass while the display catalog is only partially translated because keys exist but values equal English. / 残余风险：切换到 zh-CN 的用户可能看到 timeline label、快速导航 label、renderer fallback 和 project-selection state payload 混用语言；由于 key 存在但值等于英文，测试可能在 catalog 仅部分翻译时仍通过。
-- Preferred direction: add catalog-completeness assertions that distinguish intentionally retained technical terms from untranslated values, localize raw DTO display labels without changing machine fields, propagate selected locale through state-returning project APIs, and simplify duplicate fallback label registries after coverage is in place. / 建议方向：添加 catalog 完整性断言，区分有意保留的技术英文词和未翻译值；本地化 raw DTO 展示 label 且不改变机器字段；通过会返回 state 的 project API 传递所选 locale；在覆盖到位后简化重复 fallback label 注册表。
+- Status: resolved 2026-06-15 / 状态：已解决 2026-06-15
+- Resolution: zh-CN catalog completeness is guarded by allowlist-based tests, raw DTO display labels now follow locale without changing machine fields, and project-selection POST plus state-returning project job responses propagate the browser-selected locale. / 解决方式：zh-CN catalog 完整性已由基于 allowlist 的测试保护，raw DTO 展示 label 现在会跟随 locale 且不改变机器字段，project-selection POST 和会返回 state 的 project job 响应会传递浏览器选择的 locale。
+- Residual risk: future catalog additions can still choose awkward Chinese wording or overuse allowlisted English terms, but new disallowed English tokens fail tests instead of silently shipping. / 残余风险：后续 catalog 新增项仍可能选择不自然的中文文案或过度使用 allowlist 中的英文术语，但新的未允许英文 token 会让测试失败，不会静默发布。
+- Follow-up direction: keep the allowlist narrow during future catalog changes and consider simplifying duplicate fallback label registries once separate cleanup work starts. / 后续方向：未来修改 catalog 时保持 allowlist 收窄，并在单独 cleanup 工作开始后再考虑简化重复 fallback label 注册表。
 - Related docs: / 相关文档：
   - `docs/product-specs/session-transcript-analyzer.md`
   - `docs/design-docs/logical-event-timeline.md`

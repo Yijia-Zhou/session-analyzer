@@ -1644,7 +1644,7 @@ async function selectProject(repoRoot, options = {}) {
   try {
     const started = await api('/api/project', {
       method: 'POST',
-      body: { repoRoot },
+      body: { repoRoot, locale: state.locale },
     });
     const job = started.job || {};
     if (requestId !== state.projectChooserRequestId) {

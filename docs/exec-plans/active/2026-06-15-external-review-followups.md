@@ -44,7 +44,7 @@ The completed v0.1 plan promised incremental responsibility boundaries, not a co
 
 ## Milestones / 里程碑
 
-- [ ] Fix locale correctness: zh-CN catalogs, raw labels, POST/project-job locale propagation, and locale tests. / 修复 locale 正确性：zh-CN catalog、raw label、POST/project-job locale 传递和 locale 测试。
+- [x] Fix locale correctness: zh-CN catalogs, raw labels, POST/project-job locale propagation, and locale tests. / 修复 locale 正确性：zh-CN catalog、raw label、POST/project-job locale 传递和 locale 测试。
 - [ ] Fix cross-platform golden stability and locator naming docs. / 修复跨平台 golden 稳定性和 locator 命名文档。
 - [ ] Harden package artifacts and smoke coverage: minified app bundle, source-map policy, stronger package smoke, and build script coverage. / 加固 package artifact 和 smoke 覆盖：压缩 app bundle、source-map 策略、更强 package smoke 和 build script 覆盖。
 - [ ] Tackle low-risk cleanup: remove unused local variables, avoid duplicate raw locator work if it keeps the code clearer, and consolidate fallback label registries where tests show no behavior loss. / 处理低风险清理：移除未使用局部变量，在保持代码清晰时避免重复 raw locator 计算，并在测试证明无行为损失时合并 fallback label 注册表。
@@ -61,3 +61,4 @@ The completed v0.1 plan promised incremental responsibility boundaries, not a co
 ## Progress log / 进度记录
 
 - 2026-06-15: Created this follow-up plan from the external review triage and documented corrected conclusions, Stage 2 audit results, and validation expectations. / 2026-06-15：根据外部评审评估创建本后续计划，并记录修正后的结论、阶段 2 核查结果和验证预期。
+- 2026-06-15: Completed the locale correctness milestone with allowlist-based zh-CN catalog coverage, locale-aware raw-record display labels, project job locale propagation, browser POST locale forwarding, rebuilt browser assets, and updated product/design/debt docs. / 2026-06-15：完成 locale 正确性里程碑，加入基于 allowlist 的 zh-CN catalog 覆盖、locale-aware raw-record 展示 label、project job locale 传递、浏览器 POST locale 转发，重建浏览器资产，并更新产品、设计和技术债文档。

@@ -154,7 +154,7 @@ function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
       ? {
         main: state.index.eventKinds.main.map((item) => ({ ...item, label: i18n.eventKindLabel(item.value, resolvedLocale) })),
         protocol: state.index.eventKinds.protocol.map((item) => ({ ...item, label: i18n.eventKindLabel(item.value, resolvedLocale) })),
-        raw: state.index.eventKinds.raw.map((item) => ({ ...item, label: i18n.eventKindLabel(item.value, resolvedLocale) })),
+        raw: state.index.eventKinds.raw.map((item) => ({ ...item, label: i18n.rawRecordLabel(item.value, resolvedLocale) })),
       }
       : state.index.eventKinds,
     foldingProfiles: foldingProfiles.map((profile) => i18n.localizeProfile(profile, resolvedLocale)),
@@ -181,6 +181,7 @@ function projectJobPayload(job) {
   return {
     id: job.id,
     repoRoot: job.repoRoot,
+    locale: job.locale || i18n.DEFAULT_LOCALE,
     status: job.status,
     startedAt: job.startedAt,
     completedAt: job.completedAt,
@@ -238,16 +239,18 @@ function mergeProjectLists(configProjects = [], scannedProjects = [], options = 
   return order.map((key) => map.get(key));
 }
 
-function startProjectJob(state, repoRoot) {
+function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   if (state.activeProjectJob && ['queued', 'running'].includes(state.activeProjectJob.status)) {
     state.activeProjectJob.controller.abort();
   }
 
   const id = String(state.nextProjectJobId++);
   const controller = new AbortController();
+  const resolvedLocale = i18n.resolveLocale(locale);
   const job = {
     id,
     repoRoot,
+    locale: resolvedLocale,
     controller,
     status: 'running',
     startedAt: new Date().toISOString(),
@@ -337,7 +340,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     projectCache: null,
     buildIndex: options.buildIndex || buildIndex,
   };
-  if (options.repo) startProjectJob(state, options.repo);
+  if (options.repo) startProjectJob(state, options.repo, options.locale);
 
   return http.createServer(async (req, res) => {
     try {
@@ -367,7 +370,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sendError(res, 400, 'repoRoot is required');
           return;
         }
-        const job = startProjectJob(state, repoRoot);
+        const job = startProjectJob(state, repoRoot, body.locale || locale);
         sendJson(res, 202, { job: projectJobPayload(job) });
         return;
       }
@@ -381,7 +384,8 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         }
         const payload = { job: projectJobPayload(job) };
         if (job.status === 'succeeded' && state.index?.repoRoot === path.resolve(job.repoRoot)) {
-          payload.state = statePayload(state, locale);
+          const stateLocale = searchParams.has('locale') ? locale : (job.locale || locale);
+          payload.state = statePayload(state, stateLocale);
         }
         sendJson(res, 200, payload);
         return;
@@ -413,7 +417,8 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
             job: projectJobPayload(activeJob),
           };
           if (state.index) {
-            payload.currentState = statePayload(state, locale);
+            const stateLocale = searchParams.has('locale') ? locale : (activeJob.locale || locale);
+            payload.currentState = statePayload(state, stateLocale);
           }
           sendJson(res, 202, payload);
           return;

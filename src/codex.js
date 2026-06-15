@@ -264,8 +264,13 @@ function eventKindLabel(value, locale = i18n.DEFAULT_LOCALE) {
   return i18n.eventKindLabel(key, locale) || EVENT_KIND_LABELS[key] || PROTOCOL_LABELS[key] || humanizeEventKind(key) || key;
 }
 
-function rawRecordLabel(raw) {
-  return raw.payloadType || raw.recordType || '';
+function rawRecordLabel(raw, locale = i18n.DEFAULT_LOCALE) {
+  const key = raw?.payloadType || raw?.recordType || '';
+  return i18n.rawRecordLabel(key, locale);
+}
+
+function rawRecordValueLabel(value, locale = i18n.DEFAULT_LOCALE) {
+  return i18n.rawRecordLabel(value, locale);
 }
 
 function usageLimitKind(text) {
@@ -2793,7 +2798,7 @@ function rawEventDto(raw, q, locale = i18n.DEFAULT_LOCALE) {
     subtype: raw.role || '',
     layer: 'raw',
     role: raw.role,
-    label: rawRecordLabel(raw),
+    label: rawRecordLabel(raw, locale),
     preview: raw.preview,
     severity: raw.payloadType === 'error' ? 'error' : 'normal',
     status: raw.status,
@@ -2952,10 +2957,10 @@ function countBy(items, fn) {
   return [...map.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
 }
 
-function eventKindOptionsFromCounts(counts, locale = i18n.DEFAULT_LOCALE) {
+function eventKindOptionsFromCounts(counts, locale = i18n.DEFAULT_LOCALE, labelFn = eventKindLabel) {
   return [...counts.entries()]
-    .sort((a, b) => eventKindLabel(a[0], locale).localeCompare(eventKindLabel(b[0], locale)) || a[0].localeCompare(b[0]))
-    .map(([value, count]) => ({ value, label: eventKindLabel(value, locale), count }));
+    .sort((a, b) => labelFn(a[0], locale).localeCompare(labelFn(b[0], locale)) || a[0].localeCompare(b[0]))
+    .map(([value, count]) => ({ value, label: labelFn(value, locale), count }));
 }
 
 function eventKindCatalog(sessions, options = {}) {
@@ -2982,7 +2987,7 @@ function eventKindCatalog(sessions, options = {}) {
   return {
     main: eventKindOptionsFromCounts(counts.main, locale),
     protocol: eventKindOptionsFromCounts(counts.protocol, locale),
-    raw: eventKindOptionsFromCounts(counts.raw, locale),
+    raw: eventKindOptionsFromCounts(counts.raw, locale, rawRecordValueLabel),
   };
 }
 

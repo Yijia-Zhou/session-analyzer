@@ -11,6 +11,73 @@ const { createServer } = require('../server');
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const fixtureRepo = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
+const allowedZhTerms = new Set([
+  'agents.md',
+  'api',
+  'chatgpt',
+  'cli',
+  'codex',
+  'css',
+  'dom',
+  'dto',
+  'figma',
+  'function_call',
+  'gb18030',
+  'github',
+  'html',
+  'http',
+  'https',
+  'id',
+  'js',
+  'json',
+  'jsonl',
+  'markdown',
+  'mcp',
+  'mime',
+  'node.js',
+  'npm',
+  'openai',
+  'playwright',
+  'powershell',
+  'session',
+  'sessions',
+  'transcript',
+  'uri',
+  'url',
+  'utf-8',
+  'uuid',
+  'agent',
+  'review',
+  'subagent',
+]);
+const allowedZhPhrases = [
+  'JS REPL',
+];
+
+function stripAllowedNoise(value) {
+  let text = String(value || '').replace(/\{[A-Za-z0-9_]+\}/g, ' ');
+  for (const phrase of allowedZhPhrases) {
+    text = text.replace(new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ');
+  }
+  return text;
+}
+
+function asciiTokens(value) {
+  const stripped = stripAllowedNoise(value);
+  return stripped.match(/[A-Za-z][A-Za-z0-9_]*(?:[.-][A-Za-z0-9_]+)*/g) || [];
+}
+
+function catalogStrings(source, pathParts = []) {
+  if (Array.isArray(source)) {
+    return source.flatMap((item, index) => catalogStrings(item, [...pathParts, String(index)]));
+  }
+  if (source && typeof source === 'object') {
+    return Object.keys(source)
+      .sort()
+      .flatMap((key) => catalogStrings(source[key], [...pathParts, key]));
+  }
+  return typeof source === 'string' ? [{ path: pathParts.join('.'), value: source }] : [];
+}
 
 function requestJson(server, requestPath) {
   return new Promise((resolve, reject) => {
@@ -35,9 +102,22 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.resolveLocale('zh-CN,zh;q=0.9'), 'zh-CN');
   assert.equal(i18n.resolveLocale('en-US'), 'en');
   assert.equal(i18n.resolveLocale('fr-FR'), 'en');
-  assert.equal(i18n.t('zh-CN', 'ui', 'mainTimeline'), 'Main timeline');
+  assert.equal(i18n.t('zh-CN', 'ui', 'mainTimeline'), '主时间线');
   assert.equal(i18n.displayStateLabel('expanded', 'zh-CN'), '展开');
-  assert.equal(i18n.eventKindLabel('command', 'zh-CN'), 'Command');
+  assert.equal(i18n.eventKindLabel('command', 'zh-CN'), '命令');
+});
+
+test('zh-CN catalog only keeps approved English terms in display text', () => {
+  const offenders = [];
+  for (const entry of catalogStrings(i18n.catalogs['zh-CN'])) {
+    const unexpected = asciiTokens(entry.value)
+      .filter((token) => !allowedZhTerms.has(token.toLowerCase()));
+    if (unexpected.length) {
+      offenders.push(`${entry.path}: ${JSON.stringify(entry.value)} -> ${[...new Set(unexpected)].join(', ')}`);
+    }
+  }
+
+  assert.deepEqual(offenders, []);
 });
 
 test('timeline/detail locale changes display fields without changing machine fields', async () => {
@@ -67,6 +147,27 @@ test('locale keeps curated protocol labels more specific than event kind', async
   assert.equal(detail.kind, 'reasoning');
 });
 
+test('raw timeline and detail labels localize display text without changing raw machine fields', async () => {
+  const index = await buildIndex({ codexHome: fixtureCodexHome, repoRoot: fixtureRepo });
+  const session = index.sessionsById.get(primaryFixtureSessionId);
+  const timeline = getTimeline(index, session.id, { layer: 'raw', offset: 0, limit: 20, q: '', locale: 'zh-CN' });
+  const event = timeline.events.find((item) => item.payloadType === 'task_started');
+  const kindOption = timeline.eventKinds.raw.find((item) => item.value === 'task_started');
+
+  assert.ok(event);
+  assert.ok(kindOption);
+  const detail = buildEventDetail(session, event.id, 'raw', { locale: 'zh-CN' });
+  assert.equal(event.label, '任务开始');
+  assert.equal(kindOption.label, '任务开始');
+  assert.equal(detail.title, '任务开始');
+  assert.equal(event.recordType, 'event_msg');
+  assert.equal(event.payloadType, 'task_started');
+  assert.equal(event.sourceRecordType, 'event_msg');
+  assert.equal(event.sourceEventType, 'task_started');
+  assert.equal(detail.sourceRecordType, 'event_msg');
+  assert.equal(detail.sourceEventType, 'task_started');
+});
+
 test('state API localizes display resources while preserving ids', async () => {
   const index = await buildIndex({ codexHome: fixtureCodexHome, repoRoot: fixtureRepo });
   const server = createServer(index, 1, { codexHome: fixtureCodexHome });
@@ -81,6 +182,8 @@ test('state API localizes display resources while preserving ids', async () => {
     assert.equal(narrative.name, '叙事时间线');
     assert.equal(narrative.rules.fallback, 'summary');
     assert.ok(body.eventKinds.main.every((item) => item.value && item.label));
+    const rawAgentMessage = body.eventKinds.raw.find((item) => item.value === 'agent_message');
+    assert.equal(rawAgentMessage.label, 'agent 消息');
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

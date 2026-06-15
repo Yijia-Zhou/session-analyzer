@@ -286,7 +286,7 @@ test('browser folding profile edits save, cancel, and repair invalid localStorag
 
 test('browser issues metric toggles error-focus profile without losing session or adding filters', async (t) => {
   const index = await buildFixtureIndex();
-  const { page } = await openApp(t, index);
+  const { page } = await openApp(t, index, { locale: 'en' });
   await selectPrimarySession(page);
 
   const issuesMetric = page.locator('.metric', { hasText: 'Issues' }).first();

@@ -206,7 +206,7 @@ function createCodexDetailBuilder(deps) {
         kind: raw.payloadType || raw.recordType,
         subtype: raw.role || '',
         layer: 'raw',
-        title: rawRecordLabel(raw),
+        title: rawRecordLabel(raw, locale),
         sourceLocator: codexSourceLocator(raw.source),
         sourceRecordType: raw.recordType || '',
         sourceEventType: raw.payloadType || '',
