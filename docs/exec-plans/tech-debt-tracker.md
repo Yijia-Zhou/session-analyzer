@@ -105,3 +105,32 @@
 - Related docs: / 相关文档：
   - `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`
   - `CHANGELOG.md`
+
+### 11. Locale display completeness and propagation / Locale 展示完整性与传递
+- Status: open / 状态：开放
+- Problem: the accepted i18n contract says display labels, detail titles, folding names, renderer fallbacks, and UI chrome should follow the selected locale, but zh-CN still has several namespaces whose values remain English, raw-record labels do not consistently use locale, and project-selection POST responses can fall back to request language instead of the in-app selection. / 问题：已接受的 i18n 契约要求展示 label、detail title、folding 名称、renderer fallback 和 UI chrome 跟随所选 locale，但 zh-CN 仍有多个 namespace 的值保持英文，raw-record label 尚未一致使用 locale，project-selection POST 响应可能回退到请求语言而非应用内选择。
+- Residual risk: users who switch to zh-CN can see mixed-language timeline labels, quick-navigation labels, renderer fallbacks, and project-selection state payloads; tests can pass while the display catalog is only partially translated because keys exist but values equal English. / 残余风险：切换到 zh-CN 的用户可能看到 timeline label、快速导航 label、renderer fallback 和 project-selection state payload 混用语言；由于 key 存在但值等于英文，测试可能在 catalog 仅部分翻译时仍通过。
+- Preferred direction: add catalog-completeness assertions that distinguish intentionally retained technical terms from untranslated values, localize raw DTO display labels without changing machine fields, propagate selected locale through state-returning project APIs, and simplify duplicate fallback label registries after coverage is in place. / 建议方向：添加 catalog 完整性断言，区分有意保留的技术英文词和未翻译值；本地化 raw DTO 展示 label 且不改变机器字段；通过会返回 state 的 project API 传递所选 locale；在覆盖到位后简化重复 fallback label 注册表。
+- Related docs: / 相关文档：
+  - `docs/product-specs/session-transcript-analyzer.md`
+  - `docs/design-docs/logical-event-timeline.md`
+  - `docs/exec-plans/active/2026-06-15-external-review-followups.md`
+
+### 12. Cross-platform locator and golden stability / 跨平台 locator 与 golden 稳定性
+- Status: open / 状态：开放
+- Problem: several fixtures and golden expectations use Windows-style repository paths and path separators. Source locator examples and expectations should distinguish source-provided text from generated DTO paths that should be stable across Windows, Linux, and macOS. / 问题：若干 fixture 和 golden 期望使用 Windows 风格仓库路径与路径分隔符。Source locator 示例和期望应区分来源提供的文本与应在 Windows、Linux、macOS 上保持稳定的生成 DTO 路径。
+- Residual risk: tests can pass on Windows while failing in Linux/macOS CI because `path.relative()` and file locator values naturally use platform separators unless normalized at the DTO or expectation boundary. / 残余风险：测试可在 Windows 上通过，却在 Linux/macOS CI 中失败，因为除非在 DTO 或期望边界归一化，`path.relative()` 和 file locator 值会自然使用平台分隔符。
+- Preferred direction: define a stable locator path convention for Codex JSONL DTOs, update golden replay helpers to build or normalize expected file paths, and keep fixture transcript content paths intact when they represent original source text. / 建议方向：为 Codex JSONL DTO 定义稳定 locator path 约定，更新 golden replay helper 以构造或归一化期望 file path，并在路径代表原始来源文本时保持 fixture transcript 内容不变。
+- Related docs: / 相关文档：
+  - `docs/design-docs/logical-event-timeline.md`
+  - `docs/design-docs/external-source-mapping-pressure-tests.md`
+  - `docs/exec-plans/active/2026-06-15-external-review-followups.md`
+
+### 13. Package artifact and smoke hardening / Package artifact 与 smoke 加固
+- Status: open / 状态：开放
+- Problem: the generated app bundle is currently unminified, package smoke verification checks CLI help and root HTTP liveness but not useful JSON/API behavior, and `scripts/build-client.js` lacks focused behavioral coverage for release artifact policy. / 问题：当前生成的 app bundle 未压缩，package smoke 验证检查 CLI help 和根路径 HTTP 存活但不检查有用的 JSON/API 行为，`scripts/build-client.js` 缺少针对 release artifact 策略的聚焦行为覆盖。
+- Residual risk: npm artifacts can carry avoidable generated code size or accidentally package source maps; smoke tests may pass even if the packaged server cannot return valid `/api/state` JSON or the HTML stops referencing the generated bundle. / 残余风险：npm artifact 可能携带可避免的生成代码体积，或意外打包 sourcemap；即使 packaged server 无法返回有效 `/api/state` JSON，或 HTML 不再引用生成 bundle，smoke test 仍可能通过。
+- Preferred direction: minify release browser delivery, make source-map inclusion an explicit package policy, verify generated assets with `npm run build:check`, strengthen package smoke around `/api/state` and `public/index.html`, and add build-script coverage for stale assets and artifact expectations. / 建议方向：压缩发布浏览器交付资产，将 sourcemap 是否纳入包作为显式 package 策略，用 `npm run build:check` 验证生成资产，围绕 `/api/state` 和 `public/index.html` 强化 package smoke，并为 build script 的过期资产和 artifact 期望添加覆盖。
+- Related docs: / 相关文档：
+  - `docs/exec-plans/active/2026-06-15-external-review-followups.md`
+  - `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`

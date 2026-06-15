@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased / 未发布
+
+### English
+
+- Known follow-up: Simplified Chinese display catalogs are present but not complete; several display namespaces still contain English values until the external-review follow-up plan is completed.
+- Known follow-up: package smoke and generated app bundle hardening remain tracked work; `require('session-analyzer')` does not start the server because `server.js` is guarded by `require.main === module`.
+
+### 中文
+
+- 已知后续项：简体中文展示 catalog 已存在但尚未完整；在外部评审后续计划完成前，若干展示 namespace 仍包含英文值。
+- 已知后续项：package smoke 和生成 app bundle 加固仍在跟踪中；由于 `server.js` 受 `require.main === module` 保护，`require('session-analyzer')` 不会启动服务器。
+
 ## 0.1.0 - 2026-06-11
 
 ### English

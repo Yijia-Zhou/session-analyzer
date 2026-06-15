@@ -101,7 +101,7 @@ The following examples describe future pressure-test semantics only. They are no
 
 ```json
 {
-  "type": "jsonl-line",
+  "type": "jsonl_line",
   "path": "/home/user/.claude/projects/example/session.jsonl",
   "line": 42
 }
