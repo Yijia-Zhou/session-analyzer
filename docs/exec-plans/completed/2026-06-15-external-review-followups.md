@@ -2,7 +2,7 @@
 
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
-- Status: active / 状态：进行中
+- Status: completed / 状态：已完成
 - Created: 2026-06-15 / 创建日期：2026-06-15
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
@@ -58,7 +58,7 @@ Do not merge `origin/fix/v0.1-review-followups-wip` wholesale and do not trust i
 
 ### 2. Cross-platform golden stability and locator naming docs / 跨平台 golden 稳定性和 locator 命名文档
 
-- Status: pending. / 状态：待完成。
+- Status: complete. / 状态：已完成。
 - Available resources: WIP branch findings identify the target area, but its claimed fix is not trusted. / 可用资源：WIP 分支的发现可用于定位目标区域，但其声称的修复不可信。
 - Implementation resources: normalize only project-generated Codex JSONL locator paths to forward slashes at the locator-generation boundary; do not rewrite original transcript text. / 实施资源：只在 locator 生成边界将项目生成的 Codex JSONL locator path 归一化为前斜杠；不要改写原始 transcript 文本。
 - Test resources: add a Windows-style path test using `path.win32.relative(...)` or an equivalent helper, update golden expectations to forward slashes, and add a negative assertion that raw transcript path strings remain unchanged. / 测试资源：添加使用 `path.win32.relative(...)` 或等价 helper 的 Windows-style path 测试，将 golden 期望更新为 forward slash，并增加 raw transcript path 字符串保持原文的负向断言。
@@ -67,7 +67,7 @@ Do not merge `origin/fix/v0.1-review-followups-wip` wholesale and do not trust i
 
 ### 3. Package artifact and smoke hardening / Package artifact 与 smoke 加固
 
-- Status: pending. / 状态：待完成。
+- Status: complete. / 状态：已完成。
 - Available resources: WIP branch material for `scripts/build-client.js` minification, rebuilt `public/assets/app.js`, default-English `public/index.html`, `.gitattributes`, and build-boundary checks may be reused after review; WIP claims about `package-smoke.js` and pack manifest `.map` rejection are not trusted because the branch did not implement them. / 可用资源：WIP 分支中关于 `scripts/build-client.js` 压缩、重建 `public/assets/app.js`、默认英文 `public/index.html`、`.gitattributes` 和 build-boundary 检查的素材可在复审后复用；WIP 关于 `package-smoke.js` 和 pack manifest `.map` 拒绝的声明不可信，因为该分支没有实现。
 - Bundle/static shell resources: make the static HTML shell default to English, verify catalog-owned shell/navigation/button/empty-state labels after switching to zh-CN, enable `public/assets/app.js` minification, rebuild the checked-in bundle, and keep generated source maps out of `public/` and the npm artifact. / Bundle/static shell 资源：将静态 HTML shell 默认改为英文，验证切换到 zh-CN 后由 catalog 接管的 shell/navigation/button/empty-state label 已本地化，启用 `public/assets/app.js` 压缩，重建已提交 bundle，并确保 generated source map 不进入 `public/` 或 npm artifact。
 - Package smoke resources: preserve the existing consumer-path smoke flow (`npm pack --json`, install tarball into a temporary project, run the installed package), then add minimal `/api/state` JSON checks and `/` HTML bundle-reference checks without freezing extra internal API fields. / Package smoke 资源：保留现有 consumer-path smoke 流程（`npm pack --json`、将 tarball 安装到临时项目、运行安装后的 package），再添加最小 `/api/state` JSON 检查和 `/` HTML bundle-reference 检查，不固化额外内部 API 字段。
@@ -77,7 +77,7 @@ Do not merge `origin/fix/v0.1-review-followups-wip` wholesale and do not trust i
 
 ### 4. Low-risk cleanup / 低风险清理
 
-- Status: pending. / 状态：待完成。
+- Status: complete. / 状态：已完成。
 - Available resources: WIP branch material for shared `i18n.humanize`, English fallback-label consolidation, and raw-record label expectation updates may be reused after review. Do not reuse unrelated partial server method hardening or "all resolved" documentation edits. / 可用资源：WIP 分支中关于共享 `i18n.humanize`、英文 fallback-label 合并和 raw-record label 期望更新的素材可在复审后复用。不要复用无关的 partial server method hardening 或“全部 resolved”文档改动。
 - Implementation resources: consolidate fallback label registries only where tests show no behavior loss, and do small raw-locator dedupe only if it stays clearer and preserves raw traceability. / 实施资源：仅在测试证明无行为损失时合并 fallback label 注册表；只有在保持代码更清晰且保留 raw traceability 时，才做小型 raw-locator 去重。
 - File boundary: `src/shared/i18n.js`, `src/codex.js`, relevant tests, and docs only if behavior is actually completed. / 文件边界：`src/shared/i18n.js`、`src/codex.js`、相关 tests，以及仅在行为实际完成时更新 docs。
@@ -85,7 +85,7 @@ Do not merge `origin/fix/v0.1-review-followups-wip` wholesale and do not trust i
 
 ### 5. `codex-detail` DI grouping / `codex-detail` DI 分组
 
-- Status: pending. / 状态：待完成。
+- Status: complete. / 状态：已完成。
 - Available resources: WIP branch DI grouping shape may be reused after review, but documentation must not claim that still-used injections, such as `codexSourceLocator`, were removed. / 可用资源：WIP 分支中的 DI 分组形状可在复审后复用，但文档不得声称仍在使用的注入项（如 `codexSourceLocator`）已删除。
 - Implementation resources: group dependencies into five traceable semantic groups only if the pure boundary remains intact; group names should follow stable responsibilities rather than visual neatness. / 实施资源：仅在保留 pure boundary 的前提下，将依赖分成五个可追溯语义组；分组名称应遵循稳定职责，而不是视觉整齐。
 - Test resources: boundary tests must continue to show that `src/codex-detail.js` does not directly import dependencies that should be injected. / 测试资源：boundary tests 必须继续证明 `src/codex-detail.js` 不会直接 import 本应注入的依赖。
@@ -105,3 +105,8 @@ Do not merge `origin/fix/v0.1-review-followups-wip` wholesale and do not trust i
 - 2026-06-15: Created this follow-up plan from the external review triage and documented corrected conclusions, Stage 2 audit results, and validation expectations. / 2026-06-15：根据外部评审评估创建本后续计划，并记录修正后的结论、阶段 2 核查结果和验证预期。
 - 2026-06-15: Completed the locale correctness milestone with allowlist-based zh-CN catalog coverage, locale-aware raw-record display labels, project job locale propagation, browser POST locale forwarding, rebuilt browser assets, and updated product/design/debt docs. / 2026-06-15：完成 locale 正确性里程碑，加入基于 allowlist 的 zh-CN catalog 覆盖、locale-aware raw-record 展示 label、project job locale 传递、浏览器 POST locale 转发，重建浏览器资产，并更新产品、设计和技术债文档。
 - 2026-06-17: Reviewed `origin/fix/v0.1-review-followups-wip` and recorded a quality-first extraction strategy. The WIP branch contains useful implementation material, but its completion claims are not trusted; remaining work must be rebuilt by theme from the clean baseline and validated before milestones are checked off. / 2026-06-17：审阅 `origin/fix/v0.1-review-followups-wip` 并记录质量优先的拆取策略。该 WIP 分支包含有用实现素材，但其完成声明不可信；剩余工作必须从干净基线按主题重做并验证后，才能勾选里程碑。
+- 2026-06-17: Completed the low-risk cleanup milestone by exporting the shared i18n humanizer, routing Codex fallback event-kind labels through it, preserving raw machine labels, and adding focused fallback-label coverage. Gate: `npm test` passed. / 2026-06-17：完成低风险清理里程碑，导出共享 i18n humanizer，将 Codex event-kind 兜底展示 label 接入该 helper，保留 raw 机器 label，并增加聚焦的兜底 label 覆盖。门槛：`npm test` 已通过。
+- 2026-06-17: Completed the `codex-detail` DI grouping milestone with five semantic dependency groups: `envelope`, `sourceTrace`, `localization`, `sectionBuilders`, and `sectionExtractors`. Boundary coverage verifies the grouped injection shape and that `src/codex-detail.js` remains import-free. Gate: `npm test` passed. / 2026-06-17：完成 `codex-detail` DI 分组里程碑，将依赖整理为五个语义组：`envelope`、`sourceTrace`、`localization`、`sectionBuilders` 和 `sectionExtractors`。边界覆盖验证分组注入形态，并确认 `src/codex-detail.js` 仍不直接 import。门槛：`npm test` 已通过。
+- 2026-06-17: Completed cross-platform locator stability by normalizing Codex JSONL `sourceLocator.file` values to forward slashes, updating golden replay expectations, and adding targeted tests that legacy raw source paths and path-like transcript text stay unchanged. Gate: `npm test` passed. / 2026-06-17：完成跨平台 locator 稳定性，将 Codex JSONL `sourceLocator.file` 归一化为前斜杠，更新 golden replay 期望，并添加定向测试证明 legacy raw source path 和 transcript 中类似 path 的文本保持原样。门槛：`npm test` 已通过。
+- 2026-06-17: Completed package artifact and smoke hardening by minifying the generated app bundle without source maps, keeping the static HTML shell English by default, adding broad build/source-map/bundle-reference checks, rejecting `.map` files in the pack manifest, extending browser zh-CN shell coverage, and verifying installed-package `/api/state` JSON plus root HTML bundle references. Gates: `npm run build`, `npm run build:check`, `npm test`, `npm run test:browser`, `npm run test:package`, and `node --test test/package.test.js` passed. / 2026-06-17：完成 package artifact 与 smoke 加固：压缩生成的 app bundle 且不生成 sourcemap，将静态 HTML shell 默认保持英文，加入宽松的 build/source-map/bundle-reference 检查，拒绝 pack manifest 中的 `.map` 文件，扩展浏览器 zh-CN shell 覆盖，并验证已安装 package 的 `/api/state` JSON 与根 HTML bundle 引用。门槛：`npm run build`、`npm run build:check`、`npm test`、`npm run test:browser`、`npm run test:package` 和 `node --test test/package.test.js` 已通过。
+- 2026-06-17: Completed final validation and archived the plan. Final gates: `npm test`, `npm run test:browser`, `npm run build:check`, and `npm run test:package` passed. / 2026-06-17：完成最终验证并归档本计划。最终门槛：`npm test`、`npm run test:browser`、`npm run build:check` 和 `npm run test:package` 已通过。

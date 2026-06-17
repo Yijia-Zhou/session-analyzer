@@ -107,6 +107,7 @@ test('npm pack manifest contains only runtime package files', () => {
   for (const file of files) {
     assert.equal(file, file.replace(/\\/g, '/'));
     assert.equal(forbiddenPrefixes.some((prefix) => file.startsWith(prefix)), false, `${file} should not be included in the package`);
+    assert.equal(file.endsWith('.map'), false, `${file} source maps should not be included in the package`);
   }
 
   const forbiddenFiles = new Set([

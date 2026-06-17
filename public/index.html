@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -17,7 +17,7 @@
             <span class="projectSwitchHint">Select</span>
           </button>
         </h1>
-        <p id="stateLine">正在读取本地 sessions…</p>
+        <p id="stateLine">Reading local sessions...</p>
       </div>
       <div class="searchbar">
         <label class="localeControl">
@@ -85,16 +85,16 @@
             </div>
           </div>
         </div>
-        <select id="layerSelect" aria-label="事件层">
+        <select id="layerSelect" aria-label="Layer">
           <option value="main">Main timeline</option>
           <option value="protocol">Protocol layer</option>
           <option value="raw">Raw records</option>
         </select>
         <div class="foldControls">
           <div class="profilePickerCompact profilePickerTopbar" data-profile-picker-host="topbar">
-            <select id="profileSelect" aria-label="折叠策略"></select>
+            <select id="profileSelect" aria-label="Folding strategy"></select>
           </div>
-          <button id="resetFoldsBtn" class="ghostBtn" type="button" hidden>重置展开状态</button>
+          <button id="resetFoldsBtn" class="ghostBtn" type="button" hidden>Reset folds</button>
         </div>
       </div>
     </header>
@@ -121,12 +121,12 @@
         <div class="sessionListHeader">
           <h2>Sessions</h2>
           <label class="sortControl">
-            <span class="srOnly">排序</span>
+            <span class="srOnly">Sort</span>
             <select id="sortSelect">
-              <option value="updated-desc">最近更新</option>
-              <option value="started-asc">开始时间</option>
-              <option value="events-desc">事件最多</option>
-              <option value="failures-desc">失败命令最多</option>
+              <option value="updated-desc">Recently updated</option>
+              <option value="started-asc">Start time</option>
+              <option value="events-desc">Most events</option>
+              <option value="failures-desc">Most failed commands</option>
             </select>
           </label>
         </div>
@@ -135,43 +135,43 @@
 
       <section class="timelinePane">
         <div id="sessionHeader" class="sessionHeader">
-          <h2>选择一个 session</h2>
-          <p>左侧列表按当前仓库过滤。</p>
+          <h2>Select a session</h2>
+          <p>The left list is filtered by the current repository.</p>
         </div>
         <div id="resultSummary" class="resultSummary" aria-live="polite"></div>
         <div id="analysisPanel" class="analysisPanel"></div>
         <div id="timeline" class="timeline"></div>
         <div class="timelineFooter">
-          <button id="loadMoreBtn" type="button">加载更多</button>
+          <button id="loadMoreBtn" type="button">Load more</button>
         </div>
       </section>
 
       <aside class="detailPane">
         <div id="detail">
-          <h2>事件详情</h2>
-          <p>点击时间线事件查看原始 JSONL 记录。</p>
+          <h2>Event detail</h2>
+          <p>Click a timeline event to inspect the original JSONL records.</p>
         </div>
       </aside>
     </main>
 
     <div id="dirtyProfileDialog" class="appDialogBackdrop" hidden>
       <section class="appDialog" role="dialog" aria-modal="true" aria-labelledby="dirtyProfileTitle" aria-describedby="dirtyProfileMessage">
-        <h2 id="dirtyProfileTitle">折叠策略有未保存修改</h2>
-        <p id="dirtyProfileMessage">切换策略前，请选择保存当前修改、放弃修改，或留在当前策略继续编辑。</p>
+        <h2 id="dirtyProfileTitle">Unsaved folding strategy changes</h2>
+        <p id="dirtyProfileMessage">Before switching strategies, save the current changes, discard them, or stay on the current strategy.</p>
         <dl class="appDialogMeta">
           <div>
-            <dt>当前策略</dt>
+            <dt>Current strategy</dt>
             <dd id="dirtyProfileCurrentName">-</dd>
           </div>
         </dl>
         <label class="appDialogField">
-          <span>保存为</span>
+          <span>Save as</span>
           <input id="dirtyProfileSaveName" type="text" autocomplete="off">
         </label>
         <div class="appDialogActions">
-          <button class="primaryBtn" type="button" data-dirty-profile-choice="save">保存并切换</button>
-          <button class="secondaryBtn" type="button" data-dirty-profile-choice="discard">不保存并切换</button>
-          <button class="ghostBtn" type="button" data-dirty-profile-choice="cancel">取消</button>
+          <button class="primaryBtn" type="button" data-dirty-profile-choice="save">Save and switch</button>
+          <button class="secondaryBtn" type="button" data-dirty-profile-choice="discard">Discard and switch</button>
+          <button class="ghostBtn" type="button" data-dirty-profile-choice="cancel">Cancel</button>
         </div>
       </section>
     </div>

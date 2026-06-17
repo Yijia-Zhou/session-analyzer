@@ -110,27 +110,27 @@
 - Status: resolved 2026-06-15 / 状态：已解决 2026-06-15
 - Resolution: zh-CN catalog completeness is guarded by allowlist-based tests, raw DTO display labels now follow locale without changing machine fields, and project-selection POST plus state-returning project job responses propagate the browser-selected locale. / 解决方式：zh-CN catalog 完整性已由基于 allowlist 的测试保护，raw DTO 展示 label 现在会跟随 locale 且不改变机器字段，project-selection POST 和会返回 state 的 project job 响应会传递浏览器选择的 locale。
 - Residual risk: future catalog additions can still choose awkward Chinese wording or overuse allowlisted English terms, but new disallowed English tokens fail tests instead of silently shipping. / 残余风险：后续 catalog 新增项仍可能选择不自然的中文文案或过度使用 allowlist 中的英文术语，但新的未允许英文 token 会让测试失败，不会静默发布。
-- Follow-up direction: keep the allowlist narrow during future catalog changes and consider simplifying duplicate fallback label registries once separate cleanup work starts. / 后续方向：未来修改 catalog 时保持 allowlist 收窄，并在单独 cleanup 工作开始后再考虑简化重复 fallback label 注册表。
+- Follow-up direction: keep the allowlist narrow during future catalog changes; shared fallback humanization now covers the first cleanup pass. / 后续方向：未来修改 catalog 时保持 allowlist 收窄；共享兜底 humanization 已覆盖第一轮清理。
 - Related docs: / 相关文档：
   - `docs/product-specs/session-transcript-analyzer.md`
   - `docs/design-docs/logical-event-timeline.md`
-  - `docs/exec-plans/active/2026-06-15-external-review-followups.md`
+  - `docs/exec-plans/completed/2026-06-15-external-review-followups.md`
 
 ### 12. Cross-platform locator and golden stability / 跨平台 locator 与 golden 稳定性
-- Status: open / 状态：开放
-- Problem: several fixtures and golden expectations use Windows-style repository paths and path separators. Source locator examples and expectations should distinguish source-provided text from generated DTO paths that should be stable across Windows, Linux, and macOS. / 问题：若干 fixture 和 golden 期望使用 Windows 风格仓库路径与路径分隔符。Source locator 示例和期望应区分来源提供的文本与应在 Windows、Linux、macOS 上保持稳定的生成 DTO 路径。
-- Residual risk: tests can pass on Windows while failing in Linux/macOS CI because `path.relative()` and file locator values naturally use platform separators unless normalized at the DTO or expectation boundary. / 残余风险：测试可在 Windows 上通过，却在 Linux/macOS CI 中失败，因为除非在 DTO 或期望边界归一化，`path.relative()` 和 file locator 值会自然使用平台分隔符。
-- Preferred direction: define a stable locator path convention for Codex JSONL DTOs, update golden replay helpers to build or normalize expected file paths, and keep fixture transcript content paths intact when they represent original source text. / 建议方向：为 Codex JSONL DTO 定义稳定 locator path 约定，更新 golden replay helper 以构造或归一化期望 file path，并在路径代表原始来源文本时保持 fixture transcript 内容不变。
+- Status: resolved 2026-06-17 / 状态：已解决 2026-06-17
+- Resolution: Codex JSONL `sourceLocator.file` values are normalized to forward slashes at the locator-generation boundary, golden expectations use that convention, and tests verify legacy raw source paths plus path-like transcript text stay unchanged. / 解决方式：Codex JSONL `sourceLocator.file` 在 locator 生成边界归一化为前斜杠，golden 期望使用该约定，并且测试验证 legacy raw source path 与 transcript 中类似 path 的文本保持原样。
+- Residual risk: future non-Codex source adapters may need their own locator conventions rather than assuming file/line semantics. / 残余风险：未来非 Codex source adapter 可能需要自己的 locator 约定，而不能假设 file/line 语义。
+- Follow-up direction: keep new locator examples typed and normalize only generated locator fields, not original transcript content. / 后续方向：新增 locator 示例保持 typed 形态，并且只归一化生成的 locator 字段，不改写原始 transcript 内容。
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/external-source-mapping-pressure-tests.md`
-  - `docs/exec-plans/active/2026-06-15-external-review-followups.md`
+  - `docs/exec-plans/completed/2026-06-15-external-review-followups.md`
 
 ### 13. Package artifact and smoke hardening / Package artifact 与 smoke 加固
-- Status: open / 状态：开放
-- Problem: the generated app bundle is currently unminified, package smoke verification checks CLI help and root HTTP liveness but not useful JSON/API behavior, and `scripts/build-client.js` lacks focused behavioral coverage for release artifact policy. / 问题：当前生成的 app bundle 未压缩，package smoke 验证检查 CLI help 和根路径 HTTP 存活但不检查有用的 JSON/API 行为，`scripts/build-client.js` 缺少针对 release artifact 策略的聚焦行为覆盖。
-- Residual risk: npm artifacts can carry avoidable generated code size or accidentally package source maps; smoke tests may pass even if the packaged server cannot return valid `/api/state` JSON or the HTML stops referencing the generated bundle. / 残余风险：npm artifact 可能携带可避免的生成代码体积，或意外打包 sourcemap；即使 packaged server 无法返回有效 `/api/state` JSON，或 HTML 不再引用生成 bundle，smoke test 仍可能通过。
-- Preferred direction: minify release browser delivery, make source-map inclusion an explicit package policy, verify generated assets with `npm run build:check`, strengthen package smoke around `/api/state` and `public/index.html`, and add build-script coverage for stale assets and artifact expectations. / 建议方向：压缩发布浏览器交付资产，将 sourcemap 是否纳入包作为显式 package 策略，用 `npm run build:check` 验证生成资产，围绕 `/api/state` 和 `public/index.html` 强化 package smoke，并为 build script 的过期资产和 artifact 期望添加覆盖。
+- Status: resolved 2026-06-17 / 状态：已解决 2026-06-17
+- Resolution: release browser delivery is minified without generated source maps, `npm run build:check` verifies generated assets, pack manifest tests reject `.map` files, and package smoke verifies installed-package `/api/state` JSON plus root HTML bundle references. / 解决方式：发布浏览器交付资产已压缩且不生成 sourcemap，`npm run build:check` 会验证生成资产，pack manifest 测试会拒绝 `.map` 文件，package smoke 会验证已安装 package 的 `/api/state` JSON 与根 HTML bundle 引用。
+- Residual risk: future package surface changes still need matching smoke coverage so the installed tarball remains the tested artifact. / 残余风险：未来 package 表面变化仍需要同步 smoke 覆盖，确保测试对象始终是已安装 tarball。
+- Follow-up direction: keep release artifact checks broad and policy-oriented rather than tied to exact generated byte counts. / 后续方向：release artifact 检查保持宽松且面向策略，不绑定精确生成字节数。
 - Related docs: / 相关文档：
-  - `docs/exec-plans/active/2026-06-15-external-review-followups.md`
+  - `docs/exec-plans/completed/2026-06-15-external-review-followups.md`
   - `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`

@@ -162,7 +162,7 @@ test('Codex fixture replay exposes minimal canonical envelope fields', async () 
     hasSourceSchemaVersion: false,
     sourceLocator: {
       type: 'jsonl_line',
-      file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+      file: '2026/04/20/rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
       line: 7,
     },
     hasSourceRecordType: false,
@@ -176,7 +176,7 @@ test('Codex fixture replay exposes minimal canonical envelope fields', async () 
         rawIdSuffix: 'raw:7',
         sourceLocator: {
           type: 'jsonl_line',
-          file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+          file: '2026/04/20/rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
           line: 7,
         },
         sourceRecordType: 'response_item',
@@ -188,7 +188,7 @@ test('Codex fixture replay exposes minimal canonical envelope fields', async () 
         rawIdSuffix: 'raw:8',
         sourceLocator: {
           type: 'jsonl_line',
-          file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+          file: '2026/04/20/rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
           line: 8,
         },
         sourceRecordType: 'event_msg',
@@ -203,7 +203,7 @@ test('Codex fixture replay exposes minimal canonical envelope fields', async () 
     hasSourceSchemaVersion: false,
     sourceLocator: {
       type: 'jsonl_line',
-      file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+      file: '2026/04/20/rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
       line: 2,
     },
     hasSourceRecordType: false,
@@ -217,7 +217,7 @@ test('Codex fixture replay exposes minimal canonical envelope fields', async () 
         rawIdSuffix: 'raw:2',
         sourceLocator: {
           type: 'jsonl_line',
-          file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+          file: '2026/04/20/rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
           line: 2,
         },
         sourceRecordType: 'event_msg',
@@ -232,7 +232,7 @@ test('Codex fixture replay exposes minimal canonical envelope fields', async () 
     hasSourceSchemaVersion: false,
     sourceLocator: {
       type: 'jsonl_line',
-      file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+      file: '2026/04/20/rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
       line: 2,
     },
     hasSourceRecordType: true,
@@ -246,7 +246,7 @@ test('Codex fixture replay exposes minimal canonical envelope fields', async () 
         rawIdSuffix: 'raw:2',
         sourceLocator: {
           type: 'jsonl_line',
-          file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+          file: '2026/04/20/rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
           line: 2,
         },
         sourceRecordType: 'event_msg',

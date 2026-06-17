@@ -54,12 +54,12 @@ test('raw detail keeps canonical source and traceability fields', async () => {
   assert.equal(detail.layer, 'raw');
   assert.equal(detail.sourceRecordType, raw.recordType);
   assert.equal(detail.sourceEventType, raw.payloadType);
-  assert.deepEqual(detail.sourceLocator, { type: 'jsonl_line', file: raw.source.file, line: raw.source.line });
+  assert.deepEqual(detail.sourceLocator, { type: 'jsonl_line', file: raw.source.file.replace(/\\/g, '/'), line: raw.source.line });
   assert.deepEqual(detail.rawRefs, [{
     rawId: raw.rawId,
     file: raw.source.file,
     line: raw.source.line,
-    sourceLocator: { type: 'jsonl_line', file: raw.source.file, line: raw.source.line },
+    sourceLocator: { type: 'jsonl_line', file: raw.source.file.replace(/\\/g, '/'), line: raw.source.line },
     sourceRecordType: raw.recordType || '',
     sourceEventType: raw.payloadType || '',
   }]);

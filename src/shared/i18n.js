@@ -737,14 +737,15 @@
   function humanize(value) {
     const text = String(value || '').trim();
     if (!text) return '';
-    if (/^mcp\b/i.test(text)) return text.replace(/_/g, ' ').replace(/^mcp/i, 'MCP');
     return text
       .replace(/([a-z])([A-Z])/g, '$1 $2')
       .replace(/[_-]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
       .replace(/\b\w/g, (letter) => letter.toUpperCase())
-      .replace(/\bJs\b/g, 'JS');
+      .replace(/\bMcp\b/g, 'MCP')
+      .replace(/\bJs\b/g, 'JS')
+      .replace(/\bRepl\b/g, 'REPL');
   }
 
   function eventKindLabel(value, locale) {
@@ -814,5 +815,6 @@
     localizeCondition,
     localizeProfile,
     localizeSection,
+    humanize,
   };
 }));

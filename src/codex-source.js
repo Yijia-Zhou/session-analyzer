@@ -13,11 +13,15 @@ function canonicalEventType(type) {
   return CANONICAL_EVENT_TYPES[type] || type || '';
 }
 
+function codexLocatorFile(file) {
+  return String(file || '').replace(/\\/g, '/');
+}
+
 function codexSourceLocator(source) {
   if (!source || !source.file || source.line == null) return null;
   return {
     type: CODEX_JSONL_LINE_LOCATOR_TYPE,
-    file: source.file,
+    file: codexLocatorFile(source.file),
     line: source.line,
   };
 }

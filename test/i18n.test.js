@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const http = require('node:http');
 const i18n = require('../src/shared/i18n');
-const { buildIndex, getTimeline, buildEventDetail } = require('../src/codex');
+const { buildIndex, getTimeline, buildEventDetail, eventKindCatalog } = require('../src/codex');
 const { createServer } = require('../server');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
@@ -105,6 +105,24 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.t('zh-CN', 'ui', 'mainTimeline'), '主时间线');
   assert.equal(i18n.displayStateLabel('expanded', 'zh-CN'), '展开');
   assert.equal(i18n.eventKindLabel('command', 'zh-CN'), '命令');
+  assert.equal(i18n.humanize('mcp_tool_call'), 'MCP Tool Call');
+  assert.equal(i18n.humanize('js_repl'), 'JS REPL');
+});
+
+test('unknown display labels use shared humanization without changing machine values', () => {
+  const catalog = eventKindCatalog([{
+    logicalEvents: [
+      { layer: 'main', kind: 'future_toolCall' },
+      { layer: 'protocol', kind: 'protocol', subtype: 'mcp_custom_event' },
+    ],
+    rawEvents: [
+      { recordType: 'event_msg', payloadType: 'future_raw_type' },
+    ],
+  }]);
+
+  assert.deepEqual(catalog.main[0], { value: 'future_toolCall', label: 'Future Tool Call', count: 1 });
+  assert.deepEqual(catalog.protocol[0], { value: 'mcp_custom_event', label: 'MCP Custom Event', count: 1 });
+  assert.deepEqual(catalog.raw[0], { value: 'future_raw_type', label: 'future_raw_type', count: 1 });
 });
 
 test('zh-CN catalog only keeps approved English terms in display text', () => {

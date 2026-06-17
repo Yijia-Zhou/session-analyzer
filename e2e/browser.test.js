@@ -138,6 +138,19 @@ test('browser locale localizes static shell and dirty profile dialog', async (t)
   await page.waitForFunction(() => document.documentElement.lang === 'en');
   await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('logical events'));
   assert.equal(await page.locator('#dirtyProfileTitle').textContent(), 'Unsaved folding strategy changes');
+  assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), 'Search messages, commands, files, output');
+
+  await page.locator('#localeSelect').selectOption('zh-CN');
+  await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
+  assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), '搜索消息、命令、文件、输出');
+  assert.equal(await page.locator('.mobileViewTab[data-mobile-view="events"]').textContent(), '事件');
+  assert.match(await page.locator('#loadMoreBtn').textContent(), /加载更多|已加载|加载中/);
+  await fillSearch(page, 'zzzz-no-match');
+  await page.waitForFunction(() => document.querySelector('[data-search-match-count]')?.textContent === '无匹配');
+  await fillSearch(page, '');
+
+  await page.locator('#localeSelect').selectOption('en');
+  await page.waitForFunction(() => document.documentElement.lang === 'en');
 
   await selectPrimarySession(page);
   const messagesMetricTitle = await page.locator('.metric', { hasText: 'Messages' }).getAttribute('title');

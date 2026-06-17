@@ -53,7 +53,7 @@ test('Codex source constants and typed locator are stable', () => {
   assert.equal(CODEX_JSONL_LINE_LOCATOR_TYPE, 'jsonl_line');
   assert.deepEqual(codexSourceLocator({ file: '2026\\06\\10\\rollout.jsonl', line: 42 }), {
     type: 'jsonl_line',
-    file: '2026\\06\\10\\rollout.jsonl',
+    file: '2026/06/10/rollout.jsonl',
     line: 42,
   });
   assert.equal(codexSourceLocator({ file: 'missing-line.jsonl' }), null);
@@ -73,7 +73,7 @@ test('raw refs preserve legacy fields and source metadata', () => {
     rawId: 'session:raw:7',
     sourceLocator: {
       type: 'jsonl_line',
-      file: '2026\\06\\10\\rollout.jsonl',
+      file: '2026/06/10/rollout.jsonl',
       line: 7,
     },
     sourceRecordType: 'event_msg',
@@ -111,6 +111,11 @@ test('raw parser keeps canonical lifecycle aliases without changing payload type
   assert.equal(raw.turnId, 'turn-1');
   assert.equal(raw.source.file, '2026\\06\\10\\rollout.jsonl');
   assert.equal(raw.source.line, 3);
+  assert.deepEqual(rawRef(raw).sourceLocator, {
+    type: 'jsonl_line',
+    file: '2026/06/10/rollout.jsonl',
+    line: 3,
+  });
 });
 
 test('raw parser preserves unknown records through generic fallback fields', () => {
@@ -120,7 +125,7 @@ test('raw parser preserves unknown records through generic fallback fields', () 
     type: 'event_msg',
     payload: {
       type: 'future_protocol_shape',
-      nested: { message: 'new protocol payload' },
+      nested: { message: 'new protocol payload at C:\\Users\\Yijia\\repo' },
       status: 'mystery',
     },
   }, 4, '2026\\06\\10\\rollout.jsonl', 'session-id', [{ previewId: 'image-1' }]);
@@ -132,6 +137,8 @@ test('raw parser preserves unknown records through generic fallback fields', () 
   assert.equal(raw.status, 'mystery');
   assert.match(raw.preview, /future_protocol_shape|new protocol payload/);
   assert.match(raw.searchText, /new protocol payload/);
+  assert.match(raw.searchText, /C:\\Users\\Yijia\\repo/);
   assert.deepEqual(raw.embeddedImages, [{ previewId: 'image-1' }]);
   assert.equal(raw.parsed.payload.type, 'future_protocol_shape');
+  assert.equal(raw.parsed.payload.nested.message, 'new protocol payload at C:\\Users\\Yijia\\repo');
 });

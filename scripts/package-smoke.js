@@ -112,7 +112,7 @@ async function launchPackagedServer(packagedServer, projectDir, codexHome, smoke
 
     try {
       await waitForHttp(`http://127.0.0.1:${port}/`);
-      return child;
+      return { child, port };
     } catch (error) {
       lastError = error;
       await stopChild(child);
@@ -162,6 +162,34 @@ function waitForHttp(url, timeoutMs = 10000) {
   });
 }
 
+function requestText(url, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        resolve({
+          statusCode: res.statusCode,
+          headers: res.headers,
+          body: Buffer.concat(chunks).toString('utf8'),
+        });
+      });
+    });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Timed out requesting ${url}`));
+    });
+    req.on('error', reject);
+  });
+}
+
+async function requestJson(url) {
+  const response = await requestText(url);
+  return {
+    ...response,
+    json: JSON.parse(response.body),
+  };
+}
+
 async function main() {
   let cacheDir = null;
   let smokeRoot = null;
@@ -206,7 +234,23 @@ async function main() {
     }
 
     const packagedServer = path.join(smokeRoot, 'node_modules', 'session-analyzer', 'server.js');
-    child = await launchPackagedServer(packagedServer, projectDir, codexHome, smokeRoot);
+    const launched = await launchPackagedServer(packagedServer, projectDir, codexHome, smokeRoot);
+    child = launched.child;
+    const baseUrl = `http://127.0.0.1:${launched.port}`;
+    const state = await requestJson(`${baseUrl}/api/state`);
+    const hasStatePayload = state.statusCode === 200
+      && state.json.totals
+      && Array.isArray(state.json.supportedLocales)
+      && state.json.eventKinds
+      && state.json.projectSelected === true;
+    const hasJobPayload = state.statusCode === 202 && state.json.job && typeof state.json.job.id === 'string';
+    if (!hasStatePayload && !hasJobPayload) {
+      throw new Error(`/api/state did not return the expected package smoke JSON shape: ${state.statusCode} ${state.body}`);
+    }
+    const html = await requestText(`${baseUrl}/`);
+    if (html.statusCode !== 200 || !html.body.includes('src="/assets/app.js"')) {
+      throw new Error('Root HTML did not reference the generated browser bundle');
+    }
     console.log('Package smoke passed.');
   } finally {
     await stopChild(child);

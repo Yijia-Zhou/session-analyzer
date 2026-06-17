@@ -2,11 +2,51 @@
 
 function createCodexDetailBuilder(deps) {
   const {
+    envelope,
+    sourceTrace,
+    localization,
+    sectionBuilders,
+    sectionExtractors,
+  } = deps;
+  const {
     CANONICAL_SCHEMA_VERSION,
     CODEX_SOURCE_KIND,
+    sanitizeLogicalDetailSections,
+    sanitizeLogicalEnvelopeValue,
+  } = envelope;
+  const {
     classifyProtocolText,
     codexSourceLocator,
     commandLanguageContext,
+    logicalMeta,
+    rawConversationRole,
+    rawEventsForLogicalEvent,
+    rawMatchesEvent,
+    rawMeta,
+    rawRef,
+    rawToolSections,
+  } = sourceTrace;
+  const {
+    i18n,
+    localizeDetailSections,
+    localizedLogicalLabel,
+    rawRecordLabel,
+  } = localization;
+  const {
+    filterDetailSections,
+    makeNoticeSection,
+    makeRawJsonSection,
+    maybePushCodeSection,
+    maybePushKvSection,
+    maybePushMarkdownSection,
+    maybePushStructuredSection,
+    maybePushTerminalSection,
+    structuredOutputValue,
+    toKvEntries,
+    withoutKeys,
+    withoutSectionTypes,
+  } = sectionBuilders;
+  const {
     extractCommandSections,
     extractConversationSections,
     extractJsReplSections,
@@ -19,33 +59,8 @@ function createCodexDetailBuilder(deps) {
     extractToolSections,
     extractUpdatePlanSections,
     extractWebSearchSections,
-    filterDetailSections,
-    i18n,
     inferCommandLanguage,
-    localizeDetailSections,
-    localizedLogicalLabel,
-    logicalMeta,
-    makeNoticeSection,
-    makeRawJsonSection,
-    maybePushCodeSection,
-    maybePushKvSection,
-    maybePushMarkdownSection,
-    maybePushStructuredSection,
-    maybePushTerminalSection,
-    rawConversationRole,
-    rawEventsForLogicalEvent,
-    rawMatchesEvent,
-    rawMeta,
-    rawRecordLabel,
-    rawRef,
-    rawToolSections,
-    sanitizeLogicalDetailSections,
-    sanitizeLogicalEnvelopeValue,
-    structuredOutputValue,
-    toKvEntries,
-    withoutKeys,
-    withoutSectionTypes,
-  } = deps;
+  } = sectionExtractors;
 
   function rawPrimarySections(raw, relatedEvent, session = {}) {
     if (relatedEvent?.kind === 'protocol') {

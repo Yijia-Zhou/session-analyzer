@@ -26,7 +26,7 @@ async function buildApp(outfile) {
     format: 'iife',
     sourcemap: false,
     splitting: false,
-    minify: false,
+    minify: true,
     logLevel: 'info',
   });
 }

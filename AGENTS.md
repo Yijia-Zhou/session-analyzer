@@ -38,9 +38,9 @@ When changing product behavior or repository structure:
 - Design doc: `docs/design-docs/logical-event-timeline.md`
 - Schema update runbook: `docs/design-docs/schema-update-runbook.md`
 - Documentation system guide: `docs/design-docs/documentation-system.md`
-- Active plans:
-  - `docs/exec-plans/active/2026-06-15-external-review-followups.md`
+- Active plans: none
 - Completed plans:
+  - `docs/exec-plans/completed/2026-06-15-external-review-followups.md`
   - `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`
   - `docs/exec-plans/completed/2026-06-02-inspector-search-target-reveal.md`
   - `docs/exec-plans/completed/2026-06-02-find-in-page-phrase-search.md`

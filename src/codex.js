@@ -246,22 +246,9 @@ function humanizeUsageLimitKey(value) {
     .trim();
 }
 
-function humanizeEventKind(value) {
-  const text = String(value || '').trim();
-  if (!text) return '';
-  if (/^mcp\b/i.test(text)) return text.replace(/_/g, ' ').replace(/^mcp/i, 'MCP');
-  return text
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\b\w/g, (letter) => letter.toUpperCase())
-    .replace(/\bJs\b/g, 'JS');
-}
-
 function eventKindLabel(value, locale = i18n.DEFAULT_LOCALE) {
   const key = String(value || '').trim();
-  return i18n.eventKindLabel(key, locale) || EVENT_KIND_LABELS[key] || PROTOCOL_LABELS[key] || humanizeEventKind(key) || key;
+  return i18n.eventKindLabel(key, locale) || EVENT_KIND_LABELS[key] || PROTOCOL_LABELS[key] || i18n.humanize(key) || key;
 }
 
 function rawRecordLabel(raw, locale = i18n.DEFAULT_LOCALE) {
@@ -2736,49 +2723,59 @@ function rawToolSections(raw, relatedEvent, session = {}) {
 }
 
 const codexDetailBuilder = createCodexDetailBuilder({
-  CANONICAL_SCHEMA_VERSION,
-  CODEX_SOURCE_KIND,
-  classifyProtocolText,
-  codexSourceLocator,
-  commandLanguageContext,
-  extractCommandSections,
-  extractConversationSections,
-  extractJsReplSections,
-  extractLifecycleSections,
-  extractPatchSections,
-  extractPlanSections,
-  extractProtocolSections,
-  extractReasoningSections,
-  extractToolOperationSections,
-  extractToolSections,
-  extractUpdatePlanSections,
-  extractWebSearchSections,
-  filterDetailSections,
-  i18n,
-  inferCommandLanguage,
-  localizeDetailSections,
-  localizedLogicalLabel,
-  logicalMeta,
-  makeNoticeSection,
-  makeRawJsonSection,
-  maybePushCodeSection,
-  maybePushKvSection,
-  maybePushMarkdownSection,
-  maybePushStructuredSection,
-  maybePushTerminalSection,
-  rawConversationRole,
-  rawEventsForLogicalEvent,
-  rawMatchesEvent,
-  rawMeta,
-  rawRecordLabel,
-  rawRef,
-  rawToolSections,
-  sanitizeLogicalDetailSections,
-  sanitizeLogicalEnvelopeValue,
-  structuredOutputValue,
-  toKvEntries,
-  withoutKeys,
-  withoutSectionTypes,
+  envelope: {
+    CANONICAL_SCHEMA_VERSION,
+    CODEX_SOURCE_KIND,
+    sanitizeLogicalDetailSections,
+    sanitizeLogicalEnvelopeValue,
+  },
+  sourceTrace: {
+    classifyProtocolText,
+    codexSourceLocator,
+    commandLanguageContext,
+    logicalMeta,
+    rawConversationRole,
+    rawEventsForLogicalEvent,
+    rawMatchesEvent,
+    rawMeta,
+    rawRef,
+    rawToolSections,
+  },
+  localization: {
+    i18n,
+    localizeDetailSections,
+    localizedLogicalLabel,
+    rawRecordLabel,
+  },
+  sectionBuilders: {
+    filterDetailSections,
+    makeNoticeSection,
+    makeRawJsonSection,
+    maybePushCodeSection,
+    maybePushKvSection,
+    maybePushMarkdownSection,
+    maybePushStructuredSection,
+    maybePushTerminalSection,
+    structuredOutputValue,
+    toKvEntries,
+    withoutKeys,
+    withoutSectionTypes,
+  },
+  sectionExtractors: {
+    extractCommandSections,
+    extractConversationSections,
+    extractJsReplSections,
+    extractLifecycleSections,
+    extractPatchSections,
+    extractPlanSections,
+    extractProtocolSections,
+    extractReasoningSections,
+    extractToolOperationSections,
+    extractToolSections,
+    extractUpdatePlanSections,
+    extractWebSearchSections,
+    inferCommandLanguage,
+  },
 });
 const { buildEventDetail } = codexDetailBuilder;
 

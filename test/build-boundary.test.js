@@ -23,16 +23,33 @@ function readText(relativePath) {
 
 test('browser runtime assets are generated and index loads only the bundle path', () => {
   const appBundle = path.join(repoRoot, 'public', 'assets', 'app.js');
+  const appBundleMap = `${appBundle}.map`;
   assert.ok(fs.existsSync(appBundle), 'public/assets/app.js should exist after npm run build');
   assert.ok(fs.statSync(appBundle).size > 0, 'public/assets/app.js should not be empty');
+  assert.equal(fs.existsSync(appBundleMap), false, 'public/assets/app.js.map should not be generated or committed');
+  const appText = fs.readFileSync(appBundle, 'utf8');
+  assert.equal(appText.includes('//# sourceMappingURL='), false, 'app bundle should not reference a source map');
+  assert.ok(appText.split(/\r?\n/).length < 400, 'app bundle should be minified into a compact line count');
+  assert.equal(appText.includes('function applyStaticLocale()'), false, 'app bundle should not retain unminified source function declarations');
 
   const index = readText(path.join('public', 'index.html'));
   assert.match(index, /src="\/vendor\/highlightjs\/highlight\.min\.js"/);
   assert.match(index, /src="\/assets\/app\.js"/);
+  assert.doesNotMatch(index, /\.map(?:["?]|$)/);
+  assert.match(index, /<html lang="en">/);
+  assert.match(index, /Reading local sessions\.\.\./);
+  assert.doesNotMatch(index, /正在读取本地 sessions/);
   for (const script of oldPublicScripts) {
     assert.doesNotMatch(index, new RegExp(`src="${script.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
     assert.equal(fs.existsSync(path.join(repoRoot, 'public', script.slice(1))), false, `${script} should not remain as public source`);
   }
+});
+
+test('client build script minifies without source maps', () => {
+  const script = readText(path.join('scripts', 'build-client.js'));
+  assert.match(script, /sourcemap:\s*false/);
+  assert.match(script, /minify:\s*true/);
+  assert.doesNotMatch(script, /app\.js\.map/);
 });
 
 test('source modules no longer depend on public as a source tree', () => {
@@ -85,6 +102,7 @@ test('codex logical builder stays a pure logical-construction boundary', () => {
 test('codex detail builder stays a detail-construction boundary', () => {
   const detailModule = require('../src/codex-detail');
   const text = readText(path.join('src', 'codex-detail.js'));
+  const codexText = readText(path.join('src', 'codex.js'));
   const forbiddenPatterns = [
     /\brequire\s*\(/,
     /\bimport\s+/,
@@ -100,6 +118,10 @@ test('codex detail builder stays a detail-construction boundary', () => {
   ];
 
   assert.deepEqual(Object.keys(detailModule), ['createCodexDetailBuilder']);
+  assert.match(codexText, /createCodexDetailBuilder\(\{\s*envelope:\s*\{/);
+  for (const group of ['sourceTrace', 'localization', 'sectionBuilders', 'sectionExtractors']) {
+    assert.match(codexText, new RegExp(`\\n  ${group}: \\{`));
+  }
   for (const pattern of forbiddenPatterns) {
     assert.doesNotMatch(text, pattern);
   }
