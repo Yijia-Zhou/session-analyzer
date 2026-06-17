@@ -4,13 +4,17 @@
 
 ### English
 
-- Known follow-up: Simplified Chinese display catalogs are present but not complete; several display namespaces still contain English values until the external-review follow-up plan is completed.
-- Known follow-up: package smoke and generated app bundle hardening remain tracked work; `require('session-analyzer')` does not start the server because `server.js` is guarded by `require.main === module`.
+- Post-review hardening completed: Simplified Chinese display catalogs now cover the shipped display namespaces while preserving machine fields such as `kind`, `status`, `layer`, raw refs, and source locators.
+- Build and package gates now verify the generated browser bundle path, minified/no-sourcemap output, packaged runtime allowlist, CLI help, root HTML bundle reference, and `/api/state` package smoke shape.
+- Source traceability was tightened with normalized `sourceLocator.file` values, legacy raw ref preservation, and grouped detail/logical dependency injection boundaries.
+- Programmatic exports from `server.js` remain internal and are not a stable v0.1 API; `require('session-analyzer')` does not start the server because `server.js` is guarded by `require.main === module`.
 
 ### 中文
 
-- 已知后续项：简体中文展示 catalog 已存在但尚未完整；在外部评审后续计划完成前，若干展示 namespace 仍包含英文值。
-- 已知后续项：package smoke 和生成 app bundle 加固仍在跟踪中；由于 `server.js` 受 `require.main === module` 保护，`require('session-analyzer')` 不会启动服务器。
+- 外部评审后续加固已完成：简体中文展示 catalog 已覆盖当前发布的展示 namespace，同时保留 `kind`、`status`、`layer`、raw refs、source locators 等机器字段不变。
+- 构建和打包 gate 现在会验证生成浏览器 bundle 路径、minified/no-sourcemap 输出、打包 runtime allowlist、CLI help、根 HTML 的 bundle 引用，以及 `/api/state` package smoke 形态。
+- Source traceability 已加固：`sourceLocator.file` 归一化、legacy raw ref 保留，以及 detail/logical 的 grouped dependency injection 边界均已落地。
+- `server.js` 导出的程序接口仍属于内部接口，不是稳定的 v0.1 API；由于 `server.js` 受 `require.main === module` 保护，`require('session-analyzer')` 不会启动服务器。
 
 ## 0.1.0 - 2026-06-11
 

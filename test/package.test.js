@@ -6,6 +6,7 @@ const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { isPackageStatePayload, waitForPackageState } = require('../scripts/package-smoke');
 
 const repoRoot = path.join(__dirname, '..');
 const npmCommand = process.platform === 'win32'
@@ -117,4 +118,97 @@ test('npm pack manifest contains only runtime package files', () => {
   for (const file of forbiddenFiles) {
     assert.equal(fileSet.has(file), false, `${file} should not be included in the package`);
   }
+});
+
+test('package smoke state predicate requires final app state payload', () => {
+  assert.equal(isPackageStatePayload({
+    statusCode: 202,
+    json: { job: { id: '1', status: 'running' } },
+    body: '{"job":{"id":"1","status":"running"}}',
+  }), false);
+
+  assert.equal(isPackageStatePayload({
+    statusCode: 200,
+    json: {
+      totals: {},
+      supportedLocales: ['en', 'zh-CN'],
+      eventKinds: {},
+      projectSelected: true,
+    },
+    body: '{}',
+  }), true);
+});
+
+test('package smoke waits past a 202 indexing job before passing state', async () => {
+  const statePayload = {
+    totals: {},
+    supportedLocales: ['en', 'zh-CN'],
+    eventKinds: {},
+    projectSelected: true,
+  };
+  let stateCalls = 0;
+  const requestedUrls = [];
+
+  const result = await waitForPackageState('http://127.0.0.1:12345', {
+    timeoutMs: 1000,
+    pollIntervalMs: 1,
+    requestJson: async (url) => {
+      requestedUrls.push(url);
+      if (url.endsWith('/api/state')) {
+        stateCalls += 1;
+        if (stateCalls === 1) {
+          return {
+            statusCode: 202,
+            json: { job: { id: 'job-1', status: 'running' } },
+            body: '{"job":{"id":"job-1","status":"running"}}',
+          };
+        }
+        return {
+          statusCode: 200,
+          json: statePayload,
+          body: JSON.stringify(statePayload),
+        };
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+  });
+
+  assert.equal(result.json, statePayload);
+  assert.deepEqual(requestedUrls, [
+    'http://127.0.0.1:12345/api/state',
+    'http://127.0.0.1:12345/api/state',
+  ]);
+});
+
+test('package smoke reports indexing failure after an initial 202 state response', async () => {
+  let stateCalls = 0;
+  await assert.rejects(waitForPackageState('http://127.0.0.1:12345', {
+    timeoutMs: 1000,
+    pollIntervalMs: 1,
+    requestJson: async (url) => {
+      if (url.endsWith('/api/state')) {
+        stateCalls += 1;
+        if (stateCalls === 1) {
+          return {
+            statusCode: 202,
+            json: { job: { id: 'job-1', status: 'running' } },
+            body: '{"job":{"id":"job-1","status":"running"}}',
+          };
+        }
+        return {
+          statusCode: 409,
+          json: { error: 'Project not selected' },
+          body: '{"error":"Project not selected"}',
+        };
+      }
+      if (url.endsWith('/api/project/status?jobId=job-1')) {
+        return {
+          statusCode: 200,
+          json: { job: { id: 'job-1', status: 'failed', error: 'synthetic failure' } },
+          body: '{"job":{"id":"job-1","status":"failed","error":"synthetic failure"}}',
+        };
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+  }), /Indexing job failed during package smoke: synthetic failure/);
 });

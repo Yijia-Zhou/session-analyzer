@@ -190,6 +190,72 @@ async function requestJson(url) {
   };
 }
 
+function isPackageStatePayload(response) {
+  return response.statusCode === 200
+    && response.json
+    && response.json.totals
+    && Array.isArray(response.json.supportedLocales)
+    && response.json.eventKinds
+    && response.json.projectSelected === true;
+}
+
+function summarizeResponse(response) {
+  if (!response) return 'no response';
+  const body = response.body || JSON.stringify(response.json || {});
+  return `${response.statusCode} ${body.slice(0, 500)}`;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForPackageState(baseUrl, options = {}) {
+  const timeoutMs = options.timeoutMs || 15000;
+  const pollIntervalMs = options.pollIntervalMs || 100;
+  const requestJsonImpl = options.requestJson || requestJson;
+  const started = Date.now();
+  let lastState = null;
+  let jobId = '';
+
+  while (Date.now() - started <= timeoutMs) {
+    lastState = await requestJsonImpl(`${baseUrl}/api/state`);
+    if (isPackageStatePayload(lastState)) return lastState;
+
+    const job = lastState.json?.job;
+    if (lastState.statusCode === 202 && job && typeof job.id === 'string') {
+      jobId = job.id;
+      if (job.status === 'failed') {
+        throw new Error(`Indexing job failed during package smoke: ${job.error || 'unknown error'}`);
+      }
+      if (job.status === 'cancelled') {
+        throw new Error(`Indexing job was cancelled during package smoke: ${job.error || 'cancelled'}`);
+      }
+    } else if (jobId) {
+      const status = await requestJsonImpl(`${baseUrl}/api/project/status?jobId=${encodeURIComponent(jobId)}`);
+      const statusJob = status.json?.job;
+      if (statusJob?.status === 'failed') {
+        throw new Error(`Indexing job failed during package smoke: ${statusJob.error || 'unknown error'}`);
+      }
+      if (statusJob?.status === 'cancelled') {
+        throw new Error(`Indexing job was cancelled during package smoke: ${statusJob.error || 'cancelled'}`);
+      }
+      if (statusJob?.status === 'succeeded' && status.json.state) {
+        const stateResponse = {
+          statusCode: 200,
+          headers: status.headers,
+          body: JSON.stringify(status.json.state),
+          json: status.json.state,
+        };
+        if (isPackageStatePayload(stateResponse)) return stateResponse;
+      }
+    }
+
+    await wait(pollIntervalMs);
+  }
+
+  throw new Error(`/api/state did not reach the expected package smoke JSON shape within ${timeoutMs}ms; last response: ${summarizeResponse(lastState)}`);
+}
+
 async function main() {
   let cacheDir = null;
   let smokeRoot = null;
@@ -237,16 +303,7 @@ async function main() {
     const launched = await launchPackagedServer(packagedServer, projectDir, codexHome, smokeRoot);
     child = launched.child;
     const baseUrl = `http://127.0.0.1:${launched.port}`;
-    const state = await requestJson(`${baseUrl}/api/state`);
-    const hasStatePayload = state.statusCode === 200
-      && state.json.totals
-      && Array.isArray(state.json.supportedLocales)
-      && state.json.eventKinds
-      && state.json.projectSelected === true;
-    const hasJobPayload = state.statusCode === 202 && state.json.job && typeof state.json.job.id === 'string';
-    if (!hasStatePayload && !hasJobPayload) {
-      throw new Error(`/api/state did not return the expected package smoke JSON shape: ${state.statusCode} ${state.body}`);
-    }
+    await waitForPackageState(baseUrl);
     const html = await requestText(`${baseUrl}/`);
     if (html.statusCode !== 200 || !html.body.includes('src="/assets/app.js"')) {
       throw new Error('Root HTML did not reference the generated browser bundle');
@@ -262,7 +319,14 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error.stack || error.message);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error.stack || error.message);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  isPackageStatePayload,
+  waitForPackageState,
+};
