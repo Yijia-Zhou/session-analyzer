@@ -128,6 +128,13 @@ package smoke 命令会执行 `npm pack`，把 tarball 安装到全新的临时�
 
 npm 包不承诺稳定的程序接口。v0.1 支持的接口是 `session-analyzer` CLI。
 
+## 已知限制
+
+- v0.1 只支持 Codex transcript。非 Codex transcript 格式只是未来 adapter 的设计参考，不是当前支持的导入来源。
+- 未来或未知的 Codex protocol event 仍可通过 protocol/raw 兜底视图检查，但并非每个事件族都有完整精致的结构化渲染器。
+- Transcript fixture 覆盖是有重点的，不是穷尽式的；后续观察到新的历史形态时，可能仍需要补充 fixture 和展示调整。
+- Review finding 渲染已有 synthetic 覆盖，但非空 `review_output.findings[]` 仍需要在拿到真实转录样本后验证。
+
 ## 仓库结构
 
 - `server.js`：本地 HTTP 服务器和 API 路由。

@@ -28,18 +28,62 @@ function parseArgs(argv) {
     host: '127.0.0.1',
     errors: [],
   };
-  const isMissingOptionValue = (value) => value === undefined || (typeof value === 'string' && value.startsWith('--'));
+  const canonicalOptionFor = (arg) => {
+    if (arg === '-h') return '--help';
+    if (!arg.startsWith('--')) return null;
+    const key = arg.slice(2).replace(/[-_]/g, '').toLowerCase();
+    const aliases = {
+      repo: '--repo',
+      repos: '--repo',
+      repository: '--repo',
+      repopath: '--repo',
+      reporoot: '--repo',
+      project: '--repo',
+      projectroot: '--repo',
+      codexhome: '--codex-home',
+      codexpath: '--codex-home',
+      codexdir: '--codex-home',
+      codexdirectory: '--codex-home',
+      port: '--port',
+      host: '--host',
+      hostname: '--host',
+      help: '--help',
+    };
+    return aliases[key] || null;
+  };
+  const isMissingOptionValue = (value) => value === undefined
+    || (typeof value === 'string' && (value.startsWith('--') || /^-[A-Za-z]/.test(value)));
   const isBlankOptionValue = (value) => typeof value === 'string' && value.trim() === '';
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
-    if (arg === '--repo' && next) {
+    const option = canonicalOptionFor(arg);
+    if (arg.startsWith('-') && !option) {
+      opts.errors.push(`Unknown option: ${arg}.`);
+      if (next !== undefined && !String(next).startsWith('-')) i += 1;
+      continue;
+    }
+    if (!option) {
+      opts.errors.push(`Unexpected positional argument: ${arg}. Use --repo <repo-path> to choose a repository.`);
+      continue;
+    }
+    if (option === '--repo') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push('Missing value for --repo. Expected a repository path.');
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
       opts.repo = next;
       i += 1;
-    } else if (arg === '--codex-home' && next) {
+    } else if (option === '--codex-home') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push('Missing value for --codex-home. Expected a Codex home path.');
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
       opts.codexHome = next;
       i += 1;
-    } else if (arg === '--port') {
+    } else if (option === '--port') {
       if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
         opts.errors.push('Missing value for --port. Expected an integer between 1 and 65535.');
         if (isBlankOptionValue(next)) i += 1;
@@ -53,7 +97,7 @@ function parseArgs(argv) {
       }
       opts.port = port;
       i += 1;
-    } else if (arg === '--host') {
+    } else if (option === '--host') {
       if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
         opts.errors.push('Missing value for --host. Expected a non-empty host name or IP address.');
         if (isBlankOptionValue(next)) i += 1;
@@ -61,7 +105,7 @@ function parseArgs(argv) {
       }
       opts.host = next;
       i += 1;
-    } else if (arg === '--help' || arg === '-h') {
+    } else if (option === '--help') {
       opts.help = true;
     }
   }

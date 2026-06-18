@@ -51,6 +51,38 @@ test('parseArgs leaves repo unset unless --repo is provided', () => {
   assert.equal(parseArgs(['node', 'server.js', '--repo', 'G:\\vibe\\term-agent']).repo, 'G:\\vibe\\term-agent');
 });
 
+test('parseArgs accepts limited typo aliases for common options', () => {
+  assert.equal(parseArgs(['node', 'server.js', '--repos', 'G:\\vibe\\term-agent']).repo, 'G:\\vibe\\term-agent');
+  assert.equal(parseArgs(['node', 'server.js', '--repo-root', 'G:\\vibe\\term-agent']).repo, 'G:\\vibe\\term-agent');
+  assert.equal(parseArgs(['node', 'server.js', '--codexhome', 'G:\\codex']).codexHome, 'G:\\codex');
+  assert.equal(parseArgs(['node', 'server.js', '--codex_home', 'G:\\codex']).codexHome, 'G:\\codex');
+  assert.equal(parseArgs(['node', 'server.js', '--host-name', '0.0.0.0']).host, '0.0.0.0');
+});
+
+test('parseArgs rejects unknown flags and positional arguments', () => {
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--codex-hmoe', 'G:\\codex']).errors,
+    ['Unknown option: --codex-hmoe.'],
+  );
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', 'G:\\vibe\\term-agent']).errors,
+    ['Unexpected positional argument: G:\\vibe\\term-agent. Use --repo <repo-path> to choose a repository.'],
+  );
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--repo', '--port', '9000']).errors,
+    ['Missing value for --repo. Expected a repository path.'],
+  );
+  assert.equal(parseArgs(['node', 'server.js', '--repo', '--port', '9000']).port, 9000);
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--repo', '-h']).errors,
+    ['Missing value for --repo. Expected a repository path.'],
+  );
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--codex-home']).errors,
+    ['Missing value for --codex-home. Expected a Codex home path.'],
+  );
+});
+
 test('parseArgs validates explicit port values', () => {
   assert.equal(parseArgs(['node', 'server.js', '--port', '3000']).port, 3000);
 
@@ -97,6 +129,18 @@ test('CLI exits early with usage when argument validation fails', () => {
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Error: Invalid value for --port: "0"\. Expected an integer between 1 and 65535\./);
+  assert.match(result.stdout, /Usage:/);
+  assert.doesNotMatch(result.stdout, /Codex Session Analyzer: http:\/\//);
+});
+
+test('CLI exits early with usage when an unknown option is provided', () => {
+  const result = childProcess.spawnSync(process.execPath, ['server.js', '--codex-hmoe', fixtureCodexHome], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Error: Unknown option: --codex-hmoe\./);
   assert.match(result.stdout, /Usage:/);
   assert.doesNotMatch(result.stdout, /Codex Session Analyzer: http:\/\//);
 });
