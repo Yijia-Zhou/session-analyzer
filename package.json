@@ -1,13 +1,51 @@
 {
   "name": "session-analyzer",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.1.0",
   "description": "Local interactive viewer for Codex session transcripts.",
+  "keywords": [
+    "codex",
+    "transcript",
+    "viewer",
+    "session",
+    "local"
+  ],
+  "homepage": "https://github.com/Yijia-Zhou/session-analyzer#readme",
+  "bugs": {
+    "url": "https://github.com/Yijia-Zhou/session-analyzer/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yijia-Zhou/session-analyzer.git"
+  },
+  "license": "BSD-3-Clause",
   "main": "server.js",
+  "bin": {
+    "session-analyzer": "./server.js"
+  },
+  "files": [
+    "server.js",
+    "src/codex.js",
+    "src/codex-detail.js",
+    "src/codex-logical.js",
+    "src/codex-source.js",
+    "src/folding.js",
+    "src/shared/",
+    "public/",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node server.js",
-    "test": "node --test",
-    "vendor:highlight": "npx --yes --package esbuild esbuild ./scripts/highlight-vendor-entry.js --bundle --format=iife --global-name=sessionHighlightVendor --outfile=./public/vendor/highlightjs/highlight.min.js --minify"
+    "build": "npm run build:client",
+    "build:check": "node scripts/build-client.js --check",
+    "build:client": "node scripts/build-client.js",
+    "test": "node --test \"test/*.test.js\"",
+    "test:browser": "node --test e2e/browser.test.js",
+    "test:package": "node scripts/package-smoke.js",
+    "browser:install": "playwright install chromium",
+    "vendor:highlight": "node scripts/build-client.js --vendor-highlight-only"
   },
   "dependencies": {
     "highlight.js": "^11.11.1",
@@ -15,5 +53,9 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "playwright": "^1.60.0"
   }
 }

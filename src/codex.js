@@ -5,7 +5,19 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
 const MarkdownIt = require('markdown-it');
-const { SHELL_EXTERNAL_COMMAND_WORDS } = require('../public/command-highlighting');
+const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
+const i18n = require('./shared/i18n');
+const { createCodexDetailBuilder } = require('./codex-detail');
+const { createCodexLogicalBuilder } = require('./codex-logical');
+const {
+  CANONICAL_SCHEMA_VERSION,
+  CODEX_SOURCE_KIND,
+  codexSourceLocator,
+  createCodexRawParser,
+  rawEventsForLogicalEvent,
+  rawMatchesEvent,
+  rawRef,
+} = require('./codex-source');
 
 const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
@@ -119,11 +131,6 @@ const EVENT_KIND_LABELS = Object.freeze({
   event: 'Event',
 });
 
-const CANONICAL_EVENT_TYPES = Object.freeze({
-  turn_started: 'task_started',
-  turn_complete: 'task_complete',
-});
-
 const TOOL_EVENT_TYPES = new Set([
   'exec_command_begin',
   'exec_command_update',
@@ -165,10 +172,6 @@ const TOOL_EVENT_TYPES = new Set([
   'collab_close_begin',
   'collab_close_end',
 ]);
-
-function canonicalEventType(type) {
-  return CANONICAL_EVENT_TYPES[type] || type || '';
-}
 
 function flattenText(value, budget = 8000) {
   const parts = [];
@@ -243,22 +246,18 @@ function humanizeUsageLimitKey(value) {
     .trim();
 }
 
-function humanizeEventKind(value) {
-  const text = String(value || '').trim();
-  if (!text) return '';
-  if (/^mcp\b/i.test(text)) return text.replace(/_/g, ' ').replace(/^mcp/i, 'MCP');
-  return text
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\b\w/g, (letter) => letter.toUpperCase())
-    .replace(/\bJs\b/g, 'JS');
+function eventKindLabel(value, locale = i18n.DEFAULT_LOCALE) {
+  const key = String(value || '').trim();
+  return i18n.eventKindLabel(key, locale) || EVENT_KIND_LABELS[key] || PROTOCOL_LABELS[key] || i18n.humanize(key) || key;
 }
 
-function eventKindLabel(value) {
-  const key = String(value || '').trim();
-  return EVENT_KIND_LABELS[key] || PROTOCOL_LABELS[key] || humanizeEventKind(key) || key;
+function rawRecordLabel(raw, locale = i18n.DEFAULT_LOCALE) {
+  const key = raw?.payloadType || raw?.recordType || '';
+  return i18n.rawRecordLabel(key, locale);
+}
+
+function rawRecordValueLabel(value, locale = i18n.DEFAULT_LOCALE) {
+  return i18n.rawRecordLabel(value, locale);
 }
 
 function usageLimitKind(text) {
@@ -1178,6 +1177,20 @@ function filterDetailSections(sections) {
   return sections.filter((section) => section && SECTION_TYPES.has(section.type));
 }
 
+function localizeDetailSections(sections, locale) {
+  return filterDetailSections(sections).map((section) => i18n.localizeSection(section, locale));
+}
+
+function localizedLogicalLabel(logical, locale) {
+  if (!logical) return '';
+  const label = sanitizeLogicalEnvelopeValue(logical.label);
+  const translated = i18n.lookupKnownLabel(label, locale);
+  if (translated) return translated;
+  if (label) return label;
+  if (logical.layer === 'protocol') return eventKindLabel(logical.subtype || logical.kind, locale);
+  return '';
+}
+
 function readSessionIndexEntry(line) {
   try {
     const item = JSON.parse(line);
@@ -1600,191 +1613,21 @@ function durationMs(duration) {
   return Math.round(secs * 1000 + nanos / 1e6);
 }
 
-function makeRawEvent(record, lineNumber, relFile, sessionId, embeddedImages = []) {
-  const payload = record.payload || {};
-  const raw = {
-    rawId: `${sessionId}:raw:${lineNumber}`,
-    sessionId,
-    line: lineNumber,
-    source: { file: relFile, line: lineNumber },
-    timestamp: safeIso(record.timestamp),
-    turnId: payload.turn_id || '',
-    recordType: record.type || '',
-    payloadType: payload.type || '',
-    canonicalType: canonicalEventType(payload.type || ''),
-    role: payload.role || '',
-    typeKey: `${record.type}:${payload.type || ''}:${payload.role || ''}`,
-    callId: payload.call_id || payload.callId || '',
-    toolName: payload.name || payload.tool_name || payload.tool || '',
-    status: payload.status || '',
-    messageText: '',
-    searchText: '',
-    preview: '',
-    commandText: '',
-    stdout: '',
-    stderr: '',
-    aggregatedOutput: '',
-    exitCode: null,
-    durationMs: 0,
-    touchedFiles: [],
-    embeddedImages,
-    parsed: record,
-    output: '',
-    rawIndex: lineNumber,
-  };
-
-  if (record.type === 'response_item') {
-    if (payload.type === 'message') {
-      raw.messageText = extractContentText(payload.content);
-      raw.preview = truncate(raw.messageText || payload.role || 'message');
-      raw.searchText = raw.messageText;
-      return raw;
-    }
-    if (payload.type === 'reasoning') {
-      raw.messageText = extractReasoningText(payload);
-      raw.preview = truncate(raw.messageText || 'reasoning');
-      raw.searchText = raw.messageText;
-      return raw;
-    }
-    if (payload.type === 'function_call') {
-      raw.output = stringifyValue(payload.arguments);
-      raw.preview = truncate(`${payload.name || 'function_call'} ${raw.output}`);
-      raw.searchText = `${payload.name || ''}\n${raw.output}`;
-      return raw;
-    }
-    if (payload.type === 'function_call_output') {
-      raw.output = stringifyValue(payload.output);
-      raw.preview = truncate(raw.output || payload.call_id || 'function_call_output');
-      raw.searchText = raw.output;
-      return raw;
-    }
-    if (payload.type === 'custom_tool_call') {
-      raw.output = stringifyValue(payload.input);
-      raw.preview = truncate(`${payload.name || 'custom_tool_call'} ${raw.output}`);
-      raw.searchText = `${payload.name || ''}\n${raw.output}`;
-      return raw;
-    }
-    if (payload.type === 'custom_tool_call_output') {
-      raw.output = stringifyValue(payload.output);
-      raw.preview = truncate(raw.output || payload.call_id || 'custom_tool_call_output');
-      raw.searchText = raw.output;
-      return raw;
-    }
-    if (payload.type === 'web_search_call') {
-      raw.preview = truncate(flattenText(payload.action || payload, 8000) || payload.status || 'web_search_call');
-      raw.searchText = flattenText(payload, 12000);
-      return raw;
-    }
-  }
-
-  if (record.type === 'event_msg') {
-    switch (payload.type) {
-      case 'user_message':
-      case 'agent_message':
-        raw.messageText = displayValue(firstNonEmpty(payload.message, payload.text), 16000);
-        raw.preview = truncate(raw.messageText || payload.type);
-        raw.searchText = raw.messageText;
-        return raw;
-      case 'agent_reasoning':
-        raw.messageText = extractEventReasoningText(payload);
-        raw.preview = truncate(raw.messageText || payload.type);
-        raw.searchText = raw.messageText;
-        return raw;
-      case 'exec_command_end':
-      case 'exec_command_begin':
-      case 'exec_command_update':
-      case 'exec_command_delta':
-      case 'exec_command_declined':
-        raw.commandText = commandToText(payload.command);
-        raw.stdout = stringifyValue(payload.stdout);
-        raw.stderr = stringifyValue(payload.stderr);
-        raw.aggregatedOutput = stringifyValue(payload.aggregated_output);
-        raw.exitCode = Number.isFinite(Number(payload.exit_code)) ? Number(payload.exit_code) : null;
-        raw.durationMs = durationMs(payload.duration);
-        raw.preview = truncate(raw.commandText || displayValue(payload.reason, 1000) || payload.type);
-        raw.searchText = [raw.commandText, raw.stdout, raw.stderr, raw.aggregatedOutput, stringifyValue(payload.formatted_output)].join('\n');
-        return raw;
-      case 'patch_apply_end':
-      case 'patch_apply_begin':
-      case 'patch_apply_update':
-      case 'patch_apply_delta':
-      case 'patch_apply_declined':
-        raw.touchedFiles = payload.changes && typeof payload.changes === 'object' ? Object.keys(payload.changes) : [];
-        raw.output = stringifyValue(firstNonEmpty(payload.patch, payload.input, payload.diff));
-        raw.preview = truncate(raw.touchedFiles.join(', ') || raw.output || displayValue(firstNonEmpty(payload.stdout, payload.stderr, payload.reason, payload.type), 1000));
-        raw.searchText = [raw.touchedFiles.join('\n'), raw.output, stringifyValue(payload.stdout), stringifyValue(payload.stderr), displayValue(payload.reason, 4000)].join('\n');
-        return raw;
-      case 'token_count':
-        raw.preview = truncate(formatTokenUsagePreview(payload) || flattenText(payload, 12000) || payload.type);
-        raw.searchText = [tokenUsageSearchText(payload), flattenText(payload, 16000)].filter(Boolean).join('\n');
-        return raw;
-      case 'mcp_tool_call_end':
-      case 'mcp_tool_call_begin':
-      case 'mcp_tool_call_update':
-      case 'mcp_tool_call_delta':
-      case 'mcp_tool_call_declined':
-      case 'image_generation_call_begin':
-      case 'image_generation_call_update':
-      case 'image_generation_call_delta':
-      case 'image_generation_call_end':
-      case 'image_generation_call_declined':
-      case 'dynamic_tool_call_begin':
-      case 'dynamic_tool_call_update':
-      case 'dynamic_tool_call_delta':
-      case 'dynamic_tool_call_end':
-      case 'dynamic_tool_call_declined':
-      case 'approval_request_begin':
-      case 'approval_request_end':
-      case 'approval_request_declined':
-      case 'hook_begin':
-      case 'hook_end':
-      case 'hook_declined':
-      case 'web_search_end':
-      case 'context_compacted':
-      case 'turn_aborted':
-      case 'thread_rolled_back':
-      case 'error':
-      case 'collab_agent_spawn_end':
-      case 'collab_agent_spawn_begin':
-      case 'collab_agent_interaction_end':
-      case 'collab_agent_interaction_begin':
-      case 'collab_waiting_end':
-      case 'collab_waiting_begin':
-      case 'collab_close_end':
-      case 'collab_close_begin':
-      case 'task_started':
-      case 'task_complete':
-      case 'turn_started':
-      case 'turn_complete':
-      case 'item_completed':
-      case 'thread_name_updated':
-      case 'thread_goal_updated':
-      case 'session_configured':
-      case 'warning':
-      case 'guardian_warning':
-      case 'stream_error':
-      case 'plan_update':
-      case 'plan_delta':
-        raw.preview = truncate(flattenText(payload, 12000) || payload.type);
-        raw.searchText = flattenText(payload, 16000);
-        return raw;
-      default:
-        raw.preview = truncate(flattenText(payload, 12000) || payload.type || 'event');
-        raw.searchText = flattenText(payload, 16000);
-        return raw;
-    }
-  }
-
-  if (record.type === 'turn_context' || record.type === 'session_meta') {
-    raw.preview = truncate(flattenText(payload, 12000) || record.type);
-    raw.searchText = flattenText(payload, 16000);
-    return raw;
-  }
-
-  raw.preview = truncate(flattenText(record, 12000) || raw.typeKey);
-  raw.searchText = flattenText(record, 16000);
-  return raw;
-}
+const { makeRawEvent } = createCodexRawParser({
+  commandToText,
+  displayValue,
+  durationMs,
+  extractContentText,
+  extractEventReasoningText,
+  extractReasoningText,
+  firstNonEmpty,
+  flattenText,
+  formatTokenUsagePreview,
+  safeIso,
+  stringifyValue,
+  tokenUsageSearchText,
+  truncate,
+});
 
 function relatedReasoning(eventText, responseText) {
   const a = String(eventText || '').trim();
@@ -1852,13 +1695,21 @@ function patchOutputHasSuccess(text) {
 function inferPatchSuccess(patchEnd, customOutputObj, rawOutput) {
   const explicitStatus = String(patchEnd?.status || customOutputObj?.metadata?.status || '').toLowerCase();
   if (explicitStatus === 'failed' || explicitStatus === 'declined') return false;
-  if (patchEnd) return Boolean(patchEnd.parsed.payload.success);
+  if (explicitStatus === 'success') return true;
+  if (explicitStatus === 'incomplete') return null;
+  if (patchEnd && Object.hasOwn(patchEnd.parsed?.payload || {}, 'success')) {
+    return patchEnd.parsed.payload.success === true;
+  }
   const exitCode = customOutputObj?.metadata?.exit_code;
   if (isFiniteNumberValue(exitCode)) return Number(exitCode) === 0;
-  const outputText = patchOutputText(customOutputObj, rawOutput);
-  if (patchOutputHasFailure(outputText)) return false;
-  if (patchOutputHasSuccess(outputText)) return true;
-  return true;
+  const outputSignals = [
+    patchEnd?.parsed?.payload?.stderr,
+    patchEnd?.parsed?.payload?.stdout,
+    patchOutputText(customOutputObj, rawOutput),
+  ];
+  if (outputSignals.some((text) => patchOutputHasFailure(text))) return false;
+  if (outputSignals.some((text) => patchOutputHasSuccess(text))) return true;
+  return null;
 }
 
 function humanizeProtocolSubtype(subtype) {
@@ -1977,50 +1828,6 @@ function classifyProtocolText(text, role) {
   if (source.startsWith('<image ')) return 'image_wrapper';
   if (source.startsWith('<')) return 'meta_block';
   return '';
-}
-
-function createLogicalEvent(fields) {
-  const preview = sanitizeLogicalEnvelopeValue(fields.preview || '');
-  const searchText = sanitizeLogicalEnvelopeValue(fields.searchText || '').trim();
-  return {
-    id: fields.id,
-    timestamp: sanitizeLogicalEnvelopeValue(fields.timestamp || ''),
-    turnId: sanitizeLogicalEnvelopeValue(fields.turnId || ''),
-    kind: sanitizeLogicalEnvelopeValue(fields.kind || 'event'),
-    subtype: sanitizeLogicalEnvelopeValue(fields.subtype || ''),
-    layer: sanitizeLogicalEnvelopeValue(fields.layer || 'main'),
-    role: sanitizeLogicalEnvelopeValue(fields.role || ''),
-    label: sanitizeLogicalEnvelopeValue(fields.label || fields.kind || 'event'),
-    preview,
-    searchText,
-    severity: sanitizeLogicalEnvelopeValue(fields.severity || 'normal'),
-    status: sanitizeLogicalEnvelopeValue(fields.status || ''),
-    toolName: sanitizeLogicalEnvelopeValue(fields.toolName || ''),
-    hasLongOutput: preview.length > 800 || searchText.length > 1600,
-    hasReadableReasoning: Boolean(fields.hasReadableReasoning),
-    touchedFiles: sanitizeLogicalEnvelopeValue(fields.touchedFiles || []),
-    outputStats: sanitizeLogicalEnvelopeValue(fields.outputStats || {}),
-    tokenUsage: sanitizeLogicalEnvelopeValue(fields.tokenUsage || []),
-    usageLimits: sanitizeLogicalEnvelopeValue(fields.usageLimits || []),
-    rawRefs: fields.rawRefs || [],
-    channels: sanitizeLogicalEnvelopeValue(fields.channels || []),
-    source: fields.rawRefs && fields.rawRefs[0] ? fields.rawRefs[0] : fields.source,
-  };
-}
-
-function rawRef(raw) {
-  return { file: raw.source.file, line: raw.source.line, rawId: raw.rawId };
-}
-
-function rawMatchesEvent(raw, event) {
-  if (!raw) return false;
-  if (!event) return false;
-  return event.rawRefs.some((ref) => ref.rawId === raw.rawId);
-}
-
-function rawEventsForLogicalEvent(session, event) {
-  const byId = new Map(session.rawEvents.map((raw) => [raw.rawId, raw]));
-  return event.rawRefs.map((ref) => byId.get(ref.rawId)).filter(Boolean);
 }
 
 function commandArgsFromRaw(raw) {
@@ -2166,7 +1973,7 @@ function extractPatchSections(raws, event, session = {}) {
     event.status ? `Patch ${event.status}.` : '',
   );
   if (noticeText) {
-    inspectorSections.push(makeNoticeSection('Result', noticeText, event.status === 'failed' ? 'error' : 'info'));
+    inspectorSections.push(makeNoticeSection('Result', noticeText, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info'));
   }
 
   if (!timelineSections.some((section) => section.type === 'diff' || section.type === 'patch')) {
@@ -2672,8 +2479,8 @@ function sanitizeToolInspectorSections(sections, imagePreview = null) {
   }));
 }
 
-function extractToolOperationSections(raws, event) {
-  const split = splitSectionsForDetail(extractToolSections(raws, event));
+function extractToolOperationSections(raws, event, splitSections) {
+  const split = splitSections(extractToolSections(raws, event));
   const { requestValue, responseValue } = toolDetailValues(raws);
   const timelineSections = [];
   const userInput = event.toolName === 'request_user_input' ? requestUserInputSection(requestValue, responseValue) : null;
@@ -2720,8 +2527,8 @@ function updatePlanSection(requestValue) {
   };
 }
 
-function extractUpdatePlanSections(raws, event) {
-  const split = splitSectionsForDetail(extractToolSections(raws, event));
+function extractUpdatePlanSections(raws, event, splitSections) {
+  const split = splitSections(extractToolSections(raws, event));
   const { requestValue, responseValue } = toolDetailValues(raws);
   const timelineSections = [];
   const planUpdate = updatePlanSection(requestValue);
@@ -2891,8 +2698,14 @@ function rawToolSections(raw, relatedEvent, session = {}) {
     const patchSection = parseUnifiedDiffPatchSection(raw.parsed?.payload?.changes, session.repoRoot);
     if (patchSection) sections.push(patchSection);
     maybePushKvSection(sections, 'Files', diffStatsEntries(raw.parsed?.payload?.changes, session.repoRoot));
-    const noticeText = firstNonEmpty(raw.parsed?.payload?.stdout, raw.parsed?.payload?.stderr, raw.status ? `Patch ${raw.status}.` : '');
-    if (noticeText) sections.push(makeNoticeSection('Result', noticeText, raw.parsed?.payload?.success === false ? 'error' : 'info'));
+    const patchStdout = raw.parsed?.payload?.stdout;
+    const patchStderr = raw.parsed?.payload?.stderr;
+    const noticeText = [patchStdout, patchStderr].filter((text) => String(text || '').trim()).join('\n')
+      || (raw.status ? `Patch ${raw.status}.` : '');
+    const patchFailed = raw.parsed?.payload?.success === false
+      || patchOutputHasFailure(patchStderr)
+      || patchOutputHasFailure(patchStdout);
+    if (noticeText) sections.push(makeNoticeSection('Result', noticeText, patchFailed ? 'error' : 'info'));
     maybePushKvSection(sections, 'Apply result', [
       { key: 'status', value: String(raw.status || '') },
       { key: 'durationMs', value: raw.durationMs == null ? '' : String(raw.durationMs) },
@@ -2901,7 +2714,8 @@ function rawToolSections(raw, relatedEvent, session = {}) {
   } else if (raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output' && relatedEvent?.kind === 'patch') {
     const envelope = toolOutputEnvelope(raw);
     const output = firstNonEmpty(envelope?.output, raw.output);
-    if (output) sections.push(makeNoticeSection('Result', stringifyValue(output), inferPatchSuccess(null, envelope, raw.output) ? 'info' : 'error'));
+    const patchSuccess = inferPatchSuccess(null, envelope, raw.output);
+    if (output) sections.push(makeNoticeSection('Result', stringifyValue(output), patchSuccess === true ? 'info' : patchSuccess === false ? 'error' : 'warning'));
     maybePushKvSection(sections, 'Apply result', [
       { key: 'exitCode', value: envelope?.metadata?.exit_code == null ? '' : String(envelope.metadata.exit_code) },
       { key: 'durationMs', value: envelope?.metadata?.duration_seconds == null ? '' : String(Math.round(Number(envelope.metadata.duration_seconds) * 1000)) },
@@ -2924,204 +2738,80 @@ function rawToolSections(raw, relatedEvent, session = {}) {
   return { sections, omitPayloadKeys };
 }
 
-function rawPrimarySections(raw, relatedEvent, session = {}) {
-  if (relatedEvent?.kind === 'protocol') {
-    return {
-      sections: withoutSectionTypes(extractProtocolSections(relatedEvent, [raw]), ['raw_json']),
-      omitPayloadKeys: relatedEvent.subtype === 'session_meta'
-        ? ['id', 'cwd', 'originator']
-        : relatedEvent.subtype === 'turn_context'
-          ? ['turn_id', 'cwd', 'model']
-          : [],
-    };
-  }
-  if (['usage_limit_warning', 'compaction', 'abort', 'rollback', 'error', 'subagent'].includes(relatedEvent?.kind)) {
-    return {
-      sections: withoutSectionTypes(extractLifecycleSections(relatedEvent, [raw]), ['raw_json']),
-      omitPayloadKeys: ['type', 'turn_id', 'thread_id', 'thread_name', 'last_agent_message'],
-    };
-  }
+const codexDetailBuilder = createCodexDetailBuilder({
+  envelope: {
+    CANONICAL_SCHEMA_VERSION,
+    CODEX_SOURCE_KIND,
+    sanitizeLogicalDetailSections,
+    sanitizeLogicalEnvelopeValue,
+  },
+  sourceTrace: {
+    classifyProtocolText,
+    codexSourceLocator,
+    commandLanguageContext,
+    logicalMeta,
+    rawConversationRole,
+    rawEventsForLogicalEvent,
+    rawMatchesEvent,
+    rawMeta,
+    rawRef,
+    rawToolSections,
+  },
+  localization: {
+    i18n,
+    localizeDetailSections,
+    localizedLogicalLabel,
+    rawRecordLabel,
+  },
+  sectionBuilders: {
+    filterDetailSections,
+    makeNoticeSection,
+    makeRawJsonSection,
+    maybePushCodeSection,
+    maybePushKvSection,
+    maybePushMarkdownSection,
+    maybePushStructuredSection,
+    maybePushTerminalSection,
+    structuredOutputValue,
+    toKvEntries,
+    withoutKeys,
+    withoutSectionTypes,
+  },
+  sectionExtractors: {
+    extractCommandSections,
+    extractConversationSections,
+    extractJsReplSections,
+    extractLifecycleSections,
+    extractPatchSections,
+    extractPlanSections,
+    extractProtocolSections,
+    extractReasoningSections,
+    extractToolOperationSections,
+    extractToolSections,
+    extractUpdatePlanSections,
+    extractWebSearchSections,
+    inferCommandLanguage,
+  },
+});
+const { buildEventDetail } = codexDetailBuilder;
 
-  const tool = rawToolSections(raw, relatedEvent, session);
-  if (tool.sections.length) return tool;
-
-  if (rawConversationRole(raw)) {
-    return {
-      sections: extractConversationSections([raw]),
-      omitPayloadKeys: ['message'],
-    };
-  }
-  if (raw.recordType === 'event_msg' && raw.payloadType === 'agent_reasoning') {
-    return {
-      sections: extractReasoningSections([raw]),
-      omitPayloadKeys: ['text'],
-    };
-  }
-  if (raw.recordType === 'response_item' && raw.payloadType === 'reasoning') {
-    return {
-      sections: extractReasoningSections([raw]),
-      omitPayloadKeys: [],
-    };
-  }
-  if (raw.recordType === 'event_msg' && raw.payloadType === 'item_completed' && raw.parsed?.payload?.item?.type === 'Plan') {
-    return {
-      sections: withoutSectionTypes(extractPlanSections([raw]), ['raw_json']),
-      omitPayloadKeys: [],
-    };
-  }
-  if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.messageText.startsWith('<proposed_plan>')) {
-    return {
-      sections: withoutSectionTypes(extractPlanSections([raw]), ['raw_json']),
-      omitPayloadKeys: [],
-    };
-  }
-  return { sections: [], omitPayloadKeys: [] };
-}
-
-function sectionIsInspectorSupplement(section) {
-  if (!section) return false;
-  if (section.type === 'raw_json' || section.type === 'kv' || section.type === 'json') return true;
-  if (section.type === 'notice' && /(metadata|status|fields|raw json)$/i.test(section.title || '')) return true;
-  return false;
-}
-
-function splitSectionsForDetail(sections) {
-  const timelineSections = [];
-  const inspectorSections = [];
-  for (const section of sections || []) {
-    if (sectionIsInspectorSupplement(section)) inspectorSections.push(section);
-    else timelineSections.push(section);
-  }
-  return { timelineSections, inspectorSections };
-}
-
-function extractRawSections(raw, relatedEvent, session = {}) {
-  const sections = [];
-  const primary = rawPrimarySections(raw, relatedEvent, session);
-  sections.push(...primary.sections);
-  if (!primary.sections.length && raw.messageText) {
-    const subtype = classifyProtocolText(raw.messageText, raw.role);
-    if (subtype === 'user_shell_command') {
-      maybePushCodeSection(sections, 'Message', raw.messageText, 'shell');
-    } else {
-      maybePushMarkdownSection(sections, 'Message', raw.messageText);
-    }
-  }
-  if (!primary.sections.length && raw.commandText) {
-    maybePushCodeSection(sections, 'Command', raw.commandText, inferCommandLanguage(raw.commandText, {}, commandLanguageContext(session)));
-    maybePushTerminalSection(sections, 'stdout', raw.stdout, 'stdout');
-    maybePushTerminalSection(sections, 'stderr', raw.stderr, 'stderr');
-    if (raw.stdout) maybePushStructuredSection(sections, 'stdout (structured)', raw.stdout);
-    if (raw.stderr) maybePushStructuredSection(sections, 'stderr (structured)', raw.stderr);
-  }
-  if (!primary.sections.length && raw.output) {
-    maybePushStructuredSection(sections, 'Payload', structuredOutputValue(raw.output));
-  }
-  const recordFields = withoutKeys(raw.parsed?.payload, primary.omitPayloadKeys);
-  maybePushKvSection(sections, 'Record fields', toKvEntries(recordFields, ['type', 'role', 'name', 'call_id', 'status', 'cwd']));
-  if (raw.embeddedImages?.length) {
-    sections.push(makeNoticeSection('Externalized image payloads', 'This indexed raw view omits embedded image bytes. Open Raw refs to load the original lossless JSONL row.', 'info'));
-  }
-  sections.push(makeRawJsonSection(raw.embeddedImages?.length ? 'Indexed raw JSON' : 'Raw JSON', raw.parsed));
-  return sections;
-}
-
-function extractLogicalDetailSections(event, raws, session = {}) {
-  switch (event.kind) {
-    case 'user_message':
-    case 'assistant_message':
-      return splitSectionsForDetail(extractConversationSections(raws));
-    case 'proposed_plan':
-    case 'plan_update':
-      return splitSectionsForDetail(extractPlanSections(raws));
-    case 'reasoning':
-      return splitSectionsForDetail(extractReasoningSections(raws));
-    case 'command':
-      return extractCommandSections(raws, event, session);
-    case 'patch':
-      return extractPatchSections(raws, event, session);
-    case 'js_repl':
-      return splitSectionsForDetail(extractJsReplSections(raws, event));
-    case 'mcp_call':
-      return splitSectionsForDetail(extractToolSections(raws, event));
-    case 'other_tool_call':
-      if (event.toolName === 'update_plan') return extractUpdatePlanSections(raws, event);
-      return extractToolOperationSections(raws, event);
-    case 'web_search':
-      return splitSectionsForDetail(extractWebSearchSections(raws, event));
-    case 'protocol':
-      return splitSectionsForDetail(extractProtocolSections(event, raws));
-    case 'usage_limit_warning':
-    case 'compaction':
-    case 'abort':
-    case 'rollback':
-    case 'error':
-    case 'warning':
-    case 'subagent':
-    case 'review':
-      return splitSectionsForDetail(extractLifecycleSections(event, raws));
-    default:
-      return { timelineSections: [], inspectorSections: [makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed))] };
-  }
-}
-
-function buildEventDetail(session, eventId, layer = 'main') {
-  if (layer === 'raw') {
-    const raw = session.rawEvents.find((candidate) => candidate.rawId === eventId);
-    if (!raw) return null;
-    const relatedLogical = session.logicalEvents.find((event) => rawMatchesEvent(raw, event));
-    const sections = filterDetailSections(extractRawSections(raw, relatedLogical, session));
-    for (const section of sections) {
-      if (section.type === 'raw_json') section.expanded = true;
-    }
-    const split = splitSectionsForDetail(sections);
-    return {
-      id: raw.rawId,
-      kind: raw.payloadType || raw.recordType,
-      subtype: raw.role || '',
-      layer: 'raw',
-      title: raw.payloadType || raw.recordType,
-      meta: rawMeta(raw),
-      rawRefs: [rawRef(raw)],
-      timelineSections: filterDetailSections(split.timelineSections),
-      inspectorSections: filterDetailSections(split.inspectorSections),
-    };
-  }
-
-  const logical = session.logicalEvents.find((candidate) => candidate.id === eventId && candidate.layer === layer);
-  if (!logical) return null;
-  const raws = rawEventsForLogicalEvent(session, logical);
-  const detailSections = extractLogicalDetailSections(logical, raws, session);
-  if (!detailSections.timelineSections.length && !detailSections.inspectorSections.length) {
-    detailSections.inspectorSections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
-  }
-  const sanitizedDetailSections = sanitizeLogicalDetailSections(detailSections);
-  return {
-    id: logical.id,
-    kind: sanitizeLogicalEnvelopeValue(logical.kind),
-    subtype: sanitizeLogicalEnvelopeValue(logical.subtype),
-    layer: sanitizeLogicalEnvelopeValue(logical.layer),
-    title: sanitizeLogicalEnvelopeValue(logical.label),
-    meta: logicalMeta(logical),
-    rawRefs: logical.rawRefs,
-    timelineSections: filterDetailSections(sanitizedDetailSections.timelineSections),
-    inspectorSections: filterDetailSections(sanitizedDetailSections.inspectorSections),
-  };
-}
-
-function rawEventDto(raw, q) {
+function rawEventDto(raw, q, locale = i18n.DEFAULT_LOCALE) {
   const hasSearchHit = q ? eventHasSearchHit(raw, q) : false;
   return {
     id: raw.rawId,
+    schemaVersion: CANONICAL_SCHEMA_VERSION,
+    sourceKind: CODEX_SOURCE_KIND,
     timestamp: raw.timestamp,
     turnId: raw.turnId,
     recordType: raw.recordType,
     payloadType: raw.payloadType,
+    sourceRecordType: raw.recordType || '',
+    sourceEventType: raw.payloadType || '',
     kind: raw.payloadType || raw.recordType,
     subtype: raw.role || '',
     layer: 'raw',
     role: raw.role,
-    label: raw.payloadType || raw.recordType,
+    label: rawRecordLabel(raw, locale),
     preview: raw.preview,
     severity: raw.payloadType === 'error' ? 'error' : 'normal',
     status: raw.status,
@@ -3134,270 +2824,12 @@ function rawEventDto(raw, q) {
       durationMs: raw.durationMs,
     },
     source: raw.source,
+    sourceLocator: codexSourceLocator(raw.source),
     rawRefs: [rawRef(raw)],
     channels: [raw.recordType],
     searchText: raw.searchText,
     snippet: hasSearchHit ? eventSearchSnippet(raw, q) : '',
   };
-}
-
-function buildToolLogicalEvent(callId, group) {
-  const rawRefs = group.map(rawRef);
-  const channels = [...new Set(group.map((raw) => raw.recordType))];
-  const first = group[0];
-  const functionCall = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');
-  const functionOutput = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
-  const customCall = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call');
-  const customOutput = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output');
-  const execRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('exec_command_'));
-  const patchRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('patch_apply_'));
-  const mcpRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('mcp_tool_call_'));
-  const imageRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('image_generation_call_'));
-  const dynamicRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('dynamic_tool_call_'));
-  const approvalRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('approval_request_'));
-  const hookRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('hook_'));
-  const collabRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('collab_'));
-  const execEnd = execRows.find((raw) => raw.payloadType === 'exec_command_end');
-  const patchEnd = patchRows.find((raw) => raw.payloadType === 'patch_apply_end');
-  const mcpEnd = mcpRows.find((raw) => raw.payloadType === 'mcp_tool_call_end');
-
-  const protocolToolName = group.find((raw) => raw.toolName)?.toolName || '';
-  const toolName = customCall?.toolName || functionCall?.toolName || protocolToolName || '';
-  const functionOutputInfo = parseFormattedCommandOutput(functionOutput?.output);
-  const customOutputObj = parseOutputEnvelope(customOutput?.output);
-
-  let kind = 'other_tool_call';
-  let label = toolName || 'Other tool call';
-  let preview = truncate(toolName || 'Other tool call');
-  let status = 'completed';
-  let severity = 'normal';
-  let touchedFiles = [];
-  const outputStats = {};
-  const parts = [];
-
-  const protocolStatus = String(group.find((raw) => raw.status)?.status || '').toLowerCase();
-  const declined = group.some((raw) => /_declined$/.test(raw.payloadType) || String(raw.status || '').toLowerCase() === 'declined');
-  const failed = group.some((raw) => String(raw.status || '').toLowerCase() === 'failed');
-  const completed = group.some((raw) => /_end$/.test(raw.payloadType)) || Boolean(functionOutput || customOutput);
-  const explicitIncomplete = !completed && !failed && !declined;
-
-  if (execRows.length) {
-    const execText = execRows.map((raw) => [raw.commandText, raw.stdout, raw.stderr, raw.aggregatedOutput, raw.searchText].filter(Boolean).join('\n')).join('\n');
-    parts.push(execText);
-    if (execEnd?.exitCode != null) outputStats.exitCode = execEnd.exitCode;
-    if (execEnd?.durationMs) outputStats.durationMs = execEnd.durationMs;
-  }
-  if (functionCall) parts.push(functionCall.output);
-  if (functionOutput) parts.push(functionOutput.output);
-  if (customCall) parts.push(customCall.output);
-  if (customOutput) parts.push(customOutput.output);
-  if (mcpRows.length) parts.push(mcpRows.map((raw) => raw.searchText).join('\n'));
-  if (imageRows.length) parts.push(imageRows.map((raw) => raw.searchText).join('\n'));
-  if (dynamicRows.length) parts.push(dynamicRows.map((raw) => raw.searchText).join('\n'));
-  if (approvalRows.length) parts.push(approvalRows.map((raw) => raw.searchText).join('\n'));
-  if (hookRows.length) parts.push(hookRows.map((raw) => raw.searchText).join('\n'));
-  if (collabRows.length) parts.push(collabRows.map((raw) => raw.searchText).join('\n'));
-
-  if (toolName === 'shell_command' || execRows.length) {
-    kind = 'command';
-    const args = commandArgsFromRaw(functionCall);
-    const exitCode = numericExitCode(execEnd?.exitCode, functionOutputInfo?.exitCode, customOutputObj?.metadata?.exit_code);
-    const commandText = execRows.find((raw) => raw.commandText)?.commandText || commandToText(args?.command);
-    status = declined ? 'declined' : failed || (exitCode != null && exitCode !== 0) ? 'failed' : exitCode === 0 ? 'success' : explicitIncomplete ? 'incomplete' : protocolStatus || 'completed';
-    severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
-    label = status === 'failed' ? 'Failed command' : status === 'declined' ? 'Declined command' : status === 'incomplete' ? 'Incomplete command' : 'Command';
-    preview = truncate(commandText || functionCall?.output || group.find((raw) => raw.preview)?.preview || 'shell command');
-    if (exitCode != null) outputStats.exitCode = exitCode;
-    if (!outputStats.durationMs && customOutputObj?.metadata?.duration_seconds) {
-      outputStats.durationMs = Math.round(Number(customOutputObj.metadata.duration_seconds) * 1000);
-    }
-    touchedFiles = touchFilesFromOutputText(firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, functionOutputInfo?.output));
-  } else if (toolName === 'apply_patch' || patchRows.length) {
-    kind = 'patch';
-    const patchInput = firstNonEmpty(customCall?.output, patchRows.find((raw) => raw.output)?.output);
-    touchedFiles = patchEnd?.touchedFiles?.length ? patchEnd.touchedFiles : patchFilesFromPatchInput(patchInput || '');
-    const patchSuccess = inferPatchSuccess(patchEnd, customOutputObj, customOutput?.output);
-    status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : patchSuccess ? 'success' : 'failed';
-    severity = patchSuccess ? 'normal' : 'error';
-    if (status === 'declined' || status === 'incomplete') severity = 'warning';
-    label = status === 'success' ? 'Patch applied' : status === 'declined' ? 'Patch declined' : status === 'incomplete' ? 'Incomplete patch' : 'Patch failed';
-    preview = truncate(touchedFiles.join(', ') || customOutputObj?.output || patchInput || group.find((raw) => raw.preview)?.preview || 'apply_patch');
-    if (customOutputObj?.metadata && isFiniteNumberValue(customOutputObj.metadata.exit_code)) {
-      outputStats.exitCode = Number(customOutputObj.metadata.exit_code);
-    } else if (!patchSuccess) {
-      outputStats.exitCode = 1;
-    }
-    if (customOutputObj?.metadata?.duration_seconds) {
-      outputStats.durationMs = Math.round(Number(customOutputObj.metadata.duration_seconds) * 1000);
-    }
-  } else if (toolName === 'js_repl') {
-    kind = 'js_repl';
-    const exitCode = execEnd?.exitCode ?? customOutputObj?.metadata?.exit_code ?? 0;
-    status = exitCode === 0 ? 'success' : 'failed';
-    severity = exitCode === 0 ? 'normal' : 'error';
-    label = exitCode === 0 ? 'JS REPL' : 'JS REPL error';
-    preview = truncate(customCall?.output || customOutputObj?.output || 'js_repl');
-    outputStats.exitCode = exitCode;
-    outputStats.durationMs = execEnd?.durationMs || Math.round(Number(customOutputObj?.metadata?.duration_seconds || 0) * 1000);
-  } else if (mcpRows.length || toolName.startsWith('mcp__')) {
-    kind = 'mcp_call';
-    label = 'MCP tool';
-    preview = truncate(mcpEnd?.preview || group.find((raw) => raw.preview)?.preview || toolName);
-    status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
-    severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
-    outputStats.durationMs = mcpEnd?.durationMs || 0;
-  } else if (imageRows.length || dynamicRows.length || approvalRows.length || hookRows.length || collabRows.length) {
-    kind = 'other_tool_call';
-    label = humanizeProtocolSubtype(group.find((raw) => raw.recordType === 'event_msg' && raw.payloadType)?.payloadType || toolName || 'Other tool call');
-    preview = truncate(group.find((raw) => raw.preview)?.preview || toolName || label);
-    status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
-    severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
-  } else if (toolName === 'request_user_input' || toolName === 'update_plan' || toolName === 'view_image' || toolName === 'spawn_agent' || toolName === 'wait_agent' || toolName === 'send_input' || toolName === 'close_agent' || toolName === 'js_repl_reset') {
-    kind = 'other_tool_call';
-    label = toolName;
-    preview = truncate(functionCall?.output || functionOutput?.output || toolName);
-    status = 'success';
-  } else {
-    preview = truncate(first.preview || toolName || 'Other tool call');
-  }
-
-  return createLogicalEvent({
-    id: `${first.sessionId}:logical:call:${callId}`,
-    timestamp: first.timestamp,
-    turnId: first.turnId || '',
-    kind,
-    subtype: toolName || kind,
-    layer: 'main',
-    role: 'assistant',
-    label,
-    preview,
-    searchText: parts.filter(Boolean).join('\n'),
-    severity,
-    status,
-    toolName: toolName || kind,
-    touchedFiles,
-    outputStats,
-    rawRefs,
-    channels,
-  });
-}
-
-function isWebSearchCall(raw) {
-  return raw?.recordType === 'response_item' && raw.payloadType === 'web_search_call';
-}
-
-function isWebSearchEnd(raw) {
-  return raw?.recordType === 'event_msg' && raw.payloadType === 'web_search_end';
-}
-
-function webSearchActionKey(raw) {
-  const payload = raw?.parsed?.payload || {};
-  const action = payload.action && typeof payload.action === 'object' ? payload.action : {};
-  const type = action.type || '';
-  const query = action.query || (type === 'search' ? payload.query : '');
-  const url = action.url || payload.url || (type === 'open_page' ? payload.query : '');
-  const pattern = action.pattern || payload.pattern || '';
-  return [
-    type,
-    query,
-    url,
-    pattern,
-  ].filter(Boolean).join('\n');
-}
-
-function webSearchRowsMatch(searchEnd, searchCall) {
-  if (!isWebSearchEnd(searchEnd) || !isWebSearchCall(searchCall)) return false;
-  const endKey = webSearchActionKey(searchEnd);
-  const callKey = webSearchActionKey(searchCall);
-  if (endKey && callKey) return endKey === callKey;
-  if (!searchEnd.timestamp || !searchCall.timestamp) return true;
-  const deltaMs = Math.abs(Date.parse(searchEnd.timestamp) - Date.parse(searchCall.timestamp));
-  return Number.isFinite(deltaMs) && deltaMs <= 1000;
-}
-
-function buildWebSearchEvent(searchCall, searchEnd) {
-  const raws = [searchEnd, searchCall].filter(Boolean).sort((a, b) => a.line - b.line);
-  const first = raws[0];
-  const preview = searchEnd?.preview || searchCall?.preview || 'web_search';
-  const searchText = uniqueNonEmpty(raws.map((raw) => raw.searchText)).join('\n');
-  return createLogicalEvent({
-    id: `${first.sessionId}:logical:web_search:${first.line}`,
-    timestamp: first.timestamp,
-    turnId: searchEnd?.turnId || searchCall?.turnId || '',
-    kind: 'web_search',
-    subtype: 'web_search',
-    layer: 'main',
-    role: 'assistant',
-    label: 'Web search',
-    preview,
-    searchText,
-    severity: 'normal',
-    status: searchEnd?.status || searchCall?.status || 'completed',
-    toolName: 'web_search',
-    rawRefs: raws.map(rawRef),
-    channels: raws.map((raw) => raw.recordType),
-  });
-}
-
-function buildProtocolEvent(raw, subtype, label) {
-  const resolvedSubtype = subtype || raw.payloadType || raw.recordType || 'protocol_event';
-  const displayLabel = protocolLabelFor(resolvedSubtype, label);
-  const preview = protocolPreviewFor(raw, resolvedSubtype);
-  return createLogicalEvent({
-    id: `${raw.sessionId}:logical:protocol:${raw.line}`,
-    timestamp: raw.timestamp,
-    turnId: raw.turnId,
-    kind: 'protocol',
-    subtype: resolvedSubtype,
-    layer: 'protocol',
-    role: raw.role,
-    label: displayLabel,
-    preview,
-    searchText: uniqueNonEmpty([displayLabel, preview, raw.searchText]).join('\n'),
-    severity: 'normal',
-    status: raw.status,
-    rawRefs: [rawRef(raw)],
-    channels: [raw.recordType],
-  });
-}
-
-function buildLifecycleEvent(raw, kind, label, severity, previewOverride = '') {
-  const tokenUsage = kind === 'usage_limit_warning' ? tokenUsageItems(raw.parsed?.payload) : [];
-  const usageLimits = kind === 'usage_limit_warning' ? collectUsageLimitItems(raw.parsed?.payload) : [];
-  const reachedType = kind === 'usage_limit_warning' ? rateLimitReachedType(raw.parsed?.payload) : '';
-  return createLogicalEvent({
-    id: `${raw.sessionId}:logical:${kind}:${raw.line}`,
-    timestamp: raw.timestamp,
-    turnId: raw.turnId,
-    kind,
-    subtype: raw.payloadType || kind,
-    layer: 'main',
-    role: raw.role,
-    label,
-    preview: previewOverride || raw.preview || label,
-    searchText: raw.searchText,
-    severity,
-    status: raw.status || reachedType,
-    tokenUsage,
-    usageLimits,
-    rawRefs: [rawRef(raw)],
-    channels: [raw.recordType],
-  });
-}
-
-function reviewLifecyclePreview(raw) {
-  const payload = raw.parsed?.payload || {};
-  if (raw.payloadType === 'entered_review_mode') {
-    const hint = displayValue(firstNonEmpty(payload.user_facing_hint, payload.target), 180).trim();
-    return hint ? `Review started: ${hint}` : 'Review started';
-  }
-
-  const output = payload.review_output || {};
-  const findings = Array.isArray(output.findings) ? `${output.findings.length} findings` : '';
-  const correctness = displayValue(output.overall_correctness, 200).trim();
-  const explanation = displayValue(output.overall_explanation, 400).trim();
-  const summary = uniqueNonEmpty([correctness, findings, explanation]).join(' - ');
-  return truncate(summary ? `Review completed: ${summary}` : 'Review completed');
 }
 
 function reviewFindingMarkdown(finding, index) {
@@ -3476,65 +2908,6 @@ function extractReviewLifecycleSections(event, raws) {
   return sections;
 }
 
-function buildConversationEvent(id, kind, role, text, raws) {
-  return createLogicalEvent({
-    id,
-    timestamp: raws[0].timestamp,
-    turnId: raws.find((raw) => raw.turnId)?.turnId || '',
-    kind,
-    subtype: kind,
-    layer: 'main',
-    role,
-    label: role === 'user' ? 'User message' : 'Assistant message',
-    preview: truncate(text),
-    searchText: text,
-    severity: 'normal',
-    status: '',
-    rawRefs: raws.map(rawRef),
-    channels: [...new Set(raws.map((raw) => raw.recordType))],
-  });
-}
-
-function buildReasoningEvent(raws, text) {
-  return createLogicalEvent({
-    id: `${raws[0].sessionId}:logical:reasoning:${raws[0].line}`,
-    timestamp: raws[0].timestamp,
-    turnId: raws.find((raw) => raw.turnId)?.turnId || '',
-    kind: 'reasoning',
-    subtype: 'reasoning',
-    layer: text ? 'main' : 'protocol',
-    role: 'assistant',
-    label: text ? 'Reasoning' : 'Empty reasoning',
-    preview: truncate(text || raws[0].preview || 'reasoning'),
-    searchText: text,
-    hasReadableReasoning: Boolean(text),
-    severity: 'normal',
-    status: '',
-    rawRefs: raws.map(rawRef),
-    channels: [...new Set(raws.map((raw) => raw.recordType))],
-  });
-}
-
-function buildPlanArtifact(itemRaw, messageRaw, text) {
-  const raws = messageRaw ? [itemRaw, messageRaw] : [itemRaw];
-  return createLogicalEvent({
-    id: `${itemRaw.sessionId}:logical:plan:${itemRaw.line}`,
-    timestamp: itemRaw.timestamp,
-    turnId: itemRaw.turnId || messageRaw?.turnId || '',
-    kind: 'proposed_plan',
-    subtype: 'proposed_plan',
-    layer: 'main',
-    role: 'assistant',
-    label: 'Proposed plan',
-    preview: truncate(text),
-    searchText: text,
-    severity: 'normal',
-    status: '',
-    rawRefs: raws.map(rawRef),
-    channels: [...new Set(raws.map((raw) => raw.recordType))],
-  });
-}
-
 function planUpdateText(raw) {
   const payload = raw.parsed?.payload || {};
   if (payload.explanation) return displayValue(payload.explanation, 8000);
@@ -3548,297 +2921,45 @@ function planUpdateText(raw) {
   return flattenText(payload, 8000);
 }
 
-function buildPlanUpdateEvent(raw) {
-  const text = planUpdateText(raw);
-  return createLogicalEvent({
-    id: `${raw.sessionId}:logical:plan-update:${raw.line}`,
-    timestamp: raw.timestamp,
-    turnId: raw.turnId || '',
-    kind: 'plan_update',
-    subtype: raw.payloadType,
-    layer: 'main',
-    role: 'assistant',
-    label: raw.payloadType === 'plan_delta' ? 'Plan delta' : 'Plan update',
-    preview: truncate(text || raw.preview || raw.payloadType),
-    searchText: text || raw.searchText,
-    severity: 'normal',
-    status: raw.status || '',
-    rawRefs: [rawRef(raw)],
-    channels: [raw.recordType],
-  });
-}
-
-function protocolWarningLabel(type) {
-  if (type === 'stream_error') return 'Stream error';
-  if (type === 'guardian_warning') return 'Guardian warning';
-  return 'Warning';
-}
-
-function buildProtocolWarningEvent(raw) {
-  const isError = raw.payloadType === 'stream_error';
-  return createLogicalEvent({
-    id: `${raw.sessionId}:logical:${raw.payloadType}:${raw.line}`,
-    timestamp: raw.timestamp,
-    turnId: raw.turnId || '',
-    kind: isError ? 'error' : 'warning',
-    subtype: raw.payloadType,
-    layer: 'main',
-    role: 'system',
-    label: protocolWarningLabel(raw.payloadType),
-    preview: truncate(firstNonEmpty(raw.parsed?.payload?.message, raw.parsed?.payload?.reason, raw.preview, raw.payloadType)),
-    searchText: raw.searchText,
-    severity: isError ? 'error' : 'warning',
-    status: raw.status || '',
-    rawRefs: [rawRef(raw)],
-    channels: [raw.recordType],
-  });
-}
-
-function buildLogicalEvents(rawEvents) {
-  const logicalEvents = [];
-  const consumed = new Set();
-  const byCallId = new Map();
-
-  for (const raw of rawEvents) {
-    if (raw.callId) {
-      if (!byCallId.has(raw.callId)) byCallId.set(raw.callId, []);
-      byCallId.get(raw.callId).push(raw);
-    }
-  }
-
-  for (const [callId, group] of byCallId.entries()) {
-    group.sort((a, b) => a.line - b.line);
-    const hasToolShape = group.some((raw) => raw.recordType === 'response_item' && ['function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output'].includes(raw.payloadType))
-      || group.some((raw) => raw.recordType === 'event_msg' && TOOL_EVENT_TYPES.has(raw.payloadType));
-    if (!hasToolShape) continue;
-    logicalEvents.push(buildToolLogicalEvent(callId, group));
-    for (const raw of group) consumed.add(raw.rawId);
-  }
-
-  for (let i = 0; i < rawEvents.length; i += 1) {
-    const raw = rawEvents[i];
-    if (consumed.has(raw.rawId)) continue;
-    const next = rawEvents[i + 1];
-    const prev = rawEvents[i - 1];
-
-    if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'user') {
-      const protocolSubtype = classifyProtocolText(raw.messageText, raw.role);
-      if (protocolSubtype) {
-        logicalEvents.push(buildProtocolEvent(raw, protocolSubtype));
-        consumed.add(raw.rawId);
-        continue;
-      }
-      if (next && next.recordType === 'event_msg' && next.payloadType === 'user_message' && raw.messageText === next.messageText) {
-        logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:user:${raw.line}`, 'user_message', 'user', next.messageText, [raw, next]));
-        consumed.add(raw.rawId);
-        consumed.add(next.rawId);
-        continue;
-      }
-      logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:user:${raw.line}`, 'user_message', 'user', raw.messageText, [raw]));
-      consumed.add(raw.rawId);
-      continue;
-    }
-
-    if (raw.recordType === 'event_msg' && raw.payloadType === 'user_message') {
-      if (prev && prev.recordType === 'response_item' && prev.payloadType === 'message' && prev.role === 'user' && prev.messageText === raw.messageText) {
-        consumed.add(raw.rawId);
-        continue;
-      }
-      const protocolSubtype = classifyProtocolText(raw.messageText, 'user');
-      if (protocolSubtype) {
-        logicalEvents.push(buildProtocolEvent(raw, protocolSubtype));
-        consumed.add(raw.rawId);
-        continue;
-      }
-      logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:user:${raw.line}`, 'user_message', 'user', raw.messageText, [raw]));
-      consumed.add(raw.rawId);
-      continue;
-    }
-
-    if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'developer') {
-      logicalEvents.push(buildProtocolEvent(raw, classifyProtocolText(raw.messageText, 'developer') || 'developer_instruction'));
-      consumed.add(raw.rawId);
-      continue;
-    }
-
-    if (raw.recordType === 'event_msg' && raw.payloadType === 'agent_message') {
-      if (next && next.recordType === 'response_item' && next.payloadType === 'message' && next.role === 'assistant' && next.messageText === raw.messageText) {
-        logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:assistant:${raw.line}`, 'assistant_message', 'assistant', raw.messageText, [raw, next]));
-        consumed.add(raw.rawId);
-        consumed.add(next.rawId);
-        continue;
-      }
-      logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:assistant:${raw.line}`, 'assistant_message', 'assistant', raw.messageText, [raw]));
-      consumed.add(raw.rawId);
-      continue;
-    }
-
-    if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'assistant') {
-      if (prev && prev.recordType === 'event_msg' && prev.payloadType === 'agent_message' && prev.messageText === raw.messageText) {
-        consumed.add(raw.rawId);
-        continue;
-      }
-      if (raw.messageText.startsWith('<proposed_plan>')) {
-        logicalEvents.push(buildPlanArtifact(raw, null, raw.messageText));
-        consumed.add(raw.rawId);
-        continue;
-      }
-      logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:assistant:${raw.line}`, 'assistant_message', 'assistant', raw.messageText, [raw]));
-      consumed.add(raw.rawId);
-      continue;
-    }
-
-    if (raw.recordType === 'event_msg' && raw.payloadType === 'agent_reasoning') {
-      if (next && next.recordType === 'response_item' && next.payloadType === 'reasoning' && relatedReasoning(raw.messageText, next.messageText)) {
-        logicalEvents.push(buildReasoningEvent([raw, next], next.messageText || raw.messageText));
-        consumed.add(raw.rawId);
-        consumed.add(next.rawId);
-        continue;
-      }
-      logicalEvents.push(buildReasoningEvent([raw], raw.messageText));
-      consumed.add(raw.rawId);
-      continue;
-    }
-
-    if (raw.recordType === 'response_item' && raw.payloadType === 'reasoning') {
-      if (prev && prev.recordType === 'event_msg' && prev.payloadType === 'agent_reasoning' && relatedReasoning(prev.messageText, raw.messageText)) {
-        consumed.add(raw.rawId);
-        continue;
-      }
-      logicalEvents.push(buildReasoningEvent([raw], raw.messageText));
-      consumed.add(raw.rawId);
-      continue;
-    }
-
-    if (raw.recordType === 'event_msg' && raw.payloadType === 'item_completed' && raw.parsed.payload?.item?.type === 'Plan') {
-      if (next && next.recordType === 'response_item' && next.payloadType === 'message' && next.role === 'assistant' && next.messageText.startsWith('<proposed_plan>')) {
-        logicalEvents.push(buildPlanArtifact(raw, next, next.messageText));
-        consumed.add(raw.rawId);
-        consumed.add(next.rawId);
-        continue;
-      }
-      logicalEvents.push(buildPlanArtifact(raw, null, raw.parsed.payload.item.text || raw.searchText));
-      consumed.add(raw.rawId);
-      continue;
-    }
-
-    if (raw.recordType === 'event_msg' && ['plan_update', 'plan_delta'].includes(raw.payloadType)) {
-      logicalEvents.push(buildPlanUpdateEvent(raw));
-      consumed.add(raw.rawId);
-      continue;
-    }
-
-    if (isWebSearchCall(raw)) {
-      const pairedEnd = webSearchRowsMatch(next, raw) ? next : null;
-      const event = buildWebSearchEvent(raw, pairedEnd);
-      logicalEvents.push(event);
-      consumed.add(raw.rawId);
-      if (pairedEnd) consumed.add(pairedEnd.rawId);
-      continue;
-    }
-
-    if (isWebSearchEnd(raw)) {
-      if (webSearchRowsMatch(raw, prev)) {
-        consumed.add(raw.rawId);
-        continue;
-      }
-      if (webSearchRowsMatch(raw, next)) {
-        logicalEvents.push(buildWebSearchEvent(next, raw));
-        consumed.add(raw.rawId);
-        consumed.add(next.rawId);
-        continue;
-      }
-      logicalEvents.push(buildWebSearchEvent(null, raw));
-      consumed.add(raw.rawId);
-      continue;
-    }
-
-    if (raw.recordType === 'session_meta') {
-      logicalEvents.push(buildProtocolEvent(raw, 'session_meta'));
-      consumed.add(raw.rawId);
-      continue;
-    }
-
-    if (raw.recordType === 'turn_context') {
-      logicalEvents.push(buildProtocolEvent(raw, 'turn_context'));
-      consumed.add(raw.rawId);
-      continue;
-    }
-
-    if (raw.recordType === 'event_msg' && raw.payloadType === 'token_count') {
-      logicalEvents.push(buildProtocolEvent(raw, 'token_count'));
-      if (rateLimitReachedType(raw.parsed?.payload)) {
-        logicalEvents.push(buildLifecycleEvent(raw, 'usage_limit_warning', 'Usage limit reached', 'warning'));
-      }
-      consumed.add(raw.rawId);
-      continue;
-    }
-    if (raw.recordType === 'event_msg' && raw.payloadType === 'context_compacted') {
-      logicalEvents.push(buildLifecycleEvent(raw, 'compaction', 'Context compacted', 'warning'));
-      consumed.add(raw.rawId);
-      continue;
-    }
-    if (raw.recordType === 'event_msg' && raw.payloadType === 'turn_aborted') {
-      logicalEvents.push(buildLifecycleEvent(raw, 'abort', 'Turn aborted', 'error'));
-      consumed.add(raw.rawId);
-      continue;
-    }
-    if (raw.recordType === 'event_msg' && raw.payloadType === 'thread_rolled_back') {
-      logicalEvents.push(buildLifecycleEvent(raw, 'rollback', 'Thread rolled back', 'warning'));
-      consumed.add(raw.rawId);
-      continue;
-    }
-    if (raw.recordType === 'event_msg' && ['warning', 'guardian_warning', 'stream_error'].includes(raw.payloadType)) {
-      logicalEvents.push(buildProtocolWarningEvent(raw));
-      consumed.add(raw.rawId);
-      continue;
-    }
-    if (raw.recordType === 'event_msg' && raw.payloadType === 'error') {
-      logicalEvents.push(buildLifecycleEvent(raw, 'error', 'Error', 'error'));
-      consumed.add(raw.rawId);
-      continue;
-    }
-    if (raw.recordType === 'event_msg' && raw.payloadType === 'entered_review_mode') {
-      logicalEvents.push(buildLifecycleEvent(raw, 'review', 'Review started', 'normal', reviewLifecyclePreview(raw)));
-      consumed.add(raw.rawId);
-      continue;
-    }
-    if (raw.recordType === 'event_msg' && raw.payloadType === 'exited_review_mode') {
-      logicalEvents.push(buildLifecycleEvent(raw, 'review', 'Review completed', 'normal', reviewLifecyclePreview(raw)));
-      consumed.add(raw.rawId);
-      continue;
-    }
-    if (raw.recordType === 'event_msg' && ['collab_agent_spawn_end', 'collab_agent_interaction_end', 'collab_waiting_end', 'collab_close_end'].includes(raw.payloadType)) {
-      logicalEvents.push(buildLifecycleEvent(raw, 'subagent', 'Subagent', 'normal'));
-      consumed.add(raw.rawId);
-      continue;
-    }
-    if (raw.recordType === 'event_msg' && ['task_started', 'task_complete'].includes(raw.canonicalType)) {
-      logicalEvents.push(buildProtocolEvent(raw, raw.canonicalType));
-      consumed.add(raw.rawId);
-      continue;
-    }
-    if (raw.recordType === 'event_msg' && ['thread_name_updated', 'item_completed'].includes(raw.canonicalType)) {
-      logicalEvents.push(buildProtocolEvent(raw, raw.canonicalType));
-      consumed.add(raw.rawId);
-      continue;
-    }
-
-    logicalEvents.push(buildProtocolEvent(raw, raw.payloadType || raw.recordType, raw.payloadType || raw.recordType));
-    consumed.add(raw.rawId);
-  }
-
-  logicalEvents.sort((a, b) => {
-    const at = a.timestamp || '';
-    const bt = b.timestamp || '';
-    if (at !== bt) return at.localeCompare(bt);
-    const al = a.rawRefs[0]?.line || 0;
-    const bl = b.rawRefs[0]?.line || 0;
-    return al - bl;
-  });
-
-  return logicalEvents;
-}
+const codexLogicalBuilder = createCodexLogicalBuilder({
+  envelope: {
+    CANONICAL_SCHEMA_VERSION,
+    CODEX_SOURCE_KIND,
+    sanitizeLogicalEnvelopeValue,
+    rawRef,
+  },
+  protocol: {
+    classifyProtocolText,
+    humanizeProtocolSubtype,
+    protocolLabelFor,
+    protocolPreviewFor,
+  },
+  tool: {
+    TOOL_EVENT_TYPES,
+    commandArgsFromRaw,
+    commandToText,
+    inferPatchSuccess,
+    isFiniteNumberValue,
+    numericExitCode,
+    parseFormattedCommandOutput,
+    parseOutputEnvelope,
+    patchFilesFromPatchInput,
+    touchFilesFromOutputText,
+  },
+  text: {
+    displayValue,
+    firstNonEmpty,
+    planUpdateText,
+    relatedReasoning,
+    truncate,
+    uniqueNonEmpty,
+  },
+  usage: {
+    tokenUsageItems,
+    collectUsageLimitItems,
+    rateLimitReachedType,
+  },
+});
 
 function countBy(items, fn) {
   const map = new Map();
@@ -3849,13 +2970,14 @@ function countBy(items, fn) {
   return [...map.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
 }
 
-function eventKindOptionsFromCounts(counts) {
+function eventKindOptionsFromCounts(counts, locale = i18n.DEFAULT_LOCALE, labelFn = eventKindLabel) {
   return [...counts.entries()]
-    .sort((a, b) => eventKindLabel(a[0]).localeCompare(eventKindLabel(b[0])) || a[0].localeCompare(b[0]))
-    .map(([value, count]) => ({ value, label: eventKindLabel(value), count }));
+    .sort((a, b) => labelFn(a[0], locale).localeCompare(labelFn(b[0], locale)) || a[0].localeCompare(b[0]))
+    .map(([value, count]) => ({ value, label: labelFn(value, locale), count }));
 }
 
-function eventKindCatalog(sessions) {
+function eventKindCatalog(sessions, options = {}) {
+  const locale = i18n.resolveLocale(options.locale);
   const counts = {
     main: new Map(),
     protocol: new Map(),
@@ -3876,9 +2998,9 @@ function eventKindCatalog(sessions) {
     }
   }
   return {
-    main: eventKindOptionsFromCounts(counts.main),
-    protocol: eventKindOptionsFromCounts(counts.protocol),
-    raw: eventKindOptionsFromCounts(counts.raw),
+    main: eventKindOptionsFromCounts(counts.main, locale),
+    protocol: eventKindOptionsFromCounts(counts.protocol, locale),
+    raw: eventKindOptionsFromCounts(counts.raw, locale, rawRecordValueLabel),
   };
 }
 
@@ -4128,7 +3250,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
   }
 
   throwIfAborted(signal);
-  session.logicalEvents = buildLogicalEvents(session.rawEvents);
+  session.logicalEvents = codexLogicalBuilder.buildLogicalEvents(session.rawEvents);
   for (const event of session.logicalEvents) {
     addCounts(session, event);
     updateAnalysisDraft(session, event);
@@ -4160,6 +3282,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
   let skippedFileCount = 0;
   let unknownFileCount = 0;
   let candidateBytes = 0;
+  let filesScanned = 0;
 
   emitProgress(onProgress, {
     phase: 'selecting',
@@ -4179,18 +3302,20 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
     const inspected = await inspectSessionFile(filePath, { repoRoot: resolvedRepo, signal });
     const hasCwd = inspected.cwdSet.size > 0;
     const matchesRepo = [...inspected.cwdSet].some((cwd) => isPathInsideOrSame(cwd, resolvedRepo));
-    if (matchesRepo || !hasCwd) {
+    if (matchesRepo) {
       candidates.push(filePath);
       candidateBytes += inspected.bytes;
-      if (!hasCwd) unknownFileCount += 1;
+    } else if (!hasCwd) {
+      unknownFileCount += 1;
     } else {
       skippedFileCount += 1;
     }
+    filesScanned += 1;
     emitProgress(onProgress, {
       phase: 'selecting',
       repoRoot: resolvedRepo,
       filesTotal: files.length,
-      filesScanned: skippedFileCount + candidates.length,
+      filesScanned,
       candidateFileCount: candidates.length,
       skippedFileCount,
       unknownFileCount,
@@ -4379,12 +3504,14 @@ function sessionSummary(session, index) {
 }
 
 function filterSessions(index, filters) {
+  const locale = i18n.resolveLocale(filters.locale);
   let sessions = index.sessions.filter((session) => {
-    if (filters.from && String(session.updatedAt || session.startedAt) < `${filters.from}T00:00:00.000Z`) return false;
-    if (filters.to && String(session.startedAt || session.updatedAt) > `${filters.to}T23:59:59.999Z`) return false;
+    const activityAt = String(session.updatedAt || session.startedAt || '');
+    if (filters.from && activityAt < `${filters.from}T00:00:00.000Z`) return false;
+    if (filters.to && activityAt > `${filters.to}T23:59:59.999Z`) return false;
     if (filters.q && !matchTerms(session.searchText, filters.q)) return false;
     if (filters.kind || filters.status || filters.tool || filters.file || filters.layer) {
-      const haystack = filters.layer === 'raw' ? session.rawEvents.map((raw) => rawEventDto(raw, '')).filter((event) => eventMatches(event, filters)) : session.logicalEvents.filter((event) => eventMatches(event, filters));
+      const haystack = filters.layer === 'raw' ? session.rawEvents.map((raw) => rawEventDto(raw, '', locale)).filter((event) => eventMatches(event, filters)) : session.logicalEvents.filter((event) => eventMatches(event, filters));
       return haystack.length > 0;
     }
     return true;
@@ -4443,10 +3570,12 @@ function makeSnippet(text, q) {
   return `${prefix}${source.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
 }
 
-function logicalEventDto(event, q) {
+function logicalEventDto(event, q, locale = i18n.DEFAULT_LOCALE) {
   const hasSearchHit = q ? eventHasSearchHit(event, q) : false;
   return sanitizeLogicalEventDto({
     id: event.id,
+    schemaVersion: event.schemaVersion,
+    sourceKind: event.sourceKind,
     timestamp: event.timestamp,
     turnId: event.turnId,
     recordType: '',
@@ -4455,7 +3584,7 @@ function logicalEventDto(event, q) {
     subtype: event.subtype,
     layer: event.layer,
     role: event.role,
-    label: event.label,
+    label: localizedLogicalLabel(event, locale),
     preview: event.preview,
     severity: event.severity,
     status: event.status,
@@ -4468,6 +3597,7 @@ function logicalEventDto(event, q) {
     tokenUsage: event.tokenUsage,
     usageLimits: event.usageLimits,
     source: event.source,
+    sourceLocator: event.sourceLocator,
     rawRefs: event.rawRefs,
     channels: event.channels,
     snippet: hasSearchHit ? eventSearchSnippet(event, q) : '',
@@ -4475,11 +3605,12 @@ function logicalEventDto(event, q) {
 }
 
 function getTimeline(index, sessionId, filters) {
+  const locale = i18n.resolveLocale(filters.locale);
   const session = index.sessionsById.get(sessionId);
   if (!session) return null;
   const layer = filters.layer || 'main';
   const sourceEvents = layer === 'raw'
-    ? session.rawEvents.map((raw) => rawEventDto(raw, filters.q))
+    ? session.rawEvents.map((raw) => rawEventDto(raw, filters.q, locale))
     : session.logicalEvents.filter((event) => event.layer === layer);
   const structuralFilters = { ...filters, q: '', layer };
   const matched = sourceEvents.filter((event) => eventMatches(event, structuralFilters));
@@ -4488,14 +3619,14 @@ function getTimeline(index, sessionId, filters) {
     : 0;
   const page = matched.slice(filters.offset, filters.offset + filters.limit);
   return {
-    session: sessionSummary(session),
+    session: sessionSummary(session, index),
     total: matched.length,
     searchMatchCount,
     offset: filters.offset,
     limit: filters.limit,
     layer,
-    eventKinds: session.eventKinds || eventKindCatalog([session]),
-    events: layer === 'raw' ? page : page.map((event) => logicalEventDto(event, filters.q)),
+    eventKinds: eventKindCatalog([session], { locale }),
+    events: layer === 'raw' ? page : page.map((event) => logicalEventDto(event, filters.q, locale)),
   };
 }
 

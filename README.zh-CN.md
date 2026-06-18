@@ -33,36 +33,30 @@ Codex 转录可能包含提示词、命令输出、文件路径、环境详情�
 - Node.js 18 或更高版本
 - npm
 
-## 安装
-
-```sh
-npm install
-```
-
-## 运行
+## 通过 npm 运行
 
 不指定仓库启动，然后在浏览器中从发现的项目里选择：
 
 ```sh
-npm start
+npx session-analyzer
 ```
 
 或者启动时显式指定仓库：
 
 ```sh
-node server.js --repo /path/to/project
+npx session-analyzer --repo /path/to/project
 ```
 
 Windows 示例：
 
 ```powershell
-node server.js --repo 'C:\path\to\project'
+npx session-analyzer --repo 'C:\path\to\project'
 ```
 
-默认情况下，应用会从 `~/.codex` 读取 Codex 转录。如果你的转录在其他位置，可以使用 `--codex-home`：
+默认情况下，应用会从 `~/.codex` 读取 Codex transcript。如果你的 transcript 在其他位置，可以使用 `--codex-home`：
 
 ```sh
-node server.js --repo /path/to/project --codex-home /path/to/.codex --port 17890
+npx session-analyzer --repo /path/to/project --codex-home /path/to/.codex --port 17890
 ```
 
 然后打开：
@@ -70,6 +64,59 @@ node server.js --repo /path/to/project --codex-home /path/to/.codex --port 17890
 ```text
 http://127.0.0.1:17890/
 ```
+
+也可以全局安装 CLI：
+
+```sh
+npm install -g session-analyzer
+session-analyzer --repo /path/to/project
+```
+
+默认 host 是 `127.0.0.1`。`--host` 是高级选项；绑定到 localhost 之外可能让网络上的其他机器读取当前进程可访问的 transcript 内容。
+
+## 从源码开发
+
+安装依赖：
+
+```sh
+npm install
+```
+
+从源码仓库启动：
+
+```sh
+npm start
+```
+
+或者直接运行 server 文件：
+
+```powershell
+node server.js --repo 'C:\path\to\project'
+```
+
+构建浏览器 bundle：
+
+```sh
+npm run build
+```
+
+运行测试：
+
+```sh
+npm test
+```
+
+发布打包前运行 package smoke 验证：
+
+```sh
+npm run test:package
+```
+
+package smoke 命令会执行 `npm pack`，把 tarball 安装到全新的临时项目中，检查已安装 CLI 的 help，并启动打包后的 server。
+
+`test/fixtures/codex-home` 下的测试 fixture 是合成转录数据。它们有意包含假的 Windows 路径和示例转录形态，用于覆盖解析器行为。
+
+浏览器 JavaScript 源码位于 `src/browser/`，浏览器与 Node 共用逻辑位于 `src/shared/`。生成的运行时 bundle 是 `public/assets/app.js`；不要直接编辑它。
 
 ## 使用方式
 
@@ -79,21 +126,23 @@ http://127.0.0.1:17890/
 4. 使用忽略大小写的普通文本短语或筛选条件搜索，例如 `file:src/parser.js`、`kind:command`、`status:failed` 和 `layer:raw`。短语中的空白可以匹配空格、Tab 或换行。
 5. 打开事件以检查结构化详情和原始引用。
 
-## 测试
+npm 包不承诺稳定的程序接口。v0.1 支持的接口是 `session-analyzer` CLI。
 
-```sh
-npm test
-```
+## 已知限制
 
-`test/fixtures/codex-home` 下的测试 fixture 是合成转录数据。它们有意包含假的 Windows 路径和示例转录形态，用于覆盖解析器行为。
+- v0.1 只支持 Codex transcript。非 Codex transcript 格式只是未来 adapter 的设计参考，不是当前支持的导入来源。
+- 未来或未知的 Codex protocol event 仍可通过 protocol/raw 兜底视图检查，但并非每个事件族都有完整精致的结构化渲染器。
+- Transcript fixture 覆盖是有重点的，不是穷尽式的；后续观察到新的历史形态时，可能仍需要补充 fixture 和展示调整。
+- Review finding 渲染已有 synthetic 覆盖，但非空 `review_output.findings[]` 仍需要在拿到真实转录样本后验证。
 
 ## 仓库结构
 
 - `server.js`：本地 HTTP 服务器和 API 路由。
 - `src/codex.js`：转录解析、项目发现、索引、逻辑时间线构建和事件详情提取。
 - `src/folding.js`：内置时间线折叠策略。
-- `public/folding.js`：浏览器与 Node 共用的折叠规则求值。
-- `public/`：浏览器 UI、搜索解析、渲染器和样式。
+- `src/shared/`：浏览器与 Node 共用逻辑，例如折叠规则求值和命令高亮元数据。
+- `src/browser/`：浏览器 UI 源码、搜索解析、渲染器、导航和应用接线。
+- `public/`：静态 HTML/CSS 和生成的浏览器运行时资产。
 - `test/`：Node 测试套件和合成转录 fixture。
 - `docs/`：产品规格、设计文档、执行计划和 backlog 笔记。
 

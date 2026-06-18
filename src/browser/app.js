@@ -7,6 +7,7 @@ const renderTimelineSections = rendererApi.renderTimelineSections;
 const searchQuery = window.sessionSearchQuery;
 const searchHighlighter = window.sessionSearchHighlighter;
 const foldingApi = window.sessionFolding;
+const i18n = window.sessionI18n;
 const navigationApi = window.sessionNavigation;
 const eventChipsApi = window.sessionEventChips;
 
@@ -19,6 +20,7 @@ const SEARCH_HIGHLIGHT_INPUT_DELAY_MS = 300;
 const REPO_STORAGE_KEY = 'sessionAnalyzer.repoRoot';
 const CUSTOM_PROFILES_KEY = 'sessionAnalyzer.customProfiles';
 const OVERRIDES_KEY = 'sessionAnalyzer.overrides';
+const LOCALE_STORAGE_KEY = 'sessionAnalyzer.locale';
 const DISPLAY_STATES = foldingApi.DISPLAY_STATES;
 const CONDITION_DISPLAY_STATES = foldingApi.CONDITION_DISPLAY_STATES;
 const EDITABLE_EVENT_KINDS = foldingApi.EDITABLE_EVENT_KINDS;
@@ -28,12 +30,6 @@ const normalizeOverrides = foldingApi.normalizeOverrides;
 const evaluateDisplayStateFromRules = foldingApi.displayStateFromRules;
 const inspectorChipValues = eventChipsApi.inspectorChipValues;
 const rawRefsSubtitle = eventChipsApi.rawRefsSubtitle;
-const DISPLAY_STATE_LABELS = {
-  expanded: '展开',
-  summary: '摘要',
-  collapsed: '折叠',
-  hidden: '隐藏',
-};
 const KIND_LABELS = {
   user_message: 'User message',
   assistant_message: 'Assistant message',
@@ -69,7 +65,26 @@ const LAYER_LABELS = {
 };
 const NAVIGATION_CATEGORIES = navigationApi.NAVIGATION_CATEGORIES;
 
+function browserLocale() {
+  const saved = localStorage.getItem(LOCALE_STORAGE_KEY);
+  if (saved) return i18n.resolveLocale(saved);
+  return i18n.resolveLocale(navigator.languages?.[0] || navigator.language || '');
+}
+
+function t(key, vars = {}) {
+  return i18n.t(state?.locale || browserLocale(), 'ui', key, vars);
+}
+
+function displayStateLabel(value) {
+  return i18n.displayStateLabel(value, state?.locale || browserLocale());
+}
+
+function statusLabel(value) {
+  return i18n.statusLabel(value, state?.locale || browserLocale());
+}
+
 const state = {
+  locale: browserLocale(),
   sessions: [],
   repoRoot: '',
   projects: [],
@@ -129,6 +144,7 @@ const el = {
   projectSwitchHint: document.querySelector('.projectSwitchHint'),
   stateLine: document.getElementById('stateLine'),
   searchInput: document.getElementById('searchInput'),
+  localeSelect: document.getElementById('localeSelect'),
   searchAssist: document.getElementById('searchAssist'),
   searchAssistChips: document.getElementById('searchAssistChips'),
   searchField: document.querySelector('.searchField'),
@@ -185,6 +201,82 @@ function updateDetailViewChrome() {
   document.body.dataset.detailView = state.detailView?.type || 'profileRules';
 }
 
+function setText(node, text) {
+  if (node) node.textContent = text;
+}
+
+function setSelectOptionText(select, value, text) {
+  const option = select ? [...select.options].find((item) => item.value === value) : null;
+  if (option) option.textContent = text;
+}
+
+function applyStaticLocale() {
+  window.sessionAnalyzerLocale = state.locale;
+  document.documentElement.lang = state.locale;
+  if (el.localeSelect) el.localeSelect.value = state.locale;
+  document.querySelector('.localeControl .srOnly') && setText(document.querySelector('.localeControl .srOnly'), t('localeLabel'));
+  if (el.localeSelect) el.localeSelect.setAttribute('aria-label', t('localeLabel'));
+  if (!state.repoRoot && !state.projectLoadingRoot) setText(el.stateLine, t('stateLoading'));
+  if (el.searchInput) el.searchInput.placeholder = t('searchPlaceholder');
+  if (el.searchAssist) el.searchAssist.setAttribute('aria-label', t('searchOptions'));
+  document.querySelector('[data-search-match-controls]')?.setAttribute('title', t('searchMatchTitle'));
+  document.querySelector('[data-search-match-nav="previous"]')?.setAttribute('aria-label', t('previousSearchMatch'));
+  document.querySelector('[data-search-match-nav="previous"]')?.setAttribute('title', t('previousSearchMatch'));
+  document.querySelector('[data-search-match-nav="next"]')?.setAttribute('aria-label', t('nextSearchMatch'));
+  document.querySelector('[data-search-match-nav="next"]')?.setAttribute('title', t('nextSearchMatch'));
+  document.querySelectorAll('.searchAssistTitle')[0] && setText(document.querySelectorAll('.searchAssistTitle')[0], t('searchFilters'));
+  document.querySelectorAll('.searchAssistTitle')[1] && setText(document.querySelectorAll('.searchAssistTitle')[1], t('active'));
+  setSelectOptionText(el.searchKindSelect, '', t('anyKind'));
+  setSelectOptionText(el.searchStatusSelect, '', t('anyStatus'));
+  setSelectOptionText(el.searchStatusSelect, 'failed', statusLabel('failed'));
+  setSelectOptionText(el.searchStatusSelect, 'success', statusLabel('success'));
+  setSelectOptionText(el.searchStatusSelect, 'completed', statusLabel('completed'));
+  setSelectOptionText(el.searchLayerSelect, '', t('currentLayer'));
+  setSelectOptionText(el.searchLayerSelect, 'main', t('mainTimeline'));
+  setSelectOptionText(el.searchLayerSelect, 'protocol', t('protocolLayer'));
+  setSelectOptionText(el.searchLayerSelect, 'raw', t('rawRecords'));
+  setSelectOptionText(el.layerSelect, 'main', t('mainTimeline'));
+  setSelectOptionText(el.layerSelect, 'protocol', t('protocolLayer'));
+  setSelectOptionText(el.layerSelect, 'raw', t('rawRecords'));
+  setSelectOptionText(el.sortSelect, 'updated-desc', t('updatedDesc'));
+  setSelectOptionText(el.sortSelect, 'started-asc', t('startedAsc'));
+  setSelectOptionText(el.sortSelect, 'events-desc', t('eventsDesc'));
+  setSelectOptionText(el.sortSelect, 'failures-desc', t('failuresDesc'));
+  setText(document.querySelector('.mobileViewTab[data-mobile-view="sessions"]'), t('sessions'));
+  setText(document.querySelector('.mobileViewTab[data-mobile-view="events"]'), t('events'));
+  setText(document.querySelector('.mobileViewTab[data-mobile-view="detail"]'), t('detail'));
+  setText(el.resetFoldsBtn, t('resetFolds'));
+  setText(el.loadMoreBtn, t('loadMore'));
+  setText(document.querySelector('.projectChooserHeader h2'), t('selectProject'));
+  setText(document.querySelector('.projectChooserHeader p'), t('chooseProject'));
+  setText(el.projectCancelBtn, t('cancelIndexing'));
+  setText(document.querySelector('.sessionsPane .sessionListHeader h2'), t('sessions'));
+  setText(document.querySelector('.sortControl .srOnly'), t('sort'));
+  el.layerSelect?.setAttribute('aria-label', t('layer'));
+  el.profileSelect?.setAttribute('aria-label', t('foldingStrategy'));
+  setText(document.getElementById('dirtyProfileTitle'), t('dirtyProfileTitle'));
+  setText(document.getElementById('dirtyProfileMessage'), t('dirtyProfileMessage'));
+  setText(document.querySelector('.appDialogMeta dt'), t('currentStrategy'));
+  setText(document.querySelector('.appDialogField span'), t('saveAs'));
+  setText(document.querySelector('[data-dirty-profile-choice="save"]'), t('saveAndSwitch'));
+  setText(document.querySelector('[data-dirty-profile-choice="discard"]'), t('discardAndSwitch'));
+  setText(document.querySelector('[data-dirty-profile-choice="cancel"]'), t('cancel'));
+  const sessionHeaderTitle = el.sessionHeader?.querySelector('h2');
+  const sessionHeaderText = el.sessionHeader?.querySelector('p');
+  if (!state.selectedSessionId) {
+    setText(sessionHeaderTitle, t('chooseSession'));
+    setText(sessionHeaderText, t('leftListFiltered'));
+  }
+  if (!state.selectedEventId && !el.detail?.querySelector('.detailView')) {
+    const detailTitle = el.detail?.querySelector('h2');
+    const detailText = el.detail?.querySelector('p');
+    setText(detailTitle, t('eventDetail'));
+    setText(detailText, t('clickTimelineEvent'));
+  }
+  updateProjectChooserHeader();
+  updateProjectSwitchControl();
+}
+
 function readJsonStorage(key, fallback) {
   try {
     const value = JSON.parse(localStorage.getItem(key) || 'null');
@@ -200,11 +292,18 @@ function writeJsonStorage(key, value) {
 
 function api(path, options = {}) {
   const init = { ...options };
+  let requestPath = path;
+  const method = String(init.method || 'GET').toUpperCase();
+  if (method === 'GET') {
+    const url = new URL(path, window.location.origin);
+    url.searchParams.set('locale', state.locale);
+    requestPath = `${url.pathname}${url.search}${url.hash}`;
+  }
   if (options.body && typeof options.body !== 'string') {
     init.body = JSON.stringify(options.body);
     init.headers = { 'content-type': 'application/json', ...(options.headers || {}) };
   }
-  return fetch(path, init).then(async (res) => {
+  return fetch(requestPath, init).then(async (res) => {
     const body = await res.json();
     if (!res.ok) {
       const error = new Error(body.error || `HTTP ${res.status}`);
@@ -238,7 +337,7 @@ function fmtDate(value) {
 
 function projectName(repoRoot) {
   const text = String(repoRoot || '').replace(/[\\/]+$/, '');
-  if (!text) return 'Select project';
+  if (!text) return t('selectProject');
   return text.split(/[\\/]/).filter(Boolean).pop() || text;
 }
 
@@ -256,11 +355,11 @@ function updateProjectChrome(options = {}) {
 function updateProjectChooserHeader() {
   if (!el.projectChooserTitle || !el.projectChooserDescription) return;
   if (state.projectLoadingRoot) {
-    el.projectChooserTitle.textContent = `Opening ${projectName(state.projectLoadingRoot)}`;
-    el.projectChooserDescription.textContent = 'Indexing matching Codex sessions before showing the project timeline.';
+    el.projectChooserTitle.textContent = t('openingProject', { name: projectName(state.projectLoadingRoot) });
+    el.projectChooserDescription.textContent = t('indexingProject');
   } else {
-    el.projectChooserTitle.textContent = 'Select target project';
-    el.projectChooserDescription.textContent = 'Choose a Codex session working directory to analyze.';
+    el.projectChooserTitle.textContent = t('selectProject');
+    el.projectChooserDescription.textContent = t('chooseProject');
   }
 }
 
@@ -271,19 +370,19 @@ function updateProjectSwitchControl(options = {}) {
   const labelRoot = canReturn ? returnRoot : displayRoot;
   if (el.projectTitle) el.projectTitle.textContent = projectName(labelRoot);
   if (el.projectSwitchHint) {
-    el.projectSwitchHint.textContent = state.projectReturning ? 'Returning' : (canReturn ? 'Return' : (displayRoot ? 'Change' : 'Select'));
+    el.projectSwitchHint.textContent = state.projectReturning ? t('returning') : (canReturn ? t('return') : (displayRoot ? t('change') : t('select')));
   }
   if (!el.projectSwitchControl) return;
   el.projectSwitchControl.disabled = state.projectReturning || Boolean(state.projectLoadingRoot || state.projectJobId);
   if (state.projectReturning && returnRoot) {
-    el.projectSwitchControl.title = `Returning to project: ${returnRoot}`;
-    el.projectSwitchControl.setAttribute('aria-label', `Returning to current project: ${returnRoot}`);
+    el.projectSwitchControl.title = t('returningToProject', { root: returnRoot });
+    el.projectSwitchControl.setAttribute('aria-label', t('returningToCurrentProject', { root: returnRoot }));
   } else if (canReturn) {
-    el.projectSwitchControl.title = `Return to project: ${returnRoot}`;
-    el.projectSwitchControl.setAttribute('aria-label', `Return to current project: ${returnRoot}`);
+    el.projectSwitchControl.title = t('returnToProject', { root: returnRoot });
+    el.projectSwitchControl.setAttribute('aria-label', t('returnToCurrentProject', { root: returnRoot }));
   } else {
-    el.projectSwitchControl.title = displayRoot ? `Switch project: ${displayRoot}` : 'Select target project';
-    el.projectSwitchControl.setAttribute('aria-label', displayRoot ? `Switch target project: ${displayRoot}` : 'Select target project');
+    el.projectSwitchControl.title = displayRoot ? t('switchProject', { root: displayRoot }) : t('selectProject');
+    el.projectSwitchControl.setAttribute('aria-label', displayRoot ? t('switchTargetProject', { root: displayRoot }) : t('selectProject'));
   }
 }
 
@@ -320,7 +419,7 @@ function humanizeKind(value) {
 }
 
 function kindLabel(value) {
-  return KIND_LABELS[value] || humanizeKind(value) || value;
+  return i18n.eventKindLabel(value, state.locale) || KIND_LABELS[value] || humanizeKind(value) || value;
 }
 
 function projectProgressPercent(progress) {
@@ -341,19 +440,19 @@ function renderProjectJob(job) {
   const phase = progress.phase || job?.status || 'queued';
   const parts = [];
   if (phase === 'selecting') {
-    parts.push(`Scanning ${progress.filesScanned || 0}/${progress.filesTotal || 0} transcript files`);
-    parts.push(`${progress.candidateFileCount || 0} candidates`);
-    parts.push(`${progress.skippedFileCount || 0} skipped`);
+    parts.push(t('scanningFiles', { done: progress.filesScanned || 0, total: progress.filesTotal || 0 }));
+    parts.push(t('candidates', { count: progress.candidateFileCount || 0 }));
+    parts.push(t('skipped', { count: progress.skippedFileCount || 0 }));
   } else if (phase === 'parsing') {
-    parts.push(`Parsing ${progress.indexedFileCount || 0}/${progress.candidateFileCount || 0} candidate files`);
-    parts.push(`${progress.sessionCount || 0} sessions`);
+    parts.push(t('parsingFiles', { done: progress.indexedFileCount || 0, total: progress.candidateFileCount || 0 }));
+    parts.push(t('sessionCount', { count: progress.sessionCount || 0 }));
     parts.push(fmtBytes(progress.indexedBytes || 0));
   } else if (job?.status === 'cancelled') {
-    parts.push('Indexing cancelled');
+    parts.push(t('indexingCancelled'));
   } else if (job?.status === 'failed') {
-    parts.push(job.error || 'Indexing failed');
+    parts.push(job.error || t('indexingFailed'));
   } else {
-    parts.push(`Preparing index for ${projectName(job?.repoRoot || progress.repoRoot || '')}`);
+    parts.push(t('preparingIndex', { name: projectName(job?.repoRoot || progress.repoRoot || '') }));
   }
   if (progress.elapsedMs || job?.buildMs) parts.push(fmtDuration(progress.elapsedMs || job.buildMs));
   if (el.projectStatus) el.projectStatus.textContent = parts.join(' | ');
@@ -391,7 +490,11 @@ function profileAppliesToActiveLayer() {
 }
 
 function activeLayerLabel() {
-  return LAYER_LABELS[activeLayerId()] || activeLayerId();
+  const layer = activeLayerId();
+  if (layer === 'main') return t('mainTimeline');
+  if (layer === 'protocol') return t('protocolLayer');
+  if (layer === 'raw') return t('rawRecords');
+  return LAYER_LABELS[layer] || layer;
 }
 
 function highlightTerms() {
@@ -426,9 +529,9 @@ function structuredSearchKey() {
 function currentSearchMarkLabel() {
   const { marks, activeIndex } = state.searchHighlight;
   const total = searchHighlighter.displayedMatchTotal(state.timelineSearchMatchCount, marks.length);
-  if (!total) return 'No matches';
+  if (!total) return t('noMatches');
   const current = marks.length && activeIndex >= 0 ? activeIndex + 1 : 0;
-  return `${current} / ${total} matches`;
+  return t('matchCount', { current, total });
 }
 
 function updateSearchMatchControls() {
@@ -574,7 +677,7 @@ function resetDetailPane() {
   state.detailHistory = [];
   state.searchTargetPreload = { key: '', pages: 0, pending: false };
   state.detailView = { type: 'profileRules' };
-  renderProfileRulesPane();
+  renderProfileRulesPane({ reveal: false });
   updateSelectedTimelineEvent();
 }
 
@@ -597,7 +700,7 @@ function activeProfile() {
   return state.profiles.find((profile) => profile.id === state.profileId)
     || state.profiles.find((profile) => profile.id === 'narrative')
     || state.profiles[0]
-    || { id: 'narrative', name: '叙事时间线', description: '', rules: defaultRules() };
+    || i18n.localizeProfile({ id: 'narrative', name: 'narrative', description: '', rules: defaultRules() }, state.locale);
 }
 
 function renderProfileOptions() {
@@ -609,19 +712,19 @@ function renderProfileOptions() {
 function renderProfileInfoItems() {
   const rows = state.profiles.map((profile) => {
     const active = profile.id === state.profileId ? ' active' : '';
-    const description = profile.description || '暂无说明。';
+    const description = profile.description || t('profileInfoMissingDescription');
     return `<div class="profileInfoItem${active}">
       <strong>${escapeHtml(profile.name || profile.id)}</strong>
       <p>${escapeHtml(description)}</p>
     </div>`;
   }).join('');
-  return rows || '<div class="profileInfoItem"><p>暂无折叠策略说明。</p></div>';
+  return rows || `<div class="profileInfoItem"><p>${escapeHtml(t('profileInfoEmpty'))}</p></div>`;
 }
 
 function profileInfoLabel() {
   const profile = activeProfile();
-  const description = profile.description || '暂无说明。';
-  return `查看折叠策略说明，当前策略：${profile.name || profile.id}。${description}`;
+  const description = profile.description || t('profileInfoMissingDescription');
+  return t('profileInfoLabel', { name: profile.name || profile.id, description });
 }
 
 function ensureProfileInfoSlot() {
@@ -706,7 +809,7 @@ function knownEventKinds() {
 }
 
 function conditionDefinitions() {
-  return CONDITION_DEFINITIONS;
+  return CONDITION_DEFINITIONS.map((condition) => i18n.localizeCondition(condition, state.locale));
 }
 
 function sourceRefs(event) {
@@ -742,15 +845,15 @@ function shortSessionTitle(value, limit = 54) {
 function sessionRelationshipLabel(session) {
   if (session.isDerivedSession) {
     const parent = shortId(session.parentSessionId);
-    const kind = session.derivedKind === 'review' ? 'Review' : 'Subagent';
+    const kind = session.derivedKind === 'review' ? t('reviewKind') : t('subagentKind');
     const nickname = session.agentNickname && session.agentNickname.toLowerCase() !== kind.toLowerCase() ? ` ${session.agentNickname}` : '';
     const parentLabel = shortSessionTitle(session.parentSessionTitle) || parent;
-    if (parentLabel) return `${kind}${nickname} · from ${parentLabel}`;
-    return `${kind}${nickname} session`;
+    if (parentLabel) return t('derivedFrom', { kind, nickname, parent: parentLabel });
+    return t('derivedSession', { kind, nickname });
   }
   const forkedFrom = shortId(session.forkedFromSessionId);
   const forkedFromLabel = shortSessionTitle(session.forkedFromSessionTitle) || forkedFrom;
-  if (forkedFromLabel) return `Fork · from ${forkedFromLabel}`;
+  if (forkedFromLabel) return t('forkFrom', { parent: forkedFromLabel });
   return '';
 }
 
@@ -789,15 +892,15 @@ function renderInspectorMetadata(event, refs, detail = null) {
   const meta = detail?.meta || event;
   const outputStats = meta.outputStats || event.outputStats || {};
   return [
-    metadataRow('Time', fmtDate(meta.timestamp || event.timestamp)),
-    metadataRow('Status', meta.status || event.status),
-    metadataRow('Severity', meta.severity && meta.severity !== 'normal' ? meta.severity : ''),
-    metadataRow('Tool', meta.toolName || event.toolName),
-    metadataRow('Exit code', outputStats.exitCode == null ? '' : String(outputStats.exitCode)),
-    metadataRow('Duration', outputStats.durationMs == null ? '' : `${outputStats.durationMs} ms`),
-    metadataRow('Record type', event.recordType),
-    metadataRow('Channels', formatList(meta.channels || event.channels)),
-    metadataRow('Touched files', formatList(meta.touchedFiles || event.touchedFiles)),
+    metadataRow(t('time'), fmtDate(meta.timestamp || event.timestamp)),
+    metadataRow(t('status'), meta.status || event.status),
+    metadataRow(t('severity'), meta.severity && meta.severity !== 'normal' ? meta.severity : ''),
+    metadataRow(t('tool'), meta.toolName || event.toolName),
+    metadataRow(t('exitCode'), outputStats.exitCode == null ? '' : String(outputStats.exitCode)),
+    metadataRow(t('duration'), outputStats.durationMs == null ? '' : `${outputStats.durationMs} ms`),
+    metadataRow(t('recordType'), event.recordType),
+    metadataRow(t('channels'), formatList(meta.channels || event.channels)),
+    metadataRow(t('touchedFiles'), formatList(meta.touchedFiles || event.touchedFiles)),
   ].join('');
 }
 
@@ -805,11 +908,11 @@ function renderInspectorSource(event, refs, detail = null) {
   const meta = detail?.meta || event;
   const source = sourceLabel(meta.source || event.source || refs[0]);
   return `<section class="inspectorSection">
-    <h3>Source</h3>
+    <h3>${escapeHtml(t('source'))}</h3>
     ${source ? `<div class="inspectorSourcePath">${escapeHtml(source)}</div>` : ''}
     <div class="inspectorActions">
-      <button class="smallBtn" type="button" data-detail-action="raw">Raw refs</button>
-      <span class="rawMeta">${escapeHtml(refs.length ? `${refs.length} JSONL row${refs.length === 1 ? '' : 's'}` : 'No raw refs available')}</span>
+      <button class="smallBtn" type="button" data-detail-action="raw">${escapeHtml(t('rawRefs'))}</button>
+      <span class="rawMeta">${escapeHtml(refs.length ? t('rawRows', { count: refs.length, plural: refs.length === 1 ? '' : 's' }) : t('noRawRefs'))}</span>
     </div>
   </section>`;
 }
@@ -821,20 +924,20 @@ function renderInspectorDetail(event) {
   if (detail) {
     if (!detail.inspectorSections?.length) return '';
     return `<section class="inspectorSection">
-      <h3>Details</h3>
+      <h3>${escapeHtml(t('details'))}</h3>
       <div class="inspectorDetailBody">${renderSections(detail.inspectorSections)}</div>
     </section>`;
   }
   if (error) {
     return `<section class="inspectorSection">
-      <h3>Details</h3>
+      <h3>${escapeHtml(t('details'))}</h3>
       <div class="notice error"><p>${escapeHtml(error)}</p></div>
-      <button class="smallBtn" type="button" data-detail-action="retry-detail">Retry detail</button>
+      <button class="smallBtn" type="button" data-detail-action="retry-detail">${escapeHtml(t('retryDetail'))}</button>
     </section>`;
   }
   return `<section class="inspectorSection">
-    <h3>Details</h3>
-    <div class="notice info"><p>Loading structured detail...</p></div>
+    <h3>${escapeHtml(t('details'))}</h3>
+    <div class="notice info"><p>${escapeHtml(t('loadingStructuredDetail'))}</p></div>
   </section>`;
 }
 
@@ -870,23 +973,23 @@ function optionText(select, value, fallback = {}) {
 function activeFilters() {
   const filters = [];
   const search = currentSearchState();
-  if (search.kind) filters.push({ key: 'kind', label: `Kind: ${optionText(el.searchKindSelect, search.kind) || kindLabel(search.kind)}` });
-  if (search.status) filters.push({ key: 'status', label: `Status: ${optionText(el.searchStatusSelect, search.status, STATUS_LABELS)}` });
-  if (search.file) filters.push({ key: 'file', label: `File: ${search.file}` });
-  if (search.parsed.layer && search.layer !== 'main') filters.push({ key: 'layer', label: `Layer: ${optionText(el.layerSelect, search.layer, LAYER_LABELS)}` });
+  if (search.kind) filters.push({ key: 'kind', label: `${t('kind')}: ${optionText(el.searchKindSelect, search.kind) || kindLabel(search.kind)}` });
+  if (search.status) filters.push({ key: 'status', label: `${t('status')}: ${optionText(el.searchStatusSelect, search.status, STATUS_LABELS)}` });
+  if (search.file) filters.push({ key: 'file', label: `${t('file')}: ${search.file}` });
+  if (search.parsed.layer && search.layer !== 'main') filters.push({ key: 'layer', label: `${t('layer')}: ${optionText(el.layerSelect, search.layer, LAYER_LABELS)}` });
   return filters;
 }
 
 function activeFindAndFilters() {
   const search = currentSearchState();
   return [
-    search.q ? { key: 'q', label: `Find: ${search.q}` } : null,
+    search.q ? { key: 'q', label: `${t('find')}: ${search.q}` } : null,
     ...activeFilters(),
   ].filter(Boolean);
 }
 
 function filterChipMarkup(filter) {
-  return `<button class="filterChip" type="button" data-clear-filter="${escapeHtml(filter.key)}" aria-label="Clear ${escapeHtml(filter.label)}">
+  return `<button class="filterChip" type="button" data-clear-filter="${escapeHtml(filter.key)}" aria-label="${escapeHtml(t('clear', { label: filter.label }))}">
       <span>${escapeHtml(filter.label)}</span><span aria-hidden="true">&times;</span>
     </button>`;
 }
@@ -902,16 +1005,16 @@ function hasFocusedTimelineContext() {
 
 function renderReadFromHereAction() {
   if (!state.selectedSessionId || !state.selectedEventId || !hasFocusedTimelineContext()) return '';
-  return '<button class="smallBtn readFromHereBtn" type="button" data-detail-action="read-from-here" title="Clear event filters, switch to Main timeline, and keep this position">Read from here</button>';
+  return `<button class="smallBtn readFromHereBtn" type="button" data-detail-action="read-from-here" title="${escapeHtml(t('readFromHereTitle'))}">${escapeHtml(t('readFromHere'))}</button>`;
 }
 
 function renderSearchAssistChips(filters = activeFindAndFilters()) {
   if (!el.searchAssistChips) return;
   if (!filters.length) {
-    el.searchAssistChips.innerHTML = '<span class="searchAssistEmpty">No active find or filters</span>';
+    el.searchAssistChips.innerHTML = `<span class="searchAssistEmpty">${escapeHtml(t('noActiveFilters'))}</span>`;
     return;
   }
-  el.searchAssistChips.innerHTML = `${renderFilterChips(filters)}<button class="clearFiltersBtn" type="button" data-clear-filter="all">Clear all</button>`;
+  el.searchAssistChips.innerHTML = `${renderFilterChips(filters)}<button class="clearFiltersBtn" type="button" data-clear-filter="all">${escapeHtml(t('clearAll'))}</button>`;
 }
 
 function setSelectIfOption(select, value) {
@@ -942,7 +1045,7 @@ function renderKindOptions() {
   const search = currentSearchState();
   const options = normalizedKindOptions(search.layer);
   const values = new Set(options.map((option) => option.value));
-  const rows = ['<option value="">Any kind</option>'];
+  const rows = [`<option value="">${escapeHtml(t('anyKind'))}</option>`];
   if (search.kind && !values.has(search.kind)) {
     rows.push(`<option value="${escapeHtml(search.kind)}">${escapeHtml(`${kindLabel(search.kind)} (${search.kind})`)}</option>`);
   }
@@ -1050,19 +1153,19 @@ function renderResultSummary() {
   }
   const sessionTotal = state.sessionGrandTotal || state.sessionTotal;
   const countText = filters.length && sessionTotal
-    ? `Sessions: ${state.sessionTotal} match (${sessionTotal} total)`
-    : (filters.length ? `Sessions: ${state.sessionTotal} match` : '');
+    ? t('sessionsMatchTotal', { count: state.sessionTotal, total: sessionTotal })
+    : (filters.length ? t('sessionsMatch', { count: state.sessionTotal }) : '');
   const eventText = filters.length && state.selectedSessionId
-    ? `Events: ${state.timelineTotal} match${state.offset < state.timelineTotal ? ` (${state.offset} loaded)` : ''}`
-    : (filters.length ? 'Events: select a session' : '');
+    ? (state.offset < state.timelineTotal ? t('eventsMatchLoaded', { count: state.timelineTotal, loaded: state.offset }) : t('eventsMatch', { count: state.timelineTotal }))
+    : (filters.length ? t('eventsSelectSession') : '');
   const matchControls = search.q
-    ? `<div class="searchMatchControls" data-search-match-controls title="Rendered jump targets; total keeps the full-text count and is raised when more rendered targets are visible">
+    ? `<div class="searchMatchControls" data-search-match-controls title="${escapeHtml(t('searchMatchTitle'))}">
       <span class="searchMatchCount" data-search-match-count>${escapeHtml(currentSearchMarkLabel())}</span>
     </div>`
     : '';
   const countMarkup = [countText, eventText].filter(Boolean).join(' · ');
-  const filterText = renderFilterChips(controls) + '<button class="clearFiltersBtn" type="button" data-clear-filter="all">Clear all</button>';
-  el.resultSummary.innerHTML = `${countMarkup ? `<div class="resultCounts">${escapeHtml(countMarkup)}</div>` : ''}${matchControls}<div class="activeFilters" aria-label="Active find and filters">${filterText}</div>`;
+  const filterText = renderFilterChips(controls) + `<button class="clearFiltersBtn" type="button" data-clear-filter="all">${escapeHtml(t('clearAll'))}</button>`;
+  el.resultSummary.innerHTML = `${countMarkup ? `<div class="resultCounts">${escapeHtml(countMarkup)}</div>` : ''}${matchControls}<div class="activeFilters" aria-label="${escapeHtml(t('activeFindFilters'))}">${filterText}</div>`;
   updateSearchMatchControls();
 }
 
@@ -1208,8 +1311,8 @@ function updateProfileApplicabilityUi(analyzerDisabled = false) {
   if (el.profileSelect) {
     el.profileSelect.disabled = analyzerDisabled || !applies;
     const label = applies
-      ? '折叠策略'
-      : 'Folding strategies apply only to Main timeline. This layer uses fixed display rules.';
+      ? t('foldingStrategy')
+      : t('fixedProfileRules');
     el.profileSelect.removeAttribute('title');
     el.profileSelect.setAttribute('aria-label', label);
   }
@@ -1255,9 +1358,9 @@ function resetProjectViewState() {
   el.analysisPanel.innerHTML = '';
   el.timeline.innerHTML = '';
   el.resultSummary.textContent = '';
-  el.sessionHeader.innerHTML = '<h2>Select a session</h2><p>Choose a target project first.</p>';
+  el.sessionHeader.innerHTML = `<h2>${escapeHtml(t('chooseSession'))}</h2><p>${escapeHtml(t('selectSessionFirst'))}</p>`;
   el.loadMoreBtn.disabled = true;
-  el.loadMoreBtn.textContent = 'Load more';
+  el.loadMoreBtn.textContent = t('loadMore');
   updateResetFoldsButton();
   resetDetailPane();
 }
@@ -1270,7 +1373,7 @@ function renderProjects() {
   if (!state.projects.length) {
     el.projectList.innerHTML = loadingRoot
       ? ''
-      : '<div class="notice warning"><p>No Codex projects were found in the configured sessions directory.</p></div>';
+      : `<div class="notice warning"><p>${escapeHtml(t('noCodexProjects'))}</p></div>`;
     return;
   }
   const saved = localStorage.getItem(REPO_STORAGE_KEY) || '';
@@ -1286,19 +1389,19 @@ function renderProjects() {
       isLoading ? 'loading' : '',
     ].filter(Boolean).join(' ');
     const badges = [
-      isSaved ? '<span class="projectBadge">Last selected</span>' : '',
-      project.exists ? '' : '<span class="projectBadge warning">Missing directory</span>',
+      isSaved ? `<span class="projectBadge">${escapeHtml(t('lastSelected'))}</span>` : '',
+      project.exists ? '' : `<span class="projectBadge warning">${escapeHtml(t('missingDirectory'))}</span>`,
     ].join('');
-    const action = isLoading ? '<span class="projectSpinner" aria-hidden="true"></span><span>Indexing...</span>' : '<span>Open</span>';
+    const action = isLoading ? `<span class="projectSpinner" aria-hidden="true"></span><span>${escapeHtml(t('indexing'))}</span>` : `<span>${escapeHtml(t('open'))}</span>`;
     const facts = statsPending
-      ? '<span>Activity loading...</span>'
-      : `<span>${escapeHtml(sessionCount)} session${sessionCount === 1 ? '' : 's'}</span><span>${escapeHtml(project.updatedAt ? fmtDate(project.updatedAt) : 'No transcript activity')}</span>`;
+      ? `<span>${escapeHtml(t('activityLoading'))}</span>`
+      : `<span>${escapeHtml(t('sessionCount', { count: sessionCount }))}</span><span>${escapeHtml(project.updatedAt ? fmtDate(project.updatedAt) : t('noTranscriptActivity'))}</span>`;
     return `<button class="${classes}" type="button" data-project-root="${escapeHtml(project.repoRoot)}"${loadingRoot ? ' disabled' : ''}>
       <span class="projectMain">
         <span class="projectName">${escapeHtml(projectName(project.repoRoot))}${badges}</span>
         <span class="projectPath">${escapeHtml(project.repoRoot)}</span>
       </span>
-      <span class="projectFacts" aria-label="Project activity">
+      <span class="projectFacts" aria-label="${escapeHtml(t('projectActivity'))}">
         ${facts}
       </span>
       <span class="projectAction">${action}</span>
@@ -1345,8 +1448,8 @@ async function showProjectChooser(options = {}) {
   updateProjectChrome({ displayRoot: '', returnRoot: state.repoRoot });
   clearProjectPollTimer();
   resetProjectViewState();
-  setProjectHeader('', 'Choose a target project to continue.');
-  if (el.projectStatus) el.projectStatus.textContent = 'Loading project list...';
+  setProjectHeader('', t('chooseTargetProjectContinue'));
+  if (el.projectStatus) el.projectStatus.textContent = t('loadingProjectList');
   if (el.projectProgress) el.projectProgress.hidden = true;
   if (el.projectCancelBtn) el.projectCancelBtn.hidden = true;
   if (el.projectList) el.projectList.innerHTML = '';
@@ -1359,8 +1462,8 @@ async function showProjectChooser(options = {}) {
     if (renderedSummary) renderProjects();
     if (el.projectStatus) {
       el.projectStatus.textContent = renderedSummary
-        ? `Loading project activity from ${summary.codexHome}...`
-        : 'Discovering transcript projects...';
+        ? t('projectActivityLoading', { codexHome: summary.codexHome })
+        : t('discoveringProjects');
     }
   } catch (error) {
     console.warn('Unable to load project summary', error);
@@ -1370,7 +1473,7 @@ async function showProjectChooser(options = {}) {
   if (!isActiveProjectChooserRequest(requestId)) return;
   state.projects = data.projects;
   renderProjects();
-  if (el.projectStatus) el.projectStatus.textContent = state.projects.length ? `${state.projects.length} project candidates from ${data.codexHome}` : `No project candidates from ${data.codexHome}`;
+  if (el.projectStatus) el.projectStatus.textContent = state.projects.length ? t('projectCandidates', { count: state.projects.length, codexHome: data.codexHome }) : t('noProjectCandidates', { codexHome: data.codexHome });
 
   const saved = localStorage.getItem(REPO_STORAGE_KEY);
   if (options.autoRestore && saved && state.projects.some((project) => project.repoRoot === saved)) {
@@ -1390,7 +1493,7 @@ async function exitProjectChooser() {
     await cancelProjectJob(jobId);
     const appState = await api('/api/state');
     const currentState = appState.currentState || (!appState.job ? appState : null);
-    if (!currentState?.projectSelected) throw new Error('No project is available to return to');
+    if (!currentState?.projectSelected) throw new Error(t('projectUnavailable'));
     await finishProjectSelection(currentState, { restore: true });
   } catch (error) {
     state.projectReturning = false;
@@ -1400,6 +1503,8 @@ async function exitProjectChooser() {
 }
 
 async function applyAppState(appState) {
+  if (appState.locale) state.locale = i18n.resolveLocale(appState.locale);
+  applyStaticLocale();
   state.repoRoot = appState.repoRoot || '';
   state.builtinProfiles = normalizeProfiles(appState.foldingProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
@@ -1407,7 +1512,11 @@ async function applyAppState(appState) {
   state.sessionGrandTotal = appState.totals.sessionCount || 0;
   setProjectHeader(
     appState.repoRoot,
-    `${appState.totals.sessionCount} sessions | ${appState.totals.eventCount} logical events | ${appState.totals.rawEventCount} raw records`,
+    [
+      t('sessionCount', { count: appState.totals.sessionCount }),
+      t('logicalEventCount', { count: appState.totals.eventCount }),
+      t('rawRecordCount', { count: appState.totals.rawEventCount }),
+    ].join(' | '),
   );
   el.profileSelect.innerHTML = renderProfileOptions();
   el.profileSelect.value = state.profileId;
@@ -1444,6 +1553,32 @@ async function finishProjectSelection(appState, options = {}) {
   if (el.projectCancelBtn) el.projectCancelBtn.hidden = true;
 }
 
+async function changeLocale(locale) {
+  const next = i18n.resolveLocale(locale);
+  if (next === state.locale) return;
+  const dirtyDraft = profileDirty()
+    ? { profileId: state.profileId, rules: normalizeRules(cloneProfile(state.profileDraft).rules || defaultRules()) }
+    : null;
+  state.locale = next;
+  localStorage.setItem(LOCALE_STORAGE_KEY, state.locale);
+  resetSessionDetailCache();
+  applyStaticLocale();
+  if (state.projectSelected) {
+    const appState = await api('/api/state');
+    await applyAppState(appState.currentState || appState);
+    await loadSessions();
+    if (dirtyDraft && state.profileId === dirtyDraft.profileId && state.profiles.some((profile) => profile.id === dirtyDraft.profileId)) {
+      state.profileDraft = cloneProfile(activeProfile());
+      state.profileDraft.rules = normalizeRules(dirtyDraft.rules);
+      renderTimeline();
+      updateMetricActionStates();
+      if (state.detailView.type === 'profileRules') renderProfileRulesPane();
+    }
+  } else {
+    renderProjects();
+  }
+}
+
 async function handleProjectJobResponse(data, options = {}) {
   const job = data.job || {};
   if (job.id !== state.projectJobId) return;
@@ -1455,18 +1590,18 @@ async function handleProjectJobResponse(data, options = {}) {
       const current = await api('/api/state');
       if (!current.job) appState = current;
     }
-    if (!appState) throw new Error('Project index completed but state is not available');
+    if (!appState) throw new Error(t('projectIndexUnavailable'));
     await finishProjectSelection(appState, options);
     return;
   }
-  if (job.status === 'failed') throw new Error(job.error || 'Indexing failed');
+  if (job.status === 'failed') throw new Error(job.error || t('indexingFailed'));
   if (job.status === 'cancelled') {
     state.projectLoadingRoot = '';
     state.projectJobId = '';
     state.projectReturning = false;
     setAnalyzerDisabled(false);
     updateProjectChrome({ displayRoot: state.repoRoot, returnRoot: state.repoRoot });
-    if (el.projectStatus) el.projectStatus.textContent = 'Indexing cancelled.';
+    if (el.projectStatus) el.projectStatus.textContent = t('indexingCancelledSentence');
     if (el.projectProgress) el.projectProgress.hidden = true;
     if (el.projectCancelBtn) el.projectCancelBtn.hidden = true;
     if (state.projects.length) renderProjects();
@@ -1504,12 +1639,12 @@ async function selectProject(repoRoot, options = {}) {
   clearProjectPollTimer();
   updateProjectChrome({ displayRoot: state.repoRoot, returnRoot: state.repoRoot });
   renderProjects();
-  if (el.projectStatus) el.projectStatus.textContent = `Reading matching sessions for ${repoRoot}. This can take a few seconds for large transcript history.`;
+  if (el.projectStatus) el.projectStatus.textContent = t('readingMatchingSessions', { repoRoot });
   setAnalyzerDisabled(true);
   try {
     const started = await api('/api/project', {
       method: 'POST',
-      body: { repoRoot },
+      body: { repoRoot, locale: state.locale },
     });
     const job = started.job || {};
     if (requestId !== state.projectChooserRequestId) {
@@ -1581,7 +1716,7 @@ async function loadSessions() {
     el.analysisPanel.innerHTML = '';
     updateLoadMoreButton();
     updateResetFoldsButton();
-    el.sessionHeader.innerHTML = '<h2>No matching session</h2><p>Adjust the search or filters.</p>';
+    el.sessionHeader.innerHTML = `<h2>${escapeHtml(t('noMatchingSession'))}</h2><p>${escapeHtml(t('adjustSearchFilters'))}</p>`;
     resetDetailPane();
     renderResultSummary();
   } else if (state.selectedSessionId) {
@@ -1602,10 +1737,10 @@ function renderSessions() {
       <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
       <span class="chips">
         ${relationship ? `<span class="chip relationshipChip" title="${escapeHtml(relationshipTitle)}">${escapeHtml(relationship)}</span>` : ''}
-        <span class="chip">${session.counts.messages} msgs</span>
-        <span class="chip">${session.counts.toolCalls} tools</span>
-        <span class="chip">${session.counts.failedCommands} failed cmds</span>
-        <span class="chip">${session.protocolCount} protocol</span>
+        <span class="chip">${escapeHtml(t('messageCountShort', { count: session.counts.messages }))}</span>
+        <span class="chip">${escapeHtml(t('toolCountShort', { count: session.counts.toolCalls }))}</span>
+        <span class="chip">${escapeHtml(t('failedCommandCountShort', { count: session.counts.failedCommands }))}</span>
+        <span class="chip">${escapeHtml(t('protocolCountShort', { count: session.protocolCount }))}</span>
       </span>
     </button>`;
   }).join('');
@@ -1629,7 +1764,7 @@ async function selectSession(sessionId, options = {}) {
   if (session) {
     const relationship = sessionRelationshipLabel(session);
     el.sessionHeader.innerHTML = `<h2>${escapeHtml(session.title)}</h2>
-      <div class="sessionMeta" aria-label="Session metadata">
+      <div class="sessionMeta" aria-label="${escapeHtml(t('sessionMetadata'))}">
         ${relationship ? `<span class="sessionMetaChip">${escapeHtml(relationship)}</span>` : ''}
         <span class="sessionMetaChip">${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</span>
         <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
@@ -1644,12 +1779,12 @@ async function loadAnalysis(sessionId) {
   const planCount = analysis.counts.planEvents ?? analysis.counts.planArtifacts;
   const issueCount = analysis.counts.issueEvents ?? analysis.counts.failedCommands;
   el.analysisPanel.innerHTML = [
-    metric('Turns', analysis.counts.turns),
-    metric('Messages', analysis.counts.messages, { action: 'profile', value: 'conversation', label: '切换到对话阅读折叠策略' }),
-    metric('Issues', issueCount, { action: 'profile', value: 'debug', label: '切换到错误聚焦折叠策略' }),
-    metric('Files', analysis.patchedFiles.length, { action: 'profile', value: 'changes', label: '切换到改动审查折叠策略' }),
-    metric('Protocol', analysis.counts.protocol, { action: 'layer', value: 'protocol', label: '切换到协议层事件' }),
-    metric('Plans', planCount, { action: 'profile', value: 'planning', label: '切换到计划阅读折叠策略' }),
+    metric(t('metricTurns'), analysis.counts.turns),
+    metric(t('metricMessages'), analysis.counts.messages, { action: 'profile', value: 'conversation', label: t('switchToConversationProfile') }),
+    metric(t('metricIssues'), issueCount, { action: 'profile', value: 'debug', label: t('switchToIssueProfile') }),
+    metric(t('metricFiles'), analysis.patchedFiles.length, { action: 'profile', value: 'changes', label: t('switchToChangesProfile') }),
+    metric(t('metricProtocol'), analysis.counts.protocol, { action: 'layer', value: 'protocol', label: t('switchToProtocolLayer') }),
+    metric(t('metricPlans'), planCount, { action: 'profile', value: 'planning', label: t('switchToPlanningProfile') }),
   ].join('');
 }
 
@@ -1666,8 +1801,8 @@ function metric(label, value, action = null) {
   const disabledProfileAction = action?.action === 'profile' && !profileAppliesToActiveLayer() && hasValue;
   const isActionable = action && hasValue && !disabledProfileAction;
   const actionLabel = disabledProfileAction
-    ? `${label} shortcut is available on Main timeline only.`
-    : (action?.label ? `${action.label}：${value} ${label}` : '');
+    ? t('metricShortcutMainOnly', { label })
+    : (action?.label ? t('metricActionCount', { action: action.label, value, label }) : '');
   const actionAttrs = isActionable
     ? ` role="button" tabindex="0" aria-pressed="${isMetricActionActive(action) ? 'true' : 'false'}" aria-label="${escapeHtml(actionLabel)}" title="${escapeHtml(actionLabel)}" data-metric-action="${escapeHtml(action.action)}" data-metric-value="${escapeHtml(action.value)}"`
     : (disabledProfileAction ? ` aria-disabled="true" title="${escapeHtml(actionLabel)}"` : '');
@@ -1753,9 +1888,11 @@ function updateLoadMoreButton() {
   const hasMore = state.offset < state.timelineTotal;
   el.loadMoreBtn.disabled = !state.selectedSessionId || state.timelineLoading || !hasMore;
   if (state.timelineLoading) {
-    el.loadMoreBtn.textContent = 'Loading...';
+    el.loadMoreBtn.textContent = t('loading');
   } else {
-    el.loadMoreBtn.textContent = hasMore ? `Load more (${state.offset}/${state.timelineTotal})` : `Loaded ${state.offset}`;
+    el.loadMoreBtn.textContent = hasMore
+      ? t('loadMoreCount', { loaded: state.offset, total: state.timelineTotal })
+      : t('loadedCount', { loaded: state.offset });
   }
 }
 
@@ -1880,17 +2017,17 @@ function renderEventBody(event, display) {
     return `<div class="eventBody">${renderTimelineSections(detail.timelineSections, preview)}</div>`;
   }
   if (error) {
-    return `<div class="eventBody"><div class="notice error"><p>${escapeHtml(error)}</p></div><button class="smallBtn" type="button" data-action="retry-detail">Retry detail</button></div>`;
+    return `<div class="eventBody"><div class="notice error"><p>${escapeHtml(error)}</p></div><button class="smallBtn" type="button" data-action="retry-detail">${escapeHtml(t('retryDetail'))}</button></div>`;
   }
   const snippet = event.hasSearchHit && event.snippet
     ? `<div class="eventPreview eventLoadingSnippet">${escapeHtml(event.snippet)}</div>`
     : '';
-  return `<div class="eventBody">${snippet}<div class="notice info"><p>Loading structured detail...</p></div></div>`;
+  return `<div class="eventBody">${snippet}<div class="notice info"><p>${escapeHtml(t('loadingStructuredDetail'))}</p></div></div>`;
 }
 
 function renderEventFooterActions(display) {
   if (display !== 'expanded') return '';
-  const label = 'Collapse event';
+  const label = t('collapseEvent');
   return `<div class="eventFooterActions">
     <button class="eventCollapseBtn" type="button" data-action="toggle" aria-label="${label}" title="${label}">
       <svg class="eventCollapseIcon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -1921,7 +2058,7 @@ function renderTokenUsageBadges(items) {
 }
 
 function renderUsageLimitPreview(items) {
-  return items.map((item) => `<div class="usageLimitMini"><strong>${escapeHtml(item.label || '')}</strong><span>${escapeHtml(item.remaining || '')} remaining</span><em>Resets ${escapeHtml(item.reset || '')}</em></div>`).join('');
+  return items.map((item) => `<div class="usageLimitMini"><strong>${escapeHtml(item.label || '')}</strong><span>${escapeHtml(item.remaining || '')} ${escapeHtml(t('remaining'))}</span><em>${escapeHtml(t('resets'))} ${escapeHtml(item.reset || '')}</em></div>`).join('');
 }
 
 function cssToken(value) {
@@ -1945,11 +2082,11 @@ function renderTimeline() {
     const chips = [
       event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
       event.toolName ? `<span class="chip toolChip">${escapeHtml(event.toolName)}</span>` : '',
-      event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} files</span>` : '',
-      event.rawRefs?.length ? `<span class="chip countChip">${event.rawRefs.length} raw</span>` : '',
+      event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t('files'))}</span>` : '',
+      event.rawRefs?.length ? `<span class="chip countChip">${event.rawRefs.length} ${escapeHtml(t('raw'))}</span>` : '',
       event.channels?.length ? `<span class="chip channelChip">${escapeHtml(event.channels.join(','))}</span>` : '',
     ].join('');
-    const toggleLabel = ds === 'expanded' ? 'Collapse event' : 'Expand event';
+    const toggleLabel = ds === 'expanded' ? t('collapseEvent') : t('expandEvent');
     return `<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
       <div class="eventHeader">
         <button class="eventToggle" type="button" data-action="toggle" aria-label="${toggleLabel}" title="${toggleLabel}">
@@ -2131,7 +2268,7 @@ function selectedNavigationCategoryId(event, categories) {
 function renderInspectorNavigation(event) {
   const cache = currentNavigationCache();
   if (!cache) {
-    return '<nav class="eventNavigator" aria-label="Event quick navigation"><span class="navStatus">Loading navigation...</span></nav>';
+    return `<nav class="eventNavigator" aria-label="${escapeHtml(t('eventQuickNavigation'))}"><span class="navStatus">${escapeHtml(t('loadingNavigation'))}</span></nav>`;
   }
   const categories = navigationCategoriesForEvent(event, cache.events);
   if (!categories.length) return '';
@@ -2142,15 +2279,15 @@ function renderInspectorNavigation(event) {
   const index = matches.findIndex((candidate) => candidate.id === event.id);
   const position = index >= 0 ? index + 1 : 0;
   const categorySelect = categories.length > 1
-    ? `<select class="navSelect" data-navigation-category aria-label="Quick navigation category">${categories.map((item) => (
-      `<option value="${escapeHtml(item.id)}"${item.id === category.id ? ' selected' : ''}>${escapeHtml(item.label)}</option>`
+    ? `<select class="navSelect" data-navigation-category aria-label="${escapeHtml(t('quickNavigationCategory'))}">${categories.map((item) => (
+      `<option value="${escapeHtml(item.id)}"${item.id === category.id ? ' selected' : ''}>${escapeHtml(i18n.t(state.locale, 'navigation', item.id) || item.label)}</option>`
     )).join('')}</select>`
     : '';
-  return `<nav class="eventNavigator" aria-label="Event quick navigation">
+  return `<nav class="eventNavigator" aria-label="${escapeHtml(t('eventQuickNavigation'))}">
     ${categorySelect}
-    <button class="navBtn" type="button" data-detail-action="navigate-event" data-nav-direction="prev"${index <= 0 ? ' disabled' : ''}>Prev</button>
+    <button class="navBtn" type="button" data-detail-action="navigate-event" data-nav-direction="prev"${index <= 0 ? ' disabled' : ''}>${escapeHtml(t('previous'))}</button>
     <span class="navPosition">${escapeHtml(`${position}/${matches.length}`)}</span>
-    <button class="navBtn" type="button" data-detail-action="navigate-event" data-nav-direction="next"${index < 0 || index >= matches.length - 1 ? ' disabled' : ''}>Next</button>
+    <button class="navBtn" type="button" data-detail-action="navigate-event" data-nav-direction="next"${index < 0 || index >= matches.length - 1 ? ' disabled' : ''}>${escapeHtml(t('next'))}</button>
   </nav>`;
 }
 
@@ -2277,10 +2414,10 @@ function renderDetailShell({ title, subtitle = '', actions = '', body = '', clos
   const hasChromeControls = backable || closeable;
   const resolvedHeaderClass = [headerClass, hasChromeControls ? 'detailChromeHeader' : ''].filter(Boolean).join(' ');
   const backButton = backable
-    ? '<button class="detailIconBtn detailBackBtn" type="button" data-detail-action="back" aria-label="Back" title="Back">&larr;</button>'
+    ? `<button class="detailIconBtn detailBackBtn" type="button" data-detail-action="back" aria-label="${escapeHtml(t('back'))}" title="${escapeHtml(t('back'))}">&larr;</button>`
     : '';
   const closeButton = closeable
-    ? '<button class="detailIconBtn detailCloseBtn" type="button" data-detail-action="close" aria-label="Close" title="Close">&times;</button>'
+    ? `<button class="detailIconBtn detailCloseBtn" type="button" data-detail-action="close" aria-label="${escapeHtml(t('close'))}" title="${escapeHtml(t('close'))}">&times;</button>`
     : '';
   el.detail.innerHTML = `<article class="detailView">
     <header class="detailViewHeader ${escapeHtml(resolvedHeaderClass)}">
@@ -2298,29 +2435,29 @@ function renderDetailShell({ title, subtitle = '', actions = '', body = '', clos
   refreshSearchHighlights({ preserveActive: true });
 }
 
-function renderProfileRulesPane() {
+function renderProfileRulesPane(options = {}) {
   state.detailView = { type: 'profileRules' };
   state.detailSelectionKey = '';
   state.selectedEventId = '';
   state.navigationCategoryId = '';
   state.navigationCategoryManualId = '';
-  setMobileView('detail', { scroll: false });
+  if (options.reveal === true) setMobileView('detail', { scroll: false });
   updateSelectedTimelineEvent();
   if (!profileAppliesToActiveLayer()) {
     const layer = activeLayerId();
     const fixedRuleText = layer === 'protocol'
-      ? 'Protocol events are shown as summaries; non-protocol events stay collapsed.'
-      : 'Raw event_msg and response_item records stay collapsed; other raw records are shown as summaries.';
+      ? t('protocolFixedRules')
+      : t('rawFixedRules');
     renderDetailShell({
-      title: '折叠策略',
-      subtitle: `${activeLayerLabel()} uses fixed display rules`,
-      actions: '<button class="smallBtn" type="button" data-detail-action="view-main-layer">View Main timeline</button>',
+      title: t('foldingStrategy'),
+      subtitle: t('fixedRuleSubtitle', { layer: activeLayerLabel() }),
+      actions: `<button class="smallBtn" type="button" data-detail-action="view-main-layer">${escapeHtml(t('viewMainTimeline'))}</button>`,
       headerClass: 'profileDetailHeader',
       closeable: false,
       backable: false,
       body: `<section class="profileRules profileRulesInactive">
         <div class="notice info">
-          <p>Folding strategies apply only to Main timeline. This layer uses fixed display rules.</p>
+          <p>${escapeHtml(t('fixedProfileRules'))}</p>
         </div>
         <section class="profileRuleSection">
           <h3>${escapeHtml(activeLayerLabel())}</h3>
@@ -2334,7 +2471,7 @@ function renderProfileRulesPane() {
   const profile = activeProfile();
   const draft = state.profileDraft || cloneProfile(profile);
   const dirty = profileDirty();
-  const status = dirty ? 'Unsaved preview' : '';
+  const status = dirty ? t('unsavedPreview') : '';
   const profileOptions = state.profiles.map((item) => {
     const name = dirty && item.id === state.profileId && isBuiltinProfile(item.id)
       ? nextCustomProfileName(item.id)
@@ -2342,8 +2479,8 @@ function renderProfileRulesPane() {
     return `<option value="${escapeHtml(item.id)}"${item.id === state.profileId ? ' selected' : ''}>${escapeHtml(name)}</option>`;
   }).join('');
   const stateOptions = (value, includeDisabled = false, states = DISPLAY_STATES) => [
-    includeDisabled ? `<option value=""${value ? '' : ' selected'}>Disabled</option>` : '',
-    ...states.map((stateId) => `<option value="${stateId}"${stateId === value ? ' selected' : ''}>${DISPLAY_STATE_LABELS[stateId]}</option>`),
+    includeDisabled ? `<option value=""${value ? '' : ' selected'}>${escapeHtml(t('disabled'))}</option>` : '',
+    ...states.map((stateId) => `<option value="${stateId}"${stateId === value ? ' selected' : ''}>${escapeHtml(displayStateLabel(stateId))}</option>`),
   ].join('');
   const rules = normalizeRules(draft.rules);
   const conditionMap = new Map(rules.conditions.map((condition) => [condition.id, condition.state]));
@@ -2355,8 +2492,8 @@ function renderProfileRulesPane() {
         <span>${escapeHtml(kind)}</span>
       </span>
       <select data-profile-kind="${escapeHtml(kind)}">
-        <option value=""${display ? '' : ' selected'}>${escapeHtml(DISPLAY_STATE_LABELS[rules.fallback])} (Default)</option>
-        ${DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === display ? ' selected' : ''}>${DISPLAY_STATE_LABELS[stateId]}</option>`).join('')}
+        <option value=""${display ? '' : ' selected'}>${escapeHtml(displayStateLabel(rules.fallback))} (${escapeHtml(t('default'))})</option>
+        ${DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === display ? ' selected' : ''}>${escapeHtml(displayStateLabel(stateId))}</option>`).join('')}
       </select>
     </label>`;
   };
@@ -2394,18 +2531,18 @@ function renderProfileRulesPane() {
   </svg>`;
   const editActions = dirty
     ? `<span class="profileActionButtons">
-      <button class="smallBtn profileActionIconBtn" type="button" data-detail-action="save-profile" aria-label="Save profile changes" title="Save">${saveIcon}</button>
-      <button class="smallBtn profileActionIconBtn" type="button" data-detail-action="cancel-profile" aria-label="Cancel profile changes" title="Cancel">${cancelIcon}</button>
+      <button class="smallBtn profileActionIconBtn" type="button" data-detail-action="save-profile" aria-label="${escapeHtml(t('saveProfileChanges'))}" title="${escapeHtml(t('save'))}">${saveIcon}</button>
+      <button class="smallBtn profileActionIconBtn" type="button" data-detail-action="cancel-profile" aria-label="${escapeHtml(t('cancelProfileChanges'))}" title="${escapeHtml(t('cancel'))}">${cancelIcon}</button>
     </span>`
     : '';
   const actions = `<div class="profileActionStack">
       <div class="profilePickerCompact" data-profile-picker-host="detail">
-        <select data-profile-picker aria-label="Strategy">${profileOptions}</select>
+        <select data-profile-picker aria-label="${escapeHtml(t('strategy'))}">${profileOptions}</select>
       </div>
       ${editActions}
   </div>`;
   renderDetailShell({
-    title: '折叠策略',
+    title: t('foldingStrategy'),
     subtitle: [status, draft.description].filter(Boolean).join(' | '),
     actions,
     headerClass: 'profileDetailHeader',
@@ -2414,15 +2551,15 @@ function renderProfileRulesPane() {
     body: `<section class="profileRules">
       <section class="profileRuleSection">
         <div class="profileRuleSectionHeader">
-          <h3>Event kinds</h3>
+          <h3>${escapeHtml(t('eventKinds'))}</h3>
         </div>
-        <div class="profileRuleList">${explicitKindRows || '<div class="profileRuleEmpty">No explicit event-kind rules.</div>'}</div>
+        <div class="profileRuleList">${explicitKindRows || `<div class="profileRuleEmpty">${escapeHtml(t('noExplicitKindRules'))}</div>`}</div>
       </section>
       <details class="profileRuleDetails">
         <summary>
-          <span>${escapeHtml(`${defaultKinds.length} event kinds use Default`)}</span>
+          <span>${escapeHtml(t('defaultKindCount', { count: defaultKinds.length }))}</span>
           <label class="profileDefaultInline">
-            <span>Default</span>
+            <span>${escapeHtml(t('default'))}</span>
             <select data-profile-fallback>${stateOptions(rules.fallback)}</select>
           </label>
         </summary>
@@ -2430,11 +2567,11 @@ function renderProfileRulesPane() {
         <div class="profileRuleList">${defaultKindRows}</div>
       </details>
       <section class="profileRuleSection">
-        <h3>Conditions</h3>
-        <div class="profileRuleList">${activeConditionRows || '<div class="profileRuleEmpty">No active conditions.</div>'}</div>
+        <h3>${escapeHtml(t('conditions'))}</h3>
+        <div class="profileRuleList">${activeConditionRows || `<div class="profileRuleEmpty">${escapeHtml(t('noActiveConditions'))}</div>`}</div>
       </section>
       <details class="profileRuleDetails">
-        <summary>${escapeHtml(`${conditionDefinitions().length - conditionMap.size} inactive conditions`)}</summary>
+        <summary>${escapeHtml(t('inactiveConditions', { count: conditionDefinitions().length - conditionMap.size }))}</summary>
         <div class="profileRuleList">${inactiveConditionRows}</div>
       </details>
     </section>`,
@@ -2464,9 +2601,9 @@ function showInspector(event, options = {}) {
     actions: [renderReadFromHereAction(), renderInspectorNavigation(event)].filter(Boolean).join(''),
     body: `<div class="inspector">
     ${chips ? `<div class="chips">${chips}</div>` : ''}
-    ${shouldShowInspectorSummary(event, preview, detail) ? `<section class="inspectorSection"><h3>Summary</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
+    ${shouldShowInspectorSummary(event, preview, detail) ? `<section class="inspectorSection"><h3>${escapeHtml(t('summary'))}</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
     <section class="inspectorSection">
-      <h3>Metadata</h3>
+      <h3>${escapeHtml(t('metadata'))}</h3>
       <dl class="inspectorMeta">${renderInspectorMetadata(event, refs, detail)}</dl>
     </section>
     ${renderInspectorSource(event, refs, detail)}
@@ -2493,11 +2630,11 @@ async function showRaw(event, options = {}) {
   updateSelectedTimelineEvent();
   if (!refs.length) {
     renderDetailShell({
-      title: 'Raw refs',
+      title: t('rawRefs'),
       subtitle: rawRefsSubtitle(event),
-      actions: [renderReadFromHereAction(), '<button class="smallBtn" type="button" data-detail-action="inspect">Inspect event</button>'].filter(Boolean).join(''),
+      actions: [renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
       body: `<div class="rawRefsView">
-      <div class="notice warning"><p>No raw source rows are available for this event.</p></div>
+      <div class="notice warning"><p>${escapeHtml(t('noRawRows'))}</p></div>
     </div>`,
     });
     return;
@@ -2505,11 +2642,11 @@ async function showRaw(event, options = {}) {
   const payloads = await Promise.all(refs.map((ref) => api(`/api/raw?file=${encodeURIComponent(ref.file)}&line=${encodeURIComponent(ref.line)}`)));
   if (state.detailSelectionKey !== rawKey) return;
   renderDetailShell({
-    title: 'Raw refs',
+    title: t('rawRefs'),
     subtitle: rawRefsSubtitle(event),
-    actions: [renderReadFromHereAction(), '<button class="smallBtn" type="button" data-detail-action="inspect">Inspect event</button>'].filter(Boolean).join(''),
+    actions: [renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
     body: `<div class="rawRefsView">
-    <p class="rawMeta">${escapeHtml(`${refs.length} JSONL row${refs.length === 1 ? '' : 's'} for ${event.id}`)}</p>
+    <p class="rawMeta">${escapeHtml(t('rawRowsForEvent', { count: refs.length, plural: refs.length === 1 ? '' : 's', eventId: event.id }))}</p>
     ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(raw.file)}:${raw.line}</p><pre>${escapeHtml(JSON.stringify(raw.parsed, null, 2) || raw.raw)}</pre></section>`).join('')}
   </div>`,
   });
@@ -2609,7 +2746,7 @@ function nextCustomProfileName(baseProfileId) {
     || state.profiles.find((profile) => profile.id === baseProfileId)
     || activeProfile();
   const count = state.customProfiles.filter((profile) => profile.baseProfileId === baseProfileId).length + 1;
-  return `${base.name} (自定义${count})`;
+  return t('customProfileName', { name: base.name, count });
 }
 
 function saveProfileDraft(name = '') {
@@ -2660,6 +2797,10 @@ el.projectSwitchControl?.addEventListener('click', () => {
   if (state.projectLoadingRoot || state.projectJobId) return;
   const action = state.selectingProject && state.repoRoot ? exitProjectChooser : showProjectChooser;
   action({ autoRestore: false }).catch(showError);
+});
+
+el.localeSelect?.addEventListener('change', () => {
+  changeLocale(el.localeSelect.value).catch(showError);
 });
 
 el.projectCancelBtn?.addEventListener('click', () => {
@@ -3053,4 +3194,5 @@ function showError(error) {
   console.error(error);
 }
 
+applyStaticLocale();
 init().catch(showError);

@@ -21,7 +21,10 @@ This repository uses three formal document classes plus one idea parking area:
 - `product-specs/session-transcript-analyzer.md` / 会话转录分析器产品规格
 - `design-docs/logical-event-timeline.md` / 逻辑事件时间线设计文档
 - `design-docs/codex-protocol-event-coverage.md` / Codex 协议事件覆盖设计文档
+- `design-docs/schema-update-runbook.md` / Schema 更新运行手册
+- `design-docs/external-source-mapping-pressure-tests.md` / 外部 source 映射压力测试设计文档
 - `design-docs/documentation-system.md` / 文档系统设计文档
+- `exec-plans/completed/2026-06-10-v0.1-release-hardening.md` / v0.1 发布前加固已完成执行计划
 - `exec-plans/completed/2026-06-02-inspector-search-target-reveal.md` / Inspector 搜索目标展开定位已完成执行计划
 - `exec-plans/completed/2026-06-02-find-in-page-phrase-search.md` / 类浏览器页内短语查找已完成执行计划
 - `exec-plans/completed/2026-05-31-folding-rule-priority-governance.md` / 折叠规则优先级治理已完成执行计划

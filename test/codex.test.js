@@ -2,15 +2,17 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const childProcess = require('node:child_process');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { buildIndex, buildEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readRawLine, isPathInsideOrSame } = require('../src/codex');
-const { createServer, parseArgs } = require('../server');
+const { createServer, parseArgs, resolveStaticAssetPath } = require('../server');
 const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../src/folding');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
+const repoRoot = path.join(__dirname, '..');
 
 async function buildFixtureIndex() {
   return buildIndex({
@@ -47,6 +49,100 @@ async function writeFixtureTranscript(codexHome, cwd, id = 'cccccccc-cccc-cccc-c
 test('parseArgs leaves repo unset unless --repo is provided', () => {
   assert.equal(parseArgs(['node', 'server.js']).repo, null);
   assert.equal(parseArgs(['node', 'server.js', '--repo', 'G:\\vibe\\term-agent']).repo, 'G:\\vibe\\term-agent');
+});
+
+test('parseArgs accepts limited typo aliases for common options', () => {
+  assert.equal(parseArgs(['node', 'server.js', '--repos', 'G:\\vibe\\term-agent']).repo, 'G:\\vibe\\term-agent');
+  assert.equal(parseArgs(['node', 'server.js', '--repo-root', 'G:\\vibe\\term-agent']).repo, 'G:\\vibe\\term-agent');
+  assert.equal(parseArgs(['node', 'server.js', '--codexhome', 'G:\\codex']).codexHome, 'G:\\codex');
+  assert.equal(parseArgs(['node', 'server.js', '--codex_home', 'G:\\codex']).codexHome, 'G:\\codex');
+  assert.equal(parseArgs(['node', 'server.js', '--host-name', '0.0.0.0']).host, '0.0.0.0');
+});
+
+test('parseArgs rejects unknown flags and positional arguments', () => {
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--codex-hmoe', 'G:\\codex']).errors,
+    ['Unknown option: --codex-hmoe.'],
+  );
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', 'G:\\vibe\\term-agent']).errors,
+    ['Unexpected positional argument: G:\\vibe\\term-agent. Use --repo <repo-path> to choose a repository.'],
+  );
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--repo', '--port', '9000']).errors,
+    ['Missing value for --repo. Expected a repository path.'],
+  );
+  assert.equal(parseArgs(['node', 'server.js', '--repo', '--port', '9000']).port, 9000);
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--repo', '-h']).errors,
+    ['Missing value for --repo. Expected a repository path.'],
+  );
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--codex-home']).errors,
+    ['Missing value for --codex-home. Expected a Codex home path.'],
+  );
+});
+
+test('parseArgs validates explicit port values', () => {
+  assert.equal(parseArgs(['node', 'server.js', '--port', '3000']).port, 3000);
+
+  const invalidCases = [
+    { argv: ['node', 'server.js', '--port'], error: 'Missing value for --port. Expected an integer between 1 and 65535.' },
+    { argv: ['node', 'server.js', '--port', ''], error: 'Missing value for --port. Expected an integer between 1 and 65535.' },
+    { argv: ['node', 'server.js', '--port', '   '], error: 'Missing value for --port. Expected an integer between 1 and 65535.' },
+    { argv: ['node', 'server.js', '--port', 'NaN'], error: 'Invalid value for --port: "NaN". Expected an integer between 1 and 65535.' },
+    { argv: ['node', 'server.js', '--port', '1.5'], error: 'Invalid value for --port: "1.5". Expected an integer between 1 and 65535.' },
+    { argv: ['node', 'server.js', '--port', '0'], error: 'Invalid value for --port: "0". Expected an integer between 1 and 65535.' },
+    { argv: ['node', 'server.js', '--port', '-1'], error: 'Invalid value for --port: "-1". Expected an integer between 1 and 65535.' },
+    { argv: ['node', 'server.js', '--port', '65536'], error: 'Invalid value for --port: "65536". Expected an integer between 1 and 65535.' },
+  ];
+
+  for (const { argv, error } of invalidCases) {
+    assert.deepEqual(parseArgs(argv).errors, [error]);
+  }
+});
+
+test('parseArgs validates host values', () => {
+  assert.equal(parseArgs(['node', 'server.js', '--host', '0.0.0.0']).host, '0.0.0.0');
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--host']).errors,
+    ['Missing value for --host. Expected a non-empty host name or IP address.'],
+  );
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--host', '']).errors,
+    ['Missing value for --host. Expected a non-empty host name or IP address.'],
+  );
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--host', '   ']).errors,
+    ['Missing value for --host. Expected a non-empty host name or IP address.'],
+  );
+  const opts = parseArgs(['node', 'server.js', '--host', '--port', '9000']);
+  assert.deepEqual(opts.errors, ['Missing value for --host. Expected a non-empty host name or IP address.']);
+  assert.equal(opts.port, 9000);
+});
+
+test('CLI exits early with usage when argument validation fails', () => {
+  const result = childProcess.spawnSync(process.execPath, ['server.js', '--port', '0'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Error: Invalid value for --port: "0"\. Expected an integer between 1 and 65535\./);
+  assert.match(result.stdout, /Usage:/);
+  assert.doesNotMatch(result.stdout, /Codex Session Analyzer: http:\/\//);
+});
+
+test('CLI exits early with usage when an unknown option is provided', () => {
+  const result = childProcess.spawnSync(process.execPath, ['server.js', '--codex-hmoe', fixtureCodexHome], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Error: Unknown option: --codex-hmoe\./);
+  assert.match(result.stdout, /Usage:/);
+  assert.doesNotMatch(result.stdout, /Codex Session Analyzer: http:\/\//);
 });
 
 test('discoverProjects groups Codex sessions by cwd', async () => {
@@ -158,6 +254,110 @@ test('state endpoint includes dynamic event kind options', async () => {
   }
 });
 
+test('resolveStaticAssetPath rejects sibling-prefix paths outside the public root', () => {
+  const publicRoot = path.join('G:\\vibe\\session-analyzer', 'public');
+  assert.equal(resolveStaticAssetPath(publicRoot, '/index.html'), path.join(publicRoot, 'index.html'));
+  assert.equal(resolveStaticAssetPath(publicRoot, '/../public-evil/secret.txt'), '');
+});
+
+test('server hides 500 stack details by default but preserves thrown 4xx status codes', async () => {
+  const stackError = new Error('Exploded while listing sessions');
+  stackError.stack = `Error: ${stackError.message}\n    at G:\\vibe\\session-analyzer\\src\\boom.js:7:9`;
+  const errorIndex = {
+    repoRoot: 'G:\\vibe\\term-agent',
+    codexHome: fixtureCodexHome,
+    sessionsById: new Map(),
+    get sessions() {
+      throw stackError;
+    },
+  };
+  const server = createServer(errorIndex, 1, { codexHome: fixtureCodexHome });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  try {
+    const res = await fetch(`http://127.0.0.1:${address.port}/api/sessions`);
+    assert.equal(res.status, 500);
+    const body = await res.json();
+    assert.equal(body.error, 'Internal server error');
+    assert.equal(body.details, undefined);
+    assert.doesNotMatch(JSON.stringify(body), /boom\.js|Exploded while listing sessions/);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+
+  const notFoundError = new Error('Custom missing session');
+  notFoundError.statusCode = 404;
+  const notFoundIndex = {
+    repoRoot: 'G:\\vibe\\term-agent',
+    codexHome: fixtureCodexHome,
+    sessionsById: new Map(),
+    get sessions() {
+      throw notFoundError;
+    },
+  };
+  const notFoundServer = createServer(notFoundIndex, 1, { codexHome: fixtureCodexHome });
+  await new Promise((resolve) => notFoundServer.listen(0, '127.0.0.1', resolve));
+  const notFoundAddress = notFoundServer.address();
+  try {
+    const res = await fetch(`http://127.0.0.1:${notFoundAddress.port}/api/sessions`);
+    assert.equal(res.status, 404);
+    const body = await res.json();
+    assert.equal(body.error, 'Custom missing session');
+    assert.equal(body.details, undefined);
+  } finally {
+    await new Promise((resolve, reject) => notFoundServer.close((error) => (error ? reject(error) : resolve())));
+  }
+
+  const internalStatusError = new Error('Internal path G:\\vibe\\session-analyzer\\src\\internal.js');
+  internalStatusError.statusCode = 500;
+  const internalStatusIndex = {
+    repoRoot: 'G:\\vibe\\term-agent',
+    codexHome: fixtureCodexHome,
+    sessionsById: new Map(),
+    get sessions() {
+      throw internalStatusError;
+    },
+  };
+  const internalStatusServer = createServer(internalStatusIndex, 1, { codexHome: fixtureCodexHome });
+  await new Promise((resolve) => internalStatusServer.listen(0, '127.0.0.1', resolve));
+  const internalStatusAddress = internalStatusServer.address();
+  try {
+    const res = await fetch(`http://127.0.0.1:${internalStatusAddress.port}/api/sessions`);
+    assert.equal(res.status, 500);
+    const body = await res.json();
+    assert.equal(body.error, 'Internal server error');
+    assert.equal(body.details, undefined);
+    assert.doesNotMatch(JSON.stringify(body), /internal\.js|Internal path/);
+  } finally {
+    await new Promise((resolve, reject) => internalStatusServer.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('server exposes 500 stack details only when debug mode is explicitly enabled', async () => {
+  const stackError = new Error('Debug trace enabled');
+  stackError.stack = `Error: ${stackError.message}\n    at G:\\vibe\\session-analyzer\\src\\debug.js:4:2`;
+  const debugIndex = {
+    repoRoot: 'G:\\vibe\\term-agent',
+    codexHome: fixtureCodexHome,
+    sessionsById: new Map(),
+    get sessions() {
+      throw stackError;
+    },
+  };
+  const server = createServer(debugIndex, 1, { codexHome: fixtureCodexHome, debugErrors: true });
+  try {
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const res = await fetch(`http://127.0.0.1:${address.port}/api/sessions`);
+    assert.equal(res.status, 500);
+    const body = await res.json();
+    assert.equal(body.error, 'Internal server error');
+    assert.match(String(body.details || ''), /debug\.js:4:2/);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
 test('buildIndex deduplicates mirrored messages and keeps protocol separately', async () => {
   const index = await buildFixtureIndex();
   const session = primaryFixtureSession(index);
@@ -196,6 +396,42 @@ test('buildIndex keeps files whose later metadata cwd matches the repo', async (
   assert.equal(afterWindowSession.title, 'late matching cwd after scan window fixture');
   assert.equal(afterWindowSession.matchesRepo, true);
   assert.deepEqual([...afterWindowSession.cwdSet].sort(), ['G:\\other\\repo', 'G:\\vibe\\term-agent'].sort());
+});
+
+test('buildIndex excludes no-cwd files from candidates while tracking them as unknown', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const sessionDir = path.join(codexHome, 'sessions', '2026', '06', '18');
+  const file = path.join(sessionDir, 'rollout-2026-06-18T10-00-00-ffffffff-ffff-ffff-ffff-ffffffffffff.jsonl');
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(sessionDir, { recursive: true });
+  await fsp.writeFile(file, [
+    JSON.stringify({ timestamp: '2026-06-18T10:00:00.000Z', type: 'session_meta', payload: { id: 'ffffffff-ffff-ffff-ffff-ffffffffffff' } }),
+    JSON.stringify({ timestamp: '2026-06-18T10:00:01.000Z', type: 'event_msg', payload: { type: 'thread_name_updated', thread_name: 'no cwd fixture' } }),
+    '',
+  ].join('\n'), 'utf8');
+
+  const progress = [];
+  const index = await buildIndex({
+    repoRoot,
+    codexHome,
+    onProgress: (entry) => progress.push(entry),
+  });
+
+  assert.equal(index.totals.fileCount, 1);
+  assert.equal(index.totals.unknownFileCount, 1);
+  assert.equal(index.totals.candidateFileCount, 0);
+  assert.equal(index.totals.indexedFileCount, 0);
+  assert.equal(index.totals.sessionCount, 0);
+  assert.equal(index.sessions.length, 0);
+  const selecting = progress.filter((entry) => entry.phase === 'selecting').at(-1);
+  const complete = progress.filter((entry) => entry.phase === 'complete').at(-1);
+  assert.equal(selecting.filesScanned, 1);
+  assert.equal(selecting.unknownFileCount, 1);
+  assert.equal(selecting.candidateFileCount, 0);
+  assert.equal(complete.unknownFileCount, 1);
+  assert.equal(complete.candidateFileCount, 0);
+  assert.equal(complete.indexedFileCount, 0);
 });
 
 test('buildIndex reports progress and supports cancellation', async () => {
@@ -299,6 +535,23 @@ test('buildIndex keeps forked subagent identity separate from embedded parent me
   assert.equal(normalForkSummary.forkedFromSessionTitle, parent.title);
   assert.equal(normalForkSummary.isDerivedSession, false);
   assert.equal(normalForkSummary.derivedKind, '');
+
+  const childTimeline = getTimeline(index, child.id, {
+    q: '',
+    offset: 0,
+    limit: 20,
+    layer: 'main',
+  });
+  const normalForkTimeline = getTimeline(index, normalFork.id, {
+    q: '',
+    offset: 0,
+    limit: 20,
+    layer: 'main',
+  });
+  assert.equal(childTimeline.session.parentSessionTitle, parent.title);
+  assert.equal(childTimeline.session.forkedFromSessionTitle, parent.title);
+  assert.equal(normalForkTimeline.session.parentSessionTitle, '');
+  assert.equal(normalForkTimeline.session.forkedFromSessionTitle, parent.title);
 });
 
 test('buildIndex infers fallback titles from real user tasks after protocol wrappers', async () => {
@@ -657,6 +910,175 @@ test('current protocol plan, severity, lifecycle aliases, and incomplete tool re
   assert.match(allSections(planDetail)[0].html, /Protocol plan update fixture/);
 });
 
+test('grouped generic protocol tool labels prefer terminal lifecycle rows', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'eeeeeeee-1111-4444-8888-eeeeeeeeeeee';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '10');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const file = path.join(dir, `rollout-2026-06-10T12-00-00-${id}.jsonl`);
+  const records = [
+    {
+      type: 'session_meta',
+      timestamp: '2026-06-10T12:00:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:01.000Z',
+      payload: { type: 'dynamic_tool_call_begin', call_id: 'call-dynamic', tool_name: 'asset_lookup', request: { query: 'begin query' } },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:01.100Z',
+      payload: { type: 'dynamic_tool_call_end', call_id: 'call-dynamic', tool_name: 'asset_lookup', result: { count: 1 } },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:02.000Z',
+      payload: { type: 'image_generation_call_begin', call_id: 'call-image', tool_name: 'image_generation', prompt: 'draw a release icon' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:02.100Z',
+      payload: { type: 'image_generation_call_end', call_id: 'call-image', tool_name: 'image_generation', output: { image_count: 1 } },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:03.000Z',
+      payload: { type: 'approval_request_begin', call_id: 'call-approval', tool_name: 'approval', action: 'run command' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:03.100Z',
+      payload: { type: 'approval_request_declined', call_id: 'call-approval', tool_name: 'approval', status: 'declined', reason: 'not allowed' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:04.000Z',
+      payload: { type: 'hook_begin', call_id: 'call-hook', tool_name: 'pre_apply_hook', hook: 'pre-apply' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:04.100Z',
+      payload: { type: 'hook_end', call_id: 'call-hook', tool_name: 'pre_apply_hook', status: 'completed' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:05.000Z',
+      payload: { type: 'collab_agent_spawn_begin', call_id: 'call-collab', new_thread_id: 'agent-1', message: 'start helper' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:05.100Z',
+      payload: { type: 'collab_agent_spawn_end', call_id: 'call-collab', new_thread_id: 'agent-1', status: 'pending_init' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T12:00:06.000Z',
+      payload: { type: 'dynamic_tool_call_declined', call_id: 'call-dynamic-declined', tool_name: 'asset_lookup', status: 'declined', reason: 'not allowed' },
+    },
+  ];
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const timeline = getTimeline(index, id, {
+    offset: 0,
+    limit: 20,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  const byCall = new Map(timeline.events.map((event) => [event.id.split(':call:')[1], event]));
+
+  assert.deepEqual({
+    dynamic: {
+      label: byCall.get('call-dynamic').label,
+      status: byCall.get('call-dynamic').status,
+      severity: byCall.get('call-dynamic').severity,
+      rawLines: byCall.get('call-dynamic').rawRefs.map((ref) => ref.line),
+    },
+    image: {
+      label: byCall.get('call-image').label,
+      status: byCall.get('call-image').status,
+      severity: byCall.get('call-image').severity,
+      rawLines: byCall.get('call-image').rawRefs.map((ref) => ref.line),
+    },
+    approval: {
+      label: byCall.get('call-approval').label,
+      status: byCall.get('call-approval').status,
+      severity: byCall.get('call-approval').severity,
+      rawLines: byCall.get('call-approval').rawRefs.map((ref) => ref.line),
+    },
+    hook: {
+      label: byCall.get('call-hook').label,
+      status: byCall.get('call-hook').status,
+      severity: byCall.get('call-hook').severity,
+      rawLines: byCall.get('call-hook').rawRefs.map((ref) => ref.line),
+    },
+    collab: {
+      label: byCall.get('call-collab').label,
+      status: byCall.get('call-collab').status,
+      severity: byCall.get('call-collab').severity,
+      rawLines: byCall.get('call-collab').rawRefs.map((ref) => ref.line),
+    },
+  }, {
+    dynamic: {
+      label: 'Dynamic Tool Call End',
+      status: 'success',
+      severity: 'normal',
+      rawLines: [2, 3],
+    },
+    image: {
+      label: 'Image Generation Call End',
+      status: 'success',
+      severity: 'normal',
+      rawLines: [4, 5],
+    },
+    approval: {
+      label: 'Approval Request Declined',
+      status: 'declined',
+      severity: 'warning',
+      rawLines: [6, 7],
+    },
+    hook: {
+      label: 'Hook End',
+      status: 'success',
+      severity: 'normal',
+      rawLines: [8, 9],
+    },
+    collab: {
+      label: 'Collab Agent Spawn End',
+      status: 'success',
+      severity: 'normal',
+      rawLines: [10, 11],
+    },
+  });
+
+  const rawTimeline = getTimeline(index, id, {
+    offset: 0,
+    limit: 20,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'raw',
+  });
+  const rawDeclined = rawTimeline.events.find((event) => event.payloadType === 'dynamic_tool_call_declined');
+  assert.ok(rawDeclined);
+  assert.equal(rawDeclined.label, 'dynamic_tool_call_declined');
+
+  const session = index.sessionsById.get(id);
+  assert.ok(session);
+  const rawDetail = buildEventDetail(session, rawDeclined.id, 'raw');
+  assert.equal(rawDetail.title, 'dynamic_tool_call_declined');
+});
+
 test('tool logical events merge new and old format patch records and search still works', async () => {
   const index = await buildFixtureIndex();
   const session = primaryFixtureSession(index);
@@ -837,6 +1259,112 @@ test('filterSessions uses contiguous phrase semantics for direct q API filtering
 
   assert.equal(filterSessions(index, { q: 'foo bar', sort: 'updated-desc' }).total, 1);
   assert.equal(filterSessions(index, { q: 'alpha beta', sort: 'updated-desc' }).total, 0);
+});
+
+test('filterSessions applies from/to date filters on the same activity timestamp basis', () => {
+  const makeSession = (id, startedAt, updatedAt) => ({
+    id,
+    title: id,
+    sourceFile: `${id}.jsonl`,
+    bytes: 1,
+    lineCount: 1,
+    cwdSet: new Set(),
+    parentSessionId: '',
+    parentSessionInferred: false,
+    forkedFromSessionId: '',
+    agentNickname: '',
+    startedAt,
+    updatedAt,
+    counts: { failedCommands: 0 },
+    analysis: { toolUsage: [], failedCommands: [], patchedFiles: [], protocolStats: [] },
+    logicalEvents: [],
+    rawEvents: [],
+    searchText: id,
+  });
+  const index = {
+    sessions: [
+      makeSession('updated-late', '2026-06-01T08:00:00.000Z', '2026-06-10T12:00:00.000Z'),
+      makeSession('started-only', '2026-06-04T09:00:00.000Z', ''),
+    ],
+    sessionsById: new Map(),
+  };
+
+  assert.deepEqual(
+    filterSessions(index, { from: '2026-06-05', sort: 'updated-desc' }).sessions.map((session) => session.id),
+    ['updated-late'],
+  );
+  assert.deepEqual(
+    filterSessions(index, { to: '2026-06-05', sort: 'updated-desc' }).sessions.map((session) => session.id),
+    ['started-only'],
+  );
+});
+
+test('patches with ambiguous outputs stay incomplete and warning-severity', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'abababab-abab-abab-abab-abababababab';
+  const sessionDir = path.join(codexHome, 'sessions', '2026', '06', '18');
+  const file = path.join(sessionDir, `rollout-2026-06-18T09-00-00-${id}.jsonl`);
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(sessionDir, { recursive: true });
+  await fsp.writeFile(file, [
+    JSON.stringify({ timestamp: '2026-06-18T09:00:00.000Z', type: 'session_meta', payload: { id, cwd: repoRoot } }),
+    JSON.stringify({ timestamp: '2026-06-18T09:00:01.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', call_id: 'call-patch-unknown', input: '*** Begin Patch\n*** Update File: src/unknown.js\n@@\n-old\n+new\n*** End Patch' } }),
+    JSON.stringify({ timestamp: '2026-06-18T09:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call-patch-unknown', output: '{"output":"Patch request sent to helper.","metadata":{"duration_seconds":0.1}}' } }),
+    '',
+  ].join('\n'), 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const patchEvent = session.logicalEvents.find((event) => event.kind === 'patch');
+  const rawOutput = session.rawEvents.find((raw) => raw.payloadType === 'custom_tool_call_output');
+  const rawDetail = buildEventDetail(session, rawOutput.rawId, 'raw');
+  const resultNotice = allSections(rawDetail).find((section) => section.type === 'notice' && section.title === 'Result');
+
+  assert.ok(patchEvent);
+  assert.equal(patchEvent.status, 'incomplete');
+  assert.equal(patchEvent.severity, 'warning');
+  assert.equal(patchEvent.label, 'Incomplete patch');
+  assert.equal(resultNotice.level, 'warning');
+});
+
+test('patch stderr failure markers override incidental stdout', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'acacacac-acac-acac-acac-acacacacacac';
+  const sessionDir = path.join(codexHome, 'sessions', '2026', '06', '18');
+  const file = path.join(sessionDir, `rollout-2026-06-18T09-05-00-${id}.jsonl`);
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(sessionDir, { recursive: true });
+  await fsp.writeFile(file, [
+    JSON.stringify({ timestamp: '2026-06-18T09:05:00.000Z', type: 'session_meta', payload: { id, cwd: repoRoot } }),
+    JSON.stringify({
+      timestamp: '2026-06-18T09:05:01.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'patch_apply_end',
+        call_id: 'call-patch-stderr-failure',
+        stdout: 'Done',
+        stderr: 'error: invalid patch',
+      },
+    }),
+    '',
+  ].join('\n'), 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const patchEvent = session.logicalEvents.find((event) => event.kind === 'patch');
+  const rawPatchEnd = session.rawEvents.find((raw) => raw.payloadType === 'patch_apply_end');
+  const rawDetail = buildEventDetail(session, rawPatchEnd.rawId, 'raw');
+  const resultNotice = allSections(rawDetail).find((section) => section.type === 'notice' && section.title === 'Result');
+
+  assert.ok(patchEvent);
+  assert.equal(patchEvent.status, 'failed');
+  assert.equal(patchEvent.severity, 'error');
+  assert.equal(patchEvent.label, 'Patch failed');
+  assert.equal(resultNotice.level, 'error');
+  assert.match(resultNotice.text, /Done/);
+  assert.match(resultNotice.text, /invalid patch/);
 });
 
 test('patch detail preserves changed lines that begin with diff marker characters', () => {
@@ -2235,7 +2763,7 @@ test('project endpoints require and select a browser-chosen project', async () =
     const selectRes = await fetch(`${base}/api/project`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ repoRoot: 'G:\\vibe\\term-agent' }),
+      body: JSON.stringify({ repoRoot: 'G:\\vibe\\term-agent', locale: 'zh-CN' }),
     });
     assert.equal(selectRes.status, 202);
     const selectBody = await selectRes.json();
@@ -2251,6 +2779,7 @@ test('project endpoints require and select a browser-chosen project', async () =
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     assert.equal(statusBody.job.status, 'succeeded');
+    assert.equal(statusBody.state.locale, 'zh-CN');
     assert.equal(statusBody.state.repoRoot, 'G:\\vibe\\term-agent');
     assert.equal(statusBody.state.totals.sessionCount, 10);
     assert.equal(statusBody.state.totals.skippedFileCount, 1);
@@ -2324,7 +2853,7 @@ test('state reports active project job even when an old index exists', async () 
     const selectRes = await fetch(`${base}/api/project`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ repoRoot: 'G:\\vibe\\term-agent' }),
+      body: JSON.stringify({ repoRoot: 'G:\\vibe\\term-agent', locale: 'zh-CN' }),
     });
     assert.equal(selectRes.status, 202);
     const selectBody = await selectRes.json();
@@ -2333,6 +2862,7 @@ test('state reports active project job even when an old index exists', async () 
     assert.equal(stateRes.status, 202);
     const stateBody = await stateRes.json();
     assert.equal(stateBody.job.id, selectBody.job.id);
+    assert.equal(stateBody.currentState.locale, 'zh-CN');
     assert.equal(stateBody.currentState.repoRoot, 'G:\\vibe\\term-agent');
     releaseIndex();
   } finally {

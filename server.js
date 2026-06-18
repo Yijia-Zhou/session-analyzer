@@ -7,8 +7,9 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const url = require('node:url');
-const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, normalizeFsPath, readImagePreview, readRawLine } = require('./src/codex');
+const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, isPathInsideOrSame, normalizeFsPath, readImagePreview, readRawLine } = require('./src/codex');
 const { foldingProfiles } = require('./src/folding');
+const i18n = require('./src/shared/i18n');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -25,23 +26,86 @@ function parseArgs(argv) {
     codexHome: path.join(os.homedir(), '.codex'),
     port: 17890,
     host: '127.0.0.1',
+    errors: [],
   };
+  const canonicalOptionFor = (arg) => {
+    if (arg === '-h') return '--help';
+    if (!arg.startsWith('--')) return null;
+    const key = arg.slice(2).replace(/[-_]/g, '').toLowerCase();
+    const aliases = {
+      repo: '--repo',
+      repos: '--repo',
+      repository: '--repo',
+      repopath: '--repo',
+      reporoot: '--repo',
+      project: '--repo',
+      projectroot: '--repo',
+      codexhome: '--codex-home',
+      codexpath: '--codex-home',
+      codexdir: '--codex-home',
+      codexdirectory: '--codex-home',
+      port: '--port',
+      host: '--host',
+      hostname: '--host',
+      help: '--help',
+    };
+    return aliases[key] || null;
+  };
+  const isMissingOptionValue = (value) => value === undefined
+    || (typeof value === 'string' && (value.startsWith('--') || /^-[A-Za-z]/.test(value)));
+  const isBlankOptionValue = (value) => typeof value === 'string' && value.trim() === '';
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
-    if (arg === '--repo' && next) {
+    const option = canonicalOptionFor(arg);
+    if (arg.startsWith('-') && !option) {
+      opts.errors.push(`Unknown option: ${arg}.`);
+      if (next !== undefined && !String(next).startsWith('-')) i += 1;
+      continue;
+    }
+    if (!option) {
+      opts.errors.push(`Unexpected positional argument: ${arg}. Use --repo <repo-path> to choose a repository.`);
+      continue;
+    }
+    if (option === '--repo') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push('Missing value for --repo. Expected a repository path.');
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
       opts.repo = next;
       i += 1;
-    } else if (arg === '--codex-home' && next) {
+    } else if (option === '--codex-home') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push('Missing value for --codex-home. Expected a Codex home path.');
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
       opts.codexHome = next;
       i += 1;
-    } else if (arg === '--port' && next) {
-      opts.port = Number(next);
+    } else if (option === '--port') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push('Missing value for --port. Expected an integer between 1 and 65535.');
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
+      const port = Number(next);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        opts.errors.push(`Invalid value for --port: ${JSON.stringify(next)}. Expected an integer between 1 and 65535.`);
+        i += 1;
+        continue;
+      }
+      opts.port = port;
       i += 1;
-    } else if (arg === '--host' && next) {
+    } else if (option === '--host') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push('Missing value for --host. Expected a non-empty host name or IP address.');
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
       opts.host = next;
       i += 1;
-    } else if (arg === '--help' || arg === '-h') {
+    } else if (option === '--help') {
       opts.help = true;
     }
   }
@@ -53,12 +117,22 @@ function printHelp() {
     'Codex Session Analyzer',
     '',
     'Usage:',
-    '  node server.js [--repo <repo-path>] [--codex-home <path>] [--port <port>]',
+    '  session-analyzer [--repo <repo-path>] [--codex-home <path>] [--port <port>] [--host <host>]',
+    '',
+    'Options:',
+    '  --repo <repo-path>     Repository to analyze. If omitted, select a project in the browser.',
+    '  --codex-home <path>    Codex home directory. Defaults to ~/.codex.',
+    '  --port <port>          Local server port. Must be an integer from 1 to 65535. Defaults to 17890.',
+    '  --host <host>          Advanced: bind host. Defaults to 127.0.0.1.',
     '',
     'Examples:',
-    '  node server.js',
-    '  node server.js --repo C:\\path\\to\\project',
-    '  node server.js --repo C:\\path\\to\\project --codex-home C:\\Users\\you\\.codex --port 17890',
+    '  session-analyzer',
+    '  session-analyzer --repo C:\\path\\to\\project',
+    '  session-analyzer --repo C:\\path\\to\\project --codex-home C:\\Users\\you\\.codex --port 17890',
+    '',
+    'Privacy:',
+    '  The default host is 127.0.0.1. Binding to another host can expose transcript content',
+    '  available to this process to other machines on the network.',
   ].join('\n'));
 }
 
@@ -129,15 +203,24 @@ async function readJsonBody(req, limit = 64 * 1024) {
   }
 }
 
-function statePayload(state) {
+function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
+  const resolvedLocale = i18n.resolveLocale(locale);
   return {
+    locale: resolvedLocale,
+    supportedLocales: i18n.SUPPORTED_LOCALES,
     repoRoot: state.index.repoRoot,
     codexHome: state.index.codexHome,
     generatedAt: state.index.generatedAt,
     buildMs: state.buildMs,
     totals: state.index.totals,
-    eventKinds: state.index.eventKinds,
-    foldingProfiles,
+    eventKinds: state.index.eventKinds
+      ? {
+        main: state.index.eventKinds.main.map((item) => ({ ...item, label: i18n.eventKindLabel(item.value, resolvedLocale) })),
+        protocol: state.index.eventKinds.protocol.map((item) => ({ ...item, label: i18n.eventKindLabel(item.value, resolvedLocale) })),
+        raw: state.index.eventKinds.raw.map((item) => ({ ...item, label: i18n.rawRecordLabel(item.value, resolvedLocale) })),
+      }
+      : state.index.eventKinds,
+    foldingProfiles: foldingProfiles.map((profile) => i18n.localizeProfile(profile, resolvedLocale)),
     projectSelected: true,
   };
 }
@@ -161,6 +244,7 @@ function projectJobPayload(job) {
   return {
     id: job.id,
     repoRoot: job.repoRoot,
+    locale: job.locale || i18n.DEFAULT_LOCALE,
     status: job.status,
     startedAt: job.startedAt,
     completedAt: job.completedAt,
@@ -218,16 +302,18 @@ function mergeProjectLists(configProjects = [], scannedProjects = [], options = 
   return order.map((key) => map.get(key));
 }
 
-function startProjectJob(state, repoRoot) {
+function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   if (state.activeProjectJob && ['queued', 'running'].includes(state.activeProjectJob.status)) {
     state.activeProjectJob.controller.abort();
   }
 
   const id = String(state.nextProjectJobId++);
   const controller = new AbortController();
+  const resolvedLocale = i18n.resolveLocale(locale);
   const job = {
     id,
     repoRoot,
+    locale: resolvedLocale,
     controller,
     status: 'running',
     startedAt: new Date().toISOString(),
@@ -285,9 +371,8 @@ function startProjectJob(state, repoRoot) {
 
 async function serveStatic(res, pathname) {
   const publicRoot = path.join(__dirname, 'public');
-  const safePath = pathname === '/' ? '/index.html' : pathname;
-  const target = path.resolve(publicRoot, `.${safePath}`);
-  if (!target.startsWith(publicRoot)) {
+  const target = resolveStaticAssetPath(publicRoot, pathname);
+  if (!target) {
     sendError(res, 403, 'Forbidden');
     return;
   }
@@ -303,11 +388,18 @@ async function serveStatic(res, pathname) {
       sendError(res, 404, 'Not found');
       return;
     }
-    sendError(res, 500, 'Unable to read static asset', error.message);
+    sendError(res, 500, 'Unable to read static asset');
   }
 }
 
+function resolveStaticAssetPath(publicRoot, pathname) {
+  const safePath = pathname === '/' ? '/index.html' : pathname;
+  const target = path.resolve(publicRoot, `.${safePath}`);
+  return isPathInsideOrSame(target, publicRoot) ? target : '';
+}
+
 function createServer(initialIndex = null, buildMs = 0, options = {}) {
+  const debugErrors = options.debugErrors ?? process.env.SESSION_ANALYZER_DEBUG_ERRORS === '1';
   const state = {
     index: initialIndex?.repoRoot ? initialIndex : null,
     buildMs: initialIndex?.repoRoot ? buildMs : 0,
@@ -317,11 +409,12 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     projectCache: null,
     buildIndex: options.buildIndex || buildIndex,
   };
-  if (options.repo) startProjectJob(state, options.repo);
+  if (options.repo) startProjectJob(state, options.repo, options.locale);
 
   return http.createServer(async (req, res) => {
     try {
       const { pathname, searchParams } = parseQuery(req.url);
+      const locale = i18n.resolveLocale(searchParams.get('locale') || req.headers['accept-language']);
       if (pathname === '/api/projects') {
         const configuredProjects = await discoverConfiguredProjects({ codexHome: state.codexHome });
         if (searchParams.get('summary') === '1') {
@@ -346,7 +439,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sendError(res, 400, 'repoRoot is required');
           return;
         }
-        const job = startProjectJob(state, repoRoot);
+        const job = startProjectJob(state, repoRoot, body.locale || locale);
         sendJson(res, 202, { job: projectJobPayload(job) });
         return;
       }
@@ -360,7 +453,8 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         }
         const payload = { job: projectJobPayload(job) };
         if (job.status === 'succeeded' && state.index?.repoRoot === path.resolve(job.repoRoot)) {
-          payload.state = statePayload(state);
+          const stateLocale = searchParams.has('locale') ? locale : (job.locale || locale);
+          payload.state = statePayload(state, stateLocale);
         }
         sendJson(res, 200, payload);
         return;
@@ -392,13 +486,14 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
             job: projectJobPayload(activeJob),
           };
           if (state.index) {
-            payload.currentState = statePayload(state);
+            const stateLocale = searchParams.has('locale') ? locale : (activeJob.locale || locale);
+            payload.currentState = statePayload(state, stateLocale);
           }
           sendJson(res, 202, payload);
           return;
         }
         if (!requireIndex(state, res)) return;
-        sendJson(res, 200, statePayload(state));
+        sendJson(res, 200, statePayload(state, locale));
         return;
       }
 
@@ -415,6 +510,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           tool: searchParams.get('tool') || '',
           file: searchParams.get('file') || '',
           sort: searchParams.get('sort') || 'updated-desc',
+          locale,
         });
         sendJson(res, 200, result);
         return;
@@ -441,6 +537,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           status: searchParams.get('status') || '',
           tool: searchParams.get('tool') || '',
           file: searchParams.get('file') || '',
+          locale,
         });
         if (!result) {
           sendError(res, 404, 'Unknown session');
@@ -460,7 +557,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           return;
         }
         const layer = searchParams.get('layer') || 'main';
-        const detail = buildEventDetail(session, decodePathSegment(detailMatch[2]), layer);
+        const detail = buildEventDetail(session, decodePathSegment(detailMatch[2]), layer, { locale });
         if (!detail) {
           sendError(res, 404, 'Unknown event');
           return;
@@ -520,7 +617,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
 
       await serveStatic(res, pathname);
     } catch (error) {
-      sendError(res, error.statusCode || 500, error.statusCode ? error.message : 'Internal server error', error.statusCode ? undefined : error.stack || error.message);
+      const statusCode = error.statusCode || 500;
+      const details = debugErrors
+        ? (statusCode >= 500 ? error.stack || error.message : error.message)
+        : undefined;
+      sendError(res, statusCode, statusCode >= 500 ? 'Internal server error' : error.message, details);
     }
   });
 }
@@ -529,6 +630,14 @@ async function main() {
   const opts = parseArgs(process.argv);
   if (opts.help) {
     printHelp();
+    return;
+  }
+  if (opts.errors.length > 0) {
+    for (const message of opts.errors) {
+      console.error(`Error: ${message}`);
+    }
+    printHelp();
+    process.exitCode = 1;
     return;
   }
 
@@ -556,4 +665,5 @@ if (require.main === module) {
 module.exports = {
   createServer,
   parseArgs,
+  resolveStaticAssetPath,
 };

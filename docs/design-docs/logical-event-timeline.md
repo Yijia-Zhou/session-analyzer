@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-06-05 / 最近更新：2026-06-05
+- Last updated: 2026-06-18 / 最近更新：2026-06-18
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -47,15 +47,15 @@ The first version of this repository rendered raw records directly, which caused
 
 ### Main components / 主要组件
 
-- Raw parser in `src/codex.js` / `src/codex.js` 中的原始解析器
-- Logical-event builder in `src/codex.js` / `src/codex.js` 中的逻辑事件构建器
+- Codex source/raw parser in `src/codex-source.js`, assembled by `src/codex.js` / `src/codex-source.js` 中的 Codex source/raw 解析器，并由 `src/codex.js` 组装
+- Codex logical-event builder in `src/codex-logical.js`, assembled by `src/codex.js` / `src/codex-logical.js` 中的 Codex 逻辑事件构建器，并由 `src/codex.js` 组装
 - HTTP API in `server.js` / `server.js` 中的 HTTP API
 - Layer-aware UI rendering in `public/app.js` / `public/app.js` 中的层感知 UI 渲染
 
 ### Data flow / 数据流
 
 1. Load session metadata and raw JSONL rows. / 加载会话元数据和原始 JSONL 行。
-2. Before full parsing, scan early session metadata rows to select candidate files for the target repository. Files known to belong only to other repositories are skipped; files without early repository metadata remain candidates. / 在完整解析前，先扫描早期 session metadata 行，为目标仓库选择候选文件。已知只属于其他仓库的文件会被跳过；缺少早期仓库 metadata 的文件仍保留为候选。
+2. Before full parsing, pre-scan transcript `cwd` metadata to select candidate files for the target repository. Files whose `cwd` matches the target repository enter the candidate set, files known to belong only to other repositories are skipped, and files with no `cwd` metadata are counted as unknown without full parsing or display. / 在完整解析前，先预扫描转录中的 `cwd` metadata，为目标仓库选择候选文件。`cwd` 匹配目标仓库的文件会进入候选集合，已知只属于其他仓库的文件会被跳过，而没有 `cwd` metadata 的文件会计入 unknown，不会再做完整解析，也不会显示。
 3. Annotate each raw row with extracted text, call IDs, command text, outputs, and touched files when available. / 在可用时，为每个原始行标注提取文本、调用 ID、命令文本、输出和触及文件。
 4. Group by `call_id` first for tool operations. / 对工具操作先按 `call_id` 分组。
 5. Walk the remaining rows in order and fold them into logical messages, reasoning entries, protocol events, lifecycle events, or proposed plans. / 按顺序遍历剩余行，并折叠为逻辑消息、推理条目、协议事件、生命周期事件或 proposed plan。
@@ -65,9 +65,9 @@ Reasoning text extraction is intentionally narrower than generic raw-field text 
 
 Reasoning 文本提取有意比通用原始字段文本扁平化更严格。`response_item.reasoning` 行会优先使用 `summary_text` 条目，当 summary 为空时再回退到 `reasoning_text` content 条目。`event_msg.agent_reasoning` 行只接受字符串类型的 `message` 或 `text` 字段。保留的 reasoning 文本（包括从镜像行组合出的详情文本）会限制在 16,000 个字符以内；未知 content 类型或形态和 `encrypted_content` 不会被提升为 Main timeline 文本，也不会命中可读 reasoning 折叠条件。
 
-Web search records are normalized as adjacent mirrored rows rather than normal `call_id` tool groups. Real transcripts may write `event_msg.web_search_end` before the completed `response_item.web_search_call` snapshot, often with matching action metadata and identical or near-identical timestamps. The logical builder merges adjacent search/open-page rows by canonical action target so the main timeline shows one web search event with both raw refs; call-only and end-only historical rows remain visible as single logical events.
+Web search records are normalized as adjacent mirrored rows rather than normal `call_id` tool groups. Real transcripts may write `event_msg.web_search_end` before the completed `response_item.web_search_call` snapshot, often with matching action metadata and identical or near-identical timestamps. The logical builder merges adjacent search/open-page rows by canonical action target so the main timeline shows one web search event with both raw refs. When action metadata is absent or incomplete, timestamp fallback pairing is limited to rows from the same `turn_id`; call-only and end-only historical rows remain visible as single logical events.
 
-Web 搜索记录会按相邻镜像行归一化，而不是按普通 `call_id` 工具分组处理。真实转录可能先写入 `event_msg.web_search_end`，再写入已完成的 `response_item.web_search_call` 快照，二者通常带有匹配的 action 元数据，并且时间戳相同或非常接近。逻辑构建器会按规范化后的 action 目标合并相邻的搜索/打开页面记录，使主时间线只显示一个带有两个原始引用的 Web 搜索事件；只有 call 或只有 end 的历史行仍保留为单独逻辑事件。
+Web 搜索记录会按相邻镜像行归一化，而不是按普通 `call_id` 工具分组处理。真实转录可能先写入 `event_msg.web_search_end`，再写入已完成的 `response_item.web_search_call` 快照，二者通常带有匹配的 action 元数据，并且时间戳相同或非常接近。逻辑构建器会按规范化后的 action 目标合并相邻的搜索/打开页面记录，使主时间线只显示一个带有两个原始引用的 Web 搜索事件。当 action 元数据缺失或不完整时，基于 timestamp 的兜底配对只会作用于同一个 `turn_id` 内的行；只有 call 或只有 end 的历史行仍保留为单独逻辑事件。
 
 Session identity is fixed from the transcript file UUID or the first `session_meta` row. Later embedded `session_meta` rows, such as parent metadata copied into a forked subagent transcript, remain inspectable protocol/raw records but do not replace the owning session id or selection key.
 
@@ -87,15 +87,36 @@ Session summaries expose derived-session display metadata for subagent and revie
 
 ## Data model / schema / 数据模型 / 模式
 
+Canonical DTOs use a small source envelope so raw, logical, and detail payloads can be interpreted without assuming Codex JSONL implementation details. `schemaVersion` is the Session Analyzer canonical DTO version, starts at `1`, and is independent from any upstream protocol version. `sourceKind` is a stable machine identifier for the source system; v0.1 emits only `codex`, while future adapters may add other values without localizing this field. `sourceSchemaVersion` is optional and should be populated only when the source provides a trustworthy schema or protocol version.
+
+规范 DTO 使用一个小型 source envelope，使 raw、logical 和 detail payload 可以被解释，而不需要假设 Codex JSONL 实现细节。`schemaVersion` 是 Session Analyzer 自己的规范 DTO 版本，初始为 `1`，与任何上游协议版本相互独立。`sourceKind` 是来源系统的稳定机器标识；v0.1 只输出 `codex`，未来 adapter 可以增加其他值，但该字段不得本地化。`sourceSchemaVersion` 是可选字段，只应在来源提供可信 schema 或协议版本时填充。
+
+Source locations use typed locators instead of assuming every source can be addressed by file and line. Current Codex rows use `sourceLocator: { type: "jsonl_line", file, line }`; the `file` value is a project-generated JSONL locator path normalized to forward slashes for cross-platform DTO stability. Future sources may use different locator types such as database rows or stream offsets. During compatibility migration, existing Codex `source`, `rawRefs[].file`, `rawRefs[].line`, and `rawRefs[].rawId` fields remain available and preserve their original parser path strings, but new code should use `sourceLocator` when it needs source identity and must not assume every locator has file and line properties.
+
+来源位置使用 typed locator，而不是假设每种来源都能用文件和行号寻址。当前 Codex 行使用 `sourceLocator: { type: "jsonl_line", file, line }`；其中 `file` 是项目生成的 JSONL locator path，并归一化为前斜杠，以保持跨平台 DTO 稳定。未来来源可以使用其他 locator 类型，例如数据库行或流 offset。在兼容迁移期间，现有 Codex `source`、`rawRefs[].file`、`rawRefs[].line` 和 `rawRefs[].rawId` 字段继续可用，并保留原始 parser path 字符串；但新代码在需要来源身份时应使用 `sourceLocator`，并且不得假设每个 locator 都有 file 和 line 属性。
+
+`sourceRecordType` and `sourceEventType` use refs-only semantics. Raw DTOs may expose the precise source row types at the top level. Logical and detail DTOs do not expose potentially misleading aggregate `sourceRecordType` or `sourceEventType` fields; each `rawRefs[]` entry carries the precise row-level types instead, and `rawRefs[]` remains the authoritative traceability surface for multi-row logical events.
+
+`sourceRecordType` 和 `sourceEventType` 采用 refs-only 语义。Raw DTO 可以在顶层暴露精确的来源行类型。Logical 和 detail DTO 不在顶层暴露可能误导的聚合 `sourceRecordType` 或 `sourceEventType` 字段；每个 `rawRefs[]` 条目会携带精确的逐行类型，`rawRefs[]` 仍是多行 logical event 的权威可追踪表面。
+
+Implementation boundary: detail DTO assembly plus timeline/inspector section selection and splitting orchestration now live in `src/codex-detail.js` behind `createCodexDetailBuilder(deps)`. `src/codex.js` remains the public assembly/API layer and injects lower-level formatting, parsing, sanitization, and raw/logical source helpers. This is an implementation-only split: the canonical DTO shape and raw traceability semantics above are unchanged.
+
+实现边界：detail DTO 组装，以及 timeline/inspector section 的选择和拆分编排现在位于 `src/codex-detail.js`，并通过 `createCodexDetailBuilder(deps)` 接入。`src/codex.js` 仍是公开组装/API 层，并注入较低层的格式化、解析、清理以及 raw/logical source helper。这只是实现层拆分：上文的 canonical DTO 形状和 raw 可追踪语义保持不变。
+
 ### Raw event / 原始事件
 
 Important fields:
 
 重要字段：
 
+- `schemaVersion`
+- `sourceKind`
+- `sourceSchemaVersion`
 - `rawId`
 - `recordType`
 - `payloadType`
+- `sourceRecordType`
+- `sourceEventType`
 - `role`
 - `timestamp`
 - `turnId`
@@ -107,6 +128,7 @@ Important fields:
 - `stderr`
 - `touchedFiles`
 - `source`
+- `sourceLocator`
 
 ### Logical event / 逻辑事件
 
@@ -115,6 +137,9 @@ Important fields:
 重要字段：
 
 - `id`
+- `schemaVersion`
+- `sourceKind`
+- `sourceSchemaVersion`
 - `kind`
 - `subtype`
 - `layer`
@@ -127,6 +152,7 @@ Important fields:
 - `status`
 - `toolName`
 - `touchedFiles`
+- `sourceLocator`
 - `rawRefs[]`
 - `channels[]`
 
@@ -171,11 +197,15 @@ Expanded cards do not reuse `preview` for rich rendering. The server derives an 
 展开卡片不会复用 `preview` 进行富渲染。服务器会根据底层逻辑事件及其引用的原始行派生 `EventDetailDto`：
 
 - `id`
+- `schemaVersion`
+- `sourceKind`
+- `sourceSchemaVersion`
 - `kind`
 - `subtype`
 - `layer`
 - `title`
 - `meta`
+- `sourceLocator`
 - `rawRefs[]`
 - `timelineSections[]`
 - `inspectorSections[]`
@@ -260,6 +290,12 @@ The selected-event inspector is optimized for fast triage rather than repeating 
 
 选中事件 inspector 面向快速判断事件状况，而不是重复展开后的 timeline 正文。只有当 preview 能补充 timeline 正文之外的上下文时才渲染 Summary，之后依次渲染 Metadata、Source 和 Details。Metadata 只放紧凑标量事实，例如时间、状态、工具、退出码、耗时、通道和涉及文件。Source 负责 JSONL 位置和 Raw refs 动作。详情区段标题应描述用户意图，例如 `Files`、`Result`、`Run context`、`Arguments`、`Request` 和 `Response`，而不是重复通用的 `metadata` 名称。
 
+Display text is localized through the shared `src/shared/i18n.js` catalog at DTO response and browser-rendering boundaries. Locale affects labels, raw-record display labels, section titles, folding profile names/descriptions, condition names/descriptions, renderer fallback copy, and UI chrome. Logical-event label localization uses a strict known-label lookup first: exact logical fixed-display labels are translated directly, kind/protocol/section keys are translated by key, and English default-catalog values are reverse-mapped back to their machine key before translating. If no strict match exists, the original logical label text is preserved; only events without a label fall back to protocol kind/subtype display keys. Locale must not affect canonical machine fields, filtering/storage identifiers, raw refs, source locators, raw JSONL content, or search semantics.
+
+展示文本通过共享的 `src/shared/i18n.js` catalog 在 DTO 响应边界和浏览器渲染边界本地化。Locale 会影响 label、raw-record 展示 label、section title、folding profile 名称/说明、condition 名称/说明、renderer fallback 文案和 UI chrome。逻辑事件 label 会先走严格的已知文案查找：先直接翻译固定 logical display label，再按 key 翻译 kind/protocol/section，并支持把英文默认 catalog value 反查回机器 key 后再翻译；如果严格查找未命中，则保留原始 logical label 文本，只有完全没有 label 的事件才回退到 protocol kind/subtype 展示 key。Locale 不得影响 canonical machine field、filter/storage 标识、raw refs、source locator、raw JSONL 内容或搜索语义。
+
+Project-selection POST stores the browser-selected locale on the active indexing job. State-returning project responses use an explicit query locale when present, otherwise the stored job locale, so job-status and active-job state payloads do not fall back to request language accidentally. Raw-record DTO labels are localized display fields; `recordType`, `payloadType`, `sourceRecordType`, and `sourceEventType` remain stable machine fields. The zh-CN catalog may keep allowlisted technical terms when clearer, and catalog tests guard against untranslated English values outside that allowlist. / Project-selection POST 会把浏览器选择的 locale 存到当前 indexing job 上。会返回 state 的 project 响应在存在显式 query locale 时优先使用它，否则使用 job 上保存的 locale，因此 job-status 和 active-job state payload 不会意外回退到请求语言。Raw-record DTO label 是本地化展示字段；`recordType`、`payloadType`、`sourceRecordType` 和 `sourceEventType` 仍是稳定机器字段。zh-CN catalog 可以在更清晰时保留 allowlist 中的技术术语，并由 catalog 测试防止 allowlist 之外的英文值漏翻。
+
 Folding profiles are data-driven presets with `kindStates`, a `fallback` display state, and fixed condition rules. Built-in presets remain read-only. Edits create a draft that immediately previews in the Main timeline; Save writes a custom profile to browser `localStorage`, and Cancel restores the saved profile. Editable kind rules cover Main timeline kinds only, so protocol-only `protocol` events and raw fallback `event` kinds are not exposed as folding controls. Protocol and raw layer overrides stay outside profile editing so layer semantics remain separate from folding strategy semantics. When protocol or raw is active, the frontend disables profile controls, renders a read-only fixed-rules explanation in the detail panel, and disables profile metric shortcuts.
 
 折叠策略是数据驱动预设，包含 `kindStates`、`fallback` 显示状态和固定条件规则。内置预设保持只读。编辑会创建草稿并立即在 Main timeline 中预览；Save 会把自定义策略写入浏览器 `localStorage`，Cancel 会恢复已保存策略。可编辑 kind 规则只覆盖 Main timeline kind，因此只存在于 protocol layer 的 `protocol` 事件和 raw fallback `event` kind 不会暴露为折叠控件。协议层和原始层覆盖规则不进入策略编辑，以保持事件层语义与折叠策略语义分离。当 protocol 或 raw 生效时，前端会禁用 profile 控件，在详情面板展示只读的固定规则说明，并禁用 profile 指标快捷入口。
@@ -272,9 +308,9 @@ The conversation profile treats some non-message events as conversation continui
 
 对话阅读策略会把部分非消息事件视为对话连续性上下文：proposed plan、协议 plan update、`update_plan` 调用、`request_user_input` 调用和可读 reasoning 条目会展开，避免阅读用户与助手消息时跳过影响下一条消息的决策或计划上下文。空 reasoning 不会被该条件提升。其他普通工具调用在该策略下仍保持隐藏，除非被其他 condition 提升可见性。
 
-Natural Main-timeline folding uses a deterministic visibility merge: `max(kind rule, every matching condition rule)` under `expanded > summary > collapsed > hidden`, with fallback used only when no rule matches. A valid manual event override remains above that natural result. Conditions intentionally support only `expanded` and `summary`, so they promote visibility rather than forcing degradation, hiding, or exclusion. `public/folding.js` is the shared UMD implementation for browser and Node consumers; `src/folding.js` owns built-in profile data and re-exports the shared contract. Browser-local folding state is normalized when read and saved; if a stored profile id no longer exists, the frontend falls back to `narrative` and persists the repaired selection.
+Natural Main-timeline folding uses a deterministic visibility merge: `max(kind rule, every matching condition rule)` under `expanded > summary > collapsed > hidden`, with fallback used only when no rule matches. A valid manual event override remains above that natural result. Conditions intentionally support only `expanded` and `summary`, so they promote visibility rather than forcing degradation, hiding, or exclusion. `src/shared/folding.js` is the shared UMD-compatible implementation for browser and Node consumers; `src/folding.js` owns built-in profile data and re-exports the shared contract, while the browser receives the shared code through the generated `public/assets/app.js` bundle. Browser-local folding state is normalized when read and saved; if a stored profile id no longer exists, the frontend falls back to `narrative` and persists the repaired selection.
 
-Main timeline 的自然折叠状态使用确定性的可见性合并：在 `expanded > summary > collapsed > hidden` 顺序下求 `max(kind rule, 所有命中 condition rule)`，只有没有任何规则命中时才使用 fallback。合法的事件手动覆盖仍高于该自然结果。Condition 有意只支持 `expanded` 和 `summary`，因此它们用于提升可见性，而不是强制降级、隐藏或排除。`public/folding.js` 是浏览器与 Node 消费者共用的 UMD 实现；`src/folding.js` 负责内置 profile 数据并重新导出共享契约。浏览器本地折叠状态在读取和保存时都会规范化；如果已存储的 profile id 不再存在，前端会回退到 `narrative` 并持久化修复后的选择。
+Main timeline 的自然折叠状态使用确定性的可见性合并：在 `expanded > summary > collapsed > hidden` 顺序下求 `max(kind rule, 所有命中 condition rule)`，只有没有任何规则命中时才使用 fallback。合法的事件手动覆盖仍高于该自然结果。Condition 有意只支持 `expanded` 和 `summary`，因此它们用于提升可见性，而不是强制降级、隐藏或排除。`src/shared/folding.js` 是浏览器与 Node 消费者共用的 UMD 兼容实现；`src/folding.js` 负责内置 profile 数据并重新导出共享契约，浏览器则通过生成的 `public/assets/app.js` bundle 接收共享代码。浏览器本地折叠状态在读取和保存时都会规范化；如果已存储的 profile id 不再存在，前端会回退到 `narrative` 并持久化修复后的选择。
 
 Before a folding-profile or layer switch, the frontend captures the selected event as a focus anchor. After the new timeline state is loaded, it restores the same event when it remains visible, otherwise selects the nearest visible event in the new timeline order; if no event was selected before the switch, it selects the first event that is naturally `expanded`, and leaves the folding-rules view open when no expanded event exists.
 
@@ -285,6 +321,8 @@ Before a folding-profile or layer switch, the frontend captures the selected eve
 - `POST /api/project` starts an asynchronous indexing job and returns `202 { job }`; `GET /api/project/status?jobId=...` returns progress and includes the app state when the job succeeds; `DELETE /api/project/status?jobId=...` cancels an active job. / `POST /api/project` 启动异步索引任务并返回 `202 { job }`；`GET /api/project/status?jobId=...` 返回进度，并在任务成功时包含应用状态；`DELETE /api/project/status?jobId=...` 取消活动任务。
 - `/api/sessions/:id/timeline` accepts `layer=main|protocol|raw` / `/api/sessions/:id/timeline` 接受 `layer=main|protocol|raw`
 - `/api/sessions/:id/events/:eventId/detail?layer=main|protocol|raw` returns the structured detail DTO for one event / `/api/sessions/:id/events/:eventId/detail?layer=main|protocol|raw` 返回单个事件的结构化详情 DTO
+- Read APIs accept optional `locale=en|zh-CN|zh`; unsupported values fall back to English. Localized fields are display-only and do not change filtering identifiers or raw/source traceability. / 只读 API 接受可选的 `locale=en|zh-CN|zh`；不支持的值回退到英文。被本地化的字段仅用于展示，不改变筛选标识或 raw/source 可追踪性。
+- State-returning project APIs should honor the browser-selected locale consistently, including project-selection POST and job-status responses that embed app state. / 会返回 state 的 project API 应一致遵循浏览器选择的 locale，包括 project-selection POST 和内嵌 app state 的 job-status 响应。
 - Main and protocol layers return logical events / 主层和协议层返回逻辑事件
 - Raw layer returns raw-record DTOs / 原始层返回原始记录 DTO
 - Event detail uses `rawRefs` so one logical event can expose multiple source rows / 事件详情使用 `rawRefs`，因此一个逻辑事件可以暴露多个来源行

@@ -1,6 +1,6 @@
 (function initNavigation(root, factory) {
   const folding = typeof module === 'object' && module.exports
-    ? require('./folding')
+    ? require('../shared/folding')
     : root.sessionFolding;
   const api = factory(folding);
   if (typeof module === 'object' && module.exports) module.exports = api;
