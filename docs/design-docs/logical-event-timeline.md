@@ -55,7 +55,7 @@ The first version of this repository rendered raw records directly, which caused
 ### Data flow / 数据流
 
 1. Load session metadata and raw JSONL rows. / 加载会话元数据和原始 JSONL 行。
-2. Before full parsing, scan early session metadata rows to select candidate files for the target repository. Files known to belong only to other repositories are skipped; files without early repository metadata remain candidates. / 在完整解析前，先扫描早期 session metadata 行，为目标仓库选择候选文件。已知只属于其他仓库的文件会被跳过；缺少早期仓库 metadata 的文件仍保留为候选。
+2. Before full parsing, pre-scan transcript `cwd` metadata to select candidate files for the target repository. Files whose `cwd` matches the target repository enter the candidate set, files known to belong only to other repositories are skipped, and files with no `cwd` metadata are counted as unknown without full parsing or display. / 在完整解析前，先预扫描转录中的 `cwd` metadata，为目标仓库选择候选文件。`cwd` 匹配目标仓库的文件会进入候选集合，已知只属于其他仓库的文件会被跳过，而没有 `cwd` metadata 的文件会计入 unknown，不会再做完整解析，也不会显示。
 3. Annotate each raw row with extracted text, call IDs, command text, outputs, and touched files when available. / 在可用时，为每个原始行标注提取文本、调用 ID、命令文本、输出和触及文件。
 4. Group by `call_id` first for tool operations. / 对工具操作先按 `call_id` 分组。
 5. Walk the remaining rows in order and fold them into logical messages, reasoning entries, protocol events, lifecycle events, or proposed plans. / 按顺序遍历剩余行，并折叠为逻辑消息、推理条目、协议事件、生命周期事件或 proposed plan。

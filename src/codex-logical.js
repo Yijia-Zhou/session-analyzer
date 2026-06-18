@@ -178,14 +178,14 @@ function createCodexLogicalBuilder(deps) {
       const patchInput = firstNonEmpty(customCall?.output, patchRows.find((raw) => raw.output)?.output);
       touchedFiles = patchEnd?.touchedFiles?.length ? patchEnd.touchedFiles : patchFilesFromPatchInput(patchInput || '');
       const patchSuccess = inferPatchSuccess(patchEnd, customOutputObj, customOutput?.output);
-      status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : patchSuccess ? 'success' : 'failed';
-      severity = patchSuccess ? 'normal' : 'error';
+      status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : patchSuccess === true ? 'success' : patchSuccess === false ? 'failed' : 'incomplete';
+      severity = patchSuccess === true ? 'normal' : patchSuccess === false ? 'error' : 'warning';
       if (status === 'declined' || status === 'incomplete') severity = 'warning';
       label = status === 'success' ? 'Patch applied' : status === 'declined' ? 'Patch declined' : status === 'incomplete' ? 'Incomplete patch' : 'Patch failed';
       preview = truncate(touchedFiles.join(', ') || customOutputObj?.output || patchInput || group.find((raw) => raw.preview)?.preview || 'apply_patch');
       if (customOutputObj?.metadata && isFiniteNumberValue(customOutputObj.metadata.exit_code)) {
         outputStats.exitCode = Number(customOutputObj.metadata.exit_code);
-      } else if (!patchSuccess) {
+      } else if (patchSuccess === false) {
         outputStats.exitCode = 1;
       }
       if (customOutputObj?.metadata?.duration_seconds) {
@@ -272,7 +272,7 @@ function createCodexLogicalBuilder(deps) {
     const endKey = webSearchActionKey(searchEnd);
     const callKey = webSearchActionKey(searchCall);
     if (endKey && callKey) return endKey === callKey;
-    if (!searchEnd.timestamp || !searchCall.timestamp) return true;
+    if (!searchEnd.timestamp || !searchCall.timestamp) return false;
     const deltaMs = Math.abs(Date.parse(searchEnd.timestamp) - Date.parse(searchCall.timestamp));
     return Number.isFinite(deltaMs) && deltaMs <= 1000;
   }

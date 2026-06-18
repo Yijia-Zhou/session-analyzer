@@ -55,52 +55,57 @@ function uniqueNonEmpty(values) {
   return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
 }
 
-const logicalBuilder = createCodexLogicalBuilder({
-  envelope: {
-    CANONICAL_SCHEMA_VERSION,
-    CODEX_SOURCE_KIND,
-    sanitizeLogicalEnvelopeValue: (value) => value,
-    rawRef,
-  },
-  protocol: {
-    classifyProtocolText: (text, role) => {
-      if (role === 'developer') return 'developer_instruction';
-      if (String(text || '').startsWith('# AGENTS.md instructions')) return 'agents_instructions';
-      return '';
+function makeLogicalBuilder(overrides = {}) {
+  return createCodexLogicalBuilder({
+    envelope: {
+      CANONICAL_SCHEMA_VERSION,
+      CODEX_SOURCE_KIND,
+      sanitizeLogicalEnvelopeValue: (value) => value,
+      rawRef,
     },
-    humanizeProtocolSubtype: titleCaseProtocolSubtype,
-    protocolLabelFor: (subtype, fallback = '') => fallback || titleCaseProtocolSubtype(subtype),
-    protocolPreviewFor: (raw, subtype) => raw.preview || subtype,
-  },
-  tool: {
-    TOOL_EVENT_TYPES,
-    commandArgsFromRaw: (raw) => raw?.commandArgs || null,
-    commandToText: (command) => Array.isArray(command) ? command.join(' ') : String(command || ''),
-    inferPatchSuccess: () => true,
-    isFiniteNumberValue: (value) => Number.isFinite(Number(value)),
-    numericExitCode: (...values) => {
-      const value = values.find((candidate) => candidate != null && Number.isFinite(Number(candidate)));
-      return value == null ? null : Number(value);
+    protocol: {
+      classifyProtocolText: (text, role) => {
+        if (role === 'developer') return 'developer_instruction';
+        if (String(text || '').startsWith('# AGENTS.md instructions')) return 'agents_instructions';
+        return '';
+      },
+      humanizeProtocolSubtype: titleCaseProtocolSubtype,
+      protocolLabelFor: (subtype, fallback = '') => fallback || titleCaseProtocolSubtype(subtype),
+      protocolPreviewFor: (raw, subtype) => raw.preview || subtype,
     },
-    parseFormattedCommandOutput: () => null,
-    parseOutputEnvelope: () => null,
-    patchFilesFromPatchInput: () => [],
-    touchFilesFromOutputText: () => [],
-  },
-  text: {
-    displayValue,
-    firstNonEmpty,
-    planUpdateText: (raw) => raw.searchText,
-    relatedReasoning: (left, right) => Boolean(left && right && (left.includes(right) || right.includes(left))),
-    truncate,
-    uniqueNonEmpty,
-  },
-  usage: {
-    tokenUsageItems: () => [],
-    collectUsageLimitItems: () => [],
-    rateLimitReachedType: () => '',
-  },
-});
+    tool: {
+      TOOL_EVENT_TYPES,
+      commandArgsFromRaw: (raw) => raw?.commandArgs || null,
+      commandToText: (command) => Array.isArray(command) ? command.join(' ') : String(command || ''),
+      inferPatchSuccess: () => true,
+      isFiniteNumberValue: (value) => Number.isFinite(Number(value)),
+      numericExitCode: (...values) => {
+        const value = values.find((candidate) => candidate != null && Number.isFinite(Number(candidate)));
+        return value == null ? null : Number(value);
+      },
+      parseFormattedCommandOutput: () => null,
+      parseOutputEnvelope: () => null,
+      patchFilesFromPatchInput: () => [],
+      touchFilesFromOutputText: () => [],
+      ...(overrides.tool || {}),
+    },
+    text: {
+      displayValue,
+      firstNonEmpty,
+      planUpdateText: (raw) => raw.searchText,
+      relatedReasoning: (left, right) => Boolean(left && right && (left.includes(right) || right.includes(left))),
+      truncate,
+      uniqueNonEmpty,
+    },
+    usage: {
+      tokenUsageItems: () => [],
+      collectUsageLimitItems: () => [],
+      rateLimitReachedType: () => '',
+    },
+  });
+}
+
+const logicalBuilder = makeLogicalBuilder();
 
 function raw(line, fields = {}) {
   const payloadType = fields.payloadType || '';
@@ -115,7 +120,7 @@ function raw(line, fields = {}) {
     sessionId: 'session-1',
     line,
     source: { file: '2026/06/10/session.jsonl', line },
-    timestamp: fields.timestamp || `2026-06-10T12:00:${String(line).padStart(2, '0')}.000Z`,
+    timestamp: Object.hasOwn(fields, 'timestamp') ? fields.timestamp : `2026-06-10T12:00:${String(line).padStart(2, '0')}.000Z`,
     turnId: fields.turnId || '',
     recordType,
     payloadType,
@@ -255,4 +260,65 @@ test('logical builder pairs web search rows without changing ids, refs, status, 
   assert.match(paired.searchText, /release hardening call/);
   assert.equal(orphan.preview, 'orphan web search end fixture');
   assert.deepEqual(orphan.rawRefs.map((ref) => ref.line), [3]);
+});
+
+test('logical builder keeps adjacent web search call/end rows separate without action key or timestamps', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      payloadType: 'web_search_end',
+      payload: {},
+      timestamp: '',
+      preview: 'end without key',
+      status: 'completed',
+    }),
+    raw(2, {
+      recordType: 'response_item',
+      payloadType: 'web_search_call',
+      payload: {},
+      timestamp: '',
+      preview: 'call without key',
+    }),
+  ]);
+
+  const searchEvents = logicalEvents.filter((event) => event.kind === 'web_search');
+  assert.equal(searchEvents.length, 2);
+  assert.deepEqual(searchEvents.map((event) => event.rawRefs.map((ref) => ref.line)), [[1], [2]]);
+});
+
+test('logical builder marks patch calls with unknown success as incomplete warnings', () => {
+  const builder = makeLogicalBuilder({
+    tool: {
+      inferPatchSuccess: () => null,
+      patchFilesFromPatchInput: () => ['src/unknown.js'],
+      parseOutputEnvelope: (text) => JSON.parse(text),
+    },
+  });
+  const logicalEvents = builder.buildLogicalEvents([
+    raw(1, {
+      recordType: 'response_item',
+      payloadType: 'custom_tool_call',
+      toolName: 'apply_patch',
+      callId: 'call-patch-unknown',
+      output: '*** Begin Patch\n*** Update File: src/unknown.js\n*** End Patch',
+    }),
+    raw(2, {
+      recordType: 'response_item',
+      payloadType: 'custom_tool_call_output',
+      toolName: 'apply_patch',
+      callId: 'call-patch-unknown',
+      output: '{"output":"Patch request sent.","metadata":{"duration_seconds":0.1}}',
+    }),
+  ]);
+
+  assert.deepEqual(logicalEvents.filter((event) => event.kind === 'patch').map((event) => ({
+    status: event.status,
+    severity: event.severity,
+    label: event.label,
+    touchedFiles: event.touchedFiles,
+  })), [{
+    status: 'incomplete',
+    severity: 'warning',
+    label: 'Incomplete patch',
+    touchedFiles: ['src/unknown.js'],
+  }]);
 });

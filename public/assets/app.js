@@ -157,9 +157,9 @@
       </details>
     </section>`})}function W(e,n={}){let s=K(),i=re(t.selectedSessionId,s,e.id),o=Hn(e),l=e.snippet||e.preview||"",f=t.detailCache[i],m=di(zs(e));t.selectedEventId=e.id,t.detailSelectionKey=i,n.replace?hs({type:"inspector",eventId:e.id}):fs({type:"inspector",eventId:e.id}),he("detail"),Ae(),cs()||Wt().then(()=>{t.detailSelectionKey===i&&t.selectedEventId===e.id&&W(e,{replace:!0})}).catch(_),qe({title:e.label,actions:[Tt(),zi(e)].filter(Boolean).join(""),body:`<div class="inspector">
     ${m?`<div class="chips">${m}</div>`:""}
-    ${vi(e,l,f)?`<section class="inspectorSection"><h3>Summary</h3><div class="inspectorLead">${c(l)}</div></section>`:""}
+    ${vi(e,l,f)?`<section class="inspectorSection"><h3>${c(r("summary"))}</h3><div class="inspectorLead">${c(l)}</div></section>`:""}
     <section class="inspectorSection">
-      <h3>Metadata</h3>
+      <h3>${c(r("metadata"))}</h3>
       <dl class="inspectorMeta">${hi(e,o,f)}</dl>
     </section>
     ${mi(e,o,f)}

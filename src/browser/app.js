@@ -2601,9 +2601,9 @@ function showInspector(event, options = {}) {
     actions: [renderReadFromHereAction(), renderInspectorNavigation(event)].filter(Boolean).join(''),
     body: `<div class="inspector">
     ${chips ? `<div class="chips">${chips}</div>` : ''}
-    ${shouldShowInspectorSummary(event, preview, detail) ? `<section class="inspectorSection"><h3>Summary</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
+    ${shouldShowInspectorSummary(event, preview, detail) ? `<section class="inspectorSection"><h3>${escapeHtml(t('summary'))}</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
     <section class="inspectorSection">
-      <h3>Metadata</h3>
+      <h3>${escapeHtml(t('metadata'))}</h3>
       <dl class="inspectorMeta">${renderInspectorMetadata(event, refs, detail)}</dl>
     </section>
     ${renderInspectorSource(event, refs, detail)}

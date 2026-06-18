@@ -7,7 +7,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const url = require('node:url');
-const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, normalizeFsPath, readImagePreview, readRawLine } = require('./src/codex');
+const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, isPathInsideOrSame, normalizeFsPath, readImagePreview, readRawLine } = require('./src/codex');
 const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
 
@@ -308,9 +308,8 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
 
 async function serveStatic(res, pathname) {
   const publicRoot = path.join(__dirname, 'public');
-  const safePath = pathname === '/' ? '/index.html' : pathname;
-  const target = path.resolve(publicRoot, `.${safePath}`);
-  if (!target.startsWith(publicRoot)) {
+  const target = resolveStaticAssetPath(publicRoot, pathname);
+  if (!target) {
     sendError(res, 403, 'Forbidden');
     return;
   }
@@ -326,11 +325,18 @@ async function serveStatic(res, pathname) {
       sendError(res, 404, 'Not found');
       return;
     }
-    sendError(res, 500, 'Unable to read static asset', error.message);
+    sendError(res, 500, 'Unable to read static asset');
   }
 }
 
+function resolveStaticAssetPath(publicRoot, pathname) {
+  const safePath = pathname === '/' ? '/index.html' : pathname;
+  const target = path.resolve(publicRoot, `.${safePath}`);
+  return isPathInsideOrSame(target, publicRoot) ? target : '';
+}
+
 function createServer(initialIndex = null, buildMs = 0, options = {}) {
+  const debugErrors = options.debugErrors ?? process.env.SESSION_ANALYZER_DEBUG_ERRORS === '1';
   const state = {
     index: initialIndex?.repoRoot ? initialIndex : null,
     buildMs: initialIndex?.repoRoot ? buildMs : 0,
@@ -548,7 +554,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
 
       await serveStatic(res, pathname);
     } catch (error) {
-      sendError(res, error.statusCode || 500, error.statusCode ? error.message : 'Internal server error', error.statusCode ? undefined : error.stack || error.message);
+      const statusCode = error.statusCode || 500;
+      const details = debugErrors
+        ? (statusCode >= 500 ? error.stack || error.message : error.message)
+        : undefined;
+      sendError(res, statusCode, statusCode >= 500 ? 'Internal server error' : error.message, details);
     }
   });
 }
@@ -584,4 +594,5 @@ if (require.main === module) {
 module.exports = {
   createServer,
   parseArgs,
+  resolveStaticAssetPath,
 };

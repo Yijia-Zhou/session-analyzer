@@ -1695,13 +1695,21 @@ function patchOutputHasSuccess(text) {
 function inferPatchSuccess(patchEnd, customOutputObj, rawOutput) {
   const explicitStatus = String(patchEnd?.status || customOutputObj?.metadata?.status || '').toLowerCase();
   if (explicitStatus === 'failed' || explicitStatus === 'declined') return false;
-  if (patchEnd) return Boolean(patchEnd.parsed.payload.success);
+  if (explicitStatus === 'success') return true;
+  if (explicitStatus === 'incomplete') return null;
+  if (patchEnd && Object.hasOwn(patchEnd.parsed?.payload || {}, 'success')) {
+    return patchEnd.parsed.payload.success === true;
+  }
   const exitCode = customOutputObj?.metadata?.exit_code;
   if (isFiniteNumberValue(exitCode)) return Number(exitCode) === 0;
-  const outputText = patchOutputText(customOutputObj, rawOutput);
-  if (patchOutputHasFailure(outputText)) return false;
-  if (patchOutputHasSuccess(outputText)) return true;
-  return true;
+  const outputSignals = [
+    patchEnd?.parsed?.payload?.stderr,
+    patchEnd?.parsed?.payload?.stdout,
+    patchOutputText(customOutputObj, rawOutput),
+  ];
+  if (outputSignals.some((text) => patchOutputHasFailure(text))) return false;
+  if (outputSignals.some((text) => patchOutputHasSuccess(text))) return true;
+  return null;
 }
 
 function humanizeProtocolSubtype(subtype) {
@@ -1965,7 +1973,7 @@ function extractPatchSections(raws, event, session = {}) {
     event.status ? `Patch ${event.status}.` : '',
   );
   if (noticeText) {
-    inspectorSections.push(makeNoticeSection('Result', noticeText, event.status === 'failed' ? 'error' : 'info'));
+    inspectorSections.push(makeNoticeSection('Result', noticeText, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info'));
   }
 
   if (!timelineSections.some((section) => section.type === 'diff' || section.type === 'patch')) {
@@ -2690,8 +2698,14 @@ function rawToolSections(raw, relatedEvent, session = {}) {
     const patchSection = parseUnifiedDiffPatchSection(raw.parsed?.payload?.changes, session.repoRoot);
     if (patchSection) sections.push(patchSection);
     maybePushKvSection(sections, 'Files', diffStatsEntries(raw.parsed?.payload?.changes, session.repoRoot));
-    const noticeText = firstNonEmpty(raw.parsed?.payload?.stdout, raw.parsed?.payload?.stderr, raw.status ? `Patch ${raw.status}.` : '');
-    if (noticeText) sections.push(makeNoticeSection('Result', noticeText, raw.parsed?.payload?.success === false ? 'error' : 'info'));
+    const patchStdout = raw.parsed?.payload?.stdout;
+    const patchStderr = raw.parsed?.payload?.stderr;
+    const noticeText = [patchStdout, patchStderr].filter((text) => String(text || '').trim()).join('\n')
+      || (raw.status ? `Patch ${raw.status}.` : '');
+    const patchFailed = raw.parsed?.payload?.success === false
+      || patchOutputHasFailure(patchStderr)
+      || patchOutputHasFailure(patchStdout);
+    if (noticeText) sections.push(makeNoticeSection('Result', noticeText, patchFailed ? 'error' : 'info'));
     maybePushKvSection(sections, 'Apply result', [
       { key: 'status', value: String(raw.status || '') },
       { key: 'durationMs', value: raw.durationMs == null ? '' : String(raw.durationMs) },
@@ -2700,7 +2714,8 @@ function rawToolSections(raw, relatedEvent, session = {}) {
   } else if (raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output' && relatedEvent?.kind === 'patch') {
     const envelope = toolOutputEnvelope(raw);
     const output = firstNonEmpty(envelope?.output, raw.output);
-    if (output) sections.push(makeNoticeSection('Result', stringifyValue(output), inferPatchSuccess(null, envelope, raw.output) ? 'info' : 'error'));
+    const patchSuccess = inferPatchSuccess(null, envelope, raw.output);
+    if (output) sections.push(makeNoticeSection('Result', stringifyValue(output), patchSuccess === true ? 'info' : patchSuccess === false ? 'error' : 'warning'));
     maybePushKvSection(sections, 'Apply result', [
       { key: 'exitCode', value: envelope?.metadata?.exit_code == null ? '' : String(envelope.metadata.exit_code) },
       { key: 'durationMs', value: envelope?.metadata?.duration_seconds == null ? '' : String(Math.round(Number(envelope.metadata.duration_seconds) * 1000)) },
@@ -3267,6 +3282,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
   let skippedFileCount = 0;
   let unknownFileCount = 0;
   let candidateBytes = 0;
+  let filesScanned = 0;
 
   emitProgress(onProgress, {
     phase: 'selecting',
@@ -3286,18 +3302,20 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
     const inspected = await inspectSessionFile(filePath, { repoRoot: resolvedRepo, signal });
     const hasCwd = inspected.cwdSet.size > 0;
     const matchesRepo = [...inspected.cwdSet].some((cwd) => isPathInsideOrSame(cwd, resolvedRepo));
-    if (matchesRepo || !hasCwd) {
+    if (matchesRepo) {
       candidates.push(filePath);
       candidateBytes += inspected.bytes;
-      if (!hasCwd) unknownFileCount += 1;
+    } else if (!hasCwd) {
+      unknownFileCount += 1;
     } else {
       skippedFileCount += 1;
     }
+    filesScanned += 1;
     emitProgress(onProgress, {
       phase: 'selecting',
       repoRoot: resolvedRepo,
       filesTotal: files.length,
-      filesScanned: skippedFileCount + candidates.length,
+      filesScanned,
       candidateFileCount: candidates.length,
       skippedFileCount,
       unknownFileCount,
@@ -3488,8 +3506,9 @@ function sessionSummary(session, index) {
 function filterSessions(index, filters) {
   const locale = i18n.resolveLocale(filters.locale);
   let sessions = index.sessions.filter((session) => {
-    if (filters.from && String(session.updatedAt || session.startedAt) < `${filters.from}T00:00:00.000Z`) return false;
-    if (filters.to && String(session.startedAt || session.updatedAt) > `${filters.to}T23:59:59.999Z`) return false;
+    const activityAt = String(session.updatedAt || session.startedAt || '');
+    if (filters.from && activityAt < `${filters.from}T00:00:00.000Z`) return false;
+    if (filters.to && activityAt > `${filters.to}T23:59:59.999Z`) return false;
     if (filters.q && !matchTerms(session.searchText, filters.q)) return false;
     if (filters.kind || filters.status || filters.tool || filters.file || filters.layer) {
       const haystack = filters.layer === 'raw' ? session.rawEvents.map((raw) => rawEventDto(raw, '', locale)).filter((event) => eventMatches(event, filters)) : session.logicalEvents.filter((event) => eventMatches(event, filters));
