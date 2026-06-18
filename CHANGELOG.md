@@ -2,6 +2,10 @@
 
 ## Unreleased / 未发布
 
+_No changes yet. / 暂无变更。_
+
+## 0.1.0 - 2026-06-18
+
 ### English
 
 - Post-review hardening completed: Simplified Chinese display catalogs now cover the shipped display namespaces while preserving machine fields such as `kind`, `status`, `layer`, raw refs, and source locators.
@@ -19,8 +23,6 @@
 - CLI 参数处理现在会在 server 启动前拒绝未知 option 和位置参数，同时接受少量常见 option 别名，例如 `--repos` 和 `--codexhome`。
 - README 已补充已知限制，明确 Codex-only 范围、未来 event 的 protocol/raw 兜底、fixture 覆盖是有重点的，以及非空 review finding 仍需真实数据验证。
 - `server.js` 导出的程序接口仍属于内部接口，不是稳定的 v0.1 API；由于 `server.js` 受 `require.main === module` 保护，`require('session-analyzer')` 不会启动服务器。
-
-## 0.1.0 - 2026-06-11
 
 ### English
 
