@@ -246,6 +246,28 @@
         turn_context: 'Turn context',
         user_shell_command: 'User shell command',
       },
+      logicalLabel: {
+        'Other tool call': 'Other tool call',
+        'Failed command': 'Failed command',
+        'Declined command': 'Declined command',
+        'Incomplete command': 'Incomplete command',
+        'Patch applied': 'Patch applied',
+        'Patch declined': 'Patch declined',
+        'Incomplete patch': 'Incomplete patch',
+        'Patch failed': 'Patch failed',
+        'JS REPL error': 'JS REPL error',
+        'MCP tool': 'MCP tool',
+        'Empty reasoning': 'Empty reasoning',
+        'Plan delta': 'Plan delta',
+        'Stream error': 'Stream error',
+        'Guardian warning': 'Guardian warning',
+        'Usage limit reached': 'Usage limit reached',
+        'Context compacted': 'Context compacted',
+        'Thread rolled back': 'Thread rolled back',
+        'Review started': 'Review started',
+        'Review completed': 'Review completed',
+        Subagent: 'Subagent',
+      },
       status: {
         failed: 'Failed',
         success: 'Success',
@@ -573,6 +595,28 @@
         turn_context: '轮次上下文',
         user_shell_command: '用户命令行命令',
       },
+      logicalLabel: {
+        'Other tool call': '其他工具调用',
+        'Failed command': '失败命令',
+        'Declined command': '命令已拒绝',
+        'Incomplete command': '未完成命令',
+        'Patch applied': '补丁已应用',
+        'Patch declined': '补丁已拒绝',
+        'Incomplete patch': '未完成补丁',
+        'Patch failed': '补丁失败',
+        'JS REPL error': 'JS REPL 错误',
+        'MCP tool': 'MCP 工具',
+        'Empty reasoning': '空推理',
+        'Plan delta': '计划变更',
+        'Stream error': '流错误',
+        'Guardian warning': '守护警告',
+        'Usage limit reached': '达到用量限制',
+        'Context compacted': '上下文已压缩',
+        'Thread rolled back': '线程已回滚',
+        'Review started': 'Review 开始',
+        'Review completed': 'Review 完成',
+        Subagent: 'Subagent',
+      },
       rawRecord: {
         agent_message: 'agent 消息',
         agent_reasoning: 'agent 推理',
@@ -776,9 +820,40 @@
     return t(locale, 'section', key) || key;
   }
 
+  const KNOWN_LABEL_NAMESPACES = ['logicalLabel', 'kind', 'protocol', 'section'];
+  const DEFAULT_KNOWN_LABEL_REVERSE = new Map();
+
+  for (const namespace of KNOWN_LABEL_NAMESPACES) {
+    const entries = catalogs[DEFAULT_LOCALE]?.[namespace];
+    if (!entries || typeof entries !== 'object') continue;
+    for (const [key, value] of Object.entries(entries)) {
+      const text = typeof value === 'string' ? value.trim() : '';
+      if (text && !DEFAULT_KNOWN_LABEL_REVERSE.has(text)) {
+        DEFAULT_KNOWN_LABEL_REVERSE.set(text, { namespace, key });
+      }
+    }
+  }
+
+  function readKnownLabel(locale, namespace, key) {
+    const resolved = resolveLocale(locale);
+    return readPath(resolved, namespace, key) || '';
+  }
+
+  function lookupKnownLabel(label, locale) {
+    const key = String(label || '').trim();
+    if (!key) return '';
+    for (const namespace of KNOWN_LABEL_NAMESPACES) {
+      const translated = readKnownLabel(locale, namespace, key);
+      if (translated) return translated;
+    }
+    const reverse = DEFAULT_KNOWN_LABEL_REVERSE.get(key);
+    if (!reverse) return '';
+    return readKnownLabel(locale, reverse.namespace, reverse.key);
+  }
+
   function knownLabel(label, locale) {
     const key = String(label || '').trim();
-    return t(locale, 'kind', key) || t(locale, 'protocol', key) || t(locale, 'section', key) || key;
+    return lookupKnownLabel(key, locale) || key;
   }
 
   function localizeCondition(condition, locale) {
@@ -811,6 +886,7 @@
     displayStateLabel,
     statusLabel,
     sectionTitle,
+    lookupKnownLabel,
     knownLabel,
     localizeCondition,
     localizeProfile,

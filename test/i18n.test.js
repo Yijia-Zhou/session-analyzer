@@ -109,6 +109,27 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.humanize('js_repl'), 'JS REPL');
 });
 
+test('known label lookup translates exact keys and English catalog values without losing fallback compatibility', () => {
+  assert.equal(i18n.lookupKnownLabel('Failed command', 'zh-CN'), '失败命令');
+  assert.equal(i18n.lookupKnownLabel('user_message', 'zh-CN'), '用户消息');
+  assert.equal(i18n.lookupKnownLabel('User message', 'zh-CN'), '用户消息');
+  assert.equal(i18n.lookupKnownLabel('Web search', 'zh-CN'), '网页搜索');
+  assert.equal(i18n.lookupKnownLabel('No such label', 'zh-CN'), '');
+  assert.equal(i18n.knownLabel('No such label', 'zh-CN'), 'No such label');
+});
+
+test('strict known label lookup does not treat default-locale fallback as a zh-CN hit', () => {
+  const zhLogicalLabels = i18n.catalogs['zh-CN'].logicalLabel;
+  const original = zhLogicalLabels['Failed command'];
+  delete zhLogicalLabels['Failed command'];
+  try {
+    assert.equal(i18n.lookupKnownLabel('Failed command', 'zh-CN'), '');
+    assert.equal(i18n.knownLabel('Failed command', 'zh-CN'), 'Failed command');
+  } finally {
+    zhLogicalLabels['Failed command'] = original;
+  }
+});
+
 test('unknown display labels use shared humanization without changing machine values', () => {
   const catalog = eventKindCatalog([{
     logicalEvents: [
@@ -140,28 +161,49 @@ test('zh-CN catalog only keeps approved English terms in display text', () => {
 
 test('timeline/detail locale changes display fields without changing machine fields', async () => {
   const index = await buildIndex({ codexHome: fixtureCodexHome, repoRoot: fixtureRepo });
-  const session = index.sessions.find((item) => item.logicalEvents.some((event) => event.layer === 'main'));
-  const timeline = getTimeline(index, session.id, { layer: 'main', offset: 0, limit: 20, q: '', locale: 'zh-CN' });
-  const event = timeline.events.find((item) => item.kind === 'command') || timeline.events[0];
-  const detail = buildEventDetail(session, event.id, event.layer, { locale: 'zh-CN' });
+  const session = index.sessionsById.get(primaryFixtureSessionId);
+  const timeline = getTimeline(index, session.id, { layer: 'main', offset: 0, limit: 200, q: '', locale: 'zh-CN' });
+  const userMessage = timeline.events.find((item) => item.kind === 'user_message');
+  const failedCommand = timeline.events.find((item) => item.kind === 'command' && item.status === 'failed');
+  const patchApplied = timeline.events.find((item) => item.kind === 'patch' && item.status === 'success');
 
-  assert.equal(event.schemaVersion, 1);
-  assert.equal(event.sourceKind, 'codex');
-  assert.equal(event.layer, 'main');
-  assert.ok(event.rawRefs.every((ref) => ref.sourceLocator?.type === 'jsonl_line'));
-  assert.equal(detail.kind, event.kind);
-  assert.equal(detail.sourceKind, 'codex');
+  assert.ok(userMessage, 'fixture should include a user message event');
+  assert.ok(failedCommand, 'fixture should include a failed command event');
+  assert.ok(patchApplied, 'fixture should include a successful patch event');
+
+  const userDetail = buildEventDetail(session, userMessage.id, userMessage.layer, { locale: 'zh-CN' });
+  const failedCommandDetail = buildEventDetail(session, failedCommand.id, failedCommand.layer, { locale: 'zh-CN' });
+  const patchAppliedDetail = buildEventDetail(session, patchApplied.id, patchApplied.layer, { locale: 'zh-CN' });
+
+  assert.equal(userMessage.label, '用户消息');
+  assert.equal(failedCommand.label, '失败命令');
+  assert.equal(patchApplied.label, '补丁已应用');
+  assert.equal(userDetail.title, '用户消息');
+  assert.equal(failedCommandDetail.title, '失败命令');
+  assert.equal(patchAppliedDetail.title, '补丁已应用');
+
+  assert.equal(userMessage.schemaVersion, 1);
+  assert.equal(failedCommand.sourceKind, 'codex');
+  assert.equal(patchApplied.layer, 'main');
+  assert.ok(failedCommand.rawRefs.every((ref) => ref.sourceLocator?.type === 'jsonl_line'));
+  assert.equal(userDetail.kind, 'user_message');
+  assert.equal(failedCommandDetail.kind, 'command');
+  assert.equal(patchAppliedDetail.kind, 'patch');
+  assert.equal(failedCommand.status, 'failed');
+  assert.equal(patchApplied.status, 'success');
+  assert.equal(failedCommandDetail.sourceKind, 'codex');
 });
 
 test('locale keeps curated protocol labels more specific than event kind', async () => {
   const index = await buildIndex({ codexHome: fixtureCodexHome, repoRoot: fixtureRepo });
   const session = index.sessionsById.get(primaryFixtureSessionId);
   const timeline = getTimeline(index, session.id, { layer: 'protocol', offset: 0, limit: 200, q: '', locale: 'zh-CN' });
-  const event = timeline.events.find((item) => item.kind === 'reasoning' && item.label === 'Empty reasoning');
+  const event = timeline.events.find((item) => item.kind === 'reasoning' && !item.hasReadableReasoning);
 
   assert.ok(event, 'protocol timeline should preserve the curated Empty reasoning label');
   const detail = buildEventDetail(session, event.id, 'protocol', { locale: 'zh-CN' });
-  assert.equal(detail.title, 'Empty reasoning');
+  assert.equal(event.label, '空推理');
+  assert.equal(detail.title, '空推理');
   assert.equal(detail.kind, 'reasoning');
 });
 

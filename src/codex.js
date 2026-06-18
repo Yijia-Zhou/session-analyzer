@@ -1184,8 +1184,9 @@ function localizeDetailSections(sections, locale) {
 function localizedLogicalLabel(logical, locale) {
   if (!logical) return '';
   const label = sanitizeLogicalEnvelopeValue(logical.label);
-  const translated = i18n.knownLabel(label, locale);
-  if (translated || label) return translated || label;
+  const translated = i18n.lookupKnownLabel(label, locale);
+  if (translated) return translated;
+  if (label) return label;
   if (logical.layer === 'protocol') return eventKindLabel(logical.subtype || logical.kind, locale);
   return '';
 }

@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-06-11 / 最近更新：2026-06-11
+- Last updated: 2026-06-18 / 最近更新：2026-06-18
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -290,9 +290,9 @@ The selected-event inspector is optimized for fast triage rather than repeating 
 
 选中事件 inspector 面向快速判断事件状况，而不是重复展开后的 timeline 正文。只有当 preview 能补充 timeline 正文之外的上下文时才渲染 Summary，之后依次渲染 Metadata、Source 和 Details。Metadata 只放紧凑标量事实，例如时间、状态、工具、退出码、耗时、通道和涉及文件。Source 负责 JSONL 位置和 Raw refs 动作。详情区段标题应描述用户意图，例如 `Files`、`Result`、`Run context`、`Arguments`、`Request` 和 `Response`，而不是重复通用的 `metadata` 名称。
 
-Display text is localized through the shared `src/shared/i18n.js` catalog at DTO response and browser-rendering boundaries. Locale affects labels, raw-record display labels, section titles, folding profile names/descriptions, condition names/descriptions, renderer fallback copy, and UI chrome. Locale must not affect canonical machine fields, filtering/storage identifiers, raw refs, source locators, raw JSONL content, or search semantics.
+Display text is localized through the shared `src/shared/i18n.js` catalog at DTO response and browser-rendering boundaries. Locale affects labels, raw-record display labels, section titles, folding profile names/descriptions, condition names/descriptions, renderer fallback copy, and UI chrome. Logical-event label localization uses a strict known-label lookup first: exact logical fixed-display labels are translated directly, kind/protocol/section keys are translated by key, and English default-catalog values are reverse-mapped back to their machine key before translating. If no strict match exists, the original logical label text is preserved; only events without a label fall back to protocol kind/subtype display keys. Locale must not affect canonical machine fields, filtering/storage identifiers, raw refs, source locators, raw JSONL content, or search semantics.
 
-展示文本通过共享的 `src/shared/i18n.js` catalog 在 DTO 响应边界和浏览器渲染边界本地化。Locale 会影响 label、raw-record 展示 label、section title、folding profile 名称/说明、condition 名称/说明、renderer fallback 文案和 UI chrome。Locale 不得影响 canonical machine field、filter/storage 标识、raw refs、source locator、raw JSONL 内容或搜索语义。
+展示文本通过共享的 `src/shared/i18n.js` catalog 在 DTO 响应边界和浏览器渲染边界本地化。Locale 会影响 label、raw-record 展示 label、section title、folding profile 名称/说明、condition 名称/说明、renderer fallback 文案和 UI chrome。逻辑事件 label 会先走严格的已知文案查找：先直接翻译固定 logical display label，再按 key 翻译 kind/protocol/section，并支持把英文默认 catalog value 反查回机器 key 后再翻译；如果严格查找未命中，则保留原始 logical label 文本，只有完全没有 label 的事件才回退到 protocol kind/subtype 展示 key。Locale 不得影响 canonical machine field、filter/storage 标识、raw refs、source locator、raw JSONL 内容或搜索语义。
 
 Project-selection POST stores the browser-selected locale on the active indexing job. State-returning project responses use an explicit query locale when present, otherwise the stored job locale, so job-status and active-job state payloads do not fall back to request language accidentally. Raw-record DTO labels are localized display fields; `recordType`, `payloadType`, `sourceRecordType`, and `sourceEventType` remain stable machine fields. The zh-CN catalog may keep allowlisted technical terms when clearer, and catalog tests guard against untranslated English values outside that allowlist. / Project-selection POST 会把浏览器选择的 locale 存到当前 indexing job 上。会返回 state 的 project 响应在存在显式 query locale 时优先使用它，否则使用 job 上保存的 locale，因此 job-status 和 active-job state payload 不会意外回退到请求语言。Raw-record DTO label 是本地化展示字段；`recordType`、`payloadType`、`sourceRecordType` 和 `sourceEventType` 仍是稳定机器字段。zh-CN catalog 可以在更清晰时保留 allowlist 中的技术术语，并由 catalog 测试防止 allowlist 之外的英文值漏翻。
 
