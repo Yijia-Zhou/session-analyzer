@@ -26,7 +26,10 @@ function parseArgs(argv) {
     codexHome: path.join(os.homedir(), '.codex'),
     port: 17890,
     host: '127.0.0.1',
+    errors: [],
   };
+  const isMissingOptionValue = (value) => value === undefined || (typeof value === 'string' && value.startsWith('--'));
+  const isBlankOptionValue = (value) => typeof value === 'string' && value.trim() === '';
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
@@ -36,10 +39,26 @@ function parseArgs(argv) {
     } else if (arg === '--codex-home' && next) {
       opts.codexHome = next;
       i += 1;
-    } else if (arg === '--port' && next) {
-      opts.port = Number(next);
+    } else if (arg === '--port') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push('Missing value for --port. Expected an integer between 1 and 65535.');
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
+      const port = Number(next);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        opts.errors.push(`Invalid value for --port: ${JSON.stringify(next)}. Expected an integer between 1 and 65535.`);
+        i += 1;
+        continue;
+      }
+      opts.port = port;
       i += 1;
-    } else if (arg === '--host' && next) {
+    } else if (arg === '--host') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push('Missing value for --host. Expected a non-empty host name or IP address.');
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
       opts.host = next;
       i += 1;
     } else if (arg === '--help' || arg === '-h') {
@@ -59,7 +78,7 @@ function printHelp() {
     'Options:',
     '  --repo <repo-path>     Repository to analyze. If omitted, select a project in the browser.',
     '  --codex-home <path>    Codex home directory. Defaults to ~/.codex.',
-    '  --port <port>          Local server port. Defaults to 17890.',
+    '  --port <port>          Local server port. Must be an integer from 1 to 65535. Defaults to 17890.',
     '  --host <host>          Advanced: bind host. Defaults to 127.0.0.1.',
     '',
     'Examples:',
@@ -567,6 +586,14 @@ async function main() {
   const opts = parseArgs(process.argv);
   if (opts.help) {
     printHelp();
+    return;
+  }
+  if (opts.errors.length > 0) {
+    for (const message of opts.errors) {
+      console.error(`Error: ${message}`);
+    }
+    printHelp();
+    process.exitCode = 1;
     return;
   }
 

@@ -3619,7 +3619,7 @@ function getTimeline(index, sessionId, filters) {
     : 0;
   const page = matched.slice(filters.offset, filters.offset + filters.limit);
   return {
-    session: sessionSummary(session),
+    session: sessionSummary(session, index),
     total: matched.length,
     searchMatchCount,
     offset: filters.offset,

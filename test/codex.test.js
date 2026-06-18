@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const childProcess = require('node:child_process');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -11,6 +12,7 @@ const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../sr
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
+const repoRoot = path.join(__dirname, '..');
 
 async function buildFixtureIndex() {
   return buildIndex({
@@ -47,6 +49,56 @@ async function writeFixtureTranscript(codexHome, cwd, id = 'cccccccc-cccc-cccc-c
 test('parseArgs leaves repo unset unless --repo is provided', () => {
   assert.equal(parseArgs(['node', 'server.js']).repo, null);
   assert.equal(parseArgs(['node', 'server.js', '--repo', 'G:\\vibe\\term-agent']).repo, 'G:\\vibe\\term-agent');
+});
+
+test('parseArgs validates explicit port values', () => {
+  assert.equal(parseArgs(['node', 'server.js', '--port', '3000']).port, 3000);
+
+  const invalidCases = [
+    { argv: ['node', 'server.js', '--port'], error: 'Missing value for --port. Expected an integer between 1 and 65535.' },
+    { argv: ['node', 'server.js', '--port', ''], error: 'Missing value for --port. Expected an integer between 1 and 65535.' },
+    { argv: ['node', 'server.js', '--port', '   '], error: 'Missing value for --port. Expected an integer between 1 and 65535.' },
+    { argv: ['node', 'server.js', '--port', 'NaN'], error: 'Invalid value for --port: "NaN". Expected an integer between 1 and 65535.' },
+    { argv: ['node', 'server.js', '--port', '1.5'], error: 'Invalid value for --port: "1.5". Expected an integer between 1 and 65535.' },
+    { argv: ['node', 'server.js', '--port', '0'], error: 'Invalid value for --port: "0". Expected an integer between 1 and 65535.' },
+    { argv: ['node', 'server.js', '--port', '-1'], error: 'Invalid value for --port: "-1". Expected an integer between 1 and 65535.' },
+    { argv: ['node', 'server.js', '--port', '65536'], error: 'Invalid value for --port: "65536". Expected an integer between 1 and 65535.' },
+  ];
+
+  for (const { argv, error } of invalidCases) {
+    assert.deepEqual(parseArgs(argv).errors, [error]);
+  }
+});
+
+test('parseArgs validates host values', () => {
+  assert.equal(parseArgs(['node', 'server.js', '--host', '0.0.0.0']).host, '0.0.0.0');
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--host']).errors,
+    ['Missing value for --host. Expected a non-empty host name or IP address.'],
+  );
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--host', '']).errors,
+    ['Missing value for --host. Expected a non-empty host name or IP address.'],
+  );
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--host', '   ']).errors,
+    ['Missing value for --host. Expected a non-empty host name or IP address.'],
+  );
+  const opts = parseArgs(['node', 'server.js', '--host', '--port', '9000']);
+  assert.deepEqual(opts.errors, ['Missing value for --host. Expected a non-empty host name or IP address.']);
+  assert.equal(opts.port, 9000);
+});
+
+test('CLI exits early with usage when argument validation fails', () => {
+  const result = childProcess.spawnSync(process.execPath, ['server.js', '--port', '0'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Error: Invalid value for --port: "0"\. Expected an integer between 1 and 65535\./);
+  assert.match(result.stdout, /Usage:/);
+  assert.doesNotMatch(result.stdout, /Codex Session Analyzer: http:\/\//);
 });
 
 test('discoverProjects groups Codex sessions by cwd', async () => {
@@ -439,6 +491,23 @@ test('buildIndex keeps forked subagent identity separate from embedded parent me
   assert.equal(normalForkSummary.forkedFromSessionTitle, parent.title);
   assert.equal(normalForkSummary.isDerivedSession, false);
   assert.equal(normalForkSummary.derivedKind, '');
+
+  const childTimeline = getTimeline(index, child.id, {
+    q: '',
+    offset: 0,
+    limit: 20,
+    layer: 'main',
+  });
+  const normalForkTimeline = getTimeline(index, normalFork.id, {
+    q: '',
+    offset: 0,
+    limit: 20,
+    layer: 'main',
+  });
+  assert.equal(childTimeline.session.parentSessionTitle, parent.title);
+  assert.equal(childTimeline.session.forkedFromSessionTitle, parent.title);
+  assert.equal(normalForkTimeline.session.parentSessionTitle, '');
+  assert.equal(normalForkTimeline.session.forkedFromSessionTitle, parent.title);
 });
 
 test('buildIndex infers fallback titles from real user tasks after protocol wrappers', async () => {

@@ -285,6 +285,69 @@ test('logical builder keeps adjacent web search call/end rows separate without a
   assert.deepEqual(searchEvents.map((event) => event.rawRefs.map((ref) => ref.line)), [[1], [2]]);
 });
 
+test('logical builder requires the same turn for unkeyed web search timestamp fallback', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      payloadType: 'web_search_end',
+      payload: {},
+      timestamp: '2026-06-10T12:00:00.000Z',
+      turnId: 'turn-a',
+      preview: 'first unkeyed end',
+      status: 'completed',
+    }),
+    raw(2, {
+      recordType: 'response_item',
+      payloadType: 'web_search_call',
+      payload: {},
+      timestamp: '2026-06-10T12:00:00.200Z',
+      turnId: 'turn-b',
+      preview: 'second unkeyed call',
+    }),
+    raw(3, {
+      payloadType: 'web_search_end',
+      payload: {},
+      timestamp: '2026-06-10T12:00:00.300Z',
+      turnId: 'turn-b',
+      preview: 'second unkeyed end',
+      status: 'completed',
+    }),
+  ]);
+
+  const searchEvents = logicalEvents.filter((event) => event.kind === 'web_search');
+  assert.deepEqual(searchEvents.map((event) => event.rawRefs.map((ref) => ref.line)), [[1], [2, 3]]);
+  assert.equal(searchEvents[0].preview, 'first unkeyed end');
+  assert.match(searchEvents[1].searchText, /second unkeyed call/);
+  assert.match(searchEvents[1].searchText, /second unkeyed end/);
+});
+
+test('logical builder keeps raw line order for the whole batch when an event is missing a timestamp', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      payloadType: 'warning',
+      timestamp: '2026-06-10T12:00:10.000Z',
+      preview: 'later timestamped warning',
+    }),
+    raw(2, {
+      payloadType: 'thread_goal_updated',
+      canonicalType: 'thread_goal_updated',
+      timestamp: '',
+      preview: 'untimestamped protocol row',
+    }),
+    raw(3, {
+      payloadType: 'warning',
+      timestamp: '2026-06-10T12:00:00.000Z',
+      preview: 'earlier timestamped warning',
+    }),
+  ]);
+
+  assert.deepEqual(logicalEvents.map((event) => event.rawRefs[0]?.line), [1, 2, 3]);
+  assert.deepEqual(logicalEvents.map((event) => event.preview), [
+    'later timestamped warning',
+    'untimestamped protocol row',
+    'earlier timestamped warning',
+  ]);
+});
+
 test('logical builder marks patch calls with unknown success as incomplete warnings', () => {
   const builder = makeLogicalBuilder({
     tool: {

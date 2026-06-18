@@ -272,6 +272,7 @@ function createCodexLogicalBuilder(deps) {
     const endKey = webSearchActionKey(searchEnd);
     const callKey = webSearchActionKey(searchCall);
     if (endKey && callKey) return endKey === callKey;
+    if (!searchEnd.turnId || searchEnd.turnId !== searchCall.turnId) return false;
     if (!searchEnd.timestamp || !searchCall.timestamp) return false;
     const deltaMs = Math.abs(Date.parse(searchEnd.timestamp) - Date.parse(searchCall.timestamp));
     return Number.isFinite(deltaMs) && deltaMs <= 1000;
@@ -701,12 +702,15 @@ function createCodexLogicalBuilder(deps) {
       consumed.add(raw.rawId);
     }
 
+    const hasUntimestampedEvent = logicalEvents.some((event) => !event.timestamp);
     logicalEvents.sort((a, b) => {
-      const at = a.timestamp || '';
-      const bt = b.timestamp || '';
-      if (at !== bt) return at.localeCompare(bt);
       const al = a.rawRefs[0]?.line || 0;
       const bl = b.rawRefs[0]?.line || 0;
+      if (!hasUntimestampedEvent) {
+        const at = a.timestamp || '';
+        const bt = b.timestamp || '';
+        if (at !== bt) return at.localeCompare(bt);
+      }
       return al - bl;
     });
 
