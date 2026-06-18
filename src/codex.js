@@ -97,6 +97,7 @@ const PROTOCOL_LABELS = Object.freeze({
   environment_context: 'Environment context',
   session_configured: 'Session configured',
   thread_goal_updated: 'Thread goal updated',
+  goal_context: 'Goal context',
   image_wrapper: 'Image attachment wrapper',
   meta_block: 'Protocol metadata block',
   session_meta: 'Session metadata',
@@ -128,6 +129,7 @@ const EVENT_KIND_LABELS = Object.freeze({
   review: 'Review',
   reasoning: 'Reasoning',
   web_search: 'Web search',
+  goal: 'Goal',
   event: 'Event',
 });
 
@@ -1728,6 +1730,12 @@ function readXmlTag(source, tagName) {
   return match ? match[1].replace(/\s+/g, ' ').trim() : '';
 }
 
+function readRawXmlTag(source, tagName) {
+  const pattern = new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, 'i');
+  const match = String(source || '').match(pattern);
+  return match ? match[1].trim() : '';
+}
+
 function protocolTagName(source) {
   const match = String(source || '').trim().match(/^<([A-Za-z][\w:-]*)(?:\s|>)/);
   return match ? match[1] : '';
@@ -1764,6 +1772,9 @@ function protocolPreviewFor(raw, subtype) {
   }
   if (subtype === 'thread_goal_updated') {
     return truncate(displayValue(firstNonEmpty(raw.parsed?.payload?.thread_goal, raw.parsed?.payload?.goal, raw.preview, 'Thread goal updated'), 1000));
+  }
+  if (subtype === 'goal_context') {
+    return truncate(readXmlTag(source, 'objective') || firstProtocolBodyLine(source) || 'Goal context');
   }
   if (subtype === 'turn_context') {
     return payloadPreview(raw.parsed?.payload, ['turn_id', 'cwd', 'model']) || raw.preview;
@@ -1823,6 +1834,7 @@ function classifyProtocolText(text, role) {
   if (source.startsWith('# AGENTS.md instructions')) return 'agents_instructions';
   if (source.startsWith('<environment_context>')) return 'environment_context';
   if (source.startsWith('<turn_aborted>')) return 'turn_aborted_marker';
+  if (source.startsWith('<codex_internal_context source="goal">')) return 'goal_context';
   if (source.startsWith('<user_shell_command>')) return 'user_shell_command';
   if (source.startsWith('<skill>')) return 'skill_injection';
   if (source.startsWith('<image ')) return 'image_wrapper';
@@ -2090,6 +2102,52 @@ function requestUserInputSection(requestValue, responseValue) {
     return { id, title, prompt, options, answers: answerValues };
   }).filter(Boolean);
   return items.length ? { type: 'user_input', title: 'User input', questions: items } : null;
+}
+
+function goalStatusLabel(status) {
+  if (status === 'complete') return 'Complete';
+  if (status === 'blocked') return 'Blocked';
+  if (status === 'active') return 'Active';
+  return status ? humanizeProtocolSubtype(status) : '';
+}
+
+function goalSection(raws, event, requestValue, responseValue) {
+  const goal = responseValue?.goal && typeof responseValue.goal === 'object' ? responseValue.goal : {};
+  const objective = conciseToolValue(firstNonEmpty(goal.objective, requestValue?.objective), 4000);
+  const status = conciseToolValue(firstNonEmpty(goal.status, responseValue?.status, event.status), 200);
+  const entries = [
+    { key: 'Status', value: goalStatusLabel(status) || status },
+    { key: 'Tokens used', value: goal.tokensUsed == null ? '' : String(goal.tokensUsed) },
+    { key: 'Time used', value: goal.timeUsedSeconds == null ? '' : `${goal.timeUsedSeconds}s` },
+    { key: 'Created', value: goal.createdAt == null ? '' : String(goal.createdAt) },
+    { key: 'Updated', value: goal.updatedAt == null ? '' : String(goal.updatedAt) },
+    { key: 'Remaining tokens', value: responseValue?.remainingTokens == null ? '' : String(responseValue.remainingTokens) },
+  ].filter((entry) => entry.value !== '');
+  const lines = [
+    `### ${event.label || 'Goal'}`,
+    status ? `**Status:** ${goalStatusLabel(status) || status}` : '',
+    objective ? `**Objective:**\n\n${objective}` : '',
+  ].filter(Boolean);
+  const sections = [];
+  maybePushMarkdownSection(sections, 'Goal', lines.join('\n\n'));
+  maybePushKvSection(sections, 'Goal usage', entries);
+  if (responseValue?.completionBudgetReport) {
+    maybePushStructuredSection(sections, 'Completion budget', responseValue.completionBudgetReport);
+  }
+  if (!sections.length) {
+    sections.push(hideSectionTitle(makeNoticeSection(event.label || 'Goal', event.preview || event.label || 'Goal', event.severity === 'warning' ? 'warning' : 'info')));
+  }
+  return sections;
+}
+
+function extractGoalSections(raws, event, splitSections) {
+  const split = splitSections(extractToolSections(raws, event));
+  const { requestValue, responseValue } = toolDetailValues(raws);
+  const timelineSections = goalSection(raws, event, requestValue, responseValue);
+  return {
+    timelineSections,
+    inspectorSections: sanitizeToolInspectorSections(split.inspectorSections),
+  };
 }
 
 function viewImageMarkdown(requestValue, responseValue) {
@@ -2582,6 +2640,17 @@ function extractProtocolSections(event, raws) {
     hideSectionTitle(sections[0]);
     return sections;
   }
+  if (event.subtype === 'goal_context') {
+    const objective = readRawXmlTag(primary.messageText, 'objective');
+    if (objective) {
+      maybePushMarkdownSection(sections, 'Goal objective', objective);
+      hideSectionTitle(sections[0]);
+    }
+    const budgetMatch = String(primary.messageText || '').match(/Budget:\s*([\s\S]*?)(?:\n\s*\n[A-Z][^\n]*:|<\/codex_internal_context>)/);
+    if (budgetMatch) maybePushMarkdownSection(sections, 'Budget', budgetMatch[1].trim());
+    sections.push(makeRawJsonSection('Protocol raw JSON', primary.parsed));
+    return sections;
+  }
   if (event.subtype === 'environment_context' || event.subtype === 'session_meta' || event.subtype === 'session_configured' || event.subtype === 'thread_goal_updated' || event.subtype === 'turn_context') {
     const entries = event.subtype === 'environment_context'
       ? taggedBlockEntries(primary.messageText)
@@ -2784,6 +2853,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
     extractLifecycleSections,
     extractPatchSections,
     extractPlanSections,
+    extractGoalSections,
     extractProtocolSections,
     extractReasoningSections,
     extractToolOperationSections,
@@ -3016,7 +3086,7 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'user_message') session.counts.userMessages += 1;
   if (logicalEvent.kind === 'assistant_message') session.counts.assistantMessages += 1;
   if (logicalEvent.kind === 'reasoning') session.counts.reasoning += 1;
-  if (['command', 'patch', 'mcp_call', 'web_search', 'other_tool_call', 'js_repl'].includes(logicalEvent.kind)) {
+  if (['command', 'patch', 'mcp_call', 'web_search', 'other_tool_call', 'js_repl', 'goal'].includes(logicalEvent.kind)) {
     session.counts.toolCalls += 1;
   }
   if (logicalEvent.kind === 'command' && logicalEvent.status === 'failed') session.counts.failedCommands += 1;

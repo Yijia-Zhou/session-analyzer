@@ -21,6 +21,7 @@ const foldingProfiles = [
         rollback: 'expanded',
         compaction: 'expanded',
         review: 'summary',
+        goal: 'summary',
         proposed_plan: 'expanded',
         reasoning: 'collapsed',
         command: 'collapsed',
@@ -46,6 +47,7 @@ const foldingProfiles = [
         user_message: 'expanded',
         assistant_message: 'expanded',
         proposed_plan: 'expanded',
+        goal: 'summary',
         error: 'summary',
         abort: 'summary',
         rollback: 'summary',
@@ -105,6 +107,7 @@ const foldingProfiles = [
     rules: profileRules(
       {
         proposed_plan: 'expanded',
+        goal: 'expanded',
         user_message: 'summary',
         assistant_message: 'summary',
         patch: 'summary',

@@ -25,6 +25,7 @@
     'js_repl',
     'other_tool_call',
     'web_search',
+    'goal',
     'error',
     'warning',
     'abort',
@@ -44,7 +45,7 @@
     {
       id: 'importantEvent',
       name: 'Important event',
-      description: 'User/assistant messages, patches, errors, aborts, rollbacks, compactions, plans, plan updates, update_plan calls, failed events, and abnormal severity.',
+      description: 'User/assistant messages, patches, goals, errors, aborts, rollbacks, compactions, plans, plan updates, update_plan calls, failed events, and abnormal severity.',
     },
     {
       id: 'updatePlanCall',
@@ -128,7 +129,7 @@
   }
 
   function importantEvent(event = {}) {
-    return ['user_message', 'assistant_message', 'patch', 'error', 'warning', 'abort', 'rollback', 'compaction', 'proposed_plan', 'review'].includes(event.kind)
+    return ['user_message', 'assistant_message', 'patch', 'goal', 'error', 'warning', 'abort', 'rollback', 'compaction', 'proposed_plan', 'review'].includes(event.kind)
       || isUpdatePlanEvent(event)
       || event.severity !== 'normal'
       || event.status === 'failed';

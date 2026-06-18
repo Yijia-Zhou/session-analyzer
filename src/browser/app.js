@@ -51,9 +51,13 @@ const KIND_LABELS = {
   review: 'Review',
   reasoning: 'Reasoning',
   web_search: 'Web search',
+  goal: 'Goal',
   event: 'Event',
 };
 const STATUS_LABELS = {
+  active: 'Active',
+  blocked: 'Blocked',
+  complete: 'Complete',
   failed: 'Failed',
   success: 'Success',
   completed: 'Completed',
@@ -228,6 +232,9 @@ function applyStaticLocale() {
   document.querySelectorAll('.searchAssistTitle')[1] && setText(document.querySelectorAll('.searchAssistTitle')[1], t('active'));
   setSelectOptionText(el.searchKindSelect, '', t('anyKind'));
   setSelectOptionText(el.searchStatusSelect, '', t('anyStatus'));
+  setSelectOptionText(el.searchStatusSelect, 'active', statusLabel('active'));
+  setSelectOptionText(el.searchStatusSelect, 'blocked', statusLabel('blocked'));
+  setSelectOptionText(el.searchStatusSelect, 'complete', statusLabel('complete'));
   setSelectOptionText(el.searchStatusSelect, 'failed', statusLabel('failed'));
   setSelectOptionText(el.searchStatusSelect, 'success', statusLabel('success'));
   setSelectOptionText(el.searchStatusSelect, 'completed', statusLabel('completed'));

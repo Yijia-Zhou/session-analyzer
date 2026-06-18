@@ -46,6 +46,8 @@ function createCodexLogicalBuilder(deps) {
     rateLimitReachedType,
   } = usage;
 
+  const GOAL_TOOL_NAMES = new Set(['create_goal', 'get_goal', 'update_goal']);
+
   function createLogicalEvent(fields) {
     const preview = sanitizeLogicalEnvelopeValue(fields.preview || '');
     const searchText = sanitizeLogicalEnvelopeValue(fields.searchText || '').trim();
@@ -102,6 +104,84 @@ function createCodexLogicalBuilder(deps) {
     return best;
   }
 
+  function parseToolJsonValue(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'object') return value;
+    try {
+      return JSON.parse(String(value));
+    } catch {
+      return null;
+    }
+  }
+
+  function goalOutputFromRaw(raw) {
+    const parsed = parseToolJsonValue(raw?.output);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  }
+
+  function goalStatusFrom(toolName, requestValue, responseValue) {
+    return String(firstNonEmpty(
+      responseValue?.goal?.status,
+      responseValue?.status,
+      requestValue?.status,
+      toolName === 'create_goal' ? 'active' : '',
+    ) || '').toLowerCase();
+  }
+
+  function goalLabelFor(toolName, status) {
+    if (toolName === 'create_goal') return 'Goal created';
+    if (toolName === 'get_goal') return 'Goal status';
+    if (status === 'complete') return 'Goal complete';
+    if (status === 'blocked') return 'Goal blocked';
+    return 'Goal updated';
+  }
+
+  function buildGoalLogicalEvent(callId, group, toolName, functionCall, functionOutput) {
+    const first = group[0];
+    const completed = Boolean(functionOutput);
+    const requestValue = parseToolJsonValue(functionCall?.output) || {};
+    const responseValue = goalOutputFromRaw(functionOutput) || {};
+    const goal = responseValue.goal && typeof responseValue.goal === 'object' ? responseValue.goal : {};
+    const objective = displayValue(firstNonEmpty(goal.objective, requestValue.objective), 4000).trim();
+    const status = completed ? goalStatusFrom(toolName, requestValue, responseValue) : 'incomplete';
+    const label = completed ? goalLabelFor(toolName, status) : 'Incomplete goal call';
+    const usageParts = [];
+    if (goal.tokensUsed != null) usageParts.push(`tokens: ${goal.tokensUsed}`);
+    if (goal.timeUsedSeconds != null) usageParts.push(`time: ${goal.timeUsedSeconds}s`);
+    const previewParts = [];
+    if (status) previewParts.push(status);
+    if (objective) previewParts.push(objective);
+    if (usageParts.length) previewParts.push(usageParts.join(', '));
+    const searchText = [
+      toolName,
+      status,
+      objective,
+      displayValue(goal, 8000),
+      displayValue(responseValue.completionBudgetReport, 4000),
+      displayValue(responseValue.remainingTokens, 1000),
+      functionCall?.output,
+      functionOutput?.output,
+    ].filter(Boolean).join('\n');
+
+    return createLogicalEvent({
+      id: `${first.sessionId}:logical:call:${callId}`,
+      timestamp: first.timestamp,
+      turnId: first.turnId || '',
+      kind: 'goal',
+      subtype: toolName,
+      layer: 'main',
+      role: 'assistant',
+      label,
+      preview: truncate(previewParts.join(' - ') || toolName || label),
+      searchText,
+      severity: status === 'blocked' || status === 'incomplete' ? 'warning' : 'normal',
+      status,
+      toolName,
+      rawRefs: group.map(rawRef),
+      channels: [...new Set(group.map((raw) => raw.recordType))],
+    });
+  }
+
   function buildToolLogicalEvent(callId, group) {
     const rawRefs = group.map(rawRef);
     const channels = [...new Set(group.map((raw) => raw.recordType))];
@@ -126,6 +206,10 @@ function createCodexLogicalBuilder(deps) {
     const toolName = customCall?.toolName || functionCall?.toolName || protocolToolName || '';
     const functionOutputInfo = parseFormattedCommandOutput(functionOutput?.output);
     const customOutputObj = parseOutputEnvelope(customOutput?.output);
+
+    if (GOAL_TOOL_NAMES.has(toolName)) {
+      return buildGoalLogicalEvent(callId, group, toolName, functionCall, functionOutput);
+    }
 
     let kind = 'other_tool_call';
     let label = toolName || 'Other tool call';

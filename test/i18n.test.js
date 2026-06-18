@@ -105,12 +105,17 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.t('zh-CN', 'ui', 'mainTimeline'), '主时间线');
   assert.equal(i18n.displayStateLabel('expanded', 'zh-CN'), '展开');
   assert.equal(i18n.eventKindLabel('command', 'zh-CN'), '命令');
+  assert.equal(i18n.eventKindLabel('goal', 'zh-CN'), '目标');
+  assert.equal(i18n.eventKindLabel('goal_context', 'zh-CN'), '目标上下文');
+  assert.equal(i18n.statusLabel('blocked', 'zh-CN'), '已阻塞');
   assert.equal(i18n.humanize('mcp_tool_call'), 'MCP Tool Call');
   assert.equal(i18n.humanize('js_repl'), 'JS REPL');
 });
 
 test('known label lookup translates exact keys and English catalog values without losing fallback compatibility', () => {
   assert.equal(i18n.lookupKnownLabel('Failed command', 'zh-CN'), '失败命令');
+  assert.equal(i18n.lookupKnownLabel('Goal complete', 'zh-CN'), '目标已完成');
+  assert.equal(i18n.lookupKnownLabel('Incomplete goal call', 'zh-CN'), '目标调用未完成');
   assert.equal(i18n.lookupKnownLabel('user_message', 'zh-CN'), '用户消息');
   assert.equal(i18n.lookupKnownLabel('User message', 'zh-CN'), '用户消息');
   assert.equal(i18n.lookupKnownLabel('Web search', 'zh-CN'), '网页搜索');

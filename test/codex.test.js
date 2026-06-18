@@ -1959,6 +1959,166 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
   assert.match(reviewFindings.html, /src\/codex\.js:lines 10-12/);
 });
 
+test('goal context stays protocol while goal tool lifecycle is readable on main timeline', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repo = path.join(codexHome, 'repo');
+  const id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '10');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repo, { recursive: true });
+  const file = path.join(dir, `rollout-2026-06-10T10-00-00-${id}.jsonl`);
+  const objective = 'Ship goal cards without exposing internal audit text.';
+  const goalContext = `<codex_internal_context source="goal">
+Continue working toward the active thread goal.
+
+<objective>
+${objective}
+</objective>
+
+Budget:
+- Tokens used: 12
+- Token budget: none
+</codex_internal_context>`;
+  const records = [
+    {
+      type: 'session_meta',
+      timestamp: '2026-06-10T10:00:00.000Z',
+      payload: { id, cwd: repo },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-10T10:00:01.000Z',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: goalContext }],
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-10T10:00:02.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'update_goal',
+        arguments: JSON.stringify({ status: 'complete' }),
+        call_id: 'call-goal-complete',
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-10T10:00:02.100Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-goal-complete',
+        output: JSON.stringify({
+          goal: {
+            threadId: id,
+            objective,
+            status: 'complete',
+            tokensUsed: 132017,
+            timeUsedSeconds: 361,
+            createdAt: 1781102515,
+            updatedAt: 1781102876,
+          },
+          remainingTokens: null,
+          completionBudgetReport: { finalTokenUsage: 132017 },
+        }),
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-10T10:00:03.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'update_goal',
+        arguments: JSON.stringify({ status: 'blocked' }),
+        call_id: 'call-goal-blocked',
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-10T10:00:03.100Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-goal-blocked',
+        output: JSON.stringify({
+          goal: {
+            threadId: id,
+            objective: 'Wait for external service access.',
+            status: 'blocked',
+            tokensUsed: 150,
+            timeUsedSeconds: 30,
+          },
+        }),
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-10T10:00:04.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'create_goal',
+        arguments: JSON.stringify({ objective: 'Interrupted goal create.' }),
+        call_id: 'call-goal-create-incomplete',
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-10T10:00:05.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'update_goal',
+        arguments: JSON.stringify({ status: 'complete' }),
+        call_id: 'call-goal-update-incomplete',
+      },
+    },
+  ];
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot: repo, codexHome });
+  const session = index.sessionsById.get(id);
+  const mainTimeline = getTimeline(index, id, { layer: 'main', offset: 0, limit: 20, q: '', kind: '', status: '', tool: '', file: '' });
+  const protocolTimeline = getTimeline(index, id, { layer: 'protocol', offset: 0, limit: 20, q: '', kind: '', status: '', tool: '', file: '' });
+  const goalContextEvent = protocolTimeline.events.find((event) => event.subtype === 'goal_context');
+  const goalEvents = mainTimeline.events.filter((event) => event.kind === 'goal');
+  const complete = goalEvents.find((event) => event.status === 'complete');
+  const blocked = goalEvents.find((event) => event.status === 'blocked');
+  const incomplete = goalEvents.filter((event) => event.status === 'incomplete');
+  const incompleteUpdate = incomplete.find((event) => event.toolName === 'update_goal');
+  const detail = buildEventDetail(session, complete.id, 'main');
+  const incompleteUpdateDetail = buildEventDetail(session, incompleteUpdate.id, 'main');
+  const protocolDetail = buildEventDetail(session, goalContextEvent.id, 'protocol');
+
+  assert.ok(goalContextEvent);
+  assert.equal(goalContextEvent.label, 'Goal context');
+  assert.match(goalContextEvent.preview, /Ship goal cards/);
+  assert.equal(mainTimeline.events.some((event) => event.rawRefs.some((ref) => ref.line === 2)), false);
+  assert.equal(goalEvents.length, 4);
+  assert.equal(complete.label, 'Goal complete');
+  assert.equal(complete.toolName, 'update_goal');
+  assert.equal(complete.rawRefs.length, 2);
+  assert.match(complete.preview, /complete/);
+  assert.match(complete.preview, /Ship goal cards/);
+  assert.equal(blocked.label, 'Goal blocked');
+  assert.equal(blocked.severity, 'warning');
+  assert.equal(incomplete.length, 2);
+  assert.ok(incomplete.every((event) => event.label === 'Incomplete goal call'));
+  assert.ok(incomplete.every((event) => event.severity === 'warning'));
+  assert.equal(incomplete.some((event) => event.preview.includes('active')), false);
+  assert.match(incompleteUpdateDetail.timelineSections[0].html, /Status:<\/strong> Incomplete/);
+  assert.doesNotMatch(incompleteUpdateDetail.timelineSections[0].html, /Objective/);
+  assert.doesNotMatch(incompleteUpdateDetail.timelineSections[0].html, /incomplete<\/p>/);
+  assert.equal(session.counts.toolCalls, 4);
+  assert.ok(mainTimeline.eventKinds.main.some((item) => item.value === 'goal'));
+  assert.ok(EDITABLE_EVENT_KINDS.includes('goal'));
+  assert.equal(foldingProfiles.find((profile) => profile.id === 'planning').rules.kindStates.goal, 'expanded');
+  assert.equal(detail.timelineSections.some((section) => section.title === 'Goal'), true);
+  assert.equal(detail.timelineSections.some((section) => section.title === 'Goal usage'), true);
+  assert.equal(detail.inspectorSections.some((section) => section.title === 'Request'), true);
+  assert.equal(detail.inspectorSections.some((section) => section.title === 'Response'), true);
+  assert.equal(protocolDetail.timelineSections.some((section) => section.title === 'Goal objective'), true);
+});
+
 test('other tool call detail renders readable summaries and omits large data URLs', async (t) => {
   const codexHome = await makeTempCodexHome(t);
   const repoRoot = path.join(codexHome, 'repo');

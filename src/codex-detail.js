@@ -49,6 +49,7 @@ function createCodexDetailBuilder(deps) {
   const {
     extractCommandSections,
     extractConversationSections,
+    extractGoalSections,
     extractJsReplSections,
     extractLifecycleSections,
     extractPatchSections,
@@ -187,6 +188,8 @@ function createCodexDetailBuilder(deps) {
         return extractToolOperationSections(raws, event, splitSectionsForDetail);
       case 'web_search':
         return splitSectionsForDetail(extractWebSearchSections(raws, event));
+      case 'goal':
+        return extractGoalSections(raws, event, splitSectionsForDetail);
       case 'protocol':
         return splitSectionsForDetail(extractProtocolSections(event, raws));
       case 'usage_limit_warning':

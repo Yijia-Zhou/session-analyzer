@@ -22,6 +22,13 @@ test('parseSearchInput supports quoted operator values and last operator wins', 
   assert.equal(parsed.status, 'failed');
 });
 
+test('parseSearchInput accepts goal lifecycle status values', () => {
+  const parsed = searchQuery.parseSearchInput('status:active status:blocked status:complete');
+
+  assert.equal(parsed.q, '');
+  assert.equal(parsed.status, 'complete');
+});
+
 test('parseSearchInput accepts open-ended kind values', () => {
   const parsed = searchQuery.parseSearchInput('kind:review kind:plan_update kind:exec_command_begin');
 
