@@ -408,6 +408,28 @@ function createCodexLogicalBuilder(deps) {
     });
   }
 
+  function buildUserShellCommandEvent(raws) {
+    const group = Array.isArray(raws) ? raws : [raws];
+    const first = group[0];
+    const preview = protocolPreviewFor(first, 'user_shell_command');
+    return createLogicalEvent({
+      id: `${first.sessionId}:logical:user_shell_command:${first.line}`,
+      timestamp: first.timestamp,
+      turnId: group.find((raw) => raw.turnId)?.turnId || '',
+      kind: 'user_shell_command',
+      subtype: 'user_shell_command',
+      layer: 'main',
+      role: 'user',
+      label: 'user_shell_command',
+      preview,
+      searchText: uniqueNonEmpty(['user_shell_command', preview, ...group.map((raw) => raw.searchText)]).join('\n'),
+      severity: 'normal',
+      status: first.status,
+      rawRefs: group.map(rawRef),
+      channels: [...new Set(group.map((raw) => raw.recordType))],
+    });
+  }
+
   function buildLifecycleEvent(raw, kind, label, severity, previewOverride = '') {
     const tokenUsage = kind === 'usage_limit_warning' ? tokenUsageItems(raw.parsed?.payload) : [];
     const usageLimits = kind === 'usage_limit_warning' ? collectUsageLimitItems(raw.parsed?.payload) : [];
@@ -581,6 +603,17 @@ function createCodexLogicalBuilder(deps) {
 
       if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'user') {
         const protocolSubtype = classifyProtocolText(raw.messageText, raw.role);
+        if (protocolSubtype === 'user_shell_command') {
+          if (next && next.recordType === 'event_msg' && next.payloadType === 'user_message' && raw.messageText === next.messageText) {
+            logicalEvents.push(buildUserShellCommandEvent([raw, next]));
+            consumed.add(raw.rawId);
+            consumed.add(next.rawId);
+            continue;
+          }
+          logicalEvents.push(buildUserShellCommandEvent(raw));
+          consumed.add(raw.rawId);
+          continue;
+        }
         if (protocolSubtype) {
           logicalEvents.push(buildProtocolEvent(raw, protocolSubtype));
           consumed.add(raw.rawId);
@@ -603,6 +636,11 @@ function createCodexLogicalBuilder(deps) {
           continue;
         }
         const protocolSubtype = classifyProtocolText(raw.messageText, 'user');
+        if (protocolSubtype === 'user_shell_command') {
+          logicalEvents.push(buildUserShellCommandEvent(raw));
+          consumed.add(raw.rawId);
+          continue;
+        }
         if (protocolSubtype) {
           logicalEvents.push(buildProtocolEvent(raw, protocolSubtype));
           consumed.add(raw.rawId);

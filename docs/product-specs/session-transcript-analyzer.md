@@ -115,6 +115,7 @@ Completed v0.1 follow-up: zh-CN catalog completeness, raw-record display labels,
 - [x] Inferred fallback titles come from real user task text rather than protocol wrappers or malformed transcript scaffolding. / 推断出的回退标题来自真实用户任务文本，而不是协议包装或格式异常的转录脚手架。
 - [x] Starting without `--repo` lets the user select a target project in the browser before repository-scoped indexing. / 不带 `--repo` 启动时，用户可以先在浏览器中选择目标项目，再进行仓库范围的索引。
 - [x] Routine token count and lifecycle metadata events stay out of Main timeline, remain readable in Protocol layer, and only produce a Main timeline warning when a usage limit is reached. / 常规 token count 和生命周期 metadata 事件不会进入 Main timeline，会在 Protocol layer 中保持可读，并且只有在触达使用限额时才会产生 Main timeline warning。
+- [x] User-initiated `<user_shell_command>` transcript wrappers appear in Main timeline as `user_shell_command` events with a dedicated user shell command title and raw traceability, but do not count as normal user messages or affect fallback titles. / 用户发起的 `<user_shell_command>` transcript 包装会以 `user_shell_command` 事件出现在 Main timeline，带有专用的用户 shell command 标题并保留 raw traceability，但不会计为普通用户消息，也不会影响回退标题。
 - [x] Project indexing reports visible progress, can be cancelled before completion, skips files known to belong to other repositories, and tracks files with no repository metadata found during pre-scan as unknown instead of displaying them as matching sessions. / 项目索引会报告可见进度，可在完成前取消，会跳过已知属于其他仓库的文件，并把预扫描期间没有发现仓库 metadata 的文件计为 unknown，而不是把它们显示为匹配 session。
 - [x] English and Simplified Chinese UI catalogs localize display text without localizing API/filter/storage identifiers or raw transcript content; zh-CN completeness and project-state locale propagation are covered by tests. / 英文和简体中文 UI catalog 会本地化展示文本，但不会本地化 API/filter/storage 标识或原始 transcript 内容；zh-CN 完整性和 project state locale 传递已有测试覆盖。
 
@@ -124,7 +125,7 @@ Completed v0.1 follow-up: zh-CN catalog completeness, raw-record display labels,
 - Sessions with partial or malformed JSONL rows / 包含部分或格式错误 JSONL 行的会话
 - Old transcripts that only expose tool call plus output without an `event_msg:*_end` row / 只暴露工具调用及输出、但没有 `event_msg:*_end` 行的旧转录
 - Empty reasoning records / 空推理记录
-- Sessions that contain user-side protocol wrappers such as `<turn_aborted>` or `<user_shell_command>` / 包含 `<turn_aborted>` 或 `<user_shell_command>` 等用户侧协议包装器的会话
+- Sessions that contain user-side protocol wrappers such as `<turn_aborted>` and user-initiated shell wrappers such as `<user_shell_command>` / 包含 `<turn_aborted>` 等用户侧协议包装器，以及 `<user_shell_command>` 等用户发起的 shell 包装的会话
 - Forked subagent sessions that start with child `session_meta` and then embed parent `session_meta` from forked context / fork 出来的子 agent 会话以子会话 `session_meta` 开头，随后又因 fork 上下文嵌入父会话 `session_meta`
 
 ## Metrics / 指标

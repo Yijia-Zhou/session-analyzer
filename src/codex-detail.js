@@ -190,6 +190,8 @@ function createCodexDetailBuilder(deps) {
         return splitSectionsForDetail(extractWebSearchSections(raws, event));
       case 'goal':
         return extractGoalSections(raws, event, splitSectionsForDetail);
+      case 'user_shell_command':
+        return splitSectionsForDetail(extractProtocolSections(event, raws));
       case 'protocol':
         return splitSectionsForDetail(extractProtocolSections(event, raws));
       case 'usage_limit_warning':

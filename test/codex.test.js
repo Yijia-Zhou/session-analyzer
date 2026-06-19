@@ -572,9 +572,18 @@ test('buildIndex infers fallback titles from real user tasks after protocol wrap
     file: '',
     layer: 'main',
   });
-  assert.equal(mainTimeline.events.some((event) => event.preview.includes('Get-ChildItem')), false);
+  const shellWrapper = mainTimeline.events.find((event) => event.subtype === 'user_shell_command');
+  assert.ok(shellWrapper);
+  assert.equal(shellWrapper.kind, 'user_shell_command');
+  assert.equal(shellWrapper.label, 'User shell command');
+  assert.notEqual(shellWrapper.label, 'Command');
+  assert.notEqual(shellWrapper.label, 'User message');
+  assert.equal(shellWrapper.preview, 'Get-ChildItem -Force');
+  assert.deepEqual(shellWrapper.rawRefs.map((ref) => ref.line), [2]);
+  assert.deepEqual(shellWrapper.channels, ['event_msg']);
   assert.ok(mainTimeline.eventKinds.main.some((item) => item.value === 'user_message' && item.count === 1));
-  assert.ok(mainTimeline.eventKinds.protocol.some((item) => item.value === 'user_shell_command'));
+  assert.ok(mainTimeline.eventKinds.main.some((item) => item.value === 'user_shell_command' && item.label === 'User shell command' && item.count === 1));
+  assert.equal(mainTimeline.eventKinds.protocol.some((item) => item.value === 'user_shell_command'), false);
   assert.deepEqual(mainTimeline.eventKinds, session.eventKinds);
 
   const protocolTimeline = getTimeline(index, session.id, {
@@ -587,9 +596,121 @@ test('buildIndex infers fallback titles from real user tasks after protocol wrap
     file: '',
     layer: 'protocol',
   });
-  const shellWrapper = protocolTimeline.events.find((event) => event.subtype === 'user_shell_command');
+  assert.equal(protocolTimeline.events.some((event) => event.subtype === 'user_shell_command'), false);
+});
+
+test('buildIndex shows response-item-only user shell command wrappers as main events without message counts', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const projectRoot = path.join(codexHome, 'response-item-shell-project');
+  const id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '17');
+  const file = path.join(dir, `rollout-2026-06-17T16-10-07-${id}.jsonl`);
+  const shellText = [
+    '<user_shell_command>',
+    '<command>',
+    'git fetch origin',
+    '</command>',
+    '<result>',
+    'Exit code: 0',
+    'Duration: 7.9050 seconds',
+    'Output:',
+    'From github.com:Yijia-Zhou/session-analyzer',
+    ' * [new branch]      main       -> origin/main',
+    '',
+    '</result>',
+    '</user_shell_command>',
+  ].join('\n');
+  const taskText = 'Repair fallback session titles';
+  const records = [
+    {
+      timestamp: '2026-06-17T08:10:07.000Z',
+      type: 'session_meta',
+      payload: { id, cwd: projectRoot },
+    },
+    {
+      timestamp: '2026-06-17T08:10:07.100Z',
+      type: 'event_msg',
+      payload: { type: 'thread_goal_updated', message: 'Goal changed' },
+    },
+    {
+      timestamp: '2026-06-17T08:10:07.200Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: shellText }],
+      },
+    },
+    {
+      timestamp: '2026-06-17T08:10:08.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: taskText }],
+      },
+    },
+  ];
+  await fsp.mkdir(projectRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot: projectRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  assert.ok(session);
+  assert.equal(session.title, taskText);
+  assert.equal(session.counts.userMessages, 1);
+  assert.equal(session.counts.messages, 1);
+
+  const mainTimeline = getTimeline(index, session.id, {
+    offset: 0,
+    limit: 100,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  const userEvents = mainTimeline.events.filter((event) => event.kind === 'user_message');
+  assert.equal(userEvents.length, 1);
+  assert.equal(userEvents[0].preview, taskText);
+  assert.deepEqual(userEvents[0].rawRefs.map((ref) => ref.line), [4]);
+  const shellWrapper = mainTimeline.events.find((event) => event.subtype === 'user_shell_command');
   assert.ok(shellWrapper);
-  assert.equal(shellWrapper.preview, 'Get-ChildItem -Force');
+  assert.equal(shellWrapper.kind, 'user_shell_command');
+  assert.equal(shellWrapper.label, 'User shell command');
+  assert.notEqual(shellWrapper.label, 'Command');
+  assert.notEqual(shellWrapper.label, 'User message');
+  assert.match(shellWrapper.preview, /git fetch origin/);
+  assert.deepEqual(shellWrapper.rawRefs.map((ref) => ref.line), [3]);
+  assert.deepEqual(shellWrapper.channels, ['response_item']);
+  const shellDetail = buildEventDetail(session, shellWrapper.id, 'main');
+  assert.equal(shellDetail.timelineSections[0].title, 'Shell command wrapper');
+  assert.match(shellDetail.timelineSections[0].code, /git fetch origin/);
+  assert.equal(mainTimeline.eventKinds.main.find((item) => item.value === 'user_message')?.count, 1);
+  assert.equal(mainTimeline.eventKinds.main.find((item) => item.value === 'user_shell_command')?.count, 1);
+  assert.equal(mainTimeline.eventKinds.main.find((item) => item.value === 'user_shell_command')?.label, 'User shell command');
+  assert.equal(mainTimeline.eventKinds.protocol.some((item) => item.value === 'user_shell_command'), false);
+  assert.deepEqual(mainTimeline.eventKinds, session.eventKinds);
+
+  const protocolTimeline = getTimeline(index, session.id, {
+    offset: 0,
+    limit: 100,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'protocol',
+  });
+  assert.equal(protocolTimeline.events.some((event) => event.subtype === 'user_shell_command'), false);
+
+  const raw = await readRawLine(index, session.sourceFile, 3);
+  assert.equal(raw.parsed.type, 'response_item');
+  assert.equal(raw.parsed.payload.type, 'message');
+  assert.equal(raw.parsed.payload.role, 'user');
+  assert.equal(raw.parsed.payload.content[0].text, shellText);
 });
 
 test('timeline main layer returns logical events without duplicate user or assistant messages', async () => {

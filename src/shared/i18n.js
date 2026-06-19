@@ -224,6 +224,7 @@
         reasoning: 'Reasoning',
         web_search: 'Web search',
         goal: 'Goal',
+        user_shell_command: 'User shell command',
         event: 'Event',
       },
       protocol: {
@@ -589,6 +590,7 @@
         reasoning: '推理',
         web_search: '网页搜索',
         goal: '目标',
+        user_shell_command: '用户命令行命令',
         event: '事件',
       },
       protocol: {

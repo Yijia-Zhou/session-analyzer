@@ -65,8 +65,10 @@ function makeLogicalBuilder(overrides = {}) {
     },
     protocol: {
       classifyProtocolText: (text, role) => {
+        const source = String(text || '');
         if (role === 'developer') return 'developer_instruction';
-        if (String(text || '').startsWith('# AGENTS.md instructions')) return 'agents_instructions';
+        if (source.startsWith('# AGENTS.md instructions')) return 'agents_instructions';
+        if (source.startsWith('<user_shell_command>')) return 'user_shell_command';
         return '';
       },
       humanizeProtocolSubtype: titleCaseProtocolSubtype,
@@ -166,6 +168,75 @@ test('logical builder folds raw rows into message, reasoning, protocol, and fall
   assert.equal(developer.layer, 'protocol');
   assert.equal(fallback.kind, 'protocol');
   assert.equal(fallback.sourceLocator.type, 'jsonl_line');
+});
+
+test('logical builder treats response-item-only user shell command wrappers as main user shell command events', () => {
+  const shellText = [
+    '<user_shell_command>',
+    '<command>',
+    'git fetch origin',
+    '</command>',
+    '<result>',
+    'Exit code: 0',
+    'Duration: 7.9050 seconds',
+    'Output:',
+    'From github.com:Yijia-Zhou/session-analyzer',
+    ' * [new branch]      main       -> origin/main',
+    '',
+    '</result>',
+    '</user_shell_command>',
+  ].join('\n');
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { payloadType: 'session_meta', preview: 'session metadata' }),
+    raw(2, { payloadType: 'thread_goal_updated', canonicalType: 'thread_goal_updated', preview: 'goal changed' }),
+    raw(3, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: shellText }),
+    raw(4, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: 'Repair fallback session titles' }),
+  ]);
+
+  const userMessages = logicalEvents.filter((event) => event.kind === 'user_message');
+  const shellWrapper = logicalEvents.find((event) => event.subtype === 'user_shell_command');
+
+  assert.ok(shellWrapper);
+  assert.equal(shellWrapper.kind, 'user_shell_command');
+  assert.equal(shellWrapper.layer, 'main');
+  assert.match(shellWrapper.preview, /git fetch origin/);
+  assert.match(shellWrapper.searchText, /git fetch origin/);
+  assert.deepEqual(shellWrapper.rawRefs.map((ref) => ref.line), [3]);
+  assert.deepEqual(shellWrapper.channels, ['response_item']);
+  assert.equal(userMessages.length, 1);
+  assert.equal(userMessages[0].preview, 'Repair fallback session titles');
+  assert.deepEqual(userMessages[0].rawRefs.map((ref) => ref.line), [4]);
+});
+
+test('logical builder treats event-msg-only user shell command wrappers as main user shell command events', () => {
+  const shellText = '<user_shell_command>\nGet-ChildItem -Force\n</user_shell_command>';
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { payloadType: 'user_message', messageText: shellText }),
+  ]);
+  const shellWrapper = logicalEvents.find((event) => event.subtype === 'user_shell_command');
+
+  assert.ok(shellWrapper);
+  assert.equal(shellWrapper.kind, 'user_shell_command');
+  assert.equal(shellWrapper.layer, 'main');
+  assert.deepEqual(shellWrapper.rawRefs.map((ref) => ref.line), [1]);
+  assert.deepEqual(shellWrapper.channels, ['event_msg']);
+  assert.equal(logicalEvents.some((event) => event.kind === 'user_message'), false);
+});
+
+test('logical builder folds mirrored user shell command wrapper rows into one main event', () => {
+  const shellText = '<user_shell_command>\nGet-ChildItem -Force\n</user_shell_command>';
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: shellText }),
+    raw(2, { payloadType: 'user_message', messageText: shellText }),
+  ]);
+  const shellWrappers = logicalEvents.filter((event) => event.subtype === 'user_shell_command');
+
+  assert.equal(shellWrappers.length, 1);
+  assert.equal(shellWrappers[0].kind, 'user_shell_command');
+  assert.equal(shellWrappers[0].layer, 'main');
+  assert.deepEqual(shellWrappers[0].rawRefs.map((ref) => ref.line), [1, 2]);
+  assert.deepEqual(shellWrappers[0].channels, ['response_item', 'event_msg']);
+  assert.equal(logicalEvents.some((event) => event.kind === 'user_message'), false);
 });
 
 test('logical builder uses terminal lifecycle rows for generic protocol tool labels', () => {

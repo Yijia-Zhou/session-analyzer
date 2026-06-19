@@ -130,6 +130,7 @@ const EVENT_KIND_LABELS = Object.freeze({
   reasoning: 'Reasoning',
   web_search: 'Web search',
   goal: 'Goal',
+  user_shell_command: 'User shell command',
   event: 'Event',
 });
 
