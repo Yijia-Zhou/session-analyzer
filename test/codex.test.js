@@ -6,7 +6,7 @@ const childProcess = require('node:child_process');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { buildIndex, buildEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readRawLine, isPathInsideOrSame } = require('../src/codex');
+const { buildIndex, buildEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readImagePreview, readRawLine, isPathInsideOrSame } = require('../src/codex');
 const { createServer, parseArgs, resolveStaticAssetPath } = require('../server');
 const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../src/folding');
 
@@ -1155,7 +1155,7 @@ test('grouped generic protocol tool labels prefer terminal lifecycle rows', asyn
       rawLines: [2, 3],
     },
     image: {
-      label: 'Image Generation Call End',
+      label: 'Image Generation',
       status: 'success',
       severity: 'normal',
       rawLines: [4, 5],
@@ -1198,6 +1198,162 @@ test('grouped generic protocol tool labels prefer terminal lifecycle rows', asyn
   assert.ok(session);
   const rawDetail = buildEventDetail(session, rawDeclined.id, 'raw');
   assert.equal(rawDetail.title, 'dynamic_tool_call_declined');
+});
+
+test('real image generation response item and event rows group as one tool event', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'edededed-2222-4444-8888-edededededed';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '19');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const file = path.join(dir, `rollout-2026-06-19T12-00-00-${id}.jsonl`);
+  const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+  const records = [
+    {
+      type: 'session_meta',
+      timestamp: '2026-06-19T12:00:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-19T12:00:01.000Z',
+      payload: {
+        type: 'image_generation_end',
+        call_id: 'ig_fixture_call',
+        status: 'completed',
+        saved_path: 'output/fixture-image.png',
+        revised_prompt: 'sanitized prompt',
+        result: pngBase64,
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-19T12:00:01.100Z',
+      payload: {
+        type: 'image_generation_call',
+        id: 'ig_fixture_call',
+        status: 'completed',
+        revised_prompt: 'sanitized prompt',
+        result: pngBase64,
+      },
+    },
+  ];
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  assert.ok(session);
+
+  const rawResponse = session.rawEvents.find((raw) => raw.payloadType === 'image_generation_call');
+  assert.equal(rawResponse.callId, 'ig_fixture_call');
+  assert.equal(rawResponse.toolName, 'image_generation');
+  assert.equal(rawResponse.embeddedImages.length, 1);
+  assert.equal(JSON.stringify(session).includes(pngBase64), false);
+
+  const timeline = getTimeline(index, id, {
+    offset: 0,
+    limit: 20,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  const imageEvent = timeline.events.find((event) => event.toolName === 'image_generation');
+  assert.ok(imageEvent);
+  assert.equal(imageEvent.kind, 'other_tool_call');
+  assert.equal(imageEvent.label, 'Image Generation');
+  assert.equal(imageEvent.status, 'success');
+  assert.deepEqual(imageEvent.rawRefs.map((ref) => ({
+    line: ref.line,
+    recordType: ref.sourceRecordType,
+    eventType: ref.sourceEventType,
+  })), [
+    { line: 2, recordType: 'event_msg', eventType: 'image_generation_end' },
+    { line: 3, recordType: 'response_item', eventType: 'image_generation_call' },
+  ]);
+
+  const detail = buildEventDetail(session, imageEvent.id, 'main');
+  assert.deepEqual(detail.timelineSections.map((section) => section.title), ['Image generation']);
+  assert.equal(detail.timelineSections[0].type, 'markdown');
+  assert.match(detail.timelineSections[0].html, /Image generation/);
+  assert.match(detail.timelineSections[0].html, /output\/fixture-image\.png/);
+  assert.match(detail.timelineSections[0].html, /1 image/);
+  assert.doesNotMatch(detail.timelineSections[0].html, /2 images/);
+  assert.doesNotMatch(detail.timelineSections[0].html, /Response summary/);
+  assert.deepEqual(detail.inspectorSections.map((section) => section.type), ['image_preview', 'kv', 'json']);
+  assert.deepEqual(detail.inspectorSections.map((section) => section.title), ['Image preview', 'Tool context', 'Response']);
+  const preview = detail.inspectorSections.find((section) => section.type === 'image_preview').images[0];
+  assert.equal(preview.mimeType, 'image/png');
+  assert.equal(detail.inspectorSections.find((section) => section.title === 'Response').value.result, '[embedded image payload externalized; open raw refs for source]');
+  const decoded = await readImagePreview(index, id, imageEvent.id, preview.previewId);
+  assert.equal(decoded.mimeType, 'image/png');
+  assert.equal(decoded.bytes[0], 0x89);
+});
+
+test('response-only image generation calls are successful and readable', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'edededed-3333-4444-8888-edededededed';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '19');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const file = path.join(dir, `rollout-2026-06-19T12-30-00-${id}.jsonl`);
+  const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+  const records = [
+    {
+      type: 'session_meta',
+      timestamp: '2026-06-19T12:30:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-19T12:30:01.000Z',
+      payload: {
+        type: 'image_generation_call',
+        id: 'ig_response_only',
+        status: 'completed',
+        revised_prompt: 'response only prompt',
+        result: pngBase64,
+      },
+    },
+  ];
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const timeline = getTimeline(index, id, {
+    offset: 0,
+    limit: 20,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  const imageEvent = timeline.events.find((event) => event.toolName === 'image_generation');
+  assert.ok(imageEvent);
+  assert.equal(imageEvent.label, 'Image Generation');
+  assert.equal(imageEvent.status, 'success');
+  assert.equal(imageEvent.severity, 'normal');
+  assert.deepEqual(imageEvent.rawRefs.map((ref) => ({
+    line: ref.line,
+    recordType: ref.sourceRecordType,
+    eventType: ref.sourceEventType,
+  })), [
+    { line: 2, recordType: 'response_item', eventType: 'image_generation_call' },
+  ]);
+
+  const detail = buildEventDetail(session, imageEvent.id, 'main');
+  assert.deepEqual(detail.timelineSections.map((section) => section.title), ['Image generation']);
+  assert.match(detail.timelineSections[0].html, /1 image/);
+  assert.match(detail.timelineSections[0].html, /response only prompt/);
+  const preview = detail.inspectorSections.find((section) => section.type === 'image_preview').images[0];
+  assert.equal(preview.mimeType, 'image/png');
+  assert.equal(detail.inspectorSections.find((section) => section.title === 'Response').value.result, '[embedded image payload externalized; open raw refs for source]');
 });
 
 test('tool logical events merge new and old format patch records and search still works', async () => {

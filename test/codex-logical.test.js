@@ -14,6 +14,7 @@ const TOOL_EVENT_TYPES = new Set([
   'mcp_tool_call_end',
   'image_generation_call_begin',
   'image_generation_call_end',
+  'image_generation_end',
   'dynamic_tool_call_begin',
   'dynamic_tool_call_end',
   'dynamic_tool_call_declined',
@@ -287,7 +288,7 @@ test('logical builder uses terminal lifecycle rows for generic protocol tool lab
     },
   }, {
     dynamic: { label: 'Dynamic Tool Call End', status: 'success', severity: 'normal', rawLines: [1, 2] },
-    image: { label: 'Image Generation Call End', status: 'success', severity: 'normal', rawLines: [3, 4] },
+    image: { label: 'Image Generation', status: 'success', severity: 'normal', rawLines: [3, 4] },
     approval: { label: 'Approval Request Declined', status: 'declined', severity: 'warning', rawLines: [5, 6] },
     hook: { label: 'Hook End', status: 'success', severity: 'normal', rawLines: [7, 8] },
     collab: { label: 'Collab Agent Spawn End', status: 'success', severity: 'normal', rawLines: [9, 10] },

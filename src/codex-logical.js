@@ -104,6 +104,13 @@ function createCodexLogicalBuilder(deps) {
     return best;
   }
 
+  function groupedToolLifecycleLabel(row, fallback) {
+    if (row?.toolName === 'image_generation' || String(row?.payloadType || '').startsWith('image_generation_')) {
+      return 'Image Generation';
+    }
+    return humanizeProtocolSubtype(row?.payloadType || fallback || 'Other tool call');
+  }
+
   function parseToolJsonValue(value) {
     if (value == null || value === '') return null;
     if (typeof value === 'object') return value;
@@ -193,7 +200,9 @@ function createCodexLogicalBuilder(deps) {
     const execRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('exec_command_'));
     const patchRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('patch_apply_'));
     const mcpRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('mcp_tool_call_'));
-    const imageRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('image_generation_call_'));
+    const imageRows = group.filter((raw) => (
+      raw.recordType === 'event_msg' && (raw.payloadType.startsWith('image_generation_call_') || raw.payloadType === 'image_generation_end')
+    ) || (raw.recordType === 'response_item' && raw.payloadType === 'image_generation_call'));
     const dynamicRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('dynamic_tool_call_'));
     const approvalRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('approval_request_'));
     const hookRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('hook_'));
@@ -223,7 +232,9 @@ function createCodexLogicalBuilder(deps) {
     const protocolStatus = String(group.find((raw) => raw.status)?.status || '').toLowerCase();
     const declined = group.some((raw) => /_declined$/.test(raw.payloadType) || String(raw.status || '').toLowerCase() === 'declined');
     const failed = group.some((raw) => String(raw.status || '').toLowerCase() === 'failed');
-    const completed = group.some((raw) => /_end$/.test(raw.payloadType)) || Boolean(functionOutput || customOutput);
+    const imageCallCompleted = group.some((raw) => raw.payloadType === 'image_generation_call'
+      && ['completed', 'complete', 'success', 'succeeded'].includes(String(raw.status || '').toLowerCase()));
+    const completed = group.some((raw) => /_end$/.test(raw.payloadType)) || imageCallCompleted || Boolean(functionOutput || customOutput);
     const explicitIncomplete = !completed && !failed && !declined;
 
     if (execRows.length) {
@@ -294,7 +305,7 @@ function createCodexLogicalBuilder(deps) {
     } else if (imageRows.length || dynamicRows.length || approvalRows.length || hookRows.length || collabRows.length) {
       kind = 'other_tool_call';
       const representativeRow = representativeToolLifecycleRow([...imageRows, ...dynamicRows, ...approvalRows, ...hookRows, ...collabRows]);
-      label = humanizeProtocolSubtype(representativeRow?.payloadType || toolName || 'Other tool call');
+      label = groupedToolLifecycleLabel(representativeRow, toolName);
       preview = truncate(representativeRow?.preview || group.find((raw) => raw.preview)?.preview || toolName || label);
       status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
       severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
@@ -588,7 +599,7 @@ function createCodexLogicalBuilder(deps) {
 
     for (const [callId, group] of byCallId.entries()) {
       group.sort((a, b) => a.line - b.line);
-      const hasToolShape = group.some((raw) => raw.recordType === 'response_item' && ['function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output'].includes(raw.payloadType))
+      const hasToolShape = group.some((raw) => raw.recordType === 'response_item' && ['function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output', 'image_generation_call'].includes(raw.payloadType))
         || group.some((raw) => raw.recordType === 'event_msg' && TOOL_EVENT_TYPES.has(raw.payloadType));
       if (!hasToolShape) continue;
       logicalEvents.push(buildToolLogicalEvent(callId, group));

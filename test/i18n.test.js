@@ -119,6 +119,7 @@ test('known label lookup translates exact keys and English catalog values withou
   assert.equal(i18n.lookupKnownLabel('user_message', 'zh-CN'), '用户消息');
   assert.equal(i18n.lookupKnownLabel('User message', 'zh-CN'), '用户消息');
   assert.equal(i18n.lookupKnownLabel('Web search', 'zh-CN'), '网页搜索');
+  assert.equal(i18n.lookupKnownLabel('Image Generation', 'zh-CN'), '图片生成');
   assert.equal(i18n.lookupKnownLabel('No such label', 'zh-CN'), '');
   assert.equal(i18n.knownLabel('No such label', 'zh-CN'), 'No such label');
 });

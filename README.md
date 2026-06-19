@@ -133,7 +133,7 @@ The npm package does not promise a stable programmatic API. The supported v0.1 i
 - v0.1 supports Codex transcripts only. Non-Codex transcript formats are design references for future adapters, not supported import sources.
 - Future or unknown Codex protocol events remain inspectable through protocol/raw fallback views, but not every event family has a polished structured renderer.
 - Transcript fixture coverage is targeted rather than exhaustive; newly observed historical shapes may need additional fixtures and display adjustments.
-- Review finding rendering has synthetic coverage, but non-empty `review_output.findings[]` still needs validation against real-world transcripts once such samples are available.
+- Review finding rendering has synthetic coverage and real non-empty `review_output.findings[]` examples have been observed locally; sanitized fixture strengthening is still useful for future regressions.
 
 ## Repository Layout
 

@@ -155,6 +155,7 @@ const TOOL_EVENT_TYPES = new Set([
   'image_generation_call_delta',
   'image_generation_call_end',
   'image_generation_call_declined',
+  'image_generation_end',
   'dynamic_tool_call_begin',
   'dynamic_tool_call_update',
   'dynamic_tool_call_delta',
@@ -2021,6 +2022,7 @@ function toolDetailValues(raws) {
   const functionOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
   const customCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call');
   const customOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output');
+  const imageCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'image_generation_call');
   const requestValue = firstNonEmpty(
     commandArgsFromRaw(functionCall),
     coerceJsonValue(customCall?.output),
@@ -2031,6 +2033,7 @@ function toolDetailValues(raws) {
   const responseEnvelope = toolOutputEnvelope(customOutput);
   const responseValue = firstNonEmpty(
     raws.find((raw) => raw.recordType === 'event_msg' && /_end$/.test(raw.payloadType || ''))?.parsed?.payload,
+    imageCall?.parsed?.payload,
     responseEnvelope?.output,
     parseOutputEnvelope(functionOutput?.output),
     functionOutput?.output,
@@ -2164,6 +2167,32 @@ function viewImageMarkdown(requestValue, responseValue) {
   ].filter(Boolean).join('\n\n');
 }
 
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function imageGenerationMarkdown(raws, responseValue) {
+  if (!responseValue || typeof responseValue !== 'object') return '';
+  const imageByKey = new Map();
+  for (const image of raws.flatMap((raw) => raw.embeddedImages || [])) {
+    if (!image?.dedupeKey || imageByKey.has(image.dedupeKey)) continue;
+    imageByKey.set(image.dedupeKey, image);
+  }
+  const images = [...imageByKey.values()];
+  const totalBytes = images.reduce((sum, image) => sum + Number(image.estimatedBytes || 0), 0);
+  return [
+    '### Image generation',
+    markdownField('Status', responseValue.status, 200),
+    markdownField('Saved image', responseValue.saved_path, 2000),
+    markdownField('Generated payload', images.length ? `${images.length} image${images.length === 1 ? '' : 's'}${totalBytes ? `, ${formatBytes(totalBytes)}` : ''}` : '', 200),
+    markdownField('Revised prompt', responseValue.revised_prompt, 1200),
+  ].filter(Boolean).join('\n\n');
+}
+
 function inspectSupportedImageDataUrl(value) {
   const source = String(value || '');
   const match = source.match(/^data:image\/(png|jpeg|gif|webp|avif);base64,([\s\S]*)$/i);
@@ -2183,6 +2212,37 @@ function inspectSupportedImageDataUrl(value) {
     encodedLength,
     estimatedBytes: Math.max(0, Math.floor(encodedLength * 3 / 4) - Math.min(padding, 2)),
   };
+}
+
+function imageMimeTypeFromBytes(bytes) {
+  if (!Buffer.isBuffer(bytes)) return '';
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  if (bytes.length >= 6 && ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'))) return 'image/gif';
+  return '';
+}
+
+function inspectSupportedBareImageBase64(value) {
+  const payload = String(value || '').replace(/\s+/g, '');
+  if (payload.length < 64 || payload.length % 4 !== 0) return null;
+  if (!/^(?:[a-z0-9+/]{4})*(?:[a-z0-9+/]{2}==|[a-z0-9+/]{3}=)?$/i.test(payload)) return null;
+  const header = Buffer.from(payload.slice(0, Math.min(payload.length, 128)), 'base64');
+  const mimeType = imageMimeTypeFromBytes(header);
+  if (!mimeType || mimeType === 'image/gif') return null;
+  const padding = payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0;
+  return {
+    mimeType,
+    payload,
+    encodedLength: payload.length,
+    estimatedBytes: Math.max(0, Math.floor(payload.length * 3 / 4) - padding),
+  };
+}
+
+function inspectSupportedImagePayload(value, encoding = '') {
+  if (encoding === 'bare_base64') return inspectSupportedBareImageBase64(value);
+  if (encoding === 'data_url') return inspectSupportedImageDataUrl(value);
+  return inspectSupportedImageDataUrl(value) || inspectSupportedBareImageBase64(value);
 }
 
 function imagePresentationKey(value, mimeType) {
@@ -2271,6 +2331,28 @@ function externalizeEmbeddedImages(value, source, images = [], jsonPath = [], se
     value[key] = externalizeEmbeddedImages(item, source, images, [...jsonPath, key], seen);
   }
   return value;
+}
+
+function externalizeKnownImageGenerationResult(record, source, images = []) {
+  const payload = record?.payload || {};
+  if (!['image_generation_end', 'image_generation_call'].includes(payload.type)) return;
+  if (typeof payload.result !== 'string') return;
+  const inspected = inspectSupportedBareImageBase64(payload.result);
+  if (!inspected) return;
+  images.push({
+    previewId: `image-${source.line}-${images.length}`,
+    source: {
+      file: source.file,
+      line: source.line,
+      jsonPath: ['payload', 'result'],
+    },
+    mimeType: inspected.mimeType,
+    estimatedBytes: inspected.estimatedBytes,
+    dedupeKey: imagePresentationKey(payload.result, inspected.mimeType),
+    encoding: 'bare_base64',
+    detail: 'generated image',
+  });
+  payload.result = EMBEDDED_IMAGE_EXTERNALIZED_MARKER;
 }
 
 function imagePreviewUrl(sessionId, eventId, previewId) {
@@ -2548,6 +2630,8 @@ function extractToolOperationSections(raws, event, splitSections) {
   if (collaboration) timelineSections.push(collaboration);
   const markdown = event.toolName === 'view_image' ? viewImageMarkdown(requestValue, responseValue) : '';
   maybePushMarkdownSection(timelineSections, 'Other tool call', markdown);
+  const imageGeneration = event.toolName === 'image_generation' ? imageGenerationMarkdown(raws, responseValue) : '';
+  maybePushMarkdownSection(timelineSections, 'Image generation', imageGeneration);
   const hasSpecializedTimeline = timelineSections.length > 0;
   if (!timelineSections.length) {
     maybePushToolSummaryCodeSection(timelineSections, 'Request summary', requestValue);
@@ -2558,7 +2642,7 @@ function extractToolOperationSections(raws, event, splitSections) {
   if (!timelineSections.length) {
     timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info')));
   }
-  const imagePreview = event.toolName === 'view_image' ? imagePreviewSection(raws, event, requestValue) : null;
+  const imagePreview = ['view_image', 'image_generation'].includes(event.toolName) ? imagePreviewSection(raws, event, requestValue) : null;
   const inspectorSections = sanitizeToolInspectorSections(split.inspectorSections, imagePreview);
   return {
     timelineSections,
@@ -3308,6 +3392,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
       }
       updateTimeRange(session, record.timestamp);
       const embeddedImages = [];
+      externalizeKnownImageGenerationResult(record, { file: relFile, line: lineNumber }, embeddedImages);
       externalizeEmbeddedImages(record, { file: relFile, line: lineNumber }, embeddedImages);
       const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages);
       if (!session.shell && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
@@ -3780,7 +3865,7 @@ async function readImagePreview(index, sessionId, eventId, previewId) {
   }
   if (!sourceRow?.parsed) return imagePreviewError(409, 'Image preview source is stale');
   const value = jsonPathValue(sourceRow.parsed, descriptor.source.jsonPath);
-  const inspected = inspectSupportedImageDataUrl(value);
+  const inspected = inspectSupportedImagePayload(value, descriptor.encoding);
   if (!inspected || inspected.mimeType !== descriptor.mimeType) {
     return imagePreviewError(409, 'Image preview source is stale');
   }
@@ -3790,6 +3875,11 @@ async function readImagePreview(index, sessionId, eventId, previewId) {
   }
   if (imagePresentationKey(value, inspected.mimeType) !== descriptor.dedupeKey) {
     return imagePreviewError(409, 'Image preview source is stale');
+  }
+  if (descriptor.encoding === 'bare_base64') {
+    const decoded = decodeImagePreviewDataUrl(`data:${descriptor.mimeType};base64,${inspected.payload}`);
+    if (decoded.error === 'Image preview payload is malformed') return imagePreviewError(422, decoded.error);
+    return decoded;
   }
   return decodeImagePreviewDataUrl(value);
 }
