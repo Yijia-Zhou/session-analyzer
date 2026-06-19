@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-06-18 / 最近更新：2026-06-18
+- Last updated: 2026-06-20 / 最近更新：2026-06-20
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -68,6 +68,14 @@ Reasoning 文本提取有意比通用原始字段文本扁平化更严格。`res
 Web search records are normalized as adjacent mirrored rows rather than normal `call_id` tool groups. Real transcripts may write `event_msg.web_search_end` before the completed `response_item.web_search_call` snapshot, often with matching action metadata and identical or near-identical timestamps. The logical builder merges adjacent search/open-page rows by canonical action target so the main timeline shows one web search event with both raw refs. When action metadata is absent or incomplete, timestamp fallback pairing is limited to rows from the same `turn_id`; call-only and end-only historical rows remain visible as single logical events.
 
 Web 搜索记录会按相邻镜像行归一化，而不是按普通 `call_id` 工具分组处理。真实转录可能先写入 `event_msg.web_search_end`，再写入已完成的 `response_item.web_search_call` 快照，二者通常带有匹配的 action 元数据，并且时间戳相同或非常接近。逻辑构建器会按规范化后的 action 目标合并相邻的搜索/打开页面记录，使主时间线只显示一个带有两个原始引用的 Web 搜索事件。当 action 元数据缺失或不完整时，基于 timestamp 的兜底配对只会作用于同一个 `turn_id` 内的行；只有 call 或只有 end 的历史行仍保留为单独逻辑事件。
+
+Hook lifecycle records are normalized only when the JSONL row itself is explicit: `event_msg` rows with `hook_begin` / `hook_end` / `hook_declined` or newer `hook_started` / `hook_completed` payload types become Main timeline `kind: hook` events. Rows with the same `call_id` are grouped; rows without a `call_id` remain single hook events. The label prefers hook-name fields in the payload, then `tool_name`, then `Hook`; status comes from the terminal row as `completed`, `declined`, `failed`, or `incomplete`.
+
+Hook 生命周期记录只在 JSONL 行本身明确时才会归一化：payload type 为 `hook_begin` / `hook_end` / `hook_declined` 或新版 `hook_started` / `hook_completed` 的 `event_msg` 行会变成 Main timeline 的 `kind: hook` 事件。带有同一 `call_id` 的行会合并；没有 `call_id` 的行会保留为单行 hook 事件。label 优先使用 payload 中的 hook 名称字段，其次使用 `tool_name`，最后回退为 `Hook`；status 来自终态行，取 `completed`、`declined`、`failed` 或 `incomplete`。
+
+Unwrapped `response_item.message` rows with `role=developer` are not assumed to be hooks. If the text is a known protocol wrapper such as permissions, collaboration mode, environment context, goal context, skill injection, or another XML-like metadata block, it remains in the protocol layer. Otherwise it becomes a Main timeline `kind: developer_message` event tagged `Possible hook output`. This preserves startup output seen by the TUI without claiming a precise hook source when the JSONL row lacks one. Current samples can show an outer TUI title such as `SessionStart hook`, but that title is not present in the raw JSONL row and cannot be reconstructed exactly from the row alone.
+
+未包装的 `response_item.message role=developer` 行不会被直接假定为 hook。如果文本是已知协议包装，例如 permissions、collaboration mode、environment context、goal context、skill injection 或其他 XML-like metadata block，它仍保留在 protocol 层。否则它会变成 Main timeline 的 `kind: developer_message` 事件，并带有 `Possible hook output` tag。这样可以保留 TUI 中可见的 startup 输出，同时在 JSONL 行缺少明确来源时不声称精确 hook 来源。当前样本可能在 TUI 中显示 `SessionStart hook` 这样的外层标题，但该标题没有进入原始 JSONL 行，不能仅凭该行精确还原。
 
 User-initiated `<user_shell_command>` wrappers from `response_item.message` role `user` or `event_msg.user_message` are promoted to Main timeline events with `kind` and `subtype` both set to `user_shell_command`. They have a dedicated user shell command label/title for display, preserve raw refs, and expose the command/result wrapper in preview and detail, but they are not normal `user_message` events.
 
@@ -159,6 +167,7 @@ Important fields:
 - `sourceLocator`
 - `rawRefs[]`
 - `channels[]`
+- `tags[]`
 
 Protocol logical events derive `label` and `preview` from subtype display metadata instead of raw subtype identifiers, while `searchText` and `rawRefs[]` keep the original transcript text discoverable and traceable.
 
@@ -168,9 +177,9 @@ Protocol event coverage is intentionally open-ended. The parser should preserve 
 
 协议事件覆盖有意保持开放。解析器应通过 protocol/raw 层保留未知 `event_msg` variant；只有当上游事件会改变可读时间线归属、严重级别、元数据、工具分组、搜索、指标或结构化详情时，才添加专门归一化。当前事件族记录和更新规则见 `docs/design-docs/codex-protocol-event-coverage.md`。
 
-Current protocol normalization includes task lifecycle events and their aliases (`task_started` / `task_complete` and `turn_started` / `turn_complete`) in the protocol layer, `session_configured` metadata, `thread_goal_updated` protocol details, injected `goal_context` protocol details, main-layer goal tool lifecycle events, main-layer warning/error events, protocol-shaped plan updates, and incomplete tool-family records grouped by `call_id` when available. These records remain traceable through raw refs and unknown future variants still fall back to protocol/raw visibility.
+Current protocol normalization includes task lifecycle events and their aliases (`task_started` / `task_complete` and `turn_started` / `turn_complete`) in the protocol layer, `session_configured` metadata, `thread_goal_updated` protocol details, injected `goal_context` protocol details, main-layer goal tool lifecycle events, main-layer warning/error events, protocol-shaped plan updates, deterministic main-layer hook lifecycle events, possible hook-output developer messages, and incomplete tool-family records grouped by `call_id` when available. These records remain traceable through raw refs and unknown future variants still fall back to protocol/raw visibility.
 
-当前协议归一化包括位于 protocol 层的 task 生命周期事件及其别名（`task_started` / `task_complete` 与 `turn_started` / `turn_complete`）、`session_configured` metadata、`thread_goal_updated` 协议详情、注入的 `goal_context` 协议详情、main 层 goal 工具生命周期事件、main 层 warning/error 事件、协议形态计划更新，以及在可用时按 `call_id` 分组的不完整工具族记录。这些记录仍可通过 raw refs 追踪，未知未来 variant 仍回退到 protocol/raw 可见性。
+当前协议归一化包括位于 protocol 层的 task 生命周期事件及其别名（`task_started` / `task_complete` 与 `turn_started` / `turn_complete`）、`session_configured` metadata、`thread_goal_updated` 协议详情、注入的 `goal_context` 协议详情、main 层 goal 工具生命周期事件、main 层 warning/error 事件、协议形态计划更新、确定性的 main 层 hook 生命周期事件、可能为 hook 输出的 developer message，以及在可用时按 `call_id` 分组的不完整工具族记录。这些记录仍可通过 raw refs 追踪，未知未来 variant 仍回退到 protocol/raw 可见性。
 
 ### Search and highlighting / 搜索与高亮
 

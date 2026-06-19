@@ -169,6 +169,7 @@ function createCodexDetailBuilder(deps) {
     switch (event.kind) {
       case 'user_message':
       case 'assistant_message':
+      case 'developer_message':
         return splitSectionsForDetail(extractConversationSections(raws));
       case 'proposed_plan':
       case 'plan_update':
@@ -183,6 +184,8 @@ function createCodexDetailBuilder(deps) {
         return splitSectionsForDetail(extractJsReplSections(raws, event));
       case 'mcp_call':
         return splitSectionsForDetail(extractToolSections(raws, event));
+      case 'hook':
+        return extractToolOperationSections(raws, event, splitSectionsForDetail);
       case 'other_tool_call':
         if (event.toolName === 'update_plan') return extractUpdatePlanSections(raws, event, splitSectionsForDetail);
         return extractToolOperationSections(raws, event, splitSectionsForDetail);

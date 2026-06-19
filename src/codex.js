@@ -130,6 +130,8 @@ const EVENT_KIND_LABELS = Object.freeze({
   reasoning: 'Reasoning',
   web_search: 'Web search',
   goal: 'Goal',
+  hook: 'Hook',
+  developer_message: 'Developer message',
   user_shell_command: 'User shell command',
   event: 'Event',
 });
@@ -167,6 +169,8 @@ const TOOL_EVENT_TYPES = new Set([
   'hook_begin',
   'hook_end',
   'hook_declined',
+  'hook_started',
+  'hook_completed',
   'collab_agent_spawn_begin',
   'collab_agent_spawn_end',
   'collab_agent_interaction_begin',
@@ -1831,7 +1835,11 @@ function classifyProtocolText(text, role) {
   if (role === 'developer') {
     if (source.startsWith('<permissions instructions>')) return 'developer_permissions';
     if (source.startsWith('<collaboration_mode>')) return 'developer_collaboration_mode';
-    return 'developer_instruction';
+    if (source.startsWith('<environment_context>')) return 'environment_context';
+    if (source.startsWith('<codex_internal_context source="goal">')) return 'goal_context';
+    if (source.startsWith('<skill>')) return 'skill_injection';
+    if (source.startsWith('<')) return 'meta_block';
+    return '';
   }
   if (source.startsWith('# AGENTS.md instructions')) return 'agents_instructions';
   if (source.startsWith('<environment_context>')) return 'environment_context';
@@ -3171,7 +3179,7 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'user_message') session.counts.userMessages += 1;
   if (logicalEvent.kind === 'assistant_message') session.counts.assistantMessages += 1;
   if (logicalEvent.kind === 'reasoning') session.counts.reasoning += 1;
-  if (['command', 'patch', 'mcp_call', 'web_search', 'other_tool_call', 'js_repl', 'goal'].includes(logicalEvent.kind)) {
+  if (['command', 'patch', 'mcp_call', 'web_search', 'other_tool_call', 'js_repl', 'goal', 'hook'].includes(logicalEvent.kind)) {
     session.counts.toolCalls += 1;
   }
   if (logicalEvent.kind === 'command' && logicalEvent.status === 'failed') session.counts.failedCommands += 1;
@@ -3748,6 +3756,7 @@ function logicalEventDto(event, q, locale = i18n.DEFAULT_LOCALE) {
     hasLongOutput: event.hasLongOutput,
     hasReadableReasoning: event.hasReadableReasoning,
     hasSearchHit,
+    tags: event.tags || [],
     touchedFiles: event.touchedFiles,
     outputStats: event.outputStats,
     tokenUsage: event.tokenUsage,

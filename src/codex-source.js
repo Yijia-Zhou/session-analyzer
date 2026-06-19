@@ -213,6 +213,8 @@ function createCodexRawParser(deps) {
         case 'hook_begin':
         case 'hook_end':
         case 'hook_declined':
+        case 'hook_started':
+        case 'hook_completed':
         case 'web_search_end':
         case 'context_compacted':
         case 'turn_aborted':

@@ -1136,6 +1136,7 @@ test('grouped generic protocol tool labels prefer terminal lifecycle rows', asyn
       rawLines: byCall.get('call-approval').rawRefs.map((ref) => ref.line),
     },
     hook: {
+      kind: byCall.get('call-hook').kind,
       label: byCall.get('call-hook').label,
       status: byCall.get('call-hook').status,
       severity: byCall.get('call-hook').severity,
@@ -1167,8 +1168,9 @@ test('grouped generic protocol tool labels prefer terminal lifecycle rows', asyn
       rawLines: [6, 7],
     },
     hook: {
-      label: 'Hook End',
-      status: 'success',
+      kind: 'hook',
+      label: 'pre-apply',
+      status: 'completed',
       severity: 'normal',
       rawLines: [8, 9],
     },

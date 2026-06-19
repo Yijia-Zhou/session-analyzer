@@ -22,6 +22,9 @@ const TOOL_EVENT_TYPES = new Set([
   'approval_request_declined',
   'hook_begin',
   'hook_end',
+  'hook_declined',
+  'hook_started',
+  'hook_completed',
   'collab_agent_spawn_begin',
   'collab_agent_spawn_end',
 ]);
@@ -67,7 +70,11 @@ function makeLogicalBuilder(overrides = {}) {
     protocol: {
       classifyProtocolText: (text, role) => {
         const source = String(text || '');
-        if (role === 'developer') return 'developer_instruction';
+        if (role === 'developer') {
+          if (source.startsWith('<permissions instructions>')) return 'developer_permissions';
+          if (source.startsWith('<collaboration_mode>')) return 'developer_collaboration_mode';
+          return '';
+        }
         if (source.startsWith('# AGENTS.md instructions')) return 'agents_instructions';
         if (source.startsWith('<user_shell_command>')) return 'user_shell_command';
         return '';
@@ -152,13 +159,13 @@ test('logical builder folds raw rows into message, reasoning, protocol, and fall
     raw(1, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: 'hello' }),
     raw(2, { payloadType: 'user_message', messageText: 'hello' }),
     raw(3, { payloadType: 'agent_reasoning', messageText: '' }),
-    raw(4, { recordType: 'response_item', payloadType: 'message', role: 'developer', messageText: '# AGENTS.md instructions\nUse tests.' }),
+    raw(4, { recordType: 'response_item', payloadType: 'message', role: 'developer', messageText: '<permissions instructions>\nUse tests.' }),
     raw(5, { payloadType: 'thread_goal_updated', canonicalType: 'thread_goal_updated', preview: 'goal changed' }),
   ]);
 
   const user = logicalEvents.find((event) => event.kind === 'user_message');
   const reasoning = logicalEvents.find((event) => event.kind === 'reasoning');
-  const developer = logicalEvents.find((event) => event.subtype === 'developer_instruction');
+  const developer = logicalEvents.find((event) => event.subtype === 'developer_permissions');
   const fallback = logicalEvents.find((event) => event.subtype === 'thread_goal_updated');
 
   assert.equal(user.schemaVersion, 1);
@@ -248,8 +255,8 @@ test('logical builder uses terminal lifecycle rows for generic protocol tool lab
     raw(4, { payloadType: 'image_generation_call_end', callId: 'call-image', toolName: 'image_generation', preview: 'image done' }),
     raw(5, { payloadType: 'approval_request_begin', callId: 'call-approval', toolName: 'approval', preview: 'approve' }),
     raw(6, { payloadType: 'approval_request_declined', callId: 'call-approval', toolName: 'approval', status: 'declined', preview: 'declined' }),
-    raw(7, { payloadType: 'hook_begin', callId: 'call-hook', toolName: 'pre_apply_hook', preview: 'hook' }),
-    raw(8, { payloadType: 'hook_end', callId: 'call-hook', toolName: 'pre_apply_hook', preview: 'hook done' }),
+    raw(7, { payloadType: 'hook_begin', callId: 'call-hook', toolName: 'pre_apply_hook', payload: { hook: 'pre-apply' }, preview: 'hook' }),
+    raw(8, { payloadType: 'hook_end', callId: 'call-hook', toolName: 'pre_apply_hook', status: 'completed', preview: 'hook done' }),
     raw(9, { payloadType: 'collab_agent_spawn_begin', callId: 'call-collab', preview: 'spawn' }),
     raw(10, { payloadType: 'collab_agent_spawn_end', callId: 'call-collab', status: 'pending_init', preview: 'spawned' }),
   ]);
@@ -275,6 +282,7 @@ test('logical builder uses terminal lifecycle rows for generic protocol tool lab
       rawLines: byCall.get('call-approval').rawRefs.map((ref) => ref.line),
     },
     hook: {
+      kind: byCall.get('call-hook').kind,
       label: byCall.get('call-hook').label,
       status: byCall.get('call-hook').status,
       severity: byCall.get('call-hook').severity,
@@ -290,9 +298,52 @@ test('logical builder uses terminal lifecycle rows for generic protocol tool lab
     dynamic: { label: 'Dynamic Tool Call End', status: 'success', severity: 'normal', rawLines: [1, 2] },
     image: { label: 'Image Generation', status: 'success', severity: 'normal', rawLines: [3, 4] },
     approval: { label: 'Approval Request Declined', status: 'declined', severity: 'warning', rawLines: [5, 6] },
-    hook: { label: 'Hook End', status: 'success', severity: 'normal', rawLines: [7, 8] },
+    hook: { kind: 'hook', label: 'pre-apply', status: 'completed', severity: 'normal', rawLines: [7, 8] },
     collab: { label: 'Collab Agent Spawn End', status: 'success', severity: 'normal', rawLines: [9, 10] },
   });
+});
+
+test('logical builder supports new hook lifecycle rows and ungrouped declined hooks', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { payloadType: 'hook_started', callId: 'call-hook-new', toolName: 'SessionStart', payload: { hook_name: 'SessionStart' }, preview: 'starting hook' }),
+    raw(2, { payloadType: 'hook_completed', callId: 'call-hook-new', toolName: 'SessionStart', status: 'completed', preview: 'hook complete' }),
+    raw(3, { payloadType: 'hook_declined', toolName: 'Stop', status: 'declined', preview: 'hook declined' }),
+  ]);
+  const grouped = logicalEvents.find((event) => event.rawRefs.some((ref) => ref.line === 1));
+  const declined = logicalEvents.find((event) => event.rawRefs.some((ref) => ref.line === 3));
+
+  assert.equal(grouped.kind, 'hook');
+  assert.equal(grouped.label, 'SessionStart');
+  assert.equal(grouped.status, 'completed');
+  assert.deepEqual(grouped.rawRefs.map((ref) => ref.line), [1, 2]);
+  assert.equal(declined.kind, 'hook');
+  assert.equal(declined.label, 'Stop');
+  assert.equal(declined.status, 'declined');
+  assert.equal(declined.severity, 'warning');
+});
+
+test('logical builder surfaces unwrapped developer messages as possible hook output', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      recordType: 'response_item',
+      payloadType: 'message',
+      role: 'developer',
+      messageText: 'session-analyzer guardrails:\n- repo: .',
+    }),
+    raw(2, {
+      recordType: 'response_item',
+      payloadType: 'message',
+      role: 'developer',
+      messageText: '<collaboration_mode>\n# Collaboration Mode: Default',
+    }),
+  ]);
+  const developerMessage = logicalEvents.find((event) => event.kind === 'developer_message');
+  const wrapper = logicalEvents.find((event) => event.subtype === 'developer_collaboration_mode');
+
+  assert.equal(developerMessage.label, 'Developer message');
+  assert.deepEqual(developerMessage.tags, ['Possible hook output']);
+  assert.match(developerMessage.searchText, /Possible hook output/);
+  assert.equal(wrapper.layer, 'protocol');
 });
 
 test('logical builder pairs web search rows without changing ids, refs, status, or search text', () => {

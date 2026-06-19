@@ -27,6 +27,7 @@ const allowedZhTerms = new Set([
   'html',
   'http',
   'https',
+  'hook',
   'id',
   'js',
   'json',
@@ -106,6 +107,7 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.displayStateLabel('expanded', 'zh-CN'), '展开');
   assert.equal(i18n.eventKindLabel('command', 'zh-CN'), '命令');
   assert.equal(i18n.eventKindLabel('goal', 'zh-CN'), '目标');
+  assert.equal(i18n.eventKindLabel('developer_message', 'zh-CN'), '开发者消息');
   assert.equal(i18n.eventKindLabel('goal_context', 'zh-CN'), '目标上下文');
   assert.equal(i18n.statusLabel('blocked', 'zh-CN'), '已阻塞');
   assert.equal(i18n.humanize('mcp_tool_call'), 'MCP Tool Call');
@@ -120,6 +122,7 @@ test('known label lookup translates exact keys and English catalog values withou
   assert.equal(i18n.lookupKnownLabel('User message', 'zh-CN'), '用户消息');
   assert.equal(i18n.lookupKnownLabel('Web search', 'zh-CN'), '网页搜索');
   assert.equal(i18n.lookupKnownLabel('Image Generation', 'zh-CN'), '图片生成');
+  assert.equal(i18n.lookupKnownLabel('Developer message', 'zh-CN'), '开发者消息');
   assert.equal(i18n.lookupKnownLabel('No such label', 'zh-CN'), '');
   assert.equal(i18n.knownLabel('No such label', 'zh-CN'), 'No such label');
 });

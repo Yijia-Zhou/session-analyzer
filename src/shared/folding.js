@@ -26,6 +26,8 @@
     'other_tool_call',
     'web_search',
     'goal',
+    'hook',
+    'developer_message',
     'error',
     'warning',
     'abort',

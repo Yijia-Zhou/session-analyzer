@@ -52,6 +52,8 @@ const KIND_LABELS = {
   reasoning: 'Reasoning',
   web_search: 'Web search',
   goal: 'Goal',
+  hook: 'Hook',
+  developer_message: 'Developer message',
   event: 'Event',
 };
 const STATUS_LABELS = {
@@ -2088,6 +2090,7 @@ function renderTimeline() {
     ].filter(Boolean).join(' ');
     const chips = [
       event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
+      ...(Array.isArray(event.tags) ? event.tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`) : []),
       event.toolName ? `<span class="chip toolChip">${escapeHtml(event.toolName)}</span>` : '',
       event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t('files'))}</span>` : '',
       event.rawRefs?.length ? `<span class="chip countChip">${event.rawRefs.length} ${escapeHtml(t('raw'))}</span>` : '',

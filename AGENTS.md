@@ -38,6 +38,7 @@ When changing product behavior or repository structure:
 - Design doc: `docs/design-docs/logical-event-timeline.md`
 - Schema update runbook: `docs/design-docs/schema-update-runbook.md`
 - Documentation system guide: `docs/design-docs/documentation-system.md`
+- Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Active plans: none
 - Completed plans:
   - `docs/exec-plans/completed/2026-06-15-external-review-followups.md`

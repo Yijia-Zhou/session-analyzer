@@ -63,6 +63,8 @@ test('narrative profile collapses ordinary high-frequency tool events', () => {
   for (const kind of ['command', 'mcp_call', 'js_repl', 'other_tool_call', 'web_search']) {
     assert.equal(folding.displayStateFromRules({ kind, status: 'success', severity: 'normal' }, rules), 'collapsed', kind);
   }
+  assert.equal(folding.displayStateFromRules({ kind: 'hook', status: 'completed', severity: 'normal' }, rules), 'summary');
+  assert.equal(folding.displayStateFromRules({ kind: 'developer_message', severity: 'normal' }, rules), 'summary');
 });
 
 test('matching condition order does not change the most visible result', () => {
@@ -122,6 +124,12 @@ test('conversation profile keeps plan updates and user input requests expanded',
   assert.equal(folding.displayStateFromRules({ kind: 'reasoning', hasReadableReasoning: true, severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'reasoning', hasReadableReasoning: false, severity: 'normal' }, rules), 'hidden');
   assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'view_image', severity: 'normal' }, rules), 'hidden');
+  assert.equal(folding.displayStateFromRules({ kind: 'hook', severity: 'normal' }, rules), 'hidden');
+  assert.equal(folding.displayStateFromRules({ kind: 'developer_message', hasSearchHit: true, severity: 'normal' }, {
+    kindStates: {},
+    fallback: 'hidden',
+    conditions: [{ id: 'searchHit', state: 'expanded' }],
+  }), 'expanded');
 });
 
 test('override normalization drops malformed branches and retains valid manual states', () => {

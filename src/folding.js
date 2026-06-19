@@ -22,6 +22,8 @@ const foldingProfiles = [
         compaction: 'expanded',
         review: 'summary',
         goal: 'summary',
+        hook: 'summary',
+        developer_message: 'summary',
         proposed_plan: 'expanded',
         reasoning: 'collapsed',
         command: 'collapsed',

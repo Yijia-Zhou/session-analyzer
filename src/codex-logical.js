@@ -76,6 +76,7 @@ function createCodexLogicalBuilder(deps) {
       usageLimits: sanitizeLogicalEnvelopeValue(fields.usageLimits || []),
       rawRefs,
       channels: sanitizeLogicalEnvelopeValue(fields.channels || []),
+      tags: sanitizeLogicalEnvelopeValue(fields.tags || []),
       source: rawRefs[0] || fields.source,
       sourceLocator: rawRefs[0]?.sourceLocator || fields.sourceLocator || null,
     };
@@ -84,7 +85,9 @@ function createCodexLogicalBuilder(deps) {
   function toolLifecycleRank(raw) {
     const type = String(raw?.payloadType || '');
     if (/_declined$/.test(type)) return 4;
+    if (/_completed$/.test(type)) return 3;
     if (/_end$/.test(type)) return 3;
+    if (/_started$/.test(type)) return 1;
     if (/(?:_update|_delta)$/.test(type)) return 2;
     if (/_begin$/.test(type)) return 1;
     return 0;
@@ -109,6 +112,71 @@ function createCodexLogicalBuilder(deps) {
       return 'Image Generation';
     }
     return humanizeProtocolSubtype(row?.payloadType || fallback || 'Other tool call');
+  }
+
+  function isHookLifecycleRow(raw) {
+    return raw?.recordType === 'event_msg' && [
+      'hook_begin',
+      'hook_end',
+      'hook_declined',
+      'hook_started',
+      'hook_completed',
+    ].includes(raw.payloadType);
+  }
+
+  function hookNameFromRow(row) {
+    const payload = row?.parsed?.payload || {};
+    return String(firstNonEmpty(
+      payload.hook,
+      payload.hook_name,
+      payload.name,
+      payload.hookName,
+      row?.toolName,
+      'Hook',
+    ) || 'Hook');
+  }
+
+  function hookStatusFromRows(rows) {
+    const terminal = representativeToolLifecycleRow(rows) || rows[0];
+    const type = String(terminal?.payloadType || '');
+    const explicit = String(terminal?.status || terminal?.parsed?.payload?.status || '').toLowerCase();
+    if (explicit === 'declined' || /_declined$/.test(type)) return 'declined';
+    if (explicit === 'failed' || explicit === 'error') return 'failed';
+    if (explicit === 'completed' || explicit === 'complete' || explicit === 'success' || explicit === 'succeeded') return 'completed';
+    if (/_completed$|_end$/.test(type)) return 'completed';
+    return 'incomplete';
+  }
+
+  function buildHookLogicalEvent(idSuffix, rows) {
+    const group = rows.slice().sort((a, b) => a.line - b.line);
+    const first = group[0];
+    const representative = representativeToolLifecycleRow(group) || first;
+    const hookName = hookNameFromRow(group.find((row) => hookNameFromRow(row) !== 'Hook') || representative);
+    const status = hookStatusFromRows(group);
+    const severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
+    const preview = truncate(firstNonEmpty(
+      representative.preview,
+      group.find((raw) => raw.preview)?.preview,
+      group.map((raw) => raw.searchText).filter(Boolean).join('\n'),
+      hookName,
+    ));
+    return createLogicalEvent({
+      id: `${first.sessionId}:logical:hook:${idSuffix}`,
+      timestamp: first.timestamp,
+      turnId: group.find((raw) => raw.turnId)?.turnId || '',
+      kind: 'hook',
+      subtype: representative.payloadType || 'hook',
+      layer: 'main',
+      role: 'system',
+      label: hookName,
+      preview,
+      searchText: uniqueNonEmpty([hookName, status, ...group.map((raw) => raw.searchText)]).join('\n'),
+      severity,
+      status,
+      toolName: hookName,
+      rawRefs: group.map(rawRef),
+      channels: [...new Set(group.map((raw) => raw.recordType))],
+    });
   }
 
   function parseToolJsonValue(value) {
@@ -205,7 +273,7 @@ function createCodexLogicalBuilder(deps) {
     ) || (raw.recordType === 'response_item' && raw.payloadType === 'image_generation_call'));
     const dynamicRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('dynamic_tool_call_'));
     const approvalRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('approval_request_'));
-    const hookRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('hook_'));
+    const hookRows = group.filter(isHookLifecycleRow);
     const collabRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('collab_'));
     const execEnd = execRows.find((raw) => raw.payloadType === 'exec_command_end');
     const patchEnd = patchRows.find((raw) => raw.payloadType === 'patch_apply_end');
@@ -302,9 +370,11 @@ function createCodexLogicalBuilder(deps) {
       status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
       severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
       outputStats.durationMs = mcpEnd?.durationMs || 0;
-    } else if (imageRows.length || dynamicRows.length || approvalRows.length || hookRows.length || collabRows.length) {
+    } else if (hookRows.length) {
+      return buildHookLogicalEvent(`call:${callId}`, hookRows);
+    } else if (imageRows.length || dynamicRows.length || approvalRows.length || collabRows.length) {
       kind = 'other_tool_call';
-      const representativeRow = representativeToolLifecycleRow([...imageRows, ...dynamicRows, ...approvalRows, ...hookRows, ...collabRows]);
+      const representativeRow = representativeToolLifecycleRow([...imageRows, ...dynamicRows, ...approvalRows, ...collabRows]);
       label = groupedToolLifecycleLabel(representativeRow, toolName);
       preview = truncate(representativeRow?.preview || group.find((raw) => raw.preview)?.preview || toolName || label);
       status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
@@ -499,6 +569,26 @@ function createCodexLogicalBuilder(deps) {
     });
   }
 
+  function buildDeveloperMessageEvent(raw) {
+    return createLogicalEvent({
+      id: `${raw.sessionId}:logical:developer:${raw.line}`,
+      timestamp: raw.timestamp,
+      turnId: raw.turnId || '',
+      kind: 'developer_message',
+      subtype: 'developer_message',
+      layer: 'main',
+      role: 'developer',
+      label: 'Developer message',
+      preview: truncate(raw.messageText || raw.preview || 'Developer message'),
+      searchText: uniqueNonEmpty(['Possible hook output', raw.messageText, raw.searchText]).join('\n'),
+      severity: 'normal',
+      status: '',
+      rawRefs: [rawRef(raw)],
+      channels: [raw.recordType],
+      tags: ['Possible hook output'],
+    });
+  }
+
   function buildReasoningEvent(raws, text) {
     return createLogicalEvent({
       id: `${raws[0].sessionId}:logical:reasoning:${raws[0].line}`,
@@ -663,7 +753,8 @@ function createCodexLogicalBuilder(deps) {
       }
 
       if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'developer') {
-        logicalEvents.push(buildProtocolEvent(raw, classifyProtocolText(raw.messageText, 'developer') || 'developer_instruction'));
+        const protocolSubtype = classifyProtocolText(raw.messageText, 'developer');
+        logicalEvents.push(protocolSubtype ? buildProtocolEvent(raw, protocolSubtype) : buildDeveloperMessageEvent(raw));
         consumed.add(raw.rawId);
         continue;
       }
@@ -731,6 +822,12 @@ function createCodexLogicalBuilder(deps) {
 
       if (raw.recordType === 'event_msg' && ['plan_update', 'plan_delta'].includes(raw.payloadType)) {
         logicalEvents.push(buildPlanUpdateEvent(raw));
+        consumed.add(raw.rawId);
+        continue;
+      }
+
+      if (isHookLifecycleRow(raw)) {
+        logicalEvents.push(buildHookLogicalEvent(raw.line, [raw]));
         consumed.add(raw.rawId);
         continue;
       }
