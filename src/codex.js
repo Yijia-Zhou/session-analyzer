@@ -2609,6 +2609,111 @@ function maybePushToolSummaryCodeSection(sections, title, value) {
   maybePushCodeSection(sections, title, stringifyValue(summarized), typeof summarized === 'object' ? 'json' : 'text');
 }
 
+function mcpPayloadValue(value) {
+  if (!value || typeof value !== 'object') return value;
+  return firstNonEmpty(value.result, value.output, value.response, value.message, value.content, value.data, value);
+}
+
+function isTextualMcpMime(mime) {
+  const value = String(mime || '').toLowerCase();
+  return value.startsWith('text/') || value === 'application/json' || /\+json$/.test(value);
+}
+
+function isMcpMediaPayload(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const type = String(value.type || '').toLowerCase();
+  const mime = String(firstNonEmpty(value.mimeType, value.mime_type) || '').toLowerCase();
+  const mediaType = ['image', 'audio', 'video', 'blob', 'binary'].includes(type);
+  const mediaMime = mime && !isTextualMcpMime(mime);
+  const hasBarePayload = ['blob', 'base64'].some((key) => Object.hasOwn(value, key));
+  return Boolean(mediaType || mediaMime || hasBarePayload);
+}
+
+function mcpTextFragments(value, depth = 0, key = '') {
+  if (value == null || depth > 6) return [];
+  const normalizedKey = String(key || '').toLowerCase();
+  if (['blob', 'base64'].includes(normalizedKey)) return [];
+  if (typeof value === 'string') return [value];
+  if (typeof value === 'number' || typeof value === 'boolean') return [String(value)];
+  if (Array.isArray(value)) return value.flatMap((item) => mcpTextFragments(item, depth + 1, key));
+  if (typeof value !== 'object') return [];
+  if (isMcpMediaPayload(value)) return [];
+  if (typeof value.text === 'string') return [value.text];
+  if (typeof value.content === 'string') return [value.content];
+  return Object.entries(value).flatMap(([key, item]) => {
+    if (['type', 'mimeType', 'mime_type', 'annotations', 'blob', 'base64'].includes(key)) return [];
+    return mcpTextFragments(item, depth + 1, key);
+  });
+}
+
+function pushMcpRequestSummary(sections, event, requestValue) {
+  if (!requestValue || typeof requestValue !== 'object') {
+    maybePushToolSummaryCodeSection(sections, 'Request summary', requestValue);
+    return;
+  }
+  const payload = firstNonEmpty(requestValue.arguments, requestValue.input, requestValue.request, mcpPayloadValue(requestValue));
+  const code = firstNonEmpty(payload?.code, requestValue.code, payload?.script, requestValue.script);
+  const language = String(firstNonEmpty(payload?.language, requestValue.language, event.toolName === 'js' ? 'javascript' : '') || '').toLowerCase();
+  if (code) {
+    maybePushCodeSection(sections, language === 'javascript' ? 'JavaScript' : 'Code', String(code), language || 'text');
+  }
+  const entries = Object.entries(payload && typeof payload === 'object' ? payload : requestValue)
+    .filter(([key, value]) => !['code', 'script'].includes(key) && value != null && value !== '' && typeof value !== 'object')
+    .slice(0, 8)
+    .map(([key, value]) => ({ key, value: conciseToolValue(value, 1000) }));
+  if (entries.length) sections.push({ type: 'kv', title: 'Request', entries });
+  if (!code && !entries.length) maybePushToolSummaryCodeSection(sections, 'Request summary', requestValue);
+}
+
+function sanitizeMcpTimelineValue(value, depth = 0, key = '') {
+  if (depth > 5) return '[nested value omitted]';
+  const normalizedKey = String(key || '').toLowerCase();
+  if (['blob', 'base64'].includes(normalizedKey)) return '[non-text MCP payload omitted]';
+  if (typeof value === 'string') return truncate(redactEmbeddedDataUrls(value, TIMELINE_DATA_URL_MARKER), 4000);
+  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 12).map((item) => sanitizeMcpTimelineValue(item, depth + 1, key));
+    if (value.length > items.length) items.push(`[${value.length - items.length} more items omitted]`);
+    return items;
+  }
+  if (typeof value !== 'object') return String(value);
+  if (isMcpMediaPayload(value)) return '[non-text MCP payload omitted]';
+  const entries = Object.entries(value);
+  const usedKeys = new Set();
+  const summarized = Object.fromEntries(entries.slice(0, 24).map(([entryKey, item]) => [
+    uniqueSanitizedObjectKey(entryKey, usedKeys, TIMELINE_DATA_URL_MARKER),
+    sanitizeMcpTimelineValue(item, depth + 1, entryKey),
+  ]));
+  if (entries.length > 24) summarized['[additional fields omitted]'] = entries.length - 24;
+  return summarized;
+}
+function pushMcpResponseSummary(sections, responseValue) {
+  const payload = mcpPayloadValue(responseValue);
+  const fragments = mcpTextFragments(payload).map((item) => item.trim()).filter(Boolean);
+  const text = uniqueNonEmpty(fragments).join('\n\n');
+  if (text) {
+    maybePushTerminalSection(sections, 'Result', truncatePreservingWhitespace(redactEmbeddedDataUrls(text, TIMELINE_DATA_URL_MARKER), 4000), 'stdout');
+    return;
+  }
+  const summarized = sanitizeMcpTimelineValue(payload);
+  maybePushCodeSection(sections, 'Response summary', stringifyValue(summarized), typeof summarized === 'object' ? 'json' : 'text');
+}
+
+function extractMcpSections(raws, event, splitSections) {
+  const split = splitSections(extractToolSections(raws, event));
+  const { requestValue, responseValue } = toolDetailValues(raws);
+  const timelineSections = [];
+  pushMcpRequestSummary(timelineSections, event, requestValue);
+  pushMcpResponseSummary(timelineSections, responseValue);
+  if (!timelineSections.length) timelineSections.push(...sanitizeUnmodeledToolTimelineSections(split.timelineSections));
+  if (!timelineSections.length) {
+    timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info')));
+  }
+  return {
+    timelineSections: sanitizeUnmodeledToolTimelineSections(timelineSections),
+    inspectorSections: sanitizeToolInspectorSections(split.inspectorSections),
+  };
+}
 function sanitizeUnmodeledToolTimelineSection(section) {
   const sanitized = sanitizeToolValue(section, { marker: TIMELINE_DATA_URL_MARKER });
   if (sanitized.type === 'code') sanitized.code = truncatePreservingWhitespace(sanitized.code, 4000);
@@ -2944,6 +3049,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
     extractConversationSections,
     extractJsReplSections,
     extractLifecycleSections,
+    extractMcpSections,
     extractPatchSections,
     extractPlanSections,
     extractGoalSections,

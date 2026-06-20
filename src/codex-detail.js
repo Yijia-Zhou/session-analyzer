@@ -52,6 +52,7 @@ function createCodexDetailBuilder(deps) {
     extractGoalSections,
     extractJsReplSections,
     extractLifecycleSections,
+    extractMcpSections,
     extractPatchSections,
     extractPlanSections,
     extractProtocolSections,
@@ -183,7 +184,7 @@ function createCodexDetailBuilder(deps) {
       case 'js_repl':
         return splitSectionsForDetail(extractJsReplSections(raws, event));
       case 'mcp_call':
-        return splitSectionsForDetail(extractToolSections(raws, event));
+        return extractMcpSections(raws, event, splitSectionsForDetail);
       case 'hook':
         return extractToolOperationSections(raws, event, splitSectionsForDetail);
       case 'other_tool_call':

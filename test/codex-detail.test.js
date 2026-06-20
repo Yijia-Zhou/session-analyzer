@@ -99,6 +99,192 @@ test('command, patch, and tool details keep stable section type boundaries', asy
   });
 });
 
+test('mcp call detail shows structured timeline summary instead of raw preview fallback', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'abababab-3333-4444-8888-abababababab';
+  await writeTranscript(codexHome, repoRoot, id, [
+    {
+      type: 'session_meta',
+      timestamp: '2026-06-12T10:00:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-12T10:00:01.000Z',
+      payload: {
+        type: 'mcp_tool_call_begin',
+        call_id: 'call-mcp-js',
+        tool_name: 'js',
+        arguments: { code: "nodeRepl.write('ok');", title: 'Smoke' },
+        status: 'in_progress',
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-12T10:00:02.000Z',
+      payload: {
+        type: 'mcp_tool_call_end',
+        call_id: 'call-mcp-js',
+        tool_name: 'js',
+        result: [{ type: 'text', text: 'ok' }],
+        status: 'success',
+      },
+    },
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = Array.from(index.sessionsById.values()).find((candidate) => candidate.id === id);
+  const event = session.logicalEvents.find((candidate) => candidate.kind === 'mcp_call' && candidate.toolName === 'js');
+  const detail = buildEventDetail(session, event.id, event.layer);
+
+  assert.deepEqual(detail.timelineSections.map((section) => section.title), ['JavaScript', 'Request', 'Result']);
+  assert.equal(detail.timelineSections[0].type, 'code');
+  assert.equal(detail.timelineSections[0].language, 'javascript');
+  assert.match(detail.timelineSections[0].code, /nodeRepl\.write/);
+  assert.equal(detail.timelineSections[2].type, 'terminal');
+  assert.match(detail.timelineSections[2].text, /ok/);
+  assert.deepEqual(detail.inspectorSections.map((section) => section.title), ['Tool context', 'Request', 'Response']);
+});
+test('mcp non-text result omits bare payload bytes from timeline summary', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'cdcdcdcd-3333-4444-8888-cdcdcdcdcdcd';
+  const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+  await writeTranscript(codexHome, repoRoot, id, [
+    {
+      type: 'session_meta',
+      timestamp: '2026-06-12T10:00:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-12T10:00:01.000Z',
+      payload: {
+        type: 'mcp_tool_call_begin',
+        call_id: 'call-mcp-image',
+        tool_name: 'render_preview',
+        arguments: { prompt: 'render a preview' },
+        status: 'in_progress',
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-12T10:00:02.000Z',
+      payload: {
+        type: 'mcp_tool_call_end',
+        call_id: 'call-mcp-image',
+        tool_name: 'render_preview',
+        result: [{ type: 'image', data: pngBase64, mimeType: 'image/png' }],
+        status: 'success',
+      },
+    },
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = Array.from(index.sessionsById.values()).find((candidate) => candidate.id === id);
+  const event = session.logicalEvents.find((candidate) => candidate.kind === 'mcp_call' && candidate.toolName === 'render_preview');
+  const detail = buildEventDetail(session, event.id, event.layer);
+  const timelineJson = JSON.stringify(detail.timelineSections);
+
+  assert.equal(timelineJson.includes(pngBase64), false);
+  assert.match(timelineJson, /non-text MCP payload omitted/);
+  assert.deepEqual(detail.inspectorSections.map((section) => section.title), ['Tool context', 'Request', 'Response']);
+});
+
+test('mcp typed error result stays visible in timeline fallback summary', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'efefefef-3333-4444-8888-efefefefefef';
+  await writeTranscript(codexHome, repoRoot, id, [
+    {
+      type: 'session_meta',
+      timestamp: '2026-06-12T10:00:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-12T10:00:01.000Z',
+      payload: {
+        type: 'mcp_tool_call_begin',
+        call_id: 'call-mcp-error',
+        tool_name: 'lookup',
+        arguments: { query: 'missing' },
+        status: 'in_progress',
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-12T10:00:02.000Z',
+      payload: {
+        type: 'mcp_tool_call_end',
+        call_id: 'call-mcp-error',
+        tool_name: 'lookup',
+        result: { type: 'error', message: 'lookup failed', status: 'failed' },
+        status: 'failed',
+      },
+    },
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = Array.from(index.sessionsById.values()).find((candidate) => candidate.id === id);
+  const event = session.logicalEvents.find((candidate) => candidate.kind === 'mcp_call' && candidate.toolName === 'lookup');
+  const detail = buildEventDetail(session, event.id, event.layer);
+  const timelineJson = JSON.stringify(detail.timelineSections);
+
+  assert.match(timelineJson, /lookup failed/);
+  assert.match(timelineJson, /failed/);
+  assert.doesNotMatch(timelineJson, /non-text MCP payload omitted/);
+});
+
+test('mcp text resources and structured data stay visible in timeline summary', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'fdfdfdfd-3333-4444-8888-fdfdfdfdfdfd';
+  await writeTranscript(codexHome, repoRoot, id, [
+    {
+      type: 'session_meta',
+      timestamp: '2026-06-12T10:00:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-12T10:00:01.000Z',
+      payload: {
+        type: 'mcp_tool_call_begin',
+        call_id: 'call-mcp-resource',
+        tool_name: 'resource_lookup',
+        arguments: { path: 'README.md' },
+        status: 'in_progress',
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-12T10:00:02.000Z',
+      payload: {
+        type: 'mcp_tool_call_end',
+        call_id: 'call-mcp-resource',
+        tool_name: 'resource_lookup',
+        result: [
+          { type: 'resource', mimeType: 'text/plain', text: 'plain text resource' },
+          { type: 'result', data: { message: 'structured data result', status: 'complete' } },
+        ],
+        status: 'success',
+      },
+    },
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = Array.from(index.sessionsById.values()).find((candidate) => candidate.id === id);
+  const event = session.logicalEvents.find((candidate) => candidate.kind === 'mcp_call' && candidate.toolName === 'resource_lookup');
+  const detail = buildEventDetail(session, event.id, event.layer);
+  const timelineJson = JSON.stringify(detail.timelineSections);
+
+  assert.match(timelineJson, /plain text resource/);
+  assert.match(timelineJson, /structured data result/);
+  assert.match(timelineJson, /complete/);
+  assert.doesNotMatch(timelineJson, /non-text MCP payload omitted/);
+});
 test('detail sections replace embedded data URLs with markers', async (t) => {
   const codexHome = await makeTempCodexHome(t);
   const repoRoot = path.join(codexHome, 'repo');
