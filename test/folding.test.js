@@ -149,6 +149,23 @@ test('server built-in profiles normalize through the shared module', () => {
   }
 });
 
+test('editable kind grouping prioritizes familiar event types without affecting unknown dynamic kinds', () => {
+  assert.deepEqual(folding.EDITABLE_KIND_GROUPS.map((group) => group.id), [
+    'conversationPlanning',
+    'commonWork',
+    'issuesRisks',
+    'toolsAndInternals',
+    'other',
+  ]);
+  assert.equal(folding.editableKindGroup('user_message').groupId, 'conversationPlanning');
+  assert.equal(folding.editableKindGroup('command').groupId, 'commonWork');
+  assert.equal(folding.editableKindGroup('error').groupId, 'issuesRisks');
+  assert.equal(folding.editableKindGroup('hook').groupId, 'toolsAndInternals');
+  assert.equal(folding.editableKindGroup('future_event_kind').groupId, 'other');
+  assert.ok(folding.editableKindGroup('user_message').groupPriority < folding.editableKindGroup('hook').groupPriority);
+  assert.ok(folding.editableKindGroup('command').groupPriority < folding.editableKindGroup('future_event_kind').groupPriority);
+});
+
 test('reserved object keys remain ordinary folding keys without prototype inheritance', () => {
   const fallbackRules = { kindStates: {}, fallback: 'hidden' };
   for (const kind of ['toString', 'constructor', '__proto__']) {

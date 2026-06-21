@@ -38,6 +38,76 @@
     'review',
   ];
 
+  const EDITABLE_KIND_GROUPS = [
+    {
+      id: 'conversationPlanning',
+      priority: 10,
+      kindOrder: [
+        'user_message',
+        'assistant_message',
+        'proposed_plan',
+        'plan_update',
+        'goal',
+      ],
+    },
+    {
+      id: 'commonWork',
+      priority: 20,
+      kindOrder: [
+        'command',
+        'user_shell_command',
+        'patch',
+        'web_search',
+      ],
+    },
+    {
+      id: 'issuesRisks',
+      priority: 30,
+      kindOrder: [
+        'error',
+        'warning',
+      ],
+    },
+    {
+      id: 'toolsAndInternals',
+      priority: 80,
+      kindOrder: [
+        'reasoning',
+        'mcp_call',
+        'js_repl',
+        'other_tool_call',
+        'hook',
+        'developer_message',
+        'review',
+        'subagent',
+        'abort',
+        'rollback',
+        'compaction',
+        'usage_limit_warning',
+      ],
+    },
+    {
+      id: 'other',
+      priority: 100,
+      kindOrder: [],
+    },
+  ];
+
+  const KIND_GROUP_BY_KIND = new Map();
+  for (const group of EDITABLE_KIND_GROUPS) {
+    group.kindOrder.forEach((kind, index) => {
+      KIND_GROUP_BY_KIND.set(kind, { groupId: group.id, groupPriority: group.priority, kindPriority: index });
+    });
+  }
+
+  function editableKindGroup(kind) {
+    return KIND_GROUP_BY_KIND.get(kind) || {
+      groupId: 'other',
+      groupPriority: 100,
+      kindPriority: Number.MAX_SAFE_INTEGER,
+    };
+  }
+
   const CONDITION_DEFINITIONS = [
     {
       id: 'searchHit',
@@ -180,6 +250,8 @@
     CONDITION_DISPLAY_STATES,
     DISPLAY_STATE_PRIORITY,
     EDITABLE_EVENT_KINDS,
+    EDITABLE_KIND_GROUPS,
+    editableKindGroup,
     CONDITION_DEFINITIONS,
     isUpdatePlanEvent,
     isUserInputRequestEvent,

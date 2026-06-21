@@ -24,6 +24,7 @@ const LOCALE_STORAGE_KEY = 'sessionAnalyzer.locale';
 const DISPLAY_STATES = foldingApi.DISPLAY_STATES;
 const CONDITION_DISPLAY_STATES = foldingApi.CONDITION_DISPLAY_STATES;
 const EDITABLE_EVENT_KINDS = foldingApi.EDITABLE_EVENT_KINDS;
+const EDITABLE_KIND_GROUPS = foldingApi.EDITABLE_KIND_GROUPS;
 const CONDITION_DEFINITIONS = foldingApi.CONDITION_DEFINITIONS;
 const normalizeRules = foldingApi.normalizeRules;
 const normalizeOverrides = foldingApi.normalizeOverrides;
@@ -814,7 +815,32 @@ function knownEventKinds() {
   for (const event of state.currentEvents) {
     if (event.kind) kinds.add(event.kind);
   }
-  return [...kinds].sort((a, b) => kindLabel(a).localeCompare(kindLabel(b)) || a.localeCompare(b));
+  return [...kinds].sort(compareEditableKinds);
+}
+
+function compareEditableKinds(left, right) {
+  const leftGroup = foldingApi.editableKindGroup(left);
+  const rightGroup = foldingApi.editableKindGroup(right);
+  return leftGroup.groupPriority - rightGroup.groupPriority
+    || leftGroup.kindPriority - rightGroup.kindPriority
+    || kindLabel(left).localeCompare(kindLabel(right))
+    || left.localeCompare(right);
+}
+
+function groupedEditableKinds(kinds) {
+  const byGroup = new Map(EDITABLE_KIND_GROUPS.map((group) => [group.id, { group, kinds: [] }]));
+  for (const kind of kinds) {
+    const groupId = foldingApi.editableKindGroup(kind).groupId;
+    const entry = byGroup.get(groupId) || byGroup.get('other');
+    entry.kinds.push(kind);
+  }
+  return EDITABLE_KIND_GROUPS
+    .map((group) => byGroup.get(group.id))
+    .filter((entry) => entry && entry.kinds.length)
+    .map((entry) => ({
+      ...entry,
+      kinds: [...entry.kinds].sort(compareEditableKinds),
+    }));
 }
 
 function conditionDefinitions() {
@@ -2509,8 +2535,13 @@ function renderProfileRulesPane(options = {}) {
   };
   const explicitKinds = knownEventKinds().filter((kind) => rules.kindStates[kind]);
   const defaultKinds = knownEventKinds().filter((kind) => !rules.kindStates[kind]);
-  const explicitKindRows = explicitKinds.map(renderKindRow).join('');
-  const defaultKindRows = defaultKinds.map(renderKindRow).join('');
+  const renderKindGroup = (entry) => `<section class="profileRuleGroup">
+    <h4>${escapeHtml(t(`kindGroup${entry.group.id[0].toUpperCase()}${entry.group.id.slice(1)}Name`))}</h4>
+    <p>${escapeHtml(t(`kindGroup${entry.group.id[0].toUpperCase()}${entry.group.id.slice(1)}Description`))}</p>
+    <div class="profileRuleList">${entry.kinds.map(renderKindRow).join('')}</div>
+  </section>`;
+  const explicitKindRows = groupedEditableKinds(explicitKinds).map(renderKindGroup).join('');
+  const defaultKindRows = groupedEditableKinds(defaultKinds).map(renderKindGroup).join('');
   const activeConditionRows = conditionDefinitions().filter((condition) => conditionMap.has(condition.id)).map((condition) => (
     `<label class="profileRuleRow">
       <span>
@@ -2562,16 +2593,16 @@ function renderProfileRulesPane(options = {}) {
       <section class="profileRuleSection">
         <div class="profileRuleSectionHeader">
           <h3>${escapeHtml(t('eventKinds'))}</h3>
+          <label class="profileDefaultInline">
+            <span>${escapeHtml(t('default'))}</span>
+            <select data-profile-fallback>${stateOptions(rules.fallback)}</select>
+          </label>
         </div>
         <div class="profileRuleList">${explicitKindRows || `<div class="profileRuleEmpty">${escapeHtml(t('noExplicitKindRules'))}</div>`}</div>
       </section>
       <details class="profileRuleDetails">
         <summary>
           <span>${escapeHtml(t('defaultKindCount', { count: defaultKinds.length }))}</span>
-          <label class="profileDefaultInline">
-            <span>${escapeHtml(t('default'))}</span>
-            <select data-profile-fallback>${stateOptions(rules.fallback)}</select>
-          </label>
         </summary>
         <p>${escapeHtml(defaultKindNames)}</p>
         <div class="profileRuleList">${defaultKindRows}</div>

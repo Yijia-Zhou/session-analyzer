@@ -313,6 +313,10 @@ Folding profiles are data-driven presets with `kindStates`, a `fallback` display
 
 折叠策略是数据驱动预设，包含 `kindStates`、`fallback` 显示状态和固定条件规则。内置预设保持只读。编辑会创建草稿并立即在 Main timeline 中预览；Save 会把自定义策略写入浏览器 `localStorage`，Cancel 会恢复已保存策略。可编辑 kind 规则只覆盖 Main timeline kind，因此只存在于 protocol layer 的 `protocol` 事件和 raw fallback `event` kind 不会暴露为折叠控件。协议层和原始层覆盖规则不进入策略编辑，以保持事件层语义与折叠策略语义分离。当 protocol 或 raw 生效时，前端会禁用 profile 控件，在详情面板展示只读的固定规则说明，并禁用 profile 指标快捷入口。
 
+The folding editor groups editable Main-timeline kinds by user familiarity before rendering them. Conversation/planning, common work, and issue/risk kinds appear ahead of lower-frequency tool, lifecycle, and diagnostic kinds, while dynamic or custom kinds remain available in an other group. This is a frontend discoverability aid only: stored `kindStates`, API/filter identifiers, normalization, and display-state evaluation continue to use the original machine `kind` values unchanged.
+
+折叠编辑器会先按用户熟悉度对可编辑的 Main timeline kind 分组再渲染。对话/计划、常见工作、问题/风险类型会排在较低频的工具、生命周期和诊断类型之前；动态或自定义类型仍保留在其它分组中。这只是前端可发现性辅助：已保存的 `kindStates`、API/filter 标识、规范化和显示状态求值仍继续使用原始机器 `kind` 值，且不发生变化。
+
 The profile description affordance is a single movable frontend slot rather than duplicated controls. It attaches only when the active profile is a saved built-in profile with no unsaved preview: to the right-side profile picker when the folding-rules view is visible, otherwise to the topbar profile picker. Custom profiles and dirty previews hide the affordance so the picker and edit actions keep enough room. When present, its popover lists all strategy names and descriptions. The detail-pane popover is width-constrained to the pane so long descriptions wrap instead of being clipped by the scroll container.
 
 折叠策略说明入口是一个可移动的前端 slot，而不是复制出的多个控件。只有当当前 profile 是没有未保存预览的已保存内置策略时，它才会挂载：折叠规则视图可见时挂载到右侧 profile 选择器，否则挂载到顶部栏 profile 选择器。自定义策略和 dirty preview 会隐藏该入口，让选择器和编辑动作保留足够空间。入口可见时，弹层会列出所有策略名称和说明。右侧详情面板中的弹层会按面板宽度约束，使较长说明自动换行，而不是被滚动容器裁切。
