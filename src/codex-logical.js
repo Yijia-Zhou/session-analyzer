@@ -569,6 +569,10 @@ function createCodexLogicalBuilder(deps) {
     });
   }
 
+  function mirroredMessageTextMatches(left, right) {
+    return String(left || '').trim() === String(right || '').trim();
+  }
+
   function buildDeveloperMessageEvent(raw) {
     return createLogicalEvent({
       id: `${raw.sessionId}:logical:developer:${raw.line}`,
@@ -705,7 +709,7 @@ function createCodexLogicalBuilder(deps) {
       if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'user') {
         const protocolSubtype = classifyProtocolText(raw.messageText, raw.role);
         if (protocolSubtype === 'user_shell_command') {
-          if (next && next.recordType === 'event_msg' && next.payloadType === 'user_message' && raw.messageText === next.messageText) {
+          if (next && next.recordType === 'event_msg' && next.payloadType === 'user_message' && mirroredMessageTextMatches(raw.messageText, next.messageText)) {
             logicalEvents.push(buildUserShellCommandEvent([raw, next]));
             consumed.add(raw.rawId);
             consumed.add(next.rawId);
@@ -720,8 +724,8 @@ function createCodexLogicalBuilder(deps) {
           consumed.add(raw.rawId);
           continue;
         }
-        if (next && next.recordType === 'event_msg' && next.payloadType === 'user_message' && raw.messageText === next.messageText) {
-          logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:user:${raw.line}`, 'user_message', 'user', next.messageText, [raw, next]));
+        if (next && next.recordType === 'event_msg' && next.payloadType === 'user_message' && mirroredMessageTextMatches(raw.messageText, next.messageText)) {
+          logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:user:${raw.line}`, 'user_message', 'user', raw.messageText, [raw, next]));
           consumed.add(raw.rawId);
           consumed.add(next.rawId);
           continue;
@@ -732,7 +736,7 @@ function createCodexLogicalBuilder(deps) {
       }
 
       if (raw.recordType === 'event_msg' && raw.payloadType === 'user_message') {
-        if (prev && prev.recordType === 'response_item' && prev.payloadType === 'message' && prev.role === 'user' && prev.messageText === raw.messageText) {
+        if (prev && prev.recordType === 'response_item' && prev.payloadType === 'message' && prev.role === 'user' && mirroredMessageTextMatches(prev.messageText, raw.messageText)) {
           consumed.add(raw.rawId);
           continue;
         }
@@ -760,8 +764,8 @@ function createCodexLogicalBuilder(deps) {
       }
 
       if (raw.recordType === 'event_msg' && raw.payloadType === 'agent_message') {
-        if (next && next.recordType === 'response_item' && next.payloadType === 'message' && next.role === 'assistant' && next.messageText === raw.messageText) {
-          logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:assistant:${raw.line}`, 'assistant_message', 'assistant', raw.messageText, [raw, next]));
+        if (next && next.recordType === 'response_item' && next.payloadType === 'message' && next.role === 'assistant' && mirroredMessageTextMatches(next.messageText, raw.messageText)) {
+          logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:assistant:${raw.line}`, 'assistant_message', 'assistant', next.messageText, [raw, next]));
           consumed.add(raw.rawId);
           consumed.add(next.rawId);
           continue;
@@ -772,7 +776,7 @@ function createCodexLogicalBuilder(deps) {
       }
 
       if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'assistant') {
-        if (prev && prev.recordType === 'event_msg' && prev.payloadType === 'agent_message' && prev.messageText === raw.messageText) {
+        if (prev && prev.recordType === 'event_msg' && prev.payloadType === 'agent_message' && mirroredMessageTextMatches(prev.messageText, raw.messageText)) {
           consumed.add(raw.rawId);
           continue;
         }

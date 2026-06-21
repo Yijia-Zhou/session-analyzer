@@ -178,6 +178,43 @@ test('logical builder folds raw rows into message, reasoning, protocol, and fall
   assert.equal(fallback.sourceLocator.type, 'jsonl_line');
 });
 
+test('logical builder folds mirrored user messages with trailing whitespace differences', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: 'open the browser' }),
+    raw(2, { payloadType: 'user_message', messageText: 'open the browser\n' }),
+  ]);
+  const userMessages = logicalEvents.filter((event) => event.kind === 'user_message');
+
+  assert.equal(userMessages.length, 1);
+  assert.deepEqual(userMessages[0].rawRefs.map((ref) => ref.line), [1, 2]);
+  assert.deepEqual(userMessages[0].channels, ['response_item', 'event_msg']);
+  assert.equal(userMessages[0].searchText, 'open the browser');
+});
+
+test('logical builder folds mirrored assistant messages with trailing whitespace differences', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { payloadType: 'agent_message', messageText: 'I will inspect it.\n' }),
+    raw(2, { recordType: 'response_item', payloadType: 'message', role: 'assistant', messageText: 'I will inspect it.' }),
+  ]);
+  const assistantMessages = logicalEvents.filter((event) => event.kind === 'assistant_message');
+
+  assert.equal(assistantMessages.length, 1);
+  assert.deepEqual(assistantMessages[0].rawRefs.map((ref) => ref.line), [1, 2]);
+  assert.deepEqual(assistantMessages[0].channels, ['event_msg', 'response_item']);
+  assert.equal(assistantMessages[0].searchText, 'I will inspect it.');
+});
+
+test('logical builder does not fold mirrored-looking messages with internal whitespace differences', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: 'open the browser' }),
+    raw(2, { payloadType: 'user_message', messageText: 'open  the browser' }),
+  ]);
+  const userMessages = logicalEvents.filter((event) => event.kind === 'user_message');
+
+  assert.equal(userMessages.length, 2);
+  assert.deepEqual(userMessages.map((event) => event.rawRefs.map((ref) => ref.line)), [[1], [2]]);
+});
+
 test('logical builder treats response-item-only user shell command wrappers as main user shell command events', () => {
   const shellText = [
     '<user_shell_command>',
@@ -242,6 +279,20 @@ test('logical builder folds mirrored user shell command wrapper rows into one ma
   assert.equal(shellWrappers.length, 1);
   assert.equal(shellWrappers[0].kind, 'user_shell_command');
   assert.equal(shellWrappers[0].layer, 'main');
+  assert.deepEqual(shellWrappers[0].rawRefs.map((ref) => ref.line), [1, 2]);
+  assert.deepEqual(shellWrappers[0].channels, ['response_item', 'event_msg']);
+  assert.equal(logicalEvents.some((event) => event.kind === 'user_message'), false);
+});
+
+test('logical builder folds mirrored user shell command wrappers with trailing whitespace differences', () => {
+  const shellText = '<user_shell_command>\nGet-ChildItem -Force\n</user_shell_command>';
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: shellText }),
+    raw(2, { payloadType: 'user_message', messageText: `${shellText}\n` }),
+  ]);
+  const shellWrappers = logicalEvents.filter((event) => event.subtype === 'user_shell_command');
+
+  assert.equal(shellWrappers.length, 1);
   assert.deepEqual(shellWrappers[0].rawRefs.map((ref) => ref.line), [1, 2]);
   assert.deepEqual(shellWrappers[0].channels, ['response_item', 'event_msg']);
   assert.equal(logicalEvents.some((event) => event.kind === 'user_message'), false);
