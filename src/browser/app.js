@@ -807,10 +807,51 @@ function saveCustomProfiles() {
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
 }
 
+function hasOwnRuleForKind(profile, kind) {
+  return Boolean(profile?.rules?.kindStates && Object.hasOwn(profile.rules.kindStates, kind));
+}
+
+function profileRuleForKind(profile, kind) {
+  return hasOwnRuleForKind(profile, kind) ? profile.rules.kindStates[kind] : '';
+}
+
+function baseProfileFor(profile) {
+  if (!profile?.baseProfileId) return null;
+  return state.builtinProfiles.find((candidate) => candidate.id === profile.baseProfileId) || null;
+}
+
+function dynamicKindMatchesAnyBuiltin(kind, display) {
+  return state.builtinProfiles.some((profile) => profileRuleForKind(profile, kind) === display);
+}
+
+function addProfileKindDifferences(kinds, profile, baseProfile = null) {
+  if (!profile?.rules?.kindStates) return;
+  const base = baseProfile || baseProfileFor(profile);
+  for (const kind of Object.keys(profile.rules.kindStates)) {
+    if (!foldingApi.isDynamicEditableKind(kind)) {
+      kinds.add(kind);
+      continue;
+    }
+    const display = profileRuleForKind(profile, kind);
+    if (base ? display !== profileRuleForKind(base, kind) : !dynamicKindMatchesAnyBuiltin(kind, display)) {
+      kinds.add(kind);
+    }
+  }
+  if (!base?.rules?.kindStates) return;
+  for (const kind of Object.keys(base.rules.kindStates)) {
+    if (foldingApi.isDynamicEditableKind(kind) && profileRuleForKind(profile, kind) !== profileRuleForKind(base, kind)) {
+      kinds.add(kind);
+    }
+  }
+}
+
 function knownEventKinds() {
   const kinds = new Set(EDITABLE_EVENT_KINDS);
-  for (const profile of state.profiles) {
-    for (const kind of Object.keys(profile.rules?.kindStates || {})) kinds.add(kind);
+  for (const profile of state.customProfiles) addProfileKindDifferences(kinds, profile);
+  if (state.profileDraft) addProfileKindDifferences(kinds, state.profileDraft, activeProfile());
+  for (const item of state.sessionEventKinds?.main || []) {
+    const kind = String(item?.value || '').trim();
+    if (kind) kinds.add(kind);
   }
   for (const event of state.currentEvents) {
     if (event.kind) kinds.add(event.kind);
@@ -1955,6 +1996,7 @@ async function loadTimeline(append, options = {}) {
     state.timelineSearchMatchCount = data.searchMatchCount || 0;
     state.sessionEventKinds = data.eventKinds;
     syncSearchAssistControls();
+    if (state.detailView.type === 'profileRules') renderProfileRulesPane();
     renderTimeline();
     if (!append && !options.keepScroll) resetTimelineScroll();
     renderResultSummary();
@@ -2004,6 +2046,7 @@ async function refreshTimelineFindState(options = {}) {
     state.timelineSearchMatchCount = searchMatchCount;
     state.sessionEventKinds = eventKinds;
     syncSearchAssistControls();
+    if (state.detailView.type === 'profileRules') renderProfileRulesPane();
     renderTimeline();
     refreshSearchSensitiveDetailView();
     renderResultSummary();

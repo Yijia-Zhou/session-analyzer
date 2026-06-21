@@ -161,7 +161,13 @@ test('editable kind grouping prioritizes familiar event types without affecting 
   assert.equal(folding.editableKindGroup('command').groupId, 'commonWork');
   assert.equal(folding.editableKindGroup('error').groupId, 'issuesRisks');
   assert.equal(folding.editableKindGroup('hook').groupId, 'toolsAndInternals');
+  assert.equal(folding.editableKindGroup('subagent').groupId, 'toolsAndInternals');
   assert.equal(folding.editableKindGroup('future_event_kind').groupId, 'other');
+  assert.equal(folding.EDITABLE_EVENT_KINDS.includes('hook'), false);
+  assert.equal(folding.EDITABLE_EVENT_KINDS.includes('subagent'), false);
+  assert.equal(folding.isDynamicEditableKind('hook'), true);
+  assert.equal(folding.isDynamicEditableKind('subagent'), true);
+  assert.equal(folding.isDynamicEditableKind('command'), false);
   assert.ok(folding.editableKindGroup('user_message').groupPriority < folding.editableKindGroup('hook').groupPriority);
   assert.ok(folding.editableKindGroup('command').groupPriority < folding.editableKindGroup('future_event_kind').groupPriority);
 });

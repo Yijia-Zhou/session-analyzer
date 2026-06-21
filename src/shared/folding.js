@@ -26,7 +26,6 @@
     'other_tool_call',
     'web_search',
     'goal',
-    'hook',
     'developer_message',
     'error',
     'warning',
@@ -34,8 +33,12 @@
     'rollback',
     'compaction',
     'usage_limit_warning',
-    'subagent',
     'review',
+  ];
+
+  const DYNAMIC_EDITABLE_EVENT_KINDS = [
+    'hook',
+    'subagent',
   ];
 
   const EDITABLE_KIND_GROUPS = [
@@ -106,6 +109,10 @@
       groupPriority: 100,
       kindPriority: Number.MAX_SAFE_INTEGER,
     };
+  }
+
+  function isDynamicEditableKind(kind) {
+    return DYNAMIC_EDITABLE_EVENT_KINDS.includes(kind);
   }
 
   const CONDITION_DEFINITIONS = [
@@ -250,8 +257,10 @@
     CONDITION_DISPLAY_STATES,
     DISPLAY_STATE_PRIORITY,
     EDITABLE_EVENT_KINDS,
+    DYNAMIC_EDITABLE_EVENT_KINDS,
     EDITABLE_KIND_GROUPS,
     editableKindGroup,
+    isDynamicEditableKind,
     CONDITION_DEFINITIONS,
     isUpdatePlanEvent,
     isUserInputRequestEvent,

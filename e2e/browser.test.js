@@ -31,6 +31,13 @@ async function openApp(t, index, options = {}) {
   const baseUrl = await startServer(t, index);
   const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: options.viewport || { width: 1280, height: 900 } });
+  if (options.localStorage) {
+    await context.addInitScript((entries) => {
+      for (const [key, value] of Object.entries(entries)) {
+        localStorage.setItem(key, value);
+      }
+    }, options.localStorage);
+  }
   if (options.locale) {
     await context.addInitScript((locale) => {
       localStorage.setItem('sessionAnalyzer.locale', locale);
@@ -118,6 +125,49 @@ async function makeLongCodexHome(t) {
   await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
   t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
   return { codexHome, repoRoot: longRepoRoot };
+}
+
+async function makeHookCodexHome(t) {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-hook-'));
+  const hookRepoRoot = path.join(codexHome, 'repo');
+  const sessionId = 'abababab-abab-abab-abab-abababababab';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '12');
+  const file = path.join(dir, `rollout-2026-06-12T09-00-00-${sessionId}.jsonl`);
+  await fsp.mkdir(hookRepoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  const rows = [
+    {
+      timestamp: '2026-06-12T09:00:00.000Z',
+      type: 'session_meta',
+      payload: { id: sessionId, cwd: hookRepoRoot },
+    },
+  ];
+  for (let i = 0; i < 170; i += 1) {
+    rows.push({
+      timestamp: `2026-06-12T09:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}.000Z`,
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        content: [{ type: i % 2 === 0 ? 'input_text' : 'output_text', text: `Catalog seed row ${i}` }],
+      },
+    });
+  }
+  rows.push(
+    {
+      timestamp: '2026-06-12T09:03:00.000Z',
+      type: 'event_msg',
+      payload: { type: 'hook_begin', call_id: 'call-hook', tool_name: 'pre_apply_hook', hook: 'pre-apply' },
+    },
+    {
+      timestamp: '2026-06-12T09:03:01.000Z',
+      type: 'event_msg',
+      payload: { type: 'hook_end', call_id: 'call-hook', tool_name: 'pre_apply_hook', status: 'completed' },
+    },
+  );
+  await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  return { codexHome, repoRoot: hookRepoRoot, sessionId };
 }
 
 test('browser locale bootstrap keeps narrow screens on sessions view', async (t) => {
@@ -271,6 +321,8 @@ test('browser folding profile edits save, cancel, and repair invalid localStorag
   const { page, baseUrl } = await openApp(t, index);
   await selectPrimarySession(page);
 
+  assert.equal(await page.locator('#detail [data-profile-kind="hook"]').count(), 0);
+  assert.equal(await page.locator('#detail [data-profile-kind="subagent"]').count(), 0);
   await page.locator('[data-profile-kind="command"]').selectOption('expanded');
   await page.waitForSelector('#detail [data-detail-action="save-profile"]');
   await page.waitForFunction(() => [...document.querySelectorAll('#timeline .event.kind-command')].some((event) => event.classList.contains('expanded')));
@@ -295,6 +347,42 @@ test('browser folding profile edits save, cancel, and repair invalid localStorag
   await expectInputValue(page, '#profileSelect', 'narrative');
   const repaired = await page.evaluate(() => localStorage.getItem('sessionAnalyzer.profile'));
   assert.equal(repaired, 'narrative');
+});
+
+test('browser folding profile seeds dynamic kinds from the full session catalog', async (t) => {
+  const fixture = await makeHookCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const { page } = await openApp(t, index);
+
+  await page.waitForFunction(() => document.querySelectorAll('#timeline .event.kind-hook').length === 0);
+  await page.waitForSelector('#detail [data-profile-kind="hook"]');
+  assert.equal(await page.locator('#detail [data-profile-kind="hook"]').inputValue(), 'summary');
+});
+
+test('browser folding profile ignores inherited dynamic kinds in legacy custom profiles', async (t) => {
+  const index = await buildFixtureIndex();
+  const legacyProfile = {
+    id: 'custom:legacy',
+    name: 'Legacy custom profile',
+    description: 'Saved before custom profile base ids were available.',
+    rules: {
+      kindStates: {
+        user_message: 'expanded',
+        assistant_message: 'expanded',
+        hook: 'summary',
+      },
+      fallback: 'summary',
+      conditions: [],
+    },
+  };
+  const { page } = await openApp(t, index, {
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([legacyProfile]),
+    },
+  });
+  await selectPrimarySession(page);
+
+  assert.equal(await page.locator('#detail [data-profile-kind="hook"]').count(), 0);
 });
 
 test('browser issues metric toggles error-focus profile without losing session or adding filters', async (t) => {

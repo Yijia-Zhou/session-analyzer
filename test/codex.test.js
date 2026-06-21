@@ -3366,6 +3366,8 @@ test('path containment and folding profiles expose expected presets', () => {
   assert.equal(EDITABLE_EVENT_KINDS.includes('protocol'), false);
   assert.equal(EDITABLE_EVENT_KINDS.includes('event'), false);
   assert.equal(EDITABLE_EVENT_KINDS.includes('plan_update'), false);
+  assert.equal(EDITABLE_EVENT_KINDS.includes('hook'), false);
+  assert.equal(EDITABLE_EVENT_KINDS.includes('subagent'), false);
   assert.equal(EDITABLE_EVENT_KINDS.includes('review'), true);
   for (const profile of foldingProfiles) {
     assert.ok(profile.rules, `${profile.id} has rule data`);
