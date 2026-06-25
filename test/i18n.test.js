@@ -168,6 +168,36 @@ test('zh-CN catalog only keeps approved English terms in display text', () => {
   assert.deepEqual(offenders, []);
 });
 
+test('zh-CN protocol and section labels avoid mechanical schema wording', () => {
+  assert.equal(i18n.t('zh-CN', 'ui', 'rawFixedRules'), '原始事件记录和模型响应记录保持折叠；其他原始记录显示为摘要。');
+  assert.equal(i18n.t('zh-CN', 'protocol', 'thread_goal_updated'), '会话线程目标已更新');
+  assert.equal(i18n.t('zh-CN', 'protocol', 'turn_started'), '对话轮次开始');
+  assert.equal(i18n.t('zh-CN', 'protocol', 'turn_complete'), '对话轮次完成');
+  assert.equal(i18n.t('zh-CN', 'protocol', 'meta_block'), '协议元数据');
+  assert.equal(i18n.sectionTitle('Search payload', 'zh-CN'), '搜索请求内容');
+});
+
+test('zh-CN raw record labels keep selected wire terms while smoothing lifecycle copy', () => {
+  assert.equal(i18n.rawRecordLabel('function_call', 'zh-CN'), 'function_call');
+  assert.equal(i18n.rawRecordLabel('function_call_output', 'zh-CN'), 'function_call输出');
+  assert.equal(i18n.rawRecordLabel('patch_apply_begin', 'zh-CN'), '开始应用文件补丁');
+  assert.equal(i18n.rawRecordLabel('patch_apply_declined', 'zh-CN'), '文件补丁应用被拒绝');
+  assert.equal(i18n.rawRecordLabel('patch_apply_end', 'zh-CN'), '文件补丁应用完成');
+  assert.equal(i18n.rawRecordLabel('exec_command_begin', 'zh-CN'), '开始执行命令');
+  assert.equal(i18n.rawRecordLabel('exec_command_end', 'zh-CN'), '命令执行完成');
+  assert.equal(i18n.rawRecordLabel('mcp_tool_call_end', 'zh-CN'), 'MCP 工具调用完成');
+  assert.equal(i18n.rawRecordLabel('image_generation_end', 'zh-CN'), '图片生成完成');
+  assert.equal(i18n.rawRecordLabel('hook_completed', 'zh-CN'), 'Hook 完成');
+  assert.equal(i18n.rawRecordLabel('approval_request_declined', 'zh-CN'), '审批请求被拒绝');
+  assert.equal(i18n.rawRecordLabel('collab_agent_spawn_end', 'zh-CN'), '协作 agent 启动完成');
+  assert.equal(i18n.rawRecordLabel('event_msg', 'zh-CN'), '事件记录');
+  assert.equal(i18n.rawRecordLabel('response_item', 'zh-CN'), '模型响应记录');
+  assert.equal(i18n.rawRecordLabel('item_completed', 'zh-CN'), '响应项完成');
+  assert.equal(i18n.rawRecordLabel('thread_goal_updated', 'zh-CN'), '会话线程目标已更新');
+  assert.equal(i18n.rawRecordLabel('turn_started', 'zh-CN'), '对话轮次开始');
+  assert.equal(i18n.rawRecordLabel('turn_complete', 'zh-CN'), '对话轮次完成');
+});
+
 test('timeline/detail locale changes display fields without changing machine fields', async () => {
   const index = await buildIndex({ codexHome: fixtureCodexHome, repoRoot: fixtureRepo });
   const session = index.sessionsById.get(primaryFixtureSessionId);
@@ -186,10 +216,10 @@ test('timeline/detail locale changes display fields without changing machine fie
 
   assert.equal(userMessage.label, '用户消息');
   assert.equal(failedCommand.label, '失败命令');
-  assert.equal(patchApplied.label, '补丁已应用');
+  assert.equal(patchApplied.label, '文件补丁已应用');
   assert.equal(userDetail.title, '用户消息');
   assert.equal(failedCommandDetail.title, '失败命令');
-  assert.equal(patchAppliedDetail.title, '补丁已应用');
+  assert.equal(patchAppliedDetail.title, '文件补丁已应用');
 
   assert.equal(userMessage.schemaVersion, 1);
   assert.equal(failedCommand.sourceKind, 'codex');
