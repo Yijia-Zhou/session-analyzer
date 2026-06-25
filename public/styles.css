@@ -166,6 +166,10 @@ button:hover,
   width: min(940px, 68vw);
 }
 
+.localeControl {
+  display: none;
+}
+
 .searchbar input,
 .searchbar select,
 .searchbar button {

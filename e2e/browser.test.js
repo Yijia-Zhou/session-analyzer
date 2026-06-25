@@ -65,6 +65,13 @@ async function openApp(t, index, options = {}) {
   return { page, baseUrl, requestedPaths };
 }
 
+async function switchHiddenLocale(page, locale) {
+  await page.locator('#localeSelect').evaluate((select, nextLocale) => {
+    select.value = nextLocale;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }, locale);
+}
+
 async function selectPrimarySession(page) {
   const session = page.locator(`[data-session-id="${primaryFixtureSessionId}"]`);
   await session.click();
@@ -189,8 +196,10 @@ test('browser locale localizes static shell and dirty profile dialog', async (t)
   await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('logical events'));
   assert.equal(await page.locator('#dirtyProfileTitle').textContent(), 'Unsaved folding strategy changes');
   assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), 'Search messages, commands, files, output');
+  assert.equal(await page.locator('.localeControl').isVisible(), false);
+  assert.equal(await page.locator('#localeSelect').count(), 1);
 
-  await page.locator('#localeSelect').selectOption('zh-CN');
+  await switchHiddenLocale(page, 'zh-CN');
   await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
   assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), '搜索消息、命令、文件、输出');
   assert.equal(await page.locator('.mobileViewTab[data-mobile-view="events"]').textContent(), '事件');
@@ -199,7 +208,7 @@ test('browser locale localizes static shell and dirty profile dialog', async (t)
   await page.waitForFunction(() => document.querySelector('[data-search-match-count]')?.textContent === '无匹配');
   await fillSearch(page, '');
 
-  await page.locator('#localeSelect').selectOption('en');
+  await switchHiddenLocale(page, 'en');
   await page.waitForFunction(() => document.documentElement.lang === 'en');
 
   await selectPrimarySession(page);
@@ -225,7 +234,7 @@ test('browser locale switch preserves unsaved folding draft', async (t) => {
   await page.locator('[data-profile-kind="command"]').selectOption('expanded');
   await page.waitForSelector('#detail [data-detail-action="save-profile"]');
 
-  await page.locator('#localeSelect').selectOption('zh-CN');
+  await switchHiddenLocale(page, 'zh-CN');
   await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
 
   await expectInputValue(page, '#detail [data-profile-kind="command"]', 'expanded');
@@ -255,7 +264,7 @@ test('browser locale switch reloads cached expanded event detail', async (t) => 
 
   await Promise.all([
     page.waitForResponse(detailResponseFor('zh-CN')),
-    page.locator('#localeSelect').selectOption('zh-CN'),
+    switchHiddenLocale(page, 'zh-CN'),
   ]);
   await page.waitForSelector('#timeline .event.kind-command.expanded .eventBody');
 });
