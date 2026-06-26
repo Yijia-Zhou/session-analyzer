@@ -1435,12 +1435,14 @@ body[data-project-mode='selecting'] .searchAssist {
 .profileDefaultInline span {
   color: var(--muted);
   font-size: 0.76rem;
+  font-weight: 400;
 }
 
 .profileDefaultInline select {
   background-color: #f8fafb;
   border-color: #cbd5da;
   font-size: 0.78rem;
+  font-weight: 400;
   min-height: 30px;
   padding: 0.25rem 1.35rem 0.25rem 0.5rem;
   width: auto;

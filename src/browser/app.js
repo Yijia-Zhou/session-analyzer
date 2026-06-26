@@ -2636,16 +2636,16 @@ function renderProfileRulesPane(options = {}) {
       <section class="profileRuleSection">
         <div class="profileRuleSectionHeader">
           <h3>${escapeHtml(t('eventKinds'))}</h3>
-          <label class="profileDefaultInline">
-            <span>${escapeHtml(t('default'))}</span>
-            <select data-profile-fallback>${stateOptions(rules.fallback)}</select>
-          </label>
         </div>
         <div class="profileRuleList">${explicitKindRows || `<div class="profileRuleEmpty">${escapeHtml(t('noExplicitKindRules'))}</div>`}</div>
       </section>
       <details class="profileRuleDetails">
         <summary>
           <span>${escapeHtml(t('defaultKindCount', { count: defaultKinds.length }))}</span>
+          <label class="profileDefaultInline">
+            <span>${escapeHtml(t('default'))}</span>
+            <select data-profile-fallback>${stateOptions(rules.fallback)}</select>
+          </label>
         </summary>
         <p>${escapeHtml(defaultKindNames)}</p>
         <div class="profileRuleList">${defaultKindRows}</div>

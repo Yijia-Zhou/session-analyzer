@@ -332,6 +332,15 @@ test('browser folding profile edits save, cancel, and repair invalid localStorag
 
   assert.equal(await page.locator('#detail [data-profile-kind="hook"]').count(), 0);
   assert.equal(await page.locator('#detail [data-profile-kind="subagent"]').count(), 0);
+  const fallbackPlacement = await page.locator('#detail [data-profile-fallback]').evaluate((select) => ({
+    inDefaultDetailsSummary: Boolean(document.querySelector('#detail .profileRuleDetails:first-of-type summary')?.contains(select)),
+    inSectionHeader: Boolean(select.closest('.profileRuleSectionHeader')),
+  }));
+  assert.deepEqual(fallbackPlacement, { inDefaultDetailsSummary: true, inSectionHeader: false });
+  await page.locator('#detail [data-profile-fallback]').selectOption('collapsed');
+  await expectInputValue(page, '#detail [data-profile-fallback]', 'collapsed');
+  await page.waitForSelector('#detail [data-detail-action="save-profile"]');
+  await page.waitForSelector('#detail [data-detail-action="cancel-profile"]');
   await page.locator('[data-profile-kind="command"]').selectOption('expanded');
   await page.waitForSelector('#detail [data-detail-action="save-profile"]');
   await page.waitForFunction(() => [...document.querySelectorAll('#timeline .event.kind-command')].some((event) => event.classList.contains('expanded')));

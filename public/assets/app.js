@@ -137,16 +137,16 @@
       <section class="profileRuleSection">
         <div class="profileRuleSectionHeader">
           <h3>${c(r("eventKinds"))}</h3>
-          <label class="profileDefaultInline">
-            <span>${c(r("default"))}</span>
-            <select data-profile-fallback>${h(g.fallback)}</select>
-          </label>
         </div>
         <div class="profileRuleList">${C||`<div class="profileRuleEmpty">${c(r("noExplicitKindRules"))}</div>`}</div>
       </section>
       <details class="profileRuleDetails">
         <summary>
           <span>${c(r("defaultKindCount",{count:P.length}))}</span>
+          <label class="profileDefaultInline">
+            <span>${c(r("default"))}</span>
+            <select data-profile-fallback>${h(g.fallback)}</select>
+          </label>
         </summary>
         <p>${c(T)}</p>
         <div class="profileRuleList">${b}</div>
