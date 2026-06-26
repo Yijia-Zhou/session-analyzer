@@ -1468,6 +1468,59 @@ test('tool logical events merge new and old format patch records and search stil
   assert.match(outputOnlyCommandTimeline.events[0].preview, /rg -n -F 'alpha' 'src'/);
   const outputOnlyCommandDetail = buildEventDetail(session, outputOnlyCommandTimeline.events[0].id, 'main');
   assert.equal(outputOnlyCommandDetail.timelineSections[0].language, 'powershell');
+
+  const failedCommandOutputSearch = getTimeline(index, primaryFixtureSessionId, {
+    offset: 0,
+    limit: 100,
+    q: 'alpha failed',
+    kind: 'command',
+    status: 'failed',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(failedCommandOutputSearch.total, 1);
+  assert.equal(failedCommandOutputSearch.searchMatchCount, 1);
+  assert.equal(failedCommandOutputSearch.events[0].hasSearchHit, true);
+
+  const failedCommandTextSearch = getTimeline(index, primaryFixtureSessionId, {
+    offset: 0,
+    limit: 100,
+    q: 'npm test',
+    kind: 'command',
+    status: 'failed',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(failedCommandTextSearch.total, 1);
+  assert.equal(failedCommandTextSearch.searchMatchCount, 1);
+
+  const failedCommandStderrSearch = getTimeline(index, primaryFixtureSessionId, {
+    offset: 0,
+    limit: 100,
+    q: 'parser stack',
+    kind: 'command',
+    status: 'failed',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(failedCommandStderrSearch.total, 1);
+  assert.equal(failedCommandStderrSearch.searchMatchCount, 1);
+
+  const outputOnlyCommandOutputSearch = getTimeline(index, primaryFixtureSessionId, {
+    offset: 0,
+    limit: 100,
+    q: 'src/parser.js:1:alpha',
+    kind: 'command',
+    status: 'success',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(outputOnlyCommandOutputSearch.total, 1);
+  assert.equal(outputOnlyCommandOutputSearch.searchMatchCount, 1);
 });
 
 test('free-text search matches one case-insensitive phrase with flexible whitespace', () => {
@@ -1475,6 +1528,188 @@ test('free-text search matches one case-insensitive phrase with flexible whitesp
   assert.equal(matchTerms('before foo unrelated bar after', 'foo bar'), false);
   assert.equal(matchTerms('before a+b after', 'a+b'), true);
   assert.equal(matchTerms('before aaab after', 'a+b'), false);
+});
+
+test('command search keeps unique parsed function output without duplicate stream counts', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const sessionId = 'abababab-abab-abab-abab-abababababab';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '26');
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.writeFile(path.join(dir, `rollout-2026-06-26T10-00-00-${sessionId}.jsonl`), [
+    JSON.stringify({ timestamp: '2026-06-26T10:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: repoRoot } }),
+    JSON.stringify({
+      timestamp: '2026-06-26T10:00:01.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call',
+        name: 'shell_command',
+        call_id: 'call-shell-stream-and-tail',
+        arguments: JSON.stringify({ command: 'npm test', workdir: repoRoot }),
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-26T10:00:01.100Z',
+      type: 'event_msg',
+      payload: {
+        type: 'exec_command_end',
+        call_id: 'call-shell-stream-and-tail',
+        turn_id: 'turn-1',
+        command: ['powershell.exe', '-Command', 'npm test'],
+        cwd: repoRoot,
+        stdout: 'stdout mirror phrase',
+        stderr: 'stderr mirror phrase',
+        aggregated_output: 'stdout mirror phrase\nstderr mirror phrase',
+        exit_code: 0,
+        duration: { secs: 1, nanos: 0 },
+        status: 'completed',
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-26T10:00:01.200Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-shell-stream-and-tail',
+        output: 'Exit code: 0\nWall time: 1.0 seconds\nOutput:\nstdout mirror phrase\nstderr mirror phrase\nunique parsed function tail',
+      },
+    }),
+    '',
+  ].join('\n'), 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const stdoutSearch = getTimeline(index, sessionId, {
+    offset: 0,
+    limit: 100,
+    q: 'stdout mirror phrase',
+    kind: 'command',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(stdoutSearch.total, 1);
+  assert.equal(stdoutSearch.searchMatchCount, 1);
+
+  const tailSearch = getTimeline(index, sessionId, {
+    offset: 0,
+    limit: 100,
+    q: 'unique parsed function tail',
+    kind: 'command',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(tailSearch.total, 1);
+  assert.equal(tailSearch.searchMatchCount, 1);
+  assert.equal(tailSearch.events[0].hasSearchHit, true);
+});
+
+test('command search preserves output from update and delta rows', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const sessionId = 'bcbcbcbc-bcbc-bcbc-bcbc-bcbcbcbcbcbc';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '26');
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.writeFile(path.join(dir, `rollout-2026-06-26T11-00-00-${sessionId}.jsonl`), [
+    JSON.stringify({ timestamp: '2026-06-26T11:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: repoRoot } }),
+    JSON.stringify({
+      timestamp: '2026-06-26T11:00:01.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call',
+        name: 'shell_command',
+        call_id: 'call-shell-incremental-output',
+        arguments: JSON.stringify({ command: 'npm test', workdir: repoRoot }),
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-26T11:00:01.100Z',
+      type: 'event_msg',
+      payload: {
+        type: 'exec_command_begin',
+        call_id: 'call-shell-incremental-output',
+        turn_id: 'turn-1',
+        command: ['powershell.exe', '-Command', 'npm test'],
+        cwd: repoRoot,
+        status: 'running',
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-26T11:00:01.200Z',
+      type: 'event_msg',
+      payload: {
+        type: 'exec_command_update',
+        call_id: 'call-shell-incremental-output',
+        turn_id: 'turn-1',
+        stdout: 'first incremental chunk',
+        status: 'running',
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-26T11:00:01.300Z',
+      type: 'event_msg',
+      payload: {
+        type: 'exec_command_delta',
+        call_id: 'call-shell-incremental-output',
+        turn_id: 'turn-1',
+        stdout: 'later delta only chunk',
+        status: 'running',
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-26T11:00:01.400Z',
+      type: 'event_msg',
+      payload: {
+        type: 'exec_command_end',
+        call_id: 'call-shell-incremental-output',
+        turn_id: 'turn-1',
+        stdout: 'final end chunk',
+        aggregated_output: 'final end chunk\naggregate only final summary',
+        formatted_output: 'formatted only final note',
+        exit_code: 0,
+        duration: { secs: 1, nanos: 0 },
+        status: 'completed',
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-26T11:00:01.500Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-shell-incremental-output',
+        output: 'Exit code: 0\nWall time: 1.0 seconds\nOutput:\nfunction output only tail',
+      },
+    }),
+    '',
+  ].join('\n'), 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  for (const q of [
+    'first incremental chunk',
+    'later delta only chunk',
+    'final end chunk',
+    'aggregate only final summary',
+    'formatted only final note',
+    'function output only tail',
+  ]) {
+    const timeline = getTimeline(index, sessionId, {
+      offset: 0,
+      limit: 100,
+      q,
+      kind: 'command',
+      status: '',
+      tool: '',
+      file: '',
+      layer: 'main',
+    });
+    assert.equal(timeline.total, 1);
+    assert.equal(timeline.searchMatchCount, 1, q);
+    assert.equal(timeline.events[0].hasSearchHit, true, q);
+  }
 });
 
 test('command language inference uses session shell context for bare external commands', async (t) => {

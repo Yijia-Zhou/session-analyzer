@@ -257,6 +257,58 @@ function createCodexLogicalBuilder(deps) {
     });
   }
 
+  function textIncludes(source, needle) {
+    const sourceText = String(source || '');
+    const needleText = String(needle || '').trim();
+    return needleText && sourceText.includes(needleText);
+  }
+
+  function textIncludesAll(source, needles) {
+    return (needles || []).every((needle) => textIncludes(source, needle));
+  }
+
+  function firstTextCoveringAll(candidates, needles) {
+    return uniqueNonEmpty(candidates).find((candidate) => textIncludesAll(candidate, needles)) || '';
+  }
+
+  function addUncoveredTextPart(parts, candidate) {
+    const text = String(candidate || '').trim();
+    if (!text) return parts;
+    if (parts.some((part) => textIncludes(part, text))) return parts;
+    return [...parts.filter((part) => !textIncludes(text, part)), text];
+  }
+
+  function commandSearchText({ commandText, execEnd, execRows, functionOutputInfo, functionOutput, touchedFiles }) {
+    const parsedOutput = functionOutputInfo?.output || '';
+    const streamParts = uniqueNonEmpty(execRows.flatMap((raw) => [
+      raw.stdout,
+      raw.stderr,
+    ]));
+    const outputCandidates = uniqueNonEmpty([
+      parsedOutput,
+      execEnd?.aggregatedOutput,
+      execEnd?.parsed?.payload?.formatted_output,
+      parsedOutput ? '' : functionOutput?.output,
+      ...execRows.flatMap((raw) => [
+        raw.aggregatedOutput,
+        raw.parsed?.payload?.formatted_output,
+      ]),
+    ]);
+    const coveringOutput = streamParts.length ? firstTextCoveringAll(outputCandidates, streamParts) : '';
+    let outputParts = coveringOutput ? [coveringOutput] : streamParts;
+    for (const candidate of outputCandidates) {
+      outputParts = addUncoveredTextPart(outputParts, candidate);
+    }
+    let searchParts = addUncoveredTextPart([], commandText);
+    for (const outputPart of outputParts) {
+      searchParts = addUncoveredTextPart(searchParts, outputPart);
+    }
+    for (const touchedFile of touchedFiles || []) {
+      searchParts = addUncoveredTextPart(searchParts, touchedFile);
+    }
+    return searchParts.join('\n');
+  }
+
   function buildToolLogicalEvent(callId, group) {
     const rawRefs = group.map(rawRef);
     const channels = [...new Set(group.map((raw) => raw.recordType))];
@@ -305,16 +357,16 @@ function createCodexLogicalBuilder(deps) {
     const completed = group.some((raw) => /_end$/.test(raw.payloadType)) || imageCallCompleted || Boolean(functionOutput || customOutput);
     const explicitIncomplete = !completed && !failed && !declined;
 
+    const isCommandTool = toolName === 'shell_command' || execRows.length;
+
     if (execRows.length) {
-      const execText = execRows.map((raw) => [raw.commandText, raw.stdout, raw.stderr, raw.aggregatedOutput, raw.searchText].filter(Boolean).join('\n')).join('\n');
-      parts.push(execText);
       if (execEnd?.exitCode != null) outputStats.exitCode = execEnd.exitCode;
       if (execEnd?.durationMs) outputStats.durationMs = execEnd.durationMs;
     }
-    if (functionCall) parts.push(functionCall.output);
-    if (functionOutput) parts.push(functionOutput.output);
-    if (customCall) parts.push(customCall.output);
-    if (customOutput) parts.push(customOutput.output);
+    if (functionCall && !isCommandTool) parts.push(functionCall.output);
+    if (functionOutput && !isCommandTool) parts.push(functionOutput.output);
+    if (customCall && !isCommandTool) parts.push(customCall.output);
+    if (customOutput && !isCommandTool) parts.push(customOutput.output);
     if (mcpRows.length) parts.push(mcpRows.map((raw) => raw.searchText).join('\n'));
     if (imageRows.length) parts.push(imageRows.map((raw) => raw.searchText).join('\n'));
     if (dynamicRows.length) parts.push(dynamicRows.map((raw) => raw.searchText).join('\n'));
@@ -322,7 +374,7 @@ function createCodexLogicalBuilder(deps) {
     if (hookRows.length) parts.push(hookRows.map((raw) => raw.searchText).join('\n'));
     if (collabRows.length) parts.push(collabRows.map((raw) => raw.searchText).join('\n'));
 
-    if (toolName === 'shell_command' || execRows.length) {
+    if (isCommandTool) {
       kind = 'command';
       const args = commandArgsFromRaw(functionCall);
       const exitCode = numericExitCode(execEnd?.exitCode, functionOutputInfo?.exitCode, customOutputObj?.metadata?.exit_code);
@@ -336,6 +388,14 @@ function createCodexLogicalBuilder(deps) {
         outputStats.durationMs = Math.round(Number(customOutputObj.metadata.duration_seconds) * 1000);
       }
       touchedFiles = touchFilesFromOutputText(firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, functionOutputInfo?.output));
+      parts.push(commandSearchText({
+        commandText,
+        execEnd,
+        execRows,
+        functionOutputInfo,
+        functionOutput,
+        touchedFiles,
+      }));
     } else if (toolName === 'apply_patch' || patchRows.length) {
       kind = 'patch';
       const patchInput = firstNonEmpty(customCall?.output, patchRows.find((raw) => raw.output)?.output);

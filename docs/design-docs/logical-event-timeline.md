@@ -3,11 +3,12 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-06-20 / 最近更新：2026-06-20
+- Last updated: 2026-06-26 / 最近更新：2026-06-26
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
+  - `docs/exec-plans/active/2026-06-26-search-count-and-jump-target-convergence.md`
 - Related design notes: / 相关设计说明：
   - `docs/design-docs/codex-protocol-event-coverage.md`
 
@@ -186,6 +187,10 @@ Current protocol normalization includes task lifecycle events and their aliases 
 Backend free-text search is event-oriented but not timeline-filtering. After `file:`, `kind:`, `status:`, and `layer:` operators are removed, the remaining `q` is one case-insensitive contiguous phrase. Literal phrase segments are regex-escaped and query whitespace runs become `\s+`, so spaces, tabs, and newlines match without allowing unrelated words between segments. For each event, `preview` and `searchText` are matched independently: hit state accepts either field, snippet generation prefers `preview`, and the event contributes the larger non-overlapping match count from the two fields. This avoids double-counting derived preview text and prevents artificial matches across the field boundary. The `/timeline` response applies only layer and structured filters to decide which events are returned; its `q` parameter marks `hasSearchHit`, populates snippets, and returns `searchMatchCount` across that full structured result set. This keeps the main timeline readable as a continuous sequence while still letting the frontend jump between hits. Session filtering can still use the same phrase matcher against aggregated session `searchText` when explicitly requested by API callers, but the browser's primary search box treats free text as find-in-timeline and omits `q` from session-list requests.
 
 后端自由文本搜索仍以事件为单位，但不再过滤时间线。移除 `file:`、`kind:`、`status:` 和 `layer:` 操作符后，剩余 `q` 会被视为一个忽略大小写的连续短语。短语中的字面片段会进行正则转义，查询中的空白段会变为 `\s+`，因此空格、Tab 和换行可以互相匹配，但片段之间不能插入无关单词。对每个事件，`preview` 和 `searchText` 会独立匹配：任一字段命中即可标记 hit，snippet 优先使用 `preview`，事件贡献的非重叠命中数取两个字段中的较大值。这样既不会重复计算派生 preview 文本，也不会在字段拼接边界产生人工命中。`/timeline` 响应只用事件层和结构化筛选决定返回哪些事件；它的 `q` 参数只负责标记 `hasSearchHit`、生成 snippet，并在完整结构化结果集上返回 `searchMatchCount`。这样 Main timeline 仍保持连续可读，同时前端仍可在命中之间跳转。Session 筛选在 API 调用方明确请求时仍会对聚合后的 session `searchText` 使用同一短语匹配器，但浏览器主搜索框会把自由文本视为时间线内查找，并在请求 session 列表时省略 `q`。
+
+Command logical events build `searchText` from the command text plus canonicalized output parts. Output chunks are collected across all command lifecycle rows, including begin, update, delta, and end rows, so incremental output remains searchable even when the final row omits earlier chunks. When a parsed function-call output, aggregate output, or formatted output covers existing chunks, it replaces those covered chunks as the canonical body; candidates that contain different non-covered text are still retained once. Inferred touched files are also indexed so path searches remain discoverable. The logical event does not concatenate every mirrored command-output carrier, which keeps `searchMatchCount` from inflating when the same text appears in `stdout`, `aggregated_output`, `formatted_output`, raw row `searchText`, and `function_call_output`.
+
+Command 逻辑事件会用命令文本加规范化后的输出片段来构造 `searchText`。输出 chunk 会从所有 command lifecycle row 收集，包括 begin、update、delta 和 end 行，因此即使最终行没有包含早先 chunk，增量输出仍可搜索。当解析后的 function-call output、aggregate output 或 formatted output 覆盖已有 chunk 时，它会替代这些已覆盖 chunk，作为规范化主体；包含不同未覆盖文本的候选输出仍会保留一次。推断出的 touched files 也会被索引，以保持路径搜索可发现。逻辑事件不会拼接每一个镜像 command-output 载体，因此当同一文本同时出现在 `stdout`、`aggregated_output`、`formatted_output`、原始行 `searchText` 和 `function_call_output` 中时，`searchMatchCount` 不会被放大。
 
 Frontend highlighting is DOM-oriented. After HTML has been rendered, the browser walks text nodes under the session list, timeline, and detail panel, skips interactive or unsafe nodes such as inputs, buttons, links, scripts, styles, and existing marks, and inserts `<mark>` elements with `textContent` around complete phrase matches instead of rewriting HTML strings. Matching remains confined to each individual DOM text node; it does not concatenate text across HTML nodes. The displayed position uses the currently rendered and jumpable marks. Its denominator is `max(searchMatchCount, renderedMarkCount)`: backend full-text coverage is retained for unloaded content, while additional rendered targets such as inspector detail marks cannot produce an impossible position like `4 / 3`. Previous/next navigation scrolls the concrete live mark after any synchronous inspector redraw; when that target is inside closed supplemental `<details>` sections, navigation opens every ancestor first. Ordinary highlight refresh remains passive and does not expand sections.
 
