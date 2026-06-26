@@ -7,7 +7,7 @@
 
   const OPERATOR_VALUES = {
     layer: new Set(['main', 'protocol', 'raw']),
-    status: new Set(['failed', 'success', 'completed']),
+    status: new Set(['active', 'blocked', 'complete', 'failed', 'success', 'completed']),
   };
 
   const OPERATORS = new Set(['file', 'kind', 'status', 'layer']);

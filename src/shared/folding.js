@@ -6,7 +6,7 @@
   'use strict';
 
   const DISPLAY_STATES = ['expanded', 'summary', 'collapsed', 'hidden'];
-  const CONDITION_DISPLAY_STATES = ['expanded', 'summary'];
+  const CONDITION_DISPLAY_STATES = ['expanded', 'summary', 'collapsed'];
   const DISPLAY_STATE_PRIORITY = {
     hidden: 0,
     collapsed: 1,
@@ -25,15 +25,95 @@
     'js_repl',
     'other_tool_call',
     'web_search',
+    'goal',
+    'developer_message',
     'error',
     'warning',
     'abort',
     'rollback',
     'compaction',
     'usage_limit_warning',
-    'subagent',
     'review',
   ];
+
+  const DYNAMIC_EDITABLE_EVENT_KINDS = [
+    'hook',
+    'subagent',
+  ];
+
+  const EDITABLE_KIND_GROUPS = [
+    {
+      id: 'conversationPlanning',
+      priority: 10,
+      kindOrder: [
+        'user_message',
+        'assistant_message',
+        'proposed_plan',
+        'plan_update',
+        'goal',
+      ],
+    },
+    {
+      id: 'commonWork',
+      priority: 20,
+      kindOrder: [
+        'command',
+        'user_shell_command',
+        'patch',
+        'web_search',
+      ],
+    },
+    {
+      id: 'issuesRisks',
+      priority: 30,
+      kindOrder: [
+        'error',
+        'warning',
+      ],
+    },
+    {
+      id: 'toolsAndInternals',
+      priority: 80,
+      kindOrder: [
+        'reasoning',
+        'mcp_call',
+        'js_repl',
+        'other_tool_call',
+        'hook',
+        'developer_message',
+        'review',
+        'subagent',
+        'abort',
+        'rollback',
+        'compaction',
+        'usage_limit_warning',
+      ],
+    },
+    {
+      id: 'other',
+      priority: 100,
+      kindOrder: [],
+    },
+  ];
+
+  const KIND_GROUP_BY_KIND = new Map();
+  for (const group of EDITABLE_KIND_GROUPS) {
+    group.kindOrder.forEach((kind, index) => {
+      KIND_GROUP_BY_KIND.set(kind, { groupId: group.id, groupPriority: group.priority, kindPriority: index });
+    });
+  }
+
+  function editableKindGroup(kind) {
+    return KIND_GROUP_BY_KIND.get(kind) || {
+      groupId: 'other',
+      groupPriority: 100,
+      kindPriority: Number.MAX_SAFE_INTEGER,
+    };
+  }
+
+  function isDynamicEditableKind(kind) {
+    return DYNAMIC_EDITABLE_EVENT_KINDS.includes(kind);
+  }
 
   const CONDITION_DEFINITIONS = [
     {
@@ -44,7 +124,7 @@
     {
       id: 'importantEvent',
       name: 'Important event',
-      description: 'User/assistant messages, patches, errors, aborts, rollbacks, compactions, plans, plan updates, update_plan calls, failed events, and abnormal severity.',
+      description: 'User/assistant messages, patches, goals, errors, aborts, rollbacks, compactions, plans, plan updates, update_plan calls, failed events, and abnormal severity.',
     },
     {
       id: 'updatePlanCall',
@@ -128,7 +208,7 @@
   }
 
   function importantEvent(event = {}) {
-    return ['user_message', 'assistant_message', 'patch', 'error', 'warning', 'abort', 'rollback', 'compaction', 'proposed_plan', 'review'].includes(event.kind)
+    return ['user_message', 'assistant_message', 'patch', 'goal', 'error', 'warning', 'abort', 'rollback', 'compaction', 'proposed_plan', 'review'].includes(event.kind)
       || isUpdatePlanEvent(event)
       || event.severity !== 'normal'
       || event.status === 'failed';
@@ -177,6 +257,10 @@
     CONDITION_DISPLAY_STATES,
     DISPLAY_STATE_PRIORITY,
     EDITABLE_EVENT_KINDS,
+    DYNAMIC_EDITABLE_EVENT_KINDS,
+    EDITABLE_KIND_GROUPS,
+    editableKindGroup,
+    isDynamicEditableKind,
     CONDITION_DEFINITIONS,
     isUpdatePlanEvent,
     isUserInputRequestEvent,

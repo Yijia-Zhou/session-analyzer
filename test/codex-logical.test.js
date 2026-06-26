@@ -14,6 +14,7 @@ const TOOL_EVENT_TYPES = new Set([
   'mcp_tool_call_end',
   'image_generation_call_begin',
   'image_generation_call_end',
+  'image_generation_end',
   'dynamic_tool_call_begin',
   'dynamic_tool_call_end',
   'dynamic_tool_call_declined',
@@ -21,6 +22,9 @@ const TOOL_EVENT_TYPES = new Set([
   'approval_request_declined',
   'hook_begin',
   'hook_end',
+  'hook_declined',
+  'hook_started',
+  'hook_completed',
   'collab_agent_spawn_begin',
   'collab_agent_spawn_end',
 ]);
@@ -65,8 +69,14 @@ function makeLogicalBuilder(overrides = {}) {
     },
     protocol: {
       classifyProtocolText: (text, role) => {
-        if (role === 'developer') return 'developer_instruction';
-        if (String(text || '').startsWith('# AGENTS.md instructions')) return 'agents_instructions';
+        const source = String(text || '');
+        if (role === 'developer') {
+          if (source.startsWith('<permissions instructions>')) return 'developer_permissions';
+          if (source.startsWith('<collaboration_mode>')) return 'developer_collaboration_mode';
+          return '';
+        }
+        if (source.startsWith('# AGENTS.md instructions')) return 'agents_instructions';
+        if (source.startsWith('<user_shell_command>')) return 'user_shell_command';
         return '';
       },
       humanizeProtocolSubtype: titleCaseProtocolSubtype,
@@ -149,13 +159,13 @@ test('logical builder folds raw rows into message, reasoning, protocol, and fall
     raw(1, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: 'hello' }),
     raw(2, { payloadType: 'user_message', messageText: 'hello' }),
     raw(3, { payloadType: 'agent_reasoning', messageText: '' }),
-    raw(4, { recordType: 'response_item', payloadType: 'message', role: 'developer', messageText: '# AGENTS.md instructions\nUse tests.' }),
+    raw(4, { recordType: 'response_item', payloadType: 'message', role: 'developer', messageText: '<permissions instructions>\nUse tests.' }),
     raw(5, { payloadType: 'thread_goal_updated', canonicalType: 'thread_goal_updated', preview: 'goal changed' }),
   ]);
 
   const user = logicalEvents.find((event) => event.kind === 'user_message');
   const reasoning = logicalEvents.find((event) => event.kind === 'reasoning');
-  const developer = logicalEvents.find((event) => event.subtype === 'developer_instruction');
+  const developer = logicalEvents.find((event) => event.subtype === 'developer_permissions');
   const fallback = logicalEvents.find((event) => event.subtype === 'thread_goal_updated');
 
   assert.equal(user.schemaVersion, 1);
@@ -168,6 +178,126 @@ test('logical builder folds raw rows into message, reasoning, protocol, and fall
   assert.equal(fallback.sourceLocator.type, 'jsonl_line');
 });
 
+test('logical builder folds mirrored user messages with trailing whitespace differences', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: 'open the browser' }),
+    raw(2, { payloadType: 'user_message', messageText: 'open the browser\n' }),
+  ]);
+  const userMessages = logicalEvents.filter((event) => event.kind === 'user_message');
+
+  assert.equal(userMessages.length, 1);
+  assert.deepEqual(userMessages[0].rawRefs.map((ref) => ref.line), [1, 2]);
+  assert.deepEqual(userMessages[0].channels, ['response_item', 'event_msg']);
+  assert.equal(userMessages[0].searchText, 'open the browser');
+});
+
+test('logical builder folds mirrored assistant messages with trailing whitespace differences', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { payloadType: 'agent_message', messageText: 'I will inspect it.\n' }),
+    raw(2, { recordType: 'response_item', payloadType: 'message', role: 'assistant', messageText: 'I will inspect it.' }),
+  ]);
+  const assistantMessages = logicalEvents.filter((event) => event.kind === 'assistant_message');
+
+  assert.equal(assistantMessages.length, 1);
+  assert.deepEqual(assistantMessages[0].rawRefs.map((ref) => ref.line), [1, 2]);
+  assert.deepEqual(assistantMessages[0].channels, ['event_msg', 'response_item']);
+  assert.equal(assistantMessages[0].searchText, 'I will inspect it.');
+});
+
+test('logical builder does not fold mirrored-looking messages with internal whitespace differences', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: 'open the browser' }),
+    raw(2, { payloadType: 'user_message', messageText: 'open  the browser' }),
+  ]);
+  const userMessages = logicalEvents.filter((event) => event.kind === 'user_message');
+
+  assert.equal(userMessages.length, 2);
+  assert.deepEqual(userMessages.map((event) => event.rawRefs.map((ref) => ref.line)), [[1], [2]]);
+});
+
+test('logical builder treats response-item-only user shell command wrappers as main user shell command events', () => {
+  const shellText = [
+    '<user_shell_command>',
+    '<command>',
+    'git fetch origin',
+    '</command>',
+    '<result>',
+    'Exit code: 0',
+    'Duration: 7.9050 seconds',
+    'Output:',
+    'From github.com:Yijia-Zhou/session-analyzer',
+    ' * [new branch]      main       -> origin/main',
+    '',
+    '</result>',
+    '</user_shell_command>',
+  ].join('\n');
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { payloadType: 'session_meta', preview: 'session metadata' }),
+    raw(2, { payloadType: 'thread_goal_updated', canonicalType: 'thread_goal_updated', preview: 'goal changed' }),
+    raw(3, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: shellText }),
+    raw(4, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: 'Repair fallback session titles' }),
+  ]);
+
+  const userMessages = logicalEvents.filter((event) => event.kind === 'user_message');
+  const shellWrapper = logicalEvents.find((event) => event.subtype === 'user_shell_command');
+
+  assert.ok(shellWrapper);
+  assert.equal(shellWrapper.kind, 'user_shell_command');
+  assert.equal(shellWrapper.layer, 'main');
+  assert.match(shellWrapper.preview, /git fetch origin/);
+  assert.match(shellWrapper.searchText, /git fetch origin/);
+  assert.deepEqual(shellWrapper.rawRefs.map((ref) => ref.line), [3]);
+  assert.deepEqual(shellWrapper.channels, ['response_item']);
+  assert.equal(userMessages.length, 1);
+  assert.equal(userMessages[0].preview, 'Repair fallback session titles');
+  assert.deepEqual(userMessages[0].rawRefs.map((ref) => ref.line), [4]);
+});
+
+test('logical builder treats event-msg-only user shell command wrappers as main user shell command events', () => {
+  const shellText = '<user_shell_command>\nGet-ChildItem -Force\n</user_shell_command>';
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { payloadType: 'user_message', messageText: shellText }),
+  ]);
+  const shellWrapper = logicalEvents.find((event) => event.subtype === 'user_shell_command');
+
+  assert.ok(shellWrapper);
+  assert.equal(shellWrapper.kind, 'user_shell_command');
+  assert.equal(shellWrapper.layer, 'main');
+  assert.deepEqual(shellWrapper.rawRefs.map((ref) => ref.line), [1]);
+  assert.deepEqual(shellWrapper.channels, ['event_msg']);
+  assert.equal(logicalEvents.some((event) => event.kind === 'user_message'), false);
+});
+
+test('logical builder folds mirrored user shell command wrapper rows into one main event', () => {
+  const shellText = '<user_shell_command>\nGet-ChildItem -Force\n</user_shell_command>';
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: shellText }),
+    raw(2, { payloadType: 'user_message', messageText: shellText }),
+  ]);
+  const shellWrappers = logicalEvents.filter((event) => event.subtype === 'user_shell_command');
+
+  assert.equal(shellWrappers.length, 1);
+  assert.equal(shellWrappers[0].kind, 'user_shell_command');
+  assert.equal(shellWrappers[0].layer, 'main');
+  assert.deepEqual(shellWrappers[0].rawRefs.map((ref) => ref.line), [1, 2]);
+  assert.deepEqual(shellWrappers[0].channels, ['response_item', 'event_msg']);
+  assert.equal(logicalEvents.some((event) => event.kind === 'user_message'), false);
+});
+
+test('logical builder folds mirrored user shell command wrappers with trailing whitespace differences', () => {
+  const shellText = '<user_shell_command>\nGet-ChildItem -Force\n</user_shell_command>';
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { recordType: 'response_item', payloadType: 'message', role: 'user', messageText: shellText }),
+    raw(2, { payloadType: 'user_message', messageText: `${shellText}\n` }),
+  ]);
+  const shellWrappers = logicalEvents.filter((event) => event.subtype === 'user_shell_command');
+
+  assert.equal(shellWrappers.length, 1);
+  assert.deepEqual(shellWrappers[0].rawRefs.map((ref) => ref.line), [1, 2]);
+  assert.deepEqual(shellWrappers[0].channels, ['response_item', 'event_msg']);
+  assert.equal(logicalEvents.some((event) => event.kind === 'user_message'), false);
+});
+
 test('logical builder uses terminal lifecycle rows for generic protocol tool labels', () => {
   const logicalEvents = logicalBuilder.buildLogicalEvents([
     raw(1, { payloadType: 'dynamic_tool_call_begin', callId: 'call-dynamic', toolName: 'asset_lookup', preview: 'begin query' }),
@@ -176,8 +306,8 @@ test('logical builder uses terminal lifecycle rows for generic protocol tool lab
     raw(4, { payloadType: 'image_generation_call_end', callId: 'call-image', toolName: 'image_generation', preview: 'image done' }),
     raw(5, { payloadType: 'approval_request_begin', callId: 'call-approval', toolName: 'approval', preview: 'approve' }),
     raw(6, { payloadType: 'approval_request_declined', callId: 'call-approval', toolName: 'approval', status: 'declined', preview: 'declined' }),
-    raw(7, { payloadType: 'hook_begin', callId: 'call-hook', toolName: 'pre_apply_hook', preview: 'hook' }),
-    raw(8, { payloadType: 'hook_end', callId: 'call-hook', toolName: 'pre_apply_hook', preview: 'hook done' }),
+    raw(7, { payloadType: 'hook_begin', callId: 'call-hook', toolName: 'pre_apply_hook', payload: { hook: 'pre-apply' }, preview: 'hook' }),
+    raw(8, { payloadType: 'hook_end', callId: 'call-hook', toolName: 'pre_apply_hook', status: 'completed', preview: 'hook done' }),
     raw(9, { payloadType: 'collab_agent_spawn_begin', callId: 'call-collab', preview: 'spawn' }),
     raw(10, { payloadType: 'collab_agent_spawn_end', callId: 'call-collab', status: 'pending_init', preview: 'spawned' }),
   ]);
@@ -203,6 +333,7 @@ test('logical builder uses terminal lifecycle rows for generic protocol tool lab
       rawLines: byCall.get('call-approval').rawRefs.map((ref) => ref.line),
     },
     hook: {
+      kind: byCall.get('call-hook').kind,
       label: byCall.get('call-hook').label,
       status: byCall.get('call-hook').status,
       severity: byCall.get('call-hook').severity,
@@ -216,11 +347,54 @@ test('logical builder uses terminal lifecycle rows for generic protocol tool lab
     },
   }, {
     dynamic: { label: 'Dynamic Tool Call End', status: 'success', severity: 'normal', rawLines: [1, 2] },
-    image: { label: 'Image Generation Call End', status: 'success', severity: 'normal', rawLines: [3, 4] },
+    image: { label: 'Image Generation', status: 'success', severity: 'normal', rawLines: [3, 4] },
     approval: { label: 'Approval Request Declined', status: 'declined', severity: 'warning', rawLines: [5, 6] },
-    hook: { label: 'Hook End', status: 'success', severity: 'normal', rawLines: [7, 8] },
+    hook: { kind: 'hook', label: 'pre-apply', status: 'completed', severity: 'normal', rawLines: [7, 8] },
     collab: { label: 'Collab Agent Spawn End', status: 'success', severity: 'normal', rawLines: [9, 10] },
   });
+});
+
+test('logical builder supports new hook lifecycle rows and ungrouped declined hooks', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { payloadType: 'hook_started', callId: 'call-hook-new', toolName: 'SessionStart', payload: { hook_name: 'SessionStart' }, preview: 'starting hook' }),
+    raw(2, { payloadType: 'hook_completed', callId: 'call-hook-new', toolName: 'SessionStart', status: 'completed', preview: 'hook complete' }),
+    raw(3, { payloadType: 'hook_declined', toolName: 'Stop', status: 'declined', preview: 'hook declined' }),
+  ]);
+  const grouped = logicalEvents.find((event) => event.rawRefs.some((ref) => ref.line === 1));
+  const declined = logicalEvents.find((event) => event.rawRefs.some((ref) => ref.line === 3));
+
+  assert.equal(grouped.kind, 'hook');
+  assert.equal(grouped.label, 'SessionStart');
+  assert.equal(grouped.status, 'completed');
+  assert.deepEqual(grouped.rawRefs.map((ref) => ref.line), [1, 2]);
+  assert.equal(declined.kind, 'hook');
+  assert.equal(declined.label, 'Stop');
+  assert.equal(declined.status, 'declined');
+  assert.equal(declined.severity, 'warning');
+});
+
+test('logical builder surfaces unwrapped developer messages as possible hook output', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      recordType: 'response_item',
+      payloadType: 'message',
+      role: 'developer',
+      messageText: 'session-analyzer guardrails:\n- repo: .',
+    }),
+    raw(2, {
+      recordType: 'response_item',
+      payloadType: 'message',
+      role: 'developer',
+      messageText: '<collaboration_mode>\n# Collaboration Mode: Default',
+    }),
+  ]);
+  const developerMessage = logicalEvents.find((event) => event.kind === 'developer_message');
+  const wrapper = logicalEvents.find((event) => event.subtype === 'developer_collaboration_mode');
+
+  assert.equal(developerMessage.label, 'Developer message');
+  assert.deepEqual(developerMessage.tags, ['Possible hook output']);
+  assert.match(developerMessage.searchText, /Possible hook output/);
+  assert.equal(wrapper.layer, 'protocol');
 });
 
 test('logical builder pairs web search rows without changing ids, refs, status, or search text', () => {

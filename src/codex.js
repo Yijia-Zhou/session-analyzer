@@ -97,6 +97,7 @@ const PROTOCOL_LABELS = Object.freeze({
   environment_context: 'Environment context',
   session_configured: 'Session configured',
   thread_goal_updated: 'Thread goal updated',
+  goal_context: 'Goal context',
   image_wrapper: 'Image attachment wrapper',
   meta_block: 'Protocol metadata block',
   session_meta: 'Session metadata',
@@ -128,6 +129,10 @@ const EVENT_KIND_LABELS = Object.freeze({
   review: 'Review',
   reasoning: 'Reasoning',
   web_search: 'Web search',
+  goal: 'Goal',
+  hook: 'Hook',
+  developer_message: 'Developer message',
+  user_shell_command: 'User shell command',
   event: 'Event',
 });
 
@@ -152,6 +157,7 @@ const TOOL_EVENT_TYPES = new Set([
   'image_generation_call_delta',
   'image_generation_call_end',
   'image_generation_call_declined',
+  'image_generation_end',
   'dynamic_tool_call_begin',
   'dynamic_tool_call_update',
   'dynamic_tool_call_delta',
@@ -163,6 +169,8 @@ const TOOL_EVENT_TYPES = new Set([
   'hook_begin',
   'hook_end',
   'hook_declined',
+  'hook_started',
+  'hook_completed',
   'collab_agent_spawn_begin',
   'collab_agent_spawn_end',
   'collab_agent_interaction_begin',
@@ -1728,6 +1736,12 @@ function readXmlTag(source, tagName) {
   return match ? match[1].replace(/\s+/g, ' ').trim() : '';
 }
 
+function readRawXmlTag(source, tagName) {
+  const pattern = new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, 'i');
+  const match = String(source || '').match(pattern);
+  return match ? match[1].trim() : '';
+}
+
 function protocolTagName(source) {
   const match = String(source || '').trim().match(/^<([A-Za-z][\w:-]*)(?:\s|>)/);
   return match ? match[1] : '';
@@ -1764,6 +1778,9 @@ function protocolPreviewFor(raw, subtype) {
   }
   if (subtype === 'thread_goal_updated') {
     return truncate(displayValue(firstNonEmpty(raw.parsed?.payload?.thread_goal, raw.parsed?.payload?.goal, raw.preview, 'Thread goal updated'), 1000));
+  }
+  if (subtype === 'goal_context') {
+    return truncate(readXmlTag(source, 'objective') || firstProtocolBodyLine(source) || 'Goal context');
   }
   if (subtype === 'turn_context') {
     return payloadPreview(raw.parsed?.payload, ['turn_id', 'cwd', 'model']) || raw.preview;
@@ -1818,11 +1835,16 @@ function classifyProtocolText(text, role) {
   if (role === 'developer') {
     if (source.startsWith('<permissions instructions>')) return 'developer_permissions';
     if (source.startsWith('<collaboration_mode>')) return 'developer_collaboration_mode';
-    return 'developer_instruction';
+    if (source.startsWith('<environment_context>')) return 'environment_context';
+    if (source.startsWith('<codex_internal_context source="goal">')) return 'goal_context';
+    if (source.startsWith('<skill>')) return 'skill_injection';
+    if (source.startsWith('<')) return 'meta_block';
+    return '';
   }
   if (source.startsWith('# AGENTS.md instructions')) return 'agents_instructions';
   if (source.startsWith('<environment_context>')) return 'environment_context';
   if (source.startsWith('<turn_aborted>')) return 'turn_aborted_marker';
+  if (source.startsWith('<codex_internal_context source="goal">')) return 'goal_context';
   if (source.startsWith('<user_shell_command>')) return 'user_shell_command';
   if (source.startsWith('<skill>')) return 'skill_injection';
   if (source.startsWith('<image ')) return 'image_wrapper';
@@ -2008,6 +2030,7 @@ function toolDetailValues(raws) {
   const functionOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
   const customCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call');
   const customOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output');
+  const imageCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'image_generation_call');
   const requestValue = firstNonEmpty(
     commandArgsFromRaw(functionCall),
     coerceJsonValue(customCall?.output),
@@ -2018,6 +2041,7 @@ function toolDetailValues(raws) {
   const responseEnvelope = toolOutputEnvelope(customOutput);
   const responseValue = firstNonEmpty(
     raws.find((raw) => raw.recordType === 'event_msg' && /_end$/.test(raw.payloadType || ''))?.parsed?.payload,
+    imageCall?.parsed?.payload,
     responseEnvelope?.output,
     parseOutputEnvelope(functionOutput?.output),
     functionOutput?.output,
@@ -2092,6 +2116,52 @@ function requestUserInputSection(requestValue, responseValue) {
   return items.length ? { type: 'user_input', title: 'User input', questions: items } : null;
 }
 
+function goalStatusLabel(status) {
+  if (status === 'complete') return 'Complete';
+  if (status === 'blocked') return 'Blocked';
+  if (status === 'active') return 'Active';
+  return status ? humanizeProtocolSubtype(status) : '';
+}
+
+function goalSection(raws, event, requestValue, responseValue) {
+  const goal = responseValue?.goal && typeof responseValue.goal === 'object' ? responseValue.goal : {};
+  const objective = conciseToolValue(firstNonEmpty(goal.objective, requestValue?.objective), 4000);
+  const status = conciseToolValue(firstNonEmpty(goal.status, responseValue?.status, event.status), 200);
+  const entries = [
+    { key: 'Status', value: goalStatusLabel(status) || status },
+    { key: 'Tokens used', value: goal.tokensUsed == null ? '' : String(goal.tokensUsed) },
+    { key: 'Time used', value: goal.timeUsedSeconds == null ? '' : `${goal.timeUsedSeconds}s` },
+    { key: 'Created', value: goal.createdAt == null ? '' : String(goal.createdAt) },
+    { key: 'Updated', value: goal.updatedAt == null ? '' : String(goal.updatedAt) },
+    { key: 'Remaining tokens', value: responseValue?.remainingTokens == null ? '' : String(responseValue.remainingTokens) },
+  ].filter((entry) => entry.value !== '');
+  const lines = [
+    `### ${event.label || 'Goal'}`,
+    status ? `**Status:** ${goalStatusLabel(status) || status}` : '',
+    objective ? `**Objective:**\n\n${objective}` : '',
+  ].filter(Boolean);
+  const sections = [];
+  maybePushMarkdownSection(sections, 'Goal', lines.join('\n\n'));
+  maybePushKvSection(sections, 'Goal usage', entries);
+  if (responseValue?.completionBudgetReport) {
+    maybePushStructuredSection(sections, 'Completion budget', responseValue.completionBudgetReport);
+  }
+  if (!sections.length) {
+    sections.push(hideSectionTitle(makeNoticeSection(event.label || 'Goal', event.preview || event.label || 'Goal', event.severity === 'warning' ? 'warning' : 'info')));
+  }
+  return sections;
+}
+
+function extractGoalSections(raws, event, splitSections) {
+  const split = splitSections(extractToolSections(raws, event));
+  const { requestValue, responseValue } = toolDetailValues(raws);
+  const timelineSections = goalSection(raws, event, requestValue, responseValue);
+  return {
+    timelineSections,
+    inspectorSections: sanitizeToolInspectorSections(split.inspectorSections),
+  };
+}
+
 function viewImageMarkdown(requestValue, responseValue) {
   const dimensions = responseValue && !Array.isArray(responseValue) && typeof responseValue === 'object'
     ? [responseValue.width, responseValue.height].filter((value) => value != null).join(' x ')
@@ -2102,6 +2172,32 @@ function viewImageMarkdown(requestValue, responseValue) {
     markdownField('Detail', requestValue?.detail, 200),
     markdownField('Dimensions', dimensions, 200),
     markdownField('MIME type', responseValue?.mimeType, 200),
+  ].filter(Boolean).join('\n\n');
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function imageGenerationMarkdown(raws, responseValue) {
+  if (!responseValue || typeof responseValue !== 'object') return '';
+  const imageByKey = new Map();
+  for (const image of raws.flatMap((raw) => raw.embeddedImages || [])) {
+    if (!image?.dedupeKey || imageByKey.has(image.dedupeKey)) continue;
+    imageByKey.set(image.dedupeKey, image);
+  }
+  const images = [...imageByKey.values()];
+  const totalBytes = images.reduce((sum, image) => sum + Number(image.estimatedBytes || 0), 0);
+  return [
+    '### Image generation',
+    markdownField('Status', responseValue.status, 200),
+    markdownField('Saved image', responseValue.saved_path, 2000),
+    markdownField('Generated payload', images.length ? `${images.length} image${images.length === 1 ? '' : 's'}${totalBytes ? `, ${formatBytes(totalBytes)}` : ''}` : '', 200),
+    markdownField('Revised prompt', responseValue.revised_prompt, 1200),
   ].filter(Boolean).join('\n\n');
 }
 
@@ -2124,6 +2220,37 @@ function inspectSupportedImageDataUrl(value) {
     encodedLength,
     estimatedBytes: Math.max(0, Math.floor(encodedLength * 3 / 4) - Math.min(padding, 2)),
   };
+}
+
+function imageMimeTypeFromBytes(bytes) {
+  if (!Buffer.isBuffer(bytes)) return '';
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  if (bytes.length >= 6 && ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'))) return 'image/gif';
+  return '';
+}
+
+function inspectSupportedBareImageBase64(value) {
+  const payload = String(value || '').replace(/\s+/g, '');
+  if (payload.length < 64 || payload.length % 4 !== 0) return null;
+  if (!/^(?:[a-z0-9+/]{4})*(?:[a-z0-9+/]{2}==|[a-z0-9+/]{3}=)?$/i.test(payload)) return null;
+  const header = Buffer.from(payload.slice(0, Math.min(payload.length, 128)), 'base64');
+  const mimeType = imageMimeTypeFromBytes(header);
+  if (!mimeType || mimeType === 'image/gif') return null;
+  const padding = payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0;
+  return {
+    mimeType,
+    payload,
+    encodedLength: payload.length,
+    estimatedBytes: Math.max(0, Math.floor(payload.length * 3 / 4) - padding),
+  };
+}
+
+function inspectSupportedImagePayload(value, encoding = '') {
+  if (encoding === 'bare_base64') return inspectSupportedBareImageBase64(value);
+  if (encoding === 'data_url') return inspectSupportedImageDataUrl(value);
+  return inspectSupportedImageDataUrl(value) || inspectSupportedBareImageBase64(value);
 }
 
 function imagePresentationKey(value, mimeType) {
@@ -2212,6 +2339,28 @@ function externalizeEmbeddedImages(value, source, images = [], jsonPath = [], se
     value[key] = externalizeEmbeddedImages(item, source, images, [...jsonPath, key], seen);
   }
   return value;
+}
+
+function externalizeKnownImageGenerationResult(record, source, images = []) {
+  const payload = record?.payload || {};
+  if (!['image_generation_end', 'image_generation_call'].includes(payload.type)) return;
+  if (typeof payload.result !== 'string') return;
+  const inspected = inspectSupportedBareImageBase64(payload.result);
+  if (!inspected) return;
+  images.push({
+    previewId: `image-${source.line}-${images.length}`,
+    source: {
+      file: source.file,
+      line: source.line,
+      jsonPath: ['payload', 'result'],
+    },
+    mimeType: inspected.mimeType,
+    estimatedBytes: inspected.estimatedBytes,
+    dedupeKey: imagePresentationKey(payload.result, inspected.mimeType),
+    encoding: 'bare_base64',
+    detail: 'generated image',
+  });
+  payload.result = EMBEDDED_IMAGE_EXTERNALIZED_MARKER;
 }
 
 function imagePreviewUrl(sessionId, eventId, previewId) {
@@ -2460,6 +2609,111 @@ function maybePushToolSummaryCodeSection(sections, title, value) {
   maybePushCodeSection(sections, title, stringifyValue(summarized), typeof summarized === 'object' ? 'json' : 'text');
 }
 
+function mcpPayloadValue(value) {
+  if (!value || typeof value !== 'object') return value;
+  return firstNonEmpty(value.result, value.output, value.response, value.message, value.content, value.data, value);
+}
+
+function isTextualMcpMime(mime) {
+  const value = String(mime || '').toLowerCase();
+  return value.startsWith('text/') || value === 'application/json' || /\+json$/.test(value);
+}
+
+function isMcpMediaPayload(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const type = String(value.type || '').toLowerCase();
+  const mime = String(firstNonEmpty(value.mimeType, value.mime_type) || '').toLowerCase();
+  const mediaType = ['image', 'audio', 'video', 'blob', 'binary'].includes(type);
+  const mediaMime = mime && !isTextualMcpMime(mime);
+  const hasBarePayload = ['blob', 'base64'].some((key) => Object.hasOwn(value, key));
+  return Boolean(mediaType || mediaMime || hasBarePayload);
+}
+
+function mcpTextFragments(value, depth = 0, key = '') {
+  if (value == null || depth > 6) return [];
+  const normalizedKey = String(key || '').toLowerCase();
+  if (['blob', 'base64'].includes(normalizedKey)) return [];
+  if (typeof value === 'string') return [value];
+  if (typeof value === 'number' || typeof value === 'boolean') return [String(value)];
+  if (Array.isArray(value)) return value.flatMap((item) => mcpTextFragments(item, depth + 1, key));
+  if (typeof value !== 'object') return [];
+  if (isMcpMediaPayload(value)) return [];
+  if (typeof value.text === 'string') return [value.text];
+  if (typeof value.content === 'string') return [value.content];
+  return Object.entries(value).flatMap(([key, item]) => {
+    if (['type', 'mimeType', 'mime_type', 'annotations', 'blob', 'base64'].includes(key)) return [];
+    return mcpTextFragments(item, depth + 1, key);
+  });
+}
+
+function pushMcpRequestSummary(sections, event, requestValue) {
+  if (!requestValue || typeof requestValue !== 'object') {
+    maybePushToolSummaryCodeSection(sections, 'Request summary', requestValue);
+    return;
+  }
+  const payload = firstNonEmpty(requestValue.arguments, requestValue.input, requestValue.request, mcpPayloadValue(requestValue));
+  const code = firstNonEmpty(payload?.code, requestValue.code, payload?.script, requestValue.script);
+  const language = String(firstNonEmpty(payload?.language, requestValue.language, event.toolName === 'js' ? 'javascript' : '') || '').toLowerCase();
+  if (code) {
+    maybePushCodeSection(sections, language === 'javascript' ? 'JavaScript' : 'Code', String(code), language || 'text');
+  }
+  const entries = Object.entries(payload && typeof payload === 'object' ? payload : requestValue)
+    .filter(([key, value]) => !['code', 'script'].includes(key) && value != null && value !== '' && typeof value !== 'object')
+    .slice(0, 8)
+    .map(([key, value]) => ({ key, value: conciseToolValue(value, 1000) }));
+  if (entries.length) sections.push({ type: 'kv', title: 'Request', entries });
+  if (!code && !entries.length) maybePushToolSummaryCodeSection(sections, 'Request summary', requestValue);
+}
+
+function sanitizeMcpTimelineValue(value, depth = 0, key = '') {
+  if (depth > 5) return '[nested value omitted]';
+  const normalizedKey = String(key || '').toLowerCase();
+  if (['blob', 'base64'].includes(normalizedKey)) return '[non-text MCP payload omitted]';
+  if (typeof value === 'string') return truncate(redactEmbeddedDataUrls(value, TIMELINE_DATA_URL_MARKER), 4000);
+  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 12).map((item) => sanitizeMcpTimelineValue(item, depth + 1, key));
+    if (value.length > items.length) items.push(`[${value.length - items.length} more items omitted]`);
+    return items;
+  }
+  if (typeof value !== 'object') return String(value);
+  if (isMcpMediaPayload(value)) return '[non-text MCP payload omitted]';
+  const entries = Object.entries(value);
+  const usedKeys = new Set();
+  const summarized = Object.fromEntries(entries.slice(0, 24).map(([entryKey, item]) => [
+    uniqueSanitizedObjectKey(entryKey, usedKeys, TIMELINE_DATA_URL_MARKER),
+    sanitizeMcpTimelineValue(item, depth + 1, entryKey),
+  ]));
+  if (entries.length > 24) summarized['[additional fields omitted]'] = entries.length - 24;
+  return summarized;
+}
+function pushMcpResponseSummary(sections, responseValue) {
+  const payload = mcpPayloadValue(responseValue);
+  const fragments = mcpTextFragments(payload).map((item) => item.trim()).filter(Boolean);
+  const text = uniqueNonEmpty(fragments).join('\n\n');
+  if (text) {
+    maybePushTerminalSection(sections, 'Result', truncatePreservingWhitespace(redactEmbeddedDataUrls(text, TIMELINE_DATA_URL_MARKER), 4000), 'stdout');
+    return;
+  }
+  const summarized = sanitizeMcpTimelineValue(payload);
+  maybePushCodeSection(sections, 'Response summary', stringifyValue(summarized), typeof summarized === 'object' ? 'json' : 'text');
+}
+
+function extractMcpSections(raws, event, splitSections) {
+  const split = splitSections(extractToolSections(raws, event));
+  const { requestValue, responseValue } = toolDetailValues(raws);
+  const timelineSections = [];
+  pushMcpRequestSummary(timelineSections, event, requestValue);
+  pushMcpResponseSummary(timelineSections, responseValue);
+  if (!timelineSections.length) timelineSections.push(...sanitizeUnmodeledToolTimelineSections(split.timelineSections));
+  if (!timelineSections.length) {
+    timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info')));
+  }
+  return {
+    timelineSections: sanitizeUnmodeledToolTimelineSections(timelineSections),
+    inspectorSections: sanitizeToolInspectorSections(split.inspectorSections),
+  };
+}
 function sanitizeUnmodeledToolTimelineSection(section) {
   const sanitized = sanitizeToolValue(section, { marker: TIMELINE_DATA_URL_MARKER });
   if (sanitized.type === 'code') sanitized.code = truncatePreservingWhitespace(sanitized.code, 4000);
@@ -2489,6 +2743,8 @@ function extractToolOperationSections(raws, event, splitSections) {
   if (collaboration) timelineSections.push(collaboration);
   const markdown = event.toolName === 'view_image' ? viewImageMarkdown(requestValue, responseValue) : '';
   maybePushMarkdownSection(timelineSections, 'Other tool call', markdown);
+  const imageGeneration = event.toolName === 'image_generation' ? imageGenerationMarkdown(raws, responseValue) : '';
+  maybePushMarkdownSection(timelineSections, 'Image generation', imageGeneration);
   const hasSpecializedTimeline = timelineSections.length > 0;
   if (!timelineSections.length) {
     maybePushToolSummaryCodeSection(timelineSections, 'Request summary', requestValue);
@@ -2499,7 +2755,7 @@ function extractToolOperationSections(raws, event, splitSections) {
   if (!timelineSections.length) {
     timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info')));
   }
-  const imagePreview = event.toolName === 'view_image' ? imagePreviewSection(raws, event, requestValue) : null;
+  const imagePreview = ['view_image', 'image_generation'].includes(event.toolName) ? imagePreviewSection(raws, event, requestValue) : null;
   const inspectorSections = sanitizeToolInspectorSections(split.inspectorSections, imagePreview);
   return {
     timelineSections,
@@ -2580,6 +2836,17 @@ function extractProtocolSections(event, raws) {
   if (['agents_instructions', 'developer_instruction', 'developer_permissions', 'developer_collaboration_mode', 'skill_injection'].includes(event.subtype)) {
     maybePushMarkdownSection(sections, 'Protocol text', primary.messageText);
     hideSectionTitle(sections[0]);
+    return sections;
+  }
+  if (event.subtype === 'goal_context') {
+    const objective = readRawXmlTag(primary.messageText, 'objective');
+    if (objective) {
+      maybePushMarkdownSection(sections, 'Goal objective', objective);
+      hideSectionTitle(sections[0]);
+    }
+    const budgetMatch = String(primary.messageText || '').match(/Budget:\s*([\s\S]*?)(?:\n\s*\n[A-Z][^\n]*:|<\/codex_internal_context>)/);
+    if (budgetMatch) maybePushMarkdownSection(sections, 'Budget', budgetMatch[1].trim());
+    sections.push(makeRawJsonSection('Protocol raw JSON', primary.parsed));
     return sections;
   }
   if (event.subtype === 'environment_context' || event.subtype === 'session_meta' || event.subtype === 'session_configured' || event.subtype === 'thread_goal_updated' || event.subtype === 'turn_context') {
@@ -2782,8 +3049,10 @@ const codexDetailBuilder = createCodexDetailBuilder({
     extractConversationSections,
     extractJsReplSections,
     extractLifecycleSections,
+    extractMcpSections,
     extractPatchSections,
     extractPlanSections,
+    extractGoalSections,
     extractProtocolSections,
     extractReasoningSections,
     extractToolOperationSections,
@@ -3016,7 +3285,7 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'user_message') session.counts.userMessages += 1;
   if (logicalEvent.kind === 'assistant_message') session.counts.assistantMessages += 1;
   if (logicalEvent.kind === 'reasoning') session.counts.reasoning += 1;
-  if (['command', 'patch', 'mcp_call', 'web_search', 'other_tool_call', 'js_repl'].includes(logicalEvent.kind)) {
+  if (['command', 'patch', 'mcp_call', 'web_search', 'other_tool_call', 'js_repl', 'goal', 'hook'].includes(logicalEvent.kind)) {
     session.counts.toolCalls += 1;
   }
   if (logicalEvent.kind === 'command' && logicalEvent.status === 'failed') session.counts.failedCommands += 1;
@@ -3237,6 +3506,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
       }
       updateTimeRange(session, record.timestamp);
       const embeddedImages = [];
+      externalizeKnownImageGenerationResult(record, { file: relFile, line: lineNumber }, embeddedImages);
       externalizeEmbeddedImages(record, { file: relFile, line: lineNumber }, embeddedImages);
       const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages);
       if (!session.shell && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
@@ -3592,6 +3862,7 @@ function logicalEventDto(event, q, locale = i18n.DEFAULT_LOCALE) {
     hasLongOutput: event.hasLongOutput,
     hasReadableReasoning: event.hasReadableReasoning,
     hasSearchHit,
+    tags: event.tags || [],
     touchedFiles: event.touchedFiles,
     outputStats: event.outputStats,
     tokenUsage: event.tokenUsage,
@@ -3709,7 +3980,7 @@ async function readImagePreview(index, sessionId, eventId, previewId) {
   }
   if (!sourceRow?.parsed) return imagePreviewError(409, 'Image preview source is stale');
   const value = jsonPathValue(sourceRow.parsed, descriptor.source.jsonPath);
-  const inspected = inspectSupportedImageDataUrl(value);
+  const inspected = inspectSupportedImagePayload(value, descriptor.encoding);
   if (!inspected || inspected.mimeType !== descriptor.mimeType) {
     return imagePreviewError(409, 'Image preview source is stale');
   }
@@ -3719,6 +3990,11 @@ async function readImagePreview(index, sessionId, eventId, previewId) {
   }
   if (imagePresentationKey(value, inspected.mimeType) !== descriptor.dedupeKey) {
     return imagePreviewError(409, 'Image preview source is stale');
+  }
+  if (descriptor.encoding === 'bare_base64') {
+    const decoded = decodeImagePreviewDataUrl(`data:${descriptor.mimeType};base64,${inspected.payload}`);
+    if (decoded.error === 'Image preview payload is malformed') return imagePreviewError(422, decoded.error);
+    return decoded;
   }
   return decodeImagePreviewDataUrl(value);
 }

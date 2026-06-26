@@ -140,6 +140,14 @@ function createCodexRawParser(deps) {
         raw.searchText = flattenText(payload, 12000);
         return raw;
       }
+      if (payload.type === 'image_generation_call') {
+        raw.callId = payload.id || payload.call_id || payload.callId || '';
+        raw.toolName = 'image_generation';
+        raw.output = stringifyValue(payload);
+        raw.preview = truncate(firstNonEmpty(payload.saved_path, payload.status, payload.type));
+        raw.searchText = flattenText(payload, 16000);
+        return raw;
+      }
     }
 
     if (record.type === 'event_msg') {
@@ -193,6 +201,7 @@ function createCodexRawParser(deps) {
         case 'image_generation_call_delta':
         case 'image_generation_call_end':
         case 'image_generation_call_declined':
+        case 'image_generation_end':
         case 'dynamic_tool_call_begin':
         case 'dynamic_tool_call_update':
         case 'dynamic_tool_call_delta':
@@ -204,6 +213,8 @@ function createCodexRawParser(deps) {
         case 'hook_begin':
         case 'hook_end':
         case 'hook_declined':
+        case 'hook_started':
+        case 'hook_completed':
         case 'web_search_end':
         case 'context_compacted':
         case 'turn_aborted':
@@ -230,6 +241,7 @@ function createCodexRawParser(deps) {
         case 'stream_error':
         case 'plan_update':
         case 'plan_delta':
+          if (payload.type === 'image_generation_end') raw.toolName = 'image_generation';
           raw.preview = truncate(flattenText(payload, 12000) || payload.type);
           raw.searchText = flattenText(payload, 16000);
           return raw;

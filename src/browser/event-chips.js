@@ -12,6 +12,7 @@
   function inspectorChipValues(event) {
     return [
       meaningfulEventKind(event),
+      ...(Array.isArray(event.tags) ? event.tags : []),
       event.status,
       event.severity && event.severity !== 'normal' ? event.severity : '',
     ];

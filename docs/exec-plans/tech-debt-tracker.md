@@ -1,6 +1,6 @@
 # Tech Debt Tracker / 技术债跟踪器
 
-## Open items / 未关闭条目
+## Tracked items / 跟踪条目
 
 ### 1. Protocol label quality / 协议标签质量
 - Status: open / 状态：开放
@@ -16,7 +16,7 @@
 - Status: open / 状态：开放
 - Problem: many older transcript shapes are only partially represented in fixtures / 问题：许多较旧的转录形态在 fixture 中只有部分表示
 - Residual risk: fixture coverage is targeted rather than exhaustive; current incomplete tool begin/declined rows are covered, but sparse metadata, malformed JSONL, and new MCP, collaboration, hook, approval, dynamic tool, or image generation shapes may still need new fixtures as they appear. / 残余风险：fixture 覆盖是针对性的而非穷尽式的；当前不完整工具 begin/declined 行已有覆盖，但稀疏 metadata、格式异常 JSONL，以及新的 MCP、协作、hook、approval、dynamic tool 或图像生成形态出现时仍可能需要新增 fixture。
-- Current observation: the local corpus contains collaboration lifecycle variants but no dynamic tool, approval, hook, or image-generation protocol rows. Synthetic lifecycle coverage now protects grouped labels and status for these families, while field-specific presentation intentionally remains bounded until real payloads are available. / 当前观察：本地语料包含协作生命周期 variant，但没有 dynamic tool、approval、hook 或图像生成协议行。Synthetic 生命周期覆盖现已保护这些事件族的分组 label 和 status，而字段级呈现仍有意保持受限，直到出现真实 payload。
+- Current observation: the local corpus contains collaboration lifecycle variants and many tool-call traces of approval and multi-agent behavior, but no dynamic tool, request-permissions approval, explicit hook lifecycle, or path-based `sub_agent_activity` protocol rows. Hook-like startup stdout has been observed as unwrapped developer messages, so the analyzer labels it as possible hook output without asserting a precise hook source. Approval is observed through escalated `shell_command` calls, and multi-agent activity is observed through tools such as `spawn_agent`, `wait_agent`, `send_input`, and `close_agent`; do not treat missing protocol rows as proof that those user-visible behaviors never happened. A separate real transcript has now confirmed image generation as paired `event_msg.image_generation_end` and `response_item.image_generation_call` rows whose `result` is a bare base64 PNG payload; minimized fixture coverage protects externalizing that payload and grouping those pairs into Main timeline `image_generation` tool events with preview support. Field-specific protocol-event presentation remains intentionally bounded for the still-unobserved protocol payloads. / 当前观察：本地语料包含协作生命周期 variant，也有大量 approval 和 multi-agent 行为的工具调用痕迹，但没有 dynamic tool、request-permissions approval、明确 hook lifecycle 或基于路径的 `sub_agent_activity` 协议行。类似 hook 的 startup stdout 已通过未包装 developer message 观察到，因此 analyzer 只把它标为 possible hook output，而不声称精确 hook 来源。Approval 可通过 escalated `shell_command` 调用观察到，multi-agent 活动可通过 `spawn_agent`、`wait_agent`、`send_input` 和 `close_agent` 等工具观察到；不要把缺少协议行误判为这些用户可见行为从未发生。另一个真实 transcript 现已确认图像生成会以配对的 `event_msg.image_generation_end` 与 `response_item.image_generation_call` 行出现，且 `result` 是裸 base64 PNG payload；最小化 fixture 已保护该 payload 的外部化，并保护这些配对合并为带预览支持的 Main timeline `image_generation` tool 事件。对仍未观察到的协议 payload，字段级协议事件呈现继续有意保持受限。
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/codex-protocol-event-coverage.md`
@@ -39,10 +39,10 @@
   - `docs/product-specs/session-transcript-analyzer.md`
   - `docs/design-docs/logical-event-timeline.md`
 
-### 5. Review finding real-data validation / Review finding 真实数据验证
-- Status: open / 状态：开放
-- Problem: review lifecycle parsing is covered by official core protocol schema and artificial fixtures, but local real-world transcripts observed so far only include empty `review_output.findings` arrays. / 问题：review 生命周期解析已有官方 core protocol schema 和人工 fixture 覆盖，但目前观察到的本地真实转录只包含空的 `review_output.findings` 数组。
-- Residual risk: rendering of non-empty `review_output.findings[]` may need adjustment once a real transcript with findings is available, especially for field presence, priority/confidence formatting, and code location shapes. / 残余风险：一旦拿到包含 findings 的真实转录，非空 `review_output.findings[]` 的渲染可能仍需调整，尤其是字段存在性、priority/confidence 格式和代码位置形态。
+### 5. Review finding fixture strengthening / Review finding fixture 加强
+- Status: closed / 状态：已关闭
+- Closure note: a 2026-06-19 local-corpus validation found real non-empty `review_output.findings[]` rows using the same field family already covered by committed fixtures: `title`, `body`, `priority`, `confidence_score`, and `code_location.absolute_file_path` with `line_range.start/end`. The current index and detail pipeline generated `Review result` and `Findings` sections for all observed review completion rows without `[object Object]` output, including priority, confidence, and line-range rendering. / 关闭说明：2026-06-19 本地语料验证发现，真实非空 `review_output.findings[]` 行使用的字段族已被已提交 fixture 覆盖：`title`、`body`、`priority`、`confidence_score`，以及带 `line_range.start/end` 的 `code_location.absolute_file_path`。当前索引和详情管线能为所有观察到的 review 完成行生成 `Review result` 和 `Findings` section，没有出现 `[object Object]` 输出，并能渲染 priority、confidence 和行号范围。
+- Residual risk: future Codex versions may introduce new finding field shapes; handle those through the normal schema-review and fixture-update process when they appear, rather than tracking the current real-data case as an open debt. / 残余风险：未来 Codex 版本可能引入新的 finding 字段形态；等它们出现时，通过常规 schema review 和 fixture 更新流程处理，而不要继续把当前真实数据 case 作为开放技术债跟踪。
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/product-specs/session-transcript-analyzer.md`

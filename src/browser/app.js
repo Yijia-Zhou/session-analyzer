@@ -24,6 +24,7 @@ const LOCALE_STORAGE_KEY = 'sessionAnalyzer.locale';
 const DISPLAY_STATES = foldingApi.DISPLAY_STATES;
 const CONDITION_DISPLAY_STATES = foldingApi.CONDITION_DISPLAY_STATES;
 const EDITABLE_EVENT_KINDS = foldingApi.EDITABLE_EVENT_KINDS;
+const EDITABLE_KIND_GROUPS = foldingApi.EDITABLE_KIND_GROUPS;
 const CONDITION_DEFINITIONS = foldingApi.CONDITION_DEFINITIONS;
 const normalizeRules = foldingApi.normalizeRules;
 const normalizeOverrides = foldingApi.normalizeOverrides;
@@ -51,9 +52,15 @@ const KIND_LABELS = {
   review: 'Review',
   reasoning: 'Reasoning',
   web_search: 'Web search',
+  goal: 'Goal',
+  hook: 'Hook',
+  developer_message: 'Developer message',
   event: 'Event',
 };
 const STATUS_LABELS = {
+  active: 'Active',
+  blocked: 'Blocked',
+  complete: 'Complete',
   failed: 'Failed',
   success: 'Success',
   completed: 'Completed',
@@ -228,6 +235,9 @@ function applyStaticLocale() {
   document.querySelectorAll('.searchAssistTitle')[1] && setText(document.querySelectorAll('.searchAssistTitle')[1], t('active'));
   setSelectOptionText(el.searchKindSelect, '', t('anyKind'));
   setSelectOptionText(el.searchStatusSelect, '', t('anyStatus'));
+  setSelectOptionText(el.searchStatusSelect, 'active', statusLabel('active'));
+  setSelectOptionText(el.searchStatusSelect, 'blocked', statusLabel('blocked'));
+  setSelectOptionText(el.searchStatusSelect, 'complete', statusLabel('complete'));
   setSelectOptionText(el.searchStatusSelect, 'failed', statusLabel('failed'));
   setSelectOptionText(el.searchStatusSelect, 'success', statusLabel('success'));
   setSelectOptionText(el.searchStatusSelect, 'completed', statusLabel('completed'));
@@ -797,15 +807,81 @@ function saveCustomProfiles() {
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
 }
 
+function hasOwnRuleForKind(profile, kind) {
+  return Boolean(profile?.rules?.kindStates && Object.hasOwn(profile.rules.kindStates, kind));
+}
+
+function profileRuleForKind(profile, kind) {
+  return hasOwnRuleForKind(profile, kind) ? profile.rules.kindStates[kind] : '';
+}
+
+function baseProfileFor(profile) {
+  if (!profile?.baseProfileId) return null;
+  return state.builtinProfiles.find((candidate) => candidate.id === profile.baseProfileId) || null;
+}
+
+function dynamicKindMatchesAnyBuiltin(kind, display) {
+  return state.builtinProfiles.some((profile) => profileRuleForKind(profile, kind) === display);
+}
+
+function addProfileKindDifferences(kinds, profile, baseProfile = null) {
+  if (!profile?.rules?.kindStates) return;
+  const base = baseProfile || baseProfileFor(profile);
+  for (const kind of Object.keys(profile.rules.kindStates)) {
+    if (!foldingApi.isDynamicEditableKind(kind)) {
+      kinds.add(kind);
+      continue;
+    }
+    const display = profileRuleForKind(profile, kind);
+    if (base ? display !== profileRuleForKind(base, kind) : !dynamicKindMatchesAnyBuiltin(kind, display)) {
+      kinds.add(kind);
+    }
+  }
+  if (!base?.rules?.kindStates) return;
+  for (const kind of Object.keys(base.rules.kindStates)) {
+    if (foldingApi.isDynamicEditableKind(kind) && profileRuleForKind(profile, kind) !== profileRuleForKind(base, kind)) {
+      kinds.add(kind);
+    }
+  }
+}
+
 function knownEventKinds() {
   const kinds = new Set(EDITABLE_EVENT_KINDS);
-  for (const profile of state.profiles) {
-    for (const kind of Object.keys(profile.rules?.kindStates || {})) kinds.add(kind);
+  for (const profile of state.customProfiles) addProfileKindDifferences(kinds, profile);
+  if (state.profileDraft) addProfileKindDifferences(kinds, state.profileDraft, activeProfile());
+  for (const item of state.sessionEventKinds?.main || []) {
+    const kind = String(item?.value || '').trim();
+    if (kind) kinds.add(kind);
   }
   for (const event of state.currentEvents) {
     if (event.kind) kinds.add(event.kind);
   }
-  return [...kinds].sort((a, b) => kindLabel(a).localeCompare(kindLabel(b)) || a.localeCompare(b));
+  return [...kinds].sort(compareEditableKinds);
+}
+
+function compareEditableKinds(left, right) {
+  const leftGroup = foldingApi.editableKindGroup(left);
+  const rightGroup = foldingApi.editableKindGroup(right);
+  return leftGroup.groupPriority - rightGroup.groupPriority
+    || leftGroup.kindPriority - rightGroup.kindPriority
+    || kindLabel(left).localeCompare(kindLabel(right))
+    || left.localeCompare(right);
+}
+
+function groupedEditableKinds(kinds) {
+  const byGroup = new Map(EDITABLE_KIND_GROUPS.map((group) => [group.id, { group, kinds: [] }]));
+  for (const kind of kinds) {
+    const groupId = foldingApi.editableKindGroup(kind).groupId;
+    const entry = byGroup.get(groupId) || byGroup.get('other');
+    entry.kinds.push(kind);
+  }
+  return EDITABLE_KIND_GROUPS
+    .map((group) => byGroup.get(group.id))
+    .filter((entry) => entry && entry.kinds.length)
+    .map((entry) => ({
+      ...entry,
+      kinds: [...entry.kinds].sort(compareEditableKinds),
+    }));
 }
 
 function conditionDefinitions() {
@@ -1920,6 +1996,7 @@ async function loadTimeline(append, options = {}) {
     state.timelineSearchMatchCount = data.searchMatchCount || 0;
     state.sessionEventKinds = data.eventKinds;
     syncSearchAssistControls();
+    if (state.detailView.type === 'profileRules') renderProfileRulesPane();
     renderTimeline();
     if (!append && !options.keepScroll) resetTimelineScroll();
     renderResultSummary();
@@ -1969,6 +2046,7 @@ async function refreshTimelineFindState(options = {}) {
     state.timelineSearchMatchCount = searchMatchCount;
     state.sessionEventKinds = eventKinds;
     syncSearchAssistControls();
+    if (state.detailView.type === 'profileRules') renderProfileRulesPane();
     renderTimeline();
     refreshSearchSensitiveDetailView();
     renderResultSummary();
@@ -2081,6 +2159,7 @@ function renderTimeline() {
     ].filter(Boolean).join(' ');
     const chips = [
       event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
+      ...(Array.isArray(event.tags) ? event.tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`) : []),
       event.toolName ? `<span class="chip toolChip">${escapeHtml(event.toolName)}</span>` : '',
       event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t('files'))}</span>` : '',
       event.rawRefs?.length ? `<span class="chip countChip">${event.rawRefs.length} ${escapeHtml(t('raw'))}</span>` : '',
@@ -2499,8 +2578,13 @@ function renderProfileRulesPane(options = {}) {
   };
   const explicitKinds = knownEventKinds().filter((kind) => rules.kindStates[kind]);
   const defaultKinds = knownEventKinds().filter((kind) => !rules.kindStates[kind]);
-  const explicitKindRows = explicitKinds.map(renderKindRow).join('');
-  const defaultKindRows = defaultKinds.map(renderKindRow).join('');
+  const renderKindGroup = (entry) => `<section class="profileRuleGroup">
+    <h4>${escapeHtml(t(`kindGroup${entry.group.id[0].toUpperCase()}${entry.group.id.slice(1)}Name`))}</h4>
+    <p>${escapeHtml(t(`kindGroup${entry.group.id[0].toUpperCase()}${entry.group.id.slice(1)}Description`))}</p>
+    <div class="profileRuleList">${entry.kinds.map(renderKindRow).join('')}</div>
+  </section>`;
+  const explicitKindRows = groupedEditableKinds(explicitKinds).map(renderKindGroup).join('');
+  const defaultKindRows = groupedEditableKinds(defaultKinds).map(renderKindGroup).join('');
   const activeConditionRows = conditionDefinitions().filter((condition) => conditionMap.has(condition.id)).map((condition) => (
     `<label class="profileRuleRow">
       <span>

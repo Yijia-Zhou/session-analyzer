@@ -6,7 +6,7 @@ const childProcess = require('node:child_process');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { buildIndex, buildEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readRawLine, isPathInsideOrSame } = require('../src/codex');
+const { buildIndex, buildEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readImagePreview, readRawLine, isPathInsideOrSame } = require('../src/codex');
 const { createServer, parseArgs, resolveStaticAssetPath } = require('../server');
 const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../src/folding');
 
@@ -572,9 +572,18 @@ test('buildIndex infers fallback titles from real user tasks after protocol wrap
     file: '',
     layer: 'main',
   });
-  assert.equal(mainTimeline.events.some((event) => event.preview.includes('Get-ChildItem')), false);
+  const shellWrapper = mainTimeline.events.find((event) => event.subtype === 'user_shell_command');
+  assert.ok(shellWrapper);
+  assert.equal(shellWrapper.kind, 'user_shell_command');
+  assert.equal(shellWrapper.label, 'User shell command');
+  assert.notEqual(shellWrapper.label, 'Command');
+  assert.notEqual(shellWrapper.label, 'User message');
+  assert.equal(shellWrapper.preview, 'Get-ChildItem -Force');
+  assert.deepEqual(shellWrapper.rawRefs.map((ref) => ref.line), [2]);
+  assert.deepEqual(shellWrapper.channels, ['event_msg']);
   assert.ok(mainTimeline.eventKinds.main.some((item) => item.value === 'user_message' && item.count === 1));
-  assert.ok(mainTimeline.eventKinds.protocol.some((item) => item.value === 'user_shell_command'));
+  assert.ok(mainTimeline.eventKinds.main.some((item) => item.value === 'user_shell_command' && item.label === 'User shell command' && item.count === 1));
+  assert.equal(mainTimeline.eventKinds.protocol.some((item) => item.value === 'user_shell_command'), false);
   assert.deepEqual(mainTimeline.eventKinds, session.eventKinds);
 
   const protocolTimeline = getTimeline(index, session.id, {
@@ -587,9 +596,121 @@ test('buildIndex infers fallback titles from real user tasks after protocol wrap
     file: '',
     layer: 'protocol',
   });
-  const shellWrapper = protocolTimeline.events.find((event) => event.subtype === 'user_shell_command');
+  assert.equal(protocolTimeline.events.some((event) => event.subtype === 'user_shell_command'), false);
+});
+
+test('buildIndex shows response-item-only user shell command wrappers as main events without message counts', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const projectRoot = path.join(codexHome, 'response-item-shell-project');
+  const id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '17');
+  const file = path.join(dir, `rollout-2026-06-17T16-10-07-${id}.jsonl`);
+  const shellText = [
+    '<user_shell_command>',
+    '<command>',
+    'git fetch origin',
+    '</command>',
+    '<result>',
+    'Exit code: 0',
+    'Duration: 7.9050 seconds',
+    'Output:',
+    'From github.com:Yijia-Zhou/session-analyzer',
+    ' * [new branch]      main       -> origin/main',
+    '',
+    '</result>',
+    '</user_shell_command>',
+  ].join('\n');
+  const taskText = 'Repair fallback session titles';
+  const records = [
+    {
+      timestamp: '2026-06-17T08:10:07.000Z',
+      type: 'session_meta',
+      payload: { id, cwd: projectRoot },
+    },
+    {
+      timestamp: '2026-06-17T08:10:07.100Z',
+      type: 'event_msg',
+      payload: { type: 'thread_goal_updated', message: 'Goal changed' },
+    },
+    {
+      timestamp: '2026-06-17T08:10:07.200Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: shellText }],
+      },
+    },
+    {
+      timestamp: '2026-06-17T08:10:08.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: taskText }],
+      },
+    },
+  ];
+  await fsp.mkdir(projectRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot: projectRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  assert.ok(session);
+  assert.equal(session.title, taskText);
+  assert.equal(session.counts.userMessages, 1);
+  assert.equal(session.counts.messages, 1);
+
+  const mainTimeline = getTimeline(index, session.id, {
+    offset: 0,
+    limit: 100,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  const userEvents = mainTimeline.events.filter((event) => event.kind === 'user_message');
+  assert.equal(userEvents.length, 1);
+  assert.equal(userEvents[0].preview, taskText);
+  assert.deepEqual(userEvents[0].rawRefs.map((ref) => ref.line), [4]);
+  const shellWrapper = mainTimeline.events.find((event) => event.subtype === 'user_shell_command');
   assert.ok(shellWrapper);
-  assert.equal(shellWrapper.preview, 'Get-ChildItem -Force');
+  assert.equal(shellWrapper.kind, 'user_shell_command');
+  assert.equal(shellWrapper.label, 'User shell command');
+  assert.notEqual(shellWrapper.label, 'Command');
+  assert.notEqual(shellWrapper.label, 'User message');
+  assert.match(shellWrapper.preview, /git fetch origin/);
+  assert.deepEqual(shellWrapper.rawRefs.map((ref) => ref.line), [3]);
+  assert.deepEqual(shellWrapper.channels, ['response_item']);
+  const shellDetail = buildEventDetail(session, shellWrapper.id, 'main');
+  assert.equal(shellDetail.timelineSections[0].title, 'Shell command wrapper');
+  assert.match(shellDetail.timelineSections[0].code, /git fetch origin/);
+  assert.equal(mainTimeline.eventKinds.main.find((item) => item.value === 'user_message')?.count, 1);
+  assert.equal(mainTimeline.eventKinds.main.find((item) => item.value === 'user_shell_command')?.count, 1);
+  assert.equal(mainTimeline.eventKinds.main.find((item) => item.value === 'user_shell_command')?.label, 'User shell command');
+  assert.equal(mainTimeline.eventKinds.protocol.some((item) => item.value === 'user_shell_command'), false);
+  assert.deepEqual(mainTimeline.eventKinds, session.eventKinds);
+
+  const protocolTimeline = getTimeline(index, session.id, {
+    offset: 0,
+    limit: 100,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'protocol',
+  });
+  assert.equal(protocolTimeline.events.some((event) => event.subtype === 'user_shell_command'), false);
+
+  const raw = await readRawLine(index, session.sourceFile, 3);
+  assert.equal(raw.parsed.type, 'response_item');
+  assert.equal(raw.parsed.payload.type, 'message');
+  assert.equal(raw.parsed.payload.role, 'user');
+  assert.equal(raw.parsed.payload.content[0].text, shellText);
 });
 
 test('timeline main layer returns logical events without duplicate user or assistant messages', async () => {
@@ -1015,6 +1136,7 @@ test('grouped generic protocol tool labels prefer terminal lifecycle rows', asyn
       rawLines: byCall.get('call-approval').rawRefs.map((ref) => ref.line),
     },
     hook: {
+      kind: byCall.get('call-hook').kind,
       label: byCall.get('call-hook').label,
       status: byCall.get('call-hook').status,
       severity: byCall.get('call-hook').severity,
@@ -1034,7 +1156,7 @@ test('grouped generic protocol tool labels prefer terminal lifecycle rows', asyn
       rawLines: [2, 3],
     },
     image: {
-      label: 'Image Generation Call End',
+      label: 'Image Generation',
       status: 'success',
       severity: 'normal',
       rawLines: [4, 5],
@@ -1046,8 +1168,9 @@ test('grouped generic protocol tool labels prefer terminal lifecycle rows', asyn
       rawLines: [6, 7],
     },
     hook: {
-      label: 'Hook End',
-      status: 'success',
+      kind: 'hook',
+      label: 'pre-apply',
+      status: 'completed',
       severity: 'normal',
       rawLines: [8, 9],
     },
@@ -1077,6 +1200,162 @@ test('grouped generic protocol tool labels prefer terminal lifecycle rows', asyn
   assert.ok(session);
   const rawDetail = buildEventDetail(session, rawDeclined.id, 'raw');
   assert.equal(rawDetail.title, 'dynamic_tool_call_declined');
+});
+
+test('real image generation response item and event rows group as one tool event', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'edededed-2222-4444-8888-edededededed';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '19');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const file = path.join(dir, `rollout-2026-06-19T12-00-00-${id}.jsonl`);
+  const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+  const records = [
+    {
+      type: 'session_meta',
+      timestamp: '2026-06-19T12:00:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-19T12:00:01.000Z',
+      payload: {
+        type: 'image_generation_end',
+        call_id: 'ig_fixture_call',
+        status: 'completed',
+        saved_path: 'output/fixture-image.png',
+        revised_prompt: 'sanitized prompt',
+        result: pngBase64,
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-19T12:00:01.100Z',
+      payload: {
+        type: 'image_generation_call',
+        id: 'ig_fixture_call',
+        status: 'completed',
+        revised_prompt: 'sanitized prompt',
+        result: pngBase64,
+      },
+    },
+  ];
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  assert.ok(session);
+
+  const rawResponse = session.rawEvents.find((raw) => raw.payloadType === 'image_generation_call');
+  assert.equal(rawResponse.callId, 'ig_fixture_call');
+  assert.equal(rawResponse.toolName, 'image_generation');
+  assert.equal(rawResponse.embeddedImages.length, 1);
+  assert.equal(JSON.stringify(session).includes(pngBase64), false);
+
+  const timeline = getTimeline(index, id, {
+    offset: 0,
+    limit: 20,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  const imageEvent = timeline.events.find((event) => event.toolName === 'image_generation');
+  assert.ok(imageEvent);
+  assert.equal(imageEvent.kind, 'other_tool_call');
+  assert.equal(imageEvent.label, 'Image Generation');
+  assert.equal(imageEvent.status, 'success');
+  assert.deepEqual(imageEvent.rawRefs.map((ref) => ({
+    line: ref.line,
+    recordType: ref.sourceRecordType,
+    eventType: ref.sourceEventType,
+  })), [
+    { line: 2, recordType: 'event_msg', eventType: 'image_generation_end' },
+    { line: 3, recordType: 'response_item', eventType: 'image_generation_call' },
+  ]);
+
+  const detail = buildEventDetail(session, imageEvent.id, 'main');
+  assert.deepEqual(detail.timelineSections.map((section) => section.title), ['Image generation']);
+  assert.equal(detail.timelineSections[0].type, 'markdown');
+  assert.match(detail.timelineSections[0].html, /Image generation/);
+  assert.match(detail.timelineSections[0].html, /output\/fixture-image\.png/);
+  assert.match(detail.timelineSections[0].html, /1 image/);
+  assert.doesNotMatch(detail.timelineSections[0].html, /2 images/);
+  assert.doesNotMatch(detail.timelineSections[0].html, /Response summary/);
+  assert.deepEqual(detail.inspectorSections.map((section) => section.type), ['image_preview', 'kv', 'json']);
+  assert.deepEqual(detail.inspectorSections.map((section) => section.title), ['Image preview', 'Tool context', 'Response']);
+  const preview = detail.inspectorSections.find((section) => section.type === 'image_preview').images[0];
+  assert.equal(preview.mimeType, 'image/png');
+  assert.equal(detail.inspectorSections.find((section) => section.title === 'Response').value.result, '[embedded image payload externalized; open raw refs for source]');
+  const decoded = await readImagePreview(index, id, imageEvent.id, preview.previewId);
+  assert.equal(decoded.mimeType, 'image/png');
+  assert.equal(decoded.bytes[0], 0x89);
+});
+
+test('response-only image generation calls are successful and readable', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'edededed-3333-4444-8888-edededededed';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '19');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const file = path.join(dir, `rollout-2026-06-19T12-30-00-${id}.jsonl`);
+  const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+  const records = [
+    {
+      type: 'session_meta',
+      timestamp: '2026-06-19T12:30:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-19T12:30:01.000Z',
+      payload: {
+        type: 'image_generation_call',
+        id: 'ig_response_only',
+        status: 'completed',
+        revised_prompt: 'response only prompt',
+        result: pngBase64,
+      },
+    },
+  ];
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const timeline = getTimeline(index, id, {
+    offset: 0,
+    limit: 20,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  const imageEvent = timeline.events.find((event) => event.toolName === 'image_generation');
+  assert.ok(imageEvent);
+  assert.equal(imageEvent.label, 'Image Generation');
+  assert.equal(imageEvent.status, 'success');
+  assert.equal(imageEvent.severity, 'normal');
+  assert.deepEqual(imageEvent.rawRefs.map((ref) => ({
+    line: ref.line,
+    recordType: ref.sourceRecordType,
+    eventType: ref.sourceEventType,
+  })), [
+    { line: 2, recordType: 'response_item', eventType: 'image_generation_call' },
+  ]);
+
+  const detail = buildEventDetail(session, imageEvent.id, 'main');
+  assert.deepEqual(detail.timelineSections.map((section) => section.title), ['Image generation']);
+  assert.match(detail.timelineSections[0].html, /1 image/);
+  assert.match(detail.timelineSections[0].html, /response only prompt/);
+  const preview = detail.inspectorSections.find((section) => section.type === 'image_preview').images[0];
+  assert.equal(preview.mimeType, 'image/png');
+  assert.equal(detail.inspectorSections.find((section) => section.title === 'Response').value.result, '[embedded image payload externalized; open raw refs for source]');
 });
 
 test('tool logical events merge new and old format patch records and search still works', async () => {
@@ -1957,6 +2236,166 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
   assert.match(reviewFindings.html, /P1/);
   assert.match(reviewFindings.html, /confidence 0\.95/);
   assert.match(reviewFindings.html, /src\/codex\.js:lines 10-12/);
+});
+
+test('goal context stays protocol while goal tool lifecycle is readable on main timeline', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repo = path.join(codexHome, 'repo');
+  const id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '10');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repo, { recursive: true });
+  const file = path.join(dir, `rollout-2026-06-10T10-00-00-${id}.jsonl`);
+  const objective = 'Ship goal cards without exposing internal audit text.';
+  const goalContext = `<codex_internal_context source="goal">
+Continue working toward the active thread goal.
+
+<objective>
+${objective}
+</objective>
+
+Budget:
+- Tokens used: 12
+- Token budget: none
+</codex_internal_context>`;
+  const records = [
+    {
+      type: 'session_meta',
+      timestamp: '2026-06-10T10:00:00.000Z',
+      payload: { id, cwd: repo },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-10T10:00:01.000Z',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: goalContext }],
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-10T10:00:02.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'update_goal',
+        arguments: JSON.stringify({ status: 'complete' }),
+        call_id: 'call-goal-complete',
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-10T10:00:02.100Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-goal-complete',
+        output: JSON.stringify({
+          goal: {
+            threadId: id,
+            objective,
+            status: 'complete',
+            tokensUsed: 132017,
+            timeUsedSeconds: 361,
+            createdAt: 1781102515,
+            updatedAt: 1781102876,
+          },
+          remainingTokens: null,
+          completionBudgetReport: { finalTokenUsage: 132017 },
+        }),
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-10T10:00:03.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'update_goal',
+        arguments: JSON.stringify({ status: 'blocked' }),
+        call_id: 'call-goal-blocked',
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-10T10:00:03.100Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-goal-blocked',
+        output: JSON.stringify({
+          goal: {
+            threadId: id,
+            objective: 'Wait for external service access.',
+            status: 'blocked',
+            tokensUsed: 150,
+            timeUsedSeconds: 30,
+          },
+        }),
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-10T10:00:04.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'create_goal',
+        arguments: JSON.stringify({ objective: 'Interrupted goal create.' }),
+        call_id: 'call-goal-create-incomplete',
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-10T10:00:05.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'update_goal',
+        arguments: JSON.stringify({ status: 'complete' }),
+        call_id: 'call-goal-update-incomplete',
+      },
+    },
+  ];
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot: repo, codexHome });
+  const session = index.sessionsById.get(id);
+  const mainTimeline = getTimeline(index, id, { layer: 'main', offset: 0, limit: 20, q: '', kind: '', status: '', tool: '', file: '' });
+  const protocolTimeline = getTimeline(index, id, { layer: 'protocol', offset: 0, limit: 20, q: '', kind: '', status: '', tool: '', file: '' });
+  const goalContextEvent = protocolTimeline.events.find((event) => event.subtype === 'goal_context');
+  const goalEvents = mainTimeline.events.filter((event) => event.kind === 'goal');
+  const complete = goalEvents.find((event) => event.status === 'complete');
+  const blocked = goalEvents.find((event) => event.status === 'blocked');
+  const incomplete = goalEvents.filter((event) => event.status === 'incomplete');
+  const incompleteUpdate = incomplete.find((event) => event.toolName === 'update_goal');
+  const detail = buildEventDetail(session, complete.id, 'main');
+  const incompleteUpdateDetail = buildEventDetail(session, incompleteUpdate.id, 'main');
+  const protocolDetail = buildEventDetail(session, goalContextEvent.id, 'protocol');
+
+  assert.ok(goalContextEvent);
+  assert.equal(goalContextEvent.label, 'Goal context');
+  assert.match(goalContextEvent.preview, /Ship goal cards/);
+  assert.equal(mainTimeline.events.some((event) => event.rawRefs.some((ref) => ref.line === 2)), false);
+  assert.equal(goalEvents.length, 4);
+  assert.equal(complete.label, 'Goal complete');
+  assert.equal(complete.toolName, 'update_goal');
+  assert.equal(complete.rawRefs.length, 2);
+  assert.match(complete.preview, /complete/);
+  assert.match(complete.preview, /Ship goal cards/);
+  assert.equal(blocked.label, 'Goal blocked');
+  assert.equal(blocked.severity, 'warning');
+  assert.equal(incomplete.length, 2);
+  assert.ok(incomplete.every((event) => event.label === 'Incomplete goal call'));
+  assert.ok(incomplete.every((event) => event.severity === 'warning'));
+  assert.equal(incomplete.some((event) => event.preview.includes('active')), false);
+  assert.match(incompleteUpdateDetail.timelineSections[0].html, /Status:<\/strong> Incomplete/);
+  assert.doesNotMatch(incompleteUpdateDetail.timelineSections[0].html, /Objective/);
+  assert.doesNotMatch(incompleteUpdateDetail.timelineSections[0].html, /incomplete<\/p>/);
+  assert.equal(session.counts.toolCalls, 4);
+  assert.ok(mainTimeline.eventKinds.main.some((item) => item.value === 'goal'));
+  assert.ok(EDITABLE_EVENT_KINDS.includes('goal'));
+  assert.equal(foldingProfiles.find((profile) => profile.id === 'planning').rules.kindStates.goal, 'expanded');
+  assert.equal(detail.timelineSections.some((section) => section.title === 'Goal'), true);
+  assert.equal(detail.timelineSections.some((section) => section.title === 'Goal usage'), true);
+  assert.equal(detail.inspectorSections.some((section) => section.title === 'Request'), true);
+  assert.equal(detail.inspectorSections.some((section) => section.title === 'Response'), true);
+  assert.equal(protocolDetail.timelineSections.some((section) => section.title === 'Goal objective'), true);
 });
 
 test('other tool call detail renders readable summaries and omits large data URLs', async (t) => {
@@ -2927,6 +3366,8 @@ test('path containment and folding profiles expose expected presets', () => {
   assert.equal(EDITABLE_EVENT_KINDS.includes('protocol'), false);
   assert.equal(EDITABLE_EVENT_KINDS.includes('event'), false);
   assert.equal(EDITABLE_EVENT_KINDS.includes('plan_update'), false);
+  assert.equal(EDITABLE_EVENT_KINDS.includes('hook'), false);
+  assert.equal(EDITABLE_EVENT_KINDS.includes('subagent'), false);
   assert.equal(EDITABLE_EVENT_KINDS.includes('review'), true);
   for (const profile of foldingProfiles) {
     assert.ok(profile.rules, `${profile.id} has rule data`);
