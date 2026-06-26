@@ -1214,6 +1214,7 @@ body[data-project-mode='selecting'] .searchAssist {
 }
 
 .detailChromeHeader .eventNavigator {
+  min-width: 0;
   justify-content: flex-start;
 }
 
@@ -1359,21 +1360,26 @@ body[data-project-mode='selecting'] .searchAssist {
 .eventNavigator {
   align-items: center;
   display: flex;
-  flex-wrap: wrap;
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
   gap: 0.35rem;
   justify-content: flex-end;
   max-width: 100%;
+  min-width: 0;
 }
 
 .navSelect {
   background: #fff;
+  flex: 1 1 8rem;
   font-size: 0.78rem;
   max-width: 170px;
+  min-width: 0;
   min-height: 30px;
   padding: 0.25rem 0.4rem;
 }
 
 .navBtn {
+  flex: 0 0 auto;
   font-size: 0.76rem;
   min-height: 30px;
   padding: 0.25rem 0.45rem;
@@ -1388,8 +1394,15 @@ body[data-project-mode='selecting'] .searchAssist {
 .navPosition,
 .navStatus {
   color: var(--muted);
+  flex: 0 0 auto;
   font-size: 0.76rem;
   white-space: nowrap;
+}
+
+.navPosition {
+  align-items: center;
+  display: inline-flex;
+  min-height: 30px;
 }
 
 .inspectorSection {
