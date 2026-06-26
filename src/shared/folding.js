@@ -6,7 +6,7 @@
   'use strict';
 
   const DISPLAY_STATES = ['expanded', 'summary', 'collapsed', 'hidden'];
-  const CONDITION_DISPLAY_STATES = ['expanded', 'summary'];
+  const CONDITION_DISPLAY_STATES = ['expanded', 'summary', 'collapsed'];
   const DISPLAY_STATE_PRIORITY = {
     hidden: 0,
     collapsed: 1,

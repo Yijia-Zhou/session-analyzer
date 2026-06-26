@@ -20,6 +20,7 @@ test('display states have a fixed most-visible priority', () => {
     summary: 2,
     expanded: 3,
   });
+  assert.deepEqual(folding.CONDITION_DISPLAY_STATES, ['expanded', 'summary', 'collapsed']);
   const event = { kind: 'patch', touchedFiles: ['public/app.js'], severity: 'normal' };
   assert.equal(folding.displayStateFromRules(event, {
     kindStates: { patch: 'collapsed' },
@@ -34,20 +35,20 @@ test('changes profile keeps successful and failed patches with files expanded', 
   assert.equal(folding.displayStateFromRules({ kind: 'patch', status: 'failed', touchedFiles: ['a.js'], severity: 'normal' }, rules), 'expanded');
 });
 
-test('changes profile summarizes ordinary touched-file events', () => {
+test('changes profile collapses ordinary touched-file events', () => {
   assert.equal(folding.displayStateFromRules({
     kind: 'other_tool_call',
     touchedFiles: ['a.js'],
     severity: 'normal',
-  }, profileRules('changes')), 'summary');
+  }, profileRules('changes')), 'collapsed');
 });
 
-test('changes profile summarizes failed events even without touched files', () => {
+test('changes profile collapses failed events even without touched files', () => {
   assert.equal(folding.displayStateFromRules({
     kind: 'mcp_call',
     status: 'failed',
     severity: 'normal',
-  }, profileRules('changes')), 'summary');
+  }, profileRules('changes')), 'collapsed');
 });
 
 test('changes profile recognizes common verification commands', () => {
@@ -64,14 +65,14 @@ test('narrative profile collapses ordinary high-frequency tool events', () => {
     assert.equal(folding.displayStateFromRules({ kind, status: 'success', severity: 'normal' }, rules), 'collapsed', kind);
   }
   assert.equal(folding.displayStateFromRules({ kind: 'hook', status: 'completed', severity: 'normal' }, rules), 'summary');
-  assert.equal(folding.displayStateFromRules({ kind: 'developer_message', severity: 'normal' }, rules), 'summary');
+  assert.equal(folding.displayStateFromRules({ kind: 'developer_message', severity: 'normal' }, rules), 'expanded');
 });
 
 test('matching condition order does not change the most visible result', () => {
   const event = { kind: 'other_tool_call', hasSearchHit: true, severity: 'error' };
   const conditions = [
     { id: 'searchHit', state: 'expanded' },
-    { id: 'importantEvent', state: 'summary' },
+    { id: 'importantEvent', state: 'collapsed' },
   ];
   const rules = { kindStates: {}, fallback: 'hidden', conditions };
   assert.equal(folding.displayStateFromRules(event, rules), 'expanded');
@@ -98,6 +99,7 @@ test('rule normalization rejects invalid conditions and stabilizes duplicates', 
       { id: 'unknown', state: 'expanded' },
       { id: 'searchHit', state: 'collapsed' },
       { id: 'failedStatus', state: 'expanded' },
+      { id: 'touchedFiles', state: 'collapsed' },
       { id: 'searchHit', state: 'summary' },
     ],
   })), {
@@ -106,6 +108,7 @@ test('rule normalization rejects invalid conditions and stabilizes duplicates', 
     conditions: [
       { id: 'searchHit', state: 'summary' },
       { id: 'failedStatus', state: 'expanded' },
+      { id: 'touchedFiles', state: 'collapsed' },
     ],
   });
 });
@@ -117,12 +120,39 @@ test('planning condition matches update_plan calls and protocol plan updates', (
   assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'update_plan', severity: 'normal' }, profileRules('planning')), 'expanded');
 });
 
+test('planning profile expands only planning anchors and collapses known non-planning events', () => {
+  const rules = profileRules('planning');
+  assert.equal(folding.displayStateFromRules({ kind: 'proposed_plan', severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'goal', severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'update_plan', severity: 'normal' }, rules), 'expanded');
+  for (const kind of ['user_message', 'assistant_message', 'patch', 'command', 'developer_message', 'review', 'compaction', 'user_shell_command']) {
+    assert.equal(folding.displayStateFromRules({ kind, severity: 'normal' }, rules), 'collapsed', kind);
+  }
+  assert.equal(folding.displayStateFromRules({ kind: 'future_event_kind', severity: 'normal' }, rules), 'hidden');
+});
+
+test('search profile expands hits and collapses important events', () => {
+  const rules = profileRules('search');
+  assert.equal(folding.displayStateFromRules({ kind: 'command', hasSearchHit: true, severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'goal', severity: 'normal' }, rules), 'collapsed');
+  assert.equal(folding.displayStateFromRules({ kind: 'mcp_call', status: 'failed', severity: 'normal' }, rules), 'collapsed');
+  assert.equal(folding.displayStateFromRules({ kind: 'mcp_call', status: 'success', severity: 'normal' }, rules), 'hidden');
+});
+
+test('debug profile hides ordinary events by default', () => {
+  const rules = profileRules('debug');
+  assert.equal(folding.displayStateFromRules({ kind: 'command', status: 'success', severity: 'normal' }, rules), 'hidden');
+  assert.equal(folding.displayStateFromRules({ kind: 'command', status: 'failed', severity: 'normal' }, rules), 'expanded');
+});
+
 test('conversation profile keeps plan updates and user input requests expanded', () => {
   const rules = profileRules('conversation');
   assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'update_plan', severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'request_user_input', severity: 'normal' }, rules), 'expanded');
-  assert.equal(folding.displayStateFromRules({ kind: 'reasoning', hasReadableReasoning: true, severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'reasoning', hasReadableReasoning: true, severity: 'normal' }, rules), 'summary');
   assert.equal(folding.displayStateFromRules({ kind: 'reasoning', hasReadableReasoning: false, severity: 'normal' }, rules), 'hidden');
+  assert.equal(folding.displayStateFromRules({ kind: 'goal', severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'compaction', severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'view_image', severity: 'normal' }, rules), 'hidden');
   assert.equal(folding.displayStateFromRules({ kind: 'hook', severity: 'normal' }, rules), 'hidden');
   assert.equal(folding.displayStateFromRules({ kind: 'developer_message', hasSearchHit: true, severity: 'normal' }, {
