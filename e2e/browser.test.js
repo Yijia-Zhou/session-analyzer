@@ -103,6 +103,10 @@ async function waitForNoSearchMarks(page) {
   await page.waitForFunction(() => document.querySelectorAll('.searchMark').length === 0);
 }
 
+async function waitForDetailView(page, type) {
+  await page.waitForFunction((expected) => document.body.dataset.detailView === expected, type);
+}
+
 async function makeLongCodexHome(t) {
   const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-'));
   const longRepoRoot = path.join(codexHome, 'repo');
@@ -203,6 +207,8 @@ test('browser locale localizes static shell and dirty profile dialog', async (t)
   await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
   assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), '搜索消息、命令、文件、输出');
   assert.equal(await page.locator('.mobileViewTab[data-mobile-view="events"]').textContent(), '事件');
+  assert.equal(await page.locator('#searchStatusSelect option[value="complete"]').textContent(), '目标已完成');
+  assert.equal(await page.locator('#searchStatusSelect option[value="completed"]').textContent(), '事件已完成');
   assert.match(await page.locator('#loadMoreBtn').textContent(), /加载更多|已加载|加载中/);
   await fillSearch(page, 'zzzz-no-match');
   await page.waitForFunction(() => document.querySelector('[data-search-match-count]')?.textContent === '无匹配');
@@ -302,6 +308,111 @@ test('browser inspector search reacquires live marks after redraw', async (t) =>
   await page.locator('[data-search-match-nav="next"]').first().click();
   await page.waitForFunction((title) => document.querySelector('#detail h2')?.textContent !== title, firstDetailTitle);
   await page.waitForSelector('#detail .searchMark.activeSearchMark, #detail .searchMark');
+});
+
+test('browser search-transient detail closes when free text no longer matches', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index);
+  await selectPrimarySession(page);
+
+  await fillSearch(page, 'patch');
+  await waitForSearchMarks(page);
+  await page.locator('#searchInput').press('Enter');
+  await waitForDetailView(page, 'inspector');
+
+  await fillSearch(page, 'definitely-no-search-hit');
+  await waitForNoSearchMarks(page);
+  await waitForDetailView(page, 'profileRules');
+
+  await fillSearch(page, 'patch');
+  await waitForSearchMarks(page);
+  await page.locator('#searchInput').press('Enter');
+  await waitForDetailView(page, 'inspector');
+
+  await page.locator('#resultSummary [data-clear-filter="q"]').click();
+  await expectInputValue(page, '#searchInput', '');
+  await waitForDetailView(page, 'profileRules');
+});
+
+test('browser user-confirmed inspector and raw refs persist across free-text changes', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index);
+  await selectPrimarySession(page);
+
+  await page.locator('#timeline .event[data-event-id]').first().click();
+  await waitForDetailView(page, 'inspector');
+
+  await fillSearch(page, 'definitely-no-search-hit');
+  await waitForNoSearchMarks(page);
+  await waitForDetailView(page, 'inspector');
+
+  await fillSearch(page, '');
+  await expectInputValue(page, '#searchInput', '');
+  await waitForDetailView(page, 'inspector');
+
+  await page.locator('[data-detail-action="raw"]').click();
+  await waitForDetailView(page, 'rawRefs');
+
+  await fillSearch(page, 'definitely-no-search-hit');
+  await waitForNoSearchMarks(page);
+  await waitForDetailView(page, 'rawRefs');
+
+  await fillSearch(page, '');
+  await expectInputValue(page, '#searchInput', '');
+  await waitForDetailView(page, 'rawRefs');
+});
+
+test('browser passive search refresh does not downgrade user-confirmed detail views', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index);
+  await selectPrimarySession(page);
+
+  await page.locator('#timeline .event[data-event-id]:not(.kind-patch)').first().click();
+  await waitForDetailView(page, 'inspector');
+  const confirmedTitle = await page.locator('#detail h2').textContent();
+
+  await fillSearch(page, 'patch');
+  await waitForSearchMarks(page);
+  await waitForDetailView(page, 'inspector');
+  assert.equal(await page.locator('#detail h2').textContent(), confirmedTitle);
+
+  await fillSearch(page, '');
+  await expectInputValue(page, '#searchInput', '');
+  await waitForDetailView(page, 'inspector');
+  assert.equal(await page.locator('#detail h2').textContent(), confirmedTitle);
+
+  await page.locator('[data-detail-action="raw"]').click();
+  await waitForDetailView(page, 'rawRefs');
+  const rawTitle = await page.locator('#detail h2').textContent();
+
+  await fillSearch(page, 'patch');
+  await waitForSearchMarks(page);
+  await waitForDetailView(page, 'rawRefs');
+  assert.equal(await page.locator('#detail h2').textContent(), rawTitle);
+
+  await page.locator('#searchInput').press('Enter');
+  await waitForDetailView(page, 'inspector');
+  await page.waitForFunction((title) => document.querySelector('#detail h2')?.textContent !== title, rawTitle);
+
+  await fillSearch(page, '');
+  await expectInputValue(page, '#searchInput', '');
+  await waitForDetailView(page, 'profileRules');
+});
+
+test('browser user-confirmed detail closes when structured filters remove the selected event', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index);
+  await selectPrimarySession(page);
+
+  await page.locator('#timeline .event[data-event-id]:not(.kind-patch)').first().click();
+  await waitForDetailView(page, 'inspector');
+
+  await fillSearch(page, 'kind:patch');
+  await page.waitForFunction(() => {
+    const events = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    return events.length > 0 && events.every((event) => event.classList.contains('kind-patch'));
+  });
+  await waitForDetailView(page, 'profileRules');
 });
 
 test('browser read from here clears structured filters and preserves free text', async (t) => {

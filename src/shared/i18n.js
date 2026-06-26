@@ -300,6 +300,14 @@
         success: 'Success',
         completed: 'Completed',
       },
+      searchStatus: {
+        active: 'Active',
+        blocked: 'Blocked',
+        complete: 'Complete goal',
+        failed: 'Failed',
+        success: 'Success',
+        completed: 'Completed event',
+      },
       section: {
         Arguments: 'Arguments',
         Patch: 'Patch',
@@ -738,6 +746,14 @@
         success: '成功',
         completed: '已完成',
       },
+      searchStatus: {
+        active: '活跃',
+        blocked: '已阻塞',
+        complete: '目标已完成',
+        failed: '失败',
+        success: '成功',
+        completed: '事件已完成',
+      },
       section: {
         Arguments: '参数',
         Patch: '文件补丁',
@@ -893,6 +909,11 @@
     return t(locale, 'status', key) || key;
   }
 
+  function searchStatusLabel(value, locale) {
+    const key = String(value || '').trim();
+    return t(locale, 'searchStatus', key) || statusLabel(key, locale);
+  }
+
   function sectionTitle(title, locale) {
     const key = String(title || '').trim();
     return t(locale, 'section', key) || key;
@@ -963,6 +984,7 @@
     rawRecordLabel,
     displayStateLabel,
     statusLabel,
+    searchStatusLabel,
     sectionTitle,
     lookupKnownLabel,
     knownLabel,

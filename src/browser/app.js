@@ -17,6 +17,8 @@ const SEARCH_TARGET_PRELOAD_MIN = 5;
 const SEARCH_TARGET_PRELOAD_MAX_PAGES = 3;
 const FILE_SUGGESTION_LIMIT = 12;
 const SEARCH_HIGHLIGHT_INPUT_DELAY_MS = 300;
+const DETAIL_VIEW_ORIGIN_SEARCH = 'searchTransient';
+const DETAIL_VIEW_ORIGIN_USER = 'userConfirmed';
 const REPO_STORAGE_KEY = 'sessionAnalyzer.repoRoot';
 const CUSTOM_PROFILES_KEY = 'sessionAnalyzer.customProfiles';
 const OVERRIDES_KEY = 'sessionAnalyzer.overrides';
@@ -88,6 +90,10 @@ function displayStateLabel(value) {
 
 function statusLabel(value) {
   return i18n.statusLabel(value, state?.locale || browserLocale());
+}
+
+function searchStatusLabel(value) {
+  return i18n.searchStatusLabel(value, state?.locale || browserLocale());
 }
 
 const state = {
@@ -235,12 +241,12 @@ function applyStaticLocale() {
   document.querySelectorAll('.searchAssistTitle')[1] && setText(document.querySelectorAll('.searchAssistTitle')[1], t('active'));
   setSelectOptionText(el.searchKindSelect, '', t('anyKind'));
   setSelectOptionText(el.searchStatusSelect, '', t('anyStatus'));
-  setSelectOptionText(el.searchStatusSelect, 'active', statusLabel('active'));
-  setSelectOptionText(el.searchStatusSelect, 'blocked', statusLabel('blocked'));
-  setSelectOptionText(el.searchStatusSelect, 'complete', statusLabel('complete'));
-  setSelectOptionText(el.searchStatusSelect, 'failed', statusLabel('failed'));
-  setSelectOptionText(el.searchStatusSelect, 'success', statusLabel('success'));
-  setSelectOptionText(el.searchStatusSelect, 'completed', statusLabel('completed'));
+  setSelectOptionText(el.searchStatusSelect, 'active', searchStatusLabel('active'));
+  setSelectOptionText(el.searchStatusSelect, 'blocked', searchStatusLabel('blocked'));
+  setSelectOptionText(el.searchStatusSelect, 'complete', searchStatusLabel('complete'));
+  setSelectOptionText(el.searchStatusSelect, 'failed', searchStatusLabel('failed'));
+  setSelectOptionText(el.searchStatusSelect, 'success', searchStatusLabel('success'));
+  setSelectOptionText(el.searchStatusSelect, 'completed', searchStatusLabel('completed'));
   setSelectOptionText(el.searchLayerSelect, '', t('currentLayer'));
   setSelectOptionText(el.searchLayerSelect, 'main', t('mainTimeline'));
   setSelectOptionText(el.searchLayerSelect, 'protocol', t('protocolLayer'));
@@ -598,12 +604,21 @@ function setActiveSearchMark(index, options = {}) {
   if (options.scroll || options.syncDetail) {
     const article = mark.closest('[data-event-id]');
     if (article?.dataset.eventId) {
+      const confirmedEventDetail = isSelectedEventDetailView()
+        && state.detailView.origin === DETAIL_VIEW_ORIGIN_USER;
+      if (options.passive && confirmedEventDetail) {
+        updateSearchMatchControls();
+        return true;
+      }
       state.selectedEventId = article.dataset.eventId;
       updateSelectedTimelineEvent();
       if (options.syncDetail) {
         const item = state.currentEvents.find((event) => event.id === article.dataset.eventId);
         if (item) {
-          showInspector(item, { replace: true });
+          const confirmedCurrentEvent = confirmedEventDetail && state.detailView.eventId === item.id;
+          if (!confirmedCurrentEvent) {
+            showInspector(item, { replace: true, origin: DETAIL_VIEW_ORIGIN_SEARCH });
+          }
         }
       }
     }
@@ -636,10 +651,12 @@ function refreshSearchHighlights(options = {}) {
     setActiveSearchMark(keepIndex ? Math.min(previousIndex, marks.length - 1) : 0, {
       scroll: false,
       syncDetail: options.syncDetail,
+      passive: options.passive,
     });
   } else {
     updateSearchMatchControls();
   }
+  convergeSelectedEventDetailView();
   if (options.allowPreload !== false) maybePreloadSearchTargets();
 }
 
@@ -1998,6 +2015,7 @@ async function loadTimeline(append, options = {}) {
     syncSearchAssistControls();
     if (state.detailView.type === 'profileRules') renderProfileRulesPane();
     renderTimeline();
+    convergeSelectedEventDetailView({ refreshedHitState: true });
     if (!append && !options.keepScroll) resetTimelineScroll();
     renderResultSummary();
     maybePreloadSearchTargets();
@@ -2048,7 +2066,7 @@ async function refreshTimelineFindState(options = {}) {
     syncSearchAssistControls();
     if (state.detailView.type === 'profileRules') renderProfileRulesPane();
     renderTimeline();
-    refreshSearchSensitiveDetailView();
+    if (!convergeSelectedEventDetailView({ refreshedHitState: true })) refreshSearchSensitiveDetailView();
     renderResultSummary();
     maybePreloadSearchTargets();
   } finally {
@@ -2372,7 +2390,7 @@ function renderInspectorNavigation(event) {
 
 function currentSelectedEvent() {
   return state.currentEvents.find((candidate) => candidate.id === state.selectedEventId)
-    || state.navigationCache.events.find((candidate) => candidate.id === state.selectedEventId)
+    || currentNavigationCache()?.events.find((candidate) => candidate.id === state.selectedEventId)
     || null;
 }
 
@@ -2396,7 +2414,7 @@ async function inspectAndRevealEvent(target) {
     setOverride(loaded.id, 'summary');
     renderTimeline();
   }
-  showInspector(loaded, { replace: true });
+  showInspector(loaded, { replace: true, origin: DETAIL_VIEW_ORIGIN_USER });
   scrollToTimelineEvent(loaded.id);
 }
 
@@ -2416,8 +2434,58 @@ async function navigateSelectedEvent(direction) {
   await inspectAndRevealEvent(matches[nextIndex]);
 }
 
+function isSelectedEventDetailView(view = state.detailView) {
+  return view?.type === 'inspector' || view?.type === 'rawRefs';
+}
+
+function detailViewOrigin(type, eventId, options = {}) {
+  if (options.origin) return options.origin;
+  if (options.replace && state.detailView?.type === type && state.detailView?.eventId === eventId) {
+    return state.detailView.origin || DETAIL_VIEW_ORIGIN_USER;
+  }
+  return DETAIL_VIEW_ORIGIN_USER;
+}
+
+function eventDetailView(type, eventId, options = {}) {
+  return { type, eventId, origin: detailViewOrigin(type, eventId, options) };
+}
+
+function selectedEventInCurrentTimeline() {
+  const eventId = state.detailView?.eventId || state.selectedEventId;
+  if (!eventId) return null;
+  return state.currentEvents.find((candidate) => candidate.id === eventId) || null;
+}
+
+function convergeSelectedEventDetailView(options = {}) {
+  if (!isSelectedEventDetailView()) return false;
+  const item = selectedEventInCurrentTimeline();
+  if (!item) {
+    closeDetailView();
+    return true;
+  }
+  if (state.detailView.origin !== DETAIL_VIEW_ORIGIN_SEARCH) return false;
+  const query = currentSearchState().q;
+  if (!query) {
+    closeDetailView();
+    return true;
+  }
+  if (!options.refreshedHitState) return false;
+  if (!state.timelineSearchMatchCount || !item.hasSearchHit) {
+    closeDetailView();
+    return true;
+  }
+  return false;
+}
+
 function pushDetailView(nextView) {
-  if (state.detailView) state.detailHistory.push(state.detailView);
+  if (state.detailView) {
+    const previousView = nextView.origin === DETAIL_VIEW_ORIGIN_USER
+      && isSelectedEventDetailView(state.detailView)
+      && state.detailView.eventId === nextView.eventId
+      ? { ...state.detailView, origin: DETAIL_VIEW_ORIGIN_USER }
+      : state.detailView;
+    state.detailHistory.push(previousView);
+  }
   state.detailView = nextView;
 }
 
@@ -2459,7 +2527,7 @@ function renderCurrentDetailView() {
 }
 
 function refreshSearchSensitiveDetailView() {
-  if (state.detailView.type === 'inspector' || state.detailView.type === 'rawRefs') {
+  if (isSelectedEventDetailView()) {
     renderCurrentDetailView();
   }
 }
@@ -2671,8 +2739,8 @@ function showInspector(event, options = {}) {
   const chips = renderChips(inspectorChipValues(event));
   state.selectedEventId = event.id;
   state.detailSelectionKey = key;
-  if (options.replace) replaceDetailView({ type: 'inspector', eventId: event.id });
-  else pushDetailView({ type: 'inspector', eventId: event.id });
+  if (options.replace) replaceDetailView(eventDetailView('inspector', event.id, options));
+  else pushDetailView(eventDetailView('inspector', event.id, options));
   setMobileView('detail');
   updateSelectedTimelineEvent();
   if (!currentNavigationCache()) {
@@ -2708,8 +2776,8 @@ async function showRaw(event, options = {}) {
   const rawKey = `raw:${detailKey(state.selectedSessionId, layer, event.id)}`;
   state.selectedEventId = event.id;
   state.detailSelectionKey = rawKey;
-  if (options.replace) replaceDetailView({ type: 'rawRefs', eventId: event.id });
-  else pushDetailView({ type: 'rawRefs', eventId: event.id });
+  if (options.replace) replaceDetailView(eventDetailView('rawRefs', event.id, options));
+  else pushDetailView(eventDetailView('rawRefs', event.id, options));
   setMobileView('detail');
   updateSelectedTimelineEvent();
   if (!refs.length) {
@@ -3053,7 +3121,7 @@ el.detail.addEventListener('change', (event) => {
   state.navigationCategoryId = select.value;
   state.navigationCategoryManualId = select.value;
   const item = currentSelectedEvent();
-  if (item) showInspector(item, { replace: true });
+  if (item) showInspector(item, { replace: true, origin: DETAIL_VIEW_ORIGIN_USER });
 });
 
 el.profileSelect.addEventListener('change', () => {
@@ -3155,7 +3223,7 @@ el.searchInput.addEventListener('input', () => {
   state.searchHighlight = { query: currentSearchState().q, marks: [], activeIndex: -1 };
   state.timelineSearchMatchCount = 0;
   updateSearchMatchControls();
-  scheduleSearchHighlightRefresh({ allowPreload: false, syncDetail: true });
+  scheduleSearchHighlightRefresh({ allowPreload: false, syncDetail: true, passive: true });
   const nextStructureKey = structuredSearchKey();
   const structureChanged = state.searchStructureKey && state.searchStructureKey !== nextStructureKey;
   state.searchStructureKey = nextStructureKey;

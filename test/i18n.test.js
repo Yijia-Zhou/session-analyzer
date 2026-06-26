@@ -110,6 +110,11 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.eventKindLabel('developer_message', 'zh-CN'), '开发者消息');
   assert.equal(i18n.eventKindLabel('goal_context', 'zh-CN'), '目标上下文');
   assert.equal(i18n.statusLabel('blocked', 'zh-CN'), '已阻塞');
+  assert.equal(i18n.statusLabel('complete', 'zh-CN'), '已完成');
+  assert.equal(i18n.statusLabel('completed', 'zh-CN'), '已完成');
+  assert.equal(i18n.searchStatusLabel('complete', 'zh-CN'), '目标已完成');
+  assert.equal(i18n.searchStatusLabel('completed', 'zh-CN'), '事件已完成');
+  assert.notEqual(i18n.searchStatusLabel('complete', 'zh-CN'), i18n.searchStatusLabel('completed', 'zh-CN'));
   assert.equal(i18n.humanize('mcp_tool_call'), 'MCP Tool Call');
   assert.equal(i18n.humanize('js_repl'), 'JS REPL');
 });

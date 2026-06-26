@@ -41,6 +41,7 @@ When changing product behavior or repository structure:
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Active plans: none
 - Completed plans:
+  - `docs/exec-plans/completed/2026-06-26-search-detail-state-convergence.md`
   - `docs/exec-plans/completed/2026-06-15-external-review-followups.md`
   - `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`
   - `docs/exec-plans/completed/2026-06-02-inspector-search-target-reveal.md`
