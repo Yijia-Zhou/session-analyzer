@@ -115,6 +115,8 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.searchStatusLabel('complete', 'zh-CN'), '目标已完成');
   assert.equal(i18n.searchStatusLabel('completed', 'zh-CN'), '事件已完成');
   assert.notEqual(i18n.searchStatusLabel('complete', 'zh-CN'), i18n.searchStatusLabel('completed', 'zh-CN'));
+  assert.equal(i18n.t('en', 'ui', 'matchCount', { current: 2, jumpTotal: 3, fullTextTotal: 5 }), '2 / 3 jump targets · 5 full-text hits');
+  assert.equal(i18n.t('zh-CN', 'ui', 'matchCount', { current: 2, jumpTotal: 3, fullTextTotal: 5 }), '2 / 3 个跳转目标 · 5 个全文命中');
   assert.equal(i18n.humanize('mcp_tool_call'), 'MCP Tool Call');
   assert.equal(i18n.humanize('js_repl'), 'JS REPL');
 });

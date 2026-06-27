@@ -143,9 +143,11 @@ const state = {
   navigationCategoryId: '',
   navigationCategoryManualId: '',
   navigationCache: { key: '', events: [], total: 0, pending: null },
+  navigationLoadErrorKey: '',
   searchHighlight: { query: '', marks: [], activeIndex: -1 },
   searchHighlightTimer: 0,
   searchTargetPreload: { key: '', pages: 0, pending: false },
+  searchTransientExpansion: { key: '', eventIds: [] },
   searchStructureKey: '',
   mobileView: 'sessions',
 };
@@ -533,6 +535,46 @@ function searchTargetPreloadKey() {
   ].join('\u001f');
 }
 
+function resetSearchTransientExpansions() {
+  const hadExpansions = state.searchTransientExpansion.eventIds.length > 0;
+  state.searchTransientExpansion = { key: '', eventIds: [] };
+  return hadExpansions;
+}
+
+function currentSearchTransientExpansionIds() {
+  const key = searchTargetPreloadKey();
+  const search = currentSearchState();
+  if (!search.q || state.searchTransientExpansion.key !== key) return [];
+  return state.searchTransientExpansion.eventIds;
+}
+
+function reconcileSearchTransientExpansions() {
+  const search = currentSearchState();
+  const key = searchTargetPreloadKey();
+  if (!search.q || (state.searchTransientExpansion.key && state.searchTransientExpansion.key !== key)) {
+    return resetSearchTransientExpansions();
+  }
+  return false;
+}
+
+function addSearchTransientExpansion(eventId) {
+  const search = currentSearchState();
+  if (!search.q || !eventId) return;
+  const key = searchTargetPreloadKey();
+  if (state.searchTransientExpansion.key !== key) {
+    state.searchTransientExpansion = { key, eventIds: [] };
+  }
+  if (!state.searchTransientExpansion.eventIds.includes(eventId)) {
+    state.searchTransientExpansion.eventIds.push(eventId);
+  }
+}
+
+function clearSearchTransientExpansion(eventId) {
+  if (!eventId || !state.searchTransientExpansion.eventIds.length) return;
+  state.searchTransientExpansion.eventIds = state.searchTransientExpansion.eventIds.filter((id) => id !== eventId);
+  if (!state.searchTransientExpansion.eventIds.length) state.searchTransientExpansion.key = '';
+}
+
 function structuredSearchKey() {
   const search = currentSearchState();
   return searchQuery.structuredSearchKey(
@@ -544,22 +586,22 @@ function structuredSearchKey() {
 
 function currentSearchMarkLabel() {
   const { marks, activeIndex } = state.searchHighlight;
-  const total = searchHighlighter.displayedMatchTotal(state.timelineSearchMatchCount, marks.length);
-  if (!total) return t('noMatches');
-  const current = marks.length && activeIndex >= 0 ? activeIndex + 1 : 0;
-  return t('matchCount', { current, total });
+  const count = searchHighlighter.searchCountModel(state.timelineSearchMatchCount, marks.length, activeIndex);
+  if (!count.hasAnyMatch) return t('noMatches');
+  return t('matchCount', count);
 }
 
 function updateSearchMatchControls() {
   const controls = document.querySelectorAll('[data-search-match-controls]');
   const { marks } = state.searchHighlight;
   const visible = Boolean(currentSearchState().q);
+  const canNavigate = marks.length > 0 || state.timelineSearchMatchCount > 0;
   controls.forEach((control) => {
     control.hidden = !visible;
     const label = control.querySelector('[data-search-match-count]');
     if (label) label.textContent = currentSearchMarkLabel();
     control.querySelectorAll('[data-search-match-nav]').forEach((button) => {
-      button.disabled = marks.length === 0;
+      button.disabled = !canNavigate;
     });
   });
 }
@@ -660,12 +702,156 @@ function refreshSearchHighlights(options = {}) {
   if (options.allowPreload !== false) maybePreloadSearchTargets();
 }
 
-function navigateSearchMatch(direction) {
+function searchMarkEventId(mark) {
+  return mark?.closest?.('[data-event-id]')?.dataset.eventId || '';
+}
+
+function eventSearchMarks(eventId, selector = 'mark.searchMark') {
+  const article = el.timeline.querySelector(`[data-event-id="${CSS.escape(eventId)}"]`);
+  return article ? [...article.querySelectorAll(selector)] : [];
+}
+
+function setActiveSearchMarkElement(mark, options = {}) {
+  const index = state.searchHighlight.marks.indexOf(mark);
+  if (index < 0) return false;
+  return setActiveSearchMark(index, options);
+}
+
+function persistedDisplayOverride(eventId) {
+  const sessionOverrides = state.overrides[state.selectedSessionId] || {};
+  return sessionOverrides[eventId] || '';
+}
+
+function materializedSearchEventIds() {
+  const eventIds = new Set();
+  for (const article of el.timeline.querySelectorAll('[data-event-id]')) {
+    if (article.querySelector('mark.searchMark')) eventIds.add(article.dataset.eventId);
+  }
+  return eventIds;
+}
+
+function waitForTimelineIdle() {
+  if (!state.timelineLoading) return Promise.resolve();
+  return new Promise((resolve) => {
+    const poll = () => {
+      if (!state.timelineLoading) resolve();
+      else setTimeout(poll, 25);
+    };
+    poll();
+  });
+}
+
+function activateMaterializedEventSearchTarget(eventId, direction, options = {}) {
+  const bodyMarks = eventSearchMarks(eventId, '.eventBody mark.searchMark');
+  const marks = bodyMarks.length ? bodyMarks : eventSearchMarks(eventId);
+  const mark = direction < 0 ? marks[marks.length - 1] : marks[0];
+  if (mark) return setActiveSearchMarkElement(mark, { scroll: true, syncDetail: true });
+
+  if (options.allowSnippet === false) return false;
+  const article = el.timeline.querySelector(`[data-event-id="${CSS.escape(eventId)}"]`);
+  const snippet = article?.querySelector('.eventPreview, .eventLoadingSnippet');
+  if (!snippet) return false;
+  state.selectedEventId = eventId;
+  updateSelectedTimelineEvent();
+  snippet.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  updateSearchMatchControls();
+  return true;
+}
+
+async function materializeSearchEvent(event, direction, options = {}) {
+  await ensureEventLoaded(event.id);
+  if (options.searchKey && searchTargetPreloadKey() !== options.searchKey) return false;
+  const loaded = state.currentEvents.find((candidate) => candidate.id === event.id) || event;
+  if (activateMaterializedEventSearchTarget(loaded.id, direction, { allowSnippet: false })) return true;
+
+  const override = persistedDisplayOverride(loaded.id);
+  if (override && override !== 'expanded') return false;
+  if (!override && displayState(loaded) !== 'expanded') {
+    addSearchTransientExpansion(loaded.id);
+    renderTimeline();
+  }
+
+  await loadEventDetail(loaded);
+  if (options.searchKey && searchTargetPreloadKey() !== options.searchKey) return false;
+  renderTimeline();
+  refreshSearchHighlights({ preserveActive: true, allowPreload: false });
+  return activateMaterializedEventSearchTarget(loaded.id, direction);
+}
+
+async function materializeNextSearchTarget(direction, options = {}) {
+  const search = currentSearchState();
+  if (!search.q || !state.timelineSearchMatchCount) return false;
+  const searchKey = searchTargetPreloadKey();
+  const activeMark = state.searchHighlight.marks[state.searchHighlight.activeIndex] || null;
+  const activeEventId = activeMark ? searchMarkEventId(activeMark) : '';
+  const activeEventIndex = state.currentEvents.findIndex((event) => event.id === activeEventId);
+  const initiallyMaterialized = options.onlyUnmaterialized ? materializedSearchEventIds() : new Set();
+  const attempted = new Set();
+
+  const tryEvents = async (events) => {
+    for (const event of events) {
+      if (!event.hasSearchHit || attempted.has(event.id)) continue;
+      attempted.add(event.id);
+      if (options.onlyUnmaterialized && initiallyMaterialized.has(event.id)) continue;
+      if (await materializeSearchEvent(event, direction, { searchKey })) return true;
+      if (searchTargetPreloadKey() !== searchKey) return false;
+    }
+    return false;
+  };
+
+  const appendNextPage = async () => {
+    const previousOffset = state.offset;
+    await waitForTimelineIdle();
+    if (searchTargetPreloadKey() !== searchKey) return false;
+    if (state.offset > previousOffset) return true;
+    if (state.offset >= state.timelineTotal) return false;
+    await loadTimeline(true, { allowSearchTargetPreload: false });
+    await waitForTimelineIdle();
+    if (searchTargetPreloadKey() !== searchKey) return false;
+    return state.offset > previousOffset;
+  };
+
+  if (direction >= 0) {
+    let scanOffset = activeEventIndex >= 0 ? activeEventIndex + 1 : 0;
+    while (true) {
+      const loadedEnd = state.currentEvents.length;
+      if (await tryEvents(state.currentEvents.slice(scanOffset, loadedEnd))) return true;
+      if (searchTargetPreloadKey() !== searchKey || state.offset >= state.timelineTotal) break;
+      scanOffset = loadedEnd;
+      if (!await appendNextPage()) break;
+    }
+    if (activeEventIndex >= 0) {
+      return tryEvents(state.currentEvents.slice(0, activeEventIndex));
+    }
+    return false;
+  }
+
+  if (activeEventIndex >= 0) {
+    if (await tryEvents(state.currentEvents.slice(0, activeEventIndex).reverse())) return true;
+    if (searchTargetPreloadKey() !== searchKey) return false;
+  }
+
+  while (state.offset < state.timelineTotal) {
+    if (!await appendNextPage()) break;
+  }
+  if (searchTargetPreloadKey() !== searchKey) return false;
+  const wrapStart = activeEventIndex >= 0 ? activeEventIndex + 1 : 0;
+  return tryEvents(state.currentEvents.slice(wrapStart).reverse());
+}
+
+async function navigateSearchMatch(direction) {
+  await waitForTimelineIdle();
+  reconcileSearchTransientExpansions();
   if (!state.searchHighlight.marks.length) refreshSearchHighlights({ preserveActive: true, syncDetail: true });
   const marks = state.searchHighlight.marks;
-  if (!marks.length) return false;
+  if (!marks.length) return materializeNextSearchTarget(direction);
   const current = state.searchHighlight.activeIndex >= 0 ? state.searchHighlight.activeIndex : 0;
-  return setActiveSearchMark(current + direction, { scroll: true, syncDetail: true });
+  const next = current + direction;
+  if (next >= 0 && next < marks.length) {
+    return setActiveSearchMark(next, { scroll: true, syncDetail: true });
+  }
+  if (await materializeNextSearchTarget(direction, { onlyUnmaterialized: true })) return true;
+  return setActiveSearchMark(next, { scroll: true, syncDetail: true });
 }
 
 function scheduleSearchHighlightRefresh(options = {}) {
@@ -1286,6 +1472,7 @@ function clearActiveFilter(key) {
   syncSearchAssistControls();
   renderSearchAssistChips();
   updateProfileApplicabilityUi();
+  if (reconcileSearchTransientExpansions()) renderTimeline();
   const structureAfter = structuredSearchKey();
   state.searchStructureKey = structureAfter;
   if (structureBefore === structureAfter) {
@@ -1849,6 +2036,7 @@ async function selectSession(sessionId, options = {}) {
   state.currentEvents = [];
   state.sessionEventKinds = { main: [], protocol: [], raw: [] };
   state.searchTargetPreload = { key: '', pages: 0, pending: false };
+  resetSearchTransientExpansions();
   invalidateNavigationCache();
   updateResetFoldsButton();
   renderSessions();
@@ -1964,6 +2152,7 @@ async function applyMetricLayer(targetLayerId) {
 async function changeLayer(layerId) {
   if (!['main', 'protocol', 'raw'].includes(layerId)) return;
   const focusAnchor = captureFocusAnchor();
+  resetSearchTransientExpansions();
   state.layerId = layerId;
   el.layerSelect.value = state.layerId;
   el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'layer');
@@ -2018,12 +2207,12 @@ async function loadTimeline(append, options = {}) {
     convergeSelectedEventDetailView({ refreshedHitState: true });
     if (!append && !options.keepScroll) resetTimelineScroll();
     renderResultSummary();
-    maybePreloadSearchTargets();
+    if (options.allowSearchTargetPreload !== false) maybePreloadSearchTargets();
   } finally {
     if (requestId === state.timelineRequestId) {
       state.timelineLoading = false;
       updateLoadMoreButton();
-      maybePreloadSearchTargets();
+      if (options.allowSearchTargetPreload !== false) maybePreloadSearchTargets();
     }
   }
 }
@@ -2095,6 +2284,7 @@ function naturalDisplayState(event) {
 function displayState(event) {
   const sessionOverrides = state.overrides[state.selectedSessionId] || {};
   if (sessionOverrides[event.id]) return sessionOverrides[event.id];
+  if (currentSearchTransientExpansionIds().includes(event.id)) return 'expanded';
   return naturalDisplayState(event);
 }
 
@@ -2203,6 +2393,7 @@ function renderTimeline() {
 }
 
 function setOverride(eventId, value) {
+  clearSearchTransientExpansion(eventId);
   if (!state.overrides[state.selectedSessionId]) state.overrides[state.selectedSessionId] = {};
   state.overrides[state.selectedSessionId][eventId] = value;
   saveOverrides();
@@ -2295,11 +2486,17 @@ function navigationCacheKey() {
 
 function invalidateNavigationCache() {
   state.navigationCache = { key: '', events: [], total: 0, pending: null };
+  state.navigationLoadErrorKey = '';
 }
 
 function currentNavigationCache() {
   const key = navigationCacheKey();
   return state.navigationCache.key === key && !state.navigationCache.pending ? state.navigationCache : null;
+}
+
+function currentNavigationPending() {
+  const key = navigationCacheKey();
+  return state.navigationCache.key === key ? state.navigationCache.pending : null;
 }
 
 function ensureNavigationEvents() {
@@ -2362,9 +2559,10 @@ function selectedNavigationCategoryId(event, categories) {
   return next;
 }
 
-function renderInspectorNavigation(event) {
+function renderInspectorNavigation(event, options = {}) {
   const cache = currentNavigationCache();
   if (!cache) {
+    if (!options.pending) return '';
     return `<nav class="eventNavigator" aria-label="${escapeHtml(t('eventQuickNavigation'))}"><span class="navStatus">${escapeHtml(t('loadingNavigation'))}</span></nav>`;
   }
   const categories = navigationCategoriesForEvent(event, cache.events);
@@ -2397,6 +2595,7 @@ function currentSelectedEvent() {
 async function ensureEventLoaded(eventId) {
   if (state.currentEvents.some((event) => event.id === eventId)) return;
   while (state.offset < state.timelineTotal) {
+    await waitForTimelineIdle();
     await loadTimeline(true);
     if (state.currentEvents.some((event) => event.id === eventId)) return;
   }
@@ -2730,6 +2929,12 @@ function renderProfileRulesPane(options = {}) {
   });
 }
 
+function rerenderCurrentInspectorNavigation() {
+  if (state.detailView.type !== 'inspector') return;
+  const item = selectedEventInCurrentTimeline();
+  if (item) showInspector(item, { replace: true });
+}
+
 function showInspector(event, options = {}) {
   const layer = activeLayerId();
   const key = detailKey(state.selectedSessionId, layer, event.id);
@@ -2743,14 +2948,34 @@ function showInspector(event, options = {}) {
   else pushDetailView(eventDetailView('inspector', event.id, options));
   setMobileView('detail');
   updateSelectedTimelineEvent();
-  if (!currentNavigationCache()) {
-    ensureNavigationEvents().then(() => {
-      if (state.detailSelectionKey === key && state.selectedEventId === event.id) showInspector(event, { replace: true });
-    }).catch(showError);
+  const navigationKey = navigationCacheKey();
+  const userRequestedNavigation = state.detailView.origin === DETAIL_VIEW_ORIGIN_USER
+    && (options.replace !== true || options.retryNavigation === true);
+  if (userRequestedNavigation && state.navigationLoadErrorKey === navigationKey) {
+    state.navigationLoadErrorKey = '';
+  }
+  let navigationPending = currentNavigationPending();
+  const shouldLoadNavigation = state.detailView.origin !== DETAIL_VIEW_ORIGIN_SEARCH
+    && !currentNavigationCache()
+    && !navigationPending
+    && state.navigationLoadErrorKey !== navigationKey;
+  if (shouldLoadNavigation) {
+    navigationPending = ensureNavigationEvents();
+    navigationPending.then(() => {
+      if (state.navigationLoadErrorKey === navigationKey) state.navigationLoadErrorKey = '';
+      rerenderCurrentInspectorNavigation();
+    }).catch((error) => {
+      if (state.navigationCache.key === navigationKey) {
+        state.navigationCache = { key: '', events: [], total: 0, pending: null };
+      }
+      state.navigationLoadErrorKey = navigationKey;
+      showError(error);
+      rerenderCurrentInspectorNavigation();
+    });
   }
   renderDetailShell({
     title: event.label,
-    actions: [renderReadFromHereAction(), renderInspectorNavigation(event)].filter(Boolean).join(''),
+    actions: [renderReadFromHereAction(), renderInspectorNavigation(event, { pending: Boolean(navigationPending) })].filter(Boolean).join(''),
     body: `<div class="inspector">
     ${chips ? `<div class="chips">${chips}</div>` : ''}
     ${shouldShowInspectorSummary(event, preview, detail) ? `<section class="inspectorSection"><h3>${escapeHtml(t('summary'))}</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
@@ -2813,6 +3038,7 @@ function setProfileId(profileId, options = {}) {
   state.profileId = profileId;
   localStorage.setItem('sessionAnalyzer.profile', state.profileId);
   el.profileSelect.value = state.profileId;
+  resetSearchTransientExpansions();
   resetProfileDraft();
   syncProfileInfoSlot();
   clearCurrentSessionOverrides();
@@ -3069,7 +3295,7 @@ el.detail.addEventListener('click', (event) => {
   const item = state.currentEvents.find((candidate) => detailKey(state.selectedSessionId, activeLayerId(), candidate.id) === key);
   if (!item) return;
   if (action === 'inspect') {
-    showInspector(item, { replace: true });
+    showInspector(item, { replace: true, origin: DETAIL_VIEW_ORIGIN_USER, retryNavigation: true });
   } else if (action === 'raw') {
     showRaw(item).catch(showError);
   } else if (action === 'retry-detail') {
@@ -3164,20 +3390,20 @@ el.resultSummary?.addEventListener('click', (event) => {
   const nav = event.target.closest('[data-search-match-nav]')?.dataset.searchMatchNav;
   if (nav === 'previous') {
     hideSearchAssist();
-    navigateSearchMatch(-1);
+    navigateSearchMatch(-1).catch(showError);
   } else if (nav === 'next') {
     hideSearchAssist();
-    navigateSearchMatch(1);
+    navigateSearchMatch(1).catch(showError);
   }
 });
 el.searchField?.addEventListener('click', (event) => {
   const nav = event.target.closest('[data-search-match-nav]')?.dataset.searchMatchNav;
   if (nav === 'previous') {
     hideSearchAssist();
-    navigateSearchMatch(-1);
+    navigateSearchMatch(-1).catch(showError);
   } else if (nav === 'next') {
     hideSearchAssist();
-    navigateSearchMatch(1);
+    navigateSearchMatch(1).catch(showError);
   }
 });
 el.timeline.closest('.timelinePane')?.addEventListener('scroll', onTimelinePaneScroll, { passive: true });
@@ -3209,7 +3435,7 @@ el.searchInput.addEventListener('keydown', (event) => {
     if (search.q) {
       event.preventDefault();
       hideSearchAssist();
-      navigateSearchMatch(event.shiftKey ? -1 : 1);
+      navigateSearchMatch(event.shiftKey ? -1 : 1).catch(showError);
     } else if (!el.searchAssist?.hidden) {
       event.preventDefault();
       hideSearchAssist();
@@ -3220,8 +3446,10 @@ el.searchInput.addEventListener('keydown', (event) => {
 el.searchInput.addEventListener('input', () => {
   showSearchAssist();
   state.searchTargetPreload = { key: '', pages: 0, pending: false };
+  const clearedTransientExpansions = reconcileSearchTransientExpansions();
   state.searchHighlight = { query: currentSearchState().q, marks: [], activeIndex: -1 };
   state.timelineSearchMatchCount = 0;
+  if (clearedTransientExpansions) renderTimeline();
   updateSearchMatchControls();
   scheduleSearchHighlightRefresh({ allowPreload: false, syncDetail: true, passive: true });
   const nextStructureKey = structuredSearchKey();
@@ -3235,6 +3463,7 @@ el.searchInput.addEventListener('input', () => {
   }
 });
 el.searchInput.addEventListener('change', () => {
+  if (reconcileSearchTransientExpansions()) renderTimeline();
   const nextStructureKey = structuredSearchKey();
   if (nextStructureKey !== state.searchStructureKey) {
     state.searchStructureKey = nextStructureKey;

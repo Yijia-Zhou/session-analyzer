@@ -8,10 +8,25 @@ test('searchTerms preserves one trimmed free-text phrase', () => {
   assert.deepEqual(highlighter.searchTerms('  alpha ALPHA alphabet beta  '), ['alpha ALPHA alphabet beta']);
 });
 
-test('displayedMatchTotal keeps backend coverage and never undercounts rendered targets', () => {
-  assert.equal(highlighter.displayedMatchTotal(5, 3), 5);
-  assert.equal(highlighter.displayedMatchTotal(3, 4), 4);
-  assert.equal(highlighter.displayedMatchTotal(undefined, 'nope'), 0);
+test('searchCountModel keeps jump targets primary and full-text hits as context', () => {
+  assert.deepEqual(highlighter.searchCountModel(5, 3, 1), {
+    current: 2,
+    jumpTotal: 3,
+    fullTextTotal: 5,
+    hasAnyMatch: true,
+  });
+  assert.deepEqual(highlighter.searchCountModel(5, 0, -1), {
+    current: 0,
+    jumpTotal: 0,
+    fullTextTotal: 5,
+    hasAnyMatch: true,
+  });
+  assert.deepEqual(highlighter.searchCountModel(undefined, 'nope', 0), {
+    current: 0,
+    jumpTotal: 0,
+    fullTextTotal: 0,
+    hasAnyMatch: false,
+  });
 });
 
 test('highlightedParts marks a phrase case-insensitively with flexible whitespace', () => {
