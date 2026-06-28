@@ -40,7 +40,7 @@ When changing product behavior or repository structure:
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Active plans:
-  - None currently tracked.
+  - `docs/exec-plans/active/2026-06-28-search-navigation-state-convergence.md`
 - Completed plans:
   - `docs/exec-plans/completed/2026-06-26-search-count-and-jump-target-convergence.md`
   - `docs/exec-plans/completed/2026-06-26-search-detail-state-convergence.md`
