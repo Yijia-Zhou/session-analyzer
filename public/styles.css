@@ -1708,6 +1708,10 @@ body[data-project-mode='selecting'] .searchAssist {
   display: none;
 }
 
+.resultSummary[hidden] {
+  display: none;
+}
+
 .activeFilters {
   align-items: center;
   display: flex;

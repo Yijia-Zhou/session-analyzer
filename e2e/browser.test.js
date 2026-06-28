@@ -283,12 +283,14 @@ test('browser locale localizes static shell and dirty profile dialog', async (t)
   await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('logical events'));
   assert.equal(await page.locator('#dirtyProfileTitle').textContent(), 'Unsaved folding strategy changes');
   assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), 'Search messages, commands, files, output');
+  assert.equal(await page.locator('#searchKindLabel').textContent(), 'Event type (current session total)');
   assert.equal(await page.locator('.localeControl').isVisible(), false);
   assert.equal(await page.locator('#localeSelect').count(), 1);
 
   await switchHiddenLocale(page, 'zh-CN');
   await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
   assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), '搜索消息、命令、文件、输出');
+  assert.equal(await page.locator('#searchKindLabel').textContent(), '事件类型（当前 session 总数）');
   assert.equal(await page.locator('.mobileViewTab[data-mobile-view="events"]').textContent(), '事件');
   assert.equal(await page.locator('#searchStatusSelect option[value="complete"]').textContent(), '目标已完成');
   assert.equal(await page.locator('#searchStatusSelect option[value="completed"]').textContent(), '事件已完成');
@@ -371,7 +373,16 @@ test('browser find keeps loaded timeline range and clearing find does not reset 
   await assertEventCount(page, 180);
   await waitForSearchMarks(page);
 
-  await page.locator('#resultSummary [data-clear-filter="q"]').click();
+  assert.equal(await page.locator('#searchAssist').isVisible(), true);
+  assert.equal(await page.locator('#resultSummary').isVisible(), false);
+  assert.equal(await page.getByRole('button', { name: 'Clear all' }).count(), 1);
+
+  await page.locator('#searchInput').press('Escape');
+  assert.equal(await page.locator('#searchAssist').isVisible(), false);
+  assert.equal(await page.locator('#resultSummary').isVisible(), true);
+  assert.equal(await page.getByRole('button', { name: 'Clear all' }).count(), 1);
+
+  await page.locator('#resultSummary [data-clear-filter="all"]').click();
   await expectInputValue(page, '#searchInput', '');
   await assertEventCount(page, 180);
   await waitForNoSearchMarks(page);

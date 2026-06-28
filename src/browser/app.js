@@ -163,6 +163,7 @@ const el = {
   searchAssist: document.getElementById('searchAssist'),
   searchAssistChips: document.getElementById('searchAssistChips'),
   searchField: document.querySelector('.searchField'),
+  searchKindLabel: document.getElementById('searchKindLabel'),
   searchKindSelect: document.getElementById('searchKindSelect'),
   searchStatusSelect: document.getElementById('searchStatusSelect'),
   searchLayerSelect: document.getElementById('searchLayerSelect'),
@@ -241,6 +242,7 @@ function applyStaticLocale() {
   document.querySelector('[data-search-match-nav="next"]')?.setAttribute('title', t('nextSearchMatch'));
   document.querySelectorAll('.searchAssistTitle')[0] && setText(document.querySelectorAll('.searchAssistTitle')[0], t('searchFilters'));
   document.querySelectorAll('.searchAssistTitle')[1] && setText(document.querySelectorAll('.searchAssistTitle')[1], t('active'));
+  setText(el.searchKindLabel, t('eventTypeSessionTotal'));
   setSelectOptionText(el.searchKindSelect, '', t('anyKind'));
   setSelectOptionText(el.searchStatusSelect, '', t('anyStatus'));
   setSelectOptionText(el.searchStatusSelect, 'active', searchStatusLabel('active'));
@@ -1348,6 +1350,7 @@ function syncSearchAssistControls() {
 function showSearchAssist() {
   if (!el.searchAssist) return;
   el.searchAssist.hidden = false;
+  if (el.resultSummary) el.resultSummary.hidden = true;
   el.searchInput.setAttribute('aria-expanded', 'true');
   syncSearchAssistControls();
   renderSearchAssistChips();
@@ -1356,6 +1359,7 @@ function showSearchAssist() {
 function hideSearchAssist() {
   if (!el.searchAssist) return;
   el.searchAssist.hidden = true;
+  if (el.resultSummary) el.resultSummary.hidden = false;
   el.searchInput.setAttribute('aria-expanded', 'false');
 }
 
