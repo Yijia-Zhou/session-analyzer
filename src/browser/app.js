@@ -108,12 +108,16 @@ const state = {
   projectPollTimer: 0,
   projectChooserRequestId: 0,
   projectReturning: false,
+  sessionsRequestId: 0,
+  analysisRequestId: 0,
   selectedSessionId: '',
   selectedEventId: '',
   offset: 0,
   limit: 150,
   timelineLoading: false,
   timelineRequestId: 0,
+  sessionsDataContext: '',
+  timelineDataContext: '',
   sessionGrandTotal: 0,
   sessionTotal: 0,
   timelineTotal: 0,
@@ -144,11 +148,15 @@ const state = {
   navigationCategoryManualId: '',
   navigationCache: { key: '', events: [], total: 0, pending: null },
   navigationLoadErrorKey: '',
-  searchHighlight: { query: '', marks: [], activeIndex: -1 },
+  searchHighlight: { query: '', marks: [] },
+  searchTargetRegistry: { key: '', targets: [], activeTargetId: '' },
+  searchNavigation: { running: false, queue: [] },
+  searchProgrammaticScroll: { active: false, timer: 0, paginationFrame: 0 },
   searchHighlightTimer: 0,
   searchTargetPreload: { key: '', pages: 0, pending: false },
   searchTransientExpansion: { key: '', eventIds: [] },
   searchStructureKey: '',
+  searchSurfaceContexts: { sessions: '', timeline: '', detail: '' },
   mobileView: 'sessions',
 };
 
@@ -525,16 +533,166 @@ function highlightRoots() {
   return [el.sessionList, el.timeline, el.detail].filter(Boolean);
 }
 
-function searchTargetPreloadKey() {
+function sessionsDataContextKey() {
   const search = currentSearchState();
-  return [
+  return JSON.stringify([
+    state.repoRoot,
+    search.layer,
+    search.kind,
+    search.status,
+    search.file,
+    el.sortSelect?.value || '',
+    state.locale,
+  ]);
+}
+
+function timelineDataContextKey() {
+  const search = currentSearchState();
+  return JSON.stringify([
+    state.repoRoot,
     state.selectedSessionId,
     search.layer,
     search.q,
     search.kind,
     search.status,
     search.file,
+    state.locale,
+  ]);
+}
+
+function foldingProfileSearchContextKey() {
+  return JSON.stringify([
+    state.profileId,
+    normalizeRules(activeProfileRules()),
+  ]);
+}
+
+function timelineSearchSurfaceContextKey() {
+  return JSON.stringify([timelineDataContextKey(), foldingProfileSearchContextKey()]);
+}
+
+function detailSearchSurfaceContextKey() {
+  return JSON.stringify([
+    state.repoRoot,
+    state.selectedSessionId,
+    activeLayerId(),
+    state.locale,
+    state.detailCacheGeneration,
+    state.detailView?.type || '',
+    state.detailView?.eventId || '',
+  ]);
+}
+
+function searchDiscoveryContextReady() {
+  const sessionsReady = state.searchSurfaceContexts.sessions === sessionsDataContextKey();
+  const timelineReady = !state.selectedSessionId
+    || state.searchSurfaceContexts.timeline === timelineSearchSurfaceContextKey();
+  return sessionsReady && timelineReady;
+}
+
+function searchTargetKey() {
+  const search = currentSearchState();
+  return [
+    state.repoRoot,
+    state.selectedSessionId,
+    search.layer,
+    search.q,
+    search.kind,
+    search.status,
+    search.file,
+    foldingProfileSearchContextKey(),
+    el.sortSelect?.value || '',
+    state.locale,
   ].join('\u001f');
+}
+
+function searchTargetPreloadKey() {
+  return searchTargetKey();
+}
+
+function resetSearchTargetRegistry(key = searchTargetKey()) {
+  state.searchTargetRegistry = { key, targets: [], activeTargetId: '' };
+}
+
+function syncSearchTargetRegistryKey() {
+  const key = searchTargetKey();
+  if (state.searchTargetRegistry.key !== key) resetSearchTargetRegistry(key);
+  return key;
+}
+
+function beginSearchTargetContextTransition() {
+  const key = searchTargetKey();
+  if (state.searchTargetRegistry.key === key) return false;
+  clearQueuedSearchNavigations();
+  state.searchTargetPreload = { key: '', pages: 0, pending: false };
+  highlightRoots().forEach((root) => searchHighlighter.clear(root));
+  state.searchHighlight = { query: currentSearchState().q, marks: [] };
+  resetSearchTargetRegistry(key);
+  state.timelineSearchMatchCount = 0;
+  updateSearchMatchControls();
+  return true;
+}
+
+function searchTargetId(searchKey, surface, ownerId, occurrence) {
+  return JSON.stringify([searchKey, surface, ownerId, occurrence]);
+}
+
+function searchTargetIndex() {
+  const { targets, activeTargetId } = state.searchTargetRegistry;
+  return targets.findIndex((target) => target.id === activeTargetId);
+}
+
+function activeSearchTarget() {
+  const index = searchTargetIndex();
+  return index >= 0 ? state.searchTargetRegistry.targets[index] : null;
+}
+
+function searchableHighlightOwners() {
+  if (!searchDiscoveryContextReady()) return [];
+  const owners = [];
+  const sessionIds = new Set(state.sessions.map((session) => session.id));
+  const eventIds = new Set(state.currentEvents.map((event) => event.id));
+  for (const row of el.sessionList?.querySelectorAll('[data-session-id]') || []) {
+    if (sessionIds.has(row.dataset.sessionId)) {
+      owners.push({ surface: 'session', ownerId: row.dataset.sessionId, root: row });
+    }
+  }
+  for (const article of el.timeline?.querySelectorAll('[data-event-id]:not(.hiddenByProfile)') || []) {
+    if (eventIds.has(article.dataset.eventId)) {
+      owners.push({ surface: 'timeline', ownerId: article.dataset.eventId, root: article });
+    }
+  }
+  if (state.detailView.type === 'inspector' && state.detailView.eventId) {
+    const inspector = el.detail?.querySelector('.inspector');
+    const detailReady = state.searchSurfaceContexts.detail === detailSearchSurfaceContextKey();
+    if (inspector && detailReady && eventIds.has(state.detailView.eventId)) {
+      owners.push({ surface: 'inspector', ownerId: state.detailView.eventId, root: inspector });
+    }
+  }
+  return owners;
+}
+
+function bindSearchTarget(searchKey, owner, occurrence, mark, targetsById) {
+  const id = searchTargetId(searchKey, owner.surface, owner.ownerId, occurrence);
+  let target = targetsById.get(id);
+  if (!target) {
+    target = {
+      id,
+      searchKey,
+      surface: owner.surface,
+      ownerId: owner.ownerId,
+      occurrence,
+      node: null,
+    };
+    state.searchTargetRegistry.targets.push(target);
+    targetsById.set(id, target);
+  }
+  target.node = mark;
+  mark.dataset.searchTargetId = id;
+  mark.dataset.searchTargetSurface = owner.surface;
+  mark.dataset.searchTargetOwner = owner.ownerId;
+  mark.dataset.searchTargetOccurrence = String(occurrence);
+  return target;
 }
 
 function resetSearchTransientExpansions() {
@@ -587,33 +745,52 @@ function structuredSearchKey() {
 }
 
 function currentSearchMarkLabel() {
-  const { marks, activeIndex } = state.searchHighlight;
-  const count = searchHighlighter.searchCountModel(state.timelineSearchMatchCount, marks.length, activeIndex);
+  const { targets } = state.searchTargetRegistry;
+  const count = searchHighlighter.searchCountModel(state.timelineSearchMatchCount, targets.length, searchTargetIndex());
   if (!count.hasAnyMatch) return t('noMatches');
   return t('matchCount', count);
 }
 
+function syncSearchInlineLayout() {
+  if (!el.searchField) return;
+  const controls = el.searchField.querySelector('.searchInlineMatches');
+  if (!controls || controls.hidden) {
+    el.searchField.classList.remove('searchInlineStacked');
+    el.searchField.style.removeProperty('--search-inline-reserve');
+    return;
+  }
+  el.searchField.classList.remove('searchInlineStacked');
+  const reserve = Math.ceil(controls.scrollWidth + 12);
+  el.searchField.style.setProperty('--search-inline-reserve', `${reserve}px`);
+  el.searchField.classList.toggle('searchInlineStacked', el.searchField.clientWidth - reserve < 120);
+}
+
 function updateSearchMatchControls() {
   const controls = document.querySelectorAll('[data-search-match-controls]');
-  const { marks } = state.searchHighlight;
+  syncSearchTargetRegistryKey();
+  const { targets } = state.searchTargetRegistry;
   const visible = Boolean(currentSearchState().q);
-  const canNavigate = marks.length > 0 || state.timelineSearchMatchCount > 0;
+  const canNavigate = searchDiscoveryContextReady()
+    && (targets.length > 0 || state.timelineSearchMatchCount > 0);
   controls.forEach((control) => {
     control.hidden = !visible;
+    control.toggleAttribute('data-search-navigation-pending', state.searchNavigation.running);
     const label = control.querySelector('[data-search-match-count]');
     if (label) label.textContent = currentSearchMarkLabel();
     control.querySelectorAll('[data-search-match-nav]').forEach((button) => {
       button.disabled = !canNavigate;
     });
   });
+  requestAnimationFrame(syncSearchInlineLayout);
 }
 
 function maybePreloadSearchTargets() {
   const search = currentSearchState();
   if (!search.q || !state.selectedSessionId) return;
-  if (state.searchHighlight.marks.length >= SEARCH_TARGET_PRELOAD_MIN) return;
+  if (!searchDiscoveryContextReady()) return;
+  if (state.searchTargetRegistry.targets.length >= SEARCH_TARGET_PRELOAD_MIN) return;
   if (state.offset >= state.timelineTotal) return;
-  if (state.timelineLoading || state.searchTargetPreload.pending) return;
+  if (state.timelineLoading || state.searchTargetPreload.pending || state.searchNavigation.running) return;
 
   const key = searchTargetPreloadKey();
   if (state.searchTargetPreload.key !== key) {
@@ -627,72 +804,106 @@ function maybePreloadSearchTargets() {
     .catch(showError)
     .finally(() => {
       state.searchTargetPreload.pending = false;
-      if (state.searchHighlight.marks.length < SEARCH_TARGET_PRELOAD_MIN) {
+      if (state.searchTargetRegistry.targets.length < SEARCH_TARGET_PRELOAD_MIN) {
         maybePreloadSearchTargets();
       }
     });
 }
 
-function setActiveSearchMark(index, options = {}) {
-  const marks = state.searchHighlight.marks;
-  marks.forEach((mark) => mark.classList.remove('activeSearchMark'));
-  if (!marks.length) {
-    state.searchHighlight.activeIndex = -1;
+function liveSearchTargetNode(target) {
+  return target?.node?.isConnected && target.node.dataset.searchTargetId === target.id ? target.node : null;
+}
+
+function endProgrammaticSearchScrollGuard() {
+  if (state.searchProgrammaticScroll.timer) clearTimeout(state.searchProgrammaticScroll.timer);
+  state.searchProgrammaticScroll.active = false;
+  state.searchProgrammaticScroll.timer = 0;
+}
+
+function scheduleProgrammaticSearchScrollGuard(timeout) {
+  state.searchProgrammaticScroll.active = true;
+  if (state.searchProgrammaticScroll.timer) clearTimeout(state.searchProgrammaticScroll.timer);
+  state.searchProgrammaticScroll.timer = setTimeout(() => {
+    endProgrammaticSearchScrollGuard();
+  }, timeout);
+}
+
+function beginProgrammaticSearchScroll() {
+  scheduleProgrammaticSearchScrollGuard(1500);
+}
+
+function keepProgrammaticSearchScrollGuard() {
+  if (!state.searchProgrammaticScroll.active) return;
+  scheduleProgrammaticSearchScrollGuard(250);
+}
+
+function setActiveSearchTarget(target, options = {}) {
+  state.searchHighlight.marks.forEach((mark) => mark.classList.remove('activeSearchMark'));
+  if (!target) {
+    state.searchTargetRegistry.activeTargetId = '';
     updateSearchMatchControls();
     return false;
   }
-  const normalized = ((index % marks.length) + marks.length) % marks.length;
-  state.searchHighlight.activeIndex = normalized;
-  const mark = marks[normalized];
-  mark.classList.add('activeSearchMark');
-  if (options.scroll || options.syncDetail) {
-    const article = mark.closest('[data-event-id]');
-    if (article?.dataset.eventId) {
-      const confirmedEventDetail = isSelectedEventDetailView()
-        && state.detailView.origin === DETAIL_VIEW_ORIGIN_USER;
-      if (options.passive && confirmedEventDetail) {
-        updateSearchMatchControls();
-        return true;
-      }
-      state.selectedEventId = article.dataset.eventId;
+
+  state.searchTargetRegistry.activeTargetId = target.id;
+  let mark = liveSearchTargetNode(target);
+  if (mark) mark.classList.add('activeSearchMark');
+
+  if (target.surface === 'timeline' && (options.scroll || options.syncDetail)) {
+    const confirmedEventDetail = isSelectedEventDetailView()
+      && state.detailView.origin === DETAIL_VIEW_ORIGIN_USER;
+    if (!(options.passive && confirmedEventDetail)) {
+      state.selectedEventId = target.ownerId;
       updateSelectedTimelineEvent();
       if (options.syncDetail) {
-        const item = state.currentEvents.find((event) => event.id === article.dataset.eventId);
-        if (item) {
-          const confirmedCurrentEvent = confirmedEventDetail && state.detailView.eventId === item.id;
-          if (!confirmedCurrentEvent) {
-            showInspector(item, { replace: true, origin: DETAIL_VIEW_ORIGIN_SEARCH });
-          }
+        const item = state.currentEvents.find((event) => event.id === target.ownerId);
+        const confirmedCurrentEvent = confirmedEventDetail && state.detailView.eventId === item?.id;
+        if (item && !confirmedCurrentEvent) {
+          showInspector(item, { replace: true, origin: DETAIL_VIEW_ORIGIN_SEARCH });
+          mark = liveSearchTargetNode(target);
         }
       }
     }
   }
-  if (options.scroll) {
-    const liveMark = state.searchHighlight.marks[state.searchHighlight.activeIndex];
-    searchHighlighter.reveal(liveMark);
+
+  if (options.scroll && mark) {
+    beginProgrammaticSearchScroll();
+    searchHighlighter.reveal(mark);
   }
   updateSearchMatchControls();
-  return true;
+  return Boolean(mark);
 }
 
 function refreshSearchHighlights(options = {}) {
   const roots = highlightRoots();
-  const previousQuery = state.searchHighlight.query;
-  const previousIndex = state.searchHighlight.activeIndex;
+  const searchKey = syncSearchTargetRegistryKey();
+  const previousActiveTargetId = state.searchTargetRegistry.activeTargetId;
+  for (const target of state.searchTargetRegistry.targets) target.node = null;
   roots.forEach((root) => searchHighlighter.clear(root));
 
   const query = currentSearchState().q;
   const terms = highlightTerms();
-  const marks = terms.length ? roots.flatMap((root) => searchHighlighter.apply(root, terms)) : [];
-  state.searchHighlight = {
-    query,
-    marks,
-    activeIndex: -1,
-  };
+  const marks = [];
+  if (terms.length) {
+    const targetsById = new Map(state.searchTargetRegistry.targets.map((target) => [target.id, target]));
+    for (const owner of searchableHighlightOwners()) {
+      const ownerMarks = searchHighlighter.apply(owner.root, terms);
+      ownerMarks.forEach((mark, occurrence) => bindSearchTarget(searchKey, owner, occurrence, mark, targetsById));
+      marks.push(...ownerMarks);
+    }
+  }
+  state.searchHighlight = { query, marks };
 
-  if (marks.length) {
-    const keepIndex = options.preserveActive && query === previousQuery && previousIndex >= 0;
-    setActiveSearchMark(keepIndex ? Math.min(previousIndex, marks.length - 1) : 0, {
+  if (!query) resetSearchTargetRegistry(searchKey);
+  const activeTargetStillKnown = options.preserveActive
+    && state.searchTargetRegistry.targets.some((target) => target.id === previousActiveTargetId);
+  if (!activeTargetStillKnown) {
+    state.searchTargetRegistry.activeTargetId = state.searchTargetRegistry.targets[0]?.id || '';
+  }
+
+  const target = activeSearchTarget();
+  if (target) {
+    setActiveSearchTarget(target, {
       scroll: false,
       syncDetail: options.syncDetail,
       passive: options.passive,
@@ -704,32 +915,15 @@ function refreshSearchHighlights(options = {}) {
   if (options.allowPreload !== false) maybePreloadSearchTargets();
 }
 
-function searchMarkEventId(mark) {
-  return mark?.closest?.('[data-event-id]')?.dataset.eventId || '';
-}
-
-function eventSearchMarks(eventId, selector = 'mark.searchMark') {
-  const article = el.timeline.querySelector(`[data-event-id="${CSS.escape(eventId)}"]`);
-  return article ? [...article.querySelectorAll(selector)] : [];
-}
-
-function setActiveSearchMarkElement(mark, options = {}) {
-  const index = state.searchHighlight.marks.indexOf(mark);
-  if (index < 0) return false;
-  return setActiveSearchMark(index, options);
-}
-
 function persistedDisplayOverride(eventId) {
   const sessionOverrides = state.overrides[state.selectedSessionId] || {};
   return sessionOverrides[eventId] || '';
 }
 
-function materializedSearchEventIds() {
-  const eventIds = new Set();
-  for (const article of el.timeline.querySelectorAll('[data-event-id]')) {
-    if (article.querySelector('mark.searchMark')) eventIds.add(article.dataset.eventId);
-  }
-  return eventIds;
+function knownTimelineSearchEventIds() {
+  return new Set(state.searchTargetRegistry.targets
+    .filter((target) => target.surface === 'timeline')
+    .map((target) => target.ownerId));
 }
 
 function waitForTimelineIdle() {
@@ -743,28 +937,18 @@ function waitForTimelineIdle() {
   });
 }
 
-function activateMaterializedEventSearchTarget(eventId, direction, options = {}) {
-  const bodyMarks = eventSearchMarks(eventId, '.eventBody mark.searchMark');
-  const marks = bodyMarks.length ? bodyMarks : eventSearchMarks(eventId);
-  const mark = direction < 0 ? marks[marks.length - 1] : marks[0];
-  if (mark) return setActiveSearchMarkElement(mark, { scroll: true, syncDetail: true });
-
-  if (options.allowSnippet === false) return false;
-  const article = el.timeline.querySelector(`[data-event-id="${CSS.escape(eventId)}"]`);
-  const snippet = article?.querySelector('.eventPreview, .eventLoadingSnippet');
-  if (!snippet) return false;
-  state.selectedEventId = eventId;
-  updateSelectedTimelineEvent();
-  snippet.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  updateSearchMatchControls();
-  return true;
+function timelineSearchTargets(eventId) {
+  return state.searchTargetRegistry.targets.filter((target) => (
+    target.surface === 'timeline' && target.ownerId === eventId
+  ));
 }
 
 async function materializeSearchEvent(event, direction, options = {}) {
-  await ensureEventLoaded(event.id);
+  await ensureEventLoaded(event.id, { allowSearchTargetPreload: false });
   if (options.searchKey && searchTargetPreloadKey() !== options.searchKey) return false;
   const loaded = state.currentEvents.find((candidate) => candidate.id === event.id) || event;
-  if (activateMaterializedEventSearchTarget(loaded.id, direction, { allowSnippet: false })) return true;
+  let targets = timelineSearchTargets(loaded.id);
+  if (targets.length) return direction < 0 ? targets[targets.length - 1] : targets[0];
 
   const override = persistedDisplayOverride(loaded.id);
   if (override && override !== 'expanded') return false;
@@ -777,25 +961,90 @@ async function materializeSearchEvent(event, direction, options = {}) {
   if (options.searchKey && searchTargetPreloadKey() !== options.searchKey) return false;
   renderTimeline();
   refreshSearchHighlights({ preserveActive: true, allowPreload: false });
-  return activateMaterializedEventSearchTarget(loaded.id, direction);
+  targets = timelineSearchTargets(loaded.id);
+  return (direction < 0 ? targets[targets.length - 1] : targets[0]) || false;
 }
 
-async function materializeNextSearchTarget(direction, options = {}) {
+async function resolveSearchTargetNode(target, searchKey) {
+  let node = liveSearchTargetNode(target);
+  if (node || !target || searchTargetPreloadKey() !== searchKey) return node;
+
+  if (target.surface === 'session') {
+    refreshSearchHighlights({ preserveActive: true, allowPreload: false });
+    return liveSearchTargetNode(target);
+  }
+
+  await ensureEventLoaded(target.ownerId, { allowSearchTargetPreload: false });
+  if (searchTargetPreloadKey() !== searchKey) return null;
+  node = liveSearchTargetNode(target);
+
+  const event = state.currentEvents.find((candidate) => candidate.id === target.ownerId);
+  if (!event) return null;
+  if (target.surface === 'inspector') {
+    await loadEventDetail(event);
+    if (searchTargetPreloadKey() !== searchKey) return null;
+    showInspector(event, { replace: true, origin: DETAIL_VIEW_ORIGIN_SEARCH });
+    return liveSearchTargetNode(target);
+  }
+
+  if (!node) {
+    const override = persistedDisplayOverride(event.id);
+    if (!override && displayState(event) !== 'expanded') addSearchTransientExpansion(event.id);
+    await loadEventDetail(event);
+    if (searchTargetPreloadKey() !== searchKey) return null;
+    renderTimeline();
+    refreshSearchHighlights({ preserveActive: true, allowPreload: false });
+  }
+  return liveSearchTargetNode(target);
+}
+
+async function activateSearchTarget(target, options = {}) {
+  if (!target) return false;
+  const searchKey = state.searchTargetRegistry.key;
+  const previousActiveTargetId = state.searchTargetRegistry.activeTargetId;
+  state.searchTargetRegistry.activeTargetId = target.id;
+  const node = await resolveSearchTargetNode(target, searchKey);
+  if (searchTargetPreloadKey() !== searchKey) return false;
+  if (!node) {
+    state.searchTargetRegistry.activeTargetId = previousActiveTargetId;
+    setActiveSearchTarget(activeSearchTarget());
+    return false;
+  }
+  return setActiveSearchTarget(target, options);
+}
+
+async function activateSearchTargetCandidates(candidates, options, attempted, searchKey) {
+  for (const target of candidates) {
+    if (!target || attempted.has(target.id)) continue;
+    attempted.add(target.id);
+    if (await activateSearchTarget(target, options)) return true;
+    if (searchTargetPreloadKey() !== searchKey) return false;
+  }
+  return false;
+}
+
+async function materializeNextSearchTarget(direction) {
   const search = currentSearchState();
-  if (!search.q || !state.timelineSearchMatchCount) return false;
+  if (!search.q || !state.timelineSearchMatchCount || !searchDiscoveryContextReady()) return false;
   const searchKey = searchTargetPreloadKey();
-  const activeMark = state.searchHighlight.marks[state.searchHighlight.activeIndex] || null;
-  const activeEventId = activeMark ? searchMarkEventId(activeMark) : '';
+  const currentTarget = activeSearchTarget();
+  const activeEventId = ['timeline', 'inspector'].includes(currentTarget?.surface) ? currentTarget.ownerId : '';
   const activeEventIndex = state.currentEvents.findIndex((event) => event.id === activeEventId);
-  const initiallyMaterialized = options.onlyUnmaterialized ? materializedSearchEventIds() : new Set();
+  const initiallyKnownTargetIds = new Set(state.searchTargetRegistry.targets.map((target) => target.id));
   const attempted = new Set();
 
   const tryEvents = async (events) => {
     for (const event of events) {
       if (!event.hasSearchHit || attempted.has(event.id)) continue;
       attempted.add(event.id);
-      if (options.onlyUnmaterialized && initiallyMaterialized.has(event.id)) continue;
-      if (await materializeSearchEvent(event, direction, { searchKey })) return true;
+      const newlyDiscovered = timelineSearchTargets(event.id)
+        .filter((target) => !initiallyKnownTargetIds.has(target.id));
+      if (newlyDiscovered.length) {
+        return direction < 0 ? newlyDiscovered[newlyDiscovered.length - 1] : newlyDiscovered[0];
+      }
+      if (knownTimelineSearchEventIds().has(event.id)) continue;
+      const target = await materializeSearchEvent(event, direction, { searchKey });
+      if (target) return target;
       if (searchTargetPreloadKey() !== searchKey) return false;
     }
     return false;
@@ -817,7 +1066,8 @@ async function materializeNextSearchTarget(direction, options = {}) {
     let scanOffset = activeEventIndex >= 0 ? activeEventIndex + 1 : 0;
     while (true) {
       const loadedEnd = state.currentEvents.length;
-      if (await tryEvents(state.currentEvents.slice(scanOffset, loadedEnd))) return true;
+      const target = await tryEvents(state.currentEvents.slice(scanOffset, loadedEnd));
+      if (target) return target;
       if (searchTargetPreloadKey() !== searchKey || state.offset >= state.timelineTotal) break;
       scanOffset = loadedEnd;
       if (!await appendNextPage()) break;
@@ -829,7 +1079,8 @@ async function materializeNextSearchTarget(direction, options = {}) {
   }
 
   if (activeEventIndex >= 0) {
-    if (await tryEvents(state.currentEvents.slice(0, activeEventIndex).reverse())) return true;
+    const target = await tryEvents(state.currentEvents.slice(0, activeEventIndex).reverse());
+    if (target) return target;
     if (searchTargetPreloadKey() !== searchKey) return false;
   }
 
@@ -842,18 +1093,94 @@ async function materializeNextSearchTarget(direction, options = {}) {
 }
 
 async function navigateSearchMatch(direction) {
+  const searchKey = syncSearchTargetRegistryKey();
   await waitForTimelineIdle();
+  if (searchTargetPreloadKey() !== searchKey) return false;
+  if (!searchDiscoveryContextReady()) return false;
   reconcileSearchTransientExpansions();
-  if (!state.searchHighlight.marks.length) refreshSearchHighlights({ preserveActive: true, syncDetail: true });
-  const marks = state.searchHighlight.marks;
-  if (!marks.length) return materializeNextSearchTarget(direction);
-  const current = state.searchHighlight.activeIndex >= 0 ? state.searchHighlight.activeIndex : 0;
-  const next = current + direction;
-  if (next >= 0 && next < marks.length) {
-    return setActiveSearchMark(next, { scroll: true, syncDetail: true });
+  if (!state.searchTargetRegistry.targets.length) {
+    refreshSearchHighlights({ preserveActive: true, syncDetail: true });
   }
-  if (await materializeNextSearchTarget(direction, { onlyUnmaterialized: true })) return true;
-  return setActiveSearchMark(next, { scroll: true, syncDetail: true });
+  const targets = state.searchTargetRegistry.targets;
+  if (!targets.length) {
+    const materialized = await materializeNextSearchTarget(direction);
+    return activateSearchTarget(materialized, { scroll: true, syncDetail: true });
+  }
+
+  const options = { scroll: true, syncDetail: true };
+  const attempted = new Set();
+  const activeTargetId = state.searchTargetRegistry.activeTargetId;
+  const current = searchTargetIndex();
+  const beforeBoundary = current < 0
+    ? (direction < 0 ? [...targets].reverse() : [...targets])
+    : direction < 0
+      ? targets.slice(0, current).reverse()
+      : targets.slice(current + 1);
+  if (await activateSearchTargetCandidates(beforeBoundary, options, attempted, searchKey)) return true;
+  if (searchTargetPreloadKey() !== searchKey) return false;
+
+  const knownBeforeMaterialization = new Set(
+    state.searchTargetRegistry.targets.map((target) => target.id),
+  );
+  const materialized = await materializeNextSearchTarget(direction);
+  if (materialized && await activateSearchTargetCandidates(
+    [materialized], options, attempted, searchKey,
+  )) return true;
+  if (searchTargetPreloadKey() !== searchKey) return false;
+
+  const newlyRegistered = state.searchTargetRegistry.targets.filter(
+    (target) => !knownBeforeMaterialization.has(target.id),
+  );
+  if (await activateSearchTargetCandidates(
+    direction < 0 ? newlyRegistered.reverse() : newlyRegistered,
+    options,
+    attempted,
+    searchKey,
+  )) return true;
+  if (searchTargetPreloadKey() !== searchKey) return false;
+
+  const updatedTargets = state.searchTargetRegistry.targets;
+  const updatedCurrent = updatedTargets.findIndex((target) => target.id === activeTargetId);
+  const wrapped = updatedCurrent < 0
+    ? (direction < 0 ? [...updatedTargets].reverse() : [...updatedTargets])
+    : direction < 0
+      ? updatedTargets.slice(updatedCurrent).reverse()
+      : updatedTargets.slice(0, updatedCurrent + 1);
+  return activateSearchTargetCandidates(wrapped, options, attempted, searchKey);
+}
+
+function clearQueuedSearchNavigations() {
+  const queued = state.searchNavigation.queue.splice(0);
+  queued.forEach(({ resolve }) => resolve(false));
+}
+
+async function drainSearchNavigationQueue() {
+  if (state.searchNavigation.running) return;
+  state.searchNavigation.running = true;
+  updateSearchMatchControls();
+  try {
+    while (state.searchNavigation.queue.length) {
+      const item = state.searchNavigation.queue.shift();
+      try {
+        item.resolve(await navigateSearchMatch(item.direction));
+      } catch (error) {
+        item.reject(error);
+      }
+    }
+  } finally {
+    state.searchNavigation.running = false;
+    updateSearchMatchControls();
+    maybePreloadSearchTargets();
+  }
+}
+
+function queueSearchNavigation(direction) {
+  const normalizedDirection = direction < 0 ? -1 : 1;
+  const pending = new Promise((resolve, reject) => {
+    state.searchNavigation.queue.push({ direction: normalizedDirection, resolve, reject });
+  });
+  drainSearchNavigationQueue();
+  return pending;
 }
 
 function scheduleSearchHighlightRefresh(options = {}) {
@@ -1376,6 +1703,7 @@ function applySearchOperator(operator, value) {
   } else {
     el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, operator);
   }
+  beginSearchTargetContextTransition();
   syncSearchAssistControls();
   renderSearchAssistChips();
   updateProfileApplicabilityUi();
@@ -1473,6 +1801,7 @@ function clearActiveFilter(key) {
     el.layerSelect.value = state.layerId;
     localStorage.setItem('sessionAnalyzer.layer', state.layerId);
   }
+  beginSearchTargetContextTransition();
   syncSearchAssistControls();
   renderSearchAssistChips();
   updateProfileApplicabilityUi();
@@ -1622,16 +1951,21 @@ function setProjectMode(selecting) {
 
 function resetProjectViewState() {
   state.sessions = [];
+  state.sessionsRequestId += 1;
+  state.analysisRequestId += 1;
   state.selectedSessionId = '';
   state.selectedEventId = '';
   state.offset = 0;
   state.timelineLoading = false;
   state.timelineRequestId += 1;
+  state.sessionsDataContext = '';
+  state.timelineDataContext = '';
   state.sessionGrandTotal = 0;
   state.sessionTotal = 0;
   state.timelineTotal = 0;
   state.timelineSearchMatchCount = 0;
   state.currentEvents = [];
+  state.searchSurfaceContexts = { sessions: '', timeline: '', detail: '' };
   state.searchTargetPreload = { key: '', pages: 0, pending: false };
   state.fileSuggestions = [];
   state.eventKinds = { main: [], protocol: [], raw: [] };
@@ -1844,6 +2178,7 @@ async function changeLocale(locale) {
     ? { profileId: state.profileId, rules: normalizeRules(cloneProfile(state.profileDraft).rules || defaultRules()) }
     : null;
   state.locale = next;
+  beginSearchTargetContextTransition();
   localStorage.setItem(LOCALE_STORAGE_KEY, state.locale);
   resetSessionDetailCache();
   applyStaticLocale();
@@ -1981,7 +2316,12 @@ async function init() {
 async function loadSessions() {
   updateProfileApplicabilityUi();
   state.searchStructureKey = structuredSearchKey();
+  const requestId = state.sessionsRequestId + 1;
+  const requestContext = sessionsDataContextKey();
+  state.sessionsRequestId = requestId;
   const data = await api(`/api/sessions${currentQuery({ sort: el.sortSelect.value }, { includeQ: false })}`);
+  if (requestId !== state.sessionsRequestId || requestContext !== sessionsDataContextKey()) return false;
+  state.sessionsDataContext = requestContext;
   state.sessions = data.sessions;
   state.sessionTotal = data.total;
   renderSessions();
@@ -2008,6 +2348,7 @@ async function loadSessions() {
   } else {
     renderResultSummary();
   }
+  return true;
 }
 
 function renderSessions() {
@@ -2028,12 +2369,16 @@ function renderSessions() {
       </span>
     </button>`;
   }).join('');
+  state.searchSurfaceContexts.sessions = state.sessionsDataContext === sessionsDataContextKey()
+    ? sessionsDataContextKey()
+    : '';
   refreshSearchHighlights({ preserveActive: true });
 }
 
 async function selectSession(sessionId, options = {}) {
   if (state.selectedSessionId !== sessionId) resetSessionDetailCache();
   state.selectedSessionId = sessionId;
+  beginSearchTargetContextTransition();
   state.offset = 0;
   state.timelineLoading = false;
   state.timelineRequestId += 1;
@@ -2060,7 +2405,13 @@ async function selectSession(sessionId, options = {}) {
 }
 
 async function loadAnalysis(sessionId) {
+  const requestId = state.analysisRequestId + 1;
+  const requestLocale = state.locale;
+  state.analysisRequestId = requestId;
   const analysis = await api(`/api/sessions/${encodeURIComponent(sessionId)}/analysis`);
+  if (requestId !== state.analysisRequestId
+      || sessionId !== state.selectedSessionId
+      || requestLocale !== state.locale) return;
   const planCount = analysis.counts.planEvents ?? analysis.counts.planArtifacts;
   const issueCount = analysis.counts.issueEvents ?? analysis.counts.failedCommands;
   el.analysisPanel.innerHTML = [
@@ -2160,6 +2511,7 @@ async function changeLayer(layerId) {
   state.layerId = layerId;
   el.layerSelect.value = state.layerId;
   el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'layer');
+  beginSearchTargetContextTransition();
   localStorage.setItem('sessionAnalyzer.layer', state.layerId);
   syncSearchAssistControls();
   updateProfileApplicabilityUi();
@@ -2186,6 +2538,8 @@ async function loadTimeline(append, options = {}) {
   if (!state.selectedSessionId) return;
   if (append && state.timelineLoading) return;
   const sessionId = state.selectedSessionId;
+  const requestContext = timelineDataContextKey();
+  if (append && state.timelineDataContext !== requestContext) return;
   const requestId = state.timelineRequestId + 1;
   state.timelineRequestId = requestId;
   state.timelineLoading = true;
@@ -2195,7 +2549,9 @@ async function loadTimeline(append, options = {}) {
       offset: append ? state.offset : 0,
       limit: state.limit,
     })}`);
-    if (requestId !== state.timelineRequestId || sessionId !== state.selectedSessionId) return;
+    if (requestId !== state.timelineRequestId
+        || sessionId !== state.selectedSessionId
+        || requestContext !== timelineDataContextKey()) return;
     if (append) {
       state.currentEvents = state.currentEvents.concat(data.events);
     } else {
@@ -2205,6 +2561,7 @@ async function loadTimeline(append, options = {}) {
     state.timelineTotal = data.total;
     state.timelineSearchMatchCount = data.searchMatchCount || 0;
     state.sessionEventKinds = data.eventKinds;
+    state.timelineDataContext = requestContext;
     syncSearchAssistControls();
     if (state.detailView.type === 'profileRules') renderProfileRulesPane();
     renderTimeline();
@@ -2224,6 +2581,7 @@ async function loadTimeline(append, options = {}) {
 async function refreshTimelineFindState(options = {}) {
   if (!state.selectedSessionId) return;
   const sessionId = state.selectedSessionId;
+  const requestContext = timelineDataContextKey();
   const targetCount = Math.max(state.currentEvents.length, state.offset, state.limit);
   if (!targetCount) {
     await loadTimeline(false, { keepScroll: true, ...options });
@@ -2244,7 +2602,9 @@ async function refreshTimelineFindState(options = {}) {
         offset: events.length,
         limit: Math.min(500, targetCount - events.length),
       })}`);
-      if (requestId !== state.timelineRequestId || sessionId !== state.selectedSessionId) return;
+      if (requestId !== state.timelineRequestId
+          || sessionId !== state.selectedSessionId
+          || requestContext !== timelineDataContextKey()) return;
       total = data.total;
       searchMatchCount = data.searchMatchCount || 0;
       eventKinds = data.eventKinds;
@@ -2256,6 +2616,7 @@ async function refreshTimelineFindState(options = {}) {
     state.timelineTotal = total;
     state.timelineSearchMatchCount = searchMatchCount;
     state.sessionEventKinds = eventKinds;
+    state.timelineDataContext = requestContext;
     syncSearchAssistControls();
     if (state.detailView.type === 'profileRules') renderProfileRulesPane();
     renderTimeline();
@@ -2392,6 +2753,9 @@ function renderTimeline() {
       ${renderEventFooterActions(ds)}
     </article>`;
   }).join('');
+  state.searchSurfaceContexts.timeline = state.timelineDataContext === timelineDataContextKey()
+    ? timelineSearchSurfaceContextKey()
+    : '';
   queueVisibleDetailLoad();
   refreshSearchHighlights({ preserveActive: true });
 }
@@ -2439,11 +2803,14 @@ function isInScrollport(element) {
   const rect = element.getBoundingClientRect();
   const scroller = element.closest('.timelinePane');
   const bounds = scroller ? scroller.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+  if ((scroller && (bounds.width <= 0 || bounds.height <= 0))
+      || (rect.width <= 0 && rect.height <= 0)) return false;
   return rect.bottom >= bounds.top && rect.top <= bounds.bottom;
 }
 
 function loadVisibleExpandedDetails() {
   state.detailViewportTimer = 0;
+  if (!searchDiscoveryContextReady()) return;
   for (const article of el.timeline.querySelectorAll('.event.expanded[data-event-id]')) {
     if (!isInScrollport(article)) continue;
     const item = state.currentEvents.find((candidate) => candidate.id === article.dataset.eventId);
@@ -2464,10 +2831,37 @@ function maybeLoadMoreTimeline(scroller) {
   }
 }
 
+function queueTimelinePaginationCheck(scroller) {
+  if (!scroller || state.searchProgrammaticScroll.paginationFrame) return;
+  state.searchProgrammaticScroll.paginationFrame = requestAnimationFrame(() => {
+    state.searchProgrammaticScroll.paginationFrame = 0;
+    maybeLoadMoreTimeline(scroller);
+  });
+}
+
+const TIMELINE_SCROLL_KEYS = new Set([
+  'ArrowDown',
+  'ArrowUp',
+  'End',
+  'Home',
+  'PageDown',
+  'PageUp',
+  ' ',
+]);
+
+function onTimelineUserScrollIntent(event) {
+  if (event.type === 'keydown' && !TIMELINE_SCROLL_KEYS.has(event.key)) return;
+  if (!state.searchProgrammaticScroll.active) return;
+  endProgrammaticSearchScrollGuard();
+  queueTimelinePaginationCheck(event.currentTarget);
+}
+
 function onTimelinePaneScroll(event) {
-  hideSearchAssist();
+  const searchScroll = state.searchProgrammaticScroll.active;
+  if (searchScroll) keepProgrammaticSearchScrollGuard();
+  if (document.activeElement !== el.searchInput && !searchScroll) hideSearchAssist();
   queueVisibleDetailLoad();
-  maybeLoadMoreTimeline(event.currentTarget);
+  if (!searchScroll) maybeLoadMoreTimeline(event.currentTarget);
 }
 
 function updateSelectedTimelineEvent() {
@@ -2596,11 +2990,11 @@ function currentSelectedEvent() {
     || null;
 }
 
-async function ensureEventLoaded(eventId) {
+async function ensureEventLoaded(eventId, options = {}) {
   if (state.currentEvents.some((event) => event.id === eventId)) return;
   while (state.offset < state.timelineTotal) {
     await waitForTimelineIdle();
-    await loadTimeline(true);
+    await loadTimeline(true, options);
     if (state.currentEvents.some((event) => event.id === eventId)) return;
   }
 }
@@ -2748,7 +3142,9 @@ async function readFromSelectedEvent() {
   localStorage.setItem('sessionAnalyzer.layer', state.layerId);
   syncSearchAssistControls();
   renderSearchAssistChips();
-  state.searchHighlight = { query: '', marks: [], activeIndex: -1 };
+  state.searchHighlight = { query: '', marks: [] };
+  resetSearchTargetRegistry();
+  clearQueuedSearchNavigations();
   state.timelineSearchMatchCount = 0;
   updateSearchMatchControls();
   updateProfileApplicabilityUi();
@@ -2781,6 +3177,7 @@ function renderDetailShell({ title, subtitle = '', actions = '', body = '', clos
     </header>
     ${body}
   </article>`;
+  state.searchSurfaceContexts.detail = detailSearchSurfaceContextKey();
   syncProfileInfoSlot();
   refreshSearchHighlights({ preserveActive: true });
 }
@@ -3394,26 +3791,34 @@ el.resultSummary?.addEventListener('click', (event) => {
   const nav = event.target.closest('[data-search-match-nav]')?.dataset.searchMatchNav;
   if (nav === 'previous') {
     hideSearchAssist();
-    navigateSearchMatch(-1).catch(showError);
+    queueSearchNavigation(-1).catch(showError);
   } else if (nav === 'next') {
     hideSearchAssist();
-    navigateSearchMatch(1).catch(showError);
+    queueSearchNavigation(1).catch(showError);
   }
 });
 el.searchField?.addEventListener('click', (event) => {
   const nav = event.target.closest('[data-search-match-nav]')?.dataset.searchMatchNav;
   if (nav === 'previous') {
     hideSearchAssist();
-    navigateSearchMatch(-1).catch(showError);
+    queueSearchNavigation(-1).catch(showError);
   } else if (nav === 'next') {
     hideSearchAssist();
-    navigateSearchMatch(1).catch(showError);
+    queueSearchNavigation(1).catch(showError);
+  } else if (event.target === el.searchField) {
+    el.searchInput.focus();
   }
 });
-el.timeline.closest('.timelinePane')?.addEventListener('scroll', onTimelinePaneScroll, { passive: true });
+const timelinePane = el.timeline.closest('.timelinePane');
+timelinePane?.addEventListener('scroll', onTimelinePaneScroll, { passive: true });
+timelinePane?.addEventListener('wheel', onTimelineUserScrollIntent, { passive: true });
+timelinePane?.addEventListener('touchstart', onTimelineUserScrollIntent, { passive: true });
+timelinePane?.addEventListener('pointerdown', onTimelineUserScrollIntent, { passive: true });
+timelinePane?.addEventListener('keydown', onTimelineUserScrollIntent);
 window.addEventListener('resize', () => {
   queueVisibleDetailLoad();
   syncProfileInfoSlot();
+  syncSearchInlineLayout();
 });
 
 const reload = debounce(() => {
@@ -3428,6 +3833,7 @@ const refreshFind = debounce(() => {
 }, SEARCH_HIGHLIGHT_INPUT_DELAY_MS);
 
 el.searchInput.addEventListener('focus', showSearchAssist);
+el.searchInput.addEventListener('click', showSearchAssist);
 el.searchInput.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
     event.preventDefault();
@@ -3439,7 +3845,7 @@ el.searchInput.addEventListener('keydown', (event) => {
     if (search.q) {
       event.preventDefault();
       hideSearchAssist();
-      navigateSearchMatch(event.shiftKey ? -1 : 1).catch(showError);
+      queueSearchNavigation(event.shiftKey ? -1 : 1).catch(showError);
     } else if (!el.searchAssist?.hidden) {
       event.preventDefault();
       hideSearchAssist();
@@ -3449,12 +3855,9 @@ el.searchInput.addEventListener('keydown', (event) => {
 });
 el.searchInput.addEventListener('input', () => {
   showSearchAssist();
-  state.searchTargetPreload = { key: '', pages: 0, pending: false };
   const clearedTransientExpansions = reconcileSearchTransientExpansions();
-  state.searchHighlight = { query: currentSearchState().q, marks: [], activeIndex: -1 };
-  state.timelineSearchMatchCount = 0;
+  beginSearchTargetContextTransition();
   if (clearedTransientExpansions) renderTimeline();
-  updateSearchMatchControls();
   scheduleSearchHighlightRefresh({ allowPreload: false, syncDetail: true, passive: true });
   const nextStructureKey = structuredSearchKey();
   const structureChanged = state.searchStructureKey && state.searchStructureKey !== nextStructureKey;
@@ -3544,8 +3947,12 @@ document.addEventListener('pointerdown', (event) => {
   hideSearchAssist();
 });
 
-el.sortSelect.addEventListener('input', reload);
-el.sortSelect.addEventListener('change', reload);
+const reloadForSearchContextChange = () => {
+  beginSearchTargetContextTransition();
+  reload();
+};
+el.sortSelect.addEventListener('input', reloadForSearchContextChange);
+el.sortSelect.addEventListener('change', reloadForSearchContextChange);
 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !el.searchAssist?.hidden) {

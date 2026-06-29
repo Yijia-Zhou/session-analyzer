@@ -318,18 +318,20 @@ button:hover,
 }
 
 .searchField {
+  --search-inline-reserve: 0px;
   min-width: 0;
   position: relative;
 }
 
 .searchField > input {
-  padding-right: 10rem;
+  padding-right: var(--search-inline-reserve);
 }
 
 .searchInlineMatches {
   align-items: center;
   display: inline-flex;
   gap: 0.15rem;
+  pointer-events: none;
   position: absolute;
   right: 0.32rem;
   top: 50%;
@@ -345,11 +347,8 @@ button:hover,
   color: var(--muted);
   font-size: 0.76rem;
   font-variant-numeric: tabular-nums;
-  max-width: 6.8rem;
-  min-width: 5.6rem;
-  overflow: hidden;
+  pointer-events: none;
   text-align: right;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -365,7 +364,20 @@ button:hover,
   line-height: 1;
   min-height: 28px;
   padding: 0;
+  pointer-events: auto;
   width: 28px;
+}
+
+.searchField.searchInlineStacked > input {
+  padding-right: 0.5rem;
+}
+
+.searchField.searchInlineStacked .searchInlineMatches {
+  justify-content: flex-end;
+  margin-top: 0.25rem;
+  position: static;
+  transform: none;
+  width: 100%;
 }
 
 .searchbar .searchInlineBtn:hover,

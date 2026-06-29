@@ -60,9 +60,11 @@
     }
   }
 
-  function textNodeAccepted(node, terms) {
+  function textNodeAccepted(node, terms, rootNode) {
     const parent = node.parentElement;
-    if (!parent || parent.closest(SKIP_SELECTOR)) return false;
+    if (!parent) return false;
+    const skipped = parent.closest(SKIP_SELECTOR);
+    if (skipped && skipped !== rootNode) return false;
     const text = node.nodeValue || '';
     if (!text.trim()) return false;
     return Boolean(phraseRegex((terms || []).join(' '))?.test(text));
@@ -73,7 +75,7 @@
     const doc = rootNode.ownerDocument;
     const walker = doc.createTreeWalker(rootNode, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
-        return textNodeAccepted(node, terms) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        return textNodeAccepted(node, terms, rootNode) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
       },
     });
     const nodes = [];
