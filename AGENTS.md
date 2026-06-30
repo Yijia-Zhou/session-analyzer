@@ -39,9 +39,9 @@ When changing product behavior or repository structure:
 - Schema update runbook: `docs/design-docs/schema-update-runbook.md`
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
-- Active plans:
-  - None / 无
+- Active plans: none
 - Completed plans:
+  - `docs/exec-plans/completed/2026-06-29-search-scope-mental-model-convergence.md`
   - `docs/exec-plans/completed/2026-06-28-search-navigation-state-convergence.md`
   - `docs/exec-plans/completed/2026-06-26-search-count-and-jump-target-convergence.md`
   - `docs/exec-plans/completed/2026-06-26-search-detail-state-convergence.md`

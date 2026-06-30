@@ -100,6 +100,16 @@ async function fillSearch(page, value) {
   await page.locator('#searchInput').dispatchEvent('input');
 }
 
+async function switchToProjectScope(page) {
+  await page.getByRole('button', { name: 'Entire project' }).click();
+  await page.waitForFunction(() => document.body.dataset.searchScope === 'project');
+  assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), 'Search the entire project');
+}
+
+async function waitForProjectCards(page, minimum = 1) {
+  await page.waitForFunction((count) => document.querySelectorAll('[data-project-result-session-id]').length >= count, minimum);
+}
+
 async function waitForSearchMarks(page, minimum = 1) {
   await page.waitForFunction((count) => document.querySelectorAll('.searchMark').length >= count, minimum);
 }
@@ -166,7 +176,7 @@ async function openColdLongSearchInspector(page) {
   await assertEventCount(page, 150);
   await fillSearch(page, 'needle');
   await waitForSearchMarks(page, 9);
-  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent.includes('37 full-text hits'));
+  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent.includes('37 full-text occurrences'));
   await Promise.all([
     page.waitForResponse((response) => {
       const url = new URL(response.url());
@@ -325,7 +335,7 @@ test('browser locale bootstrap keeps narrow screens on sessions view', async (t)
   assert.equal(await page.locator('body').getAttribute('data-mobile-view'), 'sessions');
 
   await fillSearch(page, 'patch');
-  await page.waitForFunction(() => document.querySelector('#resultSummary')?.textContent.includes('patch'));
+  await page.waitForFunction(() => document.querySelector('#searchActionRegion')?.textContent.includes('patch'));
   assert.equal(await page.locator('body').getAttribute('data-mobile-view'), 'sessions');
 });
 
@@ -335,14 +345,14 @@ test('browser locale localizes static shell and dirty profile dialog', async (t)
   await page.waitForFunction(() => document.documentElement.lang === 'en');
   await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('logical events'));
   assert.equal(await page.locator('#dirtyProfileTitle').textContent(), 'Unsaved folding strategy changes');
-  assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), 'Search messages, commands, files, output');
+  assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), 'Find in current session');
   assert.equal(await page.locator('#searchKindLabel').textContent(), 'Event type (current session total)');
   assert.equal(await page.locator('.localeControl').isVisible(), false);
   assert.equal(await page.locator('#localeSelect').count(), 1);
 
   await switchHiddenLocale(page, 'zh-CN');
   await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
-  assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), '搜索消息、命令、文件、输出');
+  assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), '在当前 session 中查找');
   assert.equal(await page.locator('#searchKindLabel').textContent(), '事件类型（当前 session 总数）');
   assert.equal(await page.locator('.mobileViewTab[data-mobile-view="events"]').textContent(), '事件');
   assert.equal(await page.locator('#searchStatusSelect option[value="complete"]').textContent(), '目标已完成');
@@ -413,6 +423,234 @@ test('browser locale switch reloads cached expanded event detail', async (t) => 
   await page.waitForSelector('#timeline .event.kind-command.expanded .eventBody');
 });
 
+test('browser search scope starts in current-session mode with persistent context chips', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en' });
+
+  assert.equal(await page.locator('body').getAttribute('data-search-scope'), 'session');
+  assert.equal(await page.getByRole('button', { name: 'Current session' }).getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.getByRole('button', { name: 'Entire project' }).getAttribute('aria-pressed'), 'false');
+  assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), 'Find in current session');
+  assert.equal(await page.locator('#searchActionRegion [data-search-context="layer"]').textContent(), 'Layer: Main timeline');
+
+  await fillSearch(page, 'definitely-no-search-hit');
+  await page.locator('#searchInput').press('Escape');
+  await page.waitForSelector('[data-search-project-fallback]');
+  assert.equal(await page.getByRole('button', { name: 'Search entire project' }).count(), 1);
+
+  await page.locator('[data-search-project-fallback]').click();
+  await page.waitForFunction(() => document.body.dataset.searchScope === 'project');
+  assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), 'Search the entire project');
+  assert.equal(await page.locator('#searchActionRegion [data-search-context="layer"]').textContent(), 'Layer: Main timeline');
+  await page.waitForFunction(() => document.querySelector('#timeline .projectSearchState')?.textContent.includes('No project events match this expression.'));
+});
+
+test('browser project scope renders cards, aggregate summary, and filter-only results without jump targets', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+
+  await switchToProjectScope(page);
+  await page.waitForFunction(() => document.querySelector('#timeline .projectSearchState')?.textContent.includes('Enter text or add a file'));
+  assert.equal(await page.locator('[data-project-result-session-id]').count(), 0);
+  assert.ok(await page.locator('[data-session-id]').count() > 0, 'empty project expression should show ordinary session rows');
+  assert.equal(await page.locator('#detail').textContent(), '');
+
+  await fillSearch(page, 'patch');
+  await waitForProjectCards(page);
+  await page.waitForFunction(() => document.querySelector('#resultSummary')?.textContent.includes('matching sessions'));
+
+  const cards = await page.locator('[data-project-result-session-id]').evaluateAll((items) => items.map((item) => {
+    const countText = item.querySelector('.projectResultCount')?.textContent || '';
+    return {
+      sessionId: item.dataset.projectResultSessionId,
+      count: Number(countText.match(/\d+/)?.[0] || 0),
+      text: item.textContent,
+      highlighted: item.querySelectorAll('mark.projectSearchHighlight').length,
+    };
+  }));
+  assert.ok(cards.length > 0);
+  assert.ok(cards.every((card) => card.sessionId && card.count > 0));
+  assert.ok(cards.some((card) => card.highlighted > 0), 'project snippets should highlight with project-only marks');
+  assert.equal(await page.locator('.searchMark').count(), 0, 'project cards must not enter the session jump-target registry');
+  assert.equal(await page.locator('[data-search-match-controls]').first().isHidden(), true);
+
+  const summary = await page.locator('#resultSummary').textContent();
+  assert.match(summary, /^\d+ matching sessions · \d+ matching events$/);
+  assert.equal(Number(summary.match(/^(\d+)/)?.[1] || 0), cards.length);
+  assert.equal(Number(summary.match(/· (\d+) matching events/)?.[1] || 0), cards.reduce((sum, card) => sum + card.count, 0));
+  assert.equal(requestedUrls.some((value) => {
+    const url = new URL(value, 'http://local');
+    return url.pathname === '/api/sessions'
+      && url.searchParams.get('q') === 'patch'
+      && url.searchParams.get('sort') === 'latest-match-desc'
+      && url.searchParams.get('layer') === 'main';
+  }), true);
+
+  await page.locator('#searchInput').press('Enter');
+  await page.waitForFunction(() => document.activeElement?.matches('[data-project-result-session-id]'));
+
+  const statusProjectResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/sessions'
+      && url.searchParams.get('status') === 'failed'
+      && url.searchParams.get('sort') === 'latest-match-desc'
+      && !url.searchParams.has('q');
+  });
+  await fillSearch(page, 'status:failed');
+  await statusProjectResponse;
+  await waitForProjectCards(page);
+  await page.waitForFunction(() => document.querySelector('#searchActionRegion')?.textContent.includes('Status: Failed'));
+  assert.equal(requestedUrls.some((value) => {
+    const url = new URL(value, 'http://local');
+    return url.pathname === '/api/sessions'
+      && url.searchParams.get('status') === 'failed'
+      && url.searchParams.get('sort') === 'latest-match-desc'
+      && !url.searchParams.has('q');
+  }), true);
+});
+
+test('browser project result drill-down loads a deep latest event and returns to project cards', async (t) => {
+  const longFixture = await makeLongCodexHome(t);
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openApp(t, index, {
+    locale: 'en',
+    viewport: { width: 390, height: 760 },
+    activeSessionState: 'attached',
+  });
+
+  await switchToProjectScope(page);
+  await fillSearch(page, 'needle');
+  await waitForProjectCards(page);
+  await page.locator('#searchInput').press('Enter');
+  await page.waitForFunction(() => document.activeElement?.matches('[data-project-result-session-id]'));
+  const focusedSessionId = await page.evaluate(() => document.activeElement?.dataset.projectResultSessionId || '');
+  assert.equal(focusedSessionId, longFixture.sessionId);
+
+  const requestStart = requestedUrls.length;
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => (
+    document.body.dataset.searchScope === 'session'
+      && document.body.dataset.mobileView === 'events'
+      && document.querySelector('#timeline .event.selected')?.textContent.includes('Long timeline row 170')
+  ));
+  await assertEventCount(page, 171);
+  assert.equal(requestedUrls.slice(requestStart).some((value) => {
+    const url = new URL(value, 'http://local');
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('offset') === '0'
+      && url.searchParams.get('limit') === '171'
+      && url.searchParams.get('q') === 'needle';
+  }), true);
+
+  const clickedBackToProject = await page.evaluate(() => {
+    const button = document.querySelector('#timeline [data-search-back-to-project], #resultSummary [data-search-back-to-project]');
+    button?.click();
+    return Boolean(button);
+  });
+  assert.equal(clickedBackToProject, true);
+  await page.waitForFunction((sessionId) => (
+    document.body.dataset.searchScope === 'project'
+      && document.body.dataset.mobileView === 'sessions'
+      && document.activeElement?.dataset.projectResultSessionId === sessionId
+      && document.querySelectorAll('[data-project-result-session-id]').length > 0
+  ), longFixture.sessionId);
+  assert.equal(await page.locator('#timeline .projectSearchState').count(), 1);
+});
+
+test('browser project return ignores stale selected-session analysis responses', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en' });
+
+  await switchToProjectScope(page);
+  await fillSearch(page, 'patch');
+  await waitForProjectCards(page);
+
+  let releaseAnalysis;
+  const analysisGate = new Promise((resolve) => { releaseAnalysis = resolve; });
+  let delayedOnce = false;
+  t.after(() => releaseAnalysis?.());
+  await page.route('**/api/sessions/*/analysis', async (route) => {
+    if (!delayedOnce) {
+      delayedOnce = true;
+      await analysisGate;
+    }
+    await route.continue();
+  });
+
+  await page.locator('[data-project-result-session-id]').first().click();
+  await page.waitForFunction(() => (
+    document.body.dataset.searchScope === 'session'
+      && document.querySelector('#sessionHeader [data-search-back-to-project]')
+  ));
+  await page.evaluate(() => document.querySelector('#sessionHeader [data-search-back-to-project]')?.click());
+  await page.waitForFunction(() => (
+    document.body.dataset.searchScope === 'project'
+      && document.querySelectorAll('[data-project-result-session-id]').length > 0
+  ));
+  releaseAnalysis();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('#analysisPanel .metric').count(), 0);
+  assert.equal(await page.locator('#timeline .projectSearchState').count(), 1);
+});
+
+test('browser project search commits after folding profile changes during an in-flight request', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en' });
+
+  await switchToProjectScope(page);
+
+  let releaseProjectSearch;
+  let markProjectSearchSeen;
+  const projectSearchGate = new Promise((resolve) => { releaseProjectSearch = resolve; });
+  const projectSearchSeen = new Promise((resolve) => { markProjectSearchSeen = resolve; });
+  let delayedOnce = false;
+  t.after(() => releaseProjectSearch?.());
+  await page.route('**/api/sessions*', async (route) => {
+    const url = new URL(route.request().url());
+    if (!delayedOnce
+        && url.pathname === '/api/sessions'
+        && url.searchParams.get('q') === 'patch'
+        && url.searchParams.get('sort') === 'latest-match-desc') {
+      delayedOnce = true;
+      markProjectSearchSeen();
+      await projectSearchGate;
+    }
+    await route.continue();
+  });
+
+  await fillSearch(page, 'patch');
+  await projectSearchSeen;
+  await page.evaluate(() => {
+    const select = document.querySelector('#profileSelect');
+    select.value = 'debug';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  releaseProjectSearch();
+  await waitForProjectCards(page);
+  await page.waitForFunction(() => document.querySelector('#resultSummary')?.textContent.includes('matching sessions'));
+  assert.equal(await page.locator('#profileSelect').inputValue(), 'debug');
+});
+
+test('browser project scope profile changes do not repopulate the detail pane', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en' });
+
+  await switchToProjectScope(page);
+  await fillSearch(page, 'patch');
+  await waitForProjectCards(page);
+  await page.waitForFunction(() => document.querySelector('#timeline .projectSearchState'));
+  assert.equal(await page.locator('#detail').textContent(), '');
+
+  await page.evaluate(() => {
+    const select = document.querySelector('#profileSelect');
+    select.value = 'debug';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.waitForFunction(() => document.querySelector('#profileSelect')?.value === 'debug');
+  assert.equal(await page.locator('#detail').textContent(), '');
+  assert.equal(await page.locator('#timeline .projectSearchState').count(), 1);
+});
+
 test('browser find keeps loaded timeline range and clearing find does not reset pagination', async (t) => {
   const longFixture = await makeLongCodexHome(t);
   const index = await buildIndex(longFixture);
@@ -435,13 +673,13 @@ test('browser find keeps loaded timeline range and clearing find does not reset 
   assert.equal(await page.locator('#resultSummary').isVisible(), true);
   assert.equal(await page.getByRole('button', { name: 'Clear all' }).count(), 1);
 
-  await page.locator('#resultSummary [data-clear-filter="all"]').click();
+  await page.locator('#searchActionRegion [data-clear-filter="all"]').click();
   await expectInputValue(page, '#searchInput', '');
   await assertEventCount(page, 180);
   await waitForNoSearchMarks(page);
 });
 
-test('browser search count separates jump targets from full-text hits', async (t) => {
+test('browser search count separates discovered jump targets from full-text occurrences', async (t) => {
   const longFixture = await makeLongCodexHome(t);
   const index = await buildIndex(longFixture);
   const { page } = await openApp(t, index, { locale: 'en' });
@@ -450,7 +688,7 @@ test('browser search count separates jump targets from full-text hits', async (t
   await waitForSearchMarks(page);
 
   await page.waitForFunction(() => (
-    document.querySelector('.searchInlineCount')?.textContent === '1 / 10 jump targets · 11 full-text hits'
+    document.querySelector('.searchInlineCount')?.textContent === '1 / 9 discovered jump targets · 11 full-text occurrences; loading or expanding can add targets'
   ));
 });
 
@@ -462,22 +700,22 @@ test('browser search discovery waits for a structured result view to commit', as
   await fillSearch(page, 'src');
   await waitForSearchMarks(page);
 
-  let releaseSessions;
-  let markSessionsRequestSeen;
-  const sessionsGate = new Promise((resolve) => { releaseSessions = resolve; });
-  const sessionsRequestSeen = new Promise((resolve) => { markSessionsRequestSeen = resolve; });
-  t.after(() => releaseSessions());
-  await page.route('**/api/sessions*', async (route) => {
+  let releaseTimeline;
+  let markTimelineRequestSeen;
+  const timelineGate = new Promise((resolve) => { releaseTimeline = resolve; });
+  const timelineRequestSeen = new Promise((resolve) => { markTimelineRequestSeen = resolve; });
+  t.after(() => releaseTimeline());
+  await page.route('**/api/sessions/*/timeline*', async (route) => {
     const url = new URL(route.request().url());
     if (url.searchParams.get('kind') === 'patch') {
-      markSessionsRequestSeen();
-      await sessionsGate;
+      markTimelineRequestSeen();
+      await timelineGate;
     }
     await route.continue();
   });
 
   await fillSearch(page, 'src kind:patch');
-  await sessionsRequestSeen;
+  await timelineRequestSeen;
   await page.waitForTimeout(200);
   assert.equal(
     await page.locator('.searchMark').count(),
@@ -486,7 +724,7 @@ test('browser search discovery waits for a structured result view to commit', as
   );
   assert.equal(await page.locator('[data-search-match-nav="next"]').first().isDisabled(), true);
 
-  releaseSessions();
+  releaseTimeline();
   await page.waitForFunction(() => {
     const events = [...document.querySelectorAll('#timeline .event[data-event-id]')];
     return events.length > 0 && events.every((event) => event.classList.contains('kind-patch'));
@@ -544,7 +782,7 @@ test('browser search discovery waits for localized timeline content to commit', 
   const index = await buildIndex(longFixture);
   const { page } = await openApp(t, index, { locale: 'en' });
   await fillSearch(page, 'needle');
-  await waitForSearchMarks(page, 10);
+  await waitForSearchMarks(page, 9);
 
   let releaseTimeline;
   let markTimelineRequestSeen;
@@ -575,7 +813,7 @@ test('browser search discovery waits for localized timeline content to commit', 
   });
   releaseTimeline();
   await timelineResponse;
-  await waitForSearchMarks(page, 10);
+  await waitForSearchMarks(page, 9);
   const committed = await searchNavigationSnapshot(page);
   assert.equal(committed.total, await page.locator('.searchMark').count());
 });
@@ -640,7 +878,7 @@ test('browser search navigation skips stale body targets after a manual fold', a
   await fillSearch(page, 'fold only target');
   await page.waitForFunction(() => (
     document.querySelector('.searchInlineCount')?.textContent
-      === '0 / 0 jump targets · 6 full-text hits'
+      === '0 / 0 discovered jump targets · 6 full-text occurrences; loading or expanding can add targets'
   ));
 
   const empty = await searchNavigationSnapshot(page);
@@ -736,7 +974,7 @@ test('browser rapid search navigation is serialized without skips or duplicates'
   const { page } = await openApp(t, index, { locale: 'en' });
 
   await fillSearch(page, 'needle');
-  await waitForSearchMarks(page, 10);
+  await waitForSearchMarks(page, 9);
   const initial = await searchNavigationSnapshot(page);
   assert.equal(initial.current, 1);
 
@@ -766,7 +1004,7 @@ test('browser search count hit testing keeps input and navigation controls disti
   const { page } = await openApp(t, index, { locale: 'en' });
 
   await fillSearch(page, 'needle');
-  await waitForSearchMarks(page, 10);
+  await waitForSearchMarks(page, 9);
   await page.locator('#searchInput').press('Escape');
   await page.locator('#searchInput').blur();
   const countBox = await page.locator('.searchInlineCount').boundingBox();
@@ -832,11 +1070,11 @@ test('browser large search counts stay unabridged and reserve usable input space
     }
   };
 
-  await assertLayout(`${fullTextTotal} full-text hits`);
+  await assertLayout(`${fullTextTotal} full-text occurrences`);
   await page.setViewportSize({ width: 390, height: 760 });
   await switchHiddenLocale(page, 'zh-CN');
-  await page.waitForFunction((count) => document.querySelector('.searchInlineCount')?.textContent.includes(`${count} 个全文命中`), fullTextTotal);
-  await assertLayout(`${fullTextTotal} 个全文命中`);
+  await page.waitForFunction((count) => document.querySelector('.searchInlineCount')?.textContent.includes(`${count} 处全文命中`), fullTextTotal);
+  await assertLayout(`${fullTextTotal} 处全文命中`);
 });
 
 test('browser focused search input reopens assist through residual navigation scroll', async (t) => {
@@ -845,7 +1083,7 @@ test('browser focused search input reopens assist through residual navigation sc
   const { page } = await openApp(t, index, { locale: 'en' });
 
   await fillSearch(page, 'needle');
-  await waitForSearchMarks(page, 10);
+  await waitForSearchMarks(page, 9);
   await page.locator('#searchInput').press('Escape');
   assert.equal(await page.locator('#searchAssist').isVisible(), false);
   assert.equal(await page.locator('#searchInput').evaluate((input) => document.activeElement === input), true);
@@ -866,7 +1104,7 @@ test('browser user scroll during the search-scroll guard still loads the next pa
 
   await assertEventCount(page, 150);
   await fillSearch(page, 'needle');
-  await waitForSearchMarks(page, 10);
+  await waitForSearchMarks(page, 9);
   const before = await searchNavigationSnapshot(page);
   await clickSearchNavigationAndWait(page, 'next', before.id);
 
@@ -890,7 +1128,7 @@ test('browser search navigation loads only the next hit page before wrapping', a
   await assertEventCount(page, 150);
   await fillSearch(page, 'needle');
   await waitForSearchMarks(page, 9);
-  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent.includes('37 full-text hits'));
+  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent.includes('37 full-text occurrences'));
 
   const inspectorRequestStart = requestedUrls.length;
   await moveToLastSearchMark(page);
@@ -1039,7 +1277,7 @@ test('browser previous search navigation scans backward wrap through UI pages', 
   await assertEventCount(page, 150);
   await fillSearch(page, 'needle');
   await waitForSearchMarks(page, 9);
-  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent.includes('37 full-text hits'));
+  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent.includes('37 full-text occurrences'));
   await Promise.all([
     page.waitForResponse((response) => {
       const url = new URL(response.url());
@@ -1108,8 +1346,8 @@ test('browser search navigation preserves inspector marks while ignoring raw-det
   assert.equal(await page.locator('#detail mark.searchMark').count(), 0);
 
   await fillSearch(page, 'needle');
-  await waitForSearchMarks(page, 10);
-  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent.includes('14 full-text hits'));
+  await waitForSearchMarks(page, 9);
+  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent.includes('14 full-text occurrences'));
   assert.equal(await page.locator('#detail mark.searchMark').count(), 0);
 });
 
@@ -1136,7 +1374,7 @@ test('browser search navigation temporarily expands hidden command detail target
 
   await page.waitForFunction(() => document.querySelector('#timeline .event.kind-command.hiddenByProfile'));
   await fillSearch(page, 'alpha failed');
-  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent === '0 / 0 jump targets · 1 full-text hits');
+  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent === '0 / 0 discovered jump targets · 1 full-text occurrences; loading or expanding can add targets');
 
   await page.locator('.searchInlineMatches [data-search-match-nav="next"]').click();
   await page.waitForSelector('#timeline .event.kind-command.expanded .eventBody mark.searchMark.activeSearchMark');
@@ -1181,7 +1419,7 @@ test('browser search-transient detail closes when free text no longer matches', 
   await page.locator('#searchInput').press('Enter');
   await waitForDetailView(page, 'inspector');
 
-  await page.locator('#resultSummary [data-clear-filter="q"]').click();
+  await page.locator('#searchActionRegion [data-clear-filter="q"]').click();
   await expectInputValue(page, '#searchInput', '');
   await waitForDetailView(page, 'profileRules');
 });
@@ -1266,6 +1504,72 @@ test('browser user-confirmed detail closes when structured filters remove the se
     return events.length > 0 && events.every((event) => event.classList.contains('kind-patch'));
   });
   await waitForDetailView(page, 'profileRules');
+});
+
+test('browser search input commits authoritative query filters without reloading ordinary sessions', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+  await selectPrimarySession(page);
+  const requestStart = requestedUrls.length;
+
+  const committedTimeline = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('layer') === 'raw'
+      && url.searchParams.get('q') === 'alpha owner:me'
+      && url.searchParams.get('kind') === 'exec_command_end'
+      && url.searchParams.get('file') === 'src/parser.js'
+      && !url.searchParams.has('status');
+  });
+  await fillSearch(page, 'alpha owner:me kind:exec_command_end file:"src/parser.js" status:nope layer:raw');
+  await committedTimeline;
+
+  await expectInputValue(page, '#searchInput', 'alpha owner:me status:nope');
+  assert.match(await page.locator('#searchValidation').textContent(), /status/);
+  assert.equal(await page.locator('#searchInput').getAttribute('aria-invalid'), 'true');
+  const actionText = await page.locator('#searchActionRegion').textContent();
+  assert.match(actionText, /Layer: Raw records/);
+  assert.match(actionText, /Kind: Exec Command End|Kind: exec_command_end/);
+  assert.match(actionText, /File: src\/parser\.js/);
+  assert.equal(requestedUrls.slice(requestStart).some((value) => value.startsWith('/api/sessions?')), false);
+
+  await page.locator('#searchStatusSelect').selectOption('failed');
+  await expectInputValue(page, '#searchInput', 'alpha owner:me');
+  assert.equal(await page.locator('#searchValidation').isHidden(), true);
+  assert.match(await page.locator('#searchActionRegion').textContent(), /Status: Failed/);
+
+  await page.locator('#searchActionRegion [data-clear-filter="all"]').click();
+  await expectInputValue(page, '#searchInput', '');
+  await expectInputValue(page, '#layerSelect', 'raw');
+  assert.equal(await page.locator('#searchValidation').isHidden(), true);
+  assert.match(await page.locator('#searchActionRegion').textContent(), /Layer: Raw records/);
+});
+
+test('browser assist filter transition keeps the next free-text edit on the find-refresh path', async (t) => {
+  const fixture = await makeLongCodexHome(t);
+  const index = await buildIndex(fixture);
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+
+  await page.locator('#searchInput').click();
+  await page.locator('#searchFileInput').fill(fixture.sessionId);
+  await page.locator('#searchFileInput').press('Enter');
+  await assertEventCount(page, 150);
+  await page.locator('#loadMoreBtn').click();
+  await assertEventCount(page, 180);
+  const requestStart = requestedUrls.length;
+
+  const findResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('file') === fixture.sessionId
+      && url.searchParams.get('q') === 'alpha';
+  });
+  await fillSearch(page, 'alpha');
+  const response = await findResponse;
+  const url = new URL(response.url());
+  assert.equal(url.searchParams.get('limit'), '180');
+  await assertEventCount(page, 180);
+  assert.equal(requestedUrls.slice(requestStart).some((value) => value.startsWith('/api/sessions?')), false);
 });
 
 test('browser read from here clears structured filters and preserves free text', async (t) => {

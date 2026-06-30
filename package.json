@@ -27,6 +27,7 @@
     "src/codex.js",
     "src/codex-detail.js",
     "src/codex-logical.js",
+    "src/codex-search.js",
     "src/codex-source.js",
     "src/folding.js",
     "src/shared/",

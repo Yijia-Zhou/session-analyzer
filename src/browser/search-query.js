@@ -48,25 +48,34 @@
 
     const rawValue = raw.slice(colon + 1);
     const value = operator === 'file' ? unquote(rawValue) : unquote(rawValue).toLowerCase();
-    if (!value) return { operator, value: '', valid: true, empty: true };
-    if (OPERATOR_VALUES[operator] && !OPERATOR_VALUES[operator].has(value)) return null;
-    return { operator, value, valid: true, empty: false };
+    if (!value) return { operator, value: '', valid: false, empty: true, error: 'missing-value' };
+    if (OPERATOR_VALUES[operator] && !OPERATOR_VALUES[operator].has(value)) {
+      return { operator, value, valid: false, empty: false, error: 'invalid-value' };
+    }
+    return { operator, value, valid: true, empty: false, error: '' };
   }
 
   function parseSearchInput(input) {
     const filters = { q: '', file: '', kind: '', status: '', layer: '' };
     const text = [];
+    const retained = [];
+    const errors = [];
     const tokens = tokenize(input).map((token) => {
       const parsed = parseOperatorToken(token.raw);
       if (parsed?.valid) {
-        if (!parsed.empty) filters[parsed.operator] = parsed.value;
+        filters[parsed.operator] = parsed.value;
+        return { ...token, ...parsed };
+      }
+      retained.push(token.raw);
+      if (parsed?.operator) {
+        errors.push({ operator: parsed.operator, value: parsed.value, raw: token.raw, error: parsed.error });
         return { ...token, ...parsed };
       }
       text.push(unquote(token.raw));
-      return { ...token, operator: '', value: unquote(token.raw), valid: false, empty: false };
+      return { ...token, operator: '', value: unquote(token.raw), valid: false, empty: false, error: '' };
     });
     filters.q = text.filter(Boolean).join(' ').trim();
-    return { ...filters, tokens };
+    return { ...filters, tokens, errors, retainedInput: retained.join(' ').trim() };
   }
 
   function formatOperatorValue(value) {
@@ -83,7 +92,7 @@
   }
 
   function removeFreeText(input) {
-    return joinTokens(tokenize(input).filter((token) => parseOperatorToken(token.raw)?.valid));
+    return joinTokens(tokenize(input).filter((token) => parseOperatorToken(token.raw)?.operator));
   }
 
   function upsertOperator(input, operator, value) {

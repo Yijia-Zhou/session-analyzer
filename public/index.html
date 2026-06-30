@@ -28,12 +28,20 @@
           </select>
         </label>
         <div class="searchField">
-          <input id="searchInput" type="search" placeholder="Search messages, commands, files, output" autocomplete="off" aria-controls="searchAssist" aria-expanded="false" aria-haspopup="dialog">
-          <div class="searchInlineMatches" data-search-match-controls title="Previous/next moves through materialized jump targets; backend full-text hits may require loading or expanding timeline events" hidden>
-            <span class="searchInlineCount" data-search-match-count>0 / 0</span>
-            <button class="searchInlineBtn" type="button" data-search-match-nav="previous" aria-label="Previous search match" title="Previous search match">↑</button>
-            <button class="searchInlineBtn" type="button" data-search-match-nav="next" aria-label="Next search match" title="Next search match">↓</button>
+          <div class="searchInputRow">
+            <div class="searchScopeControl" role="group" aria-label="Search scope">
+              <button class="searchScopeBtn" type="button" data-search-scope="session" aria-pressed="true">Current session</button>
+              <button class="searchScopeBtn" type="button" data-search-scope="project" aria-pressed="false">Entire project</button>
+            </div>
+            <input id="searchInput" type="search" placeholder="Find in current session" autocomplete="off" aria-controls="searchAssist" aria-expanded="false" aria-haspopup="dialog">
+            <div class="searchInlineMatches" data-search-match-controls title="Previous/next moves through materialized jump targets; backend full-text hits may require loading or expanding timeline events" hidden>
+              <span class="searchInlineCount" data-search-match-count>0 / 0</span>
+              <button class="searchInlineBtn" type="button" data-search-match-nav="previous" aria-label="Previous search match" title="Previous search match">↑</button>
+              <button class="searchInlineBtn" type="button" data-search-match-nav="next" aria-label="Next search match" title="Next search match">↓</button>
+            </div>
           </div>
+          <div id="searchValidation" class="searchValidation" role="status" hidden></div>
+          <div id="searchActionRegion" class="searchActionRegion" aria-label="Active search context"></div>
           <div id="searchAssist" class="searchAssist" role="dialog" aria-label="Search options" hidden>
             <div class="searchAssistSection">
               <div class="searchAssistTitle">Search filters</div>
@@ -81,10 +89,6 @@
                   </span>
                 </label>
               </div>
-            </div>
-            <div class="searchAssistSection">
-              <div class="searchAssistTitle">Active</div>
-              <div id="searchAssistChips" class="searchAssistChips"></div>
             </div>
           </div>
         </div>

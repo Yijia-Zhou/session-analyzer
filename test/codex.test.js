@@ -1765,14 +1765,16 @@ test('command language inference uses session shell context for bare external co
   assert.equal(buildEventDetail(wrappedBashSession, wrappedBashEvent.id, 'main').timelineSections[0].language, 'bash');
 });
 
-test('filterSessions uses contiguous phrase semantics for direct q API filtering', async () => {
+test('filterSessions uses contiguous phrase semantics for project event search', async () => {
   const index = await buildFixtureIndex();
   const session = primaryFixtureSession(index);
-  session.searchText = 'before Foo \n\t bar after; alpha unrelated beta';
+  const event = session.logicalEvents.find((candidate) => candidate.layer === 'main');
+  event.preview = 'before Foo \n\t bar after; alpha unrelated beta';
+  event.searchText = event.preview;
   index.sessions = [session];
 
-  assert.equal(filterSessions(index, { q: 'foo bar', sort: 'updated-desc' }).total, 1);
-  assert.equal(filterSessions(index, { q: 'alpha beta', sort: 'updated-desc' }).total, 0);
+  assert.equal(filterSessions(index, { q: 'foo bar', layer: 'main', sort: 'latest-match-desc' }).total, 1);
+  assert.equal(filterSessions(index, { q: 'alpha beta', layer: 'main', sort: 'latest-match-desc' }).total, 0);
 });
 
 test('filterSessions applies from/to date filters on the same activity timestamp basis', () => {

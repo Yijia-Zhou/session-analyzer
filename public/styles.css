@@ -323,8 +323,43 @@ button:hover,
   position: relative;
 }
 
-.searchField > input {
+.searchInputRow {
+  align-items: center;
+  display: grid;
+  gap: 0.35rem;
+  grid-template-columns: auto minmax(120px, 1fr);
+  position: relative;
+}
+
+.searchInputRow > input {
   padding-right: var(--search-inline-reserve);
+}
+
+.searchScopeControl {
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: inline-flex;
+  padding: 2px;
+}
+
+.searchbar .searchScopeBtn {
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  min-height: 34px;
+  padding: 0.3rem 0.45rem;
+  white-space: nowrap;
+  width: auto;
+}
+
+.searchbar .searchScopeBtn[aria-pressed='true'] {
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(24, 32, 36, 0.12);
+  color: var(--ink);
+  font-weight: 700;
 }
 
 .searchInlineMatches {
@@ -352,6 +387,34 @@ button:hover,
   white-space: nowrap;
 }
 
+.searchValidation {
+  color: #9f2d2d;
+  font-size: 0.76rem;
+  line-height: 1.35;
+  margin-top: 0.3rem;
+}
+
+.searchValidation[hidden] {
+  display: none;
+}
+
+.searchActionRegion {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+  min-height: 24px;
+}
+
+.searchActionRegion:empty {
+  display: none;
+}
+
+.contextChip {
+  cursor: default;
+}
+
 .searchbar .searchInlineBtn {
   align-items: center;
   background: transparent;
@@ -368,11 +431,12 @@ button:hover,
   width: 28px;
 }
 
-.searchField.searchInlineStacked > input {
+.searchField.searchInlineStacked .searchInputRow > input {
   padding-right: 0.5rem;
 }
 
 .searchField.searchInlineStacked .searchInlineMatches {
+  grid-column: 2;
   justify-content: flex-end;
   margin-top: 0.25rem;
   position: static;
@@ -945,6 +1009,84 @@ body[data-project-mode='selecting'] .searchAssist {
 .sessionItem:focus-within {
   max-height: 28rem;
   overflow: hidden;
+}
+
+.projectResultCard {
+  gap: 0.45rem;
+  max-height: 15rem;
+}
+
+.projectResultCard:hover,
+.projectResultCard:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 6px 18px rgba(24, 32, 36, 0.1);
+}
+
+.projectResultCount {
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.projectLatestMatch {
+  background: var(--soft);
+  border-radius: 6px;
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.5rem;
+}
+
+.projectLatestMeta {
+  align-items: baseline;
+  color: var(--muted);
+  display: flex;
+  font-size: 0.72rem;
+  gap: 0.4rem;
+  justify-content: space-between;
+}
+
+.projectLatestMeta strong {
+  color: var(--ink);
+}
+
+.projectLatestSnippet {
+  color: var(--ink);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.projectSearchHighlight {
+  background: #ffe599;
+  color: inherit;
+}
+
+.projectSearchState {
+  align-self: start;
+  background: var(--soft);
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  margin: 1rem;
+  padding: 1rem;
+}
+
+.projectSearchState h3 {
+  margin: 0 0 0.35rem;
+}
+
+.projectSearchState p {
+  color: var(--muted);
+  margin: 0;
+}
+
+.projectReturnBanner {
+  align-items: center;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  justify-content: flex-start;
+  padding: 0.5rem;
 }
 
 .sessionItem.secondarySession {
@@ -3431,6 +3573,28 @@ pre {
   .searchbar {
     grid-template-columns: 1fr;
     width: 100%;
+  }
+
+  .searchInputRow {
+    grid-template-columns: 1fr;
+  }
+
+  .searchScopeControl {
+    width: 100%;
+  }
+
+  .searchbar .searchScopeBtn {
+    flex: 1;
+  }
+
+  .searchInlineMatches {
+    bottom: 6px;
+    top: auto;
+    transform: none;
+  }
+
+  .searchField.searchInlineStacked .searchInlineMatches {
+    grid-column: 1;
   }
 
   .foldControls {

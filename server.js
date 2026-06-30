@@ -519,7 +519,12 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       if (pathname === '/api/file-suggestions') {
         const index = requireIndex(state, res);
         if (!index) return;
-        sendJson(res, 200, { files: fileSuggestions(index) });
+        sendJson(res, 200, {
+          files: fileSuggestions(index, {
+            layer: searchParams.get('layer') || 'main',
+            sessionId: searchParams.get('sessionId') || '',
+          }),
+        });
         return;
       }
 

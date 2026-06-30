@@ -36,12 +36,17 @@ test('parseSearchInput accepts open-ended kind values', () => {
   assert.equal(parsed.kind, 'exec_command_begin');
 });
 
-test('parseSearchInput keeps unknown operators and invalid enumerated operators as text', () => {
+test('parseSearchInput keeps unknown operators literal and reports known invalid values outside phrase text', () => {
   const parsed = searchQuery.parseSearchInput('layer:nope owner:me error file:');
 
-  assert.equal(parsed.q, 'layer:nope owner:me error');
+  assert.equal(parsed.q, 'owner:me error');
   assert.equal(parsed.kind, '');
   assert.equal(parsed.file, '');
+  assert.equal(parsed.retainedInput, 'layer:nope owner:me error file:');
+  assert.deepEqual(parsed.errors, [
+    { operator: 'layer', value: 'nope', raw: 'layer:nope', error: 'invalid-value' },
+    { operator: 'file', value: '', raw: 'file:', error: 'missing-value' },
+  ]);
 });
 
 test('search query helpers remove and upsert operators', () => {

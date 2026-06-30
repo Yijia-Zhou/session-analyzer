@@ -9,6 +9,7 @@ const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting'
 const i18n = require('./shared/i18n');
 const { createCodexDetailBuilder } = require('./codex-detail');
 const { createCodexLogicalBuilder } = require('./codex-logical');
+const { createCodexSearch } = require('./codex-search');
 const {
   CANONICAL_SCHEMA_VERSION,
   CODEX_SOURCE_KIND,
@@ -3064,43 +3065,6 @@ const codexDetailBuilder = createCodexDetailBuilder({
 });
 const { buildEventDetail } = codexDetailBuilder;
 
-function rawEventDto(raw, q, locale = i18n.DEFAULT_LOCALE) {
-  const hasSearchHit = q ? eventHasSearchHit(raw, q) : false;
-  return {
-    id: raw.rawId,
-    schemaVersion: CANONICAL_SCHEMA_VERSION,
-    sourceKind: CODEX_SOURCE_KIND,
-    timestamp: raw.timestamp,
-    turnId: raw.turnId,
-    recordType: raw.recordType,
-    payloadType: raw.payloadType,
-    sourceRecordType: raw.recordType || '',
-    sourceEventType: raw.payloadType || '',
-    kind: raw.payloadType || raw.recordType,
-    subtype: raw.role || '',
-    layer: 'raw',
-    role: raw.role,
-    label: rawRecordLabel(raw, locale),
-    preview: raw.preview,
-    severity: raw.payloadType === 'error' ? 'error' : 'normal',
-    status: raw.status,
-    toolName: raw.toolName,
-    hasLongOutput: raw.searchText.length > 1600,
-    hasSearchHit,
-    touchedFiles: raw.touchedFiles,
-    outputStats: {
-      exitCode: raw.exitCode,
-      durationMs: raw.durationMs,
-    },
-    source: raw.source,
-    sourceLocator: codexSourceLocator(raw.source),
-    rawRefs: [rawRef(raw)],
-    channels: [raw.recordType],
-    searchText: raw.searchText,
-    snippet: hasSearchHit ? eventSearchSnippet(raw, q) : '',
-  };
-}
-
 function reviewFindingMarkdown(finding, index) {
   if (!finding || typeof finding !== 'object') return '';
   const title = displayValue(firstNonEmpty(finding.title, finding.summary, `Finding ${index + 1}`), 400).trim();
@@ -3692,214 +3656,28 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
   };
 }
 
-function searchPhraseRegex(q, flags = '') {
-  const phrase = String(q || '').trim();
-  if (!phrase) return null;
-  const pattern = phrase
-    .split(/\s+/)
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('\\s+');
-  return new RegExp(pattern, flags.includes('i') ? flags : `${flags}i`);
-}
-
-function matchTerms(text, q) {
-  const regex = searchPhraseRegex(q);
-  return regex ? regex.test(String(text || '')) : true;
-}
-
-function countSearchMatches(text, q) {
-  const regex = searchPhraseRegex(q, 'g');
-  return regex ? [...String(text || '').matchAll(regex)].length : 0;
-}
-
-function eventSearchMatchCount(event, q) {
-  return Math.max(
-    countSearchMatches(event.preview, q),
-    countSearchMatches(event.searchText, q),
-  );
-}
-
-function eventHasSearchHit(event, q) {
-  return eventSearchMatchCount(event, q) > 0;
-}
-
-function eventSearchSnippet(event, q) {
-  return makeSnippet(event.preview, q) || makeSnippet(event.searchText, q);
-}
-
-function eventMatches(event, filters) {
-  if (filters.layer && event.layer !== filters.layer) return false;
-  if (filters.kind && event.kind !== filters.kind && event.subtype !== filters.kind) return false;
-  if (filters.status && event.status !== filters.status) return false;
-  if (filters.tool && !String(event.toolName || '').toLowerCase().includes(filters.tool.toLowerCase())) return false;
-  if (filters.file) {
-    const needle = normalizeSearchPath(filters.file);
-    const sourceMatch = normalizeSearchPath(event.source?.file).includes(needle);
-    const touchedMatch = (event.touchedFiles || []).some((file) => normalizeSearchPath(file).includes(needle));
-    const rawMatch = (event.rawRefs || []).some((ref) => normalizeSearchPath(ref.file).includes(needle));
-    if (!sourceMatch && !touchedMatch && !rawMatch) return false;
-  }
-  if (filters.q && !eventHasSearchHit(event, filters.q)) return false;
-  return true;
-}
-
-function sessionSummary(session, index) {
-  const derivedKind = derivedSessionKind(session);
-  const parentSession = session.parentSessionId ? index?.sessionsById?.get(session.parentSessionId) : null;
-  const forkedFromSession = session.forkedFromSessionId ? index?.sessionsById?.get(session.forkedFromSessionId) : null;
-  return {
-    id: session.id,
-    title: sanitizeLogicalEnvelopeValue(session.title),
-    sourceFile: session.sourceFile,
-    bytes: session.bytes,
-    lineCount: session.lineCount,
-    cwdSet: [...session.cwdSet],
-    parentSessionId: session.parentSessionId,
-    parentSessionInferred: Boolean(session.parentSessionInferred),
-    parentSessionTitle: sanitizeLogicalEnvelopeValue(parentSession?.title || ''),
-    forkedFromSessionId: session.forkedFromSessionId,
-    forkedFromSessionTitle: sanitizeLogicalEnvelopeValue(forkedFromSession?.title || ''),
-    agentNickname: sanitizeLogicalEnvelopeValue(session.agentNickname),
-    isDerivedSession: Boolean(derivedKind),
-    derivedKind,
-    startedAt: session.startedAt,
-    updatedAt: session.updatedAt,
-    counts: session.counts,
-    topTools: session.analysis.toolUsage.slice(0, 5),
-    failedCommands: session.analysis.failedCommands.length,
-    patchedFiles: session.analysis.patchedFiles.slice(0, 5),
-    protocolCount: session.analysis.protocolStats.reduce((sum, item) => sum + item.count, 0),
-    rawEventCount: session.rawEvents.length,
-  };
-}
-
-function filterSessions(index, filters) {
-  const locale = i18n.resolveLocale(filters.locale);
-  let sessions = index.sessions.filter((session) => {
-    const activityAt = String(session.updatedAt || session.startedAt || '');
-    if (filters.from && activityAt < `${filters.from}T00:00:00.000Z`) return false;
-    if (filters.to && activityAt > `${filters.to}T23:59:59.999Z`) return false;
-    if (filters.q && !matchTerms(session.searchText, filters.q)) return false;
-    if (filters.kind || filters.status || filters.tool || filters.file || filters.layer) {
-      const haystack = filters.layer === 'raw' ? session.rawEvents.map((raw) => rawEventDto(raw, '', locale)).filter((event) => eventMatches(event, filters)) : session.logicalEvents.filter((event) => eventMatches(event, filters));
-      return haystack.length > 0;
-    }
-    return true;
-  });
-
-  if (filters.sort === 'started-asc') {
-    sessions = sessions.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
-  } else if (filters.sort === 'events-desc') {
-    sessions = sessions.sort((a, b) => b.logicalEvents.length - a.logicalEvents.length);
-  } else if (filters.sort === 'failures-desc') {
-    sessions = sessions.sort((a, b) => b.counts.failedCommands - a.counts.failedCommands);
-  } else {
-    sessions = sessions.sort((a, b) => String(b.updatedAt || b.startedAt).localeCompare(String(a.updatedAt || a.startedAt)));
-  }
-
-  return {
-    total: sessions.length,
-    sessions: sessions.map((session) => sessionSummary(session, index)),
-  };
-}
-
-function fileSuggestions(index, limit = 80) {
-  const counts = new Map();
-  const add = (file, count = 1) => {
-    const display = displayProjectFile(file, index.repoRoot);
-    if (!display) return;
-    counts.set(display, (counts.get(display) || 0) + count);
-  };
-  for (const session of index.sessions || []) {
-    for (const item of session.analysis?.patchedFiles || []) {
-      add(item.file, item.count || 1);
-    }
-    for (const event of session.logicalEvents || []) {
-      for (const file of event.touchedFiles || []) {
-        add(file);
-      }
-    }
-  }
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .slice(0, limit)
-    .map(([file, count]) => ({ file, count }));
-}
-
-function makeSnippet(text, q) {
-  const regex = searchPhraseRegex(q);
-  if (!regex) return '';
-  const source = String(text || '');
-  const match = regex.exec(source);
-  if (!match) return '';
-  const first = match.index;
-  const start = Math.max(0, first - 80);
-  const end = Math.min(source.length, first + 180);
-  const prefix = start > 0 ? '...' : '';
-  const suffix = end < source.length ? '...' : '';
-  return `${prefix}${source.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
-}
-
-function logicalEventDto(event, q, locale = i18n.DEFAULT_LOCALE) {
-  const hasSearchHit = q ? eventHasSearchHit(event, q) : false;
-  return sanitizeLogicalEventDto({
-    id: event.id,
-    schemaVersion: event.schemaVersion,
-    sourceKind: event.sourceKind,
-    timestamp: event.timestamp,
-    turnId: event.turnId,
-    recordType: '',
-    payloadType: event.subtype,
-    kind: event.kind,
-    subtype: event.subtype,
-    layer: event.layer,
-    role: event.role,
-    label: localizedLogicalLabel(event, locale),
-    preview: event.preview,
-    severity: event.severity,
-    status: event.status,
-    toolName: event.toolName,
-    hasLongOutput: event.hasLongOutput,
-    hasReadableReasoning: event.hasReadableReasoning,
-    hasSearchHit,
-    tags: event.tags || [],
-    touchedFiles: event.touchedFiles,
-    outputStats: event.outputStats,
-    tokenUsage: event.tokenUsage,
-    usageLimits: event.usageLimits,
-    source: event.source,
-    sourceLocator: event.sourceLocator,
-    rawRefs: event.rawRefs,
-    channels: event.channels,
-    snippet: hasSearchHit ? eventSearchSnippet(event, q) : '',
-  });
-}
-
-function getTimeline(index, sessionId, filters) {
-  const locale = i18n.resolveLocale(filters.locale);
-  const session = index.sessionsById.get(sessionId);
-  if (!session) return null;
-  const layer = filters.layer || 'main';
-  const sourceEvents = layer === 'raw'
-    ? session.rawEvents.map((raw) => rawEventDto(raw, filters.q, locale))
-    : session.logicalEvents.filter((event) => event.layer === layer);
-  const structuralFilters = { ...filters, q: '', layer };
-  const matched = sourceEvents.filter((event) => eventMatches(event, structuralFilters));
-  const searchMatchCount = filters.q
-    ? matched.reduce((sum, event) => sum + eventSearchMatchCount(event, filters.q), 0)
-    : 0;
-  const page = matched.slice(filters.offset, filters.offset + filters.limit);
-  return {
-    session: sessionSummary(session, index),
-    total: matched.length,
-    searchMatchCount,
-    offset: filters.offset,
-    limit: filters.limit,
-    layer,
-    eventKinds: eventKindCatalog([session], { locale }),
-    events: layer === 'raw' ? page : page.map((event) => logicalEventDto(event, filters.q, locale)),
-  };
-}
+const codexSearch = createCodexSearch({
+  canonicalSchemaVersion: CANONICAL_SCHEMA_VERSION,
+  codexSourceKind: CODEX_SOURCE_KIND,
+  codexSourceLocator,
+  defaultLocale: i18n.DEFAULT_LOCALE,
+  derivedSessionKind,
+  displayProjectFile,
+  eventKindCatalog,
+  localizedLogicalLabel,
+  normalizeSearchPath,
+  rawRecordLabel,
+  rawRef,
+  resolveLocale: i18n.resolveLocale,
+  sanitizeLogicalEnvelopeValue,
+  sanitizeLogicalEventDto,
+});
+const {
+  fileSuggestions,
+  filterSessions,
+  getTimeline,
+  matchTerms,
+} = codexSearch;
 
 async function readRawLine(index, relFile, lineNumber) {
   const target = path.resolve(index.sessionsRoot, relFile);

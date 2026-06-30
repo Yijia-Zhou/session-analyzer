@@ -126,3 +126,28 @@ test('codex detail builder stays a detail-construction boundary', () => {
     assert.doesNotMatch(text, pattern);
   }
 });
+
+test('codex search builder stays a pure search-contract boundary', () => {
+  const searchModule = require('../src/codex-search');
+  const text = readText(path.join('src', 'codex-search.js'));
+  const codexText = readText(path.join('src', 'codex.js'));
+  const forbiddenPatterns = [
+    /\brequire\s*\(/,
+    /\bimport\s+/,
+    /server\.js/,
+    /src[\\/]browser/,
+    /public[\\/]/,
+    /assets[\\/]/,
+    /node:fs/,
+    /\bfs\./,
+    /\breadFile\b/,
+    /\bwriteFile\b/,
+    /\bcreateReadStream\b/,
+  ];
+
+  assert.deepEqual(Object.keys(searchModule), ['createCodexSearch']);
+  assert.match(codexText, /createCodexSearch\(\{/);
+  for (const pattern of forbiddenPatterns) {
+    assert.doesNotMatch(text, pattern);
+  }
+});

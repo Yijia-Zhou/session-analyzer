@@ -99,6 +99,7 @@ function searchStatusLabel(value) {
 const state = {
   locale: browserLocale(),
   sessions: [],
+  projectResults: [],
   repoRoot: '',
   projects: [],
   projectSelected: false,
@@ -109,6 +110,13 @@ const state = {
   projectChooserRequestId: 0,
   projectReturning: false,
   sessionsRequestId: 0,
+  projectSearchRequestId: 0,
+  projectSearchDataContext: '',
+  projectSearchTotal: 0,
+  projectSearchEventTotal: 0,
+  projectSearchSort: 'latest-match-desc',
+  projectSearchLoading: false,
+  projectReturnContext: null,
   analysisRequestId: 0,
   selectedSessionId: '',
   selectedEventId: '',
@@ -122,8 +130,10 @@ const state = {
   sessionTotal: 0,
   timelineTotal: 0,
   timelineSearchMatchCount: 0,
+  timelineSearchEventCount: 0,
   currentEvents: [],
   fileSuggestions: [],
+  fileSuggestionRequestId: 0,
   eventKinds: { main: [], protocol: [], raw: [] },
   sessionEventKinds: { main: [], protocol: [], raw: [] },
   profiles: [],
@@ -149,6 +159,10 @@ const state = {
   navigationCache: { key: '', events: [], total: 0, pending: null },
   navigationLoadErrorKey: '',
   searchHighlight: { query: '', marks: [] },
+  searchScope: 'session',
+  searchQuery: '',
+  searchFilters: { file: '', kind: '', status: '' },
+  searchValidation: [],
   searchTargetRegistry: { key: '', targets: [], activeTargetId: '' },
   searchNavigation: { running: false, queue: [] },
   searchProgrammaticScroll: { active: false, timer: 0, paginationFrame: 0 },
@@ -167,6 +181,9 @@ const el = {
   projectSwitchHint: document.querySelector('.projectSwitchHint'),
   stateLine: document.getElementById('stateLine'),
   searchInput: document.getElementById('searchInput'),
+  searchScopeButtons: document.querySelectorAll('[data-search-scope]'),
+  searchValidation: document.getElementById('searchValidation'),
+  searchActionRegion: document.getElementById('searchActionRegion'),
   localeSelect: document.getElementById('localeSelect'),
   searchAssist: document.getElementById('searchAssist'),
   searchAssistChips: document.getElementById('searchAssistChips'),
@@ -241,8 +258,9 @@ function applyStaticLocale() {
   document.querySelector('.localeControl .srOnly') && setText(document.querySelector('.localeControl .srOnly'), t('localeLabel'));
   if (el.localeSelect) el.localeSelect.setAttribute('aria-label', t('localeLabel'));
   if (!state.repoRoot && !state.projectLoadingRoot) setText(el.stateLine, t('stateLoading'));
-  if (el.searchInput) el.searchInput.placeholder = t('searchPlaceholder');
+  syncSearchScopeUi();
   if (el.searchAssist) el.searchAssist.setAttribute('aria-label', t('searchOptions'));
+  if (el.searchActionRegion) el.searchActionRegion.setAttribute('aria-label', t('activeSearchContext'));
   document.querySelector('[data-search-match-controls]')?.setAttribute('title', t('searchMatchTitle'));
   document.querySelector('[data-search-match-nav="previous"]')?.setAttribute('aria-label', t('previousSearchMatch'));
   document.querySelector('[data-search-match-nav="previous"]')?.setAttribute('title', t('previousSearchMatch'));
@@ -250,7 +268,6 @@ function applyStaticLocale() {
   document.querySelector('[data-search-match-nav="next"]')?.setAttribute('title', t('nextSearchMatch'));
   document.querySelectorAll('.searchAssistTitle')[0] && setText(document.querySelectorAll('.searchAssistTitle')[0], t('searchFilters'));
   document.querySelectorAll('.searchAssistTitle')[1] && setText(document.querySelectorAll('.searchAssistTitle')[1], t('active'));
-  setText(el.searchKindLabel, t('eventTypeSessionTotal'));
   setSelectOptionText(el.searchKindSelect, '', t('anyKind'));
   setSelectOptionText(el.searchStatusSelect, '', t('anyStatus'));
   setSelectOptionText(el.searchStatusSelect, 'active', searchStatusLabel('active'));
@@ -493,20 +510,76 @@ function renderProjectJob(job) {
   }
 }
 
-function parsedSearchInput() {
-  return searchQuery.parseSearchInput(el.searchInput.value);
+function currentSearchState() {
+  return {
+    scope: state.searchScope,
+    q: state.searchQuery,
+    file: state.searchFilters.file,
+    kind: state.searchFilters.kind,
+    status: state.searchFilters.status,
+    layer: state.layerId || 'main',
+    validation: state.searchValidation,
+  };
 }
 
-function currentSearchState() {
-  const parsed = parsedSearchInput();
-  return {
-    q: parsed.q,
-    file: parsed.file,
-    kind: parsed.kind,
-    status: parsed.status,
-    layer: parsed.layer || state.layerId || 'main',
-    parsed,
-  };
+function syncSearchScopeUi() {
+  document.body.dataset.searchScope = state.searchScope;
+  for (const button of el.searchScopeButtons) {
+    const scope = button.dataset.searchScope;
+    button.setAttribute('aria-pressed', scope === state.searchScope ? 'true' : 'false');
+    button.disabled = scope === 'session' && !state.selectedSessionId;
+    button.textContent = scope === 'session' ? t('currentSessionScope') : t('entireProjectScope');
+  }
+  const group = document.querySelector('.searchScopeControl');
+  if (group) group.setAttribute('aria-label', t('searchScope'));
+  if (el.searchInput) {
+    el.searchInput.placeholder = state.searchScope === 'project'
+      ? t('projectSearchPlaceholder')
+      : t('sessionSearchPlaceholder');
+  }
+  if (el.sortSelect && !state.selectingProject) el.sortSelect.disabled = state.searchScope === 'project';
+  setText(el.searchKindLabel, state.searchScope === 'project' ? t('eventTypeProjectTotal') : t('eventTypeSessionTotal'));
+}
+
+function hasActiveSearchExpression() {
+  const search = currentSearchState();
+  return Boolean(search.q || search.file || search.kind || search.status);
+}
+
+function searchInputValueFromState() {
+  return [
+    state.searchQuery,
+    ...state.searchValidation.map((item) => item.raw),
+  ].filter(Boolean).join(' ').trim();
+}
+
+function syncSearchInputValue() {
+  const value = searchInputValueFromState();
+  if (el.searchInput.value !== value) el.searchInput.value = value;
+}
+
+function clearSearchValidationOperator(operator) {
+  const next = state.searchValidation.filter((item) => item.operator !== operator);
+  if (next.length === state.searchValidation.length) return false;
+  state.searchValidation = next;
+  syncSearchInputValue();
+  renderSearchValidation();
+  return true;
+}
+
+function commitTypedSearchInput() {
+  const parsed = searchQuery.parseSearchInput(el.searchInput.value);
+  const filters = { ...state.searchFilters };
+  for (const token of parsed.tokens) {
+    if (!token.valid || !Object.hasOwn(filters, token.operator)) continue;
+    filters[token.operator] = token.value;
+  }
+  state.searchQuery = parsed.q;
+  state.searchFilters = filters;
+  state.searchValidation = parsed.errors;
+  el.searchInput.value = parsed.retainedInput;
+  renderSearchValidation();
+  return parsed.layer && parsed.layer !== state.layerId ? parsed.layer : '';
 }
 
 function activeLayerId() {
@@ -530,18 +603,29 @@ function highlightTerms() {
 }
 
 function highlightRoots() {
-  return [el.sessionList, el.timeline, el.detail].filter(Boolean);
+  return [el.timeline, el.detail].filter(Boolean);
 }
 
 function sessionsDataContextKey() {
+  return JSON.stringify([
+    state.repoRoot,
+    el.sortSelect?.value || '',
+    state.locale,
+  ]);
+}
+
+function projectSearchDataContextKey() {
   const search = currentSearchState();
   return JSON.stringify([
     state.repoRoot,
+    search.scope,
+    state.selectedSessionId,
+    search.q,
     search.layer,
     search.kind,
     search.status,
     search.file,
-    el.sortSelect?.value || '',
+    state.projectSearchSort,
     state.locale,
   ]);
 }
@@ -550,6 +634,7 @@ function timelineDataContextKey() {
   const search = currentSearchState();
   return JSON.stringify([
     state.repoRoot,
+    search.scope,
     state.selectedSessionId,
     search.layer,
     search.q,
@@ -568,15 +653,16 @@ function foldingProfileSearchContextKey() {
 }
 
 function timelineSearchSurfaceContextKey() {
-  return JSON.stringify([timelineDataContextKey(), foldingProfileSearchContextKey()]);
+  return JSON.stringify([
+    timelineDataContextKey(),
+    foldingProfileSearchContextKey(),
+    el.sortSelect?.value || '',
+  ]);
 }
 
 function detailSearchSurfaceContextKey() {
   return JSON.stringify([
-    state.repoRoot,
-    state.selectedSessionId,
-    activeLayerId(),
-    state.locale,
+    timelineDataContextKey(),
     state.detailCacheGeneration,
     state.detailView?.type || '',
     state.detailView?.eventId || '',
@@ -584,6 +670,7 @@ function detailSearchSurfaceContextKey() {
 }
 
 function searchDiscoveryContextReady() {
+  if (state.searchScope !== 'session') return false;
   const sessionsReady = state.searchSurfaceContexts.sessions === sessionsDataContextKey();
   const timelineReady = !state.selectedSessionId
     || state.searchSurfaceContexts.timeline === timelineSearchSurfaceContextKey();
@@ -594,6 +681,7 @@ function searchTargetKey() {
   const search = currentSearchState();
   return [
     state.repoRoot,
+    search.scope,
     state.selectedSessionId,
     search.layer,
     search.q,
@@ -601,7 +689,7 @@ function searchTargetKey() {
     search.status,
     search.file,
     foldingProfileSearchContextKey(),
-    el.sortSelect?.value || '',
+    search.scope === 'project' ? state.projectSearchSort : (el.sortSelect?.value || ''),
     state.locale,
   ].join('\u001f');
 }
@@ -629,6 +717,7 @@ function beginSearchTargetContextTransition() {
   state.searchHighlight = { query: currentSearchState().q, marks: [] };
   resetSearchTargetRegistry(key);
   state.timelineSearchMatchCount = 0;
+  state.timelineSearchEventCount = 0;
   updateSearchMatchControls();
   return true;
 }
@@ -650,13 +739,7 @@ function activeSearchTarget() {
 function searchableHighlightOwners() {
   if (!searchDiscoveryContextReady()) return [];
   const owners = [];
-  const sessionIds = new Set(state.sessions.map((session) => session.id));
   const eventIds = new Set(state.currentEvents.map((event) => event.id));
-  for (const row of el.sessionList?.querySelectorAll('[data-session-id]') || []) {
-    if (sessionIds.has(row.dataset.sessionId)) {
-      owners.push({ surface: 'session', ownerId: row.dataset.sessionId, root: row });
-    }
-  }
   for (const article of el.timeline?.querySelectorAll('[data-event-id]:not(.hiddenByProfile)') || []) {
     if (eventIds.has(article.dataset.eventId)) {
       owners.push({ surface: 'timeline', ownerId: article.dataset.eventId, root: article });
@@ -737,11 +820,11 @@ function clearSearchTransientExpansion(eventId) {
 
 function structuredSearchKey() {
   const search = currentSearchState();
-  return searchQuery.structuredSearchKey(
-    { kind: search.kind, status: search.status, file: search.file, layer: search.parsed.layer || '' },
+  return `${search.scope}\u001e${searchQuery.structuredSearchKey(
+    { kind: search.kind, status: search.status, file: search.file },
     state.layerId || '',
-    el.sortSelect?.value || '',
-  );
+    search.scope === 'project' ? state.projectSearchSort : (el.sortSelect?.value || ''),
+  )}`;
 }
 
 function currentSearchMarkLabel() {
@@ -762,14 +845,14 @@ function syncSearchInlineLayout() {
   el.searchField.classList.remove('searchInlineStacked');
   const reserve = Math.ceil(controls.scrollWidth + 12);
   el.searchField.style.setProperty('--search-inline-reserve', `${reserve}px`);
-  el.searchField.classList.toggle('searchInlineStacked', el.searchField.clientWidth - reserve < 120);
+  el.searchField.classList.toggle('searchInlineStacked', el.searchInput.clientWidth - reserve < 120);
 }
 
 function updateSearchMatchControls() {
   const controls = document.querySelectorAll('[data-search-match-controls]');
   syncSearchTargetRegistryKey();
   const { targets } = state.searchTargetRegistry;
-  const visible = Boolean(currentSearchState().q);
+  const visible = state.searchScope === 'session' && Boolean(currentSearchState().q);
   const canNavigate = searchDiscoveryContextReady()
     && (targets.length > 0 || state.timelineSearchMatchCount > 0);
   controls.forEach((control) => {
@@ -786,7 +869,7 @@ function updateSearchMatchControls() {
 
 function maybePreloadSearchTargets() {
   const search = currentSearchState();
-  if (!search.q || !state.selectedSessionId) return;
+  if (search.scope !== 'session' || !search.q || !state.selectedSessionId) return;
   if (!searchDiscoveryContextReady()) return;
   if (state.searchTargetRegistry.targets.length >= SEARCH_TARGET_PRELOAD_MIN) return;
   if (state.offset >= state.timelineTotal) return;
@@ -1185,8 +1268,10 @@ function queueSearchNavigation(direction) {
 
 function scheduleSearchHighlightRefresh(options = {}) {
   if (state.searchHighlightTimer) clearTimeout(state.searchHighlightTimer);
+  const scheduledKey = searchTargetKey();
   state.searchHighlightTimer = setTimeout(() => {
     state.searchHighlightTimer = 0;
+    if (scheduledKey !== searchTargetKey()) return;
     refreshSearchHighlights(options);
     renderResultSummary();
   }, SEARCH_HIGHLIGHT_INPUT_DELAY_MS);
@@ -1195,11 +1280,13 @@ function scheduleSearchHighlightRefresh(options = {}) {
 function currentQuery(extra = {}, options = {}) {
   const params = new URLSearchParams();
   const filters = currentSearchState();
-  if (options.includeQ !== false && filters.q) params.set('q', filters.q);
-  if (filters.kind) params.set('kind', filters.kind);
-  if (filters.status) params.set('status', filters.status);
-  if (filters.file) params.set('file', filters.file);
-  if (filters.layer) params.set('layer', filters.layer);
+  if (options.includeExpression !== false) {
+    if (options.includeQ !== false && filters.q) params.set('q', filters.q);
+    if (filters.kind) params.set('kind', filters.kind);
+    if (filters.status) params.set('status', filters.status);
+    if (filters.file) params.set('file', filters.file);
+  }
+  if (options.includeLayer !== false && filters.layer) params.set('layer', filters.layer);
   for (const [key, value] of Object.entries(extra)) {
     if (value !== '' && value != null) params.set(key, value);
   }
@@ -1584,7 +1671,6 @@ function activeFilters() {
   if (search.kind) filters.push({ key: 'kind', label: `${t('kind')}: ${optionText(el.searchKindSelect, search.kind) || kindLabel(search.kind)}` });
   if (search.status) filters.push({ key: 'status', label: `${t('status')}: ${optionText(el.searchStatusSelect, search.status, STATUS_LABELS)}` });
   if (search.file) filters.push({ key: 'file', label: `${t('file')}: ${search.file}` });
-  if (search.parsed.layer && search.layer !== 'main') filters.push({ key: 'layer', label: `${t('layer')}: ${optionText(el.layerSelect, search.layer, LAYER_LABELS)}` });
   return filters;
 }
 
@@ -1596,7 +1682,17 @@ function activeFindAndFilters() {
   ].filter(Boolean);
 }
 
+function activeSearchChips() {
+  return [
+    { key: 'layer', label: `${t('layer')}: ${activeLayerLabel()}`, removable: false },
+    ...activeFindAndFilters(),
+  ];
+}
+
 function filterChipMarkup(filter) {
+  if (filter.removable === false) {
+    return `<span class="filterChip contextChip" data-search-context="${escapeHtml(filter.key)}"><span>${escapeHtml(filter.label)}</span></span>`;
+  }
   return `<button class="filterChip" type="button" data-clear-filter="${escapeHtml(filter.key)}" aria-label="${escapeHtml(t('clear', { label: filter.label }))}">
       <span>${escapeHtml(filter.label)}</span><span aria-hidden="true">&times;</span>
     </button>`;
@@ -1608,7 +1704,7 @@ function renderFilterChips(filters) {
 
 function hasFocusedTimelineContext() {
   const search = currentSearchState();
-  return Boolean(search.kind || search.status || search.file || search.parsed.layer || activeLayerId() !== 'main');
+  return Boolean(search.kind || search.status || search.file || activeLayerId() !== 'main');
 }
 
 function renderReadFromHereAction() {
@@ -1616,13 +1712,41 @@ function renderReadFromHereAction() {
   return `<button class="smallBtn readFromHereBtn" type="button" data-detail-action="read-from-here" title="${escapeHtml(t('readFromHereTitle'))}">${escapeHtml(t('readFromHere'))}</button>`;
 }
 
-function renderSearchAssistChips(filters = activeFindAndFilters()) {
-  if (!el.searchAssistChips) return;
-  if (!filters.length) {
-    el.searchAssistChips.innerHTML = `<span class="searchAssistEmpty">${escapeHtml(t('noActiveFilters'))}</span>`;
+function renderSearchActionRegion() {
+  const region = el.searchActionRegion || el.searchAssistChips;
+  if (!region) return;
+  const expression = activeFindAndFilters();
+  const clear = expression.length
+    ? `<button class="clearFiltersBtn" type="button" data-clear-filter="all">${escapeHtml(t('clearAll'))}</button>`
+    : '';
+  region.innerHTML = `${renderFilterChips(activeSearchChips())}${clear}`;
+}
+
+function renderBackToProjectResultsAction() {
+  if (!state.projectReturnContext || state.searchScope !== 'session') return '';
+  return `<button class="smallBtn" type="button" data-detail-action="back-to-project-results">${escapeHtml(t('backToProjectResults'))}</button>`;
+}
+
+function renderSearchAssistChips() {
+  renderSearchActionRegion();
+}
+
+function renderSearchValidation() {
+  if (!el.searchValidation) return;
+  if (!state.searchValidation.length) {
+    el.searchValidation.hidden = true;
+    el.searchValidation.textContent = '';
+    el.searchInput.removeAttribute('aria-invalid');
     return;
   }
-  el.searchAssistChips.innerHTML = `${renderFilterChips(filters)}<button class="clearFiltersBtn" type="button" data-clear-filter="all">${escapeHtml(t('clearAll'))}</button>`;
+  const messages = state.searchValidation.map((item) => (
+    item.error === 'missing-value'
+      ? t('searchOperatorMissingValue', { operator: item.operator })
+      : t('searchOperatorInvalidValue', { operator: item.operator, value: item.value })
+  ));
+  el.searchValidation.textContent = messages.join(' ');
+  el.searchValidation.hidden = false;
+  el.searchInput.setAttribute('aria-invalid', 'true');
 }
 
 function setSelectIfOption(select, value) {
@@ -1634,7 +1758,9 @@ function setSelectIfOption(select, value) {
 function normalizedKindOptions(layerId = activeLayerId()) {
   const seen = new Set();
   const options = [];
-  const source = state.selectedSessionId ? state.sessionEventKinds : state.eventKinds;
+  const source = state.searchScope === 'session' && state.selectedSessionId
+    ? state.sessionEventKinds
+    : state.eventKinds;
   for (const item of source?.[layerId] || []) {
     const value = String(item?.value || '').trim();
     if (!value || seen.has(value)) continue;
@@ -1670,8 +1796,9 @@ function syncSearchAssistControls() {
   renderKindOptions();
   setSelectIfOption(el.searchKindSelect, search.kind);
   setSelectIfOption(el.searchStatusSelect, search.status);
-  setSelectIfOption(el.searchLayerSelect, search.parsed.layer);
+  setSelectIfOption(el.searchLayerSelect, search.layer);
   if (el.searchFileInput) el.searchFileInput.value = search.file;
+  renderSearchValidation();
 }
 
 function showSearchAssist() {
@@ -1698,21 +1825,48 @@ function focusSearchEnd() {
 
 function applySearchOperator(operator, value) {
   if (!operator) return;
-  if (value) {
-    el.searchInput.value = searchQuery.upsertOperator(el.searchInput.value, operator, value);
-  } else {
-    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, operator);
+  clearSearchValidationOperator(operator);
+  if (operator === 'layer') {
+    if (value && value !== state.layerId) changeLayer(value).catch(showError);
+  } else if (Object.hasOwn(state.searchFilters, operator)) {
+    state.searchFilters = { ...state.searchFilters, [operator]: value || '' };
+    state.searchStructureKey = structuredSearchKey();
+    beginSearchTargetContextTransition();
+    refreshActiveSearch({ structural: true }).catch(showError);
   }
-  beginSearchTargetContextTransition();
   syncSearchAssistControls();
   renderSearchAssistChips();
   updateProfileApplicabilityUi();
   focusSearchEnd();
-  loadSessions().catch(showError);
 }
 
 function normalizeFileSuggestionText(value) {
   return String(value || '').trim().replace(/\\/g, '/').toLowerCase();
+}
+
+function fileSuggestionContextKey() {
+  return JSON.stringify([
+    state.repoRoot,
+    state.searchScope,
+    activeLayerId(),
+    state.searchScope === 'session' ? state.selectedSessionId : '',
+    state.locale,
+  ]);
+}
+
+async function refreshFileSuggestions() {
+  const requestId = state.fileSuggestionRequestId + 1;
+  const requestContext = fileSuggestionContextKey();
+  state.fileSuggestionRequestId = requestId;
+  const params = new URLSearchParams({ layer: activeLayerId() });
+  if (state.searchScope === 'session' && state.selectedSessionId) {
+    params.set('sessionId', state.selectedSessionId);
+  }
+  const data = await api(`/api/file-suggestions?${params.toString()}`);
+  if (requestId !== state.fileSuggestionRequestId || requestContext !== fileSuggestionContextKey()) return false;
+  state.fileSuggestions = data.files || [];
+  renderFileSuggestions();
+  return true;
 }
 
 function visibleFileSuggestions() {
@@ -1741,7 +1895,7 @@ function renderFileSuggestions() {
   el.searchFileSuggestions.innerHTML = suggestions.map((item) => (
     `<button class="fileSuggestion" type="button" role="option" data-search-file-suggestion="${escapeHtml(item.file)}">
       <span class="fileSuggestionPath">${escapeHtml(item.file)}</span>
-      <span class="fileSuggestionHits">${escapeHtml(item.count)} hits</span>
+      <span class="fileSuggestionHits">${escapeHtml(t('suggestionEventCount', { count: item.count }))}</span>
     </button>`
   )).join('');
   setFileSuggestionsOpen(document.activeElement === el.searchFileInput);
@@ -1755,17 +1909,29 @@ function isSuggestedFile(value) {
 function renderResultSummary() {
   if (!el.resultSummary) return;
   const filters = activeFilters();
-  const controls = activeFindAndFilters();
   const search = currentSearchState();
-  renderSearchAssistChips(controls);
-  if (!filters.length && !search.q) {
-    el.resultSummary.replaceChildren();
+  renderSearchAssistChips();
+  if (search.scope === 'project') {
+    if (!hasActiveSearchExpression()) {
+      el.resultSummary.replaceChildren();
+      return;
+    }
+    const summary = t('projectResultSummary', {
+      sessions: state.projectSearchTotal,
+      events: state.projectSearchEventTotal,
+    });
+    el.resultSummary.innerHTML = `<div class="resultCounts">${escapeHtml(summary)}</div>`;
+    updateSearchMatchControls();
     return;
   }
-  const sessionTotal = state.sessionGrandTotal || state.sessionTotal;
-  const countText = filters.length && sessionTotal
-    ? t('sessionsMatchTotal', { count: state.sessionTotal, total: sessionTotal })
-    : (filters.length ? t('sessionsMatch', { count: state.sessionTotal }) : '');
+  if (!filters.length && !search.q) {
+    if (state.projectReturnContext) {
+      el.resultSummary.innerHTML = `<button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>`;
+    } else {
+      el.resultSummary.replaceChildren();
+    }
+    return;
+  }
   const eventText = filters.length && state.selectedSessionId
     ? (state.offset < state.timelineTotal ? t('eventsMatchLoaded', { count: state.timelineTotal, loaded: state.offset }) : t('eventsMatch', { count: state.timelineTotal }))
     : (filters.length ? t('eventsSelectSession') : '');
@@ -1774,33 +1940,31 @@ function renderResultSummary() {
       <span class="searchMatchCount" data-search-match-count>${escapeHtml(currentSearchMarkLabel())}</span>
     </div>`
     : '';
-  const countMarkup = [countText, eventText].filter(Boolean).join(' · ');
-  const filterText = renderFilterChips(controls) + `<button class="clearFiltersBtn" type="button" data-clear-filter="all">${escapeHtml(t('clearAll'))}</button>`;
-  el.resultSummary.innerHTML = `${countMarkup ? `<div class="resultCounts">${escapeHtml(countMarkup)}</div>` : ''}${matchControls}<div class="activeFilters" aria-label="${escapeHtml(t('activeFindFilters'))}">${filterText}</div>`;
+  const committed = state.timelineDataContext === timelineDataContextKey();
+  const matchingEventCount = search.q ? state.timelineSearchEventCount : state.timelineTotal;
+  const projectFallback = committed && hasActiveSearchExpression() && matchingEventCount === 0
+    ? `<button class="smallBtn projectFallbackBtn" type="button" data-search-project-fallback>${escapeHtml(t('searchEntireProject'))}</button>`
+    : '';
+  const backToProject = state.projectReturnContext
+    ? `<button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>`
+    : '';
+  el.resultSummary.innerHTML = `${eventText ? `<div class="resultCounts">${escapeHtml(eventText)}</div>` : ''}${matchControls}${projectFallback}${backToProject}`;
   updateSearchMatchControls();
 }
 
 function clearActiveFilter(key) {
   const structureBefore = structuredSearchKey();
   if (key === 'all') {
-    el.searchInput.value = '';
-    state.layerId = 'main';
-    el.layerSelect.value = state.layerId;
-    localStorage.setItem('sessionAnalyzer.layer', state.layerId);
+    state.searchQuery = '';
+    state.searchFilters = { file: '', kind: '', status: '' };
+    state.searchValidation = [];
   } else if (key === 'q') {
-    el.searchInput.value = searchQuery.removeFreeText(el.searchInput.value);
-  } else if (key === 'file') {
-    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'file');
-  } else if (key === 'kind') {
-    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'kind');
-  } else if (key === 'status') {
-    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'status');
-  } else if (key === 'layer') {
-    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'layer');
-    state.layerId = 'main';
-    el.layerSelect.value = state.layerId;
-    localStorage.setItem('sessionAnalyzer.layer', state.layerId);
+    state.searchQuery = '';
+  } else if (Object.hasOwn(state.searchFilters, key)) {
+    state.searchFilters = { ...state.searchFilters, [key]: '' };
   }
+  syncSearchInputValue();
+  renderSearchValidation();
   beginSearchTargetContextTransition();
   syncSearchAssistControls();
   renderSearchAssistChips();
@@ -1808,11 +1972,7 @@ function clearActiveFilter(key) {
   if (reconcileSearchTransientExpansions()) renderTimeline();
   const structureAfter = structuredSearchKey();
   state.searchStructureKey = structureAfter;
-  if (structureBefore === structureAfter) {
-    refreshTimelineFindState().catch(showError);
-  } else {
-    loadSessions().catch(showError);
-  }
+  refreshActiveSearch({ structural: structureBefore !== structureAfter }).catch(showError);
 }
 
 function resetTimelineScroll() {
@@ -1934,10 +2094,11 @@ function updateProfileApplicabilityUi(analyzerDisabled = false) {
 }
 
 function setAnalyzerDisabled(disabled) {
-  for (const control of [el.searchInput, el.layerSelect, el.sortSelect, el.resetFoldsBtn, el.loadMoreBtn]) {
+  for (const control of [el.searchInput, ...el.searchScopeButtons, el.layerSelect, el.sortSelect, el.resetFoldsBtn, el.loadMoreBtn]) {
     if (control) control.disabled = disabled;
   }
   updateProfileApplicabilityUi(disabled);
+  if (!disabled) syncSearchScopeUi();
 }
 
 function setProjectMode(selecting) {
@@ -1951,7 +2112,14 @@ function setProjectMode(selecting) {
 
 function resetProjectViewState() {
   state.sessions = [];
+  state.projectResults = [];
   state.sessionsRequestId += 1;
+  state.projectSearchRequestId += 1;
+  state.projectSearchDataContext = '';
+  state.projectSearchTotal = 0;
+  state.projectSearchEventTotal = 0;
+  state.projectSearchLoading = false;
+  state.projectReturnContext = null;
   state.analysisRequestId += 1;
   state.selectedSessionId = '';
   state.selectedEventId = '';
@@ -1964,10 +2132,12 @@ function resetProjectViewState() {
   state.sessionTotal = 0;
   state.timelineTotal = 0;
   state.timelineSearchMatchCount = 0;
+  state.timelineSearchEventCount = 0;
   state.currentEvents = [];
   state.searchSurfaceContexts = { sessions: '', timeline: '', detail: '' };
   state.searchTargetPreload = { key: '', pages: 0, pending: false };
   state.fileSuggestions = [];
+  state.fileSuggestionRequestId += 1;
   state.eventKinds = { main: [], protocol: [], raw: [] };
   state.sessionEventKinds = { main: [], protocol: [], raw: [] };
   resetSessionDetailCache();
@@ -2148,9 +2318,6 @@ async function applyAppState(appState) {
   resetProfileDraft();
   el.layerSelect.value = state.layerId;
   syncSearchAssistControls();
-  const suggestionState = await api('/api/file-suggestions');
-  state.fileSuggestions = suggestionState.files;
-  renderFileSuggestions();
   resetDetailPane();
 }
 
@@ -2319,39 +2486,243 @@ async function loadSessions() {
   const requestId = state.sessionsRequestId + 1;
   const requestContext = sessionsDataContextKey();
   state.sessionsRequestId = requestId;
-  const data = await api(`/api/sessions${currentQuery({ sort: el.sortSelect.value }, { includeQ: false })}`);
+  const data = await api(`/api/sessions${currentQuery(
+    { sort: el.sortSelect.value },
+    { includeExpression: false, includeLayer: false },
+  )}`);
   if (requestId !== state.sessionsRequestId || requestContext !== sessionsDataContextKey()) return false;
   state.sessionsDataContext = requestContext;
   state.sessions = data.sessions;
   state.sessionTotal = data.total;
-  renderSessions();
-  if (!state.selectedSessionId && data.sessions[0]) {
-    await selectSession(data.sessions[0].id);
-  } else if (state.selectedSessionId && !data.sessions.some((session) => session.id === state.selectedSessionId)) {
+  if (!data.sessions.length) {
     state.selectedSessionId = '';
-    state.offset = 0;
-    state.timelineLoading = false;
+    state.searchScope = 'project';
     state.timelineRequestId += 1;
-    state.timelineTotal = 0;
     state.currentEvents = [];
-    state.sessionEventKinds = { main: [], protocol: [], raw: [] };
-    syncSearchAssistControls();
-    el.timeline.innerHTML = '';
-    el.analysisPanel.innerHTML = '';
-    updateLoadMoreButton();
-    updateResetFoldsButton();
-    el.sessionHeader.innerHTML = `<h2>${escapeHtml(t('noMatchingSession'))}</h2><p>${escapeHtml(t('adjustSearchFilters'))}</p>`;
-    resetDetailPane();
-    renderResultSummary();
-  } else if (state.selectedSessionId) {
-    await selectSession(state.selectedSessionId);
+    state.timelineTotal = 0;
+    state.timelineSearchMatchCount = 0;
+    state.timelineSearchEventCount = 0;
+    state.searchStructureKey = structuredSearchKey();
+    syncSearchScopeUi();
+    renderProjectSearchView();
   } else {
-    renderResultSummary();
+    if (!state.selectedSessionId || !data.sessions.some((session) => session.id === state.selectedSessionId)) {
+      state.selectedSessionId = data.sessions[0].id;
+    }
+    if (state.searchScope === 'project') {
+      state.searchStructureKey = structuredSearchKey();
+      syncSearchScopeUi();
+      await loadProjectResults();
+    } else {
+      await selectSession(state.selectedSessionId);
+    }
   }
+  renderSearchAssistChips();
+  await refreshFileSuggestions();
   return true;
 }
 
+async function loadProjectResults() {
+  state.projectSearchRequestId += 1;
+  const requestId = state.projectSearchRequestId;
+  const requestContext = projectSearchDataContextKey();
+  if (state.searchScope !== 'project' || !hasActiveSearchExpression()) {
+    state.projectSearchLoading = false;
+    state.projectSearchDataContext = requestContext;
+    state.projectResults = [];
+    state.projectSearchTotal = 0;
+    state.projectSearchEventTotal = 0;
+    renderProjectSearchView();
+    return true;
+  }
+  state.projectSearchLoading = true;
+  state.projectResults = [];
+  state.projectSearchTotal = 0;
+  state.projectSearchEventTotal = 0;
+  renderProjectSearchView();
+  try {
+    const data = await api(`/api/sessions${currentQuery({ sort: state.projectSearchSort })}`);
+    if (requestId !== state.projectSearchRequestId || requestContext !== projectSearchDataContextKey()) return false;
+    state.projectSearchDataContext = requestContext;
+    state.projectResults = data.sessions || [];
+    state.projectSearchTotal = data.total || 0;
+    state.projectSearchEventTotal = data.matchingEventTotal || 0;
+    return true;
+  } finally {
+    if (requestId === state.projectSearchRequestId && requestContext === projectSearchDataContextKey()) {
+      state.projectSearchLoading = false;
+      renderProjectSearchView();
+    }
+  }
+}
+
+async function refreshActiveSearch(options = {}) {
+  state.projectSearchRequestId += 1;
+  if (state.searchScope === 'project') {
+    await loadProjectResults();
+    return;
+  }
+  if (!state.selectedSessionId) return;
+  if (options.structural) {
+    await loadTimeline(false, { keepScroll: true });
+  } else {
+    await refreshTimelineFindState();
+  }
+}
+
+function focusFirstProjectResult(preferredSessionId = '') {
+  const preferred = preferredSessionId
+    ? el.sessionList.querySelector(`[data-project-result-session-id="${CSS.escape(preferredSessionId)}"]`)
+    : null;
+  const target = preferred || el.sessionList.querySelector('[data-project-result-session-id]');
+  target?.focus();
+  return Boolean(target);
+}
+
+function restoreProjectResultFocus(preferredSessionId = '') {
+  const focused = focusFirstProjectResult(preferredSessionId);
+  requestAnimationFrame(() => focusFirstProjectResult(preferredSessionId));
+  return focused;
+}
+
+async function setSearchScope(scope, options = {}) {
+  if (!['session', 'project'].includes(scope)) return false;
+  if (scope === 'session' && !state.selectedSessionId) return false;
+  if (scope === state.searchScope && !options.force) {
+    syncSearchScopeUi();
+    return true;
+  }
+  state.searchScope = scope;
+  state.searchStructureKey = structuredSearchKey();
+  beginSearchTargetContextTransition();
+  syncSearchScopeUi();
+  syncSearchAssistControls();
+  renderSearchAssistChips();
+  updateSearchMatchControls();
+  if (scope === 'project') {
+    state.timelineRequestId += 1;
+    state.analysisRequestId += 1;
+    state.timelineLoading = false;
+    renderProjectSearchView();
+    await Promise.all([loadProjectResults(), refreshFileSuggestions()]);
+    if (options.mobileView !== false) setMobileView('sessions');
+    if (options.focusResults) restoreProjectResultFocus(options.preferredSessionId || '');
+    return true;
+  }
+  state.projectSearchRequestId += 1;
+  state.projectSearchLoading = false;
+  state.projectReturnContext = null;
+  await selectSession(state.selectedSessionId, { mobileView: options.mobileView === false ? '' : 'events' });
+  return true;
+}
+
+async function backToProjectResults() {
+  const preferredSessionId = state.projectReturnContext?.sessionId || '';
+  await setSearchScope('project', {
+    force: true,
+    focusResults: true,
+    preferredSessionId,
+    mobileView: true,
+  });
+  restoreProjectResultFocus(preferredSessionId);
+}
+
+async function drillDownProjectResult(sessionId) {
+  if (state.searchScope !== 'project') return false;
+  const result = state.projectResults.find((item) => item.id === sessionId);
+  const latest = result?.searchMatch?.latestEvent;
+  if (!result || !latest) return false;
+  const returnContext = {
+    sessionId,
+    eventId: latest.id,
+    timelineIndex: latest.timelineIndex,
+    contextKey: projectSearchDataContextKey(),
+  };
+  state.projectReturnContext = returnContext;
+  if (state.selectedSessionId !== sessionId) resetSessionDetailCache();
+  state.searchScope = 'session';
+  state.projectSearchRequestId += 1;
+  state.selectedSessionId = sessionId;
+  state.searchStructureKey = structuredSearchKey();
+  syncSearchScopeUi();
+  beginSearchTargetContextTransition();
+  state.offset = 0;
+  state.timelineLoading = false;
+  state.timelineRequestId += 1;
+  state.currentEvents = [];
+  state.sessionEventKinds = { main: [], protocol: [], raw: [] };
+  state.searchTargetPreload = { key: '', pages: 0, pending: false };
+  resetSearchTransientExpansions();
+  invalidateNavigationCache();
+  resetDetailPane();
+  renderSessions();
+  const session = state.sessions.find((item) => item.id === sessionId) || result;
+  el.sessionHeader.innerHTML = `<h2>${escapeHtml(session.title)}</h2>
+    <div class="sessionMeta" aria-label="${escapeHtml(t('sessionMetadata'))}">
+      <span class="sessionMetaChip">${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</span>
+      <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
+    </div>
+    <button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>`;
+  const loaded = await Promise.all([
+    loadAnalysis(sessionId),
+    loadTimelineThroughIndex(latest.timelineIndex),
+    refreshFileSuggestions(),
+  ]);
+  if (!loaded[1]
+      || state.searchScope !== 'session'
+      || state.selectedSessionId !== sessionId
+      || !state.projectReturnContext
+      || state.projectReturnContext.eventId !== latest.id) return false;
+  const event = state.currentEvents.find((item) => item.id === latest.id);
+  if (!event) return false;
+  state.selectedEventId = event.id;
+  updateSelectedTimelineEvent();
+  if (state.searchQuery) {
+    const searchKey = searchTargetPreloadKey();
+    const target = await materializeSearchEvent(event, 1, { searchKey });
+    if (target) await activateSearchTarget(target, { scroll: true, syncDetail: false });
+  } else {
+    scrollToTimelineEvent(event.id);
+  }
+  if (state.searchScope === 'session' && state.selectedSessionId === sessionId) {
+    state.projectReturnContext = returnContext;
+    renderTimeline();
+    updateSelectedTimelineEvent();
+  }
+  setMobileView('events');
+  renderResultSummary();
+  return true;
+}
+
+function renderProjectResultSnippet(text) {
+  return searchHighlighter.highlightedParts(text, highlightTerms()).map((part) => (
+    part.match
+      ? `<mark class="projectSearchHighlight">${escapeHtml(part.text)}</mark>`
+      : escapeHtml(part.text)
+  )).join('');
+}
+
+function renderProjectResultCard(session) {
+  const latest = session.searchMatch?.latestEvent || {};
+  const relationship = sessionRelationshipLabel(session);
+  return `<button class="sessionItem projectResultCard" type="button" data-project-result-session-id="${escapeHtml(session.id)}">
+    <span class="sessionTitle">${escapeHtml(session.title)}</span>
+    <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
+    ${relationship ? `<span class="chip relationshipChip">${escapeHtml(relationship)}</span>` : ''}
+    <span class="projectResultCount">${escapeHtml(t('projectResultCount', { count: session.searchMatch?.eventCount || 0 }))}</span>
+    <span class="projectLatestMatch">
+      <span class="projectLatestMeta"><strong>${escapeHtml(latest.label || t('latestMatch'))}</strong><time>${escapeHtml(fmtDate(latest.timestamp))}</time></span>
+      <span class="projectLatestSnippet">${renderProjectResultSnippet(latest.snippet || '')}</span>
+    </span>
+  </button>`;
+}
+
 function renderSessions() {
+  if (state.searchScope === 'project' && hasActiveSearchExpression()) {
+    el.sessionList.innerHTML = state.projectResults.map(renderProjectResultCard).join('');
+    state.searchSurfaceContexts.sessions = '';
+    return;
+  }
   el.sessionList.innerHTML = state.sessions.map((session) => {
     const active = session.id === state.selectedSessionId;
     const relationship = sessionRelationshipLabel(session);
@@ -2375,9 +2746,39 @@ function renderSessions() {
   refreshSearchHighlights({ preserveActive: true });
 }
 
+function renderProjectSearchView() {
+  if (state.searchScope !== 'project') return;
+  const active = hasActiveSearchExpression();
+  const noResults = active && !state.projectSearchLoading && state.projectSearchTotal === 0;
+  const message = !active
+    ? t('projectSearchPrompt')
+    : (noResults ? t('projectNoResults') : t('projectResultsGuidance'));
+  el.sessionHeader.innerHTML = `<h2>${escapeHtml(t('projectSearchTitle'))}</h2><p>${escapeHtml(message)}</p>`;
+  el.analysisPanel.innerHTML = '';
+  el.timeline.innerHTML = `<div class="projectSearchState"><h3>${escapeHtml(t('projectSearchTitle'))}</h3><p>${escapeHtml(message)}</p></div>`;
+  el.detail.innerHTML = '';
+  state.searchSurfaceContexts.timeline = '';
+  state.searchSurfaceContexts.detail = '';
+  el.loadMoreBtn.disabled = true;
+  el.loadMoreBtn.textContent = t('loadMore');
+  renderSessions();
+  renderResultSummary();
+}
+
+function renderProjectReturnBanner() {
+  if (!state.projectReturnContext || state.searchScope !== 'session') return '';
+  return `<div class="projectReturnBanner">
+    <button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>
+  </div>`;
+}
+
 async function selectSession(sessionId, options = {}) {
   if (state.selectedSessionId !== sessionId) resetSessionDetailCache();
+  state.searchScope = 'session';
+  state.projectSearchRequestId += 1;
   state.selectedSessionId = sessionId;
+  state.searchStructureKey = structuredSearchKey();
+  syncSearchScopeUi();
   beginSearchTargetContextTransition();
   state.offset = 0;
   state.timelineLoading = false;
@@ -2400,17 +2801,21 @@ async function selectSession(sessionId, options = {}) {
         <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
       </div>`;
   }
-  await Promise.all([loadAnalysis(sessionId), loadTimeline(false)]);
+  renderSearchAssistChips();
+  await Promise.all([loadAnalysis(sessionId), loadTimeline(false), refreshFileSuggestions()]);
   if (options.mobileView) setMobileView(options.mobileView);
 }
 
 async function loadAnalysis(sessionId) {
   const requestId = state.analysisRequestId + 1;
   const requestLocale = state.locale;
+  const requestScope = state.searchScope;
   state.analysisRequestId = requestId;
   const analysis = await api(`/api/sessions/${encodeURIComponent(sessionId)}/analysis`);
   if (requestId !== state.analysisRequestId
       || sessionId !== state.selectedSessionId
+      || requestScope !== state.searchScope
+      || state.searchScope !== 'session'
       || requestLocale !== state.locale) return;
   const planCount = analysis.counts.planEvents ?? analysis.counts.planArtifacts;
   const issueCount = analysis.counts.issueEvents ?? analysis.counts.failedCommands;
@@ -2506,18 +2911,20 @@ async function applyMetricLayer(targetLayerId) {
 
 async function changeLayer(layerId) {
   if (!['main', 'protocol', 'raw'].includes(layerId)) return;
-  const focusAnchor = captureFocusAnchor();
+  const focusAnchor = state.searchScope === 'session' ? captureFocusAnchor() : { hadSelection: false };
   resetSearchTransientExpansions();
   state.layerId = layerId;
+  clearSearchValidationOperator('layer');
   el.layerSelect.value = state.layerId;
-  el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'layer');
+  state.searchStructureKey = structuredSearchKey();
   beginSearchTargetContextTransition();
   localStorage.setItem('sessionAnalyzer.layer', state.layerId);
   syncSearchAssistControls();
+  renderSearchAssistChips();
   updateProfileApplicabilityUi();
   if (state.detailView.type === 'profileRules') renderProfileRulesPane();
-  await loadSessions();
-  await restoreFocus(focusAnchor);
+  await Promise.all([refreshActiveSearch({ structural: true }), refreshFileSuggestions()]);
+  if (focusAnchor.hadSelection) await restoreFocus(focusAnchor);
   updateMetricActionStates();
 }
 
@@ -2560,6 +2967,7 @@ async function loadTimeline(append, options = {}) {
     state.offset = state.currentEvents.length;
     state.timelineTotal = data.total;
     state.timelineSearchMatchCount = data.searchMatchCount || 0;
+    state.timelineSearchEventCount = data.searchEventCount || 0;
     state.sessionEventKinds = data.eventKinds;
     state.timelineDataContext = requestContext;
     syncSearchAssistControls();
@@ -2574,6 +2982,57 @@ async function loadTimeline(append, options = {}) {
       state.timelineLoading = false;
       updateLoadMoreButton();
       if (options.allowSearchTargetPreload !== false) maybePreloadSearchTargets();
+    }
+  }
+}
+
+async function loadTimelineThroughIndex(timelineIndex) {
+  if (!state.selectedSessionId || state.searchScope !== 'session') return false;
+  const sessionId = state.selectedSessionId;
+  const requestContext = timelineDataContextKey();
+  const requiredCount = Math.max(1, Number(timelineIndex || 0) + 1);
+  const requestId = state.timelineRequestId + 1;
+  state.timelineRequestId = requestId;
+  state.timelineLoading = true;
+  updateLoadMoreButton();
+  try {
+    const events = [];
+    let total = 0;
+    let searchMatchCount = 0;
+    let searchEventCount = 0;
+    let eventKinds = null;
+    while (events.length < requiredCount) {
+      const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
+        offset: events.length,
+        limit: Math.min(500, requiredCount - events.length),
+      })}`);
+      if (requestId !== state.timelineRequestId
+          || sessionId !== state.selectedSessionId
+          || state.searchScope !== 'session'
+          || requestContext !== timelineDataContextKey()) return false;
+      total = data.total;
+      searchMatchCount = data.searchMatchCount || 0;
+      searchEventCount = data.searchEventCount || 0;
+      eventKinds = data.eventKinds;
+      events.push(...data.events);
+      if (!data.events.length || events.length >= total) break;
+    }
+    state.currentEvents = events;
+    state.offset = events.length;
+    state.timelineTotal = total;
+    state.timelineSearchMatchCount = searchMatchCount;
+    state.timelineSearchEventCount = searchEventCount;
+    state.sessionEventKinds = eventKinds || { main: [], protocol: [], raw: [] };
+    state.timelineDataContext = requestContext;
+    syncSearchAssistControls();
+    renderTimeline();
+    renderResultSummary();
+    resetTimelineScroll();
+    return true;
+  } finally {
+    if (requestId === state.timelineRequestId) {
+      state.timelineLoading = false;
+      updateLoadMoreButton();
     }
   }
 }
@@ -2596,6 +3055,7 @@ async function refreshTimelineFindState(options = {}) {
     const events = [];
     let total = 0;
     let searchMatchCount = 0;
+    let searchEventCount = 0;
     let eventKinds = null;
     while (events.length < targetCount) {
       const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
@@ -2607,6 +3067,7 @@ async function refreshTimelineFindState(options = {}) {
           || requestContext !== timelineDataContextKey()) return;
       total = data.total;
       searchMatchCount = data.searchMatchCount || 0;
+      searchEventCount = data.searchEventCount || 0;
       eventKinds = data.eventKinds;
       events.push(...data.events);
       if (!data.events.length || events.length >= total) break;
@@ -2615,6 +3076,7 @@ async function refreshTimelineFindState(options = {}) {
     state.offset = events.length;
     state.timelineTotal = total;
     state.timelineSearchMatchCount = searchMatchCount;
+    state.timelineSearchEventCount = searchEventCount;
     state.sessionEventKinds = eventKinds;
     state.timelineDataContext = requestContext;
     syncSearchAssistControls();
@@ -2717,7 +3179,11 @@ function cssToken(value) {
 }
 
 function renderTimeline() {
-  el.timeline.innerHTML = state.currentEvents.map((event) => {
+  if (state.searchScope !== 'session') {
+    renderProjectSearchView();
+    return;
+  }
+  el.timeline.innerHTML = `${renderProjectReturnBanner()}${state.currentEvents.map((event) => {
     const ds = displayState(event);
     const classes = [
       'event',
@@ -2752,7 +3218,7 @@ function renderTimeline() {
       ${renderEventBody(event, ds)}
       ${renderEventFooterActions(ds)}
     </article>`;
-  }).join('');
+  }).join('')}`;
   state.searchSurfaceContexts.timeline = state.timelineDataContext === timelineDataContextKey()
     ? timelineSearchSurfaceContextKey()
     : '';
@@ -3133,22 +3599,20 @@ async function readFromSelectedEvent() {
   const anchor = { ...captureFocusAnchor(), detailType: 'inspector' };
   if (!anchor.hadSelection) return;
   hideSearchAssist();
-  el.searchInput.value = ['kind', 'status', 'file', 'layer'].reduce(
-    (input, operator) => searchQuery.removeOperator(input, operator),
-    el.searchInput.value,
-  );
+  state.searchScope = 'session';
+  state.searchFilters = { file: '', kind: '', status: '' };
+  state.searchValidation = state.searchValidation.filter((item) => !['file', 'kind', 'status', 'layer'].includes(item.operator));
   state.layerId = 'main';
   el.layerSelect.value = state.layerId;
   localStorage.setItem('sessionAnalyzer.layer', state.layerId);
+  syncSearchInputValue();
+  state.searchStructureKey = structuredSearchKey();
   syncSearchAssistControls();
   renderSearchAssistChips();
-  state.searchHighlight = { query: '', marks: [] };
-  resetSearchTargetRegistry();
+  beginSearchTargetContextTransition();
   clearQueuedSearchNavigations();
-  state.timelineSearchMatchCount = 0;
-  updateSearchMatchControls();
   updateProfileApplicabilityUi();
-  await loadSessions();
+  await loadTimeline(false, { keepScroll: true });
   const restored = await restoreFocus(anchor);
   setMobileView('events');
   if (restored?.id) scrollToTimelineEvent(restored.id);
@@ -3190,6 +3654,11 @@ function renderProfileRulesPane(options = {}) {
   state.navigationCategoryManualId = '';
   if (options.reveal === true) setMobileView('detail', { scroll: false });
   updateSelectedTimelineEvent();
+  if (state.searchScope === 'project') {
+    el.detail.innerHTML = '';
+    state.searchSurfaceContexts.detail = '';
+    return;
+  }
   if (!profileAppliesToActiveLayer()) {
     const layer = activeLayerId();
     const fixedRuleText = layer === 'protocol'
@@ -3376,7 +3845,7 @@ function showInspector(event, options = {}) {
   }
   renderDetailShell({
     title: event.label,
-    actions: [renderReadFromHereAction(), renderInspectorNavigation(event, { pending: Boolean(navigationPending) })].filter(Boolean).join(''),
+    actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), renderInspectorNavigation(event, { pending: Boolean(navigationPending) })].filter(Boolean).join(''),
     body: `<div class="inspector">
     ${chips ? `<div class="chips">${chips}</div>` : ''}
     ${shouldShowInspectorSummary(event, preview, detail) ? `<section class="inspectorSection"><h3>${escapeHtml(t('summary'))}</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
@@ -3410,7 +3879,7 @@ async function showRaw(event, options = {}) {
     renderDetailShell({
       title: t('rawRefs'),
       subtitle: rawRefsSubtitle(event),
-      actions: [renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
+      actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
       body: `<div class="rawRefsView">
       <div class="notice warning"><p>${escapeHtml(t('noRawRows'))}</p></div>
     </div>`,
@@ -3422,7 +3891,7 @@ async function showRaw(event, options = {}) {
   renderDetailShell({
     title: t('rawRefs'),
     subtitle: rawRefsSubtitle(event),
-    actions: [renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
+    actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
     body: `<div class="rawRefsView">
     <p class="rawMeta">${escapeHtml(t('rawRowsForEvent', { count: refs.length, plural: refs.length === 1 ? '' : 's', eventId: event.id }))}</p>
     ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(raw.file)}:${raw.line}</p><pre>${escapeHtml(JSON.stringify(raw.parsed, null, 2) || raw.raw)}</pre></section>`).join('')}
@@ -3592,8 +4061,24 @@ el.projectCancelBtn?.addEventListener('click', () => {
 });
 
 el.sessionList.addEventListener('click', (event) => {
+  const projectResult = event.target.closest('[data-project-result-session-id]');
+  if (projectResult) {
+    drillDownProjectResult(projectResult.dataset.projectResultSessionId).catch(showError);
+    return;
+  }
   const item = event.target.closest('[data-session-id]');
-  if (item) selectSession(item.dataset.sessionId, { mobileView: 'events' }).catch(showError);
+  if (item) {
+    state.projectReturnContext = null;
+    selectSession(item.dataset.sessionId, { mobileView: 'events' }).catch(showError);
+  }
+});
+
+el.sessionList.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const projectResult = event.target.closest('[data-project-result-session-id]');
+  if (!projectResult) return;
+  event.preventDefault();
+  drillDownProjectResult(projectResult.dataset.projectResultSessionId).catch(showError);
 });
 
 el.sessionList.addEventListener('pointerover', (event) => {
@@ -3619,11 +4104,20 @@ el.sessionList.addEventListener('focusout', (event) => {
   setRelatedParentHighlight(item.dataset.parentSessionId, false);
 });
 
+el.sessionHeader?.addEventListener('click', (event) => {
+  if (!event.target.closest('[data-search-back-to-project]')) return;
+  backToProjectResults().catch(showError);
+});
+
 for (const button of el.mobileViewButtons) {
   button.addEventListener('click', () => setMobileView(button.dataset.mobileView));
 }
 
 el.timeline.addEventListener('click', (event) => {
+  if (event.target.closest('[data-search-back-to-project]')) {
+    backToProjectResults().catch(showError);
+    return;
+  }
   const article = event.target.closest('[data-event-id]');
   if (!article) return;
   hideSearchAssist();
@@ -3686,6 +4180,10 @@ el.detail.addEventListener('click', (event) => {
   }
   if (action === 'read-from-here') {
     readFromSelectedEvent().catch(showError);
+    return;
+  }
+  if (action === 'back-to-project-results') {
+    backToProjectResults().catch(showError);
     return;
   }
   if (action === 'navigate-event') {
@@ -3783,6 +4281,14 @@ el.analysisPanel?.addEventListener('keydown', (event) => {
   applyMetricAction(metricEl).catch(showError);
 });
 el.resultSummary?.addEventListener('click', (event) => {
+  if (event.target.closest('[data-search-project-fallback]')) {
+    setSearchScope('project').catch(showError);
+    return;
+  }
+  if (event.target.closest('[data-search-back-to-project]')) {
+    backToProjectResults().catch(showError);
+    return;
+  }
   const clear = event.target.closest('[data-clear-filter]')?.dataset.clearFilter;
   if (clear) {
     clearActiveFilter(clear);
@@ -3797,6 +4303,13 @@ el.resultSummary?.addEventListener('click', (event) => {
     queueSearchNavigation(1).catch(showError);
   }
 });
+for (const button of el.searchScopeButtons) {
+  button.addEventListener('click', () => setSearchScope(button.dataset.searchScope).catch(showError));
+}
+el.searchActionRegion?.addEventListener('click', (event) => {
+  const clear = event.target.closest('[data-clear-filter]')?.dataset.clearFilter;
+  if (clear) clearActiveFilter(clear);
+});
 el.searchField?.addEventListener('click', (event) => {
   const nav = event.target.closest('[data-search-match-nav]')?.dataset.searchMatchNav;
   if (nav === 'previous') {
@@ -3805,7 +4318,10 @@ el.searchField?.addEventListener('click', (event) => {
   } else if (nav === 'next') {
     hideSearchAssist();
     queueSearchNavigation(1).catch(showError);
-  } else if (event.target === el.searchField) {
+  } else if (
+    event.target === el.searchField
+    || (event.target.closest('.searchInputRow') && !event.target.closest('.searchScopeControl'))
+  ) {
     el.searchInput.focus();
   }
 });
@@ -3826,10 +4342,10 @@ const reload = debounce(() => {
   renderSearchAssistChips();
   updateProfileApplicabilityUi();
   if (state.detailView.type === 'profileRules') renderProfileRulesPane();
-  loadSessions().catch(showError);
+  refreshActiveSearch({ structural: true }).catch(showError);
 }, 220);
 const refreshFind = debounce(() => {
-  refreshTimelineFindState().catch(showError);
+  refreshActiveSearch({ structural: false }).catch(showError);
 }, SEARCH_HIGHLIGHT_INPUT_DELAY_MS);
 
 el.searchInput.addEventListener('focus', showSearchAssist);
@@ -3842,7 +4358,16 @@ el.searchInput.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Enter') {
     const search = currentSearchState();
-    if (search.q) {
+    if (search.scope === 'project') {
+      event.preventDefault();
+      hideSearchAssist();
+      commitTypedSearchInput();
+      refreshFind.cancel();
+      reload.cancel();
+      loadProjectResults()
+        .then(() => focusFirstProjectResult())
+        .catch(showError);
+    } else if (search.q) {
       event.preventDefault();
       hideSearchAssist();
       queueSearchNavigation(event.shiftKey ? -1 : 1).catch(showError);
@@ -3855,13 +4380,22 @@ el.searchInput.addEventListener('keydown', (event) => {
 });
 el.searchInput.addEventListener('input', () => {
   showSearchAssist();
+  const requestedLayer = commitTypedSearchInput();
   const clearedTransientExpansions = reconcileSearchTransientExpansions();
   beginSearchTargetContextTransition();
+  syncSearchAssistControls();
+  renderSearchAssistChips();
   if (clearedTransientExpansions) renderTimeline();
   scheduleSearchHighlightRefresh({ allowPreload: false, syncDetail: true, passive: true });
   const nextStructureKey = structuredSearchKey();
   const structureChanged = state.searchStructureKey && state.searchStructureKey !== nextStructureKey;
   state.searchStructureKey = nextStructureKey;
+  if (requestedLayer) {
+    refreshFind.cancel();
+    reload.cancel();
+    changeLayer(requestedLayer).catch(showError);
+    return;
+  }
   if (structureChanged) {
     refreshFind.cancel();
     reload();
@@ -3870,8 +4404,16 @@ el.searchInput.addEventListener('input', () => {
   }
 });
 el.searchInput.addEventListener('change', () => {
+  const requestedLayer = commitTypedSearchInput();
   if (reconcileSearchTransientExpansions()) renderTimeline();
   const nextStructureKey = structuredSearchKey();
+  if (requestedLayer) {
+    state.searchStructureKey = nextStructureKey;
+    refreshFind.cancel();
+    reload.cancel();
+    changeLayer(requestedLayer).catch(showError);
+    return;
+  }
   if (nextStructureKey !== state.searchStructureKey) {
     state.searchStructureKey = nextStructureKey;
     refreshFind.cancel();
@@ -3949,7 +4491,7 @@ document.addEventListener('pointerdown', (event) => {
 
 const reloadForSearchContextChange = () => {
   beginSearchTargetContextTransition();
-  reload();
+  if (state.searchScope === 'session') loadSessions().catch(showError);
 };
 el.sortSelect.addEventListener('input', reloadForSearchContextChange);
 el.sortSelect.addEventListener('change', reloadForSearchContextChange);
