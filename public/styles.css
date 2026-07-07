@@ -162,8 +162,8 @@ button:hover,
 .searchbar {
   display: grid;
   gap: 0.5rem;
-  grid-template-columns: minmax(220px, 1fr) minmax(150px, 190px) minmax(260px, 340px);
-  width: min(940px, 68vw);
+  grid-template-columns: minmax(460px, 1fr) minmax(130px, 170px) minmax(200px, 280px);
+  width: min(1080px, 78vw);
 }
 
 .localeControl {
@@ -318,7 +318,6 @@ button:hover,
 }
 
 .searchField {
-  --search-inline-reserve: 0px;
   min-width: 0;
   position: relative;
 }
@@ -326,21 +325,80 @@ button:hover,
 .searchInputRow {
   align-items: center;
   display: grid;
-  gap: 0.35rem;
-  grid-template-columns: auto minmax(120px, 1fr);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  gap: 0.25rem;
+  grid-template-columns: auto auto auto minmax(90px, 1fr) auto;
+  min-height: 40px;
+  padding: 0.22rem 0.3rem;
   position: relative;
 }
 
 .searchInputRow > input {
-  padding-right: var(--search-inline-reserve);
+  border: 0;
+  border-radius: 0;
+  min-height: 30px;
+  min-width: 0;
+  outline: none;
+  padding: 0.25rem;
+}
+
+.searchInputRow:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.searchbar .searchHudPill {
+  align-items: center;
+  background: var(--soft);
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted);
+  display: inline-flex;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  gap: 0.25rem;
+  justify-content: center;
+  min-height: 28px;
+  max-width: 150px;
+  overflow: hidden;
+  padding: 0.24rem 0.42rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: auto;
+}
+
+.searchbar .searchHudScope,
+.searchbar .searchFilterBtn.active {
+  background: var(--soft);
+  color: var(--accent);
+}
+
+.searchbar .searchHudPill:hover,
+.searchbar .searchHudPill:focus-visible {
+  background: #e7eef8;
+  outline: none;
+}
+
+.searchFilterBtn svg {
+  fill: none;
+  height: 12px;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
+  width: 12px;
 }
 
 .searchScopeControl {
   background: var(--soft);
   border: 1px solid var(--line);
   border-radius: 8px;
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   padding: 2px;
+  width: 100%;
 }
 
 .searchbar .searchScopeBtn {
@@ -352,7 +410,7 @@ button:hover,
   min-height: 34px;
   padding: 0.3rem 0.45rem;
   white-space: nowrap;
-  width: auto;
+  width: 100%;
 }
 
 .searchbar .searchScopeBtn[aria-pressed='true'] {
@@ -366,15 +424,14 @@ button:hover,
   align-items: center;
   display: inline-flex;
   gap: 0.15rem;
-  pointer-events: none;
-  position: absolute;
-  right: 0.32rem;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 2;
+  min-width: 0;
 }
 
 .searchInlineMatches[hidden] {
+  display: none;
+}
+
+.searchbar .searchInlineBtn[hidden] {
   display: none;
 }
 
@@ -382,37 +439,8 @@ button:hover,
   color: var(--muted);
   font-size: 0.76rem;
   font-variant-numeric: tabular-nums;
-  pointer-events: none;
   text-align: right;
   white-space: nowrap;
-}
-
-.searchValidation {
-  color: #9f2d2d;
-  font-size: 0.76rem;
-  line-height: 1.35;
-  margin-top: 0.3rem;
-}
-
-.searchValidation[hidden] {
-  display: none;
-}
-
-.searchActionRegion {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-  margin-top: 0.3rem;
-  min-height: 24px;
-}
-
-.searchActionRegion:empty {
-  display: none;
-}
-
-.contextChip {
-  cursor: default;
 }
 
 .searchbar .searchInlineBtn {
@@ -427,21 +455,11 @@ button:hover,
   line-height: 1;
   min-height: 28px;
   padding: 0;
-  pointer-events: auto;
   width: 28px;
 }
 
-.searchField.searchInlineStacked .searchInputRow > input {
-  padding-right: 0.5rem;
-}
-
-.searchField.searchInlineStacked .searchInlineMatches {
-  grid-column: 2;
-  justify-content: flex-end;
-  margin-top: 0.25rem;
-  position: static;
-  transform: none;
-  width: 100%;
+.searchField.searchMetricsConstrained .searchInlineCount {
+  display: none;
 }
 
 .searchbar .searchInlineBtn:hover,
@@ -466,59 +484,184 @@ button:hover,
   border: 1px solid var(--line);
   border-radius: 8px;
   box-shadow: 0 14px 32px rgba(24, 32, 36, 0.16);
-  display: grid;
-  gap: 0.75rem;
   left: 0;
-  padding: 0.75rem;
   position: absolute;
   top: calc(100% + 0.35rem);
-  width: clamp(320px, 100%, calc(100vw - 2rem));
+  width: min(560px, calc(100vw - 2rem));
   z-index: 30;
+}
+
+.searchAssistHeader,
+.searchAssistFooter {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 0.65rem 0.9rem;
+}
+
+.searchAssistHeader {
+  border-bottom: 1px solid var(--line);
+  color: #34434a;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.searchAssistHeader span,
+.searchAssistFooter span {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.searchAssistBody {
+  display: grid;
+  gap: 0.8rem;
+  max-height: min(560px, 65vh);
+  overflow: auto;
+  padding: 0.85rem 0.9rem;
 }
 
 .searchAssistSection {
   display: grid;
   gap: 0.4rem;
+  min-width: 0;
+  position: relative;
 }
 
-.searchAssistTitle {
-  color: var(--muted);
-  font-size: 0.76rem;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.searchAssistControls,
-.searchAssistChips {
+.searchAssistSectionHeader {
+  align-items: baseline;
   display: flex;
-  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.searchAssistSectionHeader strong {
+  color: #34434a;
+  font-size: 0.78rem;
+}
+
+.searchAssistSectionHeader span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.searchbar .searchLayerShortcut {
+  align-items: center;
+  background: #f8fafb;
+  border-color: var(--line);
+  display: flex;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+}
+
+.searchLayerShortcut span {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.searchbar .searchAddFilterBtn,
+.searchbar .searchClearAllBtn {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  min-height: 24px;
+  padding: 0;
+  width: auto;
+}
+
+.searchbar .searchClearAllBtn {
+  color: #b42525;
+  font-weight: 700;
+}
+
+.searchbar .searchClearAllBtn:disabled {
+  color: var(--muted);
+}
+
+.searchAddFilterMenu {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 10px 24px rgba(24, 32, 36, 0.16);
+  display: grid;
+  padding: 0.25rem;
+  position: absolute;
+  right: 0;
+  top: 1.7rem;
+  width: 180px;
+  z-index: 35;
+}
+
+.searchAddFilterMenu[hidden] {
+  display: none;
+}
+
+.searchbar .searchAddFilterMenu button {
+  background: #fff;
+  border: 0;
+  min-height: 30px;
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+}
+
+.searchbar .searchAddFilterMenu button:hover,
+.searchbar .searchAddFilterMenu button:focus-visible {
+  background: var(--soft);
+}
+
+.searchFilterRows {
+  display: grid;
   gap: 0.35rem;
 }
 
-.searchAssistControls {
+.searchFilterRow {
+  align-items: center;
+  background: #f8fafb;
+  border: 1px solid var(--line);
+  border-radius: 6px;
   display: grid;
-  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 0.5rem;
+  grid-template-columns: 64px minmax(0, 1fr) 28px;
+  min-height: 38px;
+  padding: 0.25rem 0.35rem 0.25rem 0.65rem;
 }
 
-.searchAssistControls label {
-  color: var(--muted);
-  display: grid;
-  font-size: 0.76rem;
-  gap: 0.22rem;
-  min-width: 0;
+.searchFilterRow[hidden] {
+  display: none;
 }
 
-.searchAssistControls .fileFilterControl {
-  grid-column: 1 / -1;
+.searchFilterRow label {
+  color: #34434a;
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  font-weight: 700;
 }
 
-.searchAssistControls input,
-.searchAssistControls select {
+.searchFilterRow input,
+.searchFilterRow select {
   background: #fff;
   color: var(--ink);
-  min-height: 32px;
+  min-height: 30px;
+  min-width: 0;
   padding: 0.25rem 0.4rem;
   width: 100%;
+}
+
+.searchbar .searchFilterRemove {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 1rem;
+  min-height: 28px;
+  padding: 0;
+  width: 28px;
 }
 
 .fileSuggestControl {
@@ -581,6 +724,57 @@ button:hover,
 .searchAssistEmpty {
   color: var(--muted);
   font-size: 0.8rem;
+  margin: 0.2rem 0;
+}
+
+.searchMetricsPanel {
+  background: var(--soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: 6px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+}
+
+.searchMetric {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.65rem 0.75rem;
+}
+
+.searchMetric + .searchMetric {
+  border-left: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+}
+
+.searchMetric span {
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.searchMetric strong {
+  color: color-mix(in srgb, var(--accent) 80%, var(--ink));
+  font-family: var(--mono);
+  font-size: 0.82rem;
+}
+
+.searchMetricsNote,
+.searchMetricsEmpty {
+  color: var(--muted);
+  font-size: 0.72rem;
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0.2rem 0.75rem 0.55rem;
+}
+
+.searchMetricsEmpty {
+  padding: 0.7rem 0.75rem;
+}
+
+.searchAssistFooter {
+  border-top: 1px solid var(--line);
 }
 
 .mobileViewTabs {
@@ -3501,7 +3695,22 @@ pre {
   }
 
   body[data-detail-view='profileRules'] .searchbar {
-    grid-template-columns: minmax(220px, 1fr) minmax(150px, 190px) auto;
+    grid-template-columns: minmax(460px, 1fr) minmax(130px, 170px) auto;
+  }
+}
+
+@media (max-width: 1200px) {
+  .topbar {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .projectHeader {
+    min-width: 0;
+  }
+
+  .searchbar {
+    width: 100%;
   }
 }
 
@@ -3514,9 +3723,6 @@ pre {
     display: none;
   }
 
-  .searchbar {
-    width: 62vw;
-  }
 }
 
 @media (max-width: 760px) {
@@ -3576,25 +3782,16 @@ pre {
   }
 
   .searchInputRow {
-    grid-template-columns: 1fr;
+    grid-template-columns: auto auto auto minmax(64px, 1fr) auto;
   }
 
-  .searchScopeControl {
-    width: 100%;
+  .searchbar .searchHudPill {
+    max-width: 82px;
+    padding-inline: 0.3rem;
   }
 
-  .searchbar .searchScopeBtn {
-    flex: 1;
-  }
-
-  .searchInlineMatches {
-    bottom: 6px;
-    top: auto;
-    transform: none;
-  }
-
-  .searchField.searchInlineStacked .searchInlineMatches {
-    grid-column: 1;
+  .searchInlineCount {
+    display: none;
   }
 
   .foldControls {
@@ -3602,9 +3799,26 @@ pre {
   }
 
   .searchAssist {
-    max-height: 58vh;
-    overflow: auto;
-    width: 100%;
+    max-height: 70vh;
+    width: calc(100vw - 2rem);
+  }
+
+  .searchAssistBody {
+    max-height: calc(70vh - 104px);
+  }
+
+  .searchAssistFooter {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .searchMetricsPanel {
+    grid-template-columns: 1fr;
+  }
+
+  .searchMetric + .searchMetric {
+    border-left: 0;
+    border-top: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
   }
 
   .layout {

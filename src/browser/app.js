@@ -4,7 +4,7 @@ const rendererApi = window.sessionRenderers;
 const escapeHtml = rendererApi.escapeHtml;
 const renderSections = rendererApi.renderSections;
 const renderTimelineSections = rendererApi.renderTimelineSections;
-const searchQuery = window.sessionSearchQuery;
+const searchControls = window.sessionSearchControls;
 const searchHighlighter = window.sessionSearchHighlighter;
 const foldingApi = window.sessionFolding;
 const i18n = window.sessionI18n;
@@ -59,14 +59,6 @@ const KIND_LABELS = {
   developer_message: 'Developer message',
   event: 'Event',
 };
-const STATUS_LABELS = {
-  active: 'Active',
-  blocked: 'Blocked',
-  complete: 'Complete',
-  failed: 'Failed',
-  success: 'Success',
-  completed: 'Completed',
-};
 const LAYER_LABELS = {
   main: 'Main timeline',
   protocol: 'Protocol layer',
@@ -104,6 +96,7 @@ const state = {
   projects: [],
   projectSelected: false,
   selectingProject: false,
+  analyzerDisabled: false,
   projectLoadingRoot: '',
   projectJobId: '',
   projectPollTimer: 0,
@@ -116,6 +109,7 @@ const state = {
   projectSearchEventTotal: 0,
   projectSearchSort: 'latest-match-desc',
   projectSearchLoading: false,
+  projectSearchPendingContext: '',
   projectReturnContext: null,
   analysisRequestId: 0,
   selectedSessionId: '',
@@ -162,7 +156,7 @@ const state = {
   searchScope: 'session',
   searchQuery: '',
   searchFilters: { file: '', kind: '', status: '' },
-  searchValidation: [],
+  searchFilterDraft: '',
   searchTargetRegistry: { key: '', targets: [], activeTargetId: '' },
   searchNavigation: { running: false, queue: [] },
   searchProgrammaticScroll: { active: false, timer: 0, paginationFrame: 0 },
@@ -182,16 +176,25 @@ const el = {
   stateLine: document.getElementById('stateLine'),
   searchInput: document.getElementById('searchInput'),
   searchScopeButtons: document.querySelectorAll('[data-search-scope]'),
-  searchValidation: document.getElementById('searchValidation'),
-  searchActionRegion: document.getElementById('searchActionRegion'),
+  searchHudScope: document.getElementById('searchHudScope'),
+  searchHudLayer: document.getElementById('searchHudLayer'),
+  searchFilterBtn: document.getElementById('searchFilterBtn'),
+  searchFilterCount: document.getElementById('searchFilterCount'),
   localeSelect: document.getElementById('localeSelect'),
   searchAssist: document.getElementById('searchAssist'),
-  searchAssistChips: document.getElementById('searchAssistChips'),
   searchField: document.querySelector('.searchField'),
+  searchLayerShortcut: document.getElementById('searchLayerShortcut'),
+  searchLayerShortcutValue: document.getElementById('searchLayerShortcutValue'),
+  searchAddFilterBtn: document.getElementById('searchAddFilterBtn'),
+  searchAddFilterMenu: document.getElementById('searchAddFilterMenu'),
+  searchFilterRows: document.getElementById('searchFilterRows'),
+  searchFiltersEmpty: document.getElementById('searchFiltersEmpty'),
+  searchMetricsPanel: document.getElementById('searchMetricsPanel'),
+  searchClearAllBtn: document.getElementById('searchClearAllBtn'),
+  searchEnterHint: document.getElementById('searchEnterHint'),
   searchKindLabel: document.getElementById('searchKindLabel'),
   searchKindSelect: document.getElementById('searchKindSelect'),
   searchStatusSelect: document.getElementById('searchStatusSelect'),
-  searchLayerSelect: document.getElementById('searchLayerSelect'),
   searchFileInput: document.getElementById('searchFileInput'),
   searchFileSuggestions: document.getElementById('searchFileSuggestions'),
   profileSelect: document.getElementById('profileSelect'),
@@ -259,15 +262,35 @@ function applyStaticLocale() {
   if (el.localeSelect) el.localeSelect.setAttribute('aria-label', t('localeLabel'));
   if (!state.repoRoot && !state.projectLoadingRoot) setText(el.stateLine, t('stateLoading'));
   syncSearchScopeUi();
-  if (el.searchAssist) el.searchAssist.setAttribute('aria-label', t('searchOptions'));
-  if (el.searchActionRegion) el.searchActionRegion.setAttribute('aria-label', t('activeSearchContext'));
+  if (el.searchAssist) el.searchAssist.setAttribute('aria-label', t('searchParameters'));
   document.querySelector('[data-search-match-controls]')?.setAttribute('title', t('searchMatchTitle'));
   document.querySelector('[data-search-match-nav="previous"]')?.setAttribute('aria-label', t('previousSearchMatch'));
   document.querySelector('[data-search-match-nav="previous"]')?.setAttribute('title', t('previousSearchMatch'));
   document.querySelector('[data-search-match-nav="next"]')?.setAttribute('aria-label', t('nextSearchMatch'));
   document.querySelector('[data-search-match-nav="next"]')?.setAttribute('title', t('nextSearchMatch'));
-  document.querySelectorAll('.searchAssistTitle')[0] && setText(document.querySelectorAll('.searchAssistTitle')[0], t('searchFilters'));
-  document.querySelectorAll('.searchAssistTitle')[1] && setText(document.querySelectorAll('.searchAssistTitle')[1], t('active'));
+  setText(document.getElementById('searchAssistHeading'), t('searchParameters'));
+  setText(document.getElementById('searchAssistEscape'), t('escapeToClose'));
+  setText(document.getElementById('searchScopeHeading'), t('searchScope'));
+  setText(document.getElementById('searchLayerHeading'), t('activeGlobalLayer'));
+  setText(document.getElementById('searchLayerHint'), t('layerViewerContextHint'));
+  setText(document.getElementById('searchLayerShortcutAction'), t('switchLayer'));
+  setText(document.getElementById('searchFiltersHeading'), t('activeFilters'));
+  setText(el.searchAddFilterBtn, t('addFilter'));
+  setText(document.getElementById('searchResultsHeading'), t('searchResultsBreakdown'));
+  setText(el.searchFiltersEmpty, t('noStructuredFilters'));
+  setText(el.searchClearAllBtn, t('clearAll'));
+  el.searchClearAllBtn?.setAttribute('aria-label', t('clearAll'));
+  el.searchClearAllBtn?.setAttribute('title', t('clearAllSearchTitle'));
+  document.querySelector('[data-add-search-filter="file"]') && setText(document.querySelector('[data-add-search-filter="file"]'), t('file'));
+  document.querySelector('[data-add-search-filter="kind"]') && setText(document.querySelector('[data-add-search-filter="kind"]'), t('kind'));
+  document.querySelector('[data-add-search-filter="status"]') && setText(document.querySelector('[data-add-search-filter="status"]'), t('status'));
+  document.querySelector('[data-search-filter-row="file"] label') && setText(document.querySelector('[data-search-filter-row="file"] label'), t('file'));
+  document.querySelector('[data-search-filter-row="kind"] label') && setText(document.querySelector('[data-search-filter-row="kind"] label'), t('kind'));
+  document.querySelector('[data-search-filter-row="status"] label') && setText(document.querySelector('[data-search-filter-row="status"] label'), t('status'));
+  document.querySelectorAll('[data-remove-search-filter]').forEach((button) => {
+    const key = button.dataset.removeSearchFilter;
+    button.setAttribute('aria-label', t('removeFilter', { label: t(key) }));
+  });
   setSelectOptionText(el.searchKindSelect, '', t('anyKind'));
   setSelectOptionText(el.searchStatusSelect, '', t('anyStatus'));
   setSelectOptionText(el.searchStatusSelect, 'active', searchStatusLabel('active'));
@@ -276,10 +299,6 @@ function applyStaticLocale() {
   setSelectOptionText(el.searchStatusSelect, 'failed', searchStatusLabel('failed'));
   setSelectOptionText(el.searchStatusSelect, 'success', searchStatusLabel('success'));
   setSelectOptionText(el.searchStatusSelect, 'completed', searchStatusLabel('completed'));
-  setSelectOptionText(el.searchLayerSelect, '', t('currentLayer'));
-  setSelectOptionText(el.searchLayerSelect, 'main', t('mainTimeline'));
-  setSelectOptionText(el.searchLayerSelect, 'protocol', t('protocolLayer'));
-  setSelectOptionText(el.searchLayerSelect, 'raw', t('rawRecords'));
   setSelectOptionText(el.layerSelect, 'main', t('mainTimeline'));
   setSelectOptionText(el.layerSelect, 'protocol', t('protocolLayer'));
   setSelectOptionText(el.layerSelect, 'raw', t('rawRecords'));
@@ -306,6 +325,8 @@ function applyStaticLocale() {
   setText(document.querySelector('[data-dirty-profile-choice="save"]'), t('saveAndSwitch'));
   setText(document.querySelector('[data-dirty-profile-choice="discard"]'), t('discardAndSwitch'));
   setText(document.querySelector('[data-dirty-profile-choice="cancel"]'), t('cancel'));
+  syncSearchAssistControls();
+  renderSearchAssistChips();
   const sessionHeaderTitle = el.sessionHeader?.querySelector('h2');
   const sessionHeaderText = el.sessionHeader?.querySelector('p');
   if (!state.selectedSessionId) {
@@ -518,18 +539,37 @@ function currentSearchState() {
     kind: state.searchFilters.kind,
     status: state.searchFilters.status,
     layer: state.layerId || 'main',
-    validation: state.searchValidation,
   };
+}
+
+function usesCompactSearchLabels() {
+  return window.matchMedia('(max-width: 760px)').matches;
+}
+
+function isAnalyzerInteractionDisabled() {
+  return Boolean(state.analyzerDisabled || state.selectingProject || state.projectLoadingRoot || state.projectJobId);
 }
 
 function syncSearchScopeUi() {
   document.body.dataset.searchScope = state.searchScope;
+  const compact = usesCompactSearchLabels();
+  const analyzerDisabled = isAnalyzerInteractionDisabled();
   for (const button of el.searchScopeButtons) {
     const scope = button.dataset.searchScope;
     button.setAttribute('aria-pressed', scope === state.searchScope ? 'true' : 'false');
-    button.disabled = scope === 'session' && !state.selectedSessionId;
+    button.disabled = analyzerDisabled || (scope === 'session' && !state.selectedSessionId);
     button.textContent = scope === 'session' ? t('currentSessionScope') : t('entireProjectScope');
   }
+  if (el.searchHudScope) {
+    el.searchHudScope.textContent = state.searchScope === 'session'
+      ? t(compact ? 'currentSessionScopeShort' : 'currentSessionScope')
+      : t(compact ? 'entireProjectScopeShort' : 'entireProjectScope');
+    el.searchHudScope.title = state.searchScope === 'session' ? t('currentSessionScope') : t('entireProjectScope');
+    el.searchHudScope.setAttribute('aria-label', t('searchScopeValue', { value: el.searchHudScope.title }));
+    el.searchHudScope.disabled = analyzerDisabled;
+  }
+  if (el.searchHudLayer) el.searchHudLayer.disabled = analyzerDisabled;
+  if (el.searchFilterBtn) el.searchFilterBtn.disabled = analyzerDisabled;
   const group = document.querySelector('.searchScopeControl');
   if (group) group.setAttribute('aria-label', t('searchScope'));
   if (el.searchInput) {
@@ -537,8 +577,7 @@ function syncSearchScopeUi() {
       ? t('projectSearchPlaceholder')
       : t('sessionSearchPlaceholder');
   }
-  if (el.sortSelect && !state.selectingProject) el.sortSelect.disabled = state.searchScope === 'project';
-  setText(el.searchKindLabel, state.searchScope === 'project' ? t('eventTypeProjectTotal') : t('eventTypeSessionTotal'));
+  if (el.sortSelect) el.sortSelect.disabled = analyzerDisabled || state.searchScope === 'project';
 }
 
 function hasActiveSearchExpression() {
@@ -547,10 +586,7 @@ function hasActiveSearchExpression() {
 }
 
 function searchInputValueFromState() {
-  return [
-    state.searchQuery,
-    ...state.searchValidation.map((item) => item.raw),
-  ].filter(Boolean).join(' ').trim();
+  return state.searchQuery;
 }
 
 function syncSearchInputValue() {
@@ -558,28 +594,11 @@ function syncSearchInputValue() {
   if (el.searchInput.value !== value) el.searchInput.value = value;
 }
 
-function clearSearchValidationOperator(operator) {
-  const next = state.searchValidation.filter((item) => item.operator !== operator);
-  if (next.length === state.searchValidation.length) return false;
-  state.searchValidation = next;
-  syncSearchInputValue();
-  renderSearchValidation();
-  return true;
-}
-
-function commitTypedSearchInput() {
-  const parsed = searchQuery.parseSearchInput(el.searchInput.value);
-  const filters = { ...state.searchFilters };
-  for (const token of parsed.tokens) {
-    if (!token.valid || !Object.hasOwn(filters, token.operator)) continue;
-    filters[token.operator] = token.value;
-  }
-  state.searchQuery = parsed.q;
-  state.searchFilters = filters;
-  state.searchValidation = parsed.errors;
-  el.searchInput.value = parsed.retainedInput;
-  renderSearchValidation();
-  return parsed.layer && parsed.layer !== state.layerId ? parsed.layer : '';
+function commitSearchInput() {
+  const nextQuery = el.searchInput.value.trim();
+  const changed = nextQuery !== state.searchQuery;
+  state.searchQuery = nextQuery;
+  return changed;
 }
 
 function activeLayerId() {
@@ -820,48 +839,83 @@ function clearSearchTransientExpansion(eventId) {
 
 function structuredSearchKey() {
   const search = currentSearchState();
-  return `${search.scope}\u001e${searchQuery.structuredSearchKey(
+  return `${search.scope}\u001e${searchControls.structuredSearchKey(
     { kind: search.kind, status: search.status, file: search.file },
     state.layerId || '',
     search.scope === 'project' ? state.projectSearchSort : (el.sortSelect?.value || ''),
   )}`;
 }
 
-function currentSearchMarkLabel() {
+function currentSearchMetricsModel() {
+  const search = currentSearchState();
   const { targets } = state.searchTargetRegistry;
-  const count = searchHighlighter.searchCountModel(state.timelineSearchMatchCount, targets.length, searchTargetIndex());
-  if (!count.hasAnyMatch) return t('noMatches');
-  return t('matchCount', count);
+  const active = search.scope === 'project' ? hasActiveSearchExpression() : Boolean(search.q);
+  return searchControls.searchMetricsModel({
+    scope: search.scope,
+    active,
+    loading: search.scope === 'project' && state.projectSearchLoading,
+    currentIndex: searchTargetIndex(),
+    jumpTargetCount: targets.length,
+    fullTextCount: state.timelineSearchMatchCount,
+    projectSessionCount: state.projectSearchTotal,
+    projectEventCount: state.projectSearchEventTotal,
+  });
+}
+
+function compactSearchMetricsLabel(model = currentSearchMetricsModel()) {
+  if (model.mode === 'loading') return t('searching');
+  if (model.mode !== 'ready') return '';
+  if (model.scope === 'project') return t('compactProjectMatches', { count: model.sessions });
+  return t('compactJumpTargets', { current: model.current, total: model.jumpTotal });
+}
+
+function renderSearchMetrics() {
+  const model = currentSearchMetricsModel();
+  if (el.searchMetricsPanel) {
+    if (model.mode === 'idle') {
+      el.searchMetricsPanel.innerHTML = `<p class="searchMetricsEmpty">${escapeHtml(t(model.scope === 'project' ? 'projectMetricsIdle' : 'sessionMetricsIdle'))}</p>`;
+    } else if (model.mode === 'loading') {
+      el.searchMetricsPanel.innerHTML = `<p class="searchMetricsEmpty">${escapeHtml(t('searching'))}</p>`;
+    } else if (model.scope === 'project') {
+      el.searchMetricsPanel.innerHTML = `<div class="searchMetric"><span>${escapeHtml(t('matchingSessions'))}</span><strong>${model.sessions}</strong></div>
+        <div class="searchMetric"><span>${escapeHtml(t('matchingEvents'))}</span><strong>${model.events}</strong></div>`;
+    } else {
+      el.searchMetricsPanel.innerHTML = `<div class="searchMetric"><span>${escapeHtml(t('jumpTargets'))}</span><strong>${model.current} / ${model.jumpTotal} ${escapeHtml(t('discovered'))}</strong></div>
+        <div class="searchMetric"><span>${escapeHtml(t('fullTextHits'))}</span><strong>${model.fullTextTotal} ${escapeHtml(t('occurrences'))}</strong></div>
+        <p class="searchMetricsNote">${escapeHtml(t('searchTargetsMayGrow'))}</p>`;
+    }
+  }
+  if (el.searchEnterHint) {
+    el.searchEnterHint.textContent = state.searchScope === 'project' ? t('enterFocusesResults') : t('enterMovesNextTarget');
+  }
+  return model;
 }
 
 function syncSearchInlineLayout() {
   if (!el.searchField) return;
   const controls = el.searchField.querySelector('.searchInlineMatches');
-  if (!controls || controls.hidden) {
-    el.searchField.classList.remove('searchInlineStacked');
-    el.searchField.style.removeProperty('--search-inline-reserve');
-    return;
-  }
-  el.searchField.classList.remove('searchInlineStacked');
-  const reserve = Math.ceil(controls.scrollWidth + 12);
-  el.searchField.style.setProperty('--search-inline-reserve', `${reserve}px`);
-  el.searchField.classList.toggle('searchInlineStacked', el.searchInput.clientWidth - reserve < 120);
+  if (!controls) return;
+  el.searchField.classList.toggle('searchMetricsConstrained', el.searchField.clientWidth < 460);
 }
 
 function updateSearchMatchControls() {
   const controls = document.querySelectorAll('[data-search-match-controls]');
   syncSearchTargetRegistryKey();
   const { targets } = state.searchTargetRegistry;
-  const visible = state.searchScope === 'session' && Boolean(currentSearchState().q);
+  const analyzerDisabled = isAnalyzerInteractionDisabled();
+  const sessionNavigation = state.searchScope === 'session' && Boolean(currentSearchState().q);
+  const visible = sessionNavigation || (state.searchScope === 'project' && hasActiveSearchExpression());
   const canNavigate = searchDiscoveryContextReady()
     && (targets.length > 0 || state.timelineSearchMatchCount > 0);
   controls.forEach((control) => {
     control.hidden = !visible;
+    control.title = sessionNavigation ? t('searchMatchTitle') : t('projectCompactMatchTitle');
     control.toggleAttribute('data-search-navigation-pending', state.searchNavigation.running);
     const label = control.querySelector('[data-search-match-count]');
-    if (label) label.textContent = currentSearchMarkLabel();
+    if (label) label.textContent = compactSearchMetricsLabel(renderSearchMetrics());
     control.querySelectorAll('[data-search-match-nav]').forEach((button) => {
-      button.disabled = !canNavigate;
+      button.hidden = !sessionNavigation;
+      button.disabled = analyzerDisabled || !canNavigate;
     });
   });
   requestAnimationFrame(syncSearchInlineLayout);
@@ -1379,7 +1433,7 @@ function visibleProfilePickerHost(host) {
 }
 
 // Keep exactly one strategy info control and move it to the visible profile picker.
-function syncProfileInfoSlot(analyzerDisabled = false) {
+function syncProfileInfoSlot(analyzerDisabled = isAnalyzerInteractionDisabled()) {
   const detailHost = el.detail?.querySelector('[data-profile-picker-host="detail"]');
   const topbarHost = el.profileSelect?.closest('[data-profile-picker-host="topbar"]');
   const host = !analyzerDisabled && profileAppliesToActiveLayer() && isBuiltinProfile(state.profileId) && !profileDirty()
@@ -1656,50 +1710,21 @@ function shouldShowInspectorSummary(event, preview, detail = null) {
   return true;
 }
 
-function selectedOptionText(select) {
-  return select.selectedOptions[0]?.textContent?.trim() || '';
-}
-
-function optionText(select, value, fallback = {}) {
-  const option = [...select.options].find((item) => item.value === value);
-  return fallback[value] || option?.textContent?.trim() || value;
-}
-
 function activeFilters() {
-  const filters = [];
   const search = currentSearchState();
-  if (search.kind) filters.push({ key: 'kind', label: `${t('kind')}: ${optionText(el.searchKindSelect, search.kind) || kindLabel(search.kind)}` });
-  if (search.status) filters.push({ key: 'status', label: `${t('status')}: ${optionText(el.searchStatusSelect, search.status, STATUS_LABELS)}` });
-  if (search.file) filters.push({ key: 'file', label: `${t('file')}: ${search.file}` });
-  return filters;
-}
-
-function activeFindAndFilters() {
-  const search = currentSearchState();
-  return [
-    search.q ? { key: 'q', label: `${t('find')}: ${search.q}` } : null,
-    ...activeFilters(),
-  ].filter(Boolean);
-}
-
-function activeSearchChips() {
-  return [
-    { key: 'layer', label: `${t('layer')}: ${activeLayerLabel()}`, removable: false },
-    ...activeFindAndFilters(),
-  ];
-}
-
-function filterChipMarkup(filter) {
-  if (filter.removable === false) {
-    return `<span class="filterChip contextChip" data-search-context="${escapeHtml(filter.key)}"><span>${escapeHtml(filter.label)}</span></span>`;
-  }
-  return `<button class="filterChip" type="button" data-clear-filter="${escapeHtml(filter.key)}" aria-label="${escapeHtml(t('clear', { label: filter.label }))}">
-      <span>${escapeHtml(filter.label)}</span><span aria-hidden="true">&times;</span>
-    </button>`;
-}
-
-function renderFilterChips(filters) {
-  return filters.map(filterChipMarkup).join('');
+  return searchControls.activeFilterEntries(search, {
+    file: t('file'),
+    kind: t('kind'),
+    status: t('status'),
+  }).map((entry) => ({
+    ...entry,
+    displayValue: entry.key === 'kind'
+      ? kindLabel(entry.value)
+      : (entry.key === 'status' ? searchStatusLabel(entry.value) : entry.value),
+    label: `${entry.label}: ${entry.key === 'kind'
+      ? kindLabel(entry.value)
+      : (entry.key === 'status' ? searchStatusLabel(entry.value) : entry.value)}`,
+  }));
 }
 
 function hasFocusedTimelineContext() {
@@ -1712,41 +1737,52 @@ function renderReadFromHereAction() {
   return `<button class="smallBtn readFromHereBtn" type="button" data-detail-action="read-from-here" title="${escapeHtml(t('readFromHereTitle'))}">${escapeHtml(t('readFromHere'))}</button>`;
 }
 
-function renderSearchActionRegion() {
-  const region = el.searchActionRegion || el.searchAssistChips;
-  if (!region) return;
-  const expression = activeFindAndFilters();
-  const clear = expression.length
-    ? `<button class="clearFiltersBtn" type="button" data-clear-filter="all">${escapeHtml(t('clearAll'))}</button>`
-    : '';
-  region.innerHTML = `${renderFilterChips(activeSearchChips())}${clear}`;
-}
-
 function renderBackToProjectResultsAction() {
   if (!state.projectReturnContext || state.searchScope !== 'session') return '';
   return `<button class="smallBtn" type="button" data-detail-action="back-to-project-results">${escapeHtml(t('backToProjectResults'))}</button>`;
 }
 
 function renderSearchAssistChips() {
-  renderSearchActionRegion();
-}
-
-function renderSearchValidation() {
-  if (!el.searchValidation) return;
-  if (!state.searchValidation.length) {
-    el.searchValidation.hidden = true;
-    el.searchValidation.textContent = '';
-    el.searchInput.removeAttribute('aria-invalid');
-    return;
+  const filters = activeFilters();
+  const filterSummary = filters.map((filter) => filter.label).join(' · ');
+  const filterCount = filters.length;
+  const analyzerDisabled = isAnalyzerInteractionDisabled();
+  if (el.searchFilterCount) {
+    el.searchFilterCount.textContent = filterCount
+      ? t(filterCount === 1 ? 'filterCountOne' : 'filterCount', { count: filterCount })
+      : '';
+    el.searchFilterCount.hidden = filterCount === 0;
   }
-  const messages = state.searchValidation.map((item) => (
-    item.error === 'missing-value'
-      ? t('searchOperatorMissingValue', { operator: item.operator })
-      : t('searchOperatorInvalidValue', { operator: item.operator, value: item.value })
-  ));
-  el.searchValidation.textContent = messages.join(' ');
-  el.searchValidation.hidden = false;
-  el.searchInput.setAttribute('aria-invalid', 'true');
+  if (el.searchFilterBtn) {
+    el.searchFilterBtn.classList.toggle('active', filterCount > 0);
+    el.searchFilterBtn.title = filterSummary || t('noActiveFilters');
+    el.searchFilterBtn.setAttribute('aria-label', filterCount
+      ? t('activeFilterSummary', { count: filterCount, summary: filterSummary })
+      : t('searchFilters'));
+  }
+  if (el.searchHudLayer) {
+    el.searchHudLayer.textContent = usesCompactSearchLabels() && activeLayerId() === 'main'
+      ? t('mainTimelineShort')
+      : activeLayerLabel();
+    el.searchHudLayer.title = t('globalLayerValue', { value: activeLayerLabel() });
+  }
+  setText(el.searchLayerShortcutValue, activeLayerLabel());
+  for (const key of searchControls.FILTER_ORDER) {
+    const row = el.searchFilterRows?.querySelector(`[data-search-filter-row="${key}"]`);
+    const value = state.searchFilters[key] || '';
+    if (row) row.hidden = !value && state.searchFilterDraft !== key;
+    const addButton = el.searchAddFilterMenu?.querySelector(`[data-add-search-filter="${key}"]`);
+    if (addButton) addButton.disabled = analyzerDisabled || Boolean(value) || state.searchFilterDraft === key;
+  }
+  if (el.searchFiltersEmpty) el.searchFiltersEmpty.hidden = filterCount > 0 || Boolean(state.searchFilterDraft);
+  if (el.searchAddFilterBtn) el.searchAddFilterBtn.disabled = analyzerDisabled;
+  if (el.searchLayerShortcut) el.searchLayerShortcut.disabled = analyzerDisabled;
+  el.searchFilterRows?.querySelectorAll('[data-search-filter-control], [data-remove-search-filter]').forEach((control) => {
+    control.disabled = analyzerDisabled;
+  });
+  if (el.searchClearAllBtn) el.searchClearAllBtn.disabled = analyzerDisabled || (!state.searchQuery && filterCount === 0);
+  renderSearchMetrics();
+  requestAnimationFrame(syncSearchInlineLayout);
 }
 
 function setSelectIfOption(select, value) {
@@ -1796,25 +1832,33 @@ function syncSearchAssistControls() {
   renderKindOptions();
   setSelectIfOption(el.searchKindSelect, search.kind);
   setSelectIfOption(el.searchStatusSelect, search.status);
-  setSelectIfOption(el.searchLayerSelect, search.layer);
   if (el.searchFileInput) el.searchFileInput.value = search.file;
-  renderSearchValidation();
+  renderSearchAssistChips();
 }
 
 function showSearchAssist() {
   if (!el.searchAssist) return;
+  if (isAnalyzerInteractionDisabled()) {
+    hideSearchAssist();
+    return;
+  }
   el.searchAssist.hidden = false;
-  if (el.resultSummary) el.resultSummary.hidden = true;
-  el.searchInput.setAttribute('aria-expanded', 'true');
+  for (const control of [el.searchInput, el.searchHudScope, el.searchHudLayer, el.searchFilterBtn]) {
+    control?.setAttribute('aria-expanded', 'true');
+  }
   syncSearchAssistControls();
-  renderSearchAssistChips();
 }
 
 function hideSearchAssist() {
   if (!el.searchAssist) return;
   el.searchAssist.hidden = true;
-  if (el.resultSummary) el.resultSummary.hidden = false;
-  el.searchInput.setAttribute('aria-expanded', 'false');
+  hideFileSuggestions();
+  setAddFilterMenuOpen(false);
+  if (state.searchFilterDraft && !state.searchFilters[state.searchFilterDraft]) state.searchFilterDraft = '';
+  for (const control of [el.searchInput, el.searchHudScope, el.searchHudLayer, el.searchFilterBtn]) {
+    control?.setAttribute('aria-expanded', 'false');
+  }
+  renderSearchAssistChips();
 }
 
 function focusSearchEnd() {
@@ -1823,21 +1867,37 @@ function focusSearchEnd() {
   el.searchInput.setSelectionRange(end, end);
 }
 
-function applySearchOperator(operator, value) {
-  if (!operator) return;
-  clearSearchValidationOperator(operator);
-  if (operator === 'layer') {
-    if (value && value !== state.layerId) changeLayer(value).catch(showError);
-  } else if (Object.hasOwn(state.searchFilters, operator)) {
+function applySearchFilter(operator, value) {
+  if (!Object.hasOwn(state.searchFilters, operator)) return;
+  state.searchFilterDraft = '';
+  if (Object.hasOwn(state.searchFilters, operator)) {
     state.searchFilters = { ...state.searchFilters, [operator]: value || '' };
     state.searchStructureKey = structuredSearchKey();
+    beginProjectSearchPendingTransition();
     beginSearchTargetContextTransition();
     refreshActiveSearch({ structural: true }).catch(showError);
   }
   syncSearchAssistControls();
-  renderSearchAssistChips();
   updateProfileApplicabilityUi();
-  focusSearchEnd();
+}
+
+function setAddFilterMenuOpen(open) {
+  if (!el.searchAddFilterMenu || !el.searchAddFilterBtn) return;
+  el.searchAddFilterMenu.hidden = !open;
+  el.searchAddFilterBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function beginAddingSearchFilter(key) {
+  if (!Object.hasOwn(state.searchFilters, key)) return;
+  state.searchFilterDraft = key;
+  setAddFilterMenuOpen(false);
+  syncSearchAssistControls();
+  const control = el.searchFilterRows?.querySelector(`[data-search-filter-control="${key}"]`);
+  control?.focus();
+  if (key === 'file') {
+    renderFileSuggestions();
+    setFileSuggestionsOpen(true);
+  }
 }
 
 function normalizeFileSuggestionText(value) {
@@ -1912,8 +1972,11 @@ function renderResultSummary() {
   const search = currentSearchState();
   renderSearchAssistChips();
   if (search.scope === 'project') {
-    if (!hasActiveSearchExpression()) {
+    if (!hasActiveSearchExpression()
+        || state.projectSearchLoading
+        || state.projectSearchDataContext !== projectSearchDataContextKey()) {
       el.resultSummary.replaceChildren();
+      updateSearchMatchControls();
       return;
     }
     const summary = t('projectResultSummary', {
@@ -1935,11 +1998,6 @@ function renderResultSummary() {
   const eventText = filters.length && state.selectedSessionId
     ? (state.offset < state.timelineTotal ? t('eventsMatchLoaded', { count: state.timelineTotal, loaded: state.offset }) : t('eventsMatch', { count: state.timelineTotal }))
     : (filters.length ? t('eventsSelectSession') : '');
-  const matchControls = search.q
-    ? `<div class="searchMatchControls" data-search-match-controls title="${escapeHtml(t('searchMatchTitle'))}">
-      <span class="searchMatchCount" data-search-match-count>${escapeHtml(currentSearchMarkLabel())}</span>
-    </div>`
-    : '';
   const committed = state.timelineDataContext === timelineDataContextKey();
   const matchingEventCount = search.q ? state.timelineSearchEventCount : state.timelineTotal;
   const projectFallback = committed && hasActiveSearchExpression() && matchingEventCount === 0
@@ -1948,7 +2006,7 @@ function renderResultSummary() {
   const backToProject = state.projectReturnContext
     ? `<button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>`
     : '';
-  el.resultSummary.innerHTML = `${eventText ? `<div class="resultCounts">${escapeHtml(eventText)}</div>` : ''}${matchControls}${projectFallback}${backToProject}`;
+  el.resultSummary.innerHTML = `${eventText ? `<div class="resultCounts">${escapeHtml(eventText)}</div>` : ''}${projectFallback}${backToProject}`;
   updateSearchMatchControls();
 }
 
@@ -1957,14 +2015,14 @@ function clearActiveFilter(key) {
   if (key === 'all') {
     state.searchQuery = '';
     state.searchFilters = { file: '', kind: '', status: '' };
-    state.searchValidation = [];
+    state.searchFilterDraft = '';
   } else if (key === 'q') {
     state.searchQuery = '';
   } else if (Object.hasOwn(state.searchFilters, key)) {
     state.searchFilters = { ...state.searchFilters, [key]: '' };
   }
   syncSearchInputValue();
-  renderSearchValidation();
+  beginProjectSearchPendingTransition();
   beginSearchTargetContextTransition();
   syncSearchAssistControls();
   renderSearchAssistChips();
@@ -2078,7 +2136,7 @@ function updateResetFoldsButton() {
   el.resetFoldsBtn.closest('.foldControls')?.toggleAttribute('data-has-reset-folds', visible);
 }
 
-function updateProfileApplicabilityUi(analyzerDisabled = false) {
+function updateProfileApplicabilityUi(analyzerDisabled = isAnalyzerInteractionDisabled()) {
   const applies = profileAppliesToActiveLayer();
   const controls = el.profileSelect?.closest('.foldControls');
   if (el.profileSelect) {
@@ -2094,11 +2152,30 @@ function updateProfileApplicabilityUi(analyzerDisabled = false) {
 }
 
 function setAnalyzerDisabled(disabled) {
-  for (const control of [el.searchInput, ...el.searchScopeButtons, el.layerSelect, el.sortSelect, el.resetFoldsBtn, el.loadMoreBtn]) {
-    if (control) control.disabled = disabled;
+  state.analyzerDisabled = Boolean(disabled);
+  const analyzerDisabled = isAnalyzerInteractionDisabled();
+  if (analyzerDisabled) hideSearchAssist();
+  const controls = new Set([
+    el.searchInput,
+    el.searchHudScope,
+    el.searchHudLayer,
+    el.searchFilterBtn,
+    el.searchLayerShortcut,
+    el.layerSelect,
+    el.sortSelect,
+    el.resetFoldsBtn,
+    el.loadMoreBtn,
+    ...el.searchScopeButtons,
+  ].filter(Boolean));
+  el.searchAssist?.querySelectorAll('button, input, select').forEach((control) => controls.add(control));
+  el.searchField?.querySelectorAll('[data-search-match-nav]').forEach((control) => controls.add(control));
+  for (const control of controls) {
+    control.disabled = analyzerDisabled;
   }
-  updateProfileApplicabilityUi(disabled);
-  if (!disabled) syncSearchScopeUi();
+  updateProfileApplicabilityUi(analyzerDisabled);
+  syncSearchScopeUi();
+  renderSearchAssistChips();
+  updateSearchMatchControls();
 }
 
 function setProjectMode(selecting) {
@@ -2119,6 +2196,7 @@ function resetProjectViewState() {
   state.projectSearchTotal = 0;
   state.projectSearchEventTotal = 0;
   state.projectSearchLoading = false;
+  state.projectSearchPendingContext = '';
   state.projectReturnContext = null;
   state.analysisRequestId += 1;
   state.selectedSessionId = '';
@@ -2522,12 +2600,33 @@ async function loadSessions() {
   return true;
 }
 
+function beginProjectSearchPendingTransition() {
+  if (state.searchScope !== 'project') return false;
+  const requestContext = projectSearchDataContextKey();
+  const active = hasActiveSearchExpression();
+  if (state.projectSearchPendingContext === requestContext
+      && state.projectSearchLoading === active
+      && state.projectResults.length === 0
+      && state.projectSearchTotal === 0
+      && state.projectSearchEventTotal === 0) return false;
+  state.projectSearchRequestId += 1;
+  state.projectSearchPendingContext = requestContext;
+  state.projectSearchDataContext = '';
+  state.projectSearchLoading = active;
+  state.projectResults = [];
+  state.projectSearchTotal = 0;
+  state.projectSearchEventTotal = 0;
+  renderProjectSearchView();
+  return true;
+}
+
 async function loadProjectResults() {
   state.projectSearchRequestId += 1;
   const requestId = state.projectSearchRequestId;
   const requestContext = projectSearchDataContextKey();
   if (state.searchScope !== 'project' || !hasActiveSearchExpression()) {
     state.projectSearchLoading = false;
+    state.projectSearchPendingContext = '';
     state.projectSearchDataContext = requestContext;
     state.projectResults = [];
     state.projectSearchTotal = 0;
@@ -2536,6 +2635,8 @@ async function loadProjectResults() {
     return true;
   }
   state.projectSearchLoading = true;
+  state.projectSearchPendingContext = requestContext;
+  state.projectSearchDataContext = '';
   state.projectResults = [];
   state.projectSearchTotal = 0;
   state.projectSearchEventTotal = 0;
@@ -2544,6 +2645,7 @@ async function loadProjectResults() {
     const data = await api(`/api/sessions${currentQuery({ sort: state.projectSearchSort })}`);
     if (requestId !== state.projectSearchRequestId || requestContext !== projectSearchDataContextKey()) return false;
     state.projectSearchDataContext = requestContext;
+    state.projectSearchPendingContext = '';
     state.projectResults = data.sessions || [];
     state.projectSearchTotal = data.total || 0;
     state.projectSearchEventTotal = data.matchingEventTotal || 0;
@@ -2551,6 +2653,7 @@ async function loadProjectResults() {
   } finally {
     if (requestId === state.projectSearchRequestId && requestContext === projectSearchDataContextKey()) {
       state.projectSearchLoading = false;
+      state.projectSearchPendingContext = '';
       renderProjectSearchView();
     }
   }
@@ -2603,7 +2706,7 @@ async function setSearchScope(scope, options = {}) {
     state.timelineRequestId += 1;
     state.analysisRequestId += 1;
     state.timelineLoading = false;
-    renderProjectSearchView();
+    beginProjectSearchPendingTransition();
     await Promise.all([loadProjectResults(), refreshFileSuggestions()]);
     if (options.mobileView !== false) setMobileView('sessions');
     if (options.focusResults) restoreProjectResultFocus(options.preferredSessionId || '');
@@ -2611,6 +2714,7 @@ async function setSearchScope(scope, options = {}) {
   }
   state.projectSearchRequestId += 1;
   state.projectSearchLoading = false;
+  state.projectSearchPendingContext = '';
   state.projectReturnContext = null;
   await selectSession(state.selectedSessionId, { mobileView: options.mobileView === false ? '' : 'events' });
   return true;
@@ -2641,6 +2745,7 @@ async function drillDownProjectResult(sessionId) {
   state.projectReturnContext = returnContext;
   if (state.selectedSessionId !== sessionId) resetSessionDetailCache();
   state.searchScope = 'session';
+  state.projectSearchPendingContext = '';
   state.projectSearchRequestId += 1;
   state.selectedSessionId = sessionId;
   state.searchStructureKey = structuredSearchKey();
@@ -2752,7 +2857,7 @@ function renderProjectSearchView() {
   const noResults = active && !state.projectSearchLoading && state.projectSearchTotal === 0;
   const message = !active
     ? t('projectSearchPrompt')
-    : (noResults ? t('projectNoResults') : t('projectResultsGuidance'));
+    : (state.projectSearchLoading ? t('searching') : (noResults ? t('projectNoResults') : t('projectResultsGuidance')));
   el.sessionHeader.innerHTML = `<h2>${escapeHtml(t('projectSearchTitle'))}</h2><p>${escapeHtml(message)}</p>`;
   el.analysisPanel.innerHTML = '';
   el.timeline.innerHTML = `<div class="projectSearchState"><h3>${escapeHtml(t('projectSearchTitle'))}</h3><p>${escapeHtml(message)}</p></div>`;
@@ -2775,6 +2880,7 @@ function renderProjectReturnBanner() {
 async function selectSession(sessionId, options = {}) {
   if (state.selectedSessionId !== sessionId) resetSessionDetailCache();
   state.searchScope = 'session';
+  state.projectSearchPendingContext = '';
   state.projectSearchRequestId += 1;
   state.selectedSessionId = sessionId;
   state.searchStructureKey = structuredSearchKey();
@@ -2914,9 +3020,9 @@ async function changeLayer(layerId) {
   const focusAnchor = state.searchScope === 'session' ? captureFocusAnchor() : { hadSelection: false };
   resetSearchTransientExpansions();
   state.layerId = layerId;
-  clearSearchValidationOperator('layer');
   el.layerSelect.value = state.layerId;
   state.searchStructureKey = structuredSearchKey();
+  beginProjectSearchPendingTransition();
   beginSearchTargetContextTransition();
   localStorage.setItem('sessionAnalyzer.layer', state.layerId);
   syncSearchAssistControls();
@@ -3600,8 +3706,9 @@ async function readFromSelectedEvent() {
   if (!anchor.hadSelection) return;
   hideSearchAssist();
   state.searchScope = 'session';
+  state.projectSearchPendingContext = '';
   state.searchFilters = { file: '', kind: '', status: '' };
-  state.searchValidation = state.searchValidation.filter((item) => !['file', 'kind', 'status', 'layer'].includes(item.operator));
+  state.searchFilterDraft = '';
   state.layerId = 'main';
   el.layerSelect.value = state.layerId;
   localStorage.setItem('sessionAnalyzer.layer', state.layerId);
@@ -3886,6 +3993,14 @@ async function showRaw(event, options = {}) {
     });
     return;
   }
+  renderDetailShell({
+    title: t('rawRefs'),
+    subtitle: rawRefsSubtitle(event),
+    actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
+    body: `<div class="rawRefsView">
+      <p class="rawMeta">${escapeHtml(t('loading'))}</p>
+    </div>`,
+  });
   const payloads = await Promise.all(refs.map((ref) => api(`/api/raw?file=${encodeURIComponent(ref.file)}&line=${encodeURIComponent(ref.line)}`)));
   if (state.detailSelectionKey !== rawKey) return;
   renderDetailShell({
@@ -4304,13 +4419,19 @@ el.resultSummary?.addEventListener('click', (event) => {
   }
 });
 for (const button of el.searchScopeButtons) {
-  button.addEventListener('click', () => setSearchScope(button.dataset.searchScope).catch(showError));
+  button.addEventListener('click', () => {
+    if (isAnalyzerInteractionDisabled()) return;
+    setSearchScope(button.dataset.searchScope).catch(showError);
+  });
 }
-el.searchActionRegion?.addEventListener('click', (event) => {
-  const clear = event.target.closest('[data-clear-filter]')?.dataset.clearFilter;
-  if (clear) clearActiveFilter(clear);
-});
+for (const button of [el.searchHudScope, el.searchHudLayer, el.searchFilterBtn]) {
+  button?.addEventListener('click', showSearchAssist);
+}
 el.searchField?.addEventListener('click', (event) => {
+  if (isAnalyzerInteractionDisabled()) {
+    hideSearchAssist();
+    return;
+  }
   const nav = event.target.closest('[data-search-match-nav]')?.dataset.searchMatchNav;
   if (nav === 'previous') {
     hideSearchAssist();
@@ -4320,7 +4441,7 @@ el.searchField?.addEventListener('click', (event) => {
     queueSearchNavigation(1).catch(showError);
   } else if (
     event.target === el.searchField
-    || (event.target.closest('.searchInputRow') && !event.target.closest('.searchScopeControl'))
+    || (event.target.closest('.searchInputRow') && !event.target.closest('button'))
   ) {
     el.searchInput.focus();
   }
@@ -4334,6 +4455,8 @@ timelinePane?.addEventListener('keydown', onTimelineUserScrollIntent);
 window.addEventListener('resize', () => {
   queueVisibleDetailLoad();
   syncProfileInfoSlot();
+  syncSearchScopeUi();
+  renderSearchAssistChips();
   syncSearchInlineLayout();
 });
 
@@ -4351,6 +4474,11 @@ const refreshFind = debounce(() => {
 el.searchInput.addEventListener('focus', showSearchAssist);
 el.searchInput.addEventListener('click', showSearchAssist);
 el.searchInput.addEventListener('keydown', (event) => {
+  if (isAnalyzerInteractionDisabled()) {
+    event.preventDefault();
+    hideSearchAssist();
+    return;
+  }
   if (event.key === 'Escape') {
     event.preventDefault();
     hideSearchAssist();
@@ -4361,7 +4489,12 @@ el.searchInput.addEventListener('keydown', (event) => {
     if (search.scope === 'project') {
       event.preventDefault();
       hideSearchAssist();
-      commitTypedSearchInput();
+      commitSearchInput();
+      if (el.sessionList.querySelector('[data-project-result-session-id]')) {
+        focusFirstProjectResult();
+        return;
+      }
+      beginProjectSearchPendingTransition();
       refreshFind.cancel();
       reload.cancel();
       loadProjectResults()
@@ -4379,8 +4512,15 @@ el.searchInput.addEventListener('keydown', (event) => {
   }
 });
 el.searchInput.addEventListener('input', () => {
+  if (isAnalyzerInteractionDisabled()) {
+    hideSearchAssist();
+    syncSearchInputValue();
+    return;
+  }
   showSearchAssist();
-  const requestedLayer = commitTypedSearchInput();
+  const queryChanged = commitSearchInput();
+  if (!queryChanged) return;
+  beginProjectSearchPendingTransition();
   const clearedTransientExpansions = reconcileSearchTransientExpansions();
   beginSearchTargetContextTransition();
   syncSearchAssistControls();
@@ -4390,12 +4530,6 @@ el.searchInput.addEventListener('input', () => {
   const nextStructureKey = structuredSearchKey();
   const structureChanged = state.searchStructureKey && state.searchStructureKey !== nextStructureKey;
   state.searchStructureKey = nextStructureKey;
-  if (requestedLayer) {
-    refreshFind.cancel();
-    reload.cancel();
-    changeLayer(requestedLayer).catch(showError);
-    return;
-  }
   if (structureChanged) {
     refreshFind.cancel();
     reload();
@@ -4404,16 +4538,19 @@ el.searchInput.addEventListener('input', () => {
   }
 });
 el.searchInput.addEventListener('change', () => {
-  const requestedLayer = commitTypedSearchInput();
-  if (reconcileSearchTransientExpansions()) renderTimeline();
-  const nextStructureKey = structuredSearchKey();
-  if (requestedLayer) {
-    state.searchStructureKey = nextStructureKey;
-    refreshFind.cancel();
-    reload.cancel();
-    changeLayer(requestedLayer).catch(showError);
+  if (isAnalyzerInteractionDisabled()) {
+    hideSearchAssist();
+    syncSearchInputValue();
     return;
   }
+  const queryChanged = commitSearchInput();
+  if (!queryChanged) {
+    if (state.searchScope === 'session') refreshFind();
+    return;
+  }
+  beginProjectSearchPendingTransition();
+  if (reconcileSearchTransientExpansions()) renderTimeline();
+  const nextStructureKey = structuredSearchKey();
   if (nextStructureKey !== state.searchStructureKey) {
     state.searchStructureKey = nextStructureKey;
     refreshFind.cancel();
@@ -4424,48 +4561,112 @@ el.searchInput.addEventListener('change', () => {
 });
 
 el.searchAssist?.addEventListener('click', (event) => {
+  if (isAnalyzerInteractionDisabled()) {
+    event.preventDefault();
+    hideSearchAssist();
+    return;
+  }
   const clear = event.target.closest('[data-clear-filter]')?.dataset.clearFilter;
   if (clear) {
     clearActiveFilter(clear);
+    focusSearchEnd();
+    return;
+  }
+  if (event.target.closest('#searchAddFilterBtn')) {
+    setAddFilterMenuOpen(el.searchAddFilterMenu?.hidden !== false);
+    return;
+  }
+  const add = event.target.closest('[data-add-search-filter]')?.dataset.addSearchFilter;
+  if (add) {
+    beginAddingSearchFilter(add);
+    return;
+  }
+  const remove = event.target.closest('[data-remove-search-filter]')?.dataset.removeSearchFilter;
+  if (remove) {
+    if (state.searchFilterDraft === remove && !state.searchFilters[remove]) {
+      state.searchFilterDraft = '';
+      syncSearchAssistControls();
+    } else {
+      clearActiveFilter(remove);
+    }
     return;
   }
   const suggestedFile = event.target.closest('[data-search-file-suggestion]')?.dataset.searchFileSuggestion;
   if (suggestedFile) {
-    applySearchOperator('file', suggestedFile);
+    applySearchFilter('file', suggestedFile);
     hideFileSuggestions();
     return;
   }
 });
 
 el.searchAssist?.addEventListener('focusin', (event) => {
+  if (isAnalyzerInteractionDisabled()) {
+    hideSearchAssist();
+    return;
+  }
   if (event.target !== el.searchFileInput) return;
   renderFileSuggestions();
   setFileSuggestionsOpen(true);
 });
 
 el.searchAssist?.addEventListener('change', (event) => {
-  const control = event.target.closest('[data-search-operator]');
+  if (isAnalyzerInteractionDisabled()) {
+    event.preventDefault();
+    hideSearchAssist();
+    return;
+  }
+  const control = event.target.closest('[data-search-filter-control]');
   if (!control) return;
-  if (control.dataset.searchOperator === 'file') hideFileSuggestions();
-  applySearchOperator(control.dataset.searchOperator, control.value.trim());
+  if (control.dataset.searchFilterControl === 'file') hideFileSuggestions();
+  applySearchFilter(control.dataset.searchFilterControl, control.value.trim());
 });
 
 el.searchAssist?.addEventListener('input', (event) => {
-  const control = event.target.closest('[data-search-operator="file"]');
+  if (isAnalyzerInteractionDisabled()) {
+    event.preventDefault();
+    hideSearchAssist();
+    return;
+  }
+  const control = event.target.closest('[data-search-filter-control="file"]');
   if (!control) return;
   renderFileSuggestions();
   setFileSuggestionsOpen(true);
   if (isSuggestedFile(control.value)) {
     hideFileSuggestions();
-    applySearchOperator('file', control.value.trim());
+    applySearchFilter('file', control.value.trim());
   }
 });
 
 el.searchAssist?.addEventListener('keydown', (event) => {
+  if (isAnalyzerInteractionDisabled()) {
+    event.preventDefault();
+    hideSearchAssist();
+    return;
+  }
   if (event.key === 'Escape' && event.target === el.searchFileInput && !el.searchFileSuggestions?.hidden) {
     event.preventDefault();
+    event.stopPropagation();
     hideFileSuggestions();
     return;
+  }
+  if (event.key === 'Escape' && !el.searchAddFilterMenu?.hidden) {
+    event.preventDefault();
+    event.stopPropagation();
+    setAddFilterMenuOpen(false);
+    el.searchAddFilterBtn?.focus();
+    return;
+  }
+  if (event.key === 'Escape') {
+    const control = event.target.closest('[data-search-filter-control]');
+    if (control) {
+      event.preventDefault();
+      event.stopPropagation();
+      const key = control.dataset.searchFilterControl;
+      if (state.searchFilterDraft === key && !state.searchFilters[key]) state.searchFilterDraft = '';
+      syncSearchAssistControls();
+      focusSearchEnd();
+      return;
+    }
   }
   if (event.key === 'ArrowDown' && event.target === el.searchFileInput && !el.searchFileSuggestions?.hidden) {
     const firstSuggestion = el.searchFileSuggestions.querySelector('[data-search-file-suggestion]');
@@ -4476,15 +4677,32 @@ el.searchAssist?.addEventListener('keydown', (event) => {
     return;
   }
   if (event.key !== 'Enter') return;
-  const control = event.target.closest('[data-search-operator]');
+  const control = event.target.closest('[data-search-filter-control]');
   if (!control) return;
   event.preventDefault();
   hideFileSuggestions();
-  applySearchOperator(control.dataset.searchOperator, control.value.trim());
+  applySearchFilter(control.dataset.searchFilterControl, control.value.trim());
+});
+
+el.searchLayerShortcut?.addEventListener('click', () => {
+  if (isAnalyzerInteractionDisabled()) {
+    hideSearchAssist();
+    return;
+  }
+  hideSearchAssist();
+  el.layerSelect?.focus();
+  try {
+    el.layerSelect?.showPicker?.();
+  } catch {
+    // Focus remains on the canonical Layer control when the native picker is unavailable.
+  }
 });
 
 document.addEventListener('pointerdown', (event) => {
   if (el.searchFileInput && !event.target.closest('.fileSuggestControl')) hideFileSuggestions();
+  if (el.searchAddFilterMenu && !event.target.closest('#searchAddFilterBtn') && !event.target.closest('#searchAddFilterMenu')) {
+    setAddFilterMenuOpen(false);
+  }
   if (!el.searchField || el.searchField.contains(event.target)) return;
   hideSearchAssist();
 });

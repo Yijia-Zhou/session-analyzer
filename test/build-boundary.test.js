@@ -14,7 +14,7 @@ const oldPublicScripts = [
   '/highlight.js',
   '/navigation.js',
   '/renderers.js',
-  '/search-query.js',
+  '/search-controls.js',
 ];
 
 function readText(relativePath) {
