@@ -8,6 +8,14 @@ const MarkdownIt = require('markdown-it');
 const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
 const i18n = require('./shared/i18n');
 const { createCodexDetailBuilder } = require('./codex-detail');
+const {
+  goalResponseFromValue,
+  goalSnapshotFromGoal,
+  goalSnapshotFromRaw,
+  goalSnapshotSignature,
+  goalSnapshotTransition,
+  normalizeGoalStatus,
+} = require('./codex-goal');
 const { createCodexLogicalBuilder } = require('./codex-logical');
 const { createCodexSearch } = require('./codex-search');
 const {
@@ -2118,34 +2126,49 @@ function requestUserInputSection(requestValue, responseValue) {
 }
 
 function goalStatusLabel(status) {
-  if (status === 'complete') return 'Complete';
-  if (status === 'blocked') return 'Blocked';
-  if (status === 'active') return 'Active';
-  return status ? humanizeProtocolSubtype(status) : '';
+  const normalized = normalizeGoalStatus(status);
+  if (normalized === 'complete') return 'Complete';
+  if (normalized === 'blocked') return 'Blocked';
+  if (normalized === 'active') return 'Active';
+  if (normalized === 'budget_limited') return 'Budget limited';
+  if (normalized === 'usage_limited') return 'Usage limited';
+  if (normalized === 'incomplete') return 'Incomplete';
+  return normalized ? humanizeProtocolSubtype(normalized) : '';
 }
 
-function goalSection(raws, event, requestValue, responseValue) {
-  const goal = responseValue?.goal && typeof responseValue.goal === 'object' ? responseValue.goal : {};
-  const objective = conciseToolValue(firstNonEmpty(goal.objective, requestValue?.objective), 4000);
-  const status = conciseToolValue(firstNonEmpty(goal.status, responseValue?.status, event.status), 200);
+function goalLimitValue(value) {
+  if (value === undefined || value === null || value === '') return 'Unbounded';
+  return conciseToolValue(value, 1000);
+}
+
+function goalSection(raws, event, requestValue, responseValue, snapshotOverride = null) {
+  const response = goalResponseFromValue(responseValue);
+  const snapshot = snapshotOverride || response.snapshot;
+  const requestSnapshot = goalSnapshotFromGoal(requestValue);
+  const objective = conciseToolValue(firstNonEmpty(snapshot?.objective, requestSnapshot?.objective), 4000);
+  const status = normalizeGoalStatus(firstNonEmpty(snapshot?.status, responseValue?.status, event.status, requestSnapshot?.status));
+  const hasTokenBudget = Boolean(snapshot) || Boolean(requestSnapshot?.hasTokenBudget);
+  const tokenBudget = snapshot ? snapshot.tokenBudget : requestSnapshot?.tokenBudget;
   const entries = [
     { key: 'Status', value: goalStatusLabel(status) || status },
-    { key: 'Tokens used', value: goal.tokensUsed == null ? '' : String(goal.tokensUsed) },
-    { key: 'Time used', value: goal.timeUsedSeconds == null ? '' : `${goal.timeUsedSeconds}s` },
-    { key: 'Created', value: goal.createdAt == null ? '' : String(goal.createdAt) },
-    { key: 'Updated', value: goal.updatedAt == null ? '' : String(goal.updatedAt) },
-    { key: 'Remaining tokens', value: responseValue?.remainingTokens == null ? '' : String(responseValue.remainingTokens) },
+    { key: 'Token budget', value: hasTokenBudget ? goalLimitValue(tokenBudget) : '' },
+    { key: 'Tokens used', value: snapshot?.tokensUsed == null ? '' : String(snapshot.tokensUsed) },
+    { key: 'Time used', value: snapshot?.timeUsedSeconds == null ? '' : `${snapshot.timeUsedSeconds}s` },
+    { key: 'Created', value: snapshot?.createdAt == null ? '' : String(snapshot.createdAt) },
+    { key: 'Updated', value: snapshot?.updatedAt == null ? '' : String(snapshot.updatedAt) },
+    { key: 'Remaining tokens', value: response.hasRemainingTokens ? goalLimitValue(response.remainingTokens) : '' },
   ].filter((entry) => entry.value !== '');
   const lines = [
     `### ${event.label || 'Goal'}`,
     status ? `**Status:** ${goalStatusLabel(status) || status}` : '',
+    hasTokenBudget ? `**Token budget:** ${goalLimitValue(tokenBudget)}` : '',
     objective ? `**Objective:**\n\n${objective}` : '',
   ].filter(Boolean);
   const sections = [];
   maybePushMarkdownSection(sections, 'Goal', lines.join('\n\n'));
   maybePushKvSection(sections, 'Goal usage', entries);
-  if (responseValue?.completionBudgetReport) {
-    maybePushStructuredSection(sections, 'Completion budget', responseValue.completionBudgetReport);
+  if (response.hasCompletionBudgetReport && response.completionBudgetReport != null && response.completionBudgetReport !== '') {
+    maybePushStructuredSection(sections, 'Completion budget', response.completionBudgetReport);
   }
   if (!sections.length) {
     sections.push(hideSectionTitle(makeNoticeSection(event.label || 'Goal', event.preview || event.label || 'Goal', event.severity === 'warning' ? 'warning' : 'info')));
@@ -2156,10 +2179,20 @@ function goalSection(raws, event, requestValue, responseValue) {
 function extractGoalSections(raws, event, splitSections) {
   const split = splitSections(extractToolSections(raws, event));
   const { requestValue, responseValue } = toolDetailValues(raws);
-  const timelineSections = goalSection(raws, event, requestValue, responseValue);
+  const snapshotRaw = raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'thread_goal_updated');
+  const normalizedSnapshot = goalSnapshotFromRaw(snapshotRaw);
+  const snapshotGoal = normalizedSnapshot?.goal;
+  const resolvedResponseValue = responseValue || (snapshotGoal && typeof snapshotGoal === 'object' ? { goal: snapshotGoal } : null);
+  const timelineSections = goalSection(raws, event, requestValue, resolvedResponseValue, normalizedSnapshot);
+  const hasToolRows = raws.some((raw) => raw.recordType === 'response_item'
+    && ['function_call', 'function_call_output'].includes(raw.payloadType));
   return {
     timelineSections,
-    inspectorSections: sanitizeToolInspectorSections(split.inspectorSections),
+    inspectorSections: hasToolRows
+      ? sanitizeToolInspectorSections(split.inspectorSections)
+      : snapshotGoal && typeof snapshotGoal === 'object'
+        ? [{ type: 'json', title: 'Goal status', value: snapshotGoal }]
+        : sanitizeToolInspectorSections(split.inspectorSections),
   };
 }
 
@@ -3161,6 +3194,14 @@ const codexLogicalBuilder = createCodexLogicalBuilder({
     sanitizeLogicalEnvelopeValue,
     rawRef,
   },
+  goal: {
+    goalResponseFromValue,
+    goalSnapshotFromGoal,
+    goalSnapshotFromRaw,
+    goalSnapshotSignature,
+    goalSnapshotTransition,
+    normalizeGoalStatus,
+  },
   protocol: {
     classifyProtocolText,
     humanizeProtocolSubtype,
@@ -3249,7 +3290,8 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'user_message') session.counts.userMessages += 1;
   if (logicalEvent.kind === 'assistant_message') session.counts.assistantMessages += 1;
   if (logicalEvent.kind === 'reasoning') session.counts.reasoning += 1;
-  if (['command', 'patch', 'mcp_call', 'web_search', 'other_tool_call', 'js_repl', 'goal', 'hook'].includes(logicalEvent.kind)) {
+  if (['command', 'patch', 'mcp_call', 'web_search', 'other_tool_call', 'js_repl', 'hook'].includes(logicalEvent.kind)
+      || (logicalEvent.kind === 'goal' && logicalEvent.toolName)) {
     session.counts.toolCalls += 1;
   }
   if (logicalEvent.kind === 'command' && logicalEvent.status === 'failed') session.counts.failedCommands += 1;

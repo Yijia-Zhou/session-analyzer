@@ -110,8 +110,10 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.eventKindLabel('developer_message', 'zh-CN'), '开发者消息');
   assert.equal(i18n.eventKindLabel('goal_context', 'zh-CN'), '目标上下文');
   assert.equal(i18n.statusLabel('blocked', 'zh-CN'), '已阻塞');
+  assert.equal(i18n.statusLabel('budget_limited', 'zh-CN'), '已达到预算限制');
   assert.equal(i18n.statusLabel('complete', 'zh-CN'), '已完成');
   assert.equal(i18n.statusLabel('completed', 'zh-CN'), '已完成');
+  assert.equal(i18n.statusLabel('usage_limited', 'zh-CN'), '已达到用量限制');
   assert.equal(i18n.searchStatusLabel('complete', 'zh-CN'), '目标已完成');
   assert.equal(i18n.searchStatusLabel('completed', 'zh-CN'), '事件已完成');
   assert.notEqual(i18n.searchStatusLabel('complete', 'zh-CN'), i18n.searchStatusLabel('completed', 'zh-CN'));
@@ -122,6 +124,8 @@ test('i18n resolves supported locales and falls back predictably', () => {
 test('known label lookup translates exact keys and English catalog values without losing fallback compatibility', () => {
   assert.equal(i18n.lookupKnownLabel('Failed command', 'zh-CN'), '失败命令');
   assert.equal(i18n.lookupKnownLabel('Goal complete', 'zh-CN'), '目标已完成');
+  assert.equal(i18n.lookupKnownLabel('Goal budget limited', 'zh-CN'), '目标已达到预算限制');
+  assert.equal(i18n.lookupKnownLabel('Goal usage limited', 'zh-CN'), '目标已达到用量限制');
   assert.equal(i18n.lookupKnownLabel('Incomplete goal call', 'zh-CN'), '目标调用未完成');
   assert.equal(i18n.lookupKnownLabel('user_message', 'zh-CN'), '用户消息');
   assert.equal(i18n.lookupKnownLabel('User message', 'zh-CN'), '用户消息');

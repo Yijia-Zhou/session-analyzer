@@ -2366,7 +2366,15 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
       payload: {
         type: 'thread_goal_updated',
         thread_id: 'thread-1',
-        goal: { objective: 'Analyze object-shaped events', status: 'active' },
+        goal: {
+          objective: 'Analyze object-shaped events',
+          status: 'active',
+          token_budget: 5000,
+          tokens_used: 120,
+          time_used_seconds: 12,
+          created_at: 100,
+          updated_at: 112,
+        },
       },
     },
     {
@@ -2432,6 +2440,8 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
   const reviewStarted = session.logicalEvents.find((candidate) => candidate.subtype === 'entered_review_mode');
   const reviewFinished = session.logicalEvents.find((candidate) => candidate.subtype === 'exited_review_mode');
   const detail = buildEventDetail(session, event.id, 'main');
+  const goalDetail = buildEventDetail(session, goalEvent.id, 'main');
+  const goalUsage = goalDetail.timelineSections.find((section) => section.title === 'Goal usage');
   const request = detail.inspectorSections.find((section) => section.title === 'Request');
   const response = detail.inspectorSections.find((section) => section.title === 'Response');
   const imagePreview = detail.inspectorSections.find((section) => section.type === 'image_preview');
@@ -2446,6 +2456,24 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
   assert.equal(reviewStarted.preview.includes('[object Object]'), false);
   assert.equal(reviewFinished.preview.includes('[object Object]'), false);
   assert.match(goalEvent.preview, /Analyze object-shaped events/);
+  assert.equal(goalEvent.kind, 'goal');
+  assert.equal(goalEvent.layer, 'main');
+  assert.match(goalEvent.preview, /budget: 5000/);
+  assert.match(goalEvent.preview, /tokens: 120/);
+  assert.equal(goalDetail.timelineSections[0].title, 'Goal');
+  assert.match(goalDetail.timelineSections[0].html, /Analyze object-shaped events/);
+  assert.match(goalDetail.timelineSections[0].html, /Token budget:<\/strong> 5000/);
+  assert.deepEqual(goalUsage.entries, [
+    { key: 'Status', value: 'Active' },
+    { key: 'Token budget', value: '5000' },
+    { key: 'Tokens used', value: '120' },
+    { key: 'Time used', value: '12s' },
+    { key: 'Created', value: '100' },
+    { key: 'Updated', value: '112' },
+  ]);
+  assert.equal(goalDetail.inspectorSections[0].title, 'Goal status');
+  assert.equal(goalDetail.inspectorSections[0].value.status, 'active');
+  assert.equal(goalDetail.inspectorSections[0].value.token_budget, 5000);
   assert.equal(request.type, 'json');
   assert.equal(request.value.path, 'G:\\vibe\\session-analyzer\\output\\image.png');
   assert.equal(response.type, 'json');
@@ -2511,6 +2539,60 @@ Budget:
       },
     },
     {
+      type: 'event_msg',
+      timestamp: '2026-06-10T10:00:01.100Z',
+      payload: {
+        type: 'thread_goal_updated',
+        threadId: id,
+        goal: {
+          threadId: id,
+          objective,
+          status: 'active',
+          tokenBudget: 100000,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt: 1781102515,
+          updatedAt: 1781102515,
+        },
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T10:00:01.200Z',
+      payload: {
+        type: 'thread_goal_updated',
+        threadId: id,
+        goal: {
+          threadId: id,
+          objective,
+          status: 'active',
+          tokenBudget: 100000,
+          tokensUsed: 12,
+          timeUsedSeconds: 1,
+          createdAt: 1781102515,
+          updatedAt: 1781102516,
+        },
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T10:00:01.300Z',
+      payload: {
+        type: 'thread_goal_updated',
+        threadId: id,
+        goal: {
+          threadId: id,
+          objective,
+          status: 'active',
+          tokenBudget: 200000,
+          tokensUsed: 12,
+          timeUsedSeconds: 1,
+          createdAt: 1781102515,
+          updatedAt: 1781102517,
+        },
+      },
+    },
+    {
       type: 'response_item',
       timestamp: '2026-06-10T10:00:02.000Z',
       payload: {
@@ -2531,14 +2613,30 @@ Budget:
             threadId: id,
             objective,
             status: 'complete',
-            tokensUsed: 132017,
-            timeUsedSeconds: 361,
             createdAt: 1781102515,
             updatedAt: 1781102876,
           },
           remainingTokens: null,
           completionBudgetReport: { finalTokenUsage: 132017 },
         }),
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T10:00:02.200Z',
+      payload: {
+        type: 'thread_goal_updated',
+        threadId: id,
+        goal: {
+          threadId: id,
+          objective,
+          status: 'complete',
+          tokenBudget: 200000,
+          tokensUsed: 132017,
+          timeUsedSeconds: 361,
+          createdAt: 1781102515,
+          updatedAt: 1781102876,
+        },
       },
     },
     {
@@ -2596,12 +2694,17 @@ Budget:
   const mainTimeline = getTimeline(index, id, { layer: 'main', offset: 0, limit: 20, q: '', kind: '', status: '', tool: '', file: '' });
   const protocolTimeline = getTimeline(index, id, { layer: 'protocol', offset: 0, limit: 20, q: '', kind: '', status: '', tool: '', file: '' });
   const goalContextEvent = protocolTimeline.events.find((event) => event.subtype === 'goal_context');
+  const goalHeartbeatEvent = protocolTimeline.events.find((event) => event.subtype === 'thread_goal_updated');
   const goalEvents = mainTimeline.events.filter((event) => event.kind === 'goal');
   const complete = goalEvents.find((event) => event.status === 'complete');
   const blocked = goalEvents.find((event) => event.status === 'blocked');
+  const budgetUpdate = goalEvents.find((event) => event.subtype === 'thread_goal_updated' && event.label === 'Goal updated');
   const incomplete = goalEvents.filter((event) => event.status === 'incomplete');
   const incompleteUpdate = incomplete.find((event) => event.toolName === 'update_goal');
   const detail = buildEventDetail(session, complete.id, 'main');
+  const detailUsage = detail.timelineSections.find((section) => section.title === 'Goal usage');
+  const budgetUpdateDetail = buildEventDetail(session, budgetUpdate.id, 'main');
+  const budgetUpdateUsage = budgetUpdateDetail.timelineSections.find((section) => section.title === 'Goal usage');
   const incompleteUpdateDetail = buildEventDetail(session, incompleteUpdate.id, 'main');
   const protocolDetail = buildEventDetail(session, goalContextEvent.id, 'protocol');
 
@@ -2609,11 +2712,20 @@ Budget:
   assert.equal(goalContextEvent.label, 'Goal context');
   assert.match(goalContextEvent.preview, /Ship goal cards/);
   assert.equal(mainTimeline.events.some((event) => event.rawRefs.some((ref) => ref.line === 2)), false);
-  assert.equal(goalEvents.length, 4);
+  assert.ok(goalHeartbeatEvent);
+  assert.deepEqual(goalHeartbeatEvent.rawRefs.map((ref) => ref.line), [4]);
+  assert.equal(mainTimeline.events.some((event) => event.rawRefs.some((ref) => ref.line === 4)), false);
+  assert.equal(goalEvents.length, 6);
+  assert.equal(goalEvents[0].label, 'Goal created');
+  assert.equal(goalEvents[0].subtype, 'thread_goal_updated');
+  assert.match(budgetUpdate.preview, /budget: 200000/);
+  assert.match(budgetUpdateDetail.timelineSections[0].html, /Token budget:<\/strong> 200000/);
+  assert.equal(budgetUpdateUsage.entries.some((entry) => entry.key === 'Token budget' && entry.value === '200000'), true);
   assert.equal(complete.label, 'Goal complete');
   assert.equal(complete.toolName, 'update_goal');
-  assert.equal(complete.rawRefs.length, 2);
+  assert.equal(complete.rawRefs.length, 3);
   assert.match(complete.preview, /complete/);
+  assert.match(complete.preview, /budget: 200000/);
   assert.match(complete.preview, /Ship goal cards/);
   assert.equal(blocked.label, 'Goal blocked');
   assert.equal(blocked.severity, 'warning');
@@ -2630,6 +2742,9 @@ Budget:
   assert.equal(foldingProfiles.find((profile) => profile.id === 'planning').rules.kindStates.goal, 'expanded');
   assert.equal(detail.timelineSections.some((section) => section.title === 'Goal'), true);
   assert.equal(detail.timelineSections.some((section) => section.title === 'Goal usage'), true);
+  assert.equal(detailUsage.entries.some((entry) => entry.key === 'Token budget' && entry.value === '200000'), true);
+  assert.equal(detailUsage.entries.some((entry) => entry.key === 'Remaining tokens' && entry.value === 'Unbounded'), true);
+  assert.equal(detail.timelineSections.some((section) => section.title === 'Completion budget'), true);
   assert.equal(detail.inspectorSections.some((section) => section.title === 'Request'), true);
   assert.equal(detail.inspectorSections.some((section) => section.title === 'Response'), true);
   assert.equal(protocolDetail.timelineSections.some((section) => section.title === 'Goal objective'), true);

@@ -3,6 +3,7 @@
 function createCodexLogicalBuilder(deps) {
   const {
     envelope,
+    goal,
     protocol,
     tool,
     text,
@@ -14,6 +15,14 @@ function createCodexLogicalBuilder(deps) {
     sanitizeLogicalEnvelopeValue,
     rawRef,
   } = envelope;
+  const {
+    goalResponseFromValue,
+    goalSnapshotFromGoal,
+    goalSnapshotFromRaw,
+    goalSnapshotSignature,
+    goalSnapshotTransition,
+    normalizeGoalStatus,
+  } = goal;
   const {
     classifyProtocolText,
     humanizeProtocolSubtype,
@@ -194,13 +203,13 @@ function createCodexLogicalBuilder(deps) {
     return parsed && typeof parsed === 'object' ? parsed : null;
   }
 
-  function goalStatusFrom(toolName, requestValue, responseValue) {
-    return String(firstNonEmpty(
-      responseValue?.goal?.status,
+  function goalStatusFrom(toolName, requestSnapshot, responseValue, responseSnapshot) {
+    return normalizeGoalStatus(firstNonEmpty(
+      responseSnapshot?.status,
       responseValue?.status,
-      requestValue?.status,
+      requestSnapshot?.status,
       toolName === 'create_goal' ? 'active' : '',
-    ) || '').toLowerCase();
+    ));
   }
 
   function goalLabelFor(toolName, status) {
@@ -208,32 +217,98 @@ function createCodexLogicalBuilder(deps) {
     if (toolName === 'get_goal') return 'Goal status';
     if (status === 'complete') return 'Goal complete';
     if (status === 'blocked') return 'Goal blocked';
+    if (status === 'budget_limited') return 'Goal budget limited';
+    if (status === 'usage_limited') return 'Goal usage limited';
     return 'Goal updated';
   }
 
-  function buildGoalLogicalEvent(callId, group, toolName, functionCall, functionOutput) {
+  function goalSeverity(status) {
+    return ['blocked', 'incomplete', 'budget_limited', 'usage_limited'].includes(status)
+      ? 'warning'
+      : 'normal';
+  }
+
+  function goalPreviewStatus(status) {
+    return String(status || '').replace(/_/g, ' ');
+  }
+
+  function goalPreviewParts(snapshot, options = {}) {
+    const objective = displayValue(snapshot?.objective, 4000).trim();
+    const usageParts = [];
+    if (options.includeBudget || snapshot?.hasTokenBudget) {
+      const budget = snapshot?.tokenBudget == null || snapshot.tokenBudget === ''
+        ? 'unbounded'
+        : displayValue(snapshot.tokenBudget, 1000).trim();
+      usageParts.push(`budget: ${budget}`);
+    }
+    if (snapshot?.tokensUsed != null) usageParts.push(`tokens: ${snapshot.tokensUsed}`);
+    if (snapshot?.timeUsedSeconds != null) usageParts.push(`time: ${snapshot.timeUsedSeconds}s`);
+    return [
+      goalPreviewStatus(snapshot?.status),
+      usageParts.join(', '),
+      objective,
+    ].filter(Boolean);
+  }
+
+  function goalToolState(group, toolName, functionCall, functionOutput) {
     const first = group[0];
     const completed = Boolean(functionOutput);
     const requestValue = parseToolJsonValue(functionCall?.output) || {};
     const responseValue = goalOutputFromRaw(functionOutput) || {};
-    const goal = responseValue.goal && typeof responseValue.goal === 'object' ? responseValue.goal : {};
-    const objective = displayValue(firstNonEmpty(goal.objective, requestValue.objective), 4000).trim();
-    const status = completed ? goalStatusFrom(toolName, requestValue, responseValue) : 'incomplete';
+    const response = goalResponseFromValue(responseValue, {
+      threadId: firstNonEmpty(responseValue.threadId, responseValue.thread_id),
+      sessionId: first.sessionId,
+    });
+    const requestSnapshot = goalSnapshotFromGoal(requestValue, { sessionId: first.sessionId });
+    const responseSnapshot = response.snapshot;
+    const objective = firstNonEmpty(responseSnapshot?.objective, requestSnapshot?.objective);
+    const status = completed ? goalStatusFrom(toolName, requestSnapshot, responseValue, responseSnapshot) : 'incomplete';
+    const snapshot = responseSnapshot
+      ? goalSnapshotFromGoal({
+        ...responseSnapshot.goal,
+        objective,
+        status,
+      }, {
+        threadId: responseSnapshot.threadId,
+        sessionId: first.sessionId,
+      })
+      : null;
+    return {
+      completed,
+      objective,
+      requestSnapshot,
+      response,
+      snapshot,
+      status,
+    };
+  }
+
+  function buildGoalLogicalEvent(callId, group, toolName, functionCall, functionOutput) {
+    const first = group[0];
+    const {
+      completed,
+      objective,
+      requestSnapshot,
+      response,
+      snapshot,
+      status,
+    } = goalToolState(group, toolName, functionCall, functionOutput);
     const label = completed ? goalLabelFor(toolName, status) : 'Incomplete goal call';
-    const usageParts = [];
-    if (goal.tokensUsed != null) usageParts.push(`tokens: ${goal.tokensUsed}`);
-    if (goal.timeUsedSeconds != null) usageParts.push(`time: ${goal.timeUsedSeconds}s`);
-    const previewParts = [];
-    if (status) previewParts.push(status);
-    if (objective) previewParts.push(objective);
-    if (usageParts.length) previewParts.push(usageParts.join(', '));
+    const previewParts = goalPreviewParts({
+      objective,
+      status,
+      hasTokenBudget: snapshot?.hasTokenBudget || requestSnapshot?.hasTokenBudget,
+      tokenBudget: snapshot ? snapshot.tokenBudget : requestSnapshot?.tokenBudget,
+      tokensUsed: snapshot?.tokensUsed,
+      timeUsedSeconds: snapshot?.timeUsedSeconds,
+    }, { includeBudget: Boolean(snapshot) });
     const searchText = [
       toolName,
       status,
       objective,
-      displayValue(goal, 8000),
-      displayValue(responseValue.completionBudgetReport, 4000),
-      displayValue(responseValue.remainingTokens, 1000),
+      displayValue(snapshot?.goal, 8000),
+      displayValue(response.completionBudgetReport, 4000),
+      displayValue(response.remainingTokens, 1000),
       functionCall?.output,
       functionOutput?.output,
     ].filter(Boolean).join('\n');
@@ -249,12 +324,79 @@ function createCodexLogicalBuilder(deps) {
       label,
       preview: truncate(previewParts.join(' - ') || toolName || label),
       searchText,
-      severity: status === 'blocked' || status === 'incomplete' ? 'warning' : 'normal',
+      severity: goalSeverity(status),
       status,
       toolName,
       rawRefs: group.map(rawRef),
       channels: [...new Set(group.map((raw) => raw.recordType))],
     });
+  }
+
+  function buildGoalSnapshotLogicalEvent(raw, snapshot, transition) {
+    const hasRecordedProgress = Number(snapshot.tokensUsed || 0) > 0 || Number(snapshot.timeUsedSeconds || 0) > 0;
+    const statusLabel = goalLabelFor('thread_goal_updated', snapshot.status);
+    const hasSpecificStatusLabel = statusLabel !== 'Goal updated';
+    const label = hasSpecificStatusLabel
+      ? statusLabel
+      : transition === 'created' && !hasRecordedProgress
+        ? 'Goal created'
+        : transition === 'created'
+          ? 'Goal status'
+          : statusLabel;
+    const previewParts = goalPreviewParts(snapshot, { includeBudget: true });
+    return createLogicalEvent({
+      id: `${raw.sessionId}:logical:goal:${raw.line}`,
+      timestamp: raw.timestamp,
+      turnId: raw.turnId || '',
+      kind: 'goal',
+      subtype: 'thread_goal_updated',
+      layer: 'main',
+      role: 'system',
+      label,
+      preview: truncate(previewParts.join(' - ') || label),
+      searchText: uniqueNonEmpty([
+        'thread_goal_updated',
+        snapshot.status,
+        displayValue(snapshot.goal, 8000),
+      ]).join('\n'),
+      severity: goalSeverity(snapshot.status),
+      status: snapshot.status,
+      rawRefs: [rawRef(raw)],
+      channels: [raw.recordType],
+    });
+  }
+
+  function mergeGoalSnapshotRef(event, raw, snapshot) {
+    event.rawRefs.push(rawRef(raw));
+    event.rawRefs.sort((a, b) => a.line - b.line);
+    if (!event.channels.includes(raw.recordType)) event.channels.push(raw.recordType);
+    const preview = truncate(goalPreviewParts({ ...snapshot, status: event.status || snapshot.status }, { includeBudget: true }).join(' - '));
+    const searchText = uniqueNonEmpty([event.searchText, displayValue(snapshot.goal, 8000)]).join('\n');
+    event.preview = sanitizeLogicalEnvelopeValue(preview || event.preview);
+    event.searchText = sanitizeLogicalEnvelopeValue(searchText).trim();
+    event.hasLongOutput = event.preview.length > 800 || event.searchText.length > 1600;
+  }
+
+  function goalToolCandidateMatches(candidate, raw) {
+    if (candidate.matched) return false;
+    if (raw.line < candidate.startLine || raw.line > candidate.endLine + 1) return false;
+    if (raw.turnId && candidate.turnIds.length && !candidate.turnIds.includes(raw.turnId)) return false;
+    return true;
+  }
+
+  function nearestGoalToolEvent(candidates, raw) {
+    const matching = (candidates || []).filter((candidate) => goalToolCandidateMatches(candidate, raw));
+    const candidate = matching.reduce((nearest, current) => {
+      if (!nearest) return current;
+      const distance = raw.line <= current.endLine ? 0 : raw.line - current.endLine;
+      const nearestDistance = raw.line <= nearest.endLine ? 0 : raw.line - nearest.endLine;
+      return distance < nearestDistance || (distance === nearestDistance && current.startLine > nearest.startLine)
+        ? current
+        : nearest;
+    }, null);
+    if (!candidate) return null;
+    candidate.matched = true;
+    return candidate.event;
   }
 
   function textIncludes(source, needle) {
@@ -743,6 +885,8 @@ function createCodexLogicalBuilder(deps) {
     const logicalEvents = [];
     const consumed = new Set();
     const byCallId = new Map();
+    const goalToolEventsBySignature = new Map();
+    const previousGoalSnapshots = new Map();
 
     for (const raw of rawEvents) {
       if (raw.callId) {
@@ -756,7 +900,25 @@ function createCodexLogicalBuilder(deps) {
       const hasToolShape = group.some((raw) => raw.recordType === 'response_item' && ['function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output', 'image_generation_call'].includes(raw.payloadType))
         || group.some((raw) => raw.recordType === 'event_msg' && TOOL_EVENT_TYPES.has(raw.payloadType));
       if (!hasToolShape) continue;
-      logicalEvents.push(buildToolLogicalEvent(callId, group));
+      const logicalEvent = buildToolLogicalEvent(callId, group);
+      logicalEvents.push(logicalEvent);
+      if (logicalEvent.kind === 'goal' && ['create_goal', 'update_goal'].includes(logicalEvent.toolName)) {
+        const functionCall = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');
+        const functionOutput = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
+        const signature = goalSnapshotSignature(
+          goalToolState(group, logicalEvent.toolName, functionCall, functionOutput).snapshot,
+        );
+        if (signature) {
+          if (!goalToolEventsBySignature.has(signature)) goalToolEventsBySignature.set(signature, []);
+          goalToolEventsBySignature.get(signature).push({
+            event: logicalEvent,
+            startLine: group[0]?.line || 0,
+            endLine: group[group.length - 1]?.line || 0,
+            turnIds: [...new Set(group.map((raw) => raw.turnId).filter(Boolean))],
+            matched: false,
+          });
+        }
+      }
       for (const raw of group) consumed.add(raw.rawId);
     }
 
@@ -765,6 +927,26 @@ function createCodexLogicalBuilder(deps) {
       if (consumed.has(raw.rawId)) continue;
       const next = rawEvents[i + 1];
       const prev = rawEvents[i - 1];
+
+      const goalSnapshot = goalSnapshotFromRaw(raw);
+      if (goalSnapshot) {
+        const previousSnapshot = previousGoalSnapshots.get(goalSnapshot.identityKey);
+        const transition = goalSnapshotTransition(previousSnapshot, goalSnapshot);
+        previousGoalSnapshots.set(goalSnapshot.identityKey, goalSnapshot);
+        const matchingToolEvent = nearestGoalToolEvent(
+          goalToolEventsBySignature.get(goalSnapshotSignature(goalSnapshot)),
+          raw,
+        );
+        if (matchingToolEvent) {
+          mergeGoalSnapshotRef(matchingToolEvent, raw, goalSnapshot);
+        } else if (transition) {
+          logicalEvents.push(buildGoalSnapshotLogicalEvent(raw, goalSnapshot, transition));
+        } else {
+          logicalEvents.push(buildProtocolEvent(raw, 'thread_goal_updated'));
+        }
+        consumed.add(raw.rawId);
+        continue;
+      }
 
       if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'user') {
         const protocolSubtype = classifyProtocolText(raw.messageText, raw.role);

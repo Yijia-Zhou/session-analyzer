@@ -2,6 +2,14 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const {
+  goalResponseFromValue,
+  goalSnapshotFromGoal,
+  goalSnapshotFromRaw,
+  goalSnapshotSignature,
+  goalSnapshotTransition,
+  normalizeGoalStatus,
+} = require('../src/codex-goal');
 const { createCodexLogicalBuilder } = require('../src/codex-logical');
 const { CANONICAL_SCHEMA_VERSION, CODEX_SOURCE_KIND, rawRef } = require('../src/codex-source');
 
@@ -66,6 +74,14 @@ function makeLogicalBuilder(overrides = {}) {
       CODEX_SOURCE_KIND,
       sanitizeLogicalEnvelopeValue: (value) => value,
       rawRef,
+    },
+    goal: {
+      goalResponseFromValue,
+      goalSnapshotFromGoal,
+      goalSnapshotFromRaw,
+      goalSnapshotSignature,
+      goalSnapshotTransition,
+      normalizeGoalStatus,
     },
     protocol: {
       classifyProtocolText: (text, role) => {
@@ -176,6 +192,300 @@ test('logical builder folds raw rows into message, reasoning, protocol, and fall
   assert.equal(developer.layer, 'protocol');
   assert.equal(fallback.kind, 'protocol');
   assert.equal(fallback.sourceLocator.type, 'jsonl_line');
+});
+
+test('logical builder promotes meaningful goal snapshots and keeps accounting heartbeats in protocol', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      payloadType: 'thread_goal_updated',
+      payload: {
+        threadId: 'thread-1',
+        goal: {
+          threadId: 'thread-1',
+          objective: 'Ship goal timeline support',
+          status: 'active',
+          tokenBudget: 2000,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt: 100,
+          updatedAt: 100,
+        },
+      },
+    }),
+    raw(2, {
+      payloadType: 'thread_goal_updated',
+      payload: {
+        threadId: 'thread-1',
+        goal: {
+          threadId: 'thread-1',
+          objective: 'Ship goal timeline support',
+          status: 'active',
+          tokenBudget: 2000,
+          tokensUsed: 600,
+          timeUsedSeconds: 30,
+          createdAt: 100,
+          updatedAt: 130,
+        },
+      },
+    }),
+    raw(3, {
+      payloadType: 'thread_goal_updated',
+      payload: {
+        threadId: 'thread-1',
+        goal: {
+          threadId: 'thread-1',
+          objective: 'Ship goal timeline support',
+          status: 'blocked',
+          tokenBudget: 2000,
+          tokensUsed: 600,
+          timeUsedSeconds: 31,
+          createdAt: 100,
+          updatedAt: 131,
+        },
+      },
+    }),
+    raw(4, { payloadType: 'thread_goal_updated', preview: 'legacy goal metadata' }),
+    raw(5, {
+      payloadType: 'thread_goal_updated',
+      payload: {
+        threadId: 'thread-2',
+        goal: {
+          threadId: 'thread-2',
+          objective: 'Resume an existing goal',
+          status: 'active',
+          tokensUsed: 900,
+          timeUsedSeconds: 45,
+          createdAt: 50,
+          updatedAt: 95,
+        },
+      },
+    }),
+    raw(6, {
+      payloadType: 'thread_goal_updated',
+      payload: {
+        threadId: 'thread-3',
+        goal: {
+          threadId: 'thread-3',
+          objective: 'Wait for usage availability',
+          status: 'usageLimited',
+          tokensUsed: 900,
+          timeUsedSeconds: 45,
+          createdAt: 60,
+          updatedAt: 105,
+        },
+      },
+    }),
+  ]);
+
+  const goalEvents = logicalEvents.filter((event) => event.kind === 'goal');
+  const protocolEvents = logicalEvents.filter((event) => event.layer === 'protocol' && event.subtype === 'thread_goal_updated');
+
+  assert.deepEqual(goalEvents.map((event) => event.rawRefs[0].line), [1, 3, 5, 6]);
+  assert.deepEqual(goalEvents.map((event) => event.label), ['Goal created', 'Goal blocked', 'Goal status', 'Goal usage limited']);
+  assert.equal(goalEvents[1].severity, 'warning');
+  assert.equal(goalEvents[3].status, 'usage_limited');
+  assert.equal(goalEvents[3].severity, 'warning');
+  assert.deepEqual(protocolEvents.map((event) => event.rawRefs[0].line), [2, 4]);
+});
+
+test('logical builder explains token-budget-only transitions including budget removal', () => {
+  const snapshot = (tokenBudget, updatedAt, includeBudget = true) => ({
+    threadId: 'thread-budget',
+    objective: 'Keep the budget readable',
+    status: 'active',
+    tokensUsed: 100,
+    timeUsedSeconds: 10,
+    createdAt: 100,
+    updatedAt,
+    ...(includeBudget ? { tokenBudget } : {}),
+  });
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { payloadType: 'thread_goal_updated', payload: { goal: snapshot(1000, 100) } }),
+    raw(2, { payloadType: 'thread_goal_updated', payload: { goal: snapshot(2000, 110) } }),
+    raw(3, { payloadType: 'thread_goal_updated', payload: { goal: snapshot(undefined, 120, false) } }),
+  ]);
+  const goalEvents = logicalEvents.filter((event) => event.kind === 'goal');
+
+  assert.deepEqual(goalEvents.map((event) => event.label), ['Goal status', 'Goal updated', 'Goal updated']);
+  assert.match(goalEvents[1].preview, /budget: 2000/);
+  assert.match(goalEvents[2].preview, /budget: unbounded/);
+  assert.ok(goalEvents.every((event) => event.preview.indexOf('budget:') < event.preview.indexOf('Keep the budget readable')));
+});
+
+test('logical builder merges goal snapshots with matching create or update tool events', () => {
+  const currentGoal = {
+    threadId: 'thread-1',
+    objective: 'Ship goal timeline support',
+    status: 'complete',
+    tokenBudget: 2000,
+    tokensUsed: 1000,
+    timeUsedSeconds: 60,
+    createdAt: 100,
+    updatedAt: 160,
+  };
+  const partialLegacyGoal = {
+    thread_id: 'thread-1',
+    created_at: 100,
+    updated_at: 160,
+  };
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      recordType: 'response_item',
+      payloadType: 'function_call',
+      callId: 'call-goal',
+      toolName: 'update_goal',
+      output: JSON.stringify({ objective: 'Ship goal timeline support' }),
+    }),
+    raw(2, {
+      payloadType: 'thread_goal_updated',
+      payload: { threadId: 'thread-1', goal: currentGoal },
+    }),
+    raw(3, {
+      recordType: 'response_item',
+      payloadType: 'function_call_output',
+      callId: 'call-goal',
+      output: JSON.stringify({ status: 'complete', goal: partialLegacyGoal }),
+    }),
+  ]);
+  const goalEvents = logicalEvents.filter((event) => event.kind === 'goal');
+
+  assert.equal(goalEvents.length, 1);
+  assert.equal(goalEvents[0].toolName, 'update_goal');
+  assert.equal(goalEvents[0].status, 'complete');
+  assert.match(goalEvents[0].preview, /Ship goal timeline support/);
+  assert.match(goalEvents[0].preview, /budget: 2000/);
+  assert.match(goalEvents[0].preview, /tokens: 1000/);
+  assert.deepEqual(goalEvents[0].rawRefs.map((ref) => ref.line), [1, 2, 3]);
+  assert.deepEqual(goalEvents[0].channels, ['response_item', 'event_msg']);
+  assert.equal(logicalEvents.some((event) => event.layer === 'protocol' && event.subtype === 'thread_goal_updated'), false);
+});
+
+test('logical builder does not merge an earlier goal snapshot into a future no-op tool call', () => {
+  const goal = {
+    threadId: 'thread-resumed',
+    objective: 'Preserve the resumed lifecycle event',
+    status: 'active',
+    createdAt: 100,
+    updatedAt: 160,
+  };
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      payloadType: 'thread_goal_updated',
+      payload: { goal },
+    }),
+    raw(10, {
+      recordType: 'response_item',
+      payloadType: 'function_call',
+      callId: 'call-future-goal',
+      toolName: 'update_goal',
+      output: JSON.stringify({ status: 'active' }),
+    }),
+    raw(11, {
+      recordType: 'response_item',
+      payloadType: 'function_call_output',
+      callId: 'call-future-goal',
+      output: JSON.stringify({ goal }),
+    }),
+  ]);
+  const goalEvents = logicalEvents.filter((event) => event.kind === 'goal');
+
+  assert.equal(goalEvents.length, 2);
+  assert.deepEqual(goalEvents[0].rawRefs.map((ref) => ref.line), [1]);
+  assert.deepEqual(goalEvents[1].rawRefs.map((ref) => ref.line), [10, 11]);
+});
+
+test('logical builder requires proximity and compatible turns before merging goal snapshots', () => {
+  const goal = {
+    threadId: 'thread-local',
+    objective: 'Keep matching local',
+    status: 'active',
+    createdAt: 100,
+    updatedAt: 160,
+  };
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      recordType: 'response_item',
+      payloadType: 'function_call',
+      callId: 'call-distant-goal',
+      toolName: 'update_goal',
+      output: JSON.stringify({ status: 'active' }),
+      turnId: 'turn-a',
+    }),
+    raw(2, {
+      recordType: 'response_item',
+      payloadType: 'function_call_output',
+      callId: 'call-distant-goal',
+      output: JSON.stringify({ goal }),
+      turnId: 'turn-a',
+    }),
+    raw(5, {
+      payloadType: 'thread_goal_updated',
+      payload: { goal },
+      turnId: 'turn-a',
+    }),
+    raw(10, {
+      recordType: 'response_item',
+      payloadType: 'function_call',
+      callId: 'call-other-turn-goal',
+      toolName: 'update_goal',
+      output: JSON.stringify({ status: 'active' }),
+      turnId: 'turn-b',
+    }),
+    raw(11, {
+      recordType: 'response_item',
+      payloadType: 'function_call_output',
+      callId: 'call-other-turn-goal',
+      output: JSON.stringify({ goal: { ...goal, updatedAt: 170 } }),
+      turnId: 'turn-b',
+    }),
+    raw(12, {
+      payloadType: 'thread_goal_updated',
+      payload: { goal: { ...goal, updatedAt: 170 } },
+      turnId: 'turn-c',
+    }),
+  ]);
+  const goalEvents = logicalEvents.filter((event) => event.kind === 'goal');
+  const protocolSnapshots = logicalEvents.filter((event) => event.layer === 'protocol' && event.subtype === 'thread_goal_updated');
+
+  assert.equal(goalEvents.length, 3);
+  assert.ok(goalEvents.every((event) => event.rawRefs.length <= 2));
+  assert.deepEqual(goalEvents.map((event) => event.rawRefs[0].line), [1, 5, 10]);
+  assert.deepEqual(protocolSnapshots.map((event) => event.rawRefs[0].line), [12]);
+});
+
+test('logical builder consumes a matching goal tool candidate only once', () => {
+  const goal = {
+    threadId: 'thread-once',
+    objective: 'Merge one mirrored snapshot',
+    status: 'complete',
+    createdAt: 100,
+    updatedAt: 160,
+  };
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      recordType: 'response_item',
+      payloadType: 'function_call',
+      callId: 'call-once-goal',
+      toolName: 'update_goal',
+      output: JSON.stringify({ status: 'complete' }),
+      turnId: 'turn-a',
+    }),
+    raw(2, {
+      recordType: 'response_item',
+      payloadType: 'function_call_output',
+      callId: 'call-once-goal',
+      output: JSON.stringify({ goal }),
+      turnId: 'turn-a',
+    }),
+    raw(3, { payloadType: 'thread_goal_updated', payload: { goal }, turnId: 'turn-a' }),
+    raw(4, { payloadType: 'thread_goal_updated', payload: { goal }, turnId: 'turn-a' }),
+  ]);
+  const goalEvents = logicalEvents.filter((event) => event.kind === 'goal');
+  const protocolSnapshots = logicalEvents.filter((event) => event.layer === 'protocol' && event.subtype === 'thread_goal_updated');
+
+  assert.equal(goalEvents.length, 1);
+  assert.deepEqual(goalEvents[0].rawRefs.map((ref) => ref.line), [1, 2, 3]);
+  assert.deepEqual(protocolSnapshots.map((event) => event.rawRefs[0].line), [4]);
 });
 
 test('logical builder folds mirrored user messages with trailing whitespace differences', () => {
