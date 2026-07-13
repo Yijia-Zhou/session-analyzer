@@ -40,6 +40,21 @@ const IMAGE_PREVIEW_MAX_DECODED_BYTES = 12 * 1024 * 1024;
 const SESSION_TITLE_LIMIT = 120;
 const SUBAGENT_SESSION_TITLE_LIMIT = 160;
 const REASONING_TEXT_LIMIT = 16000;
+const TRUNCATE_NATIVE_THRESHOLD = 1000;
+const RESET_TIME_CACHE_LIMIT = 512;
+
+const SAME_DAY_RESET_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  hour: 'numeric',
+  minute: '2-digit',
+});
+const FULL_RESET_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+});
+const resetTimeCache = new Map();
 
 let markdownRenderer = null;
 let gb18030ReverseMap = null;
@@ -86,8 +101,46 @@ function safeIso(value) {
   return Number.isNaN(date.getTime()) ? '' : date.toISOString();
 }
 
+function isEcmaScriptWhitespace(codeUnit) {
+  return (codeUnit >= 0x0009 && codeUnit <= 0x000d)
+    || codeUnit === 0x0020
+    || codeUnit === 0x00a0
+    || codeUnit === 0x1680
+    || (codeUnit >= 0x2000 && codeUnit <= 0x200a)
+    || codeUnit === 0x2028
+    || codeUnit === 0x2029
+    || codeUnit === 0x202f
+    || codeUnit === 0x205f
+    || codeUnit === 0x3000
+    || codeUnit === 0xfeff;
+}
+
 function truncate(value, limit = 240) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  const source = String(value || '');
+  if (source.length <= TRUNCATE_NATIVE_THRESHOLD || !Number.isInteger(limit) || limit < 0) {
+    const text = source.replace(/\s+/g, ' ').trim();
+    if (text.length <= limit) return text;
+    return `${text.slice(0, Math.max(0, limit - 3))}...`;
+  }
+
+  const normalized = [];
+  let pendingWhitespace = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const codeUnit = source.charCodeAt(index);
+    if (isEcmaScriptWhitespace(codeUnit)) {
+      if (normalized.length) pendingWhitespace = true;
+      continue;
+    }
+    if (pendingWhitespace) {
+      normalized.push(' ');
+      pendingWhitespace = false;
+      if (normalized.length > limit) break;
+    }
+    normalized.push(source[index]);
+    if (normalized.length > limit) break;
+  }
+
+  const text = normalized.join('');
   if (text.length <= limit) return text;
   return `${text.slice(0, Math.max(0, limit - 3))}...`;
 }
@@ -360,21 +413,24 @@ function formatPercentValue(value) {
   return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
 }
 
-function formatResetTime(value) {
+function formatResetTime(value, now = new Date()) {
   if (value == null || value === '') return '';
   const source = typeof value === 'number' ? (value < 10000000000 ? value * 1000 : value) : value;
   const date = new Date(source);
   if (Number.isNaN(date.getTime())) return String(value);
-  const now = new Date();
   const sameYear = date.getFullYear() === now.getFullYear();
   const sameDay = sameYear && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
-  return date.toLocaleString('en-US', {
-    month: sameDay ? undefined : 'short',
-    day: sameDay ? undefined : 'numeric',
-    year: sameDay ? undefined : 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  const mode = sameDay ? 'same-day' : 'full';
+  const cacheKey = `${date.getTime()}|${mode}`;
+  const cached = resetTimeCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const formatted = (sameDay ? SAME_DAY_RESET_TIME_FORMATTER : FULL_RESET_TIME_FORMATTER).format(date);
+  if (resetTimeCache.size >= RESET_TIME_CACHE_LIMIT) {
+    resetTimeCache.delete(resetTimeCache.keys().next().value);
+  }
+  resetTimeCache.set(cacheKey, formatted);
+  return formatted;
 }
 
 function isRemainingKey(key) {
@@ -1273,7 +1329,7 @@ function reviewMarkerMatchesSession(marker, session) {
 }
 
 function sessionReviewMarkers(session) {
-  if (Array.isArray(session._reviewMarkers) && session._reviewMarkers.length) return session._reviewMarkers;
+  if (Array.isArray(session._reviewMarkers)) return session._reviewMarkers;
   const markers = [];
   for (const raw of session.rawEvents || []) {
     if (raw.recordType !== 'event_msg') continue;
@@ -1589,7 +1645,6 @@ function makeEmptySession(filePath, relFile, stat) {
     _reviewMarkers: [],
     rawEvents: [],
     logicalEvents: [],
-    searchText: '',
     counts: {
       turns: 0,
       messages: 0,
@@ -1611,11 +1666,11 @@ function makeEmptySession(filePath, relFile, stat) {
   };
 }
 
-function updateTimeRange(session, timestamp) {
-  const iso = safeIso(timestamp);
-  if (!iso) return;
-  if (!session.startedAt || iso < session.startedAt) session.startedAt = iso;
-  if (!session.updatedAt || iso > session.updatedAt) session.updatedAt = iso;
+// Invariant: callers pass an already normalized ISO timestamp; do not repeat safeIso here.
+function updateTimeRangeFromNormalizedTimestamp(session, timestamp) {
+  if (!timestamp) return;
+  if (!session.startedAt || timestamp < session.startedAt) session.startedAt = timestamp;
+  if (!session.updatedAt || timestamp > session.updatedAt) session.updatedAt = timestamp;
 }
 
 function commandToText(command) {
@@ -3412,12 +3467,6 @@ function finalizeSession(session, sessionIndexEntry) {
     session.title = inferSessionTitle(session);
   }
 
-  session.searchText = [
-    session.title,
-    [...session.cwdSet].join('\n'),
-    session.logicalEvents.map((event) => event.searchText).join('\n'),
-  ].join('\n').toLowerCase();
-
   const draft = session._analysisDraft;
   session.analysis = {
     sessionId: session.id,
@@ -3497,24 +3546,24 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
       if (!session.parentSessionId && record.type === 'event_msg' && record.payload?.type === 'thread_name_updated' && record.payload.thread_name) {
         session.title = record.payload.thread_name;
       }
-      if (record.type === 'event_msg' && record.payload?.type === 'entered_review_mode') {
+      const embeddedImages = [];
+      externalizeKnownImageGenerationResult(record, { file: relFile, line: lineNumber }, embeddedImages);
+      externalizeEmbeddedImages(record, { file: relFile, line: lineNumber }, embeddedImages);
+      const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages);
+      updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
+      if (raw.recordType === 'event_msg' && raw.payloadType === 'entered_review_mode') {
         session._reviewMarkers.push({
-          enteredAt: safeIso(record.timestamp),
+          enteredAt: raw.timestamp,
           exitedAt: '',
         });
-      } else if (record.type === 'event_msg' && record.payload?.type === 'exited_review_mode') {
+      } else if (raw.recordType === 'event_msg' && raw.payloadType === 'exited_review_mode') {
         let marker = session._reviewMarkers[session._reviewMarkers.length - 1];
         if (!marker || marker.exitedAt) {
           marker = { enteredAt: '', exitedAt: '' };
           session._reviewMarkers.push(marker);
         }
-        marker.exitedAt = safeIso(record.timestamp);
+        marker.exitedAt = raw.timestamp;
       }
-      updateTimeRange(session, record.timestamp);
-      const embeddedImages = [];
-      externalizeKnownImageGenerationResult(record, { file: relFile, line: lineNumber }, embeddedImages);
-      externalizeEmbeddedImages(record, { file: relFile, line: lineNumber }, embeddedImages);
-      const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages);
       if (!session.shell && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
         session.shell = readXmlTag(raw.messageText, 'shell');
       }
@@ -3819,7 +3868,18 @@ async function readImagePreview(index, sessionId, eventId, previewId) {
   return decodeImagePreviewDataUrl(value);
 }
 
+// Test-only introspection for focused equivalence coverage; this is not a supported runtime API.
+const __testOnly = Object.freeze({
+  formatResetTime,
+  isEcmaScriptWhitespace,
+  resetTimeCacheLimit: RESET_TIME_CACHE_LIMIT,
+  resetTimeCacheSize: () => resetTimeCache.size,
+  sessionReviewMarkers,
+  truncate,
+});
+
 module.exports = {
+  __testOnly,
   buildIndex,
   discoverProjects,
   decodeImagePreviewDataUrl,

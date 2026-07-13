@@ -270,7 +270,6 @@ function createCodexSearch(deps) {
   function ordinarySessionResult(index, filters, locale) {
     let sessions = index.sessions.filter((session) => {
       if (!sessionWithinDateRange(session, filters)) return false;
-      if (filters.q && !matchTerms(session.searchText, filters.q)) return false;
       if (filters.kind || filters.status || filters.tool || filters.file) {
         const layer = filters.layer || 'main';
         const haystack = sourceEventsForLayer(session, layer, locale);

@@ -370,6 +370,7 @@ test('buildIndex deduplicates mirrored messages and keeps protocol separately', 
   assert.equal(index.totals.sessionCount, 10);
   assert.equal(session.id, '11111111-1111-1111-1111-111111111111');
   assert.equal(session.title, 'fixture repo session');
+  assert.equal(Object.hasOwn(session, 'searchText'), false);
   assert.equal(session.counts.userMessages, 1);
   assert.equal(session.counts.assistantMessages, 1);
   assert.equal(session.counts.messages, 2);
@@ -1795,7 +1796,6 @@ test('filterSessions applies from/to date filters on the same activity timestamp
     analysis: { toolUsage: [], failedCommands: [], patchedFiles: [], protocolStats: [] },
     logicalEvents: [],
     rawEvents: [],
-    searchText: id,
   });
   const index = {
     sessions: [

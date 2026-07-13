@@ -73,7 +73,6 @@ function session(id, logicalEvents, rawEvents = []) {
     analysis: { toolUsage: [], failedCommands: [], patchedFiles: [], protocolStats: [] },
     logicalEvents,
     rawEvents,
-    searchText: logicalEvents.map((event) => event.searchText).join('\n'),
   };
 }
 
@@ -148,6 +147,7 @@ function searchIndex() {
 
 test('project search intersects query and filters per event and returns deterministic match metadata', () => {
   const index = searchIndex();
+  assert.ok(index.sessions.every((item) => !Object.hasOwn(item, 'searchText')));
   const result = filterSessions(index, {
     q: 'alpha target',
     file: 'src/a.js',
@@ -198,6 +198,7 @@ test('project search supports filter-only results, layer isolation, and localize
 
   const ordinary = filterSessions(index, { q: '', layer: 'protocol', sort: 'updated-desc' });
   assert.equal(ordinary.total, 3);
+  assert.deepEqual(ordinary.sessions.map((item) => item.id), ['split', 'first', 'second']);
   assert.equal(Object.hasOwn(ordinary, 'matchingEventTotal'), false);
   assert.equal(Object.hasOwn(ordinary.sessions[0], 'searchMatch'), false);
 });
