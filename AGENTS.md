@@ -41,6 +41,7 @@ When changing product behavior or repository structure:
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Active plans: none
 - Completed plans:
+  - `docs/exec-plans/completed/2026-07-12-search-jump-target-canonicalization.md`
   - `docs/exec-plans/completed/2026-07-06-search-hud-integration.md`
   - `docs/exec-plans/completed/2026-06-29-search-scope-mental-model-convergence.md`
   - `docs/exec-plans/completed/2026-06-28-search-navigation-state-convergence.md`

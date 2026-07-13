@@ -123,7 +123,7 @@ Browser JavaScript source lives in `src/browser/`, and browser-and-Node shared l
 1. Select a target project, or pass `--repo` when starting the server.
 2. Pick a session from the left pane.
 3. Use `Main timeline` for normal reading, `Protocol layer` for injected context and lifecycle records, or `Raw records` for exact transcript rows.
-4. Enter a case-insensitive plain-text phrase in the search HUD; whitespace inside a phrase matches spaces, tabs, or newlines. Open Search parameters to switch between the current session and the entire project, add `file`, `kind`, or `status` filters, inspect complete counts, or jump to the global Layer selector. Operator-like input such as `status:failed` remains literal text.
+4. Enter a case-insensitive plain-text phrase in the search HUD; whitespace inside a phrase matches spaces, tabs, or newlines. Open Search options to switch between the current session and the entire project, edit the always-visible `Touched file`, `Kind`, or `Status` filters, inspect complete counts, or jump to the adjacent global Layer selector. Operator-like input such as `status:failed` remains literal text.
 5. Open an event to inspect structured detail and raw references.
 
 The npm package does not promise a stable programmatic API. The supported v0.1 interface is the `session-analyzer` CLI.

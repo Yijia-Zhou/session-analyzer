@@ -29,8 +29,10 @@
         </label>
         <div class="searchField">
           <div class="searchInputRow">
-            <button id="searchHudScope" class="searchHudPill searchHudScope" type="button" aria-controls="searchAssist" aria-expanded="false">Current session</button>
-            <button id="searchHudLayer" class="searchHudPill searchHudLayer" type="button" aria-controls="searchAssist" aria-expanded="false">Main timeline</button>
+            <button id="searchHudScope" class="searchHudPill searchHudScope" type="button" aria-controls="searchAssist" aria-expanded="false">
+              <span id="searchHudScopeValue">session</span>
+              <svg class="searchHudChevron" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"></path></svg>
+            </button>
             <button id="searchFilterBtn" class="searchHudPill searchFilterBtn" type="button" aria-controls="searchAssist" aria-expanded="false" aria-label="Search filters">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12l-4.6 5.1v3.6l-2.8 1.4v-5z"></path></svg>
               <span id="searchFilterCount">Filters</span>
@@ -42,13 +44,11 @@
               <button class="searchInlineBtn" type="button" data-search-match-nav="next" aria-label="Next search match" title="Next search match">↓</button>
             </div>
           </div>
-          <div id="searchAssist" class="searchAssist" role="dialog" aria-label="Search parameters" hidden>
-            <header class="searchAssistHeader">
-              <strong id="searchAssistHeading">Search parameters</strong>
-              <span id="searchAssistEscape">Esc to close</span>
-            </header>
+          <div id="searchAssist" class="searchAssist" role="dialog" aria-labelledby="searchAssistHeading" hidden>
+            <strong id="searchAssistHeading" class="srOnly">Search options</strong>
+            <button id="searchAssistClose" class="searchAssistClose" type="button" aria-label="Close search options" title="Close search options">×</button>
             <div class="searchAssistBody">
-              <section class="searchAssistSection" aria-labelledby="searchScopeHeading">
+              <section class="searchAssistSection" data-search-assist-section="scope" aria-labelledby="searchScopeHeading">
                 <div class="searchAssistSectionHeader">
                   <strong id="searchScopeHeading">Search scope</strong>
                 </div>
@@ -57,43 +57,27 @@
                   <button class="searchScopeBtn" type="button" data-search-scope="project" aria-pressed="false">Entire project</button>
                 </div>
               </section>
-              <section class="searchAssistSection" aria-labelledby="searchLayerHeading">
-                <div class="searchAssistSectionHeader">
-                  <strong id="searchLayerHeading">Active global layer</strong>
-                  <span id="searchLayerHint">Changes the whole viewer context</span>
-                </div>
+              <section class="searchAssistSection" data-search-assist-section="layer" aria-labelledby="searchLayerHeading">
                 <button id="searchLayerShortcut" class="searchLayerShortcut" type="button">
-                  <strong id="searchLayerShortcutValue">Main timeline</strong>
-                  <span id="searchLayerShortcutAction">Switch Layer…</span>
+                  <strong id="searchLayerHeading">Layer</strong>
+                  <span class="searchLayerShortcutSelection">
+                    <span id="searchLayerShortcutValue">Main timeline</span>
+                    <span class="searchLayerShortcutArrow" aria-hidden="true">›</span>
+                  </span>
                 </button>
               </section>
-              <section class="searchAssistSection" aria-labelledby="searchFiltersHeading">
+              <section class="searchAssistSection" data-search-assist-section="filters" aria-labelledby="searchFiltersHeading">
                 <div class="searchAssistSectionHeader">
-                  <strong id="searchFiltersHeading">Active filters</strong>
-                  <button id="searchAddFilterBtn" class="searchAddFilterBtn" type="button" aria-expanded="false" aria-controls="searchAddFilterMenu">+ Add filter</button>
-                </div>
-                <div id="searchAddFilterMenu" class="searchAddFilterMenu" role="menu" hidden>
-                  <button type="button" role="menuitem" data-add-search-filter="file">File</button>
-                  <button type="button" role="menuitem" data-add-search-filter="kind">Kind</button>
-                  <button type="button" role="menuitem" data-add-search-filter="status">Status</button>
+                  <strong id="searchFiltersHeading">Filters</strong>
                 </div>
                 <div id="searchFilterRows" class="searchFilterRows">
-                  <div class="searchFilterRow" data-search-filter-row="file" hidden>
-                    <label for="searchFileInput">File</label>
-                    <span class="fileSuggestControl">
-                      <input id="searchFileInput" data-search-filter-control="file" placeholder="Choose a file" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="searchFileSuggestions">
-                      <span id="searchFileSuggestions" class="searchFileSuggestions" role="listbox" hidden></span>
-                    </span>
-                    <button class="searchFilterRemove" type="button" data-remove-search-filter="file" aria-label="Remove File filter">×</button>
-                  </div>
-                  <div class="searchFilterRow" data-search-filter-row="kind" hidden>
+                  <div class="searchFilterRow" data-search-filter-row="kind">
                     <label id="searchKindLabel" for="searchKindSelect">Kind</label>
                     <select id="searchKindSelect" data-search-filter-control="kind">
                       <option value="">Any kind</option>
                     </select>
-                    <button class="searchFilterRemove" type="button" data-remove-search-filter="kind" aria-label="Remove Kind filter">×</button>
                   </div>
-                  <div class="searchFilterRow" data-search-filter-row="status" hidden>
+                  <div class="searchFilterRow" data-search-filter-row="status">
                     <label for="searchStatusSelect">Status</label>
                     <select id="searchStatusSelect" data-search-filter-control="status">
                       <option value="">Any status</option>
@@ -104,34 +88,41 @@
                       <option value="success">Success</option>
                       <option value="completed">Completed</option>
                     </select>
-                    <button class="searchFilterRemove" type="button" data-remove-search-filter="status" aria-label="Remove Status filter">×</button>
                   </div>
-                  <p id="searchFiltersEmpty" class="searchAssistEmpty">No structured filters. Add one to narrow events.</p>
+                  <div class="searchFilterRow searchFilterRowFile" data-search-filter-row="file">
+                    <label for="searchFileInput">Touched file</label>
+                    <span class="fileSuggestControl">
+                      <input id="searchFileInput" data-search-filter-control="file" placeholder="Any touched file" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="searchFileSuggestions">
+                      <span id="searchFileSuggestions" class="searchFileSuggestions" role="listbox" hidden></span>
+                    </span>
+                  </div>
                 </div>
               </section>
-              <section class="searchAssistSection" aria-labelledby="searchResultsHeading">
+              <section id="searchResultsSection" class="searchAssistSection" data-search-assist-section="results" aria-labelledby="searchResultsHeading" hidden>
                 <div class="searchAssistSectionHeader">
-                  <strong id="searchResultsHeading">Search results breakdown</strong>
+                  <strong id="searchResultsHeading">Results</strong>
                 </div>
                 <div id="searchMetricsPanel" class="searchMetricsPanel" aria-live="polite"></div>
               </section>
             </div>
-            <footer class="searchAssistFooter">
-              <span id="searchEnterHint">Press Enter to move to the next target</span>
+            <footer id="searchAssistFooter" class="searchAssistFooter" hidden>
+              <span id="searchEnterHint" hidden>Press Enter to move to the next target</span>
               <button id="searchClearAllBtn" class="searchClearAllBtn" type="button" data-clear-filter="all">Clear all</button>
             </footer>
           </div>
         </div>
-        <select id="layerSelect" aria-label="Layer">
-          <option value="main">Main timeline</option>
-          <option value="protocol">Protocol layer</option>
-          <option value="raw">Raw records</option>
-        </select>
-        <div class="foldControls">
-          <div class="profilePickerCompact profilePickerTopbar" data-profile-picker-host="topbar">
-            <select id="profileSelect" aria-label="Folding strategy"></select>
+        <div class="topbarDetailControls">
+          <select id="layerSelect" aria-label="Layer">
+            <option value="main">Main timeline</option>
+            <option value="protocol">Protocol layer</option>
+            <option value="raw">Raw records</option>
+          </select>
+          <div class="foldControls">
+            <div class="profilePickerCompact profilePickerTopbar" data-profile-picker-host="topbar">
+              <select id="profileSelect" aria-label="Folding strategy"></select>
+            </div>
+            <button id="resetFoldsBtn" class="ghostBtn" type="button" hidden>Reset folds</button>
           </div>
-          <button id="resetFoldsBtn" class="ghostBtn" type="button" hidden>Reset folds</button>
         </div>
       </div>
     </header>

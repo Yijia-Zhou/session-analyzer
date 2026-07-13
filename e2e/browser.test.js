@@ -101,12 +101,7 @@ async function fillSearch(page, value) {
 }
 
 async function addSearchFilter(page, key, value) {
-  await page.locator('#searchInput').click();
-  const row = page.locator(`[data-search-filter-row="${key}"]`);
-  if (await row.isHidden()) {
-    await page.locator('#searchAddFilterBtn').click();
-    await page.locator(`[data-add-search-filter="${key}"]`).click();
-  }
+  await page.locator('#searchFilterBtn').click();
   const control = page.locator(`[data-search-filter-control="${key}"]`);
   if (key === 'file') {
     await control.fill(value);
@@ -121,7 +116,7 @@ async function addSearchFilter(page, key, value) {
 }
 
 async function clearAllSearch(page) {
-  await page.locator('#searchInput').click();
+  await page.locator('#searchFilterBtn').click();
   await page.locator('#searchClearAllBtn').click();
   await expectInputValue(page, '#searchInput', '');
 }
@@ -150,12 +145,27 @@ async function searchNavigationSnapshot(page) {
     const label = document.querySelector('.searchInlineCount')?.textContent || '';
     const match = label.match(/^(\d+) \/ (\d+)/);
     const active = document.querySelector('.searchMark.activeSearchMark');
+    const metrics = document.querySelector('#searchMetricsPanel');
+    const ids = JSON.parse(metrics?.dataset.searchTargetIds || '[]');
+    const activeId = metrics?.dataset.searchActiveTargetId || '';
+    const bindings = ids.map((id) => {
+      const nodes = [...document.querySelectorAll('[data-search-target-id]')]
+        .filter((node) => node.dataset.searchTargetId === id);
+      return {
+        id,
+        ownerId: JSON.parse(id).at(-1),
+        surfaces: [...new Set(nodes.map((node) => node.dataset.searchTargetSurface))].sort(),
+        live: nodes.length > 0,
+      };
+    });
     return {
       current: Number(match?.[1] || 0),
       total: Number(match?.[2] || 0),
-      id: active?.dataset.searchTargetId || '',
+      id: activeId,
       surface: active?.dataset.searchTargetSurface || '',
-      ownerId: active?.dataset.searchTargetOwner || '',
+      ownerId: active?.dataset.searchTargetOwner || (activeId ? JSON.parse(activeId).at(-1) : ''),
+      ids,
+      bindings,
     };
   });
 }
@@ -163,7 +173,8 @@ async function searchNavigationSnapshot(page) {
 async function clickSearchNavigationAndWait(page, direction, previousId) {
   await page.locator(`.searchInlineMatches [data-search-match-nav="${direction}"]`).click();
   await page.waitForFunction((id) => (
-    document.querySelector('.searchMark.activeSearchMark')?.dataset.searchTargetId !== id
+    Boolean(document.querySelector('#searchMetricsPanel')?.dataset.searchActiveTargetId)
+      && document.querySelector('#searchMetricsPanel')?.dataset.searchActiveTargetId !== id
   ), previousId);
   return searchNavigationSnapshot(page);
 }
@@ -201,19 +212,18 @@ async function moveToLastSearchMark(page) {
 
 async function openColdLongSearchInspector(page) {
   await assertEventCount(page, 150);
+  const committedSearch = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('q') === 'needle'
+      && url.searchParams.get('offset') === '0'
+      && url.searchParams.get('limit') === '150';
+  });
   await fillSearch(page, 'needle');
   await waitForSearchMarks(page, 9);
   await page.waitForFunction(() => document.querySelector('#searchMetricsPanel')?.textContent.includes('37 occurrences'));
-  await Promise.all([
-    page.waitForResponse((response) => {
-      const url = new URL(response.url());
-      return url.pathname.endsWith('/timeline')
-        && url.searchParams.get('q') === 'needle'
-        && url.searchParams.get('offset') === '0'
-        && url.searchParams.get('limit') === '150';
-    }),
-    page.locator('#searchInput').blur(),
-  ]);
+  await committedSearch;
+  await page.locator('#searchInput').blur();
   await page.locator('.searchInlineMatches [data-search-match-nav="next"]').click();
   await waitForDetailView(page, 'inspector');
   await page.waitForFunction(() => !document.querySelector('#detail')?.textContent.includes('Loading structured detail...'));
@@ -295,6 +305,7 @@ async function makeLongCodexHome(t, options = {}) {
   }
   const eventCount = options.eventCount || 180;
   const needleText = Array.from({ length: options.needleRepeats || 1 }, () => 'needle').join(' ');
+  const needleIndices = Array.isArray(options.needleIndices) ? new Set(options.needleIndices) : null;
   for (let i = 0; i < eventCount; i += 1) {
     rows.push({
       timestamp: `2026-06-11T09:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}.000Z`,
@@ -302,7 +313,7 @@ async function makeLongCodexHome(t, options = {}) {
       payload: {
         type: 'message',
         role: i % 2 === 0 ? 'user' : 'assistant',
-        content: [{ type: i % 2 === 0 ? 'input_text' : 'output_text', text: `Long timeline row ${i} ${i % 17 === 0 ? needleText : 'ordinary'}` }],
+        content: [{ type: i % 2 === 0 ? 'input_text' : 'output_text', text: `Long timeline row ${i} ${(needleIndices ? needleIndices.has(i) : i % 17 === 0) ? needleText : 'ordinary'}` }],
       },
     });
   }
@@ -449,16 +460,106 @@ test('browser locale switch reloads cached expanded event detail', async (t) => 
   await page.waitForSelector('#timeline .event.kind-command.expanded .eventBody');
 });
 
+test('browser topbar width priorities keep search, Layer, and folding controls responsive', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { viewport: { width: 1280, height: 900 }, locale: 'en' });
+
+  const readLayout = () => page.locator('.searchbar').evaluate((searchbar) => {
+    const rect = (selector) => {
+      const bounds = document.querySelector(selector).getBoundingClientRect();
+      return { top: bounds.top, left: bounds.left, right: bounds.right, width: bounds.width, height: bounds.height };
+    };
+    return {
+      project: rect('.projectHeader'),
+      sessions: rect('.sessionsPane'),
+      searchbar: rect('.searchbar'),
+      search: rect('.searchField'),
+      layer: rect('#layerSelect'),
+      folds: rect('.foldControls'),
+      detailControls: rect('.topbarDetailControls'),
+      timeline: rect('.timelinePane'),
+      detail: rect('.detailPane'),
+    };
+  });
+
+  let layout = await readLayout();
+  assert.ok(Math.abs(layout.project.left - layout.sessions.left) < 1
+    && Math.abs(layout.project.right - layout.sessions.right) < 1,
+  'project header should share the sessions workspace column');
+  assert.ok(layout.search.width <= 760.5, `expected capped search width, got ${layout.search.width}`);
+  assert.ok(Math.abs(layout.search.left - (layout.timeline.left + 16)) < 1,
+    'search should align with the padded timeline content edge');
+  assert.ok(layout.search.left + layout.search.width <= layout.timeline.left + layout.timeline.width + 1,
+    'search should not cross the timeline right boundary');
+  assert.ok(Math.abs(layout.detailControls.left - layout.detail.left) < 1
+    && Math.abs(layout.detailControls.right - layout.detail.right) < 1,
+  'detail controls should occupy the same workspace column as the detail pane');
+  assert.ok(layout.layer.width >= 129 && layout.layer.width <= 171);
+  const topbarChrome = await page.locator('.topbar').evaluate((topbar) => {
+    const chrome = (selector) => {
+      const style = getComputedStyle(document.querySelector(selector));
+      return { background: style.backgroundColor, borderLeft: style.borderLeftWidth, borderRight: style.borderRightWidth };
+    };
+    return {
+      topbar: chrome('.topbar'),
+      regions: ['.projectHeader', '.searchField', '.topbarDetailControls'].map(chrome),
+    };
+  });
+  assert.notEqual(topbarChrome.topbar.background, 'rgba(0, 0, 0, 0)');
+  assert.equal(topbarChrome.regions.every((region) => region.background === 'rgba(0, 0, 0, 0)'
+    && region.borderLeft === '0px' && region.borderRight === '0px'), true,
+  'workspace alignment should not visually split the topbar');
+
+  await page.setViewportSize({ width: 820, height: 900 });
+  layout = await readLayout();
+  assert.ok(layout.search.top < layout.detailControls.top, 'search should occupy the first compact-medium row');
+  assert.ok(layout.layer.left >= layout.detailControls.left && layout.layer.right <= layout.detailControls.right);
+  assert.ok(layout.folds.width === 0
+    || (layout.folds.left >= layout.detailControls.left && layout.folds.right <= layout.detailControls.right));
+  assert.ok(Math.abs(layout.search.width - (layout.searchbar.width - 32)) < 2,
+    'search should span the compact-medium workspace column with shared padding');
+
+  await page.locator('#searchFilterBtn').click();
+  const assistLayout = await page.locator('#searchAssist').evaluate((assist) => {
+    const field = document.querySelector('.searchField').getBoundingClientRect();
+    const bounds = assist.getBoundingClientRect();
+    return { fieldWidth: field.width, assistWidth: bounds.width, aligned: Math.abs(field.left - bounds.left) < 2 };
+  });
+  assert.equal(assistLayout.aligned, true);
+  assert.equal(Math.round(assistLayout.assistWidth), Math.round(Math.min(560, Math.max(500, assistLayout.fieldWidth))));
+  await page.locator('#searchAssistClose').click();
+
+  await fillSearch(page, 'patch');
+  const resultsAlignment = await page.locator('#searchAssist').evaluate((assist) => {
+    const input = document.querySelector('#searchInput').getBoundingClientRect();
+    const metrics = document.querySelector('#searchMetricsPanel').getBoundingClientRect();
+    return { inputLeft: input.left, metricsLeft: metrics.left, assistMode: assist.dataset.mode };
+  });
+  assert.equal(resultsAlignment.assistMode, 'results');
+  assert.ok(Math.abs(resultsAlignment.inputLeft - resultsAlignment.metricsLeft) < 2,
+    'results metrics should align with the free-text input');
+  await page.locator('#searchInput').fill('');
+  await page.locator('#searchInput').press('Escape');
+
+  await page.setViewportSize({ width: 760, height: 900 });
+  layout = await readLayout();
+  assert.ok(layout.search.top < layout.detailControls.top && layout.layer.top >= layout.detailControls.top,
+    'narrow controls should stack in priority order');
+  assert.ok(Math.abs(layout.search.width - layout.layer.width) < 2);
+  assert.ok(layout.folds.width === 0 || Math.abs(layout.layer.width - layout.folds.width) < 2);
+});
+
 test('browser search HUD starts in current-session mode with persistent global Layer context', async (t) => {
   const index = await buildFixtureIndex();
   const { page } = await openApp(t, index, { locale: 'en' });
 
   assert.equal(await page.locator('body').getAttribute('data-search-scope'), 'session');
+  assert.equal(await page.locator('#searchHudScopeValue').textContent(), 'session');
   await page.locator('#searchHudScope').click();
   assert.equal(await page.locator('#searchAssist').getByRole('button', { name: 'Current session' }).getAttribute('aria-pressed'), 'true');
   assert.equal(await page.locator('#searchAssist').getByRole('button', { name: 'Entire project' }).getAttribute('aria-pressed'), 'false');
   assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), 'Find in current session');
-  assert.equal(await page.locator('#searchHudLayer').textContent(), 'Main timeline');
+  assert.equal(await page.locator('#layerSelect').inputValue(), 'main');
 
   await fillSearch(page, 'definitely-no-search-hit');
   await page.locator('#searchInput').press('Escape');
@@ -467,35 +568,70 @@ test('browser search HUD starts in current-session mode with persistent global L
 
   await page.locator('[data-search-project-fallback]').click();
   await page.waitForFunction(() => document.body.dataset.searchScope === 'project');
+  assert.equal(await page.locator('#searchHudScopeValue').textContent(), 'project');
   assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), 'Search the entire project');
-  assert.equal(await page.locator('#searchHudLayer').textContent(), 'Main timeline');
+  assert.equal(await page.locator('#layerSelect').inputValue(), 'main');
   await page.waitForFunction(() => document.querySelector('#timeline .projectSearchState')?.textContent.includes('No project events match this expression.'));
 });
 
-test('browser search parameter popover owns filter CRUD, Escape layers, and the global Layer shortcut', async (t) => {
+test('browser search parameter popover exposes direct fixed filters, Escape layers, and the global Layer shortcut', async (t) => {
   const index = await buildFixtureIndex();
   const { page } = await openApp(t, index, { locale: 'en' });
   await selectPrimarySession(page);
 
   await page.locator('#searchFilterBtn').click();
-  assert.equal(await page.locator('#searchAssistHeading').textContent(), 'Search parameters');
-  assert.equal(await page.locator('#searchFiltersEmpty').isVisible(), true);
+  assert.equal(await page.locator('#searchAssistHeading').textContent(), 'Search options');
+  assert.equal(await page.locator('#searchResultsSection').isHidden(), true);
+  assert.equal(await page.locator('#searchAssistFooter').isHidden(), true);
+  assert.equal(await page.locator('[data-search-filter-row]').count(), 3);
+  assert.equal(await page.locator('[data-search-filter-row][hidden]').count(), 0);
+  assert.equal(await page.locator('[data-search-filter-row="file"] label').textContent(), 'Touched file');
+  assert.equal(await page.locator('#searchFileInput').getAttribute('placeholder'), 'Any touched file');
+  assert.equal(await page.locator('#searchKindSelect').evaluate((select) => document.activeElement === select), true);
+
+  const filterLayout = await page.locator('#searchFilterRows').evaluate((filters) => {
+    const kind = filters.querySelector('[data-search-filter-row="kind"]')?.getBoundingClientRect();
+    const status = filters.querySelector('[data-search-filter-row="status"]')?.getBoundingClientRect();
+    const file = filters.querySelector('[data-search-filter-row="file"]')?.getBoundingClientRect();
+    return {
+      kindTop: kind?.top || 0,
+      statusTop: status?.top || 0,
+      kindBottom: kind?.bottom || 0,
+      fileTop: file?.top || 0,
+    };
+  });
+  assert.ok(Math.abs(filterLayout.kindTop - filterLayout.statusTop) < 2, 'Kind and Status should share one row');
+  assert.ok(filterLayout.fileTop >= filterLayout.kindBottom, 'File should span the next row');
+
+  await page.locator('#searchFileInput').fill('definitely-no-touched-file');
+  assert.equal(await page.locator('#searchFileSuggestions').isVisible(), true);
+  assert.equal(await page.locator('#searchFileSuggestions .fileSuggestionEmpty').textContent(), 'No matching touched files.');
+  assert.equal(await page.locator('#searchFileInput').getAttribute('aria-expanded'), 'true');
+  const suggestionOverlay = await page.locator('#searchFileSuggestions').evaluate((list) => {
+    const input = document.querySelector('#searchFileInput').getBoundingClientRect();
+    const rect = list.getBoundingClientRect();
+    return {
+      position: getComputedStyle(list).position,
+      aligned: Math.abs(rect.left - input.left) < 2 && Math.abs(rect.width - input.width) < 2,
+      insideViewport: rect.top >= 0 && rect.bottom <= window.innerHeight,
+    };
+  });
+  assert.equal(suggestionOverlay.position, 'fixed');
+  assert.equal(suggestionOverlay.aligned, true);
+  assert.equal(suggestionOverlay.insideViewport, true);
+  await page.locator('#searchFileInput').press('Escape');
+  assert.equal(await page.locator('#searchFileSuggestions').isHidden(), true);
+  await page.locator('#searchFileInput').fill('');
 
   await addSearchFilter(page, 'kind', 'patch');
   await addSearchFilter(page, 'status', 'failed');
-  assert.equal((await page.locator('#searchFilterBtn').textContent()).trim(), '2 filters');
+  assert.equal((await page.locator('#searchFilterCount').textContent()).trim(), 'Filters · 2');
   assert.match(await page.locator('#searchFilterBtn').getAttribute('title'), /Kind: Patch/);
   assert.match(await page.locator('#searchFilterBtn').getAttribute('title'), /Status: Failed/);
 
-  await page.locator('[data-remove-search-filter="status"]').click();
-  await page.waitForFunction(() => document.querySelector('#searchFilterCount')?.textContent === '1 filter');
-  assert.equal(await page.locator('[data-search-filter-row="status"]').isHidden(), true);
-
-  await page.locator('#searchAddFilterBtn').click();
-  assert.equal(await page.locator('#searchAddFilterMenu').isVisible(), true);
-  await page.locator('#searchAddFilterBtn').press('Escape');
-  assert.equal(await page.locator('#searchAddFilterMenu').isHidden(), true);
-  assert.equal(await page.locator('#searchAssist').isVisible(), true);
+  await page.locator('#searchStatusSelect').selectOption('');
+  await page.waitForFunction(() => document.querySelector('#searchFilterCount')?.textContent === 'Filters · 1');
+  assert.equal(await page.locator('[data-search-filter-row="status"]').isVisible(), true);
 
   await page.locator('#searchLayerShortcut').click();
   assert.equal(await page.locator('#searchAssist').isHidden(), true);
@@ -504,9 +640,15 @@ test('browser search parameter popover owns filter CRUD, Escape layers, and the 
   await page.locator('#searchFilterBtn').click();
   await page.locator('#searchClearAllBtn').click();
   await expectInputValue(page, '#searchInput', '');
-  assert.equal(await page.locator('#searchFilterCount').isHidden(), true);
-  assert.equal(await page.locator('#searchAssist').isVisible(), true);
+  assert.equal(await page.locator('#searchFilterCount').textContent(), 'Filters');
+  assert.equal(await page.locator('#searchAssist').isHidden(), true);
   assert.equal(await page.locator('#searchInput').evaluate((input) => document.activeElement === input), true);
+
+  await page.locator('#searchHudScope').click();
+  assert.equal(await page.locator('button[data-search-scope="session"]').evaluate((button) => document.activeElement === button), true);
+  await page.locator('#searchAssistClose').click();
+  assert.equal(await page.locator('#searchHudScope').evaluate((button) => document.activeElement === button), true);
+
 });
 
 test('browser search HUD stays inert while the analyzer is disabled for project selection', async (t) => {
@@ -519,11 +661,11 @@ test('browser search HUD stays inert while the analyzer is disabled for project 
   await page.locator('#projectSwitchControl').click();
   await page.waitForFunction(() => document.body.dataset.projectMode === 'selecting');
   assert.equal(await page.locator('#searchAssist').evaluate((popover) => popover.hidden), true);
-  for (const selector of ['#searchHudScope', '#searchHudLayer', '#searchFilterBtn', '#searchInput']) {
+  for (const selector of ['#searchHudScope', '#searchFilterBtn', '#searchInput']) {
     assert.equal(await page.locator(selector).evaluate((control) => control.disabled), true);
   }
 
-  for (const selector of ['#searchHudScope', '#searchHudLayer', '#searchFilterBtn']) {
+  for (const selector of ['#searchHudScope', '#searchFilterBtn']) {
     await page.locator(selector).dispatchEvent('click');
     assert.equal(await page.locator('#searchAssist').evaluate((popover) => popover.hidden), true);
   }
@@ -537,7 +679,7 @@ test('browser search HUD stays inert while the analyzer is disabled for project 
   await page.locator('#projectSwitchControl').click();
   await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
   assert.equal(await page.locator('#searchAssist').isVisible(), false);
-  for (const selector of ['#searchHudScope', '#searchHudLayer', '#searchFilterBtn', '#searchInput']) {
+  for (const selector of ['#searchHudScope', '#searchFilterBtn', '#searchInput']) {
     assert.equal(await page.locator(selector).evaluate((control) => control.disabled), false);
   }
 });
@@ -555,6 +697,8 @@ test('browser project scope renders cards, aggregate summary, and filter-only re
   await fillSearch(page, 'patch');
   await waitForProjectCards(page);
   await page.waitForFunction(() => document.querySelector('#resultSummary')?.textContent.includes('matching sessions'));
+  assert.equal(await page.locator('#searchEnterHint').isVisible(), true);
+  assert.equal(await page.locator('#searchEnterHint').textContent(), 'Press Enter to focus the first project result');
 
   const cards = await page.locator('[data-project-result-session-id]').evaluateAll((items) => items.map((item) => {
     const countText = item.querySelector('.projectResultCount')?.textContent || '';
@@ -599,7 +743,7 @@ test('browser project scope renders cards, aggregate summary, and filter-only re
   await addSearchFilter(page, 'status', 'failed');
   await statusProjectResponse;
   await waitForProjectCards(page);
-  await page.waitForFunction(() => document.querySelector('#searchFilterBtn')?.textContent.includes('1 filter'));
+  await page.waitForFunction(() => document.querySelector('#searchFilterCount')?.textContent === 'Filters · 1');
   assert.equal(requestedUrls.some((value) => {
     const url = new URL(value, 'http://local');
     return url.pathname === '/api/sessions'
@@ -806,8 +950,9 @@ test('browser find keeps loaded timeline range and clearing find does not reset 
   await waitForSearchMarks(page);
 
   assert.equal(await page.locator('#searchAssist').isVisible(), true);
+  assert.equal(await page.locator('#searchAssist').getAttribute('data-mode'), 'results');
   assert.equal(await page.locator('#resultSummary').isVisible(), false);
-  assert.equal(await page.getByRole('button', { name: 'Clear all' }).count(), 1);
+  assert.equal(await page.getByRole('button', { name: 'Clear all' }).count(), 0);
 
   await page.locator('#searchInput').press('Escape');
   assert.equal(await page.locator('#searchAssist').isVisible(), false);
@@ -966,33 +1111,42 @@ test('browser search target identities and denominator stay stable across inspec
 
   await fillSearch(page, 'patch');
   await waitForSearchMarks(page);
+  assert.equal(
+    await page.locator('[data-search-load-more-targets]').count(),
+    0,
+    'a fully loaded timeline must not expose a no-op Load more action',
+  );
   const initial = await searchNavigationSnapshot(page);
-  const steps = Math.min(10, initial.total - 1);
-  assert.ok(steps >= 4, `expected enough patch targets, got ${initial.total}`);
+  assert.ok(initial.total >= 4, `expected enough patch events, got ${initial.total}`);
+  assert.equal(initial.total, initial.ids.length);
+  assert.equal(new Set(initial.ids).size, initial.ids.length);
+  assert.ok(initial.bindings.every((binding) => !binding.surfaces.includes('inspector')));
 
-  const forward = [initial];
   const inspectorCounts = new Map();
-  for (let i = 0; i < steps; i += 1) {
-    const next = await clickSearchNavigationAndWait(page, 'next', forward.at(-1).id);
-    assert.ok(next.total >= forward.at(-1).total, 'known target denominator must not decrease');
-    assert.ok(next.current >= forward.at(-1).current, 'forward target position must not regress');
-    forward.push(next);
+  let previous = initial;
+  for (let i = 0; i < initial.total; i += 1) {
+    const next = await clickSearchNavigationAndWait(page, 'next', previous.id);
+    assert.deepEqual(next.ids, initial.ids, 'Inspector navigation must not add, remove, or reorder canonical IDs');
+    assert.equal(next.total, initial.total);
     const selectedId = await page.evaluate(() => document.querySelector('#timeline .event.selected')?.dataset.eventId || '');
     if (selectedId) inspectorCounts.set(selectedId, await page.locator('#detail mark.searchMark').count());
+    previous = next;
+    if (new Set(inspectorCounts.values()).size > 1) break;
   }
-
-  assert.equal(new Set(forward.map((item) => item.id)).size, forward.length);
-  assert.ok([...inspectorCounts.values()].some((count) => count > 0), 'inspector targets should remain discoverable');
+  assert.ok([...inspectorCounts.values()].some((count) => count > 0), 'Inspector highlights should remain visible');
   assert.ok(new Set(inspectorCounts.values()).size > 1, 'fixture should exercise different inspector match counts');
+  assert.ok((await searchNavigationSnapshot(page)).bindings.some((binding) => binding.surfaces.includes('inspector')));
 
-  for (let i = forward.length - 2; i >= 0; i -= 1) {
-    const previous = await clickSearchNavigationAndWait(page, 'previous', forward[i + 1].id);
-    assert.equal(previous.id, forward[i].id);
-    assert.ok(previous.total >= forward.at(-1).total, 'reverse navigation must retain the known target set');
+  if (await page.locator('[data-detail-action="close"]').count()) {
+    await page.locator('[data-detail-action="close"]').click();
+    await waitForDetailView(page, 'profileRules');
   }
+  const closed = await searchNavigationSnapshot(page);
+  assert.deepEqual(closed.ids, initial.ids, 'closing Inspector must not alter canonical membership');
+  assert.ok(closed.bindings.every((binding) => !binding.surfaces.includes('inspector')));
 });
 
-test('browser search navigation skips stale body targets after a manual fold', async (t) => {
+test('browser manual fold replaces occurrence bindings without changing event-anchor membership', async (t) => {
   const longFixture = await makeLongCodexHome(t, {
     eventCount: 1,
     includeFoldableSearchTargets: true,
@@ -1018,40 +1172,32 @@ test('browser search navigation skips stale body targets after a manual fold', a
 
   await fillSearch(page, 'fold only target');
   await page.waitForFunction(() => (
-    document.querySelector('.searchInlineCount')?.textContent === '0 / 0 targets'
+    document.querySelector('.searchInlineCount')?.textContent?.endsWith('/ 3 targets')
       && document.querySelector('#searchMetricsPanel')?.textContent.includes('6 occurrences')
   ));
 
   const empty = await searchNavigationSnapshot(page);
   const first = await clickSearchNavigationAndWait(page, 'next', empty.id);
   const second = await clickSearchNavigationAndWait(page, 'next', first.id);
-  const third = await clickSearchNavigationAndWait(page, 'next', second.id);
-  assert.equal(new Set([first.id, second.id, third.id]).size, 3);
-  assert.equal(second.ownerId, first.ownerId, 'first event should expose two body occurrences');
-  assert.notEqual(third.ownerId, second.ownerId, 'third target should belong to the next event');
+  assert.notEqual(second.ownerId, first.ownerId, 'event-anchor navigation must advance once per event');
+  assert.deepEqual(second.ids, empty.ids);
+  const knownTotal = second.total;
 
-  const backToSecond = await clickSearchNavigationAndWait(page, 'previous', third.id);
-  assert.equal(backToSecond.id, second.id);
-  const beforeFold = await clickSearchNavigationAndWait(page, 'previous', backToSecond.id);
-  assert.equal(beforeFold.id, first.id);
-  const knownTotal = beforeFold.total;
-
-  const event = page.locator(`#timeline .event[data-event-id="${second.ownerId}"]`);
+  const event = page.locator(`#timeline .event[data-event-id="${first.ownerId}"]`);
   await event.locator('.eventHeader [data-action="toggle"]').click();
-  await page.waitForFunction(({ eventId, targetId }) => {
+  await page.waitForFunction(({ eventId }) => {
     const owner = document.querySelector(`#timeline .event[data-event-id="${eventId}"]`);
-    return owner && !owner.classList.contains('expanded')
-      && ![...document.querySelectorAll('[data-search-target-id]')]
-        .some((node) => node.dataset.searchTargetId === targetId);
-  }, { eventId: second.ownerId, targetId: second.id });
+    return owner && !owner.classList.contains('expanded');
+  }, { eventId: first.ownerId });
+  const folded = await searchNavigationSnapshot(page);
+  assert.deepEqual(folded.ids, empty.ids);
+  assert.equal(folded.total, knownTotal);
 
-  const afterFold = await clickSearchNavigationAndWait(page, 'next', beforeFold.id);
-  assert.equal(afterFold.id, third.id, 'forward navigation should skip the folded body target');
-  assert.equal(afterFold.total, knownTotal, 'skipping an unavailable descriptor must not shrink the registry');
-
-  const reverse = await clickSearchNavigationAndWait(page, 'previous', afterFold.id);
-  assert.equal(reverse.id, beforeFold.id, 'reverse navigation should skip the same folded body target');
+  await page.locator('.searchInlineMatches [data-search-match-nav="previous"]').click();
+  await page.waitForFunction(() => !document.querySelector('[data-search-navigation-pending]'));
+  const reverse = await searchNavigationSnapshot(page);
   assert.equal(reverse.total, knownTotal);
+  assert.deepEqual(reverse.ids, empty.ids, 'folding changes bindings, not canonical membership');
 });
 
 test('browser search registry follows folding profile rule revisions', async (t) => {
@@ -1084,7 +1230,7 @@ test('browser search registry follows folding profile rule revisions', async (t)
     await waitForDetailView(page, 'profileRules');
   }
   const initial = await searchNavigationSnapshot(page);
-  assert.ok(initial.total >= 6, `expected registered command targets, got ${initial.total}`);
+  assert.equal(initial.total, 3, `expected one canonical target per matching command event, got ${initial.total}`);
 
   await page.locator('#detail [data-profile-kind="command"]').selectOption('hidden');
   await page.waitForFunction(() => (
@@ -1092,21 +1238,23 @@ test('browser search registry follows folding profile rule revisions', async (t)
   ));
   await waitForNoSearchMarks(page);
   const hiddenDraft = await searchNavigationSnapshot(page);
-  assert.equal(hiddenDraft.total, 0, 'a rule edit must discard targets registered under the previous rules');
+  assert.equal(hiddenDraft.total, 3, 'hidden matching events remain canonical but have no live bindings');
+  assert.notDeepEqual(hiddenDraft.ids, initial.ids, 'a rule revision must replace the prior search-key identities');
   assert.equal(await page.locator('#profileSelect').inputValue(), expandedCommandProfile.id);
 
   await page.locator('#detail [data-detail-action="save-profile"]').click();
   assert.equal(await page.locator('#profileSelect').inputValue(), expandedCommandProfile.id);
-  assert.equal((await searchNavigationSnapshot(page)).total, 0, 'same-ID save must not restore stale targets');
+  assert.deepEqual((await searchNavigationSnapshot(page)).ids, hiddenDraft.ids, 'same-ID save must preserve the committed hidden-rule identities');
 
   await page.locator('#detail [data-profile-kind="command"]').selectOption('expanded');
   await waitForSearchMarks(page, 6);
   const expandedDraft = await searchNavigationSnapshot(page);
-  assert.equal(expandedDraft.total, await page.locator('.searchMark').count());
+  assert.equal(expandedDraft.total, 3);
+  assert.equal(await page.locator('.searchMark').count(), 6, 'occurrence highlights must not multiply event anchors');
 
   await page.locator('#detail [data-detail-action="cancel-profile"]').click();
   await waitForNoSearchMarks(page);
-  assert.equal((await searchNavigationSnapshot(page)).total, 0, 'cancel must restore the saved rule context without prior targets');
+  assert.deepEqual((await searchNavigationSnapshot(page)).ids, hiddenDraft.ids, 'cancel must restore the saved canonical context');
 });
 
 test('browser rapid search navigation is serialized without skips or duplicates', async (t) => {
@@ -1146,6 +1294,31 @@ test('browser search count hit testing keeps input and navigation controls disti
 
   await fillSearch(page, 'needle');
   await waitForSearchMarks(page, 9);
+  assert.equal(await page.locator('#searchMetricsPanel [data-search-match-nav]').count(), 2);
+  assert.equal(await page.locator('#searchMetricsPanel .searchMetricTargets [data-search-match-nav]').count(), 2);
+  assert.equal(await page.locator('#searchMetricsPanel .searchMetricsFooter [data-search-match-nav]').count(), 0);
+  await page.waitForFunction(() => !document.querySelector('[data-search-load-more-targets]')?.disabled);
+  const loadMoreBefore = await searchNavigationSnapshot(page);
+  const discoveredBefore = Number((await page.locator('.searchMetricTargets strong').textContent()).match(/\/\s*(\d+)/)?.[1] || 0);
+  await page.locator('[data-search-load-more-targets]').click();
+  await page.waitForFunction((count) => {
+    const text = document.querySelector('.searchMetricTargets strong')?.textContent || '';
+    const discovered = Number(text.match(/\/\s*(\d+)/)?.[1] || 0);
+    return discovered > count || !document.querySelector('[data-search-load-more-targets]');
+  }, discoveredBefore);
+  const loadMoreAfter = await searchNavigationSnapshot(page);
+  assert.equal(loadMoreAfter.id, loadMoreBefore.id, 'loading more targets should preserve the active target');
+  assert.equal(await page.locator('#searchAssist').isVisible(), true);
+  const panelBefore = await searchNavigationSnapshot(page);
+  await page.locator('#searchMetricsPanel [data-search-match-nav="next"]').click();
+  await page.waitForFunction((id) => document.querySelector('.searchMark.activeSearchMark')?.dataset.searchTargetId !== id, panelBefore.id);
+  const panelNext = await searchNavigationSnapshot(page);
+  assert.equal(panelNext.current, panelBefore.current + 1);
+  assert.equal(await page.locator('#searchAssist').isVisible(), true);
+  assert.equal(await page.locator('#searchAssist').getAttribute('data-mode'), 'results');
+  await page.locator('#searchMetricsPanel [data-search-match-nav="previous"]').click();
+  await page.waitForFunction((id) => document.querySelector('.searchMark.activeSearchMark')?.dataset.searchTargetId === id, panelBefore.id);
+  assert.equal(await page.locator('#searchAssist').isVisible(), true);
   await page.locator('#searchInput').press('Escape');
   await page.locator('#searchInput').blur();
   const countBox = await page.locator('.searchInlineCount').boundingBox();
@@ -1160,7 +1333,151 @@ test('browser search count hit testing keeps input and navigation controls disti
   assert.equal(previous.id, before.id);
 });
 
-test('browser large search counts stay unabridged and reserve usable input space in both locales', async (t) => {
+test('browser canonical Load more scans multiple pages once and becomes idempotent at exhaustion', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 620,
+    needleIndices: [0, 1, 2, 3, 4, 455],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+
+  await fillSearch(page, 'needle');
+  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent === '1 / 5 targets');
+  const before = await searchNavigationSnapshot(page);
+  const beforeState = await page.evaluate(() => ({
+    selected: document.querySelector('#timeline .event.selected')?.dataset.eventId || '',
+    detail: document.body.dataset.detailView,
+    scrollTop: document.querySelector('.timelinePane')?.scrollTop || 0,
+  }));
+  assert.equal(beforeState.detail, 'profileRules');
+  const requestStart = requestedUrls.length;
+
+  await page.locator('[data-search-load-more-targets]').click();
+  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent?.endsWith('/ 6 targets'));
+  const after = await searchNavigationSnapshot(page);
+  const afterState = await page.evaluate(() => ({
+    selected: document.querySelector('#timeline .event.selected')?.dataset.eventId || '',
+    detail: document.body.dataset.detailView,
+    scrollTop: document.querySelector('.timelinePane')?.scrollTop || 0,
+  }));
+  assert.deepEqual(after.ids.slice(0, before.ids.length), before.ids);
+  assert.equal(after.ids.length, before.ids.length + 1);
+  assert.equal(after.id, before.id);
+  assert.deepEqual(afterState, beforeState, 'discovery must preserve selection, detail, and scroll');
+  const discoveryRequests = requestedUrls.slice(requestStart)
+      .filter((value) => value.includes('/timeline?') && new URL(value, 'http://local').searchParams.get('limit') === '150')
+  assert.deepEqual(
+    discoveryRequests.map((value) => new URL(value, 'http://local').searchParams.get('offset')),
+    ['150', '300', '450'],
+    discoveryRequests.join('\n'),
+  );
+
+  await page.locator('[data-search-load-more-targets]').click();
+  await page.waitForFunction(() => !document.querySelector('[data-search-load-more-targets]'));
+  const exhausted = await searchNavigationSnapshot(page);
+  assert.deepEqual(exhausted.ids, after.ids);
+  assert.equal(exhausted.id, before.id);
+  const allOffsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?') && new URL(value, 'http://local').searchParams.get('limit') === '150')
+    .map((value) => new URL(value, 'http://local').searchParams.get('offset'));
+  assert.deepEqual(allOffsets, ['150', '300', '450', '600']);
+  assert.equal(new Set(allOffsets).size, allOffsets.length, 'no timeline page may be requested twice');
+});
+
+test('browser query edits invalidate an in-flight canonical discovery', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 620,
+    needleIndices: [0, 1, 2, 3, 4, 455],
+  });
+  const index = await buildIndex(longFixture);
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await fillSearch(page, 'needle');
+  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent === '1 / 5 targets');
+
+  let releaseOldPage;
+  let markOldPageStarted;
+  const oldPageRelease = new Promise((resolve) => { releaseOldPage = resolve; });
+  const oldPageStarted = new Promise((resolve) => { markOldPageStarted = resolve; });
+  t.after(() => releaseOldPage());
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '150') {
+      markOldPageStarted();
+      await oldPageRelease;
+    }
+    await route.continue();
+  });
+
+  await page.locator('[data-search-load-more-targets]').click();
+  await oldPageStarted;
+  await fillSearch(page, 'ordinary');
+  releaseOldPage();
+  await page.waitForFunction(() => {
+    const ids = JSON.parse(document.querySelector('#searchMetricsPanel')?.dataset.searchTargetIds || '[]');
+    return ids.length > 0 && ids.every((id) => JSON.parse(id)[0].split('\u001f')[4] === 'ordinary');
+  });
+  const committed = await searchNavigationSnapshot(page);
+  assert.ok(committed.ids.length > 0);
+  assert.ok(committed.ids.every((id) => JSON.parse(id)[0].split('\u001f')[4] === 'ordinary'));
+  assert.equal(await page.locator('[data-search-navigation-pending]').count(), 0);
+});
+
+test('browser rapid navigation and Load more interleaving commits one ordered activation', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 320,
+    needleIndices: [0, 1, 2, 3, 4, 155],
+  });
+  const index = await buildIndex(longFixture);
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await fillSearch(page, 'needle');
+  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent === '1 / 5 targets');
+  const before = await searchNavigationSnapshot(page);
+
+  await page.locator('[data-search-load-more-targets]').click();
+  await page.locator('.searchInlineMatches [data-search-match-nav="next"]').click();
+  await page.waitForFunction(() => (
+    document.querySelector('.searchInlineCount')?.textContent?.endsWith('/ 6 targets')
+      && !document.querySelector('[data-search-navigation-pending]')
+      && !document.querySelector('[data-search-load-more-targets][disabled]')
+  ));
+  const after = await searchNavigationSnapshot(page);
+  assert.equal(after.id, before.ids[1]);
+  assert.equal(after.current, 2);
+  assert.equal(after.ids.length, 6);
+  assert.equal(new Set(after.ids).size, after.ids.length);
+});
+
+test('browser canonical membership is independent of responsive detail visibility and event layer chrome', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en', viewport: { width: 1280, height: 900 } });
+  await selectPrimarySession(page);
+  await fillSearch(page, 'patch');
+  await waitForSearchMarks(page);
+  const desktop = await searchNavigationSnapshot(page);
+
+  for (const width of [900, 390, 1280]) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.waitForTimeout(50);
+    assert.deepEqual((await searchNavigationSnapshot(page)).ids, desktop.ids);
+  }
+
+  for (const layer of ['protocol', 'raw', 'main']) {
+    const response = page.waitForResponse((candidate) => {
+      const url = new URL(candidate.url());
+      return url.pathname.endsWith('/timeline') && url.searchParams.get('layer') === layer;
+    });
+    await page.locator('#layerSelect').selectOption(layer);
+    await response;
+    await page.waitForFunction((expected) => document.querySelector('#layerSelect')?.value === expected, layer);
+    const snapshot = await searchNavigationSnapshot(page);
+    assert.equal(snapshot.ids.length, new Set(snapshot.ids).size);
+    assert.ok(snapshot.bindings.every((binding) => (
+      binding.surfaces.every((surface) => ['timeline', 'inspector'].includes(surface))
+    )));
+  }
+});
+
+test('browser large full-text counts stay unabridged beside canonical event targets in both locales', async (t) => {
   const longFixture = await makeLongCodexHome(t, { needleRepeats: 20 });
   const index = await buildIndex(longFixture);
   const { page } = await openApp(t, index, { locale: 'en', viewport: { width: 1365, height: 900 } });
@@ -1197,7 +1514,7 @@ test('browser large search counts stay unabridged and reserve usable input space
       };
     });
     assert.ok(layout.text.includes(expectedText));
-    assert.ok(layout.jumpTotal >= 100, `expected a large jump-target count, got ${layout.jumpTotal}`);
+    assert.equal(layout.jumpTotal, 9, 'large occurrence totals must not inflate event-anchor membership');
     assert.equal(layout.singleLine, true);
     assert.equal(layout.separated, true);
     assert.ok(layout.rowHeight <= 48, `expected one-line HUD, got ${layout.rowHeight}px`);
@@ -1411,19 +1728,18 @@ test('browser previous search navigation scans backward wrap through UI pages', 
   const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
 
   await assertEventCount(page, 150);
+  const committedSearch = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('q') === 'needle'
+      && url.searchParams.get('offset') === '0'
+      && url.searchParams.get('limit') === '150';
+  });
   await fillSearch(page, 'needle');
   await waitForSearchMarks(page, 9);
   await page.waitForFunction(() => document.querySelector('#searchMetricsPanel')?.textContent.includes('37 occurrences'));
-  await Promise.all([
-    page.waitForResponse((response) => {
-      const url = new URL(response.url());
-      return url.pathname.endsWith('/timeline')
-        && url.searchParams.get('q') === 'needle'
-        && url.searchParams.get('offset') === '0'
-        && url.searchParams.get('limit') === '150';
-    }),
-    page.locator('#searchInput').blur(),
-  ]);
+  await committedSearch;
+  await page.locator('#searchInput').blur();
   await assertEventCount(page, 150);
 
   const boundaryRequestStart = requestedUrls.length;
@@ -1469,12 +1785,14 @@ test('browser search navigation preserves inspector marks while ignoring raw-det
   await page.waitForFunction(() => !document.querySelector('#detail')?.textContent.includes('Loading structured detail...'));
   await fillSearch(page, 'status');
   await page.waitForSelector('#detail mark.searchMark');
+  const beforeInspector = await searchNavigationSnapshot(page);
 
   const inspectorTargetIds = await page.locator('#detail mark.searchMark').evaluateAll((marks) => (
-    marks.map((mark) => mark.dataset.searchTargetId)
+    marks.map((mark) => mark.dataset.searchTargetId).filter(Boolean)
   ));
-  assert.ok(inspectorTargetIds.length > 0);
-  assert.ok(inspectorTargetIds.every(Boolean));
+  assert.ok(await page.locator('#detail mark.searchMark').count() > 0, 'Inspector occurrences remain highlighted');
+  assert.ok(inspectorTargetIds.every((id) => beforeInspector.ids.includes(id)));
+  assert.ok(new Set(inspectorTargetIds).size <= 1, 'one Inspector event may bind at most one event anchor');
 
   let releaseRawRequest;
   let markRawRequestStarted;
@@ -1495,6 +1813,7 @@ test('browser search navigation preserves inspector marks while ignoring raw-det
   releaseRawRequest();
   await page.waitForFunction(() => document.querySelector('#detail')?.textContent.toLowerCase().includes('status'));
   assert.equal(await page.locator('#detail mark.searchMark').count(), 0);
+  assert.deepEqual((await searchNavigationSnapshot(page)).ids, beforeInspector.ids, 'Raw refs transition must not change membership');
 
   await fillSearch(page, 'needle');
   await waitForSearchMarks(page, 9);
@@ -1525,7 +1844,7 @@ test('browser search navigation temporarily expands hidden command detail target
 
   await page.waitForFunction(() => document.querySelector('#timeline .event.kind-command.hiddenByProfile'));
   await fillSearch(page, 'alpha failed');
-  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent === '0 / 0 targets'
+  await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent?.endsWith('/ 1 targets')
     && document.querySelector('#searchMetricsPanel')?.textContent.includes('1 occurrences'));
 
   await page.locator('.searchInlineMatches [data-search-match-nav="next"]').click();
@@ -1664,7 +1983,7 @@ test('browser search input treats operator-like text literally and GUI filters s
   const requestStart = requestedUrls.length;
 
   await page.locator('#layerSelect').selectOption('raw');
-  await page.waitForFunction(() => document.querySelector('#searchHudLayer')?.textContent === 'Raw records');
+  await expectInputValue(page, '#layerSelect', 'raw');
   await addSearchFilter(page, 'kind', 'exec_command_end');
   await addSearchFilter(page, 'file', 'src/parser.js');
 
@@ -1682,20 +2001,20 @@ test('browser search input treats operator-like text literally and GUI filters s
 
   await expectInputValue(page, '#searchInput', 'alpha owner:me status:failed');
   assert.equal(await page.locator('#searchInput').getAttribute('aria-invalid'), null);
-  assert.equal(await page.locator('#searchHudLayer').textContent(), 'Raw records');
-  assert.equal((await page.locator('#searchFilterBtn').textContent()).trim(), '2 filters');
+  assert.equal(await page.locator('#layerSelect').inputValue(), 'raw');
+  assert.equal((await page.locator('#searchFilterCount').textContent()).trim(), 'Filters · 2');
   assert.equal(await page.locator('#searchKindSelect').inputValue(), 'exec_command_end');
   assert.equal(await page.locator('#searchFileInput').inputValue(), 'src/parser.js');
   assert.equal(requestedUrls.slice(requestStart).some((value) => value.startsWith('/api/sessions?')), false);
 
   await addSearchFilter(page, 'status', 'failed');
   await expectInputValue(page, '#searchInput', 'alpha owner:me status:failed');
-  assert.equal((await page.locator('#searchFilterBtn').textContent()).trim(), '3 filters');
+  assert.equal((await page.locator('#searchFilterCount').textContent()).trim(), 'Filters · 3');
 
   await clearAllSearch(page);
   await expectInputValue(page, '#layerSelect', 'raw');
-  assert.equal(await page.locator('#searchHudLayer').textContent(), 'Raw records');
-  assert.equal(await page.locator('#searchFilterCount').isHidden(), true);
+  assert.equal(await page.locator('#layerSelect').inputValue(), 'raw');
+  assert.equal(await page.locator('#searchFilterCount').textContent(), 'Filters');
 });
 
 test('browser assist filter transition keeps the next free-text edit on the find-refresh path', async (t) => {

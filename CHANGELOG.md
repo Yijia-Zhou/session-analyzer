@@ -4,12 +4,12 @@
 
 ### English
 
-- Rebuilt search as a single-line scope-aware HUD with a non-modal parameter popover, GUI-only structured filters, compact/full count hierarchy, and a shortcut to the canonical global Layer selector.
+- Rebuilt search as a single-line scope-aware HUD with entry-specific parameter focus, idle-state progressive disclosure, a compact results-only surface for free-text input, always-visible Kind/Status/Touched-file quick filters, and a shortcut to the canonical global Layer selector.
 - Search input now always represents literal free text; operator-like text is no longer parsed into filters or Layer changes. Existing backend search, navigation, and project result contracts are unchanged.
 
 ### 中文
 
-- 将搜索重建为感知范围的单行 HUD 与非模态参数弹层，提供纯 GUI 结构化筛选、紧凑/完整计数层级，以及指向唯一全局层级选择器的快捷入口。
+- 将搜索重建为感知范围的单行 HUD：参数入口会定向聚焦，空闲状态采用渐进披露，自由文本输入只展开紧凑结果表面，同时提供常驻的类型/状态/涉及文件快速筛选及指向唯一全局层级选择器的快捷入口。
 - 搜索输入现在始终表示字面自由文本；类似操作符的文本不再解析为筛选或层级切换。现有后端搜索、导航和项目结果契约保持不变。
 
 ## 0.1.0 - 2026-06-18

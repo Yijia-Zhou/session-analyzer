@@ -4,6 +4,7 @@ require('../shared/command-highlighting');
 require('../shared/i18n');
 require('./renderers');
 require('./search-controls');
+require('./search-targets');
 require('./highlight');
 require('../shared/folding');
 require('./navigation');

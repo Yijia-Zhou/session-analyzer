@@ -54,6 +54,9 @@ const allowedZhTerms = new Set([
 const allowedZhPhrases = [
   'JS REPL',
 ];
+const allowedZhTermsByPath = new Map([
+  ['ui.entireProjectScopeShort', new Set(['project'])],
+]);
 
 function stripAllowedNoise(value) {
   let text = String(value || '').replace(/\{[A-Za-z0-9_]+\}/g, ' ');
@@ -168,7 +171,11 @@ test('zh-CN catalog only keeps approved English terms in display text', () => {
   const offenders = [];
   for (const entry of catalogStrings(i18n.catalogs['zh-CN'])) {
     const unexpected = asciiTokens(entry.value)
-      .filter((token) => !allowedZhTerms.has(token.toLowerCase()));
+      .filter((token) => {
+        const normalized = token.toLowerCase();
+        return !allowedZhTerms.has(normalized)
+          && !allowedZhTermsByPath.get(entry.path)?.has(normalized);
+      });
     if (unexpected.length) {
       offenders.push(`${entry.path}: ${JSON.stringify(entry.value)} -> ${[...new Set(unexpected)].join(', ')}`);
     }

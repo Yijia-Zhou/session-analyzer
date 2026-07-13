@@ -5,6 +5,7 @@ const escapeHtml = rendererApi.escapeHtml;
 const renderSections = rendererApi.renderSections;
 const renderTimelineSections = rendererApi.renderTimelineSections;
 const searchControls = window.sessionSearchControls;
+const searchTargets = window.sessionSearchTargets;
 const searchHighlighter = window.sessionSearchHighlighter;
 const foldingApi = window.sessionFolding;
 const i18n = window.sessionI18n;
@@ -156,12 +157,11 @@ const state = {
   searchScope: 'session',
   searchQuery: '',
   searchFilters: { file: '', kind: '', status: '' },
-  searchFilterDraft: '',
   searchTargetRegistry: { key: '', targets: [], activeTargetId: '' },
   searchNavigation: { running: false, queue: [] },
   searchProgrammaticScroll: { active: false, timer: 0, paginationFrame: 0 },
   searchHighlightTimer: 0,
-  searchTargetPreload: { key: '', pages: 0, pending: false },
+  searchTargetPreload: { key: '', pages: 0, pending: false, exhausted: false },
   searchTransientExpansion: { key: '', eventIds: [] },
   searchStructureKey: '',
   searchSurfaceContexts: { sessions: '', timeline: '', detail: '' },
@@ -177,19 +177,19 @@ const el = {
   searchInput: document.getElementById('searchInput'),
   searchScopeButtons: document.querySelectorAll('[data-search-scope]'),
   searchHudScope: document.getElementById('searchHudScope'),
-  searchHudLayer: document.getElementById('searchHudLayer'),
+  searchHudScopeValue: document.getElementById('searchHudScopeValue'),
   searchFilterBtn: document.getElementById('searchFilterBtn'),
   searchFilterCount: document.getElementById('searchFilterCount'),
   localeSelect: document.getElementById('localeSelect'),
   searchAssist: document.getElementById('searchAssist'),
+  searchAssistClose: document.getElementById('searchAssistClose'),
   searchField: document.querySelector('.searchField'),
   searchLayerShortcut: document.getElementById('searchLayerShortcut'),
   searchLayerShortcutValue: document.getElementById('searchLayerShortcutValue'),
-  searchAddFilterBtn: document.getElementById('searchAddFilterBtn'),
-  searchAddFilterMenu: document.getElementById('searchAddFilterMenu'),
   searchFilterRows: document.getElementById('searchFilterRows'),
-  searchFiltersEmpty: document.getElementById('searchFiltersEmpty'),
   searchMetricsPanel: document.getElementById('searchMetricsPanel'),
+  searchResultsSection: document.getElementById('searchResultsSection'),
+  searchAssistFooter: document.getElementById('searchAssistFooter'),
   searchClearAllBtn: document.getElementById('searchClearAllBtn'),
   searchEnterHint: document.getElementById('searchEnterHint'),
   searchKindLabel: document.getElementById('searchKindLabel'),
@@ -262,35 +262,27 @@ function applyStaticLocale() {
   if (el.localeSelect) el.localeSelect.setAttribute('aria-label', t('localeLabel'));
   if (!state.repoRoot && !state.projectLoadingRoot) setText(el.stateLine, t('stateLoading'));
   syncSearchScopeUi();
-  if (el.searchAssist) el.searchAssist.setAttribute('aria-label', t('searchParameters'));
   document.querySelector('[data-search-match-controls]')?.setAttribute('title', t('searchMatchTitle'));
   document.querySelector('[data-search-match-nav="previous"]')?.setAttribute('aria-label', t('previousSearchMatch'));
   document.querySelector('[data-search-match-nav="previous"]')?.setAttribute('title', t('previousSearchMatch'));
   document.querySelector('[data-search-match-nav="next"]')?.setAttribute('aria-label', t('nextSearchMatch'));
   document.querySelector('[data-search-match-nav="next"]')?.setAttribute('title', t('nextSearchMatch'));
   setText(document.getElementById('searchAssistHeading'), t('searchParameters'));
-  setText(document.getElementById('searchAssistEscape'), t('escapeToClose'));
+  if (el.searchAssistClose) {
+    el.searchAssistClose.setAttribute('aria-label', t('closeSearchOptions'));
+    el.searchAssistClose.setAttribute('title', t('closeSearchOptions'));
+  }
   setText(document.getElementById('searchScopeHeading'), t('searchScope'));
-  setText(document.getElementById('searchLayerHeading'), t('activeGlobalLayer'));
-  setText(document.getElementById('searchLayerHint'), t('layerViewerContextHint'));
-  setText(document.getElementById('searchLayerShortcutAction'), t('switchLayer'));
-  setText(document.getElementById('searchFiltersHeading'), t('activeFilters'));
-  setText(el.searchAddFilterBtn, t('addFilter'));
+  setText(document.getElementById('searchLayerHeading'), t('layer'));
+  setText(document.getElementById('searchFiltersHeading'), t('filters'));
   setText(document.getElementById('searchResultsHeading'), t('searchResultsBreakdown'));
-  setText(el.searchFiltersEmpty, t('noStructuredFilters'));
   setText(el.searchClearAllBtn, t('clearAll'));
   el.searchClearAllBtn?.setAttribute('aria-label', t('clearAll'));
   el.searchClearAllBtn?.setAttribute('title', t('clearAllSearchTitle'));
-  document.querySelector('[data-add-search-filter="file"]') && setText(document.querySelector('[data-add-search-filter="file"]'), t('file'));
-  document.querySelector('[data-add-search-filter="kind"]') && setText(document.querySelector('[data-add-search-filter="kind"]'), t('kind'));
-  document.querySelector('[data-add-search-filter="status"]') && setText(document.querySelector('[data-add-search-filter="status"]'), t('status'));
-  document.querySelector('[data-search-filter-row="file"] label') && setText(document.querySelector('[data-search-filter-row="file"] label'), t('file'));
+  document.querySelector('[data-search-filter-row="file"] label') && setText(document.querySelector('[data-search-filter-row="file"] label'), t('touchedFileFilter'));
   document.querySelector('[data-search-filter-row="kind"] label') && setText(document.querySelector('[data-search-filter-row="kind"] label'), t('kind'));
   document.querySelector('[data-search-filter-row="status"] label') && setText(document.querySelector('[data-search-filter-row="status"] label'), t('status'));
-  document.querySelectorAll('[data-remove-search-filter]').forEach((button) => {
-    const key = button.dataset.removeSearchFilter;
-    button.setAttribute('aria-label', t('removeFilter', { label: t(key) }));
-  });
+  if (el.searchFileInput) el.searchFileInput.setAttribute('placeholder', t('anyFile'));
   setSelectOptionText(el.searchKindSelect, '', t('anyKind'));
   setSelectOptionText(el.searchStatusSelect, '', t('anyStatus'));
   setSelectOptionText(el.searchStatusSelect, 'active', searchStatusLabel('active'));
@@ -542,17 +534,12 @@ function currentSearchState() {
   };
 }
 
-function usesCompactSearchLabels() {
-  return window.matchMedia('(max-width: 760px)').matches;
-}
-
 function isAnalyzerInteractionDisabled() {
   return Boolean(state.analyzerDisabled || state.selectingProject || state.projectLoadingRoot || state.projectJobId);
 }
 
 function syncSearchScopeUi() {
   document.body.dataset.searchScope = state.searchScope;
-  const compact = usesCompactSearchLabels();
   const analyzerDisabled = isAnalyzerInteractionDisabled();
   for (const button of el.searchScopeButtons) {
     const scope = button.dataset.searchScope;
@@ -561,14 +548,14 @@ function syncSearchScopeUi() {
     button.textContent = scope === 'session' ? t('currentSessionScope') : t('entireProjectScope');
   }
   if (el.searchHudScope) {
-    el.searchHudScope.textContent = state.searchScope === 'session'
-      ? t(compact ? 'currentSessionScopeShort' : 'currentSessionScope')
-      : t(compact ? 'entireProjectScopeShort' : 'entireProjectScope');
+    const scopeLabel = state.searchScope === 'session'
+      ? t('currentSessionScopeShort')
+      : t('entireProjectScopeShort');
+    setText(el.searchHudScopeValue, scopeLabel);
     el.searchHudScope.title = state.searchScope === 'session' ? t('currentSessionScope') : t('entireProjectScope');
     el.searchHudScope.setAttribute('aria-label', t('searchScopeValue', { value: el.searchHudScope.title }));
     el.searchHudScope.disabled = analyzerDisabled;
   }
-  if (el.searchHudLayer) el.searchHudLayer.disabled = analyzerDisabled;
   if (el.searchFilterBtn) el.searchFilterBtn.disabled = analyzerDisabled;
   const group = document.querySelector('.searchScopeControl');
   if (group) group.setAttribute('aria-label', t('searchScope'));
@@ -731,7 +718,7 @@ function beginSearchTargetContextTransition() {
   const key = searchTargetKey();
   if (state.searchTargetRegistry.key === key) return false;
   clearQueuedSearchNavigations();
-  state.searchTargetPreload = { key: '', pages: 0, pending: false };
+  state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
   highlightRoots().forEach((root) => searchHighlighter.clear(root));
   state.searchHighlight = { query: currentSearchState().q, marks: [] };
   resetSearchTargetRegistry(key);
@@ -741,8 +728,8 @@ function beginSearchTargetContextTransition() {
   return true;
 }
 
-function searchTargetId(searchKey, surface, ownerId, occurrence) {
-  return JSON.stringify([searchKey, surface, ownerId, occurrence]);
+function searchTargetId(searchKey, ownerId) {
+  return searchTargets.targetId(searchKey, ownerId);
 }
 
 function searchTargetIndex() {
@@ -774,27 +761,22 @@ function searchableHighlightOwners() {
   return owners;
 }
 
-function bindSearchTarget(searchKey, owner, occurrence, mark, targetsById) {
-  const id = searchTargetId(searchKey, owner.surface, owner.ownerId, occurrence);
-  let target = targetsById.get(id);
-  if (!target) {
-    target = {
-      id,
-      searchKey,
-      surface: owner.surface,
-      ownerId: owner.ownerId,
-      occurrence,
-      node: null,
-    };
-    state.searchTargetRegistry.targets.push(target);
-    targetsById.set(id, target);
-  }
-  target.node = mark;
+function discoverCanonicalSearchTargets(searchKey) {
+  const result = searchTargets.discover(state.searchTargetRegistry.targets, searchKey, state.currentEvents);
+  state.searchTargetRegistry.targets = result.targets;
+  return result.addedIds;
+}
+
+function bindSearchTarget(owner, occurrence, mark, targetsById) {
+  const id = searchTargetId(state.searchTargetRegistry.key, owner.ownerId);
+  const target = targetsById.get(id);
+  if (!target) return false;
+  searchTargets.bind(target, owner.surface, mark);
   mark.dataset.searchTargetId = id;
   mark.dataset.searchTargetSurface = owner.surface;
   mark.dataset.searchTargetOwner = owner.ownerId;
   mark.dataset.searchTargetOccurrence = String(occurrence);
-  return target;
+  return true;
 }
 
 function resetSearchTransientExpansions() {
@@ -871,36 +853,70 @@ function compactSearchMetricsLabel(model = currentSearchMetricsModel()) {
 
 function renderSearchMetrics() {
   const model = currentSearchMetricsModel();
+  const noMatches = model.mode === 'ready' && (model.scope === 'project'
+    ? model.events === 0
+    : model.jumpTotal === 0 && model.fullTextTotal === 0);
+  if (el.searchResultsSection) el.searchResultsSection.hidden = model.mode === 'idle';
   if (el.searchMetricsPanel) {
     if (model.mode === 'idle') {
-      el.searchMetricsPanel.innerHTML = `<p class="searchMetricsEmpty">${escapeHtml(t(model.scope === 'project' ? 'projectMetricsIdle' : 'sessionMetricsIdle'))}</p>`;
+      el.searchMetricsPanel.innerHTML = '';
     } else if (model.mode === 'loading') {
       el.searchMetricsPanel.innerHTML = `<p class="searchMetricsEmpty">${escapeHtml(t('searching'))}</p>`;
+    } else if (noMatches) {
+      el.searchMetricsPanel.innerHTML = `<p class="searchMetricsEmpty">${escapeHtml(t('noSearchMatches'))}</p>`;
     } else if (model.scope === 'project') {
       el.searchMetricsPanel.innerHTML = `<div class="searchMetric"><span>${escapeHtml(t('matchingSessions'))}</span><strong>${model.sessions}</strong></div>
         <div class="searchMetric"><span>${escapeHtml(t('matchingEvents'))}</span><strong>${model.events}</strong></div>`;
     } else {
-      el.searchMetricsPanel.innerHTML = `<div class="searchMetric"><span>${escapeHtml(t('jumpTargets'))}</span><strong>${model.current} / ${model.jumpTotal} ${escapeHtml(t('discovered'))}</strong></div>
+      const navigation = model.jumpTotal > 0 || model.fullTextTotal > 0
+        ? `<div class="searchMetricsNavigation" data-search-match-controls>
+            <button class="searchInlineBtn" type="button" data-search-match-nav="previous" aria-label="${escapeHtml(t('previousSearchMatch'))}" title="${escapeHtml(t('previousSearchMatch'))}">↑</button>
+            <button class="searchInlineBtn" type="button" data-search-match-nav="next" aria-label="${escapeHtml(t('nextSearchMatch'))}" title="${escapeHtml(t('nextSearchMatch'))}">↓</button>
+          </div>`
+        : '';
+      const canLoadMoreTargets = !state.searchTargetPreload.exhausted
+        && state.offset < state.timelineTotal;
+      el.searchMetricsPanel.innerHTML = `<div class="searchMetric searchMetricTargets"><div class="searchMetricHeader"><span>${escapeHtml(t('jumpTargets'))}</span>${navigation}</div><strong>${model.current} / ${model.jumpTotal} ${escapeHtml(t('discovered'))}</strong></div>
         <div class="searchMetric"><span>${escapeHtml(t('fullTextHits'))}</span><strong>${model.fullTextTotal} ${escapeHtml(t('occurrences'))}</strong></div>
-        <p class="searchMetricsNote">${escapeHtml(t('searchTargetsMayGrow'))}</p>`;
+        <div class="searchMetricsFooter">
+          <p class="searchMetricsNote">${escapeHtml(t('searchTargetsMayGrow'))}</p>
+          ${canLoadMoreTargets ? `<button class="searchMetricsLoadMore" type="button" data-search-load-more-targets${state.searchTargetPreload.pending ? ' disabled' : ''}>${escapeHtml(t(state.searchTargetPreload.pending ? 'loadingMoreSearchTargets' : 'loadMoreSearchTargets'))}</button>` : ''}
+        </div>`;
     }
+    el.searchMetricsPanel.dataset.searchTargetIds = JSON.stringify(
+      state.searchTargetRegistry.targets.map((target) => target.id),
+    );
+    el.searchMetricsPanel.dataset.searchActiveTargetId = state.searchTargetRegistry.activeTargetId;
   }
   if (el.searchEnterHint) {
     el.searchEnterHint.textContent = state.searchScope === 'project' ? t('enterFocusesResults') : t('enterMovesNextTarget');
+    const canNavigate = model.scope === 'project'
+      ? model.mode === 'ready' && model.events > 0
+      : searchDiscoveryContextReady()
+        && model.mode === 'ready'
+        && (model.jumpTotal > 0 || model.fullTextTotal > 0);
+    el.searchEnterHint.hidden = !canNavigate;
   }
+  if (el.searchAssistFooter) el.searchAssistFooter.hidden = !hasActiveSearchExpression();
   return model;
 }
 
 function syncSearchInlineLayout() {
   if (!el.searchField) return;
+  if (el.searchAssist && el.searchInput) {
+    const fieldLeft = el.searchField.getBoundingClientRect().left;
+    const inputLeft = Math.max(0, el.searchInput.getBoundingClientRect().left - fieldLeft);
+    el.searchAssist.style.setProperty('--search-input-inline-start', `${inputLeft}px`);
+  }
   const controls = el.searchField.querySelector('.searchInlineMatches');
   if (!controls) return;
   el.searchField.classList.toggle('searchMetricsConstrained', el.searchField.clientWidth < 460);
 }
 
 function updateSearchMatchControls() {
-  const controls = document.querySelectorAll('[data-search-match-controls]');
   syncSearchTargetRegistryKey();
+  const model = renderSearchMetrics();
+  const controls = document.querySelectorAll('[data-search-match-controls]');
   const { targets } = state.searchTargetRegistry;
   const analyzerDisabled = isAnalyzerInteractionDisabled();
   const sessionNavigation = state.searchScope === 'session' && Boolean(currentSearchState().q);
@@ -912,7 +928,7 @@ function updateSearchMatchControls() {
     control.title = sessionNavigation ? t('searchMatchTitle') : t('projectCompactMatchTitle');
     control.toggleAttribute('data-search-navigation-pending', state.searchNavigation.running);
     const label = control.querySelector('[data-search-match-count]');
-    if (label) label.textContent = compactSearchMetricsLabel(renderSearchMetrics());
+    if (label) label.textContent = compactSearchMetricsLabel(model);
     control.querySelectorAll('[data-search-match-nav]').forEach((button) => {
       button.hidden = !sessionNavigation;
       button.disabled = analyzerDisabled || !canNavigate;
@@ -931,7 +947,7 @@ function maybePreloadSearchTargets() {
 
   const key = searchTargetPreloadKey();
   if (state.searchTargetPreload.key !== key) {
-    state.searchTargetPreload = { key, pages: 0, pending: false };
+    state.searchTargetPreload = { key, pages: 0, pending: false, exhausted: false };
   }
   if (state.searchTargetPreload.pages >= SEARCH_TARGET_PRELOAD_MAX_PAGES) return;
 
@@ -947,8 +963,14 @@ function maybePreloadSearchTargets() {
     });
 }
 
+function liveSearchTargetBinding(target, surface) {
+  return searchTargets.liveBinding(target, surface, (node, candidate) => (
+    node?.isConnected && node.dataset.searchTargetId === candidate.id
+  ));
+}
+
 function liveSearchTargetNode(target) {
-  return target?.node?.isConnected && target.node.dataset.searchTargetId === target.id ? target.node : null;
+  return liveSearchTargetBinding(target, 'timeline') || liveSearchTargetBinding(target, 'inspector');
 }
 
 function endProgrammaticSearchScrollGuard() {
@@ -986,7 +1008,7 @@ function setActiveSearchTarget(target, options = {}) {
   let mark = liveSearchTargetNode(target);
   if (mark) mark.classList.add('activeSearchMark');
 
-  if (target.surface === 'timeline' && (options.scroll || options.syncDetail)) {
+  if (options.scroll || options.syncDetail) {
     const confirmedEventDetail = isSelectedEventDetailView()
       && state.detailView.origin === DETAIL_VIEW_ORIGIN_USER;
     if (!(options.passive && confirmedEventDetail)) {
@@ -1015,17 +1037,18 @@ function refreshSearchHighlights(options = {}) {
   const roots = highlightRoots();
   const searchKey = syncSearchTargetRegistryKey();
   const previousActiveTargetId = state.searchTargetRegistry.activeTargetId;
-  for (const target of state.searchTargetRegistry.targets) target.node = null;
+  searchTargets.resetBindings(state.searchTargetRegistry.targets);
   roots.forEach((root) => searchHighlighter.clear(root));
 
   const query = currentSearchState().q;
   const terms = highlightTerms();
   const marks = [];
   if (terms.length) {
+    discoverCanonicalSearchTargets(searchKey);
     const targetsById = new Map(state.searchTargetRegistry.targets.map((target) => [target.id, target]));
     for (const owner of searchableHighlightOwners()) {
       const ownerMarks = searchHighlighter.apply(owner.root, terms);
-      ownerMarks.forEach((mark, occurrence) => bindSearchTarget(searchKey, owner, occurrence, mark, targetsById));
+      ownerMarks.forEach((mark, occurrence) => bindSearchTarget(owner, occurrence, mark, targetsById));
       marks.push(...ownerMarks);
     }
   }
@@ -1035,7 +1058,8 @@ function refreshSearchHighlights(options = {}) {
   const activeTargetStillKnown = options.preserveActive
     && state.searchTargetRegistry.targets.some((target) => target.id === previousActiveTargetId);
   if (!activeTargetStillKnown) {
-    state.searchTargetRegistry.activeTargetId = state.searchTargetRegistry.targets[0]?.id || '';
+    state.searchTargetRegistry.activeTargetId = state.searchTargetRegistry.targets
+      .find((candidate) => liveSearchTargetNode(candidate))?.id || '';
   }
 
   const target = activeSearchTarget();
@@ -1057,12 +1081,6 @@ function persistedDisplayOverride(eventId) {
   return sessionOverrides[eventId] || '';
 }
 
-function knownTimelineSearchEventIds() {
-  return new Set(state.searchTargetRegistry.targets
-    .filter((target) => target.surface === 'timeline')
-    .map((target) => target.ownerId));
-}
-
 function waitForTimelineIdle() {
   if (!state.timelineLoading) return Promise.resolve();
   return new Promise((resolve) => {
@@ -1076,7 +1094,7 @@ function waitForTimelineIdle() {
 
 function timelineSearchTargets(eventId) {
   return state.searchTargetRegistry.targets.filter((target) => (
-    target.surface === 'timeline' && target.ownerId === eventId
+    target.ownerId === eventId && liveSearchTargetBinding(target, 'timeline')
   ));
 }
 
@@ -1106,24 +1124,12 @@ async function resolveSearchTargetNode(target, searchKey) {
   let node = liveSearchTargetNode(target);
   if (node || !target || searchTargetPreloadKey() !== searchKey) return node;
 
-  if (target.surface === 'session') {
-    refreshSearchHighlights({ preserveActive: true, allowPreload: false });
-    return liveSearchTargetNode(target);
-  }
-
   await ensureEventLoaded(target.ownerId, { allowSearchTargetPreload: false });
   if (searchTargetPreloadKey() !== searchKey) return null;
   node = liveSearchTargetNode(target);
 
   const event = state.currentEvents.find((candidate) => candidate.id === target.ownerId);
   if (!event) return null;
-  if (target.surface === 'inspector') {
-    await loadEventDetail(event);
-    if (searchTargetPreloadKey() !== searchKey) return null;
-    showInspector(event, { replace: true, origin: DETAIL_VIEW_ORIGIN_SEARCH });
-    return liveSearchTargetNode(target);
-  }
-
   if (!node) {
     const override = persistedDisplayOverride(event.id);
     if (!override && displayState(event) !== 'expanded') addSearchTransientExpansion(event.id);
@@ -1165,7 +1171,7 @@ async function materializeNextSearchTarget(direction) {
   if (!search.q || !state.timelineSearchMatchCount || !searchDiscoveryContextReady()) return false;
   const searchKey = searchTargetPreloadKey();
   const currentTarget = activeSearchTarget();
-  const activeEventId = ['timeline', 'inspector'].includes(currentTarget?.surface) ? currentTarget.ownerId : '';
+  const activeEventId = currentTarget?.ownerId || '';
   const activeEventIndex = state.currentEvents.findIndex((event) => event.id === activeEventId);
   const initiallyKnownTargetIds = new Set(state.searchTargetRegistry.targets.map((target) => target.id));
   const attempted = new Set();
@@ -1179,7 +1185,6 @@ async function materializeNextSearchTarget(direction) {
       if (newlyDiscovered.length) {
         return direction < 0 ? newlyDiscovered[newlyDiscovered.length - 1] : newlyDiscovered[0];
       }
-      if (knownTimelineSearchEventIds().has(event.id)) continue;
       const target = await materializeSearchEvent(event, direction, { searchKey });
       if (target) return target;
       if (searchTargetPreloadKey() !== searchKey) return false;
@@ -1227,6 +1232,42 @@ async function materializeNextSearchTarget(direction) {
   if (searchTargetPreloadKey() !== searchKey) return false;
   const wrapStart = activeEventIndex >= 0 ? activeEventIndex + 1 : 0;
   return tryEvents(state.currentEvents.slice(wrapStart).reverse());
+}
+
+async function loadMoreSearchTargets() {
+  const search = currentSearchState();
+  if (search.scope !== 'session' || !search.q || !state.selectedSessionId) return false;
+  if (!searchDiscoveryContextReady() || state.searchNavigation.running || state.searchTargetPreload.pending) return false;
+  const searchKey = searchTargetPreloadKey();
+  if (state.searchTargetPreload.key !== searchKey) {
+    state.searchTargetPreload = { key: searchKey, pages: 0, pending: false, exhausted: false };
+  }
+  const beforeIds = new Set(state.searchTargetRegistry.targets.map((target) => target.id));
+  state.searchTargetPreload.pending = true;
+  updateSearchMatchControls();
+  try {
+    while (searchTargetPreloadKey() === searchKey && state.offset < state.timelineTotal) {
+      const previousOffset = state.offset;
+      await loadTimeline(true, { allowSearchTargetPreload: false });
+      await waitForTimelineIdle();
+      if (searchTargetPreloadKey() !== searchKey) return false;
+      const addedIds = state.searchTargetRegistry.targets
+        .map((target) => target.id)
+        .filter((id) => !beforeIds.has(id));
+      if (addedIds.length) {
+        state.searchTargetPreload.exhausted = false;
+        return true;
+      }
+      if (state.offset <= previousOffset) break;
+    }
+    state.searchTargetPreload.exhausted = state.offset >= state.timelineTotal;
+    return false;
+  } finally {
+    if (state.searchTargetPreload.key === searchKey) {
+      state.searchTargetPreload.pending = false;
+      updateSearchMatchControls();
+    }
+  }
 }
 
 async function navigateSearchMatch(direction) {
@@ -1358,7 +1399,7 @@ function resetDetailPane() {
   state.navigationCategoryId = '';
   state.navigationCategoryManualId = '';
   state.detailHistory = [];
-  state.searchTargetPreload = { key: '', pages: 0, pending: false };
+  state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
   state.detailView = { type: 'profileRules' };
   renderProfileRulesPane({ reveal: false });
   updateSelectedTimelineEvent();
@@ -1713,7 +1754,7 @@ function shouldShowInspectorSummary(event, preview, detail = null) {
 function activeFilters() {
   const search = currentSearchState();
   return searchControls.activeFilterEntries(search, {
-    file: t('file'),
+    file: t('touchedFileFilter'),
     kind: t('kind'),
     status: t('status'),
   }).map((entry) => ({
@@ -1749,9 +1790,9 @@ function renderSearchAssistChips() {
   const analyzerDisabled = isAnalyzerInteractionDisabled();
   if (el.searchFilterCount) {
     el.searchFilterCount.textContent = filterCount
-      ? t(filterCount === 1 ? 'filterCountOne' : 'filterCount', { count: filterCount })
-      : '';
-    el.searchFilterCount.hidden = filterCount === 0;
+      ? t('filterHudCount', { count: filterCount })
+      : t('filters');
+    el.searchFilterCount.hidden = false;
   }
   if (el.searchFilterBtn) {
     el.searchFilterBtn.classList.toggle('active', filterCount > 0);
@@ -1760,24 +1801,14 @@ function renderSearchAssistChips() {
       ? t('activeFilterSummary', { count: filterCount, summary: filterSummary })
       : t('searchFilters'));
   }
-  if (el.searchHudLayer) {
-    el.searchHudLayer.textContent = usesCompactSearchLabels() && activeLayerId() === 'main'
-      ? t('mainTimelineShort')
-      : activeLayerLabel();
-    el.searchHudLayer.title = t('globalLayerValue', { value: activeLayerLabel() });
-  }
   setText(el.searchLayerShortcutValue, activeLayerLabel());
   for (const key of searchControls.FILTER_ORDER) {
     const row = el.searchFilterRows?.querySelector(`[data-search-filter-row="${key}"]`);
     const value = state.searchFilters[key] || '';
-    if (row) row.hidden = !value && state.searchFilterDraft !== key;
-    const addButton = el.searchAddFilterMenu?.querySelector(`[data-add-search-filter="${key}"]`);
-    if (addButton) addButton.disabled = analyzerDisabled || Boolean(value) || state.searchFilterDraft === key;
+    row?.classList.toggle('active', Boolean(value));
   }
-  if (el.searchFiltersEmpty) el.searchFiltersEmpty.hidden = filterCount > 0 || Boolean(state.searchFilterDraft);
-  if (el.searchAddFilterBtn) el.searchAddFilterBtn.disabled = analyzerDisabled;
   if (el.searchLayerShortcut) el.searchLayerShortcut.disabled = analyzerDisabled;
-  el.searchFilterRows?.querySelectorAll('[data-search-filter-control], [data-remove-search-filter]').forEach((control) => {
+  el.searchFilterRows?.querySelectorAll('[data-search-filter-control]').forEach((control) => {
     control.disabled = analyzerDisabled;
   });
   if (el.searchClearAllBtn) el.searchClearAllBtn.disabled = analyzerDisabled || (!state.searchQuery && filterCount === 0);
@@ -1836,29 +1867,51 @@ function syncSearchAssistControls() {
   renderSearchAssistChips();
 }
 
-function showSearchAssist() {
+let searchAssistInvoker = null;
+
+function showSearchAssist({ mode = 'parameters', focusTarget = '' } = {}) {
   if (!el.searchAssist) return;
   if (isAnalyzerInteractionDisabled()) {
     hideSearchAssist();
     return;
   }
-  el.searchAssist.hidden = false;
-  for (const control of [el.searchInput, el.searchHudScope, el.searchHudLayer, el.searchFilterBtn]) {
-    control?.setAttribute('aria-expanded', 'true');
+  if (mode === 'parameters') searchAssistInvoker = document.activeElement;
+  if (mode === 'results' && currentSearchMetricsModel().mode === 'idle') {
+    hideSearchAssist();
+    return;
   }
+  el.searchAssist.dataset.mode = mode;
+  el.searchAssist.hidden = false;
+  el.searchInput?.setAttribute('aria-expanded', mode === 'results' ? 'true' : 'false');
+  el.searchHudScope?.setAttribute('aria-expanded', mode === 'parameters' ? 'true' : 'false');
+  el.searchFilterBtn?.setAttribute('aria-expanded', mode === 'parameters' ? 'true' : 'false');
   syncSearchAssistControls();
+  if (mode !== 'parameters' || !focusTarget) return;
+  const firstVisibleFilterControl = [...(el.searchFilterRows?.querySelectorAll('[data-search-filter-control]') || [])]
+    .find((control) => !control.closest('[data-search-filter-row]')?.hidden && !control.disabled);
+  const target = focusTarget === 'scope'
+    ? [...el.searchScopeButtons].find((button) => button.getAttribute('aria-pressed') === 'true')
+    : focusTarget === 'layer'
+      ? el.searchLayerShortcut
+      : firstVisibleFilterControl;
+  target?.focus();
 }
 
-function hideSearchAssist() {
+function showSearchResultsAssist() {
+  showSearchAssist({ mode: 'results' });
+}
+
+function hideSearchAssist({ restoreFocus = false } = {}) {
   if (!el.searchAssist) return;
   el.searchAssist.hidden = true;
+  delete el.searchAssist.dataset.mode;
   hideFileSuggestions();
-  setAddFilterMenuOpen(false);
-  if (state.searchFilterDraft && !state.searchFilters[state.searchFilterDraft]) state.searchFilterDraft = '';
-  for (const control of [el.searchInput, el.searchHudScope, el.searchHudLayer, el.searchFilterBtn]) {
+  for (const control of [el.searchInput, el.searchHudScope, el.searchFilterBtn]) {
     control?.setAttribute('aria-expanded', 'false');
   }
   renderSearchAssistChips();
+  if (restoreFocus && searchAssistInvoker instanceof HTMLElement) searchAssistInvoker.focus({ preventScroll: true });
+  searchAssistInvoker = null;
 }
 
 function focusSearchEnd() {
@@ -1869,35 +1922,15 @@ function focusSearchEnd() {
 
 function applySearchFilter(operator, value) {
   if (!Object.hasOwn(state.searchFilters, operator)) return;
-  state.searchFilterDraft = '';
-  if (Object.hasOwn(state.searchFilters, operator)) {
-    state.searchFilters = { ...state.searchFilters, [operator]: value || '' };
-    state.searchStructureKey = structuredSearchKey();
-    beginProjectSearchPendingTransition();
-    beginSearchTargetContextTransition();
-    refreshActiveSearch({ structural: true }).catch(showError);
-  }
+  const nextValue = value || '';
+  if (state.searchFilters[operator] === nextValue) return;
+  state.searchFilters = { ...state.searchFilters, [operator]: nextValue };
+  state.searchStructureKey = structuredSearchKey();
+  beginProjectSearchPendingTransition();
+  beginSearchTargetContextTransition();
+  refreshActiveSearch({ structural: true }).catch(showError);
   syncSearchAssistControls();
   updateProfileApplicabilityUi();
-}
-
-function setAddFilterMenuOpen(open) {
-  if (!el.searchAddFilterMenu || !el.searchAddFilterBtn) return;
-  el.searchAddFilterMenu.hidden = !open;
-  el.searchAddFilterBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-}
-
-function beginAddingSearchFilter(key) {
-  if (!Object.hasOwn(state.searchFilters, key)) return;
-  state.searchFilterDraft = key;
-  setAddFilterMenuOpen(false);
-  syncSearchAssistControls();
-  const control = el.searchFilterRows?.querySelector(`[data-search-filter-control="${key}"]`);
-  control?.focus();
-  if (key === 'file') {
-    renderFileSuggestions();
-    setFileSuggestionsOpen(true);
-  }
 }
 
 function normalizeFileSuggestionText(value) {
@@ -1937,12 +1970,33 @@ function visibleFileSuggestions() {
   return suggestions.slice(0, FILE_SUGGESTION_LIMIT);
 }
 
+function positionFileSuggestions() {
+  if (!el.searchFileSuggestions || !el.searchFileInput || el.searchFileSuggestions.hidden) return;
+  const inputRect = el.searchFileInput.getBoundingClientRect();
+  const suggestionRect = el.searchFileSuggestions.getBoundingClientRect();
+  const viewportGap = 8;
+  const controlGap = 4;
+  const spaceBelow = window.innerHeight - inputRect.bottom - viewportGap;
+  const spaceAbove = inputRect.top - viewportGap;
+  const openAbove = spaceBelow < Math.min(suggestionRect.height, 160) && spaceAbove > spaceBelow;
+  const top = openAbove
+    ? Math.max(viewportGap, inputRect.top - suggestionRect.height - controlGap)
+    : Math.min(inputRect.bottom + controlGap, window.innerHeight - suggestionRect.height - viewportGap);
+  const left = Math.min(
+    Math.max(viewportGap, inputRect.left),
+    Math.max(viewportGap, window.innerWidth - inputRect.width - viewportGap),
+  );
+  el.searchFileSuggestions.style.left = `${left}px`;
+  el.searchFileSuggestions.style.top = `${Math.max(viewportGap, top)}px`;
+  el.searchFileSuggestions.style.width = `${inputRect.width}px`;
+}
+
 function setFileSuggestionsOpen(open) {
   if (!el.searchFileSuggestions || !el.searchFileInput) return;
-  const suggestions = visibleFileSuggestions();
-  const shouldOpen = open && suggestions.length > 0;
+  const shouldOpen = open;
   el.searchFileSuggestions.hidden = !shouldOpen;
   el.searchFileInput.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+  if (shouldOpen) positionFileSuggestions();
 }
 
 function hideFileSuggestions() {
@@ -1952,12 +2006,16 @@ function hideFileSuggestions() {
 function renderFileSuggestions() {
   if (!el.searchFileSuggestions) return;
   const suggestions = visibleFileSuggestions();
-  el.searchFileSuggestions.innerHTML = suggestions.map((item) => (
-    `<button class="fileSuggestion" type="button" role="option" data-search-file-suggestion="${escapeHtml(item.file)}">
-      <span class="fileSuggestionPath">${escapeHtml(item.file)}</span>
-      <span class="fileSuggestionHits">${escapeHtml(t('suggestionEventCount', { count: item.count }))}</span>
-    </button>`
-  )).join('');
+  el.searchFileSuggestions.innerHTML = suggestions.length
+    ? suggestions.map((item) => (
+      `<button class="fileSuggestion" type="button" role="option" data-search-file-suggestion="${escapeHtml(item.file)}">
+        <span class="fileSuggestionPath">${escapeHtml(item.file)}</span>
+        <span class="fileSuggestionHits">${escapeHtml(t('suggestionEventCount', { count: item.count }))}</span>
+      </button>`
+    )).join('')
+    : `<span class="fileSuggestionEmpty" role="status">${escapeHtml(t(
+      state.fileSuggestions.length ? 'noMatchingTouchedFiles' : 'noTouchedFilesInScope',
+    ))}</span>`;
   setFileSuggestionsOpen(document.activeElement === el.searchFileInput);
 }
 
@@ -2015,7 +2073,6 @@ function clearActiveFilter(key) {
   if (key === 'all') {
     state.searchQuery = '';
     state.searchFilters = { file: '', kind: '', status: '' };
-    state.searchFilterDraft = '';
   } else if (key === 'q') {
     state.searchQuery = '';
   } else if (Object.hasOwn(state.searchFilters, key)) {
@@ -2158,7 +2215,6 @@ function setAnalyzerDisabled(disabled) {
   const controls = new Set([
     el.searchInput,
     el.searchHudScope,
-    el.searchHudLayer,
     el.searchFilterBtn,
     el.searchLayerShortcut,
     el.layerSelect,
@@ -2213,7 +2269,7 @@ function resetProjectViewState() {
   state.timelineSearchEventCount = 0;
   state.currentEvents = [];
   state.searchSurfaceContexts = { sessions: '', timeline: '', detail: '' };
-  state.searchTargetPreload = { key: '', pages: 0, pending: false };
+  state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
   state.fileSuggestions = [];
   state.fileSuggestionRequestId += 1;
   state.eventKinds = { main: [], protocol: [], raw: [] };
@@ -2756,7 +2812,7 @@ async function drillDownProjectResult(sessionId) {
   state.timelineRequestId += 1;
   state.currentEvents = [];
   state.sessionEventKinds = { main: [], protocol: [], raw: [] };
-  state.searchTargetPreload = { key: '', pages: 0, pending: false };
+  state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
   resetSearchTransientExpansions();
   invalidateNavigationCache();
   resetDetailPane();
@@ -2891,7 +2947,7 @@ async function selectSession(sessionId, options = {}) {
   state.timelineRequestId += 1;
   state.currentEvents = [];
   state.sessionEventKinds = { main: [], protocol: [], raw: [] };
-  state.searchTargetPreload = { key: '', pages: 0, pending: false };
+  state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
   resetSearchTransientExpansions();
   invalidateNavigationCache();
   updateResetFoldsButton();
@@ -3708,7 +3764,6 @@ async function readFromSelectedEvent() {
   state.searchScope = 'session';
   state.projectSearchPendingContext = '';
   state.searchFilters = { file: '', kind: '', status: '' };
-  state.searchFilterDraft = '';
   state.layerId = 'main';
   el.layerSelect.value = state.layerId;
   localStorage.setItem('sessionAnalyzer.layer', state.layerId);
@@ -4424,20 +4479,24 @@ for (const button of el.searchScopeButtons) {
     setSearchScope(button.dataset.searchScope).catch(showError);
   });
 }
-for (const button of [el.searchHudScope, el.searchHudLayer, el.searchFilterBtn]) {
-  button?.addEventListener('click', showSearchAssist);
-}
+el.searchHudScope?.addEventListener('click', () => showSearchAssist({ focusTarget: 'scope' }));
+el.searchFilterBtn?.addEventListener('click', () => showSearchAssist({ focusTarget: 'filters' }));
 el.searchField?.addEventListener('click', (event) => {
   if (isAnalyzerInteractionDisabled()) {
     hideSearchAssist();
     return;
   }
+  if (event.target.closest('[data-search-load-more-targets]')) {
+    loadMoreSearchTargets().catch(showError);
+    return;
+  }
   const nav = event.target.closest('[data-search-match-nav]')?.dataset.searchMatchNav;
+  const preserveResultsAssist = Boolean(event.target.closest('#searchMetricsPanel'));
   if (nav === 'previous') {
-    hideSearchAssist();
+    if (!preserveResultsAssist) hideSearchAssist();
     queueSearchNavigation(-1).catch(showError);
   } else if (nav === 'next') {
-    hideSearchAssist();
+    if (!preserveResultsAssist) hideSearchAssist();
     queueSearchNavigation(1).catch(showError);
   } else if (
     event.target === el.searchField
@@ -4458,6 +4517,7 @@ window.addEventListener('resize', () => {
   syncSearchScopeUi();
   renderSearchAssistChips();
   syncSearchInlineLayout();
+  positionFileSuggestions();
 });
 
 const reload = debounce(() => {
@@ -4471,8 +4531,8 @@ const refreshFind = debounce(() => {
   refreshActiveSearch({ structural: false }).catch(showError);
 }, SEARCH_HIGHLIGHT_INPUT_DELAY_MS);
 
-el.searchInput.addEventListener('focus', showSearchAssist);
-el.searchInput.addEventListener('click', showSearchAssist);
+el.searchInput.addEventListener('focus', showSearchResultsAssist);
+el.searchInput.addEventListener('click', showSearchResultsAssist);
 el.searchInput.addEventListener('keydown', (event) => {
   if (isAnalyzerInteractionDisabled()) {
     event.preventDefault();
@@ -4517,8 +4577,8 @@ el.searchInput.addEventListener('input', () => {
     syncSearchInputValue();
     return;
   }
-  showSearchAssist();
   const queryChanged = commitSearchInput();
+  showSearchResultsAssist();
   if (!queryChanged) return;
   beginProjectSearchPendingTransition();
   const clearedTransientExpansions = reconcileSearchTransientExpansions();
@@ -4544,10 +4604,7 @@ el.searchInput.addEventListener('change', () => {
     return;
   }
   const queryChanged = commitSearchInput();
-  if (!queryChanged) {
-    if (state.searchScope === 'session') refreshFind();
-    return;
-  }
+  if (!queryChanged) return;
   beginProjectSearchPendingTransition();
   if (reconcileSearchTransientExpansions()) renderTimeline();
   const nextStructureKey = structuredSearchKey();
@@ -4572,31 +4629,16 @@ el.searchAssist?.addEventListener('click', (event) => {
     focusSearchEnd();
     return;
   }
-  if (event.target.closest('#searchAddFilterBtn')) {
-    setAddFilterMenuOpen(el.searchAddFilterMenu?.hidden !== false);
-    return;
-  }
-  const add = event.target.closest('[data-add-search-filter]')?.dataset.addSearchFilter;
-  if (add) {
-    beginAddingSearchFilter(add);
-    return;
-  }
-  const remove = event.target.closest('[data-remove-search-filter]')?.dataset.removeSearchFilter;
-  if (remove) {
-    if (state.searchFilterDraft === remove && !state.searchFilters[remove]) {
-      state.searchFilterDraft = '';
-      syncSearchAssistControls();
-    } else {
-      clearActiveFilter(remove);
-    }
-    return;
-  }
   const suggestedFile = event.target.closest('[data-search-file-suggestion]')?.dataset.searchFileSuggestion;
   if (suggestedFile) {
     applySearchFilter('file', suggestedFile);
     hideFileSuggestions();
     return;
   }
+});
+
+el.searchAssistClose?.addEventListener('click', () => {
+  hideSearchAssist({ restoreFocus: true });
 });
 
 el.searchAssist?.addEventListener('focusin', (event) => {
@@ -4608,6 +4650,10 @@ el.searchAssist?.addEventListener('focusin', (event) => {
   renderFileSuggestions();
   setFileSuggestionsOpen(true);
 });
+
+el.searchAssist?.querySelector('.searchAssistBody')?.addEventListener('scroll', () => {
+  positionFileSuggestions();
+}, { passive: true });
 
 el.searchAssist?.addEventListener('change', (event) => {
   if (isAnalyzerInteractionDisabled()) {
@@ -4649,25 +4695,6 @@ el.searchAssist?.addEventListener('keydown', (event) => {
     hideFileSuggestions();
     return;
   }
-  if (event.key === 'Escape' && !el.searchAddFilterMenu?.hidden) {
-    event.preventDefault();
-    event.stopPropagation();
-    setAddFilterMenuOpen(false);
-    el.searchAddFilterBtn?.focus();
-    return;
-  }
-  if (event.key === 'Escape') {
-    const control = event.target.closest('[data-search-filter-control]');
-    if (control) {
-      event.preventDefault();
-      event.stopPropagation();
-      const key = control.dataset.searchFilterControl;
-      if (state.searchFilterDraft === key && !state.searchFilters[key]) state.searchFilterDraft = '';
-      syncSearchAssistControls();
-      focusSearchEnd();
-      return;
-    }
-  }
   if (event.key === 'ArrowDown' && event.target === el.searchFileInput && !el.searchFileSuggestions?.hidden) {
     const firstSuggestion = el.searchFileSuggestions.querySelector('[data-search-file-suggestion]');
     if (firstSuggestion) {
@@ -4700,9 +4727,6 @@ el.searchLayerShortcut?.addEventListener('click', () => {
 
 document.addEventListener('pointerdown', (event) => {
   if (el.searchFileInput && !event.target.closest('.fileSuggestControl')) hideFileSuggestions();
-  if (el.searchAddFilterMenu && !event.target.closest('#searchAddFilterBtn') && !event.target.closest('#searchAddFilterMenu')) {
-    setAddFilterMenuOpen(false);
-  }
   if (!el.searchField || el.searchField.contains(event.target)) return;
   hideSearchAssist();
 });
@@ -4711,13 +4735,12 @@ const reloadForSearchContextChange = () => {
   beginSearchTargetContextTransition();
   if (state.searchScope === 'session') loadSessions().catch(showError);
 };
-el.sortSelect.addEventListener('input', reloadForSearchContextChange);
 el.sortSelect.addEventListener('change', reloadForSearchContextChange);
 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !el.searchAssist?.hidden) {
     event.preventDefault();
-    hideSearchAssist();
+    hideSearchAssist({ restoreFocus: el.searchAssist?.dataset.mode === 'parameters' });
     return;
   }
   if (event.altKey && event.key === 'ArrowRight') {
