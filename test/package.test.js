@@ -85,6 +85,7 @@ test('npm pack manifest contains only runtime package files', () => {
     'public/vendor/highlightjs/github.min.css',
     'public/vendor/highlightjs/highlight.min.js',
     'server.js',
+    'src/codex-code-mode.js',
     'src/codex-detail.js',
     'src/codex-goal.js',
     'src/codex-logical.js',

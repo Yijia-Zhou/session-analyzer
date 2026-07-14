@@ -1,0 +1,3 @@
+{"timestamp":"2026-07-14T00:03:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"exec-unobserved-fixture","turn_id":"turn-unobserved","input":"// Sanitized pending outer exec fixture."}}
+{"timestamp":"2026-07-14T00:03:02.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"exec-unobserved-fixture","turn_id":"turn-unobserved","output":"Script running with cell ID 5151\nLive output:"}}
+{"timestamp":"2026-07-14T00:03:03.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-unobserved","status":"completed"}}

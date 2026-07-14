@@ -39,10 +39,12 @@ When changing product behavior or repository structure:
 - Domain language: `CONTEXT.md`
 - Product spec: `docs/product-specs/session-transcript-analyzer.md`
 - Design doc: `docs/design-docs/logical-event-timeline.md`
+- Code Mode operations design: `docs/design-docs/code-mode-operations.md`
 - Schema update runbook: `docs/design-docs/schema-update-runbook.md`
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
-- Active plans: none
+- Active plans:
+  - `docs/exec-plans/active/2026-07-14-code-mode-operation-grouping.md`
 - Completed plans:
   - `docs/exec-plans/completed/2026-07-13-codex-event-schema-review.md`
   - `docs/exec-plans/completed/2026-07-12-search-jump-target-canonicalization.md`

@@ -1,0 +1,2 @@
+{"timestamp":"2026-07-14T00:04:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"exec-escalated-fixture","turn_id":"turn-escalated","input":"const value = await tools.shell_command({ command: 'Write-Output fixture', sandbox_permissions: 'require_escalated' }); text(value);"}}
+{"timestamp":"2026-07-14T00:04:02.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"exec-escalated-fixture","turn_id":"turn-escalated","output":"Script completed\nSanitized fixture output."}}
