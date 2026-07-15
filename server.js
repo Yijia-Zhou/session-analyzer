@@ -7,7 +7,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const url = require('node:url');
-const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, isPathInsideOrSame, normalizeFsPath, readImagePreview, readRawLine } = require('./src/codex');
+const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getEvent, getTimeline, isPathInsideOrSame, normalizeFsPath, readImagePreview, readRawLine } = require('./src/codex');
 const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
 
@@ -549,6 +549,27 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           return;
         }
         sendJson(res, 200, result);
+        return;
+      }
+
+      const eventMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/events\/([^/]+)$/);
+      if (eventMatch) {
+        const index = requireIndex(state, res);
+        if (!index) return;
+        const event = getEvent(
+          index,
+          decodePathSegment(eventMatch[1]),
+          decodePathSegment(eventMatch[2]),
+          {
+            layer: searchParams.get('layer') || 'main',
+            locale,
+          },
+        );
+        if (!event) {
+          sendError(res, 404, 'Unknown event');
+          return;
+        }
+        sendJson(res, 200, event);
         return;
       }
 

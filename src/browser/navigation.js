@@ -35,9 +35,35 @@
       .filter((category) => category.matches(event) && category.matchesInResult.length);
   }
 
+  function withTemporaryEventReveal(events, reveal) {
+    if (!reveal?.event || events.some((event) => event.id === reveal.event.id)) return events;
+    const result = [...events];
+    const sourceIndex = result.findIndex((event) => event.id === reveal.sourceEventId);
+    result.splice(sourceIndex >= 0 ? sourceIndex + 1 : result.length, 0, reveal.event);
+    return result;
+  }
+
+  function reconcileTemporaryEventReveal({ reveal, detailView, history = [] } = {}) {
+    const selectedEventId = ['inspector', 'rawRefs'].includes(detailView?.type)
+      ? String(detailView?.eventId || '')
+      : '';
+    const temporaryEventId = String(reveal?.event?.id || '');
+    const cleared = Boolean(temporaryEventId && selectedEventId !== temporaryEventId);
+    return {
+      selectedEventId,
+      reveal: cleared ? null : reveal || null,
+      history: cleared
+        ? history.filter((view) => String(view?.eventId || '') !== temporaryEventId)
+        : [...history],
+      cleared,
+    };
+  }
+
   return {
     NAVIGATION_CATEGORIES,
     isUpdatePlanEvent,
     navigationCategoriesForEvent,
+    reconcileTemporaryEventReveal,
+    withTemporaryEventReveal,
   };
 }));

@@ -326,3 +326,42 @@ test('detail sections replace embedded data URLs with markers', async (t) => {
   assert.doesNotMatch(serialized, /data:image\/png;base64/);
   assert.match(serialized, /embedded data URL omitted|data URL omitted|embedded image payload externalized/);
 });
+
+test('Code Mode detail separates exec and wait phases and exposes inspector-only event refs', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+  await writeTranscript(codexHome, repoRoot, id, [
+    { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-detail', turn_id: 'turn-code', input: 'const value = await tools.fixture(); text(value);' } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:02.000Z', payload: { type: 'custom_tool_call_output', call_id: 'exec-detail', turn_id: 'turn-code', output: 'Script running with cell ID 4242\nLive output:' } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:03.000Z', payload: { type: 'function_call', name: 'wait', call_id: 'wait-detail', turn_id: 'turn-code', arguments: '{"cell_id":"4242"}' } },
+    { type: 'event_msg', timestamp: '2026-06-12T10:00:04.000Z', payload: { type: 'mcp_tool_call_end', call_id: 'nested-detail', turn_id: 'turn-code', tool_name: 'fixture_lookup', status: 'failed' } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:05.000Z', payload: { type: 'function_call_output', call_id: 'wait-detail', turn_id: 'turn-code', output: 'Script completed\nfixture result' } },
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const nested = session.logicalEvents.find((event) => event.toolName === 'fixture_lookup');
+  const detail = buildEventDetail(session, operation.id, 'main');
+  const chineseDetail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
+
+  assert.deepEqual(detail.rawRefs.map((ref) => ref.line), [2, 3, 4, 6]);
+  assert.deepEqual(detail.timelineSections.map((section) => section.type), ['kv', 'code', 'terminal', 'kv', 'terminal']);
+  assert.deepEqual(detail.timelineSections.map((section) => section.title), ['Code Mode operation', 'Exec phase', 'Exec output', 'Wait phase', 'Wait output']);
+  assert.deepEqual(detail.timelineSections[0].entries, [
+    { key: 'evidenceState', value: 'output_observed' },
+    { key: 'observationState', value: 'terminal' },
+    { key: 'cell', value: '4242' },
+    { key: 'poll count', value: '1' },
+  ]);
+  assert.deepEqual(detail.inspectorSections, [{
+    type: 'event_refs',
+    title: 'Observed nested activity',
+    items: [{ id: nested.id, label: 'MCP tool', kind: 'mcp_call', status: 'failed' }],
+  }]);
+  assert.equal(Object.hasOwn(detail, 'eventRefs'), false);
+  assert.deepEqual(chineseDetail.timelineSections.map((section) => section.title), ['代码模式操作', '执行阶段', '执行输出', '等待阶段', '等待输出']);
+  assert.equal(chineseDetail.inspectorSections[0].title, '已观测嵌套活动');
+});

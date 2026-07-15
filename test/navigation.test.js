@@ -36,3 +36,64 @@ test('navigation category helpers keep existing event categories', () => {
   assert.ok(planCategories.includes('update_plan'));
   assert.ok(planCategories.includes('plans'));
 });
+
+test('temporary referenced events are revealed beside their source without mutating filtered results', () => {
+  const events = [
+    { id: 'operation', kind: 'other_tool_call' },
+    { id: 'next', kind: 'assistant_message' },
+  ];
+  const referenced = { id: 'nested-failure', kind: 'command', status: 'failed' };
+
+  const revealed = navigation.withTemporaryEventReveal(events, {
+    sourceEventId: 'operation',
+    event: referenced,
+  });
+  assert.deepEqual(revealed.map((event) => event.id), ['operation', 'nested-failure', 'next']);
+  assert.deepEqual(events.map((event) => event.id), ['operation', 'next']);
+  assert.equal(navigation.withTemporaryEventReveal(revealed, { event: referenced }), revealed);
+});
+
+test('temporary reference detail history returns to source with synchronized selection and removes target', () => {
+  const source = { id: 'operation', kind: 'other_tool_call' };
+  const target = { id: 'nested-failure', kind: 'command', status: 'failed' };
+  const filteredEvents = [source];
+  const reveal = { sourceEventId: source.id, event: target };
+  const targetState = navigation.reconcileTemporaryEventReveal({
+    reveal,
+    detailView: { type: 'inspector', eventId: target.id },
+    history: [{ type: 'inspector', eventId: source.id }],
+  });
+  assert.equal(targetState.selectedEventId, target.id);
+  assert.equal(targetState.reveal, reveal);
+  assert.deepEqual(navigation.withTemporaryEventReveal(filteredEvents, targetState.reveal).map((event) => event.id), [source.id, target.id]);
+
+  const backState = navigation.reconcileTemporaryEventReveal({
+    reveal: targetState.reveal,
+    detailView: targetState.history[0],
+    history: [],
+  });
+  assert.equal(backState.selectedEventId, source.id);
+  assert.equal(backState.reveal, null);
+  assert.deepEqual(backState.history, []);
+  assert.deepEqual(navigation.withTemporaryEventReveal(filteredEvents, backState.reveal).map((event) => event.id), [source.id]);
+});
+
+test('leaving a temporary target for another event or profile removes stale target history', () => {
+  const reveal = { sourceEventId: 'source', event: { id: 'temporary-target' } };
+  for (const detailView of [
+    { type: 'inspector', eventId: 'ordinary-event' },
+    { type: 'profileRules' },
+  ]) {
+    const result = navigation.reconcileTemporaryEventReveal({
+      reveal,
+      detailView,
+      history: [
+        { type: 'inspector', eventId: 'source' },
+        { type: 'inspector', eventId: 'temporary-target' },
+      ],
+    });
+    assert.equal(result.reveal, null);
+    assert.equal(result.selectedEventId, detailView.eventId || '');
+    assert.deepEqual(result.history.map((view) => view.eventId), ['source']);
+  }
+});

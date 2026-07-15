@@ -8,7 +8,12 @@ function createCodexLogicalBuilder(deps) {
     tool,
     text,
     usage,
+    codeMode,
   } = deps;
+  const {
+    deriveCodeModeFacts,
+    projectCodeModeOperations,
+  } = codeMode;
   const {
     CANONICAL_SCHEMA_VERSION,
     CODEX_SOURCE_KIND,
@@ -611,6 +616,33 @@ function createCodexLogicalBuilder(deps) {
     });
   }
 
+  function buildCodeModeLogicalEvent(operation, facts, rawById) {
+    const ownedRaws = facts.rawRefs
+      .map((ref) => rawById.get(ref.rawId))
+      .filter(Boolean);
+    const first = ownedRaws[0];
+    const execCall = rawById.get(operation.phases[0]?.callRef?.rawId);
+    const event = createLogicalEvent({
+      id: operation.id,
+      timestamp: first?.timestamp || '',
+      turnId: operation.turnId || first?.turnId || '',
+      kind: 'other_tool_call',
+      subtype: 'code_mode_operation',
+      layer: 'main',
+      role: 'assistant',
+      label: 'Code Mode operation',
+      preview: truncate(execCall?.output || 'Code Mode operation'),
+      searchText: facts.searchableText,
+      severity: 'normal',
+      status: '',
+      toolName: 'exec',
+      rawRefs: facts.rawRefs,
+      channels: [...new Set(ownedRaws.map((raw) => raw.recordType))],
+    });
+    event.codeModeOperation = { ...operation, eventRefs: facts.eventRefs };
+    return event;
+  }
+
   function isWebSearchCall(raw) {
     return raw?.recordType === 'response_item' && raw.payloadType === 'web_search_call';
   }
@@ -887,6 +919,22 @@ function createCodexLogicalBuilder(deps) {
     const byCallId = new Map();
     const goalToolEventsBySignature = new Map();
     const previousGoalSnapshots = new Map();
+    const rawById = new Map(rawEvents.map((raw) => [raw.rawId, raw]));
+    const codeModeProjection = projectCodeModeOperations(rawEvents);
+    const initialCodeModeFacts = deriveCodeModeFacts({
+      projection: codeModeProjection,
+      rawEvents,
+      logicalEvents: [],
+      lifecycleTypes: TOOL_EVENT_TYPES,
+    });
+    const initialFactsByOperation = new Map(initialCodeModeFacts.operationFacts
+      .map((facts) => [facts.operationId, facts]));
+
+    for (const operation of codeModeProjection.operations) {
+      const event = buildCodeModeLogicalEvent(operation, initialFactsByOperation.get(operation.id), rawById);
+      logicalEvents.push(event);
+    }
+    for (const rawId of initialCodeModeFacts.claimedRawIds) consumed.add(rawId);
 
     for (const raw of rawEvents) {
       if (raw.callId) {
@@ -895,8 +943,8 @@ function createCodexLogicalBuilder(deps) {
       }
     }
 
-    for (const [callId, group] of byCallId.entries()) {
-      group.sort((a, b) => a.line - b.line);
+    for (const [callId, callGroup] of byCallId.entries()) {
+      const group = callGroup.filter((raw) => !consumed.has(raw.rawId)).sort((a, b) => a.line - b.line);
       const hasToolShape = group.some((raw) => raw.recordType === 'response_item' && ['function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output', 'image_generation_call'].includes(raw.payloadType))
         || group.some((raw) => raw.recordType === 'event_msg' && TOOL_EVENT_TYPES.has(raw.payloadType));
       if (!hasToolShape) continue;
@@ -1176,6 +1224,23 @@ function createCodexLogicalBuilder(deps) {
 
       logicalEvents.push(buildProtocolEvent(raw, raw.payloadType || raw.recordType, raw.payloadType || raw.recordType));
       consumed.add(raw.rawId);
+    }
+
+    const finalCodeModeFacts = deriveCodeModeFacts({
+      projection: codeModeProjection,
+      rawEvents,
+      logicalEvents,
+      lifecycleTypes: TOOL_EVENT_TYPES,
+    });
+    for (const facts of finalCodeModeFacts.operationFacts) {
+      const event = logicalEvents.find((candidate) => candidate.id === facts.operationId);
+      if (event?.codeModeOperation) {
+        event.codeModeOperation = {
+          ...event.codeModeOperation,
+          eventRefs: facts.eventRefs,
+          phaseEventRefs: facts.phaseEventRefs,
+        };
+      }
     }
 
     const hasUntimestampedEvent = logicalEvents.some((event) => !event.timestamp);

@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createServer } = require('../server');
-const { fileSuggestions, filterSessions, getTimeline } = require('../src/codex');
+const { fileSuggestions, filterSessions, getEvent, getTimeline } = require('../src/codex');
 
 function logicalEvent(id, options = {}) {
   const line = options.line || 1;
@@ -224,6 +224,23 @@ test('timeline reports matching events separately from phrase occurrences withou
   assert.deepEqual(timeline.events.map((event) => event.hasSearchHit), [true, true, false]);
 });
 
+test('event lookup resolves by id and layer without inheriting timeline filters', () => {
+  const index = searchIndex();
+  const source = index.sessionsById.get('first').logicalEvents.find((event) => event.id === 'first-latest-hit');
+  source.eventRefs = [{ id: 'private-ref' }];
+  source.codeModeOperation = { private: true };
+
+  const event = getEvent(index, 'first', source.id, { layer: 'main', locale: 'en' });
+  assert.equal(event.id, source.id);
+  assert.equal(event.status, 'failed');
+  assert.equal(event.hasSearchHit, false);
+  assert.equal(Object.hasOwn(event, 'eventRefs'), false);
+  assert.equal(Object.hasOwn(event, 'codeModeOperation'), false);
+  assert.equal(getEvent(index, 'first', 'first-protocol', { layer: 'main' }), null);
+  assert.equal(getEvent(index, 'first', 'first-protocol', { layer: 'protocol' }).id, 'first-protocol');
+  assert.equal(getEvent(index, 'missing', source.id, { layer: 'main' }), null);
+});
+
 test('file suggestions respect session and layer boundaries and count events once per file', () => {
   const index = searchIndex();
   assert.deepEqual(fileSuggestions(index, { layer: 'main', sessionId: 'first' }), [
@@ -266,6 +283,13 @@ test('HTTP search and suggestion routes expose the additive backend contracts', 
     assert.equal(timeline.total, 3);
     assert.equal(timeline.searchEventCount, 2);
     assert.equal(timeline.searchMatchCount, 3);
+
+    const eventResponse = await fetch('http://127.0.0.1:' + address.port + '/api/sessions/first/events/first-latest-hit?layer=main&q=does-not-match&kind=assistant_message&status=success&tool=wait&file=missing.js');
+    assert.equal(eventResponse.status, 200);
+    assert.equal((await eventResponse.json()).id, 'first-latest-hit');
+
+    const wrongLayerResponse = await fetch('http://127.0.0.1:' + address.port + '/api/sessions/first/events/first-latest-hit?layer=protocol');
+    assert.equal(wrongLayerResponse.status, 404);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }

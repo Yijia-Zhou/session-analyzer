@@ -22,6 +22,7 @@ test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv
   const missingImagePreview = renderSection({ type: 'image_preview', title: 'Image preview', images: [], notice: 'Image <missing>' });
   const rawJson = renderSection({ type: 'raw_json', title: 'Raw JSON', value: { raw: true } });
   const expandedRawJson = renderSection({ type: 'raw_json', title: 'Raw JSON', value: { raw: true }, expanded: true });
+  const eventRefs = renderSection({ type: 'event_refs', title: 'Observed nested activity', items: [{ id: 'event-<1>', label: 'Nested <tool>', kind: 'mcp_call', status: 'failed' }] });
 
   assert.match(markdown, /<strong>safe<\/strong>/);
   assert.match(markdown, /class="sectionTitle">Message/);
@@ -68,6 +69,10 @@ test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv
   assert.match(missingImagePreview, /Image &lt;missing&gt;/);
   assert.match(rawJson, /<details class="rawJsonDetails">/);
   assert.match(expandedRawJson, /<details class="rawJsonDetails" open>/);
+  assert.match(eventRefs, /data-detail-action="jump-event-ref"/);
+  assert.match(eventRefs, /data-event-ref-id="event-&lt;1&gt;"/);
+  assert.match(eventRefs, /Nested &lt;tool&gt;/);
+  assert.doesNotMatch(eventRefs, /Nested <tool>/);
 });
 
 test('renderer outputs patch sections with file summaries, line numbers, and escaped code', () => {

@@ -9,6 +9,7 @@ const {
   codeModeOutputText,
   projectCodeModeOperations,
 } = require('../src/codex-code-mode');
+const { deriveCodeModeFacts } = require('../src/codex-code-mode-facts');
 
 const CODE_MODE_FIXTURE_DIR = path.join(__dirname, 'fixtures', 'code-mode');
 
@@ -360,4 +361,46 @@ test('formal sanitized fixtures cover the Code Mode operation scenarios', () => 
   assert.ok(direct.phaseSpans.some((span) => span.startLine < 2 && span.endLine > 2));
   assert.ok(chain.phaseSpans.some((span) => span.startLine < 6 && span.endLine > 6));
   assert.equal(direct.phaseSpans[0].file, 'test/fixtures/code-mode/direct-terminal.jsonl');
+});
+
+test('associates nested lifecycle ownership only inside one unique closed phase span', () => {
+  const rawEvents = [
+    execCall(1, 'exec-a'),
+    execCall(2, 'exec-b'),
+    execOutput(9, 'exec-b', 'Script completed'),
+    execOutput(10, 'exec-a', 'Script completed'),
+    execCall(20, 'exec-unique'),
+    execOutput(30, 'exec-unique', 'Script completed'),
+  ];
+  const projection = projectCodeModeOperations(rawEvents);
+  const lifecycleTypes = new Set(['mcp_tool_call_begin', 'mcp_tool_call_end']);
+  const nestedEvent = (id, lines) => ({
+    id,
+    rawRefs: lines.map((line) => ({
+      rawId: `${id}:${line}`,
+      file: 'fixtures/code-mode/redacted.jsonl',
+      line,
+      sourceEventType: line === lines[0] ? 'mcp_tool_call_begin' : 'mcp_tool_call_end',
+    })),
+  });
+
+  const facts = deriveCodeModeFacts({
+    projection,
+    rawEvents,
+    logicalEvents: [
+      nestedEvent('ambiguous', [3, 4]),
+      nestedEvent('cross-boundary', [8, 21]),
+      nestedEvent('unique', [22, 23]),
+    ],
+    lifecycleTypes,
+  });
+
+  assert.deepEqual(projection.operations.map((operation) => [
+    operation.outerCallId,
+    facts.operationFacts.find((item) => item.operationId === operation.id).eventRefs,
+  ]), [
+    ['exec-a', []],
+    ['exec-b', []],
+    ['exec-unique', ['unique']],
+  ]);
 });

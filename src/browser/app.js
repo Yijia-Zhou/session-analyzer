@@ -127,6 +127,7 @@ const state = {
   timelineSearchMatchCount: 0,
   timelineSearchEventCount: 0,
   currentEvents: [],
+  temporaryEventReveal: null,
   fileSuggestions: [],
   fileSuggestionRequestId: 0,
   eventKinds: { main: [], protocol: [], raw: [] },
@@ -3106,6 +3107,7 @@ function updateLoadMoreButton() {
 async function loadTimeline(append, options = {}) {
   if (!state.selectedSessionId) return;
   if (append && state.timelineLoading) return;
+  if (!append) state.temporaryEventReveal = null;
   const sessionId = state.selectedSessionId;
   const requestContext = timelineDataContextKey();
   if (append && state.timelineDataContext !== requestContext) return;
@@ -3125,6 +3127,10 @@ async function loadTimeline(append, options = {}) {
       state.currentEvents = state.currentEvents.concat(data.events);
     } else {
       state.currentEvents = data.events;
+    }
+    if (state.temporaryEventReveal
+        && state.currentEvents.some((event) => event.id === state.temporaryEventReveal.event.id)) {
+      state.temporaryEventReveal = null;
     }
     state.offset = state.currentEvents.length;
     state.timelineTotal = data.total;
@@ -3345,8 +3351,10 @@ function renderTimeline() {
     renderProjectSearchView();
     return;
   }
-  el.timeline.innerHTML = `${renderProjectReturnBanner()}${state.currentEvents.map((event) => {
+  el.timeline.innerHTML = `${renderProjectReturnBanner()}${renderedTimelineEvents().map((event) => {
     const ds = displayState(event);
+    const temporaryReveal = state.temporaryEventReveal?.event.id === event.id
+      && !state.currentEvents.some((candidate) => candidate.id === event.id);
     const classes = [
       'event',
       ds,
@@ -3357,6 +3365,7 @@ function renderTimeline() {
       event.id === state.selectedEventId ? 'selected' : '',
       event.hasSearchHit ? 'searchHit' : '',
       ds === 'hidden' ? 'hiddenByProfile' : '',
+      temporaryReveal ? 'temporaryReferenceReveal' : '',
     ].filter(Boolean).join(' ');
     const chips = [
       event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
@@ -3365,6 +3374,7 @@ function renderTimeline() {
       event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t('files'))}</span>` : '',
       event.rawRefs?.length ? `<span class="chip countChip">${event.rawRefs.length} ${escapeHtml(t('raw'))}</span>` : '',
       event.channels?.length ? `<span class="chip channelChip">${escapeHtml(event.channels.join(','))}</span>` : '',
+      temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
     ].join('');
     const toggleLabel = ds === 'expanded' ? t('collapseEvent') : t('expandEvent');
     return `<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
@@ -3441,7 +3451,7 @@ function loadVisibleExpandedDetails() {
   if (!searchDiscoveryContextReady()) return;
   for (const article of el.timeline.querySelectorAll('.event.expanded[data-event-id]')) {
     if (!isInScrollport(article)) continue;
-    const item = state.currentEvents.find((candidate) => candidate.id === article.dataset.eventId);
+    const item = currentTimelineEvent(article.dataset.eventId);
     if (item) ensureEventDetail(item);
   }
 }
@@ -3613,9 +3623,18 @@ function renderInspectorNavigation(event, options = {}) {
 }
 
 function currentSelectedEvent() {
-  return state.currentEvents.find((candidate) => candidate.id === state.selectedEventId)
+  return currentTimelineEvent(state.selectedEventId)
     || currentNavigationCache()?.events.find((candidate) => candidate.id === state.selectedEventId)
     || null;
+}
+
+function renderedTimelineEvents() {
+  return navigationApi.withTemporaryEventReveal(state.currentEvents, state.temporaryEventReveal);
+}
+
+function currentTimelineEvent(eventId) {
+  return state.currentEvents.find((candidate) => candidate.id === eventId)
+    || (state.temporaryEventReveal?.event.id === eventId ? state.temporaryEventReveal.event : null);
 }
 
 async function ensureEventLoaded(eventId, options = {}) {
@@ -3632,15 +3651,35 @@ function scrollToTimelineEvent(eventId) {
   if (article) article.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
-async function inspectAndRevealEvent(target) {
-  await ensureEventLoaded(target.id);
-  const loaded = state.currentEvents.find((event) => event.id === target.id) || target;
+async function inspectAndRevealEvent(target, options = {}) {
+  if (options.temporary) {
+    state.temporaryEventReveal = {
+      sourceEventId: options.sourceEventId || '',
+      event: target,
+    };
+    renderTimeline();
+  } else {
+    await ensureEventLoaded(target.id);
+  }
+  const loaded = currentTimelineEvent(target.id) || target;
   if (displayState(loaded) === 'hidden') {
     setOverride(loaded.id, 'summary');
     renderTimeline();
   }
-  showInspector(loaded, { replace: true, origin: DETAIL_VIEW_ORIGIN_USER });
+  showInspector(loaded, { replace: options.replace !== false, origin: DETAIL_VIEW_ORIGIN_USER });
   scrollToTimelineEvent(loaded.id);
+}
+
+async function inspectEventRef(eventId) {
+  if (!eventId) return;
+  const sourceEventId = state.selectedEventId;
+  const current = currentTimelineEvent(eventId);
+  const target = current || await api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/events/${encodeURIComponent(eventId)}?layer=${encodeURIComponent(activeLayerId())}&locale=${encodeURIComponent(state.locale)}`);
+  await inspectAndRevealEvent(target, {
+    temporary: !current,
+    sourceEventId,
+    replace: false,
+  });
 }
 
 async function navigateSelectedEvent(direction) {
@@ -3678,7 +3717,15 @@ function eventDetailView(type, eventId, options = {}) {
 function selectedEventInCurrentTimeline() {
   const eventId = state.detailView?.eventId || state.selectedEventId;
   if (!eventId) return null;
-  return state.currentEvents.find((candidate) => candidate.id === eventId) || null;
+  return currentTimelineEvent(eventId);
+}
+
+function eventForDetailView(view = state.detailView) {
+  const eventId = String(view?.eventId || '');
+  if (!eventId) return null;
+  return currentTimelineEvent(eventId)
+    || currentNavigationCache()?.events.find((candidate) => candidate.id === eventId)
+    || null;
 }
 
 function convergeSelectedEventDetailView(options = {}) {
@@ -3712,10 +3759,24 @@ function pushDetailView(nextView) {
     state.detailHistory.push(previousView);
   }
   state.detailView = nextView;
+  return reconcileDetailViewState();
 }
 
 function replaceDetailView(nextView) {
   state.detailView = nextView;
+  return reconcileDetailViewState();
+}
+
+function reconcileDetailViewState() {
+  const reconciled = navigationApi.reconcileTemporaryEventReveal({
+    reveal: state.temporaryEventReveal,
+    detailView: state.detailView,
+    history: state.detailHistory,
+  });
+  state.selectedEventId = reconciled.selectedEventId;
+  state.temporaryEventReveal = reconciled.reveal;
+  state.detailHistory = reconciled.history;
+  return reconciled.cleared;
 }
 
 function closeDetailView() {
@@ -3724,26 +3785,31 @@ function closeDetailView() {
   state.selectedEventId = '';
   state.navigationCategoryId = '';
   state.navigationCategoryManualId = '';
+  const hadTemporaryReveal = Boolean(state.temporaryEventReveal);
+  state.temporaryEventReveal = null;
   state.detailView = { type: 'profileRules' };
   renderProfileRulesPane();
+  if (hadTemporaryReveal) renderTimeline();
   updateSelectedTimelineEvent();
 }
 
 function backDetailView() {
   const previous = state.detailHistory.pop() || { type: 'profileRules' };
   state.detailView = previous;
+  const clearedTemporaryReveal = reconcileDetailViewState();
+  if (clearedTemporaryReveal) renderTimeline();
   renderCurrentDetailView();
 }
 
 function renderCurrentDetailView() {
   if (state.detailView.type === 'inspector') {
-    const item = currentSelectedEvent();
+    const item = eventForDetailView();
     if (item) showInspector(item, { replace: true });
     else closeDetailView();
     return;
   }
   if (state.detailView.type === 'rawRefs') {
-    const item = currentSelectedEvent();
+    const item = eventForDetailView();
     if (item) showRaw(item, { replace: true }).catch(showError);
     else closeDetailView();
     return;
@@ -3810,10 +3876,12 @@ function renderDetailShell({ title, subtitle = '', actions = '', body = '', clos
 
 function renderProfileRulesPane(options = {}) {
   state.detailView = { type: 'profileRules' };
+  const clearedTemporaryReveal = reconcileDetailViewState();
   state.detailSelectionKey = '';
   state.selectedEventId = '';
   state.navigationCategoryId = '';
   state.navigationCategoryManualId = '';
+  if (clearedTemporaryReveal) renderTimeline();
   if (options.reveal === true) setMobileView('detail', { scroll: false });
   updateSelectedTimelineEvent();
   if (state.searchScope === 'project') {
@@ -3974,10 +4042,11 @@ function showInspector(event, options = {}) {
   const preview = event.snippet || event.preview || '';
   const detail = state.detailCache[key];
   const chips = renderChips(inspectorChipValues(event));
-  state.selectedEventId = event.id;
   state.detailSelectionKey = key;
-  if (options.replace) replaceDetailView(eventDetailView('inspector', event.id, options));
-  else pushDetailView(eventDetailView('inspector', event.id, options));
+  const clearedTemporaryReveal = options.replace
+    ? replaceDetailView(eventDetailView('inspector', event.id, options))
+    : pushDetailView(eventDetailView('inspector', event.id, options));
+  if (clearedTemporaryReveal) renderTimeline();
   setMobileView('detail');
   updateSelectedTimelineEvent();
   const navigationKey = navigationCacheKey();
@@ -4031,10 +4100,11 @@ async function showRaw(event, options = {}) {
   const refs = sourceRefs(event);
   const layer = activeLayerId();
   const rawKey = `raw:${detailKey(state.selectedSessionId, layer, event.id)}`;
-  state.selectedEventId = event.id;
   state.detailSelectionKey = rawKey;
-  if (options.replace) replaceDetailView(eventDetailView('rawRefs', event.id, options));
-  else pushDetailView(eventDetailView('rawRefs', event.id, options));
+  const clearedTemporaryReveal = options.replace
+    ? replaceDetailView(eventDetailView('rawRefs', event.id, options))
+    : pushDetailView(eventDetailView('rawRefs', event.id, options));
+  if (clearedTemporaryReveal) renderTimeline();
   setMobileView('detail');
   updateSelectedTimelineEvent();
   if (!refs.length) {
@@ -4291,7 +4361,7 @@ el.timeline.addEventListener('click', (event) => {
   const article = event.target.closest('[data-event-id]');
   if (!article) return;
   hideSearchAssist();
-  const item = state.currentEvents.find((candidate) => candidate.id === article.dataset.eventId);
+  const item = currentTimelineEvent(article.dataset.eventId);
   if (!item) return;
   const action = event.target.closest('[data-action]')?.dataset.action || 'inspect';
   if (action === 'toggle') {
@@ -4360,8 +4430,12 @@ el.detail.addEventListener('click', (event) => {
     navigateSelectedEvent(event.target.closest('[data-nav-direction]')?.dataset.navDirection || '').catch(showError);
     return;
   }
+  if (action === 'jump-event-ref') {
+    inspectEventRef(event.target.closest('[data-event-ref-id]')?.dataset.eventRefId || '').catch(showError);
+    return;
+  }
   const key = state.detailSelectionKey.replace(/^raw:/, '');
-  const item = state.currentEvents.find((candidate) => detailKey(state.selectedSessionId, activeLayerId(), candidate.id) === key);
+  const item = renderedTimelineEvents().find((candidate) => detailKey(state.selectedSessionId, activeLayerId(), candidate.id) === key);
   if (!item) return;
   if (action === 'inspect') {
     showInspector(item, { replace: true, origin: DETAIL_VIEW_ORIGIN_USER, retryNavigation: true });

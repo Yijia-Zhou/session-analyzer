@@ -7,7 +7,9 @@ function createCodexDetailBuilder(deps) {
     localization,
     sectionBuilders,
     sectionExtractors,
+    codeMode,
   } = deps;
+  const { codeModeOutputText } = codeMode;
   const {
     CANONICAL_SCHEMA_VERSION,
     CODEX_SOURCE_KIND,
@@ -188,6 +190,7 @@ function createCodexDetailBuilder(deps) {
       case 'hook':
         return extractToolOperationSections(raws, event, splitSectionsForDetail);
       case 'other_tool_call':
+        if (event.subtype === 'code_mode_operation') return extractCodeModeOperationSections(event, raws);
         if (event.toolName === 'update_plan') return extractUpdatePlanSections(raws, event, splitSectionsForDetail);
         return extractToolOperationSections(raws, event, splitSectionsForDetail);
       case 'web_search':
@@ -210,6 +213,69 @@ function createCodexDetailBuilder(deps) {
       default:
         return { timelineSections: [], inspectorSections: [makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed))] };
     }
+  }
+
+  function extractCodeModeOperationSections(event, raws) {
+    const operation = event.codeModeOperation || {};
+    const rawById = new Map(raws.map((raw) => [raw.rawId, raw]));
+    const phases = Array.isArray(operation.phases) ? operation.phases : [];
+    const pollCount = phases.filter((phase) => phase.kind === 'wait').length;
+    const timelineSections = [{
+      type: 'kv',
+      title: 'Code Mode operation',
+      entries: [
+        { key: 'evidenceState', value: String(operation.evidenceState || '') },
+        { key: 'observationState', value: String(operation.observationState || '') },
+        { key: 'cell', value: String(operation.cellId || '') },
+        { key: 'poll count', value: String(pollCount) },
+      ].filter((entry) => entry.value !== ''),
+    }];
+
+    let pollIndex = 0;
+    for (const phase of phases) {
+      const callRaw = rawById.get(phase.callRef?.rawId);
+      const outputRaw = rawById.get(phase.outputRef?.rawId);
+      if (phase.kind === 'exec') {
+        maybePushCodeSection(timelineSections, 'Exec phase', callRaw?.output, 'javascript');
+      } else {
+        pollIndex += 1;
+        timelineSections.push({
+          type: 'kv',
+          title: 'Wait phase',
+          entries: [
+            { key: 'poll', value: String(pollIndex) },
+            { key: 'call', value: String(phase.callId || '') },
+            { key: 'evidenceState', value: String(phase.evidenceState || '') },
+            { key: 'observationState', value: String(phase.observationState || '') },
+            { key: 'cell', value: String(phase.targetCellId || '') },
+          ].filter((entry) => entry.value !== ''),
+        });
+      }
+      if (outputRaw) {
+        maybePushTerminalSection(
+          timelineSections,
+          phase.kind === 'exec' ? 'Exec output' : 'Wait output',
+          codeModeOutputText(outputRaw),
+          'stdout',
+        );
+      }
+    }
+    return { timelineSections, inspectorSections: [] };
+  }
+
+  function codeModeEventRefsSection(event, session, locale) {
+    const ids = event.codeModeOperation?.eventRefs || [];
+    const items = ids.map((id) => {
+      const target = session.logicalEvents.find((candidate) => candidate.id === id);
+      if (!target) return null;
+      return {
+        id: target.id,
+        label: localizedLogicalLabel(target, locale),
+        kind: target.kind,
+        status: target.status,
+      };
+    }).filter(Boolean);
+    return items.length ? { type: 'event_refs', title: 'Observed nested activity', items } : null;
   }
 
   function buildEventDetail(session, eventId, layer = 'main', options = {}) {
@@ -245,6 +311,10 @@ function createCodexDetailBuilder(deps) {
     if (!logical) return null;
     const raws = rawEventsForLogicalEvent(session, logical);
     const detailSections = extractLogicalDetailSections(logical, raws, session);
+    const eventRefsSection = logical.subtype === 'code_mode_operation'
+      ? codeModeEventRefsSection(logical, session, locale)
+      : null;
+    if (eventRefsSection) detailSections.inspectorSections.push(eventRefsSection);
     if (!detailSections.timelineSections.length && !detailSections.inspectorSections.length) {
       detailSections.inspectorSections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
     }

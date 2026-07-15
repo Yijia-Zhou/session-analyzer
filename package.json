@@ -26,6 +26,7 @@
     "server.js",
     "src/codex-code-mode-facts.js",
     "src/codex-code-mode.js",
+    "src/codex-code-mode-facts.js",
     "src/codex.js",
     "src/codex-detail.js",
     "src/codex-goal.js",

@@ -7,6 +7,11 @@ const readline = require('node:readline');
 const MarkdownIt = require('markdown-it');
 const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
 const i18n = require('./shared/i18n');
+const {
+  codeModeOutputText,
+  projectCodeModeOperations,
+} = require('./codex-code-mode');
+const { deriveCodeModeFacts } = require('./codex-code-mode-facts');
 const { createCodexDetailBuilder } = require('./codex-detail');
 const {
   goalResponseFromValue,
@@ -30,7 +35,7 @@ const {
 
 const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
-const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'patch', 'kv', 'notice', 'raw_json', 'token_usage', 'usage_limits', 'user_input', 'plan_update', 'collaboration', 'image_preview']);
+const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'patch', 'kv', 'notice', 'raw_json', 'token_usage', 'usage_limits', 'user_input', 'plan_update', 'collaboration', 'image_preview', 'event_refs']);
 const TOOL_DATA_URL_MARKER = '[embedded data URL omitted; see raw refs]';
 const TIMELINE_DATA_URL_MARKER = '[data URL omitted]';
 const EMBEDDED_IMAGE_EXTERNALIZED_MARKER = '[embedded image payload externalized; open raw refs for source]';
@@ -3150,6 +3155,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
     extractWebSearchSections,
     inferCommandLanguage,
   },
+  codeMode: { codeModeOutputText },
 });
 const { buildEventDetail } = codexDetailBuilder;
 
@@ -3243,6 +3249,10 @@ function planUpdateText(raw) {
 }
 
 const codexLogicalBuilder = createCodexLogicalBuilder({
+  codeMode: {
+    deriveCodeModeFacts,
+    projectCodeModeOperations,
+  },
   envelope: {
     CANONICAL_SCHEMA_VERSION,
     CODEX_SOURCE_KIND,
@@ -3766,6 +3776,7 @@ const codexSearch = createCodexSearch({
 const {
   fileSuggestions,
   filterSessions,
+  getEvent,
   getTimeline,
   matchTerms,
 } = codexSearch;
@@ -3887,6 +3898,7 @@ module.exports = {
   buildEventDetail,
   fileSuggestions,
   filterSessions,
+  getEvent,
   getTimeline,
   eventKindCatalog,
   readImagePreview,

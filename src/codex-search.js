@@ -359,9 +359,21 @@ function createCodexSearch(deps) {
     };
   }
 
+  function getEvent(index, sessionId, eventId, options = {}) {
+    const locale = resolveLocale(options.locale);
+    const session = index.sessionsById.get(sessionId);
+    if (!session) return null;
+    const layer = options.layer || 'main';
+    const sourceEvents = sourceEventsForLayer(session, layer, locale);
+    const event = sourceEvents.find((candidate) => (candidate.id || candidate.rawId) === eventId);
+    if (!event) return null;
+    return layer === 'raw' ? event : logicalEventDto(event, '', locale);
+  }
+
   return {
     fileSuggestions,
     filterSessions,
+    getEvent,
     getTimeline,
     matchTerms,
   };

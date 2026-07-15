@@ -2390,6 +2390,15 @@ body[data-project-mode='selecting'] .searchAssist {
   box-shadow: 0 0 0 1px var(--accent);
 }
 
+.event.temporaryReferenceReveal {
+  border-style: dashed;
+  border-color: var(--warn);
+}
+
+.temporaryReferenceChip {
+  color: var(--warn);
+}
+
 .eventHeader {
   align-items: center;
   display: grid;

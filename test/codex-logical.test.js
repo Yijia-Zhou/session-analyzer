@@ -11,6 +11,10 @@ const {
   normalizeGoalStatus,
 } = require('../src/codex-goal');
 const { createCodexLogicalBuilder } = require('../src/codex-logical');
+const {
+  projectCodeModeOperations,
+} = require('../src/codex-code-mode');
+const { deriveCodeModeFacts } = require('../src/codex-code-mode-facts');
 const { CANONICAL_SCHEMA_VERSION, CODEX_SOURCE_KIND, rawRef } = require('../src/codex-source');
 
 const TOOL_EVENT_TYPES = new Set([
@@ -69,6 +73,7 @@ function uniqueNonEmpty(values) {
 
 function makeLogicalBuilder(overrides = {}) {
   return createCodexLogicalBuilder({
+    codeMode: { deriveCodeModeFacts, projectCodeModeOperations },
     envelope: {
       CANONICAL_SCHEMA_VERSION,
       CODEX_SOURCE_KIND,
@@ -868,4 +873,63 @@ test('logical builder marks patch calls with unknown success as incomplete warni
     label: 'Incomplete patch',
     touchedFiles: ['src/unknown.js'],
   }]);
+});
+
+test('logical builder emits one neutral Code Mode operation and uniquely links nested lifecycle events', () => {
+  const events = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      recordType: 'response_item', payloadType: 'custom_tool_call', callId: 'exec-code-mode', toolName: 'exec', turnId: 'turn-code',
+      output: "for (const item of items) await tools.shell_command({ command: item, sandbox_permissions: 'require_escalated' });",
+      payload: { name: 'exec', input: 'sanitized JavaScript' },
+    }),
+    raw(2, { payloadType: 'patch_apply_end', callId: 'nested-patch', toolName: 'apply_patch', turnId: 'turn-code', status: 'completed', searchText: 'nested-patch-only' }),
+    raw(3, {
+      recordType: 'response_item', payloadType: 'custom_tool_call_output', callId: 'exec-code-mode', turnId: 'turn-code',
+      output: 'Script running with cell ID 4242\nLive output: outer-exec-only',
+      payload: { output: 'Script running with cell ID 4242\nLive output: outer-exec-only' },
+    }),
+    raw(4, {
+      recordType: 'response_item', payloadType: 'function_call', callId: 'wait-code-mode', toolName: 'wait', turnId: 'turn-code',
+      output: '{"cell_id":"4242"}', payload: { name: 'wait', arguments: '{"cell_id":"4242"}' },
+    }),
+    raw(5, { payloadType: 'mcp_tool_call_begin', callId: 'nested-mcp', toolName: 'fixture_lookup', turnId: 'turn-code', status: 'in_progress', searchText: 'nested-mcp-only begin' }),
+    raw(6, { payloadType: 'mcp_tool_call_end', callId: 'nested-mcp', toolName: 'fixture_lookup', turnId: 'turn-code', status: 'failed', searchText: 'nested-mcp-only end' }),
+    raw(7, {
+      recordType: 'response_item', payloadType: 'function_call_output', callId: 'wait-code-mode', turnId: 'turn-code',
+      output: 'Script completed\nouter-wait-only', payload: { output: 'Script completed\nouter-wait-only' },
+    }),
+    raw(8, { recordType: 'response_item', payloadType: 'function_call', callId: 'direct-tool', toolName: 'view_image', output: '{"path":"fixture.png"}' }),
+    raw(9, { recordType: 'response_item', payloadType: 'function_call_output', callId: 'direct-tool', output: '{"ok":true}' }),
+  ]);
+  const operation = events.find((event) => event.subtype === 'code_mode_operation');
+  const nestedPatch = events.find((event) => event.kind === 'patch');
+  const nestedMcp = events.find((event) => event.kind === 'mcp_call');
+
+  assert.ok(operation);
+  assert.deepEqual({
+    kind: operation.kind,
+    subtype: operation.subtype,
+    toolName: operation.toolName,
+    status: operation.status,
+    severity: operation.severity,
+    rawLines: operation.rawRefs.map((ref) => ref.line),
+  }, {
+    kind: 'other_tool_call', subtype: 'code_mode_operation', toolName: 'exec', status: '', severity: 'normal', rawLines: [1, 3, 4, 7],
+  });
+  assert.equal(events.some((event) => event.toolName === 'wait'), false);
+  assert.deepEqual(operation.codeModeOperation.eventRefs, [nestedPatch.id, nestedMcp.id]);
+  assert.deepEqual(nestedPatch.rawRefs.map((ref) => ref.line), [2]);
+  assert.equal(nestedPatch.status, 'success');
+  assert.equal(nestedPatch.severity, 'normal');
+  assert.deepEqual(nestedMcp.rawRefs.map((ref) => ref.line), [5, 6]);
+  assert.equal(nestedMcp.status, 'failed');
+  assert.equal(nestedMcp.severity, 'error');
+  assert.match(operation.searchText, /sanitized JavaScript/);
+  assert.doesNotMatch(operation.searchText, /require_escalated/);
+  assert.match(operation.searchText, /outer-exec-only/);
+  assert.match(operation.searchText, /outer-wait-only/);
+  assert.doesNotMatch(operation.searchText, /nested-(?:patch|mcp)-only/);
+  assert.deepEqual(operation.tags, []);
+  assert.equal(events.filter((event) => event.toolName === 'shell_command').length, 0);
+  assert.ok(events.some((event) => event.toolName === 'view_image'));
 });
