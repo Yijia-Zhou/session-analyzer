@@ -322,6 +322,30 @@ async function makeLongCodexHome(t, options = {}) {
   return { codexHome, repoRoot: longRepoRoot, sessionId };
 }
 
+async function makeCodeModeCodexHome(t) {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-code-mode-'));
+  const codeModeRepoRoot = path.join(codexHome, 'repo');
+  const sessionId = 'cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd';
+  const dir = path.join(codexHome, 'sessions', '2026', '07', '15');
+  const file = path.join(dir, `rollout-2026-07-15T09-00-00-${sessionId}.jsonl`);
+  await fsp.mkdir(codeModeRepoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  const rows = [
+    { timestamp: '2026-07-15T01:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: codeModeRepoRoot } },
+    { timestamp: '2026-07-15T01:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Inspect Code Mode hierarchy.' }] } },
+    { timestamp: '2026-07-15T01:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-browser-hierarchy', turn_id: 'turn-code-mode', input: 'const result = await tools.fixture(); text(result);' } },
+    { timestamp: '2026-07-15T01:00:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-browser-hierarchy', turn_id: 'turn-code-mode', output: 'Script running with cell ID 7373\nInitial output' } },
+    { timestamp: '2026-07-15T01:00:04.000Z', type: 'response_item', payload: { type: 'function_call', name: 'wait', call_id: 'wait-browser-1', turn_id: 'turn-code-mode', arguments: '{"cell_id":"7373"}' } },
+    { timestamp: '2026-07-15T01:00:05.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'wait-browser-1', turn_id: 'turn-code-mode', output: 'Script running with cell ID 7373\nIntermediate output' } },
+    { timestamp: '2026-07-15T01:00:06.000Z', type: 'response_item', payload: { type: 'function_call', name: 'wait', call_id: 'wait-browser-2', turn_id: 'turn-code-mode', arguments: '{"cell_id":"7373"}' } },
+    { timestamp: '2026-07-15T01:00:07.000Z', type: 'event_msg', payload: { type: 'mcp_tool_call_end', call_id: 'nested-browser-hierarchy', turn_id: 'turn-code-mode', tool_name: 'fixture', status: 'completed' } },
+    { timestamp: '2026-07-15T01:00:08.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'wait-browser-2', turn_id: 'turn-code-mode', output: 'Script completed\nFinal browser output' } },
+  ];
+  await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  return { codexHome, repoRoot: codeModeRepoRoot };
+}
+
 async function makeHookCodexHome(t) {
   const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-hook-'));
   const hookRepoRoot = path.join(codexHome, 'repo');
@@ -458,6 +482,39 @@ test('browser locale switch reloads cached expanded event detail', async (t) => 
     switchHiddenLocale(page, 'zh-CN'),
   ]);
   await page.waitForSelector('#timeline .event.kind-command.expanded .eventBody');
+});
+
+test('browser Code Mode detail prioritizes command and final output while keeping wait trace secondary', async (t) => {
+  const fixture = await makeCodeModeCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const session = Array.from(index.sessionsById.values())[0];
+  const operation = session.logicalEvents.find((candidate) => candidate.subtype === 'code_mode_operation');
+  assert.ok(operation, 'fixture should create one Code Mode operation');
+  const { page } = await openApp(t, index, { locale: 'en' });
+  const renderedEventIds = await page.locator('#timeline .event[data-event-id]').evaluateAll((events) => events.map((eventNode) => eventNode.dataset.eventId));
+  assert.ok(renderedEventIds.includes(operation.id), `expected Code Mode event in ${JSON.stringify(renderedEventIds)}`);
+  const event = page.locator(`#timeline .event[data-event-id="${operation.id}"]`);
+
+  await event.click();
+  await page.waitForSelector('#timeline .event .codeModeTrace');
+  assert.match(await event.locator('.commandRun').textContent(), /Command.*tools\.fixture.*Final output.*Final browser output/s);
+  assert.equal(await event.locator('.codeModeTrace').getAttribute('open'), null);
+  assert.equal((await event.textContent()).includes('Operation metadata'), false);
+  assert.equal(await event.locator('.codeModeTracePhase').first().isVisible(), false);
+
+  await waitForDetailView(page, 'inspector');
+  await page.waitForSelector('#detail .inspectorDetailBody');
+  assert.match(await page.locator('#detail .inspectorDetailBody').textContent(), /Operation metadata.*Poll count.*2.*Observed nested activity.*MCP tool/s);
+
+  await switchHiddenLocale(page, 'zh-CN');
+  await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
+  await page.waitForFunction((eventId) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"] .commandRun`)?.textContent.includes('最终输出'), operation.id);
+  assert.match(await event.locator('.commandRun').textContent(), /执行命令.*最终输出/s);
+
+  await event.locator('.codeModeTrace > summary').click();
+  assert.notEqual(await event.locator('.codeModeTrace').getAttribute('open'), null);
+  assert.match(await event.locator('.codeModeTrace').textContent(), /执行阶段.*Initial output.*等待阶段 1.*Intermediate output.*等待阶段 2/s);
+  assert.equal((await event.locator('.codeModeTrace').textContent()).includes('Final browser output'), false);
 });
 
 test('browser topbar width priorities keep search, Layer, and folding controls responsive', async (t) => {

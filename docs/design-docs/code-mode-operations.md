@@ -3,14 +3,14 @@
 ## Metadata / 元数据
 
 - Owner: repository maintainers / 负责人：仓库维护者
-- Status: proposed; A/B presentation decision pending / 状态：提议中；A/B 呈现决策待定
-- Last updated: 2026-07-14 / 最近更新：2026-07-14
-- Related spec: intentionally deferred until the A/B winner is selected / 相关规格：有意延后到 A/B 胜出方案确定后再更新
+- Status: accepted; composite Logical Event selected / 状态：已接受；选用复合逻辑事件
+- Last updated: 2026-07-15 / 最近更新：2026-07-15
+- Related spec: `docs/product-specs/session-transcript-analyzer.md` / 相关规格：`docs/product-specs/session-transcript-analyzer.md`
 - Related design docs: / 相关设计文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/codex-protocol-event-coverage.md`
 - Related plan: / 相关计划：
-  - `docs/exec-plans/active/2026-07-14-code-mode-operation-grouping.md`
+  - `docs/exec-plans/completed/2026-07-14-code-mode-operation-grouping.md`
 
 ## Context / 背景
 
@@ -133,7 +133,7 @@ The implementation must not execute JavaScript to recover escalation, must not t
 
 实现不得为恢复提权信息而执行 JavaScript，不得把非结构化关键字出现当作结构化证据，也不得根据普通输出中的审批相关文本推断失败或拒绝。缺少 approval event 表示“未观测到”，不表示“没有发生审批”。
 
-## A/B representation decision / A/B 呈现决策
+## Representation decision / 呈现决策
 
 ### A: composite Logical Event / A：复合逻辑事件
 
@@ -141,11 +141,19 @@ A emits one Main Timeline event for the operation using the existing `kind: othe
 
 A 在主时间线中为操作发出一个事件，使用现有 `kind: other_tool_call`、`subtype: code_mode_operation` 和 `toolName: exec`。它只拥有外层 exec/wait refs，通过详情 `eventRefs` 暴露相关嵌套 ID，并让嵌套逻辑事件继续独立可见。它不新增 kind，并保持状态中性。
 
+Accepted. The expanded timeline body gives the outer JavaScript command and final observed output the primary visual region. When waits exist, their phase metadata and intermediate outputs live in one collapsed-by-default `code_mode_trace` section after the final output. Operation evidence, observation state, cell ID, and poll count live in the inspector; associated nested events remain independently navigable through inspector-only `event_refs`.
+
+已接受。展开后的 timeline 正文把 outer JavaScript 命令与最终已观测输出作为主要视觉区域。存在 wait 时，各阶段元数据和中间输出位于最终输出之后的单个 `code_mode_trace` section 中，并默认折叠。Operation 的证据状态、观测状态、cell ID 和轮询次数位于 inspector；关联的 nested event 继续通过 inspector 专用 `event_refs` 独立导航。
+
 ### B: non-event group / B：非事件 group
 
 B represents the operation as a stable group/container around child events for the outer exec phase, every Poll Phase, and every associated Observed Nested Activity, without emitting a Logical Event for the operation itself. The group owns the operation search target and one operation metric contribution. Exec and wait children remain independently inspectable inside the group, but Poll Phases contribute zero tool-call metrics; nested event identities and metrics remain unchanged.
 
 B 把操作表示为一个稳定 group/container，其中的子事件包括 outer exec phase、每一个轮询阶段，以及每一个已关联嵌套活动，但不为操作本身发出逻辑事件。该 group 拥有操作搜索目标和一次 operation 指标贡献。exec 与 wait 子项在 group 内保持可独立检查，但轮询阶段贡献零次工具调用指标；nested event 的 identity 与指标保持不变。
+
+Rejected for the product path. Although B preserved the shared facts, it required group-specific API, pagination, search-target, metrics, ordering, and browser state paths, and measured slower cold startup on the comparison corpus. A fits the existing Logical Event contract with less migration risk. The B worktree is intentionally retained as comparison evidence rather than merged.
+
+产品实现不采用 B。虽然 B 保留了共享事实，但它需要 group 专属的 API、分页、搜索目标、指标、顺序和浏览器状态路径，并在对比语料上测得更慢的冷启动。A 能以更低迁移风险适配现有逻辑事件契约。B worktree 有意保留为对比证据，不合并进产品实现。
 
 Neither representation may change the shared grouping, association, status, counting, search, or escalation semantics. The decision is about presentation and DTO fit, not about choosing different facts.
 
@@ -163,9 +171,9 @@ The two implementations must start from the same verified fixture/shared-core co
 - Additional schema/UI complexity and migration risk / 额外 schema/UI 复杂度和迁移风险
 - Deterministic behavior for pending, unobserved-terminal, incomplete-tail, multi-wait, and nested-lifecycle cases / pending、unobserved-terminal、incomplete-tail、multi-wait 和 nested-lifecycle 场景下的确定性行为
 
-After the winner is accepted, update the bilingual product spec and `logical-event-timeline.md` together with the final behavior, record the decision here, and remove experimental-only DTO paths. Until then, neither candidate is an accepted product contract.
+Candidate A was accepted on 2026-07-15 after both candidates passed the symmetric correctness gate. The product spec and `logical-event-timeline.md` now record the composite-event behavior; the main implementation contains no group-container DTO path.
 
-胜出方案获接受后，应根据最终行为同步更新双语产品规格与 `logical-event-timeline.md`，在本文记录决策，并移除仅用于实验的 DTO 路径。在此之前，两个候选方案都不是已接受的产品 contract。
+候选 A 已于 2026-07-15 在两个候选都通过对称正确性门禁后获接受。产品规格与 `logical-event-timeline.md` 现已记录复合事件行为；主实现不包含 group-container DTO 路径。
 
 ## Alternatives considered / 已考虑的备选方案
 
@@ -205,3 +213,4 @@ After the winner is accepted, update the bilingual product spec and `logical-eve
 ## Decision log / 决策日志
 
 - 2026-07-14: Accepted the shared operation semantics and opened an A/B decision between a composite Logical Event and a non-event group. No new kind, product-spec change, or logical-timeline contract is accepted yet. / 2026-07-14：接受共享操作语义，并在复合逻辑事件与非事件 group 之间开启 A/B 决策。当前尚未接受新 kind、产品规格变更或逻辑时间线 contract 变更。
+- 2026-07-15: Selected A after symmetric unit/browser/package validation and directional cold-start comparison. The accepted UI prioritizes command and final output, folds wait trace by default, and keeps operation metadata plus nested-event navigation in the inspector. Both prototype worktrees are retained; only A was integrated. / 2026-07-15：在对称单元/浏览器/package 验证和方向性冷启动对比后选择 A。已接受 UI 优先展示命令和最终输出，默认折叠 wait 过程，并把 operation 元数据与 nested-event 导航保留在 inspector。两个原型 worktree 都继续保留；只有 A 被集成。

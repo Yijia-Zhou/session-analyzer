@@ -363,11 +363,20 @@
       },
       section: {
         'Code Mode operation': 'Code Mode operation',
+        Command: 'Command',
+        'Final output': 'Final output',
+        'Execution trace': 'Execution trace',
+        'Operation metadata': 'Operation metadata',
         'Exec phase': 'Exec phase',
         'Exec output': 'Exec output',
         'Wait phase': 'Wait phase',
         'Wait output': 'Wait output',
         'Observed nested activity': 'Observed nested activity',
+        Call: 'Call',
+        Evidence: 'Evidence',
+        Observation: 'Observation',
+        Cell: 'Cell',
+        'Poll count': 'Poll count',
         Arguments: 'Arguments',
         Patch: 'Patch',
         Output: 'Output',
@@ -868,11 +877,20 @@
       },
       section: {
         'Code Mode operation': '代码模式操作',
+        Command: '执行命令',
+        'Final output': '最终输出',
+        'Execution trace': '执行过程',
+        'Operation metadata': '操作元数据',
         'Exec phase': '执行阶段',
         'Exec output': '执行输出',
         'Wait phase': '等待阶段',
         'Wait output': '等待输出',
         'Observed nested activity': '已观测嵌套活动',
+        Call: '调用',
+        Evidence: '证据状态',
+        Observation: '观测状态',
+        Cell: '运行单元',
+        'Poll count': '轮询次数',
         Arguments: '参数',
         Patch: '文件补丁',
         Output: '输出',
@@ -1089,6 +1107,18 @@
     if (!section || typeof section !== 'object') return section;
     const next = { ...section };
     if (next.title) next.title = sectionTitle(next.title, locale);
+    if (Array.isArray(next.entries)) {
+      next.entries = next.entries.map((entry) => ({ ...entry, key: sectionTitle(entry.key, locale) }));
+    }
+    if (next.type === 'code_mode_trace' && Array.isArray(next.phases)) {
+      next.phases = next.phases.map((phase) => ({
+        ...phase,
+        title: phase.kind === 'wait'
+          ? `${sectionTitle('Wait phase', locale)} ${phase.poll}`
+          : sectionTitle('Exec phase', locale),
+        entries: (phase.entries || []).map((entry) => ({ ...entry, key: sectionTitle(entry.key, locale) })),
+      }));
+    }
     return next;
   }
 

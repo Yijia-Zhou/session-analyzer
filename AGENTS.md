@@ -43,9 +43,9 @@ When changing product behavior or repository structure:
 - Schema update runbook: `docs/design-docs/schema-update-runbook.md`
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
-- Active plans:
-  - `docs/exec-plans/active/2026-07-14-code-mode-operation-grouping.md`
+- Active plans: none
 - Completed plans:
+  - `docs/exec-plans/completed/2026-07-14-code-mode-operation-grouping.md`
   - `docs/exec-plans/completed/2026-07-13-codex-event-schema-review.md`
   - `docs/exec-plans/completed/2026-07-12-search-jump-target-canonicalization.md`
   - `docs/exec-plans/completed/2026-07-06-search-hud-integration.md`

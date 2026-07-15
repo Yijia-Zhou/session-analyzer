@@ -23,6 +23,7 @@ test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv
   const rawJson = renderSection({ type: 'raw_json', title: 'Raw JSON', value: { raw: true } });
   const expandedRawJson = renderSection({ type: 'raw_json', title: 'Raw JSON', value: { raw: true }, expanded: true });
   const eventRefs = renderSection({ type: 'event_refs', title: 'Observed nested activity', items: [{ id: 'event-<1>', label: 'Nested <tool>', kind: 'mcp_call', status: 'failed' }] });
+  const codeModeTrace = renderSection({ type: 'code_mode_trace', title: 'Execution trace', phases: [{ title: 'Wait phase 1', entries: [{ key: 'Call', value: 'wait-<1>' }], output: 'pending <output>' }] });
 
   assert.match(markdown, /<strong>safe<\/strong>/);
   assert.match(markdown, /class="sectionTitle">Message/);
@@ -69,6 +70,11 @@ test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv
   assert.match(missingImagePreview, /Image &lt;missing&gt;/);
   assert.match(rawJson, /<details class="rawJsonDetails">/);
   assert.match(expandedRawJson, /<details class="rawJsonDetails" open>/);
+  assert.match(codeModeTrace, /<details class="codeModeTrace">/);
+  assert.doesNotMatch(codeModeTrace, /codeModeTrace" open/);
+  assert.match(codeModeTrace, /Wait phase 1/);
+  assert.match(codeModeTrace, /wait-&lt;1&gt;/);
+  assert.match(codeModeTrace, /pending &lt;output&gt;/);
   assert.match(eventRefs, /data-detail-action="jump-event-ref"/);
   assert.match(eventRefs, /data-event-ref-id="event-&lt;1&gt;"/);
   assert.match(eventRefs, /Nested &lt;tool&gt;/);

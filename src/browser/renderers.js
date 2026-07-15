@@ -211,7 +211,7 @@
   }
 
   function isCommandSection(section) {
-    return section?.type === 'code' && String(section.title || '').toLowerCase() === 'command';
+    return section?.type === 'code' && (section.role === 'command' || String(section.title || '').toLowerCase() === 'command');
   }
 
   function isTerminalOutputSection(section) {
@@ -364,6 +364,16 @@
     return `<section class="eventSection"><div class="eventRefsBlock">${renderSectionTitle(section)}<ul>${items}</ul></div></section>`;
   }
 
+  function renderCodeModeTrace(section) {
+    const open = section.expanded ? ' open' : '';
+    const phases = (section.phases || []).map((phase) => {
+      const entries = (phase.entries || []).map((entry) => `<span><strong>${escapeHtml(entry.key || '')}</strong>${escapeHtml(entry.value || '')}</span>`).join('');
+      const output = phase.output ? `<pre><code>${escapeHtml(phase.output)}</code></pre>` : '';
+      return `<article class="codeModeTracePhase"><header><strong>${escapeHtml(phase.title || '')}</strong>${entries ? `<div>${entries}</div>` : ''}</header>${output}</article>`;
+    }).join('');
+    return `<section class="eventSection"><details class="codeModeTrace"${open}><summary>${renderInlineTitle(section)}</summary><div class="codeModeTraceBody">${phases}</div></details></section>`;
+  }
+
   function renderSection(section) {
     if (!section || !section.type) return '';
     switch (section.type) {
@@ -399,6 +409,8 @@
         return renderRawJson(section);
       case 'event_refs':
         return renderEventRefs(section);
+      case 'code_mode_trace':
+        return renderCodeModeTrace(section);
       default:
         return renderRawJson({ title: section.title || 'Raw JSON', value: section.value || section });
     }

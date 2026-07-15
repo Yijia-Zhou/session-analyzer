@@ -327,7 +327,7 @@ test('detail sections replace embedded data URLs with markers', async (t) => {
   assert.match(serialized, /embedded data URL omitted|data URL omitted|embedded image payload externalized/);
 });
 
-test('Code Mode detail separates exec and wait phases and exposes inspector-only event refs', async (t) => {
+test('Code Mode detail prioritizes command and final output while folding wait trace into secondary detail', async (t) => {
   const codexHome = await makeTempCodexHome(t);
   const repoRoot = path.join(codexHome, 'repo');
   const id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
@@ -348,20 +348,38 @@ test('Code Mode detail separates exec and wait phases and exposes inspector-only
   const chineseDetail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
 
   assert.deepEqual(detail.rawRefs.map((ref) => ref.line), [2, 3, 4, 6]);
-  assert.deepEqual(detail.timelineSections.map((section) => section.type), ['kv', 'code', 'terminal', 'kv', 'terminal']);
-  assert.deepEqual(detail.timelineSections.map((section) => section.title), ['Code Mode operation', 'Exec phase', 'Exec output', 'Wait phase', 'Wait output']);
-  assert.deepEqual(detail.timelineSections[0].entries, [
-    { key: 'evidenceState', value: 'output_observed' },
-    { key: 'observationState', value: 'terminal' },
-    { key: 'cell', value: '4242' },
-    { key: 'poll count', value: '1' },
-  ]);
-  assert.deepEqual(detail.inspectorSections, [{
+  assert.deepEqual(detail.timelineSections.map((section) => section.type), ['code', 'terminal', 'code_mode_trace']);
+  assert.deepEqual(detail.timelineSections.map((section) => section.title), ['Command', 'Final output', 'Execution trace']);
+  assert.equal(detail.timelineSections[0].role, 'command');
+  assert.match(detail.timelineSections[0].code, /tools\.fixture/);
+  assert.equal(detail.timelineSections[1].text, 'Script completed\nfixture result');
+  assert.equal(detail.timelineSections[2].expanded, undefined);
+  assert.deepEqual(detail.timelineSections[2].phases.map((phase) => phase.title), ['Exec phase', 'Wait phase 1']);
+  assert.match(detail.timelineSections[2].phases[0].output, /Script running with cell ID 4242/);
+  assert.equal(detail.timelineSections[2].phases[1].output, '');
+  assert.deepEqual(detail.inspectorSections[0], {
+    type: 'kv',
+    title: 'Operation metadata',
+    entries: [
+      { key: 'Evidence', value: 'output_observed' },
+      { key: 'Observation', value: 'terminal' },
+      { key: 'Cell', value: '4242' },
+      { key: 'Poll count', value: '1' },
+    ],
+  });
+  assert.deepEqual(detail.inspectorSections[1], {
     type: 'event_refs',
     title: 'Observed nested activity',
     items: [{ id: nested.id, label: 'MCP tool', kind: 'mcp_call', status: 'failed' }],
-  }]);
+  });
   assert.equal(Object.hasOwn(detail, 'eventRefs'), false);
-  assert.deepEqual(chineseDetail.timelineSections.map((section) => section.title), ['代码模式操作', '执行阶段', '执行输出', '等待阶段', '等待输出']);
-  assert.equal(chineseDetail.inspectorSections[0].title, '已观测嵌套活动');
+  assert.deepEqual(chineseDetail.timelineSections.map((section) => section.title), ['执行命令', '最终输出', '执行过程']);
+  assert.deepEqual(chineseDetail.timelineSections[2].phases.map((phase) => phase.title), ['执行阶段', '等待阶段 1']);
+  assert.deepEqual(chineseDetail.inspectorSections[0].entries, [
+    { key: '证据状态', value: 'output_observed' },
+    { key: '观测状态', value: 'terminal' },
+    { key: '运行单元', value: '4242' },
+    { key: '轮询次数', value: '1' },
+  ]);
+  assert.equal(chineseDetail.inspectorSections[1].title, '已观测嵌套活动');
 });

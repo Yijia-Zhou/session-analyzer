@@ -35,7 +35,7 @@ const {
 
 const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
-const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'patch', 'kv', 'notice', 'raw_json', 'token_usage', 'usage_limits', 'user_input', 'plan_update', 'collaboration', 'image_preview', 'event_refs']);
+const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'patch', 'kv', 'notice', 'raw_json', 'token_usage', 'usage_limits', 'user_input', 'plan_update', 'collaboration', 'image_preview', 'event_refs', 'code_mode_trace']);
 const TOOL_DATA_URL_MARKER = '[embedded data URL omitted; see raw refs]';
 const TIMELINE_DATA_URL_MARKER = '[data URL omitted]';
 const EMBEDDED_IMAGE_EXTERNALIZED_MARKER = '[embedded image payload externalized; open raw refs for source]';

@@ -220,47 +220,55 @@ function createCodexDetailBuilder(deps) {
     const rawById = new Map(raws.map((raw) => [raw.rawId, raw]));
     const phases = Array.isArray(operation.phases) ? operation.phases : [];
     const pollCount = phases.filter((phase) => phase.kind === 'wait').length;
-    const timelineSections = [{
+    const timelineSections = [];
+    const inspectorSections = [{
       type: 'kv',
-      title: 'Code Mode operation',
+      title: 'Operation metadata',
       entries: [
-        { key: 'evidenceState', value: String(operation.evidenceState || '') },
-        { key: 'observationState', value: String(operation.observationState || '') },
-        { key: 'cell', value: String(operation.cellId || '') },
-        { key: 'poll count', value: String(pollCount) },
+        { key: 'Evidence', value: String(operation.evidenceState || '') },
+        { key: 'Observation', value: String(operation.observationState || '') },
+        { key: 'Cell', value: String(operation.cellId || '') },
+        { key: 'Poll count', value: String(pollCount) },
       ].filter((entry) => entry.value !== ''),
     }];
 
+    const execPhase = phases.find((phase) => phase.kind === 'exec');
+    const execRaw = rawById.get(execPhase?.callRef?.rawId);
+    maybePushCodeSection(timelineSections, 'Command', execRaw?.output, 'javascript');
+    if (timelineSections.at(-1)?.type === 'code') timelineSections.at(-1).role = 'command';
+
+    const observedOutputs = phases.map((phase) => {
+      const outputRaw = rawById.get(phase.outputRef?.rawId);
+      return outputRaw ? { phase, text: codeModeOutputText(outputRaw) } : null;
+    }).filter((item) => item?.text);
+    const finalObservedOutput = observedOutputs.at(-1);
+    if (finalObservedOutput) {
+      maybePushTerminalSection(timelineSections, 'Final output', finalObservedOutput.text, 'stdout');
+    }
+
+    const tracePhases = [];
     let pollIndex = 0;
     for (const phase of phases) {
-      const callRaw = rawById.get(phase.callRef?.rawId);
       const outputRaw = rawById.get(phase.outputRef?.rawId);
-      if (phase.kind === 'exec') {
-        maybePushCodeSection(timelineSections, 'Exec phase', callRaw?.output, 'javascript');
-      } else {
-        pollIndex += 1;
-        timelineSections.push({
-          type: 'kv',
-          title: 'Wait phase',
-          entries: [
-            { key: 'poll', value: String(pollIndex) },
-            { key: 'call', value: String(phase.callId || '') },
-            { key: 'evidenceState', value: String(phase.evidenceState || '') },
-            { key: 'observationState', value: String(phase.observationState || '') },
-            { key: 'cell', value: String(phase.targetCellId || '') },
-          ].filter((entry) => entry.value !== ''),
-        });
-      }
-      if (outputRaw) {
-        maybePushTerminalSection(
-          timelineSections,
-          phase.kind === 'exec' ? 'Exec output' : 'Wait output',
-          codeModeOutputText(outputRaw),
-          'stdout',
-        );
-      }
+      if (phase.kind === 'wait') pollIndex += 1;
+      tracePhases.push({
+        kind: phase.kind,
+        poll: phase.kind === 'wait' ? pollIndex : 0,
+        entries: [
+          { key: 'Call', value: String(phase.callId || '') },
+          { key: 'Evidence', value: String(phase.evidenceState || '') },
+          { key: 'Observation', value: String(phase.observationState || '') },
+          { key: 'Cell', value: String(phase.targetCellId || operation.cellId || '') },
+        ].filter((entry) => entry.value !== ''),
+        output: outputRaw && outputRaw.rawId !== finalObservedOutput?.phase.outputRef?.rawId
+          ? codeModeOutputText(outputRaw)
+          : '',
+      });
     }
-    return { timelineSections, inspectorSections: [] };
+    if (pollCount > 0) {
+      timelineSections.push({ type: 'code_mode_trace', title: 'Execution trace', phases: tracePhases });
+    }
+    return { timelineSections, inspectorSections };
   }
 
   function codeModeEventRefsSection(event, session, locale) {
