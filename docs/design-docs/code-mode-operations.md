@@ -143,7 +143,11 @@ A 在主时间线中为操作发出一个事件，使用现有 `kind: other_tool
 
 Accepted. The expanded timeline body gives the outer JavaScript command and final observed output the primary visual region. When waits exist, their phase metadata and intermediate outputs live in one collapsed-by-default `code_mode_trace` section after the final output. Operation evidence, observation state, cell ID, and poll count live in the inspector; associated nested events remain independently navigable through inspector-only `event_refs`.
 
+Display extraction is deliberately separate from observation classification. Classification reads the complete outer output so the canonical first line still determines pending or terminal state. Presentation may remove a leading status-only array fragment when a later fragment contains the actual tool result, and strips ANSI terminal control sequences; Raw refs preserve the original fragments and escapes.
+
 已接受。展开后的 timeline 正文把 outer JavaScript 命令与最终已观测输出作为主要视觉区域。存在 wait 时，各阶段元数据和中间输出位于最终输出之后的单个 `code_mode_trace` section 中，并默认折叠。Operation 的证据状态、观测状态、cell ID 和轮询次数位于 inspector；关联的 nested event 继续通过 inspector 专用 `event_refs` 独立导航。
+
+展示提取与观测分类有意分离。分类读取完整 outer output，仍由 canonical 首行判断 pending 或 terminal；展示可以在后续 fragment 包含实际工具结果时移除开头仅含状态的数组 fragment，并剥离 ANSI 终端控制序列。Raw refs 保留原始 fragment 与转义字符。
 
 ### B: non-event group / B：非事件 group
 

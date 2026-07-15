@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   classifyObservedOutput,
+  codeModeDisplayOutputText,
   codeModeOutputText,
   projectCodeModeOperations,
 } = require('../src/codex-code-mode');
@@ -181,6 +182,17 @@ test('decodes text arrays recursively and only accepts the canonical pending fir
     observationState: 'unknown',
     cellId: '',
   });
+});
+
+test('Code Mode display output removes an empty outer status envelope without changing classification', () => {
+  const output = execOutput(1, 'exec-display', [
+    { type: 'input_text', text: 'Script completed\nWall time 3.3 seconds\nOutput:\n' },
+    { type: 'input_text', text: 'Exit code: 0\nWall time: 3 seconds\nOutput:\n\u001b[32;1mFullName\u001b[0m' },
+  ]);
+
+  assert.equal(codeModeOutputText(output), 'Script completed\nWall time 3.3 seconds\nOutput:\n\nExit code: 0\nWall time: 3 seconds\nOutput:\n\u001b[32;1mFullName\u001b[0m');
+  assert.deepEqual(classifyObservedOutput(output), { observationState: 'terminal', cellId: '' });
+  assert.equal(codeModeDisplayOutputText(output), 'Exit code: 0\nWall time: 3 seconds\nOutput:\nFullName');
 });
 
 test('only exposes phase spans for ordered rows in the same physical source file', () => {

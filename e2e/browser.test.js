@@ -339,7 +339,7 @@ async function makeCodeModeCodexHome(t) {
     { timestamp: '2026-07-15T01:00:05.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'wait-browser-1', turn_id: 'turn-code-mode', output: 'Script running with cell ID 7373\nIntermediate output' } },
     { timestamp: '2026-07-15T01:00:06.000Z', type: 'response_item', payload: { type: 'function_call', name: 'wait', call_id: 'wait-browser-2', turn_id: 'turn-code-mode', arguments: '{"cell_id":"7373"}' } },
     { timestamp: '2026-07-15T01:00:07.000Z', type: 'event_msg', payload: { type: 'mcp_tool_call_end', call_id: 'nested-browser-hierarchy', turn_id: 'turn-code-mode', tool_name: 'fixture', status: 'completed' } },
-    { timestamp: '2026-07-15T01:00:08.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'wait-browser-2', turn_id: 'turn-code-mode', output: 'Script completed\nFinal browser output' } },
+    { timestamp: '2026-07-15T01:00:08.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'wait-browser-2', turn_id: 'turn-code-mode', output: [{ type: 'input_text', text: 'Script completed\nWall time 3.3 seconds\nOutput:\n' }, { type: 'input_text', text: 'Exit code: 0\nOutput:\n\u001b[32;1mFinal browser output\u001b[0m' }] } },
   ];
   await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
   t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
@@ -498,6 +498,8 @@ test('browser Code Mode detail prioritizes command and final output while keepin
   await event.click();
   await page.waitForSelector('#timeline .event .codeModeTrace');
   assert.match(await event.locator('.commandRun').textContent(), /Command.*tools\.fixture.*Final output.*Final browser output/s);
+  assert.equal((await event.locator('.commandRun').textContent()).includes('Script completed'), false);
+  assert.doesNotMatch(await event.locator('.commandRun').textContent(), /\[32;1m|\[0m/);
   assert.equal(await event.locator('.codeModeTrace').getAttribute('open'), null);
   assert.equal((await event.textContent()).includes('Operation metadata'), false);
   assert.equal(await event.locator('.codeModeTracePhase').first().isVisible(), false);

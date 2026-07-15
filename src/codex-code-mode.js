@@ -1,5 +1,7 @@
 'use strict';
 
+const { stripAnsiSequences } = require('./shared/terminal-text');
+
 const OBSERVATION_STATES = Object.freeze({
   UNKNOWN: 'unknown',
   PENDING: 'pending',
@@ -78,6 +80,25 @@ function codeModeOutputText(raw) {
   const payload = parsedPayload(raw);
   if (Object.hasOwn(payload, 'output')) return textFromValue(payload.output);
   return textFromValue(parseJsonContainer(raw?.output));
+}
+
+function isOuterStatusEnvelope(text) {
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+  if (!TERMINAL_FIRST_LINES.has(lines[0]) && !PENDING_FIRST_LINE.test(lines[0])) return false;
+  return lines.slice(1).every((line) => {
+    const trimmed = line.trim();
+    return !trimmed || /^Wall time\b/i.test(trimmed) || /^(?:Live )?Output:$/i.test(trimmed);
+  });
+}
+
+function codeModeDisplayOutputText(raw) {
+  const payload = parsedPayload(raw);
+  const value = Object.hasOwn(payload, 'output') ? payload.output : parseJsonContainer(raw?.output);
+  if (!Array.isArray(value)) return stripAnsiSequences(textFromValue(value));
+
+  const fragments = value.map((item) => textFromValue(item)).filter(Boolean);
+  if (fragments.length > 1 && isOuterStatusEnvelope(fragments[0])) fragments.shift();
+  return stripAnsiSequences(fragments.join('\n'));
 }
 
 function firstOutputLine(raw) {
@@ -357,6 +378,7 @@ module.exports = {
   EVIDENCE_STATES,
   OBSERVATION_STATES,
   classifyObservedOutput,
+  codeModeDisplayOutputText,
   codeModeOutputText,
   projectCodeModeOperations,
   waitCellId,

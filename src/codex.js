@@ -8,9 +8,11 @@ const MarkdownIt = require('markdown-it');
 const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
 const i18n = require('./shared/i18n');
 const {
+  codeModeDisplayOutputText,
   codeModeOutputText,
   projectCodeModeOperations,
 } = require('./codex-code-mode');
+const { stripAnsiSequences } = require('./shared/terminal-text');
 const { deriveCodeModeFacts } = require('./codex-code-mode-facts');
 const { createCodexDetailBuilder } = require('./codex-detail');
 const {
@@ -1191,7 +1193,7 @@ function inferTerminalLanguage(text) {
 }
 
 function maybePushTerminalSection(sections, title, text, stream = 'stdout', language = '') {
-  const source = normalizeTerminalReplacementPlaceholders(repairLikelyMojibake(text));
+  const source = normalizeTerminalReplacementPlaceholders(repairLikelyMojibake(stripAnsiSequences(text)));
   if (!source.trim()) return;
   sections.push({ type: 'terminal', title, text: source, stream, language: normalizeLanguage(language || inferTerminalLanguage(source), 'text') });
 }
@@ -3155,7 +3157,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
     extractWebSearchSections,
     inferCommandLanguage,
   },
-  codeMode: { codeModeOutputText },
+  codeMode: { codeModeDisplayOutputText, codeModeOutputText },
 });
 const { buildEventDetail } = codexDetailBuilder;
 

@@ -3460,6 +3460,8 @@ test('command terminal sections repair UTF-8 text decoded as GB18030', () => {
       'Exit code: 0',
       'Wall time: 0.1 seconds',
       'Output:',
+      '\u001b[32;1mANSI heading\u001b[0m',
+      '\u001b]8;;https://example.invalid\u0007linked label\u001b]8;;\u0007',
       `# AI ${decodeUtf8AsGb18030('功能测试视频事件定位工作流')}`,
       '本文档总结 `荣耀-OCR表格提取` 和 `2-语音转文字` 两个场景。',
       'ASCII question? stays as question.',
@@ -3497,6 +3499,9 @@ test('command terminal sections repair UTF-8 text decoded as GB18030', () => {
   const stdout = allSections(detail).find((section) => section.type === 'terminal' && section.title === 'stdout');
   assert.ok(stdout);
   assert.match(stdout.text, /功能测试视频事件定位工作/);
+  assert.match(stdout.text, /ANSI heading/);
+  assert.match(stdout.text, /linked label/);
+  assert.doesNotMatch(stdout.text, /\u001b|\[32;1m|\]8;;/);
   assert.match(stdout.text, /功能测试视频事件定位工作□/);
   assert.match(stdout.text, /本文档总结 `荣耀-OCR表格提取` 和 `2-语音转文字` 两个场景。/);
   assert.match(stdout.text, /ASCII question\? stays as question\./);

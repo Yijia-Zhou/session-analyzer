@@ -9,7 +9,7 @@ function createCodexDetailBuilder(deps) {
     sectionExtractors,
     codeMode,
   } = deps;
-  const { codeModeOutputText } = codeMode;
+  const { codeModeDisplayOutputText } = codeMode;
   const {
     CANONICAL_SCHEMA_VERSION,
     CODEX_SOURCE_KIND,
@@ -239,7 +239,7 @@ function createCodexDetailBuilder(deps) {
 
     const observedOutputs = phases.map((phase) => {
       const outputRaw = rawById.get(phase.outputRef?.rawId);
-      return outputRaw ? { phase, text: codeModeOutputText(outputRaw) } : null;
+      return outputRaw ? { phase, text: codeModeDisplayOutputText(outputRaw) } : null;
     }).filter((item) => item?.text);
     const finalObservedOutput = observedOutputs.at(-1);
     if (finalObservedOutput) {
@@ -261,7 +261,7 @@ function createCodexDetailBuilder(deps) {
           { key: 'Cell', value: String(phase.targetCellId || operation.cellId || '') },
         ].filter((entry) => entry.value !== ''),
         output: outputRaw && outputRaw.rawId !== finalObservedOutput?.phase.outputRef?.rawId
-          ? codeModeOutputText(outputRaw)
+          ? codeModeDisplayOutputText(outputRaw)
           : '',
       });
     }
