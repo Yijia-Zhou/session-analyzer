@@ -96,8 +96,6 @@
         declaredRequest: 'Declared request',
         observedActivity: 'Observed activity',
         resultMatchedExactly: 'Result matched exactly',
-        resultAssociatedByOrder: 'Inferred result',
-        unassociated: 'Unassociated output',
         declaredRequests: '{count} tools',
         clickTimelineEvent: 'Click a timeline event to inspect the original JSONL records.',
         loadMore: 'Load more',
@@ -371,7 +369,8 @@
       },
       section: {
         'Code Mode operation': 'Code Mode operation',
-        'Multi-tool Code Mode operation': 'Multi-tool Code Mode operation',
+        'Multiple operations': 'Multiple operations',
+        'Script operation': 'Script operation',
         'Code Mode source': 'Code Mode source',
         'Shell command': 'Shell command',
         'Apply patch': 'Apply patch',
@@ -424,7 +423,7 @@
         Count: 'Count',
         Command: 'Command',
         'Final output': 'Final output',
-        'Unassociated operation output': 'Unassociated operation output',
+        'Operation output': 'Operation output',
         'Execution trace': 'Execution trace',
         'Operation metadata': 'Operation metadata',
         'Projection evidence': 'Projection evidence',
@@ -443,6 +442,8 @@
         'Declared requests': 'Declared requests',
         'Request evidence': 'Request evidence',
         'Result association': 'Result association',
+        'Result association note': 'Result association note',
+        'No result output matched the supported shape': 'No result output matched the supported shape',
         Arguments: 'Arguments',
         Patch: 'Patch',
         Output: 'Output',
@@ -553,8 +554,6 @@
         declaredRequest: 'Declared request',
         observedActivity: 'Observed activity',
         resultMatchedExactly: 'Result matched exactly',
-        resultAssociatedByOrder: 'Result associated by order',
-        unassociated: 'Unassociated',
         imageAlt: 'Image preview',
         imageError: 'Image preview could not be loaded.',
         imageUnavailable: 'Image preview is unavailable.',
@@ -647,8 +646,6 @@
         declaredRequest: '声明的请求',
         observedActivity: '已观测活动',
         resultMatchedExactly: '结果精确匹配',
-        resultAssociatedByOrder: '推断结果',
-        unassociated: '未关联输出',
         declaredRequests: '{count} 个工具',
         clickTimelineEvent: '点击时间线事件查看原始 JSONL 记录。',
         loadMore: '加载更多',
@@ -979,7 +976,8 @@
       },
       section: {
         'Code Mode operation': '代码模式操作',
-        'Multi-tool Code Mode operation': '多工具代码模式操作',
+        'Multiple operations': '多个操作',
+        'Script operation': '脚本操作',
         'Code Mode source': '代码模式源码',
         'Shell command': '终端命令',
         'Apply patch': '应用补丁',
@@ -1032,7 +1030,7 @@
         Count: '数量',
         Command: '执行命令',
         'Final output': '最终输出',
-        'Unassociated operation output': '未关联的操作输出',
+        'Operation output': '操作输出',
         'Execution trace': '执行过程',
         'Operation metadata': '操作元数据',
         'Projection evidence': '投影证据',
@@ -1051,6 +1049,8 @@
         'Declared requests': '声明请求数',
         'Request evidence': '请求证据',
         'Result association': '结果关联',
+        'Result association note': '结果关联说明',
+        'No result output matched the supported shape': '未检测到满足受支持形态的结果输出',
         Arguments: '参数',
         Patch: '文件补丁',
         Output: '输出',
@@ -1161,8 +1161,6 @@
         declaredRequest: '声明的请求',
         observedActivity: '已观测嵌套活动',
         resultMatchedExactly: '结果精确匹配',
-        resultAssociatedByOrder: '结果按顺序关联',
-        unassociated: '未关联',
         imageAlt: '图片预览',
         imageError: '图片预览无法加载。',
         imageUnavailable: '图片预览不可用。',
@@ -1296,7 +1294,11 @@
     const next = { ...section };
     if (next.title) next.title = sectionTitle(next.title, locale);
     if (Array.isArray(next.entries)) {
-      next.entries = next.entries.map((entry) => ({ ...entry, key: sectionTitle(entry.key, locale) }));
+      next.entries = next.entries.map((entry) => ({
+        ...entry,
+        key: sectionTitle(entry.key, locale),
+        value: entry.key === 'Result association note' ? sectionTitle(entry.value, locale) : entry.value,
+      }));
     }
     if (next.type === 'collaboration') {
       next.fields = (next.fields || []).map((field) => ({

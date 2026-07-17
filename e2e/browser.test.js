@@ -346,6 +346,24 @@ async function makeCodeModeCodexHome(t) {
   return { codexHome, repoRoot: codeModeRepoRoot };
 }
 
+async function makeRawCodeModeCodexHome(t) {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-code-mode-raw-'));
+  const rawRepoRoot = path.join(codexHome, 'repo');
+  const sessionId = 'cececece-cece-cece-cece-cececececece';
+  const dir = path.join(codexHome, 'sessions', '2026', '07', '15');
+  const file = path.join(dir, `rollout-2026-07-15T10-00-00-${sessionId}.jsonl`);
+  await fsp.mkdir(rawRepoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  const rows = [
+    { timestamp: '2026-07-15T02:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: rawRepoRoot } },
+    { timestamp: '2026-07-15T02:00:01.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-browser-raw', input: 'const args = { plan: [] }; const plan = await tools.update_plan(args); text(plan);' } },
+    { timestamp: '2026-07-15T02:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-browser-raw', output: 'Script completed\nOutput:\n{}' } },
+  ];
+  await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  return { codexHome, repoRoot: rawRepoRoot };
+}
+
 async function makeAdaptiveCodeModeCodexHome(t) {
   const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-code-mode-adaptive-'));
   const adaptiveRepoRoot = path.join(codexHome, 'repo');
@@ -555,7 +573,7 @@ test('browser locale switch reloads cached expanded event detail', async (t) => 
   await page.waitForSelector('#timeline .event.kind-command.expanded .eventBody');
 });
 
-test('browser single-tool Code Mode keeps native request and unassociated output primary while moving trace to inspector', async (t) => {
+test('browser single-tool Code Mode keeps native request and operation output primary while moving trace to inspector', async (t) => {
   const fixture = await makeCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const session = Array.from(index.sessionsById.values())[0];
@@ -569,14 +587,15 @@ test('browser single-tool Code Mode keeps native request and unassociated output
   await page.waitForFunction((eventId) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`)?.classList.contains('code-mode-single-tool'), operation.id);
   assert.equal(await event.locator('.eventKind').textContent(), 'Wait for subagent');
   const compactHeader = await event.locator('.eventHeader').textContent();
-  assert.match(compactHeader, /Code Mode.*Unassociated output/s);
+  assert.match(compactHeader, /Code Mode/);
+  assert.doesNotMatch(compactHeader, /Unassociated|Unattributed/);
   assert.doesNotMatch(compactHeader, /Declared request|response_item|2 raw|wait_agent/);
   assert.equal(compactHeader.includes('exec'), false);
 
   await event.click();
   await page.waitForSelector(`#timeline .event[data-event-id="${operation.id}"] .collaborationBlock`);
   assert.match(await event.locator('.collaborationBlock').textContent(), /Wait for subagent.*Timeout ms.*1000/s);
-  assert.match(await event.locator('.terminalBlock').textContent(), /Unassociated operation output.*Final browser output/s);
+  assert.match(await event.locator('.terminalBlock').textContent(), /Operation output.*Final browser output/s);
   assert.equal((await event.locator('.terminalBlock').textContent()).includes('Script completed'), false);
   assert.doesNotMatch(await event.locator('.terminalBlock').textContent(), /\[32;1m|\[0m/);
   assert.equal(await event.locator('.codeModeTrace').count(), 0);
@@ -584,15 +603,16 @@ test('browser single-tool Code Mode keeps native request and unassociated output
 
   await waitForDetailView(page, 'inspector');
   await page.waitForSelector('#detail .inspectorDetailBody');
-  assert.match(await page.locator('#detail .inspectorDetailBody').textContent(), /Operation metadata.*Poll count.*2.*Projection evidence.*wait_agent.*Code Mode source.*Execution trace.*Observed nested activity.*MCP tool/s);
+  assert.match(await page.locator('#detail .inspectorDetailBody').textContent(), /Operation metadata.*Poll count.*2.*Projection evidence.*wait_agent.*Result association note.*No result output matched the supported shape.*Code Mode source.*Execution trace.*Observed nested activity.*MCP tool/s);
   const inspectorTrace = page.locator('#detail .codeModeTrace');
   assert.equal(await inspectorTrace.getAttribute('open'), null);
 
   await switchHiddenLocale(page, 'zh-CN');
   await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
-  await page.waitForFunction((eventId) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"] .terminalBlock`)?.textContent.includes('未关联的操作输出'), operation.id);
+  await page.waitForFunction((eventId) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"] .terminalBlock`)?.textContent.includes('操作输出'), operation.id);
   assert.equal(await event.locator('.eventKind').textContent(), '等待子代理');
-  assert.match(await event.locator('.eventHeader').textContent(), /代码模式.*未关联输出/s);
+  assert.match(await event.locator('.eventHeader').textContent(), /代码模式/);
+  assert.doesNotMatch(await event.locator('.eventHeader').textContent(), /未关联|未归属/);
   assert.equal((await event.locator('.eventHeader').textContent()).includes('wait_agent'), false);
 
   await event.click();
@@ -603,6 +623,27 @@ test('browser single-tool Code Mode keeps native request and unassociated output
   assert.notEqual(await localizedInspectorTrace.getAttribute('open'), null);
   assert.match(await localizedInspectorTrace.textContent(), /执行阶段.*Initial output.*等待阶段 1.*Intermediate output.*等待阶段 2/s);
   assert.equal((await localizedInspectorTrace.textContent()).includes('Final browser output'), false);
+});
+
+test('browser Code Mode raw fallback keeps a shared origin tag instead of the outer exec tool tag', async (t) => {
+  const fixture = await makeRawCodeModeCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const session = Array.from(index.sessionsById.values())[0];
+  const operation = session.logicalEvents.find((candidate) => candidate.subtype === 'code_mode_operation');
+  assert.ok(operation);
+
+  const { page } = await openApp(t, index, { locale: 'en' });
+  const event = page.locator(`#timeline .event[data-event-id="${operation.id}"]`);
+  await page.waitForFunction((eventId) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`)?.classList.contains('code-mode-raw-code-mode'), operation.id);
+  assert.equal(await event.locator('.eventKind').textContent(), 'Script operation');
+  assert.match(await event.locator('.eventHeader').textContent(), /Code Mode/);
+  assert.equal(await event.locator('.codeModeChip').count(), 1);
+  assert.equal(await event.locator('.toolChip').count(), 0);
+
+  await switchHiddenLocale(page, 'zh-CN');
+  await page.waitForFunction((eventId) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"] .eventKind`)?.textContent === '脚本操作', operation.id);
+  assert.match(await event.locator('.eventHeader').textContent(), /代码模式/);
+  assert.equal(await event.locator('.toolChip').count(), 0);
 });
 
 test('browser Code Mode adaptively unwraps one declared tool and labels multiple declared tools without changing counts', async (t) => {
@@ -631,7 +672,8 @@ test('browser Code Mode adaptively unwraps one declared tool and labels multiple
   const multiEvent = page.locator(`#timeline .event[data-event-id="${multi.id}"]`);
   const requestOnlyEvent = page.locator(`#timeline .event[data-event-id="${requestOnly.id}"]`);
   assert.equal(await singleEvent.locator('.eventKind').textContent(), 'Plan update');
-  assert.match(await singleEvent.locator('.eventHeader').textContent(), /Code Mode.*Inferred result/s);
+  assert.match(await singleEvent.locator('.eventHeader').textContent(), /Code Mode/);
+  assert.doesNotMatch(await singleEvent.locator('.eventHeader').textContent(), /Result output/);
   assert.doesNotMatch(await singleEvent.locator('.eventHeader').textContent(), /Declared request|response_item|2 raw|update_plan/);
   assert.equal(await singleEvent.locator('.toolChip').count(), 0, 'the native single-tool title makes the tool-name chip redundant');
   await singleEvent.click();
@@ -640,9 +682,10 @@ test('browser Code Mode adaptively unwraps one declared tool and labels multiple
   assert.equal(await singleEvent.locator('.codeModeSource').count(), 1, 'associated result remains folded in the timeline');
   assert.equal((await singleEvent.locator('.codeModeSource').textContent()).includes('const plan'), false);
 
-  assert.equal(await multiEvent.locator('.eventKind').textContent(), 'Multi-tool Code Mode operation');
+  assert.equal(await multiEvent.locator('.eventKind').textContent(), 'Multiple operations');
   const multiHeader = await multiEvent.locator('.eventHeader').textContent();
-  assert.match(multiHeader, /2 tools.*Inferred result/s);
+  assert.match(multiHeader, /2 tools/);
+  assert.doesNotMatch(multiHeader, /Result output/);
   assert.doesNotMatch(multiHeader, /Declared request|response_item|2 raw/);
   assert.equal(await multiEvent.locator('.toolChip').count(), 0);
   await multiEvent.click();
@@ -652,19 +695,20 @@ test('browser Code Mode adaptively unwraps one declared tool and labels multiple
 
   assert.equal(await requestOnlyEvent.locator('.eventKind').textContent(), 'Plan update');
   assert.match(await requestOnlyEvent.locator('.eventHeader').textContent(), /Code Mode/);
-  assert.doesNotMatch(await requestOnlyEvent.locator('.eventHeader').textContent(), /Inferred result|Unassociated output/);
+  assert.doesNotMatch(await requestOnlyEvent.locator('.eventHeader').textContent(), /Result output|Unassociated output/);
 
   await switchHiddenLocale(page, 'zh-CN');
   await page.waitForFunction(({ singleId, multiId, requestOnlyId }) => {
     const label = (id) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(id)}"] .eventKind`)?.textContent;
     return label(singleId) === '计划更新'
-      && label(multiId) === '多工具代码模式操作'
+      && label(multiId) === '多个操作'
       && label(requestOnlyId) === '计划更新';
   }, { singleId: single.id, multiId: multi.id, requestOnlyId: requestOnly.id });
-  assert.match(await multiEvent.locator('.eventHeader').textContent(), /2 个工具.*推断结果/s);
-  assert.equal((await multiEvent.locator('.eventHeader').textContent()).includes('代码模式'), true, 'the localized multi-tool title retains the Code Mode identity');
-  assert.equal(await multiEvent.locator('.codeModeChip').count(), 0, 'the multi-tool title makes a separate Code Mode chip redundant');
-  assert.doesNotMatch(await requestOnlyEvent.locator('.eventHeader').textContent(), /推断结果|未关联输出/);
+  assert.match(await multiEvent.locator('.eventHeader').textContent(), /2 个工具/);
+  assert.doesNotMatch(await multiEvent.locator('.eventHeader').textContent(), /结果输出/);
+  assert.equal((await multiEvent.locator('.eventHeader').textContent()).includes('代码模式'), true, 'the Code Mode chip retains the shared origin identity');
+  assert.equal(await multiEvent.locator('.codeModeChip').count(), 1);
+  assert.doesNotMatch(await requestOnlyEvent.locator('.eventHeader').textContent(), /结果输出|未关联输出/);
 });
 
 test('browser Code Mode presents web requests structurally, renders safe Markdown, and compacts associated lifecycle evidence', async (t) => {
@@ -688,7 +732,8 @@ test('browser Code Mode presents web requests structurally, renders safe Markdow
   const operationEvent = page.locator(`#timeline .event[data-event-id="${operation.id}"]`);
   const lifecycleEvent = page.locator(`#timeline .event[data-event-id="${webLifecycle.id}"]`);
   assert.equal(await operationEvent.locator('.eventKind').textContent(), 'Web search');
-  assert.match(await operationEvent.locator('.eventHeader').textContent(), /Code Mode.*Inferred result/s);
+  assert.match(await operationEvent.locator('.eventHeader').textContent(), /Code Mode/);
+  assert.doesNotMatch(await operationEvent.locator('.eventHeader').textContent(), /Result output/);
   assert.equal(await operationEvent.locator('.toolChip').count(), 0);
   assert.equal(await lifecycleEvent.locator('.eventKind').textContent(), 'Web activity observed');
   assert.equal(await lifecycleEvent.locator('.eventPreview').count(), 0);

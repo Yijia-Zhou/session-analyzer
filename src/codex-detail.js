@@ -265,6 +265,9 @@ function createCodexDetailBuilder(deps) {
       { key: declaredToolCount === 1 ? 'Declared tool' : 'Declared requests', value: declaredToolCount === 1 ? projection.toolName : String(declaredToolCount) },
       { key: 'Request evidence', value: projection.requestEvidence },
       { key: 'Result association', value: projection.resultAssociation },
+      ...(projection.resultAssociation === 'none'
+        ? [{ key: 'Result association note', value: 'No result output matched the supported shape' }]
+        : []),
     ].filter((entry) => entry.value !== '');
     return { type: 'kv', title: 'Projection evidence', entries };
   }
@@ -334,7 +337,7 @@ function createCodexDetailBuilder(deps) {
     const hasUnassociatedOutput = Boolean(finalObservedOutput && !declaredProjection.hasCompleteOutputAssociation);
 
     let presentation = codeModePresentationDescriptor('raw_code_mode', {
-      label: 'Code Mode operation',
+      label: 'Script operation',
       toolName: 'exec',
     });
     const projections = declaredProjection.supported
@@ -373,7 +376,7 @@ function createCodexDetailBuilder(deps) {
       });
       inspectorSections.push(codeModeProjectionEvidenceSection(projections[0], projections.length));
       presentation = codeModePresentationDescriptor('multi_tool', {
-        label: 'Multi-tool Code Mode operation',
+        label: 'Multiple operations',
         declaredToolCount: projections.length,
         requestEvidence: projections[0].requestEvidence,
         resultAssociation: projections[0].resultAssociation,
@@ -387,7 +390,7 @@ function createCodexDetailBuilder(deps) {
     if (hasUnassociatedOutput) {
       maybePushTerminalSection(
         timelineSections,
-        singleProjection ? 'Unassociated operation output' : 'Final output',
+        singleProjection ? 'Operation output' : 'Final output',
         finalObservedOutput.text,
         'stdout',
       );

@@ -128,7 +128,7 @@ test('renderer projects Code Mode tools with neutral evidence and existing neste
       resultObserved: true,
       sourceOrder: 8,
     });
-    const unassociated = renderSection({
+    const withoutResult = renderSection({
       type: 'code_mode_tool_projection',
       title: 'Unpaired projection',
       requestEvidence: 'declared_source',
@@ -152,7 +152,7 @@ test('renderer projects Code Mode tools with neutral evidence and existing neste
     assert.doesNotMatch(shell, /\bsuccess\b|\boutcome\b/i);
 
     assert.match(plan, /requestEvidence observedLifecycle">Observed activity/);
-    assert.match(plan, /resultAssociation boundedOrder">Result associated by order/);
+    assert.doesNotMatch(plan, /resultAssociation/);
     assert.match(plan, /class="planUpdateBlock"/);
     assert.match(plan, /class="planUpdateSteps"/);
     assert.match(plan, /class="planStatus completed">completed/);
@@ -160,7 +160,7 @@ test('renderer projects Code Mode tools with neutral evidence and existing neste
     assert.match(plan, /codeModeToolProjectionPart result/);
     assert.match(plan, /<details class="codeModeSource">/);
     assert.match(plan, /Associated result/);
-    assert.match(unassociated, /resultAssociation unassociated">Unassociated/);
+    assert.doesNotMatch(withoutResult, /resultAssociation/);
 
     globalThis.sessionAnalyzerLocale = 'zh-CN';
     const localized = renderSection({
@@ -174,7 +174,7 @@ test('renderer projects Code Mode tools with neutral evidence and existing neste
       sourceOrder: 10,
     });
     assert.match(localized, />已观测嵌套活动</);
-    assert.match(localized, />未关联</);
+    assert.doesNotMatch(localized, /resultAssociation/);
     assert.match(localized, /codeModeToolProjectionPartLabel">请求/);
   } finally {
     globalThis.sessionAnalyzerLocale = previousLocale;

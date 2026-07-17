@@ -401,8 +401,6 @@
 
   function codeModeProjectionResultBadge(value) {
     if (value === 'exact' || value === 'exact_identity') return { className: 'exactIdentity', label: tr('resultMatchedExactly') };
-    if (value === 'bounded' || value === 'bounded_order') return { className: 'boundedOrder', label: tr('resultAssociatedByOrder') };
-    if (value === 'none') return { className: 'unassociated', label: tr('unassociated') };
     return null;
   }
 

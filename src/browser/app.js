@@ -521,24 +521,17 @@ function codeModeRequestEvidenceBadge(value) {
   return null;
 }
 
-function codeModeResultAssociationBadge(value, hasUnassociatedOutput = false) {
+function codeModeResultAssociationBadge(value) {
   if (value === 'exact' || value === 'exact_identity') return { className: 'exactIdentity', label: t('resultMatchedExactly') };
-  if (value === 'bounded' || value === 'bounded_order') return { className: 'boundedOrder', label: t('resultAssociatedByOrder') };
-  if (value === 'none' && hasUnassociatedOutput) return { className: 'unassociated', label: t('unassociated') };
   return null;
 }
 
-function renderCodeModePresentationChips(presentation) {
-  if (!presentation || presentation.variant === 'raw_code_mode') return '';
-  const resultAssociation = codeModeResultAssociationBadge(
-    presentation.resultAssociation,
-    presentation.hasUnassociatedOutput,
-  );
+function renderCodeModePresentationChips(presentation, isCodeMode = false) {
+  if (!presentation && !isCodeMode) return '';
+  const resultAssociation = codeModeResultAssociationBadge(presentation?.resultAssociation);
   return [
-    presentation.variant === 'single_tool'
-      ? `<span class="chip codeModeChip">${escapeHtml(t('codeMode'))}</span>`
-      : '',
-    presentation.variant === 'multi_tool'
+    `<span class="chip codeModeChip">${escapeHtml(t('codeMode'))}</span>`,
+    presentation?.variant === 'multi_tool'
       ? `<span class="chip countChip">${escapeHtml(t('declaredRequests', { count: presentation.declaredToolCount }))}</span>`
       : '',
     resultAssociation
@@ -549,7 +542,7 @@ function renderCodeModePresentationChips(presentation) {
 
 function presentedEventLabel(event, presentation = codeModeEventPresentation(event), compactWebLifecycle = false) {
   if (compactWebLifecycle) return t('webActivityObserved');
-  return presentation && presentation.variant !== 'raw_code_mode' ? presentation.label : event.label;
+  return presentation ? presentation.label : event.label;
 }
 
 function projectProgressPercent(progress) {
@@ -3444,15 +3437,11 @@ function renderTimeline() {
       presentation ? `code-mode-${cssToken(presentation.variant)}` : '',
       compactWebLifecycle ? 'code-mode-web-lifecycle' : '',
     ].filter(Boolean).join(' ');
-    const displayToolName = compactWebLifecycle
-      ? ''
-      : presentation && presentation.variant !== 'raw_code_mode'
-      ? ''
-      : event.toolName;
+    const displayToolName = compactWebLifecycle || event.subtype === 'code_mode_operation' ? '' : event.toolName;
     const chips = [
       event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
       ...(Array.isArray(event.tags) ? event.tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`) : []),
-      renderCodeModePresentationChips(presentation),
+      renderCodeModePresentationChips(presentation, event.subtype === 'code_mode_operation'),
       displayToolName ? `<span class="chip toolChip">${escapeHtml(displayToolName)}</span>` : '',
       event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t('files'))}</span>` : '',
       temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
@@ -4126,14 +4115,11 @@ function showInspector(event, options = {}) {
   const preview = event.snippet || event.preview || '';
   const detail = state.detailCache[key];
   const presentation = codeModeEventPresentation(event, detail);
-  const presentationChipValues = presentation && presentation.variant !== 'raw_code_mode'
+  const presentationChipValues = presentation
     ? [
       t('codeMode'),
       codeModeRequestEvidenceBadge(presentation.requestEvidence)?.label,
-      codeModeResultAssociationBadge(
-        presentation.resultAssociation,
-        presentation.hasUnassociatedOutput,
-      )?.label,
+      codeModeResultAssociationBadge(presentation.resultAssociation)?.label,
     ]
     : [];
   const chips = renderChips([...inspectorChipValues(event), ...presentationChipValues]);

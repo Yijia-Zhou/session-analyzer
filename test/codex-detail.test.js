@@ -430,7 +430,7 @@ test('Code Mode detail restores declared plan and shell structure with explicitl
   ]);
   assert.deepEqual(detail.presentation, {
     variant: 'multi_tool',
-    label: 'Multi-tool Code Mode operation',
+    label: 'Multiple operations',
     toolName: '',
     declaredToolCount: 2,
     requestEvidence: 'declared_source',
@@ -467,7 +467,7 @@ test('Code Mode detail restores declared plan and shell structure with explicitl
     '终端命令',
     '代码模式源码',
   ]);
-  assert.equal(chineseDetail.presentation.label, '多工具代码模式操作');
+  assert.equal(chineseDetail.presentation.label, '多个操作');
   assert.equal(chineseDetail.timelineSections[0].requestSections[0].title, '计划更新');
   assert.equal(chineseDetail.timelineSections[1].requestSections[1].title, '运行上下文');
   assert.ok(chineseDetail.timelineSections[1].requestSections[1].entries
@@ -628,7 +628,7 @@ test('Code Mode web projection renders structured request and safe Markdown resu
   ]);
 });
 
-test('Code Mode single unassociated request keeps outer output explicit and separate from the projected result', async (t) => {
+test('Code Mode single request keeps operation output explicit and separate from the projected result', async (t) => {
   const codexHome = await makeTempCodexHome(t);
   const repoRoot = path.join(codexHome, 'repo');
   const id = 'dddddddd-8888-4444-9999-dddddddddddd';
@@ -649,12 +649,39 @@ test('Code Mode single unassociated request keeps outer output explicit and sepa
   assert.equal(detail.presentation.resultAssociation, 'none');
   assert.equal(detail.presentation.hasUnassociatedOutput, true);
   assert.deepEqual(detail.timelineSections.map((section) => section.type), ['code', 'terminal']);
-  assert.equal(detail.timelineSections[1].title, 'Unassociated operation output');
+  assert.equal(detail.timelineSections[1].title, 'Operation output');
   assert.match(detail.timelineSections[1].text, /outer-only output/);
   assert.equal(detail.timelineSections.some((section) => section.type === 'code_mode_tool_projection'), false);
+  const projectionEvidence = detail.inspectorSections.find((section) => section.title === 'Projection evidence');
+  const chineseProjectionEvidence = chineseDetail.inspectorSections.find((section) => section.title === '投影证据');
+  assert.ok(projectionEvidence?.entries.some((entry) => entry.key === 'Result association note'
+    && entry.value === 'No result output matched the supported shape'));
+  assert.ok(chineseProjectionEvidence?.entries.some((entry) => entry.key === '结果关联说明'
+    && entry.value === '未检测到满足受支持形态的结果输出'));
   assert.equal(detail.inspectorSections.some((section) => section.type === 'code_mode_source'
     && section.title === 'Code Mode source'), true);
-  assert.equal(chineseDetail.timelineSections[1].title, '未关联的操作输出');
+  assert.equal(chineseDetail.timelineSections[1].title, '操作输出');
+});
+
+test('Code Mode result-association evidence does not imply an output was observed', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'dddddddd-7777-4444-9999-dddddddddddd';
+  await writeTranscript(codexHome, repoRoot, id, [
+    { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-single-no-output', input: 'const plan = await tools.update_plan({ plan: [] }); text(plan);' } },
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const detail = buildEventDetail(session, operation.id, 'main');
+  const projectionEvidence = detail.inspectorSections.find((section) => section.title === 'Projection evidence');
+
+  assert.equal(detail.presentation.resultAssociation, 'none');
+  assert.equal(detail.presentation.hasUnassociatedOutput, false);
+  assert.ok(projectionEvidence?.entries.some((entry) => entry.key === 'Result association note'
+    && entry.value === 'No result output matched the supported shape'));
 });
 
 test('Code Mode declared projection fails closed and keeps aggregate output for dynamic programs', async (t) => {
@@ -686,6 +713,7 @@ test('Code Mode declared projection fails closed and keeps aggregate output for 
 
   assert.deepEqual(detail.timelineSections.map((section) => section.type), ['code', 'terminal']);
   assert.equal(detail.presentation.variant, 'raw_code_mode');
+  assert.equal(detail.presentation.label, 'Script operation');
   assert.equal(detail.timelineSections[0].role, 'command');
   assert.match(detail.timelineSections[0].code, /update_plan\(args\)/);
   assert.equal(detail.timelineSections[1].text, '{}');
