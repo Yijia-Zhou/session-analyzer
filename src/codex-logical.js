@@ -46,6 +46,10 @@ function createCodexLogicalBuilder(deps) {
     patchFilesFromPatchInput,
     touchFilesFromOutputText,
   } = tool;
+  const CODE_MODE_ASSOCIATION_EVENT_TYPES = new Set([
+    ...TOOL_EVENT_TYPES,
+    'web_search_end',
+  ]);
   const {
     displayValue,
     firstNonEmpty,
@@ -925,7 +929,7 @@ function createCodexLogicalBuilder(deps) {
       projection: codeModeProjection,
       rawEvents,
       logicalEvents: [],
-      lifecycleTypes: TOOL_EVENT_TYPES,
+      lifecycleTypes: CODE_MODE_ASSOCIATION_EVENT_TYPES,
     });
     const initialFactsByOperation = new Map(initialCodeModeFacts.operationFacts
       .map((facts) => [facts.operationId, facts]));
@@ -1230,7 +1234,7 @@ function createCodexLogicalBuilder(deps) {
       projection: codeModeProjection,
       rawEvents,
       logicalEvents,
-      lifecycleTypes: TOOL_EVENT_TYPES,
+      lifecycleTypes: CODE_MODE_ASSOCIATION_EVENT_TYPES,
     });
     for (const facts of finalCodeModeFacts.operationFacts) {
       const event = logicalEvents.find((candidate) => candidate.id === facts.operationId);

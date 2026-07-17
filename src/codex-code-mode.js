@@ -23,6 +23,7 @@ const TERMINAL_FIRST_LINES = new Set([
   'Script timed out',
   'No script found',
 ]);
+const ASSOCIATION_TEXT_TYPES = new Set(['input_text', 'output_text', 'text']);
 
 function parsedPayload(raw) {
   const payload = raw?.parsed?.payload;
@@ -99,6 +100,25 @@ function codeModeDisplayOutputText(raw) {
   const fragments = value.map((item) => textFromValue(item)).filter(Boolean);
   if (fragments.length > 1 && isOuterStatusEnvelope(fragments[0])) fragments.shift();
   return stripAnsiSequences(fragments.join('\n'));
+}
+
+function codeModeAssociableOutputFragments(raw) {
+  const payload = parsedPayload(raw);
+  const value = Object.hasOwn(payload, 'output') ? payload.output : parseJsonContainer(raw?.output);
+  if (!Array.isArray(value) || value.length < 2) return [];
+
+  const fragments = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)
+        || !ASSOCIATION_TEXT_TYPES.has(String(item.type || '')) || typeof item.text !== 'string') {
+      return [];
+    }
+    fragments.push(item.text);
+  }
+
+  if (fragments[0].split(/\r?\n/, 1)[0] !== 'Script completed' || !isOuterStatusEnvelope(fragments[0])) return [];
+  const results = fragments.slice(1).map(stripAnsiSequences);
+  return results.every((fragment) => fragment.length > 0) ? results : [];
 }
 
 function firstOutputLine(raw) {
@@ -378,6 +398,7 @@ module.exports = {
   EVIDENCE_STATES,
   OBSERVATION_STATES,
   classifyObservedOutput,
+  codeModeAssociableOutputFragments,
   codeModeDisplayOutputText,
   codeModeOutputText,
   projectCodeModeOperations,

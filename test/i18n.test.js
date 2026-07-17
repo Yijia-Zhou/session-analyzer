@@ -193,6 +193,28 @@ test('zh-CN protocol and section labels avoid mechanical schema wording', () => 
   assert.equal(i18n.sectionTitle('Search payload', 'zh-CN'), '搜索请求内容');
 });
 
+test('nested collaboration fields and generic status labels localize without changing agent names', () => {
+  const localized = i18n.localizeSection({
+    type: 'collaboration',
+    title: 'Spawn subagent',
+    fields: [
+      { key: 'Agent type', value: 'worker' },
+      { key: 'Reasoning effort', value: 'high' },
+    ],
+    statuses: [
+      { label: 'Status', labelKind: 'generic', status: 'completed' },
+      { label: 'Status', labelKind: 'agent', status: 'running' },
+      { label: 'Model', labelKind: 'agent', status: 'pending' },
+      { label: 'agent-1', labelKind: 'agent', status: 'running' },
+    ],
+  }, 'zh-CN');
+
+  assert.equal(localized.title, '启动子代理');
+  assert.deepEqual(localized.fields.map((field) => field.key), ['代理类型', '推理强度']);
+  assert.deepEqual(localized.statuses.map((status) => status.label), ['状态', 'Status', 'Model', 'agent-1']);
+  assert.ok(localized.statuses.every((status) => !Object.hasOwn(status, 'labelKind')));
+});
+
 test('zh-CN raw record labels keep selected wire terms while smoothing lifecycle copy', () => {
   assert.equal(i18n.rawRecordLabel('function_call', 'zh-CN'), 'function_call');
   assert.equal(i18n.rawRecordLabel('function_call_output', 'zh-CN'), 'function_call输出');

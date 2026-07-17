@@ -8,10 +8,12 @@ const MarkdownIt = require('markdown-it');
 const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
 const i18n = require('./shared/i18n');
 const {
+  codeModeAssociableOutputFragments,
   codeModeDisplayOutputText,
   codeModeOutputText,
   projectCodeModeOperations,
 } = require('./codex-code-mode');
+const { projectDeclaredCodeModeCalls } = require('./codex-code-mode-declared');
 const { stripAnsiSequences } = require('./shared/terminal-text');
 const { deriveCodeModeFacts } = require('./codex-code-mode-facts');
 const { createCodexDetailBuilder } = require('./codex-detail');
@@ -37,7 +39,7 @@ const {
 
 const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
-const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'patch', 'kv', 'notice', 'raw_json', 'token_usage', 'usage_limits', 'user_input', 'plan_update', 'collaboration', 'image_preview', 'event_refs', 'code_mode_trace']);
+const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'patch', 'kv', 'notice', 'raw_json', 'token_usage', 'usage_limits', 'user_input', 'plan_update', 'collaboration', 'image_preview', 'event_refs', 'code_mode_trace', 'code_mode_tool_projection', 'code_mode_source', 'web_request']);
 const TOOL_DATA_URL_MARKER = '[embedded data URL omitted; see raw refs]';
 const TIMELINE_DATA_URL_MARKER = '[data URL omitted]';
 const EMBEDDED_IMAGE_EXTERNALIZED_MARKER = '[embedded image payload externalized; open raw refs for source]';
@@ -49,6 +51,9 @@ const SUBAGENT_SESSION_TITLE_LIMIT = 160;
 const REASONING_TEXT_LIMIT = 16000;
 const TRUNCATE_NATIVE_THRESHOLD = 1000;
 const RESET_TIME_CACHE_LIMIT = 512;
+const CODE_MODE_STRUCTURED_RESULT_MAX_CHARS = 32_000;
+const CODE_MODE_STRUCTURED_RESULT_MAX_DEPTH = 32;
+const CODE_MODE_STRUCTURED_RESULT_MAX_NODES = 1_000;
 
 const SAME_DAY_RESET_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
   hour: 'numeric',
@@ -2588,16 +2593,25 @@ function statusName(value) {
   return ['completed', 'success', 'running', 'in_progress', 'pending', 'pending_init', 'failed', 'blocked', 'declined'].includes(source) ? source : '';
 }
 
-function collaborationStatusEntries(value, fallbackLabel = 'Status') {
+function collaborationStatusEntries(value, fallbackLabel = 'Status', fallbackLabelKind = 'generic') {
   if (!value) return [];
-  if (typeof value === 'string') return [{ label: fallbackLabel, status: value }];
+  if (typeof value === 'string') return [{ label: fallbackLabel, labelKind: fallbackLabelKind, status: value }];
   if (Array.isArray(value)) {
-    return value.flatMap((item) => collaborationStatusEntries(item?.status, firstNonEmpty(item?.agent_nickname, item?.thread_id, fallbackLabel)));
+    return value.flatMap((item) => {
+      const agentLabel = firstNonEmpty(item?.agent_nickname, item?.thread_id);
+      return collaborationStatusEntries(
+        item?.status,
+        agentLabel || fallbackLabel,
+        agentLabel ? 'agent' : fallbackLabelKind,
+      );
+    });
   }
   if (typeof value !== 'object') return [];
   return Object.entries(value).flatMap(([key, item]) => {
-    if (statusName(key)) return [{ label: fallbackLabel, status: key }];
-    return collaborationStatusEntries(item, key);
+    if (statusName(key)) return [{ label: fallbackLabel, labelKind: fallbackLabelKind, status: key }];
+    if (key === 'status') return collaborationStatusEntries(item, fallbackLabel, fallbackLabelKind);
+    if (key === 'previous_status') return collaborationStatusEntries(item, 'Previous status', 'generic');
+    return collaborationStatusEntries(item, key, 'agent');
   });
 }
 
@@ -2607,9 +2621,10 @@ function collaborationStatusItems(responseValue) {
   const fallbackLabel = source === responseValue.previous_status ? 'Previous status' : 'Status';
   const items = collaborationStatusEntries(source, fallbackLabel).map((item) => ({
     label: conciseToolValue(item.label, 500),
+    labelKind: item.labelKind,
     status: conciseToolValue(item.status, 1000),
   })).filter((item) => item.label && item.status);
-  return [...new Map(items.map((item) => [`${item.label}\n${item.status}`, item])).values()];
+  return [...new Map(items.map((item) => [`${item.labelKind}\n${item.label}\n${item.status}`, item])).values()];
 }
 
 function collaborationResultEntries(value, label = '') {
@@ -2900,6 +2915,284 @@ function extractUpdatePlanSections(raws, event, splitSections) {
   };
 }
 
+const CODE_MODE_WEB_OPERATION_TITLES = Object.freeze({
+  search_query: 'Web search',
+  image_query: 'Image search',
+  open: 'Open webpage',
+  click: 'Follow web link',
+  find: 'Find on page',
+  screenshot: 'Web screenshot',
+  finance: 'Finance lookup',
+  weather: 'Weather lookup',
+  sports: 'Sports lookup',
+  time: 'Time lookup',
+});
+
+const CODE_MODE_WEB_GROUP_TITLES = Object.freeze({
+  search_query: 'Queries',
+  image_query: 'Image queries',
+  open: 'Pages',
+  click: 'Links',
+  find: 'Page matches',
+  screenshot: 'Screenshots',
+  finance: 'Finance requests',
+  weather: 'Weather requests',
+  sports: 'Sports requests',
+  time: 'Time requests',
+});
+
+const CODE_MODE_WEB_PRIMARY_KEYS = Object.freeze([
+  'q',
+  'ref_id',
+  'ticker',
+  'location',
+  'team',
+  'utc_offset',
+  'id',
+]);
+
+const CODE_MODE_WEB_FIELD_LABELS = Object.freeze({
+  lineno: 'Line number',
+  id: 'Link ID',
+  pageno: 'Page number',
+  response_length: 'Response length',
+  utc_offset: 'UTC offset',
+  date_from: 'From',
+  date_to: 'To',
+  num_games: 'Count',
+});
+
+function codeModeWebFieldLabel(key) {
+  return CODE_MODE_WEB_FIELD_LABELS[key] || humanizeProtocolSubtype(key);
+}
+
+function codeModeWebOperationKeys(requestValue) {
+  if (!requestValue || typeof requestValue !== 'object' || Array.isArray(requestValue)) return [];
+  return Object.keys(CODE_MODE_WEB_OPERATION_TITLES)
+    .filter((key) => Array.isArray(requestValue[key]) && requestValue[key].length > 0);
+}
+
+function codeModeWebProjectionTitle(requestValue) {
+  const operationKeys = codeModeWebOperationKeys(requestValue);
+  if (operationKeys.length === 1) return CODE_MODE_WEB_OPERATION_TITLES[operationKeys[0]];
+  if (operationKeys.length > 1) return 'Web browsing operation';
+  return 'Web request';
+}
+
+function codeModeWebItem(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    return { primary: conciseToolValue(item, 4000), entries: [] };
+  }
+  const primaryKey = CODE_MODE_WEB_PRIMARY_KEYS.find((key) => item[key] != null && item[key] !== '');
+  const entries = Object.entries(item)
+    .filter(([key, value]) => key !== primaryKey && value != null && value !== '')
+    .map(([key, value]) => ({
+      key: codeModeWebFieldLabel(key),
+      value: conciseToolValue(value, 2000),
+    }));
+  return {
+    primary: conciseToolValue(primaryKey ? item[primaryKey] : item, 4000),
+    entries,
+  };
+}
+
+function codeModeWebRequestSection(requestValue) {
+  const args = requestValue && typeof requestValue === 'object' && !Array.isArray(requestValue)
+    ? requestValue
+    : {};
+  const groups = codeModeWebOperationKeys(args).map((key) => ({
+    kind: key,
+    title: CODE_MODE_WEB_GROUP_TITLES[key],
+    items: args[key].map(codeModeWebItem).filter((item) => item.primary || item.entries.length),
+  })).filter((group) => group.items.length);
+  const options = Object.entries(args)
+    .filter(([key, value]) => !Object.hasOwn(CODE_MODE_WEB_OPERATION_TITLES, key) && value != null && value !== '')
+    .map(([key, value]) => ({
+      key: codeModeWebFieldLabel(key),
+      value: conciseToolValue(value, 2000),
+    }));
+  if (!groups.length && !options.length) return null;
+  return {
+    type: 'web_request',
+    title: 'Web request',
+    groups,
+    options,
+  };
+}
+
+function codeModeWebResultSection(resultText) {
+  const source = truncatePreservingWhitespace(
+    redactEmbeddedDataUrls(String(resultText || '').trim()),
+    100000,
+  );
+  if (!source) return null;
+  return {
+    type: 'markdown',
+    role: 'web_result',
+    title: 'Web results',
+    html: renderMarkdownToHtml(source),
+  };
+}
+
+function codeModeToolProjectionTitle(toolName, requestValue) {
+  if (toolName === 'web__run') return codeModeWebProjectionTitle(requestValue);
+  return {
+    apply_patch: 'Apply patch',
+    close_agent: 'Close subagent',
+    create_goal: 'Create goal',
+    exec_command: 'Shell command',
+    get_goal: 'Get goal',
+    image_gen__imagegen: 'Image generation',
+    list_available_plugins_to_install: 'List available plugins',
+    list_mcp_resource_templates: 'List MCP resource templates',
+    list_mcp_resources: 'List MCP resources',
+    read_mcp_resource: 'Read MCP resource',
+    request_plugin_install: 'Request plugin install',
+    request_user_input: 'User input',
+    send_input: 'Send input to subagent',
+    shell_command: 'Shell command',
+    spawn_agent: 'Spawn subagent',
+    update_goal: 'Update goal',
+    update_plan: 'Plan update',
+    view_image: 'Image inspection',
+    wait_agent: 'Wait for subagent',
+  }[toolName] || humanizeProtocolSubtype(toolName);
+}
+
+function isBoundedCodeModeStructuredResult(value) {
+  if (!value || typeof value !== 'object') return true;
+  const stack = [{ value, depth: 0 }];
+  const seen = new WeakSet();
+  let nodes = 0;
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current.value || typeof current.value !== 'object' || seen.has(current.value)) continue;
+    seen.add(current.value);
+    nodes += 1;
+    if (nodes > CODE_MODE_STRUCTURED_RESULT_MAX_NODES
+        || current.depth > CODE_MODE_STRUCTURED_RESULT_MAX_DEPTH) return false;
+    for (const child of Array.isArray(current.value) ? current.value : Object.values(current.value)) {
+      if (child && typeof child === 'object') stack.push({ value: child, depth: current.depth + 1 });
+    }
+  }
+  return true;
+}
+
+function codeModeStructuredResponseValue(resultText) {
+  const source = String(resultText || '');
+  if (!source || source.length > CODE_MODE_STRUCTURED_RESULT_MAX_CHARS) return null;
+  const value = coerceJsonValue(source);
+  return value != null && isBoundedCodeModeStructuredResult(value) ? value : null;
+}
+
+function codeModeShellRequestSections(requestValue, session) {
+  const sections = [];
+  const args = requestValue && typeof requestValue === 'object' && !Array.isArray(requestValue)
+    ? requestValue
+    : {};
+  const command = commandToText(firstNonEmpty(args.command, args.cmd));
+  maybePushCodeSection(
+    sections,
+    'Command',
+    command,
+    inferCommandLanguage(command, args, commandLanguageContext(session)),
+  );
+  maybePushKvSection(sections, 'Run context', [
+    { key: 'cwd', value: conciseToolValue(firstNonEmpty(args.workdir, args.cwd), 2000) },
+    { key: 'Timeout ms', value: conciseToolValue(args.timeout_ms ?? args.timeoutMs, 200) },
+    { key: 'Sandbox permissions', value: conciseToolValue(args.sandbox_permissions, 200) },
+  ]);
+  return sections;
+}
+
+function codeModeShellResultSections(resultText) {
+  const sections = [];
+  const formatted = parseFormattedCommandOutput(resultText);
+  if (formatted) {
+    maybePushKvSection(sections, 'Run result', [
+      { key: 'Exit code', value: String(formatted.exitCode) },
+      { key: 'Wall time', value: formatted.wallTime },
+    ]);
+    maybePushTerminalSection(sections, 'Output', formatted.output, 'stdout');
+  } else {
+    maybePushTerminalSection(sections, 'Result', resultText, 'stdout');
+  }
+  return sections;
+}
+
+function codeModeToolProjectionSection(call, session = {}) {
+  const toolName = String(call?.toolName || '');
+  const requestValue = call?.requestValue;
+  const associated = call?.resultAssociation === 'bounded';
+  const responseValue = associated ? codeModeStructuredResponseValue(call.resultText) : null;
+  const requestSections = [];
+  const resultSections = [];
+
+  if (toolName === 'update_plan') {
+    const planUpdate = updatePlanSection(requestValue);
+    if (planUpdate) requestSections.push(planUpdate);
+  } else if (toolName === 'request_user_input') {
+    const userInput = requestUserInputSection(requestValue, responseValue);
+    if (userInput) requestSections.push(userInput);
+  } else if (['shell_command', 'exec_command'].includes(toolName)) {
+    requestSections.push(...codeModeShellRequestSections(requestValue, session));
+  } else if (toolName === 'apply_patch') {
+    const patchText = typeof requestValue === 'string' ? requestValue : String(requestValue?.patch || '');
+    if (patchText && !maybePushPatchSection(requestSections, 'Patch', patchText)) {
+      maybePushCodeSection(requestSections, 'Patch', patchText, 'diff');
+    }
+  } else if (toolName === 'view_image') {
+    const dimensions = responseValue && !Array.isArray(responseValue) && typeof responseValue === 'object'
+      ? [responseValue.width, responseValue.height].filter((value) => value != null).join(' x ')
+      : '';
+    maybePushKvSection(requestSections, 'Image inspection', [
+      { key: 'Path', value: conciseToolValue(requestValue?.path, 2000) },
+      { key: 'Detail', value: conciseToolValue(requestValue?.detail, 200) },
+      { key: 'Dimensions', value: conciseToolValue(dimensions, 200) },
+      { key: 'MIME type', value: conciseToolValue(firstNonEmpty(responseValue?.mimeType, responseValue?.mime_type), 200) },
+    ]);
+  } else if (toolName === 'web__run') {
+    const webRequest = codeModeWebRequestSection(requestValue);
+    if (webRequest) requestSections.push(webRequest);
+  } else {
+    const collaboration = collaborationToolSection(toolName, requestValue, responseValue);
+    if (collaboration) requestSections.push(collaboration);
+  }
+
+  if (!requestSections.length) maybePushToolSummaryCodeSection(requestSections, 'Request summary', requestValue);
+  if (!requestSections.length) requestSections.push(makeNoticeSection('Declared request', toolName, 'info'));
+
+  if (associated && ['shell_command', 'exec_command'].includes(toolName)) {
+    resultSections.push(...codeModeShellResultSections(call.resultText));
+  } else if (associated && toolName === 'web__run') {
+    const webResult = codeModeWebResultSection(call.resultText);
+    if (webResult) resultSections.push(webResult);
+  } else if (associated && toolName !== 'update_plan' && toolName !== 'request_user_input'
+      && !collaborationToolSection(toolName, requestValue, responseValue)) {
+    maybePushToolSummaryCodeSection(resultSections, 'Response summary', responseValue == null ? call.resultText : responseValue);
+  }
+  if (associated) {
+    resultSections.push({
+      type: 'code_mode_source',
+      title: 'Associated result',
+      code: String(call.resultText || ''),
+      language: 'text',
+    });
+  }
+
+  return {
+    type: 'code_mode_tool_projection',
+    title: codeModeToolProjectionTitle(toolName, requestValue),
+    toolName,
+    requestEvidence: 'declared_source',
+    resultAssociation: associated ? 'bounded' : 'none',
+    requestSections: sanitizeUnmodeledToolTimelineSections(requestSections),
+    resultSections: sanitizeUnmodeledToolTimelineSections(resultSections),
+    resultObserved: associated,
+    sourceOrder: Number(call?.sourceOrder || 0),
+  };
+}
+
 function extractWebSearchSections(raws, event) {
   const sections = [];
   const searchCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'web_search_call');
@@ -3141,6 +3434,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
     withoutSectionTypes,
   },
   sectionExtractors: {
+    codeModeToolProjectionSection,
     extractCommandSections,
     extractConversationSections,
     extractJsReplSections,
@@ -3157,7 +3451,12 @@ const codexDetailBuilder = createCodexDetailBuilder({
     extractWebSearchSections,
     inferCommandLanguage,
   },
-  codeMode: { codeModeDisplayOutputText, codeModeOutputText },
+  codeMode: {
+    codeModeAssociableOutputFragments,
+    codeModeDisplayOutputText,
+    codeModeOutputText,
+    projectDeclaredCodeModeCalls,
+  },
 });
 const { buildEventDetail } = codexDetailBuilder;
 

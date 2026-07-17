@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   classifyObservedOutput,
+  codeModeAssociableOutputFragments,
   codeModeDisplayOutputText,
   codeModeOutputText,
   projectCodeModeOperations,
@@ -193,6 +194,31 @@ test('Code Mode display output removes an empty outer status envelope without ch
   assert.equal(codeModeOutputText(output), 'Script completed\nWall time 3.3 seconds\nOutput:\n\nExit code: 0\nWall time: 3 seconds\nOutput:\n\u001b[32;1mFullName\u001b[0m');
   assert.deepEqual(classifyObservedOutput(output), { observationState: 'terminal', cellId: '' });
   assert.equal(codeModeDisplayOutputText(output), 'Exit code: 0\nWall time: 3 seconds\nOutput:\nFullName');
+  assert.deepEqual(codeModeAssociableOutputFragments(output), [
+    'Exit code: 0\nWall time: 3 seconds\nOutput:\nFullName',
+  ]);
+});
+
+test('only exposes bounded-association fragments from a completed structured envelope', () => {
+  const completed = execOutput(2, 'exec-associated', [
+    { type: 'input_text', text: 'Script completed\nWall time 1 second\nOutput:\n' },
+    { type: 'input_text', text: '{}' },
+    { type: 'input_text', text: '\u001b[32mresult\u001b[0m' },
+  ]);
+  const failed = execOutput(3, 'exec-failed', [
+    { type: 'input_text', text: 'Script failed\nOutput:\n' },
+    { type: 'input_text', text: 'partial' },
+  ]);
+  const scalar = execOutput(4, 'exec-scalar', 'Script completed\nOutput:\nresult');
+  const mixed = execOutput(5, 'exec-mixed', [
+    { type: 'input_text', text: 'Script completed\nOutput:\n' },
+    { type: 'image', image_url: 'redacted' },
+  ]);
+
+  assert.deepEqual(codeModeAssociableOutputFragments(completed), ['{}', 'result']);
+  assert.deepEqual(codeModeAssociableOutputFragments(failed), []);
+  assert.deepEqual(codeModeAssociableOutputFragments(scalar), []);
+  assert.deepEqual(codeModeAssociableOutputFragments(mixed), []);
 });
 
 test('only exposes phase spans for ordered rows in the same physical source file', () => {
@@ -356,6 +382,8 @@ test('formal sanitized fixtures cover the Code Mode operation scenarios', () => 
     'incomplete_tail',
     'unobserved_terminal',
     'outer_js_is_not_nested_evidence',
+    'structured_declared_sequential',
+    'structured_declared_dynamic_fallback',
   ]));
 
   for (const fixture of manifest.fixtures) {

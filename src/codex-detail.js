@@ -9,7 +9,11 @@ function createCodexDetailBuilder(deps) {
     sectionExtractors,
     codeMode,
   } = deps;
-  const { codeModeDisplayOutputText } = codeMode;
+  const {
+    codeModeAssociableOutputFragments,
+    codeModeDisplayOutputText,
+    projectDeclaredCodeModeCalls,
+  } = codeMode;
   const {
     CANONICAL_SCHEMA_VERSION,
     CODEX_SOURCE_KIND,
@@ -49,6 +53,7 @@ function createCodexDetailBuilder(deps) {
     withoutSectionTypes,
   } = sectionBuilders;
   const {
+    codeModeToolProjectionSection,
     extractCommandSections,
     extractConversationSections,
     extractGoalSections,
@@ -190,7 +195,7 @@ function createCodexDetailBuilder(deps) {
       case 'hook':
         return extractToolOperationSections(raws, event, splitSectionsForDetail);
       case 'other_tool_call':
-        if (event.subtype === 'code_mode_operation') return extractCodeModeOperationSections(event, raws);
+        if (event.subtype === 'code_mode_operation') return extractCodeModeOperationSections(event, raws, session);
         if (event.toolName === 'update_plan') return extractUpdatePlanSections(raws, event, splitSectionsForDetail);
         return extractToolOperationSections(raws, event, splitSectionsForDetail);
       case 'web_search':
@@ -215,7 +220,84 @@ function createCodexDetailBuilder(deps) {
     }
   }
 
-  function extractCodeModeOperationSections(event, raws) {
+  function codeModePresentationDescriptor(variant, options = {}) {
+    return {
+      variant,
+      label: String(options.label || 'Code Mode operation'),
+      toolName: String(options.toolName || ''),
+      declaredToolCount: Math.max(0, Number(options.declaredToolCount || 0)),
+      requestEvidence: String(options.requestEvidence || ''),
+      resultAssociation: String(options.resultAssociation || ''),
+      hasUnassociatedOutput: options.hasUnassociatedOutput === true,
+    };
+  }
+
+  function sanitizeCodeModePresentation(presentation) {
+    if (!presentation || !['single_tool', 'multi_tool', 'raw_code_mode'].includes(presentation.variant)) return null;
+    return {
+      variant: presentation.variant,
+      label: sanitizeLogicalEnvelopeValue(presentation.label),
+      toolName: sanitizeLogicalEnvelopeValue(presentation.toolName),
+      declaredToolCount: Number.isFinite(presentation.declaredToolCount)
+        ? Math.max(0, Math.trunc(presentation.declaredToolCount))
+        : 0,
+      requestEvidence: ['declared_source', 'observed_lifecycle'].includes(presentation.requestEvidence)
+        ? presentation.requestEvidence
+        : '',
+      resultAssociation: ['exact', 'exact_identity', 'bounded', 'bounded_order', 'none'].includes(presentation.resultAssociation)
+        ? presentation.resultAssociation
+        : '',
+      hasUnassociatedOutput: presentation.hasUnassociatedOutput === true,
+    };
+  }
+
+  function localizeCodeModePresentation(presentation, locale) {
+    if (!presentation) return null;
+    return {
+      ...presentation,
+      label: i18n.sectionTitle(presentation.label, locale),
+    };
+  }
+
+  function codeModeProjectionEvidenceSection(projection, declaredToolCount) {
+    const entries = [
+      { key: 'Presentation', value: declaredToolCount === 1 ? 'single_tool' : 'multi_tool' },
+      { key: declaredToolCount === 1 ? 'Declared tool' : 'Declared requests', value: declaredToolCount === 1 ? projection.toolName : String(declaredToolCount) },
+      { key: 'Request evidence', value: projection.requestEvidence },
+      { key: 'Result association', value: projection.resultAssociation },
+    ].filter((entry) => entry.value !== '');
+    return { type: 'kv', title: 'Projection evidence', entries };
+  }
+
+  function splitSingleCodeModeProjection(projection) {
+    const requestSections = Array.isArray(projection.requestSections) ? projection.requestSections : [];
+    const resultSections = Array.isArray(projection.resultSections) ? projection.resultSections : [];
+    if (projection.toolName === 'web__run') {
+      const associatedResultSections = resultSections.filter((section) => section.type === 'code_mode_source');
+      return {
+        timelineSections: [
+          ...requestSections,
+          ...resultSections.filter((section) => !associatedResultSections.includes(section)),
+        ],
+        inspectorSections: associatedResultSections,
+      };
+    }
+    if (!['shell_command', 'exec_command'].includes(projection.toolName)) {
+      return { timelineSections: [...requestSections, ...resultSections], inspectorSections: [] };
+    }
+
+    const commandSections = requestSections.filter((section) => section.type === 'code' && String(section.title || '').toLowerCase() === 'command');
+    const requestSupplements = requestSections.filter((section) => !commandSections.includes(section));
+    const terminalSections = resultSections.filter((section) => section.type === 'terminal');
+    const associatedResultSections = resultSections.filter((section) => section.type === 'code_mode_source');
+    const resultSupplements = resultSections.filter((section) => !terminalSections.includes(section) && !associatedResultSections.includes(section));
+    return {
+      timelineSections: [...commandSections, ...terminalSections, ...associatedResultSections],
+      inspectorSections: [...requestSupplements, ...resultSupplements],
+    };
+  }
+
+  function extractCodeModeOperationSections(event, raws, session = {}) {
     const operation = event.codeModeOperation || {};
     const rawById = new Map(raws.map((raw) => [raw.rawId, raw]));
     const phases = Array.isArray(operation.phases) ? operation.phases : [];
@@ -234,16 +316,81 @@ function createCodexDetailBuilder(deps) {
 
     const execPhase = phases.find((phase) => phase.kind === 'exec');
     const execRaw = rawById.get(execPhase?.callRef?.rawId);
-    maybePushCodeSection(timelineSections, 'Command', execRaw?.output, 'javascript');
-    if (timelineSections.at(-1)?.type === 'code') timelineSections.at(-1).role = 'command';
+    const execSource = String(execRaw?.parsed?.payload?.input || execRaw?.output || '');
 
     const observedOutputs = phases.map((phase) => {
       const outputRaw = rawById.get(phase.outputRef?.rawId);
-      return outputRaw ? { phase, text: codeModeDisplayOutputText(outputRaw) } : null;
+      return outputRaw ? { phase, raw: outputRaw, text: codeModeDisplayOutputText(outputRaw) } : null;
     }).filter((item) => item?.text);
     const finalObservedOutput = observedOutputs.at(-1);
-    if (finalObservedOutput) {
-      maybePushTerminalSection(timelineSections, 'Final output', finalObservedOutput.text, 'stdout');
+    const associableFragments = phases.length === 1
+      && execPhase?.observationState === 'terminal'
+      && finalObservedOutput?.phase === execPhase
+      ? codeModeAssociableOutputFragments(finalObservedOutput.raw)
+      : [];
+    const declaredProjection = projectDeclaredCodeModeCalls(execSource, {
+      outputFragments: associableFragments,
+    });
+    const hasUnassociatedOutput = Boolean(finalObservedOutput && !declaredProjection.hasCompleteOutputAssociation);
+
+    let presentation = codeModePresentationDescriptor('raw_code_mode', {
+      label: 'Code Mode operation',
+      toolName: 'exec',
+    });
+    const projections = declaredProjection.supported
+      ? declaredProjection.calls.map((call) => codeModeToolProjectionSection(call, session))
+      : [];
+    const singleProjection = projections.length === 1 ? projections[0] : null;
+
+    if (singleProjection) {
+      const split = splitSingleCodeModeProjection(singleProjection);
+      timelineSections.push(...split.timelineSections);
+      inspectorSections.push(
+        codeModeProjectionEvidenceSection(singleProjection, 1),
+        ...split.inspectorSections,
+        {
+          type: 'code_mode_source',
+          title: 'Code Mode source',
+          code: execSource,
+          language: 'javascript',
+        },
+      );
+      presentation = codeModePresentationDescriptor('single_tool', {
+        label: singleProjection.title,
+        toolName: singleProjection.toolName,
+        declaredToolCount: 1,
+        requestEvidence: singleProjection.requestEvidence,
+        resultAssociation: singleProjection.resultAssociation,
+        hasUnassociatedOutput,
+      });
+    } else if (projections.length > 1) {
+      timelineSections.push(...projections);
+      timelineSections.push({
+        type: 'code_mode_source',
+        title: 'Code Mode source',
+        code: execSource,
+        language: 'javascript',
+      });
+      inspectorSections.push(codeModeProjectionEvidenceSection(projections[0], projections.length));
+      presentation = codeModePresentationDescriptor('multi_tool', {
+        label: 'Multi-tool Code Mode operation',
+        declaredToolCount: projections.length,
+        requestEvidence: projections[0].requestEvidence,
+        resultAssociation: projections[0].resultAssociation,
+        hasUnassociatedOutput,
+      });
+    } else {
+      maybePushCodeSection(timelineSections, 'Command', execSource, 'javascript');
+      if (timelineSections.at(-1)?.type === 'code') timelineSections.at(-1).role = 'command';
+    }
+
+    if (hasUnassociatedOutput) {
+      maybePushTerminalSection(
+        timelineSections,
+        singleProjection ? 'Unassociated operation output' : 'Final output',
+        finalObservedOutput.text,
+        'stdout',
+      );
     }
 
     const tracePhases = [];
@@ -266,9 +413,11 @@ function createCodexDetailBuilder(deps) {
       });
     }
     if (pollCount > 0) {
-      timelineSections.push({ type: 'code_mode_trace', title: 'Execution trace', phases: tracePhases });
+      const traceSection = { type: 'code_mode_trace', title: 'Execution trace', phases: tracePhases };
+      if (singleProjection) inspectorSections.push(traceSection);
+      else timelineSections.push(traceSection);
     }
-    return { timelineSections, inspectorSections };
+    return { timelineSections, inspectorSections, presentation };
   }
 
   function codeModeEventRefsSection(event, session, locale) {
@@ -327,6 +476,9 @@ function createCodexDetailBuilder(deps) {
       detailSections.inspectorSections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
     }
     const sanitizedDetailSections = sanitizeLogicalDetailSections(detailSections);
+    const presentation = logical.subtype === 'code_mode_operation'
+      ? localizeCodeModePresentation(sanitizeCodeModePresentation(detailSections.presentation), locale)
+      : null;
     return {
       id: logical.id,
       schemaVersion: CANONICAL_SCHEMA_VERSION,
@@ -340,6 +492,7 @@ function createCodexDetailBuilder(deps) {
       rawRefs: logical.rawRefs,
       timelineSections: localizeDetailSections(sanitizedDetailSections.timelineSections, locale),
       inspectorSections: localizeDetailSections(sanitizedDetailSections.inspectorSections, locale),
+      ...(presentation ? { presentation } : {}),
     };
   }
 

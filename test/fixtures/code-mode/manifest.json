@@ -34,6 +34,24 @@
       "outerCallId": "exec-escalated-fixture",
       "observationState": "terminal",
       "phaseCount": 1
+    },
+    {
+      "file": "structured-declared-sequential.jsonl",
+      "scenario": "structured_declared_sequential",
+      "outerCallId": "exec-structured-fixture",
+      "observationState": "terminal",
+      "phaseCount": 1,
+      "declaredProjection": "bounded",
+      "projectionCount": 2
+    },
+    {
+      "file": "structured-declared-dynamic-fallback.jsonl",
+      "scenario": "structured_declared_dynamic_fallback",
+      "outerCallId": "exec-dynamic-fixture",
+      "observationState": "terminal",
+      "phaseCount": 1,
+      "declaredProjection": "raw_fallback",
+      "projectionCount": 0
     }
   ]
 }

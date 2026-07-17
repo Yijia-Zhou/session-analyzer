@@ -66,6 +66,10 @@ _Avoid_: Declared nested call, parsed nested call / 声明的嵌套调用、解�
 A nested `tools.*` call site visible in Code Mode JavaScript; it records declared intent but does not prove how many times, or whether, the call executed. / Code Mode JavaScript 中可见的嵌套 `tools.*` 调用位置；它记录声明意图，但不能证明该调用是否执行或执行了多少次。
 _Avoid_: Executed nested tool, observed activity / 已执行嵌套工具、已观测活动
 
+**Nested Tool Projection / 嵌套工具投影**:
+A display-only representation of a nested tool request within a Code Mode Operation. It may originate from a Declared Nested Call and may carry an exact, bounded, or absent result association. It is not a Logical Event and does not own metrics, search identity, Raw References, or an outcome. / Code Mode 操作内嵌套工具请求的仅展示表示。它可以来自声明的嵌套调用，并可带有精确、受限或无结果关联。它不是逻辑事件，也不拥有指标、搜索 identity、原始引用或结果。
+_Avoid_: Nested Logical Event, Observed Nested Activity / 嵌套逻辑事件、已观测嵌套活动
+
 **Poll Phase / 轮询阶段**:
 One `wait` call/output exchange that observes or advances a pending Code Mode cell as part of its owning Code Mode Operation. / 一次用于观察或推进 pending Code Mode cell 的 `wait` 调用/输出交换；它是所属 Code Mode 操作的一部分。
 _Avoid_: Wait operation, wait event / Wait 操作、Wait 事件

@@ -24,9 +24,9 @@
   },
   "files": [
     "server.js",
+    "src/codex-code-mode-declared.js",
     "src/codex-code-mode-facts.js",
     "src/codex-code-mode.js",
-    "src/codex-code-mode-facts.js",
     "src/codex.js",
     "src/codex-detail.js",
     "src/codex-goal.js",
@@ -53,6 +53,7 @@
     "vendor:highlight": "node scripts/build-client.js --vendor-highlight-only"
   },
   "dependencies": {
+    "acorn": "^8.15.0",
     "highlight.js": "^11.11.1",
     "markdown-it": "^14.1.0"
   },

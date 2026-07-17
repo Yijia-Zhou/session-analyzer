@@ -4,13 +4,16 @@
 
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted; composite Logical Event selected / 状态：已接受；选用复合逻辑事件
-- Last updated: 2026-07-15 / 最近更新：2026-07-15
+- Last updated: 2026-07-16 / 最近更新：2026-07-16
 - Related spec: `docs/product-specs/session-transcript-analyzer.md` / 相关规格：`docs/product-specs/session-transcript-analyzer.md`
 - Related design docs: / 相关设计文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/codex-protocol-event-coverage.md`
+  - `docs/design-docs/code-mode-structured-display-catalog.md`
 - Related plan: / 相关计划：
+  - `docs/exec-plans/completed/2026-07-16-code-mode-adaptive-presentation.md`
   - `docs/exec-plans/completed/2026-07-14-code-mode-operation-grouping.md`
+  - `docs/exec-plans/completed/2026-07-15-code-mode-structured-nested-projections.md`
 
 ## Context / 背景
 
@@ -33,8 +36,8 @@ Upstream runtime identity is richer than the ordinary rollout. At runtime, Codex
 ## Non-goals / 非目标
 
 - Executing Code Mode JavaScript or implementing a general JavaScript evaluator / 执行 Code Mode JavaScript，或实现通用 JavaScript 求值器
-- Treating each static `tools.*` call site as an executed tool call or as a reliable execution count / 把每个静态 `tools.*` 调用位置视为已执行工具调用或可靠执行次数
-- Assigning undifferentiated outer output to a particular nested call without a persisted identity edge / 在缺少持久化 identity 边时，把不可区分的外层输出分配给某个特定嵌套调用
+- Treating each static `tools.*` call site or Nested Tool Projection as an executed tool call or as a reliable execution count / 把每个静态 `tools.*` 调用位置或嵌套工具投影视为已执行工具调用或可靠执行次数
+- Treating undifferentiated outer output as an exact or unlabeled result for a particular nested call without a persisted identity edge / 在缺少持久化 identity 边时，把不可区分的外层输出当作某个特定嵌套调用的精确结果或未标注结果
 - Inferring failure, decline, or approval outcome from words such as `error`, `failed`, `denied`, or `approved` in JavaScript, logs, search results, or ordinary output text / 根据 JavaScript、日志、搜索结果或普通输出文本中的 `error`、`failed`、`denied` 或 `approved` 等词推断失败、拒绝或审批结果
 - Adding a new Logical Event `kind` for Code Mode / 为 Code Mode 新增逻辑事件 `kind`
 - Stabilizing the provisional shared model as a public DTO before the representation decision / 在呈现决策前把临时共享模型稳定为公开 DTO
@@ -64,9 +67,55 @@ CodeModeOperation
 
 `outerRefs` 和轮询阶段 refs 是操作自有的来源引用；`eventRefs` 是逻辑引用。嵌套事件的 `rawRefs` 继续由该嵌套事件拥有，不得复制进操作的 `rawRefs`、来源列表或详情 sections。本决策简写把这条关系称为 `event_refs`；如果按仓库 canonical camelCase DTO 风格序列化，则字段名为 `eventRefs`。操作详情必须暴露这些 event refs，使读者能够打开每个嵌套事件，而不制造重复的原始引用。
 
-Declared Nested Calls remain visible only as part of the original JavaScript. Loops, branches, and `Promise.all` mean one source call site can execute zero, one, or many times. V1 does not extract them into summaries, Logical Events, counters, statuses, or parent links.
+Declared Nested Calls remain source declarations rather than execution facts. Supported declarations may additionally produce request-only Nested Tool Projections inside the accepted operation presentation, but the operation identity and canonical event model do not change. Loops, branches, concurrency, and dynamic dispatch mean one source call site can execute zero, one, or many times; no projection becomes a Logical Event, counter, status, parent link, or execution claim.
 
-声明的嵌套调用只作为原始 JavaScript 的一部分保持可见。循环、分支和 `Promise.all` 意味着一个来源调用位置可能执行零次、一次或多次。V1 不会把它们提取为摘要、逻辑事件、计数、状态或父子关联。
+声明的嵌套调用仍是来源声明，而不是执行事实。受支持的声明可以在已接受的 operation 呈现内额外生成 request-only 嵌套工具投影，但 operation identity 与 canonical 事件模型不变。循环、分支、并发和动态分派意味着一个来源调用位置可以执行零次、一次或多次；任何投影都不会成为逻辑事件、计数器、状态、父链接或执行声明。
+
+## Nested Tool Projections / 嵌套工具投影
+
+A Nested Tool Projection is an operation-owned display fragment derived from a supported structured nested request. It may originate from a Declared Nested Call even when no nested lifecycle evidence was persisted. It remains request-only: presentation may show the tool name and bounded structured arguments, but must not state that the request executed.
+
+嵌套工具投影是从受支持的结构化嵌套 request 派生、归属于 operation 展示的片段。即使没有持久化 nested lifecycle 证据，它也可以来自声明的嵌套调用。它始终保持 request-only：呈现可以显示工具名称和受限结构化 arguments，但不得声称该 request 已执行。
+
+Every projection exposes one explicit result-association label: / 每个投影都暴露一个明确的结果关联标签：
+
+- `exact`: a persisted identity edge proves which observed result belongs to the request. / `exact`：持久化 identity 边证明哪个已观测结果属于该 request。
+- `bounded`: no exact identity edge exists, but one result fragment can be conservatively related within a strictly ordered static shape. This is permitted only when calls and candidate results are sequential and one-to-one, with no branch, loop, concurrency (`Promise.all` or equivalent), dynamic tool selection, repeated call site, or ambiguous extra output. The UI must label the association as bounded rather than exact. / `bounded`：不存在精确 identity 边，但在严格有序静态形态中，可以保守地把一个结果 fragment 与 request 关联。只有当调用与候选结果按顺序一一对应，且不存在分支、循环、并发（`Promise.all` 或同类形态）、动态工具选择、重复调用位置或歧义额外输出时才允许使用。UI 必须把该关联标为 bounded，而不是 exact。
+- `none`: no result is assigned to the projection. This is the default whenever the source shape or output mapping is uncertain. / `none`：不向投影分配结果。只要来源形态或输出映射存在不确定性，就默认使用该值。
+
+Unsupported syntax, unsafe values, parse uncertainty, or any failed eligibility check uses raw fallback: keep the outer JavaScript as the readable source and preserve lossless verification through operation Raw refs. The analyzer must not execute JavaScript to improve a projection or association.
+
+不受支持的语法、不安全的值、解析不确定性，或任何资格检查失败，都会使用 raw fallback：保留 outer JavaScript 作为可读来源，并通过 operation Raw refs 保留无损验证能力。Analyzer 不得为了改进投影或关联而执行 JavaScript。
+
+Projection extraction runs only while building operation detail. It uses a versioned known-tool allowlist, a real JavaScript parser, and an all-or-nothing top-level sequential grammar with recursively bounded literal arguments. One unsupported statement, tool, binding, argument, or emission shape makes the entire source use raw fallback; partial projections are forbidden because they can imply a complete execution list.
+
+投影提取只在构建 operation detail 时运行。它使用版本化的已知工具 allowlist、真正的 JavaScript parser，以及全有或全无的顶层顺序语法与递归受限的 literal arguments。只要存在一个不受支持的语句、工具、绑定、参数或 emission 形态，整个来源就使用 raw fallback；禁止生成局部投影，因为局部列表可能暗示它是一份完整执行清单。
+
+Whenever `bounded` assigns a result fragment, the projection keeps that entire sanitized fragment in a collapsed associated-result section even if a specialized renderer also shows a plan, command output, collaboration response, or truncated summary. Structured interpretation of result JSON has independent character, depth, and node budgets; over-budget values remain uninterpreted text. Raw refs remain the lossless source when standard payload sanitization removes embedded data URLs.
+
+只要 `bounded` 分配了某个结果 fragment，投影就会在折叠的关联结果 section 中保留该 fragment 的完整脱敏文本，即使专用 renderer 还会展示计划、命令输出、协作响应或截断摘要。结果 JSON 的结构化解释使用独立的字符数、深度与节点预算；超出预算的值保持为未解释文本。当标准 payload 脱敏移除内嵌 data URL 时，Raw refs 继续作为无损来源。
+
+Nested Tool Projections own no Logical Event identity, metrics, search document or target, Raw refs, source rows, outcome, severity, or escalation tag. Their text is already covered by the operation's single search owner. Observed Nested Activity remains the canonical, independently inspectable Logical Event and is never replaced, merged, or demoted by a projection; exact or bounded projection display is not a second event.
+
+嵌套工具投影不拥有逻辑事件 identity、指标、搜索文档或目标、Raw refs、来源行、结果、severity 或提权标签。其文本已经由 operation 的单一搜索 owner 覆盖。已观测嵌套活动仍是 canonical、可独立检查的逻辑事件，绝不会被投影替代、合并或降级；exact 或 bounded 投影展示也不是第二个事件。
+
+## Adaptive single/multi-tool presentation / 单工具与多工具自适应呈现
+
+Adaptive presentation is selected only after the detail-only whole-program projector succeeds. Exactly one declared request uses `single_tool`: its projection wrapper is removed, its existing structured request/result sections become the timeline body, and the compact event header receives the presentation-only native tool title plus one visible Code Mode chip. Because that title already names the tool, the machine tool-name chip is omitted. A bounded result that is actually displayed adds the compact warning `Inferred result`; separate outer output adds `Unassociated output`. Request evidence and machine tool name remain in inspector chips, metadata, and projection evidence rather than the timeline header. Outer source, projection evidence, operation metadata, command context/result metadata, protocol channel, Raw-ref count, and wait trace are inspector detail. A final outer output without bounded association stays in the timeline under `Unassociated operation output`; it is not assigned to the declared tool. / 只有详情阶段的整段程序 projector 成功后，才选择自适应呈现。恰好一个声明 request 时使用 `single_tool`：移除投影 wrapper，让既有结构化 request/result sections 成为时间线正文，并在紧凑事件 header 中增加仅 presentation 的原生工具 title 与一个明确的代码模式 chip。由于标题已经命名工具，因此省略机器工具名 chip。Request evidence 与机器工具名保留在 inspector chip、metadata 与投影证据中，不再占用时间线 header。只有实际展示 bounded 结果时才增加紧凑警示“推断结果”；outer output 保持分离时增加“未关联输出”。Outer source、投影证据、operation metadata、命令 context/result metadata、协议 channel、Raw-ref 数量与 wait trace 属于 inspector 详情。没有 bounded 关联的最终 outer output 仍以 `Unassociated operation output` 留在时间线中，不会被分配给声明工具。
+
+`resultAssociation: none` means only that no result fragment was assigned to a declared request; it does not prove that any output exists. The presentation descriptor therefore carries the separate boolean `hasUnassociatedOutput`, derived from an actually observed final outer output that lacks complete association. Header and inspector output-warning chips require that boolean, while request-only and incomplete-tail operations show no output warning. / `resultAssociation: none` 只表示没有 result fragment 被分配给声明 request，并不证明存在任何 output。因此 presentation descriptor 使用独立布尔值 `hasUnassociatedOutput`，它只能由实际观测到、且缺少完整关联的最终 outer output 派生。Header 与 inspector 的输出警示 chip 都必须依赖该布尔值；request-only 与 incomplete-tail operation 不显示输出警示。
+
+Projected shell run context preserves numeric timeout values. `timeout_ms` takes nullish precedence over the compatibility alias `timeoutMs`, and the chosen scalar is formatted only after selection rather than passed through string-oriented non-empty selection. / 投影的 shell 运行上下文会保留数值 timeout。`timeout_ms` 通过 nullish 规则优先于兼容别名 `timeoutMs`；应先选定 scalar，再格式化，而不是让它经过面向字符串的非空选择逻辑。
+
+Two or more declared requests use `multi_tool`: the current projection wrappers and folded outer source remain in the timeline, the header label becomes `Multi-tool Code Mode operation`, and one compact tool-count chip is shown. The title replaces a redundant Code Mode chip; a bounded association adds `Inferred result` only because projected results are actually visible. Unsupported programs use `raw_code_mode` and retain the existing command/final-output/trace presentation without any single, multiple, or complex claim. / 两个及以上声明 request 使用 `multi_tool`：当前投影 wrapper 与折叠 outer source 继续留在时间线，header label 变为 `Multi-tool Code Mode operation`，并显示一个紧凑工具数量 chip。标题取代重复的代码模式 chip；只有投影结果实际可见时，bounded 关联才增加“推断结果”。不受支持的程序使用 `raw_code_mode`，保留现有 command/final-output/trace 呈现，不提出 single、multiple 或 complex 声明。
+
+The descriptor is presentation-only. All three variants keep canonical `kind: other_tool_call`, `subtype: code_mode_operation`, `toolName: exec`, operation identity, metric/search/Raw-ref ownership, neutral outcome, and independently visible Observed Nested Activity. The AST projector remains detail-only; visible Code Mode cards may lazily fetch detail to refine their headers, but cold indexing does not classify declared tool composition. / 该 descriptor 只属于 presentation。三个 variant 都保持 canonical `kind: other_tool_call`、`subtype: code_mode_operation`、`toolName: exec`、operation identity、指标/搜索/Raw-ref 所有权、中性 outcome，以及独立可见的已观测嵌套活动。AST projector 继续只在详情阶段运行；可见 Code Mode 卡片可以惰性获取详情以细化 header，但冷索引不会分类声明工具组成。
+
+## Web request projection and lifecycle compression / Web request 投影与生命周期压缩
+
+For `web__run`, the detail projector groups literal top-level arrays such as `search_query`, `open`, `click`, `find`, `finance`, `weather`, `sports`, and `time`. Each group shows only bounded identifying fields and shared options; it does not evaluate JavaScript, infer execution multiplicity from syntax, or manufacture a per-result schema. A bounded terminal fragment is rendered through the existing Markdown pipeline (`html: false`, safe-link validation, escaped fallback), while the complete sanitized fragment remains folded in inspector evidence. Citation markers remain text and do not create synthetic links. / 对 `web__run`，detail projector 会对 `search_query`、`open`、`click`、`find`、`finance`、`weather`、`sports` 与 `time` 等 literal 顶层数组分组。每组只展示受限辨识字段与共享 option；不会求值 JavaScript、从语法推断执行次数，也不会伪造逐结果 schema。Bounded terminal fragment 通过既有 Markdown pipeline 渲染（`html: false`、安全链接校验、转义 fallback），完整脱敏 fragment 则继续折叠保存在 inspector 证据中。Citation marker 保持文本，不生成合成链接。
+
+`web_search_end` is not moved to the Protocol layer. It remains the canonical Main timeline `web_search` event and keeps its event identity, metrics, search document/target, status, and Raw refs. When a Code Mode detail supplies a unique `event_refs` association to such an event, the browser only compresses its ordinary presentation to a one-line `Web activity observed` lifecycle row and hides redundant preview/tool chips. A search hit may still reveal its preview, and opening the row retains the canonical event detail. Ambiguous or missing associations receive no compression. / `web_search_end` 不会移入 Protocol 层。它继续作为 canonical Main timeline `web_search` event，并保留 event identity、指标、搜索 document/target、status 与 Raw refs。当 Code Mode detail 通过 `event_refs` 唯一关联到该事件时，浏览器只把其普通呈现压缩为一行“已观测网页活动”生命周期行，并隐藏重复 preview/tool chip。搜索命中仍可显示其 preview，打开该行也仍保留 canonical event detail。歧义或缺失关联不会触发压缩。
 
 ## Deterministic grouping / 确定性分组
 
@@ -109,6 +158,7 @@ The outcome axis is the existing Logical Event `status`/severity surface. During
 - Count each Observed Nested Activity Logical Event exactly once under its existing tool semantics. / 每个已观测嵌套活动逻辑事件按其现有工具语义恰好计数一次。
 - Count every Poll Phase zero times as an independent tool call or engineering activity. / 每个轮询阶段作为独立工具调用或工程活动计数零次。
 - Count every Declared Nested Call zero times. / 每个声明的嵌套调用计数零次。
+- Count every Nested Tool Projection zero times; its association label does not change operation or nested-event metrics. / 每个嵌套工具投影计数零次；其关联标签不改变 operation 或 nested event 指标。
 - Do not follow `eventRefs` when aggregating counts; they are relations, not ownership copies. / 聚合计数时不得跟随 `eventRefs`；它们是关系，不是所有权副本。
 
 Thus a Code Mode Operation with two associated nested lifecycle events and three waits contributes one operation plus two nested tool calls, not six tool calls. Both A and B must produce the same metrics.
@@ -120,7 +170,8 @@ Thus a Code Mode Operation with two associated nested lifecycle events and three
 - Index the operation's outer JavaScript and accumulated exec/wait outputs once under one operation search owner. / 将操作的外层 JavaScript 及累积 exec/wait 输出在一个操作搜索 owner 下只索引一次。
 - Do not create standalone wait search owners. Poll text resolves to the owning operation. / 不创建独立 wait 搜索 owner；poll 文本归属其操作。
 - Keep each nested Logical Event's existing search document and target. Do not copy nested search text into the operation by following `eventRefs`. / 保留每个嵌套逻辑事件现有的搜索文档和目标；不得沿 `eventRefs` 把嵌套搜索文本复制到操作。
-- Declared Nested Call text remains visible inside the already-indexed JavaScript but is not separately extracted and creates no extra results, tool facets, or execution claims. / 声明的嵌套调用文本继续在已索引 JavaScript 中可见，但不会被单独提取，也不创建额外结果、工具 facet 或执行声明。
+- Declared Nested Call text remains covered by the already-indexed JavaScript and is not separately indexed; a Nested Tool Projection is another view of that same operation-owned text and creates no extra results, tool facets, or execution claims. / 声明的嵌套调用文本继续由已索引的 JavaScript 覆盖，不会被单独索引；嵌套工具投影只是同一份 operation-owned 文本的另一种视图，不创建额外结果、工具 facet 或执行声明。
+- Nested Tool Projections create no search owner or duplicated searchable text; their request and any displayed result remain covered by the operation's existing single owner. / 嵌套工具投影不创建搜索 owner，也不复制可搜索文本；其 request 与任何展示结果继续由 operation 既有的单一 owner 覆盖。
 - A maps the operation search owner to its composite Logical Event ID. B maps it to the non-event group's stable ID. The A/B decision must compare identical queries and exact owner IDs/counts. / A 方案把操作搜索 owner 映射到复合逻辑事件 ID；B 方案把它映射到非事件 group 的稳定 ID。A/B 决策必须使用相同 query 并比较精确 owner ID/计数。
 
 ## Escalation rules / 提权规则
@@ -140,6 +191,10 @@ The implementation must not execute JavaScript to recover escalation, must not t
 A emits one Main Timeline event for the operation using the existing `kind: other_tool_call`, `subtype: code_mode_operation`, and `toolName: exec`. It owns only outer exec and wait refs, exposes associated nested IDs through detail `eventRefs`, and leaves nested Logical Events independently visible. It adds no new kind and remains status-neutral.
 
 A 在主时间线中为操作发出一个事件，使用现有 `kind: other_tool_call`、`subtype: code_mode_operation` 和 `toolName: exec`。它只拥有外层 exec/wait refs，通过详情 `eventRefs` 暴露相关嵌套 ID，并让嵌套逻辑事件继续独立可见。它不新增 kind，并保持状态中性。
+
+Adding zero or more Nested Tool Projections does not create a second operation or change the operation ID, Logical Event ID, kind, subtype, raw ownership, metric ownership, or search owner. Projections are sections inside the accepted A presentation, not children in the canonical event graph.
+
+增加零个或多个嵌套工具投影不会创建第二个 operation，也不会改变 operation ID、逻辑事件 ID、kind、subtype、raw 所有权、指标所有权或搜索 owner。投影只是已接受 A 呈现内部的 section，不是 canonical 事件图中的子节点。
 
 Accepted. The expanded timeline body gives the outer JavaScript command and final observed output the primary visual region. When waits exist, their phase metadata and intermediate outputs live in one collapsed-by-default `code_mode_trace` section after the final output. Operation evidence, observation state, cell ID, and poll count live in the inspector; associated nested events remain independently navigable through inspector-only `event_refs`.
 
@@ -206,6 +261,7 @@ Candidate A was accepted on 2026-07-15 after both candidates passed the symmetri
 - Treating observation state `terminal` as success would contaminate failure filters and session metrics. / 把观测状态 `terminal` 视为成功会污染失败筛选和会话指标。
 - A and B can appear comparable while accidentally using different grouping code. The shared core and fixture expectations must land before worktree divergence. / A 与 B 可能看似可比，却意外使用不同分组代码。共享核心和 fixture 预期必须在 worktree 分叉前落盘。
 - A non-event group may require broader API and browser changes; a composite event may add timeline density. The decision gate must measure both rather than assuming either cost is acceptable. / 非事件 group 可能需要更广的 API 与浏览器改动；复合事件可能增加时间线密度。决策门必须实际衡量两者，而不能假定任一成本可接受。
+- A structured projection can look like execution evidence even when it is request-only, and a bounded result can look exact if its uncertainty is hidden. Keep the request-only and association labels visible, make bounded eligibility fail closed, and prefer raw fallback over a fabricated mapping. / 结构化投影即使只是 request-only，也可能看起来像执行证据；如果隐藏不确定性，bounded 结果也可能看起来像 exact。应保持 request-only 与关联标签可见，让 bounded 资格检查以保守失败为原则，并优先使用 raw fallback 而不是制造映射。
 
 ## Validation / 验证
 
@@ -213,8 +269,11 @@ Candidate A was accepted on 2026-07-15 after both candidates passed the symmetri
 - Shared-core unit tests assert grouping and association without depending on A or B presentation. / 共享核心单元测试断言分组与关联，且不依赖 A 或 B 呈现。
 - Candidate tests assert identical counts, search owners, raw-ref ownership, event refs, and neutral status. / 候选方案测试断言完全一致的计数、搜索 owner、raw-ref 所有权、event refs 和中性状态。
 - Browser acceptance uses only sanitized fixtures until a winning representation is chosen; real transcripts remain read-only validation inputs and are never committed. / 胜出呈现确定前，浏览器验收只使用脱敏 fixture；真实转录只作为只读验证输入，绝不提交。
+- Structured-projection fixtures cover request-only display, emitted `bounded` and `none` labels, strict sequential bounded eligibility, branch/loop/concurrency rejection, unsafe or unsupported argument fallback, unchanged operation identity, zero projection ownership, and coexistence with canonical Observed Nested Activity events. `exact` remains reserved for a future persisted identity edge and must not be emitted or fixture-claimed until such evidence exists. / 结构化投影 fixture 覆盖 request-only 展示、实际发出的 `bounded` 与 `none` 标签、严格顺序 bounded 资格、分支/循环/并发拒绝、不安全或不受支持 argument fallback、不变的 operation identity、投影零所有权，以及与 canonical 已观测嵌套活动事件共存。`exact` 保留给未来的持久化 identity 边；在这种证据出现前，不得发出该标签，也不得声称 fixture 已覆盖。
 
 ## Decision log / 决策日志
 
 - 2026-07-14: Accepted the shared operation semantics and opened an A/B decision between a composite Logical Event and a non-event group. No new kind, product-spec change, or logical-timeline contract is accepted yet. / 2026-07-14：接受共享操作语义，并在复合逻辑事件与非事件 group 之间开启 A/B 决策。当前尚未接受新 kind、产品规格变更或逻辑时间线 contract 变更。
 - 2026-07-15: Selected A after symmetric unit/browser/package validation and directional cold-start comparison. The accepted UI prioritizes command and final output, folds wait trace by default, and keeps operation metadata plus nested-event navigation in the inspector. Both prototype worktrees are retained; only A was integrated. / 2026-07-15：在对称单元/浏览器/package 验证和方向性冷启动对比后选择 A。已接受 UI 优先展示命令和最终输出，默认折叠 wait 过程，并把 operation 元数据与 nested-event 导航保留在 inspector。两个原型 worktree 都继续保留；只有 A 被集成。
+- 2026-07-15: Accepted request-only Nested Tool Projections as an additive presentation inside A without changing operation identity or the canonical event model. Result association must be explicit (`exact | bounded | none`); bounded is limited to strict sequential static shapes, and every uncertain case uses raw fallback. / 2026-07-15：接受 request-only 嵌套工具投影作为 A 内部的增量呈现，不改变 operation identity 或 canonical 事件模型。结果关联必须明确标注（`exact | bounded | none`）；bounded 仅限严格有序静态形态，所有不确定场景都使用 raw fallback。
+- 2026-07-16: Accepted adaptive presentation: one safe declared tool reuses its structured body with visible Code Mode/evidence header labels and inspector-only operation details; multiple declarations retain composite cards under a multi-tool label; raw fallback remains unclassified. Canonical event semantics do not change. / 2026-07-16：接受自适应呈现：一个安全声明工具复用其结构化正文，header 明确显示代码模式/证据标签，operation 详情只进 inspector；多个声明继续在多工具 label 下使用复合卡片；raw fallback 保持未分类。Canonical event 语义不变。
