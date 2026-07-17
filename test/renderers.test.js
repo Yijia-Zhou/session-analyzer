@@ -24,6 +24,16 @@ test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv
   const expandedRawJson = renderSection({ type: 'raw_json', title: 'Raw JSON', value: { raw: true }, expanded: true });
   const eventRefs = renderSection({ type: 'event_refs', title: 'Observed nested activity', items: [{ id: 'event-<1>', label: 'Nested <tool>', kind: 'mcp_call', status: 'failed' }] });
   const codeModeTrace = renderSection({ type: 'code_mode_trace', title: 'Execution trace', phases: [{ title: 'Wait phase 1', entries: [{ key: 'Call', value: 'wait-<1>' }], output: 'pending <output>' }] });
+  const webRequest = renderSection({
+    type: 'web_request',
+    title: 'Web request',
+    groups: [{
+      title: 'Queries',
+      items: [{ primary: 'site:example.test <query>', entries: [{ key: 'Domains', value: 'example.test' }] }],
+    }],
+    options: [{ key: 'Response length', value: 'long' }],
+  });
+  const webResult = renderSection({ type: 'markdown', role: 'web_result', title: 'Web results', html: '<h2>Result</h2><p><a href="https://example.test">Example</a></p>' });
 
   assert.match(markdown, /<strong>safe<\/strong>/);
   assert.match(markdown, /class="sectionTitle">Message/);
@@ -79,6 +89,123 @@ test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv
   assert.match(eventRefs, /data-event-ref-id="event-&lt;1&gt;"/);
   assert.match(eventRefs, /Nested &lt;tool&gt;/);
   assert.doesNotMatch(eventRefs, /Nested <tool>/);
+  assert.match(webRequest, /class="eventSection webRequestBlock"/);
+  assert.match(webRequest, /site:example\.test &lt;query&gt;/);
+  assert.match(webRequest, /Domains/);
+  assert.match(webRequest, /Response length/);
+  assert.match(webResult, /class="eventSection mdBlock webResultMarkdown"/);
+  assert.match(webResult, /href="https:\/\/example\.test"/);
+});
+
+test('renderer projects Code Mode tools with neutral evidence and existing nested section structures', () => {
+  const previousLocale = globalThis.sessionAnalyzerLocale;
+  globalThis.sessionAnalyzerLocale = 'en';
+  try {
+    const shell = renderSection({
+      type: 'code_mode_tool_projection',
+      title: 'Shell <projection>',
+      toolName: 'exec<tool>',
+      requestEvidence: 'declared_source',
+      resultAssociation: 'exact',
+      requestSections: [{ type: 'code', title: 'Command', role: 'command', code: 'echo "<body>"', language: 'shell' }],
+      resultSections: [{ type: 'terminal', title: 'stdout', stream: 'stdout', text: 'full result <body>', language: 'text' }],
+      resultObserved: true,
+      sourceOrder: 7,
+    });
+    const plan = renderSection({
+      type: 'code_mode_tool_projection',
+      title: 'Plan projection',
+      toolName: 'update_plan',
+      requestEvidence: 'observed_lifecycle',
+      resultAssociation: 'bounded',
+      requestSections: [{
+        type: 'plan_update',
+        title: 'Plan update',
+        explanationHtml: '<p>Keep the structured card</p>',
+        steps: [{ step: 'Inspect', status: 'completed' }, { step: 'Render', status: 'in_progress' }],
+      }],
+      resultSections: [{ type: 'code_mode_source', title: 'Associated result', code: '{}', language: 'text' }],
+      resultObserved: true,
+      sourceOrder: 8,
+    });
+    const unassociated = renderSection({
+      type: 'code_mode_tool_projection',
+      title: 'Unpaired projection',
+      requestEvidence: 'declared_source',
+      resultAssociation: 'none',
+      requestSections: [],
+      resultSections: [],
+      resultObserved: false,
+      sourceOrder: 9,
+    });
+
+    assert.match(shell, /class="eventSection codeModeToolProjection" data-source-order="7"/);
+    assert.match(shell, /Shell &lt;projection&gt;/);
+    assert.match(shell, /exec&lt;tool&gt;/);
+    assert.match(shell, /requestEvidence declaredSource">Declared request/);
+    assert.match(shell, /resultAssociation exactIdentity">Result matched exactly/);
+    assert.match(shell, /codeModeToolProjectionPart request/);
+    assert.match(shell, /codeModeToolProjectionPart result/);
+    assert.match(shell, /class="eventSection commandRun"/);
+    assert.match(shell, /terminalBlock stdout/);
+    assert.match(shell, /full result &lt;body&gt;/);
+    assert.doesNotMatch(shell, /\bsuccess\b|\boutcome\b/i);
+
+    assert.match(plan, /requestEvidence observedLifecycle">Observed activity/);
+    assert.match(plan, /resultAssociation boundedOrder">Result associated by order/);
+    assert.match(plan, /class="planUpdateBlock"/);
+    assert.match(plan, /class="planUpdateSteps"/);
+    assert.match(plan, /class="planStatus completed">completed/);
+    assert.match(plan, /class="planStatus inProgress">in_progress/);
+    assert.match(plan, /codeModeToolProjectionPart result/);
+    assert.match(plan, /<details class="codeModeSource">/);
+    assert.match(plan, /Associated result/);
+    assert.match(unassociated, /resultAssociation unassociated">Unassociated/);
+
+    globalThis.sessionAnalyzerLocale = 'zh-CN';
+    const localized = renderSection({
+      type: 'code_mode_tool_projection',
+      title: '工具投影',
+      requestEvidence: 'observed_lifecycle',
+      resultAssociation: 'none',
+      requestSections: [{ type: 'notice', title: '请求体', text: '内容' }],
+      resultSections: [],
+      resultObserved: false,
+      sourceOrder: 10,
+    });
+    assert.match(localized, />已观测嵌套活动</);
+    assert.match(localized, />未关联</);
+    assert.match(localized, /codeModeToolProjectionPartLabel">请求/);
+  } finally {
+    globalThis.sessionAnalyzerLocale = previousLocale;
+  }
+});
+
+test('renderer keeps Code Mode source folded without changing ordinary code sections', () => {
+  const source = renderSection({
+    type: 'code_mode_source',
+    title: 'Outer <JavaScript>',
+    code: 'const value = "<source>";',
+    language: 'javascript',
+  });
+  const expanded = renderSection({
+    type: 'code_mode_source',
+    title: 'Outer JavaScript',
+    code: 'return 1;',
+    language: 'javascript',
+    expanded: true,
+  });
+  const ordinary = renderSection({ type: 'code', title: 'Command', code: 'echo full-size', language: 'shell' });
+
+  assert.match(source, /<details class="codeModeSource">/);
+  assert.doesNotMatch(source, /codeModeSource" open/);
+  assert.match(source, /Outer &lt;JavaScript&gt;/);
+  assert.match(source, /<code>javascript<\/code>/);
+  assert.match(source, /class="language-javascript hljs"/);
+  assert.match(source, /&quot;&lt;source&gt;&quot;/);
+  assert.match(expanded, /<details class="codeModeSource" open>/);
+  assert.match(ordinary, /class="codeFence"/);
+  assert.doesNotMatch(ordinary, /codeModeSource/);
 });
 
 test('renderer outputs patch sections with file summaries, line numbers, and escaped code', () => {

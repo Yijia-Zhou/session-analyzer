@@ -481,6 +481,77 @@ function kindLabel(value) {
   return i18n.eventKindLabel(value, state.locale) || KIND_LABELS[value] || humanizeKind(value) || value;
 }
 
+function timelineEventDetail(event) {
+  if (!event) return null;
+  return state.detailCache[detailKey(state.selectedSessionId, activeLayerId(), event.id)] || null;
+}
+
+function codeModeEventPresentation(event, detail = timelineEventDetail(event)) {
+  if (event?.subtype !== 'code_mode_operation') return null;
+  const presentation = detail?.presentation;
+  return presentation && ['single_tool', 'multi_tool', 'raw_code_mode'].includes(presentation.variant)
+    ? presentation
+    : null;
+}
+
+function detailHasWebProjection(detail) {
+  if (detail?.presentation?.variant === 'single_tool' && detail.presentation.toolName === 'web__run') return true;
+  return (detail?.timelineSections || []).some((section) => (
+    section?.type === 'code_mode_tool_projection' && section.toolName === 'web__run'
+  ));
+}
+
+function compactCodeModeWebLifecycleIds() {
+  const ids = new Set();
+  for (const detail of Object.values(state.detailCache)) {
+    if (detail?.subtype !== 'code_mode_operation' || !detailHasWebProjection(detail)) continue;
+    for (const section of detail.inspectorSections || []) {
+      if (section?.type !== 'event_refs') continue;
+      for (const item of section.items || []) {
+        if (item?.kind === 'web_search' && item.id) ids.add(item.id);
+      }
+    }
+  }
+  return ids;
+}
+
+function codeModeRequestEvidenceBadge(value) {
+  if (value === 'declared_source') return { className: 'declaredSource', label: t('declaredRequest') };
+  if (value === 'observed_lifecycle') return { className: 'observedLifecycle', label: t('observedActivity') };
+  return null;
+}
+
+function codeModeResultAssociationBadge(value, hasUnassociatedOutput = false) {
+  if (value === 'exact' || value === 'exact_identity') return { className: 'exactIdentity', label: t('resultMatchedExactly') };
+  if (value === 'bounded' || value === 'bounded_order') return { className: 'boundedOrder', label: t('resultAssociatedByOrder') };
+  if (value === 'none' && hasUnassociatedOutput) return { className: 'unassociated', label: t('unassociated') };
+  return null;
+}
+
+function renderCodeModePresentationChips(presentation) {
+  if (!presentation || presentation.variant === 'raw_code_mode') return '';
+  const resultAssociation = codeModeResultAssociationBadge(
+    presentation.resultAssociation,
+    presentation.hasUnassociatedOutput,
+  );
+  return [
+    presentation.variant === 'single_tool'
+      ? `<span class="chip codeModeChip">${escapeHtml(t('codeMode'))}</span>`
+      : '',
+    presentation.variant === 'multi_tool'
+      ? `<span class="chip countChip">${escapeHtml(t('declaredRequests', { count: presentation.declaredToolCount }))}</span>`
+      : '',
+    resultAssociation
+      ? `<span class="codeModeEvidenceBadge resultAssociation ${resultAssociation.className}">${escapeHtml(resultAssociation.label)}</span>`
+      : '',
+  ].join('');
+}
+
+function presentedEventLabel(event, presentation = codeModeEventPresentation(event), compactWebLifecycle = false) {
+  if (compactWebLifecycle) return t('webActivityObserved');
+  return presentation && presentation.variant !== 'raw_code_mode' ? presentation.label : event.label;
+}
+
 function projectProgressPercent(progress) {
   const phase = progress?.phase || '';
   if (phase === 'complete') return 100;
@@ -1748,7 +1819,7 @@ function shouldShowInspectorSummary(event, preview, detail = null) {
     'js_repl',
   ]);
   if (bodyOwnedKinds.has(event.kind)) return false;
-  if (detail?.timelineSections?.some((section) => ['markdown', 'code', 'terminal', 'patch', 'diff', 'user_input', 'plan_update', 'collaboration'].includes(section.type))) return false;
+  if (detail?.timelineSections?.some((section) => ['markdown', 'code', 'terminal', 'patch', 'diff', 'user_input', 'plan_update', 'collaboration', 'code_mode_tool_projection', 'code_mode_source'].includes(section.type))) return false;
   return true;
 }
 
@@ -3319,7 +3390,7 @@ function renderEventFooterActions(display) {
   </div>`;
 }
 
-function renderEventPreview(event, display) {
+function renderEventPreview(event, display, presentation = null) {
   if (display === 'expanded') return '';
   if (event.kind === 'usage_limit_warning' && event.usageLimits?.length) {
     return `<div class="eventPreview usageLimitPreview">${renderUsageLimitPreview(event.usageLimits)}</div>`;
@@ -3327,7 +3398,8 @@ function renderEventPreview(event, display) {
   if (event.kind === 'usage_limit_warning' && event.tokenUsage?.length) {
     return `<div class="eventPreview tokenPreview">${renderTokenUsageBadges(event.tokenUsage)}</div>`;
   }
-  const preview = event.snippet || event.preview || event.label;
+  if (presentation?.variant === 'single_tool') return '';
+  const preview = event.snippet || event.preview || presentedEventLabel(event, presentation);
   return `<div class="eventPreview">${escapeHtml(preview)}</div>`;
 }
 
@@ -3351,8 +3423,11 @@ function renderTimeline() {
     renderProjectSearchView();
     return;
   }
+  const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
   el.timeline.innerHTML = `${renderProjectReturnBanner()}${renderedTimelineEvents().map((event) => {
     const ds = displayState(event);
+    const presentation = codeModeEventPresentation(event);
+    const compactWebLifecycle = event.kind === 'web_search' && compactWebLifecycleIds.has(event.id);
     const temporaryReveal = state.temporaryEventReveal?.event.id === event.id
       && !state.currentEvents.some((candidate) => candidate.id === event.id);
     const classes = [
@@ -3366,14 +3441,20 @@ function renderTimeline() {
       event.hasSearchHit ? 'searchHit' : '',
       ds === 'hidden' ? 'hiddenByProfile' : '',
       temporaryReveal ? 'temporaryReferenceReveal' : '',
+      presentation ? `code-mode-${cssToken(presentation.variant)}` : '',
+      compactWebLifecycle ? 'code-mode-web-lifecycle' : '',
     ].filter(Boolean).join(' ');
+    const displayToolName = compactWebLifecycle
+      ? ''
+      : presentation && presentation.variant !== 'raw_code_mode'
+      ? ''
+      : event.toolName;
     const chips = [
       event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
       ...(Array.isArray(event.tags) ? event.tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`) : []),
-      event.toolName ? `<span class="chip toolChip">${escapeHtml(event.toolName)}</span>` : '',
+      renderCodeModePresentationChips(presentation),
+      displayToolName ? `<span class="chip toolChip">${escapeHtml(displayToolName)}</span>` : '',
       event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t('files'))}</span>` : '',
-      event.rawRefs?.length ? `<span class="chip countChip">${event.rawRefs.length} ${escapeHtml(t('raw'))}</span>` : '',
-      event.channels?.length ? `<span class="chip channelChip">${escapeHtml(event.channels.join(','))}</span>` : '',
       temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
     ].join('');
     const toggleLabel = ds === 'expanded' ? t('collapseEvent') : t('expandEvent');
@@ -3382,11 +3463,11 @@ function renderTimeline() {
         <button class="eventToggle" type="button" data-action="toggle" aria-label="${toggleLabel}" title="${toggleLabel}">
           <span class="srOnly">${toggleLabel}</span>
         </button>
-        <span class="eventKind">${escapeHtml(event.label)}</span>
+        <span class="eventKind">${escapeHtml(presentedEventLabel(event, presentation, compactWebLifecycle))}</span>
         ${chips ? `<span class="chips">${chips}</span>` : ''}
         <span class="eventTime">${escapeHtml(fmtDate(event.timestamp))}</span>
       </div>
-      ${renderEventPreview(event, ds)}
+      ${compactWebLifecycle && !event.hasSearchHit ? '' : renderEventPreview(event, ds, presentation)}
       ${renderEventBody(event, ds)}
       ${renderEventFooterActions(ds)}
     </article>`;
@@ -3449,10 +3530,13 @@ function isInScrollport(element) {
 function loadVisibleExpandedDetails() {
   state.detailViewportTimer = 0;
   if (!searchDiscoveryContextReady()) return;
-  for (const article of el.timeline.querySelectorAll('.event.expanded[data-event-id]')) {
+  for (const article of el.timeline.querySelectorAll('.event[data-event-id]')) {
     if (!isInScrollport(article)) continue;
     const item = currentTimelineEvent(article.dataset.eventId);
-    if (item) ensureEventDetail(item);
+    if (item && (article.classList.contains('expanded')
+        || (activeLayerId() === 'main' && item.subtype === 'code_mode_operation'))) {
+      ensureEventDetail(item);
+    }
   }
 }
 
@@ -4041,7 +4125,18 @@ function showInspector(event, options = {}) {
   const refs = sourceRefs(event);
   const preview = event.snippet || event.preview || '';
   const detail = state.detailCache[key];
-  const chips = renderChips(inspectorChipValues(event));
+  const presentation = codeModeEventPresentation(event, detail);
+  const presentationChipValues = presentation && presentation.variant !== 'raw_code_mode'
+    ? [
+      t('codeMode'),
+      codeModeRequestEvidenceBadge(presentation.requestEvidence)?.label,
+      codeModeResultAssociationBadge(
+        presentation.resultAssociation,
+        presentation.hasUnassociatedOutput,
+      )?.label,
+    ]
+    : [];
+  const chips = renderChips([...inspectorChipValues(event), ...presentationChipValues]);
   state.detailSelectionKey = key;
   const clearedTemporaryReveal = options.replace
     ? replaceDetailView(eventDetailView('inspector', event.id, options))
@@ -4075,7 +4170,7 @@ function showInspector(event, options = {}) {
     });
   }
   renderDetailShell({
-    title: event.label,
+    title: presentedEventLabel(event, presentation),
     actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), renderInspectorNavigation(event, { pending: Boolean(navigationPending) })].filter(Boolean).join(''),
     body: `<div class="inspector">
     ${chips ? `<div class="chips">${chips}</div>` : ''}

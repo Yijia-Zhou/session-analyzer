@@ -333,7 +333,7 @@ async function makeCodeModeCodexHome(t) {
   const rows = [
     { timestamp: '2026-07-15T01:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: codeModeRepoRoot } },
     { timestamp: '2026-07-15T01:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Inspect Code Mode hierarchy.' }] } },
-    { timestamp: '2026-07-15T01:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-browser-hierarchy', turn_id: 'turn-code-mode', input: 'const result = await tools.fixture(); text(result);' } },
+    { timestamp: '2026-07-15T01:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-browser-hierarchy', turn_id: 'turn-code-mode', input: 'const result = await tools.wait_agent({ timeout_ms: 1000 }); text(result);' } },
     { timestamp: '2026-07-15T01:00:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-browser-hierarchy', turn_id: 'turn-code-mode', output: 'Script running with cell ID 7373\nInitial output' } },
     { timestamp: '2026-07-15T01:00:04.000Z', type: 'response_item', payload: { type: 'function_call', name: 'wait', call_id: 'wait-browser-1', turn_id: 'turn-code-mode', arguments: '{"cell_id":"7373"}' } },
     { timestamp: '2026-07-15T01:00:05.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'wait-browser-1', turn_id: 'turn-code-mode', output: 'Script running with cell ID 7373\nIntermediate output' } },
@@ -344,6 +344,74 @@ async function makeCodeModeCodexHome(t) {
   await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
   t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
   return { codexHome, repoRoot: codeModeRepoRoot };
+}
+
+async function makeAdaptiveCodeModeCodexHome(t) {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-code-mode-adaptive-'));
+  const adaptiveRepoRoot = path.join(codexHome, 'repo');
+  const sessionId = 'dededede-dede-dede-dede-dededededede';
+  const dir = path.join(codexHome, 'sessions', '2026', '07', '16');
+  const file = path.join(dir, `rollout-2026-07-16T09-00-00-${sessionId}.jsonl`);
+  await fsp.mkdir(adaptiveRepoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  const singleSource = [
+    "const plan = await tools.update_plan({ explanation: 'single fixture', plan: [",
+    "  { step: 'Inspect single', status: 'in_progress' },",
+    "  { step: 'Finish single', status: 'pending' },",
+    '] });',
+    'text(plan);',
+  ].join('\n');
+  const multiSource = [
+    "const plan = await tools.update_plan({ plan: [{ step: 'Inspect multi', status: 'in_progress' }] });",
+    "const command = await tools.shell_command({ command: 'Write-Output multi' });",
+    'text(plan);',
+    'text(command);',
+  ].join('\n');
+  const requestOnlySource = "const plan = await tools.update_plan({ plan: [{ step: 'Request only', status: 'pending' }] }); text(plan);";
+  const rows = [
+    { timestamp: '2026-07-16T01:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: adaptiveRepoRoot } },
+    { timestamp: '2026-07-16T01:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Inspect adaptive Code Mode presentation.' }] } },
+    { timestamp: '2026-07-16T01:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-browser-single', turn_id: 'turn-single', input: singleSource } },
+    { timestamp: '2026-07-16T01:00:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-browser-single', turn_id: 'turn-single', output: [{ type: 'input_text', text: 'Script completed\nOutput:\n' }, { type: 'input_text', text: '{}' }] } },
+    { timestamp: '2026-07-16T01:00:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-browser-multi', turn_id: 'turn-multi', input: multiSource } },
+    { timestamp: '2026-07-16T01:00:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-browser-multi', turn_id: 'turn-multi', output: [{ type: 'input_text', text: 'Script completed\nOutput:\n' }, { type: 'input_text', text: '{}' }, { type: 'input_text', text: 'Exit code: 0\nWall time: 1 second\nOutput:\nmulti' }] } },
+    { timestamp: '2026-07-16T01:00:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-browser-request-only', turn_id: 'turn-request-only', input: requestOnlySource } },
+  ];
+  await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  return { codexHome, repoRoot: adaptiveRepoRoot };
+}
+
+async function makeWebCodeModeCodexHome(t) {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-code-mode-web-'));
+  const webRepoRoot = path.join(codexHome, 'repo');
+  const sessionId = 'efefefef-efef-efef-efef-efefefefefef';
+  const dir = path.join(codexHome, 'sessions', '2026', '07', '16');
+  const file = path.join(dir, `rollout-2026-07-16T10-00-00-${sessionId}.jsonl`);
+  await fsp.mkdir(webRepoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  const source = "const result = await tools.web__run({ search_query: [{ q: 'site:example.test browser markdown', domains: ['example.test'] }], response_length: 'long' }); text(result);";
+  const result = [
+    '## Example browser result',
+    '',
+    '- [Safe source](https://example.test/docs)',
+    '- **Rendered browser emphasis**',
+    '- [Unsafe source](javascript:alert(1))',
+    '',
+    '<script>alert("unsafe")</script>',
+    '',
+    'citeturn0search0',
+  ].join('\n');
+  const rows = [
+    { timestamp: '2026-07-16T02:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: webRepoRoot } },
+    { timestamp: '2026-07-16T02:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Inspect Web Code Mode presentation.' }] } },
+    { timestamp: '2026-07-16T02:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-browser-web', turn_id: 'turn-web', input: source } },
+    { timestamp: '2026-07-16T02:00:02.500Z', type: 'event_msg', payload: { type: 'web_search_end', call_id: 'internal-browser-web', turn_id: 'turn-web', query: 'site:example.test browser markdown', action: { type: 'search', queries: ['site:example.test browser markdown'] }, status: 'completed' } },
+    { timestamp: '2026-07-16T02:00:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-browser-web', turn_id: 'turn-web', output: [{ type: 'input_text', text: 'Script completed\nWall time 1.2 seconds\nOutput:\n' }, { type: 'input_text', text: result }] } },
+  ];
+  await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  return { codexHome, repoRoot: webRepoRoot };
 }
 
 async function makeHookCodexHome(t) {
@@ -427,6 +495,9 @@ test('browser locale localizes static shell and dirty profile dialog', async (t)
   await page.waitForFunction(() => document.documentElement.lang === 'en');
 
   await selectPrimarySession(page);
+  const timelineHeaderText = await page.locator('#timeline .eventHeader').allTextContents();
+  assert.equal(await page.locator('#timeline .eventHeader .channelChip').count(), 0);
+  assert.doesNotMatch(timelineHeaderText.join('\n'), /(?:^|\s)\d+ raw(?:\s|$)|event_msg|response_item/);
   const messagesMetricTitle = await page.locator('.metric', { hasText: 'Messages' }).getAttribute('title');
   assert.match(messagesMetricTitle || '', /Switch to conversation reading folding strategy/);
   assert.equal((messagesMetricTitle || '').includes('切换到'), false);
@@ -484,7 +555,7 @@ test('browser locale switch reloads cached expanded event detail', async (t) => 
   await page.waitForSelector('#timeline .event.kind-command.expanded .eventBody');
 });
 
-test('browser Code Mode detail prioritizes command and final output while keeping wait trace secondary', async (t) => {
+test('browser single-tool Code Mode keeps native request and unassociated output primary while moving trace to inspector', async (t) => {
   const fixture = await makeCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const session = Array.from(index.sessionsById.values())[0];
@@ -495,28 +566,154 @@ test('browser Code Mode detail prioritizes command and final output while keepin
   assert.ok(renderedEventIds.includes(operation.id), `expected Code Mode event in ${JSON.stringify(renderedEventIds)}`);
   const event = page.locator(`#timeline .event[data-event-id="${operation.id}"]`);
 
+  await page.waitForFunction((eventId) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`)?.classList.contains('code-mode-single-tool'), operation.id);
+  assert.equal(await event.locator('.eventKind').textContent(), 'Wait for subagent');
+  const compactHeader = await event.locator('.eventHeader').textContent();
+  assert.match(compactHeader, /Code Mode.*Unassociated output/s);
+  assert.doesNotMatch(compactHeader, /Declared request|response_item|2 raw|wait_agent/);
+  assert.equal(compactHeader.includes('exec'), false);
+
   await event.click();
-  await page.waitForSelector('#timeline .event .codeModeTrace');
-  assert.match(await event.locator('.commandRun').textContent(), /Command.*tools\.fixture.*Final output.*Final browser output/s);
-  assert.equal((await event.locator('.commandRun').textContent()).includes('Script completed'), false);
-  assert.doesNotMatch(await event.locator('.commandRun').textContent(), /\[32;1m|\[0m/);
-  assert.equal(await event.locator('.codeModeTrace').getAttribute('open'), null);
+  await page.waitForSelector(`#timeline .event[data-event-id="${operation.id}"] .collaborationBlock`);
+  assert.match(await event.locator('.collaborationBlock').textContent(), /Wait for subagent.*Timeout ms.*1000/s);
+  assert.match(await event.locator('.terminalBlock').textContent(), /Unassociated operation output.*Final browser output/s);
+  assert.equal((await event.locator('.terminalBlock').textContent()).includes('Script completed'), false);
+  assert.doesNotMatch(await event.locator('.terminalBlock').textContent(), /\[32;1m|\[0m/);
+  assert.equal(await event.locator('.codeModeTrace').count(), 0);
   assert.equal((await event.textContent()).includes('Operation metadata'), false);
-  assert.equal(await event.locator('.codeModeTracePhase').first().isVisible(), false);
 
   await waitForDetailView(page, 'inspector');
   await page.waitForSelector('#detail .inspectorDetailBody');
-  assert.match(await page.locator('#detail .inspectorDetailBody').textContent(), /Operation metadata.*Poll count.*2.*Observed nested activity.*MCP tool/s);
+  assert.match(await page.locator('#detail .inspectorDetailBody').textContent(), /Operation metadata.*Poll count.*2.*Projection evidence.*wait_agent.*Code Mode source.*Execution trace.*Observed nested activity.*MCP tool/s);
+  const inspectorTrace = page.locator('#detail .codeModeTrace');
+  assert.equal(await inspectorTrace.getAttribute('open'), null);
 
   await switchHiddenLocale(page, 'zh-CN');
   await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
-  await page.waitForFunction((eventId) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"] .commandRun`)?.textContent.includes('最终输出'), operation.id);
-  assert.match(await event.locator('.commandRun').textContent(), /执行命令.*最终输出/s);
+  await page.waitForFunction((eventId) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"] .terminalBlock`)?.textContent.includes('未关联的操作输出'), operation.id);
+  assert.equal(await event.locator('.eventKind').textContent(), '等待子代理');
+  assert.match(await event.locator('.eventHeader').textContent(), /代码模式.*未关联输出/s);
+  assert.equal((await event.locator('.eventHeader').textContent()).includes('wait_agent'), false);
 
-  await event.locator('.codeModeTrace > summary').click();
-  assert.notEqual(await event.locator('.codeModeTrace').getAttribute('open'), null);
-  assert.match(await event.locator('.codeModeTrace').textContent(), /执行阶段.*Initial output.*等待阶段 1.*Intermediate output.*等待阶段 2/s);
-  assert.equal((await event.locator('.codeModeTrace').textContent()).includes('Final browser output'), false);
+  await event.click();
+  await waitForDetailView(page, 'inspector');
+  await page.waitForSelector('#detail .codeModeTrace');
+  const localizedInspectorTrace = page.locator('#detail .codeModeTrace');
+  await localizedInspectorTrace.locator('summary').click();
+  assert.notEqual(await localizedInspectorTrace.getAttribute('open'), null);
+  assert.match(await localizedInspectorTrace.textContent(), /执行阶段.*Initial output.*等待阶段 1.*Intermediate output.*等待阶段 2/s);
+  assert.equal((await localizedInspectorTrace.textContent()).includes('Final browser output'), false);
+});
+
+test('browser Code Mode adaptively unwraps one declared tool and labels multiple declared tools without changing counts', async (t) => {
+  const fixture = await makeAdaptiveCodeModeCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const session = Array.from(index.sessionsById.values())[0];
+  const operations = session.logicalEvents.filter((candidate) => candidate.subtype === 'code_mode_operation');
+  const single = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-browser-single');
+  const multi = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-browser-multi');
+  const requestOnly = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-browser-request-only');
+  assert.ok(single && multi && requestOnly);
+  assert.equal(session.counts.toolCalls, 3);
+  assert.deepEqual(session.analysis.toolUsage, [{ name: 'exec', count: 3 }]);
+
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await page.waitForFunction(({ singleId, multiId, requestOnlyId }) => {
+    const singleEvent = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(singleId)}"]`);
+    const multiEvent = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(multiId)}"]`);
+    const requestOnlyEvent = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(requestOnlyId)}"]`);
+    return singleEvent?.classList.contains('code-mode-single-tool')
+      && multiEvent?.classList.contains('code-mode-multi-tool')
+      && requestOnlyEvent?.classList.contains('code-mode-single-tool');
+  }, { singleId: single.id, multiId: multi.id, requestOnlyId: requestOnly.id });
+
+  const singleEvent = page.locator(`#timeline .event[data-event-id="${single.id}"]`);
+  const multiEvent = page.locator(`#timeline .event[data-event-id="${multi.id}"]`);
+  const requestOnlyEvent = page.locator(`#timeline .event[data-event-id="${requestOnly.id}"]`);
+  assert.equal(await singleEvent.locator('.eventKind').textContent(), 'Plan update');
+  assert.match(await singleEvent.locator('.eventHeader').textContent(), /Code Mode.*Inferred result/s);
+  assert.doesNotMatch(await singleEvent.locator('.eventHeader').textContent(), /Declared request|response_item|2 raw|update_plan/);
+  assert.equal(await singleEvent.locator('.toolChip').count(), 0, 'the native single-tool title makes the tool-name chip redundant');
+  await singleEvent.click();
+  await page.waitForSelector(`#timeline .event[data-event-id="${single.id}"] .planUpdateBlock`);
+  assert.equal(await singleEvent.locator('.codeModeToolProjection').count(), 0);
+  assert.equal(await singleEvent.locator('.codeModeSource').count(), 1, 'associated result remains folded in the timeline');
+  assert.equal((await singleEvent.locator('.codeModeSource').textContent()).includes('const plan'), false);
+
+  assert.equal(await multiEvent.locator('.eventKind').textContent(), 'Multi-tool Code Mode operation');
+  const multiHeader = await multiEvent.locator('.eventHeader').textContent();
+  assert.match(multiHeader, /2 tools.*Inferred result/s);
+  assert.doesNotMatch(multiHeader, /Declared request|response_item|2 raw/);
+  assert.equal(await multiEvent.locator('.toolChip').count(), 0);
+  await multiEvent.click();
+  await page.waitForSelector(`#timeline .event[data-event-id="${multi.id}"] .codeModeToolProjection`);
+  assert.equal(await multiEvent.locator('.codeModeToolProjection').count(), 2);
+  assert.equal(await multiEvent.locator('.codeModeSource').count(), 3, 'two associated results plus outer source remain folded');
+
+  assert.equal(await requestOnlyEvent.locator('.eventKind').textContent(), 'Plan update');
+  assert.match(await requestOnlyEvent.locator('.eventHeader').textContent(), /Code Mode/);
+  assert.doesNotMatch(await requestOnlyEvent.locator('.eventHeader').textContent(), /Inferred result|Unassociated output/);
+
+  await switchHiddenLocale(page, 'zh-CN');
+  await page.waitForFunction(({ singleId, multiId, requestOnlyId }) => {
+    const label = (id) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(id)}"] .eventKind`)?.textContent;
+    return label(singleId) === '计划更新'
+      && label(multiId) === '多工具代码模式操作'
+      && label(requestOnlyId) === '计划更新';
+  }, { singleId: single.id, multiId: multi.id, requestOnlyId: requestOnly.id });
+  assert.match(await multiEvent.locator('.eventHeader').textContent(), /2 个工具.*推断结果/s);
+  assert.equal((await multiEvent.locator('.eventHeader').textContent()).includes('代码模式'), true, 'the localized multi-tool title retains the Code Mode identity');
+  assert.equal(await multiEvent.locator('.codeModeChip').count(), 0, 'the multi-tool title makes a separate Code Mode chip redundant');
+  assert.doesNotMatch(await requestOnlyEvent.locator('.eventHeader').textContent(), /推断结果|未关联输出/);
+});
+
+test('browser Code Mode presents web requests structurally, renders safe Markdown, and compacts associated lifecycle evidence', async (t) => {
+  const fixture = await makeWebCodeModeCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const session = Array.from(index.sessionsById.values())[0];
+  const operation = session.logicalEvents.find((candidate) => candidate.subtype === 'code_mode_operation');
+  const webLifecycle = session.logicalEvents.find((candidate) => candidate.kind === 'web_search');
+  assert.ok(operation && webLifecycle);
+  assert.equal(session.counts.toolCalls, 2);
+  assert.deepEqual(session.analysis.toolUsage, [{ name: 'exec', count: 1 }, { name: 'web_search', count: 1 }]);
+
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await page.waitForFunction(({ operationId, lifecycleId }) => {
+    const operationEvent = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(operationId)}"]`);
+    const lifecycleEvent = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(lifecycleId)}"]`);
+    return operationEvent?.classList.contains('code-mode-single-tool')
+      && lifecycleEvent?.classList.contains('code-mode-web-lifecycle');
+  }, { operationId: operation.id, lifecycleId: webLifecycle.id });
+
+  const operationEvent = page.locator(`#timeline .event[data-event-id="${operation.id}"]`);
+  const lifecycleEvent = page.locator(`#timeline .event[data-event-id="${webLifecycle.id}"]`);
+  assert.equal(await operationEvent.locator('.eventKind').textContent(), 'Web search');
+  assert.match(await operationEvent.locator('.eventHeader').textContent(), /Code Mode.*Inferred result/s);
+  assert.equal(await operationEvent.locator('.toolChip').count(), 0);
+  assert.equal(await lifecycleEvent.locator('.eventKind').textContent(), 'Web activity observed');
+  assert.equal(await lifecycleEvent.locator('.eventPreview').count(), 0);
+  assert.equal(await lifecycleEvent.locator('.toolChip').count(), 0);
+
+  await operationEvent.click();
+  await page.waitForSelector(`#timeline .event[data-event-id="${operation.id}"] .webRequestBlock`);
+  assert.match(await operationEvent.locator('.webRequestBlock').textContent(), /Web request.*Queries.*site:example\.test browser markdown.*Domains.*example\.test.*Response length.*long/s);
+  const markdown = operationEvent.locator('.webResultMarkdown');
+  assert.equal(await markdown.locator('h2').textContent(), 'Example browser result');
+  assert.equal(await markdown.locator('strong').textContent(), 'Rendered browser emphasis');
+  assert.equal(await markdown.locator('a[href="https://example.test/docs"]').count(), 1);
+  assert.equal(await markdown.locator('a[href^="javascript:"]').count(), 0);
+  assert.equal(await markdown.locator('script').count(), 0);
+  assert.match(await markdown.textContent(), /citeturn0search0/);
+  assert.equal((await operationEvent.textContent()).includes('Script completed'), false);
+  assert.equal((await operationEvent.textContent()).includes('Associated result'), false);
+
+  await switchHiddenLocale(page, 'zh-CN');
+  await page.waitForFunction(({ operationId, lifecycleId }) => {
+    const label = (id) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(id)}"] .eventKind`)?.textContent;
+    return label(operationId) === '网页搜索' && label(lifecycleId) === '已观测网页活动';
+  }, { operationId: operation.id, lifecycleId: webLifecycle.id });
+  assert.match(await operationEvent.locator('.webRequestBlock').textContent(), /网络请求.*查询.*域名.*响应长度/s);
+  assert.match(await operationEvent.locator('.webResultMarkdown').textContent(), /网页结果.*Example browser result/s);
 });
 
 test('browser topbar width priorities keep search, Layer, and folding controls responsive', async (t) => {

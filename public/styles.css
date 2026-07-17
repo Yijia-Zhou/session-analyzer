@@ -2988,6 +2988,75 @@ body[data-project-mode='selecting'] .searchAssist {
   margin: 0.75rem 0 0;
 }
 
+.webRequestBlock,
+.webResultMarkdown {
+  background: #fbfcfd;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.7rem 0.8rem;
+}
+
+.webRequestGroup + .webRequestGroup {
+  border-top: 1px solid var(--line);
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+}
+
+.webRequestGroup h4 {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin: 0 0 0.45rem;
+  text-transform: uppercase;
+}
+
+.webRequestItems {
+  margin: 0;
+  padding-left: 1.35rem;
+}
+
+.webRequestItem + .webRequestItem {
+  margin-top: 0.55rem;
+}
+
+.webRequestPrimary {
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.webRequestMeta,
+.webRequestOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.65rem;
+  margin-top: 0.3rem;
+}
+
+.webRequestMetaItem,
+.webRequestOption {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.webRequestMetaItem strong,
+.webRequestOption strong {
+  color: var(--ink);
+  margin-right: 0.28rem;
+}
+
+.webResultMarkdown {
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.webResultMarkdown > .sectionTitle {
+  position: sticky;
+  top: -0.7rem;
+  z-index: 1;
+  background: #fbfcfd;
+  border-bottom: 1px solid var(--line);
+  padding: 0.7rem 0 0.45rem;
+}
+
 .codeFence pre,
 .terminalBlock pre,
 .commandRun pre,
@@ -3222,6 +3291,180 @@ body[data-project-mode='selecting'] .searchAssist {
   overflow: auto;
   padding: 0.6rem;
   white-space: pre-wrap;
+}
+
+.codeModeToolProjection {
+  background: #fbfcfd;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.codeModeSource {
+  background: #f8fafb;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.codeModeSource > summary {
+  align-items: baseline;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  font-size: 0.74rem;
+  font-weight: 700;
+  gap: 0.65rem;
+  justify-content: space-between;
+  padding: 0.48rem 0.65rem;
+  text-transform: uppercase;
+}
+
+.codeModeSource > summary code {
+  color: var(--code-muted);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 400;
+  text-transform: none;
+}
+
+.codeModeSourceBody {
+  border-top: 1px solid var(--line);
+}
+
+.codeModeSourceBody pre {
+  background: var(--code-bg);
+  color: var(--code-ink);
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  line-height: 1.45;
+  margin: 0;
+  max-height: 45vh;
+  overflow: auto;
+  padding: 0.65rem;
+  white-space: pre-wrap;
+}
+
+.codeModeSourceBody code.hljs {
+  background: transparent;
+  padding: 0;
+}
+
+.codeModeToolProjectionHeader {
+  align-items: center;
+  background: #f5f7f8;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.75rem;
+  justify-content: space-between;
+  padding: 0.5rem 0.65rem;
+}
+
+.codeModeToolProjectionHeading {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.55rem;
+  min-width: 0;
+}
+
+.codeModeToolProjectionHeading .sectionTitle {
+  margin: 0;
+}
+
+.codeModeToolProjectionTool {
+  color: var(--code-muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.codeModeEvidenceBadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.codeModeEvidenceBadge {
+  background: #eef2f3;
+  border: 1px solid #d5dfe2;
+  border-radius: 999px;
+  color: #526168;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1.25;
+  padding: 0.14rem 0.42rem;
+  white-space: nowrap;
+}
+
+.codeModeEvidenceBadge.observedLifecycle,
+.codeModeEvidenceBadge.boundedOrder {
+  background: #f1f0f7;
+  border-color: #ddd9e8;
+  color: #625c72;
+}
+
+.codeModeEvidenceBadge.unassociated {
+  background: transparent;
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.eventHeader .codeModeChip {
+  background: #eaf2f5;
+  border-color: #cbdde3;
+  color: #3e6170;
+  font-weight: 700;
+}
+
+.eventHeader .codeModeEvidenceBadge {
+  align-self: center;
+}
+
+.event.code-mode-web-lifecycle .eventKind {
+  color: var(--muted);
+}
+
+.codeModeToolProjectionBody,
+.codeModeToolProjectionSections {
+  display: grid;
+  min-width: 0;
+}
+
+.codeModeToolProjectionBody {
+  gap: 0;
+  padding: 0 0.65rem;
+}
+
+.codeModeToolProjectionPart {
+  min-width: 0;
+  padding: 0.65rem 0;
+}
+
+.codeModeToolProjectionPart + .codeModeToolProjectionPart {
+  border-top: 1px solid var(--line);
+}
+
+.codeModeToolProjectionPartLabel {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  margin-bottom: 0.38rem;
+  text-transform: uppercase;
+}
+
+.codeModeToolProjectionSections {
+  gap: 0.55rem;
+}
+
+.codeModeToolProjectionSections > .eventSection,
+.codeModeToolProjectionSections .codeFence,
+.codeModeToolProjectionSections .terminalBlock,
+.codeModeToolProjectionSections .commandRun,
+.codeModeToolProjectionSections .planUpdateBlock {
+  min-width: 0;
+  width: 100%;
 }
 
 .diffLine {
