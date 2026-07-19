@@ -120,6 +120,18 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.searchStatusLabel('complete', 'zh-CN'), '目标已完成');
   assert.equal(i18n.searchStatusLabel('completed', 'zh-CN'), '事件已完成');
   assert.notEqual(i18n.searchStatusLabel('complete', 'zh-CN'), i18n.searchStatusLabel('completed', 'zh-CN'));
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeDeclaredSequence'), '声明顺序');
+  assert.equal(i18n.t('en', 'ui', 'codeModeRequestSummary'), 'Request');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequestSummary'), '请求');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeNoArguments'), '无参数');
+  assert.equal(i18n.t('en', 'ui', 'codeModeRequestStructure', { field: 'Plan', shape: 'empty list' }), 'Plan: empty list');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequestStructure', { field: '计划', shape: '空列表' }), '计划：空列表');
+  assert.equal(i18n.t('en', 'ui', 'codeModeSourceExcerpt'), 'Source');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeSourceExcerpt'), '源码');
+  assert.equal(i18n.t('en', 'ui', 'codeModeSourceExcerptMore'), 'Additional source not shown.');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeSourceExcerptMore'), '还有未显示的源码。');
+  assert.equal(i18n.t('en', 'ui', 'codeModeStepCountOne'), '1 step');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeStepCount', { count: 2 }), '2 个步骤');
   assert.equal(i18n.humanize('mcp_tool_call'), 'MCP Tool Call');
   assert.equal(i18n.humanize('js_repl'), 'JS REPL');
 });

@@ -447,6 +447,7 @@ Before a folding-profile or layer switch, the frontend captures the selected eve
 - No transcript mutation / 不变更转录
 - Raw transcript access remains explicit and traceable / 原始转录访问保持显式且可追踪
 - Derived logical events should not expose more than the source rows already contain / 派生逻辑事件不应暴露超过来源行已经包含的内容
+- For non-base64 data URLs, explicit `%HH`, uppercase, or symbol/numeric-only tokens may continue across newline/tab boundaries; lowercase prose starts a new searchable logical segment even when it contains path, snake_case, URL, `+`, or `=` punctuation / 对非 base64 data URL，明确的 `%HH`、全大写或仅符号/数字 token 可以跨换行/tab 边界继续脱敏；小写正文即使包含路径、snake_case、URL、`+` 或 `=` 标点，也会开始新的可搜索逻辑片段
 
 ## Rollout plan / 推出计划
 

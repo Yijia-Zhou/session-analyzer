@@ -3383,6 +3383,48 @@ function renderEventFooterActions(display) {
   </div>`;
 }
 
+function renderCodeModeCollapsedPreview(presentation, display) {
+  const preview = presentation?.collapsedPreview;
+  if (!preview) return '';
+  const summaryClass = display === 'summary' ? ' codeModeSummaryPreview' : '';
+  if (preview.kind === 'declared_sequence') {
+    const items = (preview.items || []).map((item) => {
+      const detail = item.detail ? `<span class="codeModeCollapsedPreviewDetail">${escapeHtml(item.detail)}</span>` : '';
+      return `<span class="codeModeCollapsedPreviewItem"><span>${escapeHtml(item.label || '')}</span>${detail}</span>`;
+    });
+    const ordered = items.map((item, index) => (
+      `${index ? '<span class="codeModeCollapsedPreviewArrow" aria-hidden="true">→</span>' : ''}${item}`
+    ));
+    if (preview.omittedCount > 0) {
+      ordered.push(`<span class="codeModeCollapsedPreviewMore">+${escapeHtml(preview.omittedCount)}</span>`);
+    }
+    return `<div class="eventPreview codeModeCollapsedPreview codeModeDeclaredSequencePreview${summaryClass}"><span class="codeModeCollapsedPreviewLabel">${escapeHtml(preview.label || '')}</span><span class="codeModeDeclaredSequenceItems">${ordered.join('')}</span></div>`;
+  }
+  if (preview.kind === 'request_summary' && preview.text) {
+    return `<div class="eventPreview codeModeCollapsedPreview codeModeRequestSummaryPreview${summaryClass}"><span class="codeModeCollapsedPreviewLabel">${escapeHtml(preview.label || '')}</span><span class="codeModeRequestSummaryText" dir="auto">${escapeHtml(preview.text)}</span></div>`;
+  }
+  if (preview.kind === 'source_excerpt' && preview.text) {
+    if (display === 'summary') {
+      const summaryLines = (Array.isArray(preview.summaryLines) && preview.summaryLines.length
+        ? preview.summaryLines
+        : [preview.text])
+        .slice(0, 2)
+        .map((line) => String(line || '').trim())
+        .filter(Boolean);
+      const lines = summaryLines
+        .map((line) => `<span class="codeModeSummaryExcerptLine" dir="auto">${escapeHtml(line)}</span>`)
+        .join('');
+      const continuation = preview.hasMoreSource === true
+        ? `<span class="codeModeSummaryExcerptContinuation"><span aria-hidden="true">…</span><span class="srOnly">${escapeHtml(t('codeModeSourceExcerptMore'))}</span></span>`
+        : '';
+      return `<div class="eventPreview codeModeCollapsedPreview codeModeSourceExcerptPreview${summaryClass}"><span class="codeModeCollapsedPreviewLabel">${escapeHtml(preview.label || '')}</span><span class="codeModeSummaryExcerptBody">${lines}${continuation}</span></div>`;
+    }
+    const excerpt = `<code class="codeModeSourceExcerpt">${escapeHtml(preview.text)}</code>`;
+    return `<div class="eventPreview codeModeCollapsedPreview codeModeSourceExcerptPreview${summaryClass}"><span class="codeModeCollapsedPreviewLabel">${escapeHtml(preview.label || '')}</span>${excerpt}</div>`;
+  }
+  return '';
+}
+
 function renderEventPreview(event, display, presentation = null) {
   if (display === 'expanded') return '';
   if (event.kind === 'usage_limit_warning' && event.usageLimits?.length) {
@@ -3391,6 +3433,11 @@ function renderEventPreview(event, display, presentation = null) {
   if (event.kind === 'usage_limit_warning' && event.tokenUsage?.length) {
     return `<div class="eventPreview tokenPreview">${renderTokenUsageBadges(event.tokenUsage)}</div>`;
   }
+  if (event.hasSearchHit && event.snippet) {
+    return `<div class="eventPreview">${escapeHtml(event.snippet)}</div>`;
+  }
+  const codeModePreview = renderCodeModeCollapsedPreview(presentation, display);
+  if (codeModePreview) return codeModePreview;
   if (presentation?.variant === 'single_tool') return '';
   const preview = event.snippet || event.preview || presentedEventLabel(event, presentation);
   return `<div class="eventPreview">${escapeHtml(preview)}</div>`;

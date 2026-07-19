@@ -2404,6 +2404,53 @@ function redactEmbeddedBase64DataUrls(value, headerPattern, marker, prefixGroup 
   return cursor ? redacted + source.slice(cursor) : source;
 }
 
+function embeddedNonBase64PayloadEnd(source, start) {
+  let index = start;
+  while (index < source.length) {
+    if (/["'<>]/.test(source[index]) || source.charCodeAt(index) === 96) break;
+    if (!/\s/.test(source[index])) {
+      index += 1;
+      continue;
+    }
+    const whitespaceStart = index;
+    while (index < source.length && /\s/.test(source[index])) index += 1;
+    const whitespace = source.slice(whitespaceStart, index);
+    // A literal space starts ordinary prose. Across other whitespace, continue
+    // only for high-confidence encoded or uppercase tokens. Lowercase prose wins
+    // over common punctuation so paths, snake_case, and URLs stay searchable.
+    if (!/[^ ]/.test(whitespace)) return whitespaceStart;
+    let tokenEnd = index;
+    while (tokenEnd < source.length && !/[\s"'<>]/.test(source[tokenEnd])
+      && source.charCodeAt(tokenEnd) !== 96) tokenEnd += 1;
+    const continuation = source.slice(index, tokenEnd);
+    const hasLetters = /[a-z]/i.test(continuation);
+    const hasLowercase = /[a-z]/.test(continuation);
+    const uppercaseToken = hasLetters && !hasLowercase;
+    const percentEncodedToken = /%[0-9a-f]{2}/i.test(continuation);
+    const symbolOrNumericToken = !hasLetters && /^[0-9+\/=_-]+$/.test(continuation);
+    if (!continuation || (!percentEncodedToken && !uppercaseToken && !symbolOrNumericToken)) {
+      return whitespaceStart;
+    }
+  }
+  return index;
+}
+
+function redactEmbeddedNonBase64DataUrls(value, marker) {
+  const source = String(value || '');
+  const headerPattern = /(^|[^a-z0-9_])data:[^,\s"'<>\x60]*,/gi;
+  let cursor = 0;
+  let redacted = '';
+  headerPattern.lastIndex = 0;
+  for (let match = headerPattern.exec(source); match; match = headerPattern.exec(source)) {
+    redacted += source.slice(cursor, match.index);
+    redacted += match[1];
+    redacted += marker;
+    cursor = embeddedNonBase64PayloadEnd(source, headerPattern.lastIndex);
+    headerPattern.lastIndex = cursor;
+  }
+  return cursor ? redacted + source.slice(cursor) : source;
+}
+
 function externalizeEmbeddedImages(value, source, images = [], jsonPath = [], seen = new WeakSet()) {
   if (typeof value === 'string') {
     const inspected = inspectSupportedImageDataUrl(value);
@@ -2477,8 +2524,13 @@ function redactEmbeddedDataUrls(value, marker = TOOL_DATA_URL_MARKER) {
   const source = String(value || '');
   if (!/data:/i.test(source)) return source;
   if (/^\s*data:[^,\s"'<>`]*,[\s\S]*$/i.test(source)) return marker;
-  return redactEmbeddedBase64DataUrls(source, /(^|[^a-z0-9_])data:[^,\s"'<>`]*;base64,/gi, marker, 1)
-    .replace(/(^|[^a-z0-9_])data:[^,\s"'<>`]*,[^\s"'<>`]*/gi, (match, prefix) => `${prefix}${marker}`);
+  const base64Redacted = redactEmbeddedBase64DataUrls(
+    source,
+    /(^|[^a-z0-9_])data:[^,\s"'<>`]*;base64,/gi,
+    marker,
+    1,
+  );
+  return redactEmbeddedNonBase64DataUrls(base64Redacted, marker);
 }
 
 function uniqueSanitizedObjectKey(key, usedKeys, marker) {

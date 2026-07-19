@@ -58,6 +58,61 @@ test('keeps safe declared requests when no bounded result association is availab
   ]);
 });
 
+test('preserves request argument presence for omitted, null, and empty-object calls', () => {
+  const projection = projectDeclaredCodeModeCalls(`
+    await tools.get_goal();
+    await tools.get_goal(null);
+    await tools.get_goal({});
+  `);
+
+  assert.equal(projection.supported, true);
+  assert.deepEqual(projection.calls.map((call) => call.hasRequestArgument), [false, true, true]);
+  assert.equal(projection.calls[0].requestValue, null);
+  assert.equal(projection.calls[1].requestValue, null);
+  assert.deepEqual(Object.keys(projection.calls[2].requestValue), []);
+  assert.equal(Object.getPrototypeOf(projection.calls[2].requestValue), null);
+});
+
+test('recognizes the standard string-or-JSON result emission wrapper', () => {
+  const projection = projectDeclaredCodeModeCalls(`
+    const result = await tools.shell_command({ command: 'Write-Output fixture' });
+    text(typeof result === "string" ? result : JSON.stringify(result));
+  `, { outputFragments: ['Exit code: 0\nOutput:\nfixture'] });
+
+  assert.equal(projection.supported, true);
+  assert.equal(projection.hasCompleteOutputAssociation, true);
+  assert.equal(projection.calls.length, 1);
+  assert.equal(projection.calls[0].toolName, 'shell_command');
+  assert.equal(projection.calls[0].resultVariable, 'result');
+  assert.equal(projection.calls[0].resultAssociation, 'bounded');
+});
+
+test('rejects lookalike conditional result emissions', () => {
+  const sources = [
+    'const result = await tools.shell_command({ command: "fixture" }); text(typeof other === "string" ? result : JSON.stringify(result));',
+    'const result = await tools.shell_command({ command: "fixture" }); text(typeof result === "string" ? other : JSON.stringify(result));',
+    'const result = await tools.shell_command({ command: "fixture" }); text(typeof result === "string" ? result : JSON.parse(result));',
+  ];
+
+  for (const source of sources) assert.equal(projectDeclaredCodeModeCalls(source).supported, false, source);
+});
+
+test('fails closed when a declared result shadows projector runtime identifiers', () => {
+  const sources = [
+    'const JSON = await tools.get_goal({}); text(typeof JSON === "string" ? JSON : JSON.stringify(JSON));',
+    'const tools = await tools.get_goal({}); text(tools);',
+    'const text = await tools.get_goal({}); text(text);',
+  ];
+
+  for (const source of sources) {
+    const projection = projectDeclaredCodeModeCalls(source, { outputFragments: ['fixture'] });
+    assert.equal(projection.supported, false, source);
+    assert.equal(projection.reason, 'unsupported_binding', source);
+    assert.deepEqual(projection.calls, [], source);
+    assert.equal(projection.hasCompleteOutputAssociation, false, source);
+  }
+});
+
 test('fails the whole program closed for unknown, dynamic, control-flow, and concurrent calls', () => {
   const sources = [
     'const result = await tools.fixture({}); text(result);',

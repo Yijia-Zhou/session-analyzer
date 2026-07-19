@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { buildEventDetail, buildIndex } = require('../src/codex');
 const { createCodexDetailBuilder } = require('../src/codex-detail');
+const { knownCodeModeToolNames } = require('../src/codex-code-mode-declared');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
@@ -36,7 +37,10 @@ async function writeTranscript(codexHome, cwd, id, records) {
   const dir = path.join(codexHome, 'sessions', '2026', '06', '12');
   await fsp.mkdir(dir, { recursive: true });
   const file = path.join(dir, `rollout-2026-06-12T10-00-00-${id}.jsonl`);
-  await fsp.writeFile(file, records.map((record) => JSON.stringify(record)).join('\n') + '\n', 'utf8');
+  const lines = records.map((record) => JSON.stringify(record)
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029'));
+  await fsp.writeFile(file, lines.join('\n') + '\n', 'utf8');
 }
 
 test('codex detail module exports the detail builder factory', () => {
@@ -436,6 +440,20 @@ test('Code Mode detail restores declared plan and shell structure with explicitl
     requestEvidence: 'declared_source',
     resultAssociation: 'bounded',
     hasUnassociatedOutput: false,
+    collapsedPreview: {
+      kind: 'declared_sequence',
+      label: 'Declared sequence',
+      items: [
+        {
+          label: 'Plan update',
+          detail: '2 steps · Inspect',
+          detailKind: 'steps',
+          detailCount: 2,
+        },
+        { label: 'Shell command', detail: 'Write-Output fixture' },
+      ],
+      omittedCount: 0,
+    },
   });
   assert.equal(plan.toolName, 'update_plan');
   assert.equal(plan.requestEvidence, 'declared_source');
@@ -468,6 +486,20 @@ test('Code Mode detail restores declared plan and shell structure with explicitl
     '代码模式源码',
   ]);
   assert.equal(chineseDetail.presentation.label, '多个操作');
+  assert.deepEqual(chineseDetail.presentation.collapsedPreview, {
+    kind: 'declared_sequence',
+    label: '声明顺序',
+    items: [
+      {
+        label: '计划更新',
+        detail: '2 个步骤 · Inspect',
+        detailKind: 'steps',
+        detailCount: 2,
+      },
+      { label: '终端命令', detail: 'Write-Output fixture' },
+    ],
+    omittedCount: 0,
+  });
   assert.equal(chineseDetail.timelineSections[0].requestSections[0].title, '计划更新');
   assert.equal(chineseDetail.timelineSections[1].requestSections[1].title, '运行上下文');
   assert.ok(chineseDetail.timelineSections[1].requestSections[1].entries
@@ -480,7 +512,7 @@ test('Code Mode single shell presentation unwraps the native command run and mov
   const id = 'dddddddd-7777-4444-9999-dddddddddddd';
   await writeTranscript(codexHome, repoRoot, id, [
     { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
-    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-single-shell', input: "const result = await tools.shell_command({ command: 'Write-Output native', workdir: 'G:\\\\fixture', timeout_ms: 1000, timeoutMs: 2000 }); text(result);" } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-single-shell', input: "const result = await tools.shell_command({ command: 'Write-Output native', workdir: 'G:\\\\fixture', timeout_ms: 1000, timeoutMs: 2000 }); text(typeof result === 'string' ? result : JSON.stringify(result));" } },
     {
       type: 'response_item',
       timestamp: '2026-06-12T10:00:02.000Z',
@@ -509,6 +541,11 @@ test('Code Mode single shell presentation unwraps the native command run and mov
     requestEvidence: 'declared_source',
     resultAssociation: 'bounded',
     hasUnassociatedOutput: false,
+    collapsedPreview: {
+      kind: 'request_summary',
+      label: 'Request',
+      text: 'Write-Output native',
+    },
   });
   assert.deepEqual(detail.timelineSections.map((section) => section.type), ['code', 'terminal', 'code_mode_source']);
   assert.equal(detail.timelineSections[0].title, 'Command');
@@ -535,6 +572,100 @@ test('Code Mode single shell presentation unwraps the native command run and mov
   assert.equal(chineseDetail.presentation.label, '终端命令');
   assert.equal(session.counts.toolCalls, 1);
   assert.deepEqual(session.analysis.toolUsage, [{ name: 'exec', count: 1 }]);
+});
+
+test('Code Mode single request summaries cover every safely projected tool type', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'dddddddd-7878-4444-9999-dddddddddddd';
+  const cases = [
+    { tool: 'apply_patch', request: { patch: '*** Begin Patch\n*** Update File: fixture.txt\n@@\n-old\n+new\n*** End Patch' }, expected: 'fixture.txt' },
+    { tool: 'close_agent', request: { target: 'agent-close' }, expected: 'agent-close' },
+    { tool: 'create_goal', request: { objective: 'Ship fixture' }, expected: 'Ship fixture' },
+    { tool: 'exec_command', request: { command: 'Write-Output exec' }, expected: 'Write-Output exec' },
+    { tool: 'get_goal', request: {}, expected: 'No arguments', detailKind: 'empty_request' },
+    {
+      tool: 'image_gen__imagegen',
+      request: { prompt: 'Draw fixture data:text/plain;base64,QUJD' },
+      expected: 'Draw fixture [embedded data URL omitted; see raw refs]',
+    },
+    { tool: 'list_available_plugins_to_install', request: {}, expected: 'No arguments', detailKind: 'empty_request' },
+    { tool: 'list_mcp_resource_templates', request: { server: 'template-server' }, expected: 'template-server' },
+    { tool: 'list_mcp_resources', request: { server: 'resource-server' }, expected: 'resource-server' },
+    { tool: 'read_mcp_resource', request: { server: 'reader-server', uri: 'fixture://resource' }, expected: 'fixture://resource · reader-server' },
+    { tool: 'request_plugin_install', request: { plugin: 'fixture-plugin' }, expected: 'fixture-plugin' },
+    {
+      tool: 'request_user_input',
+      request: { questions: [{ id: 'fixture', header: 'Fixture', question: 'Choose fixture?', options: [] }] },
+      expected: 'Choose fixture?',
+    },
+    { tool: 'send_input', request: { target: 'agent-send', message: 'Continue fixture' }, expected: 'agent-send · Continue fixture' },
+    { tool: 'shell_command', request: { command: 'Write-Output shell' }, expected: 'Write-Output shell' },
+    { tool: 'spawn_agent', request: { task_name: 'fixture-task', message: 'Inspect fixture' }, expected: 'fixture-task · Inspect fixture' },
+    { tool: 'update_goal', request: { status: 'complete' }, expected: 'complete' },
+    {
+      tool: 'update_plan',
+      request: { plan: [{ step: 'Plan fixture', status: 'in_progress' }] },
+      expected: '1 step · Plan fixture',
+      detailKind: 'steps',
+    },
+    { tool: 'view_image', request: { path: 'G:/fixture.png', detail: 'original' }, expected: 'G:/fixture.png · original' },
+    { tool: 'wait_agent', request: { targets: ['agent-a', 'agent-b'], timeout_ms: 1000 }, expected: 'agent-a, agent-b · 1000' },
+    { tool: 'web__run', request: { search_query: [{ q: 'fixture query' }] }, expected: 'fixture query' },
+  ];
+  assert.deepEqual(
+    cases.map((item) => item.tool).sort(),
+    knownCodeModeToolNames().sort(),
+    'the summary matrix must change whenever the safe tool allowlist changes',
+  );
+
+  const rows = [{ type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } }];
+  cases.forEach((item, index) => {
+    const callId = `exec-single-summary-${index}`;
+    const second = String((index * 2) + 1).padStart(2, '0');
+    const outputSecond = String((index * 2) + 2).padStart(2, '0');
+    rows.push(
+      {
+        type: 'response_item',
+        timestamp: `2026-06-12T10:00:${second}.000Z`,
+        payload: {
+          type: 'custom_tool_call',
+          name: 'exec',
+          call_id: callId,
+          input: `const result = await tools.${item.tool}(${JSON.stringify(item.request)}); text(result);`,
+        },
+      },
+      {
+        type: 'response_item',
+        timestamp: `2026-06-12T10:00:${outputSecond}.000Z`,
+        payload: { type: 'custom_tool_call_output', call_id: callId, output: 'Script completed\nOutput:\n{}' },
+      },
+    );
+  });
+  await writeTranscript(codexHome, repoRoot, id, rows);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const operations = session.logicalEvents.filter((event) => event.subtype === 'code_mode_operation');
+  assert.equal(operations.length, cases.length);
+  operations.forEach((operation, index) => {
+    const detail = buildEventDetail(session, operation.id, 'main');
+    const preview = detail.presentation.collapsedPreview;
+    assert.equal(detail.presentation.variant, 'single_tool', cases[index].tool);
+    assert.equal(preview.kind, 'request_summary', cases[index].tool);
+    assert.equal(preview.label, 'Request', cases[index].tool);
+    assert.equal(preview.text, cases[index].expected, cases[index].tool);
+    assert.equal(preview.detailKind || '', cases[index].detailKind || '', cases[index].tool);
+  });
+
+  const noArgumentOperation = operations[cases.findIndex((item) => item.tool === 'get_goal')];
+  const chineseDetail = buildEventDetail(session, noArgumentOperation.id, 'main', { locale: 'zh-CN' });
+  assert.deepEqual(chineseDetail.presentation.collapsedPreview, {
+    kind: 'request_summary',
+    label: '请求',
+    text: '无参数',
+    detailKind: 'empty_request',
+  });
 });
 
 test('Code Mode web projection renders structured request and safe Markdown result while retaining lifecycle evidence', async (t) => {
@@ -600,6 +731,11 @@ test('Code Mode web projection renders structured request and safe Markdown resu
     requestEvidence: 'declared_source',
     resultAssociation: 'bounded',
     hasUnassociatedOutput: false,
+    collapsedPreview: {
+      kind: 'request_summary',
+      label: 'Request',
+      text: 'site:example.test markdown',
+    },
   });
   assert.deepEqual(detail.timelineSections.map((section) => section.type), ['web_request', 'markdown']);
   assert.equal(request.groups[0].title, 'Queries');
@@ -676,19 +812,127 @@ test('Code Mode result-association evidence does not imply an output was observe
   const session = index.sessionsById.get(id);
   const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
+  const chineseDetail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
   const projectionEvidence = detail.inspectorSections.find((section) => section.title === 'Projection evidence');
 
   assert.equal(detail.presentation.resultAssociation, 'none');
   assert.equal(detail.presentation.hasUnassociatedOutput, false);
+  assert.deepEqual(detail.presentation.collapsedPreview, {
+    kind: 'request_summary',
+    label: 'Request',
+    text: 'Plan: empty list',
+    detailKind: 'request_structure',
+    detailField: 'Plan',
+    detailShape: 'empty_list',
+  });
+  assert.deepEqual(chineseDetail.presentation.collapsedPreview, {
+    kind: 'request_summary',
+    label: '请求',
+    text: '计划：空列表',
+    detailKind: 'request_structure',
+    detailField: 'Plan',
+    detailShape: 'empty_list',
+  });
   assert.ok(projectionEvidence?.entries.some((entry) => entry.key === 'Result association note'
     && entry.value === 'No result output matched the supported shape'));
 });
 
-test('Code Mode declared projection fails closed and keeps aggregate output for dynamic programs', async (t) => {
+test('Code Mode request previews distinguish omitted, null, and empty-object arguments', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'dddddddd-7788-4444-9999-dddddddddddd';
+  const inputs = [
+    'const result = await tools.get_goal(); text(result);',
+    'const result = await tools.get_goal(null); text(result);',
+    'const result = await tools.get_goal({}); text(result);',
+    "const result = await tools.get_goal({ 'field-data:text/plain,private-payload': [] }); text(result);",
+  ];
+  await writeTranscript(codexHome, repoRoot, id, [
+    { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
+    ...inputs.map((input, index) => ({
+      type: 'response_item',
+      timestamp: `2026-06-12T10:00:0${index + 1}.000Z`,
+      payload: { type: 'custom_tool_call', name: 'exec', call_id: `exec-request-presence-${index}`, input },
+    })),
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const operations = session.logicalEvents.filter((event) => event.subtype === 'code_mode_operation');
+  const previews = operations.map((operation) => buildEventDetail(session, operation.id, 'main').presentation.collapsedPreview);
+  const chinesePreviews = operations.map((operation) => (
+    buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' }).presentation.collapsedPreview
+  ));
+
+  assert.equal(previews.length, 4);
+  assert.deepEqual(previews[0], {
+    kind: 'request_summary', label: 'Request', text: 'No arguments', detailKind: 'empty_request',
+  });
+  assert.deepEqual(previews[1], {
+    kind: 'request_summary',
+    label: 'Request',
+    text: 'Request: null',
+    detailKind: 'request_structure',
+    detailField: 'Request',
+    detailShape: 'null_value',
+  });
+  assert.deepEqual(previews[2], {
+    kind: 'request_summary', label: 'Request', text: 'No arguments', detailKind: 'empty_request',
+  });
+  assert.deepEqual(previews[3], {
+    kind: 'request_summary',
+    label: 'Request',
+    text: 'Field [embedded data URL omitted; see raw refs]: empty list',
+    detailKind: 'request_structure',
+    detailField: 'Field [embedded data URL omitted; see raw refs]',
+    detailShape: 'empty_list',
+  });
+  assert.equal(chinesePreviews[0].text, '无参数');
+  assert.equal(chinesePreviews[1].text, '请求：空值');
+  assert.equal(chinesePreviews[2].text, '无参数');
+  assert.doesNotMatch(JSON.stringify([previews[3], chinesePreviews[3]]), /private|payload/);
+});
+
+test('Code Mode declared sequence sanitizes request keys before humanizing separators', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'dddddddd-7799-4444-9999-dddddddddddd';
+  const input = [
+    "const first = await tools.get_goal({ 'field-data:text/plain,private-payload': [] });",
+    "const second = await tools.get_goal({ 'field_data:text/plain,private_payload': [] });",
+    'text(first);',
+    'text(second);',
+  ].join('\n');
+  await writeTranscript(codexHome, repoRoot, id, [
+    { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-request-key-redaction', input } },
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const preview = buildEventDetail(session, operation.id, 'main').presentation.collapsedPreview;
+
+  assert.equal(preview.kind, 'declared_sequence');
+  assert.equal(preview.items.length, 2);
+  for (const item of preview.items) {
+    assert.equal(item.detail, 'Field [embedded data URL omitted; see raw refs]: empty list');
+    assert.equal(item.detailField, 'Field [embedded data URL omitted; see raw refs]');
+  }
+  assert.doesNotMatch(JSON.stringify(preview), /private|payload/);
+});
+
+test('Code Mode declared projection fails closed and keeps an outer-source excerpt for dynamic programs', async (t) => {
   const codexHome = await makeTempCodexHome(t);
   const repoRoot = path.join(codexHome, 'repo');
   const id = 'dddddddd-2222-4444-9999-dddddddddddd';
-  const input = "const args = { plan: [] }; const plan = await tools.update_plan(args); text(plan);";
+  const input = [
+    'const args = { plan: [] };',
+    'const plan = await tools.update_plan(args);',
+    'const goal = await tools.get_goal(args);',
+    'const input = await tools.request_user_input(args);',
+    'text(plan);',
+  ].join('\n');
   await writeTranscript(codexHome, repoRoot, id, [
     { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
     { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-dynamic', input } },
@@ -714,9 +958,235 @@ test('Code Mode declared projection fails closed and keeps aggregate output for 
   assert.deepEqual(detail.timelineSections.map((section) => section.type), ['code', 'terminal']);
   assert.equal(detail.presentation.variant, 'raw_code_mode');
   assert.equal(detail.presentation.label, 'Script operation');
+  assert.deepEqual(detail.presentation.collapsedPreview, {
+    kind: 'source_excerpt',
+    label: 'Source',
+    text: 'const plan = await update_plan(args);',
+    summaryLines: [
+      'const plan = await update_plan(args);',
+      'const goal = await get_goal(args);',
+    ],
+    hasMoreSource: true,
+  });
   assert.equal(detail.timelineSections[0].role, 'command');
-  assert.match(detail.timelineSections[0].code, /update_plan\(args\)/);
+  assert.match(detail.timelineSections[0].code, /tools\.update_plan\(args\)/);
   assert.equal(detail.timelineSections[1].text, '{}');
+});
+
+test('Code Mode raw source excerpt records a complete two-line summary without a continuation signal', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'dddddddd-2233-4444-9999-dddddddddddd';
+  const input = [
+    'const plan = await tools.update_plan(args);',
+    'text(plan);',
+  ].join('\n');
+  await writeTranscript(codexHome, repoRoot, id, [
+    { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-dynamic-complete', input } },
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const detail = buildEventDetail(session, operation.id, 'main');
+
+  assert.equal(detail.presentation.variant, 'raw_code_mode');
+  assert.deepEqual(detail.presentation.collapsedPreview, {
+    kind: 'source_excerpt',
+    label: 'Source',
+    text: 'const plan = await update_plan(args);',
+    summaryLines: [
+      'const plan = await update_plan(args);',
+      'text(plan);',
+    ],
+    hasMoreSource: false,
+  });
+});
+
+test('Code Mode raw source excerpt splits every ECMAScript line terminator', async (t) => {
+  const cases = [
+    ['LF', '\n'],
+    ['CRLF', '\r\n'],
+    ['CR', '\r'],
+    ['line separator', '\u2028'],
+    ['paragraph separator', '\u2029'],
+  ];
+
+  for (const [caseIndex, [name, separator]] of cases.entries()) {
+    await t.test(name, async (subtest) => {
+      const codexHome = await makeTempCodexHome(subtest);
+      const repoRoot = path.join(codexHome, 'repo');
+      const suffix = String(caseIndex + 1).padStart(12, '0');
+      const id = `dddddddd-2266-4444-9999-${suffix}`;
+      const input = [
+        'const plan = await tools.update_plan(args);',
+        'const goal = await tools.get_goal(args);',
+      ].join(separator);
+      await writeTranscript(codexHome, repoRoot, id, [
+        { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
+        { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: `exec-dynamic-${suffix}`, input } },
+      ]);
+
+      const index = await buildIndex({ repoRoot, codexHome });
+      const session = index.sessionsById.get(id);
+      const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+      const detail = buildEventDetail(session, operation.id, 'main');
+
+      assert.equal(detail.presentation.variant, 'raw_code_mode');
+      assert.deepEqual(detail.presentation.collapsedPreview.summaryLines, [
+        'const plan = await update_plan(args);',
+        'const goal = await get_goal(args);',
+      ]);
+      assert.equal(detail.presentation.collapsedPreview.hasMoreSource, false);
+    });
+  }
+});
+
+test('Code Mode raw source excerpt bounds retained candidates for newline-dense oversized source', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'dddddddd-2277-4444-9999-dddddddddddd';
+  const filler = Array.from({ length: 20_000 }, (_, index) => `// filler ${index}`).join('\n');
+  const input = [
+    filler,
+    'const plan = await tools.update_plan(args);',
+    'const goal = await tools.get_goal(args);',
+    'text(plan);',
+  ].join('\n');
+  assert.ok(input.length > 100_000);
+  await writeTranscript(codexHome, repoRoot, id, [
+    { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-oversized-dense-source', input } },
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const detail = buildEventDetail(session, operation.id, 'main');
+
+  assert.equal(detail.presentation.variant, 'raw_code_mode');
+  assert.deepEqual(detail.presentation.collapsedPreview.summaryLines, [
+    'const plan = await update_plan(args);',
+    'const goal = await get_goal(args);',
+  ]);
+  assert.equal(detail.presentation.collapsedPreview.hasMoreSource, true);
+});
+
+test('Code Mode raw source excerpt scans newline-dense oversized source without a tool token', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'dddddddd-2288-4444-9999-dddddddddddd';
+  const input = Array.from({ length: 20_000 }, (_, index) => `// ordinary ${index}`).join('\n');
+  assert.ok(input.length > 100_000);
+  await writeTranscript(codexHome, repoRoot, id, [
+    { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-oversized-no-tool-source', input } },
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const detail = buildEventDetail(session, operation.id, 'main');
+
+  assert.equal(detail.presentation.variant, 'raw_code_mode');
+  assert.deepEqual(detail.presentation.collapsedPreview.summaryLines, [
+    '// ordinary 0',
+    '// ordinary 1',
+  ]);
+  assert.equal(detail.presentation.collapsedPreview.hasMoreSource, true);
+});
+
+test('Code Mode raw source excerpt marks an individually truncated source line as incomplete', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'dddddddd-2244-4444-9999-dddddddddddd';
+  const input = `const plan = await tools.update_plan(args); // ${'x'.repeat(220)}`;
+  await writeTranscript(codexHome, repoRoot, id, [
+    { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-dynamic-truncated', input } },
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const detail = buildEventDetail(session, operation.id, 'main');
+  const preview = detail.presentation.collapsedPreview;
+
+  assert.equal(detail.presentation.variant, 'raw_code_mode');
+  assert.equal(preview.kind, 'source_excerpt');
+  assert.equal(preview.summaryLines.length, 1);
+  assert.equal(preview.hasMoreSource, true);
+  assert.match(preview.text, /…$/);
+  assert.equal(preview.summaryLines[0], preview.text);
+});
+
+test('Code Mode raw source excerpt redacts a multiline data URL before selecting summary lines', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'dddddddd-2255-4444-9999-dddddddddddd';
+  const templateQuote = String.fromCharCode(96);
+  const input = [
+    'const result = await tools.shell_command({ command: ' + templateQuote + 'data:text/plain;base64,QUJD',
+    'REVGR0g=' + templateQuote + ', timeout_ms: options.timeoutMs });',
+    'text(result);',
+  ].join('\n');
+  await writeTranscript(codexHome, repoRoot, id, [
+    { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-dynamic-data-url', input } },
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const detail = buildEventDetail(session, operation.id, 'main');
+  const preview = detail.presentation.collapsedPreview;
+  const previewText = preview.summaryLines.join('\n');
+
+  assert.equal(detail.presentation.variant, 'raw_code_mode');
+  assert.match(previewText, /\[embedded data URL omitted; see raw refs\]/);
+  assert.match(preview.summaryLines[1], /^text\(result\);$/);
+  assert.doesNotMatch(previewText, /QUJD|REVGR0g=/);
+  assert.doesNotMatch(detail.timelineSections[0].code, /QUJD|REVGR0g=/);
+});
+
+test('Code Mode raw source excerpt redacts whitespace-wrapped non-base64 data URLs', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const templateQuote = String.fromCharCode(96);
+  const variants = [
+    { label: 'tab', separator: '\t' },
+    { label: 'carriage return', separator: '\r' },
+    { label: 'template newline', separator: '\n' },
+  ];
+  for (const [index, variant] of variants.entries()) {
+    const id = 'dddddddd-226' + index + '-4444-9999-dddddddddddd';
+    const input = 'const result = await tools.shell_command({ command: '
+      + templateQuote + 'data:text/plain,SECRET' + variant.separator + 'LEAKED'
+      + templateQuote + ', timeout_ms: options.timeoutMs });\ntext(result);';
+    await writeTranscript(codexHome, repoRoot, id, [
+      { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
+      { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-dynamic-generic-data-url-' + index, input } },
+    ]);
+  }
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  for (const [variantIndex, variant] of variants.entries()) {
+    const id = 'dddddddd-226' + variantIndex + '-4444-9999-dddddddddddd';
+    const session = index.sessionsById.get(id);
+    const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+    const detail = buildEventDetail(session, operation.id, 'main');
+    const preview = detail.presentation.collapsedPreview;
+    const rendered = JSON.stringify({
+      text: preview.text,
+      summaryLines: preview.summaryLines,
+      command: detail.timelineSections[0].code,
+    });
+
+    assert.equal(detail.presentation.variant, 'raw_code_mode', variant.label);
+    assert.match(rendered, /\[embedded data URL omitted; see raw refs\]/, variant.label);
+    assert.doesNotMatch(rendered, /SECRET|LEAKED/, variant.label);
+  }
 });
 
 test('Code Mode bounded projections preserve long associated results without promoting extra events', async (t) => {
@@ -756,6 +1226,12 @@ test('Code Mode bounded projections preserve long associated results without pro
     requestEvidence: 'declared_source',
     resultAssociation: 'bounded',
     hasUnassociatedOutput: false,
+    collapsedPreview: {
+      kind: 'request_summary',
+      label: 'Request',
+      text: 'No arguments',
+      detailKind: 'empty_request',
+    },
   });
   assert.deepEqual(detail.timelineSections.map((section) => section.type), ['code', 'code', 'code_mode_source']);
   assert.equal(fullResult.type, 'code_mode_source');
@@ -841,6 +1317,12 @@ test('Code Mode image projections keep structured request fields localizable', a
 
   assert.equal(detail.presentation.toolName, 'view_image');
   assert.equal(detail.presentation.label, '图片检查');
+  assert.deepEqual(detail.presentation.collapsedPreview, {
+    kind: 'request_summary',
+    label: '请求',
+    text: 'G:/fixture.png · original',
+  });
+  assert.doesNotMatch(detail.presentation.collapsedPreview.text, /1280|720|image\/png/);
   assert.equal(imageRequest.type, 'kv');
   assert.equal(imageRequest.title, '图片检查');
   assert.deepEqual(imageRequest.entries, [
@@ -850,6 +1332,57 @@ test('Code Mode image projections keep structured request fields localizable', a
     { key: 'MIME 类型', value: 'image/png' },
   ]);
   assert.equal(detail.timelineSections.at(-1).code, '{"width":1280,"height":720,"mimeType":"image/png"}');
+});
+
+test('Code Mode declared sequence keeps image preview details request-only', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'dddddddd-5566-4444-9999-dddddddddddd';
+  const input = [
+    'const image = await tools.view_image({});',
+    "const plan = await tools.update_plan({ plan: [{ step: 'x', status: 'pending' }] });",
+    'text(image);',
+    'text(plan);',
+  ].join('\n');
+  await writeTranscript(codexHome, repoRoot, id, [
+    { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-multi-view-image', input } },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-12T10:00:02.000Z',
+      payload: {
+        type: 'custom_tool_call_output',
+        call_id: 'exec-multi-view-image',
+        output: [
+          { type: 'input_text', text: 'Script completed\nOutput:\n' },
+          { type: 'input_text', text: '{"width":1280,"height":720,"mimeType":"image/png"}' },
+          { type: 'input_text', text: '{}' },
+        ],
+      },
+    },
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const detail = buildEventDetail(session, operation.id, 'main');
+  const preview = detail.presentation.collapsedPreview;
+  const imageProjection = detail.timelineSections[0];
+
+  assert.equal(detail.presentation.variant, 'multi_tool');
+  assert.deepEqual(preview.items, [
+    { label: 'Image inspection', detail: 'No arguments', detailKind: 'empty_request' },
+    {
+      label: 'Plan update',
+      detail: '1 step · x',
+      detailKind: 'steps',
+      detailCount: 1,
+    },
+  ]);
+  assert.deepEqual(imageProjection.requestSections[0].entries, [
+    { key: 'Dimensions', value: '1280 x 720' },
+    { key: 'MIME type', value: 'image/png' },
+  ]);
 });
 
 test('Code Mode collaboration projections do not translate agent names that collide with UI labels', async (t) => {

@@ -71,6 +71,10 @@ function createCodexDetailBuilder(deps) {
     inferCommandLanguage,
   } = sectionExtractors;
 
+  const CODE_MODE_COLLAPSED_PREVIEW_ITEM_LIMIT = 2;
+  const CODE_MODE_COLLAPSED_PREVIEW_TEXT_LIMIT = 160;
+  const CODE_MODE_SOURCE_EXCERPT_SUMMARY_LINE_LIMIT = 2;
+
   function rawPrimarySections(raw, relatedEvent, session = {}) {
     if (relatedEvent?.kind === 'protocol') {
       return {
@@ -229,11 +233,358 @@ function createCodexDetailBuilder(deps) {
       requestEvidence: String(options.requestEvidence || ''),
       resultAssociation: String(options.resultAssociation || ''),
       hasUnassociatedOutput: options.hasUnassociatedOutput === true,
+      ...(options.collapsedPreview ? { collapsedPreview: options.collapsedPreview } : {}),
     };
+  }
+
+  function conciseCodeModePreviewTextWithMetadata(value, limit = CODE_MODE_COLLAPSED_PREVIEW_TEXT_LIMIT) {
+    const sanitized = sanitizeLogicalEnvelopeValue(value == null ? '' : String(value));
+    const text = String(sanitized || '').replace(/\s+/g, ' ').trim();
+    if (!text || text.length <= limit) return { text, truncated: false };
+    return {
+      text: `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…`,
+      truncated: true,
+    };
+  }
+
+  function conciseCodeModePreviewText(value, limit = CODE_MODE_COLLAPSED_PREVIEW_TEXT_LIMIT) {
+    return conciseCodeModePreviewTextWithMetadata(value, limit).text;
+  }
+
+  function conciseCodeModeSourcePreviewTextWithMetadata(value, limit = CODE_MODE_COLLAPSED_PREVIEW_TEXT_LIMIT) {
+    const source = String(sanitizeLogicalEnvelopeValue(value == null ? '' : String(value)) || '');
+    const namespaceElided = source.replace(
+      /^(\s*(?:(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*)?(?:await\s+)?)tools\.(?=[A-Za-z_$][\w$]*\s*\()/,
+      '$1',
+    );
+    return conciseCodeModePreviewTextWithMetadata(namespaceElided, limit);
+  }
+
+  function conciseCodeModeSourcePreviewText(value, limit = CODE_MODE_COLLAPSED_PREVIEW_TEXT_LIMIT) {
+    return conciseCodeModeSourcePreviewTextWithMetadata(value, limit).text;
+  }
+
+  function firstCodeModeRequestScalar(value, depth = 0) {
+    if (depth > 4 || value == null) return '';
+    if (['string', 'number', 'boolean'].includes(typeof value)) return String(value);
+    if (Array.isArray(value)) {
+      return value.map((item) => firstCodeModeRequestScalar(item, depth + 1)).find(Boolean) || '';
+    }
+    if (typeof value !== 'object') return '';
+    const priorityKeys = [
+      'command', 'cmd', 'objective', 'status', 'question', 'prompt', 'message', 'path', 'uri',
+      'target', 'task_name', 'server', 'plugin', 'plugin_id', 'name', 'detail', 'timeout_ms', 'cursor',
+    ];
+    for (const key of priorityKeys) {
+      if (!Object.hasOwn(value, key)) continue;
+      const result = firstCodeModeRequestScalar(value[key], depth + 1);
+      if (result) return result;
+    }
+    return Object.values(value).map((item) => firstCodeModeRequestScalar(item, depth + 1)).find(Boolean) || '';
+  }
+
+  function codeModeRequestFieldPreview(requestValue, keys, limit = CODE_MODE_COLLAPSED_PREVIEW_TEXT_LIMIT) {
+    if (!requestValue || typeof requestValue !== 'object' || Array.isArray(requestValue)) return '';
+    const values = keys.map((key) => {
+      const value = requestValue[key];
+      if (Array.isArray(value)) {
+        return value.slice(0, 2).map((item) => firstCodeModeRequestScalar(item)).filter(Boolean).join(', ');
+      }
+      return firstCodeModeRequestScalar(value);
+    }).filter(Boolean);
+    return conciseCodeModePreviewText(values.join(' · '), limit);
+  }
+
+  function sanitizeCodeModeRequestField(rawField) {
+    const source = String(rawField || 'Request');
+    const embeddedDataUrlIndex = source.search(/data:[^,\s"'<>`]*,/i);
+    const sanitized = embeddedDataUrlIndex > 0
+      ? `${sanitizeLogicalEnvelopeValue(source.slice(0, embeddedDataUrlIndex))}${sanitizeLogicalEnvelopeValue(source.slice(embeddedDataUrlIndex))}`
+      : sanitizeLogicalEnvelopeValue(source);
+    return String(sanitized || 'Request');
+  }
+
+  function codeModeRequestStructureFallback(requestValue, hasRequestArgument) {
+    if (requestValue == null && !hasRequestArgument) return null;
+    const entries = requestValue === null
+      ? [['Request', null]]
+      : Array.isArray(requestValue)
+      ? [['Request', requestValue]]
+      : typeof requestValue === 'object' ? Object.entries(requestValue) : [['Request', requestValue]];
+    if (!entries.length) return null;
+    const [rawField, value] = entries[0];
+    const field = sanitizeCodeModeRequestField(rawField)
+      .replace(/[_-]+/g, ' ')
+      .replace(/^\w/, (character) => character.toUpperCase());
+    let shape = 'structured_value';
+    if (Array.isArray(value)) shape = value.length ? 'list' : 'empty_list';
+    else if (value === null) shape = 'null_value';
+    else if (typeof value === 'object') shape = Object.keys(value).length ? 'object' : 'empty_object';
+    else if (value === '') shape = 'empty_value';
+    const shapeLabels = {
+      empty_list: 'empty list',
+      list: 'list',
+      null_value: 'null',
+      empty_object: 'empty object',
+      object: 'object',
+      empty_value: 'empty value',
+      structured_value: 'structured value',
+    };
+    return {
+      detailKind: 'request_structure',
+      detailField: field,
+      detailShape: shape,
+      detail: `${field}: ${shapeLabels[shape]}`,
+    };
+  }
+
+  function codeModeProjectionCollapsedPreviewItem(projection, call = {}) {
+    const item = { label: String(projection?.title || projection?.toolName || '') };
+    const requestSections = Array.isArray(projection?.requestSections) ? projection.requestSections : [];
+    const requestValue = call?.requestValue;
+    const plan = requestSections.find((section) => section?.type === 'plan_update');
+    const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+    if (steps.length) {
+      return {
+        ...item,
+        detailKind: 'steps',
+        detailCount: steps.length,
+        detail: conciseCodeModePreviewText(steps[0]?.step, 72),
+      };
+    }
+
+    const command = requestSections.find((section) => section?.type === 'code' && [
+      'Command', 'Patch',
+    ].includes(String(section?.title || '')));
+    if (command?.code) return { ...item, detail: conciseCodeModePreviewText(command.code) };
+
+    const webRequest = requestSections.find((section) => section?.type === 'web_request');
+    const webItem = (webRequest?.groups || [])
+      .flatMap((group) => group?.items || [])
+      .find((candidate) => String(candidate?.primary || '').trim());
+    if (webItem?.primary) return { ...item, detail: conciseCodeModePreviewText(webItem.primary) };
+
+    const patch = requestSections.find((section) => section?.type === 'patch');
+    const patchFiles = (patch?.files || []).map((file) => String(file?.file || file?.path || '').trim()).filter(Boolean);
+    if (patchFiles.length) return { ...item, detail: conciseCodeModePreviewText(patchFiles.slice(0, 2).join(', ')) };
+
+    const userInput = requestSections.find((section) => section?.type === 'user_input');
+    const question = (userInput?.questions || []).find((candidate) => String(candidate?.prompt || candidate?.title || '').trim());
+    if (question) {
+      return {
+        ...item,
+        detail: conciseCodeModePreviewText(question.prompt || question.title),
+      };
+    }
+
+    const previewKeys = {
+      apply_patch: ['patch'],
+      close_agent: ['target'],
+      create_goal: ['objective'],
+      exec_command: ['command', 'cmd', 'workdir'],
+      get_goal: [],
+      image_gen__imagegen: ['prompt'],
+      list_available_plugins_to_install: [],
+      list_mcp_resource_templates: ['server', 'cursor'],
+      list_mcp_resources: ['server', 'cursor'],
+      read_mcp_resource: ['uri', 'server'],
+      request_plugin_install: ['plugin', 'plugin_id', 'name'],
+      request_user_input: ['question'],
+      send_input: ['target', 'message'],
+      shell_command: ['command', 'cmd', 'workdir'],
+      spawn_agent: ['task_name', 'message'],
+      update_goal: ['status'],
+      update_plan: ['explanation'],
+      view_image: ['path', 'detail'],
+      wait_agent: ['targets', 'target', 'timeout_ms'],
+      web__run: ['search_query', 'open', 'url'],
+    };
+    const toolName = String(projection?.toolName || call?.toolName || '');
+    const detail = codeModeRequestFieldPreview(requestValue, previewKeys[toolName] || []);
+    if (detail) return { ...item, detail };
+    const genericDetail = conciseCodeModePreviewText(firstCodeModeRequestScalar(requestValue));
+    if (genericDetail) return { ...item, detail: genericDetail };
+    const structuralDetail = codeModeRequestStructureFallback(requestValue, call?.hasRequestArgument === true);
+    if (structuralDetail) return { ...item, ...structuralDetail };
+    return { ...item, detailKind: 'empty_request', detail: 'No arguments' };
+  }
+
+  function codeModeDeclaredSequenceCollapsedPreview(projections, calls = []) {
+    const allItems = (projections || []).map((projection, index) => (
+      codeModeProjectionCollapsedPreviewItem(projection, calls[index])
+    ))
+      .filter((item) => item.label);
+    if (!allItems.length) return null;
+    const items = allItems.slice(0, CODE_MODE_COLLAPSED_PREVIEW_ITEM_LIMIT);
+    return {
+      kind: 'declared_sequence',
+      label: 'Declared sequence',
+      items,
+      omittedCount: Math.max(0, allItems.length - items.length),
+    };
+  }
+
+  function codeModeSingleRequestCollapsedPreview(projection, call) {
+    const item = codeModeProjectionCollapsedPreviewItem(projection, call);
+    const text = conciseCodeModePreviewText(item?.detail);
+    if (!text) return null;
+    return {
+      kind: 'request_summary',
+      label: 'Request',
+      text,
+      ...(item.detailKind ? { detailKind: item.detailKind } : {}),
+      ...(item.detailCount ? { detailCount: item.detailCount } : {}),
+      ...(item.detailField ? { detailField: item.detailField } : {}),
+      ...(item.detailShape ? { detailShape: item.detailShape } : {}),
+    };
+  }
+
+  function codeModeSourceExcerptCollapsedPreview(source) {
+    const sanitizedSource = String(sanitizeLogicalEnvelopeValue(String(source || '')) || '');
+    let firstNonempty = null;
+    let fallbackSecondary = null;
+    let firstToolLine = null;
+    let firstAfterTool = null;
+    let nextToolLine = null;
+    let nonemptyCount = 0;
+    let nextToolIndex = sanitizedSource.indexOf('tools.');
+
+    const considerLine = (lineStart, lineEnd) => {
+      while (lineStart < lineEnd && /\s/.test(sanitizedSource[lineStart])) lineStart += 1;
+      while (lineEnd > lineStart && /\s/.test(sanitizedSource[lineEnd - 1])) lineEnd -= 1;
+      if (lineStart >= lineEnd) return;
+      nonemptyCount = Math.min(3, nonemptyCount + 1);
+      while (nextToolIndex >= 0 && nextToolIndex < lineStart) {
+        nextToolIndex = sanitizedSource.indexOf('tools.', nextToolIndex + 'tools.'.length);
+      }
+      const candidate = { start: lineStart, end: lineEnd };
+      const hasTool = nextToolIndex >= lineStart && nextToolIndex < lineEnd;
+      if (!firstNonempty) firstNonempty = candidate;
+      else if (!fallbackSecondary) fallbackSecondary = candidate;
+      if (!firstToolLine && hasTool) {
+        firstToolLine = candidate;
+        firstAfterTool = null;
+        nextToolLine = null;
+      } else if (firstToolLine) {
+        if (!firstAfterTool) firstAfterTool = candidate;
+        if (!nextToolLine && hasTool) nextToolLine = candidate;
+      }
+    };
+
+    let lineStart = 0;
+    for (let cursor = 0; cursor <= sanitizedSource.length; cursor += 1) {
+      const code = sanitizedSource.charCodeAt(cursor);
+      const lineTerminator = cursor === sanitizedSource.length
+        || code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029;
+      if (!lineTerminator) continue;
+      considerLine(lineStart, cursor);
+      if (code === 0x0d && sanitizedSource.charCodeAt(cursor + 1) === 0x0a) cursor += 1;
+      lineStart = cursor + 1;
+    }
+    if (!firstNonempty) return null;
+
+    const primary = firstToolLine || firstNonempty;
+    const secondary = firstToolLine ? (nextToolLine || firstAfterTool) : fallbackSecondary;
+    const selectedCandidates = [primary, secondary]
+      .filter(Boolean)
+      .slice(0, CODE_MODE_SOURCE_EXCERPT_SUMMARY_LINE_LIMIT);
+    const selectedLines = selectedCandidates.map((candidate) => {
+      const sourceText = sanitizedSource.slice(candidate.start, candidate.end);
+      return { sourceText, ...conciseCodeModeSourcePreviewTextWithMetadata(sourceText) };
+    });
+    const summaryLines = selectedLines.map((line) => line.text);
+    const hasMoreSource = nonemptyCount > selectedLines.length || selectedLines.some((line) => line.truncated);
+    const text = summaryLines[0] || '';
+    return text
+      ? {
+        kind: 'source_excerpt',
+        label: 'Source excerpt',
+        text,
+        summaryLines,
+        hasMoreSource,
+      }
+      : null;
+  }
+
+  function sanitizeCodeModeCollapsedPreview(preview) {
+    if (!preview || typeof preview !== 'object') return null;
+    if (preview.kind === 'declared_sequence') {
+      const items = (Array.isArray(preview.items) ? preview.items : [])
+        .slice(0, CODE_MODE_COLLAPSED_PREVIEW_ITEM_LIMIT)
+        .map((item) => {
+          const label = conciseCodeModePreviewText(item?.label, 100);
+          if (!label) return null;
+          const detailKind = ['steps', 'empty_request', 'request_structure'].includes(item?.detailKind) ? item.detailKind : '';
+          const detailCount = Number.isFinite(Number(item?.detailCount))
+            ? Math.max(0, Math.trunc(Number(item.detailCount)))
+            : 0;
+          const detail = conciseCodeModePreviewText(item?.detail, 96);
+          return {
+            label,
+            ...(detail ? { detail } : {}),
+            ...(detailKind ? { detailKind } : {}),
+            ...(detailKind === 'steps' && detailCount ? { detailCount } : {}),
+            ...(detailKind === 'request_structure' && item?.detailField
+              ? { detailField: conciseCodeModePreviewText(item.detailField, 60) }
+              : {}),
+            ...(detailKind === 'request_structure' && [
+              'empty_list', 'list', 'null_value', 'empty_object', 'object', 'empty_value', 'structured_value',
+            ].includes(item?.detailShape) ? { detailShape: item.detailShape } : {}),
+          };
+        })
+        .filter(Boolean);
+      if (!items.length) return null;
+      return {
+        kind: 'declared_sequence',
+        label: conciseCodeModePreviewText(preview.label || 'Declared sequence', 100),
+        items,
+        omittedCount: Number.isFinite(Number(preview.omittedCount))
+          ? Math.max(0, Math.trunc(Number(preview.omittedCount)))
+          : 0,
+      };
+    }
+    if (preview.kind === 'source_excerpt') {
+      const text = conciseCodeModeSourcePreviewText(preview.text);
+      if (!text) return null;
+      const summaryLines = (Array.isArray(preview.summaryLines) ? preview.summaryLines : [])
+        .slice(0, CODE_MODE_SOURCE_EXCERPT_SUMMARY_LINE_LIMIT)
+        .map((line) => conciseCodeModeSourcePreviewText(line))
+        .filter(Boolean);
+      return {
+        kind: 'source_excerpt',
+        label: conciseCodeModePreviewText(preview.label || 'Source excerpt', 100),
+        text,
+        ...(summaryLines.length ? { summaryLines } : {}),
+        hasMoreSource: preview.hasMoreSource === true,
+      };
+    }
+    if (preview.kind === 'request_summary') {
+      const text = conciseCodeModePreviewText(preview.text);
+      if (!text) return null;
+      const detailKind = ['steps', 'empty_request', 'request_structure'].includes(preview.detailKind) ? preview.detailKind : '';
+      const detailCount = Number.isFinite(Number(preview.detailCount))
+        ? Math.max(0, Math.trunc(Number(preview.detailCount)))
+        : 0;
+      return {
+        kind: 'request_summary',
+        label: conciseCodeModePreviewText(preview.label || 'Request', 100),
+        text,
+        ...(detailKind ? { detailKind } : {}),
+        ...(detailKind === 'steps' && detailCount ? { detailCount } : {}),
+        ...(detailKind === 'request_structure' && preview.detailField
+          ? { detailField: conciseCodeModePreviewText(preview.detailField, 60) }
+          : {}),
+        ...(detailKind === 'request_structure' && [
+          'empty_list', 'list', 'null_value', 'empty_object', 'object', 'empty_value', 'structured_value',
+        ].includes(preview.detailShape) ? { detailShape: preview.detailShape } : {}),
+      };
+    }
+    return null;
   }
 
   function sanitizeCodeModePresentation(presentation) {
     if (!presentation || !['single_tool', 'multi_tool', 'raw_code_mode'].includes(presentation.variant)) return null;
+    const collapsedPreview = sanitizeCodeModeCollapsedPreview(presentation.collapsedPreview);
     return {
       variant: presentation.variant,
       label: sanitizeLogicalEnvelopeValue(presentation.label),
@@ -248,14 +599,83 @@ function createCodexDetailBuilder(deps) {
         ? presentation.resultAssociation
         : '',
       hasUnassociatedOutput: presentation.hasUnassociatedOutput === true,
+      ...(collapsedPreview ? { collapsedPreview } : {}),
     };
+  }
+
+  function localizeCodeModeCollapsedPreview(preview, locale) {
+    if (!preview) return null;
+    const localizedRequestDetail = (item, fallback) => {
+      if (item.detailKind === 'empty_request') return i18n.t(locale, 'ui', 'codeModeNoArguments');
+      if (item.detailKind !== 'request_structure' || !item.detailField || !item.detailShape) return fallback;
+      const shapeKey = {
+        empty_list: 'codeModeEmptyList',
+        list: 'codeModeList',
+        null_value: 'codeModeNullValue',
+        empty_object: 'codeModeEmptyObject',
+        object: 'codeModeObject',
+        empty_value: 'codeModeEmptyValue',
+        structured_value: 'codeModeStructuredValue',
+      }[item.detailShape];
+      const field = i18n.sectionTitle(item.detailField, locale);
+      const shape = i18n.t(locale, 'ui', shapeKey);
+      return i18n.t(locale, 'ui', 'codeModeRequestStructure', { field, shape });
+    };
+    if (preview.kind === 'declared_sequence') {
+      return {
+        ...preview,
+        label: i18n.t(locale, 'ui', 'codeModeDeclaredSequence') || preview.label,
+        items: preview.items.map((item) => {
+          const stepCount = item.detailKind === 'steps' && item.detailCount
+            ? i18n.t(
+              locale,
+              'ui',
+              item.detailCount === 1 ? 'codeModeStepCountOne' : 'codeModeStepCount',
+              { count: item.detailCount },
+            )
+            : '';
+          const requestDetail = localizedRequestDetail(item, item.detail);
+          const detail = [stepCount, requestDetail].filter(Boolean).join(' · ');
+          return {
+            ...item,
+            label: i18n.sectionTitle(item.label, locale),
+            ...(detail ? { detail } : {}),
+          };
+        }),
+      };
+    }
+    if (preview.kind === 'source_excerpt') {
+      return {
+        ...preview,
+        label: i18n.t(locale, 'ui', 'codeModeSourceExcerpt') || preview.label,
+      };
+    }
+    if (preview.kind === 'request_summary') {
+      const detail = localizedRequestDetail(preview, preview.text);
+      const stepCount = preview.detailKind === 'steps' && preview.detailCount
+        ? i18n.t(
+          locale,
+          'ui',
+          preview.detailCount === 1 ? 'codeModeStepCountOne' : 'codeModeStepCount',
+          { count: preview.detailCount },
+        )
+        : '';
+      return {
+        ...preview,
+        label: i18n.t(locale, 'ui', 'codeModeRequestSummary') || preview.label,
+        text: [stepCount, detail].filter(Boolean).join(' · '),
+      };
+    }
+    return null;
   }
 
   function localizeCodeModePresentation(presentation, locale) {
     if (!presentation) return null;
+    const collapsedPreview = localizeCodeModeCollapsedPreview(presentation.collapsedPreview, locale);
     return {
       ...presentation,
       label: i18n.sectionTitle(presentation.label, locale),
+      ...(collapsedPreview ? { collapsedPreview } : {}),
     };
   }
 
@@ -339,6 +759,7 @@ function createCodexDetailBuilder(deps) {
     let presentation = codeModePresentationDescriptor('raw_code_mode', {
       label: 'Script operation',
       toolName: 'exec',
+      collapsedPreview: codeModeSourceExcerptCollapsedPreview(execSource),
     });
     const projections = declaredProjection.supported
       ? declaredProjection.calls.map((call) => codeModeToolProjectionSection(call, session))
@@ -365,6 +786,7 @@ function createCodexDetailBuilder(deps) {
         requestEvidence: singleProjection.requestEvidence,
         resultAssociation: singleProjection.resultAssociation,
         hasUnassociatedOutput,
+        collapsedPreview: codeModeSingleRequestCollapsedPreview(singleProjection, declaredProjection.calls[0]),
       });
     } else if (projections.length > 1) {
       timelineSections.push(...projections);
@@ -381,6 +803,7 @@ function createCodexDetailBuilder(deps) {
         requestEvidence: projections[0].requestEvidence,
         resultAssociation: projections[0].resultAssociation,
         hasUnassociatedOutput,
+        collapsedPreview: codeModeDeclaredSequenceCollapsedPreview(projections, declaredProjection.calls),
       });
     } else {
       maybePushCodeSection(timelineSections, 'Command', execSource, 'javascript');

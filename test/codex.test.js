@@ -3084,6 +3084,7 @@ test('other tool call sanitization covers structured cards, embedded URLs, objec
   const id = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
   const embeddedUrl = 'data:text/plain,private-payload';
   const encodedUrl = 'data:text/plain,encoded%20private%20payload';
+  const wrappedGenericUrl = 'data:text/plain,wrapped-private-payload\twrapped-private-tail';
   const multilineBase64Url = 'data:image/png;base64,AAAA\nBBBB\nCCCC';
   const spacedBase64Url = 'data:image/png;base64,DDDD EEEE\tFFFF';
   const malformedRasterUrl = 'data:image/png;base64,AAAA%%%%malformed-image-secret';
@@ -3185,6 +3186,14 @@ test('other tool call sanitization covers structured cards, embedded URLs, objec
           malformedLeadingRaster: `Request before ${malformedLeadingRasterUrl} after`,
           malformedGeneric: `Request before ${malformedGenericUrl} after`,
           encoded: `Request before ${encodedUrl} after`,
+          wrappedGeneric: 'Request before ' + wrappedGenericUrl + ' after',
+          uppercaseWrappedGeneric: 'Request before data:text/plain,SECRET\tLEAKED after',
+          percentWrappedGeneric: 'Request before data:text/plain,SECRET\tencoded%20tail after',
+          ordinaryAfterNewline: 'Request before data:text/plain,SECRET\nnavigation needle',
+          ordinaryAfterTab: 'Request before data:text/plain,SECRET\tnavigation needle',
+          ordinarySlash: 'Request before data:text/plain,SECRET\ninput/output remains',
+          ordinaryUnderscore: 'Request before data:text/plain,SECRET\nnavigation_needle remains',
+          ordinaryUrl: 'Request before data:text/plain,SECRET\nhttps://example.test/path remains',
           multiple: `Request before ${embeddedUrl} middle ${encodedUrl} after`,
           ordinary: 'metadata:value',
         },
@@ -3300,8 +3309,34 @@ test('other tool call sanitization covers structured cards, embedded URLs, objec
   assert.equal(dynamicRequest.malformedLeadingRaster, 'Request before [embedded image payload externalized; open raw refs for source] after');
   assert.equal(dynamicRequest.malformedGeneric, 'Request before [embedded data URL omitted; see raw refs] after');
   assert.equal(dynamicRequest.encoded, 'Request before [embedded data URL omitted; see raw refs] after');
+  assert.equal(dynamicRequest.wrappedGeneric, 'Request before [embedded data URL omitted; see raw refs]\twrapped-private-tail after');
+  assert.equal(dynamicRequest.uppercaseWrappedGeneric, 'Request before [embedded data URL omitted; see raw refs] after');
+  assert.equal(dynamicRequest.percentWrappedGeneric, 'Request before [embedded data URL omitted; see raw refs] after');
+  assert.equal(dynamicRequest.ordinaryAfterNewline, 'Request before [embedded data URL omitted; see raw refs]\nnavigation needle');
+  assert.equal(dynamicRequest.ordinaryAfterTab, 'Request before [embedded data URL omitted; see raw refs]\tnavigation needle');
+  assert.equal(dynamicRequest.ordinarySlash, 'Request before [embedded data URL omitted; see raw refs]\ninput/output remains');
+  assert.equal(dynamicRequest.ordinaryUnderscore, 'Request before [embedded data URL omitted; see raw refs]\nnavigation_needle remains');
+  assert.equal(dynamicRequest.ordinaryUrl, 'Request before [embedded data URL omitted; see raw refs]\nhttps://example.test/path remains');
   assert.equal(dynamicRequest.multiple, 'Request before [embedded data URL omitted; see raw refs] middle [embedded data URL omitted; see raw refs] after');
   assert.doesNotMatch(JSON.stringify(dynamic.detail), /AAAA|BBBB|CCCC|DDDD|EEEE|FFFF|encoded%20private/);
+  assert.doesNotMatch(JSON.stringify(dynamic.detail), /wrapped-private-payload|encoded%20tail/);
+  assert.doesNotMatch(JSON.stringify(dynamic.detail), /SECRET|LEAKED/);
+  for (const query of ['navigation needle', 'input/output', 'navigation_needle', 'https://example.test/path']) {
+    const preservedTextSearch = getTimeline(index, id, {
+      offset: 0,
+      limit: 100,
+      q: query,
+      kind: '',
+      status: '',
+      tool: '',
+      file: '',
+      layer: 'main',
+    });
+    assert.ok(
+      preservedTextSearch.events.some((event) => event.id === dynamic.event.id && event.hasSearchHit),
+      query,
+    );
+  }
   assert.equal(image.detail.timelineSections[1].code.length, 4000);
   assert.match(image.detail.timelineSections[1].code, /Decode failed before \[data URL omitted\] after/);
   const imagePreview = manyImages.detail.inspectorSections.find((section) => section.type === 'image_preview');

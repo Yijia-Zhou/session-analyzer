@@ -356,10 +356,53 @@ async function makeRawCodeModeCodexHome(t) {
   await fsp.mkdir(dir, { recursive: true });
   const rows = [
     { timestamp: '2026-07-15T02:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: rawRepoRoot } },
-    { timestamp: '2026-07-15T02:00:01.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-browser-raw', input: 'const args = { plan: [] }; const plan = await tools.update_plan(args); text(plan);' } },
+    {
+      timestamp: '2026-07-15T02:00:01.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        name: 'exec',
+        call_id: 'exec-browser-raw',
+        input: [
+          'const args = { plan: [] };',
+          'const plan = await tools.update_plan(args);',
+          'const goal = await tools.get_goal(args);',
+          'const input = await tools.request_user_input(args);',
+          'text(plan);',
+        ].join('\n'),
+      },
+    },
     { timestamp: '2026-07-15T02:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-browser-raw', output: 'Script completed\nOutput:\n{}' } },
   ];
   await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  return { codexHome, repoRoot: rawRepoRoot };
+}
+
+async function makeSingleLineRawCodeModeCodexHome(t) {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-code-mode-raw-single-line-'));
+  const rawRepoRoot = path.join(codexHome, 'repo');
+  const sessionId = 'cfcfcfcf-cfcf-cfcf-cfcf-cfcfcfcfcfcf';
+  const dir = path.join(codexHome, 'sessions', '2026', '07', '15');
+  const file = path.join(dir, 'rollout-2026-07-15T10-10-00-' + sessionId + '.jsonl');
+  const source = 'const result = await tools.shell_command(args); // ' + 'single logical source preview '.repeat(20);
+  await fsp.mkdir(rawRepoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  const rows = [
+    { timestamp: '2026-07-15T02:10:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: rawRepoRoot } },
+    {
+      timestamp: '2026-07-15T02:10:01.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        name: 'exec',
+        call_id: 'exec-browser-raw-single-line',
+        input: source,
+      },
+    },
+    { timestamp: '2026-07-15T02:10:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-browser-raw-single-line', output: 'Script completed\nOutput:\n{}' } },
+  ];
+  await fsp.writeFile(file, rows.map((row) => JSON.stringify(row)).join('\n') + '\n', 'utf8');
   t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
   return { codexHome, repoRoot: rawRepoRoot };
 }
@@ -398,6 +441,41 @@ async function makeAdaptiveCodeModeCodexHome(t) {
   await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
   t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
   return { codexHome, repoRoot: adaptiveRepoRoot };
+}
+
+async function makeCodeModeSearchPreviewCodexHome(t) {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-code-mode-search-'));
+  const searchRepoRoot = path.join(codexHome, 'repo');
+  const sessionId = 'dfdfdfdf-dfdf-dfdf-dfdf-dfdfdfdfdfdf';
+  const dir = path.join(codexHome, 'sessions', '2026', '07', '16');
+  const file = path.join(dir, `rollout-2026-07-16T09-30-00-${sessionId}.jsonl`);
+  await fsp.mkdir(searchRepoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  const singleSource = "const plan = await tools.update_plan({ plan: [{ step: 'Visible single request', status: 'pending' }] }); text(plan);";
+  const multiSource = [
+    "const plan = await tools.update_plan({ plan: [{ step: 'Visible multi request', status: 'pending' }] });",
+    "const command = await tools.shell_command({ command: 'Write-Output visible-multi-command' });",
+    'text(plan);',
+    'text(command);',
+  ].join('\n');
+  const rawSource = [
+    'const args = { plan: [] };',
+    'const plan = await tools.update_plan(args);',
+    'const goal = await tools.get_goal(args);',
+    "const hidden = 'raw source navigation needle';",
+    'text(plan);',
+  ].join('\n');
+  const rows = [
+    { timestamp: '2026-07-16T01:30:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: searchRepoRoot } },
+    { timestamp: '2026-07-16T01:30:01.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-search-single', input: singleSource } },
+    { timestamp: '2026-07-16T01:30:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-search-single', output: 'Script completed\nOutput:\n{"message":"single result navigation needle"}' } },
+    { timestamp: '2026-07-16T01:30:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-search-multi', input: multiSource } },
+    { timestamp: '2026-07-16T01:30:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-search-multi', output: [{ type: 'input_text', text: 'Script completed\nOutput:\n' }, { type: 'input_text', text: '{"message":"multi result navigation needle"}' }, { type: 'input_text', text: 'Exit code: 0\nOutput:\nordinary output' }] } },
+    { timestamp: '2026-07-16T01:30:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-search-raw', input: rawSource } },
+  ];
+  await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  return { codexHome, repoRoot: searchRepoRoot, sessionId };
 }
 
 async function makeWebCodeModeCodexHome(t) {
@@ -591,6 +669,9 @@ test('browser single-tool Code Mode keeps native request and operation output pr
   assert.doesNotMatch(compactHeader, /Unassociated|Unattributed/);
   assert.doesNotMatch(compactHeader, /Declared request|response_item|2 raw|wait_agent/);
   assert.equal(compactHeader.includes('exec'), false);
+  const requestPreview = event.locator('.codeModeRequestSummaryPreview');
+  assert.equal(await requestPreview.count(), 1);
+  assert.match(await requestPreview.textContent(), /Request.*1000/s);
 
   await event.click();
   await page.waitForSelector(`#timeline .event[data-event-id="${operation.id}"] .collaborationBlock`);
@@ -634,16 +715,157 @@ test('browser Code Mode raw fallback keeps a shared origin tag instead of the ou
 
   const { page } = await openApp(t, index, { locale: 'en' });
   const event = page.locator(`#timeline .event[data-event-id="${operation.id}"]`);
-  await page.waitForFunction((eventId) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`)?.classList.contains('code-mode-raw-code-mode'), operation.id);
+  await page.waitForFunction((eventId) => {
+    const card = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`);
+    return card?.classList.contains('collapsed') && card.classList.contains('code-mode-raw-code-mode');
+  }, operation.id);
   assert.equal(await event.locator('.eventKind').textContent(), 'Script operation');
   assert.match(await event.locator('.eventHeader').textContent(), /Code Mode/);
   assert.equal(await event.locator('.codeModeChip').count(), 1);
   assert.equal(await event.locator('.toolChip').count(), 0);
+  const rawPreview = event.locator('.codeModeSourceExcerptPreview');
+  assert.equal(await rawPreview.count(), 1);
+  assert.match(await rawPreview.textContent(), /Source.*update_plan\(args\)/s);
+  assert.equal((await rawPreview.textContent()).includes('tools.'), false);
+  assert.equal((await rawPreview.textContent()).includes('{}'), false);
 
   await switchHiddenLocale(page, 'zh-CN');
   await page.waitForFunction((eventId) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"] .eventKind`)?.textContent === '脚本操作', operation.id);
   assert.match(await event.locator('.eventHeader').textContent(), /代码模式/);
   assert.equal(await event.locator('.toolChip').count(), 0);
+  assert.match(await rawPreview.textContent(), /源码.*update_plan\(args\)/s);
+});
+
+test('browser Code Mode summary presents a readable source excerpt instead of raw code', async (t) => {
+  const fixture = await makeRawCodeModeCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const session = Array.from(index.sessionsById.values())[0];
+  const operation = session.logicalEvents.find((candidate) => candidate.subtype === 'code_mode_operation');
+  assert.ok(operation);
+
+  const summaryProfile = {
+    id: 'custom:code-mode-summary',
+    name: 'Code Mode summary test',
+    description: 'Shows Code Mode operations in summary state.',
+    rules: {
+      kindStates: { other_tool_call: 'summary' },
+      fallback: 'hidden',
+      conditions: [],
+    },
+  };
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([summaryProfile]),
+      'sessionAnalyzer.profile': summaryProfile.id,
+    },
+  });
+  const event = page.locator(`#timeline .event[data-event-id="${operation.id}"]`);
+  await page.waitForFunction((eventId) => {
+    const card = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`);
+    return card?.classList.contains('summary')
+      && card.classList.contains('code-mode-raw-code-mode')
+      && Boolean(card.querySelector('.codeModeSummaryPreview'));
+  }, operation.id);
+
+  const summaryPreview = event.locator('.codeModeSummaryPreview');
+  assert.equal(await event.locator('.eventKind').textContent(), 'Script operation');
+  assert.equal(await event.locator('.toolChip').count(), 0);
+  assert.equal(await summaryPreview.count(), 1);
+  assert.equal(await summaryPreview.locator('code').count(), 0);
+  assert.equal(await summaryPreview.locator('.codeModeSummaryExcerptBodySingleLine').count(), 0);
+  assert.equal(await summaryPreview.locator('.codeModeCollapsedPreviewLabel').textContent(), 'Source');
+  const previewChrome = await summaryPreview.evaluate((element) => {
+    const style = window.getComputedStyle(element);
+    return {
+      backgroundColor: style.backgroundColor,
+      borderTopWidth: style.borderTopWidth,
+      borderLeftWidth: style.borderLeftWidth,
+    };
+  });
+  assert.deepEqual(previewChrome, {
+    backgroundColor: 'rgba(0, 0, 0, 0)',
+    borderTopWidth: '0px',
+    borderLeftWidth: '0px',
+  });
+  const summaryLines = summaryPreview.locator('.codeModeSummaryExcerptLine');
+  assert.equal(await summaryLines.count(), 2);
+  assert.match(await summaryLines.nth(0).textContent(), /update_plan\(args\)/);
+  assert.match(await summaryLines.nth(1).textContent(), /get_goal\(args\)/);
+  assert.equal((await summaryPreview.textContent()).includes('tools.'), false);
+  const continuation = summaryPreview.locator('.codeModeSummaryExcerptContinuation');
+  assert.equal(await continuation.count(), 1);
+  assert.equal(await continuation.locator('[aria-hidden="true"]').textContent(), '…');
+  assert.match(await summaryPreview.textContent(), /Additional source not shown\./);
+  assert.equal((await summaryPreview.textContent()).includes('request_user_input(args)'), false);
+
+  await event.locator('.eventToggle').first().click();
+  await page.waitForSelector(`#timeline .event[data-event-id="${operation.id}"].expanded .commandRun`);
+  await event.locator('.eventToggle').first().click();
+  await page.waitForFunction((eventId) => {
+    const card = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`);
+    return card?.classList.contains('summary') && Boolean(card.querySelector('.codeModeSummaryPreview'));
+  }, operation.id);
+
+  await switchHiddenLocale(page, 'zh-CN');
+  await page.waitForFunction((eventId) => {
+    const card = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`);
+      return card?.classList.contains('summary')
+      && card.querySelector('.eventKind')?.textContent === '脚本操作'
+      && Boolean(card.querySelector('.codeModeSummaryPreview .codeModeSummaryExcerptLine'));
+  }, operation.id);
+  assert.match(await summaryPreview.textContent(), /源码.*还有未显示的源码。/s);
+  assert.equal(await summaryPreview.locator('code').count(), 0);
+});
+
+test('browser Code Mode summary keeps one logical source line to one visual row', async (t) => {
+  const fixture = await makeSingleLineRawCodeModeCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const session = Array.from(index.sessionsById.values())[0];
+  const operation = session.logicalEvents.find((candidate) => candidate.subtype === 'code_mode_operation');
+  assert.ok(operation);
+
+  const summaryProfile = {
+    id: 'custom:code-mode-summary-single-line',
+    name: 'Code Mode summary single-line test',
+    description: 'Shows one raw source line with the summary presentation.',
+    rules: {
+      kindStates: { other_tool_call: 'summary' },
+      fallback: 'hidden',
+      conditions: [],
+    },
+  };
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([summaryProfile]),
+      'sessionAnalyzer.profile': summaryProfile.id,
+    },
+  });
+  await page.setViewportSize({ width: 820, height: 900 });
+  const event = page.locator('#timeline .event[data-event-id="' + operation.id + '"]');
+  await page.waitForFunction((eventId) => {
+    const card = document.querySelector('#timeline .event[data-event-id="' + CSS.escape(eventId) + '"]');
+    return card?.classList.contains('summary')
+      && card?.classList.contains('code-mode-raw-code-mode')
+      && Boolean(card.querySelector('.codeModeSummaryExcerptLine'));
+  }, operation.id);
+
+  const summaryPreview = event.locator('.codeModeSummaryPreview');
+  const summaryLine = summaryPreview.locator('.codeModeSummaryExcerptLine');
+  assert.equal(await summaryLine.count(), 1);
+  assert.equal(await summaryPreview.locator('.codeModeSummaryExcerptBodySingleLine').count(), 0);
+  assert.equal(await summaryPreview.locator('code').count(), 0);
+  const metrics = await summaryLine.evaluate((element) => {
+    const style = window.getComputedStyle(element);
+    return {
+      whiteSpace: style.whiteSpace,
+      height: element.getBoundingClientRect().height,
+      lineHeight: Number.parseFloat(style.lineHeight),
+    };
+  });
+  assert.equal(metrics.whiteSpace, 'nowrap');
+  assert.ok(metrics.height <= metrics.lineHeight * 1.2, JSON.stringify(metrics));
 });
 
 test('browser Code Mode adaptively unwraps one declared tool and labels multiple declared tools without changing counts', async (t) => {
@@ -676,6 +898,12 @@ test('browser Code Mode adaptively unwraps one declared tool and labels multiple
   assert.doesNotMatch(await singleEvent.locator('.eventHeader').textContent(), /Result output/);
   assert.doesNotMatch(await singleEvent.locator('.eventHeader').textContent(), /Declared request|response_item|2 raw|update_plan/);
   assert.equal(await singleEvent.locator('.toolChip').count(), 0, 'the native single-tool title makes the tool-name chip redundant');
+  const singlePreview = singleEvent.locator('.codeModeRequestSummaryPreview');
+  assert.equal(await singlePreview.count(), 1);
+  assert.match(await singlePreview.textContent(), /Request.*2 steps.*Inspect single/s);
+  const requestOnlyPreview = requestOnlyEvent.locator('.codeModeRequestSummaryPreview');
+  assert.equal(await requestOnlyPreview.count(), 1);
+  assert.match(await requestOnlyPreview.textContent(), /Request.*1 step.*Request only/s);
   await singleEvent.click();
   await page.waitForSelector(`#timeline .event[data-event-id="${single.id}"] .planUpdateBlock`);
   assert.equal(await singleEvent.locator('.codeModeToolProjection').count(), 0);
@@ -688,10 +916,35 @@ test('browser Code Mode adaptively unwraps one declared tool and labels multiple
   assert.doesNotMatch(multiHeader, /Result output/);
   assert.doesNotMatch(multiHeader, /Declared request|response_item|2 raw/);
   assert.equal(await multiEvent.locator('.toolChip').count(), 0);
+  const multiPreview = multiEvent.locator('.codeModeDeclaredSequencePreview');
+  assert.equal(await multiPreview.count(), 1);
+  assert.match(await multiPreview.textContent(), /Declared sequence.*Plan update.*1 step.*Inspect multi.*Shell command.*Write-Output multi/s);
   await multiEvent.click();
   await page.waitForSelector(`#timeline .event[data-event-id="${multi.id}"] .codeModeToolProjection`);
   assert.equal(await multiEvent.locator('.codeModeToolProjection').count(), 2);
   assert.equal(await multiEvent.locator('.codeModeSource').count(), 3, 'two associated results plus outer source remain folded');
+  await multiEvent.locator('.eventToggle').click();
+  await page.waitForFunction((eventId) => {
+    const event = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`);
+    return event && !event.classList.contains('expanded') && Boolean(event.querySelector('.codeModeDeclaredSequencePreview'));
+  }, multi.id);
+  if (await page.locator('[data-detail-action="close"]').count()) {
+    await page.locator('[data-detail-action="close"]').click();
+    await waitForDetailView(page, 'profileRules');
+  }
+  await page.locator('#detail [data-profile-kind="other_tool_call"]').selectOption('summary');
+  await page.locator('#resetFoldsBtn').click();
+  await page.waitForFunction((eventId) => {
+    const event = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`);
+    return event?.classList.contains('summary') && Boolean(event.querySelector('.codeModeDeclaredSequencePreview.codeModeSummaryPreview'));
+  }, multi.id);
+  assert.equal(await multiPreview.locator('code').count(), 0);
+  await page.waitForFunction((eventId) => {
+    const event = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`);
+    return event?.classList.contains('summary')
+      && Boolean(event.querySelector('.codeModeRequestSummaryPreview.codeModeSummaryPreview'));
+  }, requestOnly.id);
+  assert.match(await requestOnlyPreview.textContent(), /Request.*1 step.*Request only/s);
 
   assert.equal(await requestOnlyEvent.locator('.eventKind').textContent(), 'Plan update');
   assert.match(await requestOnlyEvent.locator('.eventHeader').textContent(), /Code Mode/);
@@ -708,7 +961,62 @@ test('browser Code Mode adaptively unwraps one declared tool and labels multiple
   assert.doesNotMatch(await multiEvent.locator('.eventHeader').textContent(), /结果输出/);
   assert.equal((await multiEvent.locator('.eventHeader').textContent()).includes('代码模式'), true, 'the Code Mode chip retains the shared origin identity');
   assert.equal(await multiEvent.locator('.codeModeChip').count(), 1);
+  assert.match(await multiPreview.textContent(), /声明顺序.*计划更新.*1 个步骤.*Inspect multi.*终端命令.*Write-Output multi/s);
   assert.doesNotMatch(await requestOnlyEvent.locator('.eventHeader').textContent(), /结果输出|未关联输出/);
+  assert.match(await requestOnlyPreview.textContent(), /请求.*1 个步骤.*Request only/s);
+});
+
+test('browser search-hit snippets stay navigable ahead of every folded Code Mode preview', async (t) => {
+  const fixture = await makeCodeModeSearchPreviewCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const session = index.sessionsById.get(fixture.sessionId);
+  const operations = session.logicalEvents.filter((candidate) => candidate.subtype === 'code_mode_operation');
+  const single = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-search-single');
+  const multi = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-search-multi');
+  const raw = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-search-raw');
+  assert.ok(single && multi && raw);
+
+  const overrides = {
+    [session.id]: {
+      [single.id]: 'collapsed',
+      [multi.id]: 'summary',
+      [raw.id]: 'collapsed',
+    },
+  };
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    localStorage: { 'sessionAnalyzer.overrides': JSON.stringify(overrides) },
+  });
+  const cases = [
+    { event: single, state: 'collapsed', query: 'single result navigation needle', preview: '.codeModeRequestSummaryPreview' },
+    { event: multi, state: 'summary', query: 'multi result navigation needle', preview: '.codeModeDeclaredSequencePreview' },
+    { event: raw, state: 'collapsed', query: 'raw source navigation needle', preview: '.codeModeSourceExcerptPreview' },
+  ];
+
+  for (const item of cases) {
+    const event = page.locator(`#timeline .event[data-event-id="${item.event.id}"]`);
+    await page.waitForSelector(`#timeline .event[data-event-id="${item.event.id}"].${item.state} ${item.preview}`);
+    await fillSearch(page, item.query);
+    await page.waitForFunction(({ eventId, query }) => {
+      const card = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`);
+      return card?.classList.contains('searchHit')
+        && (card.classList.contains('collapsed') || card.classList.contains('summary'))
+        && card.querySelector('.eventPreview .searchMark')?.textContent.toLowerCase() === query;
+    }, { eventId: item.event.id, query: item.query });
+    assert.equal(await event.locator(item.preview).count(), 0, 'the bounded preview must yield to the active search snippet');
+    const beforeNavigation = await searchNavigationSnapshot(page);
+    const binding = beforeNavigation.bindings.find((candidate) => candidate.ownerId === item.event.id);
+    assert.ok(binding?.live);
+    assert.deepEqual(binding.surfaces, ['timeline']);
+    await page.locator('.searchInlineMatches [data-search-match-nav="next"]').click();
+    await page.waitForFunction((eventId) => (
+      document.querySelector(`.searchMark.activeSearchMark[data-search-target-owner="${CSS.escape(eventId)}"]`)
+    ), item.event.id);
+    assert.ok(await event.locator('.eventPreview .searchMark.activeSearchMark').count());
+    assert.ok(await event.evaluate((node, state) => node.classList.contains(state), item.state));
+    await fillSearch(page, '');
+    await page.waitForSelector(`#timeline .event[data-event-id="${item.event.id}"].${item.state} ${item.preview}`);
+  }
 });
 
 test('browser Code Mode presents web requests structurally, renders safe Markdown, and compacts associated lifecycle evidence', async (t) => {

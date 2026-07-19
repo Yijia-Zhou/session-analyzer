@@ -30,6 +30,11 @@ const KNOWN_CODE_MODE_TOOLS = new Set([
   'web__run',
 ]);
 
+// The declared projector treats these names as ambient runtime helpers. A result
+// binding with any of them changes the source program's meaning, so do not
+// project it as a safe declarative sequence.
+const RESERVED_DECLARED_RESULT_BINDINGS = new Set(['JSON', 'text', 'tools']);
+
 function unsupported(reason) {
   return {
     supported: false,
@@ -137,6 +142,7 @@ function declaredCallFromAwait(awaitNode, resultVariable, sourceOrder, budget) {
     value: {
       toolName: direct.toolName,
       requestValue: request.value,
+      hasRequestArgument: direct.call.arguments.length === 1,
       resultVariable,
       sourceOrder,
       requestEvidence: 'declared_source',
@@ -151,10 +157,39 @@ function emittedVariable(statement) {
   const expression = statement.expression;
   if (!expression || expression.type !== 'CallExpression' || expression.optional
       || expression.callee?.type !== 'Identifier' || expression.callee.name !== 'text'
-      || expression.arguments.length !== 1 || expression.arguments[0]?.type !== 'Identifier') {
+      || expression.arguments.length !== 1) {
     return '';
   }
-  return expression.arguments[0].name;
+  const emitted = expression.arguments[0];
+  if (emitted?.type === 'Identifier') return emitted.name;
+
+  if (emitted?.type !== 'ConditionalExpression'
+      || emitted.test?.type !== 'BinaryExpression'
+      || emitted.test.operator !== '==='
+      || emitted.test.left?.type !== 'UnaryExpression'
+      || emitted.test.left.operator !== 'typeof'
+      || emitted.test.left.argument?.type !== 'Identifier'
+      || emitted.test.right?.type !== 'Literal'
+      || emitted.test.right.value !== 'string'
+      || emitted.consequent?.type !== 'Identifier'
+      || emitted.alternate?.type !== 'CallExpression'
+      || emitted.alternate.optional
+      || emitted.alternate.arguments.length !== 1
+      || emitted.alternate.callee?.type !== 'MemberExpression'
+      || emitted.alternate.callee.optional
+      || emitted.alternate.callee.computed
+      || emitted.alternate.callee.object?.type !== 'Identifier'
+      || emitted.alternate.callee.object.name !== 'JSON'
+      || emitted.alternate.callee.property?.type !== 'Identifier'
+      || emitted.alternate.callee.property.name !== 'stringify'
+      || emitted.alternate.arguments[0]?.type !== 'Identifier') {
+    return '';
+  }
+  const variable = emitted.consequent.name;
+  return emitted.test.left.argument.name === variable
+      && emitted.alternate.arguments[0].name === variable
+    ? variable
+    : '';
 }
 
 function applyBoundedOutputAssociation(calls, emissions, outputFragments) {
@@ -201,7 +236,11 @@ function projectDeclaredCodeModeCalls(source, options = {}) {
     if (statement.type === 'VariableDeclaration') {
       if (statement.kind !== 'const' || statement.declarations.length !== 1) return unsupported('unsupported_binding');
       const declaration = statement.declarations[0];
-      if (declaration.id?.type !== 'Identifier' || variables.has(declaration.id.name)) return unsupported('unsupported_binding');
+      if (declaration.id?.type !== 'Identifier'
+          || variables.has(declaration.id.name)
+          || RESERVED_DECLARED_RESULT_BINDINGS.has(declaration.id.name)) {
+        return unsupported('unsupported_binding');
+      }
       const parsed = declaredCallFromAwait(declaration.init, declaration.id.name, calls.length, budget);
       if (!parsed.ok) return unsupported(parsed.reason);
       variables.add(declaration.id.name);
@@ -237,6 +276,11 @@ function projectDeclaredCodeModeCalls(source, options = {}) {
   };
 }
 
+function knownCodeModeToolNames() {
+  return [...KNOWN_CODE_MODE_TOOLS];
+}
+
 module.exports = {
+  knownCodeModeToolNames,
   projectDeclaredCodeModeCalls,
 };

@@ -2469,6 +2469,63 @@ body[data-project-mode='selecting'] .searchAssist {
   white-space: pre-wrap;
 }
 
+.codeModeCollapsedPreview {
+  align-items: baseline;
+  display: flex;
+  gap: 0.45rem;
+  min-width: 0;
+  white-space: normal;
+}
+
+.codeModeCollapsedPreviewLabel {
+  color: var(--muted);
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.codeModeDeclaredSequenceItems {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.42rem;
+  min-width: 0;
+}
+
+.codeModeCollapsedPreviewItem {
+  align-items: baseline;
+  color: var(--ink);
+  display: inline-flex;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.codeModeCollapsedPreviewDetail,
+.codeModeCollapsedPreviewMore {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.76rem;
+}
+
+.codeModeCollapsedPreviewArrow {
+  color: var(--muted);
+}
+
+.codeModeSourceExcerpt {
+  color: var(--code-ink);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  min-width: 0;
+}
+
+.codeModeRequestSummaryText {
+  color: var(--code-ink);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  min-width: 0;
+}
+
 .tokenPreview {
   align-items: center;
   display: flex;
@@ -2556,6 +2613,23 @@ body[data-project-mode='selecting'] .searchAssist {
   white-space: nowrap;
 }
 
+.event.collapsed .codeModeCollapsedPreview {
+  flex-wrap: nowrap;
+}
+
+.event.collapsed .codeModeDeclaredSequenceItems {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.event.collapsed .codeModeCollapsedPreviewItem,
+.event.collapsed .codeModeRequestSummaryText,
+.event.collapsed .codeModeSourceExcerpt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .event.collapsed .tokenPreview {
   white-space: normal;
 }
@@ -2568,6 +2642,80 @@ body[data-project-mode='selecting'] .searchAssist {
 .event.summary .eventPreview {
   max-height: 4.5rem;
   overflow: hidden;
+}
+
+.event.summary .codeModeSummaryPreview {
+  align-items: flex-start;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  gap: 0.42rem;
+  max-height: none;
+  overflow: visible;
+  padding: 0.1rem 0;
+}
+
+.event.summary .codeModeSummaryPreview .codeModeCollapsedPreviewLabel {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.45;
+  opacity: 0.78;
+  text-transform: none;
+}
+
+.event.summary .codeModeSourceExcerptPreview.codeModeSummaryPreview {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+
+.event.summary .codeModeRequestSummaryPreview.codeModeSummaryPreview {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+
+.event.summary .codeModeRequestSummaryText {
+  color: var(--ink);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event.summary .codeModeSummaryExcerptBody {
+  display: grid;
+  gap: 0.05rem;
+  min-width: 0;
+}
+
+.event.summary .codeModeSummaryExcerptLine {
+  color: var(--ink);
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 400;
+  line-height: 1.45;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event.summary .codeModeSummaryExcerptContinuation {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 0.8rem;
+  font-weight: 700;
+  justify-content: flex-start;
+  line-height: 1;
+  margin-top: 0.08rem;
+  min-width: 0;
+  opacity: 0.75;
+}
+
+.event.summary .codeModeDeclaredSequenceItems {
+  line-height: 1.45;
 }
 
 .eventTools {
@@ -4216,6 +4364,12 @@ pre {
 }
 
 @media (max-width: 760px) {
+  .event.summary .codeModeRequestSummaryPreview.codeModeSummaryPreview,
+  .event.summary .codeModeSourceExcerptPreview.codeModeSummaryPreview {
+    gap: 0.22rem;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   body[data-detail-view='profileRules'][data-mobile-view='detail'] .profilePickerTopbar {
     display: none;
   }
