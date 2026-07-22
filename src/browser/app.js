@@ -11,6 +11,21 @@ const foldingApi = window.sessionFolding;
 const i18n = window.sessionI18n;
 const navigationApi = window.sessionNavigation;
 const eventChipsApi = window.sessionEventChips;
+const transitionSafety = require('./transition-safety');
+const isIntentionalAbort = transitionSafety.isIntentionalAbort;
+
+const requestOwners = {
+  timeline: transitionSafety.createRequestOwner(),
+  sessions: transitionSafety.createRequestOwner(),
+  projectResults: transitionSafety.createRequestOwner(),
+  analysis: transitionSafety.createRequestOwner(),
+  fileSuggestions: transitionSafety.createRequestOwner(),
+  navigation: transitionSafety.createRequestOwner(),
+  eventEnvelope: transitionSafety.createRequestOwner(),
+  rawReferences: transitionSafety.createRequestOwner(),
+};
+const paginationIntents = transitionSafety.createPaginationIntentState();
+const detailRequestControllers = new Map();
 
 const NAVIGATION_PAGE_LIMIT = 500;
 const TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD = 96;
@@ -160,7 +175,13 @@ const state = {
   searchFilters: { file: '', kind: '', status: '' },
   searchTargetRegistry: { key: '', targets: [], activeTargetId: '' },
   searchNavigation: { running: false, queue: [] },
-  searchProgrammaticScroll: { active: false, timer: 0, paginationFrame: 0 },
+  searchProgrammaticScroll: { active: false, timer: 0 },
+  timelineUserPaginationIntent: null,
+  timelineUserPaginationSettleTimer: 0,
+  timelineUserPaginationCheckFrame: 0,
+  timelineUserPaginationHasDownwardScroll: false,
+  timelineLastScrollTop: 0,
+  timelineReplacementRetry: null,
   searchHighlightTimer: 0,
   searchTargetPreload: { key: '', pages: 0, pending: false, exhausted: false },
   searchTransientExpansion: { key: '', eventIds: [] },
@@ -782,6 +803,7 @@ function syncSearchTargetRegistryKey() {
 function beginSearchTargetContextTransition() {
   const key = searchTargetKey();
   if (state.searchTargetRegistry.key === key) return false;
+  requestOwners.navigation.abort();
   clearQueuedSearchNavigations();
   state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
   highlightRoots().forEach((root) => searchHighlighter.clear(root));
@@ -1018,9 +1040,10 @@ function maybePreloadSearchTargets() {
 
   state.searchTargetPreload.pages += 1;
   state.searchTargetPreload.pending = true;
-  loadTimeline(true)
+  loadTimeline(true, { paginationIntent: paginationIntent('search-preload') })
     .catch(showError)
     .finally(() => {
+      if (state.searchTargetPreload.key !== key) return;
       state.searchTargetPreload.pending = false;
       if (state.searchTargetRegistry.targets.length < SEARCH_TARGET_PRELOAD_MIN) {
         maybePreloadSearchTargets();
@@ -1053,6 +1076,7 @@ function scheduleProgrammaticSearchScrollGuard(timeout) {
 }
 
 function beginProgrammaticSearchScroll() {
+  clearTimelineUserPaginationIntent();
   scheduleProgrammaticSearchScrollGuard(1500);
 }
 
@@ -1263,7 +1287,10 @@ async function materializeNextSearchTarget(direction) {
     if (searchTargetPreloadKey() !== searchKey) return false;
     if (state.offset > previousOffset) return true;
     if (state.offset >= state.timelineTotal) return false;
-    await loadTimeline(true, { allowSearchTargetPreload: false });
+    await loadTimeline(true, {
+      allowSearchTargetPreload: false,
+      paginationIntent: paginationIntent('search-navigation'),
+    });
     await waitForTimelineIdle();
     if (searchTargetPreloadKey() !== searchKey) return false;
     return state.offset > previousOffset;
@@ -1313,7 +1340,10 @@ async function loadMoreSearchTargets() {
   try {
     while (searchTargetPreloadKey() === searchKey && state.offset < state.timelineTotal) {
       const previousOffset = state.offset;
-      await loadTimeline(true, { allowSearchTargetPreload: false });
+      await loadTimeline(true, {
+        allowSearchTargetPreload: false,
+        paginationIntent: paginationIntent('search-load-more'),
+      });
       await waitForTimelineIdle();
       if (searchTargetPreloadKey() !== searchKey) return false;
       const addedIds = state.searchTargetRegistry.targets
@@ -1458,8 +1488,42 @@ function detailKey(sessionId, layerId, eventId) {
   return `${sessionId}:${layerId}:${eventId}`;
 }
 
-function resetDetailPane() {
+function detailSelectionContextKey() {
+  const search = currentSearchState();
+  return JSON.stringify([
+    state.repoRoot,
+    search.scope,
+    state.selectedSessionId,
+    search.layer,
+    search.kind,
+    search.status,
+    search.file,
+    state.locale,
+    state.detailCacheGeneration,
+  ]);
+}
+
+function detailRequestKeyForSelection() {
+  return state.detailSelectionKey.replace(/^raw:/, '');
+}
+
+function invalidateDetailSelection() {
+  requestOwners.rawReferences.abort();
+  const key = detailRequestKeyForSelection();
+  detailRequestControllers.get(key)?.abort();
   state.detailSelectionKey = '';
+}
+
+function isCurrentDetailSelection(type, key, eventId, context) {
+  return state.searchScope === 'session'
+    && state.detailSelectionKey === key
+    && state.detailView?.type === type
+    && state.detailView?.eventId === eventId
+    && detailSelectionContextKey() === context;
+}
+
+function resetDetailPane() {
+  invalidateDetailSelection();
   state.selectedEventId = '';
   state.navigationCategoryId = '';
   state.navigationCategoryManualId = '';
@@ -1993,7 +2057,7 @@ function applySearchFilter(operator, value) {
   state.searchStructureKey = structuredSearchKey();
   beginProjectSearchPendingTransition();
   beginSearchTargetContextTransition();
-  refreshActiveSearch({ structural: true }).catch(showError);
+  refreshActiveSearch({ structural: true, transitionKind: 'structured-filter' }).catch(showError);
   syncSearchAssistControls();
   updateProfileApplicabilityUi();
 }
@@ -2016,15 +2080,25 @@ async function refreshFileSuggestions() {
   const requestId = state.fileSuggestionRequestId + 1;
   const requestContext = fileSuggestionContextKey();
   state.fileSuggestionRequestId = requestId;
+  const owner = requestOwners.fileSuggestions.start(requestContext);
   const params = new URLSearchParams({ layer: activeLayerId() });
   if (state.searchScope === 'session' && state.selectedSessionId) {
     params.set('sessionId', state.selectedSessionId);
   }
-  const data = await api(`/api/file-suggestions?${params.toString()}`);
-  if (requestId !== state.fileSuggestionRequestId || requestContext !== fileSuggestionContextKey()) return false;
-  state.fileSuggestions = data.files || [];
-  renderFileSuggestions();
-  return true;
+  try {
+    const data = await api(`/api/file-suggestions?${params.toString()}`, { signal: owner.controller.signal });
+    if (!requestOwners.fileSuggestions.isCurrent(owner)
+        || requestId !== state.fileSuggestionRequestId
+        || requestContext !== fileSuggestionContextKey()) return false;
+    state.fileSuggestions = data.files || [];
+    renderFileSuggestions();
+    return true;
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    throw error;
+  } finally {
+    requestOwners.fileSuggestions.finish(owner);
+  }
 }
 
 function visibleFileSuggestions() {
@@ -2152,12 +2226,17 @@ function clearActiveFilter(key) {
   if (reconcileSearchTransientExpansions()) renderTimeline();
   const structureAfter = structuredSearchKey();
   state.searchStructureKey = structureAfter;
-  refreshActiveSearch({ structural: structureBefore !== structureAfter }).catch(showError);
+  refreshActiveSearch({
+    structural: structureBefore !== structureAfter,
+    transitionKind: structureBefore !== structureAfter ? 'structured-filter' : '',
+  }).catch(showError);
 }
 
 function resetTimelineScroll() {
   const pane = el.timeline.closest('.timelinePane');
-  if (pane) pane.scrollTop = 0;
+  if (!pane) return;
+  pane.scrollTop = 0;
+  state.timelineLastScrollTop = pane.scrollTop;
 }
 
 function eventPrimaryLine(event) {
@@ -2309,6 +2388,7 @@ function setProjectMode(selecting) {
 }
 
 function resetProjectViewState() {
+  Object.values(requestOwners).forEach((owner) => owner.abort());
   state.sessions = [];
   state.projectResults = [];
   state.sessionsRequestId += 1;
@@ -2327,6 +2407,7 @@ function resetProjectViewState() {
   state.timelineRequestId += 1;
   state.sessionsDataContext = '';
   state.timelineDataContext = '';
+  state.timelineReplacementRetry = null;
   state.sessionGrandTotal = 0;
   state.sessionTotal = 0;
   state.timelineTotal = 0;
@@ -2410,6 +2491,8 @@ function isActiveProjectChooserRequest(requestId) {
 }
 
 function resetSessionDetailCache() {
+  for (const controller of detailRequestControllers.values()) controller.abort();
+  detailRequestControllers.clear();
   state.detailCache = {};
   state.detailErrors = {};
   state.detailPending = {};
@@ -2685,10 +2768,19 @@ async function loadSessions() {
   const requestId = state.sessionsRequestId + 1;
   const requestContext = sessionsDataContextKey();
   state.sessionsRequestId = requestId;
-  const data = await api(`/api/sessions${currentQuery(
-    { sort: el.sortSelect.value },
-    { includeExpression: false, includeLayer: false },
-  )}`);
+  const owner = requestOwners.sessions.start(requestContext);
+  let data;
+  try {
+    data = await api(`/api/sessions${currentQuery(
+      { sort: el.sortSelect.value },
+      { includeExpression: false, includeLayer: false },
+    )}`, { signal: owner.controller.signal });
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    throw error;
+  } finally {
+    requestOwners.sessions.finish(owner);
+  }
   if (requestId !== state.sessionsRequestId || requestContext !== sessionsDataContextKey()) return false;
   state.sessionsDataContext = requestContext;
   state.sessions = data.sessions;
@@ -2702,6 +2794,7 @@ async function loadSessions() {
     state.timelineSearchMatchCount = 0;
     state.timelineSearchEventCount = 0;
     state.searchStructureKey = structuredSearchKey();
+    resetDetailPane();
     syncSearchScopeUi();
     renderProjectSearchView();
   } else {
@@ -2730,6 +2823,7 @@ function beginProjectSearchPendingTransition() {
       && state.projectResults.length === 0
       && state.projectSearchTotal === 0
       && state.projectSearchEventTotal === 0) return false;
+  requestOwners.projectResults.abort();
   state.projectSearchRequestId += 1;
   state.projectSearchPendingContext = requestContext;
   state.projectSearchDataContext = '';
@@ -2745,6 +2839,7 @@ async function loadProjectResults() {
   state.projectSearchRequestId += 1;
   const requestId = state.projectSearchRequestId;
   const requestContext = projectSearchDataContextKey();
+  const owner = requestOwners.projectResults.start(requestContext);
   if (state.searchScope !== 'project' || !hasActiveSearchExpression()) {
     state.projectSearchLoading = false;
     state.projectSearchPendingContext = '';
@@ -2753,6 +2848,7 @@ async function loadProjectResults() {
     state.projectSearchTotal = 0;
     state.projectSearchEventTotal = 0;
     renderProjectSearchView();
+    requestOwners.projectResults.finish(owner);
     return true;
   }
   state.projectSearchLoading = true;
@@ -2763,16 +2859,22 @@ async function loadProjectResults() {
   state.projectSearchEventTotal = 0;
   renderProjectSearchView();
   try {
-    const data = await api(`/api/sessions${currentQuery({ sort: state.projectSearchSort })}`);
-    if (requestId !== state.projectSearchRequestId || requestContext !== projectSearchDataContextKey()) return false;
+    const data = await api(`/api/sessions${currentQuery({ sort: state.projectSearchSort })}`, { signal: owner.controller.signal });
+    if (!requestOwners.projectResults.isCurrent(owner)
+        || requestId !== state.projectSearchRequestId
+        || requestContext !== projectSearchDataContextKey()) return false;
     state.projectSearchDataContext = requestContext;
     state.projectSearchPendingContext = '';
     state.projectResults = data.sessions || [];
     state.projectSearchTotal = data.total || 0;
     state.projectSearchEventTotal = data.matchingEventTotal || 0;
     return true;
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    throw error;
   } finally {
-    if (requestId === state.projectSearchRequestId && requestContext === projectSearchDataContextKey()) {
+    const currentOwner = requestOwners.projectResults.finish(owner);
+    if (currentOwner && requestId === state.projectSearchRequestId && requestContext === projectSearchDataContextKey()) {
       state.projectSearchLoading = false;
       state.projectSearchPendingContext = '';
       renderProjectSearchView();
@@ -2788,7 +2890,10 @@ async function refreshActiveSearch(options = {}) {
   }
   if (!state.selectedSessionId) return;
   if (options.structural) {
-    await loadTimeline(false, { keepScroll: true });
+    await loadTimeline(false, {
+      keepScroll: true,
+      viewportPolicy: options.transitionKind === 'structured-filter' ? 'structured-filter' : 'focus-restore',
+    });
   } else {
     await refreshTimelineFindState();
   }
@@ -2824,9 +2929,13 @@ async function setSearchScope(scope, options = {}) {
   renderSearchAssistChips();
   updateSearchMatchControls();
   if (scope === 'project') {
+    requestOwners.timeline.abort();
+    requestOwners.analysis.abort();
+    beginTimelineReplacement(timelineDataContextKey());
     state.timelineRequestId += 1;
     state.analysisRequestId += 1;
     state.timelineLoading = false;
+    resetDetailPane();
     beginProjectSearchPendingTransition();
     await Promise.all([loadProjectResults(), refreshFileSuggestions()]);
     if (options.mobileView !== false) setMobileView('sessions');
@@ -3038,7 +3147,17 @@ async function loadAnalysis(sessionId) {
   const requestLocale = state.locale;
   const requestScope = state.searchScope;
   state.analysisRequestId = requestId;
-  const analysis = await api(`/api/sessions/${encodeURIComponent(sessionId)}/analysis`);
+  const requestContext = JSON.stringify([sessionId, requestScope, requestLocale]);
+  const owner = requestOwners.analysis.start(requestContext);
+  let analysis;
+  try {
+    analysis = await api(`/api/sessions/${encodeURIComponent(sessionId)}/analysis`, { signal: owner.controller.signal });
+  } catch (error) {
+    if (isIntentionalAbort(error)) return;
+    throw error;
+  } finally {
+    requestOwners.analysis.finish(owner);
+  }
   if (requestId !== state.analysisRequestId
       || sessionId !== state.selectedSessionId
       || requestScope !== state.searchScope
@@ -3139,6 +3258,7 @@ async function applyMetricLayer(targetLayerId) {
 async function changeLayer(layerId) {
   if (!['main', 'protocol', 'raw'].includes(layerId)) return;
   const focusAnchor = state.searchScope === 'session' ? captureFocusAnchor() : { hadSelection: false };
+  if (focusAnchor.hadSelection || isSelectedEventDetailView()) resetDetailPane();
   resetSearchTransientExpansions();
   state.layerId = layerId;
   el.layerSelect.value = state.layerId;
@@ -3150,17 +3270,23 @@ async function changeLayer(layerId) {
   renderSearchAssistChips();
   updateProfileApplicabilityUi();
   if (state.detailView.type === 'profileRules') renderProfileRulesPane();
-  await Promise.all([refreshActiveSearch({ structural: true }), refreshFileSuggestions()]);
+  await Promise.all([
+    refreshActiveSearch({ structural: true, transitionKind: 'focus-restore' }),
+    refreshFileSuggestions(),
+  ]);
   if (focusAnchor.hadSelection) await restoreFocus(focusAnchor);
   updateMetricActionStates();
 }
 
 function updateLoadMoreButton() {
   if (!el.loadMoreBtn) return;
-  const hasMore = state.offset < state.timelineTotal;
+  const replacementRetry = currentTimelineReplacementRetry();
+  const hasMore = Boolean(replacementRetry) || state.offset < state.timelineTotal;
   el.loadMoreBtn.disabled = !state.selectedSessionId || state.timelineLoading || !hasMore;
   if (state.timelineLoading) {
     el.loadMoreBtn.textContent = t('loading');
+  } else if (replacementRetry) {
+    el.loadMoreBtn.textContent = t('retryTimeline');
   } else {
     el.loadMoreBtn.textContent = hasMore
       ? t('loadMoreCount', { loaded: state.offset, total: state.timelineTotal })
@@ -3168,26 +3294,65 @@ function updateLoadMoreButton() {
   }
 }
 
+function paginationIntent(kind) {
+  return paginationIntents.createIntent(kind);
+}
+
+function currentTimelineReplacementRetry() {
+  const retry = state.timelineReplacementRetry;
+  if (!retry) return null;
+  if (retry.sessionId === state.selectedSessionId && retry.requestContext === timelineDataContextKey()) {
+    return retry;
+  }
+  state.timelineReplacementRetry = null;
+  return null;
+}
+
+function setTimelineReplacementRetry(requestContext, sessionId, retry) {
+  if (sessionId !== state.selectedSessionId || requestContext !== timelineDataContextKey()) return;
+  state.timelineReplacementRetry = { requestContext, sessionId, retry };
+}
+
+function retryTimelineReplacement() {
+  const retry = currentTimelineReplacementRetry();
+  if (!retry || state.timelineLoading) return Promise.resolve(false);
+  return retry.retry();
+}
+
+function beginTimelineReplacement(requestContext) {
+  clearTimelineUserPaginationIntent();
+  state.timelineReplacementRetry = null;
+  const epoch = paginationIntents.beginReplacement(requestContext);
+  return epoch;
+}
+
 async function loadTimeline(append, options = {}) {
-  if (!state.selectedSessionId) return;
-  if (append && state.timelineLoading) return;
+  if (!state.selectedSessionId) return false;
+  if (append && state.timelineLoading) return false;
+  if (append && !paginationIntents.claim(options.paginationIntent)) return false;
   if (!append) state.temporaryEventReveal = null;
   const sessionId = state.selectedSessionId;
   const requestContext = timelineDataContextKey();
-  if (append && state.timelineDataContext !== requestContext) return;
+  if (append && state.timelineDataContext !== requestContext) return false;
+  const appendOffset = append ? state.offset : 0;
+  const selectedBeforeReplacement = append ? '' : state.selectedEventId;
+  const replacementEpoch = append ? 0 : beginTimelineReplacement(requestContext);
   const requestId = state.timelineRequestId + 1;
   state.timelineRequestId = requestId;
+  const owner = requestOwners.timeline.start(requestContext);
   state.timelineLoading = true;
   updateLoadMoreButton();
   try {
     const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
-      offset: append ? state.offset : 0,
+      offset: appendOffset,
       limit: state.limit,
-    })}`);
-    if (requestId !== state.timelineRequestId
+    })}`, { signal: owner.controller.signal });
+    if (!requestOwners.timeline.isCurrent(owner)
+        || requestId !== state.timelineRequestId
         || sessionId !== state.selectedSessionId
-        || requestContext !== timelineDataContextKey()) return;
+        || requestContext !== timelineDataContextKey()) return false;
     if (append) {
+      if (appendOffset !== state.offset || appendOffset !== state.currentEvents.length) return false;
       state.currentEvents = state.currentEvents.concat(data.events);
     } else {
       state.currentEvents = data.events;
@@ -3206,11 +3371,38 @@ async function loadTimeline(append, options = {}) {
     if (state.detailView.type === 'profileRules') renderProfileRulesPane();
     renderTimeline();
     convergeSelectedEventDetailView({ refreshedHitState: true });
-    if (!append && !options.keepScroll) resetTimelineScroll();
+    if (!append && options.viewportPolicy === 'structured-filter') {
+      const selected = selectedBeforeReplacement
+        ? state.currentEvents.find((event) => event.id === selectedBeforeReplacement)
+        : null;
+      if (selected) scrollToTimelineEvent(selected.id, { behavior: 'auto' });
+      else resetTimelineScroll();
+    } else if (!append && !options.keepScroll) {
+      resetTimelineScroll();
+    }
+    if (append) paginationIntents.commitReplacement();
+    else paginationIntents.commitReplacement(replacementEpoch);
     renderResultSummary();
     if (options.allowSearchTargetPreload !== false) maybePreloadSearchTargets();
+    return true;
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    if (!append
+        && requestOwners.timeline.isCurrent(owner)
+        && requestId === state.timelineRequestId
+        && sessionId === state.selectedSessionId
+        && requestContext === timelineDataContextKey()) {
+      const retryOptions = {
+        keepScroll: options.keepScroll,
+        viewportPolicy: options.viewportPolicy,
+        allowSearchTargetPreload: options.allowSearchTargetPreload,
+      };
+      setTimelineReplacementRetry(requestContext, sessionId, () => loadTimeline(false, retryOptions));
+    }
+    throw error;
   } finally {
-    if (requestId === state.timelineRequestId) {
+    const currentOwner = requestOwners.timeline.finish(owner);
+    if (currentOwner && requestId === state.timelineRequestId) {
       state.timelineLoading = false;
       updateLoadMoreButton();
       if (options.allowSearchTargetPreload !== false) maybePreloadSearchTargets();
@@ -3222,9 +3414,11 @@ async function loadTimelineThroughIndex(timelineIndex) {
   if (!state.selectedSessionId || state.searchScope !== 'session') return false;
   const sessionId = state.selectedSessionId;
   const requestContext = timelineDataContextKey();
+  const replacementEpoch = beginTimelineReplacement(requestContext);
   const requiredCount = Math.max(1, Number(timelineIndex || 0) + 1);
   const requestId = state.timelineRequestId + 1;
   state.timelineRequestId = requestId;
+  const owner = requestOwners.timeline.start(requestContext);
   state.timelineLoading = true;
   updateLoadMoreButton();
   try {
@@ -3237,8 +3431,9 @@ async function loadTimelineThroughIndex(timelineIndex) {
       const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
         offset: events.length,
         limit: Math.min(500, requiredCount - events.length),
-      })}`);
-      if (requestId !== state.timelineRequestId
+      })}`, { signal: owner.controller.signal });
+      if (!requestOwners.timeline.isCurrent(owner)
+          || requestId !== state.timelineRequestId
           || sessionId !== state.selectedSessionId
           || state.searchScope !== 'session'
           || requestContext !== timelineDataContextKey()) return false;
@@ -3260,9 +3455,20 @@ async function loadTimelineThroughIndex(timelineIndex) {
     renderTimeline();
     renderResultSummary();
     resetTimelineScroll();
+    paginationIntents.commitReplacement(replacementEpoch);
     return true;
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    if (requestOwners.timeline.isCurrent(owner)
+        && requestId === state.timelineRequestId
+        && sessionId === state.selectedSessionId
+        && requestContext === timelineDataContextKey()) {
+      setTimelineReplacementRetry(requestContext, sessionId, () => loadTimelineThroughIndex(timelineIndex));
+    }
+    throw error;
   } finally {
-    if (requestId === state.timelineRequestId) {
+    const currentOwner = requestOwners.timeline.finish(owner);
+    if (currentOwner && requestId === state.timelineRequestId) {
       state.timelineLoading = false;
       updateLoadMoreButton();
     }
@@ -3273,6 +3479,7 @@ async function refreshTimelineFindState(options = {}) {
   if (!state.selectedSessionId) return;
   const sessionId = state.selectedSessionId;
   const requestContext = timelineDataContextKey();
+  const replacementEpoch = beginTimelineReplacement(requestContext);
   const targetCount = Math.max(state.currentEvents.length, state.offset, state.limit);
   if (!targetCount) {
     await loadTimeline(false, { keepScroll: true, ...options });
@@ -3281,6 +3488,7 @@ async function refreshTimelineFindState(options = {}) {
 
   const requestId = state.timelineRequestId + 1;
   state.timelineRequestId = requestId;
+  const owner = requestOwners.timeline.start(requestContext);
   state.timelineLoading = true;
   updateLoadMoreButton();
   try {
@@ -3293,8 +3501,9 @@ async function refreshTimelineFindState(options = {}) {
       const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
         offset: events.length,
         limit: Math.min(500, targetCount - events.length),
-      })}`);
-      if (requestId !== state.timelineRequestId
+      })}`, { signal: owner.controller.signal });
+      if (!requestOwners.timeline.isCurrent(owner)
+          || requestId !== state.timelineRequestId
           || sessionId !== state.selectedSessionId
           || requestContext !== timelineDataContextKey()) return;
       total = data.total;
@@ -3316,9 +3525,21 @@ async function refreshTimelineFindState(options = {}) {
     renderTimeline();
     if (!convergeSelectedEventDetailView({ refreshedHitState: true })) refreshSearchSensitiveDetailView();
     renderResultSummary();
+    paginationIntents.commitReplacement(replacementEpoch);
     maybePreloadSearchTargets();
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    if (requestOwners.timeline.isCurrent(owner)
+        && requestId === state.timelineRequestId
+        && sessionId === state.selectedSessionId
+        && requestContext === timelineDataContextKey()) {
+      const retryOptions = { ...options };
+      setTimelineReplacementRetry(requestContext, sessionId, () => refreshTimelineFindState(retryOptions));
+    }
+    throw error;
   } finally {
-    if (requestId === state.timelineRequestId) {
+    const currentOwner = requestOwners.timeline.finish(owner);
+    if (currentOwner && requestId === state.timelineRequestId) {
       state.timelineLoading = false;
       updateLoadMoreButton();
       maybePreloadSearchTargets();
@@ -3528,19 +3749,31 @@ function loadEventDetail(event) {
   const sessionId = state.selectedSessionId;
   const generation = state.detailCacheGeneration;
   const key = detailKey(sessionId, layer, event.id);
-  if (state.detailCache[key] || state.detailErrors[key]) return Promise.resolve();
+  if (state.detailCache[key] || state.detailErrors[key]) return Promise.resolve(false);
   if (!state.detailPending[key]) {
-    const pending = api(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(layer)}`)
+    const controller = new AbortController();
+    detailRequestControllers.set(key, controller);
+    const pending = api(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(layer)}`, {
+      signal: controller.signal,
+    })
       .then((detail) => {
-        if (state.selectedSessionId !== sessionId || state.detailCacheGeneration !== generation) return;
+        if (detailRequestControllers.get(key) !== controller
+            || state.selectedSessionId !== sessionId
+            || state.detailCacheGeneration !== generation) return false;
         state.detailCache[key] = detail;
         delete state.detailErrors[key];
+        return true;
       })
       .catch((error) => {
-        if (state.selectedSessionId !== sessionId || state.detailCacheGeneration !== generation) return;
+        if (isIntentionalAbort(error)) return false;
+        if (detailRequestControllers.get(key) !== controller
+            || state.selectedSessionId !== sessionId
+            || state.detailCacheGeneration !== generation) return false;
         state.detailErrors[key] = error.message;
+        return true;
       })
       .finally(() => {
+        if (detailRequestControllers.get(key) === controller) detailRequestControllers.delete(key);
         if (state.detailPending[key] === pending) delete state.detailPending[key];
       });
     state.detailPending[key] = pending;
@@ -3551,7 +3784,9 @@ function loadEventDetail(event) {
 function ensureEventDetail(event) {
   const key = detailKey(state.selectedSessionId, activeLayerId(), event.id);
   if (state.detailCache[key] || state.detailErrors[key]) return;
-  loadEventDetail(event).then(() => renderTimeline());
+  loadEventDetail(event).then((settled) => {
+    if (settled && key === detailKey(state.selectedSessionId, activeLayerId(), event.id)) renderTimeline();
+  });
 }
 
 function isInScrollport(element) {
@@ -3581,19 +3816,83 @@ function queueVisibleDetailLoad() {
   state.detailViewportTimer = requestAnimationFrame(loadVisibleExpandedDetails);
 }
 
-function maybeLoadMoreTimeline(scroller) {
-  if (!scroller || !state.selectedSessionId || state.timelineLoading || state.offset >= state.timelineTotal) return;
-  const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-  if (remaining <= TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD) {
-    loadTimeline(true).catch(showError);
-  }
+const TIMELINE_USER_INTENT_EXPIRY_MS = 250;
+const TIMELINE_USER_SCROLL_SETTLE_MS = 120;
+
+function clearTimelineUserPaginationIntent(expectedIntent = null) {
+  const intent = state.timelineUserPaginationIntent;
+  if (!intent || (expectedIntent && intent !== expectedIntent)) return false;
+  if (state.timelineUserPaginationSettleTimer) clearTimeout(state.timelineUserPaginationSettleTimer);
+  if (state.timelineUserPaginationCheckFrame) cancelAnimationFrame(state.timelineUserPaginationCheckFrame);
+  state.timelineUserPaginationSettleTimer = 0;
+  state.timelineUserPaginationCheckFrame = 0;
+  state.timelineUserPaginationIntent = null;
+  state.timelineUserPaginationHasDownwardScroll = false;
+  paginationIntents.revokeUser(intent);
+  return true;
 }
 
-function queueTimelinePaginationCheck(scroller) {
-  if (!scroller || state.searchProgrammaticScroll.paginationFrame) return;
-  state.searchProgrammaticScroll.paginationFrame = requestAnimationFrame(() => {
-    state.searchProgrammaticScroll.paginationFrame = 0;
-    maybeLoadMoreTimeline(scroller);
+function scheduleTimelineUserPaginationExpiry(intent, delay) {
+  if (!intent || state.timelineUserPaginationIntent !== intent) return;
+  if (state.timelineUserPaginationSettleTimer) clearTimeout(state.timelineUserPaginationSettleTimer);
+  state.timelineUserPaginationSettleTimer = setTimeout(() => {
+    state.timelineUserPaginationSettleTimer = 0;
+    clearTimelineUserPaginationIntent(intent);
+  }, delay);
+}
+
+function claimTimelineUserPaginationIntent(intent) {
+  if (!intent
+      || state.timelineUserPaginationIntent !== intent
+      || !state.timelineUserPaginationHasDownwardScroll) return false;
+  if (state.timelineUserPaginationSettleTimer) clearTimeout(state.timelineUserPaginationSettleTimer);
+  if (state.timelineUserPaginationCheckFrame) cancelAnimationFrame(state.timelineUserPaginationCheckFrame);
+  state.timelineUserPaginationSettleTimer = 0;
+  state.timelineUserPaginationCheckFrame = 0;
+  state.timelineUserPaginationIntent = null;
+  state.timelineUserPaginationHasDownwardScroll = false;
+  return true;
+}
+
+function recordTimelineUserPaginationScroll(scroller) {
+  const scrollTop = Number(scroller?.scrollTop) || 0;
+  const previousScrollTop = state.timelineLastScrollTop;
+  state.timelineLastScrollTop = scrollTop;
+  const intent = state.timelineUserPaginationIntent;
+  if (!intent) return false;
+  const delta = scrollTop - previousScrollTop;
+  if (delta <= 0) {
+    if (delta < 0) clearTimelineUserPaginationIntent(intent);
+    return false;
+  }
+  state.timelineUserPaginationHasDownwardScroll = true;
+  return true;
+}
+
+function maybeLoadMoreTimeline(scroller, hasDownwardScroll = false) {
+  const intent = state.timelineUserPaginationIntent;
+  if (!intent) return;
+  if (!hasDownwardScroll || !state.timelineUserPaginationHasDownwardScroll) return;
+  if (!scroller || !state.selectedSessionId || state.timelineLoading || state.offset >= state.timelineTotal) {
+    clearTimelineUserPaginationIntent(intent);
+    return;
+  }
+  const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+  if (remaining > TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD) {
+    scheduleTimelineUserPaginationExpiry(intent, TIMELINE_USER_SCROLL_SETTLE_MS);
+    return;
+  }
+  if (!claimTimelineUserPaginationIntent(intent)) return;
+  loadTimeline(true, { paginationIntent: intent }).catch(showError);
+}
+
+function queueTimelinePaginationCheck(scroller, intent) {
+  if (!scroller || !intent || state.timelineUserPaginationIntent !== intent) return;
+  if (state.timelineUserPaginationCheckFrame) cancelAnimationFrame(state.timelineUserPaginationCheckFrame);
+  state.timelineUserPaginationCheckFrame = requestAnimationFrame(() => {
+    state.timelineUserPaginationCheckFrame = 0;
+    if (state.timelineUserPaginationIntent !== intent) return;
+    maybeLoadMoreTimeline(scroller, state.timelineUserPaginationHasDownwardScroll);
   });
 }
 
@@ -3606,20 +3905,59 @@ const TIMELINE_SCROLL_KEYS = new Set([
   'PageUp',
   ' ',
 ]);
+const TIMELINE_PAGINATION_KEYS = new Set(['ArrowDown', 'End', 'PageDown', ' ']);
 
 function onTimelineUserScrollIntent(event) {
   if (event.type === 'keydown' && !TIMELINE_SCROLL_KEYS.has(event.key)) return;
+  const scroller = event.currentTarget;
+  const interactiveTarget = event.target instanceof Element
+    && event.target.closest('button, input, select, textarea, a[href], [role="button"]');
+  if (event.type === 'pointerdown') {
+    scroller.focus({ preventScroll: true });
+  }
+  if (interactiveTarget && event.type !== 'wheel') {
+    clearTimelineUserPaginationIntent();
+    state.timelineLastScrollTop = Number(scroller?.scrollTop) || 0;
+    return;
+  }
+  if (event.type === 'pointerdown') {
+    clearTimelineUserPaginationIntent();
+    state.timelineLastScrollTop = Number(scroller?.scrollTop) || 0;
+    return;
+  }
+  if (event.type === 'pointermove' && !event.buttons) return;
+  clearTimelineUserPaginationIntent();
+  const scrollTop = Number(scroller?.scrollTop) || 0;
+  const observedScrollDelta = scrollTop - state.timelineLastScrollTop;
+  state.timelineLastScrollTop = scrollTop;
+  const kind = event.type === 'wheel'
+    ? 'wheel'
+    : (event.type === 'touchmove' ? 'touch' : (event.type.startsWith('pointer') ? 'pointer' : 'keyboard'));
+  const hasUnsupportedModifier = event.altKey || event.ctrlKey || event.metaKey || event.shiftKey;
+  const qualifiesForPagination = !hasUnsupportedModifier
+    && observedScrollDelta >= 0
+    && (event.type !== 'keydown' || TIMELINE_PAGINATION_KEYS.has(event.key))
+    && (event.type !== 'wheel' || event.deltaY > 0)
+    && event.type !== 'pointerdown'
+    && !state.timelineLoading
+    && Boolean(state.selectedSessionId)
+    && state.offset < state.timelineTotal;
+  const intent = qualifiesForPagination ? paginationIntents.authorizeUser(kind) : null;
+  state.timelineUserPaginationIntent = intent;
+  state.timelineUserPaginationHasDownwardScroll = Boolean(intent && observedScrollDelta > 0);
+  scheduleTimelineUserPaginationExpiry(intent, TIMELINE_USER_INTENT_EXPIRY_MS);
+  if (state.timelineUserPaginationHasDownwardScroll) queueTimelinePaginationCheck(scroller, intent);
   if (!state.searchProgrammaticScroll.active) return;
   endProgrammaticSearchScrollGuard();
-  queueTimelinePaginationCheck(event.currentTarget);
 }
 
 function onTimelinePaneScroll(event) {
   const searchScroll = state.searchProgrammaticScroll.active;
+  const hasDownwardUserScroll = recordTimelineUserPaginationScroll(event.currentTarget);
   if (searchScroll) keepProgrammaticSearchScrollGuard();
   if (document.activeElement !== el.searchInput && !searchScroll) hideSearchAssist();
   queueVisibleDetailLoad();
-  if (!searchScroll) maybeLoadMoreTimeline(event.currentTarget);
+  if (!searchScroll) maybeLoadMoreTimeline(event.currentTarget, hasDownwardUserScroll);
 }
 
 function updateSelectedTimelineEvent() {
@@ -3641,6 +3979,7 @@ function navigationCacheKey() {
 }
 
 function invalidateNavigationCache() {
+  requestOwners.navigation.abort();
   state.navigationCache = { key: '', events: [], total: 0, pending: null };
   state.navigationLoadErrorKey = '';
 }
@@ -3662,6 +4001,7 @@ function ensureNavigationEvents() {
     return Promise.resolve(state.navigationCache);
   }
 
+  const owner = requestOwners.navigation.start(key);
   const pending = (async () => {
     const events = [];
     let total = 0;
@@ -3670,7 +4010,7 @@ function ensureNavigationEvents() {
       const data = await api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/timeline${currentQuery({
         offset: events.length,
         limit: NAVIGATION_PAGE_LIMIT,
-      })}`);
+      })}`, { signal: owner.controller.signal });
       total = data.total;
       events.push(...data.events);
       if (!data.events.length) break;
@@ -3678,8 +4018,17 @@ function ensureNavigationEvents() {
     if (navigationCacheKey() !== key) return null;
     state.navigationCache = { key, events, total, pending: null };
     return state.navigationCache;
-  })().finally(() => {
-    if (state.navigationCache.key === key) state.navigationCache.pending = null;
+  })().catch((error) => {
+    if (isIntentionalAbort(error)) {
+      if (requestOwners.navigation.isCurrent(owner) && state.navigationCache.key === key) {
+        state.navigationCache = { key: '', events: [], total: 0, pending: null };
+      }
+      return null;
+    }
+    throw error;
+  }).finally(() => {
+    const currentOwner = requestOwners.navigation.finish(owner);
+    if (currentOwner && state.navigationCache.key === key) state.navigationCache.pending = null;
   });
 
   state.navigationCache = { key, events: [], total: 0, pending };
@@ -3761,14 +4110,20 @@ async function ensureEventLoaded(eventId, options = {}) {
   if (state.currentEvents.some((event) => event.id === eventId)) return;
   while (state.offset < state.timelineTotal) {
     await waitForTimelineIdle();
-    await loadTimeline(true, options);
+    await loadTimeline(true, {
+      ...options,
+      paginationIntent: paginationIntent(options.paginationIntentKind || 'selected-event-navigation'),
+    });
     if (state.currentEvents.some((event) => event.id === eventId)) return;
   }
 }
 
-function scrollToTimelineEvent(eventId) {
+function scrollToTimelineEvent(eventId, options = {}) {
   const article = el.timeline.querySelector(`[data-event-id="${CSS.escape(eventId)}"]`);
-  if (article) article.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  if (article) {
+    beginProgrammaticSearchScroll();
+    article.scrollIntoView({ block: 'center', behavior: options.behavior || 'smooth' });
+  }
 }
 
 async function inspectAndRevealEvent(target, options = {}) {
@@ -3794,12 +4149,26 @@ async function inspectEventRef(eventId) {
   if (!eventId) return;
   const sourceEventId = state.selectedEventId;
   const current = currentTimelineEvent(eventId);
-  const target = current || await api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/events/${encodeURIComponent(eventId)}?layer=${encodeURIComponent(activeLayerId())}&locale=${encodeURIComponent(state.locale)}`);
+  const requestContext = JSON.stringify([state.selectedSessionId, activeLayerId(), eventId, state.locale]);
+  const owner = requestOwners.eventEnvelope.start(requestContext);
+  let target = current;
+  try {
+    target = target || await api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/events/${encodeURIComponent(eventId)}?layer=${encodeURIComponent(activeLayerId())}&locale=${encodeURIComponent(state.locale)}`, {
+      signal: owner.controller.signal,
+    });
+    if (!requestOwners.eventEnvelope.isCurrent(owner)) return false;
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    throw error;
+  } finally {
+    requestOwners.eventEnvelope.finish(owner);
+  }
   await inspectAndRevealEvent(target, {
     temporary: !current,
     sourceEventId,
     replace: false,
   });
+  return true;
 }
 
 async function navigateSelectedEvent(direction) {
@@ -3900,8 +4269,8 @@ function reconcileDetailViewState() {
 }
 
 function closeDetailView() {
+  invalidateDetailSelection();
   state.detailHistory = [];
-  state.detailSelectionKey = '';
   state.selectedEventId = '';
   state.navigationCategoryId = '';
   state.navigationCategoryManualId = '';
@@ -3946,6 +4315,7 @@ function refreshSearchSensitiveDetailView() {
 async function readFromSelectedEvent() {
   const anchor = { ...captureFocusAnchor(), detailType: 'inspector' };
   if (!anchor.hadSelection) return;
+  resetDetailPane();
   hideSearchAssist();
   state.searchScope = 'session';
   state.projectSearchPendingContext = '';
@@ -3960,7 +4330,7 @@ async function readFromSelectedEvent() {
   beginSearchTargetContextTransition();
   clearQueuedSearchNavigations();
   updateProfileApplicabilityUi();
-  await loadTimeline(false, { keepScroll: true });
+  await loadTimeline(false, { keepScroll: true, viewportPolicy: 'focus-restore' });
   const restored = await restoreFocus(anchor);
   setMobileView('events');
   if (restored?.id) scrollToTimelineEvent(restored.id);
@@ -3995,9 +4365,9 @@ function renderDetailShell({ title, subtitle = '', actions = '', body = '', clos
 }
 
 function renderProfileRulesPane(options = {}) {
+  invalidateDetailSelection();
   state.detailView = { type: 'profileRules' };
   const clearedTemporaryReveal = reconcileDetailViewState();
-  state.detailSelectionKey = '';
   state.selectedEventId = '';
   state.navigationCategoryId = '';
   state.navigationCategoryManualId = '';
@@ -4158,6 +4528,8 @@ function rerenderCurrentInspectorNavigation() {
 function showInspector(event, options = {}) {
   const layer = activeLayerId();
   const key = detailKey(state.selectedSessionId, layer, event.id);
+  if (state.detailSelectionKey !== key) invalidateDetailSelection();
+  else requestOwners.rawReferences.abort();
   const refs = sourceRefs(event);
   const preview = event.snippet || event.preview || '';
   const detail = state.detailCache[key];
@@ -4177,6 +4549,7 @@ function showInspector(event, options = {}) {
   if (clearedTemporaryReveal) renderTimeline();
   setMobileView('detail');
   updateSelectedTimelineEvent();
+  const selectionContext = detailSelectionContextKey();
   const navigationKey = navigationCacheKey();
   const userRequestedNavigation = state.detailView.origin === DETAIL_VIEW_ORIGIN_USER
     && (options.replace !== true || options.retryNavigation === true);
@@ -4218,8 +4591,10 @@ function showInspector(event, options = {}) {
   });
 
   if (!state.detailCache[key] && !state.detailErrors[key]) {
-    loadEventDetail(event).then(() => {
-      if (state.detailSelectionKey === key) showInspector(event, { replace: true });
+    loadEventDetail(event).then((settled) => {
+      if (!settled || !isCurrentDetailSelection('inspector', key, event.id, selectionContext)) return;
+      const current = currentTimelineEvent(event.id);
+      if (current) showInspector(current, { replace: true });
     });
   }
 }
@@ -4228,6 +4603,8 @@ async function showRaw(event, options = {}) {
   const refs = sourceRefs(event);
   const layer = activeLayerId();
   const rawKey = `raw:${detailKey(state.selectedSessionId, layer, event.id)}`;
+  if (state.detailSelectionKey !== rawKey) invalidateDetailSelection();
+  const owner = requestOwners.rawReferences.start(rawKey);
   state.detailSelectionKey = rawKey;
   const clearedTemporaryReveal = options.replace
     ? replaceDetailView(eventDetailView('rawRefs', event.id, options))
@@ -4235,6 +4612,7 @@ async function showRaw(event, options = {}) {
   if (clearedTemporaryReveal) renderTimeline();
   setMobileView('detail');
   updateSelectedTimelineEvent();
+  const selectionContext = detailSelectionContextKey();
   if (!refs.length) {
     renderDetailShell({
       title: t('rawRefs'),
@@ -4244,7 +4622,8 @@ async function showRaw(event, options = {}) {
       <div class="notice warning"><p>${escapeHtml(t('noRawRows'))}</p></div>
     </div>`,
     });
-    return;
+    requestOwners.rawReferences.finish(owner);
+    return true;
   }
   renderDetailShell({
     title: t('rawRefs'),
@@ -4254,17 +4633,28 @@ async function showRaw(event, options = {}) {
       <p class="rawMeta">${escapeHtml(t('loading'))}</p>
     </div>`,
   });
-  const payloads = await Promise.all(refs.map((ref) => api(`/api/raw?file=${encodeURIComponent(ref.file)}&line=${encodeURIComponent(ref.line)}`)));
-  if (state.detailSelectionKey !== rawKey) return;
-  renderDetailShell({
-    title: t('rawRefs'),
-    subtitle: rawRefsSubtitle(event),
-    actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
-    body: `<div class="rawRefsView">
-    <p class="rawMeta">${escapeHtml(t('rawRowsForEvent', { count: refs.length, plural: refs.length === 1 ? '' : 's', eventId: event.id }))}</p>
-    ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(raw.file)}:${raw.line}</p><pre>${escapeHtml(JSON.stringify(raw.parsed, null, 2) || raw.raw)}</pre></section>`).join('')}
-  </div>`,
-  });
+  try {
+    const payloads = await Promise.all(refs.map((ref) => api(`/api/raw?file=${encodeURIComponent(ref.file)}&line=${encodeURIComponent(ref.line)}`, {
+      signal: owner.controller.signal,
+    })));
+    if (!requestOwners.rawReferences.isCurrent(owner)
+        || !isCurrentDetailSelection('rawRefs', rawKey, event.id, selectionContext)) return false;
+    renderDetailShell({
+      title: t('rawRefs'),
+      subtitle: rawRefsSubtitle(event),
+      actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
+      body: `<div class="rawRefsView">
+      <p class="rawMeta">${escapeHtml(t('rawRowsForEvent', { count: refs.length, plural: refs.length === 1 ? '' : 's', eventId: event.id }))}</p>
+      ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(raw.file)}:${raw.line}</p><pre>${escapeHtml(JSON.stringify(raw.parsed, null, 2) || raw.raw)}</pre></section>`).join('')}
+    </div>`,
+    });
+    return true;
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    throw error;
+  } finally {
+    requestOwners.rawReferences.finish(owner);
+  }
 }
 
 function ensureProfileDraft() {
@@ -4638,7 +5028,11 @@ el.resetFoldsBtn.addEventListener('click', () => {
 
 el.loadMoreBtn.addEventListener('click', () => {
   hideSearchAssist();
-  loadTimeline(true).catch(showError);
+  if (currentTimelineReplacementRetry()) {
+    retryTimelineReplacement().catch(showError);
+    return;
+  }
+  loadTimeline(true, { paginationIntent: paginationIntent('explicit-load-more') }).catch(showError);
 });
 el.analysisPanel?.addEventListener('click', (event) => {
   const metricEl = event.target.closest('[data-metric-action]');
@@ -4710,8 +5104,9 @@ el.searchField?.addEventListener('click', (event) => {
 const timelinePane = el.timeline.closest('.timelinePane');
 timelinePane?.addEventListener('scroll', onTimelinePaneScroll, { passive: true });
 timelinePane?.addEventListener('wheel', onTimelineUserScrollIntent, { passive: true });
-timelinePane?.addEventListener('touchstart', onTimelineUserScrollIntent, { passive: true });
+timelinePane?.addEventListener('touchmove', onTimelineUserScrollIntent, { passive: true });
 timelinePane?.addEventListener('pointerdown', onTimelineUserScrollIntent, { passive: true });
+timelinePane?.addEventListener('pointermove', onTimelineUserScrollIntent, { passive: true });
 timelinePane?.addEventListener('keydown', onTimelineUserScrollIntent);
 window.addEventListener('resize', () => {
   queueVisibleDetailLoad();
@@ -4727,7 +5122,7 @@ const reload = debounce(() => {
   renderSearchAssistChips();
   updateProfileApplicabilityUi();
   if (state.detailView.type === 'profileRules') renderProfileRulesPane();
-  refreshActiveSearch({ structural: true }).catch(showError);
+  refreshActiveSearch({ structural: true, transitionKind: 'structured-filter' }).catch(showError);
 }, 220);
 const refreshFind = debounce(() => {
   refreshActiveSearch({ structural: false }).catch(showError);

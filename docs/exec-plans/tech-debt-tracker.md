@@ -89,6 +89,7 @@
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/documentation-system.md`
+  - `docs/design-docs/timeline-loading-and-rendering-performance.md`
 
 ### 9. Shared browser-and-Node module ownership boundary / 浏览器与 Node 共享模块归属边界
 - Status: resolved for v0.1 build boundary / 状态：已针对 v0.1 构建边界解决
@@ -146,3 +147,13 @@
   - `docs/design-docs/schema-update-runbook.md`
   - `docs/design-docs/codex-protocol-event-coverage.md`
   - `docs/exec-plans/completed/2026-07-13-codex-event-schema-review.md`
+
+### 15. Full timeline render and highlight amplification / 完整时间线 render 与高亮放大
+- Status: open; next timeline-performance stage input / 状态：开放；下一阶段时间线性能输入
+- Problem: transition safety removes accidental work but deliberately retains the current renderer architecture. Every committed append, query refresh, visible-detail completion, and folding-related redraw can still rebuild the complete materialized prefix and rebind all visible highlights. Deep target navigation therefore continues to generate cards over successively larger prefixes, and common-term highlighting remains proportional to mounted searchable content. / 问题：转换安全已移除意外工作，但有意保留当前 renderer 架构。每次已提交追加、query 刷新、可见详情完成和折叠相关重绘仍可能重建完整已物化前缀，并重新绑定所有可见高亮。深层 target 导航因此仍会在逐步增大的前缀上重复生成 card；常见词高亮成本也继续与已挂载可搜索内容成正比。
+- Current measurement: in the same-environment 1,800-event before/after profile, deliberate late-hit navigation remained exactly eight timeline requests, 20 full renders, and 31,800 card generations; Long Tasks/end-to-end time were 8,074/8,222 ms before and 8,093/8,238 ms after. The transition-safety implementation therefore does not claim to improve that renderer path. Its measured win is removal of the filter multiplier: structured filtering changed from six requests, 116 renders, 84,900 card generations, and 16,348/16,844 ms to one request, one render, 150 card generations, and 389/1,681 ms. / 当前测量：在同环境 1,800 事件的前后 profile 中，有意的靠后命中导航严格保持八次 timeline 请求、20 次完整 render 与 31,800 次 card 生成；修改前 Long Task/端到端时长为 8,074/8,222 ms，修改后为 8,093/8,238 ms。因此转换安全实现不声称改善该 renderer 路径。它的已测收益是移除筛选放大器：结构筛选从六次请求、116 次 render、84,900 次 card 生成与 16,348/16,844 ms，收敛为一次请求、一次 render、150 次 card 生成与 389/1,681 ms。
+- Next-stage direction: use the recorded shallow, medium, and deep counters to design a separate keyed card-lifecycle and owner-scoped highlighting stage. Preserve the contiguous materialized prefix, exact counts, canonical event-anchor registry, detail provenance, manual folds, and Raw Reference ownership. Do not smuggle incremental rendering, virtualization, server cursor, sparse jump, cache, or count-semantic changes back into the transition-safety increment. / 下一阶段方向：使用已记录的浅、中、深层计数，另行设计带 key 的 card lifecycle 与 owner 范围高亮阶段。继续保持连续已物化前缀、精确计数、canonical 事件锚 registry、详情来源、手动折叠与原始引用 ownership。不得把增量渲染、虚拟化、服务端 cursor、稀疏跳转、cache 或计数语义变化重新塞回转换安全增量。
+- Related docs: / 相关文档：
+  - `docs/design-docs/timeline-loading-and-rendering-performance.md`
+  - `docs/design-docs/logical-event-timeline.md`
+  - `docs/exec-plans/completed/2026-07-20-timeline-transition-safety-and-profiling.md`

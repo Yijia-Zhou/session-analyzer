@@ -8,6 +8,7 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 const { buildIndex } = require('../src/codex');
 const { createServer } = require('../server');
+const { createTimelineProfileFixture } = require('../scripts/timeline-profile-fixture');
 
 const fixtureCodexHome = path.join(__dirname, '..', 'test', 'fixtures', 'codex-home');
 const repoRoot = 'G:\\vibe\\term-agent';
@@ -320,6 +321,20 @@ async function makeLongCodexHome(t, options = {}) {
   await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
   t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
   return { codexHome, repoRoot: longRepoRoot, sessionId };
+}
+
+async function makeTransitionProfileIndex(t, options = {}) {
+  const baseDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-transition-'));
+  const fixture = await createTimelineProfileFixture(baseDir, {
+    eventCount: options.eventCount || 700,
+    searchableTextBytes: options.searchableTextBytes || 512,
+    hitPositions: options.hitPositions || [650],
+    commonTermEvery: options.commonTermEvery || 1,
+    secondaryEventCount: options.secondaryEventCount || 40,
+  });
+  t.after(() => fsp.rm(baseDir, { recursive: true, force: true }));
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  return { fixture, index };
 }
 
 async function makeCodeModeCodexHome(t) {
@@ -1487,6 +1502,46 @@ test('browser project query transitions clear stale cards and counts before the 
   assert.match((await page.locator('.searchInlineCount').textContent()).trim(), /^\d+ sessions$/);
 });
 
+test('browser superseded project results abort and an immediate retry settles Searching state', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await switchToProjectScope(page);
+  const failures = [];
+  page.on('requestfailed', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === '/api/sessions') failures.push(request.failure()?.errorText || '');
+  });
+  let releaseSlow;
+  const slowGate = new Promise((resolve) => { releaseSlow = resolve; });
+  let markSlow;
+  const slowStarted = new Promise((resolve) => { markSlow = resolve; });
+  await page.route('**/api/sessions?*', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') !== 'slow-project') {
+      await route.continue();
+      return;
+    }
+    markSlow();
+    await slowGate;
+    try {
+      await route.continue();
+    } catch {}
+  });
+
+  await fillSearch(page, 'slow-project');
+  await slowStarted;
+  await fillSearch(page, 'fixture');
+  await waitForProjectCards(page);
+  releaseSlow();
+  await page.waitForTimeout(300);
+
+  assert.ok(failures.some((value) => /ERR_ABORTED|NS_BINDING_ABORTED/i.test(value)), failures.join(', '));
+  assert.equal(await page.locator('#searchInput').inputValue(), 'fixture');
+  assert.equal((await page.locator('#timeline').textContent()).includes('Searching'), false);
+  assert.ok(await page.locator('[data-project-result-session-id]').count() > 0);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+});
+
 test('browser project search commits after folding profile changes during an in-flight request', async (t) => {
   const index = await buildFixtureIndex();
   const { page } = await openApp(t, index, { locale: 'en' });
@@ -2182,6 +2237,506 @@ test('browser user scroll during the search-scroll guard still loads the next pa
   assert.equal(paginationRequests.some((url) => url.searchParams.get('offset') === '150'), true);
 });
 
+test('browser an above-threshold user scroll cannot authorize a later programmatic bottom scroll', async (t) => {
+  const longFixture = await makeLongCodexHome(t, { eventCount: 300 });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+  const timelinePane = page.locator('.timelinePane');
+
+  await assertEventCount(page, 150);
+  await timelinePane.hover();
+  await page.mouse.wheel(0, 120);
+  await page.waitForFunction(() => document.querySelector('.timelinePane')?.scrollTop > 0);
+  await page.waitForTimeout(180);
+  const programmaticScrollStart = requestedUrls.length;
+  await timelinePane.evaluate((pane) => {
+    pane.querySelector('.event[data-event-id]:last-of-type')?.scrollIntoView({ block: 'end', behavior: 'auto' });
+  });
+  await page.waitForTimeout(300);
+
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 150);
+  const leakedRequests = requestedUrls.slice(programmaticScrollStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'));
+  assert.equal(leakedRequests.some((url) => url.searchParams.get('offset') === '150'), false);
+
+  await timelinePane.evaluate((pane) => { pane.scrollTop = 0; });
+  await timelinePane.hover();
+  await page.mouse.wheel(0, 100000);
+  await assertEventCount(page, 300);
+});
+
+test('browser a scroll during an in-flight append cannot leak pagination authority after loading settles', async (t) => {
+  const longFixture = await makeLongCodexHome(t, { eventCount: 450 });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+  const timelinePane = page.locator('.timelinePane');
+  let releaseAppend;
+  const appendGate = new Promise((resolve) => { releaseAppend = resolve; });
+  let markAppendStarted;
+  const appendStarted = new Promise((resolve) => { markAppendStarted = resolve; });
+  let gated = false;
+  t.after(() => releaseAppend?.());
+  await page.route('**/api/sessions/*/timeline?*', async (route) => {
+    const url = new URL(route.request().url());
+    if (!gated && url.searchParams.get('offset') === '150') {
+      gated = true;
+      markAppendStarted();
+      await appendGate;
+    }
+    await route.continue();
+  });
+
+  await page.locator('#loadMoreBtn').click();
+  await appendStarted;
+  await timelinePane.evaluate(async (pane) => {
+    pane.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 120 }));
+    pane.scrollTop = 120;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  releaseAppend();
+  await assertEventCount(page, 300);
+
+  const programmaticScrollStart = requestedUrls.length;
+  await timelinePane.evaluate((pane) => {
+    pane.querySelector('.event[data-event-id]:last-of-type')?.scrollIntoView({ block: 'end', behavior: 'auto' });
+  });
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 300);
+  const leakedRequests = requestedUrls.slice(programmaticScrollStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'));
+  assert.equal(leakedRequests.some((url) => url.searchParams.get('offset') === '300'), false);
+});
+
+test('browser touch inertia keeps one pagination sequence until its later bottom scroll', async (t) => {
+  const longFixture = await makeLongCodexHome(t, { eventCount: 300 });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+  const requestStart = requestedUrls.length;
+
+  await assertEventCount(page, 150);
+  await page.locator('.timelinePane').evaluate(async (pane) => {
+    const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    pane.dispatchEvent(new Event('touchmove', { bubbles: true }));
+    pane.scrollTop = 120;
+    await nextFrame();
+    pane.scrollTop = 240;
+    await nextFrame();
+    pane.scrollTop = pane.scrollHeight;
+    await nextFrame();
+  });
+  await assertEventCount(page, 300);
+  const paginationRequests = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'));
+  assert.deepEqual(paginationRequests.map((url) => url.searchParams.get('offset')), ['150']);
+});
+
+test('browser reverse touch or pointer movement and modified scrolling input cannot authorize pagination', async (t) => {
+  const longFixture = await makeLongCodexHome(t, { eventCount: 300 });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+  const requestStart = requestedUrls.length;
+  const timelinePane = page.locator('.timelinePane');
+
+  const moveNearBottom = async () => {
+    await timelinePane.evaluate(async (pane) => {
+      pane.scrollTop = Math.max(0, pane.scrollHeight - pane.clientHeight - 48);
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+  };
+  const assertNotAppended = async (message) => {
+    await page.waitForTimeout(80);
+    assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 150, message);
+  };
+
+  await assertEventCount(page, 150);
+  await moveNearBottom();
+  await timelinePane.evaluate(async (pane) => {
+    pane.dispatchEvent(new Event('touchmove', { bubbles: true }));
+    pane.scrollTop = Math.max(0, pane.scrollTop - 12);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  await assertNotAppended('reverse touch movement must not append');
+
+  await moveNearBottom();
+  await timelinePane.evaluate(async (pane) => {
+    const pointerMove = new Event('pointermove', { bubbles: true });
+    Object.defineProperty(pointerMove, 'buttons', { value: 1 });
+    pane.dispatchEvent(pointerMove);
+    pane.scrollTop = Math.max(0, pane.scrollTop - 12);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  await assertNotAppended('reverse pointer movement must not append');
+
+  await moveNearBottom();
+  await timelinePane.evaluate(async (pane) => {
+    pane.focus();
+    pane.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ' ', shiftKey: true }));
+    pane.scrollTop = Math.max(0, pane.scrollTop - 12);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  await assertNotAppended('Shift+Space must not append');
+
+  await moveNearBottom();
+  await timelinePane.evaluate(async (pane) => {
+    pane.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 120, ctrlKey: true }));
+    pane.scrollTop = pane.scrollHeight;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  await assertNotAppended('modified wheel input must not append');
+  const paginationRequests = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'));
+  assert.equal(paginationRequests.some((url) => url.searchParams.get('offset') === '150'), false);
+});
+
+test('browser replacement pagination requires current-context intent while explicit wheel and keyboard scrolling still append', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t);
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+
+  await page.waitForSelector(`[data-session-id="${fixture.longSessionId}"].active`);
+  await assertEventCount(page, 150);
+  let previousOffset = 150;
+  for (const expected of [300, 450, 600]) {
+    const response = page.waitForResponse((candidate) => {
+      const url = new URL(candidate.url());
+      return url.pathname.endsWith('/timeline') && url.searchParams.get('offset') === String(previousOffset);
+    });
+    await page.locator('#loadMoreBtn').click();
+    await response;
+    await assertEventCount(page, expected);
+    previousOffset = expected;
+  }
+  const deepEventId = await page.locator('#timeline .event[data-event-id]').nth(501).getAttribute('data-event-id');
+  await page.locator(`[data-event-id="${deepEventId}"]`).click();
+  await waitForDetailView(page, 'inspector');
+
+  const filterRequestStart = requestedUrls.length;
+  const filterPageZero = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('kind') === 'assistant_message'
+      && url.searchParams.get('offset') === '0';
+  });
+  await addSearchFilter(page, 'kind', 'assistant_message');
+  await filterPageZero;
+  await assertEventCount(page, 150);
+  await page.waitForTimeout(500);
+
+  const filterRequests = requestedUrls.slice(filterRequestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'));
+  assert.deepEqual(filterRequests.map((url) => url.searchParams.get('offset')), ['0']);
+  assert.equal(await page.locator('#timeline .event.selected').count(), 0, 'deep selection outside page zero resets deterministically');
+  assert.equal(await page.locator('.timelinePane').evaluate((pane) => pane.scrollTop), 0);
+
+  await page.locator('#loadMoreBtn').click();
+  await assertEventCount(page, 300);
+  const explicitRequest = new URL(requestedUrls.filter((value) => value.includes('/timeline?')).at(-1), 'http://local');
+  assert.equal(explicitRequest.searchParams.get('offset'), '150');
+
+  const userScrollStart = requestedUrls.length;
+  await page.locator('.timelinePane').hover();
+  await page.mouse.wheel(0, 100000);
+  await assertEventCount(page, 350);
+  const userScrollRequests = requestedUrls.slice(userScrollStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'));
+  assert.deepEqual(userScrollRequests.map((url) => url.searchParams.get('offset')), ['300']);
+
+  await page.locator('.timelinePane').evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+  const clearRequestStart = requestedUrls.length;
+  const clearPageZero = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && !url.searchParams.has('kind')
+      && url.searchParams.get('offset') === '0';
+  });
+  await clearAllSearch(page);
+  await clearPageZero;
+  await assertEventCount(page, 150);
+  await page.waitForTimeout(500);
+  const clearRequests = requestedUrls.slice(clearRequestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'));
+  assert.deepEqual(clearRequests.map((url) => url.searchParams.get('offset')), ['0']);
+  assert.equal(await page.locator('#layerSelect').inputValue(), 'main');
+  assert.equal(await page.locator('body').getAttribute('data-search-scope'), 'session');
+  assert.match(await page.locator('#loadMoreBtn').textContent(), /150\/700/);
+
+  const keyboardScrollStart = requestedUrls.length;
+  await page.locator('.timelinePane').click({ position: { x: 5, y: 5 } });
+  assert.equal(await page.locator('.timelinePane').evaluate((pane) => document.activeElement === pane), true);
+  await page.keyboard.press('End');
+  await assertEventCount(page, 300);
+  const keyboardScrollRequests = requestedUrls.slice(keyboardScrollStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'));
+  assert.deepEqual(keyboardScrollRequests.map((url) => url.searchParams.get('offset')), ['150']);
+
+  const retainedEvent = page.locator('#timeline .event[data-event-id]').nth(1);
+  const retainedEventId = await retainedEvent.getAttribute('data-event-id');
+  await retainedEvent.click();
+  const retainedPageZero = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('kind') === 'assistant_message'
+      && url.searchParams.get('offset') === '0';
+  });
+  await addSearchFilter(page, 'kind', 'assistant_message');
+  await retainedPageZero;
+  await assertEventCount(page, 150);
+  assert.equal(await page.locator('#timeline .event.selected').getAttribute('data-event-id'), retainedEventId);
+});
+
+test('browser Layer focus restoration keeps its explicit deep loads without a residual append', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t);
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+  await page.waitForSelector(`[data-session-id="${fixture.longSessionId}"].active`);
+  for (const expected of [300, 450, 600]) {
+    const response = page.waitForResponse((candidate) => {
+      const url = new URL(candidate.url());
+      return url.pathname.endsWith('/timeline') && url.searchParams.get('offset') === String(expected - 150);
+    });
+    await page.locator('#loadMoreBtn').click();
+    await response;
+    await assertEventCount(page, expected);
+  }
+  await page.locator('#timeline .event[data-event-id]').nth(501).click();
+  await waitForDetailView(page, 'inspector');
+
+  const layerRequestStart = requestedUrls.length;
+  await page.locator('#layerSelect').selectOption('raw');
+  await page.waitForFunction(() => document.querySelector('#layerSelect')?.value === 'raw');
+  await page.waitForFunction(() => document.querySelector('#timeline .event.selected'));
+  await page.waitForFunction(() => !document.querySelector('#loadMoreBtn')?.textContent.includes('Loading'));
+  await page.waitForTimeout(500);
+
+  const rawRequests = requestedUrls.slice(layerRequestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('layer') === 'raw');
+  assert.ok(rawRequests.some((url) => url.searchParams.get('offset') === '0'));
+  assert.ok(rawRequests.some((url) => url.searchParams.get('offset') === '450'));
+  assert.equal(rawRequests.some((url) => url.searchParams.get('offset') === '600'), false, rawRequests.map((url) => url.search).join('\n'));
+  assert.ok(await page.locator('#timeline .event[data-event-id]').count() >= 502);
+});
+
+test('browser rapid query filter and Session replacement aborts old work and settles latest intent', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t);
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+  const failed = [];
+  page.on('requestfailed', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith('/timeline')) failed.push(request.failure()?.errorText || '');
+  });
+
+  let releaseSlow;
+  const slowGate = new Promise((resolve) => { releaseSlow = resolve; });
+  let slowCount = 0;
+  let markFirst;
+  let markSecond;
+  const firstSlowRequest = new Promise((resolve) => { markFirst = resolve; });
+  const secondSlowRequest = new Promise((resolve) => { markSecond = resolve; });
+  await page.route(`**/api/sessions/${fixture.longSessionId}/timeline?*`, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') !== 'slow-query') {
+      await route.continue();
+      return;
+    }
+    slowCount += 1;
+    if (slowCount === 1) markFirst();
+    if (slowCount === 2) markSecond();
+    await slowGate;
+    try {
+      await route.continue();
+    } catch {}
+  });
+
+  await fillSearch(page, 'slow-query');
+  await firstSlowRequest;
+  await addSearchFilter(page, 'kind', 'assistant_message');
+  await secondSlowRequest;
+  await page.locator(`[data-session-id="${fixture.secondarySessionId}"]`).click();
+  await page.waitForSelector(`[data-session-id="${fixture.secondarySessionId}"].active`);
+  await assertEventCount(page, 20);
+  releaseSlow();
+  await page.waitForTimeout(400);
+
+  assert.ok(failed.length >= 2, `expected both superseded timeline requests to abort, received ${failed.join(', ')}`);
+  assert.ok(failed.every((value) => /ERR_ABORTED|NS_BINDING_ABORTED/i.test(value)), failed.join(', '));
+  const newSessionRequests = requestedUrls
+    .filter((value) => value.includes(`/api/sessions/${fixture.secondarySessionId}/timeline?`))
+    .map((value) => new URL(value, 'http://local'));
+  assert.equal(newSessionRequests.at(-1).searchParams.get('offset'), '0');
+  assert.equal(await page.locator('.timelinePane').evaluate((pane) => pane.scrollTop), 0);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+  assert.equal((await page.locator('#loadMoreBtn').textContent()).includes('Loading'), false);
+  assert.equal(await page.locator('[data-search-navigation-pending]').count(), 0);
+});
+
+test('browser intentional timeline abort permits an immediate same-surface retry without stale cleanup', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t);
+  const { page } = await openApp(t, index, { locale: 'en' });
+  const failed = [];
+  page.on('requestfailed', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith('/timeline')) failed.push(request.failure()?.errorText || '');
+  });
+
+  let releaseSlow;
+  const slowGate = new Promise((resolve) => { releaseSlow = resolve; });
+  let markSlow;
+  const slowStarted = new Promise((resolve) => { markSlow = resolve; });
+  await page.route(`**/api/sessions/${fixture.longSessionId}/timeline?*`, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') !== 'slow-query') {
+      await route.continue();
+      return;
+    }
+    markSlow();
+    await slowGate;
+    try {
+      await route.continue();
+    } catch {}
+  });
+
+  await fillSearch(page, 'slow-query');
+  await slowStarted;
+  await fillSearch(page, 'far-needle');
+  await page.waitForFunction(() => document.querySelectorAll('#timeline .event[data-event-id]').length === 600);
+  releaseSlow();
+  await page.waitForTimeout(300);
+
+  assert.ok(failed.some((value) => /ERR_ABORTED|NS_BINDING_ABORTED/i.test(value)), failed.join(', '));
+  assert.equal(await page.locator('#searchInput').inputValue(), 'far-needle');
+  assert.match(await page.locator('#loadMoreBtn').textContent(), /600\/700/);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+  assert.equal(await page.locator('[data-search-navigation-pending]').count(), 0);
+});
+
+test('browser real timeline errors remain visible and leave explicit retry available', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t);
+  const { page } = await openApp(t, index, { locale: 'en' });
+  let failNext = true;
+  await page.route(`**/api/sessions/${fixture.longSessionId}/timeline?*`, async (route) => {
+    const url = new URL(route.request().url());
+    if (failNext && url.searchParams.get('offset') === '150') {
+      failNext = false;
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'synthetic timeline failure' }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.locator('#loadMoreBtn').click();
+  await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('synthetic timeline failure'));
+  assert.equal(await page.locator('#loadMoreBtn').isEnabled(), true);
+  assert.equal((await page.locator('#loadMoreBtn').textContent()).includes('Loading'), false);
+
+  await page.locator('#loadMoreBtn').click();
+  await assertEventCount(page, 300);
+  assert.match(await page.locator('#loadMoreBtn').textContent(), /300\/700/);
+});
+
+test('browser successful page-zero append retry recommits automatic pagination', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t);
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+  let failReplacement = true;
+  await page.route(`**/api/sessions/${fixture.longSessionId}/timeline?*`, async (route) => {
+    const url = new URL(route.request().url());
+    if (failReplacement && url.searchParams.get('offset') === '0') {
+      failReplacement = false;
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'synthetic replacement failure' }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  const requestStart = requestedUrls.length;
+  await page.locator(`[data-session-id="${fixture.longSessionId}"]`).click();
+  await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('synthetic replacement failure'));
+  assert.equal(await page.locator('#loadMoreBtn').isEnabled(), true);
+
+  await page.locator('#loadMoreBtn').click();
+  await assertEventCount(page, 150);
+
+  await page.locator('.timelinePane').hover();
+  await page.mouse.wheel(0, 100000);
+  await assertEventCount(page, 300);
+
+  const offsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local').searchParams.get('offset'));
+  assert.deepEqual(offsets, ['0', '0', '150']);
+});
+
+test('browser retries a failed replacement in its new structured context before normal append resumes', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t);
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+  let failReplacement = true;
+  await page.route(`**/api/sessions/${fixture.longSessionId}/timeline?*`, async (route) => {
+    const url = new URL(route.request().url());
+    if (failReplacement
+        && url.searchParams.get('kind') === 'assistant_message'
+        && url.searchParams.get('offset') === '0') {
+      failReplacement = false;
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'synthetic structured replacement failure' }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  const requestStart = requestedUrls.length;
+  await addSearchFilter(page, 'kind', 'assistant_message');
+  await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('synthetic structured replacement failure'));
+  assert.equal(await page.locator('#loadMoreBtn').isEnabled(), true);
+  assert.equal(await page.locator('#loadMoreBtn').textContent(), 'Retry timeline');
+
+  const retryResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('kind') === 'assistant_message'
+      && url.searchParams.get('offset') === '0'
+      && response.status() === 200;
+  });
+  await page.locator('#loadMoreBtn').click();
+  await retryResponse;
+  await assertEventCount(page, 150);
+
+  const appendResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('kind') === 'assistant_message'
+      && url.searchParams.get('offset') === '150'
+      && response.status() === 200;
+  });
+  await page.locator('#loadMoreBtn').click();
+  await appendResponse;
+  await assertEventCount(page, 300);
+
+  const offsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('kind') === 'assistant_message')
+    .map((url) => url.searchParams.get('offset'));
+  assert.deepEqual(offsets, ['0', '0', '150']);
+});
+
 test('browser search navigation loads only the next hit page before wrapping', async (t) => {
   const longFixture = await makeLongCodexHome(t, { eventCount: 620 });
   const index = await buildIndex(longFixture);
@@ -2329,6 +2884,68 @@ test('browser inspector navigation failure clears loading and explicit click ret
     .filter((url) => url.searchParams.get('limit') === '500');
   assert.deepEqual(retriedNavigationRequests.map((url) => url.searchParams.get('offset')), ['0', '0', '500']);
   assert.equal(await page.locator('#detail .navStatus').count(), 0);
+});
+
+test('browser intentional navigation abort invalidates an incomplete same-key cache', async (t) => {
+  const longFixture = await makeLongCodexHome(t, { eventCount: 620 });
+  const index = await buildIndex(longFixture);
+  const { page } = await openApp(t, index, { locale: 'en' });
+
+  const eventId = await openColdLongSearchInspector(page);
+  assert.ok(eventId);
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  t.after(() => releaseFirst());
+  let navigationRequestCount = 0;
+  let markFirstStarted;
+  const firstStarted = new Promise((resolve) => { markFirstStarted = resolve; });
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    const isNavigationRequest = url.searchParams.get('q') === 'needle'
+      && url.searchParams.get('offset') === '0'
+      && url.searchParams.get('limit') === '500';
+    if (!isNavigationRequest) {
+      await route.continue();
+      return;
+    }
+    navigationRequestCount += 1;
+    if (navigationRequestCount === 1) {
+      markFirstStarted();
+      await firstGate;
+    }
+    try {
+      await route.continue();
+    } catch {}
+  });
+
+  await page.locator(`#timeline .event[data-event-id="${eventId}"]`).click();
+  await firstStarted;
+  await page.waitForSelector('#detail .eventNavigator .navStatus');
+
+  const retry = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('q') === 'needle'
+      && url.searchParams.get('offset') === '0'
+      && url.searchParams.get('limit') === '500';
+  });
+  const aborted = page.waitForEvent('requestfailed', (request) => {
+    const url = new URL(request.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('q') === 'needle'
+      && url.searchParams.get('limit') === '500';
+  });
+  await fillSearch(page, 'different-query');
+  await fillSearch(page, 'needle');
+  await page.locator('[data-detail-action="close"]').click();
+  releaseFirst();
+  await aborted;
+  await page.waitForTimeout(100);
+
+  await page.locator(`#timeline .event[data-event-id="${eventId}"]`).click();
+  await retry;
+  await page.waitForSelector('#detail .eventNavigator .navPosition');
+  assert.equal(navigationRequestCount, 2);
 });
 
 test('browser previous search navigation scans backward wrap through UI pages', async (t) => {
@@ -2529,6 +3146,219 @@ test('browser user-confirmed inspector and raw refs persist across free-text cha
   await fillSearch(page, '');
   await expectInputValue(page, '#searchInput', '');
   await waitForDetailView(page, 'rawRefs');
+});
+
+test('browser obsolete detail and Raw Reference requests abort without redrawing the replacement view', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [180] });
+  const { page } = await openApp(t, index, { locale: 'en' });
+  const failures = [];
+  page.on('requestfailed', (request) => failures.push({
+    path: new URL(request.url()).pathname,
+    error: request.failure()?.errorText || '',
+  }));
+
+  let releaseDetail;
+  const detailGate = new Promise((resolve) => { releaseDetail = resolve; });
+  let markDetail;
+  const detailStarted = new Promise((resolve) => { markDetail = resolve; });
+  let firstDetail = true;
+  await page.route(`**/api/sessions/${fixture.longSessionId}/events/*/detail?*`, async (route) => {
+    if (!firstDetail) {
+      await route.continue();
+      return;
+    }
+    firstDetail = false;
+    markDetail();
+    await detailGate;
+    try {
+      await route.continue();
+    } catch {}
+  });
+
+  const target = page.locator('#timeline .event[data-event-id]').nth(100);
+  const targetId = await target.getAttribute('data-event-id');
+  await target.click();
+  await detailStarted;
+  await page.locator(`[data-session-id="${fixture.secondarySessionId}"]`).click();
+  await page.waitForSelector(`[data-session-id="${fixture.secondarySessionId}"].active`);
+  await assertEventCount(page, 40);
+  releaseDetail();
+  await page.waitForTimeout(300);
+  assert.ok(failures.some((failure) => failure.path.endsWith('/detail') && /ERR_ABORTED|NS_BINDING_ABORTED/i.test(failure.error)));
+  assert.equal(await page.locator(`[data-session-id="${fixture.secondarySessionId}"].active`).count(), 1);
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 40);
+
+  await page.locator(`[data-session-id="${fixture.longSessionId}"]`).click();
+  await assertEventCount(page, 150);
+  await page.locator(`[data-event-id="${targetId}"]`).click();
+  await waitForDetailView(page, 'inspector');
+  await page.waitForFunction(() => !document.querySelector('#detail')?.textContent.includes('Loading structured detail'));
+
+  const fixtureIndex = await buildFixtureIndex();
+  const secondApp = await openApp(t, fixtureIndex, { locale: 'en' });
+  await selectPrimarySession(secondApp.page);
+  await secondApp.page.locator('#timeline .event[data-event-id]').first().click();
+  await waitForDetailView(secondApp.page, 'inspector');
+  const rawFailures = [];
+  secondApp.page.on('requestfailed', (request) => {
+    if (new URL(request.url()).pathname === '/api/raw') rawFailures.push(request.failure()?.errorText || '');
+  });
+  let releaseRaw;
+  const rawGate = new Promise((resolve) => { releaseRaw = resolve; });
+  let markRaw;
+  const rawStarted = new Promise((resolve) => { markRaw = resolve; });
+  let rawRequestCount = 0;
+  await secondApp.page.route('**/api/raw?*', async (route) => {
+    rawRequestCount += 1;
+    if (rawRequestCount > 1) {
+      await route.continue();
+      return;
+    }
+    markRaw();
+    await rawGate;
+    try {
+      await route.continue();
+    } catch {}
+  });
+  await secondApp.page.locator('[data-detail-action="raw"]').click();
+  await rawStarted;
+  await waitForDetailView(secondApp.page, 'rawRefs');
+  await secondApp.page.locator('[data-detail-action="inspect"]').click();
+  await waitForDetailView(secondApp.page, 'inspector');
+  releaseRaw();
+  await secondApp.page.waitForTimeout(300);
+  assert.ok(rawFailures.some((value) => /ERR_ABORTED|NS_BINDING_ABORTED/i.test(value)), rawFailures.join(', '));
+  await secondApp.page.locator('[data-detail-action="raw"]').click();
+  await waitForDetailView(secondApp.page, 'rawRefs');
+  await secondApp.page.waitForFunction(() => !document.querySelector('#detail')?.textContent.includes('Loading'));
+});
+
+test('browser project scope aborts in-flight selected structured detail before it can restore a session Inspector', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [180] });
+  const { page } = await openApp(t, index, { locale: 'en' });
+  let releaseDetail;
+  const detailGate = new Promise((resolve) => { releaseDetail = resolve; });
+  let markDetail;
+  const detailStarted = new Promise((resolve) => { markDetail = resolve; });
+  let firstDetail = true;
+  await page.route(`**/api/sessions/${fixture.longSessionId}/events/*/detail?*`, async (route) => {
+    if (!firstDetail) {
+      await route.continue();
+      return;
+    }
+    firstDetail = false;
+    markDetail();
+    await detailGate;
+    try {
+      await route.continue();
+    } catch {}
+  });
+
+  const target = page.locator('#timeline .event[data-event-id]').nth(100);
+  const targetId = await target.getAttribute('data-event-id');
+  await target.click();
+  await detailStarted;
+  const detailAbort = page.waitForEvent('requestfailed', (request) => (
+    new URL(request.url()).pathname.endsWith('/detail')
+      && /ERR_ABORTED|NS_BINDING_ABORTED/i.test(request.failure()?.errorText || '')
+  ));
+
+  await switchToProjectScope(page);
+  releaseDetail();
+  await detailAbort;
+  await page.waitForFunction(() => (
+    document.body.dataset.searchScope === 'project'
+      && Boolean(document.querySelector('#timeline .projectSearchState'))
+      && document.querySelector('#detail')?.textContent === ''
+  ));
+  assert.equal(await page.locator(`[data-event-id="${targetId}"]`).count(), 0);
+});
+
+test('browser project scope aborts in-flight Raw References before they can restore a session detail view', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await selectPrimarySession(page);
+  await page.locator('#timeline .event[data-event-id]').first().click();
+  await waitForDetailView(page, 'inspector');
+
+  let releaseRaw;
+  const rawGate = new Promise((resolve) => { releaseRaw = resolve; });
+  let markRaw;
+  const rawStarted = new Promise((resolve) => { markRaw = resolve; });
+  let firstRaw = true;
+  await page.route('**/api/raw?*', async (route) => {
+    if (!firstRaw) {
+      await route.continue();
+      return;
+    }
+    firstRaw = false;
+    markRaw();
+    await rawGate;
+    try {
+      await route.continue();
+    } catch {}
+  });
+
+  await page.locator('[data-detail-action="raw"]').click();
+  await rawStarted;
+  const rawAbort = page.waitForEvent('requestfailed', (request) => (
+    new URL(request.url()).pathname === '/api/raw'
+      && /ERR_ABORTED|NS_BINDING_ABORTED/i.test(request.failure()?.errorText || '')
+  ));
+
+  await switchToProjectScope(page);
+  releaseRaw();
+  await rawAbort;
+  await page.waitForFunction(() => (
+    document.body.dataset.searchScope === 'project'
+      && Boolean(document.querySelector('#timeline .projectSearchState'))
+      && document.querySelector('#detail')?.textContent === ''
+  ));
+});
+
+test('browser Layer transitions abort an in-flight selected detail instead of restoring the previous-layer Inspector', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [180] });
+  const { page } = await openApp(t, index, { locale: 'en' });
+  let releaseDetail;
+  const detailGate = new Promise((resolve) => { releaseDetail = resolve; });
+  let markDetail;
+  const detailStarted = new Promise((resolve) => { markDetail = resolve; });
+  let firstDetail = true;
+  await page.route(`**/api/sessions/${fixture.longSessionId}/events/*/detail?*`, async (route) => {
+    if (!firstDetail) {
+      await route.continue();
+      return;
+    }
+    firstDetail = false;
+    markDetail();
+    await detailGate;
+    try {
+      await route.continue();
+    } catch {}
+  });
+
+  const target = page.locator('#timeline .event[data-event-id]').nth(100);
+  await target.click();
+  await detailStarted;
+  const detailAbort = page.waitForEvent('requestfailed', (request) => (
+    new URL(request.url()).pathname.endsWith('/detail')
+      && /ERR_ABORTED|NS_BINDING_ABORTED/i.test(request.failure()?.errorText || '')
+  ));
+  const protocolTimeline = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('layer') === 'protocol'
+      && url.searchParams.get('offset') === '0';
+  });
+
+  await page.locator('#layerSelect').selectOption('protocol');
+  await protocolTimeline;
+  releaseDetail();
+  await detailAbort;
+  await page.waitForFunction(() => (
+    document.querySelector('#layerSelect')?.value === 'protocol'
+      && !document.querySelector('#detail')?.textContent.includes('Synthetic timeline event 0100.')
+  ));
 });
 
 test('browser passive search refresh does not downgrade user-confirmed detail views', async (t) => {
