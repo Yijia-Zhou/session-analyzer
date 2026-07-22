@@ -67,7 +67,7 @@ A nested `tools.*` call site visible in Code Mode JavaScript; it records declare
 _Avoid_: Executed nested tool, observed activity / 已执行嵌套工具、已观测活动
 
 **Nested Tool Projection / 嵌套工具投影**:
-A display-only representation of a nested tool request within a Code Mode Operation. It may originate from a Declared Nested Call and may carry an exact, bounded, or absent result association. It is not a Logical Event and does not own metrics, search identity, Raw References, or an outcome. / Code Mode 操作内嵌套工具请求的仅展示表示。它可以来自声明的嵌套调用，并可带有精确、受限或无结果关联。它不是逻辑事件，也不拥有指标、搜索 identity、原始引用或结果。
+A display-only representation of a nested tool request within a Code Mode Operation. It may originate from a Declared Nested Call and may carry a result association classified as `exact`, `bounded`, or `none`. It is not a Logical Event and does not own metrics, search identity, Raw References, or an outcome. / Code Mode 操作内嵌套工具请求的仅展示表示。它可以来自声明的嵌套调用，并可带有分类为 `exact`、`bounded` 或 `none` 的结果关联。它不是逻辑事件，也不拥有指标、搜索 identity、原始引用或结果。
 _Avoid_: Nested Logical Event, Observed Nested Activity / 嵌套逻辑事件、已观测嵌套活动
 
 **Poll Phase / 轮询阶段**:
@@ -79,7 +79,7 @@ What the Session Transcript proves about whether a Code Mode Operation reached a
 _Avoid_: Success status, outcome / 成功状态、结果
 
 **Operation Outcome Status / 操作结果状态**:
-A success, failure, decline, or neutral conclusion supported by outcome-specific evidence, independently of observation completeness. / 由结果专属证据支持的成功、失败、拒绝或中性结论；该状态独立于观测完整性。
+A success, failure, or decline conclusion supported by outcome-specific evidence, or neutral when no such conclusion is supported; it is independent of observation completeness. / 由结果专属证据支持的成功、失败或拒绝结论；当没有此类受支持的结论时为中性。该状态独立于观测完整性。
 _Avoid_: Completion state, observed state / 完成状态、观测状态
 
 **Escalation Evidence / 提权证据**:
