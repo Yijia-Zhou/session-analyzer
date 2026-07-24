@@ -70,3 +70,7 @@ When changing product behavior or repository structure:
   - `docs/exec-plans/completed/2026-04-20-session-analyzer-v1.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
   - `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md`
+
+## Tips
+
+如果你觉得需要，可以通过 `$spawn-specified-subagent` 派出 `gpt-5.6-luna`（thinking effort: max）subagent，处理繁重、复杂但不需要较强启发式判断的任务。Max effort 可能需要数十分钟；不要频繁使用很短的 `wait_agent` timeout。
