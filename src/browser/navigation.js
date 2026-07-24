@@ -9,6 +9,53 @@
   'use strict';
 
   const isUpdatePlanEvent = folding.isUpdatePlanEvent;
+  const CODE_MODE_CONTEXT_RELATION = 'enclosed_by_code_mode_operation';
+
+  function enclosingOperationParentId(event = {}) {
+    const context = event.presentationContext;
+    if (!context || context.relation !== CODE_MODE_CONTEXT_RELATION) return '';
+    return String(context.codeModeParentId || '').trim();
+  }
+
+  function shouldShowEnclosingOperationAffordance(event, displayState, search = {}, selectedEventId = '') {
+    if (!enclosingOperationParentId(event)) return false;
+    return Boolean(
+      event.hasSearchHit
+      || search.kind
+      || search.status
+      || search.file
+      || String(selectedEventId || '') === String(event.id || '')
+      || displayState === 'expanded',
+    );
+  }
+
+  function contextRevealSourceIndex(events = [], reveal = null) {
+    const sourceEventId = String(reveal?.sourceEventId || '');
+    if (!sourceEventId) return -1;
+    return events.findIndex((event) => String(event?.id || '') === sourceEventId);
+  }
+
+  function reconcileContextReveal({
+    reveal,
+    sessionId = '',
+    layerId = '',
+    dataContext = '',
+    foldingContext = '',
+    detailGeneration = null,
+    events = [],
+  } = {}) {
+    if (!reveal) return null;
+    if (String(reveal.sessionId || '') !== String(sessionId || '')
+        || String(reveal.layerId || '') !== String(layerId || '')
+        || String(reveal.dataContext || '') !== String(dataContext || '')
+        || (foldingContext !== '' && String(reveal.foldingContext || '') !== String(foldingContext))
+        || (detailGeneration != null && Number(reveal.detailGeneration) !== Number(detailGeneration))) return null;
+    const sourceIndex = contextRevealSourceIndex(events, reveal);
+    if (sourceIndex < 0) return null;
+    const source = events[sourceIndex];
+    if (enclosingOperationParentId(source) !== String(reveal.parentEventId || '')) return null;
+    return reveal;
+  }
 
   const NAVIGATION_CATEGORIES = [
     { id: 'search_hits', label: 'Search hits', matches: (event) => Boolean(event.hasSearchHit) },
@@ -60,10 +107,15 @@
   }
 
   return {
+    CODE_MODE_CONTEXT_RELATION,
     NAVIGATION_CATEGORIES,
+    contextRevealSourceIndex,
+    enclosingOperationParentId,
     isUpdatePlanEvent,
     navigationCategoriesForEvent,
+    reconcileContextReveal,
     reconcileTemporaryEventReveal,
+    shouldShowEnclosingOperationAffordance,
     withTemporaryEventReveal,
   };
 }));

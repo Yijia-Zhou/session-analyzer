@@ -22,6 +22,7 @@ const requestOwners = {
   fileSuggestions: transitionSafety.createRequestOwner(),
   navigation: transitionSafety.createRequestOwner(),
   eventEnvelope: transitionSafety.createRequestOwner(),
+  contextEventEnvelope: transitionSafety.createRequestOwner(),
   rawReferences: transitionSafety.createRequestOwner(),
 };
 const paginationIntents = transitionSafety.createPaginationIntentState();
@@ -143,6 +144,10 @@ const state = {
   timelineSearchEventCount: 0,
   currentEvents: [],
   temporaryEventReveal: null,
+  contextReveal: null,
+  contextRevealPending: null,
+  contextRevealRequestId: 0,
+  contextParentCache: Object.create(null),
   fileSuggestions: [],
   fileSuggestionRequestId: 0,
   eventKinds: { main: [], protocol: [], raw: [] },
@@ -803,6 +808,7 @@ function syncSearchTargetRegistryKey() {
 function beginSearchTargetContextTransition() {
   const key = searchTargetKey();
   if (state.searchTargetRegistry.key === key) return false;
+  clearContextReveal({ render: false });
   requestOwners.navigation.abort();
   clearQueuedSearchNavigations();
   state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
@@ -1503,6 +1509,38 @@ function detailSelectionContextKey() {
   ]);
 }
 
+function clearContextReveal(options = {}) {
+  const hadReveal = Boolean(state.contextReveal || state.contextRevealPending);
+  requestOwners.contextEventEnvelope.abort();
+  state.contextReveal = null;
+  state.contextRevealPending = null;
+  state.contextRevealRequestId += 1;
+  if (options.clearParentCache !== false) state.contextParentCache = Object.create(null);
+  if (options.render && hadReveal) renderTimeline();
+  else if (options.syncDom !== false) syncContextRevealDom();
+  return hadReveal;
+}
+
+function detachedContextEvent(eventId) {
+  return state.contextParentCache?.[String(eventId || '')] || null;
+}
+
+function reconcileContextRevealState() {
+  if (!state.contextReveal) return false;
+  const next = navigationApi.reconcileContextReveal({
+    reveal: state.contextReveal,
+    sessionId: state.selectedSessionId,
+    layerId: activeLayerId(),
+    dataContext: timelineDataContextKey(),
+    foldingContext: foldingProfileSearchContextKey(),
+    detailGeneration: state.detailCacheGeneration,
+    events: state.currentEvents,
+  });
+  if (next) return false;
+  clearContextReveal({ render: false });
+  return true;
+}
+
 function detailRequestKeyForSelection() {
   return state.detailSelectionKey.replace(/^raw:/, '');
 }
@@ -1523,6 +1561,7 @@ function isCurrentDetailSelection(type, key, eventId, context) {
 }
 
 function resetDetailPane() {
+  clearContextReveal({ render: false });
   invalidateDetailSelection();
   state.selectedEventId = '';
   state.navigationCategoryId = '';
@@ -1699,7 +1738,13 @@ function knownEventKinds() {
   for (const event of state.currentEvents) {
     if (event.kind) kinds.add(event.kind);
   }
-  return [...kinds].sort(compareEditableKinds);
+  const subtypeCatalogKinds = new Set([
+    ...(state.eventKinds?.main || []),
+    ...(state.sessionEventKinds?.main || []),
+  ].filter((item) => item?.matchField === 'subtype').map((item) => String(item.value || '').trim()).filter(Boolean));
+  return [...kinds]
+    .filter((kind) => !subtypeCatalogKinds.has(kind))
+    .sort(compareEditableKinds);
 }
 
 function compareEditableKinds(left, right) {
@@ -1965,6 +2010,7 @@ function normalizedKindOptions(layerId = activeLayerId()) {
       value,
       label: item.label || kindLabel(value),
       count: Number(item.count || 0),
+      matchField: String(item.matchField || '').trim(),
     });
   }
   return options.sort((a, b) => a.label.localeCompare(b.label) || a.value.localeCompare(b.value));
@@ -1981,7 +2027,8 @@ function renderKindOptions() {
   }
   rows.push(...options.map((option) => {
     const label = option.count ? `${option.label} (${option.count})` : option.label;
-    return `<option value="${escapeHtml(option.value)}">${escapeHtml(label)}</option>`;
+    const matchField = option.matchField ? ` data-match-field="${escapeHtml(option.matchField)}"` : '';
+    return `<option value="${escapeHtml(option.value)}"${matchField}>${escapeHtml(label)}</option>`;
   }));
   el.searchKindSelect.innerHTML = rows.join('');
   el.searchKindSelect.value = search.kind;
@@ -2389,6 +2436,7 @@ function setProjectMode(selecting) {
 
 function resetProjectViewState() {
   Object.values(requestOwners).forEach((owner) => owner.abort());
+  clearContextReveal({ render: false });
   state.sessions = [];
   state.projectResults = [];
   state.sessionsRequestId += 1;
@@ -2491,6 +2539,7 @@ function isActiveProjectChooserRequest(requestId) {
 }
 
 function resetSessionDetailCache() {
+  clearContextReveal({ render: false });
   for (const controller of detailRequestControllers.values()) controller.abort();
   detailRequestControllers.clear();
   state.detailCache = {};
@@ -2627,6 +2676,7 @@ async function changeLocale(locale) {
     ? { profileId: state.profileId, rules: normalizeRules(cloneProfile(state.profileDraft).rules || defaultRules()) }
     : null;
   state.locale = next;
+  clearContextReveal({ render: false });
   beginSearchTargetContextTransition();
   localStorage.setItem(LOCALE_STORAGE_KEY, state.locale);
   resetSessionDetailCache();
@@ -2921,6 +2971,7 @@ async function setSearchScope(scope, options = {}) {
     syncSearchScopeUi();
     return true;
   }
+  clearContextReveal({ render: false });
   state.searchScope = scope;
   state.searchStructureKey = structuredSearchKey();
   beginSearchTargetContextTransition();
@@ -2973,6 +3024,7 @@ async function drillDownProjectResult(sessionId) {
     contextKey: projectSearchDataContextKey(),
   };
   state.projectReturnContext = returnContext;
+  clearContextReveal({ render: false });
   if (state.selectedSessionId !== sessionId) resetSessionDetailCache();
   state.searchScope = 'session';
   state.projectSearchPendingContext = '';
@@ -3108,6 +3160,7 @@ function renderProjectReturnBanner() {
 }
 
 async function selectSession(sessionId, options = {}) {
+  clearContextReveal({ render: false });
   if (state.selectedSessionId !== sessionId) resetSessionDetailCache();
   state.searchScope = 'session';
   state.projectSearchPendingContext = '';
@@ -3259,6 +3312,7 @@ async function changeLayer(layerId) {
   if (!['main', 'protocol', 'raw'].includes(layerId)) return;
   const focusAnchor = state.searchScope === 'session' ? captureFocusAnchor() : { hadSelection: false };
   if (focusAnchor.hadSelection || isSelectedEventDetailView()) resetDetailPane();
+  clearContextReveal({ render: false });
   resetSearchTransientExpansions();
   state.layerId = layerId;
   el.layerSelect.value = state.layerId;
@@ -3320,6 +3374,7 @@ function retryTimelineReplacement() {
 }
 
 function beginTimelineReplacement(requestContext) {
+  clearContextReveal({ render: false });
   clearTimelineUserPaginationIntent();
   state.timelineReplacementRetry = null;
   const epoch = paginationIntents.beginReplacement(requestContext);
@@ -3604,6 +3659,67 @@ function renderEventFooterActions(display) {
   </div>`;
 }
 
+function renderEnclosingOperationAffordance(event, display) {
+  const parentId = navigationApi.enclosingOperationParentId(event);
+  if (!parentId) return '';
+  const relevant = navigationApi.shouldShowEnclosingOperationAffordance(
+    event,
+    display,
+    currentSearchState(),
+    state.selectedEventId,
+  );
+  const busy = state.contextRevealPending?.sourceEventId === event.id ? ' aria-busy="true"' : '';
+  return `<button class="enclosingOperationAffordance" type="button" data-action="reveal-context-parent" data-context-parent-id="${escapeHtml(parentId)}"${relevant ? '' : ' hidden'}${busy}>${escapeHtml(t('viewEnclosingOperation'))}</button>`;
+}
+
+function renderContextRevealSlot(event) {
+  if (!navigationApi.enclosingOperationParentId(event)) return '';
+  return `<div class="contextRevealSlot" data-context-source-id="${escapeHtml(event.id)}" hidden></div>`;
+}
+
+function renderContextRevealRowContents(event) {
+  const reveal = state.contextReveal;
+  if (!reveal || reveal.sourceEventId !== event.id || !reveal.parentEvent) return '';
+  const parent = reveal.parentEvent;
+  const title = parent.label || kindLabel(parent.kind) || t('enclosingOperation');
+  const preview = String(parent.preview || '').replace(/\s+/g, ' ').trim();
+  return `<span class="contextRevealMarker" aria-hidden="true">↳</span>
+    <span class="contextRevealText"><strong>${escapeHtml(t('enclosingOperation'))}</strong><span>${escapeHtml(title)}${preview && preview !== title ? ` · ${escapeHtml(preview)}` : ''}</span></span>
+    <button class="contextRevealAction" type="button" data-action="inspect-context-parent" data-context-parent-id="${escapeHtml(parent.id)}">${escapeHtml(t('inspectEnclosingOperation'))}</button>`;
+}
+
+function syncContextRevealDom() {
+  if (!el.timeline) return;
+  const reveal = state.contextReveal;
+  for (const slot of el.timeline.querySelectorAll('.contextRevealSlot')) {
+    const active = Boolean(reveal && slot.dataset.contextSourceId === reveal.sourceEventId && reveal.parentEvent);
+    slot.hidden = !active;
+    slot.classList.toggle('contextRevealRow', active);
+    slot.setAttribute('role', active ? 'note' : 'presentation');
+    slot.replaceChildren();
+    if (active) slot.innerHTML = renderContextRevealRowContents({ id: reveal.sourceEventId });
+  }
+}
+
+function syncEnclosingOperationAffordances() {
+  if (!el.timeline) return;
+  const search = currentSearchState();
+  for (const article of el.timeline.querySelectorAll('.event[data-event-id]')) {
+    const item = currentTimelineEvent(article.dataset.eventId);
+    const button = article.querySelector('[data-action="reveal-context-parent"]');
+    if (!item || !button) continue;
+    const visible = navigationApi.shouldShowEnclosingOperationAffordance(
+      item,
+      displayState(item),
+      search,
+      state.selectedEventId,
+    );
+    button.hidden = !visible;
+    button.setAttribute('aria-hidden', visible ? 'false' : 'true');
+    button.toggleAttribute('disabled', state.contextRevealPending?.sourceEventId === item.id);
+  }
+}
+
 function renderCodeModeCollapsedPreview(presentation, display) {
   const preview = presentation?.collapsedPreview;
   if (!preview) return '';
@@ -3681,9 +3797,11 @@ function cssToken(value) {
 
 function renderTimeline() {
   if (state.searchScope !== 'session') {
+    clearContextReveal({ render: false });
     renderProjectSearchView();
     return;
   }
+  reconcileContextRevealState();
   const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
   el.timeline.innerHTML = `${renderProjectReturnBanner()}${renderedTimelineEvents().map((event) => {
     const ds = displayState(event);
@@ -3715,7 +3833,7 @@ function renderTimeline() {
       temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
     ].join('');
     const toggleLabel = ds === 'expanded' ? t('collapseEvent') : t('expandEvent');
-    return `<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
+    return `${renderContextRevealSlot(event)}<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
       <div class="eventHeader">
         <button class="eventToggle" type="button" data-action="toggle" aria-label="${toggleLabel}" title="${toggleLabel}">
           <span class="srOnly">${toggleLabel}</span>
@@ -3725,6 +3843,7 @@ function renderTimeline() {
         <span class="eventTime">${escapeHtml(fmtDate(event.timestamp))}</span>
       </div>
       ${compactWebLifecycle && !event.hasSearchHit ? '' : renderEventPreview(event, ds, presentation)}
+      ${renderEnclosingOperationAffordance(event, ds)}
       ${renderEventBody(event, ds)}
       ${renderEventFooterActions(ds)}
     </article>`;
@@ -3732,11 +3851,14 @@ function renderTimeline() {
   state.searchSurfaceContexts.timeline = state.timelineDataContext === timelineDataContextKey()
     ? timelineSearchSurfaceContextKey()
     : '';
+  syncContextRevealDom();
+  syncEnclosingOperationAffordances();
   queueVisibleDetailLoad();
   refreshSearchHighlights({ preserveActive: true });
 }
 
 function setOverride(eventId, value) {
+  clearContextReveal({ render: false });
   clearSearchTransientExpansion(eventId);
   if (!state.overrides[state.selectedSessionId]) state.overrides[state.selectedSessionId] = {};
   state.overrides[state.selectedSessionId][eventId] = value;
@@ -3964,6 +4086,7 @@ function updateSelectedTimelineEvent() {
   for (const article of el.timeline.querySelectorAll('.event[data-event-id]')) {
     article.classList.toggle('selected', article.dataset.eventId === state.selectedEventId);
   }
+  syncEnclosingOperationAffordances();
 }
 
 function navigationCacheKey() {
@@ -4093,6 +4216,7 @@ function renderInspectorNavigation(event, options = {}) {
 
 function currentSelectedEvent() {
   return currentTimelineEvent(state.selectedEventId)
+    || detachedContextEvent(state.selectedEventId)
     || currentNavigationCache()?.events.find((candidate) => candidate.id === state.selectedEventId)
     || null;
 }
@@ -4123,6 +4247,93 @@ function scrollToTimelineEvent(eventId, options = {}) {
   if (article) {
     beginProgrammaticSearchScroll();
     article.scrollIntoView({ block: 'center', behavior: options.behavior || 'smooth' });
+  }
+}
+
+function inspectContextParent(parent, sourceEventId = '') {
+  if (!parent?.id) return false;
+  state.contextParentCache[String(parent.id)] = parent;
+  clearContextReveal({ render: false, clearParentCache: false });
+  showInspector(parent, { origin: DETAIL_VIEW_ORIGIN_USER });
+  if (state.currentEvents.some((event) => event.id === parent.id)) scrollToTimelineEvent(parent.id);
+  return true;
+}
+
+async function revealEnclosingOperation(sourceEvent) {
+  const source = sourceEvent && currentTimelineEvent(sourceEvent.id) || sourceEvent;
+  const parentId = navigationApi.enclosingOperationParentId(source);
+  if (!source?.id || !parentId || !state.selectedSessionId || state.searchScope !== 'session') return false;
+  const materialized = state.currentEvents.find((event) => event.id === parentId);
+  if (materialized && displayState(materialized) !== 'hidden') {
+    return inspectContextParent(materialized, source.id);
+  }
+
+  const sessionId = state.selectedSessionId;
+  const layer = activeLayerId();
+  const dataContext = timelineDataContextKey();
+  const foldingContext = foldingProfileSearchContextKey();
+  const detailGeneration = state.detailCacheGeneration;
+  const requestContext = JSON.stringify([
+    sessionId,
+    layer,
+    source.id,
+    parentId,
+    dataContext,
+    foldingContext,
+    detailGeneration,
+  ]);
+  clearContextReveal({ render: false });
+  const requestId = state.contextRevealRequestId + 1;
+  state.contextRevealRequestId = requestId;
+  const owner = requestOwners.contextEventEnvelope.start(requestContext);
+  state.contextRevealPending = {
+    requestId,
+    sourceEventId: source.id,
+    parentEventId: parentId,
+    dataContext,
+    foldingContext,
+    detailGeneration,
+  };
+  syncEnclosingOperationAffordances();
+  try {
+    const parent = await api(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(parentId)}?layer=${encodeURIComponent(layer)}&locale=${encodeURIComponent(state.locale)}`, {
+      signal: owner.controller.signal,
+    });
+    const currentSource = currentTimelineEvent(source.id);
+    if (!requestOwners.contextEventEnvelope.isCurrent(owner)
+        || state.contextRevealRequestId !== requestId
+        || state.contextRevealPending?.requestId !== requestId
+        || state.selectedSessionId !== sessionId
+        || state.searchScope !== 'session'
+        || activeLayerId() !== layer
+        || dataContext !== timelineDataContextKey()
+        || foldingContext !== foldingProfileSearchContextKey()
+        || detailGeneration !== state.detailCacheGeneration
+        || !currentSource
+        || navigationApi.enclosingOperationParentId(currentSource) !== parentId) return false;
+    if (!parent || String(parent.id || '') !== parentId) return false;
+    state.contextReveal = {
+      sessionId,
+      layerId: layer,
+      dataContext,
+      sourceEventId: source.id,
+      parentEventId: parentId,
+      parentEvent: parent,
+      foldingContext,
+      detailGeneration,
+    };
+    state.contextRevealPending = null;
+    syncContextRevealDom();
+    return true;
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    throw error;
+  } finally {
+    const currentOwner = requestOwners.contextEventEnvelope.finish(owner);
+    if (currentOwner && state.contextRevealRequestId === requestId) {
+      state.contextRevealPending = null;
+      syncEnclosingOperationAffordances();
+    }
   }
 }
 
@@ -4206,13 +4417,14 @@ function eventDetailView(type, eventId, options = {}) {
 function selectedEventInCurrentTimeline() {
   const eventId = state.detailView?.eventId || state.selectedEventId;
   if (!eventId) return null;
-  return currentTimelineEvent(eventId);
+  return currentTimelineEvent(eventId) || detachedContextEvent(eventId);
 }
 
 function eventForDetailView(view = state.detailView) {
   const eventId = String(view?.eventId || '');
   if (!eventId) return null;
   return currentTimelineEvent(eventId)
+    || detachedContextEvent(eventId)
     || currentNavigationCache()?.events.find((candidate) => candidate.id === eventId)
     || null;
 }
@@ -4269,6 +4481,7 @@ function reconcileDetailViewState() {
 }
 
 function closeDetailView() {
+  clearContextReveal({ render: false });
   invalidateDetailSelection();
   state.detailHistory = [];
   state.selectedEventId = '';
@@ -4283,6 +4496,7 @@ function closeDetailView() {
 }
 
 function backDetailView() {
+  clearContextReveal({ render: false });
   const previous = state.detailHistory.pop() || { type: 'profileRules' };
   state.detailView = previous;
   const clearedTemporaryReveal = reconcileDetailViewState();
@@ -4365,6 +4579,7 @@ function renderDetailShell({ title, subtitle = '', actions = '', body = '', clos
 }
 
 function renderProfileRulesPane(options = {}) {
+  clearContextReveal({ render: false });
   invalidateDetailSelection();
   state.detailView = { type: 'profileRules' };
   const clearedTemporaryReveal = reconcileDetailViewState();
@@ -4526,6 +4741,7 @@ function rerenderCurrentInspectorNavigation() {
 }
 
 function showInspector(event, options = {}) {
+  if (state.contextReveal || state.contextRevealPending) clearContextReveal({ render: false });
   const layer = activeLayerId();
   const key = detailKey(state.selectedSessionId, layer, event.id);
   if (state.detailSelectionKey !== key) invalidateDetailSelection();
@@ -4593,13 +4809,14 @@ function showInspector(event, options = {}) {
   if (!state.detailCache[key] && !state.detailErrors[key]) {
     loadEventDetail(event).then((settled) => {
       if (!settled || !isCurrentDetailSelection('inspector', key, event.id, selectionContext)) return;
-      const current = currentTimelineEvent(event.id);
+      const current = currentTimelineEvent(event.id) || detachedContextEvent(event.id);
       if (current) showInspector(current, { replace: true });
     });
   }
 }
 
 async function showRaw(event, options = {}) {
+  if (state.contextReveal || state.contextRevealPending) clearContextReveal({ render: false });
   const refs = sourceRefs(event);
   const layer = activeLayerId();
   const rawKey = `raw:${detailKey(state.selectedSessionId, layer, event.id)}`;
@@ -4663,6 +4880,7 @@ function ensureProfileDraft() {
 }
 
 function setProfileId(profileId, options = {}) {
+  clearContextReveal({ render: false });
   state.profileId = profileId;
   localStorage.setItem('sessionAnalyzer.profile', state.profileId);
   el.profileSelect.value = state.profileId;
@@ -4756,6 +4974,7 @@ function nextCustomProfileName(baseProfileId) {
 }
 
 function saveProfileDraft(name = '') {
+  clearContextReveal({ render: false });
   ensureProfileDraft();
   const draft = normalizeProfiles([state.profileDraft])[0];
   if (isBuiltinProfile(state.profileId)) {
@@ -4789,6 +5008,7 @@ function saveProfileDraft(name = '') {
 }
 
 function cancelProfileDraft() {
+  clearContextReveal({ render: false });
   resetProfileDraft();
   renderTimeline();
   renderProfileRulesPane();
@@ -4874,6 +5094,22 @@ for (const button of el.mobileViewButtons) {
 el.timeline.addEventListener('click', (event) => {
   if (event.target.closest('[data-search-back-to-project]')) {
     backToProjectResults().catch(showError);
+    return;
+  }
+  const contextAction = event.target.closest('[data-action="reveal-context-parent"], [data-action="inspect-context-parent"]');
+  if (contextAction) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (contextAction.dataset.action === 'inspect-context-parent') {
+      const parentId = contextAction.dataset.contextParentId || '';
+      const reveal = state.contextReveal;
+      const parent = reveal?.parentEvent?.id === parentId ? reveal.parentEvent : detachedContextEvent(parentId);
+      if (parent) inspectContextParent(parent, reveal?.sourceEventId || '');
+    } else {
+      const article = contextAction.closest('.event[data-event-id]');
+      const item = article ? currentTimelineEvent(article.dataset.eventId) : null;
+      if (item) revealEnclosingOperation(item).catch(showError);
+    }
     return;
   }
   const article = event.target.closest('[data-event-id]');
@@ -4974,6 +5210,7 @@ el.detail.addEventListener('change', (event) => {
   }
   const fallback = event.target.closest('[data-profile-fallback]');
   if (fallback) {
+    clearContextReveal({ render: false });
     ensureProfileDraft();
     state.profileDraft.rules.fallback = fallback.value;
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
@@ -4983,6 +5220,7 @@ el.detail.addEventListener('change', (event) => {
   }
   const kindSelect = event.target.closest('[data-profile-kind]');
   if (kindSelect) {
+    clearContextReveal({ render: false });
     ensureProfileDraft();
     const kind = kindSelect.dataset.profileKind;
     if (kindSelect.value) state.profileDraft.rules.kindStates[kind] = kindSelect.value;
@@ -4994,6 +5232,7 @@ el.detail.addEventListener('change', (event) => {
   }
   const conditionSelect = event.target.closest('[data-profile-condition]');
   if (conditionSelect) {
+    clearContextReveal({ render: false });
     ensureProfileDraft();
     const conditionId = conditionSelect.dataset.profileCondition;
     state.profileDraft.rules.conditions = state.profileDraft.rules.conditions.filter((condition) => condition.id !== conditionId);
@@ -5020,6 +5259,7 @@ el.layerSelect.addEventListener('change', () => {
 });
 
 el.resetFoldsBtn.addEventListener('click', () => {
+  clearContextReveal({ render: false });
   delete state.overrides[state.selectedSessionId];
   saveOverrides();
   updateResetFoldsButton();

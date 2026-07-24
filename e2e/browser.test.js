@@ -361,6 +361,27 @@ async function makeCodeModeCodexHome(t) {
   return { codexHome, repoRoot: codeModeRepoRoot };
 }
 
+async function makeContextCodeModeCodexHome(t) {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-code-mode-context-'));
+  const contextRepoRoot = path.join(codexHome, 'repo');
+  const sessionId = 'cacacaca-caca-caca-caca-cacacacacaca';
+  const dir = path.join(codexHome, 'sessions', '2026', '07', '22');
+  const file = path.join(dir, `rollout-2026-07-22T09-00-00-${sessionId}.jsonl`);
+  await fsp.mkdir(contextRepoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  const rows = [
+    { timestamp: '2026-07-22T01:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: contextRepoRoot } },
+    { timestamp: '2026-07-22T01:00:01.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-browser-context', turn_id: 'turn-context', input: "const value = await tools.fixture({ status: 'failed' }); text(value);" } },
+    { timestamp: '2026-07-22T01:00:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-browser-context', turn_id: 'turn-context', output: 'Script running with cell ID 4242\nexec-context-output' } },
+    { timestamp: '2026-07-22T01:00:03.000Z', type: 'response_item', payload: { type: 'function_call', name: 'wait', call_id: 'wait-browser-context', turn_id: 'turn-context', arguments: '{"cell_id":"4242"}' } },
+    { timestamp: '2026-07-22T01:00:04.000Z', type: 'event_msg', payload: { type: 'mcp_tool_call_end', call_id: 'nested-browser-context', turn_id: 'turn-context', tool_name: 'nested-context-token', status: 'failed' } },
+    { timestamp: '2026-07-22T01:00:05.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'wait-browser-context', turn_id: 'turn-context', output: 'Script completed\ncontext-wait-output' } },
+  ];
+  await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  return { codexHome, repoRoot: contextRepoRoot, sessionId };
+}
+
 async function makeRawCodeModeCodexHome(t) {
   const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-code-mode-raw-'));
   const rawRepoRoot = path.join(codexHome, 'repo');
@@ -719,6 +740,165 @@ test('browser single-tool Code Mode keeps native request and operation output pr
   assert.notEqual(await localizedInspectorTrace.getAttribute('open'), null);
   assert.match(await localizedInspectorTrace.textContent(), /执行阶段.*Initial output.*等待阶段 1.*Intermediate output.*等待阶段 2/s);
   assert.equal((await localizedInspectorTrace.textContent()).includes('Final browser output'), false);
+});
+
+test('browser nested Code Mode context reveals a distinct parent row without changing search owners or fold overrides', async (t) => {
+  const fixture = await makeContextCodeModeCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const session = index.sessionsById.get(fixture.sessionId);
+  const operation = session.logicalEvents.find((candidate) => candidate.subtype === 'code_mode_operation');
+  const nested = session.logicalEvents.find((candidate) => candidate.toolName === 'nested-context-token');
+  assert.ok(operation && nested);
+
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await page.waitForFunction(({ operationId, nestedId }) => (
+    Boolean(document.querySelector(`#timeline .event[data-event-id="${CSS.escape(operationId)}"]`))
+      && Boolean(document.querySelector(`#timeline .event[data-event-id="${CSS.escape(nestedId)}"]`))
+  ), { operationId: operation.id, nestedId: nested.id });
+  await fillSearch(page, 'nested-context-token');
+  await waitForSearchMarks(page);
+
+  await addSearchFilter(page, 'status', 'failed');
+  await page.waitForFunction((nestedId) => {
+    const cards = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    return cards.length === 1 && cards[0].dataset.eventId === nestedId;
+  }, nested.id);
+  await page.locator('#searchAssistClose').click();
+  const beforeSearch = await page.evaluate(() => ({
+    result: document.querySelector('#resultSummary')?.textContent || '',
+    owners: [...document.querySelectorAll('[data-search-target-owner]')].map((node) => node.getAttribute('data-search-target-owner')),
+  }));
+  const affordance = page.locator(`#timeline .event[data-event-id="${nested.id}"] [data-action="reveal-context-parent"]`);
+  await affordance.click();
+  await page.waitForSelector('.contextRevealRow');
+  const revealed = await page.locator('.contextRevealRow').evaluate((row, nestedId) => {
+    const slot = row.closest('.contextRevealSlot');
+    const child = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(nestedId)}"]`);
+    return {
+      isEvent: row.classList.contains('event'),
+      eventId: row.getAttribute('data-event-id'),
+      searchOwner: row.getAttribute('data-search-target-owner'),
+      beforeChild: slot?.nextElementSibling === child,
+    };
+  }, nested.id);
+  assert.deepEqual(revealed, { isEvent: false, eventId: null, searchOwner: null, beforeChild: true });
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 1);
+  assert.equal(await page.locator('#resultSummary').textContent(), beforeSearch.result);
+  const afterOwners = await page.locator('[data-search-target-owner]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-search-target-owner')));
+  assert.deepEqual(afterOwners, beforeSearch.owners);
+  const overridesBefore = await page.evaluate(() => localStorage.getItem('sessionAnalyzer.overrides'));
+
+  await page.locator('.contextRevealAction').click();
+  await page.waitForSelector('#detail .detailView');
+  assert.equal(await page.locator('.contextRevealRow').count(), 0);
+  assert.equal(await page.locator(`#timeline .event[data-event-id="${operation.id}"]`).count(), 0);
+  assert.equal(await page.evaluate(() => localStorage.getItem('sessionAnalyzer.overrides')), overridesBefore);
+
+  await page.locator('[data-detail-action="close"]').click();
+  await page.locator('#searchFilterBtn').click();
+  await page.locator('#searchStatusSelect').selectOption('');
+  await page.locator('#searchAssistClose').click();
+  await page.waitForFunction((operationId) => Boolean(document.querySelector(`#timeline .event[data-event-id="${CSS.escape(operationId)}"]`)), operation.id);
+  await page.locator(`#timeline .event[data-event-id="${nested.id}"] [data-action="reveal-context-parent"]`).click();
+  await page.waitForFunction((operationId) => document.querySelector(`#timeline .event.selected[data-event-id="${CSS.escape(operationId)}"]`), operation.id);
+});
+
+test('browser nested Code Mode context late responses are invalidated by same-source detail, fold, and profile transitions', async (t) => {
+  const fixture = await makeContextCodeModeCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const session = index.sessionsById.get(fixture.sessionId);
+  const operation = session.logicalEvents.find((candidate) => candidate.subtype === 'code_mode_operation');
+  const nested = session.logicalEvents.find((candidate) => candidate.toolName === 'nested-context-token');
+  assert.ok(operation && nested);
+
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await page.waitForFunction(({ operationId, nestedId }) => (
+    Boolean(document.querySelector(`#timeline .event[data-event-id="${CSS.escape(operationId)}"]`))
+      && Boolean(document.querySelector(`#timeline .event[data-event-id="${CSS.escape(nestedId)}"]`))
+  ), { operationId: operation.id, nestedId: nested.id });
+  await fillSearch(page, 'nested-context-token');
+  await waitForSearchMarks(page);
+  await addSearchFilter(page, 'status', 'failed');
+  await page.waitForFunction((nestedId) => {
+    const cards = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    return cards.length === 1 && cards[0].dataset.eventId === nestedId;
+  }, nested.id);
+  await page.locator('#searchAssistClose').click();
+
+  const parentPath = `/api/sessions/${fixture.sessionId}/events/${encodeURIComponent(operation.id)}`;
+  const parentPayload = JSON.stringify(operation);
+  const gates = [];
+  await page.route((url) => new URL(String(url)).pathname === parentPath, async (route) => {
+    const gate = gates.shift();
+    if (!gate) {
+      await route.continue();
+      return;
+    }
+    gate.startedResolve();
+    await gate.releasePromise;
+    try {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: parentPayload });
+    } catch {
+      // The transition under test may abort the request before the late response is delivered.
+    } finally {
+      gate.finishedResolve();
+    }
+  });
+
+  const queueParentGate = () => {
+    let releaseResolve;
+    let startedResolve;
+    let finishedResolve;
+    const gate = {
+      releasePromise: new Promise((resolve) => { releaseResolve = resolve; }),
+      started: new Promise((resolve) => { startedResolve = resolve; }),
+      finished: new Promise((resolve) => { finishedResolve = resolve; }),
+      release: () => releaseResolve(),
+      startedResolve: () => startedResolve(),
+      finishedResolve: () => finishedResolve(),
+    };
+    gates.push(gate);
+    return gate;
+  };
+  const revealAndWaitForRequest = async (gate) => {
+    await page.locator(`#timeline .event[data-event-id="${nested.id}"] [data-action="reveal-context-parent"]`).click();
+    await gate.started;
+  };
+  const assertContextRowGone = async () => {
+    await page.waitForFunction(() => !document.querySelector('.contextRevealRow'));
+    assert.equal(await page.locator('.contextRevealRow').count(), 0);
+  };
+
+  const detailGate = queueParentGate();
+  await revealAndWaitForRequest(detailGate);
+  await page.locator(`#timeline .event[data-event-id="${nested.id}"] .eventKind`).click();
+  await waitForDetailView(page, 'inspector');
+  await assertContextRowGone();
+  detailGate.release();
+  await detailGate.finished;
+
+  const rawGate = queueParentGate();
+  await revealAndWaitForRequest(rawGate);
+  await page.locator('#detail [data-detail-action="raw"]').click();
+  await waitForDetailView(page, 'rawRefs');
+  await assertContextRowGone();
+  rawGate.release();
+  await rawGate.finished;
+
+  const foldGate = queueParentGate();
+  await revealAndWaitForRequest(foldGate);
+  await page.locator(`#timeline .event[data-event-id="${nested.id}"] [data-action="toggle"]`).first().click();
+  await assertContextRowGone();
+  foldGate.release();
+  await foldGate.finished;
+
+  const profileGate = queueParentGate();
+  await revealAndWaitForRequest(profileGate);
+  await page.locator('#profileSelect').selectOption('debug');
+  await page.waitForFunction(() => document.querySelector('#profileSelect')?.value === 'debug');
+  await assertContextRowGone();
+  profileGate.release();
+  await profileGate.finished;
 });
 
 test('browser Code Mode raw fallback keeps a shared origin tag instead of the outer exec tool tag', async (t) => {

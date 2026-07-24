@@ -3,6 +3,7 @@
 function createCodexSearch(deps) {
   const {
     canonicalSchemaVersion,
+    codeModePresentationContextMap,
     codexSourceKind,
     codexSourceLocator,
     defaultLocale,
@@ -150,8 +151,9 @@ function createCodexSearch(deps) {
     };
   }
 
-  function logicalEventDto(event, q, locale = defaultLocale) {
+  function logicalEventDto(event, q, locale = defaultLocale, presentationContexts) {
     const hasSearchHit = q ? eventHasSearchHit(event, q) : false;
+    const presentationContext = presentationContexts?.get(event.id);
     return sanitizeLogicalEventDto({
       id: event.id,
       schemaVersion: event.schemaVersion,
@@ -182,6 +184,7 @@ function createCodexSearch(deps) {
       rawRefs: event.rawRefs,
       channels: event.channels,
       snippet: hasSearchHit ? eventSearchSnippet(event, q) : '',
+      ...(presentationContext ? { presentationContext } : {}),
     });
   }
 
@@ -346,6 +349,9 @@ function createCodexSearch(deps) {
       ? matched.reduce((sum, event) => sum + (eventHasSearchHit(event, filters.q) ? 1 : 0), 0)
       : 0;
     const page = matched.slice(filters.offset, filters.offset + filters.limit);
+    const presentationContexts = layer === 'main' && page.length
+      ? codeModePresentationContextMap(session.logicalEvents)
+      : null;
     return {
       session: sessionSummary(session, index),
       total: matched.length,
@@ -355,7 +361,7 @@ function createCodexSearch(deps) {
       limit: filters.limit,
       layer,
       eventKinds: eventKindCatalog([session], { locale }),
-      events: layer === 'raw' ? page : page.map((event) => logicalEventDto(event, filters.q, locale)),
+      events: layer === 'raw' ? page : page.map((event) => logicalEventDto(event, filters.q, locale, presentationContexts)),
     };
   }
 
@@ -367,7 +373,11 @@ function createCodexSearch(deps) {
     const sourceEvents = sourceEventsForLayer(session, layer, locale);
     const event = sourceEvents.find((candidate) => (candidate.id || candidate.rawId) === eventId);
     if (!event) return null;
-    return layer === 'raw' ? event : logicalEventDto(event, '', locale);
+    if (layer === 'raw') return event;
+    const presentationContexts = layer === 'main'
+      ? codeModePresentationContextMap(session.logicalEvents)
+      : null;
+    return logicalEventDto(event, '', locale, presentationContexts);
   }
 
   return {

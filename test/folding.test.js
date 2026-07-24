@@ -120,6 +120,29 @@ test('planning condition matches update_plan calls and protocol plan updates', (
   assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'update_plan', severity: 'normal' }, profileRules('planning')), 'expanded');
 });
 
+test('Code Mode folding condition matches only the canonical operation subtype', () => {
+  const codeModeOperation = {
+    kind: 'other_tool_call',
+    subtype: 'code_mode_operation',
+    toolName: 'exec',
+    presentation: { variant: 'single_tool', toolName: 'update_plan' },
+  };
+  assert.equal(folding.conditionMatches('codeModeOperation', codeModeOperation), true);
+  assert.equal(folding.conditionMatches('updatePlanCall', codeModeOperation), false);
+  assert.equal(folding.conditionMatches('userInputRequest', codeModeOperation), false);
+  assert.equal(folding.conditionMatches('codeModeOperation', {
+    kind: 'other_tool_call',
+    subtype: 'update_plan',
+    toolName: 'update_plan',
+  }), false);
+  assert.equal(folding.conditionMatches('codeModeOperation', {
+    kind: 'other_tool_call',
+    subtype: 'request_user_input',
+    toolName: 'request_user_input',
+  }), false);
+  assert.ok(folding.CONDITION_DEFINITIONS.some((condition) => condition.id === 'codeModeOperation'));
+});
+
 test('planning profile expands only planning anchors and collapses known non-planning events', () => {
   const rules = profileRules('planning');
   assert.equal(folding.displayStateFromRules({ kind: 'proposed_plan', severity: 'normal' }, rules), 'expanded');
@@ -176,6 +199,25 @@ test('override normalization drops malformed branches and retains valid manual s
 test('server built-in profiles normalize through the shared module', () => {
   for (const profile of foldingProfiles) {
     assert.deepEqual(profile.rules, folding.normalizeRules(profile.rules), profile.id);
+  }
+});
+
+test('Code Mode condition leaves every built-in profile default unchanged', () => {
+  const ordinaryTool = {
+    kind: 'other_tool_call',
+    subtype: 'ordinary_tool_call',
+    toolName: 'exec',
+    status: 'success',
+    severity: 'normal',
+  };
+  const codeModeOperation = { ...ordinaryTool, subtype: 'code_mode_operation' };
+  for (const profile of foldingProfiles) {
+    assert.equal(profile.rules.conditions.some((condition) => condition.id === 'codeModeOperation'), false, profile.id);
+    assert.equal(
+      folding.displayStateFromRules(codeModeOperation, profile.rules),
+      folding.displayStateFromRules(ordinaryTool, profile.rules),
+      profile.id,
+    );
   }
 });
 

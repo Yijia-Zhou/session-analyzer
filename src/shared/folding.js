@@ -137,6 +137,11 @@
       description: 'Calls to request_user_input that collect user choices during a conversation.',
     },
     {
+      id: 'codeModeOperation',
+      name: 'Code Mode operation',
+      description: 'Operations grouped from a Code Mode exec call and its wait chain.',
+    },
+    {
       id: 'readableReasoning',
       name: 'Readable reasoning',
       description: 'Reasoning entries that contain readable text in the Main timeline.',
@@ -219,6 +224,7 @@
     if (conditionId === 'importantEvent') return importantEvent(event);
     if (conditionId === 'updatePlanCall') return isUpdatePlanEvent(event);
     if (conditionId === 'userInputRequest') return isUserInputRequestEvent(event);
+    if (conditionId === 'codeModeOperation') return event.subtype === 'code_mode_operation';
     if (conditionId === 'readableReasoning') return event.kind === 'reasoning' && Boolean(event.hasReadableReasoning);
     if (conditionId === 'failedStatus') return event.status === 'failed';
     if (conditionId === 'errorSeverity') return event.severity === 'error';

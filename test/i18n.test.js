@@ -111,6 +111,8 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.eventKindLabel('command', 'zh-CN'), '命令');
   assert.equal(i18n.eventKindLabel('goal', 'zh-CN'), '目标');
   assert.equal(i18n.eventKindLabel('developer_message', 'zh-CN'), '开发者消息');
+  assert.equal(i18n.eventKindLabel('code_mode_operation', 'en'), 'Code Mode operation');
+  assert.equal(i18n.eventKindLabel('code_mode_operation', 'zh-CN'), '代码模式操作');
   assert.equal(i18n.eventKindLabel('goal_context', 'zh-CN'), '目标上下文');
   assert.equal(i18n.statusLabel('blocked', 'zh-CN'), '已阻塞');
   assert.equal(i18n.statusLabel('budget_limited', 'zh-CN'), '已达到预算限制');
@@ -134,6 +136,11 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeStepCount', { count: 2 }), '2 个步骤');
   assert.equal(i18n.humanize('mcp_tool_call'), 'MCP Tool Call');
   assert.equal(i18n.humanize('js_repl'), 'JS REPL');
+  assert.deepEqual(i18n.localizeCondition({ id: 'codeModeOperation' }, 'zh-CN'), {
+    id: 'codeModeOperation',
+    name: '代码模式操作',
+    description: '由代码模式执行入口及其轮询链分组得到的操作。',
+  });
 });
 
 test('known label lookup translates exact keys and English catalog values without losing fallback compatibility', () => {

@@ -16,6 +16,7 @@ const {
 const { projectDeclaredCodeModeCalls } = require('./codex-code-mode-declared');
 const { stripAnsiSequences } = require('./shared/terminal-text');
 const { deriveCodeModeFacts } = require('./codex-code-mode-facts');
+const { codeModePresentationContextMap } = require('./codex-presentation-context');
 const { createCodexDetailBuilder } = require('./codex-detail');
 const {
   goalResponseFromValue,
@@ -3662,10 +3663,15 @@ function countBy(items, fn) {
   return [...map.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
 }
 
-function eventKindOptionsFromCounts(counts, locale = i18n.DEFAULT_LOCALE, labelFn = eventKindLabel) {
+function eventKindOptionsFromCounts(counts, locale = i18n.DEFAULT_LOCALE, labelFn = eventKindLabel, matchFields = new Map()) {
   return [...counts.entries()]
     .sort((a, b) => labelFn(a[0], locale).localeCompare(labelFn(b[0], locale)) || a[0].localeCompare(b[0]))
-    .map(([value, count]) => ({ value, label: labelFn(value, locale), count }));
+    .map(([value, count]) => ({
+      value,
+      label: labelFn(value, locale),
+      count,
+      ...(matchFields.has(value) ? { matchField: matchFields.get(value) } : {}),
+    }));
 }
 
 function eventKindCatalog(sessions, options = {}) {
@@ -3675,24 +3681,35 @@ function eventKindCatalog(sessions, options = {}) {
     protocol: new Map(),
     raw: new Map(),
   };
-  const add = (layer, value) => {
+  const matchFields = {
+    main: new Map(),
+    protocol: new Map(),
+    raw: new Map(),
+  };
+  const add = (layer, value, matchField = '') => {
     const key = String(value || '').trim();
     if (!key) return;
     counts[layer].set(key, (counts[layer].get(key) || 0) + 1);
+    if (matchField) matchFields[layer].set(key, matchField);
   };
   for (const session of sessions || []) {
     for (const event of session.logicalEvents || []) {
       if (event.layer === 'protocol') add('protocol', event.subtype || event.kind);
-      else add('main', event.kind);
+      else {
+        add('main', event.kind);
+        if (event.subtype === 'code_mode_operation' && event.kind !== 'code_mode_operation') {
+          add('main', 'code_mode_operation', 'subtype');
+        }
+      }
     }
     for (const raw of session.rawEvents || []) {
       add('raw', raw.payloadType || raw.recordType);
     }
   }
   return {
-    main: eventKindOptionsFromCounts(counts.main, locale),
-    protocol: eventKindOptionsFromCounts(counts.protocol, locale),
-    raw: eventKindOptionsFromCounts(counts.raw, locale, rawRecordValueLabel),
+    main: eventKindOptionsFromCounts(counts.main, locale, eventKindLabel, matchFields.main),
+    protocol: eventKindOptionsFromCounts(counts.protocol, locale, eventKindLabel, matchFields.protocol),
+    raw: eventKindOptionsFromCounts(counts.raw, locale, rawRecordValueLabel, matchFields.raw),
   };
 }
 
@@ -4112,6 +4129,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
 
 const codexSearch = createCodexSearch({
   canonicalSchemaVersion: CANONICAL_SCHEMA_VERSION,
+  codeModePresentationContextMap,
   codexSourceKind: CODEX_SOURCE_KIND,
   codexSourceLocator,
   defaultLocale: i18n.DEFAULT_LOCALE,

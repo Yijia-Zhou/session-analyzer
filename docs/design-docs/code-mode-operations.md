@@ -4,7 +4,7 @@
 
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted; composite Logical Event selected / 状态：已接受；选用复合逻辑事件
-- Last updated: 2026-07-16 / 最近更新：2026-07-16
+- Last updated: 2026-07-22 / 最近更新：2026-07-22
 - Related spec: `docs/product-specs/session-transcript-analyzer.md` / 相关规格：`docs/product-specs/session-transcript-analyzer.md`
 - Related design docs: / 相关设计文档：
   - `docs/design-docs/logical-event-timeline.md`
@@ -14,6 +14,7 @@
   - `docs/exec-plans/completed/2026-07-16-code-mode-adaptive-presentation.md`
   - `docs/exec-plans/completed/2026-07-14-code-mode-operation-grouping.md`
   - `docs/exec-plans/completed/2026-07-15-code-mode-structured-nested-projections.md`
+  - `docs/exec-plans/completed/2026-07-22-code-mode-context-and-discoverability.md`
 
 ## Context / 背景
 
@@ -66,6 +67,16 @@ CodeModeOperation
 `outerRefs` and Poll Phase refs are operation-owned source references. `eventRefs` are logical references. A nested event's `rawRefs` remain owned by that nested event and must not be copied into the operation's `rawRefs`, source list, or detail sections. In the decision shorthand this relation is called `event_refs`; if serialized in the repository's canonical camelCase DTO style, the field is `eventRefs`. The operation detail must expose these event refs so a reader can open each nested event without manufacturing duplicate Raw References.
 
 `outerRefs` 和轮询阶段 refs 是操作自有的来源引用；`eventRefs` 是逻辑引用。嵌套事件的 `rawRefs` 继续由该嵌套事件拥有，不得复制进操作的 `rawRefs`、来源列表或详情 sections。本决策简写把这条关系称为 `event_refs`；如果按仓库 canonical camelCase DTO 风格序列化，则字段名为 `eventRefs`。操作详情必须暴露这些 event refs，使读者能够打开每个嵌套事件，而不制造重复的原始引用。
+
+The accepted public reverse relation is presentation-only. At a logical timeline DTO or layer-aware event-envelope response boundary, a nested event may receive exactly `{ relation: 'enclosed_by_code_mode_operation', codeModeParentId }` under optional `presentationContext` only when one existing canonical `code_mode_operation` parent has an existing ID and lists that nested ID in `eventRefs`. It is omitted for zero or multiple parents, missing/malformed refs, self/ambiguous/cross-span associations, and declaration/projection-only facts. It is never inferred from JavaScript, tool names, timestamps, adjacency, or similar call IDs, and it is not written into raw DTOs or the canonical event graph. Parent and child identities, Raw refs, status, counts, search owners/targets, metrics, and evidence ownership remain unchanged.
+
+已接受的公开反向关系只用于呈现。在逻辑 timeline DTO 或感知事件层 event-envelope 响应边界，nested event 只有在一个已有规范 `code_mode_operation` 父操作具有已有 ID 且其 `eventRefs` 列出该 nested ID 时，才可以在可选 `presentationContext` 下获得精确的 `{ relation: 'enclosed_by_code_mode_operation', codeModeParentId }`。父操作为零或多个、refs 缺失/格式错误、自引用/歧义/跨区间关联，以及仅有声明/投影事实时都会省略。它绝不从 JavaScript、工具名称、timestamp、相邻关系或相似 call ID 推断，也不会写入 raw DTO 或规范事件图。父子 identity、Raw refs、status、计数、搜索 owner/target、指标和证据 ownership 均保持不变。
+
+### Main discoverability and canonical folding / Main 可发现性与规范折叠
+
+Code Mode Operations remain canonical `kind: other_tool_call`; the Main catalog therefore retains that complete kind and adds only the localized `{ value: 'code_mode_operation', label, count, matchField: 'subtype' }` facet. `other_tool_call` includes every event of its canonical kind, including operations, while the new facet selects only the subtype subset through the existing kind-or-subtype matching rule. Its count is a facet count, not a duplicate event or metric, and unrelated subtypes are not cataloged. The `codeModeOperation` Folding Strategy condition is exactly `event.subtype === 'code_mode_operation'`; it ignores tool names, labels, adaptive variants, and declared-call projections. This condition does not seed a built-in profile rule or editable canonical-kind default, so built-in visible states remain unchanged.
+
+Code Mode 操作继续保持规范 `kind: other_tool_call`；因此 Main 目录会保留这个完整 kind，并且只增加本地化的 `{ value: 'code_mode_operation', label, count, matchField: 'subtype' }` facet。`other_tool_call` 包含其规范 kind 的每一个事件（包括操作），而新 facet 通过既有 kind-or-subtype 匹配规则只选择 subtype 子集。其计数是 facet 计数，不是重复事件或指标；无关 subtype 不会被编入目录。折叠策略的 `codeModeOperation` condition 精确为 `event.subtype === 'code_mode_operation'`；它忽略工具名称、label、自适应 variant 和声明调用投影。该 condition 不会写入内置 profile 规则或可编辑规范 kind 默认值，因此内置可见状态保持不变。
 
 Declared Nested Calls remain source declarations rather than execution facts. Supported declarations may additionally produce request-only Nested Tool Projections inside the accepted operation presentation, but the operation identity and canonical event model do not change. Loops, branches, concurrency, and dynamic dispatch mean one source call site can execute zero, one, or many times; no projection becomes a Logical Event, counter, status, parent link, or execution claim.
 
@@ -184,6 +195,20 @@ Thus a Code Mode Operation with two associated nested lifecycle events and three
 - Nested Tool Projections create no search owner or duplicated searchable text; their request and any displayed result remain covered by the operation's existing single owner. / 嵌套工具投影不创建搜索 owner，也不复制可搜索文本；其 request 与任何展示结果继续由 operation 既有的单一 owner 覆盖。
 - A maps the operation search owner to its composite Logical Event ID. B maps it to the non-event group's stable ID. The A/B decision must compare identical queries and exact owner IDs/counts. / A 方案把操作搜索 owner 映射到复合逻辑事件 ID；B 方案把它映射到非事件 group 的稳定 ID。A/B 决策必须使用相同 query 并比较精确 owner ID/计数。
 
+## Enclosing-operation presentation / Enclosing-operation 呈现
+
+The optional reverse context does not automatically decorate every nested event. Its localized, low-emphasis enclosing-operation affordance appears only when the nested event is relevant in the committed current-session view: an active free-text hit, a returned structured-filter result, a selected event, or an expanded event. If the unique parent card is mounted, not profile-hidden, and structurally present in the committed timeline, the control invokes the existing event-selection/scroll path directly. Any navigation expansion is transient and cannot persist a fold override.
+
+可选反向上下文不会自动装饰每个 nested event。其已本地化、低强调的 enclosing-operation 入口只在 nested event 与已提交的当前 session 视图相关时出现：它是生效的自由文本命中、已返回的结构化筛选结果、被选中的事件或被展开的事件。如果唯一父卡片已挂载、未被 profile 隐藏且在结构上存在于已提交时间线中，该控件会直接调用既有事件选择/滚动路径。导航所需的任何展开都是临时的，不能持久化折叠覆盖。
+
+If the parent is profile-hidden, outside the loaded prefix, or structurally filtered out, the browser uses a separately owned context reveal keyed by the committed repository, scope, session, layer, query, filters, Folding Strategy, locale, detail context, nested ID, and parent ID. It resolves the parent through the layer-aware event envelope/detail path rather than adding a timeline page. A current-owner success may insert one distinct context-only summary row immediately before the nested event; the row can expose a parent preview plus inspect/open action but is explicitly not a normal event card or search owner. It does not enter `currentEvents`, change offsets, totals, filters, matching counts, occurrence counts, targets, highlights, Raw-ref ownership, or pagination, and uses distinct data/class/ARIA markers with no ordinary event-ID or search-owner attributes. Missing/ambiguous parents and stale or failed requests leave canonical state unchanged.
+
+如果父操作被 profile 隐藏、位于已加载前缀之外或被结构化筛选排除，浏览器会使用独立 ownership 的 context reveal；其 key 包含已提交的仓库、范围、会话、事件层、query、筛选、折叠策略、locale、详情上下文、nested ID 和 parent ID。它通过感知事件层的 event envelope/detail 路径解析父操作，而不是增加时间线分页。当前 owner 成功时，可以在 nested event 前立即插入一条不同的 context-only 摘要行；该行可以暴露父操作预览及 inspect/open 操作，但被明确规定为不是普通事件卡片或搜索 owner。它不会进入 `currentEvents`，不会改变 offset、总数、筛选、匹配计数、occurrence 计数、目标、高亮、Raw-ref ownership 或分页，并且使用不同的 data/class/ARIA 标记，不带普通 event-ID 或 search-owner 属性。父操作缺失/歧义、以及过期或失败请求都不会改变规范状态。
+
+This presentation owner has its own generation and `AbortController`. A new reveal cancels only its matching owner. Committed repository, scope, session, layer, query/filter, Folding Strategy, locale, selected detail/view, and detail-cache-generation transitions invalidate its generation, abort pending work, and remove all context rows. Every success, error, and `finally` path verifies both current owner identity and captured committed context; typed intentional aborts are silent. Context-row insertion/removal updates only an owner-scoped presentation slot and never triggers canonical target discovery or ordinary timeline/search rendering.
+
+该呈现 owner 拥有自己的 generation 和 `AbortController`。新的 reveal 只会取消匹配的 owner。已提交的仓库、范围、会话、事件层、query/filter、折叠策略、locale、选中详情/视图和 detail-cache-generation 转换会使其 generation 失效、取消 pending 工作并移除所有 context 行。每条 success、error 和 `finally` 路径都会同时验证当前 owner identity 与捕获的已提交 context；类型化的有意 abort 保持静默。context 行的插入/移除只更新 owner 范围的呈现 slot，绝不触发规范目标发现或普通 timeline/search 渲染。
+
 ## Escalation rules / 提权规则
 
 Escalation is evidence, not an outcome classifier. V1 creates an `Escalation requested` tag only when an Observed Nested Activity owns a structured request whose `sandbox_permissions` is exactly `require_escalated`. The tag belongs only to that nested event. The same text inside outer JavaScript remains visible and searchable but creates no tag or approval event. A persisted permission/approval lifecycle record, if present, remains its own observed evidence and event.
@@ -198,19 +223,19 @@ The implementation must not execute JavaScript to recover escalation, must not t
 
 ### A: composite Logical Event / A：复合逻辑事件
 
-A emits one Main Timeline event for the operation using the existing `kind: other_tool_call`, `subtype: code_mode_operation`, and `toolName: exec`. It owns only outer exec and wait refs, exposes associated nested IDs through detail `eventRefs`, and leaves nested Logical Events independently visible. It adds no new kind and remains status-neutral.
+A emits one Main Timeline event for the operation using the existing `kind: other_tool_call`, `subtype: code_mode_operation`, and `toolName: exec`. It owns only outer exec and wait refs, exposes associated nested IDs through detail `eventRefs`, and leaves nested Logical Events independently visible. A nested logical DTO may additionally expose the separately derived, optional enclosing-operation presentation context, but that reverse display relation creates no canonical child. A adds no new kind and remains status-neutral.
 
-A 在主时间线中为操作发出一个事件，使用现有 `kind: other_tool_call`、`subtype: code_mode_operation` 和 `toolName: exec`。它只拥有外层 exec/wait refs，通过详情 `eventRefs` 暴露相关嵌套 ID，并让嵌套逻辑事件继续独立可见。它不新增 kind，并保持状态中性。
+A 在主时间线中为操作发出一个事件，使用现有 `kind: other_tool_call`、`subtype: code_mode_operation` 和 `toolName: exec`。它只拥有外层 exec/wait refs，通过详情 `eventRefs` 暴露相关嵌套 ID，并让嵌套逻辑事件继续独立可见。Nested 逻辑 DTO 还可以额外暴露独立派生、可选的 enclosing-operation 呈现上下文，但这种反向展示关系不会创建规范 child。A 不新增 kind，并保持状态中性。
 
 Adding zero or more Nested Tool Projections does not create a second operation or change the operation ID, Logical Event ID, kind, subtype, raw ownership, metric ownership, or search owner. Projections are sections inside the accepted A presentation, not children in the canonical event graph.
 
 增加零个或多个嵌套工具投影不会创建第二个 operation，也不会改变 operation ID、逻辑事件 ID、kind、subtype、raw 所有权、指标所有权或搜索 owner。投影只是已接受 A 呈现内部的 section，不是 canonical 事件图中的子节点。
 
-Accepted. The expanded timeline body gives the outer JavaScript command and final observed output the primary visual region. When waits exist, their phase metadata and intermediate outputs live in one collapsed-by-default `code_mode_trace` section after the final output. Operation evidence, observation state, cell ID, and poll count live in the inspector; associated nested events remain independently navigable through inspector-only `event_refs`.
+Accepted. The expanded timeline body gives the outer JavaScript command and final observed output the primary visual region. When waits exist, their phase metadata and intermediate outputs live in one collapsed-by-default `code_mode_trace` section after the final output. Operation evidence, observation state, cell ID, and poll count live in the inspector; `eventRefs` remain inspector evidence/navigation while the nested DTO's unique presentation context can offer the separate enclosing-operation path described above.
 
 Display extraction is deliberately separate from observation classification. Classification reads the complete outer output so the canonical first line still determines pending or terminal state. Presentation may remove a leading status-only array fragment when a later fragment contains the actual tool result, and strips ANSI terminal control sequences; Raw refs preserve the original fragments and escapes.
 
-已接受。展开后的 timeline 正文把 outer JavaScript 命令与最终已观测输出作为主要视觉区域。存在 wait 时，各阶段元数据和中间输出位于最终输出之后的单个 `code_mode_trace` section 中，并默认折叠。Operation 的证据状态、观测状态、cell ID 和轮询次数位于 inspector；关联的 nested event 继续通过 inspector 专用 `event_refs` 独立导航。
+已接受。展开后的 timeline 正文把 outer JavaScript 命令与最终已观测输出作为主要视觉区域。存在 wait 时，各阶段元数据和中间输出位于最终输出之后的单个 `code_mode_trace` section 中，并默认折叠。Operation 的证据状态、观测状态、cell ID 和轮询次数位于 inspector；`eventRefs` 继续属于 inspector 证据/导航，而 nested DTO 的唯一呈现上下文可以提供上文所述独立的 enclosing-operation 路径。
 
 展示提取与观测分类有意分离。分类读取完整 outer output，仍由 canonical 首行判断 pending 或 terminal；展示可以在后续 fragment 包含实际工具结果时移除开头仅含状态的数组 fragment，并剥离 ANSI 终端控制序列。Raw refs 保留原始 fragment 与转义字符。
 
@@ -280,6 +305,8 @@ Candidate A was accepted on 2026-07-15 after both candidates passed the symmetri
 - Candidate tests assert identical counts, search owners, raw-ref ownership, event refs, and neutral status. / 候选方案测试断言完全一致的计数、搜索 owner、raw-ref 所有权、event refs 和中性状态。
 - Browser acceptance uses only sanitized fixtures until a winning representation is chosen; real transcripts remain read-only validation inputs and are never committed. / 胜出呈现确定前，浏览器验收只使用脱敏 fixture；真实转录只作为只读验证输入，绝不提交。
 - Structured-projection fixtures cover request-only display, emitted `bounded` and `none` labels, strict sequential bounded eligibility, branch/loop/concurrency rejection, unsafe or unsupported argument fallback, unchanged operation identity, zero projection ownership, and coexistence with canonical Observed Nested Activity events. `exact` remains reserved for a future persisted identity edge and must not be emitted or fixture-claimed until such evidence exists. / 结构化投影 fixture 覆盖 request-only 展示、实际发出的 `bounded` 与 `none` 标签、严格顺序 bounded 资格、分支/循环/并发拒绝、不安全或不受支持 argument fallback、不变的 operation identity、投影零所有权，以及与 canonical 已观测嵌套活动事件共存。`exact` 保留给未来的持久化 identity 边；在这种证据出现前，不得发出该标签，也不得声称 fixture 已覆盖。
+- Public-context coverage proves exact DTO shape and omission for unique, missing, malformed, self, ambiguous, and cross-span `eventRefs`; catalog coverage proves both kind and subtype facets, localized labels, and subtype-compatible filtering without cataloging unrelated subtypes; folding coverage proves that only the canonical subtype matches. / 公开上下文覆盖证明唯一、缺失、格式错误、自引用、歧义和跨区间 `eventRefs` 的精确 DTO 形态与省略行为；目录覆盖证明 kind 与 subtype facet、本地化标签和 subtype 兼容筛选同时成立，且不会编入无关 subtype；折叠覆盖证明只有规范 subtype 会命中。
+- Browser coverage proves relevance-gated affordance rendering, visible-parent direct navigation, hidden/unloaded/filtered-parent owner-scoped context reveal, one context-only row before the nested event, and cancellation across committed transition boundaries without changing canonical timeline/search/count/pagination/folding behavior. / 浏览器覆盖证明按相关性门控的入口渲染、可见父操作直达、隐藏/未加载/被筛选父操作的 owner 范围 context reveal、nested event 前的一条 context-only 行，以及跨已提交转换边界的取消，同时不改变规范时间线/搜索/计数/分页/折叠行为。
 - Collapsed-preview coverage verifies source order, bounded request-only detail, truncation, and `+N` for safe multi-tool declarations, plus a sanitized outer-source excerpt for raw fallback. Dynamic or uncertain programs must never receive a partial declared-tool sequence. / 折叠态预览覆盖会验证安全多工具声明的源码顺序、有上限的 request-only 详情、截断与 `+N`，并验证 raw fallback 的已脱敏 outer 源码摘录。动态或不确定程序绝不能获得局部声明工具顺序。
 
 ## Decision log / 决策日志
@@ -288,3 +315,4 @@ Candidate A was accepted on 2026-07-15 after both candidates passed the symmetri
 - 2026-07-15: Selected A after symmetric unit/browser/package validation and directional cold-start comparison. The accepted UI prioritizes command and final output, folds wait trace by default, and keeps operation metadata plus nested-event navigation in the inspector. Both prototype worktrees are retained; only A was integrated. / 2026-07-15：在对称单元/浏览器/package 验证和方向性冷启动对比后选择 A。已接受 UI 优先展示命令和最终输出，默认折叠 wait 过程，并把 operation 元数据与 nested-event 导航保留在 inspector。两个原型 worktree 都继续保留；只有 A 被集成。
 - 2026-07-15: Accepted request-only Nested Tool Projections as an additive presentation inside A without changing operation identity or the canonical event model. Result association must be explicit (`exact | bounded | none`); bounded is limited to strict sequential static shapes, and every uncertain case uses raw fallback. / 2026-07-15：接受 request-only 嵌套工具投影作为 A 内部的增量呈现，不改变 operation identity 或 canonical 事件模型。结果关联必须明确标注（`exact | bounded | none`）；bounded 仅限严格有序静态形态，所有不确定场景都使用 raw fallback。
 - 2026-07-16: Accepted adaptive presentation: one safe declared tool reuses its structured body with visible Code Mode/evidence header labels and inspector-only operation details; multiple declarations retain composite cards under a multi-tool label; raw fallback remains unclassified. Canonical event semantics do not change. / 2026-07-16：接受自适应呈现：一个安全声明工具复用其结构化正文，header 明确显示代码模式/证据标签，operation 详情只进 inspector；多个声明继续在多工具 label 下使用复合卡片；raw fallback 保持未分类。Canonical event 语义不变。
+- 2026-07-22: Locked the public, optional enclosing-operation presentation context and the `code_mode_operation` discoverability facet. Both derive from existing canonical operation facts only; the subtype-only folding condition and separately owned context row improve access without changing canonical identity, evidence, counts, search, pagination, or built-in Folding Strategy defaults. / 2026-07-22：锁定公开、可选的 enclosing-operation 呈现上下文以及 `code_mode_operation` 可发现性 facet。二者都只能从既有规范 operation 事实派生；仅 subtype 的折叠 condition 和独立 ownership 的 context 行提升访问能力，却不改变规范 identity、证据、计数、搜索、分页或内置折叠策略默认值。

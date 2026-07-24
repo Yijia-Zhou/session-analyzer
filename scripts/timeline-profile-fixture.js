@@ -6,6 +6,8 @@ const path = require('node:path');
 const DEFAULT_EVENT_COUNT = 1800;
 const DEFAULT_SEARCHABLE_TEXT_BYTES = 3700;
 const DEFAULT_HIT_POSITIONS = [1650];
+const DEFAULT_CONTEXT_REVEAL_INDEX = 24;
+const CONTEXT_REVEAL_TOOL_NAME = 'context-profile-token';
 
 function normalizePositions(values, eventCount) {
   return new Set((Array.isArray(values) ? values : [])
@@ -26,6 +28,88 @@ function syntheticText(index, options = {}) {
   return text.slice(0, searchableTextBytes);
 }
 
+function codeModeContextRows(timestamp, repoRoot) {
+  const iso = (offset) => new Date(timestamp + offset).toISOString();
+  const callId = 'profile-context-exec';
+  const turnId = 'profile-context-turn';
+  return [
+    {
+      timestamp: iso(0),
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        name: 'exec',
+        call_id: callId,
+        turn_id: turnId,
+        input: "const value = await tools.fixture({ status: 'failed' }); text(value);",
+      },
+    },
+    {
+      timestamp: iso(1000),
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call_output',
+        call_id: callId,
+        turn_id: turnId,
+        output: 'Script running with cell ID 4242\ncommon-term context output',
+      },
+    },
+    {
+      timestamp: iso(2000),
+      type: 'response_item',
+      payload: {
+        type: 'function_call',
+        name: 'wait',
+        call_id: 'profile-context-wait-1',
+        turn_id: turnId,
+        arguments: '{"cell_id":"4242"}',
+      },
+    },
+    {
+      timestamp: iso(3000),
+      type: 'response_item',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'profile-context-wait-1',
+        turn_id: turnId,
+        output: 'Script running with cell ID 4242\ncommon-term intermediate output',
+      },
+    },
+    {
+      timestamp: iso(4000),
+      type: 'response_item',
+      payload: {
+        type: 'function_call',
+        name: 'wait',
+        call_id: 'profile-context-wait-2',
+        turn_id: turnId,
+        arguments: '{"cell_id":"4242"}',
+      },
+    },
+    {
+      timestamp: iso(5000),
+      type: 'event_msg',
+      payload: {
+        type: 'mcp_tool_call_end',
+        call_id: 'profile-context-nested',
+        turn_id: turnId,
+        tool_name: CONTEXT_REVEAL_TOOL_NAME,
+        status: 'failed',
+      },
+    },
+    {
+      timestamp: iso(6000),
+      type: 'response_item',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'profile-context-wait-2',
+        turn_id: turnId,
+        output: 'Script completed\ncommon-term context completion',
+      },
+    },
+  ];
+}
+
 function makeSessionRows({
   sessionId,
   repoRoot,
@@ -35,6 +119,8 @@ function makeSessionRows({
   commonTermEvery,
   detailHeavyPositions,
   startTime,
+  includeContextReveal,
+  contextRevealIndex,
 }) {
   const rows = [{
     timestamp: new Date(startTime).toISOString(),
@@ -45,6 +131,13 @@ function makeSessionRows({
   const details = normalizePositions(detailHeavyPositions, eventCount);
   for (let index = 0; index < eventCount; index += 1) {
     const timestamp = startTime + ((index + 1) * 2000);
+    // This protocol sequence projects to two Main logical events, so replace two ordinary rows
+    // and keep the fixed profiling corpus at exactly eventCount Main events.
+    if (includeContextReveal && index === contextRevealIndex && index + 1 < eventCount) {
+      rows.push(...codeModeContextRows(timestamp, repoRoot));
+      index += 1;
+      continue;
+    }
     const text = syntheticText(index, {
       searchableTextBytes,
       hasHit: hits.has(index),
@@ -105,6 +198,13 @@ async function createTimelineProfileFixture(baseDir, options = {}) {
   const hitPositions = Array.isArray(options.hitPositions) ? options.hitPositions : DEFAULT_HIT_POSITIONS;
   const commonTermEvery = Math.max(0, Number(options.commonTermEvery) || 1);
   const detailHeavyPositions = Array.isArray(options.detailHeavyPositions) ? options.detailHeavyPositions : [];
+  const includeContextReveal = options.includeContextReveal === true && eventCount >= 4;
+  const requestedContextRevealIndex = Number(options.contextRevealIndex);
+  const contextRevealIndex = Number.isInteger(requestedContextRevealIndex)
+    && requestedContextRevealIndex >= 0
+    && requestedContextRevealIndex + 1 < eventCount
+    ? requestedContextRevealIndex
+    : Math.min(DEFAULT_CONTEXT_REVEAL_INDEX, Math.max(0, eventCount - 2));
   const secondaryEventCount = Math.max(1, Number(options.secondaryEventCount) || 40);
   const codexHome = path.join(baseDir, 'codex-home');
   const repoRoot = path.join(baseDir, 'repo');
@@ -123,6 +223,8 @@ async function createTimelineProfileFixture(baseDir, options = {}) {
     commonTermEvery,
     detailHeavyPositions,
     startTime: longStart,
+    includeContextReveal,
+    contextRevealIndex,
   });
   const secondaryRows = makeSessionRows({
     sessionId: secondarySessionId,
@@ -156,7 +258,10 @@ async function createTimelineProfileFixture(baseDir, options = {}) {
       commonTermEvery,
       detailHeavyPositions: [...normalizePositions(detailHeavyPositions, eventCount)],
       secondaryEventCount,
+      includeContextReveal,
+      contextRevealIndex: includeContextReveal ? contextRevealIndex : null,
     },
+    contextReveal: includeContextReveal ? { toolName: CONTEXT_REVEAL_TOOL_NAME } : null,
   };
 }
 
@@ -164,5 +269,6 @@ module.exports = {
   DEFAULT_EVENT_COUNT,
   DEFAULT_SEARCHABLE_TEXT_BYTES,
   DEFAULT_HIT_POSITIONS,
+  CONTEXT_REVEAL_TOOL_NAME,
   createTimelineProfileFixture,
 };

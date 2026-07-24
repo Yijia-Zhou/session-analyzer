@@ -39,6 +39,7 @@ When changing product behavior or repository structure:
 - Domain language: `CONTEXT.md`
 - Product spec: `docs/product-specs/session-transcript-analyzer.md`
 - Design doc: `docs/design-docs/logical-event-timeline.md`
+- Timeline loading/rendering performance: `docs/design-docs/timeline-loading-and-rendering-performance.md`
 - Code Mode operations design: `docs/design-docs/code-mode-operations.md`
 - Code Mode structured display catalog: `docs/design-docs/code-mode-structured-display-catalog.md`
 - Schema update runbook: `docs/design-docs/schema-update-runbook.md`
@@ -46,6 +47,8 @@ When changing product behavior or repository structure:
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Active plans: none
 - Completed plans:
+  - `docs/exec-plans/completed/2026-07-22-code-mode-context-and-discoverability.md`
+  - `docs/exec-plans/completed/2026-07-20-timeline-transition-safety-and-profiling.md`
   - `docs/exec-plans/completed/2026-07-16-code-mode-adaptive-presentation.md`
   - `docs/exec-plans/completed/2026-07-15-code-mode-structured-nested-projections.md`
   - `docs/exec-plans/completed/2026-07-14-code-mode-operation-grouping.md`

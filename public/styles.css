@@ -2395,6 +2395,81 @@ body[data-project-mode='selecting'] .searchAssist {
   border-color: var(--warn);
 }
 
+.contextRevealSlot {
+  display: contents;
+}
+
+.contextRevealSlot[hidden] {
+  display: none;
+}
+
+.contextRevealSlot.contextRevealRow {
+  display: flex;
+}
+
+.contextRevealRow {
+  align-items: center;
+  background: color-mix(in srgb, var(--soft) 52%, transparent);
+  border-left: 1px dashed #b7c3c7;
+  border-radius: 4px;
+  color: var(--muted);
+  display: flex;
+  gap: 0.45rem;
+  margin-left: 0.42rem;
+  min-width: 0;
+  padding: 0.25rem 0.55rem 0.25rem 0.8rem;
+}
+
+.contextRevealMarker {
+  color: #9aa9af;
+  font-size: 0.9rem;
+}
+
+.contextRevealText {
+  display: inline-flex;
+  flex: 1 1 auto;
+  gap: 0.38rem;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.contextRevealText > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contextRevealAction,
+.enclosingOperationAffordance {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.72rem;
+  padding: 0.14rem 0.25rem;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 0.15em;
+  white-space: nowrap;
+}
+
+.contextRevealAction:hover,
+.contextRevealAction:focus-visible,
+.enclosingOperationAffordance:hover,
+.enclosingOperationAffordance:focus-visible {
+  color: var(--accent);
+  text-decoration-color: currentColor;
+}
+
+.enclosingOperationAffordance {
+  justify-self: start;
+  opacity: 0.64;
+}
+
+.enclosingOperationAffordance[hidden] {
+  display: none;
+}
+
 .temporaryReferenceChip {
   color: var(--warn);
 }

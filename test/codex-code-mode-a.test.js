@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { buildIndex, getTimeline } = require('../src/codex');
+const { buildIndex, eventKindCatalog, getEvent, getTimeline } = require('../src/codex');
 
 async function candidateIndex(t) {
   const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-code-mode-a-'));
@@ -58,6 +58,59 @@ test('candidate A counts and searches one operation plus nested activity while w
   assert.equal(Object.hasOwn(publicOperation, 'eventRefs'), false);
   assert.equal(Object.hasOwn(publicOperation, 'codeModeOperation'), false);
   assert.deepEqual(publicOperation.tags, []);
+});
+
+test('public Code Mode context is parity-safe, omits unproven parents, and preserves kind filtering', async (t) => {
+  const { id, index } = await candidateIndex(t);
+  const session = index.sessionsById.get(id);
+  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const nested = session.logicalEvents.find((event) => event.toolName === 'nested-search-token');
+  const expectedContext = {
+    relation: 'enclosed_by_code_mode_operation',
+    codeModeParentId: operation.id,
+  };
+
+  const fromTimeline = timeline(index, id).events.find((event) => event.id === nested.id);
+  const fromEvent = getEvent(index, id, nested.id, { layer: 'main', locale: 'en' });
+  assert.deepEqual(fromTimeline.presentationContext, expectedContext);
+  assert.deepEqual(fromEvent.presentationContext, expectedContext);
+  assert.equal(Object.hasOwn(nested, 'presentationContext'), false);
+  assert.equal(Object.hasOwn(timeline(index, id).events.find((event) => event.id === operation.id), 'presentationContext'), false);
+
+  operation.codeModeOperation = { ...operation.codeModeOperation, eventRefs: [] };
+  assert.equal(Object.hasOwn(timeline(index, id).events.find((event) => event.id === nested.id), 'presentationContext'), false);
+
+  operation.codeModeOperation = { ...operation.codeModeOperation, eventRefs: [nested.id] };
+  session.logicalEvents.push({
+    ...operation,
+    id: 'ambiguous-code-mode-parent',
+    codeModeOperation: { ...operation.codeModeOperation, eventRefs: [nested.id] },
+  });
+  assert.equal(Object.hasOwn(timeline(index, id).events.find((event) => event.id === nested.id), 'presentationContext'), false);
+
+  assert.deepEqual(timeline(index, id, { kind: 'code_mode_operation' }).events.map((event) => event.id), [operation.id, 'ambiguous-code-mode-parent']);
+  assert.deepEqual(timeline(index, id, { kind: 'other_tool_call' }).events.map((event) => event.id), [operation.id, 'ambiguous-code-mode-parent']);
+});
+
+test('Main kind catalog adds Code Mode operations without cataloging other subtypes', () => {
+  const catalog = eventKindCatalog([{
+    logicalEvents: [
+      { layer: 'main', kind: 'other_tool_call', subtype: 'code_mode_operation' },
+      { layer: 'main', kind: 'other_tool_call', subtype: 'update_plan' },
+      { layer: 'main', kind: 'command', subtype: 'shell_command' },
+      { layer: 'protocol', kind: 'protocol', subtype: 'task_started' },
+    ],
+    rawEvents: [],
+  }], { locale: 'en' });
+
+  assert.deepEqual(catalog.main.find((item) => item.value === 'other_tool_call'), {
+    value: 'other_tool_call', label: 'Other tool call', count: 2,
+  });
+  assert.deepEqual(catalog.main.find((item) => item.value === 'code_mode_operation'), {
+    value: 'code_mode_operation', label: 'Code Mode operation', count: 1, matchField: 'subtype',
+  });
+  assert.equal(catalog.main.some((item) => item.value === 'update_plan'), false);
+  assert.equal(catalog.main.some((item) => item.value === 'shell_command'), false);
 });
 
 test('duplicate outer call ids contribute two operations while their ambiguous output is claimed once', async (t) => {

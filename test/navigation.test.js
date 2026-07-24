@@ -97,3 +97,80 @@ test('leaving a temporary target for another event or profile removes stale targ
     assert.deepEqual(result.history.map((view) => view.eventId), ['source']);
   }
 });
+
+test('enclosing operation affordance is gated by presentation relevance without translating relation data', () => {
+  const nested = {
+    id: 'nested',
+    presentationContext: {
+      relation: 'enclosed_by_code_mode_operation',
+      codeModeParentId: 'parent',
+    },
+  };
+  assert.equal(navigation.enclosingOperationParentId(nested), 'parent');
+  assert.equal(navigation.shouldShowEnclosingOperationAffordance(nested, 'collapsed', {}), false);
+  assert.equal(navigation.shouldShowEnclosingOperationAffordance(nested, 'collapsed', { status: 'failed' }), true);
+  assert.equal(navigation.shouldShowEnclosingOperationAffordance(nested, 'collapsed', {}, 'nested'), true);
+  assert.equal(navigation.shouldShowEnclosingOperationAffordance(nested, 'expanded', {}), true);
+  assert.equal(navigation.enclosingOperationParentId({ presentationContext: { relation: '其它关系', codeModeParentId: 'parent' } }), '');
+});
+
+test('context reveal reconciliation keeps a distinct source slot while structural context changes invalidate it', () => {
+  const source = {
+    id: 'nested',
+    presentationContext: { relation: 'enclosed_by_code_mode_operation', codeModeParentId: 'parent' },
+  };
+  const reveal = {
+    sessionId: 'session',
+    layerId: 'main',
+    dataContext: 'context-a',
+    foldingContext: 'profile-a',
+    detailGeneration: 3,
+    sourceEventId: 'nested',
+    parentEventId: 'parent',
+    parentEvent: { id: 'parent' },
+  };
+  assert.equal(navigation.contextRevealSourceIndex([source], reveal), 0);
+  assert.equal(navigation.reconcileContextReveal({
+    reveal,
+    sessionId: 'session',
+    layerId: 'main',
+    dataContext: 'context-a',
+    foldingContext: 'profile-a',
+    detailGeneration: 3,
+    events: [source],
+  }), reveal);
+  assert.equal(navigation.reconcileContextReveal({
+    reveal,
+    sessionId: 'session',
+    layerId: 'main',
+    dataContext: 'context-b',
+    foldingContext: 'profile-a',
+    detailGeneration: 3,
+    events: [source],
+  }), null);
+  assert.equal(navigation.reconcileContextReveal({
+    reveal,
+    sessionId: 'session',
+    layerId: 'main',
+    dataContext: 'context-a',
+    foldingContext: 'profile-b',
+    detailGeneration: 3,
+    events: [source],
+  }), null);
+  assert.equal(navigation.reconcileContextReveal({
+    reveal,
+    sessionId: 'session',
+    layerId: 'main',
+    dataContext: 'context-a',
+    foldingContext: 'profile-a',
+    detailGeneration: 4,
+    events: [source],
+  }), null);
+  assert.equal(navigation.reconcileContextReveal({
+    reveal,
+    sessionId: 'session',
+    layerId: 'main',
+    dataContext: 'context-a',
+    events: [{ ...source, presentationContext: { ...source.presentationContext, codeModeParentId: 'other' } }],
+  }), null);
+});

@@ -89,6 +89,7 @@ test('npm pack manifest contains only runtime package files', () => {
     'src/codex-detail.js',
     'src/codex-goal.js',
     'src/codex-logical.js',
+    'src/codex-presentation-context.js',
     'src/codex-search.js',
     'src/codex-source.js',
     'src/codex.js',
