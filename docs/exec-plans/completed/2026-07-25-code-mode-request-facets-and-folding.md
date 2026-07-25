@@ -9,11 +9,14 @@ Make safely projected Code Mode requests discoverable and controllable using the
 ## Status and ownership / 状态与负责人
 
 - Owner: repository maintainers / 负责人：仓库维护者
-- Status: active / 状态：进行中
+- Status: completed / 状态：已完成
 - Started: 2026-07-25 / 开始日期：2026-07-25
+- Completed: 2026-07-25 / 完成日期：2026-07-25
+- Archive: `docs/exec-plans/completed/` / 归档：`docs/exec-plans/completed/`
 - Baseline commits:
   - `6b58962 feat: add Code Mode context and discoverability`
   - `53edbbe docs: document optional Luna subagent delegation`
+  - `3c1de05 docs: plan Code Mode request facets and folding`
 - Related product spec: `docs/product-specs/session-transcript-analyzer.md`
 - Related designs:
   - `docs/design-docs/code-mode-operations.md`
@@ -292,46 +295,46 @@ The existing source-length, call-count, literal-depth, and literal-node budgets 
 
 ### Phase 0: baseline and contract spike / 基线与契约 spike
 
-- [ ] Record paired indexing/performance measurements and choose cold, lazy, or hybrid indexing.
-- [ ] Freeze query name, DTO namespace, catalog shape, evidence value, layer-transition behavior, Project-scope behavior, and historical profile-key policy.
-- [ ] Add minimized sanitized fixtures for safe single, safe multi, duplicate tool, and all raw-fallback families.
+- [x] Record paired indexing/performance measurements and choose cold, lazy, or hybrid indexing.
+- [x] Freeze query name, DTO namespace, catalog shape, evidence value, layer-transition behavior, Project-scope behavior, and historical profile-key policy.
+- [x] Add minimized sanitized fixtures for safe single, safe multi, duplicate tool, and all raw-fallback families.
 
 ### Phase 1: shared projection facts / 共享投影事实
 
-- [ ] Extract a shared exact outer-exec source lookup from operation phase refs.
-- [ ] Build the independent presentation index without mutating canonical Logical Events.
-- [ ] Produce per-Session and project-wide request catalogs with operation counts.
-- [ ] Prove canonical event serialization, metrics, Raw refs, status, and analysis counts remain unchanged.
+- [x] Extract a shared exact outer-exec source lookup from operation phase refs.
+- [x] Build the independent presentation index without mutating canonical Logical Events.
+- [x] Produce per-Session and project-wide request catalogs with operation counts.
+- [x] Prove canonical event serialization, metrics, Raw refs, status, and analysis counts remain unchanged.
 
 ### Phase 2: server filtering and DTOs / 服务端筛选与 DTO
 
-- [ ] Parse and validate `codeModeRequest`.
-- [ ] Add presentation-aware matching without rewriting `event.toolName`.
-- [ ] Apply the filter before pagination in Session timeline and Project results.
-- [ ] Add lightweight `presentationFacts` and `codeModeRequests` catalogs to the required state/timeline surfaces.
-- [ ] Preserve same-event intersections, phrase counts, target counts, and layer isolation.
+- [x] Parse and validate `codeModeRequest`.
+- [x] Add presentation-aware matching without rewriting `event.toolName`.
+- [x] Apply the filter before pagination in Session timeline and Project results.
+- [x] Add lightweight `presentationFacts` and `codeModeRequests` catalogs to the required state/timeline surfaces.
+- [x] Preserve same-event intersections, phrase counts, target counts, and layer isolation.
 
 ### Phase 3: folding schema and evaluation / 折叠 schema 与求值
 
-- [ ] Add `codeModeRequestStates` normalization, persistence, migration, and most-visible evaluation.
-- [ ] Preserve valid historical keys and protect reserved object names.
-- [ ] Keep every built-in profile default behavior unchanged.
-- [ ] Add the editable request-rule group with current and historical catalog rows.
+- [x] Add `codeModeRequestStates` normalization, persistence, migration, and most-visible evaluation.
+- [x] Preserve valid historical keys and protect reserved object names.
+- [x] Keep every built-in profile default behavior unchanged.
+- [x] Add the editable request-rule group with current and historical catalog rows.
 
 ### Phase 4: browser filter integration / 浏览器筛选接入
 
-- [ ] Add the Main-only `Code Mode request` selector and operation counts.
-- [ ] Integrate draft/committed search state, active chips, clear actions, URL/API composition, and filter summaries.
-- [ ] Add the field to data-context, request-owner, target-registry, preload, pagination, Session/Project, locale, and stale-response keys.
-- [ ] Clear the filter on Protocol/Raw transitions.
-- [ ] Keep narrow-screen and keyboard behavior consistent with existing fixed filters.
+- [x] Add the Main-only `Code Mode request` selector and operation counts.
+- [x] Integrate draft/committed search state, active chips, clear actions, URL/API composition, and filter summaries.
+- [x] Add the field to data-context, request-owner, target-registry, preload, pagination, Session/Project, locale, and stale-response keys.
+- [x] Clear the filter on Protocol/Raw transitions.
+- [x] Keep narrow-screen and keyboard behavior consistent with existing fixed filters.
 
 ### Phase 5: documentation and acceptance / 文档与验收
 
-- [ ] Update bilingual product, Code Mode, logical-timeline, structured-display, and performance contracts.
-- [ ] Regenerate browser assets from source and pass build check.
-- [ ] Run unit, integration, browser, package, and performance gates.
-- [ ] Move this plan to `completed/` only after every required behavior and measurement passes.
+- [x] Update bilingual product, Code Mode, logical-timeline, structured-display, and performance contracts.
+- [x] Regenerate browser assets from source and pass build check.
+- [x] Run unit, integration, browser, package, and performance gates.
+- [x] Move this plan to `completed/` only after every required behavior and measurement passes.
 
 ## Acceptance matrix / 验收矩阵
 
@@ -391,3 +394,6 @@ No real Session Transcript, private command/result body, user path beyond existi
 ## Progress log / 进度日志
 
 - 2026-07-25: Planning baseline created after committing the enclosing-operation context/discoverability increment. Product semantics, evidence boundaries, Session/Project scope, Main-layer clearing behavior, folding schema, historical-key policy, performance decision gate, implementation phases, and acceptance matrix are recorded. No runtime implementation has started. / 2026-07-25：在 enclosing-operation context/discoverability 增量提交后建立规划基线。已记录产品语义、证据边界、Session/Project scope、Main layer 清除行为、折叠 schema、历史 key 策略、性能决策门槛、实施阶段与验收矩阵；尚未开始运行时实现。
+- 2026-07-25: Phase 0 selected cold indexing from a read-only paired benchmark on one immutable local snapshot. The repository-scoped corpus contained 313 Sessions, 7,440 Code Mode operations, and 5.994 MiB of outer source. The existing build took 11,865.6 ms; the bounded name-only projector pass took 266.7 ms, for a 12,132.3 ms combined estimate and 2.25% wall-time regression. It retained about 1.89 MiB and serialized to about 817.6 KiB. A seven-Session sanitized fixture measured 4.77% wall-time regression. Both pass the 5% gate; lazy or hybrid indexing is not warranted. Only aggregates are recorded. / 2026-07-25：Phase 0 基于同一个不可变本地快照上的只读配对基准选择 cold indexing。仓库范围语料包含 313 个 Session、7,440 个 Code Mode operation 与 5.994 MiB outer source。既有 build 耗时 11,865.6 ms；有界的仅名称 projector pass 耗时 266.7 ms，合计估算 12,132.3 ms，wall-time 回归 2.25%。它额外保留约 1.89 MiB，序列化后约 817.6 KiB。七 Session 脱敏 fixture 的 wall-time 回归为 4.77%。两者都通过 5% 门槛，无需 lazy 或 hybrid indexing。这里只记录聚合数据。
+- 2026-07-25: Runtime implementation began after the performance gate. The shared exact outer-exec lookup, independent Session presentation index, operation-count catalogs, presentation-aware server filtering/DTOs, and additive folding-rule schema are under test; canonical Logical Events remain unchanged. / 2026-07-25：性能门禁通过后开始运行时实现。共享的精确 outer-exec lookup、独立 Session presentation index、按 operation 计数的目录、presentation-aware 服务端筛选/DTO 与 additive folding-rule schema 正在测试中；规范 Logical Event 保持不变。
+- 2026-07-25: Completed the independent Main-only request filter/catalog, lightweight timeline facts, additive folding rules/editor, historical-key migration, bilingual contracts, generated assets, and transition-safe Session/Project browser integration. Final acceptance passed `npm test` (283/283), `npm run test:browser` (77/77), package smoke, build/check, the paired cold-index benchmark, and timeline profiling with no acceptance failures. Two final read-only reviews found no blocker; their defensive non-Main catalog/fact observations were fixed before completion. / 2026-07-25：完成独立且仅 Main 可用的 request 筛选/目录、轻量 timeline facts、增量折叠规则/编辑器、历史 key 迁移、双语合同、生成资产，以及具备 transition safety 的 Session/Project 浏览器接入。最终验收通过 `npm test`（283/283）、`npm run test:browser`（77/77）、package smoke、build/check、配对 cold-index 基准与 timeline profiling，且无 acceptance failure。两次最终只读审查均未发现 blocker；其中关于非 Main 目录/事实的防御性意见已在完成前修复。

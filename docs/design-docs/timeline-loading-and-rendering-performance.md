@@ -4,18 +4,20 @@
 
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: proposed / 状态：提议中
-- Last updated: 2026-07-22 / 最近更新：2026-07-22
+- Last updated: 2026-07-25 / 最近更新：2026-07-25
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related design docs: / 相关设计文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/code-mode-operations.md`
+  - `docs/design-docs/code-mode-structured-display-catalog.md`
   - `docs/design-docs/documentation-system.md`
 - Related plans: / 相关计划：
   - `docs/exec-plans/completed/2026-07-20-timeline-transition-safety-and-profiling.md`
   - `docs/exec-plans/completed/2026-07-12-search-jump-target-canonicalization.md`
   - `docs/exec-plans/completed/2026-07-06-search-hud-integration.md`
   - `docs/exec-plans/completed/2026-07-22-code-mode-context-and-discoverability.md`
+  - `docs/exec-plans/active/2026-07-25-code-mode-request-facets-and-folding.md`
 
 ## Context / 背景
 
@@ -47,7 +49,7 @@ The baseline establishes priority, not a permanent benchmark contract. Future im
 ## Non-goals / 非目标
 
 - Redesigning Logical Event normalization or Event Layer membership. / 重新设计逻辑事件归一化或事件层成员关系。
-- Optimizing cold project indexing before evidence shows it dominates the affected interactions. / 在证据表明冷项目索引主导相关交互前优化它。
+- Broadly optimizing cold project indexing before evidence shows it dominates the affected interactions. The measured bounded Code Mode name-only pass is an accepted exception because it is required for exact Session/Project request catalogs and filters. / 在证据表明冷项目索引主导相关交互前进行广泛优化。经过测量的、有界 Code Mode 仅名称遍历是已接受的例外，因为精确的 Session/Project request 目录和筛选需要它。
 - Replacing all event-specific structured renderers. / 替换所有事件专属的结构化 renderer。
 - Committing now to full virtualization, sparse timeline loading, or an exact global jump-target denominator. / 现在就承诺完整虚拟化、稀疏时间线加载或精确的全局跳转目标分母。
 - Treating page size as a server-side performance boundary when the server still scans the full selected corpus. / 在服务端仍扫描完整所选语料时，把 page size 当作服务端性能边界。
@@ -58,7 +60,7 @@ The baseline establishes priority, not a permanent benchmark contract. Future im
 
 ```text
 Project selection / 项目选择
-  -> buildIndex: JSONL -> rawEvents -> logicalEvents (retained in memory)
+  -> buildIndex: JSONL -> rawEvents -> logicalEvents + presentationIndexes (retained in memory)
   -> /timeline: choose Layer -> structural scan -> text counts -> slice -> DTO page
   -> browser currentEvents: contiguous committed prefix [0, offset)
   -> renderTimeline: all materialized events -> one timeline innerHTML replacement
@@ -69,21 +71,25 @@ Project selection / 项目选择
 
 #### 1. Project index lifetime / 项目索引生命周期
 
-`buildIndex` pre-scans transcript metadata to select repository candidates, parses each selected JSONL file once, retains `rawEvents`, builds `logicalEvents` once, and stores Sessions in an in-memory index. Search and timeline requests reuse that index and do not reparse the transcript files. Cancelling a new project-index job can stop index construction, while an already committed index remains available. / `buildIndex` 会预扫描转录 metadata 以选择仓库候选文件，对每个选中的 JSONL 文件解析一次，保留 `rawEvents`，构建一次 `logicalEvents`，并把会话存入内存索引。搜索和时间线请求复用该索引，不会重新解析转录文件。取消新的项目索引 job 可以停止索引构建，同时已提交的旧索引继续可用。
+`buildIndex` pre-scans transcript metadata to select repository candidates, parses each selected JSONL file once, retains `rawEvents`, builds `logicalEvents` once, builds bounded independent presentation indexes, and stores Sessions in an in-memory index. Search and timeline requests reuse that index and do not reparse the transcript files. Cancelling a new project-index job can stop index construction, while an already committed index remains available. / `buildIndex` 会预扫描转录 metadata 以选择仓库候选文件，对每个选中的 JSONL 文件解析一次，保留 `rawEvents`，构建一次 `logicalEvents`，构建有界的独立 presentation index，并把会话存入内存索引。搜索和时间线请求复用该索引，不会重新解析转录文件。取消新的项目索引 job 可以停止索引构建，同时已提交的旧索引继续可用。
 
-This lifetime is memory-heavy but is not the cause of the measured interaction freeze. It remains relevant to cache invalidation because every timeline/search cache must be scoped to a particular committed index revision. / 该生命周期占用较多内存，但不是已测交互卡顿的原因。它仍与缓存失效有关，因为任何时间线/搜索缓存都必须绑定到特定的已提交索引 revision。
+This lifetime is memory-heavy but is not the cause of the measured interaction freeze. It remains relevant to cache invalidation because every timeline/search cache must be scoped to a particular committed index revision. The Code Mode request index is deliberately name-only and independent from canonical Logical Events: it maps existing operation IDs to safe declared tool names plus `declared_source`, never to arguments, source, AST nodes, result association, or execution evidence. / 该生命周期占用较多内存，但不是已测交互卡顿的原因。它仍与缓存失效有关，因为任何时间线/搜索缓存都必须绑定到特定的已提交索引 revision。Code Mode request 索引有意只保留名称，并与 canonical Logical Event 相互独立：它只把既有 operation ID 映射到安全声明的工具名称和 `declared_source`，绝不映射到参数、源码、AST 节点、result association 或执行证据。
+
+### Measured Code Mode request-index decision / 已测 Code Mode request 索引决策
+
+On 2026-07-25, a read-only paired measurement selected cold indexing for the bounded name-only Code Mode projector. On one immutable local repository snapshot, adding one projector pass per Code Mode operation estimated a 2.25% wall-time regression. A seven-Session sanitized fixture measured a 4.77% wall-time regression. Both are below the 5% gate, so a lazy cache or hybrid design is not warranted. Only aggregate measurements are recorded: no real transcript, request argument, command/result body, or user path enters this document, fixtures, generated assets, or commits. / 2026-07-25 的只读配对测量为有界的 Code Mode 仅名称 projector 选择了 cold indexing。在一个不可变的本地仓库快照上，每个 Code Mode operation 增加一次 projector 遍历估算出 2.25% 的 wall-time 回归。七个 Session 的脱敏 fixture 测得 4.77% 的 wall-time 回归。两者都低于 5% 门槛，因此无需 lazy cache 或 hybrid 设计。这里只记录聚合测量：真实转录、request 参数、command/result 正文或用户路径均不会进入本文档、fixture、生成资产或提交。
 
 #### 2. Timeline request lifetime / 时间线请求生命周期
 
-`GET /api/sessions/:sessionId/timeline` accepts `offset`, `limit`, `layer`, `q`, `kind`, `status`, `tool`, `file`, and `locale`. For Main Timeline and Protocol Layer requests, `sourceEventsForLayer` selects the retained Logical Events. For Raw Layer requests, it first maps every Raw Record to a raw DTO. `getTimeline` then: / `GET /api/sessions/:sessionId/timeline` 接收 `offset`、`limit`、`layer`、`q`、`kind`、`status`、`tool`、`file` 与 `locale`。对主时间线和协议层请求，`sourceEventsForLayer` 从常驻逻辑事件中选择；对原始层请求，它会先把每条原始记录映射成 raw DTO。随后 `getTimeline` 会：
+`GET /api/sessions/:sessionId/timeline` accepts `offset`, `limit`, `layer`, `q`, `kind`, `status`, `tool`, `file`, Main-only `codeModeRequest`, and `locale`. For Main Timeline and Protocol Layer requests, `sourceEventsForLayer` selects the retained Logical Events. For Raw Layer requests, it first maps every Raw Record to a raw DTO. `getTimeline` then: / `GET /api/sessions/:sessionId/timeline` 接收 `offset`、`limit`、`layer`、`q`、`kind`、`status`、`tool`、`file`、仅 Main 的 `codeModeRequest` 与 `locale`。对主时间线和协议层请求，`sourceEventsForLayer` 从常驻逻辑事件中选择；对原始层请求，它会先把每条原始记录映射成 raw DTO。随后 `getTimeline` 会：
 
 1. Apply Layer and structured filters to the full selected event sequence. / 对完整的所选事件序列应用事件层与结构化筛选。
 2. Calculate full-corpus phrase occurrence and matching-event counts when `q` is active. / 当 `q` 生效时，计算完整语料范围的短语 occurrence 与命中事件数。
 3. Slice the filtered sequence by `offset` and `limit`. / 按 `offset` 与 `limit` 切分筛选后的序列。
 4. Map the page to timeline DTOs. / 把该页映射为时间线 DTO。
-5. Recalculate the selected Session's complete event-kind catalog for the response. / 为响应重新计算所选会话的完整事件类型 catalog。
+5. Recalculate the selected Session's complete event-kind catalog and, on Main, the operation-count Code Mode request catalog for the response. / 为响应重新计算所选会话的完整事件类型 catalog，以及在 Main 上按 operation 计的 Code Mode request 目录。
 
-The page size bounds response size and page DTO mapping, but it does not bound structural filtering, text counting, Raw Layer DTO creation, or event-kind catalog work. / Page size 会限制响应体和分页 DTO 映射，但不会限制结构筛选、文本计数、原始层 DTO 创建或事件类型 catalog 的工作量。
+The page size bounds response size and page DTO mapping, but it does not bound structural filtering, text counting, Raw Layer DTO creation, event-kind catalog work, or Main-layer request-catalog work. The request catalog reads the retained name-only presentation index and counts operations; it does not parse source or load detail per timeline request. / Page size 会限制响应体和分页 DTO 映射，但不会限制结构筛选、文本计数、原始层 DTO 创建、事件类型 catalog 工作或 Main 层 request 目录工作。Request 目录读取常驻的仅名称 presentation index 并按 operation 计数；它不会在每个 timeline 请求中解析源码或加载 detail。
 
 For a non-empty logical response, public DTO composition may build a request-scoped reverse map for Code Mode presentation context. It performs one linear pass over the retained Session logical events and their existing `eventRefs`, records only uniquely proven `code_mode_operation` parents, and attaches an optional context only to matching DTOs on the requested page or layer-aware event envelope. The transient map is not retained in the canonical index, does not run for raw DTOs, and creates no additional timeline membership, target, count, or pagination work. Its cost is intentionally an explicit `O(E + R)` response-projection boundary, where `E` is Session logical-event count and `R` is the total examined `eventRefs` entries.
 
@@ -200,6 +206,7 @@ A structured refresh intentionally keeps scroll. When a deep timeline is replace
 10. If a future renderer distinguishes materialized data from mounted DOM, `loaded` continues to describe data materialization unless the product contract and copy are explicitly revised. / 如果未来 renderer 区分已物化数据与已挂载 DOM，`loaded` 仍描述数据物化，除非产品 contract 与文案被明确修改。
 11. Detail compatibility preserves the split between `timelineSections` and `inspectorSections`, Layer-specific event identity, `sourceLocator`, and `rawRefs`; transport paging and rendering caches do not redefine evidence ownership. / 详情兼容性会保留 `timelineSections` 与 `inspectorSections` 的分离、事件层专属事件 identity、`sourceLocator` 与 `rawRefs`；transport 分页和渲染 cache 不会重新定义证据 ownership。
 12. Enclosing-Code-Mode context is an owner-scoped presentation slot, not an event materialization path. A visible parent uses direct navigation; a hidden, unloaded, or filtered parent may use only an envelope/detail request plus one distinct row before the nested event. The row never acquires event/search-owner DOM identity or alters canonical target discovery, counts, highlights, pagination, current prefix, Raw refs, or persisted folds. / Enclosing-Code-Mode context 是 owner 范围的呈现 slot，而不是事件物化路径。可见父操作使用直接导航；隐藏、未加载或被筛选的父操作最多只能使用 envelope/detail 请求加 nested event 前的一条不同的行。该行绝不获得事件/搜索 owner DOM identity，也不会改变规范目标发现、计数、高亮、分页、当前前缀、Raw refs 或持久化折叠。
+13. The cold-built Code Mode request index must remain bounded, name-only, and separate from canonical event storage. It may supply Main-layer filters, operation-count catalogs, lightweight presentation facts, and request-rule folding preview, but it must not add detail fetches, reparse source on read requests, or change canonical identity, evidence ownership, counts, search targets, Raw refs, status, metrics, or nested-event visibility. / 冷启动构建的 Code Mode request 索引必须保持有界、仅名称，并与 canonical 事件存储分离。它可以提供 Main 层筛选、按 operation 计数的目录、轻量呈现事实和 request 规则折叠预览，但不得增加 detail fetch、在读取请求中重新解析源码，或改变 canonical identity、证据 ownership、计数、搜索 target、Raw refs、status、指标或 nested-event 可见性。
 
 ## Coupling assessment / 耦合评估
 
@@ -340,6 +347,7 @@ Direct sparse mounting also requires a product decision for `loaded`, reading co
 - Cancellation tests for every request owner, including late success, abort, error, and immediate retry. / 为每个请求 owner 增加取消测试，覆盖晚到成功、abort、错误与立即重试。
 - Performance regression runs at shallow, medium, and deep materialization depths, including common-term highlighting and visible-detail loading. / 在浅、中、深物化深度运行性能回归，包括常见词高亮与可见详情加载。
 - Code Mode context coverage verifies the request-scoped reverse-map boundary, direct navigation for a mounted visible parent, owner-scoped envelope/detail reveal for hidden/unloaded/filtered parents, one distinct context row, cancellation on every committed transition, and zero changes to canonical final request/card/mark/target/count state. Stable scenarios require exact feature-off/on work counters. In an intentionally cancelled in-flight transition, transient render/card/highlight/discovery work may decrease but must not increase; final canonical state remains exact. / Code Mode context 覆盖验证请求范围反向映射边界、已挂载可见父操作的直接导航、隐藏/未加载/被筛选父操作的 owner 范围 envelope/detail reveal、一条不同的 context 行、每个已提交转换上的取消，以及规范最终 request/card/mark/target/count 状态零变化。稳定场景要求 feature-off/on 工作计数精确相等；在有意取消的进行中转换里，瞬态 render/card/highlight/discovery 工作可以减少但不得增加，最终规范状态仍须精确一致。
+- Code Mode request-index coverage verifies one bounded projector invocation per operation during cold build, exact source identity, name-only retention, no canonical serialization changes, safe operation-count catalogs, Main-only same-event filtering and clearing, and request-rule preview without a detail fetch. Paired performance runs retain only aggregate cold-build elapsed, CPU, memory, serialized-index-size, and fixture-regression measurements. / Code Mode request 索引覆盖验证冷启动构建时每个 operation 只进行一次有界 projector 调用、精确源码 identity、仅名称保留、不变的 canonical 序列化、安全的按 operation 计目录、仅 Main 的同一事件筛选与清除，以及不请求 detail 的 request 规则预览。配对性能运行只保留聚合的 cold-build elapsed、CPU、内存、序列化索引大小和 fixture 回归测量。
 
 ### Measurement dimensions / 测量维度
 
@@ -350,6 +358,7 @@ Direct sparse mounting also requires a product decision for `loaded`, reading co
 - Timeline, detail, navigation, and cancelled request counts / 时间线、详情、导航与已取消请求数
 - Server scan/count/cache-hit time by request context / 按请求 context 统计的服务端扫描、计数与 cache-hit 时间
 - Heap and detached-node growth after repeated query/filter/session transitions / 重复 query、筛选、会话转换后的 heap 与 detached-node 增长
+- Cold-build elapsed regression, process CPU, peak RSS, retained presentation-index heap, and serialized index size for the bounded name-only request pass / 有界仅名称 request 遍历的冷构建 elapsed 回归、进程 CPU、峰值 RSS、保留的 presentation-index heap 和序列化索引大小
 
 ## Decision log / 决策日志
 
@@ -357,3 +366,4 @@ Direct sparse mounting also requires a product decision for `loaded`, reading co
 - 2026-07-20: Completed the residual-work protection stage with independent request owners, typed intentional-abort handling, committed pagination epochs, one-shot append intents, and deterministic structured-filter anchoring. In the fixed 1,800-event profile, the deep structured-filter path fell from six timeline requests, 116 full renders, and 84,900 card generations to one request, one render, and 150 card generations. The unchanged late-hit path still performs eight timeline requests, 20 full renders, and 31,800 card generations; this remains measured input for the next keyed card-lifecycle and owner-scoped highlighting stage. / 2026-07-20：完成残余工作保护阶段，引入独立 request owner、typed intentional-abort 处理、已提交分页 epoch、一次性 append intent 与确定性结构筛选锚点。在固定的 1,800 事件 profile 中，深层结构筛选路径从六次 timeline 请求、116 次完整 render 与 84,900 次 card 生成降为一次请求、一次 render 与 150 次 card 生成。未改变的靠后命中路径仍会发生八次 timeline 请求、20 次完整 render 与 31,800 次 card 生成；这些数据继续作为下一阶段带 key 的 card lifecycle 与 owner 范围高亮设计输入。
 - 2026-07-22: Set the Code Mode presentation-context performance boundary: a logical response may pay one request-scoped linear reverse-map pass, while a hidden-parent reveal may pay only its owned envelope/detail fetch and one presentation-slot update. Neither path may append timeline pages, rerun canonical target discovery, or change request/render/card/mark/target/count ownership. / 2026-07-22：确定 Code Mode 呈现上下文的性能边界：逻辑响应可以承担一次请求范围的线性反向映射遍历，而隐藏父操作 reveal 最多只能承担其 own 的 envelope/detail fetch 和一次呈现 slot 更新。两条路径都不得追加时间线分页、重新运行规范目标发现，或改变 request/render/card/mark/target/count ownership。
 - 2026-07-23: Completed the sanitized 1,800-event feature-off/on acceptance. Stable scenarios retain exact request/render/card/mark/target/count comparisons. The `switchDuringQuery` cancellation scenario compares requests and final canonical state exactly while allowing transient render/card/highlight/discovery work only to decrease, because aborted work is scheduling-dependent; latency and Long Task limits remain 110% of baseline. The accepted run recorded one context envelope request, zero timeline requests, zero full renders/card generations/highlight or target-discovery passes, one owner-slot insertion, and unchanged isolated canonical state. / 2026-07-23：完成脱敏 1,800 事件 feature-off/on 验收。稳定场景继续精确比较 request/render/card/mark/target/count；`switchDuringQuery` 取消场景精确比较请求和最终规范状态，同时只允许瞬态 render/card/highlight/discovery 工作减少，因为被取消工作取决于调度时序；延迟与 Long Task 上限仍为 baseline 的 110%。通过的运行记录为一次 context envelope 请求、零次 timeline 请求、零次完整 render/card generation/highlight 或 target-discovery pass、一次 owner-slot 插入，以及保持隔离且不变的规范状态。
+- 2026-07-25: Accepted cold indexing for the bounded, name-only Code Mode request pass after read-only paired measurement: 2.25% wall-time regression on one immutable local repository snapshot and 4.77% on a seven-Session sanitized fixture, both below the 5% gate. The index powers request catalogs/filters/folding facts without canonical mutation; lazy or hybrid caching is not warranted. Only aggregate measurements are retained. / 2026-07-25：在只读配对测量后，接受有界、仅名称的 Code Mode request 遍历采用 cold indexing：一个不可变本地仓库快照的 wall-time 回归为 2.25%，七个 Session 的脱敏 fixture 为 4.77%，两者都低于 5% 门槛。该索引在不修改 canonical 的情况下为 request 目录/筛选/折叠事实提供数据；无需 lazy 或 hybrid cache。只保留聚合测量。
