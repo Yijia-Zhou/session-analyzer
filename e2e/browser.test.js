@@ -3742,6 +3742,50 @@ test('browser folding profile exposes declared Code Mode requests and previews r
     .some((event) => event.classList.contains('expanded')));
 });
 
+test('browser structured filters keep profile-hidden Code Mode request results visible', async (t) => {
+  const fixture = await makeAdaptiveCodeModeCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const hiddenProfile = {
+    id: 'custom:hidden-code-mode-filter-results',
+    name: 'Hidden Code Mode filter results',
+    description: 'Exercises the structured-filter visibility floor.',
+    rules: {
+      kindStates: {},
+      codeModeRequestStates: {},
+      fallback: 'hidden',
+      conditions: [],
+    },
+  };
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([hiddenProfile]),
+      'sessionAnalyzer.profile': hiddenProfile.id,
+    },
+  });
+
+  await page.waitForFunction(() => (
+    document.querySelectorAll('#timeline .event.hiddenByProfile').length >= 3
+  ));
+  await addSearchFilter(page, 'kind', 'code_mode_operation');
+  await addSearchFilter(page, 'codeModeRequest', 'shell_command');
+  await page.waitForFunction(() => {
+    const events = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    return events.length === 1
+      && events[0].classList.contains('collapsed')
+      && !events[0].classList.contains('hiddenByProfile');
+  });
+  assert.match(
+    await page.locator('#searchCodeModeRequestSelect option[value="shell_command"]').textContent(),
+    /Shell command \(1\)/,
+  );
+
+  await clearAllSearch(page);
+  await page.waitForFunction(() => (
+    document.querySelectorAll('#timeline .event.hiddenByProfile').length >= 3
+  ));
+});
+
 test('browser folding profile seeds dynamic kinds from the full session catalog', async (t) => {
   const fixture = await makeHookCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });

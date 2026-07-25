@@ -3729,11 +3729,20 @@ function naturalDisplayState(event) {
   return evaluateDisplayStateFromRules(event, profile?.rules || defaultRules());
 }
 
+function hasActiveStructuredEventFilter() {
+  const search = currentSearchState();
+  return Boolean(search.file || search.kind || search.status || search.codeModeRequest);
+}
+
 function displayState(event) {
   const sessionOverrides = state.overrides[state.selectedSessionId] || {};
   if (sessionOverrides[event.id]) return sessionOverrides[event.id];
   if (currentSearchTransientExpansionIds().includes(event.id)) return 'expanded';
-  return naturalDisplayState(event);
+  const natural = naturalDisplayState(event);
+  if (natural === 'hidden' && state.searchScope === 'session' && hasActiveStructuredEventFilter()) {
+    return 'collapsed';
+  }
+  return natural;
 }
 
 function foldedDisplayState(event) {
