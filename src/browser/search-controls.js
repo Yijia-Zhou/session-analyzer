@@ -5,7 +5,7 @@
 }(typeof globalThis !== 'undefined' ? globalThis : window, function createSearchControlsApi() {
   'use strict';
 
-  const FILTER_ORDER = ['file', 'kind', 'status', 'codeModeRequest'];
+  const FILTER_ORDER = ['file', 'kind', 'status'];
 
   function normalizedCount(value) {
     const number = Number(value);
@@ -27,7 +27,11 @@
   function activeFilterEntries(filters, labels = {}) {
     const search = filters || {};
     return FILTER_ORDER.flatMap((key) => {
-      const value = String(search[key] || '').trim();
+      const value = String(
+        key === 'kind' && !search.kind && search.codeModeRequest
+          ? 'code_mode_operation'
+          : (search[key] || ''),
+      ).trim();
       if (!value) return [];
       const label = typeof labels[key] === 'function' ? labels[key](value) : (labels[key] || key);
       return [{ key, value, label: String(label || key) }];

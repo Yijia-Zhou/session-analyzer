@@ -132,7 +132,7 @@ test('Main kind catalog adds Code Mode operations without cataloging other subty
     value: 'other_tool_call', label: 'Other tool call', count: 2,
   });
   assert.deepEqual(catalog.main.find((item) => item.value === 'code_mode_operation'), {
-    value: 'code_mode_operation', label: 'Code Mode operation', count: 1, matchField: 'subtype',
+    value: 'code_mode_operation', label: 'Code Mode tool call', count: 1, matchField: 'subtype',
   });
   assert.equal(catalog.main.some((item) => item.value === 'update_plan'), false);
   assert.equal(catalog.main.some((item) => item.value === 'shell_command'), false);

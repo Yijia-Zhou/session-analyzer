@@ -28,13 +28,13 @@ test('active filter entries and summaries keep file-kind-status order', () => {
   assert.equal(searchControls.filterSummary(filters, labels), 'File: src/app.js · Kind: command · Status: failed');
 });
 
-test('active request filters use a stable final slot', () => {
+test('active request filters project into the Kind slot', () => {
   assert.deepEqual(searchControls.activeFilterEntries({ codeModeRequest: 'shell_command' }, {
-    codeModeRequest: 'Code Mode request',
+    kind: 'Kind',
   }), [{
-    key: 'codeModeRequest',
-    value: 'shell_command',
-    label: 'Code Mode request',
+    key: 'kind',
+    value: 'code_mode_operation',
+    label: 'Kind',
   }]);
 });
 

@@ -55,7 +55,7 @@ A tool invocation emitted directly as a source-level call, rather than invoked i
 _Avoid_: Legacy tool call / 旧式工具调用
 
 **Code Mode Operation / Code Mode 操作**:
-A tool-execution unit initiated by an outer `exec` call whose JavaScript may invoke nested tools and may continue through one or more Poll Phases. / 由外层 `exec` 调用发起的工具执行单元；其中的 JavaScript 可以调用嵌套工具，也可以通过一个或多个轮询阶段继续运行。
+A tool-execution unit initiated by an outer `exec` call whose JavaScript may invoke nested tools and may continue through one or more Poll Phases. Its user-facing display name is `Code Mode tool call`; the canonical concept and stable `code_mode_operation` subtype remain unchanged. / 由外层 `exec` 调用发起的工具执行单元；其中的 JavaScript 可以调用嵌套工具，也可以通过一个或多个轮询阶段继续运行。其用户界面显示名为 `Code Mode 工具调用`；规范概念和稳定的 `code_mode_operation` subtype 保持不变。
 _Avoid_: Exec event, JavaScript command / Exec 事件、JavaScript 命令
 
 **Observed Nested Activity / 已观测嵌套活动**:

@@ -635,7 +635,7 @@ function createCodexLogicalBuilder(deps) {
       layer: 'main',
       role: 'assistant',
       label: 'Code Mode operation',
-      preview: truncate(execCall?.output || 'Code Mode operation'),
+      preview: truncate(execCall?.output || ''),
       searchText: facts.searchableText,
       severity: 'normal',
       status: '',

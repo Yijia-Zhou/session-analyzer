@@ -1387,7 +1387,7 @@ test('browser search parameter popover exposes direct fixed filters, Escape laye
   assert.equal(await page.locator('#searchAssistHeading').textContent(), 'Search options');
   assert.equal(await page.locator('#searchResultsSection').isHidden(), true);
   assert.equal(await page.locator('#searchAssistFooter').isHidden(), true);
-  assert.equal(await page.locator('[data-search-filter-row]').count(), 4);
+  assert.equal(await page.locator('[data-search-filter-row]').count(), 3);
   assert.equal(await page.locator('[data-search-filter-row][hidden]').count(), 0);
   assert.equal(await page.locator('[data-search-filter-row="file"] label').textContent(), 'Touched file');
   assert.equal(await page.locator('#searchFileInput').getAttribute('placeholder'), 'Any touched file');
@@ -3731,15 +3731,50 @@ test('browser folding profile exposes declared Code Mode requests and previews r
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const { page } = await openApp(t, index);
 
+  const codeModeCard = page.locator('#detail .codeModeRuleCard');
+  await codeModeCard.waitFor();
+  assert.equal(
+    await page.locator('#detail .profileDetailHeader').evaluate((header) => getComputedStyle(header).position),
+    'sticky',
+  );
+  assert.equal(await page.locator('#detail .profileStrategyDescription').count(), 1);
+  const stickyHeaderPosition = await page.locator('.detailPane').evaluate((pane) => {
+    pane.scrollTop = pane.scrollHeight;
+    const header = pane.querySelector('.profileDetailHeader');
+    const paneRect = pane.getBoundingClientRect();
+    const headerRect = header.getBoundingClientRect();
+    return {
+      scrollTop: pane.scrollTop,
+      paneTop: paneRect.top,
+      panePaddingTop: Number.parseFloat(getComputedStyle(pane).paddingTop) || 0,
+      headerTop: headerRect.top,
+    };
+  });
+  assert.ok(stickyHeaderPosition.scrollTop > 0);
+  assert.ok(
+    Math.abs(
+      stickyHeaderPosition.headerTop
+      - stickyHeaderPosition.paneTop
+      - stickyHeaderPosition.panePaddingTop
+    ) <= 2,
+    `expected sticky profile header at detail-pane top: ${JSON.stringify(stickyHeaderPosition)}`,
+  );
+  assert.equal(await codeModeCard.locator('[data-profile-condition="codeModeOperation"]').count(), 1);
+  assert.equal(
+    await page.locator('#detail .profileRuleSection:not(.codeModeRuleSection) [data-profile-condition="codeModeOperation"]').count(),
+    0,
+  );
   const requestRule = page.locator('#detail [data-profile-code-mode-request="wait_agent"]');
   await requestRule.waitFor();
   const rowText = await requestRule.locator('xpath=..').textContent();
   assert.match(rowText, /Wait for subagent|等待子代理/);
   assert.match(rowText, /wait_agent/);
+  assert.match(rowText, /Inherit other rules|继承其他规则/);
 
   await requestRule.selectOption('expanded');
   await page.waitForFunction(() => [...document.querySelectorAll('#timeline .event.code-mode-single-tool')]
     .some((event) => event.classList.contains('expanded')));
+  assert.equal(await requestRule.locator('xpath=..').locator('.profileRuleChanged').count(), 1);
 });
 
 test('browser structured filters keep profile-hidden Code Mode request results visible', async (t) => {
@@ -3767,18 +3802,39 @@ test('browser structured filters keep profile-hidden Code Mode request results v
   await page.waitForFunction(() => (
     document.querySelectorAll('#timeline .event.hiddenByProfile').length >= 3
   ));
-  await addSearchFilter(page, 'kind', 'code_mode_operation');
-  await addSearchFilter(page, 'codeModeRequest', 'shell_command');
+  assert.match(
+    await page.locator('#searchKindSelect option[value="code_mode_operation"]').textContent(),
+    /Code Mode tool call \(3\)/,
+  );
+  assert.equal(await page.locator('[data-search-filter-row="codeModeRequest"]').count(), 0);
+  assert.match(
+    await page.locator('#searchKindSelect optgroup').filter({ hasText: 'Code Mode tool call' }).getAttribute('label'),
+    /Code Mode tool call/,
+  );
+  assert.match(
+    await page.locator('#searchKindSelect option[value="code_mode_request:shell_command"]').textContent(),
+    /Declared: Shell command \(1\)/,
+  );
+  await addSearchFilter(page, 'kind', 'code_mode_request:shell_command');
   await page.waitForFunction(() => {
     const events = [...document.querySelectorAll('#timeline .event[data-event-id]')];
     return events.length === 1
       && events[0].classList.contains('collapsed')
       && !events[0].classList.contains('hiddenByProfile');
   });
-  assert.match(
-    await page.locator('#searchCodeModeRequestSelect option[value="shell_command"]').textContent(),
-    /Shell command \(1\)/,
-  );
+  await expectInputValue(page, '#searchKindSelect', 'code_mode_request:shell_command');
+  assert.equal(await page.locator('#searchFilterCount').textContent(), 'Filters · 1');
+
+  await addSearchFilter(page, 'kind', 'code_mode_operation');
+  await page.waitForFunction(() => {
+    const events = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    return events.length === 3
+      && events.every((event) => (
+        event.classList.contains('collapsed') && !event.classList.contains('hiddenByProfile')
+      ));
+  });
+  await expectInputValue(page, '#searchKindSelect', 'code_mode_operation');
+  assert.equal(await page.locator('#searchFilterCount').textContent(), 'Filters · 1');
 
   await clearAllSearch(page);
   await page.waitForFunction(() => (

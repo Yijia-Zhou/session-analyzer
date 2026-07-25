@@ -224,7 +224,6 @@ const el = {
   searchKindLabel: document.getElementById('searchKindLabel'),
   searchKindSelect: document.getElementById('searchKindSelect'),
   searchStatusSelect: document.getElementById('searchStatusSelect'),
-  searchCodeModeRequestSelect: document.getElementById('searchCodeModeRequestSelect'),
   searchFileInput: document.getElementById('searchFileInput'),
   searchFileSuggestions: document.getElementById('searchFileSuggestions'),
   profileSelect: document.getElementById('profileSelect'),
@@ -312,11 +311,9 @@ function applyStaticLocale() {
   document.querySelector('[data-search-filter-row="file"] label') && setText(document.querySelector('[data-search-filter-row="file"] label'), t('touchedFileFilter'));
   document.querySelector('[data-search-filter-row="kind"] label') && setText(document.querySelector('[data-search-filter-row="kind"] label'), t('kind'));
   document.querySelector('[data-search-filter-row="status"] label') && setText(document.querySelector('[data-search-filter-row="status"] label'), t('status'));
-  document.querySelector('[data-search-filter-row="codeModeRequest"] label') && setText(document.querySelector('[data-search-filter-row="codeModeRequest"] label'), t('codeModeRequest'));
   if (el.searchFileInput) el.searchFileInput.setAttribute('placeholder', t('anyFile'));
   setSelectOptionText(el.searchKindSelect, '', t('anyKind'));
   setSelectOptionText(el.searchStatusSelect, '', t('anyStatus'));
-  setSelectOptionText(el.searchCodeModeRequestSelect, '', t('anyCodeModeRequest'));
   setSelectOptionText(el.searchStatusSelect, 'active', searchStatusLabel('active'));
   setSelectOptionText(el.searchStatusSelect, 'blocked', searchStatusLabel('blocked'));
   setSelectOptionText(el.searchStatusSelect, 'complete', searchStatusLabel('complete'));
@@ -1947,19 +1944,18 @@ function activeFilters() {
     file: t('touchedFileFilter'),
     kind: t('kind'),
     status: t('status'),
-    codeModeRequest: t('codeModeRequest'),
   }).map((entry) => ({
     ...entry,
     displayValue: entry.key === 'kind'
-      ? kindLabel(entry.value)
+      ? kindFilterDisplayLabel(search)
       : (entry.key === 'status'
         ? searchStatusLabel(entry.value)
-        : (entry.key === 'codeModeRequest' ? codeModeRequestDisplayLabel(entry.value) : entry.value)),
+        : entry.value),
     label: `${entry.label}: ${entry.key === 'kind'
-      ? kindLabel(entry.value)
+      ? kindFilterDisplayLabel(search)
       : (entry.key === 'status'
         ? searchStatusLabel(entry.value)
-        : (entry.key === 'codeModeRequest' ? codeModeRequestDisplayLabel(entry.value) : entry.value))}`,
+        : entry.value)}`,
   }));
 }
 
@@ -2001,15 +1997,10 @@ function renderSearchAssistChips() {
     const row = el.searchFilterRows?.querySelector(`[data-search-filter-row="${key}"]`);
     const value = state.searchFilters[key] || '';
     row?.classList.toggle('active', Boolean(value));
-    if (key === 'codeModeRequest' && row) {
-      const mainOnly = activeLayerId() !== 'main';
-      row.hidden = mainOnly;
-      row.classList.toggle('mainOnly', mainOnly);
-    }
   }
   if (el.searchLayerShortcut) el.searchLayerShortcut.disabled = analyzerDisabled;
   el.searchFilterRows?.querySelectorAll('[data-search-filter-control]').forEach((control) => {
-    control.disabled = analyzerDisabled || (control.dataset.searchFilterControl === 'codeModeRequest' && activeLayerId() !== 'main');
+    control.disabled = analyzerDisabled;
   });
   if (el.searchClearAllBtn) el.searchClearAllBtn.disabled = analyzerDisabled || (!state.searchQuery && filterCount === 0);
   renderSearchMetrics();
@@ -2079,6 +2070,33 @@ function codeModeRequestDisplayLabel(value) {
   return i18n.codeModeRequestLabel(request, state.locale) || request;
 }
 
+const CODE_MODE_REQUEST_KIND_PREFIX = 'code_mode_request:';
+
+function codeModeRequestKindValue(value) {
+  const request = String(value || '').trim();
+  return request ? `${CODE_MODE_REQUEST_KIND_PREFIX}${request}` : '';
+}
+
+function codeModeRequestFromKindValue(value) {
+  const selected = String(value || '');
+  return selected.startsWith(CODE_MODE_REQUEST_KIND_PREFIX)
+    ? selected.slice(CODE_MODE_REQUEST_KIND_PREFIX.length).trim()
+    : '';
+}
+
+function kindControlValue(search = currentSearchState()) {
+  if (search.codeModeRequest) return codeModeRequestKindValue(search.codeModeRequest);
+  return search.kind || '';
+}
+
+function kindFilterDisplayLabel(search = currentSearchState()) {
+  const kind = search.kind || (search.codeModeRequest ? 'code_mode_operation' : '');
+  if (kind !== 'code_mode_operation' || !search.codeModeRequest) return kindLabel(kind);
+  return `${kindLabel(kind)} › ${t('declaredRequestOption', {
+    value: codeModeRequestDisplayLabel(search.codeModeRequest),
+  })}`;
+}
+
 function profileCodeModeRequestCatalog(rules) {
   const current = normalizedCodeModeRequestOptions('main');
   const currentValues = new Set(current.map((item) => item.value));
@@ -2101,42 +2119,68 @@ function renderKindOptions() {
   const options = normalizedKindOptions(search.layer);
   const values = new Set(options.map((option) => option.value));
   const rows = [`<option value="">${escapeHtml(t('anyKind'))}</option>`];
-  if (search.kind && !values.has(search.kind)) {
+  const requestOptions = normalizedCodeModeRequestOptions(search.layer);
+  const requestValues = new Set(requestOptions.map((option) => option.value));
+  if (search.codeModeRequest && !requestValues.has(search.codeModeRequest)) {
+    requestOptions.push({
+      value: search.codeModeRequest,
+      displayLabel: codeModeRequestDisplayLabel(search.codeModeRequest),
+      count: 0,
+    });
+    requestOptions.sort((left, right) => (
+      left.displayLabel.localeCompare(right.displayLabel) || left.value.localeCompare(right.value)
+    ));
+  }
+  if (search.kind && search.kind !== 'code_mode_operation' && !values.has(search.kind)) {
     rows.push(`<option value="${escapeHtml(search.kind)}">${escapeHtml(`${kindLabel(search.kind)} (${search.kind})`)}</option>`);
   }
-  rows.push(...options.map((option) => {
+  const renderOrdinaryKindOption = (option) => {
     const label = option.count ? `${option.label} (${option.count})` : option.label;
     const matchField = option.matchField ? ` data-match-field="${escapeHtml(option.matchField)}"` : '';
     return `<option value="${escapeHtml(option.value)}"${matchField}>${escapeHtml(label)}</option>`;
-  }));
-  el.searchKindSelect.innerHTML = rows.join('');
-  el.searchKindSelect.value = search.kind;
-}
-
-function renderCodeModeRequestOptions() {
-  if (!el.searchCodeModeRequestSelect) return;
-  const search = currentSearchState();
-  const options = normalizedCodeModeRequestOptions(search.layer);
-  const values = new Set(options.map((option) => option.value));
-  const rows = [`<option value="">${escapeHtml(t('anyCodeModeRequest'))}</option>`];
-  if (search.codeModeRequest && !values.has(search.codeModeRequest)) {
-    rows.push(`<option value="${escapeHtml(search.codeModeRequest)}">${escapeHtml(codeModeRequestDisplayLabel(search.codeModeRequest))}</option>`);
+  };
+  const codeModeKind = options.find((option) => option.value === 'code_mode_operation');
+  const renderCodeModeGroup = () => {
+    if (!codeModeKind && !requestOptions.length && search.kind !== 'code_mode_operation' && !search.codeModeRequest) return '';
+    const kindOption = codeModeKind || {
+      value: 'code_mode_operation',
+      label: kindLabel('code_mode_operation'),
+      count: 0,
+      matchField: 'subtype',
+    };
+    const allLabel = kindOption.count ? `${kindOption.label} (${kindOption.count})` : kindOption.label;
+    const matchField = kindOption.matchField ? ` data-match-field="${escapeHtml(kindOption.matchField)}"` : '';
+    const requestRows = requestOptions.map((option) => {
+      const requestLabel = t('declaredRequestOption', { value: option.displayLabel });
+      const label = option.count ? `${requestLabel} (${option.count})` : requestLabel;
+      return `<option value="${escapeHtml(codeModeRequestKindValue(option.value))}">${escapeHtml(label)}</option>`;
+    });
+    return [
+      `<optgroup label="${escapeHtml(kindOption.label)}">`,
+      `<option value="code_mode_operation"${matchField}>${escapeHtml(allLabel)}</option>`,
+      ...requestRows,
+      '</optgroup>',
+    ].join('');
+  };
+  let codeModeGroupRendered = false;
+  for (const option of options) {
+    if (option.value === 'code_mode_operation') {
+      rows.push(renderCodeModeGroup());
+      codeModeGroupRendered = true;
+    } else {
+      rows.push(renderOrdinaryKindOption(option));
+    }
   }
-  rows.push(...options.map((option) => {
-    const label = option.count ? `${option.displayLabel} (${option.count})` : option.displayLabel;
-    return `<option value="${escapeHtml(option.value)}">${escapeHtml(label)}</option>`;
-  }));
-  el.searchCodeModeRequestSelect.innerHTML = rows.join('');
-  el.searchCodeModeRequestSelect.value = search.codeModeRequest;
+  if (!codeModeGroupRendered) rows.push(renderCodeModeGroup());
+  el.searchKindSelect.innerHTML = rows.join('');
+  el.searchKindSelect.value = kindControlValue(search);
 }
 
 function syncSearchAssistControls() {
   const search = currentSearchState();
   renderKindOptions();
-  renderCodeModeRequestOptions();
-  setSelectIfOption(el.searchKindSelect, search.kind);
+  setSelectIfOption(el.searchKindSelect, kindControlValue(search));
   setSelectIfOption(el.searchStatusSelect, search.status);
-  setSelectIfOption(el.searchCodeModeRequestSelect, search.codeModeRequest);
   if (el.searchFileInput) el.searchFileInput.value = search.file;
   renderSearchAssistChips();
 }
@@ -2196,9 +2240,20 @@ function focusSearchEnd() {
 
 function applySearchFilter(operator, value) {
   if (!Object.hasOwn(state.searchFilters, operator)) return;
-  const nextValue = operator === 'codeModeRequest' && activeLayerId() !== 'main' ? '' : (value || '');
-  if (state.searchFilters[operator] === nextValue) return;
-  state.searchFilters = { ...state.searchFilters, [operator]: nextValue };
+  const nextFilters = { ...state.searchFilters };
+  if (operator === 'kind') {
+    const request = activeLayerId() === 'main' ? codeModeRequestFromKindValue(value) : '';
+    nextFilters.kind = request ? 'code_mode_operation' : (value || '');
+    nextFilters.codeModeRequest = request;
+  } else if (operator === 'codeModeRequest') {
+    const request = activeLayerId() === 'main' ? (value || '') : '';
+    nextFilters.codeModeRequest = request;
+    if (request) nextFilters.kind = 'code_mode_operation';
+  } else {
+    nextFilters[operator] = value || '';
+  }
+  if (Object.keys(nextFilters).every((key) => nextFilters[key] === state.searchFilters[key])) return;
+  state.searchFilters = nextFilters;
   state.searchStructureKey = structuredSearchKey();
   beginProjectSearchPendingTransition();
   beginSearchTargetContextTransition();
@@ -2360,7 +2415,9 @@ function clearActiveFilter(key) {
   } else if (key === 'q') {
     state.searchQuery = '';
   } else if (Object.hasOwn(state.searchFilters, key)) {
-    state.searchFilters = { ...state.searchFilters, [key]: '' };
+    state.searchFilters = key === 'kind'
+      ? { ...state.searchFilters, kind: '', codeModeRequest: '' }
+      : { ...state.searchFilters, [key]: '' };
   }
   syncSearchInputValue();
   beginProjectSearchPendingTransition();
@@ -4752,12 +4809,14 @@ function renderProfileRulesPane(options = {}) {
       : item.name;
     return `<option value="${escapeHtml(item.id)}"${item.id === state.profileId ? ' selected' : ''}>${escapeHtml(name)}</option>`;
   }).join('');
-  const stateOptions = (value, includeDisabled = false, states = DISPLAY_STATES) => [
-    includeDisabled ? `<option value=""${value ? '' : ' selected'}>${escapeHtml(t('disabled'))}</option>` : '',
+  const stateOptions = (value, includeDisabled = false, states = DISPLAY_STATES, emptyLabel = t('disabled')) => [
+    includeDisabled ? `<option value=""${value ? '' : ' selected'}>${escapeHtml(emptyLabel)}</option>` : '',
     ...states.map((stateId) => `<option value="${stateId}"${stateId === value ? ' selected' : ''}>${escapeHtml(displayStateLabel(stateId))}</option>`),
   ].join('');
   const rules = normalizeRules(draft.rules);
+  const savedRules = normalizeRules(profile.rules);
   const conditionMap = new Map(rules.conditions.map((condition) => [condition.id, condition.state]));
+  const savedConditionMap = new Map(savedRules.conditions.map((condition) => [condition.id, condition.state]));
   const renderKindRow = (kind) => {
     const display = rules.kindStates[kind] || '';
     return `<label class="profileRuleRow">
@@ -4773,14 +4832,22 @@ function renderProfileRulesPane(options = {}) {
   };
   const renderCodeModeRequestRow = (request) => {
     const display = rules.codeModeRequestStates[request.value] || '';
+    const savedDisplay = savedRules.codeModeRequestStates[request.value] || '';
+    const changed = display !== savedDisplay;
     const label = request.displayLabel || request.label || codeModeRequestDisplayLabel(request.value) || request.value;
-    return `<label class="profileRuleRow" data-profile-code-mode-request-row="${escapeHtml(request.value)}">
+    const metadata = [
+      `<code>${escapeHtml(request.value)}</code>`,
+      request.historical ? escapeHtml(t('historicalRule')) : '',
+      request.count ? escapeHtml(t('suggestionEventCount', { count: request.count })) : '',
+      changed ? `<span class="profileRuleChanged">${escapeHtml(t('changed'))}</span>` : '',
+    ].filter(Boolean).join('<span aria-hidden="true">·</span>');
+    return `<label class="profileRuleRow codeModeRuleRow codeModeRequestRuleRow${changed ? ' changed' : ''}${request.historical ? ' historical' : ''}" data-profile-code-mode-request-row="${escapeHtml(request.value)}">
       <span>
         <strong>${escapeHtml(label)}</strong>
-        <span>${escapeHtml(request.value)}</span>
+        <span class="profileRuleMeta">${metadata}</span>
       </span>
       <select data-profile-code-mode-request="${escapeHtml(request.value)}">
-        <option value=""${display ? '' : ' selected'}>${escapeHtml(displayStateLabel(rules.fallback))} (${escapeHtml(t('default'))})</option>
+        <option value=""${display ? '' : ' selected'}>${escapeHtml(t('inheritOtherRules'))}</option>
         ${DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === display ? ' selected' : ''}>${escapeHtml(displayStateLabel(stateId))}</option>`).join('')}
       </select>
     </label>`;
@@ -4790,6 +4857,29 @@ function renderProfileRulesPane(options = {}) {
   const codeModeRequestCatalog = profileCodeModeRequestCatalog(rules);
   const codeModeRequestRows = codeModeRequestCatalog.current.map(renderCodeModeRequestRow).join('');
   const historicalCodeModeRequestRows = codeModeRequestCatalog.historical.map(renderCodeModeRequestRow).join('');
+  const codeModeOperationCount = normalizedKindOptions('main')
+    .find((option) => option.value === 'code_mode_operation')?.count || 0;
+  const codeModeConditionState = conditionMap.get('codeModeOperation') || '';
+  const codeModeConditionChanged = codeModeConditionState !== (savedConditionMap.get('codeModeOperation') || '');
+  const currentCodeModeRuleCount = codeModeRequestCatalog.current.length;
+  const openCodeModeRequests = currentCodeModeRuleCount <= 4
+    || codeModeRequestCatalog.current.some((request) => rules.codeModeRequestStates[request.value]);
+  const codeModeParentMetadata = [
+    `<span>${escapeHtml(t('codeModeAllOperationsDescription'))}</span>`,
+    codeModeConditionChanged ? `<span class="profileRuleChanged">${escapeHtml(t('changed'))}</span>` : '',
+  ].filter(Boolean).join('');
+  const codeModeParentRow = `<label class="profileRuleRow codeModeRuleRow codeModeParentRuleRow${codeModeConditionChanged ? ' changed' : ''}">
+    <span>
+      <strong>${escapeHtml(t('codeModeAllOperations'))}</strong>
+      <span class="profileRuleMeta">${codeModeParentMetadata}</span>
+    </span>
+    <select data-profile-condition="codeModeOperation">${stateOptions(
+    codeModeConditionState,
+    true,
+    CONDITION_DISPLAY_STATES,
+    t('inheritOtherRules'),
+  )}</select>
+  </label>`;
   const renderKindGroup = (entry) => `<section class="profileRuleGroup">
     <h4>${escapeHtml(t(`kindGroup${entry.group.id[0].toUpperCase()}${entry.group.id.slice(1)}Name`))}</h4>
     <p>${escapeHtml(t(`kindGroup${entry.group.id[0].toUpperCase()}${entry.group.id.slice(1)}Description`))}</p>
@@ -4797,7 +4887,8 @@ function renderProfileRulesPane(options = {}) {
   </section>`;
   const explicitKindRows = groupedEditableKinds(explicitKinds).map(renderKindGroup).join('');
   const defaultKindRows = groupedEditableKinds(defaultKinds).map(renderKindGroup).join('');
-  const activeConditionRows = conditionDefinitions().filter((condition) => conditionMap.has(condition.id)).map((condition) => (
+  const genericConditionDefinitions = conditionDefinitions().filter((condition) => condition.id !== 'codeModeOperation');
+  const activeConditionRows = genericConditionDefinitions.filter((condition) => conditionMap.has(condition.id)).map((condition) => (
     `<label class="profileRuleRow">
       <span>
         <strong>${escapeHtml(condition.name)}</strong>
@@ -4806,7 +4897,7 @@ function renderProfileRulesPane(options = {}) {
       <select data-profile-condition="${escapeHtml(condition.id)}">${stateOptions(conditionMap.get(condition.id) || '', true, CONDITION_DISPLAY_STATES)}</select>
     </label>`
   )).join('');
-  const inactiveConditionRows = conditionDefinitions().filter((condition) => !conditionMap.has(condition.id)).map((condition) => (
+  const inactiveConditionRows = genericConditionDefinitions.filter((condition) => !conditionMap.has(condition.id)).map((condition) => (
     `<label class="profileRuleRow">
       <span>
         <strong>${escapeHtml(condition.name)}</strong>
@@ -4839,12 +4930,13 @@ function renderProfileRulesPane(options = {}) {
   </div>`;
   renderDetailShell({
     title: t('foldingStrategy'),
-    subtitle: [status, draft.description].filter(Boolean).join(' | '),
+    subtitle: status,
     actions,
     headerClass: 'profileDetailHeader',
     closeable: false,
     backable: false,
     body: `<section class="profileRules">
+      ${draft.description ? `<p class="profileStrategyDescription">${escapeHtml(draft.description)}</p>` : ''}
       <section class="profileRuleSection">
         <div class="profileRuleSectionHeader">
           <h3>${escapeHtml(t('eventKinds'))}</h3>
@@ -4862,24 +4954,38 @@ function renderProfileRulesPane(options = {}) {
         <p>${escapeHtml(defaultKindNames)}</p>
         <div class="profileRuleList">${defaultKindRows}</div>
       </details>
-      <section class="profileRuleSection codeModeRequestRuleSection">
-        <div class="profileRuleSectionHeader">
-          <h3>${escapeHtml(t('codeModeRequestRules'))}</h3>
+      <section class="profileRuleSection codeModeRuleSection">
+        <div class="profileRuleSectionHeader codeModeRuleSectionHeader">
+          <h3>${escapeHtml(t('codeModeRules'))}</h3>
+          ${codeModeOperationCount ? `<span class="profileRuleCount" title="${escapeHtml(t('codeModeOperationCountHint'))}">${escapeHtml(t('suggestionEventCount', { count: codeModeOperationCount }))}</span>` : ''}
         </div>
-        <p class="profileInactiveText">${escapeHtml(t('codeModeRequestRulesDescription'))}</p>
-        <h4>${escapeHtml(t('codeModeRequestCurrentGroup'))}</h4>
-        <div class="profileRuleList">${codeModeRequestRows || `<div class="profileRuleEmpty">${escapeHtml(t('noCodeModeRequestRules'))}</div>`}</div>
-        ${historicalCodeModeRequestRows ? `<details class="profileRuleDetails">
-          <summary>${escapeHtml(t('codeModeRequestHistoricalGroup'))}</summary>
-          <div class="profileRuleList">${historicalCodeModeRequestRows}</div>
-        </details>` : ''}
+        <p class="codeModeRuleLead">${escapeHtml(t('codeModeRulesDescription'))}</p>
+        <div class="codeModeRuleCard">
+          ${codeModeParentRow}
+          <details class="codeModeRequestDetails"${openCodeModeRequests ? ' open' : ''}>
+            <summary>
+              <span>
+                <strong>${escapeHtml(t('codeModeRequestRules'))}</strong>
+                <small>${escapeHtml(t('codeModeRequestRulesDescription'))}</small>
+              </span>
+              <span class="profileRuleCount" title="${escapeHtml(t('codeModeRequestCountHint'))}">${escapeHtml(t('codeModeRequestTypeCount', { count: currentCodeModeRuleCount }))}</span>
+            </summary>
+            <div class="profileRuleList codeModeRequestRuleList">${codeModeRequestRows || `<div class="profileRuleEmpty">${escapeHtml(t('noCodeModeRequestRules'))}</div>`}</div>
+            ${historicalCodeModeRequestRows ? `<details class="profileRuleDetails codeModeHistoricalRules">
+              <summary>${escapeHtml(t('codeModeRequestHistoricalGroup'))}</summary>
+              <div class="profileRuleList">${historicalCodeModeRequestRows}</div>
+            </details>` : ''}
+          </details>
+        </div>
       </section>
       <section class="profileRuleSection">
         <h3>${escapeHtml(t('conditions'))}</h3>
         <div class="profileRuleList">${activeConditionRows || `<div class="profileRuleEmpty">${escapeHtml(t('noActiveConditions'))}</div>`}</div>
       </section>
       <details class="profileRuleDetails">
-        <summary>${escapeHtml(t('inactiveConditions', { count: conditionDefinitions().length - conditionMap.size }))}</summary>
+        <summary>${escapeHtml(t('inactiveConditions', {
+          count: genericConditionDefinitions.filter((condition) => !conditionMap.has(condition.id)).length,
+        }))}</summary>
         <div class="profileRuleList">${inactiveConditionRows}</div>
       </details>
     </section>`,

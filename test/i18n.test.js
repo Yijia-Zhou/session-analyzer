@@ -55,13 +55,22 @@ const allowedZhPhrases = [
   'JS REPL',
 ];
 const allowedZhTermsByPath = new Map([
+  ['foldingCondition.codeModeOperation.0', new Set(['code', 'mode'])],
+  ['foldingCondition.codeModeOperation.1', new Set(['code', 'mode'])],
+  ['kind.code_mode_operation', new Set(['code', 'mode'])],
+  ['logicalLabel.Code Mode operation', new Set(['code', 'mode'])],
+  ['section.Code Mode operation', new Set(['code', 'mode'])],
+  ['ui.enclosingOperation', new Set(['code', 'mode'])],
   ['ui.entireProjectScopeShort', new Set(['project'])],
   ['ui.anyCodeModeRequest', new Set(['code', 'mode'])],
   ['ui.codeModeRequest', new Set(['code', 'mode'])],
+  ['ui.codeModeRules', new Set(['code', 'mode'])],
+  ['ui.codeModeRulesDescription', new Set(['code', 'mode'])],
+  ['ui.codeModeAllOperations', new Set(['code', 'mode'])],
   ['ui.codeModeRequestRules', new Set(['code', 'mode'])],
   ['ui.codeModeRequestRulesDescription', new Set(['code', 'mode'])],
   ['ui.noCodeModeRequestRules', new Set(['code', 'mode'])],
-  ['ui.projectSearchPrompt', new Set(['code', 'mode'])],
+  ['ui.viewEnclosingOperation', new Set(['code', 'mode'])],
 ]);
 
 function stripAllowedNoise(value) {
@@ -117,8 +126,8 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.eventKindLabel('command', 'zh-CN'), '命令');
   assert.equal(i18n.eventKindLabel('goal', 'zh-CN'), '目标');
   assert.equal(i18n.eventKindLabel('developer_message', 'zh-CN'), '开发者消息');
-  assert.equal(i18n.eventKindLabel('code_mode_operation', 'en'), 'Code Mode operation');
-  assert.equal(i18n.eventKindLabel('code_mode_operation', 'zh-CN'), '代码模式操作');
+  assert.equal(i18n.eventKindLabel('code_mode_operation', 'en'), 'Code Mode tool call');
+  assert.equal(i18n.eventKindLabel('code_mode_operation', 'zh-CN'), 'Code Mode 工具调用');
   assert.equal(i18n.eventKindLabel('goal_context', 'zh-CN'), '目标上下文');
   assert.equal(i18n.statusLabel('blocked', 'zh-CN'), '已阻塞');
   assert.equal(i18n.statusLabel('budget_limited', 'zh-CN'), '已达到预算限制');
@@ -131,10 +140,14 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeDeclaredSequence'), '声明顺序');
   assert.equal(i18n.t('en', 'ui', 'codeModeRequest'), 'Code Mode request');
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequest'), 'Code Mode 请求');
+  assert.equal(i18n.t('en', 'ui', 'declaredRequestOption', { value: 'Shell command' }), 'Declared: Shell command');
+  assert.equal(i18n.t('zh-CN', 'ui', 'declaredRequestOption', { value: '终端命令' }), '声明：终端命令');
   assert.equal(i18n.t('en', 'ui', 'anyCodeModeRequest'), 'Any Code Mode request');
   assert.equal(i18n.t('zh-CN', 'ui', 'anyCodeModeRequest'), '任意 Code Mode 请求');
-  assert.equal(i18n.t('en', 'ui', 'codeModeRequestRules'), 'Code Mode requests (declared)');
-  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequestRules'), 'Code Mode 请求（声明）');
+  assert.equal(i18n.t('en', 'ui', 'codeModeRequestRules'), 'Declared request refinements');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequestRules'), '按声明请求细分');
+  assert.equal(i18n.t('en', 'ui', 'inheritOtherRules'), 'Inherit other rules');
+  assert.equal(i18n.t('zh-CN', 'ui', 'inheritOtherRules'), '继承其他规则');
   assert.equal(i18n.t('en', 'ui', 'codeModeRequestSummary'), 'Request');
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequestSummary'), '请求');
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeNoArguments'), '无参数');
@@ -150,8 +163,8 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.humanize('js_repl'), 'JS REPL');
   assert.deepEqual(i18n.localizeCondition({ id: 'codeModeOperation' }, 'zh-CN'), {
     id: 'codeModeOperation',
-    name: '代码模式操作',
-    description: '由代码模式执行入口及其轮询链分组得到的操作。',
+    name: 'Code Mode 工具调用',
+    description: '由外层 Code Mode 工具调用及其轮询链分组得到。',
   });
 });
 

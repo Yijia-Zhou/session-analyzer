@@ -933,3 +933,30 @@ test('logical builder emits one neutral Code Mode operation and uniquely links n
   assert.equal(events.filter((event) => event.toolName === 'shell_command').length, 0);
   assert.ok(events.some((event) => event.toolName === 'view_image'));
 });
+
+test('logical builder leaves an empty Code Mode source preview empty', () => {
+  const events = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      recordType: 'response_item',
+      payloadType: 'custom_tool_call',
+      callId: 'exec-code-mode-empty-source',
+      toolName: 'exec',
+      turnId: 'turn-code-empty-source',
+      output: '',
+      payload: { name: 'exec', input: '' },
+    }),
+    raw(2, {
+      recordType: 'response_item',
+      payloadType: 'custom_tool_call_output',
+      callId: 'exec-code-mode-empty-source',
+      turnId: 'turn-code-empty-source',
+      output: 'Script completed\nOutput:\n',
+      payload: { output: 'Script completed\nOutput:\n' },
+    }),
+  ]);
+
+  const operation = events.find((event) => event.subtype === 'code_mode_operation');
+  assert.ok(operation);
+  assert.equal(operation.label, 'Code Mode operation');
+  assert.equal(operation.preview, '');
+});
