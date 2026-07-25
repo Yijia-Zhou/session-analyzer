@@ -196,6 +196,7 @@ function isPackageStatePayload(response) {
     && response.json.totals
     && Array.isArray(response.json.supportedLocales)
     && response.json.eventKinds
+    && Array.isArray(response.json.codeModeRequests)
     && response.json.projectSelected === true;
 }
 

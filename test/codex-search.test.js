@@ -73,6 +73,9 @@ function session(id, logicalEvents, rawEvents = []) {
     analysis: { toolUsage: [], failedCommands: [], patchedFiles: [], protocolStats: [] },
     logicalEvents,
     rawEvents,
+    presentationIndexes: {
+      codeModeDeclaredRequests: new Map(),
+    },
   };
 }
 
@@ -201,6 +204,102 @@ test('project search supports filter-only results, layer isolation, and localize
   assert.deepEqual(ordinary.sessions.map((item) => item.id), ['split', 'first', 'second']);
   assert.equal(Object.hasOwn(ordinary, 'matchingEventTotal'), false);
   assert.equal(Object.hasOwn(ordinary.sessions[0], 'searchMatch'), false);
+});
+
+test('Code Mode request filters are exact Main-layer presentation facts with same-event AND semantics', () => {
+  const matchingOperation = logicalEvent('declared-shell', {
+    kind: 'other_tool_call',
+    subtype: 'code_mode_operation',
+    preview: 'alpha parent operation',
+    status: 'failed',
+    touchedFiles: ['G:\\repo\\src\\a.js'],
+  });
+  const otherOperation = logicalEvent('declared-plan', {
+    kind: 'other_tool_call',
+    subtype: 'code_mode_operation',
+    preview: 'alpha other operation',
+    status: 'success',
+  });
+  const nestedCommand = logicalEvent('nested-command', {
+    kind: 'command',
+    subtype: 'command',
+    preview: 'observed nested shell activity',
+    status: 'failed',
+  });
+  const item = session('requests', [matchingOperation, otherOperation, nestedCommand]);
+  item.presentationIndexes.codeModeDeclaredRequests.set(matchingOperation.id, {
+    toolNames: ['shell_command', 'shell_command', 'update_plan'],
+    requestEvidence: 'declared_source',
+  });
+  item.presentationIndexes.codeModeDeclaredRequests.set(otherOperation.id, {
+    toolNames: ['update_plan'],
+    requestEvidence: 'declared_source',
+  });
+  const index = {
+    repoRoot: 'G:\\repo',
+    sessions: [item],
+    sessionsById: new Map([[item.id, item]]),
+  };
+
+  const project = filterSessions(index, {
+    q: 'alpha',
+    kind: 'other_tool_call',
+    status: 'failed',
+    file: 'src/a.js',
+    codeModeRequest: 'shell_command',
+    layer: 'main',
+  });
+  assert.equal(project.total, 1);
+  assert.equal(project.matchingEventTotal, 1);
+  assert.equal(project.sessions[0].searchMatch.latestEvent.id, matchingOperation.id);
+  assert.equal(filterSessions(index, {
+    codeModeRequest: 'shell',
+    layer: 'main',
+  }).total, 0);
+  assert.equal(filterSessions(index, {
+    codeModeRequest: 'shell_command',
+    layer: 'protocol',
+  }).total, 0);
+  const protocolTimeline = getTimeline(index, item.id, {
+    offset: 0,
+    limit: 50,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    codeModeRequest: '',
+    file: '',
+    layer: 'protocol',
+    locale: 'en',
+  });
+  assert.deepEqual(protocolTimeline.codeModeRequests, []);
+
+  const timeline = getTimeline(index, item.id, {
+    offset: 0,
+    limit: 50,
+    q: '',
+    kind: '',
+    status: '',
+    tool: '',
+    codeModeRequest: 'shell_command',
+    file: '',
+    layer: 'main',
+    locale: 'en',
+  });
+  assert.equal(timeline.total, 1);
+  assert.deepEqual(timeline.events[0].presentationFacts, {
+    codeModeDeclaredRequests: {
+      toolNames: ['shell_command', 'shell_command', 'update_plan'],
+      requestEvidence: 'declared_source',
+    },
+  });
+  assert.deepEqual(timeline.codeModeRequests, [
+    { value: 'update_plan', label: 'Plan update', count: 2, evidence: 'declared_source' },
+    { value: 'shell_command', label: 'Shell command', count: 1, evidence: 'declared_source' },
+  ]);
+  assert.equal(timeline.events[0].kind, 'other_tool_call');
+  assert.equal(timeline.events[0].toolName, '');
+  assert.equal(timeline.events.some((event) => event.id === nestedCommand.id), false);
 });
 
 test('timeline reports matching events separately from phrase occurrences without filtering membership', () => {

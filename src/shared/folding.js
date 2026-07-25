@@ -198,6 +198,10 @@
     for (const [kind, display] of Object.entries(source.kindStates || {}).sort(([left], [right]) => left.localeCompare(right))) {
       if (DISPLAY_STATES.includes(display)) kindStates[kind] = display;
     }
+    const codeModeRequestStates = Object.create(null);
+    for (const [request, display] of Object.entries(source.codeModeRequestStates || {}).sort(([left], [right]) => left.localeCompare(right))) {
+      if (request && DISPLAY_STATES.includes(display)) codeModeRequestStates[request] = display;
+    }
     const fallback = DISPLAY_STATES.includes(source.fallback) ? source.fallback : 'summary';
     const conditionStates = new Map();
     for (const condition of Array.isArray(source.conditions) ? source.conditions : []) {
@@ -209,7 +213,7 @@
     const conditions = CONDITION_DEFINITIONS
       .filter((condition) => conditionStates.has(condition.id))
       .map((condition) => ({ id: condition.id, state: conditionStates.get(condition.id) }));
-    return { kindStates, fallback, conditions };
+    return { kindStates, codeModeRequestStates, fallback, conditions };
   }
 
   function importantEvent(event = {}) {
@@ -238,6 +242,12 @@
     const normalized = normalizeRules(rules);
     const matches = [];
     if (Object.hasOwn(normalized.kindStates, event.kind)) matches.push(normalized.kindStates[event.kind]);
+    const requestNames = event.presentationFacts?.codeModeDeclaredRequests?.toolNames;
+    for (const request of new Set(Array.isArray(requestNames) ? requestNames : [])) {
+      if (Object.hasOwn(normalized.codeModeRequestStates, request)) {
+        matches.push(normalized.codeModeRequestStates[request]);
+      }
+    }
     for (const condition of normalized.conditions) {
       if (conditionMatches(condition.id, event)) matches.push(condition.state);
     }

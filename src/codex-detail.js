@@ -12,6 +12,7 @@ function createCodexDetailBuilder(deps) {
   const {
     codeModeAssociableOutputFragments,
     codeModeDisplayOutputText,
+    codeModeExecSource,
     projectDeclaredCodeModeCalls,
   } = codeMode;
   const {
@@ -738,8 +739,7 @@ function createCodexDetailBuilder(deps) {
     }];
 
     const execPhase = phases.find((phase) => phase.kind === 'exec');
-    const execRaw = rawById.get(execPhase?.callRef?.rawId);
-    const execSource = String(execRaw?.parsed?.payload?.input || execRaw?.output || '');
+    const execSource = codeModeExecSource(event, rawById);
 
     const observedOutputs = phases.map((phase) => {
       const outputRaw = rawById.get(phase.outputRef?.rawId);

@@ -86,6 +86,7 @@ test('npm pack manifest contains only runtime package files', () => {
     'public/vendor/highlightjs/highlight.min.js',
     'server.js',
     'src/codex-code-mode.js',
+    'src/codex-code-mode-presentation.js',
     'src/codex-detail.js',
     'src/codex-goal.js',
     'src/codex-logical.js',
@@ -137,6 +138,7 @@ test('package smoke state predicate requires final app state payload', () => {
       totals: {},
       supportedLocales: ['en', 'zh-CN'],
       eventKinds: {},
+      codeModeRequests: [],
       projectSelected: true,
     },
     body: '{}',
@@ -148,6 +150,7 @@ test('package smoke waits past a 202 indexing job before passing state', async (
     totals: {},
     supportedLocales: ['en', 'zh-CN'],
     eventKinds: {},
+    codeModeRequests: [],
     projectSelected: true,
   };
   let stateCalls = 0;

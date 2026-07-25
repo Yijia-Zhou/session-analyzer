@@ -1,6 +1,7 @@
 'use strict';
 
 const { codeModeOutputText } = require('./codex-code-mode');
+const { codeModeOperationExecSource } = require('./codex-code-mode-presentation');
 const { rawRef } = require('./codex-source');
 
 const PRESENTATION_CLAIMED_RAW_POLICY = 'operation_phase_refs_plus_matching_outer_exec_outputs';
@@ -122,9 +123,7 @@ function phaseEventRefs(operation, logicalEvents) {
 }
 
 function operationSearchableText(operation, rawById) {
-  const execCall = rawById.get(String(operation?.phases?.[0]?.callRef?.rawId || ''));
-  const payload = parsedPayload(execCall);
-  const outerJavaScript = Object.hasOwn(payload, 'input') ? payload.input : execCall?.output;
+  const outerJavaScript = codeModeOperationExecSource(operation, rawById);
   const observedOutputs = (operation?.phases || [])
     .map((phase) => rawById.get(String(phase?.outputRef?.rawId || '')))
     .filter(Boolean)

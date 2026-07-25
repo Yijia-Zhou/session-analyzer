@@ -7,7 +7,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const url = require('node:url');
-const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getEvent, getTimeline, isPathInsideOrSame, normalizeFsPath, readImagePreview, readRawLine } = require('./src/codex');
+const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getEvent, getTimeline, isPathInsideOrSame, normalizeCodeModeRequest, normalizeFsPath, readImagePreview, readRawLine } = require('./src/codex');
 const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
 
@@ -220,6 +220,10 @@ function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
         raw: state.index.eventKinds.raw.map((item) => ({ ...item, label: i18n.rawRecordLabel(item.value, resolvedLocale) })),
       }
       : state.index.eventKinds,
+    codeModeRequests: (state.index.codeModeRequests || []).map((item) => ({
+      ...item,
+      label: i18n.codeModeRequestLabel(item.value, resolvedLocale),
+    })),
     foldingProfiles: foldingProfiles.map((profile) => i18n.localizeProfile(profile, resolvedLocale)),
     projectSelected: true,
   };
@@ -508,6 +512,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           kind: searchParams.get('kind') || '',
           status: searchParams.get('status') || '',
           tool: searchParams.get('tool') || '',
+          codeModeRequest: normalizeCodeModeRequest(searchParams.get('codeModeRequest')),
           file: searchParams.get('file') || '',
           sort: searchParams.get('sort') || 'updated-desc',
           locale,
@@ -541,6 +546,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           kind: searchParams.get('kind') || '',
           status: searchParams.get('status') || '',
           tool: searchParams.get('tool') || '',
+          codeModeRequest: normalizeCodeModeRequest(searchParams.get('codeModeRequest')),
           file: searchParams.get('file') || '',
           locale,
         });

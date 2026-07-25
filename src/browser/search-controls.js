@@ -5,7 +5,7 @@
 }(typeof globalThis !== 'undefined' ? globalThis : window, function createSearchControlsApi() {
   'use strict';
 
-  const FILTER_ORDER = ['file', 'kind', 'status'];
+  const FILTER_ORDER = ['file', 'kind', 'status', 'codeModeRequest'];
 
   function normalizedCount(value) {
     const number = Number(value);
@@ -18,6 +18,7 @@
       search.kind || '',
       search.status || '',
       search.file || '',
+      search.codeModeRequest || '',
       layerId || '',
       sortValue || '',
     ].join('\u001f');

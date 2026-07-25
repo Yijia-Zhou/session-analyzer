@@ -3,7 +3,10 @@
 function createCodexSearch(deps) {
   const {
     canonicalSchemaVersion,
+    codeModePresentationFactsForEvent,
     codeModePresentationContextMap,
+    codeModeRequestCatalog,
+    codeModeRequestLabel,
     codexSourceKind,
     codexSourceLocator,
     defaultLocale,
@@ -68,11 +71,16 @@ function createCodexSearch(deps) {
     return makeSnippet(event.preview, q) || makeSnippet(event.searchText, q);
   }
 
-  function eventMatches(event, filters) {
+  function eventMatches(event, filters, presentationIndexes) {
     if (filters.layer && event.layer !== filters.layer) return false;
     if (filters.kind && event.kind !== filters.kind && event.subtype !== filters.kind) return false;
     if (filters.status && event.status !== filters.status) return false;
     if (filters.tool && !String(event.toolName || '').toLowerCase().includes(filters.tool.toLowerCase())) return false;
+    if (filters.codeModeRequest) {
+      if (event.layer !== 'main' || event.subtype !== 'code_mode_operation') return false;
+      const fact = presentationIndexes?.codeModeDeclaredRequests?.get(String(event.id || ''));
+      if (!fact?.toolNames?.includes(filters.codeModeRequest)) return false;
+    }
     if (filters.file) {
       const needle = normalizeSearchPath(filters.file);
       const sourceMatch = normalizeSearchPath(event.source?.file).includes(needle);
@@ -151,7 +159,7 @@ function createCodexSearch(deps) {
     };
   }
 
-  function logicalEventDto(event, q, locale = defaultLocale, presentationContexts) {
+  function logicalEventDto(event, q, locale = defaultLocale, presentationContexts, presentationFacts) {
     const hasSearchHit = q ? eventHasSearchHit(event, q) : false;
     const presentationContext = presentationContexts?.get(event.id);
     return sanitizeLogicalEventDto({
@@ -185,6 +193,7 @@ function createCodexSearch(deps) {
       channels: event.channels,
       snippet: hasSearchHit ? eventSearchSnippet(event, q) : '',
       ...(presentationContext ? { presentationContext } : {}),
+      ...(presentationFacts ? { presentationFacts } : {}),
     });
   }
 
@@ -198,7 +207,8 @@ function createCodexSearch(deps) {
       String(filters.q || '').trim()
       || String(filters.file || '').trim()
       || String(filters.kind || '').trim()
-      || String(filters.status || '').trim(),
+      || String(filters.status || '').trim()
+      || String(filters.codeModeRequest || '').trim(),
     );
   }
 
@@ -234,7 +244,7 @@ function createCodexSearch(deps) {
       if (!sessionWithinDateRange(session, filters)) continue;
       const sourceEvents = sourceEventsForLayer(session, layer, locale);
       const structuralFilters = { ...filters, q: '', layer };
-      const structurallyMatched = sourceEvents.filter((event) => eventMatches(event, structuralFilters));
+      const structurallyMatched = sourceEvents.filter((event) => eventMatches(event, structuralFilters, session.presentationIndexes));
       const matches = structurallyMatched
         .map((event, timelineIndex) => ({ event, timelineIndex }))
         .filter(({ event }) => !filters.q || eventHasSearchHit(event, filters.q));
@@ -273,10 +283,10 @@ function createCodexSearch(deps) {
   function ordinarySessionResult(index, filters, locale) {
     let sessions = index.sessions.filter((session) => {
       if (!sessionWithinDateRange(session, filters)) return false;
-      if (filters.kind || filters.status || filters.tool || filters.file) {
+      if (filters.kind || filters.status || filters.tool || filters.file || filters.codeModeRequest) {
         const layer = filters.layer || 'main';
         const haystack = sourceEventsForLayer(session, layer, locale);
-        return haystack.some((event) => eventMatches(event, { ...filters, layer }));
+        return haystack.some((event) => eventMatches(event, { ...filters, layer }, session.presentationIndexes));
       }
       return true;
     });
@@ -341,7 +351,7 @@ function createCodexSearch(deps) {
     const layer = filters.layer || 'main';
     const sourceEvents = sourceEventsForLayer(session, layer, locale, layer === 'raw' ? filters.q : '');
     const structuralFilters = { ...filters, q: '', layer };
-    const matched = sourceEvents.filter((event) => eventMatches(event, structuralFilters));
+    const matched = sourceEvents.filter((event) => eventMatches(event, structuralFilters, session.presentationIndexes));
     const searchMatchCount = filters.q
       ? matched.reduce((sum, event) => sum + eventSearchMatchCount(event, filters.q), 0)
       : 0;
@@ -361,7 +371,18 @@ function createCodexSearch(deps) {
       limit: filters.limit,
       layer,
       eventKinds: eventKindCatalog([session], { locale }),
-      events: layer === 'raw' ? page : page.map((event) => logicalEventDto(event, filters.q, locale, presentationContexts)),
+      codeModeRequests: layer === 'main'
+        ? codeModeRequestCatalog([session], {
+          label: (value) => codeModeRequestLabel(value, locale),
+        })
+        : [],
+      events: layer === 'raw' ? page : page.map((event) => logicalEventDto(
+        event,
+        filters.q,
+        locale,
+        presentationContexts,
+        layer === 'main' ? codeModePresentationFactsForEvent(session, event.id) : null,
+      )),
     };
   }
 
@@ -377,7 +398,13 @@ function createCodexSearch(deps) {
     const presentationContexts = layer === 'main'
       ? codeModePresentationContextMap(session.logicalEvents)
       : null;
-    return logicalEventDto(event, '', locale, presentationContexts);
+    return logicalEventDto(
+      event,
+      '',
+      locale,
+      presentationContexts,
+      layer === 'main' ? codeModePresentationFactsForEvent(session, event.id) : null,
+    );
   }
 
   return {

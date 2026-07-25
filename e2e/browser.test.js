@@ -1387,7 +1387,7 @@ test('browser search parameter popover exposes direct fixed filters, Escape laye
   assert.equal(await page.locator('#searchAssistHeading').textContent(), 'Search options');
   assert.equal(await page.locator('#searchResultsSection').isHidden(), true);
   assert.equal(await page.locator('#searchAssistFooter').isHidden(), true);
-  assert.equal(await page.locator('[data-search-filter-row]').count(), 3);
+  assert.equal(await page.locator('[data-search-filter-row]').count(), 4);
   assert.equal(await page.locator('[data-search-filter-row][hidden]').count(), 0);
   assert.equal(await page.locator('[data-search-filter-row="file"] label').textContent(), 'Touched file');
   assert.equal(await page.locator('#searchFileInput').getAttribute('placeholder'), 'Any touched file');
@@ -3724,6 +3724,22 @@ test('browser folding profile edits save, cancel, and repair invalid localStorag
   await expectInputValue(page, '#profileSelect', 'narrative');
   const repaired = await page.evaluate(() => localStorage.getItem('sessionAnalyzer.profile'));
   assert.equal(repaired, 'narrative');
+});
+
+test('browser folding profile exposes declared Code Mode requests and previews request rules immediately', async (t) => {
+  const fixture = await makeCodeModeCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const { page } = await openApp(t, index);
+
+  const requestRule = page.locator('#detail [data-profile-code-mode-request="wait_agent"]');
+  await requestRule.waitFor();
+  const rowText = await requestRule.locator('xpath=..').textContent();
+  assert.match(rowText, /Wait for subagent|等待子代理/);
+  assert.match(rowText, /wait_agent/);
+
+  await requestRule.selectOption('expanded');
+  await page.waitForFunction(() => [...document.querySelectorAll('#timeline .event.code-mode-single-tool')]
+    .some((event) => event.classList.contains('expanded')));
 });
 
 test('browser folding profile seeds dynamic kinds from the full session catalog', async (t) => {

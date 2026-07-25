@@ -41,10 +41,13 @@ test('only Main logical DTO responses build one reverse context map when needed'
   let mapBuilds = 0;
   const search = createCodexSearch({
     canonicalSchemaVersion: 1,
+    codeModePresentationFactsForEvent: () => null,
     codeModePresentationContextMap(logicalEvents) {
       mapBuilds += 1;
       return codeModePresentationContextMap(logicalEvents);
     },
+    codeModeRequestCatalog: () => [],
+    codeModeRequestLabel: (value) => value,
     codexSourceKind: 'codex',
     codexSourceLocator: (source) => source,
     defaultLocale: 'en',

@@ -104,6 +104,7 @@ test('rule normalization rejects invalid conditions and stabilizes duplicates', 
     ],
   })), {
     kindStates: { patch: 'expanded' },
+    codeModeRequestStates: {},
     fallback: 'summary',
     conditions: [
       { id: 'searchHit', state: 'summary' },
@@ -111,6 +112,76 @@ test('rule normalization rejects invalid conditions and stabilizes duplicates', 
       { id: 'touchedFiles', state: 'collapsed' },
     ],
   });
+});
+
+test('normalizes Code Mode request rules and preserves historical and reserved keys', () => {
+  const normalized = folding.normalizeRules({
+    codeModeRequestStates: JSON.parse('{"shell_command":"collapsed","historical_tool":"summary","__proto__":"expanded","constructor":"hidden","":"expanded","bad":"unknown"}'),
+  });
+  assert.deepEqual(
+    plain(normalized.codeModeRequestStates),
+    JSON.parse('{"__proto__":"expanded","constructor":"hidden","historical_tool":"summary","shell_command":"collapsed"}'),
+  );
+  assert.equal(Object.getPrototypeOf(normalized.codeModeRequestStates), null);
+});
+
+test('Code Mode request rules use presentation facts and most-visible priority', () => {
+  const event = {
+    kind: 'other_tool_call',
+    subtype: 'code_mode_operation',
+    severity: 'normal',
+    presentationFacts: {
+      codeModeDeclaredRequests: {
+        toolNames: ['shell_command', 'shell_command', 'update_plan'],
+        requestEvidence: 'declared_source',
+      },
+    },
+  };
+  const rules = {
+    kindStates: { other_tool_call: 'collapsed' },
+    codeModeRequestStates: {
+      shell_command: 'hidden',
+      update_plan: 'expanded',
+    },
+    fallback: 'summary',
+  };
+  assert.equal(folding.displayStateFromRules(event, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({
+    ...event,
+    presentationFacts: {
+      codeModeDeclaredRequests: {
+        toolNames: ['shell_command'],
+        requestEvidence: 'declared_source',
+      },
+    },
+  }, rules), 'collapsed');
+  assert.equal(folding.displayStateFromRules({
+    ...event,
+    presentationFacts: undefined,
+  }, {
+    codeModeRequestStates: { shell_command: 'expanded' },
+    fallback: 'hidden',
+  }), 'hidden');
+});
+
+test('declared update_plan requests do not match the canonical update-plan condition', () => {
+  const event = {
+    kind: 'other_tool_call',
+    subtype: 'code_mode_operation',
+    severity: 'normal',
+    presentationFacts: {
+      codeModeDeclaredRequests: {
+        toolNames: ['update_plan'],
+        requestEvidence: 'declared_source',
+      },
+    },
+  };
+  assert.equal(folding.conditionMatches('updatePlanCall', event), false);
+  assert.equal(folding.displayStateFromRules(event, {
+    codeModeRequestStates: { update_plan: 'collapsed' },
+    conditions: [{ id: 'updatePlanCall', state: 'expanded' }],
+    fallback: 'hidden',
+  }), 'collapsed');
 });
 
 test('planning condition matches update_plan calls and protocol plan updates', () => {

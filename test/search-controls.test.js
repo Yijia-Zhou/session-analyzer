@@ -11,6 +11,7 @@ test('structured search key ignores free text and tracks structural filters', ()
   assert.notEqual(searchControls.structuredSearchKey({ q: 'alpha', kind: 'command' }, 'main', 'mtime-desc'), base);
   assert.notEqual(searchControls.structuredSearchKey({ q: 'alpha', status: 'failed' }, 'main', 'mtime-desc'), base);
   assert.notEqual(searchControls.structuredSearchKey({ q: 'alpha', file: 'src/app.js' }, 'main', 'mtime-desc'), base);
+  assert.notEqual(searchControls.structuredSearchKey({ q: 'alpha', codeModeRequest: 'shell_command' }, 'main', 'mtime-desc'), base);
   assert.notEqual(searchControls.structuredSearchKey({ q: 'alpha' }, 'protocol', 'mtime-desc'), base);
   assert.notEqual(searchControls.structuredSearchKey({ q: 'alpha' }, 'main', 'start-asc'), base);
 });
@@ -25,6 +26,16 @@ test('active filter entries and summaries keep file-kind-status order', () => {
     { key: 'status', value: 'failed', label: 'Status' },
   ]);
   assert.equal(searchControls.filterSummary(filters, labels), 'File: src/app.js · Kind: command · Status: failed');
+});
+
+test('active request filters use a stable final slot', () => {
+  assert.deepEqual(searchControls.activeFilterEntries({ codeModeRequest: 'shell_command' }, {
+    codeModeRequest: 'Code Mode request',
+  }), [{
+    key: 'codeModeRequest',
+    value: 'shell_command',
+    label: 'Code Mode request',
+  }]);
 });
 
 test('search metrics model distinguishes idle, loading, session, and project states', () => {

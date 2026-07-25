@@ -56,6 +56,12 @@ const allowedZhPhrases = [
 ];
 const allowedZhTermsByPath = new Map([
   ['ui.entireProjectScopeShort', new Set(['project'])],
+  ['ui.anyCodeModeRequest', new Set(['code', 'mode'])],
+  ['ui.codeModeRequest', new Set(['code', 'mode'])],
+  ['ui.codeModeRequestRules', new Set(['code', 'mode'])],
+  ['ui.codeModeRequestRulesDescription', new Set(['code', 'mode'])],
+  ['ui.noCodeModeRequestRules', new Set(['code', 'mode'])],
+  ['ui.projectSearchPrompt', new Set(['code', 'mode'])],
 ]);
 
 function stripAllowedNoise(value) {
@@ -123,6 +129,12 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.searchStatusLabel('completed', 'zh-CN'), '事件已完成');
   assert.notEqual(i18n.searchStatusLabel('complete', 'zh-CN'), i18n.searchStatusLabel('completed', 'zh-CN'));
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeDeclaredSequence'), '声明顺序');
+  assert.equal(i18n.t('en', 'ui', 'codeModeRequest'), 'Code Mode request');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequest'), 'Code Mode 请求');
+  assert.equal(i18n.t('en', 'ui', 'anyCodeModeRequest'), 'Any Code Mode request');
+  assert.equal(i18n.t('zh-CN', 'ui', 'anyCodeModeRequest'), '任意 Code Mode 请求');
+  assert.equal(i18n.t('en', 'ui', 'codeModeRequestRules'), 'Code Mode requests (declared)');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequestRules'), 'Code Mode 请求（声明）');
   assert.equal(i18n.t('en', 'ui', 'codeModeRequestSummary'), 'Request');
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequestSummary'), '请求');
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeNoArguments'), '无参数');
@@ -210,6 +222,13 @@ test('zh-CN protocol and section labels avoid mechanical schema wording', () => 
   assert.equal(i18n.t('zh-CN', 'protocol', 'turn_complete'), '对话轮次完成');
   assert.equal(i18n.t('zh-CN', 'protocol', 'meta_block'), '协议元数据');
   assert.equal(i18n.sectionTitle('Search payload', 'zh-CN'), '搜索请求内容');
+});
+
+test('Code Mode request labels localize display text while preserving machine values separately', () => {
+  assert.equal(i18n.codeModeRequestLabel('shell_command', 'en'), 'Shell command');
+  assert.equal(i18n.codeModeRequestLabel('exec_command', 'en'), 'Shell command');
+  assert.equal(i18n.codeModeRequestLabel('shell_command', 'zh-CN'), '终端命令');
+  assert.equal(i18n.codeModeRequestLabel('web__run', 'zh-CN'), '网络请求');
 });
 
 test('nested collaboration fields and generic status labels localize without changing agent names', () => {
@@ -338,6 +357,7 @@ test('state API localizes display resources while preserving ids', async () => {
     assert.equal(narrative.name, '叙事时间线');
     assert.equal(narrative.rules.fallback, 'summary');
     assert.ok(body.eventKinds.main.every((item) => item.value && item.label));
+    assert.ok(Array.isArray(body.codeModeRequests));
     const rawAgentMessage = body.eventKinds.raw.find((item) => item.value === 'agent_message');
     assert.equal(rawAgentMessage.label, 'agent 消息');
   } finally {

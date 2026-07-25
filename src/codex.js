@@ -14,6 +14,13 @@ const {
   projectCodeModeOperations,
 } = require('./codex-code-mode');
 const { projectDeclaredCodeModeCalls } = require('./codex-code-mode-declared');
+const {
+  buildCodeModePresentationIndexes,
+  codeModePresentationFactsForEvent,
+  codeModeExecSource,
+  codeModeRequestCatalog,
+  normalizeCodeModeRequest,
+} = require('./codex-code-mode-presentation');
 const { stripAnsiSequences } = require('./shared/terminal-text');
 const { deriveCodeModeFacts } = require('./codex-code-mode-facts');
 const { codeModePresentationContextMap } = require('./codex-presentation-context');
@@ -3507,6 +3514,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
   codeMode: {
     codeModeAssociableOutputFragments,
     codeModeDisplayOutputText,
+    codeModeExecSource,
     codeModeOutputText,
     projectDeclaredCodeModeCalls,
   },
@@ -3860,6 +3868,7 @@ function finalizeSession(session, sessionIndexEntry) {
     timelineStats: countBy(session.logicalEvents.filter((event) => event.layer !== 'protocol'), (event) => event.kind),
     protocolStats: countBy(session.logicalEvents.filter((event) => event.layer === 'protocol'), (event) => event.subtype),
   };
+  session.presentationIndexes = buildCodeModePresentationIndexes(session);
   session.eventKinds = eventKindCatalog([session]);
 
   delete session._turnIds;
@@ -4112,6 +4121,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
     sessions,
     sessionsById,
     eventKinds: eventKindCatalog(sessions),
+    codeModeRequests: codeModeRequestCatalog(sessions),
     totals: {
       fileCount: files.length,
       candidateFileCount: candidates.length,
@@ -4129,7 +4139,10 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
 
 const codexSearch = createCodexSearch({
   canonicalSchemaVersion: CANONICAL_SCHEMA_VERSION,
+  codeModePresentationFactsForEvent,
   codeModePresentationContextMap,
+  codeModeRequestCatalog,
+  codeModeRequestLabel: i18n.codeModeRequestLabel,
   codexSourceKind: CODEX_SOURCE_KIND,
   codexSourceLocator,
   defaultLocale: i18n.DEFAULT_LOCALE,
@@ -4277,4 +4290,5 @@ module.exports = {
   normalizeFsPath,
   isPathInsideOrSame,
   matchTerms,
+  normalizeCodeModeRequest,
 };

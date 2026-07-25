@@ -16,7 +16,7 @@ async function candidateIndex(t) {
   await fsp.mkdir(dir, { recursive: true });
   const records = [
     { type: 'session_meta', timestamp: '2026-07-14T00:00:00.000Z', payload: { id, cwd: repoRoot } },
-    { type: 'response_item', timestamp: '2026-07-14T00:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-a', turn_id: 'turn-a', input: "const value = await tools.fixture({ sandbox_permissions: 'require_escalated' }); text(value);" } },
+    { type: 'response_item', timestamp: '2026-07-14T00:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-a', turn_id: 'turn-a', input: "const value = await tools.shell_command({ command: 'echo fixture', sandbox_permissions: 'require_escalated' }); text(value);" } },
     { type: 'response_item', timestamp: '2026-07-14T00:00:02.000Z', payload: { type: 'custom_tool_call_output', call_id: 'exec-a', turn_id: 'turn-a', output: 'Script running with cell ID 4242\nexec-output-token' } },
     { type: 'response_item', timestamp: '2026-07-14T00:00:03.000Z', payload: { type: 'function_call', name: 'wait', call_id: 'wait-a', turn_id: 'turn-a', arguments: '{"cell_id":"4242"}' } },
     { type: 'event_msg', timestamp: '2026-07-14T00:00:04.000Z', payload: { type: 'mcp_tool_call_end', call_id: 'nested-a', turn_id: 'turn-a', tool_name: 'nested-search-token', status: 'failed' } },
@@ -42,6 +42,16 @@ test('candidate A counts and searches one operation plus nested activity while w
   assert.deepEqual(session.analysis.toolUsage, [{ name: 'exec', count: 1 }, { name: 'nested-search-token', count: 1 }]);
   assert.equal(session.logicalEvents.some((event) => event.toolName === 'wait'), false);
   assert.deepEqual(operation.codeModeOperation.eventRefs, [nested.id]);
+  assert.deepEqual(session.presentationIndexes.codeModeDeclaredRequests.get(operation.id), {
+    toolNames: ['shell_command'],
+    requestEvidence: 'declared_source',
+  });
+  assert.deepEqual(index.codeModeRequests, [{
+    value: 'shell_command',
+    label: 'shell_command',
+    count: 1,
+    evidence: 'declared_source',
+  }]);
 
   for (const query of ['require_escalated', 'exec-output-token', 'wait-output-token']) {
     const result = timeline(index, id, { q: query });
@@ -53,6 +63,21 @@ test('candidate A counts and searches one operation plus nested activity while w
   assert.deepEqual(nestedResult.events.filter((event) => event.hasSearchHit).map((event) => event.id), [nested.id]);
   const failed = timeline(index, id, { status: 'failed' });
   assert.deepEqual(failed.events.map((event) => event.id), [nested.id]);
+  const declaredShell = timeline(index, id, { codeModeRequest: 'shell_command' });
+  assert.deepEqual(declaredShell.events.map((event) => event.id), [operation.id]);
+  assert.deepEqual(declaredShell.events[0].presentationFacts, {
+    codeModeDeclaredRequests: {
+      toolNames: ['shell_command'],
+      requestEvidence: 'declared_source',
+    },
+  });
+  assert.deepEqual(declaredShell.codeModeRequests, [{
+    value: 'shell_command',
+    label: 'Shell command',
+    count: 1,
+    evidence: 'declared_source',
+  }]);
+  assert.deepEqual(timeline(index, id, { codeModeRequest: 'shell_command', status: 'failed' }).events, []);
 
   const publicOperation = timeline(index, id).events.find((event) => event.id === operation.id);
   assert.equal(Object.hasOwn(publicOperation, 'eventRefs'), false);

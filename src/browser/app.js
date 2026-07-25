@@ -152,6 +152,8 @@ const state = {
   fileSuggestionRequestId: 0,
   eventKinds: { main: [], protocol: [], raw: [] },
   sessionEventKinds: { main: [], protocol: [], raw: [] },
+  codeModeRequests: [],
+  sessionCodeModeRequests: [],
   profiles: [],
   builtinProfiles: [],
   customProfiles: readJsonStorage(CUSTOM_PROFILES_KEY, []),
@@ -177,7 +179,7 @@ const state = {
   searchHighlight: { query: '', marks: [] },
   searchScope: 'session',
   searchQuery: '',
-  searchFilters: { file: '', kind: '', status: '' },
+  searchFilters: { file: '', kind: '', status: '', codeModeRequest: '' },
   searchTargetRegistry: { key: '', targets: [], activeTargetId: '' },
   searchNavigation: { running: false, queue: [] },
   searchProgrammaticScroll: { active: false, timer: 0 },
@@ -222,6 +224,7 @@ const el = {
   searchKindLabel: document.getElementById('searchKindLabel'),
   searchKindSelect: document.getElementById('searchKindSelect'),
   searchStatusSelect: document.getElementById('searchStatusSelect'),
+  searchCodeModeRequestSelect: document.getElementById('searchCodeModeRequestSelect'),
   searchFileInput: document.getElementById('searchFileInput'),
   searchFileSuggestions: document.getElementById('searchFileSuggestions'),
   profileSelect: document.getElementById('profileSelect'),
@@ -309,9 +312,11 @@ function applyStaticLocale() {
   document.querySelector('[data-search-filter-row="file"] label') && setText(document.querySelector('[data-search-filter-row="file"] label'), t('touchedFileFilter'));
   document.querySelector('[data-search-filter-row="kind"] label') && setText(document.querySelector('[data-search-filter-row="kind"] label'), t('kind'));
   document.querySelector('[data-search-filter-row="status"] label') && setText(document.querySelector('[data-search-filter-row="status"] label'), t('status'));
+  document.querySelector('[data-search-filter-row="codeModeRequest"] label') && setText(document.querySelector('[data-search-filter-row="codeModeRequest"] label'), t('codeModeRequest'));
   if (el.searchFileInput) el.searchFileInput.setAttribute('placeholder', t('anyFile'));
   setSelectOptionText(el.searchKindSelect, '', t('anyKind'));
   setSelectOptionText(el.searchStatusSelect, '', t('anyStatus'));
+  setSelectOptionText(el.searchCodeModeRequestSelect, '', t('anyCodeModeRequest'));
   setSelectOptionText(el.searchStatusSelect, 'active', searchStatusLabel('active'));
   setSelectOptionText(el.searchStatusSelect, 'blocked', searchStatusLabel('blocked'));
   setSelectOptionText(el.searchStatusSelect, 'complete', searchStatusLabel('complete'));
@@ -621,6 +626,7 @@ function currentSearchState() {
     file: state.searchFilters.file,
     kind: state.searchFilters.kind,
     status: state.searchFilters.status,
+    codeModeRequest: state.searchFilters.codeModeRequest,
     layer: state.layerId || 'main',
   };
 }
@@ -660,7 +666,7 @@ function syncSearchScopeUi() {
 
 function hasActiveSearchExpression() {
   const search = currentSearchState();
-  return Boolean(search.q || search.file || search.kind || search.status);
+  return Boolean(search.q || search.file || search.kind || search.status || search.codeModeRequest);
 }
 
 function searchInputValueFromState() {
@@ -722,6 +728,7 @@ function projectSearchDataContextKey() {
     search.kind,
     search.status,
     search.file,
+    search.codeModeRequest,
     state.projectSearchSort,
     state.locale,
   ]);
@@ -738,6 +745,7 @@ function timelineDataContextKey() {
     search.kind,
     search.status,
     search.file,
+    search.codeModeRequest,
     state.locale,
   ]);
 }
@@ -785,6 +793,7 @@ function searchTargetKey() {
     search.kind,
     search.status,
     search.file,
+    search.codeModeRequest,
     foldingProfileSearchContextKey(),
     search.scope === 'project' ? state.projectSearchSort : (el.sortSelect?.value || ''),
     state.locale,
@@ -915,7 +924,12 @@ function clearSearchTransientExpansion(eventId) {
 function structuredSearchKey() {
   const search = currentSearchState();
   return `${search.scope}\u001e${searchControls.structuredSearchKey(
-    { kind: search.kind, status: search.status, file: search.file },
+    {
+      kind: search.kind,
+      status: search.status,
+      file: search.file,
+      codeModeRequest: search.codeModeRequest,
+    },
     state.layerId || '',
     search.scope === 'project' ? state.projectSearchSort : (el.sortSelect?.value || ''),
   )}`;
@@ -1480,6 +1494,7 @@ function currentQuery(extra = {}, options = {}) {
     if (options.includeQ !== false && filters.q) params.set('q', filters.q);
     if (filters.kind) params.set('kind', filters.kind);
     if (filters.status) params.set('status', filters.status);
+    if (filters.codeModeRequest) params.set('codeModeRequest', filters.codeModeRequest);
     if (filters.file) params.set('file', filters.file);
   }
   if (options.includeLayer !== false && filters.layer) params.set('layer', filters.layer);
@@ -1504,6 +1519,7 @@ function detailSelectionContextKey() {
     search.kind,
     search.status,
     search.file,
+    search.codeModeRequest,
     state.locale,
     state.detailCacheGeneration,
   ]);
@@ -1578,7 +1594,7 @@ function cloneProfile(profile) {
 }
 
 function defaultRules() {
-  return { kindStates: {}, fallback: 'summary', conditions: [] };
+  return { kindStates: {}, codeModeRequestStates: {}, fallback: 'summary', conditions: [] };
 }
 
 function normalizeProfiles(profiles) {
@@ -1931,20 +1947,25 @@ function activeFilters() {
     file: t('touchedFileFilter'),
     kind: t('kind'),
     status: t('status'),
+    codeModeRequest: t('codeModeRequest'),
   }).map((entry) => ({
     ...entry,
     displayValue: entry.key === 'kind'
       ? kindLabel(entry.value)
-      : (entry.key === 'status' ? searchStatusLabel(entry.value) : entry.value),
+      : (entry.key === 'status'
+        ? searchStatusLabel(entry.value)
+        : (entry.key === 'codeModeRequest' ? codeModeRequestDisplayLabel(entry.value) : entry.value)),
     label: `${entry.label}: ${entry.key === 'kind'
       ? kindLabel(entry.value)
-      : (entry.key === 'status' ? searchStatusLabel(entry.value) : entry.value)}`,
+      : (entry.key === 'status'
+        ? searchStatusLabel(entry.value)
+        : (entry.key === 'codeModeRequest' ? codeModeRequestDisplayLabel(entry.value) : entry.value))}`,
   }));
 }
 
 function hasFocusedTimelineContext() {
   const search = currentSearchState();
-  return Boolean(search.kind || search.status || search.file || activeLayerId() !== 'main');
+  return Boolean(search.kind || search.status || search.file || search.codeModeRequest || activeLayerId() !== 'main');
 }
 
 function renderReadFromHereAction() {
@@ -1980,10 +2001,15 @@ function renderSearchAssistChips() {
     const row = el.searchFilterRows?.querySelector(`[data-search-filter-row="${key}"]`);
     const value = state.searchFilters[key] || '';
     row?.classList.toggle('active', Boolean(value));
+    if (key === 'codeModeRequest' && row) {
+      const mainOnly = activeLayerId() !== 'main';
+      row.hidden = mainOnly;
+      row.classList.toggle('mainOnly', mainOnly);
+    }
   }
   if (el.searchLayerShortcut) el.searchLayerShortcut.disabled = analyzerDisabled;
   el.searchFilterRows?.querySelectorAll('[data-search-filter-control]').forEach((control) => {
-    control.disabled = analyzerDisabled;
+    control.disabled = analyzerDisabled || (control.dataset.searchFilterControl === 'codeModeRequest' && activeLayerId() !== 'main');
   });
   if (el.searchClearAllBtn) el.searchClearAllBtn.disabled = analyzerDisabled || (!state.searchQuery && filterCount === 0);
   renderSearchMetrics();
@@ -2016,6 +2042,59 @@ function normalizedKindOptions(layerId = activeLayerId()) {
   return options.sort((a, b) => a.label.localeCompare(b.label) || a.value.localeCompare(b.value));
 }
 
+function normalizedCodeModeRequestOptions(layerId = activeLayerId()) {
+  if (layerId !== 'main') return [];
+  const seen = new Set();
+  const options = [];
+  const source = state.searchScope === 'session' && state.selectedSessionId
+    ? state.sessionCodeModeRequests
+    : state.codeModeRequests;
+  for (const item of source || []) {
+    const value = String(item?.value || '').trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    options.push({
+      value,
+      label: String(item?.label || i18n.codeModeRequestLabel(value, state.locale) || value),
+      count: Number(item?.count || 0),
+      evidence: String(item?.evidence || ''),
+    });
+  }
+  const labels = new Map();
+  for (const option of options) labels.set(option.label, (labels.get(option.label) || 0) + 1);
+  return options
+    .map((option) => ({
+      ...option,
+      displayLabel: labels.get(option.label) > 1 ? `${option.label} (${option.value})` : option.label,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label) || a.value.localeCompare(b.value));
+}
+
+function codeModeRequestDisplayLabel(value) {
+  const request = String(value || '').trim();
+  if (!request) return '';
+  const options = normalizedCodeModeRequestOptions('main');
+  const option = options.find((item) => item.value === request);
+  if (option) return option.displayLabel;
+  return i18n.codeModeRequestLabel(request, state.locale) || request;
+}
+
+function profileCodeModeRequestCatalog(rules) {
+  const current = normalizedCodeModeRequestOptions('main');
+  const currentValues = new Set(current.map((item) => item.value));
+  const historical = Object.keys(rules?.codeModeRequestStates || {})
+    .filter((value) => !currentValues.has(value))
+    .map((value) => ({
+      value,
+      label: codeModeRequestDisplayLabel(value),
+      displayLabel: codeModeRequestDisplayLabel(value),
+      count: 0,
+      historical: true,
+    }))
+    .sort((left, right) => left.displayLabel.localeCompare(right.displayLabel) || left.value.localeCompare(right.value));
+  return { current, historical };
+}
+
 function renderKindOptions() {
   if (!el.searchKindSelect) return;
   const search = currentSearchState();
@@ -2034,11 +2113,30 @@ function renderKindOptions() {
   el.searchKindSelect.value = search.kind;
 }
 
+function renderCodeModeRequestOptions() {
+  if (!el.searchCodeModeRequestSelect) return;
+  const search = currentSearchState();
+  const options = normalizedCodeModeRequestOptions(search.layer);
+  const values = new Set(options.map((option) => option.value));
+  const rows = [`<option value="">${escapeHtml(t('anyCodeModeRequest'))}</option>`];
+  if (search.codeModeRequest && !values.has(search.codeModeRequest)) {
+    rows.push(`<option value="${escapeHtml(search.codeModeRequest)}">${escapeHtml(codeModeRequestDisplayLabel(search.codeModeRequest))}</option>`);
+  }
+  rows.push(...options.map((option) => {
+    const label = option.count ? `${option.displayLabel} (${option.count})` : option.displayLabel;
+    return `<option value="${escapeHtml(option.value)}">${escapeHtml(label)}</option>`;
+  }));
+  el.searchCodeModeRequestSelect.innerHTML = rows.join('');
+  el.searchCodeModeRequestSelect.value = search.codeModeRequest;
+}
+
 function syncSearchAssistControls() {
   const search = currentSearchState();
   renderKindOptions();
+  renderCodeModeRequestOptions();
   setSelectIfOption(el.searchKindSelect, search.kind);
   setSelectIfOption(el.searchStatusSelect, search.status);
+  setSelectIfOption(el.searchCodeModeRequestSelect, search.codeModeRequest);
   if (el.searchFileInput) el.searchFileInput.value = search.file;
   renderSearchAssistChips();
 }
@@ -2098,7 +2196,7 @@ function focusSearchEnd() {
 
 function applySearchFilter(operator, value) {
   if (!Object.hasOwn(state.searchFilters, operator)) return;
-  const nextValue = value || '';
+  const nextValue = operator === 'codeModeRequest' && activeLayerId() !== 'main' ? '' : (value || '');
   if (state.searchFilters[operator] === nextValue) return;
   state.searchFilters = { ...state.searchFilters, [operator]: nextValue };
   state.searchStructureKey = structuredSearchKey();
@@ -2258,7 +2356,7 @@ function clearActiveFilter(key) {
   const structureBefore = structuredSearchKey();
   if (key === 'all') {
     state.searchQuery = '';
-    state.searchFilters = { file: '', kind: '', status: '' };
+    state.searchFilters = { file: '', kind: '', status: '', codeModeRequest: '' };
   } else if (key === 'q') {
     state.searchQuery = '';
   } else if (Object.hasOwn(state.searchFilters, key)) {
@@ -2468,6 +2566,8 @@ function resetProjectViewState() {
   state.fileSuggestionRequestId += 1;
   state.eventKinds = { main: [], protocol: [], raw: [] };
   state.sessionEventKinds = { main: [], protocol: [], raw: [] };
+  state.codeModeRequests = [];
+  state.sessionCodeModeRequests = [];
   resetSessionDetailCache();
   invalidateNavigationCache();
   el.sessionList.innerHTML = '';
@@ -2628,6 +2728,7 @@ async function applyAppState(appState) {
   state.builtinProfiles = normalizeProfiles(appState.foldingProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
   state.eventKinds = appState.eventKinds;
+  state.codeModeRequests = Array.isArray(appState.codeModeRequests) ? appState.codeModeRequests : [];
   state.sessionGrandTotal = appState.totals.sessionCount || 0;
   setProjectHeader(
     appState.repoRoot,
@@ -3038,6 +3139,7 @@ async function drillDownProjectResult(sessionId) {
   state.timelineRequestId += 1;
   state.currentEvents = [];
   state.sessionEventKinds = { main: [], protocol: [], raw: [] };
+  state.sessionCodeModeRequests = [];
   state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
   resetSearchTransientExpansions();
   invalidateNavigationCache();
@@ -3174,6 +3276,7 @@ async function selectSession(sessionId, options = {}) {
   state.timelineRequestId += 1;
   state.currentEvents = [];
   state.sessionEventKinds = { main: [], protocol: [], raw: [] };
+  state.sessionCodeModeRequests = [];
   state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
   resetSearchTransientExpansions();
   invalidateNavigationCache();
@@ -3315,6 +3418,9 @@ async function changeLayer(layerId) {
   clearContextReveal({ render: false });
   resetSearchTransientExpansions();
   state.layerId = layerId;
+  if (layerId !== 'main' && state.searchFilters.codeModeRequest) {
+    state.searchFilters = { ...state.searchFilters, codeModeRequest: '' };
+  }
   el.layerSelect.value = state.layerId;
   state.searchStructureKey = structuredSearchKey();
   beginProjectSearchPendingTransition();
@@ -3421,6 +3527,7 @@ async function loadTimeline(append, options = {}) {
     state.timelineSearchMatchCount = data.searchMatchCount || 0;
     state.timelineSearchEventCount = data.searchEventCount || 0;
     state.sessionEventKinds = data.eventKinds;
+    state.sessionCodeModeRequests = Array.isArray(data.codeModeRequests) ? data.codeModeRequests : [];
     state.timelineDataContext = requestContext;
     syncSearchAssistControls();
     if (state.detailView.type === 'profileRules') renderProfileRulesPane();
@@ -3482,6 +3589,7 @@ async function loadTimelineThroughIndex(timelineIndex) {
     let searchMatchCount = 0;
     let searchEventCount = 0;
     let eventKinds = null;
+    let codeModeRequests = null;
     while (events.length < requiredCount) {
       const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
         offset: events.length,
@@ -3496,6 +3604,7 @@ async function loadTimelineThroughIndex(timelineIndex) {
       searchMatchCount = data.searchMatchCount || 0;
       searchEventCount = data.searchEventCount || 0;
       eventKinds = data.eventKinds;
+      codeModeRequests = data.codeModeRequests;
       events.push(...data.events);
       if (!data.events.length || events.length >= total) break;
     }
@@ -3505,6 +3614,7 @@ async function loadTimelineThroughIndex(timelineIndex) {
     state.timelineSearchMatchCount = searchMatchCount;
     state.timelineSearchEventCount = searchEventCount;
     state.sessionEventKinds = eventKinds || { main: [], protocol: [], raw: [] };
+    state.sessionCodeModeRequests = Array.isArray(codeModeRequests) ? codeModeRequests : [];
     state.timelineDataContext = requestContext;
     syncSearchAssistControls();
     renderTimeline();
@@ -3552,6 +3662,7 @@ async function refreshTimelineFindState(options = {}) {
     let searchMatchCount = 0;
     let searchEventCount = 0;
     let eventKinds = null;
+    let codeModeRequests = null;
     while (events.length < targetCount) {
       const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
         offset: events.length,
@@ -3565,6 +3676,7 @@ async function refreshTimelineFindState(options = {}) {
       searchMatchCount = data.searchMatchCount || 0;
       searchEventCount = data.searchEventCount || 0;
       eventKinds = data.eventKinds;
+      codeModeRequests = data.codeModeRequests;
       events.push(...data.events);
       if (!data.events.length || events.length >= total) break;
     }
@@ -3574,6 +3686,7 @@ async function refreshTimelineFindState(options = {}) {
     state.timelineSearchMatchCount = searchMatchCount;
     state.timelineSearchEventCount = searchEventCount;
     state.sessionEventKinds = eventKinds;
+    state.sessionCodeModeRequests = Array.isArray(codeModeRequests) ? codeModeRequests : [];
     state.timelineDataContext = requestContext;
     syncSearchAssistControls();
     if (state.detailView.type === 'profileRules') renderProfileRulesPane();
@@ -4098,6 +4211,7 @@ function navigationCacheKey() {
     kind: search.kind,
     status: search.status,
     file: search.file,
+    codeModeRequest: search.codeModeRequest,
   });
 }
 
@@ -4533,7 +4647,7 @@ async function readFromSelectedEvent() {
   hideSearchAssist();
   state.searchScope = 'session';
   state.projectSearchPendingContext = '';
-  state.searchFilters = { file: '', kind: '', status: '' };
+  state.searchFilters = { file: '', kind: '', status: '', codeModeRequest: '' };
   state.layerId = 'main';
   el.layerSelect.value = state.layerId;
   localStorage.setItem('sessionAnalyzer.layer', state.layerId);
@@ -4648,8 +4762,25 @@ function renderProfileRulesPane(options = {}) {
       </select>
     </label>`;
   };
+  const renderCodeModeRequestRow = (request) => {
+    const display = rules.codeModeRequestStates[request.value] || '';
+    const label = request.displayLabel || request.label || codeModeRequestDisplayLabel(request.value) || request.value;
+    return `<label class="profileRuleRow" data-profile-code-mode-request-row="${escapeHtml(request.value)}">
+      <span>
+        <strong>${escapeHtml(label)}</strong>
+        <span>${escapeHtml(request.value)}</span>
+      </span>
+      <select data-profile-code-mode-request="${escapeHtml(request.value)}">
+        <option value=""${display ? '' : ' selected'}>${escapeHtml(displayStateLabel(rules.fallback))} (${escapeHtml(t('default'))})</option>
+        ${DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === display ? ' selected' : ''}>${escapeHtml(displayStateLabel(stateId))}</option>`).join('')}
+      </select>
+    </label>`;
+  };
   const explicitKinds = knownEventKinds().filter((kind) => rules.kindStates[kind]);
   const defaultKinds = knownEventKinds().filter((kind) => !rules.kindStates[kind]);
+  const codeModeRequestCatalog = profileCodeModeRequestCatalog(rules);
+  const codeModeRequestRows = codeModeRequestCatalog.current.map(renderCodeModeRequestRow).join('');
+  const historicalCodeModeRequestRows = codeModeRequestCatalog.historical.map(renderCodeModeRequestRow).join('');
   const renderKindGroup = (entry) => `<section class="profileRuleGroup">
     <h4>${escapeHtml(t(`kindGroup${entry.group.id[0].toUpperCase()}${entry.group.id.slice(1)}Name`))}</h4>
     <p>${escapeHtml(t(`kindGroup${entry.group.id[0].toUpperCase()}${entry.group.id.slice(1)}Description`))}</p>
@@ -4722,6 +4853,18 @@ function renderProfileRulesPane(options = {}) {
         <p>${escapeHtml(defaultKindNames)}</p>
         <div class="profileRuleList">${defaultKindRows}</div>
       </details>
+      <section class="profileRuleSection codeModeRequestRuleSection">
+        <div class="profileRuleSectionHeader">
+          <h3>${escapeHtml(t('codeModeRequestRules'))}</h3>
+        </div>
+        <p class="profileInactiveText">${escapeHtml(t('codeModeRequestRulesDescription'))}</p>
+        <h4>${escapeHtml(t('codeModeRequestCurrentGroup'))}</h4>
+        <div class="profileRuleList">${codeModeRequestRows || `<div class="profileRuleEmpty">${escapeHtml(t('noCodeModeRequestRules'))}</div>`}</div>
+        ${historicalCodeModeRequestRows ? `<details class="profileRuleDetails">
+          <summary>${escapeHtml(t('codeModeRequestHistoricalGroup'))}</summary>
+          <div class="profileRuleList">${historicalCodeModeRequestRows}</div>
+        </details>` : ''}
+      </section>
       <section class="profileRuleSection">
         <h3>${escapeHtml(t('conditions'))}</h3>
         <div class="profileRuleList">${activeConditionRows || `<div class="profileRuleEmpty">${escapeHtml(t('noActiveConditions'))}</div>`}</div>
@@ -5225,6 +5368,18 @@ el.detail.addEventListener('change', (event) => {
     const kind = kindSelect.dataset.profileKind;
     if (kindSelect.value) state.profileDraft.rules.kindStates[kind] = kindSelect.value;
     else delete state.profileDraft.rules.kindStates[kind];
+    state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
+    renderTimeline();
+    renderProfileRulesPane();
+    return;
+  }
+  const codeModeRequestSelect = event.target.closest('[data-profile-code-mode-request]');
+  if (codeModeRequestSelect) {
+    clearContextReveal({ render: false });
+    ensureProfileDraft();
+    const request = codeModeRequestSelect.dataset.profileCodeModeRequest;
+    if (codeModeRequestSelect.value) state.profileDraft.rules.codeModeRequestStates[request] = codeModeRequestSelect.value;
+    else delete state.profileDraft.rules.codeModeRequestStates[request];
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
     renderTimeline();
     renderProfileRulesPane();
