@@ -1397,6 +1397,22 @@ test('browser search parameter popover exposes direct fixed filters, Escape laye
   assert.equal(await page.locator('[data-search-filter-row="file"] label').textContent(), 'Touched file');
   assert.equal(await page.locator('#searchFileInput').getAttribute('placeholder'), 'Any touched file');
   assert.equal(await page.locator('#searchKindSelect').evaluate((select) => document.activeElement === select), true);
+  const mainKindOrder = await page.locator('#searchKindSelect option').evaluateAll((options) => (
+    options.map((option) => option.value).filter((value) => [
+      'user_message',
+      'assistant_message',
+      'command',
+      'patch',
+      'error',
+      'warning',
+      'reasoning',
+    ].includes(value))
+  ));
+  assert.deepEqual(
+    mainKindOrder,
+    ['user_message', 'assistant_message', 'command', 'patch', 'error', 'warning', 'reasoning'],
+    'Main Kind options should follow the folding editor semantic order without adding headings',
+  );
 
   const filterLayout = await page.locator('#searchFilterRows').evaluate((filters) => {
     const kind = filters.querySelector('[data-search-filter-row="kind"]')?.getBoundingClientRect();

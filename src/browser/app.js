@@ -2031,7 +2031,21 @@ function normalizedKindOptions(layerId = activeLayerId()) {
       matchField: String(item.matchField || '').trim(),
     });
   }
-  return options.sort((a, b) => a.label.localeCompare(b.label) || a.value.localeCompare(b.value));
+  return options.sort((a, b) => {
+    if (layerId === 'main') {
+      const semanticPriority = (value) => (
+        value === 'code_mode_operation' || value === 'code_mode_script_operation'
+          ? { groupPriority: 25, kindPriority: 0 }
+          : foldingApi.editableKindGroup(value)
+      );
+      const left = semanticPriority(a.value);
+      const right = semanticPriority(b.value);
+      const semanticOrder = left.groupPriority - right.groupPriority
+        || left.kindPriority - right.kindPriority;
+      if (semanticOrder) return semanticOrder;
+    }
+    return a.label.localeCompare(b.label) || a.value.localeCompare(b.value);
+  });
 }
 
 function normalizedCodeModeRequestOptions(layerId = activeLayerId()) {
