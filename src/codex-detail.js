@@ -199,8 +199,9 @@ function createCodexDetailBuilder(deps) {
         return extractMcpSections(raws, event, splitSectionsForDetail);
       case 'hook':
         return extractToolOperationSections(raws, event, splitSectionsForDetail);
+      case 'code_mode_operation':
+        return extractCodeModeOperationSections(event, raws, session);
       case 'other_tool_call':
-        if (event.subtype === 'code_mode_operation') return extractCodeModeOperationSections(event, raws, session);
         if (event.toolName === 'update_plan') return extractUpdatePlanSections(raws, event, splitSectionsForDetail);
         return extractToolOperationSections(raws, event, splitSectionsForDetail);
       case 'web_search':
@@ -757,7 +758,7 @@ function createCodexDetailBuilder(deps) {
     const hasUnassociatedOutput = Boolean(finalObservedOutput && !declaredProjection.hasCompleteOutputAssociation);
 
     let presentation = codeModePresentationDescriptor('raw_code_mode', {
-      label: 'Script operation',
+      label: 'Scripted operation',
       toolName: 'exec',
       collapsedPreview: codeModeSourceExcerptCollapsedPreview(execSource),
     });
@@ -894,7 +895,7 @@ function createCodexDetailBuilder(deps) {
     if (!logical) return null;
     const raws = rawEventsForLogicalEvent(session, logical);
     const detailSections = extractLogicalDetailSections(logical, raws, session);
-    const eventRefsSection = logical.subtype === 'code_mode_operation'
+    const eventRefsSection = logical.kind === 'code_mode_operation'
       ? codeModeEventRefsSection(logical, session, locale)
       : null;
     if (eventRefsSection) detailSections.inspectorSections.push(eventRefsSection);
@@ -902,7 +903,7 @@ function createCodexDetailBuilder(deps) {
       detailSections.inspectorSections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
     }
     const sanitizedDetailSections = sanitizeLogicalDetailSections(detailSections);
-    const presentation = logical.subtype === 'code_mode_operation'
+    const presentation = logical.kind === 'code_mode_operation'
       ? localizeCodeModePresentation(sanitizeCodeModePresentation(detailSections.presentation), locale)
       : null;
     return {

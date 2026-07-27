@@ -208,15 +208,13 @@ test('project search supports filter-only results, layer isolation, and localize
 
 test('Code Mode request filters are exact Main-layer presentation facts with same-event AND semantics', () => {
   const matchingOperation = logicalEvent('declared-shell', {
-    kind: 'other_tool_call',
-    subtype: 'code_mode_operation',
+    kind: 'code_mode_operation',
     preview: 'alpha parent operation',
     status: 'failed',
     touchedFiles: ['G:\\repo\\src\\a.js'],
   });
   const otherOperation = logicalEvent('declared-plan', {
-    kind: 'other_tool_call',
-    subtype: 'code_mode_operation',
+    kind: 'code_mode_operation',
     preview: 'alpha other operation',
     status: 'success',
   });
@@ -243,7 +241,7 @@ test('Code Mode request filters are exact Main-layer presentation facts with sam
 
   const project = filterSessions(index, {
     q: 'alpha',
-    kind: 'other_tool_call',
+    kind: 'code_mode_operation',
     status: 'failed',
     file: 'src/a.js',
     codeModeRequest: 'shell_command',
@@ -297,7 +295,7 @@ test('Code Mode request filters are exact Main-layer presentation facts with sam
     { value: 'update_plan', label: 'Plan update', count: 2, evidence: 'declared_source' },
     { value: 'shell_command', label: 'Shell command', count: 1, evidence: 'declared_source' },
   ]);
-  assert.equal(timeline.events[0].kind, 'other_tool_call');
+  assert.equal(timeline.events[0].kind, 'code_mode_operation');
   assert.equal(timeline.events[0].toolName, '');
   assert.equal(timeline.events.some((event) => event.id === nestedCommand.id), false);
 });

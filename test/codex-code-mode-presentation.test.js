@@ -16,8 +16,7 @@ function operation(id, rawId) {
   return {
     id,
     layer: 'main',
-    kind: 'other_tool_call',
-    subtype: 'code_mode_operation',
+    kind: 'code_mode_operation',
     toolName: 'exec',
     codeModeOperation: {
       id,
@@ -45,7 +44,7 @@ test('Code Mode exec source follows the exact exec phase raw identity', () => {
     ['exec-raw', raw('exec-raw', 'await tools.shell_command({ command: "pwd" });')],
   ]);
   assert.equal(codeModeExecSource(event, raws), 'await tools.shell_command({ command: "pwd" });');
-  assert.equal(codeModeExecSource({ ...event, subtype: 'ordinary_tool_call' }, raws), '');
+  assert.equal(codeModeExecSource({ ...event, kind: 'other_tool_call' }, raws), '');
 });
 
 test('Code Mode request query values accept only stable projector tool names', () => {

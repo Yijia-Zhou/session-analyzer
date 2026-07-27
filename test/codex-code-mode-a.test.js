@@ -33,13 +33,18 @@ function timeline(index, id, filters = {}) {
 test('candidate A counts and searches one operation plus nested activity while waits own nothing', async (t) => {
   const { id, index } = await candidateIndex(t);
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const nested = session.logicalEvents.find((event) => event.toolName === 'nested-search-token');
 
   assert.equal(session.counts.toolCalls, 2);
   assert.equal(session.counts.failedCommands, 0);
   assert.equal(session.counts.issueEvents, 1);
   assert.deepEqual(session.analysis.toolUsage, [{ name: 'exec', count: 1 }, { name: 'nested-search-token', count: 1 }]);
+  assert.deepEqual(session.analysis.timelineStats.find((item) => item.name === 'code_mode_operation'), {
+    name: 'code_mode_operation',
+    count: 1,
+  });
+  assert.equal(session.analysis.timelineStats.some((item) => item.name === 'other_tool_call'), false);
   assert.equal(session.logicalEvents.some((event) => event.toolName === 'wait'), false);
   assert.deepEqual(operation.codeModeOperation.eventRefs, [nested.id]);
   assert.deepEqual(session.presentationIndexes.codeModeDeclaredRequests.get(operation.id), {
@@ -88,7 +93,7 @@ test('candidate A counts and searches one operation plus nested activity while w
 test('public Code Mode context is parity-safe, omits unproven parents, and preserves kind filtering', async (t) => {
   const { id, index } = await candidateIndex(t);
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const nested = session.logicalEvents.find((event) => event.toolName === 'nested-search-token');
   const expectedContext = {
     relation: 'enclosed_by_code_mode_operation',
@@ -114,13 +119,14 @@ test('public Code Mode context is parity-safe, omits unproven parents, and prese
   assert.equal(Object.hasOwn(timeline(index, id).events.find((event) => event.id === nested.id), 'presentationContext'), false);
 
   assert.deepEqual(timeline(index, id, { kind: 'code_mode_operation' }).events.map((event) => event.id), [operation.id, 'ambiguous-code-mode-parent']);
-  assert.deepEqual(timeline(index, id, { kind: 'other_tool_call' }).events.map((event) => event.id), [operation.id, 'ambiguous-code-mode-parent']);
+  assert.deepEqual(timeline(index, id, { kind: 'code_mode_script_operation' }).events.map((event) => event.id), ['ambiguous-code-mode-parent']);
+  assert.deepEqual(timeline(index, id, { kind: 'other_tool_call' }).events.map((event) => event.id), []);
 });
 
-test('Main kind catalog adds Code Mode operations without cataloging other subtypes', () => {
+test('Main kind catalog adds Code Mode operations and the exact script fallback facet', () => {
   const catalog = eventKindCatalog([{
     logicalEvents: [
-      { layer: 'main', kind: 'other_tool_call', subtype: 'code_mode_operation' },
+      { layer: 'main', kind: 'code_mode_operation' },
       { layer: 'main', kind: 'other_tool_call', subtype: 'update_plan' },
       { layer: 'main', kind: 'command', subtype: 'shell_command' },
       { layer: 'protocol', kind: 'protocol', subtype: 'task_started' },
@@ -129,10 +135,13 @@ test('Main kind catalog adds Code Mode operations without cataloging other subty
   }], { locale: 'en' });
 
   assert.deepEqual(catalog.main.find((item) => item.value === 'other_tool_call'), {
-    value: 'other_tool_call', label: 'Other tool call', count: 2,
+    value: 'other_tool_call', label: 'Other tool call', count: 1,
   });
   assert.deepEqual(catalog.main.find((item) => item.value === 'code_mode_operation'), {
-    value: 'code_mode_operation', label: 'Code Mode tool call', count: 1, matchField: 'subtype',
+    value: 'code_mode_operation', label: 'Code Mode tool call', count: 1,
+  });
+  assert.deepEqual(catalog.main.find((item) => item.value === 'code_mode_script_operation'), {
+    value: 'code_mode_script_operation', label: 'Scripted operation', count: 1, matchField: 'presentation_fallback',
   });
   assert.equal(catalog.main.some((item) => item.value === 'update_plan'), false);
   assert.equal(catalog.main.some((item) => item.value === 'shell_command'), false);
@@ -155,7 +164,7 @@ test('duplicate outer call ids contribute two operations while their ambiguous o
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operations = session.logicalEvents.filter((event) => event.subtype === 'code_mode_operation');
+  const operations = session.logicalEvents.filter((event) => event.kind === 'code_mode_operation');
   assert.equal(operations.length, 2);
   assert.equal(session.logicalEvents.filter((event) => event.layer === 'main').length, 2);
   assert.equal(session.counts.toolCalls, 2);

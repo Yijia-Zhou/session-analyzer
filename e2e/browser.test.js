@@ -473,6 +473,8 @@ async function makeAdaptiveCodeModeCodexHome(t) {
     { timestamp: '2026-07-16T01:00:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-browser-multi', turn_id: 'turn-multi', input: multiSource } },
     { timestamp: '2026-07-16T01:00:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-browser-multi', turn_id: 'turn-multi', output: [{ type: 'input_text', text: 'Script completed\nOutput:\n' }, { type: 'input_text', text: '{}' }, { type: 'input_text', text: 'Exit code: 0\nWall time: 1 second\nOutput:\nmulti' }] } },
     { timestamp: '2026-07-16T01:00:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-browser-request-only', turn_id: 'turn-request-only', input: requestOnlySource } },
+    { timestamp: '2026-07-16T01:00:07.000Z', type: 'response_item', payload: { type: 'function_call', name: 'fixture_other_tool', call_id: 'ordinary-browser-tool', turn_id: 'turn-ordinary', arguments: '{}' } },
+    { timestamp: '2026-07-16T01:00:08.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'ordinary-browser-tool', turn_id: 'turn-ordinary', output: 'ordinary fixture output' } },
   ];
   await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
   t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
@@ -691,7 +693,7 @@ test('browser single-tool Code Mode keeps native request and operation output pr
   const fixture = await makeCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const session = Array.from(index.sessionsById.values())[0];
-  const operation = session.logicalEvents.find((candidate) => candidate.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   assert.ok(operation, 'fixture should create one Code Mode operation');
   const { page } = await openApp(t, index, { locale: 'en' });
   const renderedEventIds = await page.locator('#timeline .event[data-event-id]').evaluateAll((events) => events.map((eventNode) => eventNode.dataset.eventId));
@@ -746,7 +748,7 @@ test('browser nested Code Mode context reveals a distinct parent row without cha
   const fixture = await makeContextCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const session = index.sessionsById.get(fixture.sessionId);
-  const operation = session.logicalEvents.find((candidate) => candidate.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   const nested = session.logicalEvents.find((candidate) => candidate.toolName === 'nested-context-token');
   assert.ok(operation && nested);
 
@@ -807,7 +809,7 @@ test('browser nested Code Mode context late responses are invalidated by same-so
   const fixture = await makeContextCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const session = index.sessionsById.get(fixture.sessionId);
-  const operation = session.logicalEvents.find((candidate) => candidate.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   const nested = session.logicalEvents.find((candidate) => candidate.toolName === 'nested-context-token');
   assert.ok(operation && nested);
 
@@ -905,7 +907,7 @@ test('browser Code Mode raw fallback keeps a shared origin tag instead of the ou
   const fixture = await makeRawCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const session = Array.from(index.sessionsById.values())[0];
-  const operation = session.logicalEvents.find((candidate) => candidate.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   assert.ok(operation);
 
   const { page } = await openApp(t, index, { locale: 'en' });
@@ -914,7 +916,7 @@ test('browser Code Mode raw fallback keeps a shared origin tag instead of the ou
     const card = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`);
     return card?.classList.contains('collapsed') && card.classList.contains('code-mode-raw-code-mode');
   }, operation.id);
-  assert.equal(await event.locator('.eventKind').textContent(), 'Script operation');
+  assert.equal(await event.locator('.eventKind').textContent(), 'Scripted operation');
   assert.match(await event.locator('.eventHeader').textContent(), /Code Mode/);
   assert.equal(await event.locator('.codeModeChip').count(), 1);
   assert.equal(await event.locator('.toolChip').count(), 0);
@@ -925,7 +927,7 @@ test('browser Code Mode raw fallback keeps a shared origin tag instead of the ou
   assert.equal((await rawPreview.textContent()).includes('{}'), false);
 
   await switchHiddenLocale(page, 'zh-CN');
-  await page.waitForFunction((eventId) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"] .eventKind`)?.textContent === '脚本操作', operation.id);
+  await page.waitForFunction((eventId) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"] .eventKind`)?.textContent === '脚本化操作', operation.id);
   assert.match(await event.locator('.eventHeader').textContent(), /代码模式/);
   assert.equal(await event.locator('.toolChip').count(), 0);
   assert.match(await rawPreview.textContent(), /源码.*update_plan\(args\)/s);
@@ -935,7 +937,7 @@ test('browser Code Mode summary presents a readable source excerpt instead of ra
   const fixture = await makeRawCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const session = Array.from(index.sessionsById.values())[0];
-  const operation = session.logicalEvents.find((candidate) => candidate.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   assert.ok(operation);
 
   const summaryProfile = {
@@ -964,7 +966,7 @@ test('browser Code Mode summary presents a readable source excerpt instead of ra
   }, operation.id);
 
   const summaryPreview = event.locator('.codeModeSummaryPreview');
-  assert.equal(await event.locator('.eventKind').textContent(), 'Script operation');
+  assert.equal(await event.locator('.eventKind').textContent(), 'Scripted operation');
   assert.equal(await event.locator('.toolChip').count(), 0);
   assert.equal(await summaryPreview.count(), 1);
   assert.equal(await summaryPreview.locator('code').count(), 0);
@@ -1006,7 +1008,7 @@ test('browser Code Mode summary presents a readable source excerpt instead of ra
   await page.waitForFunction((eventId) => {
     const card = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`);
       return card?.classList.contains('summary')
-      && card.querySelector('.eventKind')?.textContent === '脚本操作'
+      && card.querySelector('.eventKind')?.textContent === '脚本化操作'
       && Boolean(card.querySelector('.codeModeSummaryPreview .codeModeSummaryExcerptLine'));
   }, operation.id);
   assert.match(await summaryPreview.textContent(), /源码.*还有未显示的源码。/s);
@@ -1017,7 +1019,7 @@ test('browser Code Mode summary keeps one logical source line to one visual row'
   const fixture = await makeSingleLineRawCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const session = Array.from(index.sessionsById.values())[0];
-  const operation = session.logicalEvents.find((candidate) => candidate.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   assert.ok(operation);
 
   const summaryProfile = {
@@ -1067,13 +1069,16 @@ test('browser Code Mode adaptively unwraps one declared tool and labels multiple
   const fixture = await makeAdaptiveCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const session = Array.from(index.sessionsById.values())[0];
-  const operations = session.logicalEvents.filter((candidate) => candidate.subtype === 'code_mode_operation');
+  const operations = session.logicalEvents.filter((candidate) => candidate.kind === 'code_mode_operation');
   const single = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-browser-single');
   const multi = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-browser-multi');
   const requestOnly = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-browser-request-only');
   assert.ok(single && multi && requestOnly);
-  assert.equal(session.counts.toolCalls, 3);
-  assert.deepEqual(session.analysis.toolUsage, [{ name: 'exec', count: 3 }]);
+  assert.equal(session.counts.toolCalls, 4);
+  assert.deepEqual(session.analysis.toolUsage, [
+    { name: 'exec', count: 3 },
+    { name: 'fixture_other_tool', count: 1 },
+  ]);
 
   const { page } = await openApp(t, index, { locale: 'en' });
   await page.waitForFunction(({ singleId, multiId, requestOnlyId }) => {
@@ -1165,7 +1170,7 @@ test('browser search-hit snippets stay navigable ahead of every folded Code Mode
   const fixture = await makeCodeModeSearchPreviewCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const session = index.sessionsById.get(fixture.sessionId);
-  const operations = session.logicalEvents.filter((candidate) => candidate.subtype === 'code_mode_operation');
+  const operations = session.logicalEvents.filter((candidate) => candidate.kind === 'code_mode_operation');
   const single = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-search-single');
   const multi = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-search-multi');
   const raw = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-search-raw');
@@ -1218,7 +1223,7 @@ test('browser Code Mode presents web requests structurally, renders safe Markdow
   const fixture = await makeWebCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const session = Array.from(index.sessionsById.values())[0];
-  const operation = session.logicalEvents.find((candidate) => candidate.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   const webLifecycle = session.logicalEvents.find((candidate) => candidate.kind === 'web_search');
   assert.ok(operation && webLifecycle);
   assert.equal(session.counts.toolCalls, 2);
@@ -3731,8 +3736,19 @@ test('browser folding profile exposes declared Code Mode requests and previews r
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const { page } = await openApp(t, index);
 
-  const codeModeCard = page.locator('#detail .codeModeRuleCard');
-  await codeModeCard.waitFor();
+  const codeModeSection = page.locator('#detail [data-profile-section="code-mode"]');
+  await codeModeSection.waitFor();
+  const eventKindGroupNames = await page.locator(
+    '#detail .profileRuleSection',
+  ).first().locator(':scope > .profileRuleList > .profileRuleGroup > h4').allTextContents();
+  const commonWorkIndex = eventKindGroupNames.findIndex((name) => /Work and tools|工作与工具/.test(name));
+  const codeModeIndex = eventKindGroupNames.findIndex((name) => /Code Mode tool calls|Code Mode 工具调用/.test(name));
+  assert.ok(commonWorkIndex >= 0);
+  assert.equal(codeModeIndex, -1);
+  assert.match(
+    await codeModeSection.locator('xpath=ancestor::section[contains(@class, "profileRuleGroup")]/h4').textContent(),
+    /Work and tools|工作与工具/,
+  );
   assert.equal(
     await page.locator('#detail .profileDetailHeader').evaluate((header) => getComputedStyle(header).position),
     'sticky',
@@ -3744,32 +3760,94 @@ test('browser folding profile exposes declared Code Mode requests and previews r
     const paneRect = pane.getBoundingClientRect();
     const headerRect = header.getBoundingClientRect();
     return {
+      scrollable: pane.scrollHeight > pane.clientHeight,
       scrollTop: pane.scrollTop,
       paneTop: paneRect.top,
       panePaddingTop: Number.parseFloat(getComputedStyle(pane).paddingTop) || 0,
       headerTop: headerRect.top,
     };
   });
-  assert.ok(stickyHeaderPosition.scrollTop > 0);
-  assert.ok(
-    Math.abs(
-      stickyHeaderPosition.headerTop
-      - stickyHeaderPosition.paneTop
-      - stickyHeaderPosition.panePaddingTop
-    ) <= 2,
-    `expected sticky profile header at detail-pane top: ${JSON.stringify(stickyHeaderPosition)}`,
-  );
-  assert.equal(await codeModeCard.locator('[data-profile-condition="codeModeOperation"]').count(), 1);
+  if (stickyHeaderPosition.scrollable) {
+    assert.ok(stickyHeaderPosition.scrollTop > 0);
+    assert.ok(
+      Math.abs(
+        stickyHeaderPosition.headerTop
+        - stickyHeaderPosition.paneTop
+        - stickyHeaderPosition.panePaddingTop
+      ) <= 2,
+      `expected sticky profile header at detail-pane top: ${JSON.stringify(stickyHeaderPosition)}`,
+    );
+  }
+  assert.equal(await codeModeSection.locator('[data-profile-condition="codeModeScriptOperation"]').count(), 1);
   assert.equal(
-    await page.locator('#detail .profileRuleSection:not(.codeModeRuleSection) [data-profile-condition="codeModeOperation"]').count(),
-    0,
+    await page.locator('#detail [data-profile-condition="codeModeScriptOperation"]').count(),
+    1,
   );
+  assert.equal(await page.locator('#detail [data-profile-kind="code_mode_script_operation"]').count(), 0);
+  assert.equal(await page.locator('#detail [data-profile-kind="command"]').count(), 0);
+  assert.equal(await page.locator('#detail [data-profile-kind="error"]').count(), 0);
+  assert.equal(await page.locator('#detail [data-profile-default-kinds]').count(), 0);
+  assert.match(await codeModeSection.locator(':scope > p > strong').textContent(), /Code Mode tool calls|Code Mode 工具调用/);
+  assert.equal(await codeModeSection.locator('h4').count(), 0);
+  assert.equal(await codeModeSection.locator('[data-profile-condition="codeModeOperation"]').count(), 0);
+  assert.match(
+    await codeModeSection.locator('[data-profile-condition="codeModeScriptOperation"] option:checked').textContent(),
+    /Inherit:|继承：/,
+  );
+  assert.equal(await codeModeSection.locator('.codeModeRuleCard, .codeModeRequestDetails, .profileRuleCount').count(), 0);
+  for (const profileId of ['conversation', 'changes', 'debug', 'search', 'compact']) {
+    await page.evaluate((id) => {
+      const select = document.querySelector('#detail [data-profile-picker]');
+      select.value = id;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }, profileId);
+    await page.waitForFunction((id) => document.querySelector('#profileSelect')?.value === id, profileId);
+    if (await page.locator('#detail [data-detail-action="close"]').count()) {
+      await page.locator('#detail [data-detail-action="close"]').click();
+    }
+    await waitForDetailView(page, 'profileRules');
+    const placement = await page.evaluate(() => {
+      const section = document.querySelector('#detail [data-profile-section="code-mode"]');
+      return {
+        profile: document.querySelector('#detail [data-profile-picker]')?.value || '',
+        count: document.querySelectorAll('#detail [data-profile-section="code-mode"]').length,
+        inGroup: Boolean(section?.closest('.profileRuleGroup')),
+        inDefaults: Boolean(section?.closest('[data-profile-default-kinds]')),
+      };
+    });
+    assert.deepEqual(placement, {
+      profile: profileId,
+      count: 1,
+      inGroup: true,
+      inDefaults: false,
+    }, `${profileId} keeps Code Mode controls in the explicit Work and tools group`);
+  }
+  await page.evaluate(() => {
+    const select = document.querySelector('#detail [data-profile-picker]');
+    select.value = 'narrative';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.waitForFunction(() => document.querySelector('#profileSelect')?.value === 'narrative');
+  if (await page.locator('#detail [data-detail-action="close"]').count()) {
+    await page.locator('#detail [data-detail-action="close"]').click();
+  }
+  await page.waitForFunction(() => (
+    document.querySelector('#detail [data-profile-picker]')?.value === 'narrative'
+    && document.querySelectorAll('#detail [data-profile-section="code-mode"]').length === 1
+  ));
   const requestRule = page.locator('#detail [data-profile-code-mode-request="wait_agent"]');
   await requestRule.waitFor();
   const rowText = await requestRule.locator('xpath=..').textContent();
   assert.match(rowText, /Wait for subagent|等待子代理/);
   assert.match(rowText, /wait_agent/);
-  assert.match(rowText, /Inherit other rules|继承其他规则/);
+  assert.match(rowText, /Inherit:|继承：/);
+  assert.match(await requestRule.locator('option[value=""]').textContent(), /Collapsed|折叠/);
+
+  assert.equal(
+    await page.locator('#detail [data-profile-kind="other_tool_call"]').count(),
+    0,
+    'zero-count ordinary tool kinds stay hidden even when Code Mode requests inherit their rules',
+  );
 
   await requestRule.selectOption('expanded');
   await page.waitForFunction(() => [...document.querySelectorAll('#timeline .event.code-mode-single-tool')]
@@ -3778,7 +3856,7 @@ test('browser folding profile exposes declared Code Mode requests and previews r
 });
 
 test('browser structured filters keep profile-hidden Code Mode request results visible', async (t) => {
-  const fixture = await makeAdaptiveCodeModeCodexHome(t);
+  const fixture = await makeCodeModeSearchPreviewCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const hiddenProfile = {
     id: 'custom:hidden-code-mode-filter-results',
@@ -3802,18 +3880,19 @@ test('browser structured filters keep profile-hidden Code Mode request results v
   await page.waitForFunction(() => (
     document.querySelectorAll('#timeline .event.hiddenByProfile').length >= 3
   ));
-  assert.match(
-    await page.locator('#searchKindSelect option[value="code_mode_operation"]').textContent(),
-    /Code Mode tool call \(3\)/,
-  );
+  assert.equal(await page.locator('#searchKindSelect option[value="code_mode_operation"]').count(), 0);
   assert.equal(await page.locator('[data-search-filter-row="codeModeRequest"]').count(), 0);
   assert.match(
-    await page.locator('#searchKindSelect optgroup').filter({ hasText: 'Code Mode tool call' }).getAttribute('label'),
+    await page.locator('#searchKindSelect optgroup[label="Code Mode tool call"]').getAttribute('label'),
     /Code Mode tool call/,
   );
   assert.match(
     await page.locator('#searchKindSelect option[value="code_mode_request:shell_command"]').textContent(),
     /Declared: Shell command \(1\)/,
+  );
+  assert.match(
+    await page.locator('#searchKindSelect option[value="code_mode_script_operation"]').textContent(),
+    /Scripted operation \(1\)/,
   );
   await addSearchFilter(page, 'kind', 'code_mode_request:shell_command');
   await page.waitForFunction(() => {
@@ -3825,15 +3904,14 @@ test('browser structured filters keep profile-hidden Code Mode request results v
   await expectInputValue(page, '#searchKindSelect', 'code_mode_request:shell_command');
   assert.equal(await page.locator('#searchFilterCount').textContent(), 'Filters · 1');
 
-  await addSearchFilter(page, 'kind', 'code_mode_operation');
+  await addSearchFilter(page, 'kind', 'code_mode_script_operation');
   await page.waitForFunction(() => {
     const events = [...document.querySelectorAll('#timeline .event[data-event-id]')];
-    return events.length === 3
-      && events.every((event) => (
-        event.classList.contains('collapsed') && !event.classList.contains('hiddenByProfile')
-      ));
+    return events.length === 1
+      && events[0].classList.contains('collapsed')
+      && !events[0].classList.contains('hiddenByProfile');
   });
-  await expectInputValue(page, '#searchKindSelect', 'code_mode_operation');
+  await expectInputValue(page, '#searchKindSelect', 'code_mode_script_operation');
   assert.equal(await page.locator('#searchFilterCount').textContent(), 'Filters · 1');
 
   await clearAllSearch(page);

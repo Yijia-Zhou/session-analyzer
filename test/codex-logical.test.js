@@ -901,7 +901,7 @@ test('logical builder emits one neutral Code Mode operation and uniquely links n
     raw(8, { recordType: 'response_item', payloadType: 'function_call', callId: 'direct-tool', toolName: 'view_image', output: '{"path":"fixture.png"}' }),
     raw(9, { recordType: 'response_item', payloadType: 'function_call_output', callId: 'direct-tool', output: '{"ok":true}' }),
   ]);
-  const operation = events.find((event) => event.subtype === 'code_mode_operation');
+  const operation = events.find((event) => event.kind === 'code_mode_operation');
   const nestedPatch = events.find((event) => event.kind === 'patch');
   const nestedMcp = events.find((event) => event.kind === 'mcp_call');
 
@@ -914,7 +914,7 @@ test('logical builder emits one neutral Code Mode operation and uniquely links n
     severity: operation.severity,
     rawLines: operation.rawRefs.map((ref) => ref.line),
   }, {
-    kind: 'other_tool_call', subtype: 'code_mode_operation', toolName: 'exec', status: '', severity: 'normal', rawLines: [1, 3, 4, 7],
+    kind: 'code_mode_operation', subtype: '', toolName: 'exec', status: '', severity: 'normal', rawLines: [1, 3, 4, 7],
   });
   assert.equal(events.some((event) => event.toolName === 'wait'), false);
   assert.deepEqual(operation.codeModeOperation.eventRefs, [nestedPatch.id, nestedMcp.id]);
@@ -955,7 +955,7 @@ test('logical builder leaves an empty Code Mode source preview empty', () => {
     }),
   ]);
 
-  const operation = events.find((event) => event.subtype === 'code_mode_operation');
+  const operation = events.find((event) => event.kind === 'code_mode_operation');
   assert.ok(operation);
   assert.equal(operation.label, 'Code Mode operation');
   assert.equal(operation.preview, '');

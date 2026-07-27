@@ -346,7 +346,7 @@ test('Code Mode detail prioritizes command and final output while folding wait t
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const nested = session.logicalEvents.find((event) => event.toolName === 'fixture_lookup');
   const detail = buildEventDetail(session, operation.id, 'main');
   const chineseDetail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
@@ -422,7 +422,7 @@ test('Code Mode detail restores declared plan and shell structure with explicitl
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
   const chineseDetail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
   const [plan, shell, source] = detail.timelineSections;
@@ -529,7 +529,7 @@ test('Code Mode single shell presentation unwraps the native command run and mov
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
   const chineseDetail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
 
@@ -646,7 +646,7 @@ test('Code Mode single request summaries cover every safely projected tool type'
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operations = session.logicalEvents.filter((event) => event.subtype === 'code_mode_operation');
+  const operations = session.logicalEvents.filter((event) => event.kind === 'code_mode_operation');
   assert.equal(operations.length, cases.length);
   operations.forEach((operation, index) => {
     const detail = buildEventDetail(session, operation.id, 'main');
@@ -716,7 +716,7 @@ test('Code Mode web projection renders structured request and safe Markdown resu
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const nestedWeb = session.logicalEvents.find((event) => event.kind === 'web_search');
   const detail = buildEventDetail(session, operation.id, 'main');
   const chineseDetail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
@@ -776,7 +776,7 @@ test('Code Mode single request keeps operation output explicit and separate from
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
   const chineseDetail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
 
@@ -810,7 +810,7 @@ test('Code Mode result-association evidence does not imply an output was observe
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
   const chineseDetail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
   const projectionEvidence = detail.inspectorSections.find((section) => section.title === 'Projection evidence');
@@ -858,7 +858,7 @@ test('Code Mode request previews distinguish omitted, null, and empty-object arg
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operations = session.logicalEvents.filter((event) => event.subtype === 'code_mode_operation');
+  const operations = session.logicalEvents.filter((event) => event.kind === 'code_mode_operation');
   const previews = operations.map((operation) => buildEventDetail(session, operation.id, 'main').presentation.collapsedPreview);
   const chinesePreviews = operations.map((operation) => (
     buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' }).presentation.collapsedPreview
@@ -910,7 +910,7 @@ test('Code Mode declared sequence sanitizes request keys before humanizing separ
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const preview = buildEventDetail(session, operation.id, 'main').presentation.collapsedPreview;
 
   assert.equal(preview.kind, 'declared_sequence');
@@ -952,12 +952,12 @@ test('Code Mode declared projection fails closed and keeps an outer-source excer
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
 
   assert.deepEqual(detail.timelineSections.map((section) => section.type), ['code', 'terminal']);
   assert.equal(detail.presentation.variant, 'raw_code_mode');
-  assert.equal(detail.presentation.label, 'Script operation');
+  assert.equal(detail.presentation.label, 'Scripted operation');
   assert.deepEqual(detail.presentation.collapsedPreview, {
     kind: 'source_excerpt',
     label: 'Source',
@@ -988,7 +988,7 @@ test('Code Mode raw source excerpt records a complete two-line summary without a
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
 
   assert.equal(detail.presentation.variant, 'raw_code_mode');
@@ -1030,7 +1030,7 @@ test('Code Mode raw source excerpt splits every ECMAScript line terminator', asy
 
       const index = await buildIndex({ repoRoot, codexHome });
       const session = index.sessionsById.get(id);
-      const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+      const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
       const detail = buildEventDetail(session, operation.id, 'main');
 
       assert.equal(detail.presentation.variant, 'raw_code_mode');
@@ -1062,7 +1062,7 @@ test('Code Mode raw source excerpt bounds retained candidates for newline-dense 
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
 
   assert.equal(detail.presentation.variant, 'raw_code_mode');
@@ -1086,7 +1086,7 @@ test('Code Mode raw source excerpt scans newline-dense oversized source without 
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
 
   assert.equal(detail.presentation.variant, 'raw_code_mode');
@@ -1109,7 +1109,7 @@ test('Code Mode raw source excerpt marks an individually truncated source line a
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
   const preview = detail.presentation.collapsedPreview;
 
@@ -1138,7 +1138,7 @@ test('Code Mode raw source excerpt redacts a multiline data URL before selecting
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
   const preview = detail.presentation.collapsedPreview;
   const previewText = preview.summaryLines.join('\n');
@@ -1174,7 +1174,7 @@ test('Code Mode raw source excerpt redacts whitespace-wrapped non-base64 data UR
   for (const [variantIndex, variant] of variants.entries()) {
     const id = 'dddddddd-226' + variantIndex + '-4444-9999-dddddddddddd';
     const session = index.sessionsById.get(id);
-    const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+    const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
     const detail = buildEventDetail(session, operation.id, 'main');
     const preview = detail.presentation.collapsedPreview;
     const rendered = JSON.stringify({
@@ -1213,7 +1213,7 @@ test('Code Mode bounded projections preserve long associated results without pro
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
   const chineseDetail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
   const fullResult = detail.timelineSections.at(-1);
@@ -1267,7 +1267,7 @@ test('Code Mode detail bounds structured result interpretation before collaborat
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
   const chineseDetail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
   const collaboration = detail.timelineSections[0];
@@ -1311,7 +1311,7 @@ test('Code Mode image projections keep structured request fields localizable', a
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
   const imageRequest = detail.timelineSections[0];
 
@@ -1364,7 +1364,7 @@ test('Code Mode declared sequence keeps image preview details request-only', asy
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
   const preview = detail.presentation.collapsedPreview;
   const imageProjection = detail.timelineSections[0];
@@ -1416,7 +1416,7 @@ test('Code Mode collaboration projections do not translate agent names that coll
 
   const index = await buildIndex({ repoRoot, codexHome });
   const session = index.sessionsById.get(id);
-  const operation = session.logicalEvents.find((event) => event.subtype === 'code_mode_operation');
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
   const detail = buildEventDetail(session, operation.id, 'main');
   const chineseDetail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
   const statuses = detail.timelineSections[0].statuses;

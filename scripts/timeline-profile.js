@@ -399,7 +399,7 @@ function disableContextRelation(index, fixture) {
   const session = index.sessionsById.get(fixture.longSessionId);
   const nested = session?.logicalEvents.find((event) => event.toolName === fixture.contextReveal?.toolName);
   const parent = nested && session.logicalEvents.find((event) => (
-    event.subtype === 'code_mode_operation'
+    event.kind === 'code_mode_operation'
       && Array.isArray(event.codeModeOperation?.eventRefs)
       && event.codeModeOperation.eventRefs.includes(nested.id)
   ));

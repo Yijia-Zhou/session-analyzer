@@ -5,7 +5,8 @@ const {
   projectDeclaredCodeModeCalls,
 } = require('./codex-code-mode-declared');
 
-const CODE_MODE_OPERATION_SUBTYPE = 'code_mode_operation';
+const CODE_MODE_OPERATION_KIND = 'code_mode_operation';
+const CODE_MODE_SCRIPT_OPERATION_KIND = 'code_mode_script_operation';
 const CODE_MODE_REQUEST_EVIDENCE = 'declared_source';
 const CODE_MODE_REQUEST_PATTERN = /^[a-z][a-z0-9_]*$/;
 const KNOWN_CODE_MODE_REQUESTS = new Set(knownCodeModeToolNames());
@@ -18,7 +19,7 @@ function normalizeCodeModeRequest(value) {
 function codeModeExecPhase(event = {}) {
   const eventId = String(event.id || '');
   if (event.layer !== 'main'
-      || event.subtype !== CODE_MODE_OPERATION_SUBTYPE
+      || event.kind !== CODE_MODE_OPERATION_KIND
       || !eventId
       || String(event.codeModeOperation?.id || '') !== eventId) return null;
   const phases = event.codeModeOperation?.phases;
@@ -88,7 +89,7 @@ function buildCodeModePresentationIndexes(session = {}, options = {}) {
   const codeModeDeclaredRequests = new Map();
   for (const event of session.logicalEvents || []) {
     if (event?.layer !== 'main'
-        || event?.subtype !== CODE_MODE_OPERATION_SUBTYPE
+        || event?.kind !== CODE_MODE_OPERATION_KIND
         || !String(event?.id || '')
         || String(event?.codeModeOperation?.id || '') !== String(event?.id || '')) continue;
     const fact = codeModeDeclaredRequestFact(event, rawById, options);
@@ -100,6 +101,12 @@ function buildCodeModePresentationIndexes(session = {}, options = {}) {
 function codeModeDeclaredRequestFactForEvent(session = {}, eventId = '') {
   const index = session.presentationIndexes?.codeModeDeclaredRequests;
   return index instanceof Map ? index.get(String(eventId || '')) || null : null;
+}
+
+function isCodeModeScriptOperation(event = {}, presentationIndexes) {
+  if (event.layer !== 'main' || event.kind !== CODE_MODE_OPERATION_KIND) return false;
+  const index = presentationIndexes?.codeModeDeclaredRequests;
+  return !(index instanceof Map) || !index.has(String(event.id || ''));
 }
 
 function codeModePresentationFactsForEvent(session = {}, eventId = '') {
@@ -137,7 +144,8 @@ function codeModeRequestCatalog(sessions, options = {}) {
 }
 
 module.exports = {
-  CODE_MODE_OPERATION_SUBTYPE,
+  CODE_MODE_OPERATION_KIND,
+  CODE_MODE_SCRIPT_OPERATION_KIND,
   CODE_MODE_REQUEST_EVIDENCE,
   buildCodeModePresentationIndexes,
   codeModeDeclaredRequestFact,
@@ -147,5 +155,6 @@ module.exports = {
   codeModeOperationExecSource,
   codeModePresentationFactsForEvent,
   codeModeRequestCatalog,
+  isCodeModeScriptOperation,
   normalizeCodeModeRequest,
 };

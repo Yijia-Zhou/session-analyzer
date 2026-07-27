@@ -7,12 +7,14 @@ function createCodexSearch(deps) {
     codeModePresentationContextMap,
     codeModeRequestCatalog,
     codeModeRequestLabel,
+    codeModeScriptOperationKind,
     codexSourceKind,
     codexSourceLocator,
     defaultLocale,
     derivedSessionKind,
     displayProjectFile,
     eventKindCatalog,
+    isCodeModeScriptOperation,
     localizedLogicalLabel,
     normalizeSearchPath,
     rawRecordLabel,
@@ -73,11 +75,13 @@ function createCodexSearch(deps) {
 
   function eventMatches(event, filters, presentationIndexes) {
     if (filters.layer && event.layer !== filters.layer) return false;
-    if (filters.kind && event.kind !== filters.kind && event.subtype !== filters.kind) return false;
+    if (codeModeScriptOperationKind && filters.kind === codeModeScriptOperationKind) {
+      if (!isCodeModeScriptOperation(event, presentationIndexes)) return false;
+    } else if (filters.kind && event.kind !== filters.kind && event.subtype !== filters.kind) return false;
     if (filters.status && event.status !== filters.status) return false;
     if (filters.tool && !String(event.toolName || '').toLowerCase().includes(filters.tool.toLowerCase())) return false;
     if (filters.codeModeRequest) {
-      if (event.layer !== 'main' || event.subtype !== 'code_mode_operation') return false;
+      if (event.layer !== 'main' || event.kind !== 'code_mode_operation') return false;
       const fact = presentationIndexes?.codeModeDeclaredRequests?.get(String(event.id || ''));
       if (!fact?.toolNames?.includes(filters.codeModeRequest)) return false;
     }

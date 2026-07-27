@@ -42,12 +42,12 @@ const OVERRIDES_KEY = 'sessionAnalyzer.overrides';
 const LOCALE_STORAGE_KEY = 'sessionAnalyzer.locale';
 const DISPLAY_STATES = foldingApi.DISPLAY_STATES;
 const CONDITION_DISPLAY_STATES = foldingApi.CONDITION_DISPLAY_STATES;
-const EDITABLE_EVENT_KINDS = foldingApi.EDITABLE_EVENT_KINDS;
 const EDITABLE_KIND_GROUPS = foldingApi.EDITABLE_KIND_GROUPS;
 const CONDITION_DEFINITIONS = foldingApi.CONDITION_DEFINITIONS;
 const normalizeRules = foldingApi.normalizeRules;
 const normalizeOverrides = foldingApi.normalizeOverrides;
 const evaluateDisplayStateFromRules = foldingApi.displayStateFromRules;
+const inheritedCodeModeRequestState = foldingApi.inheritedCodeModeRequestState;
 const inspectorChipValues = eventChipsApi.inspectorChipValues;
 const rawRefsSubtitle = eventChipsApi.rawRefsSubtitle;
 const KIND_LABELS = {
@@ -58,6 +58,7 @@ const KIND_LABELS = {
   mcp_call: 'MCP call',
   js_repl: 'JS REPL',
   other_tool_call: 'Other tool call',
+  code_mode_operation: 'Code Mode tool call',
   proposed_plan: 'Proposed plan',
   plan_update: 'Plan update',
   protocol: 'Protocol',
@@ -515,7 +516,7 @@ function timelineEventDetail(event) {
 }
 
 function codeModeEventPresentation(event, detail = timelineEventDetail(event)) {
-  if (event?.subtype !== 'code_mode_operation') return null;
+  if (event?.kind !== 'code_mode_operation') return null;
   const presentation = detail?.presentation;
   return presentation && ['single_tool', 'multi_tool', 'raw_code_mode'].includes(presentation.variant)
     ? presentation
@@ -532,7 +533,7 @@ function detailHasWebProjection(detail) {
 function compactCodeModeWebLifecycleIds() {
   const ids = new Set();
   for (const detail of Object.values(state.detailCache)) {
-    if (detail?.subtype !== 'code_mode_operation' || !detailHasWebProjection(detail)) continue;
+    if (detail?.kind !== 'code_mode_operation' || !detailHasWebProjection(detail)) continue;
     for (const section of detail.inspectorSections || []) {
       if (section?.type !== 'event_refs') continue;
       for (const item of section.items || []) {
@@ -1724,7 +1725,7 @@ function addProfileKindDifferences(kinds, profile, baseProfile = null) {
   const base = baseProfile || baseProfileFor(profile);
   for (const kind of Object.keys(profile.rules.kindStates)) {
     if (!foldingApi.isDynamicEditableKind(kind)) {
-      kinds.add(kind);
+      if (!base || profileRuleForKind(profile, kind) !== profileRuleForKind(base, kind)) kinds.add(kind);
       continue;
     }
     const display = profileRuleForKind(profile, kind);
@@ -1741,7 +1742,7 @@ function addProfileKindDifferences(kinds, profile, baseProfile = null) {
 }
 
 function knownEventKinds() {
-  const kinds = new Set(EDITABLE_EVENT_KINDS);
+  const kinds = new Set();
   for (const profile of state.customProfiles) addProfileKindDifferences(kinds, profile);
   if (state.profileDraft) addProfileKindDifferences(kinds, state.profileDraft, activeProfile());
   for (const item of state.sessionEventKinds?.main || []) {
@@ -1751,12 +1752,12 @@ function knownEventKinds() {
   for (const event of state.currentEvents) {
     if (event.kind) kinds.add(event.kind);
   }
-  const subtypeCatalogKinds = new Set([
+  const projectedCatalogKinds = new Set([
     ...(state.eventKinds?.main || []),
     ...(state.sessionEventKinds?.main || []),
-  ].filter((item) => item?.matchField === 'subtype').map((item) => String(item.value || '').trim()).filter(Boolean));
+  ].filter((item) => item?.matchField).map((item) => String(item.value || '').trim()).filter(Boolean));
   return [...kinds]
-    .filter((kind) => !subtypeCatalogKinds.has(kind))
+    .filter((kind) => kind !== 'code_mode_operation' && !projectedCatalogKinds.has(kind))
     .sort(compareEditableKinds);
 }
 
@@ -2140,16 +2141,24 @@ function renderKindOptions() {
     return `<option value="${escapeHtml(option.value)}"${matchField}>${escapeHtml(label)}</option>`;
   };
   const codeModeKind = options.find((option) => option.value === 'code_mode_operation');
+  const codeModeScriptKind = options.find((option) => option.value === 'code_mode_script_operation');
   const renderCodeModeGroup = () => {
-    if (!codeModeKind && !requestOptions.length && search.kind !== 'code_mode_operation' && !search.codeModeRequest) return '';
+    if (!codeModeKind && !codeModeScriptKind && !requestOptions.length && !search.codeModeRequest) return '';
     const kindOption = codeModeKind || {
       value: 'code_mode_operation',
       label: kindLabel('code_mode_operation'),
       count: 0,
-      matchField: 'subtype',
     };
-    const allLabel = kindOption.count ? `${kindOption.label} (${kindOption.count})` : kindOption.label;
-    const matchField = kindOption.matchField ? ` data-match-field="${escapeHtml(kindOption.matchField)}"` : '';
+    const scriptOption = codeModeScriptKind || {
+      value: 'code_mode_script_operation',
+      label: kindLabel('code_mode_script_operation'),
+      count: 0,
+      matchField: 'presentation_fallback',
+    };
+    const scriptLabel = scriptOption.count ? `${scriptOption.label} (${scriptOption.count})` : scriptOption.label;
+    const scriptMatchField = scriptOption.matchField
+      ? ` data-match-field="${escapeHtml(scriptOption.matchField)}"`
+      : '';
     const requestRows = requestOptions.map((option) => {
       const requestLabel = t('declaredRequestOption', { value: option.displayLabel });
       const label = option.count ? `${requestLabel} (${option.count})` : requestLabel;
@@ -2157,7 +2166,9 @@ function renderKindOptions() {
     });
     return [
       `<optgroup label="${escapeHtml(kindOption.label)}">`,
-      `<option value="code_mode_operation"${matchField}>${escapeHtml(allLabel)}</option>`,
+      ...(codeModeScriptKind ? [
+        `<option value="${escapeHtml(scriptOption.value)}"${scriptMatchField}>${escapeHtml(scriptLabel)}</option>`,
+      ] : []),
       ...requestRows,
       '</optgroup>',
     ].join('');
@@ -2167,6 +2178,8 @@ function renderKindOptions() {
     if (option.value === 'code_mode_operation') {
       rows.push(renderCodeModeGroup());
       codeModeGroupRendered = true;
+    } else if (option.value === 'code_mode_script_operation') {
+      continue;
     } else {
       rows.push(renderOrdinaryKindOption(option));
     }
@@ -4002,11 +4015,11 @@ function renderTimeline() {
       presentation ? `code-mode-${cssToken(presentation.variant)}` : '',
       compactWebLifecycle ? 'code-mode-web-lifecycle' : '',
     ].filter(Boolean).join(' ');
-    const displayToolName = compactWebLifecycle || event.subtype === 'code_mode_operation' ? '' : event.toolName;
+    const displayToolName = compactWebLifecycle || event.kind === 'code_mode_operation' ? '' : event.toolName;
     const chips = [
       event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
       ...(Array.isArray(event.tags) ? event.tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`) : []),
-      renderCodeModePresentationChips(presentation, event.subtype === 'code_mode_operation'),
+      renderCodeModePresentationChips(presentation, event.kind === 'code_mode_operation'),
       displayToolName ? `<span class="chip toolChip">${escapeHtml(displayToolName)}</span>` : '',
       event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t('files'))}</span>` : '',
       temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
@@ -4106,7 +4119,7 @@ function loadVisibleExpandedDetails() {
     if (!isInScrollport(article)) continue;
     const item = currentTimelineEvent(article.dataset.eventId);
     if (item && (article.classList.contains('expanded')
-        || (activeLayerId() === 'main' && item.subtype === 'code_mode_operation'))) {
+        || (activeLayerId() === 'main' && item.kind === 'code_mode_operation'))) {
       ensureEventDetail(item);
     }
   }
@@ -4817,12 +4830,20 @@ function renderProfileRulesPane(options = {}) {
   const savedRules = normalizeRules(profile.rules);
   const conditionMap = new Map(rules.conditions.map((condition) => [condition.id, condition.state]));
   const savedConditionMap = new Map(savedRules.conditions.map((condition) => [condition.id, condition.state]));
+  const editableKindCounts = new Map((state.sessionEventKinds?.main || [])
+    .filter((item) => !item?.matchField)
+    .map((item) => [String(item?.value || '').trim(), Number(item?.count || 0)]));
   const renderKindRow = (kind) => {
     const display = rules.kindStates[kind] || '';
+    const count = editableKindCounts.get(kind) || 0;
+    const metadata = [
+      `<code>${escapeHtml(kind)}</code>`,
+      count ? escapeHtml(t('suggestionEventCount', { count })) : '',
+    ].filter(Boolean).join('<span aria-hidden="true">·</span>');
     return `<label class="profileRuleRow">
       <span>
         <strong>${escapeHtml(kindLabel(kind))}</strong>
-        <span>${escapeHtml(kind)}</span>
+        <span class="profileRuleMeta">${metadata}</span>
       </span>
       <select data-profile-kind="${escapeHtml(kind)}">
         <option value=""${display ? '' : ' selected'}>${escapeHtml(displayStateLabel(rules.fallback))} (${escapeHtml(t('default'))})</option>
@@ -4833,6 +4854,7 @@ function renderProfileRulesPane(options = {}) {
   const renderCodeModeRequestRow = (request) => {
     const display = rules.codeModeRequestStates[request.value] || '';
     const savedDisplay = savedRules.codeModeRequestStates[request.value] || '';
+    const inheritedDisplay = inheritedCodeModeRequestState(request.value, rules);
     const changed = display !== savedDisplay;
     const label = request.displayLabel || request.label || codeModeRequestDisplayLabel(request.value) || request.value;
     const metadata = [
@@ -4841,13 +4863,15 @@ function renderProfileRulesPane(options = {}) {
       request.count ? escapeHtml(t('suggestionEventCount', { count: request.count })) : '',
       changed ? `<span class="profileRuleChanged">${escapeHtml(t('changed'))}</span>` : '',
     ].filter(Boolean).join('<span aria-hidden="true">·</span>');
-    return `<label class="profileRuleRow codeModeRuleRow codeModeRequestRuleRow${changed ? ' changed' : ''}${request.historical ? ' historical' : ''}" data-profile-code-mode-request-row="${escapeHtml(request.value)}">
+    return `<label class="profileRuleRow" data-profile-code-mode-request-row="${escapeHtml(request.value)}">
       <span>
         <strong>${escapeHtml(label)}</strong>
         <span class="profileRuleMeta">${metadata}</span>
       </span>
       <select data-profile-code-mode-request="${escapeHtml(request.value)}">
-        <option value=""${display ? '' : ' selected'}>${escapeHtml(t('inheritOtherRules'))}</option>
+        <option value=""${display ? '' : ' selected'}>${escapeHtml(t('inheritOrdinaryToolState', {
+          state: displayStateLabel(inheritedDisplay),
+        }))}</option>
         ${DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === display ? ' selected' : ''}>${escapeHtml(displayStateLabel(stateId))}</option>`).join('')}
       </select>
     </label>`;
@@ -4859,35 +4883,58 @@ function renderProfileRulesPane(options = {}) {
   const historicalCodeModeRequestRows = codeModeRequestCatalog.historical.map(renderCodeModeRequestRow).join('');
   const codeModeOperationCount = normalizedKindOptions('main')
     .find((option) => option.value === 'code_mode_operation')?.count || 0;
-  const codeModeConditionState = conditionMap.get('codeModeOperation') || '';
-  const codeModeConditionChanged = codeModeConditionState !== (savedConditionMap.get('codeModeOperation') || '');
-  const currentCodeModeRuleCount = codeModeRequestCatalog.current.length;
-  const openCodeModeRequests = currentCodeModeRuleCount <= 4
-    || codeModeRequestCatalog.current.some((request) => rules.codeModeRequestStates[request.value]);
-  const codeModeParentMetadata = [
-    `<span>${escapeHtml(t('codeModeAllOperationsDescription'))}</span>`,
-    codeModeConditionChanged ? `<span class="profileRuleChanged">${escapeHtml(t('changed'))}</span>` : '',
-  ].filter(Boolean).join('');
-  const codeModeParentRow = `<label class="profileRuleRow codeModeRuleRow codeModeParentRuleRow${codeModeConditionChanged ? ' changed' : ''}">
+  const codeModeScriptState = conditionMap.get('codeModeScriptOperation') || '';
+  const codeModeScriptChanged = codeModeScriptState !== (savedConditionMap.get('codeModeScriptOperation') || '');
+  const codeModeScriptMetadata = codeModeScriptChanged
+    ? `<span class="profileRuleMeta"><span class="profileRuleChanged">${escapeHtml(t('changed'))}</span></span>`
+    : '';
+  const codeModeScriptRow = `<label class="profileRuleRow">
     <span>
-      <strong>${escapeHtml(t('codeModeAllOperations'))}</strong>
-      <span class="profileRuleMeta">${codeModeParentMetadata}</span>
+      <strong>${escapeHtml(t('codeModeScriptOperation'))}</strong>
+      ${codeModeScriptMetadata}
     </span>
-    <select data-profile-condition="codeModeOperation">${stateOptions(
-    codeModeConditionState,
+    <select data-profile-condition="codeModeScriptOperation">${stateOptions(
+    codeModeScriptState,
     true,
     CONDITION_DISPLAY_STATES,
-    t('inheritOtherRules'),
+    t('inheritOrdinaryToolState', {
+      state: displayStateLabel(inheritedCodeModeRequestState('', rules)),
+    }),
   )}</select>
   </label>`;
-  const renderKindGroup = (entry) => `<section class="profileRuleGroup">
+  const codeModeRuleSubgroup = `<div class="profileRuleSubgroup" data-profile-section="code-mode">
+    <p><strong>${escapeHtml(t('codeModeRules'))}</strong> · ${escapeHtml(t('codeModeRulesDescription'))}</p>
+    <div class="profileRuleList">${codeModeScriptRow}${codeModeRequestRows}</div>
+    ${historicalCodeModeRequestRows ? `<details class="profileRuleDetails">
+      <summary>${escapeHtml(t('codeModeRequestHistoricalGroup'))}</summary>
+      <div class="profileRuleList">${historicalCodeModeRequestRows}</div>
+    </details>` : ''}
+  </div>`;
+  const renderKindGroup = (entry, includeCodeMode = false) => `<section class="profileRuleGroup">
     <h4>${escapeHtml(t(`kindGroup${entry.group.id[0].toUpperCase()}${entry.group.id.slice(1)}Name`))}</h4>
     <p>${escapeHtml(t(`kindGroup${entry.group.id[0].toUpperCase()}${entry.group.id.slice(1)}Description`))}</p>
-    <div class="profileRuleList">${entry.kinds.map(renderKindRow).join('')}</div>
+    ${entry.kinds.length ? `<div class="profileRuleList">${entry.kinds.map(renderKindRow).join('')}</div>` : ''}
+    ${includeCodeMode ? codeModeRuleSubgroup : ''}
   </section>`;
-  const explicitKindRows = groupedEditableKinds(explicitKinds).map(renderKindGroup).join('');
-  const defaultKindRows = groupedEditableKinds(defaultKinds).map(renderKindGroup).join('');
-  const genericConditionDefinitions = conditionDefinitions().filter((condition) => condition.id !== 'codeModeOperation');
+  const explicitKindGroups = groupedEditableKinds(explicitKinds);
+  const hasCodeModeControls = codeModeOperationCount > 0
+    || codeModeScriptState
+    || codeModeRequestCatalog.current.length > 0
+    || codeModeRequestCatalog.historical.length > 0;
+  if (hasCodeModeControls && !explicitKindGroups.some((entry) => entry.group.id === 'commonWork')) {
+    const commonWorkGroup = EDITABLE_KIND_GROUPS.find((group) => group.id === 'commonWork');
+    if (commonWorkGroup) {
+      explicitKindGroups.push({ group: commonWorkGroup, kinds: [] });
+      explicitKindGroups.sort((left, right) => left.group.priority - right.group.priority);
+    }
+  }
+  const explicitKindRows = explicitKindGroups
+    .map((entry) => renderKindGroup(entry, hasCodeModeControls && entry.group.id === 'commonWork'))
+    .join('');
+  const defaultKindRows = groupedEditableKinds(defaultKinds)
+    .map((entry) => renderKindGroup(entry))
+    .join('');
+  const genericConditionDefinitions = conditionDefinitions().filter((condition) => condition.id !== 'codeModeScriptOperation');
   const activeConditionRows = genericConditionDefinitions.filter((condition) => conditionMap.has(condition.id)).map((condition) => (
     `<label class="profileRuleRow">
       <span>
@@ -4943,7 +4990,7 @@ function renderProfileRulesPane(options = {}) {
         </div>
         <div class="profileRuleList">${explicitKindRows || `<div class="profileRuleEmpty">${escapeHtml(t('noExplicitKindRules'))}</div>`}</div>
       </section>
-      <details class="profileRuleDetails">
+      ${defaultKinds.length ? `<details class="profileRuleDetails" data-profile-default-kinds>
         <summary>
           <span>${escapeHtml(t('defaultKindCount', { count: defaultKinds.length }))}</span>
           <label class="profileDefaultInline">
@@ -4953,31 +5000,7 @@ function renderProfileRulesPane(options = {}) {
         </summary>
         <p>${escapeHtml(defaultKindNames)}</p>
         <div class="profileRuleList">${defaultKindRows}</div>
-      </details>
-      <section class="profileRuleSection codeModeRuleSection">
-        <div class="profileRuleSectionHeader codeModeRuleSectionHeader">
-          <h3>${escapeHtml(t('codeModeRules'))}</h3>
-          ${codeModeOperationCount ? `<span class="profileRuleCount" title="${escapeHtml(t('codeModeOperationCountHint'))}">${escapeHtml(t('suggestionEventCount', { count: codeModeOperationCount }))}</span>` : ''}
-        </div>
-        <p class="codeModeRuleLead">${escapeHtml(t('codeModeRulesDescription'))}</p>
-        <div class="codeModeRuleCard">
-          ${codeModeParentRow}
-          <details class="codeModeRequestDetails"${openCodeModeRequests ? ' open' : ''}>
-            <summary>
-              <span>
-                <strong>${escapeHtml(t('codeModeRequestRules'))}</strong>
-                <small>${escapeHtml(t('codeModeRequestRulesDescription'))}</small>
-              </span>
-              <span class="profileRuleCount" title="${escapeHtml(t('codeModeRequestCountHint'))}">${escapeHtml(t('codeModeRequestTypeCount', { count: currentCodeModeRuleCount }))}</span>
-            </summary>
-            <div class="profileRuleList codeModeRequestRuleList">${codeModeRequestRows || `<div class="profileRuleEmpty">${escapeHtml(t('noCodeModeRequestRules'))}</div>`}</div>
-            ${historicalCodeModeRequestRows ? `<details class="profileRuleDetails codeModeHistoricalRules">
-              <summary>${escapeHtml(t('codeModeRequestHistoricalGroup'))}</summary>
-              <div class="profileRuleList">${historicalCodeModeRequestRows}</div>
-            </details>` : ''}
-          </details>
-        </div>
-      </section>
+      </details>` : ''}
       <section class="profileRuleSection">
         <h3>${escapeHtml(t('conditions'))}</h3>
         <div class="profileRuleList">${activeConditionRows || `<div class="profileRuleEmpty">${escapeHtml(t('noActiveConditions'))}</div>`}</div>

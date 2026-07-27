@@ -127,8 +127,7 @@ test('normalizes Code Mode request rules and preserves historical and reserved k
 
 test('Code Mode request rules use presentation facts and most-visible priority', () => {
   const event = {
-    kind: 'other_tool_call',
-    subtype: 'code_mode_operation',
+    kind: 'code_mode_operation',
     severity: 'normal',
     presentationFacts: {
       codeModeDeclaredRequests: {
@@ -154,7 +153,7 @@ test('Code Mode request rules use presentation facts and most-visible priority',
         requestEvidence: 'declared_source',
       },
     },
-  }, rules), 'collapsed');
+  }, rules), 'hidden');
   assert.equal(folding.displayStateFromRules({
     ...event,
     presentationFacts: undefined,
@@ -164,10 +163,104 @@ test('Code Mode request rules use presentation facts and most-visible priority',
   }), 'hidden');
 });
 
+test('unset Code Mode request rules inherit corresponding ordinary tool folding', () => {
+  const rules = {
+    kindStates: {
+      command: 'collapsed',
+      patch: 'expanded',
+      goal: 'summary',
+      other_tool_call: 'hidden',
+    },
+    codeModeRequestStates: {},
+    fallback: 'hidden',
+    conditions: [
+      { id: 'updatePlanCall', state: 'expanded' },
+      { id: 'userInputRequest', state: 'summary' },
+      { id: 'reviewCommand', state: 'expanded' },
+      { id: 'touchedFiles', state: 'expanded' },
+      { id: 'failedStatus', state: 'expanded' },
+    ],
+  };
+  assert.equal(folding.ordinaryKindForCodeModeRequest('shell_command'), 'command');
+  assert.equal(folding.ordinaryKindForCodeModeRequest('exec_command'), 'command');
+  assert.equal(folding.ordinaryKindForCodeModeRequest('apply_patch'), 'patch');
+  assert.equal(folding.ordinaryKindForCodeModeRequest('create_goal'), 'goal');
+  assert.equal(folding.ordinaryKindForCodeModeRequest('web__run'), 'other_tool_call');
+  assert.equal(folding.ordinaryKindForCodeModeRequest('spawn_agent'), 'other_tool_call');
+
+  assert.equal(folding.inheritedCodeModeRequestState('shell_command', rules), 'collapsed');
+  assert.equal(folding.inheritedCodeModeRequestState('apply_patch', rules), 'expanded');
+  assert.equal(folding.inheritedCodeModeRequestState('create_goal', rules), 'summary');
+  assert.equal(folding.inheritedCodeModeRequestState('update_plan', rules), 'expanded');
+  assert.equal(folding.inheritedCodeModeRequestState('request_user_input', rules), 'summary');
+  assert.equal(folding.inheritedCodeModeRequestState('web__run', rules), 'hidden');
+
+  const operation = (toolNames) => ({
+    kind: 'code_mode_operation',
+    status: 'success',
+    severity: 'normal',
+    presentationFacts: {
+      codeModeDeclaredRequests: {
+        toolNames,
+        requestEvidence: 'declared_source',
+      },
+    },
+  });
+  assert.equal(folding.displayStateFromRules(operation(['shell_command']), rules), 'collapsed');
+  assert.equal(folding.displayStateFromRules(operation(['apply_patch']), rules), 'expanded');
+  assert.equal(folding.displayStateFromRules(operation(['shell_command', 'request_user_input']), rules), 'summary');
+  assert.equal(folding.displayStateFromRules(operation(['update_plan']), {
+    ...rules,
+    codeModeRequestStates: { update_plan: 'hidden' },
+  }), 'hidden');
+});
+
+test('Scripted operations inherit ordinary Other tool call folding unless explicitly set', () => {
+  const event = {
+    kind: 'code_mode_operation',
+    status: 'success',
+    severity: 'normal',
+  };
+  const rules = {
+    kindStates: {
+      other_tool_call: 'collapsed',
+      code_mode_operation: 'expanded',
+    },
+    fallback: 'hidden',
+  };
+  assert.equal(folding.displayStateFromRules(event, rules), 'collapsed');
+  assert.equal(folding.displayStateFromRules(event, {
+    ...rules,
+    conditions: [{ id: 'codeModeScriptOperation', state: 'summary' }],
+  }), 'summary');
+});
+
+test('built-in profiles inherit only safe ordinary-call folding facts', () => {
+  const operation = (toolName) => ({
+    kind: 'code_mode_operation',
+    status: 'success',
+    severity: 'normal',
+    preview: 'npm test',
+    touchedFiles: [],
+    presentationFacts: {
+      codeModeDeclaredRequests: {
+        toolNames: [toolName],
+        requestEvidence: 'declared_source',
+      },
+    },
+  });
+  assert.equal(folding.displayStateFromRules(operation('update_plan'), profileRules('conversation')), 'expanded');
+  assert.equal(folding.displayStateFromRules(operation('request_user_input'), profileRules('conversation')), 'expanded');
+  assert.equal(folding.displayStateFromRules(operation('shell_command'), profileRules('conversation')), 'hidden');
+  assert.equal(folding.displayStateFromRules(operation('apply_patch'), profileRules('changes')), 'expanded');
+  assert.equal(folding.displayStateFromRules(operation('shell_command'), profileRules('changes')), 'hidden');
+  assert.equal(folding.displayStateFromRules(operation('create_goal'), profileRules('planning')), 'expanded');
+  assert.equal(folding.displayStateFromRules(operation('web__run'), profileRules('planning')), 'collapsed');
+});
+
 test('declared update_plan requests do not match the canonical update-plan condition', () => {
   const event = {
-    kind: 'other_tool_call',
-    subtype: 'code_mode_operation',
+    kind: 'code_mode_operation',
     severity: 'normal',
     presentationFacts: {
       codeModeDeclaredRequests: {
@@ -191,27 +284,50 @@ test('planning condition matches update_plan calls and protocol plan updates', (
   assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'update_plan', severity: 'normal' }, profileRules('planning')), 'expanded');
 });
 
-test('Code Mode folding condition matches only the canonical operation subtype', () => {
-  const codeModeOperation = {
-    kind: 'other_tool_call',
-    subtype: 'code_mode_operation',
+test('Scripted operation folding condition matches only unprojected Code Mode calls', () => {
+  const scriptOperation = {
+    kind: 'code_mode_operation',
     toolName: 'exec',
-    presentation: { variant: 'single_tool', toolName: 'update_plan' },
   };
-  assert.equal(folding.conditionMatches('codeModeOperation', codeModeOperation), true);
-  assert.equal(folding.conditionMatches('updatePlanCall', codeModeOperation), false);
-  assert.equal(folding.conditionMatches('userInputRequest', codeModeOperation), false);
-  assert.equal(folding.conditionMatches('codeModeOperation', {
+  const projectedOperation = {
+    ...scriptOperation,
+    presentationFacts: {
+      codeModeDeclaredRequests: {
+        toolNames: ['update_plan'],
+        requestEvidence: 'declared_source',
+      },
+    },
+  };
+  assert.equal(folding.conditionMatches('codeModeScriptOperation', scriptOperation), true);
+  assert.equal(folding.conditionMatches('codeModeScriptOperation', projectedOperation), false);
+  assert.equal(folding.conditionMatches('updatePlanCall', scriptOperation), false);
+  assert.equal(folding.conditionMatches('userInputRequest', scriptOperation), false);
+  assert.equal(folding.conditionMatches('codeModeScriptOperation', {
     kind: 'other_tool_call',
     subtype: 'update_plan',
     toolName: 'update_plan',
   }), false);
-  assert.equal(folding.conditionMatches('codeModeOperation', {
-    kind: 'other_tool_call',
-    subtype: 'request_user_input',
-    toolName: 'request_user_input',
-  }), false);
-  assert.ok(folding.CONDITION_DEFINITIONS.some((condition) => condition.id === 'codeModeOperation'));
+  assert.ok(folding.CONDITION_DEFINITIONS.some((condition) => condition.id === 'codeModeScriptOperation'));
+  assert.equal(folding.CONDITION_DEFINITIONS.some((condition) => condition.id === 'codeModeOperation'), false);
+  assert.equal(folding.displayStateFromRules(scriptOperation, {
+    kindStates: { other_tool_call: 'collapsed' },
+    conditions: [{ id: 'codeModeScriptOperation', state: 'expanded' }],
+  }), 'expanded');
+  assert.equal(folding.displayStateFromRules(projectedOperation, {
+    kindStates: { other_tool_call: 'collapsed' },
+    codeModeRequestStates: { update_plan: 'summary' },
+    conditions: [{ id: 'codeModeScriptOperation', state: 'expanded' }],
+  }), 'summary');
+});
+
+test('obsolete all-Code-Mode conditions are rejected', () => {
+  const normalized = folding.normalizeRules({
+    conditions: [
+      { id: 'codeModeOperation', state: 'collapsed' },
+      { id: 'codeModeScriptOperation', state: 'expanded' },
+    ],
+  });
+  assert.deepEqual(normalized.conditions, [{ id: 'codeModeScriptOperation', state: 'expanded' }]);
 });
 
 test('planning profile expands only planning anchors and collapses known non-planning events', () => {
@@ -273,7 +389,7 @@ test('server built-in profiles normalize through the shared module', () => {
   }
 });
 
-test('Code Mode condition leaves every built-in profile default unchanged', () => {
+test('Scripted operation condition leaves every built-in profile default unchanged', () => {
   const ordinaryTool = {
     kind: 'other_tool_call',
     subtype: 'ordinary_tool_call',
@@ -281,9 +397,9 @@ test('Code Mode condition leaves every built-in profile default unchanged', () =
     status: 'success',
     severity: 'normal',
   };
-  const codeModeOperation = { ...ordinaryTool, subtype: 'code_mode_operation' };
+  const codeModeOperation = { ...ordinaryTool, kind: 'code_mode_operation' };
   for (const profile of foldingProfiles) {
-    assert.equal(profile.rules.conditions.some((condition) => condition.id === 'codeModeOperation'), false, profile.id);
+    assert.equal(profile.rules.conditions.some((condition) => condition.id === 'codeModeScriptOperation'), false, profile.id);
     assert.equal(
       folding.displayStateFromRules(codeModeOperation, profile.rules),
       folding.displayStateFromRules(ordinaryTool, profile.rules),
@@ -297,14 +413,17 @@ test('editable kind grouping prioritizes familiar event types without affecting 
     'conversationPlanning',
     'commonWork',
     'issuesRisks',
-    'toolsAndInternals',
+    'agentSystem',
     'other',
   ]);
   assert.equal(folding.editableKindGroup('user_message').groupId, 'conversationPlanning');
   assert.equal(folding.editableKindGroup('command').groupId, 'commonWork');
   assert.equal(folding.editableKindGroup('error').groupId, 'issuesRisks');
-  assert.equal(folding.editableKindGroup('hook').groupId, 'toolsAndInternals');
-  assert.equal(folding.editableKindGroup('subagent').groupId, 'toolsAndInternals');
+  assert.equal(folding.editableKindGroup('mcp_call').groupId, 'commonWork');
+  assert.equal(folding.editableKindGroup('js_repl').groupId, 'commonWork');
+  assert.equal(folding.editableKindGroup('other_tool_call').groupId, 'commonWork');
+  assert.equal(folding.editableKindGroup('hook').groupId, 'agentSystem');
+  assert.equal(folding.editableKindGroup('subagent').groupId, 'agentSystem');
   assert.equal(folding.editableKindGroup('future_event_kind').groupId, 'other');
   assert.equal(folding.EDITABLE_EVENT_KINDS.includes('hook'), false);
   assert.equal(folding.EDITABLE_EVENT_KINDS.includes('subagent'), false);

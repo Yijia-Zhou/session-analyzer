@@ -16,9 +16,11 @@ const {
 const { projectDeclaredCodeModeCalls } = require('./codex-code-mode-declared');
 const {
   buildCodeModePresentationIndexes,
+  CODE_MODE_SCRIPT_OPERATION_KIND,
   codeModePresentationFactsForEvent,
   codeModeExecSource,
   codeModeRequestCatalog,
+  isCodeModeScriptOperation,
   normalizeCodeModeRequest,
 } = require('./codex-code-mode-presentation');
 const { stripAnsiSequences } = require('./shared/terminal-text');
@@ -3705,8 +3707,9 @@ function eventKindCatalog(sessions, options = {}) {
       if (event.layer === 'protocol') add('protocol', event.subtype || event.kind);
       else {
         add('main', event.kind);
-        if (event.subtype === 'code_mode_operation' && event.kind !== 'code_mode_operation') {
-          add('main', 'code_mode_operation', 'subtype');
+        if (event.kind === 'code_mode_operation'
+            && isCodeModeScriptOperation(event, session.presentationIndexes)) {
+          add('main', CODE_MODE_SCRIPT_OPERATION_KIND, 'presentation_fallback');
         }
       }
     }
@@ -3733,7 +3736,7 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'user_message') session.counts.userMessages += 1;
   if (logicalEvent.kind === 'assistant_message') session.counts.assistantMessages += 1;
   if (logicalEvent.kind === 'reasoning') session.counts.reasoning += 1;
-  if (['command', 'patch', 'mcp_call', 'web_search', 'other_tool_call', 'js_repl', 'hook'].includes(logicalEvent.kind)
+  if (['command', 'patch', 'mcp_call', 'web_search', 'other_tool_call', 'code_mode_operation', 'js_repl', 'hook'].includes(logicalEvent.kind)
       || (logicalEvent.kind === 'goal' && logicalEvent.toolName)) {
     session.counts.toolCalls += 1;
   }
@@ -4143,12 +4146,14 @@ const codexSearch = createCodexSearch({
   codeModePresentationContextMap,
   codeModeRequestCatalog,
   codeModeRequestLabel: i18n.codeModeRequestLabel,
+  codeModeScriptOperationKind: CODE_MODE_SCRIPT_OPERATION_KIND,
   codexSourceKind: CODEX_SOURCE_KIND,
   codexSourceLocator,
   defaultLocale: i18n.DEFAULT_LOCALE,
   derivedSessionKind,
   displayProjectFile,
   eventKindCatalog,
+  isCodeModeScriptOperation,
   localizedLogicalLabel,
   normalizeSearchPath,
   rawRecordLabel,

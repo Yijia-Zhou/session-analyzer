@@ -8,7 +8,7 @@ const { codeModePresentationContextMap } = require('../src/codex-presentation-co
 test('Code Mode presentation context map retains unique parents and omits ambiguous or malformed references', () => {
   const parent = {
     id: 'code-mode-parent',
-    subtype: 'code_mode_operation',
+    kind: 'code_mode_operation',
     codeModeOperation: { eventRefs: ['nested-event', 'nested-event'] },
   };
 
@@ -23,7 +23,7 @@ test('Code Mode presentation context map retains unique parents and omits ambigu
     parent,
     {
       id: 'second-code-mode-parent',
-      subtype: 'code_mode_operation',
+      kind: 'code_mode_operation',
       codeModeOperation: { eventRefs: ['nested-event'] },
     },
   ]);
@@ -31,7 +31,7 @@ test('Code Mode presentation context map retains unique parents and omits ambigu
 
   const malformed = codeModePresentationContextMap([{
     id: 'malformed-parent',
-    subtype: 'code_mode_operation',
+    kind: 'code_mode_operation',
     codeModeOperation: { eventRefs: 'nested-event' },
   }]);
   assert.equal(malformed.size, 0);
@@ -66,8 +66,7 @@ test('only Main logical DTO responses build one reverse context map when needed'
     {
       id: 'code-mode-parent',
       layer: 'main',
-      kind: 'other_tool_call',
-      subtype: 'code_mode_operation',
+      kind: 'code_mode_operation',
       label: 'Code Mode operation',
       codeModeOperation: { eventRefs: ['nested-event'] },
       rawRefs: [],
