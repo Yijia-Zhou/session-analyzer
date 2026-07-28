@@ -1634,6 +1634,37 @@ test('browser project chrome separates project switching from session-list reind
   assert.equal(requestedPaths.includes('/api/project'), true);
 });
 
+test('browser reindex retries transient status and committed-session transport failures', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en' });
+  let statusAttempts = 0;
+  let sessionAttempts = 0;
+
+  await page.route('**/api/project/status?*', async (route) => {
+    statusAttempts += 1;
+    if (statusAttempts === 1) {
+      await route.abort('connectionrefused');
+      return;
+    }
+    await route.continue();
+  });
+  await page.route('**/api/sessions?*', async (route) => {
+    sessionAttempts += 1;
+    if (sessionAttempts === 1) {
+      await route.abort('connectionrefused');
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.locator('#projectRefreshBtn').click();
+  await page.waitForFunction(() => document.querySelector('#projectRefreshBtn')?.dataset.refreshing === 'false');
+
+  assert.equal(await page.locator('#projectRefreshStatus').textContent(), 'Project reindexed');
+  assert.ok(statusAttempts >= 2, 'status polling should retry after a transport failure');
+  assert.ok(sessionAttempts >= 2, 'committed session loading should retry through the succeeded job');
+});
+
 test('browser project scope renders cards, aggregate summary, and filter-only results without jump targets', async (t) => {
   const index = await buildFixtureIndex();
   const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });

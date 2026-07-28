@@ -13,6 +13,7 @@ const navigationApi = window.sessionNavigation;
 const eventChipsApi = window.sessionEventChips;
 const transitionSafety = require('./transition-safety');
 const isIntentionalAbort = transitionSafety.isIntentionalAbort;
+const isRetriableTransportError = transitionSafety.isRetriableTransportError;
 const { sameProjectRoot } = require('../shared/project-root');
 
 const requestOwners = {
@@ -35,6 +36,7 @@ const SEARCH_TARGET_PRELOAD_MIN = 5;
 const SEARCH_TARGET_PRELOAD_MAX_PAGES = 3;
 const FILE_SUGGESTION_LIMIT = 12;
 const SEARCH_HIGHLIGHT_INPUT_DELAY_MS = 300;
+const PROJECT_REFRESH_RETRY_DELAYS_MS = [400, 800, 1600];
 const DETAIL_VIEW_ORIGIN_SEARCH = 'searchTransient';
 const DETAIL_VIEW_ORIGIN_USER = 'userConfirmed';
 const REPO_STORAGE_KEY = 'sessionAnalyzer.repoRoot';
@@ -123,6 +125,7 @@ const state = {
   projectRefreshJobId: '',
   projectRefreshPollTimer: 0,
   projectRefreshRequestId: 0,
+  projectRefreshRetryCount: 0,
   projectRefreshNoticeTimer: 0,
   projectRefreshing: false,
   projectChooserRequestId: 0,
@@ -684,11 +687,13 @@ function renderProjectRefreshJob(job) {
   updateProjectRefreshControl();
 }
 
-function scheduleProjectRefreshPoll(jobId, requestId) {
+function scheduleProjectRefreshPoll(jobId, requestId, delayMs = 400) {
   clearProjectRefreshPollTimer();
   state.projectRefreshPollTimer = setTimeout(() => {
-    pollProjectRefreshJob(jobId, requestId).catch(handleProjectRefreshError);
-  }, 400);
+    pollProjectRefreshJob(jobId, requestId).catch((error) => {
+      handleProjectRefreshPollError(error, jobId, requestId);
+    });
+  }, delayMs);
 }
 
 async function finishProjectRefresh(appState, requestId) {
@@ -706,6 +711,7 @@ async function finishProjectRefresh(appState, requestId) {
   if (requestId !== state.projectRefreshRequestId) return;
   state.projectRefreshing = false;
   state.projectRefreshJobId = '';
+  state.projectRefreshRetryCount = 0;
   clearProjectRefreshPollTimer();
   setProjectRefreshStatus(t('projectRefreshComplete'), 'success');
   updateProjectChrome();
@@ -719,11 +725,24 @@ async function finishProjectRefresh(appState, requestId) {
 function handleProjectRefreshError(error) {
   state.projectRefreshing = false;
   state.projectRefreshJobId = '';
+  state.projectRefreshRetryCount = 0;
   clearProjectRefreshPollTimer();
   setProjectRefreshStatus(t('projectRefreshFailed', {
     message: error?.message || t('indexingFailed'),
   }), 'error');
   updateProjectChrome();
+}
+
+function handleProjectRefreshPollError(error, jobId, requestId) {
+  if (requestId !== state.projectRefreshRequestId || jobId !== state.projectRefreshJobId) return false;
+  const retryDelay = PROJECT_REFRESH_RETRY_DELAYS_MS[state.projectRefreshRetryCount];
+  if (isRetriableTransportError(error) && retryDelay != null) {
+    state.projectRefreshRetryCount += 1;
+    scheduleProjectRefreshPoll(jobId, requestId, retryDelay);
+    return true;
+  }
+  handleProjectRefreshError(error);
+  return false;
 }
 
 async function pollProjectRefreshJob(jobId, requestId) {
@@ -752,6 +771,7 @@ async function refreshCurrentProject() {
   const requestId = state.projectRefreshRequestId + 1;
   state.projectRefreshRequestId = requestId;
   state.projectRefreshing = true;
+  state.projectRefreshRetryCount = 0;
   clearProjectRefreshNoticeTimer();
   setProjectRefreshStatus(t('refreshingCurrentProject'));
   updateProjectChrome();
@@ -767,8 +787,12 @@ async function refreshCurrentProject() {
     state.projectRefreshJobId = started.job?.id || '';
     if (!state.projectRefreshJobId) throw new Error(t('projectIndexUnavailable'));
     renderProjectRefreshJob(started.job);
-    await pollProjectRefreshJob(state.projectRefreshJobId, requestId);
-    return true;
+    try {
+      await pollProjectRefreshJob(state.projectRefreshJobId, requestId);
+      return true;
+    } catch (error) {
+      return handleProjectRefreshPollError(error, state.projectRefreshJobId, requestId);
+    }
   } catch (error) {
     if (requestId === state.projectRefreshRequestId) handleProjectRefreshError(error);
     return false;

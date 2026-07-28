@@ -1652,6 +1652,7 @@ function makeEmptySession(filePath, relFile, stat) {
     title: '',
     sourceFile: relFile,
     sourceAbsFile: filePath,
+    sourceUpdatedAt: safeIso(stat.mtime),
     bytes: stat.size,
     lineCount: 0,
     cwdSet: new Set(),
@@ -3848,15 +3849,19 @@ function inferSessionTitle(session) {
   return titleFromUserEvents(userEvents, Boolean(session.forkedFromSessionId)) || path.basename(session.sourceFile, '.jsonl');
 }
 
-function finalizeSession(session, sessionIndexEntry) {
-  session.counts.turns = session._turnIds.size;
-  if (sessionIndexEntry?.title) session.title = sessionIndexEntry.title;
+function applySessionIndexMetadata(session, sessionIndexEntry) {
+  session.title = sessionIndexEntry?.title || session.transcriptTitle;
+  session.updatedAt = session.transcriptUpdatedAt;
   if (sessionIndexEntry?.updatedAt && (!session.updatedAt || sessionIndexEntry.updatedAt > session.updatedAt)) {
     session.updatedAt = sessionIndexEntry.updatedAt;
   }
-  if (!session.title) {
-    session.title = inferSessionTitle(session);
-  }
+}
+
+function finalizeSession(session, sessionIndexEntry) {
+  session.counts.turns = session._turnIds.size;
+  session.transcriptTitle = session.title || inferSessionTitle(session);
+  session.transcriptUpdatedAt = session.updatedAt;
+  applySessionIndexMetadata(session, sessionIndexEntry);
 
   const draft = session._analysisDraft;
   session.analysis = {
@@ -3975,7 +3980,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
   return session;
 }
 
-async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
+async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousIndex = null }) {
   const resolvedRepo = path.resolve(repoRoot);
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
@@ -4048,7 +4053,14 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
   let logicalEventCount = 0;
   let rawEventCount = 0;
   let indexedFileCount = 0;
+  let reusedFileCount = 0;
   let parsedBytes = 0;
+  const canReusePrevious = previousIndex
+    && path.resolve(previousIndex.repoRoot || '') === resolvedRepo
+    && path.resolve(previousIndex.codexHome || '') === resolvedCodex;
+  const previousSessionsBySource = canReusePrevious
+    ? new Map(previousIndex.sessions.map((session) => [session.sourceFile, session]))
+    : new Map();
 
   emitProgress(onProgress, {
     phase: 'parsing',
@@ -4067,11 +4079,32 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
   for (const filePath of candidates) {
     throwIfAborted(signal);
     const relFile = path.relative(sessionsRoot, filePath);
-    const session = await parseSessionFile(filePath, relFile, resolvedRepo, signal);
+    const previousSession = previousSessionsBySource.get(relFile);
+    const currentStat = previousSession ? await fsp.stat(filePath) : null;
+    const reusable = previousSession
+      && previousSession.bytes === currentStat.size
+      && previousSession.sourceUpdatedAt === safeIso(currentStat.mtime);
+    let session;
+    if (reusable) {
+      session = {
+        ...previousSession,
+        parentSessionId: previousSession.parentSessionInferred ? '' : previousSession.parentSessionId,
+        parentSessionInferred: false,
+        _reviewMarkers: sessionReviewMarkers(previousSession),
+      };
+      const indexEntry = sessionIndex.get(session.id);
+      session.transcriptTitle ||= session.title;
+      session.transcriptUpdatedAt ??= session.updatedAt;
+      applySessionIndexMetadata(session, indexEntry);
+      session.analysis = { ...session.analysis, title: session.title };
+      reusedFileCount += 1;
+    } else {
+      session = await parseSessionFile(filePath, relFile, resolvedRepo, signal);
+      const indexEntry = sessionIndex.get(session.id);
+      finalizeSession(session, indexEntry);
+    }
     indexedFileCount += 1;
     parsedBytes += session.bytes;
-    const indexEntry = sessionIndex.get(session.id);
-    finalizeSession(session, indexEntry);
     if (session.matchesRepo) {
       sessions.push(session);
       sessionsById.set(session.id, session);
@@ -4087,6 +4120,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
       skippedFileCount,
       unknownFileCount,
       indexedFileCount,
+      reusedFileCount,
       indexedBytes: parsedBytes,
       candidateBytes,
       sessionCount: sessions.length,
@@ -4109,6 +4143,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
     skippedFileCount,
     unknownFileCount,
     indexedFileCount,
+    reusedFileCount,
     indexedBytes: parsedBytes,
     candidateBytes,
     sessionCount: sessions.length,
@@ -4129,6 +4164,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
       fileCount: files.length,
       candidateFileCount: candidates.length,
       indexedFileCount,
+      reusedFileCount,
       skippedFileCount,
       unknownFileCount,
       sessionCount: sessions.length,

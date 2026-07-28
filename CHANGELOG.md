@@ -4,11 +4,13 @@
 
 ### English
 
+- Same-project reindexing now reuses unchanged transcript payloads to avoid duplicating large in-memory indexes, reparses files that change after selection, reapplies current session-index metadata from transcript-derived baselines, and retries bounded transient browser transport failures.
 - Rebuilt search as a single-line scope-aware HUD with entry-specific parameter focus, idle-state progressive disclosure, a compact results-only surface for free-text input, always-visible Kind/Status/Touched-file quick filters, and a shortcut to the canonical global Layer selector.
 - Search input now always represents literal free text; operator-like text is no longer parsed into filters or Layer changes. Existing backend search, navigation, and project result contracts are unchanged.
 
 ### 中文
 
+- 同一项目重新索引现在会复用未变化的 transcript payload，避免在内存中复制大型索引；对 selecting 后发生变化的文件重新解析，基于 transcript 派生基线重新应用当前 session-index metadata，并对浏览器中的瞬时传输失败进行有界重试。
 - 将搜索重建为感知范围的单行 HUD：参数入口会定向聚焦，空闲状态采用渐进披露，自由文本输入只展开紧凑结果表面，同时提供常驻的类型/状态/涉及文件快速筛选及指向唯一全局层级选择器的快捷入口。
 - 搜索输入现在始终表示字面自由文本；类似操作符的文本不再解析为筛选或层级切换。现有后端搜索、导航和项目结果契约保持不变。
 

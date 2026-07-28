@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   isIntentionalAbort,
+  isRetriableTransportError,
   createRequestOwner,
   createPaginationIntentState,
 } = require('../src/browser/transition-safety');
@@ -29,6 +30,15 @@ test('intentional abort classification is type-based and does not swallow ordina
   renamed.name = 'AbortError';
   assert.equal(isIntentionalAbort(renamed), false);
   assert.equal(isIntentionalAbort(new DOMException('network failure', 'NetworkError')), false);
+});
+
+test('retriable transport errors cover fetch failures without hiding HTTP errors', () => {
+  assert.equal(isRetriableTransportError(new TypeError('Failed to fetch')), true);
+  assert.equal(isRetriableTransportError(new DOMException('network failure', 'NetworkError')), true);
+  const httpError = new Error('HTTP 500');
+  httpError.status = 500;
+  assert.equal(isRetriableTransportError(httpError), false);
+  assert.equal(isRetriableTransportError(new SyntaxError('invalid JSON')), false);
 });
 
 test('pagination intent belongs to one replacement epoch and is consumed once', () => {

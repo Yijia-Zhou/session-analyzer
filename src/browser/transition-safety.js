@@ -8,6 +8,11 @@ function isIntentionalAbort(error) {
   return Object.prototype.toString.call(error) === '[object DOMException]';
 }
 
+function isRetriableTransportError(error) {
+  if (!error) return false;
+  return error.name === 'NetworkError' || error instanceof TypeError;
+}
+
 function createRequestOwner(options = {}) {
   const AbortControllerImpl = options.AbortControllerImpl || globalThis.AbortController;
   let sequence = 0;
@@ -129,6 +134,7 @@ function createPaginationIntentState() {
 module.exports = {
   USER_PAGINATION_INTENTS,
   isIntentionalAbort,
+  isRetriableTransportError,
   createRequestOwner,
   createPaginationIntentState,
 };

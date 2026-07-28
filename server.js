@@ -343,6 +343,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   job.promise = state.buildIndex({
     repoRoot,
     codexHome: state.codexHome,
+    previousIndex: state.index,
     signal: controller.signal,
     onProgress: (progress) => {
       job.progress = { ...job.progress, ...progress };

@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const childProcess = require('node:child_process');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
@@ -44,6 +45,7 @@ async function writeFixtureTranscript(codexHome, cwd, id = 'cccccccc-cccc-cccc-c
     timestamp: '2026-05-25T10:00:00.000Z',
     payload: { id, cwd },
   })}\n`, 'utf8');
+  return file;
 }
 
 test('parseArgs leaves repo unset unless --repo is provided', () => {
@@ -457,6 +459,132 @@ test('buildIndex reports progress and supports cancellation', async () => {
   assert.ok(phases.includes('selecting'));
   assert.ok(phases.includes('parsing'));
   assert.equal(phases.at(-1), 'complete');
+});
+
+test('buildIndex reuses unchanged session payloads while reparsing changed transcripts', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const projectRoot = path.join(codexHome, 'reuse-project');
+  const unchangedId = '10101010-1010-1010-1010-101010101010';
+  const changedId = '20202020-2020-2020-2020-202020202020';
+  await fsp.mkdir(projectRoot, { recursive: true });
+  await writeFixtureTranscript(codexHome, projectRoot, unchangedId);
+  const changedFile = await writeFixtureTranscript(codexHome, projectRoot, changedId);
+  const first = await buildIndex({ repoRoot: projectRoot, codexHome });
+
+  await fsp.appendFile(changedFile, `${JSON.stringify({
+    type: 'event_msg',
+    timestamp: '2026-05-25T10:01:00.000Z',
+    payload: { type: 'warning', message: 'changed transcript' },
+  })}\n`, 'utf8');
+  const progress = [];
+  const second = await buildIndex({
+    repoRoot: projectRoot,
+    codexHome,
+    previousIndex: first,
+    onProgress: (entry) => progress.push(entry),
+  });
+
+  const oldUnchanged = first.sessionsById.get(unchangedId);
+  const newUnchanged = second.sessionsById.get(unchangedId);
+  const oldChanged = first.sessionsById.get(changedId);
+  const newChanged = second.sessionsById.get(changedId);
+  assert.notEqual(newUnchanged, oldUnchanged, 'reused top-level metadata must remain commit-isolated');
+  assert.equal(newUnchanged.rawEvents, oldUnchanged.rawEvents, 'unchanged heavy event payload should be shared');
+  assert.notEqual(newChanged.rawEvents, oldChanged.rawEvents, 'changed transcripts must be reparsed');
+  assert.equal(newChanged.rawEvents.length, oldChanged.rawEvents.length + 1);
+  assert.equal(second.totals.reusedFileCount, 1);
+  assert.equal(progress.at(-1).reusedFileCount, 1);
+});
+
+test('buildIndex re-stats a transcript before reuse when it grows after selecting', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const projectRoot = path.join(codexHome, 'concurrent-append-project');
+  const id = '30303030-3030-3030-3030-303030303030';
+  await fsp.mkdir(projectRoot, { recursive: true });
+  const file = await writeFixtureTranscript(codexHome, projectRoot, id);
+  const first = await buildIndex({ repoRoot: projectRoot, codexHome });
+  let appended = false;
+
+  const second = await buildIndex({
+    repoRoot: projectRoot,
+    codexHome,
+    previousIndex: first,
+    onProgress: (entry) => {
+      if (appended || entry.phase !== 'parsing' || entry.indexedFileCount !== 0) return;
+      appended = true;
+      fs.appendFileSync(file, `${JSON.stringify({
+        type: 'event_msg',
+        timestamp: '2026-05-25T10:01:00.000Z',
+        payload: { type: 'warning', message: 'appended after selecting' },
+      })}\n`, 'utf8');
+    },
+  });
+
+  assert.equal(appended, true);
+  assert.equal(second.totals.reusedFileCount, 0);
+  assert.equal(
+    second.sessionsById.get(id).rawEvents.length,
+    first.sessionsById.get(id).rawEvents.length + 1,
+  );
+});
+
+test('buildIndex refreshes reused session title, updatedAt, and ordering from session index', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const projectRoot = path.join(codexHome, 'session-index-refresh-project');
+  const refreshedId = '40404040-4040-4040-4040-404040404040';
+  const otherId = '50505050-5050-5050-5050-505050505050';
+  await fsp.mkdir(projectRoot, { recursive: true });
+  await writeFixtureTranscript(codexHome, projectRoot, refreshedId);
+  const otherFile = await writeFixtureTranscript(codexHome, projectRoot, otherId);
+  await fsp.appendFile(otherFile, `${JSON.stringify({
+    type: 'event_msg',
+    timestamp: '2026-05-25T11:00:00.000Z',
+    payload: { type: 'warning', message: 'initially newer session' },
+  })}\n`, 'utf8');
+  const first = await buildIndex({ repoRoot: projectRoot, codexHome });
+  const sessionIndexPath = path.join(codexHome, 'session_index.jsonl');
+  await fsp.writeFile(sessionIndexPath, `${JSON.stringify({
+    id: refreshedId,
+    thread_name: 'Renamed reused session',
+    updated_at: '2026-05-25T12:00:00.000Z',
+  })}\n`, 'utf8');
+
+  const second = await buildIndex({ repoRoot: projectRoot, codexHome, previousIndex: first });
+  const oldSession = first.sessionsById.get(refreshedId);
+  const refreshedSession = second.sessionsById.get(refreshedId);
+  assert.equal(refreshedSession.rawEvents, oldSession.rawEvents);
+  assert.equal(refreshedSession.title, 'Renamed reused session');
+  assert.equal(refreshedSession.updatedAt, '2026-05-25T12:00:00.000Z');
+  assert.equal(second.sessions[0].id, refreshedId);
+  assert.equal(second.totals.reusedFileCount, 2);
+
+  await fsp.writeFile(sessionIndexPath, '', 'utf8');
+  const withoutIndexEntry = await buildIndex({
+    repoRoot: projectRoot,
+    codexHome,
+    previousIndex: second,
+  });
+  const restoredSession = withoutIndexEntry.sessionsById.get(refreshedId);
+  assert.equal(restoredSession.rawEvents, refreshedSession.rawEvents);
+  assert.equal(restoredSession.title, restoredSession.transcriptTitle);
+  assert.equal(restoredSession.updatedAt, '2026-05-25T10:00:00.000Z');
+  assert.equal(withoutIndexEntry.sessions[0].id, otherId);
+
+  await fsp.writeFile(sessionIndexPath, `${JSON.stringify({
+    id: refreshedId,
+    thread_name: 'Earlier index timestamp',
+    updated_at: '2026-05-25T10:30:00.000Z',
+  })}\n`, 'utf8');
+  const earlierIndexEntry = await buildIndex({
+    repoRoot: projectRoot,
+    codexHome,
+    previousIndex: second,
+  });
+  const movedBackwardSession = earlierIndexEntry.sessionsById.get(refreshedId);
+  assert.equal(movedBackwardSession.rawEvents, refreshedSession.rawEvents);
+  assert.equal(movedBackwardSession.title, 'Earlier index timestamp');
+  assert.equal(movedBackwardSession.updatedAt, '2026-05-25T10:30:00.000Z');
+  assert.equal(earlierIndexEntry.sessions[0].id, otherId);
 });
 
 test('buildIndex keeps forked subagent identity separate from embedded parent metadata', async () => {
