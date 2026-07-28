@@ -315,6 +315,9 @@ function applyStaticLocale() {
   if (el.searchFileInput) el.searchFileInput.setAttribute('placeholder', t('anyFile'));
   setSelectOptionText(el.searchKindSelect, '', t('anyKind'));
   setSelectOptionText(el.searchStatusSelect, '', t('anyStatus'));
+  document.getElementById('searchStatusGoalGroup')?.setAttribute('label', t('statusGroupGoalLifecycle'));
+  document.getElementById('searchStatusExecutionGroup')?.setAttribute('label', t('statusGroupExecutionOutcome'));
+  document.getElementById('searchStatusEventGroup')?.setAttribute('label', t('statusGroupEventLifecycle'));
   setSelectOptionText(el.searchStatusSelect, 'active', searchStatusLabel('active'));
   setSelectOptionText(el.searchStatusSelect, 'blocked', searchStatusLabel('blocked'));
   setSelectOptionText(el.searchStatusSelect, 'complete', searchStatusLabel('complete'));
@@ -1786,6 +1789,11 @@ function groupedEditableKinds(kinds) {
     }));
 }
 
+function editableKindGroupLabel(group) {
+  const id = String(group?.id || 'other');
+  return t(`kindGroup${id[0].toUpperCase()}${id.slice(1)}Name`);
+}
+
 function conditionDefinitions() {
   return CONDITION_DEFINITIONS.map((condition) => i18n.localizeCondition(condition, state.locale));
 }
@@ -2147,7 +2155,12 @@ function renderKindOptions() {
     ));
   }
   if (search.kind && search.kind !== 'code_mode_operation' && !values.has(search.kind)) {
-    rows.push(`<option value="${escapeHtml(search.kind)}">${escapeHtml(`${kindLabel(search.kind)} (${search.kind})`)}</option>`);
+    options.push({
+      value: search.kind,
+      label: `${kindLabel(search.kind)} (${search.kind})`,
+      count: 0,
+      matchField: '',
+    });
   }
   const renderOrdinaryKindOption = (option) => {
     const label = option.count ? `${option.label} (${option.count})` : option.label;
@@ -2158,11 +2171,6 @@ function renderKindOptions() {
   const codeModeScriptKind = options.find((option) => option.value === 'code_mode_script_operation');
   const renderCodeModeGroup = () => {
     if (!codeModeKind && !codeModeScriptKind && !requestOptions.length && !search.codeModeRequest) return '';
-    const kindOption = codeModeKind || {
-      value: 'code_mode_operation',
-      label: kindLabel('code_mode_operation'),
-      count: 0,
-    };
     const scriptOption = codeModeScriptKind || {
       value: 'code_mode_script_operation',
       label: kindLabel('code_mode_script_operation'),
@@ -2179,7 +2187,7 @@ function renderKindOptions() {
       return `<option value="${escapeHtml(codeModeRequestKindValue(option.value))}">${escapeHtml(label)}</option>`;
     });
     return [
-      `<optgroup label="${escapeHtml(kindOption.label)}">`,
+      `<optgroup data-kind-group="code-mode" label="${escapeHtml(t('codeModeKindSubgroup'))}">`,
       ...(codeModeScriptKind ? [
         `<option value="${escapeHtml(scriptOption.value)}"${scriptMatchField}>${escapeHtml(scriptLabel)}</option>`,
       ] : []),
@@ -2187,18 +2195,29 @@ function renderKindOptions() {
       '</optgroup>',
     ].join('');
   };
-  let codeModeGroupRendered = false;
-  for (const option of options) {
-    if (option.value === 'code_mode_operation') {
-      rows.push(renderCodeModeGroup());
-      codeModeGroupRendered = true;
-    } else if (option.value === 'code_mode_script_operation') {
-      continue;
-    } else {
-      rows.push(renderOrdinaryKindOption(option));
+
+  if (search.layer !== 'main') {
+    rows.push(...options.map(renderOrdinaryKindOption));
+  } else {
+    const codeModeValues = new Set(['code_mode_operation', 'code_mode_script_operation']);
+    const optionsByGroup = new Map(EDITABLE_KIND_GROUPS.map((group) => [group.id, []]));
+    for (const option of options) {
+      if (codeModeValues.has(option.value)) continue;
+      const groupId = foldingApi.editableKindGroup(option.value).groupId;
+      (optionsByGroup.get(groupId) || optionsByGroup.get('other')).push(option);
+    }
+    for (const group of EDITABLE_KIND_GROUPS) {
+      const groupedOptions = optionsByGroup.get(group.id) || [];
+      if (groupedOptions.length) {
+        rows.push([
+          `<optgroup label="${escapeHtml(editableKindGroupLabel(group))}">`,
+          ...groupedOptions.map(renderOrdinaryKindOption),
+          '</optgroup>',
+        ].join(''));
+      }
+      if (group.id === 'commonWork') rows.push(renderCodeModeGroup());
     }
   }
-  if (!codeModeGroupRendered) rows.push(renderCodeModeGroup());
   el.searchKindSelect.innerHTML = rows.join('');
   el.searchKindSelect.value = kindControlValue(search);
 }
@@ -4925,7 +4944,7 @@ function renderProfileRulesPane(options = {}) {
     </details>` : ''}
   </div>`;
   const renderKindGroup = (entry, includeCodeMode = false) => `<section class="profileRuleGroup">
-    <h4>${escapeHtml(t(`kindGroup${entry.group.id[0].toUpperCase()}${entry.group.id.slice(1)}Name`))}</h4>
+    <h4>${escapeHtml(editableKindGroupLabel(entry.group))}</h4>
     <p>${escapeHtml(t(`kindGroup${entry.group.id[0].toUpperCase()}${entry.group.id.slice(1)}Description`))}</p>
     ${entry.kinds.length ? `<div class="profileRuleList">${entry.kinds.map(renderKindRow).join('')}</div>` : ''}
     ${includeCodeMode ? codeModeRuleSubgroup : ''}

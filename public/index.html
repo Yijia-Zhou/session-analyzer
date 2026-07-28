@@ -81,12 +81,18 @@
                     <label for="searchStatusSelect">Status</label>
                     <select id="searchStatusSelect" data-search-filter-control="status">
                       <option value="">Any status</option>
-                      <option value="active">Active</option>
-                      <option value="blocked">Blocked</option>
-                      <option value="complete">Complete</option>
-                      <option value="failed">Failed</option>
-                      <option value="success">Success</option>
-                      <option value="completed">Completed</option>
+                      <optgroup id="searchStatusGoalGroup" label="Goal lifecycle">
+                        <option value="active">Active</option>
+                        <option value="complete">Complete goal</option>
+                        <option value="blocked">Blocked</option>
+                      </optgroup>
+                      <optgroup id="searchStatusExecutionGroup" label="Execution outcome">
+                        <option value="success">Success</option>
+                        <option value="failed">Failed</option>
+                      </optgroup>
+                      <optgroup id="searchStatusEventGroup" label="Event lifecycle">
+                        <option value="completed">Completed event</option>
+                      </optgroup>
                     </select>
                   </div>
                   <div class="searchFilterRow searchFilterRowFile" data-search-filter-row="file">

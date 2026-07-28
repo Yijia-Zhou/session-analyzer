@@ -62,6 +62,7 @@ const allowedZhTermsByPath = new Map([
   ['ui.enclosingOperation', new Set(['code', 'mode'])],
   ['ui.entireProjectScopeShort', new Set(['project'])],
   ['ui.anyCodeModeRequest', new Set(['code', 'mode'])],
+  ['ui.codeModeKindSubgroup', new Set(['code', 'mode'])],
   ['ui.codeModeRequest', new Set(['code', 'mode'])],
   ['ui.codeModeRules', new Set(['code', 'mode'])],
   ['ui.codeModeRulesDescription', new Set(['code', 'mode'])],
@@ -134,6 +135,11 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.searchStatusLabel('complete', 'zh-CN'), '目标已完成');
   assert.equal(i18n.searchStatusLabel('completed', 'zh-CN'), '事件已完成');
   assert.notEqual(i18n.searchStatusLabel('complete', 'zh-CN'), i18n.searchStatusLabel('completed', 'zh-CN'));
+  assert.equal(i18n.t('en', 'ui', 'statusGroupGoalLifecycle'), 'Goal lifecycle');
+  assert.equal(i18n.t('zh-CN', 'ui', 'statusGroupExecutionOutcome'), '执行结果');
+  assert.equal(i18n.t('zh-CN', 'ui', 'statusGroupEventLifecycle'), '事件生命周期');
+  assert.equal(i18n.t('en', 'ui', 'codeModeKindSubgroup'), '↳ Code Mode tool call');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeKindSubgroup'), '↳ Code Mode 工具调用');
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeDeclaredSequence'), '声明顺序');
   assert.equal(i18n.t('en', 'ui', 'codeModeRequest'), 'Code Mode request');
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequest'), 'Code Mode 请求');

@@ -617,7 +617,14 @@ test('browser locale localizes static shell and dirty profile dialog', async (t)
   await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
   assert.equal(await page.locator('#searchInput').getAttribute('placeholder'), '在当前 session 中查找');
   assert.equal(await page.locator('#searchKindLabel').textContent(), '类型');
+  assert.equal(
+    await page.locator('#searchKindSelect optgroup').first().getAttribute('label'),
+    '对话与计划',
+  );
   assert.equal(await page.locator('.mobileViewTab[data-mobile-view="events"]').textContent(), '事件');
+  assert.equal(await page.locator('#searchStatusGoalGroup').getAttribute('label'), '目标生命周期');
+  assert.equal(await page.locator('#searchStatusExecutionGroup').getAttribute('label'), '执行结果');
+  assert.equal(await page.locator('#searchStatusEventGroup').getAttribute('label'), '事件生命周期');
   assert.equal(await page.locator('#searchStatusSelect option[value="complete"]').textContent(), '目标已完成');
   assert.equal(await page.locator('#searchStatusSelect option[value="completed"]').textContent(), '事件已完成');
   assert.match(await page.locator('#loadMoreBtn').textContent(), /加载更多|已加载|加载中/);
@@ -1411,7 +1418,23 @@ test('browser search parameter popover exposes direct fixed filters, Escape laye
   assert.deepEqual(
     mainKindOrder,
     ['user_message', 'assistant_message', 'command', 'patch', 'error', 'warning', 'reasoning'],
-    'Main Kind options should follow the folding editor semantic order without adding headings',
+    'Main Kind options should follow the folding editor semantic order',
+  );
+  assert.deepEqual(
+    await page.locator('#searchKindSelect optgroup').evaluateAll((groups) => groups.map((group) => group.label)),
+    ['Conversation and plans', 'Work and tools', 'Issues and risks', 'Agent and system events'],
+  );
+  assert.equal(
+    await page.locator('#searchKindSelect optgroup[label="Work and tools"] option[value="command"]').count(),
+    1,
+  );
+  assert.equal(
+    await page.locator('#searchKindSelect optgroup[label="Issues and risks"] option[value="error"]').count(),
+    1,
+  );
+  assert.equal(
+    await page.locator('#searchKindSelect optgroup[label="Agent and system events"] option[value="reasoning"]').count(),
+    1,
   );
 
   const filterLayout = await page.locator('#searchFilterRows').evaluate((filters) => {
@@ -3898,9 +3921,9 @@ test('browser structured filters keep profile-hidden Code Mode request results v
   ));
   assert.equal(await page.locator('#searchKindSelect option[value="code_mode_operation"]').count(), 0);
   assert.equal(await page.locator('[data-search-filter-row="codeModeRequest"]').count(), 0);
-  assert.match(
-    await page.locator('#searchKindSelect optgroup[label="Code Mode tool call"]').getAttribute('label'),
-    /Code Mode tool call/,
+  assert.equal(
+    await page.locator('#searchKindSelect optgroup[data-kind-group="code-mode"]').getAttribute('label'),
+    '↳ Code Mode tool call',
   );
   assert.match(
     await page.locator('#searchKindSelect option[value="code_mode_request:shell_command"]').textContent(),
