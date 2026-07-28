@@ -11,13 +11,19 @@
   <body data-mobile-view="sessions">
     <header class="topbar">
       <div class="projectHeader">
-        <h1>
+        <h1 class="projectHeading">
           <button id="projectSwitchControl" class="projectSwitchControl" type="button" aria-label="Select target project">
-            <span id="projectTitle">Select project</span>
-            <span class="projectSwitchHint">Select</span>
+            <span class="projectMark" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+            </span>
+            <span class="projectSwitchCopy">
+              <span id="projectTitle">Select project</span>
+              <span class="projectSwitchHint">Select project</span>
+            </span>
+            <svg class="projectSwitchChevron" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
         </h1>
-        <p id="stateLine">Reading local sessions...</p>
+        <p id="stateLine" class="projectStateLine" aria-live="polite">Reading local sessions...</p>
       </div>
       <div class="searchbar">
         <label class="localeControl">
@@ -153,7 +159,12 @@
     <main class="layout">
       <aside class="sessionsPane">
         <div class="sessionListHeader">
-          <h2>Sessions</h2>
+          <div class="sessionListTitleGroup">
+            <h2>Sessions</h2>
+            <button id="projectRefreshBtn" class="projectRefreshBtn" type="button" aria-label="Reindex current project" title="Reindex current project">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66"></path><polyline points="20 4 20 11 13 11"></polyline></svg>
+            </button>
+          </div>
           <label class="sortControl">
             <span class="srOnly">Sort</span>
             <select id="sortSelect">
@@ -164,6 +175,7 @@
             </select>
           </label>
         </div>
+        <p id="projectRefreshStatus" class="projectRefreshStatus" role="status" hidden></p>
         <div id="sessionList" class="sessionList"></div>
       </aside>
 

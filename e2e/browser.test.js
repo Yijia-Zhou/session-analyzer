@@ -70,6 +70,7 @@ async function openApp(t, index, options = {}) {
   await page.waitForFunction(() => window.sessionFolding && window.sessionRenderers && window.sessionSearchControls);
   await page.waitForSelector('.sessionItem.active', { state: options.activeSessionState || 'visible' });
   await page.waitForFunction(() => document.querySelectorAll('#timeline .event[data-event-id]').length > 0);
+  await page.waitForFunction(() => document.querySelector('#projectRefreshBtn')?.dataset.refreshing !== 'true');
   return { page, baseUrl, requestedPaths, requestedUrls };
 }
 
@@ -1591,6 +1592,46 @@ test('browser search HUD stays inert while the analyzer is disabled for project 
   for (const selector of ['#searchHudScope', '#searchFilterBtn', '#searchInput']) {
     assert.equal(await page.locator(selector).evaluate((control) => control.disabled), false);
   }
+});
+
+test('browser project chrome separates project switching from session-list reindexing', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page, requestedPaths } = await openApp(t, index, { locale: 'en' });
+  const refreshButton = page.locator('#projectRefreshBtn');
+
+  assert.equal(await page.locator('.projectMark').isVisible(), true);
+  assert.equal(await page.locator('.projectSwitchHint').textContent(), 'Change project');
+  assert.equal(await refreshButton.getAttribute('title'), 'Reindex current project');
+  assert.equal(await refreshButton.evaluate((button) => button.parentElement?.classList.contains('sessionListTitleGroup')), true);
+
+  const selectedSessionId = await page.locator('.sessionItem.active').getAttribute('data-session-id');
+  let releasePost;
+  let markPostStarted;
+  const postGate = new Promise((resolve) => {
+    releasePost = resolve;
+  });
+  const postStarted = new Promise((resolve) => {
+    markPostStarted = resolve;
+  });
+  await page.route('**/api/project', async (route) => {
+    markPostStarted();
+    await postGate;
+    await route.continue();
+  });
+
+  await refreshButton.click();
+  await postStarted;
+  assert.equal(await refreshButton.isDisabled(), true);
+  assert.equal(await refreshButton.getAttribute('data-refreshing'), 'true');
+  assert.equal(await page.locator('#projectSwitchControl').isDisabled(), true);
+  assert.equal(await page.locator('.sessionItem.active').getAttribute('data-session-id'), selectedSessionId);
+  assert.match(await page.locator('#projectRefreshStatus').textContent(), /Reindexing|Preparing/);
+
+  releasePost();
+  await page.waitForFunction(() => document.querySelector('#projectRefreshBtn')?.dataset.refreshing === 'false');
+  assert.equal(await page.locator('#projectRefreshStatus').textContent(), 'Project reindexed');
+  assert.equal(await page.locator('.sessionItem.active').getAttribute('data-session-id'), selectedSessionId);
+  assert.equal(requestedPaths.includes('/api/project'), true);
 });
 
 test('browser project scope renders cards, aggregate summary, and filter-only results without jump targets', async (t) => {

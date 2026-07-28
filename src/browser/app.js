@@ -13,6 +13,7 @@ const navigationApi = window.sessionNavigation;
 const eventChipsApi = window.sessionEventChips;
 const transitionSafety = require('./transition-safety');
 const isIntentionalAbort = transitionSafety.isIntentionalAbort;
+const { sameProjectRoot } = require('../shared/project-root');
 
 const requestOwners = {
   timeline: transitionSafety.createRequestOwner(),
@@ -119,6 +120,11 @@ const state = {
   projectLoadingRoot: '',
   projectJobId: '',
   projectPollTimer: 0,
+  projectRefreshJobId: '',
+  projectRefreshPollTimer: 0,
+  projectRefreshRequestId: 0,
+  projectRefreshNoticeTimer: 0,
+  projectRefreshing: false,
   projectChooserRequestId: 0,
   projectReturning: false,
   sessionsRequestId: 0,
@@ -205,6 +211,8 @@ const el = {
   projectSwitchControl: document.getElementById('projectSwitchControl'),
   projectSwitchHint: document.querySelector('.projectSwitchHint'),
   stateLine: document.getElementById('stateLine'),
+  projectRefreshBtn: document.getElementById('projectRefreshBtn'),
+  projectRefreshStatus: document.getElementById('projectRefreshStatus'),
   searchInput: document.getElementById('searchInput'),
   searchScopeButtons: document.querySelectorAll('[data-search-scope]'),
   searchHudScope: document.getElementById('searchHudScope'),
@@ -342,6 +350,10 @@ function applyStaticLocale() {
   setText(el.projectCancelBtn, t('cancelIndexing'));
   setText(document.querySelector('.sessionsPane .sessionListHeader h2'), t('sessions'));
   setText(document.querySelector('.sortControl .srOnly'), t('sort'));
+  if (el.projectRefreshBtn) {
+    el.projectRefreshBtn.setAttribute('aria-label', t('reindexCurrentProject'));
+    el.projectRefreshBtn.setAttribute('title', t('reindexCurrentProject'));
+  }
   el.layerSelect?.setAttribute('aria-label', t('layer'));
   el.profileSelect?.setAttribute('aria-label', t('foldingStrategy'));
   setText(document.getElementById('dirtyProfileTitle'), t('dirtyProfileTitle'));
@@ -433,15 +445,19 @@ function projectName(repoRoot) {
   return text.split(/[\\/]/).filter(Boolean).pop() || text;
 }
 
-function setProjectHeader(repoRoot, summary) {
+function setProjectHeader(repoRoot, summary, status = repoRoot ? 'ready' : 'idle') {
   updateProjectSwitchControl({ displayRoot: repoRoot, returnRoot: state.repoRoot });
+  if (!el.stateLine) return;
   el.stateLine.textContent = summary || '';
+  el.stateLine.title = summary || '';
+  el.stateLine.dataset.state = status;
 }
 
 function updateProjectChrome(options = {}) {
   if (el.topbar) el.topbar.hidden = Boolean(state.projectLoadingRoot);
   updateProjectChooserHeader();
   updateProjectSwitchControl(options);
+  updateProjectRefreshControl();
 }
 
 function updateProjectChooserHeader() {
@@ -462,10 +478,16 @@ function updateProjectSwitchControl(options = {}) {
   const labelRoot = canReturn ? returnRoot : displayRoot;
   if (el.projectTitle) el.projectTitle.textContent = projectName(labelRoot);
   if (el.projectSwitchHint) {
-    el.projectSwitchHint.textContent = state.projectReturning ? t('returning') : (canReturn ? t('return') : (displayRoot ? t('change') : t('select')));
+    el.projectSwitchHint.textContent = state.projectReturning
+      ? t('returning')
+      : (canReturn ? t('return') : (displayRoot ? t('changeProject') : t('selectProjectAction')));
   }
   if (!el.projectSwitchControl) return;
-  el.projectSwitchControl.disabled = state.projectReturning || Boolean(state.projectLoadingRoot || state.projectJobId);
+  el.projectSwitchControl.disabled = state.projectReturning || Boolean(
+    state.projectLoadingRoot || state.projectJobId || state.projectRefreshing || state.projectRefreshJobId,
+  );
+  el.projectSwitchControl.setAttribute('aria-controls', 'projectChooser');
+  el.projectSwitchControl.setAttribute('aria-expanded', state.selectingProject ? 'true' : 'false');
   if (state.projectReturning && returnRoot) {
     el.projectSwitchControl.title = t('returningToProject', { root: returnRoot });
     el.projectSwitchControl.setAttribute('aria-label', t('returningToCurrentProject', { root: returnRoot }));
@@ -591,7 +613,7 @@ function projectProgressPercent(progress) {
   return total ? Math.max(1, Math.min(95, Math.round((done / total) * 100))) : 0;
 }
 
-function renderProjectJob(job) {
+function projectJobStatusText(job) {
   const progress = job?.progress || {};
   const phase = progress.phase || job?.status || 'queued';
   const parts = [];
@@ -611,13 +633,145 @@ function renderProjectJob(job) {
     parts.push(t('preparingIndex', { name: projectName(job?.repoRoot || progress.repoRoot || '') }));
   }
   if (progress.elapsedMs || job?.buildMs) parts.push(fmtDuration(progress.elapsedMs || job.buildMs));
-  if (el.projectStatus) el.projectStatus.textContent = parts.join(' | ');
+  return parts.join(' | ');
+}
+
+function renderProjectJob(job) {
+  const progress = job?.progress || {};
+  if (el.projectStatus) el.projectStatus.textContent = projectJobStatusText(job);
   if (el.projectProgress) {
     el.projectProgress.hidden = !job || ['failed', 'cancelled'].includes(job.status);
     el.projectProgress.value = projectProgressPercent(progress);
   }
   if (el.projectCancelBtn) {
     el.projectCancelBtn.hidden = !job || !['queued', 'running'].includes(job.status);
+  }
+}
+
+function clearProjectRefreshPollTimer() {
+  clearTimeout(state.projectRefreshPollTimer);
+  state.projectRefreshPollTimer = 0;
+}
+
+function clearProjectRefreshNoticeTimer() {
+  clearTimeout(state.projectRefreshNoticeTimer);
+  state.projectRefreshNoticeTimer = 0;
+}
+
+function setProjectRefreshStatus(message = '', kind = '') {
+  if (!el.projectRefreshStatus) return;
+  el.projectRefreshStatus.textContent = message;
+  el.projectRefreshStatus.hidden = !message;
+  el.projectRefreshStatus.classList.toggle('error', kind === 'error');
+  el.projectRefreshStatus.classList.toggle('success', kind === 'success');
+}
+
+function updateProjectRefreshControl() {
+  if (!el.projectRefreshBtn) return;
+  const refreshing = Boolean(state.projectRefreshing || state.projectRefreshJobId);
+  const disabled = !state.repoRoot
+    || refreshing
+    || state.selectingProject
+    || state.projectReturning
+    || Boolean(state.projectLoadingRoot || state.projectJobId);
+  el.projectRefreshBtn.disabled = disabled;
+  el.projectRefreshBtn.dataset.refreshing = refreshing ? 'true' : 'false';
+  el.projectRefreshBtn.setAttribute('aria-busy', refreshing ? 'true' : 'false');
+}
+
+function renderProjectRefreshJob(job) {
+  setProjectRefreshStatus(projectJobStatusText(job));
+  updateProjectRefreshControl();
+}
+
+function scheduleProjectRefreshPoll(jobId, requestId) {
+  clearProjectRefreshPollTimer();
+  state.projectRefreshPollTimer = setTimeout(() => {
+    pollProjectRefreshJob(jobId, requestId).catch(handleProjectRefreshError);
+  }, 400);
+}
+
+async function finishProjectRefresh(appState, requestId) {
+  if (requestId !== state.projectRefreshRequestId) return;
+  Object.values(requestOwners).forEach((owner) => owner.abort());
+  clearContextReveal({ render: false });
+  beginSearchTargetContextTransition();
+  state.sessionsDataContext = '';
+  state.timelineDataContext = '';
+  state.timelineReplacementRetry = null;
+  resetSessionDetailCache();
+  invalidateNavigationCache();
+  await applyAppState(appState);
+  await loadSessions();
+  if (requestId !== state.projectRefreshRequestId) return;
+  state.projectRefreshing = false;
+  state.projectRefreshJobId = '';
+  clearProjectRefreshPollTimer();
+  setProjectRefreshStatus(t('projectRefreshComplete'), 'success');
+  updateProjectChrome();
+  clearProjectRefreshNoticeTimer();
+  state.projectRefreshNoticeTimer = setTimeout(() => {
+    setProjectRefreshStatus();
+    state.projectRefreshNoticeTimer = 0;
+  }, 4000);
+}
+
+function handleProjectRefreshError(error) {
+  state.projectRefreshing = false;
+  state.projectRefreshJobId = '';
+  clearProjectRefreshPollTimer();
+  setProjectRefreshStatus(t('projectRefreshFailed', {
+    message: error?.message || t('indexingFailed'),
+  }), 'error');
+  updateProjectChrome();
+}
+
+async function pollProjectRefreshJob(jobId, requestId) {
+  clearProjectRefreshPollTimer();
+  const data = await api(`/api/project/status?jobId=${encodeURIComponent(jobId)}`);
+  if (requestId !== state.projectRefreshRequestId || jobId !== state.projectRefreshJobId) return;
+  const job = data.job || {};
+  renderProjectRefreshJob(job);
+  if (job.status === 'succeeded') {
+    let appState = data.state;
+    if (!appState) {
+      const current = await api('/api/state');
+      appState = current.currentState || (!current.job ? current : null);
+    }
+    if (!appState) throw new Error(t('projectIndexUnavailable'));
+    await finishProjectRefresh(appState, requestId);
+    return;
+  }
+  if (job.status === 'failed') throw new Error(job.error || t('indexingFailed'));
+  if (job.status === 'cancelled') throw new Error(t('indexingCancelled'));
+  scheduleProjectRefreshPoll(jobId, requestId);
+}
+
+async function refreshCurrentProject() {
+  if (!state.repoRoot || state.projectRefreshing || state.projectRefreshJobId) return false;
+  const requestId = state.projectRefreshRequestId + 1;
+  state.projectRefreshRequestId = requestId;
+  state.projectRefreshing = true;
+  clearProjectRefreshNoticeTimer();
+  setProjectRefreshStatus(t('refreshingCurrentProject'));
+  updateProjectChrome();
+  try {
+    const started = await api('/api/project', {
+      method: 'POST',
+      body: { repoRoot: state.repoRoot, locale: state.locale },
+    });
+    if (requestId !== state.projectRefreshRequestId) {
+      await cancelProjectJob(started.job?.id || '');
+      return false;
+    }
+    state.projectRefreshJobId = started.job?.id || '';
+    if (!state.projectRefreshJobId) throw new Error(t('projectIndexUnavailable'));
+    renderProjectRefreshJob(started.job);
+    await pollProjectRefreshJob(state.projectRefreshJobId, requestId);
+    return true;
+  } catch (error) {
+    if (requestId === state.projectRefreshRequestId) handleProjectRefreshError(error);
+    return false;
   }
 }
 
@@ -2666,6 +2820,7 @@ function setAnalyzerDisabled(disabled) {
   syncSearchScopeUi();
   renderSearchAssistChips();
   updateSearchMatchControls();
+  updateProjectRefreshControl();
 }
 
 function setProjectMode(selecting) {
@@ -3038,6 +3193,20 @@ async function init() {
     const appState = await api('/api/state');
     if (appState.job) {
       const job = appState.job;
+      const currentState = appState.currentState;
+      if (currentState?.projectSelected && sameProjectRoot(currentState.repoRoot, job.repoRoot)) {
+        state.projectRefreshRequestId += 1;
+        state.projectRefreshing = true;
+        state.projectRefreshJobId = job.id || '';
+        await applyAppState(currentState);
+        setProjectMode(false);
+        renderProjectRefreshJob(job);
+        await loadSessions();
+        if (state.projectRefreshJobId) {
+          scheduleProjectRefreshPoll(state.projectRefreshJobId, state.projectRefreshRequestId);
+        }
+        return;
+      }
       setProjectMode(true);
       state.projectLoadingRoot = job.repoRoot || '';
       state.projectJobId = job.id || '';
@@ -5395,9 +5564,13 @@ el.projectList?.addEventListener('click', (event) => {
 });
 
 el.projectSwitchControl?.addEventListener('click', () => {
-  if (state.projectLoadingRoot || state.projectJobId) return;
+  if (state.projectLoadingRoot || state.projectJobId || state.projectRefreshJobId || state.projectRefreshing) return;
   const action = state.selectingProject && state.repoRoot ? exitProjectChooser : showProjectChooser;
   action({ autoRestore: false }).catch(showError);
+});
+
+el.projectRefreshBtn?.addEventListener('click', () => {
+  refreshCurrentProject().catch(handleProjectRefreshError);
 });
 
 el.localeSelect?.addEventListener('change', () => {
@@ -5971,9 +6144,11 @@ document.addEventListener('keydown', (event) => {
 
 function showError(error) {
   if (state.selectingProject) {
-    setProjectHeader('', error.message);
+    setProjectHeader('', error.message, 'error');
   } else {
     el.stateLine.textContent = error.message;
+    el.stateLine.title = error.message;
+    el.stateLine.dataset.state = 'error';
   }
   if (state.selectingProject && el.projectStatus) el.projectStatus.textContent = error.message;
   console.error(error);
