@@ -18,8 +18,11 @@ async function buildFixtureIndex() {
   return buildIndex({ repoRoot, codexHome: fixtureCodexHome });
 }
 
-async function startServer(t, index) {
-  const server = createServer(index, 1, { codexHome: index.codexHome, repo: index.repoRoot });
+async function startServer(t, index, options = {}) {
+  const server = createServer(index, 1, {
+    codexHome: index.codexHome,
+    ...(options.skipProjectReindex ? {} : { repo: index.repoRoot }),
+  });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
@@ -29,7 +32,7 @@ async function startServer(t, index) {
 }
 
 async function openApp(t, index, options = {}) {
-  const baseUrl = await startServer(t, index);
+  const baseUrl = await startServer(t, index, options);
   const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: options.viewport || { width: 1280, height: 900 } });
   if (options.localStorage) {
@@ -667,6 +670,64 @@ test('browser locale switch preserves unsaved folding draft', async (t) => {
   await expectInputValue(page, '#detail [data-profile-kind="command"]', 'expanded');
   await page.waitForSelector('#detail [data-detail-action="save-profile"]');
   await page.waitForFunction(() => [...document.querySelectorAll('#timeline .event.kind-command')].some((event) => event.classList.contains('expanded')));
+});
+
+test('browser groups derived sessions under their parent and collapses them by default', async (t) => {
+  const index = await buildFixtureIndex();
+  const childSessionId = '33333333-3333-3333-3333-333333333333';
+  const orphanReviewSessionId = '88888888-8888-8888-8888-888888888888';
+  const normalForkSessionId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const expectedChildCount = index.sessions.filter((session) => session.parentSessionId === primaryFixtureSessionId).length;
+  const { page } = await openApp(t, index, { locale: 'en', skipProjectReindex: true });
+
+  const parentBranch = page.locator(`[data-session-branch-id="${primaryFixtureSessionId}"]`);
+  const toggle = parentBranch.locator(`:scope > .sessionRow [data-session-children-toggle="${primaryFixtureSessionId}"]`);
+  const children = parentBranch.locator(':scope > .sessionChildren');
+  assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+  assert.match(await toggle.getAttribute('aria-label'), new RegExp(`Show ${expectedChildCount} child sessions`));
+  assert.equal((await toggle.textContent()).trim(), `${expectedChildCount} child sessions`);
+  assert.equal(await toggle.locator('.sessionChildrenChevron').getAttribute('aria-hidden'), 'true');
+  const bridgePlacement = await parentBranch.locator(':scope > .sessionRow').evaluate((row) => {
+    const card = row.querySelector('.sessionItem').getBoundingClientRect();
+    const control = row.querySelector('.sessionChildrenToggle').getBoundingClientRect();
+    return {
+      centerDelta: Math.abs((card.left + card.right) / 2 - (control.left + control.right) / 2),
+      edgeDelta: Math.abs(card.bottom - (control.top + control.bottom) / 2),
+    };
+  });
+  assert.ok(bridgePlacement.centerDelta <= 1, `expected centered bridge, got ${bridgePlacement.centerDelta}`);
+  assert.ok(bridgePlacement.edgeDelta <= 1, `expected bottom-edge bridge, got ${bridgePlacement.edgeDelta}`);
+  assert.equal(await children.getAttribute('hidden'), '');
+  assert.equal(await page.locator(`[data-session-id="${orphanReviewSessionId}"]`).isVisible(), true);
+  assert.equal(await page.locator(`[data-session-id="${normalForkSessionId}"]`).isVisible(), true);
+
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
+  assert.equal(await children.getAttribute('hidden'), null);
+  const child = children.locator(`[data-session-id="${childSessionId}"]`);
+  assert.equal(await child.isVisible(), true);
+  assert.match(await child.textContent(), /Subagent Fixture.*from/s);
+
+  await child.click();
+  await page.waitForFunction((sessionId) => document.querySelector('.sessionItem.active')?.dataset.sessionId === sessionId, childSessionId);
+  assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
+});
+
+test('browser uses singular child session labels for one derived child', async (t) => {
+  const index = await buildFixtureIndex();
+  const childSessionId = '33333333-3333-3333-3333-333333333333';
+  index.sessions = index.sessions.filter(
+    (session) => session.parentSessionId !== primaryFixtureSessionId || session.id === childSessionId,
+  );
+  const { page } = await openApp(t, index, { locale: 'en', skipProjectReindex: true });
+
+  const toggle = page.locator(`[data-session-children-toggle="${primaryFixtureSessionId}"]`);
+  assert.equal((await toggle.textContent()).trim(), '1 child session');
+  assert.equal(await toggle.getAttribute('aria-label'), 'Show 1 child session');
+
+  await toggle.click();
+  assert.equal(await toggle.getAttribute('aria-label'), 'Hide 1 child session');
 });
 
 test('browser locale switch reloads cached expanded event detail', async (t) => {

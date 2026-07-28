@@ -1360,6 +1360,32 @@ body[data-project-mode='selecting'] .searchAssist {
   padding: 0.35rem 0.75rem 0.75rem;
 }
 
+.sessionBranch,
+.sessionChildren {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.sessionChildren[hidden] {
+  display: none;
+}
+
+.sessionChildren {
+  border-left: 1px solid rgba(184, 196, 201, 0.8);
+  margin-left: 0.8rem;
+  padding-left: 0.7rem;
+}
+
+.sessionRow {
+  min-width: 0;
+  position: relative;
+}
+
+.sessionRow.hasSessionChildren {
+  margin-bottom: 0.8rem;
+}
+
 .sessionItem {
   background: #fff;
   border: 1px solid var(--line);
@@ -1372,6 +1398,54 @@ body[data-project-mode='selecting'] .searchAssist {
   padding: 0.75rem;
   text-align: left;
   transition: max-height 160ms ease, background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+  width: 100%;
+}
+
+.sessionChildrenToggle {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  bottom: 0;
+  box-shadow: 0 0 0 0.25rem var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.72rem;
+  font-weight: 650;
+  gap: 0.3rem;
+  justify-content: center;
+  left: 50%;
+  line-height: 1;
+  min-height: 1.65rem;
+  padding: 0.25rem 0.65rem 0.3rem 0.55rem;
+  position: absolute;
+  transform: translate(-50%, 50%);
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.sessionChildrenToggle:hover,
+.sessionChildrenToggle:focus-visible {
+  background: #fff;
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 0 0.25rem var(--panel);
+}
+
+.sessionChildrenChevron {
+  border-bottom: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 0.42rem;
+  transform: translateY(-0.12rem) rotate(45deg);
+  transition: transform 140ms ease;
+  width: 0.42rem;
+}
+
+.sessionChildrenToggle[aria-expanded='true'] .sessionChildrenChevron {
+  transform: translateY(0.12rem) rotate(225deg);
 }
 
 .sessionItem:hover,
@@ -1463,13 +1537,11 @@ body[data-project-mode='selecting'] .searchAssist {
   background: #f8fbfb;
   border-color: rgba(207, 216, 221, 0.8);
   gap: 0.3rem;
-  margin-left: 1rem;
   max-height: 8.2rem;
   overflow: hidden;
   padding-bottom: 0.65rem;
   padding-left: 0.9rem;
   padding-top: 0.65rem;
-  position: relative;
 }
 
 .sessionItem.secondarySession:hover,
@@ -1479,30 +1551,9 @@ body[data-project-mode='selecting'] .searchAssist {
   overflow: hidden;
 }
 
-.sessionItem.secondarySession::before {
-  background: #b8c4c9;
-  border-radius: 999px;
-  bottom: 0.7rem;
-  content: '';
-  left: -0.55rem;
-  position: absolute;
-  top: 0.7rem;
-  width: 2px;
-}
-
 .sessionItem.active {
   border-color: var(--accent);
   box-shadow: inset 4px 0 0 var(--accent);
-}
-
-.sessionItem.relatedParentSession {
-  background: #f3faf8;
-  border-color: #88b7aa;
-  box-shadow: inset 4px 0 0 #88b7aa;
-}
-
-.sessionItem.relatedParentSession .sessionTitle {
-  color: #0f574c;
 }
 
 .sessionItem.secondarySession.active {

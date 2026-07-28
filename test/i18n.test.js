@@ -163,6 +163,10 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeSourceExcerptMore'), '还有未显示的源码。');
   assert.equal(i18n.t('en', 'ui', 'codeModeStepCountOne'), '1 step');
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeStepCount', { count: 2 }), '2 个步骤');
+  assert.equal(i18n.t('en', 'ui', 'childSessionCountOne'), '1 child session');
+  assert.equal(i18n.t('en', 'ui', 'expandChildSessionsOne'), 'Show 1 child session');
+  assert.equal(i18n.t('en', 'ui', 'collapseChildSessionsOne'), 'Hide 1 child session');
+  assert.equal(i18n.t('en', 'ui', 'childSessionCount', { count: 2 }), '2 child sessions');
   assert.equal(i18n.humanize('mcp_tool_call'), 'MCP Tool Call');
   assert.equal(i18n.humanize('js_repl'), 'JS REPL');
   assert.deepEqual(i18n.localizeCondition({ id: 'codeModeScriptOperation' }, 'zh-CN'), {
