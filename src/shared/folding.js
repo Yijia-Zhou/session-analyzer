@@ -1,8 +1,11 @@
 (function initFolding(root, factory) {
-  const api = factory();
+  const agentCoordination = typeof module === 'object' && module.exports
+    ? require('./agent-coordination')
+    : root.sessionAgentCoordination;
+  const api = factory(agentCoordination);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionFolding = api;
-}(typeof globalThis !== 'undefined' ? globalThis : window, function createFoldingApi() {
+}(typeof globalThis !== 'undefined' ? globalThis : window, function createFoldingApi(agentCoordination) {
   'use strict';
 
   const DISPLAY_STATES = ['expanded', 'summary', 'collapsed', 'hidden'];
@@ -23,6 +26,7 @@
     'patch',
     'mcp_call',
     'js_repl',
+    'agent_coordination',
     'other_tool_call',
     'web_search',
     'goal',
@@ -83,6 +87,7 @@
         'developer_message',
         'review',
         'subagent',
+        'agent_coordination',
         'abort',
         'rollback',
         'compaction',
@@ -247,6 +252,7 @@
     if (toolName === 'shell_command' || toolName === 'exec_command') return 'command';
     if (toolName === 'apply_patch') return 'patch';
     if (toolName === 'create_goal' || toolName === 'get_goal' || toolName === 'update_goal') return 'goal';
+    if (agentCoordination?.isAgentCoordinationTool(toolName)) return 'agent_coordination';
     return 'other_tool_call';
   }
 
@@ -268,6 +274,8 @@
     const matches = [];
     if (event.kind !== 'code_mode_operation' && Object.hasOwn(normalized.kindStates, event.kind)) {
       matches.push(normalized.kindStates[event.kind]);
+    } else if (event.kind === 'agent_coordination' && Object.hasOwn(normalized.kindStates, 'other_tool_call')) {
+      matches.push(normalized.kindStates.other_tool_call);
     }
     for (const condition of normalized.conditions) {
       if (conditionMatches(condition.id, event)) matches.push(condition.state);

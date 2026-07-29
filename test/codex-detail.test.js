@@ -583,12 +583,15 @@ test('Code Mode single request summaries cover every safely projected tool type'
     { tool: 'close_agent', request: { target: 'agent-close' }, expected: 'agent-close' },
     { tool: 'create_goal', request: { objective: 'Ship fixture' }, expected: 'Ship fixture' },
     { tool: 'exec_command', request: { command: 'Write-Output exec' }, expected: 'Write-Output exec' },
+    { tool: 'followup_task', request: { target: 'agent-followup', message: 'Continue follow-up' }, expected: 'agent-followup · Continue follow-up' },
     { tool: 'get_goal', request: {}, expected: 'No arguments', detailKind: 'empty_request' },
     {
       tool: 'image_gen__imagegen',
       request: { prompt: 'Draw fixture data:text/plain;base64,QUJD' },
       expected: 'Draw fixture [embedded data URL omitted; see raw refs]',
     },
+    { tool: 'interrupt_agent', request: { target: 'agent-interrupt' }, expected: 'agent-interrupt' },
+    { tool: 'list_agents', request: { path_prefix: '/root/review' }, expected: '/root/review' },
     { tool: 'list_available_plugins_to_install', request: {}, expected: 'No arguments', detailKind: 'empty_request' },
     { tool: 'list_mcp_resource_templates', request: { server: 'template-server' }, expected: 'template-server' },
     { tool: 'list_mcp_resources', request: { server: 'resource-server' }, expected: 'resource-server' },
@@ -600,6 +603,7 @@ test('Code Mode single request summaries cover every safely projected tool type'
       expected: 'Choose fixture?',
     },
     { tool: 'send_input', request: { target: 'agent-send', message: 'Continue fixture' }, expected: 'agent-send · Continue fixture' },
+    { tool: 'send_message', request: { target: 'agent-message', message: 'Message fixture' }, expected: 'agent-message · Message fixture' },
     { tool: 'shell_command', request: { command: 'Write-Output shell' }, expected: 'Write-Output shell' },
     { tool: 'spawn_agent', request: { task_name: 'fixture-task', message: 'Inspect fixture' }, expected: 'fixture-task · Inspect fixture' },
     { tool: 'update_goal', request: { status: 'complete' }, expected: 'complete' },
@@ -1274,9 +1278,12 @@ test('Code Mode detail bounds structured result interpretation before collaborat
 
   assert.equal(detail.presentation.toolName, 'spawn_agent');
   assert.equal(detail.presentation.variant, 'single_tool');
-  assert.deepEqual(detail.timelineSections.map((section) => section.type), ['collaboration', 'code_mode_source']);
+  assert.deepEqual(detail.timelineSections.map((section) => section.type), ['collaboration', 'code', 'code_mode_source']);
   assert.equal(collaboration.type, 'collaboration');
-  assert.equal(detail.timelineSections[1].code, deeplyNestedResult);
+  assert.equal(detail.timelineSections[1].title, 'Response summary');
+  assert.equal(detail.timelineSections[1].code.endsWith('...'), true);
+  assert.ok(detail.timelineSections[1].code.length < deeplyNestedResult.length);
+  assert.equal(detail.timelineSections[2].code, deeplyNestedResult);
   assert.equal(chineseDetail.presentation.label, '启动子代理');
   assert.equal(chineseDetail.timelineSections[0].title, '启动子代理');
   assert.deepEqual(chineseDetail.timelineSections[0].fields.map((field) => field.key), [
@@ -1426,4 +1433,48 @@ test('Code Mode collaboration projections do not translate agent names that coll
   assert.deepEqual(chineseStatuses.map((item) => item.label), ['Status', 'Model', 'agent-1', '状态']);
   assert.ok(chineseStatuses.every((item) => !Object.hasOwn(item, 'labelKind')));
   assert.deepEqual(chineseStatuses.map((item) => item.status), ['completed', 'running', 'pending', 'failed']);
+});
+
+test('Code Mode list_agents projections retain agent statuses and task messages', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'dddddddd-7777-4444-9999-dddddddddddd';
+  const result = JSON.stringify({
+    agents: [
+      { agent_name: 'worker-a', agent_status: 'running', last_task_message: 'Inspect the parser.' },
+      { agent_name: 'worker-b', agent_status: 'completed', last_task_message: 'Tests complete.' },
+    ],
+  });
+  await writeTranscript(codexHome, repoRoot, id, [
+    { type: 'session_meta', timestamp: '2026-06-12T11:00:00.000Z', payload: { id, cwd: repoRoot } },
+    { type: 'response_item', timestamp: '2026-06-12T11:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-list-agents', input: 'const result = await tools.list_agents({}); text(result);' } },
+    {
+      type: 'response_item',
+      timestamp: '2026-06-12T11:00:02.000Z',
+      payload: {
+        type: 'custom_tool_call_output',
+        call_id: 'exec-list-agents',
+        output: [
+          { type: 'input_text', text: 'Script completed\nOutput:\n' },
+          { type: 'input_text', text: result },
+        ],
+      },
+    },
+  ]);
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
+  const detail = buildEventDetail(session, operation.id, 'main');
+  const projection = detail.timelineSections[0];
+
+  assert.equal(projection.type, 'collaboration');
+  assert.deepEqual(projection.fields.find((field) => field.key === 'Agent count'), { key: 'Agent count', value: '2' });
+  assert.deepEqual(projection.statuses, [
+    { label: 'worker-a', status: 'running' },
+    { label: 'worker-b', status: 'completed' },
+  ]);
+  assert.match(projection.resultHtml, /Inspect the parser/);
+  assert.match(projection.resultHtml, /Tests complete/);
+  assert.equal(detail.timelineSections.some((section) => section.title === 'Response summary'), false);
 });

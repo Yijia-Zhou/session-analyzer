@@ -11,6 +11,7 @@ const {
   normalizeGoalStatus,
 } = require('../src/codex-goal');
 const { createCodexLogicalBuilder } = require('../src/codex-logical');
+const agentCoordination = require('../src/shared/agent-coordination');
 const {
   projectCodeModeOperations,
 } = require('../src/codex-code-mode');
@@ -73,6 +74,7 @@ function uniqueNonEmpty(values) {
 
 function makeLogicalBuilder(overrides = {}) {
   return createCodexLogicalBuilder({
+    agentCoordination,
     codeMode: { deriveCodeModeFacts, projectCodeModeOperations },
     envelope: {
       CANONICAL_SCHEMA_VERSION,
@@ -655,6 +657,7 @@ test('logical builder uses terminal lifecycle rows for generic protocol tool lab
       rawLines: byCall.get('call-hook').rawRefs.map((ref) => ref.line),
     },
     collab: {
+      kind: byCall.get('call-collab').kind,
       label: byCall.get('call-collab').label,
       status: byCall.get('call-collab').status,
       severity: byCall.get('call-collab').severity,
@@ -665,8 +668,38 @@ test('logical builder uses terminal lifecycle rows for generic protocol tool lab
     image: { label: 'Image Generation', status: 'success', severity: 'normal', rawLines: [3, 4] },
     approval: { label: 'Approval Request Declined', status: 'declined', severity: 'warning', rawLines: [5, 6] },
     hook: { kind: 'hook', label: 'pre-apply', status: 'completed', severity: 'normal', rawLines: [7, 8] },
-    collab: { label: 'Collab Agent Spawn End', status: 'success', severity: 'normal', rawLines: [9, 10] },
+    collab: { kind: 'agent_coordination', label: 'Collab Agent Spawn End', status: 'success', severity: 'normal', rawLines: [9, 10] },
   });
+});
+
+test('logical builder classifies direct subagent coordination tools independently', () => {
+  const toolNames = [
+    'spawn_agent',
+    'list_agents',
+    'wait_agent',
+    'send_message',
+    'send_input',
+    'followup_task',
+    'interrupt_agent',
+    'close_agent',
+  ];
+  const logicalEvents = logicalBuilder.buildLogicalEvents(toolNames.map((toolName, index) => raw(index + 1, {
+    recordType: 'response_item',
+    payloadType: 'function_call',
+    callId: `call-${toolName}`,
+    toolName,
+    output: '{}',
+  })));
+
+  assert.deepEqual(logicalEvents.map((event) => ({
+    kind: event.kind,
+    subtype: event.subtype,
+    toolName: event.toolName,
+  })), toolNames.map((toolName) => ({
+    kind: 'agent_coordination',
+    subtype: toolName,
+    toolName,
+  })));
 });
 
 test('logical builder supports new hook lifecycle rows and ungrouped declined hooks', () => {

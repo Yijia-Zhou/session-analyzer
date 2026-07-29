@@ -60,6 +60,7 @@ const KIND_LABELS = {
   patch: 'Patch',
   mcp_call: 'MCP call',
   js_repl: 'JS REPL',
+  agent_coordination: 'Subagent coordination',
   other_tool_call: 'Other tool call',
   code_mode_operation: 'Code Mode tool call',
   proposed_plan: 'Proposed plan',
@@ -3047,6 +3048,7 @@ async function exitProjectChooser() {
 }
 
 async function applyAppState(appState) {
+  const totals = appState.totals || {};
   if (appState.locale) state.locale = i18n.resolveLocale(appState.locale);
   applyStaticLocale();
   state.repoRoot = appState.repoRoot || '';
@@ -3054,13 +3056,13 @@ async function applyAppState(appState) {
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
   state.eventKinds = appState.eventKinds;
   state.codeModeRequests = Array.isArray(appState.codeModeRequests) ? appState.codeModeRequests : [];
-  state.sessionGrandTotal = appState.totals.sessionCount || 0;
+  state.sessionGrandTotal = totals.sessionCount || 0;
   setProjectHeader(
     appState.repoRoot,
     [
-      t('sessionCount', { count: appState.totals.sessionCount }),
-      t('logicalEventCount', { count: appState.totals.eventCount }),
-      t('rawRecordCount', { count: appState.totals.rawEventCount }),
+      t('sessionCount', { count: totals.sessionCount || 0 }),
+      t('logicalEventCount', { count: totals.eventCount || 0 }),
+      t('rawRecordCount', { count: totals.rawEventCount || 0 }),
     ].join(' | '),
   );
   el.profileSelect.innerHTML = renderProfileOptions();
@@ -5122,6 +5124,16 @@ function renderProfileRulesPane(options = {}) {
     .map((item) => [String(item?.value || '').trim(), Number(item?.count || 0)]));
   const renderKindRow = (kind) => {
     const display = rules.kindStates[kind] || '';
+    const inheritedAgentCoordinationDisplay = kind === 'agent_coordination' && !display
+      ? evaluateDisplayStateFromRules({
+        kind,
+        subtype: '',
+        toolName: '',
+        status: 'success',
+        severity: 'normal',
+        touchedFiles: [],
+      }, rules)
+      : '';
     const count = editableKindCounts.get(kind) || 0;
     const metadata = [
       `<code>${escapeHtml(kind)}</code>`,
@@ -5133,7 +5145,9 @@ function renderProfileRulesPane(options = {}) {
         <span class="profileRuleMeta">${metadata}</span>
       </span>
       <select data-profile-kind="${escapeHtml(kind)}">
-        <option value=""${display ? '' : ' selected'}>${escapeHtml(displayStateLabel(rules.fallback))} (${escapeHtml(t('default'))})</option>
+        <option value=""${display ? '' : ' selected'}>${inheritedAgentCoordinationDisplay
+    ? escapeHtml(t('inheritOrdinaryToolState', { state: displayStateLabel(inheritedAgentCoordinationDisplay) }))
+    : `${escapeHtml(displayStateLabel(rules.fallback))} (${escapeHtml(t('default'))})`}</option>
         ${DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === display ? ' selected' : ''}>${escapeHtml(displayStateLabel(stateId))}</option>`).join('')}
       </select>
     </label>`;

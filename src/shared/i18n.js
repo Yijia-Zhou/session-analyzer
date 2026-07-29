@@ -1,8 +1,11 @@
 (function initI18n(root, factory) {
-  const api = factory();
+  const agentCoordination = typeof module === 'object' && module.exports
+    ? require('./agent-coordination')
+    : root.sessionAgentCoordination;
+  const api = factory(agentCoordination);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionI18n = api;
-}(typeof globalThis !== 'undefined' ? globalThis : this, function createI18nApi() {
+}(typeof globalThis !== 'undefined' ? globalThis : this, function createI18nApi(agentCoordination) {
   'use strict';
 
   const DEFAULT_LOCALE = 'en';
@@ -317,6 +320,7 @@
         patch: 'Patch',
         mcp_call: 'MCP call',
         js_repl: 'JS REPL',
+        agent_coordination: 'Subagent coordination',
         other_tool_call: 'Other tool call',
         code_mode_operation: 'Code Mode tool call',
         code_mode_script_operation: 'Scripted operation',
@@ -423,16 +427,20 @@
         'Apply patch': 'Apply patch',
         'Image inspection': 'Image inspection',
         'Close subagent': 'Close subagent',
+        'Delegate follow-up task': 'Delegate follow-up task',
         'Create goal': 'Create goal',
         'Get goal': 'Get goal',
         'Image generation': 'Image generation',
         'List available plugins': 'List available plugins',
         'List MCP resource templates': 'List MCP resource templates',
         'List MCP resources': 'List MCP resources',
+        'List subagents': 'List subagents',
         'Read MCP resource': 'Read MCP resource',
         'Request plugin install': 'Request plugin install',
         'Send input to subagent': 'Send input to subagent',
+        'Send message to subagent': 'Send message to subagent',
         'Spawn subagent': 'Spawn subagent',
+        'Interrupt subagent': 'Interrupt subagent',
         'Update goal': 'Update goal',
         'Wait for subagent': 'Wait for subagent',
         'Web request': 'Web request',
@@ -507,6 +515,9 @@
         Model: 'Model',
         'Reasoning effort': 'Reasoning effort',
         'Fork context': 'Fork context',
+        Task: 'Task',
+        'Path prefix': 'Path prefix',
+        'Agent count': 'Agent count',
         Nickname: 'Nickname',
         Receiver: 'Receiver',
         'Previous status': 'Previous status',
@@ -915,6 +926,7 @@
         patch: '文件补丁',
         mcp_call: 'MCP 调用',
         js_repl: 'JS REPL',
+        agent_coordination: '子代理协调',
         other_tool_call: '其他工具调用',
         code_mode_operation: 'Code Mode 工具调用',
         code_mode_script_operation: '脚本化操作',
@@ -1078,16 +1090,20 @@
         'Apply patch': '应用补丁',
         'Image inspection': '图片检查',
         'Close subagent': '关闭子代理',
+        'Delegate follow-up task': '委派后续任务',
         'Create goal': '创建目标',
         'Get goal': '获取目标',
         'Image generation': '图片生成',
         'List available plugins': '列出可用插件',
         'List MCP resource templates': '列出 MCP 资源模板',
         'List MCP resources': '列出 MCP 资源',
+        'List subagents': '列出子代理',
         'Read MCP resource': '读取 MCP 资源',
         'Request plugin install': '请求安装插件',
         'Send input to subagent': '向子代理发送输入',
+        'Send message to subagent': '向子代理发送消息',
         'Spawn subagent': '启动子代理',
+        'Interrupt subagent': '中断子代理',
         'Update goal': '更新目标',
         'Wait for subagent': '等待子代理',
         'Web request': '网络请求',
@@ -1162,6 +1178,9 @@
         Model: '模型',
         'Reasoning effort': '推理强度',
         'Fork context': '分支上下文',
+        Task: '任务',
+        'Path prefix': '路径前缀',
+        'Agent count': 'Agent 数量',
         Nickname: '昵称',
         Receiver: '接收方',
         'Previous status': '之前状态',
@@ -1443,7 +1462,6 @@
     const key = String(value || '').trim();
     const title = {
       apply_patch: 'Apply patch',
-      close_agent: 'Close subagent',
       create_goal: 'Create goal',
       exec_command: 'Shell command',
       get_goal: 'Get goal',
@@ -1454,15 +1472,12 @@
       read_mcp_resource: 'Read MCP resource',
       request_plugin_install: 'Request plugin install',
       request_user_input: 'User input',
-      send_input: 'Send input to subagent',
       shell_command: 'Shell command',
-      spawn_agent: 'Spawn subagent',
       update_goal: 'Update goal',
       update_plan: 'Plan update',
       view_image: 'Image inspection',
-      wait_agent: 'Wait for subagent',
       web__run: 'Web request',
-    }[key] || humanize(key);
+    }[key] || agentCoordination?.agentCoordinationDefinition(key)?.title || humanize(key);
     return sectionTitle(title, locale) || key;
   }
 

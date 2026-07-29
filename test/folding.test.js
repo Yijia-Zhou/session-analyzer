@@ -186,7 +186,8 @@ test('unset Code Mode request rules inherit corresponding ordinary tool folding'
   assert.equal(folding.ordinaryKindForCodeModeRequest('apply_patch'), 'patch');
   assert.equal(folding.ordinaryKindForCodeModeRequest('create_goal'), 'goal');
   assert.equal(folding.ordinaryKindForCodeModeRequest('web__run'), 'other_tool_call');
-  assert.equal(folding.ordinaryKindForCodeModeRequest('spawn_agent'), 'other_tool_call');
+  assert.equal(folding.ordinaryKindForCodeModeRequest('spawn_agent'), 'agent_coordination');
+  assert.equal(folding.ordinaryKindForCodeModeRequest('list_agents'), 'agent_coordination');
 
   assert.equal(folding.inheritedCodeModeRequestState('shell_command', rules), 'collapsed');
   assert.equal(folding.inheritedCodeModeRequestState('apply_patch', rules), 'expanded');
@@ -194,6 +195,7 @@ test('unset Code Mode request rules inherit corresponding ordinary tool folding'
   assert.equal(folding.inheritedCodeModeRequestState('update_plan', rules), 'expanded');
   assert.equal(folding.inheritedCodeModeRequestState('request_user_input', rules), 'summary');
   assert.equal(folding.inheritedCodeModeRequestState('web__run', rules), 'hidden');
+  assert.equal(folding.inheritedCodeModeRequestState('spawn_agent', rules), 'hidden');
 
   const operation = (toolNames) => ({
     kind: 'code_mode_operation',
@@ -422,6 +424,7 @@ test('editable kind grouping prioritizes familiar event types without affecting 
   assert.equal(folding.editableKindGroup('mcp_call').groupId, 'commonWork');
   assert.equal(folding.editableKindGroup('js_repl').groupId, 'commonWork');
   assert.equal(folding.editableKindGroup('other_tool_call').groupId, 'commonWork');
+  assert.equal(folding.editableKindGroup('agent_coordination').groupId, 'agentSystem');
   assert.equal(folding.editableKindGroup('hook').groupId, 'agentSystem');
   assert.equal(folding.editableKindGroup('subagent').groupId, 'agentSystem');
   assert.equal(folding.editableKindGroup('future_event_kind').groupId, 'other');

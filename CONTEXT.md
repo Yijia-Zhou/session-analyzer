@@ -88,6 +88,14 @@ _Avoid_: Approval result, permission event / 审批结果、权限事件
 
 ### Session relationships / 会话关系
 
+**Agent Coordination / Agent 协调**:
+A Direct Tool Call that creates, observes, waits for, communicates with, delegates to, interrupts, or closes a subagent on behalf of the source Session. / 来源会话为了创建、观察、等待、通信、委派、中断或关闭 subagent 而发出的直接工具调用。
+_Avoid_: Subagent activity, Subagent lifecycle / Subagent 活动、Subagent 生命周期
+
+**Subagent Lifecycle Event / Subagent 生命周期事件**:
+A source-reported fact that a subagent lifecycle transition or interaction completed; it is distinct from the Agent Coordination operation that may have requested that transition. / 来源系统报告的 subagent 生命周期转换或交互已完成这一事实；它不同于可能请求该转换的 Agent 协调操作。
+_Avoid_: Agent Coordination, coordination command / Agent 协调、协调命令
+
 **Derived Session / 派生会话**:
 A child Session created for delegated subagent work or review work on behalf of a source Session. / 为来源会话执行委派的 subagent 工作或审查工作而创建的子会话。
 _Avoid_: Fork Session, child transcript / 分叉会话、子转录

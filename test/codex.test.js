@@ -496,6 +496,24 @@ test('buildIndex reuses unchanged session payloads while reparsing changed trans
   assert.equal(progress.at(-1).reusedFileCount, 1);
 });
 
+test('buildIndex ignores an incomplete previous-index placeholder', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const projectRoot = path.join(codexHome, 'placeholder-project');
+  const id = '21212121-2121-2121-2121-212121212121';
+  await fsp.mkdir(projectRoot, { recursive: true });
+  await writeFixtureTranscript(codexHome, projectRoot, id);
+
+  const index = await buildIndex({
+    repoRoot: projectRoot,
+    codexHome,
+    previousIndex: { repoRoot: projectRoot, codexHome },
+  });
+
+  assert.equal(index.sessions.length, 1);
+  assert.equal(index.sessions[0].id, id);
+  assert.equal(index.totals.reusedFileCount, 0);
+});
+
 test('buildIndex re-stats a transcript before reuse when it grows after selecting', async (t) => {
   const codexHome = await makeTempCodexHome(t);
   const projectRoot = path.join(codexHome, 'concurrent-append-project');
@@ -3061,6 +3079,49 @@ test('other tool call detail renders readable summaries and omits large data URL
     },
     {
       type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.770Z',
+      payload: {
+        type: 'function_call',
+        name: 'list_agents',
+        call_id: 'call-list-output',
+        arguments: {},
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.780Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-list-output',
+        output: {
+          agents: [
+            { agent_name: 'Builder', agent_status: 'running', last_task_message: 'Implement the fix.' },
+            { agent_name: 'Reviewer', agent_status: 'completed', last_task_message: 'Review complete.' },
+          ],
+        },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.790Z',
+      payload: {
+        type: 'function_call',
+        name: 'send_message',
+        call_id: 'call-send-fallback',
+        arguments: { target: 'agent-3', message: 'Continue.' },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.795Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-send-fallback',
+        output: { delivery_receipt: 'receipt-1' },
+      },
+    },
+    {
+      type: 'response_item',
       timestamp: '2026-05-28T10:00:02.800Z',
       payload: {
         type: 'function_call',
@@ -3136,6 +3197,8 @@ test('other tool call detail renders readable summaries and omits large data URL
   const spawnOutput = session.logicalEvents.find((event) => event.id.includes('call-spawn-output'));
   const waitOutput = session.logicalEvents.find((event) => event.id.includes('call-wait-output'));
   const closeOutput = session.logicalEvents.find((event) => event.id.includes('call-close-output'));
+  const listOutput = session.logicalEvents.find((event) => event.id.includes('call-list-output'));
+  const sendFallback = session.logicalEvents.find((event) => event.id.includes('call-send-fallback'));
   const questionDetail = buildEventDetail(session, question.id, 'main');
   const waitDetail = buildEventDetail(session, wait.id, 'main');
   const spawnDetail = buildEventDetail(session, spawn.id, 'main');
@@ -3147,6 +3210,8 @@ test('other tool call detail renders readable summaries and omits large data URL
   const spawnOutputDetail = buildEventDetail(session, spawnOutput.id, 'main');
   const waitOutputDetail = buildEventDetail(session, waitOutput.id, 'main');
   const closeOutputDetail = buildEventDetail(session, closeOutput.id, 'main');
+  const listOutputDetail = buildEventDetail(session, listOutput.id, 'main');
+  const sendFallbackDetail = buildEventDetail(session, sendFallback.id, 'main');
 
   assert.equal(questionDetail.timelineSections[0].type, 'user_input');
   assert.equal(questionDetail.timelineSections[0].questions[0].prompt, 'Which display mode should be used?');
@@ -3179,12 +3244,27 @@ test('other tool call detail renders readable summaries and omits large data URL
   assert.match(waitOutputDetail.timelineSections[0].resultHtml, /Function result/);
   assert.deepEqual(closeOutputDetail.timelineSections[0].statuses, [{ label: 'Previous status', status: 'completed' }]);
   assert.match(closeOutputDetail.timelineSections[0].resultHtml, /Previous result/);
+  assert.deepEqual(listOutputDetail.timelineSections[0].fields.find((field) => field.key === 'Agent count'), { key: 'Agent count', value: '2' });
+  assert.deepEqual(listOutputDetail.timelineSections[0].statuses, [
+    { label: 'Builder', status: 'running' },
+    { label: 'Reviewer', status: 'completed' },
+  ]);
+  assert.match(listOutputDetail.timelineSections[0].resultHtml, /Implement the fix/);
+  assert.match(listOutputDetail.timelineSections[0].resultHtml, /Review complete/);
+  assert.equal(listOutputDetail.timelineSections.some((section) => section.title === 'Response summary'), false);
+  assert.equal(sendFallbackDetail.timelineSections[0].type, 'collaboration');
+  assert.deepEqual(sendFallbackDetail.timelineSections[1], {
+    type: 'code',
+    title: 'Response summary',
+    language: 'json',
+    code: '{\n  "delivery_receipt": "receipt-1"\n}',
+  });
   assert.equal(imageDetail.timelineSections[0].type, 'markdown');
   assert.match(imageDetail.timelineSections[0].html, /Image inspection/);
   assert.deepEqual(imageDetail.inspectorSections.find((section) => section.type === 'image_preview').images, [
     {
-      previewId: 'image-19-0',
-      src: `/api/sessions/${id}/events/${encodeURIComponent(image.id)}/image-previews/image-19-0`,
+      previewId: 'image-23-0',
+      src: `/api/sessions/${id}/events/${encodeURIComponent(image.id)}/image-previews/image-23-0`,
       mimeType: 'image/png',
       estimatedBytes: 5,
       detail: 'high',

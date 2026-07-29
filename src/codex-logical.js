@@ -9,6 +9,7 @@ function createCodexLogicalBuilder(deps) {
     text,
     usage,
     codeMode,
+    agentCoordination,
   } = deps;
   const {
     deriveCodeModeFacts,
@@ -65,6 +66,10 @@ function createCodexLogicalBuilder(deps) {
   } = usage;
 
   const GOAL_TOOL_NAMES = new Set(['create_goal', 'get_goal', 'update_goal']);
+  const {
+    AGENT_COORDINATION_KIND,
+    isAgentCoordinationTool,
+  } = agentCoordination;
 
   function createLogicalEvent(fields) {
     const preview = sanitizeLogicalEnvelopeValue(fields.preview || '');
@@ -583,14 +588,21 @@ function createCodexLogicalBuilder(deps) {
       outputStats.durationMs = mcpEnd?.durationMs || 0;
     } else if (hookRows.length) {
       return buildHookLogicalEvent(`call:${callId}`, hookRows);
-    } else if (imageRows.length || dynamicRows.length || approvalRows.length || collabRows.length) {
+    } else if (collabRows.length || isAgentCoordinationTool(toolName)) {
+      kind = AGENT_COORDINATION_KIND;
+      const representativeRow = representativeToolLifecycleRow(collabRows);
+      label = representativeRow ? groupedToolLifecycleLabel(representativeRow, toolName) : toolName;
+      preview = truncate(representativeRow?.preview || functionCall?.output || functionOutput?.output || toolName || label);
+      status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
+      severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
+    } else if (imageRows.length || dynamicRows.length || approvalRows.length) {
       kind = 'other_tool_call';
-      const representativeRow = representativeToolLifecycleRow([...imageRows, ...dynamicRows, ...approvalRows, ...collabRows]);
+      const representativeRow = representativeToolLifecycleRow([...imageRows, ...dynamicRows, ...approvalRows]);
       label = groupedToolLifecycleLabel(representativeRow, toolName);
       preview = truncate(representativeRow?.preview || group.find((raw) => raw.preview)?.preview || toolName || label);
       status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
       severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
-    } else if (toolName === 'request_user_input' || toolName === 'update_plan' || toolName === 'view_image' || toolName === 'spawn_agent' || toolName === 'wait_agent' || toolName === 'send_input' || toolName === 'close_agent' || toolName === 'js_repl_reset') {
+    } else if (toolName === 'request_user_input' || toolName === 'update_plan' || toolName === 'view_image' || toolName === 'js_repl_reset') {
       kind = 'other_tool_call';
       label = toolName;
       preview = truncate(functionCall?.output || functionOutput?.output || toolName);

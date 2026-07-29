@@ -1,6 +1,7 @@
 'use strict';
 
 const acorn = require('acorn');
+const { agentCoordinationToolNames } = require('./shared/agent-coordination');
 
 const MAX_SOURCE_LENGTH = 100_000;
 const MAX_DECLARED_CALLS = 24;
@@ -9,7 +10,6 @@ const MAX_LITERAL_NODES = 1_000;
 
 const KNOWN_CODE_MODE_TOOLS = new Set([
   'apply_patch',
-  'close_agent',
   'create_goal',
   'exec_command',
   'get_goal',
@@ -20,14 +20,12 @@ const KNOWN_CODE_MODE_TOOLS = new Set([
   'read_mcp_resource',
   'request_plugin_install',
   'request_user_input',
-  'send_input',
   'shell_command',
-  'spawn_agent',
   'update_goal',
   'update_plan',
   'view_image',
-  'wait_agent',
   'web__run',
+  ...agentCoordinationToolNames(),
 ]);
 
 // The declared projector treats these names as ambient runtime helpers. A result

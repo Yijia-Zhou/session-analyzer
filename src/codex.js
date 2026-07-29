@@ -6,6 +6,7 @@ const path = require('node:path');
 const readline = require('node:readline');
 const MarkdownIt = require('markdown-it');
 const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
+const agentCoordination = require('./shared/agent-coordination');
 const i18n = require('./shared/i18n');
 const {
   codeModeAssociableOutputFragments,
@@ -199,6 +200,7 @@ const EVENT_KIND_LABELS = Object.freeze({
   patch: 'Patch',
   mcp_call: 'MCP call',
   js_repl: 'JS REPL',
+  agent_coordination: 'Subagent coordination',
   other_tool_call: 'Other tool call',
   proposed_plan: 'Proposed plan',
   plan_update: 'Plan update',
@@ -2661,9 +2663,15 @@ function collaborationStatusEntries(value, fallbackLabel = 'Status', fallbackLab
   if (typeof value === 'string') return [{ label: fallbackLabel, labelKind: fallbackLabelKind, status: value }];
   if (Array.isArray(value)) {
     return value.flatMap((item) => {
-      const agentLabel = firstNonEmpty(item?.agent_nickname, item?.thread_id);
+      const agentLabel = firstNonEmpty(
+        item?.agent_name,
+        item?.agent_nickname,
+        item?.nickname,
+        item?.agent_id,
+        item?.thread_id,
+      );
       return collaborationStatusEntries(
-        item?.status,
+        firstNonEmpty(item?.agent_status, item?.status),
         agentLabel || fallbackLabel,
         agentLabel ? 'agent' : fallbackLabelKind,
       );
@@ -2680,7 +2688,13 @@ function collaborationStatusEntries(value, fallbackLabel = 'Status', fallbackLab
 
 function collaborationStatusItems(responseValue) {
   if (!responseValue || typeof responseValue !== 'object') return [];
-  const source = firstNonEmpty(responseValue.agent_statuses, responseValue.statuses, responseValue.previous_status, responseValue.status);
+  const source = firstNonEmpty(
+    responseValue.agent_statuses,
+    responseValue.statuses,
+    responseValue.previous_status,
+    responseValue.status,
+    responseValue.agents,
+  );
   const fallbackLabel = source === responseValue.previous_status ? 'Previous status' : 'Status';
   const items = collaborationStatusEntries(source, fallbackLabel).map((item) => ({
     label: conciseToolValue(item.label, 500),
@@ -2705,6 +2719,18 @@ function collaborationResultMarkdown(responseValue) {
   if (!responseValue || typeof responseValue !== 'object') return '';
   const direct = firstNonEmpty(responseValue.result, responseValue.output, responseValue.message);
   if (direct) return stringifyValue(direct);
+  const agentMessages = (Array.isArray(responseValue.agents) ? responseValue.agents : [])
+    .map((agent) => ({
+      label: firstNonEmpty(agent?.agent_name, agent?.agent_nickname, agent?.nickname, agent?.agent_id, agent?.thread_id),
+      message: firstNonEmpty(agent?.last_task_message, agent?.task_message),
+    }))
+    .filter((agent) => agent.message);
+  if (agentMessages.length) {
+    return agentMessages.map(({ label, message }) => [
+      label ? `### ${label}` : '',
+      stringifyValue(message),
+    ].filter(Boolean).join('\n\n')).join('\n\n');
+  }
   const source = firstNonEmpty(responseValue.agent_statuses, responseValue.statuses, responseValue.previous_status, responseValue.status);
   const entries = collaborationResultEntries(source);
   return [...new Map(entries.map((item) => [`${item.label}\n${item.value}`, item])).values()].map(({ label, value }) => [
@@ -2713,14 +2739,33 @@ function collaborationResultMarkdown(responseValue) {
   ].filter(Boolean).join('\n\n')).join('\n\n');
 }
 
+function collaborationResponseCaptured(responseValue) {
+  if (!responseValue || typeof responseValue !== 'object') return false;
+  return Array.isArray(responseValue.agents)
+    || collaborationStatusItems(responseValue).length > 0
+    || Boolean(collaborationResultMarkdown(responseValue))
+    || Boolean(firstNonEmpty(
+      responseValue.agent_id,
+      responseValue.new_thread_id,
+      responseValue.nickname,
+      responseValue.new_agent_nickname,
+      responseValue.receiver_agent_nickname,
+      responseValue.receiver_thread_id,
+      responseValue.prompt,
+    ))
+    || responseValue.timed_out === true;
+}
+
+function hasMeaningfulToolValue(value) {
+  if (value == null || value === '') return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value).length > 0;
+  return true;
+}
+
 function collaborationToolSection(toolName, requestValue, responseValue) {
-  const title = {
-    spawn_agent: 'Spawn subagent',
-    wait_agent: 'Wait for subagent',
-    send_input: 'Send input to subagent',
-    close_agent: 'Close subagent',
-  }[toolName];
-  if (!title) return null;
+  const definition = agentCoordination.agentCoordinationDefinition(toolName);
+  if (!definition) return null;
   const spawnedAgentId = firstNonEmpty(responseValue?.agent_id, responseValue?.new_thread_id);
   const targets = uniqueNonEmpty([
     ...(Array.isArray(requestValue?.targets) ? requestValue.targets : [requestValue?.target]),
@@ -2731,7 +2776,10 @@ function collaborationToolSection(toolName, requestValue, responseValue) {
     { key: 'Agent type', value: requestValue?.agent_type },
     { key: 'Model', value: requestValue?.model },
     { key: 'Reasoning effort', value: requestValue?.reasoning_effort },
-    { key: 'Fork context', value: requestValue?.fork_context },
+    { key: 'Fork context', value: firstNonEmpty(requestValue?.fork_context, requestValue?.fork_turns) },
+    { key: 'Task', value: requestValue?.task_name },
+    { key: 'Path prefix', value: requestValue?.path_prefix },
+    { key: 'Agent count', value: Array.isArray(responseValue?.agents) ? responseValue.agents.length : null },
     { key: 'Nickname', value: firstNonEmpty(responseValue?.nickname, responseValue?.new_agent_nickname) },
     { key: 'Receiver', value: firstNonEmpty(responseValue?.receiver_agent_nickname, responseValue?.receiver_thread_id) },
   ].filter((entry) => entry.value != null && entry.value !== '').map((entry) => ({
@@ -2742,8 +2790,8 @@ function collaborationToolSection(toolName, requestValue, responseValue) {
   const result = redactEmbeddedDataUrls(collaborationResultMarkdown(responseValue));
   return {
     type: 'collaboration',
-    title,
-    action: toolName,
+    title: definition.title,
+    action: definition.action,
     targets,
     fields,
     statuses: collaborationStatusItems(responseValue),
@@ -2915,6 +2963,9 @@ function extractToolOperationSections(raws, event, splitSections) {
   if (userInput) timelineSections.push(userInput);
   const collaboration = collaborationToolSection(event.toolName, requestValue, responseValue);
   if (collaboration) timelineSections.push(collaboration);
+  if (collaboration && hasMeaningfulToolValue(responseValue) && !collaborationResponseCaptured(responseValue)) {
+    maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue);
+  }
   const markdown = event.toolName === 'view_image' ? viewImageMarkdown(requestValue, responseValue) : '';
   maybePushMarkdownSection(timelineSections, 'Other tool call', markdown);
   const imageGeneration = event.toolName === 'image_generation' ? imageGenerationMarkdown(raws, responseValue) : '';
@@ -3101,7 +3152,6 @@ function codeModeToolProjectionTitle(toolName, requestValue) {
   if (toolName === 'web__run') return codeModeWebProjectionTitle(requestValue);
   return {
     apply_patch: 'Apply patch',
-    close_agent: 'Close subagent',
     create_goal: 'Create goal',
     exec_command: 'Shell command',
     get_goal: 'Get goal',
@@ -3112,14 +3162,11 @@ function codeModeToolProjectionTitle(toolName, requestValue) {
     read_mcp_resource: 'Read MCP resource',
     request_plugin_install: 'Request plugin install',
     request_user_input: 'User input',
-    send_input: 'Send input to subagent',
     shell_command: 'Shell command',
-    spawn_agent: 'Spawn subagent',
     update_goal: 'Update goal',
     update_plan: 'Plan update',
     view_image: 'Image inspection',
-    wait_agent: 'Wait for subagent',
-  }[toolName] || humanizeProtocolSubtype(toolName);
+  }[toolName] || agentCoordination.agentCoordinationDefinition(toolName)?.title || humanizeProtocolSubtype(toolName);
 }
 
 function isBoundedCodeModeStructuredResult(value) {
@@ -3230,9 +3277,11 @@ function codeModeToolProjectionSection(call, session = {}) {
   } else if (associated && toolName === 'web__run') {
     const webResult = codeModeWebResultSection(call.resultText);
     if (webResult) resultSections.push(webResult);
-  } else if (associated && toolName !== 'update_plan' && toolName !== 'request_user_input'
-      && !collaborationToolSection(toolName, requestValue, responseValue)) {
-    maybePushToolSummaryCodeSection(resultSections, 'Response summary', responseValue == null ? call.resultText : responseValue);
+  } else if (associated && toolName !== 'update_plan' && toolName !== 'request_user_input') {
+    const collaboration = collaborationToolSection(toolName, requestValue, responseValue);
+    if (!collaboration || !collaborationResponseCaptured(responseValue)) {
+      maybePushToolSummaryCodeSection(resultSections, 'Response summary', responseValue == null ? call.resultText : responseValue);
+    }
   }
   if (associated) {
     resultSections.push({
@@ -3521,6 +3570,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
     codeModeOutputText,
     projectDeclaredCodeModeCalls,
   },
+  agentCoordination,
 });
 const { buildEventDetail } = codexDetailBuilder;
 
@@ -3614,6 +3664,7 @@ function planUpdateText(raw) {
 }
 
 const codexLogicalBuilder = createCodexLogicalBuilder({
+  agentCoordination,
   codeMode: {
     deriveCodeModeFacts,
     projectCodeModeOperations,
@@ -3737,7 +3788,7 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'user_message') session.counts.userMessages += 1;
   if (logicalEvent.kind === 'assistant_message') session.counts.assistantMessages += 1;
   if (logicalEvent.kind === 'reasoning') session.counts.reasoning += 1;
-  if (['command', 'patch', 'mcp_call', 'web_search', 'other_tool_call', 'code_mode_operation', 'js_repl', 'hook'].includes(logicalEvent.kind)
+  if (['command', 'patch', 'mcp_call', 'web_search', 'agent_coordination', 'other_tool_call', 'code_mode_operation', 'js_repl', 'hook'].includes(logicalEvent.kind)
       || (logicalEvent.kind === 'goal' && logicalEvent.toolName)) {
     session.counts.toolCalls += 1;
   }
@@ -4056,6 +4107,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
   let reusedFileCount = 0;
   let parsedBytes = 0;
   const canReusePrevious = previousIndex
+    && Array.isArray(previousIndex.sessions)
     && path.resolve(previousIndex.repoRoot || '') === resolvedRepo
     && path.resolve(previousIndex.codexHome || '') === resolvedCodex;
   const previousSessionsBySource = canReusePrevious

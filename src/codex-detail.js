@@ -8,6 +8,7 @@ function createCodexDetailBuilder(deps) {
     sectionBuilders,
     sectionExtractors,
     codeMode,
+    agentCoordination,
   } = deps;
   const {
     codeModeAssociableOutputFragments,
@@ -201,6 +202,7 @@ function createCodexDetailBuilder(deps) {
         return extractToolOperationSections(raws, event, splitSectionsForDetail);
       case 'code_mode_operation':
         return extractCodeModeOperationSections(event, raws, session);
+      case 'agent_coordination':
       case 'other_tool_call':
         if (event.toolName === 'update_plan') return extractUpdatePlanSections(raws, event, splitSectionsForDetail);
         return extractToolOperationSections(raws, event, splitSectionsForDetail);
@@ -381,7 +383,6 @@ function createCodexDetailBuilder(deps) {
 
     const previewKeys = {
       apply_patch: ['patch'],
-      close_agent: ['target'],
       create_goal: ['objective'],
       exec_command: ['command', 'cmd', 'workdir'],
       get_goal: [],
@@ -392,17 +393,15 @@ function createCodexDetailBuilder(deps) {
       read_mcp_resource: ['uri', 'server'],
       request_plugin_install: ['plugin', 'plugin_id', 'name'],
       request_user_input: ['question'],
-      send_input: ['target', 'message'],
       shell_command: ['command', 'cmd', 'workdir'],
-      spawn_agent: ['task_name', 'message'],
       update_goal: ['status'],
       update_plan: ['explanation'],
       view_image: ['path', 'detail'],
-      wait_agent: ['targets', 'target', 'timeout_ms'],
       web__run: ['search_query', 'open', 'url'],
     };
     const toolName = String(projection?.toolName || call?.toolName || '');
-    const detail = codeModeRequestFieldPreview(requestValue, previewKeys[toolName] || []);
+    const coordinationPreviewFields = agentCoordination.agentCoordinationDefinition(toolName)?.previewFields || [];
+    const detail = codeModeRequestFieldPreview(requestValue, previewKeys[toolName] || coordinationPreviewFields);
     if (detail) return { ...item, detail };
     const genericDetail = conciseCodeModePreviewText(firstCodeModeRequestScalar(requestValue));
     if (genericDetail) return { ...item, detail: genericDetail };
