@@ -46,6 +46,7 @@ When changing product behavior or repository structure:
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Active plans:
+  - `docs/exec-plans/active/2026-07-30-tool-lifecycle-family-contract.md`
 - Completed plans:
   - `docs/exec-plans/completed/2026-07-30-code-mode-detail-presentation-contract.md`
   - `docs/exec-plans/completed/2026-07-25-code-mode-request-facets-and-folding.md`

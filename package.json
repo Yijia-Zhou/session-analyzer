@@ -35,6 +35,7 @@
     "src/codex-logical.js",
     "src/codex-search.js",
     "src/codex-source.js",
+    "src/codex-tool-lifecycle-contract.js",
     "src/folding.js",
     "src/shared/",
     "public/",

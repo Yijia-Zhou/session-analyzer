@@ -9,6 +9,7 @@ const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting'
 const agentCoordination = require('./shared/agent-coordination');
 const codeModeTools = require('./shared/code-mode-tools');
 const codeModePresentationContract = require('./shared/code-mode-presentation-contract');
+const toolLifecycleContract = require('./codex-tool-lifecycle-contract');
 const i18n = require('./shared/i18n');
 const {
   codeModeAssociableOutputFragments,
@@ -223,51 +224,6 @@ const EVENT_KIND_LABELS = Object.freeze({
   user_shell_command: 'User shell command',
   event: 'Event',
 });
-
-const TOOL_EVENT_TYPES = new Set([
-  'exec_command_begin',
-  'exec_command_update',
-  'exec_command_delta',
-  'exec_command_end',
-  'exec_command_declined',
-  'patch_apply_begin',
-  'patch_apply_update',
-  'patch_apply_delta',
-  'patch_apply_end',
-  'patch_apply_declined',
-  'mcp_tool_call_begin',
-  'mcp_tool_call_update',
-  'mcp_tool_call_delta',
-  'mcp_tool_call_end',
-  'mcp_tool_call_declined',
-  'image_generation_call_begin',
-  'image_generation_call_update',
-  'image_generation_call_delta',
-  'image_generation_call_end',
-  'image_generation_call_declined',
-  'image_generation_end',
-  'dynamic_tool_call_begin',
-  'dynamic_tool_call_update',
-  'dynamic_tool_call_delta',
-  'dynamic_tool_call_end',
-  'dynamic_tool_call_declined',
-  'approval_request_begin',
-  'approval_request_end',
-  'approval_request_declined',
-  'hook_begin',
-  'hook_end',
-  'hook_declined',
-  'hook_started',
-  'hook_completed',
-  'collab_agent_spawn_begin',
-  'collab_agent_spawn_end',
-  'collab_agent_interaction_begin',
-  'collab_agent_interaction_end',
-  'collab_waiting_begin',
-  'collab_waiting_end',
-  'collab_close_begin',
-  'collab_close_end',
-]);
 
 function flattenText(value, budget = 8000) {
   const parts = [];
@@ -3681,7 +3637,7 @@ const codexLogicalBuilder = createCodexLogicalBuilder({
     protocolPreviewFor,
   },
   tool: {
-    TOOL_EVENT_TYPES,
+    ...toolLifecycleContract,
     commandArgsFromRaw,
     commandToText,
     inferPatchSuccess,

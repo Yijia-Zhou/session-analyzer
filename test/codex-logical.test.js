@@ -17,30 +17,7 @@ const {
 } = require('../src/codex-code-mode');
 const { deriveCodeModeFacts } = require('../src/codex-code-mode-facts');
 const { CANONICAL_SCHEMA_VERSION, CODEX_SOURCE_KIND, rawRef } = require('../src/codex-source');
-
-const TOOL_EVENT_TYPES = new Set([
-  'exec_command_begin',
-  'exec_command_end',
-  'patch_apply_begin',
-  'patch_apply_end',
-  'mcp_tool_call_begin',
-  'mcp_tool_call_end',
-  'image_generation_call_begin',
-  'image_generation_call_end',
-  'image_generation_end',
-  'dynamic_tool_call_begin',
-  'dynamic_tool_call_end',
-  'dynamic_tool_call_declined',
-  'approval_request_begin',
-  'approval_request_declined',
-  'hook_begin',
-  'hook_end',
-  'hook_declined',
-  'hook_started',
-  'hook_completed',
-  'collab_agent_spawn_begin',
-  'collab_agent_spawn_end',
-]);
+const toolLifecycleContract = require('../src/codex-tool-lifecycle-contract');
 
 function titleCaseProtocolSubtype(value) {
   return String(value || '')
@@ -107,7 +84,7 @@ function makeLogicalBuilder(overrides = {}) {
       protocolPreviewFor: (raw, subtype) => raw.preview || subtype,
     },
     tool: {
-      TOOL_EVENT_TYPES,
+      ...toolLifecycleContract,
       commandArgsFromRaw: (raw) => raw?.commandArgs || null,
       commandToText: (command) => Array.isArray(command) ? command.join(' ') : String(command || ''),
       inferPatchSuccess: () => true,
@@ -670,6 +647,146 @@ test('logical builder uses terminal lifecycle rows for generic protocol tool lab
     hook: { kind: 'hook', label: 'pre-apply', status: 'completed', severity: 'normal', rawLines: [7, 8] },
     collab: { kind: 'agent_coordination', label: 'Collab Agent Spawn End', status: 'success', severity: 'normal', rawLines: [9, 10] },
   });
+});
+
+test('logical builder keeps descriptor representative priority across lifecycle transitions', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, { payloadType: 'dynamic_tool_call_begin', callId: 'call-transition', preview: 'begin' }),
+    raw(2, { payloadType: 'dynamic_tool_call_end', callId: 'call-transition', preview: 'terminal' }),
+    raw(3, { payloadType: 'dynamic_tool_call_update', callId: 'call-transition', preview: 'late progress' }),
+    raw(4, { payloadType: 'approval_request_begin', callId: 'call-declined', preview: 'approval begin' }),
+    raw(5, { payloadType: 'approval_request_declined', callId: 'call-declined', status: 'declined', preview: 'declined' }),
+    raw(6, { payloadType: 'approval_request_end', callId: 'call-declined', preview: 'later terminal' }),
+  ]);
+  const byCall = new Map(logicalEvents.map((event) => [event.id.split(':call:')[1], event]));
+
+  assert.deepEqual({
+    label: byCall.get('call-transition').label,
+    preview: byCall.get('call-transition').preview,
+    rawLines: byCall.get('call-transition').rawRefs.map((ref) => ref.line),
+  }, {
+    label: 'Dynamic Tool Call End',
+    preview: 'terminal',
+    rawLines: [1, 2, 3],
+  });
+  assert.deepEqual({
+    label: byCall.get('call-declined').label,
+    preview: byCall.get('call-declined').preview,
+    status: byCall.get('call-declined').status,
+    severity: byCall.get('call-declined').severity,
+    rawLines: byCall.get('call-declined').rawRefs.map((ref) => ref.line),
+  }, {
+    label: 'Approval Request Declined',
+    preview: 'declined',
+    status: 'declined',
+    severity: 'warning',
+    rawLines: [4, 5, 6],
+  });
+});
+
+test('logical builder leaves unknown lifecycle lookalikes in protocol fallback', () => {
+  const lookalikeTypes = [
+    'exec_command_output_delta',
+    'patch_apply_updated',
+    'dynamic_tool_call_response',
+    'hook_complete',
+    'collab_resume_end',
+  ];
+  const logicalEvents = logicalBuilder.buildLogicalEvents(lookalikeTypes
+    .map((payloadType, index) => raw(index + 1, {
+      payloadType,
+      callId: `lookalike-${index}`,
+      preview: `unknown ${payloadType}`,
+    })));
+
+  assert.deepEqual(logicalEvents.map((event) => ({
+    kind: event.kind,
+    subtype: event.subtype,
+    layer: event.layer,
+    rawLines: event.rawRefs.map((ref) => ref.line),
+  })), lookalikeTypes.map((payloadType, index) => ({
+    kind: 'protocol',
+    subtype: payloadType,
+    layer: 'protocol',
+    rawLines: [index + 1],
+  })));
+});
+
+test('logical builder excludes a same-call lookalike from lifecycle semantics but retains its raw reference', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      payloadType: 'dynamic_tool_call_begin',
+      callId: 'call-mixed-lookalike',
+      preview: 'admitted begin',
+      searchText: 'admitted-begin-search',
+    }),
+    raw(2, {
+      payloadType: 'dynamic_tool_call_end',
+      callId: 'call-mixed-lookalike',
+      preview: 'admitted terminal',
+      searchText: 'admitted-terminal-search',
+    }),
+    raw(3, {
+      payloadType: 'dynamic_tool_call_future_end',
+      callId: 'call-mixed-lookalike',
+      preview: 'unknown future terminal',
+      searchText: 'unknown-lookalike-search',
+    }),
+  ]);
+  const event = logicalEvents.find((candidate) => candidate.id.endsWith(':call:call-mixed-lookalike'));
+
+  assert.ok(event);
+  assert.equal(event.label, 'Dynamic Tool Call End');
+  assert.equal(event.preview, 'admitted terminal');
+  assert.match(event.searchText, /admitted-begin-search/);
+  assert.match(event.searchText, /admitted-terminal-search/);
+  assert.doesNotMatch(event.searchText, /unknown-lookalike-search/);
+  assert.deepEqual(event.rawRefs.map((ref) => ({
+    line: ref.line,
+    sourceEventType: ref.sourceEventType,
+  })), [
+    { line: 1, sourceEventType: 'dynamic_tool_call_begin' },
+    { line: 2, sourceEventType: 'dynamic_tool_call_end' },
+    { line: 3, sourceEventType: 'dynamic_tool_call_future_end' },
+  ]);
+  assert.equal(logicalEvents.some((candidate) => (
+    candidate.layer === 'protocol'
+    && candidate.subtype === 'dynamic_tool_call_future_end'
+  )), false);
+});
+
+test('logical builder excludes same-call lookalikes from lifecycle outcome inference', () => {
+  const lookalikes = [
+    { payloadType: 'dynamic_tool_call_future_end' },
+    { payloadType: 'dynamic_tool_call_future_declined' },
+    { payloadType: 'dynamic_tool_call_future_status', status: 'failed' },
+  ];
+
+  for (const [index, lookalike] of lookalikes.entries()) {
+    const callId = `call-outcome-lookalike-${index}`;
+    const logicalEvents = logicalBuilder.buildLogicalEvents([
+      raw(1, {
+        payloadType: 'dynamic_tool_call_begin',
+        callId,
+        preview: 'admitted begin',
+        searchText: 'admitted-begin-search',
+      }),
+      raw(2, {
+        ...lookalike,
+        callId,
+        preview: 'unknown outcome',
+        searchText: 'unknown-outcome-search',
+      }),
+    ]);
+    const event = logicalEvents.find((candidate) => candidate.id.endsWith(`:call:${callId}`));
+
+    assert.ok(event);
+    assert.equal(event.status, 'incomplete');
+    assert.equal(event.severity, 'warning');
+    assert.equal(event.label, 'Dynamic Tool Call Begin');
+    assert.deepEqual(event.rawRefs.map((ref) => ref.line), [1, 2]);
+    assert.doesNotMatch(event.searchText, /unknown-outcome-search/);
+  }
 });
 
 test('logical builder classifies direct subagent coordination tools independently', () => {

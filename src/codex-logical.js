@@ -36,7 +36,8 @@ function createCodexLogicalBuilder(deps) {
     protocolPreviewFor,
   } = protocol;
   const {
-    TOOL_EVENT_TYPES,
+    TOOL_LIFECYCLE_EVENT_TYPES,
+    TOOL_LIFECYCLE_FAMILY,
     commandArgsFromRaw,
     commandToText,
     inferPatchSuccess,
@@ -46,9 +47,13 @@ function createCodexLogicalBuilder(deps) {
     parseOutputEnvelope,
     patchFilesFromPatchInput,
     touchFilesFromOutputText,
+    isToolLifecycleCallGroupType,
+    isToolLifecycleFamily,
+    isToolLifecycleStandaloneType,
+    toolLifecycleRepresentativeRank,
   } = tool;
   const CODE_MODE_ASSOCIATION_EVENT_TYPES = new Set([
-    ...TOOL_EVENT_TYPES,
+    ...TOOL_LIFECYCLE_EVENT_TYPES,
     'web_search_end',
   ]);
   const {
@@ -70,6 +75,13 @@ function createCodexLogicalBuilder(deps) {
     AGENT_COORDINATION_KIND,
     isAgentCoordinationTool,
   } = agentCoordination;
+  const TOOL_RESPONSE_ITEM_TYPES = new Set([
+    'function_call',
+    'function_call_output',
+    'custom_tool_call',
+    'custom_tool_call_output',
+    'image_generation_call',
+  ]);
 
   function createLogicalEvent(fields) {
     const preview = sanitizeLogicalEnvelopeValue(fields.preview || '');
@@ -106,14 +118,7 @@ function createCodexLogicalBuilder(deps) {
   }
 
   function toolLifecycleRank(raw) {
-    const type = String(raw?.payloadType || '');
-    if (/_declined$/.test(type)) return 4;
-    if (/_completed$/.test(type)) return 3;
-    if (/_end$/.test(type)) return 3;
-    if (/_started$/.test(type)) return 1;
-    if (/(?:_update|_delta)$/.test(type)) return 2;
-    if (/_begin$/.test(type)) return 1;
-    return 0;
+    return toolLifecycleRepresentativeRank(raw?.payloadType);
   }
 
   function representativeToolLifecycleRow(rows) {
@@ -131,20 +136,32 @@ function createCodexLogicalBuilder(deps) {
   }
 
   function groupedToolLifecycleLabel(row, fallback) {
-    if (row?.toolName === 'image_generation' || String(row?.payloadType || '').startsWith('image_generation_')) {
+    if (row?.toolName === 'image_generation'
+        || isToolLifecycleFamily(row?.payloadType, TOOL_LIFECYCLE_FAMILY.IMAGE_GENERATION)) {
       return 'Image Generation';
     }
     return humanizeProtocolSubtype(row?.payloadType || fallback || 'Other tool call');
   }
 
   function isHookLifecycleRow(raw) {
-    return raw?.recordType === 'event_msg' && [
-      'hook_begin',
-      'hook_end',
-      'hook_declined',
-      'hook_started',
-      'hook_completed',
-    ].includes(raw.payloadType);
+    return raw?.recordType === 'event_msg'
+      && isToolLifecycleFamily(raw.payloadType, TOOL_LIFECYCLE_FAMILY.HOOK);
+  }
+
+  function toolLifecycleRowsForFamily(group, family) {
+    return group.filter((raw) => raw.recordType === 'event_msg'
+      && isToolLifecycleFamily(raw.payloadType, family));
+  }
+
+  function isToolResponseItemRow(raw) {
+    return raw?.recordType === 'response_item'
+      && TOOL_RESPONSE_ITEM_TYPES.has(raw.payloadType);
+  }
+
+  function isToolOutcomeRow(raw) {
+    return isToolResponseItemRow(raw)
+      || (raw?.recordType === 'event_msg'
+        && isToolLifecycleCallGroupType(raw.payloadType));
   }
 
   function hookNameFromRow(row) {
@@ -473,16 +490,17 @@ function createCodexLogicalBuilder(deps) {
     const functionOutput = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
     const customCall = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call');
     const customOutput = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output');
-    const execRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('exec_command_'));
-    const patchRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('patch_apply_'));
-    const mcpRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('mcp_tool_call_'));
-    const imageRows = group.filter((raw) => (
-      raw.recordType === 'event_msg' && (raw.payloadType.startsWith('image_generation_call_') || raw.payloadType === 'image_generation_end')
-    ) || (raw.recordType === 'response_item' && raw.payloadType === 'image_generation_call'));
-    const dynamicRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('dynamic_tool_call_'));
-    const approvalRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('approval_request_'));
+    const execRows = toolLifecycleRowsForFamily(group, TOOL_LIFECYCLE_FAMILY.COMMAND);
+    const patchRows = toolLifecycleRowsForFamily(group, TOOL_LIFECYCLE_FAMILY.PATCH);
+    const mcpRows = toolLifecycleRowsForFamily(group, TOOL_LIFECYCLE_FAMILY.MCP_TOOL);
+    const imageRows = [
+      ...toolLifecycleRowsForFamily(group, TOOL_LIFECYCLE_FAMILY.IMAGE_GENERATION),
+      ...group.filter((raw) => raw.recordType === 'response_item' && raw.payloadType === 'image_generation_call'),
+    ].sort((a, b) => a.line - b.line);
+    const dynamicRows = toolLifecycleRowsForFamily(group, TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL);
+    const approvalRows = toolLifecycleRowsForFamily(group, TOOL_LIFECYCLE_FAMILY.APPROVAL);
     const hookRows = group.filter(isHookLifecycleRow);
-    const collabRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('collab_'));
+    const collabRows = toolLifecycleRowsForFamily(group, TOOL_LIFECYCLE_FAMILY.COLLABORATION);
     const execEnd = execRows.find((raw) => raw.payloadType === 'exec_command_end');
     const patchEnd = patchRows.find((raw) => raw.payloadType === 'patch_apply_end');
     const mcpEnd = mcpRows.find((raw) => raw.payloadType === 'mcp_tool_call_end');
@@ -505,12 +523,13 @@ function createCodexLogicalBuilder(deps) {
     const outputStats = {};
     const parts = [];
 
-    const protocolStatus = String(group.find((raw) => raw.status)?.status || '').toLowerCase();
-    const declined = group.some((raw) => /_declined$/.test(raw.payloadType) || String(raw.status || '').toLowerCase() === 'declined');
-    const failed = group.some((raw) => String(raw.status || '').toLowerCase() === 'failed');
-    const imageCallCompleted = group.some((raw) => raw.payloadType === 'image_generation_call'
+    const outcomeRows = group.filter(isToolOutcomeRow);
+    const protocolStatus = String(outcomeRows.find((raw) => raw.status)?.status || '').toLowerCase();
+    const declined = outcomeRows.some((raw) => /_declined$/.test(raw.payloadType) || String(raw.status || '').toLowerCase() === 'declined');
+    const failed = outcomeRows.some((raw) => String(raw.status || '').toLowerCase() === 'failed');
+    const imageCallCompleted = outcomeRows.some((raw) => raw.payloadType === 'image_generation_call'
       && ['completed', 'complete', 'success', 'succeeded'].includes(String(raw.status || '').toLowerCase()));
-    const completed = group.some((raw) => /_end$/.test(raw.payloadType)) || imageCallCompleted || Boolean(functionOutput || customOutput);
+    const completed = outcomeRows.some((raw) => /_end$/.test(raw.payloadType)) || imageCallCompleted || Boolean(functionOutput || customOutput);
     const explicitIncomplete = !completed && !failed && !declined;
 
     const isCommandTool = toolName === 'shell_command' || execRows.length;
@@ -960,8 +979,8 @@ function createCodexLogicalBuilder(deps) {
 
     for (const [callId, callGroup] of byCallId.entries()) {
       const group = callGroup.filter((raw) => !consumed.has(raw.rawId)).sort((a, b) => a.line - b.line);
-      const hasToolShape = group.some((raw) => raw.recordType === 'response_item' && ['function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output', 'image_generation_call'].includes(raw.payloadType))
-        || group.some((raw) => raw.recordType === 'event_msg' && TOOL_EVENT_TYPES.has(raw.payloadType));
+      const hasToolShape = group.some(isToolResponseItemRow)
+        || group.some((raw) => raw.recordType === 'event_msg' && isToolLifecycleCallGroupType(raw.payloadType));
       if (!hasToolShape) continue;
       const logicalEvent = buildToolLogicalEvent(callId, group);
       logicalEvents.push(logicalEvent);
@@ -1135,7 +1154,7 @@ function createCodexLogicalBuilder(deps) {
         continue;
       }
 
-      if (isHookLifecycleRow(raw)) {
+      if (isHookLifecycleRow(raw) && isToolLifecycleStandaloneType(raw.payloadType)) {
         logicalEvents.push(buildHookLogicalEvent(raw.line, [raw]));
         consumed.add(raw.rawId);
         continue;
@@ -1221,7 +1240,9 @@ function createCodexLogicalBuilder(deps) {
         consumed.add(raw.rawId);
         continue;
       }
-      if (raw.recordType === 'event_msg' && ['collab_agent_spawn_end', 'collab_agent_interaction_end', 'collab_waiting_end', 'collab_close_end'].includes(raw.payloadType)) {
+      if (raw.recordType === 'event_msg'
+          && isToolLifecycleStandaloneType(raw.payloadType)
+          && isToolLifecycleFamily(raw.payloadType, TOOL_LIFECYCLE_FAMILY.COLLABORATION)) {
         logicalEvents.push(buildLifecycleEvent(raw, 'subagent', 'Subagent', 'normal'));
         consumed.add(raw.rawId);
         continue;

@@ -50,6 +50,22 @@ _Avoid_: Profile, preset, filter / 配置、预设、筛选器
 
 ### Tool execution topology / 工具执行拓扑
 
+**Tool Lifecycle Family / 工具生命周期族**:
+A source-aware classification that relates the exact Raw Record types describing stages of the same category of tool execution while preserving current and historical wire identities. It does not by itself decide Main Timeline admission. / 一种面向来源的分类，用于关联描述同一类工具执行各阶段的精确原始记录类型，同时保留现行与历史 wire identity。它本身不决定是否进入主时间线。
+_Avoid_: Tool kind, prefix family / 工具 kind、前缀族
+
+**Lifecycle Phase / 生命周期阶段**:
+A source-neutral position of a Raw Record within a Tool Lifecycle Family, such as start, progress, interaction, terminal, or single. It is independent of the wire suffix, outcome status, and representative-selection priority. / 原始记录在工具生命周期族中的来源中立位置，例如开始、进展、交互、终态或单条；它独立于 wire 后缀、结果状态和代表记录选择优先级。
+_Avoid_: Wire suffix, status, terminal rank / Wire 后缀、状态、终态排名
+
+**Lifecycle Correlation Identity / 生命周期关联标识**:
+A typed source identity, such as a call ID, hook run ID, or event ID, that can support relating lifecycle Raw Records to the same execution. It does not by itself authorize grouping across turn or Session boundaries or choose Logical Event ownership. / 一种带类型的来源 identity，例如调用 ID、hook run ID 或事件 ID；它可以支持把生命周期原始记录关联到同一次执行，但本身不授权跨 turn 或会话分组，也不决定逻辑事件 ownership。
+_Avoid_: Generic call ID, untyped ID / 泛化调用 ID、无类型 ID
+
+**Lifecycle Outcome Status / 生命周期结果状态**:
+A source-supported completion, failure, decline, or other outcome of a tool lifecycle, independent of its Lifecycle Phase and representative-selection priority. / 由来源证据支持的工具生命周期完成、失败、拒绝或其他结果；它独立于生命周期阶段和代表记录选择优先级。
+_Avoid_: Phase, representative rank / 阶段、代表记录排名
+
 **Direct Tool Call / 直接工具调用**:
 A tool invocation emitted directly as a source-level call, rather than invoked inside a Code Mode Operation. / 作为来源层调用直接发出的工具调用，而不是在 Code Mode 操作内部发起的调用。
 _Avoid_: Legacy tool call / 旧式工具调用

@@ -12,6 +12,10 @@ const {
   rawMatchesEvent,
   rawRef,
 } = require('../src/codex-source');
+const {
+  TOOL_LIFECYCLE_DESCRIPTORS,
+  TOOL_LIFECYCLE_FAMILY,
+} = require('../src/codex-tool-lifecycle-contract');
 
 function flattenText(value) {
   if (value == null) return '';
@@ -141,4 +145,47 @@ test('raw parser preserves unknown records through generic fallback fields', () 
   assert.deepEqual(raw.embeddedImages, [{ previewId: 'image-1' }]);
   assert.equal(raw.parsed.payload.type, 'future_protocol_shape');
   assert.equal(raw.parsed.payload.nested.message, 'new protocol payload at C:\\Users\\Yijia\\repo');
+});
+
+test('raw parser preserves specialized and generic enrichment for every admitted lifecycle member', () => {
+  const { makeRawEvent } = makeParser();
+
+  for (const [index, descriptor] of TOOL_LIFECYCLE_DESCRIPTORS.entries()) {
+    const marker = `marker-${descriptor.wireType}`;
+    const payload = {
+      type: descriptor.wireType,
+      call_id: `call-${index}`,
+      marker,
+    };
+    if (descriptor.family === TOOL_LIFECYCLE_FAMILY.COMMAND) {
+      payload.command = ['node', '--version'];
+      payload.stdout = marker;
+    }
+    if (descriptor.family === TOOL_LIFECYCLE_FAMILY.PATCH) {
+      payload.changes = { [`src/${marker}.js`]: { kind: 'update' } };
+      payload.patch = marker;
+    }
+
+    const raw = makeRawEvent({
+      timestamp: '2026-06-10T10:02:00.000Z',
+      type: 'event_msg',
+      payload,
+    }, index + 1, '2026\\06\\10\\rollout.jsonl', 'session-id');
+
+    assert.equal(raw.payloadType, descriptor.wireType);
+    assert.equal(raw.callId, `call-${index}`);
+    assert.match(raw.searchText, new RegExp(marker));
+    if (descriptor.family === TOOL_LIFECYCLE_FAMILY.COMMAND) {
+      assert.equal(raw.commandText, 'node --version');
+    } else if (descriptor.family === TOOL_LIFECYCLE_FAMILY.PATCH) {
+      assert.deepEqual(raw.touchedFiles, [`src/${marker}.js`]);
+      assert.equal(raw.output, marker);
+    } else {
+      assert.match(raw.preview, new RegExp(descriptor.wireType));
+    }
+    assert.equal(
+      raw.toolName,
+      descriptor.wireType === 'image_generation_end' ? 'image_generation' : '',
+    );
+  }
 });
