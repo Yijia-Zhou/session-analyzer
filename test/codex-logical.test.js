@@ -16,7 +16,12 @@ const {
   projectCodeModeOperations,
 } = require('../src/codex-code-mode');
 const { deriveCodeModeFacts } = require('../src/codex-code-mode-facts');
-const { CANONICAL_SCHEMA_VERSION, CODEX_SOURCE_KIND, rawRef } = require('../src/codex-source');
+const {
+  CANONICAL_SCHEMA_VERSION,
+  CODEX_SOURCE_KIND,
+  rawRef,
+  subAgentActivityEventId,
+} = require('../src/codex-source');
 const toolLifecycleContract = require('../src/codex-tool-lifecycle-contract');
 
 function titleCaseProtocolSubtype(value) {
@@ -58,6 +63,7 @@ function makeLogicalBuilder(overrides = {}) {
       CODEX_SOURCE_KIND,
       sanitizeLogicalEnvelopeValue: (value) => value,
       rawRef,
+      subAgentActivityEventId,
     },
     goal: {
       goalResponseFromValue,
@@ -817,6 +823,178 @@ test('logical builder classifies direct subagent coordination tools independentl
     subtype: toolName,
     toolName,
   })));
+});
+
+test('logical builder attaches exact same-session subagent observations as coordination traceability only', () => {
+  const coordinationRows = [
+    raw(2, {
+      recordType: 'response_item',
+      payloadType: 'function_call',
+      callId: 'call-spawn',
+      toolName: 'spawn_agent',
+      output: '{"task_name":"fixture-agent"}',
+      turnId: 'turn-owner',
+    }),
+    raw(3, {
+      recordType: 'response_item',
+      payloadType: 'function_call_output',
+      callId: 'call-spawn',
+      output: '{"agent_id":"fixture-agent-id"}',
+      turnId: 'turn-owner',
+    }),
+  ];
+  const baseline = logicalBuilder.buildLogicalEvents(coordinationRows)
+    .find((event) => event.toolName === 'spawn_agent');
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      payloadType: 'sub_agent_activity',
+      status: 'failed',
+      searchText: 'activity-only-sensitive-marker',
+      preview: 'activity-only-preview',
+      payload: {
+        event_id: 'call-spawn',
+        agent_thread_id: 'agent-thread-1',
+        agent_path: '/root/fixture-agent',
+        kind: 'started',
+        occurred_at_ms: 1785405660000,
+      },
+    }),
+    ...coordinationRows,
+    raw(4, {
+      recordType: 'response_item',
+      payloadType: 'function_call',
+      callId: 'call-image',
+      toolName: 'view_image',
+      output: '{"path":"fixture.png"}',
+    }),
+    raw(5, {
+      recordType: 'response_item',
+      payloadType: 'function_call_output',
+      callId: 'call-image',
+      output: '{"ok":true}',
+    }),
+    raw(6, {
+      payloadType: 'sub_agent_activity',
+      payload: {
+        event_id: 'call-image',
+        agent_thread_id: 'agent-thread-1',
+        agent_path: '/root/fixture-agent',
+        kind: 'interacted',
+        occurred_at_ms: 1785405660001,
+      },
+    }),
+    raw(7, {
+      payloadType: 'sub_agent_activity',
+      payload: {
+        event_id: 'call-cross-session-owner',
+        agent_thread_id: 'agent-thread-1',
+        agent_path: '/root/fixture-agent',
+        kind: 'interacted',
+        occurred_at_ms: 1785405660002,
+      },
+    }),
+    raw(8, {
+      payloadType: 'sub_agent_activity',
+      payload: {
+        agent_thread_id: 'agent-thread-1',
+        agent_path: '/root/fixture-agent',
+        kind: 'interacted',
+        occurred_at_ms: 1785405660003,
+      },
+    }),
+    raw(9, {
+      payloadType: 'sub_agent_activity_future',
+      payload: {
+        event_id: 'call-spawn',
+        agent_thread_id: 'agent-thread-1',
+        agent_path: '/root/fixture-agent',
+        kind: 'started',
+        occurred_at_ms: 1785405660004,
+      },
+    }),
+    raw(10, {
+      payloadType: 'sub_agent_activity',
+      searchText: 'second-activity-only-marker',
+      payload: {
+        event_id: 'call-spawn',
+        agent_thread_id: 'agent-thread-1',
+        agent_path: '/root/fixture-agent',
+        kind: 'interacted',
+        occurred_at_ms: 1785405660005,
+      },
+    }),
+  ]);
+  const coordination = logicalEvents.find((event) => event.toolName === 'spawn_agent');
+
+  assert.deepEqual({
+    id: coordination.id,
+    timestamp: coordination.timestamp,
+    turnId: coordination.turnId,
+    kind: coordination.kind,
+    subtype: coordination.subtype,
+    label: coordination.label,
+    preview: coordination.preview,
+    searchText: coordination.searchText,
+    severity: coordination.severity,
+    status: coordination.status,
+    toolName: coordination.toolName,
+  }, {
+    id: baseline.id,
+    timestamp: baseline.timestamp,
+    turnId: baseline.turnId,
+    kind: baseline.kind,
+    subtype: baseline.subtype,
+    label: baseline.label,
+    preview: baseline.preview,
+    searchText: baseline.searchText,
+    severity: baseline.severity,
+    status: baseline.status,
+    toolName: baseline.toolName,
+  });
+  assert.deepEqual(coordination.rawRefs.map((ref) => ref.line), [2, 3, 1, 10]);
+  assert.deepEqual(coordination.channels, ['response_item', 'event_msg']);
+  assert.equal(coordination.source.line, 2);
+  assert.doesNotMatch(coordination.searchText, /activity-only|second-activity|\/root\/fixture-agent/);
+
+  const protocolLines = logicalEvents
+    .filter((event) => event.layer === 'protocol')
+    .flatMap((event) => event.rawRefs.map((ref) => ref.line));
+  assert.deepEqual(protocolLines.filter((line) => [1, 6, 7, 8, 9, 10].includes(line)), [6, 7, 8, 9]);
+  assert.equal(logicalEvents.find((event) => event.rawRefs.some((ref) => ref.line === 6)).subtype, 'sub_agent_activity');
+});
+
+test('logical builder keeps real-shaped view-image event mirrors traceability-only', () => {
+  const logicalEvents = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      recordType: 'response_item',
+      payloadType: 'function_call',
+      callId: 'call-view-image',
+      toolName: 'view_image',
+      output: '{"path":"fixture.png"}',
+    }),
+    raw(2, {
+      payloadType: 'view_image_tool_call',
+      callId: 'call-view-image',
+      searchText: 'event-only-view-image-marker',
+      preview: 'event-only-view-image-preview',
+      payload: {
+        call_id: 'call-view-image',
+        path: 'fixture.png',
+      },
+    }),
+    raw(3, {
+      recordType: 'response_item',
+      payloadType: 'function_call_output',
+      callId: 'call-view-image',
+      output: '{"ok":true}',
+    }),
+  ]);
+  const viewImage = logicalEvents.find((event) => event.toolName === 'view_image');
+
+  assert.equal(viewImage.kind, 'other_tool_call');
+  assert.deepEqual(viewImage.rawRefs.map((ref) => ref.line), [1, 2, 3]);
+  assert.doesNotMatch(viewImage.searchText, /event-only-view-image-marker/);
+  assert.equal(logicalEvents.some((event) => event.layer === 'protocol'), false);
 });
 
 test('logical builder supports new hook lifecycle rows and ungrouped declined hooks', () => {

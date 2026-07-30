@@ -13,6 +13,7 @@ const CANONICAL_EVENT_TYPES = Object.freeze({
 const CANONICAL_SCHEMA_VERSION = 1;
 const CODEX_SOURCE_KIND = 'codex';
 const CODEX_JSONL_LINE_LOCATOR_TYPE = 'jsonl_line';
+const SUB_AGENT_ACTIVITY_EVENT_TYPE = 'sub_agent_activity';
 
 function canonicalEventType(type) {
   return CANONICAL_EVENT_TYPES[type] || type || '';
@@ -51,6 +52,12 @@ function rawMatchesEvent(raw, event) {
 function rawEventsForLogicalEvent(session, event) {
   const byId = new Map(session.rawEvents.map((raw) => [raw.rawId, raw]));
   return event.rawRefs.map((ref) => byId.get(ref.rawId)).filter(Boolean);
+}
+
+function subAgentActivityEventId(raw) {
+  if (raw?.recordType !== 'event_msg' || raw?.payloadType !== SUB_AGENT_ACTIVITY_EVENT_TYPE) return '';
+  const eventId = raw?.parsed?.payload?.event_id;
+  return typeof eventId === 'string' ? eventId : '';
 }
 
 function createCodexRawParser(deps) {
@@ -252,10 +259,12 @@ module.exports = {
   CANONICAL_SCHEMA_VERSION,
   CODEX_SOURCE_KIND,
   CODEX_JSONL_LINE_LOCATOR_TYPE,
+  SUB_AGENT_ACTIVITY_EVENT_TYPE,
   canonicalEventType,
   codexSourceLocator,
   createCodexRawParser,
   rawEventsForLogicalEvent,
   rawMatchesEvent,
   rawRef,
+  subAgentActivityEventId,
 };

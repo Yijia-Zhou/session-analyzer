@@ -25,7 +25,8 @@ This repository uses three formal document classes plus one idea parking area:
 - `design-docs/schema-update-runbook.md` / Schema 更新运行手册
 - `design-docs/external-source-mapping-pressure-tests.md` / 外部 source 映射压力测试设计文档
 - `design-docs/documentation-system.md` / 文档系统设计文档
-- `exec-plans/active/2026-07-30-tool-lifecycle-family-contract.md` / 工具生命周期族契约收敛活跃执行计划
+- `exec-plans/completed/2026-07-30-subagent-activity-correlation.md` / Subagent 活动带类型关联已完成执行计划
+- `exec-plans/completed/2026-07-30-tool-lifecycle-family-contract.md` / 工具生命周期族契约收敛已完成执行计划
 - `exec-plans/completed/2026-06-26-search-count-and-jump-target-convergence.md` / 搜索计数与可跳转目标收敛已完成执行计划
 - `exec-plans/completed/2026-06-10-v0.1-release-hardening.md` / v0.1 发布前加固已完成执行计划
 - `exec-plans/completed/2026-06-02-inspector-search-target-reveal.md` / Inspector 搜索目标展开定位已完成执行计划

@@ -701,6 +701,81 @@ test('buildIndex keeps forked subagent identity separate from embedded parent me
   assert.equal(normalForkTimeline.session.forkedFromSessionTitle, parent.title);
 });
 
+test('buildIndex correlates subagent activity only to a same-session coordination owner', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const fixtureRepoRoot = path.join(codexHome, 'repo');
+  const ownerSessionId = 'aaaaaaaa-7777-4444-9999-aaaaaaaaaaaa';
+  const replicaSessionId = 'bbbbbbbb-7777-4444-9999-bbbbbbbbbbbb';
+  const ownerFile = await writeFixtureTranscript(codexHome, fixtureRepoRoot, ownerSessionId);
+  const replicaFile = await writeFixtureTranscript(codexHome, fixtureRepoRoot, replicaSessionId);
+  const eventId = 'coordination-call-fixture';
+  const observationPayload = {
+    type: 'sub_agent_activity',
+    event_id: eventId,
+    agent_thread_id: 'agent-thread-fixture',
+    agent_path: '/root/fixture-agent',
+    kind: 'started',
+    occurred_at_ms: 1785405660000,
+  };
+
+  await fsp.appendFile(ownerFile, [
+    {
+      type: 'event_msg',
+      timestamp: '2026-07-30T10:01:00.000Z',
+      payload: observationPayload,
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-07-30T10:01:01.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'spawn_agent',
+        call_id: eventId,
+        arguments: { task_name: 'fixture-agent', message: 'Run the fixture task.' },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-07-30T10:01:02.000Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: eventId,
+        output: { agent_id: 'agent-thread-fixture' },
+      },
+    },
+  ].map((record) => JSON.stringify(record)).join('\n') + '\n', 'utf8');
+  await fsp.appendFile(replicaFile, `${JSON.stringify({
+    type: 'event_msg',
+    timestamp: '2026-07-30T10:01:03.000Z',
+    payload: observationPayload,
+  })}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot: fixtureRepoRoot, codexHome });
+  const ownerSession = index.sessionsById.get(ownerSessionId);
+  const replicaSession = index.sessionsById.get(replicaSessionId);
+  const coordination = ownerSession.logicalEvents.find((event) => event.toolName === 'spawn_agent');
+  const ownerObservationRaw = ownerSession.rawEvents.find((raw) => raw.payloadType === 'sub_agent_activity');
+  const replicaObservation = replicaSession.logicalEvents.find((event) => event.subtype === 'sub_agent_activity');
+
+  assert.ok(coordination);
+  assert.equal(coordination.kind, 'agent_coordination');
+  assert.deepEqual(coordination.rawRefs.map((ref) => ref.sourceEventType), [
+    'function_call',
+    'function_call_output',
+    'sub_agent_activity',
+  ]);
+  assert.equal(coordination.source.line, 3);
+  assert.doesNotMatch(coordination.searchText, /\/root\/fixture-agent|sub_agent_activity/);
+  assert.equal(ownerObservationRaw.callId, '');
+  assert.equal(ownerSession.logicalEvents.some((event) => event.layer === 'protocol'
+    && event.subtype === 'sub_agent_activity'), false);
+
+  assert.ok(replicaObservation);
+  assert.equal(replicaObservation.layer, 'protocol');
+  assert.deepEqual(replicaObservation.rawRefs.map((ref) => ref.sourceEventType), ['sub_agent_activity']);
+  assert.equal(replicaSession.rawEvents.find((raw) => raw.payloadType === 'sub_agent_activity').callId, '');
+});
+
 test('buildIndex infers fallback titles from real user tasks after protocol wrappers', async () => {
   const index = await buildFixtureIndex();
   const session = index.sessions.find((item) => item.id === '44444444-4444-4444-4444-444444444444');

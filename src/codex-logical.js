@@ -20,6 +20,7 @@ function createCodexLogicalBuilder(deps) {
     CODEX_SOURCE_KIND,
     sanitizeLogicalEnvelopeValue,
     rawRef,
+    subAgentActivityEventId,
   } = envelope;
   const {
     goalResponseFromValue,
@@ -482,9 +483,9 @@ function createCodexLogicalBuilder(deps) {
     return searchParts.join('\n');
   }
 
-  function buildToolLogicalEvent(callId, group) {
-    const rawRefs = group.map(rawRef);
-    const channels = [...new Set(group.map((raw) => raw.recordType))];
+  function buildToolLogicalEvent(callId, group, traceabilityRows = []) {
+    const rawRefs = [...group.map(rawRef), ...traceabilityRows.map(rawRef)];
+    const channels = [...new Set([...group, ...traceabilityRows].map((raw) => raw.recordType))];
     const first = group[0];
     const functionCall = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');
     const functionOutput = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
@@ -951,6 +952,7 @@ function createCodexLogicalBuilder(deps) {
     const logicalEvents = [];
     const consumed = new Set();
     const byCallId = new Map();
+    const subAgentActivityByEventId = new Map();
     const goalToolEventsBySignature = new Map();
     const previousGoalSnapshots = new Map();
     const rawById = new Map(rawEvents.map((raw) => [raw.rawId, raw]));
@@ -975,6 +977,11 @@ function createCodexLogicalBuilder(deps) {
         if (!byCallId.has(raw.callId)) byCallId.set(raw.callId, []);
         byCallId.get(raw.callId).push(raw);
       }
+      const activityEventId = subAgentActivityEventId(raw);
+      if (activityEventId) {
+        if (!subAgentActivityByEventId.has(activityEventId)) subAgentActivityByEventId.set(activityEventId, []);
+        subAgentActivityByEventId.get(activityEventId).push(raw);
+      }
     }
 
     for (const [callId, callGroup] of byCallId.entries()) {
@@ -982,7 +989,16 @@ function createCodexLogicalBuilder(deps) {
       const hasToolShape = group.some(isToolResponseItemRow)
         || group.some((raw) => raw.recordType === 'event_msg' && isToolLifecycleCallGroupType(raw.payloadType));
       if (!hasToolShape) continue;
-      const logicalEvent = buildToolLogicalEvent(callId, group);
+      const hasAgentCoordinationOwner = group.some((raw) => raw.recordType === 'response_item'
+        && ['function_call', 'custom_tool_call'].includes(raw.payloadType)
+        && isAgentCoordinationTool(raw.toolName));
+      const groupRawIds = new Set(group.map((raw) => raw.rawId));
+      const traceabilityRows = hasAgentCoordinationOwner
+        ? (subAgentActivityByEventId.get(callId) || [])
+          .filter((raw) => !consumed.has(raw.rawId) && !groupRawIds.has(raw.rawId))
+          .sort((a, b) => a.line - b.line)
+        : [];
+      const logicalEvent = buildToolLogicalEvent(callId, group, traceabilityRows);
       logicalEvents.push(logicalEvent);
       if (logicalEvent.kind === 'goal' && ['create_goal', 'update_goal'].includes(logicalEvent.toolName)) {
         const functionCall = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');
@@ -1002,6 +1018,7 @@ function createCodexLogicalBuilder(deps) {
         }
       }
       for (const raw of group) consumed.add(raw.rawId);
+      for (const raw of traceabilityRows) consumed.add(raw.rawId);
     }
 
     for (let i = 0; i < rawEvents.length; i += 1) {

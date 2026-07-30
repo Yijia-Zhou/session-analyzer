@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-07-25 / 最近更新：2026-07-25
+- Last updated: 2026-07-30 / 最近更新：2026-07-30
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -14,7 +14,8 @@
   - `docs/exec-plans/completed/2026-06-29-search-scope-mental-model-convergence.md`
   - `docs/exec-plans/completed/2026-07-06-search-hud-integration.md`
   - `docs/exec-plans/completed/2026-07-22-code-mode-context-and-discoverability.md`
-  - `docs/exec-plans/active/2026-07-25-code-mode-request-facets-and-folding.md`
+  - `docs/exec-plans/completed/2026-07-25-code-mode-request-facets-and-folding.md`
+  - `docs/exec-plans/completed/2026-07-30-subagent-activity-correlation.md`
 - Related design notes: / 相关设计说明：
   - `docs/design-docs/codex-protocol-event-coverage.md`
   - `docs/design-docs/code-mode-operations.md`
@@ -329,6 +330,8 @@ Other `other_tool_call` events also receive timeline-owned summaries instead of 
 
 Direct collaboration tools are normalized as the independent Main-timeline `agent_coordination` kind. One shared exact-name registry covers `spawn_agent`, `list_agents`, `wait_agent`, `send_message`, historical `send_input`, `followup_task`, `interrupt_agent`, and historical `close_agent`; it supplies classification, Code Mode recognition, localized titles, action families, and collapsed-preview fields without substring inference. Grouped `collab_*` lifecycle rows belong to the same Agent Coordination event, while ungrouped terminal lifecycle facts remain `subagent` events.
 
+Exact `event_msg.sub_agent_activity` rows are Subagent Activity Observations, not another Tool Lifecycle Family or another Agent Coordination operation. The source boundary exposes their `event_id` through an exact typed extractor without copying it into generic `callId`. During one Session's logical construction, an observation is attached only when an ordinary response-item call group proves an exact Agent Coordination Direct Tool Call with the same ID. Attached observations are consumed from Protocol Logical Event construction and appended after the owner's semantic Raw References; they add only `event_msg` traceability and never participate in owner selection, timestamp, turn, family, outcome, representative, preview, search, metrics, or folding. Missing identities, unknown lookalikes, non-coordination ID collisions, and observations copied into a Session without the owner remain Protocol/Raw fallback. No global or cross-Session grouping is inferred from `event_id`, `agent_thread_id`, or `agent_path`.
+
 Code Mode uses the same Logical Event API through an independent `code_mode_operation` event. Exact outer call IDs and pending cell IDs group the exec output and ordered wait chain; each wait contributes zero standalone events or metrics. The operation owns only outer exec/wait Raw refs. Uniquely enclosed observed nested lifecycle events remain independent Logical Events: the operation detail exposes `eventRefs`, while the nested public logical DTO may receive the optional display-only `presentationContext` described above. Neither direction copies evidence or changes canonical membership. The timeline detail begins with a command `code` section and the final observed `terminal` output. Multi-wait operations append a collapsed-by-default `code_mode_trace` section containing compact phase metadata and intermediate outputs; operation evidence, observation state, cell, and poll count are inspector `kv` data. Observation state remains separate from outcome status.
 
 Code Mode 通过独立的 `code_mode_operation` event 复用同一套逻辑事件 API。精确的 outer call ID 与 pending cell ID 会把 exec output 和有序 wait 链分组；每个 wait 都不会贡献独立事件或指标。Operation 只拥有 outer exec/wait 的 Raw refs。唯一落在闭合区间内的已观测 nested lifecycle event 继续作为独立逻辑事件：operation 详情暴露 `eventRefs`，而 nested 的公开逻辑 DTO 可以获得上文所述可选、只用于展示的 `presentationContext`。任一方向都不会复制证据或改变规范成员关系。Timeline 详情以 command `code` section 和最终已观测 `terminal` output 开始；multi-wait operation 追加默认折叠的 `code_mode_trace` section，其中包含紧凑阶段元数据与中间输出；operation 的证据状态、观测状态、cell 和轮询次数作为 inspector `kv` 数据。观测状态继续与结果 status 分离。
@@ -348,6 +351,8 @@ The same boundary canonicalizes camelCase and snake_case spellings for thread ID
 其他 `other_tool_call` 事件也会获得 timeline 所属摘要，而不是依赖 preview 回退。面向用户的提问使用结构化 `user_input` section，其中包含问题卡片、选项行、已选选项高亮和答案 chip。Goal 生命周期工具（`create_goal`、`get_goal` 和 `update_goal`）会归一为 Main timeline 的 `goal` 事件，展示状态、objective 和用量摘要；注入的 goal context 则保留为仅在 protocol 层出现的 `goal_context` 记录。图片检查会保留聚焦的 Markdown timeline 摘要，并为受支持的内嵌 raster 图片 payload 增加 inspector 专用 `image_preview` section。受支持的预览会去重，每个事件最多保留八张不同图片；每个 descriptor 都携带受控的同源端点 URL，而不是内联 data URL。其它工具调用的 inspector section 会保留 payload 结构，但递归地把 data URL 替换为标记，包括嵌入普通字符串中的片段、换行包装的 base64 payload 和对象键，从而避免缓存的详情 DTO 重复保存大型 payload；Raw refs 仍是无损下钻入口。专用 timeline 卡片会追加经过清洗和限长的未建模文本响应，而不是将其隐藏。协作动作使用结构化 `collaboration` section，其中包含动作元数据、目标和状态 chip、超时状态，以及经过清洗的完整 Markdown 消息和结果正文。形如 `agents[]` 的 `list_agents` 响应会提供 agent 数量、逐 agent 状态 chip 和每条非空的 `last_task_message`。若某个非空协作响应未被这些已建模字段消费，专用卡片旁还会保留受限的通用响应摘要。`update_plan` 会使用与其他专用卡片相同的清洗和文本响应保留路径。当镜像协作状态字段同时存在时，归一化逻辑会依次优先使用 `agent_statuses`、`statuses`、关闭操作状态和通用状态字段，从而避免重复 chip，并保留描述性最强的 agent label。未知工具族使用受限的 request/response 代码摘要。Timeline 摘要会递归省略 data URL 并限制嵌套值长度。作为最后一道防护，每个 logical-detail section、logical-event preview、session 列表展示字段和 logical DTO envelope 中的非定位字段都会在 DTO 输出前递归清洗。稳定 event ID、source locator 和 Raw refs 会有意保留原始值。Indexed raw DTO 对受支持的 raster 图片可以包含明确的外置标记；基于源文件的 Raw refs 仍是权威无损下钻入口。由协议事件支持的协作动作 label 会优先使用对应的 `event_msg` subtype，避免分组调用退化成通用的 `Function Call` label。
 
 直接协作工具会归一为独立的 Main timeline `agent_coordination` kind。共享的精确名称注册表覆盖 `spawn_agent`、`list_agents`、`wait_agent`、`send_message`、历史 `send_input`、`followup_task`、`interrupt_agent` 和历史 `close_agent`；它为分类、Code Mode 识别、本地化标题、action 家族和折叠摘要字段提供共同事实，不使用子字符串推断。已归组的 `collab_*` 生命周期记录属于同一 Agent 协调事件，未归组的终态生命周期事实继续作为 `subagent` event。
+
+精确的 `event_msg.sub_agent_activity` 记录属于 Subagent 活动观察，而不是另一个工具生命周期族或另一次 Agent 协调操作。source 边界通过精确、带类型的 extractor 暴露其 `event_id`，但不会把它复制进泛化 `callId`。在单个会话的逻辑构建过程中，只有普通 response-item call group 证明存在 ID 相同的精确 Agent 协调直接工具调用时，才会附加该观察。已附加观察不再构建协议层逻辑事件，并会排在 owner 的语义原始引用之后；它只增加 `event_msg` traceability，绝不参与 owner 选择、时间戳、turn、family、outcome、代表记录、preview、搜索、指标或折叠。缺失 identity、未知相似类型、非协调 ID 碰撞，以及复制到不含 owner 的会话中的观察，继续进入协议层／原始层兜底。不得根据 `event_id`、`agent_thread_id` 或 `agent_path` 推断全局或跨会话分组。
 
 Supported raster image payloads are externalized during JSONL parsing before `makeRawEvent` derives retained `parsed`, `output`, and `searchText` copies. Each retained raw event keeps compact sidecar descriptors with a preview ID, source file, source line, JSON path, MIME type, estimated size, and presentation-only dedupe key. `/api/sessions/:sessionId/events/:eventId/image-previews/:previewId` resolves only an indexed server-owned descriptor, reloads the source JSONL row, traverses the stored JSON path, revalidates the source signature, MIME whitelist, base64 syntax, and encoded and decoded size guards, then returns `no-store`, `nosniff` raster bytes. The frontend accepts only this controlled route, uses `loading='lazy'` and `decoding='async'`, displays an explicit load-failure fallback, and invalidates detail-cache generations when switching sessions.
 

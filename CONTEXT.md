@@ -112,6 +112,10 @@ _Avoid_: Subagent activity, Subagent lifecycle / Subagent 活动、Subagent 生�
 A source-reported fact that a subagent lifecycle transition or interaction completed; it is distinct from the Agent Coordination operation that may have requested that transition. / 来源系统报告的 subagent 生命周期转换或交互已完成这一事实；它不同于可能请求该转换的 Agent 协调操作。
 _Avoid_: Agent Coordination, coordination command / Agent 协调、协调命令
 
+**Subagent Activity Observation / Subagent 活动观察**:
+A source-reported observation that an Agent Coordination action affected a subagent identified through typed event, thread, and path identities. It may be replicated across related Session Transcripts and is not a second coordination operation or a generic call-ID record. / 来源系统报告的一项观察，表示某次 Agent 协调操作影响了由带类型的 event、thread 与 path identity 标识的 subagent。它可以复制到相关会话转录中，但不是第二次协调操作，也不是泛化的调用 ID 记录。
+_Avoid_: Duplicate coordination call, generic call-ID event / 重复协调调用、泛化调用 ID 事件
+
 **Derived Session / 派生会话**:
 A child Session created for delegated subagent work or review work on behalf of a source Session. / 为来源会话执行委派的 subagent 工作或审查工作而创建的子会话。
 _Avoid_: Fork Session, child transcript / 分叉会话、子转录
