@@ -3508,6 +3508,10 @@ test('browser user-confirmed inspector and raw refs persist across free-text cha
 test('browser obsolete detail and Raw Reference requests abort without redrawing the replacement view', async (t) => {
   const { fixture, index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [180] });
   const { page } = await openApp(t, index, { locale: 'en' });
+  const target = page.locator('#timeline .event[data-event-id]').nth(100);
+  const targetId = await target.getAttribute('data-event-id');
+  assert.ok(targetId);
+  const targetDetailPath = `/api/sessions/${fixture.longSessionId}/events/${encodeURIComponent(targetId)}/detail`;
   const failures = [];
   page.on('requestfailed', (request) => failures.push({
     path: new URL(request.url()).pathname,
@@ -3519,7 +3523,7 @@ test('browser obsolete detail and Raw Reference requests abort without redrawing
   let markDetail;
   const detailStarted = new Promise((resolve) => { markDetail = resolve; });
   let firstDetail = true;
-  await page.route(`**/api/sessions/${fixture.longSessionId}/events/*/detail?*`, async (route) => {
+  await page.route((url) => new URL(String(url)).pathname === targetDetailPath, async (route) => {
     if (!firstDetail) {
       await route.continue();
       return;
@@ -3532,8 +3536,6 @@ test('browser obsolete detail and Raw Reference requests abort without redrawing
     } catch {}
   });
 
-  const target = page.locator('#timeline .event[data-event-id]').nth(100);
-  const targetId = await target.getAttribute('data-event-id');
   await target.click();
   await detailStarted;
   await page.locator(`[data-session-id="${fixture.secondarySessionId}"]`).click();
@@ -3541,7 +3543,9 @@ test('browser obsolete detail and Raw Reference requests abort without redrawing
   await assertEventCount(page, 40);
   releaseDetail();
   await page.waitForTimeout(300);
-  assert.ok(failures.some((failure) => failure.path.endsWith('/detail') && /ERR_ABORTED|NS_BINDING_ABORTED/i.test(failure.error)));
+  assert.ok(failures.some((failure) => (
+    failure.path === targetDetailPath && /ERR_ABORTED|NS_BINDING_ABORTED/i.test(failure.error)
+  )));
   assert.equal(await page.locator(`[data-session-id="${fixture.secondarySessionId}"].active`).count(), 1);
   assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 40);
 
@@ -3593,12 +3597,16 @@ test('browser obsolete detail and Raw Reference requests abort without redrawing
 test('browser project scope aborts in-flight selected structured detail before it can restore a session Inspector', async (t) => {
   const { fixture, index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [180] });
   const { page } = await openApp(t, index, { locale: 'en' });
+  const target = page.locator('#timeline .event[data-event-id]').nth(100);
+  const targetId = await target.getAttribute('data-event-id');
+  assert.ok(targetId);
+  const targetDetailPath = `/api/sessions/${fixture.longSessionId}/events/${encodeURIComponent(targetId)}/detail`;
   let releaseDetail;
   const detailGate = new Promise((resolve) => { releaseDetail = resolve; });
   let markDetail;
   const detailStarted = new Promise((resolve) => { markDetail = resolve; });
   let firstDetail = true;
-  await page.route(`**/api/sessions/${fixture.longSessionId}/events/*/detail?*`, async (route) => {
+  await page.route((url) => new URL(String(url)).pathname === targetDetailPath, async (route) => {
     if (!firstDetail) {
       await route.continue();
       return;
@@ -3611,12 +3619,10 @@ test('browser project scope aborts in-flight selected structured detail before i
     } catch {}
   });
 
-  const target = page.locator('#timeline .event[data-event-id]').nth(100);
-  const targetId = await target.getAttribute('data-event-id');
   await target.click();
   await detailStarted;
   const detailAbort = page.waitForEvent('requestfailed', (request) => (
-    new URL(request.url()).pathname.endsWith('/detail')
+    new URL(request.url()).pathname === targetDetailPath
       && /ERR_ABORTED|NS_BINDING_ABORTED/i.test(request.failure()?.errorText || '')
   ));
 
@@ -3676,12 +3682,16 @@ test('browser project scope aborts in-flight Raw References before they can rest
 test('browser Layer transitions abort an in-flight selected detail instead of restoring the previous-layer Inspector', async (t) => {
   const { fixture, index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [180] });
   const { page } = await openApp(t, index, { locale: 'en' });
+  const target = page.locator('#timeline .event[data-event-id]').nth(100);
+  const targetId = await target.getAttribute('data-event-id');
+  assert.ok(targetId);
+  const targetDetailPath = `/api/sessions/${fixture.longSessionId}/events/${encodeURIComponent(targetId)}/detail`;
   let releaseDetail;
   const detailGate = new Promise((resolve) => { releaseDetail = resolve; });
   let markDetail;
   const detailStarted = new Promise((resolve) => { markDetail = resolve; });
   let firstDetail = true;
-  await page.route(`**/api/sessions/${fixture.longSessionId}/events/*/detail?*`, async (route) => {
+  await page.route((url) => new URL(String(url)).pathname === targetDetailPath, async (route) => {
     if (!firstDetail) {
       await route.continue();
       return;
@@ -3694,11 +3704,10 @@ test('browser Layer transitions abort an in-flight selected detail instead of re
     } catch {}
   });
 
-  const target = page.locator('#timeline .event[data-event-id]').nth(100);
   await target.click();
   await detailStarted;
   const detailAbort = page.waitForEvent('requestfailed', (request) => (
-    new URL(request.url()).pathname.endsWith('/detail')
+    new URL(request.url()).pathname === targetDetailPath
       && /ERR_ABORTED|NS_BINDING_ABORTED/i.test(request.failure()?.errorText || '')
   ));
   const protocolTimeline = page.waitForResponse((response) => {
@@ -3716,6 +3725,69 @@ test('browser Layer transitions abort an in-flight selected detail instead of re
     document.querySelector('#layerSelect')?.value === 'protocol'
       && !document.querySelector('#detail')?.textContent.includes('Synthetic timeline event 0100.')
   ));
+});
+
+test('browser delayed background detail prefetch does not redraw the selected Inspector', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [180] });
+  const { page } = await openApp(t, index, { locale: 'en' });
+  const background = page.locator('#timeline .event[data-event-id]').nth(21);
+  const target = page.locator('#timeline .event[data-event-id]').nth(100);
+  const backgroundId = await background.getAttribute('data-event-id');
+  const targetId = await target.getAttribute('data-event-id');
+  assert.ok(backgroundId);
+  assert.ok(targetId);
+  const backgroundDetailPath = `/api/sessions/${fixture.longSessionId}/events/${encodeURIComponent(backgroundId)}/detail`;
+  let releaseBackground;
+  const backgroundGate = new Promise((resolve) => { releaseBackground = resolve; });
+  let markBackgroundStarted;
+  const backgroundStarted = new Promise((resolve) => { markBackgroundStarted = resolve; });
+  await page.route((url) => new URL(String(url)).pathname === backgroundDetailPath, async (route) => {
+    markBackgroundStarted();
+    await backgroundGate;
+    try {
+      await route.continue();
+    } catch {}
+  });
+
+  const backgroundToggle = background.locator('.eventHeader [data-action="toggle"]');
+  if (await background.evaluate((event) => event.classList.contains('expanded'))) {
+    await backgroundToggle.click();
+    await page.waitForFunction((eventId) => {
+      const event = [...document.querySelectorAll('#timeline .event[data-event-id]')]
+        .find((candidate) => candidate.dataset.eventId === eventId);
+      return Boolean(event && !event.classList.contains('expanded'));
+    }, backgroundId);
+  }
+  await backgroundToggle.click();
+  await backgroundStarted;
+
+  await target.click();
+  await waitForDetailView(page, 'inspector');
+  await page.waitForFunction((eventId) => {
+    const targetEvent = [...document.querySelectorAll('#timeline .event[data-event-id]')]
+      .find((candidate) => candidate.dataset.eventId === eventId);
+    const detail = document.querySelector('#detail')?.textContent || '';
+    return Boolean(targetEvent?.classList.contains('selected'))
+      && !detail.includes('Loading structured detail')
+      && !document.querySelector('#detail .navStatus');
+  }, targetId);
+  const selectedInspector = await page.locator('#detail').innerHTML();
+  const backgroundResponse = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === backgroundDetailPath && response.status() === 200
+  ));
+
+  releaseBackground();
+  await backgroundResponse;
+  await page.waitForFunction(({ backgroundId: currentBackgroundId, targetId: currentTargetId }) => {
+    const events = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    const backgroundEvent = events.find((candidate) => candidate.dataset.eventId === currentBackgroundId);
+    const targetEvent = events.find((candidate) => candidate.dataset.eventId === currentTargetId);
+    return Boolean(backgroundEvent?.classList.contains('expanded')
+      && !backgroundEvent.textContent.includes('Loading structured detail')
+      && targetEvent?.classList.contains('selected')
+      && !backgroundEvent.classList.contains('selected'));
+  }, { backgroundId, targetId });
+  assert.equal(await page.locator('#detail').innerHTML(), selectedInspector);
 });
 
 test('browser passive search refresh does not downgrade user-confirmed detail views', async (t) => {
