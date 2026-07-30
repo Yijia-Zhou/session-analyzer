@@ -3,6 +3,7 @@
 require('../shared/command-highlighting');
 require('../shared/agent-coordination');
 require('../shared/code-mode-tools');
+require('../shared/code-mode-presentation-contract');
 require('../shared/i18n');
 require('./renderers');
 require('./search-controls');

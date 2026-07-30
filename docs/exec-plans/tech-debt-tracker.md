@@ -157,3 +157,10 @@
   - `docs/design-docs/timeline-loading-and-rendering-performance.md`
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/exec-plans/completed/2026-07-20-timeline-transition-safety-and-profiling.md`
+
+### 16. Cross-surface contract consistency / 跨表面契约一致性
+- Status: open / 状态：开放
+- Problem: lifecycle-family taxonomy, planning semantics, Code Mode detail-presentation DTO vocabulary, and structured detail-section types each have stable facts interpreted by several layers. A new value or wire shape can therefore be recognized in one layer while being omitted or handled inconsistently in another. / 问题：生命周期族分类法、规划语义、Code Mode detail 展示 DTO 词汇表和结构化 detail-section 类型都包含被多个层分别解释的稳定事实。因此，新增值或 wire shape 可能被其中一层识别，却在另一层遗漏或以不一致方式处理。
+- Progress: the Code Mode detail-presentation increment is complete. One browser-safe shared contract now owns stable variants, request evidence, result association, sanitizer predicates, and semantic badge identity; stale aliases are rejected; `exact` remains reserved; and timeline/detail DTO ownership stays separate. / 进展：Code Mode detail 展示增量已完成。一份浏览器安全的共享契约现在负责稳定 variant、请求证据、结果关联、sanitizer 谓词与语义 badge identity；陈旧 alias 会被拒绝；`exact` 保持 reserved；timeline/detail DTO ownership 继续分离。
+- Direction: keep the completed Code Mode contract bounded and revisit a multi-family model only when a new kind, relation, cross-surface evidence provenance, or consumer creates concrete pressure. For the remaining debt, use shared descriptors only for shared semantic facts, preserve source-specific parsing, rendering, layout, and safety-sensitive decisions at their existing boundaries, design lifecycle and planning work fixture-first when their trigger occurs, and defer structured section-type consolidation until a new type is needed. / 方向：保持已完成 Code Mode 契约的有界范围，并且只在新 kind、relation、跨表面 evidence provenance 或消费方带来具体压力时重新评估多 family 模型。对于剩余技术债，只为共享语义事实使用共享 descriptor；source 专属解析、渲染、布局和安全敏感决策继续保留在现有边界；生命周期与规划工作在触发条件出现时先做 fixture 驱动设计；结构化 section 类型收敛继续推迟到确有新类型需求时。
+- Detail: / 详情：`docs/design-docs/cross-surface-contract-consistency-tech-debt.md`

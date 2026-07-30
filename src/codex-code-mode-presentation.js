@@ -4,10 +4,13 @@ const {
   knownCodeModeToolNames,
   projectDeclaredCodeModeCalls,
 } = require('./codex-code-mode-declared');
+const {
+  CODE_MODE_REQUEST_EVIDENCE: CODE_MODE_REQUEST_EVIDENCE_VALUES,
+} = require('./shared/code-mode-presentation-contract');
 
 const CODE_MODE_OPERATION_KIND = 'code_mode_operation';
 const CODE_MODE_SCRIPT_OPERATION_KIND = 'code_mode_script_operation';
-const CODE_MODE_REQUEST_EVIDENCE = 'declared_source';
+const CODE_MODE_REQUEST_EVIDENCE = CODE_MODE_REQUEST_EVIDENCE_VALUES.DECLARED_SOURCE;
 const CODE_MODE_REQUEST_PATTERN = /^[a-z][a-z0-9_]*$/;
 const KNOWN_CODE_MODE_REQUESTS = new Set(knownCodeModeToolNames());
 

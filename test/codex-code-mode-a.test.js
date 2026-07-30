@@ -5,7 +5,16 @@ const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { buildIndex, eventKindCatalog, getEvent, getTimeline } = require('../src/codex');
+const {
+  buildEventDetail,
+  buildIndex,
+  eventKindCatalog,
+  getEvent,
+  getTimeline,
+} = require('../src/codex');
+const {
+  CODE_MODE_REQUEST_EVIDENCE,
+} = require('../src/shared/code-mode-presentation-contract');
 
 async function candidateIndex(t) {
   const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-code-mode-a-'));
@@ -73,7 +82,7 @@ test('candidate A counts and searches one operation plus nested activity while w
   assert.deepEqual(declaredShell.events[0].presentationFacts, {
     codeModeDeclaredRequests: {
       toolNames: ['shell_command'],
-      requestEvidence: 'declared_source',
+      requestEvidence: CODE_MODE_REQUEST_EVIDENCE.DECLARED_SOURCE,
     },
   });
   assert.deepEqual(declaredShell.codeModeRequests, [{
@@ -88,6 +97,12 @@ test('candidate A counts and searches one operation plus nested activity while w
   assert.equal(Object.hasOwn(publicOperation, 'eventRefs'), false);
   assert.equal(Object.hasOwn(publicOperation, 'codeModeOperation'), false);
   assert.deepEqual(publicOperation.tags, []);
+
+  const detail = buildEventDetail(session, operation.id, 'main');
+  assert.equal(detail.presentation.requestEvidence, CODE_MODE_REQUEST_EVIDENCE.DECLARED_SOURCE);
+  assert.equal(Object.hasOwn(detail.presentation, 'codeModeDeclaredRequests'), false);
+  assert.equal(Object.hasOwn(declaredShell.events[0].presentationFacts, 'variant'), false);
+  assert.equal(Object.hasOwn(declaredShell.events[0].presentationFacts, 'resultAssociation'), false);
 });
 
 test('public Code Mode context is parity-safe, omits unproven parents, and preserves kind filtering', async (t) => {

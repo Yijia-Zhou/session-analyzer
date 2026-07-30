@@ -5,10 +5,13 @@
   const i18n = typeof module === 'object' && module.exports
     ? require('../shared/i18n')
     : root.sessionI18n;
-  const api = factory(commandHighlighting, i18n);
+  const codeModePresentationContract = typeof module === 'object' && module.exports
+    ? require('../shared/code-mode-presentation-contract')
+    : root.sessionCodeModePresentationContract;
+  const api = factory(commandHighlighting, i18n, codeModePresentationContract);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionRenderers = api;
-}(typeof globalThis !== 'undefined' ? globalThis : this, (commandHighlighting, i18n) => {
+}(typeof globalThis !== 'undefined' ? globalThis : this, (commandHighlighting, i18n, codeModePresentationContract) => {
   'use strict';
 
   function locale() {
@@ -394,14 +397,13 @@
   }
 
   function codeModeProjectionRequestBadge(value) {
-    if (value === 'declared_source') return { className: 'declaredSource', label: tr('declaredRequest') };
-    if (value === 'observed_lifecycle') return { className: 'observedLifecycle', label: tr('observedActivity') };
-    return null;
+    const badge = codeModePresentationContract.codeModeRequestEvidenceBadge(value);
+    return badge ? { className: badge.className, label: tr(badge.labelKey) } : null;
   }
 
   function codeModeProjectionResultBadge(value) {
-    if (value === 'exact' || value === 'exact_identity') return { className: 'exactIdentity', label: tr('resultMatchedExactly') };
-    return null;
+    const badge = codeModePresentationContract.codeModeResultAssociationBadge(value);
+    return badge ? { className: badge.className, label: tr(badge.labelKey) } : null;
   }
 
   function renderCodeModeToolProjection(section) {

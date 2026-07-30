@@ -2,6 +2,10 @@
 
 const acorn = require('acorn');
 const { declaredCodeModeToolNames } = require('./shared/code-mode-tools');
+const {
+  CODE_MODE_REQUEST_EVIDENCE,
+  CODE_MODE_RESULT_ASSOCIATION,
+} = require('./shared/code-mode-presentation-contract');
 
 const MAX_SOURCE_LENGTH = 100_000;
 const MAX_DECLARED_CALLS = 24;
@@ -127,8 +131,8 @@ function declaredCallFromAwait(awaitNode, resultVariable, sourceOrder, budget) {
       hasRequestArgument: direct.call.arguments.length === 1,
       resultVariable,
       sourceOrder,
-      requestEvidence: 'declared_source',
-      resultAssociation: 'none',
+      requestEvidence: CODE_MODE_REQUEST_EVIDENCE.DECLARED_SOURCE,
+      resultAssociation: CODE_MODE_RESULT_ASSOCIATION.NONE,
       resultText: '',
     },
   };
@@ -185,7 +189,7 @@ function applyBoundedOutputAssociation(calls, emissions, outputFragments) {
   if (boundCalls.some((call, index) => call.resultVariable !== emissions[index])) return false;
 
   for (let index = 0; index < boundCalls.length; index += 1) {
-    boundCalls[index].resultAssociation = 'bounded';
+    boundCalls[index].resultAssociation = CODE_MODE_RESULT_ASSOCIATION.BOUNDED;
     boundCalls[index].resultText = outputFragments[index];
   }
   return true;

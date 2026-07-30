@@ -21,6 +21,7 @@ This repository uses three formal document classes plus one idea parking area:
 - `product-specs/session-transcript-analyzer.md` / 会话转录分析器产品规格
 - `design-docs/logical-event-timeline.md` / 逻辑事件时间线设计文档
 - `design-docs/codex-protocol-event-coverage.md` / Codex 协议事件覆盖设计文档
+- `design-docs/cross-surface-contract-consistency-tech-debt.md` / 跨表面契约一致性技术债
 - `design-docs/schema-update-runbook.md` / Schema 更新运行手册
 - `design-docs/external-source-mapping-pressure-tests.md` / 外部 source 映射压力测试设计文档
 - `design-docs/documentation-system.md` / 文档系统设计文档

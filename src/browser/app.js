@@ -11,6 +11,7 @@ const foldingApi = window.sessionFolding;
 const i18n = window.sessionI18n;
 const navigationApi = window.sessionNavigation;
 const eventChipsApi = window.sessionEventChips;
+const codeModePresentationContract = window.sessionCodeModePresentationContract;
 const transitionSafety = require('./transition-safety');
 const isIntentionalAbort = transitionSafety.isIntentionalAbort;
 const isRetriableTransportError = transitionSafety.isRetriableTransportError;
@@ -548,13 +549,15 @@ function timelineEventDetail(event) {
 function codeModeEventPresentation(event, detail = timelineEventDetail(event)) {
   if (event?.kind !== 'code_mode_operation') return null;
   const presentation = detail?.presentation;
-  return presentation && ['single_tool', 'multi_tool', 'raw_code_mode'].includes(presentation.variant)
+  return presentation && codeModePresentationContract.isCodeModePresentationVariant(presentation.variant)
     ? presentation
     : null;
 }
 
 function detailHasWebProjection(detail) {
-  if (detail?.presentation?.variant === 'single_tool' && detail.presentation.toolName === 'web__run') return true;
+  if (detail?.presentation?.variant
+      === codeModePresentationContract.CODE_MODE_PRESENTATION_VARIANT.SINGLE_TOOL
+      && detail.presentation.toolName === 'web__run') return true;
   return (detail?.timelineSections || []).some((section) => (
     section?.type === 'code_mode_tool_projection' && section.toolName === 'web__run'
   ));
@@ -575,14 +578,13 @@ function compactCodeModeWebLifecycleIds() {
 }
 
 function codeModeRequestEvidenceBadge(value) {
-  if (value === 'declared_source') return { className: 'declaredSource', label: t('declaredRequest') };
-  if (value === 'observed_lifecycle') return { className: 'observedLifecycle', label: t('observedActivity') };
-  return null;
+  const badge = codeModePresentationContract.codeModeRequestEvidenceBadge(value);
+  return badge ? { className: badge.className, label: t(badge.labelKey) } : null;
 }
 
 function codeModeResultAssociationBadge(value) {
-  if (value === 'exact' || value === 'exact_identity') return { className: 'exactIdentity', label: t('resultMatchedExactly') };
-  return null;
+  const badge = codeModePresentationContract.codeModeResultAssociationBadge(value);
+  return badge ? { className: badge.className, label: t(badge.labelKey) } : null;
 }
 
 function renderCodeModePresentationChips(presentation, isCodeMode = false) {
@@ -590,7 +592,7 @@ function renderCodeModePresentationChips(presentation, isCodeMode = false) {
   const resultAssociation = codeModeResultAssociationBadge(presentation?.resultAssociation);
   return [
     `<span class="chip codeModeChip">${escapeHtml(t('codeMode'))}</span>`,
-    presentation?.variant === 'multi_tool'
+    presentation?.variant === codeModePresentationContract.CODE_MODE_PRESENTATION_VARIANT.MULTI_TOOL
       ? `<span class="chip countChip">${escapeHtml(t('declaredRequests', { count: presentation.declaredToolCount }))}</span>`
       : '',
     resultAssociation
@@ -4256,7 +4258,7 @@ function renderEventPreview(event, display, presentation = null) {
   }
   const codeModePreview = renderCodeModeCollapsedPreview(presentation, display);
   if (codeModePreview) return codeModePreview;
-  if (presentation?.variant === 'single_tool') return '';
+  if (presentation?.variant === codeModePresentationContract.CODE_MODE_PRESENTATION_VARIANT.SINGLE_TOOL) return '';
   const preview = event.snippet || event.preview || presentedEventLabel(event, presentation);
   return `<div class="eventPreview">${escapeHtml(preview)}</div>`;
 }

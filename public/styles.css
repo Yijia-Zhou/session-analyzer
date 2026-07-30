@@ -3913,19 +3913,6 @@ body[data-project-mode='selecting'] .searchAssist {
   white-space: nowrap;
 }
 
-.codeModeEvidenceBadge.observedLifecycle,
-.codeModeEvidenceBadge.boundedOrder {
-  background: #f1f0f7;
-  border-color: #ddd9e8;
-  color: #625c72;
-}
-
-.codeModeEvidenceBadge.unassociated {
-  background: transparent;
-  border-style: dashed;
-  color: var(--muted);
-}
-
 .eventHeader .codeModeChip {
   background: #eaf2f5;
   border-color: #cbdde3;

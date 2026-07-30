@@ -9,6 +9,7 @@ function createCodexDetailBuilder(deps) {
     sectionExtractors,
     codeMode,
     codeModeTools,
+    codeModePresentationContract,
     agentCoordination,
   } = deps;
   const {
@@ -23,6 +24,11 @@ function createCodexDetailBuilder(deps) {
     sanitizeLogicalDetailSections,
     sanitizeLogicalEnvelopeValue,
   } = envelope;
+  const {
+    CODE_MODE_PRESENTATION_VARIANT,
+    CODE_MODE_RESULT_ASSOCIATION,
+    sanitizeCodeModeDetailPresentationVocabulary,
+  } = codeModePresentationContract;
   const {
     classifyProtocolText,
     codexSourceLocator,
@@ -567,21 +573,18 @@ function createCodexDetailBuilder(deps) {
   }
 
   function sanitizeCodeModePresentation(presentation) {
-    if (!presentation || !['single_tool', 'multi_tool', 'raw_code_mode'].includes(presentation.variant)) return null;
+    const vocabulary = sanitizeCodeModeDetailPresentationVocabulary(presentation);
+    if (!vocabulary) return null;
     const collapsedPreview = sanitizeCodeModeCollapsedPreview(presentation.collapsedPreview);
     return {
-      variant: presentation.variant,
+      variant: vocabulary.variant,
       label: sanitizeLogicalEnvelopeValue(presentation.label),
       toolName: sanitizeLogicalEnvelopeValue(presentation.toolName),
       declaredToolCount: Number.isFinite(presentation.declaredToolCount)
         ? Math.max(0, Math.trunc(presentation.declaredToolCount))
         : 0,
-      requestEvidence: ['declared_source', 'observed_lifecycle'].includes(presentation.requestEvidence)
-        ? presentation.requestEvidence
-        : '',
-      resultAssociation: ['exact', 'exact_identity', 'bounded', 'bounded_order', 'none'].includes(presentation.resultAssociation)
-        ? presentation.resultAssociation
-        : '',
+      requestEvidence: vocabulary.requestEvidence,
+      resultAssociation: vocabulary.resultAssociation,
       hasUnassociatedOutput: presentation.hasUnassociatedOutput === true,
       ...(collapsedPreview ? { collapsedPreview } : {}),
     };
@@ -665,11 +668,16 @@ function createCodexDetailBuilder(deps) {
 
   function codeModeProjectionEvidenceSection(projection, declaredToolCount) {
     const entries = [
-      { key: 'Presentation', value: declaredToolCount === 1 ? 'single_tool' : 'multi_tool' },
+      {
+        key: 'Presentation',
+        value: declaredToolCount === 1
+          ? CODE_MODE_PRESENTATION_VARIANT.SINGLE_TOOL
+          : CODE_MODE_PRESENTATION_VARIANT.MULTI_TOOL,
+      },
       { key: declaredToolCount === 1 ? 'Declared tool' : 'Declared requests', value: declaredToolCount === 1 ? projection.toolName : String(declaredToolCount) },
       { key: 'Request evidence', value: projection.requestEvidence },
       { key: 'Result association', value: projection.resultAssociation },
-      ...(projection.resultAssociation === 'none'
+      ...(projection.resultAssociation === CODE_MODE_RESULT_ASSOCIATION.NONE
         ? [{ key: 'Result association note', value: 'No result output matched the supported shape' }]
         : []),
     ].filter((entry) => entry.value !== '');
@@ -739,7 +747,7 @@ function createCodexDetailBuilder(deps) {
     });
     const hasUnassociatedOutput = Boolean(finalObservedOutput && !declaredProjection.hasCompleteOutputAssociation);
 
-    let presentation = codeModePresentationDescriptor('raw_code_mode', {
+    let presentation = codeModePresentationDescriptor(CODE_MODE_PRESENTATION_VARIANT.RAW_CODE_MODE, {
       label: 'Scripted operation',
       toolName: 'exec',
       collapsedPreview: codeModeSourceExcerptCollapsedPreview(execSource),
@@ -762,7 +770,7 @@ function createCodexDetailBuilder(deps) {
           language: 'javascript',
         },
       );
-      presentation = codeModePresentationDescriptor('single_tool', {
+      presentation = codeModePresentationDescriptor(CODE_MODE_PRESENTATION_VARIANT.SINGLE_TOOL, {
         label: singleProjection.title,
         toolName: singleProjection.toolName,
         declaredToolCount: 1,
@@ -780,7 +788,7 @@ function createCodexDetailBuilder(deps) {
         language: 'javascript',
       });
       inspectorSections.push(codeModeProjectionEvidenceSection(projections[0], projections.length));
-      presentation = codeModePresentationDescriptor('multi_tool', {
+      presentation = codeModePresentationDescriptor(CODE_MODE_PRESENTATION_VARIANT.MULTI_TOOL, {
         label: 'Multiple operations',
         declaredToolCount: projections.length,
         requestEvidence: projections[0].requestEvidence,

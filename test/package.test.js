@@ -96,6 +96,7 @@ test('npm pack manifest contains only runtime package files', () => {
     'src/codex.js',
     'src/folding.js',
     'src/shared/command-highlighting.js',
+    'src/shared/code-mode-presentation-contract.js',
     'src/shared/folding.js',
     'src/shared/i18n.js',
   ];

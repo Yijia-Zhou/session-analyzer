@@ -116,7 +116,7 @@ test('renderer projects Code Mode tools with neutral evidence and existing neste
       type: 'code_mode_tool_projection',
       title: 'Plan projection',
       toolName: 'update_plan',
-      requestEvidence: 'observed_lifecycle',
+      requestEvidence: 'declared_source',
       resultAssociation: 'bounded',
       requestSections: [{
         type: 'plan_update',
@@ -138,6 +138,16 @@ test('renderer projects Code Mode tools with neutral evidence and existing neste
       resultObserved: false,
       sourceOrder: 9,
     });
+    const rejectedAliases = renderSection({
+      type: 'code_mode_tool_projection',
+      title: 'Rejected aliases',
+      requestEvidence: 'observed_lifecycle',
+      resultAssociation: 'exact_identity',
+      requestSections: [{ type: 'notice', title: 'Request', text: 'fixture' }],
+      resultSections: [],
+      resultObserved: false,
+      sourceOrder: 10,
+    });
 
     assert.match(shell, /class="eventSection codeModeToolProjection" data-source-order="7"/);
     assert.match(shell, /Shell &lt;projection&gt;/);
@@ -151,7 +161,7 @@ test('renderer projects Code Mode tools with neutral evidence and existing neste
     assert.match(shell, /full result &lt;body&gt;/);
     assert.doesNotMatch(shell, /\bsuccess\b|\boutcome\b/i);
 
-    assert.match(plan, /requestEvidence observedLifecycle">Observed activity/);
+    assert.match(plan, /requestEvidence declaredSource">Declared request/);
     assert.doesNotMatch(plan, /resultAssociation/);
     assert.match(plan, /class="planUpdateBlock"/);
     assert.match(plan, /class="planUpdateSteps"/);
@@ -161,19 +171,20 @@ test('renderer projects Code Mode tools with neutral evidence and existing neste
     assert.match(plan, /<details class="codeModeSource">/);
     assert.match(plan, /Associated result/);
     assert.doesNotMatch(withoutResult, /resultAssociation/);
+    assert.doesNotMatch(rejectedAliases, /requestEvidence|resultAssociation/);
 
     globalThis.sessionAnalyzerLocale = 'zh-CN';
     const localized = renderSection({
       type: 'code_mode_tool_projection',
       title: '工具投影',
-      requestEvidence: 'observed_lifecycle',
+      requestEvidence: 'declared_source',
       resultAssociation: 'none',
       requestSections: [{ type: 'notice', title: '请求体', text: '内容' }],
       resultSections: [],
       resultObserved: false,
-      sourceOrder: 10,
+      sourceOrder: 11,
     });
-    assert.match(localized, />已观测嵌套活动</);
+    assert.match(localized, />声明的请求</);
     assert.doesNotMatch(localized, /resultAssociation/);
     assert.match(localized, /codeModeToolProjectionPartLabel">请求/);
   } finally {

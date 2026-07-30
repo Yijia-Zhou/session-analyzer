@@ -8,6 +8,7 @@ const MarkdownIt = require('markdown-it');
 const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
 const agentCoordination = require('./shared/agent-coordination');
 const codeModeTools = require('./shared/code-mode-tools');
+const codeModePresentationContract = require('./shared/code-mode-presentation-contract');
 const i18n = require('./shared/i18n');
 const {
   codeModeAssociableOutputFragments,
@@ -3218,7 +3219,8 @@ function codeModeShellResultSections(resultText) {
 function codeModeToolProjectionSection(call, session = {}) {
   const toolName = String(call?.toolName || '');
   const requestValue = call?.requestValue;
-  const associated = call?.resultAssociation === 'bounded';
+  const associated = call?.resultAssociation
+    === codeModePresentationContract.CODE_MODE_RESULT_ASSOCIATION.BOUNDED;
   const responseValue = associated ? codeModeStructuredResponseValue(call.resultText) : null;
   const requestSections = [];
   const resultSections = [];
@@ -3281,8 +3283,10 @@ function codeModeToolProjectionSection(call, session = {}) {
     type: 'code_mode_tool_projection',
     title: codeModeToolProjectionTitle(toolName, requestValue),
     toolName,
-    requestEvidence: 'declared_source',
-    resultAssociation: associated ? 'bounded' : 'none',
+    requestEvidence: codeModePresentationContract.CODE_MODE_REQUEST_EVIDENCE.DECLARED_SOURCE,
+    resultAssociation: associated
+      ? codeModePresentationContract.CODE_MODE_RESULT_ASSOCIATION.BOUNDED
+      : codeModePresentationContract.CODE_MODE_RESULT_ASSOCIATION.NONE,
     requestSections: sanitizeUnmodeledToolTimelineSections(requestSections),
     resultSections: sanitizeUnmodeledToolTimelineSections(resultSections),
     resultObserved: associated,
@@ -3556,6 +3560,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
     projectDeclaredCodeModeCalls,
   },
   codeModeTools,
+  codeModePresentationContract,
   agentCoordination,
 });
 const { buildEventDetail } = codexDetailBuilder;

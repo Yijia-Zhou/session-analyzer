@@ -47,6 +47,7 @@ When changing product behavior or repository structure:
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Active plans:
 - Completed plans:
+  - `docs/exec-plans/completed/2026-07-30-code-mode-detail-presentation-contract.md`
   - `docs/exec-plans/completed/2026-07-25-code-mode-request-facets-and-folding.md`
   - `docs/exec-plans/completed/2026-07-22-code-mode-context-and-discoverability.md`
   - `docs/exec-plans/completed/2026-07-20-timeline-transition-safety-and-profiling.md`
