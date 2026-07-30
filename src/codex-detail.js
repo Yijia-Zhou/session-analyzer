@@ -8,6 +8,7 @@ function createCodexDetailBuilder(deps) {
     sectionBuilders,
     sectionExtractors,
     codeMode,
+    codeModeTools,
     agentCoordination,
   } = deps;
   const {
@@ -381,27 +382,9 @@ function createCodexDetailBuilder(deps) {
       };
     }
 
-    const previewKeys = {
-      apply_patch: ['patch'],
-      create_goal: ['objective'],
-      exec_command: ['command', 'cmd', 'workdir'],
-      get_goal: [],
-      image_gen__imagegen: ['prompt'],
-      list_available_plugins_to_install: [],
-      list_mcp_resource_templates: ['server', 'cursor'],
-      list_mcp_resources: ['server', 'cursor'],
-      read_mcp_resource: ['uri', 'server'],
-      request_plugin_install: ['plugin', 'plugin_id', 'name'],
-      request_user_input: ['question'],
-      shell_command: ['command', 'cmd', 'workdir'],
-      update_goal: ['status'],
-      update_plan: ['explanation'],
-      view_image: ['path', 'detail'],
-      web__run: ['search_query', 'open', 'url'],
-    };
     const toolName = String(projection?.toolName || call?.toolName || '');
-    const coordinationPreviewFields = agentCoordination.agentCoordinationDefinition(toolName)?.previewFields || [];
-    const detail = codeModeRequestFieldPreview(requestValue, previewKeys[toolName] || coordinationPreviewFields);
+    const previewFields = codeModeTools?.codeModeToolDefinition(toolName)?.previewFields || [];
+    const detail = codeModeRequestFieldPreview(requestValue, previewFields);
     if (detail) return { ...item, detail };
     const genericDetail = conciseCodeModePreviewText(firstCodeModeRequestScalar(requestValue));
     if (genericDetail) return { ...item, detail: genericDetail };

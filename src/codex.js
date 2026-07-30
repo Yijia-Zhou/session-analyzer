@@ -7,6 +7,7 @@ const readline = require('node:readline');
 const MarkdownIt = require('markdown-it');
 const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
 const agentCoordination = require('./shared/agent-coordination');
+const codeModeTools = require('./shared/code-mode-tools');
 const i18n = require('./shared/i18n');
 const {
   codeModeAssociableOutputFragments,
@@ -3150,23 +3151,7 @@ function codeModeWebResultSection(resultText) {
 
 function codeModeToolProjectionTitle(toolName, requestValue) {
   if (toolName === 'web__run') return codeModeWebProjectionTitle(requestValue);
-  return {
-    apply_patch: 'Apply patch',
-    create_goal: 'Create goal',
-    exec_command: 'Shell command',
-    get_goal: 'Get goal',
-    image_gen__imagegen: 'Image generation',
-    list_available_plugins_to_install: 'List available plugins',
-    list_mcp_resource_templates: 'List MCP resource templates',
-    list_mcp_resources: 'List MCP resources',
-    read_mcp_resource: 'Read MCP resource',
-    request_plugin_install: 'Request plugin install',
-    request_user_input: 'User input',
-    shell_command: 'Shell command',
-    update_goal: 'Update goal',
-    update_plan: 'Plan update',
-    view_image: 'Image inspection',
-  }[toolName] || agentCoordination.agentCoordinationDefinition(toolName)?.title || humanizeProtocolSubtype(toolName);
+  return codeModeTools.codeModeToolDefinition(toolName)?.title || humanizeProtocolSubtype(toolName);
 }
 
 function isBoundedCodeModeStructuredResult(value) {
@@ -3570,6 +3555,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
     codeModeOutputText,
     projectDeclaredCodeModeCalls,
   },
+  codeModeTools,
   agentCoordination,
 });
 const { buildEventDetail } = codexDetailBuilder;

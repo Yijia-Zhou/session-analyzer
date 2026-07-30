@@ -1,11 +1,11 @@
 (function initI18n(root, factory) {
-  const agentCoordination = typeof module === 'object' && module.exports
-    ? require('./agent-coordination')
-    : root.sessionAgentCoordination;
-  const api = factory(agentCoordination);
+  const codeModeTools = typeof module === 'object' && module.exports
+    ? require('./code-mode-tools')
+    : root.sessionCodeModeTools;
+  const api = factory(codeModeTools);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionI18n = api;
-}(typeof globalThis !== 'undefined' ? globalThis : this, function createI18nApi(agentCoordination) {
+}(typeof globalThis !== 'undefined' ? globalThis : this, function createI18nApi(codeModeTools) {
   'use strict';
 
   const DEFAULT_LOCALE = 'en';
@@ -1460,24 +1460,7 @@
 
   function codeModeRequestLabel(value, locale) {
     const key = String(value || '').trim();
-    const title = {
-      apply_patch: 'Apply patch',
-      create_goal: 'Create goal',
-      exec_command: 'Shell command',
-      get_goal: 'Get goal',
-      image_gen__imagegen: 'Image generation',
-      list_available_plugins_to_install: 'List available plugins',
-      list_mcp_resource_templates: 'List MCP resource templates',
-      list_mcp_resources: 'List MCP resources',
-      read_mcp_resource: 'Read MCP resource',
-      request_plugin_install: 'Request plugin install',
-      request_user_input: 'User input',
-      shell_command: 'Shell command',
-      update_goal: 'Update goal',
-      update_plan: 'Plan update',
-      view_image: 'Image inspection',
-      web__run: 'Web request',
-    }[key] || agentCoordination?.agentCoordinationDefinition(key)?.title || humanize(key);
+    const title = codeModeTools?.codeModeToolDefinition(key)?.title || humanize(key);
     return sectionTitle(title, locale) || key;
   }
 

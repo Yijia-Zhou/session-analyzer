@@ -1,11 +1,11 @@
 (function initFolding(root, factory) {
-  const agentCoordination = typeof module === 'object' && module.exports
-    ? require('./agent-coordination')
-    : root.sessionAgentCoordination;
-  const api = factory(agentCoordination);
+  const codeModeTools = typeof module === 'object' && module.exports
+    ? require('./code-mode-tools')
+    : root.sessionCodeModeTools;
+  const api = factory(codeModeTools);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionFolding = api;
-}(typeof globalThis !== 'undefined' ? globalThis : window, function createFoldingApi(agentCoordination) {
+}(typeof globalThis !== 'undefined' ? globalThis : window, function createFoldingApi(codeModeTools) {
   'use strict';
 
   const DISPLAY_STATES = ['expanded', 'summary', 'collapsed', 'hidden'];
@@ -249,11 +249,7 @@
 
   function ordinaryKindForCodeModeRequest(request) {
     const toolName = String(request || '').trim();
-    if (toolName === 'shell_command' || toolName === 'exec_command') return 'command';
-    if (toolName === 'apply_patch') return 'patch';
-    if (toolName === 'create_goal' || toolName === 'get_goal' || toolName === 'update_goal') return 'goal';
-    if (agentCoordination?.isAgentCoordinationTool(toolName)) return 'agent_coordination';
-    return 'other_tool_call';
+    return codeModeTools?.codeModeToolOrdinaryKind(toolName) || 'other_tool_call';
   }
 
   function ordinaryEventForCodeModeRequest(request) {

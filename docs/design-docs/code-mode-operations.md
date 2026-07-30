@@ -4,7 +4,7 @@
 
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted; composite Logical Event selected / 状态：已接受；选用复合逻辑事件
-- Last updated: 2026-07-25 / 最近更新：2026-07-25
+- Last updated: 2026-07-30 / 最近更新：2026-07-30
 - Related spec: `docs/product-specs/session-transcript-analyzer.md` / 相关规格：`docs/product-specs/session-transcript-analyzer.md`
 - Related design docs: / 相关设计文档：
   - `docs/design-docs/logical-event-timeline.md`
@@ -128,6 +128,8 @@ Unsupported syntax, unsafe values, parse uncertainty, or any failed eligibility 
 Projection extraction runs during cold Session indexing for the bounded name-only fact and during detail construction for structured request presentation. Both paths share the exact outer-exec source lookup and the same eligibility entry point. It uses a versioned known-tool allowlist, a real JavaScript parser, and an all-or-nothing top-level sequential grammar with recursively bounded literal arguments. Result emission accepts both direct `text(result)` and the standard type-preserving `text(typeof result === "string" ? result : JSON.stringify(result))` wrapper, with every identifier required to name the same declared result. The ambient runtime identifiers `tools`, `text`, and `JSON` must remain unshadowed by every declared result binding; otherwise the source uses raw fallback. One unsupported statement, tool, binding, argument, or emission shape makes the entire source use raw fallback; partial projections are forbidden because they can imply a complete execution list.
 
 投影提取会在冷启动的 Session 索引阶段为有界的仅名称事实运行，并在构建 detail 时为结构化 request 呈现运行。两条路径共享精确的 outer-exec 源码查找和同一个资格入口。它使用版本化的已知工具 allowlist、真正的 JavaScript parser，以及全有或全无的顶层顺序语法与递归受限的 literal arguments。结果 emission 同时接受直接的 `text(result)` 与标准的保类型包装 `text(typeof result === "string" ? result : JSON.stringify(result))`，且其中每个 identifier 都必须指向同一个已声明结果。环境运行时标识符 `tools`、`text` 与 `JSON` 必须不被任何已声明的结果绑定遮蔽；否则该来源使用 raw fallback。只要存在一个不受支持的语句、工具、绑定、参数或 emission 形态，整个来源就使用 raw fallback；禁止生成局部投影，因为局部列表可能暗示它是一份完整执行清单。
+
+`src/shared/code-mode-tools.js` is the single source for stable Code Mode tool metadata shared by Node and the browser: whether a direct tool is safe to declare, its baseline display-title key, evidence-neutral ordinary folding kind, and collapsed-preview field priority. It composes the separate Agent Coordination registry rather than copying its tools. The parser still uses a derived closed-world Set as its fail-closed security boundary; translation catalogs still own localized text; dynamic `web__run` titles and specialized request/result sections remain in their dedicated renderers. Registry coverage is verified against the declared-tool list, folding behavior, localized labels, and the exhaustive preview matrix. / `src/shared/code-mode-tools.js` 是 Node 与浏览器共享的稳定 Code Mode 工具元数据唯一来源：直接工具是否可安全声明、基础展示标题 key、不携带执行证据的普通折叠 kind，以及折叠预览的字段优先级。它组合独立的 Agent Coordination 注册表，而不复制其中的工具。parser 仍使用由此派生的封闭集合，作为保守失败的安全边界；翻译目录仍负责本地化文本；动态的 `web__run` 标题和专用 request/result section 继续留在各自 renderer 中。测试会把注册表覆盖与声明工具列表、折叠行为、本地化标签以及完整预览矩阵进行校验。
 
 Whenever `bounded` assigns a result fragment, the projection keeps that entire sanitized fragment in a collapsed associated-result section even if a specialized renderer also shows a plan, command output, collaboration response, or truncated summary. Structured interpretation of result JSON has independent character, depth, and node budgets; over-budget values remain uninterpreted text. Raw refs remain the lossless source when standard payload sanitization removes embedded data URLs.
 

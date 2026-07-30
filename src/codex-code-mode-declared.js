@@ -1,32 +1,16 @@
 'use strict';
 
 const acorn = require('acorn');
-const { agentCoordinationToolNames } = require('./shared/agent-coordination');
+const { declaredCodeModeToolNames } = require('./shared/code-mode-tools');
 
 const MAX_SOURCE_LENGTH = 100_000;
 const MAX_DECLARED_CALLS = 24;
 const MAX_LITERAL_DEPTH = 16;
 const MAX_LITERAL_NODES = 1_000;
 
-const KNOWN_CODE_MODE_TOOLS = new Set([
-  'apply_patch',
-  'create_goal',
-  'exec_command',
-  'get_goal',
-  'image_gen__imagegen',
-  'list_available_plugins_to_install',
-  'list_mcp_resource_templates',
-  'list_mcp_resources',
-  'read_mcp_resource',
-  'request_plugin_install',
-  'request_user_input',
-  'shell_command',
-  'update_goal',
-  'update_plan',
-  'view_image',
-  'web__run',
-  ...agentCoordinationToolNames(),
-]);
+// Keep a local Set for parser lookups, but derive its closed-world membership
+// from the shared registry rather than duplicating tool names here.
+const KNOWN_CODE_MODE_TOOLS = new Set(declaredCodeModeToolNames());
 
 // The declared projector treats these names as ambient runtime helpers. A result
 // binding with any of them changes the source program's meaning, so do not

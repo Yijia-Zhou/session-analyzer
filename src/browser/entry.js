@@ -2,6 +2,7 @@
 
 require('../shared/command-highlighting');
 require('../shared/agent-coordination');
+require('../shared/code-mode-tools');
 require('../shared/i18n');
 require('./renderers');
 require('./search-controls');

@@ -18,7 +18,8 @@
   });
 
   function agentCoordinationDefinition(toolName) {
-    return AGENT_COORDINATION_TOOLS[String(toolName || '').trim()] || null;
+    const key = String(toolName || '').trim();
+    return Object.hasOwn(AGENT_COORDINATION_TOOLS, key) ? AGENT_COORDINATION_TOOLS[key] : null;
   }
 
   function isAgentCoordinationTool(toolName) {

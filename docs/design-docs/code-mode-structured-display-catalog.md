@@ -4,9 +4,9 @@
 
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: implementation snapshot and review worksheet / 状态：实现现状快照与评审工作表
-- Snapshot date: 2026-07-25 / 快照日期：2026-07-25
+- Snapshot date: 2026-07-30 / 快照日期：2026-07-30
 - Canonical design: `docs/design-docs/code-mode-operations.md` / 规范设计：`docs/design-docs/code-mode-operations.md`
-- Main implementation: `src/codex-code-mode-declared.js`, `src/codex-detail.js`, `src/codex.js`, `src/browser/renderers.js`, and `src/shared/i18n.js` / 主要实现：`src/codex-code-mode-declared.js`、`src/codex-detail.js`、`src/codex.js`、`src/browser/renderers.js` 与 `src/shared/i18n.js`
+- Main implementation: `src/shared/code-mode-tools.js`, `src/codex-code-mode-declared.js`, `src/codex-detail.js`, `src/codex.js`, `src/browser/renderers.js`, and `src/shared/i18n.js` / 主要实现：`src/shared/code-mode-tools.js`、`src/codex-code-mode-declared.js`、`src/codex-detail.js`、`src/codex.js`、`src/browser/renderers.js` 与 `src/shared/i18n.js`
 
 ## Purpose and reading rules / 目的与阅读规则
 
