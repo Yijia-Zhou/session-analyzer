@@ -384,6 +384,7 @@ test('formal sanitized fixtures cover the Code Mode operation scenarios', () => 
     'outer_js_is_not_nested_evidence',
     'structured_declared_sequential',
     'structured_declared_dynamic_fallback',
+    'observed_nested_update_plan',
   ]));
 
   for (const fixture of manifest.fixtures) {

@@ -48,6 +48,18 @@ _Avoid_: JSON layer, source layer / JSON 层、来源层
 A named reading policy that controls how prominently different Logical Events appear in the Main Timeline. / 一种具名的阅读策略，用于控制不同逻辑事件在主时间线中的显著程度。
 _Avoid_: Profile, preset, filter / 配置、预设、筛选器
 
+**Plan Event / 计划事件**:
+A Logical Event whose user meaning is either a Plan Artifact or a Plan Update. An Observed Nested Activity can qualify under its own identity, while a Declared Nested Call or Nested Tool Projection cannot. / 用户语义属于计划产物或计划更新的逻辑事件。已观测嵌套活动可以凭自身 identity 成为计划事件，而声明的嵌套调用或嵌套工具投影不能。
+_Avoid_: Planning anchor, plan-shaped display / 规划锚点、计划形态展示
+
+**Plan Artifact / 计划产物**:
+A Plan Event representing a complete proposed plan intended to be read as one coherent work artifact. / 表示一份完整 proposed plan、应作为一个连贯工作产物阅读的计划事件。
+_Avoid_: Plan update, plan snapshot / 计划更新、计划快照
+
+**Plan Update / 计划更新**:
+A Plan Event representing an observed establishment or change of the execution plan, whether reported as a full update or an incremental delta. / 表示已观测到执行计划被建立或发生变化的计划事件，无论来源将其报告为完整更新还是增量变更。
+_Avoid_: Plan artifact, declared plan intent / 计划产物、声明的计划意图
+
 ### Tool execution topology / 工具执行拓扑
 
 **Tool Lifecycle Family / 工具生命周期族**:

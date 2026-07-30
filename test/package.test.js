@@ -100,6 +100,7 @@ test('npm pack manifest contains only runtime package files', () => {
     'src/shared/code-mode-presentation-contract.js',
     'src/shared/folding.js',
     'src/shared/i18n.js',
+    'src/shared/plan-facet.js',
   ];
   for (const file of required) {
     assert.ok(fileSet.has(file), `${file} should be included in the package`);

@@ -9,6 +9,7 @@ const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting'
 const agentCoordination = require('./shared/agent-coordination');
 const codeModeTools = require('./shared/code-mode-tools');
 const codeModePresentationContract = require('./shared/code-mode-presentation-contract');
+const planFacet = require('./shared/plan-facet');
 const toolLifecycleContract = require('./codex-tool-lifecycle-contract');
 const i18n = require('./shared/i18n');
 const {
@@ -3747,10 +3748,8 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'compaction') session.counts.compactions += 1;
   if (logicalEvent.kind === 'abort') session.counts.aborts += 1;
   if (logicalEvent.kind === 'error') session.counts.errors += 1;
-  if (logicalEvent.kind === 'proposed_plan') session.counts.planArtifacts += 1;
-  if (logicalEvent.kind === 'proposed_plan' || logicalEvent.kind === 'plan_update' || logicalEvent.toolName === 'update_plan' || logicalEvent.subtype === 'update_plan') {
-    session.counts.planEvents += 1;
-  }
+  if (planFacet.isPlanArtifactEvent(logicalEvent)) session.counts.planArtifacts += 1;
+  if (planFacet.isPlanEvent(logicalEvent)) session.counts.planEvents += 1;
 }
 
 function updateAnalysisDraft(session, event) {

@@ -280,10 +280,13 @@ test('declared update_plan requests do not match the canonical update-plan condi
 });
 
 test('planning condition matches update_plan calls and protocol plan updates', () => {
-  assert.equal(folding.conditionMatches('updatePlanCall', { kind: 'other_tool_call', toolName: 'update_plan' }), true);
-  assert.equal(folding.conditionMatches('updatePlanCall', { kind: 'plan_update' }), true);
-  assert.equal(folding.displayStateFromRules({ kind: 'plan_update', severity: 'normal' }, profileRules('planning')), 'expanded');
-  assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'update_plan', severity: 'normal' }, profileRules('planning')), 'expanded');
+  const toolUpdate = { kind: 'other_tool_call', subtype: 'update_plan', toolName: 'update_plan', severity: 'normal' };
+  const protocolUpdate = { kind: 'plan_update', subtype: 'plan_update', toolName: '', severity: 'normal' };
+  assert.equal(folding.conditionMatches('updatePlanCall', toolUpdate), true);
+  assert.equal(folding.conditionMatches('updatePlanCall', protocolUpdate), true);
+  assert.equal(folding.displayStateFromRules(protocolUpdate, profileRules('planning')), 'expanded');
+  assert.equal(folding.displayStateFromRules(toolUpdate, profileRules('planning')), 'expanded');
+  assert.equal(folding.conditionMatches('updatePlanCall', { label: 'update_plan' }), false);
 });
 
 test('Scripted operation folding condition matches only unprojected Code Mode calls', () => {
@@ -334,9 +337,9 @@ test('obsolete all-Code-Mode conditions are rejected', () => {
 
 test('planning profile expands only planning anchors and collapses known non-planning events', () => {
   const rules = profileRules('planning');
-  assert.equal(folding.displayStateFromRules({ kind: 'proposed_plan', severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'proposed_plan', subtype: 'proposed_plan', toolName: '', severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'goal', severity: 'normal' }, rules), 'expanded');
-  assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'update_plan', severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', subtype: 'update_plan', toolName: 'update_plan', severity: 'normal' }, rules), 'expanded');
   for (const kind of ['user_message', 'assistant_message', 'patch', 'command', 'developer_message', 'review', 'compaction', 'user_shell_command']) {
     assert.equal(folding.displayStateFromRules({ kind, severity: 'normal' }, rules), 'collapsed', kind);
   }
@@ -359,7 +362,7 @@ test('debug profile hides ordinary events by default', () => {
 
 test('conversation profile keeps plan updates and user input requests expanded', () => {
   const rules = profileRules('conversation');
-  assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'update_plan', severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', subtype: 'update_plan', toolName: 'update_plan', severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'request_user_input', severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'reasoning', hasReadableReasoning: true, severity: 'normal' }, rules), 'summary');
   assert.equal(folding.displayStateFromRules({ kind: 'reasoning', hasReadableReasoning: false, severity: 'normal' }, rules), 'hidden');

@@ -185,7 +185,7 @@ test('sanitized fixtures freeze structured and raw-fallback projection behavior'
   const manifest = JSON.parse(fs.readFileSync(path.join(CODE_MODE_FIXTURE_DIR, 'manifest.json'), 'utf8'));
   const fixtures = manifest.fixtures.filter((fixture) => fixture.declaredProjection);
 
-  assert.deepEqual(fixtures.map((fixture) => fixture.declaredProjection), ['bounded', 'raw_fallback']);
+  assert.deepEqual(fixtures.map((fixture) => fixture.declaredProjection), ['bounded', 'raw_fallback', 'bounded']);
   for (const fixture of fixtures) {
     const rows = fs.readFileSync(path.join(CODE_MODE_FIXTURE_DIR, fixture.file), 'utf8')
       .trim()

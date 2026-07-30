@@ -2089,7 +2089,7 @@ function expandSessionAncestors(sessionId) {
 }
 
 function isUpdatePlanEvent(event) {
-  return foldingApi.isUpdatePlanEvent(event);
+  return navigationApi.isPlanUpdateEvent(event);
 }
 
 function metadataRow(label, value) {

@@ -47,6 +47,7 @@ When changing product behavior or repository structure:
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Active plans:
 - Completed plans:
+  - `docs/exec-plans/completed/2026-07-31-planning-semantic-facet.md`
   - `docs/exec-plans/completed/2026-07-30-subagent-activity-correlation.md`
   - `docs/exec-plans/completed/2026-07-30-tool-lifecycle-family-contract.md`
   - `docs/exec-plans/completed/2026-07-30-code-mode-detail-presentation-contract.md`

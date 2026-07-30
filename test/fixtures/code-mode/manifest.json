@@ -52,6 +52,15 @@
       "phaseCount": 1,
       "declaredProjection": "raw_fallback",
       "projectionCount": 0
+    },
+    {
+      "file": "observed-update-plan.jsonl",
+      "scenario": "observed_nested_update_plan",
+      "outerCallId": "exec-observed-plan-fixture",
+      "observationState": "terminal",
+      "phaseCount": 1,
+      "declaredProjection": "bounded",
+      "projectionCount": 1
     }
   ]
 }

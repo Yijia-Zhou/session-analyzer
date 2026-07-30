@@ -2,10 +2,13 @@
   const codeModeTools = typeof module === 'object' && module.exports
     ? require('./code-mode-tools')
     : root.sessionCodeModeTools;
-  const api = factory(codeModeTools);
+  const planFacet = typeof module === 'object' && module.exports
+    ? require('./plan-facet')
+    : root.sessionPlanFacet;
+  const api = factory(codeModeTools, planFacet);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionFolding = api;
-}(typeof globalThis !== 'undefined' ? globalThis : window, function createFoldingApi(codeModeTools) {
+}(typeof globalThis !== 'undefined' ? globalThis : window, function createFoldingApi(codeModeTools, planFacet) {
   'use strict';
 
   const DISPLAY_STATES = ['expanded', 'summary', 'collapsed', 'hidden'];
@@ -180,12 +183,9 @@
 
   const CONDITION_IDS = new Set(CONDITION_DEFINITIONS.map((condition) => condition.id));
 
-  function isUpdatePlanEvent(event = {}) {
-    return event.kind === 'plan_update'
-      || event.toolName === 'update_plan'
-      || event.subtype === 'update_plan'
-      || event.label === 'update_plan';
-  }
+  const isPlanEvent = planFacet.isPlanEvent;
+  const isPlanUpdateEvent = planFacet.isPlanUpdateEvent;
+  const isUpdatePlanEvent = isPlanUpdateEvent;
 
   function isUserInputRequestEvent(event = {}) {
     return event.toolName === 'request_user_input'
@@ -222,8 +222,8 @@
   }
 
   function importantEvent(event = {}) {
-    return ['user_message', 'assistant_message', 'patch', 'goal', 'error', 'warning', 'abort', 'rollback', 'compaction', 'proposed_plan', 'review'].includes(event.kind)
-      || isUpdatePlanEvent(event)
+    return ['user_message', 'assistant_message', 'patch', 'goal', 'error', 'warning', 'abort', 'rollback', 'compaction', 'review'].includes(event.kind)
+      || isPlanEvent(event)
       || event.severity !== 'normal'
       || event.status === 'failed';
   }
@@ -231,7 +231,7 @@
   function conditionMatches(conditionId, event = {}) {
     if (conditionId === 'searchHit') return Boolean(event.hasSearchHit);
     if (conditionId === 'importantEvent') return importantEvent(event);
-    if (conditionId === 'updatePlanCall') return isUpdatePlanEvent(event);
+    if (conditionId === 'updatePlanCall') return isPlanUpdateEvent(event);
     if (conditionId === 'userInputRequest') return isUserInputRequestEvent(event);
     if (conditionId === 'codeModeScriptOperation') {
       const requestNames = event.presentationFacts?.codeModeDeclaredRequests?.toolNames;
@@ -331,6 +331,8 @@
     editableKindGroup,
     isDynamicEditableKind,
     CONDITION_DEFINITIONS,
+    isPlanEvent,
+    isPlanUpdateEvent,
     isUpdatePlanEvent,
     isUserInputRequestEvent,
     normalizeRules,

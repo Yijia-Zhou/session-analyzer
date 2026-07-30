@@ -24,7 +24,9 @@ test('navigation category helpers keep existing event categories', () => {
   const events = [
     { id: 'cmd-ok', kind: 'command', status: 'success', severity: 'normal' },
     { id: 'cmd-fail', kind: 'command', status: 'failed', severity: 'normal' },
-    { id: 'plan', kind: 'other_tool_call', toolName: 'update_plan', severity: 'normal' },
+    { id: 'artifact', kind: 'proposed_plan', subtype: 'proposed_plan', toolName: '', severity: 'normal' },
+    { id: 'plan', kind: 'other_tool_call', subtype: 'update_plan', toolName: 'update_plan', severity: 'normal' },
+    { id: 'delta', kind: 'plan_update', subtype: 'plan_delta', toolName: '', severity: 'normal' },
   ];
 
   const failedCommandCategories = navigation.navigationCategoriesForEvent(events[1], events).map((category) => category.id);
@@ -33,8 +35,13 @@ test('navigation category helpers keep existing event categories', () => {
   assert.ok(failedCommandCategories.includes('errors_warnings'));
 
   const planCategories = navigation.navigationCategoriesForEvent(events[2], events).map((category) => category.id);
-  assert.ok(planCategories.includes('update_plan'));
-  assert.ok(planCategories.includes('plans'));
+  assert.deepEqual(planCategories, ['plans']);
+  const updateCategories = navigation.navigationCategoriesForEvent(events[3], events).map((category) => category.id);
+  assert.ok(updateCategories.includes('update_plan'));
+  assert.ok(updateCategories.includes('plans'));
+  const deltaCategories = navigation.navigationCategoriesForEvent(events[4], events).map((category) => category.id);
+  assert.ok(deltaCategories.includes('update_plan'));
+  assert.ok(deltaCategories.includes('plans'));
 });
 
 test('temporary referenced events are revealed beside their source without mutating filtered results', () => {

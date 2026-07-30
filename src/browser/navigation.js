@@ -1,14 +1,16 @@
 (function initNavigation(root, factory) {
-  const folding = typeof module === 'object' && module.exports
-    ? require('../shared/folding')
-    : root.sessionFolding;
-  const api = factory(folding);
+  const planFacet = typeof module === 'object' && module.exports
+    ? require('../shared/plan-facet')
+    : root.sessionPlanFacet;
+  const api = factory(planFacet);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionNavigation = api;
-}(typeof globalThis !== 'undefined' ? globalThis : window, function createNavigationApi(folding) {
+}(typeof globalThis !== 'undefined' ? globalThis : window, function createNavigationApi(planFacet) {
   'use strict';
 
-  const isUpdatePlanEvent = folding.isUpdatePlanEvent;
+  const isPlanEvent = planFacet.isPlanEvent;
+  const isPlanUpdateEvent = planFacet.isPlanUpdateEvent;
+  const isUpdatePlanEvent = isPlanUpdateEvent;
   const CODE_MODE_CONTEXT_RELATION = 'enclosed_by_code_mode_operation';
 
   function enclosingOperationParentId(event = {}) {
@@ -61,8 +63,8 @@
     { id: 'search_hits', label: 'Search hits', matches: (event) => Boolean(event.hasSearchHit) },
     { id: 'user_messages', label: 'User messages', matches: (event) => event.kind === 'user_message' },
     { id: 'assistant_messages', label: 'Assistant messages', matches: (event) => event.kind === 'assistant_message' },
-    { id: 'update_plan', label: 'Plan updates', matches: isUpdatePlanEvent },
-    { id: 'plans', label: 'Plans / updates', matches: (event) => event.kind === 'proposed_plan' || isUpdatePlanEvent(event) },
+    { id: 'update_plan', label: 'Plan updates', matches: isPlanUpdateEvent },
+    { id: 'plans', label: 'Plans / updates', matches: isPlanEvent },
     { id: 'failed_commands', label: 'Failed commands', matches: (event) => event.kind === 'command' && event.status === 'failed' },
     { id: 'commands', label: 'Commands', matches: (event) => event.kind === 'command' },
     { id: 'patch_applied', label: 'Patch applied', matches: (event) => event.kind === 'patch' && event.status === 'success' },
@@ -111,6 +113,8 @@
     NAVIGATION_CATEGORIES,
     contextRevealSourceIndex,
     enclosingOperationParentId,
+    isPlanEvent,
+    isPlanUpdateEvent,
     isUpdatePlanEvent,
     navigationCategoriesForEvent,
     reconcileContextReveal,
