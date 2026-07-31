@@ -6,7 +6,11 @@ const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { isPackageStatePayload, waitForPackageState } = require('../scripts/package-smoke');
+const {
+  isPackageStatePayload,
+  normalizePackManifest,
+  waitForPackageState,
+} = require('../scripts/package-smoke');
 
 const repoRoot = path.join(__dirname, '..');
 const npmCommand = process.platform === 'win32'
@@ -42,8 +46,8 @@ function npmPackDryRunFiles() {
     const result = run(npmCommand.command, [...npmCommand.prefixArgs, 'pack', '--dry-run', '--json'], {
       env: { npm_config_cache: cacheDir },
     });
-    const manifest = JSON.parse(result.stdout);
-    return manifest[0].files.map((file) => file.path).sort();
+    const manifest = normalizePackManifest(JSON.parse(result.stdout));
+    return manifest.files.map((file) => file.path).sort();
   } finally {
     fs.rmSync(cacheDir, { recursive: true, force: true });
   }
@@ -53,10 +57,17 @@ test('package metadata exposes the session-analyzer CLI', () => {
   const pkg = require('../package.json');
   const server = fs.readFileSync(path.join(repoRoot, 'server.js'), 'utf8');
 
-  assert.equal(pkg.version, '0.1.0');
+  assert.equal(pkg.version, '0.1.2');
   assert.equal(pkg.private, undefined);
   assert.equal(pkg.license, 'BSD-3-Clause');
-  assert.deepEqual(pkg.bin, { 'session-analyzer': './server.js' });
+  assert.deepEqual(pkg.engines, { node: '>=22' });
+  assert.deepEqual(pkg.publishConfig, {
+    access: 'public',
+    registry: 'https://registry.npmjs.org/',
+  });
+  assert.equal(pkg.scripts['release:check'], 'npm run build:check && npm test && npm run test:package');
+  assert.equal(pkg.scripts.prepublishOnly, 'npm run release:check');
+  assert.deepEqual(pkg.bin, { 'session-analyzer': 'server.js' });
   assert.ok(server.startsWith('#!/usr/bin/env node'));
 });
 
@@ -67,6 +78,24 @@ test('CLI help documents the npm command and host privacy option', () => {
   assert.match(result.stdout, /--host <host>/);
   assert.match(result.stdout, /Binding to another host can expose transcript content/);
   assert.doesNotMatch(result.stdout, /node server\.js \[--repo/);
+});
+
+test('npm pack manifest normalization supports npm 11 and npm 12 JSON shapes', () => {
+  const artifact = {
+    filename: 'session-analyzer-0.1.2.tgz',
+    files: [{ path: 'server.js' }],
+  };
+
+  assert.equal(normalizePackManifest([artifact]), artifact);
+  assert.equal(normalizePackManifest({ 'session-analyzer': artifact }), artifact);
+  assert.throws(
+    () => normalizePackManifest({}),
+    /exactly one package artifact/,
+  );
+  assert.throws(
+    () => normalizePackManifest({ first: artifact, second: artifact }),
+    /exactly one package artifact/,
+  );
 });
 
 test('npm pack manifest contains only runtime package files', () => {

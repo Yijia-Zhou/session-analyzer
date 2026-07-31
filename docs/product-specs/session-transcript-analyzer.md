@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-07-30 / 最近更新：2026-07-30
+- Last updated: 2026-07-31 / 最近更新：2026-07-31
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/timeline-loading-and-rendering-performance.md`
@@ -19,6 +19,7 @@
   - `docs/exec-plans/completed/2026-07-22-code-mode-context-and-discoverability.md`
   - `docs/exec-plans/completed/2026-07-25-code-mode-request-facets-and-folding.md`
   - `docs/exec-plans/completed/2026-07-30-subagent-activity-correlation.md`
+  - `docs/exec-plans/active/2026-07-31-first-public-npm-release.md`
 
 ## Summary / 摘要
 
@@ -122,6 +123,7 @@ Completed v0.1 follow-up: zh-CN catalog completeness, raw-record display labels,
 
 25. Current-session search uses an event-anchor contract: one canonical jump target exists per discovered matching logical event, identified only by the complete semantic search key and logical event ID and ordered by logical timeline position. Multiple phrase occurrences in one event remain highlights and contribute to `Full-text hits`, but never multiply `Jump targets`. Timeline and Inspector marks are disposable bindings to the same event anchor; opening, closing, loading, retrying, or switching Inspector changes membership and order by zero. A phrase found only in supplemental Inspector presentation or UI chrome creates no Inspector-only target; navigation may use an Inspector mark only as a fallback binding for an already canonical matching event. Loading later timeline pages is the only way to discover additional anchors for an unchanged key, and `Load more` preserves the active ID, selection, detail provenance, and scroll while continuing until it finds a new ID or proves exhaustion. Persisted user folds remain authoritative: an unavailable anchor stays in the denominator and is skipped for that transition. Navigation actions are serialized, including rapid repeated input, and wrap only after the filtered timeline is exhausted. Session rows, project result cards, search-result summaries, folding controls, Raw refs, and other UI chrome never become jump targets. / 当前 session 搜索采用事件锚点 contract：每个已发现且匹配的逻辑事件只有一个 canonical 跳转目标，身份仅由完整语义搜索 key 与逻辑事件 ID 决定，并按逻辑时间线位置排序。同一事件中的多个短语 occurrence 仍会高亮并计入 `全文命中`，但绝不会增加 `跳转目标`。Timeline 与 Inspector mark 都只是同一事件锚点的可丢弃 binding；打开、关闭、加载、重试或切换 Inspector 对成员与顺序的变化都为零。仅存在于 Inspector 补充展示或 UI chrome 中的短语不会产生 Inspector-only target；只有事件本身已是 canonical 匹配事件时，导航才可把 Inspector mark 作为后备 binding。对未变化 key，只有加载后续时间线分页才能发现更多锚点；“加载更多”会保留活动 ID、选择、详情来源与滚动，并持续到找到新 ID 或证明耗尽。持久化用户折叠保持权威：暂不可用锚点仍保留在分母中，并在本次转换中跳过。包括快速连续输入在内的导航动作会串行执行，且只有筛选后的时间线耗尽后才回绕。Session row、项目结果卡、搜索结果摘要、折叠控制、Raw refs 和其它 UI chrome 永不成为跳转目标。
 26. Search targets are discovered only from a current-session timeline/detail view committed for the current repository, structured filters, selected session, free text, layer, active folding-profile rules, sort order, and locale. Project result cards use separate highlight markup and never feed the session jump-target registry. Editing, saving, or cancelling folding rules starts a distinct target context even when the profile ID is unchanged. During a context transition, stale DOM cannot contribute jump targets or enable navigation; once the matching session view commits, discovery resumes without carrying owners excluded by the new context. / 搜索目标只能从已针对当前仓库、结构化筛选、选中 session、自由文本、事件层、当前折叠 profile 规则、排序和 locale 完成提交的当前 session timeline/detail 视图中发现。项目结果卡使用独立高亮标记，绝不进入 session 跳转目标注册表。即使 profile ID 未变化，编辑、保存或取消折叠规则也会进入不同的目标上下文。在上下文转换期间，旧 DOM 不能贡献跳转目标或启用导航；匹配的 session 视图提交后会恢复发现，且不会携带被新上下文排除的 owner。
+27. The supported public npm surface is the `session-analyzer` CLI on Node.js 22 or newer; Node.js 24 LTS is the recommended runtime. The package includes only allowlisted runtime files and documentation, exposes no stable programmatic API in v0.1, binds to localhost by default, and must pass generated-asset, Node, browser, and installed-package gates on Linux and Windows before release. / 受支持的公共 npm surface 是运行于 Node.js 22 或更高版本的 `session-analyzer` CLI；推荐使用 Node.js 24 LTS。Package 只包含白名单允许的运行时文件与文档，v0.1 不暴露稳定的程序接口，默认绑定到 localhost，并且必须在发布前通过 Linux 与 Windows 上的生成资产、Node、browser 和安装后 package gate。
 
 ### Canonical search-target reconciliation / Canonical 搜索目标契约调整
 

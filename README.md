@@ -30,7 +30,7 @@ Codex transcripts can contain prompts, command output, file paths, environment d
 
 ## Requirements
 
-- Node.js 18 or newer
+- A supported Node.js LTS release, Node.js 22 or newer (Node.js 24 recommended)
 - npm
 
 ## Run With npm
@@ -106,6 +106,13 @@ Run tests:
 npm test
 ```
 
+Install Chromium and run browser coverage:
+
+```sh
+npm run browser:install
+npm run test:browser
+```
+
 Run package smoke verification before release packaging:
 
 ```sh
@@ -113,6 +120,14 @@ npm run test:package
 ```
 
 The package smoke command runs `npm pack`, installs the tarball into a fresh temporary project, checks installed CLI help, and starts the packaged server.
+
+Run the repeatable non-browser release gate:
+
+```sh
+npm run release:check
+```
+
+The release gate checks generated assets, runs the full Node test suite, and repeats the installed-package smoke. Browser coverage remains a separate CI and local release requirement.
 
 The test fixtures under `test/fixtures/codex-home` are synthetic transcript data. They intentionally include fake Windows paths and sample transcript shapes for parser coverage.
 

@@ -1,0 +1,104 @@
+# First public npm release / 首次 npm 公开发布
+
+## Objective / 目标
+
+Publish the repository's first public npm package as `session-analyzer@0.1.2`, with a reproducible release artifact, explicit Node.js support, cross-platform CI, a human-controlled 2FA publication boundary, and a documented path to trusted publishing after the package exists. / 将仓库的首个公共 npm package 以 `session-analyzer@0.1.2` 发布；发布制品必须可复现，Node.js 支持范围必须明确，CI 必须覆盖跨平台场景，首次发布必须保留由维护者控制的 2FA 边界，并记录 package 建立后迁移到 trusted publishing 的路径。
+
+## Status and ownership / 状态与负责人
+
+- Owner: repository maintainers / 负责人：仓库维护者
+- Status: in progress / 状态：进行中
+- Started: 2026-07-31 / 开始日期：2026-07-31
+- Target version: `0.1.2`
+- Target package: `session-analyzer`
+- Source branch: `v0.1.2-development`
+- Source baseline: `d9ba3f6`
+- Related product spec: `docs/product-specs/session-transcript-analyzer.md` / 相关产品规格：`docs/product-specs/session-transcript-analyzer.md`
+- Related release runbook: `docs/design-docs/npm-release-runbook.md` / 相关发布运行手册：`docs/design-docs/npm-release-runbook.md`
+- Related completed hardening: `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md` / 相关已完成加固：`docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`
+- Related debt: `docs/exec-plans/tech-debt-tracker.md#10-release-workflow-and-trusted-publishing--发布流程与-trusted-publishing` / 相关技术债：`docs/exec-plans/tech-debt-tracker.md#10-release-workflow-and-trusted-publishing--发布流程与-trusted-publishing`
+
+## Fixed release decisions / 已确定的发布决策
+
+1. The first public registry version is `0.1.2`; the earlier `0.1.0` changelog entry remains an internal pack-ready milestone rather than a claim that npm versions `0.1.0` or `0.1.1` were published. / 首个公共 registry 版本为 `0.1.2`；较早的 `0.1.0` changelog 条目继续表示内部可打包里程碑，而不声称 npm 上曾发布 `0.1.0` 或 `0.1.1`。
+2. The unscoped `session-analyzer` name remains the primary target while the public registry reports it as absent. A scoped-name fallback is out of scope unless that availability changes before publication. / 公共 registry 仍报告该名称不存在时，继续以无 scope 的 `session-analyzer` 为首选。除非发布前可用性发生变化，否则 scoped 名称回退不在本计划范围内。
+3. The supported runtime floor becomes Node.js 22, with Node.js 24 LTS used for release production and Node.js 22 plus 24 covered by CI. / 支持的运行时下限调整为 Node.js 22；发布制品使用 Node.js 24 LTS 生成，并由 CI 覆盖 Node.js 22 与 24。
+4. The first publication is manual and interactive against `https://registry.npmjs.org/`; the maintainer owns npm login, 2FA, the irreversible publish action, and promotion of the verified version to `latest`. / 首次发布通过 `https://registry.npmjs.org/` 手动交互执行；维护者负责 npm 登录、2FA、不可逆发布动作，以及把已验证版本提升为 `latest`。
+5. Repository automation stops before public mutation. This plan may prepare and inspect `session-analyzer-0.1.2.tgz` as release evidence, but the irreversible publish must run from the same clean release commit's package root with no positional tarball argument so `prepublishOnly` executes. This plan does not authorize npm publication, remote tags, or GitHub Releases. / 仓库自动化在公共状态变更前停止。本计划可以把 `session-analyzer-0.1.2.tgz` 作为发布证据进行准备与检查，但不可逆 publish 必须从同一干净 release commit 的 package root 执行，且不带位置 tarball 参数，从而确保 `prepublishOnly` 运行。本计划不授权执行 npm 发布、远端 tag 或 GitHub Release。
+6. A future trusted-publishing workflow is added only after the package exists. It should use GitHub-hosted runners, OIDC, a protected GitHub Environment, and preferably stage-only permission followed by human 2FA approval. / 只有 package 已存在后才添加未来的 trusted-publishing workflow。该流程应使用 GitHub-hosted runner、OIDC、受保护的 GitHub Environment，并优先采用仅允许 stage、随后由人工 2FA 审批的权限。
+
+## Implementation phases / 实施阶段
+
+### Phase 1: repository release contract / 第一阶段：仓库发布契约
+
+- Set package and lockfile version metadata to `0.1.2`. / 将 package 与 lockfile 版本元数据设为 `0.1.2`。
+- Set the Node.js engine floor to 22 and update both READMEs and the product specification. / 将 Node.js engine 下限设为 22，并同步更新两份 README 与产品规格。
+- Add public-registry `publishConfig`, a reusable `release:check` script, and a `prepublishOnly` guard. / 增加指向公共 registry 的 `publishConfig`、可复用的 `release:check` 脚本，以及 `prepublishOnly` guard。
+- Update package metadata tests so the release contract cannot silently drift. / 更新 package metadata 测试，避免发布契约静默漂移。
+- Keep a blank bilingual Unreleased section and close the accumulated work into a bilingual `0.1.2` entry. / 保留空的双语 Unreleased 区段，并把累积工作收口到双语 `0.1.2` 条目。
+
+### Phase 2: public CI gate / 第二阶段：公共 CI gate
+
+- Add read-only GitHub Actions CI for pull requests, `main`, and versioned development branches. / 为 pull request、`main` 与版本化 development branch 增加只读 GitHub Actions CI。
+- Test Node.js 22 and 24 on Linux, and Node.js 24 on Windows. / 在 Linux 上测试 Node.js 22 与 24，并在 Windows 上测试 Node.js 24。
+- Run generated-asset checks and the full Node suite in the runtime matrix. / 在运行时矩阵中执行生成资产检查与完整 Node 测试。
+- Run packaged-install smoke on both Linux and Windows, and browser coverage on Linux with Chromium. / 在 Linux 与 Windows 上执行安装后 package smoke，并在 Linux Chromium 上执行 browser coverage。
+
+### Phase 3: official-registry lock and artifact / 第三阶段：官方 registry lock 与制品
+
+- Replace mirror-host lockfile URLs with official registry URLs without changing dependency versions unintentionally. / 将 lockfile 中的镜像 host URL 替换为官方 registry URL，不得无意改变依赖版本。
+- Run the release gate, browser tests, package smoke, audit review, generated-asset checks, syntax checks, and diff checks. / 执行 release gate、browser 测试、package smoke、audit 审查、生成资产检查、语法检查与 diff 检查。
+- Generate `session-analyzer-0.1.2.tgz`, record its integrity and manifest, extract it into a temporary directory, and inspect the runtime allowlist and sensitive-file exclusions. / 生成 `session-analyzer-0.1.2.tgz`，记录完整性与 manifest，解压到临时目录，并检查运行时白名单及敏感文件排除情况。
+- Treat the candidate tarball as inspection evidence only. Stop before npm authentication or publication and hand the manifest, hashes, clean-release-commit identity, and directory-based publish commands to the maintainer. / 把候选 tarball 仅作为检查证据。在 npm 认证或发布前停止，把 manifest、哈希、干净 release commit 身份，以及基于工作树的 publish 命令交给维护者。
+
+### Phase 4: maintainer publication and public verification / 第四阶段：维护者发布与公共验证
+
+- Maintainer confirms that the release commit is pushed, required Linux/Windows CI is green, the local worktree is clean, and no candidate `.tgz` remains inside it. / 维护者确认 release commit 已推送、要求的 Linux/Windows CI 全部通过、本地工作树干净，且其中不再留有候选 `.tgz`。
+- From that package root, the maintainer runs `npm publish --dry-run --foreground-scripts --tag='next' --access='public'` and verifies that `prepublishOnly`, `release:check`, and the expected manifest complete. / 维护者从该 package root 执行 `npm publish --dry-run --foreground-scripts --tag='next' --access='public'`，并验证 `prepublishOnly`、`release:check` 与预期 manifest 均完成。
+- Maintainer logs in to the official registry with 2FA and runs `npm publish --foreground-scripts --tag='next' --access='public'` from the same unchanged package root, with no positional package or tarball argument. / 维护者使用 2FA 登录官方 registry，并从同一未变化的 package root 执行 `npm publish --foreground-scripts --tag='next' --access='public'`，不带位置 package 或 tarball 参数。
+- Verify exact-version `npx`, global installation, CLI help, packaged server startup, and registry metadata from clean Windows and Linux environments. / 在干净 Windows 与 Linux 环境中验证精确版本的 `npx`、全局安装、CLI help、packaged server 启动与 registry metadata。
+- Promote `session-analyzer@0.1.2` to `latest`, push an annotated `v0.1.2` tag pointing to the published commit, and create the GitHub Release. / 将 `session-analyzer@0.1.2` 提升为 `latest`，推送指向已发布 commit 的 annotated `v0.1.2` tag，并创建 GitHub Release。
+- Record public verification evidence, then move this plan to `completed/`. / 记录公共验证证据，然后把本计划移动到 `completed/`。
+
+## Acceptance criteria / 验收标准
+
+1. Package metadata, lockfile metadata, package metadata tests, changelog, Git tag, and GitHub Release agree on `0.1.2` / `v0.1.2`. / Package metadata、lockfile metadata、package metadata 测试、changelog、Git tag 与 GitHub Release 对 `0.1.2` / `v0.1.2` 保持一致。
+2. `publishConfig` fixes public access and the official registry, while repository install resolution no longer depends on npmmirror URLs. / `publishConfig` 固定公共访问与官方 registry，仓库安装解析不再依赖 npmmirror URL。
+3. Linux Node.js 22/24 and Windows Node.js 24 CI pass; browser and packaged-install jobs cover the release surfaces before publication. / Linux Node.js 22/24 与 Windows Node.js 24 CI 通过；browser 与安装后 package job 在发布前覆盖 release surface。
+4. `npm run release:check`, `npm run test:browser`, `npm audit --omit=dev`, `npm pack --dry-run`, the final directory-based `npm publish --dry-run`, and `git diff --check` pass or have an explicitly reviewed, documented exception. / `npm run release:check`、`npm run test:browser`、`npm audit --omit=dev`、`npm pack --dry-run`、最终基于工作树的 `npm publish --dry-run` 与 `git diff --check` 通过，或具有经过明确审查并记录的例外。
+5. The inspected tarball contains every runtime file required by the allowlist and excludes tests, docs, real transcripts, `.codex`, source maps, CI metadata, temporary files, credentials, and personal logs. / 已检查 tarball 包含白名单要求的全部运行时文件，并排除测试、docs、真实 transcript、`.codex`、source map、CI metadata、临时文件、凭据与个人日志。
+6. The first irreversible registry write and every later approval boundary requiring proof of presence remain maintainer-controlled through 2FA. / 首次不可逆 registry 写入，以及之后每个需要 proof of presence 的审批边界，均继续由维护者通过 2FA 控制。
+7. Public exact-version installation succeeds on Windows and Linux before the version is promoted to `latest`. / 在版本提升为 `latest` 前，公共精确版本安装已在 Windows 与 Linux 上成功。
+8. The actual `npm publish` runs from the clean release commit's package root without a positional argument or `--ignore-scripts`, and its output proves `prepublishOnly` completed. / 实际 `npm publish` 从干净 release commit 的 package root 执行，不带位置参数，也不使用 `--ignore-scripts`；其输出能够证明 `prepublishOnly` 已完成。
+
+## Failure and recovery policy / 失败与恢复策略
+
+- Before publication, discard the candidate evidence, correct and commit the repository, rerun all invalidated gates, and generate a new inspection candidate. / 发布前若发现问题，丢弃候选证据，修正并提交仓库，重跑全部已失效 gate，并生成新的检查候选制品。
+- After `0.1.2` is published, never attempt to reuse that version. If verification fails, leave it off `latest`, deprecate it with a precise message when useful, fix the repository, and publish `0.1.3`. / `0.1.2` 发布后不得尝试复用该版本。若验证失败，应保持其不进入 `latest`，必要时使用精确消息标记 deprecated，修复仓库后发布 `0.1.3`。
+- Do not move an already pushed release tag to a different commit. Use a new patch version instead. / 不得把已经推送的 release tag 移到其他 commit；应改用新的 patch 版本。
+- Never use a long-lived write token merely to bypass the interactive first-release boundary. / 不得仅为绕过首次发布的交互边界而使用长期 write token。
+
+## Prepared candidate artifact / 已准备候选制品
+
+- Artifact: `session-analyzer-0.1.2.tgz`
+- npm packed size: 222,088 bytes / npm 打包大小：222,088 bytes
+- npm unpacked size: 908,635 bytes / npm 解包大小：908,635 bytes
+- Manifest entries: 34 / Manifest 条目：34
+- SHA-1: `efc0d8ea4c799d677527e7f3d38438a48e920af2`
+- SHA-256: `532e268a703f9c07fa78ef94090c19559b22e891ec51bcbf0858609a06c332f8`
+- npm integrity: `sha512-KcEkBxPSrryK5vNmxTyYvk3RXUyH5usso47B7K3T+C3gitLGHrYgzxW73b2yfX/nX+aIlpzQIFmuLp+Xqq+QSw==`
+- Inspection result: all 34 packed files were byte-identical to their repository sources; forbidden development paths and tested credential/personal-path patterns had zero matches. / 检查结果：全部 34 个打包文件与仓库源文件逐字节一致；禁止的开发路径以及已检查的凭据/个人绝对路径模式均为零匹配。
+- Purpose boundary: this tarball is inspection evidence and must not be passed to `npm publish`; positional tarball publication bypassed `prepublishOnly` in the verified npm 12 workflow. / 用途边界：该 tarball 是检查证据，不得传给 `npm publish`；在已验证的 npm 12 流程中，带位置 tarball 的发布会绕过 `prepublishOnly`。
+- Commit boundary: this candidate was generated from the release-preparation working tree based on `d9ba3f6`. Before an irreversible publish, commit the release changes without altering packed files, regenerate and inspect the candidate from that clean commit, require the same manifest and hashes, then move or remove the `.tgz` so the worktree is clean. The final dry run and publish must let npm repack that same clean tree. / Commit 边界：该候选制品由以 `d9ba3f6` 为基线的发布准备工作树生成。执行不可逆发布前，应在不改变打包文件的前提下提交发布变更，从该干净 commit 重新生成并检查候选制品，要求 manifest 与哈希完全相同，然后移走或删除 `.tgz`，确保工作树干净。最终 dry run 与 publish 必须由 npm 重新打包同一干净工作树。
+
+## Progress log / 进度日志
+
+- 2026-07-31: Confirmed a clean `v0.1.2-development` worktree at `d9ba3f6`, one commit ahead of `origin/v0.1.2-development`, and opened this plan. / 2026-07-31：确认 `v0.1.2-development` 工作树在 `d9ba3f6` 保持干净，比 `origin/v0.1.2-development` 领先一个 commit，并建立本计划。
+- 2026-07-31: Closed package metadata, both READMEs, the bilingual changelog, product specification, package metadata tests, and the public CI contract around `session-analyzer@0.1.2` with a Node.js 22 floor. / 2026-07-31：围绕 Node.js 22 下限与 `session-analyzer@0.1.2`，完成 package metadata、两份 README、双语 changelog、产品规格、package metadata 测试与公共 CI 契约的收口。
+- 2026-07-31: Normalized all 78 lockfile download URLs to `https://registry.npmjs.org/` and confirmed zero remaining npmmirror URLs. The only dependency-version changes were reviewed security updates: `markdown-it` 14.1.1 to 14.3.0, `linkify-it` 5.0.0 to 5.0.2, and `esbuild` plus its platform packages 0.28.0 to 0.28.1. / 2026-07-31：将 lockfile 中全部 78 个下载 URL 统一到 `https://registry.npmjs.org/`，并确认不再存在 npmmirror URL。唯一的依赖版本变化均为经过审查的安全更新：`markdown-it` 14.1.1 升至 14.3.0、`linkify-it` 5.0.0 升至 5.0.2，以及 `esbuild` 与其平台 package 从 0.28.0 升至 0.28.1。
+- 2026-07-31: Verified the production-only and complete dependency graphs with Node.js 24.18.1 and npm 12.0.2 against the official registry; both audits reported zero vulnerabilities. / 2026-07-31：使用 Node.js 24.18.1 与 npm 12.0.2 对官方 registry 验证 production-only 与完整依赖图；两次 audit 均报告零漏洞。
+- 2026-07-31: Regenerated the checked-in browser assets after the reviewed dependency updates. The Node.js 24 release gate passed 320 tests plus packaged installation/server smoke, Chromium passed 83 browser tests, and Node.js 22 passed the same 320-test Node suite plus generated-asset verification. / 2026-07-31：在经过审查的依赖更新后重新生成已纳入版本控制的 browser assets。Node.js 24 release gate 通过 320 项测试及安装后 package/server smoke，Chromium 通过 83 项 browser 测试，Node.js 22 通过同一套 320 项 Node 测试及生成资产验证。
+- 2026-07-31: Hardened package smoke for the npm 11 array-shaped and npm 12 object-shaped pack manifests, isolated nested smoke commands from inherited publish dry-run state, and normalized the CLI bin target before publication. A final `npm publish --dry-run --tag next` completed through `prepublishOnly` without metadata auto-correction warnings. / 2026-07-31：加固 package smoke，使其兼容 npm 11 的 array-shaped 与 npm 12 的 object-shaped pack manifest；隔离外层 publish dry-run 状态对嵌套 smoke command 的继承，并在发布前规范化 CLI bin target。最终 `npm publish --dry-run --tag next` 完整通过 `prepublishOnly`，且不再出现 metadata 自动修正警告。
+- 2026-07-31: Generated and extracted `session-analyzer-0.1.2.tgz`; the 34-entry allowlist, package metadata, byte-for-byte source parity, forbidden-path exclusions, and tested credential/personal-path exclusions all passed inspection. / 2026-07-31：生成并解包 `session-analyzer-0.1.2.tgz`；34 项白名单、package metadata、与源文件逐字节一致性、禁止路径排除，以及已测试的凭据/个人路径排除均通过检查。
+- 2026-07-31: Rechecked the official registry immediately before handoff; `npm view session-analyzer version` returned `E404`, so the unscoped package name remained unregistered at that moment. / 2026-07-31：交接前立即复查官方 registry；`npm view session-analyzer version` 返回 `E404`，因此当时该无 scope package 名仍未注册。
+- 2026-07-31: Review found that the planned positional tarball publication would bypass the new lifecycle guard. Reproduced with `npm publish .\session-analyzer-0.1.2.tgz --dry-run --tag='next'` under npm 12.0.2: it exited successfully without `prepublishOnly`, `release:check`, or package smoke. Accepted `docs/design-docs/npm-release-runbook.md` and corrected this plan so the candidate is evidence only and publication runs from the clean package root without a positional argument. / 2026-07-31：Review 发现计划中的位置 tarball 发布会绕过新的生命周期 guard。使用 npm 12.0.2 执行 `npm publish .\session-analyzer-0.1.2.tgz --dry-run --tag='next'` 完成复现：命令成功退出，但没有 `prepublishOnly`、`release:check` 或 package smoke。现已接受 `docs/design-docs/npm-release-runbook.md`，并修正本计划：候选制品只作为证据，发布从干净 package root 执行且不带位置参数。

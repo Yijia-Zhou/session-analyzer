@@ -2,17 +2,33 @@
 
 ## Unreleased / 未发布
 
+No unreleased changes. / 暂无未发布变更。
+
+## 0.1.2 - 2026-07-31
+
 ### English
 
-- Same-project reindexing now reuses unchanged transcript payloads to avoid duplicating large in-memory indexes, reparses files that change after selection, reapplies current session-index metadata from transcript-derived baselines, and retries bounded transient browser transport failures.
-- Rebuilt search as a single-line scope-aware HUD with entry-specific parameter focus, idle-state progressive disclosure, a compact results-only surface for free-text input, always-visible Kind/Status/Touched-file quick filters, and a shortcut to the canonical global Layer selector.
-- Search input now always represents literal free text; operator-like text is no longer parsed into filters or Layer changes. Existing backend search, navigation, and project result contracts are unchanged.
+- First version published to the public npm registry. The earlier `0.1.0` entry records an internal pack-ready milestone; neither `0.1.0` nor `0.1.1` was published to npm.
+- Code Mode now groups outer `exec` plus pending/wait lifecycle rows into one neutral operation, adds safe structured nested request projections, and exposes request-aware Main-layer filtering and folding without fabricating nested execution evidence.
+- Search now uses explicit current-session and entire-project scopes, a single-line literal-text HUD, stable event-anchor jump targets, structured Kind/Status/Touched-file controls, deterministic detail/navigation convergence, and safe deep-timeline transitions.
+- Same-project reindexing now reuses unchanged transcript payloads, reparses files that change after selection, refreshes session-index metadata from transcript-derived baselines, reports bounded progress, and retries transient browser transport failures.
+- Main-timeline coverage now includes normalized goal lifecycles, user shell wrappers, image generation, hooks, Agent Coordination, typed Subagent Activity correlation, stronger MCP summaries, and readable fallbacks while retaining exact Raw Reference traceability.
+- A shared Plan Event semantic facet now gives Plan Artifacts and Plan Updates one canonical definition for metrics, folding, and inspector navigation while excluding declared-only Code Mode projections.
+- Timeline loading, generated-asset ownership, tool lifecycle admission, detail presentation, and large-index behavior now have deterministic contracts, profiling fixtures, and expanded regression coverage.
+- The Markdown runtime and esbuild development dependency floors now include upstream complexity-denial-of-service and Windows development-server file-read fixes.
+- The public package requires Node.js 22 or newer, pins publication to the public registry, adds a repeatable prepublish release gate, supports both npm 11 and npm 12 pack manifests, and introduces Linux/Windows CI for Node, browser, and installed-package validation.
 
 ### 中文
 
-- 同一项目重新索引现在会复用未变化的 transcript payload，避免在内存中复制大型索引；对 selecting 后发生变化的文件重新解析，基于 transcript 派生基线重新应用当前 session-index metadata，并对浏览器中的瞬时传输失败进行有界重试。
-- 将搜索重建为感知范围的单行 HUD：参数入口会定向聚焦，空闲状态采用渐进披露，自由文本输入只展开紧凑结果表面，同时提供常驻的类型/状态/涉及文件快速筛选及指向唯一全局层级选择器的快捷入口。
-- 搜索输入现在始终表示字面自由文本；类似操作符的文本不再解析为筛选或层级切换。现有后端搜索、导航和项目结果契约保持不变。
+- 首个发布到公共 npm registry 的版本。较早的 `0.1.0` 条目记录内部可打包里程碑；`0.1.0` 与 `0.1.1` 均未发布到 npm。
+- Code Mode 现在会把 outer `exec`、pending 与 wait lifecycle 行归并为一个中性 operation，增加安全的结构化嵌套 request 投影，并提供感知 request 的 Main 层筛选与折叠，同时不虚构嵌套执行证据。
+- 搜索现在采用明确的当前 session 与整个项目范围、单行字面文本 HUD、稳定的事件锚点跳转目标、结构化的类型/状态/涉及文件控件、确定性的详情与导航收敛，以及安全的深层时间线转换。
+- 同一项目重新索引现在会复用未变化的 transcript payload，重新解析选择后发生变化的文件，基于 transcript 派生基线刷新 session-index metadata，报告有界进度，并重试浏览器中的瞬时传输失败。
+- 主时间线覆盖现在包括规范化 goal 生命周期、用户 shell wrapper、图片生成、hook、Agent 协调、带类型的 Subagent 活动关联、更清晰的 MCP 摘要与可读兜底，同时保留精确的原始引用可追溯性。
+- 共享计划事件语义 facet 现在为计划产物与计划更新提供一套供指标、折叠和检查器导航共同使用的 canonical 定义，同时排除只有声明证据的 Code Mode 投影。
+- 时间线加载、生成资产 ownership、工具生命周期准入、详情呈现与大型索引行为现在具有确定性契约、profiling fixture 和更完整的回归覆盖。
+- Markdown 运行时与 esbuild 开发依赖下限现在包含上游复杂度拒绝服务和 Windows 开发服务器文件读取修复。
+- 公共 package 要求 Node.js 22 或更高版本，把发布固定到公共 registry，增加可重复的 prepublish release gate，兼容 npm 11 与 npm 12 的 pack manifest，并引入覆盖 Linux/Windows 的 Node、browser 与安装后 package CI。
 
 ## 0.1.0 - 2026-06-18
 

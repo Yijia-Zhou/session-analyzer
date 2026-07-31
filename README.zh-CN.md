@@ -30,7 +30,7 @@ Codex 转录可能包含提示词、命令输出、文件路径、环境详情�
 
 ## 环境要求
 
-- Node.js 18 或更高版本
+- 受支持的 Node.js LTS，最低 Node.js 22（推荐 Node.js 24）
 - npm
 
 ## 通过 npm 运行
@@ -106,6 +106,13 @@ npm run build
 npm test
 ```
 
+安装 Chromium 并运行浏览器覆盖：
+
+```sh
+npm run browser:install
+npm run test:browser
+```
+
 发布打包前运行 package smoke 验证：
 
 ```sh
@@ -113,6 +120,14 @@ npm run test:package
 ```
 
 package smoke 命令会执行 `npm pack`，把 tarball 安装到全新的临时项目中，检查已安装 CLI 的 help，并启动打包后的 server。
+
+运行可重复的非浏览器 release gate：
+
+```sh
+npm run release:check
+```
+
+Release gate 会检查生成资产、运行完整 Node 测试，并重复执行安装后 package smoke。Browser coverage 继续作为独立的 CI 与本地发布要求。
 
 `test/fixtures/codex-home` 下的测试 fixture 是合成转录数据。它们有意包含假的 Windows 路径和示例转录形态，用于覆盖解析器行为。
 

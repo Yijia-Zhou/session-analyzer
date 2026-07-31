@@ -23,8 +23,10 @@ This repository uses three formal document classes plus one idea parking area:
 - `design-docs/codex-protocol-event-coverage.md` / Codex 协议事件覆盖设计文档
 - `design-docs/cross-surface-contract-consistency-tech-debt.md` / 跨表面契约一致性技术债
 - `design-docs/schema-update-runbook.md` / Schema 更新运行手册
+- `design-docs/npm-release-runbook.md` / npm 发布运行手册
 - `design-docs/external-source-mapping-pressure-tests.md` / 外部 source 映射压力测试设计文档
 - `design-docs/documentation-system.md` / 文档系统设计文档
+- `exec-plans/active/2026-07-31-first-public-npm-release.md` / 首次 npm 公开发布进行中执行计划
 - `exec-plans/completed/2026-07-30-subagent-activity-correlation.md` / Subagent 活动带类型关联已完成执行计划
 - `exec-plans/completed/2026-07-30-tool-lifecycle-family-contract.md` / 工具生命周期族契约收敛已完成执行计划
 - `exec-plans/completed/2026-06-26-search-count-and-jump-target-convergence.md` / 搜索计数与可跳转目标收敛已完成执行计划

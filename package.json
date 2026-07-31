@@ -1,6 +1,6 @@
 {
   "name": "session-analyzer",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Local interactive viewer for Codex session transcripts.",
   "keywords": [
     "codex",
@@ -20,7 +20,7 @@
   "license": "BSD-3-Clause",
   "main": "server.js",
   "bin": {
-    "session-analyzer": "./server.js"
+    "session-analyzer": "server.js"
   },
   "files": [
     "server.js",
@@ -52,6 +52,8 @@
     "test": "node --test \"test/*.test.js\"",
     "test:browser": "node --test e2e/browser.test.js",
     "test:package": "node scripts/package-smoke.js",
+    "release:check": "npm run build:check && npm test && npm run test:package",
+    "prepublishOnly": "npm run release:check",
     "profile:timeline": "node scripts/timeline-profile.js",
     "browser:install": "playwright install chromium",
     "vendor:highlight": "node scripts/build-client.js --vendor-highlight-only"
@@ -59,13 +61,17 @@
   "dependencies": {
     "acorn": "^8.15.0",
     "highlight.js": "^11.11.1",
-    "markdown-it": "^14.1.0"
+    "markdown-it": "^14.3.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "devDependencies": {
-    "esbuild": "^0.28.0",
+    "esbuild": "^0.28.1",
     "playwright": "^1.60.0"
   }
 }

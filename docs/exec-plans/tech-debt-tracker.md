@@ -101,11 +101,14 @@
   - `docs/exec-plans/completed/2026-05-31-folding-rule-priority-governance.md`
 
 ### 10. Release workflow and trusted publishing / 发布流程与 trusted publishing
-- Status: deferred / 状态：已推迟
+- Status: manual release runbook accepted; first-public-release execution in progress; post-package trusted publishing remains deferred / 状态：手动发布运行手册已接受；首次公开发布执行进行中；package 建立后的 trusted publishing 仍已推迟
 - Problem: Stage 7 makes the package pack-ready and smoke-verified, but it intentionally does not decide how maintainers publish to npm. Adding a CI publish workflow later needs an authentication model, provenance expectations, package-name availability check, and release approval boundary. / 问题：阶段 7 只让 package 达到可打包并通过 smoke 验证的状态，但有意不决定维护者如何发布到 npm。后续添加 CI 发布流程时，需要决定认证模型、provenance 预期、包名可用性检查和发布审批边界。
+- Resolution so far: `docs/design-docs/npm-release-runbook.md` now defines the durable manual workflow, clean-release-commit invariant, candidate-versus-published-artifact distinction, guarded directory-based `npm publish`, `next` verification boundary, evidence template, and failure recovery. It explicitly forbids positional tarball publication because the verified npm 12 path skips the package's `prepublishOnly`. / 当前解决进展：`docs/design-docs/npm-release-runbook.md` 已定义长期手动流程、干净 release commit 不变量、候选制品与已发布制品的区别、受 guard 保护且基于工作树的 `npm publish`、`next` 验证边界、证据模板与失败恢复。由于已验证的 npm 12 路径会跳过 package 的 `prepublishOnly`，该文档明确禁止带位置 tarball 的发布。
 - Preferred direction: evaluate npm trusted publishing/OIDC for CI-based npm releases before introducing any long-lived npm automation token; if manual publish remains the first release path, document the exact `npm pack` smoke, `npm publish` command, 2FA expectations, and rollback/deprecate policy. / 建议方向：在为 npm 发布引入任何长期自动化 token 前，先评估 npm trusted publishing/OIDC；如果首个发布路径仍采用手动发布，则记录精确的 `npm pack` smoke、`npm publish` 命令、2FA 预期，以及回滚/deprecate 策略。
 - Reference: npm trusted publishing documentation, `https://docs.npmjs.com/trusted-publishers/`. / 参考：npm trusted publishing 文档，`https://docs.npmjs.com/trusted-publishers/`。
 - Related docs: / 相关文档：
+  - `docs/design-docs/npm-release-runbook.md`
+  - `docs/exec-plans/active/2026-07-31-first-public-npm-release.md`
   - `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`
   - `CHANGELOG.md`
 

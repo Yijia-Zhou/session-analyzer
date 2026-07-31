@@ -43,9 +43,11 @@ When changing product behavior or repository structure:
 - Code Mode operations design: `docs/design-docs/code-mode-operations.md`
 - Code Mode structured display catalog: `docs/design-docs/code-mode-structured-display-catalog.md`
 - Schema update runbook: `docs/design-docs/schema-update-runbook.md`
+- npm release runbook: `docs/design-docs/npm-release-runbook.md`
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Active plans:
+  - `docs/exec-plans/active/2026-07-31-first-public-npm-release.md`
 - Completed plans:
   - `docs/exec-plans/completed/2026-07-31-planning-semantic-facet.md`
   - `docs/exec-plans/completed/2026-07-30-subagent-activity-correlation.md`
