@@ -5,10 +5,13 @@
   const i18n = typeof module === 'object' && module.exports
     ? require('../shared/i18n')
     : root.sessionI18n;
-  const api = factory(commandHighlighting, i18n);
+  const codeModePresentationContract = typeof module === 'object' && module.exports
+    ? require('../shared/code-mode-presentation-contract')
+    : root.sessionCodeModePresentationContract;
+  const api = factory(commandHighlighting, i18n, codeModePresentationContract);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionRenderers = api;
-}(typeof globalThis !== 'undefined' ? globalThis : this, (commandHighlighting, i18n) => {
+}(typeof globalThis !== 'undefined' ? globalThis : this, (commandHighlighting, i18n, codeModePresentationContract) => {
   'use strict';
 
   function locale() {
@@ -193,7 +196,20 @@
   }
 
   function renderMarkdown(section) {
-    return `<section class="eventSection mdBlock">${renderSectionTitle(section)}${section.html || ''}</section>`;
+    const roleClass = section.role === 'web_result' ? ' webResultMarkdown' : '';
+    return `<section class="eventSection mdBlock${roleClass}">${renderSectionTitle(section)}${section.html || ''}</section>`;
+  }
+
+  function renderWebRequest(section) {
+    const groups = (section.groups || []).map((group) => {
+      const items = (group.items || []).map((item) => {
+        const entries = (item.entries || []).map((entry) => `<span class="webRequestMetaItem"><strong>${escapeHtml(entry.key || '')}</strong>${escapeHtml(entry.value || '')}</span>`).join('');
+        return `<li class="webRequestItem"><div class="webRequestPrimary">${escapeHtml(item.primary || '')}</div>${entries ? `<div class="webRequestMeta">${entries}</div>` : ''}</li>`;
+      }).join('');
+      return items ? `<section class="webRequestGroup"><h4>${escapeHtml(group.title || '')}</h4><ol class="webRequestItems">${items}</ol></section>` : '';
+    }).join('');
+    const options = (section.options || []).map((entry) => `<span class="webRequestOption"><strong>${escapeHtml(entry.key || '')}</strong>${escapeHtml(entry.value || '')}</span>`).join('');
+    return `<section class="eventSection webRequestBlock">${renderSectionTitle(section)}${groups}${options ? `<div class="webRequestOptions">${options}</div>` : ''}</section>`;
   }
 
   function renderCode(section) {
@@ -211,7 +227,7 @@
   }
 
   function isCommandSection(section) {
-    return section?.type === 'code' && String(section.title || '').toLowerCase() === 'command';
+    return section?.type === 'code' && (section.role === 'command' || String(section.title || '').toLowerCase() === 'command');
   }
 
   function isTerminalOutputSection(section) {
@@ -356,6 +372,62 @@
     return `<section class="eventSection"><details class="rawJsonDetails"${open}><summary>${renderInlineTitle(section)}</summary><div class="jsonBlock"><pre>${escapeHtml(JSON.stringify(section.value, null, 2))}</pre></div></details></section>`;
   }
 
+  function renderEventRefs(section) {
+    const items = (section.items || []).map((item) => {
+      const meta = [item.kind, item.status].filter(Boolean).join(' · ');
+      return `<li><button class="smallBtn" type="button" data-detail-action="jump-event-ref" data-event-ref-id="${escapeHtml(item.id || '')}">${escapeHtml(item.label || item.id || '')}</button>${meta ? `<span>${escapeHtml(meta)}</span>` : ''}</li>`;
+    }).join('');
+    return `<section class="eventSection"><div class="eventRefsBlock">${renderSectionTitle(section)}<ul>${items}</ul></div></section>`;
+  }
+
+  function renderCodeModeTrace(section) {
+    const open = section.expanded ? ' open' : '';
+    const phases = (section.phases || []).map((phase) => {
+      const entries = (phase.entries || []).map((entry) => `<span><strong>${escapeHtml(entry.key || '')}</strong>${escapeHtml(entry.value || '')}</span>`).join('');
+      const output = phase.output ? `<pre><code>${escapeHtml(phase.output)}</code></pre>` : '';
+      return `<article class="codeModeTracePhase"><header><strong>${escapeHtml(phase.title || '')}</strong>${entries ? `<div>${entries}</div>` : ''}</header>${output}</article>`;
+    }).join('');
+    return `<section class="eventSection"><details class="codeModeTrace"${open}><summary>${renderInlineTitle(section)}</summary><div class="codeModeTraceBody">${phases}</div></details></section>`;
+  }
+
+  function renderCodeModeSource(section) {
+    const open = section.expanded ? ' open' : '';
+    const language = section.language || 'javascript';
+    return `<section class="eventSection"><details class="codeModeSource"${open}><summary><span>${renderInlineTitle(section)}</span><code>${escapeHtml(language)}</code></summary><div class="codeModeSourceBody"><pre><code class="language-${escapeHtml(language)} hljs">${highlightCode(section.code || '', language)}</code></pre></div></details></section>`;
+  }
+
+  function codeModeProjectionRequestBadge(value) {
+    const badge = codeModePresentationContract.codeModeRequestEvidenceBadge(value);
+    return badge ? { className: badge.className, label: tr(badge.labelKey) } : null;
+  }
+
+  function codeModeProjectionResultBadge(value) {
+    const badge = codeModePresentationContract.codeModeResultAssociationBadge(value);
+    return badge ? { className: badge.className, label: tr(badge.labelKey) } : null;
+  }
+
+  function renderCodeModeToolProjection(section) {
+    const requestSections = Array.isArray(section.requestSections) ? section.requestSections : [];
+    const resultSections = Array.isArray(section.resultSections) ? section.resultSections : [];
+    const requestBadge = codeModeProjectionRequestBadge(section.requestEvidence);
+    const resultBadge = codeModeProjectionResultBadge(section.resultAssociation);
+    const badges = [
+      requestBadge ? `<span class="codeModeEvidenceBadge requestEvidence ${requestBadge.className}">${escapeHtml(requestBadge.label)}</span>` : '',
+      resultBadge ? `<span class="codeModeEvidenceBadge resultAssociation ${resultBadge.className}">${escapeHtml(resultBadge.label)}</span>` : '',
+    ].join('');
+    const toolName = section.toolName ? `<code class="codeModeToolProjectionTool">${escapeHtml(section.toolName)}</code>` : '';
+    const requestBody = renderSections(requestSections);
+    const resultBody = renderSections(resultSections);
+    const request = requestBody
+      ? `<div class="codeModeToolProjectionPart request"><div class="codeModeToolProjectionPartLabel">${escapeHtml(tr('request'))}</div><div class="codeModeToolProjectionSections">${requestBody}</div></div>`
+      : '';
+    const result = (section.resultObserved || resultSections.length) && resultBody
+      ? `<div class="codeModeToolProjectionPart result"><div class="codeModeToolProjectionPartLabel">${escapeHtml(tr('result'))}</div><div class="codeModeToolProjectionSections">${resultBody}</div></div>`
+      : '';
+    const sourceOrder = Number.isFinite(section.sourceOrder) ? ` data-source-order="${escapeHtml(section.sourceOrder)}"` : '';
+    return `<section class="eventSection codeModeToolProjection"${sourceOrder}><header class="codeModeToolProjectionHeader"><div class="codeModeToolProjectionHeading">${renderSectionTitle(section)}${toolName}</div>${badges ? `<div class="codeModeEvidenceBadges">${badges}</div>` : ''}</header><div class="codeModeToolProjectionBody">${request}${result}</div></section>`;
+  }
+
   function renderSection(section) {
     if (!section || !section.type) return '';
     switch (section.type) {
@@ -381,6 +453,8 @@
         return renderUserInput(section);
       case 'plan_update':
         return renderPlanUpdate(section);
+      case 'web_request':
+        return renderWebRequest(section);
       case 'collaboration':
         return renderCollaboration(section);
       case 'image_preview':
@@ -389,6 +463,14 @@
         return renderNotice(section);
       case 'raw_json':
         return renderRawJson(section);
+      case 'event_refs':
+        return renderEventRefs(section);
+      case 'code_mode_trace':
+        return renderCodeModeTrace(section);
+      case 'code_mode_source':
+        return renderCodeModeSource(section);
+      case 'code_mode_tool_projection':
+        return renderCodeModeToolProjection(section);
       default:
         return renderRawJson({ title: section.title || 'Raw JSON', value: section.value || section });
     }

@@ -30,7 +30,7 @@ Codex 转录可能包含提示词、命令输出、文件路径、环境详情�
 
 ## 环境要求
 
-- Node.js 18 或更高版本
+- 受支持的 Node.js LTS，最低 Node.js 22（推荐 Node.js 24）
 - npm
 
 ## 通过 npm 运行
@@ -106,6 +106,13 @@ npm run build
 npm test
 ```
 
+安装 Chromium 并运行浏览器覆盖：
+
+```sh
+npm run browser:install
+npm run test:browser
+```
+
 发布打包前运行 package smoke 验证：
 
 ```sh
@@ -113,6 +120,14 @@ npm run test:package
 ```
 
 package smoke 命令会执行 `npm pack`，把 tarball 安装到全新的临时项目中，检查已安装 CLI 的 help，并启动打包后的 server。
+
+运行可重复的非浏览器 release gate：
+
+```sh
+npm run release:check
+```
+
+Release gate 会检查生成资产、运行完整 Node 测试，并重复执行安装后 package smoke。Browser coverage 继续作为独立的 CI 与本地发布要求。
 
 `test/fixtures/codex-home` 下的测试 fixture 是合成转录数据。它们有意包含假的 Windows 路径和示例转录形态，用于覆盖解析器行为。
 
@@ -123,7 +138,7 @@ package smoke 命令会执行 `npm pack`，把 tarball 安装到全新的临时�
 1. 选择目标项目，或在启动服务器时传入 `--repo`。
 2. 从左侧面板选择一个会话。
 3. 使用 `Main timeline` 进行日常阅读，使用 `Protocol layer` 查看注入上下文和生命周期记录，使用 `Raw records` 查看精确转录行。
-4. 使用忽略大小写的普通文本短语或筛选条件搜索，例如 `file:src/parser.js`、`kind:command`、`status:failed` 和 `layer:raw`。短语中的空白可以匹配空格、Tab 或换行。
+4. 在搜索 HUD 中输入忽略大小写的普通文本短语；短语中的空白可以匹配空格、Tab 或换行。打开“搜索选项”可在当前 session 与整个项目之间切换，编辑始终可见的“涉及文件”“类型”或“状态”筛选，查看完整计数，或跳到相邻的全局层级选择器。`status:failed` 等类似操作符的输入仍按字面文本搜索。
 5. 打开事件以检查结构化详情和原始引用。
 
 npm 包不承诺稳定的程序接口。v0.1 支持的接口是 `session-analyzer` CLI。
@@ -141,7 +156,7 @@ npm 包不承诺稳定的程序接口。v0.1 支持的接口是 `session-analyze
 - `src/codex.js`：转录解析、项目发现、索引、逻辑时间线构建和事件详情提取。
 - `src/folding.js`：内置时间线折叠策略。
 - `src/shared/`：浏览器与 Node 共用逻辑，例如折叠规则求值和命令高亮元数据。
-- `src/browser/`：浏览器 UI 源码、搜索解析、渲染器、导航和应用接线。
+- `src/browser/`：浏览器 UI 源码、搜索控件与状态模型、渲染器、导航和应用接线。
 - `public/`：静态 HTML/CSS 和生成的浏览器运行时资产。
 - `test/`：Node 测试套件和合成转录 fixture。
 - `docs/`：产品规格、设计文档、执行计划和 backlog 笔记。

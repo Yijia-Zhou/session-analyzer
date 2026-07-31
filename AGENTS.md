@@ -4,6 +4,8 @@ This repository keeps long-lived project intent in `docs/` rather than expanding
 
 ## Documentation map
 
+- `CONTEXT.md`
+  - Canonical bilingual domain terminology and words to avoid.
 - `docs/product-specs/`
   - External behavior, user value, scope boundaries, acceptance criteria.
 - `docs/design-docs/`
@@ -34,13 +36,36 @@ When changing product behavior or repository structure:
 
 ## Current anchors
 
+- Domain language: `CONTEXT.md`
 - Product spec: `docs/product-specs/session-transcript-analyzer.md`
 - Design doc: `docs/design-docs/logical-event-timeline.md`
+- Timeline loading/rendering performance: `docs/design-docs/timeline-loading-and-rendering-performance.md`
+- Code Mode operations design: `docs/design-docs/code-mode-operations.md`
+- Code Mode structured display catalog: `docs/design-docs/code-mode-structured-display-catalog.md`
 - Schema update runbook: `docs/design-docs/schema-update-runbook.md`
+- npm release runbook: `docs/design-docs/npm-release-runbook.md`
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
-- Active plans: none
+- Active plans:
+  - `docs/exec-plans/active/2026-07-31-first-public-npm-release.md`
 - Completed plans:
+  - `docs/exec-plans/completed/2026-07-31-planning-semantic-facet.md`
+  - `docs/exec-plans/completed/2026-07-30-subagent-activity-correlation.md`
+  - `docs/exec-plans/completed/2026-07-30-tool-lifecycle-family-contract.md`
+  - `docs/exec-plans/completed/2026-07-30-code-mode-detail-presentation-contract.md`
+  - `docs/exec-plans/completed/2026-07-25-code-mode-request-facets-and-folding.md`
+  - `docs/exec-plans/completed/2026-07-22-code-mode-context-and-discoverability.md`
+  - `docs/exec-plans/completed/2026-07-20-timeline-transition-safety-and-profiling.md`
+  - `docs/exec-plans/completed/2026-07-16-code-mode-adaptive-presentation.md`
+  - `docs/exec-plans/completed/2026-07-15-code-mode-structured-nested-projections.md`
+  - `docs/exec-plans/completed/2026-07-14-code-mode-operation-grouping.md`
+  - `docs/exec-plans/completed/2026-07-13-codex-event-schema-review.md`
+  - `docs/exec-plans/completed/2026-07-12-search-jump-target-canonicalization.md`
+  - `docs/exec-plans/completed/2026-07-06-search-hud-integration.md`
+  - `docs/exec-plans/completed/2026-06-29-search-scope-mental-model-convergence.md`
+  - `docs/exec-plans/completed/2026-06-28-search-navigation-state-convergence.md`
+  - `docs/exec-plans/completed/2026-06-26-search-count-and-jump-target-convergence.md`
+  - `docs/exec-plans/completed/2026-06-26-search-detail-state-convergence.md`
   - `docs/exec-plans/completed/2026-06-15-external-review-followups.md`
   - `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`
   - `docs/exec-plans/completed/2026-06-02-inspector-search-target-reveal.md`
@@ -52,3 +77,7 @@ When changing product behavior or repository structure:
   - `docs/exec-plans/completed/2026-04-20-session-analyzer-v1.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
   - `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md`
+
+## Tips
+
+如果你觉得需要，可以通过 `$spawn-specified-subagent` 派出 `gpt-5.6-luna`（thinking effort: max）subagent，处理繁重、复杂但不需要较强启发式判断的任务。Max effort 可能需要数十分钟；不要频繁使用很短的 `wait_agent` timeout。

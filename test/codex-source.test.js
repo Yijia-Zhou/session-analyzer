@@ -6,12 +6,18 @@ const {
   CANONICAL_SCHEMA_VERSION,
   CODEX_JSONL_LINE_LOCATOR_TYPE,
   CODEX_SOURCE_KIND,
+  SUB_AGENT_ACTIVITY_EVENT_TYPE,
   codexSourceLocator,
   createCodexRawParser,
   rawEventsForLogicalEvent,
   rawMatchesEvent,
   rawRef,
+  subAgentActivityEventId,
 } = require('../src/codex-source');
+const {
+  TOOL_LIFECYCLE_DESCRIPTORS,
+  TOOL_LIFECYCLE_FAMILY,
+} = require('../src/codex-tool-lifecycle-contract');
 
 function flattenText(value) {
   if (value == null) return '';
@@ -141,4 +147,100 @@ test('raw parser preserves unknown records through generic fallback fields', () 
   assert.deepEqual(raw.embeddedImages, [{ previewId: 'image-1' }]);
   assert.equal(raw.parsed.payload.type, 'future_protocol_shape');
   assert.equal(raw.parsed.payload.nested.message, 'new protocol payload at C:\\Users\\Yijia\\repo');
+});
+
+test('raw parser exposes exact subagent activity identity without generic call-id admission', () => {
+  const { makeRawEvent } = makeParser();
+  const raw = makeRawEvent({
+    timestamp: '2026-07-30T10:01:00.000Z',
+    type: 'event_msg',
+    payload: {
+      type: SUB_AGENT_ACTIVITY_EVENT_TYPE,
+      event_id: 'coordination-event-1',
+      agent_thread_id: 'agent-thread-1',
+      agent_path: '/root/fixture-agent',
+      kind: 'interacted',
+      occurred_at_ms: 1785405660000,
+    },
+  }, 5, '2026\\07\\30\\rollout.jsonl', 'session-id');
+  const lookalike = makeRawEvent({
+    timestamp: '2026-07-30T10:01:01.000Z',
+    type: 'event_msg',
+    payload: {
+      type: 'sub_agent_activity_future',
+      event_id: 'coordination-event-1',
+    },
+  }, 6, '2026\\07\\30\\rollout.jsonl', 'session-id');
+
+  assert.equal(raw.payloadType, SUB_AGENT_ACTIVITY_EVENT_TYPE);
+  assert.equal(raw.callId, '');
+  assert.equal(subAgentActivityEventId(raw), 'coordination-event-1');
+  assert.equal(subAgentActivityEventId(lookalike), '');
+  assert.equal(subAgentActivityEventId({
+    ...raw,
+    parsed: { payload: { ...raw.parsed.payload, event_id: 42 } },
+  }), '');
+});
+
+test('raw parser preserves real-shaped view-image mirror correlation without semantic admission', () => {
+  const { makeRawEvent } = makeParser();
+  const raw = makeRawEvent({
+    timestamp: '2026-07-30T10:02:00.000Z',
+    type: 'event_msg',
+    payload: {
+      type: 'view_image_tool_call',
+      call_id: 'call-view-image',
+      path: 'G:\\fixture\\preview.png',
+    },
+  }, 7, '2026\\07\\30\\rollout.jsonl', 'session-id');
+
+  assert.equal(raw.payloadType, 'view_image_tool_call');
+  assert.equal(raw.callId, 'call-view-image');
+  assert.equal(raw.toolName, '');
+  assert.equal(subAgentActivityEventId(raw), '');
+  assert.match(raw.searchText, /view_image_tool_call/);
+  assert.match(raw.searchText, /preview\.png/);
+});
+
+test('raw parser preserves specialized and generic enrichment for every admitted lifecycle member', () => {
+  const { makeRawEvent } = makeParser();
+
+  for (const [index, descriptor] of TOOL_LIFECYCLE_DESCRIPTORS.entries()) {
+    const marker = `marker-${descriptor.wireType}`;
+    const payload = {
+      type: descriptor.wireType,
+      call_id: `call-${index}`,
+      marker,
+    };
+    if (descriptor.family === TOOL_LIFECYCLE_FAMILY.COMMAND) {
+      payload.command = ['node', '--version'];
+      payload.stdout = marker;
+    }
+    if (descriptor.family === TOOL_LIFECYCLE_FAMILY.PATCH) {
+      payload.changes = { [`src/${marker}.js`]: { kind: 'update' } };
+      payload.patch = marker;
+    }
+
+    const raw = makeRawEvent({
+      timestamp: '2026-06-10T10:02:00.000Z',
+      type: 'event_msg',
+      payload,
+    }, index + 1, '2026\\06\\10\\rollout.jsonl', 'session-id');
+
+    assert.equal(raw.payloadType, descriptor.wireType);
+    assert.equal(raw.callId, `call-${index}`);
+    assert.match(raw.searchText, new RegExp(marker));
+    if (descriptor.family === TOOL_LIFECYCLE_FAMILY.COMMAND) {
+      assert.equal(raw.commandText, 'node --version');
+    } else if (descriptor.family === TOOL_LIFECYCLE_FAMILY.PATCH) {
+      assert.deepEqual(raw.touchedFiles, [`src/${marker}.js`]);
+      assert.equal(raw.output, marker);
+    } else {
+      assert.match(raw.preview, new RegExp(descriptor.wireType));
+    }
+    assert.equal(
+      raw.toolName,
+      descriptor.wireType === 'image_generation_end' ? 'image_generation' : '',
+    );
+  }
 });

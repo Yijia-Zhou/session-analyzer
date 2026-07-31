@@ -3,17 +3,33 @@
 function createCodexLogicalBuilder(deps) {
   const {
     envelope,
+    goal,
     protocol,
     tool,
     text,
     usage,
+    codeMode,
+    agentCoordination,
   } = deps;
+  const {
+    deriveCodeModeFacts,
+    projectCodeModeOperations,
+  } = codeMode;
   const {
     CANONICAL_SCHEMA_VERSION,
     CODEX_SOURCE_KIND,
     sanitizeLogicalEnvelopeValue,
     rawRef,
+    subAgentActivityEventId,
   } = envelope;
+  const {
+    goalResponseFromValue,
+    goalSnapshotFromGoal,
+    goalSnapshotFromRaw,
+    goalSnapshotSignature,
+    goalSnapshotTransition,
+    normalizeGoalStatus,
+  } = goal;
   const {
     classifyProtocolText,
     humanizeProtocolSubtype,
@@ -21,7 +37,8 @@ function createCodexLogicalBuilder(deps) {
     protocolPreviewFor,
   } = protocol;
   const {
-    TOOL_EVENT_TYPES,
+    TOOL_LIFECYCLE_EVENT_TYPES,
+    TOOL_LIFECYCLE_FAMILY,
     commandArgsFromRaw,
     commandToText,
     inferPatchSuccess,
@@ -31,7 +48,15 @@ function createCodexLogicalBuilder(deps) {
     parseOutputEnvelope,
     patchFilesFromPatchInput,
     touchFilesFromOutputText,
+    isToolLifecycleCallGroupType,
+    isToolLifecycleFamily,
+    isToolLifecycleStandaloneType,
+    toolLifecycleRepresentativeRank,
   } = tool;
+  const CODE_MODE_ASSOCIATION_EVENT_TYPES = new Set([
+    ...TOOL_LIFECYCLE_EVENT_TYPES,
+    'web_search_end',
+  ]);
   const {
     displayValue,
     firstNonEmpty,
@@ -47,6 +72,17 @@ function createCodexLogicalBuilder(deps) {
   } = usage;
 
   const GOAL_TOOL_NAMES = new Set(['create_goal', 'get_goal', 'update_goal']);
+  const {
+    AGENT_COORDINATION_KIND,
+    isAgentCoordinationTool,
+  } = agentCoordination;
+  const TOOL_RESPONSE_ITEM_TYPES = new Set([
+    'function_call',
+    'function_call_output',
+    'custom_tool_call',
+    'custom_tool_call_output',
+    'image_generation_call',
+  ]);
 
   function createLogicalEvent(fields) {
     const preview = sanitizeLogicalEnvelopeValue(fields.preview || '');
@@ -83,14 +119,7 @@ function createCodexLogicalBuilder(deps) {
   }
 
   function toolLifecycleRank(raw) {
-    const type = String(raw?.payloadType || '');
-    if (/_declined$/.test(type)) return 4;
-    if (/_completed$/.test(type)) return 3;
-    if (/_end$/.test(type)) return 3;
-    if (/_started$/.test(type)) return 1;
-    if (/(?:_update|_delta)$/.test(type)) return 2;
-    if (/_begin$/.test(type)) return 1;
-    return 0;
+    return toolLifecycleRepresentativeRank(raw?.payloadType);
   }
 
   function representativeToolLifecycleRow(rows) {
@@ -108,20 +137,32 @@ function createCodexLogicalBuilder(deps) {
   }
 
   function groupedToolLifecycleLabel(row, fallback) {
-    if (row?.toolName === 'image_generation' || String(row?.payloadType || '').startsWith('image_generation_')) {
+    if (row?.toolName === 'image_generation'
+        || isToolLifecycleFamily(row?.payloadType, TOOL_LIFECYCLE_FAMILY.IMAGE_GENERATION)) {
       return 'Image Generation';
     }
     return humanizeProtocolSubtype(row?.payloadType || fallback || 'Other tool call');
   }
 
   function isHookLifecycleRow(raw) {
-    return raw?.recordType === 'event_msg' && [
-      'hook_begin',
-      'hook_end',
-      'hook_declined',
-      'hook_started',
-      'hook_completed',
-    ].includes(raw.payloadType);
+    return raw?.recordType === 'event_msg'
+      && isToolLifecycleFamily(raw.payloadType, TOOL_LIFECYCLE_FAMILY.HOOK);
+  }
+
+  function toolLifecycleRowsForFamily(group, family) {
+    return group.filter((raw) => raw.recordType === 'event_msg'
+      && isToolLifecycleFamily(raw.payloadType, family));
+  }
+
+  function isToolResponseItemRow(raw) {
+    return raw?.recordType === 'response_item'
+      && TOOL_RESPONSE_ITEM_TYPES.has(raw.payloadType);
+  }
+
+  function isToolOutcomeRow(raw) {
+    return isToolResponseItemRow(raw)
+      || (raw?.recordType === 'event_msg'
+        && isToolLifecycleCallGroupType(raw.payloadType));
   }
 
   function hookNameFromRow(row) {
@@ -194,13 +235,13 @@ function createCodexLogicalBuilder(deps) {
     return parsed && typeof parsed === 'object' ? parsed : null;
   }
 
-  function goalStatusFrom(toolName, requestValue, responseValue) {
-    return String(firstNonEmpty(
-      responseValue?.goal?.status,
+  function goalStatusFrom(toolName, requestSnapshot, responseValue, responseSnapshot) {
+    return normalizeGoalStatus(firstNonEmpty(
+      responseSnapshot?.status,
       responseValue?.status,
-      requestValue?.status,
+      requestSnapshot?.status,
       toolName === 'create_goal' ? 'active' : '',
-    ) || '').toLowerCase();
+    ));
   }
 
   function goalLabelFor(toolName, status) {
@@ -208,32 +249,98 @@ function createCodexLogicalBuilder(deps) {
     if (toolName === 'get_goal') return 'Goal status';
     if (status === 'complete') return 'Goal complete';
     if (status === 'blocked') return 'Goal blocked';
+    if (status === 'budget_limited') return 'Goal budget limited';
+    if (status === 'usage_limited') return 'Goal usage limited';
     return 'Goal updated';
   }
 
-  function buildGoalLogicalEvent(callId, group, toolName, functionCall, functionOutput) {
+  function goalSeverity(status) {
+    return ['blocked', 'incomplete', 'budget_limited', 'usage_limited'].includes(status)
+      ? 'warning'
+      : 'normal';
+  }
+
+  function goalPreviewStatus(status) {
+    return String(status || '').replace(/_/g, ' ');
+  }
+
+  function goalPreviewParts(snapshot, options = {}) {
+    const objective = displayValue(snapshot?.objective, 4000).trim();
+    const usageParts = [];
+    if (options.includeBudget || snapshot?.hasTokenBudget) {
+      const budget = snapshot?.tokenBudget == null || snapshot.tokenBudget === ''
+        ? 'unbounded'
+        : displayValue(snapshot.tokenBudget, 1000).trim();
+      usageParts.push(`budget: ${budget}`);
+    }
+    if (snapshot?.tokensUsed != null) usageParts.push(`tokens: ${snapshot.tokensUsed}`);
+    if (snapshot?.timeUsedSeconds != null) usageParts.push(`time: ${snapshot.timeUsedSeconds}s`);
+    return [
+      goalPreviewStatus(snapshot?.status),
+      usageParts.join(', '),
+      objective,
+    ].filter(Boolean);
+  }
+
+  function goalToolState(group, toolName, functionCall, functionOutput) {
     const first = group[0];
     const completed = Boolean(functionOutput);
     const requestValue = parseToolJsonValue(functionCall?.output) || {};
     const responseValue = goalOutputFromRaw(functionOutput) || {};
-    const goal = responseValue.goal && typeof responseValue.goal === 'object' ? responseValue.goal : {};
-    const objective = displayValue(firstNonEmpty(goal.objective, requestValue.objective), 4000).trim();
-    const status = completed ? goalStatusFrom(toolName, requestValue, responseValue) : 'incomplete';
+    const response = goalResponseFromValue(responseValue, {
+      threadId: firstNonEmpty(responseValue.threadId, responseValue.thread_id),
+      sessionId: first.sessionId,
+    });
+    const requestSnapshot = goalSnapshotFromGoal(requestValue, { sessionId: first.sessionId });
+    const responseSnapshot = response.snapshot;
+    const objective = firstNonEmpty(responseSnapshot?.objective, requestSnapshot?.objective);
+    const status = completed ? goalStatusFrom(toolName, requestSnapshot, responseValue, responseSnapshot) : 'incomplete';
+    const snapshot = responseSnapshot
+      ? goalSnapshotFromGoal({
+        ...responseSnapshot.goal,
+        objective,
+        status,
+      }, {
+        threadId: responseSnapshot.threadId,
+        sessionId: first.sessionId,
+      })
+      : null;
+    return {
+      completed,
+      objective,
+      requestSnapshot,
+      response,
+      snapshot,
+      status,
+    };
+  }
+
+  function buildGoalLogicalEvent(callId, group, toolName, functionCall, functionOutput) {
+    const first = group[0];
+    const {
+      completed,
+      objective,
+      requestSnapshot,
+      response,
+      snapshot,
+      status,
+    } = goalToolState(group, toolName, functionCall, functionOutput);
     const label = completed ? goalLabelFor(toolName, status) : 'Incomplete goal call';
-    const usageParts = [];
-    if (goal.tokensUsed != null) usageParts.push(`tokens: ${goal.tokensUsed}`);
-    if (goal.timeUsedSeconds != null) usageParts.push(`time: ${goal.timeUsedSeconds}s`);
-    const previewParts = [];
-    if (status) previewParts.push(status);
-    if (objective) previewParts.push(objective);
-    if (usageParts.length) previewParts.push(usageParts.join(', '));
+    const previewParts = goalPreviewParts({
+      objective,
+      status,
+      hasTokenBudget: snapshot?.hasTokenBudget || requestSnapshot?.hasTokenBudget,
+      tokenBudget: snapshot ? snapshot.tokenBudget : requestSnapshot?.tokenBudget,
+      tokensUsed: snapshot?.tokensUsed,
+      timeUsedSeconds: snapshot?.timeUsedSeconds,
+    }, { includeBudget: Boolean(snapshot) });
     const searchText = [
       toolName,
       status,
       objective,
-      displayValue(goal, 8000),
-      displayValue(responseValue.completionBudgetReport, 4000),
-      displayValue(responseValue.remainingTokens, 1000),
+      displayValue(snapshot?.goal, 8000),
+      displayValue(response.completionBudgetReport, 4000),
+      displayValue(response.remainingTokens, 1000),
       functionCall?.output,
       functionOutput?.output,
     ].filter(Boolean).join('\n');
@@ -249,7 +356,7 @@ function createCodexLogicalBuilder(deps) {
       label,
       preview: truncate(previewParts.join(' - ') || toolName || label),
       searchText,
-      severity: status === 'blocked' || status === 'incomplete' ? 'warning' : 'normal',
+      severity: goalSeverity(status),
       status,
       toolName,
       rawRefs: group.map(rawRef),
@@ -257,24 +364,144 @@ function createCodexLogicalBuilder(deps) {
     });
   }
 
-  function buildToolLogicalEvent(callId, group) {
-    const rawRefs = group.map(rawRef);
-    const channels = [...new Set(group.map((raw) => raw.recordType))];
+  function buildGoalSnapshotLogicalEvent(raw, snapshot, transition) {
+    const hasRecordedProgress = Number(snapshot.tokensUsed || 0) > 0 || Number(snapshot.timeUsedSeconds || 0) > 0;
+    const statusLabel = goalLabelFor('thread_goal_updated', snapshot.status);
+    const hasSpecificStatusLabel = statusLabel !== 'Goal updated';
+    const label = hasSpecificStatusLabel
+      ? statusLabel
+      : transition === 'created' && !hasRecordedProgress
+        ? 'Goal created'
+        : transition === 'created'
+          ? 'Goal status'
+          : statusLabel;
+    const previewParts = goalPreviewParts(snapshot, { includeBudget: true });
+    return createLogicalEvent({
+      id: `${raw.sessionId}:logical:goal:${raw.line}`,
+      timestamp: raw.timestamp,
+      turnId: raw.turnId || '',
+      kind: 'goal',
+      subtype: 'thread_goal_updated',
+      layer: 'main',
+      role: 'system',
+      label,
+      preview: truncate(previewParts.join(' - ') || label),
+      searchText: uniqueNonEmpty([
+        'thread_goal_updated',
+        snapshot.status,
+        displayValue(snapshot.goal, 8000),
+      ]).join('\n'),
+      severity: goalSeverity(snapshot.status),
+      status: snapshot.status,
+      rawRefs: [rawRef(raw)],
+      channels: [raw.recordType],
+    });
+  }
+
+  function mergeGoalSnapshotRef(event, raw, snapshot) {
+    event.rawRefs.push(rawRef(raw));
+    event.rawRefs.sort((a, b) => a.line - b.line);
+    if (!event.channels.includes(raw.recordType)) event.channels.push(raw.recordType);
+    const preview = truncate(goalPreviewParts({ ...snapshot, status: event.status || snapshot.status }, { includeBudget: true }).join(' - '));
+    const searchText = uniqueNonEmpty([event.searchText, displayValue(snapshot.goal, 8000)]).join('\n');
+    event.preview = sanitizeLogicalEnvelopeValue(preview || event.preview);
+    event.searchText = sanitizeLogicalEnvelopeValue(searchText).trim();
+    event.hasLongOutput = event.preview.length > 800 || event.searchText.length > 1600;
+  }
+
+  function goalToolCandidateMatches(candidate, raw) {
+    if (candidate.matched) return false;
+    if (raw.line < candidate.startLine || raw.line > candidate.endLine + 1) return false;
+    if (raw.turnId && candidate.turnIds.length && !candidate.turnIds.includes(raw.turnId)) return false;
+    return true;
+  }
+
+  function nearestGoalToolEvent(candidates, raw) {
+    const matching = (candidates || []).filter((candidate) => goalToolCandidateMatches(candidate, raw));
+    const candidate = matching.reduce((nearest, current) => {
+      if (!nearest) return current;
+      const distance = raw.line <= current.endLine ? 0 : raw.line - current.endLine;
+      const nearestDistance = raw.line <= nearest.endLine ? 0 : raw.line - nearest.endLine;
+      return distance < nearestDistance || (distance === nearestDistance && current.startLine > nearest.startLine)
+        ? current
+        : nearest;
+    }, null);
+    if (!candidate) return null;
+    candidate.matched = true;
+    return candidate.event;
+  }
+
+  function textIncludes(source, needle) {
+    const sourceText = String(source || '');
+    const needleText = String(needle || '').trim();
+    return needleText && sourceText.includes(needleText);
+  }
+
+  function textIncludesAll(source, needles) {
+    return (needles || []).every((needle) => textIncludes(source, needle));
+  }
+
+  function firstTextCoveringAll(candidates, needles) {
+    return uniqueNonEmpty(candidates).find((candidate) => textIncludesAll(candidate, needles)) || '';
+  }
+
+  function addUncoveredTextPart(parts, candidate) {
+    const text = String(candidate || '').trim();
+    if (!text) return parts;
+    if (parts.some((part) => textIncludes(part, text))) return parts;
+    return [...parts.filter((part) => !textIncludes(text, part)), text];
+  }
+
+  function commandSearchText({ commandText, execEnd, execRows, functionOutputInfo, functionOutput, touchedFiles }) {
+    const parsedOutput = functionOutputInfo?.output || '';
+    const streamParts = uniqueNonEmpty(execRows.flatMap((raw) => [
+      raw.stdout,
+      raw.stderr,
+    ]));
+    const outputCandidates = uniqueNonEmpty([
+      parsedOutput,
+      execEnd?.aggregatedOutput,
+      execEnd?.parsed?.payload?.formatted_output,
+      parsedOutput ? '' : functionOutput?.output,
+      ...execRows.flatMap((raw) => [
+        raw.aggregatedOutput,
+        raw.parsed?.payload?.formatted_output,
+      ]),
+    ]);
+    const coveringOutput = streamParts.length ? firstTextCoveringAll(outputCandidates, streamParts) : '';
+    let outputParts = coveringOutput ? [coveringOutput] : streamParts;
+    for (const candidate of outputCandidates) {
+      outputParts = addUncoveredTextPart(outputParts, candidate);
+    }
+    let searchParts = addUncoveredTextPart([], commandText);
+    for (const outputPart of outputParts) {
+      searchParts = addUncoveredTextPart(searchParts, outputPart);
+    }
+    for (const touchedFile of touchedFiles || []) {
+      searchParts = addUncoveredTextPart(searchParts, touchedFile);
+    }
+    return searchParts.join('\n');
+  }
+
+  function buildToolLogicalEvent(callId, group, traceabilityRows = []) {
+    const rawRefs = [...group.map(rawRef), ...traceabilityRows.map(rawRef)];
+    const channels = [...new Set([...group, ...traceabilityRows].map((raw) => raw.recordType))];
     const first = group[0];
     const functionCall = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');
     const functionOutput = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
     const customCall = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call');
     const customOutput = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output');
-    const execRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('exec_command_'));
-    const patchRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('patch_apply_'));
-    const mcpRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('mcp_tool_call_'));
-    const imageRows = group.filter((raw) => (
-      raw.recordType === 'event_msg' && (raw.payloadType.startsWith('image_generation_call_') || raw.payloadType === 'image_generation_end')
-    ) || (raw.recordType === 'response_item' && raw.payloadType === 'image_generation_call'));
-    const dynamicRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('dynamic_tool_call_'));
-    const approvalRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('approval_request_'));
+    const execRows = toolLifecycleRowsForFamily(group, TOOL_LIFECYCLE_FAMILY.COMMAND);
+    const patchRows = toolLifecycleRowsForFamily(group, TOOL_LIFECYCLE_FAMILY.PATCH);
+    const mcpRows = toolLifecycleRowsForFamily(group, TOOL_LIFECYCLE_FAMILY.MCP_TOOL);
+    const imageRows = [
+      ...toolLifecycleRowsForFamily(group, TOOL_LIFECYCLE_FAMILY.IMAGE_GENERATION),
+      ...group.filter((raw) => raw.recordType === 'response_item' && raw.payloadType === 'image_generation_call'),
+    ].sort((a, b) => a.line - b.line);
+    const dynamicRows = toolLifecycleRowsForFamily(group, TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL);
+    const approvalRows = toolLifecycleRowsForFamily(group, TOOL_LIFECYCLE_FAMILY.APPROVAL);
     const hookRows = group.filter(isHookLifecycleRow);
-    const collabRows = group.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('collab_'));
+    const collabRows = toolLifecycleRowsForFamily(group, TOOL_LIFECYCLE_FAMILY.COLLABORATION);
     const execEnd = execRows.find((raw) => raw.payloadType === 'exec_command_end');
     const patchEnd = patchRows.find((raw) => raw.payloadType === 'patch_apply_end');
     const mcpEnd = mcpRows.find((raw) => raw.payloadType === 'mcp_tool_call_end');
@@ -297,24 +524,25 @@ function createCodexLogicalBuilder(deps) {
     const outputStats = {};
     const parts = [];
 
-    const protocolStatus = String(group.find((raw) => raw.status)?.status || '').toLowerCase();
-    const declined = group.some((raw) => /_declined$/.test(raw.payloadType) || String(raw.status || '').toLowerCase() === 'declined');
-    const failed = group.some((raw) => String(raw.status || '').toLowerCase() === 'failed');
-    const imageCallCompleted = group.some((raw) => raw.payloadType === 'image_generation_call'
+    const outcomeRows = group.filter(isToolOutcomeRow);
+    const protocolStatus = String(outcomeRows.find((raw) => raw.status)?.status || '').toLowerCase();
+    const declined = outcomeRows.some((raw) => /_declined$/.test(raw.payloadType) || String(raw.status || '').toLowerCase() === 'declined');
+    const failed = outcomeRows.some((raw) => String(raw.status || '').toLowerCase() === 'failed');
+    const imageCallCompleted = outcomeRows.some((raw) => raw.payloadType === 'image_generation_call'
       && ['completed', 'complete', 'success', 'succeeded'].includes(String(raw.status || '').toLowerCase()));
-    const completed = group.some((raw) => /_end$/.test(raw.payloadType)) || imageCallCompleted || Boolean(functionOutput || customOutput);
+    const completed = outcomeRows.some((raw) => /_end$/.test(raw.payloadType)) || imageCallCompleted || Boolean(functionOutput || customOutput);
     const explicitIncomplete = !completed && !failed && !declined;
 
+    const isCommandTool = toolName === 'shell_command' || execRows.length;
+
     if (execRows.length) {
-      const execText = execRows.map((raw) => [raw.commandText, raw.stdout, raw.stderr, raw.aggregatedOutput, raw.searchText].filter(Boolean).join('\n')).join('\n');
-      parts.push(execText);
       if (execEnd?.exitCode != null) outputStats.exitCode = execEnd.exitCode;
       if (execEnd?.durationMs) outputStats.durationMs = execEnd.durationMs;
     }
-    if (functionCall) parts.push(functionCall.output);
-    if (functionOutput) parts.push(functionOutput.output);
-    if (customCall) parts.push(customCall.output);
-    if (customOutput) parts.push(customOutput.output);
+    if (functionCall && !isCommandTool) parts.push(functionCall.output);
+    if (functionOutput && !isCommandTool) parts.push(functionOutput.output);
+    if (customCall && !isCommandTool) parts.push(customCall.output);
+    if (customOutput && !isCommandTool) parts.push(customOutput.output);
     if (mcpRows.length) parts.push(mcpRows.map((raw) => raw.searchText).join('\n'));
     if (imageRows.length) parts.push(imageRows.map((raw) => raw.searchText).join('\n'));
     if (dynamicRows.length) parts.push(dynamicRows.map((raw) => raw.searchText).join('\n'));
@@ -322,7 +550,7 @@ function createCodexLogicalBuilder(deps) {
     if (hookRows.length) parts.push(hookRows.map((raw) => raw.searchText).join('\n'));
     if (collabRows.length) parts.push(collabRows.map((raw) => raw.searchText).join('\n'));
 
-    if (toolName === 'shell_command' || execRows.length) {
+    if (isCommandTool) {
       kind = 'command';
       const args = commandArgsFromRaw(functionCall);
       const exitCode = numericExitCode(execEnd?.exitCode, functionOutputInfo?.exitCode, customOutputObj?.metadata?.exit_code);
@@ -336,6 +564,14 @@ function createCodexLogicalBuilder(deps) {
         outputStats.durationMs = Math.round(Number(customOutputObj.metadata.duration_seconds) * 1000);
       }
       touchedFiles = touchFilesFromOutputText(firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, functionOutputInfo?.output));
+      parts.push(commandSearchText({
+        commandText,
+        execEnd,
+        execRows,
+        functionOutputInfo,
+        functionOutput,
+        touchedFiles,
+      }));
     } else if (toolName === 'apply_patch' || patchRows.length) {
       kind = 'patch';
       const patchInput = firstNonEmpty(customCall?.output, patchRows.find((raw) => raw.output)?.output);
@@ -372,14 +608,21 @@ function createCodexLogicalBuilder(deps) {
       outputStats.durationMs = mcpEnd?.durationMs || 0;
     } else if (hookRows.length) {
       return buildHookLogicalEvent(`call:${callId}`, hookRows);
-    } else if (imageRows.length || dynamicRows.length || approvalRows.length || collabRows.length) {
+    } else if (collabRows.length || isAgentCoordinationTool(toolName)) {
+      kind = AGENT_COORDINATION_KIND;
+      const representativeRow = representativeToolLifecycleRow(collabRows);
+      label = representativeRow ? groupedToolLifecycleLabel(representativeRow, toolName) : toolName;
+      preview = truncate(representativeRow?.preview || functionCall?.output || functionOutput?.output || toolName || label);
+      status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
+      severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
+    } else if (imageRows.length || dynamicRows.length || approvalRows.length) {
       kind = 'other_tool_call';
-      const representativeRow = representativeToolLifecycleRow([...imageRows, ...dynamicRows, ...approvalRows, ...collabRows]);
+      const representativeRow = representativeToolLifecycleRow([...imageRows, ...dynamicRows, ...approvalRows]);
       label = groupedToolLifecycleLabel(representativeRow, toolName);
       preview = truncate(representativeRow?.preview || group.find((raw) => raw.preview)?.preview || toolName || label);
       status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
       severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
-    } else if (toolName === 'request_user_input' || toolName === 'update_plan' || toolName === 'view_image' || toolName === 'spawn_agent' || toolName === 'wait_agent' || toolName === 'send_input' || toolName === 'close_agent' || toolName === 'js_repl_reset') {
+    } else if (toolName === 'request_user_input' || toolName === 'update_plan' || toolName === 'view_image' || toolName === 'js_repl_reset') {
       kind = 'other_tool_call';
       label = toolName;
       preview = truncate(functionCall?.output || functionOutput?.output || toolName);
@@ -407,6 +650,32 @@ function createCodexLogicalBuilder(deps) {
       rawRefs,
       channels,
     });
+  }
+
+  function buildCodeModeLogicalEvent(operation, facts, rawById) {
+    const ownedRaws = facts.rawRefs
+      .map((ref) => rawById.get(ref.rawId))
+      .filter(Boolean);
+    const first = ownedRaws[0];
+    const execCall = rawById.get(operation.phases[0]?.callRef?.rawId);
+    const event = createLogicalEvent({
+      id: operation.id,
+      timestamp: first?.timestamp || '',
+      turnId: operation.turnId || first?.turnId || '',
+      kind: 'code_mode_operation',
+      layer: 'main',
+      role: 'assistant',
+      label: 'Code Mode operation',
+      preview: truncate(execCall?.output || ''),
+      searchText: facts.searchableText,
+      severity: 'normal',
+      status: '',
+      toolName: 'exec',
+      rawRefs: facts.rawRefs,
+      channels: [...new Set(ownedRaws.map((raw) => raw.recordType))],
+    });
+    event.codeModeOperation = { ...operation, eventRefs: facts.eventRefs };
+    return event;
   }
 
   function isWebSearchCall(raw) {
@@ -683,21 +952,73 @@ function createCodexLogicalBuilder(deps) {
     const logicalEvents = [];
     const consumed = new Set();
     const byCallId = new Map();
+    const subAgentActivityByEventId = new Map();
+    const goalToolEventsBySignature = new Map();
+    const previousGoalSnapshots = new Map();
+    const rawById = new Map(rawEvents.map((raw) => [raw.rawId, raw]));
+    const codeModeProjection = projectCodeModeOperations(rawEvents);
+    const initialCodeModeFacts = deriveCodeModeFacts({
+      projection: codeModeProjection,
+      rawEvents,
+      logicalEvents: [],
+      lifecycleTypes: CODE_MODE_ASSOCIATION_EVENT_TYPES,
+    });
+    const initialFactsByOperation = new Map(initialCodeModeFacts.operationFacts
+      .map((facts) => [facts.operationId, facts]));
+
+    for (const operation of codeModeProjection.operations) {
+      const event = buildCodeModeLogicalEvent(operation, initialFactsByOperation.get(operation.id), rawById);
+      logicalEvents.push(event);
+    }
+    for (const rawId of initialCodeModeFacts.claimedRawIds) consumed.add(rawId);
 
     for (const raw of rawEvents) {
       if (raw.callId) {
         if (!byCallId.has(raw.callId)) byCallId.set(raw.callId, []);
         byCallId.get(raw.callId).push(raw);
       }
+      const activityEventId = subAgentActivityEventId(raw);
+      if (activityEventId) {
+        if (!subAgentActivityByEventId.has(activityEventId)) subAgentActivityByEventId.set(activityEventId, []);
+        subAgentActivityByEventId.get(activityEventId).push(raw);
+      }
     }
 
-    for (const [callId, group] of byCallId.entries()) {
-      group.sort((a, b) => a.line - b.line);
-      const hasToolShape = group.some((raw) => raw.recordType === 'response_item' && ['function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output', 'image_generation_call'].includes(raw.payloadType))
-        || group.some((raw) => raw.recordType === 'event_msg' && TOOL_EVENT_TYPES.has(raw.payloadType));
+    for (const [callId, callGroup] of byCallId.entries()) {
+      const group = callGroup.filter((raw) => !consumed.has(raw.rawId)).sort((a, b) => a.line - b.line);
+      const hasToolShape = group.some(isToolResponseItemRow)
+        || group.some((raw) => raw.recordType === 'event_msg' && isToolLifecycleCallGroupType(raw.payloadType));
       if (!hasToolShape) continue;
-      logicalEvents.push(buildToolLogicalEvent(callId, group));
+      const hasAgentCoordinationOwner = group.some((raw) => raw.recordType === 'response_item'
+        && ['function_call', 'custom_tool_call'].includes(raw.payloadType)
+        && isAgentCoordinationTool(raw.toolName));
+      const groupRawIds = new Set(group.map((raw) => raw.rawId));
+      const traceabilityRows = hasAgentCoordinationOwner
+        ? (subAgentActivityByEventId.get(callId) || [])
+          .filter((raw) => !consumed.has(raw.rawId) && !groupRawIds.has(raw.rawId))
+          .sort((a, b) => a.line - b.line)
+        : [];
+      const logicalEvent = buildToolLogicalEvent(callId, group, traceabilityRows);
+      logicalEvents.push(logicalEvent);
+      if (logicalEvent.kind === 'goal' && ['create_goal', 'update_goal'].includes(logicalEvent.toolName)) {
+        const functionCall = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');
+        const functionOutput = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
+        const signature = goalSnapshotSignature(
+          goalToolState(group, logicalEvent.toolName, functionCall, functionOutput).snapshot,
+        );
+        if (signature) {
+          if (!goalToolEventsBySignature.has(signature)) goalToolEventsBySignature.set(signature, []);
+          goalToolEventsBySignature.get(signature).push({
+            event: logicalEvent,
+            startLine: group[0]?.line || 0,
+            endLine: group[group.length - 1]?.line || 0,
+            turnIds: [...new Set(group.map((raw) => raw.turnId).filter(Boolean))],
+            matched: false,
+          });
+        }
+      }
       for (const raw of group) consumed.add(raw.rawId);
+      for (const raw of traceabilityRows) consumed.add(raw.rawId);
     }
 
     for (let i = 0; i < rawEvents.length; i += 1) {
@@ -705,6 +1026,26 @@ function createCodexLogicalBuilder(deps) {
       if (consumed.has(raw.rawId)) continue;
       const next = rawEvents[i + 1];
       const prev = rawEvents[i - 1];
+
+      const goalSnapshot = goalSnapshotFromRaw(raw);
+      if (goalSnapshot) {
+        const previousSnapshot = previousGoalSnapshots.get(goalSnapshot.identityKey);
+        const transition = goalSnapshotTransition(previousSnapshot, goalSnapshot);
+        previousGoalSnapshots.set(goalSnapshot.identityKey, goalSnapshot);
+        const matchingToolEvent = nearestGoalToolEvent(
+          goalToolEventsBySignature.get(goalSnapshotSignature(goalSnapshot)),
+          raw,
+        );
+        if (matchingToolEvent) {
+          mergeGoalSnapshotRef(matchingToolEvent, raw, goalSnapshot);
+        } else if (transition) {
+          logicalEvents.push(buildGoalSnapshotLogicalEvent(raw, goalSnapshot, transition));
+        } else {
+          logicalEvents.push(buildProtocolEvent(raw, 'thread_goal_updated'));
+        }
+        consumed.add(raw.rawId);
+        continue;
+      }
 
       if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'user') {
         const protocolSubtype = classifyProtocolText(raw.messageText, raw.role);
@@ -830,7 +1171,7 @@ function createCodexLogicalBuilder(deps) {
         continue;
       }
 
-      if (isHookLifecycleRow(raw)) {
+      if (isHookLifecycleRow(raw) && isToolLifecycleStandaloneType(raw.payloadType)) {
         logicalEvents.push(buildHookLogicalEvent(raw.line, [raw]));
         consumed.add(raw.rawId);
         continue;
@@ -916,7 +1257,9 @@ function createCodexLogicalBuilder(deps) {
         consumed.add(raw.rawId);
         continue;
       }
-      if (raw.recordType === 'event_msg' && ['collab_agent_spawn_end', 'collab_agent_interaction_end', 'collab_waiting_end', 'collab_close_end'].includes(raw.payloadType)) {
+      if (raw.recordType === 'event_msg'
+          && isToolLifecycleStandaloneType(raw.payloadType)
+          && isToolLifecycleFamily(raw.payloadType, TOOL_LIFECYCLE_FAMILY.COLLABORATION)) {
         logicalEvents.push(buildLifecycleEvent(raw, 'subagent', 'Subagent', 'normal'));
         consumed.add(raw.rawId);
         continue;
@@ -934,6 +1277,23 @@ function createCodexLogicalBuilder(deps) {
 
       logicalEvents.push(buildProtocolEvent(raw, raw.payloadType || raw.recordType, raw.payloadType || raw.recordType));
       consumed.add(raw.rawId);
+    }
+
+    const finalCodeModeFacts = deriveCodeModeFacts({
+      projection: codeModeProjection,
+      rawEvents,
+      logicalEvents,
+      lifecycleTypes: CODE_MODE_ASSOCIATION_EVENT_TYPES,
+    });
+    for (const facts of finalCodeModeFacts.operationFacts) {
+      const event = logicalEvents.find((candidate) => candidate.id === facts.operationId);
+      if (event?.codeModeOperation) {
+        event.codeModeOperation = {
+          ...event.codeModeOperation,
+          eventRefs: facts.eventRefs,
+          phaseEventRefs: facts.phaseEventRefs,
+        };
+      }
     }
 
     const hasUntimestampedEvent = logicalEvents.some((event) => !event.timestamp);

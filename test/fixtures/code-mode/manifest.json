@@ -1,0 +1,66 @@
+{
+  "fixtures": [
+    {
+      "file": "direct-terminal.jsonl",
+      "scenario": "direct_terminal_with_nested_lifecycle",
+      "outerCallId": "exec-direct-fixture",
+      "observationState": "terminal",
+      "phaseCount": 1
+    },
+    {
+      "file": "pending-multi-wait.jsonl",
+      "scenario": "pending_multi_wait",
+      "outerCallId": "exec-chain-fixture",
+      "observationState": "terminal",
+      "phaseCount": 3
+    },
+    {
+      "file": "incomplete-tail.jsonl",
+      "scenario": "incomplete_tail",
+      "outerCallId": "exec-incomplete-fixture",
+      "observationState": "unknown",
+      "phaseCount": 1
+    },
+    {
+      "file": "unobserved-terminal.jsonl",
+      "scenario": "unobserved_terminal",
+      "outerCallId": "exec-unobserved-fixture",
+      "observationState": "unobserved_terminal",
+      "phaseCount": 1
+    },
+    {
+      "file": "require-escalated-negative.jsonl",
+      "scenario": "outer_js_is_not_nested_evidence",
+      "outerCallId": "exec-escalated-fixture",
+      "observationState": "terminal",
+      "phaseCount": 1
+    },
+    {
+      "file": "structured-declared-sequential.jsonl",
+      "scenario": "structured_declared_sequential",
+      "outerCallId": "exec-structured-fixture",
+      "observationState": "terminal",
+      "phaseCount": 1,
+      "declaredProjection": "bounded",
+      "projectionCount": 2
+    },
+    {
+      "file": "structured-declared-dynamic-fallback.jsonl",
+      "scenario": "structured_declared_dynamic_fallback",
+      "outerCallId": "exec-dynamic-fixture",
+      "observationState": "terminal",
+      "phaseCount": 1,
+      "declaredProjection": "raw_fallback",
+      "projectionCount": 0
+    },
+    {
+      "file": "observed-update-plan.jsonl",
+      "scenario": "observed_nested_update_plan",
+      "outerCallId": "exec-observed-plan-fixture",
+      "observationState": "terminal",
+      "phaseCount": 1,
+      "declaredProjection": "bounded",
+      "projectionCount": 1
+    }
+  ]
+}

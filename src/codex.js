@@ -6,9 +6,42 @@ const path = require('node:path');
 const readline = require('node:readline');
 const MarkdownIt = require('markdown-it');
 const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
+const agentCoordination = require('./shared/agent-coordination');
+const codeModeTools = require('./shared/code-mode-tools');
+const codeModePresentationContract = require('./shared/code-mode-presentation-contract');
+const planFacet = require('./shared/plan-facet');
+const toolLifecycleContract = require('./codex-tool-lifecycle-contract');
 const i18n = require('./shared/i18n');
+const {
+  codeModeAssociableOutputFragments,
+  codeModeDisplayOutputText,
+  codeModeOutputText,
+  projectCodeModeOperations,
+} = require('./codex-code-mode');
+const { projectDeclaredCodeModeCalls } = require('./codex-code-mode-declared');
+const {
+  buildCodeModePresentationIndexes,
+  CODE_MODE_SCRIPT_OPERATION_KIND,
+  codeModePresentationFactsForEvent,
+  codeModeExecSource,
+  codeModeRequestCatalog,
+  isCodeModeScriptOperation,
+  normalizeCodeModeRequest,
+} = require('./codex-code-mode-presentation');
+const { stripAnsiSequences } = require('./shared/terminal-text');
+const { deriveCodeModeFacts } = require('./codex-code-mode-facts');
+const { codeModePresentationContextMap } = require('./codex-presentation-context');
 const { createCodexDetailBuilder } = require('./codex-detail');
+const {
+  goalResponseFromValue,
+  goalSnapshotFromGoal,
+  goalSnapshotFromRaw,
+  goalSnapshotSignature,
+  goalSnapshotTransition,
+  normalizeGoalStatus,
+} = require('./codex-goal');
 const { createCodexLogicalBuilder } = require('./codex-logical');
+const { createCodexSearch } = require('./codex-search');
 const {
   CANONICAL_SCHEMA_VERSION,
   CODEX_SOURCE_KIND,
@@ -17,11 +50,12 @@ const {
   rawEventsForLogicalEvent,
   rawMatchesEvent,
   rawRef,
+  subAgentActivityEventId,
 } = require('./codex-source');
 
 const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
-const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'patch', 'kv', 'notice', 'raw_json', 'token_usage', 'usage_limits', 'user_input', 'plan_update', 'collaboration', 'image_preview']);
+const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'patch', 'kv', 'notice', 'raw_json', 'token_usage', 'usage_limits', 'user_input', 'plan_update', 'collaboration', 'image_preview', 'event_refs', 'code_mode_trace', 'code_mode_tool_projection', 'code_mode_source', 'web_request']);
 const TOOL_DATA_URL_MARKER = '[embedded data URL omitted; see raw refs]';
 const TIMELINE_DATA_URL_MARKER = '[data URL omitted]';
 const EMBEDDED_IMAGE_EXTERNALIZED_MARKER = '[embedded image payload externalized; open raw refs for source]';
@@ -31,20 +65,58 @@ const IMAGE_PREVIEW_MAX_DECODED_BYTES = 12 * 1024 * 1024;
 const SESSION_TITLE_LIMIT = 120;
 const SUBAGENT_SESSION_TITLE_LIMIT = 160;
 const REASONING_TEXT_LIMIT = 16000;
+const TRUNCATE_NATIVE_THRESHOLD = 1000;
+const RESET_TIME_CACHE_LIMIT = 512;
+const CODE_MODE_STRUCTURED_RESULT_MAX_CHARS = 32_000;
+const CODE_MODE_STRUCTURED_RESULT_MAX_DEPTH = 32;
+const CODE_MODE_STRUCTURED_RESULT_MAX_NODES = 1_000;
+
+const SAME_DAY_RESET_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  hour: 'numeric',
+  minute: '2-digit',
+});
+const FULL_RESET_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+});
+const resetTimeCache = new Map();
 
 let markdownRenderer = null;
 let gb18030ReverseMap = null;
 
+function fsPathFlavor(input) {
+  const text = String(input || '');
+  if (/^(?:[A-Za-z]:[\\/]|\\\\)/.test(text)) return 'win32';
+  if (text.startsWith('/')) return 'posix';
+  return process.platform === 'win32' ? 'win32' : 'posix';
+}
+
+function fsPathApi(input) {
+  return fsPathFlavor(input) === 'win32' ? path.win32 : path.posix;
+}
+
+function resolveFsPath(input) {
+  const text = String(input || '');
+  if (!text) return '';
+  return fsPathApi(text).resolve(text);
+}
+
 function normalizeFsPath(input) {
   if (!input) return '';
-  const resolved = path.resolve(input);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  const resolved = resolveFsPath(input);
+  return fsPathFlavor(input) === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
 function isPathInsideOrSame(child, parent) {
+  if (!child || !parent || fsPathFlavor(child) !== fsPathFlavor(parent)) return false;
   const c = normalizeFsPath(child);
   const p = normalizeFsPath(parent);
-  return c === p || c.startsWith(`${p}${path.sep}`);
+  const separator = fsPathApi(parent).sep;
+  const boundary = p.endsWith(separator) ? p : `${p}${separator}`;
+  return c === p || c.startsWith(boundary);
 }
 
 function throwIfAborted(signal) {
@@ -65,8 +137,12 @@ function normalizeSearchPath(input) {
 function displayProjectFile(file, repoRoot) {
   const text = String(file || '').trim();
   if (!text) return '';
-  if (path.isAbsolute(text) && repoRoot && isPathInsideOrSame(text, repoRoot)) {
-    return path.relative(repoRoot, text).replace(/\\/g, '/');
+  const pathApi = fsPathApi(text);
+  if (pathApi.isAbsolute(text)
+      && repoRoot
+      && fsPathFlavor(text) === fsPathFlavor(repoRoot)
+      && isPathInsideOrSame(text, repoRoot)) {
+    return pathApi.relative(resolveFsPath(repoRoot), resolveFsPath(text)).replace(/\\/g, '/');
   }
   return text.replace(/\\/g, '/').replace(/^\.\//, '');
 }
@@ -77,8 +153,46 @@ function safeIso(value) {
   return Number.isNaN(date.getTime()) ? '' : date.toISOString();
 }
 
+function isEcmaScriptWhitespace(codeUnit) {
+  return (codeUnit >= 0x0009 && codeUnit <= 0x000d)
+    || codeUnit === 0x0020
+    || codeUnit === 0x00a0
+    || codeUnit === 0x1680
+    || (codeUnit >= 0x2000 && codeUnit <= 0x200a)
+    || codeUnit === 0x2028
+    || codeUnit === 0x2029
+    || codeUnit === 0x202f
+    || codeUnit === 0x205f
+    || codeUnit === 0x3000
+    || codeUnit === 0xfeff;
+}
+
 function truncate(value, limit = 240) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  const source = String(value || '');
+  if (source.length <= TRUNCATE_NATIVE_THRESHOLD || !Number.isInteger(limit) || limit < 0) {
+    const text = source.replace(/\s+/g, ' ').trim();
+    if (text.length <= limit) return text;
+    return `${text.slice(0, Math.max(0, limit - 3))}...`;
+  }
+
+  const normalized = [];
+  let pendingWhitespace = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const codeUnit = source.charCodeAt(index);
+    if (isEcmaScriptWhitespace(codeUnit)) {
+      if (normalized.length) pendingWhitespace = true;
+      continue;
+    }
+    if (pendingWhitespace) {
+      normalized.push(' ');
+      pendingWhitespace = false;
+      if (normalized.length > limit) break;
+    }
+    normalized.push(source[index]);
+    if (normalized.length > limit) break;
+  }
+
+  const text = normalized.join('');
   if (text.length <= limit) return text;
   return `${text.slice(0, Math.max(0, limit - 3))}...`;
 }
@@ -115,6 +229,7 @@ const EVENT_KIND_LABELS = Object.freeze({
   patch: 'Patch',
   mcp_call: 'MCP call',
   js_repl: 'JS REPL',
+  agent_coordination: 'Subagent coordination',
   other_tool_call: 'Other tool call',
   proposed_plan: 'Proposed plan',
   plan_update: 'Plan update',
@@ -135,51 +250,6 @@ const EVENT_KIND_LABELS = Object.freeze({
   user_shell_command: 'User shell command',
   event: 'Event',
 });
-
-const TOOL_EVENT_TYPES = new Set([
-  'exec_command_begin',
-  'exec_command_update',
-  'exec_command_delta',
-  'exec_command_end',
-  'exec_command_declined',
-  'patch_apply_begin',
-  'patch_apply_update',
-  'patch_apply_delta',
-  'patch_apply_end',
-  'patch_apply_declined',
-  'mcp_tool_call_begin',
-  'mcp_tool_call_update',
-  'mcp_tool_call_delta',
-  'mcp_tool_call_end',
-  'mcp_tool_call_declined',
-  'image_generation_call_begin',
-  'image_generation_call_update',
-  'image_generation_call_delta',
-  'image_generation_call_end',
-  'image_generation_call_declined',
-  'image_generation_end',
-  'dynamic_tool_call_begin',
-  'dynamic_tool_call_update',
-  'dynamic_tool_call_delta',
-  'dynamic_tool_call_end',
-  'dynamic_tool_call_declined',
-  'approval_request_begin',
-  'approval_request_end',
-  'approval_request_declined',
-  'hook_begin',
-  'hook_end',
-  'hook_declined',
-  'hook_started',
-  'hook_completed',
-  'collab_agent_spawn_begin',
-  'collab_agent_spawn_end',
-  'collab_agent_interaction_begin',
-  'collab_agent_interaction_end',
-  'collab_waiting_begin',
-  'collab_waiting_end',
-  'collab_close_begin',
-  'collab_close_end',
-]);
 
 function flattenText(value, budget = 8000) {
   const parts = [];
@@ -351,21 +421,24 @@ function formatPercentValue(value) {
   return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
 }
 
-function formatResetTime(value) {
+function formatResetTime(value, now = new Date()) {
   if (value == null || value === '') return '';
   const source = typeof value === 'number' ? (value < 10000000000 ? value * 1000 : value) : value;
   const date = new Date(source);
   if (Number.isNaN(date.getTime())) return String(value);
-  const now = new Date();
   const sameYear = date.getFullYear() === now.getFullYear();
   const sameDay = sameYear && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
-  return date.toLocaleString('en-US', {
-    month: sameDay ? undefined : 'short',
-    day: sameDay ? undefined : 'numeric',
-    year: sameDay ? undefined : 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  const mode = sameDay ? 'same-day' : 'full';
+  const cacheKey = `${date.getTime()}|${mode}`;
+  const cached = resetTimeCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const formatted = (sameDay ? SAME_DAY_RESET_TIME_FORMATTER : FULL_RESET_TIME_FORMATTER).format(date);
+  if (resetTimeCache.size >= RESET_TIME_CACHE_LIMIT) {
+    resetTimeCache.delete(resetTimeCache.keys().next().value);
+  }
+  resetTimeCache.set(cacheKey, formatted);
+  return formatted;
 }
 
 function isRemainingKey(key) {
@@ -1121,7 +1194,7 @@ function inferTerminalLanguage(text) {
 }
 
 function maybePushTerminalSection(sections, title, text, stream = 'stdout', language = '') {
-  const source = normalizeTerminalReplacementPlaceholders(repairLikelyMojibake(text));
+  const source = normalizeTerminalReplacementPlaceholders(repairLikelyMojibake(stripAnsiSequences(text)));
   if (!source.trim()) return;
   sections.push({ type: 'terminal', title, text: source, stream, language: normalizeLanguage(language || inferTerminalLanguage(source), 'text') });
 }
@@ -1264,7 +1337,7 @@ function reviewMarkerMatchesSession(marker, session) {
 }
 
 function sessionReviewMarkers(session) {
-  if (Array.isArray(session._reviewMarkers) && session._reviewMarkers.length) return session._reviewMarkers;
+  if (Array.isArray(session._reviewMarkers)) return session._reviewMarkers;
   const markers = [];
   for (const raw of session.rawEvents || []) {
     if (raw.recordType !== 'event_msg') continue;
@@ -1438,7 +1511,7 @@ async function discoverConfiguredProjects({ codexHome }) {
   for (const line of text.split(/\r?\n/)) {
     const parsed = parseProjectConfigHeader(line);
     if (!parsed) continue;
-    const repoRoot = path.resolve(stripExtendedPathPrefix(expandEnvironmentVariables(parsed)));
+    const repoRoot = resolveFsPath(stripExtendedPathPrefix(expandEnvironmentVariables(parsed)));
     const key = normalizeFsPath(repoRoot);
     if (!key || projects.has(key)) continue;
     projects.set(key, {
@@ -1463,7 +1536,7 @@ async function discoverConfiguredProjects({ codexHome }) {
 
 async function inspectSessionFile(filePath, options = {}) {
   const signal = options.signal;
-  const repoRoot = options.repoRoot ? path.resolve(options.repoRoot) : '';
+  const repoRoot = options.repoRoot ? resolveFsPath(options.repoRoot) : '';
   throwIfAborted(signal);
   const stat = await fsp.stat(filePath);
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
@@ -1480,7 +1553,7 @@ async function inspectSessionFile(filePath, options = {}) {
       const payloadType = record.type === 'event_msg' ? record.payload?.type : '';
       const cwd = record.type === 'session_meta' || payloadType === 'session_configured' ? record.payload?.cwd : '';
       if (cwd) {
-        const resolvedCwd = path.resolve(cwd);
+        const resolvedCwd = resolveFsPath(cwd);
         cwdSet.add(resolvedCwd);
         if (repoRoot && isPathInsideOrSame(resolvedCwd, repoRoot)) {
           rl.close();
@@ -1565,6 +1638,7 @@ function makeEmptySession(filePath, relFile, stat) {
     title: '',
     sourceFile: relFile,
     sourceAbsFile: filePath,
+    sourceUpdatedAt: safeIso(stat.mtime),
     bytes: stat.size,
     lineCount: 0,
     cwdSet: new Set(),
@@ -1580,7 +1654,6 @@ function makeEmptySession(filePath, relFile, stat) {
     _reviewMarkers: [],
     rawEvents: [],
     logicalEvents: [],
-    searchText: '',
     counts: {
       turns: 0,
       messages: 0,
@@ -1602,11 +1675,11 @@ function makeEmptySession(filePath, relFile, stat) {
   };
 }
 
-function updateTimeRange(session, timestamp) {
-  const iso = safeIso(timestamp);
-  if (!iso) return;
-  if (!session.startedAt || iso < session.startedAt) session.startedAt = iso;
-  if (!session.updatedAt || iso > session.updatedAt) session.updatedAt = iso;
+// Invariant: callers pass an already normalized ISO timestamp; do not repeat safeIso here.
+function updateTimeRangeFromNormalizedTimestamp(session, timestamp) {
+  if (!timestamp) return;
+  if (!session.startedAt || timestamp < session.startedAt) session.startedAt = timestamp;
+  if (!session.updatedAt || timestamp > session.updatedAt) session.updatedAt = timestamp;
 }
 
 function commandToText(command) {
@@ -2117,34 +2190,49 @@ function requestUserInputSection(requestValue, responseValue) {
 }
 
 function goalStatusLabel(status) {
-  if (status === 'complete') return 'Complete';
-  if (status === 'blocked') return 'Blocked';
-  if (status === 'active') return 'Active';
-  return status ? humanizeProtocolSubtype(status) : '';
+  const normalized = normalizeGoalStatus(status);
+  if (normalized === 'complete') return 'Complete';
+  if (normalized === 'blocked') return 'Blocked';
+  if (normalized === 'active') return 'Active';
+  if (normalized === 'budget_limited') return 'Budget limited';
+  if (normalized === 'usage_limited') return 'Usage limited';
+  if (normalized === 'incomplete') return 'Incomplete';
+  return normalized ? humanizeProtocolSubtype(normalized) : '';
 }
 
-function goalSection(raws, event, requestValue, responseValue) {
-  const goal = responseValue?.goal && typeof responseValue.goal === 'object' ? responseValue.goal : {};
-  const objective = conciseToolValue(firstNonEmpty(goal.objective, requestValue?.objective), 4000);
-  const status = conciseToolValue(firstNonEmpty(goal.status, responseValue?.status, event.status), 200);
+function goalLimitValue(value) {
+  if (value === undefined || value === null || value === '') return 'Unbounded';
+  return conciseToolValue(value, 1000);
+}
+
+function goalSection(raws, event, requestValue, responseValue, snapshotOverride = null) {
+  const response = goalResponseFromValue(responseValue);
+  const snapshot = snapshotOverride || response.snapshot;
+  const requestSnapshot = goalSnapshotFromGoal(requestValue);
+  const objective = conciseToolValue(firstNonEmpty(snapshot?.objective, requestSnapshot?.objective), 4000);
+  const status = normalizeGoalStatus(firstNonEmpty(snapshot?.status, responseValue?.status, event.status, requestSnapshot?.status));
+  const hasTokenBudget = Boolean(snapshot) || Boolean(requestSnapshot?.hasTokenBudget);
+  const tokenBudget = snapshot ? snapshot.tokenBudget : requestSnapshot?.tokenBudget;
   const entries = [
     { key: 'Status', value: goalStatusLabel(status) || status },
-    { key: 'Tokens used', value: goal.tokensUsed == null ? '' : String(goal.tokensUsed) },
-    { key: 'Time used', value: goal.timeUsedSeconds == null ? '' : `${goal.timeUsedSeconds}s` },
-    { key: 'Created', value: goal.createdAt == null ? '' : String(goal.createdAt) },
-    { key: 'Updated', value: goal.updatedAt == null ? '' : String(goal.updatedAt) },
-    { key: 'Remaining tokens', value: responseValue?.remainingTokens == null ? '' : String(responseValue.remainingTokens) },
+    { key: 'Token budget', value: hasTokenBudget ? goalLimitValue(tokenBudget) : '' },
+    { key: 'Tokens used', value: snapshot?.tokensUsed == null ? '' : String(snapshot.tokensUsed) },
+    { key: 'Time used', value: snapshot?.timeUsedSeconds == null ? '' : `${snapshot.timeUsedSeconds}s` },
+    { key: 'Created', value: snapshot?.createdAt == null ? '' : String(snapshot.createdAt) },
+    { key: 'Updated', value: snapshot?.updatedAt == null ? '' : String(snapshot.updatedAt) },
+    { key: 'Remaining tokens', value: response.hasRemainingTokens ? goalLimitValue(response.remainingTokens) : '' },
   ].filter((entry) => entry.value !== '');
   const lines = [
     `### ${event.label || 'Goal'}`,
     status ? `**Status:** ${goalStatusLabel(status) || status}` : '',
+    hasTokenBudget ? `**Token budget:** ${goalLimitValue(tokenBudget)}` : '',
     objective ? `**Objective:**\n\n${objective}` : '',
   ].filter(Boolean);
   const sections = [];
   maybePushMarkdownSection(sections, 'Goal', lines.join('\n\n'));
   maybePushKvSection(sections, 'Goal usage', entries);
-  if (responseValue?.completionBudgetReport) {
-    maybePushStructuredSection(sections, 'Completion budget', responseValue.completionBudgetReport);
+  if (response.hasCompletionBudgetReport && response.completionBudgetReport != null && response.completionBudgetReport !== '') {
+    maybePushStructuredSection(sections, 'Completion budget', response.completionBudgetReport);
   }
   if (!sections.length) {
     sections.push(hideSectionTitle(makeNoticeSection(event.label || 'Goal', event.preview || event.label || 'Goal', event.severity === 'warning' ? 'warning' : 'info')));
@@ -2155,10 +2243,20 @@ function goalSection(raws, event, requestValue, responseValue) {
 function extractGoalSections(raws, event, splitSections) {
   const split = splitSections(extractToolSections(raws, event));
   const { requestValue, responseValue } = toolDetailValues(raws);
-  const timelineSections = goalSection(raws, event, requestValue, responseValue);
+  const snapshotRaw = raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'thread_goal_updated');
+  const normalizedSnapshot = goalSnapshotFromRaw(snapshotRaw);
+  const snapshotGoal = normalizedSnapshot?.goal;
+  const resolvedResponseValue = responseValue || (snapshotGoal && typeof snapshotGoal === 'object' ? { goal: snapshotGoal } : null);
+  const timelineSections = goalSection(raws, event, requestValue, resolvedResponseValue, normalizedSnapshot);
+  const hasToolRows = raws.some((raw) => raw.recordType === 'response_item'
+    && ['function_call', 'function_call_output'].includes(raw.payloadType));
   return {
     timelineSections,
-    inspectorSections: sanitizeToolInspectorSections(split.inspectorSections),
+    inspectorSections: hasToolRows
+      ? sanitizeToolInspectorSections(split.inspectorSections)
+      : snapshotGoal && typeof snapshotGoal === 'object'
+        ? [{ type: 'json', title: 'Goal status', value: snapshotGoal }]
+        : sanitizeToolInspectorSections(split.inspectorSections),
   };
 }
 
@@ -2303,6 +2401,53 @@ function redactEmbeddedBase64DataUrls(value, headerPattern, marker, prefixGroup 
   return cursor ? redacted + source.slice(cursor) : source;
 }
 
+function embeddedNonBase64PayloadEnd(source, start) {
+  let index = start;
+  while (index < source.length) {
+    if (/["'<>]/.test(source[index]) || source.charCodeAt(index) === 96) break;
+    if (!/\s/.test(source[index])) {
+      index += 1;
+      continue;
+    }
+    const whitespaceStart = index;
+    while (index < source.length && /\s/.test(source[index])) index += 1;
+    const whitespace = source.slice(whitespaceStart, index);
+    // A literal space starts ordinary prose. Across other whitespace, continue
+    // only for high-confidence encoded or uppercase tokens. Lowercase prose wins
+    // over common punctuation so paths, snake_case, and URLs stay searchable.
+    if (!/[^ ]/.test(whitespace)) return whitespaceStart;
+    let tokenEnd = index;
+    while (tokenEnd < source.length && !/[\s"'<>]/.test(source[tokenEnd])
+      && source.charCodeAt(tokenEnd) !== 96) tokenEnd += 1;
+    const continuation = source.slice(index, tokenEnd);
+    const hasLetters = /[a-z]/i.test(continuation);
+    const hasLowercase = /[a-z]/.test(continuation);
+    const uppercaseToken = hasLetters && !hasLowercase;
+    const percentEncodedToken = /%[0-9a-f]{2}/i.test(continuation);
+    const symbolOrNumericToken = !hasLetters && /^[0-9+\/=_-]+$/.test(continuation);
+    if (!continuation || (!percentEncodedToken && !uppercaseToken && !symbolOrNumericToken)) {
+      return whitespaceStart;
+    }
+  }
+  return index;
+}
+
+function redactEmbeddedNonBase64DataUrls(value, marker) {
+  const source = String(value || '');
+  const headerPattern = /(^|[^a-z0-9_])data:[^,\s"'<>\x60]*,/gi;
+  let cursor = 0;
+  let redacted = '';
+  headerPattern.lastIndex = 0;
+  for (let match = headerPattern.exec(source); match; match = headerPattern.exec(source)) {
+    redacted += source.slice(cursor, match.index);
+    redacted += match[1];
+    redacted += marker;
+    cursor = embeddedNonBase64PayloadEnd(source, headerPattern.lastIndex);
+    headerPattern.lastIndex = cursor;
+  }
+  return cursor ? redacted + source.slice(cursor) : source;
+}
+
 function externalizeEmbeddedImages(value, source, images = [], jsonPath = [], seen = new WeakSet()) {
   if (typeof value === 'string') {
     const inspected = inspectSupportedImageDataUrl(value);
@@ -2376,8 +2521,13 @@ function redactEmbeddedDataUrls(value, marker = TOOL_DATA_URL_MARKER) {
   const source = String(value || '');
   if (!/data:/i.test(source)) return source;
   if (/^\s*data:[^,\s"'<>`]*,[\s\S]*$/i.test(source)) return marker;
-  return redactEmbeddedBase64DataUrls(source, /(^|[^a-z0-9_])data:[^,\s"'<>`]*;base64,/gi, marker, 1)
-    .replace(/(^|[^a-z0-9_])data:[^,\s"'<>`]*,[^\s"'<>`]*/gi, (match, prefix) => `${prefix}${marker}`);
+  const base64Redacted = redactEmbeddedBase64DataUrls(
+    source,
+    /(^|[^a-z0-9_])data:[^,\s"'<>`]*;base64,/gi,
+    marker,
+    1,
+  );
+  return redactEmbeddedNonBase64DataUrls(base64Redacted, marker);
 }
 
 function uniqueSanitizedObjectKey(key, usedKeys, marker) {
@@ -2492,28 +2642,50 @@ function statusName(value) {
   return ['completed', 'success', 'running', 'in_progress', 'pending', 'pending_init', 'failed', 'blocked', 'declined'].includes(source) ? source : '';
 }
 
-function collaborationStatusEntries(value, fallbackLabel = 'Status') {
+function collaborationStatusEntries(value, fallbackLabel = 'Status', fallbackLabelKind = 'generic') {
   if (!value) return [];
-  if (typeof value === 'string') return [{ label: fallbackLabel, status: value }];
+  if (typeof value === 'string') return [{ label: fallbackLabel, labelKind: fallbackLabelKind, status: value }];
   if (Array.isArray(value)) {
-    return value.flatMap((item) => collaborationStatusEntries(item?.status, firstNonEmpty(item?.agent_nickname, item?.thread_id, fallbackLabel)));
+    return value.flatMap((item) => {
+      const agentLabel = firstNonEmpty(
+        item?.agent_name,
+        item?.agent_nickname,
+        item?.nickname,
+        item?.agent_id,
+        item?.thread_id,
+      );
+      return collaborationStatusEntries(
+        firstNonEmpty(item?.agent_status, item?.status),
+        agentLabel || fallbackLabel,
+        agentLabel ? 'agent' : fallbackLabelKind,
+      );
+    });
   }
   if (typeof value !== 'object') return [];
   return Object.entries(value).flatMap(([key, item]) => {
-    if (statusName(key)) return [{ label: fallbackLabel, status: key }];
-    return collaborationStatusEntries(item, key);
+    if (statusName(key)) return [{ label: fallbackLabel, labelKind: fallbackLabelKind, status: key }];
+    if (key === 'status') return collaborationStatusEntries(item, fallbackLabel, fallbackLabelKind);
+    if (key === 'previous_status') return collaborationStatusEntries(item, 'Previous status', 'generic');
+    return collaborationStatusEntries(item, key, 'agent');
   });
 }
 
 function collaborationStatusItems(responseValue) {
   if (!responseValue || typeof responseValue !== 'object') return [];
-  const source = firstNonEmpty(responseValue.agent_statuses, responseValue.statuses, responseValue.previous_status, responseValue.status);
+  const source = firstNonEmpty(
+    responseValue.agent_statuses,
+    responseValue.statuses,
+    responseValue.previous_status,
+    responseValue.status,
+    responseValue.agents,
+  );
   const fallbackLabel = source === responseValue.previous_status ? 'Previous status' : 'Status';
   const items = collaborationStatusEntries(source, fallbackLabel).map((item) => ({
     label: conciseToolValue(item.label, 500),
+    labelKind: item.labelKind,
     status: conciseToolValue(item.status, 1000),
   })).filter((item) => item.label && item.status);
-  return [...new Map(items.map((item) => [`${item.label}\n${item.status}`, item])).values()];
+  return [...new Map(items.map((item) => [`${item.labelKind}\n${item.label}\n${item.status}`, item])).values()];
 }
 
 function collaborationResultEntries(value, label = '') {
@@ -2531,6 +2703,18 @@ function collaborationResultMarkdown(responseValue) {
   if (!responseValue || typeof responseValue !== 'object') return '';
   const direct = firstNonEmpty(responseValue.result, responseValue.output, responseValue.message);
   if (direct) return stringifyValue(direct);
+  const agentMessages = (Array.isArray(responseValue.agents) ? responseValue.agents : [])
+    .map((agent) => ({
+      label: firstNonEmpty(agent?.agent_name, agent?.agent_nickname, agent?.nickname, agent?.agent_id, agent?.thread_id),
+      message: firstNonEmpty(agent?.last_task_message, agent?.task_message),
+    }))
+    .filter((agent) => agent.message);
+  if (agentMessages.length) {
+    return agentMessages.map(({ label, message }) => [
+      label ? `### ${label}` : '',
+      stringifyValue(message),
+    ].filter(Boolean).join('\n\n')).join('\n\n');
+  }
   const source = firstNonEmpty(responseValue.agent_statuses, responseValue.statuses, responseValue.previous_status, responseValue.status);
   const entries = collaborationResultEntries(source);
   return [...new Map(entries.map((item) => [`${item.label}\n${item.value}`, item])).values()].map(({ label, value }) => [
@@ -2539,14 +2723,33 @@ function collaborationResultMarkdown(responseValue) {
   ].filter(Boolean).join('\n\n')).join('\n\n');
 }
 
+function collaborationResponseCaptured(responseValue) {
+  if (!responseValue || typeof responseValue !== 'object') return false;
+  return Array.isArray(responseValue.agents)
+    || collaborationStatusItems(responseValue).length > 0
+    || Boolean(collaborationResultMarkdown(responseValue))
+    || Boolean(firstNonEmpty(
+      responseValue.agent_id,
+      responseValue.new_thread_id,
+      responseValue.nickname,
+      responseValue.new_agent_nickname,
+      responseValue.receiver_agent_nickname,
+      responseValue.receiver_thread_id,
+      responseValue.prompt,
+    ))
+    || responseValue.timed_out === true;
+}
+
+function hasMeaningfulToolValue(value) {
+  if (value == null || value === '') return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value).length > 0;
+  return true;
+}
+
 function collaborationToolSection(toolName, requestValue, responseValue) {
-  const title = {
-    spawn_agent: 'Spawn subagent',
-    wait_agent: 'Wait for subagent',
-    send_input: 'Send input to subagent',
-    close_agent: 'Close subagent',
-  }[toolName];
-  if (!title) return null;
+  const definition = agentCoordination.agentCoordinationDefinition(toolName);
+  if (!definition) return null;
   const spawnedAgentId = firstNonEmpty(responseValue?.agent_id, responseValue?.new_thread_id);
   const targets = uniqueNonEmpty([
     ...(Array.isArray(requestValue?.targets) ? requestValue.targets : [requestValue?.target]),
@@ -2557,7 +2760,10 @@ function collaborationToolSection(toolName, requestValue, responseValue) {
     { key: 'Agent type', value: requestValue?.agent_type },
     { key: 'Model', value: requestValue?.model },
     { key: 'Reasoning effort', value: requestValue?.reasoning_effort },
-    { key: 'Fork context', value: requestValue?.fork_context },
+    { key: 'Fork context', value: firstNonEmpty(requestValue?.fork_context, requestValue?.fork_turns) },
+    { key: 'Task', value: requestValue?.task_name },
+    { key: 'Path prefix', value: requestValue?.path_prefix },
+    { key: 'Agent count', value: Array.isArray(responseValue?.agents) ? responseValue.agents.length : null },
     { key: 'Nickname', value: firstNonEmpty(responseValue?.nickname, responseValue?.new_agent_nickname) },
     { key: 'Receiver', value: firstNonEmpty(responseValue?.receiver_agent_nickname, responseValue?.receiver_thread_id) },
   ].filter((entry) => entry.value != null && entry.value !== '').map((entry) => ({
@@ -2568,8 +2774,8 @@ function collaborationToolSection(toolName, requestValue, responseValue) {
   const result = redactEmbeddedDataUrls(collaborationResultMarkdown(responseValue));
   return {
     type: 'collaboration',
-    title,
-    action: toolName,
+    title: definition.title,
+    action: definition.action,
     targets,
     fields,
     statuses: collaborationStatusItems(responseValue),
@@ -2741,6 +2947,9 @@ function extractToolOperationSections(raws, event, splitSections) {
   if (userInput) timelineSections.push(userInput);
   const collaboration = collaborationToolSection(event.toolName, requestValue, responseValue);
   if (collaboration) timelineSections.push(collaboration);
+  if (collaboration && hasMeaningfulToolValue(responseValue) && !collaborationResponseCaptured(responseValue)) {
+    maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue);
+  }
   const markdown = event.toolName === 'view_image' ? viewImageMarkdown(requestValue, responseValue) : '';
   maybePushMarkdownSection(timelineSections, 'Other tool call', markdown);
   const imageGeneration = event.toolName === 'image_generation' ? imageGenerationMarkdown(raws, responseValue) : '';
@@ -2801,6 +3010,269 @@ function extractUpdatePlanSections(raws, event, splitSections) {
   return {
     timelineSections,
     inspectorSections: sanitizeToolInspectorSections(split.inspectorSections),
+  };
+}
+
+const CODE_MODE_WEB_OPERATION_TITLES = Object.freeze({
+  search_query: 'Web search',
+  image_query: 'Image search',
+  open: 'Open webpage',
+  click: 'Follow web link',
+  find: 'Find on page',
+  screenshot: 'Web screenshot',
+  finance: 'Finance lookup',
+  weather: 'Weather lookup',
+  sports: 'Sports lookup',
+  time: 'Time lookup',
+});
+
+const CODE_MODE_WEB_GROUP_TITLES = Object.freeze({
+  search_query: 'Queries',
+  image_query: 'Image queries',
+  open: 'Pages',
+  click: 'Links',
+  find: 'Page matches',
+  screenshot: 'Screenshots',
+  finance: 'Finance requests',
+  weather: 'Weather requests',
+  sports: 'Sports requests',
+  time: 'Time requests',
+});
+
+const CODE_MODE_WEB_PRIMARY_KEYS = Object.freeze([
+  'q',
+  'ref_id',
+  'ticker',
+  'location',
+  'team',
+  'utc_offset',
+  'id',
+]);
+
+const CODE_MODE_WEB_FIELD_LABELS = Object.freeze({
+  lineno: 'Line number',
+  id: 'Link ID',
+  pageno: 'Page number',
+  response_length: 'Response length',
+  utc_offset: 'UTC offset',
+  date_from: 'From',
+  date_to: 'To',
+  num_games: 'Count',
+});
+
+function codeModeWebFieldLabel(key) {
+  return CODE_MODE_WEB_FIELD_LABELS[key] || humanizeProtocolSubtype(key);
+}
+
+function codeModeWebOperationKeys(requestValue) {
+  if (!requestValue || typeof requestValue !== 'object' || Array.isArray(requestValue)) return [];
+  return Object.keys(CODE_MODE_WEB_OPERATION_TITLES)
+    .filter((key) => Array.isArray(requestValue[key]) && requestValue[key].length > 0);
+}
+
+function codeModeWebProjectionTitle(requestValue) {
+  const operationKeys = codeModeWebOperationKeys(requestValue);
+  if (operationKeys.length === 1) return CODE_MODE_WEB_OPERATION_TITLES[operationKeys[0]];
+  if (operationKeys.length > 1) return 'Web browsing operation';
+  return 'Web request';
+}
+
+function codeModeWebItem(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    return { primary: conciseToolValue(item, 4000), entries: [] };
+  }
+  const primaryKey = CODE_MODE_WEB_PRIMARY_KEYS.find((key) => item[key] != null && item[key] !== '');
+  const entries = Object.entries(item)
+    .filter(([key, value]) => key !== primaryKey && value != null && value !== '')
+    .map(([key, value]) => ({
+      key: codeModeWebFieldLabel(key),
+      value: conciseToolValue(value, 2000),
+    }));
+  return {
+    primary: conciseToolValue(primaryKey ? item[primaryKey] : item, 4000),
+    entries,
+  };
+}
+
+function codeModeWebRequestSection(requestValue) {
+  const args = requestValue && typeof requestValue === 'object' && !Array.isArray(requestValue)
+    ? requestValue
+    : {};
+  const groups = codeModeWebOperationKeys(args).map((key) => ({
+    kind: key,
+    title: CODE_MODE_WEB_GROUP_TITLES[key],
+    items: args[key].map(codeModeWebItem).filter((item) => item.primary || item.entries.length),
+  })).filter((group) => group.items.length);
+  const options = Object.entries(args)
+    .filter(([key, value]) => !Object.hasOwn(CODE_MODE_WEB_OPERATION_TITLES, key) && value != null && value !== '')
+    .map(([key, value]) => ({
+      key: codeModeWebFieldLabel(key),
+      value: conciseToolValue(value, 2000),
+    }));
+  if (!groups.length && !options.length) return null;
+  return {
+    type: 'web_request',
+    title: 'Web request',
+    groups,
+    options,
+  };
+}
+
+function codeModeWebResultSection(resultText) {
+  const source = truncatePreservingWhitespace(
+    redactEmbeddedDataUrls(String(resultText || '').trim()),
+    100000,
+  );
+  if (!source) return null;
+  return {
+    type: 'markdown',
+    role: 'web_result',
+    title: 'Web results',
+    html: renderMarkdownToHtml(source),
+  };
+}
+
+function codeModeToolProjectionTitle(toolName, requestValue) {
+  if (toolName === 'web__run') return codeModeWebProjectionTitle(requestValue);
+  return codeModeTools.codeModeToolDefinition(toolName)?.title || humanizeProtocolSubtype(toolName);
+}
+
+function isBoundedCodeModeStructuredResult(value) {
+  if (!value || typeof value !== 'object') return true;
+  const stack = [{ value, depth: 0 }];
+  const seen = new WeakSet();
+  let nodes = 0;
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current.value || typeof current.value !== 'object' || seen.has(current.value)) continue;
+    seen.add(current.value);
+    nodes += 1;
+    if (nodes > CODE_MODE_STRUCTURED_RESULT_MAX_NODES
+        || current.depth > CODE_MODE_STRUCTURED_RESULT_MAX_DEPTH) return false;
+    for (const child of Array.isArray(current.value) ? current.value : Object.values(current.value)) {
+      if (child && typeof child === 'object') stack.push({ value: child, depth: current.depth + 1 });
+    }
+  }
+  return true;
+}
+
+function codeModeStructuredResponseValue(resultText) {
+  const source = String(resultText || '');
+  if (!source || source.length > CODE_MODE_STRUCTURED_RESULT_MAX_CHARS) return null;
+  const value = coerceJsonValue(source);
+  return value != null && isBoundedCodeModeStructuredResult(value) ? value : null;
+}
+
+function codeModeShellRequestSections(requestValue, session) {
+  const sections = [];
+  const args = requestValue && typeof requestValue === 'object' && !Array.isArray(requestValue)
+    ? requestValue
+    : {};
+  const command = commandToText(firstNonEmpty(args.command, args.cmd));
+  maybePushCodeSection(
+    sections,
+    'Command',
+    command,
+    inferCommandLanguage(command, args, commandLanguageContext(session)),
+  );
+  maybePushKvSection(sections, 'Run context', [
+    { key: 'cwd', value: conciseToolValue(firstNonEmpty(args.workdir, args.cwd), 2000) },
+    { key: 'Timeout ms', value: conciseToolValue(args.timeout_ms ?? args.timeoutMs, 200) },
+    { key: 'Sandbox permissions', value: conciseToolValue(args.sandbox_permissions, 200) },
+  ]);
+  return sections;
+}
+
+function codeModeShellResultSections(resultText) {
+  const sections = [];
+  const formatted = parseFormattedCommandOutput(resultText);
+  if (formatted) {
+    maybePushKvSection(sections, 'Run result', [
+      { key: 'Exit code', value: String(formatted.exitCode) },
+      { key: 'Wall time', value: formatted.wallTime },
+    ]);
+    maybePushTerminalSection(sections, 'Output', formatted.output, 'stdout');
+  } else {
+    maybePushTerminalSection(sections, 'Result', resultText, 'stdout');
+  }
+  return sections;
+}
+
+function codeModeToolProjectionSection(call, session = {}) {
+  const toolName = String(call?.toolName || '');
+  const requestValue = call?.requestValue;
+  const associated = call?.resultAssociation
+    === codeModePresentationContract.CODE_MODE_RESULT_ASSOCIATION.BOUNDED;
+  const responseValue = associated ? codeModeStructuredResponseValue(call.resultText) : null;
+  const requestSections = [];
+  const resultSections = [];
+
+  if (toolName === 'update_plan') {
+    const planUpdate = updatePlanSection(requestValue);
+    if (planUpdate) requestSections.push(planUpdate);
+  } else if (toolName === 'request_user_input') {
+    const userInput = requestUserInputSection(requestValue, responseValue);
+    if (userInput) requestSections.push(userInput);
+  } else if (['shell_command', 'exec_command'].includes(toolName)) {
+    requestSections.push(...codeModeShellRequestSections(requestValue, session));
+  } else if (toolName === 'apply_patch') {
+    const patchText = typeof requestValue === 'string' ? requestValue : String(requestValue?.patch || '');
+    if (patchText && !maybePushPatchSection(requestSections, 'Patch', patchText)) {
+      maybePushCodeSection(requestSections, 'Patch', patchText, 'diff');
+    }
+  } else if (toolName === 'view_image') {
+    const dimensions = responseValue && !Array.isArray(responseValue) && typeof responseValue === 'object'
+      ? [responseValue.width, responseValue.height].filter((value) => value != null).join(' x ')
+      : '';
+    maybePushKvSection(requestSections, 'Image inspection', [
+      { key: 'Path', value: conciseToolValue(requestValue?.path, 2000) },
+      { key: 'Detail', value: conciseToolValue(requestValue?.detail, 200) },
+      { key: 'Dimensions', value: conciseToolValue(dimensions, 200) },
+      { key: 'MIME type', value: conciseToolValue(firstNonEmpty(responseValue?.mimeType, responseValue?.mime_type), 200) },
+    ]);
+  } else if (toolName === 'web__run') {
+    const webRequest = codeModeWebRequestSection(requestValue);
+    if (webRequest) requestSections.push(webRequest);
+  } else {
+    const collaboration = collaborationToolSection(toolName, requestValue, responseValue);
+    if (collaboration) requestSections.push(collaboration);
+  }
+
+  if (!requestSections.length) maybePushToolSummaryCodeSection(requestSections, 'Request summary', requestValue);
+  if (!requestSections.length) requestSections.push(makeNoticeSection('Declared request', toolName, 'info'));
+
+  if (associated && ['shell_command', 'exec_command'].includes(toolName)) {
+    resultSections.push(...codeModeShellResultSections(call.resultText));
+  } else if (associated && toolName === 'web__run') {
+    const webResult = codeModeWebResultSection(call.resultText);
+    if (webResult) resultSections.push(webResult);
+  } else if (associated && toolName !== 'update_plan' && toolName !== 'request_user_input') {
+    const collaboration = collaborationToolSection(toolName, requestValue, responseValue);
+    if (!collaboration || !collaborationResponseCaptured(responseValue)) {
+      maybePushToolSummaryCodeSection(resultSections, 'Response summary', responseValue == null ? call.resultText : responseValue);
+    }
+  }
+  if (associated) {
+    resultSections.push({
+      type: 'code_mode_source',
+      title: 'Associated result',
+      code: String(call.resultText || ''),
+      language: 'text',
+    });
+  }
+
+  return {
+    type: 'code_mode_tool_projection',
+    title: codeModeToolProjectionTitle(toolName, requestValue),
+    toolName,
+    requestEvidence: codeModePresentationContract.CODE_MODE_REQUEST_EVIDENCE.DECLARED_SOURCE,
+    resultAssociation: associated
+      ? codeModePresentationContract.CODE_MODE_RESULT_ASSOCIATION.BOUNDED
+      : codeModePresentationContract.CODE_MODE_RESULT_ASSOCIATION.NONE,
+    requestSections: sanitizeUnmodeledToolTimelineSections(requestSections),
+    resultSections: sanitizeUnmodeledToolTimelineSections(resultSections),
+    resultObserved: associated,
+    sourceOrder: Number(call?.sourceOrder || 0),
   };
 }
 
@@ -3045,6 +3517,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
     withoutSectionTypes,
   },
   sectionExtractors: {
+    codeModeToolProjectionSection,
     extractCommandSections,
     extractConversationSections,
     extractJsReplSections,
@@ -3061,45 +3534,18 @@ const codexDetailBuilder = createCodexDetailBuilder({
     extractWebSearchSections,
     inferCommandLanguage,
   },
+  codeMode: {
+    codeModeAssociableOutputFragments,
+    codeModeDisplayOutputText,
+    codeModeExecSource,
+    codeModeOutputText,
+    projectDeclaredCodeModeCalls,
+  },
+  codeModeTools,
+  codeModePresentationContract,
+  agentCoordination,
 });
 const { buildEventDetail } = codexDetailBuilder;
-
-function rawEventDto(raw, q, locale = i18n.DEFAULT_LOCALE) {
-  const hasSearchHit = q ? eventHasSearchHit(raw, q) : false;
-  return {
-    id: raw.rawId,
-    schemaVersion: CANONICAL_SCHEMA_VERSION,
-    sourceKind: CODEX_SOURCE_KIND,
-    timestamp: raw.timestamp,
-    turnId: raw.turnId,
-    recordType: raw.recordType,
-    payloadType: raw.payloadType,
-    sourceRecordType: raw.recordType || '',
-    sourceEventType: raw.payloadType || '',
-    kind: raw.payloadType || raw.recordType,
-    subtype: raw.role || '',
-    layer: 'raw',
-    role: raw.role,
-    label: rawRecordLabel(raw, locale),
-    preview: raw.preview,
-    severity: raw.payloadType === 'error' ? 'error' : 'normal',
-    status: raw.status,
-    toolName: raw.toolName,
-    hasLongOutput: raw.searchText.length > 1600,
-    hasSearchHit,
-    touchedFiles: raw.touchedFiles,
-    outputStats: {
-      exitCode: raw.exitCode,
-      durationMs: raw.durationMs,
-    },
-    source: raw.source,
-    sourceLocator: codexSourceLocator(raw.source),
-    rawRefs: [rawRef(raw)],
-    channels: [raw.recordType],
-    searchText: raw.searchText,
-    snippet: hasSearchHit ? eventSearchSnippet(raw, q) : '',
-  };
-}
 
 function reviewFindingMarkdown(finding, index) {
   if (!finding || typeof finding !== 'object') return '';
@@ -3191,11 +3637,25 @@ function planUpdateText(raw) {
 }
 
 const codexLogicalBuilder = createCodexLogicalBuilder({
+  agentCoordination,
+  codeMode: {
+    deriveCodeModeFacts,
+    projectCodeModeOperations,
+  },
   envelope: {
     CANONICAL_SCHEMA_VERSION,
     CODEX_SOURCE_KIND,
     sanitizeLogicalEnvelopeValue,
     rawRef,
+    subAgentActivityEventId,
+  },
+  goal: {
+    goalResponseFromValue,
+    goalSnapshotFromGoal,
+    goalSnapshotFromRaw,
+    goalSnapshotSignature,
+    goalSnapshotTransition,
+    normalizeGoalStatus,
   },
   protocol: {
     classifyProtocolText,
@@ -3204,7 +3664,7 @@ const codexLogicalBuilder = createCodexLogicalBuilder({
     protocolPreviewFor,
   },
   tool: {
-    TOOL_EVENT_TYPES,
+    ...toolLifecycleContract,
     commandArgsFromRaw,
     commandToText,
     inferPatchSuccess,
@@ -3239,10 +3699,15 @@ function countBy(items, fn) {
   return [...map.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
 }
 
-function eventKindOptionsFromCounts(counts, locale = i18n.DEFAULT_LOCALE, labelFn = eventKindLabel) {
+function eventKindOptionsFromCounts(counts, locale = i18n.DEFAULT_LOCALE, labelFn = eventKindLabel, matchFields = new Map()) {
   return [...counts.entries()]
     .sort((a, b) => labelFn(a[0], locale).localeCompare(labelFn(b[0], locale)) || a[0].localeCompare(b[0]))
-    .map(([value, count]) => ({ value, label: labelFn(value, locale), count }));
+    .map(([value, count]) => ({
+      value,
+      label: labelFn(value, locale),
+      count,
+      ...(matchFields.has(value) ? { matchField: matchFields.get(value) } : {}),
+    }));
 }
 
 function eventKindCatalog(sessions, options = {}) {
@@ -3252,24 +3717,36 @@ function eventKindCatalog(sessions, options = {}) {
     protocol: new Map(),
     raw: new Map(),
   };
-  const add = (layer, value) => {
+  const matchFields = {
+    main: new Map(),
+    protocol: new Map(),
+    raw: new Map(),
+  };
+  const add = (layer, value, matchField = '') => {
     const key = String(value || '').trim();
     if (!key) return;
     counts[layer].set(key, (counts[layer].get(key) || 0) + 1);
+    if (matchField) matchFields[layer].set(key, matchField);
   };
   for (const session of sessions || []) {
     for (const event of session.logicalEvents || []) {
       if (event.layer === 'protocol') add('protocol', event.subtype || event.kind);
-      else add('main', event.kind);
+      else {
+        add('main', event.kind);
+        if (event.kind === 'code_mode_operation'
+            && isCodeModeScriptOperation(event, session.presentationIndexes)) {
+          add('main', CODE_MODE_SCRIPT_OPERATION_KIND, 'presentation_fallback');
+        }
+      }
     }
     for (const raw of session.rawEvents || []) {
       add('raw', raw.payloadType || raw.recordType);
     }
   }
   return {
-    main: eventKindOptionsFromCounts(counts.main, locale),
-    protocol: eventKindOptionsFromCounts(counts.protocol, locale),
-    raw: eventKindOptionsFromCounts(counts.raw, locale, rawRecordValueLabel),
+    main: eventKindOptionsFromCounts(counts.main, locale, eventKindLabel, matchFields.main),
+    protocol: eventKindOptionsFromCounts(counts.protocol, locale, eventKindLabel, matchFields.protocol),
+    raw: eventKindOptionsFromCounts(counts.raw, locale, rawRecordValueLabel, matchFields.raw),
   };
 }
 
@@ -3285,7 +3762,8 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'user_message') session.counts.userMessages += 1;
   if (logicalEvent.kind === 'assistant_message') session.counts.assistantMessages += 1;
   if (logicalEvent.kind === 'reasoning') session.counts.reasoning += 1;
-  if (['command', 'patch', 'mcp_call', 'web_search', 'other_tool_call', 'js_repl', 'goal', 'hook'].includes(logicalEvent.kind)) {
+  if (['command', 'patch', 'mcp_call', 'web_search', 'agent_coordination', 'other_tool_call', 'code_mode_operation', 'js_repl', 'hook'].includes(logicalEvent.kind)
+      || (logicalEvent.kind === 'goal' && logicalEvent.toolName)) {
     session.counts.toolCalls += 1;
   }
   if (logicalEvent.kind === 'command' && logicalEvent.status === 'failed') session.counts.failedCommands += 1;
@@ -3294,10 +3772,8 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'compaction') session.counts.compactions += 1;
   if (logicalEvent.kind === 'abort') session.counts.aborts += 1;
   if (logicalEvent.kind === 'error') session.counts.errors += 1;
-  if (logicalEvent.kind === 'proposed_plan') session.counts.planArtifacts += 1;
-  if (logicalEvent.kind === 'proposed_plan' || logicalEvent.kind === 'plan_update' || logicalEvent.toolName === 'update_plan' || logicalEvent.subtype === 'update_plan') {
-    session.counts.planEvents += 1;
-  }
+  if (planFacet.isPlanArtifactEvent(logicalEvent)) session.counts.planArtifacts += 1;
+  if (planFacet.isPlanEvent(logicalEvent)) session.counts.planEvents += 1;
 }
 
 function updateAnalysisDraft(session, event) {
@@ -3396,21 +3872,19 @@ function inferSessionTitle(session) {
   return titleFromUserEvents(userEvents, Boolean(session.forkedFromSessionId)) || path.basename(session.sourceFile, '.jsonl');
 }
 
-function finalizeSession(session, sessionIndexEntry) {
-  session.counts.turns = session._turnIds.size;
-  if (sessionIndexEntry?.title) session.title = sessionIndexEntry.title;
+function applySessionIndexMetadata(session, sessionIndexEntry) {
+  session.title = sessionIndexEntry?.title || session.transcriptTitle;
+  session.updatedAt = session.transcriptUpdatedAt;
   if (sessionIndexEntry?.updatedAt && (!session.updatedAt || sessionIndexEntry.updatedAt > session.updatedAt)) {
     session.updatedAt = sessionIndexEntry.updatedAt;
   }
-  if (!session.title) {
-    session.title = inferSessionTitle(session);
-  }
+}
 
-  session.searchText = [
-    session.title,
-    [...session.cwdSet].join('\n'),
-    session.logicalEvents.map((event) => event.searchText).join('\n'),
-  ].join('\n').toLowerCase();
+function finalizeSession(session, sessionIndexEntry) {
+  session.counts.turns = session._turnIds.size;
+  session.transcriptTitle = session.title || inferSessionTitle(session);
+  session.transcriptUpdatedAt = session.updatedAt;
+  applySessionIndexMetadata(session, sessionIndexEntry);
 
   const draft = session._analysisDraft;
   session.analysis = {
@@ -3425,6 +3899,7 @@ function finalizeSession(session, sessionIndexEntry) {
     timelineStats: countBy(session.logicalEvents.filter((event) => event.layer !== 'protocol'), (event) => event.kind),
     protocolStats: countBy(session.logicalEvents.filter((event) => event.layer === 'protocol'), (event) => event.subtype),
   };
+  session.presentationIndexes = buildCodeModePresentationIndexes(session);
   session.eventKinds = eventKindCatalog([session]);
 
   delete session._turnIds;
@@ -3491,24 +3966,24 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
       if (!session.parentSessionId && record.type === 'event_msg' && record.payload?.type === 'thread_name_updated' && record.payload.thread_name) {
         session.title = record.payload.thread_name;
       }
-      if (record.type === 'event_msg' && record.payload?.type === 'entered_review_mode') {
+      const embeddedImages = [];
+      externalizeKnownImageGenerationResult(record, { file: relFile, line: lineNumber }, embeddedImages);
+      externalizeEmbeddedImages(record, { file: relFile, line: lineNumber }, embeddedImages);
+      const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages);
+      updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
+      if (raw.recordType === 'event_msg' && raw.payloadType === 'entered_review_mode') {
         session._reviewMarkers.push({
-          enteredAt: safeIso(record.timestamp),
+          enteredAt: raw.timestamp,
           exitedAt: '',
         });
-      } else if (record.type === 'event_msg' && record.payload?.type === 'exited_review_mode') {
+      } else if (raw.recordType === 'event_msg' && raw.payloadType === 'exited_review_mode') {
         let marker = session._reviewMarkers[session._reviewMarkers.length - 1];
         if (!marker || marker.exitedAt) {
           marker = { enteredAt: '', exitedAt: '' };
           session._reviewMarkers.push(marker);
         }
-        marker.exitedAt = safeIso(record.timestamp);
+        marker.exitedAt = raw.timestamp;
       }
-      updateTimeRange(session, record.timestamp);
-      const embeddedImages = [];
-      externalizeKnownImageGenerationResult(record, { file: relFile, line: lineNumber }, embeddedImages);
-      externalizeEmbeddedImages(record, { file: relFile, line: lineNumber }, embeddedImages);
-      const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages);
       if (!session.shell && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
         session.shell = readXmlTag(raw.messageText, 'shell');
       }
@@ -3528,8 +4003,8 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
   return session;
 }
 
-async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
-  const resolvedRepo = path.resolve(repoRoot);
+async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousIndex = null }) {
+  const resolvedRepo = resolveFsPath(repoRoot);
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
   const startedAt = Date.now();
@@ -3601,7 +4076,15 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
   let logicalEventCount = 0;
   let rawEventCount = 0;
   let indexedFileCount = 0;
+  let reusedFileCount = 0;
   let parsedBytes = 0;
+  const canReusePrevious = previousIndex
+    && Array.isArray(previousIndex.sessions)
+    && normalizeFsPath(previousIndex.repoRoot || '') === normalizeFsPath(resolvedRepo)
+    && path.resolve(previousIndex.codexHome || '') === resolvedCodex;
+  const previousSessionsBySource = canReusePrevious
+    ? new Map(previousIndex.sessions.map((session) => [session.sourceFile, session]))
+    : new Map();
 
   emitProgress(onProgress, {
     phase: 'parsing',
@@ -3620,11 +4103,32 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
   for (const filePath of candidates) {
     throwIfAborted(signal);
     const relFile = path.relative(sessionsRoot, filePath);
-    const session = await parseSessionFile(filePath, relFile, resolvedRepo, signal);
+    const previousSession = previousSessionsBySource.get(relFile);
+    const currentStat = previousSession ? await fsp.stat(filePath) : null;
+    const reusable = previousSession
+      && previousSession.bytes === currentStat.size
+      && previousSession.sourceUpdatedAt === safeIso(currentStat.mtime);
+    let session;
+    if (reusable) {
+      session = {
+        ...previousSession,
+        parentSessionId: previousSession.parentSessionInferred ? '' : previousSession.parentSessionId,
+        parentSessionInferred: false,
+        _reviewMarkers: sessionReviewMarkers(previousSession),
+      };
+      const indexEntry = sessionIndex.get(session.id);
+      session.transcriptTitle ||= session.title;
+      session.transcriptUpdatedAt ??= session.updatedAt;
+      applySessionIndexMetadata(session, indexEntry);
+      session.analysis = { ...session.analysis, title: session.title };
+      reusedFileCount += 1;
+    } else {
+      session = await parseSessionFile(filePath, relFile, resolvedRepo, signal);
+      const indexEntry = sessionIndex.get(session.id);
+      finalizeSession(session, indexEntry);
+    }
     indexedFileCount += 1;
     parsedBytes += session.bytes;
-    const indexEntry = sessionIndex.get(session.id);
-    finalizeSession(session, indexEntry);
     if (session.matchesRepo) {
       sessions.push(session);
       sessionsById.set(session.id, session);
@@ -3640,6 +4144,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
       skippedFileCount,
       unknownFileCount,
       indexedFileCount,
+      reusedFileCount,
       indexedBytes: parsedBytes,
       candidateBytes,
       sessionCount: sessions.length,
@@ -3662,6 +4167,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
     skippedFileCount,
     unknownFileCount,
     indexedFileCount,
+    reusedFileCount,
     indexedBytes: parsedBytes,
     candidateBytes,
     sessionCount: sessions.length,
@@ -3677,10 +4183,12 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
     sessions,
     sessionsById,
     eventKinds: eventKindCatalog(sessions),
+    codeModeRequests: codeModeRequestCatalog(sessions),
     totals: {
       fileCount: files.length,
       candidateFileCount: candidates.length,
       indexedFileCount,
+      reusedFileCount,
       skippedFileCount,
       unknownFileCount,
       sessionCount: sessions.length,
@@ -3692,214 +4200,35 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal }) {
   };
 }
 
-function searchPhraseRegex(q, flags = '') {
-  const phrase = String(q || '').trim();
-  if (!phrase) return null;
-  const pattern = phrase
-    .split(/\s+/)
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('\\s+');
-  return new RegExp(pattern, flags.includes('i') ? flags : `${flags}i`);
-}
-
-function matchTerms(text, q) {
-  const regex = searchPhraseRegex(q);
-  return regex ? regex.test(String(text || '')) : true;
-}
-
-function countSearchMatches(text, q) {
-  const regex = searchPhraseRegex(q, 'g');
-  return regex ? [...String(text || '').matchAll(regex)].length : 0;
-}
-
-function eventSearchMatchCount(event, q) {
-  return Math.max(
-    countSearchMatches(event.preview, q),
-    countSearchMatches(event.searchText, q),
-  );
-}
-
-function eventHasSearchHit(event, q) {
-  return eventSearchMatchCount(event, q) > 0;
-}
-
-function eventSearchSnippet(event, q) {
-  return makeSnippet(event.preview, q) || makeSnippet(event.searchText, q);
-}
-
-function eventMatches(event, filters) {
-  if (filters.layer && event.layer !== filters.layer) return false;
-  if (filters.kind && event.kind !== filters.kind && event.subtype !== filters.kind) return false;
-  if (filters.status && event.status !== filters.status) return false;
-  if (filters.tool && !String(event.toolName || '').toLowerCase().includes(filters.tool.toLowerCase())) return false;
-  if (filters.file) {
-    const needle = normalizeSearchPath(filters.file);
-    const sourceMatch = normalizeSearchPath(event.source?.file).includes(needle);
-    const touchedMatch = (event.touchedFiles || []).some((file) => normalizeSearchPath(file).includes(needle));
-    const rawMatch = (event.rawRefs || []).some((ref) => normalizeSearchPath(ref.file).includes(needle));
-    if (!sourceMatch && !touchedMatch && !rawMatch) return false;
-  }
-  if (filters.q && !eventHasSearchHit(event, filters.q)) return false;
-  return true;
-}
-
-function sessionSummary(session, index) {
-  const derivedKind = derivedSessionKind(session);
-  const parentSession = session.parentSessionId ? index?.sessionsById?.get(session.parentSessionId) : null;
-  const forkedFromSession = session.forkedFromSessionId ? index?.sessionsById?.get(session.forkedFromSessionId) : null;
-  return {
-    id: session.id,
-    title: sanitizeLogicalEnvelopeValue(session.title),
-    sourceFile: session.sourceFile,
-    bytes: session.bytes,
-    lineCount: session.lineCount,
-    cwdSet: [...session.cwdSet],
-    parentSessionId: session.parentSessionId,
-    parentSessionInferred: Boolean(session.parentSessionInferred),
-    parentSessionTitle: sanitizeLogicalEnvelopeValue(parentSession?.title || ''),
-    forkedFromSessionId: session.forkedFromSessionId,
-    forkedFromSessionTitle: sanitizeLogicalEnvelopeValue(forkedFromSession?.title || ''),
-    agentNickname: sanitizeLogicalEnvelopeValue(session.agentNickname),
-    isDerivedSession: Boolean(derivedKind),
-    derivedKind,
-    startedAt: session.startedAt,
-    updatedAt: session.updatedAt,
-    counts: session.counts,
-    topTools: session.analysis.toolUsage.slice(0, 5),
-    failedCommands: session.analysis.failedCommands.length,
-    patchedFiles: session.analysis.patchedFiles.slice(0, 5),
-    protocolCount: session.analysis.protocolStats.reduce((sum, item) => sum + item.count, 0),
-    rawEventCount: session.rawEvents.length,
-  };
-}
-
-function filterSessions(index, filters) {
-  const locale = i18n.resolveLocale(filters.locale);
-  let sessions = index.sessions.filter((session) => {
-    const activityAt = String(session.updatedAt || session.startedAt || '');
-    if (filters.from && activityAt < `${filters.from}T00:00:00.000Z`) return false;
-    if (filters.to && activityAt > `${filters.to}T23:59:59.999Z`) return false;
-    if (filters.q && !matchTerms(session.searchText, filters.q)) return false;
-    if (filters.kind || filters.status || filters.tool || filters.file || filters.layer) {
-      const haystack = filters.layer === 'raw' ? session.rawEvents.map((raw) => rawEventDto(raw, '', locale)).filter((event) => eventMatches(event, filters)) : session.logicalEvents.filter((event) => eventMatches(event, filters));
-      return haystack.length > 0;
-    }
-    return true;
-  });
-
-  if (filters.sort === 'started-asc') {
-    sessions = sessions.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
-  } else if (filters.sort === 'events-desc') {
-    sessions = sessions.sort((a, b) => b.logicalEvents.length - a.logicalEvents.length);
-  } else if (filters.sort === 'failures-desc') {
-    sessions = sessions.sort((a, b) => b.counts.failedCommands - a.counts.failedCommands);
-  } else {
-    sessions = sessions.sort((a, b) => String(b.updatedAt || b.startedAt).localeCompare(String(a.updatedAt || a.startedAt)));
-  }
-
-  return {
-    total: sessions.length,
-    sessions: sessions.map((session) => sessionSummary(session, index)),
-  };
-}
-
-function fileSuggestions(index, limit = 80) {
-  const counts = new Map();
-  const add = (file, count = 1) => {
-    const display = displayProjectFile(file, index.repoRoot);
-    if (!display) return;
-    counts.set(display, (counts.get(display) || 0) + count);
-  };
-  for (const session of index.sessions || []) {
-    for (const item of session.analysis?.patchedFiles || []) {
-      add(item.file, item.count || 1);
-    }
-    for (const event of session.logicalEvents || []) {
-      for (const file of event.touchedFiles || []) {
-        add(file);
-      }
-    }
-  }
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .slice(0, limit)
-    .map(([file, count]) => ({ file, count }));
-}
-
-function makeSnippet(text, q) {
-  const regex = searchPhraseRegex(q);
-  if (!regex) return '';
-  const source = String(text || '');
-  const match = regex.exec(source);
-  if (!match) return '';
-  const first = match.index;
-  const start = Math.max(0, first - 80);
-  const end = Math.min(source.length, first + 180);
-  const prefix = start > 0 ? '...' : '';
-  const suffix = end < source.length ? '...' : '';
-  return `${prefix}${source.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
-}
-
-function logicalEventDto(event, q, locale = i18n.DEFAULT_LOCALE) {
-  const hasSearchHit = q ? eventHasSearchHit(event, q) : false;
-  return sanitizeLogicalEventDto({
-    id: event.id,
-    schemaVersion: event.schemaVersion,
-    sourceKind: event.sourceKind,
-    timestamp: event.timestamp,
-    turnId: event.turnId,
-    recordType: '',
-    payloadType: event.subtype,
-    kind: event.kind,
-    subtype: event.subtype,
-    layer: event.layer,
-    role: event.role,
-    label: localizedLogicalLabel(event, locale),
-    preview: event.preview,
-    severity: event.severity,
-    status: event.status,
-    toolName: event.toolName,
-    hasLongOutput: event.hasLongOutput,
-    hasReadableReasoning: event.hasReadableReasoning,
-    hasSearchHit,
-    tags: event.tags || [],
-    touchedFiles: event.touchedFiles,
-    outputStats: event.outputStats,
-    tokenUsage: event.tokenUsage,
-    usageLimits: event.usageLimits,
-    source: event.source,
-    sourceLocator: event.sourceLocator,
-    rawRefs: event.rawRefs,
-    channels: event.channels,
-    snippet: hasSearchHit ? eventSearchSnippet(event, q) : '',
-  });
-}
-
-function getTimeline(index, sessionId, filters) {
-  const locale = i18n.resolveLocale(filters.locale);
-  const session = index.sessionsById.get(sessionId);
-  if (!session) return null;
-  const layer = filters.layer || 'main';
-  const sourceEvents = layer === 'raw'
-    ? session.rawEvents.map((raw) => rawEventDto(raw, filters.q, locale))
-    : session.logicalEvents.filter((event) => event.layer === layer);
-  const structuralFilters = { ...filters, q: '', layer };
-  const matched = sourceEvents.filter((event) => eventMatches(event, structuralFilters));
-  const searchMatchCount = filters.q
-    ? matched.reduce((sum, event) => sum + eventSearchMatchCount(event, filters.q), 0)
-    : 0;
-  const page = matched.slice(filters.offset, filters.offset + filters.limit);
-  return {
-    session: sessionSummary(session, index),
-    total: matched.length,
-    searchMatchCount,
-    offset: filters.offset,
-    limit: filters.limit,
-    layer,
-    eventKinds: eventKindCatalog([session], { locale }),
-    events: layer === 'raw' ? page : page.map((event) => logicalEventDto(event, filters.q, locale)),
-  };
-}
+const codexSearch = createCodexSearch({
+  canonicalSchemaVersion: CANONICAL_SCHEMA_VERSION,
+  codeModePresentationFactsForEvent,
+  codeModePresentationContextMap,
+  codeModeRequestCatalog,
+  codeModeRequestLabel: i18n.codeModeRequestLabel,
+  codeModeScriptOperationKind: CODE_MODE_SCRIPT_OPERATION_KIND,
+  codexSourceKind: CODEX_SOURCE_KIND,
+  codexSourceLocator,
+  defaultLocale: i18n.DEFAULT_LOCALE,
+  derivedSessionKind,
+  displayProjectFile,
+  eventKindCatalog,
+  isCodeModeScriptOperation,
+  localizedLogicalLabel,
+  normalizeSearchPath,
+  rawRecordLabel,
+  rawRef,
+  resolveLocale: i18n.resolveLocale,
+  sanitizeLogicalEnvelopeValue,
+  sanitizeLogicalEventDto,
+});
+const {
+  fileSuggestions,
+  filterSessions,
+  getEvent,
+  getTimeline,
+  matchTerms,
+} = codexSearch;
 
 async function readRawLine(index, relFile, lineNumber) {
   const target = path.resolve(index.sessionsRoot, relFile);
@@ -3999,7 +4328,18 @@ async function readImagePreview(index, sessionId, eventId, previewId) {
   return decodeImagePreviewDataUrl(value);
 }
 
+// Test-only introspection for focused equivalence coverage; this is not a supported runtime API.
+const __testOnly = Object.freeze({
+  formatResetTime,
+  isEcmaScriptWhitespace,
+  resetTimeCacheLimit: RESET_TIME_CACHE_LIMIT,
+  resetTimeCacheSize: () => resetTimeCache.size,
+  sessionReviewMarkers,
+  truncate,
+});
+
 module.exports = {
+  __testOnly,
   buildIndex,
   discoverProjects,
   decodeImagePreviewDataUrl,
@@ -4007,6 +4347,7 @@ module.exports = {
   buildEventDetail,
   fileSuggestions,
   filterSessions,
+  getEvent,
   getTimeline,
   eventKindCatalog,
   readImagePreview,
@@ -4014,4 +4355,5 @@ module.exports = {
   normalizeFsPath,
   isPathInsideOrSame,
   matchTerms,
+  normalizeCodeModeRequest,
 };

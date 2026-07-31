@@ -1,5 +1,10 @@
 'use strict';
 
+const {
+  TOOL_LIFECYCLE_FAMILY,
+  toolLifecycleDescriptorFor,
+} = require('./codex-tool-lifecycle-contract');
+
 const CANONICAL_EVENT_TYPES = Object.freeze({
   turn_started: 'task_started',
   turn_complete: 'task_complete',
@@ -8,6 +13,7 @@ const CANONICAL_EVENT_TYPES = Object.freeze({
 const CANONICAL_SCHEMA_VERSION = 1;
 const CODEX_SOURCE_KIND = 'codex';
 const CODEX_JSONL_LINE_LOCATOR_TYPE = 'jsonl_line';
+const SUB_AGENT_ACTIVITY_EVENT_TYPE = 'sub_agent_activity';
 
 function canonicalEventType(type) {
   return CANONICAL_EVENT_TYPES[type] || type || '';
@@ -46,6 +52,12 @@ function rawMatchesEvent(raw, event) {
 function rawEventsForLogicalEvent(session, event) {
   const byId = new Map(session.rawEvents.map((raw) => [raw.rawId, raw]));
   return event.rawRefs.map((ref) => byId.get(ref.rawId)).filter(Boolean);
+}
+
+function subAgentActivityEventId(raw) {
+  if (raw?.recordType !== 'event_msg' || raw?.payloadType !== SUB_AGENT_ACTIVITY_EVENT_TYPE) return '';
+  const eventId = raw?.parsed?.payload?.event_id;
+  return typeof eventId === 'string' ? eventId : '';
 }
 
 function createCodexRawParser(deps) {
@@ -151,6 +163,16 @@ function createCodexRawParser(deps) {
     }
 
     if (record.type === 'event_msg') {
+      const lifecycleDescriptor = toolLifecycleDescriptorFor(payload.type);
+      if (lifecycleDescriptor
+          && lifecycleDescriptor.family !== TOOL_LIFECYCLE_FAMILY.COMMAND
+          && lifecycleDescriptor.family !== TOOL_LIFECYCLE_FAMILY.PATCH) {
+        if (payload.type === 'image_generation_end') raw.toolName = 'image_generation';
+        raw.preview = truncate(flattenText(payload, 12000) || payload.type);
+        raw.searchText = flattenText(payload, 16000);
+        return raw;
+      }
+
       switch (payload.type) {
         case 'user_message':
         case 'agent_message':
@@ -191,43 +213,11 @@ function createCodexRawParser(deps) {
           raw.preview = truncate(formatTokenUsagePreview(payload) || flattenText(payload, 12000) || payload.type);
           raw.searchText = [tokenUsageSearchText(payload), flattenText(payload, 16000)].filter(Boolean).join('\n');
           return raw;
-        case 'mcp_tool_call_end':
-        case 'mcp_tool_call_begin':
-        case 'mcp_tool_call_update':
-        case 'mcp_tool_call_delta':
-        case 'mcp_tool_call_declined':
-        case 'image_generation_call_begin':
-        case 'image_generation_call_update':
-        case 'image_generation_call_delta':
-        case 'image_generation_call_end':
-        case 'image_generation_call_declined':
-        case 'image_generation_end':
-        case 'dynamic_tool_call_begin':
-        case 'dynamic_tool_call_update':
-        case 'dynamic_tool_call_delta':
-        case 'dynamic_tool_call_end':
-        case 'dynamic_tool_call_declined':
-        case 'approval_request_begin':
-        case 'approval_request_end':
-        case 'approval_request_declined':
-        case 'hook_begin':
-        case 'hook_end':
-        case 'hook_declined':
-        case 'hook_started':
-        case 'hook_completed':
         case 'web_search_end':
         case 'context_compacted':
         case 'turn_aborted':
         case 'thread_rolled_back':
         case 'error':
-        case 'collab_agent_spawn_end':
-        case 'collab_agent_spawn_begin':
-        case 'collab_agent_interaction_end':
-        case 'collab_agent_interaction_begin':
-        case 'collab_waiting_end':
-        case 'collab_waiting_begin':
-        case 'collab_close_end':
-        case 'collab_close_begin':
         case 'task_started':
         case 'task_complete':
         case 'turn_started':
@@ -241,7 +231,6 @@ function createCodexRawParser(deps) {
         case 'stream_error':
         case 'plan_update':
         case 'plan_delta':
-          if (payload.type === 'image_generation_end') raw.toolName = 'image_generation';
           raw.preview = truncate(flattenText(payload, 12000) || payload.type);
           raw.searchText = flattenText(payload, 16000);
           return raw;
@@ -270,10 +259,12 @@ module.exports = {
   CANONICAL_SCHEMA_VERSION,
   CODEX_SOURCE_KIND,
   CODEX_JSONL_LINE_LOCATOR_TYPE,
+  SUB_AGENT_ACTIVITY_EVENT_TYPE,
   canonicalEventType,
   codexSourceLocator,
   createCodexRawParser,
   rawEventsForLogicalEvent,
   rawMatchesEvent,
   rawRef,
+  subAgentActivityEventId,
 };

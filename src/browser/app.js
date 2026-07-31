@@ -4,12 +4,32 @@ const rendererApi = window.sessionRenderers;
 const escapeHtml = rendererApi.escapeHtml;
 const renderSections = rendererApi.renderSections;
 const renderTimelineSections = rendererApi.renderTimelineSections;
-const searchQuery = window.sessionSearchQuery;
+const searchControls = window.sessionSearchControls;
+const searchTargets = window.sessionSearchTargets;
 const searchHighlighter = window.sessionSearchHighlighter;
 const foldingApi = window.sessionFolding;
 const i18n = window.sessionI18n;
 const navigationApi = window.sessionNavigation;
 const eventChipsApi = window.sessionEventChips;
+const codeModePresentationContract = window.sessionCodeModePresentationContract;
+const transitionSafety = require('./transition-safety');
+const isIntentionalAbort = transitionSafety.isIntentionalAbort;
+const isRetriableTransportError = transitionSafety.isRetriableTransportError;
+const { sameProjectRoot } = require('../shared/project-root');
+
+const requestOwners = {
+  timeline: transitionSafety.createRequestOwner(),
+  sessions: transitionSafety.createRequestOwner(),
+  projectResults: transitionSafety.createRequestOwner(),
+  analysis: transitionSafety.createRequestOwner(),
+  fileSuggestions: transitionSafety.createRequestOwner(),
+  navigation: transitionSafety.createRequestOwner(),
+  eventEnvelope: transitionSafety.createRequestOwner(),
+  contextEventEnvelope: transitionSafety.createRequestOwner(),
+  rawReferences: transitionSafety.createRequestOwner(),
+};
+const paginationIntents = transitionSafety.createPaginationIntentState();
+const detailRequestControllers = new Map();
 
 const NAVIGATION_PAGE_LIMIT = 500;
 const TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD = 96;
@@ -17,18 +37,21 @@ const SEARCH_TARGET_PRELOAD_MIN = 5;
 const SEARCH_TARGET_PRELOAD_MAX_PAGES = 3;
 const FILE_SUGGESTION_LIMIT = 12;
 const SEARCH_HIGHLIGHT_INPUT_DELAY_MS = 300;
+const PROJECT_REFRESH_RETRY_DELAYS_MS = [400, 800, 1600];
+const DETAIL_VIEW_ORIGIN_SEARCH = 'searchTransient';
+const DETAIL_VIEW_ORIGIN_USER = 'userConfirmed';
 const REPO_STORAGE_KEY = 'sessionAnalyzer.repoRoot';
 const CUSTOM_PROFILES_KEY = 'sessionAnalyzer.customProfiles';
 const OVERRIDES_KEY = 'sessionAnalyzer.overrides';
 const LOCALE_STORAGE_KEY = 'sessionAnalyzer.locale';
 const DISPLAY_STATES = foldingApi.DISPLAY_STATES;
 const CONDITION_DISPLAY_STATES = foldingApi.CONDITION_DISPLAY_STATES;
-const EDITABLE_EVENT_KINDS = foldingApi.EDITABLE_EVENT_KINDS;
 const EDITABLE_KIND_GROUPS = foldingApi.EDITABLE_KIND_GROUPS;
 const CONDITION_DEFINITIONS = foldingApi.CONDITION_DEFINITIONS;
 const normalizeRules = foldingApi.normalizeRules;
 const normalizeOverrides = foldingApi.normalizeOverrides;
 const evaluateDisplayStateFromRules = foldingApi.displayStateFromRules;
+const inheritedCodeModeRequestState = foldingApi.inheritedCodeModeRequestState;
 const inspectorChipValues = eventChipsApi.inspectorChipValues;
 const rawRefsSubtitle = eventChipsApi.rawRefsSubtitle;
 const KIND_LABELS = {
@@ -38,7 +61,9 @@ const KIND_LABELS = {
   patch: 'Patch',
   mcp_call: 'MCP call',
   js_repl: 'JS REPL',
+  agent_coordination: 'Subagent coordination',
   other_tool_call: 'Other tool call',
+  code_mode_operation: 'Code Mode tool call',
   proposed_plan: 'Proposed plan',
   plan_update: 'Plan update',
   protocol: 'Protocol',
@@ -56,14 +81,6 @@ const KIND_LABELS = {
   hook: 'Hook',
   developer_message: 'Developer message',
   event: 'Event',
-};
-const STATUS_LABELS = {
-  active: 'Active',
-  blocked: 'Blocked',
-  complete: 'Complete',
-  failed: 'Failed',
-  success: 'Success',
-  completed: 'Completed',
 };
 const LAYER_LABELS = {
   main: 'Main timeline',
@@ -90,32 +107,66 @@ function statusLabel(value) {
   return i18n.statusLabel(value, state?.locale || browserLocale());
 }
 
+function searchStatusLabel(value) {
+  return i18n.searchStatusLabel(value, state?.locale || browserLocale());
+}
+
 const state = {
   locale: browserLocale(),
   sessions: [],
+  expandedSessionGroups: new Set(),
+  projectResults: [],
   repoRoot: '',
   projects: [],
   projectSelected: false,
   selectingProject: false,
+  analyzerDisabled: false,
   projectLoadingRoot: '',
   projectJobId: '',
   projectPollTimer: 0,
+  projectRefreshJobId: '',
+  projectRefreshPollTimer: 0,
+  projectRefreshRequestId: 0,
+  projectRefreshRetryCount: 0,
+  projectRefreshNoticeTimer: 0,
+  projectRefreshing: false,
   projectChooserRequestId: 0,
   projectReturning: false,
+  sessionsRequestId: 0,
+  projectSearchRequestId: 0,
+  projectSearchDataContext: '',
+  projectSearchTotal: 0,
+  projectSearchEventTotal: 0,
+  projectSearchSort: 'latest-match-desc',
+  projectSearchLoading: false,
+  projectSearchPendingContext: '',
+  projectReturnContext: null,
+  analysisRequestId: 0,
   selectedSessionId: '',
   selectedEventId: '',
   offset: 0,
   limit: 150,
   timelineLoading: false,
   timelineRequestId: 0,
+  sessionsDataContext: '',
+  timelineDataContext: '',
   sessionGrandTotal: 0,
   sessionTotal: 0,
   timelineTotal: 0,
   timelineSearchMatchCount: 0,
+  timelineSearchEventCount: 0,
   currentEvents: [],
+  temporaryEventReveal: null,
+  contextReveal: null,
+  contextRevealPending: null,
+  contextRevealRequestId: 0,
+  contextParentCache: Object.create(null),
   fileSuggestions: [],
+  fileSuggestionRequestId: 0,
   eventKinds: { main: [], protocol: [], raw: [] },
   sessionEventKinds: { main: [], protocol: [], raw: [] },
+  codeModeRequests: [],
+  sessionCodeModeRequests: [],
   profiles: [],
   builtinProfiles: [],
   customProfiles: readJsonStorage(CUSTOM_PROFILES_KEY, []),
@@ -137,10 +188,25 @@ const state = {
   navigationCategoryId: '',
   navigationCategoryManualId: '',
   navigationCache: { key: '', events: [], total: 0, pending: null },
-  searchHighlight: { query: '', marks: [], activeIndex: -1 },
+  navigationLoadErrorKey: '',
+  searchHighlight: { query: '', marks: [] },
+  searchScope: 'session',
+  searchQuery: '',
+  searchFilters: { file: '', kind: '', status: '', codeModeRequest: '' },
+  searchTargetRegistry: { key: '', targets: [], activeTargetId: '' },
+  searchNavigation: { running: false, queue: [] },
+  searchProgrammaticScroll: { active: false, timer: 0 },
+  timelineUserPaginationIntent: null,
+  timelineUserPaginationSettleTimer: 0,
+  timelineUserPaginationCheckFrame: 0,
+  timelineUserPaginationHasDownwardScroll: false,
+  timelineLastScrollTop: 0,
+  timelineReplacementRetry: null,
   searchHighlightTimer: 0,
-  searchTargetPreload: { key: '', pages: 0, pending: false },
+  searchTargetPreload: { key: '', pages: 0, pending: false, exhausted: false },
+  searchTransientExpansion: { key: '', eventIds: [] },
   searchStructureKey: '',
+  searchSurfaceContexts: { sessions: '', timeline: '', detail: '' },
   mobileView: 'sessions',
 };
 
@@ -150,14 +216,29 @@ const el = {
   projectSwitchControl: document.getElementById('projectSwitchControl'),
   projectSwitchHint: document.querySelector('.projectSwitchHint'),
   stateLine: document.getElementById('stateLine'),
+  projectRefreshBtn: document.getElementById('projectRefreshBtn'),
+  projectRefreshStatus: document.getElementById('projectRefreshStatus'),
   searchInput: document.getElementById('searchInput'),
+  searchScopeButtons: document.querySelectorAll('[data-search-scope]'),
+  searchHudScope: document.getElementById('searchHudScope'),
+  searchHudScopeValue: document.getElementById('searchHudScopeValue'),
+  searchFilterBtn: document.getElementById('searchFilterBtn'),
+  searchFilterCount: document.getElementById('searchFilterCount'),
   localeSelect: document.getElementById('localeSelect'),
   searchAssist: document.getElementById('searchAssist'),
-  searchAssistChips: document.getElementById('searchAssistChips'),
+  searchAssistClose: document.getElementById('searchAssistClose'),
   searchField: document.querySelector('.searchField'),
+  searchLayerShortcut: document.getElementById('searchLayerShortcut'),
+  searchLayerShortcutValue: document.getElementById('searchLayerShortcutValue'),
+  searchFilterRows: document.getElementById('searchFilterRows'),
+  searchMetricsPanel: document.getElementById('searchMetricsPanel'),
+  searchResultsSection: document.getElementById('searchResultsSection'),
+  searchAssistFooter: document.getElementById('searchAssistFooter'),
+  searchClearAllBtn: document.getElementById('searchClearAllBtn'),
+  searchEnterHint: document.getElementById('searchEnterHint'),
+  searchKindLabel: document.getElementById('searchKindLabel'),
   searchKindSelect: document.getElementById('searchKindSelect'),
   searchStatusSelect: document.getElementById('searchStatusSelect'),
-  searchLayerSelect: document.getElementById('searchLayerSelect'),
   searchFileInput: document.getElementById('searchFileInput'),
   searchFileSuggestions: document.getElementById('searchFileSuggestions'),
   profileSelect: document.getElementById('profileSelect'),
@@ -224,27 +305,39 @@ function applyStaticLocale() {
   document.querySelector('.localeControl .srOnly') && setText(document.querySelector('.localeControl .srOnly'), t('localeLabel'));
   if (el.localeSelect) el.localeSelect.setAttribute('aria-label', t('localeLabel'));
   if (!state.repoRoot && !state.projectLoadingRoot) setText(el.stateLine, t('stateLoading'));
-  if (el.searchInput) el.searchInput.placeholder = t('searchPlaceholder');
-  if (el.searchAssist) el.searchAssist.setAttribute('aria-label', t('searchOptions'));
+  syncSearchScopeUi();
   document.querySelector('[data-search-match-controls]')?.setAttribute('title', t('searchMatchTitle'));
   document.querySelector('[data-search-match-nav="previous"]')?.setAttribute('aria-label', t('previousSearchMatch'));
   document.querySelector('[data-search-match-nav="previous"]')?.setAttribute('title', t('previousSearchMatch'));
   document.querySelector('[data-search-match-nav="next"]')?.setAttribute('aria-label', t('nextSearchMatch'));
   document.querySelector('[data-search-match-nav="next"]')?.setAttribute('title', t('nextSearchMatch'));
-  document.querySelectorAll('.searchAssistTitle')[0] && setText(document.querySelectorAll('.searchAssistTitle')[0], t('searchFilters'));
-  document.querySelectorAll('.searchAssistTitle')[1] && setText(document.querySelectorAll('.searchAssistTitle')[1], t('active'));
+  setText(document.getElementById('searchAssistHeading'), t('searchParameters'));
+  if (el.searchAssistClose) {
+    el.searchAssistClose.setAttribute('aria-label', t('closeSearchOptions'));
+    el.searchAssistClose.setAttribute('title', t('closeSearchOptions'));
+  }
+  setText(document.getElementById('searchScopeHeading'), t('searchScope'));
+  setText(document.getElementById('searchLayerHeading'), t('layer'));
+  setText(document.getElementById('searchFiltersHeading'), t('filters'));
+  setText(document.getElementById('searchResultsHeading'), t('searchResultsBreakdown'));
+  setText(el.searchClearAllBtn, t('clearAll'));
+  el.searchClearAllBtn?.setAttribute('aria-label', t('clearAll'));
+  el.searchClearAllBtn?.setAttribute('title', t('clearAllSearchTitle'));
+  document.querySelector('[data-search-filter-row="file"] label') && setText(document.querySelector('[data-search-filter-row="file"] label'), t('touchedFileFilter'));
+  document.querySelector('[data-search-filter-row="kind"] label') && setText(document.querySelector('[data-search-filter-row="kind"] label'), t('kind'));
+  document.querySelector('[data-search-filter-row="status"] label') && setText(document.querySelector('[data-search-filter-row="status"] label'), t('status'));
+  if (el.searchFileInput) el.searchFileInput.setAttribute('placeholder', t('anyFile'));
   setSelectOptionText(el.searchKindSelect, '', t('anyKind'));
   setSelectOptionText(el.searchStatusSelect, '', t('anyStatus'));
-  setSelectOptionText(el.searchStatusSelect, 'active', statusLabel('active'));
-  setSelectOptionText(el.searchStatusSelect, 'blocked', statusLabel('blocked'));
-  setSelectOptionText(el.searchStatusSelect, 'complete', statusLabel('complete'));
-  setSelectOptionText(el.searchStatusSelect, 'failed', statusLabel('failed'));
-  setSelectOptionText(el.searchStatusSelect, 'success', statusLabel('success'));
-  setSelectOptionText(el.searchStatusSelect, 'completed', statusLabel('completed'));
-  setSelectOptionText(el.searchLayerSelect, '', t('currentLayer'));
-  setSelectOptionText(el.searchLayerSelect, 'main', t('mainTimeline'));
-  setSelectOptionText(el.searchLayerSelect, 'protocol', t('protocolLayer'));
-  setSelectOptionText(el.searchLayerSelect, 'raw', t('rawRecords'));
+  document.getElementById('searchStatusGoalGroup')?.setAttribute('label', t('statusGroupGoalLifecycle'));
+  document.getElementById('searchStatusExecutionGroup')?.setAttribute('label', t('statusGroupExecutionOutcome'));
+  document.getElementById('searchStatusEventGroup')?.setAttribute('label', t('statusGroupEventLifecycle'));
+  setSelectOptionText(el.searchStatusSelect, 'active', searchStatusLabel('active'));
+  setSelectOptionText(el.searchStatusSelect, 'blocked', searchStatusLabel('blocked'));
+  setSelectOptionText(el.searchStatusSelect, 'complete', searchStatusLabel('complete'));
+  setSelectOptionText(el.searchStatusSelect, 'failed', searchStatusLabel('failed'));
+  setSelectOptionText(el.searchStatusSelect, 'success', searchStatusLabel('success'));
+  setSelectOptionText(el.searchStatusSelect, 'completed', searchStatusLabel('completed'));
   setSelectOptionText(el.layerSelect, 'main', t('mainTimeline'));
   setSelectOptionText(el.layerSelect, 'protocol', t('protocolLayer'));
   setSelectOptionText(el.layerSelect, 'raw', t('rawRecords'));
@@ -262,6 +355,10 @@ function applyStaticLocale() {
   setText(el.projectCancelBtn, t('cancelIndexing'));
   setText(document.querySelector('.sessionsPane .sessionListHeader h2'), t('sessions'));
   setText(document.querySelector('.sortControl .srOnly'), t('sort'));
+  if (el.projectRefreshBtn) {
+    el.projectRefreshBtn.setAttribute('aria-label', t('reindexCurrentProject'));
+    el.projectRefreshBtn.setAttribute('title', t('reindexCurrentProject'));
+  }
   el.layerSelect?.setAttribute('aria-label', t('layer'));
   el.profileSelect?.setAttribute('aria-label', t('foldingStrategy'));
   setText(document.getElementById('dirtyProfileTitle'), t('dirtyProfileTitle'));
@@ -271,6 +368,8 @@ function applyStaticLocale() {
   setText(document.querySelector('[data-dirty-profile-choice="save"]'), t('saveAndSwitch'));
   setText(document.querySelector('[data-dirty-profile-choice="discard"]'), t('discardAndSwitch'));
   setText(document.querySelector('[data-dirty-profile-choice="cancel"]'), t('cancel'));
+  syncSearchAssistControls();
+  renderSearchAssistChips();
   const sessionHeaderTitle = el.sessionHeader?.querySelector('h2');
   const sessionHeaderText = el.sessionHeader?.querySelector('p');
   if (!state.selectedSessionId) {
@@ -351,15 +450,19 @@ function projectName(repoRoot) {
   return text.split(/[\\/]/).filter(Boolean).pop() || text;
 }
 
-function setProjectHeader(repoRoot, summary) {
+function setProjectHeader(repoRoot, summary, status = repoRoot ? 'ready' : 'idle') {
   updateProjectSwitchControl({ displayRoot: repoRoot, returnRoot: state.repoRoot });
+  if (!el.stateLine) return;
   el.stateLine.textContent = summary || '';
+  el.stateLine.title = summary || '';
+  el.stateLine.dataset.state = status;
 }
 
 function updateProjectChrome(options = {}) {
   if (el.topbar) el.topbar.hidden = Boolean(state.projectLoadingRoot);
   updateProjectChooserHeader();
   updateProjectSwitchControl(options);
+  updateProjectRefreshControl();
 }
 
 function updateProjectChooserHeader() {
@@ -380,10 +483,16 @@ function updateProjectSwitchControl(options = {}) {
   const labelRoot = canReturn ? returnRoot : displayRoot;
   if (el.projectTitle) el.projectTitle.textContent = projectName(labelRoot);
   if (el.projectSwitchHint) {
-    el.projectSwitchHint.textContent = state.projectReturning ? t('returning') : (canReturn ? t('return') : (displayRoot ? t('change') : t('select')));
+    el.projectSwitchHint.textContent = state.projectReturning
+      ? t('returning')
+      : (canReturn ? t('return') : (displayRoot ? t('changeProject') : t('selectProjectAction')));
   }
   if (!el.projectSwitchControl) return;
-  el.projectSwitchControl.disabled = state.projectReturning || Boolean(state.projectLoadingRoot || state.projectJobId);
+  el.projectSwitchControl.disabled = state.projectReturning || Boolean(
+    state.projectLoadingRoot || state.projectJobId || state.projectRefreshing || state.projectRefreshJobId,
+  );
+  el.projectSwitchControl.setAttribute('aria-controls', 'projectChooser');
+  el.projectSwitchControl.setAttribute('aria-expanded', state.selectingProject ? 'true' : 'false');
   if (state.projectReturning && returnRoot) {
     el.projectSwitchControl.title = t('returningToProject', { root: returnRoot });
     el.projectSwitchControl.setAttribute('aria-label', t('returningToCurrentProject', { root: returnRoot }));
@@ -432,6 +541,71 @@ function kindLabel(value) {
   return i18n.eventKindLabel(value, state.locale) || KIND_LABELS[value] || humanizeKind(value) || value;
 }
 
+function timelineEventDetail(event) {
+  if (!event) return null;
+  return state.detailCache[detailKey(state.selectedSessionId, activeLayerId(), event.id)] || null;
+}
+
+function codeModeEventPresentation(event, detail = timelineEventDetail(event)) {
+  if (event?.kind !== 'code_mode_operation') return null;
+  const presentation = detail?.presentation;
+  return presentation && codeModePresentationContract.isCodeModePresentationVariant(presentation.variant)
+    ? presentation
+    : null;
+}
+
+function detailHasWebProjection(detail) {
+  if (detail?.presentation?.variant
+      === codeModePresentationContract.CODE_MODE_PRESENTATION_VARIANT.SINGLE_TOOL
+      && detail.presentation.toolName === 'web__run') return true;
+  return (detail?.timelineSections || []).some((section) => (
+    section?.type === 'code_mode_tool_projection' && section.toolName === 'web__run'
+  ));
+}
+
+function compactCodeModeWebLifecycleIds() {
+  const ids = new Set();
+  for (const detail of Object.values(state.detailCache)) {
+    if (detail?.kind !== 'code_mode_operation' || !detailHasWebProjection(detail)) continue;
+    for (const section of detail.inspectorSections || []) {
+      if (section?.type !== 'event_refs') continue;
+      for (const item of section.items || []) {
+        if (item?.kind === 'web_search' && item.id) ids.add(item.id);
+      }
+    }
+  }
+  return ids;
+}
+
+function codeModeRequestEvidenceBadge(value) {
+  const badge = codeModePresentationContract.codeModeRequestEvidenceBadge(value);
+  return badge ? { className: badge.className, label: t(badge.labelKey) } : null;
+}
+
+function codeModeResultAssociationBadge(value) {
+  const badge = codeModePresentationContract.codeModeResultAssociationBadge(value);
+  return badge ? { className: badge.className, label: t(badge.labelKey) } : null;
+}
+
+function renderCodeModePresentationChips(presentation, isCodeMode = false) {
+  if (!presentation && !isCodeMode) return '';
+  const resultAssociation = codeModeResultAssociationBadge(presentation?.resultAssociation);
+  return [
+    `<span class="chip codeModeChip">${escapeHtml(t('codeMode'))}</span>`,
+    presentation?.variant === codeModePresentationContract.CODE_MODE_PRESENTATION_VARIANT.MULTI_TOOL
+      ? `<span class="chip countChip">${escapeHtml(t('declaredRequests', { count: presentation.declaredToolCount }))}</span>`
+      : '',
+    resultAssociation
+      ? `<span class="codeModeEvidenceBadge resultAssociation ${resultAssociation.className}">${escapeHtml(resultAssociation.label)}</span>`
+      : '',
+  ].join('');
+}
+
+function presentedEventLabel(event, presentation = codeModeEventPresentation(event), compactWebLifecycle = false) {
+  if (compactWebLifecycle) return t('webActivityObserved');
+  return presentation ? presentation.label : event.label;
+}
+
 function projectProgressPercent(progress) {
   const phase = progress?.phase || '';
   if (phase === 'complete') return 100;
@@ -445,7 +619,7 @@ function projectProgressPercent(progress) {
   return total ? Math.max(1, Math.min(95, Math.round((done / total) * 100))) : 0;
 }
 
-function renderProjectJob(job) {
+function projectJobStatusText(job) {
   const progress = job?.progress || {};
   const phase = progress.phase || job?.status || 'queued';
   const parts = [];
@@ -465,7 +639,12 @@ function renderProjectJob(job) {
     parts.push(t('preparingIndex', { name: projectName(job?.repoRoot || progress.repoRoot || '') }));
   }
   if (progress.elapsedMs || job?.buildMs) parts.push(fmtDuration(progress.elapsedMs || job.buildMs));
-  if (el.projectStatus) el.projectStatus.textContent = parts.join(' | ');
+  return parts.join(' | ');
+}
+
+function renderProjectJob(job) {
+  const progress = job?.progress || {};
+  if (el.projectStatus) el.projectStatus.textContent = projectJobStatusText(job);
   if (el.projectProgress) {
     el.projectProgress.hidden = !job || ['failed', 'cancelled'].includes(job.status);
     el.projectProgress.value = projectProgressPercent(progress);
@@ -475,20 +654,218 @@ function renderProjectJob(job) {
   }
 }
 
-function parsedSearchInput() {
-  return searchQuery.parseSearchInput(el.searchInput.value);
+function clearProjectRefreshPollTimer() {
+  clearTimeout(state.projectRefreshPollTimer);
+  state.projectRefreshPollTimer = 0;
+}
+
+function clearProjectRefreshNoticeTimer() {
+  clearTimeout(state.projectRefreshNoticeTimer);
+  state.projectRefreshNoticeTimer = 0;
+}
+
+function setProjectRefreshStatus(message = '', kind = '') {
+  if (!el.projectRefreshStatus) return;
+  el.projectRefreshStatus.textContent = message;
+  el.projectRefreshStatus.hidden = !message;
+  el.projectRefreshStatus.classList.toggle('error', kind === 'error');
+  el.projectRefreshStatus.classList.toggle('success', kind === 'success');
+}
+
+function updateProjectRefreshControl() {
+  if (!el.projectRefreshBtn) return;
+  const refreshing = Boolean(state.projectRefreshing || state.projectRefreshJobId);
+  const disabled = !state.repoRoot
+    || refreshing
+    || state.selectingProject
+    || state.projectReturning
+    || Boolean(state.projectLoadingRoot || state.projectJobId);
+  el.projectRefreshBtn.disabled = disabled;
+  el.projectRefreshBtn.dataset.refreshing = refreshing ? 'true' : 'false';
+  el.projectRefreshBtn.setAttribute('aria-busy', refreshing ? 'true' : 'false');
+}
+
+function renderProjectRefreshJob(job) {
+  setProjectRefreshStatus(projectJobStatusText(job));
+  updateProjectRefreshControl();
+}
+
+function scheduleProjectRefreshPoll(jobId, requestId, delayMs = 400) {
+  clearProjectRefreshPollTimer();
+  state.projectRefreshPollTimer = setTimeout(() => {
+    pollProjectRefreshJob(jobId, requestId).catch((error) => {
+      handleProjectRefreshPollError(error, jobId, requestId);
+    });
+  }, delayMs);
+}
+
+async function finishProjectRefresh(appState, requestId) {
+  if (requestId !== state.projectRefreshRequestId) return;
+  Object.values(requestOwners).forEach((owner) => owner.abort());
+  clearContextReveal({ render: false });
+  beginSearchTargetContextTransition();
+  state.sessionsDataContext = '';
+  state.timelineDataContext = '';
+  state.timelineReplacementRetry = null;
+  resetSessionDetailCache();
+  invalidateNavigationCache();
+  await applyAppState(appState);
+  await loadSessions();
+  if (requestId !== state.projectRefreshRequestId) return;
+  state.projectRefreshing = false;
+  state.projectRefreshJobId = '';
+  state.projectRefreshRetryCount = 0;
+  clearProjectRefreshPollTimer();
+  setProjectRefreshStatus(t('projectRefreshComplete'), 'success');
+  updateProjectChrome();
+  clearProjectRefreshNoticeTimer();
+  state.projectRefreshNoticeTimer = setTimeout(() => {
+    setProjectRefreshStatus();
+    state.projectRefreshNoticeTimer = 0;
+  }, 4000);
+}
+
+function handleProjectRefreshError(error) {
+  state.projectRefreshing = false;
+  state.projectRefreshJobId = '';
+  state.projectRefreshRetryCount = 0;
+  clearProjectRefreshPollTimer();
+  setProjectRefreshStatus(t('projectRefreshFailed', {
+    message: error?.message || t('indexingFailed'),
+  }), 'error');
+  updateProjectChrome();
+}
+
+function handleProjectRefreshPollError(error, jobId, requestId) {
+  if (requestId !== state.projectRefreshRequestId || jobId !== state.projectRefreshJobId) return false;
+  const retryDelay = PROJECT_REFRESH_RETRY_DELAYS_MS[state.projectRefreshRetryCount];
+  if (isRetriableTransportError(error) && retryDelay != null) {
+    state.projectRefreshRetryCount += 1;
+    scheduleProjectRefreshPoll(jobId, requestId, retryDelay);
+    return true;
+  }
+  handleProjectRefreshError(error);
+  return false;
+}
+
+async function pollProjectRefreshJob(jobId, requestId) {
+  clearProjectRefreshPollTimer();
+  const data = await api(`/api/project/status?jobId=${encodeURIComponent(jobId)}`);
+  if (requestId !== state.projectRefreshRequestId || jobId !== state.projectRefreshJobId) return;
+  const job = data.job || {};
+  renderProjectRefreshJob(job);
+  if (job.status === 'succeeded') {
+    let appState = data.state;
+    if (!appState) {
+      const current = await api('/api/state');
+      appState = current.currentState || (!current.job ? current : null);
+    }
+    if (!appState) throw new Error(t('projectIndexUnavailable'));
+    await finishProjectRefresh(appState, requestId);
+    return;
+  }
+  if (job.status === 'failed') throw new Error(job.error || t('indexingFailed'));
+  if (job.status === 'cancelled') throw new Error(t('indexingCancelled'));
+  scheduleProjectRefreshPoll(jobId, requestId);
+}
+
+async function refreshCurrentProject() {
+  if (!state.repoRoot || state.projectRefreshing || state.projectRefreshJobId) return false;
+  const requestId = state.projectRefreshRequestId + 1;
+  state.projectRefreshRequestId = requestId;
+  state.projectRefreshing = true;
+  state.projectRefreshRetryCount = 0;
+  clearProjectRefreshNoticeTimer();
+  setProjectRefreshStatus(t('refreshingCurrentProject'));
+  updateProjectChrome();
+  try {
+    const started = await api('/api/project', {
+      method: 'POST',
+      body: { repoRoot: state.repoRoot, locale: state.locale },
+    });
+    if (requestId !== state.projectRefreshRequestId) {
+      await cancelProjectJob(started.job?.id || '');
+      return false;
+    }
+    state.projectRefreshJobId = started.job?.id || '';
+    if (!state.projectRefreshJobId) throw new Error(t('projectIndexUnavailable'));
+    renderProjectRefreshJob(started.job);
+    try {
+      await pollProjectRefreshJob(state.projectRefreshJobId, requestId);
+      return true;
+    } catch (error) {
+      return handleProjectRefreshPollError(error, state.projectRefreshJobId, requestId);
+    }
+  } catch (error) {
+    if (requestId === state.projectRefreshRequestId) handleProjectRefreshError(error);
+    return false;
+  }
 }
 
 function currentSearchState() {
-  const parsed = parsedSearchInput();
   return {
-    q: parsed.q,
-    file: parsed.file,
-    kind: parsed.kind,
-    status: parsed.status,
-    layer: parsed.layer || state.layerId || 'main',
-    parsed,
+    scope: state.searchScope,
+    q: state.searchQuery,
+    file: state.searchFilters.file,
+    kind: state.searchFilters.kind,
+    status: state.searchFilters.status,
+    codeModeRequest: state.searchFilters.codeModeRequest,
+    layer: state.layerId || 'main',
   };
+}
+
+function isAnalyzerInteractionDisabled() {
+  return Boolean(state.analyzerDisabled || state.selectingProject || state.projectLoadingRoot || state.projectJobId);
+}
+
+function syncSearchScopeUi() {
+  document.body.dataset.searchScope = state.searchScope;
+  const analyzerDisabled = isAnalyzerInteractionDisabled();
+  for (const button of el.searchScopeButtons) {
+    const scope = button.dataset.searchScope;
+    button.setAttribute('aria-pressed', scope === state.searchScope ? 'true' : 'false');
+    button.disabled = analyzerDisabled || (scope === 'session' && !state.selectedSessionId);
+    button.textContent = scope === 'session' ? t('currentSessionScope') : t('entireProjectScope');
+  }
+  if (el.searchHudScope) {
+    const scopeLabel = state.searchScope === 'session'
+      ? t('currentSessionScopeShort')
+      : t('entireProjectScopeShort');
+    setText(el.searchHudScopeValue, scopeLabel);
+    el.searchHudScope.title = state.searchScope === 'session' ? t('currentSessionScope') : t('entireProjectScope');
+    el.searchHudScope.setAttribute('aria-label', t('searchScopeValue', { value: el.searchHudScope.title }));
+    el.searchHudScope.disabled = analyzerDisabled;
+  }
+  if (el.searchFilterBtn) el.searchFilterBtn.disabled = analyzerDisabled;
+  const group = document.querySelector('.searchScopeControl');
+  if (group) group.setAttribute('aria-label', t('searchScope'));
+  if (el.searchInput) {
+    el.searchInput.placeholder = state.searchScope === 'project'
+      ? t('projectSearchPlaceholder')
+      : t('sessionSearchPlaceholder');
+  }
+  if (el.sortSelect) el.sortSelect.disabled = analyzerDisabled || state.searchScope === 'project';
+}
+
+function hasActiveSearchExpression() {
+  const search = currentSearchState();
+  return Boolean(search.q || search.file || search.kind || search.status || search.codeModeRequest);
+}
+
+function searchInputValueFromState() {
+  return state.searchQuery;
+}
+
+function syncSearchInputValue() {
+  const value = searchInputValueFromState();
+  if (el.searchInput.value !== value) el.searchInput.value = value;
+}
+
+function commitSearchInput() {
+  const nextQuery = el.searchInput.value.trim();
+  const changed = nextQuery !== state.searchQuery;
+  state.searchQuery = nextQuery;
+  return changed;
 }
 
 function activeLayerId() {
@@ -512,149 +889,782 @@ function highlightTerms() {
 }
 
 function highlightRoots() {
-  return [el.sessionList, el.timeline, el.detail].filter(Boolean);
+  return [el.timeline, el.detail].filter(Boolean);
 }
 
-function searchTargetPreloadKey() {
+function sessionsDataContextKey() {
+  return JSON.stringify([
+    state.repoRoot,
+    el.sortSelect?.value || '',
+    state.locale,
+  ]);
+}
+
+function projectSearchDataContextKey() {
   const search = currentSearchState();
-  return [
+  return JSON.stringify([
+    state.repoRoot,
+    search.scope,
+    state.selectedSessionId,
+    search.q,
+    search.layer,
+    search.kind,
+    search.status,
+    search.file,
+    search.codeModeRequest,
+    state.projectSearchSort,
+    state.locale,
+  ]);
+}
+
+function timelineDataContextKey() {
+  const search = currentSearchState();
+  return JSON.stringify([
+    state.repoRoot,
+    search.scope,
     state.selectedSessionId,
     search.layer,
     search.q,
     search.kind,
     search.status,
     search.file,
+    search.codeModeRequest,
+    state.locale,
+  ]);
+}
+
+function foldingProfileSearchContextKey() {
+  return JSON.stringify([
+    state.profileId,
+    normalizeRules(activeProfileRules()),
+  ]);
+}
+
+function timelineSearchSurfaceContextKey() {
+  return JSON.stringify([
+    timelineDataContextKey(),
+    foldingProfileSearchContextKey(),
+    el.sortSelect?.value || '',
+  ]);
+}
+
+function detailSearchSurfaceContextKey() {
+  return JSON.stringify([
+    timelineDataContextKey(),
+    state.detailCacheGeneration,
+    state.detailView?.type || '',
+    state.detailView?.eventId || '',
+  ]);
+}
+
+function searchDiscoveryContextReady() {
+  if (state.searchScope !== 'session') return false;
+  const sessionsReady = state.searchSurfaceContexts.sessions === sessionsDataContextKey();
+  const timelineReady = !state.selectedSessionId
+    || state.searchSurfaceContexts.timeline === timelineSearchSurfaceContextKey();
+  return sessionsReady && timelineReady;
+}
+
+function searchTargetKey() {
+  const search = currentSearchState();
+  return [
+    state.repoRoot,
+    search.scope,
+    state.selectedSessionId,
+    search.layer,
+    search.q,
+    search.kind,
+    search.status,
+    search.file,
+    search.codeModeRequest,
+    foldingProfileSearchContextKey(),
+    search.scope === 'project' ? state.projectSearchSort : (el.sortSelect?.value || ''),
+    state.locale,
   ].join('\u001f');
+}
+
+function searchTargetPreloadKey() {
+  return searchTargetKey();
+}
+
+function resetSearchTargetRegistry(key = searchTargetKey()) {
+  state.searchTargetRegistry = { key, targets: [], activeTargetId: '' };
+}
+
+function syncSearchTargetRegistryKey() {
+  const key = searchTargetKey();
+  if (state.searchTargetRegistry.key !== key) resetSearchTargetRegistry(key);
+  return key;
+}
+
+function beginSearchTargetContextTransition() {
+  const key = searchTargetKey();
+  if (state.searchTargetRegistry.key === key) return false;
+  clearContextReveal({ render: false });
+  requestOwners.navigation.abort();
+  clearQueuedSearchNavigations();
+  state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
+  highlightRoots().forEach((root) => searchHighlighter.clear(root));
+  state.searchHighlight = { query: currentSearchState().q, marks: [] };
+  resetSearchTargetRegistry(key);
+  state.timelineSearchMatchCount = 0;
+  state.timelineSearchEventCount = 0;
+  updateSearchMatchControls();
+  return true;
+}
+
+function searchTargetId(searchKey, ownerId) {
+  return searchTargets.targetId(searchKey, ownerId);
+}
+
+function searchTargetIndex() {
+  const { targets, activeTargetId } = state.searchTargetRegistry;
+  return targets.findIndex((target) => target.id === activeTargetId);
+}
+
+function activeSearchTarget() {
+  const index = searchTargetIndex();
+  return index >= 0 ? state.searchTargetRegistry.targets[index] : null;
+}
+
+function searchableHighlightOwners() {
+  if (!searchDiscoveryContextReady()) return [];
+  const owners = [];
+  const eventIds = new Set(state.currentEvents.map((event) => event.id));
+  for (const article of el.timeline?.querySelectorAll('[data-event-id]:not(.hiddenByProfile)') || []) {
+    if (eventIds.has(article.dataset.eventId)) {
+      owners.push({ surface: 'timeline', ownerId: article.dataset.eventId, root: article });
+    }
+  }
+  if (state.detailView.type === 'inspector' && state.detailView.eventId) {
+    const inspector = el.detail?.querySelector('.inspector');
+    const detailReady = state.searchSurfaceContexts.detail === detailSearchSurfaceContextKey();
+    if (inspector && detailReady && eventIds.has(state.detailView.eventId)) {
+      owners.push({ surface: 'inspector', ownerId: state.detailView.eventId, root: inspector });
+    }
+  }
+  return owners;
+}
+
+function discoverCanonicalSearchTargets(searchKey) {
+  const result = searchTargets.discover(state.searchTargetRegistry.targets, searchKey, state.currentEvents);
+  state.searchTargetRegistry.targets = result.targets;
+  return result.addedIds;
+}
+
+function bindSearchTarget(owner, occurrence, mark, targetsById) {
+  const id = searchTargetId(state.searchTargetRegistry.key, owner.ownerId);
+  const target = targetsById.get(id);
+  if (!target) return false;
+  searchTargets.bind(target, owner.surface, mark);
+  mark.dataset.searchTargetId = id;
+  mark.dataset.searchTargetSurface = owner.surface;
+  mark.dataset.searchTargetOwner = owner.ownerId;
+  mark.dataset.searchTargetOccurrence = String(occurrence);
+  return true;
+}
+
+function resetSearchTransientExpansions() {
+  const hadExpansions = state.searchTransientExpansion.eventIds.length > 0;
+  state.searchTransientExpansion = { key: '', eventIds: [] };
+  return hadExpansions;
+}
+
+function currentSearchTransientExpansionIds() {
+  const key = searchTargetPreloadKey();
+  const search = currentSearchState();
+  if (!search.q || state.searchTransientExpansion.key !== key) return [];
+  return state.searchTransientExpansion.eventIds;
+}
+
+function reconcileSearchTransientExpansions() {
+  const search = currentSearchState();
+  const key = searchTargetPreloadKey();
+  if (!search.q || (state.searchTransientExpansion.key && state.searchTransientExpansion.key !== key)) {
+    return resetSearchTransientExpansions();
+  }
+  return false;
+}
+
+function addSearchTransientExpansion(eventId) {
+  const search = currentSearchState();
+  if (!search.q || !eventId) return;
+  const key = searchTargetPreloadKey();
+  if (state.searchTransientExpansion.key !== key) {
+    state.searchTransientExpansion = { key, eventIds: [] };
+  }
+  if (!state.searchTransientExpansion.eventIds.includes(eventId)) {
+    state.searchTransientExpansion.eventIds.push(eventId);
+  }
+}
+
+function clearSearchTransientExpansion(eventId) {
+  if (!eventId || !state.searchTransientExpansion.eventIds.length) return;
+  state.searchTransientExpansion.eventIds = state.searchTransientExpansion.eventIds.filter((id) => id !== eventId);
+  if (!state.searchTransientExpansion.eventIds.length) state.searchTransientExpansion.key = '';
 }
 
 function structuredSearchKey() {
   const search = currentSearchState();
-  return searchQuery.structuredSearchKey(
-    { kind: search.kind, status: search.status, file: search.file, layer: search.parsed.layer || '' },
+  return `${search.scope}\u001e${searchControls.structuredSearchKey(
+    {
+      kind: search.kind,
+      status: search.status,
+      file: search.file,
+      codeModeRequest: search.codeModeRequest,
+    },
     state.layerId || '',
-    el.sortSelect?.value || '',
-  );
+    search.scope === 'project' ? state.projectSearchSort : (el.sortSelect?.value || ''),
+  )}`;
 }
 
-function currentSearchMarkLabel() {
-  const { marks, activeIndex } = state.searchHighlight;
-  const total = searchHighlighter.displayedMatchTotal(state.timelineSearchMatchCount, marks.length);
-  if (!total) return t('noMatches');
-  const current = marks.length && activeIndex >= 0 ? activeIndex + 1 : 0;
-  return t('matchCount', { current, total });
+function currentSearchMetricsModel() {
+  const search = currentSearchState();
+  const { targets } = state.searchTargetRegistry;
+  const active = search.scope === 'project' ? hasActiveSearchExpression() : Boolean(search.q);
+  return searchControls.searchMetricsModel({
+    scope: search.scope,
+    active,
+    loading: search.scope === 'project' && state.projectSearchLoading,
+    currentIndex: searchTargetIndex(),
+    jumpTargetCount: targets.length,
+    fullTextCount: state.timelineSearchMatchCount,
+    projectSessionCount: state.projectSearchTotal,
+    projectEventCount: state.projectSearchEventTotal,
+  });
+}
+
+function compactSearchMetricsLabel(model = currentSearchMetricsModel()) {
+  if (model.mode === 'loading') return t('searching');
+  if (model.mode !== 'ready') return '';
+  if (model.scope === 'project') return t('compactProjectMatches', { count: model.sessions });
+  return t('compactJumpTargets', { current: model.current, total: model.jumpTotal });
+}
+
+function renderSearchMetrics() {
+  const model = currentSearchMetricsModel();
+  const noMatches = model.mode === 'ready' && (model.scope === 'project'
+    ? model.events === 0
+    : model.jumpTotal === 0 && model.fullTextTotal === 0);
+  if (el.searchResultsSection) el.searchResultsSection.hidden = model.mode === 'idle';
+  if (el.searchMetricsPanel) {
+    if (model.mode === 'idle') {
+      el.searchMetricsPanel.innerHTML = '';
+    } else if (model.mode === 'loading') {
+      el.searchMetricsPanel.innerHTML = `<p class="searchMetricsEmpty">${escapeHtml(t('searching'))}</p>`;
+    } else if (noMatches) {
+      el.searchMetricsPanel.innerHTML = `<p class="searchMetricsEmpty">${escapeHtml(t('noSearchMatches'))}</p>`;
+    } else if (model.scope === 'project') {
+      el.searchMetricsPanel.innerHTML = `<div class="searchMetric"><span>${escapeHtml(t('matchingSessions'))}</span><strong>${model.sessions}</strong></div>
+        <div class="searchMetric"><span>${escapeHtml(t('matchingEvents'))}</span><strong>${model.events}</strong></div>`;
+    } else {
+      const navigation = model.jumpTotal > 0 || model.fullTextTotal > 0
+        ? `<div class="searchMetricsNavigation" data-search-match-controls>
+            <button class="searchInlineBtn" type="button" data-search-match-nav="previous" aria-label="${escapeHtml(t('previousSearchMatch'))}" title="${escapeHtml(t('previousSearchMatch'))}">↑</button>
+            <button class="searchInlineBtn" type="button" data-search-match-nav="next" aria-label="${escapeHtml(t('nextSearchMatch'))}" title="${escapeHtml(t('nextSearchMatch'))}">↓</button>
+          </div>`
+        : '';
+      const canLoadMoreTargets = !state.searchTargetPreload.exhausted
+        && state.offset < state.timelineTotal;
+      el.searchMetricsPanel.innerHTML = `<div class="searchMetric searchMetricTargets"><div class="searchMetricHeader"><span>${escapeHtml(t('jumpTargets'))}</span>${navigation}</div><strong>${model.current} / ${model.jumpTotal} ${escapeHtml(t('discovered'))}</strong></div>
+        <div class="searchMetric"><span>${escapeHtml(t('fullTextHits'))}</span><strong>${model.fullTextTotal} ${escapeHtml(t('occurrences'))}</strong></div>
+        <div class="searchMetricsFooter">
+          <p class="searchMetricsNote">${escapeHtml(t('searchTargetsMayGrow'))}</p>
+          ${canLoadMoreTargets ? `<button class="searchMetricsLoadMore" type="button" data-search-load-more-targets${state.searchTargetPreload.pending ? ' disabled' : ''}>${escapeHtml(t(state.searchTargetPreload.pending ? 'loadingMoreSearchTargets' : 'loadMoreSearchTargets'))}</button>` : ''}
+        </div>`;
+    }
+    el.searchMetricsPanel.dataset.searchTargetIds = JSON.stringify(
+      state.searchTargetRegistry.targets.map((target) => target.id),
+    );
+    el.searchMetricsPanel.dataset.searchActiveTargetId = state.searchTargetRegistry.activeTargetId;
+  }
+  if (el.searchEnterHint) {
+    el.searchEnterHint.textContent = state.searchScope === 'project' ? t('enterFocusesResults') : t('enterMovesNextTarget');
+    const canNavigate = model.scope === 'project'
+      ? model.mode === 'ready' && model.events > 0
+      : searchDiscoveryContextReady()
+        && model.mode === 'ready'
+        && (model.jumpTotal > 0 || model.fullTextTotal > 0);
+    el.searchEnterHint.hidden = !canNavigate;
+  }
+  if (el.searchAssistFooter) el.searchAssistFooter.hidden = !hasActiveSearchExpression();
+  return model;
+}
+
+function syncSearchInlineLayout() {
+  if (!el.searchField) return;
+  if (el.searchAssist && el.searchInput) {
+    const fieldLeft = el.searchField.getBoundingClientRect().left;
+    const inputLeft = Math.max(0, el.searchInput.getBoundingClientRect().left - fieldLeft);
+    el.searchAssist.style.setProperty('--search-input-inline-start', `${inputLeft}px`);
+  }
+  const controls = el.searchField.querySelector('.searchInlineMatches');
+  if (!controls) return;
+  el.searchField.classList.toggle('searchMetricsConstrained', el.searchField.clientWidth < 460);
 }
 
 function updateSearchMatchControls() {
+  syncSearchTargetRegistryKey();
+  const model = renderSearchMetrics();
   const controls = document.querySelectorAll('[data-search-match-controls]');
-  const { marks } = state.searchHighlight;
-  const visible = Boolean(currentSearchState().q);
+  const { targets } = state.searchTargetRegistry;
+  const analyzerDisabled = isAnalyzerInteractionDisabled();
+  const sessionNavigation = state.searchScope === 'session' && Boolean(currentSearchState().q);
+  const visible = sessionNavigation || (state.searchScope === 'project' && hasActiveSearchExpression());
+  const canNavigate = searchDiscoveryContextReady()
+    && (targets.length > 0 || state.timelineSearchMatchCount > 0);
   controls.forEach((control) => {
     control.hidden = !visible;
+    control.title = sessionNavigation ? t('searchMatchTitle') : t('projectCompactMatchTitle');
+    control.toggleAttribute('data-search-navigation-pending', state.searchNavigation.running);
     const label = control.querySelector('[data-search-match-count]');
-    if (label) label.textContent = currentSearchMarkLabel();
+    if (label) label.textContent = compactSearchMetricsLabel(model);
     control.querySelectorAll('[data-search-match-nav]').forEach((button) => {
-      button.disabled = marks.length === 0;
+      button.hidden = !sessionNavigation;
+      button.disabled = analyzerDisabled || !canNavigate;
     });
   });
+  requestAnimationFrame(syncSearchInlineLayout);
 }
 
 function maybePreloadSearchTargets() {
   const search = currentSearchState();
-  if (!search.q || !state.selectedSessionId) return;
-  if (state.searchHighlight.marks.length >= SEARCH_TARGET_PRELOAD_MIN) return;
+  if (search.scope !== 'session' || !search.q || !state.selectedSessionId) return;
+  if (!searchDiscoveryContextReady()) return;
+  if (state.searchTargetRegistry.targets.length >= SEARCH_TARGET_PRELOAD_MIN) return;
   if (state.offset >= state.timelineTotal) return;
-  if (state.timelineLoading || state.searchTargetPreload.pending) return;
+  if (state.timelineLoading || state.searchTargetPreload.pending || state.searchNavigation.running) return;
 
   const key = searchTargetPreloadKey();
   if (state.searchTargetPreload.key !== key) {
-    state.searchTargetPreload = { key, pages: 0, pending: false };
+    state.searchTargetPreload = { key, pages: 0, pending: false, exhausted: false };
   }
   if (state.searchTargetPreload.pages >= SEARCH_TARGET_PRELOAD_MAX_PAGES) return;
 
   state.searchTargetPreload.pages += 1;
   state.searchTargetPreload.pending = true;
-  loadTimeline(true)
+  loadTimeline(true, { paginationIntent: paginationIntent('search-preload') })
     .catch(showError)
     .finally(() => {
+      if (state.searchTargetPreload.key !== key) return;
       state.searchTargetPreload.pending = false;
-      if (state.searchHighlight.marks.length < SEARCH_TARGET_PRELOAD_MIN) {
+      if (state.searchTargetRegistry.targets.length < SEARCH_TARGET_PRELOAD_MIN) {
         maybePreloadSearchTargets();
       }
     });
 }
 
-function setActiveSearchMark(index, options = {}) {
-  const marks = state.searchHighlight.marks;
-  marks.forEach((mark) => mark.classList.remove('activeSearchMark'));
-  if (!marks.length) {
-    state.searchHighlight.activeIndex = -1;
+function liveSearchTargetBinding(target, surface) {
+  return searchTargets.liveBinding(target, surface, (node, candidate) => (
+    node?.isConnected && node.dataset.searchTargetId === candidate.id
+  ));
+}
+
+function liveSearchTargetNode(target) {
+  return liveSearchTargetBinding(target, 'timeline') || liveSearchTargetBinding(target, 'inspector');
+}
+
+function endProgrammaticSearchScrollGuard() {
+  if (state.searchProgrammaticScroll.timer) clearTimeout(state.searchProgrammaticScroll.timer);
+  state.searchProgrammaticScroll.active = false;
+  state.searchProgrammaticScroll.timer = 0;
+}
+
+function scheduleProgrammaticSearchScrollGuard(timeout) {
+  state.searchProgrammaticScroll.active = true;
+  if (state.searchProgrammaticScroll.timer) clearTimeout(state.searchProgrammaticScroll.timer);
+  state.searchProgrammaticScroll.timer = setTimeout(() => {
+    endProgrammaticSearchScrollGuard();
+  }, timeout);
+}
+
+function beginProgrammaticSearchScroll() {
+  clearTimelineUserPaginationIntent();
+  scheduleProgrammaticSearchScrollGuard(1500);
+}
+
+function keepProgrammaticSearchScrollGuard() {
+  if (!state.searchProgrammaticScroll.active) return;
+  scheduleProgrammaticSearchScrollGuard(250);
+}
+
+function setActiveSearchTarget(target, options = {}) {
+  state.searchHighlight.marks.forEach((mark) => mark.classList.remove('activeSearchMark'));
+  if (!target) {
+    state.searchTargetRegistry.activeTargetId = '';
     updateSearchMatchControls();
     return false;
   }
-  const normalized = ((index % marks.length) + marks.length) % marks.length;
-  state.searchHighlight.activeIndex = normalized;
-  const mark = marks[normalized];
-  mark.classList.add('activeSearchMark');
+
+  state.searchTargetRegistry.activeTargetId = target.id;
+  let mark = liveSearchTargetNode(target);
+  if (mark) mark.classList.add('activeSearchMark');
+
   if (options.scroll || options.syncDetail) {
-    const article = mark.closest('[data-event-id]');
-    if (article?.dataset.eventId) {
-      state.selectedEventId = article.dataset.eventId;
+    const confirmedEventDetail = isSelectedEventDetailView()
+      && state.detailView.origin === DETAIL_VIEW_ORIGIN_USER;
+    if (!(options.passive && confirmedEventDetail)) {
+      state.selectedEventId = target.ownerId;
       updateSelectedTimelineEvent();
       if (options.syncDetail) {
-        const item = state.currentEvents.find((event) => event.id === article.dataset.eventId);
-        if (item) {
-          showInspector(item, { replace: true });
+        const item = state.currentEvents.find((event) => event.id === target.ownerId);
+        const confirmedCurrentEvent = confirmedEventDetail && state.detailView.eventId === item?.id;
+        if (item && !confirmedCurrentEvent) {
+          showInspector(item, { replace: true, origin: DETAIL_VIEW_ORIGIN_SEARCH });
+          mark = liveSearchTargetNode(target);
         }
       }
     }
   }
-  if (options.scroll) {
-    const liveMark = state.searchHighlight.marks[state.searchHighlight.activeIndex];
-    searchHighlighter.reveal(liveMark);
+
+  if (options.scroll && mark) {
+    beginProgrammaticSearchScroll();
+    searchHighlighter.reveal(mark);
   }
   updateSearchMatchControls();
-  return true;
+  return Boolean(mark);
 }
 
 function refreshSearchHighlights(options = {}) {
   const roots = highlightRoots();
-  const previousQuery = state.searchHighlight.query;
-  const previousIndex = state.searchHighlight.activeIndex;
+  const searchKey = syncSearchTargetRegistryKey();
+  const previousActiveTargetId = state.searchTargetRegistry.activeTargetId;
+  searchTargets.resetBindings(state.searchTargetRegistry.targets);
   roots.forEach((root) => searchHighlighter.clear(root));
 
   const query = currentSearchState().q;
   const terms = highlightTerms();
-  const marks = terms.length ? roots.flatMap((root) => searchHighlighter.apply(root, terms)) : [];
-  state.searchHighlight = {
-    query,
-    marks,
-    activeIndex: -1,
-  };
+  const marks = [];
+  if (terms.length) {
+    discoverCanonicalSearchTargets(searchKey);
+    const targetsById = new Map(state.searchTargetRegistry.targets.map((target) => [target.id, target]));
+    for (const owner of searchableHighlightOwners()) {
+      const ownerMarks = searchHighlighter.apply(owner.root, terms);
+      ownerMarks.forEach((mark, occurrence) => bindSearchTarget(owner, occurrence, mark, targetsById));
+      marks.push(...ownerMarks);
+    }
+  }
+  state.searchHighlight = { query, marks };
 
-  if (marks.length) {
-    const keepIndex = options.preserveActive && query === previousQuery && previousIndex >= 0;
-    setActiveSearchMark(keepIndex ? Math.min(previousIndex, marks.length - 1) : 0, {
+  if (!query) resetSearchTargetRegistry(searchKey);
+  const activeTargetStillKnown = options.preserveActive
+    && state.searchTargetRegistry.targets.some((target) => target.id === previousActiveTargetId);
+  if (!activeTargetStillKnown) {
+    state.searchTargetRegistry.activeTargetId = state.searchTargetRegistry.targets
+      .find((candidate) => liveSearchTargetNode(candidate))?.id || '';
+  }
+
+  const target = activeSearchTarget();
+  if (target) {
+    setActiveSearchTarget(target, {
       scroll: false,
       syncDetail: options.syncDetail,
+      passive: options.passive,
     });
   } else {
     updateSearchMatchControls();
   }
+  convergeSelectedEventDetailView();
   if (options.allowPreload !== false) maybePreloadSearchTargets();
 }
 
-function navigateSearchMatch(direction) {
-  if (!state.searchHighlight.marks.length) refreshSearchHighlights({ preserveActive: true, syncDetail: true });
-  const marks = state.searchHighlight.marks;
-  if (!marks.length) return false;
-  const current = state.searchHighlight.activeIndex >= 0 ? state.searchHighlight.activeIndex : 0;
-  return setActiveSearchMark(current + direction, { scroll: true, syncDetail: true });
+function persistedDisplayOverride(eventId) {
+  const sessionOverrides = state.overrides[state.selectedSessionId] || {};
+  return sessionOverrides[eventId] || '';
+}
+
+function waitForTimelineIdle() {
+  if (!state.timelineLoading) return Promise.resolve();
+  return new Promise((resolve) => {
+    const poll = () => {
+      if (!state.timelineLoading) resolve();
+      else setTimeout(poll, 25);
+    };
+    poll();
+  });
+}
+
+function timelineSearchTargets(eventId) {
+  return state.searchTargetRegistry.targets.filter((target) => (
+    target.ownerId === eventId && liveSearchTargetBinding(target, 'timeline')
+  ));
+}
+
+async function materializeSearchEvent(event, direction, options = {}) {
+  await ensureEventLoaded(event.id, { allowSearchTargetPreload: false });
+  if (options.searchKey && searchTargetPreloadKey() !== options.searchKey) return false;
+  const loaded = state.currentEvents.find((candidate) => candidate.id === event.id) || event;
+  let targets = timelineSearchTargets(loaded.id);
+  if (targets.length) return direction < 0 ? targets[targets.length - 1] : targets[0];
+
+  const override = persistedDisplayOverride(loaded.id);
+  if (override && override !== 'expanded') return false;
+  if (!override && displayState(loaded) !== 'expanded') {
+    addSearchTransientExpansion(loaded.id);
+    renderTimeline();
+  }
+
+  await loadEventDetail(loaded);
+  if (options.searchKey && searchTargetPreloadKey() !== options.searchKey) return false;
+  renderTimeline();
+  refreshSearchHighlights({ preserveActive: true, allowPreload: false });
+  targets = timelineSearchTargets(loaded.id);
+  return (direction < 0 ? targets[targets.length - 1] : targets[0]) || false;
+}
+
+async function resolveSearchTargetNode(target, searchKey) {
+  let node = liveSearchTargetNode(target);
+  if (node || !target || searchTargetPreloadKey() !== searchKey) return node;
+
+  await ensureEventLoaded(target.ownerId, { allowSearchTargetPreload: false });
+  if (searchTargetPreloadKey() !== searchKey) return null;
+  node = liveSearchTargetNode(target);
+
+  const event = state.currentEvents.find((candidate) => candidate.id === target.ownerId);
+  if (!event) return null;
+  if (!node) {
+    const override = persistedDisplayOverride(event.id);
+    if (!override && displayState(event) !== 'expanded') addSearchTransientExpansion(event.id);
+    await loadEventDetail(event);
+    if (searchTargetPreloadKey() !== searchKey) return null;
+    renderTimeline();
+    refreshSearchHighlights({ preserveActive: true, allowPreload: false });
+  }
+  return liveSearchTargetNode(target);
+}
+
+async function activateSearchTarget(target, options = {}) {
+  if (!target) return false;
+  const searchKey = state.searchTargetRegistry.key;
+  const previousActiveTargetId = state.searchTargetRegistry.activeTargetId;
+  state.searchTargetRegistry.activeTargetId = target.id;
+  const node = await resolveSearchTargetNode(target, searchKey);
+  if (searchTargetPreloadKey() !== searchKey) return false;
+  if (!node) {
+    state.searchTargetRegistry.activeTargetId = previousActiveTargetId;
+    setActiveSearchTarget(activeSearchTarget());
+    return false;
+  }
+  return setActiveSearchTarget(target, options);
+}
+
+async function activateSearchTargetCandidates(candidates, options, attempted, searchKey) {
+  for (const target of candidates) {
+    if (!target || attempted.has(target.id)) continue;
+    attempted.add(target.id);
+    if (await activateSearchTarget(target, options)) return true;
+    if (searchTargetPreloadKey() !== searchKey) return false;
+  }
+  return false;
+}
+
+async function materializeNextSearchTarget(direction) {
+  const search = currentSearchState();
+  if (!search.q || !state.timelineSearchMatchCount || !searchDiscoveryContextReady()) return false;
+  const searchKey = searchTargetPreloadKey();
+  const currentTarget = activeSearchTarget();
+  const activeEventId = currentTarget?.ownerId || '';
+  const activeEventIndex = state.currentEvents.findIndex((event) => event.id === activeEventId);
+  const initiallyKnownTargetIds = new Set(state.searchTargetRegistry.targets.map((target) => target.id));
+  const attempted = new Set();
+
+  const tryEvents = async (events) => {
+    for (const event of events) {
+      if (!event.hasSearchHit || attempted.has(event.id)) continue;
+      attempted.add(event.id);
+      const newlyDiscovered = timelineSearchTargets(event.id)
+        .filter((target) => !initiallyKnownTargetIds.has(target.id));
+      if (newlyDiscovered.length) {
+        return direction < 0 ? newlyDiscovered[newlyDiscovered.length - 1] : newlyDiscovered[0];
+      }
+      const target = await materializeSearchEvent(event, direction, { searchKey });
+      if (target) return target;
+      if (searchTargetPreloadKey() !== searchKey) return false;
+    }
+    return false;
+  };
+
+  const appendNextPage = async () => {
+    const previousOffset = state.offset;
+    await waitForTimelineIdle();
+    if (searchTargetPreloadKey() !== searchKey) return false;
+    if (state.offset > previousOffset) return true;
+    if (state.offset >= state.timelineTotal) return false;
+    await loadTimeline(true, {
+      allowSearchTargetPreload: false,
+      paginationIntent: paginationIntent('search-navigation'),
+    });
+    await waitForTimelineIdle();
+    if (searchTargetPreloadKey() !== searchKey) return false;
+    return state.offset > previousOffset;
+  };
+
+  if (direction >= 0) {
+    let scanOffset = activeEventIndex >= 0 ? activeEventIndex + 1 : 0;
+    while (true) {
+      const loadedEnd = state.currentEvents.length;
+      const target = await tryEvents(state.currentEvents.slice(scanOffset, loadedEnd));
+      if (target) return target;
+      if (searchTargetPreloadKey() !== searchKey || state.offset >= state.timelineTotal) break;
+      scanOffset = loadedEnd;
+      if (!await appendNextPage()) break;
+    }
+    if (activeEventIndex >= 0) {
+      return tryEvents(state.currentEvents.slice(0, activeEventIndex));
+    }
+    return false;
+  }
+
+  if (activeEventIndex >= 0) {
+    const target = await tryEvents(state.currentEvents.slice(0, activeEventIndex).reverse());
+    if (target) return target;
+    if (searchTargetPreloadKey() !== searchKey) return false;
+  }
+
+  while (state.offset < state.timelineTotal) {
+    if (!await appendNextPage()) break;
+  }
+  if (searchTargetPreloadKey() !== searchKey) return false;
+  const wrapStart = activeEventIndex >= 0 ? activeEventIndex + 1 : 0;
+  return tryEvents(state.currentEvents.slice(wrapStart).reverse());
+}
+
+async function loadMoreSearchTargets() {
+  const search = currentSearchState();
+  if (search.scope !== 'session' || !search.q || !state.selectedSessionId) return false;
+  if (!searchDiscoveryContextReady() || state.searchNavigation.running || state.searchTargetPreload.pending) return false;
+  const searchKey = searchTargetPreloadKey();
+  if (state.searchTargetPreload.key !== searchKey) {
+    state.searchTargetPreload = { key: searchKey, pages: 0, pending: false, exhausted: false };
+  }
+  const beforeIds = new Set(state.searchTargetRegistry.targets.map((target) => target.id));
+  state.searchTargetPreload.pending = true;
+  updateSearchMatchControls();
+  try {
+    while (searchTargetPreloadKey() === searchKey && state.offset < state.timelineTotal) {
+      const previousOffset = state.offset;
+      await loadTimeline(true, {
+        allowSearchTargetPreload: false,
+        paginationIntent: paginationIntent('search-load-more'),
+      });
+      await waitForTimelineIdle();
+      if (searchTargetPreloadKey() !== searchKey) return false;
+      const addedIds = state.searchTargetRegistry.targets
+        .map((target) => target.id)
+        .filter((id) => !beforeIds.has(id));
+      if (addedIds.length) {
+        state.searchTargetPreload.exhausted = false;
+        return true;
+      }
+      if (state.offset <= previousOffset) break;
+    }
+    state.searchTargetPreload.exhausted = state.offset >= state.timelineTotal;
+    return false;
+  } finally {
+    if (state.searchTargetPreload.key === searchKey) {
+      state.searchTargetPreload.pending = false;
+      updateSearchMatchControls();
+    }
+  }
+}
+
+async function navigateSearchMatch(direction) {
+  const searchKey = syncSearchTargetRegistryKey();
+  await waitForTimelineIdle();
+  if (searchTargetPreloadKey() !== searchKey) return false;
+  if (!searchDiscoveryContextReady()) return false;
+  reconcileSearchTransientExpansions();
+  if (!state.searchTargetRegistry.targets.length) {
+    refreshSearchHighlights({ preserveActive: true, syncDetail: true });
+  }
+  const targets = state.searchTargetRegistry.targets;
+  if (!targets.length) {
+    const materialized = await materializeNextSearchTarget(direction);
+    return activateSearchTarget(materialized, { scroll: true, syncDetail: true });
+  }
+
+  const options = { scroll: true, syncDetail: true };
+  const attempted = new Set();
+  const activeTargetId = state.searchTargetRegistry.activeTargetId;
+  const current = searchTargetIndex();
+  const beforeBoundary = current < 0
+    ? (direction < 0 ? [...targets].reverse() : [...targets])
+    : direction < 0
+      ? targets.slice(0, current).reverse()
+      : targets.slice(current + 1);
+  if (await activateSearchTargetCandidates(beforeBoundary, options, attempted, searchKey)) return true;
+  if (searchTargetPreloadKey() !== searchKey) return false;
+
+  const knownBeforeMaterialization = new Set(
+    state.searchTargetRegistry.targets.map((target) => target.id),
+  );
+  const materialized = await materializeNextSearchTarget(direction);
+  if (materialized && await activateSearchTargetCandidates(
+    [materialized], options, attempted, searchKey,
+  )) return true;
+  if (searchTargetPreloadKey() !== searchKey) return false;
+
+  const newlyRegistered = state.searchTargetRegistry.targets.filter(
+    (target) => !knownBeforeMaterialization.has(target.id),
+  );
+  if (await activateSearchTargetCandidates(
+    direction < 0 ? newlyRegistered.reverse() : newlyRegistered,
+    options,
+    attempted,
+    searchKey,
+  )) return true;
+  if (searchTargetPreloadKey() !== searchKey) return false;
+
+  const updatedTargets = state.searchTargetRegistry.targets;
+  const updatedCurrent = updatedTargets.findIndex((target) => target.id === activeTargetId);
+  const wrapped = updatedCurrent < 0
+    ? (direction < 0 ? [...updatedTargets].reverse() : [...updatedTargets])
+    : direction < 0
+      ? updatedTargets.slice(updatedCurrent).reverse()
+      : updatedTargets.slice(0, updatedCurrent + 1);
+  return activateSearchTargetCandidates(wrapped, options, attempted, searchKey);
+}
+
+function clearQueuedSearchNavigations() {
+  const queued = state.searchNavigation.queue.splice(0);
+  queued.forEach(({ resolve }) => resolve(false));
+}
+
+async function drainSearchNavigationQueue() {
+  if (state.searchNavigation.running) return;
+  state.searchNavigation.running = true;
+  updateSearchMatchControls();
+  try {
+    while (state.searchNavigation.queue.length) {
+      const item = state.searchNavigation.queue.shift();
+      try {
+        item.resolve(await navigateSearchMatch(item.direction));
+      } catch (error) {
+        item.reject(error);
+      }
+    }
+  } finally {
+    state.searchNavigation.running = false;
+    updateSearchMatchControls();
+    maybePreloadSearchTargets();
+  }
+}
+
+function queueSearchNavigation(direction) {
+  const normalizedDirection = direction < 0 ? -1 : 1;
+  const pending = new Promise((resolve, reject) => {
+    state.searchNavigation.queue.push({ direction: normalizedDirection, resolve, reject });
+  });
+  drainSearchNavigationQueue();
+  return pending;
 }
 
 function scheduleSearchHighlightRefresh(options = {}) {
   if (state.searchHighlightTimer) clearTimeout(state.searchHighlightTimer);
+  const scheduledKey = searchTargetKey();
   state.searchHighlightTimer = setTimeout(() => {
     state.searchHighlightTimer = 0;
+    if (scheduledKey !== searchTargetKey()) return;
     refreshSearchHighlights(options);
     renderResultSummary();
   }, SEARCH_HIGHLIGHT_INPUT_DELAY_MS);
@@ -663,11 +1673,14 @@ function scheduleSearchHighlightRefresh(options = {}) {
 function currentQuery(extra = {}, options = {}) {
   const params = new URLSearchParams();
   const filters = currentSearchState();
-  if (options.includeQ !== false && filters.q) params.set('q', filters.q);
-  if (filters.kind) params.set('kind', filters.kind);
-  if (filters.status) params.set('status', filters.status);
-  if (filters.file) params.set('file', filters.file);
-  if (filters.layer) params.set('layer', filters.layer);
+  if (options.includeExpression !== false) {
+    if (options.includeQ !== false && filters.q) params.set('q', filters.q);
+    if (filters.kind) params.set('kind', filters.kind);
+    if (filters.status) params.set('status', filters.status);
+    if (filters.codeModeRequest) params.set('codeModeRequest', filters.codeModeRequest);
+    if (filters.file) params.set('file', filters.file);
+  }
+  if (options.includeLayer !== false && filters.layer) params.set('layer', filters.layer);
   for (const [key, value] of Object.entries(extra)) {
     if (value !== '' && value != null) params.set(key, value);
   }
@@ -679,13 +1692,81 @@ function detailKey(sessionId, layerId, eventId) {
   return `${sessionId}:${layerId}:${eventId}`;
 }
 
-function resetDetailPane() {
+function detailSelectionContextKey() {
+  const search = currentSearchState();
+  return JSON.stringify([
+    state.repoRoot,
+    search.scope,
+    state.selectedSessionId,
+    search.layer,
+    search.kind,
+    search.status,
+    search.file,
+    search.codeModeRequest,
+    state.locale,
+    state.detailCacheGeneration,
+  ]);
+}
+
+function clearContextReveal(options = {}) {
+  const hadReveal = Boolean(state.contextReveal || state.contextRevealPending);
+  requestOwners.contextEventEnvelope.abort();
+  state.contextReveal = null;
+  state.contextRevealPending = null;
+  state.contextRevealRequestId += 1;
+  if (options.clearParentCache !== false) state.contextParentCache = Object.create(null);
+  if (options.render && hadReveal) renderTimeline();
+  else if (options.syncDom !== false) syncContextRevealDom();
+  return hadReveal;
+}
+
+function detachedContextEvent(eventId) {
+  return state.contextParentCache?.[String(eventId || '')] || null;
+}
+
+function reconcileContextRevealState() {
+  if (!state.contextReveal) return false;
+  const next = navigationApi.reconcileContextReveal({
+    reveal: state.contextReveal,
+    sessionId: state.selectedSessionId,
+    layerId: activeLayerId(),
+    dataContext: timelineDataContextKey(),
+    foldingContext: foldingProfileSearchContextKey(),
+    detailGeneration: state.detailCacheGeneration,
+    events: state.currentEvents,
+  });
+  if (next) return false;
+  clearContextReveal({ render: false });
+  return true;
+}
+
+function detailRequestKeyForSelection() {
+  return state.detailSelectionKey.replace(/^raw:/, '');
+}
+
+function invalidateDetailSelection() {
+  requestOwners.rawReferences.abort();
+  const key = detailRequestKeyForSelection();
+  detailRequestControllers.get(key)?.abort();
   state.detailSelectionKey = '';
+}
+
+function isCurrentDetailSelection(type, key, eventId, context) {
+  return state.searchScope === 'session'
+    && state.detailSelectionKey === key
+    && state.detailView?.type === type
+    && state.detailView?.eventId === eventId
+    && detailSelectionContextKey() === context;
+}
+
+function resetDetailPane() {
+  clearContextReveal({ render: false });
+  invalidateDetailSelection();
   state.selectedEventId = '';
   state.navigationCategoryId = '';
   state.navigationCategoryManualId = '';
   state.detailHistory = [];
-  state.searchTargetPreload = { key: '', pages: 0, pending: false };
+  state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
   state.detailView = { type: 'profileRules' };
   renderProfileRulesPane({ reveal: false });
   updateSelectedTimelineEvent();
@@ -696,7 +1777,7 @@ function cloneProfile(profile) {
 }
 
 function defaultRules() {
-  return { kindStates: {}, fallback: 'summary', conditions: [] };
+  return { kindStates: {}, codeModeRequestStates: {}, fallback: 'summary', conditions: [] };
 }
 
 function normalizeProfiles(profiles) {
@@ -760,7 +1841,7 @@ function visibleProfilePickerHost(host) {
 }
 
 // Keep exactly one strategy info control and move it to the visible profile picker.
-function syncProfileInfoSlot(analyzerDisabled = false) {
+function syncProfileInfoSlot(analyzerDisabled = isAnalyzerInteractionDisabled()) {
   const detailHost = el.detail?.querySelector('[data-profile-picker-host="detail"]');
   const topbarHost = el.profileSelect?.closest('[data-profile-picker-host="topbar"]');
   const host = !analyzerDisabled && profileAppliesToActiveLayer() && isBuiltinProfile(state.profileId) && !profileDirty()
@@ -829,7 +1910,7 @@ function addProfileKindDifferences(kinds, profile, baseProfile = null) {
   const base = baseProfile || baseProfileFor(profile);
   for (const kind of Object.keys(profile.rules.kindStates)) {
     if (!foldingApi.isDynamicEditableKind(kind)) {
-      kinds.add(kind);
+      if (!base || profileRuleForKind(profile, kind) !== profileRuleForKind(base, kind)) kinds.add(kind);
       continue;
     }
     const display = profileRuleForKind(profile, kind);
@@ -846,7 +1927,7 @@ function addProfileKindDifferences(kinds, profile, baseProfile = null) {
 }
 
 function knownEventKinds() {
-  const kinds = new Set(EDITABLE_EVENT_KINDS);
+  const kinds = new Set();
   for (const profile of state.customProfiles) addProfileKindDifferences(kinds, profile);
   if (state.profileDraft) addProfileKindDifferences(kinds, state.profileDraft, activeProfile());
   for (const item of state.sessionEventKinds?.main || []) {
@@ -856,7 +1937,13 @@ function knownEventKinds() {
   for (const event of state.currentEvents) {
     if (event.kind) kinds.add(event.kind);
   }
-  return [...kinds].sort(compareEditableKinds);
+  const projectedCatalogKinds = new Set([
+    ...(state.eventKinds?.main || []),
+    ...(state.sessionEventKinds?.main || []),
+  ].filter((item) => item?.matchField).map((item) => String(item.value || '').trim()).filter(Boolean));
+  return [...kinds]
+    .filter((kind) => kind !== 'code_mode_operation' && !projectedCatalogKinds.has(kind))
+    .sort(compareEditableKinds);
 }
 
 function compareEditableKinds(left, right) {
@@ -882,6 +1969,11 @@ function groupedEditableKinds(kinds) {
       ...entry,
       kinds: [...entry.kinds].sort(compareEditableKinds),
     }));
+}
+
+function editableKindGroupLabel(group) {
+  const id = String(group?.id || 'other');
+  return t(`kindGroup${id[0].toUpperCase()}${id.slice(1)}Name`);
 }
 
 function conditionDefinitions() {
@@ -948,15 +2040,56 @@ function sessionItemClasses(session, active) {
   return classes.join(' ');
 }
 
-function setRelatedParentHighlight(parentSessionId, enabled) {
-  if (!parentSessionId) return;
-  const parent = el.sessionList.querySelector(`[data-session-id="${CSS.escape(parentSessionId)}"]`);
-  if (!parent) return;
-  parent.classList.toggle('relatedParentSession', enabled);
+function sessionHierarchy(sessions = state.sessions) {
+  const byId = new Map(sessions.map((session) => [session.id, session]));
+  const attachedParentIds = new Map();
+  const childrenByParentId = new Map();
+
+  for (const session of sessions) {
+    if (!session.isDerivedSession || !session.parentSessionId || !byId.has(session.parentSessionId)) continue;
+    const visited = new Set([session.id]);
+    let parentId = session.parentSessionId;
+    let cyclic = false;
+    while (parentId && byId.has(parentId)) {
+      if (visited.has(parentId)) {
+        cyclic = true;
+        break;
+      }
+      visited.add(parentId);
+      const parent = byId.get(parentId);
+      parentId = parent?.isDerivedSession ? parent.parentSessionId : '';
+    }
+    if (cyclic) continue;
+    attachedParentIds.set(session.id, session.parentSessionId);
+    const children = childrenByParentId.get(session.parentSessionId) || [];
+    children.push(session);
+    childrenByParentId.set(session.parentSessionId, children);
+  }
+
+  return {
+    roots: sessions.filter((session) => !attachedParentIds.has(session.id)),
+    childrenByParentId,
+    attachedParentIds,
+  };
+}
+
+function firstVisibleSession(sessions = state.sessions) {
+  return sessionHierarchy(sessions).roots[0] || sessions[0] || null;
+}
+
+function expandSessionAncestors(sessionId) {
+  const hierarchy = sessionHierarchy();
+  const visited = new Set([sessionId]);
+  let parentId = hierarchy.attachedParentIds.get(sessionId);
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId);
+    state.expandedSessionGroups.add(parentId);
+    parentId = hierarchy.attachedParentIds.get(parentId);
+  }
 }
 
 function isUpdatePlanEvent(event) {
-  return foldingApi.isUpdatePlanEvent(event);
+  return navigationApi.isPlanUpdateEvent(event);
 }
 
 function metadataRow(label, value) {
@@ -1033,50 +2166,34 @@ function shouldShowInspectorSummary(event, preview, detail = null) {
     'js_repl',
   ]);
   if (bodyOwnedKinds.has(event.kind)) return false;
-  if (detail?.timelineSections?.some((section) => ['markdown', 'code', 'terminal', 'patch', 'diff', 'user_input', 'plan_update', 'collaboration'].includes(section.type))) return false;
+  if (detail?.timelineSections?.some((section) => ['markdown', 'code', 'terminal', 'patch', 'diff', 'user_input', 'plan_update', 'collaboration', 'code_mode_tool_projection', 'code_mode_source'].includes(section.type))) return false;
   return true;
 }
 
-function selectedOptionText(select) {
-  return select.selectedOptions[0]?.textContent?.trim() || '';
-}
-
-function optionText(select, value, fallback = {}) {
-  const option = [...select.options].find((item) => item.value === value);
-  return fallback[value] || option?.textContent?.trim() || value;
-}
-
 function activeFilters() {
-  const filters = [];
   const search = currentSearchState();
-  if (search.kind) filters.push({ key: 'kind', label: `${t('kind')}: ${optionText(el.searchKindSelect, search.kind) || kindLabel(search.kind)}` });
-  if (search.status) filters.push({ key: 'status', label: `${t('status')}: ${optionText(el.searchStatusSelect, search.status, STATUS_LABELS)}` });
-  if (search.file) filters.push({ key: 'file', label: `${t('file')}: ${search.file}` });
-  if (search.parsed.layer && search.layer !== 'main') filters.push({ key: 'layer', label: `${t('layer')}: ${optionText(el.layerSelect, search.layer, LAYER_LABELS)}` });
-  return filters;
-}
-
-function activeFindAndFilters() {
-  const search = currentSearchState();
-  return [
-    search.q ? { key: 'q', label: `${t('find')}: ${search.q}` } : null,
-    ...activeFilters(),
-  ].filter(Boolean);
-}
-
-function filterChipMarkup(filter) {
-  return `<button class="filterChip" type="button" data-clear-filter="${escapeHtml(filter.key)}" aria-label="${escapeHtml(t('clear', { label: filter.label }))}">
-      <span>${escapeHtml(filter.label)}</span><span aria-hidden="true">&times;</span>
-    </button>`;
-}
-
-function renderFilterChips(filters) {
-  return filters.map(filterChipMarkup).join('');
+  return searchControls.activeFilterEntries(search, {
+    file: t('touchedFileFilter'),
+    kind: t('kind'),
+    status: t('status'),
+  }).map((entry) => ({
+    ...entry,
+    displayValue: entry.key === 'kind'
+      ? kindFilterDisplayLabel(search)
+      : (entry.key === 'status'
+        ? searchStatusLabel(entry.value)
+        : entry.value),
+    label: `${entry.label}: ${entry.key === 'kind'
+      ? kindFilterDisplayLabel(search)
+      : (entry.key === 'status'
+        ? searchStatusLabel(entry.value)
+        : entry.value)}`,
+  }));
 }
 
 function hasFocusedTimelineContext() {
   const search = currentSearchState();
-  return Boolean(search.kind || search.status || search.file || search.parsed.layer || activeLayerId() !== 'main');
+  return Boolean(search.kind || search.status || search.file || search.codeModeRequest || activeLayerId() !== 'main');
 }
 
 function renderReadFromHereAction() {
@@ -1084,13 +2201,42 @@ function renderReadFromHereAction() {
   return `<button class="smallBtn readFromHereBtn" type="button" data-detail-action="read-from-here" title="${escapeHtml(t('readFromHereTitle'))}">${escapeHtml(t('readFromHere'))}</button>`;
 }
 
-function renderSearchAssistChips(filters = activeFindAndFilters()) {
-  if (!el.searchAssistChips) return;
-  if (!filters.length) {
-    el.searchAssistChips.innerHTML = `<span class="searchAssistEmpty">${escapeHtml(t('noActiveFilters'))}</span>`;
-    return;
+function renderBackToProjectResultsAction() {
+  if (!state.projectReturnContext || state.searchScope !== 'session') return '';
+  return `<button class="smallBtn" type="button" data-detail-action="back-to-project-results">${escapeHtml(t('backToProjectResults'))}</button>`;
+}
+
+function renderSearchAssistChips() {
+  const filters = activeFilters();
+  const filterSummary = filters.map((filter) => filter.label).join(' · ');
+  const filterCount = filters.length;
+  const analyzerDisabled = isAnalyzerInteractionDisabled();
+  if (el.searchFilterCount) {
+    el.searchFilterCount.textContent = filterCount
+      ? t('filterHudCount', { count: filterCount })
+      : t('filters');
+    el.searchFilterCount.hidden = false;
   }
-  el.searchAssistChips.innerHTML = `${renderFilterChips(filters)}<button class="clearFiltersBtn" type="button" data-clear-filter="all">${escapeHtml(t('clearAll'))}</button>`;
+  if (el.searchFilterBtn) {
+    el.searchFilterBtn.classList.toggle('active', filterCount > 0);
+    el.searchFilterBtn.title = filterSummary || t('noActiveFilters');
+    el.searchFilterBtn.setAttribute('aria-label', filterCount
+      ? t('activeFilterSummary', { count: filterCount, summary: filterSummary })
+      : t('searchFilters'));
+  }
+  setText(el.searchLayerShortcutValue, activeLayerLabel());
+  for (const key of searchControls.FILTER_ORDER) {
+    const row = el.searchFilterRows?.querySelector(`[data-search-filter-row="${key}"]`);
+    const value = state.searchFilters[key] || '';
+    row?.classList.toggle('active', Boolean(value));
+  }
+  if (el.searchLayerShortcut) el.searchLayerShortcut.disabled = analyzerDisabled;
+  el.searchFilterRows?.querySelectorAll('[data-search-filter-control]').forEach((control) => {
+    control.disabled = analyzerDisabled;
+  });
+  if (el.searchClearAllBtn) el.searchClearAllBtn.disabled = analyzerDisabled || (!state.searchQuery && filterCount === 0);
+  renderSearchMetrics();
+  requestAnimationFrame(syncSearchInlineLayout);
 }
 
 function setSelectIfOption(select, value) {
@@ -1102,7 +2248,9 @@ function setSelectIfOption(select, value) {
 function normalizedKindOptions(layerId = activeLayerId()) {
   const seen = new Set();
   const options = [];
-  const source = state.selectedSessionId ? state.sessionEventKinds : state.eventKinds;
+  const source = state.searchScope === 'session' && state.selectedSessionId
+    ? state.sessionEventKinds
+    : state.eventKinds;
   for (const item of source?.[layerId] || []) {
     const value = String(item?.value || '').trim();
     if (!value || seen.has(value)) continue;
@@ -1111,9 +2259,104 @@ function normalizedKindOptions(layerId = activeLayerId()) {
       value,
       label: item.label || kindLabel(value),
       count: Number(item.count || 0),
+      matchField: String(item.matchField || '').trim(),
     });
   }
-  return options.sort((a, b) => a.label.localeCompare(b.label) || a.value.localeCompare(b.value));
+  return options.sort((a, b) => {
+    if (layerId === 'main') {
+      const semanticPriority = (value) => (
+        value === 'code_mode_operation' || value === 'code_mode_script_operation'
+          ? { groupPriority: 25, kindPriority: 0 }
+          : foldingApi.editableKindGroup(value)
+      );
+      const left = semanticPriority(a.value);
+      const right = semanticPriority(b.value);
+      const semanticOrder = left.groupPriority - right.groupPriority
+        || left.kindPriority - right.kindPriority;
+      if (semanticOrder) return semanticOrder;
+    }
+    return a.label.localeCompare(b.label) || a.value.localeCompare(b.value);
+  });
+}
+
+function normalizedCodeModeRequestOptions(layerId = activeLayerId()) {
+  if (layerId !== 'main') return [];
+  const seen = new Set();
+  const options = [];
+  const source = state.searchScope === 'session' && state.selectedSessionId
+    ? state.sessionCodeModeRequests
+    : state.codeModeRequests;
+  for (const item of source || []) {
+    const value = String(item?.value || '').trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    options.push({
+      value,
+      label: String(item?.label || i18n.codeModeRequestLabel(value, state.locale) || value),
+      count: Number(item?.count || 0),
+      evidence: String(item?.evidence || ''),
+    });
+  }
+  const labels = new Map();
+  for (const option of options) labels.set(option.label, (labels.get(option.label) || 0) + 1);
+  return options
+    .map((option) => ({
+      ...option,
+      displayLabel: labels.get(option.label) > 1 ? `${option.label} (${option.value})` : option.label,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label) || a.value.localeCompare(b.value));
+}
+
+function codeModeRequestDisplayLabel(value) {
+  const request = String(value || '').trim();
+  if (!request) return '';
+  const options = normalizedCodeModeRequestOptions('main');
+  const option = options.find((item) => item.value === request);
+  if (option) return option.displayLabel;
+  return i18n.codeModeRequestLabel(request, state.locale) || request;
+}
+
+const CODE_MODE_REQUEST_KIND_PREFIX = 'code_mode_request:';
+
+function codeModeRequestKindValue(value) {
+  const request = String(value || '').trim();
+  return request ? `${CODE_MODE_REQUEST_KIND_PREFIX}${request}` : '';
+}
+
+function codeModeRequestFromKindValue(value) {
+  const selected = String(value || '');
+  return selected.startsWith(CODE_MODE_REQUEST_KIND_PREFIX)
+    ? selected.slice(CODE_MODE_REQUEST_KIND_PREFIX.length).trim()
+    : '';
+}
+
+function kindControlValue(search = currentSearchState()) {
+  if (search.codeModeRequest) return codeModeRequestKindValue(search.codeModeRequest);
+  return search.kind || '';
+}
+
+function kindFilterDisplayLabel(search = currentSearchState()) {
+  const kind = search.kind || (search.codeModeRequest ? 'code_mode_operation' : '');
+  if (kind !== 'code_mode_operation' || !search.codeModeRequest) return kindLabel(kind);
+  return `${kindLabel(kind)} › ${t('declaredRequestOption', {
+    value: codeModeRequestDisplayLabel(search.codeModeRequest),
+  })}`;
+}
+
+function profileCodeModeRequestCatalog(rules) {
+  const current = normalizedCodeModeRequestOptions('main');
+  const currentValues = new Set(current.map((item) => item.value));
+  const historical = Object.keys(rules?.codeModeRequestStates || {})
+    .filter((value) => !currentValues.has(value))
+    .map((value) => ({
+      value,
+      label: codeModeRequestDisplayLabel(value),
+      displayLabel: codeModeRequestDisplayLabel(value),
+      count: 0,
+      historical: true,
+    }))
+    .sort((left, right) => left.displayLabel.localeCompare(right.displayLabel) || left.value.localeCompare(right.value));
+  return { current, historical };
 }
 
 function renderKindOptions() {
@@ -1122,38 +2365,140 @@ function renderKindOptions() {
   const options = normalizedKindOptions(search.layer);
   const values = new Set(options.map((option) => option.value));
   const rows = [`<option value="">${escapeHtml(t('anyKind'))}</option>`];
-  if (search.kind && !values.has(search.kind)) {
-    rows.push(`<option value="${escapeHtml(search.kind)}">${escapeHtml(`${kindLabel(search.kind)} (${search.kind})`)}</option>`);
+  const requestOptions = normalizedCodeModeRequestOptions(search.layer);
+  const requestValues = new Set(requestOptions.map((option) => option.value));
+  if (search.codeModeRequest && !requestValues.has(search.codeModeRequest)) {
+    requestOptions.push({
+      value: search.codeModeRequest,
+      displayLabel: codeModeRequestDisplayLabel(search.codeModeRequest),
+      count: 0,
+    });
+    requestOptions.sort((left, right) => (
+      left.displayLabel.localeCompare(right.displayLabel) || left.value.localeCompare(right.value)
+    ));
   }
-  rows.push(...options.map((option) => {
+  if (search.kind && search.kind !== 'code_mode_operation' && !values.has(search.kind)) {
+    options.push({
+      value: search.kind,
+      label: `${kindLabel(search.kind)} (${search.kind})`,
+      count: 0,
+      matchField: '',
+    });
+  }
+  const renderOrdinaryKindOption = (option) => {
     const label = option.count ? `${option.label} (${option.count})` : option.label;
-    return `<option value="${escapeHtml(option.value)}">${escapeHtml(label)}</option>`;
-  }));
+    const matchField = option.matchField ? ` data-match-field="${escapeHtml(option.matchField)}"` : '';
+    return `<option value="${escapeHtml(option.value)}"${matchField}>${escapeHtml(label)}</option>`;
+  };
+  const codeModeKind = options.find((option) => option.value === 'code_mode_operation');
+  const codeModeScriptKind = options.find((option) => option.value === 'code_mode_script_operation');
+  const renderCodeModeGroup = () => {
+    if (!codeModeKind && !codeModeScriptKind && !requestOptions.length && !search.codeModeRequest) return '';
+    const scriptOption = codeModeScriptKind || {
+      value: 'code_mode_script_operation',
+      label: kindLabel('code_mode_script_operation'),
+      count: 0,
+      matchField: 'presentation_fallback',
+    };
+    const scriptLabel = scriptOption.count ? `${scriptOption.label} (${scriptOption.count})` : scriptOption.label;
+    const scriptMatchField = scriptOption.matchField
+      ? ` data-match-field="${escapeHtml(scriptOption.matchField)}"`
+      : '';
+    const requestRows = requestOptions.map((option) => {
+      const requestLabel = t('declaredRequestOption', { value: option.displayLabel });
+      const label = option.count ? `${requestLabel} (${option.count})` : requestLabel;
+      return `<option value="${escapeHtml(codeModeRequestKindValue(option.value))}">${escapeHtml(label)}</option>`;
+    });
+    return [
+      `<optgroup data-kind-group="code-mode" label="${escapeHtml(t('codeModeKindSubgroup'))}">`,
+      ...(codeModeScriptKind ? [
+        `<option value="${escapeHtml(scriptOption.value)}"${scriptMatchField}>${escapeHtml(scriptLabel)}</option>`,
+      ] : []),
+      ...requestRows,
+      '</optgroup>',
+    ].join('');
+  };
+
+  if (search.layer !== 'main') {
+    rows.push(...options.map(renderOrdinaryKindOption));
+  } else {
+    const codeModeValues = new Set(['code_mode_operation', 'code_mode_script_operation']);
+    const optionsByGroup = new Map(EDITABLE_KIND_GROUPS.map((group) => [group.id, []]));
+    for (const option of options) {
+      if (codeModeValues.has(option.value)) continue;
+      const groupId = foldingApi.editableKindGroup(option.value).groupId;
+      (optionsByGroup.get(groupId) || optionsByGroup.get('other')).push(option);
+    }
+    for (const group of EDITABLE_KIND_GROUPS) {
+      const groupedOptions = optionsByGroup.get(group.id) || [];
+      if (groupedOptions.length) {
+        rows.push([
+          `<optgroup label="${escapeHtml(editableKindGroupLabel(group))}">`,
+          ...groupedOptions.map(renderOrdinaryKindOption),
+          '</optgroup>',
+        ].join(''));
+      }
+      if (group.id === 'commonWork') rows.push(renderCodeModeGroup());
+    }
+  }
   el.searchKindSelect.innerHTML = rows.join('');
-  el.searchKindSelect.value = search.kind;
+  el.searchKindSelect.value = kindControlValue(search);
 }
 
 function syncSearchAssistControls() {
   const search = currentSearchState();
   renderKindOptions();
-  setSelectIfOption(el.searchKindSelect, search.kind);
+  setSelectIfOption(el.searchKindSelect, kindControlValue(search));
   setSelectIfOption(el.searchStatusSelect, search.status);
-  setSelectIfOption(el.searchLayerSelect, search.parsed.layer);
   if (el.searchFileInput) el.searchFileInput.value = search.file;
-}
-
-function showSearchAssist() {
-  if (!el.searchAssist) return;
-  el.searchAssist.hidden = false;
-  el.searchInput.setAttribute('aria-expanded', 'true');
-  syncSearchAssistControls();
   renderSearchAssistChips();
 }
 
-function hideSearchAssist() {
+let searchAssistInvoker = null;
+
+function showSearchAssist({ mode = 'parameters', focusTarget = '' } = {}) {
+  if (!el.searchAssist) return;
+  if (isAnalyzerInteractionDisabled()) {
+    hideSearchAssist();
+    return;
+  }
+  if (mode === 'parameters') searchAssistInvoker = document.activeElement;
+  if (mode === 'results' && currentSearchMetricsModel().mode === 'idle') {
+    hideSearchAssist();
+    return;
+  }
+  el.searchAssist.dataset.mode = mode;
+  el.searchAssist.hidden = false;
+  el.searchInput?.setAttribute('aria-expanded', mode === 'results' ? 'true' : 'false');
+  el.searchHudScope?.setAttribute('aria-expanded', mode === 'parameters' ? 'true' : 'false');
+  el.searchFilterBtn?.setAttribute('aria-expanded', mode === 'parameters' ? 'true' : 'false');
+  syncSearchAssistControls();
+  if (mode !== 'parameters' || !focusTarget) return;
+  const firstVisibleFilterControl = [...(el.searchFilterRows?.querySelectorAll('[data-search-filter-control]') || [])]
+    .find((control) => !control.closest('[data-search-filter-row]')?.hidden && !control.disabled);
+  const target = focusTarget === 'scope'
+    ? [...el.searchScopeButtons].find((button) => button.getAttribute('aria-pressed') === 'true')
+    : focusTarget === 'layer'
+      ? el.searchLayerShortcut
+      : firstVisibleFilterControl;
+  target?.focus();
+}
+
+function showSearchResultsAssist() {
+  showSearchAssist({ mode: 'results' });
+}
+
+function hideSearchAssist({ restoreFocus = false } = {}) {
   if (!el.searchAssist) return;
   el.searchAssist.hidden = true;
-  el.searchInput.setAttribute('aria-expanded', 'false');
+  delete el.searchAssist.dataset.mode;
+  hideFileSuggestions();
+  for (const control of [el.searchInput, el.searchHudScope, el.searchFilterBtn]) {
+    control?.setAttribute('aria-expanded', 'false');
+  }
+  renderSearchAssistChips();
+  if (restoreFocus && searchAssistInvoker instanceof HTMLElement) searchAssistInvoker.focus({ preventScroll: true });
+  searchAssistInvoker = null;
 }
 
 function focusSearchEnd() {
@@ -1162,22 +2507,67 @@ function focusSearchEnd() {
   el.searchInput.setSelectionRange(end, end);
 }
 
-function applySearchOperator(operator, value) {
-  if (!operator) return;
-  if (value) {
-    el.searchInput.value = searchQuery.upsertOperator(el.searchInput.value, operator, value);
+function applySearchFilter(operator, value) {
+  if (!Object.hasOwn(state.searchFilters, operator)) return;
+  const nextFilters = { ...state.searchFilters };
+  if (operator === 'kind') {
+    const request = activeLayerId() === 'main' ? codeModeRequestFromKindValue(value) : '';
+    nextFilters.kind = request ? 'code_mode_operation' : (value || '');
+    nextFilters.codeModeRequest = request;
+  } else if (operator === 'codeModeRequest') {
+    const request = activeLayerId() === 'main' ? (value || '') : '';
+    nextFilters.codeModeRequest = request;
+    if (request) nextFilters.kind = 'code_mode_operation';
   } else {
-    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, operator);
+    nextFilters[operator] = value || '';
   }
+  if (Object.keys(nextFilters).every((key) => nextFilters[key] === state.searchFilters[key])) return;
+  state.searchFilters = nextFilters;
+  state.searchStructureKey = structuredSearchKey();
+  beginProjectSearchPendingTransition();
+  beginSearchTargetContextTransition();
+  refreshActiveSearch({ structural: true, transitionKind: 'structured-filter' }).catch(showError);
   syncSearchAssistControls();
-  renderSearchAssistChips();
   updateProfileApplicabilityUi();
-  focusSearchEnd();
-  loadSessions().catch(showError);
 }
 
 function normalizeFileSuggestionText(value) {
   return String(value || '').trim().replace(/\\/g, '/').toLowerCase();
+}
+
+function fileSuggestionContextKey() {
+  return JSON.stringify([
+    state.repoRoot,
+    state.searchScope,
+    activeLayerId(),
+    state.searchScope === 'session' ? state.selectedSessionId : '',
+    state.locale,
+  ]);
+}
+
+async function refreshFileSuggestions() {
+  const requestId = state.fileSuggestionRequestId + 1;
+  const requestContext = fileSuggestionContextKey();
+  state.fileSuggestionRequestId = requestId;
+  const owner = requestOwners.fileSuggestions.start(requestContext);
+  const params = new URLSearchParams({ layer: activeLayerId() });
+  if (state.searchScope === 'session' && state.selectedSessionId) {
+    params.set('sessionId', state.selectedSessionId);
+  }
+  try {
+    const data = await api(`/api/file-suggestions?${params.toString()}`, { signal: owner.controller.signal });
+    if (!requestOwners.fileSuggestions.isCurrent(owner)
+        || requestId !== state.fileSuggestionRequestId
+        || requestContext !== fileSuggestionContextKey()) return false;
+    state.fileSuggestions = data.files || [];
+    renderFileSuggestions();
+    return true;
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    throw error;
+  } finally {
+    requestOwners.fileSuggestions.finish(owner);
+  }
 }
 
 function visibleFileSuggestions() {
@@ -1188,12 +2578,33 @@ function visibleFileSuggestions() {
   return suggestions.slice(0, FILE_SUGGESTION_LIMIT);
 }
 
+function positionFileSuggestions() {
+  if (!el.searchFileSuggestions || !el.searchFileInput || el.searchFileSuggestions.hidden) return;
+  const inputRect = el.searchFileInput.getBoundingClientRect();
+  const suggestionRect = el.searchFileSuggestions.getBoundingClientRect();
+  const viewportGap = 8;
+  const controlGap = 4;
+  const spaceBelow = window.innerHeight - inputRect.bottom - viewportGap;
+  const spaceAbove = inputRect.top - viewportGap;
+  const openAbove = spaceBelow < Math.min(suggestionRect.height, 160) && spaceAbove > spaceBelow;
+  const top = openAbove
+    ? Math.max(viewportGap, inputRect.top - suggestionRect.height - controlGap)
+    : Math.min(inputRect.bottom + controlGap, window.innerHeight - suggestionRect.height - viewportGap);
+  const left = Math.min(
+    Math.max(viewportGap, inputRect.left),
+    Math.max(viewportGap, window.innerWidth - inputRect.width - viewportGap),
+  );
+  el.searchFileSuggestions.style.left = `${left}px`;
+  el.searchFileSuggestions.style.top = `${Math.max(viewportGap, top)}px`;
+  el.searchFileSuggestions.style.width = `${inputRect.width}px`;
+}
+
 function setFileSuggestionsOpen(open) {
   if (!el.searchFileSuggestions || !el.searchFileInput) return;
-  const suggestions = visibleFileSuggestions();
-  const shouldOpen = open && suggestions.length > 0;
+  const shouldOpen = open;
   el.searchFileSuggestions.hidden = !shouldOpen;
   el.searchFileInput.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+  if (shouldOpen) positionFileSuggestions();
 }
 
 function hideFileSuggestions() {
@@ -1203,12 +2614,16 @@ function hideFileSuggestions() {
 function renderFileSuggestions() {
   if (!el.searchFileSuggestions) return;
   const suggestions = visibleFileSuggestions();
-  el.searchFileSuggestions.innerHTML = suggestions.map((item) => (
-    `<button class="fileSuggestion" type="button" role="option" data-search-file-suggestion="${escapeHtml(item.file)}">
-      <span class="fileSuggestionPath">${escapeHtml(item.file)}</span>
-      <span class="fileSuggestionHits">${escapeHtml(item.count)} hits</span>
-    </button>`
-  )).join('');
+  el.searchFileSuggestions.innerHTML = suggestions.length
+    ? suggestions.map((item) => (
+      `<button class="fileSuggestion" type="button" role="option" data-search-file-suggestion="${escapeHtml(item.file)}">
+        <span class="fileSuggestionPath">${escapeHtml(item.file)}</span>
+        <span class="fileSuggestionHits">${escapeHtml(t('suggestionEventCount', { count: item.count }))}</span>
+      </button>`
+    )).join('')
+    : `<span class="fileSuggestionEmpty" role="status">${escapeHtml(t(
+      state.fileSuggestions.length ? 'noMatchingTouchedFiles' : 'noTouchedFilesInScope',
+    ))}</span>`;
   setFileSuggestionsOpen(document.activeElement === el.searchFileInput);
 }
 
@@ -1220,67 +2635,79 @@ function isSuggestedFile(value) {
 function renderResultSummary() {
   if (!el.resultSummary) return;
   const filters = activeFilters();
-  const controls = activeFindAndFilters();
   const search = currentSearchState();
-  renderSearchAssistChips(controls);
-  if (!filters.length && !search.q) {
-    el.resultSummary.replaceChildren();
+  renderSearchAssistChips();
+  if (search.scope === 'project') {
+    if (!hasActiveSearchExpression()
+        || state.projectSearchLoading
+        || state.projectSearchDataContext !== projectSearchDataContextKey()) {
+      el.resultSummary.replaceChildren();
+      updateSearchMatchControls();
+      return;
+    }
+    const summary = t('projectResultSummary', {
+      sessions: state.projectSearchTotal,
+      events: state.projectSearchEventTotal,
+    });
+    el.resultSummary.innerHTML = `<div class="resultCounts">${escapeHtml(summary)}</div>`;
+    updateSearchMatchControls();
     return;
   }
-  const sessionTotal = state.sessionGrandTotal || state.sessionTotal;
-  const countText = filters.length && sessionTotal
-    ? t('sessionsMatchTotal', { count: state.sessionTotal, total: sessionTotal })
-    : (filters.length ? t('sessionsMatch', { count: state.sessionTotal }) : '');
+  if (!filters.length && !search.q) {
+    if (state.projectReturnContext) {
+      el.resultSummary.innerHTML = `<button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>`;
+    } else {
+      el.resultSummary.replaceChildren();
+    }
+    return;
+  }
   const eventText = filters.length && state.selectedSessionId
     ? (state.offset < state.timelineTotal ? t('eventsMatchLoaded', { count: state.timelineTotal, loaded: state.offset }) : t('eventsMatch', { count: state.timelineTotal }))
     : (filters.length ? t('eventsSelectSession') : '');
-  const matchControls = search.q
-    ? `<div class="searchMatchControls" data-search-match-controls title="${escapeHtml(t('searchMatchTitle'))}">
-      <span class="searchMatchCount" data-search-match-count>${escapeHtml(currentSearchMarkLabel())}</span>
-    </div>`
+  const committed = state.timelineDataContext === timelineDataContextKey();
+  const matchingEventCount = search.q ? state.timelineSearchEventCount : state.timelineTotal;
+  const projectFallback = committed && hasActiveSearchExpression() && matchingEventCount === 0
+    ? `<button class="smallBtn projectFallbackBtn" type="button" data-search-project-fallback>${escapeHtml(t('searchEntireProject'))}</button>`
     : '';
-  const countMarkup = [countText, eventText].filter(Boolean).join(' · ');
-  const filterText = renderFilterChips(controls) + `<button class="clearFiltersBtn" type="button" data-clear-filter="all">${escapeHtml(t('clearAll'))}</button>`;
-  el.resultSummary.innerHTML = `${countMarkup ? `<div class="resultCounts">${escapeHtml(countMarkup)}</div>` : ''}${matchControls}<div class="activeFilters" aria-label="${escapeHtml(t('activeFindFilters'))}">${filterText}</div>`;
+  const backToProject = state.projectReturnContext
+    ? `<button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>`
+    : '';
+  el.resultSummary.innerHTML = `${eventText ? `<div class="resultCounts">${escapeHtml(eventText)}</div>` : ''}${projectFallback}${backToProject}`;
   updateSearchMatchControls();
 }
 
 function clearActiveFilter(key) {
   const structureBefore = structuredSearchKey();
   if (key === 'all') {
-    el.searchInput.value = '';
-    state.layerId = 'main';
-    el.layerSelect.value = state.layerId;
-    localStorage.setItem('sessionAnalyzer.layer', state.layerId);
+    state.searchQuery = '';
+    state.searchFilters = { file: '', kind: '', status: '', codeModeRequest: '' };
   } else if (key === 'q') {
-    el.searchInput.value = searchQuery.removeFreeText(el.searchInput.value);
-  } else if (key === 'file') {
-    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'file');
-  } else if (key === 'kind') {
-    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'kind');
-  } else if (key === 'status') {
-    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'status');
-  } else if (key === 'layer') {
-    el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'layer');
-    state.layerId = 'main';
-    el.layerSelect.value = state.layerId;
-    localStorage.setItem('sessionAnalyzer.layer', state.layerId);
+    state.searchQuery = '';
+  } else if (Object.hasOwn(state.searchFilters, key)) {
+    state.searchFilters = key === 'kind'
+      ? { ...state.searchFilters, kind: '', codeModeRequest: '' }
+      : { ...state.searchFilters, [key]: '' };
   }
+  syncSearchInputValue();
+  beginProjectSearchPendingTransition();
+  beginSearchTargetContextTransition();
   syncSearchAssistControls();
   renderSearchAssistChips();
   updateProfileApplicabilityUi();
+  if (reconcileSearchTransientExpansions()) renderTimeline();
   const structureAfter = structuredSearchKey();
   state.searchStructureKey = structureAfter;
-  if (structureBefore === structureAfter) {
-    refreshTimelineFindState().catch(showError);
-  } else {
-    loadSessions().catch(showError);
-  }
+  refreshActiveSearch({
+    structural: structureBefore !== structureAfter,
+    transitionKind: structureBefore !== structureAfter ? 'structured-filter' : '',
+  }).catch(showError);
 }
 
 function resetTimelineScroll() {
   const pane = el.timeline.closest('.timelinePane');
-  if (pane) pane.scrollTop = 0;
+  if (!pane) return;
+  pane.scrollTop = 0;
+  state.timelineLastScrollTop = pane.scrollTop;
 }
 
 function eventPrimaryLine(event) {
@@ -1381,7 +2808,7 @@ function updateResetFoldsButton() {
   el.resetFoldsBtn.closest('.foldControls')?.toggleAttribute('data-has-reset-folds', visible);
 }
 
-function updateProfileApplicabilityUi(analyzerDisabled = false) {
+function updateProfileApplicabilityUi(analyzerDisabled = isAnalyzerInteractionDisabled()) {
   const applies = profileAppliesToActiveLayer();
   const controls = el.profileSelect?.closest('.foldControls');
   if (el.profileSelect) {
@@ -1397,10 +2824,30 @@ function updateProfileApplicabilityUi(analyzerDisabled = false) {
 }
 
 function setAnalyzerDisabled(disabled) {
-  for (const control of [el.searchInput, el.layerSelect, el.sortSelect, el.resetFoldsBtn, el.loadMoreBtn]) {
-    if (control) control.disabled = disabled;
+  state.analyzerDisabled = Boolean(disabled);
+  const analyzerDisabled = isAnalyzerInteractionDisabled();
+  if (analyzerDisabled) hideSearchAssist();
+  const controls = new Set([
+    el.searchInput,
+    el.searchHudScope,
+    el.searchFilterBtn,
+    el.searchLayerShortcut,
+    el.layerSelect,
+    el.sortSelect,
+    el.resetFoldsBtn,
+    el.loadMoreBtn,
+    ...el.searchScopeButtons,
+  ].filter(Boolean));
+  el.searchAssist?.querySelectorAll('button, input, select').forEach((control) => controls.add(control));
+  el.searchField?.querySelectorAll('[data-search-match-nav]').forEach((control) => controls.add(control));
+  for (const control of controls) {
+    control.disabled = analyzerDisabled;
   }
-  updateProfileApplicabilityUi(disabled);
+  updateProfileApplicabilityUi(analyzerDisabled);
+  syncSearchScopeUi();
+  renderSearchAssistChips();
+  updateSearchMatchControls();
+  updateProjectRefreshControl();
 }
 
 function setProjectMode(selecting) {
@@ -1413,21 +2860,42 @@ function setProjectMode(selecting) {
 }
 
 function resetProjectViewState() {
+  Object.values(requestOwners).forEach((owner) => owner.abort());
+  clearContextReveal({ render: false });
   state.sessions = [];
+  state.expandedSessionGroups.clear();
+  state.projectResults = [];
+  state.sessionsRequestId += 1;
+  state.projectSearchRequestId += 1;
+  state.projectSearchDataContext = '';
+  state.projectSearchTotal = 0;
+  state.projectSearchEventTotal = 0;
+  state.projectSearchLoading = false;
+  state.projectSearchPendingContext = '';
+  state.projectReturnContext = null;
+  state.analysisRequestId += 1;
   state.selectedSessionId = '';
   state.selectedEventId = '';
   state.offset = 0;
   state.timelineLoading = false;
   state.timelineRequestId += 1;
+  state.sessionsDataContext = '';
+  state.timelineDataContext = '';
+  state.timelineReplacementRetry = null;
   state.sessionGrandTotal = 0;
   state.sessionTotal = 0;
   state.timelineTotal = 0;
   state.timelineSearchMatchCount = 0;
+  state.timelineSearchEventCount = 0;
   state.currentEvents = [];
-  state.searchTargetPreload = { key: '', pages: 0, pending: false };
+  state.searchSurfaceContexts = { sessions: '', timeline: '', detail: '' };
+  state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
   state.fileSuggestions = [];
+  state.fileSuggestionRequestId += 1;
   state.eventKinds = { main: [], protocol: [], raw: [] };
   state.sessionEventKinds = { main: [], protocol: [], raw: [] };
+  state.codeModeRequests = [];
+  state.sessionCodeModeRequests = [];
   resetSessionDetailCache();
   invalidateNavigationCache();
   el.sessionList.innerHTML = '';
@@ -1499,6 +2967,9 @@ function isActiveProjectChooserRequest(requestId) {
 }
 
 function resetSessionDetailCache() {
+  clearContextReveal({ render: false });
+  for (const controller of detailRequestControllers.values()) controller.abort();
+  detailRequestControllers.clear();
   state.detailCache = {};
   state.detailErrors = {};
   state.detailPending = {};
@@ -1579,19 +3050,21 @@ async function exitProjectChooser() {
 }
 
 async function applyAppState(appState) {
+  const totals = appState.totals || {};
   if (appState.locale) state.locale = i18n.resolveLocale(appState.locale);
   applyStaticLocale();
   state.repoRoot = appState.repoRoot || '';
   state.builtinProfiles = normalizeProfiles(appState.foldingProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
   state.eventKinds = appState.eventKinds;
-  state.sessionGrandTotal = appState.totals.sessionCount || 0;
+  state.codeModeRequests = Array.isArray(appState.codeModeRequests) ? appState.codeModeRequests : [];
+  state.sessionGrandTotal = totals.sessionCount || 0;
   setProjectHeader(
     appState.repoRoot,
     [
-      t('sessionCount', { count: appState.totals.sessionCount }),
-      t('logicalEventCount', { count: appState.totals.eventCount }),
-      t('rawRecordCount', { count: appState.totals.rawEventCount }),
+      t('sessionCount', { count: totals.sessionCount || 0 }),
+      t('logicalEventCount', { count: totals.eventCount || 0 }),
+      t('rawRecordCount', { count: totals.rawEventCount || 0 }),
     ].join(' | '),
   );
   el.profileSelect.innerHTML = renderProfileOptions();
@@ -1606,9 +3079,6 @@ async function applyAppState(appState) {
   resetProfileDraft();
   el.layerSelect.value = state.layerId;
   syncSearchAssistControls();
-  const suggestionState = await api('/api/file-suggestions');
-  state.fileSuggestions = suggestionState.files;
-  renderFileSuggestions();
   resetDetailPane();
 }
 
@@ -1636,6 +3106,8 @@ async function changeLocale(locale) {
     ? { profileId: state.profileId, rules: normalizeRules(cloneProfile(state.profileDraft).rules || defaultRules()) }
     : null;
   state.locale = next;
+  clearContextReveal({ render: false });
+  beginSearchTargetContextTransition();
   localStorage.setItem(LOCALE_STORAGE_KEY, state.locale);
   resetSessionDetailCache();
   applyStaticLocale();
@@ -1749,6 +3221,20 @@ async function init() {
     const appState = await api('/api/state');
     if (appState.job) {
       const job = appState.job;
+      const currentState = appState.currentState;
+      if (currentState?.projectSelected && sameProjectRoot(currentState.repoRoot, job.repoRoot)) {
+        state.projectRefreshRequestId += 1;
+        state.projectRefreshing = true;
+        state.projectRefreshJobId = job.id || '';
+        await applyAppState(currentState);
+        setProjectMode(false);
+        renderProjectRefreshJob(job);
+        await loadSessions();
+        if (state.projectRefreshJobId) {
+          scheduleProjectRefreshPoll(state.projectRefreshJobId, state.projectRefreshRequestId);
+        }
+        return;
+      }
       setProjectMode(true);
       state.projectLoadingRoot = job.repoRoot || '';
       state.projectJobId = job.id || '';
@@ -1773,65 +3259,387 @@ async function init() {
 async function loadSessions() {
   updateProfileApplicabilityUi();
   state.searchStructureKey = structuredSearchKey();
-  const data = await api(`/api/sessions${currentQuery({ sort: el.sortSelect.value }, { includeQ: false })}`);
+  const requestId = state.sessionsRequestId + 1;
+  const requestContext = sessionsDataContextKey();
+  state.sessionsRequestId = requestId;
+  const owner = requestOwners.sessions.start(requestContext);
+  let data;
+  try {
+    data = await api(`/api/sessions${currentQuery(
+      { sort: el.sortSelect.value },
+      { includeExpression: false, includeLayer: false },
+    )}`, { signal: owner.controller.signal });
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    throw error;
+  } finally {
+    requestOwners.sessions.finish(owner);
+  }
+  if (requestId !== state.sessionsRequestId || requestContext !== sessionsDataContextKey()) return false;
+  state.sessionsDataContext = requestContext;
   state.sessions = data.sessions;
   state.sessionTotal = data.total;
-  renderSessions();
-  if (!state.selectedSessionId && data.sessions[0]) {
-    await selectSession(data.sessions[0].id);
-  } else if (state.selectedSessionId && !data.sessions.some((session) => session.id === state.selectedSessionId)) {
+  if (!data.sessions.length) {
     state.selectedSessionId = '';
-    state.offset = 0;
-    state.timelineLoading = false;
+    state.searchScope = 'project';
     state.timelineRequestId += 1;
-    state.timelineTotal = 0;
     state.currentEvents = [];
-    state.sessionEventKinds = { main: [], protocol: [], raw: [] };
-    syncSearchAssistControls();
-    el.timeline.innerHTML = '';
-    el.analysisPanel.innerHTML = '';
-    updateLoadMoreButton();
-    updateResetFoldsButton();
-    el.sessionHeader.innerHTML = `<h2>${escapeHtml(t('noMatchingSession'))}</h2><p>${escapeHtml(t('adjustSearchFilters'))}</p>`;
+    state.timelineTotal = 0;
+    state.timelineSearchMatchCount = 0;
+    state.timelineSearchEventCount = 0;
+    state.searchStructureKey = structuredSearchKey();
     resetDetailPane();
-    renderResultSummary();
-  } else if (state.selectedSessionId) {
-    await selectSession(state.selectedSessionId);
+    syncSearchScopeUi();
+    renderProjectSearchView();
   } else {
-    renderResultSummary();
+    if (!state.selectedSessionId || !data.sessions.some((session) => session.id === state.selectedSessionId)) {
+      state.selectedSessionId = firstVisibleSession(data.sessions)?.id || '';
+    } else {
+      expandSessionAncestors(state.selectedSessionId);
+    }
+    if (state.searchScope === 'project') {
+      state.searchStructureKey = structuredSearchKey();
+      syncSearchScopeUi();
+      await loadProjectResults();
+    } else {
+      await selectSession(state.selectedSessionId);
+    }
+  }
+  renderSearchAssistChips();
+  await refreshFileSuggestions();
+  return true;
+}
+
+function beginProjectSearchPendingTransition() {
+  if (state.searchScope !== 'project') return false;
+  const requestContext = projectSearchDataContextKey();
+  const active = hasActiveSearchExpression();
+  if (state.projectSearchPendingContext === requestContext
+      && state.projectSearchLoading === active
+      && state.projectResults.length === 0
+      && state.projectSearchTotal === 0
+      && state.projectSearchEventTotal === 0) return false;
+  requestOwners.projectResults.abort();
+  state.projectSearchRequestId += 1;
+  state.projectSearchPendingContext = requestContext;
+  state.projectSearchDataContext = '';
+  state.projectSearchLoading = active;
+  state.projectResults = [];
+  state.projectSearchTotal = 0;
+  state.projectSearchEventTotal = 0;
+  renderProjectSearchView();
+  return true;
+}
+
+async function loadProjectResults() {
+  state.projectSearchRequestId += 1;
+  const requestId = state.projectSearchRequestId;
+  const requestContext = projectSearchDataContextKey();
+  const owner = requestOwners.projectResults.start(requestContext);
+  if (state.searchScope !== 'project' || !hasActiveSearchExpression()) {
+    state.projectSearchLoading = false;
+    state.projectSearchPendingContext = '';
+    state.projectSearchDataContext = requestContext;
+    state.projectResults = [];
+    state.projectSearchTotal = 0;
+    state.projectSearchEventTotal = 0;
+    renderProjectSearchView();
+    requestOwners.projectResults.finish(owner);
+    return true;
+  }
+  state.projectSearchLoading = true;
+  state.projectSearchPendingContext = requestContext;
+  state.projectSearchDataContext = '';
+  state.projectResults = [];
+  state.projectSearchTotal = 0;
+  state.projectSearchEventTotal = 0;
+  renderProjectSearchView();
+  try {
+    const data = await api(`/api/sessions${currentQuery({ sort: state.projectSearchSort })}`, { signal: owner.controller.signal });
+    if (!requestOwners.projectResults.isCurrent(owner)
+        || requestId !== state.projectSearchRequestId
+        || requestContext !== projectSearchDataContextKey()) return false;
+    state.projectSearchDataContext = requestContext;
+    state.projectSearchPendingContext = '';
+    state.projectResults = data.sessions || [];
+    state.projectSearchTotal = data.total || 0;
+    state.projectSearchEventTotal = data.matchingEventTotal || 0;
+    return true;
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    throw error;
+  } finally {
+    const currentOwner = requestOwners.projectResults.finish(owner);
+    if (currentOwner && requestId === state.projectSearchRequestId && requestContext === projectSearchDataContextKey()) {
+      state.projectSearchLoading = false;
+      state.projectSearchPendingContext = '';
+      renderProjectSearchView();
+    }
   }
 }
 
-function renderSessions() {
-  el.sessionList.innerHTML = state.sessions.map((session) => {
-    const active = session.id === state.selectedSessionId;
-    const relationship = sessionRelationshipLabel(session);
-    const parentAttr = session.parentSessionId ? ` data-parent-session-id="${escapeHtml(session.parentSessionId)}"` : '';
-    const relationshipTitle = sessionRelationshipTitle(session, relationship);
-    return `<button class="${sessionItemClasses(session, active)}" type="button" data-session-id="${escapeHtml(session.id)}"${parentAttr}>
-      <span class="sessionTitle">${escapeHtml(session.title)}</span>
-      <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
-      <span class="chips">
-        ${relationship ? `<span class="chip relationshipChip" title="${escapeHtml(relationshipTitle)}">${escapeHtml(relationship)}</span>` : ''}
-        <span class="chip">${escapeHtml(t('messageCountShort', { count: session.counts.messages }))}</span>
-        <span class="chip">${escapeHtml(t('toolCountShort', { count: session.counts.toolCalls }))}</span>
-        <span class="chip">${escapeHtml(t('failedCommandCountShort', { count: session.counts.failedCommands }))}</span>
-        <span class="chip">${escapeHtml(t('protocolCountShort', { count: session.protocolCount }))}</span>
-      </span>
-    </button>`;
-  }).join('');
-  refreshSearchHighlights({ preserveActive: true });
+async function refreshActiveSearch(options = {}) {
+  state.projectSearchRequestId += 1;
+  if (state.searchScope === 'project') {
+    await loadProjectResults();
+    return;
+  }
+  if (!state.selectedSessionId) return;
+  if (options.structural) {
+    await loadTimeline(false, {
+      keepScroll: true,
+      viewportPolicy: options.transitionKind === 'structured-filter' ? 'structured-filter' : 'focus-restore',
+    });
+  } else {
+    await refreshTimelineFindState();
+  }
 }
 
-async function selectSession(sessionId, options = {}) {
+function focusFirstProjectResult(preferredSessionId = '') {
+  const preferred = preferredSessionId
+    ? el.sessionList.querySelector(`[data-project-result-session-id="${CSS.escape(preferredSessionId)}"]`)
+    : null;
+  const target = preferred || el.sessionList.querySelector('[data-project-result-session-id]');
+  target?.focus();
+  return Boolean(target);
+}
+
+function restoreProjectResultFocus(preferredSessionId = '') {
+  const focused = focusFirstProjectResult(preferredSessionId);
+  requestAnimationFrame(() => focusFirstProjectResult(preferredSessionId));
+  return focused;
+}
+
+async function setSearchScope(scope, options = {}) {
+  if (!['session', 'project'].includes(scope)) return false;
+  if (scope === 'session' && !state.selectedSessionId) return false;
+  if (scope === state.searchScope && !options.force) {
+    syncSearchScopeUi();
+    return true;
+  }
+  clearContextReveal({ render: false });
+  state.searchScope = scope;
+  state.searchStructureKey = structuredSearchKey();
+  beginSearchTargetContextTransition();
+  syncSearchScopeUi();
+  syncSearchAssistControls();
+  renderSearchAssistChips();
+  updateSearchMatchControls();
+  if (scope === 'project') {
+    requestOwners.timeline.abort();
+    requestOwners.analysis.abort();
+    beginTimelineReplacement(timelineDataContextKey());
+    state.timelineRequestId += 1;
+    state.analysisRequestId += 1;
+    state.timelineLoading = false;
+    resetDetailPane();
+    beginProjectSearchPendingTransition();
+    await Promise.all([loadProjectResults(), refreshFileSuggestions()]);
+    if (options.mobileView !== false) setMobileView('sessions');
+    if (options.focusResults) restoreProjectResultFocus(options.preferredSessionId || '');
+    return true;
+  }
+  state.projectSearchRequestId += 1;
+  state.projectSearchLoading = false;
+  state.projectSearchPendingContext = '';
+  state.projectReturnContext = null;
+  await selectSession(state.selectedSessionId, { mobileView: options.mobileView === false ? '' : 'events' });
+  return true;
+}
+
+async function backToProjectResults() {
+  const preferredSessionId = state.projectReturnContext?.sessionId || '';
+  await setSearchScope('project', {
+    force: true,
+    focusResults: true,
+    preferredSessionId,
+    mobileView: true,
+  });
+  restoreProjectResultFocus(preferredSessionId);
+}
+
+async function drillDownProjectResult(sessionId) {
+  if (state.searchScope !== 'project') return false;
+  const result = state.projectResults.find((item) => item.id === sessionId);
+  const latest = result?.searchMatch?.latestEvent;
+  if (!result || !latest) return false;
+  const returnContext = {
+    sessionId,
+    eventId: latest.id,
+    timelineIndex: latest.timelineIndex,
+    contextKey: projectSearchDataContextKey(),
+  };
+  state.projectReturnContext = returnContext;
+  clearContextReveal({ render: false });
+  expandSessionAncestors(sessionId);
   if (state.selectedSessionId !== sessionId) resetSessionDetailCache();
+  state.searchScope = 'session';
+  state.projectSearchPendingContext = '';
+  state.projectSearchRequestId += 1;
   state.selectedSessionId = sessionId;
+  state.searchStructureKey = structuredSearchKey();
+  syncSearchScopeUi();
+  beginSearchTargetContextTransition();
   state.offset = 0;
   state.timelineLoading = false;
   state.timelineRequestId += 1;
   state.currentEvents = [];
   state.sessionEventKinds = { main: [], protocol: [], raw: [] };
-  state.searchTargetPreload = { key: '', pages: 0, pending: false };
+  state.sessionCodeModeRequests = [];
+  state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
+  resetSearchTransientExpansions();
+  invalidateNavigationCache();
+  resetDetailPane();
+  renderSessions();
+  const session = state.sessions.find((item) => item.id === sessionId) || result;
+  el.sessionHeader.innerHTML = `<h2>${escapeHtml(session.title)}</h2>
+    <div class="sessionMeta" aria-label="${escapeHtml(t('sessionMetadata'))}">
+      <span class="sessionMetaChip">${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</span>
+      <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
+    </div>
+    <button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>`;
+  const loaded = await Promise.all([
+    loadAnalysis(sessionId),
+    loadTimelineThroughIndex(latest.timelineIndex),
+    refreshFileSuggestions(),
+  ]);
+  if (!loaded[1]
+      || state.searchScope !== 'session'
+      || state.selectedSessionId !== sessionId
+      || !state.projectReturnContext
+      || state.projectReturnContext.eventId !== latest.id) return false;
+  const event = state.currentEvents.find((item) => item.id === latest.id);
+  if (!event) return false;
+  state.selectedEventId = event.id;
+  updateSelectedTimelineEvent();
+  if (state.searchQuery) {
+    const searchKey = searchTargetPreloadKey();
+    const target = await materializeSearchEvent(event, 1, { searchKey });
+    if (target) await activateSearchTarget(target, { scroll: true, syncDetail: false });
+  } else {
+    scrollToTimelineEvent(event.id);
+  }
+  if (state.searchScope === 'session' && state.selectedSessionId === sessionId) {
+    state.projectReturnContext = returnContext;
+    renderTimeline();
+    updateSelectedTimelineEvent();
+  }
+  setMobileView('events');
+  renderResultSummary();
+  return true;
+}
+
+function renderProjectResultSnippet(text) {
+  return searchHighlighter.highlightedParts(text, highlightTerms()).map((part) => (
+    part.match
+      ? `<mark class="projectSearchHighlight">${escapeHtml(part.text)}</mark>`
+      : escapeHtml(part.text)
+  )).join('');
+}
+
+function renderProjectResultCard(session) {
+  const latest = session.searchMatch?.latestEvent || {};
+  const relationship = sessionRelationshipLabel(session);
+  return `<button class="sessionItem projectResultCard" type="button" data-project-result-session-id="${escapeHtml(session.id)}">
+    <span class="sessionTitle">${escapeHtml(session.title)}</span>
+    <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
+    ${relationship ? `<span class="chip relationshipChip">${escapeHtml(relationship)}</span>` : ''}
+    <span class="projectResultCount">${escapeHtml(t('projectResultCount', { count: session.searchMatch?.eventCount || 0 }))}</span>
+    <span class="projectLatestMatch">
+      <span class="projectLatestMeta"><strong>${escapeHtml(latest.label || t('latestMatch'))}</strong><time>${escapeHtml(fmtDate(latest.timestamp))}</time></span>
+      <span class="projectLatestSnippet">${renderProjectResultSnippet(latest.snippet || '')}</span>
+    </span>
+  </button>`;
+}
+
+function renderSessions() {
+  if (state.searchScope === 'project' && hasActiveSearchExpression()) {
+    el.sessionList.innerHTML = state.projectResults.map(renderProjectResultCard).join('');
+    state.searchSurfaceContexts.sessions = '';
+    return;
+  }
+  const hierarchy = sessionHierarchy();
+  const renderSessionBranch = (session) => {
+    const active = session.id === state.selectedSessionId;
+    const relationship = sessionRelationshipLabel(session);
+    const relationshipTitle = sessionRelationshipTitle(session, relationship);
+    const children = hierarchy.childrenByParentId.get(session.id) || [];
+    const expanded = children.length > 0 && state.expandedSessionGroups.has(session.id);
+    const childrenId = `session-children-${session.id}`;
+    const oneChild = children.length === 1;
+    const toggleLabel = expanded
+      ? t(oneChild ? 'collapseChildSessionsOne' : 'collapseChildSessions', { count: children.length })
+      : t(oneChild ? 'expandChildSessionsOne' : 'expandChildSessions', { count: children.length });
+    return `<div class="sessionBranch" data-session-branch-id="${escapeHtml(session.id)}">
+      <div class="sessionRow${children.length ? ' hasSessionChildren' : ''}">
+        <button class="${sessionItemClasses(session, active)}" type="button" data-session-id="${escapeHtml(session.id)}">
+          <span class="sessionTitle">${escapeHtml(session.title)}</span>
+          <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
+          <span class="chips">
+            ${relationship ? `<span class="chip relationshipChip" title="${escapeHtml(relationshipTitle)}">${escapeHtml(relationship)}</span>` : ''}
+            <span class="chip">${escapeHtml(t('messageCountShort', { count: session.counts.messages }))}</span>
+            <span class="chip">${escapeHtml(t('toolCountShort', { count: session.counts.toolCalls }))}</span>
+            <span class="chip">${escapeHtml(t('failedCommandCountShort', { count: session.counts.failedCommands }))}</span>
+            <span class="chip">${escapeHtml(t('protocolCountShort', { count: session.protocolCount }))}</span>
+          </span>
+        </button>
+        ${children.length ? `<button class="sessionChildrenToggle" type="button" data-session-children-toggle="${escapeHtml(session.id)}" aria-expanded="${expanded}" aria-controls="${escapeHtml(childrenId)}" aria-label="${escapeHtml(toggleLabel)}" title="${escapeHtml(toggleLabel)}"><span class="sessionChildrenChevron" aria-hidden="true"></span><span class="sessionChildrenLabel" aria-hidden="true">${escapeHtml(t(oneChild ? 'childSessionCountOne' : 'childSessionCount', { count: children.length }))}</span></button>` : ''}
+      </div>
+      ${children.length ? `<div class="sessionChildren" id="${escapeHtml(childrenId)}"${expanded ? '' : ' hidden'}>${children.map(renderSessionBranch).join('')}</div>` : ''}
+    </div>`;
+  };
+  el.sessionList.innerHTML = hierarchy.roots.map(renderSessionBranch).join('');
+  state.searchSurfaceContexts.sessions = state.sessionsDataContext === sessionsDataContextKey()
+    ? sessionsDataContextKey()
+    : '';
+  refreshSearchHighlights({ preserveActive: true });
+}
+
+function renderProjectSearchView() {
+  if (state.searchScope !== 'project') return;
+  const active = hasActiveSearchExpression();
+  const noResults = active && !state.projectSearchLoading && state.projectSearchTotal === 0;
+  const message = !active
+    ? t('projectSearchPrompt')
+    : (state.projectSearchLoading ? t('searching') : (noResults ? t('projectNoResults') : t('projectResultsGuidance')));
+  el.sessionHeader.innerHTML = `<h2>${escapeHtml(t('projectSearchTitle'))}</h2><p>${escapeHtml(message)}</p>`;
+  el.analysisPanel.innerHTML = '';
+  el.timeline.innerHTML = `<div class="projectSearchState"><h3>${escapeHtml(t('projectSearchTitle'))}</h3><p>${escapeHtml(message)}</p></div>`;
+  el.detail.innerHTML = '';
+  state.searchSurfaceContexts.timeline = '';
+  state.searchSurfaceContexts.detail = '';
+  el.loadMoreBtn.disabled = true;
+  el.loadMoreBtn.textContent = t('loadMore');
+  renderSessions();
+  renderResultSummary();
+}
+
+function renderProjectReturnBanner() {
+  if (!state.projectReturnContext || state.searchScope !== 'session') return '';
+  return `<div class="projectReturnBanner">
+    <button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>
+  </div>`;
+}
+
+async function selectSession(sessionId, options = {}) {
+  clearContextReveal({ render: false });
+  expandSessionAncestors(sessionId);
+  if (state.selectedSessionId !== sessionId) resetSessionDetailCache();
+  state.searchScope = 'session';
+  state.projectSearchPendingContext = '';
+  state.projectSearchRequestId += 1;
+  state.selectedSessionId = sessionId;
+  state.searchStructureKey = structuredSearchKey();
+  syncSearchScopeUi();
+  beginSearchTargetContextTransition();
+  state.offset = 0;
+  state.timelineLoading = false;
+  state.timelineRequestId += 1;
+  state.currentEvents = [];
+  state.sessionEventKinds = { main: [], protocol: [], raw: [] };
+  state.sessionCodeModeRequests = [];
+  state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
+  resetSearchTransientExpansions();
   invalidateNavigationCache();
   updateResetFoldsButton();
   renderSessions();
@@ -1846,12 +3654,32 @@ async function selectSession(sessionId, options = {}) {
         <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
       </div>`;
   }
-  await Promise.all([loadAnalysis(sessionId), loadTimeline(false)]);
+  renderSearchAssistChips();
+  await Promise.all([loadAnalysis(sessionId), loadTimeline(false), refreshFileSuggestions()]);
   if (options.mobileView) setMobileView(options.mobileView);
 }
 
 async function loadAnalysis(sessionId) {
-  const analysis = await api(`/api/sessions/${encodeURIComponent(sessionId)}/analysis`);
+  const requestId = state.analysisRequestId + 1;
+  const requestLocale = state.locale;
+  const requestScope = state.searchScope;
+  state.analysisRequestId = requestId;
+  const requestContext = JSON.stringify([sessionId, requestScope, requestLocale]);
+  const owner = requestOwners.analysis.start(requestContext);
+  let analysis;
+  try {
+    analysis = await api(`/api/sessions/${encodeURIComponent(sessionId)}/analysis`, { signal: owner.controller.signal });
+  } catch (error) {
+    if (isIntentionalAbort(error)) return;
+    throw error;
+  } finally {
+    requestOwners.analysis.finish(owner);
+  }
+  if (requestId !== state.analysisRequestId
+      || sessionId !== state.selectedSessionId
+      || requestScope !== state.searchScope
+      || state.searchScope !== 'session'
+      || requestLocale !== state.locale) return;
   const planCount = analysis.counts.planEvents ?? analysis.counts.planArtifacts;
   const issueCount = analysis.counts.issueEvents ?? analysis.counts.failedCommands;
   el.analysisPanel.innerHTML = [
@@ -1946,25 +3774,40 @@ async function applyMetricLayer(targetLayerId) {
 
 async function changeLayer(layerId) {
   if (!['main', 'protocol', 'raw'].includes(layerId)) return;
-  const focusAnchor = captureFocusAnchor();
+  const focusAnchor = state.searchScope === 'session' ? captureFocusAnchor() : { hadSelection: false };
+  if (focusAnchor.hadSelection || isSelectedEventDetailView()) resetDetailPane();
+  clearContextReveal({ render: false });
+  resetSearchTransientExpansions();
   state.layerId = layerId;
+  if (layerId !== 'main' && state.searchFilters.codeModeRequest) {
+    state.searchFilters = { ...state.searchFilters, codeModeRequest: '' };
+  }
   el.layerSelect.value = state.layerId;
-  el.searchInput.value = searchQuery.removeOperator(el.searchInput.value, 'layer');
+  state.searchStructureKey = structuredSearchKey();
+  beginProjectSearchPendingTransition();
+  beginSearchTargetContextTransition();
   localStorage.setItem('sessionAnalyzer.layer', state.layerId);
   syncSearchAssistControls();
+  renderSearchAssistChips();
   updateProfileApplicabilityUi();
   if (state.detailView.type === 'profileRules') renderProfileRulesPane();
-  await loadSessions();
-  await restoreFocus(focusAnchor);
+  await Promise.all([
+    refreshActiveSearch({ structural: true, transitionKind: 'focus-restore' }),
+    refreshFileSuggestions(),
+  ]);
+  if (focusAnchor.hadSelection) await restoreFocus(focusAnchor);
   updateMetricActionStates();
 }
 
 function updateLoadMoreButton() {
   if (!el.loadMoreBtn) return;
-  const hasMore = state.offset < state.timelineTotal;
+  const replacementRetry = currentTimelineReplacementRetry();
+  const hasMore = Boolean(replacementRetry) || state.offset < state.timelineTotal;
   el.loadMoreBtn.disabled = !state.selectedSessionId || state.timelineLoading || !hasMore;
   if (state.timelineLoading) {
     el.loadMoreBtn.textContent = t('loading');
+  } else if (replacementRetry) {
+    el.loadMoreBtn.textContent = t('retryTimeline');
   } else {
     el.loadMoreBtn.textContent = hasMore
       ? t('loadMoreCount', { loaded: state.offset, total: state.timelineTotal })
@@ -1972,40 +3815,188 @@ function updateLoadMoreButton() {
   }
 }
 
+function paginationIntent(kind) {
+  return paginationIntents.createIntent(kind);
+}
+
+function currentTimelineReplacementRetry() {
+  const retry = state.timelineReplacementRetry;
+  if (!retry) return null;
+  if (retry.sessionId === state.selectedSessionId && retry.requestContext === timelineDataContextKey()) {
+    return retry;
+  }
+  state.timelineReplacementRetry = null;
+  return null;
+}
+
+function setTimelineReplacementRetry(requestContext, sessionId, retry) {
+  if (sessionId !== state.selectedSessionId || requestContext !== timelineDataContextKey()) return;
+  state.timelineReplacementRetry = { requestContext, sessionId, retry };
+}
+
+function retryTimelineReplacement() {
+  const retry = currentTimelineReplacementRetry();
+  if (!retry || state.timelineLoading) return Promise.resolve(false);
+  return retry.retry();
+}
+
+function beginTimelineReplacement(requestContext) {
+  clearContextReveal({ render: false });
+  clearTimelineUserPaginationIntent();
+  state.timelineReplacementRetry = null;
+  const epoch = paginationIntents.beginReplacement(requestContext);
+  return epoch;
+}
+
 async function loadTimeline(append, options = {}) {
-  if (!state.selectedSessionId) return;
-  if (append && state.timelineLoading) return;
+  if (!state.selectedSessionId) return false;
+  if (append && state.timelineLoading) return false;
+  if (append && !paginationIntents.claim(options.paginationIntent)) return false;
+  if (!append) state.temporaryEventReveal = null;
   const sessionId = state.selectedSessionId;
+  const requestContext = timelineDataContextKey();
+  if (append && state.timelineDataContext !== requestContext) return false;
+  const appendOffset = append ? state.offset : 0;
+  const selectedBeforeReplacement = append ? '' : state.selectedEventId;
+  const replacementEpoch = append ? 0 : beginTimelineReplacement(requestContext);
   const requestId = state.timelineRequestId + 1;
   state.timelineRequestId = requestId;
+  const owner = requestOwners.timeline.start(requestContext);
   state.timelineLoading = true;
   updateLoadMoreButton();
   try {
     const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
-      offset: append ? state.offset : 0,
+      offset: appendOffset,
       limit: state.limit,
-    })}`);
-    if (requestId !== state.timelineRequestId || sessionId !== state.selectedSessionId) return;
+    })}`, { signal: owner.controller.signal });
+    if (!requestOwners.timeline.isCurrent(owner)
+        || requestId !== state.timelineRequestId
+        || sessionId !== state.selectedSessionId
+        || requestContext !== timelineDataContextKey()) return false;
     if (append) {
+      if (appendOffset !== state.offset || appendOffset !== state.currentEvents.length) return false;
       state.currentEvents = state.currentEvents.concat(data.events);
     } else {
       state.currentEvents = data.events;
     }
+    if (state.temporaryEventReveal
+        && state.currentEvents.some((event) => event.id === state.temporaryEventReveal.event.id)) {
+      state.temporaryEventReveal = null;
+    }
     state.offset = state.currentEvents.length;
     state.timelineTotal = data.total;
     state.timelineSearchMatchCount = data.searchMatchCount || 0;
+    state.timelineSearchEventCount = data.searchEventCount || 0;
     state.sessionEventKinds = data.eventKinds;
+    state.sessionCodeModeRequests = Array.isArray(data.codeModeRequests) ? data.codeModeRequests : [];
+    state.timelineDataContext = requestContext;
     syncSearchAssistControls();
     if (state.detailView.type === 'profileRules') renderProfileRulesPane();
     renderTimeline();
-    if (!append && !options.keepScroll) resetTimelineScroll();
+    convergeSelectedEventDetailView({ refreshedHitState: true });
+    if (!append && options.viewportPolicy === 'structured-filter') {
+      const selected = selectedBeforeReplacement
+        ? state.currentEvents.find((event) => event.id === selectedBeforeReplacement)
+        : null;
+      if (selected) scrollToTimelineEvent(selected.id, { behavior: 'auto' });
+      else resetTimelineScroll();
+    } else if (!append && !options.keepScroll) {
+      resetTimelineScroll();
+    }
+    if (append) paginationIntents.commitReplacement();
+    else paginationIntents.commitReplacement(replacementEpoch);
     renderResultSummary();
-    maybePreloadSearchTargets();
+    if (options.allowSearchTargetPreload !== false) maybePreloadSearchTargets();
+    return true;
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    if (!append
+        && requestOwners.timeline.isCurrent(owner)
+        && requestId === state.timelineRequestId
+        && sessionId === state.selectedSessionId
+        && requestContext === timelineDataContextKey()) {
+      const retryOptions = {
+        keepScroll: options.keepScroll,
+        viewportPolicy: options.viewportPolicy,
+        allowSearchTargetPreload: options.allowSearchTargetPreload,
+      };
+      setTimelineReplacementRetry(requestContext, sessionId, () => loadTimeline(false, retryOptions));
+    }
+    throw error;
   } finally {
-    if (requestId === state.timelineRequestId) {
+    const currentOwner = requestOwners.timeline.finish(owner);
+    if (currentOwner && requestId === state.timelineRequestId) {
       state.timelineLoading = false;
       updateLoadMoreButton();
-      maybePreloadSearchTargets();
+      if (options.allowSearchTargetPreload !== false) maybePreloadSearchTargets();
+    }
+  }
+}
+
+async function loadTimelineThroughIndex(timelineIndex) {
+  if (!state.selectedSessionId || state.searchScope !== 'session') return false;
+  const sessionId = state.selectedSessionId;
+  const requestContext = timelineDataContextKey();
+  const replacementEpoch = beginTimelineReplacement(requestContext);
+  const requiredCount = Math.max(1, Number(timelineIndex || 0) + 1);
+  const requestId = state.timelineRequestId + 1;
+  state.timelineRequestId = requestId;
+  const owner = requestOwners.timeline.start(requestContext);
+  state.timelineLoading = true;
+  updateLoadMoreButton();
+  try {
+    const events = [];
+    let total = 0;
+    let searchMatchCount = 0;
+    let searchEventCount = 0;
+    let eventKinds = null;
+    let codeModeRequests = null;
+    while (events.length < requiredCount) {
+      const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
+        offset: events.length,
+        limit: Math.min(500, requiredCount - events.length),
+      })}`, { signal: owner.controller.signal });
+      if (!requestOwners.timeline.isCurrent(owner)
+          || requestId !== state.timelineRequestId
+          || sessionId !== state.selectedSessionId
+          || state.searchScope !== 'session'
+          || requestContext !== timelineDataContextKey()) return false;
+      total = data.total;
+      searchMatchCount = data.searchMatchCount || 0;
+      searchEventCount = data.searchEventCount || 0;
+      eventKinds = data.eventKinds;
+      codeModeRequests = data.codeModeRequests;
+      events.push(...data.events);
+      if (!data.events.length || events.length >= total) break;
+    }
+    state.currentEvents = events;
+    state.offset = events.length;
+    state.timelineTotal = total;
+    state.timelineSearchMatchCount = searchMatchCount;
+    state.timelineSearchEventCount = searchEventCount;
+    state.sessionEventKinds = eventKinds || { main: [], protocol: [], raw: [] };
+    state.sessionCodeModeRequests = Array.isArray(codeModeRequests) ? codeModeRequests : [];
+    state.timelineDataContext = requestContext;
+    syncSearchAssistControls();
+    renderTimeline();
+    renderResultSummary();
+    resetTimelineScroll();
+    paginationIntents.commitReplacement(replacementEpoch);
+    return true;
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    if (requestOwners.timeline.isCurrent(owner)
+        && requestId === state.timelineRequestId
+        && sessionId === state.selectedSessionId
+        && requestContext === timelineDataContextKey()) {
+      setTimelineReplacementRetry(requestContext, sessionId, () => loadTimelineThroughIndex(timelineIndex));
+    }
+    throw error;
+  } finally {
+    const currentOwner = requestOwners.timeline.finish(owner);
+    if (currentOwner && requestId === state.timelineRequestId) {
+      state.timelineLoading = false;
+      updateLoadMoreButton();
     }
   }
 }
@@ -2013,6 +4004,8 @@ async function loadTimeline(append, options = {}) {
 async function refreshTimelineFindState(options = {}) {
   if (!state.selectedSessionId) return;
   const sessionId = state.selectedSessionId;
+  const requestContext = timelineDataContextKey();
+  const replacementEpoch = beginTimelineReplacement(requestContext);
   const targetCount = Math.max(state.currentEvents.length, state.offset, state.limit);
   if (!targetCount) {
     await loadTimeline(false, { keepScroll: true, ...options });
@@ -2021,22 +4014,30 @@ async function refreshTimelineFindState(options = {}) {
 
   const requestId = state.timelineRequestId + 1;
   state.timelineRequestId = requestId;
+  const owner = requestOwners.timeline.start(requestContext);
   state.timelineLoading = true;
   updateLoadMoreButton();
   try {
     const events = [];
     let total = 0;
     let searchMatchCount = 0;
+    let searchEventCount = 0;
     let eventKinds = null;
+    let codeModeRequests = null;
     while (events.length < targetCount) {
       const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
         offset: events.length,
         limit: Math.min(500, targetCount - events.length),
-      })}`);
-      if (requestId !== state.timelineRequestId || sessionId !== state.selectedSessionId) return;
+      })}`, { signal: owner.controller.signal });
+      if (!requestOwners.timeline.isCurrent(owner)
+          || requestId !== state.timelineRequestId
+          || sessionId !== state.selectedSessionId
+          || requestContext !== timelineDataContextKey()) return;
       total = data.total;
       searchMatchCount = data.searchMatchCount || 0;
+      searchEventCount = data.searchEventCount || 0;
       eventKinds = data.eventKinds;
+      codeModeRequests = data.codeModeRequests;
       events.push(...data.events);
       if (!data.events.length || events.length >= total) break;
     }
@@ -2044,15 +4045,30 @@ async function refreshTimelineFindState(options = {}) {
     state.offset = events.length;
     state.timelineTotal = total;
     state.timelineSearchMatchCount = searchMatchCount;
+    state.timelineSearchEventCount = searchEventCount;
     state.sessionEventKinds = eventKinds;
+    state.sessionCodeModeRequests = Array.isArray(codeModeRequests) ? codeModeRequests : [];
+    state.timelineDataContext = requestContext;
     syncSearchAssistControls();
     if (state.detailView.type === 'profileRules') renderProfileRulesPane();
     renderTimeline();
-    refreshSearchSensitiveDetailView();
+    if (!convergeSelectedEventDetailView({ refreshedHitState: true })) refreshSearchSensitiveDetailView();
     renderResultSummary();
+    paginationIntents.commitReplacement(replacementEpoch);
     maybePreloadSearchTargets();
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    if (requestOwners.timeline.isCurrent(owner)
+        && requestId === state.timelineRequestId
+        && sessionId === state.selectedSessionId
+        && requestContext === timelineDataContextKey()) {
+      const retryOptions = { ...options };
+      setTimelineReplacementRetry(requestContext, sessionId, () => refreshTimelineFindState(retryOptions));
+    }
+    throw error;
   } finally {
-    if (requestId === state.timelineRequestId) {
+    const currentOwner = requestOwners.timeline.finish(owner);
+    if (currentOwner && requestId === state.timelineRequestId) {
       state.timelineLoading = false;
       updateLoadMoreButton();
       maybePreloadSearchTargets();
@@ -2074,10 +4090,20 @@ function naturalDisplayState(event) {
   return evaluateDisplayStateFromRules(event, profile?.rules || defaultRules());
 }
 
+function hasActiveStructuredEventFilter() {
+  const search = currentSearchState();
+  return Boolean(search.file || search.kind || search.status || search.codeModeRequest);
+}
+
 function displayState(event) {
   const sessionOverrides = state.overrides[state.selectedSessionId] || {};
   if (sessionOverrides[event.id]) return sessionOverrides[event.id];
-  return naturalDisplayState(event);
+  if (currentSearchTransientExpansionIds().includes(event.id)) return 'expanded';
+  const natural = naturalDisplayState(event);
+  if (natural === 'hidden' && state.searchScope === 'session' && hasActiveStructuredEventFilter()) {
+    return 'collapsed';
+  }
+  return natural;
 }
 
 function foldedDisplayState(event) {
@@ -2116,7 +4142,110 @@ function renderEventFooterActions(display) {
   </div>`;
 }
 
-function renderEventPreview(event, display) {
+function renderEnclosingOperationAffordance(event, display) {
+  const parentId = navigationApi.enclosingOperationParentId(event);
+  if (!parentId) return '';
+  const relevant = navigationApi.shouldShowEnclosingOperationAffordance(
+    event,
+    display,
+    currentSearchState(),
+    state.selectedEventId,
+  );
+  const busy = state.contextRevealPending?.sourceEventId === event.id ? ' aria-busy="true"' : '';
+  return `<button class="enclosingOperationAffordance" type="button" data-action="reveal-context-parent" data-context-parent-id="${escapeHtml(parentId)}"${relevant ? '' : ' hidden'}${busy}>${escapeHtml(t('viewEnclosingOperation'))}</button>`;
+}
+
+function renderContextRevealSlot(event) {
+  if (!navigationApi.enclosingOperationParentId(event)) return '';
+  return `<div class="contextRevealSlot" data-context-source-id="${escapeHtml(event.id)}" hidden></div>`;
+}
+
+function renderContextRevealRowContents(event) {
+  const reveal = state.contextReveal;
+  if (!reveal || reveal.sourceEventId !== event.id || !reveal.parentEvent) return '';
+  const parent = reveal.parentEvent;
+  const title = parent.label || kindLabel(parent.kind) || t('enclosingOperation');
+  const preview = String(parent.preview || '').replace(/\s+/g, ' ').trim();
+  return `<span class="contextRevealMarker" aria-hidden="true">↳</span>
+    <span class="contextRevealText"><strong>${escapeHtml(t('enclosingOperation'))}</strong><span>${escapeHtml(title)}${preview && preview !== title ? ` · ${escapeHtml(preview)}` : ''}</span></span>
+    <button class="contextRevealAction" type="button" data-action="inspect-context-parent" data-context-parent-id="${escapeHtml(parent.id)}">${escapeHtml(t('inspectEnclosingOperation'))}</button>`;
+}
+
+function syncContextRevealDom() {
+  if (!el.timeline) return;
+  const reveal = state.contextReveal;
+  for (const slot of el.timeline.querySelectorAll('.contextRevealSlot')) {
+    const active = Boolean(reveal && slot.dataset.contextSourceId === reveal.sourceEventId && reveal.parentEvent);
+    slot.hidden = !active;
+    slot.classList.toggle('contextRevealRow', active);
+    slot.setAttribute('role', active ? 'note' : 'presentation');
+    slot.replaceChildren();
+    if (active) slot.innerHTML = renderContextRevealRowContents({ id: reveal.sourceEventId });
+  }
+}
+
+function syncEnclosingOperationAffordances() {
+  if (!el.timeline) return;
+  const search = currentSearchState();
+  for (const article of el.timeline.querySelectorAll('.event[data-event-id]')) {
+    const item = currentTimelineEvent(article.dataset.eventId);
+    const button = article.querySelector('[data-action="reveal-context-parent"]');
+    if (!item || !button) continue;
+    const visible = navigationApi.shouldShowEnclosingOperationAffordance(
+      item,
+      displayState(item),
+      search,
+      state.selectedEventId,
+    );
+    button.hidden = !visible;
+    button.setAttribute('aria-hidden', visible ? 'false' : 'true');
+    button.toggleAttribute('disabled', state.contextRevealPending?.sourceEventId === item.id);
+  }
+}
+
+function renderCodeModeCollapsedPreview(presentation, display) {
+  const preview = presentation?.collapsedPreview;
+  if (!preview) return '';
+  const summaryClass = display === 'summary' ? ' codeModeSummaryPreview' : '';
+  if (preview.kind === 'declared_sequence') {
+    const items = (preview.items || []).map((item) => {
+      const detail = item.detail ? `<span class="codeModeCollapsedPreviewDetail">${escapeHtml(item.detail)}</span>` : '';
+      return `<span class="codeModeCollapsedPreviewItem"><span>${escapeHtml(item.label || '')}</span>${detail}</span>`;
+    });
+    const ordered = items.map((item, index) => (
+      `${index ? '<span class="codeModeCollapsedPreviewArrow" aria-hidden="true">→</span>' : ''}${item}`
+    ));
+    if (preview.omittedCount > 0) {
+      ordered.push(`<span class="codeModeCollapsedPreviewMore">+${escapeHtml(preview.omittedCount)}</span>`);
+    }
+    return `<div class="eventPreview codeModeCollapsedPreview codeModeDeclaredSequencePreview${summaryClass}"><span class="codeModeCollapsedPreviewLabel">${escapeHtml(preview.label || '')}</span><span class="codeModeDeclaredSequenceItems">${ordered.join('')}</span></div>`;
+  }
+  if (preview.kind === 'request_summary' && preview.text) {
+    return `<div class="eventPreview codeModeCollapsedPreview codeModeRequestSummaryPreview${summaryClass}"><span class="codeModeCollapsedPreviewLabel">${escapeHtml(preview.label || '')}</span><span class="codeModeRequestSummaryText" dir="auto">${escapeHtml(preview.text)}</span></div>`;
+  }
+  if (preview.kind === 'source_excerpt' && preview.text) {
+    if (display === 'summary') {
+      const summaryLines = (Array.isArray(preview.summaryLines) && preview.summaryLines.length
+        ? preview.summaryLines
+        : [preview.text])
+        .slice(0, 2)
+        .map((line) => String(line || '').trim())
+        .filter(Boolean);
+      const lines = summaryLines
+        .map((line) => `<span class="codeModeSummaryExcerptLine" dir="auto">${escapeHtml(line)}</span>`)
+        .join('');
+      const continuation = preview.hasMoreSource === true
+        ? `<span class="codeModeSummaryExcerptContinuation"><span aria-hidden="true">…</span><span class="srOnly">${escapeHtml(t('codeModeSourceExcerptMore'))}</span></span>`
+        : '';
+      return `<div class="eventPreview codeModeCollapsedPreview codeModeSourceExcerptPreview${summaryClass}"><span class="codeModeCollapsedPreviewLabel">${escapeHtml(preview.label || '')}</span><span class="codeModeSummaryExcerptBody">${lines}${continuation}</span></div>`;
+    }
+    const excerpt = `<code class="codeModeSourceExcerpt">${escapeHtml(preview.text)}</code>`;
+    return `<div class="eventPreview codeModeCollapsedPreview codeModeSourceExcerptPreview${summaryClass}"><span class="codeModeCollapsedPreviewLabel">${escapeHtml(preview.label || '')}</span>${excerpt}</div>`;
+  }
+  return '';
+}
+
+function renderEventPreview(event, display, presentation = null) {
   if (display === 'expanded') return '';
   if (event.kind === 'usage_limit_warning' && event.usageLimits?.length) {
     return `<div class="eventPreview usageLimitPreview">${renderUsageLimitPreview(event.usageLimits)}</div>`;
@@ -2124,7 +4253,13 @@ function renderEventPreview(event, display) {
   if (event.kind === 'usage_limit_warning' && event.tokenUsage?.length) {
     return `<div class="eventPreview tokenPreview">${renderTokenUsageBadges(event.tokenUsage)}</div>`;
   }
-  const preview = event.snippet || event.preview || event.label;
+  if (event.hasSearchHit && event.snippet) {
+    return `<div class="eventPreview">${escapeHtml(event.snippet)}</div>`;
+  }
+  const codeModePreview = renderCodeModeCollapsedPreview(presentation, display);
+  if (codeModePreview) return codeModePreview;
+  if (presentation?.variant === codeModePresentationContract.CODE_MODE_PRESENTATION_VARIANT.SINGLE_TOOL) return '';
+  const preview = event.snippet || event.preview || presentedEventLabel(event, presentation);
   return `<div class="eventPreview">${escapeHtml(preview)}</div>`;
 }
 
@@ -2144,8 +4279,19 @@ function cssToken(value) {
 }
 
 function renderTimeline() {
-  el.timeline.innerHTML = state.currentEvents.map((event) => {
+  if (state.searchScope !== 'session') {
+    clearContextReveal({ render: false });
+    renderProjectSearchView();
+    return;
+  }
+  reconcileContextRevealState();
+  const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
+  el.timeline.innerHTML = `${renderProjectReturnBanner()}${renderedTimelineEvents().map((event) => {
     const ds = displayState(event);
+    const presentation = codeModeEventPresentation(event);
+    const compactWebLifecycle = event.kind === 'web_search' && compactWebLifecycleIds.has(event.id);
+    const temporaryReveal = state.temporaryEventReveal?.event.id === event.id
+      && !state.currentEvents.some((candidate) => candidate.id === event.id);
     const classes = [
       'event',
       ds,
@@ -2156,35 +4302,47 @@ function renderTimeline() {
       event.id === state.selectedEventId ? 'selected' : '',
       event.hasSearchHit ? 'searchHit' : '',
       ds === 'hidden' ? 'hiddenByProfile' : '',
+      temporaryReveal ? 'temporaryReferenceReveal' : '',
+      presentation ? `code-mode-${cssToken(presentation.variant)}` : '',
+      compactWebLifecycle ? 'code-mode-web-lifecycle' : '',
     ].filter(Boolean).join(' ');
+    const displayToolName = compactWebLifecycle || event.kind === 'code_mode_operation' ? '' : event.toolName;
     const chips = [
       event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
       ...(Array.isArray(event.tags) ? event.tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`) : []),
-      event.toolName ? `<span class="chip toolChip">${escapeHtml(event.toolName)}</span>` : '',
+      renderCodeModePresentationChips(presentation, event.kind === 'code_mode_operation'),
+      displayToolName ? `<span class="chip toolChip">${escapeHtml(displayToolName)}</span>` : '',
       event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t('files'))}</span>` : '',
-      event.rawRefs?.length ? `<span class="chip countChip">${event.rawRefs.length} ${escapeHtml(t('raw'))}</span>` : '',
-      event.channels?.length ? `<span class="chip channelChip">${escapeHtml(event.channels.join(','))}</span>` : '',
+      temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
     ].join('');
     const toggleLabel = ds === 'expanded' ? t('collapseEvent') : t('expandEvent');
-    return `<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
+    return `${renderContextRevealSlot(event)}<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
       <div class="eventHeader">
         <button class="eventToggle" type="button" data-action="toggle" aria-label="${toggleLabel}" title="${toggleLabel}">
           <span class="srOnly">${toggleLabel}</span>
         </button>
-        <span class="eventKind">${escapeHtml(event.label)}</span>
+        <span class="eventKind">${escapeHtml(presentedEventLabel(event, presentation, compactWebLifecycle))}</span>
         ${chips ? `<span class="chips">${chips}</span>` : ''}
         <span class="eventTime">${escapeHtml(fmtDate(event.timestamp))}</span>
       </div>
-      ${renderEventPreview(event, ds)}
+      ${compactWebLifecycle && !event.hasSearchHit ? '' : renderEventPreview(event, ds, presentation)}
+      ${renderEnclosingOperationAffordance(event, ds)}
       ${renderEventBody(event, ds)}
       ${renderEventFooterActions(ds)}
     </article>`;
-  }).join('');
+  }).join('')}`;
+  state.searchSurfaceContexts.timeline = state.timelineDataContext === timelineDataContextKey()
+    ? timelineSearchSurfaceContextKey()
+    : '';
+  syncContextRevealDom();
+  syncEnclosingOperationAffordances();
   queueVisibleDetailLoad();
   refreshSearchHighlights({ preserveActive: true });
 }
 
 function setOverride(eventId, value) {
+  clearContextReveal({ render: false });
+  clearSearchTransientExpansion(eventId);
   if (!state.overrides[state.selectedSessionId]) state.overrides[state.selectedSessionId] = {};
   state.overrides[state.selectedSessionId][eventId] = value;
   saveOverrides();
@@ -2196,19 +4354,31 @@ function loadEventDetail(event) {
   const sessionId = state.selectedSessionId;
   const generation = state.detailCacheGeneration;
   const key = detailKey(sessionId, layer, event.id);
-  if (state.detailCache[key] || state.detailErrors[key]) return Promise.resolve();
+  if (state.detailCache[key] || state.detailErrors[key]) return Promise.resolve(false);
   if (!state.detailPending[key]) {
-    const pending = api(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(layer)}`)
+    const controller = new AbortController();
+    detailRequestControllers.set(key, controller);
+    const pending = api(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(layer)}`, {
+      signal: controller.signal,
+    })
       .then((detail) => {
-        if (state.selectedSessionId !== sessionId || state.detailCacheGeneration !== generation) return;
+        if (detailRequestControllers.get(key) !== controller
+            || state.selectedSessionId !== sessionId
+            || state.detailCacheGeneration !== generation) return false;
         state.detailCache[key] = detail;
         delete state.detailErrors[key];
+        return true;
       })
       .catch((error) => {
-        if (state.selectedSessionId !== sessionId || state.detailCacheGeneration !== generation) return;
+        if (isIntentionalAbort(error)) return false;
+        if (detailRequestControllers.get(key) !== controller
+            || state.selectedSessionId !== sessionId
+            || state.detailCacheGeneration !== generation) return false;
         state.detailErrors[key] = error.message;
+        return true;
       })
       .finally(() => {
+        if (detailRequestControllers.get(key) === controller) detailRequestControllers.delete(key);
         if (state.detailPending[key] === pending) delete state.detailPending[key];
       });
     state.detailPending[key] = pending;
@@ -2219,22 +4389,30 @@ function loadEventDetail(event) {
 function ensureEventDetail(event) {
   const key = detailKey(state.selectedSessionId, activeLayerId(), event.id);
   if (state.detailCache[key] || state.detailErrors[key]) return;
-  loadEventDetail(event).then(() => renderTimeline());
+  loadEventDetail(event).then((settled) => {
+    if (settled && key === detailKey(state.selectedSessionId, activeLayerId(), event.id)) renderTimeline();
+  });
 }
 
 function isInScrollport(element) {
   const rect = element.getBoundingClientRect();
   const scroller = element.closest('.timelinePane');
   const bounds = scroller ? scroller.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+  if ((scroller && (bounds.width <= 0 || bounds.height <= 0))
+      || (rect.width <= 0 && rect.height <= 0)) return false;
   return rect.bottom >= bounds.top && rect.top <= bounds.bottom;
 }
 
 function loadVisibleExpandedDetails() {
   state.detailViewportTimer = 0;
-  for (const article of el.timeline.querySelectorAll('.event.expanded[data-event-id]')) {
+  if (!searchDiscoveryContextReady()) return;
+  for (const article of el.timeline.querySelectorAll('.event[data-event-id]')) {
     if (!isInScrollport(article)) continue;
-    const item = state.currentEvents.find((candidate) => candidate.id === article.dataset.eventId);
-    if (item) ensureEventDetail(item);
+    const item = currentTimelineEvent(article.dataset.eventId);
+    if (item && (article.classList.contains('expanded')
+        || (activeLayerId() === 'main' && item.kind === 'code_mode_operation'))) {
+      ensureEventDetail(item);
+    }
   }
 }
 
@@ -2243,24 +4421,162 @@ function queueVisibleDetailLoad() {
   state.detailViewportTimer = requestAnimationFrame(loadVisibleExpandedDetails);
 }
 
-function maybeLoadMoreTimeline(scroller) {
-  if (!scroller || !state.selectedSessionId || state.timelineLoading || state.offset >= state.timelineTotal) return;
-  const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-  if (remaining <= TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD) {
-    loadTimeline(true).catch(showError);
+const TIMELINE_USER_INTENT_EXPIRY_MS = 250;
+const TIMELINE_USER_SCROLL_SETTLE_MS = 120;
+
+function clearTimelineUserPaginationIntent(expectedIntent = null) {
+  const intent = state.timelineUserPaginationIntent;
+  if (!intent || (expectedIntent && intent !== expectedIntent)) return false;
+  if (state.timelineUserPaginationSettleTimer) clearTimeout(state.timelineUserPaginationSettleTimer);
+  if (state.timelineUserPaginationCheckFrame) cancelAnimationFrame(state.timelineUserPaginationCheckFrame);
+  state.timelineUserPaginationSettleTimer = 0;
+  state.timelineUserPaginationCheckFrame = 0;
+  state.timelineUserPaginationIntent = null;
+  state.timelineUserPaginationHasDownwardScroll = false;
+  paginationIntents.revokeUser(intent);
+  return true;
+}
+
+function scheduleTimelineUserPaginationExpiry(intent, delay) {
+  if (!intent || state.timelineUserPaginationIntent !== intent) return;
+  if (state.timelineUserPaginationSettleTimer) clearTimeout(state.timelineUserPaginationSettleTimer);
+  state.timelineUserPaginationSettleTimer = setTimeout(() => {
+    state.timelineUserPaginationSettleTimer = 0;
+    clearTimelineUserPaginationIntent(intent);
+  }, delay);
+}
+
+function claimTimelineUserPaginationIntent(intent) {
+  if (!intent
+      || state.timelineUserPaginationIntent !== intent
+      || !state.timelineUserPaginationHasDownwardScroll) return false;
+  if (state.timelineUserPaginationSettleTimer) clearTimeout(state.timelineUserPaginationSettleTimer);
+  if (state.timelineUserPaginationCheckFrame) cancelAnimationFrame(state.timelineUserPaginationCheckFrame);
+  state.timelineUserPaginationSettleTimer = 0;
+  state.timelineUserPaginationCheckFrame = 0;
+  state.timelineUserPaginationIntent = null;
+  state.timelineUserPaginationHasDownwardScroll = false;
+  return true;
+}
+
+function recordTimelineUserPaginationScroll(scroller) {
+  const scrollTop = Number(scroller?.scrollTop) || 0;
+  const previousScrollTop = state.timelineLastScrollTop;
+  state.timelineLastScrollTop = scrollTop;
+  const intent = state.timelineUserPaginationIntent;
+  if (!intent) return false;
+  const delta = scrollTop - previousScrollTop;
+  if (delta <= 0) {
+    if (delta < 0) clearTimelineUserPaginationIntent(intent);
+    return false;
   }
+  state.timelineUserPaginationHasDownwardScroll = true;
+  return true;
+}
+
+function maybeLoadMoreTimeline(scroller, hasDownwardScroll = false) {
+  const intent = state.timelineUserPaginationIntent;
+  if (!intent) return;
+  if (!hasDownwardScroll || !state.timelineUserPaginationHasDownwardScroll) return;
+  if (!scroller || !state.selectedSessionId || state.timelineLoading || state.offset >= state.timelineTotal) {
+    clearTimelineUserPaginationIntent(intent);
+    return;
+  }
+  const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+  if (remaining > TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD) {
+    scheduleTimelineUserPaginationExpiry(intent, TIMELINE_USER_SCROLL_SETTLE_MS);
+    return;
+  }
+  if (!claimTimelineUserPaginationIntent(intent)) return;
+  loadTimeline(true, { paginationIntent: intent }).catch(showError);
+}
+
+function queueTimelinePaginationCheck(scroller, intent) {
+  if (!scroller || !intent || state.timelineUserPaginationIntent !== intent) return;
+  if (state.timelineUserPaginationCheckFrame) cancelAnimationFrame(state.timelineUserPaginationCheckFrame);
+  state.timelineUserPaginationCheckFrame = requestAnimationFrame(() => {
+    state.timelineUserPaginationCheckFrame = 0;
+    if (state.timelineUserPaginationIntent !== intent) return;
+    maybeLoadMoreTimeline(scroller, state.timelineUserPaginationHasDownwardScroll);
+  });
+}
+
+const TIMELINE_SCROLL_KEYS = new Set([
+  'ArrowDown',
+  'ArrowUp',
+  'End',
+  'Home',
+  'PageDown',
+  'PageUp',
+  ' ',
+]);
+const TIMELINE_PAGINATION_KEYS = new Set(['ArrowDown', 'End', 'PageDown', ' ']);
+
+function onTimelineUserScrollIntent(event) {
+  if (event.type === 'keydown' && !TIMELINE_SCROLL_KEYS.has(event.key)) return;
+  const scroller = event.currentTarget;
+  const ownsKeyboardEnd = event.type === 'keydown'
+    && event.key === 'End'
+    && event.target === scroller;
+  const interactiveTarget = event.target instanceof Element
+    && event.target.closest('button, input, select, textarea, a[href], [role="button"]');
+  if (event.type === 'pointerdown') {
+    scroller.focus({ preventScroll: true });
+  }
+  if (interactiveTarget && event.type !== 'wheel') {
+    clearTimelineUserPaginationIntent();
+    state.timelineLastScrollTop = Number(scroller?.scrollTop) || 0;
+    return;
+  }
+  if (event.type === 'pointerdown') {
+    clearTimelineUserPaginationIntent();
+    state.timelineLastScrollTop = Number(scroller?.scrollTop) || 0;
+    return;
+  }
+  if (event.type === 'pointermove' && !event.buttons) return;
+  clearTimelineUserPaginationIntent();
+  const scrollTop = Number(scroller?.scrollTop) || 0;
+  const observedScrollDelta = scrollTop - state.timelineLastScrollTop;
+  state.timelineLastScrollTop = scrollTop;
+  const kind = event.type === 'wheel'
+    ? 'wheel'
+    : (event.type === 'touchmove' ? 'touch' : (event.type.startsWith('pointer') ? 'pointer' : 'keyboard'));
+  const hasUnsupportedModifier = event.altKey || event.ctrlKey || event.metaKey || event.shiftKey;
+  const qualifiesForPagination = !hasUnsupportedModifier
+    && observedScrollDelta >= 0
+    && (event.type !== 'keydown' || TIMELINE_PAGINATION_KEYS.has(event.key))
+    && (event.type !== 'wheel' || event.deltaY > 0)
+    && event.type !== 'pointerdown'
+    && !state.timelineLoading
+    && Boolean(state.selectedSessionId)
+    && state.offset < state.timelineTotal;
+  const intent = qualifiesForPagination ? paginationIntents.authorizeUser(kind) : null;
+  state.timelineUserPaginationIntent = intent;
+  state.timelineUserPaginationHasDownwardScroll = Boolean(intent && observedScrollDelta > 0);
+  scheduleTimelineUserPaginationExpiry(intent, TIMELINE_USER_INTENT_EXPIRY_MS);
+  if (state.timelineUserPaginationHasDownwardScroll) queueTimelinePaginationCheck(scroller, intent);
+  if (intent && ownsKeyboardEnd) {
+    event.preventDefault();
+    scroller.scrollTop = scroller.scrollHeight;
+  }
+  if (!state.searchProgrammaticScroll.active) return;
+  endProgrammaticSearchScrollGuard();
 }
 
 function onTimelinePaneScroll(event) {
-  hideSearchAssist();
+  const searchScroll = state.searchProgrammaticScroll.active;
+  const hasDownwardUserScroll = recordTimelineUserPaginationScroll(event.currentTarget);
+  if (searchScroll) keepProgrammaticSearchScrollGuard();
+  if (document.activeElement !== el.searchInput && !searchScroll) hideSearchAssist();
   queueVisibleDetailLoad();
-  maybeLoadMoreTimeline(event.currentTarget);
+  if (!searchScroll) maybeLoadMoreTimeline(event.currentTarget, hasDownwardUserScroll);
 }
 
 function updateSelectedTimelineEvent() {
   for (const article of el.timeline.querySelectorAll('.event[data-event-id]')) {
     article.classList.toggle('selected', article.dataset.eventId === state.selectedEventId);
   }
+  syncEnclosingOperationAffordances();
 }
 
 function navigationCacheKey() {
@@ -2272,16 +4588,24 @@ function navigationCacheKey() {
     kind: search.kind,
     status: search.status,
     file: search.file,
+    codeModeRequest: search.codeModeRequest,
   });
 }
 
 function invalidateNavigationCache() {
+  requestOwners.navigation.abort();
   state.navigationCache = { key: '', events: [], total: 0, pending: null };
+  state.navigationLoadErrorKey = '';
 }
 
 function currentNavigationCache() {
   const key = navigationCacheKey();
   return state.navigationCache.key === key && !state.navigationCache.pending ? state.navigationCache : null;
+}
+
+function currentNavigationPending() {
+  const key = navigationCacheKey();
+  return state.navigationCache.key === key ? state.navigationCache.pending : null;
 }
 
 function ensureNavigationEvents() {
@@ -2291,6 +4615,7 @@ function ensureNavigationEvents() {
     return Promise.resolve(state.navigationCache);
   }
 
+  const owner = requestOwners.navigation.start(key);
   const pending = (async () => {
     const events = [];
     let total = 0;
@@ -2299,7 +4624,7 @@ function ensureNavigationEvents() {
       const data = await api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/timeline${currentQuery({
         offset: events.length,
         limit: NAVIGATION_PAGE_LIMIT,
-      })}`);
+      })}`, { signal: owner.controller.signal });
       total = data.total;
       events.push(...data.events);
       if (!data.events.length) break;
@@ -2307,8 +4632,17 @@ function ensureNavigationEvents() {
     if (navigationCacheKey() !== key) return null;
     state.navigationCache = { key, events, total, pending: null };
     return state.navigationCache;
-  })().finally(() => {
-    if (state.navigationCache.key === key) state.navigationCache.pending = null;
+  })().catch((error) => {
+    if (isIntentionalAbort(error)) {
+      if (requestOwners.navigation.isCurrent(owner) && state.navigationCache.key === key) {
+        state.navigationCache = { key: '', events: [], total: 0, pending: null };
+      }
+      return null;
+    }
+    throw error;
+  }).finally(() => {
+    const currentOwner = requestOwners.navigation.finish(owner);
+    if (currentOwner && state.navigationCache.key === key) state.navigationCache.pending = null;
   });
 
   state.navigationCache = { key, events: [], total: 0, pending };
@@ -2344,9 +4678,10 @@ function selectedNavigationCategoryId(event, categories) {
   return next;
 }
 
-function renderInspectorNavigation(event) {
+function renderInspectorNavigation(event, options = {}) {
   const cache = currentNavigationCache();
   if (!cache) {
+    if (!options.pending) return '';
     return `<nav class="eventNavigator" aria-label="${escapeHtml(t('eventQuickNavigation'))}"><span class="navStatus">${escapeHtml(t('loadingNavigation'))}</span></nav>`;
   }
   const categories = navigationCategoriesForEvent(event, cache.events);
@@ -2371,33 +4706,171 @@ function renderInspectorNavigation(event) {
 }
 
 function currentSelectedEvent() {
-  return state.currentEvents.find((candidate) => candidate.id === state.selectedEventId)
-    || state.navigationCache.events.find((candidate) => candidate.id === state.selectedEventId)
+  return currentTimelineEvent(state.selectedEventId)
+    || detachedContextEvent(state.selectedEventId)
+    || currentNavigationCache()?.events.find((candidate) => candidate.id === state.selectedEventId)
     || null;
 }
 
-async function ensureEventLoaded(eventId) {
+function renderedTimelineEvents() {
+  return navigationApi.withTemporaryEventReveal(state.currentEvents, state.temporaryEventReveal);
+}
+
+function currentTimelineEvent(eventId) {
+  return state.currentEvents.find((candidate) => candidate.id === eventId)
+    || (state.temporaryEventReveal?.event.id === eventId ? state.temporaryEventReveal.event : null);
+}
+
+async function ensureEventLoaded(eventId, options = {}) {
   if (state.currentEvents.some((event) => event.id === eventId)) return;
   while (state.offset < state.timelineTotal) {
-    await loadTimeline(true);
+    await waitForTimelineIdle();
+    await loadTimeline(true, {
+      ...options,
+      paginationIntent: paginationIntent(options.paginationIntentKind || 'selected-event-navigation'),
+    });
     if (state.currentEvents.some((event) => event.id === eventId)) return;
   }
 }
 
-function scrollToTimelineEvent(eventId) {
+function scrollToTimelineEvent(eventId, options = {}) {
   const article = el.timeline.querySelector(`[data-event-id="${CSS.escape(eventId)}"]`);
-  if (article) article.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  if (article) {
+    beginProgrammaticSearchScroll();
+    article.scrollIntoView({ block: 'center', behavior: options.behavior || 'smooth' });
+  }
 }
 
-async function inspectAndRevealEvent(target) {
-  await ensureEventLoaded(target.id);
-  const loaded = state.currentEvents.find((event) => event.id === target.id) || target;
+function inspectContextParent(parent, sourceEventId = '') {
+  if (!parent?.id) return false;
+  state.contextParentCache[String(parent.id)] = parent;
+  clearContextReveal({ render: false, clearParentCache: false });
+  showInspector(parent, { origin: DETAIL_VIEW_ORIGIN_USER });
+  if (state.currentEvents.some((event) => event.id === parent.id)) scrollToTimelineEvent(parent.id);
+  return true;
+}
+
+async function revealEnclosingOperation(sourceEvent) {
+  const source = sourceEvent && currentTimelineEvent(sourceEvent.id) || sourceEvent;
+  const parentId = navigationApi.enclosingOperationParentId(source);
+  if (!source?.id || !parentId || !state.selectedSessionId || state.searchScope !== 'session') return false;
+  const materialized = state.currentEvents.find((event) => event.id === parentId);
+  if (materialized && displayState(materialized) !== 'hidden') {
+    return inspectContextParent(materialized, source.id);
+  }
+
+  const sessionId = state.selectedSessionId;
+  const layer = activeLayerId();
+  const dataContext = timelineDataContextKey();
+  const foldingContext = foldingProfileSearchContextKey();
+  const detailGeneration = state.detailCacheGeneration;
+  const requestContext = JSON.stringify([
+    sessionId,
+    layer,
+    source.id,
+    parentId,
+    dataContext,
+    foldingContext,
+    detailGeneration,
+  ]);
+  clearContextReveal({ render: false });
+  const requestId = state.contextRevealRequestId + 1;
+  state.contextRevealRequestId = requestId;
+  const owner = requestOwners.contextEventEnvelope.start(requestContext);
+  state.contextRevealPending = {
+    requestId,
+    sourceEventId: source.id,
+    parentEventId: parentId,
+    dataContext,
+    foldingContext,
+    detailGeneration,
+  };
+  syncEnclosingOperationAffordances();
+  try {
+    const parent = await api(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(parentId)}?layer=${encodeURIComponent(layer)}&locale=${encodeURIComponent(state.locale)}`, {
+      signal: owner.controller.signal,
+    });
+    const currentSource = currentTimelineEvent(source.id);
+    if (!requestOwners.contextEventEnvelope.isCurrent(owner)
+        || state.contextRevealRequestId !== requestId
+        || state.contextRevealPending?.requestId !== requestId
+        || state.selectedSessionId !== sessionId
+        || state.searchScope !== 'session'
+        || activeLayerId() !== layer
+        || dataContext !== timelineDataContextKey()
+        || foldingContext !== foldingProfileSearchContextKey()
+        || detailGeneration !== state.detailCacheGeneration
+        || !currentSource
+        || navigationApi.enclosingOperationParentId(currentSource) !== parentId) return false;
+    if (!parent || String(parent.id || '') !== parentId) return false;
+    state.contextReveal = {
+      sessionId,
+      layerId: layer,
+      dataContext,
+      sourceEventId: source.id,
+      parentEventId: parentId,
+      parentEvent: parent,
+      foldingContext,
+      detailGeneration,
+    };
+    state.contextRevealPending = null;
+    syncContextRevealDom();
+    return true;
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    throw error;
+  } finally {
+    const currentOwner = requestOwners.contextEventEnvelope.finish(owner);
+    if (currentOwner && state.contextRevealRequestId === requestId) {
+      state.contextRevealPending = null;
+      syncEnclosingOperationAffordances();
+    }
+  }
+}
+
+async function inspectAndRevealEvent(target, options = {}) {
+  if (options.temporary) {
+    state.temporaryEventReveal = {
+      sourceEventId: options.sourceEventId || '',
+      event: target,
+    };
+    renderTimeline();
+  } else {
+    await ensureEventLoaded(target.id);
+  }
+  const loaded = currentTimelineEvent(target.id) || target;
   if (displayState(loaded) === 'hidden') {
     setOverride(loaded.id, 'summary');
     renderTimeline();
   }
-  showInspector(loaded, { replace: true });
+  showInspector(loaded, { replace: options.replace !== false, origin: DETAIL_VIEW_ORIGIN_USER });
   scrollToTimelineEvent(loaded.id);
+}
+
+async function inspectEventRef(eventId) {
+  if (!eventId) return;
+  const sourceEventId = state.selectedEventId;
+  const current = currentTimelineEvent(eventId);
+  const requestContext = JSON.stringify([state.selectedSessionId, activeLayerId(), eventId, state.locale]);
+  const owner = requestOwners.eventEnvelope.start(requestContext);
+  let target = current;
+  try {
+    target = target || await api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/events/${encodeURIComponent(eventId)}?layer=${encodeURIComponent(activeLayerId())}&locale=${encodeURIComponent(state.locale)}`, {
+      signal: owner.controller.signal,
+    });
+    if (!requestOwners.eventEnvelope.isCurrent(owner)) return false;
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    throw error;
+  } finally {
+    requestOwners.eventEnvelope.finish(owner);
+  }
+  await inspectAndRevealEvent(target, {
+    temporary: !current,
+    sourceEventId,
+    replace: false,
+  });
+  return true;
 }
 
 async function navigateSelectedEvent(direction) {
@@ -2416,41 +4889,121 @@ async function navigateSelectedEvent(direction) {
   await inspectAndRevealEvent(matches[nextIndex]);
 }
 
+function isSelectedEventDetailView(view = state.detailView) {
+  return view?.type === 'inspector' || view?.type === 'rawRefs';
+}
+
+function detailViewOrigin(type, eventId, options = {}) {
+  if (options.origin) return options.origin;
+  if (options.replace && state.detailView?.type === type && state.detailView?.eventId === eventId) {
+    return state.detailView.origin || DETAIL_VIEW_ORIGIN_USER;
+  }
+  return DETAIL_VIEW_ORIGIN_USER;
+}
+
+function eventDetailView(type, eventId, options = {}) {
+  return { type, eventId, origin: detailViewOrigin(type, eventId, options) };
+}
+
+function selectedEventInCurrentTimeline() {
+  const eventId = state.detailView?.eventId || state.selectedEventId;
+  if (!eventId) return null;
+  return currentTimelineEvent(eventId) || detachedContextEvent(eventId);
+}
+
+function eventForDetailView(view = state.detailView) {
+  const eventId = String(view?.eventId || '');
+  if (!eventId) return null;
+  return currentTimelineEvent(eventId)
+    || detachedContextEvent(eventId)
+    || currentNavigationCache()?.events.find((candidate) => candidate.id === eventId)
+    || null;
+}
+
+function convergeSelectedEventDetailView(options = {}) {
+  if (!isSelectedEventDetailView()) return false;
+  const item = selectedEventInCurrentTimeline();
+  if (!item) {
+    closeDetailView();
+    return true;
+  }
+  if (state.detailView.origin !== DETAIL_VIEW_ORIGIN_SEARCH) return false;
+  const query = currentSearchState().q;
+  if (!query) {
+    closeDetailView();
+    return true;
+  }
+  if (!options.refreshedHitState) return false;
+  if (!state.timelineSearchMatchCount || !item.hasSearchHit) {
+    closeDetailView();
+    return true;
+  }
+  return false;
+}
+
 function pushDetailView(nextView) {
-  if (state.detailView) state.detailHistory.push(state.detailView);
+  if (state.detailView) {
+    const previousView = nextView.origin === DETAIL_VIEW_ORIGIN_USER
+      && isSelectedEventDetailView(state.detailView)
+      && state.detailView.eventId === nextView.eventId
+      ? { ...state.detailView, origin: DETAIL_VIEW_ORIGIN_USER }
+      : state.detailView;
+    state.detailHistory.push(previousView);
+  }
   state.detailView = nextView;
+  return reconcileDetailViewState();
 }
 
 function replaceDetailView(nextView) {
   state.detailView = nextView;
+  return reconcileDetailViewState();
+}
+
+function reconcileDetailViewState() {
+  const reconciled = navigationApi.reconcileTemporaryEventReveal({
+    reveal: state.temporaryEventReveal,
+    detailView: state.detailView,
+    history: state.detailHistory,
+  });
+  state.selectedEventId = reconciled.selectedEventId;
+  state.temporaryEventReveal = reconciled.reveal;
+  state.detailHistory = reconciled.history;
+  return reconciled.cleared;
 }
 
 function closeDetailView() {
+  clearContextReveal({ render: false });
+  invalidateDetailSelection();
   state.detailHistory = [];
-  state.detailSelectionKey = '';
   state.selectedEventId = '';
   state.navigationCategoryId = '';
   state.navigationCategoryManualId = '';
+  const hadTemporaryReveal = Boolean(state.temporaryEventReveal);
+  state.temporaryEventReveal = null;
   state.detailView = { type: 'profileRules' };
   renderProfileRulesPane();
+  if (hadTemporaryReveal) renderTimeline();
   updateSelectedTimelineEvent();
 }
 
 function backDetailView() {
+  clearContextReveal({ render: false });
   const previous = state.detailHistory.pop() || { type: 'profileRules' };
   state.detailView = previous;
+  const clearedTemporaryReveal = reconcileDetailViewState();
+  if (clearedTemporaryReveal) renderTimeline();
   renderCurrentDetailView();
 }
 
 function renderCurrentDetailView() {
   if (state.detailView.type === 'inspector') {
-    const item = currentSelectedEvent();
+    const item = eventForDetailView();
     if (item) showInspector(item, { replace: true });
     else closeDetailView();
     return;
   }
   if (state.detailView.type === 'rawRefs') {
-    const item = currentSelectedEvent();
+    const item = eventForDetailView();
     if (item) showRaw(item, { replace: true }).catch(showError);
     else closeDetailView();
     return;
@@ -2459,7 +5012,7 @@ function renderCurrentDetailView() {
 }
 
 function refreshSearchSensitiveDetailView() {
-  if (state.detailView.type === 'inspector' || state.detailView.type === 'rawRefs') {
+  if (isSelectedEventDetailView()) {
     renderCurrentDetailView();
   }
 }
@@ -2467,21 +5020,22 @@ function refreshSearchSensitiveDetailView() {
 async function readFromSelectedEvent() {
   const anchor = { ...captureFocusAnchor(), detailType: 'inspector' };
   if (!anchor.hadSelection) return;
+  resetDetailPane();
   hideSearchAssist();
-  el.searchInput.value = ['kind', 'status', 'file', 'layer'].reduce(
-    (input, operator) => searchQuery.removeOperator(input, operator),
-    el.searchInput.value,
-  );
+  state.searchScope = 'session';
+  state.projectSearchPendingContext = '';
+  state.searchFilters = { file: '', kind: '', status: '', codeModeRequest: '' };
   state.layerId = 'main';
   el.layerSelect.value = state.layerId;
   localStorage.setItem('sessionAnalyzer.layer', state.layerId);
+  syncSearchInputValue();
+  state.searchStructureKey = structuredSearchKey();
   syncSearchAssistControls();
   renderSearchAssistChips();
-  state.searchHighlight = { query: '', marks: [], activeIndex: -1 };
-  state.timelineSearchMatchCount = 0;
-  updateSearchMatchControls();
+  beginSearchTargetContextTransition();
+  clearQueuedSearchNavigations();
   updateProfileApplicabilityUi();
-  await loadSessions();
+  await loadTimeline(false, { keepScroll: true, viewportPolicy: 'focus-restore' });
   const restored = await restoreFocus(anchor);
   setMobileView('events');
   if (restored?.id) scrollToTimelineEvent(restored.id);
@@ -2510,18 +5064,27 @@ function renderDetailShell({ title, subtitle = '', actions = '', body = '', clos
     </header>
     ${body}
   </article>`;
+  state.searchSurfaceContexts.detail = detailSearchSurfaceContextKey();
   syncProfileInfoSlot();
   refreshSearchHighlights({ preserveActive: true });
 }
 
 function renderProfileRulesPane(options = {}) {
+  clearContextReveal({ render: false });
+  invalidateDetailSelection();
   state.detailView = { type: 'profileRules' };
-  state.detailSelectionKey = '';
+  const clearedTemporaryReveal = reconcileDetailViewState();
   state.selectedEventId = '';
   state.navigationCategoryId = '';
   state.navigationCategoryManualId = '';
+  if (clearedTemporaryReveal) renderTimeline();
   if (options.reveal === true) setMobileView('detail', { scroll: false });
   updateSelectedTimelineEvent();
+  if (state.searchScope === 'project') {
+    el.detail.innerHTML = '';
+    state.searchSurfaceContexts.detail = '';
+    return;
+  }
   if (!profileAppliesToActiveLayer()) {
     const layer = activeLayerId();
     const fixedRuleText = layer === 'protocol'
@@ -2557,35 +5120,132 @@ function renderProfileRulesPane(options = {}) {
       : item.name;
     return `<option value="${escapeHtml(item.id)}"${item.id === state.profileId ? ' selected' : ''}>${escapeHtml(name)}</option>`;
   }).join('');
-  const stateOptions = (value, includeDisabled = false, states = DISPLAY_STATES) => [
-    includeDisabled ? `<option value=""${value ? '' : ' selected'}>${escapeHtml(t('disabled'))}</option>` : '',
+  const stateOptions = (value, includeDisabled = false, states = DISPLAY_STATES, emptyLabel = t('disabled')) => [
+    includeDisabled ? `<option value=""${value ? '' : ' selected'}>${escapeHtml(emptyLabel)}</option>` : '',
     ...states.map((stateId) => `<option value="${stateId}"${stateId === value ? ' selected' : ''}>${escapeHtml(displayStateLabel(stateId))}</option>`),
   ].join('');
   const rules = normalizeRules(draft.rules);
+  const savedRules = normalizeRules(profile.rules);
   const conditionMap = new Map(rules.conditions.map((condition) => [condition.id, condition.state]));
+  const savedConditionMap = new Map(savedRules.conditions.map((condition) => [condition.id, condition.state]));
+  const editableKindCounts = new Map((state.sessionEventKinds?.main || [])
+    .filter((item) => !item?.matchField)
+    .map((item) => [String(item?.value || '').trim(), Number(item?.count || 0)]));
   const renderKindRow = (kind) => {
     const display = rules.kindStates[kind] || '';
+    const inheritedAgentCoordinationDisplay = kind === 'agent_coordination' && !display
+      ? evaluateDisplayStateFromRules({
+        kind,
+        subtype: '',
+        toolName: '',
+        status: 'success',
+        severity: 'normal',
+        touchedFiles: [],
+      }, rules)
+      : '';
+    const count = editableKindCounts.get(kind) || 0;
+    const metadata = [
+      `<code>${escapeHtml(kind)}</code>`,
+      count ? escapeHtml(t('suggestionEventCount', { count })) : '',
+    ].filter(Boolean).join('<span aria-hidden="true">·</span>');
     return `<label class="profileRuleRow">
       <span>
         <strong>${escapeHtml(kindLabel(kind))}</strong>
-        <span>${escapeHtml(kind)}</span>
+        <span class="profileRuleMeta">${metadata}</span>
       </span>
       <select data-profile-kind="${escapeHtml(kind)}">
-        <option value=""${display ? '' : ' selected'}>${escapeHtml(displayStateLabel(rules.fallback))} (${escapeHtml(t('default'))})</option>
+        <option value=""${display ? '' : ' selected'}>${inheritedAgentCoordinationDisplay
+    ? escapeHtml(t('inheritOrdinaryToolState', { state: displayStateLabel(inheritedAgentCoordinationDisplay) }))
+    : `${escapeHtml(displayStateLabel(rules.fallback))} (${escapeHtml(t('default'))})`}</option>
+        ${DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === display ? ' selected' : ''}>${escapeHtml(displayStateLabel(stateId))}</option>`).join('')}
+      </select>
+    </label>`;
+  };
+  const renderCodeModeRequestRow = (request) => {
+    const display = rules.codeModeRequestStates[request.value] || '';
+    const savedDisplay = savedRules.codeModeRequestStates[request.value] || '';
+    const inheritedDisplay = inheritedCodeModeRequestState(request.value, rules);
+    const changed = display !== savedDisplay;
+    const label = request.displayLabel || request.label || codeModeRequestDisplayLabel(request.value) || request.value;
+    const metadata = [
+      `<code>${escapeHtml(request.value)}</code>`,
+      request.historical ? escapeHtml(t('historicalRule')) : '',
+      request.count ? escapeHtml(t('suggestionEventCount', { count: request.count })) : '',
+      changed ? `<span class="profileRuleChanged">${escapeHtml(t('changed'))}</span>` : '',
+    ].filter(Boolean).join('<span aria-hidden="true">·</span>');
+    return `<label class="profileRuleRow" data-profile-code-mode-request-row="${escapeHtml(request.value)}">
+      <span>
+        <strong>${escapeHtml(label)}</strong>
+        <span class="profileRuleMeta">${metadata}</span>
+      </span>
+      <select data-profile-code-mode-request="${escapeHtml(request.value)}">
+        <option value=""${display ? '' : ' selected'}>${escapeHtml(t('inheritOrdinaryToolState', {
+          state: displayStateLabel(inheritedDisplay),
+        }))}</option>
         ${DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === display ? ' selected' : ''}>${escapeHtml(displayStateLabel(stateId))}</option>`).join('')}
       </select>
     </label>`;
   };
   const explicitKinds = knownEventKinds().filter((kind) => rules.kindStates[kind]);
   const defaultKinds = knownEventKinds().filter((kind) => !rules.kindStates[kind]);
-  const renderKindGroup = (entry) => `<section class="profileRuleGroup">
-    <h4>${escapeHtml(t(`kindGroup${entry.group.id[0].toUpperCase()}${entry.group.id.slice(1)}Name`))}</h4>
+  const codeModeRequestCatalog = profileCodeModeRequestCatalog(rules);
+  const codeModeRequestRows = codeModeRequestCatalog.current.map(renderCodeModeRequestRow).join('');
+  const historicalCodeModeRequestRows = codeModeRequestCatalog.historical.map(renderCodeModeRequestRow).join('');
+  const codeModeOperationCount = normalizedKindOptions('main')
+    .find((option) => option.value === 'code_mode_operation')?.count || 0;
+  const codeModeScriptState = conditionMap.get('codeModeScriptOperation') || '';
+  const codeModeScriptChanged = codeModeScriptState !== (savedConditionMap.get('codeModeScriptOperation') || '');
+  const codeModeScriptMetadata = codeModeScriptChanged
+    ? `<span class="profileRuleMeta"><span class="profileRuleChanged">${escapeHtml(t('changed'))}</span></span>`
+    : '';
+  const codeModeScriptRow = `<label class="profileRuleRow">
+    <span>
+      <strong>${escapeHtml(t('codeModeScriptOperation'))}</strong>
+      ${codeModeScriptMetadata}
+    </span>
+    <select data-profile-condition="codeModeScriptOperation">${stateOptions(
+    codeModeScriptState,
+    true,
+    CONDITION_DISPLAY_STATES,
+    t('inheritOrdinaryToolState', {
+      state: displayStateLabel(inheritedCodeModeRequestState('', rules)),
+    }),
+  )}</select>
+  </label>`;
+  const codeModeRuleSubgroup = `<div class="profileRuleSubgroup" data-profile-section="code-mode">
+    <p><strong>${escapeHtml(t('codeModeRules'))}</strong> · ${escapeHtml(t('codeModeRulesDescription'))}</p>
+    <div class="profileRuleList">${codeModeScriptRow}${codeModeRequestRows}</div>
+    ${historicalCodeModeRequestRows ? `<details class="profileRuleDetails">
+      <summary>${escapeHtml(t('codeModeRequestHistoricalGroup'))}</summary>
+      <div class="profileRuleList">${historicalCodeModeRequestRows}</div>
+    </details>` : ''}
+  </div>`;
+  const renderKindGroup = (entry, includeCodeMode = false) => `<section class="profileRuleGroup">
+    <h4>${escapeHtml(editableKindGroupLabel(entry.group))}</h4>
     <p>${escapeHtml(t(`kindGroup${entry.group.id[0].toUpperCase()}${entry.group.id.slice(1)}Description`))}</p>
-    <div class="profileRuleList">${entry.kinds.map(renderKindRow).join('')}</div>
+    ${entry.kinds.length ? `<div class="profileRuleList">${entry.kinds.map(renderKindRow).join('')}</div>` : ''}
+    ${includeCodeMode ? codeModeRuleSubgroup : ''}
   </section>`;
-  const explicitKindRows = groupedEditableKinds(explicitKinds).map(renderKindGroup).join('');
-  const defaultKindRows = groupedEditableKinds(defaultKinds).map(renderKindGroup).join('');
-  const activeConditionRows = conditionDefinitions().filter((condition) => conditionMap.has(condition.id)).map((condition) => (
+  const explicitKindGroups = groupedEditableKinds(explicitKinds);
+  const hasCodeModeControls = codeModeOperationCount > 0
+    || codeModeScriptState
+    || codeModeRequestCatalog.current.length > 0
+    || codeModeRequestCatalog.historical.length > 0;
+  if (hasCodeModeControls && !explicitKindGroups.some((entry) => entry.group.id === 'commonWork')) {
+    const commonWorkGroup = EDITABLE_KIND_GROUPS.find((group) => group.id === 'commonWork');
+    if (commonWorkGroup) {
+      explicitKindGroups.push({ group: commonWorkGroup, kinds: [] });
+      explicitKindGroups.sort((left, right) => left.group.priority - right.group.priority);
+    }
+  }
+  const explicitKindRows = explicitKindGroups
+    .map((entry) => renderKindGroup(entry, hasCodeModeControls && entry.group.id === 'commonWork'))
+    .join('');
+  const defaultKindRows = groupedEditableKinds(defaultKinds)
+    .map((entry) => renderKindGroup(entry))
+    .join('');
+  const genericConditionDefinitions = conditionDefinitions().filter((condition) => condition.id !== 'codeModeScriptOperation');
+  const activeConditionRows = genericConditionDefinitions.filter((condition) => conditionMap.has(condition.id)).map((condition) => (
     `<label class="profileRuleRow">
       <span>
         <strong>${escapeHtml(condition.name)}</strong>
@@ -2594,7 +5254,7 @@ function renderProfileRulesPane(options = {}) {
       <select data-profile-condition="${escapeHtml(condition.id)}">${stateOptions(conditionMap.get(condition.id) || '', true, CONDITION_DISPLAY_STATES)}</select>
     </label>`
   )).join('');
-  const inactiveConditionRows = conditionDefinitions().filter((condition) => !conditionMap.has(condition.id)).map((condition) => (
+  const inactiveConditionRows = genericConditionDefinitions.filter((condition) => !conditionMap.has(condition.id)).map((condition) => (
     `<label class="profileRuleRow">
       <span>
         <strong>${escapeHtml(condition.name)}</strong>
@@ -2627,19 +5287,20 @@ function renderProfileRulesPane(options = {}) {
   </div>`;
   renderDetailShell({
     title: t('foldingStrategy'),
-    subtitle: [status, draft.description].filter(Boolean).join(' | '),
+    subtitle: status,
     actions,
     headerClass: 'profileDetailHeader',
     closeable: false,
     backable: false,
     body: `<section class="profileRules">
+      ${draft.description ? `<p class="profileStrategyDescription">${escapeHtml(draft.description)}</p>` : ''}
       <section class="profileRuleSection">
         <div class="profileRuleSectionHeader">
           <h3>${escapeHtml(t('eventKinds'))}</h3>
         </div>
         <div class="profileRuleList">${explicitKindRows || `<div class="profileRuleEmpty">${escapeHtml(t('noExplicitKindRules'))}</div>`}</div>
       </section>
-      <details class="profileRuleDetails">
+      ${defaultKinds.length ? `<details class="profileRuleDetails" data-profile-default-kinds>
         <summary>
           <span>${escapeHtml(t('defaultKindCount', { count: defaultKinds.length }))}</span>
           <label class="profileDefaultInline">
@@ -2649,40 +5310,81 @@ function renderProfileRulesPane(options = {}) {
         </summary>
         <p>${escapeHtml(defaultKindNames)}</p>
         <div class="profileRuleList">${defaultKindRows}</div>
-      </details>
+      </details>` : ''}
       <section class="profileRuleSection">
         <h3>${escapeHtml(t('conditions'))}</h3>
         <div class="profileRuleList">${activeConditionRows || `<div class="profileRuleEmpty">${escapeHtml(t('noActiveConditions'))}</div>`}</div>
       </section>
       <details class="profileRuleDetails">
-        <summary>${escapeHtml(t('inactiveConditions', { count: conditionDefinitions().length - conditionMap.size }))}</summary>
+        <summary>${escapeHtml(t('inactiveConditions', {
+          count: genericConditionDefinitions.filter((condition) => !conditionMap.has(condition.id)).length,
+        }))}</summary>
         <div class="profileRuleList">${inactiveConditionRows}</div>
       </details>
     </section>`,
   });
 }
 
+function rerenderCurrentInspectorNavigation() {
+  if (state.detailView.type !== 'inspector') return;
+  const item = selectedEventInCurrentTimeline();
+  if (item) showInspector(item, { replace: true });
+}
+
 function showInspector(event, options = {}) {
+  if (state.contextReveal || state.contextRevealPending) clearContextReveal({ render: false });
   const layer = activeLayerId();
   const key = detailKey(state.selectedSessionId, layer, event.id);
+  if (state.detailSelectionKey !== key) invalidateDetailSelection();
+  else requestOwners.rawReferences.abort();
   const refs = sourceRefs(event);
   const preview = event.snippet || event.preview || '';
   const detail = state.detailCache[key];
-  const chips = renderChips(inspectorChipValues(event));
-  state.selectedEventId = event.id;
+  const presentation = codeModeEventPresentation(event, detail);
+  const presentationChipValues = presentation
+    ? [
+      t('codeMode'),
+      codeModeRequestEvidenceBadge(presentation.requestEvidence)?.label,
+      codeModeResultAssociationBadge(presentation.resultAssociation)?.label,
+    ]
+    : [];
+  const chips = renderChips([...inspectorChipValues(event), ...presentationChipValues]);
   state.detailSelectionKey = key;
-  if (options.replace) replaceDetailView({ type: 'inspector', eventId: event.id });
-  else pushDetailView({ type: 'inspector', eventId: event.id });
+  const clearedTemporaryReveal = options.replace
+    ? replaceDetailView(eventDetailView('inspector', event.id, options))
+    : pushDetailView(eventDetailView('inspector', event.id, options));
+  if (clearedTemporaryReveal) renderTimeline();
   setMobileView('detail');
   updateSelectedTimelineEvent();
-  if (!currentNavigationCache()) {
-    ensureNavigationEvents().then(() => {
-      if (state.detailSelectionKey === key && state.selectedEventId === event.id) showInspector(event, { replace: true });
-    }).catch(showError);
+  const selectionContext = detailSelectionContextKey();
+  const navigationKey = navigationCacheKey();
+  const userRequestedNavigation = state.detailView.origin === DETAIL_VIEW_ORIGIN_USER
+    && (options.replace !== true || options.retryNavigation === true);
+  if (userRequestedNavigation && state.navigationLoadErrorKey === navigationKey) {
+    state.navigationLoadErrorKey = '';
+  }
+  let navigationPending = currentNavigationPending();
+  const shouldLoadNavigation = state.detailView.origin !== DETAIL_VIEW_ORIGIN_SEARCH
+    && !currentNavigationCache()
+    && !navigationPending
+    && state.navigationLoadErrorKey !== navigationKey;
+  if (shouldLoadNavigation) {
+    navigationPending = ensureNavigationEvents();
+    navigationPending.then(() => {
+      if (state.navigationLoadErrorKey === navigationKey) state.navigationLoadErrorKey = '';
+      rerenderCurrentInspectorNavigation();
+    }).catch((error) => {
+      if (state.navigationCache.key === navigationKey) {
+        state.navigationCache = { key: '', events: [], total: 0, pending: null };
+      }
+      state.navigationLoadErrorKey = navigationKey;
+      showError(error);
+      rerenderCurrentInspectorNavigation();
+    });
   }
   renderDetailShell({
-    title: event.label,
-    actions: [renderReadFromHereAction(), renderInspectorNavigation(event)].filter(Boolean).join(''),
+    title: presentedEventLabel(event, presentation),
+    actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), renderInspectorNavigation(event, { pending: Boolean(navigationPending) })].filter(Boolean).join(''),
     body: `<div class="inspector">
     ${chips ? `<div class="chips">${chips}</div>` : ''}
     ${shouldShowInspectorSummary(event, preview, detail) ? `<section class="inspectorSection"><h3>${escapeHtml(t('summary'))}</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
@@ -2696,44 +5398,71 @@ function showInspector(event, options = {}) {
   });
 
   if (!state.detailCache[key] && !state.detailErrors[key]) {
-    loadEventDetail(event).then(() => {
-      if (state.detailSelectionKey === key) showInspector(event, { replace: true });
+    loadEventDetail(event).then((settled) => {
+      if (!settled || !isCurrentDetailSelection('inspector', key, event.id, selectionContext)) return;
+      const current = currentTimelineEvent(event.id) || detachedContextEvent(event.id);
+      if (current) showInspector(current, { replace: true });
     });
   }
 }
 
 async function showRaw(event, options = {}) {
+  if (state.contextReveal || state.contextRevealPending) clearContextReveal({ render: false });
   const refs = sourceRefs(event);
   const layer = activeLayerId();
   const rawKey = `raw:${detailKey(state.selectedSessionId, layer, event.id)}`;
-  state.selectedEventId = event.id;
+  if (state.detailSelectionKey !== rawKey) invalidateDetailSelection();
+  const owner = requestOwners.rawReferences.start(rawKey);
   state.detailSelectionKey = rawKey;
-  if (options.replace) replaceDetailView({ type: 'rawRefs', eventId: event.id });
-  else pushDetailView({ type: 'rawRefs', eventId: event.id });
+  const clearedTemporaryReveal = options.replace
+    ? replaceDetailView(eventDetailView('rawRefs', event.id, options))
+    : pushDetailView(eventDetailView('rawRefs', event.id, options));
+  if (clearedTemporaryReveal) renderTimeline();
   setMobileView('detail');
   updateSelectedTimelineEvent();
+  const selectionContext = detailSelectionContextKey();
   if (!refs.length) {
     renderDetailShell({
       title: t('rawRefs'),
       subtitle: rawRefsSubtitle(event),
-      actions: [renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
+      actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
       body: `<div class="rawRefsView">
       <div class="notice warning"><p>${escapeHtml(t('noRawRows'))}</p></div>
     </div>`,
     });
-    return;
+    requestOwners.rawReferences.finish(owner);
+    return true;
   }
-  const payloads = await Promise.all(refs.map((ref) => api(`/api/raw?file=${encodeURIComponent(ref.file)}&line=${encodeURIComponent(ref.line)}`)));
-  if (state.detailSelectionKey !== rawKey) return;
   renderDetailShell({
     title: t('rawRefs'),
     subtitle: rawRefsSubtitle(event),
-    actions: [renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
+    actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
     body: `<div class="rawRefsView">
-    <p class="rawMeta">${escapeHtml(t('rawRowsForEvent', { count: refs.length, plural: refs.length === 1 ? '' : 's', eventId: event.id }))}</p>
-    ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(raw.file)}:${raw.line}</p><pre>${escapeHtml(JSON.stringify(raw.parsed, null, 2) || raw.raw)}</pre></section>`).join('')}
-  </div>`,
+      <p class="rawMeta">${escapeHtml(t('loading'))}</p>
+    </div>`,
   });
+  try {
+    const payloads = await Promise.all(refs.map((ref) => api(`/api/raw?file=${encodeURIComponent(ref.file)}&line=${encodeURIComponent(ref.line)}`, {
+      signal: owner.controller.signal,
+    })));
+    if (!requestOwners.rawReferences.isCurrent(owner)
+        || !isCurrentDetailSelection('rawRefs', rawKey, event.id, selectionContext)) return false;
+    renderDetailShell({
+      title: t('rawRefs'),
+      subtitle: rawRefsSubtitle(event),
+      actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
+      body: `<div class="rawRefsView">
+      <p class="rawMeta">${escapeHtml(t('rawRowsForEvent', { count: refs.length, plural: refs.length === 1 ? '' : 's', eventId: event.id }))}</p>
+      ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(raw.file)}:${raw.line}</p><pre>${escapeHtml(JSON.stringify(raw.parsed, null, 2) || raw.raw)}</pre></section>`).join('')}
+    </div>`,
+    });
+    return true;
+  } catch (error) {
+    if (isIntentionalAbort(error)) return false;
+    throw error;
+  } finally {
+    requestOwners.rawReferences.finish(owner);
+  }
 }
 
 function ensureProfileDraft() {
@@ -2742,9 +5471,11 @@ function ensureProfileDraft() {
 }
 
 function setProfileId(profileId, options = {}) {
+  clearContextReveal({ render: false });
   state.profileId = profileId;
   localStorage.setItem('sessionAnalyzer.profile', state.profileId);
   el.profileSelect.value = state.profileId;
+  resetSearchTransientExpansions();
   resetProfileDraft();
   syncProfileInfoSlot();
   clearCurrentSessionOverrides();
@@ -2834,6 +5565,7 @@ function nextCustomProfileName(baseProfileId) {
 }
 
 function saveProfileDraft(name = '') {
+  clearContextReveal({ render: false });
   ensureProfileDraft();
   const draft = normalizeProfiles([state.profileDraft])[0];
   if (isBuiltinProfile(state.profileId)) {
@@ -2867,6 +5599,7 @@ function saveProfileDraft(name = '') {
 }
 
 function cancelProfileDraft() {
+  clearContextReveal({ render: false });
   resetProfileDraft();
   renderTimeline();
   renderProfileRulesPane();
@@ -2878,9 +5611,13 @@ el.projectList?.addEventListener('click', (event) => {
 });
 
 el.projectSwitchControl?.addEventListener('click', () => {
-  if (state.projectLoadingRoot || state.projectJobId) return;
+  if (state.projectLoadingRoot || state.projectJobId || state.projectRefreshJobId || state.projectRefreshing) return;
   const action = state.selectingProject && state.repoRoot ? exitProjectChooser : showProjectChooser;
   action({ autoRestore: false }).catch(showError);
+});
+
+el.projectRefreshBtn?.addEventListener('click', () => {
+  refreshCurrentProject().catch(handleProjectRefreshError);
 });
 
 el.localeSelect?.addEventListener('change', () => {
@@ -2897,31 +5634,38 @@ el.projectCancelBtn?.addEventListener('click', () => {
 });
 
 el.sessionList.addEventListener('click', (event) => {
+  const childToggle = event.target.closest('[data-session-children-toggle]');
+  if (childToggle) {
+    const sessionId = childToggle.dataset.sessionChildrenToggle;
+    if (state.expandedSessionGroups.has(sessionId)) state.expandedSessionGroups.delete(sessionId);
+    else state.expandedSessionGroups.add(sessionId);
+    renderSessions();
+    el.sessionList.querySelector(`[data-session-children-toggle="${CSS.escape(sessionId)}"]`)?.focus();
+    return;
+  }
+  const projectResult = event.target.closest('[data-project-result-session-id]');
+  if (projectResult) {
+    drillDownProjectResult(projectResult.dataset.projectResultSessionId).catch(showError);
+    return;
+  }
   const item = event.target.closest('[data-session-id]');
-  if (item) selectSession(item.dataset.sessionId, { mobileView: 'events' }).catch(showError);
+  if (item) {
+    state.projectReturnContext = null;
+    selectSession(item.dataset.sessionId, { mobileView: 'events' }).catch(showError);
+  }
 });
 
-el.sessionList.addEventListener('pointerover', (event) => {
-  const item = event.target.closest('[data-parent-session-id]');
-  if (item && el.sessionList.contains(item)) setRelatedParentHighlight(item.dataset.parentSessionId, true);
+el.sessionList.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const projectResult = event.target.closest('[data-project-result-session-id]');
+  if (!projectResult) return;
+  event.preventDefault();
+  drillDownProjectResult(projectResult.dataset.projectResultSessionId).catch(showError);
 });
 
-el.sessionList.addEventListener('pointerout', (event) => {
-  const item = event.target.closest('[data-parent-session-id]');
-  if (!item || !el.sessionList.contains(item)) return;
-  if (item.contains(event.relatedTarget)) return;
-  setRelatedParentHighlight(item.dataset.parentSessionId, false);
-});
-
-el.sessionList.addEventListener('focusin', (event) => {
-  const item = event.target.closest('[data-parent-session-id]');
-  if (item && el.sessionList.contains(item)) setRelatedParentHighlight(item.dataset.parentSessionId, true);
-});
-
-el.sessionList.addEventListener('focusout', (event) => {
-  const item = event.target.closest('[data-parent-session-id]');
-  if (!item || !el.sessionList.contains(item)) return;
-  setRelatedParentHighlight(item.dataset.parentSessionId, false);
+el.sessionHeader?.addEventListener('click', (event) => {
+  if (!event.target.closest('[data-search-back-to-project]')) return;
+  backToProjectResults().catch(showError);
 });
 
 for (const button of el.mobileViewButtons) {
@@ -2929,10 +5673,30 @@ for (const button of el.mobileViewButtons) {
 }
 
 el.timeline.addEventListener('click', (event) => {
+  if (event.target.closest('[data-search-back-to-project]')) {
+    backToProjectResults().catch(showError);
+    return;
+  }
+  const contextAction = event.target.closest('[data-action="reveal-context-parent"], [data-action="inspect-context-parent"]');
+  if (contextAction) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (contextAction.dataset.action === 'inspect-context-parent') {
+      const parentId = contextAction.dataset.contextParentId || '';
+      const reveal = state.contextReveal;
+      const parent = reveal?.parentEvent?.id === parentId ? reveal.parentEvent : detachedContextEvent(parentId);
+      if (parent) inspectContextParent(parent, reveal?.sourceEventId || '');
+    } else {
+      const article = contextAction.closest('.event[data-event-id]');
+      const item = article ? currentTimelineEvent(article.dataset.eventId) : null;
+      if (item) revealEnclosingOperation(item).catch(showError);
+    }
+    return;
+  }
   const article = event.target.closest('[data-event-id]');
   if (!article) return;
   hideSearchAssist();
-  const item = state.currentEvents.find((candidate) => candidate.id === article.dataset.eventId);
+  const item = currentTimelineEvent(article.dataset.eventId);
   if (!item) return;
   const action = event.target.closest('[data-action]')?.dataset.action || 'inspect';
   if (action === 'toggle') {
@@ -2993,15 +5757,23 @@ el.detail.addEventListener('click', (event) => {
     readFromSelectedEvent().catch(showError);
     return;
   }
+  if (action === 'back-to-project-results') {
+    backToProjectResults().catch(showError);
+    return;
+  }
   if (action === 'navigate-event') {
     navigateSelectedEvent(event.target.closest('[data-nav-direction]')?.dataset.navDirection || '').catch(showError);
     return;
   }
+  if (action === 'jump-event-ref') {
+    inspectEventRef(event.target.closest('[data-event-ref-id]')?.dataset.eventRefId || '').catch(showError);
+    return;
+  }
   const key = state.detailSelectionKey.replace(/^raw:/, '');
-  const item = state.currentEvents.find((candidate) => detailKey(state.selectedSessionId, activeLayerId(), candidate.id) === key);
+  const item = renderedTimelineEvents().find((candidate) => detailKey(state.selectedSessionId, activeLayerId(), candidate.id) === key);
   if (!item) return;
   if (action === 'inspect') {
-    showInspector(item, { replace: true });
+    showInspector(item, { replace: true, origin: DETAIL_VIEW_ORIGIN_USER, retryNavigation: true });
   } else if (action === 'raw') {
     showRaw(item).catch(showError);
   } else if (action === 'retry-detail') {
@@ -3019,6 +5791,7 @@ el.detail.addEventListener('change', (event) => {
   }
   const fallback = event.target.closest('[data-profile-fallback]');
   if (fallback) {
+    clearContextReveal({ render: false });
     ensureProfileDraft();
     state.profileDraft.rules.fallback = fallback.value;
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
@@ -3028,6 +5801,7 @@ el.detail.addEventListener('change', (event) => {
   }
   const kindSelect = event.target.closest('[data-profile-kind]');
   if (kindSelect) {
+    clearContextReveal({ render: false });
     ensureProfileDraft();
     const kind = kindSelect.dataset.profileKind;
     if (kindSelect.value) state.profileDraft.rules.kindStates[kind] = kindSelect.value;
@@ -3037,8 +5811,21 @@ el.detail.addEventListener('change', (event) => {
     renderProfileRulesPane();
     return;
   }
+  const codeModeRequestSelect = event.target.closest('[data-profile-code-mode-request]');
+  if (codeModeRequestSelect) {
+    clearContextReveal({ render: false });
+    ensureProfileDraft();
+    const request = codeModeRequestSelect.dataset.profileCodeModeRequest;
+    if (codeModeRequestSelect.value) state.profileDraft.rules.codeModeRequestStates[request] = codeModeRequestSelect.value;
+    else delete state.profileDraft.rules.codeModeRequestStates[request];
+    state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
+    renderTimeline();
+    renderProfileRulesPane();
+    return;
+  }
   const conditionSelect = event.target.closest('[data-profile-condition]');
   if (conditionSelect) {
+    clearContextReveal({ render: false });
     ensureProfileDraft();
     const conditionId = conditionSelect.dataset.profileCondition;
     state.profileDraft.rules.conditions = state.profileDraft.rules.conditions.filter((condition) => condition.id !== conditionId);
@@ -3053,7 +5840,7 @@ el.detail.addEventListener('change', (event) => {
   state.navigationCategoryId = select.value;
   state.navigationCategoryManualId = select.value;
   const item = currentSelectedEvent();
-  if (item) showInspector(item, { replace: true });
+  if (item) showInspector(item, { replace: true, origin: DETAIL_VIEW_ORIGIN_USER });
 });
 
 el.profileSelect.addEventListener('change', () => {
@@ -3065,6 +5852,7 @@ el.layerSelect.addEventListener('change', () => {
 });
 
 el.resetFoldsBtn.addEventListener('click', () => {
+  clearContextReveal({ render: false });
   delete state.overrides[state.selectedSessionId];
   saveOverrides();
   updateResetFoldsButton();
@@ -3073,7 +5861,11 @@ el.resetFoldsBtn.addEventListener('click', () => {
 
 el.loadMoreBtn.addEventListener('click', () => {
   hideSearchAssist();
-  loadTimeline(true).catch(showError);
+  if (currentTimelineReplacementRetry()) {
+    retryTimelineReplacement().catch(showError);
+    return;
+  }
+  loadTimeline(true, { paginationIntent: paginationIntent('explicit-load-more') }).catch(showError);
 });
 el.analysisPanel?.addEventListener('click', (event) => {
   const metricEl = event.target.closest('[data-metric-action]');
@@ -3088,6 +5880,14 @@ el.analysisPanel?.addEventListener('keydown', (event) => {
   applyMetricAction(metricEl).catch(showError);
 });
 el.resultSummary?.addEventListener('click', (event) => {
+  if (event.target.closest('[data-search-project-fallback]')) {
+    setSearchScope('project').catch(showError);
+    return;
+  }
+  if (event.target.closest('[data-search-back-to-project]')) {
+    backToProjectResults().catch(showError);
+    return;
+  }
   const clear = event.target.closest('[data-clear-filter]')?.dataset.clearFilter;
   if (clear) {
     clearActiveFilter(clear);
@@ -3096,26 +5896,58 @@ el.resultSummary?.addEventListener('click', (event) => {
   const nav = event.target.closest('[data-search-match-nav]')?.dataset.searchMatchNav;
   if (nav === 'previous') {
     hideSearchAssist();
-    navigateSearchMatch(-1);
+    queueSearchNavigation(-1).catch(showError);
   } else if (nav === 'next') {
     hideSearchAssist();
-    navigateSearchMatch(1);
+    queueSearchNavigation(1).catch(showError);
   }
 });
+for (const button of el.searchScopeButtons) {
+  button.addEventListener('click', () => {
+    if (isAnalyzerInteractionDisabled()) return;
+    setSearchScope(button.dataset.searchScope).catch(showError);
+  });
+}
+el.searchHudScope?.addEventListener('click', () => showSearchAssist({ focusTarget: 'scope' }));
+el.searchFilterBtn?.addEventListener('click', () => showSearchAssist({ focusTarget: 'filters' }));
 el.searchField?.addEventListener('click', (event) => {
+  if (isAnalyzerInteractionDisabled()) {
+    hideSearchAssist();
+    return;
+  }
+  if (event.target.closest('[data-search-load-more-targets]')) {
+    loadMoreSearchTargets().catch(showError);
+    return;
+  }
   const nav = event.target.closest('[data-search-match-nav]')?.dataset.searchMatchNav;
+  const preserveResultsAssist = Boolean(event.target.closest('#searchMetricsPanel'));
   if (nav === 'previous') {
-    hideSearchAssist();
-    navigateSearchMatch(-1);
+    if (!preserveResultsAssist) hideSearchAssist();
+    queueSearchNavigation(-1).catch(showError);
   } else if (nav === 'next') {
-    hideSearchAssist();
-    navigateSearchMatch(1);
+    if (!preserveResultsAssist) hideSearchAssist();
+    queueSearchNavigation(1).catch(showError);
+  } else if (
+    event.target === el.searchField
+    || (event.target.closest('.searchInputRow') && !event.target.closest('button'))
+  ) {
+    el.searchInput.focus();
   }
 });
-el.timeline.closest('.timelinePane')?.addEventListener('scroll', onTimelinePaneScroll, { passive: true });
+const timelinePane = el.timeline.closest('.timelinePane');
+timelinePane?.addEventListener('scroll', onTimelinePaneScroll, { passive: true });
+timelinePane?.addEventListener('wheel', onTimelineUserScrollIntent, { passive: true });
+timelinePane?.addEventListener('touchmove', onTimelineUserScrollIntent, { passive: true });
+timelinePane?.addEventListener('pointerdown', onTimelineUserScrollIntent, { passive: true });
+timelinePane?.addEventListener('pointermove', onTimelineUserScrollIntent, { passive: true });
+timelinePane?.addEventListener('keydown', onTimelineUserScrollIntent);
 window.addEventListener('resize', () => {
   queueVisibleDetailLoad();
   syncProfileInfoSlot();
+  syncSearchScopeUi();
+  renderSearchAssistChips();
+  syncSearchInlineLayout();
+  positionFileSuggestions();
 });
 
 const reload = debounce(() => {
@@ -3123,14 +5955,20 @@ const reload = debounce(() => {
   renderSearchAssistChips();
   updateProfileApplicabilityUi();
   if (state.detailView.type === 'profileRules') renderProfileRulesPane();
-  loadSessions().catch(showError);
+  refreshActiveSearch({ structural: true, transitionKind: 'structured-filter' }).catch(showError);
 }, 220);
 const refreshFind = debounce(() => {
-  refreshTimelineFindState().catch(showError);
+  refreshActiveSearch({ structural: false }).catch(showError);
 }, SEARCH_HIGHLIGHT_INPUT_DELAY_MS);
 
-el.searchInput.addEventListener('focus', showSearchAssist);
+el.searchInput.addEventListener('focus', showSearchResultsAssist);
+el.searchInput.addEventListener('click', showSearchResultsAssist);
 el.searchInput.addEventListener('keydown', (event) => {
+  if (isAnalyzerInteractionDisabled()) {
+    event.preventDefault();
+    hideSearchAssist();
+    return;
+  }
   if (event.key === 'Escape') {
     event.preventDefault();
     hideSearchAssist();
@@ -3138,10 +5976,24 @@ el.searchInput.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Enter') {
     const search = currentSearchState();
-    if (search.q) {
+    if (search.scope === 'project') {
       event.preventDefault();
       hideSearchAssist();
-      navigateSearchMatch(event.shiftKey ? -1 : 1);
+      commitSearchInput();
+      if (el.sessionList.querySelector('[data-project-result-session-id]')) {
+        focusFirstProjectResult();
+        return;
+      }
+      beginProjectSearchPendingTransition();
+      refreshFind.cancel();
+      reload.cancel();
+      loadProjectResults()
+        .then(() => focusFirstProjectResult())
+        .catch(showError);
+    } else if (search.q) {
+      event.preventDefault();
+      hideSearchAssist();
+      queueSearchNavigation(event.shiftKey ? -1 : 1).catch(showError);
     } else if (!el.searchAssist?.hidden) {
       event.preventDefault();
       hideSearchAssist();
@@ -3150,12 +6002,21 @@ el.searchInput.addEventListener('keydown', (event) => {
   }
 });
 el.searchInput.addEventListener('input', () => {
-  showSearchAssist();
-  state.searchTargetPreload = { key: '', pages: 0, pending: false };
-  state.searchHighlight = { query: currentSearchState().q, marks: [], activeIndex: -1 };
-  state.timelineSearchMatchCount = 0;
-  updateSearchMatchControls();
-  scheduleSearchHighlightRefresh({ allowPreload: false, syncDetail: true });
+  if (isAnalyzerInteractionDisabled()) {
+    hideSearchAssist();
+    syncSearchInputValue();
+    return;
+  }
+  const queryChanged = commitSearchInput();
+  showSearchResultsAssist();
+  if (!queryChanged) return;
+  beginProjectSearchPendingTransition();
+  const clearedTransientExpansions = reconcileSearchTransientExpansions();
+  beginSearchTargetContextTransition();
+  syncSearchAssistControls();
+  renderSearchAssistChips();
+  if (clearedTransientExpansions) renderTimeline();
+  scheduleSearchHighlightRefresh({ allowPreload: false, syncDetail: true, passive: true });
   const nextStructureKey = structuredSearchKey();
   const structureChanged = state.searchStructureKey && state.searchStructureKey !== nextStructureKey;
   state.searchStructureKey = nextStructureKey;
@@ -3167,6 +6028,15 @@ el.searchInput.addEventListener('input', () => {
   }
 });
 el.searchInput.addEventListener('change', () => {
+  if (isAnalyzerInteractionDisabled()) {
+    hideSearchAssist();
+    syncSearchInputValue();
+    return;
+  }
+  const queryChanged = commitSearchInput();
+  if (!queryChanged) return;
+  beginProjectSearchPendingTransition();
+  if (reconcileSearchTransientExpansions()) renderTimeline();
   const nextStructureKey = structuredSearchKey();
   if (nextStructureKey !== state.searchStructureKey) {
     state.searchStructureKey = nextStructureKey;
@@ -3178,46 +6048,80 @@ el.searchInput.addEventListener('change', () => {
 });
 
 el.searchAssist?.addEventListener('click', (event) => {
+  if (isAnalyzerInteractionDisabled()) {
+    event.preventDefault();
+    hideSearchAssist();
+    return;
+  }
   const clear = event.target.closest('[data-clear-filter]')?.dataset.clearFilter;
   if (clear) {
     clearActiveFilter(clear);
+    focusSearchEnd();
     return;
   }
   const suggestedFile = event.target.closest('[data-search-file-suggestion]')?.dataset.searchFileSuggestion;
   if (suggestedFile) {
-    applySearchOperator('file', suggestedFile);
+    applySearchFilter('file', suggestedFile);
     hideFileSuggestions();
     return;
   }
 });
 
+el.searchAssistClose?.addEventListener('click', () => {
+  hideSearchAssist({ restoreFocus: true });
+});
+
 el.searchAssist?.addEventListener('focusin', (event) => {
+  if (isAnalyzerInteractionDisabled()) {
+    hideSearchAssist();
+    return;
+  }
   if (event.target !== el.searchFileInput) return;
   renderFileSuggestions();
   setFileSuggestionsOpen(true);
 });
 
+el.searchAssist?.querySelector('.searchAssistBody')?.addEventListener('scroll', () => {
+  positionFileSuggestions();
+}, { passive: true });
+
 el.searchAssist?.addEventListener('change', (event) => {
-  const control = event.target.closest('[data-search-operator]');
+  if (isAnalyzerInteractionDisabled()) {
+    event.preventDefault();
+    hideSearchAssist();
+    return;
+  }
+  const control = event.target.closest('[data-search-filter-control]');
   if (!control) return;
-  if (control.dataset.searchOperator === 'file') hideFileSuggestions();
-  applySearchOperator(control.dataset.searchOperator, control.value.trim());
+  if (control.dataset.searchFilterControl === 'file') hideFileSuggestions();
+  applySearchFilter(control.dataset.searchFilterControl, control.value.trim());
 });
 
 el.searchAssist?.addEventListener('input', (event) => {
-  const control = event.target.closest('[data-search-operator="file"]');
+  if (isAnalyzerInteractionDisabled()) {
+    event.preventDefault();
+    hideSearchAssist();
+    return;
+  }
+  const control = event.target.closest('[data-search-filter-control="file"]');
   if (!control) return;
   renderFileSuggestions();
   setFileSuggestionsOpen(true);
   if (isSuggestedFile(control.value)) {
     hideFileSuggestions();
-    applySearchOperator('file', control.value.trim());
+    applySearchFilter('file', control.value.trim());
   }
 });
 
 el.searchAssist?.addEventListener('keydown', (event) => {
+  if (isAnalyzerInteractionDisabled()) {
+    event.preventDefault();
+    hideSearchAssist();
+    return;
+  }
   if (event.key === 'Escape' && event.target === el.searchFileInput && !el.searchFileSuggestions?.hidden) {
     event.preventDefault();
+    event.stopPropagation();
     hideFileSuggestions();
     return;
   }
@@ -3230,11 +6134,25 @@ el.searchAssist?.addEventListener('keydown', (event) => {
     return;
   }
   if (event.key !== 'Enter') return;
-  const control = event.target.closest('[data-search-operator]');
+  const control = event.target.closest('[data-search-filter-control]');
   if (!control) return;
   event.preventDefault();
   hideFileSuggestions();
-  applySearchOperator(control.dataset.searchOperator, control.value.trim());
+  applySearchFilter(control.dataset.searchFilterControl, control.value.trim());
+});
+
+el.searchLayerShortcut?.addEventListener('click', () => {
+  if (isAnalyzerInteractionDisabled()) {
+    hideSearchAssist();
+    return;
+  }
+  hideSearchAssist();
+  el.layerSelect?.focus();
+  try {
+    el.layerSelect?.showPicker?.();
+  } catch {
+    // Focus remains on the canonical Layer control when the native picker is unavailable.
+  }
 });
 
 document.addEventListener('pointerdown', (event) => {
@@ -3243,13 +6161,16 @@ document.addEventListener('pointerdown', (event) => {
   hideSearchAssist();
 });
 
-el.sortSelect.addEventListener('input', reload);
-el.sortSelect.addEventListener('change', reload);
+const reloadForSearchContextChange = () => {
+  beginSearchTargetContextTransition();
+  if (state.searchScope === 'session') loadSessions().catch(showError);
+};
+el.sortSelect.addEventListener('change', reloadForSearchContextChange);
 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !el.searchAssist?.hidden) {
     event.preventDefault();
-    hideSearchAssist();
+    hideSearchAssist({ restoreFocus: el.searchAssist?.dataset.mode === 'parameters' });
     return;
   }
   if (event.altKey && event.key === 'ArrowRight') {
@@ -3270,9 +6191,11 @@ document.addEventListener('keydown', (event) => {
 
 function showError(error) {
   if (state.selectingProject) {
-    setProjectHeader('', error.message);
+    setProjectHeader('', error.message, 'error');
   } else {
     el.stateLine.textContent = error.message;
+    el.stateLine.title = error.message;
+    el.stateLine.dataset.state = 'error';
   }
   if (state.selectingProject && el.projectStatus) el.projectStatus.textContent = error.message;
   console.error(error);

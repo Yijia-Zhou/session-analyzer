@@ -30,7 +30,7 @@ Codex transcripts can contain prompts, command output, file paths, environment d
 
 ## Requirements
 
-- Node.js 18 or newer
+- A supported Node.js LTS release, Node.js 22 or newer (Node.js 24 recommended)
 - npm
 
 ## Run With npm
@@ -106,6 +106,13 @@ Run tests:
 npm test
 ```
 
+Install Chromium and run browser coverage:
+
+```sh
+npm run browser:install
+npm run test:browser
+```
+
 Run package smoke verification before release packaging:
 
 ```sh
@@ -113,6 +120,14 @@ npm run test:package
 ```
 
 The package smoke command runs `npm pack`, installs the tarball into a fresh temporary project, checks installed CLI help, and starts the packaged server.
+
+Run the repeatable non-browser release gate:
+
+```sh
+npm run release:check
+```
+
+The release gate checks generated assets, runs the full Node test suite, and repeats the installed-package smoke. Browser coverage remains a separate CI and local release requirement.
 
 The test fixtures under `test/fixtures/codex-home` are synthetic transcript data. They intentionally include fake Windows paths and sample transcript shapes for parser coverage.
 
@@ -123,7 +138,7 @@ Browser JavaScript source lives in `src/browser/`, and browser-and-Node shared l
 1. Select a target project, or pass `--repo` when starting the server.
 2. Pick a session from the left pane.
 3. Use `Main timeline` for normal reading, `Protocol layer` for injected context and lifecycle records, or `Raw records` for exact transcript rows.
-4. Search with a case-insensitive plain-text phrase or filters such as `file:src/parser.js`, `kind:command`, `status:failed`, and `layer:raw`. Whitespace inside a phrase matches spaces, tabs, or newlines.
+4. Enter a case-insensitive plain-text phrase in the search HUD; whitespace inside a phrase matches spaces, tabs, or newlines. Open Search options to switch between the current session and the entire project, edit the always-visible `Touched file`, `Kind`, or `Status` filters, inspect complete counts, or jump to the adjacent global Layer selector. Operator-like input such as `status:failed` remains literal text.
 5. Open an event to inspect structured detail and raw references.
 
 The npm package does not promise a stable programmatic API. The supported v0.1 interface is the `session-analyzer` CLI.
@@ -141,7 +156,7 @@ The npm package does not promise a stable programmatic API. The supported v0.1 i
 - `src/codex.js`: transcript parsing, project discovery, indexing, logical timeline construction, and event-detail extraction.
 - `src/folding.js`: built-in timeline folding profiles.
 - `src/shared/`: browser-and-Node shared logic such as folding rule evaluation and command highlighting metadata.
-- `src/browser/`: browser UI source, search parsing, renderers, navigation, and app wiring.
+- `src/browser/`: browser UI source, search controls and state models, renderers, navigation, and app wiring.
 - `public/`: static HTML/CSS and generated browser runtime assets.
 - `test/`: Node test suite and synthetic transcript fixtures.
 - `docs/`: product specs, design docs, execution plans, and backlog notes.

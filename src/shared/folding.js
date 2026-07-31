@@ -1,8 +1,14 @@
 (function initFolding(root, factory) {
-  const api = factory();
+  const codeModeTools = typeof module === 'object' && module.exports
+    ? require('./code-mode-tools')
+    : root.sessionCodeModeTools;
+  const planFacet = typeof module === 'object' && module.exports
+    ? require('./plan-facet')
+    : root.sessionPlanFacet;
+  const api = factory(codeModeTools, planFacet);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionFolding = api;
-}(typeof globalThis !== 'undefined' ? globalThis : window, function createFoldingApi() {
+}(typeof globalThis !== 'undefined' ? globalThis : window, function createFoldingApi(codeModeTools, planFacet) {
   'use strict';
 
   const DISPLAY_STATES = ['expanded', 'summary', 'collapsed', 'hidden'];
@@ -23,6 +29,7 @@
     'patch',
     'mcp_call',
     'js_repl',
+    'agent_coordination',
     'other_tool_call',
     'web_search',
     'goal',
@@ -61,6 +68,9 @@
         'user_shell_command',
         'patch',
         'web_search',
+        'mcp_call',
+        'js_repl',
+        'other_tool_call',
       ],
     },
     {
@@ -72,17 +82,15 @@
       ],
     },
     {
-      id: 'toolsAndInternals',
+      id: 'agentSystem',
       priority: 80,
       kindOrder: [
         'reasoning',
-        'mcp_call',
-        'js_repl',
-        'other_tool_call',
         'hook',
         'developer_message',
         'review',
         'subagent',
+        'agent_coordination',
         'abort',
         'rollback',
         'compaction',
@@ -137,6 +145,11 @@
       description: 'Calls to request_user_input that collect user choices during a conversation.',
     },
     {
+      id: 'codeModeScriptOperation',
+      name: 'Scripted operation',
+      description: 'Code Mode tool calls that cannot be safely projected as declared requests.',
+    },
+    {
       id: 'readableReasoning',
       name: 'Readable reasoning',
       description: 'Reasoning entries that contain readable text in the Main timeline.',
@@ -170,12 +183,9 @@
 
   const CONDITION_IDS = new Set(CONDITION_DEFINITIONS.map((condition) => condition.id));
 
-  function isUpdatePlanEvent(event = {}) {
-    return event.kind === 'plan_update'
-      || event.toolName === 'update_plan'
-      || event.subtype === 'update_plan'
-      || event.label === 'update_plan';
-  }
+  const isPlanEvent = planFacet.isPlanEvent;
+  const isPlanUpdateEvent = planFacet.isPlanUpdateEvent;
+  const isUpdatePlanEvent = isPlanUpdateEvent;
 
   function isUserInputRequestEvent(event = {}) {
     return event.toolName === 'request_user_input'
@@ -193,6 +203,10 @@
     for (const [kind, display] of Object.entries(source.kindStates || {}).sort(([left], [right]) => left.localeCompare(right))) {
       if (DISPLAY_STATES.includes(display)) kindStates[kind] = display;
     }
+    const codeModeRequestStates = Object.create(null);
+    for (const [request, display] of Object.entries(source.codeModeRequestStates || {}).sort(([left], [right]) => left.localeCompare(right))) {
+      if (request && DISPLAY_STATES.includes(display)) codeModeRequestStates[request] = display;
+    }
     const fallback = DISPLAY_STATES.includes(source.fallback) ? source.fallback : 'summary';
     const conditionStates = new Map();
     for (const condition of Array.isArray(source.conditions) ? source.conditions : []) {
@@ -204,12 +218,12 @@
     const conditions = CONDITION_DEFINITIONS
       .filter((condition) => conditionStates.has(condition.id))
       .map((condition) => ({ id: condition.id, state: conditionStates.get(condition.id) }));
-    return { kindStates, fallback, conditions };
+    return { kindStates, codeModeRequestStates, fallback, conditions };
   }
 
   function importantEvent(event = {}) {
-    return ['user_message', 'assistant_message', 'patch', 'goal', 'error', 'warning', 'abort', 'rollback', 'compaction', 'proposed_plan', 'review'].includes(event.kind)
-      || isUpdatePlanEvent(event)
+    return ['user_message', 'assistant_message', 'patch', 'goal', 'error', 'warning', 'abort', 'rollback', 'compaction', 'review'].includes(event.kind)
+      || isPlanEvent(event)
       || event.severity !== 'normal'
       || event.status === 'failed';
   }
@@ -217,8 +231,13 @@
   function conditionMatches(conditionId, event = {}) {
     if (conditionId === 'searchHit') return Boolean(event.hasSearchHit);
     if (conditionId === 'importantEvent') return importantEvent(event);
-    if (conditionId === 'updatePlanCall') return isUpdatePlanEvent(event);
+    if (conditionId === 'updatePlanCall') return isPlanUpdateEvent(event);
     if (conditionId === 'userInputRequest') return isUserInputRequestEvent(event);
+    if (conditionId === 'codeModeScriptOperation') {
+      const requestNames = event.presentationFacts?.codeModeDeclaredRequests?.toolNames;
+      return event.kind === 'code_mode_operation'
+        && (!Array.isArray(requestNames) || requestNames.length === 0);
+    }
     if (conditionId === 'readableReasoning') return event.kind === 'reasoning' && Boolean(event.hasReadableReasoning);
     if (conditionId === 'failedStatus') return event.status === 'failed';
     if (conditionId === 'errorSeverity') return event.severity === 'error';
@@ -228,12 +247,62 @@
     return false;
   }
 
-  function displayStateFromRules(event = {}, rules) {
-    const normalized = normalizeRules(rules);
+  function ordinaryKindForCodeModeRequest(request) {
+    const toolName = String(request || '').trim();
+    return codeModeTools?.codeModeToolOrdinaryKind(toolName) || 'other_tool_call';
+  }
+
+  function ordinaryEventForCodeModeRequest(request) {
+    const toolName = String(request || '').trim();
+    return {
+      kind: ordinaryKindForCodeModeRequest(toolName),
+      subtype: toolName,
+      toolName,
+      label: toolName,
+      preview: '',
+      status: 'success',
+      severity: 'normal',
+      touchedFiles: [],
+    };
+  }
+
+  function matchingStatesForEvent(event, normalized) {
     const matches = [];
-    if (Object.hasOwn(normalized.kindStates, event.kind)) matches.push(normalized.kindStates[event.kind]);
+    if (event.kind !== 'code_mode_operation' && Object.hasOwn(normalized.kindStates, event.kind)) {
+      matches.push(normalized.kindStates[event.kind]);
+    } else if (event.kind === 'agent_coordination' && Object.hasOwn(normalized.kindStates, 'other_tool_call')) {
+      matches.push(normalized.kindStates.other_tool_call);
+    }
     for (const condition of normalized.conditions) {
       if (conditionMatches(condition.id, event)) matches.push(condition.state);
+    }
+    return matches;
+  }
+
+  function inheritedCodeModeRequestState(request, rules) {
+    const normalized = normalizeRules(rules);
+    const matches = matchingStatesForEvent(ordinaryEventForCodeModeRequest(request), normalized);
+    return matches.reduce(moreVisibleState, null) || normalized.fallback;
+  }
+
+  function displayStateFromRules(event = {}, rules) {
+    const normalized = normalizeRules(rules);
+    const matches = matchingStatesForEvent(event, normalized);
+    const requestNames = event.presentationFacts?.codeModeDeclaredRequests?.toolNames;
+    const isCodeModeOperation = event.kind === 'code_mode_operation';
+    const hasDeclaredRequests = Array.isArray(requestNames) && requestNames.length > 0;
+    if (isCodeModeOperation && !hasDeclaredRequests
+        && !normalized.conditions.some((condition) => condition.id === 'codeModeScriptOperation')) {
+      const inheritedMatches = matchingStatesForEvent(ordinaryEventForCodeModeRequest(''), normalized);
+      matches.push(inheritedMatches.reduce(moreVisibleState, null) || normalized.fallback);
+    }
+    for (const request of new Set(Array.isArray(requestNames) ? requestNames : [])) {
+      if (Object.hasOwn(normalized.codeModeRequestStates, request)) {
+        matches.push(normalized.codeModeRequestStates[request]);
+      } else {
+        const inheritedMatches = matchingStatesForEvent(ordinaryEventForCodeModeRequest(request), normalized);
+        matches.push(inheritedMatches.reduce(moreVisibleState, null) || normalized.fallback);
+      }
     }
     return matches.reduce(moreVisibleState, null) || normalized.fallback;
   }
@@ -262,10 +331,14 @@
     editableKindGroup,
     isDynamicEditableKind,
     CONDITION_DEFINITIONS,
+    isPlanEvent,
+    isPlanUpdateEvent,
     isUpdatePlanEvent,
     isUserInputRequestEvent,
     normalizeRules,
     conditionMatches,
+    ordinaryKindForCodeModeRequest,
+    inheritedCodeModeRequestState,
     displayStateFromRules,
     normalizeOverrides,
   };

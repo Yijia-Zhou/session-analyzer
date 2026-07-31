@@ -24,7 +24,9 @@ test('navigation category helpers keep existing event categories', () => {
   const events = [
     { id: 'cmd-ok', kind: 'command', status: 'success', severity: 'normal' },
     { id: 'cmd-fail', kind: 'command', status: 'failed', severity: 'normal' },
-    { id: 'plan', kind: 'other_tool_call', toolName: 'update_plan', severity: 'normal' },
+    { id: 'artifact', kind: 'proposed_plan', subtype: 'proposed_plan', toolName: '', severity: 'normal' },
+    { id: 'plan', kind: 'other_tool_call', subtype: 'update_plan', toolName: 'update_plan', severity: 'normal' },
+    { id: 'delta', kind: 'plan_update', subtype: 'plan_delta', toolName: '', severity: 'normal' },
   ];
 
   const failedCommandCategories = navigation.navigationCategoriesForEvent(events[1], events).map((category) => category.id);
@@ -33,6 +35,149 @@ test('navigation category helpers keep existing event categories', () => {
   assert.ok(failedCommandCategories.includes('errors_warnings'));
 
   const planCategories = navigation.navigationCategoriesForEvent(events[2], events).map((category) => category.id);
-  assert.ok(planCategories.includes('update_plan'));
-  assert.ok(planCategories.includes('plans'));
+  assert.deepEqual(planCategories, ['plans']);
+  const updateCategories = navigation.navigationCategoriesForEvent(events[3], events).map((category) => category.id);
+  assert.ok(updateCategories.includes('update_plan'));
+  assert.ok(updateCategories.includes('plans'));
+  const deltaCategories = navigation.navigationCategoriesForEvent(events[4], events).map((category) => category.id);
+  assert.ok(deltaCategories.includes('update_plan'));
+  assert.ok(deltaCategories.includes('plans'));
+});
+
+test('temporary referenced events are revealed beside their source without mutating filtered results', () => {
+  const events = [
+    { id: 'operation', kind: 'other_tool_call' },
+    { id: 'next', kind: 'assistant_message' },
+  ];
+  const referenced = { id: 'nested-failure', kind: 'command', status: 'failed' };
+
+  const revealed = navigation.withTemporaryEventReveal(events, {
+    sourceEventId: 'operation',
+    event: referenced,
+  });
+  assert.deepEqual(revealed.map((event) => event.id), ['operation', 'nested-failure', 'next']);
+  assert.deepEqual(events.map((event) => event.id), ['operation', 'next']);
+  assert.equal(navigation.withTemporaryEventReveal(revealed, { event: referenced }), revealed);
+});
+
+test('temporary reference detail history returns to source with synchronized selection and removes target', () => {
+  const source = { id: 'operation', kind: 'other_tool_call' };
+  const target = { id: 'nested-failure', kind: 'command', status: 'failed' };
+  const filteredEvents = [source];
+  const reveal = { sourceEventId: source.id, event: target };
+  const targetState = navigation.reconcileTemporaryEventReveal({
+    reveal,
+    detailView: { type: 'inspector', eventId: target.id },
+    history: [{ type: 'inspector', eventId: source.id }],
+  });
+  assert.equal(targetState.selectedEventId, target.id);
+  assert.equal(targetState.reveal, reveal);
+  assert.deepEqual(navigation.withTemporaryEventReveal(filteredEvents, targetState.reveal).map((event) => event.id), [source.id, target.id]);
+
+  const backState = navigation.reconcileTemporaryEventReveal({
+    reveal: targetState.reveal,
+    detailView: targetState.history[0],
+    history: [],
+  });
+  assert.equal(backState.selectedEventId, source.id);
+  assert.equal(backState.reveal, null);
+  assert.deepEqual(backState.history, []);
+  assert.deepEqual(navigation.withTemporaryEventReveal(filteredEvents, backState.reveal).map((event) => event.id), [source.id]);
+});
+
+test('leaving a temporary target for another event or profile removes stale target history', () => {
+  const reveal = { sourceEventId: 'source', event: { id: 'temporary-target' } };
+  for (const detailView of [
+    { type: 'inspector', eventId: 'ordinary-event' },
+    { type: 'profileRules' },
+  ]) {
+    const result = navigation.reconcileTemporaryEventReveal({
+      reveal,
+      detailView,
+      history: [
+        { type: 'inspector', eventId: 'source' },
+        { type: 'inspector', eventId: 'temporary-target' },
+      ],
+    });
+    assert.equal(result.reveal, null);
+    assert.equal(result.selectedEventId, detailView.eventId || '');
+    assert.deepEqual(result.history.map((view) => view.eventId), ['source']);
+  }
+});
+
+test('enclosing operation affordance is gated by presentation relevance without translating relation data', () => {
+  const nested = {
+    id: 'nested',
+    presentationContext: {
+      relation: 'enclosed_by_code_mode_operation',
+      codeModeParentId: 'parent',
+    },
+  };
+  assert.equal(navigation.enclosingOperationParentId(nested), 'parent');
+  assert.equal(navigation.shouldShowEnclosingOperationAffordance(nested, 'collapsed', {}), false);
+  assert.equal(navigation.shouldShowEnclosingOperationAffordance(nested, 'collapsed', { status: 'failed' }), true);
+  assert.equal(navigation.shouldShowEnclosingOperationAffordance(nested, 'collapsed', {}, 'nested'), true);
+  assert.equal(navigation.shouldShowEnclosingOperationAffordance(nested, 'expanded', {}), true);
+  assert.equal(navigation.enclosingOperationParentId({ presentationContext: { relation: '其它关系', codeModeParentId: 'parent' } }), '');
+});
+
+test('context reveal reconciliation keeps a distinct source slot while structural context changes invalidate it', () => {
+  const source = {
+    id: 'nested',
+    presentationContext: { relation: 'enclosed_by_code_mode_operation', codeModeParentId: 'parent' },
+  };
+  const reveal = {
+    sessionId: 'session',
+    layerId: 'main',
+    dataContext: 'context-a',
+    foldingContext: 'profile-a',
+    detailGeneration: 3,
+    sourceEventId: 'nested',
+    parentEventId: 'parent',
+    parentEvent: { id: 'parent' },
+  };
+  assert.equal(navigation.contextRevealSourceIndex([source], reveal), 0);
+  assert.equal(navigation.reconcileContextReveal({
+    reveal,
+    sessionId: 'session',
+    layerId: 'main',
+    dataContext: 'context-a',
+    foldingContext: 'profile-a',
+    detailGeneration: 3,
+    events: [source],
+  }), reveal);
+  assert.equal(navigation.reconcileContextReveal({
+    reveal,
+    sessionId: 'session',
+    layerId: 'main',
+    dataContext: 'context-b',
+    foldingContext: 'profile-a',
+    detailGeneration: 3,
+    events: [source],
+  }), null);
+  assert.equal(navigation.reconcileContextReveal({
+    reveal,
+    sessionId: 'session',
+    layerId: 'main',
+    dataContext: 'context-a',
+    foldingContext: 'profile-b',
+    detailGeneration: 3,
+    events: [source],
+  }), null);
+  assert.equal(navigation.reconcileContextReveal({
+    reveal,
+    sessionId: 'session',
+    layerId: 'main',
+    dataContext: 'context-a',
+    foldingContext: 'profile-a',
+    detailGeneration: 4,
+    events: [source],
+  }), null);
+  assert.equal(navigation.reconcileContextReveal({
+    reveal,
+    sessionId: 'session',
+    layerId: 'main',
+    dataContext: 'context-a',
+    events: [{ ...source, presentationContext: { ...source.presentationContext, codeModeParentId: 'other' } }],
+  }), null);
 });

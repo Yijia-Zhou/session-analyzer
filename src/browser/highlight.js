@@ -5,17 +5,23 @@
 }(typeof globalThis !== 'undefined' ? globalThis : this, () => {
   'use strict';
 
-  const SKIP_SELECTOR = 'script, style, textarea, input, select, option, button, mark, a';
+  const SKIP_SELECTOR = 'script, style, textarea, input, select, option, button, mark, a, .hiddenByProfile';
 
   function searchTerms(query) {
     const phrase = String(query || '').trim();
     return phrase ? [phrase] : [];
   }
 
-  function displayedMatchTotal(fullTextTotal, renderedMarkCount) {
-    const full = Number.isFinite(Number(fullTextTotal)) ? Math.max(0, Number(fullTextTotal)) : 0;
-    const rendered = Number.isFinite(Number(renderedMarkCount)) ? Math.max(0, Number(renderedMarkCount)) : 0;
-    return Math.max(full, rendered);
+  function searchCountModel(fullTextTotal, jumpTargetCount, activeIndex) {
+    const fullText = Number.isFinite(Number(fullTextTotal)) ? Math.max(0, Number(fullTextTotal)) : 0;
+    const jumpTargets = Number.isFinite(Number(jumpTargetCount)) ? Math.max(0, Number(jumpTargetCount)) : 0;
+    const active = Number.isFinite(Number(activeIndex)) ? Number(activeIndex) : -1;
+    return {
+      current: jumpTargets > 0 && active >= 0 ? Math.min(active + 1, jumpTargets) : 0,
+      jumpTotal: jumpTargets,
+      fullTextTotal: fullText,
+      hasAnyMatch: jumpTargets > 0 || fullText > 0,
+    };
   }
 
   function phraseRegex(query, flags = '') {
@@ -54,9 +60,11 @@
     }
   }
 
-  function textNodeAccepted(node, terms) {
+  function textNodeAccepted(node, terms, rootNode) {
     const parent = node.parentElement;
-    if (!parent || parent.closest(SKIP_SELECTOR)) return false;
+    if (!parent) return false;
+    const skipped = parent.closest(SKIP_SELECTOR);
+    if (skipped && skipped !== rootNode) return false;
     const text = node.nodeValue || '';
     if (!text.trim()) return false;
     return Boolean(phraseRegex((terms || []).join(' '))?.test(text));
@@ -67,7 +75,7 @@
     const doc = rootNode.ownerDocument;
     const walker = doc.createTreeWalker(rootNode, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
-        return textNodeAccepted(node, terms) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        return textNodeAccepted(node, terms, rootNode) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
       },
     });
     const nodes = [];
@@ -114,9 +122,9 @@
   return {
     apply,
     clear,
-    displayedMatchTotal,
     highlightedParts,
     reveal,
+    searchCountModel,
     searchTerms,
   };
 }));

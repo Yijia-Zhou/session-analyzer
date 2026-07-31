@@ -8,8 +8,13 @@ const http = require('node:http');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
+const packageMetadata = require('../package.json');
 
 const repoRoot = path.join(__dirname, '..');
+const packageRegistry = packageMetadata.publishConfig?.registry;
+if (!packageRegistry) {
+  throw new Error('package publishConfig.registry is required for package smoke');
+}
 const npmCommand = process.platform === 'win32'
   ? { command: process.env.ComSpec || 'cmd.exe', prefixArgs: ['/d', '/s', '/c', 'npm'] }
   : { command: 'npm', prefixArgs: [] };
@@ -35,6 +40,18 @@ function run(command, args, options = {}) {
     ].filter(Boolean).join('\n'));
   }
   return result;
+}
+
+function normalizePackManifest(manifest) {
+  const entries = Array.isArray(manifest)
+    ? manifest
+    : manifest && typeof manifest === 'object'
+      ? Object.values(manifest)
+      : [];
+  if (entries.length !== 1 || !entries[0] || typeof entries[0].filename !== 'string') {
+    throw new TypeError('npm pack --json must describe exactly one package artifact');
+  }
+  return entries[0];
 }
 
 function binCommand(bin, args) {
@@ -196,6 +213,7 @@ function isPackageStatePayload(response) {
     && response.json.totals
     && Array.isArray(response.json.supportedLocales)
     && response.json.eventKinds
+    && Array.isArray(response.json.codeModeRequests)
     && response.json.projectSelected === true;
 }
 
@@ -267,10 +285,14 @@ async function main() {
     smokeRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'session analyzer package smoke-'));
 
     const pack = run(npmCommand.command, [...npmCommand.prefixArgs, 'pack', '--json'], {
-      env: { npm_config_cache: cacheDir },
+      env: {
+        npm_config_cache: cacheDir,
+        npm_config_dry_run: 'false',
+        npm_config_registry: packageRegistry,
+      },
     });
-    const manifest = JSON.parse(pack.stdout);
-    tarballPath = path.join(repoRoot, manifest[0].filename);
+    const manifest = normalizePackManifest(JSON.parse(pack.stdout));
+    tarballPath = path.join(repoRoot, manifest.filename);
 
     const projectDir = path.join(smokeRoot, 'project');
     const codexHome = path.join(smokeRoot, 'codex-home');
@@ -284,7 +306,11 @@ async function main() {
 
     run(npmCommand.command, [...npmCommand.prefixArgs, 'install', '--omit=dev', '--no-audit', '--no-fund', '--prefix', smokeRoot, tarballPath], {
       cwd: smokeRoot,
-      env: { npm_config_cache: cacheDir },
+      env: {
+        npm_config_cache: cacheDir,
+        npm_config_dry_run: 'false',
+        npm_config_registry: packageRegistry,
+      },
     });
 
     const bin = process.platform === 'win32'
@@ -328,5 +354,7 @@ if (require.main === module) {
 
 module.exports = {
   isPackageStatePayload,
+  normalizePackManifest,
+  packageRegistry,
   waitForPackageState,
 };

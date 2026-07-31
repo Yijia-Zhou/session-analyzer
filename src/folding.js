@@ -3,7 +3,7 @@
 const folding = require('./shared/folding');
 
 function profileRules(kindStates, fallback, conditions = []) {
-  return { kindStates, fallback, conditions };
+  return { kindStates, codeModeRequestStates: {}, fallback, conditions };
 }
 
 const foldingProfiles = [

@@ -1,0 +1,1 @@
+{"timestamp":"2026-07-14T00:02:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"exec-incomplete-fixture","turn_id":"turn-incomplete","input":"// Sanitized incomplete outer exec fixture."}}

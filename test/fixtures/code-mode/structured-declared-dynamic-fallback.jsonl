@@ -1,0 +1,2 @@
+{"timestamp":"2026-07-15T00:01:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"exec-dynamic-fixture","turn_id":"turn-dynamic","input":"const args = { plan: [] };\nconst plan = await tools.update_plan(args);\ntext(plan);"}}
+{"timestamp":"2026-07-15T00:01:02.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"exec-dynamic-fixture","turn_id":"turn-dynamic","output":[{"type":"input_text","text":"Script completed\nOutput:\n"},{"type":"input_text","text":"{}"}]}}

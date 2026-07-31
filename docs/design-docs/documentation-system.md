@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-05-05 / 最近更新：2026-05-05
+- Last updated: 2026-07-13 / 最近更新：2026-07-13
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -23,8 +23,15 @@ This repository started as a small local tool, but it already has user-facing be
 - Make active implementation plans self-contained enough for a new executor to continue the work. / 让活跃实现计划足够自包含，使新的执行者可以继续工作。
 - Keep filenames searchable by topic and status. / 让文件名可按主题和状态搜索。
 - Keep bilingual docs synchronized when either language changes. / 当任一语言发生变更时，保持双语文档同步。
+- Keep project-specific domain terms canonical and easy to discover. / 让项目特有的领域术语保持规范且易于发现。
 
 ## Proposed design / 提议设计
+
+### `CONTEXT.md` / 领域语言词汇表
+
+- Canonical bilingual names and tight definitions for project-specific domain concepts / 为项目特有的领域概念提供规范的双语名称和精炼定义
+- Explicit words to avoid when they would blur an important domain distinction / 明确列出会模糊重要领域边界、因而应避免的词语
+- Contains no implementation details, behavior specifications, or architectural decisions / 不包含实现细节、行为规格或架构决策
 
 ### `AGENTS.md` / 仓库导航文件
 
@@ -99,6 +106,7 @@ This repository started as a small local tool, but it already has user-facing be
 
 ## Validation / 验证
 
+- Project-specific terminology should be consistent with `CONTEXT.md`. / 项目特有的术语应与 `CONTEXT.md` 保持一致。
 - Every major feature should be traceable from spec -> design -> active/completed plan / 每个主要功能都应能从规格 -> 设计 -> 活跃/已完成计划追踪
 - Backlog items should not be treated as accepted work until promoted into a formal document class. / backlog 条目在晋升到正式文档类别前，不应被视为已接受工作。
 - AGENTS should remain small enough to read quickly / AGENTS 应保持足够小，以便快速阅读
@@ -107,6 +115,7 @@ This repository started as a small local tool, but it already has user-facing be
 
 ## Decision log / 决策日志
 
+- 2026-07-13: Added a root bilingual domain glossary to distinguish source history, interpreted history, event layers, session relationships, and search boundaries. / 2026-07-13：新增根目录双语领域词汇表，用于区分来源历史、解释后历史、事件层、会话关系和搜索边界。
 - 2026-05-04: Added `docs/backlog/` as a separate parking area for rough long-horizon ideas. / 2026-05-04：新增 `docs/backlog/`，作为粗略远期想法的独立暂存区。
 - 2026-05-03: Added a lightweight rule requiring translated docs to keep English and Chinese text synchronized. / 2026-05-03：添加轻量规则，要求已翻译文档保持英文和中文文本同步。
 - 2026-04-21: Chose a three-tier documentation system with repository-specific starter docs instead of template-only scaffolding. / 2026-04-21：选择带有仓库专属起始文档的三层文档系统，而不是只使用模板脚手架。

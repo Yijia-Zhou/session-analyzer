@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const childProcess = require('node:child_process');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
@@ -44,6 +45,7 @@ async function writeFixtureTranscript(codexHome, cwd, id = 'cccccccc-cccc-cccc-c
     timestamp: '2026-05-25T10:00:00.000Z',
     payload: { id, cwd },
   })}\n`, 'utf8');
+  return file;
 }
 
 test('parseArgs leaves repo unset unless --repo is provided', () => {
@@ -255,7 +257,7 @@ test('state endpoint includes dynamic event kind options', async () => {
 });
 
 test('resolveStaticAssetPath rejects sibling-prefix paths outside the public root', () => {
-  const publicRoot = path.join('G:\\vibe\\session-analyzer', 'public');
+  const publicRoot = path.join(repoRoot, 'public');
   assert.equal(resolveStaticAssetPath(publicRoot, '/index.html'), path.join(publicRoot, 'index.html'));
   assert.equal(resolveStaticAssetPath(publicRoot, '/../public-evil/secret.txt'), '');
 });
@@ -370,6 +372,7 @@ test('buildIndex deduplicates mirrored messages and keeps protocol separately', 
   assert.equal(index.totals.sessionCount, 10);
   assert.equal(session.id, '11111111-1111-1111-1111-111111111111');
   assert.equal(session.title, 'fixture repo session');
+  assert.equal(Object.hasOwn(session, 'searchText'), false);
   assert.equal(session.counts.userMessages, 1);
   assert.equal(session.counts.assistantMessages, 1);
   assert.equal(session.counts.messages, 2);
@@ -456,6 +459,150 @@ test('buildIndex reports progress and supports cancellation', async () => {
   assert.ok(phases.includes('selecting'));
   assert.ok(phases.includes('parsing'));
   assert.equal(phases.at(-1), 'complete');
+});
+
+test('buildIndex reuses unchanged session payloads while reparsing changed transcripts', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const projectRoot = path.join(codexHome, 'reuse-project');
+  const unchangedId = '10101010-1010-1010-1010-101010101010';
+  const changedId = '20202020-2020-2020-2020-202020202020';
+  await fsp.mkdir(projectRoot, { recursive: true });
+  await writeFixtureTranscript(codexHome, projectRoot, unchangedId);
+  const changedFile = await writeFixtureTranscript(codexHome, projectRoot, changedId);
+  const first = await buildIndex({ repoRoot: projectRoot, codexHome });
+
+  await fsp.appendFile(changedFile, `${JSON.stringify({
+    type: 'event_msg',
+    timestamp: '2026-05-25T10:01:00.000Z',
+    payload: { type: 'warning', message: 'changed transcript' },
+  })}\n`, 'utf8');
+  const progress = [];
+  const second = await buildIndex({
+    repoRoot: projectRoot,
+    codexHome,
+    previousIndex: first,
+    onProgress: (entry) => progress.push(entry),
+  });
+
+  const oldUnchanged = first.sessionsById.get(unchangedId);
+  const newUnchanged = second.sessionsById.get(unchangedId);
+  const oldChanged = first.sessionsById.get(changedId);
+  const newChanged = second.sessionsById.get(changedId);
+  assert.notEqual(newUnchanged, oldUnchanged, 'reused top-level metadata must remain commit-isolated');
+  assert.equal(newUnchanged.rawEvents, oldUnchanged.rawEvents, 'unchanged heavy event payload should be shared');
+  assert.notEqual(newChanged.rawEvents, oldChanged.rawEvents, 'changed transcripts must be reparsed');
+  assert.equal(newChanged.rawEvents.length, oldChanged.rawEvents.length + 1);
+  assert.equal(second.totals.reusedFileCount, 1);
+  assert.equal(progress.at(-1).reusedFileCount, 1);
+});
+
+test('buildIndex ignores an incomplete previous-index placeholder', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const projectRoot = path.join(codexHome, 'placeholder-project');
+  const id = '21212121-2121-2121-2121-212121212121';
+  await fsp.mkdir(projectRoot, { recursive: true });
+  await writeFixtureTranscript(codexHome, projectRoot, id);
+
+  const index = await buildIndex({
+    repoRoot: projectRoot,
+    codexHome,
+    previousIndex: { repoRoot: projectRoot, codexHome },
+  });
+
+  assert.equal(index.sessions.length, 1);
+  assert.equal(index.sessions[0].id, id);
+  assert.equal(index.totals.reusedFileCount, 0);
+});
+
+test('buildIndex re-stats a transcript before reuse when it grows after selecting', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const projectRoot = path.join(codexHome, 'concurrent-append-project');
+  const id = '30303030-3030-3030-3030-303030303030';
+  await fsp.mkdir(projectRoot, { recursive: true });
+  const file = await writeFixtureTranscript(codexHome, projectRoot, id);
+  const first = await buildIndex({ repoRoot: projectRoot, codexHome });
+  let appended = false;
+
+  const second = await buildIndex({
+    repoRoot: projectRoot,
+    codexHome,
+    previousIndex: first,
+    onProgress: (entry) => {
+      if (appended || entry.phase !== 'parsing' || entry.indexedFileCount !== 0) return;
+      appended = true;
+      fs.appendFileSync(file, `${JSON.stringify({
+        type: 'event_msg',
+        timestamp: '2026-05-25T10:01:00.000Z',
+        payload: { type: 'warning', message: 'appended after selecting' },
+      })}\n`, 'utf8');
+    },
+  });
+
+  assert.equal(appended, true);
+  assert.equal(second.totals.reusedFileCount, 0);
+  assert.equal(
+    second.sessionsById.get(id).rawEvents.length,
+    first.sessionsById.get(id).rawEvents.length + 1,
+  );
+});
+
+test('buildIndex refreshes reused session title, updatedAt, and ordering from session index', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const projectRoot = path.join(codexHome, 'session-index-refresh-project');
+  const refreshedId = '40404040-4040-4040-4040-404040404040';
+  const otherId = '50505050-5050-5050-5050-505050505050';
+  await fsp.mkdir(projectRoot, { recursive: true });
+  await writeFixtureTranscript(codexHome, projectRoot, refreshedId);
+  const otherFile = await writeFixtureTranscript(codexHome, projectRoot, otherId);
+  await fsp.appendFile(otherFile, `${JSON.stringify({
+    type: 'event_msg',
+    timestamp: '2026-05-25T11:00:00.000Z',
+    payload: { type: 'warning', message: 'initially newer session' },
+  })}\n`, 'utf8');
+  const first = await buildIndex({ repoRoot: projectRoot, codexHome });
+  const sessionIndexPath = path.join(codexHome, 'session_index.jsonl');
+  await fsp.writeFile(sessionIndexPath, `${JSON.stringify({
+    id: refreshedId,
+    thread_name: 'Renamed reused session',
+    updated_at: '2026-05-25T12:00:00.000Z',
+  })}\n`, 'utf8');
+
+  const second = await buildIndex({ repoRoot: projectRoot, codexHome, previousIndex: first });
+  const oldSession = first.sessionsById.get(refreshedId);
+  const refreshedSession = second.sessionsById.get(refreshedId);
+  assert.equal(refreshedSession.rawEvents, oldSession.rawEvents);
+  assert.equal(refreshedSession.title, 'Renamed reused session');
+  assert.equal(refreshedSession.updatedAt, '2026-05-25T12:00:00.000Z');
+  assert.equal(second.sessions[0].id, refreshedId);
+  assert.equal(second.totals.reusedFileCount, 2);
+
+  await fsp.writeFile(sessionIndexPath, '', 'utf8');
+  const withoutIndexEntry = await buildIndex({
+    repoRoot: projectRoot,
+    codexHome,
+    previousIndex: second,
+  });
+  const restoredSession = withoutIndexEntry.sessionsById.get(refreshedId);
+  assert.equal(restoredSession.rawEvents, refreshedSession.rawEvents);
+  assert.equal(restoredSession.title, restoredSession.transcriptTitle);
+  assert.equal(restoredSession.updatedAt, '2026-05-25T10:00:00.000Z');
+  assert.equal(withoutIndexEntry.sessions[0].id, otherId);
+
+  await fsp.writeFile(sessionIndexPath, `${JSON.stringify({
+    id: refreshedId,
+    thread_name: 'Earlier index timestamp',
+    updated_at: '2026-05-25T10:30:00.000Z',
+  })}\n`, 'utf8');
+  const earlierIndexEntry = await buildIndex({
+    repoRoot: projectRoot,
+    codexHome,
+    previousIndex: second,
+  });
+  const movedBackwardSession = earlierIndexEntry.sessionsById.get(refreshedId);
+  assert.equal(movedBackwardSession.rawEvents, refreshedSession.rawEvents);
+  assert.equal(movedBackwardSession.title, 'Earlier index timestamp');
+  assert.equal(movedBackwardSession.updatedAt, '2026-05-25T10:30:00.000Z');
+  assert.equal(earlierIndexEntry.sessions[0].id, otherId);
 });
 
 test('buildIndex keeps forked subagent identity separate from embedded parent metadata', async () => {
@@ -552,6 +699,81 @@ test('buildIndex keeps forked subagent identity separate from embedded parent me
   assert.equal(childTimeline.session.forkedFromSessionTitle, parent.title);
   assert.equal(normalForkTimeline.session.parentSessionTitle, '');
   assert.equal(normalForkTimeline.session.forkedFromSessionTitle, parent.title);
+});
+
+test('buildIndex correlates subagent activity only to a same-session coordination owner', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const fixtureRepoRoot = path.join(codexHome, 'repo');
+  const ownerSessionId = 'aaaaaaaa-7777-4444-9999-aaaaaaaaaaaa';
+  const replicaSessionId = 'bbbbbbbb-7777-4444-9999-bbbbbbbbbbbb';
+  const ownerFile = await writeFixtureTranscript(codexHome, fixtureRepoRoot, ownerSessionId);
+  const replicaFile = await writeFixtureTranscript(codexHome, fixtureRepoRoot, replicaSessionId);
+  const eventId = 'coordination-call-fixture';
+  const observationPayload = {
+    type: 'sub_agent_activity',
+    event_id: eventId,
+    agent_thread_id: 'agent-thread-fixture',
+    agent_path: '/root/fixture-agent',
+    kind: 'started',
+    occurred_at_ms: 1785405660000,
+  };
+
+  await fsp.appendFile(ownerFile, [
+    {
+      type: 'event_msg',
+      timestamp: '2026-07-30T10:01:00.000Z',
+      payload: observationPayload,
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-07-30T10:01:01.000Z',
+      payload: {
+        type: 'function_call',
+        name: 'spawn_agent',
+        call_id: eventId,
+        arguments: { task_name: 'fixture-agent', message: 'Run the fixture task.' },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-07-30T10:01:02.000Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: eventId,
+        output: { agent_id: 'agent-thread-fixture' },
+      },
+    },
+  ].map((record) => JSON.stringify(record)).join('\n') + '\n', 'utf8');
+  await fsp.appendFile(replicaFile, `${JSON.stringify({
+    type: 'event_msg',
+    timestamp: '2026-07-30T10:01:03.000Z',
+    payload: observationPayload,
+  })}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot: fixtureRepoRoot, codexHome });
+  const ownerSession = index.sessionsById.get(ownerSessionId);
+  const replicaSession = index.sessionsById.get(replicaSessionId);
+  const coordination = ownerSession.logicalEvents.find((event) => event.toolName === 'spawn_agent');
+  const ownerObservationRaw = ownerSession.rawEvents.find((raw) => raw.payloadType === 'sub_agent_activity');
+  const replicaObservation = replicaSession.logicalEvents.find((event) => event.subtype === 'sub_agent_activity');
+
+  assert.ok(coordination);
+  assert.equal(coordination.kind, 'agent_coordination');
+  assert.deepEqual(coordination.rawRefs.map((ref) => ref.sourceEventType), [
+    'function_call',
+    'function_call_output',
+    'sub_agent_activity',
+  ]);
+  assert.equal(coordination.source.line, 3);
+  assert.doesNotMatch(coordination.searchText, /\/root\/fixture-agent|sub_agent_activity/);
+  assert.equal(ownerObservationRaw.callId, '');
+  assert.equal(ownerSession.logicalEvents.some((event) => event.layer === 'protocol'
+    && event.subtype === 'sub_agent_activity'), false);
+
+  assert.ok(replicaObservation);
+  assert.equal(replicaObservation.layer, 'protocol');
+  assert.deepEqual(replicaObservation.rawRefs.map((ref) => ref.sourceEventType), ['sub_agent_activity']);
+  assert.equal(replicaSession.rawEvents.find((raw) => raw.payloadType === 'sub_agent_activity').callId, '');
 });
 
 test('buildIndex infers fallback titles from real user tasks after protocol wrappers', async () => {
@@ -1468,6 +1690,59 @@ test('tool logical events merge new and old format patch records and search stil
   assert.match(outputOnlyCommandTimeline.events[0].preview, /rg -n -F 'alpha' 'src'/);
   const outputOnlyCommandDetail = buildEventDetail(session, outputOnlyCommandTimeline.events[0].id, 'main');
   assert.equal(outputOnlyCommandDetail.timelineSections[0].language, 'powershell');
+
+  const failedCommandOutputSearch = getTimeline(index, primaryFixtureSessionId, {
+    offset: 0,
+    limit: 100,
+    q: 'alpha failed',
+    kind: 'command',
+    status: 'failed',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(failedCommandOutputSearch.total, 1);
+  assert.equal(failedCommandOutputSearch.searchMatchCount, 1);
+  assert.equal(failedCommandOutputSearch.events[0].hasSearchHit, true);
+
+  const failedCommandTextSearch = getTimeline(index, primaryFixtureSessionId, {
+    offset: 0,
+    limit: 100,
+    q: 'npm test',
+    kind: 'command',
+    status: 'failed',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(failedCommandTextSearch.total, 1);
+  assert.equal(failedCommandTextSearch.searchMatchCount, 1);
+
+  const failedCommandStderrSearch = getTimeline(index, primaryFixtureSessionId, {
+    offset: 0,
+    limit: 100,
+    q: 'parser stack',
+    kind: 'command',
+    status: 'failed',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(failedCommandStderrSearch.total, 1);
+  assert.equal(failedCommandStderrSearch.searchMatchCount, 1);
+
+  const outputOnlyCommandOutputSearch = getTimeline(index, primaryFixtureSessionId, {
+    offset: 0,
+    limit: 100,
+    q: 'src/parser.js:1:alpha',
+    kind: 'command',
+    status: 'success',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(outputOnlyCommandOutputSearch.total, 1);
+  assert.equal(outputOnlyCommandOutputSearch.searchMatchCount, 1);
 });
 
 test('free-text search matches one case-insensitive phrase with flexible whitespace', () => {
@@ -1475,6 +1750,188 @@ test('free-text search matches one case-insensitive phrase with flexible whitesp
   assert.equal(matchTerms('before foo unrelated bar after', 'foo bar'), false);
   assert.equal(matchTerms('before a+b after', 'a+b'), true);
   assert.equal(matchTerms('before aaab after', 'a+b'), false);
+});
+
+test('command search keeps unique parsed function output without duplicate stream counts', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const sessionId = 'abababab-abab-abab-abab-abababababab';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '26');
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.writeFile(path.join(dir, `rollout-2026-06-26T10-00-00-${sessionId}.jsonl`), [
+    JSON.stringify({ timestamp: '2026-06-26T10:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: repoRoot } }),
+    JSON.stringify({
+      timestamp: '2026-06-26T10:00:01.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call',
+        name: 'shell_command',
+        call_id: 'call-shell-stream-and-tail',
+        arguments: JSON.stringify({ command: 'npm test', workdir: repoRoot }),
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-26T10:00:01.100Z',
+      type: 'event_msg',
+      payload: {
+        type: 'exec_command_end',
+        call_id: 'call-shell-stream-and-tail',
+        turn_id: 'turn-1',
+        command: ['powershell.exe', '-Command', 'npm test'],
+        cwd: repoRoot,
+        stdout: 'stdout mirror phrase',
+        stderr: 'stderr mirror phrase',
+        aggregated_output: 'stdout mirror phrase\nstderr mirror phrase',
+        exit_code: 0,
+        duration: { secs: 1, nanos: 0 },
+        status: 'completed',
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-26T10:00:01.200Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-shell-stream-and-tail',
+        output: 'Exit code: 0\nWall time: 1.0 seconds\nOutput:\nstdout mirror phrase\nstderr mirror phrase\nunique parsed function tail',
+      },
+    }),
+    '',
+  ].join('\n'), 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const stdoutSearch = getTimeline(index, sessionId, {
+    offset: 0,
+    limit: 100,
+    q: 'stdout mirror phrase',
+    kind: 'command',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(stdoutSearch.total, 1);
+  assert.equal(stdoutSearch.searchMatchCount, 1);
+
+  const tailSearch = getTimeline(index, sessionId, {
+    offset: 0,
+    limit: 100,
+    q: 'unique parsed function tail',
+    kind: 'command',
+    status: '',
+    tool: '',
+    file: '',
+    layer: 'main',
+  });
+  assert.equal(tailSearch.total, 1);
+  assert.equal(tailSearch.searchMatchCount, 1);
+  assert.equal(tailSearch.events[0].hasSearchHit, true);
+});
+
+test('command search preserves output from update and delta rows', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const sessionId = 'bcbcbcbc-bcbc-bcbc-bcbc-bcbcbcbcbcbc';
+  const dir = path.join(codexHome, 'sessions', '2026', '06', '26');
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.writeFile(path.join(dir, `rollout-2026-06-26T11-00-00-${sessionId}.jsonl`), [
+    JSON.stringify({ timestamp: '2026-06-26T11:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: repoRoot } }),
+    JSON.stringify({
+      timestamp: '2026-06-26T11:00:01.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call',
+        name: 'shell_command',
+        call_id: 'call-shell-incremental-output',
+        arguments: JSON.stringify({ command: 'npm test', workdir: repoRoot }),
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-26T11:00:01.100Z',
+      type: 'event_msg',
+      payload: {
+        type: 'exec_command_begin',
+        call_id: 'call-shell-incremental-output',
+        turn_id: 'turn-1',
+        command: ['powershell.exe', '-Command', 'npm test'],
+        cwd: repoRoot,
+        status: 'running',
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-26T11:00:01.200Z',
+      type: 'event_msg',
+      payload: {
+        type: 'exec_command_update',
+        call_id: 'call-shell-incremental-output',
+        turn_id: 'turn-1',
+        stdout: 'first incremental chunk',
+        status: 'running',
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-26T11:00:01.300Z',
+      type: 'event_msg',
+      payload: {
+        type: 'exec_command_delta',
+        call_id: 'call-shell-incremental-output',
+        turn_id: 'turn-1',
+        stdout: 'later delta only chunk',
+        status: 'running',
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-26T11:00:01.400Z',
+      type: 'event_msg',
+      payload: {
+        type: 'exec_command_end',
+        call_id: 'call-shell-incremental-output',
+        turn_id: 'turn-1',
+        stdout: 'final end chunk',
+        aggregated_output: 'final end chunk\naggregate only final summary',
+        formatted_output: 'formatted only final note',
+        exit_code: 0,
+        duration: { secs: 1, nanos: 0 },
+        status: 'completed',
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-26T11:00:01.500Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-shell-incremental-output',
+        output: 'Exit code: 0\nWall time: 1.0 seconds\nOutput:\nfunction output only tail',
+      },
+    }),
+    '',
+  ].join('\n'), 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  for (const q of [
+    'first incremental chunk',
+    'later delta only chunk',
+    'final end chunk',
+    'aggregate only final summary',
+    'formatted only final note',
+    'function output only tail',
+  ]) {
+    const timeline = getTimeline(index, sessionId, {
+      offset: 0,
+      limit: 100,
+      q,
+      kind: 'command',
+      status: '',
+      tool: '',
+      file: '',
+      layer: 'main',
+    });
+    assert.equal(timeline.total, 1);
+    assert.equal(timeline.searchMatchCount, 1, q);
+    assert.equal(timeline.events[0].hasSearchHit, true, q);
+  }
 });
 
 test('command language inference uses session shell context for bare external commands', async (t) => {
@@ -1530,14 +1987,16 @@ test('command language inference uses session shell context for bare external co
   assert.equal(buildEventDetail(wrappedBashSession, wrappedBashEvent.id, 'main').timelineSections[0].language, 'bash');
 });
 
-test('filterSessions uses contiguous phrase semantics for direct q API filtering', async () => {
+test('filterSessions uses contiguous phrase semantics for project event search', async () => {
   const index = await buildFixtureIndex();
   const session = primaryFixtureSession(index);
-  session.searchText = 'before Foo \n\t bar after; alpha unrelated beta';
+  const event = session.logicalEvents.find((candidate) => candidate.layer === 'main');
+  event.preview = 'before Foo \n\t bar after; alpha unrelated beta';
+  event.searchText = event.preview;
   index.sessions = [session];
 
-  assert.equal(filterSessions(index, { q: 'foo bar', sort: 'updated-desc' }).total, 1);
-  assert.equal(filterSessions(index, { q: 'alpha beta', sort: 'updated-desc' }).total, 0);
+  assert.equal(filterSessions(index, { q: 'foo bar', layer: 'main', sort: 'latest-match-desc' }).total, 1);
+  assert.equal(filterSessions(index, { q: 'alpha beta', layer: 'main', sort: 'latest-match-desc' }).total, 0);
 });
 
 test('filterSessions applies from/to date filters on the same activity timestamp basis', () => {
@@ -1558,7 +2017,6 @@ test('filterSessions applies from/to date filters on the same activity timestamp
     analysis: { toolUsage: [], failedCommands: [], patchedFiles: [], protocolStats: [] },
     logicalEvents: [],
     rawEvents: [],
-    searchText: id,
   });
   const index = {
     sessions: [
@@ -2129,7 +2587,15 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
       payload: {
         type: 'thread_goal_updated',
         thread_id: 'thread-1',
-        goal: { objective: 'Analyze object-shaped events', status: 'active' },
+        goal: {
+          objective: 'Analyze object-shaped events',
+          status: 'active',
+          token_budget: 5000,
+          tokens_used: 120,
+          time_used_seconds: 12,
+          created_at: 100,
+          updated_at: 112,
+        },
       },
     },
     {
@@ -2195,6 +2661,8 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
   const reviewStarted = session.logicalEvents.find((candidate) => candidate.subtype === 'entered_review_mode');
   const reviewFinished = session.logicalEvents.find((candidate) => candidate.subtype === 'exited_review_mode');
   const detail = buildEventDetail(session, event.id, 'main');
+  const goalDetail = buildEventDetail(session, goalEvent.id, 'main');
+  const goalUsage = goalDetail.timelineSections.find((section) => section.title === 'Goal usage');
   const request = detail.inspectorSections.find((section) => section.title === 'Request');
   const response = detail.inspectorSections.find((section) => section.title === 'Response');
   const imagePreview = detail.inspectorSections.find((section) => section.type === 'image_preview');
@@ -2209,6 +2677,24 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
   assert.equal(reviewStarted.preview.includes('[object Object]'), false);
   assert.equal(reviewFinished.preview.includes('[object Object]'), false);
   assert.match(goalEvent.preview, /Analyze object-shaped events/);
+  assert.equal(goalEvent.kind, 'goal');
+  assert.equal(goalEvent.layer, 'main');
+  assert.match(goalEvent.preview, /budget: 5000/);
+  assert.match(goalEvent.preview, /tokens: 120/);
+  assert.equal(goalDetail.timelineSections[0].title, 'Goal');
+  assert.match(goalDetail.timelineSections[0].html, /Analyze object-shaped events/);
+  assert.match(goalDetail.timelineSections[0].html, /Token budget:<\/strong> 5000/);
+  assert.deepEqual(goalUsage.entries, [
+    { key: 'Status', value: 'Active' },
+    { key: 'Token budget', value: '5000' },
+    { key: 'Tokens used', value: '120' },
+    { key: 'Time used', value: '12s' },
+    { key: 'Created', value: '100' },
+    { key: 'Updated', value: '112' },
+  ]);
+  assert.equal(goalDetail.inspectorSections[0].title, 'Goal status');
+  assert.equal(goalDetail.inspectorSections[0].value.status, 'active');
+  assert.equal(goalDetail.inspectorSections[0].value.token_budget, 5000);
   assert.equal(request.type, 'json');
   assert.equal(request.value.path, 'G:\\vibe\\session-analyzer\\output\\image.png');
   assert.equal(response.type, 'json');
@@ -2274,6 +2760,60 @@ Budget:
       },
     },
     {
+      type: 'event_msg',
+      timestamp: '2026-06-10T10:00:01.100Z',
+      payload: {
+        type: 'thread_goal_updated',
+        threadId: id,
+        goal: {
+          threadId: id,
+          objective,
+          status: 'active',
+          tokenBudget: 100000,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt: 1781102515,
+          updatedAt: 1781102515,
+        },
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T10:00:01.200Z',
+      payload: {
+        type: 'thread_goal_updated',
+        threadId: id,
+        goal: {
+          threadId: id,
+          objective,
+          status: 'active',
+          tokenBudget: 100000,
+          tokensUsed: 12,
+          timeUsedSeconds: 1,
+          createdAt: 1781102515,
+          updatedAt: 1781102516,
+        },
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T10:00:01.300Z',
+      payload: {
+        type: 'thread_goal_updated',
+        threadId: id,
+        goal: {
+          threadId: id,
+          objective,
+          status: 'active',
+          tokenBudget: 200000,
+          tokensUsed: 12,
+          timeUsedSeconds: 1,
+          createdAt: 1781102515,
+          updatedAt: 1781102517,
+        },
+      },
+    },
+    {
       type: 'response_item',
       timestamp: '2026-06-10T10:00:02.000Z',
       payload: {
@@ -2294,14 +2834,30 @@ Budget:
             threadId: id,
             objective,
             status: 'complete',
-            tokensUsed: 132017,
-            timeUsedSeconds: 361,
             createdAt: 1781102515,
             updatedAt: 1781102876,
           },
           remainingTokens: null,
           completionBudgetReport: { finalTokenUsage: 132017 },
         }),
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-06-10T10:00:02.200Z',
+      payload: {
+        type: 'thread_goal_updated',
+        threadId: id,
+        goal: {
+          threadId: id,
+          objective,
+          status: 'complete',
+          tokenBudget: 200000,
+          tokensUsed: 132017,
+          timeUsedSeconds: 361,
+          createdAt: 1781102515,
+          updatedAt: 1781102876,
+        },
       },
     },
     {
@@ -2359,12 +2915,17 @@ Budget:
   const mainTimeline = getTimeline(index, id, { layer: 'main', offset: 0, limit: 20, q: '', kind: '', status: '', tool: '', file: '' });
   const protocolTimeline = getTimeline(index, id, { layer: 'protocol', offset: 0, limit: 20, q: '', kind: '', status: '', tool: '', file: '' });
   const goalContextEvent = protocolTimeline.events.find((event) => event.subtype === 'goal_context');
+  const goalHeartbeatEvent = protocolTimeline.events.find((event) => event.subtype === 'thread_goal_updated');
   const goalEvents = mainTimeline.events.filter((event) => event.kind === 'goal');
   const complete = goalEvents.find((event) => event.status === 'complete');
   const blocked = goalEvents.find((event) => event.status === 'blocked');
+  const budgetUpdate = goalEvents.find((event) => event.subtype === 'thread_goal_updated' && event.label === 'Goal updated');
   const incomplete = goalEvents.filter((event) => event.status === 'incomplete');
   const incompleteUpdate = incomplete.find((event) => event.toolName === 'update_goal');
   const detail = buildEventDetail(session, complete.id, 'main');
+  const detailUsage = detail.timelineSections.find((section) => section.title === 'Goal usage');
+  const budgetUpdateDetail = buildEventDetail(session, budgetUpdate.id, 'main');
+  const budgetUpdateUsage = budgetUpdateDetail.timelineSections.find((section) => section.title === 'Goal usage');
   const incompleteUpdateDetail = buildEventDetail(session, incompleteUpdate.id, 'main');
   const protocolDetail = buildEventDetail(session, goalContextEvent.id, 'protocol');
 
@@ -2372,11 +2933,20 @@ Budget:
   assert.equal(goalContextEvent.label, 'Goal context');
   assert.match(goalContextEvent.preview, /Ship goal cards/);
   assert.equal(mainTimeline.events.some((event) => event.rawRefs.some((ref) => ref.line === 2)), false);
-  assert.equal(goalEvents.length, 4);
+  assert.ok(goalHeartbeatEvent);
+  assert.deepEqual(goalHeartbeatEvent.rawRefs.map((ref) => ref.line), [4]);
+  assert.equal(mainTimeline.events.some((event) => event.rawRefs.some((ref) => ref.line === 4)), false);
+  assert.equal(goalEvents.length, 6);
+  assert.equal(goalEvents[0].label, 'Goal created');
+  assert.equal(goalEvents[0].subtype, 'thread_goal_updated');
+  assert.match(budgetUpdate.preview, /budget: 200000/);
+  assert.match(budgetUpdateDetail.timelineSections[0].html, /Token budget:<\/strong> 200000/);
+  assert.equal(budgetUpdateUsage.entries.some((entry) => entry.key === 'Token budget' && entry.value === '200000'), true);
   assert.equal(complete.label, 'Goal complete');
   assert.equal(complete.toolName, 'update_goal');
-  assert.equal(complete.rawRefs.length, 2);
+  assert.equal(complete.rawRefs.length, 3);
   assert.match(complete.preview, /complete/);
+  assert.match(complete.preview, /budget: 200000/);
   assert.match(complete.preview, /Ship goal cards/);
   assert.equal(blocked.label, 'Goal blocked');
   assert.equal(blocked.severity, 'warning');
@@ -2393,6 +2963,9 @@ Budget:
   assert.equal(foldingProfiles.find((profile) => profile.id === 'planning').rules.kindStates.goal, 'expanded');
   assert.equal(detail.timelineSections.some((section) => section.title === 'Goal'), true);
   assert.equal(detail.timelineSections.some((section) => section.title === 'Goal usage'), true);
+  assert.equal(detailUsage.entries.some((entry) => entry.key === 'Token budget' && entry.value === '200000'), true);
+  assert.equal(detailUsage.entries.some((entry) => entry.key === 'Remaining tokens' && entry.value === 'Unbounded'), true);
+  assert.equal(detail.timelineSections.some((section) => section.title === 'Completion budget'), true);
   assert.equal(detail.inspectorSections.some((section) => section.title === 'Request'), true);
   assert.equal(detail.inspectorSections.some((section) => section.title === 'Response'), true);
   assert.equal(protocolDetail.timelineSections.some((section) => section.title === 'Goal objective'), true);
@@ -2581,6 +3154,49 @@ test('other tool call detail renders readable summaries and omits large data URL
     },
     {
       type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.770Z',
+      payload: {
+        type: 'function_call',
+        name: 'list_agents',
+        call_id: 'call-list-output',
+        arguments: {},
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.780Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-list-output',
+        output: {
+          agents: [
+            { agent_name: 'Builder', agent_status: 'running', last_task_message: 'Implement the fix.' },
+            { agent_name: 'Reviewer', agent_status: 'completed', last_task_message: 'Review complete.' },
+          ],
+        },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.790Z',
+      payload: {
+        type: 'function_call',
+        name: 'send_message',
+        call_id: 'call-send-fallback',
+        arguments: { target: 'agent-3', message: 'Continue.' },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-05-28T10:00:02.795Z',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-send-fallback',
+        output: { delivery_receipt: 'receipt-1' },
+      },
+    },
+    {
+      type: 'response_item',
       timestamp: '2026-05-28T10:00:02.800Z',
       payload: {
         type: 'function_call',
@@ -2656,6 +3272,8 @@ test('other tool call detail renders readable summaries and omits large data URL
   const spawnOutput = session.logicalEvents.find((event) => event.id.includes('call-spawn-output'));
   const waitOutput = session.logicalEvents.find((event) => event.id.includes('call-wait-output'));
   const closeOutput = session.logicalEvents.find((event) => event.id.includes('call-close-output'));
+  const listOutput = session.logicalEvents.find((event) => event.id.includes('call-list-output'));
+  const sendFallback = session.logicalEvents.find((event) => event.id.includes('call-send-fallback'));
   const questionDetail = buildEventDetail(session, question.id, 'main');
   const waitDetail = buildEventDetail(session, wait.id, 'main');
   const spawnDetail = buildEventDetail(session, spawn.id, 'main');
@@ -2667,6 +3285,8 @@ test('other tool call detail renders readable summaries and omits large data URL
   const spawnOutputDetail = buildEventDetail(session, spawnOutput.id, 'main');
   const waitOutputDetail = buildEventDetail(session, waitOutput.id, 'main');
   const closeOutputDetail = buildEventDetail(session, closeOutput.id, 'main');
+  const listOutputDetail = buildEventDetail(session, listOutput.id, 'main');
+  const sendFallbackDetail = buildEventDetail(session, sendFallback.id, 'main');
 
   assert.equal(questionDetail.timelineSections[0].type, 'user_input');
   assert.equal(questionDetail.timelineSections[0].questions[0].prompt, 'Which display mode should be used?');
@@ -2699,12 +3319,27 @@ test('other tool call detail renders readable summaries and omits large data URL
   assert.match(waitOutputDetail.timelineSections[0].resultHtml, /Function result/);
   assert.deepEqual(closeOutputDetail.timelineSections[0].statuses, [{ label: 'Previous status', status: 'completed' }]);
   assert.match(closeOutputDetail.timelineSections[0].resultHtml, /Previous result/);
+  assert.deepEqual(listOutputDetail.timelineSections[0].fields.find((field) => field.key === 'Agent count'), { key: 'Agent count', value: '2' });
+  assert.deepEqual(listOutputDetail.timelineSections[0].statuses, [
+    { label: 'Builder', status: 'running' },
+    { label: 'Reviewer', status: 'completed' },
+  ]);
+  assert.match(listOutputDetail.timelineSections[0].resultHtml, /Implement the fix/);
+  assert.match(listOutputDetail.timelineSections[0].resultHtml, /Review complete/);
+  assert.equal(listOutputDetail.timelineSections.some((section) => section.title === 'Response summary'), false);
+  assert.equal(sendFallbackDetail.timelineSections[0].type, 'collaboration');
+  assert.deepEqual(sendFallbackDetail.timelineSections[1], {
+    type: 'code',
+    title: 'Response summary',
+    language: 'json',
+    code: '{\n  "delivery_receipt": "receipt-1"\n}',
+  });
   assert.equal(imageDetail.timelineSections[0].type, 'markdown');
   assert.match(imageDetail.timelineSections[0].html, /Image inspection/);
   assert.deepEqual(imageDetail.inspectorSections.find((section) => section.type === 'image_preview').images, [
     {
-      previewId: 'image-19-0',
-      src: `/api/sessions/${id}/events/${encodeURIComponent(image.id)}/image-previews/image-19-0`,
+      previewId: 'image-23-0',
+      src: `/api/sessions/${id}/events/${encodeURIComponent(image.id)}/image-previews/image-23-0`,
       mimeType: 'image/png',
       estimatedBytes: 5,
       detail: 'high',
@@ -2732,6 +3367,7 @@ test('other tool call sanitization covers structured cards, embedded URLs, objec
   const id = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
   const embeddedUrl = 'data:text/plain,private-payload';
   const encodedUrl = 'data:text/plain,encoded%20private%20payload';
+  const wrappedGenericUrl = 'data:text/plain,wrapped-private-payload\twrapped-private-tail';
   const multilineBase64Url = 'data:image/png;base64,AAAA\nBBBB\nCCCC';
   const spacedBase64Url = 'data:image/png;base64,DDDD EEEE\tFFFF';
   const malformedRasterUrl = 'data:image/png;base64,AAAA%%%%malformed-image-secret';
@@ -2833,6 +3469,14 @@ test('other tool call sanitization covers structured cards, embedded URLs, objec
           malformedLeadingRaster: `Request before ${malformedLeadingRasterUrl} after`,
           malformedGeneric: `Request before ${malformedGenericUrl} after`,
           encoded: `Request before ${encodedUrl} after`,
+          wrappedGeneric: 'Request before ' + wrappedGenericUrl + ' after',
+          uppercaseWrappedGeneric: 'Request before data:text/plain,SECRET\tLEAKED after',
+          percentWrappedGeneric: 'Request before data:text/plain,SECRET\tencoded%20tail after',
+          ordinaryAfterNewline: 'Request before data:text/plain,SECRET\nnavigation needle',
+          ordinaryAfterTab: 'Request before data:text/plain,SECRET\tnavigation needle',
+          ordinarySlash: 'Request before data:text/plain,SECRET\ninput/output remains',
+          ordinaryUnderscore: 'Request before data:text/plain,SECRET\nnavigation_needle remains',
+          ordinaryUrl: 'Request before data:text/plain,SECRET\nhttps://example.test/path remains',
           multiple: `Request before ${embeddedUrl} middle ${encodedUrl} after`,
           ordinary: 'metadata:value',
         },
@@ -2948,8 +3592,34 @@ test('other tool call sanitization covers structured cards, embedded URLs, objec
   assert.equal(dynamicRequest.malformedLeadingRaster, 'Request before [embedded image payload externalized; open raw refs for source] after');
   assert.equal(dynamicRequest.malformedGeneric, 'Request before [embedded data URL omitted; see raw refs] after');
   assert.equal(dynamicRequest.encoded, 'Request before [embedded data URL omitted; see raw refs] after');
+  assert.equal(dynamicRequest.wrappedGeneric, 'Request before [embedded data URL omitted; see raw refs]\twrapped-private-tail after');
+  assert.equal(dynamicRequest.uppercaseWrappedGeneric, 'Request before [embedded data URL omitted; see raw refs] after');
+  assert.equal(dynamicRequest.percentWrappedGeneric, 'Request before [embedded data URL omitted; see raw refs] after');
+  assert.equal(dynamicRequest.ordinaryAfterNewline, 'Request before [embedded data URL omitted; see raw refs]\nnavigation needle');
+  assert.equal(dynamicRequest.ordinaryAfterTab, 'Request before [embedded data URL omitted; see raw refs]\tnavigation needle');
+  assert.equal(dynamicRequest.ordinarySlash, 'Request before [embedded data URL omitted; see raw refs]\ninput/output remains');
+  assert.equal(dynamicRequest.ordinaryUnderscore, 'Request before [embedded data URL omitted; see raw refs]\nnavigation_needle remains');
+  assert.equal(dynamicRequest.ordinaryUrl, 'Request before [embedded data URL omitted; see raw refs]\nhttps://example.test/path remains');
   assert.equal(dynamicRequest.multiple, 'Request before [embedded data URL omitted; see raw refs] middle [embedded data URL omitted; see raw refs] after');
   assert.doesNotMatch(JSON.stringify(dynamic.detail), /AAAA|BBBB|CCCC|DDDD|EEEE|FFFF|encoded%20private/);
+  assert.doesNotMatch(JSON.stringify(dynamic.detail), /wrapped-private-payload|encoded%20tail/);
+  assert.doesNotMatch(JSON.stringify(dynamic.detail), /SECRET|LEAKED/);
+  for (const query of ['navigation needle', 'input/output', 'navigation_needle', 'https://example.test/path']) {
+    const preservedTextSearch = getTimeline(index, id, {
+      offset: 0,
+      limit: 100,
+      q: query,
+      kind: '',
+      status: '',
+      tool: '',
+      file: '',
+      layer: 'main',
+    });
+    assert.ok(
+      preservedTextSearch.events.some((event) => event.id === dynamic.event.id && event.hasSearchHit),
+      query,
+    );
+  }
   assert.equal(image.detail.timelineSections[1].code.length, 4000);
   assert.match(image.detail.timelineSections[1].code, /Decode failed before \[data URL omitted\] after/);
   const imagePreview = manyImages.detail.inspectorSections.find((section) => section.type === 'image_preview');
@@ -3108,6 +3778,8 @@ test('command terminal sections repair UTF-8 text decoded as GB18030', () => {
       'Exit code: 0',
       'Wall time: 0.1 seconds',
       'Output:',
+      '\u001b[32;1mANSI heading\u001b[0m',
+      '\u001b]8;;https://example.invalid\u0007linked label\u001b]8;;\u0007',
       `# AI ${decodeUtf8AsGb18030('功能测试视频事件定位工作流')}`,
       '本文档总结 `荣耀-OCR表格提取` 和 `2-语音转文字` 两个场景。',
       'ASCII question? stays as question.',
@@ -3145,6 +3817,9 @@ test('command terminal sections repair UTF-8 text decoded as GB18030', () => {
   const stdout = allSections(detail).find((section) => section.type === 'terminal' && section.title === 'stdout');
   assert.ok(stdout);
   assert.match(stdout.text, /功能测试视频事件定位工作/);
+  assert.match(stdout.text, /ANSI heading/);
+  assert.match(stdout.text, /linked label/);
+  assert.doesNotMatch(stdout.text, /\u001b|\[32;1m|\]8;;/);
   assert.match(stdout.text, /功能测试视频事件定位工作□/);
   assert.match(stdout.text, /本文档总结 `荣耀-OCR表格提取` 和 `2-语音转文字` 两个场景。/);
   assert.match(stdout.text, /ASCII question\? stays as question\./);
@@ -3359,7 +4034,11 @@ test('readRawLine returns the original JSONL row for drill-down', async () => {
 
 test('path containment and folding profiles expose expected presets', () => {
   assert.equal(isPathInsideOrSame('G:\\vibe\\term-agent\\src', 'G:\\vibe\\term-agent'), true);
+  assert.equal(isPathInsideOrSame('g:\\VIBE\\term-agent\\src', 'G:\\vibe\\term-agent'), true);
   assert.equal(isPathInsideOrSame('G:\\vibe\\term-agent-other', 'G:\\vibe\\term-agent'), false);
+  assert.equal(isPathInsideOrSame('/srv/session-analyzer/src', '/srv/session-analyzer'), true);
+  assert.equal(isPathInsideOrSame('/srv/session-analyzer-other', '/srv/session-analyzer'), false);
+  assert.equal(isPathInsideOrSame('G:\\vibe\\term-agent', '/srv/session-analyzer'), false);
   assert.ok(foldingProfiles.some((profile) => profile.id === 'narrative'));
   assert.ok(foldingProfiles.some((profile) => profile.id === 'debug'));
   assert.ok(foldingProfiles.some((profile) => profile.id === 'compact'));

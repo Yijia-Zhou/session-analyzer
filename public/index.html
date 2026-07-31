@@ -11,13 +11,19 @@
   <body data-mobile-view="sessions">
     <header class="topbar">
       <div class="projectHeader">
-        <h1>
+        <h1 class="projectHeading">
           <button id="projectSwitchControl" class="projectSwitchControl" type="button" aria-label="Select target project">
-            <span id="projectTitle">Select project</span>
-            <span class="projectSwitchHint">Select</span>
+            <span class="projectMark" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+            </span>
+            <span class="projectSwitchCopy">
+              <span id="projectTitle">Select project</span>
+              <span class="projectSwitchHint">Select project</span>
+            </span>
+            <svg class="projectSwitchChevron" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
         </h1>
-        <p id="stateLine">Reading local sessions...</p>
+        <p id="stateLine" class="projectStateLine" aria-live="polite">Reading local sessions...</p>
       </div>
       <div class="searchbar">
         <label class="localeControl">
@@ -28,76 +34,107 @@
           </select>
         </label>
         <div class="searchField">
-          <input id="searchInput" type="search" placeholder="Search messages, commands, files, output" autocomplete="off" aria-controls="searchAssist" aria-expanded="false" aria-haspopup="dialog">
-          <div class="searchInlineMatches" data-search-match-controls title="Rendered jump targets; total keeps the full-text count and is raised when more rendered targets are visible" hidden>
-            <span class="searchInlineCount" data-search-match-count>0 / 0</span>
-            <button class="searchInlineBtn" type="button" data-search-match-nav="previous" aria-label="Previous search match" title="Previous search match">↑</button>
-            <button class="searchInlineBtn" type="button" data-search-match-nav="next" aria-label="Next search match" title="Next search match">↓</button>
+          <div class="searchInputRow">
+            <button id="searchHudScope" class="searchHudPill searchHudScope" type="button" aria-controls="searchAssist" aria-expanded="false">
+              <span id="searchHudScopeValue">session</span>
+              <svg class="searchHudChevron" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"></path></svg>
+            </button>
+            <button id="searchFilterBtn" class="searchHudPill searchFilterBtn" type="button" aria-controls="searchAssist" aria-expanded="false" aria-label="Search filters">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12l-4.6 5.1v3.6l-2.8 1.4v-5z"></path></svg>
+              <span id="searchFilterCount">Filters</span>
+            </button>
+            <input id="searchInput" type="search" placeholder="Find in current session" autocomplete="off" aria-controls="searchAssist" aria-expanded="false" aria-haspopup="dialog">
+            <div class="searchInlineMatches" data-search-match-controls title="Previous/next moves through materialized jump targets" hidden>
+              <span class="searchInlineCount" data-search-match-count>0 / 0 targets</span>
+              <button class="searchInlineBtn" type="button" data-search-match-nav="previous" aria-label="Previous search match" title="Previous search match">↑</button>
+              <button class="searchInlineBtn" type="button" data-search-match-nav="next" aria-label="Next search match" title="Next search match">↓</button>
+            </div>
           </div>
-          <div id="searchAssist" class="searchAssist" role="dialog" aria-label="Search options" hidden>
-            <div class="searchAssistSection">
-              <div class="searchAssistTitle">Search filters</div>
-              <div class="searchAssistControls">
-                <label>
-                  Kind
-                  <select id="searchKindSelect" data-search-operator="kind">
-                    <option value="">Any kind</option>
-                    <option value="patch">Patch</option>
-                    <option value="command">Command</option>
-                    <option value="mcp_call">MCP call</option>
-                    <option value="web_search">Web search</option>
-                    <option value="user_message">User message</option>
-                    <option value="assistant_message">Assistant message</option>
-                    <option value="proposed_plan">Proposed plan</option>
-                    <option value="error">Error</option>
-                  </select>
-                </label>
-                <label>
-                  Status
-                  <select id="searchStatusSelect" data-search-operator="status">
-                    <option value="">Any status</option>
-                    <option value="active">Active</option>
-                    <option value="blocked">Blocked</option>
-                    <option value="complete">Complete</option>
-                    <option value="failed">Failed</option>
-                    <option value="success">Success</option>
-                    <option value="completed">Completed</option>
-                  </select>
-                </label>
-                <label>
-                  Layer
-                  <select id="searchLayerSelect" data-search-operator="layer">
-                    <option value="">Current layer</option>
-                    <option value="main">Main timeline</option>
-                    <option value="protocol">Protocol layer</option>
-                    <option value="raw">Raw records</option>
-                  </select>
-                </label>
-                <label class="fileFilterControl">
-                  File
-                  <span class="fileSuggestControl">
-                    <input id="searchFileInput" data-search-operator="file" placeholder="Any file" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="searchFileSuggestions">
-                    <span id="searchFileSuggestions" class="searchFileSuggestions" role="listbox" hidden></span>
+          <div id="searchAssist" class="searchAssist" role="dialog" aria-labelledby="searchAssistHeading" hidden>
+            <strong id="searchAssistHeading" class="srOnly">Search options</strong>
+            <button id="searchAssistClose" class="searchAssistClose" type="button" aria-label="Close search options" title="Close search options">×</button>
+            <div class="searchAssistBody">
+              <section class="searchAssistSection" data-search-assist-section="scope" aria-labelledby="searchScopeHeading">
+                <div class="searchAssistSectionHeader">
+                  <strong id="searchScopeHeading">Search scope</strong>
+                </div>
+                <div class="searchScopeControl" role="group" aria-label="Search scope">
+                  <button class="searchScopeBtn" type="button" data-search-scope="session" aria-pressed="true">Current session</button>
+                  <button class="searchScopeBtn" type="button" data-search-scope="project" aria-pressed="false">Entire project</button>
+                </div>
+              </section>
+              <section class="searchAssistSection" data-search-assist-section="layer" aria-labelledby="searchLayerHeading">
+                <button id="searchLayerShortcut" class="searchLayerShortcut" type="button">
+                  <strong id="searchLayerHeading">Layer</strong>
+                  <span class="searchLayerShortcutSelection">
+                    <span id="searchLayerShortcutValue">Main timeline</span>
+                    <span class="searchLayerShortcutArrow" aria-hidden="true">›</span>
                   </span>
-                </label>
-              </div>
+                </button>
+              </section>
+              <section class="searchAssistSection" data-search-assist-section="filters" aria-labelledby="searchFiltersHeading">
+                <div class="searchAssistSectionHeader">
+                  <strong id="searchFiltersHeading">Filters</strong>
+                </div>
+                <div id="searchFilterRows" class="searchFilterRows">
+                  <div class="searchFilterRow" data-search-filter-row="kind">
+                    <label id="searchKindLabel" for="searchKindSelect">Kind</label>
+                    <select id="searchKindSelect" data-search-filter-control="kind">
+                      <option value="">Any kind</option>
+                    </select>
+                  </div>
+                  <div class="searchFilterRow" data-search-filter-row="status">
+                    <label for="searchStatusSelect">Status</label>
+                    <select id="searchStatusSelect" data-search-filter-control="status">
+                      <option value="">Any status</option>
+                      <optgroup id="searchStatusGoalGroup" label="Goal lifecycle">
+                        <option value="active">Active</option>
+                        <option value="complete">Complete goal</option>
+                        <option value="blocked">Blocked</option>
+                      </optgroup>
+                      <optgroup id="searchStatusExecutionGroup" label="Execution outcome">
+                        <option value="success">Success</option>
+                        <option value="failed">Failed</option>
+                      </optgroup>
+                      <optgroup id="searchStatusEventGroup" label="Event lifecycle">
+                        <option value="completed">Completed event</option>
+                      </optgroup>
+                    </select>
+                  </div>
+                  <div class="searchFilterRow searchFilterRowFile" data-search-filter-row="file">
+                    <label for="searchFileInput">Touched file</label>
+                    <span class="fileSuggestControl">
+                      <input id="searchFileInput" data-search-filter-control="file" placeholder="Any touched file" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="searchFileSuggestions">
+                      <span id="searchFileSuggestions" class="searchFileSuggestions" role="listbox" hidden></span>
+                    </span>
+                  </div>
+                </div>
+              </section>
+              <section id="searchResultsSection" class="searchAssistSection" data-search-assist-section="results" aria-labelledby="searchResultsHeading" hidden>
+                <div class="searchAssistSectionHeader">
+                  <strong id="searchResultsHeading">Results</strong>
+                </div>
+                <div id="searchMetricsPanel" class="searchMetricsPanel" aria-live="polite"></div>
+              </section>
             </div>
-            <div class="searchAssistSection">
-              <div class="searchAssistTitle">Active</div>
-              <div id="searchAssistChips" class="searchAssistChips"></div>
-            </div>
+            <footer id="searchAssistFooter" class="searchAssistFooter" hidden>
+              <span id="searchEnterHint" hidden>Press Enter to move to the next target</span>
+              <button id="searchClearAllBtn" class="searchClearAllBtn" type="button" data-clear-filter="all">Clear all</button>
+            </footer>
           </div>
         </div>
-        <select id="layerSelect" aria-label="Layer">
-          <option value="main">Main timeline</option>
-          <option value="protocol">Protocol layer</option>
-          <option value="raw">Raw records</option>
-        </select>
-        <div class="foldControls">
-          <div class="profilePickerCompact profilePickerTopbar" data-profile-picker-host="topbar">
-            <select id="profileSelect" aria-label="Folding strategy"></select>
+        <div class="topbarDetailControls">
+          <select id="layerSelect" aria-label="Layer">
+            <option value="main">Main timeline</option>
+            <option value="protocol">Protocol layer</option>
+            <option value="raw">Raw records</option>
+          </select>
+          <div class="foldControls">
+            <div class="profilePickerCompact profilePickerTopbar" data-profile-picker-host="topbar">
+              <select id="profileSelect" aria-label="Folding strategy"></select>
+            </div>
+            <button id="resetFoldsBtn" class="ghostBtn" type="button" hidden>Reset folds</button>
           </div>
-          <button id="resetFoldsBtn" class="ghostBtn" type="button" hidden>Reset folds</button>
         </div>
       </div>
     </header>
@@ -122,7 +159,12 @@
     <main class="layout">
       <aside class="sessionsPane">
         <div class="sessionListHeader">
-          <h2>Sessions</h2>
+          <div class="sessionListTitleGroup">
+            <h2>Sessions</h2>
+            <button id="projectRefreshBtn" class="projectRefreshBtn" type="button" aria-label="Reindex current project" title="Reindex current project">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66"></path><polyline points="20 4 20 11 13 11"></polyline></svg>
+            </button>
+          </div>
           <label class="sortControl">
             <span class="srOnly">Sort</span>
             <select id="sortSelect">
@@ -133,10 +175,11 @@
             </select>
           </label>
         </div>
+        <p id="projectRefreshStatus" class="projectRefreshStatus" role="status" hidden></p>
         <div id="sessionList" class="sessionList"></div>
       </aside>
 
-      <section class="timelinePane">
+      <section class="timelinePane" tabindex="0">
         <div id="sessionHeader" class="sessionHeader">
           <h2>Select a session</h2>
           <p>The left list is filtered by the current repository.</p>

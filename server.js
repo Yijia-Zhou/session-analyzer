@@ -7,7 +7,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const url = require('node:url');
-const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, isPathInsideOrSame, normalizeFsPath, readImagePreview, readRawLine } = require('./src/codex');
+const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getEvent, getTimeline, isPathInsideOrSame, normalizeCodeModeRequest, normalizeFsPath, readImagePreview, readRawLine } = require('./src/codex');
 const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
 
@@ -220,6 +220,10 @@ function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
         raw: state.index.eventKinds.raw.map((item) => ({ ...item, label: i18n.rawRecordLabel(item.value, resolvedLocale) })),
       }
       : state.index.eventKinds,
+    codeModeRequests: (state.index.codeModeRequests || []).map((item) => ({
+      ...item,
+      label: i18n.codeModeRequestLabel(item.value, resolvedLocale),
+    })),
     foldingProfiles: foldingProfiles.map((profile) => i18n.localizeProfile(profile, resolvedLocale)),
     projectSelected: true,
   };
@@ -339,6 +343,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   job.promise = state.buildIndex({
     repoRoot,
     codexHome: state.codexHome,
+    previousIndex: state.index,
     signal: controller.signal,
     onProgress: (progress) => {
       job.progress = { ...job.progress, ...progress };
@@ -452,7 +457,8 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           return;
         }
         const payload = { job: projectJobPayload(job) };
-        if (job.status === 'succeeded' && state.index?.repoRoot === path.resolve(job.repoRoot)) {
+        if (job.status === 'succeeded'
+            && normalizeFsPath(state.index?.repoRoot) === normalizeFsPath(job.repoRoot)) {
           const stateLocale = searchParams.has('locale') ? locale : (job.locale || locale);
           payload.state = statePayload(state, stateLocale);
         }
@@ -508,6 +514,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           kind: searchParams.get('kind') || '',
           status: searchParams.get('status') || '',
           tool: searchParams.get('tool') || '',
+          codeModeRequest: normalizeCodeModeRequest(searchParams.get('codeModeRequest')),
           file: searchParams.get('file') || '',
           sort: searchParams.get('sort') || 'updated-desc',
           locale,
@@ -519,7 +526,12 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       if (pathname === '/api/file-suggestions') {
         const index = requireIndex(state, res);
         if (!index) return;
-        sendJson(res, 200, { files: fileSuggestions(index) });
+        sendJson(res, 200, {
+          files: fileSuggestions(index, {
+            layer: searchParams.get('layer') || 'main',
+            sessionId: searchParams.get('sessionId') || '',
+          }),
+        });
         return;
       }
 
@@ -536,6 +548,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           kind: searchParams.get('kind') || '',
           status: searchParams.get('status') || '',
           tool: searchParams.get('tool') || '',
+          codeModeRequest: normalizeCodeModeRequest(searchParams.get('codeModeRequest')),
           file: searchParams.get('file') || '',
           locale,
         });
@@ -544,6 +557,27 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           return;
         }
         sendJson(res, 200, result);
+        return;
+      }
+
+      const eventMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/events\/([^/]+)$/);
+      if (eventMatch) {
+        const index = requireIndex(state, res);
+        if (!index) return;
+        const event = getEvent(
+          index,
+          decodePathSegment(eventMatch[1]),
+          decodePathSegment(eventMatch[2]),
+          {
+            layer: searchParams.get('layer') || 'main',
+            locale,
+          },
+        );
+        if (!event) {
+          sendError(res, 404, 'Unknown event');
+          return;
+        }
+        sendJson(res, 200, event);
         return;
       }
 

@@ -54,6 +54,20 @@ const allowedZhTerms = new Set([
 const allowedZhPhrases = [
   'JS REPL',
 ];
+const allowedZhTermsByPath = new Map([
+  ['foldingCondition.codeModeScriptOperation.1', new Set(['code', 'mode'])],
+  ['kind.code_mode_operation', new Set(['code', 'mode'])],
+  ['logicalLabel.Code Mode operation', new Set(['code', 'mode'])],
+  ['section.Code Mode operation', new Set(['code', 'mode'])],
+  ['ui.enclosingOperation', new Set(['code', 'mode'])],
+  ['ui.entireProjectScopeShort', new Set(['project'])],
+  ['ui.anyCodeModeRequest', new Set(['code', 'mode'])],
+  ['ui.codeModeKindSubgroup', new Set(['code', 'mode'])],
+  ['ui.codeModeRequest', new Set(['code', 'mode'])],
+  ['ui.codeModeRules', new Set(['code', 'mode'])],
+  ['ui.codeModeRulesDescription', new Set(['code', 'mode'])],
+  ['ui.viewEnclosingOperation', new Set(['code', 'mode'])],
+]);
 
 function stripAllowedNoise(value) {
   let text = String(value || '').replace(/\{[A-Za-z0-9_]+\}/g, ' ');
@@ -108,15 +122,65 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.eventKindLabel('command', 'zh-CN'), '命令');
   assert.equal(i18n.eventKindLabel('goal', 'zh-CN'), '目标');
   assert.equal(i18n.eventKindLabel('developer_message', 'zh-CN'), '开发者消息');
+  assert.equal(i18n.eventKindLabel('code_mode_operation', 'en'), 'Code Mode tool call');
+  assert.equal(i18n.eventKindLabel('code_mode_operation', 'zh-CN'), 'Code Mode 工具调用');
+  assert.equal(i18n.eventKindLabel('code_mode_script_operation', 'en'), 'Scripted operation');
+  assert.equal(i18n.eventKindLabel('code_mode_script_operation', 'zh-CN'), '脚本化操作');
   assert.equal(i18n.eventKindLabel('goal_context', 'zh-CN'), '目标上下文');
   assert.equal(i18n.statusLabel('blocked', 'zh-CN'), '已阻塞');
+  assert.equal(i18n.statusLabel('budget_limited', 'zh-CN'), '已达到预算限制');
+  assert.equal(i18n.statusLabel('complete', 'zh-CN'), '已完成');
+  assert.equal(i18n.statusLabel('completed', 'zh-CN'), '已完成');
+  assert.equal(i18n.statusLabel('usage_limited', 'zh-CN'), '已达到用量限制');
+  assert.equal(i18n.searchStatusLabel('complete', 'zh-CN'), '目标已完成');
+  assert.equal(i18n.searchStatusLabel('completed', 'zh-CN'), '事件已完成');
+  assert.notEqual(i18n.searchStatusLabel('complete', 'zh-CN'), i18n.searchStatusLabel('completed', 'zh-CN'));
+  assert.equal(i18n.t('en', 'ui', 'statusGroupGoalLifecycle'), 'Goal lifecycle');
+  assert.equal(i18n.t('zh-CN', 'ui', 'statusGroupExecutionOutcome'), '执行结果');
+  assert.equal(i18n.t('zh-CN', 'ui', 'statusGroupEventLifecycle'), '事件生命周期');
+  assert.equal(i18n.t('en', 'ui', 'codeModeKindSubgroup'), '↳ Code Mode tool call');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeKindSubgroup'), '↳ Code Mode 工具调用');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeDeclaredSequence'), '声明顺序');
+  assert.equal(i18n.t('en', 'ui', 'codeModeRequest'), 'Code Mode request');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequest'), 'Code Mode 请求');
+  assert.equal(i18n.t('en', 'ui', 'declaredRequestOption', { value: 'Shell command' }), 'Declared: Shell command');
+  assert.equal(i18n.t('zh-CN', 'ui', 'declaredRequestOption', { value: '终端命令' }), '声明：终端命令');
+  assert.equal(i18n.t('en', 'ui', 'anyCodeModeRequest'), 'Any Code Mode request');
+  assert.equal(i18n.t('zh-CN', 'ui', 'anyCodeModeRequest'), '任意 Code Mode 请求');
+  assert.equal(i18n.t('en', 'ui', 'kindGroupCommonWorkName'), 'Work and tools');
+  assert.equal(i18n.t('zh-CN', 'ui', 'kindGroupCommonWorkName'), '工作与工具');
+  assert.equal(i18n.t('zh-CN', 'ui', 'kindGroupAgentSystemName'), '代理与系统事件');
+  assert.equal(i18n.t('en', 'ui', 'inheritOrdinaryToolState', { state: 'Collapsed' }), 'Inherit: Collapsed');
+  assert.equal(i18n.t('zh-CN', 'ui', 'inheritOrdinaryToolState', { state: '折叠' }), '继承：折叠');
+  assert.equal(i18n.t('en', 'ui', 'codeModeRequestSummary'), 'Request');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequestSummary'), '请求');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeNoArguments'), '无参数');
+  assert.equal(i18n.t('en', 'ui', 'codeModeRequestStructure', { field: 'Plan', shape: 'empty list' }), 'Plan: empty list');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequestStructure', { field: '计划', shape: '空列表' }), '计划：空列表');
+  assert.equal(i18n.t('en', 'ui', 'codeModeSourceExcerpt'), 'Source');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeSourceExcerpt'), '源码');
+  assert.equal(i18n.t('en', 'ui', 'codeModeSourceExcerptMore'), 'Additional source not shown.');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeSourceExcerptMore'), '还有未显示的源码。');
+  assert.equal(i18n.t('en', 'ui', 'codeModeStepCountOne'), '1 step');
+  assert.equal(i18n.t('zh-CN', 'ui', 'codeModeStepCount', { count: 2 }), '2 个步骤');
+  assert.equal(i18n.t('en', 'ui', 'childSessionCountOne'), '1 child session');
+  assert.equal(i18n.t('en', 'ui', 'expandChildSessionsOne'), 'Show 1 child session');
+  assert.equal(i18n.t('en', 'ui', 'collapseChildSessionsOne'), 'Hide 1 child session');
+  assert.equal(i18n.t('en', 'ui', 'childSessionCount', { count: 2 }), '2 child sessions');
   assert.equal(i18n.humanize('mcp_tool_call'), 'MCP Tool Call');
   assert.equal(i18n.humanize('js_repl'), 'JS REPL');
+  assert.deepEqual(i18n.localizeCondition({ id: 'codeModeScriptOperation' }, 'zh-CN'), {
+    id: 'codeModeScriptOperation',
+    name: '脚本化操作',
+    description: '无法安全投影为声明请求的 Code Mode 工具调用。',
+  });
 });
 
 test('known label lookup translates exact keys and English catalog values without losing fallback compatibility', () => {
   assert.equal(i18n.lookupKnownLabel('Failed command', 'zh-CN'), '失败命令');
   assert.equal(i18n.lookupKnownLabel('Goal complete', 'zh-CN'), '目标已完成');
+  assert.equal(i18n.lookupKnownLabel('Goal budget limited', 'zh-CN'), '目标已达到预算限制');
+  assert.equal(i18n.lookupKnownLabel('Goal usage limited', 'zh-CN'), '目标已达到用量限制');
   assert.equal(i18n.lookupKnownLabel('Incomplete goal call', 'zh-CN'), '目标调用未完成');
   assert.equal(i18n.lookupKnownLabel('user_message', 'zh-CN'), '用户消息');
   assert.equal(i18n.lookupKnownLabel('User message', 'zh-CN'), '用户消息');
@@ -159,7 +223,11 @@ test('zh-CN catalog only keeps approved English terms in display text', () => {
   const offenders = [];
   for (const entry of catalogStrings(i18n.catalogs['zh-CN'])) {
     const unexpected = asciiTokens(entry.value)
-      .filter((token) => !allowedZhTerms.has(token.toLowerCase()));
+      .filter((token) => {
+        const normalized = token.toLowerCase();
+        return !allowedZhTerms.has(normalized)
+          && !allowedZhTermsByPath.get(entry.path)?.has(normalized);
+      });
     if (unexpected.length) {
       offenders.push(`${entry.path}: ${JSON.stringify(entry.value)} -> ${[...new Set(unexpected)].join(', ')}`);
     }
@@ -175,6 +243,35 @@ test('zh-CN protocol and section labels avoid mechanical schema wording', () => 
   assert.equal(i18n.t('zh-CN', 'protocol', 'turn_complete'), '对话轮次完成');
   assert.equal(i18n.t('zh-CN', 'protocol', 'meta_block'), '协议元数据');
   assert.equal(i18n.sectionTitle('Search payload', 'zh-CN'), '搜索请求内容');
+});
+
+test('Code Mode request labels localize display text while preserving machine values separately', () => {
+  assert.equal(i18n.codeModeRequestLabel('shell_command', 'en'), 'Shell command');
+  assert.equal(i18n.codeModeRequestLabel('exec_command', 'en'), 'Shell command');
+  assert.equal(i18n.codeModeRequestLabel('shell_command', 'zh-CN'), '终端命令');
+  assert.equal(i18n.codeModeRequestLabel('web__run', 'zh-CN'), '网络请求');
+});
+
+test('nested collaboration fields and generic status labels localize without changing agent names', () => {
+  const localized = i18n.localizeSection({
+    type: 'collaboration',
+    title: 'Spawn subagent',
+    fields: [
+      { key: 'Agent type', value: 'worker' },
+      { key: 'Reasoning effort', value: 'high' },
+    ],
+    statuses: [
+      { label: 'Status', labelKind: 'generic', status: 'completed' },
+      { label: 'Status', labelKind: 'agent', status: 'running' },
+      { label: 'Model', labelKind: 'agent', status: 'pending' },
+      { label: 'agent-1', labelKind: 'agent', status: 'running' },
+    ],
+  }, 'zh-CN');
+
+  assert.equal(localized.title, '启动子代理');
+  assert.deepEqual(localized.fields.map((field) => field.key), ['代理类型', '推理强度']);
+  assert.deepEqual(localized.statuses.map((status) => status.label), ['状态', 'Status', 'Model', 'agent-1']);
+  assert.ok(localized.statuses.every((status) => !Object.hasOwn(status, 'labelKind')));
 });
 
 test('zh-CN raw record labels keep selected wire terms while smoothing lifecycle copy', () => {
@@ -281,6 +378,7 @@ test('state API localizes display resources while preserving ids', async () => {
     assert.equal(narrative.name, '叙事时间线');
     assert.equal(narrative.rules.fallback, 'summary');
     assert.ok(body.eventKinds.main.every((item) => item.value && item.label));
+    assert.ok(Array.isArray(body.codeModeRequests));
     const rawAgentMessage = body.eventKinds.raw.find((item) => item.value === 'agent_message');
     assert.equal(rawAgentMessage.label, 'agent 消息');
   } finally {
