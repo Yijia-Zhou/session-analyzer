@@ -87,16 +87,36 @@ const resetTimeCache = new Map();
 let markdownRenderer = null;
 let gb18030ReverseMap = null;
 
+function fsPathFlavor(input) {
+  const text = String(input || '');
+  if (/^(?:[A-Za-z]:[\\/]|\\\\)/.test(text)) return 'win32';
+  if (text.startsWith('/')) return 'posix';
+  return process.platform === 'win32' ? 'win32' : 'posix';
+}
+
+function fsPathApi(input) {
+  return fsPathFlavor(input) === 'win32' ? path.win32 : path.posix;
+}
+
+function resolveFsPath(input) {
+  const text = String(input || '');
+  if (!text) return '';
+  return fsPathApi(text).resolve(text);
+}
+
 function normalizeFsPath(input) {
   if (!input) return '';
-  const resolved = path.resolve(input);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  const resolved = resolveFsPath(input);
+  return fsPathFlavor(input) === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
 function isPathInsideOrSame(child, parent) {
+  if (!child || !parent || fsPathFlavor(child) !== fsPathFlavor(parent)) return false;
   const c = normalizeFsPath(child);
   const p = normalizeFsPath(parent);
-  return c === p || c.startsWith(`${p}${path.sep}`);
+  const separator = fsPathApi(parent).sep;
+  const boundary = p.endsWith(separator) ? p : `${p}${separator}`;
+  return c === p || c.startsWith(boundary);
 }
 
 function throwIfAborted(signal) {
@@ -117,8 +137,12 @@ function normalizeSearchPath(input) {
 function displayProjectFile(file, repoRoot) {
   const text = String(file || '').trim();
   if (!text) return '';
-  if (path.isAbsolute(text) && repoRoot && isPathInsideOrSame(text, repoRoot)) {
-    return path.relative(repoRoot, text).replace(/\\/g, '/');
+  const pathApi = fsPathApi(text);
+  if (pathApi.isAbsolute(text)
+      && repoRoot
+      && fsPathFlavor(text) === fsPathFlavor(repoRoot)
+      && isPathInsideOrSame(text, repoRoot)) {
+    return pathApi.relative(resolveFsPath(repoRoot), resolveFsPath(text)).replace(/\\/g, '/');
   }
   return text.replace(/\\/g, '/').replace(/^\.\//, '');
 }
@@ -1487,7 +1511,7 @@ async function discoverConfiguredProjects({ codexHome }) {
   for (const line of text.split(/\r?\n/)) {
     const parsed = parseProjectConfigHeader(line);
     if (!parsed) continue;
-    const repoRoot = path.resolve(stripExtendedPathPrefix(expandEnvironmentVariables(parsed)));
+    const repoRoot = resolveFsPath(stripExtendedPathPrefix(expandEnvironmentVariables(parsed)));
     const key = normalizeFsPath(repoRoot);
     if (!key || projects.has(key)) continue;
     projects.set(key, {
@@ -1512,7 +1536,7 @@ async function discoverConfiguredProjects({ codexHome }) {
 
 async function inspectSessionFile(filePath, options = {}) {
   const signal = options.signal;
-  const repoRoot = options.repoRoot ? path.resolve(options.repoRoot) : '';
+  const repoRoot = options.repoRoot ? resolveFsPath(options.repoRoot) : '';
   throwIfAborted(signal);
   const stat = await fsp.stat(filePath);
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
@@ -1529,7 +1553,7 @@ async function inspectSessionFile(filePath, options = {}) {
       const payloadType = record.type === 'event_msg' ? record.payload?.type : '';
       const cwd = record.type === 'session_meta' || payloadType === 'session_configured' ? record.payload?.cwd : '';
       if (cwd) {
-        const resolvedCwd = path.resolve(cwd);
+        const resolvedCwd = resolveFsPath(cwd);
         cwdSet.add(resolvedCwd);
         if (repoRoot && isPathInsideOrSame(resolvedCwd, repoRoot)) {
           rl.close();
@@ -3980,7 +4004,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
 }
 
 async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousIndex = null }) {
-  const resolvedRepo = path.resolve(repoRoot);
+  const resolvedRepo = resolveFsPath(repoRoot);
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
   const startedAt = Date.now();
@@ -4056,7 +4080,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
   let parsedBytes = 0;
   const canReusePrevious = previousIndex
     && Array.isArray(previousIndex.sessions)
-    && path.resolve(previousIndex.repoRoot || '') === resolvedRepo
+    && normalizeFsPath(previousIndex.repoRoot || '') === normalizeFsPath(resolvedRepo)
     && path.resolve(previousIndex.codexHome || '') === resolvedCodex;
   const previousSessionsBySource = canReusePrevious
     ? new Map(previousIndex.sessions.map((session) => [session.sourceFile, session]))

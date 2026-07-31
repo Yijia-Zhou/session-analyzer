@@ -15,8 +15,9 @@ No unreleased changes. / 暂无未发布变更。
 - Main-timeline coverage now includes normalized goal lifecycles, user shell wrappers, image generation, hooks, Agent Coordination, typed Subagent Activity correlation, stronger MCP summaries, and readable fallbacks while retaining exact Raw Reference traceability.
 - A shared Plan Event semantic facet now gives Plan Artifacts and Plan Updates one canonical definition for metrics, folding, and inspector navigation while excluding declared-only Code Mode projections.
 - Timeline loading, generated-asset ownership, tool lifecycle admission, detail presentation, and large-index behavior now have deterministic contracts, profiling fixtures, and expanded regression coverage.
+- Windows and POSIX absolute transcript paths are now interpreted by their own path syntax regardless of the host OS, keeping repository containment and project-file display stable in cross-platform replay.
 - The Markdown runtime and esbuild development dependency floors now include upstream complexity-denial-of-service and Windows development-server file-read fixes.
-- The public package requires Node.js 22 or newer, pins publication to the public registry, adds a repeatable prepublish release gate, supports both npm 11 and npm 12 pack manifests, and introduces Linux/Windows CI for Node, browser, and installed-package validation.
+- The public package requires Node.js 22 or newer, pins publication and package-smoke installation to the public registry, adds a repeatable prepublish release gate, supports both npm 11 and npm 12 pack manifests, and introduces Linux/Windows CI for Node, browser, and installed-package validation.
 
 ### 中文
 
@@ -27,8 +28,9 @@ No unreleased changes. / 暂无未发布变更。
 - 主时间线覆盖现在包括规范化 goal 生命周期、用户 shell wrapper、图片生成、hook、Agent 协调、带类型的 Subagent 活动关联、更清晰的 MCP 摘要与可读兜底，同时保留精确的原始引用可追溯性。
 - 共享计划事件语义 facet 现在为计划产物与计划更新提供一套供指标、折叠和检查器导航共同使用的 canonical 定义，同时排除只有声明证据的 Code Mode 投影。
 - 时间线加载、生成资产 ownership、工具生命周期准入、详情呈现与大型索引行为现在具有确定性契约、profiling fixture 和更完整的回归覆盖。
+- Windows 与 POSIX transcript 绝对路径现在会独立于宿主操作系统，按路径自身的语法解释，使跨平台 replay 中的仓库包含判断与项目文件显示保持稳定。
 - Markdown 运行时与 esbuild 开发依赖下限现在包含上游复杂度拒绝服务和 Windows 开发服务器文件读取修复。
-- 公共 package 要求 Node.js 22 或更高版本，把发布固定到公共 registry，增加可重复的 prepublish release gate，兼容 npm 11 与 npm 12 的 pack manifest，并引入覆盖 Linux/Windows 的 Node、browser 与安装后 package CI。
+- 公共 package 要求 Node.js 22 或更高版本，把发布与 package-smoke 安装固定到公共 registry，增加可重复的 prepublish release gate，兼容 npm 11 与 npm 12 的 pack manifest，并引入覆盖 Linux/Windows 的 Node、browser 与安装后 package CI。
 
 ## 0.1.0 - 2026-06-18
 

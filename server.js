@@ -457,7 +457,8 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           return;
         }
         const payload = { job: projectJobPayload(job) };
-        if (job.status === 'succeeded' && state.index?.repoRoot === path.resolve(job.repoRoot)) {
+        if (job.status === 'succeeded'
+            && normalizeFsPath(state.index?.repoRoot) === normalizeFsPath(job.repoRoot)) {
           const stateLocale = searchParams.has('locale') ? locale : (job.locale || locale);
           payload.state = statePayload(state, stateLocale);
         }

@@ -257,7 +257,7 @@ test('state endpoint includes dynamic event kind options', async () => {
 });
 
 test('resolveStaticAssetPath rejects sibling-prefix paths outside the public root', () => {
-  const publicRoot = path.join('G:\\vibe\\session-analyzer', 'public');
+  const publicRoot = path.join(repoRoot, 'public');
   assert.equal(resolveStaticAssetPath(publicRoot, '/index.html'), path.join(publicRoot, 'index.html'));
   assert.equal(resolveStaticAssetPath(publicRoot, '/../public-evil/secret.txt'), '');
 });
@@ -4034,7 +4034,11 @@ test('readRawLine returns the original JSONL row for drill-down', async () => {
 
 test('path containment and folding profiles expose expected presets', () => {
   assert.equal(isPathInsideOrSame('G:\\vibe\\term-agent\\src', 'G:\\vibe\\term-agent'), true);
+  assert.equal(isPathInsideOrSame('g:\\VIBE\\term-agent\\src', 'G:\\vibe\\term-agent'), true);
   assert.equal(isPathInsideOrSame('G:\\vibe\\term-agent-other', 'G:\\vibe\\term-agent'), false);
+  assert.equal(isPathInsideOrSame('/srv/session-analyzer/src', '/srv/session-analyzer'), true);
+  assert.equal(isPathInsideOrSame('/srv/session-analyzer-other', '/srv/session-analyzer'), false);
+  assert.equal(isPathInsideOrSame('G:\\vibe\\term-agent', '/srv/session-analyzer'), false);
   assert.ok(foldingProfiles.some((profile) => profile.id === 'narrative'));
   assert.ok(foldingProfiles.some((profile) => profile.id === 'debug'));
   assert.ok(foldingProfiles.some((profile) => profile.id === 'compact'));

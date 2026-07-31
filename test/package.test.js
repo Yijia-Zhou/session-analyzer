@@ -9,6 +9,7 @@ const path = require('node:path');
 const {
   isPackageStatePayload,
   normalizePackManifest,
+  packageRegistry,
   waitForPackageState,
 } = require('../scripts/package-smoke');
 
@@ -96,6 +97,10 @@ test('npm pack manifest normalization supports npm 11 and npm 12 JSON shapes', (
     () => normalizePackManifest({ first: artifact, second: artifact }),
     /exactly one package artifact/,
   );
+});
+
+test('package smoke pins nested npm operations to the public registry', () => {
+  assert.equal(packageRegistry, 'https://registry.npmjs.org/');
 });
 
 test('npm pack manifest contains only runtime package files', () => {

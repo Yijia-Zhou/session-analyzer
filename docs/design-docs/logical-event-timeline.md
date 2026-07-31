@@ -118,6 +118,10 @@ Source locations use typed locators instead of assuming every source can be addr
 
 来源位置使用 typed locator，而不是假设每种来源都能用文件和行号寻址。当前 Codex 行使用 `sourceLocator: { type: "jsonl_line", file, line }`；其中 `file` 是项目生成的 JSONL locator path，并归一化为前斜杠，以保持跨平台 DTO 稳定。未来来源可以使用其他 locator 类型，例如数据库行或流 offset。在兼容迁移期间，现有 Codex `source`、`rawRefs[].file`、`rawRefs[].line` 和 `rawRefs[].rawId` 字段继续可用，并保留原始 parser path 字符串；但新代码在需要来源身份时应使用 `sourceLocator`，并且不得假设每个 locator 都有 file 和 line 属性。
 
+Repository roots, transcript `cwd` values, and absolute touched-file paths select Windows or POSIX path semantics from the path string itself rather than from the analyzer host OS. Windows drive and UNC paths use `path.win32`, including case-insensitive containment; leading-slash paths use `path.posix` with case-sensitive containment. Relative paths continue to use host semantics. This keeps copied or sanitized transcript replay stable across Linux and Windows without changing legacy raw-ref path strings.
+
+Repository root、transcript `cwd` 值与绝对 touched-file path 会根据路径字符串自身选择 Windows 或 POSIX path 语义，而不是沿用 analyzer 宿主操作系统。Windows drive 与 UNC path 使用 `path.win32`，包含不区分大小写的 containment；以斜杠开头的 path 使用 `path.posix`，containment 区分大小写。相对路径继续使用宿主语义。这样可在不改变 legacy raw-ref path 字符串的前提下，使复制或脱敏 transcript 的 replay 在 Linux 与 Windows 间保持稳定。
+
 `sourceRecordType` and `sourceEventType` use refs-only semantics. Raw DTOs may expose the precise source row types at the top level. Logical and detail DTOs do not expose potentially misleading aggregate `sourceRecordType` or `sourceEventType` fields; each `rawRefs[]` entry carries the precise row-level types instead, and `rawRefs[]` remains the authoritative traceability surface for multi-row logical events.
 
 `sourceRecordType` 和 `sourceEventType` 采用 refs-only 语义。Raw DTO 可以在顶层暴露精确的来源行类型。Logical 和 detail DTO 不在顶层暴露可能误导的聚合 `sourceRecordType` 或 `sourceEventType` 字段；每个 `rawRefs[]` 条目会携带精确的逐行类型，`rawRefs[]` 仍是多行 logical event 的权威可追踪表面。

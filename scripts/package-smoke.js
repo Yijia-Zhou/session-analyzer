@@ -8,8 +8,13 @@ const http = require('node:http');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
+const packageMetadata = require('../package.json');
 
 const repoRoot = path.join(__dirname, '..');
+const packageRegistry = packageMetadata.publishConfig?.registry;
+if (!packageRegistry) {
+  throw new Error('package publishConfig.registry is required for package smoke');
+}
 const npmCommand = process.platform === 'win32'
   ? { command: process.env.ComSpec || 'cmd.exe', prefixArgs: ['/d', '/s', '/c', 'npm'] }
   : { command: 'npm', prefixArgs: [] };
@@ -283,6 +288,7 @@ async function main() {
       env: {
         npm_config_cache: cacheDir,
         npm_config_dry_run: 'false',
+        npm_config_registry: packageRegistry,
       },
     });
     const manifest = normalizePackManifest(JSON.parse(pack.stdout));
@@ -303,6 +309,7 @@ async function main() {
       env: {
         npm_config_cache: cacheDir,
         npm_config_dry_run: 'false',
+        npm_config_registry: packageRegistry,
       },
     });
 
@@ -348,5 +355,6 @@ if (require.main === module) {
 module.exports = {
   isPackageStatePayload,
   normalizePackManifest,
+  packageRegistry,
   waitForPackageState,
 };

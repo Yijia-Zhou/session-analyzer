@@ -8,6 +8,12 @@ const { buildEventDetail, buildIndex, getTimeline } = require('../src/codex');
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
+const legacyFixtureSourceFile = path.join(
+  '2026',
+  '04',
+  '20',
+  'rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+);
 
 async function buildFixtureIndex() {
   return buildIndex({
@@ -171,7 +177,7 @@ test('Codex fixture replay exposes minimal canonical envelope fields', async () 
     sourceEventType: undefined,
     rawRefs: [
       {
-        file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+        file: legacyFixtureSourceFile,
         line: 7,
         rawIdSuffix: 'raw:7',
         sourceLocator: {
@@ -183,7 +189,7 @@ test('Codex fixture replay exposes minimal canonical envelope fields', async () 
         sourceEventType: 'message',
       },
       {
-        file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+        file: legacyFixtureSourceFile,
         line: 8,
         rawIdSuffix: 'raw:8',
         sourceLocator: {
@@ -212,7 +218,7 @@ test('Codex fixture replay exposes minimal canonical envelope fields', async () 
     sourceEventType: undefined,
     rawRefs: [
       {
-        file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+        file: legacyFixtureSourceFile,
         line: 2,
         rawIdSuffix: 'raw:2',
         sourceLocator: {
@@ -241,7 +247,7 @@ test('Codex fixture replay exposes minimal canonical envelope fields', async () 
     sourceEventType: 'task_started',
     rawRefs: [
       {
-        file: '2026\\04\\20\\rollout-2026-04-20T10-00-00-11111111-1111-1111-1111-111111111111.jsonl',
+        file: legacyFixtureSourceFile,
         line: 2,
         rawIdSuffix: 'raw:2',
         sourceLocator: {

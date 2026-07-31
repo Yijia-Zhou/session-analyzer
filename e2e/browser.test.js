@@ -2824,9 +2824,11 @@ test('browser replacement pagination requires current-context intent while expli
   assert.match(await page.locator('#loadMoreBtn').textContent(), /150\/700/);
 
   const keyboardScrollStart = requestedUrls.length;
-  await page.locator('.timelinePane').click({ position: { x: 5, y: 5 } });
-  assert.equal(await page.locator('.timelinePane').evaluate((pane) => document.activeElement === pane), true);
-  await page.keyboard.press('End');
+  const keyboardTimelinePane = page.locator('.timelinePane');
+  await page.waitForFunction(() => document.querySelector('.timelinePane')?.scrollTop === 0);
+  await keyboardTimelinePane.click({ position: { x: 5, y: 5 } });
+  assert.equal(await keyboardTimelinePane.evaluate((pane) => document.activeElement === pane), true);
+  await keyboardTimelinePane.press('End');
   await assertEventCount(page, 300);
   const keyboardScrollRequests = requestedUrls.slice(keyboardScrollStart)
     .filter((value) => value.includes('/timeline?'))
