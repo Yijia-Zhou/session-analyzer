@@ -2828,7 +2828,12 @@ test('browser replacement pagination requires current-context intent while expli
   await page.waitForFunction(() => document.querySelector('.timelinePane')?.scrollTop === 0);
   await keyboardTimelinePane.click({ position: { x: 5, y: 5 } });
   assert.equal(await keyboardTimelinePane.evaluate((pane) => document.activeElement === pane), true);
+  const keyboardAppend = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline') && url.searchParams.get('offset') === '150';
+  });
   await keyboardTimelinePane.press('End');
+  await keyboardAppend;
   await assertEventCount(page, 300);
   const keyboardScrollRequests = requestedUrls.slice(keyboardScrollStart)
     .filter((value) => value.includes('/timeline?'))

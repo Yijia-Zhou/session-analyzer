@@ -4515,6 +4515,9 @@ const TIMELINE_PAGINATION_KEYS = new Set(['ArrowDown', 'End', 'PageDown', ' ']);
 function onTimelineUserScrollIntent(event) {
   if (event.type === 'keydown' && !TIMELINE_SCROLL_KEYS.has(event.key)) return;
   const scroller = event.currentTarget;
+  const ownsKeyboardEnd = event.type === 'keydown'
+    && event.key === 'End'
+    && event.target === scroller;
   const interactiveTarget = event.target instanceof Element
     && event.target.closest('button, input, select, textarea, a[href], [role="button"]');
   if (event.type === 'pointerdown') {
@@ -4552,6 +4555,10 @@ function onTimelineUserScrollIntent(event) {
   state.timelineUserPaginationHasDownwardScroll = Boolean(intent && observedScrollDelta > 0);
   scheduleTimelineUserPaginationExpiry(intent, TIMELINE_USER_INTENT_EXPIRY_MS);
   if (state.timelineUserPaginationHasDownwardScroll) queueTimelinePaginationCheck(scroller, intent);
+  if (intent && ownsKeyboardEnd) {
+    event.preventDefault();
+    scroller.scrollTop = scroller.scrollHeight;
+  }
   if (!state.searchProgrammaticScroll.active) return;
   endProgrammaticSearchScrollGuard();
 }
