@@ -4,7 +4,7 @@
 
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-07-31 / 最近更新：2026-07-31
+- Last updated: 2026-08-01 / 最近更新：2026-08-01
 - Applies to: the public `session-analyzer` npm package / 适用范围：公共 `session-analyzer` npm package
 - Related product spec: / 相关产品规格：
   - `docs/product-specs/session-transcript-analyzer.md`
@@ -64,6 +64,12 @@ npm publish --foreground-scripts --tag='next' --access='public'
 npm publish '.\session-analyzer-<version>.tgz' --tag='next' --access='public'
 ```
 
+### Dependency install-script safety invariant / 依赖 install-script 安全不变量
+
+The repository uses npm 12's default-deny dependency install-script policy. Root `package.json#allowScripts` records an explicit decision for every locked package with `hasInstallScript`, while the project `.npmrc` sets `strict-allow-scripts=true` so an unreviewed script fails installation instead of being skipped with a warning. Approvals must name an exact reviewed version; intentional denials may be name-wide `false` entries. / 本仓库使用 npm 12 默认拒绝依赖 install script 的策略。根 `package.json#allowScripts` 会为 lockfile 中每个带 `hasInstallScript` 的 package 记录明确决策，项目 `.npmrc` 则设置 `strict-allow-scripts=true`，使未审查脚本导致安装失败，而不是仅被跳过并产生 warning。允许项必须指向经过审查的精确版本；有意拒绝的项目可以使用按名称生效的 `false` 条目。
+
+This policy controls dependency install-time lifecycle scripts; it does not sandbox an approved script and does not govern the repository's own `prepublishOnly` release guard. CI and local release work must use the exact npm version required by `devEngines`; an older npm that does not enforce the policy is not an acceptable release toolchain. Never use `--dangerously-allow-all-scripts` to make a gate pass. / 该策略控制依赖在安装期间的 lifecycle script；它不会 sandbox 已批准脚本，也不管理仓库自身的 `prepublishOnly` 发布 guard。CI 与本地发布工作必须使用 `devEngines` 要求的精确 npm 版本；不会执行该策略的旧 npm 不能作为可接受的发布工具链。不得为了让 gate 通过而使用 `--dangerously-allow-all-scripts`。
+
 `next` is a live public dist-tag, not a private staging area. Publishing with `--tag='next'` makes the exact version publicly installable while preventing it from becoming the default `npm install session-analyzer` version until verification is complete. / `next` 是公开生效的 dist-tag，不是私有 staging area。使用 `--tag='next'` 发布后，精确版本会立即可公开安装，但在验证完成前不会成为 `npm install session-analyzer` 的默认版本。
 
 ## Responsibilities and authority / 职责与权限
@@ -86,13 +92,14 @@ Every release must satisfy all of the following before the first registry write.
 1. `package.json`, `package-lock.json`, the bilingual changelog, package metadata tests, intended Git tag, and intended GitHub Release agree on one unused version. / `package.json`、`package-lock.json`、双语 changelog、package metadata 测试、预期 Git tag 与预期 GitHub Release 对同一个未使用版本保持一致。
 2. The release source is a committed, pushed, CI-verified commit with an empty `git status --porcelain`. / 发布来源是已经 commit、push 并通过 CI 验证的 commit，且 `git status --porcelain` 为空。
 3. The release toolchain uses the supported Node.js/npm versions named in the version-specific plan and the official `https://registry.npmjs.org/` registry. / 发布工具链使用版本专属计划中指定的受支持 Node.js/npm 版本，以及官方 `https://registry.npmjs.org/` registry。
-4. Generated assets are current; Node, browser, installed-package smoke, and required cross-platform CI jobs pass. / 生成资产保持最新；Node、browser、安装后 package smoke 与要求的跨平台 CI job 均通过。
-5. Production and full dependency audits have zero unresolved findings, or a reviewed exception is explicitly recorded before publication. / Production 与完整依赖 audit 不存在未解决 finding，或在发布前已明确记录经过审查的例外。
-6. The inspection candidate contains only the approved runtime allowlist and documentation, with no credentials, real transcripts, `.codex`, test fixtures, development plans, source maps, temporary output, personal absolute paths, or logs. / 检查候选制品只包含获批的运行时白名单与文档，不包含凭据、真实 transcript、`.codex`、测试 fixture、开发计划、source map、临时输出、个人绝对路径或日志。
-7. The final dry run and actual publish are executed from the repository package root without a positional package spec and without `--ignore-scripts`; `prepublishOnly` must complete in both operations. / 最终 dry run 与实际 publish 均从仓库 package root 执行，不带位置 package spec，也不使用 `--ignore-scripts`；两次操作中的 `prepublishOnly` 都必须完成。
-8. The initial live version is published under `next`, verified by exact version on Windows and Linux, and only then promoted to `latest`. / 初始 live 版本以 `next` 发布，在 Windows 与 Linux 上按精确版本完成验证后，才提升到 `latest`。
-9. A published `name@version` is never reused, even if it is later unpublished. / 已发布的 `name@version` 永不复用，即使之后被 unpublish。
-10. Evidence is recorded in the version-specific plan before it is moved to `completed/`. / 版本专属计划移动到 `completed/` 前，必须记录证据。
+4. Every locked dependency install script has an explicit allow-or-deny decision, strict mode reports no unreviewed script, and CI installs with the plan's exact supported npm version. / 每个已锁定的依赖 install script 都具有明确的允许或拒绝决策，strict mode 不报告未审查脚本，且 CI 使用计划指定的精确受支持 npm 版本执行安装。
+5. Generated assets are current; Node, browser, installed-package smoke, and required cross-platform CI jobs pass. / 生成资产保持最新；Node、browser、安装后 package smoke 与要求的跨平台 CI job 均通过。
+6. Production and full dependency audits have zero unresolved findings, or a reviewed exception is explicitly recorded before publication. / Production 与完整依赖 audit 不存在未解决 finding，或在发布前已明确记录经过审查的例外。
+7. The inspection candidate contains only the approved runtime allowlist and documentation, preserves the complete license notice for every redistributed third-party asset, and contains no credentials, real transcripts, `.codex`, test fixtures, development plans, source maps, temporary output, personal absolute paths, or logs. / 检查候选制品只包含获批的运行时白名单与文档，为每个再分发的第三方资产保留完整许可证 notice，且不包含凭据、真实 transcript、`.codex`、测试 fixture、开发计划、source map、临时输出、个人绝对路径或日志。
+8. The final dry run and actual publish are executed from the repository package root without a positional package spec and without `--ignore-scripts`; `prepublishOnly` must complete in both operations. / 最终 dry run 与实际 publish 均从仓库 package root 执行，不带位置 package spec，也不使用 `--ignore-scripts`；两次操作中的 `prepublishOnly` 都必须完成。
+9. The initial live version is published under `next`, verified by exact version on Windows and Linux, and only then promoted to `latest`. / 初始 live 版本以 `next` 发布，在 Windows 与 Linux 上按精确版本完成验证后，才提升到 `latest`。
+10. A published `name@version` is never reused, even if it is later unpublished. / 已发布的 `name@version` 永不复用，即使之后被 unpublish。
+11. Evidence is recorded in the version-specific plan before it is moved to `completed/`. / 版本专属计划移动到 `completed/` 前，必须记录证据。
 
 ## Standard manual release workflow / 标准手动发布流程
 
@@ -116,11 +123,14 @@ Do not copy the generic publication commands into a conflicting version-specific
 - Close the bilingual `Unreleased` changes into the dated version entry while retaining a blank bilingual `Unreleased` section. / 将双语 `Unreleased` 变更收口到带日期的版本条目，同时保留空的双语 `Unreleased` 区段。
 - Update both READMEs and the relevant product/design docs when runtime support or behavior changed. / 如果运行时支持或行为发生变化，同步更新两份 README 与相关产品/设计文档。
 - Review dependency and lockfile changes against the official registry. / 对照官方 registry 审查依赖与 lockfile 变更。
+- Confirm that `dependencies` contains only packages required by the installed runtime, keep build/test tooling in `devDependencies`, and enforce any version-specific exact-pin policy in package metadata tests. / 确认 `dependencies` 只包含安装后运行时必需的 package，把构建/测试工具保留在 `devDependencies`，并通过 package metadata 测试强制执行版本专属的精确锁定策略。
+- Inventory every redistributed third-party asset, include its complete required copyright and license notice in the package, and make the package manifest test require that notice file. / 盘点每个再分发的第三方资产，在 package 中包含其要求的完整版权与许可证 notice，并让 package manifest 测试强制要求该 notice 文件。
+- Review every lockfile `hasInstallScript` entry, record an exact approval or explicit denial in `allowScripts`, keep `strict-allow-scripts=true`, and pin the supported development npm through `devEngines`. / 审查 lockfile 中每个 `hasInstallScript` 条目，在 `allowScripts` 中记录精确允许或明确拒绝，保持 `strict-allow-scripts=true`，并通过 `devEngines` 固定受支持的开发 npm。
 - Verify `publishConfig.registry` and public access. / 验证 `publishConfig.registry` 与 public access。
 
 ### 3. Commit, push, and obtain CI evidence / Commit、push 并取得 CI 证据
 
-The release commit must contain every packed source change and generated asset. Push it through the normal review path and wait for all required Linux and Windows jobs. Record the commit SHA and CI run URL in the active plan. / Release commit 必须包含所有会被打包的源文件变更与生成资产。通过正常 review 路径推送，并等待所有要求的 Linux 与 Windows job。把 commit SHA 与 CI run URL 记录到 active plan。
+The release commit must contain every packed source change and generated asset. Push it through the normal review path and wait for all required Linux and Windows jobs. Each job must let `setup-node` select Node without invoking its package-manager cache, then install the exact approved npm version from `runner.temp` before any repository-local npm command, print that version, and only then run `npm ci --strict-allow-scripts`. This ordering matters because `setup-node` otherwise calls the npm bundled with Node to resolve its cache before the approved npm has been bootstrapped, and the repository's strict `devEngines` correctly rejects that npm. Record the commit SHA and CI run URL in the active plan. / Release commit 必须包含所有会被打包的源文件变更与生成资产。通过正常 review 路径推送，并等待所有要求的 Linux 与 Windows job。每个 job 必须先让 `setup-node` 在不调用 package-manager cache 的情况下选择 Node，再从 `runner.temp` 安装精确的获批 npm 版本；在此之前不得执行任何仓库内 npm 命令。随后打印版本，最后才运行 `npm ci --strict-allow-scripts`。这个顺序很重要：否则 `setup-node` 会在获批 npm 完成 bootstrap 前调用 Node 附带的 npm 来解析缓存，而仓库严格的 `devEngines` 会正确拒绝该 npm。把 commit SHA 与 CI run URL 记录到 active plan。
 
 Before continuing locally:
 
@@ -136,6 +146,14 @@ git log -1 --oneline
 
 ### 4. Verify the release environment / 验证发布环境
 
+After selecting the supported Node.js line, bootstrap the exact npm version named by the active plan from outside the package root, before running any repository-local npm install, CI, or script command. Running outside the checkout keeps the bootstrap itself outside the project's `devEngines` gate. For the current release contract: / 选择受支持的 Node.js 版本线后，从 package root 之外 bootstrap active plan 指定的精确 npm 版本，然后才能运行仓库内任何 npm install、CI 或 script 命令。从 checkout 之外执行可使 bootstrap 本身不进入项目的 `devEngines` gate。当前发布契约使用：
+
+```powershell
+npm install --global npm@12.0.2 --ignore-scripts --registry='https://registry.npmjs.org/'
+```
+
+This global operation updates the release toolchain; it is not the project dependency installation. / 该全局操作用于更新发布工具链，不是项目依赖安装。
+
 Record the exact output:
 
 记录精确输出：
@@ -144,10 +162,11 @@ Record the exact output:
 node --version
 npm --version
 npm config get registry
+npm config get strict-allow-scripts
 npm ping --registry='https://registry.npmjs.org/'
 ```
 
-The registry must be exactly `https://registry.npmjs.org/`. Do not continue with an old Node.js/npm installation, a mirror registry, or a toolchain different from the one approved in the active plan. / Registry 必须精确为 `https://registry.npmjs.org/`。如果 Node.js/npm 版本过旧、registry 指向镜像，或工具链与 active plan 获批版本不同，不得继续。
+The registry must be exactly `https://registry.npmjs.org/`, npm must exactly match `devEngines.packageManager.version`, and strict allow-scripts must be `true`. Do not continue with an old Node.js/npm installation, a mirror registry, or a toolchain different from the one approved in the active plan. / Registry 必须精确为 `https://registry.npmjs.org/`，npm 必须与 `devEngines.packageManager.version` 完全一致，strict allow-scripts 必须为 `true`。如果 Node.js/npm 版本过旧、registry 指向镜像，或工具链与 active plan 获批版本不同，不得继续。
 
 Verify the version contract:
 
@@ -157,6 +176,8 @@ Verify the version contract:
 node -p 'require("./package.json").name'
 node -p 'require("./package.json").version'
 node -p 'JSON.stringify(require("./package.json").engines)'
+node -p 'JSON.stringify(require("./package.json").devEngines)'
+node -p 'JSON.stringify(require("./package.json").allowScripts)'
 node -p 'JSON.stringify(require("./package.json").publishConfig)'
 ```
 
@@ -179,7 +200,8 @@ npm view 'session-analyzer' versions --json --registry='https://registry.npmjs.o
 Use a clean dependency installation and the official registry. / 使用干净依赖安装与官方 registry。
 
 ```powershell
-npm ci --registry='https://registry.npmjs.org/'
+npm ci --strict-allow-scripts --registry='https://registry.npmjs.org/'
+npm install-scripts ls --json
 npm run release:check
 npm run test:browser
 npm audit --omit=dev --registry='https://registry.npmjs.org/'
@@ -188,7 +210,7 @@ git diff --check
 git status --short
 ```
 
-`release:check` must include generated-asset verification, the full Node test suite, and installed-package smoke. The final `git status --short` must still be empty. / `release:check` 必须包含生成资产验证、完整 Node 测试与安装后 package smoke。最后的 `git status --short` 仍必须为空。
+`npm install-scripts ls --json` must report no pending entries. `release:check` must include generated-asset verification, the full Node test suite, installed-package smoke, and package metadata coverage of every lockfile `hasInstallScript` entry, including platform-inert optional dependencies. The final `git status --short` must still be empty. / `npm install-scripts ls --json` 必须不报告 pending 条目。`release:check` 必须包含生成资产验证、完整 Node 测试、安装后 package smoke，以及对 lockfile 中每个 `hasInstallScript` 条目的 package metadata 覆盖，包括当前平台不生效的可选依赖。最后的 `git status --short` 仍必须为空。
 
 ### 6. Generate and inspect the candidate / 生成并检查候选制品
 
@@ -206,6 +228,7 @@ tar -tf '.\session-analyzer-<version>.tgz'
 Record npm's filename, packed size, unpacked size, entry count, SHA-1, integrity, and a separate SHA-256. Extract the tarball into a newly created temporary directory and verify: / 记录 npm 提供的 filename、packed size、unpacked size、entry count、SHA-1、integrity，以及单独计算的 SHA-256。把 tarball 解压到新建临时目录，并验证：
 
 - every required runtime file is present / 所有必需运行时文件均存在
+- every redistributed third-party asset has its complete required copyright and license notice in the packed package / 每个再分发的第三方资产都在打包后的 package 中具有其要求的完整版权与许可证 notice
 - forbidden development paths are absent / 禁止的开发路径不存在
 - packed text has no tested credential or personal-path patterns / 打包文本不包含已检查的凭据或个人路径模式
 - packed files are byte-identical to their repository sources unless npm has a documented normalization / 除非 npm 存在已记录的规范化行为，否则打包文件与仓库源文件逐字节一致
@@ -240,28 +263,118 @@ The worktree and commit must still match the approved release evidence. Make no 
 
 This is the first mandatory human-controlled boundary. / 这是第一个必须由人工控制的边界。
 
+Use a fresh, isolated npm user configuration for this single registry mutation. Do not reuse the maintainer's normal `~/.npmrc`, do not accept an inherited token, and do not display the temporary `.npmrc` or any credential value. The pre-login `npm whoami` must fail specifically with `ENEEDAUTH`; any other result means the session is not proven clean. / 为这一次 registry mutation 使用全新、隔离的 npm user configuration。不得复用维护者日常的 `~/.npmrc`，不得接受继承的 token，也不得显示临时 `.npmrc` 或任何凭据值。登录前的 `npm whoami` 必须明确以 `ENEEDAUTH` 失败；任何其他结果都表示该会话尚未证明为干净状态。
+
 ```powershell
-npm login --registry='https://registry.npmjs.org/'
-npm whoami --registry='https://registry.npmjs.org/'
-npm ping --registry='https://registry.npmjs.org/'
-npm publish --foreground-scripts --tag='next' --access='public'
+foreach ($releaseTokenName in @('NPM_TOKEN', 'NODE_AUTH_TOKEN', 'NPM_CONFIG__AUTH', 'NPM_CONFIG__AUTH_TOKEN')) {
+  if (Test-Path ('Env:' + $releaseTokenName)) {
+    throw ('Remove inherited npm credential variable before release: ' + $releaseTokenName)
+  }
+}
+if (Test-Path 'Env:NPM_CONFIG_USERCONFIG') {
+  throw 'Start from a shell without an inherited NPM_CONFIG_USERCONFIG.'
+}
+
+$releaseRegistry = 'https://registry.npmjs.org/'
+$releaseAuthDir = Join-Path ([IO.Path]::GetTempPath()) ('session-analyzer-npm-auth-' + [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $releaseAuthDir
+$env:NPM_CONFIG_USERCONFIG = Join-Path $releaseAuthDir '.npmrc'
+$releaseLoginSucceeded = $false
+$releaseOperationError = $null
+$releaseCleanupError = $null
+
+try {
+  $preLoginOutput = (& npm whoami --registry=$releaseRegistry 2>&1 | Out-String)
+  if ($LASTEXITCODE -eq 0 -or $preLoginOutput -notmatch '(?i)\bENEEDAUTH\b') {
+    throw 'The isolated pre-login session did not fail with ENEEDAUTH.'
+  }
+
+  npm login --registry=$releaseRegistry
+  if ($LASTEXITCODE -ne 0) { throw 'npm login failed.' }
+  $releaseLoginSucceeded = $true
+
+  npm whoami --registry=$releaseRegistry
+  if ($LASTEXITCODE -ne 0) { throw 'Authenticated npm whoami failed.' }
+  npm ping --registry=$releaseRegistry
+  if ($LASTEXITCODE -ne 0) { throw 'Authenticated npm ping failed.' }
+
+  npm publish --foreground-scripts --tag='next' --access='public'
+  if ($LASTEXITCODE -ne 0) {
+    throw 'npm publish failed or exited ambiguously; verify the registry before any retry.'
+  }
+}
+catch {
+  $releaseOperationError = $_
+}
+finally {
+  $releaseCredentialWasPresent = Test-Path -LiteralPath $env:NPM_CONFIG_USERCONFIG
+  if ($releaseLoginSucceeded -or $releaseCredentialWasPresent) {
+    npm logout --registry=$releaseRegistry
+    $releaseLogoutExitCode = $LASTEXITCODE
+    $postLogoutOutput = (& npm whoami --registry=$releaseRegistry 2>&1 | Out-String)
+    if ($releaseLogoutExitCode -ne 0 -or $LASTEXITCODE -eq 0 -or $postLogoutOutput -notmatch '(?i)\bENEEDAUTH\b') {
+      $releaseCleanupError = 'Credential revocation was not confirmed. Delete the local credential, then revoke the newly created session token at npmjs.com before continuing.'
+    }
+  }
+
+  if ((Split-Path -Leaf $releaseAuthDir) -like 'session-analyzer-npm-auth-*') {
+    Remove-Item -LiteralPath $releaseAuthDir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  else {
+    $releaseCleanupError = 'Refused to remove an unexpected credential directory.'
+  }
+  Remove-Item 'Env:NPM_CONFIG_USERCONFIG' -ErrorAction SilentlyContinue
+  if (Test-Path -LiteralPath $releaseAuthDir) {
+    $releaseCleanupError = 'The isolated local credential directory still exists; remove it before continuing.'
+  }
+}
+
+if ($null -ne $releaseCleanupError) { throw $releaseCleanupError }
+if ($null -ne $releaseOperationError) { throw $releaseOperationError }
 ```
 
 The publish command intentionally has no path argument. Confirm the package name, version, registry, public access, and `next` tag in npm's prompt/output before completing 2FA. / Publish 命令有意不带 path 参数。在完成 2FA 前，从 npm prompt/output 中确认 package 名、版本、registry、public access 与 `next` tag。
 
-If the CLI exits ambiguously because of a timeout, disconnect, or terminal failure, do not immediately retry. First query the exact version from the registry; the registry write may have succeeded even though the local command did not report success. / 如果 CLI 因 timeout、断线或 terminal failure 含糊退出，不得立即重试。先从 registry 查询精确版本；即使本地命令没有报告成功，registry 写入也可能已经成功。
+The `finally` cleanup is mandatory even if login, publication, 2FA, the terminal, or the network fails. `npm logout` invalidates the token at the registry; deleting the isolated directory additionally removes the local copy. If logout or the post-logout `ENEEDAUTH` proof fails, use the npm website's Access Tokens page to revoke the newly created session token, record the recovery action, and stop: publication is not operationally complete while a release credential may remain active. / 即使登录、发布、2FA、terminal 或网络失败，`finally` 清理仍是强制步骤。`npm logout` 会在 registry 端使 token 失效；删除隔离目录则额外移除本地副本。如果 logout 或 logout 后的 `ENEEDAUTH` 证明失败，必须通过 npm 网站的 Access Tokens 页面撤销刚创建的 session token，记录恢复动作并停止：只要发布凭据可能仍处于有效状态，发布在操作层面就不算完成。
+
+If the CLI exits ambiguously because of a timeout, disconnect, or terminal failure, complete credential cleanup first and do not immediately retry. Query the exact version from the registry without authentication; the registry write may have succeeded even though the local command did not report success. / 如果 CLI 因 timeout、断线或 terminal failure 含糊退出，先完成凭据清理且不得立即重试。随后在无认证状态下从 registry 查询精确版本；即使本地命令没有报告成功，registry 写入也可能已经成功。
 
 ### 9. Verify the public exact version / 验证公共精确版本
+
+Perform this phase without the publication credential. Use another empty temporary user configuration, prove that `npm whoami` returns `ENEEDAUTH`, run the public checks, and remove the temporary directory afterward. This both tests the real public path and prevents an ordinary user-level `.npmrc` from silently authenticating the verification. / 本阶段不得携带发布凭据。使用另一个空的临时 user configuration，证明 `npm whoami` 返回 `ENEEDAUTH`，执行公共检查，然后删除临时目录。这样既能测试真实公共路径，也能防止日常 user-level `.npmrc` 静默地为验证过程提供认证。
 
 Record:
 
 记录：
 
 ```powershell
-npm view 'session-analyzer@<version>' --registry='https://registry.npmjs.org/'
-npm view 'session-analyzer' dist-tags --json --registry='https://registry.npmjs.org/'
-npm view 'session-analyzer' repository --json --registry='https://registry.npmjs.org/'
-npx --yes 'session-analyzer@<version>' --help
+if (Test-Path 'Env:NPM_CONFIG_USERCONFIG') {
+  throw 'Start public verification without an inherited NPM_CONFIG_USERCONFIG.'
+}
+$publicVerifyDir = Join-Path ([IO.Path]::GetTempPath()) ('session-analyzer-npm-public-' + [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $publicVerifyDir
+$env:NPM_CONFIG_USERCONFIG = Join-Path $publicVerifyDir '.npmrc'
+try {
+  $publicWhoamiOutput = (& npm whoami --registry='https://registry.npmjs.org/' 2>&1 | Out-String)
+  if ($LASTEXITCODE -eq 0 -or $publicWhoamiOutput -notmatch '(?i)\bENEEDAUTH\b') {
+    throw 'Public verification is not demonstrably unauthenticated.'
+  }
+  npm view 'session-analyzer@<version>' --registry='https://registry.npmjs.org/'
+  if ($LASTEXITCODE -ne 0) { throw 'Exact-version metadata verification failed.' }
+  npm view 'session-analyzer' dist-tags --json --registry='https://registry.npmjs.org/'
+  if ($LASTEXITCODE -ne 0) { throw 'Dist-tag verification failed.' }
+  npm view 'session-analyzer' repository --json --registry='https://registry.npmjs.org/'
+  if ($LASTEXITCODE -ne 0) { throw 'Repository metadata verification failed.' }
+  npx --yes 'session-analyzer@<version>' --help
+  if ($LASTEXITCODE -ne 0) { throw 'Exact-version npx verification failed.' }
+}
+finally {
+  if ((Split-Path -Leaf $publicVerifyDir) -notlike 'session-analyzer-npm-public-*') {
+    throw 'Refusing to remove an unexpected public-verification directory.'
+  }
+  Remove-Item -LiteralPath $publicVerifyDir -Recurse -Force
+  Remove-Item 'Env:NPM_CONFIG_USERCONFIG' -ErrorAction SilentlyContinue
+}
 ```
 
 From clean Windows and Linux environments, verify: / 在干净 Windows 与 Linux 环境中验证：
@@ -280,12 +393,51 @@ Only after Windows and Linux exact-version verification succeeds:
 
 只有 Windows 与 Linux 精确版本验证成功后：
 
+Start a second fresh isolated authentication session using step 8's setup, pre-login `ENEEDAUTH` proof, login, and `finally` cleanup control flow. Do **not** execute step 8's publish command again; replace its publish lines with the following single authenticated mutation before running the block: / 使用第 8 步的 setup、登录前 `ENEEDAUTH` 证明、登录与 `finally` 清理控制流，建立第二个全新的隔离认证会话。**不得**再次执行第 8 步的 publish 命令；运行该 block 前，必须把其中的 publish 行替换为以下唯一的认证 mutation：
+
 ```powershell
-npm dist-tag add 'session-analyzer@<version>' 'latest'
-npm dist-tag ls 'session-analyzer'
+npm dist-tag add 'session-analyzer@<version>' 'latest' --registry=$releaseRegistry
+if ($LASTEXITCODE -ne 0) { throw 'latest promotion failed or exited ambiguously.' }
 ```
 
-This is another human-controlled registry mutation and may require 2FA. Confirm that both `next` and `latest` point to the intended version, or remove/update `next` according to the version-specific plan. / 这是另一个由人工控制的 registry mutation，可能需要 2FA。确认 `next` 与 `latest` 都指向预期版本，或按照版本专属计划移除/更新 `next`。
+After that session has logged out, removed its temporary `.npmrc`, and proved `ENEEDAUTH`, create a third isolated, empty user configuration for the final read-only check. Prove `ENEEDAUTH` again before reading the tags; otherwise the maintainer's ordinary `~/.npmrc` could silently authenticate this evidence. / 该会话完成 logout、删除临时 `.npmrc` 并证明 `ENEEDAUTH` 后，为最终只读检查创建第三个隔离、空白的 user configuration。读取 tag 前必须再次证明 `ENEEDAUTH`；否则维护者日常的 `~/.npmrc` 可能静默地为这份证据提供认证。
+
+```powershell
+foreach ($finalTagTokenName in @('NPM_TOKEN', 'NODE_AUTH_TOKEN', 'NPM_CONFIG__AUTH', 'NPM_CONFIG__AUTH_TOKEN')) {
+  if (Test-Path ('Env:' + $finalTagTokenName)) {
+    throw ('Remove inherited npm credential variable before final tag verification: ' + $finalTagTokenName)
+  }
+}
+if (Test-Path 'Env:NPM_CONFIG_USERCONFIG') {
+  throw 'Start final tag verification without an inherited NPM_CONFIG_USERCONFIG.'
+}
+
+$finalTagRegistry = 'https://registry.npmjs.org/'
+$finalTagVerifyDir = Join-Path ([IO.Path]::GetTempPath()) ('session-analyzer-npm-tags-' + [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $finalTagVerifyDir
+$env:NPM_CONFIG_USERCONFIG = Join-Path $finalTagVerifyDir '.npmrc'
+try {
+  $finalTagWhoamiOutput = (& npm whoami --registry=$finalTagRegistry 2>&1 | Out-String)
+  if ($LASTEXITCODE -eq 0 -or $finalTagWhoamiOutput -notmatch '(?i)\bENEEDAUTH\b') {
+    throw 'Final dist-tag verification is not demonstrably unauthenticated.'
+  }
+
+  npm dist-tag ls 'session-analyzer' --registry=$finalTagRegistry
+  if ($LASTEXITCODE -ne 0) { throw 'Final unauthenticated dist-tag verification failed.' }
+}
+finally {
+  Remove-Item 'Env:NPM_CONFIG_USERCONFIG' -ErrorAction SilentlyContinue
+  if ((Split-Path -Leaf $finalTagVerifyDir) -notlike 'session-analyzer-npm-tags-*') {
+    throw 'Refusing to remove an unexpected final-tag-verification directory.'
+  }
+  Remove-Item -LiteralPath $finalTagVerifyDir -Recurse -Force -ErrorAction SilentlyContinue
+  if (Test-Path -LiteralPath $finalTagVerifyDir) {
+    throw 'The isolated final-tag-verification directory still exists; remove it before continuing.'
+  }
+}
+```
+
+The promotion is another human-controlled registry mutation and may require 2FA; the final `dist-tag ls` is read-only and must be demonstrably unauthenticated. Confirm that both `next` and `latest` point to the intended version, or remove/update `next` according to the version-specific plan. / 提升是另一个由人工控制的 registry mutation，可能需要 2FA；最终 `dist-tag ls` 是只读操作，且必须可证明未认证。确认 `next` 与 `latest` 都指向预期版本，或按照版本专属计划移除/更新 `next`。
 
 ### 11. Create the release tag and GitHub Release / 创建 release tag 与 GitHub Release
 
@@ -323,8 +475,11 @@ Toolchain:
 - Node.js:
 - npm:
 - Registry:
+- strict-allow-scripts:
 - npm account:
 - Authentication mode:
+- Isolated userconfig confirmed; path and contents not recorded:
+- Inherited credential variables absent:
 
 Repository state:
 - git status:
@@ -332,6 +487,8 @@ Repository state:
 - package-lock.json version:
 - changelog entry:
 - publishConfig:
+- devEngines:
+- allowScripts:
 
 CI:
 - Commit:
@@ -343,7 +500,8 @@ CI:
 - Package smoke:
 
 Local gates:
-- npm ci:
+- npm ci --strict-allow-scripts:
+- pending install scripts:
 - release:check:
 - browser tests:
 - production audit:
@@ -361,15 +519,22 @@ Inspection candidate:
 - SHA-256:
 - npm integrity:
 - Allowlist result:
+- Third-party notices result:
 - Sensitive-path result:
 - Installed CLI/server result:
 
 Registry publication:
 - Published under next:
+- Publish-session logout exit:
+- Publish-session post-logout ENEEDAUTH:
 - Exact-version registry metadata:
+- Public verification ENEEDAUTH precondition:
 - Windows public smoke:
 - Linux public smoke:
 - Promoted to latest:
+- Promotion-session logout exit:
+- Promotion-session post-logout ENEEDAUTH:
+- Final dist-tags ENEEDAUTH precondition:
 - Final dist-tags:
 
 Exceptions and recovery actions:
@@ -384,7 +549,15 @@ Discard the candidate evidence, correct the repository, commit the correction, r
 
 ### Ambiguous publication result / 发布结果含糊
 
-Query `npm view <name>@<version>` before retrying. If the version exists, treat it as published and move to exact-version verification. If it does not exist, diagnose authentication or transport state before another attempt. / 重试前查询 `npm view <name>@<version>`。如果版本存在，按已发布处理并进入精确版本验证。如果不存在，在再次尝试前诊断认证或传输状态。
+Complete credential cleanup, then query `npm view <name>@<version>` without authentication before retrying. If the version exists, treat it as published and move to exact-version verification. If it does not exist, diagnose authentication or transport state before another attempt. / 先完成凭据清理，再以无认证方式查询 `npm view <name>@<version>`，然后才可考虑重试。如果版本存在，按已发布处理并进入精确版本验证。如果不存在，在再次尝试前诊断认证或传输状态。
+
+### Credential cleanup failure / 凭据清理失败
+
+Always delete the exact isolated credential directory and unset `NPM_CONFIG_USERCONFIG`, even if `npm logout` fails. Then open npmjs.com using a trusted browser session, revoke the newly created session token from Access Tokens, and confirm it no longer appears as active. Do not run another registry mutation, declare the release complete, paste the token into a command, or print the `.npmrc`. Record the failed logout, local deletion, server-side revocation, and confirmation in release evidence. / 即使 `npm logout` 失败，也必须删除精确的隔离凭据目录并清除 `NPM_CONFIG_USERCONFIG`。随后使用可信浏览器会话打开 npmjs.com，从 Access Tokens 撤销刚创建的 session token，并确认它不再显示为 active。不得继续执行其他 registry mutation，不得宣布发布完成，不得把 token 粘贴进命令，也不得打印 `.npmrc`。在发布证据中记录 logout 失败、本地删除、服务端撤销与确认结果。
+
+### Unreviewed dependency install script / 未审查的依赖 install script
+
+Do not bypass `ESTRICTALLOWSCRIPTS` with `--dangerously-allow-all-scripts`. First install or update metadata with scripts disabled in a disposable review state, inspect the exact locked tarball, integrity, lifecycle body, necessity, and platform scope, then record either an exact-version `true` approval or an intentional `false` denial. Recreate dependencies with `npm ci --strict-allow-scripts`, run `npm install-scripts ls --json`, and rerun all invalidated gates before committing. / 不得使用 `--dangerously-allow-all-scripts` 绕过 `ESTRICTALLOWSCRIPTS`。应先在一次性审查状态中禁用脚本，仅安装或更新 metadata；检查精确锁定 tarball、integrity、lifecycle 内容、必要性与平台范围，再记录精确版本的 `true` 允许或有意的 `false` 拒绝。提交前重新使用 `npm ci --strict-allow-scripts` 创建依赖，执行 `npm install-scripts ls --json`，并重跑全部已失效 gate。
 
 ### Published under `next` but verification fails / 已以 `next` 发布但验证失败
 
@@ -407,7 +580,14 @@ Unpublish is not the normal rollback mechanism. npm registry versions are immuta
 - `npm publish` without `--tag='next'` assigns `latest` by default. / `npm publish` 不带 `--tag='next'` 时默认分配 `latest`。
 - `next` is public and immediately installable; it is not npm staged publishing. / `next` 是公开且可立即安装的版本，不等同于 npm staged publishing。
 - `--ignore-scripts` disables the lifecycle protection. / `--ignore-scripts` 会禁用生命周期保护。
+- npm 12 blocks unreviewed dependency install scripts by default, but only `strict-allow-scripts=true` turns a newly pending script into a failed install; warnings alone are not an accepted release gate. / npm 12 默认阻止未审查的依赖 install script，但只有 `strict-allow-scripts=true` 会让新的 pending script 导致安装失败；仅产生 warning 不能作为获接受的发布 gate。
+- npm 10/11 must not be assumed to enforce npm 12's install-script policy. Pin and print npm 12.0.2 before every CI install and match the version-specific `devEngines` locally. / 不得假设 npm 10/11 会执行 npm 12 的 install-script 策略。每次 CI 安装前都必须固定并打印 npm 12.0.2，本地则必须匹配版本计划的 `devEngines`。
+- `--dangerously-allow-all-scripts` bypasses explicit approvals and denials and is forbidden in release preparation. / `--dangerously-allow-all-scripts` 会绕过明确的允许与拒绝，因此禁止用于发布准备。
+- `allowScripts` does not sandbox an approved script and does not constrain root-owned lifecycle scripts. / `allowScripts` 不会 sandbox 已批准脚本，也不约束根项目拥有的 lifecycle script。
 - A user-level `.npmrc` can point installs and diagnostics at a mirror; always pass or verify the official registry. / 用户级 `.npmrc` 可能让安装与诊断指向镜像；始终显式传入或验证官方 registry。
+- `npm login` writes a registry credential to the configured user `.npmrc`; using the normal userconfig leaves a reusable release credential behind. / `npm login` 会把 registry 凭据写入配置的 user `.npmrc`；使用日常 userconfig 会留下可复用的发布凭据。
+- Deleting `.npmrc` removes only the local copy. A successful `npm logout` or explicit server-side token revocation is required to invalidate the registry credential. / 删除 `.npmrc` 只会移除本地副本；必须成功执行 `npm logout` 或显式进行服务端 token 撤销，才能使 registry 凭据失效。
+- One login must not span publication, public verification, and `latest` promotion. Separate short-lived sessions reduce credential exposure and make the public check genuinely unauthenticated. / 一次登录不得横跨发布、公共验证与 `latest` 提升。分离的短时会话能够缩短凭据暴露时间，并让公共检查真正处于无认证状态。
 - A candidate `.tgz` inside the worktree makes the tree dirty and can be overwritten or removed by later package-smoke runs. / 工作树内的候选 `.tgz` 会使工作树变脏，并可能被后续 package-smoke 覆盖或删除。
 - npm 11 and npm 12 use different `npm pack --json` top-level shapes; repository package-smoke normalization supports both, but hand-written parsers must not assume one shape. / npm 11 与 npm 12 使用不同的 `npm pack --json` 顶层形态；仓库 package-smoke normalization 已兼容两者，但手写 parser 不得只假设其中一种。
 - A package-name `E404` is not a reservation; recheck immediately before first publication. / Package 名 `E404` 不构成保留；首次发布前必须立即复查。
@@ -445,6 +625,13 @@ Unpublish is not the normal rollback mechanism. npm registry versions are immuta
 
 - npm scripts and lifecycle order: `https://docs.npmjs.com/cli/v11/using-npm/scripts/`
 - npm publish: `https://docs.npmjs.com/cli/publish/`
+- npm login: `https://docs.npmjs.com/cli/v12/commands/npm-login/`
+- npm logout: `https://docs.npmjs.com/cli/v12/commands/npm-logout/`
+- Revoking access tokens: `https://docs.npmjs.com/revoking-access-tokens/`
+- npmrc configuration: `https://docs.npmjs.com/cli/v12/configuring-npm/npmrc/`
+- npm install-script approvals: `https://docs.npmjs.com/cli/v12/commands/npm-install-scripts/`
+- npm strict allow-scripts configuration: `https://docs.npmjs.com/cli/v12/using-npm/config/#strict-allow-scripts`
+- npm development toolchain constraints: `https://docs.npmjs.com/cli/v12/configuring-npm/package-json/#devengines`
 - Creating and publishing unscoped public packages: `https://docs.npmjs.com/creating-and-publishing-unscoped-public-packages/`
 - Requiring 2FA for publishing: `https://docs.npmjs.com/requiring-2fa-for-package-publishing-and-settings-modification/`
 - Adding dist-tags: `https://docs.npmjs.com/adding-dist-tags-to-packages/`
@@ -455,3 +642,5 @@ Unpublish is not the normal rollback mechanism. npm registry versions are immuta
 
 - 2026-07-31: Accepted clean-tree, directory-based manual publication as the only supported direct `npm publish` path. Candidate tarballs remain inspection evidence and must not be passed to the irreversible command. This decision followed a review finding and an npm 12.0.2 dry-run reproduction showing that positional tarball publication skipped `prepublishOnly`. / 2026-07-31：接受基于干净工作树、从目录执行的手动发布，作为唯一受支持的直接 `npm publish` 路径。候选 tarball 继续作为检查证据，不得传给不可逆命令。该决策源于一次 review finding，以及 npm 12.0.2 dry-run 复现：带位置 tarball 的发布会跳过 `prepublishOnly`。
 - 2026-07-31: Retained `next` as the live pre-promotion dist-tag, with exact-version Windows/Linux verification required before `latest`. / 2026-07-31：保留 `next` 作为提升前的公开 dist-tag，并要求在进入 `latest` 前完成精确版本的 Windows/Linux 验证。
+- 2026-07-31: Required isolated, short-lived manual authentication sessions for publication and promotion. Each session must begin with an unauthenticated `ENEEDAUTH` proof, perform one registry mutation, end with `npm logout`, remove its temporary userconfig, and prove `ENEEDAUTH` again; public verification runs between the two sessions without credentials. / 2026-07-31：要求发布与提升分别使用隔离、短时的手动认证会话。每个会话都必须以无认证的 `ENEEDAUTH` 证明开始，仅执行一次 registry mutation，以 `npm logout` 结束，删除临时 userconfig，并再次证明 `ENEEDAUTH`；两次会话之间的公共验证不携带凭据。
+- 2026-08-01: Required npm 12.0.2 strict default-deny dependency install-script enforcement for source, CI, and release preparation. Every lockfile `hasInstallScript` entry must have an exact approval or explicit denial, CI must bootstrap the approved npm before `npm ci --strict-allow-scripts`, and `--dangerously-allow-all-scripts` is forbidden. / 2026-08-01：要求源码环境、CI 与发布准备使用 npm 12.0.2 strict 默认拒绝依赖 install-script 策略。Lockfile 中每个 `hasInstallScript` 条目都必须具有精确允许或明确拒绝；CI 必须在 `npm ci --strict-allow-scripts` 前 bootstrap 获批 npm；并禁止使用 `--dangerously-allow-all-scripts`。
