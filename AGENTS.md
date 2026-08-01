@@ -47,8 +47,9 @@ When changing product behavior or repository structure:
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Active plans:
-  - `docs/exec-plans/active/2026-07-31-first-public-npm-release.md`
+  - None / 无
 - Completed plans:
+  - `docs/exec-plans/completed/2026-07-31-first-public-npm-release.md`
   - `docs/exec-plans/completed/2026-07-31-planning-semantic-facet.md`
   - `docs/exec-plans/completed/2026-07-30-subagent-activity-correlation.md`
   - `docs/exec-plans/completed/2026-07-30-tool-lifecycle-family-contract.md`

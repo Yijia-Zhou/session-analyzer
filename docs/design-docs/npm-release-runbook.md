@@ -9,7 +9,7 @@
 - Related product spec: / 相关产品规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
-  - `docs/exec-plans/active/2026-07-31-first-public-npm-release.md`
+  - `docs/exec-plans/completed/2026-07-31-first-public-npm-release.md`
   - `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`
 - Related debt: / 相关技术债：
   - `docs/exec-plans/tech-debt-tracker.md#10-release-workflow-and-trusted-publishing--发布流程与-trusted-publishing`
@@ -43,12 +43,16 @@ directory-based npm publish --dry-run
         ↓
 directory-based npm publish --tag next
         ↓
+anonymous dist-tag read
+        ↓
 public exact-version verification
         ↓
-promote to latest
+promote to latest only when latest still points to the prior verified version
         ↓
 Git tag + GitHub Release
 ```
+
+For an established package, `--tag='next'` keeps the new version away from the existing `latest` until verification and promotion. An inaugural publication is different: npm registry package metadata requires a `latest` tag, and the first `session-analyzer` publication created both `next` and `latest` for the only available version. Therefore a brand-new package cannot rely on a non-`latest` live holding area through ordinary `npm publish`; all blocking CI, local, candidate, and dry-run gates must finish before that first write. / 对已有 package，`--tag='next'` 会让新版本在验证与提升前不影响既有 `latest`。首发不同：npm registry package metadata 要求存在 `latest` tag，`session-analyzer` 的第一次发布为唯一可用版本同时创建了 `next` 与 `latest`。因此，全新 package 不能依赖普通 `npm publish` 获得一个不影响 `latest` 的 live holding area；首次写入前必须完成全部阻塞性 CI、本地、候选与 dry-run gate。
 
 ### Lifecycle safety invariant / 生命周期安全不变量
 
@@ -70,7 +74,7 @@ The repository uses npm 12's default-deny dependency install-script policy. Root
 
 This policy controls dependency install-time lifecycle scripts; it does not sandbox an approved script and does not govern the repository's own `prepublishOnly` release guard. CI and local release work must use the exact npm version required by `devEngines`; an older npm that does not enforce the policy is not an acceptable release toolchain. Never use `--dangerously-allow-all-scripts` to make a gate pass. / 该策略控制依赖在安装期间的 lifecycle script；它不会 sandbox 已批准脚本，也不管理仓库自身的 `prepublishOnly` 发布 guard。CI 与本地发布工作必须使用 `devEngines` 要求的精确 npm 版本；不会执行该策略的旧 npm 不能作为可接受的发布工具链。不得为了让 gate 通过而使用 `--dangerously-allow-all-scripts`。
 
-`next` is a live public dist-tag, not a private staging area. Publishing with `--tag='next'` makes the exact version publicly installable while preventing it from becoming the default `npm install session-analyzer` version until verification is complete. / `next` 是公开生效的 dist-tag，不是私有 staging area。使用 `--tag='next'` 发布后，精确版本会立即可公开安装，但在验证完成前不会成为 `npm install session-analyzer` 的默认版本。
+`next` is a live public dist-tag, not a private staging area. For an established package it makes the exact version publicly installable without moving the existing `latest`; for an inaugural package, expect the registry to assign `latest` to the only published version as well. / `next` 是公开生效的 dist-tag，不是私有 staging area。对于已有 package，它会让精确版本可公开安装而不移动既有 `latest`；对于首次发布的 package，应预期 registry 也会把 `latest` 指向唯一已发布版本。
 
 ## Responsibilities and authority / 职责与权限
 
@@ -82,7 +86,7 @@ This policy controls dependency install-time lifecycle scripts; it does not sand
 ### Maintainer / 维护者
 
 - Reviews the release diff and the recorded evidence. / 审查发布 diff 与已记录证据。
-- Owns npm login, interactive 2FA, the first irreversible publication, promotion to `latest`, remote tag creation, and GitHub Release publication. / 负责 npm 登录、交互式 2FA、首次不可逆发布、提升到 `latest`、创建远端 tag 与发布 GitHub Release。
+- Owns npm login, interactive 2FA, the first irreversible publication, any required promotion to `latest`, remote tag creation, and GitHub Release publication. / 负责 npm 登录、交互式 2FA、首次不可逆发布、任何确有需要的 `latest` 提升、创建远端 tag 与发布 GitHub Release。
 - Must stop if the working tree, CI result, package name, version, registry, or recorded manifest differs from the approved release plan. / 如果工作树、CI 结果、package 名、版本、registry 或已记录 manifest 与获批 release plan 不一致，必须停止。
 
 ## Required invariants / 必需不变量
@@ -97,7 +101,7 @@ Every release must satisfy all of the following before the first registry write.
 6. Production and full dependency audits have zero unresolved findings, or a reviewed exception is explicitly recorded before publication. / Production 与完整依赖 audit 不存在未解决 finding，或在发布前已明确记录经过审查的例外。
 7. The inspection candidate contains only the approved runtime allowlist and documentation, preserves the complete license notice for every redistributed third-party asset, and contains no credentials, real transcripts, `.codex`, test fixtures, development plans, source maps, temporary output, personal absolute paths, or logs. / 检查候选制品只包含获批的运行时白名单与文档，为每个再分发的第三方资产保留完整许可证 notice，且不包含凭据、真实 transcript、`.codex`、测试 fixture、开发计划、source map、临时输出、个人绝对路径或日志。
 8. The final dry run and actual publish are executed from the repository package root without a positional package spec and without `--ignore-scripts`; `prepublishOnly` must complete in both operations. / 最终 dry run 与实际 publish 均从仓库 package root 执行，不带位置 package spec，也不使用 `--ignore-scripts`；两次操作中的 `prepublishOnly` 都必须完成。
-9. The initial live version is published under `next`, verified by exact version on Windows and Linux, and only then promoted to `latest`. / 初始 live 版本以 `next` 发布，在 Windows 与 Linux 上按精确版本完成验证后，才提升到 `latest`。
+9. For an established package, the live candidate is published under `next`, verified by exact version on Windows and Linux, and only then promoted to `latest`. For an inaugural package, record the registry's automatic `latest`, rely on all completed pre-publication gates, and perform public verification immediately after the write. / 对已有 package，live candidate 以 `next` 发布，在 Windows 与 Linux 上按精确版本完成验证后才提升到 `latest`。对于首发 package，记录 registry 自动创建的 `latest`，依赖已经完成的全部发布前 gate，并在写入后立即执行公共验证。
 10. A published `name@version` is never reused, even if it is later unpublished. / 已发布的 `name@version` 永不复用，即使之后被 unpublish。
 11. Evidence is recorded in the version-specific plan before it is moved to `completed/`. / 版本专属计划移动到 `completed/` 前，必须记录证据。
 
@@ -333,6 +337,8 @@ if ($null -ne $releaseCleanupError) { throw $releaseCleanupError }
 if ($null -ne $releaseOperationError) { throw $releaseOperationError }
 ```
 
+Run this whole `try`/`catch`/`finally` block as one syntactic unit in an interactive terminal. Do not submit `finally` separately: PowerShell will reject it and credential cleanup will not run. Direct publication can require an interactive OTP or browser challenge; a non-interactive agent process must stop and hand control to the maintainer instead of asking for an OTP in chat or retrying with a credential on the command line. / 必须在交互式终端中把整个 `try`/`catch`/`finally` block 作为一个语法单元运行。不得单独提交 `finally`：PowerShell 会拒绝它，凭据清理也不会执行。直接发布可能要求交互式 OTP 或 browser challenge；非交互 agent 进程必须停止并把控制权交给维护者，不得要求在聊天中发送 OTP，也不得把凭据放到命令行后重试。
+
 The publish command intentionally has no path argument. Confirm the package name, version, registry, public access, and `next` tag in npm's prompt/output before completing 2FA. / Publish 命令有意不带 path 参数。在完成 2FA 前，从 npm prompt/output 中确认 package 名、版本、registry、public access 与 `next` tag。
 
 The `finally` cleanup is mandatory even if login, publication, 2FA, the terminal, or the network fails. `npm logout` invalidates the token at the registry; deleting the isolated directory additionally removes the local copy. If logout or the post-logout `ENEEDAUTH` proof fails, use the npm website's Access Tokens page to revoke the newly created session token, record the recovery action, and stop: publication is not operationally complete while a release credential may remain active. / 即使登录、发布、2FA、terminal 或网络失败，`finally` 清理仍是强制步骤。`npm logout` 会在 registry 端使 token 失效；删除隔离目录则额外移除本地副本。如果 logout 或 logout 后的 `ENEEDAUTH` 证明失败，必须通过 npm 网站的 Access Tokens 页面撤销刚创建的 session token，记录恢复动作并停止：只要发布凭据可能仍处于有效状态，发布在操作层面就不算完成。
@@ -383,15 +389,15 @@ From clean Windows and Linux environments, verify: / 在干净 Windows 与 Linux
 - global installation and CLI help / 全局安装与 CLI help
 - packaged server startup against a test project and synthetic Codex home / 针对测试项目与合成 Codex home 启动 packaged server
 - root HTML and `/api/state` / 根 HTML 与 `/api/state`
-- registry metadata and the absence of an unintended `latest` promotion / registry metadata，以及未发生意外的 `latest` 提升
+- registry metadata and expected dist-tags: unchanged prior `latest` for an established package, or the recorded automatic `latest` for an inaugural package / registry metadata 与预期 dist-tag：已有 package 的既有 `latest` 保持不变，或首发 package 已记录的自动 `latest`
 
 Do not use real transcripts for public release verification. / 公共发布验证不得使用真实 transcript。
 
 ### 10. Promote the verified version / 提升已验证版本
 
-Only after Windows and Linux exact-version verification succeeds:
+For an established package, only after Windows and Linux exact-version verification succeeds:
 
-只有 Windows 与 Linux 精确版本验证成功后：
+对于已有 package，只有 Windows 与 Linux 精确版本验证成功后：
 
 Start a second fresh isolated authentication session using step 8's setup, pre-login `ENEEDAUTH` proof, login, and `finally` cleanup control flow. Do **not** execute step 8's publish command again; replace its publish lines with the following single authenticated mutation before running the block: / 使用第 8 步的 setup、登录前 `ENEEDAUTH` 证明、登录与 `finally` 清理控制流，建立第二个全新的隔离认证会话。**不得**再次执行第 8 步的 publish 命令；运行该 block 前，必须把其中的 publish 行替换为以下唯一的认证 mutation：
 
@@ -437,7 +443,7 @@ finally {
 }
 ```
 
-The promotion is another human-controlled registry mutation and may require 2FA; the final `dist-tag ls` is read-only and must be demonstrably unauthenticated. Confirm that both `next` and `latest` point to the intended version, or remove/update `next` according to the version-specific plan. / 提升是另一个由人工控制的 registry mutation，可能需要 2FA；最终 `dist-tag ls` 是只读操作，且必须可证明未认证。确认 `next` 与 `latest` 都指向预期版本，或按照版本专属计划移除/更新 `next`。
+The promotion is another human-controlled registry mutation and may require 2FA; the final `dist-tag ls` is read-only and must be demonstrably unauthenticated. If the anonymous post-publication read already shows an inaugural package's automatic `latest` at the intended version, do **not** perform a redundant authenticated promotion: skip directly to the final anonymous tag evidence and record the first-publication exception. Otherwise confirm that promotion moved `latest` as intended. In either case, retain, remove, or update `next` according to the version-specific plan. / 提升是另一个由人工控制的 registry mutation，可能要求 2FA；最终 `dist-tag ls` 是只读操作，且必须可证明未认证。如果发布后的匿名读取已经显示首发 package 的自动 `latest` 指向预期版本，**不得**执行多余的认证提升：应直接进入最终匿名 tag 证据，并记录首发例外。否则应确认提升按预期移动了 `latest`。无论哪种情况，都应按版本专属计划保留、移除或更新 `next`。
 
 ### 11. Create the release tag and GitHub Release / 创建 release tag 与 GitHub Release
 
@@ -455,7 +461,7 @@ Create the GitHub Release from that tag and use the bilingual changelog entry as
 - Record all public verification evidence and URLs. / 记录全部公共验证证据与 URL。
 - Record any warning, retry, exception, deprecation, or dist-tag correction. / 记录任何 warning、retry、exception、deprecation 或 dist-tag 修正。
 - Update the trusted-publishing debt status if automation changed. / 如果自动化发生变化，更新 trusted-publishing 技术债状态。
-- Move the active plan to `completed/` only after publication, public verification, promotion, tag, and GitHub Release are all complete. / 只有发布、公共验证、提升、tag 与 GitHub Release 全部完成后，才把 active plan 移到 `completed/`。
+- Move the active plan to `completed/` only after publication, public verification, any required promotion (or a documented inaugural automatic-`latest` exception), tag, and GitHub Release are all complete. / 只有发布、公共验证、任何必要的提升（或已记录的首发自动 `latest` 例外）、tag 与 GitHub Release 全部完成后，才把 active plan 移到 `completed/`。
 
 ## Release evidence template / 发布证据模板
 
@@ -531,6 +537,8 @@ Registry publication:
 - Public verification ENEEDAUTH precondition:
 - Windows public smoke:
 - Linux public smoke:
+- Public-smoke exception and substitute evidence:
+- Automatic inaugural latest observed:
 - Promoted to latest:
 - Promotion-session logout exit:
 - Promotion-session post-logout ENEEDAUTH:
@@ -561,7 +569,7 @@ Do not bypass `ESTRICTALLOWSCRIPTS` with `--dangerously-allow-all-scripts`. Firs
 
 ### Published under `next` but verification fails / 已以 `next` 发布但验证失败
 
-- Do not promote it to `latest`. / 不得提升到 `latest`。
+- For an established package, do not promote it to `latest`. For an inaugural package, first determine whether the registry already assigned automatic `latest`; if so, treat the failed version as already exposed by default and begin incident response immediately. / 对已有 package，不得把它提升到 `latest`。对于首发 package，应先确认 registry 是否已经自动分配 `latest`；如果是，则必须按该失败版本已经成为默认版本处理，并立即启动 incident response。
 - Deprecate the exact version with a precise message when useful. / 必要时使用精确消息 deprecate 该版本。
 - Fix the repository and publish a new patch version. / 修复仓库并发布新的 patch 版本。
 - Do not attempt to overwrite or reuse the failed version. / 不得尝试覆盖或复用失败版本。
@@ -579,6 +587,7 @@ Unpublish is not the normal rollback mechanism. npm registry versions are immuta
 - `npm publish <file.tgz>` bypasses this repository's intended `prepublishOnly` gate in the verified npm 12 workflow. / 在已验证的 npm 12 流程中，`npm publish <file.tgz>` 会绕过本仓库预期的 `prepublishOnly` gate。
 - `npm publish` without `--tag='next'` assigns `latest` by default. / `npm publish` 不带 `--tag='next'` 时默认分配 `latest`。
 - `next` is public and immediately installable; it is not npm staged publishing. / `next` 是公开且可立即安装的版本，不等同于 npm staged publishing。
+- An inaugural registry package must have `latest`; the first direct publish can therefore create `latest` for the only version even when `--tag='next'` also creates `next`. Ordinary dist-tags cannot provide a non-default first-release holding area. / Registry 中首次建立的 package 必须存在 `latest`；因此第一次直接 publish 即使通过 `--tag='next'` 同时创建 `next`，仍可能把唯一版本创建为 `latest`。普通 dist-tag 无法为首发提供不影响默认安装的 holding area。
 - `--ignore-scripts` disables the lifecycle protection. / `--ignore-scripts` 会禁用生命周期保护。
 - npm 12 blocks unreviewed dependency install scripts by default, but only `strict-allow-scripts=true` turns a newly pending script into a failed install; warnings alone are not an accepted release gate. / npm 12 默认阻止未审查的依赖 install script，但只有 `strict-allow-scripts=true` 会让新的 pending script 导致安装失败；仅产生 warning 不能作为获接受的发布 gate。
 - npm 10/11 must not be assumed to enforce npm 12's install-script policy. Pin and print npm 12.0.2 before every CI install and match the version-specific `devEngines` locally. / 不得假设 npm 10/11 会执行 npm 12 的 install-script 策略。每次 CI 安装前都必须固定并打印 npm 12.0.2，本地则必须匹配版本计划的 `devEngines`。
@@ -588,6 +597,7 @@ Unpublish is not the normal rollback mechanism. npm registry versions are immuta
 - `npm login` writes a registry credential to the configured user `.npmrc`; using the normal userconfig leaves a reusable release credential behind. / `npm login` 会把 registry 凭据写入配置的 user `.npmrc`；使用日常 userconfig 会留下可复用的发布凭据。
 - Deleting `.npmrc` removes only the local copy. A successful `npm logout` or explicit server-side token revocation is required to invalidate the registry credential. / 删除 `.npmrc` 只会移除本地副本；必须成功执行 `npm logout` 或显式进行服务端 token 撤销，才能使 registry 凭据失效。
 - One login must not span publication, public verification, and `latest` promotion. Separate short-lived sessions reduce credential exposure and make the public check genuinely unauthenticated. / 一次登录不得横跨发布、公共验证与 `latest` 提升。分离的短时会话能够缩短凭据暴露时间，并让公共检查真正处于无认证状态。
+- A PowerShell `finally` block is not a standalone command. Paste and run the complete authentication block at once; if cleanup syntax is split accidentally, stop, run explicit logout/`ENEEDAUTH`/directory-removal recovery, and record the incident before public verification. / PowerShell 的 `finally` block 不是独立命令。必须一次性粘贴并运行完整认证 block；如果误把 cleanup 语法拆开，立即停止，显式执行 logout、`ENEEDAUTH` 与目录删除恢复，并在公共验证前记录该事件。
 - A candidate `.tgz` inside the worktree makes the tree dirty and can be overwritten or removed by later package-smoke runs. / 工作树内的候选 `.tgz` 会使工作树变脏，并可能被后续 package-smoke 覆盖或删除。
 - npm 11 and npm 12 use different `npm pack --json` top-level shapes; repository package-smoke normalization supports both, but hand-written parsers must not assume one shape. / npm 11 与 npm 12 使用不同的 `npm pack --json` 顶层形态；仓库 package-smoke normalization 已兼容两者，但手写 parser 不得只假设其中一种。
 - A package-name `E404` is not a reservation; recheck immediately before first publication. / Package 名 `E404` 不构成保留；首次发布前必须立即复查。
@@ -609,7 +619,7 @@ Unpublish is not the normal rollback mechanism. npm registry versions are immuta
 ### Publish directly to `latest` / 直接发布到 `latest`
 
 - Advantage: fewer registry mutations. / 优点：registry mutation 更少。
-- Rejected: exact-version Windows/Linux verification should happen before the version becomes the default install target. / 已拒绝：版本成为默认安装目标前，应先完成精确版本的 Windows/Linux 验证。
+- Rejected for established-package releases: exact-version Windows/Linux verification should happen before the version becomes the default install target. For an inaugural direct publish, the registry's required automatic `latest` removes this distinction; staged publishing is the future option when a true first-release approval boundary is required. / 对已有 package 的发布已拒绝：版本成为默认安装目标前，应先完成精确版本的 Windows/Linux 验证。对于首次直接 publish，registry 要求的自动 `latest` 会消除这一区别；如果首发确实需要真正的审批边界，未来应使用 staged publishing。
 
 ### Create the Git tag before npm publication / 在 npm 发布前创建 Git tag
 
@@ -625,6 +635,7 @@ Unpublish is not the normal rollback mechanism. npm registry versions are immuta
 
 - npm scripts and lifecycle order: `https://docs.npmjs.com/cli/v11/using-npm/scripts/`
 - npm publish: `https://docs.npmjs.com/cli/publish/`
+- npm registry package metadata (`latest` requirement): `https://github.com/npm/registry/blob/master/docs/responses/package-metadata.md`
 - npm login: `https://docs.npmjs.com/cli/v12/commands/npm-login/`
 - npm logout: `https://docs.npmjs.com/cli/v12/commands/npm-logout/`
 - Revoking access tokens: `https://docs.npmjs.com/revoking-access-tokens/`
@@ -641,6 +652,7 @@ Unpublish is not the normal rollback mechanism. npm registry versions are immuta
 ## Decision log / 决策日志
 
 - 2026-07-31: Accepted clean-tree, directory-based manual publication as the only supported direct `npm publish` path. Candidate tarballs remain inspection evidence and must not be passed to the irreversible command. This decision followed a review finding and an npm 12.0.2 dry-run reproduction showing that positional tarball publication skipped `prepublishOnly`. / 2026-07-31：接受基于干净工作树、从目录执行的手动发布，作为唯一受支持的直接 `npm publish` 路径。候选 tarball 继续作为检查证据，不得传给不可逆命令。该决策源于一次 review finding，以及 npm 12.0.2 dry-run 复现：带位置 tarball 的发布会跳过 `prepublishOnly`。
-- 2026-07-31: Retained `next` as the live pre-promotion dist-tag, with exact-version Windows/Linux verification required before `latest`. / 2026-07-31：保留 `next` 作为提升前的公开 dist-tag，并要求在进入 `latest` 前完成精确版本的 Windows/Linux 验证。
+- 2026-07-31: Retained `next` as the live pre-promotion dist-tag for established-package releases, with exact-version Windows/Linux verification required before moving the existing `latest`. / 2026-07-31：对于已有 package 的发布，保留 `next` 作为提升前的公开 dist-tag，并要求在移动既有 `latest` 前完成精确版本的 Windows/Linux 验证。
 - 2026-07-31: Required isolated, short-lived manual authentication sessions for publication and promotion. Each session must begin with an unauthenticated `ENEEDAUTH` proof, perform one registry mutation, end with `npm logout`, remove its temporary userconfig, and prove `ENEEDAUTH` again; public verification runs between the two sessions without credentials. / 2026-07-31：要求发布与提升分别使用隔离、短时的手动认证会话。每个会话都必须以无认证的 `ENEEDAUTH` 证明开始，仅执行一次 registry mutation，以 `npm logout` 结束，删除临时 userconfig，并再次证明 `ENEEDAUTH`；两次会话之间的公共验证不携带凭据。
+- 2026-08-01: Recorded the inaugural-package exception after `session-analyzer@0.1.2` was published with `--tag='next'` and the registry created both `next` and required `latest` at `0.1.2`. Future first-package direct releases must treat all pre-publication gates as the last blocking boundary, skip redundant promotion when anonymous evidence already shows the intended automatic `latest`, and use npm staged publishing when a true pre-default approval boundary is required. / 2026-08-01：记录首发 package 例外：`session-analyzer@0.1.2` 使用 `--tag='next'` 发布后，registry 同时把 `next` 与必需的 `latest` 创建为 `0.1.2`。今后首次直接发布 package 时，必须把全部发布前 gate 视为最后一道阻塞边界；如果匿名证据已显示预期的自动 `latest`，则跳过多余 promotion；若需要真正的默认发布前审批边界，则使用 npm staged publishing。
 - 2026-08-01: Required npm 12.0.2 strict default-deny dependency install-script enforcement for source, CI, and release preparation. Every lockfile `hasInstallScript` entry must have an exact approval or explicit denial, CI must bootstrap the approved npm before `npm ci --strict-allow-scripts`, and `--dangerously-allow-all-scripts` is forbidden. / 2026-08-01：要求源码环境、CI 与发布准备使用 npm 12.0.2 strict 默认拒绝依赖 install-script 策略。Lockfile 中每个 `hasInstallScript` 条目都必须具有精确允许或明确拒绝；CI 必须在 `npm ci --strict-allow-scripts` 前 bootstrap 获批 npm；并禁止使用 `--dangerously-allow-all-scripts`。
