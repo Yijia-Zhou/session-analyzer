@@ -123,9 +123,14 @@ test('CI pins npm before every strict dependency installation', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
   const bootstrap = 'npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/';
   const strictInstall = 'npm ci --strict-allow-scripts';
+  const isolatedBootstrapDirectory = 'working-directory: ${{ runner.temp }}';
+  const disabledSetupNodeCache = 'package-manager-cache: false';
 
   assert.equal(workflow.split(bootstrap).length - 1, 3);
   assert.equal(workflow.split(strictInstall).length - 1, 3);
+  assert.equal(workflow.split(isolatedBootstrapDirectory).length - 1, 3);
+  assert.equal(workflow.split(disabledSetupNodeCache).length - 1, 3);
+  assert.doesNotMatch(workflow, /^\s+cache:\s*npm\s*$/mu);
 });
 
 test('packaged third-party notice preserves the Highlight.js license', () => {
