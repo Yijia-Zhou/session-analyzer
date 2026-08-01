@@ -17,6 +17,9 @@ No unreleased changes. / 暂无未发布变更。
 - Timeline loading, generated-asset ownership, tool lifecycle admission, detail presentation, and large-index behavior now have deterministic contracts, profiling fixtures, and expanded regression coverage.
 - Windows and POSIX absolute transcript paths are now interpreted by their own path syntax regardless of the host OS, keeping repository containment and project-file display stable in cross-platform replay.
 - The Markdown runtime and esbuild development dependency floors now include upstream complexity-denial-of-service and Windows development-server file-read fixes.
+- Direct runtime dependencies are pinned to the versions exercised by the release gates, while the prebuilt Highlight.js vendor asset keeps its build-only package out of consumer installations.
+- Dependency installation now uses npm 12.0.2's strict, default-deny `allowScripts` policy: only exact `esbuild@0.28.1` may run an install script, optional `fsevents` is explicitly denied, and every CI job pins the reviewed npm toolchain before a clean install.
+- Source setup now documents the required npm 12.0.2 bootstrap before strict installation, redistributed Highlight.js assets retain their complete BSD notice in the package, and final dist-tag evidence is collected through a separately proven anonymous npm configuration.
 - The public package requires Node.js 22 or newer, pins publication and package-smoke installation to the public registry, adds a repeatable prepublish release gate, supports both npm 11 and npm 12 pack manifests, and introduces Linux/Windows CI for Node, browser, and installed-package validation.
 
 ### 中文
@@ -30,6 +33,9 @@ No unreleased changes. / 暂无未发布变更。
 - 时间线加载、生成资产 ownership、工具生命周期准入、详情呈现与大型索引行为现在具有确定性契约、profiling fixture 和更完整的回归覆盖。
 - Windows 与 POSIX transcript 绝对路径现在会独立于宿主操作系统，按路径自身的语法解释，使跨平台 replay 中的仓库包含判断与项目文件显示保持稳定。
 - Markdown 运行时与 esbuild 开发依赖下限现在包含上游复杂度拒绝服务和 Windows 开发服务器文件读取修复。
+- 直接运行时依赖已固定为发布 gate 实际验证的版本；预构建的 Highlight.js vendor asset 则使其仅构建期 package 不再进入用户安装树。
+- 依赖安装现在采用 npm 12.0.2 的 strict、默认拒绝 `allowScripts` 策略：只有精确的 `esbuild@0.28.1` 可以运行 install script，可选的 `fsevents` 被明确拒绝，且每个 CI job 都会在干净安装前固定经过审查的 npm 工具链。
+- 源码安装现在说明在 strict 安装前 bootstrap 所需 npm 12.0.2；再分发的 Highlight.js 资产会在 package 中保留完整 BSD notice；最终 dist-tag 证据则通过单独证明为匿名的 npm configuration 获取。
 - 公共 package 要求 Node.js 22 或更高版本，把发布与 package-smoke 安装固定到公共 registry，增加可重复的 prepublish release gate，兼容 npm 11 与 npm 12 的 pack manifest，并引入覆盖 Linux/Windows 的 Node、browser 与安装后 package CI。
 
 ## 0.1.0 - 2026-06-18

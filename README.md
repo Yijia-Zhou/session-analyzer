@@ -30,8 +30,8 @@ Codex transcripts can contain prompts, command output, file paths, environment d
 
 ## Requirements
 
-- A supported Node.js LTS release, Node.js 22 or newer (Node.js 24 recommended)
-- npm
+- Installed CLI: a supported Node.js LTS release, Node.js 22 or newer (Node.js 24 recommended), plus npm for installation
+- Source development and release work: Node.js `^22.22.2 || ^24.15.0` and exactly npm `12.0.2`
 
 ## Run With npm
 
@@ -76,11 +76,22 @@ The default host is `127.0.0.1`. `--host` is an advanced option; binding outside
 
 ## Develop From Source
 
-Install dependencies:
+The published CLI keeps the broader Node.js 22-or-newer runtime requirement above. A source checkout is deliberately stricter because npm 12 enforces the reviewed dependency install-script policy. Before any repository-local `npm install`, `npm ci`, or `npm run`, select a supported Node.js version and, from a directory outside the source checkout, bootstrap the exact npm CLI globally. This first npm command updates the toolchain and does not install project dependencies:
 
 ```sh
-npm install
+node --version
+npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/
+npm --version
 ```
+
+Return to the source checkout only after the bootstrap. Do not continue unless Node.js satisfies `^22.22.2 || ^24.15.0` and `npm --version` prints exactly `12.0.2`. Then install the locked dependencies under the strict default-deny script policy:
+
+```sh
+npm ci --strict-allow-scripts --registry=https://registry.npmjs.org/
+npm install-scripts ls --json
+```
+
+The final command must report no pending install scripts.
 
 Start from a source checkout:
 

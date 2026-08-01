@@ -40,7 +40,10 @@ jobs:
           registry-url: https://registry.npmjs.org/
           cache: npm
 
-      - run: npm ci
+      - name: Pin npm release toolchain
+        run: npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/
+      - run: npm --version
+      - run: npm ci --strict-allow-scripts
       - run: npm run build:check
       - run: npm test
 
@@ -64,7 +67,10 @@ jobs:
           registry-url: https://registry.npmjs.org/
           cache: npm
 
-      - run: npm ci
+      - name: Pin npm release toolchain
+        run: npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/
+      - run: npm --version
+      - run: npm ci --strict-allow-scripts
       - run: npm run test:package
 
   browser:
@@ -81,6 +87,32 @@ jobs:
           registry-url: https://registry.npmjs.org/
           cache: npm
 
-      - run: npm ci
+      - name: Pin npm release toolchain
+        run: npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/
+      - run: npm --version
+      - run: npm ci --strict-allow-scripts
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
+
+  ci:
+    name: ci
+    if: ${{ always() }}
+    needs:
+      - node
+      - package
+      - browser
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Require all CI jobs to succeed
+        env:
+          NODE_RESULT: ${{ needs.node.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+        run: |
+          echo "node=$NODE_RESULT"
+          echo "package=$PACKAGE_RESULT"
+          echo "browser=$BROWSER_RESULT"
+          test "$NODE_RESULT" = 'success'
+          test "$PACKAGE_RESULT" = 'success'
+          test "$BROWSER_RESULT" = 'success'

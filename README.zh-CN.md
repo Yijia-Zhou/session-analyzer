@@ -30,8 +30,8 @@ Codex 转录可能包含提示词、命令输出、文件路径、环境详情�
 
 ## 环境要求
 
-- 受支持的 Node.js LTS，最低 Node.js 22（推荐 Node.js 24）
-- npm
+- 已安装 CLI：受支持的 Node.js LTS，最低 Node.js 22（推荐 Node.js 24），以及用于安装的 npm
+- 源码开发与发布工作：Node.js `^22.22.2 || ^24.15.0`，并且 npm 必须精确为 `12.0.2`
 
 ## 通过 npm 运行
 
@@ -76,11 +76,22 @@ session-analyzer --repo /path/to/project
 
 ## 从源码开发
 
-安装依赖：
+已发布 CLI 继续采用上文 Node.js 22 或更高版本的宽泛运行时要求。源码 checkout 有意采用更严格的工具链，因为 npm 12 会执行经过审查的依赖 install-script 策略。在运行仓库内任何 `npm install`、`npm ci` 或 `npm run` 前，先选择受支持的 Node.js 版本，并从源码 checkout 之外的目录全局 bootstrap 精确的 npm CLI。下面第一条 npm 命令只更新工具链，不安装项目依赖：
 
 ```sh
-npm install
+node --version
+npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/
+npm --version
 ```
+
+完成 bootstrap 后才能返回源码 checkout。只有 Node.js 满足 `^22.22.2 || ^24.15.0` 且 `npm --version` 精确输出 `12.0.2` 时才能继续。随后在 strict 默认拒绝脚本策略下安装 lockfile 固定的依赖：
+
+```sh
+npm ci --strict-allow-scripts --registry=https://registry.npmjs.org/
+npm install-scripts ls --json
+```
+
+最后一条命令不得报告 pending install script。
 
 从源码仓库启动：
 
