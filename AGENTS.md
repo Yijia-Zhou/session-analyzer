@@ -47,7 +47,7 @@ When changing product behavior or repository structure:
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Active plans:
-  - None / 无
+  - `docs/exec-plans/active/2026-08-02-npm-trusted-publishing.md`
 - Completed plans:
   - `docs/exec-plans/completed/2026-07-31-first-public-npm-release.md`
   - `docs/exec-plans/completed/2026-07-31-planning-semantic-facet.md`

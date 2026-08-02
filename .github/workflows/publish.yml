@@ -1,0 +1,205 @@
+name: Stage npm release
+run-name: Stage session-analyzer@${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable package version already recorded in package.json
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-stage-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify release candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      candidate_sha256: ${{ steps.candidate.outputs.sha256 }}
+      source_sha: ${{ steps.identity.outputs.source_sha }}
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org/
+          package-manager-cache: false
+
+      - name: Pin npm release toolchain
+        working-directory: ${{ runner.temp }}
+        run: npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/
+
+      - run: npm --version
+
+      - name: Verify source and release identity
+        id: identity
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/main'
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(node -p "require('./package.json').name")" = 'session-analyzer'
+          test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
+          test "$(node -p "require('./package.json').repository.url")" = 'git+https://github.com/Yijia-Zhou/session-analyzer.git'
+          test -z "$(git status --porcelain)"
+          echo "source_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Require an unused registry version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          set +e
+          view_output="$(npm view "session-analyzer@$RELEASE_VERSION" version --registry=https://registry.npmjs.org/ 2>&1)"
+          view_status=$?
+          set -e
+          if [[ "$view_status" -eq 0 ]]; then
+            echo "session-analyzer@$RELEASE_VERSION already exists" >&2
+            exit 1
+          fi
+          if ! grep -Eqi '\bE404\b' <<<"$view_output"; then
+            printf '%s\n' "$view_output" >&2
+            exit "$view_status"
+          fi
+
+      - run: npm ci --strict-allow-scripts
+      - run: npm run release:check
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - run: npm audit --omit=dev --registry=https://registry.npmjs.org/
+      - run: npm audit --registry=https://registry.npmjs.org/
+
+      - name: Exercise the guarded directory publication path
+        run: npm publish --dry-run --foreground-scripts --tag=latest --access=public --registry=https://registry.npmjs.org/
+
+      - name: Record the verified candidate hash
+        id: candidate
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          candidate_dir="$RUNNER_TEMP/session-analyzer-release-candidate"
+          manifest_path="$RUNNER_TEMP/session-analyzer-release-candidate.json"
+          mkdir -p "$candidate_dir"
+          npm pack --ignore-scripts --json --pack-destination "$candidate_dir" > "$manifest_path"
+          filename="$(node -e 'const fs = require("node:fs"); const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const entries = Array.isArray(value) ? value : Object.values(value); if (entries.length !== 1 || !entries[0].filename) process.exit(1); process.stdout.write(entries[0].filename);' "$manifest_path")"
+          test "$filename" = "session-analyzer-$RELEASE_VERSION.tgz"
+          candidate_path="$candidate_dir/$filename"
+          sha256="$(sha256sum "$candidate_path" | awk '{print $1}')"
+          test -n "$sha256"
+          test -z "$(git status --porcelain)"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Verified npm release candidate'
+            echo
+            echo "- Source: \`$GITHUB_SHA\`"
+            echo "- Package: \`session-analyzer@$RELEASE_VERSION\`"
+            echo "- SHA-256: \`$sha256\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  stage:
+    name: Stage npm release
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.verify.outputs.source_sha }}
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org/
+          package-manager-cache: false
+
+      - name: Pin npm release toolchain
+        working-directory: ${{ runner.temp }}
+        run: npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/
+
+      - run: npm --version
+
+      - name: Reproduce the verified candidate without project scripts
+        id: candidate
+        shell: bash
+        env:
+          EXPECTED_SHA256: ${{ needs.verify.outputs.candidate_sha256 }}
+          EXPECTED_SOURCE_SHA: ${{ needs.verify.outputs.source_sha }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/main'
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(node -p "require('./package.json').name")" = 'session-analyzer'
+          test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
+          test "$(node -p "require('./package.json').repository.url")" = 'git+https://github.com/Yijia-Zhou/session-analyzer.git'
+          test -z "$(git status --porcelain)"
+          candidate_dir="$RUNNER_TEMP/session-analyzer-stage-candidate"
+          manifest_path="$RUNNER_TEMP/session-analyzer-stage-candidate.json"
+          mkdir -p "$candidate_dir"
+          npm pack --ignore-scripts --json --pack-destination "$candidate_dir" > "$manifest_path"
+          filename="$(node -e 'const fs = require("node:fs"); const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const entries = Array.isArray(value) ? value : Object.values(value); if (entries.length !== 1 || !entries[0].filename) process.exit(1); process.stdout.write(entries[0].filename);' "$manifest_path")"
+          test "$filename" = "session-analyzer-$RELEASE_VERSION.tgz"
+          candidate_path="$candidate_dir/$filename"
+          actual_sha256="$(sha256sum "$candidate_path" | awk '{print $1}')"
+          test "$actual_sha256" = "$EXPECTED_SHA256"
+          echo "path=$candidate_path" >> "$GITHUB_OUTPUT"
+
+      - name: Reconfirm the registry version is unused
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          set +e
+          view_output="$(npm view "session-analyzer@$RELEASE_VERSION" version --registry=https://registry.npmjs.org/ 2>&1)"
+          view_status=$?
+          set -e
+          if [[ "$view_status" -eq 0 ]]; then
+            echo "session-analyzer@$RELEASE_VERSION already exists" >&2
+            exit 1
+          fi
+          if ! grep -Eqi '\bE404\b' <<<"$view_output"; then
+            printf '%s\n' "$view_output" >&2
+            exit "$view_status"
+          fi
+
+      - name: Submit the verified bytes for 2FA approval
+        env:
+          CANDIDATE_PATH: ${{ steps.candidate.outputs.path }}
+        run: npm stage publish "$CANDIDATE_PATH" --tag=latest --access=public --registry=https://registry.npmjs.org/
+
+      - name: Record the human approval boundary
+        env:
+          CANDIDATE_SHA256: ${{ needs.verify.outputs.candidate_sha256 }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          {
+            echo '### npm staged package created'
+            echo
+            echo "- Package: \`session-analyzer@$RELEASE_VERSION\`"
+            echo "- SHA-256: \`$CANDIDATE_SHA256\`"
+            echo '- Next: review or download the staged package on npmjs.com, then approve it with maintainer 2FA.'
+          } >> "$GITHUB_STEP_SUMMARY"
