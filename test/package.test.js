@@ -139,7 +139,9 @@ test('CI pins npm before every strict dependency installation', () => {
 });
 
 test('trusted publishing stages only verified bytes behind a human approval boundary', () => {
-  const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'publish.yml'), 'utf8');
+  const workflow = fs
+    .readFileSync(path.join(repoRoot, '.github', 'workflows', 'publish.yml'), 'utf8')
+    .replace(/\r\n?/gu, '\n');
   const stageStart = workflow.indexOf('\n  stage:\n');
   const verify = workflow.slice(0, stageStart);
   const stage = workflow.slice(stageStart);
