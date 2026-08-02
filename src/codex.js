@@ -6,12 +6,20 @@ const path = require('node:path');
 const readline = require('node:readline');
 const MarkdownIt = require('markdown-it');
 const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
+const {
+  DATA_URL_MARKER: TOOL_DATA_URL_MARKER,
+  redactEmbeddedBase64DataUrls,
+  redactEmbeddedDataUrls,
+  sanitizeLogicalDetailValue: sanitizeToolValue,
+  uniqueSanitizedObjectKey,
+} = require('./shared/logical-detail-sanitizer');
 const agentCoordination = require('./shared/agent-coordination');
 const codeModeTools = require('./shared/code-mode-tools');
 const codeModePresentationContract = require('./shared/code-mode-presentation-contract');
 const planFacet = require('./shared/plan-facet');
 const toolLifecycleContract = require('./codex-tool-lifecycle-contract');
 const i18n = require('./shared/i18n');
+const fsPath = require('./shared/fs-path');
 const {
   codeModeAssociableOutputFragments,
   codeModeDisplayOutputText,
@@ -56,7 +64,6 @@ const {
 const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
 const SECTION_TYPES = new Set(['markdown', 'code', 'terminal', 'json', 'diff', 'patch', 'kv', 'notice', 'raw_json', 'token_usage', 'usage_limits', 'user_input', 'plan_update', 'collaboration', 'image_preview', 'event_refs', 'code_mode_trace', 'code_mode_tool_projection', 'code_mode_source', 'web_request']);
-const TOOL_DATA_URL_MARKER = '[embedded data URL omitted; see raw refs]';
 const TIMELINE_DATA_URL_MARKER = '[data URL omitted]';
 const EMBEDDED_IMAGE_EXTERNALIZED_MARKER = '[embedded image payload externalized; open raw refs for source]';
 const IMAGE_PREVIEW_LIMIT = 8;
@@ -88,35 +95,23 @@ let markdownRenderer = null;
 let gb18030ReverseMap = null;
 
 function fsPathFlavor(input) {
-  const text = String(input || '');
-  if (/^(?:[A-Za-z]:[\\/]|\\\\)/.test(text)) return 'win32';
-  if (text.startsWith('/')) return 'posix';
-  return process.platform === 'win32' ? 'win32' : 'posix';
+  return fsPath.fsPathFlavor(input);
 }
 
 function fsPathApi(input) {
-  return fsPathFlavor(input) === 'win32' ? path.win32 : path.posix;
+  return fsPath.fsPathApi(input);
 }
 
 function resolveFsPath(input) {
-  const text = String(input || '');
-  if (!text) return '';
-  return fsPathApi(text).resolve(text);
+  return fsPath.resolveFsPath(input);
 }
 
 function normalizeFsPath(input) {
-  if (!input) return '';
-  const resolved = resolveFsPath(input);
-  return fsPathFlavor(input) === 'win32' ? resolved.toLowerCase() : resolved;
+  return fsPath.normalizeFsPath(input);
 }
 
 function isPathInsideOrSame(child, parent) {
-  if (!child || !parent || fsPathFlavor(child) !== fsPathFlavor(parent)) return false;
-  const c = normalizeFsPath(child);
-  const p = normalizeFsPath(parent);
-  const separator = fsPathApi(parent).sep;
-  const boundary = p.endsWith(separator) ? p : `${p}${separator}`;
-  return c === p || c.startsWith(boundary);
+  return fsPath.isPathInsideOrSame(child, parent);
 }
 
 function throwIfAborted(signal) {
@@ -1635,6 +1630,10 @@ function makeEmptySession(filePath, relFile, stat) {
   const idFromName = path.basename(filePath).match(UUID_RE)?.[1] || path.basename(filePath, '.jsonl');
   return {
     id: idFromName,
+    sourceKind: CODEX_SOURCE_KIND,
+    sourceSessionId: idFromName,
+    sourceClientVersion: '',
+    projectAssociation: 'embedded-cwd',
     title: '',
     sourceFile: relFile,
     sourceAbsFile: filePath,
@@ -2363,91 +2362,6 @@ function imagePresentationKey(value, mimeType) {
   return `${mimeType}:${source.length}:${(first >>> 0).toString(36)}:${(second >>> 0).toString(36)}`;
 }
 
-function embeddedBase64PayloadEnd(source, start) {
-  let index = start;
-  let malformed = false;
-  while (index < source.length) {
-    if (/["'<>`()\[\]{}]/.test(source[index])) break;
-    if (/\s/.test(source[index])) {
-      if (malformed) break;
-      let next = index;
-      while (next < source.length && /\s/.test(source[next])) next += 1;
-      let tokenEnd = next;
-      while (tokenEnd < source.length && !/[\s"'<>`()\[\]{}]/.test(source[tokenEnd])) tokenEnd += 1;
-      if (tokenEnd === next) break;
-      const token = source.slice(next, tokenEnd);
-      index = tokenEnd;
-      if (!/^[a-z0-9+/=_-]+$/i.test(token)) malformed = true;
-      continue;
-    }
-    if (!/[a-z0-9+/=_-]/i.test(source[index])) malformed = true;
-    index += 1;
-  }
-  return index;
-}
-
-function redactEmbeddedBase64DataUrls(value, headerPattern, marker, prefixGroup = 0) {
-  const source = String(value || '');
-  let cursor = 0;
-  let redacted = '';
-  headerPattern.lastIndex = 0;
-  for (let match = headerPattern.exec(source); match; match = headerPattern.exec(source)) {
-    redacted += source.slice(cursor, match.index);
-    if (prefixGroup) redacted += match[prefixGroup];
-    redacted += marker;
-    cursor = embeddedBase64PayloadEnd(source, headerPattern.lastIndex);
-    headerPattern.lastIndex = cursor;
-  }
-  return cursor ? redacted + source.slice(cursor) : source;
-}
-
-function embeddedNonBase64PayloadEnd(source, start) {
-  let index = start;
-  while (index < source.length) {
-    if (/["'<>]/.test(source[index]) || source.charCodeAt(index) === 96) break;
-    if (!/\s/.test(source[index])) {
-      index += 1;
-      continue;
-    }
-    const whitespaceStart = index;
-    while (index < source.length && /\s/.test(source[index])) index += 1;
-    const whitespace = source.slice(whitespaceStart, index);
-    // A literal space starts ordinary prose. Across other whitespace, continue
-    // only for high-confidence encoded or uppercase tokens. Lowercase prose wins
-    // over common punctuation so paths, snake_case, and URLs stay searchable.
-    if (!/[^ ]/.test(whitespace)) return whitespaceStart;
-    let tokenEnd = index;
-    while (tokenEnd < source.length && !/[\s"'<>]/.test(source[tokenEnd])
-      && source.charCodeAt(tokenEnd) !== 96) tokenEnd += 1;
-    const continuation = source.slice(index, tokenEnd);
-    const hasLetters = /[a-z]/i.test(continuation);
-    const hasLowercase = /[a-z]/.test(continuation);
-    const uppercaseToken = hasLetters && !hasLowercase;
-    const percentEncodedToken = /%[0-9a-f]{2}/i.test(continuation);
-    const symbolOrNumericToken = !hasLetters && /^[0-9+\/=_-]+$/.test(continuation);
-    if (!continuation || (!percentEncodedToken && !uppercaseToken && !symbolOrNumericToken)) {
-      return whitespaceStart;
-    }
-  }
-  return index;
-}
-
-function redactEmbeddedNonBase64DataUrls(value, marker) {
-  const source = String(value || '');
-  const headerPattern = /(^|[^a-z0-9_])data:[^,\s"'<>\x60]*,/gi;
-  let cursor = 0;
-  let redacted = '';
-  headerPattern.lastIndex = 0;
-  for (let match = headerPattern.exec(source); match; match = headerPattern.exec(source)) {
-    redacted += source.slice(cursor, match.index);
-    redacted += match[1];
-    redacted += marker;
-    cursor = embeddedNonBase64PayloadEnd(source, headerPattern.lastIndex);
-    headerPattern.lastIndex = cursor;
-  }
-  return cursor ? redacted + source.slice(cursor) : source;
-}
-
 function externalizeEmbeddedImages(value, source, images = [], jsonPath = [], seen = new WeakSet()) {
   if (typeof value === 'string') {
     const inspected = inspectSupportedImageDataUrl(value);
@@ -2515,60 +2429,6 @@ function imagePreviewUrl(sessionId, eventId, previewId) {
 function safeImagePreviewUrl(value) {
   const source = String(value || '');
   return /^\/api\/sessions\/[^/?#]+\/events\/[^/?#]+\/image-previews\/[^/?#]+$/.test(source) ? source : '';
-}
-
-function redactEmbeddedDataUrls(value, marker = TOOL_DATA_URL_MARKER) {
-  const source = String(value || '');
-  if (!/data:/i.test(source)) return source;
-  if (/^\s*data:[^,\s"'<>`]*,[\s\S]*$/i.test(source)) return marker;
-  const base64Redacted = redactEmbeddedBase64DataUrls(
-    source,
-    /(^|[^a-z0-9_])data:[^,\s"'<>`]*;base64,/gi,
-    marker,
-    1,
-  );
-  return redactEmbeddedNonBase64DataUrls(base64Redacted, marker);
-}
-
-function uniqueSanitizedObjectKey(key, usedKeys, marker) {
-  const sanitized = redactEmbeddedDataUrls(key, marker);
-  if (!usedKeys.has(sanitized)) {
-    usedKeys.add(sanitized);
-    return sanitized;
-  }
-  let suffix = 2;
-  while (usedKeys.has(`${sanitized} #${suffix}`)) suffix += 1;
-  const unique = `${sanitized} #${suffix}`;
-  usedKeys.add(unique);
-  return unique;
-}
-
-function sanitizeToolValue(value, options = {}, seen = new WeakMap()) {
-  const marker = options.marker || TOOL_DATA_URL_MARKER;
-  if (typeof value === 'string') {
-    if (options.previewSources?.has(value)) return '[embedded image available in preview]';
-    return redactEmbeddedDataUrls(value, marker);
-  }
-  if (!value || typeof value !== 'object') return value;
-  if (seen.has(value)) return '[circular value omitted]';
-  if (Array.isArray(value)) {
-    const sanitized = [];
-    seen.set(value, sanitized);
-    sanitized.push(...value.map((item) => sanitizeToolValue(item, options, seen)));
-    return sanitized;
-  }
-  const sanitized = {};
-  const usedKeys = new Set();
-  seen.set(value, sanitized);
-  for (const [key, item] of Object.entries(value)) {
-    Object.defineProperty(sanitized, uniqueSanitizedObjectKey(key, usedKeys, marker), {
-      value: sanitizeToolValue(item, options, seen),
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
-  }
-  return sanitized;
 }
 
 function imagePreviewSection(raws, event, requestValue) {
@@ -3937,7 +3797,10 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
       if (record.type === 'session_meta' && record.payload) {
         if (!primarySessionMetaSeen) {
           primarySessionMetaSeen = true;
-          if (record.payload.id) session.id = record.payload.id;
+          if (record.payload.id) {
+            session.id = record.payload.id;
+            session.sourceSessionId = record.payload.id;
+          }
           session.forkedFromSessionId = forkedFromSessionIdFromMeta(record.payload);
           session.parentSessionId = parentSessionIdFromMeta(record.payload);
           session.agentNickname = agentNicknameFromMeta(record.payload);
@@ -3970,6 +3833,8 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
       externalizeKnownImageGenerationResult(record, { file: relFile, line: lineNumber }, embeddedImages);
       externalizeEmbeddedImages(record, { file: relFile, line: lineNumber }, embeddedImages);
       const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages);
+      raw.sourceClientVersion = record.version || '';
+      if (!session.sourceClientVersion && record.version) session.sourceClientVersion = String(record.version);
       updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
       if (raw.recordType === 'event_msg' && raw.payloadType === 'entered_review_mode') {
         session._reviewMarkers.push({
@@ -4176,6 +4041,9 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
     elapsedMs: Date.now() - startedAt,
   });
   return {
+    sourceKind: CODEX_SOURCE_KIND,
+    sourceHome: resolvedCodex,
+    sourceRoot: sessionsRoot,
     repoRoot: resolvedRepo,
     codexHome: resolvedCodex,
     sessionsRoot,

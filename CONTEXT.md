@@ -6,6 +6,18 @@ This context describes the shared language for turning session transcripts into 
 
 ### Source history / 来源历史
 
+**Transcript Source / 转录来源**:
+The source system whose storage layout and runtime semantics produced a Session Transcript, such as Codex or Claude Code. / 生成会话转录、并决定其存储布局和运行时语义的来源系统，例如 Codex 或 Claude Code。
+_Avoid_: Provider, importer / 提供方、导入器
+
+**Source Session Identity / 来源会话标识**:
+The identity assigned to a Session by its Transcript Source; it is only assumed to be unique within that source's own identity boundary. / 转录来源为会话分配的标识；只假定它在该来源自身的标识边界内唯一。
+_Avoid_: Analyzer ID, global session ID / 分析器 ID、全局会话 ID
+
+**Analyzer Session Identity / 分析器会话标识**:
+The opaque identity used by Session Analyzer to distinguish primary and Derived Sessions across Transcript Sources without treating a source-provided ID as globally unique. / Session Analyzer 用于跨转录来源区分主要会话和派生会话的不透明标识，不把来源分配的 ID 当作全局唯一标识。
+_Avoid_: Source session ID, file name / 来源会话 ID、文件名
+
 **Session / 会话**:
 A bounded work history produced through one continuous interaction with an agent. / 通过与 agent 的一次连续交互形成的、有明确边界的工作历史。
 _Avoid_: Thread, conversation / 线程、对话
@@ -135,6 +147,14 @@ _Avoid_: Fork Session, child transcript / 分叉会话、子转录
 **Fork Session / 分叉会话**:
 A user-created Session that branches from an earlier Session and continues as primary work in its own right. / 用户从较早会话分支创建、并作为独立主要工作继续进行的会话。
 _Avoid_: Derived Session, subagent session / 派生会话、subagent 会话
+
+**Pointer Fork Session / 指针式分叉会话**:
+A Fork Session whose source history refers to inherited parent history instead of storing that history again as child-owned Raw Records. / 来源历史通过引用继承的父会话历史、而不是把该历史再次存为 child 所有原始记录的分叉会话。
+_Avoid_: Empty fork, metadata-only session / 空分叉、仅 metadata 会话
+
+**Inherited Session Context / 继承会话上下文**:
+The parent-owned history visible to a Fork Session at its fork point, presented with explicit parent traceability rather than as child-owned activity. / 分叉会话在分叉点可见、归父会话所有的历史；它以明确的父会话可追溯性呈现，而不是作为 child 所有的活动。
+_Avoid_: Copied child history, child Raw Records / 复制的 child 历史、child 原始记录
 
 ### Search boundaries / 搜索边界
 

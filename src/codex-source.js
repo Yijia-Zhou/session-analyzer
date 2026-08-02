@@ -32,12 +32,18 @@ function codexSourceLocator(source) {
   };
 }
 
+function sourceLocatorForRaw(raw) {
+  if (raw?.sourceLocator?.type) return raw.sourceLocator;
+  return codexSourceLocator(raw?.source);
+}
+
 function rawRef(raw) {
+  const sourceLocator = sourceLocatorForRaw(raw);
   return {
-    file: raw.source.file,
-    line: raw.source.line,
+    file: raw.source?.file || sourceLocator?.file || '',
+    line: raw.source?.line ?? sourceLocator?.line ?? null,
     rawId: raw.rawId,
-    sourceLocator: codexSourceLocator(raw.source),
+    sourceLocator,
     sourceRecordType: raw.recordType || '',
     sourceEventType: raw.payloadType || '',
   };
@@ -82,8 +88,10 @@ function createCodexRawParser(deps) {
     const raw = {
       rawId: `${sessionId}:raw:${lineNumber}`,
       sessionId,
+      sourceKind: CODEX_SOURCE_KIND,
       line: lineNumber,
       source: { file: relFile, line: lineNumber },
+      sourceLocator: codexSourceLocator({ file: relFile, line: lineNumber }),
       timestamp: safeIso(record.timestamp),
       turnId: payload.turn_id || '',
       recordType: record.type || '',
@@ -266,5 +274,6 @@ module.exports = {
   rawEventsForLogicalEvent,
   rawMatchesEvent,
   rawRef,
+  sourceLocatorForRaw,
   subAgentActivityEventId,
 };

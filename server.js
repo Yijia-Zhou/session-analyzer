@@ -7,7 +7,16 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const url = require('node:url');
-const { buildIndex, buildEventDetail, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getEvent, getTimeline, isPathInsideOrSame, normalizeCodeModeRequest, normalizeFsPath, readImagePreview, readRawLine } = require('./src/codex');
+const { fileSuggestions, filterSessions, getEvent, getTimeline, isPathInsideOrSame, normalizeCodeModeRequest, normalizeFsPath } = require('./src/codex');
+const {
+  SOURCE_KIND,
+  adapterForSession,
+  buildEventDetailForSession,
+  normalizeSourceKind,
+  readIndexedRawRecord,
+  requireSourceAdapter,
+  supportedSourceKinds,
+} = require('./src/source-adapters');
 const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
 
@@ -23,7 +32,9 @@ const MIME = {
 function parseArgs(argv) {
   const opts = {
     repo: null,
+    source: SOURCE_KIND.CODEX,
     codexHome: path.join(os.homedir(), '.codex'),
+    claudeHome: path.join(os.homedir(), '.claude'),
     port: 17890,
     host: '127.0.0.1',
     errors: [],
@@ -40,10 +51,16 @@ function parseArgs(argv) {
       reporoot: '--repo',
       project: '--repo',
       projectroot: '--repo',
+      source: '--source',
+      transcriptsource: '--source',
       codexhome: '--codex-home',
       codexpath: '--codex-home',
       codexdir: '--codex-home',
       codexdirectory: '--codex-home',
+      claudehome: '--claude-home',
+      claudepath: '--claude-home',
+      claudedir: '--claude-home',
+      claudedirectory: '--claude-home',
       port: '--port',
       host: '--host',
       hostname: '--host',
@@ -75,6 +92,17 @@ function parseArgs(argv) {
       }
       opts.repo = next;
       i += 1;
+    } else if (option === '--source') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push(`Missing value for --source. Expected one of: ${supportedSourceKinds().join(', ')}.`);
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
+      opts.source = normalizeSourceKind(next);
+      if (!supportedSourceKinds().includes(opts.source)) {
+        opts.errors.push(`Invalid value for --source: ${JSON.stringify(next)}. Expected one of: ${supportedSourceKinds().join(', ')}.`);
+      }
+      i += 1;
     } else if (option === '--codex-home') {
       if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
         opts.errors.push('Missing value for --codex-home. Expected a Codex home path.');
@@ -82,6 +110,14 @@ function parseArgs(argv) {
         continue;
       }
       opts.codexHome = next;
+      i += 1;
+    } else if (option === '--claude-home') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push('Missing value for --claude-home. Expected a Claude home path.');
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
+      opts.claudeHome = next;
       i += 1;
     } else if (option === '--port') {
       if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
@@ -114,14 +150,16 @@ function parseArgs(argv) {
 
 function printHelp() {
   console.log([
-    'Codex Session Analyzer',
+    'Session Analyzer',
     '',
     'Usage:',
-    '  session-analyzer [--repo <repo-path>] [--codex-home <path>] [--port <port>] [--host <host>]',
+    '  session-analyzer [--repo <repo-path>] [--source <source>] [--codex-home <path>] [--claude-home <path>] [--port <port>] [--host <host>]',
     '',
     'Options:',
     '  --repo <repo-path>     Repository to analyze. If omitted, select a project in the browser.',
+    '  --source <source>       Transcript source: codex or claude-code. Defaults to codex.',
     '  --codex-home <path>    Codex home directory. Defaults to ~/.codex.',
+    '  --claude-home <path>   Claude home directory. Used only with --source claude-code. Defaults to ~/.claude.',
     '  --port <port>          Local server port. Must be an integer from 1 to 65535. Defaults to 17890.',
     '  --host <host>          Advanced: bind host. Defaults to 127.0.0.1.',
     '',
@@ -129,6 +167,7 @@ function printHelp() {
     '  session-analyzer',
     '  session-analyzer --repo C:\\path\\to\\project',
     '  session-analyzer --repo C:\\path\\to\\project --codex-home C:\\Users\\you\\.codex --port 17890',
+    '  session-analyzer --source claude-code --repo C:\\path\\to\\project --claude-home C:\\Users\\you\\.claude',
     '',
     'Privacy:',
     '  The default host is 127.0.0.1. Binding to another host can expose transcript content',
@@ -209,7 +248,10 @@ function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
     locale: resolvedLocale,
     supportedLocales: i18n.SUPPORTED_LOCALES,
     repoRoot: state.index.repoRoot,
-    codexHome: state.index.codexHome,
+    sourceKind: state.index.sourceKind || state.sourceKind,
+    sourceHome: state.index.sourceHome || state.sourceHome,
+    codexHome: state.index.codexHome || state.index.sourceHome || state.sourceHome,
+    claudeHome: state.index.claudeHome || state.claudeHome,
     generatedAt: state.index.generatedAt,
     buildMs: state.buildMs,
     totals: state.index.totals,
@@ -237,7 +279,10 @@ function activeProjectJob(state) {
 function requireIndex(state, res) {
   if (state.index) return state.index;
   sendError(res, 409, 'Project not selected', {
+    sourceKind: state.sourceKind,
+    sourceHome: state.sourceHome,
     codexHome: state.codexHome,
+    claudeHome: state.claudeHome,
     projectSelected: false,
   });
   return null;
@@ -342,7 +387,10 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   const startedAt = Date.now();
   job.promise = state.buildIndex({
     repoRoot,
+    sourceKind: state.sourceKind,
+    sourceHome: state.sourceHome,
     codexHome: state.codexHome,
+    claudeHome: state.claudeHome,
     previousIndex: state.index,
     signal: controller.signal,
     onProgress: (progress) => {
@@ -405,14 +453,25 @@ function resolveStaticAssetPath(publicRoot, pathname) {
 
 function createServer(initialIndex = null, buildMs = 0, options = {}) {
   const debugErrors = options.debugErrors ?? process.env.SESSION_ANALYZER_DEBUG_ERRORS === '1';
+  const sourceKind = normalizeSourceKind(initialIndex?.sourceKind || options.sourceKind || options.source);
+  const adapter = requireSourceAdapter(sourceKind);
+  const codexHome = path.resolve(initialIndex?.codexHome || initialIndex?.codexHomePath || options.codexHome || path.join(os.homedir(), '.codex'));
+  const claudeHome = path.resolve(initialIndex?.claudeHome || options.claudeHome || path.join(os.homedir(), '.claude'));
+  const sourceHome = path.resolve(initialIndex?.sourceHome
+    || options.sourceHome
+    || (sourceKind === SOURCE_KIND.CLAUDE_CODE ? claudeHome : codexHome));
   const state = {
     index: initialIndex?.repoRoot ? initialIndex : null,
     buildMs: initialIndex?.repoRoot ? buildMs : 0,
-    codexHome: path.resolve(initialIndex?.codexHome || initialIndex?.codexHomePath || options.codexHome || path.join(os.homedir(), '.codex')),
+    sourceKind,
+    sourceHome,
+    codexHome,
+    claudeHome,
+    adapter,
     nextProjectJobId: 1,
     activeProjectJob: null,
     projectCache: null,
-    buildIndex: options.buildIndex || buildIndex,
+    buildIndex: options.buildIndex || ((context) => adapter.buildIndex(context)),
   };
   if (options.repo) startProjectJob(state, options.repo, options.locale);
 
@@ -421,19 +480,41 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       const { pathname, searchParams } = parseQuery(req.url);
       const locale = i18n.resolveLocale(searchParams.get('locale') || req.headers['accept-language']);
       if (pathname === '/api/projects') {
-        const configuredProjects = await discoverConfiguredProjects({ codexHome: state.codexHome });
+        const configuredProjects = await state.adapter.discoverConfiguredProjects({
+          sourceKind: state.sourceKind,
+          sourceHome: state.sourceHome,
+          codexHome: state.codexHome,
+          claudeHome: state.claudeHome,
+        });
         if (searchParams.get('summary') === '1') {
           const projects = mergeProjectLists(configuredProjects, state.projectCache?.projects || []);
-          sendJson(res, 200, { codexHome: state.codexHome, projects, summary: true, cached: Boolean(state.projectCache) });
+          sendJson(res, 200, {
+            sourceKind: state.sourceKind,
+            sourceHome: state.sourceHome,
+            codexHome: state.sourceHome,
+            projects,
+            summary: true,
+            cached: Boolean(state.projectCache),
+          });
           return;
         }
-        const scannedProjects = await discoverProjects({ codexHome: state.codexHome });
+        const scannedProjects = await state.adapter.discoverProjects({
+          sourceKind: state.sourceKind,
+          sourceHome: state.sourceHome,
+          codexHome: state.codexHome,
+          claudeHome: state.claudeHome,
+        });
         const projects = mergeProjectLists(configuredProjects, scannedProjects, { full: true });
         state.projectCache = {
           generatedAt: new Date().toISOString(),
           projects: projectCachePayload(projects),
         };
-        sendJson(res, 200, { codexHome: state.codexHome, projects });
+        sendJson(res, 200, {
+          sourceKind: state.sourceKind,
+          sourceHome: state.sourceHome,
+          codexHome: state.sourceHome,
+          projects,
+        });
         return;
       }
 
@@ -488,7 +569,9 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         if (activeJob) {
           const payload = {
             projectSelected: false,
-            codexHome: state.codexHome,
+            sourceKind: state.sourceKind,
+            sourceHome: state.sourceHome,
+            codexHome: state.sourceHome,
             job: projectJobPayload(activeJob),
           };
           if (state.index) {
@@ -591,7 +674,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           return;
         }
         const layer = searchParams.get('layer') || 'main';
-        const detail = buildEventDetail(session, decodePathSegment(detailMatch[2]), layer, { locale });
+        const detail = buildEventDetailForSession(session, decodePathSegment(detailMatch[2]), layer, { locale });
         if (!detail) {
           sendError(res, 404, 'Unknown event');
           return;
@@ -604,9 +687,15 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       if (imagePreviewMatch) {
         const index = requireIndex(state, res);
         if (!index) return;
-        const image = await readImagePreview(
+        const sessionId = decodePathSegment(imagePreviewMatch[1]);
+        const session = index.sessionsById.get(sessionId);
+        if (!session) {
+          sendError(res, 404, 'Unknown session');
+          return;
+        }
+        const image = await adapterForSession(session, index.sourceKind).readImagePreview(
           index,
-          decodePathSegment(imagePreviewMatch[1]),
+          sessionId,
           decodePathSegment(imagePreviewMatch[2]),
           decodePathSegment(imagePreviewMatch[3]),
         );
@@ -631,6 +720,24 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         return;
       }
 
+      const rawRecordMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/raw\/([^/]+)$/);
+      if (rawRecordMatch) {
+        const index = requireIndex(state, res);
+        if (!index) return;
+        const session = index.sessionsById.get(decodePathSegment(rawRecordMatch[1]));
+        if (!session) {
+          sendError(res, 404, 'Unknown session');
+          return;
+        }
+        const raw = await readIndexedRawRecord(index, session, decodePathSegment(rawRecordMatch[2]));
+        if (!raw) {
+          sendError(res, 404, 'Raw record not found');
+          return;
+        }
+        sendJson(res, 200, raw);
+        return;
+      }
+
       if (pathname === '/api/raw') {
         const index = requireIndex(state, res);
         if (!index) return;
@@ -640,7 +747,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sendError(res, 400, 'file and line are required');
           return;
         }
-        const raw = await readRawLine(index, file, line);
+        const raw = await state.adapter.readLegacyRawLine(index, file, line);
         if (!raw) {
           sendError(res, 404, 'Raw line not found');
           return;
@@ -675,16 +782,30 @@ async function main() {
     return;
   }
 
-  const server = createServer(null, 0, { codexHome: opts.codexHome, repo: opts.repo });
+  const server = createServer(null, 0, {
+    source: opts.source,
+    codexHome: opts.codexHome,
+    claudeHome: opts.claudeHome,
+    repo: opts.repo,
+  });
 
   server.listen(opts.port, opts.host, () => {
-    console.log(`Codex Session Analyzer: http://${opts.host}:${opts.port}`);
+    console.log(`Session Analyzer: http://${opts.host}:${opts.port}`);
+    console.log(`Transcript source: ${opts.source}`);
     if (opts.repo) {
       console.log(`Repo: indexing ${path.resolve(opts.repo)}`);
-      console.log(`Codex home: ${path.resolve(opts.codexHome)}`);
+      if (opts.source === SOURCE_KIND.CLAUDE_CODE) {
+        console.log(`Claude home: ${path.resolve(opts.claudeHome)}`);
+      } else {
+        console.log(`Codex home: ${path.resolve(opts.codexHome)}`);
+      }
     } else {
       console.log('Repo: select in browser');
-      console.log(`Codex home: ${path.resolve(opts.codexHome)}`);
+      if (opts.source === SOURCE_KIND.CLAUDE_CODE) {
+        console.log(`Claude home: ${path.resolve(opts.claudeHome)}`);
+      } else {
+        console.log(`Codex home: ${path.resolve(opts.codexHome)}`);
+      }
     }
   });
 }

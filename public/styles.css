@@ -2651,6 +2651,84 @@ body[data-project-mode='selecting'] .searchAssist {
   gap: 0.55rem;
 }
 
+.inheritedContextCard {
+  background: #f3f7f8;
+  border: 1px solid #cbdde3;
+  border-left: 4px solid #527f90;
+  border-radius: 7px;
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.8rem 0.9rem;
+  position: relative;
+  z-index: 1;
+}
+
+.inheritedContextHeader,
+.inheritedContextActions,
+.inheritedContextEventHeader {
+  align-items: center;
+  display: flex;
+  gap: 0.65rem;
+  justify-content: space-between;
+}
+
+.inheritedContextHeader p,
+.inheritedContextSummary,
+.inheritedContextEmpty,
+.inheritedContextOmitted,
+.inheritedContextEvent p {
+  margin: 0;
+}
+
+.inheritedContextHeader p,
+.inheritedContextActions,
+.inheritedContextEventHeader,
+.inheritedContextOmitted {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.inheritedContextOwner,
+.forkStateChip {
+  color: #426b79;
+}
+
+.inheritedContextPreview summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.inheritedContextPreview ol {
+  display: grid;
+  gap: 0.45rem;
+  list-style: none;
+  margin: 0.65rem 0 0;
+  padding: 0;
+}
+
+.inheritedContextEvent {
+  background: #fff;
+  border: 1px solid #dbe5e8;
+  border-radius: 5px;
+  padding: 0.5rem 0.6rem;
+}
+
+.inheritedContextEvent p {
+  display: -webkit-box;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  margin-top: 0.25rem;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.inheritedContextOmitted {
+  margin-top: 0.55rem;
+}
+
 .event {
   background: var(--panel);
   border: 1px solid var(--line);

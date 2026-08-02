@@ -46,10 +46,14 @@ When changing product behavior or repository structure:
 - npm release runbook: `docs/design-docs/npm-release-runbook.md`
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
+- Transcript source adapters: `docs/design-docs/transcript-source-adapters.md`
 - Active plans:
   - `docs/exec-plans/active/2026-08-02-npm-trusted-publishing.md`
 - Completed plans:
+  - `docs/exec-plans/completed/2026-08-02-v0.1.3-review-followups.md`
   - `docs/exec-plans/completed/2026-07-31-first-public-npm-release.md`
+  - `docs/exec-plans/completed/2026-07-31-claude-pointer-fork-context.md`
+  - `docs/exec-plans/completed/2026-07-31-claude-code-source-adapter.md`
   - `docs/exec-plans/completed/2026-07-31-planning-semantic-facet.md`
   - `docs/exec-plans/completed/2026-07-30-subagent-activity-correlation.md`
   - `docs/exec-plans/completed/2026-07-30-tool-lifecycle-family-contract.md`

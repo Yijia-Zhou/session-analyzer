@@ -4,6 +4,30 @@
 
 No unreleased changes. / 暂无未发布变更。
 
+## 0.1.3 - 2026-07-31
+
+### English
+
+- Added an explicit `--source claude-code` adapter with layout-aware Claude Code project, session, subagent, and fork discovery; Codex remains the default and `~/.claude` is never scanned without opt-in.
+- Added source-native Claude Code mapping for messages, reasoning, exact tool-use/result pairs, compact summaries, file-history attachments, API errors, and protocol/raw fallback.
+- Added namespaced analyzer session identities and a source-neutral indexed Raw Record endpoint with adapter-owned path-containment validation.
+- Added exact Claude Code pointer-fork correlation from parent `/fork` command evidence, with corrected fork timestamps, waiting state, bounded parent-owned inherited-context previews, and no duplicated child search, metrics, or Raw ownership.
+- Added synthetic Claude coverage, real-corpus pressure-test verification, bilingual source-adapter documentation, and package/runtime inclusion for the new adapter modules.
+- Hardened Claude nested discovery with basename-owned paths, lexical and real-path containment, exact subagent identity/parent-Agent correlation, and fail-closed handling of conflicting evidence.
+- Kept Claude local-command envelopes in Protocol, preserved malformed JSONL source text in Raw refs, and made shared project-selection copy source-neutral.
+- Closed review follow-ups for duplicate parent-Agent identities, Raw-only thinking signatures, searchable prose after embedded base64 data URLs, source-owned unknown-tool names, and localized Claude Raw titles.
+
+### 中文
+
+- 新增显式 `--source claude-code` 适配器，按 Claude Code 布局发现项目、会话、subagent 与 fork；Codex 仍为默认来源，未显式启用时绝不扫描 `~/.claude`。
+- 新增来源原生的 Claude Code 映射，覆盖消息、推理、精确工具调用/结果配对、compact 摘要、文件历史附件、API 错误，以及 protocol/raw 兜底。
+- 新增带命名空间的分析器会话标识，以及由适配器负责 path containment 校验的来源中立索引 Raw Record 接口。
+- 新增基于父会话 `/fork` command 证据的精确 Claude Code 指针式分叉关联，并提供修正后的分叉时间、等待状态、有界且归父会话所有的继承上下文预览，同时不重复 child 搜索、指标或 Raw ownership。
+- 新增合成 Claude 覆盖、真实语料压力验证、双语来源适配器文档，以及新适配器模块的 package/runtime 收录。
+- 加固 Claude 嵌套发现：目录由主要文件 basename 决定，同时执行词法与 real-path containment，精确关联 subagent identity／父 Agent，并对矛盾证据 fail closed。
+- 将 Claude local-command envelope 保留在 Protocol，在 Raw refs 中保留 malformed JSONL 来源原文，并把共享项目选择文案改为来源中立。
+- 完成评审后续修复：覆盖重复父 Agent identity、仅限 Raw 的 thinking signature、内嵌 base64 data URL 后可搜索正文、来源拥有的未知工具名，以及本地化 Claude Raw 标题。
+
 ## 0.1.2 - 2026-07-31
 
 ### English

@@ -58,7 +58,7 @@ test('package metadata exposes the session-analyzer CLI', () => {
   const pkg = require('../package.json');
   const server = fs.readFileSync(path.join(repoRoot, 'server.js'), 'utf8');
 
-  assert.equal(pkg.version, '0.1.2');
+  assert.equal(pkg.version, '0.1.3');
   assert.equal(pkg.private, undefined);
   assert.equal(pkg.license, 'BSD-3-Clause');
   assert.deepEqual(pkg.engines, { node: '>=22' });
@@ -244,7 +244,7 @@ test('CLI help documents the npm command and host privacy option', () => {
 
 test('npm pack manifest normalization supports npm 11 and npm 12 JSON shapes', () => {
   const artifact = {
-    filename: 'session-analyzer-0.1.2.tgz',
+    filename: 'session-analyzer-0.1.3.tgz',
     files: [{ path: 'server.js' }],
   };
 
@@ -281,6 +281,10 @@ test('npm pack manifest contains only runtime package files', () => {
     'public/vendor/highlightjs/github.min.css',
     'public/vendor/highlightjs/highlight.min.js',
     'server.js',
+    'src/claude-detail.js',
+    'src/claude-logical.js',
+    'src/claude-source.js',
+    'src/claude.js',
     'src/codex-code-mode.js',
     'src/codex-code-mode-presentation.js',
     'src/codex-detail.js',
@@ -292,6 +296,7 @@ test('npm pack manifest contains only runtime package files', () => {
     'src/codex-tool-lifecycle-contract.js',
     'src/codex.js',
     'src/folding.js',
+    'src/source-adapters.js',
     'src/shared/command-highlighting.js',
     'src/shared/code-mode-presentation-contract.js',
     'src/shared/folding.js',

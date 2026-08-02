@@ -151,3 +151,38 @@ test('codex search builder stays a pure search-contract boundary', () => {
     assert.doesNotMatch(text, pattern);
   }
 });
+
+test('Claude logical builder stays a pure source-specific construction boundary', () => {
+  const logicalModule = require('../src/claude-logical');
+  const text = readText(path.join('src', 'claude-logical.js'));
+  const forbiddenPatterns = [
+    /\brequire\s*\(/,
+    /\bimport\s+/,
+    /server\.js/,
+    /src[\\/]browser/,
+    /public[\\/]/,
+    /assets[\\/]/,
+    /node:fs/,
+    /\bfs\./,
+    /\breadFile\b/,
+    /\bwriteFile\b/,
+    /\bcreateReadStream\b/,
+  ];
+
+  assert.deepEqual(Object.keys(logicalModule), ['createClaudeLogicalBuilder']);
+  for (const pattern of forbiddenPatterns) {
+    assert.doesNotMatch(text, pattern);
+  }
+});
+
+test('source adapter registry owns source dispatch without adding Claude branches to Codex builders', () => {
+  const registry = require('../src/source-adapters');
+  const codexLogical = readText(path.join('src', 'codex-logical.js'));
+  const codexDetail = readText(path.join('src', 'codex-detail.js'));
+
+  assert.deepEqual(registry.supportedSourceKinds(), ['codex', 'claude-code']);
+  assert.equal(registry.requireSourceAdapter('codex').kind, 'codex');
+  assert.equal(registry.requireSourceAdapter('claude').kind, 'claude-code');
+  assert.doesNotMatch(codexLogical, /claude/i);
+  assert.doesNotMatch(codexDetail, /claude/i);
+});

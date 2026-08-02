@@ -3474,6 +3474,8 @@ test('other tool call sanitization covers structured cards, embedded URLs, objec
           percentWrappedGeneric: 'Request before data:text/plain,SECRET\tencoded%20tail after',
           ordinaryAfterNewline: 'Request before data:text/plain,SECRET\nnavigation needle',
           ordinaryAfterTab: 'Request before data:text/plain,SECRET\tnavigation needle',
+          ordinaryAfterBase64: 'Request before data:text/plain;base64,AAAA 100% complete after searchable words',
+          lowercaseWrappedBase64: 'Request before data:text/plain;base64,AAAA\naaaaaaaaaaaaaaaa\nBBBB after lowercase payload tail',
           ordinarySlash: 'Request before data:text/plain,SECRET\ninput/output remains',
           ordinaryUnderscore: 'Request before data:text/plain,SECRET\nnavigation_needle remains',
           ordinaryUrl: 'Request before data:text/plain,SECRET\nhttps://example.test/path remains',
@@ -3597,14 +3599,16 @@ test('other tool call sanitization covers structured cards, embedded URLs, objec
   assert.equal(dynamicRequest.percentWrappedGeneric, 'Request before [embedded data URL omitted; see raw refs] after');
   assert.equal(dynamicRequest.ordinaryAfterNewline, 'Request before [embedded data URL omitted; see raw refs]\nnavigation needle');
   assert.equal(dynamicRequest.ordinaryAfterTab, 'Request before [embedded data URL omitted; see raw refs]\tnavigation needle');
+  assert.equal(dynamicRequest.ordinaryAfterBase64, 'Request before [embedded data URL omitted; see raw refs] 100% complete after searchable words');
+  assert.equal(dynamicRequest.lowercaseWrappedBase64, 'Request before [embedded data URL omitted; see raw refs] after lowercase payload tail');
   assert.equal(dynamicRequest.ordinarySlash, 'Request before [embedded data URL omitted; see raw refs]\ninput/output remains');
   assert.equal(dynamicRequest.ordinaryUnderscore, 'Request before [embedded data URL omitted; see raw refs]\nnavigation_needle remains');
   assert.equal(dynamicRequest.ordinaryUrl, 'Request before [embedded data URL omitted; see raw refs]\nhttps://example.test/path remains');
   assert.equal(dynamicRequest.multiple, 'Request before [embedded data URL omitted; see raw refs] middle [embedded data URL omitted; see raw refs] after');
-  assert.doesNotMatch(JSON.stringify(dynamic.detail), /AAAA|BBBB|CCCC|DDDD|EEEE|FFFF|encoded%20private/);
+  assert.doesNotMatch(JSON.stringify(dynamic.detail), /AAAA|BBBB|CCCC|DDDD|EEEE|FFFF|aaaaaaaaaaaaaaaa|encoded%20private/);
   assert.doesNotMatch(JSON.stringify(dynamic.detail), /wrapped-private-payload|encoded%20tail/);
   assert.doesNotMatch(JSON.stringify(dynamic.detail), /SECRET|LEAKED/);
-  for (const query of ['navigation needle', 'input/output', 'navigation_needle', 'https://example.test/path']) {
+  for (const query of ['navigation needle', 'searchable words', '100% complete', 'lowercase payload tail', 'input/output', 'navigation_needle', 'https://example.test/path']) {
     const preservedTextSearch = getTimeline(index, id, {
       offset: 0,
       limit: 100,
@@ -4030,6 +4034,33 @@ test('readRawLine returns the original JSONL row for drill-down', async () => {
   const raw = await readRawLine(index, primaryFixtureSession(index).sourceFile, 12);
   assert.equal(raw.parsed.type, 'event_msg');
   assert.equal(raw.parsed.payload.type, 'agent_message');
+});
+
+test('source-neutral raw endpoint resolves an indexed Codex raw id without accepting a client path', async () => {
+  const index = await buildFixtureIndex();
+  const session = primaryFixtureSession(index);
+  const rawEvent = session.rawEvents[11];
+  const server = createServer(index, 1, { codexHome: fixtureCodexHome });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const response = await fetch(
+      `${base}/api/sessions/${encodeURIComponent(session.id)}/raw/${encodeURIComponent(rawEvent.rawId)}`,
+    );
+    assert.equal(response.status, 200);
+    const raw = await response.json();
+    assert.equal(raw.rawId, rawEvent.rawId);
+    assert.equal(raw.sourceKind, 'codex');
+    assert.equal(raw.parsed.type, 'event_msg');
+    assert.equal(raw.parsed.payload.type, 'agent_message');
+
+    const unknown = await fetch(
+      `${base}/api/sessions/${encodeURIComponent(session.id)}/raw/${encodeURIComponent(`${session.id}:raw:999999`)}`,
+    );
+    assert.equal(unknown.status, 404);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
 });
 
 test('path containment and folding profiles expose expected presets', () => {
