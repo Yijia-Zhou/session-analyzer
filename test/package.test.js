@@ -121,16 +121,62 @@ test('install-script policy covers every locked install script', () => {
 
 test('CI pins npm before every strict dependency installation', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
+  const checkoutAction = 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803';
+  const setupNodeAction = 'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38';
   const bootstrap = 'npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/';
   const strictInstall = 'npm ci --strict-allow-scripts';
   const isolatedBootstrapDirectory = 'working-directory: ${{ runner.temp }}';
   const disabledSetupNodeCache = 'package-manager-cache: false';
 
+  assert.equal(workflow.split(checkoutAction).length - 1, 3);
+  assert.equal(workflow.split(setupNodeAction).length - 1, 3);
+  assert.doesNotMatch(workflow, /uses:\s+actions\/(?:checkout|setup-node)@v\d+/u);
   assert.equal(workflow.split(bootstrap).length - 1, 3);
   assert.equal(workflow.split(strictInstall).length - 1, 3);
   assert.equal(workflow.split(isolatedBootstrapDirectory).length - 1, 3);
   assert.equal(workflow.split(disabledSetupNodeCache).length - 1, 3);
   assert.doesNotMatch(workflow, /^\s+cache:\s*npm\s*$/mu);
+});
+
+test('trusted publishing stages only verified bytes behind a human approval boundary', () => {
+  const workflow = fs
+    .readFileSync(path.join(repoRoot, '.github', 'workflows', 'publish.yml'), 'utf8')
+    .replace(/\r\n?/gu, '\n');
+  const stageStart = workflow.indexOf('\n  stage:\n');
+  const verify = workflow.slice(0, stageStart);
+  const stage = workflow.slice(stageStart);
+
+  assert.ok(stageStart > -1);
+  assert.match(workflow, /workflow_dispatch:/u);
+  assert.doesNotMatch(workflow, /^\s+(?:push|pull_request|pull_request_target|release|schedule):/mu);
+  assert.match(workflow, /cancel-in-progress: false/u);
+  assert.equal(workflow.split('actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803').length - 1, 2);
+  assert.equal(workflow.split('actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38').length - 1, 2);
+  assert.equal(workflow.split('persist-credentials: false').length - 1, 2);
+  assert.equal(workflow.split('npm install --global npm@12.0.2 --ignore-scripts').length - 1, 2);
+  assert.equal(workflow.split('package-manager-cache: false').length - 1, 2);
+  assert.equal(workflow.split('id-token: write').length - 1, 1);
+  assert.equal(workflow.split('npm stage publish').length - 1, 1);
+  assert.doesNotMatch(workflow, /uses:\s+actions\/(?:checkout|setup-node)@v\d+/u);
+  assert.doesNotMatch(workflow, /NPM_TOKEN|NODE_AUTH_TOKEN|secrets\./u);
+  assert.doesNotMatch(verify, /id-token: write/u);
+
+  assert.match(verify, /test "\$GITHUB_REF" = 'refs\/heads\/main'/u);
+  assert.match(verify, /npm ci --strict-allow-scripts/u);
+  assert.match(verify, /npm run release:check/u);
+  assert.match(verify, /npm run test:browser/u);
+  assert.match(verify, /npm audit --omit=dev/u);
+  assert.match(verify, /npm publish --dry-run --foreground-scripts/u);
+  assert.match(verify, /npm pack --ignore-scripts/u);
+
+  assert.match(stage, /environment: npm-release/u);
+  assert.match(stage, /id-token: write/u);
+  assert.match(stage, /needs: verify/u);
+  assert.match(stage, /ref: \$\{\{ needs\.verify\.outputs\.source_sha \}\}/u);
+  assert.match(stage, /npm pack --ignore-scripts/u);
+  assert.match(stage, /test "\$actual_sha256" = "\$EXPECTED_SHA256"/u);
+  assert.match(stage, /npm stage publish "\$CANDIDATE_PATH" --tag=latest --access=public/u);
+  assert.doesNotMatch(stage, /npm ci|npm run|npx |npm publish(?:\s|$)/u);
 });
 
 test('packaged third-party notice preserves the Highlight.js license', () => {
@@ -172,7 +218,7 @@ test('source setup docs bootstrap exact npm before strict installation', () => {
 
 test('final dist-tag evidence uses a separately proven anonymous userconfig', () => {
   const runbook = fs.readFileSync(path.join(repoRoot, 'docs', 'design-docs', 'npm-release-runbook.md'), 'utf8');
-  const stepStart = runbook.indexOf('### 10. Promote the verified version');
+  const stepStart = runbook.indexOf('### 10. Promote a verified direct `next` publication');
   const stepEnd = runbook.indexOf('### 11. Create the release tag', stepStart);
   const step = runbook.slice(stepStart, stepEnd);
   const whoami = 'npm whoami --registry=$finalTagRegistry';

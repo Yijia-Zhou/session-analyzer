@@ -19,7 +19,7 @@
   - `docs/exec-plans/completed/2026-07-22-code-mode-context-and-discoverability.md`
   - `docs/exec-plans/completed/2026-07-25-code-mode-request-facets-and-folding.md`
   - `docs/exec-plans/completed/2026-07-30-subagent-activity-correlation.md`
-  - `docs/exec-plans/active/2026-07-31-first-public-npm-release.md`
+  - `docs/exec-plans/completed/2026-07-31-first-public-npm-release.md`
 
 ## Summary / 摘要
 
