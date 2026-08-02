@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-07-30 / 最近更新：2026-07-30
+- Last updated: 2026-08-03 / 最近更新：2026-08-03
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -16,6 +16,7 @@
   - `docs/exec-plans/completed/2026-07-22-code-mode-context-and-discoverability.md`
   - `docs/exec-plans/completed/2026-07-25-code-mode-request-facets-and-folding.md`
   - `docs/exec-plans/completed/2026-07-30-subagent-activity-correlation.md`
+  - `docs/exec-plans/completed/2026-08-02-v0.1.3-review-followups.md`
 - Related design notes: / 相关设计说明：
   - `docs/design-docs/codex-protocol-event-coverage.md`
   - `docs/design-docs/code-mode-operations.md`

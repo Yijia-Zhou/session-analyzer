@@ -3,13 +3,14 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-08-02 / 最近更新：2026-08-02
+- Last updated: 2026-08-03 / 最近更新：2026-08-03
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/timeline-loading-and-rendering-performance.md`
   - `docs/design-docs/code-mode-operations.md`
   - `docs/design-docs/code-mode-structured-display-catalog.md`
   - `docs/design-docs/transcript-source-adapters.md`
+  - `docs/exec-plans/active/2026-08-02-v0.1.3-release.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
   - `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md`
   - `docs/exec-plans/completed/2026-06-28-search-navigation-state-convergence.md`

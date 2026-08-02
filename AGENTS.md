@@ -29,7 +29,7 @@ When changing product behavior or repository structure:
 
 ## Local server startup
 
-- Start: `$repo = (git rev-parse --show-toplevel); $process = Start-Process -FilePath 'C:\Program Files\nodejs\node.exe' -ArgumentList @('server.js', '--repo', $repo) -WorkingDirectory $repo -WindowStyle Hidden -PassThru; $process.Id`
+- Start: `$repo = (git rev-parse --show-toplevel); $node = (Get-Command 'node.exe' -ErrorAction Stop).Source; $process = Start-Process -FilePath $node -ArgumentList @('server.js', '--repo', $repo) -WorkingDirectory $repo -WindowStyle Hidden -PassThru; $process.Id`
 - Verify: `Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:17890/' -TimeoutSec 10`
 - In Codex sandboxed tool sessions, background `Start-Process` server launches may be cleaned up when the command finishes. For a persistent browser-verification server, start this command outside the sandbox / with escalated execution.
 - 当代码修改完成但需要重启local server才能生效时，进行重启供用户验收。
@@ -48,6 +48,7 @@ When changing product behavior or repository structure:
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Transcript source adapters: `docs/design-docs/transcript-source-adapters.md`
 - Active plans:
+  - `docs/exec-plans/active/2026-08-02-v0.1.3-release.md`
   - `docs/exec-plans/active/2026-08-02-npm-trusted-publishing.md`
 - Completed plans:
   - `docs/exec-plans/completed/2026-08-02-v0.1.3-review-followups.md`

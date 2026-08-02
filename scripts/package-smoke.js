@@ -109,14 +109,13 @@ async function stopChild(child) {
   });
 }
 
-async function launchPackagedServer(packagedServer, projectDir, codexHome, smokeRoot) {
+async function launchPackagedServer(packagedServer, smokeRoot, serverArgs) {
   let lastError = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const port = await freePort();
     const child = childProcess.spawn(process.execPath, [
       packagedServer,
-      '--repo', projectDir,
-      '--codex-home', codexHome,
+      ...serverArgs,
       '--port', String(port),
     ], {
       cwd: smokeRoot,
@@ -296,8 +295,45 @@ async function main() {
 
     const projectDir = path.join(smokeRoot, 'project');
     const codexHome = path.join(smokeRoot, 'codex-home');
+    const claudeHome = path.join(smokeRoot, 'claude-home');
+    const claudeContainer = path.join(claudeHome, 'projects', '-package-smoke');
+    const claudeSessionId = '11111111-1111-4111-8111-111111111111';
     await fsp.mkdir(projectDir, { recursive: true });
     await fsp.mkdir(path.join(codexHome, 'sessions'), { recursive: true });
+    await fsp.mkdir(claudeContainer, { recursive: true });
+    const claudeBase = {
+      isSidechain: false,
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd: projectDir,
+      sessionId: claudeSessionId,
+      version: '2.1.220',
+      gitBranch: 'main',
+    };
+    const claudeRecords = [
+      {
+        ...claudeBase,
+        parentUuid: null,
+        type: 'mode',
+        mode: 'normal',
+        uuid: 'package-smoke-mode',
+        timestamp: '2026-08-03T00:00:00.000Z',
+      },
+      {
+        ...claudeBase,
+        parentUuid: 'package-smoke-mode',
+        promptId: 'package-smoke-prompt',
+        type: 'user',
+        message: { role: 'user', content: 'Verify the installed Claude Code adapter.' },
+        uuid: 'package-smoke-user',
+        timestamp: '2026-08-03T00:00:01.000Z',
+      },
+    ];
+    await fsp.writeFile(
+      path.join(claudeContainer, `${claudeSessionId}.jsonl`),
+      `${claudeRecords.map((record) => JSON.stringify(record)).join('\n')}\n`,
+      'utf8',
+    );
     await fsp.writeFile(path.join(smokeRoot, 'package.json'), JSON.stringify({
       name: 'session-analyzer-package-smoke',
       version: '0.0.0',
@@ -324,17 +360,47 @@ async function main() {
     if (!help.stdout.includes('session-analyzer [--repo <repo-path>]')) {
       throw new Error('Installed CLI help did not include the expected usage line');
     }
+    if (!help.stdout.includes('--source <source>')) {
+      throw new Error('Installed CLI help did not include transcript source selection');
+    }
 
     const packagedServer = path.join(smokeRoot, 'node_modules', 'session-analyzer', 'server.js');
-    const launched = await launchPackagedServer(packagedServer, projectDir, codexHome, smokeRoot);
+    let launched = await launchPackagedServer(packagedServer, smokeRoot, [
+      '--repo', projectDir,
+      '--codex-home', codexHome,
+    ]);
     child = launched.child;
-    const baseUrl = `http://127.0.0.1:${launched.port}`;
-    await waitForPackageState(baseUrl);
-    const html = await requestText(`${baseUrl}/`);
-    if (html.statusCode !== 200 || !html.body.includes('src="/assets/app.js"')) {
-      throw new Error('Root HTML did not reference the generated browser bundle');
+    let baseUrl = `http://127.0.0.1:${launched.port}`;
+    const codexState = await waitForPackageState(baseUrl);
+    if (codexState.json.sourceKind !== 'codex') {
+      throw new Error(`Installed Codex package smoke reported unexpected sourceKind: ${codexState.json.sourceKind}`);
     }
-    console.log('Package smoke passed.');
+    let html = await requestText(`${baseUrl}/`);
+    if (html.statusCode !== 200 || !html.body.includes('src="/assets/app.js"')) {
+      throw new Error('Installed Codex root HTML did not reference the generated browser bundle');
+    }
+
+    await stopChild(child);
+    child = null;
+    launched = await launchPackagedServer(packagedServer, smokeRoot, [
+      '--source', 'claude-code',
+      '--repo', projectDir,
+      '--claude-home', claudeHome,
+    ]);
+    child = launched.child;
+    baseUrl = `http://127.0.0.1:${launched.port}`;
+    const claudeState = await waitForPackageState(baseUrl);
+    if (claudeState.json.sourceKind !== 'claude-code') {
+      throw new Error(`Installed Claude package smoke reported unexpected sourceKind: ${claudeState.json.sourceKind}`);
+    }
+    if (claudeState.json.totals.sessionCount !== 1) {
+      throw new Error(`Installed Claude package smoke expected one indexed Session, received: ${claudeState.json.totals.sessionCount}`);
+    }
+    html = await requestText(`${baseUrl}/`);
+    if (html.statusCode !== 200 || !html.body.includes('src="/assets/app.js"')) {
+      throw new Error('Installed Claude root HTML did not reference the generated browser bundle');
+    }
+    console.log('Codex and Claude Code package smoke passed.');
   } finally {
     await stopChild(child);
     if (tarballPath) {

@@ -3,10 +3,11 @@
 ## Status / 状态
 
 - Status: accepted for `0.1.3` / 状态：已针对 `0.1.3` 接受
-- Last updated: 2026-08-02 / 最近更新：2026-08-02
+- Last updated: 2026-08-03 / 最近更新：2026-08-03
 - Related product spec: `docs/product-specs/session-transcript-analyzer.md` / 相关产品规格：`docs/product-specs/session-transcript-analyzer.md`
 - Related timeline design: `docs/design-docs/logical-event-timeline.md` / 相关时间线设计：`docs/design-docs/logical-event-timeline.md`
 - Related pressure test: `docs/design-docs/external-source-mapping-pressure-tests.md` / 相关压力测试：`docs/design-docs/external-source-mapping-pressure-tests.md`
+- Related release plan: `docs/exec-plans/active/2026-08-02-v0.1.3-release.md` / 相关发布计划：`docs/exec-plans/active/2026-08-02-v0.1.3-release.md`
 - Related completed plan: `docs/exec-plans/completed/2026-07-31-claude-code-source-adapter.md` / 相关已完成计划：`docs/exec-plans/completed/2026-07-31-claude-code-source-adapter.md`
 - Related pointer-fork plan: `docs/exec-plans/completed/2026-07-31-claude-pointer-fork-context.md` / 相关指针式分叉计划：`docs/exec-plans/completed/2026-07-31-claude-pointer-fork-context.md`
 

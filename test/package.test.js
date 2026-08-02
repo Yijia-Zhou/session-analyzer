@@ -56,9 +56,24 @@ function npmPackDryRunFiles() {
 
 test('package metadata exposes the session-analyzer CLI', () => {
   const pkg = require('../package.json');
+  const lock = require('../package-lock.json');
   const server = fs.readFileSync(path.join(repoRoot, 'server.js'), 'utf8');
 
+  assert.equal(pkg.name, 'session-analyzer');
   assert.equal(pkg.version, '0.1.3');
+  assert.equal(pkg.description, 'Local interactive viewer for Codex and Claude Code session transcripts.');
+  assert.deepEqual(pkg.keywords, [
+    'codex',
+    'claude-code',
+    'transcript',
+    'viewer',
+    'session',
+    'local',
+  ]);
+  assert.equal(lock.name, pkg.name);
+  assert.equal(lock.version, pkg.version);
+  assert.equal(lock.packages[''].name, pkg.name);
+  assert.equal(lock.packages[''].version, pkg.version);
   assert.equal(pkg.private, undefined);
   assert.equal(pkg.license, 'BSD-3-Clause');
   assert.deepEqual(pkg.engines, { node: '>=22' });
@@ -267,7 +282,7 @@ test('package smoke pins nested npm operations to the public registry', () => {
 test('npm pack manifest contains only runtime package files', () => {
   const files = npmPackDryRunFiles();
   const fileSet = new Set(files);
-  const required = [
+  const approvedFiles = [
     'CHANGELOG.md',
     'LICENSE',
     'README.md',
@@ -282,9 +297,12 @@ test('npm pack manifest contains only runtime package files', () => {
     'public/vendor/highlightjs/highlight.min.js',
     'server.js',
     'src/claude-detail.js',
+    'src/claude-forks.js',
     'src/claude-logical.js',
     'src/claude-source.js',
     'src/claude.js',
+    'src/codex-code-mode-declared.js',
+    'src/codex-code-mode-facts.js',
     'src/codex-code-mode.js',
     'src/codex-code-mode-presentation.js',
     'src/codex-detail.js',
@@ -297,15 +315,19 @@ test('npm pack manifest contains only runtime package files', () => {
     'src/codex.js',
     'src/folding.js',
     'src/source-adapters.js',
+    'src/shared/agent-coordination.js',
     'src/shared/command-highlighting.js',
     'src/shared/code-mode-presentation-contract.js',
+    'src/shared/code-mode-tools.js',
     'src/shared/folding.js',
+    'src/shared/fs-path.js',
     'src/shared/i18n.js',
+    'src/shared/logical-detail-sanitizer.js',
     'src/shared/plan-facet.js',
-  ];
-  for (const file of required) {
-    assert.ok(fileSet.has(file), `${file} should be included in the package`);
-  }
+    'src/shared/project-root.js',
+    'src/shared/terminal-text.js',
+  ].sort();
+  assert.deepEqual(files, approvedFiles);
 
   const forbiddenPrefixes = [
     'docs/',

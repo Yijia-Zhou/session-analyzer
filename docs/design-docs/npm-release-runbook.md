@@ -4,11 +4,12 @@
 
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-08-02 / 最近更新：2026-08-02
+- Last updated: 2026-08-03 / 最近更新：2026-08-03
 - Applies to: the public `session-analyzer` npm package / 适用范围：公共 `session-analyzer` npm package
 - Related product spec: / 相关产品规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
+  - `docs/exec-plans/active/2026-08-02-v0.1.3-release.md`
   - `docs/exec-plans/active/2026-08-02-npm-trusted-publishing.md`
   - `docs/exec-plans/completed/2026-07-31-first-public-npm-release.md`
   - `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`
@@ -17,7 +18,7 @@
 
 ## Purpose / 目的
 
-This is the durable release procedure for `session-analyzer`. The preferred path for an existing package uses GitHub Actions Trusted Publishing to create a private npm staged package, followed by maintainer review and npm 2FA approval. Isolated interactive publication remains a documented fallback. A version-specific execution plan records the target version, release commit, toolchain versions, CI runs, package manifest, integrity values, and public verification evidence; it must reference this runbook instead of redefining the publication path. / 本文档是 `session-analyzer` 的长期发布运行手册。Package 已存在时，首选路径使用 GitHub Actions Trusted Publishing 创建私有 npm staged package，随后由维护者审查并通过 npm 2FA approve。隔离的交互式发布继续作为有文档记录的 fallback。每个版本专属的执行计划负责记录目标版本、release commit、工具链版本、CI run、package manifest、完整性值与公共验证证据；版本计划必须引用本运行手册，而不是重新定义发布路径。
+This is the durable release procedure for `session-analyzer`. The preferred path for an existing package uses GitHub Actions Trusted Publishing to create a private npm staged package, followed by maintainer review and npm 2FA approval. Isolated interactive publication remains a documented fallback. Release evidence uses two layers: the version-specific execution plan is the durable public record for release identity, verifiable gate results, artifact hash continuity, and public verification; optional raw command output, account-side readback, machine-specific details, and transient diagnostics belong only in a Git-ignored maintainer-local appendix. The version plan must reference this runbook instead of redefining the publication path. / 本文档是 `session-analyzer` 的长期发布运行手册。Package 已存在时，首选路径使用 GitHub Actions Trusted Publishing 创建私有 npm staged package，随后由维护者审查并通过 npm 2FA approve。隔离的交互式发布继续作为有文档记录的 fallback。发布证据采用两层结构：版本专属执行计划是长期公开记录，负责保存 release identity、可复核 gate 结果、制品哈希连续性与公共验证；可选的原始命令输出、账户侧 readback、本机特有细节与临时诊断只进入 Git 忽略的维护者本地附录。版本计划必须引用本运行手册，而不是重新定义发布路径。
 
 Trusted Publishing replaces reusable publication credentials, not release governance. Version closure, CI, package inspection, source identity, public verification, evidence recording, and recovery rules remain mandatory. The OIDC trust is intentionally stage-only: automation cannot make a version public, and approval still requires maintainer 2FA. / Trusted Publishing 替代的是可复用发布凭据，而不是 release governance。版本收口、CI、package 检查、来源身份、公共验证、证据记录与恢复规则继续为强制要求。OIDC trust 有意限制为 stage-only：自动化不能让版本公开，approve 仍要求维护者 2FA。
 
@@ -118,7 +119,7 @@ Every release must satisfy all of the following before the first registry write.
 8. The final directory dry run executes from the repository package root without a positional package spec or `--ignore-scripts`, and proves `prepublishOnly`. Direct manual publication follows the same directory rule. The automated OIDC job may stage a positional tarball only after it reproduces the exact verified SHA-256 from the same source commit while executing no project dependency or script. / 最终目录 dry run 从仓库 package root 执行，不带位置 package spec 或 `--ignore-scripts`，并证明 `prepublishOnly`。直接手动发布遵循相同目录规则。自动 OIDC job 只有在不执行项目依赖或脚本的情况下，从相同来源 commit 复现精确的已验证 SHA-256 后，才可以 staging 位置 tarball。
 9. On the preferred path, the immutable staged artifact is reviewed and hash-checked before maintainer 2FA approval moves `latest`; public exact-version verification follows approval. On the manual fallback, an established-package candidate is published under `next`, verified publicly, and only then promoted to `latest`. / 在首选路径上，不可变 staged artifact 在维护者通过 2FA approve 并移动 `latest` 前接受审查与哈希检查；approve 后执行公共精确版本验证。在手动 fallback 上，已有 package 的候选版本先发布到 `next`，通过公共验证后才提升到 `latest`。
 10. A published `name@version` is never reused, even if it is later unpublished. / 已发布的 `name@version` 永不复用，即使之后被 unpublish。
-11. Evidence is recorded in the version-specific plan before it is moved to `completed/`. / 版本专属计划移动到 `completed/` 前，必须记录证据。
+11. The durable public evidence is recorded in the version-specific plan before it is moved to `completed/`. A maintainer-local appendix may support that record but never replaces a missing public outcome. / 版本专属计划移动到 `completed/` 前，必须记录长期公开证据。维护者本地附录可以支撑该记录，但绝不能替代缺失的公开结论。
 
 ## Standard release workflow / 标准发布流程
 
@@ -500,14 +501,14 @@ Create the GitHub Release from that tag and use the bilingual changelog entry as
 
 ### 12. Close the version plan / 收尾版本计划
 
-- Record all public verification evidence and URLs. / 记录全部公共验证证据与 URL。
-- Record any warning, retry, exception, deprecation, or dist-tag correction. / 记录任何 warning、retry、exception、deprecation 或 dist-tag 修正。
+- Record all public verification outcomes, artifact hash continuity, and URLs in the version-specific plan. / 在版本专属计划中记录全部公共验证结论、制品哈希连续性与 URL。
+- Record a sanitized public summary of any material warning, retry, exception, deprecation, or dist-tag correction. Put raw output and machine- or account-specific diagnostics only in the maintainer-local appendix. / 对任何实质性 warning、retry、exception、deprecation 或 dist-tag 修正记录脱敏后的公开摘要；原始输出及机器／账户特有诊断只进入维护者本地附录。
 - Update the trusted-publishing debt status if automation changed. / 如果自动化发生变化，更新 trusted-publishing 技术债状态。
 - Move the active plan to `completed/` only after staged review and 2FA approval (or a documented manual fallback), public verification, any required manual promotion, tag, and GitHub Release are all complete. / 只有 staged 审查与 2FA approve（或已记录的手动 fallback）、公共验证、任何必要的手动 promotion、tag 与 GitHub Release 全部完成后，才把 active plan 移到 `completed/`。
 
 ## Release evidence template / 发布证据模板
 
-Copy this section into the version-specific plan. / 把本节复制到版本专属计划。
+Copy the public record below into the version-specific plan. It must remain sufficient for a reviewer to establish what was released, from which commit, which gates passed, whether the staged and public artifacts preserved the approved bytes, and whether public verification completed. Do not include local absolute paths, maintainer identity, account screenshots, internal stage identifiers, ordinary npm configuration, or raw failure logs. / 把下面的公开记录复制到版本专属计划。它必须足以让 reviewer 判断发布了什么、来源 commit 是什么、哪些 gate 已通过、staged 与公开制品是否保持获批字节，以及公共验证是否完成。不得包含本地绝对路径、维护者身份、账户截图、内部 stage identifier、日常 npm 配置或原始失败日志。
 
 ```text
 Release identity:
@@ -525,9 +526,6 @@ Toolchain:
 - Registry:
 - strict-allow-scripts:
 - Publication path (staged OIDC / manual fallback):
-- Authentication mode; maintainer identity not recorded:
-- Isolated userconfig confirmed; path and contents not recorded:
-- Inherited credential variables absent:
 
 Repository state:
 - git status:
@@ -559,46 +557,45 @@ Local gates:
 - prepublishOnly observed:
 
 Inspection candidate:
-- Filename:
-- Packed size:
-- Unpacked size:
 - Entry count:
-- SHA-1:
 - SHA-256:
-- npm integrity:
 - Allowlist result:
 - Third-party notices result:
 - Sensitive-path result:
 - Installed CLI/server result:
 
-Registry publication:
-- Trusted Publisher binding reviewed:
-- GitHub Environment protection reviewed:
+Publication and public verification:
+- Trusted Publisher and GitHub Environment review result:
 - publish.yml run URL and source SHA:
 - Verify-job candidate SHA-256:
 - Stage-job reproduced SHA-256:
-- Staged package identifier:
-- Staged manifest/provenance review:
+- Staged identity/manifest/provenance/source review result:
 - Downloaded staged tarball SHA-256:
-- Maintainer 2FA approval:
-- Published under next:
-- Publish-session logout exit:
-- Publish-session post-logout ENEEDAUTH:
+- Maintainer 2FA approval result; identity and factor details not recorded:
+- Manual-fallback isolation and credential-cleanup result, if used:
 - Exact-version registry metadata:
-- Public verification ENEEDAUTH precondition:
 - Windows public smoke:
 - Linux public smoke:
 - Public-smoke exception and substitute evidence:
-- Automatic inaugural latest observed:
-- Promoted to latest:
-- Promotion-session logout exit:
-- Promotion-session post-logout ENEEDAUTH:
-- Final dist-tags ENEEDAUTH precondition:
+- Public tarball SHA-256:
+- Promotion result, if used:
 - Final dist-tags:
 
 Exceptions and recovery actions:
-- None / details:
+- None / sanitized summary:
+
+Maintainer-local appendix:
+- Relative path:
+- Completion status:
 ```
+
+### Maintainer-local evidence appendix / 维护者本地证据附录
+
+When raw or account-side evidence is useful, store it under `tmp/release-evidence/<version>.md`; `tmp/` is Git ignored. The appendix is optional supporting material, is not available to repository reviewers, and may not be the sole record of any fact required to approve or close a release. The public plan records only the relative path and completion status. / 当原始或账户侧证据有用时，将其保存在 `tmp/release-evidence/<version>.md`；`tmp/` 已被 Git 忽略。该附录只是可选支撑材料，仓库 reviewer 无法访问，也不得成为批准或完成发布所需事实的唯一记录。公开计划只记录其相对路径与完成状态。
+
+The local appendix may retain raw command-output pointers, account-side configuration readback or screenshot locations, the internal staged-package identifier, exact authentication-session cleanup timestamps, machine-specific environment notes, integration-only candidate filename/size/SHA-1/integrity values, and unsanitized transient diagnostics. It must not contain any token, OTP, recovery code, authenticator output, credential-bearing URL, `.npmrc` contents, or other reusable secret. Maintainer identity and authenticator details are not release evidence and must not be recorded. / 本地附录可以保留原始命令输出指针、账户侧配置 readback 或截图位置、内部 staged-package identifier、认证 session 清理的精确时间、本机环境说明、仅属于 integration 的候选 filename／size／SHA-1／integrity 值，以及未脱敏的临时诊断。它不得包含 token、OTP、恢复码、authenticator 输出、携带凭据的 URL、`.npmrc` 内容或其他可复用秘密。维护者身份与 authenticator 细节不属于发布证据，不得记录。
+
+If the appendix and public record disagree, stop and regenerate or re-review the evidence; never resolve the mismatch by weakening or deleting the public gate. / 如果本地附录与公开记录不一致，必须停止并重新生成或审查证据；不得通过削弱或删除公开 gate 来消除不一致。
 
 ## Failure and recovery / 失败与恢复
 
@@ -732,3 +729,4 @@ Unpublish is not the normal rollback mechanism. npm registry versions are immuta
 - 2026-08-01: Recorded the inaugural-package exception after `session-analyzer@0.1.2` was published with `--tag='next'` and the registry created both `next` and required `latest` at `0.1.2`. Future first-package direct releases must treat all pre-publication gates as the last blocking boundary, skip redundant promotion when anonymous evidence already shows the intended automatic `latest`, and use npm staged publishing when a true pre-default approval boundary is required. / 2026-08-01：记录首发 package 例外：`session-analyzer@0.1.2` 使用 `--tag='next'` 发布后，registry 同时把 `next` 与必需的 `latest` 创建为 `0.1.2`。今后首次直接发布 package 时，必须把全部发布前 gate 视为最后一道阻塞边界；如果匿名证据已显示预期的自动 `latest`，则跳过多余 promotion；若需要真正的默认发布前审批边界，则使用 npm staged publishing。
 - 2026-08-01: Required npm 12.0.2 strict default-deny dependency install-script enforcement for source, CI, and release preparation. Every lockfile `hasInstallScript` entry must have an exact approval or explicit denial, CI must bootstrap the approved npm before `npm ci --strict-allow-scripts`, and `--dangerously-allow-all-scripts` is forbidden. / 2026-08-01：要求源码环境、CI 与发布准备使用 npm 12.0.2 strict 默认拒绝依赖 install-script 策略。Lockfile 中每个 `hasInstallScript` 条目都必须具有精确允许或明确拒绝；CI 必须在 `npm ci --strict-allow-scripts` 前 bootstrap 获批 npm；并禁止使用 `--dangerously-allow-all-scripts`。
 - 2026-08-02: Accepted stage-only GitHub Actions Trusted Publishing as the preferred path for future established-package releases. The trust binding names `publish.yml` and protected environment `npm-release`, allows `npm stage publish` but not `npm publish`, stores no npm token, and leaves public release behind maintainer 2FA approval. The workflow separates unprivileged gates from the OIDC job; the OIDC job executes no project dependency or script and may stage only a tarball whose SHA-256 exactly reproduces the verified candidate from the same commit. / 2026-08-02：接受只允许 staging 的 GitHub Actions Trusted Publishing，作为未来已有 package 发布的首选路径。Trust binding 指定 `publish.yml` 与受保护 environment `npm-release`，允许 `npm stage publish` 但不允许 `npm publish`，不保存 npm token，并将公开发布保留在维护者 2FA approve 之后。Workflow 将无特权 gate 与 OIDC job 分离；OIDC job 不执行项目依赖或脚本，只能 staging 与同一 commit 已验证候选 SHA-256 精确一致的 tarball。
+- 2026-08-03: Split release evidence into a durable public version record and an optional Git-ignored maintainer-local appendix. Public evidence retains release identity, gate outcomes, artifact hash continuity, review conclusions, URLs, and public verification; raw output, account-side readback, machine-specific details, internal stage identifiers, and transient diagnostics remain local. Secrets are prohibited in both layers. / 2026-08-03：将发布证据拆分为长期公开的版本记录与可选的 Git 忽略维护者本地附录。公开证据保留 release identity、gate 结论、制品哈希连续性、审查结论、URL 与公共验证；原始输出、账户侧 readback、本机特有信息、内部 stage identifier 与临时诊断保留在本地。两层均禁止记录秘密。
