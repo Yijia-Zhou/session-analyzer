@@ -59,6 +59,19 @@ async function writePrimary(fixture, id, extra = []) {
 
 test('Claude primary and subagent IDs stay distinct for delimiter-shaped source data and reuse stably', async (t) => {
   const fixture = await makeFixture(t);
+  const aliasedHome = `${fixture.home}-alias`;
+  await fsp.symlink(
+    fixture.home,
+    aliasedHome,
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  t.after(async () => {
+    try {
+      await fsp.unlink(aliasedHome);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  });
   const ambiguousPrimarySourceId = 'parent:agent:child';
   const parentSourceId = 'parent';
   const agentId = 'child';
@@ -131,18 +144,23 @@ test('Claude primary and subagent IDs stay distinct for delimiter-shaped source 
   );
 
   assert.notEqual(primaryId, subagentId);
-  const projects = await discoverClaudeProjects({ claudeHome: fixture.home });
+  const projects = await discoverClaudeProjects({ claudeHome: aliasedHome });
   assert.equal(projects.length, 1);
   assert.equal(projects[0].sessionCount, 2);
 
-  const first = await buildClaudeIndex({ repoRoot: fixture.repoRoot, claudeHome: fixture.home });
+  const first = await buildClaudeIndex({ repoRoot: fixture.repoRoot, claudeHome: aliasedHome });
   assert.equal(first.sessions.length, 3);
   assert.equal(first.sessionsById.size, 3);
+  assert.equal(first.sourceRoot, await fsp.realpath(path.join(fixture.home, 'projects')));
   assert.ok(first.sessionsById.has(primaryId));
   assert.ok(first.sessionsById.has(parentId));
   assert.ok(first.sessionsById.has(subagentId));
   const child = first.sessionsById.get(subagentId);
   assert.equal(child.parentSessionId, parentId);
+  assert.equal(
+    child.sourceFile,
+    '-reindex-fixture/parent/subagents/agent-child.jsonl',
+  );
   assert.equal(child.rawEvents[0].sessionId, subagentId);
   const allRawIds = first.sessions.flatMap((session) => session.rawEvents.map((raw) => raw.rawId));
   assert.equal(new Set(allRawIds).size, allRawIds.length);
@@ -163,7 +181,7 @@ test('Claude primary and subagent IDs stay distinct for delimiter-shaped source 
 
   const second = await buildClaudeIndex({
     repoRoot: fixture.repoRoot,
-    claudeHome: fixture.home,
+    claudeHome: aliasedHome,
     previousIndex: first,
   });
   assert.equal(second.totals.reusedFileCount, 3);

@@ -240,7 +240,13 @@ async function containedRealPath(sourceRoot, target) {
 
 async function claudeLayout(claudeHome) {
   const resolvedHome = path.resolve(claudeHome);
-  const canonicalRoot = path.join(resolvedHome, 'projects');
+  let physicalHome = resolvedHome;
+  try {
+    physicalHome = await fsp.realpath(resolvedHome);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  const canonicalRoot = path.join(physicalHome, 'projects');
   if (await directoryExists(canonicalRoot)) {
     const entries = await fsp.readdir(canonicalRoot, { withFileTypes: true });
     const containers = entries
@@ -261,13 +267,13 @@ async function claudeLayout(claudeHome) {
     }
   }
 
-  const exportedFiles = await directJsonlFiles(resolvedHome);
+  const exportedFiles = await directJsonlFiles(physicalHome);
   if (exportedFiles.length) {
     return {
       claudeHome: resolvedHome,
-      sourceRoot: resolvedHome,
-      projectsRoot: resolvedHome,
-      containers: [{ key: path.basename(resolvedHome), path: resolvedHome }],
+      sourceRoot: physicalHome,
+      projectsRoot: physicalHome,
+      containers: [{ key: path.basename(physicalHome), path: physicalHome }],
       layout: 'project-container',
     };
   }
