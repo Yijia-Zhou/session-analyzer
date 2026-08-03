@@ -1,0 +1,73 @@
+name: Verify published npm release
+run-name: Verify session-analyzer@${{ inputs.version }} from npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact stable npm version to verify
+        required: true
+        type: string
+      source_sha:
+        description: Exact 40-character release source commit
+        required: true
+        type: string
+      candidate_sha256:
+        description: Exact 64-character SHA-256 recorded by Stage npm release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-public-verify-${{ github.repository }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  verify-public:
+    name: Public npm smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Pin npm verification toolchain
+        working-directory: ${{ runner.temp }}
+        run: npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/
+
+      - name: Verify exact source identity
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/main'
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
+          test -z "$(git status --porcelain)"
+
+      - name: Verify anonymous public package
+        env:
+          EXPECTED_SHA256: ${{ inputs.candidate_sha256 }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: npm run release:verify-public
