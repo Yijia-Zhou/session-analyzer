@@ -10,7 +10,7 @@
   - `docs/design-docs/code-mode-operations.md`
   - `docs/design-docs/code-mode-structured-display-catalog.md`
   - `docs/design-docs/transcript-source-adapters.md`
-  - `docs/exec-plans/active/2026-08-02-v0.1.3-release.md`
+  - `docs/exec-plans/completed/2026-08-02-v0.1.3-release.md`
   - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
   - `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md`
   - `docs/exec-plans/completed/2026-06-28-search-navigation-state-convergence.md`

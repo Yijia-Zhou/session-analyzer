@@ -48,9 +48,10 @@ When changing product behavior or repository structure:
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Transcript source adapters: `docs/design-docs/transcript-source-adapters.md`
 - Active plans:
-  - `docs/exec-plans/active/2026-08-02-v0.1.3-release.md`
-  - `docs/exec-plans/active/2026-08-02-npm-trusted-publishing.md`
+  - None.
 - Completed plans:
+  - `docs/exec-plans/completed/2026-08-02-v0.1.3-release.md`
+  - `docs/exec-plans/completed/2026-08-02-npm-trusted-publishing.md`
   - `docs/exec-plans/completed/2026-08-02-v0.1.3-review-followups.md`
   - `docs/exec-plans/completed/2026-07-31-first-public-npm-release.md`
   - `docs/exec-plans/completed/2026-07-31-claude-pointer-fork-context.md`

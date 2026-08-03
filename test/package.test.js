@@ -82,6 +82,9 @@ test('package metadata exposes the session-analyzer CLI', () => {
     registry: 'https://registry.npmjs.org/',
   });
   assert.equal(pkg.scripts['release:check'], 'npm run build:check && npm test && npm run test:package');
+  assert.equal(pkg.scripts['release:preflight'], 'node scripts/release-automation.js preflight');
+  assert.equal(pkg.scripts['release:review-stage'], 'node scripts/release-automation.js review-stage');
+  assert.equal(pkg.scripts['release:verify-public'], 'node scripts/release-automation.js verify-public');
   assert.equal(pkg.scripts.prepublishOnly, 'npm run release:check');
   assert.deepEqual(pkg.dependencies, {
     acorn: '8.15.0',
