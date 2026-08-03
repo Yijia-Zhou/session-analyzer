@@ -132,12 +132,12 @@
     {
       id: 'importantEvent',
       name: 'Important event',
-      description: 'User/assistant messages, patches, goals, errors, aborts, rollbacks, compactions, plans, plan updates, update_plan calls, failed events, and abnormal severity.',
+      description: 'User/assistant messages, patches, goals, errors, aborts, rollbacks, compactions, plan artifacts, plan updates, failed events, and abnormal severity.',
     },
     {
       id: 'updatePlanCall',
-      name: 'update_plan call',
-      description: 'Calls to the update_plan tool and protocol plan updates.',
+      name: 'Plan update',
+      description: 'Observed plan updates from supported tools or protocol evidence.',
     },
     {
       id: 'userInputRequest',

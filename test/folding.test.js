@@ -279,13 +279,16 @@ test('declared update_plan requests do not match the canonical update-plan condi
   }), 'collapsed');
 });
 
-test('planning condition matches update_plan calls and protocol plan updates', () => {
+test('planning condition matches source-neutral tool and protocol Plan Updates', () => {
   const toolUpdate = { kind: 'other_tool_call', subtype: 'update_plan', toolName: 'update_plan', severity: 'normal' };
+  const taskUpdate = { kind: 'other_tool_call', subtype: 'TaskUpdate', toolName: 'TaskUpdate', severity: 'normal' };
   const protocolUpdate = { kind: 'plan_update', subtype: 'plan_update', toolName: '', severity: 'normal' };
   assert.equal(folding.conditionMatches('updatePlanCall', toolUpdate), true);
+  assert.equal(folding.conditionMatches('updatePlanCall', taskUpdate), true);
   assert.equal(folding.conditionMatches('updatePlanCall', protocolUpdate), true);
   assert.equal(folding.displayStateFromRules(protocolUpdate, profileRules('planning')), 'expanded');
   assert.equal(folding.displayStateFromRules(toolUpdate, profileRules('planning')), 'expanded');
+  assert.equal(folding.displayStateFromRules(taskUpdate, profileRules('planning')), 'expanded');
   assert.equal(folding.conditionMatches('updatePlanCall', { label: 'update_plan' }), false);
 });
 

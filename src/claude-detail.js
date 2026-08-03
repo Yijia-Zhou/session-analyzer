@@ -74,6 +74,9 @@ function rawMeta(raw) {
     status: raw.status || '',
     severity: raw.isApiErrorMessage ? 'error' : 'normal',
     toolName: raw.toolName || '',
+    provider: raw.provider || '',
+    model: raw.model || '',
+    effort: raw.effort || '',
     touchedFiles: raw.touchedFiles || [],
     outputStats: {
       exitCode: raw.exitCode,
@@ -90,7 +93,10 @@ function logicalMeta(event) {
     turnId: event.turnId || '',
     status: event.status || '',
     severity: event.severity || 'normal',
-    toolName: event.toolName || '',
+    toolName: event.toolName || event.sourceToolName || '',
+    provider: event.provider || '',
+    model: event.model || '',
+    effort: event.effort || '',
     touchedFiles: event.touchedFiles || [],
     outputStats: event.outputStats || {},
     channels: event.channels || [],
@@ -194,6 +200,94 @@ function toolRows(raws, event) {
   return { callRaw, call, resultRaw, resultBlock };
 }
 
+function planUpdateSection(explanation, items) {
+  const text = sanitizeClaudeDetailText(explanation);
+  const steps = (Array.isArray(items) ? items : []).map((item) => {
+    if (!item || typeof item !== 'object') return null;
+    const step = sanitizeClaudeDetailText(item.step || item.subject || '').trim();
+    const status = sanitizeClaudeDetailText(item.status || '').trim();
+    if (!step && !status) return null;
+    return { step: step || '(unnamed step)', status };
+  }).filter(Boolean);
+  if (!text.trim() && !steps.length) return null;
+  return {
+    type: 'plan_update',
+    title: 'Plan update',
+    explanationHtml: text.trim() ? renderMarkdown(text) : '',
+    steps,
+  };
+}
+
+function taskToolPlanSection(call, resultRaw, locale) {
+  const request = call?.input || {};
+  const structured = resultRaw?.toolUseResult;
+  if (call?.name === 'TaskCreate') {
+    return planUpdateSection(
+      request.description || '',
+      [{
+        step: request.subject || structured?.task?.subject || '',
+        status: structured?.task?.status || 'pending',
+      }],
+    );
+  }
+  if (call?.name === 'TaskUpdate') {
+    const taskId = request.taskId || structured?.taskId || '';
+    const status = structured?.statusChange?.to || request.status || '';
+    const from = structured?.statusChange?.from || '';
+    const changed = (Array.isArray(structured?.updatedFields) ? structured.updatedFields : [])
+      .map((field) => sanitizeClaudeDetailText(field).trim())
+      .filter(Boolean);
+    return planUpdateSection(
+      from && status
+        ? claudeDetailText('taskStatusTransition', locale, { taskId, from, to: status })
+        : changed.length
+          ? claudeDetailText('taskUpdatedFields', locale, { taskId, fields: changed.join(', ') })
+          : '',
+      [{ step: request.subject || claudeDetailText('taskFallback', locale, { taskId }), status }],
+    );
+  }
+  return null;
+}
+
+function lifecycleSections(event, locale) {
+  const lifecycle = event?.lifecycle;
+  if (!lifecycle) return [];
+  const terminal = lifecycle.terminal;
+  const notifications = Array.isArray(lifecycle.notifications) ? lifecycle.notifications : terminal ? [terminal] : [];
+  const launchText = lifecycle.kind === 'background_command'
+    ? claudeDetailText(
+      lifecycle.timedOutAfterMs ? 'backgroundLifecycleLaunchTimed' : 'backgroundLifecycleLaunch',
+      locale,
+      { duration: lifecycle.timedOutAfterMs, taskId: lifecycle.taskId },
+    )
+    : claudeDetailText('asyncAgentLifecycleLaunch', locale, { taskId: lifecycle.taskId });
+  const sections = [noticeSection('Lifecycle', launchText, terminal ? 'info' : 'warning')];
+  for (const notification of notifications) {
+    sections.push(noticeSection(
+      'Completion',
+      notification.summary,
+      ['failed', 'error'].includes(notification.status) ? 'error' : 'info',
+    ));
+    sections.push(markdownSection('Result', notification.result || ''));
+    sections.push(jsonSection('Usage', notification.usage));
+  }
+  sections.push(jsonSection('Lifecycle data', {
+    kind: lifecycle.kind,
+    phase: lifecycle.phase,
+    taskId: lifecycle.taskId,
+    timedOutAfterMs: lifecycle.timedOutAfterMs,
+    terminalStatus: terminal?.status || '',
+    exitCode: terminal?.exitCode ?? null,
+    stops: notifications.map((notification) => ({
+      status: notification.status,
+      summary: notification.summary,
+      usage: notification.usage,
+      exitCode: notification.exitCode ?? null,
+    })),
+  }));
+  return sections.filter(Boolean);
+}
+
 function toolSections(raws, event, locale) {
   const { call, resultRaw, resultBlock } = toolRows(raws, event);
   const request = call?.input || {};
@@ -201,9 +295,20 @@ function toolSections(raws, event, locale) {
   const structuredResult = resultRaw?.toolUseResult;
   const sections = [];
 
+  if (['TaskCreate', 'TaskUpdate'].includes(call?.name)) {
+    sections.push(taskToolPlanSection(call, resultRaw, locale));
+    if (!sections[0]) sections.push(jsonSection('Request', request));
+    sections.push(noticeSection(
+      'Result',
+      resultText,
+      event.status === 'failed' ? 'error' : event.status === 'incomplete' ? 'warning' : 'info',
+    ));
+    return sections.filter(Boolean);
+  }
+
   if (event.kind === 'command') {
     sections.push(codeSection('Command', request.command || stringifyValue(request), 'bash', 'command'));
-    sections.push(terminalSection('stdout', structuredResult?.stdout || resultText, 'stdout'));
+    sections.push(terminalSection('stdout', structuredResult?.stdout || (event.lifecycle ? '' : resultText), 'stdout'));
     sections.push(terminalSection('stderr', structuredResult?.stderr, 'stderr'));
   } else if (event.kind === 'patch') {
     const file = request.file_path || request.filePath || request.path || request.notebook_path || '';
@@ -219,10 +324,13 @@ function toolSections(raws, event, locale) {
   } else {
     sections.push(jsonSection('Request', request));
     if (structuredResult && typeof structuredResult === 'object') {
-      sections.push(jsonSection('Structured result', structuredResult));
+      sections.push(jsonSection(event.lifecycle ? 'Launch result' : 'Structured result', structuredResult));
     }
-    sections.push(terminalSection('Result', resultText, event.status === 'failed' ? 'stderr' : 'stdout'));
+    if (!event.lifecycle) {
+      sections.push(terminalSection('Result', resultText, event.status === 'failed' ? 'stderr' : 'stdout'));
+    }
   }
+  sections.push(...lifecycleSections(event, locale));
   return sections.filter(Boolean);
 }
 
@@ -285,6 +393,13 @@ function logicalTimelineSections(event, raws, locale) {
   if (['command', 'patch', 'web_search', 'agent_coordination', 'mcp_call', 'other_tool_call'].includes(event.kind)) {
     return toolSections(raws, event, locale);
   }
+  if (event.kind === 'proposed_plan') {
+    const { call } = toolRows(raws, event);
+    return [markdownSection('Proposed plan', call?.input?.plan || event.searchText)].filter(Boolean);
+  }
+  if (event.kind === 'plan_update') {
+    return [planUpdateSection('', event.planSnapshot || [])].filter(Boolean);
+  }
   if (event.kind === 'compaction') return compactionSections(raws);
   if (['error', 'warning', 'abort'].includes(event.kind)) {
     return [noticeSection(
@@ -292,6 +407,15 @@ function logicalTimelineSections(event, raws, locale) {
       event.searchText || event.preview,
       event.kind === 'error' ? 'error' : 'warning',
     )].filter(Boolean);
+  }
+  if (event.layer === 'protocol' && event.subtype === 'task_reminder') {
+    return [planUpdateSection('', event.planSnapshot || [])].filter(Boolean);
+  }
+  if (event.layer === 'protocol' && event.subtype === 'away_summary') {
+    return [markdownSection('Away summary', raws[0]?.parsed?.content || event.searchText, { hideTitle: true })].filter(Boolean);
+  }
+  if (event.layer === 'protocol' && ['plan_mode', 'plan_mode_exit'].includes(event.subtype)) {
+    return [jsonSection('Plan mode', raws[0]?.parsed?.attachment || {})].filter(Boolean);
   }
   return [noticeSection(eventTitle(event, locale), event.preview || event.searchText)].filter(Boolean);
 }

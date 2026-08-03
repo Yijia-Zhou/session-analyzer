@@ -47,6 +47,16 @@ const admitted = [
     category: PLAN_EVENT_CATEGORY.UPDATE,
   },
   {
+    name: 'Claude TaskCreate transition',
+    event: { kind: 'other_tool_call', subtype: 'TaskCreate', toolName: 'TaskCreate' },
+    category: PLAN_EVENT_CATEGORY.UPDATE,
+  },
+  {
+    name: 'Claude TaskUpdate transition',
+    event: { kind: 'other_tool_call', subtype: 'TaskUpdate', toolName: 'TaskUpdate' },
+    category: PLAN_EVENT_CATEGORY.UPDATE,
+  },
+  {
     name: 'protocol plan_update',
     event: { kind: 'plan_update', subtype: 'plan_update', toolName: '' },
     category: PLAN_EVENT_CATEGORY.UPDATE,
@@ -91,6 +101,8 @@ test('Plan facet rejects incomplete, label-only, conflicting, and presentation-o
     { kind: 'other_tool_call', subtype: 'update_plan' },
     { kind: 'other_tool_call', toolName: 'update_plan' },
     { kind: 'other_tool_call', subtype: 'plan_delta', toolName: 'update_plan' },
+    { kind: 'other_tool_call', subtype: 'TaskCreate', toolName: 'TaskUpdate' },
+    { kind: 'other_tool_call', subtype: 'TaskUpdate', toolName: '' },
     { kind: 'plan_update' },
     { kind: 'plan_update', subtype: 'plan_update', toolName: 'update_plan' },
     { kind: 'plan_update', subtype: 'future_plan_shape', toolName: '' },

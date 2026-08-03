@@ -22,6 +22,10 @@ const {
 } = require('./claude-source');
 const { createClaudeLogicalBuilder } = require('./claude-logical');
 const { inferClaudeForkRelationships } = require('./claude-forks');
+const {
+  isPlanArtifactEvent,
+  isPlanEvent,
+} = require('./shared/plan-facet');
 
 const POINTER_PROVISIONAL_ASSOCIATION = 'pointer-provisional';
 // Keep the ordinary UUID/agent spelling stable, but never let an identity
@@ -671,6 +675,8 @@ function addCounts(session, event, turnIds) {
   if (event.kind === 'compaction') session.counts.compactions += 1;
   if (event.kind === 'abort') session.counts.aborts += 1;
   if (event.kind === 'error') session.counts.errors += 1;
+  if (isPlanArtifactEvent(event)) session.counts.planArtifacts += 1;
+  if (isPlanEvent(event)) session.counts.planEvents += 1;
 }
 
 function countBy(items, keyFor) {
