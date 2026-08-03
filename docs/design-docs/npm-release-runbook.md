@@ -170,6 +170,8 @@ Do not copy the generic publication commands into a conflicting version-specific
 
 The release commit must contain every packed source change and generated asset. Push it through the normal review path and wait for all required Linux and Windows jobs. Each job must let `setup-node` select Node without invoking its package-manager cache, then install the exact approved npm version from `runner.temp` before any repository-local npm command, print that version, and only then run `npm ci --strict-allow-scripts`. This ordering matters because `setup-node` otherwise calls the npm bundled with Node to resolve its cache before the approved npm has been bootstrapped, and the repository's strict `devEngines` correctly rejects that npm. Record the commit SHA and CI run URL in the active plan. / Release commit 必须包含所有会被打包的源文件变更与生成资产。通过正常 review 路径推送，并等待所有要求的 Linux 与 Windows job。每个 job 必须先让 `setup-node` 在不调用 package-manager cache 的情况下选择 Node，再从 `runner.temp` 安装精确的获批 npm 版本；在此之前不得执行任何仓库内 npm 命令。随后打印版本，最后才运行 `npm ci --strict-allow-scripts`。这个顺序很重要：否则 `setup-node` 会在获批 npm 完成 bootstrap 前调用 Node 附带的 npm 来解析缓存，而仓库严格的 `devEngines` 会正确拒绝该 npm。把 commit SHA 与 CI run URL 记录到 active plan。
 
+For release pull requests, push the branch and open a prefilled GitHub compare page containing the intended base, head branch, title, and body so the maintainer can review it and click **Create pull request**. Do not create a release pull request through a connector or API unless the maintainer explicitly requests another method. / 对 release pull request，先推送分支，再打开已预填目标 base、head branch、标题与正文的 GitHub compare 页面，由维护者复核并点击 **Create pull request**。除非维护者明确要求其他方式，否则不得通过 connector 或 API 创建 release pull request。
+
 Before continuing locally:
 
 本地继续前：

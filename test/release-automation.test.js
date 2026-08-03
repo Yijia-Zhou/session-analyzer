@@ -59,23 +59,32 @@ function provenanceResponse({ version = '0.1.3', sourceSha = '7ac436205b38de0580
 }
 
 test('release automation parses strict command-specific inputs', () => {
-  assert.deepEqual(parseOptions(['preflight', '0.1.3']), {
+  const parseIsolated = (argv) => parseOptions(argv, {});
+  assert.deepEqual(parseIsolated(['preflight', '0.1.3']), {
     command: 'preflight',
     version: '0.1.3',
   });
-  assert.equal(parseOptions([
+  assert.equal(parseIsolated([
     'review-stage',
     '0.1.3',
     'e263604d-5669-4e0a-a265-ab33e70ded7e',
     'a'.repeat(64),
     'b'.repeat(40),
   ]).stageId, 'e263604d-5669-4e0a-a265-ab33e70ded7e');
-  assert.throws(() => parseOptions(['preflight', '0.1.3-beta.1']), /stable x\.y\.z/u);
-  assert.throws(() => parseOptions(['verify-public', '0.1.3']), /requires positional values/u);
-  assert.throws(() => parseOptions(['verify-public', '--release-version', '0.1.3']), /expected SHA-256/u);
-  assert.throws(() => parseOptions(['preflight', '--release-version', '0.1.3', '--version', '0.1.3']), /only once/u);
-  assert.throws(() => parseOptions(['preflight', '--release-version', '0.1.3', '--release-version', '0.1.4']), /Duplicate option/u);
-  assert.throws(() => parseOptions(['preflight', '--release-version', '0.1.3', '--mystery', 'value']), /Unexpected option/u);
+  assert.deepEqual(parseOptions(['preflight'], {
+    RELEASE_VERSION: '0.1.3',
+    GITHUB_STEP_SUMMARY: '/tmp/release-summary.md',
+  }), {
+    command: 'preflight',
+    version: '0.1.3',
+    summaryFile: '/tmp/release-summary.md',
+  });
+  assert.throws(() => parseIsolated(['preflight', '0.1.3-beta.1']), /stable x\.y\.z/u);
+  assert.throws(() => parseIsolated(['verify-public', '0.1.3']), /requires positional values/u);
+  assert.throws(() => parseIsolated(['verify-public', '--release-version', '0.1.3']), /expected SHA-256/u);
+  assert.throws(() => parseIsolated(['preflight', '--release-version', '0.1.3', '--version', '0.1.3']), /only once/u);
+  assert.throws(() => parseIsolated(['preflight', '--release-version', '0.1.3', '--release-version', '0.1.4']), /Duplicate option/u);
+  assert.throws(() => parseIsolated(['preflight', '--release-version', '0.1.3', '--mystery', 'value']), /Unexpected option/u);
 });
 
 test('release automation rejects token-like npm credential environment names', () => {

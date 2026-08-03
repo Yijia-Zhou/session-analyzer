@@ -29,7 +29,7 @@ function fail(message) {
   throw new Error(message);
 }
 
-function parseOptions(argv) {
+function parseOptions(argv, environment = process.env) {
   const [command, ...tokens] = argv;
   if (!['preflight', 'review-stage', 'verify-public'].includes(command)) {
     fail('Usage: release-automation.js <preflight|review-stage|verify-public> <command-specific values>');
@@ -64,11 +64,11 @@ function parseOptions(argv) {
     delete options.releaseVersion;
   }
   const environmentFallbacks = {
-    version: process.env.RELEASE_VERSION,
-    expectedSha256: process.env.EXPECTED_SHA256,
-    expectedSourceSha: process.env.EXPECTED_SOURCE_SHA,
-    stageId: process.env.NPM_STAGE_ID,
-    summaryFile: process.env.GITHUB_STEP_SUMMARY,
+    version: environment.RELEASE_VERSION,
+    expectedSha256: environment.EXPECTED_SHA256,
+    expectedSourceSha: environment.EXPECTED_SOURCE_SHA,
+    stageId: environment.NPM_STAGE_ID,
+    summaryFile: environment.GITHUB_STEP_SUMMARY,
   };
   for (const [key, value] of Object.entries(environmentFallbacks)) {
     if (!Object.hasOwn(options, key) && value) options[key] = value;
