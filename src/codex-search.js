@@ -100,8 +100,24 @@ function createCodexSearch(deps) {
     const derivedKind = derivedSessionKind(session);
     const parentSession = session.parentSessionId ? index?.sessionsById?.get(session.parentSessionId) : null;
     const forkedFromSession = session.forkedFromSessionId ? index?.sessionsById?.get(session.forkedFromSessionId) : null;
+    const forkDetails = session.forkStorageMode ? {
+      forkStorageMode: session.forkStorageMode,
+      forkedAt: session.forkedAt || '',
+      forkPointUuid: session.forkPointUuid || '',
+      forkContinuationState: session.forkContinuationState || '',
+      forkEvidence: session.forkEvidence
+        ? sanitizeLogicalEnvelopeValue(session.forkEvidence)
+        : null,
+      inheritedContext: session.inheritedContext
+        ? sanitizeLogicalEnvelopeValue(session.inheritedContext)
+        : null,
+    } : {};
     return {
       id: session.id,
+      sourceKind: session.sourceKind || codexSourceKind,
+      sourceSessionId: session.sourceSessionId || session.id,
+      sourceClientVersion: session.sourceClientVersion || '',
+      projectAssociation: session.projectAssociation || '',
       title: sanitizeLogicalEnvelopeValue(session.title),
       sourceFile: session.sourceFile,
       bytes: session.bytes,
@@ -112,6 +128,7 @@ function createCodexSearch(deps) {
       parentSessionTitle: sanitizeLogicalEnvelopeValue(parentSession?.title || ''),
       forkedFromSessionId: session.forkedFromSessionId,
       forkedFromSessionTitle: sanitizeLogicalEnvelopeValue(forkedFromSession?.title || ''),
+      ...forkDetails,
       agentNickname: sanitizeLogicalEnvelopeValue(session.agentNickname),
       isDerivedSession: Boolean(derivedKind),
       derivedKind,
@@ -131,7 +148,7 @@ function createCodexSearch(deps) {
     return {
       id: raw.rawId,
       schemaVersion: canonicalSchemaVersion,
-      sourceKind: codexSourceKind,
+      sourceKind: raw.sourceKind || codexSourceKind,
       timestamp: raw.timestamp,
       turnId: raw.turnId,
       recordType: raw.recordType,
@@ -155,7 +172,7 @@ function createCodexSearch(deps) {
         durationMs: raw.durationMs,
       },
       source: raw.source,
-      sourceLocator: codexSourceLocator(raw.source),
+      sourceLocator: raw.sourceLocator || codexSourceLocator(raw.source),
       rawRefs: [rawRef(raw)],
       channels: [raw.recordType],
       searchText: raw.searchText,

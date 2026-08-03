@@ -1,0 +1,204 @@
+# Transcript source adapters / 转录来源适配器
+
+## Status / 状态
+
+- Status: accepted for `0.1.3` / 状态：已针对 `0.1.3` 接受
+- Last updated: 2026-08-03 / 最近更新：2026-08-03
+- Related product spec: `docs/product-specs/session-transcript-analyzer.md` / 相关产品规格：`docs/product-specs/session-transcript-analyzer.md`
+- Related timeline design: `docs/design-docs/logical-event-timeline.md` / 相关时间线设计：`docs/design-docs/logical-event-timeline.md`
+- Related pressure test: `docs/design-docs/external-source-mapping-pressure-tests.md` / 相关压力测试：`docs/design-docs/external-source-mapping-pressure-tests.md`
+- Related release plan: `docs/exec-plans/active/2026-08-02-v0.1.3-release.md` / 相关发布计划：`docs/exec-plans/active/2026-08-02-v0.1.3-release.md`
+- Related completed plan: `docs/exec-plans/completed/2026-07-31-claude-code-source-adapter.md` / 相关已完成计划：`docs/exec-plans/completed/2026-07-31-claude-code-source-adapter.md`
+- Related pointer-fork plan: `docs/exec-plans/completed/2026-07-31-claude-pointer-fork-context.md` / 相关指针式分叉计划：`docs/exec-plans/completed/2026-07-31-claude-pointer-fork-context.md`
+
+## Decision / 决策
+
+Session Analyzer supports Codex and Claude Code through source-specific adapters behind one source-neutral server, search, timeline, and browser contract. Claude Code records are interpreted directly; they are not translated into synthetic Codex rollout items. The default Transcript Source remains Codex, and Claude Code requires explicit CLI opt-in. / Session Analyzer 通过来源专属适配器，在统一且来源中立的服务器、搜索、时间线与浏览器契约后支持 Codex 和 Claude Code。Claude Code 记录会被直接解释，不会被转换成合成的 Codex rollout item。默认转录来源继续是 Codex，Claude Code 必须通过 CLI 显式启用。
+
+This decision preserves source evidence that has no Codex equivalent: Claude `uuid`/`parentUuid`, response grouping by `message.id`, exact `tool_use_id` pairing, sidechain/subagent identity, compact boundaries, file-history records, queue metadata, and source-owned external-output references. / 该决策会保留没有 Codex 等价物的来源证据：Claude 的 `uuid`/`parentUuid`、按 `message.id` 形成的响应分组、精确的 `tool_use_id` 配对、sidechain/subagent 标识、compact boundary、文件历史记录、队列 metadata，以及由来源拥有的外置输出引用。
+
+## Adapter boundary / 适配器边界
+
+The server selects exactly one adapter for a process. The adapter owns: / 每个服务器进程只选择一个适配器。适配器负责：
+
+- project discovery from source-owned storage / 从来源拥有的存储中发现项目；
+- layout-aware Session candidate discovery / 感知布局地发现会话候选；
+- Raw Record parsing and source-specific correlation / 原始记录解析与来源专属关联；
+- Logical Event construction / 逻辑事件构建；
+- structured detail construction / 结构化详情构建；
+- validated Raw Record re-reading / 经过验证的原始记录重读。
+
+The shared runtime owns project selection, indexing jobs, canonical session collections, search, folding, HTTP routing, and browser rendering. Existing Codex builders remain source-specific and contain no Claude branches. / 共享运行时负责项目选择、索引 job、canonical 会话集合、搜索、折叠、HTTP 路由与浏览器渲染。既有 Codex builder 继续保持来源专属，不包含 Claude 分支。
+
+`src/source-adapters.js` is the dispatch boundary. `src/claude-source.js`, `src/claude-logical.js`, `src/claude-detail.js`, `src/claude-forks.js`, and `src/claude.js` own the Claude implementation. `src/codex*.js` continues to own Codex interpretation. / `src/source-adapters.js` 是分派边界。`src/claude-source.js`、`src/claude-logical.js`、`src/claude-detail.js`、`src/claude-forks.js` 与 `src/claude.js` 负责 Claude 实现；`src/codex*.js` 继续负责 Codex 解释。
+
+## CLI and privacy boundary / CLI 与隐私边界
+
+Default behavior remains: / 默认行为保持为：
+
+```text
+session-analyzer --source codex
+```
+
+Claude Code is enabled explicitly: / Claude Code 需要显式启用：
+
+```text
+session-analyzer --source claude-code --claude-home <path>
+```
+
+`--source claude` is accepted as a convenience alias and normalizes to the stable machine value `claude-code`. The default Claude home is `~/.claude`, but it is not scanned unless Claude is selected. This prevents an upgrade from silently expanding the set of sensitive local transcripts read by the process. / `--source claude` 作为便利别名被接受，并归一化为稳定机器值 `claude-code`。默认 Claude home 为 `~/.claude`，但只有在选择 Claude 时才会扫描。这样可避免升级后在无提示的情况下扩大进程读取的本地敏感转录范围。
+
+`0.1.3` is Claude-only or Codex-only per process. A mixed `--source all` index, source filter, and aggregate source counts remain deferred. / `0.1.3` 的每个进程只运行 Claude 或 Codex 单一来源。混合 `--source all` 索引、来源筛选与聚合来源计数继续推迟。
+
+## Claude discovery and project association / Claude 发现与项目关联
+
+Canonical Claude layout: / Claude 的规范布局：
+
+```text
+<claude-home>/projects/<project-container>/*.jsonl
+<claude-home>/projects/<project-container>/<session-id>/subagents/*.jsonl
+<claude-home>/projects/<project-container>/<session-id>/subagents/*.meta.json
+<claude-home>/projects/<project-container>/<session-id>/tool-results/*
+```
+
+Only immediate `*.jsonl` children of a project container are primary Session candidates. Recursive JSONL discovery is intentionally rejected because it would misclassify subagent transcripts as primary Sessions. A directory containing immediate JSONL files is also accepted as an exported project-container root for local inspection and sanitized fixture workflows. Nested storage paths are derived from the primary JSONL basename, never from a record-provided `sessionId`; subagent directories, JSONL files, and optional sidecars must pass both lexical and real-path containment under the selected source root before enumeration or reading. / 只有项目容器直属的 `*.jsonl` 才是主要会话候选。有意拒绝递归 JSONL 发现，因为它会把 subagent 转录错误归类为主要会话。为便于本地检查和脱敏 fixture 工作流，也接受本身直接包含 JSONL 文件的目录作为导出的项目容器根目录。嵌套存储路径只由主要 JSONL 的 basename 派生，绝不使用记录提供的 `sessionId`；subagent 目录、JSONL 文件与可选 sidecar 在枚举或读取前都必须同时通过已选来源根目录下的词法路径和 real-path containment。
+
+Project association uses this order: / 项目关联按以下顺序处理：
+
+1. an embedded `cwd` inside the Session / 会话内嵌的 `cwd`；
+2. a Derived Session inheriting its parent association / 派生会话继承父会话关联；
+3. an exactly correlated Pointer Fork Session inheriting its parent association after relationship resolution / 精确关联的指针式分叉会话在关系解析后继承父会话关联；
+4. a metadata-only Session in a container whose other Sessions establish exactly one `cwd` cluster / metadata-only 会话所在容器的其他会话只形成一个 `cwd` cluster；
+5. a metadata-only Pointer Fork Session provisionally inspected and then promoted only when exact relationship evidence links it to an already-associated parent in the same container / metadata-only 指针式分叉会话可先被暂存检查，但只有精确关系证据把它连接到同一容器中已关联的父会话时才会纳入项目。
+6. otherwise unknown and excluded from a repository-scoped index / 否则视为 unknown，不进入仓库范围索引。
+
+The project-container name is an opaque source key, not an authoritative encoded path. A recorded `cwd` need not exist on the analyzer host; Windows and POSIX path strings keep their own semantics during copied-transcript analysis. / 项目容器名称是不透明来源 key，不是权威的编码路径。记录中的 `cwd` 无需在 analyzer 宿主机上存在；分析复制来的转录时，Windows 与 POSIX path 字符串分别保持自身语义。
+
+## Session identity and relationships / 会话标识与关系
+
+Codex primary Session IDs retain their existing public representation for browser and local-storage compatibility. Claude primary IDs are namespaced from the first supported release: / 为保持浏览器与 local storage 兼容，Codex 主要会话 ID 继续使用既有公开表示。Claude 主要会话从首个支持版本开始即使用命名空间：
+
+```text
+claude-code:<source-session-id>
+```
+
+Claude subagents use a Derived Session identity: / Claude subagent 使用派生会话标识：
+
+```text
+claude-code:<parent-source-session-id>:agent:<agent-id>
+```
+
+The source-session and agent components are encoded independently before they enter these templates. The canonical component encoding leaves only `A-Z a-z 0-9 - _ . ! ~ * ' ( )` unchanged, emits uppercase UTF-8 percent escapes for every other well-formed character, and uses `%uXXXX` for an isolated UTF-16 surrogate. It never normalizes or decodes input, so `%` is never literal in an encoded component and component output never contains `:`. Ordinary UUIDs and agent IDs therefore retain their existing spelling, while `parent:agent:child` becomes `parent%3Aagent%3Achild` and raw `%3A` becomes `%253A`. The fixed `:agent:` delimiter cannot be manufactured by source data; the primary and Derived Session templates are consequently injective over their original components. / 来源 session 与 agent 分量在进入这些模板前会分别编码。规范分量编码只原样保留 `A-Z a-z 0-9 - _ . ! ~ * ' ( )`，其他合法字符使用大写 UTF-8 percent escape；孤立 UTF-16 surrogate 使用 `%uXXXX`。编码绝不做 normalization 或 decode，因此编码分量中不会出现字面 `%`，分量输出也不会包含 `:`。普通 UUID 与 agent ID 会保留原有表示，而 `parent:agent:child` 会变成 `parent%3Aagent%3Achild`，原始 `%3A` 会变成 `%253A`。固定的 `:agent:` 分隔符不能由来源数据伪造，因此主要会话与 Derived Session 两种模板对原始分量是 injective 的。
+
+Each session also exposes `sourceKind`, `sourceSessionId`, and `sourceClientVersion`. The Claude client `version` is recorded as client metadata and is not treated as a transcript schema version. / 每个会话还暴露 `sourceKind`、`sourceSessionId` 与 `sourceClientVersion`。Claude 客户端 `version` 只作为客户端 metadata 记录，不被当作转录 schema 版本。
+
+Before constructing an Analyzer Session Identity or any Raw Record identity, one primary Claude JSONL file must establish at most one usable non-empty string Source Session Identity across all of its records; when no record declares one, the direct JSONL basename is the fallback. Invalid or contradictory declarations fail closed. Across the selected source root, multiple physical files claiming the same Source Session Identity are treated as export copies only when their canonical line-content fingerprints are identical. The adapter then selects one deterministic owner, preferring the filename that exactly matches the Source Session Identity and otherwise the first relative source path. Differing fingerprints are conflicting evidence, so every contender is excluded instead of receiving a suffix or overwriting an index map entry. Project discovery and repository indexing share this resolution, keeping session counts, event lookup, and Raw readback bound to the same physical owner. / 在构造分析器会话标识或任何原始记录标识之前，一个 Claude 主要 JSONL 文件中的所有记录至多只能确立一个可用的非空字符串来源会话标识；若没有记录声明该标识，则回退到直属 JSONL 文件名。无效或互相矛盾的声明会 fail closed。在已选来源根目录内，多个物理文件只有在声明相同来源会话标识且规范化逐行内容指纹完全一致时，才视为导出副本。适配器随后确定唯一且稳定的 owner：优先选择文件名与来源会话标识完全一致的文件，否则选择相对来源路径最靠前的文件。若内容指纹不同，则属于冲突证据，所有竞争文件都会被排除，而不是添加后缀或覆盖索引映射。项目发现与仓库索引共用这一解析结果，使会话计数、事件查找和原始记录回读始终绑定到同一个物理 owner。
+
+After primary and Derived Sessions are materialized, the adapter resolves the complete Analyzer identity set once more before fork inference, `sessionsById`, or any downstream relationship/readback use. A missing, empty, non-string, or duplicate Analyzer identity excludes every affected candidate; a derived candidate whose parent identity is itself conflicted is excluded as dependent evidence. Unrelated candidates remain eligible, and the final map duplicate check is retained only as a defensive assertion. / 主要会话与 Derived Session 物化后，适配器会在 fork inference、`sessionsById` 以及任何下游关系／回读使用之前，再对完整 Analyzer identity 集合做一次解析。缺失、为空、非字符串或重复的 Analyzer identity 会排除所有受影响的候选；若派生候选的父 identity 本身冲突，也会将其作为依赖冲突证据排除。无关候选仍可进入索引，末尾 map duplicate 检查只作为防御性断言保留。
+
+Subagents are separately selectable Derived Sessions. Parent linkage requires a layout-valid `agent-<agent-id>.jsonl`, exactly that one non-empty identity across all present per-record `agentId` values, and exactly one parent Agent result exposing the same `agentId`. When a contained sidecar supplies `toolUseId`, it must identify that same parent Agent call. Missing, contradictory, or ambiguous evidence fails closed, and child activity is not copied into the parent's Agent Coordination event. / Subagent 是可单独选择的派生会话。父子关联必须同时具有符合布局的 `agent-<agent-id>.jsonl`、所有已出现的逐记录 `agentId` 都严格等于这一个非空 identity，以及恰好一个暴露相同 `agentId` 的父会话 Agent result；若通过 containment 的 sidecar 提供 `toolUseId`，它还必须指向同一个父 Agent call。缺失、矛盾或有歧义的证据都会 fail closed；子会话活动不会被复制进父会话的 Agent 协调事件。
+
+Claude exposes two supported Fork Session storage shapes: / Claude 暴露两种受支持的分叉会话存储形态：
+
+- A materialized fork is inferred when a foreign `session_id` resolves to one discovered source Session and the two Sessions share source UUID lineage. The copied history remains physically present in the fork transcript. / 当 foreign `session_id` 能解析到唯一一个已发现来源会话，且两个会话共享来源 UUID lineage 时，推断为物化式分叉；复制的历史仍物理存在于 fork 转录中。
+- A Pointer Fork Session is inferred only from an exact parent `system:local_command` `/fork`, a second local-command row whose `parentUuid` points to that command and whose stdout exactly reports `session waiting for a prompt · <title> · <short-id>`, and one unique primary Session in the same project container whose Source Session Identity begins with that short ID. / 只有同时存在精确的父会话 `system:local_command` `/fork`、第二条 `parentUuid` 指向该 command 且 stdout 精确报告 `session waiting for a prompt · <title> · <short-id>` 的 local-command 记录，以及同一 project container 内唯一一个来源会话标识以该短 ID 开头的主要会话时，才推断指针式分叉会话。
+
+Missing, duplicate, cross-container, or ambiguous evidence fails closed. The `/fork` command must name a non-empty fork point through `parentUuid`; that UUID and every parent link back to the ancestry root must resolve uniquely inside the same parent Session, without duplicate UUIDs, missing links, or cycles. An `ai-title` suffix such as `⑂` is display evidence only and never establishes a relationship. Materialized evidence takes precedence if both storage shapes appear to match. / 缺失、重复、跨容器或有歧义的证据会 fail closed。`/fork` command 必须通过 `parentUuid` 指向一个非空 fork point；该 UUID 以及一路回溯到 ancestry 根部的每个父链接，都必须在同一个父会话内唯一解析，不能出现重复 UUID、缺失链接或循环。`⑂` 等 `ai-title` 后缀只属于展示证据，绝不建立关系；如果两种存储形态看起来都匹配，物化证据优先。
+
+The `/fork` command UUID itself must also occur exactly once in the parent Session, so the local-command output cannot point ambiguously at another Raw Record. Pointer attachment requires a parent retained by the selected repository. A child with its own embedded-`cwd` association keeps that stronger project evidence; only metadata/provisional children inherit the retained parent's association and working-directory set. / `/fork` command 自身的 UUID 在父会话中也必须恰好出现一次，避免 local-command output 含糊地指向另一条原始记录。建立指针关系还要求父会话会被所选仓库保留。拥有自身 embedded-`cwd` 关联的 child 保留这项更强的项目证据；只有 metadata/provisional child 才继承已保留父会话的关联与工作目录集合。
+
+For a Pointer Fork Session, the fork point is the `/fork` command's `parentUuid`. The adapter follows only that parent Session's UUID ancestry, cycle-safely, and projects only Logical Events whose complete Raw Reference set lies inside the inherited ancestry. The child exposes counts plus at most the latest 12 inherited Main-event previews. Every projection names the parent as owner; it is not inserted into the child's `rawEvents` or `logicalEvents`, does not acquire child Raw References, and does not participate in child/project counts, filtering, search, folding, or search targets. / 对指针式分叉会话，分叉点是 `/fork` command 的 `parentUuid`。适配器只在该父会话内以 cycle-safe 方式沿 UUID ancestry 回溯，并且只投影其完整原始引用集合都位于继承 ancestry 内的逻辑事件。Child 暴露计数以及最多最近 12 个继承 Main event 预览。每个投影都把父会话标记为 owner；它不会进入 child 的 `rawEvents` 或 `logicalEvents`，不会获得 child 原始引用，也不参与 child／项目计数、筛选、搜索、折叠或搜索 target。
+
+The pointer child inherits the parent's repository association and working-directory set. Its start time includes the source `/fork` timestamp rather than an unrelated metadata-file mtime; later child-owned timestamps may extend the range. A child with no user, assistant, or last-prompt activity is presented as `waiting_for_prompt`. The browser shows the parent-owned Inherited Session Context separately above the child timeline and provides parent navigation. / 指针式 child 继承父会话的仓库关联与工作目录集合。其开始时间包含来源 `/fork` timestamp，而不是无关的 metadata 文件 mtime；后续 child 自有 timestamp 可以扩展该范围。没有 user、assistant 或 last-prompt 活动的 child 会显示为 `waiting_for_prompt`。浏览器在 child 时间线上方单独展示归父会话所有的继承会话上下文，并提供父会话导航。
+
+## Raw Record and Raw Reference contract / 原始记录与原始引用契约
+
+One physical JSONL line remains one Raw Record. Multiple future content blocks may produce multiple Logical Events that share the same Raw Reference; the source unit is not split merely to simplify event construction. / 一条物理 JSONL 行继续对应一条原始记录。未来一行中出现多个 content block 时，可以生成多个共享同一原始引用的逻辑事件；不会只为简化事件构建而拆分来源单位。
+
+Both sources use a typed locator for JSONL rows: / 两种来源都为 JSONL 记录使用带类型的 locator：
+
+```json
+{
+  "type": "jsonl_line",
+  "file": "relative/source/file.jsonl",
+  "line": 42
+}
+```
+
+The browser reads Raw References through: / 浏览器通过以下接口读取原始引用：
+
+```text
+/api/sessions/:sessionId/raw/:rawId
+```
+
+The server first resolves the indexed Session and Raw Record, then asks the owning adapter to re-read its validated locator. The client cannot construct a free-form source path for this endpoint. Legacy Codex `/api/raw?file&line` remains temporarily available for compatibility; Claude does not implement that path. / 服务器先解析已索引会话与原始记录，再让所属适配器重读经过验证的 locator。客户端无法为该接口自由组合来源 path。旧 Codex `/api/raw?file&line` 暂时保留兼容；Claude 不实现该路径。
+
+Inherited Session Context never turns a parent Raw Record into a child Raw Reference. Fork evidence and context metadata explicitly carry the parent owner Session ID; opening source Raw data therefore continues to use the parent's indexed Raw route. / 继承会话上下文绝不会把父会话原始记录变成 child 原始引用。Fork 证据与上下文 metadata 会显式携带父会话 owner Session ID；因此打开来源 Raw 数据仍须使用父会话的索引 Raw route。
+
+When a source line is malformed JSON, the indexed Raw Record keeps `parsed: null` plus its bounded exact source text. Raw-reference drill-down explicitly renders that source text rather than serializing the null parse result, so parse failure never hides the evidence being inspected. / 当来源行是 malformed JSON 时，索引原始记录会保留 `parsed: null` 与有界的精确来源文本。原始引用下钻会显式渲染该来源文本，而不是序列化空解析结果，因此解析失败不会隐藏正在检查的证据。
+
+A legal JSON `null` line remains distinguishable from malformed JSON in structured detail. Indexed Claude projections hold sanitized clones rather than long-lived embedded payload bytes: data URLs and native `{ type: "base64", data }` image/document sources are replaced by traceability markers before Raw previews, search text, Logical Events, or ordinary detail are built. Exact payloads remain available only through the indexed Raw route, which validates the locator and re-reads the source JSONL line. / 合法 JSON `null` 行在结构化详情中继续与 malformed JSON 区分。索引中的 Claude 投影保存脱敏克隆，而不会长期持有内嵌 payload 字节：data URL 与原生 `{ type: "base64", data }` 图片／文档来源会在构造 Raw preview、搜索文本、逻辑事件或普通详情前替换为可追溯 marker。精确 payload 只通过已索引 Raw route 提供；该 route 会验证 locator 并重新读取来源 JSONL 行。
+
+Claude Raw reads require both lexical and real-path containment under the selected Claude source root. Source-record paths are never resolved from an arbitrary client-provided absolute path. / Claude 原始记录读取同时要求词法路径与 real path 都位于所选 Claude 来源根目录内。绝不会根据客户端任意提供的绝对路径解析来源记录。
+
+## Claude logical mapping / Claude 逻辑映射
+
+Claude assistant rows are response blocks, not automatically distinct assistant messages. `message.id` groups one model response and deduplicates its repeated usage snapshot, while physical JSONL order remains the display order. `promptId` plus `parentUuid` ancestry supplies turn attribution. Timestamp is session-range metadata and never reorders source history. / Claude assistant 行是响应 block，不会自动被视为互相独立的助手消息。`message.id` 对一次模型响应分组并去重其中重复的 usage snapshot；物理 JSONL 顺序继续作为展示顺序。`promptId` 与 `parentUuid` ancestry 共同提供 turn 归属。Timestamp 只用于会话范围 metadata，绝不重排来源历史。
+
+Main Timeline mapping: / 主时间线映射：
+
+| Claude evidence | Canonical Logical Event |
+|---|---|
+| real human user text | `user_message` |
+| assistant `text` | `assistant_message` |
+| assistant `thinking` | `reasoning` |
+| API error message | `error` |
+| `Bash` | `command` |
+| `Write`, `Edit`, `MultiEdit`, `NotebookEdit` | `patch` |
+| `WebSearch`, `WebFetch` | `web_search` |
+| `Agent` | `agent_coordination` |
+| proven MCP name | `mcp_call` |
+| `Read`, task tools, and unknown tools | `other_tool_call` |
+| compact boundary plus summary/reference | `compaction` |
+| informational warning/error | `warning` / `error` |
+| shutdown-interrupted user turn | user message plus `abort` |
+
+Meta user messages, synthetic acknowledgements, tool-result user envelopes, exact `<command-…>` and `<local-command-…>` user envelopes, queue records, title/mode/permission records, `last-prompt`, ordinary system metadata, and unmatched attachments remain Protocol or Raw. Local-command request/output wrappers are runtime evidence rather than human messages, so they do not affect Main search, message metrics, fallback titles, or inherited Main previews. Compact summaries are not user messages. A thinking signature remains Raw-only and is excluded from display/search text. Unknown or future Assistant content blocks receive block-level Protocol fallbacks even when modeled sibling blocks from the same Raw Record produce Main events; an Assistant row with no modeled projection receives a record-level Protocol fallback. / Meta user message、synthetic acknowledgement、tool-result user envelope、精确的 `<command-…>` 与 `<local-command-…>` user envelope、queue 记录、标题/模式/权限记录、`last-prompt`、普通 system metadata 与未匹配 attachment 保持在 Protocol 或 Raw。Local-command request／output wrapper 属于运行时证据而非人类消息，因此不会影响 Main 搜索、消息指标、fallback title 或继承的 Main 预览。Compact summary 不是用户消息。Thinking signature 只保留在 Raw，不进入展示或搜索文本。未知或未来的 Assistant content block 会获得 block 级 Protocol fallback，即使同一原始记录中的已建模 sibling block 已生成 Main event；若整条 Assistant 记录没有任何已建模投影，则生成记录级 Protocol fallback。
+
+Tool operations correlate only within one Analyzer Session by exact `tool_use.id == tool_result.tool_use_id`. Status precedence is: / 工具操作只在同一分析器会话内按精确的 `tool_use.id == tool_result.tool_use_id` 关联。状态优先级为：
+
+```text
+tool denial -> declined
+explicit tool error or non-zero exit -> failed
+paired result without contrary evidence -> success
+call without result -> incomplete
+```
+
+An exact ID is pairable only when it names exactly one call and exactly one later result block in source order. Duplicate calls, duplicate results, or a result that precedes its call are ambiguous: calls remain `incomplete`, every unmatched result block receives its own searchable Protocol fallback, and Logical Event identities include the call's source line and block index. Result consumption is block-scoped, so an unmatched sibling in an otherwise matched result row is never hidden. / 一个精确 ID 只有在同一会话中恰好指向一次调用和一个来源顺序位于其后的结果 block 时才可配对。重复调用、重复结果或先于调用出现的结果都属于歧义：调用保持 `incomplete`，每个未匹配结果 block 都获得独立且可搜索的 Protocol fallback，逻辑事件标识包含调用所在的来源行与 block index。结果消费以 block 为单位，因此同一结果行中其余未匹配 sibling 不会被隐藏。
+
+File-history deltas and read-truncation attachments are indexed once per Session before Logical Event construction rather than rescanned for every call. Matched, unambiguous supplements extend the tool event's Raw References; unknown records always remain inspectable through Protocol and Raw fallback. / File-history delta 与读取截断 attachment 会在构造逻辑事件前按会话一次性建立索引，不会为每次调用重新扫描整份原始记录。匹配且无歧义的补充证据会扩展工具事件的原始引用；未知记录始终可通过 Protocol 与 Raw fallback 检查。
+
+Claude structured-detail section headings use the shared English and Chinese catalogs. Dynamic raw tool-request headings localize only the adapter-owned “request” copy while preserving the source tool name, and adapter-generated file-change fallback messages are localized. Unknown tool families use the adapter-owned canonical `Other tool call` label; their source-owned names remain separate and verbatim in `toolName`, `subtype`, request headings, and search text, so a name that collides with catalog copy cannot be relabeled as another event kind. Source-owned titles such as patch paths are explicitly excluded from section-title lookup, even when their literal value collides with a catalog key; transcript-owned tool names, paths, requests, and results remain verbatim. / Claude 结构化详情的区段标题使用共享中英文目录。动态原始工具请求标题只本地化适配器拥有的“请求”文案，同时保留来源工具名称；适配器生成的文件改动兜底消息也会本地化。未知工具族使用适配器拥有的 canonical `Other tool call` label；来源拥有的名称会在 `toolName`、`subtype`、request 标题与搜索文本中单独保持原文，因此与 catalog 文案碰撞的名称不会被改写为另一种事件类型。文件补丁路径等来源拥有的标题会显式跳过区段标题查表，即使其字面值恰好与目录 key 相同；由转录拥有的工具名称、路径、请求与结果继续保持原文。
+
+## Claude same-project reindex reuse / Claude 同项目重建索引复用
+
+When the server reindexes the same repository and Claude home, the adapter may reuse the prior Session's immutable Raw and Logical payload arrays while constructing a fresh Session shell. Reuse requires stable source identity and relative path, file stat and transcript fingerprint, cwd/agent/foreign-session evidence, nested subagent transcript and sidecar evidence, and Agent/tool-use correlation context. A final stat check prevents a file that changed after selection from being reused. Reused shells discard inferred fork fields, restore only private source evidence, and rerun materialized/pointer inference. / 当服务器为同一仓库与 Claude home 重建索引时，适配器可以复用上一索引中不可变的 Raw 与 Logical payload 数组，同时构造新的会话壳。复用要求来源 identity 与相对路径、文件 stat 与 transcript fingerprint、cwd／agent／foreign-session 证据、嵌套 subagent transcript 与 sidecar 证据，以及 Agent／tool-use 关联上下文均保持稳定。最终 stat 检查可阻止在选择后发生变化的文件被复用。复用壳会丢弃推断所得 fork 字段，只恢复私有来源证据，并重新运行 materialized／pointer 推断。
+
+Fork correctness takes precedence over maximal reuse: any change to the top-level relationship input set conservatively invalidates top-level reuse, and nested evidence changes invalidate the affected parent/subagent bundle. Progress and final totals report `reusedFileCount` without changing the serialized Session or API contract. / Fork 正确性优先于最大化复用：任何顶层关系输入集合变化都会保守地使顶层复用失效；嵌套证据变化会使受影响的 parent／subagent bundle 失效。Progress 与最终 totals 会报告 `reusedFileCount`，但不会改变序列化会话或 API contract。
+
+## Deferred work / 推迟事项
+
+`0.1.3` deliberately does not: / `0.1.3` 有意不做：
+
+- create a mixed Codex + Claude index / 建立 Codex + Claude 混合索引；
+- persist an import ledger or adapter cache / 持久化 import ledger 或 adapter cache；
+- load or search external `tool-results/*` payloads / 加载或搜索外置 `tool-results/*` payload；
+- infer a schema version from Claude's client version / 从 Claude 客户端版本推断 schema 版本；
+- decode project-container names into authoritative file-system paths / 把项目容器名称解码为权威文件系统路径；
+- promise exhaustive support for every historical Claude record shape / 承诺穷尽支持每种历史 Claude 记录形态。
+
+External result support, if added, must be lazy, size-bounded, and real-path-contained under the configured Claude source root. / 如果后续支持外置结果，必须采用惰性读取、限制大小，并通过 real path 确保其位于配置的 Claude 来源根目录内。
+
+## Validation / 验证
+
+Committed tests use synthetic records only. A local, uncommitted Claude Code 2.1.220 corpus was used as an implementation pressure test: 39 primary JSONL files, 2 evidence-correlated subagent JSONL files, 662 Raw Records, 79 exactly paired tools, 107 usage-deduplicated model responses, 2 Derived Sessions, 1 lineage-backed materialized Fork Session, and 1 pointer-backed Fork Session were all represented without JSON parse loss or metric growth. The pointer sample resolves to 19 inherited parent Raw Records, 8 Main events, and 8 Protocol events after local-command envelopes are kept out of human activity, while retaining only its own 2 Raw Records and 0 Main events. Real transcripts remain outside the package and repository history. / 已提交测试只使用合成记录。本地未提交的 Claude Code 2.1.220 语料作为实现压力测试：39 个主要 JSONL、2 个通过证据关联的 subagent JSONL、662 条原始记录、79 个精确配对工具、107 个完成 usage 去重的模型响应、2 个派生会话、1 个具有 lineage 证据的物化式分叉会话，以及 1 个指针式分叉会话均被表示，且没有 JSON 解析丢失或指标增长。在把 local-command envelope 排除于人类活动后，指针样本解析出 19 条继承的父会话原始记录、8 个 Main 事件与 8 个 Protocol 事件，同时自身仍只拥有 2 条原始记录与 0 个 Main 事件。真实转录继续留在 package 与仓库历史之外。

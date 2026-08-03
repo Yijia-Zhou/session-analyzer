@@ -1,15 +1,16 @@
-# Codex Session Analyzer
+# Session Analyzer
 
 [English README](README.md)
 
-Codex Session Analyzer 是一个用于查看 Codex 会话转录的本地 Web 工具。它把嘈杂的 JSONL 转录历史整理成按仓库过滤的会话列表、可搜索时间线、结构化工具调用详情，以及可下钻的原始记录。
+Session Analyzer 是一个用于查看 Codex 与 Claude Code 会话转录的本地 Web 工具。它把嘈杂的 JSONL 转录历史整理成按仓库过滤的会话列表、可搜索时间线、结构化工具调用详情，以及可下钻的原始记录。
 
-这个应用面向本地使用。它从你自己的 Codex home 目录读取转录文件，在内存中完成分析，不会上传转录内容。
+这个应用面向本地使用。它只从你显式选择的来源 home 目录读取转录文件，在内存中完成分析，不会上传转录内容。
 
 ## 功能
 
-- 从 Codex 会话工作目录中发现项目，也可以启动时直接指定目标仓库。
+- 从 Codex 或 Claude Code 会话工作目录中发现项目，也可以启动时直接指定目标仓库。
 - 只显示与所选仓库匹配的会话。
+- 保持 Claude Code subagent 可单独选择；区分物化式与指针式 fork，并在不重复指标或原始记录的前提下展示归父会话所有的继承上下文。
 - 浏览三种层级：去重后的主时间线、协议事件、原始 JSONL 记录。
 - 搜索消息、命令、文件、输出、状态、事件类型和层级。
 - 检查消息、命令、补丁、计划、MCP/工具调用、Web 搜索、生命周期事件和原始记录的结构化详情。
@@ -26,7 +27,7 @@ Codex Session Analyzer 是一个用于查看 Codex 会话转录的本地 Web 工
 - 派生索引只保存在内存中。
 - 原始转录下钻需要用户显式打开，所以敏感内容不会被应用隐藏，但本应用也不会把它发送到外部。
 
-Codex 转录可能包含提示词、命令输出、文件路径、环境详情以及其他私有材料。不要把真实的 `.codex/sessions` 目录或导出的转录数据提交到公开仓库。
+Agent 转录可能包含提示词、命令输出、文件路径、环境详情以及其他私有材料。不要把真实的 `.codex/sessions`、`.claude/projects` 目录或导出的转录数据提交到公开仓库。
 
 ## 环境要求
 
@@ -58,6 +59,20 @@ npx session-analyzer --repo 'C:\path\to\project'
 ```sh
 npx session-analyzer --repo /path/to/project --codex-home /path/to/.codex --port 17890
 ```
+
+Claude Code 支持需要显式启用。除非选择 Claude Code 来源，否则应用不会扫描 `~/.claude`：
+
+```sh
+npx session-analyzer --source claude-code --repo /path/to/project
+```
+
+如果 Claude home 不在默认位置，或者要检查导出的 project-container 目录，可以使用 `--claude-home`：
+
+```sh
+npx session-analyzer --source claude-code --claude-home /path/to/.claude
+```
+
+`--source claude` 是 `--source claude-code` 的别名。0.1.3 版本的每个 server 进程只选择一种来源，不会构建 Codex 与 Claude 的混合索引。
 
 然后打开：
 
@@ -140,13 +155,13 @@ npm run release:check
 
 Release gate 会检查生成资产、运行完整 Node 测试，并重复执行安装后 package smoke。Browser coverage 继续作为独立的 CI 与本地发布要求。
 
-`test/fixtures/codex-home` 下的测试 fixture 是合成转录数据。它们有意包含假的 Windows 路径和示例转录形态，用于覆盖解析器行为。
+`test/fixtures/codex-home` 下的 fixture 以及 `test/claude.test.js` 中的内联 Claude fixture 都是合成转录数据。它们有意包含假的路径和示例转录形态，用于覆盖解析器行为。
 
 浏览器 JavaScript 源码位于 `src/browser/`，浏览器与 Node 共用逻辑位于 `src/shared/`。生成的运行时 bundle 是 `public/assets/app.js`；不要直接编辑它。
 
 ## 使用方式
 
-1. 选择目标项目，或在启动服务器时传入 `--repo`。
+1. 先在 CLI 选择转录来源，再在浏览器中选择目标项目，或在启动服务器时传入 `--repo`。Codex 是默认来源。
 2. 从左侧面板选择一个会话。
 3. 使用 `Main timeline` 进行日常阅读，使用 `Protocol layer` 查看注入上下文和生命周期记录，使用 `Raw records` 查看精确转录行。
 4. 在搜索 HUD 中输入忽略大小写的普通文本短语；短语中的空白可以匹配空格、Tab 或换行。打开“搜索选项”可在当前 session 与整个项目之间切换，编辑始终可见的“涉及文件”“类型”或“状态”筛选，查看完整计数，或跳到相邻的全局层级选择器。`status:failed` 等类似操作符的输入仍按字面文本搜索。
@@ -156,15 +171,18 @@ npm 包不承诺稳定的程序接口。v0.1 支持的接口是 `session-analyze
 
 ## 已知限制
 
-- v0.1 只支持 Codex transcript。非 Codex transcript 格式只是未来 adapter 的设计参考，不是当前支持的导入来源。
-- 未来或未知的 Codex protocol event 仍可通过 protocol/raw 兜底视图检查，但并非每个事件族都有完整精致的结构化渲染器。
+- 0.1.3 版本的每个 server 进程只选择一种转录来源；暂不支持 Codex 与 Claude 混合索引或来源筛选。
+- Claude Code 外置的 `tool-results/*` payload 暂不加载或搜索；其来源记录和引用仍可通过 protocol/raw 兜底查看。
+- 未来或未知的 Codex 与 Claude Code protocol event 仍可通过 protocol/raw 兜底视图检查，但并非每个事件族都有完整精致的结构化渲染器。
 - Transcript fixture 覆盖是有重点的，不是穷尽式的；后续观察到新的历史形态时，可能仍需要补充 fixture 和展示调整。
 - Review finding 渲染已有 synthetic 覆盖，本地也已观察到真实的非空 `review_output.findings[]` 示例；后续仍适合补充脱敏 fixture 来防止回归。
 
 ## 仓库结构
 
 - `server.js`：本地 HTTP 服务器和 API 路由。
-- `src/codex.js`：转录解析、项目发现、索引、逻辑时间线构建和事件详情提取。
+- `src/source-adapters.js`：来源选择与来源中立的分派边界。
+- `src/codex*.js`：Codex 解析、发现、逻辑映射、索引和详情构建。
+- `src/claude*.js`：Claude Code 发现、解析、逻辑映射、索引和详情构建。
 - `src/folding.js`：内置时间线折叠策略。
 - `src/shared/`：浏览器与 Node 共用逻辑，例如折叠规则求值和命令高亮元数据。
 - `src/browser/`：浏览器 UI 源码、搜索控件与状态模型、渲染器、导航和应用接线。

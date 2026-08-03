@@ -1,9 +1,10 @@
 {
   "name": "session-analyzer",
-  "version": "0.1.2",
-  "description": "Local interactive viewer for Codex session transcripts.",
+  "version": "0.1.3",
+  "description": "Local interactive viewer for Codex and Claude Code session transcripts.",
   "keywords": [
     "codex",
+    "claude-code",
     "transcript",
     "viewer",
     "session",
@@ -24,6 +25,11 @@
   },
   "files": [
     "server.js",
+    "src/claude-detail.js",
+    "src/claude-forks.js",
+    "src/claude-logical.js",
+    "src/claude-source.js",
+    "src/claude.js",
     "src/codex-code-mode-declared.js",
     "src/codex-code-mode-facts.js",
     "src/codex-code-mode-presentation.js",
@@ -37,6 +43,7 @@
     "src/codex-source.js",
     "src/codex-tool-lifecycle-contract.js",
     "src/folding.js",
+    "src/source-adapters.js",
     "src/shared/",
     "public/",
     "README.md",

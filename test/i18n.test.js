@@ -135,6 +135,14 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.searchStatusLabel('complete', 'zh-CN'), '目标已完成');
   assert.equal(i18n.searchStatusLabel('completed', 'zh-CN'), '事件已完成');
   assert.notEqual(i18n.searchStatusLabel('complete', 'zh-CN'), i18n.searchStatusLabel('completed', 'zh-CN'));
+  assert.equal(i18n.sectionTitle('Structured result', 'en'), 'Structured result');
+  assert.equal(i18n.sectionTitle('Structured result', 'zh-CN'), '结构化结果');
+  assert.equal(i18n.sectionTitle('Compaction metadata', 'zh-CN'), '压缩元数据');
+  assert.equal(i18n.sectionTitle('Compaction summary', 'zh-CN'), '压缩摘要');
+  assert.equal(i18n.sectionTitle('Tool result', 'zh-CN'), '工具结果');
+  assert.equal(i18n.sectionTitle('stdout', 'zh-CN'), '标准输出');
+  assert.equal(i18n.t('zh-CN', 'claudeDetail', 'toolRequestTitle', { tool: 'Read' }), 'Read 请求');
+  assert.equal(i18n.t('zh-CN', 'claudeDetail', 'fileChangeCompleted'), '文件改动已完成。');
   assert.equal(i18n.t('en', 'ui', 'statusGroupGoalLifecycle'), 'Goal lifecycle');
   assert.equal(i18n.t('zh-CN', 'ui', 'statusGroupExecutionOutcome'), '执行结果');
   assert.equal(i18n.t('zh-CN', 'ui', 'statusGroupEventLifecycle'), '事件生命周期');
@@ -163,6 +171,22 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeSourceExcerptMore'), '还有未显示的源码。');
   assert.equal(i18n.t('en', 'ui', 'codeModeStepCountOne'), '1 step');
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeStepCount', { count: 2 }), '2 个步骤');
+  assert.equal(
+    i18n.t('en', 'ui', 'chooseProject'),
+    'Choose a session working directory from the selected transcript source to analyze.',
+  );
+  assert.equal(
+    i18n.t('zh-CN', 'ui', 'chooseProject'),
+    '从当前转录来源中选择一个 session 工作目录进行分析。',
+  );
+  assert.equal(
+    i18n.t('en', 'ui', 'indexingProject'),
+    'Indexing matching sessions from the selected transcript source before showing the project timeline.',
+  );
+  assert.equal(
+    i18n.t('zh-CN', 'ui', 'indexingProject'),
+    '正在索引当前转录来源中匹配的 sessions，然后显示项目时间线。',
+  );
   assert.equal(i18n.t('en', 'ui', 'childSessionCountOne'), '1 child session');
   assert.equal(i18n.t('en', 'ui', 'expandChildSessionsOne'), 'Show 1 child session');
   assert.equal(i18n.t('en', 'ui', 'collapseChildSessionsOne'), 'Hide 1 child session');

@@ -3,17 +3,18 @@
 ## Metadata / 元数据
 
 - Owner: repository maintainers / 负责人：仓库维护者
-- Status: accepted for v0.1 schema pressure testing / 状态：已接受为 v0.1 schema 压力测试
-- Last updated: 2026-06-11 / 最近更新：2026-06-11
-- Scope: design pressure tests only; no non-Codex importer commitment for v0.1 / 范围：仅设计压力测试；v0.1 不承诺非 Codex importer
+- Status: accepted historical pressure test; Claude implementation graduated to the source-adapter design / 状态：已接受的历史压力测试；Claude 实现已晋升至来源适配器设计
+- Last updated: 2026-07-31 / 最近更新：2026-07-31
+- Scope: OpenCode, Crush, and Hermes remain design pressure tests; Claude Code runtime behavior is defined elsewhere / 范围：OpenCode、Crush 与 Hermes 继续作为设计压力测试；Claude Code runtime 行为由其他文档定义
 - Related design doc: `docs/design-docs/logical-event-timeline.md`
+- Implemented Claude design: `docs/design-docs/transcript-source-adapters.md`
 - Related plan: `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`
 
 ## Summary / 摘要
 
-v0.1 remains Codex-first. Claude Code, OpenCode, Crush, and Hermes are used here to pressure-test the canonical DTO envelope and source locator model before the public release, not to promise importer support in v0.1.
+This document records the pre-implementation pressure test that kept v0.1 Codex-first. Claude Code graduated to an explicit runtime adapter in `0.1.3`; OpenCode, Crush, and Hermes remain design inputs and do not imply importer support.
 
-v0.1 仍保持 Codex 优先。Claude Code、OpenCode、Crush 和 Hermes 在本文中用于在公开发布前压力测试 canonical DTO envelope 与 source locator 模型，而不是承诺在 v0.1 支持 importer。
+本文记录了让 v0.1 保持 Codex 优先的实现前压力测试。Claude Code 已在 `0.1.3` 晋升为显式 runtime adapter；OpenCode、Crush 与 Hermes 继续只作为设计输入，不代表 importer 支持承诺。
 
 The Stage 1 envelope remains sufficient for the observed and researched pressure points: `schemaVersion`, `sourceKind`, optional `sourceSchemaVersion`, typed `sourceLocator`, raw DTO top-level `sourceRecordType` / `sourceEventType`, and row-level `rawRefs[]` source type metadata on logical/detail DTOs. Logical and detail DTOs keep refs-only source type semantics.
 
@@ -152,6 +153,6 @@ Adapter implementations may choose different exact keys after real importer work
 
 ## Release implication / 发布影响
 
-Stage 4 does not change runtime behavior. It confirms that v0.1 can stay Codex-first while preserving future source boundaries for non-Codex adapters. Browser automation remains the next release-hardening stage.
+The original Stage 4 did not change runtime behavior. In `0.1.3`, the preserved source boundary became `src/source-adapters.js` and a direct Claude Code adapter. The implementation keeps typed locators and canonical DTO envelopes, adds an indexed source-neutral Raw Record route, and deliberately leaves OpenCode, Crush, Hermes, and mixed-source indexing unsupported.
 
-阶段 4 不改变 runtime 行为。它确认 v0.1 可以保持 Codex 优先，同时为未来非 Codex adapter 保留 source 边界。浏览器自动化仍是下一个发布前加固阶段。
+原 Stage 4 不改变 runtime 行为。到 `0.1.3`，此前保留的来源边界已落实为 `src/source-adapters.js` 与直接解释 Claude Code 的适配器。实现继续使用 typed locator 与 canonical DTO envelope，增加索引驱动的来源中立原始记录 route，并有意继续不支持 OpenCode、Crush、Hermes 与混合来源索引。

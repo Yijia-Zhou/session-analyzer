@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-07-30 / 最近更新：2026-07-30
+- Last updated: 2026-08-03 / 最近更新：2026-08-03
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -16,6 +16,7 @@
   - `docs/exec-plans/completed/2026-07-22-code-mode-context-and-discoverability.md`
   - `docs/exec-plans/completed/2026-07-25-code-mode-request-facets-and-folding.md`
   - `docs/exec-plans/completed/2026-07-30-subagent-activity-correlation.md`
+  - `docs/exec-plans/completed/2026-08-02-v0.1.3-review-followups.md`
 - Related design notes: / 相关设计说明：
   - `docs/design-docs/codex-protocol-event-coverage.md`
   - `docs/design-docs/code-mode-operations.md`
@@ -537,7 +538,7 @@ Before a folding-profile or layer switch, the frontend captures the selected eve
 - No transcript mutation / 不变更转录
 - Raw transcript access remains explicit and traceable / 原始转录访问保持显式且可追踪
 - Derived logical events should not expose more than the source rows already contain / 派生逻辑事件不应暴露超过来源行已经包含的内容
-- For non-base64 data URLs, explicit `%HH`, uppercase, or symbol/numeric-only tokens may continue across newline/tab boundaries; lowercase prose starts a new searchable logical segment even when it contains path, snake_case, URL, `+`, or `=` punctuation / 对非 base64 data URL，明确的 `%HH`、全大写或仅符号/数字 token 可以跨换行/tab 边界继续脱敏；小写正文即使包含路径、snake_case、URL、`+` 或 `=` 标点，也会开始新的可搜索逻辑片段
+- For embedded data URLs, high-confidence encoded tokens may continue across whitespace boundaries, including wrapped base64 chunks and explicit `%HH`, uppercase, or symbol/numeric-only non-base64 tokens; ordinary prose starts a new searchable logical segment even when its words fit the base64 alphabet or contain path, snake_case, URL, `+`, or `=` punctuation / 对内嵌 data URL，高置信 encoded token 可以跨空白边界继续脱敏，其中包括换行包装的 base64 片段，以及明确的 `%HH`、全大写或仅符号／数字的非 base64 token；普通正文即使单词符合 base64 字母表，或包含路径、snake_case、URL、`+`、`=` 标点，也会开始新的可搜索逻辑片段
 
 ## Rollout plan / 推出计划
 

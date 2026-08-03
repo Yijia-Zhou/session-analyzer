@@ -1,15 +1,16 @@
-# Codex Session Analyzer
+# Session Analyzer
 
 [中文 README](README.zh-CN.md)
 
-Codex Session Analyzer is a local web viewer for Codex session transcripts. It turns noisy JSONL transcript history into repository-scoped session lists, searchable timelines, structured tool-call details, and raw-record drill-downs.
+Session Analyzer is a local web viewer for Codex and Claude Code session transcripts. It turns noisy JSONL transcript history into repository-scoped session lists, searchable timelines, structured tool-call details, and raw-record drill-downs.
 
-The app is designed for local use. It reads transcript files from your own Codex home directory, keeps analysis in memory, and does not upload transcript content.
+The app is designed for local use. It reads transcript files from the source home you explicitly select, keeps analysis in memory, and does not upload transcript content.
 
 ## Features
 
-- Discover projects from Codex session working directories, or start directly with a target repository.
+- Discover projects from Codex or Claude Code session working directories, or start directly with a target repository.
 - Show only sessions that match the selected repository.
+- Keep Claude Code subagents separately selectable; distinguish materialized and pointer-backed forks, and show parent-owned inherited context without duplicate metrics or Raw Records.
 - Browse three layers: a deduplicated main timeline, protocol events, and raw JSONL records.
 - Search messages, commands, files, outputs, status, event kinds, and layers.
 - Inspect structured details for messages, commands, patches, plans, MCP/tool calls, web searches, lifecycle events, and raw records.
@@ -26,7 +27,7 @@ This project is intentionally local-first:
 - Derived indexes are held in memory only.
 - Raw transcript drill-down is explicit, so sensitive content is not hidden from the user but is not sent anywhere by this app.
 
-Codex transcripts can contain prompts, command output, file paths, environment details, and other private material. Do not commit your real `.codex/sessions` directory or exported transcript data to a public repository.
+Agent transcripts can contain prompts, command output, file paths, environment details, and other private material. Do not commit your real `.codex/sessions`, `.claude/projects`, or exported transcript data to a public repository.
 
 ## Requirements
 
@@ -58,6 +59,20 @@ By default the app reads Codex transcripts from `~/.codex`. Use `--codex-home` i
 ```sh
 npx session-analyzer --repo /path/to/project --codex-home /path/to/.codex --port 17890
 ```
+
+Claude Code support is explicit opt-in. The app does not scan `~/.claude` unless you select the Claude Code source:
+
+```sh
+npx session-analyzer --source claude-code --repo /path/to/project
+```
+
+Use `--claude-home` for a non-default Claude home or an exported project-container directory:
+
+```sh
+npx session-analyzer --source claude-code --claude-home /path/to/.claude
+```
+
+`--source claude` is accepted as an alias for `--source claude-code`. Version 0.1.3 selects one source per server process; it does not build a mixed Codex-and-Claude index.
 
 Then open:
 
@@ -140,13 +155,13 @@ npm run release:check
 
 The release gate checks generated assets, runs the full Node test suite, and repeats the installed-package smoke. Browser coverage remains a separate CI and local release requirement.
 
-The test fixtures under `test/fixtures/codex-home` are synthetic transcript data. They intentionally include fake Windows paths and sample transcript shapes for parser coverage.
+The test fixtures under `test/fixtures/codex-home` and the inline Claude fixtures in `test/claude.test.js` are synthetic transcript data. They intentionally include fake paths and sample transcript shapes for parser coverage.
 
 Browser JavaScript source lives in `src/browser/`, and browser-and-Node shared logic lives in `src/shared/`. The generated runtime bundle is `public/assets/app.js`; do not edit it directly.
 
 ## Usage
 
-1. Select a target project, or pass `--repo` when starting the server.
+1. Select a transcript source on the CLI, then select a target project in the browser or pass `--repo` when starting the server. Codex is the default source.
 2. Pick a session from the left pane.
 3. Use `Main timeline` for normal reading, `Protocol layer` for injected context and lifecycle records, or `Raw records` for exact transcript rows.
 4. Enter a case-insensitive plain-text phrase in the search HUD; whitespace inside a phrase matches spaces, tabs, or newlines. Open Search options to switch between the current session and the entire project, edit the always-visible `Touched file`, `Kind`, or `Status` filters, inspect complete counts, or jump to the adjacent global Layer selector. Operator-like input such as `status:failed` remains literal text.
@@ -156,15 +171,18 @@ The npm package does not promise a stable programmatic API. The supported v0.1 i
 
 ## Known Limits
 
-- v0.1 supports Codex transcripts only. Non-Codex transcript formats are design references for future adapters, not supported import sources.
-- Future or unknown Codex protocol events remain inspectable through protocol/raw fallback views, but not every event family has a polished structured renderer.
+- Version 0.1.3 selects one transcript source per server process; mixed Codex-and-Claude indexing and source filters are not yet supported.
+- Claude Code external `tool-results/*` payloads are not loaded or searched. Their source records and references remain available through protocol/raw fallback.
+- Future or unknown Codex and Claude Code protocol events remain inspectable through protocol/raw fallback views, but not every event family has a polished structured renderer.
 - Transcript fixture coverage is targeted rather than exhaustive; newly observed historical shapes may need additional fixtures and display adjustments.
 - Review finding rendering has synthetic coverage and real non-empty `review_output.findings[]` examples have been observed locally; sanitized fixture strengthening is still useful for future regressions.
 
 ## Repository Layout
 
 - `server.js`: local HTTP server and API routes.
-- `src/codex.js`: transcript parsing, project discovery, indexing, logical timeline construction, and event-detail extraction.
+- `src/source-adapters.js`: source selection and the source-neutral dispatch boundary.
+- `src/codex*.js`: Codex parsing, discovery, logical mapping, indexing, and detail construction.
+- `src/claude*.js`: Claude Code discovery, parsing, logical mapping, indexing, and detail construction.
 - `src/folding.js`: built-in timeline folding profiles.
 - `src/shared/`: browser-and-Node shared logic such as folding rule evaluation and command highlighting metadata.
 - `src/browser/`: browser UI source, search controls and state models, renderers, navigation, and app wiring.

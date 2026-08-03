@@ -6,6 +6,7 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { chromium } = require('playwright');
+const { analyzerSessionId, buildClaudeIndex } = require('../src/claude');
 const { buildIndex } = require('../src/codex');
 const { createServer } = require('../server');
 const { createTimelineProfileFixture } = require('../scripts/timeline-profile-fixture');
@@ -87,6 +88,11 @@ async function selectPrimarySession(page) {
   await session.click();
   await assertEventCount(page, 29);
   await expectInputValue(page, '#searchInput', '');
+}
+
+async function writeJsonl(file, records) {
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
 }
 
 async function assertEventCount(page, expected) {
@@ -671,6 +677,157 @@ test('browser locale switch preserves unsaved folding draft', async (t) => {
   await expectInputValue(page, '#detail [data-profile-kind="command"]', 'expanded');
   await page.waitForSelector('#detail [data-detail-action="save-profile"]');
   await page.waitForFunction(() => [...document.querySelectorAll('#timeline .event.kind-command')].some((event) => event.classList.contains('expanded')));
+});
+
+test('browser presents Claude pointer fork context without child search or event ownership', async (t) => {
+  const claudeHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-pointer-browser-'));
+  t.after(() => fsp.rm(claudeHome, { recursive: true, force: true }));
+  const claudeRepo = path.join(claudeHome, 'repo');
+  const container = path.join(claudeHome, 'projects', '-fixture-repo');
+  const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const childId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const sourceRecord = (sessionId, fields) => ({
+    isSidechain: false,
+    userType: 'external',
+    entrypoint: 'cli',
+    cwd: claudeRepo,
+    sessionId,
+    version: '2.1.220',
+    ...fields,
+  });
+  await fsp.mkdir(claudeRepo, { recursive: true });
+  await writeJsonl(path.join(container, `${parentId}.jsonl`), [
+    sourceRecord(parentId, {
+      type: 'user',
+      parentUuid: null,
+      message: { role: 'user', content: 'Inherited task' },
+      uuid: 'pointer-parent-user',
+      timestamp: '2026-07-31T12:00:00.000Z',
+    }),
+    sourceRecord(parentId, {
+      type: 'assistant',
+      parentUuid: 'pointer-parent-user',
+      message: {
+        id: 'pointer-parent-message',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Inherited answer' }],
+      },
+      uuid: 'pointer-parent-assistant',
+      timestamp: '2026-07-31T12:00:01.000Z',
+    }),
+    sourceRecord(parentId, {
+      type: 'system',
+      subtype: 'local_command',
+      parentUuid: 'pointer-parent-assistant',
+      content: '<command-name>/fork</command-name>',
+      uuid: 'pointer-fork-command',
+      timestamp: '2026-07-31T12:00:02.000Z',
+    }),
+    sourceRecord(parentId, {
+      type: 'system',
+      subtype: 'local_command',
+      parentUuid: 'pointer-fork-command',
+      content: '<local-command-stdout>session waiting for a prompt · Pointer child ⑂ · bbbbbbbb</local-command-stdout>',
+      uuid: 'pointer-fork-output',
+      timestamp: '2026-07-31T12:00:02.000Z',
+    }),
+    sourceRecord(parentId, {
+      type: 'user',
+      parentUuid: 'pointer-fork-output',
+      message: { role: 'user', content: 'Parent-only continuation' },
+      uuid: 'pointer-parent-after-fork',
+      timestamp: '2026-07-31T12:00:03.000Z',
+    }),
+  ]);
+  await writeJsonl(path.join(container, `${childId}.jsonl`), [
+    { type: 'ai-title', aiTitle: 'Pointer child ⑂', sessionId: childId },
+    { type: 'agent-name', agentName: 'Pointer child ⑂', sessionId: childId },
+  ]);
+
+  const index = await buildClaudeIndex({ repoRoot: claudeRepo, claudeHome });
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await page.locator(`[data-session-id="${analyzerSessionId(childId)}"]`).click();
+
+  const context = page.locator('[data-inherited-context]');
+  await context.waitFor();
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 0);
+  assert.match(await page.locator('.sessionHeader').innerText(), /Pointer-backed fork/);
+  assert.match(await page.locator('.sessionHeader').innerText(), /Waiting for prompt/);
+  assert.match(await context.innerText(), /2 parent Raw Records at the fork point support 2 Main and 0 Protocol events/);
+  assert.match(await context.innerText(), /Fork point pointer-/);
+
+  await context.locator('summary').click();
+  assert.equal(await context.locator('.inheritedContextEvent').count(), 2);
+  assert.match(await context.innerText(), /Inherited task/);
+  assert.match(await context.innerText(), /Inherited answer/);
+  assert.doesNotMatch(await context.innerText(), /Parent-only continuation/);
+
+  const searchResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline') && url.searchParams.get('q') === 'Inherited task';
+  });
+  await fillSearch(page, 'Inherited task');
+  await searchResponse;
+  await waitForNoSearchMarks(page);
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 0);
+
+  const parentTimelinePath = `/api/sessions/${encodeURIComponent(analyzerSessionId(parentId))}/timeline`;
+  let signalParentTimeline;
+  let releaseParentTimeline;
+  const parentTimelineStarted = new Promise((resolve) => { signalParentTimeline = resolve; });
+  const parentTimelineRelease = new Promise((resolve) => { releaseParentTimeline = resolve; });
+  await page.route((url) => new URL(String(url)).pathname === parentTimelinePath, async (route) => {
+    signalParentTimeline();
+    await parentTimelineRelease;
+    await route.continue();
+  });
+  const parentTimelineResponse = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === parentTimelinePath
+  ));
+
+  await context.getByRole('button', { name: 'Open parent session' }).click();
+  try {
+    await parentTimelineStarted;
+    await page.waitForFunction(() => document.querySelector('.sessionHeader h2')?.textContent === 'Inherited task');
+    assert.equal(await page.locator('[data-inherited-context]').count(), 0);
+  } finally {
+    releaseParentTimeline();
+  }
+  await parentTimelineResponse;
+});
+
+test('browser Raw refs preserve malformed Claude source text instead of rendering null', async (t) => {
+  const claudeHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-malformed-browser-'));
+  t.after(() => fsp.rm(claudeHome, { recursive: true, force: true }));
+  const claudeRepo = path.join(claudeHome, 'repo');
+  const container = path.join(claudeHome, 'projects', '-fixture-repo');
+  const sessionId = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
+  const file = path.join(container, `${sessionId}.jsonl`);
+  await fsp.mkdir(claudeRepo, { recursive: true });
+  await writeJsonl(file, [{
+    type: 'user',
+    message: { role: 'user', content: 'Inspect malformed evidence' },
+    cwd: claudeRepo,
+    sessionId,
+    uuid: 'malformed-parent-user',
+    timestamp: '2026-07-31T12:30:00.000Z',
+  }]);
+  const malformedLine = '{"type":"assistant","message":';
+  await fsp.appendFile(file, `${malformedLine}\n`, 'utf8');
+
+  const index = await buildClaudeIndex({ repoRoot: claudeRepo, claudeHome });
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await page.locator('#layerSelect').selectOption('protocol');
+  await expectInputValue(page, '#layerSelect', 'protocol');
+  const eventId = `${analyzerSessionId(sessionId)}:logical:protocol:2`;
+  const malformedEvent = page.locator(`#timeline .event[data-event-id="${eventId}"]`);
+  await malformedEvent.waitFor();
+  await malformedEvent.click();
+  await waitForDetailView(page, 'inspector');
+  await page.locator('#detail [data-detail-action="raw"]').click();
+  await waitForDetailView(page, 'rawRefs');
+  await page.waitForFunction(() => !document.querySelector('#detail')?.textContent.includes('Loading...'));
+  assert.equal((await page.locator('#detail .rawRefsView pre').textContent()).trim(), malformedLine);
 });
 
 test('browser groups derived sessions under their parent and collapses them by default', async (t) => {
@@ -3388,7 +3545,7 @@ test('browser search navigation preserves inspector marks while ignoring raw-det
   let markRawRequestStarted;
   const rawRequestRelease = new Promise((resolve) => { releaseRawRequest = resolve; });
   const rawRequestStarted = new Promise((resolve) => { markRawRequestStarted = resolve; });
-  await page.route('**/api/raw?*', async (route) => {
+  await page.route('**/api/sessions/*/raw/*', async (route) => {
     markRawRequestStarted();
     await rawRequestRelease;
     await route.continue();
@@ -3569,14 +3726,16 @@ test('browser obsolete detail and Raw Reference requests abort without redrawing
   await waitForDetailView(secondApp.page, 'inspector');
   const rawFailures = [];
   secondApp.page.on('requestfailed', (request) => {
-    if (new URL(request.url()).pathname === '/api/raw') rawFailures.push(request.failure()?.errorText || '');
+    if (/^\/api\/sessions\/[^/]+\/raw\/[^/]+$/.test(new URL(request.url()).pathname)) {
+      rawFailures.push(request.failure()?.errorText || '');
+    }
   });
   let releaseRaw;
   const rawGate = new Promise((resolve) => { releaseRaw = resolve; });
   let markRaw;
   const rawStarted = new Promise((resolve) => { markRaw = resolve; });
   let rawRequestCount = 0;
-  await secondApp.page.route('**/api/raw?*', async (route) => {
+  await secondApp.page.route('**/api/sessions/*/raw/*', async (route) => {
     rawRequestCount += 1;
     if (rawRequestCount > 1) {
       await route.continue();
@@ -3656,7 +3815,7 @@ test('browser project scope aborts in-flight Raw References before they can rest
   let markRaw;
   const rawStarted = new Promise((resolve) => { markRaw = resolve; });
   let firstRaw = true;
-  await page.route('**/api/raw?*', async (route) => {
+  await page.route('**/api/sessions/*/raw/*', async (route) => {
     if (!firstRaw) {
       await route.continue();
       return;
@@ -3672,7 +3831,7 @@ test('browser project scope aborts in-flight Raw References before they can rest
   await page.locator('[data-detail-action="raw"]').click();
   await rawStarted;
   const rawAbort = page.waitForEvent('requestfailed', (request) => (
-    new URL(request.url()).pathname === '/api/raw'
+    /^\/api\/sessions\/[^/]+\/raw\/[^/]+$/.test(new URL(request.url()).pathname)
       && /ERR_ABORTED|NS_BINDING_ABORTED/i.test(request.failure()?.errorText || '')
   ));
 

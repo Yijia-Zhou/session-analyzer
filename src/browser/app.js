@@ -113,6 +113,7 @@ function searchStatusLabel(value) {
 
 const state = {
   locale: browserLocale(),
+  sourceKind: 'codex',
   sessions: [],
   expandedSessionGroups: new Set(),
   projectResults: [],
@@ -1982,11 +1983,24 @@ function conditionDefinitions() {
 
 function sourceRefs(event) {
   const refs = event.rawRefs?.length ? event.rawRefs : [event.source];
-  return refs.filter((ref) => ref && ref.file && ref.line != null);
+  return refs.filter((ref) => ref && (ref.rawId || (ref.file && ref.line != null)));
 }
 
 function sourceLabel(ref) {
-  return ref && ref.file && ref.line != null ? `${ref.file}:${ref.line}` : '';
+  const file = ref?.file || ref?.sourceLocator?.file || '';
+  const line = ref?.line ?? ref?.sourceLocator?.line;
+  if (file && line != null) return `${file}:${line}`;
+  return String(ref?.rawId || '');
+}
+
+function rawReferenceUrl(ref) {
+  if (ref?.rawId && state.selectedSessionId) {
+    return `/api/sessions/${encodeURIComponent(state.selectedSessionId)}/raw/${encodeURIComponent(ref.rawId)}`;
+  }
+  if (ref?.file && ref?.line != null) {
+    return `/api/raw?file=${encodeURIComponent(ref.file)}&line=${encodeURIComponent(ref.line)}`;
+  }
+  return '';
 }
 
 function renderChips(values) {
@@ -2008,6 +2022,10 @@ function shortSessionTitle(value, limit = 54) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (!text || text.length <= limit) return text;
   return `${text.slice(0, limit - 1).trimEnd()}…`;
+}
+
+function sourceKindLabel(value) {
+  return value === 'claude-code' ? 'Claude Code' : value === 'codex' ? 'Codex' : String(value || '');
 }
 
 function sessionRelationshipLabel(session) {
@@ -3053,6 +3071,7 @@ async function applyAppState(appState) {
   const totals = appState.totals || {};
   if (appState.locale) state.locale = i18n.resolveLocale(appState.locale);
   applyStaticLocale();
+  state.sourceKind = appState.sourceKind || 'codex';
   state.repoRoot = appState.repoRoot || '';
   state.builtinProfiles = normalizeProfiles(appState.foldingProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
@@ -3062,6 +3081,7 @@ async function applyAppState(appState) {
   setProjectHeader(
     appState.repoRoot,
     [
+      sourceKindLabel(state.sourceKind),
       t('sessionCount', { count: totals.sessionCount || 0 }),
       t('logicalEventCount', { count: totals.eventCount || 0 }),
       t('rawRecordCount', { count: totals.rawEventCount || 0 }),
@@ -3494,6 +3514,7 @@ async function drillDownProjectResult(sessionId) {
   const session = state.sessions.find((item) => item.id === sessionId) || result;
   el.sessionHeader.innerHTML = `<h2>${escapeHtml(session.title)}</h2>
     <div class="sessionMeta" aria-label="${escapeHtml(t('sessionMetadata'))}">
+      <span class="sessionMetaChip">${escapeHtml(sourceKindLabel(session.sourceKind))}</span>
       <span class="sessionMetaChip">${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</span>
       <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
     </div>
@@ -3543,6 +3564,7 @@ function renderProjectResultCard(session) {
   return `<button class="sessionItem projectResultCard" type="button" data-project-result-session-id="${escapeHtml(session.id)}">
     <span class="sessionTitle">${escapeHtml(session.title)}</span>
     <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
+    <span class="chip">${escapeHtml(sourceKindLabel(session.sourceKind))}</span>
     ${relationship ? `<span class="chip relationshipChip">${escapeHtml(relationship)}</span>` : ''}
     <span class="projectResultCount">${escapeHtml(t('projectResultCount', { count: session.searchMatch?.eventCount || 0 }))}</span>
     <span class="projectLatestMatch">
@@ -3576,7 +3598,9 @@ function renderSessions() {
           <span class="sessionTitle">${escapeHtml(session.title)}</span>
           <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
           <span class="chips">
+            <span class="chip">${escapeHtml(sourceKindLabel(session.sourceKind))}</span>
             ${relationship ? `<span class="chip relationshipChip" title="${escapeHtml(relationshipTitle)}">${escapeHtml(relationship)}</span>` : ''}
+            ${session.forkContinuationState === 'waiting_for_prompt' ? `<span class="chip forkStateChip">${escapeHtml(t('forkWaitingForPrompt'))}</span>` : ''}
             <span class="chip">${escapeHtml(t('messageCountShort', { count: session.counts.messages }))}</span>
             <span class="chip">${escapeHtml(t('toolCountShort', { count: session.counts.toolCalls }))}</span>
             <span class="chip">${escapeHtml(t('failedCommandCountShort', { count: session.counts.failedCommands }))}</span>
@@ -3621,6 +3645,52 @@ function renderProjectReturnBanner() {
   </div>`;
 }
 
+function renderInheritedContextCard() {
+  const session = state.sessions.find((item) => item.id === state.selectedSessionId);
+  const context = session?.inheritedContext;
+  if (session?.forkStorageMode !== 'pointer' || !context) return '';
+  const parentLabel = shortSessionTitle(session.forkedFromSessionTitle) || shortId(context.ownerSessionId);
+  const previewEvents = Array.isArray(context.previewEvents) ? context.previewEvents : [];
+  const previewItems = previewEvents.map((event) => `<li class="inheritedContextEvent">
+    <div class="inheritedContextEventHeader">
+      <span>${escapeHtml(kindLabel(event.kind || event.subtype))}</span>
+      <time>${escapeHtml(fmtDate(event.timestamp))}</time>
+    </div>
+    <p>${escapeHtml(event.preview || '')}</p>
+  </li>`).join('');
+  const preview = previewEvents.length
+    ? `<details class="inheritedContextPreview">
+        <summary>${escapeHtml(t('inheritedContextPreview', { count: previewEvents.length }))}</summary>
+        <ol>${previewItems}</ol>
+        ${context.omittedPreviewEventCount > 0
+          ? `<p class="inheritedContextOmitted">${escapeHtml(t('inheritedContextPreviewOmitted', { count: context.omittedPreviewEventCount }))}</p>`
+          : ''}
+      </details>`
+    : `<p class="inheritedContextEmpty">${escapeHtml(t('inheritedContextNoMainEvents'))}</p>`;
+  return `<aside class="inheritedContextCard" data-inherited-context>
+    <div class="inheritedContextHeader">
+      <div>
+        <strong>${escapeHtml(t('inheritedContextTitle'))}</strong>
+        <p>${escapeHtml(t('inheritedContextFrom', {
+          parent: parentLabel,
+          time: fmtDate(session.forkedAt || session.startedAt),
+        }))}</p>
+      </div>
+      <span class="chip inheritedContextOwner">${escapeHtml(t('inheritedContextOwner'))}</span>
+    </div>
+    <p class="inheritedContextSummary">${escapeHtml(t('inheritedContextSummary', {
+      raw: context.rawRecordCount || 0,
+      main: context.mainEventCount || 0,
+      protocol: context.protocolEventCount || 0,
+    }))}</p>
+    ${preview}
+    <div class="inheritedContextActions">
+      <span>${escapeHtml(t('inheritedContextForkPoint', { id: shortId(context.forkPointUuid) }))}</span>
+      <button class="smallBtn" type="button" data-inherited-parent-session="${escapeHtml(context.ownerSessionId)}">${escapeHtml(t('openParentSession'))}</button>
+    </div>
+  </aside>`;
+}
+
 async function selectSession(sessionId, options = {}) {
   clearContextReveal({ render: false });
   expandSessionAncestors(sessionId);
@@ -3649,12 +3719,16 @@ async function selectSession(sessionId, options = {}) {
     const relationship = sessionRelationshipLabel(session);
     el.sessionHeader.innerHTML = `<h2>${escapeHtml(session.title)}</h2>
       <div class="sessionMeta" aria-label="${escapeHtml(t('sessionMetadata'))}">
+        <span class="sessionMetaChip">${escapeHtml(sourceKindLabel(session.sourceKind))}</span>
         ${relationship ? `<span class="sessionMetaChip">${escapeHtml(relationship)}</span>` : ''}
+        ${session.forkStorageMode === 'pointer' ? `<span class="sessionMetaChip">${escapeHtml(t('pointerFork'))}</span>` : ''}
+        ${session.forkContinuationState === 'waiting_for_prompt' ? `<span class="sessionMetaChip">${escapeHtml(t('forkWaitingForPrompt'))}</span>` : ''}
         <span class="sessionMetaChip">${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</span>
         <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
       </div>`;
   }
   renderSearchAssistChips();
+  renderTimeline();
   await Promise.all([loadAnalysis(sessionId), loadTimeline(false), refreshFileSuggestions()]);
   if (options.mobileView) setMobileView(options.mobileView);
 }
@@ -4286,7 +4360,7 @@ function renderTimeline() {
   }
   reconcileContextRevealState();
   const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
-  el.timeline.innerHTML = `${renderProjectReturnBanner()}${renderedTimelineEvents().map((event) => {
+  el.timeline.innerHTML = `${renderProjectReturnBanner()}${renderInheritedContextCard()}${renderedTimelineEvents().map((event) => {
     const ds = displayState(event);
     const presentation = codeModeEventPresentation(event);
     const compactWebLifecycle = event.kind === 'web_search' && compactWebLifecycleIds.has(event.id);
@@ -5406,6 +5480,11 @@ function showInspector(event, options = {}) {
   }
 }
 
+function rawPayloadText(raw) {
+  if (raw?.parsed == null) return String(raw?.raw || '');
+  return JSON.stringify(raw.parsed, null, 2);
+}
+
 async function showRaw(event, options = {}) {
   if (state.contextReveal || state.contextRevealPending) clearContextReveal({ render: false });
   const refs = sourceRefs(event);
@@ -5442,7 +5521,7 @@ async function showRaw(event, options = {}) {
     </div>`,
   });
   try {
-    const payloads = await Promise.all(refs.map((ref) => api(`/api/raw?file=${encodeURIComponent(ref.file)}&line=${encodeURIComponent(ref.line)}`, {
+    const payloads = await Promise.all(refs.map((ref) => api(rawReferenceUrl(ref), {
       signal: owner.controller.signal,
     })));
     if (!requestOwners.rawReferences.isCurrent(owner)
@@ -5453,7 +5532,7 @@ async function showRaw(event, options = {}) {
       actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
       body: `<div class="rawRefsView">
       <p class="rawMeta">${escapeHtml(t('rawRowsForEvent', { count: refs.length, plural: refs.length === 1 ? '' : 's', eventId: event.id }))}</p>
-      ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(raw.file)}:${raw.line}</p><pre>${escapeHtml(JSON.stringify(raw.parsed, null, 2) || raw.raw)}</pre></section>`).join('')}
+      ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(sourceLabel(raw))}</p><pre>${escapeHtml(rawPayloadText(raw))}</pre></section>`).join('')}
     </div>`,
     });
     return true;
@@ -5675,6 +5754,12 @@ for (const button of el.mobileViewButtons) {
 el.timeline.addEventListener('click', (event) => {
   if (event.target.closest('[data-search-back-to-project]')) {
     backToProjectResults().catch(showError);
+    return;
+  }
+  const inheritedParent = event.target.closest('[data-inherited-parent-session]');
+  if (inheritedParent) {
+    state.projectReturnContext = null;
+    selectSession(inheritedParent.dataset.inheritedParentSession, { mobileView: 'events' }).catch(showError);
     return;
   }
   const contextAction = event.target.closest('[data-action="reveal-context-parent"], [data-action="inspect-context-parent"]');
