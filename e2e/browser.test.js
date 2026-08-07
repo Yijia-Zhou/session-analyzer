@@ -1966,15 +1966,37 @@ test('browser home directory edits preserve or drop Return by active identity', 
   await page.waitForFunction(() => document.querySelectorAll('.projectItem').length === 0);
 });
 
-test('browser re-enables source controls after a failed source commit', async (t) => {
+test('browser re-enables source controls and reconciles discovery after a failed source commit', async (t) => {
+  let releaseFirstFull;
+  const firstFullGate = new Promise((resolve) => {
+    releaseFirstFull = resolve;
+  });
+  let fullCalls = 0;
+  let sourcePosts = 0;
   const { page } = await openSourceSwitchChooser(t, {
     beforeGoto: async (p) => {
+      p.on('request', (request) => {
+        const url = new URL(request.url());
+        if (url.pathname === '/api/source' && request.method() === 'POST') sourcePosts += 1;
+      });
       await p.route('**/api/source', async (route) => {
         await route.fulfill({
           status: 500,
           contentType: 'application/json',
           body: '{"error":"synthetic failure"}',
         });
+      });
+      await p.route('**/api/projects*', async (route) => {
+        const url = new URL(route.request().url());
+        if (url.searchParams.get('summary') === '1') {
+          await route.continue();
+          return;
+        }
+        fullCalls += 1;
+        if (fullCalls === 1) {
+          await firstFullGate;
+        }
+        await route.continue();
       });
     },
   });
@@ -1983,8 +2005,13 @@ test('browser re-enables source controls after a failed source commit', async (t
   await page.waitForFunction(() => document.querySelector('#projectSourceAction')?.textContent === 'Confirm switch to Claude Code');
   await page.locator('#projectSourceAction').click();
   await page.waitForFunction(() => document.querySelector('#projectSourceError')?.textContent.includes('Source switch failed'));
+  assert.equal(sourcePosts, 1);
   assert.equal(await page.locator('#projectSourceAction').isDisabled(), false);
   assert.equal(await page.locator('#projectSourceCancel').isHidden(), true);
+  releaseFirstFull();
+  await waitForProjectRoot(page, repoRoot);
+  assert.ok(fullCalls >= 2, 'failed source commit should start a successor discovery');
+  assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Codex/);
 });
 
 test('browser keeps home-directory edits while project discovery settles', async (t) => {

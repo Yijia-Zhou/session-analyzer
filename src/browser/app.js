@@ -670,7 +670,17 @@ async function performPendingSourceAction() {
     }
     invalidateProjectDiscovery();
     state.pendingSourceAction = null;
-    const result = await commitSourceConfig(target, homes);
+    let result;
+    try {
+      result = await commitSourceConfig(target, homes);
+    } catch (error) {
+      try {
+        await refreshProjectList();
+      } catch {
+        // Keep the original source-mutation error visible; reconciliation is best-effort.
+      }
+      throw error;
+    }
     state.homeEditorDirty = false;
     if (result.projectSelected === false) {
       resetReturnableProject();
