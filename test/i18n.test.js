@@ -16,6 +16,7 @@ const allowedZhTerms = new Set([
   'api',
   'chatgpt',
   'cli',
+  'claude',
   'codex',
   'css',
   'dom',

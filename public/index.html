@@ -150,6 +150,34 @@
         <h2>Select target project</h2>
         <p>Choose a session working directory from the selected transcript source to analyze.</p>
         <div id="projectStatus" class="projectStatus" aria-live="polite"></div>
+        <div id="projectSourceSwitch" class="projectSourceSwitch" hidden>
+          <div class="projectSourceRow">
+            <span class="projectSourceSummary">
+              <span id="projectSourceKind" class="projectSourceKind"></span>
+              <span id="projectSourceHome" class="projectSourceHome"></span>
+            </span>
+            <button id="projectSourceAction" class="ghostBtn projectSourceAction" type="button" hidden></button>
+            <button id="projectSourceCancel" class="ghostBtn projectSourceCancel" type="button" hidden>Cancel</button>
+          </div>
+          <p id="projectSourceConfirm" class="projectSourceConfirm" hidden></p>
+          <details id="projectHomeEditor" class="projectHomeEditor">
+            <summary>Custom directories</summary>
+            <div class="projectHomeFields">
+              <label class="projectHomeField">
+                <span>Codex home</span>
+                <input id="projectCodexHomeInput" type="text" autocomplete="off" spellcheck="false">
+              </label>
+              <label class="projectHomeField">
+                <span>Claude home</span>
+                <input id="projectClaudeHomeInput" type="text" autocomplete="off" spellcheck="false">
+              </label>
+            </div>
+            <div class="projectHomeActions">
+              <button id="projectHomeApplyBtn" class="ghostBtn" type="button">Apply directories</button>
+              <span id="projectSourceError" class="projectSourceError" aria-live="polite"></span>
+            </div>
+          </details>
+        </div>
         <progress id="projectProgress" class="projectProgress" max="100" value="0" hidden></progress>
         <button id="projectCancelBtn" class="ghostBtn projectCancelBtn" type="button" hidden>Cancel indexing</button>
       </div>

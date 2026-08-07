@@ -1119,6 +1119,108 @@ body[data-project-mode='selecting'] .searchAssist {
   padding-top: 0.2rem;
 }
 
+.projectSourceSwitch {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.35rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--line);
+}
+
+.projectSourceSwitch[hidden] {
+  display: none;
+}
+
+.projectSourceRow {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.7rem;
+}
+
+.projectSourceSummary {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.projectSourceSummary[data-empty='true'] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.projectSourceKind {
+  font-weight: 600;
+}
+
+.projectSourceHome {
+  opacity: 0.85;
+}
+
+.projectSourceAction,
+.projectSourceCancel {
+  justify-self: start;
+  padding: 0.2rem 0.55rem;
+  width: auto;
+}
+
+.projectSourceConfirm {
+  color: var(--warn);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.projectHomeEditor {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.projectHomeEditor summary {
+  cursor: pointer;
+}
+
+.projectHomeFields {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  margin-top: 0.4rem;
+}
+
+.projectHomeField {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.projectHomeField input {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  box-sizing: border-box;
+  color: var(--ink);
+  font: inherit;
+  padding: 0.3rem 0.45rem;
+  width: 100%;
+}
+
+.projectHomeField input:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.projectHomeActions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+
+.projectSourceError {
+  color: var(--warn);
+  font-size: 0.8rem;
+}
+
 .projectProgress {
   accent-color: var(--accent);
   height: 0.45rem;
@@ -4822,6 +4924,10 @@ pre {
   .projectChooser {
     grid-template-columns: 1fr;
     padding: 1.25rem 0.85rem;
+  }
+
+  .projectHomeFields {
+    grid-template-columns: 1fr;
   }
 
   .projectItem {

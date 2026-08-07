@@ -245,13 +245,10 @@ async function readJsonBody(req, limit = 64 * 1024) {
 function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
   const resolvedLocale = i18n.resolveLocale(locale);
   return {
+    ...sourceConfigurationPayload(state),
     locale: resolvedLocale,
     supportedLocales: i18n.SUPPORTED_LOCALES,
     repoRoot: state.index.repoRoot,
-    sourceKind: state.index.sourceKind || state.sourceKind,
-    sourceHome: state.index.sourceHome || state.sourceHome,
-    codexHome: state.index.codexHome || state.index.sourceHome || state.sourceHome,
-    claudeHome: state.index.claudeHome || state.claudeHome,
     generatedAt: state.index.generatedAt,
     buildMs: state.buildMs,
     totals: state.index.totals,
@@ -279,10 +276,7 @@ function activeProjectJob(state) {
 function requireIndex(state, res) {
   if (state.index) return state.index;
   sendError(res, 409, 'Project not selected', {
-    sourceKind: state.sourceKind,
-    sourceHome: state.sourceHome,
-    codexHome: state.codexHome,
-    claudeHome: state.claudeHome,
+    ...sourceConfigurationPayload(state),
     projectSelected: false,
   });
   return null;
@@ -351,10 +345,128 @@ function mergeProjectLists(configProjects = [], scannedProjects = [], options = 
   return order.map((key) => map.get(key));
 }
 
-function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
-  if (state.activeProjectJob && ['queued', 'running'].includes(state.activeProjectJob.status)) {
-    state.activeProjectJob.controller.abort();
+function sourceConfigurationPayload(state) {
+  return {
+    sourceKind: state.sourceKind,
+    sourceHome: state.sourceHome,
+    codexHome: state.codexHome,
+    claudeHome: state.claudeHome,
+    supportedSources: supportedSourceKinds(),
+  };
+}
+
+function cancelProjectJob(job) {
+  if (!job || !['queued', 'running'].includes(job.status)) return;
+  job.controller.abort();
+  job.status = 'cancelled';
+  job.completedAt = new Date().toISOString();
+  job.error = 'Indexing cancelled';
+}
+
+async function discoverProjectsForSource(state, mode) {
+  const revision = state.sourceRevision;
+  const adapter = state.adapter;
+  const context = {
+    sourceKind: state.sourceKind,
+    sourceHome: state.sourceHome,
+    codexHome: state.codexHome,
+    claudeHome: state.claudeHome,
+  };
+  const configuredProjects = await adapter.discoverConfiguredProjects(context);
+  if (revision !== state.sourceRevision) return { stale: true };
+  if (mode === 'summary') {
+    const projects = mergeProjectLists(configuredProjects, state.projectCache?.projects || []);
+    return {
+      stale: false,
+      payload: {
+        ...context,
+        supportedSources: supportedSourceKinds(),
+        projects,
+        summary: true,
+        cached: Boolean(state.projectCache),
+      },
+    };
   }
+  const scannedProjects = await adapter.discoverProjects(context);
+  if (revision !== state.sourceRevision) return { stale: true };
+  const projects = mergeProjectLists(configuredProjects, scannedProjects, { full: true });
+  state.projectCache = {
+    generatedAt: new Date().toISOString(),
+    projects: projectCachePayload(projects),
+  };
+  return {
+    stale: false,
+    payload: {
+      ...context,
+      supportedSources: supportedSourceKinds(),
+      projects,
+    },
+  };
+}
+
+function resolveSourceMutation(state, body) {
+  const errors = [];
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { errors: ['Invalid request body: expected a JSON object.'] };
+  }
+  const allowedFields = new Set(['source', 'codexHome', 'claudeHome']);
+  const unknownFields = Object.keys(body).filter((key) => !allowedFields.has(key));
+  if (unknownFields.length > 0) {
+    errors.push(`Unknown field${unknownFields.length > 1 ? 's' : ''}: ${unknownFields.join(', ')}.`);
+  }
+  const rawSource = body.source;
+  if (typeof rawSource !== 'string' || rawSource.trim() === '') {
+    errors.push(`Missing value for source. Expected one of: ${supportedSourceKinds().join(', ')}.`);
+  } else {
+    const candidateSourceKind = normalizeSourceKind(rawSource);
+    if (!supportedSourceKinds().includes(candidateSourceKind)) {
+      errors.push(`Invalid value for source: ${JSON.stringify(rawSource)}. Expected one of: ${supportedSourceKinds().join(', ')}.`);
+    }
+  }
+  const resolveHome = (value, current) => {
+    if (value === undefined) return current;
+    if (typeof value !== 'string' || value.trim() === '') return null;
+    return path.resolve(value);
+  };
+  const nextCodexHome = resolveHome(body.codexHome, state.codexHome);
+  const nextClaudeHome = resolveHome(body.claudeHome, state.claudeHome);
+  if (nextCodexHome === null || nextClaudeHome === null) {
+    errors.push('codexHome and claudeHome must be non-empty strings when provided.');
+  }
+  if (errors.length > 0) return { errors };
+
+  const nextSourceKind = normalizeSourceKind(rawSource);
+  const configChanged = nextSourceKind !== state.sourceKind
+    || normalizeFsPath(nextCodexHome) !== normalizeFsPath(state.codexHome)
+    || normalizeFsPath(nextClaudeHome) !== normalizeFsPath(state.claudeHome);
+  if (configChanged) {
+    const nextActiveHome = nextSourceKind === SOURCE_KIND.CLAUDE_CODE ? nextClaudeHome : nextCodexHome;
+    const activeIdentityChanged = nextSourceKind !== state.sourceKind
+      || normalizeFsPath(nextActiveHome) !== normalizeFsPath(state.sourceHome);
+    if (activeIdentityChanged) {
+      cancelProjectJob(state.activeProjectJob);
+      state.index = null;
+      state.projectCache = null;
+      state.buildMs = 0;
+      state.sourceKind = nextSourceKind;
+      state.adapter = requireSourceAdapter(nextSourceKind);
+    }
+    state.codexHome = nextCodexHome;
+    state.claudeHome = nextClaudeHome;
+    state.sourceHome = nextSourceKind === SOURCE_KIND.CLAUDE_CODE ? state.claudeHome : state.codexHome;
+    state.sourceRevision += 1;
+  }
+  return {
+    errors: [],
+    payload: {
+      ...sourceConfigurationPayload(state),
+      projectSelected: Boolean(state.index),
+    },
+  };
+}
+
+function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
+  cancelProjectJob(state.activeProjectJob);
 
   const id = String(state.nextProjectJobId++);
   const controller = new AbortController();
@@ -385,7 +497,8 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   state.activeProjectJob = job;
 
   const startedAt = Date.now();
-  job.promise = state.buildIndex({
+  const buildIndex = state.buildIndexOverride || ((context) => state.adapter.buildIndex(context));
+  job.promise = buildIndex({
     repoRoot,
     sourceKind: state.sourceKind,
     sourceHome: state.sourceHome,
@@ -468,10 +581,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     codexHome,
     claudeHome,
     adapter,
+    sourceRevision: 0,
+    buildIndexOverride: options.buildIndex || null,
     nextProjectJobId: 1,
     activeProjectJob: null,
     projectCache: null,
-    buildIndex: options.buildIndex || ((context) => adapter.buildIndex(context)),
   };
   if (options.repo) startProjectJob(state, options.repo, options.locale);
 
@@ -480,41 +594,24 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       const { pathname, searchParams } = parseQuery(req.url);
       const locale = i18n.resolveLocale(searchParams.get('locale') || req.headers['accept-language']);
       if (pathname === '/api/projects') {
-        const configuredProjects = await state.adapter.discoverConfiguredProjects({
-          sourceKind: state.sourceKind,
-          sourceHome: state.sourceHome,
-          codexHome: state.codexHome,
-          claudeHome: state.claudeHome,
-        });
-        if (searchParams.get('summary') === '1') {
-          const projects = mergeProjectLists(configuredProjects, state.projectCache?.projects || []);
-          sendJson(res, 200, {
-            sourceKind: state.sourceKind,
-            sourceHome: state.sourceHome,
-            codexHome: state.sourceHome,
-            projects,
-            summary: true,
-            cached: Boolean(state.projectCache),
-          });
+        const mode = searchParams.get('summary') === '1' ? 'summary' : 'full';
+        const result = await discoverProjectsForSource(state, mode);
+        if (result.stale) {
+          sendError(res, 409, 'Source changed during project discovery');
           return;
         }
-        const scannedProjects = await state.adapter.discoverProjects({
-          sourceKind: state.sourceKind,
-          sourceHome: state.sourceHome,
-          codexHome: state.codexHome,
-          claudeHome: state.claudeHome,
-        });
-        const projects = mergeProjectLists(configuredProjects, scannedProjects, { full: true });
-        state.projectCache = {
-          generatedAt: new Date().toISOString(),
-          projects: projectCachePayload(projects),
-        };
-        sendJson(res, 200, {
-          sourceKind: state.sourceKind,
-          sourceHome: state.sourceHome,
-          codexHome: state.sourceHome,
-          projects,
-        });
+        sendJson(res, 200, result.payload);
+        return;
+      }
+
+      if (pathname === '/api/source' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const result = resolveSourceMutation(state, body);
+        if (result.errors.length > 0) {
+          sendError(res, 400, result.errors.join(' '));
+          return;
+        }
+        sendJson(res, 200, result.payload);
         return;
       }
 
@@ -554,12 +651,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sendError(res, 404, 'Project indexing job not found');
           return;
         }
-        if (['queued', 'running'].includes(job.status)) {
-          job.controller.abort();
-          job.status = 'cancelled';
-          job.completedAt = new Date().toISOString();
-          job.error = 'Indexing cancelled';
-        }
+        cancelProjectJob(job);
         sendJson(res, 200, { job: projectJobPayload(job) });
         return;
       }
@@ -568,10 +660,8 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         const activeJob = activeProjectJob(state);
         if (activeJob) {
           const payload = {
+            ...sourceConfigurationPayload(state),
             projectSelected: false,
-            sourceKind: state.sourceKind,
-            sourceHome: state.sourceHome,
-            codexHome: state.sourceHome,
             job: projectJobPayload(activeJob),
           };
           if (state.index) {
@@ -819,6 +909,8 @@ if (require.main === module) {
 
 module.exports = {
   createServer,
+  discoverProjectsForSource,
   parseArgs,
+  resolveSourceMutation,
   resolveStaticAssetPath,
 };

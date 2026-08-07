@@ -19,7 +19,7 @@ This decision preserves source evidence that has no Codex equivalent: Claude `uu
 
 ## Adapter boundary / 适配器边界
 
-The server selects exactly one adapter for a process. The adapter owns: / 每个服务器进程只选择一个适配器。适配器负责：
+The server selects exactly one active adapter at any time. The adapter owns: / 每个服务器进程在任意时刻只选择一个活跃适配器。适配器负责：
 
 - project discovery from source-owned storage / 从来源拥有的存储中发现项目；
 - layout-aware Session candidate discovery / 感知布局地发现会话候选；
@@ -49,6 +49,14 @@ session-analyzer --source claude-code --claude-home <path>
 `--source claude` is accepted as a convenience alias and normalizes to the stable machine value `claude-code`. The default Claude home is `~/.claude`, but it is not scanned unless Claude is selected. This prevents an upgrade from silently expanding the set of sensitive local transcripts read by the process. / `--source claude` 作为便利别名被接受，并归一化为稳定机器值 `claude-code`。默认 Claude home 为 `~/.claude`，但只有在选择 Claude 时才会扫描。这样可避免升级后在无提示的情况下扩大进程读取的本地敏感转录范围。
 
 `0.1.3` is Claude-only or Codex-only per process. A mixed `--source all` index, source filter, and aggregate source counts remain deferred. / `0.1.3` 的每个进程只运行 Claude 或 Codex 单一来源。混合 `--source all` 索引、来源筛选与聚合来源计数继续推迟。
+
+## Runtime source switching / 运行期来源切换
+
+`POST /api/source` changes the active Transcript Source and optional source homes at runtime. The process still has exactly one active adapter at any time: `sourceKind`, `sourceHome`, and the adapter are swapped together, the committed index and project cache are cleared, and any running indexing job is cancelled. The switch is runtime-only; a server restart returns to the CLI configuration. / `POST /api/source` 可在运行期切换当前转录来源与可选来源 home。进程在任何时刻仍只有一个活跃 adapter：`sourceKind`、`sourceHome` 与 adapter 会一起替换，已提交的 index 与 project cache 会被清空，进行中的索引 job 会被取消。切换只对当前进程生效；服务器重启后回到 CLI 配置。
+
+The request accepts `source` plus optional `codexHome` and `claudeHome`. `source` must be a non-empty string and is normalized through the same alias rules as the CLI. Changing only the inactive home updates the stored configuration without resetting the active index; changing `sourceKind` or the active source's home is a reset. / 请求接受 `source` 以及可选的 `codexHome` 与 `claudeHome`。`source` 必须是非空字符串，并使用与 CLI 相同的别名规则归一化。只修改 inactive home 会更新保存的配置而不重置活跃 index；修改 `sourceKind` 或活跃来源的 home 才触发重置。
+
+Project discovery snapshots the active source configuration and its revision before awaiting adapter work. If the source changes mid-discovery, the stale result is rejected and the project cache is never written, so a response can never mix projects from two sources. / 项目发现在开始 await adapter 工作前会快照活跃来源配置及其 revision。如果发现过程中来源发生变化，过时的结果会被拒绝且不会写入 project cache，因此任何响应都不会混入两个来源的项目。
 
 ## Claude discovery and project association / Claude 发现与项目关联
 

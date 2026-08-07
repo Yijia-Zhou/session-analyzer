@@ -40,7 +40,7 @@ const SEARCH_HIGHLIGHT_INPUT_DELAY_MS = 300;
 const PROJECT_REFRESH_RETRY_DELAYS_MS = [400, 800, 1600];
 const DETAIL_VIEW_ORIGIN_SEARCH = 'searchTransient';
 const DETAIL_VIEW_ORIGIN_USER = 'userConfirmed';
-const REPO_STORAGE_KEY = 'sessionAnalyzer.repoRoot';
+const LEGACY_REPO_STORAGE_KEY = 'sessionAnalyzer.repoRoot';
 const CUSTOM_PROFILES_KEY = 'sessionAnalyzer.customProfiles';
 const OVERRIDES_KEY = 'sessionAnalyzer.overrides';
 const LOCALE_STORAGE_KEY = 'sessionAnalyzer.locale';
@@ -114,6 +114,14 @@ function searchStatusLabel(value) {
 const state = {
   locale: browserLocale(),
   sourceKind: 'codex',
+  sourceHome: '',
+  codexHome: '',
+  claudeHome: '',
+  supportedSources: [],
+  projectDiscoveryLoading: false,
+  pendingSourceAction: null,
+  sourceSwitchBusy: false,
+  homeEditorDirty: false,
   sessions: [],
   expandedSessionGroups: new Set(),
   projectResults: [],
@@ -264,6 +272,17 @@ const el = {
   projectList: document.getElementById('projectList'),
   projectChooserTitle: document.querySelector('.projectChooserHeader h2'),
   projectChooserDescription: document.querySelector('.projectChooserHeader p'),
+  projectSourceSwitch: document.getElementById('projectSourceSwitch'),
+  projectSourceKind: document.getElementById('projectSourceKind'),
+  projectSourceHome: document.getElementById('projectSourceHome'),
+  projectSourceAction: document.getElementById('projectSourceAction'),
+  projectSourceCancel: document.getElementById('projectSourceCancel'),
+  projectSourceConfirm: document.getElementById('projectSourceConfirm'),
+  projectHomeEditor: document.getElementById('projectHomeEditor'),
+  projectCodexHomeInput: document.getElementById('projectCodexHomeInput'),
+  projectClaudeHomeInput: document.getElementById('projectClaudeHomeInput'),
+  projectHomeApplyBtn: document.getElementById('projectHomeApplyBtn'),
+  projectSourceError: document.getElementById('projectSourceError'),
 };
 
 let profileInfoSlot = null;
@@ -354,6 +373,11 @@ function applyStaticLocale() {
   setText(document.querySelector('.projectChooserHeader h2'), t('selectProject'));
   setText(document.querySelector('.projectChooserHeader p'), t('chooseProject'));
   setText(el.projectCancelBtn, t('cancelIndexing'));
+  setText(document.querySelector('#projectHomeEditor summary'), t('customHomeDirectories'));
+  setText(document.querySelector('.projectHomeField:nth-child(1) span'), t('codexHomeLabel'));
+  setText(document.querySelector('.projectHomeField:nth-child(2) span'), t('claudeHomeLabel'));
+  setText(el.projectHomeApplyBtn, t('applyHomeDirectories'));
+  setText(el.projectSourceCancel, t('cancelSwitch'));
   setText(document.querySelector('.sessionsPane .sessionListHeader h2'), t('sessions'));
   setText(document.querySelector('.sortControl .srOnly'), t('sort'));
   if (el.projectRefreshBtn) {
@@ -383,6 +407,7 @@ function applyStaticLocale() {
     setText(detailTitle, t('eventDetail'));
     setText(detailText, t('clickTimelineEvent'));
   }
+  renderSourceSwitch();
   updateProjectChooserHeader();
   updateProjectSwitchControl();
 }
@@ -475,6 +500,233 @@ function updateProjectChooserHeader() {
     el.projectChooserTitle.textContent = t('selectProject');
     el.projectChooserDescription.textContent = t('chooseProject');
   }
+}
+
+function sourceConfigBusy() {
+  return Boolean(
+    state.projectLoadingRoot
+    || state.projectJobId
+    || state.projectRefreshing
+    || state.projectRefreshJobId
+    || state.projectReturning
+    || state.sourceSwitchBusy,
+  );
+}
+
+function renderSourceSwitch() {
+  if (!el.projectSourceSwitch) return;
+  const hasConfig = Boolean(state.sourceHome || state.supportedSources.length);
+  el.projectSourceSwitch.hidden = !state.selectingProject || !hasConfig;
+  if (el.projectSourceSwitch.hidden) return;
+  const other = otherSourceKind();
+  const otherLabel = sourceKindLabel(other);
+  const emptyState = !state.projects.length && !state.projectLoadingRoot && !state.projectDiscoveryLoading;
+  if (el.projectSourceKind) {
+    el.projectSourceKind.textContent = emptyState
+      ? t('noProjectsHint', { source: otherLabel })
+      : `${t('transcriptSource')}: ${sourceKindLabel(state.sourceKind)}`;
+    const summary = el.projectSourceKind.parentElement;
+    if (summary) {
+      if (emptyState) summary.setAttribute('data-empty', 'true');
+      else summary.removeAttribute('data-empty');
+    }
+  }
+  if (el.projectSourceHome) {
+    el.projectSourceHome.textContent = emptyState ? '' : (state.sourceHome ? `· ${state.sourceHome}` : '');
+  }
+  if (el.projectSourceAction) {
+    el.projectSourceAction.hidden = false;
+    el.projectSourceAction.textContent = state.pendingSourceAction === 'switch'
+      ? t('confirmSwitchToSource', { source: otherLabel })
+      : state.pendingSourceAction === 'home'
+        ? t('confirmHomeChange')
+        : t('switchToSource', { source: otherLabel });
+    el.projectSourceAction.disabled = sourceConfigBusy();
+  }
+  if (el.projectSourceCancel) el.projectSourceCancel.hidden = !state.pendingSourceAction;
+  if (el.projectSourceConfirm) {
+    const confirmText = state.pendingSourceAction === 'switch' && state.repoRoot
+      ? t('switchClosesProject', { source: otherLabel, root: state.repoRoot })
+      : state.pendingSourceAction === 'home' && state.repoRoot
+        ? t('homeChangeClosesProject', { root: state.repoRoot })
+        : '';
+    el.projectSourceConfirm.textContent = confirmText;
+    el.projectSourceConfirm.hidden = !confirmText;
+  }
+  const preserveHomeInputs = state.pendingSourceAction === 'home' || state.homeEditorDirty;
+  if (el.projectCodexHomeInput && !preserveHomeInputs && document.activeElement !== el.projectCodexHomeInput) {
+    el.projectCodexHomeInput.value = state.codexHome;
+  }
+  if (el.projectClaudeHomeInput && !preserveHomeInputs && document.activeElement !== el.projectClaudeHomeInput) {
+    el.projectClaudeHomeInput.value = state.claudeHome;
+  }
+  if (el.projectHomeApplyBtn) el.projectHomeApplyBtn.disabled = sourceConfigBusy();
+}
+
+function clearSourceError() {
+  if (el.projectSourceError) el.projectSourceError.textContent = '';
+}
+
+async function commitSourceConfig(source, homes = null) {
+  state.sourceSwitchBusy = true;
+  clearSourceError();
+  renderSourceSwitch();
+  try {
+    const body = { source };
+    if (homes) {
+      body.codexHome = homes.codexHome;
+      body.claudeHome = homes.claudeHome;
+    }
+    const result = await api('/api/source', { method: 'POST', body });
+    applySourceConfig(result);
+    return result;
+  } catch (error) {
+    if (el.projectSourceError) {
+      el.projectSourceError.textContent = t('sourceSwitchFailed', { message: error.message || String(error) });
+    }
+    throw error;
+  } finally {
+    state.sourceSwitchBusy = false;
+    renderSourceSwitch();
+  }
+}
+
+function resetReturnableProject() {
+  state.repoRoot = '';
+  state.projectReturning = false;
+}
+
+async function refreshProjectList() {
+  const requestId = state.projectChooserRequestId + 1;
+  state.projectChooserRequestId = requestId;
+  state.projectDiscoveryLoading = true;
+  renderSourceSwitch();
+  let summary = null;
+  try {
+    summary = await api('/api/projects?summary=1');
+  } catch (error) {
+    if (error.status === 409) {
+      if (isActiveProjectChooserRequest(requestId)) {
+        clearProjectDiscoveryLoading(requestId);
+        renderProjects();
+      }
+      return false;
+    }
+    console.warn('Unable to load project summary', error);
+  }
+  if (!isActiveProjectChooserRequest(requestId)) return false;
+  if (summary) {
+    applySourceConfig(summary);
+    state.projects = summary.projects;
+    if (state.projects.length > 0) renderProjects();
+    if (el.projectStatus) {
+      el.projectStatus.textContent = state.projects.length
+        ? t('projectActivityLoading', { sourceHome: summary.sourceHome })
+        : t('discoveringProjects');
+    }
+  }
+  let data;
+  try {
+    data = await api('/api/projects');
+  } catch (error) {
+    if (error.status === 409) {
+      if (isActiveProjectChooserRequest(requestId)) {
+        clearProjectDiscoveryLoading(requestId);
+        renderProjects();
+      }
+      return false;
+    }
+    clearProjectDiscoveryLoading(requestId);
+    renderProjects();
+    throw error;
+  }
+  if (!isActiveProjectChooserRequest(requestId)) return false;
+  applySourceConfig(data);
+  state.projectDiscoveryLoading = false;
+  state.projects = data.projects;
+  renderProjects();
+  renderSourceSwitch();
+  if (el.projectStatus) {
+    el.projectStatus.textContent = state.projects.length
+      ? t('projectCandidates', { count: state.projects.length, sourceHome: data.sourceHome })
+      : t('noProjectCandidates', { sourceHome: data.sourceHome });
+  }
+  return true;
+}
+
+async function performPendingSourceAction() {
+  if (state.pendingSourceAction === 'switch') {
+    const target = otherSourceKind();
+    invalidateProjectDiscovery();
+    state.pendingSourceAction = null;
+    const result = await commitSourceConfig(target);
+    state.homeEditorDirty = false;
+    if (result.projectSelected === false) {
+      resetReturnableProject();
+      state.projects = [];
+      resetProjectViewState();
+      updateProjectChrome({ displayRoot: '', returnRoot: '' });
+      await refreshProjectList();
+    } else {
+      renderSourceSwitch();
+    }
+    return;
+  }
+  if (state.pendingSourceAction === 'home') {
+    const codexHome = el.projectCodexHomeInput?.value.trim() || '';
+    const claudeHome = el.projectClaudeHomeInput?.value.trim() || '';
+    await performHomeChange(codexHome, claudeHome);
+  }
+}
+
+async function performHomeChange(codexHome, claudeHome) {
+  state.pendingSourceAction = null;
+  const result = await commitSourceConfig(state.sourceKind, { codexHome, claudeHome });
+  state.homeEditorDirty = false;
+  if (result.projectSelected === false) {
+    resetReturnableProject();
+    state.projects = [];
+    resetProjectViewState();
+    updateProjectChrome({ displayRoot: '', returnRoot: '' });
+    await refreshProjectList();
+  } else {
+    renderSourceSwitch();
+  }
+}
+
+function armSourceSwitch() {
+  if (state.pendingSourceAction) {
+    performPendingSourceAction().catch(showError);
+    return;
+  }
+  state.pendingSourceAction = 'switch';
+  clearSourceError();
+  renderSourceSwitch();
+}
+
+function armHomeChange() {
+  const codexHome = el.projectCodexHomeInput?.value.trim() || '';
+  const claudeHome = el.projectClaudeHomeInput?.value.trim() || '';
+  if (!codexHome || !claudeHome) {
+    if (el.projectSourceError) el.projectSourceError.textContent = t('homePathsRequired');
+    return;
+  }
+  const activeHomeInput = state.sourceKind === 'claude-code' ? claudeHome : codexHome;
+  const activeHomeChanged = normalizeHomePathForCompare(activeHomeInput) !== normalizeHomePathForCompare(state.sourceHome);
+  if (!activeHomeChanged || !state.repoRoot) {
+    performHomeChange(codexHome, claudeHome).catch(showError);
+    return;
+  }
+  state.pendingSourceAction = 'home';
+  clearSourceError();
+  renderSourceSwitch();
+}
+
+function cancelPendingSourceAction() {
+  state.pendingSourceAction = null;
+  state.homeEditorDirty = false;
+  clearSourceError();
+  renderSourceSwitch();
 }
 
 function updateProjectSwitchControl(options = {}) {
@@ -2028,6 +2280,84 @@ function sourceKindLabel(value) {
   return value === 'claude-code' ? 'Claude Code' : value === 'codex' ? 'Codex' : String(value || '');
 }
 
+function repoStorageKey(sourceKind) {
+  return `sessionAnalyzer.repoRoot.${sourceKind}`;
+}
+
+function readLastSelectedRepo(sourceKind) {
+  const namespaced = localStorage.getItem(repoStorageKey(sourceKind));
+  if (namespaced) return namespaced;
+  if (sourceKind !== 'codex') return '';
+  const legacy = localStorage.getItem(LEGACY_REPO_STORAGE_KEY);
+  if (legacy) {
+    localStorage.setItem(repoStorageKey('codex'), legacy);
+    localStorage.removeItem(LEGACY_REPO_STORAGE_KEY);
+  }
+  return legacy || '';
+}
+
+function writeLastSelectedRepo(sourceKind, repoRoot) {
+  if (repoRoot) {
+    localStorage.setItem(repoStorageKey(sourceKind), repoRoot);
+  } else {
+    localStorage.removeItem(repoStorageKey(sourceKind));
+  }
+}
+
+function applySourceConfig(payload) {
+  if (!payload || typeof payload !== 'object') return;
+  if (payload.sourceKind) state.sourceKind = payload.sourceKind;
+  if (typeof payload.sourceHome === 'string') state.sourceHome = payload.sourceHome;
+  if (typeof payload.codexHome === 'string') state.codexHome = payload.codexHome;
+  if (typeof payload.claudeHome === 'string') state.claudeHome = payload.claudeHome;
+  if (Array.isArray(payload.supportedSources)) state.supportedSources = payload.supportedSources;
+}
+
+function otherSourceKind() {
+  const supported = state.supportedSources.length ? state.supportedSources : ['codex', 'claude-code'];
+  return supported.find((kind) => kind !== state.sourceKind) || (state.sourceKind === 'codex' ? 'claude-code' : 'codex');
+}
+
+function normalizeHomePathForCompare(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const win32 = /^(?:[A-Za-z]:[\\/]|\\\\)/.test(text);
+  const posix = !win32 && text.startsWith('/');
+  if (!win32 && !posix) return text;
+  const parts = text.split(/[\\/]+/).filter(Boolean);
+  let root;
+  if (win32) {
+    if (/^\\\\/.test(text)) {
+      root = `\\\\${parts.slice(0, 2).join('\\')}\\`;
+      parts.splice(0, 2);
+    } else {
+      root = `${parts.shift().toLowerCase()}\\`;
+    }
+  } else {
+    root = '/';
+  }
+  const stack = [];
+  for (const part of parts) {
+    if (!part || part === '.') continue;
+    if (part === '..') stack.pop();
+    else stack.push(part);
+  }
+  const separator = win32 ? '\\' : '/';
+  const normalized = root + stack.join(separator);
+  return win32 ? normalized.toLowerCase() : normalized;
+}
+
+function clearProjectDiscoveryLoading(requestId) {
+  if (requestId === state.projectChooserRequestId) {
+    state.projectDiscoveryLoading = false;
+  }
+}
+
+function invalidateProjectDiscovery() {
+  state.projectChooserRequestId += 1;
+  state.projectDiscoveryLoading = false;
+}
+
 function sessionRelationshipLabel(session) {
   if (session.isDerivedSession) {
     const parent = shortId(session.parentSessionId);
@@ -2874,6 +3204,11 @@ function setAnalyzerDisabled(disabled) {
 function setProjectMode(selecting) {
   state.selectingProject = selecting;
   state.projectSelected = !selecting;
+  if (!selecting) {
+    state.pendingSourceAction = null;
+    state.projectDiscoveryLoading = false;
+    state.homeEditorDirty = false;
+  }
   document.body.dataset.projectMode = selecting ? 'selecting' : 'analyzing';
   if (el.projectChooser) el.projectChooser.hidden = !selecting;
   setAnalyzerDisabled(selecting);
@@ -2936,12 +3271,13 @@ function renderProjects() {
   el.projectList.setAttribute('aria-busy', loadingRoot ? 'true' : 'false');
   if (el.projectChooser) el.projectChooser.dataset.loading = loadingRoot ? 'true' : 'false';
   if (!state.projects.length) {
-    el.projectList.innerHTML = loadingRoot
+    el.projectList.innerHTML = (loadingRoot || state.projectDiscoveryLoading)
       ? ''
-      : `<div class="notice warning"><p>${escapeHtml(t('noCodexProjects'))}</p></div>`;
+      : `<div class="notice warning"><p>${escapeHtml(t('noTranscriptProjects'))}</p></div>`;
+    renderSourceSwitch();
     return;
   }
-  const saved = localStorage.getItem(REPO_STORAGE_KEY) || '';
+  const saved = readLastSelectedRepo(state.sourceKind) || '';
   el.projectList.innerHTML = state.projects.map((project) => {
     const isSaved = project.repoRoot === saved;
     const isLoading = project.repoRoot === loadingRoot;
@@ -2972,6 +3308,7 @@ function renderProjects() {
       <span class="projectAction">${action}</span>
     </button>`;
   }).join('');
+  renderSourceSwitch();
 }
 
 function clearProjectPollTimer() {
@@ -3007,9 +3344,9 @@ async function cancelProjectJob(jobId) {
 }
 
 async function showProjectChooser(options = {}) {
-  const requestId = state.projectChooserRequestId + 1;
-  state.projectChooserRequestId = requestId;
   state.projectReturning = false;
+  state.pendingSourceAction = null;
+  state.homeEditorDirty = false;
   setProjectMode(true);
   state.projectLoadingRoot = '';
   state.projectJobId = '';
@@ -3021,29 +3358,9 @@ async function showProjectChooser(options = {}) {
   if (el.projectProgress) el.projectProgress.hidden = true;
   if (el.projectCancelBtn) el.projectCancelBtn.hidden = true;
   if (el.projectList) el.projectList.innerHTML = '';
-  let renderedSummary = false;
-  try {
-    const summary = await api('/api/projects?summary=1');
-    if (!isActiveProjectChooserRequest(requestId)) return;
-    state.projects = summary.projects;
-    renderedSummary = state.projects.length > 0;
-    if (renderedSummary) renderProjects();
-    if (el.projectStatus) {
-      el.projectStatus.textContent = renderedSummary
-        ? t('projectActivityLoading', { codexHome: summary.codexHome })
-        : t('discoveringProjects');
-    }
-  } catch (error) {
-    console.warn('Unable to load project summary', error);
-  }
-  if (!isActiveProjectChooserRequest(requestId)) return;
-  const data = await api('/api/projects');
-  if (!isActiveProjectChooserRequest(requestId)) return;
-  state.projects = data.projects;
-  renderProjects();
-  if (el.projectStatus) el.projectStatus.textContent = state.projects.length ? t('projectCandidates', { count: state.projects.length, codexHome: data.codexHome }) : t('noProjectCandidates', { codexHome: data.codexHome });
-
-  const saved = localStorage.getItem(REPO_STORAGE_KEY);
+  const discovered = await refreshProjectList();
+  if (!discovered) return;
+  const saved = readLastSelectedRepo(state.sourceKind);
   if (options.autoRestore && saved && state.projects.some((project) => project.repoRoot === saved)) {
     await selectProject(saved, { restore: true });
   }
@@ -3074,7 +3391,7 @@ async function applyAppState(appState) {
   const totals = appState.totals || {};
   if (appState.locale) state.locale = i18n.resolveLocale(appState.locale);
   applyStaticLocale();
-  state.sourceKind = appState.sourceKind || 'codex';
+  applySourceConfig(appState);
   state.repoRoot = appState.repoRoot || '';
   state.builtinProfiles = normalizeProfiles(appState.foldingProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
@@ -3106,7 +3423,7 @@ async function applyAppState(appState) {
 }
 
 async function finishProjectSelection(appState, options = {}) {
-  localStorage.setItem(REPO_STORAGE_KEY, appState.repoRoot);
+  writeLastSelectedRepo(appState.sourceKind || state.sourceKind, appState.repoRoot);
   state.projectLoadingRoot = '';
   state.projectJobId = '';
   state.projectReturning = false;
@@ -3231,6 +3548,7 @@ async function selectProject(repoRoot, options = {}) {
     state.projectJobId = '';
     state.projectLoadingRoot = '';
     state.projectReturning = false;
+    state.projectDiscoveryLoading = false;
     updateProjectChrome({ displayRoot: state.repoRoot, returnRoot: state.repoRoot });
     renderProjects();
     setAnalyzerDisabled(false);
@@ -3272,6 +3590,7 @@ async function init() {
     setProjectMode(false);
   } catch (error) {
     if (error.status !== 409) throw error;
+    applySourceConfig(error.details);
     await showProjectChooser({ autoRestore: true });
     if (state.projectSelected) return;
     return;
@@ -5714,6 +6033,25 @@ el.projectCancelBtn?.addEventListener('click', () => {
     .then((data) => handleProjectJobResponse(data))
     .catch((error) => handleProjectJobError(jobId, error));
 });
+
+el.projectSourceAction?.addEventListener('click', () => {
+  if (state.pendingSourceAction) {
+    performPendingSourceAction().catch(showError);
+    return;
+  }
+  armSourceSwitch();
+});
+
+el.projectSourceCancel?.addEventListener('click', cancelPendingSourceAction);
+
+el.projectHomeApplyBtn?.addEventListener('click', armHomeChange);
+
+for (const input of [el.projectCodexHomeInput, el.projectClaudeHomeInput]) {
+  input?.addEventListener('input', () => {
+    state.homeEditorDirty = true;
+    clearSourceError();
+  });
+}
 
 el.sessionList.addEventListener('click', (event) => {
   const childToggle = event.target.closest('[data-session-children-toggle]');
