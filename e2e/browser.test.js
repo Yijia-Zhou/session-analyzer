@@ -2048,7 +2048,10 @@ test('browser skips home-change confirmation for path-equivalent inputs', async 
   await page.locator('#projectSwitchControl').click();
   await page.waitForFunction(() => document.body.dataset.projectMode === 'selecting');
   await page.locator('#projectHomeEditor summary').click();
-  await page.locator('#projectCodexHomeInput').fill(`${fixtureCodexHome.toUpperCase()}\\`);
+  const equivalentHome = process.platform === 'win32'
+    ? `${fixtureCodexHome.toUpperCase()}\\`
+    : `${fixtureCodexHome}/`;
+  await page.locator('#projectCodexHomeInput').fill(equivalentHome);
   await page.locator('#projectHomeApplyBtn').click();
   await page.waitForFunction((value) => document.querySelector('#projectCodexHomeInput')?.value === value, fixtureCodexHome);
   assert.equal(await page.locator('#projectSourceConfirm').isHidden(), true);
@@ -2145,6 +2148,45 @@ test('browser applies source config from a 202 indexing-job state', async (t) =>
     sessions: [],
   });
   await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
+});
+
+test('browser keeps discovery alive when source confirmation fails home validation', async (t) => {
+  let releaseFirstFull;
+  const firstFullGate = new Promise((resolve) => {
+    releaseFirstFull = resolve;
+  });
+  let fullCalls = 0;
+  let sourcePosts = 0;
+  const { page } = await openSourceSwitchChooser(t, {
+    beforeGoto: async (p) => {
+      p.on('request', (request) => {
+        const url = new URL(request.url());
+        if (url.pathname === '/api/source' && request.method() === 'POST') sourcePosts += 1;
+      });
+      await p.route('**/api/projects*', async (route) => {
+        const url = new URL(route.request().url());
+        if (url.searchParams.get('summary') === '1') {
+          await route.continue();
+          return;
+        }
+        fullCalls += 1;
+        if (fullCalls === 1) {
+          await firstFullGate;
+        }
+        await route.continue();
+      });
+    },
+  });
+
+  await page.locator('#projectHomeEditor summary').click();
+  await page.locator('#projectClaudeHomeInput').fill('');
+  await page.locator('#projectSourceAction').click();
+  await confirmSourceAction(page, 'Confirm switch to Claude Code');
+  await page.waitForFunction(() => document.querySelector('#projectSourceError')?.textContent.includes('Home paths must not be empty'));
+  assert.equal(sourcePosts, 0);
+  releaseFirstFull();
+  await waitForProjectRoot(page, repoRoot);
+  assert.equal(sourcePosts, 0);
 });
 
 test('browser reindex retries transient status and committed-session transport failures', async (t) => {

@@ -21,8 +21,8 @@ Add the Select project source switcher on top of the runtime `POST /api/source` 
 - Second review follow-ups: `projectDiscoveryLoading` is cleared on discovery failure or invalidation (without clobbering a successor request), and home-change confirmation compares normalized path forms so Windows-equivalent inputs do not prompt a spurious reset confirmation. / 第二轮评审后续：`projectDiscoveryLoading` 在发现失败或被作废时复位（且不会覆盖后继请求的状态）；home 修改确认改用归一化路径比较，Windows 下等价输入不再弹出多余的确认。
 - Third review follow-up: the empty-state hint now sets `data-empty="true"` explicitly so the emphasis styling applies, with an e2e assertion on the computed font weight. / 第三轮评审后续：空态提示改为显式设置 `data-empty="true"`，使强调样式生效，并新增对计算后 font-weight 的 e2e 断言。
 - Fourth review follow-ups: source switch consumes the unapplied home draft (and cancel no longer discards it), any successful home mutation re-runs project discovery as the successor of a stale scan, and `init()` applies source configuration immediately for the 202 job envelope. / 第四轮评审后续：来源切换携带未应用的 home 草稿（取消不再丢弃草稿）；任何成功的 home 修改都会重新执行项目发现，作为过期扫描的后继；`init()` 对 202 job envelope 立即应用来源配置。
-- Full gates: 384 Node tests, 96 browser tests, `npm run build:check`, and `git diff --check` pass. / 完整门槛：384 项 Node 测试、96 项浏览器测试、`npm run build:check` 与 `git diff --check` 均通过。
-- Full gates: 384 Node tests, 93 browser tests, `npm run build:check`, and `git diff --check` pass. / 完整门槛：384 项 Node 测试、93 项浏览器测试、`npm run build:check` 与 `git diff --check` 均通过。
+- Fifth review follow-ups: source confirmation validates the home draft before invalidating discovery, so a failed validation never strands the project list, and the duplicate Full-gates line was removed. / 第五轮评审后续：来源确认在作废 discovery 之前先校验 home 草稿，因此校验失败不会让项目列表滞留；同时删除了重复的 Full gates 行。
+- Full gates: 384 Node tests, 97 browser tests, `npm run build:check`, and `git diff --check` pass. / 完整门槛：384 项 Node 测试、97 项浏览器测试、`npm run build:check` 与 `git diff --check` 均通过。
 
 ## Status / 状态
 

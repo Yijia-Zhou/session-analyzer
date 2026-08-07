@@ -657,8 +657,6 @@ async function refreshProjectList() {
 async function performPendingSourceAction() {
   if (state.pendingSourceAction === 'switch') {
     const target = otherSourceKind();
-    invalidateProjectDiscovery();
-    state.pendingSourceAction = null;
     const homes = state.homeEditorDirty
       ? {
         codexHome: el.projectCodexHomeInput?.value.trim() || '',
@@ -670,6 +668,8 @@ async function performPendingSourceAction() {
       renderSourceSwitch();
       return;
     }
+    invalidateProjectDiscovery();
+    state.pendingSourceAction = null;
     const result = await commitSourceConfig(target, homes);
     state.homeEditorDirty = false;
     if (result.projectSelected === false) {
