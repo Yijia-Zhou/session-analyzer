@@ -2055,6 +2055,98 @@ test('browser skips home-change confirmation for path-equivalent inputs', async 
   assert.equal(await page.locator('.projectSwitchHint').textContent(), 'Return');
 });
 
+test('browser source switch carries unapplied home-directory edits', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  const { page } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: path.join(fixture.claudeHome, 'unused') },
+  });
+  await waitForProjectRoot(page, repoRoot);
+
+  await page.locator('#projectHomeEditor summary').click();
+  const draftClaudeHome = fixture.claudeHome;
+  await page.locator('#projectClaudeHomeInput').fill(draftClaudeHome);
+  await page.locator('#projectSourceAction').click();
+  await confirmSourceAction(page, 'Confirm switch to Claude Code');
+  await waitForProjectRoot(page, fixture.claudeRepo);
+  await page.waitForFunction((value) => document.querySelector('#projectClaudeHomeInput')?.value === value, draftClaudeHome);
+  assert.ok((await page.locator('#projectSourceHome').textContent()).includes(draftClaudeHome));
+  assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Claude Code/);
+});
+
+test('browser reapplies inactive home edits with a successor discovery while scan is in flight', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  let releaseFirstFull;
+  const firstFullGate = new Promise((resolve) => {
+    releaseFirstFull = resolve;
+  });
+  let fullCalls = 0;
+  const { page } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: fixture.claudeHome },
+    beforeGoto: async (p) => {
+      await p.route('**/api/projects*', async (route) => {
+        const url = new URL(route.request().url());
+        if (url.searchParams.get('summary') === '1') {
+          await route.continue();
+          return;
+        }
+        fullCalls += 1;
+        if (fullCalls === 1) {
+          await firstFullGate;
+        }
+        await route.continue();
+      });
+    },
+  });
+
+  await page.locator('#projectHomeEditor summary').click();
+  const inactiveHome = path.join(fixture.claudeHome, 'inactive-race');
+  await page.locator('#projectClaudeHomeInput').fill(inactiveHome);
+  const sourcePost = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/source'
+    && response.request().method() === 'POST'
+  ));
+  await page.locator('#projectHomeApplyBtn').click();
+  await sourcePost;
+  releaseFirstFull();
+
+  await waitForProjectRoot(page, repoRoot);
+  await page.waitForFunction((value) => document.querySelector('#projectClaudeHomeInput')?.value === value, inactiveHome);
+  assert.ok((await page.locator('#projectSourceHome').textContent()).includes(fixtureCodexHome));
+});
+
+test('browser applies source config from a 202 indexing-job state', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  let resolveIndex;
+  const buildIndex = () => new Promise((resolve) => {
+    resolveIndex = resolve;
+  });
+  const { page } = await openSourceSwitchChooser(t, {
+    server: {
+      source: 'claude-code',
+      claudeHome: fixture.claudeHome,
+      repo: fixture.claudeRepo,
+      buildIndex,
+    },
+  });
+
+  assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Claude Code/);
+  assert.ok((await page.locator('#projectSourceHome').textContent()).includes(fixture.claudeHome));
+  resolveIndex({
+    repoRoot: fixture.claudeRepo,
+    sourceKind: 'claude-code',
+    sourceHome: fixture.claudeHome,
+    codexHome: path.join(fixture.claudeHome, 'unused-codex'),
+    claudeHome: fixture.claudeHome,
+    generatedAt: new Date().toISOString(),
+    totals: { sessionCount: 0, eventCount: 0, rawEventCount: 0 },
+    eventKinds: { main: [], protocol: [], raw: [] },
+    codeModeRequests: [],
+    foldingProfiles: [],
+    sessions: [],
+  });
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
+});
+
 test('browser reindex retries transient status and committed-session transport failures', async (t) => {
   const index = await buildFixtureIndex();
   const { page } = await openApp(t, index, { locale: 'en' });

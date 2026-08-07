@@ -659,7 +659,18 @@ async function performPendingSourceAction() {
     const target = otherSourceKind();
     invalidateProjectDiscovery();
     state.pendingSourceAction = null;
-    const result = await commitSourceConfig(target);
+    const homes = state.homeEditorDirty
+      ? {
+        codexHome: el.projectCodexHomeInput?.value.trim() || '',
+        claudeHome: el.projectClaudeHomeInput?.value.trim() || '',
+      }
+      : null;
+    if (homes && (!homes.codexHome || !homes.claudeHome)) {
+      if (el.projectSourceError) el.projectSourceError.textContent = t('homePathsRequired');
+      renderSourceSwitch();
+      return;
+    }
+    const result = await commitSourceConfig(target, homes);
     state.homeEditorDirty = false;
     if (result.projectSelected === false) {
       resetReturnableProject();
@@ -688,10 +699,10 @@ async function performHomeChange(codexHome, claudeHome) {
     state.projects = [];
     resetProjectViewState();
     updateProjectChrome({ displayRoot: '', returnRoot: '' });
-    await refreshProjectList();
   } else {
     renderSourceSwitch();
   }
+  await refreshProjectList();
 }
 
 function armSourceSwitch() {
@@ -724,7 +735,6 @@ function armHomeChange() {
 
 function cancelPendingSourceAction() {
   state.pendingSourceAction = null;
-  state.homeEditorDirty = false;
   clearSourceError();
   renderSourceSwitch();
 }
@@ -3560,6 +3570,7 @@ async function init() {
   setMobileView(state.mobileView, { scroll: false });
   try {
     const appState = await api('/api/state');
+    applySourceConfig(appState);
     if (appState.job) {
       const job = appState.job;
       const currentState = appState.currentState;
