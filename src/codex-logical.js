@@ -849,7 +849,7 @@ function createCodexLogicalBuilder(deps) {
       turnId: raw.turnId || '',
       kind: 'developer_message',
       subtype: 'developer_message',
-      layer: 'main',
+      layer: 'protocol',
       role: 'developer',
       label: 'Developer message',
       preview: truncate(raw.messageText || raw.preview || 'Developer message'),

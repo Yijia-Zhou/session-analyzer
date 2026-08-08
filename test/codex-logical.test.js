@@ -1016,7 +1016,7 @@ test('logical builder supports new hook lifecycle rows and ungrouped declined ho
   assert.equal(declined.severity, 'warning');
 });
 
-test('logical builder surfaces unwrapped developer messages as possible hook output', () => {
+test('logical builder surfaces unwrapped developer messages as protocol-layer possible hook output', () => {
   const logicalEvents = logicalBuilder.buildLogicalEvents([
     raw(1, {
       recordType: 'response_item',
@@ -1037,6 +1037,7 @@ test('logical builder surfaces unwrapped developer messages as possible hook out
   assert.equal(developerMessage.label, 'Developer message');
   assert.deepEqual(developerMessage.tags, ['Possible hook output']);
   assert.match(developerMessage.searchText, /Possible hook output/);
+  assert.equal(developerMessage.layer, 'protocol');
   assert.equal(wrapper.layer, 'protocol');
 });
 

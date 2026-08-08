@@ -7,12 +7,14 @@
 - Added runtime Transcript Source switching: `POST /api/source` changes the active Codex/Claude Code source and optional source home directories without restarting the server; the Select project chooser exposes a source switcher with custom home directories, and stale project discovery is rejected through source revisions.
 - Added per-source last-selected repository storage with a one-time migration of the legacy Codex key, and made project-selection copy source-neutral (`sourceHome` instead of `codexHome`).
 - Added source-switch and race-regression coverage across backend, browser, and documentation.
+- Moved unwrapped Codex developer messages from the Main timeline to the protocol layer, keeping their `Possible hook output` tag and raw traceability.
 
 ### 中文
 
 - 新增运行期转录来源切换：`POST /api/source` 可在不重启服务器的情况下切换当前 Codex/Claude Code 来源及可选来源 home 目录；Select project 选择界面提供来源切换与自定义目录入口，并通过 source revision 拒绝过期的项目发现结果。
 - 新增按来源区分的“最后选择的仓库”存储，并一次性迁移旧 Codex key；项目选择文案改为来源中立（使用 `sourceHome` 而非 `codexHome`）。
 - 新增覆盖后端、浏览器与文档的来源切换及竞态回归测试。
+- 将未包装的 Codex developer message 从 Main timeline 移到 protocol 层，保留 `Possible hook output` tag 与原始可追溯性。
 
 ## 0.1.3 - 2026-08-03
 

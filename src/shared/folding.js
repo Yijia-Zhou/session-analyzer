@@ -33,7 +33,6 @@
     'other_tool_call',
     'web_search',
     'goal',
-    'developer_message',
     'error',
     'warning',
     'abort',
@@ -87,7 +86,6 @@
       kindOrder: [
         'reasoning',
         'hook',
-        'developer_message',
         'review',
         'subagent',
         'agent_coordination',

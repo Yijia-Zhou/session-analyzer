@@ -65,7 +65,7 @@ test('narrative profile collapses ordinary high-frequency tool events', () => {
     assert.equal(folding.displayStateFromRules({ kind, status: 'success', severity: 'normal' }, rules), 'collapsed', kind);
   }
   assert.equal(folding.displayStateFromRules({ kind: 'hook', status: 'completed', severity: 'normal' }, rules), 'summary');
-  assert.equal(folding.displayStateFromRules({ kind: 'developer_message', severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'developer_message', severity: 'normal' }, rules), 'summary');
 });
 
 test('matching condition order does not change the most visible result', () => {
@@ -343,7 +343,7 @@ test('planning profile expands only planning anchors and collapses known non-pla
   assert.equal(folding.displayStateFromRules({ kind: 'proposed_plan', subtype: 'proposed_plan', toolName: '', severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'goal', severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', subtype: 'update_plan', toolName: 'update_plan', severity: 'normal' }, rules), 'expanded');
-  for (const kind of ['user_message', 'assistant_message', 'patch', 'command', 'developer_message', 'review', 'compaction', 'user_shell_command']) {
+  for (const kind of ['user_message', 'assistant_message', 'patch', 'command', 'review', 'compaction', 'user_shell_command']) {
     assert.equal(folding.displayStateFromRules({ kind, severity: 'normal' }, rules), 'collapsed', kind);
   }
   assert.equal(folding.displayStateFromRules({ kind: 'future_event_kind', severity: 'normal' }, rules), 'hidden');
@@ -373,7 +373,7 @@ test('conversation profile keeps plan updates and user input requests expanded',
   assert.equal(folding.displayStateFromRules({ kind: 'compaction', severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'view_image', severity: 'normal' }, rules), 'hidden');
   assert.equal(folding.displayStateFromRules({ kind: 'hook', severity: 'normal' }, rules), 'hidden');
-  assert.equal(folding.displayStateFromRules({ kind: 'developer_message', hasSearchHit: true, severity: 'normal' }, {
+  assert.equal(folding.displayStateFromRules({ kind: 'command', hasSearchHit: true, severity: 'normal' }, {
     kindStates: {},
     fallback: 'hidden',
     conditions: [{ id: 'searchHit', state: 'expanded' }],
