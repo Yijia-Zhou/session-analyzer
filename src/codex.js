@@ -50,6 +50,7 @@ const {
 } = require('./codex-goal');
 const { createCodexLogicalBuilder } = require('./codex-logical');
 const { createCodexSearch } = require('./codex-search');
+const { appendReviewLifecycleMarker, reviewLifecycleFromRaw } = require('./review-lifecycle');
 const {
   CANONICAL_SCHEMA_VERSION,
   CODEX_SOURCE_KIND,
@@ -1290,7 +1291,15 @@ function forkedFromSessionIdFromMeta(payload) {
 }
 
 function parentSessionIdFromMeta(payload) {
-  return subagentSpawnSource(payload)?.parent_thread_id || '';
+  const nestedParent = subagentSpawnSource(payload)?.parent_thread_id || '';
+  if (nestedParent) return nestedParent;
+  // Top-level parent_thread_id is accepted only for sessions whose metadata
+  // already classifies them as review-derived children. A generic
+  // parent_thread_id alone must not visually demote an unknown session.
+  if (derivedSessionKindFromMeta(payload) === 'review') {
+    return payload?.parent_thread_id || '';
+  }
+  return '';
 }
 
 function agentNicknameFromMeta(payload) {
@@ -1335,17 +1344,7 @@ function sessionReviewMarkers(session) {
   if (Array.isArray(session._reviewMarkers)) return session._reviewMarkers;
   const markers = [];
   for (const raw of session.rawEvents || []) {
-    if (raw.recordType !== 'event_msg') continue;
-    if (raw.payloadType === 'entered_review_mode') {
-      markers.push({ enteredAt: raw.timestamp, exitedAt: '' });
-    } else if (raw.payloadType === 'exited_review_mode') {
-      let marker = markers[markers.length - 1];
-      if (!marker || marker.exitedAt) {
-        marker = { enteredAt: '', exitedAt: '' };
-        markers.push(marker);
-      }
-      marker.exitedAt = raw.timestamp;
-    }
+    appendReviewLifecycleMarker(markers, raw, { ownerId: session.id });
   }
   return markers;
 }
@@ -3452,7 +3451,8 @@ function reviewTargetLabel(target) {
 function extractReviewLifecycleSections(event, raws) {
   const sections = [];
   const primary = raws[0];
-  const payload = primary.parsed?.payload || {};
+  const lifecycle = reviewLifecycleFromRaw(primary, { ownerId: primary.sessionId });
+  const payload = lifecycle?.payload || primary.parsed?.payload || {};
   const output = payload.review_output || {};
 
   if (event.subtype === 'entered_review_mode') {
@@ -3502,6 +3502,7 @@ const codexLogicalBuilder = createCodexLogicalBuilder({
     deriveCodeModeFacts,
     projectCodeModeOperations,
   },
+  reviewLifecycle: { reviewLifecycleFromRaw },
   envelope: {
     CANONICAL_SCHEMA_VERSION,
     CODEX_SOURCE_KIND,
@@ -3836,19 +3837,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
       raw.sourceClientVersion = record.version || '';
       if (!session.sourceClientVersion && record.version) session.sourceClientVersion = String(record.version);
       updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
-      if (raw.recordType === 'event_msg' && raw.payloadType === 'entered_review_mode') {
-        session._reviewMarkers.push({
-          enteredAt: raw.timestamp,
-          exitedAt: '',
-        });
-      } else if (raw.recordType === 'event_msg' && raw.payloadType === 'exited_review_mode') {
-        let marker = session._reviewMarkers[session._reviewMarkers.length - 1];
-        if (!marker || marker.exitedAt) {
-          marker = { enteredAt: '', exitedAt: '' };
-          session._reviewMarkers.push(marker);
-        }
-        marker.exitedAt = raw.timestamp;
-      }
+      appendReviewLifecycleMarker(session._reviewMarkers, raw, { ownerId: session.id });
       if (!session.shell && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
         session.shell = readXmlTag(raw.messageText, 'shell');
       }

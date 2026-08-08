@@ -701,6 +701,212 @@ test('buildIndex keeps forked subagent identity separate from embedded parent me
   assert.equal(normalForkTimeline.session.forkedFromSessionTitle, parent.title);
 });
 
+test('buildIndex links canonical review lifecycle children through explicit parent_thread_id', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const parentId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const childId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const dir = path.join(codexHome, 'sessions', '2026', '08', '08');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const parentFile = path.join(dir, `rollout-2026-08-08T07-00-00-${parentId}.jsonl`);
+  const childFile = path.join(dir, `rollout-2026-08-08T07-00-05-${childId}.jsonl`);
+  await fsp.writeFile(parentFile, `${[
+    { timestamp: '2026-08-08T07:00:00.000Z', type: 'session_meta', payload: { id: parentId, cwd: repoRoot } },
+    {
+      timestamp: '2026-08-08T07:00:00.200Z',
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        thread_id: parentId,
+        item: {
+          type: 'EnteredReviewMode',
+          target: { type: 'uncommittedChanges' },
+          user_facing_hint: 'current changes',
+        },
+      },
+    },
+    {
+      timestamp: '2026-08-08T07:30:00.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        thread_id: parentId,
+        item: {
+          type: 'ExitedReviewMode',
+          review_output: {
+            findings: [],
+            overall_correctness: 'patch is correct',
+            overall_explanation: 'Everything checks out.',
+            overall_confidence_score: 0.95,
+          },
+        },
+      },
+    },
+  ].map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+  await fsp.writeFile(childFile, `${[
+    {
+      timestamp: '2026-08-08T07:00:05.000Z',
+      type: 'session_meta',
+      payload: {
+        session_id: parentId,
+        id: childId,
+        parent_thread_id: parentId,
+        cwd: repoRoot,
+        thread_source: 'subagent',
+        source: { subagent: 'review' },
+        model_provider: 'deepseek',
+      },
+    },
+    { timestamp: '2026-08-08T07:00:05.100Z', type: 'event_msg', payload: { type: 'task_started' } },
+  ].map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const parent = index.sessionsById.get(parentId);
+  const child = index.sessionsById.get(childId);
+  assert.ok(parent);
+  assert.ok(child);
+  assert.equal(child.parentSessionId, parentId);
+  assert.equal(child.parentSessionInferred, false);
+  assert.equal(child.primarySessionMetaKind, 'review');
+
+  const reviewStarted = parent.logicalEvents.find((event) => event.kind === 'review' && event.subtype === 'entered_review_mode');
+  const reviewCompleted = parent.logicalEvents.find((event) => event.kind === 'review' && event.subtype === 'exited_review_mode');
+  assert.ok(reviewStarted);
+  assert.ok(reviewCompleted);
+  assert.equal(reviewStarted.layer, 'main');
+  assert.equal(reviewStarted.label, 'Review started');
+  assert.match(reviewStarted.preview, /current changes/);
+  assert.equal(reviewCompleted.label, 'Review completed');
+  assert.match(reviewCompleted.preview, /patch is correct/);
+  assert.equal(parent.logicalEvents.some((event) => event.subtype === 'item_completed'), false);
+
+  const startedDetail = buildEventDetail(parent, reviewStarted.id, 'main');
+  const startedRequest = allSections(startedDetail).find((section) => section.title === 'Review request');
+  assert.ok(startedRequest);
+  assert.ok(startedRequest.entries.some((entry) => entry.key === 'Target' && entry.value === 'Uncommitted changes'));
+  assert.ok(startedRequest.entries.some((entry) => entry.key === 'Hint' && entry.value === 'current changes'));
+  const completedDetail = buildEventDetail(parent, reviewCompleted.id, 'main');
+  const completedResult = allSections(completedDetail).find((section) => section.title === 'Review result');
+  assert.ok(completedResult);
+  assert.ok(completedResult.entries.some((entry) => entry.key === 'Correctness' && entry.value === 'patch is correct'));
+  assert.ok(allSections(completedDetail).some((section) => section.title === 'Findings'));
+
+  const summaries = filterSessions(index, { q: '', sort: 'updated-desc', layer: 'main' }).sessions;
+  const childSummary = summaries.find((session) => session.id === childId);
+  assert.equal(childSummary.parentSessionId, parentId);
+  assert.equal(childSummary.parentSessionInferred, false);
+  assert.equal(childSummary.isDerivedSession, true);
+  assert.equal(childSummary.derivedKind, 'review');
+
+  const second = await buildIndex({ repoRoot, codexHome, previousIndex: index });
+  assert.ok(second.totals.reusedFileCount >= 2);
+  const reusedChild = second.sessionsById.get(childId);
+  const reusedParent = second.sessionsById.get(parentId);
+  assert.equal(reusedChild.parentSessionId, parentId);
+  assert.equal(reusedChild.parentSessionInferred, false);
+  assert.ok(reusedParent.logicalEvents.some((event) => event.kind === 'review' && event.subtype === 'entered_review_mode'));
+  assert.ok(reusedParent.logicalEvents.some((event) => event.kind === 'review' && event.subtype === 'exited_review_mode'));
+});
+
+test('buildIndex prefers an explicit review parent over temporal inference', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const markerParentId = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+  const explicitParentId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+  const childId = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+  const dir = path.join(codexHome, 'sessions', '2026', '08', '08');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const markerParentFile = path.join(dir, `rollout-2026-08-08T08-00-00-${markerParentId}.jsonl`);
+  const explicitParentFile = path.join(dir, `rollout-2026-08-08T08-00-01-${explicitParentId}.jsonl`);
+  const childFile = path.join(dir, `rollout-2026-08-08T08-00-02-${childId}.jsonl`);
+  await fsp.writeFile(markerParentFile, `${[
+    { timestamp: '2026-08-08T08:00:00.000Z', type: 'session_meta', payload: { id: markerParentId, cwd: repoRoot } },
+    { timestamp: '2026-08-08T08:00:00.100Z', type: 'event_msg', payload: { type: 'entered_review_mode', target: { type: 'uncommittedChanges' } } },
+    { timestamp: '2026-08-08T08:30:00.000Z', type: 'event_msg', payload: { type: 'exited_review_mode', review_output: { findings: [] } } },
+  ].map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+  await fsp.writeFile(explicitParentFile, `${JSON.stringify({
+    timestamp: '2026-08-08T08:00:01.000Z',
+    type: 'session_meta',
+    payload: { id: explicitParentId, cwd: repoRoot },
+  })}\n`, 'utf8');
+  await fsp.writeFile(childFile, `${JSON.stringify({
+    timestamp: '2026-08-08T08:00:02.000Z',
+    type: 'session_meta',
+    payload: {
+      session_id: explicitParentId,
+      id: childId,
+      parent_thread_id: explicitParentId,
+      cwd: repoRoot,
+      thread_source: 'subagent',
+      source: { subagent: 'review' },
+    },
+  })}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const child = index.sessionsById.get(childId);
+  assert.ok(child);
+  assert.equal(child.parentSessionId, explicitParentId);
+  assert.equal(child.parentSessionInferred, false);
+});
+
+test('buildIndex does not demote a session from a generic top-level parent_thread_id', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+  const dir = path.join(codexHome, 'sessions', '2026', '08', '08');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const file = path.join(dir, `rollout-2026-08-08T09-30-00-${id}.jsonl`);
+  await fsp.writeFile(file, `${JSON.stringify({
+    timestamp: '2026-08-08T09:30:00.000Z',
+    type: 'session_meta',
+    payload: {
+      id,
+      cwd: repoRoot,
+      parent_thread_id: '00000000-0000-0000-0000-000000000000',
+      thread_source: 'user',
+      source: 'cli',
+    },
+  })}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  assert.equal(session.parentSessionId, '');
+  assert.equal(session.parentSessionInferred, false);
+  assert.equal(session.primarySessionMetaKind, '');
+});
+
+test('buildIndex keeps an explicit review parent id even when the parent is not indexed', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const childId = '11111111-2222-3333-4444-555555555555';
+  const missingParentId = '99999999-9999-9999-9999-999999999999';
+  const dir = path.join(codexHome, 'sessions', '2026', '08', '08');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const childFile = path.join(dir, `rollout-2026-08-08T09-00-00-${childId}.jsonl`);
+  await fsp.writeFile(childFile, `${JSON.stringify({
+    timestamp: '2026-08-08T09:00:00.000Z',
+    type: 'session_meta',
+    payload: {
+      session_id: missingParentId,
+      id: childId,
+      parent_thread_id: missingParentId,
+      cwd: repoRoot,
+      thread_source: 'subagent',
+      source: { subagent: 'review' },
+    },
+  })}\n`, 'utf8');
+
+  const index = await buildIndex({ repoRoot, codexHome });
+  const child = index.sessionsById.get(childId);
+  assert.ok(child);
+  assert.equal(child.parentSessionId, missingParentId);
+  assert.equal(child.parentSessionInferred, false);
+});
+
 test('buildIndex correlates subagent activity only to a same-session coordination owner', async (t) => {
   const codexHome = await makeTempCodexHome(t);
   const fixtureRepoRoot = path.join(codexHome, 'repo');

@@ -8,6 +8,8 @@
 - Added per-source last-selected repository storage with a one-time migration of the legacy Codex key, and made project-selection copy source-neutral (`sourceHome` instead of `codexHome`).
 - Added source-switch and race-regression coverage across backend, browser, and documentation.
 - Moved unwrapped Codex developer messages from the Main timeline to the protocol layer, keeping their `Possible hook output` tag and raw traceability.
+- Normalized Codex review lifecycle from both the legacy dedicated `entered_review_mode` / `exited_review_mode` rows and the canonical completed `item_completed` TurnItem envelope (`EnteredReviewMode` / `ExitedReviewMode`), restoring Main timeline review start/end events and structured review detail for current transcripts.
+- Review-derived sessions now accept the top-level `parent_thread_id` as explicit parent evidence before temporal inference, so review children group under the correct parent even when parent lifecycle markers use the canonical envelope.
 
 ### 中文
 
@@ -15,6 +17,8 @@
 - 新增按来源区分的“最后选择的仓库”存储，并一次性迁移旧 Codex key；项目选择文案改为来源中立（使用 `sourceHome` 而非 `codexHome`）。
 - 新增覆盖后端、浏览器与文档的来源切换及竞态回归测试。
 - 将未包装的 Codex developer message 从 Main timeline 移到 protocol 层，保留 `Possible hook output` tag 与原始可追溯性。
+- 统一归一化 Codex review 生命周期：旧专用 `entered_review_mode` / `exited_review_mode` 记录与 canonical 的 `item_completed` TurnItem envelope（`EnteredReviewMode` / `ExitedReviewMode`）现在映射为相同的 review 事件，恢复父会话 Main timeline 的 Review 开始/结束与结构化详情。
+- 被判定为 review 的子会话现在会在时间推断之前接受顶层 `parent_thread_id` 作为显式父会话证据，即使父会话生命周期标记使用 canonical envelope，也能正确归组到父会话下。
 
 ## 0.1.3 - 2026-08-03
 
