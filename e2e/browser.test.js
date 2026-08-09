@@ -1957,8 +1957,10 @@ test('browser last-selected repo is scoped per source and migrates legacy Codex 
   assert.equal(migrated.codex, repoRoot);
   assert.equal(migrated.claude, null);
 
+  await page.evaluate(() => localStorage.setItem('sessionAnalyzer.repoRoot', 'stale-legacy-repo'));
   await page.locator('#projectSwitchControl').click();
   await page.waitForFunction(() => document.body.dataset.projectMode === 'selecting');
+  await page.waitForFunction(() => localStorage.getItem('sessionAnalyzer.repoRoot') === null);
   await page.locator('#projectSourceAction').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
   await waitForProjectRoot(page, fixture.claudeRepo);
@@ -1969,9 +1971,16 @@ test('browser last-selected repo is scoped per source and migrates legacy Codex 
 
 test('browser home directory edits preserve or drop Return by active identity', async (t) => {
   const fixture = await makeClaudeSwitchFixture(t);
+  let sourcePosts = 0;
   const { page } = await openSourceSwitchChooser(t, {
     server: { claudeHome: fixture.claudeHome },
     localStorage: { 'sessionAnalyzer.repoRoot.codex': repoRoot },
+    beforeGoto: async (p) => {
+      p.on('request', (request) => {
+        const url = new URL(request.url());
+        if (url.pathname === '/api/source' && request.method() === 'POST') sourcePosts += 1;
+      });
+    },
   });
 
   await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
@@ -1990,6 +1999,13 @@ test('browser home directory edits preserve or drop Return by active identity', 
   await page.locator('#projectHomeApplyBtn').click();
   await page.waitForFunction(() => document.querySelector('#projectSourceConfirm')?.hidden === false);
   assert.match(await page.locator('#projectSourceConfirm').textContent(), /current project/);
+  const sourcePostsBeforeConfirm = sourcePosts;
+  await page.locator('#projectCodexHomeInput').fill('relative-codex-home');
+  await page.locator('#projectSourceAction').click();
+  await page.waitForFunction(() => document.querySelector('#projectSourceError')?.textContent.includes('Home paths must be absolute'));
+  assert.equal(sourcePosts, sourcePostsBeforeConfirm);
+
+  await page.locator('#projectCodexHomeInput').fill(emptyCodexHome);
   await page.locator('#projectSourceAction').click();
   await page.waitForFunction(() => document.querySelector('.projectSwitchHint')?.textContent === 'Select project');
   await page.waitForFunction(() => document.querySelectorAll('.projectItem').length === 0);
@@ -2041,6 +2057,167 @@ test('browser re-enables source controls and reconciles discovery after a failed
   await waitForProjectRoot(page, repoRoot);
   assert.ok(fullCalls >= 2, 'failed source commit should start a successor discovery');
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Codex/);
+});
+
+test('browser reconciles lost source mutation responses against authoritative state', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  let sourcePosts = 0;
+  const { page } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: path.join(fixture.claudeHome, 'unused') },
+    localStorage: { 'sessionAnalyzer.repoRoot.codex': repoRoot },
+    beforeGoto: async (p) => {
+      await p.route('**/api/source', async (route) => {
+        sourcePosts += 1;
+        const response = await route.fetch();
+        assert.equal(response.status(), 200);
+        await route.abort('connectionreset');
+      });
+    },
+  });
+
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
+  await page.locator('#projectSwitchControl').click();
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'selecting');
+  await page.locator('#projectHomeEditor summary').click();
+
+  await page.locator('#projectClaudeHomeInput').fill(fixture.claudeHome);
+  const inactiveHomeDiscovery = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/projects' && !url.searchParams.has('summary') && response.status() === 200;
+  });
+  await page.locator('#projectHomeApplyBtn').click();
+  await inactiveHomeDiscovery;
+  assert.equal(sourcePosts, 1);
+  assert.equal(await page.locator('.projectSwitchHint').textContent(), 'Return');
+  assert.equal(await page.locator('#projectSourceError').textContent(), '');
+
+  await page.locator('#projectSourceAction').click();
+  await confirmSourceAction(page, 'Confirm switch to Claude Code');
+  await waitForProjectRoot(page, fixture.claudeRepo);
+  assert.equal(sourcePosts, 2);
+  assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Claude Code/);
+  assert.equal(await page.locator('.projectSwitchHint').textContent(), 'Select project');
+  assert.equal(await page.locator('#projectSourceError').textContent(), '');
+});
+
+test('browser locks Return, project selection, and home inputs while a source mutation is in flight', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  let releaseSourcePost;
+  const sourcePostGate = new Promise((resolve) => {
+    releaseSourcePost = resolve;
+  });
+  let markSourcePostStarted;
+  const sourcePostStarted = new Promise((resolve) => {
+    markSourcePostStarted = resolve;
+  });
+  let projectPosts = 0;
+  let stateRequests = 0;
+  const { page } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: fixture.claudeHome },
+    localStorage: { 'sessionAnalyzer.repoRoot.codex': repoRoot },
+    beforeGoto: async (p) => {
+      p.on('request', (request) => {
+        const url = new URL(request.url());
+        if (url.pathname === '/api/project' && request.method() === 'POST') projectPosts += 1;
+        if (url.pathname === '/api/state' && request.method() === 'GET') stateRequests += 1;
+      });
+      await p.route('**/api/source', async (route) => {
+        markSourcePostStarted();
+        await sourcePostGate;
+        await route.continue();
+      });
+    },
+  });
+  t.after(() => releaseSourcePost());
+
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
+  await page.locator('#projectSwitchControl').click();
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'selecting');
+  await waitForProjectRoot(page, repoRoot);
+  await page.locator('#projectSourceAction').click();
+  await confirmSourceAction(page, 'Confirm switch to Claude Code');
+  await sourcePostStarted;
+
+  const projectPostsBeforeSyntheticClicks = projectPosts;
+  const stateRequestsBeforeSyntheticClicks = stateRequests;
+  const projectRows = page.locator('.projectItem[data-project-root]');
+  const projectRowCount = await projectRows.count();
+  assert.ok(projectRowCount > 0);
+  assert.equal(await page.locator('.projectItem[data-project-root]:disabled').count(), projectRowCount);
+  assert.equal(await page.locator('#projectSwitchControl').isDisabled(), true);
+  assert.equal(await page.locator('#projectCodexHomeInput').isDisabled(), true);
+  assert.equal(await page.locator('#projectClaudeHomeInput').isDisabled(), true);
+  await projectRows.first().dispatchEvent('click');
+  await page.locator('#projectSwitchControl').dispatchEvent('click');
+  const lateClaudeDraft = path.join(fixture.claudeHome, 'late-unsent-draft');
+  await page.locator('#projectClaudeHomeInput').evaluate((input, value) => {
+    input.disabled = false;
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }, lateClaudeDraft);
+  await page.waitForTimeout(50);
+  assert.equal(projectPosts, projectPostsBeforeSyntheticClicks);
+  assert.equal(stateRequests, stateRequestsBeforeSyntheticClicks);
+  assert.equal(await page.locator('body').getAttribute('data-project-mode'), 'selecting');
+
+  releaseSourcePost();
+  await waitForProjectRoot(page, fixture.claudeRepo);
+  assert.equal(await page.locator('.projectItem:disabled').count(), 0);
+  assert.equal(await page.locator('#projectSwitchControl').isDisabled(), false);
+  assert.equal(await page.locator('#projectClaudeHomeInput').inputValue(), lateClaudeDraft);
+});
+
+test('browser ignores a non-409 failure from invalidated project discovery', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  let releaseObsoleteFull;
+  const obsoleteFullGate = new Promise((resolve) => {
+    releaseObsoleteFull = resolve;
+  });
+  let markObsoleteFullStarted;
+  const obsoleteFullStarted = new Promise((resolve) => {
+    markObsoleteFullStarted = resolve;
+  });
+  let markObsoleteFullSettled;
+  const obsoleteFullSettled = new Promise((resolve) => {
+    markObsoleteFullSettled = resolve;
+  });
+  let fullCalls = 0;
+  const { page } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: fixture.claudeHome },
+    beforeGoto: async (p) => {
+      await p.route('**/api/projects*', async (route) => {
+        const url = new URL(route.request().url());
+        if (url.searchParams.get('summary') === '1') {
+          await route.continue();
+          return;
+        }
+        fullCalls += 1;
+        if (fullCalls === 1) {
+          markObsoleteFullStarted();
+          await obsoleteFullGate;
+          await route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"obsolete discovery failure"}' });
+          markObsoleteFullSettled();
+          return;
+        }
+        await route.continue();
+      });
+    },
+  });
+  t.after(() => releaseObsoleteFull());
+
+  await obsoleteFullStarted;
+  await page.locator('#projectSourceAction').click();
+  await confirmSourceAction(page, 'Confirm switch to Claude Code');
+  await waitForProjectRoot(page, fixture.claudeRepo);
+  const successorStatus = await page.locator('#projectStatus').textContent();
+
+  releaseObsoleteFull();
+  await obsoleteFullSettled;
+  await page.waitForTimeout(100);
+  assert.ok(fullCalls >= 2, 'source switch should start a successor discovery');
+  assert.equal(await page.locator('#projectStatus').textContent(), successorStatus);
+  assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Claude Code/);
+  await waitForProjectRoot(page, fixture.claudeRepo);
 });
 
 test('browser keeps home-directory edits while project discovery settles', async (t) => {
@@ -2112,6 +2289,45 @@ test('browser skips home-change confirmation for path-equivalent inputs', async 
   await page.waitForFunction((value) => document.querySelector('#projectCodexHomeInput')?.value === value, fixtureCodexHome);
   assert.equal(await page.locator('#projectSourceConfirm').isHidden(), true);
   assert.equal(await page.locator('.projectSwitchHint').textContent(), 'Return');
+});
+
+test('browser treats backslashes as literal characters in POSIX home paths', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  let sourcePosts = 0;
+  const posixCodexHome = '/home/me/.codex';
+  const { page } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: fixture.claudeHome },
+    localStorage: { 'sessionAnalyzer.repoRoot.codex': repoRoot },
+    beforeGoto: async (p) => {
+      await p.route('**/api/projects*', async (route) => {
+        const response = await route.fetch();
+        const data = await response.json();
+        Object.assign(data, {
+          sourceKind: 'codex',
+          sourceHome: posixCodexHome,
+          codexHome: posixCodexHome,
+          claudeHome: '/home/me/.claude',
+        });
+        await route.fulfill({ response, json: data });
+      });
+      await p.route('**/api/source', async (route) => {
+        sourcePosts += 1;
+        await route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"unexpected source mutation"}' });
+      });
+    },
+  });
+
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
+  await page.locator('#projectSwitchControl').click();
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'selecting');
+  await page.waitForFunction((value) => document.querySelector('#projectCodexHomeInput')?.value === value, posixCodexHome);
+  await page.locator('#projectHomeEditor summary').click();
+  await page.locator('#projectCodexHomeInput').fill(`${posixCodexHome}\\`);
+  await page.locator('#projectHomeApplyBtn').click();
+
+  assert.equal(await page.locator('#projectSourceConfirm').isHidden(), false);
+  assert.match(await page.locator('#projectSourceConfirm').textContent(), /current project/);
+  assert.equal(sourcePosts, 0);
 });
 
 test('browser source switch carries unapplied home-directory edits', async (t) => {
@@ -2206,7 +2422,7 @@ test('browser applies source config from a 202 indexing-job state', async (t) =>
   await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
 });
 
-test('browser keeps discovery alive when source confirmation fails home validation', async (t) => {
+test('browser keeps discovery alive when source confirmation fails empty or relative home validation', async (t) => {
   let releaseFirstFull;
   const firstFullGate = new Promise((resolve) => {
     releaseFirstFull = resolve;
@@ -2240,6 +2456,12 @@ test('browser keeps discovery alive when source confirmation fails home validati
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
   await page.waitForFunction(() => document.querySelector('#projectSourceError')?.textContent.includes('Home paths must not be empty'));
   assert.equal(sourcePosts, 0);
+
+  await page.locator('#projectClaudeHomeInput').fill('relative-claude-home');
+  await page.locator('#projectSourceAction').click();
+  await page.waitForFunction(() => document.querySelector('#projectSourceError')?.textContent.includes('Home paths must be absolute'));
+  assert.equal(sourcePosts, 0);
+
   releaseFirstFull();
   await waitForProjectRoot(page, repoRoot);
   assert.equal(sourcePosts, 0);

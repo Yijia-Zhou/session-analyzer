@@ -519,6 +519,7 @@ function renderSourceSwitch() {
   const hasConfig = Boolean(state.sourceHome || state.supportedSources.length);
   el.projectSourceSwitch.hidden = !state.selectingProject || !hasConfig;
   if (el.projectSourceSwitch.hidden) return;
+  const configBusy = sourceConfigBusy();
   el.projectSourceSwitch.dataset.source = state.sourceKind;
   el.projectSourceSwitch.dataset.pending = state.pendingSourceAction || '';
   const other = otherSourceKind();
@@ -544,7 +545,7 @@ function renderSourceSwitch() {
       : state.pendingSourceAction === 'home'
         ? t('confirmHomeChange')
         : t('switchToSource', { source: otherLabel });
-    el.projectSourceAction.disabled = sourceConfigBusy();
+    el.projectSourceAction.disabled = configBusy;
   }
   if (el.projectSourceCancel) el.projectSourceCancel.hidden = !state.pendingSourceAction;
   if (el.projectSourceConfirm) {
@@ -557,23 +558,97 @@ function renderSourceSwitch() {
     el.projectSourceConfirm.hidden = !confirmText;
   }
   const preserveHomeInputs = state.pendingSourceAction === 'home' || state.homeEditorDirty;
-  if (el.projectCodexHomeInput && !preserveHomeInputs && document.activeElement !== el.projectCodexHomeInput) {
-    el.projectCodexHomeInput.value = state.codexHome;
+  if (el.projectCodexHomeInput) {
+    el.projectCodexHomeInput.disabled = configBusy;
+    if (!preserveHomeInputs && document.activeElement !== el.projectCodexHomeInput) {
+      el.projectCodexHomeInput.value = state.codexHome;
+    }
   }
-  if (el.projectClaudeHomeInput && !preserveHomeInputs && document.activeElement !== el.projectClaudeHomeInput) {
-    el.projectClaudeHomeInput.value = state.claudeHome;
+  if (el.projectClaudeHomeInput) {
+    el.projectClaudeHomeInput.disabled = configBusy;
+    if (!preserveHomeInputs && document.activeElement !== el.projectClaudeHomeInput) {
+      el.projectClaudeHomeInput.value = state.claudeHome;
+    }
   }
-  if (el.projectHomeApplyBtn) el.projectHomeApplyBtn.disabled = sourceConfigBusy();
+  if (el.projectHomeApplyBtn) el.projectHomeApplyBtn.disabled = configBusy;
 }
 
 function clearSourceError() {
   if (el.projectSourceError) el.projectSourceError.textContent = '';
 }
 
+function clearSubmittedHomeDraft(homes) {
+  if (!homes) return;
+  const codexHome = el.projectCodexHomeInput?.value.trim() || '';
+  const claudeHome = el.projectClaudeHomeInput?.value.trim() || '';
+  if (codexHome === homes.codexHome && claudeHome === homes.claudeHome) {
+    state.homeEditorDirty = false;
+  }
+}
+
+function validateHomePaths(codexHome, claudeHome) {
+  let errorKey = '';
+  if (!codexHome || !claudeHome) {
+    errorKey = 'homePathsRequired';
+  } else {
+    const serverPathKind = absoluteHomePathKind(state.sourceHome)
+      || absoluteHomePathKind(state.codexHome)
+      || absoluteHomePathKind(state.claudeHome);
+    if (!serverPathKind
+        || absoluteHomePathKind(codexHome) !== serverPathKind
+        || absoluteHomePathKind(claudeHome) !== serverPathKind) {
+      errorKey = 'homePathsAbsolute';
+    }
+  }
+  if (!errorKey) return true;
+  if (el.projectSourceError) el.projectSourceError.textContent = t(errorKey);
+  renderSourceSwitch();
+  return false;
+}
+
+function sourceConfigMatchesMutation(payload, source, homes) {
+  if (payload?.sourceKind !== source) return false;
+  if (!homes) return true;
+  return normalizeHomePathForCompare(payload.codexHome) === normalizeHomePathForCompare(homes.codexHome)
+    && normalizeHomePathForCompare(payload.claudeHome) === normalizeHomePathForCompare(homes.claudeHome);
+}
+
+function applyAuthoritativeSourceMutationState(payload) {
+  const selectedState = payload?.currentState?.projectSelected ? payload.currentState : null;
+  const result = selectedState
+    ? { ...payload, projectSelected: true, repoRoot: selectedState.repoRoot }
+    : payload;
+  applySourceConfig(result);
+  if (result?.projectSelected === false) {
+    resetReturnableProject();
+    state.projects = [];
+    resetProjectViewState();
+    updateProjectChrome({ displayRoot: '', returnRoot: '' });
+    renderProjects();
+  } else if (result?.projectSelected === true && result.repoRoot) {
+    state.repoRoot = result.repoRoot;
+    updateProjectChrome({ displayRoot: '', returnRoot: state.repoRoot });
+  }
+  return result;
+}
+
+async function reconcileUncertainSourceMutation(source, homes) {
+  let authoritative;
+  try {
+    authoritative = await api('/api/state');
+  } catch (error) {
+    if (error.status !== 409 || !error.details) throw error;
+    authoritative = error.details;
+  }
+  const result = applyAuthoritativeSourceMutationState(authoritative);
+  return sourceConfigMatchesMutation(result, source, homes) ? result : null;
+}
+
 async function commitSourceConfig(source, homes = null) {
   state.sourceSwitchBusy = true;
   clearSourceError();
-  renderSourceSwitch();
+  renderProjects();
+  updateProjectChrome();
   try {
     const body = { source };
     if (homes) {
@@ -584,13 +659,22 @@ async function commitSourceConfig(source, homes = null) {
     applySourceConfig(result);
     return result;
   } catch (error) {
+    if (typeof error.status !== 'number') {
+      try {
+        const reconciled = await reconcileUncertainSourceMutation(source, homes);
+        if (reconciled) return reconciled;
+      } catch (reconciliationError) {
+        console.warn('Unable to reconcile uncertain source mutation', reconciliationError);
+      }
+    }
     if (el.projectSourceError) {
       el.projectSourceError.textContent = t('sourceSwitchFailed', { message: error.message || String(error) });
     }
     throw error;
   } finally {
     state.sourceSwitchBusy = false;
-    renderSourceSwitch();
+    renderProjects();
+    updateProjectChrome();
   }
 }
 
@@ -632,11 +716,10 @@ async function refreshProjectList() {
   try {
     data = await api('/api/projects');
   } catch (error) {
+    if (!isActiveProjectChooserRequest(requestId)) return false;
     if (error.status === 409) {
-      if (isActiveProjectChooserRequest(requestId)) {
-        clearProjectDiscoveryLoading(requestId);
-        renderProjects();
-      }
+      clearProjectDiscoveryLoading(requestId);
+      renderProjects();
       return false;
     }
     clearProjectDiscoveryLoading(requestId);
@@ -666,11 +749,7 @@ async function performPendingSourceAction() {
         claudeHome: el.projectClaudeHomeInput?.value.trim() || '',
       }
       : null;
-    if (homes && (!homes.codexHome || !homes.claudeHome)) {
-      if (el.projectSourceError) el.projectSourceError.textContent = t('homePathsRequired');
-      renderSourceSwitch();
-      return;
-    }
+    if (homes && !validateHomePaths(homes.codexHome, homes.claudeHome)) return;
     invalidateProjectDiscovery();
     state.pendingSourceAction = null;
     let result;
@@ -684,7 +763,7 @@ async function performPendingSourceAction() {
       }
       throw error;
     }
-    state.homeEditorDirty = false;
+    clearSubmittedHomeDraft(homes);
     if (result.projectSelected === false) {
       resetReturnableProject();
       state.projects = [];
@@ -699,14 +778,16 @@ async function performPendingSourceAction() {
   if (state.pendingSourceAction === 'home') {
     const codexHome = el.projectCodexHomeInput?.value.trim() || '';
     const claudeHome = el.projectClaudeHomeInput?.value.trim() || '';
+    if (!validateHomePaths(codexHome, claudeHome)) return;
     await performHomeChange(codexHome, claudeHome);
   }
 }
 
 async function performHomeChange(codexHome, claudeHome) {
   state.pendingSourceAction = null;
-  const result = await commitSourceConfig(state.sourceKind, { codexHome, claudeHome });
-  state.homeEditorDirty = false;
+  const homes = { codexHome, claudeHome };
+  const result = await commitSourceConfig(state.sourceKind, homes);
+  clearSubmittedHomeDraft(homes);
   if (result.projectSelected === false) {
     resetReturnableProject();
     state.projects = [];
@@ -731,10 +812,7 @@ function armSourceSwitch() {
 function armHomeChange() {
   const codexHome = el.projectCodexHomeInput?.value.trim() || '';
   const claudeHome = el.projectClaudeHomeInput?.value.trim() || '';
-  if (!codexHome || !claudeHome) {
-    if (el.projectSourceError) el.projectSourceError.textContent = t('homePathsRequired');
-    return;
-  }
+  if (!validateHomePaths(codexHome, claudeHome)) return;
   const activeHomeInput = state.sourceKind === 'claude-code' ? claudeHome : codexHome;
   const activeHomeChanged = normalizeHomePathForCompare(activeHomeInput) !== normalizeHomePathForCompare(state.sourceHome);
   if (!activeHomeChanged || !state.repoRoot) {
@@ -764,9 +842,7 @@ function updateProjectSwitchControl(options = {}) {
       : (canReturn ? t('return') : (displayRoot ? t('changeProject') : t('selectProjectAction')));
   }
   if (!el.projectSwitchControl) return;
-  el.projectSwitchControl.disabled = state.projectReturning || Boolean(
-    state.projectLoadingRoot || state.projectJobId || state.projectRefreshing || state.projectRefreshJobId,
-  );
+  el.projectSwitchControl.disabled = sourceConfigBusy();
   el.projectSwitchControl.setAttribute('aria-controls', 'projectChooser');
   el.projectSwitchControl.setAttribute('aria-expanded', state.selectingProject ? 'true' : 'false');
   if (state.projectReturning && returnRoot) {
@@ -2309,9 +2385,12 @@ function repoStorageKey(sourceKind) {
 
 function readLastSelectedRepo(sourceKind) {
   const namespaced = localStorage.getItem(repoStorageKey(sourceKind));
-  if (namespaced) return namespaced;
-  if (sourceKind !== 'codex') return '';
+  if (sourceKind !== 'codex') return namespaced || '';
   const legacy = localStorage.getItem(LEGACY_REPO_STORAGE_KEY);
+  if (namespaced) {
+    if (legacy !== null) localStorage.removeItem(LEGACY_REPO_STORAGE_KEY);
+    return namespaced;
+  }
   if (legacy) {
     localStorage.setItem(repoStorageKey('codex'), legacy);
     localStorage.removeItem(LEGACY_REPO_STORAGE_KEY);
@@ -2341,13 +2420,20 @@ function otherSourceKind() {
   return supported.find((kind) => kind !== state.sourceKind) || (state.sourceKind === 'codex' ? 'claude-code' : 'codex');
 }
 
+function absoluteHomePathKind(value) {
+  const text = String(value || '').trim();
+  if (/^(?:[A-Za-z]:[\\/]|\\\\)/.test(text)) return 'win32';
+  if (text.startsWith('/')) return 'posix';
+  return '';
+}
+
 function normalizeHomePathForCompare(value) {
   const text = String(value || '').trim();
   if (!text) return '';
-  const win32 = /^(?:[A-Za-z]:[\\/]|\\\\)/.test(text);
-  const posix = !win32 && text.startsWith('/');
-  if (!win32 && !posix) return text;
-  const parts = text.split(/[\\/]+/).filter(Boolean);
+  const pathKind = absoluteHomePathKind(text);
+  const win32 = pathKind === 'win32';
+  if (!pathKind) return text;
+  const parts = text.split(win32 ? /[\\/]+/ : /\/+/).filter(Boolean);
   let root;
   if (win32) {
     if (/^\\\\/.test(text)) {
@@ -3291,7 +3377,8 @@ function resetProjectViewState() {
 function renderProjects() {
   if (!el.projectList) return;
   const loadingRoot = state.projectLoadingRoot;
-  el.projectList.setAttribute('aria-busy', loadingRoot ? 'true' : 'false');
+  const selectionLocked = Boolean(loadingRoot || state.sourceSwitchBusy);
+  el.projectList.setAttribute('aria-busy', selectionLocked ? 'true' : 'false');
   if (el.projectChooser) el.projectChooser.dataset.loading = loadingRoot ? 'true' : 'false';
   if (!state.projects.length) {
     el.projectList.innerHTML = (loadingRoot || state.projectDiscoveryLoading)
@@ -3320,7 +3407,7 @@ function renderProjects() {
     const facts = statsPending
       ? `<span>${escapeHtml(t('activityLoading'))}</span>`
       : `<span>${escapeHtml(t('sessionCount', { count: sessionCount }))}</span><span>${escapeHtml(project.updatedAt ? fmtDate(project.updatedAt) : t('noTranscriptActivity'))}</span>`;
-    return `<button class="${classes}" type="button" data-project-root="${escapeHtml(project.repoRoot)}"${loadingRoot ? ' disabled' : ''}>
+    return `<button class="${classes}" type="button" data-project-root="${escapeHtml(project.repoRoot)}"${selectionLocked ? ' disabled' : ''}>
       <span class="projectMain">
         <span class="projectName">${escapeHtml(projectName(project.repoRoot))}${badges}</span>
         <span class="projectPath">${escapeHtml(project.repoRoot)}</span>
@@ -3541,7 +3628,7 @@ function scheduleProjectJobPoll(jobId, options = {}) {
 }
 
 async function selectProject(repoRoot, options = {}) {
-  if (!repoRoot) return;
+  if (!repoRoot || sourceConfigBusy()) return;
   const requestId = state.projectChooserRequestId + 1;
   state.projectChooserRequestId = requestId;
   state.projectReturning = false;
@@ -6036,7 +6123,7 @@ el.projectList?.addEventListener('click', (event) => {
 });
 
 el.projectSwitchControl?.addEventListener('click', () => {
-  if (state.projectLoadingRoot || state.projectJobId || state.projectRefreshJobId || state.projectRefreshing) return;
+  if (sourceConfigBusy()) return;
   const action = state.selectingProject && state.repoRoot ? exitProjectChooser : showProjectChooser;
   action({ autoRestore: false }).catch(showError);
 });
