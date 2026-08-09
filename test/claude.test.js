@@ -825,9 +825,74 @@ test('Claude projects background, async Agent, and planning records into source-
   const container = path.join(claudeHome, 'projects', '-semantic-lifecycle');
   const sessionId = '81818181-8181-4181-8181-818181818181';
   await fsp.mkdir(repoRoot, { recursive: true });
+  const records = await readFixtureJsonl('semantic-lifecycle.jsonl', repoRoot);
+  const surrogateRequestPlan = `# Surrogate plan\n\n${String.fromCharCode(0xd800)}`;
+  const surrogateResultPlan = `# Surrogate plan\n\n${String.fromCharCode(0xd801)}`;
+  records.push(
+    assistantRecord(sessionId, repoRoot, {
+      uuid: 'semantic-redacted-plan-call',
+      parentUuid: 'semantic-away-summary',
+      timestamp: '2026-08-03T09:00:20.000Z',
+      message: {
+        id: 'semantic-redacted-plan-message',
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'call-exit-plan-redacted-mismatch',
+          name: 'ExitPlanMode',
+          input: { plan: '# Redacted plan\n\nPayload: data:image/png;base64,QUFBQQ==' },
+        }],
+      },
+    }),
+    userRecord(sessionId, repoRoot, {
+      uuid: 'semantic-redacted-plan-result',
+      parentUuid: 'semantic-redacted-plan-call',
+      timestamp: '2026-08-03T09:00:21.000Z',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'call-exit-plan-redacted-mismatch',
+          content: 'Returned a different source plan.',
+          is_error: false,
+        }],
+      },
+      toolUseResult: { plan: '# Redacted plan\n\nPayload: data:image/png;base64,QkJCQg==' },
+    }),
+    assistantRecord(sessionId, repoRoot, {
+      uuid: 'semantic-surrogate-plan-call',
+      parentUuid: 'semantic-redacted-plan-result',
+      timestamp: '2026-08-03T09:00:22.000Z',
+      message: {
+        id: 'semantic-surrogate-plan-message',
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'call-exit-plan-surrogate-mismatch',
+          name: 'ExitPlanMode',
+          input: { plan: surrogateRequestPlan },
+        }],
+      },
+    }),
+    userRecord(sessionId, repoRoot, {
+      uuid: 'semantic-surrogate-plan-result',
+      parentUuid: 'semantic-surrogate-plan-call',
+      timestamp: '2026-08-03T09:00:23.000Z',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'call-exit-plan-surrogate-mismatch',
+          content: 'Returned a plan with a different UTF-16 code unit.',
+          is_error: false,
+        }],
+      },
+      toolUseResult: { plan: surrogateResultPlan },
+    }),
+  );
   await writeJsonl(
     path.join(container, `${sessionId}.jsonl`),
-    await readFixtureJsonl('semantic-lifecycle.jsonl', repoRoot),
+    records,
   );
 
   const index = await buildClaudeIndex({ repoRoot, claudeHome });
@@ -836,6 +901,12 @@ test('Claude projects background, async Agent, and planning records into source-
   const agent = session.logicalEvents.find((event) => event.callId === 'call-agent');
   const plan = session.logicalEvents.find((event) => event.callId === 'call-exit-plan');
   const unconfirmedPlan = session.logicalEvents.find((event) => event.callId === 'call-exit-plan-noecho');
+  const redactedMismatch = session.logicalEvents.find((event) => (
+    event.callId === 'call-exit-plan-redacted-mismatch'
+  ));
+  const surrogateMismatch = session.logicalEvents.find((event) => (
+    event.callId === 'call-exit-plan-surrogate-mismatch'
+  ));
   const taskEvents = session.logicalEvents.filter((event) => (
     ['call-task-create', 'call-task-update'].includes(event.callId)
   ));
@@ -883,6 +954,24 @@ test('Claude projects background, async Agent, and planning records into source-
   assert.equal(unconfirmedPlan.kind, 'other_tool_call');
   assert.equal(unconfirmedPlan.toolName, 'ExitPlanMode');
   assert.equal(unconfirmedPlan.rawRefs.length, 3);
+  assert.equal(redactedMismatch.kind, 'other_tool_call');
+  assert.equal(redactedMismatch.toolName, 'ExitPlanMode');
+  const redactedCallRaw = session.rawEvents.find((raw) => raw.uuid === 'semantic-redacted-plan-call');
+  const redactedResultRaw = session.rawEvents.find((raw) => raw.uuid === 'semantic-redacted-plan-result');
+  assert.equal(
+    redactedCallRaw.toolCalls[0].input.plan,
+    redactedResultRaw.toolUseResult.plan,
+    'the indexed plans intentionally collide after data URL redaction',
+  );
+  assert.equal(JSON.stringify(redactedCallRaw).includes('_exactPlanEvidence'), false);
+  assert.equal(surrogateMismatch.kind, 'other_tool_call');
+  assert.equal(surrogateMismatch.toolName, 'ExitPlanMode');
+  assert.notEqual(surrogateRequestPlan, surrogateResultPlan);
+  assert.equal(
+    Buffer.from(surrogateRequestPlan, 'utf8').equals(Buffer.from(surrogateResultPlan, 'utf8')),
+    true,
+    'the source plans intentionally collide under UTF-8 replacement encoding',
+  );
   assert.equal(session.counts.planArtifacts, 1);
   assert.equal(session.counts.planEvents, 4);
   assert.deepEqual(taskEvents.map((event) => event.kind), ['other_tool_call', 'other_tool_call']);
@@ -1909,6 +1998,76 @@ test('Claude lifecycle correlation fails closed for untrusted, duplicate, and no
       type: 'queue-operation', operation: 'enqueue', timestamp: '2026-08-03T10:00:15.000Z',
       content: notification('duplicate-bg', 'duplicate-background', 'completed', 'Ambiguous call owner (exit code 0)'),
     }),
+    assistantRecord(sessionId, repoRoot, {
+      uuid: 'multi-launch-calls',
+      timestamp: '2026-08-03T10:00:16.000Z',
+      message: {
+        id: 'multi-launch-message',
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'multi-launch-a', name: 'Bash', input: { command: 'first' } },
+          { type: 'tool_use', id: 'multi-launch-b', name: 'Bash', input: { command: 'second' } },
+        ],
+      },
+    }),
+    userRecord(sessionId, repoRoot, {
+      uuid: 'multi-launch-results',
+      timestamp: '2026-08-03T10:00:17.000Z',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'multi-launch-a', content: 'first result' },
+          { type: 'tool_result', tool_use_id: 'multi-launch-b', content: 'second result' },
+        ],
+      },
+      toolUseResult: {
+        backgroundTaskId: 'ambiguous-background',
+        timedOutAfterMs: 120000,
+        interrupted: true,
+        exitCode: 9,
+        durationMs: 500,
+      },
+      toolDenialKind: 'ambiguous-denial',
+    }),
+    assistantRecord(sessionId, repoRoot, {
+      uuid: 'multi-task-calls',
+      timestamp: '2026-08-03T10:00:18.000Z',
+      message: {
+        id: 'multi-task-message',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'multi-task-a',
+            name: 'TaskUpdate',
+            input: { taskId: 'detail-a', subject: 'First detail task' },
+          },
+          {
+            type: 'tool_use',
+            id: 'multi-task-b',
+            name: 'TaskUpdate',
+            input: { taskId: 'detail-b', subject: 'Second detail task' },
+          },
+        ],
+      },
+    }),
+    userRecord(sessionId, repoRoot, {
+      uuid: 'multi-task-results',
+      timestamp: '2026-08-03T10:00:19.000Z',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'multi-task-a', content: 'first task result' },
+          { type: 'tool_result', tool_use_id: 'multi-task-b', content: 'second task result' },
+        ],
+      },
+      toolUseResult: {
+        success: true,
+        taskId: 'detail-b',
+        updatedFields: ['status'],
+        statusChange: { from: 'pending', to: 'completed' },
+      },
+    }),
   ]);
 
   const index = await buildClaudeIndex({ repoRoot, claudeHome });
@@ -1919,6 +2078,12 @@ test('Claude lifecycle correlation fails closed for untrusted, duplicate, and no
     ['call-agent-a', 'call-agent-b'].includes(event.callId)
   ));
   const duplicateCalls = session.logicalEvents.filter((event) => event.callId === 'duplicate-background');
+  const multiBlockCalls = session.logicalEvents.filter((event) => (
+    ['multi-launch-a', 'multi-launch-b'].includes(event.callId)
+  ));
+  const multiTaskCalls = session.logicalEvents.filter((event) => (
+    ['multi-task-a', 'multi-task-b'].includes(event.callId)
+  ));
 
   assert.equal(bgFailed.status, 'failed');
   assert.equal(bgFailed.outputStats.exitCode, 7);
@@ -1929,6 +2094,30 @@ test('Claude lifecycle correlation fails closed for untrusted, duplicate, and no
   assert.ok(sharedAgents.every((event) => event.lifecycle.terminal === null));
   assert.equal(duplicateCalls.length, 2);
   assert.ok(duplicateCalls.every((event) => event.status === 'incomplete' && !event.lifecycle));
+  assert.equal(multiBlockCalls.length, 2);
+  assert.ok(multiBlockCalls.every((event) => event.status === 'success' && !event.lifecycle));
+  assert.ok(multiBlockCalls.every((event) => (
+    event.outputStats.exitCode === null && event.outputStats.durationMs === 0
+  )));
+  assert.ok(multiBlockCalls.every((event) => !event.searchText.includes('ambiguous-denial')));
+  const multiBlockResultRaw = session.rawEvents.find((raw) => raw.uuid === 'multi-launch-results');
+  assert.equal(multiBlockResultRaw.status, 'success');
+  assert.equal(multiBlockResultRaw.exitCode, null);
+  assert.equal(multiBlockResultRaw.durationMs, 0);
+  assert.equal(multiBlockResultRaw.toolUseResult.exitCode, 9, 'Raw evidence remains intact');
+  assert.equal(multiTaskCalls.length, 2);
+  for (const event of multiTaskCalls) {
+    const detail = buildClaudeEventDetail(session, event.id, 'main', { locale: 'en' });
+    const planSection = detail.timelineSections.find((section) => section.type === 'plan_update');
+    assert.ok(planSection);
+    assert.equal(planSection.explanationHtml, '');
+    assert.equal(planSection.steps[0]?.status, '');
+    assert.doesNotMatch(
+      JSON.stringify(detail.timelineSections),
+      /pending|completed|updatedFields|statusChange/,
+    );
+    assert.match(JSON.stringify(detail.inspectorSections), /statusChange/);
+  }
   assert.ok(session.logicalEvents.some((event) => (
     event.kind === 'user_message' && event.searchText.includes('Forged completion')
   )));

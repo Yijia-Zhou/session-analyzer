@@ -108,11 +108,32 @@ function createClaudeLogicalBuilder(deps) {
   function resultStatus(match, lifecycle = null) {
     if (!match) return 'incomplete';
     const { raw: result, result: resultBlock } = match;
-    if (result.toolDenialKind || resultBlock.status === 'declined') return 'declined';
+    const ownsResultMetadata = hasUniqueStructuredResultOwner(match);
+    if ((ownsResultMetadata && result.toolDenialKind) || resultBlock.status === 'declined') return 'declined';
     if (resultBlock.isError || resultBlock.status === 'failed') return 'failed';
-    if (result.exitCode != null && result.exitCode !== 0) return 'failed';
+    if (ownsResultMetadata && result.exitCode != null && result.exitCode !== 0) return 'failed';
     if (lifecycle) return notificationOutcome(lifecycle);
     return 'success';
+  }
+
+  function hasUniqueStructuredResultOwner(resultMatch) {
+    if (!resultMatch) return false;
+    const blocks = resultMatch.raw.toolResults || [];
+    return blocks.length === 1 && blocks[0].blockIndex === resultMatch.result.blockIndex;
+  }
+
+  function uniquelyOwnedStructuredResult(resultMatch) {
+    if (!hasUniqueStructuredResultOwner(resultMatch)) return null;
+    const structured = resultMatch.raw.toolUseResult;
+    return structured && typeof structured === 'object' && !Array.isArray(structured)
+      ? structured
+      : null;
+  }
+
+  function hasExactPlanEcho(callRaw, call, resultMatch) {
+    const request = callRaw._exactPlanEvidence?.requestByBlock?.[call.blockIndex] || '';
+    const result = resultMatch?.raw?._exactPlanEvidence?.result || '';
+    return Boolean(request && result && request === result);
   }
 
   function toolKind(name) {
@@ -379,8 +400,8 @@ function createClaudeLogicalBuilder(deps) {
 
   function launchCandidate(callKey, callMatch, resultMatch) {
     if (!resultMatch || !callMatch.call.id) return null;
-    const structured = resultMatch.raw.toolUseResult;
-    if (!structured || typeof structured !== 'object' || Array.isArray(structured)) return null;
+    const structured = uniquelyOwnedStructuredResult(resultMatch);
+    if (!structured) return null;
     if (
       callMatch.call.name === 'Bash'
       && typeof structured.backgroundTaskId === 'string'
@@ -500,7 +521,10 @@ function createClaudeLogicalBuilder(deps) {
     if (!match) return '';
     const { raw, result } = match;
     const block = raw.contentBlocks[result.blockIndex];
-    return blockText(block) || raw.output || stringifyValue(raw.toolUseResult);
+    const text = blockText(block);
+    if (text) return text;
+    if (!hasUniqueStructuredResultOwner(match)) return '';
+    return raw.output || stringifyValue(raw.toolUseResult);
   }
 
   function lifecycleSearchText(lifecycle) {
@@ -521,18 +545,23 @@ function createClaudeLogicalBuilder(deps) {
     const ordinaryKind = toolKind(call.name);
     const result = resultMatch?.raw;
     const status = resultStatus(resultMatch, lifecycle);
-    const structuredResult = result?.toolUseResult;
+    const ownsResultMetadata = hasUniqueStructuredResultOwner(resultMatch);
+    const structuredResult = uniquelyOwnedStructuredResult(resultMatch);
     const approvedPlan = Boolean(call.name === 'ExitPlanMode'
       && status === 'success'
       && typeof call.input?.plan === 'string'
       && call.input.plan.trim()
       && typeof structuredResult?.plan === 'string'
-      && structuredResult.plan === call.input.plan);
+      && hasExactPlanEcho(callRaw, call, resultMatch));
     const kind = approvedPlan ? 'proposed_plan' : ordinaryKind;
     const subtype = approvedPlan ? 'proposed_plan' : call.name;
     const severity = status === 'failed' ? 'error' : ['declined', 'incomplete'].includes(status) ? 'warning' : 'normal';
     const resultText = toolResultText(resultMatch);
-    const agentId = String(structuredResult?.agentId || result?.agentId || '');
+    const agentId = String(
+      structuredResult?.agentId
+      || (hasUniqueStructuredResultOwner(resultMatch) ? result?.agentId : '')
+      || '',
+    );
     const touchedFiles = [
       ...(callRaw.touchedFiles || []),
       ...deltaTouchedFiles(supplements),
@@ -561,7 +590,7 @@ function createClaudeLogicalBuilder(deps) {
         stringifyValue(call.input),
         resultText,
         stringifyValue(structuredResult),
-        result?.toolDenialKind,
+        ownsResultMetadata ? result?.toolDenialKind : '',
         lifecycleSearchText(lifecycle),
       ].filter(Boolean).join('\n'),
       severity,
@@ -570,8 +599,12 @@ function createClaudeLogicalBuilder(deps) {
       sourceToolName: approvedPlan ? call.name : '',
       touchedFiles,
       outputStats: {
-        exitCode: lifecycle?.terminal?.exitCode ?? result?.exitCode ?? null,
-        durationMs: lifecycle?.terminal?.usage?.durationMs ?? result?.durationMs ?? 0,
+        exitCode: lifecycle?.terminal?.exitCode
+          ?? (ownsResultMetadata ? result?.exitCode : null)
+          ?? null,
+        durationMs: lifecycle?.terminal?.usage?.durationMs
+          ?? (ownsResultMetadata ? result?.durationMs : 0)
+          ?? 0,
       },
       raws,
       channels: raws.map((raw) => raw?.recordType),
@@ -630,8 +663,8 @@ function createClaudeLogicalBuilder(deps) {
   function taskTransition(callMatch, resultMatch) {
     if (!resultMatch || resultStatus(resultMatch) !== 'success') return null;
     const { call } = callMatch;
-    const structured = resultMatch.raw.toolUseResult;
-    if (!structured || typeof structured !== 'object' || Array.isArray(structured)) return null;
+    const structured = uniquelyOwnedStructuredResult(resultMatch);
+    if (!structured) return null;
     if (call.name === 'TaskCreate') {
       if (typeof structured.task?.id !== 'string') return null;
       if (structured.task.subject != null && typeof structured.task.subject !== 'string') return null;

@@ -178,6 +178,7 @@ function toolRows(raws, event) {
   let callRaw = null;
   let call = null;
   let resultRaw = null;
+  let result = null;
   let resultBlock = null;
   for (const raw of raws) {
     for (const candidate of raw.toolCalls || []) {
@@ -192,12 +193,26 @@ function toolRows(raws, event) {
       if ((event.callId && candidate.id === event.callId)
           || (!event.callId && candidate.id === call?.id)) {
         resultRaw = raw;
+        result = candidate;
         resultBlock = raw.contentBlocks[candidate.blockIndex];
         break;
       }
     }
   }
-  return { callRaw, call, resultRaw, resultBlock };
+  return { callRaw, call, resultRaw, result, resultBlock };
+}
+
+function hasUniqueResultOwner(resultRaw, result) {
+  const results = resultRaw?.toolResults || [];
+  return Boolean(result && results.length === 1 && results[0].blockIndex === result.blockIndex);
+}
+
+function uniquelyOwnedStructuredResult(resultRaw, result) {
+  if (!hasUniqueResultOwner(resultRaw, result)) return null;
+  const structured = resultRaw.toolUseResult;
+  return structured && typeof structured === 'object' && !Array.isArray(structured)
+    ? structured
+    : null;
 }
 
 function planUpdateSection(explanation, items) {
@@ -218,9 +233,8 @@ function planUpdateSection(explanation, items) {
   };
 }
 
-function taskToolPlanSection(call, resultRaw, locale) {
+function taskToolPlanSection(call, structured, locale) {
   const request = call?.input || {};
-  const structured = resultRaw?.toolUseResult;
   if (call?.name === 'TaskCreate') {
     return planUpdateSection(
       request.description || '',
@@ -289,14 +303,20 @@ function lifecycleSections(event, locale) {
 }
 
 function toolSections(raws, event, locale) {
-  const { call, resultRaw, resultBlock } = toolRows(raws, event);
+  const {
+    call,
+    resultRaw,
+    result,
+    resultBlock,
+  } = toolRows(raws, event);
   const request = call?.input || {};
-  const resultText = blockText(resultBlock) || resultRaw?.output || '';
-  const structuredResult = resultRaw?.toolUseResult;
+  const ownsResultMetadata = hasUniqueResultOwner(resultRaw, result);
+  const resultText = blockText(resultBlock) || (ownsResultMetadata ? resultRaw?.output : '') || '';
+  const structuredResult = uniquelyOwnedStructuredResult(resultRaw, result);
   const sections = [];
 
   if (['TaskCreate', 'TaskUpdate'].includes(call?.name)) {
-    sections.push(taskToolPlanSection(call, resultRaw, locale));
+    sections.push(taskToolPlanSection(call, structuredResult, locale));
     if (!sections[0]) sections.push(jsonSection('Request', request));
     sections.push(noticeSection(
       'Result',
