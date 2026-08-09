@@ -150,36 +150,48 @@
         <h2>Select target project</h2>
         <p>Choose a session working directory from the selected transcript source to analyze.</p>
         <div id="projectStatus" class="projectStatus" aria-live="polite"></div>
+        <progress id="projectProgress" class="projectProgress" max="100" value="0" hidden></progress>
+        <button id="projectCancelBtn" class="ghostBtn projectCancelBtn" type="button" hidden>Cancel indexing</button>
         <div id="projectSourceSwitch" class="projectSourceSwitch" hidden>
           <div class="projectSourceRow">
-            <span class="projectSourceSummary">
-              <span id="projectSourceKind" class="projectSourceKind"></span>
-              <span id="projectSourceHome" class="projectSourceHome"></span>
-            </span>
-            <button id="projectSourceAction" class="ghostBtn projectSourceAction" type="button" hidden></button>
-            <button id="projectSourceCancel" class="ghostBtn projectSourceCancel" type="button" hidden>Cancel</button>
+            <div class="projectSourceIdentity">
+              <span class="projectSourceMark" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M7 3.5h7l3.5 3.5v13.5H7z"></path>
+                  <path d="M14 3.5V7h3.5M10 12l2 2-2 2M14 16h2.5"></path>
+                </svg>
+              </span>
+              <span class="projectSourceSummary">
+                <span id="projectSourceKind" class="projectSourceKind"></span>
+                <span id="projectSourceHome" class="projectSourceHome"></span>
+              </span>
+            </div>
+            <div class="projectSourceControls">
+              <button id="projectSourceAction" class="ghostBtn projectSourceAction" type="button" hidden></button>
+              <button id="projectSourceCancel" class="ghostBtn projectSourceCancel" type="button" hidden>Cancel</button>
+            </div>
           </div>
           <p id="projectSourceConfirm" class="projectSourceConfirm" hidden></p>
           <details id="projectHomeEditor" class="projectHomeEditor">
             <summary>Custom directories</summary>
-            <div class="projectHomeFields">
-              <label class="projectHomeField">
-                <span>Codex home</span>
-                <input id="projectCodexHomeInput" type="text" autocomplete="off" spellcheck="false">
-              </label>
-              <label class="projectHomeField">
-                <span>Claude home</span>
-                <input id="projectClaudeHomeInput" type="text" autocomplete="off" spellcheck="false">
-              </label>
-            </div>
-            <div class="projectHomeActions">
-              <button id="projectHomeApplyBtn" class="ghostBtn" type="button">Apply directories</button>
-              <span id="projectSourceError" class="projectSourceError" aria-live="polite"></span>
+            <div class="projectHomeBody">
+              <div class="projectHomeFields">
+                <label class="projectHomeField">
+                  <span>Codex home</span>
+                  <input id="projectCodexHomeInput" type="text" autocomplete="off" spellcheck="false">
+                </label>
+                <label class="projectHomeField">
+                  <span>Claude home</span>
+                  <input id="projectClaudeHomeInput" type="text" autocomplete="off" spellcheck="false">
+                </label>
+              </div>
+              <div class="projectHomeActions">
+                <button id="projectHomeApplyBtn" class="primaryBtn projectHomeApplyBtn" type="button">Apply directories</button>
+                <span id="projectSourceError" class="projectSourceError" aria-live="polite"></span>
+              </div>
             </div>
           </details>
         </div>
-        <progress id="projectProgress" class="projectProgress" max="100" value="0" hidden></progress>
-        <button id="projectCancelBtn" class="ghostBtn projectCancelBtn" type="button" hidden>Cancel indexing</button>
       </div>
       <div id="projectList" class="projectList"></div>
     </section>

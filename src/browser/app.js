@@ -519,6 +519,8 @@ function renderSourceSwitch() {
   const hasConfig = Boolean(state.sourceHome || state.supportedSources.length);
   el.projectSourceSwitch.hidden = !state.selectingProject || !hasConfig;
   if (el.projectSourceSwitch.hidden) return;
+  el.projectSourceSwitch.dataset.source = state.sourceKind;
+  el.projectSourceSwitch.dataset.pending = state.pendingSourceAction || '';
   const other = otherSourceKind();
   const otherLabel = sourceKindLabel(other);
   const emptyState = !state.projects.length && !state.projectLoadingRoot && !state.projectDiscoveryLoading;
@@ -533,7 +535,7 @@ function renderSourceSwitch() {
     }
   }
   if (el.projectSourceHome) {
-    el.projectSourceHome.textContent = emptyState ? '' : (state.sourceHome ? `· ${state.sourceHome}` : '');
+    el.projectSourceHome.textContent = emptyState ? '' : state.sourceHome;
   }
   if (el.projectSourceAction) {
     el.projectSourceAction.hidden = false;

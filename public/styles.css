@@ -1120,11 +1120,14 @@ body[data-project-mode='selecting'] .searchAssist {
 }
 
 .projectSourceSwitch {
+  background: color-mix(in srgb, var(--accent) 3%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+  border-radius: 7px;
+  box-shadow: 0 1px 2px rgba(24, 32, 36, 0.04);
   display: grid;
-  gap: 0.45rem;
-  margin-top: 0.35rem;
-  padding-top: 0.55rem;
-  border-top: 1px solid var(--line);
+  gap: 0;
+  margin-top: 0.45rem;
+  overflow: hidden;
 }
 
 .projectSourceSwitch[hidden] {
@@ -1132,16 +1135,45 @@ body[data-project-mode='selecting'] .searchAssist {
 }
 
 .projectSourceRow {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.75rem;
+}
+
+.projectSourceIdentity {
+  align-items: start;
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  min-width: 0;
+}
+
+.projectSourceMark {
   align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem 0.7rem;
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-radius: 6px;
+  color: var(--accent);
+  display: inline-flex;
+  height: 2rem;
+  justify-content: center;
+  width: 2rem;
+}
+
+.projectSourceMark svg {
+  fill: none;
+  height: 1.1rem;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.65;
+  width: 1.1rem;
 }
 
 .projectSourceSummary {
-  color: var(--muted);
-  font-size: 0.82rem;
-  line-height: 1.35;
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
 }
 
 .projectSourceSummary[data-empty='true'] {
@@ -1150,61 +1182,174 @@ body[data-project-mode='selecting'] .searchAssist {
 }
 
 .projectSourceKind {
+  color: var(--ink);
+  font-size: 0.8rem;
   font-weight: 600;
+  line-height: 1.35;
 }
 
 .projectSourceHome {
-  opacity: 0.85;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.projectSourceHome:empty {
+  display: none;
+}
+
+.projectSourceControls {
+  display: flex;
+  gap: 0.45rem;
 }
 
 .projectSourceAction,
 .projectSourceCancel {
-  justify-self: start;
-  padding: 0.2rem 0.55rem;
+  font-size: 0.76rem;
+  min-height: 34px;
+  padding: 0.35rem 0.6rem;
   width: auto;
 }
 
-.projectSourceConfirm {
+.projectSourceAction {
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  color: var(--accent);
+  flex: 1 1 auto;
+  font-weight: 700;
+}
+
+.projectSourceAction:hover,
+.projectSourceAction:focus-visible {
+  background: color-mix(in srgb, var(--accent) 13%, var(--panel));
+  border-color: var(--accent);
+}
+
+.projectSourceCancel {
+  flex: 0 0 auto;
+}
+
+.projectSourceSwitch[data-pending]:not([data-pending='']) .projectSourceAction {
+  background: #fff7df;
+  border-color: #d7b650;
   color: var(--warn);
-  font-size: 0.8rem;
-  line-height: 1.35;
+}
+
+.projectSourceAction:disabled,
+.projectSourceCancel:disabled,
+.projectHomeApplyBtn:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+.projectSourceConfirm {
+  background: #fffaf0;
+  border-top: 1px solid color-mix(in srgb, var(--warn) 25%, var(--line));
+  color: var(--warn);
+  font-size: 0.75rem;
+  line-height: 1.45;
   margin: 0;
+  padding: 0.6rem 0.75rem;
 }
 
 .projectHomeEditor {
+  border-top: 1px solid color-mix(in srgb, var(--accent) 14%, var(--line));
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.78rem;
 }
 
 .projectHomeEditor summary {
+  align-items: center;
+  color: var(--ink);
   cursor: pointer;
+  display: flex;
+  font-weight: 650;
+  gap: 0.55rem;
+  justify-content: space-between;
+  list-style: none;
+  padding: 0.65rem 0.75rem;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.projectHomeEditor summary::-webkit-details-marker {
+  display: none;
+}
+
+.projectHomeEditor summary::after {
+  border-bottom: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  content: '';
+  height: 0.42rem;
+  margin-right: 0.15rem;
+  opacity: 0.62;
+  transform: rotate(45deg) translateY(-0.12rem);
+  transition: transform 140ms ease;
+  width: 0.42rem;
+}
+
+.projectHomeEditor summary:hover,
+.projectHomeEditor summary:focus-visible {
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+  color: var(--accent);
+}
+
+.projectHomeEditor summary:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  outline: none;
+}
+
+.projectHomeEditor[open] summary {
+  background: color-mix(in srgb, var(--accent) 5%, var(--panel));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 12%, var(--line));
+}
+
+.projectHomeEditor[open] summary::after {
+  transform: rotate(225deg) translate(-0.08rem, -0.08rem);
+}
+
+.projectHomeBody {
+  background: color-mix(in srgb, var(--bg) 50%, var(--panel));
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.7rem 0.75rem 0.75rem;
 }
 
 .projectHomeFields {
   display: grid;
-  gap: 0.5rem;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  margin-top: 0.4rem;
+  gap: 0.6rem;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .projectHomeField {
   display: grid;
-  gap: 0.2rem;
+  gap: 0.28rem;
+}
+
+.projectHomeField > span {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
 .projectHomeField input {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 5px;
   box-sizing: border-box;
   color: var(--ink);
-  font: inherit;
-  padding: 0.3rem 0.45rem;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  padding: 0.42rem 0.5rem;
   width: 100%;
 }
 
 .projectHomeField input:focus-visible {
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent);
   outline: none;
 }
 
@@ -1213,12 +1358,27 @@ body[data-project-mode='selecting'] .searchAssist {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-  margin-top: 0.4rem;
+}
+
+.projectHomeApplyBtn {
+  font-size: 0.76rem;
+  min-height: 34px;
+  padding: 0.35rem 0.65rem;
+  width: 100%;
 }
 
 .projectSourceError {
   color: var(--warn);
-  font-size: 0.8rem;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.projectSourceError:not(:empty) {
+  background: #fffaf0;
+  border-left: 2px solid #d7b650;
+  display: block;
+  padding: 0.45rem 0.55rem;
+  width: 100%;
 }
 
 .projectProgress {
@@ -1240,6 +1400,7 @@ body[data-project-mode='selecting'] .searchAssist {
 }
 
 .projectList {
+  align-content: start;
   display: grid;
   gap: 0.55rem;
   min-width: 0;

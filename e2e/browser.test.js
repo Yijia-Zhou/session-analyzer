@@ -1909,6 +1909,35 @@ test('browser chooser shows the server source before any switch', async (t) => {
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Claude Code/);
   assert.ok((await page.locator('#projectSourceHome').textContent()).includes(fixture.claudeHome));
   assert.equal(await page.locator('#projectSourceAction').textContent(), 'Switch to Codex');
+  const chooserOrder = await page.locator('.projectChooserHeader').evaluate((header) => (
+    [...header.children].map((child) => child.id || child.tagName)
+  ));
+  assert.ok(chooserOrder.indexOf('projectStatus') < chooserOrder.indexOf('projectProgress'));
+  assert.ok(chooserOrder.indexOf('projectProgress') < chooserOrder.indexOf('projectSourceSwitch'));
+});
+
+test('browser chooser keeps sparse project rows content-sized', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  const { page } = await openSourceSwitchChooser(t, {
+    server: { source: 'claude-code', claudeHome: fixture.claudeHome },
+  });
+
+  await waitForProjectRoot(page, fixture.claudeRepo);
+  assert.equal(await page.locator('.projectItem').count(), 1);
+  await page.locator('#projectHomeEditor summary').click();
+
+  const layout = await page.locator('#projectList').evaluate((list) => {
+    const item = list.querySelector('.projectItem');
+    const main = item?.querySelector('.projectMain');
+    return {
+      listHeight: list.getBoundingClientRect().height,
+      itemHeight: item?.getBoundingClientRect().height || 0,
+      mainHeight: main?.getBoundingClientRect().height || 0,
+    };
+  });
+  assert.ok(layout.listHeight > layout.itemHeight + 80, 'fixture should leave unused vertical space below the only project');
+  assert.ok(layout.itemHeight <= 100, `project row should stay content-sized, got ${layout.itemHeight}px`);
+  assert.ok(layout.mainHeight <= 64, `project main content should not stretch, got ${layout.mainHeight}px`);
 });
 
 test('browser last-selected repo is scoped per source and migrates legacy Codex storage', async (t) => {
