@@ -749,17 +749,38 @@ test('Claude index preserves every JSONL record while projecting messages, tools
   assert.ok(mainKinds.includes('assistant_message'));
   assert.ok(mainKinds.includes('reasoning'));
   assert.ok(mainKinds.includes('command'));
+  assert.ok(mainKinds.includes('read'));
   assert.ok(mainKinds.includes('agent_coordination'));
-  assert.ok(mainKinds.includes('other_tool_call'));
+  assert.equal(mainKinds.includes('other_tool_call'), false);
   assert.ok(mainKinds.includes('compaction'));
   assert.ok(mainKinds.includes('error'));
 
   const toolEvents = session.logicalEvents.filter((event) => event.toolName);
   assert.equal(toolEvents.length, 3);
   assert.equal(toolEvents.find((event) => event.toolName === 'Bash').status, 'success');
+  assert.equal(toolEvents.find((event) => event.toolName === 'Read').kind, 'read');
+  assert.equal(toolEvents.find((event) => event.toolName === 'Read').label, 'Read');
   assert.equal(toolEvents.find((event) => event.toolName === 'Read').status, 'declined');
   assert.equal(toolEvents.find((event) => event.toolName === 'Read').severity, 'warning');
   assert.equal(toolEvents.find((event) => event.toolName === 'Agent').agentId, 'agent-one');
+  assert.deepEqual(index.eventKinds.main.find((item) => item.value === 'read'), {
+    value: 'read', label: 'read', count: 1,
+  });
+  assert.equal(index.eventKinds.main.some((item) => item.value === 'other_tool_call'), false);
+  assert.deepEqual(
+    getTimeline(index, session.id, { offset: 0, limit: 100, layer: 'main', kind: 'read' })
+      .events.map((event) => event.toolName),
+    ['Read'],
+  );
+  assert.equal(
+    buildClaudeEventDetail(
+      session,
+      toolEvents.find((event) => event.toolName === 'Read').id,
+      'main',
+      { locale: 'zh-CN' },
+    ).title,
+    '文件读取',
+  );
 
   const compaction = session.logicalEvents.find((event) => event.kind === 'compaction');
   assert.equal(compaction.rawRefs.length, 3);
@@ -2115,6 +2136,7 @@ test('Claude preserves malformed rows and evaluates multi-block tool results ind
 
   const readEvent = session.logicalEvents.find((event) => event.callId === 'read-call');
   const bashEvent = session.logicalEvents.find((event) => event.callId === 'bash-call');
+  assert.equal(readEvent.kind, 'read');
   assert.equal(readEvent.status, 'failed');
   assert.equal(bashEvent.status, 'success');
   assert.equal(session.counts.assistantMessages, 1);

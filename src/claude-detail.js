@@ -390,7 +390,7 @@ function logicalTimelineSections(event, raws, locale) {
     const text = blockText(block) || raw?.messageText || event.searchText;
     return [markdownSection(eventTitle(event, locale), text, { hideTitle: true })].filter(Boolean);
   }
-  if (['command', 'patch', 'web_search', 'agent_coordination', 'mcp_call', 'other_tool_call'].includes(event.kind)) {
+  if (['command', 'read', 'patch', 'web_search', 'agent_coordination', 'mcp_call', 'other_tool_call'].includes(event.kind)) {
     return toolSections(raws, event, locale);
   }
   if (event.kind === 'proposed_plan') {

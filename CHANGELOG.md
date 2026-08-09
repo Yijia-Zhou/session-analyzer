@@ -4,6 +4,7 @@
 
 ### English
 
+- Promoted direct Claude Code `Read` calls from `other_tool_call` to an independent `read` kind with dedicated filtering, counts, localized labels, structured detail routing, and folding-rule compatibility.
 - Added runtime Transcript Source switching: `POST /api/source` changes the active Codex/Claude Code source and optional source home directories without restarting the server; the Select project chooser exposes a source switcher with custom home directories, and stale project discovery is rejected through source revisions.
 - Added per-source last-selected repository storage with a one-time migration of the legacy Codex key, and made project-selection copy source-neutral (`sourceHome` instead of `codexHome`).
 - Added source-switch and race-regression coverage across backend, browser, and documentation.
@@ -13,6 +14,7 @@
 
 ### 中文
 
+- 将 Claude Code 的直接 `Read` 调用从 `other_tool_call` 提升为独立的 `read` kind，并补齐专属筛选、计数、本地化标签、结构化详情路由与折叠规则兼容。
 - 新增运行期转录来源切换：`POST /api/source` 可在不重启服务器的情况下切换当前 Codex/Claude Code 来源及可选来源 home 目录；Select project 选择界面提供来源切换与自定义目录入口，并通过 source revision 拒绝过期的项目发现结果。
 - 新增按来源区分的“最后选择的仓库”存储，并一次性迁移旧 Codex key；项目选择文案改为来源中立（使用 `sourceHome` 而非 `codexHome`）。
 - 新增覆盖后端、浏览器与文档的来源切换及竞态回归测试。

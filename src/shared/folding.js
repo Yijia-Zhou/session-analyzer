@@ -26,6 +26,7 @@
     'proposed_plan',
     'reasoning',
     'command',
+    'read',
     'patch',
     'mcp_call',
     'js_repl',
@@ -65,6 +66,7 @@
       kindOrder: [
         'command',
         'user_shell_command',
+        'read',
         'patch',
         'web_search',
         'mcp_call',
@@ -268,7 +270,8 @@
     const matches = [];
     if (event.kind !== 'code_mode_operation' && Object.hasOwn(normalized.kindStates, event.kind)) {
       matches.push(normalized.kindStates[event.kind]);
-    } else if (event.kind === 'agent_coordination' && Object.hasOwn(normalized.kindStates, 'other_tool_call')) {
+    } else if (['agent_coordination', 'read'].includes(event.kind)
+        && Object.hasOwn(normalized.kindStates, 'other_tool_call')) {
       matches.push(normalized.kindStates.other_tool_call);
     }
     for (const condition of normalized.conditions) {

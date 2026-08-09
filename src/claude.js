@@ -666,7 +666,7 @@ function addCounts(session, event, turnIds) {
   if (event.kind === 'user_message') session.counts.userMessages += 1;
   if (event.kind === 'assistant_message') session.counts.assistantMessages += 1;
   if (event.kind === 'reasoning') session.counts.reasoning += 1;
-  if (['command', 'patch', 'mcp_call', 'web_search', 'agent_coordination', 'other_tool_call'].includes(event.kind)) {
+  if (['command', 'read', 'patch', 'mcp_call', 'web_search', 'agent_coordination', 'other_tool_call'].includes(event.kind)) {
     session.counts.toolCalls += 1;
   }
   if (event.kind === 'command' && event.status === 'failed') session.counts.failedCommands += 1;

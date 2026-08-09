@@ -222,6 +222,7 @@ const EVENT_KIND_LABELS = Object.freeze({
   user_message: 'User message',
   assistant_message: 'Assistant message',
   command: 'Command',
+  read: 'Read',
   patch: 'Patch',
   mcp_call: 'MCP call',
   js_repl: 'JS REPL',
@@ -3623,7 +3624,7 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'user_message') session.counts.userMessages += 1;
   if (logicalEvent.kind === 'assistant_message') session.counts.assistantMessages += 1;
   if (logicalEvent.kind === 'reasoning') session.counts.reasoning += 1;
-  if (['command', 'patch', 'mcp_call', 'web_search', 'agent_coordination', 'other_tool_call', 'code_mode_operation', 'js_repl', 'hook'].includes(logicalEvent.kind)
+  if (['command', 'read', 'patch', 'mcp_call', 'web_search', 'agent_coordination', 'other_tool_call', 'code_mode_operation', 'js_repl', 'hook'].includes(logicalEvent.kind)
       || (logicalEvent.kind === 'goal' && logicalEvent.toolName)) {
     session.counts.toolCalls += 1;
   }

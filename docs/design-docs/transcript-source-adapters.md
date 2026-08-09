@@ -3,7 +3,7 @@
 ## Status / 状态
 
 - Status: accepted for `0.1.3` / 状态：已针对 `0.1.3` 接受
-- Last updated: 2026-08-03 / 最近更新：2026-08-03
+- Last updated: 2026-08-09 / 最近更新：2026-08-09
 - Related product spec: `docs/product-specs/session-transcript-analyzer.md` / 相关产品规格：`docs/product-specs/session-transcript-analyzer.md`
 - Related timeline design: `docs/design-docs/logical-event-timeline.md` / 相关时间线设计：`docs/design-docs/logical-event-timeline.md`
 - Related pressure test: `docs/design-docs/external-source-mapping-pressure-tests.md` / 相关压力测试：`docs/design-docs/external-source-mapping-pressure-tests.md`
@@ -162,6 +162,7 @@ Main Timeline mapping: / 主时间线映射：
 | assistant `thinking` | `reasoning` |
 | API error message | `error` |
 | `Bash` | `command` |
+| `Read` | `read` |
 | `Write`, `Edit`, `MultiEdit`, `NotebookEdit` | `patch` |
 | `WebSearch`, `WebFetch` | `web_search` |
 | `Agent` | `agent_coordination` |
@@ -169,7 +170,7 @@ Main Timeline mapping: / 主时间线映射：
 | approved `ExitPlanMode` with an exactly echoed non-empty plan | `proposed_plan` (Plan Artifact) |
 | `TaskCreate`, `TaskUpdate` | `other_tool_call` classified as Plan Update |
 | novel non-empty `task_reminder` state | `plan_update` (Plan Update) |
-| `Read` and unknown tools | `other_tool_call` |
+| unknown tools | `other_tool_call` |
 | compact boundary plus summary/reference | `compaction` |
 | informational warning/error | `warning` / `error` |
 | shutdown-interrupted user turn | user message plus `abort` |

@@ -118,6 +118,7 @@ function createClaudeLogicalBuilder(deps) {
   function toolKind(name) {
     const normalized = String(name || '').toLowerCase();
     if (normalized === 'bash') return 'command';
+    if (normalized === 'read') return 'read';
     if (['write', 'edit', 'multiedit', 'notebookedit'].includes(normalized)) return 'patch';
     if (['websearch', 'webfetch'].includes(normalized)) return 'web_search';
     if (normalized === 'agent') return 'agent_coordination';
@@ -149,6 +150,7 @@ function createClaudeLogicalBuilder(deps) {
       if (status === 'incomplete') return 'Incomplete patch';
       return 'Patch applied';
     }
+    if (kind === 'read') return 'Read';
     if (kind === 'web_search') return String(name).toLowerCase() === 'webfetch' ? 'Web fetch' : 'Web search';
     if (kind === 'agent_coordination') return 'Agent coordination';
     if (kind === 'mcp_call') return 'MCP call';
@@ -164,6 +166,7 @@ function createClaudeLogicalBuilder(deps) {
     }
     if (call.name === 'ExitPlanMode') return truncate(input.plan || call.name);
     if (kind === 'command') return truncate(input.command || input.description || call.name);
+    if (kind === 'read') return truncate(input.file_path || input.filePath || input.path || call.name);
     if (kind === 'patch') return truncate(input.file_path || input.filePath || input.path || input.notebook_path || call.name);
     if (kind === 'web_search') return truncate(input.query || input.url || input.prompt || call.name);
     if (kind === 'agent_coordination') return truncate(input.description || input.prompt || input.subagent_type || call.name);

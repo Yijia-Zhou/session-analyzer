@@ -61,11 +61,24 @@ test('changes profile recognizes common verification commands', () => {
 
 test('narrative profile collapses ordinary high-frequency tool events', () => {
   const rules = profileRules('narrative');
-  for (const kind of ['command', 'mcp_call', 'js_repl', 'other_tool_call', 'web_search']) {
+  for (const kind of ['command', 'read', 'mcp_call', 'js_repl', 'other_tool_call', 'web_search']) {
     assert.equal(folding.displayStateFromRules({ kind, status: 'success', severity: 'normal' }, rules), 'collapsed', kind);
   }
   assert.equal(folding.displayStateFromRules({ kind: 'hook', status: 'completed', severity: 'normal' }, rules), 'summary');
   assert.equal(folding.displayStateFromRules({ kind: 'developer_message', severity: 'normal' }, rules), 'summary');
+});
+
+test('read kind preserves other-tool folding until explicitly configured', () => {
+  const legacyRules = {
+    kindStates: { other_tool_call: 'collapsed' },
+    fallback: 'hidden',
+  };
+  const readEvent = { kind: 'read', status: 'success', severity: 'normal' };
+  assert.equal(folding.displayStateFromRules(readEvent, legacyRules), 'collapsed');
+  assert.equal(folding.displayStateFromRules(readEvent, {
+    ...legacyRules,
+    kindStates: { ...legacyRules.kindStates, read: 'expanded' },
+  }), 'expanded');
 });
 
 test('matching condition order does not change the most visible result', () => {
@@ -426,6 +439,7 @@ test('editable kind grouping prioritizes familiar event types without affecting 
   ]);
   assert.equal(folding.editableKindGroup('user_message').groupId, 'conversationPlanning');
   assert.equal(folding.editableKindGroup('command').groupId, 'commonWork');
+  assert.equal(folding.editableKindGroup('read').groupId, 'commonWork');
   assert.equal(folding.editableKindGroup('error').groupId, 'issuesRisks');
   assert.equal(folding.editableKindGroup('mcp_call').groupId, 'commonWork');
   assert.equal(folding.editableKindGroup('js_repl').groupId, 'commonWork');
@@ -439,6 +453,7 @@ test('editable kind grouping prioritizes familiar event types without affecting 
   assert.equal(folding.isDynamicEditableKind('hook'), true);
   assert.equal(folding.isDynamicEditableKind('subagent'), true);
   assert.equal(folding.isDynamicEditableKind('command'), false);
+  assert.equal(folding.EDITABLE_EVENT_KINDS.includes('read'), true);
   assert.ok(folding.editableKindGroup('user_message').groupPriority < folding.editableKindGroup('hook').groupPriority);
   assert.ok(folding.editableKindGroup('command').groupPriority < folding.editableKindGroup('future_event_kind').groupPriority);
 });

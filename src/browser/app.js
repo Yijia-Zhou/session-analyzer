@@ -58,6 +58,7 @@ const KIND_LABELS = {
   user_message: 'User message',
   assistant_message: 'Assistant message',
   command: 'Command',
+  read: 'Read',
   patch: 'Patch',
   mcp_call: 'MCP call',
   js_repl: 'JS REPL',
@@ -5550,7 +5551,7 @@ function renderProfileRulesPane(options = {}) {
     .map((item) => [String(item?.value || '').trim(), Number(item?.count || 0)]));
   const renderKindRow = (kind) => {
     const display = rules.kindStates[kind] || '';
-    const inheritedAgentCoordinationDisplay = kind === 'agent_coordination' && !display
+    const inheritedOtherToolDisplay = ['agent_coordination', 'read'].includes(kind) && !display
       ? evaluateDisplayStateFromRules({
         kind,
         subtype: '',
@@ -5571,8 +5572,8 @@ function renderProfileRulesPane(options = {}) {
         <span class="profileRuleMeta">${metadata}</span>
       </span>
       <select data-profile-kind="${escapeHtml(kind)}">
-        <option value=""${display ? '' : ' selected'}>${inheritedAgentCoordinationDisplay
-    ? escapeHtml(t('inheritOrdinaryToolState', { state: displayStateLabel(inheritedAgentCoordinationDisplay) }))
+        <option value=""${display ? '' : ' selected'}>${inheritedOtherToolDisplay
+    ? escapeHtml(t('inheritOrdinaryToolState', { state: displayStateLabel(inheritedOtherToolDisplay) }))
     : `${escapeHtml(displayStateLabel(rules.fallback))} (${escapeHtml(t('default'))})`}</option>
         ${DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === display ? ' selected' : ''}>${escapeHtml(displayStateLabel(stateId))}</option>`).join('')}
       </select>

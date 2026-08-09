@@ -94,6 +94,10 @@ _Avoid_: Phase, representative rank / 阶段、代表记录排名
 A tool invocation emitted directly as a source-level call, rather than invoked inside a Code Mode Operation. / 作为来源层调用直接发出的工具调用，而不是在 Code Mode 操作内部发起的调用。
 _Avoid_: Legacy tool call / 旧式工具调用
 
+**Read Tool Call / 文件读取工具调用**:
+A Direct Tool Call that asks the source runtime to return file contents without changing the file. / 一种要求来源运行时返回文件内容、但不修改该文件的直接工具调用。
+_Avoid_: Other Tool Call, Patch, resource read / 其他工具调用、文件补丁、资源读取
+
 **Code Mode Operation / Code Mode 操作**:
 A tool-execution unit initiated by an outer `exec` call whose JavaScript may invoke nested tools and may continue through one or more Poll Phases. Its user-facing display name is `Code Mode tool call`; the canonical concept and stable `code_mode_operation` subtype remain unchanged. / 由外层 `exec` 调用发起的工具执行单元；其中的 JavaScript 可以调用嵌套工具，也可以通过一个或多个轮询阶段继续运行。其用户界面显示名为 `Code Mode 工具调用`；规范概念和稳定的 `code_mode_operation` subtype 保持不变。
 _Avoid_: Exec event, JavaScript command / Exec 事件、JavaScript 命令
