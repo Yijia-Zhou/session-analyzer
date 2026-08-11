@@ -4,6 +4,8 @@
 
 ### English
 
+- Recognized copied-prefix Codex Materialized Fork Sessions, excluded inherited history from continuation-owned titles, Logical metrics, and search while preserving physical Raw records, and folded uniquely inactive sources as Earlier Branches with mixed related-session hierarchy and Raw segment headings.
+- Unified inherited-context parent navigation across Codex materialized and Claude pointer forks with Main-first, Raw-fallback fork-point targets; a targetless source keeps the current search, filters, and layer during ordinary parent navigation.
 - Promoted direct Claude Code `Read` calls from `other_tool_call` to an independent `read` kind with dedicated filtering, counts, localized labels, structured detail routing, and folding-rule compatibility.
 - Added runtime Transcript Source switching: `POST /api/source` changes the active Codex/Claude Code source and optional source home directories without restarting the server; the Select project chooser exposes a source switcher with custom home directories, and stale project discovery is rejected through source revisions.
 - Added per-source last-selected repository storage with a one-time migration of the legacy Codex key, and made project-selection copy source-neutral (`sourceHome` instead of `codexHome`).
@@ -14,6 +16,8 @@
 
 ### 中文
 
+- 识别复制前缀式 Codex 物化式分叉会话，在保留完整物理 Raw Record 的同时，从续写自有标题、逻辑指标与搜索中排除继承历史，并将唯一且不再活跃的来源会话折叠为较早分支，同时支持混合相关会话层级与 Raw 区段标题。
+- 统一 Codex 物化式分叉与 Claude 指针式分叉的继承上下文父会话导航，优先定位 Main 分叉点、否则回退 Raw；若某个来源没有精确 target，普通父会话导航会保留当前搜索、筛选与层级。
 - 将 Claude Code 的直接 `Read` 调用从 `other_tool_call` 提升为独立的 `read` kind，并补齐专属筛选、计数、本地化标签、结构化详情路由与折叠规则兼容。
 - 新增运行期转录来源切换：`POST /api/source` 可在不重启服务器的情况下切换当前 Codex/Claude Code 来源及可选来源 home 目录；Select project 选择界面提供来源切换与自定义目录入口，并通过 source revision 拒绝过期的项目发现结果。
 - 新增按来源区分的“最后选择的仓库”存储，并一次性迁移旧 Codex key；项目选择文案改为来源中立（使用 `sourceHome` 而非 `codexHome`）。

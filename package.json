@@ -38,6 +38,7 @@
     "src/review-lifecycle.js",
     "src/codex.js",
     "src/codex-detail.js",
+    "src/codex-forks.js",
     "src/codex-goal.js",
     "src/codex-logical.js",
     "src/codex-search.js",

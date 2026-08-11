@@ -1548,6 +1548,13 @@ test('Claude pointer fork uses exact parent command evidence and keeps inherited
     child.inheritedContext.previewEvents.map((event) => event.preview),
     ['Inherited task', 'Inherited answer'],
   );
+  const expectedForkPointEventId = child.inheritedContext.previewEvents.at(-1).parentEventId;
+  const parentMainEvents = parent.logicalEvents.filter((event) => event.layer !== 'protocol');
+  assert.deepEqual(child.inheritedContext.forkPointTarget, {
+    layer: 'main',
+    eventId: expectedForkPointEventId,
+    timelineIndex: parentMainEvents.findIndex((event) => event.id === expectedForkPointEventId),
+  });
   assert.doesNotMatch(
     child.inheritedContext.previewEvents.map((event) => event.preview).join('\n'),
     /Parent-only continuation/,
@@ -1570,6 +1577,57 @@ test('Claude pointer fork uses exact parent command evidence and keeps inherited
   assert.equal(childTimeline.session.inheritedContext.mainEventCount, 2);
   assert.equal(childTimeline.session.inheritedContext.ownerSessionId, parent.id);
   assert.equal(childTimeline.session.rawEventCount, 2);
+});
+
+test('Claude pointer fork navigation falls back to the exact parent Raw Record without readable Main ancestry', async (t) => {
+  const claudeHome = await makeClaudeHome(t);
+  const repoRoot = path.join(claudeHome, 'repo');
+  const container = path.join(claudeHome, 'projects', '-fixture-repo');
+  const parentId = '12121212-1212-4212-8212-121212121212';
+  const childId = '34343434-3434-4434-8434-343434343434';
+  await fsp.mkdir(repoRoot, { recursive: true });
+
+  await writeJsonl(path.join(container, `${parentId}.jsonl`), [
+    baseRecord(parentId, repoRoot, {
+      type: 'system',
+      subtype: 'local_command',
+      parentUuid: null,
+      content: '<command-name>/status</command-name>',
+      uuid: 'protocol-only-anchor',
+      timestamp: '2026-07-31T13:00:00.000Z',
+    }),
+    baseRecord(parentId, repoRoot, {
+      type: 'system',
+      subtype: 'local_command',
+      parentUuid: 'protocol-only-anchor',
+      content: '<command-name>/fork</command-name>',
+      uuid: 'raw-fallback-fork-command',
+      timestamp: '2026-07-31T13:00:01.000Z',
+    }),
+    baseRecord(parentId, repoRoot, {
+      type: 'system',
+      subtype: 'local_command',
+      parentUuid: 'raw-fallback-fork-command',
+      content: '<local-command-stdout>session waiting for a prompt · Raw fallback pointer ⑂ · 34343434</local-command-stdout>',
+      uuid: 'raw-fallback-fork-output',
+      timestamp: '2026-07-31T13:00:01.000Z',
+    }),
+  ]);
+  await writeJsonl(path.join(container, `${childId}.jsonl`), [
+    { type: 'ai-title', aiTitle: 'Raw fallback pointer ⑂', sessionId: childId },
+    { type: 'agent-name', agentName: 'Raw fallback pointer ⑂', sessionId: childId },
+  ]);
+
+  const index = await buildClaudeIndex({ repoRoot, claudeHome });
+  const parent = index.sessionsById.get(analyzerSessionId(parentId));
+  const child = index.sessionsById.get(analyzerSessionId(childId));
+  assert.equal(child.forkStorageMode, 'pointer');
+  assert.equal(child.inheritedContext.mainEventCount, 0);
+  assert.deepEqual(child.inheritedContext.forkPointTarget, {
+    layer: 'raw',
+    eventId: parent.rawEvents[0].rawId,
+    timelineIndex: 0,
+  });
 });
 
 test('Claude pointer fork fails closed when the output prefix is ambiguous in one container', async (t) => {

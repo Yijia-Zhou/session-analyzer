@@ -19,6 +19,7 @@ function createCodexSearch(deps) {
     normalizeSearchPath,
     rawRecordLabel,
     rawRef,
+    rawForkSegment,
     resolveLocale,
     sanitizeLogicalEnvelopeValue,
     sanitizeLogicalEventDto,
@@ -129,6 +130,9 @@ function createCodexSearch(deps) {
       forkedFromSessionId: session.forkedFromSessionId,
       forkedFromSessionTitle: sanitizeLogicalEnvelopeValue(forkedFromSession?.title || ''),
       ...forkDetails,
+      supersededBySessionId: session.supersededBySessionId || '',
+      supersededAt: session.supersededAt || '',
+      supersededReason: session.supersededReason || '',
       agentNickname: sanitizeLogicalEnvelopeValue(session.agentNickname),
       isDerivedSession: Boolean(derivedKind),
       derivedKind,
@@ -143,8 +147,9 @@ function createCodexSearch(deps) {
     };
   }
 
-  function rawEventDto(raw, q, locale = defaultLocale) {
+  function rawEventDto(raw, q, locale = defaultLocale, session = null) {
     const hasSearchHit = q ? eventHasSearchHit(raw, q) : false;
+    const forkSegment = rawForkSegment?.(session, raw.rawId) || '';
     return {
       id: raw.rawId,
       schemaVersion: canonicalSchemaVersion,
@@ -177,6 +182,10 @@ function createCodexSearch(deps) {
       channels: [raw.recordType],
       searchText: raw.searchText,
       snippet: hasSearchHit ? eventSearchSnippet(raw, q) : '',
+      ...(forkSegment ? { forkSegment } : {}),
+      ...(forkSegment === 'inherited_context' && session?.forkedFromSessionId
+        ? { inheritedFromSessionId: session.forkedFromSessionId }
+        : {}),
     };
   }
 
@@ -219,7 +228,7 @@ function createCodexSearch(deps) {
   }
 
   function sourceEventsForLayer(session, layer, locale, q = '') {
-    if (layer === 'raw') return session.rawEvents.map((raw) => rawEventDto(raw, q, locale));
+    if (layer === 'raw') return session.rawEvents.map((raw) => rawEventDto(raw, q, locale, session));
     return session.logicalEvents.filter((event) => event.layer === layer);
   }
 

@@ -50,6 +50,13 @@ const {
 } = require('./codex-goal');
 const { createCodexLogicalBuilder } = require('./codex-logical');
 const { createCodexSearch } = require('./codex-search');
+const {
+  canonicalRawRecordDigest,
+  hasCanonicalRawDigests,
+  inferCodexMaterializedForks,
+  inferEarlierBranches,
+  rawForkSegment,
+} = require('./codex-forks');
 const { appendReviewLifecycleMarker, reviewLifecycleFromRaw } = require('./review-lifecycle');
 const {
   CANONICAL_SCHEMA_VERSION,
@@ -1537,13 +1544,29 @@ async function inspectSessionFile(filePath, options = {}) {
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   const cwdSet = new Set();
+  let firstRecordSeen = false;
+  let leadingSessionId = '';
+  let leadingForkedFromSessionId = '';
 
   try {
     for await (const line of rl) {
       throwIfAborted(signal);
       if (!line.trim()) continue;
+      let record = null;
+      if (!firstRecordSeen) {
+        record = safeJsonParse(line);
+        if (record && typeof record === 'object') {
+          firstRecordSeen = true;
+        }
+        if (firstRecordSeen && record?.type === 'session_meta') {
+          leadingSessionId = typeof record.payload?.id === 'string' ? record.payload.id : '';
+          leadingForkedFromSessionId = typeof record.payload?.forked_from_id === 'string'
+            ? record.payload.forked_from_id.trim()
+            : '';
+        }
+      }
       if (!line.includes('"cwd"')) continue;
-      const record = safeJsonParse(line);
+      record ||= safeJsonParse(line);
       if (!record) continue;
       const payloadType = record.type === 'event_msg' ? record.payload?.type : '';
       const cwd = record.type === 'session_meta' || payloadType === 'session_configured' ? record.payload?.cwd : '';
@@ -1566,7 +1589,33 @@ async function inspectSessionFile(filePath, options = {}) {
     bytes: stat.size,
     updatedAt: safeIso(stat.mtime),
     cwdSet,
+    leadingSessionId,
+    leadingForkedFromSessionId,
   };
+}
+
+function materializedForkDigestFilePaths(candidateFiles, inspectionsByFile) {
+  const candidatesBySessionId = new Map();
+  for (const filePath of candidateFiles) {
+    const sessionId = inspectionsByFile.get(filePath)?.leadingSessionId || '';
+    if (!sessionId) continue;
+    const matches = candidatesBySessionId.get(sessionId) || [];
+    matches.push(filePath);
+    candidatesBySessionId.set(sessionId, matches);
+  }
+
+  const digestFilePaths = new Set();
+  for (const childFilePath of candidateFiles) {
+    const inspection = inspectionsByFile.get(childFilePath);
+    const childSessionId = inspection?.leadingSessionId || '';
+    const parentSessionId = inspection?.leadingForkedFromSessionId || '';
+    if (!childSessionId || !parentSessionId || childSessionId === parentSessionId) continue;
+    const parentMatches = candidatesBySessionId.get(parentSessionId) || [];
+    if (parentMatches.length !== 1) continue;
+    digestFilePaths.add(childFilePath);
+    digestFilePaths.add(parentMatches[0]);
+  }
+  return digestFilePaths;
 }
 
 async function discoverProjects({ codexHome }) {
@@ -1647,30 +1696,54 @@ function makeEmptySession(filePath, relFile, stat) {
     parentSessionId: '',
     parentSessionInferred: false,
     forkedFromSessionId: '',
+    forkStorageMode: '',
+    forkedAt: '',
+    forkPointUuid: '',
+    forkContinuationState: '',
+    forkEvidence: null,
+    inheritedContext: null,
+    supersededBySessionId: '',
+    supersededAt: '',
+    supersededReason: '',
+    _parsedAncestry: null,
     agentNickname: '',
     shell: '',
     primarySessionMetaKind: '',
     _reviewMarkers: [],
     rawEvents: [],
     logicalEvents: [],
-    counts: {
-      turns: 0,
-      messages: 0,
-      userMessages: 0,
-      assistantMessages: 0,
-      reasoning: 0,
-      toolCalls: 0,
-      failedCommands: 0,
-      issueEvents: 0,
-      patches: 0,
-      compactions: 0,
-      aborts: 0,
-      errors: 0,
-      protocol: 0,
-      planArtifacts: 0,
-      planEvents: 0,
-    },
+    counts: emptySessionCounts(),
     analysis: null,
+  };
+}
+
+function emptySessionCounts() {
+  return {
+    turns: 0,
+    messages: 0,
+    userMessages: 0,
+    assistantMessages: 0,
+    reasoning: 0,
+    toolCalls: 0,
+    failedCommands: 0,
+    issueEvents: 0,
+    patches: 0,
+    compactions: 0,
+    aborts: 0,
+    errors: 0,
+    protocol: 0,
+    planArtifacts: 0,
+    planEvents: 0,
+  };
+}
+
+function emptyAnalysisDraft() {
+  return {
+    toolUsage: new Map(),
+    commands: [],
+    failedCommands: [],
+    patchedFiles: new Map(),
+    tokenStats: { maxObserved: 0 },
   };
 }
 
@@ -3731,7 +3804,32 @@ function inferSessionTitle(session) {
     const label = nickname ? `${baseLabel}${nickname}` : `${baseLabel} session`;
     return truncate(`${label}: ${taskPreview}`, SUBAGENT_SESSION_TITLE_LIMIT);
   }
-  return titleFromUserEvents(userEvents, Boolean(session.forkedFromSessionId)) || path.basename(session.sourceFile, '.jsonl');
+  const preferLast = Boolean(session.forkedFromSessionId && session.forkStorageMode !== 'materialized');
+  return titleFromUserEvents(userEvents, preferLast) || path.basename(session.sourceFile, '.jsonl');
+}
+
+function transcriptMetadataTitle(session) {
+  let title = '';
+  for (const raw of session.rawEvents || []) {
+    if (rawForkSegment(session, raw.rawId) === 'inherited_context') continue;
+    const payload = raw.parsed?.payload;
+    if (raw.recordType !== 'event_msg' || !payload?.thread_name) continue;
+    if (payload.type === 'session_configured' && !title) title = payload.thread_name;
+    if (payload.type === 'thread_name_updated' && !session.parentSessionId) title = payload.thread_name;
+  }
+  return title;
+}
+
+function resetOwnedRawFacts(session) {
+  session.startedAt = '';
+  session.updatedAt = '';
+  const reviewMarkers = [];
+  for (const raw of session.rawEvents || []) {
+    if (rawForkSegment(session, raw.rawId) === 'inherited_context') continue;
+    updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
+    appendReviewLifecycleMarker(reviewMarkers, raw, { ownerId: session.id });
+  }
+  session._reviewMarkers = reviewMarkers;
 }
 
 function applySessionIndexMetadata(session, sessionIndexEntry) {
@@ -3743,8 +3841,16 @@ function applySessionIndexMetadata(session, sessionIndexEntry) {
 }
 
 function finalizeSession(session, sessionIndexEntry) {
+  session.counts = emptySessionCounts();
+  session._turnIds = new Set();
+  session._analysisDraft = emptyAnalysisDraft();
+  resetOwnedRawFacts(session);
+  for (const event of session.logicalEvents || []) {
+    addCounts(session, event);
+    updateAnalysisDraft(session, event);
+  }
   session.counts.turns = session._turnIds.size;
-  session.transcriptTitle = session.title || inferSessionTitle(session);
+  session.transcriptTitle = transcriptMetadataTitle(session) || inferSessionTitle(session);
   session.transcriptUpdatedAt = session.updatedAt;
   applySessionIndexMetadata(session, sessionIndexEntry);
 
@@ -3769,19 +3875,12 @@ function finalizeSession(session, sessionIndexEntry) {
   return session;
 }
 
-async function parseSessionFile(filePath, relFile, repoRoot, signal) {
+async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {}) {
   throwIfAborted(signal);
   const stat = await fsp.stat(filePath);
   const session = makeEmptySession(filePath, relFile, stat);
   let primarySessionMetaSeen = false;
-  session._turnIds = new Set();
-  session._analysisDraft = {
-    toolUsage: new Map(),
-    commands: [],
-    failedCommands: [],
-    patchedFiles: new Map(),
-    tokenStats: { maxObserved: 0 },
-  };
+  const includeCanonicalRawDigests = options.canonicalRawDigests === true;
 
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -3803,7 +3902,10 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
             session.id = record.payload.id;
             session.sourceSessionId = record.payload.id;
           }
-          session.forkedFromSessionId = forkedFromSessionIdFromMeta(record.payload);
+          const forkedFromSessionId = forkedFromSessionIdFromMeta(record.payload);
+          if (forkedFromSessionId || !session.forkedFromSessionId) {
+            session.forkedFromSessionId = forkedFromSessionId;
+          }
           session.parentSessionId = parentSessionIdFromMeta(record.payload);
           session.agentNickname = agentNicknameFromMeta(record.payload);
           session.primarySessionMetaKind = derivedSessionKindFromMeta(record.payload);
@@ -3832,13 +3934,14 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
         session.title = record.payload.thread_name;
       }
       const embeddedImages = [];
+      const canonicalDigest = includeCanonicalRawDigests ? canonicalRawRecordDigest(record) : '';
       externalizeKnownImageGenerationResult(record, { file: relFile, line: lineNumber }, embeddedImages);
       externalizeEmbeddedImages(record, { file: relFile, line: lineNumber }, embeddedImages);
       const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages);
+      if (canonicalDigest) raw._canonicalRawDigest = canonicalDigest;
       raw.sourceClientVersion = record.version || '';
       if (!session.sourceClientVersion && record.version) session.sourceClientVersion = String(record.version);
       updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
-      appendReviewLifecycleMarker(session._reviewMarkers, raw, { ownerId: session.id });
       if (!session.shell && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
         session.shell = readXmlTag(raw.messageText, 'shell');
       }
@@ -3850,10 +3953,13 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
   }
 
   throwIfAborted(signal);
-  session.logicalEvents = codexLogicalBuilder.buildLogicalEvents(session.rawEvents);
-  for (const event of session.logicalEvents) {
-    addCounts(session, event);
-    updateAnalysisDraft(session, event);
+  session._parsedAncestry = {
+    forkedFromSessionId: String(session.forkedFromSessionId || '').trim(),
+  };
+  session._logicalEvents = codexLogicalBuilder.buildLogicalEvents(session.rawEvents);
+  session.logicalEvents = session._logicalEvents;
+  if (includeCanonicalRawDigests) {
+    session._canonicalRawDigests = session.rawEvents.map((raw) => raw._canonicalRawDigest);
   }
   return session;
 }
@@ -3879,6 +3985,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
   const sessionIndex = await readSessionIndex(resolvedCodex);
   const files = await collectJsonlFiles(sessionsRoot);
   const candidates = [];
+  const candidateInspections = new Map();
   let skippedFileCount = 0;
   let unknownFileCount = 0;
   let candidateBytes = 0;
@@ -3904,6 +4011,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
     const matchesRepo = [...inspected.cwdSet].some((cwd) => isPathInsideOrSame(cwd, resolvedRepo));
     if (matchesRepo) {
       candidates.push(filePath);
+      candidateInspections.set(filePath, inspected);
       candidateBytes += inspected.bytes;
     } else if (!hasCwd) {
       unknownFileCount += 1;
@@ -3940,6 +4048,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
   const previousSessionsBySource = canReusePrevious
     ? new Map(previousIndex.sessions.map((session) => [session.sourceFile, session]))
     : new Map();
+  const canonicalDigestFilePaths = materializedForkDigestFilePaths(candidates, candidateInspections);
 
   emitProgress(onProgress, {
     phase: 'parsing',
@@ -3960,34 +4069,31 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
     const relFile = path.relative(sessionsRoot, filePath);
     const previousSession = previousSessionsBySource.get(relFile);
     const currentStat = previousSession ? await fsp.stat(filePath) : null;
+    const requiresCanonicalRawDigests = canonicalDigestFilePaths.has(filePath);
     const reusable = previousSession
       && previousSession.bytes === currentStat.size
-      && previousSession.sourceUpdatedAt === safeIso(currentStat.mtime);
+      && previousSession.sourceUpdatedAt === safeIso(currentStat.mtime)
+      && (!requiresCanonicalRawDigests || hasCanonicalRawDigests(previousSession));
     let session;
     if (reusable) {
       session = {
         ...previousSession,
         parentSessionId: previousSession.parentSessionInferred ? '' : previousSession.parentSessionId,
         parentSessionInferred: false,
-        _reviewMarkers: sessionReviewMarkers(previousSession),
+        _logicalEvents: previousSession._logicalEvents || previousSession.logicalEvents,
       };
-      const indexEntry = sessionIndex.get(session.id);
-      session.transcriptTitle ||= session.title;
-      session.transcriptUpdatedAt ??= session.updatedAt;
-      applySessionIndexMetadata(session, indexEntry);
-      session.analysis = { ...session.analysis, title: session.title };
       reusedFileCount += 1;
     } else {
-      session = await parseSessionFile(filePath, relFile, resolvedRepo, signal);
-      const indexEntry = sessionIndex.get(session.id);
-      finalizeSession(session, indexEntry);
+      session = await parseSessionFile(filePath, relFile, resolvedRepo, signal, {
+        canonicalRawDigests: requiresCanonicalRawDigests,
+      });
     }
     indexedFileCount += 1;
     parsedBytes += session.bytes;
     if (session.matchesRepo) {
       sessions.push(session);
       sessionsById.set(session.id, session);
-      logicalEventCount += session.logicalEvents.length;
+      logicalEventCount += (session._logicalEvents || session.logicalEvents).length;
       rawEventCount += session.rawEvents.length;
     }
     emitProgress(onProgress, {
@@ -4010,8 +4116,13 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
   }
 
   throwIfAborted(signal);
+  inferCodexMaterializedForks(sessions);
+  for (const session of sessions) finalizeSession(session, sessionIndex.get(session.id));
   inferReviewParentSessions(sessions);
+  inferEarlierBranches(sessions);
   for (const session of sessions) delete session._reviewMarkers;
+  logicalEventCount = sessions.reduce((sum, session) => sum + session.logicalEvents.length, 0);
+  rawEventCount = sessions.reduce((sum, session) => sum + session.rawEvents.length, 0);
   sessions.sort((a, b) => String(b.updatedAt || b.startedAt).localeCompare(String(a.updatedAt || a.startedAt)));
   emitProgress(onProgress, {
     phase: 'complete',
@@ -4076,6 +4187,7 @@ const codexSearch = createCodexSearch({
   normalizeSearchPath,
   rawRecordLabel,
   rawRef,
+  rawForkSegment,
   resolveLocale: i18n.resolveLocale,
   sanitizeLogicalEnvelopeValue,
   sanitizeLogicalEventDto,

@@ -166,6 +166,7 @@ const state = {
   timelineSearchMatchCount: 0,
   timelineSearchEventCount: 0,
   currentEvents: [],
+  navigationEventReveal: null,
   temporaryEventReveal: null,
   contextReveal: null,
   contextRevealPending: null,
@@ -2467,7 +2468,29 @@ function invalidateProjectDiscovery() {
   state.projectDiscoveryLoading = false;
 }
 
-function sessionRelationshipLabel(session) {
+let sessionRelationshipIndexCache = {
+  sessions: null,
+  earlierBranchBySuccessorId: new Map(),
+};
+
+function sessionRelationshipIndex(sessions = state.sessions) {
+  if (sessionRelationshipIndexCache.sessions === sessions) return sessionRelationshipIndexCache;
+  const earlierBranchBySuccessorId = new Map();
+  for (const session of sessions) {
+    if (!session.supersededBySessionId || earlierBranchBySuccessorId.has(session.supersededBySessionId)) continue;
+    earlierBranchBySuccessorId.set(session.supersededBySessionId, session);
+  }
+  sessionRelationshipIndexCache = { sessions, earlierBranchBySuccessorId };
+  return sessionRelationshipIndexCache;
+}
+
+function sessionRelationshipLabel(session, relationships = sessionRelationshipIndex()) {
+  if (session.supersededBySessionId) return t('earlierBranch');
+  const earlierBranch = relationships.earlierBranchBySuccessorId.get(session.id);
+  if (earlierBranch) {
+    const parentLabel = shortSessionTitle(earlierBranch.title) || shortId(earlierBranch.id);
+    return t('continuesFromEarlierBranch', { parent: parentLabel });
+  }
   if (session.isDerivedSession) {
     const parent = shortId(session.parentSessionId);
     const kind = session.derivedKind === 'review' ? t('reviewKind') : t('subagentKind');
@@ -2482,14 +2505,19 @@ function sessionRelationshipLabel(session) {
   return '';
 }
 
-function sessionRelationshipTitle(session, fallback = '') {
+function sessionRelationshipTitle(session, fallback = '', relationships = sessionRelationshipIndex()) {
+  if (session.supersededBySessionId) return t('earlierBranchExplanation');
+  const earlierBranch = relationships.earlierBranchBySuccessorId.get(session.id);
+  if (earlierBranch) return earlierBranch.title || earlierBranch.id || fallback;
   if (session.isDerivedSession) return session.parentSessionTitle || session.parentSessionId || fallback;
   return session.forkedFromSessionTitle || session.forkedFromSessionId || fallback;
 }
 
 function sessionItemClasses(session, active) {
   const classes = ['sessionItem'];
-  if (session.isDerivedSession) {
+  if (session.supersededBySessionId) {
+    classes.push('secondarySession', 'earlierBranchSession');
+  } else if (session.isDerivedSession) {
     classes.push('secondarySession');
     classes.push(session.derivedKind === 'review' ? 'derived-review' : 'derived-subagent');
   }
@@ -2501,11 +2529,17 @@ function sessionHierarchy(sessions = state.sessions) {
   const byId = new Map(sessions.map((session) => [session.id, session]));
   const attachedParentIds = new Map();
   const childrenByParentId = new Map();
+  const desiredParentId = (session) => {
+    if (session.supersededBySessionId && byId.has(session.supersededBySessionId)) return session.supersededBySessionId;
+    if (session.isDerivedSession && session.parentSessionId && byId.has(session.parentSessionId)) return session.parentSessionId;
+    return '';
+  };
 
   for (const session of sessions) {
-    if (!session.isDerivedSession || !session.parentSessionId || !byId.has(session.parentSessionId)) continue;
+    const directParentId = desiredParentId(session);
+    if (!directParentId) continue;
     const visited = new Set([session.id]);
-    let parentId = session.parentSessionId;
+    let parentId = directParentId;
     let cyclic = false;
     while (parentId && byId.has(parentId)) {
       if (visited.has(parentId)) {
@@ -2514,13 +2548,13 @@ function sessionHierarchy(sessions = state.sessions) {
       }
       visited.add(parentId);
       const parent = byId.get(parentId);
-      parentId = parent?.isDerivedSession ? parent.parentSessionId : '';
+      parentId = desiredParentId(parent);
     }
     if (cyclic) continue;
-    attachedParentIds.set(session.id, session.parentSessionId);
-    const children = childrenByParentId.get(session.parentSessionId) || [];
+    attachedParentIds.set(session.id, directParentId);
+    const children = childrenByParentId.get(directParentId) || [];
     children.push(session);
-    childrenByParentId.set(session.parentSessionId, children);
+    childrenByParentId.set(directParentId, children);
   }
 
   return {
@@ -3327,6 +3361,7 @@ function setProjectMode(selecting) {
 function resetProjectViewState() {
   Object.values(requestOwners).forEach((owner) => owner.abort());
   clearContextReveal({ render: false });
+  clearNavigationEventReveal();
   state.sessions = [];
   state.expandedSessionGroups.clear();
   state.projectResults = [];
@@ -3924,6 +3959,7 @@ async function drillDownProjectResult(sessionId) {
   };
   state.projectReturnContext = returnContext;
   clearContextReveal({ render: false });
+  clearNavigationEventReveal();
   expandSessionAncestors(sessionId);
   if (state.selectedSessionId !== sessionId) resetSessionDetailCache();
   state.searchScope = 'session';
@@ -3991,9 +4027,9 @@ function renderProjectResultSnippet(text) {
   )).join('');
 }
 
-function renderProjectResultCard(session) {
+function renderProjectResultCard(session, relationships = sessionRelationshipIndex()) {
   const latest = session.searchMatch?.latestEvent || {};
-  const relationship = sessionRelationshipLabel(session);
+  const relationship = sessionRelationshipLabel(session, relationships);
   return `<button class="sessionItem projectResultCard" type="button" data-project-result-session-id="${escapeHtml(session.id)}">
     <span class="sessionTitle">${escapeHtml(session.title)}</span>
     <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
@@ -4008,23 +4044,48 @@ function renderProjectResultCard(session) {
 }
 
 function renderSessions() {
+  const relationships = sessionRelationshipIndex();
   if (state.searchScope === 'project' && hasActiveSearchExpression()) {
-    el.sessionList.innerHTML = state.projectResults.map(renderProjectResultCard).join('');
+    el.sessionList.innerHTML = state.projectResults.map((session) => renderProjectResultCard(session, relationships)).join('');
     state.searchSurfaceContexts.sessions = '';
     return;
   }
   const hierarchy = sessionHierarchy();
   const renderSessionBranch = (session) => {
     const active = session.id === state.selectedSessionId;
-    const relationship = sessionRelationshipLabel(session);
-    const relationshipTitle = sessionRelationshipTitle(session, relationship);
+    const relationship = sessionRelationshipLabel(session, relationships);
+    const relationshipTitle = sessionRelationshipTitle(session, relationship, relationships);
     const children = hierarchy.childrenByParentId.get(session.id) || [];
     const expanded = children.length > 0 && state.expandedSessionGroups.has(session.id);
     const childrenId = `session-children-${session.id}`;
     const oneChild = children.length === 1;
+    const earlierBranchCount = children.filter((child) => child.supersededBySessionId === session.id).length;
+    const derivedChildCount = children.length - earlierBranchCount;
+    const groupKind = earlierBranchCount && derivedChildCount ? 'related' : (earlierBranchCount ? 'earlier' : 'derived');
+    const groupKeys = groupKind === 'earlier'
+      ? {
+        countOne: 'earlierBranchCountOne', count: 'earlierBranchCount',
+        expandOne: 'expandEarlierBranchesOne', expand: 'expandEarlierBranches',
+        collapseOne: 'collapseEarlierBranchesOne', collapse: 'collapseEarlierBranches',
+      }
+      : (groupKind === 'related'
+        ? {
+          countOne: 'relatedSessionCountOne', count: 'relatedSessionCount',
+          expandOne: 'expandRelatedSessionsOne', expand: 'expandRelatedSessions',
+          collapseOne: 'collapseRelatedSessionsOne', collapse: 'collapseRelatedSessions',
+        }
+        : {
+          countOne: 'childSessionCountOne', count: 'childSessionCount',
+          expandOne: 'expandChildSessionsOne', expand: 'expandChildSessions',
+          collapseOne: 'collapseChildSessionsOne', collapse: 'collapseChildSessions',
+        });
     const toggleLabel = expanded
-      ? t(oneChild ? 'collapseChildSessionsOne' : 'collapseChildSessions', { count: children.length })
-      : t(oneChild ? 'expandChildSessionsOne' : 'expandChildSessions', { count: children.length });
+      ? t(oneChild ? groupKeys.collapseOne : groupKeys.collapse, { count: children.length })
+      : t(oneChild ? groupKeys.expandOne : groupKeys.expand, { count: children.length });
+    const groupCountLabel = t(oneChild ? groupKeys.countOne : groupKeys.count, { count: children.length });
+    const earlierBranchExplanation = session.supersededReason === 'inactive_after_fork'
+      ? `<span class="earlierBranchExplanation">${escapeHtml(t('earlierBranchExplanation'))}</span>`
+      : '';
     return `<div class="sessionBranch" data-session-branch-id="${escapeHtml(session.id)}">
       <div class="sessionRow${children.length ? ' hasSessionChildren' : ''}">
         <button class="${sessionItemClasses(session, active)}" type="button" data-session-id="${escapeHtml(session.id)}">
@@ -4039,8 +4100,9 @@ function renderSessions() {
             <span class="chip">${escapeHtml(t('failedCommandCountShort', { count: session.counts.failedCommands }))}</span>
             <span class="chip">${escapeHtml(t('protocolCountShort', { count: session.protocolCount }))}</span>
           </span>
+          ${earlierBranchExplanation}
         </button>
-        ${children.length ? `<button class="sessionChildrenToggle" type="button" data-session-children-toggle="${escapeHtml(session.id)}" aria-expanded="${expanded}" aria-controls="${escapeHtml(childrenId)}" aria-label="${escapeHtml(toggleLabel)}" title="${escapeHtml(toggleLabel)}"><span class="sessionChildrenChevron" aria-hidden="true"></span><span class="sessionChildrenLabel" aria-hidden="true">${escapeHtml(t(oneChild ? 'childSessionCountOne' : 'childSessionCount', { count: children.length }))}</span></button>` : ''}
+        ${children.length ? `<button class="sessionChildrenToggle" type="button" data-session-children-toggle="${escapeHtml(session.id)}" aria-expanded="${expanded}" aria-controls="${escapeHtml(childrenId)}" aria-label="${escapeHtml(toggleLabel)}" title="${escapeHtml(toggleLabel)}"><span class="sessionChildrenChevron" aria-hidden="true"></span><span class="sessionChildrenLabel" aria-hidden="true">${escapeHtml(groupCountLabel)}</span></button>` : ''}
       </div>
       ${children.length ? `<div class="sessionChildren" id="${escapeHtml(childrenId)}"${expanded ? '' : ' hidden'}>${children.map(renderSessionBranch).join('')}</div>` : ''}
     </div>`;
@@ -4081,8 +4143,9 @@ function renderProjectReturnBanner() {
 function renderInheritedContextCard() {
   const session = state.sessions.find((item) => item.id === state.selectedSessionId);
   const context = session?.inheritedContext;
-  if (session?.forkStorageMode !== 'pointer' || !context) return '';
-  const parentLabel = shortSessionTitle(session.forkedFromSessionTitle) || shortId(context.ownerSessionId);
+  if (!context) return '';
+  const sourceSessionId = context.sourceSessionId || context.ownerSessionId || session.forkedFromSessionId;
+  const parentLabel = shortSessionTitle(session.forkedFromSessionTitle) || shortId(sourceSessionId);
   const previewEvents = Array.isArray(context.previewEvents) ? context.previewEvents : [];
   const previewItems = previewEvents.map((event) => `<li class="inheritedContextEvent">
     <div class="inheritedContextEventHeader">
@@ -4109,7 +4172,7 @@ function renderInheritedContextCard() {
           time: fmtDate(session.forkedAt || session.startedAt),
         }))}</p>
       </div>
-      <span class="chip inheritedContextOwner">${escapeHtml(t('inheritedContextOwner'))}</span>
+      <span class="chip inheritedContextOwner">${escapeHtml(t('inheritedContextSource'))}</span>
     </div>
     <p class="inheritedContextSummary">${escapeHtml(t('inheritedContextSummary', {
       raw: context.rawRecordCount || 0,
@@ -4118,14 +4181,58 @@ function renderInheritedContextCard() {
     }))}</p>
     ${preview}
     <div class="inheritedContextActions">
-      <span>${escapeHtml(t('inheritedContextForkPoint', { id: shortId(context.forkPointUuid) }))}</span>
-      <button class="smallBtn" type="button" data-inherited-parent-session="${escapeHtml(context.ownerSessionId)}">${escapeHtml(t('openParentSession'))}</button>
+      <span>${escapeHtml(t('inheritedContextForkPoint', { id: shortId(context.forkPointUuid || context.forkPointRawId) }))}</span>
+      <button class="smallBtn" type="button" data-inherited-parent-session="${escapeHtml(sourceSessionId)}" data-inherited-target-layer="${escapeHtml(context.forkPointTarget?.layer || '')}" data-inherited-target-event="${escapeHtml(context.forkPointTarget?.eventId || '')}" data-inherited-target-index="${escapeHtml(context.forkPointTarget?.timelineIndex ?? '')}">${escapeHtml(t('openParentSession'))}</button>
     </div>
   </aside>`;
 }
 
+async function openInheritedSourceSession(button) {
+  const sessionId = button.dataset.inheritedParentSession || '';
+  if (!sessionId) return;
+  const targetLayer = ['main', 'protocol', 'raw'].includes(button.dataset.inheritedTargetLayer)
+    ? button.dataset.inheritedTargetLayer
+    : 'main';
+  const targetEventId = button.dataset.inheritedTargetEvent || '';
+  const targetIndex = Number(button.dataset.inheritedTargetIndex);
+  state.projectReturnContext = null;
+  if (!targetEventId) {
+    await selectSession(sessionId, { mobileView: 'events' });
+    return;
+  }
+  state.searchQuery = '';
+  state.searchFilters = { file: '', kind: '', status: '', codeModeRequest: '' };
+  state.layerId = targetLayer;
+  el.layerSelect.value = targetLayer;
+  localStorage.setItem('sessionAnalyzer.layer', targetLayer);
+  syncSearchInputValue();
+  syncSearchAssistControls();
+  renderSearchAssistChips();
+  updateProfileApplicabilityUi();
+  await selectSession(sessionId, { mobileView: 'events' });
+  if (state.selectedSessionId !== sessionId) return;
+  if (!state.currentEvents.some((event) => event.id === targetEventId)
+      && Number.isInteger(targetIndex) && targetIndex >= 0) {
+    await loadTimelineThroughIndex(targetIndex);
+  }
+  const target = state.currentEvents.find((event) => event.id === targetEventId);
+  if (!target) return;
+  if (displayState(target) === 'hidden') {
+    state.navigationEventReveal = {
+      sessionId,
+      layerId: targetLayer,
+      eventId: target.id,
+    };
+    renderTimeline();
+  }
+  state.selectedEventId = target.id;
+  updateSelectedTimelineEvent();
+  scrollToTimelineEvent(target.id, { behavior: 'auto' });
+}
+
 async function selectSession(sessionId, options = {}) {
   clearContextReveal({ render: false });
+  clearNavigationEventReveal();
   expandSessionAncestors(sessionId);
   if (state.selectedSessionId !== sessionId) resetSessionDetailCache();
   state.searchScope = 'session';
@@ -4155,6 +4262,7 @@ async function selectSession(sessionId, options = {}) {
         <span class="sessionMetaChip">${escapeHtml(sourceKindLabel(session.sourceKind))}</span>
         ${relationship ? `<span class="sessionMetaChip">${escapeHtml(relationship)}</span>` : ''}
         ${session.forkStorageMode === 'pointer' ? `<span class="sessionMetaChip">${escapeHtml(t('pointerFork'))}</span>` : ''}
+        ${session.forkStorageMode === 'materialized' ? `<span class="sessionMetaChip">${escapeHtml(t('materializedFork'))}</span>` : ''}
         ${session.forkContinuationState === 'waiting_for_prompt' ? `<span class="sessionMetaChip">${escapeHtml(t('forkWaitingForPrompt'))}</span>` : ''}
         <span class="sessionMetaChip">${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</span>
         <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
@@ -4284,6 +4392,7 @@ async function changeLayer(layerId) {
   const focusAnchor = state.searchScope === 'session' ? captureFocusAnchor() : { hadSelection: false };
   if (focusAnchor.hadSelection || isSelectedEventDetailView()) resetDetailPane();
   clearContextReveal({ render: false });
+  clearNavigationEventReveal();
   resetSearchTransientExpansions();
   state.layerId = layerId;
   if (layerId !== 'main' && state.searchFilters.codeModeRequest) {
@@ -4597,12 +4706,27 @@ function naturalDisplayState(event) {
   return evaluateDisplayStateFromRules(event, profile?.rules || defaultRules());
 }
 
+function clearNavigationEventReveal(eventId = '') {
+  if (!state.navigationEventReveal || (eventId && state.navigationEventReveal.eventId !== eventId)) return false;
+  state.navigationEventReveal = null;
+  return true;
+}
+
+function isNavigationEventRevealed(event) {
+  const reveal = state.navigationEventReveal;
+  return Boolean(reveal
+    && reveal.sessionId === state.selectedSessionId
+    && reveal.layerId === activeLayerId()
+    && reveal.eventId === event.id);
+}
+
 function hasActiveStructuredEventFilter() {
   const search = currentSearchState();
   return Boolean(search.file || search.kind || search.status || search.codeModeRequest);
 }
 
 function displayState(event) {
+  if (isNavigationEventRevealed(event)) return 'summary';
   const sessionOverrides = state.overrides[state.selectedSessionId] || {};
   if (sessionOverrides[event.id]) return sessionOverrides[event.id];
   if (currentSearchTransientExpansionIds().includes(event.id)) return 'expanded';
@@ -4785,6 +4909,16 @@ function cssToken(value) {
   return String(value || 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown';
 }
 
+function renderRawForkSegmentHeading(event, previousEvent) {
+  if (activeLayerId() !== 'raw' || !event.forkSegment || event.forkSegment === previousEvent?.forkSegment) return '';
+  const key = {
+    fork_metadata: 'rawForkMetadata',
+    inherited_context: 'rawInheritedContext',
+    continuation: 'rawForkContinuation',
+  }[event.forkSegment];
+  return key ? `<h3 class="rawForkSegmentHeading" data-fork-segment="${escapeHtml(event.forkSegment)}">${escapeHtml(t(key))}</h3>` : '';
+}
+
 function renderTimeline() {
   if (state.searchScope !== 'session') {
     clearContextReveal({ render: false });
@@ -4793,7 +4927,8 @@ function renderTimeline() {
   }
   reconcileContextRevealState();
   const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
-  el.timeline.innerHTML = `${renderProjectReturnBanner()}${renderInheritedContextCard()}${renderedTimelineEvents().map((event) => {
+  const timelineEvents = renderedTimelineEvents();
+  el.timeline.innerHTML = `${renderProjectReturnBanner()}${renderInheritedContextCard()}${timelineEvents.map((event, index) => {
     const ds = displayState(event);
     const presentation = codeModeEventPresentation(event);
     const compactWebLifecycle = event.kind === 'web_search' && compactWebLifecycleIds.has(event.id);
@@ -4823,7 +4958,7 @@ function renderTimeline() {
       temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
     ].join('');
     const toggleLabel = ds === 'expanded' ? t('collapseEvent') : t('expandEvent');
-    return `${renderContextRevealSlot(event)}<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
+    return `${renderRawForkSegmentHeading(event, timelineEvents[index - 1])}${renderContextRevealSlot(event)}<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
       <div class="eventHeader">
         <button class="eventToggle" type="button" data-action="toggle" aria-label="${toggleLabel}" title="${toggleLabel}">
           <span class="srOnly">${toggleLabel}</span>
@@ -4849,6 +4984,7 @@ function renderTimeline() {
 
 function setOverride(eventId, value) {
   clearContextReveal({ render: false });
+  clearNavigationEventReveal(eventId);
   clearSearchTransientExpansion(eventId);
   if (!state.overrides[state.selectedSessionId]) state.overrides[state.selectedSessionId] = {};
   state.overrides[state.selectedSessionId][eventId] = value;
@@ -5984,6 +6120,7 @@ function ensureProfileDraft() {
 
 function setProfileId(profileId, options = {}) {
   clearContextReveal({ render: false });
+  clearNavigationEventReveal();
   state.profileId = profileId;
   localStorage.setItem('sessionAnalyzer.profile', state.profileId);
   el.profileSelect.value = state.profileId;
@@ -6210,8 +6347,7 @@ el.timeline.addEventListener('click', (event) => {
   }
   const inheritedParent = event.target.closest('[data-inherited-parent-session]');
   if (inheritedParent) {
-    state.projectReturnContext = null;
-    selectSession(inheritedParent.dataset.inheritedParentSession, { mobileView: 'events' }).catch(showError);
+    openInheritedSourceSession(inheritedParent).catch(showError);
     return;
   }
   const contextAction = event.target.closest('[data-action="reveal-context-parent"], [data-action="inspect-context-parent"]');

@@ -181,6 +181,56 @@ async function writeJsonl(file, records) {
   await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
 }
 
+async function makeMaterializedCodexForkFixture(t, options = {}) {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-materialized-browser-'));
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  const fixtureRepo = path.join(codexHome, 'repo');
+  const sessionDir = path.join(codexHome, 'sessions', '2026', '08', '09');
+  const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const childId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const derivedId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  await fsp.mkdir(fixtureRepo, { recursive: true });
+  const timestamp = (base, seconds) => new Date(Date.parse(base) + seconds * 1000).toISOString();
+  const parentRecords = [
+    { timestamp: timestamp('2026-08-09T10:00:00.000Z', 0), type: 'session_meta', payload: { id: parentId, cwd: fixtureRepo } },
+    { timestamp: timestamp('2026-08-09T10:00:00.000Z', 1), type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Inherited browser task' }] } },
+    { timestamp: timestamp('2026-08-09T10:00:00.000Z', 2), type: 'event_msg', payload: { type: 'user_message', message: 'Inherited browser task', images: [], local_images: [], text_elements: [] } },
+    { timestamp: timestamp('2026-08-09T10:00:00.000Z', 3), type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Inherited browser answer' }] } },
+    ...Array.from({ length: 160 }, (_, index) => ({
+      timestamp: timestamp('2026-08-09T10:00:00.000Z', index + 4),
+      type: 'turn_context',
+      payload: { turn_id: `parent-turn-${index}`, cwd: fixtureRepo, marker: `parent-context-${index}` },
+    })),
+  ];
+  const childRecords = [
+    { timestamp: '2026-08-09T10:10:00.000Z', type: 'session_meta', payload: { id: childId, forked_from_id: parentId, cwd: fixtureRepo, thread_source: 'user' } },
+    ...parentRecords.map((record, index) => ({ ...structuredClone(record), timestamp: timestamp('2026-08-09T09:00:00.000Z', index) })),
+    { timestamp: '2026-08-09T10:11:00.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Own browser continuation' }] } },
+    { timestamp: '2026-08-09T10:11:01.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'Own browser continuation', images: [], local_images: [], text_elements: [] } },
+    { timestamp: '2026-08-09T10:11:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Own browser answer' }] } },
+  ];
+  await writeJsonl(path.join(sessionDir, `rollout-parent-${parentId}.jsonl`), parentRecords);
+  await writeJsonl(path.join(sessionDir, `rollout-child-${childId}.jsonl`), childRecords);
+  if (options.derived) {
+    await writeJsonl(path.join(sessionDir, `rollout-derived-${derivedId}.jsonl`), [
+      {
+        timestamp: '2026-08-09T10:12:00.000Z',
+        type: 'session_meta',
+        payload: {
+          id: derivedId,
+          forked_from_id: childId,
+          cwd: fixtureRepo,
+          source: { subagent: { thread_spawn: { parent_thread_id: childId, agent_nickname: 'Fixture' } } },
+          agent_nickname: 'Fixture',
+        },
+      },
+      { timestamp: '2026-08-09T10:12:01.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'Derived browser task' } },
+    ]);
+  }
+  const index = await buildIndex({ repoRoot: fixtureRepo, codexHome });
+  return { index, parentId, childId, derivedId };
+}
+
 async function assertEventCount(page, expected) {
   await page.waitForFunction((count) => document.querySelectorAll('#timeline .event[data-event-id]').length === count, expected);
 }
@@ -831,6 +881,10 @@ test('browser presents Claude pointer fork context without child search or event
   ]);
 
   const index = await buildClaudeIndex({ repoRoot: claudeRepo, claudeHome });
+  const pointerChild = index.sessionsById.get(analyzerSessionId(childId));
+  const forkPointTarget = pointerChild?.inheritedContext?.forkPointTarget;
+  assert.equal(forkPointTarget?.layer, 'main');
+  assert.ok(forkPointTarget?.eventId);
   const { page } = await openApp(t, index, { locale: 'en' });
   await page.locator(`[data-session-id="${analyzerSessionId(childId)}"]`).click();
 
@@ -839,7 +893,7 @@ test('browser presents Claude pointer fork context without child search or event
   assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 0);
   assert.match(await page.locator('.sessionHeader').innerText(), /Pointer-backed fork/);
   assert.match(await page.locator('.sessionHeader').innerText(), /Waiting for prompt/);
-  assert.match(await context.innerText(), /2 parent Raw Records at the fork point support 2 Main and 0 Protocol events/);
+  assert.match(await context.innerText(), /2 inherited Raw Records at the fork point support 2 Main and 0 Protocol events/);
   assert.match(await context.innerText(), /Fork point pointer-/);
 
   await context.locator('summary').click();
@@ -874,12 +928,165 @@ test('browser presents Claude pointer fork context without child search or event
   await context.getByRole('button', { name: 'Open parent session' }).click();
   try {
     await parentTimelineStarted;
+    await expectInputValue(page, '#searchInput', '');
+    await expectInputValue(page, '#layerSelect', forkPointTarget.layer);
     await page.waitForFunction(() => document.querySelector('.sessionHeader h2')?.textContent === 'Inherited task');
     assert.equal(await page.locator('[data-inherited-context]').count(), 0);
   } finally {
     releaseParentTimeline();
   }
   await parentTimelineResponse;
+  await page.waitForFunction((eventId) => (
+    document.querySelector('#timeline .event.selected')?.dataset.eventId === eventId
+  ), forkPointTarget.eventId);
+
+  const targetlessIndex = await buildClaudeIndex({ repoRoot: claudeRepo, claudeHome });
+  targetlessIndex.sessionsById.get(analyzerSessionId(childId)).inheritedContext.forkPointTarget = null;
+  const { page: fallbackPage } = await openApp(t, targetlessIndex, { locale: 'en', skipProjectReindex: true });
+  await fallbackPage.locator(`[data-session-id="${analyzerSessionId(childId)}"]`).click();
+  const fallbackContext = fallbackPage.locator('[data-inherited-context]');
+  await fallbackContext.waitFor();
+  assert.equal(
+    await fallbackContext.getByRole('button', { name: 'Open parent session' }).getAttribute('data-inherited-target-event'),
+    '',
+  );
+  const fallbackSearchResponse = fallbackPage.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline') && url.searchParams.get('q') === 'Inherited task';
+  });
+  await fillSearch(fallbackPage, 'Inherited task');
+  await fallbackSearchResponse;
+  const fallbackParentResponse = fallbackPage.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === parentTimelinePath && url.searchParams.get('q') === 'Inherited task';
+  });
+  await fallbackContext.getByRole('button', { name: 'Open parent session' }).click();
+  await fallbackParentResponse;
+  await expectInputValue(fallbackPage, '#searchInput', 'Inherited task');
+  await expectInputValue(fallbackPage, '#layerSelect', 'main');
+});
+
+test('browser presents materialized fork ownership, earlier-branch hierarchy, Raw segments, and fork-point navigation', async (t) => {
+  const fixture = await makeMaterializedCodexForkFixture(t);
+  const { page } = await openApp(t, fixture.index, { locale: 'en', skipProjectReindex: true });
+  const childBranch = page.locator(`[data-session-branch-id="${fixture.childId}"]`);
+  const childCard = childBranch.locator(`:scope > .sessionRow [data-session-id="${fixture.childId}"]`);
+  const toggle = childBranch.locator(`:scope > .sessionRow [data-session-children-toggle="${fixture.childId}"]`);
+  assert.match(await childCard.innerText(), /Continues from earlier branch/);
+  assert.doesNotMatch(await childCard.innerText(), /Fork · from/);
+  assert.equal((await toggle.textContent()).trim(), 'Earlier branch');
+  assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(await page.locator(`[data-session-id="${fixture.parentId}"]`).isVisible(), false);
+
+  await toggle.click();
+  const earlier = childBranch.locator(`[data-session-id="${fixture.parentId}"]`);
+  assert.equal(await earlier.isVisible(), true);
+  assert.match(await earlier.innerText(), /Earlier branch/);
+  assert.match(await earlier.innerText(), /did not continue after the current branch was created/);
+  await earlier.click();
+  await page.waitForFunction((id) => document.querySelector('.sessionItem.active')?.dataset.sessionId === id, fixture.parentId);
+  assert.equal(await toggle.getAttribute('aria-expanded'), 'true', 'direct selection expands the earlier branch ancestor');
+
+  await childCard.click();
+  const context = page.locator('[data-inherited-context]');
+  await context.waitFor();
+  assert.match(await page.locator('.sessionHeader').innerText(), /Materialized fork/);
+  assert.match(await context.innerText(), /Inherited through/);
+  assert.match(await context.innerText(), /not counted as this session's continuation activity/);
+  await page.waitForFunction(() => [...document.querySelectorAll('#timeline .event')].some((event) => event.textContent.includes('Own browser continuation')));
+  assert.equal(await page.locator('#timeline .event').filter({ hasText: 'Inherited browser task' }).count(), 0);
+  assert.equal(await page.locator('#timeline .event').filter({ hasText: 'Own browser continuation' }).count(), 1);
+
+  await page.locator('#layerSelect').selectOption('raw');
+  await page.waitForFunction(() => document.querySelectorAll('#timeline .rawForkSegmentHeading').length >= 2);
+  assert.deepEqual(
+    await page.locator('#timeline .rawForkSegmentHeading').allTextContents(),
+    ['Fork metadata', 'Inherited context'],
+  );
+  await page.locator('#loadMoreBtn').click();
+  await page.waitForFunction(() => document.querySelectorAll('#timeline .rawForkSegmentHeading').length === 3);
+  assert.deepEqual(
+    await page.locator('#timeline .rawForkSegmentHeading').allTextContents(),
+    ['Fork metadata', 'Inherited context', 'Fork continuation'],
+    'pagination re-render keeps one heading per contiguous segment',
+  );
+
+  const parentButton = context.getByRole('button', { name: 'Open parent session' });
+  await parentButton.click();
+  await page.waitForFunction((id) => document.querySelector('.sessionItem.active')?.dataset.sessionId === id, fixture.parentId);
+  assert.equal(await page.locator('#layerSelect').inputValue(), 'main');
+  const selected = page.locator('#timeline .event.selected');
+  await selected.waitFor();
+  assert.match(await selected.innerText(), /Inherited browser answer/);
+
+  await switchHiddenLocale(page, 'zh-CN');
+  await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
+  assert.match(await toggle.innerText(), /较早分支/);
+
+  await page.locator('#layerSelect').selectOption('raw');
+  await page.locator('#searchHudScope').click();
+  await page.locator('#searchAssist button[data-search-scope="project"]').click();
+  await fillSearch(page, 'Inherited browser task');
+  await page.waitForFunction(() => document.querySelectorAll('#sessionList .projectResultCard').length === 2);
+  assert.equal(await page.locator('#sessionList .projectResultCard').count(), 2);
+  assert.equal(await page.locator('#sessionList .sessionChildrenToggle').count(), 0, 'project search stays flat');
+});
+
+test('browser fork-point navigation temporarily reveals a profile-hidden target without changing saved folds', async (t) => {
+  const fixture = await makeMaterializedCodexForkFixture(t);
+  const child = fixture.index.sessionsById.get(fixture.childId);
+  const targetEventId = child?.inheritedContext?.forkPointTarget?.eventId || '';
+  assert.ok(targetEventId);
+  const hiddenAssistantProfile = {
+    id: 'custom:hidden-fork-point-assistant',
+    name: 'Hidden fork-point assistant',
+    description: 'Hide the inherited assistant event selected by fork-point navigation.',
+    rules: {
+      kindStates: { assistant_message: 'hidden' },
+      fallback: 'summary',
+      conditions: [],
+    },
+  };
+  const savedOverrides = {
+    [fixture.parentId]: { [targetEventId]: 'hidden' },
+  };
+  const { page } = await openApp(t, fixture.index, {
+    locale: 'en',
+    skipProjectReindex: true,
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([hiddenAssistantProfile]),
+      'sessionAnalyzer.profile': hiddenAssistantProfile.id,
+      'sessionAnalyzer.overrides': JSON.stringify(savedOverrides),
+    },
+  });
+
+  const context = page.locator('[data-inherited-context]');
+  await context.waitFor();
+  await context.getByRole('button', { name: 'Open parent session' }).click();
+  await page.waitForFunction((id) => document.querySelector('.sessionItem.active')?.dataset.sessionId === id, fixture.parentId);
+  const selected = page.locator(`#timeline .event[data-event-id="${targetEventId}"].selected`);
+  await selected.waitFor();
+  assert.equal(await selected.isVisible(), true);
+  assert.equal(await selected.evaluate((node) => node.classList.contains('hiddenByProfile')), false);
+  assert.equal(await selected.evaluate((node) => node.classList.contains('summary')), true);
+  assert.equal(
+    await page.evaluate(({ sessionId, eventId }) => (
+      JSON.parse(localStorage.getItem('sessionAnalyzer.overrides'))?.[sessionId]?.[eventId]
+    ), { sessionId: fixture.parentId, eventId: targetEventId }),
+    'hidden',
+    'fork-point reveal must not overwrite the saved folding override',
+  );
+});
+
+test('browser labels mixed Derived and Earlier children as related sessions', async (t) => {
+  const fixture = await makeMaterializedCodexForkFixture(t, { derived: true });
+  const { page } = await openApp(t, fixture.index, { locale: 'en', skipProjectReindex: true });
+  const toggle = page.locator(`[data-session-children-toggle="${fixture.childId}"]`);
+  assert.equal((await toggle.textContent()).trim(), '2 related sessions');
+  assert.equal(await toggle.getAttribute('aria-label'), 'Show 2 related sessions');
+  await toggle.click();
+  assert.match(await page.locator(`[data-session-id="${fixture.parentId}"]`).innerText(), /Earlier branch/);
+  assert.match(await page.locator(`[data-session-id="${fixture.derivedId}"]`).innerText(), /Subagent Fixture · from/);
 });
 
 test('browser Raw refs preserve malformed Claude source text instead of rendering null', async (t) => {

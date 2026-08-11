@@ -309,6 +309,7 @@ test('npm pack manifest contains only runtime package files', () => {
     'src/codex-code-mode.js',
     'src/codex-code-mode-presentation.js',
     'src/codex-detail.js',
+    'src/codex-forks.js',
     'src/codex-goal.js',
     'src/codex-logical.js',
     'src/codex-presentation-context.js',

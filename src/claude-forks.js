@@ -78,6 +78,34 @@ function inheritedEventPreview(event) {
   };
 }
 
+function pointerForkPointTarget(parent, inheritedRawEvents, mainEvents) {
+  const mainTimeline = (parent.logicalEvents || []).filter((event) => event.layer !== 'protocol');
+  const readableEvent = [...(mainEvents || [])].reverse().find((event) => (
+    String(event.preview || event.searchText || '').trim()
+    && (event.rawRefs || []).length > 0
+  ));
+  if (readableEvent) {
+    const timelineIndex = mainTimeline.findIndex((event) => event.id === readableEvent.id);
+    if (timelineIndex >= 0) {
+      return {
+        layer: 'main',
+        eventId: String(readableEvent.id || ''),
+        timelineIndex,
+      };
+    }
+  }
+
+  const raw = (inheritedRawEvents || []).at(-1);
+  if (!raw) return null;
+  const timelineIndex = (parent.rawEvents || []).findIndex((candidate) => candidate.rawId === raw.rawId);
+  if (timelineIndex < 0) return null;
+  return {
+    layer: 'raw',
+    eventId: String(raw.rawId || ''),
+    timelineIndex,
+  };
+}
+
 function pointerChildHasActivity(child) {
   return (child.rawEvents || []).some((raw) => (
     raw.recordType === 'user'
@@ -119,6 +147,7 @@ function attachPointerFork(child, parent, evidence) {
     omittedPreviewEventCount: Math.max(0, mainEvents.length - previewEvents.length),
     startedAt: String(inheritedRawEvents[0]?.timestamp || ''),
     updatedAt: String(inheritedRawEvents.at(-1)?.timestamp || ''),
+    forkPointTarget: pointerForkPointTarget(parent, inheritedRawEvents, mainEvents),
     previewEvents,
   };
   if (child.projectAssociation !== 'embedded-cwd') {
