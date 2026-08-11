@@ -2493,7 +2493,13 @@ function sessionRelationshipLabel(session, relationships = sessionRelationshipIn
   }
   if (session.isDerivedSession) {
     const parent = shortId(session.parentSessionId);
-    const kind = session.derivedKind === 'review' ? t('reviewKind') : t('subagentKind');
+    const kind = session.derivedKind === 'review'
+      ? t('reviewKind')
+      : session.derivedKind === 'forked-skill'
+        ? t('forkedSkillKind')
+        : session.derivedKind === 'workflow-agent'
+          ? t('workflowAgentKind')
+          : t('subagentKind');
     const nickname = session.agentNickname && session.agentNickname.toLowerCase() !== kind.toLowerCase() ? ` ${session.agentNickname}` : '';
     const parentLabel = shortSessionTitle(session.parentSessionTitle) || parent;
     if (parentLabel) return t('derivedFrom', { kind, nickname, parent: parentLabel });
@@ -2599,6 +2605,7 @@ function renderInspectorMetadata(event, refs, detail = null) {
     metadataRow(t('provider'), meta.provider || event.provider),
     metadataRow(t('model'), meta.model || event.model),
     metadataRow(t('reasoningEffort'), meta.effort || event.effort),
+    metadataRow(t('attributionSkill'), meta.provenance?.attributionSkill || event.provenance?.attributionSkill),
     metadataRow(t('exitCode'), outputStats.exitCode == null ? '' : String(outputStats.exitCode)),
     metadataRow(t('duration'), outputStats.durationMs == null ? '' : `${outputStats.durationMs} ms`),
     metadataRow(t('recordType'), event.recordType),

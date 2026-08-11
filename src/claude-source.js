@@ -168,6 +168,11 @@ function exactPlanFingerprint(value) {
   return `${value.length}:${crypto.createHash('sha256').update(value, 'utf16le').digest('hex')}`;
 }
 
+function exactAttributionSkill(value) {
+  if (typeof value !== 'string' || !value || value !== value.trim() || value.length > 512) return '';
+  return value;
+}
+
 function exactPlanEvidence(record) {
   if (!isPlainObject(record)) return null;
   const requestByBlock = {};
@@ -231,6 +236,9 @@ function makeClaudeRawEvent(record, lineNumber, relFile, analyzerSessionId, sour
   const source = { file: relFile, line: lineNumber };
   const touchedFiles = [...new Set(toolCalls.flatMap((call) => toolInputFiles(call.name, call.input)))];
   const commandText = firstToolCall ? commandTextFromToolUse(blocks[firstToolCall.blockIndex]) : '';
+  const attributionSkill = record.type === 'assistant'
+    ? exactAttributionSkill(record.attributionSkill)
+    : '';
   const structuredResult = record.toolUseResult && typeof record.toolUseResult === 'object'
     ? record.toolUseResult
     : null;
@@ -256,6 +264,7 @@ function makeClaudeRawEvent(record, lineNumber, relFile, analyzerSessionId, sour
     record.type === 'custom-title' ? String(record.customTitle || '') : '',
     record.type === 'ai-title' ? String(record.aiTitle || '') : '',
     record.type === 'agent-name' ? String(record.agentName || '') : '',
+    attributionSkill,
   ].filter(Boolean).join('\n').slice(0, TEXT_LIMIT);
 
   const raw = {
@@ -283,6 +292,7 @@ function makeClaudeRawEvent(record, lineNumber, relFile, analyzerSessionId, sour
     model: String(record.message?.model || record.model || ''),
     provider: String(record.message?.provider || record.provider || ''),
     effort: String(record.effort || record.message?.effort || ''),
+    attributionSkill,
     callId: String(firstToolCall?.id || firstToolResult?.id || ''),
     toolName: String(firstToolCall?.name || ''),
     status: String(firstToolResult?.status || ''),

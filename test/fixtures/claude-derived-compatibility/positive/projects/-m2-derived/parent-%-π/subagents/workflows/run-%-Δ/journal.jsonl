@@ -1,0 +1,4 @@
+{"type":"started","key":"journal-%-one","agentId":"workflow-%-one"}
+{"type":"result","key":"journal-%-one","agentId":"workflow-%-one","result":{"types":["text","tool_use"],"counts":{"toolUses":1,"outputTokens":12,"category":"synthetic"}}}
+{"type":"started","key":"journal-%-two","agentId":"workflow-%-two"}
+{"type":"result","key":"journal-%-two","agentId":"workflow-%-two","result":{"types":["text"]}}

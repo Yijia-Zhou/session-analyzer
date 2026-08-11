@@ -117,6 +117,7 @@ function createCodexSearch(deps) {
       id: session.id,
       sourceKind: session.sourceKind || codexSourceKind,
       sourceSessionId: session.sourceSessionId || session.id,
+      sourceDerivedId: session.sourceDerivedId || '',
       sourceClientVersion: session.sourceClientVersion || '',
       projectAssociation: session.projectAssociation || '',
       title: sanitizeLogicalEnvelopeValue(session.title),
@@ -136,6 +137,10 @@ function createCodexSearch(deps) {
       agentNickname: sanitizeLogicalEnvelopeValue(session.agentNickname),
       isDerivedSession: Boolean(derivedKind),
       derivedKind,
+      derivedRunId: session.derivedRunId || '',
+      derivedRelationship: session.derivedRelationship
+        ? sanitizeLogicalEnvelopeValue(session.derivedRelationship)
+        : null,
       startedAt: session.startedAt,
       updatedAt: session.updatedAt,
       counts: session.counts,
@@ -217,6 +222,7 @@ function createCodexSearch(deps) {
       outputStats: event.outputStats,
       tokenUsage: event.tokenUsage,
       usageLimits: event.usageLimits,
+      ...(event.provenance ? { provenance: event.provenance } : {}),
       source: event.source,
       sourceLocator: event.sourceLocator,
       rawRefs: event.rawRefs,

@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"parent-%-π","agentId":"workflow-%-one","cwd":"__REPO_ROOT__","version":"2.1.220","uuid":"workflow-one-user","timestamp":"2026-08-10T12:00:10.000Z","message":{"role":"user","content":"Run the first workflow worker."}}
+{"type":"assistant","sessionId":"parent-%-π","agentId":"workflow-%-one","cwd":"__REPO_ROOT__","version":"2.1.220","uuid":"workflow-one-assistant","timestamp":"2026-08-10T12:00:11.000Z","message":{"id":"workflow-one-message","role":"assistant","content":[{"type":"text","text":"First worker complete."}]}}

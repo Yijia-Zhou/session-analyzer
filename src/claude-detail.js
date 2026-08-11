@@ -97,6 +97,7 @@ function logicalMeta(event) {
     provider: event.provider || '',
     model: event.model || '',
     effort: event.effort || '',
+    provenance: event.provenance || null,
     touchedFiles: event.touchedFiles || [],
     outputStats: event.outputStats || {},
     channels: event.channels || [],
@@ -266,15 +267,41 @@ function taskToolPlanSection(call, structured, locale) {
 function lifecycleSections(event, locale) {
   const lifecycle = event?.lifecycle;
   if (!lifecycle) return [];
+  if (lifecycle.kind === 'goal') {
+    const terminal = lifecycle.terminal;
+    return [
+      markdownSection('Goal condition', lifecycle.condition),
+      ...lifecycle.validations.map((validation) => jsonSection('Goal validation', validation)),
+      terminal
+        ? markdownSection('Result', terminal.reason)
+        : noticeSection('Lifecycle', claudeDetailText('goalLifecycleActive', locale), 'warning'),
+      jsonSection('Lifecycle data', {
+        kind: lifecycle.kind,
+        phase: lifecycle.phase,
+        initial: lifecycle.initial,
+        terminal: terminal ? {
+          met: terminal.met,
+          iterations: terminal.iterations,
+          durationMs: terminal.durationMs,
+          tokens: terminal.tokens,
+        } : null,
+      }),
+    ].filter(Boolean);
+  }
   const terminal = lifecycle.terminal;
   const notifications = Array.isArray(lifecycle.notifications) ? lifecycle.notifications : terminal ? [terminal] : [];
+  const isWorkflow = lifecycle.kind === 'async_workflow';
   const launchText = lifecycle.kind === 'background_command'
     ? claudeDetailText(
       lifecycle.timedOutAfterMs ? 'backgroundLifecycleLaunchTimed' : 'backgroundLifecycleLaunch',
       locale,
       { duration: lifecycle.timedOutAfterMs, taskId: lifecycle.taskId },
     )
-    : claudeDetailText('asyncAgentLifecycleLaunch', locale, { taskId: lifecycle.taskId });
+    : claudeDetailText(
+      isWorkflow ? 'asyncWorkflowLifecycleLaunch' : 'asyncAgentLifecycleLaunch',
+      locale,
+      { taskId: lifecycle.taskId },
+    );
   const sections = [noticeSection('Lifecycle', launchText, terminal ? 'info' : 'warning')];
   for (const notification of notifications) {
     sections.push(noticeSection(
@@ -282,8 +309,19 @@ function lifecycleSections(event, locale) {
       notification.summary,
       ['failed', 'error'].includes(notification.status) ? 'error' : 'info',
     ));
-    sections.push(markdownSection('Result', notification.result || ''));
-    sections.push(jsonSection('Usage', notification.usage));
+    if (isWorkflow) {
+      sections.push(jsonSection('Workflow terminal', {
+        status: notification.status,
+        outputFile: notification.outputFile || '',
+        result: notification.result || '',
+        recovery: notification.recovery || '',
+        usage: notification.usage,
+        exitCode: notification.exitCode ?? null,
+      }));
+    } else {
+      sections.push(markdownSection('Result', notification.result || ''));
+      sections.push(jsonSection('Usage', notification.usage));
+    }
   }
   sections.push(jsonSection('Lifecycle data', {
     kind: lifecycle.kind,
@@ -295,6 +333,11 @@ function lifecycleSections(event, locale) {
     stops: notifications.map((notification) => ({
       status: notification.status,
       summary: notification.summary,
+      ...(isWorkflow ? {
+        outputFile: notification.outputFile || '',
+        result: notification.result || '',
+        recovery: notification.recovery || '',
+      } : {}),
       usage: notification.usage,
       exitCode: notification.exitCode ?? null,
     })),
@@ -421,6 +464,7 @@ function logicalTimelineSections(event, raws, locale) {
     return [planUpdateSection('', event.planSnapshot || [])].filter(Boolean);
   }
   if (event.kind === 'compaction') return compactionSections(raws);
+  if (event.kind === 'goal') return lifecycleSections(event, locale);
   if (['error', 'warning', 'abort'].includes(event.kind)) {
     return [noticeSection(
       eventTitle(event, locale),

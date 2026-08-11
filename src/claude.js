@@ -116,7 +116,11 @@ function derivedReuseEvidence(derived) {
   return {
     candidate: candidateReuseEvidence(derived.candidate),
     metadata: derived.metadataEvidence || { exists: false },
+    relationship: derived.relationshipReuseEvidence || null,
+    derivedKind: String(derived.context.derivedKind || 'subagent'),
+    derivedId: String(derived.context.derivedId || derived.context.agentId || ''),
     agentId: String(derived.context.agentId || ''),
+    runId: String(derived.context.runId || ''),
     parentSessionId: String(derived.context.parentSessionId || ''),
     toolUseId: String(derived.context.toolUseId || ''),
     agentNickname: String(derived.context.agentNickname || ''),
@@ -168,7 +172,12 @@ function cloneReusedClaudeSession(previousSession, candidate, context) {
     parentSessionId: context.parentSessionId || '',
     parentSessionInferred: false,
     agentNickname: context.agentNickname || previousSession.agentNickname,
-    primarySessionMetaKind: context.parentSessionId ? 'subagent' : '',
+    primarySessionMetaKind: context.parentSessionId
+      ? String(context.derivedKind || previousSession.primarySessionMetaKind || 'subagent')
+      : '',
+    sourceDerivedId: context.derivedId || context.agentId || previousSession.sourceDerivedId || '',
+    derivedRunId: context.runId || '',
+    derivedRelationship: context.derivedRelationship || null,
     subagentToolUseId: context.toolUseId || '',
     spawnDepth: context.spawnDepth ?? null,
   };
@@ -532,6 +541,14 @@ function analyzerSubagentSessionId(parentSourceSessionId, agentId) {
   return `${CLAUDE_SOURCE_KIND}:${encodeClaudeIdentityComponent(parentSourceSessionId)}:agent:${encodeClaudeIdentityComponent(agentId)}`;
 }
 
+function analyzerForkedSkillSessionId(parentSourceSessionId, agentId) {
+  return `${CLAUDE_SOURCE_KIND}:${encodeClaudeIdentityComponent(parentSourceSessionId)}:forked-skill:${encodeClaudeIdentityComponent(agentId)}`;
+}
+
+function analyzerWorkflowAgentSessionId(parentSourceSessionId, runId, agentId) {
+  return `${CLAUDE_SOURCE_KIND}:${encodeClaudeIdentityComponent(parentSourceSessionId)}:workflow-agent:${encodeClaudeIdentityComponent(runId)}:${encodeClaudeIdentityComponent(agentId)}`;
+}
+
 function emptyCounts() {
   return {
     turns: 0,
@@ -558,7 +575,7 @@ function makeSession(candidate, context) {
     id,
     sourceKind: CLAUDE_SOURCE_KIND,
     sourceSessionId: candidate.sourceSessionId,
-    sourceDerivedId: context.agentId || '',
+    sourceDerivedId: context.derivedId || context.agentId || '',
     sourceClientVersion: candidate.sourceClientVersion || '',
     projectAssociation: context.projectAssociation || '',
     sourceFile: candidate.relFile,
@@ -584,7 +601,9 @@ function makeSession(candidate, context) {
     forkEvidence: null,
     inheritedContext: null,
     agentNickname: context.agentNickname || '',
-    primarySessionMetaKind: context.parentSessionId ? 'subagent' : '',
+    primarySessionMetaKind: context.parentSessionId ? String(context.derivedKind || 'subagent') : '',
+    derivedRunId: context.runId || '',
+    derivedRelationship: context.derivedRelationship || null,
     shell: '',
     rawEvents: [],
     logicalEvents: [],
@@ -825,33 +844,71 @@ async function parseClaudeSession(candidate, context) {
   return finalizeSession(session);
 }
 
-async function readSubagentMetadataWithEvidence(metaPath) {
-  if (!metaPath) return { metadata: {}, evidence: { exists: false } };
+function relativeSourceFile(sourceRoot, filePath) {
+  return path.relative(sourceRoot, filePath).replace(/\\/g, '/');
+}
+
+async function containedFileState(sourceRoot, target) {
+  const resolvedRoot = path.resolve(sourceRoot);
+  const resolvedTarget = path.resolve(target);
+  if (!isPathInsideOrSame(resolvedTarget, resolvedRoot)) return { status: 'unsafe', filePath: '' };
   try {
-    const [stat, text] = await Promise.all([
-      fsp.stat(metaPath),
-      fsp.readFile(metaPath, 'utf8'),
-    ]);
-    let metadata = {};
-    try {
-      const parsed = JSON.parse(text);
-      metadata = parsed && typeof parsed === 'object' ? parsed : {};
-    } catch {
-      // Match readSubagentMetadata: malformed sidecars are deliberately treated
-      // as empty metadata, but their bytes still invalidate a prior reuse.
-    }
+    const entry = await fsp.lstat(resolvedTarget);
+    if (!entry.isFile() && !entry.isSymbolicLink()) return { status: 'unsafe', filePath: '' };
+  } catch (error) {
+    if (error.code === 'ENOENT') return { status: 'missing', filePath: '' };
+    throw error;
+  }
+  const filePath = await containedRealPath(sourceRoot, resolvedTarget);
+  if (!filePath) return { status: 'unsafe', filePath: '' };
+  const stat = await fsp.stat(filePath);
+  return stat.isFile() ? { status: 'file', filePath } : { status: 'unsafe', filePath: '' };
+}
+
+async function readContainedTextWithEvidence(sourceRoot, target) {
+  const state = await containedFileState(sourceRoot, target);
+  if (state.status !== 'file') {
     return {
-      metadata,
+      text: '',
+      valid: state.status === 'missing',
       evidence: {
-        exists: true,
-        bytes: stat.size,
-        sourceUpdatedAt: safeIso(stat.mtime),
-        fingerprint: crypto.createHash('sha256').update(text, 'utf8').digest('hex'),
+        exists: state.status !== 'missing',
+        unsafe: state.status === 'unsafe',
+        relFile: relativeSourceFile(sourceRoot, path.resolve(target)),
       },
     };
-  } catch (error) {
-    if (error.code === 'ENOENT') return { metadata: {}, evidence: { exists: false } };
-    throw error;
+  }
+  const [stat, text] = await Promise.all([
+    fsp.stat(state.filePath),
+    fsp.readFile(state.filePath, 'utf8'),
+  ]);
+  return {
+    text,
+    valid: true,
+    evidence: {
+      exists: true,
+      unsafe: false,
+      relFile: relativeSourceFile(sourceRoot, state.filePath),
+      bytes: stat.size,
+      sourceUpdatedAt: safeIso(stat.mtime),
+      fingerprint: crypto.createHash('sha256').update(text, 'utf8').digest('hex'),
+    },
+  };
+}
+
+async function readJsonObjectWithEvidence(sourceRoot, target) {
+  const value = await readContainedTextWithEvidence(sourceRoot, target);
+  if (!value.evidence.exists) return { metadata: {}, valid: true, evidence: value.evidence };
+  if (!value.valid || value.evidence.unsafe) return { metadata: {}, valid: false, evidence: value.evidence };
+  try {
+    const metadata = JSON.parse(value.text);
+    return {
+      metadata: isPlainObject(metadata) ? metadata : {},
+      valid: isPlainObject(metadata),
+      evidence: value.evidence,
+    };
+  } catch {
+    return { metadata: {}, valid: false, evidence: value.evidence };
   }
 }
 
@@ -864,6 +921,526 @@ function parentAgentEvidence(parentSession, agentId, toolUseId) {
   if (matches.length !== 1) return null;
   const [evidence] = matches;
   return !toolUseId || evidence.callId === toolUseId ? evidence : null;
+}
+
+function exactText(value) {
+  return typeof value === 'string' && value.trim() && value === value.trim() ? value : '';
+}
+
+function derivedTranscriptMatches(inspected, parentSession, agentId, requireParentSessionIdentity) {
+  if (inspected.sourceIdentityConflict) return false;
+  if (inspected.agentIds.size !== 1 || !inspected.agentIds.has(agentId)) return false;
+  if (requireParentSessionIdentity && inspected.sourceSessionId !== parentSession.sourceSessionId) return false;
+  if (requireParentSessionIdentity && (
+    !inspected.sourceClientVersion
+    || inspected.sourceClientVersion !== parentSession.sourceClientVersion
+  )) return false;
+  return true;
+}
+
+function forkedSkillLaunches(parentSession) {
+  const launches = [];
+  for (const raw of parentSession.rawEvents || []) {
+    if (raw.recordType !== 'system' || raw.payloadType !== 'local_command') continue;
+    const content = String(raw.parsed?.content || '');
+    const match = content.match(
+      /^\s*<local-command-stdout>[^<>]*<\/local-command-stdout>\s*<forked-skill-launch>([^<>]+)<\/forked-skill-launch>\s*$/u,
+    );
+    if (!match) continue;
+    let payload;
+    try {
+      payload = JSON.parse(match[1]);
+    } catch {
+      continue;
+    }
+    if (!isPlainObject(payload)) continue;
+    const skillName = exactText(payload.skillName);
+    const sourceAgentId = exactText(payload.agentId);
+    if (!skillName || !sourceAgentId) continue;
+    launches.push({
+      raw,
+      skillName,
+      sourceAgentId,
+      rawRef: claudeRawRef(raw),
+    });
+  }
+  return launches;
+}
+
+function parentWorkflowLaunches(parentSession) {
+  return (parentSession.logicalEvents || []).filter((event) => (
+    event.toolName === 'Workflow'
+    && event.lifecycle?.kind === 'async_workflow'
+    && event.lifecycle.workflow
+  )).map((event) => ({
+    event,
+    taskId: String(event.lifecycle.taskId || ''),
+    toolUseId: String(event.callId || ''),
+    runId: String(event.lifecycle.workflow.runId || ''),
+    workflowName: String(event.lifecycle.workflow.workflowName || ''),
+    scriptPath: String(event.lifecycle.workflow.scriptPath || ''),
+  }));
+}
+
+function publicEvidenceFiles(values) {
+  return values
+    .filter((value) => value?.valid !== false && value?.evidence?.exists && !value.evidence.unsafe)
+    .map((value) => ({
+      role: value.role,
+      file: value.evidence.relFile,
+    }));
+}
+
+function reuseEvidenceFiles(values) {
+  return values.filter(Boolean).map((value) => ({
+    role: value.role,
+    ...value.evidence,
+  }));
+}
+
+async function inspectDerivedTranscript(parentCandidate, filePath, signal) {
+  return inspectClaudeSessionFile({
+    filePath,
+    containerKey: parentCandidate.containerKey,
+    containerPath: parentCandidate.containerPath,
+    sourceRoot: parentCandidate.sourceRoot,
+    relFile: relativeSourceFile(parentCandidate.sourceRoot, filePath),
+  }, { signal });
+}
+
+function normalSubagentCandidate(parentSession, inspected, agentId, metadataValue) {
+  if (!derivedTranscriptMatches(inspected, parentSession, agentId, false)) return null;
+  const metadata = metadataValue.valid ? metadataValue.metadata : {};
+  const metadataToolUseId = String(metadata.toolUseId || '');
+  const evidence = parentAgentEvidence(parentSession, agentId, metadataToolUseId);
+  if (!evidence) return null;
+  inspected.sourceSessionId = parentSession.sourceSessionId;
+  return {
+    candidate: inspected,
+    metadataEvidence: metadataValue.evidence,
+    relationshipReuseEvidence: {
+      kind: 'subagent',
+      parentEventId: evidence.id,
+      parentRawRefs: evidence.rawRefs,
+      files: reuseEvidenceFiles([{ role: 'metadata', evidence: metadataValue.evidence }]),
+    },
+    context: {
+      id: analyzerSubagentSessionId(parentSession.sourceSessionId, agentId),
+      derivedKind: 'subagent',
+      derivedId: agentId,
+      agentId,
+      parentSessionId: parentSession.id,
+      agentNickname: String(metadata.agentType || ''),
+      description: String(metadata.description || ''),
+      toolUseId: evidence.callId,
+      spawnDepth: metadata.spawnDepth,
+      inheritedCwds: parentSession.cwdSet,
+      matchesRepo: true,
+      projectAssociation: 'parent-inherited',
+      derivedRelationship: {
+        kind: 'subagent',
+        ownerSessionId: parentSession.id,
+        parentEventId: evidence.id,
+        parentRawRefs: evidence.rawRefs,
+        evidenceFiles: publicEvidenceFiles([{
+          role: 'metadata',
+          valid: metadataValue.valid,
+          evidence: metadataValue.evidence,
+        }]),
+      },
+    },
+  };
+}
+
+function forkedSkillCandidate(parentSession, provisional, launch) {
+  const {
+    inspected,
+    agentId,
+    metadataValue,
+    skillValue,
+    markerValue,
+  } = provisional;
+  if (!derivedTranscriptMatches(inspected, parentSession, agentId, true)) return null;
+  if (!metadataValue.evidence.exists || !metadataValue.valid) return null;
+  if (!skillValue.evidence.exists || !skillValue.valid) return null;
+  if (!markerValue.evidence.exists || !markerValue.valid) return null;
+  const skillName = exactText(skillValue.metadata.skillName);
+  const attributionName = exactText(skillValue.metadata.attributionName);
+  if (!skillName || attributionName !== skillName || launch.skillName !== skillName) return null;
+  if (markerValue.metadata.forkedSkill !== true || markerValue.metadata.skillName !== skillName) return null;
+  inspected.sourceSessionId = parentSession.sourceSessionId;
+  const files = [
+    { role: 'metadata', evidence: metadataValue.evidence },
+    { role: 'forked-skill', evidence: skillValue.evidence },
+    { role: 'forked-skill-marker', evidence: markerValue.evidence },
+  ];
+  return {
+    candidate: inspected,
+    metadataEvidence: metadataValue.evidence,
+    relationshipReuseEvidence: {
+      kind: 'forked-skill',
+      launchRawId: launch.raw.rawId,
+      skillName,
+      files: reuseEvidenceFiles(files),
+    },
+    context: {
+      id: analyzerForkedSkillSessionId(parentSession.sourceSessionId, agentId),
+      derivedKind: 'forked-skill',
+      derivedId: agentId,
+      agentId,
+      parentSessionId: parentSession.id,
+      agentNickname: attributionName,
+      description: skillName,
+      toolUseId: '',
+      spawnDepth: metadataValue.metadata.spawnDepth,
+      inheritedCwds: parentSession.cwdSet,
+      matchesRepo: true,
+      projectAssociation: 'parent-inherited',
+      derivedRelationship: {
+        kind: 'forked-skill',
+        ownerSessionId: parentSession.id,
+        agentId,
+        skillName,
+        launchRawRefs: [launch.rawRef],
+        evidenceFiles: publicEvidenceFiles(files),
+      },
+    },
+  };
+}
+
+function validWorkflowManifest(manifest) {
+  if (!isPlainObject(manifest)) return false;
+  const stringFields = [
+    'runId',
+    'timestamp',
+    'taskId',
+    'script',
+    'scriptPath',
+    'error',
+    'summary',
+    'workflowName',
+    'status',
+    'defaultModel',
+  ];
+  const numberFields = ['agentCount', 'durationMs', 'startTime', 'totalTokens', 'totalToolCalls'];
+  if (stringFields.some((field) => typeof manifest[field] !== 'string')) return false;
+  if (numberFields.some((field) => !Number.isFinite(manifest[field]))) return false;
+  if (!Array.isArray(manifest.logs) || !Array.isArray(manifest.phases) || !Array.isArray(manifest.workflowProgress)) return false;
+  if (manifest.phases.some((phase) => !isPlainObject(phase) || typeof phase.title !== 'string')) return false;
+  return true;
+}
+
+function validFullWorkflowProgress(entry) {
+  if (!isPlainObject(entry) || typeof entry.agentId !== 'string') return false;
+  const stringFields = [
+    'type',
+    'label',
+    'phaseTitle',
+    'agentId',
+    'model',
+    'fallbackModel',
+    'state',
+    'lastToolName',
+    'promptPreview',
+    'resultPreview',
+  ];
+  const numberFields = [
+    'index',
+    'phaseIndex',
+    'startedAt',
+    'queuedAt',
+    'attempt',
+    'lastProgressAt',
+    'tokens',
+    'toolCalls',
+    'durationMs',
+  ];
+  return stringFields.every((field) => typeof entry[field] === 'string')
+    && numberFields.every((field) => Number.isFinite(entry[field]))
+    && Boolean(entry.agentId && entry.state && entry.resultPreview);
+}
+
+function validSparseWorkflowProgress(entry) {
+  return isPlainObject(entry)
+    && typeof entry.type === 'string'
+    && Number.isFinite(entry.index)
+    && typeof entry.title === 'string';
+}
+
+function parseWorkflowJournal(text) {
+  const records = [];
+  for (const line of String(text || '').split(/\r?\n/u)) {
+    if (!line.trim()) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      return null;
+    }
+    if (!isPlainObject(record)) return null;
+    const type = exactText(record.type);
+    const key = exactText(record.key);
+    const agentId = exactText(record.agentId);
+    if (!type || !key || !agentId) return null;
+    if (Object.hasOwn(record, 'result')) {
+      if (type !== 'result') return null;
+      if (!isPlainObject(record.result) || !Array.isArray(record.result.types)) return null;
+      if (record.result.types.some((value) => typeof value !== 'string')) return null;
+      if (record.result.counts != null && !isPlainObject(record.result.counts)) return null;
+      records.push({ kind: 'result', type, key, agentId, sequence: records.length });
+    } else {
+      if (type !== 'started') return null;
+      records.push({ kind: 'started', type, key, agentId, sequence: records.length });
+    }
+  }
+  return records;
+}
+
+function workflowRunEvidence(parentSession, runId, manifest, journalRecords, children) {
+  if (!validWorkflowManifest(manifest) || manifest.runId !== runId) return null;
+  if (manifest.agentCount !== children.length || !children.length) return null;
+  const launches = parentWorkflowLaunches(parentSession).filter((launch) => (
+    launch.taskId === manifest.taskId
+    && launch.runId === manifest.runId
+    && launch.workflowName === manifest.workflowName
+    && launch.scriptPath === manifest.scriptPath
+  ));
+  if (launches.length !== 1) return null;
+
+  const childIds = new Set(children.map((child) => child.agentId));
+  const fullProgress = manifest.workflowProgress.filter((entry) => Object.hasOwn(entry || {}, 'agentId'));
+  if (manifest.workflowProgress.some((entry) => (
+    Object.hasOwn(entry || {}, 'agentId')
+      ? !validFullWorkflowProgress(entry)
+      : !validSparseWorkflowProgress(entry)
+  ))) return null;
+  if (fullProgress.length !== children.length) return null;
+  const progressIds = fullProgress.map((entry) => entry.agentId);
+  if (new Set(progressIds).size !== progressIds.length || progressIds.some((agentId) => !childIds.has(agentId))) return null;
+
+  const byAgent = new Map();
+  for (const record of journalRecords || []) {
+    if (!childIds.has(record.agentId)) return null;
+    const values = byAgent.get(record.agentId) || [];
+    values.push(record);
+    byAgent.set(record.agentId, values);
+  }
+  const keys = new Set();
+  // Claude's observed journal key is an opaque pair key, not a second run or
+  // session identity.  Ownership therefore comes from the contained run
+  // directory, manifest progress, child agent identity, and the exact ordered
+  // started/result pair; do not invent a key format that the source does not
+  // provide.
+  for (const child of children) {
+    const records = byAgent.get(child.agentId) || [];
+    const started = records.filter((record) => record.kind === 'started');
+    const results = records.filter((record) => record.kind === 'result');
+    if (records.length !== 2 || started.length !== 1 || results.length !== 1) return null;
+    if (
+      started[0].key !== results[0].key
+      || started[0].sequence >= results[0].sequence
+      || keys.has(started[0].key)
+    ) return null;
+    keys.add(started[0].key);
+  }
+  return launches[0];
+}
+
+async function directDerivedCandidates(parentCandidate, parentSession, subagentsRoot, entries, signal) {
+  const candidates = [];
+  const forked = [];
+  for (const entry of entries) {
+    throwIfAborted(signal);
+    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+    const base = path.basename(entry.name, '.jsonl');
+    if (!base.startsWith('agent-') || base.length === 'agent-'.length) continue;
+    const agentId = base.slice('agent-'.length);
+    const filePath = await containedRealPath(
+      parentCandidate.sourceRoot,
+      path.join(subagentsRoot, entry.name),
+    );
+    if (!filePath) continue;
+    const [metadataValue, skillValue, markerValue, inspected] = await Promise.all([
+      readJsonObjectWithEvidence(
+        parentCandidate.sourceRoot,
+        path.join(subagentsRoot, `${base}.meta.json`),
+      ),
+      readJsonObjectWithEvidence(
+        parentCandidate.sourceRoot,
+        path.join(subagentsRoot, `${base}.forked-skill.json`),
+      ),
+      readJsonObjectWithEvidence(
+        parentCandidate.sourceRoot,
+        path.join(subagentsRoot, `${base}.forked-skill.marker.json`),
+      ),
+      inspectDerivedTranscript(parentCandidate, filePath, signal),
+    ]);
+    if (metadataValue.evidence.unsafe || skillValue.evidence.unsafe || markerValue.evidence.unsafe) continue;
+    const hasForkEvidence = skillValue.evidence.exists || markerValue.evidence.exists;
+    if (hasForkEvidence) {
+      forked.push({ inspected, agentId, metadataValue, skillValue, markerValue });
+      continue;
+    }
+    const candidate = normalSubagentCandidate(parentSession, inspected, agentId, metadataValue);
+    if (candidate) candidates.push(candidate);
+  }
+
+  const launchesBySkill = new Map();
+  for (const launch of forkedSkillLaunches(parentSession)) {
+    const matches = launchesBySkill.get(launch.skillName) || [];
+    matches.push(launch);
+    launchesBySkill.set(launch.skillName, matches);
+  }
+  const candidatesBySkill = new Map();
+  for (const value of forked) {
+    const skillName = exactText(value.skillValue.metadata.skillName);
+    if (!skillName) continue;
+    const matches = candidatesBySkill.get(skillName) || [];
+    matches.push(value);
+    candidatesBySkill.set(skillName, matches);
+  }
+  for (const [skillName, values] of candidatesBySkill) {
+    const launches = launchesBySkill.get(skillName) || [];
+    if (values.length !== 1 || launches.length !== 1) continue;
+    const candidate = forkedSkillCandidate(parentSession, values[0], launches[0]);
+    if (candidate) candidates.push(candidate);
+  }
+  return candidates;
+}
+
+async function workflowDerivedCandidates(parentCandidate, parentSession, subagentsRoot, signal) {
+  const workflowAgentsRoot = path.join(subagentsRoot, 'workflows');
+  const safeWorkflowAgentsRoot = await containedRealPath(parentCandidate.sourceRoot, workflowAgentsRoot);
+  if (!safeWorkflowAgentsRoot) return [];
+  let runs;
+  try {
+    runs = await fsp.readdir(safeWorkflowAgentsRoot, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+  const candidates = [];
+  for (const runEntry of runs.sort((left, right) => left.name.localeCompare(right.name))) {
+    throwIfAborted(signal);
+    if (!runEntry.isDirectory() || !runEntry.name || ['.', '..'].includes(runEntry.name)) continue;
+    const runId = runEntry.name;
+    const runRoot = await containedRealPath(
+      parentCandidate.sourceRoot,
+      path.join(workflowAgentsRoot, runId),
+    );
+    if (!runRoot) continue;
+    let entries;
+    try {
+      entries = await fsp.readdir(runRoot, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    const manifestValue = await readJsonObjectWithEvidence(
+      parentCandidate.sourceRoot,
+      path.join(parentCandidate.containerPath, path.basename(parentCandidate.filePath, '.jsonl'), 'workflows', `${runId}.json`),
+    );
+    const journalValue = await readContainedTextWithEvidence(
+      parentCandidate.sourceRoot,
+      path.join(runRoot, 'journal.jsonl'),
+    );
+    if (!manifestValue.evidence.exists || !manifestValue.valid || manifestValue.evidence.unsafe) continue;
+    if (!journalValue.evidence.exists || !journalValue.valid || journalValue.evidence.unsafe) continue;
+    const journalRecords = parseWorkflowJournal(journalValue.text);
+    if (!journalRecords) continue;
+
+    const runChildren = [];
+    let invalidRun = false;
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (!entry.isFile() || !entry.name.endsWith('.jsonl') || entry.name === 'journal.jsonl') continue;
+      const base = path.basename(entry.name, '.jsonl');
+      if (!base.startsWith('agent-') || base.length === 'agent-'.length) {
+        invalidRun = true;
+        break;
+      }
+      const agentId = base.slice('agent-'.length);
+      const filePath = await containedRealPath(parentCandidate.sourceRoot, path.join(runRoot, entry.name));
+      if (!filePath) {
+        invalidRun = true;
+        break;
+      }
+      const [metadataValue, inspected] = await Promise.all([
+        readJsonObjectWithEvidence(
+          parentCandidate.sourceRoot,
+          path.join(runRoot, `${base}.meta.json`),
+        ),
+        inspectDerivedTranscript(parentCandidate, filePath, signal),
+      ]);
+      if (
+        !metadataValue.evidence.exists
+        || !metadataValue.valid
+        || metadataValue.evidence.unsafe
+        || typeof metadataValue.metadata.agentType !== 'string'
+        || !Number.isFinite(metadataValue.metadata.spawnDepth)
+        || !derivedTranscriptMatches(inspected, parentSession, agentId, true)
+      ) {
+        invalidRun = true;
+        break;
+      }
+      runChildren.push({ agentId, inspected, metadataValue });
+    }
+    if (invalidRun || !runChildren.length) continue;
+    const launch = workflowRunEvidence(
+      parentSession,
+      runId,
+      manifestValue.metadata,
+      journalRecords,
+      runChildren,
+    );
+    if (!launch) continue;
+    for (const child of runChildren) {
+      child.inspected.sourceSessionId = parentSession.sourceSessionId;
+      const files = [
+        { role: 'metadata', evidence: child.metadataValue.evidence },
+        { role: 'workflow-manifest', evidence: manifestValue.evidence },
+        { role: 'workflow-journal', evidence: journalValue.evidence },
+      ];
+      candidates.push({
+        candidate: child.inspected,
+        metadataEvidence: child.metadataValue.evidence,
+        relationshipReuseEvidence: {
+          kind: 'workflow-agent',
+          parentEventId: launch.event.id,
+          runId,
+          taskId: launch.taskId,
+          toolUseId: launch.toolUseId,
+          files: reuseEvidenceFiles(files),
+        },
+        context: {
+          id: analyzerWorkflowAgentSessionId(parentSession.sourceSessionId, runId, child.agentId),
+          derivedKind: 'workflow-agent',
+          derivedId: child.agentId,
+          agentId: child.agentId,
+          runId,
+          parentSessionId: parentSession.id,
+          agentNickname: child.metadataValue.metadata.agentType,
+          description: manifestValue.metadata.workflowName,
+          toolUseId: launch.toolUseId,
+          spawnDepth: child.metadataValue.metadata.spawnDepth,
+          inheritedCwds: parentSession.cwdSet,
+          matchesRepo: true,
+          projectAssociation: 'parent-inherited',
+          derivedRelationship: {
+            kind: 'workflow-agent',
+            ownerSessionId: parentSession.id,
+            parentEventId: launch.event.id,
+            parentRawRefs: launch.event.rawRefs,
+            agentId: child.agentId,
+            runId,
+            taskId: launch.taskId,
+            toolUseId: launch.toolUseId,
+            workflowName: launch.workflowName,
+            evidenceFiles: publicEvidenceFiles(files),
+          },
+        },
+      });
+    }
+  }
+  return candidates;
 }
 
 async function subagentCandidates(parentCandidate, parentSession, signal) {
@@ -882,54 +1459,12 @@ async function subagentCandidates(parentCandidate, parentSession, signal) {
     if (error.code === 'ENOENT') return [];
     throw error;
   }
-  const candidates = [];
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    throwIfAborted(signal);
-    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
-    const filePath = await containedRealPath(
-      parentCandidate.sourceRoot,
-      path.join(subagentsRoot, entry.name),
-    );
-    if (!filePath) continue;
-    const base = path.basename(entry.name, '.jsonl');
-    if (!base.startsWith('agent-') || base.length === 'agent-'.length) continue;
-    const agentId = base.slice('agent-'.length);
-    const metaPath = await containedRealPath(
-      parentCandidate.sourceRoot,
-      path.join(subagentsRoot, `${base}.meta.json`),
-    );
-    const metadataValue = await readSubagentMetadataWithEvidence(metaPath);
-    const metadata = metadataValue.metadata;
-    const inspected = await inspectClaudeSessionFile({
-      filePath,
-      containerKey: parentCandidate.containerKey,
-      containerPath: parentCandidate.containerPath,
-      sourceRoot: parentCandidate.sourceRoot,
-      relFile: path.relative(parentCandidate.sourceRoot, filePath).replace(/\\/g, '/'),
-    }, { signal });
-    if (inspected.agentIds.size !== 1 || !inspected.agentIds.has(agentId)) continue;
-    const metadataToolUseId = String(metadata.toolUseId || '');
-    const evidence = parentAgentEvidence(parentSession, agentId, metadataToolUseId);
-    if (!evidence) continue;
-    inspected.sourceSessionId = parentSession.sourceSessionId;
-    candidates.push({
-      candidate: inspected,
-      metadataEvidence: metadataValue.evidence,
-      context: {
-        id: analyzerSubagentSessionId(parentSession.sourceSessionId, agentId),
-        agentId,
-        parentSessionId: parentSession.id,
-        agentNickname: String(metadata.agentType || ''),
-        description: String(metadata.description || ''),
-        toolUseId: evidence.callId,
-        spawnDepth: metadata.spawnDepth,
-        inheritedCwds: parentSession.cwdSet,
-        matchesRepo: true,
-        projectAssociation: 'parent-inherited',
-      },
-    });
-  }
-  return candidates;
+  const sortedEntries = entries.sort((left, right) => left.name.localeCompare(right.name));
+  const [direct, workflow] = await Promise.all([
+    directDerivedCandidates(parentCandidate, parentSession, subagentsRoot, sortedEntries, signal),
+    workflowDerivedCandidates(parentCandidate, parentSession, subagentsRoot, signal),
+  ]);
+  return [...direct, ...workflow];
 }
 
 function containerCwdClusters(inspected) {
@@ -1286,8 +1821,10 @@ async function readClaudeRawRecord(index, session, raw) {
 
 module.exports = {
   CLAUDE_SOURCE_KIND,
+  analyzerForkedSkillSessionId,
   analyzerSessionId,
   analyzerSubagentSessionId,
+  analyzerWorkflowAgentSessionId,
   buildClaudeIndex,
   claudeLayout,
   discoverClaudeConfiguredProjects,

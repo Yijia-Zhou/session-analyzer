@@ -50,6 +50,7 @@ When changing product behavior or repository structure:
 - Active plans:
   - `docs/exec-plans/active/2026-08-07-source-switch-frontend.md`
 - Completed plans:
+  - `docs/exec-plans/completed/2026-08-10-claude-compatibility-hardening.md`
   - `docs/exec-plans/completed/2026-08-09-codex-materialized-fork-ownership.md`
   - `docs/exec-plans/completed/2026-08-07-source-runtime-switch.md`
   - `docs/exec-plans/completed/2026-08-02-v0.1.3-release.md`

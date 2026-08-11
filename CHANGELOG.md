@@ -10,6 +10,7 @@
 - Added runtime Transcript Source switching: `POST /api/source` changes the active Codex/Claude Code source and optional source home directories without restarting the server; the Select project chooser exposes a source switcher with custom home directories, and stale project discovery is rejected through source revisions.
 - Added per-source last-selected repository storage with a one-time migration of the legacy Codex key, and made project-selection copy source-neutral (`sourceHome` instead of `codexHome`).
 - Added source-switch and race-regression coverage across backend, browser, and documentation.
+- Hardened Claude Code 2.1.220 compatibility for order-independent slash-command envelopes, direct asynchronous Workflow lifecycle evidence and structured detail, fail-closed terminal correlation, forked-skill and workflow-agent Derived Sessions, source-backed Goal lifecycle and `attributionSkill` provenance, and the distinction between Loop wakeups and Cron deletion.
 - Moved unwrapped Codex developer messages from the Main timeline to the protocol layer, keeping their `Possible hook output` tag and raw traceability.
 - Normalized Codex review lifecycle from both the legacy dedicated `entered_review_mode` / `exited_review_mode` rows and the canonical completed `item_completed` TurnItem envelope (`EnteredReviewMode` / `ExitedReviewMode`), restoring Main timeline review start/end events and structured review detail for current transcripts.
 - Review-derived sessions now accept the top-level `parent_thread_id` as explicit parent evidence before temporal inference, so review children group under the correct parent even when parent lifecycle markers use the canonical envelope.
@@ -22,6 +23,7 @@
 - 新增运行期转录来源切换：`POST /api/source` 可在不重启服务器的情况下切换当前 Codex/Claude Code 来源及可选来源 home 目录；Select project 选择界面提供来源切换与自定义目录入口，并通过 source revision 拒绝过期的项目发现结果。
 - 新增按来源区分的“最后选择的仓库”存储，并一次性迁移旧 Codex key；项目选择文案改为来源中立（使用 `sourceHome` 而非 `codexHome`）。
 - 新增覆盖后端、浏览器与文档的来源切换及竞态回归测试。
+- 加固 Claude Code 2.1.220 兼容性：支持顺序无关的 slash-command envelope、direct 异步 Workflow 生命周期证据与结构化详情、fail-closed 终态关联、forked-skill 与 workflow-agent Derived Session、来源驱动的 Goal 生命周期与 `attributionSkill` provenance，以及 Loop wakeup 与 Cron 删除的区分。
 - 将未包装的 Codex developer message 从 Main timeline 移到 protocol 层，保留 `Possible hook output` tag 与原始可追溯性。
 - 统一归一化 Codex review 生命周期：旧专用 `entered_review_mode` / `exited_review_mode` 记录与 canonical 的 `item_completed` TurnItem envelope（`EnteredReviewMode` / `ExitedReviewMode`）现在映射为相同的 review 事件，恢复父会话 Main timeline 的 Review 开始/结束与结构化详情。
 - 被判定为 review 的子会话现在会在时间推断之前接受顶层 `parent_thread_id` 作为显式父会话证据，即使父会话生命周期标记使用 canonical envelope，也能正确归组到父会话下。

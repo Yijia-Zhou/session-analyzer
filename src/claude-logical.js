@@ -34,7 +34,13 @@ function createClaudeLogicalBuilder(deps) {
     const raws = fields.raws || [];
     const rawRefs = uniqueRawRefs(raws);
     const preview = String(fields.preview || '').trim();
-    const searchText = String(fields.searchText || preview).trim();
+    const attributionSkills = unique(raws.map((raw) => raw?.attributionSkill));
+    const provenance = attributionSkills.length === 1
+      ? { attributionSkill: attributionSkills[0] }
+      : null;
+    const searchText = [String(fields.searchText || preview).trim(), provenance?.attributionSkill]
+      .filter(Boolean)
+      .join('\n');
     const runtimeRaw = raws.find((raw) => raw?.provider || raw?.model || raw?.effort) || null;
     return {
       id: fields.id,
@@ -67,6 +73,7 @@ function createClaudeLogicalBuilder(deps) {
       provider: String(fields.provider || runtimeRaw?.provider || ''),
       model: String(fields.model || runtimeRaw?.model || ''),
       effort: String(fields.effort || runtimeRaw?.effort || ''),
+      ...(provenance ? { provenance } : {}),
       ...(fields.callId ? { callId: fields.callId } : {}),
       ...(fields.agentId ? { agentId: fields.agentId } : {}),
       ...(fields.messageId ? { messageId: fields.messageId } : {}),
@@ -158,6 +165,7 @@ function createClaudeLogicalBuilder(deps) {
       return 'Background command';
     }
     if (lifecycle?.kind === 'async_agent') return 'Async agent';
+    if (lifecycle?.kind === 'async_workflow') return 'Async workflow';
     if (isTaskPlanTool(name)) return 'Plan update';
     if (kind === 'command') {
       if (status === 'failed') return 'Failed command';
@@ -357,12 +365,109 @@ function createClaudeLogicalBuilder(deps) {
     return Number.isSafeInteger(number) ? number : null;
   }
 
+  const WORKFLOW_TERMINAL_TAGS = new Set([
+    'task-id',
+    'tool-use-id',
+    'output-file',
+    'status',
+    'summary',
+    'result',
+    'recovery',
+    'usage',
+  ]);
+  const WORKFLOW_USAGE_TAGS = new Set([
+    'agent_count',
+    'agents_done',
+    'agents_error',
+    'agents_skipped',
+    'agents_empty_result',
+    'total_tokens',
+    'subagent_tokens',
+    'tool_uses',
+    'duration_ms',
+  ]);
+
+  function parseStrictFlatTags(text, allowedTags, nestedTag) {
+    const values = new Map();
+    let offset = 0;
+    while (offset < text.length) {
+      while (/\s/u.test(text[offset] || '')) offset += 1;
+      if (offset >= text.length) break;
+      const opening = text.slice(offset).match(/^<([A-Za-z][A-Za-z0-9_-]*)>/u);
+      if (!opening || !allowedTags.has(opening[1]) || values.has(opening[1])) return null;
+      const tag = opening[1];
+      const openText = opening[0];
+      const closeText = `</${tag}>`;
+      const closeOffset = text.indexOf(closeText, offset + openText.length);
+      if (closeOffset < 0) return null;
+      const value = text.slice(offset + openText.length, closeOffset);
+      if (tag === nestedTag) {
+        if (!parseStrictFlatTags(value, WORKFLOW_USAGE_TAGS, '')) return null;
+      } else if (/[<>]/u.test(value)) {
+        return null;
+      }
+      values.set(tag, value);
+      offset = closeOffset + closeText.length;
+    }
+    return values;
+  }
+
+  function strictWorkflowTerminal(notification) {
+    const text = String(notification?.sourceText || '').trim();
+    const opening = '<task-notification>';
+    const closing = '</task-notification>';
+    if (!text.startsWith(opening) || !text.endsWith(closing)) return false;
+    const values = parseStrictFlatTags(
+      text.slice(opening.length, -closing.length),
+      WORKFLOW_TERMINAL_TAGS,
+      'usage',
+    );
+    if (!values) return false;
+    const evidence = [values.get('output-file'), values.get('result'), values.get('recovery')]
+      .some((value) => typeof value === 'string' && value.trim());
+    if (!evidence) return false;
+    const usageText = values.get('usage') || '';
+    const usage = parseStrictFlatTags(usageText, WORKFLOW_USAGE_TAGS, '');
+    if (!usage) return false;
+    const requiredUsageTags = [
+      'agent_count',
+      'agents_done',
+      'agents_error',
+      'agents_skipped',
+      'agents_empty_result',
+      'tool_uses',
+      'duration_ms',
+    ];
+    if (requiredUsageTags.some((tag) => numericUsageValue(usageText, tag) == null)) return false;
+    if (
+      numericUsageValue(usageText, 'total_tokens') == null
+      && numericUsageValue(usageText, 'subagent_tokens') == null
+    ) return false;
+    return true;
+  }
+
+  function taskIdentifier(value) {
+    if (typeof value !== 'string') return '';
+    const identifier = value.trim();
+    return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(identifier) ? identifier : '';
+  }
+
+  function taskNotificationIdentity(raw) {
+    const sourceText = trustedTaskNotificationText(raw);
+    const text = sourceText.trim();
+    if (!text.startsWith('<task-notification>') || !text.endsWith('</task-notification>')) return null;
+    const taskId = taskIdentifier(singleTagValue(text, 'task-id')?.trim() || '');
+    const toolUseId = taskIdentifier(singleTagValue(text, 'tool-use-id')?.trim() || '');
+    if (!taskId || !toolUseId) return null;
+    return { taskId, toolUseId, sourceText };
+  }
+
   function parseTaskNotification(raw) {
     const text = trustedTaskNotificationText(raw).trim();
     if (!text.startsWith('<task-notification>') || !text.endsWith('</task-notification>')) return null;
     if (text.indexOf('<task-notification>', '<task-notification>'.length) >= 0) return null;
     if (text.indexOf('</task-notification>') !== text.length - '</task-notification>'.length) return null;
-    if (['task-id', 'tool-use-id', 'status', 'summary', 'result', 'usage'].some((tag) => {
+    if (['task-id', 'tool-use-id', 'output-file', 'status', 'summary', 'result', 'recovery', 'usage'].some((tag) => {
       const opens = tagCount(text, `<${tag}>`);
       const closes = tagCount(text, `</${tag}>`);
       return opens !== closes || opens > 1;
@@ -375,23 +480,60 @@ function createClaudeLogicalBuilder(deps) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(toolUseId)) return null;
     if (!['completed', 'success', 'failed', 'error', 'declined', 'cancelled', 'canceled', 'stopped'].includes(status)) return null;
     if (!summary || summary.length > 4000) return null;
+    const outputFile = (singleTagValue(text, 'output-file') || '').trim().slice(0, 4000);
     const result = (singleTagValue(text, 'result') || '').trim().slice(0, 16000);
+    const recovery = (singleTagValue(text, 'recovery') || '').trim().slice(0, 16000);
     const usageText = singleTagValue(text, 'usage') || '';
+    if (usageText && [
+      'agent_count',
+      'agents_done',
+      'agents_error',
+      'agents_skipped',
+      'agents_empty_result',
+      'total_tokens',
+      'subagent_tokens',
+      'tool_uses',
+      'duration_ms',
+    ].some((tag) => {
+      const opens = tagCount(usageText, `<${tag}>`);
+      const closes = tagCount(usageText, `</${tag}>`);
+      return opens !== closes || opens > 1;
+    })) return null;
     const usage = usageText ? {
+      agentCount: numericUsageValue(usageText, 'agent_count'),
+      agentsDone: numericUsageValue(usageText, 'agents_done'),
+      agentsError: numericUsageValue(usageText, 'agents_error'),
+      agentsSkipped: numericUsageValue(usageText, 'agents_skipped'),
+      agentsEmptyResult: numericUsageValue(usageText, 'agents_empty_result'),
+      totalTokens: numericUsageValue(usageText, 'total_tokens'),
       subagentTokens: numericUsageValue(usageText, 'subagent_tokens'),
       toolUses: numericUsageValue(usageText, 'tool_uses'),
       durationMs: numericUsageValue(usageText, 'duration_ms'),
     } : null;
     const exitMatch = summary.match(/\(exit code (-?\d+)\)\s*$/i);
     const exitCode = exitMatch && Number.isSafeInteger(Number(exitMatch[1])) ? Number(exitMatch[1]) : null;
-    const fingerprint = JSON.stringify({ taskId, toolUseId, status, summary, result, usage, exitCode });
-    return {
-      raw,
+    const fingerprint = JSON.stringify({
       taskId,
       toolUseId,
+      outputFile,
       status,
       summary,
       result,
+      recovery,
+      usage,
+      exitCode,
+    });
+    return {
+      raw,
+      valid: true,
+      sourceText: trustedTaskNotificationText(raw),
+      taskId,
+      toolUseId,
+      outputFile,
+      status,
+      summary,
+      result,
+      recovery,
       usage,
       exitCode,
       fingerprint,
@@ -434,6 +576,43 @@ function createClaudeLogicalBuilder(deps) {
         resultRawIndex: resultMatch.raw.rawIndex,
       };
     }
+    if (
+      callMatch.call.name === 'Workflow'
+      && callMatch.call.caller?.type === 'direct'
+      && typeof callMatch.call.input?.scriptPath === 'string'
+      && callMatch.call.input.scriptPath.trim()
+      && structured.status === 'async_launched'
+      && structured.taskType === 'local_workflow'
+    ) {
+      const taskId = taskIdentifier(structured.taskId);
+      const requiredReceiptText = [
+        structured.workflowName,
+        structured.runId,
+        structured.summary,
+        structured.transcriptDir,
+        structured.scriptPath,
+      ];
+      if (
+        !taskId
+        || requiredReceiptText.some((value) => typeof value !== 'string' || !value.trim())
+        || structured.scriptPath !== callMatch.call.input.scriptPath
+      ) return null;
+      return {
+        callKey,
+        call: callMatch.call,
+        kind: 'async_workflow',
+        taskId,
+        timedOutAfterMs: null,
+        resultRawIndex: resultMatch.raw.rawIndex,
+        workflow: {
+          runId: structured.runId,
+          workflowName: structured.workflowName,
+          scriptPath: structured.scriptPath,
+          transcriptDir: structured.transcriptDir,
+          summary: structured.summary,
+        },
+      };
+    }
     return null;
   }
 
@@ -456,13 +635,34 @@ function createClaudeLogicalBuilder(deps) {
     const notificationsByCall = new Map();
     for (const raw of raws) {
       const notification = parseTaskNotification(raw);
-      if (!notification) continue;
-      const owners = launchesByTaskId.get(notification.taskId) || [];
+      const identity = notification || taskNotificationIdentity(raw);
+      if (!identity) continue;
+      const owners = launchesByTaskId.get(identity.taskId) || [];
       if (
         owners.length !== 1
-        || owners[0].call.id !== notification.toolUseId
-        || notification.raw.rawIndex <= owners[0].resultRawIndex
+        || owners[0].call.id !== identity.toolUseId
+        || raw.rawIndex <= owners[0].resultRawIndex
       ) continue;
+      if (!notification) {
+        if (owners[0].kind !== 'async_workflow') continue;
+        appendIndexedValue(notificationsByCall, owners[0].callKey, {
+          raw,
+          valid: false,
+          sourceText: identity.sourceText,
+          taskId: identity.taskId,
+          toolUseId: identity.toolUseId,
+          fingerprint: `invalid:${raw.rawId}`,
+        });
+        continue;
+      }
+      if (owners[0].kind === 'async_workflow' && !strictWorkflowTerminal(notification)) {
+        appendIndexedValue(notificationsByCall, owners[0].callKey, {
+          ...notification,
+          valid: false,
+          fingerprint: `invalid:${raw.rawId}`,
+        });
+        continue;
+      }
       appendIndexedValue(notificationsByCall, owners[0].callKey, notification);
     }
 
@@ -474,32 +674,60 @@ function createClaudeLogicalBuilder(deps) {
       const semanticNotifications = [];
       const seen = new Set();
       for (const notification of notifications) {
-        matchedNotificationRawIds.add(notification.raw.rawId);
         if (seen.has(notification.fingerprint)) continue;
         seen.add(notification.fingerprint);
         semanticNotifications.push(notification);
       }
-      const terminal = semanticNotifications.at(-1) || null;
+      const workflowMirrors = notifications.map((notification) => notification.raw.recordType).sort();
+      const workflowNotificationsAreValid = launch.kind !== 'async_workflow' || notifications.every((notification) => (
+        notification.valid !== false
+        && strictWorkflowTerminal(notification)
+      ));
+      const workflowNotificationSetIsExact = workflowNotificationsAreValid && (
+        notifications.length <= 1 || (
+        notifications.length === 2
+        && semanticNotifications.length === 1
+        && workflowMirrors[0] === 'queue-operation'
+        && workflowMirrors[1] === 'user'
+        && notifications[0].sourceText === notifications[1].sourceText
+      ));
+      const workflowAmbiguous = launch.kind === 'async_workflow'
+        && (semanticNotifications.length > 1 || !workflowNotificationSetIsExact);
+      const acceptedNotifications = workflowAmbiguous ? [] : semanticNotifications;
+      const acceptedNotificationRaws = workflowAmbiguous
+        ? []
+        : notifications.map((notification) => notification.raw);
+      if (!workflowAmbiguous) {
+        for (const notification of notifications) {
+          matchedNotificationRawIds.add(notification.raw.rawId);
+        }
+      }
+      const terminal = acceptedNotifications.at(-1) || null;
       lifecycleByCallBlock.set(launch.callKey, {
         kind: launch.kind,
         taskId: launch.taskId,
         phase: terminal ? 'terminal' : launch.kind === 'background_command' ? 'backgrounded' : 'async_launched',
         timedOutAfterMs: launch.timedOutAfterMs,
-        notifications: semanticNotifications.map((notification) => ({
+        workflow: launch.workflow || null,
+        notifications: acceptedNotifications.map((notification) => ({
           status: notification.status,
           summary: notification.summary,
+          outputFile: notification.outputFile,
           result: notification.result,
+          recovery: notification.recovery,
           usage: notification.usage,
           exitCode: notification.exitCode,
         })),
         terminal: terminal ? {
           status: terminal.status,
           summary: terminal.summary,
+          outputFile: terminal.outputFile,
           result: terminal.result,
+          recovery: terminal.recovery,
           usage: terminal.usage,
           exitCode: terminal.exitCode,
         } : null,
-        notificationRaws: notifications.map((notification) => notification.raw),
+        notificationRaws: acceptedNotificationRaws,
       });
     }
     return { lifecycleByCallBlock, matchedNotificationRawIds };
@@ -535,7 +763,9 @@ function createClaudeLogicalBuilder(deps) {
       ...(lifecycle.notifications || []).flatMap((notification) => [
         notification.status,
         notification.summary,
+        notification.outputFile,
         notification.result,
+        notification.recovery,
         stringifyValue(notification.usage),
       ]),
     ].filter(Boolean).join('\n');
@@ -574,6 +804,7 @@ function createClaudeLogicalBuilder(deps) {
       timedOutAfterMs: lifecycle.timedOutAfterMs,
       notifications: lifecycle.notifications,
       terminal: lifecycle.terminal,
+      ...(lifecycle.workflow ? { workflow: lifecycle.workflow } : {}),
     } : null;
     return createEvent({
       id: `${callRaw.sessionId}:logical:tool:${callRaw.line}:${call.blockIndex}${call.id ? `:${call.id}` : ''}`,
@@ -616,6 +847,8 @@ function createClaudeLogicalBuilder(deps) {
         agentId ? 'subagent' : '',
         lifecycle?.kind === 'background_command' ? 'backgrounded' : '',
         lifecycle?.kind === 'async_agent' ? 'async' : '',
+        lifecycle?.kind === 'async_workflow' ? 'async' : '',
+        lifecycle?.kind === 'async_workflow' ? 'workflow' : '',
       ],
       lifecycle: publicLifecycle,
     });
@@ -830,13 +1063,40 @@ function createClaudeLogicalBuilder(deps) {
     return { events, consumedRawIds };
   }
 
+  function isSlashCommandEnvelopeText(value) {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    const admittedTags = new Set(['command-name', 'command-message', 'command-args']);
+    const values = new Map();
+    let offset = 0;
+    while (offset < text.length) {
+      const whitespace = text.slice(offset).match(/^\s*/u)?.[0] || '';
+      offset += whitespace.length;
+      if (offset >= text.length) break;
+      const open = text.slice(offset).match(/^<([a-z][a-z-]*)>/u);
+      if (!open || !admittedTags.has(open[1]) || values.has(open[1])) return false;
+      const tag = open[1];
+      offset += open[0].length;
+      const close = `</${tag}>`;
+      const end = text.indexOf(close, offset);
+      if (end < 0) return false;
+      const content = text.slice(offset, end);
+      if (/[<>]/u.test(content)) return false;
+      values.set(tag, content);
+      offset = end + close.length;
+    }
+    const commandName = String(values.get('command-name') || '').trim();
+    return values.has('command-name')
+      && /^\/[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(commandName);
+  }
+
   function isLocalCommandEnvelope(raw) {
     if (raw.recordType !== 'user' || raw.contentBlocks.length !== 1) return false;
     const [block] = raw.contentBlocks;
     if (block.type !== 'text') return false;
     const text = blockText(block).trim();
     if (/^<local-command-([a-z][a-z-]*)>[\s\S]*<\/local-command-\1>$/u.test(text)) return true;
-    return /^<command-name>[\s\S]*?<\/command-name>(?:\s*<command-message>[\s\S]*?<\/command-message>)?(?:\s*<command-args>[\s\S]*?<\/command-args>)?$/u.test(text);
+    return isSlashCommandEnvelopeText(text);
   }
 
   function isHumanUserRaw(raw) {
@@ -1042,6 +1302,270 @@ function createClaudeLogicalBuilder(deps) {
     });
   }
 
+  function exactSourceText(value, maxLength = 16_000) {
+    return typeof value === 'string'
+      && value.length > 0
+      && value.length <= maxLength
+      && value === value.trim()
+      ? value
+      : '';
+  }
+
+  function exactObjectKeys(value, expected) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const keys = Object.keys(value).sort();
+    return keys.length === expected.length
+      && keys.every((key, index) => key === expected[index]);
+  }
+
+  function goalStatusFact(raw) {
+    if (raw.recordType !== 'attachment' || raw.payloadType !== 'goal_status') return null;
+    const attachment = raw.parsed?.attachment;
+    const condition = exactSourceText(attachment?.condition);
+    if (!condition) return { raw, condition: '', kind: 'invalid' };
+    const initialKeys = ['condition', 'met', 'sentinel', 'type'];
+    if (
+      exactObjectKeys(attachment, initialKeys)
+      && attachment.type === 'goal_status'
+      && attachment.met === false
+      && attachment.sentinel === true
+    ) {
+      return { raw, condition, kind: 'initial' };
+    }
+    const terminalKeys = ['condition', 'durationMs', 'iterations', 'met', 'reason', 'tokens', 'type'];
+    if (
+      exactObjectKeys(attachment, terminalKeys)
+      && attachment.type === 'goal_status'
+      && attachment.met === true
+      && exactSourceText(attachment.reason)
+      && Number.isSafeInteger(attachment.iterations)
+      && attachment.iterations >= 0
+      && Number.isFinite(attachment.durationMs)
+      && attachment.durationMs >= 0
+      && Number.isSafeInteger(attachment.tokens)
+      && attachment.tokens >= 0
+    ) {
+      return {
+        raw,
+        condition,
+        kind: 'terminal',
+        reason: attachment.reason,
+        iterations: attachment.iterations,
+        durationMs: attachment.durationMs,
+        tokens: attachment.tokens,
+      };
+    }
+    return { raw, condition, kind: 'invalid' };
+  }
+
+  function uniqueUuidIndex(raws) {
+    const index = new Map();
+    for (const raw of raws) {
+      if (!raw.uuid) continue;
+      index.set(raw.uuid, index.has(raw.uuid) ? null : raw);
+    }
+    return index;
+  }
+
+  function isUniqueDescendant(raw, ancestor, byUuid) {
+    if (!raw?.parentUuid || !ancestor?.uuid || !byUuid.get(ancestor.uuid)) return false;
+    const seen = new Set();
+    let parentUuid = raw.parentUuid;
+    while (parentUuid) {
+      if (parentUuid === ancestor.uuid) return true;
+      if (seen.has(parentUuid)) return false;
+      seen.add(parentUuid);
+      const parent = byUuid.get(parentUuid);
+      if (!parent) return false;
+      parentUuid = parent.parentUuid;
+    }
+    return false;
+  }
+
+  function goalHookCandidate(raw, condition) {
+    if (raw.recordType !== 'system' || raw.payloadType !== 'stop_hook_summary') return false;
+    return Array.isArray(raw.parsed?.hookInfos) && raw.parsed.hookInfos.some((info) => (
+      info?.command === condition || info?.promptText === condition
+    ));
+  }
+
+  function goalHookFact(raw, condition) {
+    if (!goalHookCandidate(raw, condition)) return null;
+    const record = raw.parsed;
+    if (
+      record.hookCount !== 1
+      || !Array.isArray(record.hookInfos)
+      || record.hookInfos.length !== 1
+      || !Array.isArray(record.hookErrors)
+      || record.hookErrors.some((error) => typeof error !== 'string')
+      || !Array.isArray(record.hookAdditionalContext)
+      || typeof record.hasOutput !== 'boolean'
+      || typeof record.preventedContinuation !== 'boolean'
+      || !exactSourceText(record.toolUseID, 512)
+    ) return null;
+    const [info] = record.hookInfos;
+    if (
+      !info
+      || info.command !== condition
+      || info.promptText !== condition
+      || !Number.isFinite(info.durationMs)
+      || info.durationMs < 0
+    ) return null;
+    return {
+      raw,
+      toolUseId: record.toolUseID,
+      durationMs: info.durationMs,
+      hasOutput: record.hasOutput,
+      preventedContinuation: record.preventedContinuation,
+      errorCount: record.hookErrors.length,
+      status: record.hookErrors.length ? 'failed' : 'success',
+    };
+  }
+
+  function goalHookErrorFact(raw, condition, hook) {
+    if (raw.recordType !== 'attachment' || raw.payloadType !== 'hook_non_blocking_error') return null;
+    const attachment = raw.parsed?.attachment;
+    if (
+      attachment?.type !== 'hook_non_blocking_error'
+      || attachment.command !== condition
+      || attachment.toolUseID !== hook.toolUseId
+      || !exactSourceText(attachment.hookEvent, 512)
+      || !exactSourceText(attachment.hookName, 512)
+      || typeof attachment.stdout !== 'string'
+      || typeof attachment.stderr !== 'string'
+      || !Number.isFinite(attachment.durationMs)
+      || attachment.durationMs < 0
+      || !Number.isSafeInteger(attachment.exitCode)
+    ) return null;
+    return raw;
+  }
+
+  function goalEvent(initial, terminal, hooks, hookErrors, provenanceRaw) {
+    const raws = [
+      initial.raw,
+      ...hooks.flatMap((hook) => [hookErrors.get(hook.raw.rawId), hook.raw]).filter(Boolean),
+      provenanceRaw,
+      terminal?.raw,
+    ].filter(Boolean);
+    const validations = hooks.map((hook) => ({
+      status: hook.status,
+      durationMs: hook.durationMs,
+      toolUseId: hook.toolUseId,
+      hasOutput: hook.hasOutput,
+      preventedContinuation: hook.preventedContinuation,
+      errorCount: hook.errorCount,
+    }));
+    const lifecycle = {
+      kind: 'goal',
+      phase: terminal ? 'terminal' : 'active',
+      condition: initial.condition,
+      initial: { met: false, sentinel: true },
+      validations,
+      terminal: terminal ? {
+        met: true,
+        reason: terminal.reason,
+        iterations: terminal.iterations,
+        durationMs: terminal.durationMs,
+        tokens: terminal.tokens,
+      } : null,
+    };
+    return createEvent({
+      id: `${initial.raw.sessionId}:logical:goal:${initial.raw.line}`,
+      timestamp: initial.raw.timestamp,
+      turnId: initial.raw.turnId,
+      kind: 'goal',
+      subtype: 'goal_status',
+      layer: 'main',
+      role: 'system',
+      label: terminal ? 'Goal complete' : 'Goal status',
+      preview: truncate(initial.condition),
+      searchText: [
+        initial.condition,
+        terminal?.reason,
+        ...validations.map((validation) => stringifyValue(validation)),
+      ].filter(Boolean).join('\n'),
+      status: terminal ? 'success' : 'in_progress',
+      raws,
+      sourceOrder: initial.raw.rawIndex * 100,
+      outputStats: terminal ? { durationMs: terminal.durationMs } : {},
+      lifecycle,
+    });
+  }
+
+  function buildGoalProjection(raws) {
+    const byUuid = uniqueUuidIndex(raws);
+    const allGoalRaws = raws.filter((raw) => raw.recordType === 'attachment' && raw.payloadType === 'goal_status');
+    const facts = allGoalRaws.map(goalStatusFact);
+    const conditions = unique(facts.map((fact) => fact.condition));
+    const events = [];
+    const consumedRawIds = new Set();
+    for (const condition of conditions) {
+      const conditionFacts = facts.filter((fact) => fact.condition === condition);
+      if (conditionFacts.some((fact) => fact.kind === 'invalid')) continue;
+      const initials = conditionFacts.filter((fact) => fact.kind === 'initial');
+      const terminals = conditionFacts.filter((fact) => fact.kind === 'terminal');
+      if (initials.length !== 1 || terminals.length > 1) continue;
+      const [initial] = initials;
+      const terminal = terminals[0] || null;
+      if (terminal && (
+        terminal.raw.rawIndex <= initial.raw.rawIndex
+        || !isUniqueDescendant(terminal.raw, initial.raw, byUuid)
+      )) continue;
+
+      const hookCandidates = raws.filter((raw) => goalHookCandidate(raw, condition) && (
+        raw.rawIndex > initial.raw.rawIndex
+        && isUniqueDescendant(raw, initial.raw, byUuid)
+        && (!terminal || raw.rawIndex < terminal.raw.rawIndex || raw.parentUuid === terminal.raw.uuid)
+      ));
+      const hooks = hookCandidates.map((raw) => goalHookFact(raw, condition));
+      if (hooks.some((hook) => !hook)) continue;
+      const scopedHookErrorRaws = raws.filter((raw) => (
+        raw.recordType === 'attachment'
+        && raw.payloadType === 'hook_non_blocking_error'
+        && raw.parsed?.attachment?.command === condition
+        && raw.rawIndex > initial.raw.rawIndex
+        && isUniqueDescendant(raw, initial.raw, byUuid)
+        && (!terminal || raw.rawIndex < terminal.raw.rawIndex)
+      ));
+      const hookErrors = new Map();
+      let invalidHookError = false;
+      for (const hook of hooks) {
+        const candidates = raws.filter((raw) => (
+          raw.parentUuid
+          && hook.raw.parentUuid === raw.uuid
+          && raw.rawIndex < hook.raw.rawIndex
+          && raw.recordType === 'attachment'
+          && raw.payloadType === 'hook_non_blocking_error'
+        ));
+        if (hook.errorCount === 0) {
+          if (candidates.length) invalidHookError = true;
+          continue;
+        }
+        if (hook.errorCount !== 1 || candidates.length !== 1) {
+          invalidHookError = true;
+          continue;
+        }
+        const errorRaw = goalHookErrorFact(candidates[0], condition, hook);
+        if (!errorRaw) invalidHookError = true;
+        else hookErrors.set(hook.raw.rawId, errorRaw);
+      }
+      const matchedHookErrorIds = new Set([...hookErrors.values()].map((raw) => raw.rawId));
+      if (
+        invalidHookError
+        || scopedHookErrorRaws.some((raw) => !matchedHookErrorIds.has(raw.rawId))
+      ) continue;
+
+      const terminalParent = terminal ? byUuid.get(terminal.raw.parentUuid) : null;
+      const provenanceRaw = terminalParent?.recordType === 'assistant' && terminalParent.attributionSkill
+        ? terminalParent
+        : null;
+      events.push(goalEvent(initial, terminal, hooks, hookErrors, provenanceRaw));
+      consumedRawIds.add(initial.raw.rawId);
+      if (terminal) consumedRawIds.add(terminal.raw.rawId);
+    }
+    return { events, consumedRawIds };
+  }
+
   function buildLogicalEvents(raws) {
     resolveTurnIds(raws);
     const events = [];
@@ -1050,13 +1574,16 @@ function createClaudeLogicalBuilder(deps) {
     const toolCorrelation = buildToolCorrelation(raws);
     const asyncLifecycle = buildAsyncLifecycleCorrelation(raws, toolCorrelation);
     const taskReminderProjection = buildTaskReminderProjection(raws, toolCorrelation);
+    const goalProjection = buildGoalProjection(raws);
     const compactByBoundary = compactGroups(raws);
     for (const group of compactByBoundary.values()) {
       for (const raw of group.slice(1)) consumedRawIds.add(raw.rawId);
     }
     for (const rawId of asyncLifecycle.matchedNotificationRawIds) consumedRawIds.add(rawId);
     for (const rawId of taskReminderProjection.consumedRawIds) consumedRawIds.add(rawId);
+    for (const rawId of goalProjection.consumedRawIds) consumedRawIds.add(rawId);
     events.push(...taskReminderProjection.events);
+    events.push(...goalProjection.events);
 
     for (const raw of raws) {
       if (consumedRawIds.has(raw.rawId)) continue;

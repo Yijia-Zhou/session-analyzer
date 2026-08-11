@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"parent-%-π","agentId":"skill-%-ß","cwd":"__REPO_ROOT__","version":"2.1.220","uuid":"skill-user","timestamp":"2026-08-10T12:00:06.000Z","message":{"role":"user","content":"Run the synthetic skill."}}
+{"type":"assistant","sessionId":"parent-%-π","agentId":"skill-%-ß","cwd":"__REPO_ROOT__","version":"2.1.220","uuid":"skill-assistant","timestamp":"2026-08-10T12:00:07.000Z","message":{"id":"skill-message","role":"assistant","content":[{"type":"text","text":"Synthetic skill complete."}]}}
