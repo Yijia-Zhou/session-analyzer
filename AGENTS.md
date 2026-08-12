@@ -47,11 +47,11 @@ When changing product behavior or repository structure:
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Transcript source adapters: `docs/design-docs/transcript-source-adapters.md`
-- Active plans:
-  - `docs/exec-plans/active/2026-08-07-source-switch-frontend.md`
+- Active plans: none
 - Completed plans:
   - `docs/exec-plans/completed/2026-08-10-claude-compatibility-hardening.md`
   - `docs/exec-plans/completed/2026-08-09-codex-materialized-fork-ownership.md`
+  - `docs/exec-plans/completed/2026-08-07-source-switch-frontend.md`
   - `docs/exec-plans/completed/2026-08-07-source-runtime-switch.md`
   - `docs/exec-plans/completed/2026-08-02-v0.1.3-release.md`
   - `docs/exec-plans/completed/2026-08-02-npm-trusted-publishing.md`
