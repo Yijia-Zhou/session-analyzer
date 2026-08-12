@@ -688,7 +688,8 @@ async function refreshProjectList() {
   const requestId = state.projectChooserRequestId + 1;
   state.projectChooserRequestId = requestId;
   state.projectDiscoveryLoading = true;
-  renderSourceSwitch();
+  if (state.projects.length === 0) renderProjects();
+  else renderSourceSwitch();
   let summary = null;
   try {
     summary = await api('/api/projects?summary=1');
@@ -706,7 +707,7 @@ async function refreshProjectList() {
   if (summary) {
     applySourceConfig(summary);
     state.projects = summary.projects;
-    if (state.projects.length > 0) renderProjects();
+    renderProjects();
     if (el.projectStatus) {
       el.projectStatus.textContent = state.projects.length
         ? t('projectActivityLoading', { sourceHome: summary.sourceHome })

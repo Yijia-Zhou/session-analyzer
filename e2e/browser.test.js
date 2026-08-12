@@ -2106,6 +2106,106 @@ test('browser chooser switches transcript source and refreshes project candidate
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Codex/);
 });
 
+test('browser clears old project rows before successor discovery settles after a source switch', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  let sourcePosts = 0;
+  let projectPosts = 0;
+  let holdSuccessorFull = false;
+  let releaseSuccessorFull;
+  const successorFullGate = new Promise((resolve) => {
+    releaseSuccessorFull = resolve;
+  });
+  let markSuccessorFullStarted;
+  const successorFullStarted = new Promise((resolve) => {
+    markSuccessorFullStarted = resolve;
+  });
+  const { page } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: fixture.claudeHome },
+    beforeGoto: async (p) => {
+      p.on('request', (request) => {
+        const url = new URL(request.url());
+        if (url.pathname === '/api/source' && request.method() === 'POST') sourcePosts += 1;
+        if (url.pathname === '/api/project' && request.method() === 'POST') projectPosts += 1;
+      });
+      await p.route('**/api/projects*', async (route) => {
+        const url = new URL(route.request().url());
+        if (url.searchParams.get('summary') === '1') {
+          if (sourcePosts === 0) {
+            await route.continue();
+            return;
+          }
+          const response = await route.fetch();
+          const data = await response.json();
+          data.projects = [];
+          await route.fulfill({ response, json: data });
+          return;
+        }
+        if (sourcePosts > 0 && !holdSuccessorFull) {
+          holdSuccessorFull = true;
+          markSuccessorFullStarted();
+          await successorFullGate;
+        }
+        await route.continue();
+      });
+    },
+  });
+  t.after(() => releaseSuccessorFull());
+
+  await waitForProjectRoot(page, repoRoot);
+  await page.locator('#projectSourceAction').click();
+  await confirmSourceAction(page, 'Confirm switch to Claude Code');
+  await successorFullStarted;
+
+  assert.equal(await page.locator('.projectItem[data-project-root]').count(), 0);
+  assert.equal(projectPosts, 0);
+  assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Claude Code/);
+
+  releaseSuccessorFull();
+  await waitForProjectRoot(page, fixture.claudeRepo);
+});
+
+test('browser does not resurrect cached project rows when reopening the chooser', async (t) => {
+  let summaryCalls = 0;
+  let releaseReopenSummary;
+  const reopenSummaryGate = new Promise((resolve) => {
+    releaseReopenSummary = resolve;
+  });
+  let markReopenSummaryStarted;
+  const reopenSummaryStarted = new Promise((resolve) => {
+    markReopenSummaryStarted = resolve;
+  });
+  const { page } = await openSourceSwitchChooser(t, {
+    beforeGoto: async (p) => {
+      await p.route('**/api/projects*', async (route) => {
+        const url = new URL(route.request().url());
+        if (url.searchParams.get('summary') !== '1') {
+          await route.continue();
+          return;
+        }
+        summaryCalls += 1;
+        if (summaryCalls === 2) {
+          markReopenSummaryStarted();
+          await reopenSummaryGate;
+        }
+        await route.continue();
+      });
+    },
+  });
+  t.after(() => releaseReopenSummary());
+
+  await waitForProjectRoot(page, repoRoot);
+  await page.locator('.projectItem[data-project-root]').first().click();
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
+  await page.locator('#projectSwitchControl').click();
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'selecting');
+  await reopenSummaryStarted;
+
+  assert.equal(await page.locator('.projectItem[data-project-root]').count(), 0);
+
+  releaseReopenSummary();
+  await waitForProjectRoot(page, repoRoot);
+});
+
 test('browser chooser shows the server source before any switch', async (t) => {
   const fixture = await makeClaudeSwitchFixture(t);
   const { page } = await openSourceSwitchChooser(t, {
