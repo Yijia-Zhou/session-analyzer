@@ -33,11 +33,11 @@ const adapters = new Map([
         codexHome: context.sourceHome,
       });
     },
-    buildEventDetail(session, eventId, layer, options) {
-      return codex.buildEventDetail(session, eventId, layer, options);
+    async buildEventDetail(index, session, eventId, layer, options) {
+      return codex.buildHydratedEventDetail(index, session, eventId, layer, options);
     },
     async readRawRecord(index, session, raw) {
-      const value = await codex.readRawLine(index, raw.source?.file, raw.source?.line);
+      const value = await codex.readIndexedCodexRawRecord(index, session, raw);
       if (!value) return null;
       return {
         ...value,
@@ -74,7 +74,7 @@ const adapters = new Map([
         claudeHome: context.sourceHome,
       });
     },
-    buildEventDetail(session, eventId, layer, options) {
+    async buildEventDetail(index, session, eventId, layer, options) {
       return buildClaudeEventDetail(session, eventId, layer, options);
     },
     async readRawRecord(index, session, raw) {
@@ -109,8 +109,8 @@ function adapterForSession(session, fallbackKind = SOURCE_KIND.CODEX) {
   return requireSourceAdapter(session?.sourceKind || fallbackKind);
 }
 
-function buildEventDetailForSession(session, eventId, layer, options = {}) {
-  return adapterForSession(session).buildEventDetail(session, eventId, layer, options);
+async function buildEventDetailForSession(index, session, eventId, layer, options = {}) {
+  return adapterForSession(session, index?.sourceKind).buildEventDetail(index, session, eventId, layer, options);
 }
 
 async function readIndexedRawRecord(index, session, rawId) {

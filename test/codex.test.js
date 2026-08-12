@@ -7,7 +7,7 @@ const childProcess = require('node:child_process');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { buildIndex, buildEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readImagePreview, readRawLine, isPathInsideOrSame } = require('../src/codex');
+const { buildIndex, buildEventDetail, buildHydratedEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readImagePreview, readRawLine, isPathInsideOrSame } = require('../src/codex');
 const { createServer, parseArgs, resolveStaticAssetPath } = require('../server');
 const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../src/folding');
 
@@ -1640,6 +1640,13 @@ test('grouped generic protocol tool labels prefer terminal lifecycle rows', asyn
   assert.ok(session);
   const rawDetail = buildEventDetail(session, rawDeclined.id, 'raw');
   assert.equal(rawDetail.title, 'dynamic_tool_call_declined');
+  for (const event of timeline.events) {
+    assert.deepEqual(
+      await buildHydratedEventDetail(index, session, event.id, 'main'),
+      buildEventDetail(session, event.id, 'main'),
+    );
+  }
+  assert.deepEqual(await buildHydratedEventDetail(index, session, rawDeclined.id, 'raw'), rawDetail);
 });
 
 test('real image generation response item and event rows group as one tool event', async (t) => {
@@ -1718,6 +1725,7 @@ test('real image generation response item and event rows group as one tool event
   ]);
 
   const detail = buildEventDetail(session, imageEvent.id, 'main');
+  assert.deepEqual(await buildHydratedEventDetail(index, session, imageEvent.id, 'main'), detail);
   assert.deepEqual(detail.timelineSections.map((section) => section.title), ['Image generation']);
   assert.equal(detail.timelineSections[0].type, 'markdown');
   assert.match(detail.timelineSections[0].html, /Image generation/);
@@ -2890,6 +2898,11 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
   const reviewResult = allSections(reviewFinishedDetail).find((section) => section.title === 'Review result');
   const reviewFindings = allSections(reviewFinishedDetail).find((section) => section.title === 'Findings');
 
+  assert.deepEqual(await buildHydratedEventDetail(index, session, event.id, 'main'), detail);
+  assert.deepEqual(await buildHydratedEventDetail(index, session, goalEvent.id, 'main'), goalDetail);
+  assert.deepEqual(await buildHydratedEventDetail(index, session, reviewStarted.id, 'main'), reviewStartedDetail);
+  assert.deepEqual(await buildHydratedEventDetail(index, session, reviewFinished.id, 'main'), reviewFinishedDetail);
+
   assert.equal(event.preview.includes('[object Object]'), false);
   assert.equal(goalEvent.preview.includes('[object Object]'), false);
   assert.equal(reviewStarted.preview.includes('[object Object]'), false);
@@ -3505,6 +3518,18 @@ test('other tool call detail renders readable summaries and omits large data URL
   const closeOutputDetail = buildEventDetail(session, closeOutput.id, 'main');
   const listOutputDetail = buildEventDetail(session, listOutput.id, 'main');
   const sendFallbackDetail = buildEventDetail(session, sendFallback.id, 'main');
+
+  for (const [event, detail] of [
+    [question, questionDetail],
+    [wait, waitDetail],
+    [spawn, spawnDetail],
+    [send, sendDetail],
+    [close, closeDetail],
+    [image, imageDetail],
+    [dynamic, dynamicDetail],
+  ]) {
+    assert.deepEqual(await buildHydratedEventDetail(index, session, event.id, 'main'), detail);
+  }
 
   assert.equal(questionDetail.timelineSections[0].type, 'user_input');
   assert.equal(questionDetail.timelineSections[0].questions[0].prompt, 'Which display mode should be used?');

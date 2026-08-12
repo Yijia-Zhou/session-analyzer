@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
+const crypto = require('node:crypto');
 const MarkdownIt = require('markdown-it');
 const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
 const {
@@ -606,6 +607,10 @@ function safeJsonParse(text) {
   } catch {
     return null;
   }
+}
+
+function sourceLineDigest(line) {
+  return crypto.createHash('sha256').update(String(line), 'utf8').digest('base64url');
 }
 
 function ensureMarkdownRenderer() {
@@ -3938,6 +3943,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       externalizeKnownImageGenerationResult(record, { file: relFile, line: lineNumber }, embeddedImages);
       externalizeEmbeddedImages(record, { file: relFile, line: lineNumber }, embeddedImages);
       const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages);
+      raw.sourceLineDigest = sourceLineDigest(line);
       if (canonicalDigest) raw._canonicalRawDigest = canonicalDigest;
       raw.sourceClientVersion = record.version || '';
       if (!session.sourceClientVersion && record.version) session.sourceClientVersion = String(record.version);
@@ -4218,6 +4224,128 @@ async function readRawLine(index, relFile, lineNumber) {
   return null;
 }
 
+function indexedSourceStaleError() {
+  const error = new Error('Indexed source changed; reindex required');
+  error.name = 'IndexedSourceStaleError';
+  error.code = 'INDEXED_SOURCE_STALE';
+  error.statusCode = 409;
+  return error;
+}
+
+function validateIndexedCodexRaw(session, raw, sessionRawIds) {
+  const expectedLocator = codexSourceLocator(raw?.source);
+  const locator = raw?.sourceLocator;
+  if (!raw
+      || !sessionRawIds.has(raw.rawId)
+      || !expectedLocator
+      || locator?.type !== expectedLocator.type
+      || locator.file !== expectedLocator.file
+      || locator.line !== expectedLocator.line
+      || !Number.isInteger(raw.source?.line)
+      || raw.source.line < 1
+      || !raw.sourceLineDigest
+      || (session.sourceFile && normalizeFsPath(raw.source.file) !== normalizeFsPath(session.sourceFile))) {
+    throw indexedSourceStaleError();
+  }
+}
+
+async function readIndexedCodexSourceRows(index, session, raws, options = {}) {
+  const groups = new Map();
+  const sessionRawIds = new Set((session.rawEvents || []).map((raw) => raw.rawId));
+  for (const raw of raws || []) {
+    validateIndexedCodexRaw(session, raw, sessionRawIds);
+    const relFile = raw.source.file;
+    if (!groups.has(relFile)) groups.set(relFile, new Map());
+    const lines = groups.get(relFile);
+    if (!lines.has(raw.source.line)) lines.set(raw.source.line, []);
+    lines.get(raw.source.line).push(raw);
+  }
+
+  const rowsByRawId = new Map();
+  for (const [relFile, expectedLines] of groups) {
+    const target = path.resolve(index.sessionsRoot, relFile);
+    if (!isPathInsideOrSame(target, index.sessionsRoot)) throw indexedSourceStaleError();
+    options.onFileOpen?.(relFile);
+    let maxLine = 0;
+    for (const line of expectedLines.keys()) maxLine = Math.max(maxLine, line);
+    const stream = fs.createReadStream(target, { encoding: 'utf8' });
+    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    let current = 0;
+    try {
+      for await (const line of rl) {
+        current += 1;
+        const expectedRaws = expectedLines.get(current);
+        if (expectedRaws) {
+          const digest = sourceLineDigest(line);
+          for (const raw of expectedRaws) {
+            if (digest !== raw.sourceLineDigest) throw indexedSourceStaleError();
+            rowsByRawId.set(raw.rawId, {
+              file: relFile,
+              line: current,
+              raw: line,
+              parsed: safeJsonParse(line),
+            });
+          }
+        }
+        if (current >= maxLine) break;
+      }
+    } catch (error) {
+      if (error.code === 'ENOENT') throw indexedSourceStaleError();
+      throw error;
+    } finally {
+      rl.close();
+      stream.destroy();
+    }
+  }
+
+  if (rowsByRawId.size !== (raws || []).length) throw indexedSourceStaleError();
+  return rowsByRawId;
+}
+
+async function hydrateCodexRawEvents(index, session, raws, options = {}) {
+  const rowsByRawId = await readIndexedCodexSourceRows(index, session, raws, options);
+  return raws.map((residentRaw) => {
+    const sourceRow = rowsByRawId.get(residentRaw.rawId);
+    const record = sourceRow?.parsed;
+    if (!record) throw indexedSourceStaleError();
+    const embeddedImages = [];
+    externalizeKnownImageGenerationResult(record, residentRaw.source, embeddedImages);
+    externalizeEmbeddedImages(record, residentRaw.source, embeddedImages);
+    const hydratedRaw = makeRawEvent(
+      record,
+      residentRaw.source.line,
+      residentRaw.source.file,
+      residentRaw.sessionId,
+      embeddedImages,
+    );
+    return {
+      ...residentRaw,
+      ...hydratedRaw,
+      sourceLineDigest: residentRaw.sourceLineDigest,
+    };
+  });
+}
+
+async function buildHydratedEventDetail(index, session, eventId, layer = 'main', options = {}) {
+  let raws;
+  if (layer === 'raw') {
+    const raw = session.rawEvents.find((candidate) => candidate.rawId === eventId);
+    if (!raw) return null;
+    raws = [raw];
+  } else {
+    const logical = session.logicalEvents.find((candidate) => candidate.id === eventId && candidate.layer === layer);
+    if (!logical) return null;
+    raws = rawEventsForLogicalEvent(session, logical);
+  }
+  const hydratedRaws = await hydrateCodexRawEvents(index, session, raws, options);
+  return buildEventDetail({ ...session, rawEvents: hydratedRaws }, eventId, layer, options);
+}
+
+async function readIndexedCodexRawRecord(index, session, raw) {
+  const rowsByRawId = await readIndexedCodexSourceRows(index, session, [raw]);
+  return rowsByRawId.get(raw.rawId) || null;
+}
+
 function jsonPathValue(value, jsonPath) {
   let current = value;
   for (const key of jsonPath || []) {
@@ -4272,9 +4400,10 @@ async function readImagePreview(index, sessionId, eventId, previewId) {
   }
   let sourceRow;
   try {
-    sourceRow = await readRawLine(index, descriptor.source.file, descriptor.source.line);
+    const rowsByRawId = await readIndexedCodexSourceRows(index, session, [selectedRaw]);
+    sourceRow = rowsByRawId.get(selectedRaw.rawId);
   } catch (error) {
-    if (error.code === 'ENOENT') return imagePreviewError(404, 'Image preview source is missing');
+    if (error.code === 'INDEXED_SOURCE_STALE') return imagePreviewError(409, 'Image preview source is stale');
     throw error;
   }
   if (!sourceRow?.parsed) return imagePreviewError(409, 'Image preview source is stale');
@@ -4310,6 +4439,7 @@ const __testOnly = Object.freeze({
 
 module.exports = {
   __testOnly,
+  buildHydratedEventDetail,
   buildIndex,
   discoverProjects,
   decodeImagePreviewDataUrl,
@@ -4321,7 +4451,10 @@ module.exports = {
   getTimeline,
   eventKindCatalog,
   readImagePreview,
+  readIndexedCodexRawRecord,
+  readIndexedCodexSourceRows,
   readRawLine,
+  sourceLineDigest,
   normalizeFsPath,
   isPathInsideOrSame,
   matchTerms,

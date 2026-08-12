@@ -796,7 +796,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           return;
         }
         const layer = searchParams.get('layer') || 'main';
-        const detail = buildEventDetailForSession(session, decodePathSegment(detailMatch[2]), layer, { locale });
+        const detail = await buildEventDetailForSession(index, session, decodePathSegment(detailMatch[2]), layer, { locale });
         if (!detail) {
           sendError(res, 404, 'Unknown event');
           return;

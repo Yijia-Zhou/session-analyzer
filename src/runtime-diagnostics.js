@@ -64,6 +64,9 @@ function progressFields(progress = {}) {
   ]) {
     if (progress[key] !== undefined) fields[key] = progress[key];
   }
+  if (fields.logicalEventCount === undefined && progress.eventCount !== undefined) {
+    fields.logicalEventCount = progress.eventCount;
+  }
   return fields;
 }
 

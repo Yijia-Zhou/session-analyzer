@@ -95,7 +95,7 @@ test('progressFields keeps only aggregate non-path indexing data', () => {
     sourceFile: 'sensitive.jsonl',
     sessionCount: 2,
     rawEventCount: 3,
-    logicalEventCount: 1,
+    eventCount: 1,
   }), {
     phase: 'complete',
     sessionCount: 2,
