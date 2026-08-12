@@ -89,6 +89,8 @@ session-analyzer --repo /path/to/project
 
 The default host is `127.0.0.1`. `--host` is an advanced option; binding outside localhost can expose transcript content available to this process to other machines on the network.
 
+For opt-in indexing diagnostics, pass `--log-dir <path>`. Session Analyzer writes throttled JSONL lifecycle records with aggregate file/event counts, timing, V8 heap limits, and process memory samples. It does not include repository or transcript paths in those records, and keeps at most 20 indexing logs in that directory. Fatal V8 OOM stderr remains the authoritative crash evidence.
+
 ## Develop From Source
 
 The published CLI keeps the broader Node.js 22-or-newer runtime requirement above. A source checkout is deliberately stricter because npm 12 enforces the reviewed dependency install-script policy. Before any repository-local `npm install`, `npm ci`, or `npm run`, select a supported Node.js version and, from a directory outside the source checkout, bootstrap the exact npm CLI globally. This first npm command updates the toolchain and does not install project dependencies:

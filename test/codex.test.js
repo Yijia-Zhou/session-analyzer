@@ -123,6 +123,18 @@ test('parseArgs validates host values', () => {
   assert.equal(opts.port, 9000);
 });
 
+test('parseArgs accepts an opt-in indexing diagnostics directory', () => {
+  assert.equal(parseArgs(['node', 'server.js', '--log-dir', 'tmp/diagnostics']).logDir, 'tmp/diagnostics');
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--log-dir']).errors,
+    ['Missing value for --log-dir. Expected a directory path.'],
+  );
+  assert.deepEqual(
+    parseArgs(['node', 'server.js', '--log-dir', '   ']).errors,
+    ['Missing value for --log-dir. Expected a directory path.'],
+  );
+});
+
 test('CLI exits early with usage when argument validation fails', () => {
   const result = childProcess.spawnSync(process.execPath, ['server.js', '--port', '0'], {
     cwd: repoRoot,
@@ -4200,9 +4212,7 @@ test('cancelling an active project job preserves the previous index', async () =
     codexHome: fixtureCodexHome,
     buildIndex: ({ signal }) => new Promise((resolve, reject) => {
       signal.addEventListener('abort', () => {
-        const error = new Error('Indexing cancelled');
-        error.name = 'AbortError';
-        reject(error);
+        reject(new Error('late worker failure after cancellation'));
       });
     }),
   });
@@ -4224,6 +4234,10 @@ test('cancelling an active project job preserves the previous index', async () =
     });
     assert.equal(cancelRes.status, 200);
     assert.equal((await cancelRes.json()).job.status, 'cancelled');
+
+    const statusRes = await fetch(`${base}/api/project/status?jobId=${encodeURIComponent(selectBody.job.id)}`);
+    assert.equal(statusRes.status, 200);
+    assert.equal((await statusRes.json()).job.status, 'cancelled');
 
     const stateRes = await fetch(`${base}/api/state`);
     assert.equal(stateRes.status, 200);

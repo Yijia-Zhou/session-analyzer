@@ -19,6 +19,7 @@ const {
 } = require('./src/source-adapters');
 const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
+const { createIndexDiagnostics } = require('./src/runtime-diagnostics');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -37,6 +38,7 @@ function parseArgs(argv) {
     claudeHome: path.join(os.homedir(), '.claude'),
     port: 17890,
     host: '127.0.0.1',
+    logDir: '',
     errors: [],
   };
   const canonicalOptionFor = (arg) => {
@@ -64,6 +66,7 @@ function parseArgs(argv) {
       port: '--port',
       host: '--host',
       hostname: '--host',
+      logdir: '--log-dir',
       help: '--help',
     };
     return aliases[key] || null;
@@ -141,6 +144,14 @@ function parseArgs(argv) {
       }
       opts.host = next;
       i += 1;
+    } else if (option === '--log-dir') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push('Missing value for --log-dir. Expected a directory path.');
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
+      opts.logDir = next;
+      i += 1;
     } else if (option === '--help') {
       opts.help = true;
     }
@@ -153,7 +164,7 @@ function printHelp() {
     'Session Analyzer',
     '',
     'Usage:',
-    '  session-analyzer [--repo <repo-path>] [--source <source>] [--codex-home <path>] [--claude-home <path>] [--port <port>] [--host <host>]',
+    '  session-analyzer [--repo <repo-path>] [--source <source>] [--codex-home <path>] [--claude-home <path>] [--port <port>] [--host <host>] [--log-dir <path>]',
     '',
     'Options:',
     '  --repo <repo-path>     Repository to analyze. If omitted, select a project in the browser.',
@@ -162,6 +173,7 @@ function printHelp() {
     '  --claude-home <path>   Claude home directory. Used only with --source claude-code. Defaults to ~/.claude.',
     '  --port <port>          Local server port. Must be an integer from 1 to 65535. Defaults to 17890.',
     '  --host <host>          Advanced: bind host. Defaults to 127.0.0.1.',
+    '  --log-dir <path>       Write throttled indexing diagnostics as bounded JSONL logs.',
     '',
     'Examples:',
     '  session-analyzer',
@@ -360,7 +372,9 @@ function cancelProjectJob(job) {
   job.controller.abort();
   job.status = 'cancelled';
   job.completedAt = new Date().toISOString();
+  job.buildMs = Date.now() - job.startedAtMs;
   job.error = 'Indexing cancelled';
+  job.diagnostics?.finish('cancelled', { buildMs: job.buildMs });
 }
 
 async function discoverProjectsForSource(state, mode) {
@@ -471,6 +485,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   const id = String(state.nextProjectJobId++);
   const controller = new AbortController();
   const resolvedLocale = i18n.resolveLocale(locale);
+  const startedAtMs = Date.now();
   const job = {
     id,
     repoRoot,
@@ -478,6 +493,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     controller,
     status: 'running',
     startedAt: new Date().toISOString(),
+    startedAtMs,
     completedAt: '',
     buildMs: 0,
     error: '',
@@ -494,11 +510,15 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       elapsedMs: 0,
     },
   };
+  job.diagnostics = createIndexDiagnostics({
+    logDir: state.logDir,
+    jobId: id,
+    sourceKind: state.sourceKind,
+  });
   state.activeProjectJob = job;
 
-  const startedAt = Date.now();
   const buildIndex = state.buildIndexOverride || ((context) => state.adapter.buildIndex(context));
-  job.promise = buildIndex({
+  job.promise = Promise.resolve().then(() => buildIndex({
     repoRoot,
     sourceKind: state.sourceKind,
     sourceHome: state.sourceHome,
@@ -508,28 +528,39 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     signal: controller.signal,
     onProgress: (progress) => {
       job.progress = { ...job.progress, ...progress };
+      job.diagnostics?.progress(job.progress);
     },
-  }).then((index) => {
+  })).then((index) => {
     if (controller.signal.aborted) {
       job.status = 'cancelled';
       job.error = 'Indexing cancelled';
+      job.completedAt ||= new Date().toISOString();
+      job.buildMs = Date.now() - startedAtMs;
+      job.diagnostics?.finish('cancelled', { buildMs: job.buildMs });
       return;
     }
     job.status = 'succeeded';
     job.completedAt = new Date().toISOString();
-    job.buildMs = Date.now() - startedAt;
+    job.buildMs = Date.now() - startedAtMs;
     state.index = index;
     state.buildMs = job.buildMs;
+    job.diagnostics?.finish('succeeded', { buildMs: job.buildMs });
   }).catch((error) => {
-    job.completedAt = new Date().toISOString();
-    job.buildMs = Date.now() - startedAt;
-    if (error.name === 'AbortError') {
+    job.completedAt ||= new Date().toISOString();
+    job.buildMs = Date.now() - startedAtMs;
+    if (controller.signal.aborted || job.status === 'cancelled' || error.name === 'AbortError') {
       job.status = 'cancelled';
       job.error = 'Indexing cancelled';
+      job.diagnostics?.finish('cancelled', { buildMs: job.buildMs });
       return;
     }
     job.status = 'failed';
     job.error = error.message || 'Indexing failed';
+    job.diagnostics?.finish('failed', {
+      buildMs: job.buildMs,
+      errorName: error.name || 'Error',
+      errorCode: error.code || '',
+    });
   });
 
   return job;
@@ -586,6 +617,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     nextProjectJobId: 1,
     activeProjectJob: null,
     projectCache: null,
+    logDir: options.logDir ? path.resolve(options.logDir) : '',
   };
   if (options.repo) startProjectJob(state, options.repo, options.locale);
 
@@ -877,6 +909,7 @@ async function main() {
     codexHome: opts.codexHome,
     claudeHome: opts.claudeHome,
     repo: opts.repo,
+    logDir: opts.logDir,
   });
 
   server.listen(opts.port, opts.host, () => {
