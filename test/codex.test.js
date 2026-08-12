@@ -4099,6 +4099,9 @@ test('image preview endpoint rehydrates only indexed server-owned image locators
     const stale = await fetch(`${base}${previews[0].src}`);
     assert.equal(stale.status, 409);
     assert.equal((await stale.json()).error, 'Image preview source is stale');
+    const staleLegacyRaw = await fetch(`${base}/api/raw?file=${encodeURIComponent(outputRaw.source.file)}&line=${outputRaw.source.line}`);
+    assert.equal(staleLegacyRaw.status, 409);
+    assert.equal((await staleLegacyRaw.json()).error, 'Indexed source changed; reindex required');
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
@@ -4370,6 +4373,47 @@ test('cancelling an active project job preserves the previous index', async () =
     const stateBody = await stateRes.json();
     assert.equal(stateBody.repoRoot, 'G:\\vibe\\term-agent');
     assert.equal(stateBody.totals.sessionCount, 10);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('a failed replacement build preserves the previous index', async () => {
+  const index = await buildFixtureIndex();
+  const server = createServer(index, 1, {
+    codexHome: fixtureCodexHome,
+    buildIndex: async () => {
+      throw new Error('synthetic replacement failure');
+    },
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const selectRes = await fetch(`${base}/api/project`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repoRoot: 'G:\\vibe\\term-agent' }),
+    });
+    assert.equal(selectRes.status, 202);
+    const jobId = (await selectRes.json()).job.id;
+
+    let job = null;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const statusRes = await fetch(`${base}/api/project/status?jobId=${encodeURIComponent(jobId)}`);
+      job = (await statusRes.json()).job;
+      if (job.status !== 'running') break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(job.status, 'failed');
+
+    const stateRes = await fetch(`${base}/api/state`);
+    assert.equal(stateRes.status, 200);
+    const stateBody = await stateRes.json();
+    assert.equal(stateBody.repoRoot, 'G:\\vibe\\term-agent');
+    assert.equal(stateBody.totals.sessionCount, index.totals.sessionCount);
+    assert.equal(stateBody.totals.rawEventCount, index.totals.rawEventCount);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }

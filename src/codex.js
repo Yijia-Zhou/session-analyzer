@@ -1318,10 +1318,10 @@ function localizedLogicalLabel(logical, locale) {
 function readSessionIndexEntry(line) {
   try {
     const item = JSON.parse(line);
-    if (!item.id) return null;
+    if (typeof item.id !== 'string' || !item.id) return null;
     return {
       id: item.id,
-      title: item.thread_name || '',
+      title: typeof item.thread_name === 'string' ? item.thread_name : '',
       updatedAt: safeIso(item.updated_at),
     };
   } catch {
@@ -1330,27 +1330,31 @@ function readSessionIndexEntry(line) {
 }
 
 function subagentSpawnSource(payload) {
-  return payload?.source?.subagent?.thread_spawn || null;
+  const value = payload?.source?.subagent?.thread_spawn;
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
 
 function forkedFromSessionIdFromMeta(payload) {
-  return payload?.forked_from_id || '';
+  return typeof payload?.forked_from_id === 'string' ? payload.forked_from_id : '';
 }
 
 function parentSessionIdFromMeta(payload) {
-  const nestedParent = subagentSpawnSource(payload)?.parent_thread_id || '';
+  const nestedValue = subagentSpawnSource(payload)?.parent_thread_id;
+  const nestedParent = typeof nestedValue === 'string' ? nestedValue : '';
   if (nestedParent) return nestedParent;
   // Top-level parent_thread_id is accepted only for sessions whose metadata
   // already classifies them as review-derived children. A generic
   // parent_thread_id alone must not visually demote an unknown session.
   if (derivedSessionKindFromMeta(payload) === 'review') {
-    return payload?.parent_thread_id || '';
+    return typeof payload?.parent_thread_id === 'string' ? payload.parent_thread_id : '';
   }
   return '';
 }
 
 function agentNicknameFromMeta(payload) {
-  return payload?.agent_nickname || subagentSpawnSource(payload)?.agent_nickname || '';
+  if (typeof payload?.agent_nickname === 'string') return payload.agent_nickname;
+  const nestedNickname = subagentSpawnSource(payload)?.agent_nickname;
+  return typeof nestedNickname === 'string' ? nestedNickname : '';
 }
 
 function derivedSessionKindFromMeta(payload) {
@@ -1609,7 +1613,7 @@ async function inspectSessionFile(filePath, options = {}) {
       if (!record) continue;
       const payloadType = record.type === 'event_msg' ? record.payload?.type : '';
       const cwd = record.type === 'session_meta' || payloadType === 'session_configured' ? record.payload?.cwd : '';
-      if (cwd) {
+      if (typeof cwd === 'string' && cwd) {
         const resolvedCwd = resolveFsPath(cwd);
         cwdSet.add(resolvedCwd);
         if (repoRoot && isPathInsideOrSame(resolvedCwd, repoRoot)) {
@@ -3884,7 +3888,9 @@ function resetOwnedRawFacts(session) {
 }
 
 function applySessionIndexMetadata(session, sessionIndexEntry) {
-  session.title = sessionIndexEntry?.title || session.transcriptTitle;
+  session.title = typeof sessionIndexEntry?.title === 'string' && sessionIndexEntry.title
+    ? sessionIndexEntry.title
+    : session.transcriptTitle;
   session.updatedAt = session.transcriptUpdatedAt;
   if (sessionIndexEntry?.updatedAt && (!session.updatedAt || sessionIndexEntry.updatedAt > session.updatedAt)) {
     session.updatedAt = sessionIndexEntry.updatedAt;
@@ -4018,16 +4024,173 @@ function compactCodexRawEvent(raw) {
   return compact;
 }
 
+const COMPACT_RAW_KEYS = new Set([
+  'aggregatedOutput', 'callId', 'canonicalType', 'commandText', 'durationMs', 'embeddedImages',
+  'exitCode', 'line', 'maxObservedTokens', 'messageText', 'output', 'payloadType', 'preview',
+  'rawId', 'rawIndex', 'recordType', 'reviewLifecyclePhase', 'reviewThreadId', 'role',
+  'searchText', 'sessionId', 'sessionMetaId', 'source', 'sourceClientVersion', 'sourceKind',
+  'sourceLineDigest', 'sourceLocator', 'status', 'stderr', 'stdout', 'threadName', 'timestamp',
+  'toolName', 'touchedFiles', 'turnId', 'typeKey',
+]);
+const COMPACT_RAW_STRING_FIELDS = [
+  'aggregatedOutput', 'callId', 'canonicalType', 'commandText', 'messageText', 'output',
+  'payloadType', 'preview', 'rawId', 'recordType', 'role', 'searchText', 'sessionId',
+  'sourceClientVersion', 'sourceKind', 'sourceLineDigest', 'status', 'stderr', 'stdout',
+  'timestamp', 'toolName', 'turnId', 'typeKey',
+];
+const COMPACT_SESSION_STRING_FIELDS = [
+  'agentNickname', 'forkContinuationState', 'forkPointUuid', 'forkStorageMode', 'forkedAt',
+  'forkedFromSessionId', 'id', 'parentSessionId', 'primarySessionMetaKind', 'projectAssociation',
+  'residentRepresentation', 'shell', 'sourceAbsFile', 'sourceClientVersion', 'sourceFile',
+  'sourceFingerprint', 'sourceKind', 'sourceSessionId', 'sourceUpdatedAt', 'startedAt',
+  'supersededAt', 'supersededBySessionId', 'supersededReason', 'title', 'transcriptTitle',
+  'transcriptUpdatedAt', 'updatedAt',
+];
+const COMPACT_LOGICAL_KEYS = new Set([
+  'channels', 'codeModeOperation', 'hasLongOutput', 'hasReadableReasoning', 'id', 'kind', 'label', 'layer',
+  'outputStats', 'preview', 'rawRefs', 'role', 'schemaVersion', 'searchText', 'severity',
+  'source', 'sourceKind', 'sourceLocator', 'status', 'subtype', 'tags', 'timestamp',
+  'tokenUsage', 'toolName', 'touchedFiles', 'turnId', 'usageLimits',
+]);
+const COMPACT_LOGICAL_STRING_FIELDS = [
+  'id', 'kind', 'label', 'layer', 'preview', 'role', 'searchText', 'severity', 'sourceKind',
+  'status', 'subtype', 'timestamp', 'toolName', 'turnId',
+];
+const COMPACT_RAW_REF_KEYS = new Set([
+  'file', 'line', 'rawId', 'sourceLocator', 'sourceRecordType', 'sourceEventType',
+]);
+const COMPACT_IMAGE_DESCRIPTOR_KEYS = new Set([
+  'dedupeKey', 'detail', 'encoding', 'estimatedBytes', 'mimeType', 'previewId', 'source',
+]);
+const COMPACT_IMAGE_SOURCE_KEYS = new Set(['file', 'jsonPath', 'line']);
+
+function isCompactSourceLocator(locator) {
+  return locator === null || (
+    locator
+    && typeof locator === 'object'
+    && !Array.isArray(locator)
+    && Object.keys(locator).length === 3
+    && locator.type === 'jsonl_line'
+    && typeof locator.file === 'string'
+    && Number.isSafeInteger(locator.line)
+    && locator.line > 0
+  );
+}
+
+function isCompactEmbeddedImageDescriptor(image) {
+  if (!image || typeof image !== 'object' || Array.isArray(image)) return false;
+  if (!Object.keys(image).every((key) => COMPACT_IMAGE_DESCRIPTOR_KEYS.has(key))) return false;
+  if (!['dedupeKey', 'mimeType', 'previewId'].every((key) => typeof image[key] === 'string')) return false;
+  if (image.detail !== undefined && typeof image.detail !== 'string') return false;
+  if (image.encoding !== undefined && typeof image.encoding !== 'string') return false;
+  if (!Number.isSafeInteger(image.estimatedBytes)) return false;
+  const source = image.source;
+  return source
+    && typeof source === 'object'
+    && !Array.isArray(source)
+    && Object.keys(source).every((key) => COMPACT_IMAGE_SOURCE_KEYS.has(key))
+    && typeof source.file === 'string'
+    && Number.isSafeInteger(source.line)
+    && Array.isArray(source.jsonPath)
+    && source.jsonPath.every((part) => typeof part === 'string' || Number.isSafeInteger(part));
+}
+
+function isReusableCompactRaw(raw) {
+  return raw
+    && typeof raw === 'object'
+    && !Array.isArray(raw)
+    && Object.keys(raw).every((key) => COMPACT_RAW_KEYS.has(key))
+    && COMPACT_RAW_STRING_FIELDS.every((key) => typeof raw[key] === 'string')
+    && raw.sourceKind === CODEX_SOURCE_KIND
+    && Number.isSafeInteger(raw.line)
+    && Number.isSafeInteger(raw.rawIndex)
+    && (raw.exitCode === null || typeof raw.exitCode === 'string' || typeof raw.exitCode === 'number')
+    && Number.isFinite(raw.durationMs)
+    && raw.source
+    && typeof raw.source === 'object'
+    && !Array.isArray(raw.source)
+    && Object.keys(raw.source).length === 2
+    && typeof raw.source.file === 'string'
+    && Number.isSafeInteger(raw.source.line)
+    && isCompactSourceLocator(raw.sourceLocator)
+    && Array.isArray(raw.touchedFiles)
+    && raw.touchedFiles.every((file) => typeof file === 'string')
+    && Array.isArray(raw.embeddedImages)
+    && raw.embeddedImages.every(isCompactEmbeddedImageDescriptor)
+    && (raw.maxObservedTokens === undefined || (Number.isFinite(raw.maxObservedTokens) && raw.maxObservedTokens > 0))
+    && (raw.sessionMetaId === undefined || typeof raw.sessionMetaId === 'string')
+    && (raw.threadName === undefined || typeof raw.threadName === 'string')
+    && (raw.reviewLifecyclePhase === undefined || typeof raw.reviewLifecyclePhase === 'string')
+    && (raw.reviewThreadId === undefined || typeof raw.reviewThreadId === 'string')
+    && !Object.hasOwn(raw, 'parsed')
+    && !Object.hasOwn(raw, 'payload');
+}
+
+function isReusableCompactRawRef(ref) {
+  return ref
+    && typeof ref === 'object'
+    && !Array.isArray(ref)
+    && Object.keys(ref).every((key) => COMPACT_RAW_REF_KEYS.has(key))
+    && typeof ref.file === 'string'
+    && Number.isSafeInteger(ref.line)
+    && typeof ref.rawId === 'string'
+    && typeof ref.sourceRecordType === 'string'
+    && typeof ref.sourceEventType === 'string'
+    && isCompactSourceLocator(ref.sourceLocator);
+}
+
+function isReusableCompactLogicalEvent(event) {
+  return event
+    && typeof event === 'object'
+    && !Array.isArray(event)
+    && Object.keys(event).every((key) => COMPACT_LOGICAL_KEYS.has(key))
+    && COMPACT_LOGICAL_STRING_FIELDS.every((key) => typeof event[key] === 'string')
+    && Array.isArray(event.rawRefs)
+    && event.rawRefs.every(isReusableCompactRawRef)
+    && (event.source == null || event.rawRefs.includes(event.source))
+    && isCompactSourceLocator(event.sourceLocator)
+    && (event.codeModeOperation === undefined
+      || (event.codeModeOperation
+        && typeof event.codeModeOperation === 'object'
+        && !Array.isArray(event.codeModeOperation)
+        && !retainsForbiddenSourceContainer(event.codeModeOperation)))
+    && !Object.hasOwn(event, 'parsed')
+    && !Object.hasOwn(event, 'payload');
+}
+
+function retainsForbiddenSourceContainer(root) {
+  const pending = [root];
+  const seen = new Set();
+  while (pending.length) {
+    const value = pending.pop();
+    if (!value || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
+    if (Object.hasOwn(value, 'parsed') || Object.hasOwn(value, 'payload')) return true;
+    if (value instanceof Map) {
+      for (const [key, entry] of value) pending.push(key, entry);
+    } else if (value instanceof Set) {
+      for (const entry of value) pending.push(entry);
+    } else {
+      for (const entry of Object.values(value)) pending.push(entry);
+    }
+  }
+  return false;
+}
+
 function isReusableCompactSession(session) {
   return session?.residentRepresentation === CODEX_COMPACT_SESSION_REPRESENTATION
+    && COMPACT_SESSION_STRING_FIELDS.every((key) => typeof session[key] === 'string')
+    && session.cwdSet instanceof Set
+    && [...session.cwdSet].every((cwd) => typeof cwd === 'string')
+    && (!session._parsedAncestry
+      || (typeof session._parsedAncestry === 'object'
+        && !Array.isArray(session._parsedAncestry)
+        && typeof session._parsedAncestry.forkedFromSessionId === 'string'
+        && Object.keys(session._parsedAncestry).every((key) => key === 'forkedFromSessionId')))
     && Array.isArray(session.rawEvents)
-    && session.rawEvents.every((raw) => (
-      raw
-      && typeof raw === 'object'
-      && raw.sourceKind === CODEX_SOURCE_KIND
-      && !Object.hasOwn(raw, 'parsed')
-      && !Object.hasOwn(raw, 'payload')
-    ));
+    && session.rawEvents.every(isReusableCompactRaw)
+    && Array.isArray(session._logicalEvents || session.logicalEvents)
+    && (session._logicalEvents || session.logicalEvents).every(isReusableCompactLogicalEvent);
 }
 
 async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {}) {
@@ -4055,44 +4218,52 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       session.lineCount += 1;
       const record = safeJsonParse(line);
       if (!record) continue;
+      const recordType = typeof record.type === 'string' ? record.type : '';
+      const payload = record.payload && typeof record.payload === 'object' && !Array.isArray(record.payload)
+        ? record.payload
+        : {};
 
-      if (record.type === 'session_meta' && record.payload) {
+      if (recordType === 'session_meta') {
         if (!primarySessionMetaSeen) {
           primarySessionMetaSeen = true;
-          if (record.payload.id) {
-            session.id = record.payload.id;
-            session.sourceSessionId = record.payload.id;
+          if (typeof payload.id === 'string' && payload.id) {
+            session.id = payload.id;
+            session.sourceSessionId = payload.id;
           }
-          const forkedFromSessionId = forkedFromSessionIdFromMeta(record.payload);
+          const forkedFromSessionId = forkedFromSessionIdFromMeta(payload);
           if (forkedFromSessionId || !session.forkedFromSessionId) {
             session.forkedFromSessionId = forkedFromSessionId;
           }
-          session.parentSessionId = parentSessionIdFromMeta(record.payload);
-          session.agentNickname = agentNicknameFromMeta(record.payload);
-          session.primarySessionMetaKind = derivedSessionKindFromMeta(record.payload);
+          session.parentSessionId = parentSessionIdFromMeta(payload);
+          session.agentNickname = agentNicknameFromMeta(payload);
+          session.primarySessionMetaKind = derivedSessionKindFromMeta(payload);
         }
-        if (record.payload.cwd) {
-          session.cwdSet.add(record.payload.cwd);
-          if (isPathInsideOrSame(record.payload.cwd, repoRoot)) session.matchesRepo = true;
+        if (typeof payload.cwd === 'string' && payload.cwd) {
+          session.cwdSet.add(payload.cwd);
+          if (isPathInsideOrSame(payload.cwd, repoRoot)) session.matchesRepo = true;
         }
       }
-      if (record.type === 'event_msg' && record.payload?.type === 'session_configured') {
-        if (record.payload.cwd) {
-          session.cwdSet.add(record.payload.cwd);
-          if (isPathInsideOrSame(record.payload.cwd, repoRoot)) session.matchesRepo = true;
+      if (recordType === 'event_msg' && payload.type === 'session_configured') {
+        if (typeof payload.cwd === 'string' && payload.cwd) {
+          session.cwdSet.add(payload.cwd);
+          if (isPathInsideOrSame(payload.cwd, repoRoot)) session.matchesRepo = true;
         }
-        if (!session.title && record.payload.thread_name) {
-          session.title = record.payload.thread_name;
+        if (!session.title && typeof payload.thread_name === 'string' && payload.thread_name) {
+          session.title = payload.thread_name;
         }
         if (!primarySessionMetaSeen) {
-          if (!session.forkedFromSessionId) session.forkedFromSessionId = forkedFromSessionIdFromMeta(record.payload);
-          if (!session.parentSessionId) session.parentSessionId = parentSessionIdFromMeta(record.payload);
-          if (!session.agentNickname) session.agentNickname = agentNicknameFromMeta(record.payload);
-          if (!session.primarySessionMetaKind) session.primarySessionMetaKind = derivedSessionKindFromMeta(record.payload);
+          if (!session.forkedFromSessionId) session.forkedFromSessionId = forkedFromSessionIdFromMeta(payload);
+          if (!session.parentSessionId) session.parentSessionId = parentSessionIdFromMeta(payload);
+          if (!session.agentNickname) session.agentNickname = agentNicknameFromMeta(payload);
+          if (!session.primarySessionMetaKind) session.primarySessionMetaKind = derivedSessionKindFromMeta(payload);
         }
       }
-      if (!session.parentSessionId && record.type === 'event_msg' && record.payload?.type === 'thread_name_updated' && record.payload.thread_name) {
-        session.title = record.payload.thread_name;
+      if (!session.parentSessionId
+          && recordType === 'event_msg'
+          && payload.type === 'thread_name_updated'
+          && typeof payload.thread_name === 'string'
+          && payload.thread_name) {
+        session.title = payload.thread_name;
       }
       const embeddedImages = [];
       const canonicalDigest = includeCanonicalRawDigests ? canonicalRawRecordDigest(record) : '';
@@ -4101,9 +4272,11 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages);
       raw.sourceLineDigest = sourceLineDigest(line);
       if (canonicalDigest) raw._canonicalRawDigest = canonicalDigest;
-      raw.sourceClientVersion = record.version || '';
+      raw.sourceClientVersion = typeof record.version === 'string' ? record.version : '';
       extractResidentRawFacts(raw, record);
-      if (!session.sourceClientVersion && record.version) session.sourceClientVersion = String(record.version);
+      if (!session.sourceClientVersion && typeof record.version === 'string' && record.version) {
+        session.sourceClientVersion = record.version;
+      }
       updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
       if (!session.shell && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
         session.shell = readXmlTag(raw.messageText, 'shell');
@@ -4543,6 +4716,24 @@ async function readIndexedCodexRawRecord(index, session, raw) {
   return rowsByRawId.get(raw.rawId) || null;
 }
 
+async function readIndexedCodexLegacyRawLine(index, file, line) {
+  if (typeof file !== 'string' || !file || !Number.isSafeInteger(line) || line < 1) return null;
+  const normalizedFile = normalizeFsPath(file);
+  let match = null;
+  for (const session of index.sessions || []) {
+    if (normalizeFsPath(session.sourceFile || '') !== normalizedFile) continue;
+    const raw = session.rawEvents?.find((candidate) => (
+      candidate.source?.line === line
+      && normalizeFsPath(candidate.source?.file || '') === normalizedFile
+    ));
+    if (!raw) continue;
+    if (match) return null;
+    match = { session, raw };
+  }
+  if (!match) return null;
+  return readIndexedCodexRawRecord(index, match.session, match.raw);
+}
+
 function jsonPathValue(value, jsonPath) {
   let current = value;
   for (const key of jsonPath || []) {
@@ -4632,6 +4823,7 @@ const __testOnly = Object.freeze({
   }),
   compactCodexRawEvent,
   formatResetTime,
+  isReusableCompactSession,
   isEcmaScriptWhitespace,
   resetTimeCacheLimit: RESET_TIME_CACHE_LIMIT,
   resetTimeCacheSize: () => resetTimeCache.size,
@@ -4653,6 +4845,7 @@ module.exports = {
   getTimeline,
   eventKindCatalog,
   readImagePreview,
+  readIndexedCodexLegacyRawLine,
   readIndexedCodexRawRecord,
   readIndexedCodexSourceRows,
   readRawLine,

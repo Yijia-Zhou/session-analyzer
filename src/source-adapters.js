@@ -50,7 +50,7 @@ const adapters = new Map([
       return codex.readImagePreview(index, sessionId, eventId, previewId);
     },
     async readLegacyRawLine(index, file, line) {
-      return codex.readRawLine(index, file, line);
+      return codex.readIndexedCodexLegacyRawLine(index, file, line);
     },
   }],
   [SOURCE_KIND.CLAUDE_CODE, {

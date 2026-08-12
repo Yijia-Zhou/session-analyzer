@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fsp = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
 const {
   __testOnly,
@@ -118,6 +120,16 @@ test('sync detail fails explicitly when a compact Session has not been source-hy
   );
 });
 
+test('reuse admits bounded Code Mode facts but rejects nested source containers', async () => {
+  const index = await buildIndex({ repoRoot, codexHome: fixtureCodexHome });
+  const session = index.sessions[0];
+  const event = session.logicalEvents[0];
+  event.codeModeOperation = { id: 'synthetic-operation', phases: [], eventRefs: [] };
+  assert.equal(__testOnly.isReusableCompactSession(session), true);
+  event.codeModeOperation.payload = { nested: 'source record' };
+  assert.equal(__testOnly.isReusableCompactSession(session), false);
+});
+
 test('compaction closes scalar and locator slots over malformed source-shaped values', () => {
   const sourceObject = { nested: { source: 'must not survive' } };
   const compact = __testOnly.compactCodexRawEvent({
@@ -145,6 +157,83 @@ test('compaction closes scalar and locator slots over malformed source-shaped va
   assert.deepEqual(compact.sourceLocator, { type: 'jsonl_line', file: 'file.jsonl', line: 1 });
   assert.deepEqual(compact.touchedFiles, ['kept.txt']);
   assert.equal(JSON.stringify(compact).includes('must not survive'), false);
+});
+
+test('parser closes malformed source scalars before Logical refs and reuse', async (t) => {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-compact-shape-'));
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  const sessionsDir = path.join(codexHome, 'sessions', '2026', '08', '13');
+  await fsp.mkdir(sessionsDir, { recursive: true });
+  const sessionId = '12121212-1212-1212-1212-121212121212';
+  const marker = { nested: { retainedSourceObject: true } };
+  const file = path.join(sessionsDir, `rollout-2026-08-13T00-00-00-${sessionId}.jsonl`);
+  const rows = [
+    {
+      timestamp: '2026-08-13T00:00:00.000Z',
+      type: 'session_meta',
+      version: marker,
+      payload: {
+        id: sessionId,
+        cwd: repoRoot,
+        forked_from_id: marker,
+        parent_thread_id: marker,
+        agent_nickname: marker,
+        source: { subagent: { thread_spawn: { parent_thread_id: marker, agent_nickname: marker } } },
+      },
+    },
+    {
+      timestamp: '2026-08-13T00:00:01.000Z',
+      type: marker,
+      payload: {
+        type: marker,
+        role: marker,
+        turn_id: marker,
+        call_id: marker,
+        name: marker,
+        status: marker,
+      },
+    },
+  ];
+  await fsp.writeFile(file, `${rows.map(JSON.stringify).join('\n')}\n`, 'utf8');
+  await fsp.writeFile(path.join(codexHome, 'session_index.jsonl'), `${JSON.stringify({
+    id: sessionId,
+    thread_name: marker,
+    updated_at: '2026-08-13T00:00:02.000Z',
+  })}\n`, 'utf8');
+
+  const committed = await buildIndex({ repoRoot, codexHome });
+  const session = committed.sessionsById.get(sessionId);
+  assert.ok(session);
+  for (const key of [
+    'id', 'sourceSessionId', 'sourceClientVersion', 'parentSessionId', 'forkedFromSessionId',
+    'agentNickname', 'primarySessionMetaKind',
+  ]) assert.equal(typeof session[key], 'string', key);
+  assert.ok([...session.cwdSet].every((cwd) => typeof cwd === 'string'));
+  assert.equal(typeof session.title, 'string');
+  assert.equal(typeof session.analysis.title, 'string');
+  for (const raw of session.rawEvents) {
+    for (const key of ['rawId', 'sessionId', 'recordType', 'payloadType', 'role', 'turnId', 'callId', 'toolName', 'status']) {
+      assert.equal(typeof raw[key], 'string', `${raw.rawId}:${key}`);
+    }
+  }
+  for (const event of session.logicalEvents) {
+    for (const ref of event.rawRefs) {
+      assert.equal(typeof ref.sourceRecordType, 'string');
+      assert.equal(typeof ref.sourceEventType, 'string');
+      assert.equal(typeof ref.rawId, 'string');
+    }
+  }
+  assertNoReachableParsedGraph(committed);
+
+  const corrupted = session.logicalEvents[0].rawRefs[0];
+  corrupted.sourceRecordType = marker;
+  const replacement = await buildIndex({ repoRoot, codexHome, previousIndex: committed });
+  assert.equal(replacement.totals.reusedFileCount, 0);
+  const replacementSession = replacement.sessionsById.get(sessionId);
+  assert.equal(typeof replacementSession.logicalEvents[0].rawRefs[0].sourceRecordType, 'string');
+  assert.equal(typeof replacementSession.title, 'string');
+  assert.equal(typeof replacementSession.analysis.title, 'string');
+  assertNoReachableParsedGraph(replacement);
 });
 
 test('compact and parse-resident builds preserve timeline, search, analysis, fork, and presentation behavior', async () => {
