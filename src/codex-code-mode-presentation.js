@@ -46,11 +46,11 @@ function codeModeOperationExecSource(operation, rawById) {
   if (raw?.recordType !== 'response_item'
       || raw?.payloadType !== 'custom_tool_call'
       || raw?.toolName !== 'exec'
-      || payload?.name !== 'exec'
+      || (payload && payload.name !== 'exec')
       || !callId
       || String(raw?.callId || '') !== callId
       || String(operation?.outerCallId || '') !== callId) return '';
-  const source = Object.hasOwn(payload, 'input') ? payload.input : raw.output;
+  const source = payload && Object.hasOwn(payload, 'input') ? payload.input : raw.output;
   return typeof source === 'string' ? source : '';
 }
 

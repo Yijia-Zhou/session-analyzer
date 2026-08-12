@@ -319,6 +319,7 @@ test('npm pack manifest contains only runtime package files', () => {
     'src/codex.js',
     'src/folding.js',
     'src/review-lifecycle.js',
+    'src/runtime-diagnostics.js',
     'src/source-adapters.js',
     'src/shared/agent-coordination.js',
     'src/shared/command-highlighting.js',

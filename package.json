@@ -36,6 +36,7 @@
     "src/codex-code-mode.js",
     "src/codex-presentation-context.js",
     "src/review-lifecycle.js",
+    "src/runtime-diagnostics.js",
     "src/codex.js",
     "src/codex-detail.js",
     "src/codex-forks.js",

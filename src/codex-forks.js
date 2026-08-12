@@ -55,7 +55,8 @@ function ensureCanonicalRawDigests(session) {
 
 function isSessionMeta(raw, sessionId = '') {
   if (raw?.recordType !== 'session_meta') return false;
-  return !sessionId || raw.parsed?.payload?.id === sessionId;
+  const metaId = raw.sessionMetaId || raw.parsed?.payload?.id || '';
+  return !sessionId || metaId === sessionId;
 }
 
 function isValidTimestamp(value) {
@@ -65,7 +66,7 @@ function isValidTimestamp(value) {
 function declaredForkSourceId(session) {
   const first = session.rawEvents?.[0];
   if (!isSessionMeta(first, session.id)) return '';
-  const sourceId = first.parsed?.payload?.forked_from_id;
+  const sourceId = session?._parsedAncestry?.forkedFromSessionId || first.parsed?.payload?.forked_from_id;
   return typeof sourceId === 'string' ? sourceId.trim() : '';
 }
 
@@ -108,11 +109,10 @@ function logicalEventSegment(event, rawSegments) {
 }
 
 function rawRecordShape(raw) {
-  const parsed = raw?.parsed;
   return [
-    String(raw?.recordType || parsed?.type || ''),
-    String(parsed?.payload?.type || ''),
-    String(parsed?.payload?.role || ''),
+    String(raw?.recordType || raw?.parsed?.type || ''),
+    String(raw?.payloadType || raw?.parsed?.payload?.type || ''),
+    String(raw?.role || raw?.parsed?.payload?.role || ''),
   ].join('\u0000');
 }
 

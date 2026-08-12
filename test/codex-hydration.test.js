@@ -6,6 +6,7 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {
+  __testOnly,
   buildEventDetail,
   buildHydratedEventDetail,
   buildIndex,
@@ -46,10 +47,14 @@ async function makeSyntheticIndex(t) {
 }
 
 test('source-backed detail equals resident detail without retaining parsed records', async () => {
-  const index = await buildIndex({ repoRoot: 'G:\\vibe\\term-agent', codexHome: fixtureCodexHome });
+  const options = { repoRoot: 'G:\\vibe\\term-agent', codexHome: fixtureCodexHome };
+  const residentIndex = await __testOnly.buildUncompactedIndexForDetailTests(options);
+  const index = await buildIndex(options);
   const observedKinds = new Set();
-  for (const residentSession of index.sessions) {
-    const compactSession = withoutResidentParsed(residentSession);
+  for (const compactSession of index.sessions) {
+    const residentSession = residentIndex.sessionsById.get(compactSession.id);
+    assert.ok(residentSession);
+    assert.ok(compactSession.rawEvents.every((raw) => !Object.hasOwn(raw, 'parsed')));
     for (const event of residentSession.logicalEvents) {
       observedKinds.add(event.kind);
       for (const locale of ['en', 'zh-CN']) {
@@ -99,7 +104,7 @@ test('hydration accepts append-only growth but rejects rewrite, shrink, shift, a
   const { file, id, index, originalText, records } = await makeSyntheticIndex(t);
   const session = withoutResidentParsed(index.sessionsById.get(id));
   const command = session.logicalEvents.find((event) => event.kind === 'command');
-  const expected = buildEventDetail(index.sessionsById.get(id), command.id, command.layer);
+  const expected = await buildHydratedEventDetail(index, session, command.id, command.layer);
 
   await fsp.appendFile(file, `${JSON.stringify({ type: 'event_msg', payload: { type: 'turn_complete' } })}\n`, 'utf8');
   assert.deepEqual(await buildHydratedEventDetail(index, session, command.id, command.layer), expected);

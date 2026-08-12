@@ -7,13 +7,14 @@ const childProcess = require('node:child_process');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { buildIndex, buildEventDetail, buildHydratedEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readImagePreview, readRawLine, isPathInsideOrSame } = require('../src/codex');
+const { __testOnly, buildIndex: buildCompactIndex, buildEventDetail, buildHydratedEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readImagePreview, readRawLine, isPathInsideOrSame } = require('../src/codex');
 const { createServer, parseArgs, resolveStaticAssetPath } = require('../server');
 const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../src/folding');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 const repoRoot = path.join(__dirname, '..');
+const buildIndex = __testOnly.buildUncompactedIndexForDetailTests;
 
 async function buildFixtureIndex() {
   return buildIndex({
@@ -481,7 +482,7 @@ test('buildIndex reuses unchanged session payloads while reparsing changed trans
   await fsp.mkdir(projectRoot, { recursive: true });
   await writeFixtureTranscript(codexHome, projectRoot, unchangedId);
   const changedFile = await writeFixtureTranscript(codexHome, projectRoot, changedId);
-  const first = await buildIndex({ repoRoot: projectRoot, codexHome });
+  const first = await buildCompactIndex({ repoRoot: projectRoot, codexHome });
 
   await fsp.appendFile(changedFile, `${JSON.stringify({
     type: 'event_msg',
@@ -489,7 +490,7 @@ test('buildIndex reuses unchanged session payloads while reparsing changed trans
     payload: { type: 'warning', message: 'changed transcript' },
   })}\n`, 'utf8');
   const progress = [];
-  const second = await buildIndex({
+  const second = await buildCompactIndex({
     repoRoot: projectRoot,
     codexHome,
     previousIndex: first,
@@ -502,10 +503,44 @@ test('buildIndex reuses unchanged session payloads while reparsing changed trans
   const newChanged = second.sessionsById.get(changedId);
   assert.notEqual(newUnchanged, oldUnchanged, 'reused top-level metadata must remain commit-isolated');
   assert.equal(newUnchanged.rawEvents, oldUnchanged.rawEvents, 'unchanged heavy event payload should be shared');
+  assert.match(newUnchanged.sourceFingerprint, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(newUnchanged.sourceFingerprint, oldUnchanged.sourceFingerprint);
   assert.notEqual(newChanged.rawEvents, oldChanged.rawEvents, 'changed transcripts must be reparsed');
   assert.equal(newChanged.rawEvents.length, oldChanged.rawEvents.length + 1);
   assert.equal(second.totals.reusedFileCount, 1);
   assert.equal(progress.at(-1).reusedFileCount, 1);
+});
+
+test('buildIndex fingerprints stat-equal transcripts before reusing compact payloads', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const projectRoot = path.join(codexHome, 'fingerprint-project');
+  const id = '23232323-2323-2323-2323-232323232323';
+  await fsp.mkdir(projectRoot, { recursive: true });
+  const file = await writeFixtureTranscript(codexHome, projectRoot, id);
+  await fsp.appendFile(file, `${JSON.stringify({
+    type: 'event_msg',
+    timestamp: '2026-05-25T10:00:01.000Z',
+    payload: { type: 'thread_name_updated', thread_name: 'alpha' },
+  })}\n`, 'utf8');
+  const fixedTime = new Date('2026-05-25T12:00:00.000Z');
+  await fsp.utimes(file, fixedTime, fixedTime);
+  const first = await buildCompactIndex({ repoRoot: projectRoot, codexHome });
+  const before = first.sessionsById.get(id);
+  const original = await fsp.readFile(file, 'utf8');
+  const rewritten = original.replace('"alpha"', '"bravo"');
+  assert.equal(rewritten.length, original.length);
+  await fsp.writeFile(file, rewritten, 'utf8');
+  await fsp.utimes(file, fixedTime, fixedTime);
+  const rewrittenStat = await fsp.stat(file);
+  assert.equal(rewrittenStat.size, before.bytes);
+  assert.equal(rewrittenStat.mtime.toISOString(), before.sourceUpdatedAt);
+
+  const second = await buildCompactIndex({ repoRoot: projectRoot, codexHome, previousIndex: first });
+  const after = second.sessionsById.get(id);
+  assert.equal(second.totals.reusedFileCount, 0);
+  assert.notEqual(after.rawEvents, before.rawEvents);
+  assert.notEqual(after.sourceFingerprint, before.sourceFingerprint);
+  assert.equal(after.transcriptTitle, 'bravo');
 });
 
 test('buildIndex ignores an incomplete previous-index placeholder', async (t) => {
@@ -515,7 +550,7 @@ test('buildIndex ignores an incomplete previous-index placeholder', async (t) =>
   await fsp.mkdir(projectRoot, { recursive: true });
   await writeFixtureTranscript(codexHome, projectRoot, id);
 
-  const index = await buildIndex({
+  const index = await buildCompactIndex({
     repoRoot: projectRoot,
     codexHome,
     previousIndex: { repoRoot: projectRoot, codexHome },
@@ -532,10 +567,10 @@ test('buildIndex re-stats a transcript before reuse when it grows after selectin
   const id = '30303030-3030-3030-3030-303030303030';
   await fsp.mkdir(projectRoot, { recursive: true });
   const file = await writeFixtureTranscript(codexHome, projectRoot, id);
-  const first = await buildIndex({ repoRoot: projectRoot, codexHome });
+  const first = await buildCompactIndex({ repoRoot: projectRoot, codexHome });
   let appended = false;
 
-  const second = await buildIndex({
+  const second = await buildCompactIndex({
     repoRoot: projectRoot,
     codexHome,
     previousIndex: first,
@@ -558,6 +593,72 @@ test('buildIndex re-stats a transcript before reuse when it grows after selectin
   );
 });
 
+test('buildIndex commits a verified fixed prefix when a transcript appends during parsing', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const projectRoot = path.join(codexHome, 'parse-append-project');
+  const id = '31313131-3131-3131-3131-313131313131';
+  await fsp.mkdir(projectRoot, { recursive: true });
+  const file = await writeFixtureTranscript(codexHome, projectRoot, id);
+  let appended = false;
+
+  const first = await buildCompactIndex({
+    repoRoot: projectRoot,
+    codexHome,
+    async beforeSourceSnapshotVerificationForTests() {
+      if (appended) return;
+      appended = true;
+      await fsp.appendFile(file, `${JSON.stringify({
+        type: 'event_msg',
+        timestamp: '2026-05-25T10:01:00.000Z',
+        payload: { type: 'warning', message: 'appended during parsing' },
+      })}\n`, 'utf8');
+    },
+  });
+
+  assert.equal(appended, true);
+  assert.equal(first.sessionsById.get(id).rawEvents.length, 1);
+  assert.ok((await fsp.stat(file)).size > first.sessionsById.get(id).bytes);
+  const second = await buildCompactIndex({ repoRoot: projectRoot, codexHome, previousIndex: first });
+  assert.equal(second.totals.reusedFileCount, 0);
+  assert.equal(second.sessionsById.get(id).rawEvents.length, 2);
+});
+
+test('buildIndex rejects a rewritten parse snapshot and leaves the previous index untouched', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const projectRoot = path.join(codexHome, 'parse-rewrite-project');
+  const id = '32323232-3232-3232-3232-323232323232';
+  await fsp.mkdir(projectRoot, { recursive: true });
+  const file = await writeFixtureTranscript(codexHome, projectRoot, id);
+  const first = await buildCompactIndex({ repoRoot: projectRoot, codexHome });
+  const committedSession = first.sessionsById.get(id);
+  const committedRaws = committedSession.rawEvents;
+  await fsp.appendFile(file, `${JSON.stringify({
+    type: 'event_msg',
+    timestamp: '2026-05-25T10:01:00.000Z',
+    payload: { type: 'warning', message: 'before' },
+  })}\n`, 'utf8');
+  const parseStat = await fsp.stat(file);
+  const parsedText = await fsp.readFile(file, 'utf8');
+  const rewrittenText = parsedText.replace('"before"', '"after!"');
+  assert.equal(rewrittenText.length, parsedText.length);
+
+  await assert.rejects(
+    buildCompactIndex({
+      repoRoot: projectRoot,
+      codexHome,
+      previousIndex: first,
+      async beforeSourceSnapshotVerificationForTests() {
+        await fsp.writeFile(file, rewrittenText, 'utf8');
+        await fsp.utimes(file, parseStat.atime, parseStat.mtime);
+      },
+    }),
+    { code: 'SOURCE_CHANGED_DURING_INDEX' },
+  );
+  assert.equal(first.sessionsById.get(id), committedSession);
+  assert.equal(first.sessionsById.get(id).rawEvents, committedRaws);
+  assert.equal(committedSession.rawEvents.length, 1);
+});
+
 test('buildIndex refreshes reused session title, updatedAt, and ordering from session index', async (t) => {
   const codexHome = await makeTempCodexHome(t);
   const projectRoot = path.join(codexHome, 'session-index-refresh-project');
@@ -571,7 +672,7 @@ test('buildIndex refreshes reused session title, updatedAt, and ordering from se
     timestamp: '2026-05-25T11:00:00.000Z',
     payload: { type: 'warning', message: 'initially newer session' },
   })}\n`, 'utf8');
-  const first = await buildIndex({ repoRoot: projectRoot, codexHome });
+  const first = await buildCompactIndex({ repoRoot: projectRoot, codexHome });
   const sessionIndexPath = path.join(codexHome, 'session_index.jsonl');
   await fsp.writeFile(sessionIndexPath, `${JSON.stringify({
     id: refreshedId,
@@ -579,7 +680,7 @@ test('buildIndex refreshes reused session title, updatedAt, and ordering from se
     updated_at: '2026-05-25T12:00:00.000Z',
   })}\n`, 'utf8');
 
-  const second = await buildIndex({ repoRoot: projectRoot, codexHome, previousIndex: first });
+  const second = await buildCompactIndex({ repoRoot: projectRoot, codexHome, previousIndex: first });
   const oldSession = first.sessionsById.get(refreshedId);
   const refreshedSession = second.sessionsById.get(refreshedId);
   assert.equal(refreshedSession.rawEvents, oldSession.rawEvents);
@@ -589,7 +690,7 @@ test('buildIndex refreshes reused session title, updatedAt, and ordering from se
   assert.equal(second.totals.reusedFileCount, 2);
 
   await fsp.writeFile(sessionIndexPath, '', 'utf8');
-  const withoutIndexEntry = await buildIndex({
+  const withoutIndexEntry = await buildCompactIndex({
     repoRoot: projectRoot,
     codexHome,
     previousIndex: second,
@@ -605,7 +706,7 @@ test('buildIndex refreshes reused session title, updatedAt, and ordering from se
     thread_name: 'Earlier index timestamp',
     updated_at: '2026-05-25T10:30:00.000Z',
   })}\n`, 'utf8');
-  const earlierIndexEntry = await buildIndex({
+  const earlierIndexEntry = await buildCompactIndex({
     repoRoot: projectRoot,
     codexHome,
     previousIndex: second,
@@ -773,7 +874,7 @@ test('buildIndex links canonical review lifecycle children through explicit pare
     { timestamp: '2026-08-08T07:00:05.100Z', type: 'event_msg', payload: { type: 'task_started' } },
   ].map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
 
-  const index = await buildIndex({ repoRoot, codexHome });
+  const index = await buildCompactIndex({ repoRoot, codexHome });
   const parent = index.sessionsById.get(parentId);
   const child = index.sessionsById.get(childId);
   assert.ok(parent);
@@ -793,12 +894,12 @@ test('buildIndex links canonical review lifecycle children through explicit pare
   assert.match(reviewCompleted.preview, /patch is correct/);
   assert.equal(parent.logicalEvents.some((event) => event.subtype === 'item_completed'), false);
 
-  const startedDetail = buildEventDetail(parent, reviewStarted.id, 'main');
+  const startedDetail = await buildHydratedEventDetail(index, parent, reviewStarted.id, 'main');
   const startedRequest = allSections(startedDetail).find((section) => section.title === 'Review request');
   assert.ok(startedRequest);
   assert.ok(startedRequest.entries.some((entry) => entry.key === 'Target' && entry.value === 'Uncommitted changes'));
   assert.ok(startedRequest.entries.some((entry) => entry.key === 'Hint' && entry.value === 'current changes'));
-  const completedDetail = buildEventDetail(parent, reviewCompleted.id, 'main');
+  const completedDetail = await buildHydratedEventDetail(index, parent, reviewCompleted.id, 'main');
   const completedResult = allSections(completedDetail).find((section) => section.title === 'Review result');
   assert.ok(completedResult);
   assert.ok(completedResult.entries.some((entry) => entry.key === 'Correctness' && entry.value === 'patch is correct'));
@@ -811,7 +912,7 @@ test('buildIndex links canonical review lifecycle children through explicit pare
   assert.equal(childSummary.isDerivedSession, true);
   assert.equal(childSummary.derivedKind, 'review');
 
-  const second = await buildIndex({ repoRoot, codexHome, previousIndex: index });
+  const second = await buildCompactIndex({ repoRoot, codexHome, previousIndex: index });
   assert.ok(second.totals.reusedFileCount >= 2);
   const reusedChild = second.sessionsById.get(childId);
   const reusedParent = second.sessionsById.get(parentId);

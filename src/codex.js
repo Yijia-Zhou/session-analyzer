@@ -86,6 +86,7 @@ const RESET_TIME_CACHE_LIMIT = 512;
 const CODE_MODE_STRUCTURED_RESULT_MAX_CHARS = 32_000;
 const CODE_MODE_STRUCTURED_RESULT_MAX_DEPTH = 32;
 const CODE_MODE_STRUCTURED_RESULT_MAX_NODES = 1_000;
+const CODEX_COMPACT_SESSION_REPRESENTATION = 'codex-compact-v1';
 
 const SAME_DAY_RESET_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
   hour: 'numeric',
@@ -611,6 +612,39 @@ function safeJsonParse(text) {
 
 function sourceLineDigest(line) {
   return crypto.createHash('sha256').update(String(line), 'utf8').digest('base64url');
+}
+
+function sourceSnapshotChangedError() {
+  const error = new Error('Transcript changed while indexing; retry required');
+  error.code = 'SOURCE_CHANGED_DURING_INDEX';
+  return error;
+}
+
+async function hashFilePrefix(filePath, byteLength, signal) {
+  const expectedBytes = Number(byteLength);
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0) throw sourceSnapshotChangedError();
+  const hash = crypto.createHash('sha256');
+  let bytesRead = 0;
+  if (expectedBytes === 0) {
+    return { bytesRead, fingerprint: hash.digest('base64url') };
+  }
+  const stream = fs.createReadStream(filePath, { start: 0, end: expectedBytes - 1 });
+  try {
+    for await (const chunk of stream) {
+      throwIfAborted(signal);
+      bytesRead += chunk.length;
+      hash.update(chunk);
+    }
+  } finally {
+    stream.destroy();
+  }
+  return { bytesRead, fingerprint: hash.digest('base64url') };
+}
+
+function sameSourceStat(left, right) {
+  return Boolean(left && right
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs);
 }
 
 function ensureMarkdownRenderer() {
@@ -1692,6 +1726,7 @@ function makeEmptySession(filePath, relFile, stat) {
     sourceFile: relFile,
     sourceAbsFile: filePath,
     sourceUpdatedAt: safeIso(stat.mtime),
+    sourceFingerprint: '',
     bytes: stat.size,
     lineCount: 0,
     cwdSet: new Set(),
@@ -3483,7 +3518,19 @@ const codexDetailBuilder = createCodexDetailBuilder({
   codeModePresentationContract,
   agentCoordination,
 });
-const { buildEventDetail } = codexDetailBuilder;
+const { buildEventDetail: buildParsedEventDetail } = codexDetailBuilder;
+
+function buildEventDetail(session, eventId, layer = 'main', options = {}) {
+  const requiresHydration = (session?.rawEvents || []).some((raw) => (
+    raw?.sourceKind === CODEX_SOURCE_KIND && !Object.hasOwn(raw, 'parsed')
+  ));
+  if (requiresHydration) {
+    const error = new Error('Compact Codex detail requires source hydration');
+    error.code = 'DETAIL_SOURCE_HYDRATION_REQUIRED';
+    throw error;
+  }
+  return buildParsedEventDetail(session, eventId, layer, options);
+}
 
 function reviewFindingMarkdown(finding, index) {
   if (!finding || typeof finding !== 'object') return '';
@@ -3742,7 +3789,7 @@ function updateAnalysisDraft(session, event) {
   }
   if (event.kind === 'usage_limit_warning') {
     const primaryRaw = event.rawRefs?.[0]?.rawId ? session.rawEvents.find((raw) => raw.rawId === event.rawRefs[0].rawId) : null;
-    const observed = maxObservedTokenValue(primaryRaw?.parsed?.payload);
+    const observed = Number(primaryRaw?.maxObservedTokens || 0);
     if (observed > draft.tokenStats.maxObserved) draft.tokenStats.maxObserved = observed;
   }
 }
@@ -3817,10 +3864,9 @@ function transcriptMetadataTitle(session) {
   let title = '';
   for (const raw of session.rawEvents || []) {
     if (rawForkSegment(session, raw.rawId) === 'inherited_context') continue;
-    const payload = raw.parsed?.payload;
-    if (raw.recordType !== 'event_msg' || !payload?.thread_name) continue;
-    if (payload.type === 'session_configured' && !title) title = payload.thread_name;
-    if (payload.type === 'thread_name_updated' && !session.parentSessionId) title = payload.thread_name;
+    if (raw.recordType !== 'event_msg' || !raw.threadName) continue;
+    if (raw.payloadType === 'session_configured' && !title) title = raw.threadName;
+    if (raw.payloadType === 'thread_name_updated' && !session.parentSessionId) title = raw.threadName;
   }
   return title;
 }
@@ -3880,14 +3926,124 @@ function finalizeSession(session, sessionIndexEntry) {
   return session;
 }
 
+function extractResidentRawFacts(raw, record) {
+  const payload = record?.payload;
+  if (!payload || typeof payload !== 'object') return;
+  if (record.type === 'session_meta' && typeof payload.id === 'string' && payload.id) {
+    raw.sessionMetaId = payload.id;
+  }
+  if (record.type === 'event_msg' && typeof payload.thread_name === 'string' && payload.thread_name) {
+    raw.threadName = payload.thread_name;
+  }
+  const reviewLifecycle = reviewLifecycleFromRaw(raw);
+  if (reviewLifecycle) {
+    raw.reviewLifecyclePhase = reviewLifecycle.phase;
+    if (typeof payload.thread_id === 'string' && payload.thread_id) raw.reviewThreadId = payload.thread_id;
+  }
+  if (record.type === 'event_msg' && payload.type === 'token_count') {
+    const observed = maxObservedTokenValue(payload);
+    if (observed > 0) raw.maxObservedTokens = observed;
+  }
+}
+
+function compactString(value) {
+  return typeof value === 'string' ? value : '';
+}
+
+function compactInteger(value, fallback = null) {
+  return Number.isSafeInteger(value) ? value : fallback;
+}
+
+function compactEmbeddedImageDescriptor(image) {
+  const descriptor = {
+    previewId: compactString(image.previewId),
+    source: {
+      file: compactString(image.source?.file),
+      line: compactInteger(image.source?.line),
+      jsonPath: (Array.isArray(image.source?.jsonPath) ? image.source.jsonPath : [])
+        .filter((part) => typeof part === 'string' || Number.isSafeInteger(part)),
+    },
+    mimeType: compactString(image.mimeType),
+    estimatedBytes: compactInteger(image.estimatedBytes, 0),
+    dedupeKey: compactString(image.dedupeKey),
+  };
+  if (typeof image.encoding === 'string' && image.encoding) descriptor.encoding = image.encoding;
+  if (typeof image.detail === 'string' && image.detail) descriptor.detail = image.detail;
+  return descriptor;
+}
+
+function compactCodexRawEvent(raw) {
+  const compact = {
+    rawId: compactString(raw.rawId),
+    sessionId: compactString(raw.sessionId),
+    sourceKind: CODEX_SOURCE_KIND,
+    line: compactInteger(raw.line),
+    source: { file: compactString(raw.source?.file), line: compactInteger(raw.source?.line) },
+    sourceLocator: raw.sourceLocator ? {
+      type: raw.sourceLocator.type === 'jsonl_line' ? 'jsonl_line' : '',
+      file: compactString(raw.sourceLocator.file),
+      line: compactInteger(raw.sourceLocator.line),
+    } : null,
+    sourceLineDigest: compactString(raw.sourceLineDigest),
+    timestamp: compactString(raw.timestamp),
+    turnId: compactString(raw.turnId),
+    recordType: compactString(raw.recordType),
+    payloadType: compactString(raw.payloadType),
+    canonicalType: compactString(raw.canonicalType),
+    role: compactString(raw.role),
+    typeKey: compactString(raw.typeKey),
+    callId: compactString(raw.callId),
+    toolName: compactString(raw.toolName),
+    status: compactString(raw.status),
+    messageText: compactString(raw.messageText),
+    searchText: compactString(raw.searchText),
+    preview: compactString(raw.preview),
+    commandText: compactString(raw.commandText),
+    stdout: compactString(raw.stdout),
+    stderr: compactString(raw.stderr),
+    aggregatedOutput: compactString(raw.aggregatedOutput),
+    exitCode: typeof raw.exitCode === 'number' || typeof raw.exitCode === 'string' ? raw.exitCode : null,
+    durationMs: Number.isFinite(raw.durationMs) ? raw.durationMs : 0,
+    touchedFiles: (Array.isArray(raw.touchedFiles) ? raw.touchedFiles : []).filter((file) => typeof file === 'string'),
+    embeddedImages: (Array.isArray(raw.embeddedImages) ? raw.embeddedImages : []).map(compactEmbeddedImageDescriptor),
+    output: compactString(raw.output),
+    rawIndex: compactInteger(raw.rawIndex),
+    sourceClientVersion: compactString(raw.sourceClientVersion),
+  };
+  if (typeof raw.sessionMetaId === 'string' && raw.sessionMetaId) compact.sessionMetaId = raw.sessionMetaId;
+  if (typeof raw.threadName === 'string' && raw.threadName) compact.threadName = raw.threadName;
+  if (typeof raw.reviewLifecyclePhase === 'string' && raw.reviewLifecyclePhase) compact.reviewLifecyclePhase = raw.reviewLifecyclePhase;
+  if (typeof raw.reviewThreadId === 'string' && raw.reviewThreadId) compact.reviewThreadId = raw.reviewThreadId;
+  if (Number.isFinite(raw.maxObservedTokens) && raw.maxObservedTokens > 0) compact.maxObservedTokens = raw.maxObservedTokens;
+  return compact;
+}
+
+function isReusableCompactSession(session) {
+  return session?.residentRepresentation === CODEX_COMPACT_SESSION_REPRESENTATION
+    && Array.isArray(session.rawEvents)
+    && session.rawEvents.every((raw) => (
+      raw
+      && typeof raw === 'object'
+      && raw.sourceKind === CODEX_SOURCE_KIND
+      && !Object.hasOwn(raw, 'parsed')
+      && !Object.hasOwn(raw, 'payload')
+    ));
+}
+
 async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {}) {
   throwIfAborted(signal);
   const stat = await fsp.stat(filePath);
   const session = makeEmptySession(filePath, relFile, stat);
   let primarySessionMetaSeen = false;
   const includeCanonicalRawDigests = options.canonicalRawDigests === true;
+  const sourceHash = crypto.createHash('sha256');
+  let sourceBytesRead = 0;
 
-  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+  const stream = fs.createReadStream(filePath, stat.size > 0 ? { start: 0, end: stat.size - 1 } : { start: 0, end: 0 });
+  stream.on('data', (chunk) => {
+    sourceBytesRead += chunk.length;
+    sourceHash.update(chunk);
+  });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   let lineNumber = 0;
 
@@ -3946,6 +4102,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       raw.sourceLineDigest = sourceLineDigest(line);
       if (canonicalDigest) raw._canonicalRawDigest = canonicalDigest;
       raw.sourceClientVersion = record.version || '';
+      extractResidentRawFacts(raw, record);
       if (!session.sourceClientVersion && record.version) session.sourceClientVersion = String(record.version);
       updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
       if (!session.shell && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
@@ -3959,6 +4116,17 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   }
 
   throwIfAborted(signal);
+  const sourceFingerprint = sourceHash.digest('base64url');
+  if (typeof options.beforeSourceSnapshotVerificationForTests === 'function') {
+    await options.beforeSourceSnapshotVerificationForTests({ filePath, snapshotBytes: stat.size });
+  }
+  const verified = await hashFilePrefix(filePath, stat.size, signal);
+  if (sourceBytesRead !== stat.size
+      || verified.bytesRead !== stat.size
+      || verified.fingerprint !== sourceFingerprint) {
+    throw sourceSnapshotChangedError();
+  }
+  session.sourceFingerprint = sourceFingerprint;
   session._parsedAncestry = {
     forkedFromSessionId: String(session.forkedFromSessionId || '').trim(),
   };
@@ -3967,10 +4135,22 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   if (includeCanonicalRawDigests) {
     session._canonicalRawDigests = session.rawEvents.map((raw) => raw._canonicalRawDigest);
   }
+  if (options.retainFullSourceRecordsForTests !== true) {
+    session.rawEvents = session.rawEvents.map(compactCodexRawEvent);
+    session.residentRepresentation = CODEX_COMPACT_SESSION_REPRESENTATION;
+  }
   return session;
 }
 
-async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousIndex = null }) {
+async function buildIndex({
+  repoRoot,
+  codexHome,
+  onProgress,
+  signal,
+  previousIndex = null,
+  retainFullSourceRecordsForTests = false,
+  beforeSourceSnapshotVerificationForTests = null,
+}) {
   const resolvedRepo = resolveFsPath(repoRoot);
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
@@ -4076,10 +4256,21 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
     const previousSession = previousSessionsBySource.get(relFile);
     const currentStat = previousSession ? await fsp.stat(filePath) : null;
     const requiresCanonicalRawDigests = canonicalDigestFilePaths.has(filePath);
-    const reusable = previousSession
+    const statReusable = previousSession
       && previousSession.bytes === currentStat.size
       && previousSession.sourceUpdatedAt === safeIso(currentStat.mtime)
+      && typeof previousSession.sourceFingerprint === 'string'
+      && previousSession.sourceFingerprint.length > 0
+      && isReusableCompactSession(previousSession)
       && (!requiresCanonicalRawDigests || hasCanonicalRawDigests(previousSession));
+    let reusable = false;
+    if (statReusable) {
+      const currentSource = await hashFilePrefix(filePath, currentStat.size, signal);
+      const verifiedStat = await fsp.stat(filePath);
+      reusable = currentSource.bytesRead === currentStat.size
+        && currentSource.fingerprint === previousSession.sourceFingerprint
+        && sameSourceStat(currentStat, verifiedStat);
+    }
     let session;
     if (reusable) {
       session = {
@@ -4092,6 +4283,8 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
     } else {
       session = await parseSessionFile(filePath, relFile, resolvedRepo, signal, {
         canonicalRawDigests: requiresCanonicalRawDigests,
+        retainFullSourceRecordsForTests,
+        beforeSourceSnapshotVerificationForTests,
       });
     }
     indexedFileCount += 1;
@@ -4123,10 +4316,14 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
 
   throwIfAborted(signal);
   inferCodexMaterializedForks(sessions);
-  for (const session of sessions) finalizeSession(session, sessionIndex.get(session.id));
+  for (const session of sessions) {
+    throwIfAborted(signal);
+    finalizeSession(session, sessionIndex.get(session.id));
+  }
+  throwIfAborted(signal);
   inferReviewParentSessions(sessions);
+  throwIfAborted(signal);
   inferEarlierBranches(sessions);
-  for (const session of sessions) delete session._reviewMarkers;
   logicalEventCount = sessions.reduce((sum, session) => sum + session.logicalEvents.length, 0);
   rawEventCount = sessions.reduce((sum, session) => sum + session.rawEvents.length, 0);
   sessions.sort((a, b) => String(b.updatedAt || b.startedAt).localeCompare(String(a.updatedAt || a.startedAt)));
@@ -4429,6 +4626,11 @@ async function readImagePreview(index, sessionId, eventId, previewId) {
 
 // Test-only introspection for focused equivalence coverage; this is not a supported runtime API.
 const __testOnly = Object.freeze({
+  buildUncompactedIndexForDetailTests: (options) => buildIndex({
+    ...options,
+    retainFullSourceRecordsForTests: true,
+  }),
+  compactCodexRawEvent,
   formatResetTime,
   isEcmaScriptWhitespace,
   resetTimeCacheLimit: RESET_TIME_CACHE_LIMIT,

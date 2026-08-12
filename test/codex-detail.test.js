@@ -5,12 +5,13 @@ const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { buildEventDetail, buildIndex } = require('../src/codex');
+const { __testOnly, buildEventDetail } = require('../src/codex');
 const { createCodexDetailBuilder } = require('../src/codex-detail');
 const { knownCodeModeToolNames } = require('../src/codex-code-mode-declared');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
+const buildIndex = __testOnly.buildUncompactedIndexForDetailTests;
 
 async function buildFixtureSession() {
   const index = await buildIndex({

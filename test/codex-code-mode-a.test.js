@@ -6,7 +6,6 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {
-  buildEventDetail,
   buildHydratedEventDetail,
   buildIndex,
   eventKindCatalog,
@@ -99,8 +98,7 @@ test('candidate A counts and searches one operation plus nested activity while w
   assert.equal(Object.hasOwn(publicOperation, 'codeModeOperation'), false);
   assert.deepEqual(publicOperation.tags, []);
 
-  const detail = buildEventDetail(session, operation.id, 'main');
-  assert.deepEqual(await buildHydratedEventDetail(index, session, operation.id, 'main'), detail);
+  const detail = await buildHydratedEventDetail(index, session, operation.id, 'main');
   assert.equal(detail.presentation.requestEvidence, CODE_MODE_REQUEST_EVIDENCE.DECLARED_SOURCE);
   assert.equal(Object.hasOwn(detail.presentation, 'codeModeDeclaredRequests'), false);
   assert.equal(Object.hasOwn(declaredShell.events[0].presentationFacts, 'variant'), false);
