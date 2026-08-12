@@ -1017,10 +1017,16 @@ test('browser presents materialized fork ownership, earlier-branch hierarchy, Ra
   assert.equal(await page.locator('#layerSelect').inputValue(), 'main');
   const selected = page.locator('#timeline .event.selected');
   await selected.waitFor();
+  await page.waitForFunction(() => (
+    document.querySelector('#timeline .event.selected')?.textContent.includes('Inherited browser answer')
+  ));
   assert.match(await selected.innerText(), /Inherited browser answer/);
 
   await switchHiddenLocale(page, 'zh-CN');
   await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
+  await page.waitForFunction((id) => (
+    document.querySelector(`[data-session-children-toggle="${CSS.escape(id)}"]`)?.textContent.includes('较早分支')
+  ), fixture.childId);
   assert.match(await toggle.innerText(), /较早分支/);
 
   await page.locator('#layerSelect').selectOption('raw');
