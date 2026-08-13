@@ -97,6 +97,8 @@ session-analyzer --repo /path/to/project
 
 当匹配历史达到经验性的 800 MiB 警告阈值时，CLI 会输出一次 `[SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY]`，然后照常继续索引。该警告只为用户和 agent 提供信息：应先尝试普通索引；若索引成功，无需调整 heap。它不会修改 `NODE_OPTIONS`、重启进程或改变退出码。
 
+对 Claude Code，当前警告依据的是所选 primary transcript 的字节数；derived subagent transcript 可能进一步增加实际索引工作量，目前尚未完成大型 Claude 语料的容量校准。
+
 只有当索引因 `JavaScript heap out of memory` 等 V8 heap exhaustion 错误终止时，才使用适度增大的临时 heap 重试。这是为异常庞大历史提供的临时规避方式，不是新的产品默认值。PowerShell 示例：
 
 ```powershell

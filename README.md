@@ -97,6 +97,8 @@ As approximate anchors for the current implementation, about 250 MB of matching 
 
 When matching history reaches the empirical 800 MiB warning threshold, the CLI emits `[SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY]` once and continues indexing normally. The warning is informational for people and agents: attempt normal indexing first, and do not change the heap when indexing succeeds. It does not change `NODE_OPTIONS`, restart the process, or alter the exit code.
 
+For Claude Code, the current warning uses selected primary transcript bytes; derived subagent transcript data may add to the actual indexed workload, and large-scale Claude capacity has not yet been calibrated.
+
 Only if indexing terminates with a V8 heap-exhaustion error such as `JavaScript heap out of memory`, retry with a moderately larger temporary heap. This is a workaround for unusually large history, not a new product default. In PowerShell:
 
 ```powershell
