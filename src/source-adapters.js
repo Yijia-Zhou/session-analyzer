@@ -36,8 +36,8 @@ const adapters = new Map([
     async buildEventDetail(index, session, eventId, layer, options) {
       return codex.buildHydratedEventDetail(index, session, eventId, layer, options);
     },
-    async readRawRecord(index, session, raw) {
-      const value = await codex.readIndexedCodexRawRecord(index, session, raw);
+    async readRawRecord(index, session, raw, options) {
+      const value = await codex.readIndexedCodexRawRecord(index, session, raw, options);
       if (!value) return null;
       return {
         ...value,
@@ -46,11 +46,11 @@ const adapters = new Map([
         sourceLocator: raw.sourceLocator,
       };
     },
-    async readImagePreview(index, sessionId, eventId, previewId) {
-      return codex.readImagePreview(index, sessionId, eventId, previewId);
+    async readImagePreview(index, sessionId, eventId, previewId, options) {
+      return codex.readImagePreview(index, sessionId, eventId, previewId, options);
     },
-    async readLegacyRawLine(index, file, line) {
-      return codex.readIndexedCodexLegacyRawLine(index, file, line);
+    async readLegacyRawLine(index, file, line, options) {
+      return codex.readIndexedCodexLegacyRawLine(index, file, line, options);
     },
   }],
   [SOURCE_KIND.CLAUDE_CODE, {
@@ -77,8 +77,8 @@ const adapters = new Map([
     async buildEventDetail(index, session, eventId, layer, options) {
       return buildClaudeEventDetail(session, eventId, layer, options);
     },
-    async readRawRecord(index, session, raw) {
-      return claude.readClaudeRawRecord(index, session, raw);
+    async readRawRecord(index, session, raw, options) {
+      return claude.readClaudeRawRecord(index, session, raw, options);
     },
     async readImagePreview() {
       return { statusCode: 404, error: 'Image previews are not available for this transcript source' };
@@ -113,10 +113,10 @@ async function buildEventDetailForSession(index, session, eventId, layer, option
   return adapterForSession(session, index?.sourceKind).buildEventDetail(index, session, eventId, layer, options);
 }
 
-async function readIndexedRawRecord(index, session, rawId) {
+async function readIndexedRawRecord(index, session, rawId, options = {}) {
   const raw = session?.rawEvents?.find((candidate) => candidate.rawId === rawId);
   if (!raw) return null;
-  return adapterForSession(session, index?.sourceKind).readRawRecord(index, session, raw);
+  return adapterForSession(session, index?.sourceKind).readRawRecord(index, session, raw, options);
 }
 
 module.exports = {

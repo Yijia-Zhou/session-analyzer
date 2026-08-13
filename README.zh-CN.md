@@ -89,6 +89,8 @@ session-analyzer --repo /path/to/project
 
 默认 host 是 `127.0.0.1`。`--host` 是高级选项；绑定到 localhost 之外可能让网络上的其他机器读取当前进程可访问的 transcript 内容。
 
+如需选择性启用索引诊断，请传入 `--log-dir <path>`。Session Analyzer 会写入经过节流的 JSONL 生命周期记录，其中只包含聚合的文件／事件计数、耗时、V8 heap limit 与进程内存采样；这些记录不包含仓库或 transcript 路径，并且该目录最多保留 20 份索引日志。Fatal V8 OOM 的 stderr 仍是权威崩溃证据。
+
 ## 从源码开发
 
 已发布 CLI 继续采用上文 Node.js 22 或更高版本的宽泛运行时要求。源码 checkout 有意采用更严格的工具链，因为 npm 12 会执行经过审查的依赖 install-script 策略。在运行仓库内任何 `npm install`、`npm ci` 或 `npm run` 前，先选择受支持的 Node.js 版本，并从源码 checkout 之外的目录全局 bootstrap 精确的 npm CLI。下面第一条 npm 命令只更新工具链，不安装项目依赖：

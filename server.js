@@ -196,8 +196,8 @@ function sendJson(res, status, payload) {
   res.end(body);
 }
 
-function sendError(res, status, message, details) {
-  sendJson(res, status, { error: message, details });
+function sendError(res, status, message, details, code) {
+  sendJson(res, status, { error: message, details, code });
 }
 
 function sendImage(res, image) {
@@ -208,6 +208,25 @@ function sendImage(res, image) {
     'x-content-type-options': 'nosniff',
   });
   res.end(image.bytes);
+}
+
+function requestAbortContext(req, res) {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+  const onResponseClose = () => {
+    if (!res.writableEnded) abort();
+  };
+  const cleanup = () => {
+    req.removeListener('aborted', abort);
+    res.removeListener('close', onResponseClose);
+    res.removeListener('finish', cleanup);
+  };
+  req.once('aborted', abort);
+  res.once('close', onResponseClose);
+  res.once('finish', cleanup);
+  return { signal: controller.signal, cleanup };
 }
 
 function parseQuery(reqUrl) {
@@ -622,6 +641,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
   if (options.repo) startProjectJob(state, options.repo, options.locale);
 
   return http.createServer(async (req, res) => {
+    const requestAbort = requestAbortContext(req, res);
     try {
       const { pathname, searchParams } = parseQuery(req.url);
       const locale = i18n.resolveLocale(searchParams.get('locale') || req.headers['accept-language']);
@@ -796,7 +816,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           return;
         }
         const layer = searchParams.get('layer') || 'main';
-        const detail = await buildEventDetailForSession(index, session, decodePathSegment(detailMatch[2]), layer, { locale });
+        const detail = await buildEventDetailForSession(index, session, decodePathSegment(detailMatch[2]), layer, {
+          locale,
+          signal: requestAbort.signal,
+        });
+        if (requestAbort.signal.aborted) return;
         if (!detail) {
           sendError(res, 404, 'Unknown event');
           return;
@@ -820,9 +844,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sessionId,
           decodePathSegment(imagePreviewMatch[2]),
           decodePathSegment(imagePreviewMatch[3]),
+          { signal: requestAbort.signal },
         );
+        if (requestAbort.signal.aborted) return;
         if (image.error) {
-          sendError(res, image.statusCode, image.error);
+          sendError(res, image.statusCode, image.error, undefined, image.code);
           return;
         }
         sendImage(res, image);
@@ -851,7 +877,10 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sendError(res, 404, 'Unknown session');
           return;
         }
-        const raw = await readIndexedRawRecord(index, session, decodePathSegment(rawRecordMatch[2]));
+        const raw = await readIndexedRawRecord(index, session, decodePathSegment(rawRecordMatch[2]), {
+          signal: requestAbort.signal,
+        });
+        if (requestAbort.signal.aborted) return;
         if (!raw) {
           sendError(res, 404, 'Raw record not found');
           return;
@@ -869,7 +898,10 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sendError(res, 400, 'file and line are required');
           return;
         }
-        const raw = await state.adapter.readLegacyRawLine(index, file, line);
+        const raw = await state.adapter.readLegacyRawLine(index, file, line, {
+          signal: requestAbort.signal,
+        });
+        if (requestAbort.signal.aborted) return;
         if (!raw) {
           sendError(res, 404, 'Raw line not found');
           return;
@@ -880,11 +912,20 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
 
       await serveStatic(res, pathname);
     } catch (error) {
+      if (res.destroyed) return;
       const statusCode = error.statusCode || 500;
       const details = debugErrors
         ? (statusCode >= 500 ? error.stack || error.message : error.message)
         : undefined;
-      sendError(res, statusCode, statusCode >= 500 ? 'Internal server error' : error.message, details);
+      sendError(
+        res,
+        statusCode,
+        statusCode >= 500 ? 'Internal server error' : error.message,
+        details,
+        statusCode < 500 ? error.code : undefined,
+      );
+    } finally {
+      requestAbort.cleanup();
     }
   });
 }

@@ -63,6 +63,7 @@ async function openApp(t, index, options = {}) {
     await context.close();
     await browser.close();
   });
+  if (options.beforeGoto) await options.beforeGoto(page);
   await page.goto(baseUrl);
   assert.ok(requestedPaths.includes('/assets/app.js'), 'browser should load the generated app bundle');
   for (const oldScript of ['/app.js', '/renderers.js', '/folding.js', '/command-highlighting.js', '/search-query.js', '/search-controls.js', '/highlight.js', '/navigation.js', '/event-chips.js']) {
@@ -4656,6 +4657,79 @@ test('browser user-confirmed inspector and raw refs persist across free-text cha
   await fillSearch(page, '');
   await expectInputValue(page, '#searchInput', '');
   await waitForDetailView(page, 'rawRefs');
+});
+
+test('browser stale detail and Raw refs offer localized project reindex recovery', async (t) => {
+  const index = await buildFixtureIndex();
+  const installStaleRoutes = async (targetPage) => {
+    await targetPage.route('**/api/sessions/*/events/*/detail*', (route) => route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        error: 'Indexed source changed; reindex required',
+        code: 'INDEXED_SOURCE_STALE',
+      }),
+    }));
+    await targetPage.route('**/api/sessions/*/raw/*', (route) => route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        error: 'Indexed source changed; reindex required',
+        code: 'INDEXED_SOURCE_STALE',
+      }),
+    }));
+  };
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: installStaleRoutes,
+  });
+  await selectPrimarySession(page);
+
+  await page.locator('#timeline .event[data-event-id]').first().click();
+  await waitForDetailView(page, 'inspector');
+  await page.waitForSelector('#detail [data-detail-action="reindex-project"]');
+  assert.match(await page.locator('#detail').innerText(), /source transcript changed after this index was built/i);
+  assert.equal(await page.locator('#detail [data-detail-action="retry-detail"]').count(), 0);
+
+  await page.locator('#detail [data-detail-action="raw"]').click();
+  await waitForDetailView(page, 'rawRefs');
+  await page.waitForSelector('#detail .rawRefsView [data-detail-action="reindex-project"]');
+  assert.match(await page.locator('#detail .rawRefsView').innerText(), /source transcript changed after this index was built/i);
+  assert.equal(await page.locator('#detail [data-detail-action="retry-detail"]').count(), 0);
+
+  const refreshRequest = page.waitForRequest((request) => (
+    new URL(request.url()).pathname === '/api/project' && request.method() === 'POST'
+  ));
+  await page.locator('#detail [data-detail-action="reindex-project"]').click();
+  await refreshRequest;
+
+  const zhApp = await openApp(t, index, {
+    locale: 'zh-CN',
+    beforeGoto: installStaleRoutes,
+  });
+  await selectPrimarySession(zhApp.page);
+  await zhApp.page.locator('#timeline .event[data-event-id]').first().click();
+  await waitForDetailView(zhApp.page, 'inspector');
+  await zhApp.page.waitForSelector('#detail [data-detail-action="reindex-project"]');
+  assert.match(await zhApp.page.locator('#detail').innerText(), /来源转录已发生变化/);
+  assert.equal(await zhApp.page.locator('#detail [data-detail-action="reindex-project"]').innerText(), '重新索引当前项目');
+
+  const transientApp = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: async (targetPage) => {
+      await targetPage.route('**/api/sessions/*/events/*/detail*', (route) => route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Synthetic transient detail failure' }),
+      }));
+    },
+  });
+  await selectPrimarySession(transientApp.page);
+  await transientApp.page.locator('#timeline .event[data-event-id]').first().click();
+  await waitForDetailView(transientApp.page, 'inspector');
+  await transientApp.page.waitForSelector('#detail [data-detail-action="retry-detail"]');
+  assert.match(await transientApp.page.locator('#detail').innerText(), /Synthetic transient detail failure/);
+  assert.equal(await transientApp.page.locator('#detail [data-detail-action="reindex-project"]').count(), 0);
 });
 
 test('browser obsolete detail and Raw Reference requests abort without redrawing the replacement view', async (t) => {

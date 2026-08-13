@@ -87,6 +87,8 @@ const CODE_MODE_STRUCTURED_RESULT_MAX_CHARS = 32_000;
 const CODE_MODE_STRUCTURED_RESULT_MAX_DEPTH = 32;
 const CODE_MODE_STRUCTURED_RESULT_MAX_NODES = 1_000;
 const CODEX_COMPACT_SESSION_REPRESENTATION = 'codex-compact-v1';
+const CODEX_SOURCE_HYDRATION_CONCURRENCY = 2;
+const CODEX_HYDRATION_SLOT_OWNED = Symbol('codexHydrationSlotOwned');
 
 const SAME_DAY_RESET_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
   hour: 'numeric',
@@ -100,6 +102,7 @@ const FULL_RESET_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
   minute: '2-digit',
 });
 const resetTimeCache = new Map();
+const codexHydrationCoordinators = new WeakMap();
 
 let markdownRenderer = null;
 let gb18030ReverseMap = null;
@@ -607,6 +610,81 @@ function safeJsonParse(text) {
     return JSON.parse(text);
   } catch {
     return null;
+  }
+}
+
+function hydrationCoordinatorForIndex(index) {
+  let coordinator = codexHydrationCoordinators.get(index);
+  if (!coordinator) {
+    coordinator = { active: 0, queue: [] };
+    codexHydrationCoordinators.set(index, coordinator);
+  }
+  return coordinator;
+}
+
+function acquireCodexHydrationSlot(index, signal) {
+  throwIfAborted(signal);
+  const coordinator = hydrationCoordinatorForIndex(index);
+
+  return new Promise((resolve, reject) => {
+    const waiter = {
+      signal,
+      settled: false,
+      onAbort: null,
+      resolve,
+      reject,
+    };
+
+    const settleAbort = () => {
+      if (waiter.settled) return;
+      waiter.settled = true;
+      const indexInQueue = coordinator.queue.indexOf(waiter);
+      if (indexInQueue >= 0) coordinator.queue.splice(indexInQueue, 1);
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    waiter.onAbort = settleAbort;
+
+    const grant = () => {
+      if (waiter.settled) return;
+      if (signal?.aborted) {
+        settleAbort();
+        return;
+      }
+      waiter.settled = true;
+      signal?.removeEventListener('abort', waiter.onAbort);
+      coordinator.active += 1;
+      let released = false;
+      resolve(() => {
+        if (released) return;
+        released = true;
+        coordinator.active -= 1;
+        while (coordinator.queue.length > 0) {
+          const next = coordinator.queue.shift();
+          if (next.settled) continue;
+          next.grant();
+          break;
+        }
+      });
+    };
+    waiter.grant = grant;
+
+    signal?.addEventListener('abort', waiter.onAbort, { once: true });
+    if (coordinator.active < CODEX_SOURCE_HYDRATION_CONCURRENCY) grant();
+    else coordinator.queue.push(waiter);
+  });
+}
+
+async function withCodexHydrationSlot(index, signal, task) {
+  const release = await acquireCodexHydrationSlot(index, signal);
+  try {
+    throwIfAborted(signal);
+    return await task();
+  } finally {
+    release();
   }
 }
 
@@ -4619,10 +4697,13 @@ function validateIndexedCodexRaw(session, raw, sessionRawIds) {
   }
 }
 
-async function readIndexedCodexSourceRows(index, session, raws, options = {}) {
+async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, options = {}) {
+  const { signal } = options;
+  throwIfAborted(signal);
   const groups = new Map();
   const sessionRawIds = new Set((session.rawEvents || []).map((raw) => raw.rawId));
   for (const raw of raws || []) {
+    throwIfAborted(signal);
     validateIndexedCodexRaw(session, raw, sessionRawIds);
     const relFile = raw.source.file;
     if (!groups.has(relFile)) groups.set(relFile, new Map());
@@ -4633,17 +4714,27 @@ async function readIndexedCodexSourceRows(index, session, raws, options = {}) {
 
   const rowsByRawId = new Map();
   for (const [relFile, expectedLines] of groups) {
+    throwIfAborted(signal);
     const target = path.resolve(index.sessionsRoot, relFile);
     if (!isPathInsideOrSame(target, index.sessionsRoot)) throw indexedSourceStaleError();
-    options.onFileOpen?.(relFile);
+    await options.onFileOpen?.(relFile);
+    throwIfAborted(signal);
     let maxLine = 0;
     for (const line of expectedLines.keys()) maxLine = Math.max(maxLine, line);
     const stream = fs.createReadStream(target, { encoding: 'utf8' });
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    const abortScan = () => {
+      rl.close();
+      stream.destroy();
+    };
+    signal?.addEventListener('abort', abortScan, { once: true });
     let current = 0;
     try {
       for await (const line of rl) {
+        throwIfAborted(signal);
         current += 1;
+        options.onSourceLine?.(relFile, current);
+        throwIfAborted(signal);
         const expectedRaws = expectedLines.get(current);
         if (expectedRaws) {
           const digest = sourceLineDigest(line);
@@ -4659,10 +4750,13 @@ async function readIndexedCodexSourceRows(index, session, raws, options = {}) {
         }
         if (current >= maxLine) break;
       }
+      throwIfAborted(signal);
     } catch (error) {
+      throwIfAborted(signal);
       if (error.code === 'ENOENT') throw indexedSourceStaleError();
       throw error;
     } finally {
+      signal?.removeEventListener('abort', abortScan);
       rl.close();
       stream.destroy();
     }
@@ -4672,9 +4766,19 @@ async function readIndexedCodexSourceRows(index, session, raws, options = {}) {
   return rowsByRawId;
 }
 
+async function readIndexedCodexSourceRows(index, session, raws, options = {}) {
+  if (options[CODEX_HYDRATION_SLOT_OWNED]) {
+    return readIndexedCodexSourceRowsUncoordinated(index, session, raws, options);
+  }
+  return withCodexHydrationSlot(index, options.signal, () => (
+    readIndexedCodexSourceRowsUncoordinated(index, session, raws, options)
+  ));
+}
+
 async function hydrateCodexRawEvents(index, session, raws, options = {}) {
   const rowsByRawId = await readIndexedCodexSourceRows(index, session, raws, options);
   return raws.map((residentRaw) => {
+    throwIfAborted(options.signal);
     const sourceRow = rowsByRawId.get(residentRaw.rawId);
     const record = sourceRow?.parsed;
     if (!record) throw indexedSourceStaleError();
@@ -4697,26 +4801,39 @@ async function hydrateCodexRawEvents(index, session, raws, options = {}) {
 }
 
 async function buildHydratedEventDetail(index, session, eventId, layer = 'main', options = {}) {
-  let raws;
-  if (layer === 'raw') {
-    const raw = session.rawEvents.find((candidate) => candidate.rawId === eventId);
-    if (!raw) return null;
-    raws = [raw];
-  } else {
-    const logical = session.logicalEvents.find((candidate) => candidate.id === eventId && candidate.layer === layer);
-    if (!logical) return null;
-    raws = rawEventsForLogicalEvent(session, logical);
-  }
-  const hydratedRaws = await hydrateCodexRawEvents(index, session, raws, options);
-  return buildEventDetail({ ...session, rawEvents: hydratedRaws }, eventId, layer, options);
+  return withCodexHydrationSlot(index, options.signal, async () => {
+    let raws;
+    if (layer === 'raw') {
+      const raw = session.rawEvents.find((candidate) => candidate.rawId === eventId);
+      if (!raw) return null;
+      raws = [raw];
+    } else {
+      const logical = session.logicalEvents.find((candidate) => candidate.id === eventId && candidate.layer === layer);
+      if (!logical) return null;
+      raws = rawEventsForLogicalEvent(session, logical);
+    }
+    const hydratedRaws = await hydrateCodexRawEvents(index, session, raws, {
+      ...options,
+      [CODEX_HYDRATION_SLOT_OWNED]: true,
+    });
+    throwIfAborted(options.signal);
+    return buildEventDetail({ ...session, rawEvents: hydratedRaws }, eventId, layer, options);
+  });
 }
 
-async function readIndexedCodexRawRecord(index, session, raw) {
-  const rowsByRawId = await readIndexedCodexSourceRows(index, session, [raw]);
+async function readIndexedCodexRawRecord(index, session, raw, options = {}) {
+  if (!options[CODEX_HYDRATION_SLOT_OWNED]) {
+    return withCodexHydrationSlot(index, options.signal, () => readIndexedCodexRawRecord(index, session, raw, {
+      ...options,
+      [CODEX_HYDRATION_SLOT_OWNED]: true,
+    }));
+  }
+  const rowsByRawId = await readIndexedCodexSourceRows(index, session, [raw], options);
+  throwIfAborted(options.signal);
   return rowsByRawId.get(raw.rawId) || null;
 }
 
-async function readIndexedCodexLegacyRawLine(index, file, line) {
+async function readIndexedCodexLegacyRawLine(index, file, line, options = {}) {
   if (typeof file !== 'string' || !file || !Number.isSafeInteger(line) || line < 1) return null;
   const normalizedFile = normalizeFsPath(file);
   let match = null;
@@ -4731,7 +4848,7 @@ async function readIndexedCodexLegacyRawLine(index, file, line) {
     match = { session, raw };
   }
   if (!match) return null;
-  return readIndexedCodexRawRecord(index, match.session, match.raw);
+  return readIndexedCodexRawRecord(index, match.session, match.raw, options);
 }
 
 function jsonPathValue(value, jsonPath) {
@@ -4743,8 +4860,8 @@ function jsonPathValue(value, jsonPath) {
   return current;
 }
 
-function imagePreviewError(statusCode, error) {
-  return { statusCode, error };
+function imagePreviewError(statusCode, error, code = '') {
+  return { statusCode, error, ...(code ? { code } : {}) };
 }
 
 function decodeImagePreviewDataUrl(value, options = {}) {
@@ -4767,7 +4884,16 @@ function decodeImagePreviewDataUrl(value, options = {}) {
   };
 }
 
-async function readImagePreview(index, sessionId, eventId, previewId) {
+async function readImagePreview(index, sessionId, eventId, previewId, options = {}) {
+  if (!options[CODEX_HYDRATION_SLOT_OWNED]) {
+    return withCodexHydrationSlot(index, options.signal, () => readImagePreview(
+      index,
+      sessionId,
+      eventId,
+      previewId,
+      { ...options, [CODEX_HYDRATION_SLOT_OWNED]: true },
+    ));
+  }
   const session = index.sessionsById.get(sessionId);
   if (!session) return imagePreviewError(404, 'Unknown session');
   const event = session.logicalEvents.find((candidate) => candidate.id === eventId);
@@ -4784,35 +4910,42 @@ async function readImagePreview(index, sessionId, eventId, previewId) {
   }
   if (!descriptor || !selectedRaw) return imagePreviewError(404, 'Unknown image preview');
   if (descriptor.source.file !== selectedRaw.source.file || descriptor.source.line !== selectedRaw.source.line) {
-    return imagePreviewError(409, 'Image preview source is stale');
+    return imagePreviewError(409, 'Image preview source is stale', 'INDEXED_SOURCE_STALE');
   }
   let sourceRow;
   try {
-    const rowsByRawId = await readIndexedCodexSourceRows(index, session, [selectedRaw]);
+    const rowsByRawId = await readIndexedCodexSourceRows(index, session, [selectedRaw], options);
     sourceRow = rowsByRawId.get(selectedRaw.rawId);
   } catch (error) {
-    if (error.code === 'INDEXED_SOURCE_STALE') return imagePreviewError(409, 'Image preview source is stale');
+    if (error.code === 'INDEXED_SOURCE_STALE') {
+      return imagePreviewError(409, 'Image preview source is stale', error.code);
+    }
     throw error;
   }
-  if (!sourceRow?.parsed) return imagePreviewError(409, 'Image preview source is stale');
+  throwIfAborted(options.signal);
+  if (!sourceRow?.parsed) return imagePreviewError(409, 'Image preview source is stale', 'INDEXED_SOURCE_STALE');
   const value = jsonPathValue(sourceRow.parsed, descriptor.source.jsonPath);
   const inspected = inspectSupportedImagePayload(value, descriptor.encoding);
   if (!inspected || inspected.mimeType !== descriptor.mimeType) {
-    return imagePreviewError(409, 'Image preview source is stale');
+    return imagePreviewError(409, 'Image preview source is stale', 'INDEXED_SOURCE_STALE');
   }
   if (inspected.encodedLength > IMAGE_PREVIEW_MAX_ENCODED_CHARS
       || inspected.estimatedBytes > IMAGE_PREVIEW_MAX_DECODED_BYTES) {
     return imagePreviewError(413, 'Image preview payload is too large');
   }
   if (imagePresentationKey(value, inspected.mimeType) !== descriptor.dedupeKey) {
-    return imagePreviewError(409, 'Image preview source is stale');
+    return imagePreviewError(409, 'Image preview source is stale', 'INDEXED_SOURCE_STALE');
   }
+  throwIfAborted(options.signal);
   if (descriptor.encoding === 'bare_base64') {
     const decoded = decodeImagePreviewDataUrl(`data:${descriptor.mimeType};base64,${inspected.payload}`);
     if (decoded.error === 'Image preview payload is malformed') return imagePreviewError(422, decoded.error);
+    throwIfAborted(options.signal);
     return decoded;
   }
-  return decodeImagePreviewDataUrl(value);
+  const decoded = decodeImagePreviewDataUrl(value);
+  throwIfAborted(options.signal);
+  return decoded;
 }
 
 // Test-only introspection for focused equivalence coverage; this is not a supported runtime API.
