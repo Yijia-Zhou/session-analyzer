@@ -105,6 +105,8 @@ npx session-analyzer --repo 'C:\path\to\project' --log-dir '.\session-analyzer-l
 Remove-Item 'Env:NODE_OPTIONS'
 ```
 
+如果原本已设置 `NODE_OPTIONS`，请先保存旧值，并在运行后恢复旧值，而不是直接删除该环境变量。
+
 在 POSIX shell 中，把覆盖限制在单条命令内：
 
 ```sh

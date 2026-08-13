@@ -105,6 +105,8 @@ npx session-analyzer --repo 'C:\path\to\project' --log-dir '.\session-analyzer-l
 Remove-Item 'Env:NODE_OPTIONS'
 ```
 
+If `NODE_OPTIONS` was already set, preserve its previous value and restore it afterward instead of removing it.
+
 On POSIX shells, scope the override to one command:
 
 ```sh
