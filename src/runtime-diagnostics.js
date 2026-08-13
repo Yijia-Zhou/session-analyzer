@@ -70,6 +70,19 @@ function progressFields(progress = {}) {
   return fields;
 }
 
+function capacityWarningFields(warning = {}) {
+  const fields = {};
+  for (const key of [
+    'warningCode',
+    'thresholdBytes',
+    'candidateBytes',
+    'candidateFileCount',
+  ]) {
+    if (warning[key] !== undefined) fields[key] = warning[key];
+  }
+  return fields;
+}
+
 function createIndexDiagnostics(options = {}) {
   if (!options.logDir) return null;
 
@@ -116,6 +129,7 @@ function createIndexDiagnostics(options = {}) {
       sourceKind: options.sourceKind || '',
       ...details,
       memory,
+      peakMemory: { ...peak },
     }, required);
   };
 
@@ -133,6 +147,10 @@ function createIndexDiagnostics(options = {}) {
       lastPhase = phase;
       lastProgressAt = elapsedMs;
       write('indexing_progress', progressFields(progress));
+    },
+    capacityWarning(warning) {
+      if (finished) return;
+      write('capacity_warning', capacityWarningFields(warning));
     },
     finish(status, details = {}) {
       if (finished) return;
@@ -161,6 +179,7 @@ function createIndexDiagnostics(options = {}) {
 }
 
 module.exports = {
+  capacityWarningFields,
   createIndexDiagnostics,
   diagnosticLogFiles,
   memorySnapshot,

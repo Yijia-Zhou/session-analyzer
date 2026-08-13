@@ -251,11 +251,13 @@ test('final dist-tag evidence uses a separately proven anonymous userconfig', ()
   assert.match(step, /Remove-Item 'Env:NPM_CONFIG_USERCONFIG'/u);
 });
 
-test('CLI help documents the npm command and host privacy option', () => {
+test('CLI help documents the npm command, diagnostics, and host privacy option', () => {
   const result = run(process.execPath, ['server.js', '--help']);
 
   assert.match(result.stdout, /session-analyzer \[--repo <repo-path>\]/);
   assert.match(result.stdout, /--host <host>/);
+  assert.match(result.stdout, /--log-dir <path>/);
+  assert.match(result.stdout, /bounded JSONL logs/);
   assert.match(result.stdout, /Binding to another host can expose transcript content/);
   assert.doesNotMatch(result.stdout, /node server\.js \[--repo/);
 });
@@ -319,6 +321,7 @@ test('npm pack manifest contains only runtime package files', () => {
     'src/codex.js',
     'src/folding.js',
     'src/review-lifecycle.js',
+    'src/runtime-capacity.js',
     'src/runtime-diagnostics.js',
     'src/source-adapters.js',
     'src/shared/agent-coordination.js',

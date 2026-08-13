@@ -20,6 +20,7 @@ const {
 const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
 const { createIndexDiagnostics } = require('./src/runtime-diagnostics');
+const { createLargeTranscriptHistoryWarning } = require('./src/runtime-capacity');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -534,6 +535,10 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     jobId: id,
     sourceKind: state.sourceKind,
   });
+  job.capacityWarning = createLargeTranscriptHistoryWarning({
+    warn: state.warn,
+    onWarning: (warning) => job.diagnostics?.capacityWarning(warning),
+  });
   state.activeProjectJob = job;
 
   const buildIndex = state.buildIndexOverride || ((context) => state.adapter.buildIndex(context));
@@ -548,6 +553,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     onProgress: (progress) => {
       job.progress = { ...job.progress, ...progress };
       job.diagnostics?.progress(job.progress);
+      job.capacityWarning.observe(job.progress);
     },
   })).then((index) => {
     if (controller.signal.aborted) {
@@ -637,6 +643,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     activeProjectJob: null,
     projectCache: null,
     logDir: options.logDir ? path.resolve(options.logDir) : '',
+    warn: options.warn || console.warn,
   };
   if (options.repo) startProjectJob(state, options.repo, options.locale);
 
