@@ -467,7 +467,7 @@ async function makeLongCodexHome(t, options = {}) {
   }
   await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
   t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
-  return { codexHome, repoRoot: longRepoRoot, sessionId };
+  return { sourceKind: 'codex', codexHome, repoRoot: longRepoRoot, sessionId };
 }
 
 async function makeTransitionProfileIndex(t, options = {}) {
@@ -1183,6 +1183,7 @@ test('browser uses singular child session labels for one derived child', async (
   index.sessions = index.sessions.filter(
     (session) => session.parentSessionId !== primaryFixtureSessionId || session.id === childSessionId,
   );
+  index.sessionsById = new Map(index.sessions.map((session) => [session.id, session]));
   const { page } = await openApp(t, index, { locale: 'en', skipProjectReindex: true });
 
   const toggle = page.locator(`[data-session-children-toggle="${primaryFixtureSessionId}"]`);
@@ -2118,6 +2119,209 @@ test('browser chooser switches transcript source and refreshes project candidate
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Codex/);
 });
 
+test('browser source switch cycles through every supported registry source', async (t) => {
+  const sourceOptions = [
+    { kind: 'codex', label: 'Codex', homeOption: 'codexHome', homeLabel: 'Codex home' },
+    { kind: 'claude-code', label: 'Claude Code', homeOption: 'claudeHome', homeLabel: 'Claude home' },
+    { kind: 'future-source', label: 'Future Source', homeOption: 'futureSourceHome', homeLabel: 'Future Source home' },
+  ];
+  const homes = {
+    codex: path.join(os.tmpdir(), 'browser-cycle-codex'),
+    'claude-code': path.join(os.tmpdir(), 'browser-cycle-claude'),
+    'future-source': path.join(os.tmpdir(), 'browser-cycle-future'),
+  };
+  let currentSource = 'codex';
+  const sourcePayload = () => ({
+    sourceKind: currentSource,
+    sourceHome: homes[currentSource],
+    sourceConfigs: Object.fromEntries(Object.keys(homes).map((kind) => [kind, { home: homes[kind] }])),
+    codexHome: homes.codex,
+    claudeHome: homes['claude-code'],
+    futureSourceHome: homes['future-source'],
+    supportedSources: sourceOptions.map((option) => option.kind),
+    sourceOptions,
+    projects: [],
+    projectSelected: false,
+  });
+  const posts = [];
+  const { page } = await openSourceSwitchChooser(t, {
+    beforeGoto: async (p) => {
+      await p.route('**/api/state', async (route) => {
+        await route.fulfill({
+          status: 409,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'Project not selected', details: sourcePayload() }),
+        });
+      });
+      await p.route('**/api/projects*', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(sourcePayload()),
+        });
+      });
+      await p.route('**/api/source', async (route) => {
+        const body = JSON.parse(route.request().postData() || '{}');
+        posts.push(body.source);
+        currentSource = body.source;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(sourcePayload()),
+        });
+      });
+    },
+  });
+
+  assert.equal(await page.locator('#projectSourceAction').textContent(), 'Switch to Claude Code');
+  await page.locator('#projectSourceAction').click();
+  await confirmSourceAction(page, 'Confirm switch to Claude Code');
+  await page.waitForFunction(() => document.querySelector('#projectSourceAction')?.textContent === 'Switch to Future Source');
+
+  await page.locator('#projectSourceAction').click();
+  await confirmSourceAction(page, 'Confirm switch to Future Source');
+  await page.waitForFunction(() => document.querySelector('#projectSourceAction')?.textContent === 'Switch to Codex');
+  assert.deepEqual(posts, ['claude-code', 'future-source']);
+});
+
+test('browser hydration prefers canonical source configs over conflicting legacy home fields', async (t) => {
+  const canonicalCodexHome = path.join(os.tmpdir(), 'canonical-codex-home');
+  const canonicalClaudeHome = path.join(os.tmpdir(), 'canonical-claude-home');
+  const payload = {
+    sourceKind: 'codex',
+    sourceHome: canonicalCodexHome,
+    sourceConfigs: {
+      codex: { home: canonicalCodexHome },
+      'claude-code': { home: canonicalClaudeHome },
+    },
+    codexHome: path.join(os.tmpdir(), 'legacy-codex-home'),
+    claudeHome: path.join(os.tmpdir(), 'legacy-claude-home'),
+    supportedSources: ['codex', 'claude-code'],
+    sourceOptions: [
+      { kind: 'codex', label: 'Codex', homeOption: 'codexHome', homeLabel: 'Codex home' },
+      { kind: 'claude-code', label: 'Claude Code', homeOption: 'claudeHome', homeLabel: 'Claude home' },
+    ],
+    projects: [],
+    projectSelected: false,
+  };
+  const { page } = await openSourceSwitchChooser(t, {
+    beforeGoto: async (p) => {
+      await p.route('**/api/state', async (route) => {
+        await route.fulfill({
+          status: 409,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'Project not selected', details: payload }),
+        });
+      });
+      await p.route('**/api/projects*', async (route) => {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(payload) });
+      });
+    },
+  });
+
+  await page.waitForFunction(({ codex, claude }) => (
+    document.querySelector('#projectCodexHomeInput')?.value === codex
+      && document.querySelector('#projectClaudeHomeInput')?.value === claude
+  ), { codex: canonicalCodexHome, claude: canonicalClaudeHome });
+  assert.equal(await page.locator('#projectSourceHome').textContent(), '');
+});
+
+test('browser does not fall back to a legacy home when a canonical source config is malformed', async (t) => {
+  const canonicalClaudeHome = path.join(os.tmpdir(), 'canonical-claude-home');
+  const legacyCodexHome = path.join(os.tmpdir(), 'legacy-codex-home');
+  const payload = {
+    sourceKind: 'codex',
+    sourceHome: '',
+    sourceConfigs: {
+      codex: {},
+      'claude-code': { home: canonicalClaudeHome },
+    },
+    codexHome: legacyCodexHome,
+    claudeHome: path.join(os.tmpdir(), 'legacy-claude-home'),
+    supportedSources: ['codex', 'claude-code'],
+    sourceOptions: [
+      { kind: 'codex', label: 'Codex', homeOption: 'codexHome', homeLabel: 'Codex home' },
+      { kind: 'claude-code', label: 'Claude Code', homeOption: 'claudeHome', homeLabel: 'Claude home' },
+    ],
+    projects: [],
+    projectSelected: false,
+  };
+  const { page } = await openSourceSwitchChooser(t, {
+    beforeGoto: async (p) => {
+      await p.route('**/api/state', async (route) => {
+        await route.fulfill({
+          status: 409,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'Project not selected', details: payload }),
+        });
+      });
+      await p.route('**/api/projects*', async (route) => {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(payload) });
+      });
+    },
+  });
+
+  await page.waitForFunction(() => Boolean(document.querySelector('#projectCodexHomeInput')));
+  assert.deepEqual(await page.evaluate(() => ({
+    codex: document.querySelector('#projectCodexHomeInput')?.value || '',
+    claude: document.querySelector('#projectClaudeHomeInput')?.value || '',
+  })), { codex: '', claude: canonicalClaudeHome });
+});
+
+test('browser clears stale source config and active home after a later malformed canonical hydration', async (t) => {
+  const canonicalCodexHome = path.join(os.tmpdir(), 'canonical-codex-home');
+  const canonicalClaudeHome = path.join(os.tmpdir(), 'canonical-claude-home');
+  const initialPayload = {
+    sourceKind: 'codex',
+    sourceHome: canonicalCodexHome,
+    sourceConfigs: {
+      codex: { home: canonicalCodexHome },
+      'claude-code': { home: canonicalClaudeHome },
+    },
+    codexHome: path.join(os.tmpdir(), 'legacy-codex-home'),
+    claudeHome: path.join(os.tmpdir(), 'legacy-claude-home'),
+    supportedSources: ['codex', 'claude-code'],
+    sourceOptions: [
+      { kind: 'codex', label: 'Codex', homeOption: 'codexHome', homeLabel: 'Codex home' },
+      { kind: 'claude-code', label: 'Claude Code', homeOption: 'claudeHome', homeLabel: 'Claude home' },
+    ],
+    projects: [],
+    projectSelected: false,
+  };
+  const malformedPayload = {
+    ...initialPayload,
+    sourceHome: '',
+    sourceConfigs: {
+      codex: {},
+      'claude-code': { home: canonicalClaudeHome },
+    },
+  };
+  const { page } = await openSourceSwitchChooser(t, {
+    beforeGoto: async (p) => {
+      await p.route('**/api/state', async (route) => {
+        await route.fulfill({
+          status: 409,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'Project not selected', details: initialPayload }),
+        });
+      });
+      await p.route('**/api/projects*', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(malformedPayload),
+        });
+      });
+    },
+  });
+
+  await page.waitForFunction((expectedClaudeHome) => (
+    document.querySelector('#projectCodexHomeInput')?.value === ''
+      && document.querySelector('#projectClaudeHomeInput')?.value === expectedClaudeHome
+  ), canonicalClaudeHome);
+  assert.equal(await page.locator('#projectSourceHome').textContent(), '');
+});
+
 test('browser clears old project rows before successor discovery settles after a source switch', async (t) => {
   const fixture = await makeClaudeSwitchFixture(t);
   let sourcePosts = 0;
@@ -2626,6 +2830,11 @@ test('browser treats backslashes as literal characters in POSIX home paths', asy
           sourceHome: posixCodexHome,
           codexHome: posixCodexHome,
           claudeHome: '/home/me/.claude',
+          sourceConfigs: {
+            ...data.sourceConfigs,
+            codex: { home: posixCodexHome },
+            'claude-code': { home: '/home/me/.claude' },
+          },
         });
         await route.fulfill({ response, json: data });
       });
@@ -2737,6 +2946,7 @@ test('browser applies source config from a 202 indexing-job state', async (t) =>
     codeModeRequests: [],
     foldingProfiles: [],
     sessions: [],
+    sessionsById: new Map(),
   });
   await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
 });
@@ -3378,6 +3588,7 @@ test('browser search registry follows folding profile rule revisions', async (t)
     eventCount: 1,
     includeFoldableSearchTargets: true,
   });
+  const index = await buildIndex(longFixture);
   const expandedCommandProfile = {
     id: 'custom:search-rule-revision',
     name: 'Search rule revision test',
@@ -3388,7 +3599,7 @@ test('browser search registry follows folding profile rule revisions', async (t)
       conditions: [],
     },
   };
-  const { page } = await openApp(t, longFixture, {
+  const { page } = await openApp(t, index, {
     locale: 'en',
     localStorage: {
       'sessionAnalyzer.customProfiles': JSON.stringify([expandedCommandProfile]),

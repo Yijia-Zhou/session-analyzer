@@ -32,6 +32,7 @@ const {
   buildCodeModePresentationIndexes,
   CODE_MODE_SCRIPT_OPERATION_KIND,
   codeModePresentationFactsForEvent,
+  codeModeRequestMatches,
   codeModeExecSource,
   codeModeRequestCatalog,
   isCodeModeScriptOperation,
@@ -41,6 +42,7 @@ const { stripAnsiSequences } = require('./shared/terminal-text');
 const { deriveCodeModeFacts } = require('./codex-code-mode-facts');
 const { codeModePresentationContextMap } = require('./codex-presentation-context');
 const { createCodexDetailBuilder } = require('./codex-detail');
+const { validateCanonicalRawEventShape } = require('./canonical-contract');
 const {
   goalResponseFromValue,
   goalSnapshotFromGoal,
@@ -4629,8 +4631,9 @@ const codexSearch = createCodexSearch({
   codeModePresentationContextMap,
   codeModeRequestCatalog,
   codeModeRequestLabel: i18n.codeModeRequestLabel,
+  codeModeRequestMatches,
+  normalizeCodeModeRequest,
   codeModeScriptOperationKind: CODE_MODE_SCRIPT_OPERATION_KIND,
-  codexSourceKind: CODEX_SOURCE_KIND,
   codexSourceLocator,
   defaultLocale: i18n.DEFAULT_LOCALE,
   derivedSessionKind,
@@ -4833,7 +4836,7 @@ async function readIndexedCodexRawRecord(index, session, raw, options = {}) {
   return rowsByRawId.get(raw.rawId) || null;
 }
 
-async function readIndexedCodexLegacyRawLine(index, file, line, options = {}) {
+function resolveIndexedCodexLegacyRaw(index, file, line) {
   if (typeof file !== 'string' || !file || !Number.isSafeInteger(line) || line < 1) return null;
   const normalizedFile = normalizeFsPath(file);
   let match = null;
@@ -4847,6 +4850,11 @@ async function readIndexedCodexLegacyRawLine(index, file, line, options = {}) {
     if (match) return null;
     match = { session, raw };
   }
+  return match;
+}
+
+async function readIndexedCodexLegacyRawLine(index, file, line, options = {}) {
+  const match = resolveIndexedCodexLegacyRaw(index, file, line);
   if (!match) return null;
   return readIndexedCodexRawRecord(index, match.session, match.raw, options);
 }
@@ -4909,6 +4917,9 @@ async function readImagePreview(index, sessionId, eventId, previewId, options = 
     break;
   }
   if (!descriptor || !selectedRaw) return imagePreviewError(404, 'Unknown image preview');
+  if (options.expectedSourceKind) {
+    validateCanonicalRawEventShape(selectedRaw, options.expectedSourceKind);
+  }
   if (descriptor.source.file !== selectedRaw.source.file || descriptor.source.line !== selectedRaw.source.line) {
     return imagePreviewError(409, 'Image preview source is stale', 'INDEXED_SOURCE_STALE');
   }
@@ -4978,6 +4989,7 @@ module.exports = {
   getTimeline,
   eventKindCatalog,
   readImagePreview,
+  resolveIndexedCodexLegacyRaw,
   readIndexedCodexLegacyRawLine,
   readIndexedCodexRawRecord,
   readIndexedCodexSourceRows,
@@ -4987,4 +4999,5 @@ module.exports = {
   isPathInsideOrSame,
   matchTerms,
   normalizeCodeModeRequest,
+  query: codexSearch,
 };

@@ -207,12 +207,17 @@ async function requestJson(url) {
 }
 
 function isPackageStatePayload(response) {
+  const sourceKind = response?.json?.sourceKind;
+  const sourcePresentationShape = sourceKind === 'codex'
+    ? Array.isArray(response.json.codeModeRequests)
+    : sourceKind === 'claude-code' && !Object.hasOwn(response.json, 'codeModeRequests');
   return response.statusCode === 200
     && response.json
+    && (sourceKind === 'codex' || sourceKind === 'claude-code')
     && response.json.totals
     && Array.isArray(response.json.supportedLocales)
     && response.json.eventKinds
-    && Array.isArray(response.json.codeModeRequests)
+    && sourcePresentationShape
     && response.json.projectSelected === true;
 }
 

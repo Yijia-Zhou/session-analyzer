@@ -54,6 +54,13 @@ test('parseArgs leaves repo unset unless --repo is provided', () => {
   assert.equal(parseArgs(['node', 'server.js', '--repo', 'G:\\vibe\\term-agent']).repo, 'G:\\vibe\\term-agent');
 });
 
+test('parseArgs normalizes source-selection compatibility spelling at the CLI boundary', () => {
+  assert.equal(parseArgs(['node', 'server.js', '--source', 'CODEX']).source, 'codex');
+  assert.equal(parseArgs(['node', 'server.js', '--source', 'Claude-Code']).source, 'claude-code');
+  assert.equal(parseArgs(['node', 'server.js', '--source', ' CODEX ']).source, 'codex');
+  assert.equal(parseArgs(['node', 'server.js', '--source', ' Claude-Code ']).source, 'claude-code');
+});
+
 test('parseArgs accepts limited typo aliases for common options', () => {
   assert.equal(parseArgs(['node', 'server.js', '--repos', 'G:\\vibe\\term-agent']).repo, 'G:\\vibe\\term-agent');
   assert.equal(parseArgs(['node', 'server.js', '--repo-root', 'G:\\vibe\\term-agent']).repo, 'G:\\vibe\\term-agent');
@@ -280,13 +287,17 @@ test('server hides 500 stack details by default but preserves thrown 4xx status 
   stackError.stack = `Error: ${stackError.message}\n    at G:\\vibe\\session-analyzer\\src\\boom.js:7:9`;
   const errorIndex = {
     repoRoot: 'G:\\vibe\\term-agent',
+    sourceKind: 'codex',
     codexHome: fixtureCodexHome,
     sessionsById: new Map(),
     get sessions() {
       throw stackError;
     },
   };
-  const server = createServer(errorIndex, 1, { codexHome: fixtureCodexHome });
+  const server = createServer(errorIndex, 1, {
+    codexHome: fixtureCodexHome,
+    allowUninspectableSessions: true,
+  });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   try {
@@ -304,13 +315,17 @@ test('server hides 500 stack details by default but preserves thrown 4xx status 
   notFoundError.statusCode = 404;
   const notFoundIndex = {
     repoRoot: 'G:\\vibe\\term-agent',
+    sourceKind: 'codex',
     codexHome: fixtureCodexHome,
     sessionsById: new Map(),
     get sessions() {
       throw notFoundError;
     },
   };
-  const notFoundServer = createServer(notFoundIndex, 1, { codexHome: fixtureCodexHome });
+  const notFoundServer = createServer(notFoundIndex, 1, {
+    codexHome: fixtureCodexHome,
+    allowUninspectableSessions: true,
+  });
   await new Promise((resolve) => notFoundServer.listen(0, '127.0.0.1', resolve));
   const notFoundAddress = notFoundServer.address();
   try {
@@ -327,13 +342,17 @@ test('server hides 500 stack details by default but preserves thrown 4xx status 
   internalStatusError.statusCode = 500;
   const internalStatusIndex = {
     repoRoot: 'G:\\vibe\\term-agent',
+    sourceKind: 'codex',
     codexHome: fixtureCodexHome,
     sessionsById: new Map(),
     get sessions() {
       throw internalStatusError;
     },
   };
-  const internalStatusServer = createServer(internalStatusIndex, 1, { codexHome: fixtureCodexHome });
+  const internalStatusServer = createServer(internalStatusIndex, 1, {
+    codexHome: fixtureCodexHome,
+    allowUninspectableSessions: true,
+  });
   await new Promise((resolve) => internalStatusServer.listen(0, '127.0.0.1', resolve));
   const internalStatusAddress = internalStatusServer.address();
   try {
@@ -353,13 +372,18 @@ test('server exposes 500 stack details only when debug mode is explicitly enable
   stackError.stack = `Error: ${stackError.message}\n    at G:\\vibe\\session-analyzer\\src\\debug.js:4:2`;
   const debugIndex = {
     repoRoot: 'G:\\vibe\\term-agent',
+    sourceKind: 'codex',
     codexHome: fixtureCodexHome,
     sessionsById: new Map(),
     get sessions() {
       throw stackError;
     },
   };
-  const server = createServer(debugIndex, 1, { codexHome: fixtureCodexHome, debugErrors: true });
+  const server = createServer(debugIndex, 1, {
+    codexHome: fixtureCodexHome,
+    debugErrors: true,
+    allowUninspectableSessions: true,
+  });
   try {
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
@@ -2329,6 +2353,7 @@ test('filterSessions uses contiguous phrase semantics for project event search',
 test('filterSessions applies from/to date filters on the same activity timestamp basis', () => {
   const makeSession = (id, startedAt, updatedAt) => ({
     id,
+    sourceKind: 'codex',
     title: id,
     sourceFile: `${id}.jsonl`,
     bytes: 1,
@@ -2340,18 +2365,21 @@ test('filterSessions applies from/to date filters on the same activity timestamp
     agentNickname: '',
     startedAt,
     updatedAt,
-    counts: { failedCommands: 0 },
+    counts: { messages: 0, toolCalls: 0, failedCommands: 0 },
     analysis: { toolUsage: [], failedCommands: [], patchedFiles: [], protocolStats: [] },
     logicalEvents: [],
     rawEvents: [],
   });
   const index = {
+    sourceKind: 'codex',
+    repoRoot: 'G:\\repo',
     sessions: [
       makeSession('updated-late', '2026-06-01T08:00:00.000Z', '2026-06-10T12:00:00.000Z'),
       makeSession('started-only', '2026-06-04T09:00:00.000Z', ''),
     ],
     sessionsById: new Map(),
   };
+  for (const session of index.sessions) index.sessionsById.set(session.id, session);
 
   assert.deepEqual(
     filterSessions(index, { from: '2026-06-05', sort: 'updated-desc' }).sessions.map((session) => session.id),
@@ -4105,6 +4133,52 @@ test('image preview endpoint rehydrates only indexed server-owned image locators
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
+});
+
+test('legacy raw endpoint rejects malformed canonical Raw Event ownership', async (t) => {
+  const file = path.join(os.tmpdir(), 'session-analyzer-synthetic-legacy.jsonl');
+  const raw = {
+    rawId: 'codex:raw:1',
+    sourceKind: 'claude-code',
+    source: { file, line: 1 },
+  };
+  const event = {
+    id: 'codex:event:1',
+    sourceKind: 'codex',
+    kind: 'synthetic_event',
+    layer: 'main',
+    timestamp: '2026-08-14T00:00:00.000Z',
+    rawRefs: [{ rawId: raw.rawId }],
+  };
+  const session = {
+    id: 'codex:session:1',
+    sourceKind: 'codex',
+    sourceFile: file,
+    rawEvents: [raw],
+    logicalEvents: [event],
+    counts: { messages: 0, toolCalls: 0, failedCommands: 0 },
+  };
+  const index = {
+    sourceKind: 'codex',
+    repoRoot: path.join(os.tmpdir(), 'session-analyzer-synthetic-repo'),
+    sessions: [session],
+    sessionsById: new Map([[session.id, session]]),
+  };
+  const server = createServer(index, 0, { codexHome: fixtureCodexHome });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  }));
+
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const crossOwned = await fetch(`${base}/api/raw?file=${encodeURIComponent(file)}&line=1`);
+  assert.equal(crossOwned.status, 500);
+  assert.equal((await crossOwned.json()).error, 'Internal server error');
+
+  raw.sourceKind = undefined;
+  const missingOwnership = await fetch(`${base}/api/raw?file=${encodeURIComponent(file)}&line=1`);
+  assert.equal(missingOwnership.status, 500);
+  assert.equal((await missingOwnership.json()).error, 'Internal server error');
 });
 
 test('command terminal sections repair UTF-8 text decoded as GB18030', () => {

@@ -116,8 +116,8 @@ const state = {
   locale: browserLocale(),
   sourceKind: 'codex',
   sourceHome: '',
-  codexHome: '',
-  claudeHome: '',
+  sourceConfigs: {},
+  sourceOptions: [],
   supportedSources: [],
   projectDiscoveryLoading: false,
   pendingSourceAction: null,
@@ -281,8 +281,7 @@ const el = {
   projectSourceCancel: document.getElementById('projectSourceCancel'),
   projectSourceConfirm: document.getElementById('projectSourceConfirm'),
   projectHomeEditor: document.getElementById('projectHomeEditor'),
-  projectCodexHomeInput: document.getElementById('projectCodexHomeInput'),
-  projectClaudeHomeInput: document.getElementById('projectClaudeHomeInput'),
+  projectHomeFields: document.getElementById('projectHomeFields'),
   projectHomeApplyBtn: document.getElementById('projectHomeApplyBtn'),
   projectSourceError: document.getElementById('projectSourceError'),
 };
@@ -376,8 +375,6 @@ function applyStaticLocale() {
   setText(document.querySelector('.projectChooserHeader p'), t('chooseProject'));
   setText(el.projectCancelBtn, t('cancelIndexing'));
   setText(document.querySelector('#projectHomeEditor summary'), t('customHomeDirectories'));
-  setText(document.querySelector('.projectHomeField:nth-child(1) span'), t('codexHomeLabel'));
-  setText(document.querySelector('.projectHomeField:nth-child(2) span'), t('claudeHomeLabel'));
   setText(el.projectHomeApplyBtn, t('applyHomeDirectories'));
   setText(el.projectSourceCancel, t('cancelSwitch'));
   setText(document.querySelector('.sessionsPane .sessionListHeader h2'), t('sessions'));
@@ -518,7 +515,8 @@ function sourceConfigBusy() {
 
 function renderSourceSwitch() {
   if (!el.projectSourceSwitch) return;
-  const hasConfig = Boolean(state.sourceHome || state.supportedSources.length);
+  const sourceKinds = supportedSourceKindsForUi();
+  const hasConfig = Boolean(state.sourceHome || sourceKinds.length);
   el.projectSourceSwitch.hidden = !state.selectingProject || !hasConfig;
   if (el.projectSourceSwitch.hidden) return;
   const configBusy = sourceConfigBusy();
@@ -560,19 +558,22 @@ function renderSourceSwitch() {
     el.projectSourceConfirm.hidden = !confirmText;
   }
   const preserveHomeInputs = state.pendingSourceAction === 'home' || state.homeEditorDirty;
-  if (el.projectCodexHomeInput) {
-    el.projectCodexHomeInput.disabled = configBusy;
-    if (!preserveHomeInputs && document.activeElement !== el.projectCodexHomeInput) {
-      el.projectCodexHomeInput.value = state.codexHome;
-    }
-  }
-  if (el.projectClaudeHomeInput) {
-    el.projectClaudeHomeInput.disabled = configBusy;
-    if (!preserveHomeInputs && document.activeElement !== el.projectClaudeHomeInput) {
-      el.projectClaudeHomeInput.value = state.claudeHome;
-    }
-  }
+  renderHomeFields({ configBusy, preserveHomeInputs, sourceKinds });
   if (el.projectHomeApplyBtn) el.projectHomeApplyBtn.disabled = configBusy;
+}
+
+function renderHomeFields({ configBusy = false, preserveHomeInputs = false, sourceKinds = supportedSourceKindsForUi() } = {}) {
+  if (!el.projectHomeFields) return;
+  const currentHomes = readHomeDraft();
+  el.projectHomeFields.innerHTML = sourceKinds.map((kind) => {
+    const currentHome = preserveHomeInputs && Object.hasOwn(currentHomes, kind)
+      ? currentHomes[kind]
+      : sourceHomeFor(kind);
+    return `<label class="projectHomeField" data-source-home-field="${escapeHtml(kind)}">
+      <span data-source-home-label="${escapeHtml(kind)}">${escapeHtml(sourceHomeLabel(kind))}</span>
+      <input id="${escapeHtml(sourceHomeInputId(kind))}" data-source-home="${escapeHtml(kind)}" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(currentHome)}"${configBusy ? ' disabled' : ''}>
+    </label>`;
+  }).join('');
 }
 
 function clearSourceError() {
@@ -581,24 +582,25 @@ function clearSourceError() {
 
 function clearSubmittedHomeDraft(homes) {
   if (!homes) return;
-  const codexHome = el.projectCodexHomeInput?.value.trim() || '';
-  const claudeHome = el.projectClaudeHomeInput?.value.trim() || '';
-  if (codexHome === homes.codexHome && claudeHome === homes.claudeHome) {
+  const currentHomes = readHomeDraft();
+  const matches = supportedSourceKindsForUi().every((kind) => (
+    normalizeHomePathForCompare(currentHomes[kind]) === normalizeHomePathForCompare(homes[kind])
+  ));
+  if (matches) {
     state.homeEditorDirty = false;
   }
 }
 
-function validateHomePaths(codexHome, claudeHome) {
+function validateHomePaths(homes) {
+  const sourceKinds = supportedSourceKindsForUi();
   let errorKey = '';
-  if (!codexHome || !claudeHome) {
+  if (!sourceKinds.length || sourceKinds.some((kind) => !String(homes?.[kind] || '').trim())) {
     errorKey = 'homePathsRequired';
   } else {
     const serverPathKind = absoluteHomePathKind(state.sourceHome)
-      || absoluteHomePathKind(state.codexHome)
-      || absoluteHomePathKind(state.claudeHome);
+      || sourceKinds.map((kind) => absoluteHomePathKind(sourceHomeFor(kind))).find(Boolean);
     if (!serverPathKind
-        || absoluteHomePathKind(codexHome) !== serverPathKind
-        || absoluteHomePathKind(claudeHome) !== serverPathKind) {
+        || sourceKinds.some((kind) => absoluteHomePathKind(homes[kind]) !== serverPathKind)) {
       errorKey = 'homePathsAbsolute';
     }
   }
@@ -611,8 +613,10 @@ function validateHomePaths(codexHome, claudeHome) {
 function sourceConfigMatchesMutation(payload, source, homes) {
   if (payload?.sourceKind !== source) return false;
   if (!homes) return true;
-  return normalizeHomePathForCompare(payload.codexHome) === normalizeHomePathForCompare(homes.codexHome)
-    && normalizeHomePathForCompare(payload.claudeHome) === normalizeHomePathForCompare(homes.claudeHome);
+  return supportedSourceKindsForUi().every((kind) => (
+    normalizeHomePathForCompare(sourceHomeFromPayload(payload, kind))
+      === normalizeHomePathForCompare(homes[kind])
+  ));
 }
 
 function applyAuthoritativeSourceMutationState(payload) {
@@ -654,8 +658,9 @@ async function commitSourceConfig(source, homes = null) {
   try {
     const body = { source };
     if (homes) {
-      body.codexHome = homes.codexHome;
-      body.claudeHome = homes.claudeHome;
+      body.sourceConfigs = Object.fromEntries(
+        supportedSourceKindsForUi().map((kind) => [kind, { home: homes[kind] }]),
+      );
     }
     const result = await api('/api/source', { method: 'POST', body });
     applySourceConfig(result);
@@ -746,13 +751,8 @@ async function refreshProjectList() {
 async function performPendingSourceAction() {
   if (state.pendingSourceAction === 'switch') {
     const target = otherSourceKind();
-    const homes = state.homeEditorDirty
-      ? {
-        codexHome: el.projectCodexHomeInput?.value.trim() || '',
-        claudeHome: el.projectClaudeHomeInput?.value.trim() || '',
-      }
-      : null;
-    if (homes && !validateHomePaths(homes.codexHome, homes.claudeHome)) return;
+    const homes = state.homeEditorDirty ? readHomeDraft() : null;
+    if (homes && !validateHomePaths(homes)) return;
     invalidateProjectDiscovery();
     state.pendingSourceAction = null;
     let result;
@@ -779,16 +779,14 @@ async function performPendingSourceAction() {
     return;
   }
   if (state.pendingSourceAction === 'home') {
-    const codexHome = el.projectCodexHomeInput?.value.trim() || '';
-    const claudeHome = el.projectClaudeHomeInput?.value.trim() || '';
-    if (!validateHomePaths(codexHome, claudeHome)) return;
-    await performHomeChange(codexHome, claudeHome);
+    const homes = readHomeDraft();
+    if (!validateHomePaths(homes)) return;
+    await performHomeChange(homes);
   }
 }
 
-async function performHomeChange(codexHome, claudeHome) {
+async function performHomeChange(homes) {
   state.pendingSourceAction = null;
-  const homes = { codexHome, claudeHome };
   const result = await commitSourceConfig(state.sourceKind, homes);
   clearSubmittedHomeDraft(homes);
   if (result.projectSelected === false) {
@@ -813,13 +811,12 @@ function armSourceSwitch() {
 }
 
 function armHomeChange() {
-  const codexHome = el.projectCodexHomeInput?.value.trim() || '';
-  const claudeHome = el.projectClaudeHomeInput?.value.trim() || '';
-  if (!validateHomePaths(codexHome, claudeHome)) return;
-  const activeHomeInput = state.sourceKind === 'claude-code' ? claudeHome : codexHome;
+  const homes = readHomeDraft();
+  if (!validateHomePaths(homes)) return;
+  const activeHomeInput = homes[state.sourceKind] || '';
   const activeHomeChanged = normalizeHomePathForCompare(activeHomeInput) !== normalizeHomePathForCompare(state.sourceHome);
   if (!activeHomeChanged || !state.repoRoot) {
-    performHomeChange(codexHome, claudeHome).catch(showError);
+    performHomeChange(homes).catch(showError);
     return;
   }
   state.pendingSourceAction = 'home';
@@ -2379,7 +2376,79 @@ function shortSessionTitle(value, limit = 54) {
 }
 
 function sourceKindLabel(value) {
-  return value === 'claude-code' ? 'Claude Code' : value === 'codex' ? 'Codex' : String(value || '');
+  const option = sourceOptionFor(value);
+  return option?.label || humanizeKind(value) || String(value || '');
+}
+
+function sourceOptionFor(kind) {
+  const option = state.sourceOptions.find((candidate) => (
+    typeof candidate === 'string' ? candidate === kind : candidate?.kind === kind
+  ));
+  return typeof option === 'string' ? { kind: option } : option || null;
+}
+
+function supportedSourceKindsForUi() {
+  const kinds = [
+    ...state.supportedSources,
+    ...state.sourceOptions.map((option) => (typeof option === 'string' ? option : option?.kind)),
+    ...Object.keys(state.sourceConfigs),
+  ];
+  return [...new Set(kinds.filter(Boolean))];
+}
+
+function sourceHomeFor(kind) {
+  const config = state.sourceConfigs[kind];
+  if (!config || typeof config !== 'object' || Array.isArray(config) || !Object.hasOwn(config, 'home')) return '';
+  return typeof config.home === 'string' ? config.home : '';
+}
+
+function sourceHomeOptionFor(kind) {
+  return sourceOptionFor(kind)?.homeOption
+    || `${String(kind || '').split(/[-_]+/u).filter(Boolean)[0] || 'source'}Home`;
+}
+
+function canonicalSourceConfigMapFromPayload(payload) {
+  if (!payload || typeof payload !== 'object' || !Object.hasOwn(payload, 'sourceConfigs')) return undefined;
+  const sourceConfigs = payload.sourceConfigs;
+  if (!sourceConfigs || typeof sourceConfigs !== 'object' || Array.isArray(sourceConfigs)) return null;
+  return sourceConfigs;
+}
+
+function sourceHomeFromPayload(payload, kind) {
+  const sourceConfigs = canonicalSourceConfigMapFromPayload(payload);
+  if (sourceConfigs !== undefined) {
+    if (sourceConfigs === null) return '';
+    if (Object.hasOwn(sourceConfigs, kind)) {
+      const config = sourceConfigs[kind];
+      if (!config || typeof config !== 'object' || Array.isArray(config) || !Object.hasOwn(config, 'home')) {
+        return '';
+      }
+      return typeof config.home === 'string' && config.home.trim() ? config.home : '';
+    }
+  }
+  const legacy = sourceHomeOptionFor(kind);
+  if (typeof payload?.[legacy] === 'string') return payload[legacy];
+  return '';
+}
+
+function sourceHomeLabel(kind) {
+  return t('sourceHomeLabel', { source: sourceKindLabel(kind) });
+}
+
+function sourceHomeInputId(kind) {
+  const token = String(kind || 'source').split(/[-_]+/u).filter(Boolean)[0] || 'source';
+  return `project${token.charAt(0).toUpperCase()}${token.slice(1)}HomeInput`;
+}
+
+function readHomeDraft() {
+  const homes = {};
+  for (const kind of supportedSourceKindsForUi()) {
+    homes[kind] = sourceHomeFor(kind);
+  }
+  for (const input of el.projectHomeFields?.querySelectorAll('input[data-source-home]') || []) {
+    homes[input.dataset.sourceHome] = input.value.trim();
+  }
+  return homes;
 }
 
 function repoStorageKey(sourceKind) {
@@ -2411,16 +2480,36 @@ function writeLastSelectedRepo(sourceKind, repoRoot) {
 
 function applySourceConfig(payload) {
   if (!payload || typeof payload !== 'object') return;
-  if (payload.sourceKind) state.sourceKind = payload.sourceKind;
-  if (typeof payload.sourceHome === 'string') state.sourceHome = payload.sourceHome;
-  if (typeof payload.codexHome === 'string') state.codexHome = payload.codexHome;
-  if (typeof payload.claudeHome === 'string') state.claudeHome = payload.claudeHome;
+  if (Array.isArray(payload.sourceOptions)) state.sourceOptions = payload.sourceOptions;
   if (Array.isArray(payload.supportedSources)) state.supportedSources = payload.supportedSources;
+  if (payload.sourceKind) state.sourceKind = payload.sourceKind;
+  const canonicalSourceConfigs = canonicalSourceConfigMapFromPayload(payload);
+  const sourceKinds = [...new Set([...supportedSourceKindsForUi(), state.sourceKind].filter(Boolean))];
+  const nextSourceConfigs = { ...state.sourceConfigs };
+  for (const kind of sourceKinds) {
+    const home = sourceHomeFromPayload(payload, kind);
+    const hasExplicitCanonicalEntry = canonicalSourceConfigs === null
+      || (canonicalSourceConfigs && Object.hasOwn(canonicalSourceConfigs, kind));
+    if (hasExplicitCanonicalEntry) {
+      if (home) nextSourceConfigs[kind] = { home };
+      else delete nextSourceConfigs[kind];
+    } else if (home) {
+      nextSourceConfigs[kind] = { home };
+    }
+  }
+  if (canonicalSourceConfigs !== undefined || Object.keys(nextSourceConfigs).length) {
+    state.sourceConfigs = nextSourceConfigs;
+  }
+  if (canonicalSourceConfigs !== undefined) state.sourceHome = sourceHomeFor(state.sourceKind);
+  else if (typeof payload.sourceHome === 'string') state.sourceHome = payload.sourceHome;
+  else state.sourceHome = sourceHomeFor(state.sourceKind) || state.sourceHome;
 }
 
 function otherSourceKind() {
-  const supported = state.supportedSources.length ? state.supportedSources : ['codex', 'claude-code'];
-  return supported.find((kind) => kind !== state.sourceKind) || (state.sourceKind === 'codex' ? 'claude-code' : 'codex');
+  const sourceKinds = supportedSourceKindsForUi();
+  if (sourceKinds.length < 2) return '';
+  const currentIndex = sourceKinds.indexOf(state.sourceKind);
+  return sourceKinds[(currentIndex + 1 + sourceKinds.length) % sourceKinds.length] || '';
 }
 
 function absoluteHomePathKind(value) {
@@ -6335,12 +6424,11 @@ el.projectSourceCancel?.addEventListener('click', cancelPendingSourceAction);
 
 el.projectHomeApplyBtn?.addEventListener('click', armHomeChange);
 
-for (const input of [el.projectCodexHomeInput, el.projectClaudeHomeInput]) {
-  input?.addEventListener('input', () => {
-    state.homeEditorDirty = true;
-    clearSourceError();
-  });
-}
+el.projectHomeFields?.addEventListener('input', (event) => {
+  if (!event.target.matches('input[data-source-home]')) return;
+  state.homeEditorDirty = true;
+  clearSourceError();
+});
 
 el.sessionList.addEventListener('click', (event) => {
   const childToggle = event.target.closest('[data-session-children-toggle]');

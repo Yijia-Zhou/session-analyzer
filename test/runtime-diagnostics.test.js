@@ -209,7 +209,12 @@ test('server diagnostics record successful, failed, and cancelled indexing outco
     {
       name: 'succeeded',
       expectedStatus: 'succeeded',
-      buildIndex: async ({ repoRoot }) => ({ repoRoot }),
+      buildIndex: async ({ repoRoot, sourceKind }) => ({
+        repoRoot,
+        sourceKind,
+        sessions: [],
+        sessionsById: new Map(),
+      }),
     },
     {
       name: 'failed',
@@ -281,7 +286,12 @@ test('server emits one large-history warning without blocking successful indexin
       };
       onProgress(progress);
       onProgress({ ...progress, sessionCount: 1, rawEventCount: 2, eventCount: 1 });
-      return { repoRoot };
+      return {
+        repoRoot,
+        sourceKind: 'codex',
+        sessions: [],
+        sessionsById: new Map(),
+      };
     },
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

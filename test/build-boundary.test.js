@@ -127,13 +127,11 @@ test('codex detail builder stays a detail-construction boundary', () => {
   }
 });
 
-test('codex search builder stays a pure search-contract boundary', () => {
-  const searchModule = require('../src/codex-search');
-  const text = readText(path.join('src', 'codex-search.js'));
-  const codexText = readText(path.join('src', 'codex.js'));
+test('source-neutral session query owns the shared search contract', () => {
+  const queryModule = require('../src/session-query');
+  const queryText = readText(path.join('src', 'session-query.js'));
+  const compatibilityText = readText(path.join('src', 'codex-search.js'));
   const forbiddenPatterns = [
-    /\brequire\s*\(/,
-    /\bimport\s+/,
     /server\.js/,
     /src[\\/]browser/,
     /public[\\/]/,
@@ -145,11 +143,69 @@ test('codex search builder stays a pure search-contract boundary', () => {
     /\bcreateReadStream\b/,
   ];
 
-  assert.deepEqual(Object.keys(searchModule), ['createCodexSearch']);
-  assert.match(codexText, /createCodexSearch\(\{/);
-  for (const pattern of forbiddenPatterns) {
-    assert.doesNotMatch(text, pattern);
+  assert.deepEqual(Object.keys(queryModule), [
+    'createSessionQuery',
+    'defaultDisplayProjectFile',
+    'defaultEventKindCatalog',
+    'defaultRawRef',
+  ]);
+  assert.match(compatibilityText, /require\('\.\/session-query'\)/);
+  for (const token of [
+    'codex',
+    'code_mode_operation',
+    'codeModeRequest',
+    'codeModeRequests',
+    'codeModeDeclaredRequests',
+    'normalizeCodeModeRequest',
+    'presentationIndexes',
+    'defaultSourceKind',
+    'jsonl_line',
+  ]) {
+    assert.doesNotMatch(queryText, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
   }
+  for (const pattern of forbiddenPatterns) {
+    assert.doesNotMatch(queryText, pattern);
+  }
+});
+
+test('server shared query routes do not depend on Codex ownership', () => {
+  const serverText = readText('server.js');
+  const adapterText = readText(path.join('src', 'source-adapters.js'));
+  assert.doesNotMatch(serverText, /src[\\/]codex(?:\.js|['"])/);
+  for (const token of [
+    'code_mode_operation',
+    'codeModeRequest',
+    'codeModeDeclaredRequests',
+    'normalizeCodeModeRequest',
+    'codeModeRequests',
+  ]) {
+    assert.doesNotMatch(serverText, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
+  }
+  assert.match(serverText, /queryForIndex\(index\)/);
+  assert.match(adapterText, /function queryForIndex\(index\)/);
+  assert.doesNotMatch(serverText, /require\s*\(\s*['"]\.\/src\/codex[-./\\'"]/);
+});
+
+test('runtime source configuration is registry-driven across server and browser', () => {
+  const registry = require('../src/source-adapters');
+  const serverText = readText('server.js');
+  const browserText = readText(path.join('src', 'browser', 'app.js'));
+  const indexText = readText(path.join('public', 'index.html'));
+
+  assert.deepEqual(registry.supportedSourceOptions(), [
+    { kind: 'codex', label: 'Codex', homeOption: 'codexHome', homeLabel: 'Codex home' },
+    { kind: 'claude-code', label: 'Claude Code', homeOption: 'claudeHome', homeLabel: 'Claude home' },
+  ]);
+  assert.match(serverText, /sourceConfigs/);
+  assert.match(serverText, /supportedSourceOptions\(\)/);
+  assert.doesNotMatch(serverText, /state(?:\.(?:codexHome|claudeHome)\b|\[['"](?:codexHome|claudeHome)['"]\])/);
+  assert.match(browserText, /sourceConfigs/);
+  assert.match(browserText, /supportedSourceKindsForUi\(\)/);
+  assert.match(browserText, /data-source-home/);
+  assert.doesNotMatch(browserText, /state(?:\.(?:codexHome|claudeHome)\b|\[['"](?:codexHome|claudeHome)['"]\])/);
+  assert.doesNotMatch(browserText, /project(?:Codex|Claude)HomeInput/);
+  assert.match(indexText, /id="projectHomeFields"/);
+  assert.doesNotMatch(indexText, /id="project(?:Codex|Claude)HomeInput"/);
 });
 
 test('Claude logical builder stays a pure source-specific construction boundary', () => {
@@ -182,7 +238,62 @@ test('source adapter registry owns source dispatch without adding Claude branche
 
   assert.deepEqual(registry.supportedSourceKinds(), ['codex', 'claude-code']);
   assert.equal(registry.requireSourceAdapter('codex').kind, 'codex');
-  assert.equal(registry.requireSourceAdapter('claude').kind, 'claude-code');
+  assert.equal(registry.requireSourceAdapter(registry.normalizeSourceKind('claude')).kind, 'claude-code');
   assert.doesNotMatch(codexLogical, /claude/i);
   assert.doesNotMatch(codexDetail, /claude/i);
+});
+
+test('strict adapter registry lookup rejects absent and non-canonical source ownership', () => {
+  const registry = require('../src/source-adapters');
+
+  assert.equal(registry.getSourceAdapter(undefined), null);
+  assert.equal(registry.getSourceAdapter(' codex '), null);
+  assert.throws(
+    () => registry.requireSourceAdapter(undefined),
+    { code: 'MISSING_SOURCE_OWNERSHIP' },
+  );
+  assert.throws(
+    () => registry.requireSourceAdapter(' codex '),
+    { code: 'CANONICAL_CONTRACT_VIOLATION' },
+  );
+  assert.equal(registry.normalizeSourceKind(' Claude-Code '), 'claude-code');
+  assert.equal(registry.requireSourceAdapter(registry.normalizeSourceKind(' Claude-Code ')).kind, 'claude-code');
+});
+
+test('source-specific builders remain isolated from the other transcript source', () => {
+  for (const relativePath of [
+    'src/codex.js',
+    'src/codex-source.js',
+    'src/codex-logical.js',
+    'src/codex-detail.js',
+  ]) {
+    assert.doesNotMatch(readText(relativePath), /\bclaude(?:-code)?\b/i, relativePath);
+  }
+  for (const relativePath of [
+    'src/claude.js',
+    'src/claude-source.js',
+    'src/claude-logical.js',
+    'src/claude-detail.js',
+  ]) {
+    assert.doesNotMatch(readText(relativePath), /\bcodex\b/i, relativePath);
+  }
+});
+
+test('canonical dispatch requires explicit ownership instead of normalizing missing values', () => {
+  const adapterText = readText(path.join('src', 'source-adapters.js'));
+  const queryBoundaryStart = adapterText.indexOf('function queryForIndex');
+  const sessionBoundaryStart = adapterText.indexOf('function adapterForSession');
+  const detailBoundaryStart = adapterText.indexOf('async function buildEventDetailForSession');
+  const queryBoundary = adapterText.slice(queryBoundaryStart, sessionBoundaryStart);
+  const sessionBoundary = adapterText.slice(sessionBoundaryStart, detailBoundaryStart);
+  assert.match(
+    adapterText,
+    /function queryForIndex\(index\)[\s\S]*?requireExplicitSourceKind\(index\?\.sourceKind, 'index'\)/,
+  );
+  assert.match(
+    adapterText,
+    /function adapterForSession\(session\)[\s\S]*?requireExplicitSourceKind\(session\?\.sourceKind/,
+  );
+  assert.doesNotMatch(queryBoundary, /normalizeSourceKind/);
+  assert.doesNotMatch(sessionBoundary, /normalizeSourceKind/);
 });

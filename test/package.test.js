@@ -309,6 +309,7 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'src/claude-logical.js',
     'src/claude-source.js',
     'src/claude.js',
+    'src/canonical-contract.js',
     'src/codex-code-mode-declared.js',
     'src/codex-code-mode-facts.js',
     'src/codex-code-mode.js',
@@ -326,6 +327,7 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'src/review-lifecycle.js',
     'src/runtime-capacity.js',
     'src/runtime-diagnostics.js',
+    'src/session-query.js',
     'src/source-adapters.js',
     'src/shared/agent-coordination.js',
     'src/shared/command-highlighting.js',
@@ -372,6 +374,7 @@ test('package smoke state predicate requires final app state payload', () => {
   assert.equal(isPackageStatePayload({
     statusCode: 200,
     json: {
+      sourceKind: 'codex',
       totals: {},
       supportedLocales: ['en', 'zh-CN'],
       eventKinds: {},
@@ -380,10 +383,36 @@ test('package smoke state predicate requires final app state payload', () => {
     },
     body: '{}',
   }), true);
+
+  assert.equal(isPackageStatePayload({
+    statusCode: 200,
+    json: {
+      sourceKind: 'claude-code',
+      totals: {},
+      supportedLocales: ['en', 'zh-CN'],
+      eventKinds: {},
+      projectSelected: true,
+    },
+    body: '{}',
+  }), true);
+
+  assert.equal(isPackageStatePayload({
+    statusCode: 200,
+    json: {
+      sourceKind: 'claude-code',
+      totals: {},
+      supportedLocales: ['en', 'zh-CN'],
+      eventKinds: {},
+      codeModeRequests: [],
+      projectSelected: true,
+    },
+    body: '{}',
+  }), false);
 });
 
 test('package smoke waits past a 202 indexing job before passing state', async () => {
   const statePayload = {
+    sourceKind: 'codex',
     totals: {},
     supportedLocales: ['en', 'zh-CN'],
     eventKinds: {},

@@ -123,6 +123,12 @@ function codeModePresentationFactsForEvent(session = {}, eventId = '') {
   };
 }
 
+function codeModeRequestMatches(event = {}, session = {}, request = '') {
+  if (event.layer !== 'main' || event.kind !== CODE_MODE_OPERATION_KIND) return false;
+  const fact = codeModeDeclaredRequestFactForEvent(session, event.id);
+  return Boolean(fact?.toolNames?.includes(request));
+}
+
 function codeModeRequestCatalog(sessions, options = {}) {
   const counts = new Map();
   for (const session of sessions || []) {
@@ -157,6 +163,7 @@ module.exports = {
   codeModeExecSource,
   codeModeOperationExecSource,
   codeModePresentationFactsForEvent,
+  codeModeRequestMatches,
   codeModeRequestCatalog,
   isCodeModeScriptOperation,
   normalizeCodeModeRequest,

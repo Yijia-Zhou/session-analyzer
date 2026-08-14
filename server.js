@@ -7,16 +7,21 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const url = require('node:url');
-const { fileSuggestions, filterSessions, getEvent, getTimeline, isPathInsideOrSame, normalizeCodeModeRequest, normalizeFsPath } = require('./src/codex');
 const {
   SOURCE_KIND,
   adapterForSession,
   buildEventDetailForSession,
   normalizeSourceKind,
+  queryForIndex,
+  readImagePreviewForSession,
   readIndexedRawRecord,
+  readLegacyRawLineForIndex,
   requireSourceAdapter,
+  supportedSourceOptions,
   supportedSourceKinds,
+  validateIndexOwnership,
 } = require('./src/source-adapters');
+const { isPathInsideOrSame, normalizeFsPath } = require('./src/shared/fs-path');
 const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
 const { createIndexDiagnostics } = require('./src/runtime-diagnostics');
@@ -276,6 +281,7 @@ async function readJsonBody(req, limit = 64 * 1024) {
 
 function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
   const resolvedLocale = i18n.resolveLocale(locale);
+  const query = queryForIndex(state.index);
   return {
     ...sourceConfigurationPayload(state),
     locale: resolvedLocale,
@@ -291,10 +297,7 @@ function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
         raw: state.index.eventKinds.raw.map((item) => ({ ...item, label: i18n.rawRecordLabel(item.value, resolvedLocale) })),
       }
       : state.index.eventKinds,
-    codeModeRequests: (state.index.codeModeRequests || []).map((item) => ({
-      ...item,
-      label: i18n.codeModeRequestLabel(item.value, resolvedLocale),
-    })),
+    ...query.indexPresentation(state.index, { locale: resolvedLocale }),
     foldingProfiles: foldingProfiles.map((profile) => i18n.localizeProfile(profile, resolvedLocale)),
     projectSelected: true,
   };
@@ -377,13 +380,117 @@ function mergeProjectLists(configProjects = [], scannedProjects = [], options = 
   return order.map((key) => map.get(key));
 }
 
+function sourceConfigHome(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config) || !Object.hasOwn(config, 'home')) return '';
+  return typeof config.home === 'string' && config.home.trim() ? config.home : '';
+}
+
+function invalidSourceConfigError(kind) {
+  const error = new Error(`${kind}.home must be an explicitly provided non-empty string.`);
+  error.code = 'INVALID_SOURCE_CONFIG';
+  return error;
+}
+
+function requireSourceConfigMap(sourceConfigs, owner = 'sourceConfigs') {
+  if (!sourceConfigs || typeof sourceConfigs !== 'object' || Array.isArray(sourceConfigs)) {
+    const error = new Error(`${owner} must be an object keyed by supported transcript source.`);
+    error.code = 'INVALID_SOURCE_CONFIG';
+    throw error;
+  }
+  const supportedKinds = new Set(supportedSourceKinds());
+  for (const kind of Object.keys(sourceConfigs)) {
+    if (!supportedKinds.has(kind)) {
+      const error = new Error(`Unsupported source configuration: ${kind}.`);
+      error.code = 'UNSUPPORTED_SOURCE_CONFIG';
+      throw error;
+    }
+  }
+  return sourceConfigs;
+}
+
+function sourceConfigEntryHome(sourceConfigs, kind) {
+  if (!Object.hasOwn(sourceConfigs, kind)) return null;
+  const home = sourceConfigHome(sourceConfigs[kind]);
+  if (!home) throw invalidSourceConfigError(kind);
+  return home;
+}
+
+function cloneSourceConfigs(sourceConfigs = {}) {
+  const configuredSourceConfigs = requireSourceConfigMap(sourceConfigs);
+  const result = {};
+  for (const kind of supportedSourceKinds()) {
+    const adapter = requireSourceAdapter(kind);
+    const configured = sourceConfigEntryHome(configuredSourceConfigs, kind);
+    const home = configured ?? adapter.defaultHome();
+    result[kind] = { home: path.resolve(home) };
+  }
+  return result;
+}
+
+function sourceConfigsFromState(state) {
+  if (Object.hasOwn(state, 'sourceConfigs')) {
+    return cloneSourceConfigs(state.sourceConfigs);
+  }
+  const result = {};
+  for (const kind of supportedSourceKinds()) {
+    const adapter = requireSourceAdapter(kind);
+    const legacyHome = state[adapter.homeOption];
+    const fallback = kind === state.sourceKind ? state.sourceHome : adapter.defaultHome();
+    result[kind] = { home: path.resolve(legacyHome || fallback) };
+  }
+  return result;
+}
+
+function activeSourceHome(state, sourceKind = state.sourceKind, sourceConfigs = sourceConfigsFromState(state)) {
+  const home = sourceConfigHome(sourceConfigs[sourceKind]);
+  if (!home) throw new Error(`Missing configured home for transcript source: ${sourceKind}`);
+  return path.resolve(home);
+}
+
+function createInitialSourceConfigs(initialIndex, options, sourceKind) {
+  const provided = Object.hasOwn(options, 'sourceConfigs')
+    ? options.sourceConfigs
+    : (initialIndex && Object.hasOwn(initialIndex, 'sourceConfigs') ? initialIndex.sourceConfigs : undefined);
+  const canonicalSourceConfigs = provided === undefined ? null : requireSourceConfigMap(provided);
+  const result = {};
+  for (const kind of supportedSourceKinds()) {
+    const adapter = requireSourceAdapter(kind);
+    const configured = canonicalSourceConfigs
+      ? sourceConfigEntryHome(canonicalSourceConfigs, kind)
+      : null;
+    let home = configured;
+    if (home === null) {
+      const legacy = initialIndex?.[adapter.homeOption]
+        || initialIndex?.[`${kind}HomePath`]
+        || options[adapter.homeOption];
+      home = legacy || adapter.defaultHome();
+      if (kind === sourceKind) {
+        home = initialIndex?.sourceHome || options.sourceHome || home;
+      }
+    }
+    result[kind] = { home: path.resolve(home) };
+  }
+  return result;
+}
+
+function legacySourceHomePayload(sourceConfigs) {
+  const payload = {};
+  for (const kind of supportedSourceKinds()) {
+    const adapter = requireSourceAdapter(kind);
+    payload[adapter.homeOption] = activeSourceHome({ sourceKind: kind }, kind, sourceConfigs);
+  }
+  return payload;
+}
+
 function sourceConfigurationPayload(state) {
+  const sourceConfigs = sourceConfigsFromState(state);
   return {
     sourceKind: state.sourceKind,
-    sourceHome: state.sourceHome,
-    codexHome: state.codexHome,
-    claudeHome: state.claudeHome,
+    sourceHome: activeSourceHome(state, state.sourceKind, sourceConfigs),
+    sourceConfigs,
+    ...legacySourceHomePayload(sourceConfigs),
     supportedSources: supportedSourceKinds(),
+    sourceOptions: supportedSourceOptions(),
   };
 }
 
@@ -400,11 +507,11 @@ function cancelProjectJob(job) {
 async function discoverProjectsForSource(state, mode) {
   const revision = state.sourceRevision;
   const adapter = state.adapter;
+  const sourceConfigs = sourceConfigsFromState(state);
   const context = {
     sourceKind: state.sourceKind,
-    sourceHome: state.sourceHome,
-    codexHome: state.codexHome,
-    claudeHome: state.claudeHome,
+    sourceHome: activeSourceHome(state, state.sourceKind, sourceConfigs),
+    sourceConfigs,
   };
   const configuredProjects = await adapter.discoverConfiguredProjects(context);
   if (revision !== state.sourceRevision) return { stale: true };
@@ -413,8 +520,7 @@ async function discoverProjectsForSource(state, mode) {
     return {
       stale: false,
       payload: {
-        ...context,
-        supportedSources: supportedSourceKinds(),
+        ...sourceConfigurationPayload(state),
         projects,
         summary: true,
         cached: Boolean(state.projectCache),
@@ -431,8 +537,7 @@ async function discoverProjectsForSource(state, mode) {
   return {
     stale: false,
     payload: {
-      ...context,
-      supportedSources: supportedSourceKinds(),
+      ...sourceConfigurationPayload(state),
       projects,
     },
   };
@@ -443,7 +548,9 @@ function resolveSourceMutation(state, body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return { errors: ['Invalid request body: expected a JSON object.'] };
   }
-  const allowedFields = new Set(['source', 'codexHome', 'claudeHome']);
+  const supportedKinds = supportedSourceKinds();
+  const homeOptions = supportedKinds.map((kind) => requireSourceAdapter(kind).homeOption);
+  const allowedFields = new Set(['source', 'sourceConfigs', ...homeOptions]);
   const unknownFields = Object.keys(body).filter((key) => !allowedFields.has(key));
   if (unknownFields.length > 0) {
     errors.push(`Unknown field${unknownFields.length > 1 ? 's' : ''}: ${unknownFields.join(', ')}.`);
@@ -453,30 +560,76 @@ function resolveSourceMutation(state, body) {
     errors.push(`Missing value for source. Expected one of: ${supportedSourceKinds().join(', ')}.`);
   } else {
     const candidateSourceKind = normalizeSourceKind(rawSource);
-    if (!supportedSourceKinds().includes(candidateSourceKind)) {
-      errors.push(`Invalid value for source: ${JSON.stringify(rawSource)}. Expected one of: ${supportedSourceKinds().join(', ')}.`);
+    if (!supportedKinds.includes(candidateSourceKind)) {
+      errors.push(`Invalid value for source: ${JSON.stringify(rawSource)}. Expected one of: ${supportedKinds.join(', ')}.`);
     }
   }
+  const currentSourceConfigs = sourceConfigsFromState(state);
+  const nextSourceConfigs = cloneSourceConfigs(currentSourceConfigs);
   const resolveHome = (value, current) => {
     if (value === undefined) return current;
     if (typeof value !== 'string' || value.trim() === '') return null;
     return path.resolve(value);
   };
-  const nextCodexHome = resolveHome(body.codexHome, state.codexHome);
-  const nextClaudeHome = resolveHome(body.claudeHome, state.claudeHome);
-  if (nextCodexHome === null || nextClaudeHome === null) {
-    errors.push('codexHome and claudeHome must be non-empty strings when provided.');
+
+  if (Object.hasOwn(body, 'sourceConfigs')) {
+    const canonicalKinds = new Set();
+    if (!body.sourceConfigs || typeof body.sourceConfigs !== 'object' || Array.isArray(body.sourceConfigs)) {
+      errors.push('sourceConfigs must be an object keyed by supported transcript source.');
+    } else {
+      for (const [kind, config] of Object.entries(body.sourceConfigs)) {
+        if (!supportedKinds.includes(kind)) {
+          errors.push(`Unsupported source configuration: ${kind}.`);
+          continue;
+        }
+        canonicalKinds.add(kind);
+        if (!config || typeof config !== 'object' || Array.isArray(config)) {
+          errors.push(`${kind} must be an object with a home when provided.`);
+          continue;
+        }
+        if (!Object.hasOwn(config, 'home')
+          || typeof config.home !== 'string'
+          || config.home.trim() === '') {
+          errors.push(`${kind}.home must be an explicitly provided non-empty string.`);
+          continue;
+        }
+        nextSourceConfigs[kind] = { home: path.resolve(config.home) };
+      }
+    }
+
+    for (const kind of supportedKinds) {
+      const adapter = requireSourceAdapter(kind);
+      if (canonicalKinds.has(kind) || !Object.hasOwn(body, adapter.homeOption)) continue;
+      const nextHome = resolveHome(body[adapter.homeOption], sourceConfigHome(currentSourceConfigs[kind]));
+      if (nextHome === null) {
+        errors.push(`${adapter.homeOption} must be a non-empty string when provided.`);
+      } else {
+        nextSourceConfigs[kind] = { home: nextHome };
+      }
+    }
+  } else {
+    for (const kind of supportedKinds) {
+      const adapter = requireSourceAdapter(kind);
+      if (!Object.hasOwn(body, adapter.homeOption)) continue;
+      const nextHome = resolveHome(body[adapter.homeOption], sourceConfigHome(currentSourceConfigs[kind]));
+      if (nextHome === null) {
+        errors.push(`${adapter.homeOption} must be a non-empty string when provided.`);
+      } else {
+        nextSourceConfigs[kind] = { home: nextHome };
+      }
+    }
   }
   if (errors.length > 0) return { errors };
 
   const nextSourceKind = normalizeSourceKind(rawSource);
   const configChanged = nextSourceKind !== state.sourceKind
-    || normalizeFsPath(nextCodexHome) !== normalizeFsPath(state.codexHome)
-    || normalizeFsPath(nextClaudeHome) !== normalizeFsPath(state.claudeHome);
+    || supportedKinds.some((kind) => (
+      normalizeFsPath(nextSourceConfigs[kind].home) !== normalizeFsPath(currentSourceConfigs[kind].home)
+    ));
   if (configChanged) {
-    const nextActiveHome = nextSourceKind === SOURCE_KIND.CLAUDE_CODE ? nextClaudeHome : nextCodexHome;
+    const nextActiveHome = activeSourceHome(state, nextSourceKind, nextSourceConfigs);
     const activeIdentityChanged = nextSourceKind !== state.sourceKind
-      || normalizeFsPath(nextActiveHome) !== normalizeFsPath(state.sourceHome);
+      || normalizeFsPath(nextActiveHome) !== normalizeFsPath(activeSourceHome(state, state.sourceKind, currentSourceConfigs));
     if (activeIdentityChanged) {
       cancelProjectJob(state.activeProjectJob);
       state.index = null;
@@ -485,10 +638,10 @@ function resolveSourceMutation(state, body) {
       state.sourceKind = nextSourceKind;
       state.adapter = requireSourceAdapter(nextSourceKind);
     }
-    state.codexHome = nextCodexHome;
-    state.claudeHome = nextClaudeHome;
-    state.sourceHome = nextSourceKind === SOURCE_KIND.CLAUDE_CODE ? state.claudeHome : state.codexHome;
+    state.sourceConfigs = nextSourceConfigs;
     state.sourceRevision += 1;
+  } else if (!state.sourceConfigs) {
+    state.sourceConfigs = currentSourceConfigs;
   }
   return {
     errors: [],
@@ -541,13 +694,15 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   });
   state.activeProjectJob = job;
 
+  const jobSourceConfigs = sourceConfigsFromState(state);
+  const jobSourceKind = state.sourceKind;
+  const jobSourceHome = activeSourceHome(state, jobSourceKind, jobSourceConfigs);
   const buildIndex = state.buildIndexOverride || ((context) => state.adapter.buildIndex(context));
   job.promise = Promise.resolve().then(() => buildIndex({
     repoRoot,
-    sourceKind: state.sourceKind,
-    sourceHome: state.sourceHome,
-    codexHome: state.codexHome,
-    claudeHome: state.claudeHome,
+    sourceKind: jobSourceKind,
+    sourceHome: jobSourceHome,
+    sourceConfigs: jobSourceConfigs,
     previousIndex: state.index,
     signal: controller.signal,
     onProgress: (progress) => {
@@ -556,6 +711,20 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       job.capacityWarning.observe(job.progress);
     },
   })).then((index) => {
+    if (controller.signal.aborted) {
+      job.status = 'cancelled';
+      job.error = 'Indexing cancelled';
+      job.completedAt ||= new Date().toISOString();
+      job.buildMs = Date.now() - startedAtMs;
+      job.diagnostics?.finish('cancelled', { buildMs: job.buildMs });
+      return;
+    }
+    const indexSourceKind = validateIndexOwnership(index);
+    if (indexSourceKind !== jobSourceKind) {
+      const error = new Error(`Source ownership mismatch: job ${jobSourceKind}, index ${indexSourceKind}`);
+      error.code = 'SOURCE_OWNERSHIP_MISMATCH';
+      throw error;
+    }
     if (controller.signal.aborted) {
       job.status = 'cancelled';
       job.error = 'Indexing cancelled';
@@ -622,20 +791,18 @@ function resolveStaticAssetPath(publicRoot, pathname) {
 
 function createServer(initialIndex = null, buildMs = 0, options = {}) {
   const debugErrors = options.debugErrors ?? process.env.SESSION_ANALYZER_DEBUG_ERRORS === '1';
-  const sourceKind = normalizeSourceKind(initialIndex?.sourceKind || options.sourceKind || options.source);
+  const sourceKind = initialIndex?.repoRoot
+    ? validateIndexOwnership(initialIndex, {
+      allowUninspectableSessions: options.allowUninspectableSessions === true,
+    })
+    : normalizeSourceKind(options.sourceKind || options.source);
   const adapter = requireSourceAdapter(sourceKind);
-  const codexHome = path.resolve(initialIndex?.codexHome || initialIndex?.codexHomePath || options.codexHome || path.join(os.homedir(), '.codex'));
-  const claudeHome = path.resolve(initialIndex?.claudeHome || options.claudeHome || path.join(os.homedir(), '.claude'));
-  const sourceHome = path.resolve(initialIndex?.sourceHome
-    || options.sourceHome
-    || (sourceKind === SOURCE_KIND.CLAUDE_CODE ? claudeHome : codexHome));
+  const sourceConfigs = createInitialSourceConfigs(initialIndex, options, sourceKind);
   const state = {
     index: initialIndex?.repoRoot ? initialIndex : null,
     buildMs: initialIndex?.repoRoot ? buildMs : 0,
     sourceKind,
-    sourceHome,
-    codexHome,
-    claudeHome,
+    sourceConfigs,
     adapter,
     sourceRevision: 0,
     buildIndexOverride: options.buildIndex || null,
@@ -738,19 +905,8 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       if (pathname === '/api/sessions') {
         const index = requireIndex(state, res);
         if (!index) return;
-        const result = filterSessions(index, {
-          q: searchParams.get('q') || '',
-          from: searchParams.get('from') || '',
-          to: searchParams.get('to') || '',
-          layer: searchParams.get('layer') || '',
-          kind: searchParams.get('kind') || '',
-          status: searchParams.get('status') || '',
-          tool: searchParams.get('tool') || '',
-          codeModeRequest: normalizeCodeModeRequest(searchParams.get('codeModeRequest')),
-          file: searchParams.get('file') || '',
-          sort: searchParams.get('sort') || 'updated-desc',
-          locale,
-        });
+        const query = queryForIndex(index);
+        const result = query.filterSessions(index, query.filtersFromSearchParams(searchParams, { locale }));
         sendJson(res, 200, result);
         return;
       }
@@ -759,7 +915,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         const index = requireIndex(state, res);
         if (!index) return;
         sendJson(res, 200, {
-          files: fileSuggestions(index, {
+          files: queryForIndex(index).fileSuggestions(index, {
             layer: searchParams.get('layer') || 'main',
             sessionId: searchParams.get('sessionId') || '',
           }),
@@ -772,18 +928,12 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         const index = requireIndex(state, res);
         if (!index) return;
         const sessionId = decodePathSegment(timelineMatch[1]);
-        const result = getTimeline(index, sessionId, {
+        const query = queryForIndex(index);
+        const result = query.getTimeline(index, sessionId, query.filtersFromSearchParams(searchParams, {
           offset: asNumber(searchParams.get('offset'), 0, 0, 1_000_000),
           limit: asNumber(searchParams.get('limit'), 150, 1, 500),
-          layer: searchParams.get('layer') || 'main',
-          q: searchParams.get('q') || '',
-          kind: searchParams.get('kind') || '',
-          status: searchParams.get('status') || '',
-          tool: searchParams.get('tool') || '',
-          codeModeRequest: normalizeCodeModeRequest(searchParams.get('codeModeRequest')),
-          file: searchParams.get('file') || '',
           locale,
-        });
+        }));
         if (!result) {
           sendError(res, 404, 'Unknown session');
           return;
@@ -796,7 +946,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       if (eventMatch) {
         const index = requireIndex(state, res);
         if (!index) return;
-        const event = getEvent(
+        const event = queryForIndex(index).getEvent(
           index,
           decodePathSegment(eventMatch[1]),
           decodePathSegment(eventMatch[2]),
@@ -846,9 +996,9 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sendError(res, 404, 'Unknown session');
           return;
         }
-        const image = await adapterForSession(session, index.sourceKind).readImagePreview(
+        const image = await readImagePreviewForSession(
           index,
-          sessionId,
+          session,
           decodePathSegment(imagePreviewMatch[2]),
           decodePathSegment(imagePreviewMatch[3]),
           { signal: requestAbort.signal },
@@ -905,7 +1055,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sendError(res, 400, 'file and line are required');
           return;
         }
-        const raw = await state.adapter.readLegacyRawLine(index, file, line, {
+        const raw = await readLegacyRawLineForIndex(index, file, line, {
           signal: requestAbort.signal,
         });
         if (requestAbort.signal.aborted) return;
@@ -959,24 +1109,18 @@ async function main() {
     repo: opts.repo,
     logDir: opts.logDir,
   });
+  const startupSourceConfigs = createInitialSourceConfigs(null, opts, opts.source);
+  const startupAdapter = requireSourceAdapter(opts.source);
+  const startupSourceHome = activeSourceHome({ sourceKind: opts.source }, opts.source, startupSourceConfigs);
 
   server.listen(opts.port, opts.host, () => {
     console.log(`Session Analyzer: http://${opts.host}:${opts.port}`);
     console.log(`Transcript source: ${opts.source}`);
+    console.log(`${startupAdapter.homeLabel}: ${startupSourceHome}`);
     if (opts.repo) {
       console.log(`Repo: indexing ${path.resolve(opts.repo)}`);
-      if (opts.source === SOURCE_KIND.CLAUDE_CODE) {
-        console.log(`Claude home: ${path.resolve(opts.claudeHome)}`);
-      } else {
-        console.log(`Codex home: ${path.resolve(opts.codexHome)}`);
-      }
     } else {
       console.log('Repo: select in browser');
-      if (opts.source === SOURCE_KIND.CLAUDE_CODE) {
-        console.log(`Claude home: ${path.resolve(opts.claudeHome)}`);
-      } else {
-        console.log(`Codex home: ${path.resolve(opts.codexHome)}`);
-      }
     }
   });
 }

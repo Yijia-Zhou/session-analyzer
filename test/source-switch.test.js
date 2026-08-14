@@ -6,6 +6,11 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { createServer, discoverProjectsForSource, resolveSourceMutation } = require('../server');
+const {
+  adapterForSession,
+  queryForIndex,
+  validateIndexOwnership,
+} = require('../src/source-adapters');
 
 const codexFixtureHome = path.join(__dirname, 'fixtures', 'codex-home');
 const codexFixtureRepo = 'G:\\vibe\\term-agent';
@@ -119,6 +124,8 @@ test('POST /api/source validates source, homes, body shape, and payload size', a
     JSON.stringify({ source: 'codex', codexHome: '' }),
     JSON.stringify({ source: 'codex', codexHome: 123 }),
     JSON.stringify({ source: 'codex', claudeHome: '   ' }),
+    JSON.stringify({ source: 'codex', sourceConfigs: { codex: '/not-an-object' } }),
+    JSON.stringify({ source: 'codex', sourceConfigs: { codex: { home: '' } } }),
     JSON.stringify({ source: 'codex', unknownField: true }),
   ];
   for (const body of invalidBodies) {
@@ -142,6 +149,14 @@ test('POST /api/source validates source, homes, body shape, and payload size', a
   assert.equal(state.json.details.sourceKind, 'codex');
   assert.equal(state.json.details.codexHome, path.resolve(codexFixtureHome));
   assert.equal(state.json.details.claudeHome, path.resolve(fixture.claudeHome, 'unused'));
+  assert.deepEqual(state.json.details.sourceConfigs, {
+    codex: { home: path.resolve(codexFixtureHome) },
+    'claude-code': { home: path.resolve(fixture.claudeHome, 'unused') },
+  });
+  assert.deepEqual(state.json.details.sourceOptions, [
+    { kind: 'codex', label: 'Codex', homeOption: 'codexHome', homeLabel: 'Codex home' },
+    { kind: 'claude-code', label: 'Claude Code', homeOption: 'claudeHome', homeLabel: 'Claude home' },
+  ]);
   assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code']);
 });
 
@@ -158,6 +173,8 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(initialProjects.json.sourceKind, 'codex');
   assert.equal(initialProjects.json.codexHome, path.resolve(codexFixtureHome));
   assert.equal(initialProjects.json.claudeHome, path.resolve(fixture.claudeHome, 'unused'));
+  assert.equal(initialProjects.json.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
+  assert.equal(initialProjects.json.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome, 'unused'));
   assert.deepEqual(initialProjects.json.supportedSources, ['codex', 'claude-code']);
   assert.ok(initialProjects.json.projects.some((project) => project.repoRoot === codexFixtureRepo));
 
@@ -171,6 +188,8 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(switched.json.sourceHome, path.resolve(fixture.claudeHome));
   assert.equal(switched.json.codexHome, path.resolve(codexFixtureHome));
   assert.equal(switched.json.claudeHome, path.resolve(fixture.claudeHome));
+  assert.equal(switched.json.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
+  assert.equal(switched.json.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome));
   assert.deepEqual(switched.json.supportedSources, ['codex', 'claude-code']);
   assert.equal(switched.json.projectSelected, false);
 
@@ -180,6 +199,8 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(state.json.details.sourceHome, path.resolve(fixture.claudeHome));
   assert.equal(state.json.details.codexHome, path.resolve(codexFixtureHome));
   assert.equal(state.json.details.claudeHome, path.resolve(fixture.claudeHome));
+  assert.equal(state.json.details.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
+  assert.equal(state.json.details.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome));
   assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code']);
 
   const projects = await requestJson(base, '/api/projects');
@@ -187,7 +208,24 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(projects.json.sourceKind, 'claude-code');
   assert.equal(projects.json.codexHome, path.resolve(codexFixtureHome));
   assert.equal(projects.json.claudeHome, path.resolve(fixture.claudeHome));
+  assert.equal(projects.json.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome));
   assert.ok(projects.json.projects.some((project) => project.repoRoot === fixture.repoRoot));
+
+  const canonical = await requestJson(
+    base,
+    '/api/source',
+    jsonRequestOptions({
+      source: 'claude-code',
+      sourceConfigs: {
+        codex: { home: codexFixtureHome },
+        'claude-code': { home: fixture.claudeHome },
+      },
+    }),
+  );
+  assert.equal(canonical.status, 200);
+  assert.equal(canonical.json.sourceKind, 'claude-code');
+  assert.equal(canonical.json.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
+  assert.equal(canonical.json.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome));
 });
 
 test('project indexing uses the active adapter after a source switch', async (t) => {
@@ -218,6 +256,53 @@ test('project indexing uses the active adapter after a source switch', async (t)
   assert.equal(state.status, 200);
   assert.equal(state.json.sourceKind, 'claude-code');
   assert.ok(state.json.totals.sessionCount >= 1, 'Claude adapter must build the selected index');
+});
+
+test('shared query routes use the neutral Claude query after a source switch', async (t) => {
+  const fixture = await makeClaudeFixture(t);
+  const base = await startServer(t, {
+    source: 'claude-code',
+    codexHome: codexFixtureHome,
+    claudeHome: fixture.claudeHome,
+  });
+
+  const started = await requestJson(base, '/api/project', jsonRequestOptions({ repoRoot: fixture.repoRoot }));
+  assert.equal(started.status, 202);
+  assert.equal((await waitForJob(base, started.json.job.id)).status, 'succeeded');
+
+  const sessions = await requestJson(base, '/api/sessions?q=Switched%20fixture');
+  assert.equal(sessions.status, 200);
+  assert.equal(sessions.json.total, 1);
+  const session = sessions.json.sessions[0];
+  assert.equal(session.sourceKind, 'claude-code');
+
+  const codexOnlyFacet = await requestJson(base, '/api/sessions?codeModeRequest=shell_command');
+  assert.equal(codexOnlyFacet.status, 200);
+  assert.equal(codexOnlyFacet.json.total, 1);
+
+  const timeline = await requestJson(
+    base,
+    `/api/sessions/${encodeURIComponent(session.id)}/timeline?layer=main&offset=0&limit=20`,
+  );
+  assert.equal(timeline.status, 200);
+  assert.equal(timeline.json.session.sourceKind, 'claude-code');
+  assert.ok(timeline.json.events.some((event) => event.sourceKind === 'claude-code'));
+
+  const timelineWithCodexOnlyFacet = await requestJson(
+    base,
+    `/api/sessions/${encodeURIComponent(session.id)}/timeline?layer=main&offset=0&limit=20&codeModeRequest=shell_command`,
+  );
+  assert.equal(timelineWithCodexOnlyFacet.status, 200);
+  assert.ok(timelineWithCodexOnlyFacet.json.total > 0);
+
+  const event = timeline.json.events.find((item) => item.kind === 'assistant_message');
+  assert.ok(event, 'Claude assistant event should be queryable through the shared timeline');
+  const lookup = await requestJson(
+    base,
+    `/api/sessions/${encodeURIComponent(session.id)}/events/${encodeURIComponent(event.id)}?layer=main`,
+  );
+  assert.equal(lookup.status, 200);
+  assert.equal(lookup.json.sourceKind, 'claude-code');
 });
 
 test('source switch distinguishes no-op, inactive home update, and active identity reset', async (t) => {
@@ -267,9 +352,10 @@ test('resolveSourceMutation bumps revision for any config change and resets only
   const index = { repoRoot: '/repo' };
   const state = {
     sourceKind: 'codex',
-    sourceHome: path.resolve('/codex-home'),
-    codexHome: path.resolve('/codex-home'),
-    claudeHome: path.resolve('/claude-home'),
+    sourceConfigs: {
+      codex: { home: path.resolve('/codex-home') },
+      'claude-code': { home: path.resolve('/claude-home') },
+    },
     sourceRevision: 0,
     index,
     projectCache: { generatedAt: '', projects: [] },
@@ -286,24 +372,282 @@ test('resolveSourceMutation bumps revision for any config change and resets only
   const inactive = resolveSourceMutation(state, { source: 'codex', claudeHome: '/new-claude' });
   assert.equal(inactive.errors.length, 0);
   assert.equal(state.sourceRevision, 1);
-  assert.equal(state.claudeHome, path.resolve('/new-claude'));
+  assert.equal(state.sourceConfigs['claude-code'].home, path.resolve('/new-claude'));
   assert.equal(state.index, index);
   assert.equal(inactive.payload.projectSelected, true);
 
   const active = resolveSourceMutation(state, { source: 'codex', codexHome: '/new-codex' });
   assert.equal(active.errors.length, 0);
   assert.equal(state.sourceRevision, 2);
+  assert.equal(state.sourceConfigs.codex.home, path.resolve('/new-codex'));
   assert.equal(state.index, null);
   assert.equal(active.payload.projectSelected, false);
 
   const switched = resolveSourceMutation(state, { source: 'claude-code' });
   assert.equal(switched.errors.length, 0);
   assert.equal(state.sourceKind, 'claude-code');
-  assert.equal(state.sourceHome, state.claudeHome);
+  assert.equal(state.sourceConfigs['claude-code'].home, path.resolve('/new-claude'));
   assert.equal(state.sourceRevision, 3);
 
   assert.ok(resolveSourceMutation(state, {}).errors.length > 0);
   assert.ok(resolveSourceMutation(state, { source: 'all' }).errors.length > 0);
+});
+
+test('canonical source configs are authoritative over legacy home compatibility fields', () => {
+  const makeState = () => ({
+    sourceKind: 'codex',
+    sourceConfigs: {
+      codex: { home: path.resolve('/initial-codex') },
+      'claude-code': { home: path.resolve('/initial-claude') },
+    },
+    sourceRevision: 0,
+    index: null,
+    projectCache: null,
+    buildMs: 0,
+    adapter: { buildIndex() {} },
+    activeProjectJob: null,
+  });
+
+  const canonicalOnly = makeState();
+  assert.equal(resolveSourceMutation(canonicalOnly, {
+    source: 'codex',
+    sourceConfigs: { codex: { home: '/canonical-codex' } },
+  }).errors.length, 0);
+  assert.equal(canonicalOnly.sourceConfigs.codex.home, path.resolve('/canonical-codex'));
+
+  const missingCanonicalHome = makeState();
+  const missingCanonicalHomeResult = resolveSourceMutation(missingCanonicalHome, {
+    source: 'codex',
+    sourceConfigs: { codex: {} },
+    codexHome: '/legacy-must-not-win',
+  });
+  assert.match(missingCanonicalHomeResult.errors.join('\n'), /codex\.home must be an explicitly provided non-empty string/);
+  assert.equal(missingCanonicalHome.sourceConfigs.codex.home, path.resolve('/initial-codex'));
+
+  const emptyCanonicalHome = makeState();
+  const emptyCanonicalHomeResult = resolveSourceMutation(emptyCanonicalHome, {
+    source: 'codex',
+    sourceConfigs: { codex: { home: '   ' } },
+  });
+  assert.match(emptyCanonicalHomeResult.errors.join('\n'), /codex\.home must be an explicitly provided non-empty string/);
+  assert.equal(emptyCanonicalHome.sourceConfigs.codex.home, path.resolve('/initial-codex'));
+
+  const invalidCanonicalHome = makeState();
+  const invalidCanonicalHomeResult = resolveSourceMutation(invalidCanonicalHome, {
+    source: 'codex',
+    sourceConfigs: { codex: { home: 42 } },
+  });
+  assert.match(invalidCanonicalHomeResult.errors.join('\n'), /codex\.home must be an explicitly provided non-empty string/);
+  assert.equal(invalidCanonicalHome.sourceConfigs.codex.home, path.resolve('/initial-codex'));
+
+  const legacyOnly = makeState();
+  assert.equal(resolveSourceMutation(legacyOnly, {
+    source: 'codex',
+    codexHome: '/legacy-codex',
+  }).errors.length, 0);
+  assert.equal(legacyOnly.sourceConfigs.codex.home, path.resolve('/legacy-codex'));
+
+  const equal = makeState();
+  assert.equal(resolveSourceMutation(equal, {
+    source: 'codex',
+    sourceConfigs: { codex: { home: '/same-codex' } },
+    codexHome: '/same-codex',
+  }).errors.length, 0);
+  assert.equal(equal.sourceConfigs.codex.home, path.resolve('/same-codex'));
+
+  const conflicting = makeState();
+  assert.equal(resolveSourceMutation(conflicting, {
+    source: 'codex',
+    sourceConfigs: { codex: { home: '/canonical-codex' } },
+    codexHome: '/legacy-codex',
+  }).errors.length, 0);
+  assert.equal(conflicting.sourceConfigs.codex.home, path.resolve('/canonical-codex'));
+});
+
+test('runtime initialization keeps canonical source configs authoritative and rejects malformed entries', async (t) => {
+  const canonicalHome = path.join(os.tmpdir(), 'session-analyzer-initial-canonical-codex');
+  const legacyHome = path.join(os.tmpdir(), 'session-analyzer-initial-legacy-codex');
+  const conflictingActiveHome = path.join(os.tmpdir(), 'session-analyzer-initial-conflicting-active');
+  const base = await startServer(t, {
+    source: 'codex',
+    sourceConfigs: { codex: { home: canonicalHome } },
+    codexHome: legacyHome,
+    sourceHome: conflictingActiveHome,
+  });
+
+  const state = await requestJson(base, '/api/state');
+  assert.equal(state.status, 409);
+  assert.equal(state.json.details.sourceHome, path.resolve(canonicalHome));
+  assert.equal(state.json.details.sourceConfigs.codex.home, path.resolve(canonicalHome));
+  assert.equal(state.json.details.codexHome, path.resolve(canonicalHome));
+
+  const initialIndexServer = createServer({
+    repoRoot: 'G:\\vibe\\initial-canonical-project',
+    sourceKind: 'codex',
+    sourceConfigs: { codex: { home: canonicalHome } },
+    sessions: [],
+    sessionsById: new Map(),
+  }, 0, {
+    codexHome: legacyHome,
+    sourceHome: conflictingActiveHome,
+  });
+  await new Promise((resolve) => initialIndexServer.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve, reject) => {
+    initialIndexServer.close((error) => (error ? reject(error) : resolve()));
+  }));
+  const initialState = await requestJson(
+    `http://127.0.0.1:${initialIndexServer.address().port}`,
+    '/api/state',
+  );
+  assert.equal(initialState.status, 200);
+  assert.equal(initialState.json.sourceHome, path.resolve(canonicalHome));
+  assert.equal(initialState.json.sourceConfigs.codex.home, path.resolve(canonicalHome));
+
+  for (const sourceConfigs of [
+    { codex: {} },
+    { codex: { home: '' } },
+    { codex: 'legacy-shaped-string' },
+  ]) {
+    assert.throws(
+      () => createServer(null, 0, { source: 'codex', sourceConfigs, codexHome: legacyHome }),
+      { code: 'INVALID_SOURCE_CONFIG' },
+    );
+  }
+  assert.throws(
+    () => createServer(null, 0, {
+      source: 'codex',
+      sourceConfigs: {
+        codex: { home: canonicalHome },
+        mystery: { home: path.join(os.tmpdir(), 'session-analyzer-unknown-home') },
+      },
+      codexHome: legacyHome,
+    }),
+    { code: 'UNSUPPORTED_SOURCE_CONFIG' },
+  );
+});
+
+test('canonical source ownership dispatch fails closed instead of defaulting to Codex', () => {
+  assert.throws(
+    () => queryForIndex({}),
+    { code: 'MISSING_SOURCE_OWNERSHIP' },
+  );
+  assert.throws(
+    () => adapterForSession({ id: 'missing-source' }),
+    { code: 'MISSING_SOURCE_OWNERSHIP' },
+  );
+  assert.throws(
+    () => validateIndexOwnership({ sourceKind: 'claude-code', sessions: [{ id: 'wrong', sourceKind: 'codex' }] }),
+    { code: 'SOURCE_OWNERSHIP_MISMATCH' },
+  );
+  const rightSession = {
+    id: 'right',
+    sourceKind: 'claude-code',
+    rawEvents: [],
+    logicalEvents: [],
+    counts: { messages: 0, toolCalls: 0, failedCommands: 0 },
+  };
+  assert.equal(
+    validateIndexOwnership({
+      sourceKind: 'claude-code',
+      repoRoot: '/repo',
+      sessions: [rightSession],
+      sessionsById: new Map([[rightSession.id, rightSession]]),
+    }),
+    'claude-code',
+  );
+  const unownedReachableSession = { id: 'reachable-without-source' };
+  assert.throws(
+    () => validateIndexOwnership({
+      sourceKind: 'claude-code',
+      sessionsById: new Map([[unownedReachableSession.id, unownedReachableSession]]),
+      get sessions() {
+        throw new Error('sessions getter must not be invoked for ownership validation');
+      },
+    }),
+    { code: 'MISSING_SOURCE_OWNERSHIP' },
+  );
+  const validMapSession = {
+    id: 'valid-map-session',
+    sourceKind: 'claude-code',
+    rawEvents: [],
+    logicalEvents: [],
+    counts: { messages: 0, toolCalls: 0, failedCommands: 0 },
+  };
+  const invalidArraySession = { id: 'invalid-array-session', sourceKind: 'codex' };
+  assert.throws(
+    () => validateIndexOwnership({
+      sourceKind: 'claude-code',
+      sessionsById: new Map([[validMapSession.id, validMapSession]]),
+      sessions: [validMapSession, invalidArraySession],
+    }),
+    { code: 'SOURCE_OWNERSHIP_MISMATCH' },
+  );
+});
+
+test('an adapter index without canonical ownership is rejected before runtime commit', async (t) => {
+  const base = await startServer(t, {
+    source: 'codex',
+    codexHome: codexFixtureHome,
+    buildIndex: async ({ repoRoot }) => ({ repoRoot, sessions: [] }),
+  });
+  const started = await requestJson(base, '/api/project', jsonRequestOptions({ repoRoot: codexFixtureRepo }));
+  assert.equal(started.status, 202);
+  const job = await waitForJob(base, started.json.job.id);
+  assert.equal(job.status, 'failed');
+  assert.match(job.error, /Missing source ownership on index/);
+  assert.equal((await requestJson(base, '/api/state')).status, 409);
+});
+
+test('an adapter index with accessor-backed sessions is rejected before runtime commit', async (t) => {
+  const base = await startServer(t, {
+    source: 'codex',
+    codexHome: codexFixtureHome,
+    buildIndex: async ({ repoRoot, sourceKind }) => {
+      const index = {
+        repoRoot,
+        sourceKind,
+        sessionsById: new Map(),
+      };
+      Object.defineProperty(index, 'sessions', {
+        configurable: true,
+        get() {
+          throw new Error('adapter sessions getter must not be invoked');
+        },
+      });
+      return index;
+    },
+  });
+  const started = await requestJson(base, '/api/project', jsonRequestOptions({ repoRoot: codexFixtureRepo }));
+  assert.equal(started.status, 202);
+  const job = await waitForJob(base, started.json.job.id);
+  assert.equal(job.status, 'failed');
+  assert.match(job.error, /Canonical index\.sessions must be a data-property array/);
+  assert.equal((await requestJson(base, '/api/state')).status, 409);
+});
+
+test('an adapter index owned by another source is rejected before runtime commit', async (t) => {
+  const fixture = await makeClaudeFixture(t);
+  const base = await startServer(t, {
+    source: 'claude-code',
+    claudeHome: fixture.claudeHome,
+    buildIndex: async ({ repoRoot, sourceKind }) => {
+      assert.equal(sourceKind, 'claude-code');
+      return {
+        repoRoot,
+        sourceKind: 'codex',
+        sessions: [],
+        sessionsById: new Map(),
+      };
+    },
+  });
+  const started = await requestJson(base, '/api/project', jsonRequestOptions({ repoRoot: fixture.repoRoot }));
+  assert.equal(started.status, 202);
+  const job = await waitForJob(base, started.json.job.id);
+  assert.equal(job.status, 'failed');
+  assert.match(job.error, /Source ownership mismatch: job claude-code, index codex/);
+  const state = await requestJson(base, '/api/state');
+  assert.equal(state.status, 409);
+  assert.equal(state.json.details.sourceKind, 'claude-code');
 });
 
 test('source switch cancels the active job and never commits a stale index', async (t) => {
@@ -356,9 +700,10 @@ test('summary project discovery is rejected when the source changes mid-flight',
   const state = {
     sourceRevision: 0,
     sourceKind: 'codex',
-    sourceHome: path.resolve('/codex-home'),
-    codexHome: path.resolve('/codex-home'),
-    claudeHome: path.resolve('/claude-home'),
+    sourceConfigs: {
+      codex: { home: path.resolve('/codex-home') },
+      'claude-code': { home: path.resolve('/claude-home') },
+    },
     projectCache: null,
     adapter: {
       async discoverConfiguredProjects() {
@@ -391,9 +736,10 @@ test('full project discovery does not write the cache when the source changes mi
   const state = {
     sourceRevision: 0,
     sourceKind: 'codex',
-    sourceHome: path.resolve('/codex-home'),
-    codexHome: path.resolve('/codex-home'),
-    claudeHome: path.resolve('/claude-home'),
+    sourceConfigs: {
+      codex: { home: path.resolve('/codex-home') },
+      'claude-code': { home: path.resolve('/claude-home') },
+    },
     projectCache: null,
     adapter: {
       async discoverConfiguredProjects() {
