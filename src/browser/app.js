@@ -445,6 +445,7 @@ function api(path, options = {}) {
     if (!res.ok) {
       const error = new Error(body.error || `HTTP ${res.status}`);
       error.status = res.status;
+      error.code = body.code;
       error.details = body.details;
       throw error;
     }
@@ -2628,6 +2629,30 @@ function renderInspectorSource(event, refs, detail = null) {
   </section>`;
 }
 
+function detailErrorState(error) {
+  if (error && typeof error === 'object' && typeof error.message === 'string') {
+    return {
+      message: error.message,
+      status: error.status,
+      code: error.code,
+    };
+  }
+  return { message: String(error || '') };
+}
+
+function isIndexedSourceStaleError(error) {
+  return error?.status === 409 && error?.code === 'INDEXED_SOURCE_STALE';
+}
+
+function renderDetailFailure(error, actionAttribute) {
+  if (isIndexedSourceStaleError(error)) {
+    return `<div class="notice warning"><p>${escapeHtml(t('indexedSourceStaleRecovery'))}</p></div>
+      <button class="smallBtn" type="button" ${actionAttribute}="reindex-project">${escapeHtml(t('reindexCurrentProject'))}</button>`;
+  }
+  return `<div class="notice error"><p>${escapeHtml(error?.message || String(error || ''))}</p></div>
+    <button class="smallBtn" type="button" ${actionAttribute}="retry-detail">${escapeHtml(t('retryDetail'))}</button>`;
+}
+
 function renderInspectorDetail(event) {
   const key = detailKey(state.selectedSessionId, activeLayerId(), event.id);
   const detail = state.detailCache[key];
@@ -2642,8 +2667,7 @@ function renderInspectorDetail(event) {
   if (error) {
     return `<section class="inspectorSection">
       <h3>${escapeHtml(t('details'))}</h3>
-      <div class="notice error"><p>${escapeHtml(error)}</p></div>
-      <button class="smallBtn" type="button" data-detail-action="retry-detail">${escapeHtml(t('retryDetail'))}</button>
+      ${renderDetailFailure(error, 'data-detail-action')}
     </section>`;
   }
   return `<section class="inspectorSection">
@@ -4760,7 +4784,7 @@ function renderEventBody(event, display) {
     return `<div class="eventBody">${renderTimelineSections(detail.timelineSections, preview)}</div>`;
   }
   if (error) {
-    return `<div class="eventBody"><div class="notice error"><p>${escapeHtml(error)}</p></div><button class="smallBtn" type="button" data-action="retry-detail">${escapeHtml(t('retryDetail'))}</button></div>`;
+    return `<div class="eventBody">${renderDetailFailure(error, 'data-action')}</div>`;
   }
   const snippet = event.hasSearchHit && event.snippet
     ? `<div class="eventPreview eventLoadingSnippet">${escapeHtml(event.snippet)}</div>`
@@ -5025,7 +5049,7 @@ function loadEventDetail(event) {
         if (detailRequestControllers.get(key) !== controller
             || state.selectedSessionId !== sessionId
             || state.detailCacheGeneration !== generation) return false;
-        state.detailErrors[key] = error.message;
+        state.detailErrors[key] = detailErrorState(error);
         return true;
       })
       .finally(() => {
@@ -6115,6 +6139,18 @@ async function showRaw(event, options = {}) {
     return true;
   } catch (error) {
     if (isIntentionalAbort(error)) return false;
+    owner.controller.abort();
+    if (isIndexedSourceStaleError(error)
+        && requestOwners.rawReferences.isCurrent(owner)
+        && isCurrentDetailSelection('rawRefs', rawKey, event.id, selectionContext)) {
+      renderDetailShell({
+        title: t('rawRefs'),
+        subtitle: rawRefsSubtitle(event),
+        actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
+        body: `<div class="rawRefsView">${renderDetailFailure(detailErrorState(error), 'data-detail-action')}</div>`,
+      });
+      return true;
+    }
     throw error;
   } finally {
     requestOwners.rawReferences.finish(owner);
@@ -6380,7 +6416,9 @@ el.timeline.addEventListener('click', (event) => {
   const item = currentTimelineEvent(article.dataset.eventId);
   if (!item) return;
   const action = event.target.closest('[data-action]')?.dataset.action || 'inspect';
-  if (action === 'toggle') {
+  if (action === 'reindex-project') {
+    refreshCurrentProject().catch(handleProjectRefreshError);
+  } else if (action === 'toggle') {
     const next = article.classList.contains('expanded') ? foldedDisplayState(item) : 'expanded';
     setOverride(item.id, next);
     renderTimeline();
@@ -6448,6 +6486,10 @@ el.detail.addEventListener('click', (event) => {
   }
   if (action === 'jump-event-ref') {
     inspectEventRef(event.target.closest('[data-event-ref-id]')?.dataset.eventRefId || '').catch(showError);
+    return;
+  }
+  if (action === 'reindex-project') {
+    refreshCurrentProject().catch(handleProjectRefreshError);
     return;
   }
   const key = state.detailSelectionKey.replace(/^raw:/, '');

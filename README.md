@@ -121,6 +121,36 @@ Before publishing a fork or issue reproduction, check that any attached transcri
 - Installed CLI: a supported Node.js LTS release, Node.js 22 or newer (Node.js 24 recommended), plus npm for installation
 - Source development and release work: Node.js `^22.22.2 || ^24.15.0` and exactly npm `12.0.2`
 
+### Large transcript histories and Node/V8 memory
+
+Indexing memory depends mainly on the amount and shape of transcript history that matches the selected repository—not on the source-code repository's size. Candidate transcript bytes, Raw Record and Logical Event counts, record composition, and especially an unusually large individual Session all affect memory use.
+
+As approximate anchors for the current implementation, about 250 MB of matching Codex JSONL reached about 0.7 GB peak V8 heap, while about 850–900 MB with around 250,000 Raw Records reached about 1.9 GB peak V8 heap. Treat histories approaching roughly 1 GB of matching transcript data as high-memory workloads. These empirical measurements are guidance, not guarantees, a prediction formula, an out-of-memory boundary, or hard capacity limits; actual use varies with record shapes, event counts, Node version, and unusually large individual Sessions.
+
+When matching history reaches the empirical 800 MiB warning threshold, the CLI emits `[SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY]` once and continues indexing normally. The warning is informational for people and agents: attempt normal indexing first, and do not change the heap when indexing succeeds. It does not change `NODE_OPTIONS`, restart the process, or alter the exit code.
+
+For Claude Code, the current warning uses selected primary transcript bytes; derived subagent transcript data may add to the actual indexed workload, and large-scale Claude capacity has not yet been calibrated.
+
+Only if indexing terminates with a V8 heap-exhaustion error such as `JavaScript heap out of memory`, retry with a moderately larger temporary heap. This is a workaround for unusually large history, not a new product default. In PowerShell:
+
+```powershell
+$env:NODE_OPTIONS='--max-old-space-size=4096'
+npx session-analyzer --repo 'C:\path\to\project' --log-dir '.\session-analyzer-logs'
+Remove-Item 'Env:NODE_OPTIONS'
+```
+
+If `NODE_OPTIONS` was already set, preserve its previous value and restore it afterward instead of removing it.
+
+On POSIX shells, scope the override to one command:
+
+```sh
+NODE_OPTIONS='--max-old-space-size=4096' npx session-analyzer --repo /path/to/project --log-dir ./session-analyzer-logs
+```
+
+`--log-dir <path>` is the preferred way to collect aggregate indexing diagnostics for investigation. Session Analyzer writes throttled, bounded JSONL lifecycle records containing candidate file/byte counts, Session/Raw/Logical counts, timing, V8 heap limits, current and process-local peak memory, and the stable capacity-warning signal. These records omit repository paths, transcript paths, transcript text, prompts, commands, and source content, and at most 20 indexing logs are retained. Fatal V8 OOM stderr remains the authoritative final crash evidence; a fatal process termination may prevent the diagnostic logger from writing a final record.
+
+Memory efficiency for large transcript histories remains an active area of improvement. Future releases may further reduce indexing and runtime memory use, so these figures describe the current implementation rather than permanent product capacity limits.
+
 ## Develop From Source
 
 The published CLI keeps the broader Node.js 22-or-newer runtime requirement above. A source checkout is deliberately stricter because npm 12 enforces the reviewed dependency install-script policy. Before any repository-local `npm install`, `npm ci`, or `npm run`, select a supported Node.js version and, from a directory outside the source checkout, bootstrap the exact npm CLI globally. This first npm command updates the toolchain and does not install project dependencies:

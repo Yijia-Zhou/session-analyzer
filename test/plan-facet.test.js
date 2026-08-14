@@ -6,12 +6,13 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {
+  __testOnly,
   buildEventDetail,
-  buildIndex,
   getTimeline,
 } = require('../src/codex');
 const navigation = require('../src/browser/navigation');
 const planFacet = require('../src/shared/plan-facet');
+const buildIndex = __testOnly.buildUncompactedIndexForDetailTests;
 
 const {
   PLAN_EVENT_CATEGORY,

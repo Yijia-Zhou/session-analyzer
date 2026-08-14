@@ -1562,6 +1562,7 @@ async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, prev
   const selectedCandidates = candidates.filter((candidate) => (
     candidate.projectAssociation !== POINTER_PROVISIONAL_ASSOCIATION
   ));
+  const selectedCandidateBytes = selectedCandidates.reduce((sum, item) => sum + item.bytes, 0);
   const currentRelationshipEvidence = relationshipReuseEvidence(candidates);
   const skippedFileCount = identityCandidates.filter((candidate) => (
     candidate.cwdSet.size && !candidateProjectAssociation(candidate, resolvedRepo, clusters)
@@ -1586,6 +1587,24 @@ async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, prev
       else previousMainBySource.set(key, session);
     }
   }
+
+  emitProgress(onProgress, {
+    phase: 'parsing',
+    repoRoot: resolvedRepo,
+    filesTotal: discovery.candidates.length,
+    filesScanned: discovery.candidates.length,
+    candidateFileCount: selectedCandidates.length,
+    skippedFileCount,
+    unknownFileCount,
+    indexedFileCount,
+    reusedFileCount,
+    indexedBytes,
+    candidateBytes: selectedCandidateBytes,
+    sessionCount: 0,
+    eventCount: 0,
+    rawEventCount: 0,
+    elapsedMs: Date.now() - started,
+  });
 
   for (const candidate of candidates) {
     throwIfAborted(signal);
@@ -1683,7 +1702,7 @@ async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, prev
       indexedFileCount,
       reusedFileCount,
       indexedBytes,
-      candidateBytes: selectedCandidates.reduce((sum, item) => sum + item.bytes, 0),
+      candidateBytes: selectedCandidateBytes,
       sessionCount: sessions.filter((session) => session.matchesRepo).length,
       eventCount: sessions.filter((session) => session.matchesRepo)
         .reduce((sum, item) => sum + item.logicalEvents.length, 0),

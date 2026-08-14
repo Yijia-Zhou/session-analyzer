@@ -283,8 +283,10 @@ test('materialized fork digests use image bytes before externalization', async (
     const sameChild = sameIndex.sessionsById.get(sameImage.childId);
     const sameParentImage = sameParent.rawEvents.find((raw) => raw.payloadType === 'image_generation_end');
     const sameChildImage = sameChild.rawEvents.find((raw) => raw.payloadType === 'image_generation_end');
-    assert.equal(sameParentImage.parsed.payload.result, '[embedded image payload externalized; open raw refs for source]');
-    assert.equal(sameChildImage.parsed.payload.result, sameParentImage.parsed.payload.result);
+    assert.equal(Object.hasOwn(sameParentImage, 'parsed'), false);
+    assert.equal(Object.hasOwn(sameChildImage, 'parsed'), false);
+    assert.equal(sameParentImage.embeddedImages.length, 1);
+    assert.equal(sameChildImage.embeddedImages.length, 1);
     assert.equal(sameChild.forkStorageMode, 'materialized', imageEncoding);
 
     const differentImage = await makeForkFixture(t, { imageEncoding, differentImage: true });
@@ -293,8 +295,9 @@ test('materialized fork digests use image bytes before externalization', async (
     const differentChild = differentIndex.sessionsById.get(differentImage.childId);
     const differentParentImage = differentParent.rawEvents.find((raw) => raw.payloadType === 'image_generation_end');
     const differentChildImage = differentChild.rawEvents.find((raw) => raw.payloadType === 'image_generation_end');
-    assert.equal(differentChildImage.parsed.payload.result, differentParentImage.parsed.payload.result);
-    assert.notEqual(differentChildImage._canonicalRawDigest, differentParentImage._canonicalRawDigest, imageEncoding);
+    const differentParentDigest = differentParent._canonicalRawDigests[differentParent.rawEvents.indexOf(differentParentImage)];
+    const differentChildDigest = differentChild._canonicalRawDigests[differentChild.rawEvents.indexOf(differentChildImage)];
+    assert.notEqual(differentChildDigest, differentParentDigest, imageEncoding);
     assert.equal(differentChild.forkStorageMode, '', imageEncoding);
     assert.equal(differentChild.forkedFromSessionId, differentImage.parentId, imageEncoding);
     assert.equal(differentChild.title, 'Own continuation task', imageEncoding);
@@ -340,8 +343,12 @@ test('reindex reparses newly eligible materialized fork files once and then reus
   const parsedChild = newlyEligible.sessionsById.get(fixture.childId);
   assert.equal(newlyEligible.totals.reusedFileCount, 0);
   assert.equal(parsedChild.forkStorageMode, 'materialized');
-  assert.ok(reparsedParent.rawEvents.every((raw) => raw._canonicalRawDigest));
-  assert.ok(parsedChild.rawEvents.every((raw) => raw._canonicalRawDigest));
+  assert.equal(reparsedParent._canonicalRawDigests.length, reparsedParent.rawEvents.length);
+  assert.equal(parsedChild._canonicalRawDigests.length, parsedChild.rawEvents.length);
+  assert.ok(reparsedParent._canonicalRawDigests.every(Boolean));
+  assert.ok(parsedChild._canonicalRawDigests.every(Boolean));
+  assert.ok(reparsedParent.rawEvents.every((raw) => raw._canonicalRawDigest === undefined));
+  assert.ok(parsedChild.rawEvents.every((raw) => raw._canonicalRawDigest === undefined));
 
   const reused = await buildIndex({
     repoRoot: fixture.repoRoot,
@@ -350,6 +357,39 @@ test('reindex reparses newly eligible materialized fork files once and then reus
   });
   assert.equal(reused.totals.reusedFileCount, 2);
   assert.equal(reused.sessionsById.get(fixture.childId).forkStorageMode, 'materialized');
+});
+
+test('materialized fork reindex invalidates a stat-equal rewritten child fingerprint', async (t) => {
+  const fixture = await makeForkFixture(t);
+  const fixedTime = new Date('2026-08-09T12:00:00.000Z');
+  await fsp.utimes(fixture.parentFile, fixedTime, fixedTime);
+  await fsp.utimes(fixture.childFile, fixedTime, fixedTime);
+  const first = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const oldParent = first.sessionsById.get(fixture.parentId);
+  const oldChild = first.sessionsById.get(fixture.childId);
+  assert.equal(oldChild.forkStorageMode, 'materialized');
+  const original = await fsp.readFile(fixture.childFile, 'utf8');
+  const rewritten = original.replace('Inherited parent task', 'Inherited parent mask');
+  assert.equal(rewritten.length, original.length);
+  await fsp.writeFile(fixture.childFile, rewritten, 'utf8');
+  await fsp.utimes(fixture.childFile, fixedTime, fixedTime);
+  const rewrittenStat = await fsp.stat(fixture.childFile);
+  assert.equal(rewrittenStat.size, oldChild.bytes);
+  assert.equal(rewrittenStat.mtime.toISOString(), oldChild.sourceUpdatedAt);
+
+  const second = await buildIndex({
+    repoRoot: fixture.repoRoot,
+    codexHome: fixture.codexHome,
+    previousIndex: first,
+  });
+  const newParent = second.sessionsById.get(fixture.parentId);
+  const newChild = second.sessionsById.get(fixture.childId);
+  assert.equal(second.totals.reusedFileCount, 1);
+  assert.equal(newParent.rawEvents, oldParent.rawEvents);
+  assert.notEqual(newChild.rawEvents, oldChild.rawEvents);
+  assert.notEqual(newChild.sourceFingerprint, oldChild.sourceFingerprint);
+  assert.equal(newChild.forkStorageMode, '');
+  assert.equal(newChild.forkedFromSessionId, fixture.parentId);
 });
 
 test('materialized Codex forks expose only continuation ownership while Raw stays physical', async (t) => {

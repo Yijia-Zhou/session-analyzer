@@ -19,6 +19,8 @@ const {
 } = require('./src/source-adapters');
 const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
+const { createIndexDiagnostics } = require('./src/runtime-diagnostics');
+const { createLargeTranscriptHistoryWarning } = require('./src/runtime-capacity');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -37,6 +39,7 @@ function parseArgs(argv) {
     claudeHome: path.join(os.homedir(), '.claude'),
     port: 17890,
     host: '127.0.0.1',
+    logDir: '',
     errors: [],
   };
   const canonicalOptionFor = (arg) => {
@@ -64,6 +67,7 @@ function parseArgs(argv) {
       port: '--port',
       host: '--host',
       hostname: '--host',
+      logdir: '--log-dir',
       help: '--help',
     };
     return aliases[key] || null;
@@ -141,6 +145,14 @@ function parseArgs(argv) {
       }
       opts.host = next;
       i += 1;
+    } else if (option === '--log-dir') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push('Missing value for --log-dir. Expected a directory path.');
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
+      opts.logDir = next;
+      i += 1;
     } else if (option === '--help') {
       opts.help = true;
     }
@@ -153,7 +165,7 @@ function printHelp() {
     'Session Analyzer',
     '',
     'Usage:',
-    '  session-analyzer [--repo <repo-path>] [--source <source>] [--codex-home <path>] [--claude-home <path>] [--port <port>] [--host <host>]',
+    '  session-analyzer [--repo <repo-path>] [--source <source>] [--codex-home <path>] [--claude-home <path>] [--port <port>] [--host <host>] [--log-dir <path>]',
     '',
     'Options:',
     '  --repo <repo-path>     Repository to analyze. If omitted, select a project in the browser.',
@@ -162,6 +174,7 @@ function printHelp() {
     '  --claude-home <path>   Claude home directory. Used only with --source claude-code. Defaults to ~/.claude.',
     '  --port <port>          Local server port. Must be an integer from 1 to 65535. Defaults to 17890.',
     '  --host <host>          Advanced: bind host. Defaults to 127.0.0.1.',
+    '  --log-dir <path>       Write throttled indexing diagnostics as bounded JSONL logs.',
     '',
     'Examples:',
     '  session-analyzer',
@@ -184,8 +197,8 @@ function sendJson(res, status, payload) {
   res.end(body);
 }
 
-function sendError(res, status, message, details) {
-  sendJson(res, status, { error: message, details });
+function sendError(res, status, message, details, code) {
+  sendJson(res, status, { error: message, details, code });
 }
 
 function sendImage(res, image) {
@@ -196,6 +209,25 @@ function sendImage(res, image) {
     'x-content-type-options': 'nosniff',
   });
   res.end(image.bytes);
+}
+
+function requestAbortContext(req, res) {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+  const onResponseClose = () => {
+    if (!res.writableEnded) abort();
+  };
+  const cleanup = () => {
+    req.removeListener('aborted', abort);
+    res.removeListener('close', onResponseClose);
+    res.removeListener('finish', cleanup);
+  };
+  req.once('aborted', abort);
+  res.once('close', onResponseClose);
+  res.once('finish', cleanup);
+  return { signal: controller.signal, cleanup };
 }
 
 function parseQuery(reqUrl) {
@@ -360,7 +392,9 @@ function cancelProjectJob(job) {
   job.controller.abort();
   job.status = 'cancelled';
   job.completedAt = new Date().toISOString();
+  job.buildMs = Date.now() - job.startedAtMs;
   job.error = 'Indexing cancelled';
+  job.diagnostics?.finish('cancelled', { buildMs: job.buildMs });
 }
 
 async function discoverProjectsForSource(state, mode) {
@@ -471,6 +505,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   const id = String(state.nextProjectJobId++);
   const controller = new AbortController();
   const resolvedLocale = i18n.resolveLocale(locale);
+  const startedAtMs = Date.now();
   const job = {
     id,
     repoRoot,
@@ -478,6 +513,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     controller,
     status: 'running',
     startedAt: new Date().toISOString(),
+    startedAtMs,
     completedAt: '',
     buildMs: 0,
     error: '',
@@ -494,11 +530,19 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       elapsedMs: 0,
     },
   };
+  job.diagnostics = createIndexDiagnostics({
+    logDir: state.logDir,
+    jobId: id,
+    sourceKind: state.sourceKind,
+  });
+  job.capacityWarning = createLargeTranscriptHistoryWarning({
+    warn: state.warn,
+    onWarning: (warning) => job.diagnostics?.capacityWarning(warning),
+  });
   state.activeProjectJob = job;
 
-  const startedAt = Date.now();
   const buildIndex = state.buildIndexOverride || ((context) => state.adapter.buildIndex(context));
-  job.promise = buildIndex({
+  job.promise = Promise.resolve().then(() => buildIndex({
     repoRoot,
     sourceKind: state.sourceKind,
     sourceHome: state.sourceHome,
@@ -508,28 +552,40 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     signal: controller.signal,
     onProgress: (progress) => {
       job.progress = { ...job.progress, ...progress };
+      job.diagnostics?.progress(job.progress);
+      job.capacityWarning.observe(job.progress);
     },
-  }).then((index) => {
+  })).then((index) => {
     if (controller.signal.aborted) {
       job.status = 'cancelled';
       job.error = 'Indexing cancelled';
+      job.completedAt ||= new Date().toISOString();
+      job.buildMs = Date.now() - startedAtMs;
+      job.diagnostics?.finish('cancelled', { buildMs: job.buildMs });
       return;
     }
     job.status = 'succeeded';
     job.completedAt = new Date().toISOString();
-    job.buildMs = Date.now() - startedAt;
+    job.buildMs = Date.now() - startedAtMs;
     state.index = index;
     state.buildMs = job.buildMs;
+    job.diagnostics?.finish('succeeded', { buildMs: job.buildMs });
   }).catch((error) => {
-    job.completedAt = new Date().toISOString();
-    job.buildMs = Date.now() - startedAt;
-    if (error.name === 'AbortError') {
+    job.completedAt ||= new Date().toISOString();
+    job.buildMs = Date.now() - startedAtMs;
+    if (controller.signal.aborted || job.status === 'cancelled' || error.name === 'AbortError') {
       job.status = 'cancelled';
       job.error = 'Indexing cancelled';
+      job.diagnostics?.finish('cancelled', { buildMs: job.buildMs });
       return;
     }
     job.status = 'failed';
     job.error = error.message || 'Indexing failed';
+    job.diagnostics?.finish('failed', {
+      buildMs: job.buildMs,
+      errorName: error.name || 'Error',
+      errorCode: error.code || '',
+    });
   });
 
   return job;
@@ -586,10 +642,13 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     nextProjectJobId: 1,
     activeProjectJob: null,
     projectCache: null,
+    logDir: options.logDir ? path.resolve(options.logDir) : '',
+    warn: options.warn || console.warn,
   };
   if (options.repo) startProjectJob(state, options.repo, options.locale);
 
   return http.createServer(async (req, res) => {
+    const requestAbort = requestAbortContext(req, res);
     try {
       const { pathname, searchParams } = parseQuery(req.url);
       const locale = i18n.resolveLocale(searchParams.get('locale') || req.headers['accept-language']);
@@ -764,7 +823,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           return;
         }
         const layer = searchParams.get('layer') || 'main';
-        const detail = buildEventDetailForSession(session, decodePathSegment(detailMatch[2]), layer, { locale });
+        const detail = await buildEventDetailForSession(index, session, decodePathSegment(detailMatch[2]), layer, {
+          locale,
+          signal: requestAbort.signal,
+        });
+        if (requestAbort.signal.aborted) return;
         if (!detail) {
           sendError(res, 404, 'Unknown event');
           return;
@@ -788,9 +851,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sessionId,
           decodePathSegment(imagePreviewMatch[2]),
           decodePathSegment(imagePreviewMatch[3]),
+          { signal: requestAbort.signal },
         );
+        if (requestAbort.signal.aborted) return;
         if (image.error) {
-          sendError(res, image.statusCode, image.error);
+          sendError(res, image.statusCode, image.error, undefined, image.code);
           return;
         }
         sendImage(res, image);
@@ -819,7 +884,10 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sendError(res, 404, 'Unknown session');
           return;
         }
-        const raw = await readIndexedRawRecord(index, session, decodePathSegment(rawRecordMatch[2]));
+        const raw = await readIndexedRawRecord(index, session, decodePathSegment(rawRecordMatch[2]), {
+          signal: requestAbort.signal,
+        });
+        if (requestAbort.signal.aborted) return;
         if (!raw) {
           sendError(res, 404, 'Raw record not found');
           return;
@@ -837,7 +905,10 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sendError(res, 400, 'file and line are required');
           return;
         }
-        const raw = await state.adapter.readLegacyRawLine(index, file, line);
+        const raw = await state.adapter.readLegacyRawLine(index, file, line, {
+          signal: requestAbort.signal,
+        });
+        if (requestAbort.signal.aborted) return;
         if (!raw) {
           sendError(res, 404, 'Raw line not found');
           return;
@@ -848,11 +919,20 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
 
       await serveStatic(res, pathname);
     } catch (error) {
+      if (res.destroyed) return;
       const statusCode = error.statusCode || 500;
       const details = debugErrors
         ? (statusCode >= 500 ? error.stack || error.message : error.message)
         : undefined;
-      sendError(res, statusCode, statusCode >= 500 ? 'Internal server error' : error.message, details);
+      sendError(
+        res,
+        statusCode,
+        statusCode >= 500 ? 'Internal server error' : error.message,
+        details,
+        statusCode < 500 ? error.code : undefined,
+      );
+    } finally {
+      requestAbort.cleanup();
     }
   });
 }
@@ -877,6 +957,7 @@ async function main() {
     codexHome: opts.codexHome,
     claudeHome: opts.claudeHome,
     repo: opts.repo,
+    logDir: opts.logDir,
   });
 
   server.listen(opts.port, opts.host, () => {

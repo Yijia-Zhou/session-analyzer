@@ -121,6 +121,36 @@ Agent 转录可能包含提示词、命令输出、文件路径、环境详情�
 - 已安装 CLI：受支持的 Node.js LTS，最低 Node.js 22（推荐 Node.js 24），以及用于安装的 npm
 - 源码开发与发布工作：Node.js `^22.22.2 || ^24.15.0`，并且 npm 必须精确为 `12.0.2`
 
+### 大型 transcript 历史与 Node/V8 内存
+
+索引内存主要取决于与所选仓库匹配的 transcript 历史总量和形态，而不是源码仓库本身的大小。Candidate transcript 字节数、Raw Record 与 Logical Event 数量、记录组成，以及尤其异常庞大的单个 Session，都会影响内存使用。
+
+以当前实现的近似实测锚点为例：约 250 MB 匹配的 Codex JSONL 达到约 0.7 GB V8 heap 峰值；约 850–900 MB、约 250,000 条 Raw Record 达到约 1.9 GB V8 heap 峰值。接近约 1 GB 匹配 transcript 数据的历史应视为高内存工作负载。这些实测数据只是指导，不是保证、预测公式、内存耗尽边界或硬性容量上限；实际使用量会随记录形态、事件数量、Node 版本而变化，异常庞大的单个 Session 尤其会产生影响。
+
+当匹配历史达到经验性的 800 MiB 警告阈值时，CLI 会输出一次 `[SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY]`，然后照常继续索引。该警告只为用户和 agent 提供信息：应先尝试普通索引；若索引成功，无需调整 heap。它不会修改 `NODE_OPTIONS`、重启进程或改变退出码。
+
+对 Claude Code，当前警告依据的是所选 primary transcript 的字节数；derived subagent transcript 可能进一步增加实际索引工作量，目前尚未完成大型 Claude 语料的容量校准。
+
+只有当索引因 `JavaScript heap out of memory` 等 V8 heap exhaustion 错误终止时，才使用适度增大的临时 heap 重试。这是为异常庞大历史提供的临时规避方式，不是新的产品默认值。PowerShell 示例：
+
+```powershell
+$env:NODE_OPTIONS='--max-old-space-size=4096'
+npx session-analyzer --repo 'C:\path\to\project' --log-dir '.\session-analyzer-logs'
+Remove-Item 'Env:NODE_OPTIONS'
+```
+
+如果原本已设置 `NODE_OPTIONS`，请先保存旧值，并在运行后恢复旧值，而不是直接删除该环境变量。
+
+在 POSIX shell 中，把覆盖限制在单条命令内：
+
+```sh
+NODE_OPTIONS='--max-old-space-size=4096' npx session-analyzer --repo /path/to/project --log-dir ./session-analyzer-logs
+```
+
+调查问题时，推荐使用 `--log-dir <path>` 收集聚合索引诊断。Session Analyzer 会写入经过节流、有界的 JSONL 生命周期记录，其中包含 candidate 文件／字节数、Session／Raw／Logical 数量、耗时、V8 heap limit、当前与进程内峰值内存，以及稳定的容量警告信号。这些记录不包含仓库路径、transcript 路径、transcript 正文、提示词、命令或源码内容，并且最多保留 20 份索引日志。Fatal V8 OOM 的 stderr 仍是权威的最终崩溃证据；进程发生 fatal termination 时，诊断 logger 可能来不及写入最终记录。
+
+大型 transcript 历史的内存效率仍是持续改进方向。未来版本可能进一步降低索引与运行时内存使用量，因此以上数据描述的是当前实现，而不是永久的产品容量上限。
+
 ## 从源码开发
 
 已发布 CLI 继续采用上文 Node.js 22 或更高版本的宽泛运行时要求。源码 checkout 有意采用更严格的工具链，因为 npm 12 会执行经过审查的依赖 install-script 策略。在运行仓库内任何 `npm install`、`npm ci` 或 `npm run` 前，先选择受支持的 Node.js 版本，并从源码 checkout 之外的目录全局 bootstrap 精确的 npm CLI。下面第一条 npm 命令只更新工具链，不安装项目依赖：

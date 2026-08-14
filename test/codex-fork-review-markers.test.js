@@ -84,6 +84,7 @@ test('materialized inherited review markers do not participate in review parent 
   const reviewChild = first.sessionsById.get(fixture.reviewChildId);
   assert.equal(materializedChild.forkStorageMode, 'materialized');
   assert.equal(materializedChild.logicalEvents.some((event) => event.kind === 'review'), false);
+  assert.deepEqual(materializedChild._reviewMarkers, []);
   assert.equal(reviewChild.parentSessionId, fixture.parentId);
   assert.equal(reviewChild.parentSessionInferred, true);
 
@@ -93,7 +94,9 @@ test('materialized inherited review markers do not participate in review parent 
     previousIndex: first,
   });
   const reindexedReviewChild = second.sessionsById.get(fixture.reviewChildId);
+  const reindexedMaterializedChild = second.sessionsById.get(fixture.materializedChildId);
   assert.ok(second.totals.reusedFileCount >= 3);
+  assert.deepEqual(reindexedMaterializedChild._reviewMarkers, []);
   assert.equal(reindexedReviewChild.parentSessionId, fixture.parentId);
   assert.equal(reindexedReviewChild.parentSessionInferred, true);
 });

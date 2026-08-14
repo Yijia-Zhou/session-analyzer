@@ -5,12 +5,13 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const http = require('node:http');
 const i18n = require('../src/shared/i18n');
-const { buildIndex, getTimeline, buildEventDetail, eventKindCatalog } = require('../src/codex');
+const { __testOnly, getTimeline, buildEventDetail, eventKindCatalog } = require('../src/codex');
 const { createServer } = require('../server');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const fixtureRepo = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
+const buildIndex = __testOnly.buildUncompactedIndexForDetailTests;
 const allowedZhTerms = new Set([
   'agents.md',
   'api',

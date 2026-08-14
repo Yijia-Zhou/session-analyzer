@@ -26,10 +26,15 @@ function reviewSubtypeForPhase(phase) {
 function reviewLifecycleFromRaw(raw, options = {}) {
   if (!raw || typeof raw !== 'object') return null;
   if (raw.recordType !== 'event_msg') return null;
-  const payload = raw.parsed?.payload || raw.payload || {};
-  if (!payload || typeof payload !== 'object') return null;
+  const payload = raw.parsed?.payload || raw.payload;
 
   const ownerId = options.ownerId ? String(options.ownerId) : '';
+  if (!payload || typeof payload !== 'object') {
+    const phase = String(raw.reviewLifecyclePhase || reviewPhaseFromValue(raw.payloadType));
+    const threadId = String(raw.reviewThreadId || '');
+    if (!['entered', 'exited'].includes(phase) || (ownerId && threadId && threadId !== ownerId)) return null;
+    return { phase, subtype: reviewSubtypeForPhase(phase), payload: {} };
+  }
   const threadId = typeof payload.thread_id === 'string' ? payload.thread_id : '';
   if (ownerId && threadId && threadId !== ownerId) return null;
 
