@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "readme-capture-storyboard",
+  "source": "showcase/scenarios/readme/scenario.js",
+  "story": "Find what happened",
+  "captureOutput": "output/readme-capture/search/",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "captureClip": {
+    "x": 0,
+    "y": 0,
+    "width": 1416,
+    "height": 884
+  },
+  "fps": 10,
+  "recommendedDurationSeconds": 6,
+  "frames": [
+    {
+      "file": "01-clean-main.png",
+      "durationMs": 1000,
+      "state": "Parent session in Main timeline; no search query; current session selected."
+    },
+    {
+      "file": "02-query-entered.png",
+      "durationMs": 900,
+      "state": "Query search-navigation.test.js; search HUD shows 1 / 2 targets and 3 full-text occurrences."
+    },
+    {
+      "file": "03-jump-highlight.png",
+      "durationMs": 4100,
+      "state": "Next search match; target 2 / 2; the exact test file is highlighted in the matching Patch event and its structured result card remains visible."
+    }
+  ],
+  "interactionSequence": [
+    "Reload the parent session in Main timeline.",
+    "Focus Find in current session and fill search-navigation.test.js in one action.",
+    "Click Next search match once.",
+    "Hold on the jump target with its Patch inspector and structured result card."
+  ],
+  "keep": [
+    "Query text and 1 / 2 -> 2 / 2 target feedback",
+    "Highlighted test/browser/search-navigation.test.js",
+    "Patch inspector with touched files and the human-readable result card"
+  ],
+  "remove": [
+    "Slow per-character typing",
+    "Mouse travel between controls",
+    "Loading waits, the old Command detour, and extra Next clicks"
+  ]
+}

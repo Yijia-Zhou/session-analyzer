@@ -52,6 +52,7 @@
     "public/",
     "README.md",
     "README.zh-CN.md",
+    "docs/assets/readme/",
     "CHANGELOG.md",
     "THIRD_PARTY_NOTICES.md",
     "LICENSE"

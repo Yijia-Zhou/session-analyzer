@@ -2,39 +2,27 @@
 
 [English README](README.md)
 
-Session Analyzer 是一个用于查看 Codex 与 Claude Code 会话转录的本地 Web 工具。它把嘈杂的 JSONL 转录历史整理成按仓库过滤的会话列表、可搜索时间线、结构化工具调用详情，以及可下钻的原始记录。
+Session Analyzer 把本地 Codex 与 Claude Code 会话转录整理成按仓库组织的可读工作历史。无需翻阅原始 JSONL，就能回顾 agent 做过什么、在整个项目中找回具体工作，并理解相关会话之间的来龙去脉。
 
-这个应用面向本地使用。它只从你显式选择的来源 home 目录读取转录文件，在内存中完成分析，不会上传转录内容。
+![Session Analyzer 展示仓库会话历史、可读的主时间线和结构化命令详情](docs/assets/readme/session-analyzer-overview.png)
 
-## 功能
+左侧始终显示仓库会话历史，中间的主时间线还原工作过程，右侧则可随时查看结构化详情。
 
-- 从 Codex 或 Claude Code 会话工作目录中发现项目，也可以启动时直接指定目标仓库。
-- 只显示与所选仓库匹配的会话。
-- 保持 Claude Code subagent 可单独选择；区分物化式与指针式 fork，并在不重复指标或原始记录的前提下展示归父会话所有的继承上下文。
-- 浏览三种层级：去重后的主时间线、协议事件、原始 JSONL 记录。
-- 搜索消息、命令、文件、输出、状态、事件类型和层级。
-- 检查消息、命令、补丁、计划、MCP/工具调用、Web 搜索、生命周期事件和原始记录的结构化详情。
-- 从逻辑事件跳回精确的源 JSONL 行。
-- 使用适合叙事阅读、对话回顾、错误聚焦、改动审查、计划阅读、搜索聚焦和紧凑浏览的折叠策略。
-- 安全渲染转录中的 Markdown：禁用原始 HTML，并拒绝危险链接协议。
+默认在本地运行，只读分析转录文件，不会上传转录内容。
 
-## 隐私模型
+## 快速找回某次具体工作
 
-本项目刻意采用本地优先设计：
+搜索消息、命令、文件、输出、状态和事件类型，在匹配项之间移动并直接跳到相关事件，无需逐行翻阅转录。
 
-- 服务器默认绑定到 `127.0.0.1`。
-- 转录文件只从磁盘读取，不会被修改。
-- 派生索引只保存在内存中。
-- 原始转录下钻需要用户显式打开，所以敏感内容不会被应用隐藏，但本应用也不会把它发送到外部。
+![搜索测试文件并跳转到匹配的补丁事件](docs/assets/readme/search-and-jump.gif)
 
-Agent 转录可能包含提示词、命令输出、文件路径、环境详情以及其他私有材料。不要把真实的 `.codex/sessions`、`.claude/projects` 目录或导出的转录数据提交到公开仓库。
+## 理解工作的来龙去脉
 
-## 环境要求
+从 review 和委派工作追溯到它们开始的地方，查看继承的上下文，并在需要时重新打开父会话。
 
-- 已安装 CLI：受支持的 Node.js LTS，最低 Node.js 22（推荐 Node.js 24），以及用于安装的 npm
-- 源码开发与发布工作：Node.js `^22.22.2 || ^24.15.0`，并且 npm 必须精确为 `12.0.2`
+![打开 review 派生会话、检查继承上下文并返回父会话](docs/assets/readme/derived-session-provenance.gif)
 
-## 通过 npm 运行
+## 快速开始
 
 不指定仓库启动，然后在浏览器中从发现的项目里选择：
 
@@ -54,13 +42,19 @@ Windows 示例：
 npx session-analyzer --repo 'C:\path\to\project'
 ```
 
-默认情况下，应用会从 `~/.codex` 读取 Codex transcript。如果你的 transcript 在其他位置，可以使用 `--codex-home`：
+然后打开：
+
+```text
+http://127.0.0.1:17890/
+```
+
+Codex 是默认的启动转录来源，应用会从 `~/.codex` 读取数据。如果该目录位于其他位置，可以使用 `--codex-home`：
 
 ```sh
 npx session-analyzer --repo /path/to/project --codex-home /path/to/.codex --port 17890
 ```
 
-Claude Code 支持需要显式启用。除非选择 Claude Code 来源，否则应用不会扫描 `~/.claude`：
+可以在启动时选择 Claude Code。只有当 Claude Code 是当前来源时，应用才会扫描 `~/.claude`：
 
 ```sh
 npx session-analyzer --source claude-code --repo /path/to/project
@@ -72,13 +66,7 @@ npx session-analyzer --source claude-code --repo /path/to/project
 npx session-analyzer --source claude-code --claude-home /path/to/.claude
 ```
 
-`--source claude` 是 `--source claude-code` 的别名。0.1.3 版本的每个 server 进程只选择一种来源，不会构建 Codex 与 Claude 的混合索引。
-
-然后打开：
-
-```text
-http://127.0.0.1:17890/
-```
+`--source claude` 是 `--source claude-code` 的别名。之后也可以在项目选择界面切换当前转录来源，或编辑任一来源 home。任一时刻只有一个活跃来源；Session Analyzer 不会构建 Codex 与 Claude 的混合索引。
 
 也可以全局安装 CLI：
 
@@ -87,7 +75,51 @@ npm install -g session-analyzer
 session-analyzer --repo /path/to/project
 ```
 
-默认 host 是 `127.0.0.1`。`--host` 是高级选项；绑定到 localhost 之外可能让网络上的其他机器读取当前进程可访问的 transcript 内容。
+默认 host 是 `127.0.0.1`。`--host` 是高级选项；绑定到 localhost 之外可能让网络上的其他机器读取当前进程可访问的转录内容。
+
+## 使用方式
+
+1. 使用默认的 Codex 来源或在 CLI 选择 Claude Code，然后在浏览器中选择目标项目，也可以在启动服务器时传入 `--repo`。
+2. 使用项目选择界面在运行期切换项目；同一界面还可以切换当前转录来源或编辑其 home 目录，随后会针对该来源重新发现项目。
+3. 从左侧面板选择一个会话。
+4. 使用 `Main timeline` 进行日常阅读，使用 `Protocol layer` 查看注入上下文和生命周期记录，使用 `Raw records` 查看精确转录行。
+5. 在搜索 HUD 中输入忽略大小写的普通文本短语；短语中的空白可以匹配空格、Tab 或换行。打开“搜索选项”可在当前会话与整个项目之间切换，编辑始终可见的“涉及文件”“类型”或“状态”筛选，查看完整计数，或跳到相邻的全局层级选择器。`status:failed` 等类似操作符的输入仍按字面文本搜索。
+6. 打开事件以检查结构化详情和原始引用。
+
+npm 包不承诺稳定的程序接口。v0.1 支持的接口是 `session-analyzer` CLI。
+
+## 可检查的内容
+
+- 从 Codex 或 Claude Code 会话工作目录中发现并切换项目，也可以启动时直接指定目标仓库。
+- 无需重启服务器，即可在项目选择界面切换当前转录来源并配置来源 home 目录。
+- 只显示与所选仓库匹配的会话。
+- 保持 Claude Code subagent 可单独选择；区分物化式与指针式分叉，并在不重复指标或原始记录的前提下展示归父会话所有的继承上下文。
+- 浏览三种层级：去重后的主时间线、协议事件、原始 JSONL 记录。
+- 搜索消息、命令、文件、输出、状态、事件类型和层级。
+- 检查消息、命令、补丁、计划、MCP/工具调用、Web 搜索、生命周期事件和原始记录的结构化详情。
+- 从逻辑事件跳回精确的源 JSONL 行。
+- 使用适合叙事阅读、对话回顾、错误聚焦、改动审查、计划阅读、搜索聚焦和紧凑浏览的折叠策略。
+- 安全渲染转录中的 Markdown：禁用原始 HTML，并拒绝危险链接协议。
+
+## 隐私与安全
+
+本项目刻意采用本地优先设计：
+
+- 服务器默认绑定到 `127.0.0.1`。
+- 转录文件只从磁盘读取，不会被修改。
+- 派生索引只保存在内存中。
+- 原始转录下钻需要用户显式打开，所以敏感内容不会被应用隐藏，但本应用也不会把它发送到外部。
+
+Agent 转录可能包含提示词、命令输出、文件路径、环境详情以及其他私有材料。不要把真实的 `.codex/sessions`、`.claude/projects` 目录或导出的转录数据提交到公开仓库。
+
+这个工具是本地查看器，不是托管的多用户分析服务。如果你把服务器暴露到 localhost 之外，任何能访问该服务的人都可能读取当前进程可访问的转录内容。
+
+发布 fork、issue 复现或示例数据之前，请确认附带的转录样本是合成的或已脱敏。
+
+## 环境要求
+
+- 已安装 CLI：受支持的 Node.js LTS，最低 Node.js 22（推荐 Node.js 24），以及用于安装的 npm
+- 源码开发与发布工作：Node.js `^22.22.2 || ^24.15.0`，并且 npm 必须精确为 `12.0.2`
 
 ### 大型 transcript 历史与 Node/V8 内存
 
@@ -189,23 +221,13 @@ Release gate 会检查生成资产、运行完整 Node 测试，并重复执行�
 
 浏览器 JavaScript 源码位于 `src/browser/`，浏览器与 Node 共用逻辑位于 `src/shared/`。生成的运行时 bundle 是 `public/assets/app.js`；不要直接编辑它。
 
-## 使用方式
-
-1. 先在 CLI 选择转录来源，再在浏览器中选择目标项目，或在启动服务器时传入 `--repo`。Codex 是默认来源。
-2. 从左侧面板选择一个会话。
-3. 使用 `Main timeline` 进行日常阅读，使用 `Protocol layer` 查看注入上下文和生命周期记录，使用 `Raw records` 查看精确转录行。
-4. 在搜索 HUD 中输入忽略大小写的普通文本短语；短语中的空白可以匹配空格、Tab 或换行。打开“搜索选项”可在当前 session 与整个项目之间切换，编辑始终可见的“涉及文件”“类型”或“状态”筛选，查看完整计数，或跳到相邻的全局层级选择器。`status:failed` 等类似操作符的输入仍按字面文本搜索。
-5. 打开事件以检查结构化详情和原始引用。
-
-npm 包不承诺稳定的程序接口。v0.1 支持的接口是 `session-analyzer` CLI。
-
 ## 已知限制
 
-- 0.1.3 版本的每个 server 进程只选择一种转录来源；暂不支持 Codex 与 Claude 混合索引或来源筛选。
+- v0.1.4 暂不支持 Codex 与 Claude 混合索引或来源筛选。
 - Claude Code 外置的 `tool-results/*` payload 暂不加载或搜索；其来源记录和引用仍可通过 protocol/raw 兜底查看。
 - 未来或未知的 Codex 与 Claude Code protocol event 仍可通过 protocol/raw 兜底视图检查，但并非每个事件族都有完整精致的结构化渲染器。
-- Transcript fixture 覆盖是有重点的，不是穷尽式的；后续观察到新的历史形态时，可能仍需要补充 fixture 和展示调整。
-- Review finding 渲染已有 synthetic 覆盖，本地也已观察到真实的非空 `review_output.findings[]` 示例；后续仍适合补充脱敏 fixture 来防止回归。
+- 转录 fixture 覆盖是有重点的，不是穷尽式的；后续观察到新的历史形态时，可能仍需要补充 fixture 和展示调整。
+- Review finding 渲染已有合成数据覆盖，本地也已观察到真实的非空 `review_output.findings[]` 示例；后续仍适合补充脱敏 fixture 来防止回归。
 
 ## 仓库结构
 
@@ -219,12 +241,6 @@ npm 包不承诺稳定的程序接口。v0.1 支持的接口是 `session-analyze
 - `public/`：静态 HTML/CSS 和生成的浏览器运行时资产。
 - `test/`：Node 测试套件和合成转录 fixture。
 - `docs/`：产品规格、设计文档、执行计划和 backlog 笔记。
-
-## 安全说明
-
-这个工具是本地查看器，不是托管的多用户分析服务。如果你把服务器暴露到 localhost 之外，任何能访问该服务的人都可能读取当前进程可访问的转录内容。
-
-发布 fork、issue 复现或示例数据之前，请确认附带的转录样本是合成的或已脱敏。
 
 ## 许可证
 

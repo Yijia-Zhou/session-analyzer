@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "kind": "readme-capture-storyboard",
+  "source": "showcase/scenarios/readme/scenario.js",
+  "story": "Understand branching work",
+  "relationship": "review-derived Codex child with materialized fork storage",
+  "captureOutput": "output/readme-capture/branching/",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "captureClip": {
+    "x": 0,
+    "y": 0,
+    "width": 1416,
+    "height": 884
+  },
+  "fps": 10,
+  "recommendedDurationSeconds": 8,
+  "frames": [
+    {
+      "file": "01-parent-collapsed.png",
+      "durationMs": 1000,
+      "state": "Parent session selected; one child relationship is collapsed."
+    },
+    {
+      "file": "02-child-expanded.png",
+      "durationMs": 1300,
+      "state": "Relationship expanded; Review search navigation implementation appears under parent with Review provenance."
+    },
+    {
+      "file": "03-child-inherited-context.png",
+      "durationMs": 3300,
+      "state": "Child selected; Materialized fork and Inherited session context are visible; Latest inherited Main events (8) stays collapsed so the count and Open parent session action remain in view."
+    },
+    {
+      "file": "04-parent-returned.png",
+      "durationMs": 2400,
+      "state": "Open parent session returns to the parent timeline while the relationship remains expanded."
+    }
+  ],
+  "interactionSequence": [
+    "Start on the parent session with its child relationship collapsed.",
+    "Click Show 1 child session.",
+    "Open Review search navigation implementation.",
+    "Keep Latest inherited Main events (8) collapsed so the inherited count and Open parent session action remain visible.",
+    "Click Open parent session."
+  ],
+  "keep": [
+    "Single child only",
+    "Review · from parent label",
+    "Materialized fork and inherited-count explanation",
+    "Collapsed inherited-event evidence and the Open parent session action"
+  ],
+  "remove": [
+    "Extra child/relationship types",
+    "Expanding all inherited events or long scrolls through inherited history",
+    "Mouse travel and transition waits"
+  ]
+}
