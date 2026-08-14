@@ -24,6 +24,7 @@ This repository uses three formal document classes plus one idea parking area:
 - `design-docs/cross-surface-contract-consistency-tech-debt.md` / 跨表面契约一致性技术债
 - `design-docs/schema-update-runbook.md` / Schema 更新运行手册
 - `design-docs/npm-release-runbook.md` / npm 发布运行手册
+- `design-docs/readme-visual-capture-runbook.md` / README 视觉素材与捕获运行手册
 - `design-docs/external-source-mapping-pressure-tests.md` / 外部 source 映射压力测试设计文档
 - `design-docs/transcript-source-adapters.md` / 转录来源适配器设计文档
 - `design-docs/documentation-system.md` / 文档系统设计文档

@@ -282,7 +282,7 @@ test('package smoke pins nested npm operations to the public registry', () => {
   assert.equal(packageRegistry, 'https://registry.npmjs.org/');
 });
 
-test('npm pack manifest contains only runtime package files', () => {
+test('npm pack manifest contains only approved runtime and documentation files', () => {
   const files = npmPackDryRunFiles();
   const fileSet = new Set(files);
   const approvedFiles = [
@@ -291,6 +291,9 @@ test('npm pack manifest contains only runtime package files', () => {
     'README.md',
     'README.zh-CN.md',
     'THIRD_PARTY_NOTICES.md',
+    'docs/assets/readme/derived-session-provenance.gif',
+    'docs/assets/readme/search-and-jump.gif',
+    'docs/assets/readme/session-analyzer-overview.png',
     'package.json',
     'public/assets/app.js',
     'public/favicon.ico',
@@ -335,7 +338,6 @@ test('npm pack manifest contains only runtime package files', () => {
   assert.deepEqual(files, approvedFiles);
 
   const forbiddenPrefixes = [
-    'docs/',
     'e2e/',
     'scripts/',
     'src/browser/',

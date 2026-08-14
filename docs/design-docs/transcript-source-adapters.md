@@ -2,8 +2,8 @@
 
 ## Status / 状态
 
-- Status: accepted for `0.1.3` / 状态：已针对 `0.1.3` 接受
-- Last updated: 2026-08-11 / 最近更新：2026-08-11
+- Status: accepted for `0.1.4` / 状态：已针对 `0.1.4` 接受
+- Last updated: 2026-08-14 / 最近更新：2026-08-14
 - Related product spec: `docs/product-specs/session-transcript-analyzer.md` / 相关产品规格：`docs/product-specs/session-transcript-analyzer.md`
 - Related timeline design: `docs/design-docs/logical-event-timeline.md` / 相关时间线设计：`docs/design-docs/logical-event-timeline.md`
 - Related pressure test: `docs/design-docs/external-source-mapping-pressure-tests.md` / 相关压力测试：`docs/design-docs/external-source-mapping-pressure-tests.md`
@@ -14,7 +14,7 @@
 
 ## Decision / 决策
 
-Session Analyzer supports Codex and Claude Code through source-specific adapters behind one source-neutral server, search, timeline, and browser contract. Claude Code records are interpreted directly; they are not translated into synthetic Codex rollout items. The default Transcript Source remains Codex, and Claude Code requires explicit CLI opt-in. / Session Analyzer 通过来源专属适配器，在统一且来源中立的服务器、搜索、时间线与浏览器契约后支持 Codex 和 Claude Code。Claude Code 记录会被直接解释，不会被转换成合成的 Codex rollout item。默认转录来源继续是 Codex，Claude Code 必须通过 CLI 显式启用。
+Session Analyzer supports Codex and Claude Code through source-specific adapters behind one source-neutral server, search, timeline, and browser contract. Claude Code records are interpreted directly; they are not translated into synthetic Codex rollout items. Claude Code requires explicit user selection, while Codex remains the initial default. Selection can occur through CLI startup configuration or the runtime project chooser. / Session Analyzer 通过来源专属适配器，在统一且来源中立的服务器、搜索、时间线与浏览器契约后支持 Codex 和 Claude Code。Claude Code 记录会被直接解释，不会被转换成合成的 Codex rollout item。Claude Code 需要用户显式选择，Codex 则继续作为初始默认来源。用户既可以通过 CLI 启动配置选择来源，也可以在运行期项目选择界面中切换。
 
 This decision preserves source evidence that has no Codex equivalent: Claude `uuid`/`parentUuid`, response grouping by `message.id`, exact `tool_use_id` pairing, sidechain/subagent identity, compact boundaries, file-history records, queue metadata, and source-owned external-output references. / 该决策会保留没有 Codex 等价物的来源证据：Claude 的 `uuid`/`parentUuid`、按 `message.id` 形成的响应分组、精确的 `tool_use_id` 配对、sidechain/subagent 标识、compact boundary、文件历史记录、队列 metadata，以及由来源拥有的外置输出引用。
 
@@ -33,23 +33,23 @@ The shared runtime owns project selection, indexing jobs, canonical session coll
 
 `src/source-adapters.js` is the dispatch boundary. `src/claude-source.js`, `src/claude-logical.js`, `src/claude-detail.js`, `src/claude-forks.js`, and `src/claude.js` own the Claude implementation. `src/codex-forks.js` owns Codex fork storage and ownership inference; the remaining `src/codex*.js` modules continue to own Codex interpretation. / `src/source-adapters.js` 是分派边界。`src/claude-source.js`、`src/claude-logical.js`、`src/claude-detail.js`、`src/claude-forks.js` 与 `src/claude.js` 负责 Claude 实现；`src/codex-forks.js` 负责 Codex 分叉存储与 ownership 推断，其余 `src/codex*.js` 模块继续负责 Codex 解释。
 
-## CLI and privacy boundary / CLI 与隐私边界
+## Source selection and privacy boundary / 来源选择与隐私边界
 
-Default behavior remains: / 默认行为保持为：
+The initial startup default remains: / 初始启动默认行为保持为：
 
 ```text
 session-analyzer --source codex
 ```
 
-Claude Code is enabled explicitly: / Claude Code 需要显式启用：
+Claude Code can be selected explicitly at startup: / 可以在启动时显式选择 Claude Code：
 
 ```text
 session-analyzer --source claude-code --claude-home <path>
 ```
 
-`--source claude` is accepted as a convenience alias and normalizes to the stable machine value `claude-code`. The default Claude home is `~/.claude`, but it is not scanned unless Claude is selected. This prevents an upgrade from silently expanding the set of sensitive local transcripts read by the process. / `--source claude` 作为便利别名被接受，并归一化为稳定机器值 `claude-code`。默认 Claude home 为 `~/.claude`，但只有在选择 Claude 时才会扫描。这样可避免升级后在无提示的情况下扩大进程读取的本地敏感转录范围。
+The runtime project chooser provides the other explicit selection path. `--source claude` is accepted as a convenience alias and normalizes to the stable machine value `claude-code`. The default Claude home is `~/.claude`, but it is not scanned unless Claude is selected through either path. This prevents an upgrade from silently expanding the set of sensitive local transcripts read by the process. / 运行期项目选择界面提供另一条显式选择路径。`--source claude` 作为便利别名被接受，并归一化为稳定机器值 `claude-code`。默认 Claude home 为 `~/.claude`，但只有通过任一入口选择 Claude 后才会扫描。这样可避免升级后在无提示的情况下扩大进程读取的本地敏感转录范围。
 
-`0.1.3` is Claude-only or Codex-only per process. A mixed `--source all` index, source filter, and aggregate source counts remain deferred. / `0.1.3` 的每个进程只运行 Claude 或 Codex 单一来源。混合 `--source all` 索引、来源筛选与聚合来源计数继续推迟。
+`0.1.4` keeps exactly one active source per process, even though the user can switch that source at runtime. A mixed `--source all` index, source filter, and aggregate source counts remain deferred. / `0.1.4` 的每个进程在任一时刻仍只有一个活跃来源，但用户可以在运行期切换该来源。混合 `--source all` 索引、来源筛选与聚合来源计数继续推迟。
 
 ## Runtime source switching / 运行期来源切换
 
@@ -223,7 +223,7 @@ Fork correctness takes precedence over maximal reuse: any change to the top-leve
 
 ## Deferred work / 推迟事项
 
-`0.1.3` deliberately does not: / `0.1.3` 有意不做：
+`0.1.4` deliberately does not: / `0.1.4` 有意不做：
 
 - create a mixed Codex + Claude index / 建立 Codex + Claude 混合索引；
 - persist an import ledger or adapter cache / 持久化 import ledger 或 adapter cache；
