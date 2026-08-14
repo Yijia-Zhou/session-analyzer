@@ -1037,6 +1037,8 @@ test('browser presents materialized fork ownership, earlier-branch hierarchy, Ra
   await page.waitForFunction(() => document.querySelectorAll('#sessionList .projectResultCard').length === 2);
   assert.equal(await page.locator('#sessionList .projectResultCard').count(), 2);
   assert.equal(await page.locator('#sessionList .sessionChildrenToggle').count(), 0, 'project search stays flat');
+  const projectResultChipText = (await page.locator('#sessionList .projectResultCard .chip').allTextContents()).join(' | ');
+  assert.doesNotMatch(projectResultChipText, /Codex/);
 });
 
 test('browser fork-point navigation temporarily reveals a profile-hidden target without changing saved folds', async (t) => {
@@ -1137,6 +1139,9 @@ test('browser groups derived sessions under their parent and collapses them by d
   const normalForkSessionId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
   const expectedChildCount = index.sessions.filter((session) => session.parentSessionId === primaryFixtureSessionId).length;
   const { page } = await openApp(t, index, { locale: 'en', skipProjectReindex: true });
+  const sessionChipText = (await page.locator('#sessionList .sessionItem .chip').allTextContents()).join(' | ');
+  assert.doesNotMatch(sessionChipText, /Codex/);
+  assert.doesNotMatch(sessionChipText, /protocol/i);
 
   const parentBranch = page.locator(`[data-session-branch-id="${primaryFixtureSessionId}"]`);
   const toggle = parentBranch.locator(`:scope > .sessionRow [data-session-children-toggle="${primaryFixtureSessionId}"]`);

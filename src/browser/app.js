@@ -4065,7 +4065,6 @@ function renderProjectResultCard(session, relationships = sessionRelationshipInd
   return `<button class="sessionItem projectResultCard" type="button" data-project-result-session-id="${escapeHtml(session.id)}">
     <span class="sessionTitle">${escapeHtml(session.title)}</span>
     <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
-    <span class="chip">${escapeHtml(sourceKindLabel(session.sourceKind))}</span>
     ${relationship ? `<span class="chip relationshipChip">${escapeHtml(relationship)}</span>` : ''}
     <span class="projectResultCount">${escapeHtml(t('projectResultCount', { count: session.searchMatch?.eventCount || 0 }))}</span>
     <span class="projectLatestMatch">
@@ -4124,13 +4123,11 @@ function renderSessions() {
           <span class="sessionTitle">${escapeHtml(session.title)}</span>
           <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
           <span class="chips">
-            <span class="chip">${escapeHtml(sourceKindLabel(session.sourceKind))}</span>
             ${relationship ? `<span class="chip relationshipChip" title="${escapeHtml(relationshipTitle)}">${escapeHtml(relationship)}</span>` : ''}
             ${session.forkContinuationState === 'waiting_for_prompt' ? `<span class="chip forkStateChip">${escapeHtml(t('forkWaitingForPrompt'))}</span>` : ''}
             <span class="chip">${escapeHtml(t('messageCountShort', { count: session.counts.messages }))}</span>
             <span class="chip">${escapeHtml(t('toolCountShort', { count: session.counts.toolCalls }))}</span>
             <span class="chip">${escapeHtml(t('failedCommandCountShort', { count: session.counts.failedCommands }))}</span>
-            <span class="chip">${escapeHtml(t('protocolCountShort', { count: session.protocolCount }))}</span>
           </span>
           ${earlierBranchExplanation}
         </button>
