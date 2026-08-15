@@ -13,6 +13,8 @@
 - Related Codex materialized-fork plan: `docs/exec-plans/completed/2026-08-09-codex-materialized-fork-ownership.md` / 相关 Codex 物化式分叉计划：`docs/exec-plans/completed/2026-08-09-codex-materialized-fork-ownership.md`
 - Related completed plan: `docs/exec-plans/completed/2026-08-15-source-neutral-detail-and-adapter-contracts.md` / 相关已完成计划：`docs/exec-plans/completed/2026-08-15-source-neutral-detail-and-adapter-contracts.md`
 - Related completed plan: `docs/exec-plans/completed/2026-08-15-adapter-detail-contract-review-followups.md` / 相关已完成计划：`docs/exec-plans/completed/2026-08-15-adapter-detail-contract-review-followups.md`
+- Proposed lifecycle design: `docs/design-docs/indexed-materialized-session-lifecycle.md` / 生命周期设计提案：`docs/design-docs/indexed-materialized-session-lifecycle.md`
+- Active lifecycle plan: `docs/exec-plans/active/2026-08-16-indexed-materialized-session-lifecycle.md` / 活跃生命周期计划：`docs/exec-plans/active/2026-08-16-indexed-materialized-session-lifecycle.md`
 
 ## Decision / 决策
 

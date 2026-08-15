@@ -1,5 +1,7 @@
 # Timeline Loading and Rendering Performance / 时间线加载与渲染性能
 
+> Lifecycle note / 生命周期说明：The proposed Indexed/Materialized Session boundary and its project-query representation are specified in `docs/design-docs/indexed-materialized-session-lifecycle.md`. That proposal keeps project-wide queries resident and makes Session-scoped timeline loading an explicit on-demand materialization operation; production behavior does not change until its milestone gates pass. / 提议中的 Indexed／Materialized Session 边界及项目查询表示见 `docs/design-docs/indexed-materialized-session-lifecycle.md`。该提案让项目级查询保持常驻，并把 Session 级时间线加载变为显式按需物化操作；在其 milestone 门槛通过前，生产行为不变。
+
 ## Metadata / 元数据
 
 - Owner: repository maintainers / 负责人：仓库维护者
