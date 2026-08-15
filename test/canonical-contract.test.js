@@ -4,17 +4,27 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   CANONICAL_CONTRACT,
+  INDEXED_SESSION_COUNT_FIELDS,
+  validateCanonicalIndexedSessionShape,
   validateCanonicalLogicalEventShape,
+  validateCanonicalMaterializedSessionShape,
   validateCanonicalRawEventShape,
   validateCanonicalSessionShape,
 } = require('../src/canonical-contract');
 const { createSessionQuery } = require('../src/session-query');
 const {
   buildEventDetailForSession,
+  getSourceAdapter,
+  materializeSessionForIndex,
+  materializeSessionWithAdapter,
   queryForIndex,
   readImagePreviewForSession,
   validateIndexOwnership,
 } = require('../src/source-adapters');
+const {
+  defineSourceAdapter,
+  SESSION_LIFECYCLE,
+} = require('../src/source-adapter-contract');
 
 function makeCanonicalIndex(sourceKind, options = {}) {
   const raw = {
@@ -48,6 +58,127 @@ function makeCanonicalIndex(sourceKind, options = {}) {
   };
 }
 
+function makeStrictIndexedSession(sourceKind = 'fixture-source') {
+  const counts = Object.fromEntries(INDEXED_SESSION_COUNT_FIELDS.map((field) => [field, 0]));
+  return {
+    id: `${sourceKind}:session:strict`,
+    sourceKind,
+    sourceSessionId: 'source-session',
+    sourceDerivedId: '',
+    sourceClientVersion: '',
+    projectAssociation: '',
+    title: 'Strict fixture',
+    sourceFile: '',
+    agentNickname: '',
+    primarySessionMetaKind: '',
+    derivedRunId: '',
+    bytes: 1,
+    lineCount: 1,
+    cwdSet: ['/synthetic/repository'],
+    startedAt: '2026-08-16T00:00:00.000Z',
+    updatedAt: '2026-08-16T00:00:00.000Z',
+    counts,
+    rawEventCount: 1,
+    logicalEventCount: 1,
+    parentSessionId: '',
+    forkedFromSessionId: '',
+    forkStorageMode: '',
+    forkedAt: '',
+    forkPointUuid: '',
+    forkContinuationState: '',
+    supersededBySessionId: '',
+    supersededAt: '',
+    supersededReason: '',
+    parentSessionInferred: false,
+    forkEvidence: null,
+    inheritedContext: null,
+    summary: {
+      topTools: [],
+      failedCommandCount: 0,
+      patchedFiles: [],
+      protocolCount: 0,
+    },
+    materializationDescriptor: {
+      schemaVersion: 1,
+      dependencySetId: 'dependencies-1',
+      sourceSnapshotId: 'snapshot-1',
+      payload: { locator: 'opaque-fixture' },
+    },
+    queryShardId: `${sourceKind}:session:strict`,
+  };
+}
+
+function makeStrictMaterializedSession(indexedSession) {
+  const carried = {};
+  for (const [key, value] of Object.entries(indexedSession)) {
+    if (key === 'materializationDescriptor' || key === 'queryShardId') continue;
+    carried[key] = value;
+  }
+  const raw = {
+    rawId: `${indexedSession.sourceKind}:raw:strict`,
+    sourceKind: indexedSession.sourceKind,
+  };
+  const event = {
+    id: `${indexedSession.sourceKind}:event:strict`,
+    sourceKind: indexedSession.sourceKind,
+    kind: 'synthetic_event',
+    layer: 'main',
+    timestamp: '2026-08-16T00:00:00.000Z',
+    rawRefs: [{ rawId: raw.rawId }],
+  };
+  return {
+    ...carried,
+    materializationSnapshotId: indexedSession.materializationDescriptor.sourceSnapshotId,
+    rawEvents: [raw],
+    logicalEvents: [event],
+    analysis: {},
+    presentationIndexes: {},
+  };
+}
+
+function queryContract() {
+  return {
+    fileSuggestions() {},
+    filterSessions() {},
+    filtersFromSearchParams() {},
+    getEvent() {},
+    getTimeline() {},
+    indexPresentation() {},
+    matchTerms() {},
+  };
+}
+
+function makeLifecycleAdapter({
+  kind,
+  sessionLifecycle = SESSION_LIFECYCLE.RESIDENT_COMPLETE,
+  materializeSession,
+} = {}) {
+  const strictFields = sessionLifecycle === SESSION_LIFECYCLE.INDEXED_MATERIALIZED
+    ? {
+      validateMaterializationDescriptor() {},
+      validateLegacyRawOwnerIndex() {},
+      validateMaterializedPrivateState() {},
+      materializedPrivateFields: [],
+    }
+    : {};
+  return defineSourceAdapter({
+    kind,
+    label: 'Lifecycle fixture',
+    homeOption: 'fixtureHome',
+    homeLabel: 'Fixture home',
+    sessionLifecycle,
+    defaultHome() { return ''; },
+    query: queryContract(),
+    discoverConfiguredProjects() {},
+    discoverProjects() {},
+    buildIndex() {},
+    materializeSession,
+    buildEventDetail() {},
+    readRawRecord() {},
+    ...strictFields,
+  });
+}
+
 test('Codex and Claude canonical synthetic indexes satisfy the same shared contract', () => {
   assert.deepEqual(CANONICAL_CONTRACT.index, ['sourceKind', 'repoRoot', 'sessions', 'sessionsById']);
   assert.deepEqual(CANONICAL_CONTRACT.session.slice(0, 4), ['id', 'sourceKind', 'rawEvents', 'logicalEvents']);
@@ -66,6 +197,190 @@ test('Codex and Claude canonical synthetic indexes satisfy the same shared contr
     assert.equal(validateCanonicalRawEventShape(session.rawEvents[0], sourceKind), sourceKind);
     assert.equal(validateCanonicalLogicalEventShape(session.logicalEvents[0], sourceKind), sourceKind);
   }
+});
+
+test('production adapters expose resident compatibility materialization through one lifecycle seam', async () => {
+  for (const sourceKind of ['codex', 'claude-code']) {
+    const adapter = getSourceAdapter(sourceKind);
+    assert.equal(adapter.sessionLifecycle, SESSION_LIFECYCLE.RESIDENT_COMPLETE);
+    const index = makeCanonicalIndex(sourceKind);
+    const indexedSession = index.sessions[0];
+    const before = {
+      rawEvents: indexedSession.rawEvents,
+      logicalEvents: indexedSession.logicalEvents,
+      counts: { ...indexedSession.counts },
+    };
+    const materializedSession = await materializeSessionForIndex(index, indexedSession, {
+      indexRevision: 7,
+    });
+
+    assert.equal(materializedSession, indexedSession);
+    assert.equal(index.sessionsById.get(indexedSession.id), indexedSession);
+    assert.equal(indexedSession.rawEvents, before.rawEvents);
+    assert.equal(indexedSession.logicalEvents, before.logicalEvents);
+    assert.deepEqual(indexedSession.counts, before.counts);
+  }
+});
+
+test('compatibility materialization rejects cancellation, foreign ownership, and broken Raw references', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const cancelledIndex = makeCanonicalIndex('codex');
+  await assert.rejects(
+    materializeSessionForIndex(cancelledIndex, cancelledIndex.sessions[0], {
+      signal: controller.signal,
+    }),
+    { name: 'AbortError' },
+  );
+
+  const ownerIndex = makeCanonicalIndex('codex');
+  const foreignSession = makeCanonicalIndex('codex').sessions[0];
+  await assert.rejects(
+    materializeSessionForIndex(ownerIndex, foreignSession),
+    { code: 'CANONICAL_CONTRACT_VIOLATION' },
+  );
+
+  const brokenIndex = makeCanonicalIndex('claude-code');
+  brokenIndex.sessions[0].logicalEvents[0].rawRefs.push({ rawId: 'claude-code:raw:missing' });
+  await assert.rejects(
+    materializeSessionForIndex(brokenIndex, brokenIndex.sessions[0]),
+    { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
+  );
+});
+
+test('materialization dispatch observes post-await cancellation and resident non-mutation', async () => {
+  const index = makeCanonicalIndex('codex');
+  const controller = new AbortController();
+  let releaseMaterialization;
+  const delayedAdapter = makeLifecycleAdapter({
+    kind: 'codex',
+    materializeSession: async ({ indexedSession }) => {
+      await new Promise((resolve) => { releaseMaterialization = resolve; });
+      return indexedSession;
+    },
+  });
+  const pending = materializeSessionWithAdapter(
+    index,
+    index.sessions[0],
+    delayedAdapter,
+    { signal: controller.signal },
+  );
+  await Promise.resolve();
+  controller.abort();
+  releaseMaterialization();
+  await assert.rejects(pending, { name: 'AbortError' });
+
+  const mutatingIndex = makeCanonicalIndex('claude-code');
+  const mutatingAdapter = makeLifecycleAdapter({
+    kind: 'claude-code',
+    materializeSession: async ({ indexedSession }) => {
+      indexedSession.counts.messages += 1;
+      return indexedSession;
+    },
+  });
+  await assert.rejects(
+    materializeSessionWithAdapter(
+      mutatingIndex,
+      mutatingIndex.sessions[0],
+      mutatingAdapter,
+    ),
+    { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
+  );
+});
+
+test('strict Indexed and Materialized Session validators enforce the future lifecycle shape', () => {
+  const indexedSession = makeStrictIndexedSession();
+  const materializedSession = makeStrictMaterializedSession(indexedSession);
+  assert.equal(validateCanonicalIndexedSessionShape(indexedSession, 'fixture-source'), 'fixture-source');
+  assert.equal(
+    validateCanonicalMaterializedSessionShape(
+      indexedSession,
+      materializedSession,
+      'fixture-source',
+    ),
+    materializedSession,
+  );
+
+  assert.throws(
+    () => validateCanonicalIndexedSessionShape({
+      ...indexedSession,
+      rawEvents: [],
+    }, 'fixture-source'),
+    { code: 'CANONICAL_CONTRACT_VIOLATION' },
+  );
+  assert.throws(
+    () => validateCanonicalIndexedSessionShape({
+      ...indexedSession,
+      cwdSet: new Set(indexedSession.cwdSet),
+    }, 'fixture-source'),
+    { code: 'CANONICAL_CONTRACT_VIOLATION' },
+  );
+  assert.throws(
+    () => validateCanonicalIndexedSessionShape({
+      ...indexedSession,
+      counts: { ...indexedSession.counts, sourceSpecific: 1 },
+    }, 'fixture-source'),
+    { code: 'CANONICAL_CONTRACT_VIOLATION' },
+  );
+
+  assert.throws(
+    () => validateCanonicalMaterializedSessionShape(
+      indexedSession,
+      { ...materializedSession, title: 'Recomputed title' },
+      'fixture-source',
+    ),
+    { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
+  );
+  assert.throws(
+    () => validateCanonicalMaterializedSessionShape(
+      indexedSession,
+      { ...materializedSession, materializationSnapshotId: 'newer-snapshot' },
+      'fixture-source',
+    ),
+    { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
+  );
+});
+
+test('strict synthetic adapter traverses Indexed to Materialized dispatch without resident arrays', async () => {
+  const indexedSession = makeStrictIndexedSession();
+  const materializedSession = makeStrictMaterializedSession(indexedSession);
+  const dependencySet = {
+    schemaVersion: 1,
+    id: 'dependencies-1',
+    sourceKind: indexedSession.sourceKind,
+    entries: [],
+  };
+  const index = {
+    sourceKind: indexedSession.sourceKind,
+    repoRoot: '/synthetic/repository',
+    sessions: [indexedSession],
+    sessionsById: new Map([[indexedSession.id, indexedSession]]),
+    materializationDependencies: new Map([['dependencies-1', dependencySet]]),
+    legacyRawOwners: {
+      schemaVersion: 1,
+      sourceKind: indexedSession.sourceKind,
+      entryCount: 0,
+      accountedBytes: 0,
+      payload: {},
+    },
+  };
+  let receivedDependencySet = null;
+  const adapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async (context) => {
+      receivedDependencySet = context.dependencySet;
+      return materializedSession;
+    },
+  });
+
+  assert.equal(Object.hasOwn(indexedSession, 'rawEvents'), false);
+  assert.equal(Object.hasOwn(indexedSession, 'logicalEvents'), false);
+  assert.equal(
+    await materializeSessionWithAdapter(index, indexedSession, adapter, { indexRevision: 3 }),
+    materializedSession,
+  );
+  assert.equal(receivedDependencySet, dependencySet);
 });
 
 test('source-specific locator fields remain optional and opaque to the shared contract', () => {

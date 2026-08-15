@@ -2,7 +2,7 @@
 
 ## Status / 状态
 
-- Status: M1 architecture and authoritative milestone sequence accepted; M2 lifecycle-seam implementation may start / 状态：M1 架构与权威 milestone 顺序已接受；可以开始 M2 生命周期 seam 实现
+- Status: M1 architecture and authoritative milestone sequence accepted; M2 lifecycle-seam candidate implemented and gated, checkpoint review pending / 状态：M1 架构与权威 milestone 顺序已接受；M2 生命周期 seam 候选已实现并通过门槛，checkpoint 评审待定
 - Last updated: 2026-08-16 / 最近更新：2026-08-16
 - Review base: `6f8fa085fbd18344a973c8169be1998b5a71943d` on `towards-0.2.0` / 评审基线：`towards-0.2.0` 上的 `6f8fa085fbd18344a973c8169be1998b5a71943d`
 - Accepted review heads: contract head `e29fb566116eb1f30bdf5e8660ebc72a2c156e38` and authoritative-sequence reconciliation head `7c3db8dfd9895a57a63020035a6278e0c410f1a0` on branch `indexed-materialized-session-lifecycle`; both exact diffs contain only M0/M1 documentation / 已接受评审 head：分支 `indexed-materialized-session-lifecycle` 上的契约 head `e29fb566116eb1f30bdf5e8660ebc72a2c156e38` 与权威顺序对齐 head `7c3db8dfd9895a57a63020035a6278e0c410f1a0`；两个精确 diff 都只包含 M0／M1 文档

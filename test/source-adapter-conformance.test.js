@@ -9,6 +9,7 @@ const {
   buildEventDetailForSession,
   conformStructuredLogicalDetail,
   getSourceAdapter,
+  materializeSessionForIndex,
   readIndexedRawRecord,
   supportedSourceKinds,
   validateIndexOwnership,
@@ -86,7 +87,8 @@ async function assertAdapterIndexConforms(index, expectedPurposes) {
   let fallbackCount = 0;
   let fallbackReadbackVerified = false;
 
-  for (const session of index.sessions) {
+  for (const indexedSession of index.sessions) {
+    const session = await materializeSessionForIndex(index, indexedSession);
     for (const event of session.logicalEvents) {
       const detail = await buildEventDetailForSession(index, session, event.id, event.layer);
       assert.ok(detail, `${index.sourceKind} must hydrate ${event.id}`);
@@ -307,8 +309,23 @@ async function assertExpectedArchetypeCoverage(fixture) {
 }
 
 async function assertResponsibilityFixture(fixture) {
-  await assertConditionalResponsibilityArchetypes(fixture);
-  await assertExpectedArchetypeCoverage(fixture);
+  let materializedFixture = fixture;
+  if (!fixture.buildDetail) {
+    const sessions = [];
+    for (const indexedSession of fixture.index.sessions) {
+      sessions.push(await materializeSessionForIndex(fixture.index, indexedSession));
+    }
+    materializedFixture = {
+      ...fixture,
+      index: {
+        ...fixture.index,
+        sessions,
+        sessionsById: new Map(sessions.map((session) => [session.id, session])),
+      },
+    };
+  }
+  await assertConditionalResponsibilityArchetypes(materializedFixture);
+  await assertExpectedArchetypeCoverage(materializedFixture);
 }
 
 test('all registered adapters satisfy one source-neutral detail and Raw readback suite', async (t) => {
@@ -472,7 +489,7 @@ test('responsibility conformance separates conditional semantics from fixture co
 
 test('Code Mode composites carry outer content and renderer-local request/result/traceability purposes', async (t) => {
   const index = await buildCodeModeFixtureIndex(t);
-  const session = index.sessions[0];
+  const session = await materializeSessionForIndex(index, index.sessions[0]);
   const event = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   assert.ok(event);
   const detail = await buildEventDetailForSession(index, session, event.id, event.layer);

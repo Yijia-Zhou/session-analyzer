@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   createSourceAdapterRegistry,
   defineSourceAdapter,
+  SESSION_LIFECYCLE,
   unsupportedImagePreview,
   unsupportedLegacyRawRead,
   unsupportedLegacyRawResolver,
@@ -28,11 +29,13 @@ function descriptor(overrides = {}) {
     label: 'Fixture Source',
     homeOption: 'fixtureHome',
     homeLabel: 'Fixture home',
+    sessionLifecycle: SESSION_LIFECYCLE.RESIDENT_COMPLETE,
     defaultHome() { return 'fixture'; },
     query: queryContract(),
     discoverConfiguredProjects() {},
     discoverProjects() {},
     buildIndex() {},
+    async materializeSession({ indexedSession }) { return indexedSession; },
     buildEventDetail() {},
     readRawRecord() {},
     ...overrides,
@@ -65,6 +68,23 @@ test('source adapter descriptor accepts explicit paired optional capabilities', 
   assert.equal(adapter.readImagePreview, readImagePreview);
 });
 
+test('source adapter descriptor discriminates resident and indexed materialization modes', () => {
+  const resident = defineSourceAdapter(descriptor());
+  assert.equal(resident.sessionLifecycle, SESSION_LIFECYCLE.RESIDENT_COMPLETE);
+  assert.deepEqual(resident.materializedPrivateFields, []);
+
+  const strict = defineSourceAdapter(descriptor({
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    validateMaterializationDescriptor() {},
+    validateLegacyRawOwnerIndex() {},
+    validateMaterializedPrivateState() {},
+    materializedPrivateFields: ['_fixtureIndex'],
+  }));
+  assert.equal(strict.sessionLifecycle, SESSION_LIFECYCLE.INDEXED_MATERIALIZED);
+  assert.deepEqual(strict.materializedPrivateFields, ['_fixtureIndex']);
+  assert.equal(Object.isFrozen(strict.materializedPrivateFields), true);
+});
+
 test('source adapter descriptor rejects unknown fields and missing operations', () => {
   assert.throws(
     () => defineSourceAdapter(descriptor({ capabilities: {} })),
@@ -75,6 +95,16 @@ test('source adapter descriptor rejects unknown fields and missing operations', 
     () => defineSourceAdapter(descriptor({ buildEventDetail: undefined })),
     (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
       && /buildEventDetail must be a function/.test(error.message),
+  );
+  assert.throws(
+    () => defineSourceAdapter(descriptor({ materializeSession: undefined })),
+    (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
+      && /materializeSession must be a function/.test(error.message),
+  );
+  assert.throws(
+    () => defineSourceAdapter(descriptor({ sessionLifecycle: 'future-mode' })),
+    (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
+      && /sessionLifecycle must be/.test(error.message),
   );
   assert.throws(
     () => defineSourceAdapter(descriptor({ query: { ...queryContract(), getTimeline: null } })),
@@ -94,6 +124,23 @@ test('source adapter descriptor rejects unknown fields and missing operations', 
     () => defineSourceAdapter(symbolKeyed),
     (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
       && /must not contain symbol properties/.test(error.message),
+  );
+});
+
+test('indexed materialization mode requires its closed validation hooks', () => {
+  assert.throws(
+    () => defineSourceAdapter(descriptor({
+      sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    })),
+    (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
+      && /validateMaterializationDescriptor must be a function/.test(error.message),
+  );
+  assert.throws(
+    () => defineSourceAdapter(descriptor({
+      materializedPrivateFields: [],
+    })),
+    (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
+      && /only valid in indexed-materialized-v1/.test(error.message),
   );
 });
 

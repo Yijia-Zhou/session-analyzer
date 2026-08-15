@@ -5,17 +5,30 @@ const SOURCE_ADAPTER_DESCRIPTOR_KEYS = Object.freeze([
   'label',
   'homeOption',
   'homeLabel',
+  'sessionLifecycle',
   'defaultHome',
   'query',
   'discoverConfiguredProjects',
   'discoverProjects',
   'buildIndex',
+  'materializeSession',
   'buildEventDetail',
   'readRawRecord',
   'readImagePreview',
   'resolveLegacyRaw',
   'readLegacyRaw',
+  'validateMaterializationDescriptor',
+  'validateLegacyRawOwnerIndex',
+  'validateMaterializedPrivateState',
+  'materializedPrivateFields',
 ]);
+
+const SESSION_LIFECYCLE = Object.freeze({
+  RESIDENT_COMPLETE: 'resident-complete-v1',
+  INDEXED_MATERIALIZED: 'indexed-materialized-v1',
+});
+
+const SESSION_LIFECYCLES = new Set(Object.values(SESSION_LIFECYCLE));
 
 const REQUIRED_QUERY_OPERATIONS = Object.freeze([
   'fileSuggestions',
@@ -32,6 +45,7 @@ const REQUIRED_ADAPTER_OPERATIONS = Object.freeze([
   'discoverConfiguredProjects',
   'discoverProjects',
   'buildIndex',
+  'materializeSession',
   'buildEventDetail',
   'readRawRecord',
 ]);
@@ -90,6 +104,33 @@ function validateSourceKind(value) {
   return kind;
 }
 
+function validateSessionLifecycle(value, kind) {
+  if (!SESSION_LIFECYCLES.has(value)) {
+    throw adapterContractError(
+      `adapter ${kind}.sessionLifecycle must be ${[...SESSION_LIFECYCLES].join(' or ')}`,
+    );
+  }
+  return value;
+}
+
+function validateMaterializedPrivateFields(value, kind) {
+  if (!Array.isArray(value)) {
+    throw adapterContractError(`adapter ${kind}.materializedPrivateFields must be an array`);
+  }
+  const seen = new Set();
+  for (const field of value) {
+    requireNonEmptyString(field, `adapter ${kind}.materializedPrivateFields entry`);
+    if (!field.startsWith('_')) {
+      throw adapterContractError(`adapter ${kind}.materializedPrivateFields entries must start with _`);
+    }
+    if (seen.has(field)) {
+      throw adapterContractError(`adapter ${kind}.materializedPrivateFields must not contain duplicates`);
+    }
+    seen.add(field);
+  }
+  return Object.freeze([...value]);
+}
+
 function validateQuery(query, kind) {
   assertPlainDataObject(query, `adapter ${kind}.query`);
   for (const operation of REQUIRED_QUERY_OPERATIONS) {
@@ -126,6 +167,7 @@ function defineSourceAdapter(descriptor) {
   const label = requireNonEmptyString(descriptor.label, `adapter ${kind}.label`);
   const homeOption = requireNonEmptyString(descriptor.homeOption, `adapter ${kind}.homeOption`);
   const homeLabel = requireNonEmptyString(descriptor.homeLabel, `adapter ${kind}.homeLabel`);
+  const sessionLifecycle = validateSessionLifecycle(descriptor.sessionLifecycle, kind);
   if (!/^[a-z][A-Za-z0-9]*$/.test(homeOption)) {
     throw adapterContractError(`adapter ${kind}.homeOption must be a lower camel-case identifier`);
   }
@@ -146,21 +188,57 @@ function defineSourceAdapter(descriptor) {
     throw adapterContractError(`adapter ${kind} must provide resolveLegacyRaw and readLegacyRaw together`);
   }
 
+  let materializedPrivateFields = Object.freeze([]);
+  if (sessionLifecycle === SESSION_LIFECYCLE.INDEXED_MATERIALIZED) {
+    for (const operation of [
+      'validateMaterializationDescriptor',
+      'validateLegacyRawOwnerIndex',
+      'validateMaterializedPrivateState',
+    ]) {
+      if (typeof descriptor[operation] !== 'function') {
+        throw adapterContractError(`adapter ${kind}.${operation} must be a function in indexed-materialized-v1`);
+      }
+    }
+    materializedPrivateFields = validateMaterializedPrivateFields(
+      descriptor.materializedPrivateFields,
+      kind,
+    );
+  } else {
+    for (const operation of [
+      'validateMaterializationDescriptor',
+      'validateLegacyRawOwnerIndex',
+      'validateMaterializedPrivateState',
+    ]) {
+      if (descriptor[operation] !== undefined) {
+        throw adapterContractError(`adapter ${kind}.${operation} is only valid in indexed-materialized-v1`);
+      }
+    }
+    if (descriptor.materializedPrivateFields !== undefined) {
+      throw adapterContractError(`adapter ${kind}.materializedPrivateFields is only valid in indexed-materialized-v1`);
+    }
+  }
+
   return Object.freeze({
     kind,
     label,
     homeOption,
     homeLabel,
+    sessionLifecycle,
     defaultHome: descriptor.defaultHome,
     query: descriptor.query,
     discoverConfiguredProjects: descriptor.discoverConfiguredProjects,
     discoverProjects: descriptor.discoverProjects,
     buildIndex: descriptor.buildIndex,
+    materializeSession: descriptor.materializeSession,
     buildEventDetail: descriptor.buildEventDetail,
     readRawRecord: descriptor.readRawRecord,
     readImagePreview: descriptor.readImagePreview || unsupportedImagePreview,
     resolveLegacyRaw: descriptor.resolveLegacyRaw || unsupportedLegacyRawResolver,
     readLegacyRaw: descriptor.readLegacyRaw || unsupportedLegacyRawRead,
+    validateMaterializationDescriptor: descriptor.validateMaterializationDescriptor,
+    validateLegacyRawOwnerIndex: descriptor.validateLegacyRawOwnerIndex,
+    validateMaterializedPrivateState: descriptor.validateMaterializedPrivateState,
+    materializedPrivateFields,
   });
 }
 
@@ -183,6 +261,7 @@ module.exports = {
   OPTIONAL_ADAPTER_OPERATIONS,
   REQUIRED_ADAPTER_OPERATIONS,
   REQUIRED_QUERY_OPERATIONS,
+  SESSION_LIFECYCLE,
   SOURCE_ADAPTER_DESCRIPTOR_KEYS,
   createSourceAdapterRegistry,
   defineSourceAdapter,

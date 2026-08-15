@@ -2,13 +2,18 @@
 
 const os = require('node:os');
 const path = require('node:path');
+const { isDeepStrictEqual } = require('node:util');
 const codex = require('./codex');
 const claude = require('./claude');
 const { buildClaudeEventDetail } = require('./claude-detail');
 const {
   inspectDataProperty,
+  validateCanonicalDependencySet,
   validateCanonicalIndexFields,
+  validateCanonicalIndexedSessionShape,
+  validateCanonicalLegacyRawOwnerIndex,
   validateCanonicalLogicalEventShape,
+  validateCanonicalMaterializedSessionShape,
   validateCanonicalRawEventShape,
   validateCanonicalSessionShape,
   validateCanonicalSessionsProperty,
@@ -22,6 +27,7 @@ const {
 const {
   createSourceAdapterRegistry,
   defineSourceAdapter,
+  SESSION_LIFECYCLE,
 } = require('./source-adapter-contract');
 
 const SOURCE_KIND = Object.freeze({
@@ -30,6 +36,29 @@ const SOURCE_KIND = Object.freeze({
 });
 
 const claudeQuery = createSessionQuery();
+
+function abortError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error('The operation was aborted');
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+async function materializeResidentSession({ index, indexedSession, signal }) {
+  throwIfAborted(signal);
+  if (!(index?.sessionsById instanceof Map)
+    || index.sessionsById.get(indexedSession?.id) !== indexedSession) {
+    const error = new Error('Compatibility materialization requires exact captured Index ownership');
+    error.code = 'CANONICAL_CONTRACT_VIOLATION';
+    throw error;
+  }
+  return indexedSession;
+}
 
 function normalizeSourceKind(value) {
   const normalized = String(value || SOURCE_KIND.CODEX).trim().toLowerCase();
@@ -44,6 +73,7 @@ const codexAdapter = {
     label: 'Codex',
     homeOption: 'codexHome',
     homeLabel: 'Codex home',
+    sessionLifecycle: SESSION_LIFECYCLE.RESIDENT_COMPLETE,
     defaultHome: () => path.join(os.homedir(), '.codex'),
     query: codex.query,
     async discoverConfiguredProjects(context) {
@@ -58,6 +88,7 @@ const codexAdapter = {
         codexHome: context.sourceHome,
       });
     },
+    materializeSession: materializeResidentSession,
     async buildEventDetail(index, session, eventId, layer, options) {
       return codex.buildHydratedEventDetail(index, session, eventId, layer, options);
     },
@@ -87,6 +118,7 @@ const claudeAdapter = {
     label: 'Claude Code',
     homeOption: 'claudeHome',
     homeLabel: 'Claude home',
+    sessionLifecycle: SESSION_LIFECYCLE.RESIDENT_COMPLETE,
     defaultHome: () => path.join(os.homedir(), '.claude'),
     query: claudeQuery,
     async discoverConfiguredProjects(context) {
@@ -107,6 +139,7 @@ const claudeAdapter = {
         claudeHome: context.sourceHome,
       });
     },
+    materializeSession: materializeResidentSession,
     async buildEventDetail(index, session, eventId, layer, options) {
       return buildClaudeEventDetail(session, eventId, layer, options);
     },
@@ -154,21 +187,35 @@ function requireExplicitSourceKind(value, owner = 'source') {
   throw error;
 }
 
-function validateIndexOwnership(index, { allowUninspectableSessions = false } = {}) {
-  const indexKind = requireExplicitSourceKind(index?.sourceKind, 'index');
+function validateIndexOwnership(index, {
+  allowUninspectableSessions = false,
+  adapter: adapterOverride = null,
+} = {}) {
+  const indexKind = adapterOverride
+    ? index?.sourceKind
+    : requireExplicitSourceKind(index?.sourceKind, 'index');
+  const adapter = adapterOverride || requireSourceAdapter(indexKind);
+  if (adapter.kind !== indexKind) {
+    const error = new Error(`Source ownership mismatch: index ${indexKind}, adapter ${adapter.kind}`);
+    error.code = 'SOURCE_OWNERSHIP_MISMATCH';
+    throw error;
+  }
+  const allowResidentComplete = adapter.sessionLifecycle === SESSION_LIFECYCLE.RESIDENT_COMPLETE;
   const sessionsById = index?.sessionsById;
   const sessionsPropertyDescriptor = inspectDataProperty(index, 'sessions');
   const validatedSessions = new Set();
   const listedSessionIds = new Set();
   const validateSession = (session, { fromArray = false, mapKey } = {}) => {
-    const sessionKind = requireExplicitSourceKind(session?.sourceKind, `session ${session?.id || '<unknown>'}`);
+    const sessionKind = adapterOverride
+      ? session?.sourceKind
+      : requireExplicitSourceKind(session?.sourceKind, `session ${session?.id || '<unknown>'}`);
     if (sessionKind !== indexKind) {
       const error = new Error(`Source ownership mismatch: index ${indexKind}, session ${session?.id || '<unknown>'} ${sessionKind}`);
       error.code = 'SOURCE_OWNERSHIP_MISMATCH';
       throw error;
     }
     if (!validatedSessions.has(session)) {
-      validateCanonicalSessionShape(session, indexKind);
+      validateCanonicalIndexedSessionShape(session, indexKind, { allowResidentComplete });
       validatedSessions.add(session);
     }
     if (mapKey !== undefined && session.id !== mapKey) {
@@ -207,7 +254,181 @@ function validateIndexOwnership(index, { allowUninspectableSessions = false } = 
 
   validateCanonicalIndexFields(index);
   validateCanonicalSessionsProperty(index, { allowUninspectableSessions });
+  if (!allowResidentComplete) {
+    if (!(index.materializationDependencies instanceof Map)) {
+      const error = new Error('Canonical strict Index.materializationDependencies must be a Map');
+      error.code = 'CANONICAL_CONTRACT_VIOLATION';
+      throw error;
+    }
+    let dependencyBytes = 0;
+    for (const [dependencyId, dependencySet] of index.materializationDependencies) {
+      if (typeof dependencyId !== 'string' || dependencyId.trim() === '') {
+        const error = new Error('Canonical materialization dependency Map keys must be non-empty strings');
+        error.code = 'CANONICAL_CONTRACT_VIOLATION';
+        throw error;
+      }
+      dependencyBytes += validateCanonicalDependencySet(
+        dependencySet,
+        indexKind,
+        dependencyId,
+      );
+    }
+    if (dependencyBytes > 128 * 1024 * 1024) {
+      const error = new Error('Canonical Index materialization dependency store exceeds 128 MiB');
+      error.code = 'CANONICAL_CONTRACT_VIOLATION';
+      throw error;
+    }
+    for (const session of validatedSessions) {
+      const descriptor = session.materializationDescriptor;
+      const dependencySet = index.materializationDependencies.get(descriptor.dependencySetId);
+      if (!dependencySet) {
+        const error = new Error(`Missing materialization dependency set ${descriptor.dependencySetId}`);
+        error.code = 'CANONICAL_CONTRACT_VIOLATION';
+        throw error;
+      }
+      const validationSnapshot = structuredClone({
+        indexedSession: session,
+        descriptor,
+        dependencySet,
+      });
+      adapter.validateMaterializationDescriptor({
+        index,
+        indexedSession: session,
+        descriptor,
+        dependencySet,
+      });
+      if (!isDeepStrictEqual(validationSnapshot, {
+        indexedSession: session,
+        descriptor,
+        dependencySet,
+      })) {
+        const error = new Error('Adapter materialization descriptor validation must not mutate inputs');
+        error.code = 'SOURCE_ADAPTER_CONTRACT_VIOLATION';
+        throw error;
+      }
+    }
+    validateCanonicalLegacyRawOwnerIndex(index.legacyRawOwners, indexKind);
+    const legacyRawOwnersSnapshot = structuredClone(index.legacyRawOwners);
+    adapter.validateLegacyRawOwnerIndex({
+      index,
+      legacyRawOwners: index.legacyRawOwners,
+    });
+    if (!isDeepStrictEqual(legacyRawOwnersSnapshot, index.legacyRawOwners)) {
+      const error = new Error('Adapter legacy Raw owner validation must not mutate inputs');
+      error.code = 'SOURCE_ADAPTER_CONTRACT_VIOLATION';
+      throw error;
+    }
+  }
   return indexKind;
+}
+
+function captureResidentCompatibilityState(index, session) {
+  return {
+    sessions: index.sessions,
+    sessionsById: index.sessionsById,
+    id: session.id,
+    sourceKind: session.sourceKind,
+    rawEvents: session.rawEvents,
+    rawEventLength: session.rawEvents.length,
+    logicalEvents: session.logicalEvents,
+    logicalEventLength: session.logicalEvents.length,
+    counts: session.counts,
+    countEntries: Object.entries(session.counts),
+  };
+}
+
+function validateResidentCompatibilityState(index, session, snapshot) {
+  const unchanged = index.sessions === snapshot.sessions
+    && index.sessionsById === snapshot.sessionsById
+    && session.id === snapshot.id
+    && session.sourceKind === snapshot.sourceKind
+    && session.rawEvents === snapshot.rawEvents
+    && session.rawEvents.length === snapshot.rawEventLength
+    && session.logicalEvents === snapshot.logicalEvents
+    && session.logicalEvents.length === snapshot.logicalEventLength
+    && session.counts === snapshot.counts
+    && snapshot.countEntries.every(([key, value]) => session.counts[key] === value)
+    && Object.keys(session.counts).length === snapshot.countEntries.length;
+  if (!unchanged) {
+    const error = new Error('Compatibility materialization mutated the captured Index or resident Session');
+    error.code = 'MATERIALIZATION_CONTRACT_VIOLATION';
+    throw error;
+  }
+}
+
+async function materializeSessionForIndex(index, indexedSession, options = {}) {
+  const indexKind = validateCanonicalIndexFields(index);
+  const adapter = requireSourceAdapter(indexKind);
+  return materializeSessionWithAdapter(index, indexedSession, adapter, options);
+}
+
+async function materializeSessionWithAdapter(index, indexedSession, adapter, options = {}) {
+  const indexKind = validateIndexOwnership(index, { adapter });
+  if (!(index?.sessionsById instanceof Map)
+    || index.sessionsById.get(indexedSession?.id) !== indexedSession) {
+    const error = new Error(`Canonical Index does not own Session ${indexedSession?.id || '<unknown>'}`);
+    error.code = 'CANONICAL_CONTRACT_VIOLATION';
+    throw error;
+  }
+  const allowResidentComplete = adapter.sessionLifecycle === SESSION_LIFECYCLE.RESIDENT_COMPLETE;
+  validateCanonicalIndexedSessionShape(indexedSession, indexKind, { allowResidentComplete });
+  throwIfAborted(options.signal);
+
+  const dependencySet = allowResidentComplete
+    ? undefined
+    : index.materializationDependencies?.get(
+      indexedSession.materializationDescriptor.dependencySetId,
+    );
+  const compatibilitySnapshot = allowResidentComplete
+    ? captureResidentCompatibilityState(index, indexedSession)
+    : null;
+  const strictIndexedSnapshot = allowResidentComplete
+    ? ''
+    : JSON.stringify(indexedSession);
+  const materializedSession = await adapter.materializeSession({
+    index,
+    indexedSession,
+    dependencySet,
+    signal: options.signal,
+    indexRevision: options.indexRevision,
+  });
+  throwIfAborted(options.signal);
+  if (compatibilitySnapshot) {
+    validateResidentCompatibilityState(index, indexedSession, compatibilitySnapshot);
+  } else if (JSON.stringify(indexedSession) !== strictIndexedSnapshot) {
+    const error = new Error('Materialization mutated the Indexed Session');
+    error.code = 'MATERIALIZATION_CONTRACT_VIOLATION';
+    throw error;
+  }
+  validateCanonicalMaterializedSessionShape(
+    indexedSession,
+    materializedSession,
+    indexKind,
+    {
+      allowResidentComplete,
+      index,
+      allowedPrivateFields: adapter.materializedPrivateFields,
+    },
+  );
+  if (!allowResidentComplete) {
+    const privateValidationSnapshot = structuredClone({
+      indexedSession,
+      materializedSession,
+    });
+    adapter.validateMaterializedPrivateState({
+      indexedSession,
+      session: materializedSession,
+    });
+    if (!isDeepStrictEqual(privateValidationSnapshot, {
+      indexedSession,
+      materializedSession,
+    })) {
+      const error = new Error('Adapter materialized private-state validation must not mutate inputs');
+      error.code = 'SOURCE_ADAPTER_CONTRACT_VIOLATION';
+      throw error;
+    }
+  }
+  return materializedSession;
 }
 
 function supportedSourceKinds() {
@@ -345,6 +566,8 @@ module.exports = {
   createSourceAdapterRegistry,
   defineSourceAdapter,
   getSourceAdapter,
+  materializeSessionForIndex,
+  materializeSessionWithAdapter,
   normalizeSourceKind,
   queryForIndex,
   readImagePreviewForSession,
