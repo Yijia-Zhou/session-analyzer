@@ -7,7 +7,7 @@
 - Working branch: `indexed-materialized-session-lifecycle` / 工作分支：`indexed-materialized-session-lifecycle`
 - Baseline branch: `towards-0.2.0` / 基线分支：`towards-0.2.0`
 - Exact baseline commit: `6f8fa085fbd18344a973c8169be1998b5a71943d` / 精确基线 commit：`6f8fa085fbd18344a973c8169be1998b5a71943d`
-- Current review head: baseline commit plus the uncommitted M0/M1 documentation diff; no production lifecycle code / 当前评审 head：基线 commit 加未提交的 M0／M1 文档 diff；没有生产生命周期代码
+- Current review artifact: committed M0/M1 documentation checkpoints on this branch; each review dispatch records its exact immutable Git head; no production lifecycle code / 当前评审 artifact：本分支已提交的 M0／M1 文档 checkpoint；每次 review dispatch 都记录其精确不可变 Git head；没有生产生命周期代码
 - Design packet: `docs/design-docs/indexed-materialized-session-lifecycle.md` / 设计包：`docs/design-docs/indexed-materialized-session-lifecycle.md`
 
 ## Objective / 目标
@@ -72,7 +72,8 @@ No production M2 work may be recorded below until the review log contains an exp
 | Review / 评审 | Exact scope / 精确范围 | Verdict / 结论 | Findings and disposition / Finding 与处理 |
 | --- | --- | --- | --- |
 | M1 fresh architecture review, pass 1 / M1 fresh 架构评审，第 1 轮 | Working-tree documentation diff against `6f8fa085...`; independent `gpt-5.6-sol`, xhigh, fresh context / 相对 `6f8fa085...` 的 working-tree 文档 diff；独立 `gpt-5.6-sol`、xhigh、fresh context | `CHANGES_REQUIRED` / `CHANGES_REQUIRED` | Accepted M0 stop-condition direction; eight blockers: executable milestone transition, closed fields/budgets/equality, filtered `timelineIndex`, async query semantics/cancellation, staged adapter APIs, Codex fork descriptor, Claude dependency closure, bounded scheduler/error transitions. All are addressed in the revised design; exact re-review pending. / 接受 M0 停止条件方向；八项 blocker：可执行 milestone 过渡、封闭字段／budget／等值、过滤后 `timelineIndex`、异步查询语义／cancellation、staged adapter API、Codex fork descriptor、Claude dependency 闭包、有界 scheduler／error transition。修订设计已逐项处理；等待精确复审。 |
-| M1 architecture re-review / M1 架构复审 | Revised exact artifact manifest against `6f8fa085...` / 相对 `6f8fa085...` 的修订精确 artifact manifest | Pending / 待定 | Must explicitly close or reopen every pass-1 blocker; no M2 before acceptance / 必须显式关闭或重新打开第 1 轮每个 blocker；接受前不进入 M2 |
+| M1 architecture re-review, pass 2 / M1 架构复审，第 2 轮 | Exact immutable head `a65778e7ac5a7ae14c16d3e11b16b0698c3f8fc1` against `6f8fa085...` / 相对 `6f8fa085...` 的精确不可变 head `a65778e7ac5a7ae14c16d3e11b16b0698c3f8fc1` | `CHANGES_REQUIRED` / `CHANGES_REQUIRED` | Closed blockers 1, 3, 4, 5, 7, and 8. Reopened field-specific unresolved relationship compatibility and Codex's valid three-segment membership; new blocker removed an unconsumed Raw query segment fact. Atomic replacement wording and committed-head description were also normalized. / 关闭 blocker 1、3、4、5、7、8。重新打开按字段允许 unresolved relationship 的兼容性与 Codex 有效三 segment membership；新 blocker 要求移除无人消费的 Raw query segment fact。同时统一原子替换措辞与已提交 head 描述。 |
+| M1 architecture re-review, pass 3 / M1 架构复审，第 3 轮 | Pending next immutable documentation head / 等待下一个不可变文档 head | Pending / 待定 | Must close the two reopened and one new blocker before acceptance / 接受前必须关闭两个 reopened 与一个 new blocker |
 
 ## Planned verification / 计划验证
 
