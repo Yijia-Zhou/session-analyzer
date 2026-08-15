@@ -182,6 +182,61 @@ function graphFingerprintMatches(value, captured) {
   return graphFingerprint(value, captured.identityState) === captured.digest;
 }
 
+function materializationContractViolation(message, cause, retainCause = cause !== undefined) {
+  const error = new Error(message);
+  error.code = 'MATERIALIZATION_CONTRACT_VIOLATION';
+  if (retainCause) error.cause = cause;
+  return error;
+}
+
+function callbackErrorText(error) {
+  if (error instanceof Error && error.message) return error.message;
+  return String(error || 'unknown adapter rejection');
+}
+
+function invokeReadOnlyMaterializationValidator({
+  callback,
+  args,
+  guardedValues,
+  label,
+}) {
+  const fingerprints = guardedValues.map((value) => captureGraphFingerprint(value));
+  let callbackRejected = false;
+  let callbackError;
+  try {
+    callback(args);
+  } catch (error) {
+    callbackRejected = true;
+    callbackError = error;
+  }
+  let inputsUnchanged = false;
+  try {
+    inputsUnchanged = guardedValues.every((value, index) => (
+      graphFingerprintMatches(value, fingerprints[index])
+    ));
+  } catch (error) {
+    throw materializationContractViolation(
+      `${label} left inputs unverifiable`,
+      callbackRejected ? callbackError : error,
+      true,
+    );
+  }
+  if (!inputsUnchanged) {
+    throw materializationContractViolation(
+      `${label} must not mutate inputs`,
+      callbackRejected ? callbackError : undefined,
+      callbackRejected,
+    );
+  }
+  if (callbackRejected) {
+    throw materializationContractViolation(
+      `${label} rejected: ${callbackErrorText(callbackError)}`,
+      callbackError,
+      true,
+    );
+  }
+}
+
 function abortError(signal) {
   if (signal?.reason instanceof Error) return signal.reason;
   const error = new Error('The operation was aborted');
@@ -423,7 +478,6 @@ function validateIndexOwnership(index, {
       error.code = 'CANONICAL_CONTRACT_VIOLATION';
       throw error;
     }
-    const adapterValidationFingerprint = captureGraphFingerprint(index);
     for (const session of validatedSessions) {
       const descriptor = session.materializationDescriptor;
       const dependencySet = index.materializationDependencies.get(descriptor.dependencySetId);
@@ -432,23 +486,28 @@ function validateIndexOwnership(index, {
         error.code = 'CANONICAL_CONTRACT_VIOLATION';
         throw error;
       }
-      adapter.validateMaterializationDescriptor({
-        index,
-        indexedSession: session,
-        descriptor,
-        dependencySet,
+      invokeReadOnlyMaterializationValidator({
+        callback: adapter.validateMaterializationDescriptor,
+        args: {
+          index,
+          indexedSession: session,
+          descriptor,
+          dependencySet,
+        },
+        guardedValues: [index],
+        label: 'Adapter materialization descriptor validation',
       });
     }
     validateCanonicalLegacyRawOwnerIndex(index.legacyRawOwners, indexKind);
-    adapter.validateLegacyRawOwnerIndex({
-      index,
-      legacyRawOwners: index.legacyRawOwners,
+    invokeReadOnlyMaterializationValidator({
+      callback: adapter.validateLegacyRawOwnerIndex,
+      args: {
+        index,
+        legacyRawOwners: index.legacyRawOwners,
+      },
+      guardedValues: [index],
+      label: 'Adapter legacy Raw owner validation',
     });
-    if (!graphFingerprintMatches(index, adapterValidationFingerprint)) {
-      const error = new Error('Adapter strict Index validation must not mutate the Index');
-      error.code = 'SOURCE_ADAPTER_CONTRACT_VIOLATION';
-      throw error;
-    }
   }
   return indexKind;
 }
@@ -477,18 +536,42 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
       indexedSession.materializationDescriptor.dependencySetId,
     );
   const materializationInputFingerprint = captureGraphFingerprint(index);
-  const materializedSession = await adapter.materializeSession({
-    index,
-    indexedSession,
-    dependencySet,
-    signal: options.signal,
-    indexRevision: options.indexRevision,
-  });
-  if (!graphFingerprintMatches(index, materializationInputFingerprint)) {
-    const error = new Error('Materialization mutated the captured Index or Indexed Session');
-    error.code = 'MATERIALIZATION_CONTRACT_VIOLATION';
-    throw error;
+  let materializedSession;
+  let materializationRejected = false;
+  let materializationError;
+  try {
+    materializedSession = await adapter.materializeSession({
+      index,
+      indexedSession,
+      dependencySet,
+      signal: options.signal,
+      indexRevision: options.indexRevision,
+    });
+  } catch (error) {
+    materializationRejected = true;
+    materializationError = error;
   }
+  let materializationInputsUnchanged = false;
+  try {
+    materializationInputsUnchanged = graphFingerprintMatches(
+      index,
+      materializationInputFingerprint,
+    );
+  } catch (error) {
+    throw materializationContractViolation(
+      'Materialization left the captured Index unverifiable',
+      materializationRejected ? materializationError : error,
+      true,
+    );
+  }
+  if (!materializationInputsUnchanged) {
+    throw materializationContractViolation(
+      'Materialization mutated the captured Index or Indexed Session',
+      materializationRejected ? materializationError : undefined,
+      materializationRejected,
+    );
+  }
+  if (materializationRejected) throw materializationError;
   throwIfAborted(options.signal);
   validateCanonicalMaterializedSessionShape(
     indexedSession,
@@ -501,18 +584,15 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
     },
   );
   if (!allowResidentComplete) {
-    const privateIndexFingerprint = captureGraphFingerprint(index);
-    const privateSessionFingerprint = captureGraphFingerprint(materializedSession);
-    adapter.validateMaterializedPrivateState({
-      indexedSession,
-      session: materializedSession,
+    invokeReadOnlyMaterializationValidator({
+      callback: adapter.validateMaterializedPrivateState,
+      args: {
+        indexedSession,
+        session: materializedSession,
+      },
+      guardedValues: [index, materializedSession],
+      label: 'Adapter materialized private-state validation',
     });
-    if (!graphFingerprintMatches(index, privateIndexFingerprint)
-      || !graphFingerprintMatches(materializedSession, privateSessionFingerprint)) {
-      const error = new Error('Adapter materialized private-state validation must not mutate inputs');
-      error.code = 'SOURCE_ADAPTER_CONTRACT_VIOLATION';
-      throw error;
-    }
   }
   return materializedSession;
 }

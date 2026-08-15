@@ -95,6 +95,22 @@ const MATERIALIZED_SESSION_ALLOWED_PUBLIC_FIELDS = new Set([
   'analysis',
   'presentationIndexes',
 ]);
+const MATERIALIZED_ANALYSIS_FIELDS = Object.freeze([
+  'sessionId',
+  'title',
+  'counts',
+  'toolUsage',
+  'failedCommands',
+  'slowCommands',
+  'patchedFiles',
+  'tokenStats',
+  'timelineStats',
+  'protocolStats',
+]);
+const MATERIALIZED_PRESENTATION_INDEX_FIELDS = Object.freeze([
+  'codeModeDeclaredRequests',
+]);
+const CODE_MODE_REQUEST_EVIDENCE = 'declared_source';
 
 const CANONICAL_CONTRACT = Object.freeze({
   index: Object.freeze([
@@ -634,6 +650,96 @@ function deepEqualPlainValue(left, right, seen = new Map()) {
   return leftKeys.every((key) => deepEqualPlainValue(left[key], right[key], seen));
 }
 
+function validateMaterializedAnalysis(analysis) {
+  requirePlainObject(analysis, 'materialized session.analysis');
+  requireExactOwnKeys(
+    analysis,
+    MATERIALIZED_ANALYSIS_FIELDS,
+    'materialized session.analysis',
+  );
+  validateBoundedPlainValue(analysis, 'materialized session.analysis', {
+    maxDepth: 32,
+    maxEntries: 1_000_000,
+    maxStringBytes: 16 * 1024 * 1024,
+  });
+}
+
+function validateMaterializedPresentationIndexes(presentationIndexes, logicalEvents) {
+  requirePlainObject(presentationIndexes, 'materialized session.presentationIndexes');
+  requireExactOwnKeys(
+    presentationIndexes,
+    MATERIALIZED_PRESENTATION_INDEX_FIELDS,
+    'materialized session.presentationIndexes',
+  );
+  const declaredRequests = presentationIndexes.codeModeDeclaredRequests;
+  if (!(declaredRequests instanceof Map)
+    || Object.getPrototypeOf(declaredRequests) !== Map.prototype
+    || Reflect.ownKeys(declaredRequests).length !== 0) {
+    throw contractError(
+      'materialized session.presentationIndexes',
+      'codeModeDeclaredRequests',
+      'must be a plain Map without custom properties',
+    );
+  }
+  const logicalIds = new Set(logicalEvents.map((event) => event.id));
+  for (const [eventId, fact] of Map.prototype.entries.call(declaredRequests)) {
+    requireString(eventId, 'materialized session.presentationIndexes', 'eventId', { nonEmpty: true });
+    if (!logicalIds.has(eventId)) {
+      throw contractError(
+        'materialized session.presentationIndexes',
+        'eventId',
+        `must identify an owned Logical Event: ${eventId}`,
+      );
+    }
+    requirePlainObject(fact, 'materialized session.presentationIndexes.codeModeDeclaredRequests');
+    requireExactOwnKeys(
+      fact,
+      ['toolNames', 'requestEvidence'],
+      'materialized session.presentationIndexes.codeModeDeclaredRequests fact',
+    );
+    requireArray(
+      fact.toolNames,
+      'materialized session.presentationIndexes.codeModeDeclaredRequests fact',
+      'toolNames',
+    );
+    if (fact.toolNames.length === 0) {
+      throw contractError(
+        'materialized session.presentationIndexes.codeModeDeclaredRequests fact',
+        'toolNames',
+        'must not be empty',
+      );
+    }
+    validateBoundedPlainValue(
+      fact.toolNames,
+      'materialized session.presentationIndexes.codeModeDeclaredRequests fact.toolNames',
+    );
+    const uniqueNames = new Set();
+    for (const toolName of fact.toolNames) {
+      requireString(
+        toolName,
+        'materialized session.presentationIndexes.codeModeDeclaredRequests fact',
+        'toolNames entry',
+        { nonEmpty: true },
+      );
+      if (uniqueNames.has(toolName)) {
+        throw contractError(
+          'materialized session.presentationIndexes.codeModeDeclaredRequests fact',
+          'toolNames',
+          'must contain unique names',
+        );
+      }
+      uniqueNames.add(toolName);
+    }
+    if (fact.requestEvidence !== CODE_MODE_REQUEST_EVIDENCE) {
+      throw contractError(
+        'materialized session.presentationIndexes.codeModeDeclaredRequests fact',
+        'requestEvidence',
+        `must equal ${CODE_MODE_REQUEST_EVIDENCE}`,
+      );
+    }
+  }
+}
+
 function validateCompleteSessionEventOwnership(session, expectedSourceKind, { strictReferences = false } = {}) {
   validateCanonicalSessionShape(session, expectedSourceKind);
   const rawById = new Map();
@@ -746,8 +852,11 @@ function validateCanonicalMaterializedSessionShape(
         throw contractError('materialized session', field, 'must equal the Indexed Session copied fact');
       }
     }
-    requirePlainObject(materializedSession.analysis, 'materialized session.analysis');
-    requireObject(materializedSession.presentationIndexes, 'materialized session.presentationIndexes');
+    validateMaterializedAnalysis(materializedSession.analysis);
+    validateMaterializedPresentationIndexes(
+      materializedSession.presentationIndexes,
+      materializedSession.logicalEvents,
+    );
     const allowedPrivate = new Set(allowedPrivateFields);
     for (const key of Object.keys(materializedSession)) {
       if (MATERIALIZED_SESSION_ALLOWED_PUBLIC_FIELDS.has(key)) continue;

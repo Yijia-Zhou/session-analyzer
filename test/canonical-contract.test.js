@@ -131,8 +131,19 @@ function makeStrictMaterializedSession(indexedSession) {
     materializationSnapshotId: indexedSession.materializationDescriptor.sourceSnapshotId,
     rawEvents: [raw],
     logicalEvents: [event],
-    analysis: {},
-    presentationIndexes: {},
+    analysis: {
+      sessionId: indexedSession.id,
+      title: indexedSession.title,
+      counts: indexedSession.counts,
+      toolUsage: [],
+      failedCommands: [],
+      slowCommands: [],
+      patchedFiles: [],
+      tokenStats: {},
+      timelineStats: {},
+      protocolStats: {},
+    },
+    presentationIndexes: { codeModeDeclaredRequests: new Map() },
   };
 }
 
@@ -374,6 +385,34 @@ test('strict Indexed and Materialized Session validators enforce the future life
     ),
     { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
   );
+  assert.throws(
+    () => validateCanonicalMaterializedSessionShape(
+      indexedSession,
+      {
+        ...materializedSession,
+        analysis: {
+          ...materializedSession.analysis,
+          parsedCorrelation: new Set(['raw']),
+        },
+      },
+      'fixture-source',
+    ),
+    { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
+  );
+  assert.throws(
+    () => validateCanonicalMaterializedSessionShape(
+      indexedSession,
+      {
+        ...materializedSession,
+        presentationIndexes: {
+          ...materializedSession.presentationIndexes,
+          alternateEvents: [{ id: 'shadow' }],
+        },
+      },
+      'fixture-source',
+    ),
+    { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
+  );
 
   let getterCalled = false;
   const accessorArray = [];
@@ -475,7 +514,7 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
       indexedSession,
       mutatingValidatorAdapter,
     ),
-    { code: 'SOURCE_ADAPTER_CONTRACT_VIOLATION' },
+    { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
   );
 
   const mutatingMaterializerIndex = {
@@ -526,7 +565,147 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
       indexedSession,
       mutatingPrivateValidatorAdapter,
     ),
-    { code: 'SOURCE_ADAPTER_CONTRACT_VIOLATION' },
+    { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
+  );
+
+  const freshStrictIndex = () => ({
+    ...index,
+    sessions: [indexedSession],
+    sessionsById: new Map([[indexedSession.id, indexedSession]]),
+    materializationDependencies: new Map([['dependencies-1', dependencySet]]),
+    legacyRawOwners: { ...index.legacyRawOwners },
+  });
+  const throwingMutationCases = [
+    {
+      name: 'descriptor validator',
+      adapter: makeLifecycleAdapter({
+        kind: indexedSession.sourceKind,
+        sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+        materializeSession: async () => makeStrictMaterializedSession(indexedSession),
+        strictOverrides: {
+          validateMaterializationDescriptor({ index: callbackIndex }) {
+            callbackIndex.repoRoot = '/descriptor-mutated-before-throw';
+            throw new Error('descriptor rejected');
+          },
+        },
+      }),
+    },
+    {
+      name: 'legacy validator',
+      adapter: makeLifecycleAdapter({
+        kind: indexedSession.sourceKind,
+        sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+        materializeSession: async () => makeStrictMaterializedSession(indexedSession),
+        strictOverrides: {
+          validateLegacyRawOwnerIndex({ index: callbackIndex }) {
+            callbackIndex.repoRoot = '/legacy-mutated-before-throw';
+            throw new Error('legacy owner rejected');
+          },
+        },
+      }),
+    },
+    {
+      name: 'materializer',
+      adapter: makeLifecycleAdapter({
+        kind: indexedSession.sourceKind,
+        sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+        materializeSession: async ({ index: callbackIndex }) => {
+          callbackIndex.repoRoot = '/materializer-mutated-before-throw';
+          throw new Error('materializer rejected');
+        },
+      }),
+    },
+    {
+      name: 'private validator',
+      adapter: makeLifecycleAdapter({
+        kind: indexedSession.sourceKind,
+        sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+        materializeSession: async () => makeStrictMaterializedSession(indexedSession),
+        strictOverrides: {
+          validateMaterializedPrivateState({ session }) {
+            session.title = 'private state mutated before throw';
+            throw new Error('private state rejected');
+          },
+        },
+      }),
+    },
+  ];
+  for (const fixture of throwingMutationCases) {
+    await assert.rejects(
+      materializeSessionWithAdapter(
+        freshStrictIndex(),
+        indexedSession,
+        fixture.adapter,
+      ),
+      (error) => {
+        assert.equal(error.code, 'MATERIALIZATION_CONTRACT_VIOLATION', fixture.name);
+        assert.ok(error.cause instanceof Error, fixture.name);
+        return true;
+      },
+    );
+  }
+
+  const validatorRejectionCases = [
+    {
+      name: 'descriptor validator',
+      override: {
+        validateMaterializationDescriptor() {
+          throw new Error('descriptor rejected without mutation');
+        },
+      },
+    },
+    {
+      name: 'legacy validator',
+      override: {
+        validateLegacyRawOwnerIndex() {
+          throw new Error('legacy rejected without mutation');
+        },
+      },
+    },
+    {
+      name: 'private validator',
+      override: {
+        validateMaterializedPrivateState() {
+          throw new Error('private rejected without mutation');
+        },
+      },
+    },
+  ];
+  for (const fixture of validatorRejectionCases) {
+    const rejectingAdapter = makeLifecycleAdapter({
+      kind: indexedSession.sourceKind,
+      sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+      materializeSession: async () => makeStrictMaterializedSession(indexedSession),
+      strictOverrides: fixture.override,
+    });
+    await assert.rejects(
+      materializeSessionWithAdapter(
+        freshStrictIndex(),
+        indexedSession,
+        rejectingAdapter,
+      ),
+      (error) => {
+        assert.equal(error.code, 'MATERIALIZATION_CONTRACT_VIOLATION', fixture.name);
+        assert.ok(error.cause instanceof Error, fixture.name);
+        return true;
+      },
+    );
+  }
+
+  const sourceFailure = new Error('source became stale');
+  sourceFailure.code = 'INDEXED_SOURCE_STALE';
+  const sourceFailureAdapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async () => { throw sourceFailure; },
+  });
+  await assert.rejects(
+    materializeSessionWithAdapter(
+      freshStrictIndex(),
+      indexedSession,
+      sourceFailureAdapter,
+    ),
+    (error) => error === sourceFailure,
   );
 });
 
