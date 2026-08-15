@@ -2,10 +2,10 @@
 
 ## Status / 状态
 
-- Status: proposed M1 architecture; production implementation is blocked until an independent architecture review accepts this packet / 状态：M1 架构提案；独立架构评审接受本评审包之前，禁止进入生产实现
+- Status: M1 architecture accepted by independent pass-3 review; M2 is permitted but has not started at this mandatory checkpoint / 状态：M1 架构已获独立第 3 轮评审接受；M2 已获准但在此强制检查点尚未开始
 - Last updated: 2026-08-16 / 最近更新：2026-08-16
 - Review base: `6f8fa085fbd18344a973c8169be1998b5a71943d` on `towards-0.2.0` / 评审基线：`towards-0.2.0` 上的 `6f8fa085fbd18344a973c8169be1998b5a71943d`
-- Review head: branch `indexed-materialized-session-lifecycle`, consisting only of this M0/M1 documentation diff at this checkpoint / 评审头：分支 `indexed-materialized-session-lifecycle`，本检查点只包含 M0／M1 文档差异
+- Accepted review head: `e29fb566116eb1f30bdf5e8660ebc72a2c156e38` on branch `indexed-materialized-session-lifecycle`; exact base-to-head diff contains only M0/M1 documentation / 已接受评审 head：分支 `indexed-materialized-session-lifecycle` 上的 `e29fb566116eb1f30bdf5e8660ebc72a2c156e38`；精确 base-to-head diff 只包含 M0／M1 文档
 - Related adapter design: `docs/design-docs/transcript-source-adapters.md` / 相关 adapter 设计：`docs/design-docs/transcript-source-adapters.md`
 - Related timeline design: `docs/design-docs/logical-event-timeline.md` / 相关时间线设计：`docs/design-docs/logical-event-timeline.md`
 - Related performance design: `docs/design-docs/timeline-loading-and-rendering-performance.md` / 相关性能设计：`docs/design-docs/timeline-loading-and-rendering-performance.md`
@@ -350,4 +350,4 @@ Resident routes are `/api/state`, project-wide `/api/sessions`, and project-wide
 
 ## Acceptance gate / 接受门槛
 
-An independent fresh-context architecture reviewer must inspect the exact M0/M1 diff, this evidence, the current source/query/server contracts, both adapter sketches, fork/derived semantics, search representation, failure/cancellation behavior, compatibility, and non-goals. Every blocking finding must be resolved in the packet and re-reviewed. Only an explicit accepted verdict opens M2; this document does not self-approve. / 独立且 fresh-context 的架构评审者必须检查精确 M0／M1 diff、本证据、当前 source／query／server 契约、两种 adapter 草图、fork／derived 语义、搜索表示、失败／cancellation 行为、兼容性与非目标。每个阻断 finding 都必须在评审包中解决并复审。只有显式 accepted verdict 才能开放 M2；本文档不自我批准。
+An independent fresh-context architecture reviewer must inspect the exact M0/M1 diff, this evidence, the current source/query/server contracts, both adapter sketches, fork/derived semantics, search representation, failure/cancellation behavior, compatibility, and non-goals. Every blocking finding must be resolved in the packet and re-reviewed. This gate was satisfied on 2026-08-16: after two `CHANGES_REQUIRED` passes, pass 3 explicitly accepted exact head `e29fb566116eb1f30bdf5e8660ebc72a2c156e38` with no new blockers. M2 is therefore permitted, but no M2 production work is part of this checkpoint. / 独立且 fresh-context 的架构评审者必须检查精确 M0／M1 diff、本证据、当前 source／query／server 契约、两种 adapter 草图、fork／derived 语义、搜索表示、失败／cancellation 行为、兼容性与非目标。每个阻断 finding 都必须在评审包中解决并复审。该门槛已于 2026-08-16 满足：两轮 `CHANGES_REQUIRED` 后，第 3 轮以无新增 blocker 的结论显式接受精确 head `e29fb566116eb1f30bdf5e8660ebc72a2c156e38`。因此 M2 已获准，但本检查点不包含任何 M2 生产工作。
