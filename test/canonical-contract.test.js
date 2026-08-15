@@ -152,6 +152,7 @@ function makeLifecycleAdapter({
   kind,
   sessionLifecycle = SESSION_LIFECYCLE.RESIDENT_COMPLETE,
   materializeSession,
+  strictOverrides = {},
 } = {}) {
   const strictFields = sessionLifecycle === SESSION_LIFECYCLE.INDEXED_MATERIALIZED
     ? {
@@ -176,6 +177,7 @@ function makeLifecycleAdapter({
     buildEventDetail() {},
     readRawRecord() {},
     ...strictFields,
+    ...strictOverrides,
   });
 }
 
@@ -286,6 +288,31 @@ test('materialization dispatch observes post-await cancellation and resident non
     ),
     { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
   );
+
+  const deepMutationIndex = makeCanonicalIndex('codex');
+  const deepMutationSession = deepMutationIndex.sessions[0];
+  const secondRaw = {
+    ...deepMutationSession.rawEvents[0],
+    rawId: 'codex:raw:2',
+  };
+  deepMutationSession.rawEvents.push(secondRaw);
+  deepMutationSession.logicalEvents[0].rawRefs.push({ rawId: secondRaw.rawId });
+  const deepMutatingAdapter = makeLifecycleAdapter({
+    kind: 'codex',
+    materializeSession: async ({ indexedSession }) => {
+      indexedSession.rawEvents[0].preview = 'mutated preview';
+      indexedSession.logicalEvents[0].rawRefs.reverse();
+      return indexedSession;
+    },
+  });
+  await assert.rejects(
+    materializeSessionWithAdapter(
+      deepMutationIndex,
+      deepMutationSession,
+      deepMutatingAdapter,
+    ),
+    { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
+  );
 });
 
 test('strict Indexed and Materialized Session validators enforce the future lifecycle shape', () => {
@@ -339,6 +366,49 @@ test('strict Indexed and Materialized Session validators enforce the future life
     ),
     { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
   );
+  assert.throws(
+    () => validateCanonicalMaterializedSessionShape(
+      indexedSession,
+      { ...materializedSession, unregisteredParsedGraph: new Map([['raw', {}]]) },
+      'fixture-source',
+    ),
+    { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
+  );
+
+  let getterCalled = false;
+  const accessorArray = [];
+  Object.defineProperty(accessorArray, 0, {
+    enumerable: true,
+    get() {
+      getterCalled = true;
+      return 'unsafe';
+    },
+  });
+  const indexedWithPayload = (payload) => ({
+    ...indexedSession,
+    materializationDescriptor: {
+      ...indexedSession.materializationDescriptor,
+      payload,
+    },
+  });
+  assert.throws(
+    () => validateCanonicalIndexedSessionShape(indexedWithPayload(accessorArray), 'fixture-source'),
+    { code: 'CANONICAL_CONTRACT_VIOLATION' },
+  );
+  assert.equal(getterCalled, false);
+
+  const symbolArray = ['safe'];
+  symbolArray[Symbol('unsafe')] = 'value';
+  assert.throws(
+    () => validateCanonicalIndexedSessionShape(indexedWithPayload(symbolArray), 'fixture-source'),
+    { code: 'CANONICAL_CONTRACT_VIOLATION' },
+  );
+  const extraKeyArray = ['safe'];
+  extraKeyArray.extra = 'value';
+  assert.throws(
+    () => validateCanonicalIndexedSessionShape(indexedWithPayload(extraKeyArray), 'fixture-source'),
+    { code: 'CANONICAL_CONTRACT_VIOLATION' },
+  );
 });
 
 test('strict synthetic adapter traverses Indexed to Materialized dispatch without resident arrays', async () => {
@@ -360,7 +430,7 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
       schemaVersion: 1,
       sourceKind: indexedSession.sourceKind,
       entryCount: 0,
-      accountedBytes: 0,
+      accountedBytes: 2,
       payload: {},
     },
   };
@@ -381,6 +451,83 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
     materializedSession,
   );
   assert.equal(receivedDependencySet, dependencySet);
+
+  const mutatingValidatorIndex = {
+    ...index,
+    sessions: [indexedSession],
+    sessionsById: new Map([[indexedSession.id, indexedSession]]),
+    materializationDependencies: new Map([['dependencies-1', dependencySet]]),
+    legacyRawOwners: { ...index.legacyRawOwners },
+  };
+  const mutatingValidatorAdapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async () => materializedSession,
+    strictOverrides: {
+      validateMaterializationDescriptor({ index: callbackIndex }) {
+        callbackIndex.repoRoot = '/mutated-by-validator';
+      },
+    },
+  });
+  await assert.rejects(
+    materializeSessionWithAdapter(
+      mutatingValidatorIndex,
+      indexedSession,
+      mutatingValidatorAdapter,
+    ),
+    { code: 'SOURCE_ADAPTER_CONTRACT_VIOLATION' },
+  );
+
+  const mutatingMaterializerIndex = {
+    ...index,
+    sessions: [indexedSession],
+    sessionsById: new Map([[indexedSession.id, indexedSession]]),
+    materializationDependencies: new Map([['dependencies-1', dependencySet]]),
+    legacyRawOwners: { ...index.legacyRawOwners },
+  };
+  const mutatingMaterializerAdapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async ({ index: callbackIndex }) => {
+      callbackIndex.repoRoot = '/mutated-by-materializer';
+      return materializedSession;
+    },
+  });
+  await assert.rejects(
+    materializeSessionWithAdapter(
+      mutatingMaterializerIndex,
+      indexedSession,
+      mutatingMaterializerAdapter,
+    ),
+    { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
+  );
+
+  const mutatingPrivateValidatorIndex = {
+    ...index,
+    sessions: [indexedSession],
+    sessionsById: new Map([[indexedSession.id, indexedSession]]),
+    materializationDependencies: new Map([['dependencies-1', dependencySet]]),
+    legacyRawOwners: { ...index.legacyRawOwners },
+  };
+  const privateMutationResult = makeStrictMaterializedSession(indexedSession);
+  const mutatingPrivateValidatorAdapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async () => privateMutationResult,
+    strictOverrides: {
+      validateMaterializedPrivateState({ session }) {
+        session.title = 'mutated by private validator';
+      },
+    },
+  });
+  await assert.rejects(
+    materializeSessionWithAdapter(
+      mutatingPrivateValidatorIndex,
+      indexedSession,
+      mutatingPrivateValidatorAdapter,
+    ),
+    { code: 'SOURCE_ADAPTER_CONTRACT_VIOLATION' },
+  );
 });
 
 test('source-specific locator fields remain optional and opaque to the shared contract', () => {

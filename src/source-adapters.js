@@ -1,8 +1,8 @@
 'use strict';
 
+const { createHash } = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
-const { isDeepStrictEqual } = require('node:util');
 const codex = require('./codex');
 const claude = require('./claude');
 const { buildClaudeEventDetail } = require('./claude-detail');
@@ -36,6 +36,151 @@ const SOURCE_KIND = Object.freeze({
 });
 
 const claudeQuery = createSessionQuery();
+
+function graphFingerprint(value, identityState = {
+  objectIds: new WeakMap(),
+  symbolIds: new Map(),
+  nextObjectId: 0,
+  nextSymbolId: 0,
+}) {
+  const hash = createHash('sha256');
+  const seen = new WeakSet();
+  const objectId = (current) => {
+    if (!identityState.objectIds.has(current)) {
+      identityState.objectIds.set(current, identityState.nextObjectId);
+      identityState.nextObjectId += 1;
+    }
+    return identityState.objectIds.get(current);
+  };
+  const symbolId = (current) => {
+    if (!identityState.symbolIds.has(current)) {
+      identityState.symbolIds.set(current, identityState.nextSymbolId);
+      identityState.nextSymbolId += 1;
+    }
+    return identityState.symbolIds.get(current);
+  };
+  const write = (text) => {
+    const valueText = String(text);
+    hash.update(`${Buffer.byteLength(valueText, 'utf8')}:`);
+    hash.update(valueText, 'utf8');
+  };
+  const writeKey = (key) => {
+    if (typeof key === 'symbol') {
+      write('symbol-key');
+      write(symbolId(key));
+      write(Symbol.keyFor(key) || '');
+      write(key.description || '');
+      return;
+    }
+    write('string-key');
+    write(key);
+  };
+  const visit = (current) => {
+    if (current === null) {
+      write('null');
+      return;
+    }
+    const type = typeof current;
+    write(type);
+    if (type === 'undefined') return;
+    if (type === 'string') {
+      write(current);
+      return;
+    }
+    if (type === 'number') {
+      write(Number.isNaN(current) ? 'NaN' : (Object.is(current, -0) ? '-0' : current));
+      return;
+    }
+    if (type === 'bigint' || type === 'boolean') {
+      write(current);
+      return;
+    }
+    if (type === 'symbol') {
+      write(symbolId(current));
+      write(Symbol.keyFor(current) || '');
+      write(current.description || '');
+      return;
+    }
+    if (type === 'function') write(Function.prototype.toString.call(current));
+    const referenceId = objectId(current);
+    if (seen.has(current)) {
+      write('reference');
+      write(referenceId);
+      return;
+    }
+    seen.add(current);
+    write('object');
+    write(referenceId);
+    const prototype = Object.getPrototypeOf(current);
+    if (prototype === null) {
+      write('null-prototype');
+    } else {
+      write(objectId(prototype));
+      const constructorDescriptor = Object.getOwnPropertyDescriptor(prototype, 'constructor');
+      write(constructorDescriptor?.value?.name || 'anonymous-prototype');
+    }
+    if (current instanceof Date) write(current.getTime());
+    if (current instanceof RegExp) {
+      write(current.source);
+      write(current.flags);
+      write(current.lastIndex);
+    }
+    if (current instanceof Map) {
+      write('map');
+      write(current.size);
+      for (const [key, nested] of current) {
+        visit(key);
+        visit(nested);
+      }
+    } else if (current instanceof Set) {
+      write('set');
+      write(current.size);
+      for (const nested of current) visit(nested);
+    } else if (ArrayBuffer.isView(current)) {
+      write('array-buffer-view');
+      hash.update(Buffer.from(current.buffer, current.byteOffset, current.byteLength));
+    } else if (current instanceof ArrayBuffer) {
+      write('array-buffer');
+      hash.update(Buffer.from(current));
+    }
+    const keys = Reflect.ownKeys(current);
+    write(keys.length);
+    for (const key of keys) {
+      writeKey(key);
+      const descriptor = Object.getOwnPropertyDescriptor(current, key);
+      write(descriptor.enumerable);
+      write(descriptor.configurable);
+      if (Object.hasOwn(descriptor, 'value')) {
+        write('data');
+        write(descriptor.writable);
+        visit(descriptor.value);
+      } else {
+        write('accessor');
+        visit(descriptor.get);
+        visit(descriptor.set);
+      }
+    }
+  };
+  visit(value);
+  return hash.digest('hex');
+}
+
+function captureGraphFingerprint(value) {
+  const identityState = {
+    objectIds: new WeakMap(),
+    symbolIds: new Map(),
+    nextObjectId: 0,
+    nextSymbolId: 0,
+  };
+  return {
+    digest: graphFingerprint(value, identityState),
+    identityState,
+  };
+}
+
+function graphFingerprintMatches(value, captured) {
+  return graphFingerprint(value, captured.identityState) === captured.digest;
+}
 
 function abortError(signal) {
   if (signal?.reason instanceof Error) return signal.reason;
@@ -278,6 +423,7 @@ function validateIndexOwnership(index, {
       error.code = 'CANONICAL_CONTRACT_VIOLATION';
       throw error;
     }
+    const adapterValidationFingerprint = captureGraphFingerprint(index);
     for (const session of validatedSessions) {
       const descriptor = session.materializationDescriptor;
       const dependencySet = index.materializationDependencies.get(descriptor.dependencySetId);
@@ -286,74 +432,25 @@ function validateIndexOwnership(index, {
         error.code = 'CANONICAL_CONTRACT_VIOLATION';
         throw error;
       }
-      const validationSnapshot = structuredClone({
-        indexedSession: session,
-        descriptor,
-        dependencySet,
-      });
       adapter.validateMaterializationDescriptor({
         index,
         indexedSession: session,
         descriptor,
         dependencySet,
       });
-      if (!isDeepStrictEqual(validationSnapshot, {
-        indexedSession: session,
-        descriptor,
-        dependencySet,
-      })) {
-        const error = new Error('Adapter materialization descriptor validation must not mutate inputs');
-        error.code = 'SOURCE_ADAPTER_CONTRACT_VIOLATION';
-        throw error;
-      }
     }
     validateCanonicalLegacyRawOwnerIndex(index.legacyRawOwners, indexKind);
-    const legacyRawOwnersSnapshot = structuredClone(index.legacyRawOwners);
     adapter.validateLegacyRawOwnerIndex({
       index,
       legacyRawOwners: index.legacyRawOwners,
     });
-    if (!isDeepStrictEqual(legacyRawOwnersSnapshot, index.legacyRawOwners)) {
-      const error = new Error('Adapter legacy Raw owner validation must not mutate inputs');
+    if (!graphFingerprintMatches(index, adapterValidationFingerprint)) {
+      const error = new Error('Adapter strict Index validation must not mutate the Index');
       error.code = 'SOURCE_ADAPTER_CONTRACT_VIOLATION';
       throw error;
     }
   }
   return indexKind;
-}
-
-function captureResidentCompatibilityState(index, session) {
-  return {
-    sessions: index.sessions,
-    sessionsById: index.sessionsById,
-    id: session.id,
-    sourceKind: session.sourceKind,
-    rawEvents: session.rawEvents,
-    rawEventLength: session.rawEvents.length,
-    logicalEvents: session.logicalEvents,
-    logicalEventLength: session.logicalEvents.length,
-    counts: session.counts,
-    countEntries: Object.entries(session.counts),
-  };
-}
-
-function validateResidentCompatibilityState(index, session, snapshot) {
-  const unchanged = index.sessions === snapshot.sessions
-    && index.sessionsById === snapshot.sessionsById
-    && session.id === snapshot.id
-    && session.sourceKind === snapshot.sourceKind
-    && session.rawEvents === snapshot.rawEvents
-    && session.rawEvents.length === snapshot.rawEventLength
-    && session.logicalEvents === snapshot.logicalEvents
-    && session.logicalEvents.length === snapshot.logicalEventLength
-    && session.counts === snapshot.counts
-    && snapshot.countEntries.every(([key, value]) => session.counts[key] === value)
-    && Object.keys(session.counts).length === snapshot.countEntries.length;
-  if (!unchanged) {
-    const error = new Error('Compatibility materialization mutated the captured Index or resident Session');
-    error.code = 'MATERIALIZATION_CONTRACT_VIOLATION';
-    throw error;
-  }
 }
 
 async function materializeSessionForIndex(index, indexedSession, options = {}) {
@@ -379,12 +476,7 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
     : index.materializationDependencies?.get(
       indexedSession.materializationDescriptor.dependencySetId,
     );
-  const compatibilitySnapshot = allowResidentComplete
-    ? captureResidentCompatibilityState(index, indexedSession)
-    : null;
-  const strictIndexedSnapshot = allowResidentComplete
-    ? ''
-    : JSON.stringify(indexedSession);
+  const materializationInputFingerprint = captureGraphFingerprint(index);
   const materializedSession = await adapter.materializeSession({
     index,
     indexedSession,
@@ -392,14 +484,12 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
     signal: options.signal,
     indexRevision: options.indexRevision,
   });
-  throwIfAborted(options.signal);
-  if (compatibilitySnapshot) {
-    validateResidentCompatibilityState(index, indexedSession, compatibilitySnapshot);
-  } else if (JSON.stringify(indexedSession) !== strictIndexedSnapshot) {
-    const error = new Error('Materialization mutated the Indexed Session');
+  if (!graphFingerprintMatches(index, materializationInputFingerprint)) {
+    const error = new Error('Materialization mutated the captured Index or Indexed Session');
     error.code = 'MATERIALIZATION_CONTRACT_VIOLATION';
     throw error;
   }
+  throwIfAborted(options.signal);
   validateCanonicalMaterializedSessionShape(
     indexedSession,
     materializedSession,
@@ -411,18 +501,14 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
     },
   );
   if (!allowResidentComplete) {
-    const privateValidationSnapshot = structuredClone({
-      indexedSession,
-      materializedSession,
-    });
+    const privateIndexFingerprint = captureGraphFingerprint(index);
+    const privateSessionFingerprint = captureGraphFingerprint(materializedSession);
     adapter.validateMaterializedPrivateState({
       indexedSession,
       session: materializedSession,
     });
-    if (!isDeepStrictEqual(privateValidationSnapshot, {
-      indexedSession,
-      materializedSession,
-    })) {
+    if (!graphFingerprintMatches(index, privateIndexFingerprint)
+      || !graphFingerprintMatches(materializedSession, privateSessionFingerprint)) {
       const error = new Error('Adapter materialized private-state validation must not mutate inputs');
       error.code = 'SOURCE_ADAPTER_CONTRACT_VIOLATION';
       throw error;

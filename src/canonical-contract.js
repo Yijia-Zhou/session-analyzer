@@ -87,6 +87,14 @@ const MATERIALIZED_ALWAYS_FORBIDDEN_PRIVATE_FIELDS = new Set([
   '_canonicalRawDigests',
   '_reviewMarkers',
 ]);
+const MATERIALIZED_SESSION_ALLOWED_PUBLIC_FIELDS = new Set([
+  ...INDEXED_SESSION_CARRIED_FIELDS,
+  'materializationSnapshotId',
+  'rawEvents',
+  'logicalEvents',
+  'analysis',
+  'presentationIndexes',
+]);
 
 const CANONICAL_CONTRACT = Object.freeze({
   index: Object.freeze([
@@ -224,9 +232,24 @@ function validateBoundedPlainValue(value, owner, limits = {}) {
     } else if (Array.isArray(current)) {
       if (state.seen.has(current)) throw contractError(owner, path, 'must be acyclic');
       state.seen.add(current);
+      const keys = Reflect.ownKeys(current);
+      const indexedDescriptors = new Map();
+      for (const key of keys) {
+        if (typeof key === 'symbol') throw contractError(owner, path, 'must not contain symbol properties');
+        if (key === 'length') continue;
+        if (!/^(?:0|[1-9]\d*)$/.test(key) || Number(key) >= current.length) {
+          throw contractError(owner, `${path}.${key}`, 'must not contain extra properties');
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(current, key);
+        if (!Object.hasOwn(descriptor, 'value') || !descriptor.enumerable) {
+          throw contractError(owner, `${path}[${key}]`, 'must be an enumerable data property');
+        }
+        indexedDescriptors.set(Number(key), descriptor);
+      }
       for (let index = 0; index < current.length; index += 1) {
-        if (!Object.hasOwn(current, index)) throw contractError(owner, `${path}[${index}]`, 'must not be sparse');
-        visit(current[index], depth + 1, `${path}[${index}]`);
+        const descriptor = indexedDescriptors.get(index);
+        if (!descriptor) throw contractError(owner, `${path}[${index}]`, 'must not be sparse');
+        visit(descriptor.value, depth + 1, `${path}[${index}]`);
       }
       state.seen.delete(current);
       state.entries += current.length;
@@ -539,6 +562,14 @@ function validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, expectedSourceKin
   validateBoundedPlainValue(legacyRawOwners.payload, 'legacy Raw owner index.payload', {
     maxEntries: 1_000_000,
   });
+  const actualAccountedBytes = Buffer.byteLength(JSON.stringify(legacyRawOwners.payload), 'utf8');
+  if (legacyRawOwners.accountedBytes !== actualAccountedBytes) {
+    throw contractError(
+      'legacy Raw owner index',
+      'accountedBytes',
+      `must equal the payload byte count ${actualAccountedBytes}`,
+    );
+  }
   return legacyRawOwners;
 }
 
@@ -719,9 +750,11 @@ function validateCanonicalMaterializedSessionShape(
     requireObject(materializedSession.presentationIndexes, 'materialized session.presentationIndexes');
     const allowedPrivate = new Set(allowedPrivateFields);
     for (const key of Object.keys(materializedSession)) {
-      if (!key.startsWith('_')) continue;
-      if (MATERIALIZED_ALWAYS_FORBIDDEN_PRIVATE_FIELDS.has(key) || !allowedPrivate.has(key)) {
-        throw contractError('materialized session', key, 'is not an allowed private field');
+      if (MATERIALIZED_SESSION_ALLOWED_PUBLIC_FIELDS.has(key)) continue;
+      if (MATERIALIZED_ALWAYS_FORBIDDEN_PRIVATE_FIELDS.has(key)
+        || !key.startsWith('_')
+        || !allowedPrivate.has(key)) {
+        throw contractError('materialized session', key, 'is not an allowed Materialized Session field');
       }
     }
     return materializedSession;
