@@ -29,6 +29,9 @@ const SESSION_LIFECYCLE = Object.freeze({
 });
 
 const SESSION_LIFECYCLES = new Set(Object.values(SESSION_LIFECYCLE));
+const ASYNC_FUNCTION_PROTOTYPE = Object.getPrototypeOf(async function asyncValidatorPrototype() {});
+const GENERATOR_FUNCTION_PROTOTYPE = Object.getPrototypeOf(function* validatorGeneratorPrototype() {});
+const ASYNC_GENERATOR_FUNCTION_PROTOTYPE = Object.getPrototypeOf(async function* asyncValidatorGeneratorPrototype() {});
 
 const REQUIRED_QUERY_OPERATIONS = Object.freeze([
   'fileSuggestions',
@@ -131,6 +134,18 @@ function validateMaterializedPrivateFields(value, kind) {
   return Object.freeze([...value]);
 }
 
+function validateSynchronousValidator(callback, owner) {
+  if (typeof callback !== 'function') {
+    throw adapterContractError(`${owner} must be a function`);
+  }
+  const prototype = Object.getPrototypeOf(callback);
+  if (prototype === ASYNC_FUNCTION_PROTOTYPE
+    || prototype === GENERATOR_FUNCTION_PROTOTYPE
+    || prototype === ASYNC_GENERATOR_FUNCTION_PROTOTYPE) {
+    throw adapterContractError(`${owner} must be a synchronous non-generator function`);
+  }
+}
+
 function validateQuery(query, kind) {
   assertPlainDataObject(query, `adapter ${kind}.query`);
   for (const operation of REQUIRED_QUERY_OPERATIONS) {
@@ -195,9 +210,10 @@ function defineSourceAdapter(descriptor) {
       'validateLegacyRawOwnerIndex',
       'validateMaterializedPrivateState',
     ]) {
-      if (typeof descriptor[operation] !== 'function') {
-        throw adapterContractError(`adapter ${kind}.${operation} must be a function in indexed-materialized-v1`);
-      }
+      validateSynchronousValidator(
+        descriptor[operation],
+        `adapter ${kind}.${operation}`,
+      );
     }
     materializedPrivateFields = validateMaterializedPrivateFields(
       descriptor.materializedPrivateFields,

@@ -190,8 +190,13 @@ function materializationContractViolation(message, cause, retainCause = cause !=
 }
 
 function callbackErrorText(error) {
-  if (error instanceof Error && error.message) return error.message;
-  return String(error || 'unknown adapter rejection');
+  try {
+    if (error instanceof Error && error.message) return error.message;
+    if (error === undefined) return 'undefined adapter rejection';
+    return String(error);
+  } catch {
+    return 'unprintable adapter rejection';
+  }
 }
 
 function invokeReadOnlyMaterializationValidator({
@@ -203,11 +208,21 @@ function invokeReadOnlyMaterializationValidator({
   const fingerprints = guardedValues.map((value) => captureGraphFingerprint(value));
   let callbackRejected = false;
   let callbackError;
+  let callbackResult;
   try {
-    callback(args);
+    callbackResult = callback(args);
   } catch (error) {
     callbackRejected = true;
     callbackError = error;
+  }
+  if (!callbackRejected && callbackResult !== undefined) {
+    try {
+      if (callbackResult instanceof Promise) callbackResult.catch(() => {});
+    } catch {
+      // The return value is already a contract violation; suppressing is best-effort only.
+    }
+    callbackRejected = true;
+    callbackError = new Error(`${label} must return undefined synchronously`);
   }
   let inputsUnchanged = false;
   try {

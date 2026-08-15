@@ -233,11 +233,15 @@ function validateBoundedPlainValue(value, owner, limits = {}) {
     maxDepth: limits.maxDepth ?? 8,
     maxEntries: limits.maxEntries ?? 16_384,
     maxStringBytes: limits.maxStringBytes ?? 64 * 1024,
+    allowUndefined: limits.allowUndefined === true,
   };
   const visit = (current, depth, path) => {
     if (depth > state.maxDepth) throw contractError(owner, path, 'exceeds maximum depth');
-    if (current === null || typeof current === 'boolean') return;
-    if (typeof current === 'string') {
+    if (current === undefined && state.allowUndefined) {
+      state.entries += 1;
+    } else if (current === null || typeof current === 'boolean') {
+      return;
+    } else if (typeof current === 'string') {
       if (Buffer.byteLength(current, 'utf8') > state.maxStringBytes) {
         throw contractError(owner, path, 'exceeds maximum string bytes');
       }
@@ -661,6 +665,7 @@ function validateMaterializedAnalysis(analysis) {
     maxDepth: 32,
     maxEntries: 1_000_000,
     maxStringBytes: 16 * 1024 * 1024,
+    allowUndefined: true,
   });
 }
 

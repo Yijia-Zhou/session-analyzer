@@ -142,6 +142,25 @@ test('indexed materialization mode requires its closed validation hooks', () => 
     (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
       && /only valid in indexed-materialized-v1/.test(error.message),
   );
+  for (const operation of [
+    'validateMaterializationDescriptor',
+    'validateLegacyRawOwnerIndex',
+    'validateMaterializedPrivateState',
+  ]) {
+    const strict = {
+      sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+      validateMaterializationDescriptor() {},
+      validateLegacyRawOwnerIndex() {},
+      validateMaterializedPrivateState() {},
+      materializedPrivateFields: [],
+    };
+    strict[operation] = async function asyncValidator() {};
+    assert.throws(
+      () => defineSourceAdapter(descriptor(strict)),
+      (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
+        && new RegExp(`${operation} must be a synchronous non-generator function`).test(error.message),
+    );
+  }
 });
 
 test('source adapter descriptor requires canonical identity and paired legacy operations', () => {

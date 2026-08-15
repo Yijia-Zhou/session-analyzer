@@ -413,6 +413,23 @@ test('strict Indexed and Materialized Session validators enforce the future life
     ),
     { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
   );
+  assert.equal(
+    validateCanonicalMaterializedSessionShape(
+      indexedSession,
+      {
+        ...materializedSession,
+        analysis: {
+          ...materializedSession.analysis,
+          slowCommands: [{
+            id: 'command-without-exit-code',
+            exitCode: undefined,
+          }],
+        },
+      },
+      'fixture-source',
+    ).analysis.slowCommands[0].exitCode,
+    undefined,
+  );
 
   let getterCalled = false;
   const accessorArray = [];
@@ -691,6 +708,48 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
       },
     );
   }
+
+  const promiseReturningValidatorAdapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async () => makeStrictMaterializedSession(indexedSession),
+    strictOverrides: {
+      validateMaterializationDescriptor() {
+        return Promise.resolve('not a synchronous validator result');
+      },
+    },
+  });
+  await assert.rejects(
+    materializeSessionWithAdapter(
+      freshStrictIndex(),
+      indexedSession,
+      promiseReturningValidatorAdapter,
+    ),
+    (error) => error.code === 'MATERIALIZATION_CONTRACT_VIOLATION'
+      && /must return undefined synchronously/.test(error.cause?.message || ''),
+  );
+
+  const unprintableRejection = Object.create(null);
+  const unprintableRejectionAdapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async () => makeStrictMaterializedSession(indexedSession),
+    strictOverrides: {
+      validateMaterializationDescriptor() {
+        throw unprintableRejection;
+      },
+    },
+  });
+  await assert.rejects(
+    materializeSessionWithAdapter(
+      freshStrictIndex(),
+      indexedSession,
+      unprintableRejectionAdapter,
+    ),
+    (error) => error.code === 'MATERIALIZATION_CONTRACT_VIOLATION'
+      && error.cause === unprintableRejection
+      && /unprintable adapter rejection/.test(error.message),
+  );
 
   const sourceFailure = new Error('source became stale');
   sourceFailure.code = 'INDEXED_SOURCE_STALE';
