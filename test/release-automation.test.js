@@ -16,7 +16,7 @@ const {
   validateProvenance,
 } = require('../scripts/release-automation');
 
-function provenanceResponse({ version = '0.1.3', sourceSha = '7ac436205b38de058099fda8bdef0577bbfa5e31', sha512 = 'a'.repeat(128) } = {}) {
+function provenanceResponse({ version = '1.2.3', sourceSha = '1'.repeat(40), sha512 = 'a'.repeat(128) } = {}) {
   const payload = {
     _type: 'https://in-toto.io/Statement/v1',
     subject: [{
@@ -60,31 +60,31 @@ function provenanceResponse({ version = '0.1.3', sourceSha = '7ac436205b38de0580
 
 test('release automation parses strict command-specific inputs', () => {
   const parseIsolated = (argv) => parseOptions(argv, {});
-  assert.deepEqual(parseIsolated(['preflight', '0.1.3']), {
+  assert.deepEqual(parseIsolated(['preflight', '1.2.3']), {
     command: 'preflight',
-    version: '0.1.3',
+    version: '1.2.3',
   });
   assert.equal(parseIsolated([
     'review-stage',
-    '0.1.3',
+    '1.2.3',
     'e263604d-5669-4e0a-a265-ab33e70ded7e',
     'a'.repeat(64),
     'b'.repeat(40),
   ]).stageId, 'e263604d-5669-4e0a-a265-ab33e70ded7e');
   assert.deepEqual(parseOptions(['preflight'], {
-    RELEASE_VERSION: '0.1.3',
+    RELEASE_VERSION: '1.2.3',
     GITHUB_STEP_SUMMARY: '/tmp/release-summary.md',
   }), {
     command: 'preflight',
-    version: '0.1.3',
+    version: '1.2.3',
     summaryFile: '/tmp/release-summary.md',
   });
-  assert.throws(() => parseIsolated(['preflight', '0.1.3-beta.1']), /stable x\.y\.z/u);
-  assert.throws(() => parseIsolated(['verify-public', '0.1.3']), /requires positional values/u);
-  assert.throws(() => parseIsolated(['verify-public', '--release-version', '0.1.3']), /expected SHA-256/u);
-  assert.throws(() => parseIsolated(['preflight', '--release-version', '0.1.3', '--version', '0.1.3']), /only once/u);
-  assert.throws(() => parseIsolated(['preflight', '--release-version', '0.1.3', '--release-version', '0.1.4']), /Duplicate option/u);
-  assert.throws(() => parseIsolated(['preflight', '--release-version', '0.1.3', '--mystery', 'value']), /Unexpected option/u);
+  assert.throws(() => parseIsolated(['preflight', '1.2.3-beta.1']), /stable x\.y\.z/u);
+  assert.throws(() => parseIsolated(['verify-public', '1.2.3']), /requires positional values/u);
+  assert.throws(() => parseIsolated(['verify-public', '--release-version', '1.2.3']), /expected SHA-256/u);
+  assert.throws(() => parseIsolated(['preflight', '--release-version', '1.2.3', '--version', '1.2.3']), /only once/u);
+  assert.throws(() => parseIsolated(['preflight', '--release-version', '1.2.3', '--release-version', '1.2.4']), /Duplicate option/u);
+  assert.throws(() => parseIsolated(['preflight', '--release-version', '1.2.3', '--mystery', 'value']), /Unexpected option/u);
 });
 
 test('release automation rejects token-like npm credential environment names', () => {
@@ -103,7 +103,7 @@ test('release automation accepts only a temporary isolated stage-review userconf
 });
 
 test('release automation normalizes npm pack and tar manifest shapes', () => {
-  const artifact = { filename: 'session-analyzer-0.1.3.tgz', files: [] };
+  const artifact = { filename: 'session-analyzer-1.2.3.tgz', files: [] };
   assert.equal(normalizePackManifest([artifact]), artifact);
   assert.equal(normalizePackManifest({ 'session-analyzer': artifact }), artifact);
   assert.throws(() => normalizePackManifest({}), /exactly one package artifact/u);
@@ -123,19 +123,19 @@ test('release automation decodes a strict npm SHA-512 integrity value', () => {
 });
 
 test('release automation extracts and validates exact public provenance', () => {
-  const sourceSha = '7ac436205b38de058099fda8bdef0577bbfa5e31';
+  const sourceSha = '1'.repeat(40);
   const sha512 = 'b'.repeat(128);
   const response = provenanceResponse({ sourceSha, sha512 });
   const payload = extractProvenance(response);
   const result = validateAttestationResponse(response, {
-    version: '0.1.3',
+    version: '1.2.3',
     expectedSourceSha: sourceSha,
   }, sha512);
   assert.equal(result.sourceCommit, sourceSha);
   assert.equal(result.workflow, '.github/workflows/publish.yml');
   assert.match(result.invocation, /actions\/runs\/123\/attempts\/1/u);
   assert.throws(() => validateProvenance(payload, {
-    version: '0.1.3',
+    version: '1.2.3',
     expectedSourceSha: '0'.repeat(40),
   }, sha512), /source commit/u);
 });

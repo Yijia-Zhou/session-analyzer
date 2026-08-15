@@ -47,7 +47,8 @@ When changing product behavior or repository structure:
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Transcript source adapters: `docs/design-docs/transcript-source-adapters.md`
-- Active plans: none
+- Active plans:
+  - `docs/exec-plans/active/2026-08-15-v0.1.4-release.md`
 - Completed plans:
   - `docs/exec-plans/completed/2026-08-14-source-neutral-runtime-cleanup.md`
   - `docs/exec-plans/completed/2026-08-13-memory-runtime-reliability-review-followup.md`

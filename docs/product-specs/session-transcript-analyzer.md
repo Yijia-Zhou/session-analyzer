@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-08-13 / 最近更新：2026-08-13
+- Last updated: 2026-08-15 / 最近更新：2026-08-15
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/timeline-loading-and-rendering-performance.md`
@@ -58,7 +58,7 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 - LLM-based summarization or semantic clustering / 基于 LLM 的摘要或语义聚类
 - Editing or mutating source transcript files / 编辑或变更来源转录文件
 - Supporting every historical Codex or Claude Code transcript variant perfectly on day one / 在第一天就完美支持每一种历史 Codex 或 Claude Code 转录变体
-- Mixing Codex and Claude Code in one `0.1.3` server process / 在一个 `0.1.3` server 进程中混合 Codex 与 Claude Code
+- Mixed Codex-and-Claude indexing or source-filtered mixed views are not supported in v0.1.4 / v0.1.4 不支持 Codex 与 Claude 的混合索引或按来源筛选的混合视图
 
 ## User stories / 用户故事
 

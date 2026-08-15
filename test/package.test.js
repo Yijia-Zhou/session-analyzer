@@ -60,7 +60,7 @@ test('package metadata exposes the session-analyzer CLI', () => {
   const server = fs.readFileSync(path.join(repoRoot, 'server.js'), 'utf8');
 
   assert.equal(pkg.name, 'session-analyzer');
-  assert.equal(pkg.version, '0.1.3');
+  assert.equal(pkg.version, '0.1.4');
   assert.equal(pkg.description, 'Local interactive viewer for Codex and Claude Code session transcripts.');
   assert.deepEqual(pkg.keywords, [
     'codex',
@@ -264,7 +264,7 @@ test('CLI help documents the npm command, diagnostics, and host privacy option',
 
 test('npm pack manifest normalization supports npm 11 and npm 12 JSON shapes', () => {
   const artifact = {
-    filename: 'session-analyzer-0.1.3.tgz',
+    filename: 'session-analyzer-1.2.3.tgz',
     files: [{ path: 'server.js' }],
   };
 

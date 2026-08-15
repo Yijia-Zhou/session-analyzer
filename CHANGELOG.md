@@ -4,7 +4,14 @@
 
 ### English
 
+### 中文
+
+## 0.1.4 - 2026-08-15
+
+### English
+
 - Added empirical capacity guidance for large matching transcript histories, including a stable non-blocking `[SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY]` warning at 800 MiB candidate bytes, temporary Node heap recovery instructions specifically for V8 heap exhaustion, and aggregate-only `--log-dir` capacity diagnostics with current and peak process memory.
+- Significantly reduced resident memory for large Codex indexes with compact resident projections and source-backed detail hydration, while hardening exact transcript fingerprinting and source-snapshot/reindex freshness.
 - Recognized copied-prefix Codex Materialized Fork Sessions, excluded inherited history from continuation-owned titles, Logical metrics, and search while preserving physical Raw records, and folded uniquely inactive sources as Earlier Branches with mixed related-session hierarchy and Raw segment headings.
 - Unified inherited-context parent navigation across Codex materialized and Claude pointer forks with Main-first, Raw-fallback fork-point targets; a targetless source keeps the current search, filters, and layer during ordinary parent navigation.
 - Promoted direct Claude Code `Read` calls from `other_tool_call` to an independent `read` kind with dedicated filtering, counts, localized labels, structured detail routing, and folding-rule compatibility.
@@ -19,6 +26,7 @@
 ### 中文
 
 - 新增针对大型匹配 transcript 历史的经验性容量指引：在 candidate bytes 达到 800 MiB 时输出稳定、非阻塞的 `[SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY]` 警告；仅针对 V8 heap exhaustion 提供临时增大 Node heap 的恢复说明；并通过 `--log-dir` 提供只含聚合数据、包含当前与峰值进程内存的容量诊断。
+- 通过紧凑的常驻索引投影与来源支撑的详情 hydration，显著降低大型 Codex 索引的常驻内存，并加固精确 transcript 指纹以及来源快照／重建索引 freshness。
 - 识别复制前缀式 Codex 物化式分叉会话，在保留完整物理 Raw Record 的同时，从续写自有标题、逻辑指标与搜索中排除继承历史，并将唯一且不再活跃的来源会话折叠为较早分支，同时支持混合相关会话层级与 Raw 区段标题。
 - 统一 Codex 物化式分叉与 Claude 指针式分叉的继承上下文父会话导航，优先定位 Main 分叉点、否则回退 Raw；若某个来源没有精确 target，普通父会话导航会保留当前搜索、筛选与层级。
 - 将 Claude Code 的直接 `Read` 调用从 `other_tool_call` 提升为独立的 `read` kind，并补齐专属筛选、计数、本地化标签、结构化详情路由与折叠规则兼容。
