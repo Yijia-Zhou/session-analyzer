@@ -40,6 +40,7 @@
     "src/runtime-capacity.js",
     "src/runtime-diagnostics.js",
     "src/session-query.js",
+    "src/source-adapter-contract.js",
     "src/codex.js",
     "src/codex-detail.js",
     "src/codex-forks.js",

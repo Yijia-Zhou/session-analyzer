@@ -4,13 +4,13 @@ const {
   TOOL_LIFECYCLE_FAMILY,
   toolLifecycleDescriptorFor,
 } = require('./codex-tool-lifecycle-contract');
+const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 
 const CANONICAL_EVENT_TYPES = Object.freeze({
   turn_started: 'task_started',
   turn_complete: 'task_complete',
 });
 
-const CANONICAL_SCHEMA_VERSION = 1;
 const CODEX_SOURCE_KIND = 'codex';
 const CODEX_JSONL_LINE_LOCATOR_TYPE = 'jsonl_line';
 const SUB_AGENT_ACTIVITY_EVENT_TYPE = 'sub_agent_activity';

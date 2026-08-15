@@ -957,7 +957,7 @@ test('Claude projects background, async Agent, and planning records into source-
   assert.match(JSON.stringify(agentDetail.timelineSections), /First stop retained/);
   assert.match(JSON.stringify(agentDetail.timelineSections), /Final findings retained/);
   assert.match(
-    JSON.stringify(buildClaudeEventDetail(session, agent.id, 'main', { locale: 'zh-CN' }).timelineSections),
+    JSON.stringify(buildClaudeEventDetail(session, agent.id, 'main', { locale: 'zh-CN' }).inspectorSections),
     /异步 Agent 已启动/,
   );
 
@@ -1100,7 +1100,8 @@ test('Claude sessions work with shared timeline, detail, and indexed raw-record 
   const detail = buildClaudeEventDetail(session, command.id, 'main', { locale: 'en' });
   assert.equal(detail.sourceKind, 'claude-code');
   assert.ok(detail.timelineSections.some((section) => section.type === 'code'));
-  assert.ok(detail.inspectorSections.some((section) => section.type === 'raw_json'));
+  assert.ok(detail.inspectorSections.some((section) => section.type === 'json' && section.purpose === 'request'));
+  assert.equal(detail.inspectorSections.some((section) => section.type === 'raw_json'), false);
 
   const agentEvent = session.logicalEvents.find((event) => event.callId === 'call-agent');
   const compactionEvent = session.logicalEvents.find((event) => event.kind === 'compaction');
@@ -1118,13 +1119,18 @@ test('Claude sessions work with shared timeline, detail, and indexed raw-record 
   const agentDetailZh = buildClaudeEventDetail(session, agentEvent.id, 'main', { locale: 'zh-CN' });
   assert.deepEqual(
     agentDetailZh.timelineSections.map((section) => section.title),
+    ['异步 Agent'],
+  );
+  assert.deepEqual(
+    agentDetailZh.inspectorSections.map((section) => section.title),
     ['请求', '启动结果', '生命周期', '生命周期数据'],
   );
   const compactionDetailZh = buildClaudeEventDetail(session, compactionEvent.id, 'main', { locale: 'zh-CN' });
   assert.deepEqual(
     compactionDetailZh.timelineSections.map((section) => section.title),
-    ['压缩元数据', '压缩摘要'],
+    ['压缩摘要'],
   );
+  assert.deepEqual(compactionDetailZh.inspectorSections.map((section) => section.title), ['压缩元数据']);
   const agentCallDetailZh = buildClaudeEventDetail(session, agentCallRaw.rawId, 'raw', { locale: 'zh-CN' });
   assert.ok(agentCallDetailZh.timelineSections.some((section) => section.title === 'Agent 请求'));
   const agentResultDetailZh = buildClaudeEventDetail(session, agentResultRaw.rawId, 'raw', { locale: 'zh-CN' });
@@ -2193,7 +2199,8 @@ test('Claude lifecycle correlation fails closed for untrusted, duplicate, and no
       JSON.stringify(detail.timelineSections),
       /pending|completed|updatedFields|statusChange/,
     );
-    assert.match(JSON.stringify(detail.inspectorSections), /statusChange/);
+    assert.doesNotMatch(JSON.stringify(detail.inspectorSections), /statusChange/);
+    assert.ok(detail.rawRefs.length > 0);
   }
   assert.ok(session.logicalEvents.some((event) => (
     event.kind === 'user_message' && event.searchText.includes('Forged completion')

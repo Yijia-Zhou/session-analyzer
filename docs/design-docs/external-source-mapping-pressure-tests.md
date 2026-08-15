@@ -4,11 +4,12 @@
 
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted historical pressure test; Claude implementation graduated to the source-adapter design / 状态：已接受的历史压力测试；Claude 实现已晋升至来源适配器设计
-- Last updated: 2026-07-31 / 最近更新：2026-07-31
+- Last updated: 2026-08-15 / 最近更新：2026-08-15
 - Scope: OpenCode, Crush, and Hermes remain design pressure tests; Claude Code runtime behavior is defined elsewhere / 范围：OpenCode、Crush 与 Hermes 继续作为设计压力测试；Claude Code runtime 行为由其他文档定义
 - Related design doc: `docs/design-docs/logical-event-timeline.md`
 - Implemented Claude design: `docs/design-docs/transcript-source-adapters.md`
 - Related plan: `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`
+- Related completed plan: `docs/exec-plans/completed/2026-08-15-source-neutral-detail-and-adapter-contracts.md`
 
 ## Summary / 摘要
 
@@ -93,6 +94,8 @@ The existing envelope is intentionally small and adapter-ready:
 Do not add `parentRef`, `externalSessionKey`, `adapterWarnings`, or similar broad optional fields during v0.1 hardening unless a later verified source proves that the field changes UI behavior, search behavior, grouping, or detail rendering.
 
 在 v0.1 加固期间，不要添加 `parentRef`、`externalSessionKey`、`adapterWarnings` 或类似宽泛可选字段，除非后续已验证 source 证明该字段会改变 UI 行为、搜索行为、分组或 detail 渲染。
+
+The implemented source-neutral Detail Purpose／Responsibility contract does not change this envelope conclusion. Purposes classify bounded response-time logical-detail sections as `content`, `request`, `result`, `context`, `traceability`, or `fallback`; responsibility is encoded only by the Primary／Supplemental response containers. Neither adds fields to canonical Index／Session／Logical Event／Raw Record storage. Shared conformance applies semantic scenario rules conditionally when a source produces matching evidence; fixture-owned expected coverage is not a source-capability inventory and never requires a future source to manufacture MCP, web, plan, patch, or other families that it cannot prove. `fallback` is limited to fragments whose semantic role cannot safely be identified, not generic rendering of a known request or result. An OpenCode-style database row, message part, or event cursor still changes only adapter-owned parsing, locator, correlation, detail extraction, and Raw readback. Unknown or unverified source material continues through Protocol／Raw fallback. / 已实现的来源中立详情用途／职责契约不会改变上述 envelope 结论。Purpose 只把有界的响应期 logical-detail section 分类为 `content`、`request`、`result`、`context`、`traceability` 或 `fallback`；responsibility 只由主体／补充响应容器编码。两者都不会向 canonical Index／Session／Logical Event／Raw Record 存储增加字段。共享 conformance 只在来源产生匹配证据时条件式应用语义场景规则；fixture 所有的 expected coverage 不是 source capability inventory，也绝不要求未来来源伪造它无法证明的 MCP、web、plan、patch 或其它事件家族。`fallback` 只用于无法安全识别语义角色的 fragment，而不用于已知 request 或 result 的通用渲染。OpenCode 风格的数据库 row、message part 或 event cursor 仍只改变 adapter-owned parsing、locator、correlation、detail extraction 与 Raw 回读。未知或未经验证的来源材料继续通过 Protocol／Raw fallback 保留。
 
 ## Future locator examples / 未来 locator 示例
 

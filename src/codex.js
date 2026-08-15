@@ -943,6 +943,12 @@ function taggedBlockEntries(text) {
   return entries;
 }
 
+function isKvRepresentableValue(value) {
+  if (value == null || value === '') return false;
+  if (typeof value !== 'object') return true;
+  return Array.isArray(value) && value.every((item) => typeof item !== 'object');
+}
+
 function toKvEntries(input, preferredKeys = []) {
   if (!input || typeof input !== 'object') return [];
   const used = new Set();
@@ -959,16 +965,27 @@ function toKvEntries(input, preferredKeys = []) {
   const entries = [];
   for (const key of keys) {
     const value = input[key];
-    if (value == null || value === '') continue;
-    if (typeof value === 'object') {
-      if (Array.isArray(value) && value.every((item) => typeof item !== 'object')) {
-        entries.push({ key, value: value.join(', ') });
-      }
-      continue;
-    }
-    entries.push({ key, value: String(value) });
+    if (!isKvRepresentableValue(value)) continue;
+    entries.push({ key, value: Array.isArray(value) ? value.join(', ') : String(value) });
   }
   return entries;
+}
+
+function kvRepresentedKeys(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return [];
+  return Object.keys(input).filter((key) => {
+    const value = input[key];
+    // Null and empty scalar fields are intentionally omitted rather than residual evidence.
+    if (value == null || value === '') return true;
+    return isKvRepresentableValue(value);
+  });
+}
+
+function residualObjectFields(input, consumedKeys = []) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const consumed = new Set(consumedKeys);
+  const residualEntries = Object.entries(input).filter(([key]) => !consumed.has(key));
+  return residualEntries.length ? Object.fromEntries(residualEntries) : null;
 }
 
 function isFiniteNumberValue(value) {
@@ -1262,18 +1279,23 @@ function parsePatchSection(text) {
   return { type: 'patch', title: 'Patch', files, lineNumbers: files.some((item) => item.lineNumbers) };
 }
 
-function maybePushPatchSection(sections, title, text) {
+function withDetailPurpose(section, purpose) {
+  if (!section || !purpose) return section;
+  return { ...section, purpose };
+}
+
+function maybePushPatchSection(sections, title, text, purpose) {
   const section = parsePatchSection(text);
   if (!section) return false;
   section.title = title;
-  sections.push(section);
+  sections.push(withDetailPurpose(section, purpose));
   return true;
 }
 
-function maybePushKvSection(sections, title, entries) {
+function maybePushKvSection(sections, title, entries, purpose) {
   const filtered = (entries || []).filter((entry) => entry && entry.key && entry.value !== '');
   if (!filtered.length) return;
-  sections.push({ type: 'kv', title, entries: filtered });
+  sections.push(withDetailPurpose({ type: 'kv', title, entries: filtered }, purpose));
 }
 
 function withoutKeys(input, keys) {
@@ -1287,14 +1309,14 @@ function withoutSectionTypes(sections, types) {
   return (sections || []).filter((section) => !omitted.has(section.type));
 }
 
-function maybePushMarkdownSection(sections, title, text) {
+function maybePushMarkdownSection(sections, title, text, purpose) {
   const source = String(text || '').trim();
   if (!source) return;
-  sections.push({
+  sections.push(withDetailPurpose({
     type: 'markdown',
     title,
     html: renderMarkdownToHtml(source),
-  });
+  }, purpose));
 }
 
 function normalizeLanguage(language, fallback = 'text') {
@@ -1302,10 +1324,10 @@ function normalizeLanguage(language, fallback = 'text') {
   return source || fallback;
 }
 
-function maybePushCodeSection(sections, title, code, language = 'text') {
+function maybePushCodeSection(sections, title, code, language = 'text', purpose) {
   const source = String(code || '').trim();
   if (!source) return;
-  sections.push({ type: 'code', title, code: source, language: normalizeLanguage(language, 'text') });
+  sections.push(withDetailPurpose({ type: 'code', title, code: source, language: normalizeLanguage(language, 'text') }, purpose));
 }
 
 function inferTerminalLanguage(text) {
@@ -1316,51 +1338,51 @@ function inferTerminalLanguage(text) {
   return 'text';
 }
 
-function maybePushTerminalSection(sections, title, text, stream = 'stdout', language = '') {
+function maybePushTerminalSection(sections, title, text, stream = 'stdout', language = '', purpose) {
   const source = normalizeTerminalReplacementPlaceholders(repairLikelyMojibake(stripAnsiSequences(text)));
   if (!source.trim()) return;
-  sections.push({ type: 'terminal', title, text: source, stream, language: normalizeLanguage(language || inferTerminalLanguage(source), 'text') });
+  sections.push(withDetailPurpose({ type: 'terminal', title, text: source, stream, language: normalizeLanguage(language || inferTerminalLanguage(source), 'text') }, purpose));
 }
 
 function maybePushStructuredSection(sections, title, value, options = {}) {
   const jsonValue = coerceJsonValue(value);
   if (jsonValue) {
-    sections.push({ type: 'json', title, value: jsonValue });
+    sections.push(withDetailPurpose({ type: 'json', title, value: jsonValue }, options.purpose));
     return 'json';
   }
   const text = stringifyValue(value).trim();
   if (!text) return '';
   if (looksLikeDiff(text)) {
-    sections.push({ type: 'diff', title, text });
+    sections.push(withDetailPurpose({ type: 'diff', title, text }, options.purpose));
     return 'diff';
   }
-  sections.push({ type: options.rawType === 'raw_json'
+  sections.push(withDetailPurpose({ type: options.rawType === 'raw_json'
     ? 'raw_json'
-    : 'code', title, code: text, language: options.language || '' });
+    : 'code', title, code: text, language: options.language || '' }, options.purpose));
   return options.rawType === 'raw_json' ? 'raw_json' : 'code';
 }
 
-function maybePushParsedOutputSection(sections, title, value) {
+function maybePushParsedOutputSection(sections, title, value, purpose) {
   const jsonValue = coerceJsonValue(value);
   if (jsonValue) {
-    sections.push({ type: 'json', title, value: jsonValue });
+    sections.push(withDetailPurpose({ type: 'json', title, value: jsonValue }, purpose));
     return true;
   }
   const text = stringifyValue(value).trim();
   if (looksLikeDiff(text)) {
-    sections.push({ type: 'diff', title, text });
+    sections.push(withDetailPurpose({ type: 'diff', title, text }, purpose));
     return true;
   }
   return false;
 }
 
-function makeNoticeSection(title, text, level = 'info') {
-  return {
+function makeNoticeSection(title, text, level = 'info', purpose) {
+  return withDetailPurpose({
     type: 'notice',
     title,
     level,
     text: String(text || '').trim(),
-  };
+  }, purpose);
 }
 
 function hideSectionTitle(section) {
@@ -1368,13 +1390,28 @@ function hideSectionTitle(section) {
   return section;
 }
 
-function makeRawJsonSection(title, value, expanded = false) {
-  return {
+function makeRawJsonSection(title, value, expanded = false, purpose) {
+  return withDetailPurpose({
     type: 'raw_json',
     title,
     value,
     expanded,
-  };
+  }, purpose);
+}
+
+function logicalFallbackPayload(raws) {
+  const values = (raws || []).map((raw) => {
+    if (raw?.parsed && Object.hasOwn(raw.parsed, 'payload')) return raw.parsed.payload;
+    if (raw && Object.hasOwn(raw, 'payload')) return raw.payload;
+    return raw?.parsed;
+  }).filter((value) => value !== undefined);
+  return values.length === 1 ? values[0] : values;
+}
+
+function maybePushResidualJsonSection(sections, title, input, consumedKeys = []) {
+  const residual = residualObjectFields(input, consumedKeys);
+  if (residual) sections.push(makeRawJsonSection(title, residual, false, 'fallback'));
+  return residual;
 }
 
 function filterDetailSections(sections) {
@@ -2169,9 +2206,9 @@ function logicalMeta(event) {
 
 function extractConversationSections(raws) {
   const sections = [];
-  maybePushMarkdownSection(sections, 'Message', uniqueNonEmpty(raws.map((raw) => raw.messageText)).join('\n\n'));
+  maybePushMarkdownSection(sections, 'Message', uniqueNonEmpty(raws.map((raw) => raw.messageText)).join('\n\n'), 'content');
   hideSectionTitle(sections[0]);
-  if (!sections.length) sections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
+  if (!sections.length) sections.push(makeRawJsonSection('Unmodeled fields', logicalFallbackPayload(raws), false, 'fallback'));
   return sections;
 }
 
@@ -2179,10 +2216,10 @@ function extractReasoningSections(raws) {
   const sections = [];
   const text = joinBoundedUniqueText(raws.map((raw) => raw.messageText), '\n\n', REASONING_TEXT_LIMIT);
   if (text) {
-    maybePushMarkdownSection(sections, 'Reasoning', text);
+    maybePushMarkdownSection(sections, 'Reasoning', text, 'content');
     hideSectionTitle(sections[0]);
   } else {
-    sections.push(hideSectionTitle(makeNoticeSection('Reasoning', 'This reasoning record did not contain any text.', 'warning')));
+    sections.push(hideSectionTitle(makeNoticeSection('Reasoning', 'This reasoning record did not contain any text.', 'warning', 'content')));
   }
   return sections;
 }
@@ -2194,9 +2231,9 @@ function extractPlanSections(raws) {
     raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'item_completed')?.parsed?.payload?.item?.text,
     raws.find((raw) => raw.recordType === 'event_msg' && ['plan_update', 'plan_delta'].includes(raw.payloadType)) ? planUpdateText(raws.find((raw) => raw.recordType === 'event_msg' && ['plan_update', 'plan_delta'].includes(raw.payloadType))) : '',
   ));
-  maybePushMarkdownSection(sections, 'Plan', planText);
+  maybePushMarkdownSection(sections, 'Plan', planText, 'content');
   hideSectionTitle(sections[0]);
-  sections.push(makeRawJsonSection('Plan raw JSON', raws.map((raw) => raw.parsed)));
+  if (!sections.length) sections.push(makeRawJsonSection('Unmodeled plan fields', logicalFallbackPayload(raws), false, 'fallback'));
   return sections;
 }
 
@@ -2210,26 +2247,27 @@ function extractCommandSections(raws, event, session = {}) {
   const args = commandArgsFromRaw(functionCall);
   const formatted = parseFormattedCommandOutput(functionOutput?.output);
   const commandText = execAny?.commandText || commandToText(args?.command);
-  maybePushCodeSection(timelineSections, 'Command', commandText, inferCommandLanguage(commandText, args, commandLanguageContext(session)));
+  maybePushCodeSection(timelineSections, 'Command', commandText, inferCommandLanguage(commandText, args, commandLanguageContext(session)), 'request');
+  if (timelineSections.at(-1)?.type === 'code') timelineSections.at(-1).role = 'command';
 
   maybePushKvSection(inspectorSections, 'Run context', [
     { key: 'cwd', value: String(execAny?.parsed?.payload?.cwd || args?.workdir || '') },
-  ]);
+  ], 'context');
 
   if (args) {
-    inspectorSections.push({ type: 'json', title: 'Arguments', value: args });
+    inspectorSections.push({ purpose: 'request', type: 'json', title: 'Arguments', value: args });
   }
 
   const stdout = firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, execEnd?.parsed?.payload?.formatted_output, formatted?.output);
   const stderr = execEnd?.stderr || execAny?.stderr || '';
-  maybePushTerminalSection(timelineSections, 'stdout', stdout, 'stdout');
-  maybePushTerminalSection(timelineSections, 'stderr', stderr, 'stderr');
+  maybePushTerminalSection(timelineSections, 'stdout', stdout, 'stdout', '', 'result');
+  maybePushTerminalSection(timelineSections, 'stderr', stderr, 'stderr', '', 'result');
 
-  if (stdout) maybePushParsedOutputSection(inspectorSections, 'stdout structure', stdout);
-  if (stderr) maybePushParsedOutputSection(inspectorSections, 'stderr structure', stderr);
-  if (functionOutput?.output) maybePushParsedOutputSection(inspectorSections, 'Tool output', structuredOutputValue(functionOutput.output));
+  if (stdout) maybePushParsedOutputSection(inspectorSections, 'stdout structure', stdout, 'result');
+  if (stderr) maybePushParsedOutputSection(inspectorSections, 'stderr structure', stderr, 'result');
+  if (functionOutput?.output) maybePushParsedOutputSection(inspectorSections, 'Tool output', structuredOutputValue(functionOutput.output), 'result');
 
-  if (!timelineSections.length && !inspectorSections.length) inspectorSections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
+  if (!timelineSections.length && !inspectorSections.length) inspectorSections.push(makeRawJsonSection('Unmodeled fields', logicalFallbackPayload(raws), false, 'fallback'));
   return { timelineSections, inspectorSections };
 }
 
@@ -2243,18 +2281,24 @@ function extractPatchSections(raws, event, session = {}) {
   const envelope = toolOutputEnvelope(customOutput);
   const resultPatchSection = parseUnifiedDiffPatchSection(patchEnd?.parsed?.payload?.changes, session.repoRoot);
   if (resultPatchSection) {
-    timelineSections.push(resultPatchSection);
+    timelineSections.push(withDetailPurpose(resultPatchSection, 'result'));
   }
   const patchText = customCall?.output || patchAny?.output || '';
-  if (!timelineSections.length && patchText.trim() && !maybePushPatchSection(timelineSections, 'Patch', patchText)) {
-    timelineSections.push({ type: 'diff', title: 'Patch', text: patchText.trim() });
+  if (!timelineSections.length && patchText.trim() && !maybePushPatchSection(timelineSections, 'Patch', patchText, 'request')) {
+    timelineSections.push({ purpose: 'request', type: 'diff', title: 'Patch', text: patchText.trim() });
   }
 
   const patchFileEntries = diffStatsEntries(patchEnd?.parsed?.payload?.changes, session.repoRoot);
   const fallbackPatchFileEntries = patchFileEntries.length ? [] : diffStatsEntriesFromPatchInput(patchText);
-  maybePushKvSection(inspectorSections, 'Files', patchFileEntries.length ? patchFileEntries : fallbackPatchFileEntries);
+  maybePushKvSection(
+    inspectorSections,
+    'Files',
+    (patchFileEntries.length ? patchFileEntries : fallbackPatchFileEntries)
+      .map((entry) => ({ ...entry, fact: 'touchedFile' })),
+    'context',
+  );
   if (!patchFileEntries.length && !fallbackPatchFileEntries.length) {
-    maybePushKvSection(inspectorSections, 'Touched files', event.touchedFiles.map((file) => ({ key: file, value: 'updated' })));
+    maybePushKvSection(inspectorSections, 'Touched files', event.touchedFiles.map((file) => ({ key: file, value: 'updated', fact: 'touchedFile' })), 'context');
   }
 
   const noticeText = firstNonEmpty(
@@ -2264,34 +2308,37 @@ function extractPatchSections(raws, event, session = {}) {
     event.status ? `Patch ${event.status}.` : '',
   );
   if (noticeText) {
-    inspectorSections.push(makeNoticeSection('Result', noticeText, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info'));
+    inspectorSections.push(makeNoticeSection('Result', noticeText, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info', 'result'));
   }
 
-  if (!timelineSections.some((section) => section.type === 'diff' || section.type === 'patch')) {
-    inspectorSections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
+  if (!timelineSections.length && !inspectorSections.length) {
+    inspectorSections.push(makeRawJsonSection('Unmodeled fields', logicalFallbackPayload(raws), false, 'fallback'));
   }
   return { timelineSections, inspectorSections };
 }
 
 function extractJsReplSections(raws, event) {
-  const sections = [];
+  const timelineSections = [];
+  const inspectorSections = [];
   const customCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call');
   const customOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output');
   const envelope = toolOutputEnvelope(customOutput);
-  maybePushCodeSection(sections, 'JavaScript', customCall?.output, 'javascript');
-  maybePushKvSection(sections, 'Run context', [
+  maybePushCodeSection(timelineSections, 'JavaScript', customCall?.output, 'javascript', 'request');
+  maybePushKvSection(inspectorSections, 'Run context', [
     { key: 'status', value: String(event.status || '') },
-    { key: 'exitCode', value: event.outputStats.exitCode == null ? '' : String(event.outputStats.exitCode) },
-    { key: 'durationMs', value: event.outputStats.durationMs == null ? '' : String(event.outputStats.durationMs) },
-  ]);
+    { key: 'exitCode', value: event.outputStats.exitCode == null ? '' : String(event.outputStats.exitCode), fact: 'exitCode' },
+    { key: 'durationMs', value: event.outputStats.durationMs == null ? '' : String(event.outputStats.durationMs), fact: 'duration' },
+  ], 'context');
   const outputValue = envelope && Object.hasOwn(envelope, 'output') ? envelope.output : customOutput?.output;
   if (coerceJsonValue(outputValue)) {
-    sections.push({ type: 'json', title: 'Output', value: coerceJsonValue(outputValue) });
+    timelineSections.push({ purpose: 'result', type: 'json', title: 'Output', value: coerceJsonValue(outputValue) });
   } else {
-    maybePushTerminalSection(sections, 'Output', stringifyValue(outputValue), event.status === 'failed' ? 'stderr' : 'stdout');
+    maybePushTerminalSection(timelineSections, 'Output', stringifyValue(outputValue), event.status === 'failed' ? 'stderr' : 'stdout', '', 'result');
   }
-  if (!sections.length) sections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
-  return sections;
+  if (!timelineSections.length && !inspectorSections.length) {
+    inspectorSections.push(makeRawJsonSection('Unmodeled fields', logicalFallbackPayload(raws), false, 'fallback'));
+  }
+  return { timelineSections, inspectorSections };
 }
 
 function toolDetailValues(raws) {
@@ -2324,28 +2371,28 @@ function extractToolSections(raws, event) {
   const { requestValue, responseValue } = toolDetailValues(raws);
 
   maybePushKvSection(sections, 'Tool context', [
-    { key: 'tool', value: String(event.toolName || '') },
+    { key: 'tool', value: String(event.toolName || ''), fact: 'tool' },
     { key: 'status', value: String(event.status || '') },
-    { key: 'durationMs', value: event.outputStats.durationMs == null ? '' : String(event.outputStats.durationMs) },
-  ]);
+    { key: 'durationMs', value: event.outputStats.durationMs == null ? '' : String(event.outputStats.durationMs), fact: 'duration' },
+  ], 'context');
 
   if (requestValue) {
     if (typeof requestValue === 'object') {
-      sections.push({ type: 'json', title: 'Request', value: requestValue });
+      sections.push({ purpose: 'request', type: 'json', title: 'Request', value: requestValue });
     } else {
-      maybePushStructuredSection(sections, 'Request', requestValue);
+      maybePushStructuredSection(sections, 'Request', requestValue, { purpose: 'request' });
     }
   }
 
   if (responseValue) {
     if (typeof responseValue === 'object') {
-      sections.push({ type: 'json', title: 'Response', value: responseValue });
+      sections.push({ purpose: 'result', type: 'json', title: 'Response', value: responseValue });
     } else {
-      maybePushStructuredSection(sections, 'Response', responseValue);
+      maybePushStructuredSection(sections, 'Response', responseValue, { purpose: 'result' });
     }
   }
 
-  if (!sections.length) sections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
+  if (!sections.length) sections.push(makeRawJsonSection('Unmodeled fields', logicalFallbackPayload(raws), false, 'fallback'));
   return sections;
 }
 
@@ -2382,7 +2429,7 @@ function requestUserInputSection(requestValue, responseValue) {
     }).filter(Boolean) : [];
     return { id, title, prompt, options, answers: answerValues };
   }).filter(Boolean);
-  return items.length ? { type: 'user_input', title: 'User input', questions: items } : null;
+  return items.length ? { purpose: 'content', type: 'user_input', title: 'User input', questions: items } : null;
 }
 
 function goalStatusLabel(status) {
@@ -2425,34 +2472,36 @@ function goalSection(raws, event, requestValue, responseValue, snapshotOverride 
     objective ? `**Objective:**\n\n${objective}` : '',
   ].filter(Boolean);
   const sections = [];
-  maybePushMarkdownSection(sections, 'Goal', lines.join('\n\n'));
-  maybePushKvSection(sections, 'Goal usage', entries);
+  maybePushMarkdownSection(sections, 'Goal', lines.join('\n\n'), 'content');
+  maybePushKvSection(sections, 'Goal usage', entries, 'context');
   if (response.hasCompletionBudgetReport && response.completionBudgetReport != null && response.completionBudgetReport !== '') {
-    maybePushStructuredSection(sections, 'Completion budget', response.completionBudgetReport);
+    maybePushStructuredSection(sections, 'Completion budget', response.completionBudgetReport, { purpose: 'context' });
   }
   if (!sections.length) {
-    sections.push(hideSectionTitle(makeNoticeSection(event.label || 'Goal', event.preview || event.label || 'Goal', event.severity === 'warning' ? 'warning' : 'info')));
+    sections.push(hideSectionTitle(makeNoticeSection(event.label || 'Goal', event.preview || event.label || 'Goal', event.severity === 'warning' ? 'warning' : 'info', 'content')));
   }
   return sections;
 }
 
-function extractGoalSections(raws, event, splitSections) {
-  const split = splitSections(extractToolSections(raws, event));
+function extractGoalSections(raws, event) {
+  const toolInspectorSections = sanitizeToolInspectorSections(extractToolSections(raws, event));
   const { requestValue, responseValue } = toolDetailValues(raws);
   const snapshotRaw = raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'thread_goal_updated');
   const normalizedSnapshot = goalSnapshotFromRaw(snapshotRaw);
   const snapshotGoal = normalizedSnapshot?.goal;
   const resolvedResponseValue = responseValue || (snapshotGoal && typeof snapshotGoal === 'object' ? { goal: snapshotGoal } : null);
-  const timelineSections = goalSection(raws, event, requestValue, resolvedResponseValue, normalizedSnapshot);
+  const goalSections = goalSection(raws, event, requestValue, resolvedResponseValue, normalizedSnapshot);
+  const timelineSections = goalSections.filter((section) => section.purpose === 'content');
+  const goalInspectorSections = goalSections.filter((section) => section.purpose !== 'content');
   const hasToolRows = raws.some((raw) => raw.recordType === 'response_item'
     && ['function_call', 'function_call_output'].includes(raw.payloadType));
   return {
     timelineSections,
     inspectorSections: hasToolRows
-      ? sanitizeToolInspectorSections(split.inspectorSections)
+      ? [...goalInspectorSections, ...toolInspectorSections]
       : snapshotGoal && typeof snapshotGoal === 'object'
-        ? [{ type: 'json', title: 'Goal status', value: snapshotGoal }]
-        : sanitizeToolInspectorSections(split.inspectorSections),
+        ? [...goalInspectorSections, { purpose: 'result', type: 'json', title: 'Goal status', value: snapshotGoal }]
+        : [...goalInspectorSections, ...toolInspectorSections],
   };
 }
 
@@ -2645,6 +2694,7 @@ function imagePreviewSection(raws, event, requestValue) {
   }).filter(Boolean);
   const supportedCount = new Set(items.map((item) => item.dedupeKey).filter(Boolean)).size;
   return {
+    purpose: 'content',
     type: 'image_preview',
     title: 'Image preview',
     images,
@@ -2830,6 +2880,7 @@ function collaborationToolSection(toolName, requestValue, responseValue) {
   const message = redactEmbeddedDataUrls(stringifyValue(firstNonEmpty(requestValue?.message, responseValue?.prompt)));
   const result = redactEmbeddedDataUrls(collaborationResultMarkdown(responseValue));
   return {
+    purpose: 'content',
     type: 'collaboration',
     title: definition.title,
     action: definition.action,
@@ -2866,10 +2917,10 @@ function sanitizeToolTimelineValue(value, depth = 0) {
   return String(value);
 }
 
-function maybePushToolSummaryCodeSection(sections, title, value) {
+function maybePushToolSummaryCodeSection(sections, title, value, purpose) {
   if (value == null || value === '') return;
   const summarized = sanitizeToolTimelineValue(value);
-  maybePushCodeSection(sections, title, stringifyValue(summarized), typeof summarized === 'object' ? 'json' : 'text');
+  maybePushCodeSection(sections, title, stringifyValue(summarized), typeof summarized === 'object' ? 'json' : 'text', purpose);
 }
 
 function mcpPayloadValue(value) {
@@ -2911,21 +2962,21 @@ function mcpTextFragments(value, depth = 0, key = '') {
 
 function pushMcpRequestSummary(sections, event, requestValue) {
   if (!requestValue || typeof requestValue !== 'object') {
-    maybePushToolSummaryCodeSection(sections, 'Request summary', requestValue);
+    maybePushToolSummaryCodeSection(sections, 'Request summary', requestValue, 'request');
     return;
   }
   const payload = firstNonEmpty(requestValue.arguments, requestValue.input, requestValue.request, mcpPayloadValue(requestValue));
   const code = firstNonEmpty(payload?.code, requestValue.code, payload?.script, requestValue.script);
   const language = String(firstNonEmpty(payload?.language, requestValue.language, event.toolName === 'js' ? 'javascript' : '') || '').toLowerCase();
   if (code) {
-    maybePushCodeSection(sections, language === 'javascript' ? 'JavaScript' : 'Code', String(code), language || 'text');
+    maybePushCodeSection(sections, language === 'javascript' ? 'JavaScript' : 'Code', String(code), language || 'text', 'request');
   }
   const entries = Object.entries(payload && typeof payload === 'object' ? payload : requestValue)
     .filter(([key, value]) => !['code', 'script'].includes(key) && value != null && value !== '' && typeof value !== 'object')
     .slice(0, 8)
     .map(([key, value]) => ({ key, value: conciseToolValue(value, 1000) }));
-  if (entries.length) sections.push({ type: 'kv', title: 'Request', entries });
-  if (!code && !entries.length) maybePushToolSummaryCodeSection(sections, 'Request summary', requestValue);
+  if (entries.length) sections.push({ purpose: 'request', type: 'kv', title: 'Request', entries });
+  if (!code && !entries.length) maybePushToolSummaryCodeSection(sections, 'Request summary', requestValue, 'request');
 }
 
 function sanitizeMcpTimelineValue(value, depth = 0, key = '') {
@@ -2955,26 +3006,25 @@ function pushMcpResponseSummary(sections, responseValue) {
   const fragments = mcpTextFragments(payload).map((item) => item.trim()).filter(Boolean);
   const text = uniqueNonEmpty(fragments).join('\n\n');
   if (text) {
-    maybePushTerminalSection(sections, 'Result', truncatePreservingWhitespace(redactEmbeddedDataUrls(text, TIMELINE_DATA_URL_MARKER), 4000), 'stdout');
+    maybePushTerminalSection(sections, 'Result', truncatePreservingWhitespace(redactEmbeddedDataUrls(text, TIMELINE_DATA_URL_MARKER), 4000), 'stdout', '', 'result');
     return;
   }
   const summarized = sanitizeMcpTimelineValue(payload);
-  maybePushCodeSection(sections, 'Response summary', stringifyValue(summarized), typeof summarized === 'object' ? 'json' : 'text');
+  maybePushCodeSection(sections, 'Response summary', stringifyValue(summarized), typeof summarized === 'object' ? 'json' : 'text', 'result');
 }
 
-function extractMcpSections(raws, event, splitSections) {
-  const split = splitSections(extractToolSections(raws, event));
+function extractMcpSections(raws, event) {
+  const toolInspectorSections = extractToolSections(raws, event);
   const { requestValue, responseValue } = toolDetailValues(raws);
   const timelineSections = [];
   pushMcpRequestSummary(timelineSections, event, requestValue);
   pushMcpResponseSummary(timelineSections, responseValue);
-  if (!timelineSections.length) timelineSections.push(...sanitizeUnmodeledToolTimelineSections(split.timelineSections));
   if (!timelineSections.length) {
-    timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info')));
+    timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info', 'result')));
   }
   return {
     timelineSections: sanitizeUnmodeledToolTimelineSections(timelineSections),
-    inspectorSections: sanitizeToolInspectorSections(split.inspectorSections),
+    inspectorSections: sanitizeToolInspectorSections(toolInspectorSections),
   };
 }
 function sanitizeUnmodeledToolTimelineSection(section) {
@@ -2992,12 +3042,12 @@ function sanitizeUnmodeledToolTimelineSections(sections) {
 function sanitizeToolInspectorSections(sections, imagePreview = null) {
   const previewSources = new Set((imagePreview?.images || []).map((image) => image.src));
   return (sections || []).map((section) => sanitizeToolInspectorValue(section, {
-    previewSources: section.title === 'Response' ? previewSources : new Set(),
+    previewSources: section.purpose === 'result' ? previewSources : new Set(),
   }));
 }
 
-function extractToolOperationSections(raws, event, splitSections) {
-  const split = splitSections(extractToolSections(raws, event));
+function extractToolOperationSections(raws, event) {
+  const toolInspectorSections = extractToolSections(raws, event);
   const { requestValue, responseValue } = toolDetailValues(raws);
   const timelineSections = [];
   const userInput = event.toolName === 'request_user_input' ? requestUserInputSection(requestValue, responseValue) : null;
@@ -3005,24 +3055,28 @@ function extractToolOperationSections(raws, event, splitSections) {
   const collaboration = collaborationToolSection(event.toolName, requestValue, responseValue);
   if (collaboration) timelineSections.push(collaboration);
   if (collaboration && hasMeaningfulToolValue(responseValue) && !collaborationResponseCaptured(responseValue)) {
-    maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue);
+    maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue, 'result');
   }
   const markdown = event.toolName === 'view_image' ? viewImageMarkdown(requestValue, responseValue) : '';
-  maybePushMarkdownSection(timelineSections, 'Other tool call', markdown);
+  maybePushMarkdownSection(timelineSections, 'Other tool call', markdown, 'content');
   const imageGeneration = event.toolName === 'image_generation' ? imageGenerationMarkdown(raws, responseValue) : '';
-  maybePushMarkdownSection(timelineSections, 'Image generation', imageGeneration);
-  const hasSpecializedTimeline = timelineSections.length > 0;
-  if (!timelineSections.length) {
-    maybePushToolSummaryCodeSection(timelineSections, 'Request summary', requestValue);
-    maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue);
+  maybePushMarkdownSection(timelineSections, 'Image generation', imageGeneration, 'content');
+  if (timelineSections.length
+      && !collaboration
+      && event.toolName !== 'update_plan'
+      && typeof responseValue !== 'object'
+      && hasMeaningfulToolValue(responseValue)) {
+    maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue, 'result');
   }
-  if (hasSpecializedTimeline) timelineSections.push(...sanitizeUnmodeledToolTimelineSections(split.timelineSections));
-  if (!timelineSections.length) timelineSections.push(...sanitizeUnmodeledToolTimelineSections(split.timelineSections));
   if (!timelineSections.length) {
-    timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info')));
+    maybePushToolSummaryCodeSection(timelineSections, 'Request summary', requestValue, 'request');
+    maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue, 'result');
+  }
+  if (!timelineSections.length) {
+    timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info', 'result')));
   }
   const imagePreview = ['view_image', 'image_generation'].includes(event.toolName) ? imagePreviewSection(raws, event, requestValue) : null;
-  const inspectorSections = sanitizeToolInspectorSections(split.inspectorSections, imagePreview);
+  const inspectorSections = sanitizeToolInspectorSections(toolInspectorSections, imagePreview);
   return {
     timelineSections,
     inspectorSections: imagePreview ? [imagePreview, ...inspectorSections] : inspectorSections,
@@ -3042,6 +3096,7 @@ function updatePlanSection(requestValue) {
   }).filter(Boolean);
   if (!explanation && !items.length) return null;
   return {
+    purpose: 'content',
     type: 'plan_update',
     title: 'Plan update',
     explanationHtml: explanation ? renderMarkdownToHtml(explanation) : '',
@@ -3049,24 +3104,22 @@ function updatePlanSection(requestValue) {
   };
 }
 
-function extractUpdatePlanSections(raws, event, splitSections) {
-  const split = splitSections(extractToolSections(raws, event));
+function extractUpdatePlanSections(raws, event) {
+  const toolInspectorSections = extractToolSections(raws, event);
   const { requestValue, responseValue } = toolDetailValues(raws);
   const timelineSections = [];
   const planUpdate = updatePlanSection(requestValue);
   if (planUpdate) timelineSections.push(planUpdate);
-  if (planUpdate) timelineSections.push(...sanitizeUnmodeledToolTimelineSections(split.timelineSections));
   if (!timelineSections.length) {
-    maybePushToolSummaryCodeSection(timelineSections, 'Request summary', requestValue);
-    maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue);
+    maybePushToolSummaryCodeSection(timelineSections, 'Request summary', requestValue, 'request');
+    maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue, 'result');
   }
-  if (!timelineSections.length) timelineSections.push(...sanitizeUnmodeledToolTimelineSections(split.timelineSections));
   if (!timelineSections.length) {
-    timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info')));
+    timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info', 'result')));
   }
   return {
     timelineSections,
-    inspectorSections: sanitizeToolInspectorSections(split.inspectorSections),
+    inspectorSections: sanitizeToolInspectorSections(toolInspectorSections),
   };
 }
 
@@ -3168,6 +3221,7 @@ function codeModeWebRequestSection(requestValue) {
     }));
   if (!groups.length && !options.length) return null;
   return {
+    purpose: 'request',
     type: 'web_request',
     title: 'Web request',
     groups,
@@ -3182,6 +3236,7 @@ function codeModeWebResultSection(resultText) {
   );
   if (!source) return null;
   return {
+    purpose: 'result',
     type: 'markdown',
     role: 'web_result',
     title: 'Web results',
@@ -3231,12 +3286,14 @@ function codeModeShellRequestSections(requestValue, session) {
     'Command',
     command,
     inferCommandLanguage(command, args, commandLanguageContext(session)),
+    'request',
   );
+  if (sections.at(-1)?.type === 'code') sections.at(-1).role = 'command';
   maybePushKvSection(sections, 'Run context', [
     { key: 'cwd', value: conciseToolValue(firstNonEmpty(args.workdir, args.cwd), 2000) },
     { key: 'Timeout ms', value: conciseToolValue(args.timeout_ms ?? args.timeoutMs, 200) },
     { key: 'Sandbox permissions', value: conciseToolValue(args.sandbox_permissions, 200) },
-  ]);
+  ], 'context');
   return sections;
 }
 
@@ -3247,10 +3304,10 @@ function codeModeShellResultSections(resultText) {
     maybePushKvSection(sections, 'Run result', [
       { key: 'Exit code', value: String(formatted.exitCode) },
       { key: 'Wall time', value: formatted.wallTime },
-    ]);
-    maybePushTerminalSection(sections, 'Output', formatted.output, 'stdout');
+    ], 'result');
+    maybePushTerminalSection(sections, 'Output', formatted.output, 'stdout', '', 'result');
   } else {
-    maybePushTerminalSection(sections, 'Result', resultText, 'stdout');
+    maybePushTerminalSection(sections, 'Result', resultText, 'stdout', '', 'result');
   }
   return sections;
 }
@@ -3274,8 +3331,8 @@ function codeModeToolProjectionSection(call, session = {}) {
     requestSections.push(...codeModeShellRequestSections(requestValue, session));
   } else if (toolName === 'apply_patch') {
     const patchText = typeof requestValue === 'string' ? requestValue : String(requestValue?.patch || '');
-    if (patchText && !maybePushPatchSection(requestSections, 'Patch', patchText)) {
-      maybePushCodeSection(requestSections, 'Patch', patchText, 'diff');
+    if (patchText && !maybePushPatchSection(requestSections, 'Patch', patchText, 'request')) {
+      maybePushCodeSection(requestSections, 'Patch', patchText, 'diff', 'request');
     }
   } else if (toolName === 'view_image') {
     const dimensions = responseValue && !Array.isArray(responseValue) && typeof responseValue === 'object'
@@ -3286,7 +3343,7 @@ function codeModeToolProjectionSection(call, session = {}) {
       { key: 'Detail', value: conciseToolValue(requestValue?.detail, 200) },
       { key: 'Dimensions', value: conciseToolValue(dimensions, 200) },
       { key: 'MIME type', value: conciseToolValue(firstNonEmpty(responseValue?.mimeType, responseValue?.mime_type), 200) },
-    ]);
+    ], 'request');
   } else if (toolName === 'web__run') {
     const webRequest = codeModeWebRequestSection(requestValue);
     if (webRequest) requestSections.push(webRequest);
@@ -3295,8 +3352,8 @@ function codeModeToolProjectionSection(call, session = {}) {
     if (collaboration) requestSections.push(collaboration);
   }
 
-  if (!requestSections.length) maybePushToolSummaryCodeSection(requestSections, 'Request summary', requestValue);
-  if (!requestSections.length) requestSections.push(makeNoticeSection('Declared request', toolName, 'info'));
+  if (!requestSections.length) maybePushToolSummaryCodeSection(requestSections, 'Request summary', requestValue, 'request');
+  if (!requestSections.length) requestSections.push(makeNoticeSection('Declared request', toolName, 'info', 'request'));
 
   if (associated && ['shell_command', 'exec_command'].includes(toolName)) {
     resultSections.push(...codeModeShellResultSections(call.resultText));
@@ -3306,11 +3363,12 @@ function codeModeToolProjectionSection(call, session = {}) {
   } else if (associated && toolName !== 'update_plan' && toolName !== 'request_user_input') {
     const collaboration = collaborationToolSection(toolName, requestValue, responseValue);
     if (!collaboration || !collaborationResponseCaptured(responseValue)) {
-      maybePushToolSummaryCodeSection(resultSections, 'Response summary', responseValue == null ? call.resultText : responseValue);
+      maybePushToolSummaryCodeSection(resultSections, 'Response summary', responseValue == null ? call.resultText : responseValue, 'result');
     }
   }
   if (associated) {
     resultSections.push({
+      purpose: 'result',
       type: 'code_mode_source',
       title: 'Associated result',
       code: String(call.resultText || ''),
@@ -3319,6 +3377,7 @@ function codeModeToolProjectionSection(call, session = {}) {
   }
 
   return {
+    purpose: 'content',
     type: 'code_mode_tool_projection',
     title: codeModeToolProjectionTitle(toolName, requestValue),
     toolName,
@@ -3326,114 +3385,148 @@ function codeModeToolProjectionSection(call, session = {}) {
     resultAssociation: associated
       ? codeModePresentationContract.CODE_MODE_RESULT_ASSOCIATION.BOUNDED
       : codeModePresentationContract.CODE_MODE_RESULT_ASSOCIATION.NONE,
-    requestSections: sanitizeUnmodeledToolTimelineSections(requestSections),
-    resultSections: sanitizeUnmodeledToolTimelineSections(resultSections),
+    requestSections: sanitizeUnmodeledToolTimelineSections(requestSections).map((section) => withDetailPurpose(section, 'request')),
+    resultSections: sanitizeUnmodeledToolTimelineSections(resultSections).map((section) => withDetailPurpose(section, 'result')),
     resultObserved: associated,
     sourceOrder: Number(call?.sourceOrder || 0),
   };
 }
 
 function extractWebSearchSections(raws, event) {
-  const sections = [];
+  const timelineSections = [];
+  const inspectorSections = [];
   const searchCall = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'web_search_call');
   const searchEnd = raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'web_search_end');
   const action = searchCall?.parsed?.payload?.action;
 
   if (typeof action === 'string') {
-    maybePushMarkdownSection(sections, 'Search action', action);
+    maybePushMarkdownSection(timelineSections, 'Search action', action, 'request');
   } else if (action && typeof action === 'object') {
-    sections.push({ type: 'json', title: 'Search action', value: action });
+    timelineSections.push({ purpose: 'request', type: 'json', title: 'Search action', value: action });
   }
 
-  maybePushKvSection(sections, 'Search status', [
+  maybePushKvSection(inspectorSections, 'Search status', [
     { key: 'status', value: String(event.status || searchCall?.status || searchEnd?.status || '') },
-  ]);
+  ], 'result');
 
   if (searchEnd?.parsed?.payload) {
-    sections.push({ type: 'json', title: 'Search payload', value: searchEnd.parsed.payload });
+    inspectorSections.push({ purpose: 'result', type: 'json', title: 'Search payload', value: searchEnd.parsed.payload });
   } else if (searchCall?.parsed?.payload) {
-    sections.push({ type: 'json', title: 'Search payload', value: searchCall.parsed.payload });
+    inspectorSections.push({ purpose: 'request', type: 'json', title: 'Search payload', value: searchCall.parsed.payload });
   }
 
-  if (!sections.length) sections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
-  return sections;
+  if (!timelineSections.length && !inspectorSections.length) {
+    inspectorSections.push(makeRawJsonSection('Unmodeled fields', logicalFallbackPayload(raws), false, 'fallback'));
+  }
+  return { timelineSections, inspectorSections };
 }
 
-function extractProtocolSections(event, raws) {
-  const sections = [];
+function extractProtocolDetailSections(event, raws) {
+  const timelineSections = [];
+  const inspectorSections = [];
   const primary = raws[0];
   if (['agents_instructions', 'developer_instruction', 'developer_permissions', 'developer_collaboration_mode', 'skill_injection'].includes(event.subtype)) {
-    maybePushMarkdownSection(sections, 'Protocol text', primary.messageText);
-    hideSectionTitle(sections[0]);
-    return sections;
+    maybePushMarkdownSection(timelineSections, 'Protocol text', primary.messageText, 'content');
+    hideSectionTitle(timelineSections[0]);
+    return { timelineSections, inspectorSections };
   }
   if (event.subtype === 'goal_context') {
     const objective = readRawXmlTag(primary.messageText, 'objective');
     if (objective) {
-      maybePushMarkdownSection(sections, 'Goal objective', objective);
-      hideSectionTitle(sections[0]);
+      maybePushMarkdownSection(timelineSections, 'Goal objective', objective, 'content');
+      hideSectionTitle(timelineSections[0]);
     }
     const budgetMatch = String(primary.messageText || '').match(/Budget:\s*([\s\S]*?)(?:\n\s*\n[A-Z][^\n]*:|<\/codex_internal_context>)/);
-    if (budgetMatch) maybePushMarkdownSection(sections, 'Budget', budgetMatch[1].trim());
-    sections.push(makeRawJsonSection('Protocol raw JSON', primary.parsed));
-    return sections;
+    if (budgetMatch) maybePushMarkdownSection(inspectorSections, 'Budget', budgetMatch[1].trim(), 'context');
+    maybePushResidualJsonSection(
+      inspectorSections,
+      'Unmodeled protocol fields',
+      primary.parsed?.payload,
+      ['type', 'role', 'content'],
+    );
+    return { timelineSections, inspectorSections };
   }
   if (event.subtype === 'environment_context' || event.subtype === 'session_meta' || event.subtype === 'session_configured' || event.subtype === 'thread_goal_updated' || event.subtype === 'turn_context') {
     const entries = event.subtype === 'environment_context'
       ? taggedBlockEntries(primary.messageText)
       : toKvEntries(primary.parsed?.payload, ['cwd', 'turn_id', 'model', 'id', 'originator', 'thread_id', 'thread_name', 'thread_goal', 'goal']);
-    maybePushKvSection(sections, 'Protocol fields', entries);
-    sections.push(makeRawJsonSection('Protocol raw JSON', primary.parsed));
-    return sections;
+    maybePushKvSection(inspectorSections, 'Protocol fields', entries, 'context');
+    const consumedKeys = event.subtype === 'environment_context'
+      ? ['type', 'role', 'content']
+      : kvRepresentedKeys(primary.parsed?.payload);
+    maybePushResidualJsonSection(inspectorSections, 'Unmodeled protocol fields', primary.parsed?.payload, consumedKeys);
+    return { timelineSections, inspectorSections };
   }
   if (event.subtype === 'token_count') {
     const usageLimits = collectUsageLimitItems(primary.parsed?.payload);
-    if (usageLimits.length) sections.push({ type: 'usage_limits', title: 'Usage limits', items: usageLimits });
+    if (usageLimits.length) inspectorSections.push({ purpose: 'context', type: 'usage_limits', title: 'Usage limits', items: usageLimits });
     const tokenItems = tokenUsageItems(primary.parsed?.payload);
-    if (tokenItems.length && !usageLimits.length) sections.push({ type: 'token_usage', title: 'Token usage', items: tokenItems });
-    maybePushKvSection(sections, 'Event fields', toKvEntries(primary.parsed?.payload, ['type', 'turn_id', 'thread_id', 'thread_name']));
-    sections.push(makeRawJsonSection('Protocol raw JSON', primary.parsed));
-    return sections;
+    if (tokenItems.length && !usageLimits.length) inspectorSections.push({ purpose: 'context', type: 'token_usage', title: 'Token usage', items: tokenItems });
+    maybePushKvSection(inspectorSections, 'Event fields', toKvEntries(primary.parsed?.payload, ['type', 'turn_id', 'thread_id', 'thread_name']), 'context');
+    const consumedKeys = new Set(kvRepresentedKeys(primary.parsed?.payload));
+    if (usageLimits.length || tokenItems.length) {
+      consumedKeys.add('info');
+      consumedKeys.add('rate_limits');
+    }
+    maybePushResidualJsonSection(inspectorSections, 'Unmodeled protocol fields', primary.parsed?.payload, consumedKeys);
+    return { timelineSections, inspectorSections };
   }
   if (event.subtype === 'user_shell_command') {
-    maybePushCodeSection(sections, 'Shell command wrapper', primary.messageText, 'shell');
-    return sections;
+    maybePushCodeSection(timelineSections, 'Shell command wrapper', primary.messageText, 'shell', 'request');
+    return { timelineSections, inspectorSections };
   }
   if (event.subtype === 'image_wrapper' || event.subtype === 'meta_block' || event.subtype === 'turn_aborted_marker') {
-    sections.push(makeNoticeSection('Protocol wrapper', primary.messageText || event.preview, 'warning'));
-    return sections;
+    inspectorSections.push(makeNoticeSection('Protocol wrapper', primary.messageText || event.preview, 'warning', 'context'));
+    return { timelineSections, inspectorSections };
   }
   if (primary.messageText) {
-    maybePushMarkdownSection(sections, 'Protocol text', primary.messageText);
-    hideSectionTitle(sections[0]);
+    maybePushMarkdownSection(timelineSections, 'Protocol text', primary.messageText, 'content');
+    hideSectionTitle(timelineSections[0]);
   }
-  if (!sections.length) sections.push(makeRawJsonSection('Protocol raw JSON', primary.parsed));
-  return sections;
+  if (!timelineSections.length) inspectorSections.push(makeRawJsonSection('Unmodeled protocol fields', logicalFallbackPayload(raws), false, 'fallback'));
+  return { timelineSections, inspectorSections };
+}
+
+function extractProtocolSections(event, raws) {
+  const detail = extractProtocolDetailSections(event, raws);
+  return [...detail.timelineSections, ...detail.inspectorSections];
+}
+
+function extractLifecycleDetailSections(event, raws) {
+  const timelineSections = [];
+  const inspectorSections = [];
+  const primary = raws[0];
+  if (event.kind === 'review') {
+    return extractReviewLifecycleDetailSections(event, raws);
+  }
+  let usageLimits = [];
+  let tokenItems = [];
+  if (event.kind === 'usage_limit_warning') {
+    usageLimits = collectUsageLimitItems(primary.parsed?.payload);
+    if (usageLimits.length) {
+      timelineSections.push({ purpose: 'context', type: 'usage_limits', title: 'Usage limits', items: usageLimits });
+    } else {
+      timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, 'info', 'context')));
+    }
+    tokenItems = tokenUsageItems(primary.parsed?.payload);
+    if (tokenItems.length && !usageLimits.length) timelineSections.push({ purpose: 'context', type: 'token_usage', title: 'Token usage', items: tokenItems });
+  } else {
+    timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info', 'result')));
+  }
+  const eventFields = toKvEntries(primary.parsed?.payload, ['type', 'turn_id', 'thread_id', 'thread_name']);
+  maybePushKvSection(inspectorSections, 'Event fields', eventFields, 'context');
+  const consumedKeys = new Set(kvRepresentedKeys(primary.parsed?.payload));
+  if (usageLimits.length || tokenItems.length) {
+    consumedKeys.add('info');
+    consumedKeys.add('rate_limits');
+  }
+  maybePushResidualJsonSection(inspectorSections, 'Unmodeled event fields', primary.parsed?.payload, consumedKeys);
+  return { timelineSections, inspectorSections };
 }
 
 function extractLifecycleSections(event, raws) {
-  const sections = [];
-  const primary = raws[0];
-  if (event.kind === 'review') {
-    return extractReviewLifecycleSections(event, raws);
-  }
-  if (event.kind === 'usage_limit_warning') {
-    const usageLimits = collectUsageLimitItems(primary.parsed?.payload);
-    if (usageLimits.length) {
-      sections.push({ type: 'usage_limits', title: 'Usage limits', items: usageLimits });
-    } else {
-      sections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, 'info')));
-    }
-    const items = tokenUsageItems(primary.parsed?.payload);
-    if (items.length && !usageLimits.length) sections.push({ type: 'token_usage', title: 'Token usage', items });
-  } else {
-    sections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info')));
-  }
-  maybePushKvSection(sections, 'Event fields', toKvEntries(primary.parsed?.payload, ['type', 'turn_id', 'thread_id', 'thread_name']));
-  if (primary.parsed?.payload && Object.keys(primary.parsed.payload).length) {
-    sections.push(makeRawJsonSection('Event raw JSON', primary.parsed));
-  }
-  return sections;
+  const detail = extractLifecycleDetailSections(event, raws);
+  return [...detail.timelineSections, ...detail.inspectorSections];
 }
 
 function rawConversationRole(raw) {
@@ -3561,6 +3654,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
   },
   sectionBuilders: {
     filterDetailSections,
+    logicalFallbackPayload,
     makeNoticeSection,
     makeRawJsonSection,
     maybePushCodeSection,
@@ -3578,11 +3672,13 @@ const codexDetailBuilder = createCodexDetailBuilder({
     extractCommandSections,
     extractConversationSections,
     extractJsReplSections,
+    extractLifecycleDetailSections,
     extractLifecycleSections,
     extractMcpSections,
     extractPatchSections,
     extractPlanSections,
     extractGoalSections,
+    extractProtocolDetailSections,
     extractProtocolSections,
     extractReasoningSections,
     extractToolOperationSections,
@@ -3658,39 +3754,42 @@ function reviewTargetLabel(target) {
   }
 }
 
-function extractReviewLifecycleSections(event, raws) {
-  const sections = [];
+function extractReviewLifecycleDetailSections(event, raws) {
+  const timelineSections = [];
+  const inspectorSections = [];
   const primary = raws[0];
   const lifecycle = reviewLifecycleFromRaw(primary, { ownerId: primary.sessionId });
   const payload = lifecycle?.payload || primary.parsed?.payload || {};
   const output = payload.review_output || {};
 
   if (event.subtype === 'entered_review_mode') {
-    maybePushKvSection(sections, 'Review request', [
+    maybePushKvSection(timelineSections, 'Review request', [
       { key: 'Status', value: 'Started' },
       { key: 'Target', value: reviewTargetLabel(payload.target) },
       { key: 'Hint', value: displayValue(payload.user_facing_hint, 400) },
-    ]);
+    ], 'request');
   } else {
     const findings = Array.isArray(output.findings) ? output.findings : [];
-    maybePushKvSection(sections, 'Review result', [
+    maybePushKvSection(timelineSections, 'Review result', [
       { key: 'Status', value: 'Completed' },
       { key: 'Correctness', value: displayValue(output.overall_correctness, 400) },
       { key: 'Confidence', value: output.overall_confidence_score == null ? displayValue(output.confidence, 400) : displayValue(output.overall_confidence_score, 400) },
       { key: 'Findings', value: String(findings.length) },
-    ]);
-    maybePushMarkdownSection(sections, 'Overall explanation', displayValue(firstNonEmpty(output.overall_explanation, output.explanation), 4000));
+    ], 'result');
+    maybePushMarkdownSection(timelineSections, 'Overall explanation', displayValue(firstNonEmpty(output.overall_explanation, output.explanation), 4000), 'result');
     if (findings.length) {
-      maybePushMarkdownSection(sections, 'Findings', findings.map(reviewFindingMarkdown).filter(Boolean).join('\n\n'));
+      maybePushMarkdownSection(timelineSections, 'Findings', findings.map(reviewFindingMarkdown).filter(Boolean).join('\n\n'), 'result');
     } else {
-      sections.push(makeNoticeSection('Findings', 'No findings were reported.', 'info'));
+      timelineSections.push(makeNoticeSection('Findings', 'No findings were reported.', 'info', 'result'));
     }
-    if (Object.keys(output).length) sections.push(makeRawJsonSection('Review output JSON', output));
+    if (Object.keys(output).length) inspectorSections.push({ purpose: 'result', type: 'json', title: 'Review output', value: output });
   }
 
-  maybePushKvSection(sections, 'Event fields', toKvEntries(payload, ['type', 'turn_id', 'thread_id']));
-  if (payload && Object.keys(payload).length) sections.push(makeRawJsonSection('Event raw JSON', primary.parsed));
-  return sections;
+  maybePushKvSection(inspectorSections, 'Event fields', toKvEntries(payload, ['type', 'turn_id', 'thread_id']), 'context');
+  const consumedKeys = new Set(kvRepresentedKeys(payload));
+  consumedKeys.add(event.subtype === 'entered_review_mode' ? 'target' : 'review_output');
+  maybePushResidualJsonSection(inspectorSections, 'Unmodeled event fields', payload, consumedKeys);
+  return { timelineSections, inspectorSections };
 }
 
 function planUpdateText(raw) {

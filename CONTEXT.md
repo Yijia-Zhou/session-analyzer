@@ -40,6 +40,26 @@ _Avoid_: Source link, raw link / 来源链接、原始链接
 A user-meaningful unit of work interpreted from one or more Raw Records while preserving traceability to them. / 从一条或多条原始记录解释得到、对用户有意义且保留原始可追溯性的工作单元。
 _Avoid_: Normalized record, timeline item / 归一化记录、时间线条目
 
+**Structured Detail / 结构化详情**:
+A bounded, source-interpreted presentation of one Logical Event that keeps its supporting Raw References available without becoming canonical history or a lossless payload store; Raw Record detail is a separate source-evidence surface. / 对一个逻辑事件进行的有界、由来源解释的呈现；它保留可用的支撑原始引用，但不会成为规范历史或无损 payload 存储；原始记录详情是独立的来源证据界面。
+_Avoid_: Canonical detail, normalized payload / 规范详情、归一化 payload
+
+**Detail Purpose / 详情用途**:
+The source-neutral meaning of one Structured Detail section, independent of its renderer type, localized title, and producer order. / 一个结构化详情区段的来源中立含义，独立于其 renderer type、本地化标题与 producer 顺序。
+_Avoid_: Section type, title category, display order / 区段类型、标题类别、显示顺序
+
+**Detail Responsibility / 详情职责**:
+The source-neutral reading responsibility of one Structured Detail section: either Primary Detail or Supplemental Detail, independently of its Detail Purpose and renderer. / 一个结构化详情区段承担的来源中立阅读职责：主体详情或补充详情；该职责独立于详情用途和 renderer。
+_Avoid_: Renderer placement, section location, UI bucket / Renderer 位置、区段位置、UI 分桶
+
+**Primary Detail / 主体详情**:
+The event-specific readable representation needed to understand what happened while following chronological work history. / 沿时间顺序阅读工作历史时，为理解发生了什么所必需的事件专属可读表示。
+_Avoid_: Timeline section, summary, preview / Timeline 区段、摘要、预览
+
+**Supplemental Detail / 补充详情**:
+Additional structured information useful for inspection, verification, provenance, debugging, or deeper understanding, but not required to follow chronological work history. / 对检查、核验、来源追溯、调试或深入理解有用，但并非沿时间顺序理解工作历史所必需的附加结构化信息。
+_Avoid_: Inspector section, metadata, secondary content / Inspector 区段、元数据、次要内容
+
 **Event Layer / 事件层**:
 One of the product's distinct views of session history, defined by how much source activity is interpreted or exposed. / 产品查看会话历史的不同视图之一，以来源活动被解释或暴露的程度来区分。
 _Avoid_: View mode, timeline mode / 视图模式、时间线模式

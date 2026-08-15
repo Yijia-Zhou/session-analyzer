@@ -99,8 +99,8 @@ test('command, patch, and tool details keep stable section type boundaries', asy
     inspector: ['kv', 'notice'],
   });
   assert.deepEqual(sectionTypes(buildEventDetail(session, tool.id, tool.layer)), {
-    timeline: ['plan_update', 'code'],
-    inspector: ['kv', 'json'],
+    timeline: ['plan_update'],
+    inspector: ['kv', 'json', 'code'],
   });
 });
 
@@ -353,16 +353,13 @@ test('Code Mode detail prioritizes command and final output while folding wait t
   const chineseDetail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
 
   assert.deepEqual(detail.rawRefs.map((ref) => ref.line), [2, 3, 4, 6]);
-  assert.deepEqual(detail.timelineSections.map((section) => section.type), ['code', 'terminal', 'code_mode_trace']);
-  assert.deepEqual(detail.timelineSections.map((section) => section.title), ['Command', 'Final output', 'Execution trace']);
+  assert.deepEqual(detail.timelineSections.map((section) => section.type), ['code', 'terminal']);
+  assert.deepEqual(detail.timelineSections.map((section) => section.title), ['Command', 'Final output']);
   assert.equal(detail.timelineSections[0].role, 'command');
   assert.match(detail.timelineSections[0].code, /tools\.fixture/);
   assert.equal(detail.timelineSections[1].text, 'Script completed\nfixture result');
-  assert.equal(detail.timelineSections[2].expanded, undefined);
-  assert.deepEqual(detail.timelineSections[2].phases.map((phase) => phase.title), ['Exec phase', 'Wait phase 1']);
-  assert.match(detail.timelineSections[2].phases[0].output, /Script running with cell ID 4242/);
-  assert.equal(detail.timelineSections[2].phases[1].output, '');
   assert.deepEqual(detail.inspectorSections[0], {
+    purpose: 'context',
     type: 'kv',
     title: 'Operation metadata',
     entries: [
@@ -372,21 +369,29 @@ test('Code Mode detail prioritizes command and final output while folding wait t
       { key: 'Poll count', value: '1' },
     ],
   });
-  assert.deepEqual(detail.inspectorSections[1], {
+  assert.equal(detail.inspectorSections[1].type, 'code_mode_trace');
+  assert.equal(detail.inspectorSections[1].purpose, 'traceability');
+  assert.equal(detail.inspectorSections[1].expanded, undefined);
+  assert.deepEqual(detail.inspectorSections[1].phases.map((phase) => phase.title), ['Exec phase', 'Wait phase 1']);
+  assert.match(detail.inspectorSections[1].phases[0].output, /Script running with cell ID 4242/);
+  assert.equal(detail.inspectorSections[1].phases[1].output, '');
+  assert.deepEqual(detail.inspectorSections[2], {
+    purpose: 'traceability',
     type: 'event_refs',
     title: 'Observed nested activity',
     items: [{ id: nested.id, label: 'MCP tool', kind: 'mcp_call', status: 'failed' }],
   });
   assert.equal(Object.hasOwn(detail, 'eventRefs'), false);
-  assert.deepEqual(chineseDetail.timelineSections.map((section) => section.title), ['执行命令', '最终输出', '执行过程']);
-  assert.deepEqual(chineseDetail.timelineSections[2].phases.map((phase) => phase.title), ['执行阶段', '等待阶段 1']);
+  assert.deepEqual(chineseDetail.timelineSections.map((section) => section.title), ['执行命令', '最终输出']);
   assert.deepEqual(chineseDetail.inspectorSections[0].entries, [
     { key: '证据状态', value: 'output_observed' },
     { key: '观测状态', value: 'terminal' },
     { key: '运行单元', value: '4242' },
     { key: '轮询次数', value: '1' },
   ]);
-  assert.equal(chineseDetail.inspectorSections[1].title, '已观测嵌套活动');
+  assert.equal(chineseDetail.inspectorSections[1].title, '执行过程');
+  assert.deepEqual(chineseDetail.inspectorSections[1].phases.map((phase) => phase.title), ['执行阶段', '等待阶段 1']);
+  assert.equal(chineseDetail.inspectorSections[2].title, '已观测嵌套活动');
 });
 
 test('Code Mode detail restores declared plan and shell structure with explicitly bounded results', async (t) => {

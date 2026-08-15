@@ -2,6 +2,7 @@
 
 const rendererApi = window.sessionRenderers;
 const escapeHtml = rendererApi.escapeHtml;
+const renderInspectorSections = rendererApi.renderInspectorSections;
 const renderSections = rendererApi.renderSections;
 const renderTimelineSections = rendererApi.renderTimelineSections;
 const searchControls = window.sessionSearchControls;
@@ -11,6 +12,7 @@ const foldingApi = window.sessionFolding;
 const i18n = window.sessionI18n;
 const navigationApi = window.sessionNavigation;
 const eventChipsApi = window.sessionEventChips;
+const detailPresentationApi = window.sessionDetailPresentation;
 const codeModePresentationContract = window.sessionCodeModePresentationContract;
 const transitionSafety = require('./transition-safety');
 const isIntentionalAbort = transitionSafety.isIntentionalAbort;
@@ -2688,33 +2690,52 @@ function metadataRow(label, value) {
 function renderInspectorMetadata(event, refs, detail = null) {
   const meta = detail?.meta || event;
   const outputStats = meta.outputStats || event.outputStats || {};
-  return [
-    metadataRow(t('time'), fmtDate(meta.timestamp || event.timestamp)),
-    metadataRow(t('status'), meta.status || event.status),
-    metadataRow(t('severity'), meta.severity && meta.severity !== 'normal' ? meta.severity : ''),
-    metadataRow(t('tool'), meta.toolName || event.toolName),
-    metadataRow(t('provider'), meta.provider || event.provider),
-    metadataRow(t('model'), meta.model || event.model),
-    metadataRow(t('reasoningEffort'), meta.effort || event.effort),
-    metadataRow(t('attributionSkill'), meta.provenance?.attributionSkill || event.provenance?.attributionSkill),
-    metadataRow(t('exitCode'), outputStats.exitCode == null ? '' : String(outputStats.exitCode)),
-    metadataRow(t('duration'), outputStats.durationMs == null ? '' : `${outputStats.durationMs} ms`),
-    metadataRow(t('recordType'), event.recordType),
-    metadataRow(t('channels'), formatList(meta.channels || event.channels)),
-    metadataRow(t('touchedFiles'), formatList(meta.touchedFiles || event.touchedFiles)),
-  ].join('');
+  const channels = meta.channels || event.channels || [];
+  const touchedFiles = meta.touchedFiles || event.touchedFiles || [];
+  const items = [
+    { id: 'time', label: t('time'), value: fmtDate(meta.timestamp || event.timestamp) },
+    { id: 'tool', label: t('tool'), value: meta.toolName || event.toolName },
+    { id: 'provider', label: t('provider'), value: meta.provider || event.provider },
+    { id: 'model', label: t('model'), value: meta.model || event.model },
+    { id: 'effort', label: t('reasoningEffort'), value: meta.effort || event.effort },
+    { id: 'attributionSkill', label: t('attributionSkill'), value: meta.provenance?.attributionSkill || event.provenance?.attributionSkill },
+    { id: 'exitCode', label: t('exitCode'), value: outputStats.exitCode == null ? '' : String(outputStats.exitCode) },
+    {
+      id: 'duration',
+      label: t('duration'),
+      value: outputStats.durationMs == null ? '' : `${outputStats.durationMs} ms`,
+      aliases: outputStats.durationMs == null ? [] : [String(outputStats.durationMs)],
+    },
+    { id: 'recordType', label: t('recordType'), value: event.recordType },
+    { id: 'channels', label: t('channels'), value: formatList(channels), sourceValues: channels },
+    { id: 'touchedFiles', label: t('touchedFiles'), value: formatList(touchedFiles), sourceValues: touchedFiles },
+  ];
+  return detailPresentationApi
+    .filterInspectorMetadata(items, detail?.inspectorSections)
+    .map((item) => metadataRow(item.label, item.value))
+    .join('');
 }
 
-function renderInspectorSource(event, refs, detail = null) {
+function renderInspectorMetadataSection(event, refs, detail = null) {
+  const rows = renderInspectorMetadata(event, refs, detail);
+  if (!rows) return '';
+  return `<section class="inspectorSection inspectorMetadataSection">
+    <h3>${escapeHtml(t('metadata'))}</h3>
+    <dl class="inspectorMeta">${rows}</dl>
+  </section>`;
+}
+
+function renderInspectorRawAction(refs) {
+  return `<button class="smallBtn inspectorRawAction" type="button" data-detail-action="raw" aria-label="${escapeHtml(t('rawRefs'))}">${escapeHtml(t('rawAction', { count: refs.length }))}</button>`;
+}
+
+function renderInspectorSource(event, detail = null) {
   const meta = detail?.meta || event;
-  const source = sourceLabel(meta.source || event.source || refs[0]);
+  const source = sourceLabel(meta.source || event.source);
+  if (!source) return '';
   return `<section class="inspectorSection">
     <h3>${escapeHtml(t('source'))}</h3>
-    ${source ? `<div class="inspectorSourcePath">${escapeHtml(source)}</div>` : ''}
-    <div class="inspectorActions">
-      <button class="smallBtn" type="button" data-detail-action="raw">${escapeHtml(t('rawRefs'))}</button>
-      <span class="rawMeta">${escapeHtml(refs.length ? t('rawRows', { count: refs.length, plural: refs.length === 1 ? '' : 's' }) : t('noRawRefs'))}</span>
-    </div>
+    <div class="inspectorSourcePath">${escapeHtml(source)}</div>
   </section>`;
 }
 
@@ -2750,7 +2771,7 @@ function renderInspectorDetail(event) {
     if (!detail.inspectorSections?.length) return '';
     return `<section class="inspectorSection">
       <h3>${escapeHtml(t('details'))}</h3>
-      <div class="inspectorDetailBody">${renderSections(detail.inspectorSections)}</div>
+      <div class="inspectorDetailBody">${renderInspectorSections(detail.inspectorSections)}</div>
     </section>`;
   }
   if (error) {
@@ -2770,6 +2791,13 @@ function shouldShowInspectorSummary(event, preview, detail = null) {
   if (!source) return false;
   if (source === String(event.label || '').trim()) return false;
   if (event.layer === 'raw') return true;
+  if (detail) {
+    return !detail.timelineSections?.some((section) => (
+      section.purpose === 'content'
+      || section.purpose === 'request'
+      || section.purpose === 'result'
+    ));
+  }
   const bodyOwnedKinds = new Set([
     'user_message',
     'assistant_message',
@@ -2781,7 +2809,6 @@ function shouldShowInspectorSummary(event, preview, detail = null) {
     'js_repl',
   ]);
   if (bodyOwnedKinds.has(event.kind)) return false;
-  if (detail?.timelineSections?.some((section) => ['markdown', 'code', 'terminal', 'patch', 'diff', 'user_input', 'plan_update', 'collaboration', 'code_mode_tool_projection', 'code_mode_source'].includes(section.type))) return false;
   return true;
 }
 
@@ -6145,16 +6172,13 @@ function showInspector(event, options = {}) {
   }
   renderDetailShell({
     title: presentedEventLabel(event, presentation),
-    actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), renderInspectorNavigation(event, { pending: Boolean(navigationPending) })].filter(Boolean).join(''),
+    actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), renderInspectorRawAction(refs), renderInspectorNavigation(event, { pending: Boolean(navigationPending) })].filter(Boolean).join(''),
     body: `<div class="inspector">
     ${chips ? `<div class="chips">${chips}</div>` : ''}
     ${shouldShowInspectorSummary(event, preview, detail) ? `<section class="inspectorSection"><h3>${escapeHtml(t('summary'))}</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
-    <section class="inspectorSection">
-      <h3>${escapeHtml(t('metadata'))}</h3>
-      <dl class="inspectorMeta">${renderInspectorMetadata(event, refs, detail)}</dl>
-    </section>
-    ${renderInspectorSource(event, refs, detail)}
     ${renderInspectorDetail(event)}
+    ${renderInspectorMetadataSection(event, refs, detail)}
+    ${renderInspectorSource(event, detail)}
   </div>`,
   });
 

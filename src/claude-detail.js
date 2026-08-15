@@ -109,6 +109,7 @@ function markdownSection(title, text, options = {}) {
   const sanitized = sanitizeClaudeDetailText(text);
   if (!sanitized.trim()) return null;
   return {
+    ...(options.purpose ? { purpose: options.purpose } : {}),
     type: 'markdown',
     title,
     html: renderMarkdown(sanitized),
@@ -116,25 +117,26 @@ function markdownSection(title, text, options = {}) {
   };
 }
 
-function jsonSection(title, value) {
+function jsonSection(title, value, purpose) {
   if (value == null) return null;
-  return { type: 'json', title, value };
+  return { ...(purpose ? { purpose } : {}), type: 'json', title, value };
 }
 
-function rawJsonSection(title, value, expanded = false) {
-  return { type: 'raw_json', title, value, expanded };
+function rawJsonSection(title, value, expanded = false, purpose) {
+  return { ...(purpose ? { purpose } : {}), type: 'raw_json', title, value, expanded };
 }
 
-function noticeSection(title, text, level = 'info') {
+function noticeSection(title, text, level = 'info', purpose) {
   const sanitized = sanitizeClaudeDetailText(text);
   if (!sanitized.trim()) return null;
-  return { type: 'notice', title, text: sanitized, level };
+  return { ...(purpose ? { purpose } : {}), type: 'notice', title, text: sanitized, level };
 }
 
-function codeSection(title, code, language = 'text', role = '') {
+function codeSection(title, code, language = 'text', role = '', purpose) {
   const sanitized = sanitizeClaudeDetailText(code);
   if (!sanitized.trim()) return null;
   return {
+    ...(purpose ? { purpose } : {}),
     type: 'code',
     title,
     code: sanitized,
@@ -143,10 +145,11 @@ function codeSection(title, code, language = 'text', role = '') {
   };
 }
 
-function terminalSection(title, text, stream = 'stdout') {
+function terminalSection(title, text, stream = 'stdout', purpose) {
   const sanitized = sanitizeClaudeDetailText(text);
   if (!sanitized.trim()) return null;
   return {
+    ...(purpose ? { purpose } : {}),
     type: 'terminal',
     title,
     text: sanitized,
@@ -216,7 +219,7 @@ function uniquelyOwnedStructuredResult(resultRaw, result) {
     : null;
 }
 
-function planUpdateSection(explanation, items) {
+function planUpdateSection(explanation, items, purpose = 'content') {
   const text = sanitizeClaudeDetailText(explanation);
   const steps = (Array.isArray(items) ? items : []).map((item) => {
     if (!item || typeof item !== 'object') return null;
@@ -227,6 +230,7 @@ function planUpdateSection(explanation, items) {
   }).filter(Boolean);
   if (!text.trim() && !steps.length) return null;
   return {
+    purpose,
     type: 'plan_update',
     title: 'Plan update',
     explanationHtml: text.trim() ? renderMarkdown(text) : '',
@@ -264,29 +268,36 @@ function taskToolPlanSection(call, structured, locale) {
   return null;
 }
 
-function lifecycleSections(event, locale) {
+function lifecycleDetailSections(event, locale) {
   const lifecycle = event?.lifecycle;
-  if (!lifecycle) return [];
+  if (!lifecycle) return { timelineSections: [], inspectorSections: [] };
   if (lifecycle.kind === 'goal') {
     const terminal = lifecycle.terminal;
-    return [
-      markdownSection('Goal condition', lifecycle.condition),
-      ...lifecycle.validations.map((validation) => jsonSection('Goal validation', validation)),
-      terminal
-        ? markdownSection('Result', terminal.reason)
-        : noticeSection('Lifecycle', claudeDetailText('goalLifecycleActive', locale), 'warning'),
-      jsonSection('Lifecycle data', {
-        kind: lifecycle.kind,
-        phase: lifecycle.phase,
-        initial: lifecycle.initial,
-        terminal: terminal ? {
-          met: terminal.met,
-          iterations: terminal.iterations,
-          durationMs: terminal.durationMs,
-          tokens: terminal.tokens,
-        } : null,
-      }),
-    ].filter(Boolean);
+    return {
+      timelineSections: [
+        markdownSection('Goal condition', lifecycle.condition, { purpose: 'content' }),
+        terminal
+          ? markdownSection('Result', terminal.reason, { purpose: 'result' })
+          : null,
+      ].filter(Boolean),
+      inspectorSections: [
+      ...lifecycle.validations.map((validation) => jsonSection('Goal validation', validation, 'result')),
+        terminal
+          ? null
+          : noticeSection('Lifecycle', claudeDetailText('goalLifecycleActive', locale), 'warning', 'context'),
+        jsonSection('Lifecycle data', {
+          kind: lifecycle.kind,
+          phase: lifecycle.phase,
+          initial: lifecycle.initial,
+          terminal: terminal ? {
+            met: terminal.met,
+            iterations: terminal.iterations,
+            durationMs: terminal.durationMs,
+            tokens: terminal.tokens,
+          } : null,
+        }, 'context'),
+      ].filter(Boolean),
+    };
   }
   const terminal = lifecycle.terminal;
   const notifications = Array.isArray(lifecycle.notifications) ? lifecycle.notifications : terminal ? [terminal] : [];
@@ -302,28 +313,30 @@ function lifecycleSections(event, locale) {
       locale,
       { taskId: lifecycle.taskId },
     );
-  const sections = [noticeSection('Lifecycle', launchText, terminal ? 'info' : 'warning')];
+  const timelineSections = [];
+  const inspectorSections = [noticeSection('Lifecycle', launchText, terminal ? 'info' : 'warning', 'context')];
   for (const notification of notifications) {
-    sections.push(noticeSection(
+    timelineSections.push(noticeSection(
       'Completion',
       notification.summary,
       ['failed', 'error'].includes(notification.status) ? 'error' : 'info',
+      'result',
     ));
     if (isWorkflow) {
-      sections.push(jsonSection('Workflow terminal', {
+      inspectorSections.push(jsonSection('Workflow terminal', {
         status: notification.status,
         outputFile: notification.outputFile || '',
         result: notification.result || '',
         recovery: notification.recovery || '',
         usage: notification.usage,
         exitCode: notification.exitCode ?? null,
-      }));
+      }, 'result'));
     } else {
-      sections.push(markdownSection('Result', notification.result || ''));
-      sections.push(jsonSection('Usage', notification.usage));
+      timelineSections.push(markdownSection('Result', notification.result || '', { purpose: 'result' }));
+      inspectorSections.push(jsonSection('Usage', notification.usage, 'context'));
     }
   }
-  sections.push(jsonSection('Lifecycle data', {
+  inspectorSections.push(jsonSection('Lifecycle data', {
     kind: lifecycle.kind,
     phase: lifecycle.phase,
     taskId: lifecycle.taskId,
@@ -341,11 +354,14 @@ function lifecycleSections(event, locale) {
       usage: notification.usage,
       exitCode: notification.exitCode ?? null,
     })),
-  }));
-  return sections.filter(Boolean);
+  }, 'context'));
+  return {
+    timelineSections: timelineSections.filter(Boolean),
+    inspectorSections: inspectorSections.filter(Boolean),
+  };
 }
 
-function toolSections(raws, event, locale) {
+function toolDetailSections(raws, event, locale) {
   const {
     call,
     resultRaw,
@@ -356,54 +372,76 @@ function toolSections(raws, event, locale) {
   const ownsResultMetadata = hasUniqueResultOwner(resultRaw, result);
   const resultText = blockText(resultBlock) || (ownsResultMetadata ? resultRaw?.output : '') || '';
   const structuredResult = uniquelyOwnedStructuredResult(resultRaw, result);
-  const sections = [];
+  const timelineSections = [];
+  const inspectorSections = [];
 
   if (['TaskCreate', 'TaskUpdate'].includes(call?.name)) {
-    sections.push(taskToolPlanSection(call, structuredResult, locale));
-    if (!sections[0]) sections.push(jsonSection('Request', request));
-    sections.push(noticeSection(
+    timelineSections.push(taskToolPlanSection(call, structuredResult, locale));
+    if (!timelineSections[0]) timelineSections.push(jsonSection('Request', request, 'request'));
+    timelineSections.push(noticeSection(
       'Result',
       resultText,
       event.status === 'failed' ? 'error' : event.status === 'incomplete' ? 'warning' : 'info',
+      'result',
     ));
-    return sections.filter(Boolean);
+    inspectorSections.push(jsonSection('Request', request, 'request'));
+    inspectorSections.push(jsonSection('Structured result', structuredResult, 'result'));
+    return {
+      timelineSections: timelineSections.filter(Boolean),
+      inspectorSections: inspectorSections.filter(Boolean),
+    };
   }
 
   if (event.kind === 'command') {
-    sections.push(codeSection('Command', request.command || stringifyValue(request), 'bash', 'command'));
-    sections.push(terminalSection('stdout', structuredResult?.stdout || (event.lifecycle ? '' : resultText), 'stdout'));
-    sections.push(terminalSection('stderr', structuredResult?.stderr, 'stderr'));
+    timelineSections.push(codeSection('Command', request.command || stringifyValue(request), 'bash', 'command', 'request'));
+    timelineSections.push(terminalSection('stdout', structuredResult?.stdout || (event.lifecycle ? '' : resultText), 'stdout', 'result'));
+    timelineSections.push(terminalSection('stderr', structuredResult?.stderr, 'stderr', 'result'));
+    inspectorSections.push(jsonSection('Arguments', request, 'request'));
   } else if (event.kind === 'patch') {
     const file = request.file_path || request.filePath || request.path || request.notebook_path || '';
     const content = request.content || request.new_string || request.newString || '';
-    const contentSection = codeSection(file || 'File content', content, '', '');
-    sections.push(file && contentSection ? { ...contentSection, sourceOwnedTitle: true } : contentSection);
-    sections.push(jsonSection('Request', request));
-    sections.push(noticeSection(
+    const contentSection = codeSection(file || 'File content', content, '', '', 'request');
+    timelineSections.push(file && contentSection ? { ...contentSection, sourceOwnedTitle: true } : contentSection);
+    inspectorSections.push(jsonSection('Request', request, 'request'));
+    timelineSections.push(noticeSection(
       'Result',
       resultText || fileChangeFallback(event.status, locale),
       event.status === 'failed' ? 'error' : event.status === 'declined' || event.status === 'incomplete' ? 'warning' : 'info',
+      'result',
     ));
   } else {
-    sections.push(jsonSection('Request', request));
+    inspectorSections.push(jsonSection('Request', request, 'request'));
     if (structuredResult && typeof structuredResult === 'object') {
-      sections.push(jsonSection(event.lifecycle ? 'Launch result' : 'Structured result', structuredResult));
+      inspectorSections.push(jsonSection(event.lifecycle ? 'Launch result' : 'Structured result', structuredResult, 'result'));
     }
     if (!event.lifecycle) {
-      sections.push(terminalSection('Result', resultText, event.status === 'failed' ? 'stderr' : 'stdout'));
+      timelineSections.push(terminalSection('Result', resultText, event.status === 'failed' ? 'stderr' : 'stdout', 'result'));
     }
   }
-  sections.push(...lifecycleSections(event, locale));
-  return sections.filter(Boolean);
+  const lifecycle = lifecycleDetailSections(event, locale);
+  timelineSections.push(...lifecycle.timelineSections);
+  inspectorSections.push(...lifecycle.inspectorSections);
+  if (!timelineSections.some(Boolean)) {
+    timelineSections.push(noticeSection(
+      eventTitle(event, locale),
+      event.preview || event.searchText || eventTitle(event, locale),
+      event.status === 'failed' ? 'error' : 'info',
+      'content',
+    ));
+  }
+  return {
+    timelineSections: timelineSections.filter(Boolean),
+    inspectorSections: inspectorSections.filter(Boolean),
+  };
 }
 
-function compactionSections(raws) {
+function compactionDetailSections(raws) {
   const boundary = raws.find((raw) => raw.recordType === 'system' && raw.payloadType === 'compact_boundary');
   const summary = raws.find((raw) => raw.isCompactSummary);
-  return [
-    jsonSection('Compaction metadata', boundary?.parsed?.compactMetadata),
-    markdownSection('Compaction summary', summary?.messageText),
-  ].filter(Boolean);
+  return {
+    timelineSections: [markdownSection('Compaction summary', summary?.messageText, { purpose: 'content' })].filter(Boolean),
+    inspectorSections: [jsonSection('Compaction metadata', boundary?.parsed?.compactMetadata, 'context')].filter(Boolean),
+  };
 }
 
 function rawTimelineSections(raw, locale) {
@@ -446,42 +484,67 @@ function rawTimelineSections(raw, locale) {
   return sections.filter(Boolean);
 }
 
-function logicalTimelineSections(event, raws, locale) {
+function logicalDetailSections(event, raws, locale) {
   if (['user_message', 'assistant_message', 'reasoning'].includes(event.kind)) {
     const raw = raws[0];
     const block = raw?.contentBlocks?.[event.blockIndex ?? 0];
     const text = blockText(block) || raw?.messageText || event.searchText;
-    return [markdownSection(eventTitle(event, locale), text, { hideTitle: true })].filter(Boolean);
+    return {
+      timelineSections: [markdownSection(eventTitle(event, locale), text, { hideTitle: true, purpose: 'content' })].filter(Boolean),
+      inspectorSections: [],
+    };
   }
   if (['command', 'read', 'patch', 'web_search', 'agent_coordination', 'mcp_call', 'other_tool_call'].includes(event.kind)) {
-    return toolSections(raws, event, locale);
+    return toolDetailSections(raws, event, locale);
   }
   if (event.kind === 'proposed_plan') {
     const { call } = toolRows(raws, event);
-    return [markdownSection('Proposed plan', call?.input?.plan || event.searchText)].filter(Boolean);
+    return {
+      timelineSections: [markdownSection('Proposed plan', call?.input?.plan || event.searchText, { purpose: 'content' })].filter(Boolean),
+      inspectorSections: [],
+    };
   }
   if (event.kind === 'plan_update') {
-    return [planUpdateSection('', event.planSnapshot || [])].filter(Boolean);
+    return {
+      timelineSections: [planUpdateSection('', event.planSnapshot || [])].filter(Boolean),
+      inspectorSections: [],
+    };
   }
-  if (event.kind === 'compaction') return compactionSections(raws);
-  if (event.kind === 'goal') return lifecycleSections(event, locale);
+  if (event.kind === 'compaction') return compactionDetailSections(raws);
+  if (event.kind === 'goal') return lifecycleDetailSections(event, locale);
   if (['error', 'warning', 'abort'].includes(event.kind)) {
-    return [noticeSection(
-      eventTitle(event, locale),
-      event.searchText || event.preview,
-      event.kind === 'error' ? 'error' : 'warning',
-    )].filter(Boolean);
+    return {
+      timelineSections: [noticeSection(
+        eventTitle(event, locale),
+        event.searchText || event.preview,
+        event.kind === 'error' ? 'error' : 'warning',
+        'result',
+      )].filter(Boolean),
+      inspectorSections: [],
+    };
   }
   if (event.layer === 'protocol' && event.subtype === 'task_reminder') {
-    return [planUpdateSection('', event.planSnapshot || [])].filter(Boolean);
+    return {
+      timelineSections: [planUpdateSection('', event.planSnapshot || [])].filter(Boolean),
+      inspectorSections: [],
+    };
   }
   if (event.layer === 'protocol' && event.subtype === 'away_summary') {
-    return [markdownSection('Away summary', raws[0]?.parsed?.content || event.searchText, { hideTitle: true })].filter(Boolean);
+    return {
+      timelineSections: [markdownSection('Away summary', raws[0]?.parsed?.content || event.searchText, { hideTitle: true, purpose: 'content' })].filter(Boolean),
+      inspectorSections: [],
+    };
   }
   if (event.layer === 'protocol' && ['plan_mode', 'plan_mode_exit'].includes(event.subtype)) {
-    return [jsonSection('Plan mode', raws[0]?.parsed?.attachment || {})].filter(Boolean);
+    return {
+      timelineSections: [],
+      inspectorSections: [jsonSection('Plan mode', raws[0]?.parsed?.attachment || {}, 'context')].filter(Boolean),
+    };
   }
-  return [noticeSection(eventTitle(event, locale), event.preview || event.searchText)].filter(Boolean);
+  return {
+    timelineSections: [],
+    inspectorSections: [noticeSection(eventTitle(event, locale), event.preview || event.searchText, 'info', 'fallback')].filter(Boolean),
+  };
 }
 
 function buildClaudeEventDetail(session, eventId, layer = 'main', options = {}) {
@@ -515,6 +578,7 @@ function buildClaudeEventDetail(session, eventId, layer = 'main', options = {}) 
   const event = session.logicalEvents.find((candidate) => candidate.id === eventId && candidate.layer === layer);
   if (!event) return null;
   const raws = rawEventsForLogicalEvent(session, event);
+  const detailSections = logicalDetailSections(event, raws, locale);
   return sanitizeClaudeDetailDto({
     id: event.id,
     schemaVersion: CANONICAL_SCHEMA_VERSION,
@@ -526,10 +590,8 @@ function buildClaudeEventDetail(session, eventId, layer = 'main', options = {}) 
     sourceLocator: event.sourceLocator,
     meta: logicalMeta(event),
     rawRefs: event.rawRefs,
-    timelineSections: localizeSections(logicalTimelineSections(event, raws, locale), locale),
-    inspectorSections: localizeSections([
-      rawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)),
-    ], locale),
+    timelineSections: localizeSections(detailSections.timelineSections, locale),
+    inspectorSections: localizeSections(detailSections.inspectorSections, locale),
   }, { omitObjectKeys: CLAUDE_LOGICAL_DETAIL_OMIT_OBJECT_KEYS });
 }
 

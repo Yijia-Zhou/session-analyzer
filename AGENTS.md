@@ -50,6 +50,8 @@ When changing product behavior or repository structure:
 - Active plans:
   - None.
 - Completed plans:
+  - `docs/exec-plans/completed/2026-08-15-adapter-detail-contract-review-followups.md`
+  - `docs/exec-plans/completed/2026-08-15-source-neutral-detail-and-adapter-contracts.md`
   - `docs/exec-plans/completed/2026-08-15-v0.1.4-release.md`
   - `docs/exec-plans/completed/2026-08-14-source-neutral-runtime-cleanup.md`
   - `docs/exec-plans/completed/2026-08-13-memory-runtime-reliability-review-followup.md`

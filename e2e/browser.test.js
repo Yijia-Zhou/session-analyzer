@@ -1254,7 +1254,17 @@ test('browser single-tool Code Mode keeps native request and operation output pr
 
   await waitForDetailView(page, 'inspector');
   await page.waitForSelector('#detail .inspectorDetailBody');
-  assert.match(await page.locator('#detail .inspectorDetailBody').textContent(), /Operation metadata.*Poll count.*2.*Projection evidence.*wait_agent.*Result association note.*No result output matched the supported shape.*Code Mode source.*Execution trace.*Observed nested activity.*MCP tool/s);
+  assert.match(await page.locator('#detail .inspectorDetailBody').textContent(), /Operation metadata.*Poll count.*2.*Code Mode source.*Projection evidence.*wait_agent.*Result association note.*No result output matched the supported shape.*Execution trace.*Observed nested activity.*MCP tool/s);
+  assert.deepEqual(
+    (await page.locator('#detail .inspector > .inspectorSection > h3').allTextContents()).map((value) => value.trim()),
+    ['Details', 'Metadata', 'Source'],
+  );
+  const metadataText = await page.locator('#detail .inspectorMetadataSection').textContent();
+  assert.doesNotMatch(metadataText, /Status|Severity/);
+  const rawAction = page.locator('#detail .detailViewHeader [data-detail-action="raw"]');
+  assert.equal(await rawAction.count(), 1);
+  assert.equal((await rawAction.textContent()).trim(), `Raw · ${operation.rawRefs.length}`);
+  assert.equal(await page.locator('#detail .inspector [data-detail-action="raw"]').count(), 0);
   const inspectorTrace = page.locator('#detail .codeModeTrace');
   assert.equal(await inspectorTrace.getAttribute('open'), null);
 
@@ -1269,6 +1279,7 @@ test('browser single-tool Code Mode keeps native request and operation output pr
   await event.click();
   await waitForDetailView(page, 'inspector');
   await page.waitForSelector('#detail .codeModeTrace');
+  assert.equal((await page.locator('#detail .detailViewHeader [data-detail-action="raw"]').textContent()).trim(), `原始记录 · ${operation.rawRefs.length}`);
   const localizedInspectorTrace = page.locator('#detail .codeModeTrace');
   await localizedInspectorTrace.locator('summary').click();
   assert.notEqual(await localizedInspectorTrace.getAttribute('open'), null);
@@ -4736,7 +4747,7 @@ test('browser search navigation preserves inspector marks while ignoring raw-det
   await page.locator('#timeline .event.kind-command').first().click();
   await waitForDetailView(page, 'inspector');
   await page.waitForFunction(() => !document.querySelector('#detail')?.textContent.includes('Loading structured detail...'));
-  await fillSearch(page, 'status');
+  await fillSearch(page, 'cwd');
   await page.waitForSelector('#detail mark.searchMark');
   const beforeInspector = await searchNavigationSnapshot(page);
 
@@ -4764,7 +4775,7 @@ test('browser search navigation preserves inspector marks while ignoring raw-det
   assert.equal(await page.locator('#detail mark.searchMark').count(), 0);
 
   releaseRawRequest();
-  await page.waitForFunction(() => document.querySelector('#detail')?.textContent.toLowerCase().includes('status'));
+  await page.waitForFunction(() => document.querySelector('#detail')?.textContent.toLowerCase().includes('cwd'));
   assert.equal(await page.locator('#detail mark.searchMark').count(), 0);
   assert.deepEqual((await searchNavigationSnapshot(page)).ids, beforeInspector.ids, 'Raw refs transition must not change membership');
 

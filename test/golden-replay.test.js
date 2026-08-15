@@ -305,8 +305,8 @@ test('Codex fixture replay keeps stable representative detail DTO sections', asy
       status: 'success',
       severity: 'normal',
       metaKeys: ['channels', 'outputStats', 'severity', 'source', 'status', 'timestamp', 'toolName', 'touchedFiles', 'turnId'],
-      timelineTypes: ['plan_update', 'code'],
-      inspectorTypes: ['kv', 'json'],
+      timelineTypes: ['plan_update'],
+      inspectorTypes: ['kv', 'json', 'code'],
       rawRefLines: [29, 30],
     },
     {
@@ -316,7 +316,7 @@ test('Codex fixture replay keeps stable representative detail DTO sections', asy
       severity: 'normal',
       metaKeys: ['channels', 'outputStats', 'severity', 'source', 'status', 'timestamp', 'toolName', 'touchedFiles', 'turnId'],
       timelineTypes: ['markdown'],
-      inspectorTypes: ['raw_json'],
+      inspectorTypes: [],
       rawRefLines: [34],
     },
     {
@@ -326,7 +326,7 @@ test('Codex fixture replay keeps stable representative detail DTO sections', asy
       severity: 'error',
       metaKeys: ['channels', 'outputStats', 'severity', 'source', 'status', 'timestamp', 'toolName', 'touchedFiles', 'turnId'],
       timelineTypes: ['notice'],
-      inspectorTypes: ['kv', 'raw_json'],
+      inspectorTypes: ['kv'],
       rawRefLines: [38],
     },
   ]);

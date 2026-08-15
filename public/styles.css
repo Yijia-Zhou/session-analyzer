@@ -2741,13 +2741,6 @@ body[data-project-mode='selecting'] .searchAssist {
   overflow-wrap: anywhere;
 }
 
-.inspectorActions {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-}
-
 .inspectorDetailBody {
   border-top: 1px solid var(--line);
   display: grid;

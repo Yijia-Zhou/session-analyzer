@@ -923,11 +923,13 @@ test('buildIndex links canonical review lifecycle children through explicit pare
   assert.ok(startedRequest);
   assert.ok(startedRequest.entries.some((entry) => entry.key === 'Target' && entry.value === 'Uncommitted changes'));
   assert.ok(startedRequest.entries.some((entry) => entry.key === 'Hint' && entry.value === 'current changes'));
+  assert.equal(allSections(startedDetail).some((section) => section.type === 'raw_json'), false);
   const completedDetail = await buildHydratedEventDetail(index, parent, reviewCompleted.id, 'main');
   const completedResult = allSections(completedDetail).find((section) => section.title === 'Review result');
   assert.ok(completedResult);
   assert.ok(completedResult.entries.some((entry) => entry.key === 'Correctness' && entry.value === 'patch is correct'));
   assert.ok(allSections(completedDetail).some((section) => section.title === 'Findings'));
+  assert.equal(allSections(completedDetail).some((section) => section.type === 'raw_json'), false);
 
   const summaries = filterSessions(index, { q: '', sort: 'updated-desc', layer: 'main' }).sessions;
   const childSummary = summaries.find((session) => session.id === childId);
@@ -1953,7 +1955,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(parserTimeline.events[0].status, 'success');
   const parserDetail = buildEventDetail(session, parserTimeline.events[0].id, 'main');
   assert.deepEqual(allSections(parserDetail).find((section) => section.title === 'Files').entries, [
-    { key: 'G:/vibe/term-agent/src/parser.js', value: '+1 / -1' },
+    { key: 'G:/vibe/term-agent/src/parser.js', value: '+1 / -1', fact: 'touchedFile' },
   ]);
   const parserPreviewSearch = getTimeline(index, primaryFixtureSessionId, {
     offset: 0,
@@ -1984,7 +1986,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(legacyTimeline.events[0].status, 'success');
   const legacyDetail = buildEventDetail(session, legacyTimeline.events[0].id, 'main');
   assert.deepEqual(allSections(legacyDetail).find((section) => section.title === 'Files').entries, [
-    { key: 'src/legacy.js', value: '+1 / -1' },
+    { key: 'src/legacy.js', value: '+1 / -1', fact: 'touchedFile' },
   ]);
 
   const statsTimeline = getTimeline(index, primaryFixtureSessionId, {
@@ -2002,7 +2004,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(statsTimeline.events[0].status, 'success');
   const statsDetail = buildEventDetail(session, statsTimeline.events[0].id, 'main');
   assert.deepEqual(allSections(statsDetail).find((section) => section.title === 'Files').entries, [
-    { key: 'G:/vibe/term-agent/src/stats.js', value: '+2 / -1' },
+    { key: 'G:/vibe/term-agent/src/stats.js', value: '+2 / -1', fact: 'touchedFile' },
   ]);
 
   const failedTimeline = getTimeline(index, primaryFixtureSessionId, {
@@ -2021,7 +2023,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(failedTimeline.events[0].status, 'failed');
   const failedDetail = buildEventDetail(session, failedTimeline.events[0].id, 'main');
   assert.deepEqual(allSections(failedDetail).find((section) => section.title === 'Files').entries, [
-    { key: 'src/failed.js', value: '+1 / -1' },
+    { key: 'src/failed.js', value: '+1 / -1', fact: 'touchedFile' },
   ]);
 
   const outputOnlyCommandTimeline = getTimeline(index, primaryFixtureSessionId, {
@@ -2509,7 +2511,7 @@ test('patch detail preserves changed lines that begin with diff marker character
     ['context', 'omega', 3, 3],
   ]);
   assert.deepEqual(detail.inspectorSections.find((section) => section.title === 'Files').entries, [
-    { key: 'sample.md', value: '+1 / -1' },
+    { key: 'sample.md', value: '+1 / -1', fact: 'touchedFile' },
   ]);
 });
 
@@ -2610,7 +2612,7 @@ test('patch detail preserves applied unified diff lines that look like file head
     ['context', 'context', 2, 2],
   ]);
   assert.deepEqual(detail.inspectorSections.find((section) => section.title === 'Files').entries, [
-    { key: 'src/markers.txt', value: '+1 / -1' },
+    { key: 'src/markers.txt', value: '+1 / -1', fact: 'touchedFile' },
   ]);
 });
 
@@ -2663,8 +2665,8 @@ test('patch detail keeps mixed applied diff and content changes with display pat
     ['added', 'export default created;', false],
   ]);
   assert.deepEqual(detail.inspectorSections.find((section) => section.title === 'Files').entries, [
-    { key: 'src/app.js', value: '+1 / -1' },
-    { key: 'src/created.js', value: '+2 / -0' },
+    { key: 'src/app.js', value: '+1 / -1', fact: 'touchedFile' },
+    { key: 'src/created.js', value: '+2 / -0', fact: 'touchedFile' },
   ]);
 });
 
@@ -2833,12 +2835,12 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   assert.equal(allSections(planDetail)[0].type, 'markdown');
   assert.equal(allSections(planDetail)[0].hideTitle, true);
   assert.doesNotMatch(allSections(planDetail)[0].html, /proposed_plan/i);
-  assert.ok(allSections(planDetail).some((section) => section.type === 'raw_json'));
-  assert.equal(allSections(planDetail).find((section) => section.type === 'raw_json').expanded, false);
+  assert.equal(allSections(planDetail).some((section) => section.type === 'raw_json'), false);
+  assert.ok(planDetail.rawRefs.length > 0);
 
   const updatePlanEvent = session.logicalEvents.find((event) => event.toolName === 'update_plan');
   const updatePlanDetail = buildEventDetail(session, updatePlanEvent.id, 'main');
-  assert.equal(updatePlanDetail.timelineSections.length, 2);
+  assert.equal(updatePlanDetail.timelineSections.length, 1);
   assert.equal(updatePlanDetail.timelineSections[0].type, 'plan_update');
   assert.equal(updatePlanDetail.timelineSections[0].title, 'Plan update');
   assert.match(updatePlanDetail.timelineSections[0].explanationHtml, /Parser inspection is complete/);
@@ -2846,8 +2848,9 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
     { step: 'Inspect parser', status: 'completed' },
     { step: 'Patch regression', status: 'in_progress' },
   ]);
-  assert.equal(updatePlanDetail.timelineSections[1].type, 'code');
-  assert.match(updatePlanDetail.timelineSections[1].code, /Plan updated/);
+  const updatePlanResponse = updatePlanDetail.inspectorSections.find((section) => section.title === 'Response');
+  assert.equal(updatePlanResponse.type, 'code');
+  assert.match(updatePlanResponse.code, /Plan updated/);
   assert.ok(updatePlanDetail.inspectorSections.some((section) => section.type === 'json' && section.title === 'Request'));
 
   const protocolEvent = session.logicalEvents.find((event) => event.subtype === 'agents_instructions');
@@ -2858,12 +2861,30 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   const envEvent = session.logicalEvents.find((event) => event.subtype === 'environment_context');
   const envDetail = buildEventDetail(session, envEvent.id, 'protocol');
   assert.equal(allSections(envDetail)[0].type, 'kv');
-  assert.equal(allSections(envDetail)[1].type, 'raw_json');
+  assert.equal(allSections(envDetail).some((section) => section.type === 'raw_json'), false);
 
   const sessionMetaEvent = session.logicalEvents.find((event) => event.subtype === 'session_meta');
   const sessionMetaDetail = buildEventDetail(session, sessionMetaEvent.id, 'protocol');
   assert.equal(allSections(sessionMetaDetail)[0].type, 'kv');
-  assert.equal(allSections(sessionMetaDetail)[1].type, 'raw_json');
+  assert.equal(allSections(sessionMetaDetail).some((section) => section.type === 'raw_json'), false);
+
+  const residualSession = index.sessionsById.get('33333333-3333-3333-3333-333333333333');
+  const residualMetaEvent = residualSession.logicalEvents.find((event) => event.subtype === 'session_meta');
+  const residualMetaDetail = buildEventDetail(residualSession, residualMetaEvent.id, 'protocol');
+  const residualMetaFallback = allSections(residualMetaDetail).find((section) => section.type === 'raw_json');
+  assert.deepEqual(residualMetaFallback.value, {
+    source: {
+      subagent: {
+        thread_spawn: {
+          parent_thread_id: primaryFixtureSessionId,
+          depth: 1,
+          agent_nickname: 'Fixture',
+        },
+      },
+    },
+  });
+  assert.equal(Object.hasOwn(residualMetaFallback.value, 'id'), false);
+  assert.equal(Object.hasOwn(residualMetaFallback.value, 'cwd'), false);
 
   const emptyReasoningEvent = session.logicalEvents.find((event) => event.kind === 'reasoning' && event.label === 'Empty reasoning');
   const emptyReasoningDetail = buildEventDetail(session, emptyReasoningEvent.id, 'protocol');
@@ -2878,6 +2899,20 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
     ['5 hour usage limit', '12%'],
     ['Weekly usage limit', '67%'],
   ]);
+  assert.equal(allSections(tokenDetail).some((section) => section.type === 'raw_json'), false);
+
+  const modeledLifecycleEvents = session.logicalEvents.filter((event) => (
+    event.layer === 'main' && ['compaction', 'warning', 'error'].includes(event.kind)
+  ));
+  assert.ok(modeledLifecycleEvents.length > 0);
+  for (const lifecycleEvent of modeledLifecycleEvents) {
+    const lifecycleDetail = buildEventDetail(session, lifecycleEvent.id, 'main');
+    assert.equal(
+      allSections(lifecycleDetail).some((section) => section.type === 'raw_json'),
+      false,
+      `${lifecycleEvent.kind}/${lifecycleEvent.subtype} must not copy a modeled payload into fallback JSON`,
+    );
+  }
 
   const taskStartedEvent = session.logicalEvents.find((event) => event.layer === 'protocol' && event.subtype === 'task_started');
   const taskStartedDetail = buildEventDetail(session, taskStartedEvent.id, 'protocol');
@@ -2885,6 +2920,8 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   assert.equal(taskStartedDetail.inspectorSections[0].type, 'raw_json');
 
   const rawRecord = session.rawEvents.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'task_started');
+  assert.deepEqual(taskStartedDetail.inspectorSections[0].value, rawRecord.parsed.payload);
+  assert.notDeepEqual(taskStartedDetail.inspectorSections[0].value, rawRecord.parsed);
   const rawDetail = buildEventDetail(session, rawRecord.rawId, 'raw');
   assert.equal(allSections(rawDetail).at(-1).type, 'raw_json');
   assert.equal(allSections(rawDetail).at(-1).expanded, true);
@@ -2920,6 +2957,50 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   const rawPatchEndDetail = buildEventDetail(session, rawPatchEnd.rawId, 'raw');
   assert.equal(allSections(rawPatchEndDetail)[0].type, 'patch');
   assert.equal(allSections(rawPatchEndDetail).some((section) => section.title === 'Result'), true);
+});
+
+test('session metadata KV rendering and residual subtraction share array representability', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const fixtureRepo = path.join(codexHome, 'repo');
+  const sessionId = '12121212-1212-4212-8212-121212121212';
+  const sessionDir = path.join(codexHome, 'sessions', '2026', '08', '16');
+  await fsp.mkdir(fixtureRepo, { recursive: true });
+  await fsp.mkdir(sessionDir, { recursive: true });
+  await fsp.writeFile(
+    path.join(sessionDir, `rollout-2026-08-16T10-00-00-${sessionId}.jsonl`),
+    `${JSON.stringify({
+      timestamp: '2026-08-16T10:00:00.000Z',
+      type: 'session_meta',
+      payload: {
+        id: sessionId,
+        cwd: fixtureRepo,
+        numeric_list: [1, 2],
+        string_list: ['a', 'b'],
+        nullable_list: [null, 'b'],
+        object_list: [{ a: 1 }],
+      },
+    })}\n`,
+    'utf8',
+  );
+
+  const index = await buildIndex({ repoRoot: fixtureRepo, codexHome });
+  const session = index.sessionsById.get(sessionId);
+  const event = session.logicalEvents.find((candidate) => candidate.subtype === 'session_meta');
+  const detail = buildEventDetail(session, event.id, 'protocol');
+  const protocolFields = detail.inspectorSections.find((section) => section.type === 'kv');
+  const fallback = detail.inspectorSections.find((section) => section.type === 'raw_json');
+
+  assert.deepEqual(
+    protocolFields.entries.filter((entry) => entry.key.endsWith('_list')),
+    [
+      { key: 'numeric_list', value: '1, 2' },
+      { key: 'string_list', value: 'a, b' },
+    ],
+  );
+  assert.deepEqual(fallback.value, {
+    nullable_list: [null, 'b'],
+    object_list: [{ a: 1 }],
+  });
 });
 
 test('object-shaped protocol and tool fields stay readable', async (t) => {
@@ -3017,7 +3098,7 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
   const reviewFinished = session.logicalEvents.find((candidate) => candidate.subtype === 'exited_review_mode');
   const detail = buildEventDetail(session, event.id, 'main');
   const goalDetail = buildEventDetail(session, goalEvent.id, 'main');
-  const goalUsage = goalDetail.timelineSections.find((section) => section.title === 'Goal usage');
+  const goalUsage = goalDetail.inspectorSections.find((section) => section.title === 'Goal usage');
   const request = detail.inspectorSections.find((section) => section.title === 'Request');
   const response = detail.inspectorSections.find((section) => section.title === 'Response');
   const imagePreview = detail.inspectorSections.find((section) => section.type === 'image_preview');
@@ -3052,9 +3133,9 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
     { key: 'Created', value: '100' },
     { key: 'Updated', value: '112' },
   ]);
-  assert.equal(goalDetail.inspectorSections[0].title, 'Goal status');
-  assert.equal(goalDetail.inspectorSections[0].value.status, 'active');
-  assert.equal(goalDetail.inspectorSections[0].value.token_budget, 5000);
+  const goalStatus = goalDetail.inspectorSections.find((section) => section.title === 'Goal status');
+  assert.equal(goalStatus.value.status, 'active');
+  assert.equal(goalStatus.value.token_budget, 5000);
   assert.equal(request.type, 'json');
   assert.equal(request.value.path, 'G:\\vibe\\session-analyzer\\output\\image.png');
   assert.equal(response.type, 'json');
@@ -3283,9 +3364,9 @@ Budget:
   const incomplete = goalEvents.filter((event) => event.status === 'incomplete');
   const incompleteUpdate = incomplete.find((event) => event.toolName === 'update_goal');
   const detail = buildEventDetail(session, complete.id, 'main');
-  const detailUsage = detail.timelineSections.find((section) => section.title === 'Goal usage');
+  const detailUsage = detail.inspectorSections.find((section) => section.title === 'Goal usage');
   const budgetUpdateDetail = buildEventDetail(session, budgetUpdate.id, 'main');
-  const budgetUpdateUsage = budgetUpdateDetail.timelineSections.find((section) => section.title === 'Goal usage');
+  const budgetUpdateUsage = budgetUpdateDetail.inspectorSections.find((section) => section.title === 'Goal usage');
   const incompleteUpdateDetail = buildEventDetail(session, incompleteUpdate.id, 'main');
   const protocolDetail = buildEventDetail(session, goalContextEvent.id, 'protocol');
 
@@ -3322,13 +3403,14 @@ Budget:
   assert.ok(EDITABLE_EVENT_KINDS.includes('goal'));
   assert.equal(foldingProfiles.find((profile) => profile.id === 'planning').rules.kindStates.goal, 'expanded');
   assert.equal(detail.timelineSections.some((section) => section.title === 'Goal'), true);
-  assert.equal(detail.timelineSections.some((section) => section.title === 'Goal usage'), true);
+  assert.equal(detail.inspectorSections.some((section) => section.title === 'Goal usage'), true);
   assert.equal(detailUsage.entries.some((entry) => entry.key === 'Token budget' && entry.value === '200000'), true);
   assert.equal(detailUsage.entries.some((entry) => entry.key === 'Remaining tokens' && entry.value === 'Unbounded'), true);
-  assert.equal(detail.timelineSections.some((section) => section.title === 'Completion budget'), true);
+  assert.equal(detail.inspectorSections.some((section) => section.title === 'Completion budget'), true);
   assert.equal(detail.inspectorSections.some((section) => section.title === 'Request'), true);
   assert.equal(detail.inspectorSections.some((section) => section.title === 'Response'), true);
   assert.equal(protocolDetail.timelineSections.some((section) => section.title === 'Goal objective'), true);
+  assert.equal(allSections(protocolDetail).some((section) => section.type === 'raw_json'), false);
 });
 
 test('other tool call detail renders readable summaries and omits large data URLs', async (t) => {
@@ -3701,6 +3783,7 @@ test('other tool call detail renders readable summaries and omits large data URL
   assert.equal(listOutputDetail.timelineSections.some((section) => section.title === 'Response summary'), false);
   assert.equal(sendFallbackDetail.timelineSections[0].type, 'collaboration');
   assert.deepEqual(sendFallbackDetail.timelineSections[1], {
+    purpose: 'result',
     type: 'code',
     title: 'Response summary',
     language: 'json',
@@ -3949,10 +4032,10 @@ test('other tool call sanitization covers structured cards, embedded URLs, objec
   }
   assert.match(question.detail.timelineSections[0].questions[0].prompt, /before \[embedded data URL omitted; see raw refs\] after/);
   assert.match(send.detail.timelineSections[0].messageHtml, /before \[embedded data URL omitted; see raw refs\] after/);
-  assert.deepEqual(plan.detail.timelineSections.map((section) => section.type), ['plan_update', 'code']);
+  assert.deepEqual(plan.detail.timelineSections.map((section) => section.type), ['plan_update']);
   assert.match(plan.detail.timelineSections[0].explanationHtml, /before \[embedded data URL omitted; see raw refs\] after/);
   assert.match(plan.detail.timelineSections[0].steps[0].step, /Inspect \[embedded data URL omitted; see raw refs\] after/);
-  assert.match(plan.detail.timelineSections[1].code, /response before \[data URL omitted\] after/);
+  assert.match(plan.detail.inspectorSections.find((section) => section.title === 'Response').code, /response before \[embedded data URL omitted; see raw refs\] after/);
   assert.match(JSON.stringify(plan.detail.inspectorSections), /\[embedded data URL omitted; see raw refs\]/);
   assert.match(JSON.stringify(dynamic.detail.timelineSections), /\[data URL omitted\]/);
   assert.match(JSON.stringify(dynamic.detail.inspectorSections), /field-\[embedded data URL omitted; see raw refs\]/);
@@ -4275,7 +4358,7 @@ test('detail endpoint returns structured event detail with split sections and ra
     assert.equal(body.layer, 'main');
     assert.equal(body.sections, undefined);
     assert.equal(body.timelineSections[0].type, 'markdown');
-    assert.ok(body.inspectorSections.some((section) => section.type === 'raw_json'));
+    assert.equal(body.inspectorSections.some((section) => section.type === 'raw_json'), false);
     assert.ok(body.rawRefs.length >= 1);
     assert.deepEqual(Object.keys(body.meta), ['timestamp', 'turnId', 'status', 'severity', 'toolName', 'touchedFiles', 'outputStats', 'channels', 'source']);
   } finally {

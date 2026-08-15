@@ -14,6 +14,15 @@ const {
   validateCanonicalSessionsProperty,
 } = require('./canonical-contract');
 const { createSessionQuery } = require('./session-query');
+const {
+  sanitizeStructuredLogicalDetailDto,
+  validateLogicalDetailEnvelope,
+  validateStructuredLogicalDetailDto,
+} = require('./shared/logical-detail-contract');
+const {
+  createSourceAdapterRegistry,
+  defineSourceAdapter,
+} = require('./source-adapter-contract');
 
 const SOURCE_KIND = Object.freeze({
   CODEX: 'codex',
@@ -30,8 +39,7 @@ function normalizeSourceKind(value) {
   return normalized;
 }
 
-const adapters = new Map([
-  [SOURCE_KIND.CODEX, {
+const codexAdapter = {
     kind: SOURCE_KIND.CODEX,
     label: 'Codex',
     homeOption: 'codexHome',
@@ -72,8 +80,9 @@ const adapters = new Map([
     async readLegacyRaw(index, match, options) {
       return codex.readIndexedCodexRawRecord(index, match.session, match.raw, options);
     },
-  }],
-  [SOURCE_KIND.CLAUDE_CODE, {
+  };
+
+const claudeAdapter = {
     kind: SOURCE_KIND.CLAUDE_CODE,
     label: 'Claude Code',
     homeOption: 'claudeHome',
@@ -104,16 +113,11 @@ const adapters = new Map([
     async readRawRecord(index, session, raw, options) {
       return claude.readClaudeRawRecord(index, session, raw, options);
     },
-    async readImagePreview() {
-      return { statusCode: 404, error: 'Image previews are not available for this transcript source' };
-    },
-    resolveLegacyRaw() {
-      return null;
-    },
-    async readLegacyRaw() {
-      return null;
-    },
-  }],
+  };
+
+const adapters = createSourceAdapterRegistry([
+  codexAdapter,
+  claudeAdapter,
 ]);
 
 function getSourceAdapter(value) {
@@ -236,6 +240,7 @@ async function buildEventDetailForSession(index, session, eventId, layer, option
   const indexKind = requireExplicitSourceKind(index?.sourceKind, 'index');
   const sessionSourceKind = validateCanonicalSessionShape(session, indexKind);
   const requestedLayer = layer === undefined ? 'main' : layer;
+  let selectedLogicalEvent = null;
   if (requestedLayer === 'raw') {
     const raw = session.rawEvents.find((candidate) => candidate.rawId === eventId);
     if (!raw) return null;
@@ -245,6 +250,7 @@ async function buildEventDetailForSession(index, session, eventId, layer, option
       candidate.id === eventId && candidate.layer === requestedLayer
     ));
     if (!event) return null;
+    selectedLogicalEvent = event;
     validateCanonicalLogicalEventShape(event, sessionSourceKind);
     validateLogicalEventRawReferences(session, event, sessionSourceKind);
   }
@@ -254,7 +260,25 @@ async function buildEventDetailForSession(index, session, eventId, layer, option
     error.code = 'SOURCE_OWNERSHIP_MISMATCH';
     throw error;
   }
-  return adapter.buildEventDetail(index, session, eventId, layer, options);
+  const detail = await adapter.buildEventDetail(index, session, eventId, layer, options);
+  if (requestedLayer === 'raw') return detail;
+
+  return conformStructuredLogicalDetail(detail, selectedLogicalEvent, {
+    layer: requestedLayer,
+  });
+}
+
+function conformStructuredLogicalDetail(detail, selectedLogicalEvent, options = {}) {
+  validateLogicalDetailEnvelope(detail, selectedLogicalEvent, {
+    layer: options.layer ?? selectedLogicalEvent?.layer,
+  });
+  validateStructuredLogicalDetailDto(detail);
+  const sanitized = sanitizeStructuredLogicalDetailDto(detail, options);
+  validateStructuredLogicalDetailDto(sanitized);
+  validateLogicalDetailEnvelope(sanitized, selectedLogicalEvent, {
+    layer: options.layer ?? selectedLogicalEvent?.layer,
+  });
+  return sanitized;
 }
 
 function validateLogicalEventRawReferences(session, event, expectedSourceKind) {
@@ -317,6 +341,9 @@ module.exports = {
   SOURCE_KIND,
   adapterForSession,
   buildEventDetailForSession,
+  conformStructuredLogicalDetail,
+  createSourceAdapterRegistry,
+  defineSourceAdapter,
   getSourceAdapter,
   normalizeSourceKind,
   queryForIndex,
