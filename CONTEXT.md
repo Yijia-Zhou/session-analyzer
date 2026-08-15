@@ -94,6 +94,10 @@ _Avoid_: Phase, representative rank / 阶段、代表记录排名
 A tool invocation emitted directly as a source-level call, rather than invoked inside a Code Mode Operation. / 作为来源层调用直接发出的工具调用，而不是在 Code Mode 操作内部发起的调用。
 _Avoid_: Legacy tool call / 旧式工具调用
 
+**Read Tool Call / 文件读取工具调用**:
+A Direct Tool Call that asks the source runtime to return file contents without changing the file. / 一种要求来源运行时返回文件内容、但不修改该文件的直接工具调用。
+_Avoid_: Other Tool Call, Patch, resource read / 其他工具调用、文件补丁、资源读取
+
 **Code Mode Operation / Code Mode 操作**:
 A tool-execution unit initiated by an outer `exec` call whose JavaScript may invoke nested tools and may continue through one or more Poll Phases. Its user-facing display name is `Code Mode tool call`; the canonical concept and stable `code_mode_operation` subtype remain unchanged. / 由外层 `exec` 调用发起的工具执行单元；其中的 JavaScript 可以调用嵌套工具，也可以通过一个或多个轮询阶段继续运行。其用户界面显示名为 `Code Mode 工具调用`；规范概念和稳定的 `code_mode_operation` subtype 保持不变。
 _Avoid_: Exec event, JavaScript command / Exec 事件、JavaScript 命令
@@ -152,9 +156,17 @@ _Avoid_: Derived Session, subagent session / 派生会话、subagent 会话
 A Fork Session whose source history refers to inherited parent history instead of storing that history again as child-owned Raw Records. / 来源历史通过引用继承的父会话历史、而不是把该历史再次存为 child 所有原始记录的分叉会话。
 _Avoid_: Empty fork, metadata-only session / 空分叉、仅 metadata 会话
 
+**Materialized Fork Session / 物化式分叉会话**:
+A Fork Session whose physical transcript repeats the Raw Records visible from its immediate source Session at the fork point before storing its own continuation. The repeated prefix remains Raw evidence but is not current-session activity. / 物理转录先重复分叉点处从直接来源会话可见的原始记录、再保存自身续写的分叉会话。重复前缀继续作为 Raw 证据保留，但不属于当前会话活动。
+_Avoid_: Duplicated child activity, merged session / 重复的 child 活动、合并会话
+
 **Inherited Session Context / 继承会话上下文**:
-The parent-owned history visible to a Fork Session at its fork point, presented with explicit parent traceability rather than as child-owned activity. / 分叉会话在分叉点可见、归父会话所有的历史；它以明确的父会话可追溯性呈现，而不是作为 child 所有的活动。
+History inherited through a source Session at the fork point but not owned by the current continuation, presented with explicit source traceability. A fork chain may contain activity from more than one earlier Session. / 在分叉点通过来源会话继承、但不属于当前续写的历史；展示时带有明确的来源可追溯性。分叉链可能包含来自多个较早会话的活动。
 _Avoid_: Copied child history, child Raw Records / 复制的 child 历史、child 原始记录
+
+**Earlier Branch / 较早分支**:
+An inactive source Session shown beneath its sole continuing Fork Session when reliable timestamps prove that it did not continue after that fork was created. It remains independently selectable and keeps its own identity and Raw evidence. / 当可靠时间戳证明来源会话在唯一续写分叉创建后没有继续活动时，将该来源会话显示在续写会话下方。它仍可独立选择，并保留自身标识与 Raw 证据。
+_Avoid_: Prompt edit, deleted branch, merged history / 提示编辑、已删除分支、合并历史
 
 ### Search boundaries / 搜索边界
 

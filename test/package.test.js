@@ -60,7 +60,7 @@ test('package metadata exposes the session-analyzer CLI', () => {
   const server = fs.readFileSync(path.join(repoRoot, 'server.js'), 'utf8');
 
   assert.equal(pkg.name, 'session-analyzer');
-  assert.equal(pkg.version, '0.1.3');
+  assert.equal(pkg.version, '0.1.4');
   assert.equal(pkg.description, 'Local interactive viewer for Codex and Claude Code session transcripts.');
   assert.deepEqual(pkg.keywords, [
     'codex',
@@ -251,18 +251,20 @@ test('final dist-tag evidence uses a separately proven anonymous userconfig', ()
   assert.match(step, /Remove-Item 'Env:NPM_CONFIG_USERCONFIG'/u);
 });
 
-test('CLI help documents the npm command and host privacy option', () => {
+test('CLI help documents the npm command, diagnostics, and host privacy option', () => {
   const result = run(process.execPath, ['server.js', '--help']);
 
   assert.match(result.stdout, /session-analyzer \[--repo <repo-path>\]/);
   assert.match(result.stdout, /--host <host>/);
+  assert.match(result.stdout, /--log-dir <path>/);
+  assert.match(result.stdout, /bounded JSONL logs/);
   assert.match(result.stdout, /Binding to another host can expose transcript content/);
   assert.doesNotMatch(result.stdout, /node server\.js \[--repo/);
 });
 
 test('npm pack manifest normalization supports npm 11 and npm 12 JSON shapes', () => {
   const artifact = {
-    filename: 'session-analyzer-0.1.3.tgz',
+    filename: 'session-analyzer-1.2.3.tgz',
     files: [{ path: 'server.js' }],
   };
 
@@ -282,7 +284,7 @@ test('package smoke pins nested npm operations to the public registry', () => {
   assert.equal(packageRegistry, 'https://registry.npmjs.org/');
 });
 
-test('npm pack manifest contains only runtime package files', () => {
+test('npm pack manifest contains only approved runtime and documentation files', () => {
   const files = npmPackDryRunFiles();
   const fileSet = new Set(files);
   const approvedFiles = [
@@ -291,6 +293,9 @@ test('npm pack manifest contains only runtime package files', () => {
     'README.md',
     'README.zh-CN.md',
     'THIRD_PARTY_NOTICES.md',
+    'docs/assets/readme/derived-session-provenance.gif',
+    'docs/assets/readme/search-and-jump.gif',
+    'docs/assets/readme/session-analyzer-overview.png',
     'package.json',
     'public/assets/app.js',
     'public/favicon.ico',
@@ -304,11 +309,13 @@ test('npm pack manifest contains only runtime package files', () => {
     'src/claude-logical.js',
     'src/claude-source.js',
     'src/claude.js',
+    'src/canonical-contract.js',
     'src/codex-code-mode-declared.js',
     'src/codex-code-mode-facts.js',
     'src/codex-code-mode.js',
     'src/codex-code-mode-presentation.js',
     'src/codex-detail.js',
+    'src/codex-forks.js',
     'src/codex-goal.js',
     'src/codex-logical.js',
     'src/codex-presentation-context.js',
@@ -317,6 +324,10 @@ test('npm pack manifest contains only runtime package files', () => {
     'src/codex-tool-lifecycle-contract.js',
     'src/codex.js',
     'src/folding.js',
+    'src/review-lifecycle.js',
+    'src/runtime-capacity.js',
+    'src/runtime-diagnostics.js',
+    'src/session-query.js',
     'src/source-adapters.js',
     'src/shared/agent-coordination.js',
     'src/shared/command-highlighting.js',
@@ -333,7 +344,6 @@ test('npm pack manifest contains only runtime package files', () => {
   assert.deepEqual(files, approvedFiles);
 
   const forbiddenPrefixes = [
-    'docs/',
     'e2e/',
     'scripts/',
     'src/browser/',
@@ -364,6 +374,7 @@ test('package smoke state predicate requires final app state payload', () => {
   assert.equal(isPackageStatePayload({
     statusCode: 200,
     json: {
+      sourceKind: 'codex',
       totals: {},
       supportedLocales: ['en', 'zh-CN'],
       eventKinds: {},
@@ -372,10 +383,36 @@ test('package smoke state predicate requires final app state payload', () => {
     },
     body: '{}',
   }), true);
+
+  assert.equal(isPackageStatePayload({
+    statusCode: 200,
+    json: {
+      sourceKind: 'claude-code',
+      totals: {},
+      supportedLocales: ['en', 'zh-CN'],
+      eventKinds: {},
+      projectSelected: true,
+    },
+    body: '{}',
+  }), true);
+
+  assert.equal(isPackageStatePayload({
+    statusCode: 200,
+    json: {
+      sourceKind: 'claude-code',
+      totals: {},
+      supportedLocales: ['en', 'zh-CN'],
+      eventKinds: {},
+      codeModeRequests: [],
+      projectSelected: true,
+    },
+    body: '{}',
+  }), false);
 });
 
 test('package smoke waits past a 202 indexing job before passing state', async () => {
   const statePayload = {
+    sourceKind: 'codex',
     totals: {},
     supportedLocales: ['en', 'zh-CN'],
     eventKinds: {},

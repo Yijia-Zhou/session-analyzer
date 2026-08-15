@@ -15,6 +15,7 @@ const {
 } = require('../src/claude');
 const { getTimeline } = require('../src/codex');
 const { buildClaudeEventDetail } = require('../src/claude-detail');
+const { queryForIndex } = require('../src/source-adapters');
 const { createServer, parseArgs } = require('../server');
 
 async function makeClaudeHome(t) {
@@ -26,6 +27,15 @@ async function makeClaudeHome(t) {
 async function writeJsonl(file, records) {
   await fsp.mkdir(path.dirname(file), { recursive: true });
   await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+}
+
+async function readFixtureJsonl(name, repoRoot) {
+  const source = await fsp.readFile(path.join(__dirname, 'fixtures', 'claude', name), 'utf8');
+  return source.trim().split(/\r?\n/).map((line) => {
+    const record = JSON.parse(line);
+    if (record.cwd === '__REPO_ROOT__') record.cwd = repoRoot;
+    return record;
+  });
 }
 
 function baseRecord(sessionId, cwd, fields = {}) {
@@ -203,7 +213,7 @@ async function buildRichClaudeFixture(t) {
           type: 'tool_use',
           id: 'call-read',
           name: 'Read',
-          input: { file_path: '/outside/secret' },
+          input: { file_path: path.join(repoRoot, 'src', 'read-only.js') },
         }],
         usage: { input_tokens: 15, output_tokens: 3 },
       },
@@ -740,17 +750,56 @@ test('Claude index preserves every JSONL record while projecting messages, tools
   assert.ok(mainKinds.includes('assistant_message'));
   assert.ok(mainKinds.includes('reasoning'));
   assert.ok(mainKinds.includes('command'));
+  assert.ok(mainKinds.includes('read'));
   assert.ok(mainKinds.includes('agent_coordination'));
-  assert.ok(mainKinds.includes('other_tool_call'));
+  assert.equal(mainKinds.includes('other_tool_call'), false);
   assert.ok(mainKinds.includes('compaction'));
   assert.ok(mainKinds.includes('error'));
 
   const toolEvents = session.logicalEvents.filter((event) => event.toolName);
   assert.equal(toolEvents.length, 3);
   assert.equal(toolEvents.find((event) => event.toolName === 'Bash').status, 'success');
-  assert.equal(toolEvents.find((event) => event.toolName === 'Read').status, 'declined');
-  assert.equal(toolEvents.find((event) => event.toolName === 'Read').severity, 'warning');
+  const readRaw = session.rawEvents.find((raw) => raw.toolName === 'Read');
+  const readEvent = toolEvents.find((event) => event.toolName === 'Read');
+  const readPath = path.join(fixture.repoRoot, 'src', 'read-only.js');
+  assert.deepEqual(readRaw.touchedFiles, [readPath]);
+  assert.deepEqual(readEvent.touchedFiles, [readPath]);
+  assert.equal(readEvent.kind, 'read');
+  assert.equal(readEvent.label, 'Read');
+  assert.equal(readEvent.status, 'declined');
+  assert.equal(readEvent.severity, 'warning');
   assert.equal(toolEvents.find((event) => event.toolName === 'Agent').agentId, 'agent-one');
+  assert.deepEqual(index.eventKinds.main.find((item) => item.value === 'read'), {
+    value: 'read', label: 'read', count: 1,
+  });
+  assert.equal(index.eventKinds.main.some((item) => item.value === 'other_tool_call'), false);
+  assert.deepEqual(
+    getTimeline(index, session.id, { offset: 0, limit: 100, layer: 'main', kind: 'read' })
+      .events.map((event) => event.toolName),
+    ['Read'],
+  );
+  const query = queryForIndex(index);
+  assert.deepEqual(query.fileSuggestions(index, { layer: 'main' }), [
+    { file: 'src/read-only.js', count: 1 },
+  ]);
+  assert.deepEqual(
+    query.getTimeline(index, session.id, {
+      offset: 0,
+      limit: 100,
+      layer: 'main',
+      file: 'src/read-only.js',
+    }).events.map((event) => event.toolName),
+    ['Read'],
+  );
+  assert.equal(
+    buildClaudeEventDetail(
+      session,
+      toolEvents.find((event) => event.toolName === 'Read').id,
+      'main',
+      { locale: 'zh-CN' },
+    ).title,
+    '文件读取',
+  );
 
   const compaction = session.logicalEvents.find((event) => event.kind === 'compaction');
   assert.equal(compaction.rawRefs.length, 3);
@@ -787,6 +836,200 @@ test('Claude index preserves every JSONL record while projecting messages, tools
   assert.match(JSON.stringify(rawReasoningDetailEn), /"signature":"not-searchable"/);
   assert.equal(rawReasoningDetailEn.title, 'thinking');
   assert.equal(rawReasoningDetailZh.title, 'thinking');
+});
+
+test('Claude projects background, async Agent, and planning records into source-neutral semantics', async (t) => {
+  const claudeHome = await makeClaudeHome(t);
+  const repoRoot = path.join(claudeHome, 'repo');
+  const container = path.join(claudeHome, 'projects', '-semantic-lifecycle');
+  const sessionId = '81818181-8181-4181-8181-818181818181';
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const records = await readFixtureJsonl('semantic-lifecycle.jsonl', repoRoot);
+  const surrogateRequestPlan = `# Surrogate plan\n\n${String.fromCharCode(0xd800)}`;
+  const surrogateResultPlan = `# Surrogate plan\n\n${String.fromCharCode(0xd801)}`;
+  records.push(
+    assistantRecord(sessionId, repoRoot, {
+      uuid: 'semantic-redacted-plan-call',
+      parentUuid: 'semantic-away-summary',
+      timestamp: '2026-08-03T09:00:20.000Z',
+      message: {
+        id: 'semantic-redacted-plan-message',
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'call-exit-plan-redacted-mismatch',
+          name: 'ExitPlanMode',
+          input: { plan: '# Redacted plan\n\nPayload: data:image/png;base64,QUFBQQ==' },
+        }],
+      },
+    }),
+    userRecord(sessionId, repoRoot, {
+      uuid: 'semantic-redacted-plan-result',
+      parentUuid: 'semantic-redacted-plan-call',
+      timestamp: '2026-08-03T09:00:21.000Z',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'call-exit-plan-redacted-mismatch',
+          content: 'Returned a different source plan.',
+          is_error: false,
+        }],
+      },
+      toolUseResult: { plan: '# Redacted plan\n\nPayload: data:image/png;base64,QkJCQg==' },
+    }),
+    assistantRecord(sessionId, repoRoot, {
+      uuid: 'semantic-surrogate-plan-call',
+      parentUuid: 'semantic-redacted-plan-result',
+      timestamp: '2026-08-03T09:00:22.000Z',
+      message: {
+        id: 'semantic-surrogate-plan-message',
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'call-exit-plan-surrogate-mismatch',
+          name: 'ExitPlanMode',
+          input: { plan: surrogateRequestPlan },
+        }],
+      },
+    }),
+    userRecord(sessionId, repoRoot, {
+      uuid: 'semantic-surrogate-plan-result',
+      parentUuid: 'semantic-surrogate-plan-call',
+      timestamp: '2026-08-03T09:00:23.000Z',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'call-exit-plan-surrogate-mismatch',
+          content: 'Returned a plan with a different UTF-16 code unit.',
+          is_error: false,
+        }],
+      },
+      toolUseResult: { plan: surrogateResultPlan },
+    }),
+  );
+  await writeJsonl(
+    path.join(container, `${sessionId}.jsonl`),
+    records,
+  );
+
+  const index = await buildClaudeIndex({ repoRoot, claudeHome });
+  const session = index.sessionsById.get(analyzerSessionId(sessionId));
+  const background = session.logicalEvents.find((event) => event.callId === 'call-background');
+  const agent = session.logicalEvents.find((event) => event.callId === 'call-agent');
+  const plan = session.logicalEvents.find((event) => event.callId === 'call-exit-plan');
+  const unconfirmedPlan = session.logicalEvents.find((event) => event.callId === 'call-exit-plan-noecho');
+  const redactedMismatch = session.logicalEvents.find((event) => (
+    event.callId === 'call-exit-plan-redacted-mismatch'
+  ));
+  const surrogateMismatch = session.logicalEvents.find((event) => (
+    event.callId === 'call-exit-plan-surrogate-mismatch'
+  ));
+  const taskEvents = session.logicalEvents.filter((event) => (
+    ['call-task-create', 'call-task-update'].includes(event.callId)
+  ));
+  const reminder = session.logicalEvents.find((event) => event.subtype === 'task_reminder');
+  const novelReminder = session.logicalEvents.find((event) => event.kind === 'plan_update');
+  const whitespaceRaw = session.rawEvents.find((raw) => raw.uuid === 'semantic-whitespace');
+
+  assert.equal(background.kind, 'command');
+  assert.equal(background.status, 'success');
+  assert.equal(background.label, 'Background command');
+  assert.equal(background.lifecycle.phase, 'terminal');
+  assert.equal(background.lifecycle.notifications.length, 1);
+  assert.equal(background.lifecycle.terminal.exitCode, 0);
+  assert.equal(background.rawRefs.length, 4, 'queue and trusted user duplicates remain traceable on one event');
+
+  assert.equal(agent.kind, 'agent_coordination');
+  assert.equal(agent.status, 'success');
+  assert.equal(agent.lifecycle.taskId, 'agent-1');
+  assert.deepEqual(
+    agent.lifecycle.notifications.map((notification) => notification.status),
+    ['failed', 'completed'],
+  );
+  assert.equal(agent.rawRefs.length, 5, 'all distinct stops and duplicate source rows remain traceable');
+  assert.equal(
+    session.logicalEvents.filter((event) => event.searchText.includes('Final findings retained.')).length,
+    1,
+  );
+  const agentDetail = buildClaudeEventDetail(session, agent.id, 'main', { locale: 'en' });
+  assert.match(JSON.stringify(agentDetail.timelineSections), /First stop retained/);
+  assert.match(JSON.stringify(agentDetail.timelineSections), /Final findings retained/);
+  assert.match(
+    JSON.stringify(buildClaudeEventDetail(session, agent.id, 'main', { locale: 'zh-CN' }).timelineSections),
+    /异步 Agent 已启动/,
+  );
+
+  assert.equal(plan.kind, 'proposed_plan');
+  assert.equal(plan.subtype, 'proposed_plan');
+  assert.equal(plan.toolName, '');
+  assert.equal(plan.sourceToolName, 'ExitPlanMode');
+  assert.equal(plan.rawRefs.length, 3);
+  assert.equal(
+    buildClaudeEventDetail(session, plan.id, 'main', { locale: 'zh-CN' }).timelineSections[0]?.title,
+    '提议计划',
+  );
+  assert.equal(unconfirmedPlan.kind, 'other_tool_call');
+  assert.equal(unconfirmedPlan.toolName, 'ExitPlanMode');
+  assert.equal(unconfirmedPlan.rawRefs.length, 3);
+  assert.equal(redactedMismatch.kind, 'other_tool_call');
+  assert.equal(redactedMismatch.toolName, 'ExitPlanMode');
+  const redactedCallRaw = session.rawEvents.find((raw) => raw.uuid === 'semantic-redacted-plan-call');
+  const redactedResultRaw = session.rawEvents.find((raw) => raw.uuid === 'semantic-redacted-plan-result');
+  assert.equal(
+    redactedCallRaw.toolCalls[0].input.plan,
+    redactedResultRaw.toolUseResult.plan,
+    'the indexed plans intentionally collide after data URL redaction',
+  );
+  assert.equal(JSON.stringify(redactedCallRaw).includes('_exactPlanEvidence'), false);
+  assert.equal(surrogateMismatch.kind, 'other_tool_call');
+  assert.equal(surrogateMismatch.toolName, 'ExitPlanMode');
+  assert.notEqual(surrogateRequestPlan, surrogateResultPlan);
+  assert.equal(
+    Buffer.from(surrogateRequestPlan, 'utf8').equals(Buffer.from(surrogateResultPlan, 'utf8')),
+    true,
+    'the source plans intentionally collide under UTF-8 replacement encoding',
+  );
+  assert.equal(session.counts.planArtifacts, 1);
+  assert.equal(session.counts.planEvents, 4);
+  assert.deepEqual(taskEvents.map((event) => event.kind), ['other_tool_call', 'other_tool_call']);
+  assert.ok(taskEvents.every((event) => event.label === 'Plan update'));
+  assert.ok(taskEvents.every((event) => (
+    buildClaudeEventDetail(session, event.id, 'main', { locale: 'en' }).timelineSections[0]?.type === 'plan_update'
+  )));
+  assert.match(
+    JSON.stringify(buildClaudeEventDetail(session, taskEvents[1].id, 'main', { locale: 'zh-CN' }).timelineSections),
+    /任务 #1：pending → completed/,
+  );
+  assert.equal(reminder.layer, 'protocol');
+  assert.equal(reminder.rawRefs.length, 2, 'repeated identical snapshots form one Protocol event');
+  assert.equal(session.logicalEvents.filter((event) => event.kind === 'plan_update').length, 1);
+  assert.equal(novelReminder.planSnapshot.length, 2);
+  assert.match(novelReminder.searchText, /Verify unseen follow-up/);
+  assert.equal(
+    buildClaudeEventDetail(session, novelReminder.id, 'main', { locale: 'en' }).timelineSections[0]?.type,
+    'plan_update',
+  );
+  assert.equal(
+    session.counts.planEvents - session.counts.planArtifacts - taskEvents.length,
+    1,
+    'only the snapshot state not accounted for by Task transitions contributes another Plan Update',
+  );
+
+  assert.equal(agent.provider, 'Novita');
+  assert.equal(agent.model, 'inclusionai/ling-3.0-flash:free');
+  assert.equal(agent.effort, 'xhigh');
+  assert.equal(agentDetail.meta.provider, 'Novita');
+  assert.equal(agentDetail.meta.model, 'inclusionai/ling-3.0-flash:free');
+  assert.equal(agentDetail.meta.effort, 'xhigh');
+  assert.ok(session.logicalEvents.some((event) => event.subtype === 'plan_mode'));
+  const away = session.logicalEvents.find((event) => event.subtype === 'away_summary');
+  const awayDetail = buildClaudeEventDetail(session, away.id, 'protocol', { locale: 'en' });
+  assert.match(JSON.stringify(awayDetail.timelineSections), /Lifecycle work completed/);
+  assert.ok(!session.logicalEvents.some((event) => (
+    event.rawRefs.some((ref) => ref.rawId === whitespaceRaw.rawId)
+  )), 'whitespace-only Assistant text is ignored instead of becoming Protocol noise');
 });
 
 test('Claude local command envelopes stay in Protocol instead of becoming human messages', async (t) => {
@@ -875,7 +1118,7 @@ test('Claude sessions work with shared timeline, detail, and indexed raw-record 
   const agentDetailZh = buildClaudeEventDetail(session, agentEvent.id, 'main', { locale: 'zh-CN' });
   assert.deepEqual(
     agentDetailZh.timelineSections.map((section) => section.title),
-    ['请求', '结构化结果', '结果'],
+    ['请求', '启动结果', '生命周期', '生命周期数据'],
   );
   const compactionDetailZh = buildClaudeEventDetail(session, compactionEvent.id, 'main', { locale: 'zh-CN' });
   assert.deepEqual(
@@ -1324,6 +1567,13 @@ test('Claude pointer fork uses exact parent command evidence and keeps inherited
     child.inheritedContext.previewEvents.map((event) => event.preview),
     ['Inherited task', 'Inherited answer'],
   );
+  const expectedForkPointEventId = child.inheritedContext.previewEvents.at(-1).parentEventId;
+  const parentMainEvents = parent.logicalEvents.filter((event) => event.layer !== 'protocol');
+  assert.deepEqual(child.inheritedContext.forkPointTarget, {
+    layer: 'main',
+    eventId: expectedForkPointEventId,
+    timelineIndex: parentMainEvents.findIndex((event) => event.id === expectedForkPointEventId),
+  });
   assert.doesNotMatch(
     child.inheritedContext.previewEvents.map((event) => event.preview).join('\n'),
     /Parent-only continuation/,
@@ -1346,6 +1596,57 @@ test('Claude pointer fork uses exact parent command evidence and keeps inherited
   assert.equal(childTimeline.session.inheritedContext.mainEventCount, 2);
   assert.equal(childTimeline.session.inheritedContext.ownerSessionId, parent.id);
   assert.equal(childTimeline.session.rawEventCount, 2);
+});
+
+test('Claude pointer fork navigation falls back to the exact parent Raw Record without readable Main ancestry', async (t) => {
+  const claudeHome = await makeClaudeHome(t);
+  const repoRoot = path.join(claudeHome, 'repo');
+  const container = path.join(claudeHome, 'projects', '-fixture-repo');
+  const parentId = '12121212-1212-4212-8212-121212121212';
+  const childId = '34343434-3434-4434-8434-343434343434';
+  await fsp.mkdir(repoRoot, { recursive: true });
+
+  await writeJsonl(path.join(container, `${parentId}.jsonl`), [
+    baseRecord(parentId, repoRoot, {
+      type: 'system',
+      subtype: 'local_command',
+      parentUuid: null,
+      content: '<command-name>/status</command-name>',
+      uuid: 'protocol-only-anchor',
+      timestamp: '2026-07-31T13:00:00.000Z',
+    }),
+    baseRecord(parentId, repoRoot, {
+      type: 'system',
+      subtype: 'local_command',
+      parentUuid: 'protocol-only-anchor',
+      content: '<command-name>/fork</command-name>',
+      uuid: 'raw-fallback-fork-command',
+      timestamp: '2026-07-31T13:00:01.000Z',
+    }),
+    baseRecord(parentId, repoRoot, {
+      type: 'system',
+      subtype: 'local_command',
+      parentUuid: 'raw-fallback-fork-command',
+      content: '<local-command-stdout>session waiting for a prompt · Raw fallback pointer ⑂ · 34343434</local-command-stdout>',
+      uuid: 'raw-fallback-fork-output',
+      timestamp: '2026-07-31T13:00:01.000Z',
+    }),
+  ]);
+  await writeJsonl(path.join(container, `${childId}.jsonl`), [
+    { type: 'ai-title', aiTitle: 'Raw fallback pointer ⑂', sessionId: childId },
+    { type: 'agent-name', agentName: 'Raw fallback pointer ⑂', sessionId: childId },
+  ]);
+
+  const index = await buildClaudeIndex({ repoRoot, claudeHome });
+  const parent = index.sessionsById.get(analyzerSessionId(parentId));
+  const child = index.sessionsById.get(analyzerSessionId(childId));
+  assert.equal(child.forkStorageMode, 'pointer');
+  assert.equal(child.inheritedContext.mainEventCount, 0);
+  assert.deepEqual(child.inheritedContext.forkPointTarget, {
+    layer: 'raw',
+    eventId: parent.rawEvents[0].rawId,
+    timelineIndex: 0,
+  });
 });
 
 test('Claude pointer fork fails closed when the output prefix is ambiguous in one container', async (t) => {
@@ -1712,6 +2013,205 @@ test('Claude keeps unknown Assistant blocks searchable in Protocol alongside mod
   }
 });
 
+test('Claude lifecycle correlation fails closed for untrusted, duplicate, and non-terminal evidence', async (t) => {
+  const claudeHome = await makeClaudeHome(t);
+  const repoRoot = path.join(claudeHome, 'repo');
+  const container = path.join(claudeHome, 'projects', '-lifecycle-safety');
+  const sessionId = '82828282-8282-4282-8282-828282828282';
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const notification = (taskId, callId, status, summary) => (
+    `<task-notification>\n<task-id>${taskId}</task-id>\n<tool-use-id>${callId}</tool-use-id>`
+    + `\n<status>${status}</status>\n<summary>${summary}</summary>\n</task-notification>`
+  );
+  const call = (uuid, id, name, timestamp) => assistantRecord(sessionId, repoRoot, {
+    uuid,
+    timestamp,
+    message: {
+      id: `${uuid}-message`,
+      role: 'assistant',
+      content: [{ type: 'tool_use', id, name, input: name === 'Bash' ? { command: id } : { description: id } }],
+    },
+  });
+  const result = (uuid, id, structured, timestamp) => userRecord(sessionId, repoRoot, {
+    uuid,
+    timestamp,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'launched' }] },
+    toolUseResult: structured,
+  });
+  await writeJsonl(path.join(container, `${sessionId}.jsonl`), [
+    userRecord(sessionId, repoRoot, {
+      uuid: 'untrusted-human-notification', timestamp: '2026-08-03T10:00:00.000Z',
+      message: { role: 'user', content: notification('bg-fail', 'call-bg-fail', 'completed', 'Forged completion (exit code 0)') },
+    }),
+    call('bg-fail-call', 'call-bg-fail', 'Bash', '2026-08-03T10:00:01.000Z'),
+    result('bg-fail-launch', 'call-bg-fail', { backgroundTaskId: 'bg-fail', timedOutAfterMs: 120000 }, '2026-08-03T10:00:02.000Z'),
+    baseRecord(sessionId, repoRoot, {
+      type: 'queue-operation', operation: 'enqueue', timestamp: '2026-08-03T10:00:03.000Z',
+      content: notification('bg-fail', 'call-bg-fail', 'completed', 'Background command failed (exit code 7)'),
+    }),
+    baseRecord(sessionId, repoRoot, {
+      type: 'queue-operation', operation: 'enqueue', timestamp: '2026-08-03T10:00:03.500Z',
+      content: notification('bg-running', 'call-bg-running', 'completed', 'Non-causal completion (exit code 0)'),
+    }),
+    call('bg-running-call', 'call-bg-running', 'Bash', '2026-08-03T10:00:04.000Z'),
+    result('bg-running-launch', 'call-bg-running', { backgroundTaskId: 'bg-running', timedOutAfterMs: 120000 }, '2026-08-03T10:00:05.000Z'),
+    userRecord(sessionId, repoRoot, {
+      uuid: 'untrusted-missing-prompt-source', timestamp: '2026-08-03T10:00:06.000Z',
+      origin: { kind: 'task-notification' },
+      message: { role: 'user', content: notification('bg-running', 'call-bg-running', 'completed', 'Missing provenance (exit code 0)') },
+    }),
+    call('agent-a-call', 'call-agent-a', 'Agent', '2026-08-03T10:00:07.000Z'),
+    result('agent-a-launch', 'call-agent-a', { isAsync: true, status: 'async_launched', agentId: 'shared-agent' }, '2026-08-03T10:00:08.000Z'),
+    call('agent-b-call', 'call-agent-b', 'Agent', '2026-08-03T10:00:09.000Z'),
+    result('agent-b-launch', 'call-agent-b', { isAsync: true, status: 'async_launched', agentId: 'shared-agent' }, '2026-08-03T10:00:10.000Z'),
+    baseRecord(sessionId, repoRoot, {
+      type: 'queue-operation', operation: 'enqueue', timestamp: '2026-08-03T10:00:11.000Z',
+      content: notification('shared-agent', 'call-agent-a', 'completed', 'Ambiguous task owner'),
+    }),
+    call('duplicate-call-a', 'duplicate-background', 'Bash', '2026-08-03T10:00:12.000Z'),
+    call('duplicate-call-b', 'duplicate-background', 'Bash', '2026-08-03T10:00:13.000Z'),
+    result('duplicate-result', 'duplicate-background', { backgroundTaskId: 'duplicate-bg', timedOutAfterMs: 1000 }, '2026-08-03T10:00:14.000Z'),
+    baseRecord(sessionId, repoRoot, {
+      type: 'queue-operation', operation: 'enqueue', timestamp: '2026-08-03T10:00:15.000Z',
+      content: notification('duplicate-bg', 'duplicate-background', 'completed', 'Ambiguous call owner (exit code 0)'),
+    }),
+    assistantRecord(sessionId, repoRoot, {
+      uuid: 'multi-launch-calls',
+      timestamp: '2026-08-03T10:00:16.000Z',
+      message: {
+        id: 'multi-launch-message',
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'multi-launch-a', name: 'Bash', input: { command: 'first' } },
+          { type: 'tool_use', id: 'multi-launch-b', name: 'Bash', input: { command: 'second' } },
+        ],
+      },
+    }),
+    userRecord(sessionId, repoRoot, {
+      uuid: 'multi-launch-results',
+      timestamp: '2026-08-03T10:00:17.000Z',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'multi-launch-a', content: 'first result' },
+          { type: 'tool_result', tool_use_id: 'multi-launch-b', content: 'second result' },
+        ],
+      },
+      toolUseResult: {
+        backgroundTaskId: 'ambiguous-background',
+        timedOutAfterMs: 120000,
+        interrupted: true,
+        exitCode: 9,
+        durationMs: 500,
+      },
+      toolDenialKind: 'ambiguous-denial',
+    }),
+    assistantRecord(sessionId, repoRoot, {
+      uuid: 'multi-task-calls',
+      timestamp: '2026-08-03T10:00:18.000Z',
+      message: {
+        id: 'multi-task-message',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'multi-task-a',
+            name: 'TaskUpdate',
+            input: { taskId: 'detail-a', subject: 'First detail task' },
+          },
+          {
+            type: 'tool_use',
+            id: 'multi-task-b',
+            name: 'TaskUpdate',
+            input: { taskId: 'detail-b', subject: 'Second detail task' },
+          },
+        ],
+      },
+    }),
+    userRecord(sessionId, repoRoot, {
+      uuid: 'multi-task-results',
+      timestamp: '2026-08-03T10:00:19.000Z',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'multi-task-a', content: 'first task result' },
+          { type: 'tool_result', tool_use_id: 'multi-task-b', content: 'second task result' },
+        ],
+      },
+      toolUseResult: {
+        success: true,
+        taskId: 'detail-b',
+        updatedFields: ['status'],
+        statusChange: { from: 'pending', to: 'completed' },
+      },
+    }),
+  ]);
+
+  const index = await buildClaudeIndex({ repoRoot, claudeHome });
+  const session = index.sessionsById.get(analyzerSessionId(sessionId));
+  const bgFailed = session.logicalEvents.find((event) => event.callId === 'call-bg-fail');
+  const bgRunning = session.logicalEvents.find((event) => event.callId === 'call-bg-running');
+  const sharedAgents = session.logicalEvents.filter((event) => (
+    ['call-agent-a', 'call-agent-b'].includes(event.callId)
+  ));
+  const duplicateCalls = session.logicalEvents.filter((event) => event.callId === 'duplicate-background');
+  const multiBlockCalls = session.logicalEvents.filter((event) => (
+    ['multi-launch-a', 'multi-launch-b'].includes(event.callId)
+  ));
+  const multiTaskCalls = session.logicalEvents.filter((event) => (
+    ['multi-task-a', 'multi-task-b'].includes(event.callId)
+  ));
+
+  assert.equal(bgFailed.status, 'failed');
+  assert.equal(bgFailed.outputStats.exitCode, 7);
+  assert.equal(bgRunning.status, 'in_progress');
+  assert.equal(bgRunning.lifecycle.phase, 'backgrounded');
+  assert.equal(bgRunning.lifecycle.terminal, null);
+  assert.ok(sharedAgents.every((event) => event.status === 'in_progress'));
+  assert.ok(sharedAgents.every((event) => event.lifecycle.terminal === null));
+  assert.equal(duplicateCalls.length, 2);
+  assert.ok(duplicateCalls.every((event) => event.status === 'incomplete' && !event.lifecycle));
+  assert.equal(multiBlockCalls.length, 2);
+  assert.ok(multiBlockCalls.every((event) => event.status === 'success' && !event.lifecycle));
+  assert.ok(multiBlockCalls.every((event) => (
+    event.outputStats.exitCode === null && event.outputStats.durationMs === 0
+  )));
+  assert.ok(multiBlockCalls.every((event) => !event.searchText.includes('ambiguous-denial')));
+  const multiBlockResultRaw = session.rawEvents.find((raw) => raw.uuid === 'multi-launch-results');
+  assert.equal(multiBlockResultRaw.status, 'success');
+  assert.equal(multiBlockResultRaw.exitCode, null);
+  assert.equal(multiBlockResultRaw.durationMs, 0);
+  assert.equal(multiBlockResultRaw.toolUseResult.exitCode, 9, 'Raw evidence remains intact');
+  assert.equal(multiTaskCalls.length, 2);
+  for (const event of multiTaskCalls) {
+    const detail = buildClaudeEventDetail(session, event.id, 'main', { locale: 'en' });
+    const planSection = detail.timelineSections.find((section) => section.type === 'plan_update');
+    assert.ok(planSection);
+    assert.equal(planSection.explanationHtml, '');
+    assert.equal(planSection.steps[0]?.status, '');
+    assert.doesNotMatch(
+      JSON.stringify(detail.timelineSections),
+      /pending|completed|updatedFields|statusChange/,
+    );
+    assert.match(JSON.stringify(detail.inspectorSections), /statusChange/);
+  }
+  assert.ok(session.logicalEvents.some((event) => (
+    event.kind === 'user_message' && event.searchText.includes('Forged completion')
+  )));
+  assert.ok(session.logicalEvents.some((event) => (
+    event.layer === 'protocol' && event.searchText.includes('Missing provenance')
+  )));
+  assert.ok(session.logicalEvents.some((event) => (
+    event.layer === 'protocol' && event.searchText.includes('Ambiguous task owner')
+  )));
+  assert.ok(session.logicalEvents.some((event) => (
+    event.layer === 'protocol' && event.searchText.includes('Non-causal completion')
+  )));
+  assert.ok(session.logicalEvents.some((event) => (
+    event.layer === 'protocol' && event.searchText.includes('Ambiguous call owner')
+  )));
+});
+
 test('Claude tool correlation fails closed for duplicate or non-causal ids and preserves unmatched result siblings', async (t) => {
   const claudeHome = await makeClaudeHome(t);
   const repoRoot = path.join(claudeHome, 'repo');
@@ -1902,6 +2402,7 @@ test('Claude preserves malformed rows and evaluates multi-block tool results ind
 
   const readEvent = session.logicalEvents.find((event) => event.callId === 'read-call');
   const bashEvent = session.logicalEvents.find((event) => event.callId === 'bash-call');
+  assert.equal(readEvent.kind, 'read');
   assert.equal(readEvent.status, 'failed');
   assert.equal(bashEvent.status, 'success');
   assert.equal(session.counts.assistantMessages, 1);

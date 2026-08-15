@@ -61,11 +61,24 @@ test('changes profile recognizes common verification commands', () => {
 
 test('narrative profile collapses ordinary high-frequency tool events', () => {
   const rules = profileRules('narrative');
-  for (const kind of ['command', 'mcp_call', 'js_repl', 'other_tool_call', 'web_search']) {
+  for (const kind of ['command', 'read', 'mcp_call', 'js_repl', 'other_tool_call', 'web_search']) {
     assert.equal(folding.displayStateFromRules({ kind, status: 'success', severity: 'normal' }, rules), 'collapsed', kind);
   }
   assert.equal(folding.displayStateFromRules({ kind: 'hook', status: 'completed', severity: 'normal' }, rules), 'summary');
-  assert.equal(folding.displayStateFromRules({ kind: 'developer_message', severity: 'normal' }, rules), 'expanded');
+  assert.equal(folding.displayStateFromRules({ kind: 'developer_message', severity: 'normal' }, rules), 'summary');
+});
+
+test('read kind preserves other-tool folding until explicitly configured', () => {
+  const legacyRules = {
+    kindStates: { other_tool_call: 'collapsed' },
+    fallback: 'hidden',
+  };
+  const readEvent = { kind: 'read', status: 'success', severity: 'normal' };
+  assert.equal(folding.displayStateFromRules(readEvent, legacyRules), 'collapsed');
+  assert.equal(folding.displayStateFromRules(readEvent, {
+    ...legacyRules,
+    kindStates: { ...legacyRules.kindStates, read: 'expanded' },
+  }), 'expanded');
 });
 
 test('matching condition order does not change the most visible result', () => {
@@ -279,13 +292,16 @@ test('declared update_plan requests do not match the canonical update-plan condi
   }), 'collapsed');
 });
 
-test('planning condition matches update_plan calls and protocol plan updates', () => {
+test('planning condition matches source-neutral tool and protocol Plan Updates', () => {
   const toolUpdate = { kind: 'other_tool_call', subtype: 'update_plan', toolName: 'update_plan', severity: 'normal' };
+  const taskUpdate = { kind: 'other_tool_call', subtype: 'TaskUpdate', toolName: 'TaskUpdate', severity: 'normal' };
   const protocolUpdate = { kind: 'plan_update', subtype: 'plan_update', toolName: '', severity: 'normal' };
   assert.equal(folding.conditionMatches('updatePlanCall', toolUpdate), true);
+  assert.equal(folding.conditionMatches('updatePlanCall', taskUpdate), true);
   assert.equal(folding.conditionMatches('updatePlanCall', protocolUpdate), true);
   assert.equal(folding.displayStateFromRules(protocolUpdate, profileRules('planning')), 'expanded');
   assert.equal(folding.displayStateFromRules(toolUpdate, profileRules('planning')), 'expanded');
+  assert.equal(folding.displayStateFromRules(taskUpdate, profileRules('planning')), 'expanded');
   assert.equal(folding.conditionMatches('updatePlanCall', { label: 'update_plan' }), false);
 });
 
@@ -340,7 +356,7 @@ test('planning profile expands only planning anchors and collapses known non-pla
   assert.equal(folding.displayStateFromRules({ kind: 'proposed_plan', subtype: 'proposed_plan', toolName: '', severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'goal', severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', subtype: 'update_plan', toolName: 'update_plan', severity: 'normal' }, rules), 'expanded');
-  for (const kind of ['user_message', 'assistant_message', 'patch', 'command', 'developer_message', 'review', 'compaction', 'user_shell_command']) {
+  for (const kind of ['user_message', 'assistant_message', 'patch', 'command', 'review', 'compaction', 'user_shell_command']) {
     assert.equal(folding.displayStateFromRules({ kind, severity: 'normal' }, rules), 'collapsed', kind);
   }
   assert.equal(folding.displayStateFromRules({ kind: 'future_event_kind', severity: 'normal' }, rules), 'hidden');
@@ -370,7 +386,7 @@ test('conversation profile keeps plan updates and user input requests expanded',
   assert.equal(folding.displayStateFromRules({ kind: 'compaction', severity: 'normal' }, rules), 'expanded');
   assert.equal(folding.displayStateFromRules({ kind: 'other_tool_call', toolName: 'view_image', severity: 'normal' }, rules), 'hidden');
   assert.equal(folding.displayStateFromRules({ kind: 'hook', severity: 'normal' }, rules), 'hidden');
-  assert.equal(folding.displayStateFromRules({ kind: 'developer_message', hasSearchHit: true, severity: 'normal' }, {
+  assert.equal(folding.displayStateFromRules({ kind: 'command', hasSearchHit: true, severity: 'normal' }, {
     kindStates: {},
     fallback: 'hidden',
     conditions: [{ id: 'searchHit', state: 'expanded' }],
@@ -423,6 +439,7 @@ test('editable kind grouping prioritizes familiar event types without affecting 
   ]);
   assert.equal(folding.editableKindGroup('user_message').groupId, 'conversationPlanning');
   assert.equal(folding.editableKindGroup('command').groupId, 'commonWork');
+  assert.equal(folding.editableKindGroup('read').groupId, 'commonWork');
   assert.equal(folding.editableKindGroup('error').groupId, 'issuesRisks');
   assert.equal(folding.editableKindGroup('mcp_call').groupId, 'commonWork');
   assert.equal(folding.editableKindGroup('js_repl').groupId, 'commonWork');
@@ -436,6 +453,7 @@ test('editable kind grouping prioritizes familiar event types without affecting 
   assert.equal(folding.isDynamicEditableKind('hook'), true);
   assert.equal(folding.isDynamicEditableKind('subagent'), true);
   assert.equal(folding.isDynamicEditableKind('command'), false);
+  assert.equal(folding.EDITABLE_EVENT_KINDS.includes('read'), true);
   assert.ok(folding.editableKindGroup('user_message').groupPriority < folding.editableKindGroup('hook').groupPriority);
   assert.ok(folding.editableKindGroup('command').groupPriority < folding.editableKindGroup('future_event_kind').groupPriority);
 });

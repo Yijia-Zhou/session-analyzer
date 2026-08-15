@@ -22,6 +22,7 @@ const {
   rawRef,
   subAgentActivityEventId,
 } = require('../src/codex-source');
+const { reviewLifecycleFromRaw } = require('../src/review-lifecycle');
 const toolLifecycleContract = require('../src/codex-tool-lifecycle-contract');
 
 function titleCaseProtocolSubtype(value) {
@@ -58,6 +59,7 @@ function makeLogicalBuilder(overrides = {}) {
   return createCodexLogicalBuilder({
     agentCoordination,
     codeMode: { deriveCodeModeFacts, projectCodeModeOperations },
+    reviewLifecycle: { reviewLifecycleFromRaw },
     envelope: {
       CANONICAL_SCHEMA_VERSION,
       CODEX_SOURCE_KIND,
@@ -1016,7 +1018,7 @@ test('logical builder supports new hook lifecycle rows and ungrouped declined ho
   assert.equal(declined.severity, 'warning');
 });
 
-test('logical builder surfaces unwrapped developer messages as possible hook output', () => {
+test('logical builder surfaces unwrapped developer messages as protocol-layer possible hook output', () => {
   const logicalEvents = logicalBuilder.buildLogicalEvents([
     raw(1, {
       recordType: 'response_item',
@@ -1037,6 +1039,7 @@ test('logical builder surfaces unwrapped developer messages as possible hook out
   assert.equal(developerMessage.label, 'Developer message');
   assert.deepEqual(developerMessage.tags, ['Possible hook output']);
   assert.match(developerMessage.searchText, /Possible hook output/);
+  assert.equal(developerMessage.layer, 'protocol');
   assert.equal(wrapper.layer, 'protocol');
 });
 
@@ -1287,4 +1290,68 @@ test('logical builder leaves an empty Code Mode source preview empty', () => {
   assert.ok(operation);
   assert.equal(operation.label, 'Code Mode operation');
   assert.equal(operation.preview, '');
+});
+
+test('logical builder normalizes canonical completed review TurnItem rows', () => {
+  const events = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      payloadType: 'item_completed',
+      canonicalType: 'item_completed',
+      payload: {
+        thread_id: 'session-1',
+        item: {
+          type: 'EnteredReviewMode',
+          target: { type: 'uncommittedChanges' },
+          user_facing_hint: 'current changes',
+        },
+      },
+    }),
+    raw(2, {
+      payloadType: 'item_completed',
+      canonicalType: 'item_completed',
+      payload: {
+        thread_id: 'session-1',
+        item: {
+          type: 'ExitedReviewMode',
+          review_output: { findings: [], overall_correctness: 'patch is correct' },
+        },
+      },
+    }),
+  ]);
+
+  const started = events.find((event) => event.kind === 'review' && event.subtype === 'entered_review_mode');
+  const completed = events.find((event) => event.kind === 'review' && event.subtype === 'exited_review_mode');
+  assert.ok(started);
+  assert.ok(completed);
+  assert.equal(started.layer, 'main');
+  assert.equal(started.label, 'Review started');
+  assert.match(started.preview, /current changes/);
+  assert.equal(completed.layer, 'main');
+  assert.equal(completed.label, 'Review completed');
+  assert.match(completed.preview, /patch is correct/);
+  assert.equal(events.some((event) => event.subtype === 'item_completed'), false);
+});
+
+test('logical builder rejects cross-session canonical review items and non-review items', () => {
+  const events = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      payloadType: 'item_completed',
+      canonicalType: 'item_completed',
+      payload: {
+        thread_id: 'other-session',
+        item: { type: 'EnteredReviewMode' },
+      },
+    }),
+    raw(2, {
+      payloadType: 'item_completed',
+      canonicalType: 'item_completed',
+      payload: {
+        thread_id: 'session-1',
+        item: { type: 'CommandExecution' },
+      },
+    }),
+  ]);
+
+  assert.equal(events.some((event) => event.kind === 'review'), false);
+  assert.equal(events.filter((event) => event.subtype === 'item_completed').length, 2);
 });

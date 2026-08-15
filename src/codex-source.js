@@ -16,15 +16,16 @@ const CODEX_JSONL_LINE_LOCATOR_TYPE = 'jsonl_line';
 const SUB_AGENT_ACTIVITY_EVENT_TYPE = 'sub_agent_activity';
 
 function canonicalEventType(type) {
-  return CANONICAL_EVENT_TYPES[type] || type || '';
+  const value = typeof type === 'string' ? type : '';
+  return CANONICAL_EVENT_TYPES[value] || value;
 }
 
 function codexLocatorFile(file) {
-  return String(file || '').replace(/\\/g, '/');
+  return (typeof file === 'string' ? file : '').replace(/\\/g, '/');
 }
 
 function codexSourceLocator(source) {
-  if (!source || !source.file || source.line == null) return null;
+  if (!source || typeof source.file !== 'string' || !source.file || !Number.isSafeInteger(source.line) || source.line < 1) return null;
   return {
     type: CODEX_JSONL_LINE_LOCATOR_TYPE,
     file: codexLocatorFile(source.file),
@@ -40,12 +41,16 @@ function sourceLocatorForRaw(raw) {
 function rawRef(raw) {
   const sourceLocator = sourceLocatorForRaw(raw);
   return {
-    file: raw.source?.file || sourceLocator?.file || '',
-    line: raw.source?.line ?? sourceLocator?.line ?? null,
-    rawId: raw.rawId,
-    sourceLocator,
-    sourceRecordType: raw.recordType || '',
-    sourceEventType: raw.payloadType || '',
+    file: typeof raw.source?.file === 'string' ? raw.source.file : sourceLocator?.file || '',
+    line: Number.isSafeInteger(raw.source?.line) ? raw.source.line : sourceLocator?.line ?? null,
+    rawId: typeof raw.rawId === 'string' ? raw.rawId : '',
+    sourceLocator: sourceLocator ? {
+      type: CODEX_JSONL_LINE_LOCATOR_TYPE,
+      file: sourceLocator.file,
+      line: sourceLocator.line,
+    } : null,
+    sourceRecordType: typeof raw.recordType === 'string' ? raw.recordType : '',
+    sourceEventType: typeof raw.payloadType === 'string' ? raw.payloadType : '',
   };
 }
 
@@ -84,24 +89,30 @@ function createCodexRawParser(deps) {
   } = deps;
 
   function makeRawEvent(record, lineNumber, relFile, sessionId, embeddedImages = []) {
-    const payload = record.payload || {};
+    const payload = record?.payload && typeof record.payload === 'object' && !Array.isArray(record.payload)
+      ? record.payload
+      : {};
+    const recordType = typeof record?.type === 'string' ? record.type : '';
+    const payloadType = typeof payload.type === 'string' ? payload.type : '';
+    const role = typeof payload.role === 'string' ? payload.role : '';
+    const stringField = (...values) => values.find((value) => typeof value === 'string') || '';
     const raw = {
       rawId: `${sessionId}:raw:${lineNumber}`,
-      sessionId,
+      sessionId: typeof sessionId === 'string' ? sessionId : '',
       sourceKind: CODEX_SOURCE_KIND,
       line: lineNumber,
       source: { file: relFile, line: lineNumber },
       sourceLocator: codexSourceLocator({ file: relFile, line: lineNumber }),
       timestamp: safeIso(record.timestamp),
-      turnId: payload.turn_id || '',
-      recordType: record.type || '',
-      payloadType: payload.type || '',
-      canonicalType: canonicalEventType(payload.type || ''),
-      role: payload.role || '',
-      typeKey: `${record.type}:${payload.type || ''}:${payload.role || ''}`,
-      callId: payload.call_id || payload.callId || '',
-      toolName: payload.name || payload.tool_name || payload.tool || '',
-      status: payload.status || '',
+      turnId: stringField(payload.turn_id),
+      recordType,
+      payloadType,
+      canonicalType: canonicalEventType(payloadType),
+      role,
+      typeKey: `${recordType}:${payloadType}:${role}`,
+      callId: stringField(payload.call_id, payload.callId),
+      toolName: stringField(payload.name, payload.tool_name, payload.tool),
+      status: stringField(payload.status),
       messageText: '',
       searchText: '',
       preview: '',
@@ -118,50 +129,50 @@ function createCodexRawParser(deps) {
       rawIndex: lineNumber,
     };
 
-    if (record.type === 'response_item') {
-      if (payload.type === 'message') {
+    if (recordType === 'response_item') {
+      if (payloadType === 'message') {
         raw.messageText = extractContentText(payload.content);
         raw.preview = truncate(raw.messageText || payload.role || 'message');
         raw.searchText = raw.messageText;
         return raw;
       }
-      if (payload.type === 'reasoning') {
+      if (payloadType === 'reasoning') {
         raw.messageText = extractReasoningText(payload);
         raw.preview = truncate(raw.messageText || 'reasoning');
         raw.searchText = raw.messageText;
         return raw;
       }
-      if (payload.type === 'function_call') {
+      if (payloadType === 'function_call') {
         raw.output = stringifyValue(payload.arguments);
         raw.preview = truncate(`${payload.name || 'function_call'} ${raw.output}`);
         raw.searchText = `${payload.name || ''}\n${raw.output}`;
         return raw;
       }
-      if (payload.type === 'function_call_output') {
+      if (payloadType === 'function_call_output') {
         raw.output = stringifyValue(payload.output);
         raw.preview = truncate(raw.output || payload.call_id || 'function_call_output');
         raw.searchText = raw.output;
         return raw;
       }
-      if (payload.type === 'custom_tool_call') {
+      if (payloadType === 'custom_tool_call') {
         raw.output = stringifyValue(payload.input);
         raw.preview = truncate(`${payload.name || 'custom_tool_call'} ${raw.output}`);
         raw.searchText = `${payload.name || ''}\n${raw.output}`;
         return raw;
       }
-      if (payload.type === 'custom_tool_call_output') {
+      if (payloadType === 'custom_tool_call_output') {
         raw.output = stringifyValue(payload.output);
         raw.preview = truncate(raw.output || payload.call_id || 'custom_tool_call_output');
         raw.searchText = raw.output;
         return raw;
       }
-      if (payload.type === 'web_search_call') {
+      if (payloadType === 'web_search_call') {
         raw.preview = truncate(flattenText(payload.action || payload, 8000) || payload.status || 'web_search_call');
         raw.searchText = flattenText(payload, 12000);
         return raw;
       }
-      if (payload.type === 'image_generation_call') {
-        raw.callId = payload.id || payload.call_id || payload.callId || '';
+      if (payloadType === 'image_generation_call') {
+        raw.callId = stringField(payload.id, payload.call_id, payload.callId);
         raw.toolName = 'image_generation';
         raw.output = stringifyValue(payload);
         raw.preview = truncate(firstNonEmpty(payload.saved_path, payload.status, payload.type));
@@ -170,18 +181,18 @@ function createCodexRawParser(deps) {
       }
     }
 
-    if (record.type === 'event_msg') {
-      const lifecycleDescriptor = toolLifecycleDescriptorFor(payload.type);
+    if (recordType === 'event_msg') {
+      const lifecycleDescriptor = toolLifecycleDescriptorFor(payloadType);
       if (lifecycleDescriptor
           && lifecycleDescriptor.family !== TOOL_LIFECYCLE_FAMILY.COMMAND
           && lifecycleDescriptor.family !== TOOL_LIFECYCLE_FAMILY.PATCH) {
-        if (payload.type === 'image_generation_end') raw.toolName = 'image_generation';
+        if (payloadType === 'image_generation_end') raw.toolName = 'image_generation';
         raw.preview = truncate(flattenText(payload, 12000) || payload.type);
         raw.searchText = flattenText(payload, 16000);
         return raw;
       }
 
-      switch (payload.type) {
+      switch (payloadType) {
         case 'user_message':
         case 'agent_message':
           raw.messageText = displayValue(firstNonEmpty(payload.message, payload.text), 16000);
@@ -249,8 +260,8 @@ function createCodexRawParser(deps) {
       }
     }
 
-    if (record.type === 'turn_context' || record.type === 'session_meta') {
-      raw.preview = truncate(flattenText(payload, 12000) || record.type);
+    if (recordType === 'turn_context' || recordType === 'session_meta') {
+      raw.preview = truncate(flattenText(payload, 12000) || recordType);
       raw.searchText = flattenText(payload, 16000);
       return raw;
     }

@@ -74,6 +74,9 @@ function rawMeta(raw) {
     status: raw.status || '',
     severity: raw.isApiErrorMessage ? 'error' : 'normal',
     toolName: raw.toolName || '',
+    provider: raw.provider || '',
+    model: raw.model || '',
+    effort: raw.effort || '',
     touchedFiles: raw.touchedFiles || [],
     outputStats: {
       exitCode: raw.exitCode,
@@ -90,7 +93,11 @@ function logicalMeta(event) {
     turnId: event.turnId || '',
     status: event.status || '',
     severity: event.severity || 'normal',
-    toolName: event.toolName || '',
+    toolName: event.toolName || event.sourceToolName || '',
+    provider: event.provider || '',
+    model: event.model || '',
+    effort: event.effort || '',
+    provenance: event.provenance || null,
     touchedFiles: event.touchedFiles || [],
     outputStats: event.outputStats || {},
     channels: event.channels || [],
@@ -172,6 +179,7 @@ function toolRows(raws, event) {
   let callRaw = null;
   let call = null;
   let resultRaw = null;
+  let result = null;
   let resultBlock = null;
   for (const raw of raws) {
     for (const candidate of raw.toolCalls || []) {
@@ -186,24 +194,184 @@ function toolRows(raws, event) {
       if ((event.callId && candidate.id === event.callId)
           || (!event.callId && candidate.id === call?.id)) {
         resultRaw = raw;
+        result = candidate;
         resultBlock = raw.contentBlocks[candidate.blockIndex];
         break;
       }
     }
   }
-  return { callRaw, call, resultRaw, resultBlock };
+  return { callRaw, call, resultRaw, result, resultBlock };
+}
+
+function hasUniqueResultOwner(resultRaw, result) {
+  const results = resultRaw?.toolResults || [];
+  return Boolean(result && results.length === 1 && results[0].blockIndex === result.blockIndex);
+}
+
+function uniquelyOwnedStructuredResult(resultRaw, result) {
+  if (!hasUniqueResultOwner(resultRaw, result)) return null;
+  const structured = resultRaw.toolUseResult;
+  return structured && typeof structured === 'object' && !Array.isArray(structured)
+    ? structured
+    : null;
+}
+
+function planUpdateSection(explanation, items) {
+  const text = sanitizeClaudeDetailText(explanation);
+  const steps = (Array.isArray(items) ? items : []).map((item) => {
+    if (!item || typeof item !== 'object') return null;
+    const step = sanitizeClaudeDetailText(item.step || item.subject || '').trim();
+    const status = sanitizeClaudeDetailText(item.status || '').trim();
+    if (!step && !status) return null;
+    return { step: step || '(unnamed step)', status };
+  }).filter(Boolean);
+  if (!text.trim() && !steps.length) return null;
+  return {
+    type: 'plan_update',
+    title: 'Plan update',
+    explanationHtml: text.trim() ? renderMarkdown(text) : '',
+    steps,
+  };
+}
+
+function taskToolPlanSection(call, structured, locale) {
+  const request = call?.input || {};
+  if (call?.name === 'TaskCreate') {
+    return planUpdateSection(
+      request.description || '',
+      [{
+        step: request.subject || structured?.task?.subject || '',
+        status: structured?.task?.status || 'pending',
+      }],
+    );
+  }
+  if (call?.name === 'TaskUpdate') {
+    const taskId = request.taskId || structured?.taskId || '';
+    const status = structured?.statusChange?.to || request.status || '';
+    const from = structured?.statusChange?.from || '';
+    const changed = (Array.isArray(structured?.updatedFields) ? structured.updatedFields : [])
+      .map((field) => sanitizeClaudeDetailText(field).trim())
+      .filter(Boolean);
+    return planUpdateSection(
+      from && status
+        ? claudeDetailText('taskStatusTransition', locale, { taskId, from, to: status })
+        : changed.length
+          ? claudeDetailText('taskUpdatedFields', locale, { taskId, fields: changed.join(', ') })
+          : '',
+      [{ step: request.subject || claudeDetailText('taskFallback', locale, { taskId }), status }],
+    );
+  }
+  return null;
+}
+
+function lifecycleSections(event, locale) {
+  const lifecycle = event?.lifecycle;
+  if (!lifecycle) return [];
+  if (lifecycle.kind === 'goal') {
+    const terminal = lifecycle.terminal;
+    return [
+      markdownSection('Goal condition', lifecycle.condition),
+      ...lifecycle.validations.map((validation) => jsonSection('Goal validation', validation)),
+      terminal
+        ? markdownSection('Result', terminal.reason)
+        : noticeSection('Lifecycle', claudeDetailText('goalLifecycleActive', locale), 'warning'),
+      jsonSection('Lifecycle data', {
+        kind: lifecycle.kind,
+        phase: lifecycle.phase,
+        initial: lifecycle.initial,
+        terminal: terminal ? {
+          met: terminal.met,
+          iterations: terminal.iterations,
+          durationMs: terminal.durationMs,
+          tokens: terminal.tokens,
+        } : null,
+      }),
+    ].filter(Boolean);
+  }
+  const terminal = lifecycle.terminal;
+  const notifications = Array.isArray(lifecycle.notifications) ? lifecycle.notifications : terminal ? [terminal] : [];
+  const isWorkflow = lifecycle.kind === 'async_workflow';
+  const launchText = lifecycle.kind === 'background_command'
+    ? claudeDetailText(
+      lifecycle.timedOutAfterMs ? 'backgroundLifecycleLaunchTimed' : 'backgroundLifecycleLaunch',
+      locale,
+      { duration: lifecycle.timedOutAfterMs, taskId: lifecycle.taskId },
+    )
+    : claudeDetailText(
+      isWorkflow ? 'asyncWorkflowLifecycleLaunch' : 'asyncAgentLifecycleLaunch',
+      locale,
+      { taskId: lifecycle.taskId },
+    );
+  const sections = [noticeSection('Lifecycle', launchText, terminal ? 'info' : 'warning')];
+  for (const notification of notifications) {
+    sections.push(noticeSection(
+      'Completion',
+      notification.summary,
+      ['failed', 'error'].includes(notification.status) ? 'error' : 'info',
+    ));
+    if (isWorkflow) {
+      sections.push(jsonSection('Workflow terminal', {
+        status: notification.status,
+        outputFile: notification.outputFile || '',
+        result: notification.result || '',
+        recovery: notification.recovery || '',
+        usage: notification.usage,
+        exitCode: notification.exitCode ?? null,
+      }));
+    } else {
+      sections.push(markdownSection('Result', notification.result || ''));
+      sections.push(jsonSection('Usage', notification.usage));
+    }
+  }
+  sections.push(jsonSection('Lifecycle data', {
+    kind: lifecycle.kind,
+    phase: lifecycle.phase,
+    taskId: lifecycle.taskId,
+    timedOutAfterMs: lifecycle.timedOutAfterMs,
+    terminalStatus: terminal?.status || '',
+    exitCode: terminal?.exitCode ?? null,
+    stops: notifications.map((notification) => ({
+      status: notification.status,
+      summary: notification.summary,
+      ...(isWorkflow ? {
+        outputFile: notification.outputFile || '',
+        result: notification.result || '',
+        recovery: notification.recovery || '',
+      } : {}),
+      usage: notification.usage,
+      exitCode: notification.exitCode ?? null,
+    })),
+  }));
+  return sections.filter(Boolean);
 }
 
 function toolSections(raws, event, locale) {
-  const { call, resultRaw, resultBlock } = toolRows(raws, event);
+  const {
+    call,
+    resultRaw,
+    result,
+    resultBlock,
+  } = toolRows(raws, event);
   const request = call?.input || {};
-  const resultText = blockText(resultBlock) || resultRaw?.output || '';
-  const structuredResult = resultRaw?.toolUseResult;
+  const ownsResultMetadata = hasUniqueResultOwner(resultRaw, result);
+  const resultText = blockText(resultBlock) || (ownsResultMetadata ? resultRaw?.output : '') || '';
+  const structuredResult = uniquelyOwnedStructuredResult(resultRaw, result);
   const sections = [];
+
+  if (['TaskCreate', 'TaskUpdate'].includes(call?.name)) {
+    sections.push(taskToolPlanSection(call, structuredResult, locale));
+    if (!sections[0]) sections.push(jsonSection('Request', request));
+    sections.push(noticeSection(
+      'Result',
+      resultText,
+      event.status === 'failed' ? 'error' : event.status === 'incomplete' ? 'warning' : 'info',
+    ));
+    return sections.filter(Boolean);
+  }
 
   if (event.kind === 'command') {
     sections.push(codeSection('Command', request.command || stringifyValue(request), 'bash', 'command'));
-    sections.push(terminalSection('stdout', structuredResult?.stdout || resultText, 'stdout'));
+    sections.push(terminalSection('stdout', structuredResult?.stdout || (event.lifecycle ? '' : resultText), 'stdout'));
     sections.push(terminalSection('stderr', structuredResult?.stderr, 'stderr'));
   } else if (event.kind === 'patch') {
     const file = request.file_path || request.filePath || request.path || request.notebook_path || '';
@@ -219,10 +387,13 @@ function toolSections(raws, event, locale) {
   } else {
     sections.push(jsonSection('Request', request));
     if (structuredResult && typeof structuredResult === 'object') {
-      sections.push(jsonSection('Structured result', structuredResult));
+      sections.push(jsonSection(event.lifecycle ? 'Launch result' : 'Structured result', structuredResult));
     }
-    sections.push(terminalSection('Result', resultText, event.status === 'failed' ? 'stderr' : 'stdout'));
+    if (!event.lifecycle) {
+      sections.push(terminalSection('Result', resultText, event.status === 'failed' ? 'stderr' : 'stdout'));
+    }
   }
+  sections.push(...lifecycleSections(event, locale));
   return sections.filter(Boolean);
 }
 
@@ -282,16 +453,33 @@ function logicalTimelineSections(event, raws, locale) {
     const text = blockText(block) || raw?.messageText || event.searchText;
     return [markdownSection(eventTitle(event, locale), text, { hideTitle: true })].filter(Boolean);
   }
-  if (['command', 'patch', 'web_search', 'agent_coordination', 'mcp_call', 'other_tool_call'].includes(event.kind)) {
+  if (['command', 'read', 'patch', 'web_search', 'agent_coordination', 'mcp_call', 'other_tool_call'].includes(event.kind)) {
     return toolSections(raws, event, locale);
   }
+  if (event.kind === 'proposed_plan') {
+    const { call } = toolRows(raws, event);
+    return [markdownSection('Proposed plan', call?.input?.plan || event.searchText)].filter(Boolean);
+  }
+  if (event.kind === 'plan_update') {
+    return [planUpdateSection('', event.planSnapshot || [])].filter(Boolean);
+  }
   if (event.kind === 'compaction') return compactionSections(raws);
+  if (event.kind === 'goal') return lifecycleSections(event, locale);
   if (['error', 'warning', 'abort'].includes(event.kind)) {
     return [noticeSection(
       eventTitle(event, locale),
       event.searchText || event.preview,
       event.kind === 'error' ? 'error' : 'warning',
     )].filter(Boolean);
+  }
+  if (event.layer === 'protocol' && event.subtype === 'task_reminder') {
+    return [planUpdateSection('', event.planSnapshot || [])].filter(Boolean);
+  }
+  if (event.layer === 'protocol' && event.subtype === 'away_summary') {
+    return [markdownSection('Away summary', raws[0]?.parsed?.content || event.searchText, { hideTitle: true })].filter(Boolean);
+  }
+  if (event.layer === 'protocol' && ['plan_mode', 'plan_mode_exit'].includes(event.subtype)) {
+    return [jsonSection('Plan mode', raws[0]?.parsed?.attachment || {})].filter(Boolean);
   }
   return [noticeSection(eventTitle(event, locale), event.preview || event.searchText)].filter(Boolean);
 }

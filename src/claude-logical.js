@@ -31,9 +31,17 @@ function createClaudeLogicalBuilder(deps) {
   }
 
   function createEvent(fields) {
-    const rawRefs = uniqueRawRefs(fields.raws || []);
+    const raws = fields.raws || [];
+    const rawRefs = uniqueRawRefs(raws);
     const preview = String(fields.preview || '').trim();
-    const searchText = String(fields.searchText || preview).trim();
+    const attributionSkills = unique(raws.map((raw) => raw?.attributionSkill));
+    const provenance = attributionSkills.length === 1
+      ? { attributionSkill: attributionSkills[0] }
+      : null;
+    const searchText = [String(fields.searchText || preview).trim(), provenance?.attributionSkill]
+      .filter(Boolean)
+      .join('\n');
+    const runtimeRaw = raws.find((raw) => raw?.provider || raw?.model || raw?.effort) || null;
     return {
       id: fields.id,
       schemaVersion: CANONICAL_SCHEMA_VERSION,
@@ -62,10 +70,17 @@ function createClaudeLogicalBuilder(deps) {
       source: rawRefs[0] || null,
       sourceLocator: rawRefs[0]?.sourceLocator || null,
       _sourceOrder: fields.sourceOrder || 0,
+      provider: String(fields.provider || runtimeRaw?.provider || ''),
+      model: String(fields.model || runtimeRaw?.model || ''),
+      effort: String(fields.effort || runtimeRaw?.effort || ''),
+      ...(provenance ? { provenance } : {}),
       ...(fields.callId ? { callId: fields.callId } : {}),
       ...(fields.agentId ? { agentId: fields.agentId } : {}),
       ...(fields.messageId ? { messageId: fields.messageId } : {}),
       ...(fields.blockIndex != null ? { blockIndex: fields.blockIndex } : {}),
+      ...(fields.sourceToolName ? { sourceToolName: fields.sourceToolName } : {}),
+      ...(fields.lifecycle ? { lifecycle: fields.lifecycle } : {}),
+      ...(fields.planSnapshot ? { planSnapshot: fields.planSnapshot } : {}),
     };
   }
 
@@ -85,18 +100,53 @@ function createClaudeLogicalBuilder(deps) {
     for (const raw of raws) raw.turnId = resolve(raw);
   }
 
-  function resultStatus(match) {
+  function notificationOutcome(lifecycle) {
+    if (!lifecycle?.terminal) return 'in_progress';
+    const status = String(lifecycle.terminal.status || '').toLowerCase();
+    if (['failed', 'error'].includes(status)) return 'failed';
+    if (status === 'declined') return 'declined';
+    if (['cancelled', 'canceled', 'stopped'].includes(status)) return 'incomplete';
+    if (lifecycle.kind === 'background_command'
+        && lifecycle.terminal.exitCode != null
+        && lifecycle.terminal.exitCode !== 0) return 'failed';
+    return ['completed', 'success'].includes(status) ? 'success' : 'incomplete';
+  }
+
+  function resultStatus(match, lifecycle = null) {
     if (!match) return 'incomplete';
     const { raw: result, result: resultBlock } = match;
-    if (result.toolDenialKind || resultBlock.status === 'declined') return 'declined';
+    const ownsResultMetadata = hasUniqueStructuredResultOwner(match);
+    if ((ownsResultMetadata && result.toolDenialKind) || resultBlock.status === 'declined') return 'declined';
     if (resultBlock.isError || resultBlock.status === 'failed') return 'failed';
-    if (result.exitCode != null && result.exitCode !== 0) return 'failed';
+    if (ownsResultMetadata && result.exitCode != null && result.exitCode !== 0) return 'failed';
+    if (lifecycle) return notificationOutcome(lifecycle);
     return 'success';
+  }
+
+  function hasUniqueStructuredResultOwner(resultMatch) {
+    if (!resultMatch) return false;
+    const blocks = resultMatch.raw.toolResults || [];
+    return blocks.length === 1 && blocks[0].blockIndex === resultMatch.result.blockIndex;
+  }
+
+  function uniquelyOwnedStructuredResult(resultMatch) {
+    if (!hasUniqueStructuredResultOwner(resultMatch)) return null;
+    const structured = resultMatch.raw.toolUseResult;
+    return structured && typeof structured === 'object' && !Array.isArray(structured)
+      ? structured
+      : null;
+  }
+
+  function hasExactPlanEcho(callRaw, call, resultMatch) {
+    const request = callRaw._exactPlanEvidence?.requestByBlock?.[call.blockIndex] || '';
+    const result = resultMatch?.raw?._exactPlanEvidence?.result || '';
+    return Boolean(request && result && request === result);
   }
 
   function toolKind(name) {
     const normalized = String(name || '').toLowerCase();
     if (normalized === 'bash') return 'command';
+    if (normalized === 'read') return 'read';
     if (['write', 'edit', 'multiedit', 'notebookedit'].includes(normalized)) return 'patch';
     if (['websearch', 'webfetch'].includes(normalized)) return 'web_search';
     if (normalized === 'agent') return 'agent_coordination';
@@ -104,7 +154,19 @@ function createClaudeLogicalBuilder(deps) {
     return 'other_tool_call';
   }
 
-  function toolLabel(kind, name, status) {
+  function isTaskPlanTool(name) {
+    return ['TaskCreate', 'TaskUpdate'].includes(String(name || ''));
+  }
+
+  function toolLabel(kind, name, status, lifecycle = null) {
+    if (lifecycle?.kind === 'background_command') {
+      if (status === 'failed') return 'Failed background command';
+      if (status === 'incomplete') return 'Incomplete background command';
+      return 'Background command';
+    }
+    if (lifecycle?.kind === 'async_agent') return 'Async agent';
+    if (lifecycle?.kind === 'async_workflow') return 'Async workflow';
+    if (isTaskPlanTool(name)) return 'Plan update';
     if (kind === 'command') {
       if (status === 'failed') return 'Failed command';
       if (status === 'declined') return 'Declined command';
@@ -117,6 +179,7 @@ function createClaudeLogicalBuilder(deps) {
       if (status === 'incomplete') return 'Incomplete patch';
       return 'Patch applied';
     }
+    if (kind === 'read') return 'Read';
     if (kind === 'web_search') return String(name).toLowerCase() === 'webfetch' ? 'Web fetch' : 'Web search';
     if (kind === 'agent_coordination') return 'Agent coordination';
     if (kind === 'mcp_call') return 'MCP call';
@@ -125,7 +188,14 @@ function createClaudeLogicalBuilder(deps) {
 
   function toolPreview(call, kind) {
     const input = call.input || {};
+    if (call.name === 'TaskCreate') return truncate(input.subject || input.description || call.name);
+    if (call.name === 'TaskUpdate') {
+      const task = input.taskId ? `Task #${input.taskId}` : call.name;
+      return truncate(input.status ? `${task} → ${input.status}` : task);
+    }
+    if (call.name === 'ExitPlanMode') return truncate(input.plan || call.name);
     if (kind === 'command') return truncate(input.command || input.description || call.name);
+    if (kind === 'read') return truncate(input.file_path || input.filePath || input.path || call.name);
     if (kind === 'patch') return truncate(input.file_path || input.filePath || input.path || input.notebook_path || call.name);
     if (kind === 'web_search') return truncate(input.query || input.url || input.prompt || call.name);
     if (kind === 'agent_coordination') return truncate(input.description || input.prompt || input.subagent_type || call.name);
@@ -152,23 +222,49 @@ function createClaudeLogicalBuilder(deps) {
   function buildSupplementalIndex(raws) {
     const fileHistoryByMessageId = new Map();
     const attachmentsByCallId = new Map();
+    const planModeExitByParentUuid = new Map();
+    const uuidCounts = new Map();
+    for (const raw of raws) {
+      if (raw.uuid) uuidCounts.set(raw.uuid, (uuidCounts.get(raw.uuid) || 0) + 1);
+    }
     for (const raw of raws) {
       if (raw.recordType === 'file-history-delta') {
         appendIndexedValue(fileHistoryByMessageId, fileDeltaMessageId(raw), raw);
       } else if (raw.recordType === 'attachment') {
         appendIndexedValue(attachmentsByCallId, attachmentToolUseId(raw), raw);
+        if (
+          raw.payloadType === 'plan_mode_exit'
+          && raw.parentUuid
+          && raw.parsed?.attachment?.planExists === true
+        ) {
+          appendIndexedValue(planModeExitByParentUuid, raw.parentUuid, raw);
+        }
       }
     }
-    return { attachmentsByCallId, fileHistoryByMessageId };
+    return {
+      attachmentsByCallId,
+      fileHistoryByMessageId,
+      planModeExitByParentUuid,
+      uuidCounts,
+    };
   }
 
-  function supplementalRowsForCall(index, callRaw, callId, callIdentityUnique) {
+  function supplementalRowsForCall(index, callRaw, call, resultMatch, callIdentityUnique) {
     const rows = [];
     if (callRaw.toolCalls.length === 1 && callRaw.uuid) {
       rows.push(...(index.fileHistoryByMessageId.get(callRaw.uuid) || []));
     }
-    if (callId && callIdentityUnique) {
-      rows.push(...(index.attachmentsByCallId.get(callId) || []));
+    if (call.id && callIdentityUnique) {
+      rows.push(...(index.attachmentsByCallId.get(call.id) || []));
+    }
+    if (
+      call.name === 'ExitPlanMode'
+      && resultMatch
+      && resultStatus(resultMatch) === 'success'
+      && resultMatch.raw.uuid
+      && index.uuidCounts.get(resultMatch.raw.uuid) === 1
+    ) {
+      rows.push(...(index.planModeExitByParentUuid.get(resultMatch.raw.uuid) || []));
     }
     const seen = new Set();
     return rows.filter((raw) => {
@@ -225,6 +321,418 @@ function createClaudeLogicalBuilder(deps) {
     };
   }
 
+  function singleTagValue(text, tag) {
+    const open = `<${tag}>`;
+    const close = `</${tag}>`;
+    const start = text.indexOf(open);
+    if (start < 0 || text.indexOf(open, start + open.length) >= 0) return null;
+    const end = text.indexOf(close, start + open.length);
+    if (end < 0 || text.indexOf(close, end + close.length) >= 0) return null;
+    return text.slice(start + open.length, end);
+  }
+
+  function tagCount(text, marker) {
+    let count = 0;
+    let offset = 0;
+    while (offset < text.length) {
+      const index = text.indexOf(marker, offset);
+      if (index < 0) break;
+      count += 1;
+      offset = index + marker.length;
+    }
+    return count;
+  }
+
+  function trustedTaskNotificationText(raw) {
+    if (
+      raw.recordType === 'queue-operation'
+      && ['enqueue', 'remove'].includes(raw.payloadType)
+      && typeof raw.parsed?.content === 'string'
+    ) return raw.parsed.content;
+    if (
+      raw.recordType === 'user'
+      && raw.originKind === 'task-notification'
+      && raw.promptSource === 'system'
+      && typeof raw.parsed?.message?.content === 'string'
+    ) return raw.parsed.message.content;
+    return '';
+  }
+
+  function numericUsageValue(usageText, tag) {
+    const value = singleTagValue(usageText, tag);
+    if (value == null || !/^\d+$/.test(value.trim())) return null;
+    const number = Number(value.trim());
+    return Number.isSafeInteger(number) ? number : null;
+  }
+
+  const WORKFLOW_TERMINAL_TAGS = new Set([
+    'task-id',
+    'tool-use-id',
+    'output-file',
+    'status',
+    'summary',
+    'result',
+    'recovery',
+    'usage',
+  ]);
+  const WORKFLOW_USAGE_TAGS = new Set([
+    'agent_count',
+    'agents_done',
+    'agents_error',
+    'agents_skipped',
+    'agents_empty_result',
+    'total_tokens',
+    'subagent_tokens',
+    'tool_uses',
+    'duration_ms',
+  ]);
+
+  function parseStrictFlatTags(text, allowedTags, nestedTag) {
+    const values = new Map();
+    let offset = 0;
+    while (offset < text.length) {
+      while (/\s/u.test(text[offset] || '')) offset += 1;
+      if (offset >= text.length) break;
+      const opening = text.slice(offset).match(/^<([A-Za-z][A-Za-z0-9_-]*)>/u);
+      if (!opening || !allowedTags.has(opening[1]) || values.has(opening[1])) return null;
+      const tag = opening[1];
+      const openText = opening[0];
+      const closeText = `</${tag}>`;
+      const closeOffset = text.indexOf(closeText, offset + openText.length);
+      if (closeOffset < 0) return null;
+      const value = text.slice(offset + openText.length, closeOffset);
+      if (tag === nestedTag) {
+        if (!parseStrictFlatTags(value, WORKFLOW_USAGE_TAGS, '')) return null;
+      } else if (/[<>]/u.test(value)) {
+        return null;
+      }
+      values.set(tag, value);
+      offset = closeOffset + closeText.length;
+    }
+    return values;
+  }
+
+  function strictWorkflowTerminal(notification) {
+    const text = String(notification?.sourceText || '').trim();
+    const opening = '<task-notification>';
+    const closing = '</task-notification>';
+    if (!text.startsWith(opening) || !text.endsWith(closing)) return false;
+    const values = parseStrictFlatTags(
+      text.slice(opening.length, -closing.length),
+      WORKFLOW_TERMINAL_TAGS,
+      'usage',
+    );
+    if (!values) return false;
+    const evidence = [values.get('output-file'), values.get('result'), values.get('recovery')]
+      .some((value) => typeof value === 'string' && value.trim());
+    if (!evidence) return false;
+    const usageText = values.get('usage') || '';
+    const usage = parseStrictFlatTags(usageText, WORKFLOW_USAGE_TAGS, '');
+    if (!usage) return false;
+    const requiredUsageTags = [
+      'agent_count',
+      'agents_done',
+      'agents_error',
+      'agents_skipped',
+      'agents_empty_result',
+      'tool_uses',
+      'duration_ms',
+    ];
+    if (requiredUsageTags.some((tag) => numericUsageValue(usageText, tag) == null)) return false;
+    if (
+      numericUsageValue(usageText, 'total_tokens') == null
+      && numericUsageValue(usageText, 'subagent_tokens') == null
+    ) return false;
+    return true;
+  }
+
+  function taskIdentifier(value) {
+    if (typeof value !== 'string') return '';
+    const identifier = value.trim();
+    return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(identifier) ? identifier : '';
+  }
+
+  function taskNotificationIdentity(raw) {
+    const sourceText = trustedTaskNotificationText(raw);
+    const text = sourceText.trim();
+    if (!text.startsWith('<task-notification>') || !text.endsWith('</task-notification>')) return null;
+    const taskId = taskIdentifier(singleTagValue(text, 'task-id')?.trim() || '');
+    const toolUseId = taskIdentifier(singleTagValue(text, 'tool-use-id')?.trim() || '');
+    if (!taskId || !toolUseId) return null;
+    return { taskId, toolUseId, sourceText };
+  }
+
+  function parseTaskNotification(raw) {
+    const text = trustedTaskNotificationText(raw).trim();
+    if (!text.startsWith('<task-notification>') || !text.endsWith('</task-notification>')) return null;
+    if (text.indexOf('<task-notification>', '<task-notification>'.length) >= 0) return null;
+    if (text.indexOf('</task-notification>') !== text.length - '</task-notification>'.length) return null;
+    if (['task-id', 'tool-use-id', 'output-file', 'status', 'summary', 'result', 'recovery', 'usage'].some((tag) => {
+      const opens = tagCount(text, `<${tag}>`);
+      const closes = tagCount(text, `</${tag}>`);
+      return opens !== closes || opens > 1;
+    })) return null;
+    const taskId = singleTagValue(text, 'task-id')?.trim() || '';
+    const toolUseId = singleTagValue(text, 'tool-use-id')?.trim() || '';
+    const status = singleTagValue(text, 'status')?.trim().toLowerCase() || '';
+    const summary = singleTagValue(text, 'summary')?.trim() || '';
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(taskId)) return null;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(toolUseId)) return null;
+    if (!['completed', 'success', 'failed', 'error', 'declined', 'cancelled', 'canceled', 'stopped'].includes(status)) return null;
+    if (!summary || summary.length > 4000) return null;
+    const outputFile = (singleTagValue(text, 'output-file') || '').trim().slice(0, 4000);
+    const result = (singleTagValue(text, 'result') || '').trim().slice(0, 16000);
+    const recovery = (singleTagValue(text, 'recovery') || '').trim().slice(0, 16000);
+    const usageText = singleTagValue(text, 'usage') || '';
+    if (usageText && [
+      'agent_count',
+      'agents_done',
+      'agents_error',
+      'agents_skipped',
+      'agents_empty_result',
+      'total_tokens',
+      'subagent_tokens',
+      'tool_uses',
+      'duration_ms',
+    ].some((tag) => {
+      const opens = tagCount(usageText, `<${tag}>`);
+      const closes = tagCount(usageText, `</${tag}>`);
+      return opens !== closes || opens > 1;
+    })) return null;
+    const usage = usageText ? {
+      agentCount: numericUsageValue(usageText, 'agent_count'),
+      agentsDone: numericUsageValue(usageText, 'agents_done'),
+      agentsError: numericUsageValue(usageText, 'agents_error'),
+      agentsSkipped: numericUsageValue(usageText, 'agents_skipped'),
+      agentsEmptyResult: numericUsageValue(usageText, 'agents_empty_result'),
+      totalTokens: numericUsageValue(usageText, 'total_tokens'),
+      subagentTokens: numericUsageValue(usageText, 'subagent_tokens'),
+      toolUses: numericUsageValue(usageText, 'tool_uses'),
+      durationMs: numericUsageValue(usageText, 'duration_ms'),
+    } : null;
+    const exitMatch = summary.match(/\(exit code (-?\d+)\)\s*$/i);
+    const exitCode = exitMatch && Number.isSafeInteger(Number(exitMatch[1])) ? Number(exitMatch[1]) : null;
+    const fingerprint = JSON.stringify({
+      taskId,
+      toolUseId,
+      outputFile,
+      status,
+      summary,
+      result,
+      recovery,
+      usage,
+      exitCode,
+    });
+    return {
+      raw,
+      valid: true,
+      sourceText: trustedTaskNotificationText(raw),
+      taskId,
+      toolUseId,
+      outputFile,
+      status,
+      summary,
+      result,
+      recovery,
+      usage,
+      exitCode,
+      fingerprint,
+    };
+  }
+
+  function launchCandidate(callKey, callMatch, resultMatch) {
+    if (!resultMatch || !callMatch.call.id) return null;
+    const structured = uniquelyOwnedStructuredResult(resultMatch);
+    if (!structured) return null;
+    if (
+      callMatch.call.name === 'Bash'
+      && typeof structured.backgroundTaskId === 'string'
+      && structured.backgroundTaskId.trim()
+      && Number.isFinite(structured.timedOutAfterMs)
+      && structured.timedOutAfterMs > 0
+    ) {
+      return {
+        callKey,
+        call: callMatch.call,
+        kind: 'background_command',
+        taskId: structured.backgroundTaskId.trim(),
+        timedOutAfterMs: structured.timedOutAfterMs,
+        resultRawIndex: resultMatch.raw.rawIndex,
+      };
+    }
+    if (
+      callMatch.call.name === 'Agent'
+      && structured.isAsync === true
+      && structured.status === 'async_launched'
+      && typeof structured.agentId === 'string'
+      && structured.agentId.trim()
+    ) {
+      return {
+        callKey,
+        call: callMatch.call,
+        kind: 'async_agent',
+        taskId: structured.agentId.trim(),
+        timedOutAfterMs: null,
+        resultRawIndex: resultMatch.raw.rawIndex,
+      };
+    }
+    if (
+      callMatch.call.name === 'Workflow'
+      && callMatch.call.caller?.type === 'direct'
+      && typeof callMatch.call.input?.scriptPath === 'string'
+      && callMatch.call.input.scriptPath.trim()
+      && structured.status === 'async_launched'
+      && structured.taskType === 'local_workflow'
+    ) {
+      const taskId = taskIdentifier(structured.taskId);
+      const requiredReceiptText = [
+        structured.workflowName,
+        structured.runId,
+        structured.summary,
+        structured.transcriptDir,
+        structured.scriptPath,
+      ];
+      if (
+        !taskId
+        || requiredReceiptText.some((value) => typeof value !== 'string' || !value.trim())
+        || structured.scriptPath !== callMatch.call.input.scriptPath
+      ) return null;
+      return {
+        callKey,
+        call: callMatch.call,
+        kind: 'async_workflow',
+        taskId,
+        timedOutAfterMs: null,
+        resultRawIndex: resultMatch.raw.rawIndex,
+        workflow: {
+          runId: structured.runId,
+          workflowName: structured.workflowName,
+          scriptPath: structured.scriptPath,
+          transcriptDir: structured.transcriptDir,
+          summary: structured.summary,
+        },
+      };
+    }
+    return null;
+  }
+
+  function buildAsyncLifecycleCorrelation(raws, toolCorrelation) {
+    const launchesByTaskId = new Map();
+    const launches = [];
+    for (const [callKey, callMatch] of toolCorrelation.callByBlock) {
+      if (!toolCorrelation.uniqueCallIds.has(callMatch.call.id)) continue;
+      const candidate = launchCandidate(
+        callKey,
+        callMatch,
+        toolCorrelation.resultByCallBlock.get(callKey),
+      );
+      if (candidate) {
+        launches.push(candidate);
+        appendIndexedValue(launchesByTaskId, candidate.taskId, candidate);
+      }
+    }
+
+    const notificationsByCall = new Map();
+    for (const raw of raws) {
+      const notification = parseTaskNotification(raw);
+      const identity = notification || taskNotificationIdentity(raw);
+      if (!identity) continue;
+      const owners = launchesByTaskId.get(identity.taskId) || [];
+      if (
+        owners.length !== 1
+        || owners[0].call.id !== identity.toolUseId
+        || raw.rawIndex <= owners[0].resultRawIndex
+      ) continue;
+      if (!notification) {
+        if (owners[0].kind !== 'async_workflow') continue;
+        appendIndexedValue(notificationsByCall, owners[0].callKey, {
+          raw,
+          valid: false,
+          sourceText: identity.sourceText,
+          taskId: identity.taskId,
+          toolUseId: identity.toolUseId,
+          fingerprint: `invalid:${raw.rawId}`,
+        });
+        continue;
+      }
+      if (owners[0].kind === 'async_workflow' && !strictWorkflowTerminal(notification)) {
+        appendIndexedValue(notificationsByCall, owners[0].callKey, {
+          ...notification,
+          valid: false,
+          fingerprint: `invalid:${raw.rawId}`,
+        });
+        continue;
+      }
+      appendIndexedValue(notificationsByCall, owners[0].callKey, notification);
+    }
+
+    const lifecycleByCallBlock = new Map();
+    const matchedNotificationRawIds = new Set();
+    for (const launch of launches) {
+      const notifications = (notificationsByCall.get(launch.callKey) || [])
+        .sort((left, right) => left.raw.rawIndex - right.raw.rawIndex);
+      const semanticNotifications = [];
+      const seen = new Set();
+      for (const notification of notifications) {
+        if (seen.has(notification.fingerprint)) continue;
+        seen.add(notification.fingerprint);
+        semanticNotifications.push(notification);
+      }
+      const workflowMirrors = notifications.map((notification) => notification.raw.recordType).sort();
+      const workflowNotificationsAreValid = launch.kind !== 'async_workflow' || notifications.every((notification) => (
+        notification.valid !== false
+        && strictWorkflowTerminal(notification)
+      ));
+      const workflowNotificationSetIsExact = workflowNotificationsAreValid && (
+        notifications.length <= 1 || (
+        notifications.length === 2
+        && semanticNotifications.length === 1
+        && workflowMirrors[0] === 'queue-operation'
+        && workflowMirrors[1] === 'user'
+        && notifications[0].sourceText === notifications[1].sourceText
+      ));
+      const workflowAmbiguous = launch.kind === 'async_workflow'
+        && (semanticNotifications.length > 1 || !workflowNotificationSetIsExact);
+      const acceptedNotifications = workflowAmbiguous ? [] : semanticNotifications;
+      const acceptedNotificationRaws = workflowAmbiguous
+        ? []
+        : notifications.map((notification) => notification.raw);
+      if (!workflowAmbiguous) {
+        for (const notification of notifications) {
+          matchedNotificationRawIds.add(notification.raw.rawId);
+        }
+      }
+      const terminal = acceptedNotifications.at(-1) || null;
+      lifecycleByCallBlock.set(launch.callKey, {
+        kind: launch.kind,
+        taskId: launch.taskId,
+        phase: terminal ? 'terminal' : launch.kind === 'background_command' ? 'backgrounded' : 'async_launched',
+        timedOutAfterMs: launch.timedOutAfterMs,
+        workflow: launch.workflow || null,
+        notifications: acceptedNotifications.map((notification) => ({
+          status: notification.status,
+          summary: notification.summary,
+          outputFile: notification.outputFile,
+          result: notification.result,
+          recovery: notification.recovery,
+          usage: notification.usage,
+          exitCode: notification.exitCode,
+        })),
+        terminal: terminal ? {
+          status: terminal.status,
+          summary: terminal.summary,
+          outputFile: terminal.outputFile,
+          result: terminal.result,
+          recovery: terminal.recovery,
+          usage: terminal.usage,
+          exitCode: terminal.exitCode,
+        } : null,
+        notificationRaws: acceptedNotificationRaws,
+      });
+    }
+    return { lifecycleByCallBlock, matchedNotificationRawIds };
+  }
+
   function deltaTouchedFiles(rows) {
     return rows.flatMap((raw) => {
       const record = raw.parsed || {};
@@ -241,46 +749,93 @@ function createClaudeLogicalBuilder(deps) {
     if (!match) return '';
     const { raw, result } = match;
     const block = raw.contentBlocks[result.blockIndex];
-    return blockText(block) || raw.output || stringifyValue(raw.toolUseResult);
+    const text = blockText(block);
+    if (text) return text;
+    if (!hasUniqueStructuredResultOwner(match)) return '';
+    return raw.output || stringifyValue(raw.toolUseResult);
   }
 
-  function buildToolEvent(callRaw, call, resultMatch, supplements) {
-    const kind = toolKind(call.name);
+  function lifecycleSearchText(lifecycle) {
+    if (!lifecycle) return '';
+    return [
+      lifecycle.taskId,
+      lifecycle.phase,
+      ...(lifecycle.notifications || []).flatMap((notification) => [
+        notification.status,
+        notification.summary,
+        notification.outputFile,
+        notification.result,
+        notification.recovery,
+        stringifyValue(notification.usage),
+      ]),
+    ].filter(Boolean).join('\n');
+  }
+
+  function buildToolEvent(callRaw, call, resultMatch, supplements, lifecycle = null) {
+    const ordinaryKind = toolKind(call.name);
     const result = resultMatch?.raw;
-    const status = resultStatus(resultMatch);
+    const status = resultStatus(resultMatch, lifecycle);
+    const ownsResultMetadata = hasUniqueStructuredResultOwner(resultMatch);
+    const structuredResult = uniquelyOwnedStructuredResult(resultMatch);
+    const approvedPlan = Boolean(call.name === 'ExitPlanMode'
+      && status === 'success'
+      && typeof call.input?.plan === 'string'
+      && call.input.plan.trim()
+      && typeof structuredResult?.plan === 'string'
+      && hasExactPlanEcho(callRaw, call, resultMatch));
+    const kind = approvedPlan ? 'proposed_plan' : ordinaryKind;
+    const subtype = approvedPlan ? 'proposed_plan' : call.name;
     const severity = status === 'failed' ? 'error' : ['declined', 'incomplete'].includes(status) ? 'warning' : 'normal';
     const resultText = toolResultText(resultMatch);
-    const structuredResult = result?.toolUseResult;
-    const agentId = String(structuredResult?.agentId || result?.agentId || '');
+    const agentId = String(
+      structuredResult?.agentId
+      || (hasUniqueStructuredResultOwner(resultMatch) ? result?.agentId : '')
+      || '',
+    );
     const touchedFiles = [
       ...(callRaw.touchedFiles || []),
       ...deltaTouchedFiles(supplements),
     ];
-    const raws = [callRaw, result, ...supplements];
+    const raws = [callRaw, result, ...supplements, ...(lifecycle?.notificationRaws || [])];
+    const publicLifecycle = lifecycle ? {
+      kind: lifecycle.kind,
+      taskId: lifecycle.taskId,
+      phase: lifecycle.phase,
+      timedOutAfterMs: lifecycle.timedOutAfterMs,
+      notifications: lifecycle.notifications,
+      terminal: lifecycle.terminal,
+      ...(lifecycle.workflow ? { workflow: lifecycle.workflow } : {}),
+    } : null;
     return createEvent({
       id: `${callRaw.sessionId}:logical:tool:${callRaw.line}:${call.blockIndex}${call.id ? `:${call.id}` : ''}`,
       timestamp: callRaw.timestamp,
       turnId: callRaw.turnId || result?.turnId || '',
       kind,
-      subtype: call.name,
+      subtype,
       layer: 'main',
       role: 'assistant',
-      label: toolLabel(kind, call.name, status),
-      preview: toolPreview(call, kind),
+      label: approvedPlan ? 'Proposed plan' : toolLabel(ordinaryKind, call.name, status, lifecycle),
+      preview: approvedPlan ? truncate(call.input.plan) : toolPreview(call, ordinaryKind),
       searchText: [
         call.name,
         stringifyValue(call.input),
         resultText,
         stringifyValue(structuredResult),
-        result?.toolDenialKind,
+        ownsResultMetadata ? result?.toolDenialKind : '',
+        lifecycleSearchText(lifecycle),
       ].filter(Boolean).join('\n'),
       severity,
       status,
-      toolName: call.name,
+      toolName: approvedPlan ? '' : call.name,
+      sourceToolName: approvedPlan ? call.name : '',
       touchedFiles,
       outputStats: {
-        exitCode: result?.exitCode ?? null,
-        durationMs: result?.durationMs || 0,
+        exitCode: lifecycle?.terminal?.exitCode
+          ?? (ownsResultMetadata ? result?.exitCode : null)
+          ?? null,
+        durationMs: lifecycle?.terminal?.usage?.durationMs
+          ?? (ownsResultMetadata ? result?.durationMs : 0)
+          ?? 0,
       },
       raws,
       channels: raws.map((raw) => raw?.recordType),
@@ -288,8 +843,251 @@ function createClaudeLogicalBuilder(deps) {
       callId: call.id,
       agentId,
       blockIndex: call.blockIndex,
-      tags: agentId ? ['subagent'] : [],
+      tags: [
+        agentId ? 'subagent' : '',
+        lifecycle?.kind === 'background_command' ? 'backgrounded' : '',
+        lifecycle?.kind === 'async_agent' ? 'async' : '',
+        lifecycle?.kind === 'async_workflow' ? 'async' : '',
+        lifecycle?.kind === 'async_workflow' ? 'workflow' : '',
+      ],
+      lifecycle: publicLifecycle,
     });
+  }
+
+  function normalizedTaskItem(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    if (typeof value.id !== 'string' || typeof value.subject !== 'string' || typeof value.status !== 'string') return null;
+    if (value.description != null && typeof value.description !== 'string') return null;
+    const id = value.id.trim();
+    const subject = value.subject.trim();
+    const status = value.status.trim();
+    if (!id || !subject || !status) return null;
+    const stringList = (items) => {
+      if (items == null) return [];
+      if (!Array.isArray(items) || items.some((item) => typeof item !== 'string')) return null;
+      return items.map((item) => item.trim()).filter(Boolean).sort();
+    };
+    const blocks = stringList(value.blocks);
+    const blockedBy = stringList(value.blockedBy);
+    if (!blocks || !blockedBy) return null;
+    return {
+      id,
+      subject,
+      description: String(value.description || '').trim(),
+      status,
+      blocks,
+      blockedBy,
+    };
+  }
+
+  function taskReminderSnapshot(raw) {
+    if (raw.recordType !== 'attachment' || raw.payloadType !== 'task_reminder') return null;
+    const attachment = raw.parsed?.attachment;
+    if (!attachment || !Array.isArray(attachment.content) || !attachment.content.length) return null;
+    if (!Number.isSafeInteger(attachment.itemCount) || attachment.itemCount !== attachment.content.length) return null;
+    const items = attachment.content.map(normalizedTaskItem);
+    if (items.some((item) => !item)) return null;
+    const ids = items.map((item) => item.id);
+    if (new Set(ids).size !== ids.length) return null;
+    items.sort((left, right) => left.id.localeCompare(right.id));
+    return { raw, items, fingerprint: JSON.stringify(items) };
+  }
+
+  function taskTransition(callMatch, resultMatch) {
+    if (!resultMatch || resultStatus(resultMatch) !== 'success') return null;
+    const { call } = callMatch;
+    const structured = uniquelyOwnedStructuredResult(resultMatch);
+    if (!structured) return null;
+    if (call.name === 'TaskCreate') {
+      if (typeof structured.task?.id !== 'string') return null;
+      if (structured.task.subject != null && typeof structured.task.subject !== 'string') return null;
+      if (call.input?.subject != null && typeof call.input.subject !== 'string') return null;
+      const id = structured.task.id.trim();
+      const resultSubject = String(structured.task.subject || '').trim();
+      const requestSubject = String(call.input?.subject || '').trim();
+      if (resultSubject && requestSubject && resultSubject !== requestSubject) return null;
+      const subject = resultSubject || requestSubject;
+      if (!id || !subject) return null;
+      if (call.input?.description != null && typeof call.input.description !== 'string') return null;
+      if (structured.task.status != null && typeof structured.task.status !== 'string') return null;
+      return {
+        rawIndex: resultMatch.raw.rawIndex,
+        blockIndex: call.blockIndex,
+        apply(state) {
+          state.set(id, {
+            id,
+            subject,
+            description: String(call.input?.description || '').trim(),
+            status: String(structured.task?.status || 'pending'),
+            blocks: [],
+            blockedBy: [],
+          });
+        },
+      };
+    }
+    if (call.name === 'TaskUpdate') {
+      if (typeof call.input?.taskId !== 'string' || typeof structured.taskId !== 'string') return null;
+      const requestId = call.input.taskId.trim();
+      const resultId = structured.taskId.trim();
+      if (!requestId || requestId !== resultId || structured.success !== true) return null;
+      if (!Array.isArray(structured.updatedFields)
+          || structured.updatedFields.some((field) => typeof field !== 'string')) return null;
+      const updatedFields = new Set(structured.updatedFields.map((field) => field.trim()).filter(Boolean));
+      if (updatedFields.has('status') && typeof structured.statusChange?.to !== 'string') return null;
+      if (call.input?.status != null && typeof call.input.status !== 'string') return null;
+      const status = updatedFields.has('status') ? structured.statusChange.to.trim() : '';
+      if (status && call.input?.status && status !== call.input.status.trim()) return null;
+      const hasSubject = updatedFields.has('subject') && typeof call.input?.subject === 'string';
+      const subject = hasSubject
+        ? call.input.subject.trim()
+        : '';
+      const hasDescription = updatedFields.has('description') && typeof call.input?.description === 'string';
+      const description = hasDescription
+        ? call.input.description.trim()
+        : '';
+      const relationValues = (field) => {
+        if (!updatedFields.has(field)) return [];
+        if (!Array.isArray(call.input?.[field])
+            || call.input[field].some((value) => typeof value !== 'string')) return null;
+        return call.input[field].map((value) => value.trim()).filter(Boolean);
+      };
+      const addBlocks = relationValues('addBlocks');
+      const addBlockedBy = relationValues('addBlockedBy');
+      if (!addBlocks || !addBlockedBy) return null;
+      if (!status && !hasSubject && !hasDescription && !addBlocks.length && !addBlockedBy.length) return null;
+      return {
+        rawIndex: resultMatch.raw.rawIndex,
+        blockIndex: call.blockIndex,
+        apply(state) {
+          if (status === 'deleted') {
+            state.delete(requestId);
+            return;
+          }
+          const current = state.get(requestId) || {
+            id: requestId,
+            subject: `Task #${requestId}`,
+            description: '',
+            status: '',
+            blocks: [],
+            blockedBy: [],
+          };
+          state.set(requestId, {
+            ...current,
+            ...(hasSubject ? { subject } : {}),
+            ...(hasDescription ? { description } : {}),
+            ...(status ? { status } : {}),
+            blocks: [...new Set([...current.blocks, ...addBlocks])].sort(),
+            blockedBy: [...new Set([...current.blockedBy, ...addBlockedBy])].sort(),
+          });
+        },
+      };
+    }
+    return null;
+  }
+
+  function stateFingerprint(state) {
+    return JSON.stringify([...state.values()].sort((left, right) => left.id.localeCompare(right.id)));
+  }
+
+  function taskReminderPreview(items) {
+    const counts = new Map();
+    for (const item of items) counts.set(item.status, (counts.get(item.status) || 0) + 1);
+    return [
+      `${items.length} task${items.length === 1 ? '' : 's'}`,
+      ...[...counts.entries()].map(([status, count]) => `${count} ${status}`),
+    ].join(' · ');
+  }
+
+  function taskReminderEvent(group, isNovel) {
+    const raws = group.entries.map((entry) => entry.raw);
+    const items = group.entries[0].items;
+    return createEvent({
+      id: `${raws[0].sessionId}:logical:${isNovel ? 'plan-update' : 'protocol-task-reminder'}:${raws[0].line}`,
+      timestamp: raws[0].timestamp,
+      turnId: raws[0].turnId,
+      kind: isNovel ? 'plan_update' : 'protocol',
+      subtype: isNovel ? 'plan_update' : 'task_reminder',
+      layer: isNovel ? 'main' : 'protocol',
+      role: 'system',
+      label: isNovel ? 'Plan update' : 'Task reminder',
+      preview: taskReminderPreview(items),
+      searchText: stringifyValue(items),
+      raws,
+      sourceOrder: raws[0].rawIndex * 100,
+      planSnapshot: items,
+    });
+  }
+
+  function buildTaskReminderProjection(raws, toolCorrelation) {
+    const transitions = [];
+    for (const [callKey, callMatch] of toolCorrelation.callByBlock) {
+      if (!toolCorrelation.uniqueCallIds.has(callMatch.call.id)) continue;
+      const transition = taskTransition(callMatch, toolCorrelation.resultByCallBlock.get(callKey));
+      if (transition) transitions.push(transition);
+    }
+    transitions.sort((left, right) => left.rawIndex - right.rawIndex || left.blockIndex - right.blockIndex);
+
+    const snapshots = raws.map(taskReminderSnapshot).filter(Boolean);
+    const groups = [];
+    for (const snapshot of snapshots) {
+      const previous = groups.at(-1);
+      const transitionBetween = previous && transitions.some((transition) => (
+        transition.rawIndex > previous.entries.at(-1).raw.rawIndex
+        && transition.rawIndex < snapshot.raw.rawIndex
+      ));
+      if (previous && previous.fingerprint === snapshot.fingerprint && !transitionBetween) {
+        previous.entries.push(snapshot);
+      } else {
+        groups.push({ fingerprint: snapshot.fingerprint, entries: [snapshot] });
+      }
+    }
+
+    const state = new Map();
+    const events = [];
+    const consumedRawIds = new Set();
+    let transitionIndex = 0;
+    for (const group of groups) {
+      const rawIndex = group.entries[0].raw.rawIndex;
+      while (transitionIndex < transitions.length && transitions[transitionIndex].rawIndex < rawIndex) {
+        transitions[transitionIndex].apply(state);
+        transitionIndex += 1;
+      }
+      const isNovel = stateFingerprint(state) !== group.fingerprint;
+      events.push(taskReminderEvent(group, isNovel));
+      for (const entry of group.entries) consumedRawIds.add(entry.raw.rawId);
+      if (isNovel) {
+        state.clear();
+        for (const item of group.entries[0].items) state.set(item.id, item);
+      }
+    }
+    return { events, consumedRawIds };
+  }
+
+  function isSlashCommandEnvelopeText(value) {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    const admittedTags = new Set(['command-name', 'command-message', 'command-args']);
+    const values = new Map();
+    let offset = 0;
+    while (offset < text.length) {
+      const whitespace = text.slice(offset).match(/^\s*/u)?.[0] || '';
+      offset += whitespace.length;
+      if (offset >= text.length) break;
+      const open = text.slice(offset).match(/^<([a-z][a-z-]*)>/u);
+      if (!open || !admittedTags.has(open[1]) || values.has(open[1])) return false;
+      const tag = open[1];
+      offset += open[0].length;
+      const close = `</${tag}>`;
+      const end = text.indexOf(close, offset);
+      if (end < 0) return false;
+      const content = text.slice(offset, end);
+      if (/[<>]/u.test(content)) return false;
+      values.set(tag, content);
+      offset = end + close.length;
+    }
+    const commandName = String(values.get('command-name') || '').trim();
+    return values.has('command-name')
+      && /^\/[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(commandName);
   }
 
   function isLocalCommandEnvelope(raw) {
@@ -298,7 +1096,7 @@ function createClaudeLogicalBuilder(deps) {
     if (block.type !== 'text') return false;
     const text = blockText(block).trim();
     if (/^<local-command-([a-z][a-z-]*)>[\s\S]*<\/local-command-\1>$/u.test(text)) return true;
-    return /^<command-name>[\s\S]*?<\/command-name>(?:\s*<command-message>[\s\S]*?<\/command-message>)?(?:\s*<command-args>[\s\S]*?<\/command-args>)?$/u.test(text);
+    return isSlashCommandEnvelopeText(text);
   }
 
   function isHumanUserRaw(raw) {
@@ -504,16 +1302,288 @@ function createClaudeLogicalBuilder(deps) {
     });
   }
 
+  function exactSourceText(value, maxLength = 16_000) {
+    return typeof value === 'string'
+      && value.length > 0
+      && value.length <= maxLength
+      && value === value.trim()
+      ? value
+      : '';
+  }
+
+  function exactObjectKeys(value, expected) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const keys = Object.keys(value).sort();
+    return keys.length === expected.length
+      && keys.every((key, index) => key === expected[index]);
+  }
+
+  function goalStatusFact(raw) {
+    if (raw.recordType !== 'attachment' || raw.payloadType !== 'goal_status') return null;
+    const attachment = raw.parsed?.attachment;
+    const condition = exactSourceText(attachment?.condition);
+    if (!condition) return { raw, condition: '', kind: 'invalid' };
+    const initialKeys = ['condition', 'met', 'sentinel', 'type'];
+    if (
+      exactObjectKeys(attachment, initialKeys)
+      && attachment.type === 'goal_status'
+      && attachment.met === false
+      && attachment.sentinel === true
+    ) {
+      return { raw, condition, kind: 'initial' };
+    }
+    const terminalKeys = ['condition', 'durationMs', 'iterations', 'met', 'reason', 'tokens', 'type'];
+    if (
+      exactObjectKeys(attachment, terminalKeys)
+      && attachment.type === 'goal_status'
+      && attachment.met === true
+      && exactSourceText(attachment.reason)
+      && Number.isSafeInteger(attachment.iterations)
+      && attachment.iterations >= 0
+      && Number.isFinite(attachment.durationMs)
+      && attachment.durationMs >= 0
+      && Number.isSafeInteger(attachment.tokens)
+      && attachment.tokens >= 0
+    ) {
+      return {
+        raw,
+        condition,
+        kind: 'terminal',
+        reason: attachment.reason,
+        iterations: attachment.iterations,
+        durationMs: attachment.durationMs,
+        tokens: attachment.tokens,
+      };
+    }
+    return { raw, condition, kind: 'invalid' };
+  }
+
+  function uniqueUuidIndex(raws) {
+    const index = new Map();
+    for (const raw of raws) {
+      if (!raw.uuid) continue;
+      index.set(raw.uuid, index.has(raw.uuid) ? null : raw);
+    }
+    return index;
+  }
+
+  function isUniqueDescendant(raw, ancestor, byUuid) {
+    if (!raw?.parentUuid || !ancestor?.uuid || !byUuid.get(ancestor.uuid)) return false;
+    const seen = new Set();
+    let parentUuid = raw.parentUuid;
+    while (parentUuid) {
+      if (parentUuid === ancestor.uuid) return true;
+      if (seen.has(parentUuid)) return false;
+      seen.add(parentUuid);
+      const parent = byUuid.get(parentUuid);
+      if (!parent) return false;
+      parentUuid = parent.parentUuid;
+    }
+    return false;
+  }
+
+  function goalHookCandidate(raw, condition) {
+    if (raw.recordType !== 'system' || raw.payloadType !== 'stop_hook_summary') return false;
+    return Array.isArray(raw.parsed?.hookInfos) && raw.parsed.hookInfos.some((info) => (
+      info?.command === condition || info?.promptText === condition
+    ));
+  }
+
+  function goalHookFact(raw, condition) {
+    if (!goalHookCandidate(raw, condition)) return null;
+    const record = raw.parsed;
+    if (
+      record.hookCount !== 1
+      || !Array.isArray(record.hookInfos)
+      || record.hookInfos.length !== 1
+      || !Array.isArray(record.hookErrors)
+      || record.hookErrors.some((error) => typeof error !== 'string')
+      || !Array.isArray(record.hookAdditionalContext)
+      || typeof record.hasOutput !== 'boolean'
+      || typeof record.preventedContinuation !== 'boolean'
+      || !exactSourceText(record.toolUseID, 512)
+    ) return null;
+    const [info] = record.hookInfos;
+    if (
+      !info
+      || info.command !== condition
+      || info.promptText !== condition
+      || !Number.isFinite(info.durationMs)
+      || info.durationMs < 0
+    ) return null;
+    return {
+      raw,
+      toolUseId: record.toolUseID,
+      durationMs: info.durationMs,
+      hasOutput: record.hasOutput,
+      preventedContinuation: record.preventedContinuation,
+      errorCount: record.hookErrors.length,
+      status: record.hookErrors.length ? 'failed' : 'success',
+    };
+  }
+
+  function goalHookErrorFact(raw, condition, hook) {
+    if (raw.recordType !== 'attachment' || raw.payloadType !== 'hook_non_blocking_error') return null;
+    const attachment = raw.parsed?.attachment;
+    if (
+      attachment?.type !== 'hook_non_blocking_error'
+      || attachment.command !== condition
+      || attachment.toolUseID !== hook.toolUseId
+      || !exactSourceText(attachment.hookEvent, 512)
+      || !exactSourceText(attachment.hookName, 512)
+      || typeof attachment.stdout !== 'string'
+      || typeof attachment.stderr !== 'string'
+      || !Number.isFinite(attachment.durationMs)
+      || attachment.durationMs < 0
+      || !Number.isSafeInteger(attachment.exitCode)
+    ) return null;
+    return raw;
+  }
+
+  function goalEvent(initial, terminal, hooks, hookErrors, provenanceRaw) {
+    const raws = [
+      initial.raw,
+      ...hooks.flatMap((hook) => [hookErrors.get(hook.raw.rawId), hook.raw]).filter(Boolean),
+      provenanceRaw,
+      terminal?.raw,
+    ].filter(Boolean);
+    const validations = hooks.map((hook) => ({
+      status: hook.status,
+      durationMs: hook.durationMs,
+      toolUseId: hook.toolUseId,
+      hasOutput: hook.hasOutput,
+      preventedContinuation: hook.preventedContinuation,
+      errorCount: hook.errorCount,
+    }));
+    const lifecycle = {
+      kind: 'goal',
+      phase: terminal ? 'terminal' : 'active',
+      condition: initial.condition,
+      initial: { met: false, sentinel: true },
+      validations,
+      terminal: terminal ? {
+        met: true,
+        reason: terminal.reason,
+        iterations: terminal.iterations,
+        durationMs: terminal.durationMs,
+        tokens: terminal.tokens,
+      } : null,
+    };
+    return createEvent({
+      id: `${initial.raw.sessionId}:logical:goal:${initial.raw.line}`,
+      timestamp: initial.raw.timestamp,
+      turnId: initial.raw.turnId,
+      kind: 'goal',
+      subtype: 'goal_status',
+      layer: 'main',
+      role: 'system',
+      label: terminal ? 'Goal complete' : 'Goal status',
+      preview: truncate(initial.condition),
+      searchText: [
+        initial.condition,
+        terminal?.reason,
+        ...validations.map((validation) => stringifyValue(validation)),
+      ].filter(Boolean).join('\n'),
+      status: terminal ? 'success' : 'in_progress',
+      raws,
+      sourceOrder: initial.raw.rawIndex * 100,
+      outputStats: terminal ? { durationMs: terminal.durationMs } : {},
+      lifecycle,
+    });
+  }
+
+  function buildGoalProjection(raws) {
+    const byUuid = uniqueUuidIndex(raws);
+    const allGoalRaws = raws.filter((raw) => raw.recordType === 'attachment' && raw.payloadType === 'goal_status');
+    const facts = allGoalRaws.map(goalStatusFact);
+    const conditions = unique(facts.map((fact) => fact.condition));
+    const events = [];
+    const consumedRawIds = new Set();
+    for (const condition of conditions) {
+      const conditionFacts = facts.filter((fact) => fact.condition === condition);
+      if (conditionFacts.some((fact) => fact.kind === 'invalid')) continue;
+      const initials = conditionFacts.filter((fact) => fact.kind === 'initial');
+      const terminals = conditionFacts.filter((fact) => fact.kind === 'terminal');
+      if (initials.length !== 1 || terminals.length > 1) continue;
+      const [initial] = initials;
+      const terminal = terminals[0] || null;
+      if (terminal && (
+        terminal.raw.rawIndex <= initial.raw.rawIndex
+        || !isUniqueDescendant(terminal.raw, initial.raw, byUuid)
+      )) continue;
+
+      const hookCandidates = raws.filter((raw) => goalHookCandidate(raw, condition) && (
+        raw.rawIndex > initial.raw.rawIndex
+        && isUniqueDescendant(raw, initial.raw, byUuid)
+        && (!terminal || raw.rawIndex < terminal.raw.rawIndex || raw.parentUuid === terminal.raw.uuid)
+      ));
+      const hooks = hookCandidates.map((raw) => goalHookFact(raw, condition));
+      if (hooks.some((hook) => !hook)) continue;
+      const scopedHookErrorRaws = raws.filter((raw) => (
+        raw.recordType === 'attachment'
+        && raw.payloadType === 'hook_non_blocking_error'
+        && raw.parsed?.attachment?.command === condition
+        && raw.rawIndex > initial.raw.rawIndex
+        && isUniqueDescendant(raw, initial.raw, byUuid)
+        && (!terminal || raw.rawIndex < terminal.raw.rawIndex)
+      ));
+      const hookErrors = new Map();
+      let invalidHookError = false;
+      for (const hook of hooks) {
+        const candidates = raws.filter((raw) => (
+          raw.parentUuid
+          && hook.raw.parentUuid === raw.uuid
+          && raw.rawIndex < hook.raw.rawIndex
+          && raw.recordType === 'attachment'
+          && raw.payloadType === 'hook_non_blocking_error'
+        ));
+        if (hook.errorCount === 0) {
+          if (candidates.length) invalidHookError = true;
+          continue;
+        }
+        if (hook.errorCount !== 1 || candidates.length !== 1) {
+          invalidHookError = true;
+          continue;
+        }
+        const errorRaw = goalHookErrorFact(candidates[0], condition, hook);
+        if (!errorRaw) invalidHookError = true;
+        else hookErrors.set(hook.raw.rawId, errorRaw);
+      }
+      const matchedHookErrorIds = new Set([...hookErrors.values()].map((raw) => raw.rawId));
+      if (
+        invalidHookError
+        || scopedHookErrorRaws.some((raw) => !matchedHookErrorIds.has(raw.rawId))
+      ) continue;
+
+      const terminalParent = terminal ? byUuid.get(terminal.raw.parentUuid) : null;
+      const provenanceRaw = terminalParent?.recordType === 'assistant' && terminalParent.attributionSkill
+        ? terminalParent
+        : null;
+      events.push(goalEvent(initial, terminal, hooks, hookErrors, provenanceRaw));
+      consumedRawIds.add(initial.raw.rawId);
+      if (terminal) consumedRawIds.add(terminal.raw.rawId);
+    }
+    return { events, consumedRawIds };
+  }
+
   function buildLogicalEvents(raws) {
     resolveTurnIds(raws);
     const events = [];
     const consumedRawIds = new Set();
     const supplementalIndex = buildSupplementalIndex(raws);
     const toolCorrelation = buildToolCorrelation(raws);
+    const asyncLifecycle = buildAsyncLifecycleCorrelation(raws, toolCorrelation);
+    const taskReminderProjection = buildTaskReminderProjection(raws, toolCorrelation);
+    const goalProjection = buildGoalProjection(raws);
     const compactByBoundary = compactGroups(raws);
     for (const group of compactByBoundary.values()) {
       for (const raw of group.slice(1)) consumedRawIds.add(raw.rawId);
     }
+    for (const rawId of asyncLifecycle.matchedNotificationRawIds) consumedRawIds.add(rawId);
+    for (const rawId of taskReminderProjection.consumedRawIds) consumedRawIds.add(rawId);
+    for (const rawId of goalProjection.consumedRawIds) consumedRawIds.add(rawId);
+    events.push(...taskReminderProjection.events);
+    events.push(...goalProjection.events);
 
     for (const raw of raws) {
       if (consumedRawIds.has(raw.rawId)) continue;
@@ -528,6 +1598,7 @@ function createClaudeLogicalBuilder(deps) {
           continue;
         }
         let projectedBlockCount = 0;
+        let ignoredWhitespaceTextCount = 0;
         raw.contentBlocks.forEach((block, blockIndex) => {
           if (block.type === 'thinking') {
             events.push(reasoningEvent(raw, block, blockIndex));
@@ -535,6 +1606,8 @@ function createClaudeLogicalBuilder(deps) {
           } else if (block.type === 'text' && blockText(block).trim()) {
             events.push(messageEvent(raw, block, blockIndex, 'assistant'));
             projectedBlockCount += 1;
+          } else if (block.type === 'text') {
+            ignoredWhitespaceTextCount += 1;
           } else if (block.type === 'tool_use') {
             const callKey = blockIdentity(raw, blockIndex);
             const callMatch = toolCorrelation.callByBlock.get(callKey);
@@ -548,18 +1621,30 @@ function createClaudeLogicalBuilder(deps) {
             const supplements = supplementalRowsForCall(
               supplementalIndex,
               raw,
-              call.id,
+              call,
+              resultMatch,
               toolCorrelation.uniqueCallIds.has(call.id),
             );
             for (const supplement of supplements) consumedRawIds.add(supplement.rawId);
-            events.push(buildToolEvent(raw, call, resultMatch, supplements));
+            events.push(buildToolEvent(
+              raw,
+              call,
+              resultMatch,
+              supplements,
+              asyncLifecycle.lifecycleByCallBlock.get(callKey) || null,
+            ));
             projectedBlockCount += 1;
           } else {
             events.push(protocolBlockEvent(raw, block, blockIndex));
             projectedBlockCount += 1;
           }
         });
-        if (!projectedBlockCount) events.push(protocolEvent(raw));
+        if (
+          !projectedBlockCount
+          && (!raw.contentBlocks.length || ignoredWhitespaceTextCount !== raw.contentBlocks.length)
+        ) {
+          events.push(protocolEvent(raw));
+        }
         continue;
       }
 

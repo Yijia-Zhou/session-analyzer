@@ -10,7 +10,11 @@ function createCodexLogicalBuilder(deps) {
     usage,
     codeMode,
     agentCoordination,
+    reviewLifecycle,
   } = deps;
+  const {
+    reviewLifecycleFromRaw,
+  } = reviewLifecycle;
   const {
     deriveCodeModeFacts,
     projectCodeModeOperations,
@@ -780,7 +784,7 @@ function createCodexLogicalBuilder(deps) {
     });
   }
 
-  function buildLifecycleEvent(raw, kind, label, severity, previewOverride = '') {
+  function buildLifecycleEvent(raw, kind, label, severity, previewOverride = '', subtype = '') {
     const tokenUsage = kind === 'usage_limit_warning' ? tokenUsageItems(raw.parsed?.payload) : [];
     const usageLimits = kind === 'usage_limit_warning' ? collectUsageLimitItems(raw.parsed?.payload) : [];
     const reachedType = kind === 'usage_limit_warning' ? rateLimitReachedType(raw.parsed?.payload) : '';
@@ -789,7 +793,7 @@ function createCodexLogicalBuilder(deps) {
       timestamp: raw.timestamp,
       turnId: raw.turnId,
       kind,
-      subtype: raw.payloadType || kind,
+      subtype: subtype || raw.payloadType || kind,
       layer: 'main',
       role: raw.role,
       label,
@@ -805,8 +809,10 @@ function createCodexLogicalBuilder(deps) {
   }
 
   function reviewLifecyclePreview(raw) {
-    const payload = raw.parsed?.payload || {};
-    if (raw.payloadType === 'entered_review_mode') {
+    const lifecycle = reviewLifecycleFromRaw(raw, { ownerId: raw.sessionId });
+    const payload = lifecycle?.payload || {};
+    if (!lifecycle) return '';
+    if (lifecycle.phase === 'entered') {
       const hint = displayValue(firstNonEmpty(payload.user_facing_hint, payload.target), 180).trim();
       return hint ? `Review started: ${hint}` : 'Review started';
     }
@@ -849,7 +855,7 @@ function createCodexLogicalBuilder(deps) {
       turnId: raw.turnId || '',
       kind: 'developer_message',
       subtype: 'developer_message',
-      layer: 'main',
+      layer: 'protocol',
       role: 'developer',
       label: 'Developer message',
       preview: truncate(raw.messageText || raw.preview || 'Developer message'),
@@ -1247,13 +1253,17 @@ function createCodexLogicalBuilder(deps) {
         consumed.add(raw.rawId);
         continue;
       }
-      if (raw.recordType === 'event_msg' && raw.payloadType === 'entered_review_mode') {
-        logicalEvents.push(buildLifecycleEvent(raw, 'review', 'Review started', 'normal', reviewLifecyclePreview(raw)));
-        consumed.add(raw.rawId);
-        continue;
-      }
-      if (raw.recordType === 'event_msg' && raw.payloadType === 'exited_review_mode') {
-        logicalEvents.push(buildLifecycleEvent(raw, 'review', 'Review completed', 'normal', reviewLifecyclePreview(raw)));
+      const reviewLifecycle = reviewLifecycleFromRaw(raw, { ownerId: raw.sessionId });
+      if (reviewLifecycle) {
+        const started = reviewLifecycle.phase === 'entered';
+        logicalEvents.push(buildLifecycleEvent(
+          raw,
+          'review',
+          started ? 'Review started' : 'Review completed',
+          'normal',
+          reviewLifecyclePreview(raw),
+          reviewLifecycle.subtype,
+        ));
         consumed.add(raw.rawId);
         continue;
       }

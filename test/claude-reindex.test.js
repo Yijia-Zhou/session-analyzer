@@ -247,6 +247,71 @@ test('Claude reindex does not reuse a changed primary transcript', async (t) => 
   assert.equal(second.totals.reusedFileCount, 0);
 });
 
+test('Claude reindex rebuilds lifecycle correlation when terminal notification evidence is appended', async (t) => {
+  const fixture = await makeFixture(t);
+  const lifecycleId = '34343434-3434-4434-8434-343434343434';
+  const stableId = '35353535-3535-4535-8535-353535353535';
+  const lifecycleFile = path.join(fixture.container, `${lifecycleId}.jsonl`);
+  await writePrimary(fixture, stableId);
+  await writeJsonl(lifecycleFile, [
+    record(lifecycleId, fixture.repoRoot, {
+      type: 'user', uuid: 'lifecycle-user', timestamp: '2026-08-01T00:10:00.000Z',
+      message: { role: 'user', content: 'Run the long command.' },
+    }),
+    record(lifecycleId, fixture.repoRoot, {
+      type: 'assistant', uuid: 'lifecycle-call', timestamp: '2026-08-01T00:10:01.000Z',
+      message: { id: 'lifecycle-message', role: 'assistant', content: [{
+        type: 'tool_use', id: 'call-background', name: 'Bash', input: { command: 'npm test' },
+      }] },
+    }),
+    record(lifecycleId, fixture.repoRoot, {
+      type: 'user', uuid: 'lifecycle-launch', timestamp: '2026-08-01T00:10:02.000Z',
+      message: { role: 'user', content: [{
+        type: 'tool_result', tool_use_id: 'call-background', content: 'Moved to background.',
+      }] },
+      toolUseResult: { backgroundTaskId: 'bg-reindex', timedOutAfterMs: 120000 },
+    }),
+  ]);
+
+  const first = await buildClaudeIndex({ repoRoot: fixture.repoRoot, claudeHome: fixture.home });
+  const firstEvent = first.sessionsById.get(analyzerSessionId(lifecycleId)).logicalEvents
+    .find((event) => event.callId === 'call-background');
+  assert.equal(firstEvent.status, 'in_progress');
+  const unchanged = await buildClaudeIndex({
+    repoRoot: fixture.repoRoot,
+    claudeHome: fixture.home,
+    previousIndex: first,
+  });
+  assert.equal(unchanged.totals.reusedFileCount, 2);
+
+  await fsp.appendFile(lifecycleFile, `${JSON.stringify(record(lifecycleId, fixture.repoRoot, {
+    type: 'queue-operation', operation: 'enqueue', timestamp: '2026-08-01T00:10:03.000Z',
+    content: '<task-notification>\n<task-id>bg-reindex</task-id>\n<tool-use-id>call-background</tool-use-id>\n<status>completed</status>\n<summary>Background command completed (exit code 9)</summary>\n</task-notification>',
+  }))}\n`, 'utf8');
+  const relationshipChanged = await buildClaudeIndex({
+    repoRoot: fixture.repoRoot,
+    claudeHome: fixture.home,
+    previousIndex: unchanged,
+  });
+  const changedEvent = relationshipChanged.sessionsById.get(analyzerSessionId(lifecycleId)).logicalEvents
+    .find((event) => event.callId === 'call-background');
+  assert.equal(
+    relationshipChanged.totals.reusedFileCount,
+    0,
+    'a changed primary invalidates the container bundle used for relationship derivation',
+  );
+  assert.equal(changedEvent.status, 'failed');
+  assert.equal(changedEvent.outputStats.exitCode, 9);
+  assert.notEqual(
+    relationshipChanged.sessionsById.get(analyzerSessionId(lifecycleId)).logicalEvents,
+    unchanged.sessionsById.get(analyzerSessionId(lifecycleId)).logicalEvents,
+  );
+  assert.notEqual(
+    relationshipChanged.sessionsById.get(analyzerSessionId(stableId)).logicalEvents,
+    unchanged.sessionsById.get(analyzerSessionId(stableId)).logicalEvents,
+  );
+});
+
 test('Claude reindex invalidates a parent/subagent bundle when nested transcript or metadata evidence changes', async (t) => {
   const fixture = await makeFixture(t);
   const id = '44444444-4444-4444-8444-444444444444';

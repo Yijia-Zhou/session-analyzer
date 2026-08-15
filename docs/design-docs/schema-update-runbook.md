@@ -4,7 +4,7 @@
 
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-06-12 / 最近更新：2026-06-12
+- Last updated: 2026-08-11 / 最近更新：2026-08-11
 - Related design docs: / 相关设计文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/codex-protocol-event-coverage.md`
@@ -18,9 +18,9 @@ Use this runbook when an upstream transcript or agent-session schema may have ch
 
 当上游 transcript 或 agent session schema 可能发生变化时，使用本运行手册。目标是产出可信来源差异报告、fixture TODO、parser 检查清单，以及文档或技术债更新。本运行手册不会自动编辑 parser 行为。
 
-For current v0.1 parser behavior, Codex upstream protocol and observed Codex transcript fixtures are authoritative. Claude Code, opencode, Crush, and future verified Hermes sources are comparative adapter references unless and until a corresponding source adapter is explicitly added.
+For current v0.1 parser behavior, Codex upstream protocol and observed Codex transcript fixtures are authoritative for the Codex adapter. An explicitly accepted adapter target has its own evidence boundary: for this compatibility line, Claude Code `2.1.220` source facts are read-only structural evidence, and behavior is accepted only when exact source shapes, sanitized synthetic fixtures, and Protocol/Raw fallback behavior agree. A local corpus observation alone is never sufficient authority.
 
-对于当前 v0.1 parser 行为，Codex upstream protocol 和已观察到的 Codex transcript fixture 具有权威性。Claude Code、opencode、Crush 以及未来已验证的 Hermes 来源只作为比较性的 adapter 参考，除非并直到明确添加对应 source adapter。
+对于当前 v0.1 parser 行为，Codex upstream protocol 和已观察到的 Codex transcript fixture 对 Codex adapter 具有权威性。明确接受的 adapter target 具有自己的证据边界：对于本兼容线，Claude Code `2.1.220` 的来源事实只作为只读结构证据，只有在精确 source shape、脱敏合成 fixture 与 Protocol/Raw fallback 行为一致时才接纳行为。单独的本地语料观察永远不足以构成权威。
 
 ## Source authority / 来源权威性
 
@@ -29,6 +29,7 @@ For current v0.1 parser behavior, Codex upstream protocol and observed Codex tra
   - Protocol docs: `https://github.com/openai/codex/blob/main/codex-rs/docs/protocol_v1.md`
 - Secondary Codex evidence: minimized local observations, generated schemas from upstream Rust types, and release notes. / Codex 次级依据：最小化后的本地观察、从上游 Rust 类型生成的 schema，以及 release notes。
 - Adapter references: Claude Code docs/SDK, opencode docs/source/schema, Crush storage evidence, and any future verified Hermes source. / Adapter 参考：Claude Code 文档/SDK、opencode 文档/源码/schema、Crush 存储依据，以及未来任何已验证 Hermes 来源。
+- Accepted Claude compatibility evidence: the pinned Claude Code `2.1.220` target shape, read-only local corpus inventory, minimized synthetic fixtures, and fail-closed fallback tests. Client `version` remains metadata; it is not inferred as a transcript schema version. / 已接受的 Claude 兼容性证据：固定的 Claude Code `2.1.220` target shape、只读本地语料 inventory、最小化合成 fixture 与 fail-closed fallback 测试。Client `version` 继续只是 metadata，不会被推断为 transcript schema version。
 - Non-authoritative clues: blog posts, forum comments, screenshots, incomplete snippets, or unverified exports. Use them only to decide what official source or local fixture should be checked next. / 非权威线索：博客文章、论坛评论、截图、不完整片段或未验证导出。只能用它们决定下一步应检查哪个官方来源或本地 fixture。
 
 Observed Codex transcript fixtures should default to repo-local synthetic fixtures. If a real transcript informs investigation, minimize and sanitize it before creating any committed fixture. Do not commit real `.codex/sessions` data, Claude transcripts, opencode or Crush databases, or exported agent sessions.
@@ -37,7 +38,7 @@ Observed Codex transcript fixtures should default to repo-local synthetic fixtur
 
 ## Review workflow / 审查流程
 
-1. Identify the source family and trust level before reading fields. For v0.1 parser decisions, keep Codex sources separate from adapter-reference sources. / 先识别 source family 和信任等级，再阅读字段。对于 v0.1 parser 决策，要把 Codex 来源与 adapter 参考来源分开。
+1. Identify the source family and trust level before reading fields. For v0.1 parser decisions, keep Codex sources separate from adapter-reference sources, and keep an explicitly accepted Claude target separate from both the local observation that motivated it and the committed synthetic proof. / 先识别 source family 和信任等级，再阅读字段。对于 v0.1 parser 决策，要把 Codex 来源与 adapter 参考来源分开；明确接受的 Claude target 还必须与触发实现的本地观察、以及提交的合成证明相互区分。
 2. Compare the source against `docs/design-docs/codex-protocol-event-coverage.md`, including its coverage matrix. / 将来源与 `docs/design-docs/codex-protocol-event-coverage.md` 对比，包括其中的覆盖矩阵。
 3. Classify the result using the decision tiers below. / 使用下面的决策分层对结果分类。
 4. Record fixture gaps as TODOs unless a minimized, sanitized fixture is already available. / 除非已有最小化、脱敏后的 fixture，否则将 fixture 缺口记录为 TODO。

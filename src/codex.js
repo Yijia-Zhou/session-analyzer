@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
+const crypto = require('node:crypto');
 const MarkdownIt = require('markdown-it');
 const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
 const {
@@ -31,6 +32,7 @@ const {
   buildCodeModePresentationIndexes,
   CODE_MODE_SCRIPT_OPERATION_KIND,
   codeModePresentationFactsForEvent,
+  codeModeRequestMatches,
   codeModeExecSource,
   codeModeRequestCatalog,
   isCodeModeScriptOperation,
@@ -40,6 +42,7 @@ const { stripAnsiSequences } = require('./shared/terminal-text');
 const { deriveCodeModeFacts } = require('./codex-code-mode-facts');
 const { codeModePresentationContextMap } = require('./codex-presentation-context');
 const { createCodexDetailBuilder } = require('./codex-detail');
+const { validateCanonicalRawEventShape } = require('./canonical-contract');
 const {
   goalResponseFromValue,
   goalSnapshotFromGoal,
@@ -50,6 +53,14 @@ const {
 } = require('./codex-goal');
 const { createCodexLogicalBuilder } = require('./codex-logical');
 const { createCodexSearch } = require('./codex-search');
+const {
+  canonicalRawRecordDigest,
+  hasCanonicalRawDigests,
+  inferCodexMaterializedForks,
+  inferEarlierBranches,
+  rawForkSegment,
+} = require('./codex-forks');
+const { appendReviewLifecycleMarker, reviewLifecycleFromRaw } = require('./review-lifecycle');
 const {
   CANONICAL_SCHEMA_VERSION,
   CODEX_SOURCE_KIND,
@@ -77,6 +88,9 @@ const RESET_TIME_CACHE_LIMIT = 512;
 const CODE_MODE_STRUCTURED_RESULT_MAX_CHARS = 32_000;
 const CODE_MODE_STRUCTURED_RESULT_MAX_DEPTH = 32;
 const CODE_MODE_STRUCTURED_RESULT_MAX_NODES = 1_000;
+const CODEX_COMPACT_SESSION_REPRESENTATION = 'codex-compact-v1';
+const CODEX_SOURCE_HYDRATION_CONCURRENCY = 2;
+const CODEX_HYDRATION_SLOT_OWNED = Symbol('codexHydrationSlotOwned');
 
 const SAME_DAY_RESET_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
   hour: 'numeric',
@@ -90,6 +104,7 @@ const FULL_RESET_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
   minute: '2-digit',
 });
 const resetTimeCache = new Map();
+const codexHydrationCoordinators = new WeakMap();
 
 let markdownRenderer = null;
 let gb18030ReverseMap = null;
@@ -221,6 +236,7 @@ const EVENT_KIND_LABELS = Object.freeze({
   user_message: 'User message',
   assistant_message: 'Assistant message',
   command: 'Command',
+  read: 'Read',
   patch: 'Patch',
   mcp_call: 'MCP call',
   js_repl: 'JS REPL',
@@ -597,6 +613,118 @@ function safeJsonParse(text) {
   } catch {
     return null;
   }
+}
+
+function hydrationCoordinatorForIndex(index) {
+  let coordinator = codexHydrationCoordinators.get(index);
+  if (!coordinator) {
+    coordinator = { active: 0, queue: [] };
+    codexHydrationCoordinators.set(index, coordinator);
+  }
+  return coordinator;
+}
+
+function acquireCodexHydrationSlot(index, signal) {
+  throwIfAborted(signal);
+  const coordinator = hydrationCoordinatorForIndex(index);
+
+  return new Promise((resolve, reject) => {
+    const waiter = {
+      signal,
+      settled: false,
+      onAbort: null,
+      resolve,
+      reject,
+    };
+
+    const settleAbort = () => {
+      if (waiter.settled) return;
+      waiter.settled = true;
+      const indexInQueue = coordinator.queue.indexOf(waiter);
+      if (indexInQueue >= 0) coordinator.queue.splice(indexInQueue, 1);
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    waiter.onAbort = settleAbort;
+
+    const grant = () => {
+      if (waiter.settled) return;
+      if (signal?.aborted) {
+        settleAbort();
+        return;
+      }
+      waiter.settled = true;
+      signal?.removeEventListener('abort', waiter.onAbort);
+      coordinator.active += 1;
+      let released = false;
+      resolve(() => {
+        if (released) return;
+        released = true;
+        coordinator.active -= 1;
+        while (coordinator.queue.length > 0) {
+          const next = coordinator.queue.shift();
+          if (next.settled) continue;
+          next.grant();
+          break;
+        }
+      });
+    };
+    waiter.grant = grant;
+
+    signal?.addEventListener('abort', waiter.onAbort, { once: true });
+    if (coordinator.active < CODEX_SOURCE_HYDRATION_CONCURRENCY) grant();
+    else coordinator.queue.push(waiter);
+  });
+}
+
+async function withCodexHydrationSlot(index, signal, task) {
+  const release = await acquireCodexHydrationSlot(index, signal);
+  try {
+    throwIfAborted(signal);
+    return await task();
+  } finally {
+    release();
+  }
+}
+
+function sourceLineDigest(line) {
+  return crypto.createHash('sha256').update(String(line), 'utf8').digest('base64url');
+}
+
+function sourceSnapshotChangedError() {
+  const error = new Error('Transcript changed while indexing; retry required');
+  error.code = 'SOURCE_CHANGED_DURING_INDEX';
+  return error;
+}
+
+async function hashFilePrefix(filePath, byteLength, signal) {
+  const expectedBytes = Number(byteLength);
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0) throw sourceSnapshotChangedError();
+  const hash = crypto.createHash('sha256');
+  let bytesRead = 0;
+  if (expectedBytes === 0) {
+    return { bytesRead, fingerprint: hash.digest('base64url') };
+  }
+  const stream = fs.createReadStream(filePath, { start: 0, end: expectedBytes - 1 });
+  try {
+    for await (const chunk of stream) {
+      throwIfAborted(signal);
+      bytesRead += chunk.length;
+      hash.update(chunk);
+    }
+  } finally {
+    stream.destroy();
+  }
+  return { bytesRead, fingerprint: hash.digest('base64url') };
+}
+
+function sameSourceStat(left, right) {
+  return Boolean(left && right
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs);
 }
 
 function ensureMarkdownRenderer() {
@@ -1270,10 +1398,10 @@ function localizedLogicalLabel(logical, locale) {
 function readSessionIndexEntry(line) {
   try {
     const item = JSON.parse(line);
-    if (!item.id) return null;
+    if (typeof item.id !== 'string' || !item.id) return null;
     return {
       id: item.id,
-      title: item.thread_name || '',
+      title: typeof item.thread_name === 'string' ? item.thread_name : '',
       updatedAt: safeIso(item.updated_at),
     };
   } catch {
@@ -1282,19 +1410,31 @@ function readSessionIndexEntry(line) {
 }
 
 function subagentSpawnSource(payload) {
-  return payload?.source?.subagent?.thread_spawn || null;
+  const value = payload?.source?.subagent?.thread_spawn;
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
 
 function forkedFromSessionIdFromMeta(payload) {
-  return payload?.forked_from_id || '';
+  return typeof payload?.forked_from_id === 'string' ? payload.forked_from_id : '';
 }
 
 function parentSessionIdFromMeta(payload) {
-  return subagentSpawnSource(payload)?.parent_thread_id || '';
+  const nestedValue = subagentSpawnSource(payload)?.parent_thread_id;
+  const nestedParent = typeof nestedValue === 'string' ? nestedValue : '';
+  if (nestedParent) return nestedParent;
+  // Top-level parent_thread_id is accepted only for sessions whose metadata
+  // already classifies them as review-derived children. A generic
+  // parent_thread_id alone must not visually demote an unknown session.
+  if (derivedSessionKindFromMeta(payload) === 'review') {
+    return typeof payload?.parent_thread_id === 'string' ? payload.parent_thread_id : '';
+  }
+  return '';
 }
 
 function agentNicknameFromMeta(payload) {
-  return payload?.agent_nickname || subagentSpawnSource(payload)?.agent_nickname || '';
+  if (typeof payload?.agent_nickname === 'string') return payload.agent_nickname;
+  const nestedNickname = subagentSpawnSource(payload)?.agent_nickname;
+  return typeof nestedNickname === 'string' ? nestedNickname : '';
 }
 
 function derivedSessionKindFromMeta(payload) {
@@ -1335,17 +1475,7 @@ function sessionReviewMarkers(session) {
   if (Array.isArray(session._reviewMarkers)) return session._reviewMarkers;
   const markers = [];
   for (const raw of session.rawEvents || []) {
-    if (raw.recordType !== 'event_msg') continue;
-    if (raw.payloadType === 'entered_review_mode') {
-      markers.push({ enteredAt: raw.timestamp, exitedAt: '' });
-    } else if (raw.payloadType === 'exited_review_mode') {
-      let marker = markers[markers.length - 1];
-      if (!marker || marker.exitedAt) {
-        marker = { enteredAt: '', exitedAt: '' };
-        markers.push(marker);
-      }
-      marker.exitedAt = raw.timestamp;
-    }
+    appendReviewLifecycleMarker(markers, raw, { ownerId: session.id });
   }
   return markers;
 }
@@ -1537,17 +1667,33 @@ async function inspectSessionFile(filePath, options = {}) {
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   const cwdSet = new Set();
+  let firstRecordSeen = false;
+  let leadingSessionId = '';
+  let leadingForkedFromSessionId = '';
 
   try {
     for await (const line of rl) {
       throwIfAborted(signal);
       if (!line.trim()) continue;
+      let record = null;
+      if (!firstRecordSeen) {
+        record = safeJsonParse(line);
+        if (record && typeof record === 'object') {
+          firstRecordSeen = true;
+        }
+        if (firstRecordSeen && record?.type === 'session_meta') {
+          leadingSessionId = typeof record.payload?.id === 'string' ? record.payload.id : '';
+          leadingForkedFromSessionId = typeof record.payload?.forked_from_id === 'string'
+            ? record.payload.forked_from_id.trim()
+            : '';
+        }
+      }
       if (!line.includes('"cwd"')) continue;
-      const record = safeJsonParse(line);
+      record ||= safeJsonParse(line);
       if (!record) continue;
       const payloadType = record.type === 'event_msg' ? record.payload?.type : '';
       const cwd = record.type === 'session_meta' || payloadType === 'session_configured' ? record.payload?.cwd : '';
-      if (cwd) {
+      if (typeof cwd === 'string' && cwd) {
         const resolvedCwd = resolveFsPath(cwd);
         cwdSet.add(resolvedCwd);
         if (repoRoot && isPathInsideOrSame(resolvedCwd, repoRoot)) {
@@ -1566,7 +1712,33 @@ async function inspectSessionFile(filePath, options = {}) {
     bytes: stat.size,
     updatedAt: safeIso(stat.mtime),
     cwdSet,
+    leadingSessionId,
+    leadingForkedFromSessionId,
   };
+}
+
+function materializedForkDigestFilePaths(candidateFiles, inspectionsByFile) {
+  const candidatesBySessionId = new Map();
+  for (const filePath of candidateFiles) {
+    const sessionId = inspectionsByFile.get(filePath)?.leadingSessionId || '';
+    if (!sessionId) continue;
+    const matches = candidatesBySessionId.get(sessionId) || [];
+    matches.push(filePath);
+    candidatesBySessionId.set(sessionId, matches);
+  }
+
+  const digestFilePaths = new Set();
+  for (const childFilePath of candidateFiles) {
+    const inspection = inspectionsByFile.get(childFilePath);
+    const childSessionId = inspection?.leadingSessionId || '';
+    const parentSessionId = inspection?.leadingForkedFromSessionId || '';
+    if (!childSessionId || !parentSessionId || childSessionId === parentSessionId) continue;
+    const parentMatches = candidatesBySessionId.get(parentSessionId) || [];
+    if (parentMatches.length !== 1) continue;
+    digestFilePaths.add(childFilePath);
+    digestFilePaths.add(parentMatches[0]);
+  }
+  return digestFilePaths;
 }
 
 async function discoverProjects({ codexHome }) {
@@ -1638,6 +1810,7 @@ function makeEmptySession(filePath, relFile, stat) {
     sourceFile: relFile,
     sourceAbsFile: filePath,
     sourceUpdatedAt: safeIso(stat.mtime),
+    sourceFingerprint: '',
     bytes: stat.size,
     lineCount: 0,
     cwdSet: new Set(),
@@ -1647,30 +1820,54 @@ function makeEmptySession(filePath, relFile, stat) {
     parentSessionId: '',
     parentSessionInferred: false,
     forkedFromSessionId: '',
+    forkStorageMode: '',
+    forkedAt: '',
+    forkPointUuid: '',
+    forkContinuationState: '',
+    forkEvidence: null,
+    inheritedContext: null,
+    supersededBySessionId: '',
+    supersededAt: '',
+    supersededReason: '',
+    _parsedAncestry: null,
     agentNickname: '',
     shell: '',
     primarySessionMetaKind: '',
     _reviewMarkers: [],
     rawEvents: [],
     logicalEvents: [],
-    counts: {
-      turns: 0,
-      messages: 0,
-      userMessages: 0,
-      assistantMessages: 0,
-      reasoning: 0,
-      toolCalls: 0,
-      failedCommands: 0,
-      issueEvents: 0,
-      patches: 0,
-      compactions: 0,
-      aborts: 0,
-      errors: 0,
-      protocol: 0,
-      planArtifacts: 0,
-      planEvents: 0,
-    },
+    counts: emptySessionCounts(),
     analysis: null,
+  };
+}
+
+function emptySessionCounts() {
+  return {
+    turns: 0,
+    messages: 0,
+    userMessages: 0,
+    assistantMessages: 0,
+    reasoning: 0,
+    toolCalls: 0,
+    failedCommands: 0,
+    issueEvents: 0,
+    patches: 0,
+    compactions: 0,
+    aborts: 0,
+    errors: 0,
+    protocol: 0,
+    planArtifacts: 0,
+    planEvents: 0,
+  };
+}
+
+function emptyAnalysisDraft() {
+  return {
+    toolUsage: new Map(),
+    commands: [],
+    failedCommands: [],
+    patchedFiles: new Map(),
+    tokenStats: { maxObserved: 0 },
   };
 }
 
@@ -3405,7 +3602,19 @@ const codexDetailBuilder = createCodexDetailBuilder({
   codeModePresentationContract,
   agentCoordination,
 });
-const { buildEventDetail } = codexDetailBuilder;
+const { buildEventDetail: buildParsedEventDetail } = codexDetailBuilder;
+
+function buildEventDetail(session, eventId, layer = 'main', options = {}) {
+  const requiresHydration = (session?.rawEvents || []).some((raw) => (
+    raw?.sourceKind === CODEX_SOURCE_KIND && !Object.hasOwn(raw, 'parsed')
+  ));
+  if (requiresHydration) {
+    const error = new Error('Compact Codex detail requires source hydration');
+    error.code = 'DETAIL_SOURCE_HYDRATION_REQUIRED';
+    throw error;
+  }
+  return buildParsedEventDetail(session, eventId, layer, options);
+}
 
 function reviewFindingMarkdown(finding, index) {
   if (!finding || typeof finding !== 'object') return '';
@@ -3452,7 +3661,8 @@ function reviewTargetLabel(target) {
 function extractReviewLifecycleSections(event, raws) {
   const sections = [];
   const primary = raws[0];
-  const payload = primary.parsed?.payload || {};
+  const lifecycle = reviewLifecycleFromRaw(primary, { ownerId: primary.sessionId });
+  const payload = lifecycle?.payload || primary.parsed?.payload || {};
   const output = payload.review_output || {};
 
   if (event.subtype === 'entered_review_mode') {
@@ -3502,6 +3712,7 @@ const codexLogicalBuilder = createCodexLogicalBuilder({
     deriveCodeModeFacts,
     projectCodeModeOperations,
   },
+  reviewLifecycle: { reviewLifecycleFromRaw },
   envelope: {
     CANONICAL_SCHEMA_VERSION,
     CODEX_SOURCE_KIND,
@@ -3622,7 +3833,7 @@ function addCounts(session, logicalEvent) {
   if (logicalEvent.kind === 'user_message') session.counts.userMessages += 1;
   if (logicalEvent.kind === 'assistant_message') session.counts.assistantMessages += 1;
   if (logicalEvent.kind === 'reasoning') session.counts.reasoning += 1;
-  if (['command', 'patch', 'mcp_call', 'web_search', 'agent_coordination', 'other_tool_call', 'code_mode_operation', 'js_repl', 'hook'].includes(logicalEvent.kind)
+  if (['command', 'read', 'patch', 'mcp_call', 'web_search', 'agent_coordination', 'other_tool_call', 'code_mode_operation', 'js_repl', 'hook'].includes(logicalEvent.kind)
       || (logicalEvent.kind === 'goal' && logicalEvent.toolName)) {
     session.counts.toolCalls += 1;
   }
@@ -3662,7 +3873,7 @@ function updateAnalysisDraft(session, event) {
   }
   if (event.kind === 'usage_limit_warning') {
     const primaryRaw = event.rawRefs?.[0]?.rawId ? session.rawEvents.find((raw) => raw.rawId === event.rawRefs[0].rawId) : null;
-    const observed = maxObservedTokenValue(primaryRaw?.parsed?.payload);
+    const observed = Number(primaryRaw?.maxObservedTokens || 0);
     if (observed > draft.tokenStats.maxObserved) draft.tokenStats.maxObserved = observed;
   }
 }
@@ -3729,11 +3940,37 @@ function inferSessionTitle(session) {
     const label = nickname ? `${baseLabel}${nickname}` : `${baseLabel} session`;
     return truncate(`${label}: ${taskPreview}`, SUBAGENT_SESSION_TITLE_LIMIT);
   }
-  return titleFromUserEvents(userEvents, Boolean(session.forkedFromSessionId)) || path.basename(session.sourceFile, '.jsonl');
+  const preferLast = Boolean(session.forkedFromSessionId && session.forkStorageMode !== 'materialized');
+  return titleFromUserEvents(userEvents, preferLast) || path.basename(session.sourceFile, '.jsonl');
+}
+
+function transcriptMetadataTitle(session) {
+  let title = '';
+  for (const raw of session.rawEvents || []) {
+    if (rawForkSegment(session, raw.rawId) === 'inherited_context') continue;
+    if (raw.recordType !== 'event_msg' || !raw.threadName) continue;
+    if (raw.payloadType === 'session_configured' && !title) title = raw.threadName;
+    if (raw.payloadType === 'thread_name_updated' && !session.parentSessionId) title = raw.threadName;
+  }
+  return title;
+}
+
+function resetOwnedRawFacts(session) {
+  session.startedAt = '';
+  session.updatedAt = '';
+  const reviewMarkers = [];
+  for (const raw of session.rawEvents || []) {
+    if (rawForkSegment(session, raw.rawId) === 'inherited_context') continue;
+    updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
+    appendReviewLifecycleMarker(reviewMarkers, raw, { ownerId: session.id });
+  }
+  session._reviewMarkers = reviewMarkers;
 }
 
 function applySessionIndexMetadata(session, sessionIndexEntry) {
-  session.title = sessionIndexEntry?.title || session.transcriptTitle;
+  session.title = typeof sessionIndexEntry?.title === 'string' && sessionIndexEntry.title
+    ? sessionIndexEntry.title
+    : session.transcriptTitle;
   session.updatedAt = session.transcriptUpdatedAt;
   if (sessionIndexEntry?.updatedAt && (!session.updatedAt || sessionIndexEntry.updatedAt > session.updatedAt)) {
     session.updatedAt = sessionIndexEntry.updatedAt;
@@ -3741,8 +3978,16 @@ function applySessionIndexMetadata(session, sessionIndexEntry) {
 }
 
 function finalizeSession(session, sessionIndexEntry) {
+  session.counts = emptySessionCounts();
+  session._turnIds = new Set();
+  session._analysisDraft = emptyAnalysisDraft();
+  resetOwnedRawFacts(session);
+  for (const event of session.logicalEvents || []) {
+    addCounts(session, event);
+    updateAnalysisDraft(session, event);
+  }
   session.counts.turns = session._turnIds.size;
-  session.transcriptTitle = session.title || inferSessionTitle(session);
+  session.transcriptTitle = transcriptMetadataTitle(session) || inferSessionTitle(session);
   session.transcriptUpdatedAt = session.updatedAt;
   applySessionIndexMetadata(session, sessionIndexEntry);
 
@@ -3767,21 +4012,281 @@ function finalizeSession(session, sessionIndexEntry) {
   return session;
 }
 
-async function parseSessionFile(filePath, relFile, repoRoot, signal) {
+function extractResidentRawFacts(raw, record) {
+  const payload = record?.payload;
+  if (!payload || typeof payload !== 'object') return;
+  if (record.type === 'session_meta' && typeof payload.id === 'string' && payload.id) {
+    raw.sessionMetaId = payload.id;
+  }
+  if (record.type === 'event_msg' && typeof payload.thread_name === 'string' && payload.thread_name) {
+    raw.threadName = payload.thread_name;
+  }
+  const reviewLifecycle = reviewLifecycleFromRaw(raw);
+  if (reviewLifecycle) {
+    raw.reviewLifecyclePhase = reviewLifecycle.phase;
+    if (typeof payload.thread_id === 'string' && payload.thread_id) raw.reviewThreadId = payload.thread_id;
+  }
+  if (record.type === 'event_msg' && payload.type === 'token_count') {
+    const observed = maxObservedTokenValue(payload);
+    if (observed > 0) raw.maxObservedTokens = observed;
+  }
+}
+
+function compactString(value) {
+  return typeof value === 'string' ? value : '';
+}
+
+function compactInteger(value, fallback = null) {
+  return Number.isSafeInteger(value) ? value : fallback;
+}
+
+function compactEmbeddedImageDescriptor(image) {
+  const descriptor = {
+    previewId: compactString(image.previewId),
+    source: {
+      file: compactString(image.source?.file),
+      line: compactInteger(image.source?.line),
+      jsonPath: (Array.isArray(image.source?.jsonPath) ? image.source.jsonPath : [])
+        .filter((part) => typeof part === 'string' || Number.isSafeInteger(part)),
+    },
+    mimeType: compactString(image.mimeType),
+    estimatedBytes: compactInteger(image.estimatedBytes, 0),
+    dedupeKey: compactString(image.dedupeKey),
+  };
+  if (typeof image.encoding === 'string' && image.encoding) descriptor.encoding = image.encoding;
+  if (typeof image.detail === 'string' && image.detail) descriptor.detail = image.detail;
+  return descriptor;
+}
+
+function compactCodexRawEvent(raw) {
+  const compact = {
+    rawId: compactString(raw.rawId),
+    sessionId: compactString(raw.sessionId),
+    sourceKind: CODEX_SOURCE_KIND,
+    line: compactInteger(raw.line),
+    source: { file: compactString(raw.source?.file), line: compactInteger(raw.source?.line) },
+    sourceLocator: raw.sourceLocator ? {
+      type: raw.sourceLocator.type === 'jsonl_line' ? 'jsonl_line' : '',
+      file: compactString(raw.sourceLocator.file),
+      line: compactInteger(raw.sourceLocator.line),
+    } : null,
+    sourceLineDigest: compactString(raw.sourceLineDigest),
+    timestamp: compactString(raw.timestamp),
+    turnId: compactString(raw.turnId),
+    recordType: compactString(raw.recordType),
+    payloadType: compactString(raw.payloadType),
+    canonicalType: compactString(raw.canonicalType),
+    role: compactString(raw.role),
+    typeKey: compactString(raw.typeKey),
+    callId: compactString(raw.callId),
+    toolName: compactString(raw.toolName),
+    status: compactString(raw.status),
+    messageText: compactString(raw.messageText),
+    searchText: compactString(raw.searchText),
+    preview: compactString(raw.preview),
+    commandText: compactString(raw.commandText),
+    stdout: compactString(raw.stdout),
+    stderr: compactString(raw.stderr),
+    aggregatedOutput: compactString(raw.aggregatedOutput),
+    exitCode: typeof raw.exitCode === 'number' || typeof raw.exitCode === 'string' ? raw.exitCode : null,
+    durationMs: Number.isFinite(raw.durationMs) ? raw.durationMs : 0,
+    touchedFiles: (Array.isArray(raw.touchedFiles) ? raw.touchedFiles : []).filter((file) => typeof file === 'string'),
+    embeddedImages: (Array.isArray(raw.embeddedImages) ? raw.embeddedImages : []).map(compactEmbeddedImageDescriptor),
+    output: compactString(raw.output),
+    rawIndex: compactInteger(raw.rawIndex),
+    sourceClientVersion: compactString(raw.sourceClientVersion),
+  };
+  if (typeof raw.sessionMetaId === 'string' && raw.sessionMetaId) compact.sessionMetaId = raw.sessionMetaId;
+  if (typeof raw.threadName === 'string' && raw.threadName) compact.threadName = raw.threadName;
+  if (typeof raw.reviewLifecyclePhase === 'string' && raw.reviewLifecyclePhase) compact.reviewLifecyclePhase = raw.reviewLifecyclePhase;
+  if (typeof raw.reviewThreadId === 'string' && raw.reviewThreadId) compact.reviewThreadId = raw.reviewThreadId;
+  if (Number.isFinite(raw.maxObservedTokens) && raw.maxObservedTokens > 0) compact.maxObservedTokens = raw.maxObservedTokens;
+  return compact;
+}
+
+const COMPACT_RAW_KEYS = new Set([
+  'aggregatedOutput', 'callId', 'canonicalType', 'commandText', 'durationMs', 'embeddedImages',
+  'exitCode', 'line', 'maxObservedTokens', 'messageText', 'output', 'payloadType', 'preview',
+  'rawId', 'rawIndex', 'recordType', 'reviewLifecyclePhase', 'reviewThreadId', 'role',
+  'searchText', 'sessionId', 'sessionMetaId', 'source', 'sourceClientVersion', 'sourceKind',
+  'sourceLineDigest', 'sourceLocator', 'status', 'stderr', 'stdout', 'threadName', 'timestamp',
+  'toolName', 'touchedFiles', 'turnId', 'typeKey',
+]);
+const COMPACT_RAW_STRING_FIELDS = [
+  'aggregatedOutput', 'callId', 'canonicalType', 'commandText', 'messageText', 'output',
+  'payloadType', 'preview', 'rawId', 'recordType', 'role', 'searchText', 'sessionId',
+  'sourceClientVersion', 'sourceKind', 'sourceLineDigest', 'status', 'stderr', 'stdout',
+  'timestamp', 'toolName', 'turnId', 'typeKey',
+];
+const COMPACT_SESSION_STRING_FIELDS = [
+  'agentNickname', 'forkContinuationState', 'forkPointUuid', 'forkStorageMode', 'forkedAt',
+  'forkedFromSessionId', 'id', 'parentSessionId', 'primarySessionMetaKind', 'projectAssociation',
+  'residentRepresentation', 'shell', 'sourceAbsFile', 'sourceClientVersion', 'sourceFile',
+  'sourceFingerprint', 'sourceKind', 'sourceSessionId', 'sourceUpdatedAt', 'startedAt',
+  'supersededAt', 'supersededBySessionId', 'supersededReason', 'title', 'transcriptTitle',
+  'transcriptUpdatedAt', 'updatedAt',
+];
+const COMPACT_LOGICAL_KEYS = new Set([
+  'channels', 'codeModeOperation', 'hasLongOutput', 'hasReadableReasoning', 'id', 'kind', 'label', 'layer',
+  'outputStats', 'preview', 'rawRefs', 'role', 'schemaVersion', 'searchText', 'severity',
+  'source', 'sourceKind', 'sourceLocator', 'status', 'subtype', 'tags', 'timestamp',
+  'tokenUsage', 'toolName', 'touchedFiles', 'turnId', 'usageLimits',
+]);
+const COMPACT_LOGICAL_STRING_FIELDS = [
+  'id', 'kind', 'label', 'layer', 'preview', 'role', 'searchText', 'severity', 'sourceKind',
+  'status', 'subtype', 'timestamp', 'toolName', 'turnId',
+];
+const COMPACT_RAW_REF_KEYS = new Set([
+  'file', 'line', 'rawId', 'sourceLocator', 'sourceRecordType', 'sourceEventType',
+]);
+const COMPACT_IMAGE_DESCRIPTOR_KEYS = new Set([
+  'dedupeKey', 'detail', 'encoding', 'estimatedBytes', 'mimeType', 'previewId', 'source',
+]);
+const COMPACT_IMAGE_SOURCE_KEYS = new Set(['file', 'jsonPath', 'line']);
+
+function isCompactSourceLocator(locator) {
+  return locator === null || (
+    locator
+    && typeof locator === 'object'
+    && !Array.isArray(locator)
+    && Object.keys(locator).length === 3
+    && locator.type === 'jsonl_line'
+    && typeof locator.file === 'string'
+    && Number.isSafeInteger(locator.line)
+    && locator.line > 0
+  );
+}
+
+function isCompactEmbeddedImageDescriptor(image) {
+  if (!image || typeof image !== 'object' || Array.isArray(image)) return false;
+  if (!Object.keys(image).every((key) => COMPACT_IMAGE_DESCRIPTOR_KEYS.has(key))) return false;
+  if (!['dedupeKey', 'mimeType', 'previewId'].every((key) => typeof image[key] === 'string')) return false;
+  if (image.detail !== undefined && typeof image.detail !== 'string') return false;
+  if (image.encoding !== undefined && typeof image.encoding !== 'string') return false;
+  if (!Number.isSafeInteger(image.estimatedBytes)) return false;
+  const source = image.source;
+  return source
+    && typeof source === 'object'
+    && !Array.isArray(source)
+    && Object.keys(source).every((key) => COMPACT_IMAGE_SOURCE_KEYS.has(key))
+    && typeof source.file === 'string'
+    && Number.isSafeInteger(source.line)
+    && Array.isArray(source.jsonPath)
+    && source.jsonPath.every((part) => typeof part === 'string' || Number.isSafeInteger(part));
+}
+
+function isReusableCompactRaw(raw) {
+  return raw
+    && typeof raw === 'object'
+    && !Array.isArray(raw)
+    && Object.keys(raw).every((key) => COMPACT_RAW_KEYS.has(key))
+    && COMPACT_RAW_STRING_FIELDS.every((key) => typeof raw[key] === 'string')
+    && raw.sourceKind === CODEX_SOURCE_KIND
+    && Number.isSafeInteger(raw.line)
+    && Number.isSafeInteger(raw.rawIndex)
+    && (raw.exitCode === null || typeof raw.exitCode === 'string' || typeof raw.exitCode === 'number')
+    && Number.isFinite(raw.durationMs)
+    && raw.source
+    && typeof raw.source === 'object'
+    && !Array.isArray(raw.source)
+    && Object.keys(raw.source).length === 2
+    && typeof raw.source.file === 'string'
+    && Number.isSafeInteger(raw.source.line)
+    && isCompactSourceLocator(raw.sourceLocator)
+    && Array.isArray(raw.touchedFiles)
+    && raw.touchedFiles.every((file) => typeof file === 'string')
+    && Array.isArray(raw.embeddedImages)
+    && raw.embeddedImages.every(isCompactEmbeddedImageDescriptor)
+    && (raw.maxObservedTokens === undefined || (Number.isFinite(raw.maxObservedTokens) && raw.maxObservedTokens > 0))
+    && (raw.sessionMetaId === undefined || typeof raw.sessionMetaId === 'string')
+    && (raw.threadName === undefined || typeof raw.threadName === 'string')
+    && (raw.reviewLifecyclePhase === undefined || typeof raw.reviewLifecyclePhase === 'string')
+    && (raw.reviewThreadId === undefined || typeof raw.reviewThreadId === 'string')
+    && !Object.hasOwn(raw, 'parsed')
+    && !Object.hasOwn(raw, 'payload');
+}
+
+function isReusableCompactRawRef(ref) {
+  return ref
+    && typeof ref === 'object'
+    && !Array.isArray(ref)
+    && Object.keys(ref).every((key) => COMPACT_RAW_REF_KEYS.has(key))
+    && typeof ref.file === 'string'
+    && Number.isSafeInteger(ref.line)
+    && typeof ref.rawId === 'string'
+    && typeof ref.sourceRecordType === 'string'
+    && typeof ref.sourceEventType === 'string'
+    && isCompactSourceLocator(ref.sourceLocator);
+}
+
+function isReusableCompactLogicalEvent(event) {
+  return event
+    && typeof event === 'object'
+    && !Array.isArray(event)
+    && Object.keys(event).every((key) => COMPACT_LOGICAL_KEYS.has(key))
+    && COMPACT_LOGICAL_STRING_FIELDS.every((key) => typeof event[key] === 'string')
+    && Array.isArray(event.rawRefs)
+    && event.rawRefs.every(isReusableCompactRawRef)
+    && (event.source == null || event.rawRefs.includes(event.source))
+    && isCompactSourceLocator(event.sourceLocator)
+    && (event.codeModeOperation === undefined
+      || (event.codeModeOperation
+        && typeof event.codeModeOperation === 'object'
+        && !Array.isArray(event.codeModeOperation)
+        && !retainsForbiddenSourceContainer(event.codeModeOperation)))
+    && !Object.hasOwn(event, 'parsed')
+    && !Object.hasOwn(event, 'payload');
+}
+
+function retainsForbiddenSourceContainer(root) {
+  const pending = [root];
+  const seen = new Set();
+  while (pending.length) {
+    const value = pending.pop();
+    if (!value || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
+    if (Object.hasOwn(value, 'parsed') || Object.hasOwn(value, 'payload')) return true;
+    if (value instanceof Map) {
+      for (const [key, entry] of value) pending.push(key, entry);
+    } else if (value instanceof Set) {
+      for (const entry of value) pending.push(entry);
+    } else {
+      for (const entry of Object.values(value)) pending.push(entry);
+    }
+  }
+  return false;
+}
+
+function isReusableCompactSession(session) {
+  return session?.residentRepresentation === CODEX_COMPACT_SESSION_REPRESENTATION
+    && COMPACT_SESSION_STRING_FIELDS.every((key) => typeof session[key] === 'string')
+    && session.cwdSet instanceof Set
+    && [...session.cwdSet].every((cwd) => typeof cwd === 'string')
+    && (!session._parsedAncestry
+      || (typeof session._parsedAncestry === 'object'
+        && !Array.isArray(session._parsedAncestry)
+        && typeof session._parsedAncestry.forkedFromSessionId === 'string'
+        && Object.keys(session._parsedAncestry).every((key) => key === 'forkedFromSessionId')))
+    && Array.isArray(session.rawEvents)
+    && session.rawEvents.every(isReusableCompactRaw)
+    && Array.isArray(session._logicalEvents || session.logicalEvents)
+    && (session._logicalEvents || session.logicalEvents).every(isReusableCompactLogicalEvent);
+}
+
+async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {}) {
   throwIfAborted(signal);
   const stat = await fsp.stat(filePath);
   const session = makeEmptySession(filePath, relFile, stat);
   let primarySessionMetaSeen = false;
-  session._turnIds = new Set();
-  session._analysisDraft = {
-    toolUsage: new Map(),
-    commands: [],
-    failedCommands: [],
-    patchedFiles: new Map(),
-    tokenStats: { maxObserved: 0 },
-  };
+  const includeCanonicalRawDigests = options.canonicalRawDigests === true;
+  const sourceHash = crypto.createHash('sha256');
+  let sourceBytesRead = 0;
 
-  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+  const stream = fs.createReadStream(filePath, stat.size > 0 ? { start: 0, end: stat.size - 1 } : { start: 0, end: 0 });
+  stream.on('data', (chunk) => {
+    sourceBytesRead += chunk.length;
+    sourceHash.update(chunk);
+  });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   let lineNumber = 0;
 
@@ -3793,62 +4298,66 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
       session.lineCount += 1;
       const record = safeJsonParse(line);
       if (!record) continue;
+      const recordType = typeof record.type === 'string' ? record.type : '';
+      const payload = record.payload && typeof record.payload === 'object' && !Array.isArray(record.payload)
+        ? record.payload
+        : {};
 
-      if (record.type === 'session_meta' && record.payload) {
+      if (recordType === 'session_meta') {
         if (!primarySessionMetaSeen) {
           primarySessionMetaSeen = true;
-          if (record.payload.id) {
-            session.id = record.payload.id;
-            session.sourceSessionId = record.payload.id;
+          if (typeof payload.id === 'string' && payload.id) {
+            session.id = payload.id;
+            session.sourceSessionId = payload.id;
           }
-          session.forkedFromSessionId = forkedFromSessionIdFromMeta(record.payload);
-          session.parentSessionId = parentSessionIdFromMeta(record.payload);
-          session.agentNickname = agentNicknameFromMeta(record.payload);
-          session.primarySessionMetaKind = derivedSessionKindFromMeta(record.payload);
+          const forkedFromSessionId = forkedFromSessionIdFromMeta(payload);
+          if (forkedFromSessionId || !session.forkedFromSessionId) {
+            session.forkedFromSessionId = forkedFromSessionId;
+          }
+          session.parentSessionId = parentSessionIdFromMeta(payload);
+          session.agentNickname = agentNicknameFromMeta(payload);
+          session.primarySessionMetaKind = derivedSessionKindFromMeta(payload);
         }
-        if (record.payload.cwd) {
-          session.cwdSet.add(record.payload.cwd);
-          if (isPathInsideOrSame(record.payload.cwd, repoRoot)) session.matchesRepo = true;
+        if (typeof payload.cwd === 'string' && payload.cwd) {
+          session.cwdSet.add(payload.cwd);
+          if (isPathInsideOrSame(payload.cwd, repoRoot)) session.matchesRepo = true;
         }
       }
-      if (record.type === 'event_msg' && record.payload?.type === 'session_configured') {
-        if (record.payload.cwd) {
-          session.cwdSet.add(record.payload.cwd);
-          if (isPathInsideOrSame(record.payload.cwd, repoRoot)) session.matchesRepo = true;
+      if (recordType === 'event_msg' && payload.type === 'session_configured') {
+        if (typeof payload.cwd === 'string' && payload.cwd) {
+          session.cwdSet.add(payload.cwd);
+          if (isPathInsideOrSame(payload.cwd, repoRoot)) session.matchesRepo = true;
         }
-        if (!session.title && record.payload.thread_name) {
-          session.title = record.payload.thread_name;
+        if (!session.title && typeof payload.thread_name === 'string' && payload.thread_name) {
+          session.title = payload.thread_name;
         }
         if (!primarySessionMetaSeen) {
-          if (!session.forkedFromSessionId) session.forkedFromSessionId = forkedFromSessionIdFromMeta(record.payload);
-          if (!session.parentSessionId) session.parentSessionId = parentSessionIdFromMeta(record.payload);
-          if (!session.agentNickname) session.agentNickname = agentNicknameFromMeta(record.payload);
-          if (!session.primarySessionMetaKind) session.primarySessionMetaKind = derivedSessionKindFromMeta(record.payload);
+          if (!session.forkedFromSessionId) session.forkedFromSessionId = forkedFromSessionIdFromMeta(payload);
+          if (!session.parentSessionId) session.parentSessionId = parentSessionIdFromMeta(payload);
+          if (!session.agentNickname) session.agentNickname = agentNicknameFromMeta(payload);
+          if (!session.primarySessionMetaKind) session.primarySessionMetaKind = derivedSessionKindFromMeta(payload);
         }
       }
-      if (!session.parentSessionId && record.type === 'event_msg' && record.payload?.type === 'thread_name_updated' && record.payload.thread_name) {
-        session.title = record.payload.thread_name;
+      if (!session.parentSessionId
+          && recordType === 'event_msg'
+          && payload.type === 'thread_name_updated'
+          && typeof payload.thread_name === 'string'
+          && payload.thread_name) {
+        session.title = payload.thread_name;
       }
       const embeddedImages = [];
+      const canonicalDigest = includeCanonicalRawDigests ? canonicalRawRecordDigest(record) : '';
       externalizeKnownImageGenerationResult(record, { file: relFile, line: lineNumber }, embeddedImages);
       externalizeEmbeddedImages(record, { file: relFile, line: lineNumber }, embeddedImages);
       const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages);
-      raw.sourceClientVersion = record.version || '';
-      if (!session.sourceClientVersion && record.version) session.sourceClientVersion = String(record.version);
-      updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
-      if (raw.recordType === 'event_msg' && raw.payloadType === 'entered_review_mode') {
-        session._reviewMarkers.push({
-          enteredAt: raw.timestamp,
-          exitedAt: '',
-        });
-      } else if (raw.recordType === 'event_msg' && raw.payloadType === 'exited_review_mode') {
-        let marker = session._reviewMarkers[session._reviewMarkers.length - 1];
-        if (!marker || marker.exitedAt) {
-          marker = { enteredAt: '', exitedAt: '' };
-          session._reviewMarkers.push(marker);
-        }
-        marker.exitedAt = raw.timestamp;
+      raw.sourceLineDigest = sourceLineDigest(line);
+      if (canonicalDigest) raw._canonicalRawDigest = canonicalDigest;
+      raw.sourceClientVersion = typeof record.version === 'string' ? record.version : '';
+      extractResidentRawFacts(raw, record);
+      if (!session.sourceClientVersion && typeof record.version === 'string' && record.version) {
+        session.sourceClientVersion = record.version;
       }
+      updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
       if (!session.shell && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
         session.shell = readXmlTag(raw.messageText, 'shell');
       }
@@ -3860,15 +4369,41 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal) {
   }
 
   throwIfAborted(signal);
-  session.logicalEvents = codexLogicalBuilder.buildLogicalEvents(session.rawEvents);
-  for (const event of session.logicalEvents) {
-    addCounts(session, event);
-    updateAnalysisDraft(session, event);
+  const sourceFingerprint = sourceHash.digest('base64url');
+  if (typeof options.beforeSourceSnapshotVerificationForTests === 'function') {
+    await options.beforeSourceSnapshotVerificationForTests({ filePath, snapshotBytes: stat.size });
+  }
+  const verified = await hashFilePrefix(filePath, stat.size, signal);
+  if (sourceBytesRead !== stat.size
+      || verified.bytesRead !== stat.size
+      || verified.fingerprint !== sourceFingerprint) {
+    throw sourceSnapshotChangedError();
+  }
+  session.sourceFingerprint = sourceFingerprint;
+  session._parsedAncestry = {
+    forkedFromSessionId: String(session.forkedFromSessionId || '').trim(),
+  };
+  session._logicalEvents = codexLogicalBuilder.buildLogicalEvents(session.rawEvents);
+  session.logicalEvents = session._logicalEvents;
+  if (includeCanonicalRawDigests) {
+    session._canonicalRawDigests = session.rawEvents.map((raw) => raw._canonicalRawDigest);
+  }
+  if (options.retainFullSourceRecordsForTests !== true) {
+    session.rawEvents = session.rawEvents.map(compactCodexRawEvent);
+    session.residentRepresentation = CODEX_COMPACT_SESSION_REPRESENTATION;
   }
   return session;
 }
 
-async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousIndex = null }) {
+async function buildIndex({
+  repoRoot,
+  codexHome,
+  onProgress,
+  signal,
+  previousIndex = null,
+  retainFullSourceRecordsForTests = false,
+  beforeSourceSnapshotVerificationForTests = null,
+}) {
   const resolvedRepo = resolveFsPath(repoRoot);
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
@@ -3889,6 +4424,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
   const sessionIndex = await readSessionIndex(resolvedCodex);
   const files = await collectJsonlFiles(sessionsRoot);
   const candidates = [];
+  const candidateInspections = new Map();
   let skippedFileCount = 0;
   let unknownFileCount = 0;
   let candidateBytes = 0;
@@ -3914,6 +4450,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
     const matchesRepo = [...inspected.cwdSet].some((cwd) => isPathInsideOrSame(cwd, resolvedRepo));
     if (matchesRepo) {
       candidates.push(filePath);
+      candidateInspections.set(filePath, inspected);
       candidateBytes += inspected.bytes;
     } else if (!hasCwd) {
       unknownFileCount += 1;
@@ -3950,6 +4487,7 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
   const previousSessionsBySource = canReusePrevious
     ? new Map(previousIndex.sessions.map((session) => [session.sourceFile, session]))
     : new Map();
+  const canonicalDigestFilePaths = materializedForkDigestFilePaths(candidates, candidateInspections);
 
   emitProgress(onProgress, {
     phase: 'parsing',
@@ -3970,34 +4508,44 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
     const relFile = path.relative(sessionsRoot, filePath);
     const previousSession = previousSessionsBySource.get(relFile);
     const currentStat = previousSession ? await fsp.stat(filePath) : null;
-    const reusable = previousSession
+    const requiresCanonicalRawDigests = canonicalDigestFilePaths.has(filePath);
+    const statReusable = previousSession
       && previousSession.bytes === currentStat.size
-      && previousSession.sourceUpdatedAt === safeIso(currentStat.mtime);
+      && previousSession.sourceUpdatedAt === safeIso(currentStat.mtime)
+      && typeof previousSession.sourceFingerprint === 'string'
+      && previousSession.sourceFingerprint.length > 0
+      && isReusableCompactSession(previousSession)
+      && (!requiresCanonicalRawDigests || hasCanonicalRawDigests(previousSession));
+    let reusable = false;
+    if (statReusable) {
+      const currentSource = await hashFilePrefix(filePath, currentStat.size, signal);
+      const verifiedStat = await fsp.stat(filePath);
+      reusable = currentSource.bytesRead === currentStat.size
+        && currentSource.fingerprint === previousSession.sourceFingerprint
+        && sameSourceStat(currentStat, verifiedStat);
+    }
     let session;
     if (reusable) {
       session = {
         ...previousSession,
         parentSessionId: previousSession.parentSessionInferred ? '' : previousSession.parentSessionId,
         parentSessionInferred: false,
-        _reviewMarkers: sessionReviewMarkers(previousSession),
+        _logicalEvents: previousSession._logicalEvents || previousSession.logicalEvents,
       };
-      const indexEntry = sessionIndex.get(session.id);
-      session.transcriptTitle ||= session.title;
-      session.transcriptUpdatedAt ??= session.updatedAt;
-      applySessionIndexMetadata(session, indexEntry);
-      session.analysis = { ...session.analysis, title: session.title };
       reusedFileCount += 1;
     } else {
-      session = await parseSessionFile(filePath, relFile, resolvedRepo, signal);
-      const indexEntry = sessionIndex.get(session.id);
-      finalizeSession(session, indexEntry);
+      session = await parseSessionFile(filePath, relFile, resolvedRepo, signal, {
+        canonicalRawDigests: requiresCanonicalRawDigests,
+        retainFullSourceRecordsForTests,
+        beforeSourceSnapshotVerificationForTests,
+      });
     }
     indexedFileCount += 1;
     parsedBytes += session.bytes;
     if (session.matchesRepo) {
       sessions.push(session);
       sessionsById.set(session.id, session);
-      logicalEventCount += session.logicalEvents.length;
+      logicalEventCount += (session._logicalEvents || session.logicalEvents).length;
       rawEventCount += session.rawEvents.length;
     }
     emitProgress(onProgress, {
@@ -4020,8 +4568,17 @@ async function buildIndex({ repoRoot, codexHome, onProgress, signal, previousInd
   }
 
   throwIfAborted(signal);
+  inferCodexMaterializedForks(sessions);
+  for (const session of sessions) {
+    throwIfAborted(signal);
+    finalizeSession(session, sessionIndex.get(session.id));
+  }
+  throwIfAborted(signal);
   inferReviewParentSessions(sessions);
-  for (const session of sessions) delete session._reviewMarkers;
+  throwIfAborted(signal);
+  inferEarlierBranches(sessions);
+  logicalEventCount = sessions.reduce((sum, session) => sum + session.logicalEvents.length, 0);
+  rawEventCount = sessions.reduce((sum, session) => sum + session.rawEvents.length, 0);
   sessions.sort((a, b) => String(b.updatedAt || b.startedAt).localeCompare(String(a.updatedAt || a.startedAt)));
   emitProgress(onProgress, {
     phase: 'complete',
@@ -4074,8 +4631,9 @@ const codexSearch = createCodexSearch({
   codeModePresentationContextMap,
   codeModeRequestCatalog,
   codeModeRequestLabel: i18n.codeModeRequestLabel,
+  codeModeRequestMatches,
+  normalizeCodeModeRequest,
   codeModeScriptOperationKind: CODE_MODE_SCRIPT_OPERATION_KIND,
-  codexSourceKind: CODEX_SOURCE_KIND,
   codexSourceLocator,
   defaultLocale: i18n.DEFAULT_LOCALE,
   derivedSessionKind,
@@ -4086,6 +4644,7 @@ const codexSearch = createCodexSearch({
   normalizeSearchPath,
   rawRecordLabel,
   rawRef,
+  rawForkSegment,
   resolveLocale: i18n.resolveLocale,
   sanitizeLogicalEnvelopeValue,
   sanitizeLogicalEventDto,
@@ -4116,6 +4675,190 @@ async function readRawLine(index, relFile, lineNumber) {
   return null;
 }
 
+function indexedSourceStaleError() {
+  const error = new Error('Indexed source changed; reindex required');
+  error.name = 'IndexedSourceStaleError';
+  error.code = 'INDEXED_SOURCE_STALE';
+  error.statusCode = 409;
+  return error;
+}
+
+function validateIndexedCodexRaw(session, raw, sessionRawIds) {
+  const expectedLocator = codexSourceLocator(raw?.source);
+  const locator = raw?.sourceLocator;
+  if (!raw
+      || !sessionRawIds.has(raw.rawId)
+      || !expectedLocator
+      || locator?.type !== expectedLocator.type
+      || locator.file !== expectedLocator.file
+      || locator.line !== expectedLocator.line
+      || !Number.isInteger(raw.source?.line)
+      || raw.source.line < 1
+      || !raw.sourceLineDigest
+      || (session.sourceFile && normalizeFsPath(raw.source.file) !== normalizeFsPath(session.sourceFile))) {
+    throw indexedSourceStaleError();
+  }
+}
+
+async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, options = {}) {
+  const { signal } = options;
+  throwIfAborted(signal);
+  const groups = new Map();
+  const sessionRawIds = new Set((session.rawEvents || []).map((raw) => raw.rawId));
+  for (const raw of raws || []) {
+    throwIfAborted(signal);
+    validateIndexedCodexRaw(session, raw, sessionRawIds);
+    const relFile = raw.source.file;
+    if (!groups.has(relFile)) groups.set(relFile, new Map());
+    const lines = groups.get(relFile);
+    if (!lines.has(raw.source.line)) lines.set(raw.source.line, []);
+    lines.get(raw.source.line).push(raw);
+  }
+
+  const rowsByRawId = new Map();
+  for (const [relFile, expectedLines] of groups) {
+    throwIfAborted(signal);
+    const target = path.resolve(index.sessionsRoot, relFile);
+    if (!isPathInsideOrSame(target, index.sessionsRoot)) throw indexedSourceStaleError();
+    await options.onFileOpen?.(relFile);
+    throwIfAborted(signal);
+    let maxLine = 0;
+    for (const line of expectedLines.keys()) maxLine = Math.max(maxLine, line);
+    const stream = fs.createReadStream(target, { encoding: 'utf8' });
+    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    const abortScan = () => {
+      rl.close();
+      stream.destroy();
+    };
+    signal?.addEventListener('abort', abortScan, { once: true });
+    let current = 0;
+    try {
+      for await (const line of rl) {
+        throwIfAborted(signal);
+        current += 1;
+        options.onSourceLine?.(relFile, current);
+        throwIfAborted(signal);
+        const expectedRaws = expectedLines.get(current);
+        if (expectedRaws) {
+          const digest = sourceLineDigest(line);
+          for (const raw of expectedRaws) {
+            if (digest !== raw.sourceLineDigest) throw indexedSourceStaleError();
+            rowsByRawId.set(raw.rawId, {
+              file: relFile,
+              line: current,
+              raw: line,
+              parsed: safeJsonParse(line),
+            });
+          }
+        }
+        if (current >= maxLine) break;
+      }
+      throwIfAborted(signal);
+    } catch (error) {
+      throwIfAborted(signal);
+      if (error.code === 'ENOENT') throw indexedSourceStaleError();
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', abortScan);
+      rl.close();
+      stream.destroy();
+    }
+  }
+
+  if (rowsByRawId.size !== (raws || []).length) throw indexedSourceStaleError();
+  return rowsByRawId;
+}
+
+async function readIndexedCodexSourceRows(index, session, raws, options = {}) {
+  if (options[CODEX_HYDRATION_SLOT_OWNED]) {
+    return readIndexedCodexSourceRowsUncoordinated(index, session, raws, options);
+  }
+  return withCodexHydrationSlot(index, options.signal, () => (
+    readIndexedCodexSourceRowsUncoordinated(index, session, raws, options)
+  ));
+}
+
+async function hydrateCodexRawEvents(index, session, raws, options = {}) {
+  const rowsByRawId = await readIndexedCodexSourceRows(index, session, raws, options);
+  return raws.map((residentRaw) => {
+    throwIfAborted(options.signal);
+    const sourceRow = rowsByRawId.get(residentRaw.rawId);
+    const record = sourceRow?.parsed;
+    if (!record) throw indexedSourceStaleError();
+    const embeddedImages = [];
+    externalizeKnownImageGenerationResult(record, residentRaw.source, embeddedImages);
+    externalizeEmbeddedImages(record, residentRaw.source, embeddedImages);
+    const hydratedRaw = makeRawEvent(
+      record,
+      residentRaw.source.line,
+      residentRaw.source.file,
+      residentRaw.sessionId,
+      embeddedImages,
+    );
+    return {
+      ...residentRaw,
+      ...hydratedRaw,
+      sourceLineDigest: residentRaw.sourceLineDigest,
+    };
+  });
+}
+
+async function buildHydratedEventDetail(index, session, eventId, layer = 'main', options = {}) {
+  return withCodexHydrationSlot(index, options.signal, async () => {
+    let raws;
+    if (layer === 'raw') {
+      const raw = session.rawEvents.find((candidate) => candidate.rawId === eventId);
+      if (!raw) return null;
+      raws = [raw];
+    } else {
+      const logical = session.logicalEvents.find((candidate) => candidate.id === eventId && candidate.layer === layer);
+      if (!logical) return null;
+      raws = rawEventsForLogicalEvent(session, logical);
+    }
+    const hydratedRaws = await hydrateCodexRawEvents(index, session, raws, {
+      ...options,
+      [CODEX_HYDRATION_SLOT_OWNED]: true,
+    });
+    throwIfAborted(options.signal);
+    return buildEventDetail({ ...session, rawEvents: hydratedRaws }, eventId, layer, options);
+  });
+}
+
+async function readIndexedCodexRawRecord(index, session, raw, options = {}) {
+  if (!options[CODEX_HYDRATION_SLOT_OWNED]) {
+    return withCodexHydrationSlot(index, options.signal, () => readIndexedCodexRawRecord(index, session, raw, {
+      ...options,
+      [CODEX_HYDRATION_SLOT_OWNED]: true,
+    }));
+  }
+  const rowsByRawId = await readIndexedCodexSourceRows(index, session, [raw], options);
+  throwIfAborted(options.signal);
+  return rowsByRawId.get(raw.rawId) || null;
+}
+
+function resolveIndexedCodexLegacyRaw(index, file, line) {
+  if (typeof file !== 'string' || !file || !Number.isSafeInteger(line) || line < 1) return null;
+  const normalizedFile = normalizeFsPath(file);
+  let match = null;
+  for (const session of index.sessions || []) {
+    if (normalizeFsPath(session.sourceFile || '') !== normalizedFile) continue;
+    const raw = session.rawEvents?.find((candidate) => (
+      candidate.source?.line === line
+      && normalizeFsPath(candidate.source?.file || '') === normalizedFile
+    ));
+    if (!raw) continue;
+    if (match) return null;
+    match = { session, raw };
+  }
+  return match;
+}
+
+async function readIndexedCodexLegacyRawLine(index, file, line, options = {}) {
+  const match = resolveIndexedCodexLegacyRaw(index, file, line);
+  if (!match) return null;
+  return readIndexedCodexRawRecord(index, match.session, match.raw, options);
+}
+
 function jsonPathValue(value, jsonPath) {
   let current = value;
   for (const key of jsonPath || []) {
@@ -4125,8 +4868,8 @@ function jsonPathValue(value, jsonPath) {
   return current;
 }
 
-function imagePreviewError(statusCode, error) {
-  return { statusCode, error };
+function imagePreviewError(statusCode, error, code = '') {
+  return { statusCode, error, ...(code ? { code } : {}) };
 }
 
 function decodeImagePreviewDataUrl(value, options = {}) {
@@ -4149,7 +4892,16 @@ function decodeImagePreviewDataUrl(value, options = {}) {
   };
 }
 
-async function readImagePreview(index, sessionId, eventId, previewId) {
+async function readImagePreview(index, sessionId, eventId, previewId, options = {}) {
+  if (!options[CODEX_HYDRATION_SLOT_OWNED]) {
+    return withCodexHydrationSlot(index, options.signal, () => readImagePreview(
+      index,
+      sessionId,
+      eventId,
+      previewId,
+      { ...options, [CODEX_HYDRATION_SLOT_OWNED]: true },
+    ));
+  }
   const session = index.sessionsById.get(sessionId);
   if (!session) return imagePreviewError(404, 'Unknown session');
   const event = session.logicalEvents.find((candidate) => candidate.id === eventId);
@@ -4165,40 +4917,57 @@ async function readImagePreview(index, sessionId, eventId, previewId) {
     break;
   }
   if (!descriptor || !selectedRaw) return imagePreviewError(404, 'Unknown image preview');
+  if (options.expectedSourceKind) {
+    validateCanonicalRawEventShape(selectedRaw, options.expectedSourceKind);
+  }
   if (descriptor.source.file !== selectedRaw.source.file || descriptor.source.line !== selectedRaw.source.line) {
-    return imagePreviewError(409, 'Image preview source is stale');
+    return imagePreviewError(409, 'Image preview source is stale', 'INDEXED_SOURCE_STALE');
   }
   let sourceRow;
   try {
-    sourceRow = await readRawLine(index, descriptor.source.file, descriptor.source.line);
+    const rowsByRawId = await readIndexedCodexSourceRows(index, session, [selectedRaw], options);
+    sourceRow = rowsByRawId.get(selectedRaw.rawId);
   } catch (error) {
-    if (error.code === 'ENOENT') return imagePreviewError(404, 'Image preview source is missing');
+    if (error.code === 'INDEXED_SOURCE_STALE') {
+      return imagePreviewError(409, 'Image preview source is stale', error.code);
+    }
     throw error;
   }
-  if (!sourceRow?.parsed) return imagePreviewError(409, 'Image preview source is stale');
+  throwIfAborted(options.signal);
+  if (!sourceRow?.parsed) return imagePreviewError(409, 'Image preview source is stale', 'INDEXED_SOURCE_STALE');
   const value = jsonPathValue(sourceRow.parsed, descriptor.source.jsonPath);
   const inspected = inspectSupportedImagePayload(value, descriptor.encoding);
   if (!inspected || inspected.mimeType !== descriptor.mimeType) {
-    return imagePreviewError(409, 'Image preview source is stale');
+    return imagePreviewError(409, 'Image preview source is stale', 'INDEXED_SOURCE_STALE');
   }
   if (inspected.encodedLength > IMAGE_PREVIEW_MAX_ENCODED_CHARS
       || inspected.estimatedBytes > IMAGE_PREVIEW_MAX_DECODED_BYTES) {
     return imagePreviewError(413, 'Image preview payload is too large');
   }
   if (imagePresentationKey(value, inspected.mimeType) !== descriptor.dedupeKey) {
-    return imagePreviewError(409, 'Image preview source is stale');
+    return imagePreviewError(409, 'Image preview source is stale', 'INDEXED_SOURCE_STALE');
   }
+  throwIfAborted(options.signal);
   if (descriptor.encoding === 'bare_base64') {
     const decoded = decodeImagePreviewDataUrl(`data:${descriptor.mimeType};base64,${inspected.payload}`);
     if (decoded.error === 'Image preview payload is malformed') return imagePreviewError(422, decoded.error);
+    throwIfAborted(options.signal);
     return decoded;
   }
-  return decodeImagePreviewDataUrl(value);
+  const decoded = decodeImagePreviewDataUrl(value);
+  throwIfAborted(options.signal);
+  return decoded;
 }
 
 // Test-only introspection for focused equivalence coverage; this is not a supported runtime API.
 const __testOnly = Object.freeze({
+  buildUncompactedIndexForDetailTests: (options) => buildIndex({
+    ...options,
+    retainFullSourceRecordsForTests: true,
+  }),
+  compactCodexRawEvent,
   formatResetTime,
+  isReusableCompactSession,
   isEcmaScriptWhitespace,
   resetTimeCacheLimit: RESET_TIME_CACHE_LIMIT,
   resetTimeCacheSize: () => resetTimeCache.size,
@@ -4208,6 +4977,7 @@ const __testOnly = Object.freeze({
 
 module.exports = {
   __testOnly,
+  buildHydratedEventDetail,
   buildIndex,
   discoverProjects,
   decodeImagePreviewDataUrl,
@@ -4219,9 +4989,15 @@ module.exports = {
   getTimeline,
   eventKindCatalog,
   readImagePreview,
+  resolveIndexedCodexLegacyRaw,
+  readIndexedCodexLegacyRawLine,
+  readIndexedCodexRawRecord,
+  readIndexedCodexSourceRows,
   readRawLine,
+  sourceLineDigest,
   normalizeFsPath,
   isPathInsideOrSame,
   matchTerms,
   normalizeCodeModeRequest,
+  query: codexSearch,
 };

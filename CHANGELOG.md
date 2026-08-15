@@ -2,7 +2,41 @@
 
 ## Unreleased / 未发布
 
-No unreleased changes. / 暂无未发布变更。
+### English
+
+### 中文
+
+## 0.1.4 - 2026-08-15
+
+### English
+
+- Added empirical capacity guidance for large matching transcript histories, including a stable non-blocking `[SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY]` warning at 800 MiB candidate bytes, temporary Node heap recovery instructions specifically for V8 heap exhaustion, and aggregate-only `--log-dir` capacity diagnostics with current and peak process memory.
+- Significantly reduced resident memory for large Codex indexes with compact resident projections and source-backed detail hydration, while hardening exact transcript fingerprinting and source-snapshot/reindex freshness.
+- Recognized copied-prefix Codex Materialized Fork Sessions, excluded inherited history from continuation-owned titles, Logical metrics, and search while preserving physical Raw records, and folded uniquely inactive sources as Earlier Branches with mixed related-session hierarchy and Raw segment headings.
+- Unified inherited-context parent navigation across Codex materialized and Claude pointer forks with Main-first, Raw-fallback fork-point targets; a targetless source keeps the current search, filters, and layer during ordinary parent navigation.
+- Promoted direct Claude Code `Read` calls from `other_tool_call` to an independent `read` kind with dedicated filtering, counts, localized labels, structured detail routing, and folding-rule compatibility.
+- Added runtime Transcript Source switching: `POST /api/source` changes the active Codex/Claude Code source and optional source home directories without restarting the server; the Select project chooser exposes a source switcher with custom home directories, and stale project discovery is rejected through source revisions.
+- Added per-source last-selected repository storage with a one-time migration of the legacy Codex key, and made project-selection copy source-neutral (`sourceHome` instead of `codexHome`).
+- Added source-switch and race-regression coverage across backend, browser, and documentation.
+- Hardened Claude Code 2.1.220 compatibility for order-independent slash-command envelopes, direct asynchronous Workflow lifecycle evidence and structured detail, fail-closed terminal correlation, forked-skill and workflow-agent Derived Sessions, source-backed Goal lifecycle and `attributionSkill` provenance, and the distinction between Loop wakeups and Cron deletion.
+- Moved unwrapped Codex developer messages from the Main timeline to the protocol layer, keeping their `Possible hook output` tag and raw traceability.
+- Normalized Codex review lifecycle from both the legacy dedicated `entered_review_mode` / `exited_review_mode` rows and the canonical completed `item_completed` TurnItem envelope (`EnteredReviewMode` / `ExitedReviewMode`), restoring Main timeline review start/end events and structured review detail for current transcripts.
+- Review-derived sessions now accept the top-level `parent_thread_id` as explicit parent evidence before temporal inference, so review children group under the correct parent even when parent lifecycle markers use the canonical envelope.
+
+### 中文
+
+- 新增针对大型匹配 transcript 历史的经验性容量指引：在 candidate bytes 达到 800 MiB 时输出稳定、非阻塞的 `[SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY]` 警告；仅针对 V8 heap exhaustion 提供临时增大 Node heap 的恢复说明；并通过 `--log-dir` 提供只含聚合数据、包含当前与峰值进程内存的容量诊断。
+- 通过紧凑的常驻索引投影与来源支撑的详情 hydration，显著降低大型 Codex 索引的常驻内存，并加固精确 transcript 指纹以及来源快照／重建索引 freshness。
+- 识别复制前缀式 Codex 物化式分叉会话，在保留完整物理 Raw Record 的同时，从续写自有标题、逻辑指标与搜索中排除继承历史，并将唯一且不再活跃的来源会话折叠为较早分支，同时支持混合相关会话层级与 Raw 区段标题。
+- 统一 Codex 物化式分叉与 Claude 指针式分叉的继承上下文父会话导航，优先定位 Main 分叉点、否则回退 Raw；若某个来源没有精确 target，普通父会话导航会保留当前搜索、筛选与层级。
+- 将 Claude Code 的直接 `Read` 调用从 `other_tool_call` 提升为独立的 `read` kind，并补齐专属筛选、计数、本地化标签、结构化详情路由与折叠规则兼容。
+- 新增运行期转录来源切换：`POST /api/source` 可在不重启服务器的情况下切换当前 Codex/Claude Code 来源及可选来源 home 目录；Select project 选择界面提供来源切换与自定义目录入口，并通过 source revision 拒绝过期的项目发现结果。
+- 新增按来源区分的“最后选择的仓库”存储，并一次性迁移旧 Codex key；项目选择文案改为来源中立（使用 `sourceHome` 而非 `codexHome`）。
+- 新增覆盖后端、浏览器与文档的来源切换及竞态回归测试。
+- 加固 Claude Code 2.1.220 兼容性：支持顺序无关的 slash-command envelope、direct 异步 Workflow 生命周期证据与结构化详情、fail-closed 终态关联、forked-skill 与 workflow-agent Derived Session、来源驱动的 Goal 生命周期与 `attributionSkill` provenance，以及 Loop wakeup 与 Cron 删除的区分。
+- 将未包装的 Codex developer message 从 Main timeline 移到 protocol 层，保留 `Possible hook output` tag 与原始可追溯性。
+- 统一归一化 Codex review 生命周期：旧专用 `entered_review_mode` / `exited_review_mode` 记录与 canonical 的 `item_completed` TurnItem envelope（`EnteredReviewMode` / `ExitedReviewMode`）现在映射为相同的 review 事件，恢复父会话 Main timeline 的 Review 开始/结束与结构化详情。
+- 被判定为 review 的子会话现在会在时间推断之前接受顶层 `parent_thread_id` 作为显式父会话证据，即使父会话生命周期标记使用 canonical envelope，也能正确归组到父会话下。
 
 ## 0.1.3 - 2026-08-03
 

@@ -3,11 +3,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { buildEventDetail, buildIndex, getTimeline } = require('../src/codex');
+const { __testOnly, buildEventDetail, getTimeline } = require('../src/codex');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
+const buildIndex = __testOnly.buildUncompactedIndexForDetailTests;
 const legacyFixtureSourceFile = path.join(
   '2026',
   '04',

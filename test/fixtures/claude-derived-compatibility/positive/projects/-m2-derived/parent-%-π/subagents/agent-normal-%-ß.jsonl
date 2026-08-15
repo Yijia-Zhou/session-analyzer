@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"parent-%-π","agentId":"normal-%-ß","cwd":"__REPO_ROOT__","version":"2.1.220","uuid":"normal-user","timestamp":"2026-08-10T12:00:08.000Z","message":{"role":"user","content":"Inspect the ordinary child."}}
+{"type":"assistant","sessionId":"parent-%-π","agentId":"normal-%-ß","cwd":"__REPO_ROOT__","version":"2.1.220","uuid":"normal-assistant","timestamp":"2026-08-10T12:00:09.000Z","message":{"id":"normal-message","role":"assistant","content":[{"type":"text","text":"Ordinary child complete."}]}}

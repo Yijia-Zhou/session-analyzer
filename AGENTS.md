@@ -48,8 +48,15 @@ When changing product behavior or repository structure:
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Transcript source adapters: `docs/design-docs/transcript-source-adapters.md`
 - Active plans:
-  - None.
+  - `docs/exec-plans/active/2026-08-15-v0.1.4-release.md`
 - Completed plans:
+  - `docs/exec-plans/completed/2026-08-14-source-neutral-runtime-cleanup.md`
+  - `docs/exec-plans/completed/2026-08-13-memory-runtime-reliability-review-followup.md`
+  - `docs/exec-plans/completed/2026-08-12-index-memory-and-runtime-reliability.md`
+  - `docs/exec-plans/completed/2026-08-10-claude-compatibility-hardening.md`
+  - `docs/exec-plans/completed/2026-08-09-codex-materialized-fork-ownership.md`
+  - `docs/exec-plans/completed/2026-08-07-source-switch-frontend.md`
+  - `docs/exec-plans/completed/2026-08-07-source-runtime-switch.md`
   - `docs/exec-plans/completed/2026-08-02-v0.1.3-release.md`
   - `docs/exec-plans/completed/2026-08-02-npm-trusted-publishing.md`
   - `docs/exec-plans/completed/2026-08-02-v0.1.3-review-followups.md`

@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const { sanitizeLogicalDetailValue } = require('./shared/logical-detail-sanitizer');
 
 const CANONICAL_SCHEMA_VERSION = 1;
@@ -123,6 +124,13 @@ function claudeRawRef(raw) {
 function toolInputFiles(name, input) {
   if (!input || typeof input !== 'object') return [];
   const normalized = String(name || '').toLowerCase();
+  if (normalized === 'read') {
+    return [
+      input.file_path,
+      input.filePath,
+      input.path,
+    ].filter((value) => typeof value === 'string' && value.trim());
+  }
   if (!['write', 'edit', 'multiedit', 'notebookedit'].includes(normalized)) return [];
   return [
     input.file_path,
@@ -140,10 +148,10 @@ function commandTextFromToolUse(block) {
   return typeof command === 'string' ? command : '';
 }
 
-function toolResultStatus(record, block) {
-  if (record?.toolDenialKind) return 'declined';
+function toolResultStatus(record, block, ownsRecordResultMetadata) {
+  if (ownsRecordResultMetadata && record?.toolDenialKind) return 'declined';
   if (block?.is_error === true) return 'failed';
-  if (record?.toolUseResult?.interrupted === true) return 'failed';
+  if (ownsRecordResultMetadata && record?.toolUseResult?.interrupted === true) return 'failed';
   return block ? 'success' : '';
 }
 
@@ -162,9 +170,36 @@ function rawPreview(record, blocks, payloadType) {
   return truncate(collectText(record, 4000) || payloadType || record.type);
 }
 
+function exactPlanFingerprint(value) {
+  if (typeof value !== 'string') return '';
+  return `${value.length}:${crypto.createHash('sha256').update(value, 'utf16le').digest('hex')}`;
+}
+
+function exactAttributionSkill(value) {
+  if (typeof value !== 'string' || !value || value !== value.trim() || value.length > 512) return '';
+  return value;
+}
+
+function exactPlanEvidence(record) {
+  if (!isPlainObject(record)) return null;
+  const requestByBlock = {};
+  normalizedContentBlocks(record).forEach((block, blockIndex) => {
+    if (block.type !== 'tool_use' || block.name !== 'ExitPlanMode') return;
+    const fingerprint = exactPlanFingerprint(block.input?.plan);
+    if (fingerprint) requestByBlock[blockIndex] = fingerprint;
+  });
+  const result = exactPlanFingerprint(record.toolUseResult?.plan);
+  if (!Object.keys(requestByBlock).length && !result) return null;
+  return Object.freeze({
+    requestByBlock: Object.freeze(requestByBlock),
+    result,
+  });
+}
+
 function makeClaudeRawEvent(record, lineNumber, relFile, analyzerSessionId, sourceSessionId, options = {}) {
   const parseError = String(options.parseError || '');
   const rawText = parseError ? String(options.rawText || '').slice(0, TEXT_LIMIT) : '';
+  const planEvidence = parseError ? null : exactPlanEvidence(record);
   const parsed = parseError ? null : sanitizeLogicalDetailValue(record);
   record = parsed;
   const hasPlainRecord = isPlainObject(record);
@@ -185,15 +220,17 @@ function makeClaudeRawEvent(record, lineNumber, relFile, analyzerSessionId, sour
       input: block.input && typeof block.input === 'object' ? block.input : {},
       caller: block.caller && typeof block.caller === 'object' ? block.caller : null,
     }));
-  const toolResults = blocks
+  const toolResultBlocks = blocks
     .map((block, blockIndex) => ({ block, blockIndex }))
-    .filter(({ block }) => block.type === 'tool_result')
+    .filter(({ block }) => block.type === 'tool_result');
+  const ownsRecordResultMetadata = toolResultBlocks.length === 1;
+  const toolResults = toolResultBlocks
     .map(({ block, blockIndex }) => ({
       blockIndex,
       id: String(block.tool_use_id || ''),
       content: block.content,
       isError: block.is_error === true,
-      status: toolResultStatus(record, block),
+      status: toolResultStatus(record, block, ownsRecordResultMetadata),
     }));
   const firstToolCall = toolCalls[0] || null;
   const firstToolResult = toolResults[0] || null;
@@ -206,6 +243,9 @@ function makeClaudeRawEvent(record, lineNumber, relFile, analyzerSessionId, sour
   const source = { file: relFile, line: lineNumber };
   const touchedFiles = [...new Set(toolCalls.flatMap((call) => toolInputFiles(call.name, call.input)))];
   const commandText = firstToolCall ? commandTextFromToolUse(blocks[firstToolCall.blockIndex]) : '';
+  const attributionSkill = record.type === 'assistant'
+    ? exactAttributionSkill(record.attributionSkill)
+    : '';
   const structuredResult = record.toolUseResult && typeof record.toolUseResult === 'object'
     ? record.toolUseResult
     : null;
@@ -231,9 +271,10 @@ function makeClaudeRawEvent(record, lineNumber, relFile, analyzerSessionId, sour
     record.type === 'custom-title' ? String(record.customTitle || '') : '',
     record.type === 'ai-title' ? String(record.aiTitle || '') : '',
     record.type === 'agent-name' ? String(record.agentName || '') : '',
+    attributionSkill,
   ].filter(Boolean).join('\n').slice(0, TEXT_LIMIT);
 
-  return {
+  const raw = {
     rawId: `${analyzerSessionId}:raw:${lineNumber}`,
     sessionId: analyzerSessionId,
     sourceSessionId,
@@ -255,9 +296,10 @@ function makeClaudeRawEvent(record, lineNumber, relFile, analyzerSessionId, sour
     role: String(record.message?.role || (record.type === 'assistant' ? 'assistant' : record.type === 'user' ? 'user' : 'system')),
     typeKey: `${record.type || ''}:${payloadType}`,
     messageId: String(record.message?.id || ''),
-    model: String(record.message?.model || ''),
-    provider: String(record.message?.provider || ''),
-    effort: String(record.effort || ''),
+    model: String(record.message?.model || record.model || ''),
+    provider: String(record.message?.provider || record.provider || ''),
+    effort: String(record.effort || record.message?.effort || ''),
+    attributionSkill,
     callId: String(firstToolCall?.id || firstToolResult?.id || ''),
     toolName: String(firstToolCall?.name || ''),
     status: String(firstToolResult?.status || ''),
@@ -273,14 +315,14 @@ function makeClaudeRawEvent(record, lineNumber, relFile, analyzerSessionId, sour
     stderr,
     aggregatedOutput: toolResultText,
     output: toolResultText,
-    exitCode: Number.isFinite(Number(structuredResult?.exitCode))
+    exitCode: ownsRecordResultMetadata && Number.isFinite(Number(structuredResult?.exitCode))
       ? Number(structuredResult.exitCode)
-      : Number.isFinite(Number(structuredResult?.exit_code))
+      : ownsRecordResultMetadata && Number.isFinite(Number(structuredResult?.exit_code))
         ? Number(structuredResult.exit_code)
         : null,
-    durationMs: Number.isFinite(Number(structuredResult?.durationMs))
+    durationMs: ownsRecordResultMetadata && Number.isFinite(Number(structuredResult?.durationMs))
       ? Number(structuredResult.durationMs)
-      : Number.isFinite(Number(structuredResult?.duration_ms))
+      : ownsRecordResultMetadata && Number.isFinite(Number(structuredResult?.duration_ms))
         ? Number(structuredResult.duration_ms)
         : 0,
     touchedFiles,
@@ -297,12 +339,19 @@ function makeClaudeRawEvent(record, lineNumber, relFile, analyzerSessionId, sour
     isSidechain: record.isSidechain === true,
     interruptedByShutdown: record.interruptedByShutdown === true,
     originKind: String(record.origin?.kind || ''),
+    promptSource: String(record.promptSource || ''),
     agentId: String(record.agentId || record.toolUseResult?.agentId || ''),
     usage: record.message?.usage && typeof record.message.usage === 'object' ? record.message.usage : null,
     parseError,
     rawText,
     parsed: parseError ? null : parsed,
   };
+  if (planEvidence) {
+    Object.defineProperty(raw, '_exactPlanEvidence', {
+      value: planEvidence,
+    });
+  }
+  return raw;
 }
 
 function rawEventsForLogicalEvent(session, event) {

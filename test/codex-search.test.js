@@ -39,6 +39,7 @@ function rawEvent(id, options = {}) {
   const line = options.line || 1;
   return {
     rawId: id,
+    sourceKind: 'codex',
     timestamp: options.timestamp || '2026-06-29T10:00:00.000Z',
     turnId: '',
     recordType: 'event_msg',
@@ -58,6 +59,7 @@ function rawEvent(id, options = {}) {
 function session(id, logicalEvents, rawEvents = []) {
   return {
     id,
+    sourceKind: 'codex',
     title: `Session ${id}`,
     sourceFile: `${id}.jsonl`,
     bytes: 100,
@@ -69,7 +71,11 @@ function session(id, logicalEvents, rawEvents = []) {
     agentNickname: '',
     startedAt: '2026-06-29T08:00:00.000Z',
     updatedAt: logicalEvents.at(-1)?.timestamp || '2026-06-29T08:00:00.000Z',
-    counts: { failedCommands: logicalEvents.filter((event) => event.status === 'failed').length },
+    counts: {
+      messages: 0,
+      toolCalls: logicalEvents.length,
+      failedCommands: logicalEvents.filter((event) => event.status === 'failed').length,
+    },
     analysis: { toolUsage: [], failedCommands: [], patchedFiles: [], protocolStats: [] },
     logicalEvents,
     rawEvents,
@@ -142,6 +148,7 @@ function searchIndex() {
   ]);
   const sessions = [first, second, split];
   return {
+    sourceKind: 'codex',
     repoRoot: 'G:\\repo',
     sessions,
     sessionsById: new Map(sessions.map((item) => [item.id, item])),
@@ -234,6 +241,7 @@ test('Code Mode request filters are exact Main-layer presentation facts with sam
     requestEvidence: 'declared_source',
   });
   const index = {
+    sourceKind: 'codex',
     repoRoot: 'G:\\repo',
     sessions: [item],
     sessionsById: new Map([[item.id, item]]),

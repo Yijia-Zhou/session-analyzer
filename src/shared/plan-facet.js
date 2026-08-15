@@ -29,6 +29,9 @@
     if (kind === 'other_tool_call' && subtype === 'update_plan' && toolName === 'update_plan') {
       return PLAN_UPDATE_FACET;
     }
+    if (kind === 'other_tool_call' && subtype === toolName && ['TaskCreate', 'TaskUpdate'].includes(toolName)) {
+      return PLAN_UPDATE_FACET;
+    }
     if (kind === 'plan_update' && ['plan_update', 'plan_delta'].includes(subtype) && !toolName) {
       return PLAN_UPDATE_FACET;
     }

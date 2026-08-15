@@ -5,17 +5,19 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const http = require('node:http');
 const i18n = require('../src/shared/i18n');
-const { buildIndex, getTimeline, buildEventDetail, eventKindCatalog } = require('../src/codex');
+const { __testOnly, getTimeline, buildEventDetail, eventKindCatalog } = require('../src/codex');
 const { createServer } = require('../server');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const fixtureRepo = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
+const buildIndex = __testOnly.buildUncompactedIndexForDetailTests;
 const allowedZhTerms = new Set([
   'agents.md',
   'api',
   'chatgpt',
   'cli',
+  'claude',
   'codex',
   'css',
   'dom',
@@ -120,6 +122,8 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.t('zh-CN', 'ui', 'mainTimeline'), '主时间线');
   assert.equal(i18n.displayStateLabel('expanded', 'zh-CN'), '展开');
   assert.equal(i18n.eventKindLabel('command', 'zh-CN'), '命令');
+  assert.equal(i18n.eventKindLabel('read', 'en'), 'Read');
+  assert.equal(i18n.eventKindLabel('read', 'zh-CN'), '文件读取');
   assert.equal(i18n.eventKindLabel('goal', 'zh-CN'), '目标');
   assert.equal(i18n.eventKindLabel('developer_message', 'zh-CN'), '开发者消息');
   assert.equal(i18n.eventKindLabel('code_mode_operation', 'en'), 'Code Mode tool call');

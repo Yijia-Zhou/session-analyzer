@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"parent-%-π","agentId":"workflow-%-two","cwd":"__REPO_ROOT__","version":"2.1.220","uuid":"workflow-two-user","timestamp":"2026-08-10T12:00:12.000Z","message":{"role":"user","content":"Run the second workflow worker."}}
+{"type":"assistant","sessionId":"parent-%-π","agentId":"workflow-%-two","cwd":"__REPO_ROOT__","version":"2.1.220","uuid":"workflow-two-assistant","timestamp":"2026-08-10T12:00:13.000Z","message":{"id":"workflow-two-message","role":"assistant","content":[{"type":"text","text":"Second worker complete."}]}}

@@ -40,7 +40,7 @@ const SEARCH_HIGHLIGHT_INPUT_DELAY_MS = 300;
 const PROJECT_REFRESH_RETRY_DELAYS_MS = [400, 800, 1600];
 const DETAIL_VIEW_ORIGIN_SEARCH = 'searchTransient';
 const DETAIL_VIEW_ORIGIN_USER = 'userConfirmed';
-const REPO_STORAGE_KEY = 'sessionAnalyzer.repoRoot';
+const LEGACY_REPO_STORAGE_KEY = 'sessionAnalyzer.repoRoot';
 const CUSTOM_PROFILES_KEY = 'sessionAnalyzer.customProfiles';
 const OVERRIDES_KEY = 'sessionAnalyzer.overrides';
 const LOCALE_STORAGE_KEY = 'sessionAnalyzer.locale';
@@ -58,6 +58,7 @@ const KIND_LABELS = {
   user_message: 'User message',
   assistant_message: 'Assistant message',
   command: 'Command',
+  read: 'Read',
   patch: 'Patch',
   mcp_call: 'MCP call',
   js_repl: 'JS REPL',
@@ -114,6 +115,14 @@ function searchStatusLabel(value) {
 const state = {
   locale: browserLocale(),
   sourceKind: 'codex',
+  sourceHome: '',
+  sourceConfigs: {},
+  sourceOptions: [],
+  supportedSources: [],
+  projectDiscoveryLoading: false,
+  pendingSourceAction: null,
+  sourceSwitchBusy: false,
+  homeEditorDirty: false,
   sessions: [],
   expandedSessionGroups: new Set(),
   projectResults: [],
@@ -157,6 +166,7 @@ const state = {
   timelineSearchMatchCount: 0,
   timelineSearchEventCount: 0,
   currentEvents: [],
+  navigationEventReveal: null,
   temporaryEventReveal: null,
   contextReveal: null,
   contextRevealPending: null,
@@ -264,6 +274,16 @@ const el = {
   projectList: document.getElementById('projectList'),
   projectChooserTitle: document.querySelector('.projectChooserHeader h2'),
   projectChooserDescription: document.querySelector('.projectChooserHeader p'),
+  projectSourceSwitch: document.getElementById('projectSourceSwitch'),
+  projectSourceKind: document.getElementById('projectSourceKind'),
+  projectSourceHome: document.getElementById('projectSourceHome'),
+  projectSourceAction: document.getElementById('projectSourceAction'),
+  projectSourceCancel: document.getElementById('projectSourceCancel'),
+  projectSourceConfirm: document.getElementById('projectSourceConfirm'),
+  projectHomeEditor: document.getElementById('projectHomeEditor'),
+  projectHomeFields: document.getElementById('projectHomeFields'),
+  projectHomeApplyBtn: document.getElementById('projectHomeApplyBtn'),
+  projectSourceError: document.getElementById('projectSourceError'),
 };
 
 let profileInfoSlot = null;
@@ -354,6 +374,9 @@ function applyStaticLocale() {
   setText(document.querySelector('.projectChooserHeader h2'), t('selectProject'));
   setText(document.querySelector('.projectChooserHeader p'), t('chooseProject'));
   setText(el.projectCancelBtn, t('cancelIndexing'));
+  setText(document.querySelector('#projectHomeEditor summary'), t('customHomeDirectories'));
+  setText(el.projectHomeApplyBtn, t('applyHomeDirectories'));
+  setText(el.projectSourceCancel, t('cancelSwitch'));
   setText(document.querySelector('.sessionsPane .sessionListHeader h2'), t('sessions'));
   setText(document.querySelector('.sortControl .srOnly'), t('sort'));
   if (el.projectRefreshBtn) {
@@ -383,6 +406,7 @@ function applyStaticLocale() {
     setText(detailTitle, t('eventDetail'));
     setText(detailText, t('clickTimelineEvent'));
   }
+  renderSourceSwitch();
   updateProjectChooserHeader();
   updateProjectSwitchControl();
 }
@@ -418,6 +442,7 @@ function api(path, options = {}) {
     if (!res.ok) {
       const error = new Error(body.error || `HTTP ${res.status}`);
       error.status = res.status;
+      error.code = body.code;
       error.details = body.details;
       throw error;
     }
@@ -477,6 +502,334 @@ function updateProjectChooserHeader() {
   }
 }
 
+function sourceConfigBusy() {
+  return Boolean(
+    state.projectLoadingRoot
+    || state.projectJobId
+    || state.projectRefreshing
+    || state.projectRefreshJobId
+    || state.projectReturning
+    || state.sourceSwitchBusy,
+  );
+}
+
+function renderSourceSwitch() {
+  if (!el.projectSourceSwitch) return;
+  const sourceKinds = supportedSourceKindsForUi();
+  const hasConfig = Boolean(state.sourceHome || sourceKinds.length);
+  el.projectSourceSwitch.hidden = !state.selectingProject || !hasConfig;
+  if (el.projectSourceSwitch.hidden) return;
+  const configBusy = sourceConfigBusy();
+  el.projectSourceSwitch.dataset.source = state.sourceKind;
+  el.projectSourceSwitch.dataset.pending = state.pendingSourceAction || '';
+  const other = otherSourceKind();
+  const otherLabel = sourceKindLabel(other);
+  const emptyState = !state.projects.length && !state.projectLoadingRoot && !state.projectDiscoveryLoading;
+  if (el.projectSourceKind) {
+    el.projectSourceKind.textContent = emptyState
+      ? t('noProjectsHint', { source: otherLabel })
+      : `${t('transcriptSource')}: ${sourceKindLabel(state.sourceKind)}`;
+    const summary = el.projectSourceKind.parentElement;
+    if (summary) {
+      if (emptyState) summary.setAttribute('data-empty', 'true');
+      else summary.removeAttribute('data-empty');
+    }
+  }
+  if (el.projectSourceHome) {
+    el.projectSourceHome.textContent = emptyState ? '' : state.sourceHome;
+  }
+  if (el.projectSourceAction) {
+    el.projectSourceAction.hidden = false;
+    el.projectSourceAction.textContent = state.pendingSourceAction === 'switch'
+      ? t('confirmSwitchToSource', { source: otherLabel })
+      : state.pendingSourceAction === 'home'
+        ? t('confirmHomeChange')
+        : t('switchToSource', { source: otherLabel });
+    el.projectSourceAction.disabled = configBusy;
+  }
+  if (el.projectSourceCancel) el.projectSourceCancel.hidden = !state.pendingSourceAction;
+  if (el.projectSourceConfirm) {
+    const confirmText = state.pendingSourceAction === 'switch' && state.repoRoot
+      ? t('switchClosesProject', { source: otherLabel, root: state.repoRoot })
+      : state.pendingSourceAction === 'home' && state.repoRoot
+        ? t('homeChangeClosesProject', { root: state.repoRoot })
+        : '';
+    el.projectSourceConfirm.textContent = confirmText;
+    el.projectSourceConfirm.hidden = !confirmText;
+  }
+  const preserveHomeInputs = state.pendingSourceAction === 'home' || state.homeEditorDirty;
+  renderHomeFields({ configBusy, preserveHomeInputs, sourceKinds });
+  if (el.projectHomeApplyBtn) el.projectHomeApplyBtn.disabled = configBusy;
+}
+
+function renderHomeFields({ configBusy = false, preserveHomeInputs = false, sourceKinds = supportedSourceKindsForUi() } = {}) {
+  if (!el.projectHomeFields) return;
+  const currentHomes = readHomeDraft();
+  el.projectHomeFields.innerHTML = sourceKinds.map((kind) => {
+    const currentHome = preserveHomeInputs && Object.hasOwn(currentHomes, kind)
+      ? currentHomes[kind]
+      : sourceHomeFor(kind);
+    return `<label class="projectHomeField" data-source-home-field="${escapeHtml(kind)}">
+      <span data-source-home-label="${escapeHtml(kind)}">${escapeHtml(sourceHomeLabel(kind))}</span>
+      <input id="${escapeHtml(sourceHomeInputId(kind))}" data-source-home="${escapeHtml(kind)}" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(currentHome)}"${configBusy ? ' disabled' : ''}>
+    </label>`;
+  }).join('');
+}
+
+function clearSourceError() {
+  if (el.projectSourceError) el.projectSourceError.textContent = '';
+}
+
+function clearSubmittedHomeDraft(homes) {
+  if (!homes) return;
+  const currentHomes = readHomeDraft();
+  const matches = supportedSourceKindsForUi().every((kind) => (
+    normalizeHomePathForCompare(currentHomes[kind]) === normalizeHomePathForCompare(homes[kind])
+  ));
+  if (matches) {
+    state.homeEditorDirty = false;
+  }
+}
+
+function validateHomePaths(homes) {
+  const sourceKinds = supportedSourceKindsForUi();
+  let errorKey = '';
+  if (!sourceKinds.length || sourceKinds.some((kind) => !String(homes?.[kind] || '').trim())) {
+    errorKey = 'homePathsRequired';
+  } else {
+    const serverPathKind = absoluteHomePathKind(state.sourceHome)
+      || sourceKinds.map((kind) => absoluteHomePathKind(sourceHomeFor(kind))).find(Boolean);
+    if (!serverPathKind
+        || sourceKinds.some((kind) => absoluteHomePathKind(homes[kind]) !== serverPathKind)) {
+      errorKey = 'homePathsAbsolute';
+    }
+  }
+  if (!errorKey) return true;
+  if (el.projectSourceError) el.projectSourceError.textContent = t(errorKey);
+  renderSourceSwitch();
+  return false;
+}
+
+function sourceConfigMatchesMutation(payload, source, homes) {
+  if (payload?.sourceKind !== source) return false;
+  if (!homes) return true;
+  return supportedSourceKindsForUi().every((kind) => (
+    normalizeHomePathForCompare(sourceHomeFromPayload(payload, kind))
+      === normalizeHomePathForCompare(homes[kind])
+  ));
+}
+
+function applyAuthoritativeSourceMutationState(payload) {
+  const selectedState = payload?.currentState?.projectSelected ? payload.currentState : null;
+  const result = selectedState
+    ? { ...payload, projectSelected: true, repoRoot: selectedState.repoRoot }
+    : payload;
+  applySourceConfig(result);
+  if (result?.projectSelected === false) {
+    resetReturnableProject();
+    state.projects = [];
+    resetProjectViewState();
+    updateProjectChrome({ displayRoot: '', returnRoot: '' });
+    renderProjects();
+  } else if (result?.projectSelected === true && result.repoRoot) {
+    state.repoRoot = result.repoRoot;
+    updateProjectChrome({ displayRoot: '', returnRoot: state.repoRoot });
+  }
+  return result;
+}
+
+async function reconcileUncertainSourceMutation(source, homes) {
+  let authoritative;
+  try {
+    authoritative = await api('/api/state');
+  } catch (error) {
+    if (error.status !== 409 || !error.details) throw error;
+    authoritative = error.details;
+  }
+  const result = applyAuthoritativeSourceMutationState(authoritative);
+  return sourceConfigMatchesMutation(result, source, homes) ? result : null;
+}
+
+async function commitSourceConfig(source, homes = null) {
+  state.sourceSwitchBusy = true;
+  clearSourceError();
+  renderProjects();
+  updateProjectChrome();
+  try {
+    const body = { source };
+    if (homes) {
+      body.sourceConfigs = Object.fromEntries(
+        supportedSourceKindsForUi().map((kind) => [kind, { home: homes[kind] }]),
+      );
+    }
+    const result = await api('/api/source', { method: 'POST', body });
+    applySourceConfig(result);
+    return result;
+  } catch (error) {
+    if (typeof error.status !== 'number') {
+      try {
+        const reconciled = await reconcileUncertainSourceMutation(source, homes);
+        if (reconciled) return reconciled;
+      } catch (reconciliationError) {
+        console.warn('Unable to reconcile uncertain source mutation', reconciliationError);
+      }
+    }
+    if (el.projectSourceError) {
+      el.projectSourceError.textContent = t('sourceSwitchFailed', { message: error.message || String(error) });
+    }
+    throw error;
+  } finally {
+    state.sourceSwitchBusy = false;
+    renderProjects();
+    updateProjectChrome();
+  }
+}
+
+function resetReturnableProject() {
+  state.repoRoot = '';
+  state.projectReturning = false;
+}
+
+async function refreshProjectList() {
+  const requestId = state.projectChooserRequestId + 1;
+  state.projectChooserRequestId = requestId;
+  state.projectDiscoveryLoading = true;
+  if (state.projects.length === 0) renderProjects();
+  else renderSourceSwitch();
+  let summary = null;
+  try {
+    summary = await api('/api/projects?summary=1');
+  } catch (error) {
+    if (error.status === 409) {
+      if (isActiveProjectChooserRequest(requestId)) {
+        clearProjectDiscoveryLoading(requestId);
+        renderProjects();
+      }
+      return false;
+    }
+    console.warn('Unable to load project summary', error);
+  }
+  if (!isActiveProjectChooserRequest(requestId)) return false;
+  if (summary) {
+    applySourceConfig(summary);
+    state.projects = summary.projects;
+    renderProjects();
+    if (el.projectStatus) {
+      el.projectStatus.textContent = state.projects.length
+        ? t('projectActivityLoading', { sourceHome: summary.sourceHome })
+        : t('discoveringProjects');
+    }
+  }
+  let data;
+  try {
+    data = await api('/api/projects');
+  } catch (error) {
+    if (!isActiveProjectChooserRequest(requestId)) return false;
+    if (error.status === 409) {
+      clearProjectDiscoveryLoading(requestId);
+      renderProjects();
+      return false;
+    }
+    clearProjectDiscoveryLoading(requestId);
+    renderProjects();
+    throw error;
+  }
+  if (!isActiveProjectChooserRequest(requestId)) return false;
+  applySourceConfig(data);
+  state.projectDiscoveryLoading = false;
+  state.projects = data.projects;
+  renderProjects();
+  renderSourceSwitch();
+  if (el.projectStatus) {
+    el.projectStatus.textContent = state.projects.length
+      ? t('projectCandidates', { count: state.projects.length, sourceHome: data.sourceHome })
+      : t('noProjectCandidates', { sourceHome: data.sourceHome });
+  }
+  return true;
+}
+
+async function performPendingSourceAction() {
+  if (state.pendingSourceAction === 'switch') {
+    const target = otherSourceKind();
+    const homes = state.homeEditorDirty ? readHomeDraft() : null;
+    if (homes && !validateHomePaths(homes)) return;
+    invalidateProjectDiscovery();
+    state.pendingSourceAction = null;
+    let result;
+    try {
+      result = await commitSourceConfig(target, homes);
+    } catch (error) {
+      try {
+        await refreshProjectList();
+      } catch {
+        // Keep the original source-mutation error visible; reconciliation is best-effort.
+      }
+      throw error;
+    }
+    clearSubmittedHomeDraft(homes);
+    if (result.projectSelected === false) {
+      resetReturnableProject();
+      state.projects = [];
+      resetProjectViewState();
+      updateProjectChrome({ displayRoot: '', returnRoot: '' });
+      await refreshProjectList();
+    } else {
+      renderSourceSwitch();
+    }
+    return;
+  }
+  if (state.pendingSourceAction === 'home') {
+    const homes = readHomeDraft();
+    if (!validateHomePaths(homes)) return;
+    await performHomeChange(homes);
+  }
+}
+
+async function performHomeChange(homes) {
+  state.pendingSourceAction = null;
+  const result = await commitSourceConfig(state.sourceKind, homes);
+  clearSubmittedHomeDraft(homes);
+  if (result.projectSelected === false) {
+    resetReturnableProject();
+    state.projects = [];
+    resetProjectViewState();
+    updateProjectChrome({ displayRoot: '', returnRoot: '' });
+  } else {
+    renderSourceSwitch();
+  }
+  await refreshProjectList();
+}
+
+function armSourceSwitch() {
+  if (state.pendingSourceAction) {
+    performPendingSourceAction().catch(showError);
+    return;
+  }
+  state.pendingSourceAction = 'switch';
+  clearSourceError();
+  renderSourceSwitch();
+}
+
+function armHomeChange() {
+  const homes = readHomeDraft();
+  if (!validateHomePaths(homes)) return;
+  const activeHomeInput = homes[state.sourceKind] || '';
+  const activeHomeChanged = normalizeHomePathForCompare(activeHomeInput) !== normalizeHomePathForCompare(state.sourceHome);
+  if (!activeHomeChanged || !state.repoRoot) {
+    performHomeChange(homes).catch(showError);
+    return;
+  }
+  state.pendingSourceAction = 'home';
+  clearSourceError();
+  renderSourceSwitch();
+}
+
+function cancelPendingSourceAction() {
+  state.pendingSourceAction = null;
+  clearSourceError();
+  renderSourceSwitch();
+}
+
 function updateProjectSwitchControl(options = {}) {
   const displayRoot = Object.hasOwn(options, 'displayRoot') ? options.displayRoot : state.repoRoot;
   const returnRoot = Object.hasOwn(options, 'returnRoot') ? options.returnRoot : state.repoRoot;
@@ -489,9 +842,7 @@ function updateProjectSwitchControl(options = {}) {
       : (canReturn ? t('return') : (displayRoot ? t('changeProject') : t('selectProjectAction')));
   }
   if (!el.projectSwitchControl) return;
-  el.projectSwitchControl.disabled = state.projectReturning || Boolean(
-    state.projectLoadingRoot || state.projectJobId || state.projectRefreshing || state.projectRefreshJobId,
-  );
+  el.projectSwitchControl.disabled = sourceConfigBusy();
   el.projectSwitchControl.setAttribute('aria-controls', 'projectChooser');
   el.projectSwitchControl.setAttribute('aria-expanded', state.selectingProject ? 'true' : 'false');
   if (state.projectReturning && returnRoot) {
@@ -2025,13 +2376,221 @@ function shortSessionTitle(value, limit = 54) {
 }
 
 function sourceKindLabel(value) {
-  return value === 'claude-code' ? 'Claude Code' : value === 'codex' ? 'Codex' : String(value || '');
+  const option = sourceOptionFor(value);
+  return option?.label || humanizeKind(value) || String(value || '');
 }
 
-function sessionRelationshipLabel(session) {
+function sourceOptionFor(kind) {
+  const option = state.sourceOptions.find((candidate) => (
+    typeof candidate === 'string' ? candidate === kind : candidate?.kind === kind
+  ));
+  return typeof option === 'string' ? { kind: option } : option || null;
+}
+
+function supportedSourceKindsForUi() {
+  const kinds = [
+    ...state.supportedSources,
+    ...state.sourceOptions.map((option) => (typeof option === 'string' ? option : option?.kind)),
+    ...Object.keys(state.sourceConfigs),
+  ];
+  return [...new Set(kinds.filter(Boolean))];
+}
+
+function sourceHomeFor(kind) {
+  const config = state.sourceConfigs[kind];
+  if (!config || typeof config !== 'object' || Array.isArray(config) || !Object.hasOwn(config, 'home')) return '';
+  return typeof config.home === 'string' ? config.home : '';
+}
+
+function sourceHomeOptionFor(kind) {
+  return sourceOptionFor(kind)?.homeOption
+    || `${String(kind || '').split(/[-_]+/u).filter(Boolean)[0] || 'source'}Home`;
+}
+
+function canonicalSourceConfigMapFromPayload(payload) {
+  if (!payload || typeof payload !== 'object' || !Object.hasOwn(payload, 'sourceConfigs')) return undefined;
+  const sourceConfigs = payload.sourceConfigs;
+  if (!sourceConfigs || typeof sourceConfigs !== 'object' || Array.isArray(sourceConfigs)) return null;
+  return sourceConfigs;
+}
+
+function sourceHomeFromPayload(payload, kind) {
+  const sourceConfigs = canonicalSourceConfigMapFromPayload(payload);
+  if (sourceConfigs !== undefined) {
+    if (sourceConfigs === null) return '';
+    if (Object.hasOwn(sourceConfigs, kind)) {
+      const config = sourceConfigs[kind];
+      if (!config || typeof config !== 'object' || Array.isArray(config) || !Object.hasOwn(config, 'home')) {
+        return '';
+      }
+      return typeof config.home === 'string' && config.home.trim() ? config.home : '';
+    }
+  }
+  const legacy = sourceHomeOptionFor(kind);
+  if (typeof payload?.[legacy] === 'string') return payload[legacy];
+  return '';
+}
+
+function sourceHomeLabel(kind) {
+  return t('sourceHomeLabel', { source: sourceKindLabel(kind) });
+}
+
+function sourceHomeInputId(kind) {
+  const token = String(kind || 'source').split(/[-_]+/u).filter(Boolean)[0] || 'source';
+  return `project${token.charAt(0).toUpperCase()}${token.slice(1)}HomeInput`;
+}
+
+function readHomeDraft() {
+  const homes = {};
+  for (const kind of supportedSourceKindsForUi()) {
+    homes[kind] = sourceHomeFor(kind);
+  }
+  for (const input of el.projectHomeFields?.querySelectorAll('input[data-source-home]') || []) {
+    homes[input.dataset.sourceHome] = input.value.trim();
+  }
+  return homes;
+}
+
+function repoStorageKey(sourceKind) {
+  return `sessionAnalyzer.repoRoot.${sourceKind}`;
+}
+
+function readLastSelectedRepo(sourceKind) {
+  const namespaced = localStorage.getItem(repoStorageKey(sourceKind));
+  if (sourceKind !== 'codex') return namespaced || '';
+  const legacy = localStorage.getItem(LEGACY_REPO_STORAGE_KEY);
+  if (namespaced) {
+    if (legacy !== null) localStorage.removeItem(LEGACY_REPO_STORAGE_KEY);
+    return namespaced;
+  }
+  if (legacy) {
+    localStorage.setItem(repoStorageKey('codex'), legacy);
+    localStorage.removeItem(LEGACY_REPO_STORAGE_KEY);
+  }
+  return legacy || '';
+}
+
+function writeLastSelectedRepo(sourceKind, repoRoot) {
+  if (repoRoot) {
+    localStorage.setItem(repoStorageKey(sourceKind), repoRoot);
+  } else {
+    localStorage.removeItem(repoStorageKey(sourceKind));
+  }
+}
+
+function applySourceConfig(payload) {
+  if (!payload || typeof payload !== 'object') return;
+  if (Array.isArray(payload.sourceOptions)) state.sourceOptions = payload.sourceOptions;
+  if (Array.isArray(payload.supportedSources)) state.supportedSources = payload.supportedSources;
+  if (payload.sourceKind) state.sourceKind = payload.sourceKind;
+  const canonicalSourceConfigs = canonicalSourceConfigMapFromPayload(payload);
+  const sourceKinds = [...new Set([...supportedSourceKindsForUi(), state.sourceKind].filter(Boolean))];
+  const nextSourceConfigs = { ...state.sourceConfigs };
+  for (const kind of sourceKinds) {
+    const home = sourceHomeFromPayload(payload, kind);
+    const hasExplicitCanonicalEntry = canonicalSourceConfigs === null
+      || (canonicalSourceConfigs && Object.hasOwn(canonicalSourceConfigs, kind));
+    if (hasExplicitCanonicalEntry) {
+      if (home) nextSourceConfigs[kind] = { home };
+      else delete nextSourceConfigs[kind];
+    } else if (home) {
+      nextSourceConfigs[kind] = { home };
+    }
+  }
+  if (canonicalSourceConfigs !== undefined || Object.keys(nextSourceConfigs).length) {
+    state.sourceConfigs = nextSourceConfigs;
+  }
+  if (canonicalSourceConfigs !== undefined) state.sourceHome = sourceHomeFor(state.sourceKind);
+  else if (typeof payload.sourceHome === 'string') state.sourceHome = payload.sourceHome;
+  else state.sourceHome = sourceHomeFor(state.sourceKind) || state.sourceHome;
+}
+
+function otherSourceKind() {
+  const sourceKinds = supportedSourceKindsForUi();
+  if (sourceKinds.length < 2) return '';
+  const currentIndex = sourceKinds.indexOf(state.sourceKind);
+  return sourceKinds[(currentIndex + 1 + sourceKinds.length) % sourceKinds.length] || '';
+}
+
+function absoluteHomePathKind(value) {
+  const text = String(value || '').trim();
+  if (/^(?:[A-Za-z]:[\\/]|\\\\)/.test(text)) return 'win32';
+  if (text.startsWith('/')) return 'posix';
+  return '';
+}
+
+function normalizeHomePathForCompare(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const pathKind = absoluteHomePathKind(text);
+  const win32 = pathKind === 'win32';
+  if (!pathKind) return text;
+  const parts = text.split(win32 ? /[\\/]+/ : /\/+/).filter(Boolean);
+  let root;
+  if (win32) {
+    if (/^\\\\/.test(text)) {
+      root = `\\\\${parts.slice(0, 2).join('\\')}\\`;
+      parts.splice(0, 2);
+    } else {
+      root = `${parts.shift().toLowerCase()}\\`;
+    }
+  } else {
+    root = '/';
+  }
+  const stack = [];
+  for (const part of parts) {
+    if (!part || part === '.') continue;
+    if (part === '..') stack.pop();
+    else stack.push(part);
+  }
+  const separator = win32 ? '\\' : '/';
+  const normalized = root + stack.join(separator);
+  return win32 ? normalized.toLowerCase() : normalized;
+}
+
+function clearProjectDiscoveryLoading(requestId) {
+  if (requestId === state.projectChooserRequestId) {
+    state.projectDiscoveryLoading = false;
+  }
+}
+
+function invalidateProjectDiscovery() {
+  state.projectChooserRequestId += 1;
+  state.projectDiscoveryLoading = false;
+}
+
+let sessionRelationshipIndexCache = {
+  sessions: null,
+  earlierBranchBySuccessorId: new Map(),
+};
+
+function sessionRelationshipIndex(sessions = state.sessions) {
+  if (sessionRelationshipIndexCache.sessions === sessions) return sessionRelationshipIndexCache;
+  const earlierBranchBySuccessorId = new Map();
+  for (const session of sessions) {
+    if (!session.supersededBySessionId || earlierBranchBySuccessorId.has(session.supersededBySessionId)) continue;
+    earlierBranchBySuccessorId.set(session.supersededBySessionId, session);
+  }
+  sessionRelationshipIndexCache = { sessions, earlierBranchBySuccessorId };
+  return sessionRelationshipIndexCache;
+}
+
+function sessionRelationshipLabel(session, relationships = sessionRelationshipIndex()) {
+  if (session.supersededBySessionId) return t('earlierBranch');
+  const earlierBranch = relationships.earlierBranchBySuccessorId.get(session.id);
+  if (earlierBranch) {
+    const parentLabel = shortSessionTitle(earlierBranch.title) || shortId(earlierBranch.id);
+    return t('continuesFromEarlierBranch', { parent: parentLabel });
+  }
   if (session.isDerivedSession) {
     const parent = shortId(session.parentSessionId);
-    const kind = session.derivedKind === 'review' ? t('reviewKind') : t('subagentKind');
+    const kind = session.derivedKind === 'review'
+      ? t('reviewKind')
+      : session.derivedKind === 'forked-skill'
+        ? t('forkedSkillKind')
+        : session.derivedKind === 'workflow-agent'
+          ? t('workflowAgentKind')
+          : t('subagentKind');
     const nickname = session.agentNickname && session.agentNickname.toLowerCase() !== kind.toLowerCase() ? ` ${session.agentNickname}` : '';
     const parentLabel = shortSessionTitle(session.parentSessionTitle) || parent;
     if (parentLabel) return t('derivedFrom', { kind, nickname, parent: parentLabel });
@@ -2043,14 +2602,19 @@ function sessionRelationshipLabel(session) {
   return '';
 }
 
-function sessionRelationshipTitle(session, fallback = '') {
+function sessionRelationshipTitle(session, fallback = '', relationships = sessionRelationshipIndex()) {
+  if (session.supersededBySessionId) return t('earlierBranchExplanation');
+  const earlierBranch = relationships.earlierBranchBySuccessorId.get(session.id);
+  if (earlierBranch) return earlierBranch.title || earlierBranch.id || fallback;
   if (session.isDerivedSession) return session.parentSessionTitle || session.parentSessionId || fallback;
   return session.forkedFromSessionTitle || session.forkedFromSessionId || fallback;
 }
 
 function sessionItemClasses(session, active) {
   const classes = ['sessionItem'];
-  if (session.isDerivedSession) {
+  if (session.supersededBySessionId) {
+    classes.push('secondarySession', 'earlierBranchSession');
+  } else if (session.isDerivedSession) {
     classes.push('secondarySession');
     classes.push(session.derivedKind === 'review' ? 'derived-review' : 'derived-subagent');
   }
@@ -2062,11 +2626,17 @@ function sessionHierarchy(sessions = state.sessions) {
   const byId = new Map(sessions.map((session) => [session.id, session]));
   const attachedParentIds = new Map();
   const childrenByParentId = new Map();
+  const desiredParentId = (session) => {
+    if (session.supersededBySessionId && byId.has(session.supersededBySessionId)) return session.supersededBySessionId;
+    if (session.isDerivedSession && session.parentSessionId && byId.has(session.parentSessionId)) return session.parentSessionId;
+    return '';
+  };
 
   for (const session of sessions) {
-    if (!session.isDerivedSession || !session.parentSessionId || !byId.has(session.parentSessionId)) continue;
+    const directParentId = desiredParentId(session);
+    if (!directParentId) continue;
     const visited = new Set([session.id]);
-    let parentId = session.parentSessionId;
+    let parentId = directParentId;
     let cyclic = false;
     while (parentId && byId.has(parentId)) {
       if (visited.has(parentId)) {
@@ -2075,13 +2645,13 @@ function sessionHierarchy(sessions = state.sessions) {
       }
       visited.add(parentId);
       const parent = byId.get(parentId);
-      parentId = parent?.isDerivedSession ? parent.parentSessionId : '';
+      parentId = desiredParentId(parent);
     }
     if (cyclic) continue;
-    attachedParentIds.set(session.id, session.parentSessionId);
-    const children = childrenByParentId.get(session.parentSessionId) || [];
+    attachedParentIds.set(session.id, directParentId);
+    const children = childrenByParentId.get(directParentId) || [];
     children.push(session);
-    childrenByParentId.set(session.parentSessionId, children);
+    childrenByParentId.set(directParentId, children);
   }
 
   return {
@@ -2123,6 +2693,10 @@ function renderInspectorMetadata(event, refs, detail = null) {
     metadataRow(t('status'), meta.status || event.status),
     metadataRow(t('severity'), meta.severity && meta.severity !== 'normal' ? meta.severity : ''),
     metadataRow(t('tool'), meta.toolName || event.toolName),
+    metadataRow(t('provider'), meta.provider || event.provider),
+    metadataRow(t('model'), meta.model || event.model),
+    metadataRow(t('reasoningEffort'), meta.effort || event.effort),
+    metadataRow(t('attributionSkill'), meta.provenance?.attributionSkill || event.provenance?.attributionSkill),
     metadataRow(t('exitCode'), outputStats.exitCode == null ? '' : String(outputStats.exitCode)),
     metadataRow(t('duration'), outputStats.durationMs == null ? '' : `${outputStats.durationMs} ms`),
     metadataRow(t('recordType'), event.recordType),
@@ -2144,6 +2718,30 @@ function renderInspectorSource(event, refs, detail = null) {
   </section>`;
 }
 
+function detailErrorState(error) {
+  if (error && typeof error === 'object' && typeof error.message === 'string') {
+    return {
+      message: error.message,
+      status: error.status,
+      code: error.code,
+    };
+  }
+  return { message: String(error || '') };
+}
+
+function isIndexedSourceStaleError(error) {
+  return error?.status === 409 && error?.code === 'INDEXED_SOURCE_STALE';
+}
+
+function renderDetailFailure(error, actionAttribute) {
+  if (isIndexedSourceStaleError(error)) {
+    return `<div class="notice warning"><p>${escapeHtml(t('indexedSourceStaleRecovery'))}</p></div>
+      <button class="smallBtn" type="button" ${actionAttribute}="reindex-project">${escapeHtml(t('reindexCurrentProject'))}</button>`;
+  }
+  return `<div class="notice error"><p>${escapeHtml(error?.message || String(error || ''))}</p></div>
+    <button class="smallBtn" type="button" ${actionAttribute}="retry-detail">${escapeHtml(t('retryDetail'))}</button>`;
+}
+
 function renderInspectorDetail(event) {
   const key = detailKey(state.selectedSessionId, activeLayerId(), event.id);
   const detail = state.detailCache[key];
@@ -2158,8 +2756,7 @@ function renderInspectorDetail(event) {
   if (error) {
     return `<section class="inspectorSection">
       <h3>${escapeHtml(t('details'))}</h3>
-      <div class="notice error"><p>${escapeHtml(error)}</p></div>
-      <button class="smallBtn" type="button" data-detail-action="retry-detail">${escapeHtml(t('retryDetail'))}</button>
+      ${renderDetailFailure(error, 'data-detail-action')}
     </section>`;
   }
   return `<section class="inspectorSection">
@@ -2871,6 +3468,11 @@ function setAnalyzerDisabled(disabled) {
 function setProjectMode(selecting) {
   state.selectingProject = selecting;
   state.projectSelected = !selecting;
+  if (!selecting) {
+    state.pendingSourceAction = null;
+    state.projectDiscoveryLoading = false;
+    state.homeEditorDirty = false;
+  }
   document.body.dataset.projectMode = selecting ? 'selecting' : 'analyzing';
   if (el.projectChooser) el.projectChooser.hidden = !selecting;
   setAnalyzerDisabled(selecting);
@@ -2880,6 +3482,7 @@ function setProjectMode(selecting) {
 function resetProjectViewState() {
   Object.values(requestOwners).forEach((owner) => owner.abort());
   clearContextReveal({ render: false });
+  clearNavigationEventReveal();
   state.sessions = [];
   state.expandedSessionGroups.clear();
   state.projectResults = [];
@@ -2930,15 +3533,17 @@ function resetProjectViewState() {
 function renderProjects() {
   if (!el.projectList) return;
   const loadingRoot = state.projectLoadingRoot;
-  el.projectList.setAttribute('aria-busy', loadingRoot ? 'true' : 'false');
+  const selectionLocked = Boolean(loadingRoot || state.sourceSwitchBusy);
+  el.projectList.setAttribute('aria-busy', selectionLocked ? 'true' : 'false');
   if (el.projectChooser) el.projectChooser.dataset.loading = loadingRoot ? 'true' : 'false';
   if (!state.projects.length) {
-    el.projectList.innerHTML = loadingRoot
+    el.projectList.innerHTML = (loadingRoot || state.projectDiscoveryLoading)
       ? ''
-      : `<div class="notice warning"><p>${escapeHtml(t('noCodexProjects'))}</p></div>`;
+      : `<div class="notice warning"><p>${escapeHtml(t('noTranscriptProjects'))}</p></div>`;
+    renderSourceSwitch();
     return;
   }
-  const saved = localStorage.getItem(REPO_STORAGE_KEY) || '';
+  const saved = readLastSelectedRepo(state.sourceKind) || '';
   el.projectList.innerHTML = state.projects.map((project) => {
     const isSaved = project.repoRoot === saved;
     const isLoading = project.repoRoot === loadingRoot;
@@ -2958,7 +3563,7 @@ function renderProjects() {
     const facts = statsPending
       ? `<span>${escapeHtml(t('activityLoading'))}</span>`
       : `<span>${escapeHtml(t('sessionCount', { count: sessionCount }))}</span><span>${escapeHtml(project.updatedAt ? fmtDate(project.updatedAt) : t('noTranscriptActivity'))}</span>`;
-    return `<button class="${classes}" type="button" data-project-root="${escapeHtml(project.repoRoot)}"${loadingRoot ? ' disabled' : ''}>
+    return `<button class="${classes}" type="button" data-project-root="${escapeHtml(project.repoRoot)}"${selectionLocked ? ' disabled' : ''}>
       <span class="projectMain">
         <span class="projectName">${escapeHtml(projectName(project.repoRoot))}${badges}</span>
         <span class="projectPath">${escapeHtml(project.repoRoot)}</span>
@@ -2969,6 +3574,7 @@ function renderProjects() {
       <span class="projectAction">${action}</span>
     </button>`;
   }).join('');
+  renderSourceSwitch();
 }
 
 function clearProjectPollTimer() {
@@ -3004,9 +3610,9 @@ async function cancelProjectJob(jobId) {
 }
 
 async function showProjectChooser(options = {}) {
-  const requestId = state.projectChooserRequestId + 1;
-  state.projectChooserRequestId = requestId;
   state.projectReturning = false;
+  state.pendingSourceAction = null;
+  state.homeEditorDirty = false;
   setProjectMode(true);
   state.projectLoadingRoot = '';
   state.projectJobId = '';
@@ -3018,29 +3624,9 @@ async function showProjectChooser(options = {}) {
   if (el.projectProgress) el.projectProgress.hidden = true;
   if (el.projectCancelBtn) el.projectCancelBtn.hidden = true;
   if (el.projectList) el.projectList.innerHTML = '';
-  let renderedSummary = false;
-  try {
-    const summary = await api('/api/projects?summary=1');
-    if (!isActiveProjectChooserRequest(requestId)) return;
-    state.projects = summary.projects;
-    renderedSummary = state.projects.length > 0;
-    if (renderedSummary) renderProjects();
-    if (el.projectStatus) {
-      el.projectStatus.textContent = renderedSummary
-        ? t('projectActivityLoading', { codexHome: summary.codexHome })
-        : t('discoveringProjects');
-    }
-  } catch (error) {
-    console.warn('Unable to load project summary', error);
-  }
-  if (!isActiveProjectChooserRequest(requestId)) return;
-  const data = await api('/api/projects');
-  if (!isActiveProjectChooserRequest(requestId)) return;
-  state.projects = data.projects;
-  renderProjects();
-  if (el.projectStatus) el.projectStatus.textContent = state.projects.length ? t('projectCandidates', { count: state.projects.length, codexHome: data.codexHome }) : t('noProjectCandidates', { codexHome: data.codexHome });
-
-  const saved = localStorage.getItem(REPO_STORAGE_KEY);
+  const discovered = await refreshProjectList();
+  if (!discovered) return;
+  const saved = readLastSelectedRepo(state.sourceKind);
   if (options.autoRestore && saved && state.projects.some((project) => project.repoRoot === saved)) {
     await selectProject(saved, { restore: true });
   }
@@ -3071,7 +3657,7 @@ async function applyAppState(appState) {
   const totals = appState.totals || {};
   if (appState.locale) state.locale = i18n.resolveLocale(appState.locale);
   applyStaticLocale();
-  state.sourceKind = appState.sourceKind || 'codex';
+  applySourceConfig(appState);
   state.repoRoot = appState.repoRoot || '';
   state.builtinProfiles = normalizeProfiles(appState.foldingProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
@@ -3103,7 +3689,7 @@ async function applyAppState(appState) {
 }
 
 async function finishProjectSelection(appState, options = {}) {
-  localStorage.setItem(REPO_STORAGE_KEY, appState.repoRoot);
+  writeLastSelectedRepo(appState.sourceKind || state.sourceKind, appState.repoRoot);
   state.projectLoadingRoot = '';
   state.projectJobId = '';
   state.projectReturning = false;
@@ -3198,7 +3784,7 @@ function scheduleProjectJobPoll(jobId, options = {}) {
 }
 
 async function selectProject(repoRoot, options = {}) {
-  if (!repoRoot) return;
+  if (!repoRoot || sourceConfigBusy()) return;
   const requestId = state.projectChooserRequestId + 1;
   state.projectChooserRequestId = requestId;
   state.projectReturning = false;
@@ -3228,6 +3814,7 @@ async function selectProject(repoRoot, options = {}) {
     state.projectJobId = '';
     state.projectLoadingRoot = '';
     state.projectReturning = false;
+    state.projectDiscoveryLoading = false;
     updateProjectChrome({ displayRoot: state.repoRoot, returnRoot: state.repoRoot });
     renderProjects();
     setAnalyzerDisabled(false);
@@ -3239,6 +3826,7 @@ async function init() {
   setMobileView(state.mobileView, { scroll: false });
   try {
     const appState = await api('/api/state');
+    applySourceConfig(appState);
     if (appState.job) {
       const job = appState.job;
       const currentState = appState.currentState;
@@ -3269,6 +3857,7 @@ async function init() {
     setProjectMode(false);
   } catch (error) {
     if (error.status !== 409) throw error;
+    applySourceConfig(error.details);
     await showProjectChooser({ autoRestore: true });
     if (state.projectSelected) return;
     return;
@@ -3491,6 +4080,7 @@ async function drillDownProjectResult(sessionId) {
   };
   state.projectReturnContext = returnContext;
   clearContextReveal({ render: false });
+  clearNavigationEventReveal();
   expandSessionAncestors(sessionId);
   if (state.selectedSessionId !== sessionId) resetSessionDetailCache();
   state.searchScope = 'session';
@@ -3558,13 +4148,12 @@ function renderProjectResultSnippet(text) {
   )).join('');
 }
 
-function renderProjectResultCard(session) {
+function renderProjectResultCard(session, relationships = sessionRelationshipIndex()) {
   const latest = session.searchMatch?.latestEvent || {};
-  const relationship = sessionRelationshipLabel(session);
+  const relationship = sessionRelationshipLabel(session, relationships);
   return `<button class="sessionItem projectResultCard" type="button" data-project-result-session-id="${escapeHtml(session.id)}">
     <span class="sessionTitle">${escapeHtml(session.title)}</span>
     <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
-    <span class="chip">${escapeHtml(sourceKindLabel(session.sourceKind))}</span>
     ${relationship ? `<span class="chip relationshipChip">${escapeHtml(relationship)}</span>` : ''}
     <span class="projectResultCount">${escapeHtml(t('projectResultCount', { count: session.searchMatch?.eventCount || 0 }))}</span>
     <span class="projectLatestMatch">
@@ -3575,39 +4164,63 @@ function renderProjectResultCard(session) {
 }
 
 function renderSessions() {
+  const relationships = sessionRelationshipIndex();
   if (state.searchScope === 'project' && hasActiveSearchExpression()) {
-    el.sessionList.innerHTML = state.projectResults.map(renderProjectResultCard).join('');
+    el.sessionList.innerHTML = state.projectResults.map((session) => renderProjectResultCard(session, relationships)).join('');
     state.searchSurfaceContexts.sessions = '';
     return;
   }
   const hierarchy = sessionHierarchy();
   const renderSessionBranch = (session) => {
     const active = session.id === state.selectedSessionId;
-    const relationship = sessionRelationshipLabel(session);
-    const relationshipTitle = sessionRelationshipTitle(session, relationship);
+    const relationship = sessionRelationshipLabel(session, relationships);
+    const relationshipTitle = sessionRelationshipTitle(session, relationship, relationships);
     const children = hierarchy.childrenByParentId.get(session.id) || [];
     const expanded = children.length > 0 && state.expandedSessionGroups.has(session.id);
     const childrenId = `session-children-${session.id}`;
     const oneChild = children.length === 1;
+    const earlierBranchCount = children.filter((child) => child.supersededBySessionId === session.id).length;
+    const derivedChildCount = children.length - earlierBranchCount;
+    const groupKind = earlierBranchCount && derivedChildCount ? 'related' : (earlierBranchCount ? 'earlier' : 'derived');
+    const groupKeys = groupKind === 'earlier'
+      ? {
+        countOne: 'earlierBranchCountOne', count: 'earlierBranchCount',
+        expandOne: 'expandEarlierBranchesOne', expand: 'expandEarlierBranches',
+        collapseOne: 'collapseEarlierBranchesOne', collapse: 'collapseEarlierBranches',
+      }
+      : (groupKind === 'related'
+        ? {
+          countOne: 'relatedSessionCountOne', count: 'relatedSessionCount',
+          expandOne: 'expandRelatedSessionsOne', expand: 'expandRelatedSessions',
+          collapseOne: 'collapseRelatedSessionsOne', collapse: 'collapseRelatedSessions',
+        }
+        : {
+          countOne: 'childSessionCountOne', count: 'childSessionCount',
+          expandOne: 'expandChildSessionsOne', expand: 'expandChildSessions',
+          collapseOne: 'collapseChildSessionsOne', collapse: 'collapseChildSessions',
+        });
     const toggleLabel = expanded
-      ? t(oneChild ? 'collapseChildSessionsOne' : 'collapseChildSessions', { count: children.length })
-      : t(oneChild ? 'expandChildSessionsOne' : 'expandChildSessions', { count: children.length });
+      ? t(oneChild ? groupKeys.collapseOne : groupKeys.collapse, { count: children.length })
+      : t(oneChild ? groupKeys.expandOne : groupKeys.expand, { count: children.length });
+    const groupCountLabel = t(oneChild ? groupKeys.countOne : groupKeys.count, { count: children.length });
+    const earlierBranchExplanation = session.supersededReason === 'inactive_after_fork'
+      ? `<span class="earlierBranchExplanation">${escapeHtml(t('earlierBranchExplanation'))}</span>`
+      : '';
     return `<div class="sessionBranch" data-session-branch-id="${escapeHtml(session.id)}">
       <div class="sessionRow${children.length ? ' hasSessionChildren' : ''}">
         <button class="${sessionItemClasses(session, active)}" type="button" data-session-id="${escapeHtml(session.id)}">
           <span class="sessionTitle">${escapeHtml(session.title)}</span>
           <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
           <span class="chips">
-            <span class="chip">${escapeHtml(sourceKindLabel(session.sourceKind))}</span>
             ${relationship ? `<span class="chip relationshipChip" title="${escapeHtml(relationshipTitle)}">${escapeHtml(relationship)}</span>` : ''}
             ${session.forkContinuationState === 'waiting_for_prompt' ? `<span class="chip forkStateChip">${escapeHtml(t('forkWaitingForPrompt'))}</span>` : ''}
             <span class="chip">${escapeHtml(t('messageCountShort', { count: session.counts.messages }))}</span>
             <span class="chip">${escapeHtml(t('toolCountShort', { count: session.counts.toolCalls }))}</span>
             <span class="chip">${escapeHtml(t('failedCommandCountShort', { count: session.counts.failedCommands }))}</span>
-            <span class="chip">${escapeHtml(t('protocolCountShort', { count: session.protocolCount }))}</span>
           </span>
+          ${earlierBranchExplanation}
         </button>
-        ${children.length ? `<button class="sessionChildrenToggle" type="button" data-session-children-toggle="${escapeHtml(session.id)}" aria-expanded="${expanded}" aria-controls="${escapeHtml(childrenId)}" aria-label="${escapeHtml(toggleLabel)}" title="${escapeHtml(toggleLabel)}"><span class="sessionChildrenChevron" aria-hidden="true"></span><span class="sessionChildrenLabel" aria-hidden="true">${escapeHtml(t(oneChild ? 'childSessionCountOne' : 'childSessionCount', { count: children.length }))}</span></button>` : ''}
+        ${children.length ? `<button class="sessionChildrenToggle" type="button" data-session-children-toggle="${escapeHtml(session.id)}" aria-expanded="${expanded}" aria-controls="${escapeHtml(childrenId)}" aria-label="${escapeHtml(toggleLabel)}" title="${escapeHtml(toggleLabel)}"><span class="sessionChildrenChevron" aria-hidden="true"></span><span class="sessionChildrenLabel" aria-hidden="true">${escapeHtml(groupCountLabel)}</span></button>` : ''}
       </div>
       ${children.length ? `<div class="sessionChildren" id="${escapeHtml(childrenId)}"${expanded ? '' : ' hidden'}>${children.map(renderSessionBranch).join('')}</div>` : ''}
     </div>`;
@@ -3648,8 +4261,9 @@ function renderProjectReturnBanner() {
 function renderInheritedContextCard() {
   const session = state.sessions.find((item) => item.id === state.selectedSessionId);
   const context = session?.inheritedContext;
-  if (session?.forkStorageMode !== 'pointer' || !context) return '';
-  const parentLabel = shortSessionTitle(session.forkedFromSessionTitle) || shortId(context.ownerSessionId);
+  if (!context) return '';
+  const sourceSessionId = context.sourceSessionId || context.ownerSessionId || session.forkedFromSessionId;
+  const parentLabel = shortSessionTitle(session.forkedFromSessionTitle) || shortId(sourceSessionId);
   const previewEvents = Array.isArray(context.previewEvents) ? context.previewEvents : [];
   const previewItems = previewEvents.map((event) => `<li class="inheritedContextEvent">
     <div class="inheritedContextEventHeader">
@@ -3676,7 +4290,7 @@ function renderInheritedContextCard() {
           time: fmtDate(session.forkedAt || session.startedAt),
         }))}</p>
       </div>
-      <span class="chip inheritedContextOwner">${escapeHtml(t('inheritedContextOwner'))}</span>
+      <span class="chip inheritedContextOwner">${escapeHtml(t('inheritedContextSource'))}</span>
     </div>
     <p class="inheritedContextSummary">${escapeHtml(t('inheritedContextSummary', {
       raw: context.rawRecordCount || 0,
@@ -3685,14 +4299,58 @@ function renderInheritedContextCard() {
     }))}</p>
     ${preview}
     <div class="inheritedContextActions">
-      <span>${escapeHtml(t('inheritedContextForkPoint', { id: shortId(context.forkPointUuid) }))}</span>
-      <button class="smallBtn" type="button" data-inherited-parent-session="${escapeHtml(context.ownerSessionId)}">${escapeHtml(t('openParentSession'))}</button>
+      <span>${escapeHtml(t('inheritedContextForkPoint', { id: shortId(context.forkPointUuid || context.forkPointRawId) }))}</span>
+      <button class="smallBtn" type="button" data-inherited-parent-session="${escapeHtml(sourceSessionId)}" data-inherited-target-layer="${escapeHtml(context.forkPointTarget?.layer || '')}" data-inherited-target-event="${escapeHtml(context.forkPointTarget?.eventId || '')}" data-inherited-target-index="${escapeHtml(context.forkPointTarget?.timelineIndex ?? '')}">${escapeHtml(t('openParentSession'))}</button>
     </div>
   </aside>`;
 }
 
+async function openInheritedSourceSession(button) {
+  const sessionId = button.dataset.inheritedParentSession || '';
+  if (!sessionId) return;
+  const targetLayer = ['main', 'protocol', 'raw'].includes(button.dataset.inheritedTargetLayer)
+    ? button.dataset.inheritedTargetLayer
+    : 'main';
+  const targetEventId = button.dataset.inheritedTargetEvent || '';
+  const targetIndex = Number(button.dataset.inheritedTargetIndex);
+  state.projectReturnContext = null;
+  if (!targetEventId) {
+    await selectSession(sessionId, { mobileView: 'events' });
+    return;
+  }
+  state.searchQuery = '';
+  state.searchFilters = { file: '', kind: '', status: '', codeModeRequest: '' };
+  state.layerId = targetLayer;
+  el.layerSelect.value = targetLayer;
+  localStorage.setItem('sessionAnalyzer.layer', targetLayer);
+  syncSearchInputValue();
+  syncSearchAssistControls();
+  renderSearchAssistChips();
+  updateProfileApplicabilityUi();
+  await selectSession(sessionId, { mobileView: 'events' });
+  if (state.selectedSessionId !== sessionId) return;
+  if (!state.currentEvents.some((event) => event.id === targetEventId)
+      && Number.isInteger(targetIndex) && targetIndex >= 0) {
+    await loadTimelineThroughIndex(targetIndex);
+  }
+  const target = state.currentEvents.find((event) => event.id === targetEventId);
+  if (!target) return;
+  if (displayState(target) === 'hidden') {
+    state.navigationEventReveal = {
+      sessionId,
+      layerId: targetLayer,
+      eventId: target.id,
+    };
+    renderTimeline();
+  }
+  state.selectedEventId = target.id;
+  updateSelectedTimelineEvent();
+  scrollToTimelineEvent(target.id, { behavior: 'auto' });
+}
+
 async function selectSession(sessionId, options = {}) {
   clearContextReveal({ render: false });
+  clearNavigationEventReveal();
   expandSessionAncestors(sessionId);
   if (state.selectedSessionId !== sessionId) resetSessionDetailCache();
   state.searchScope = 'session';
@@ -3722,6 +4380,7 @@ async function selectSession(sessionId, options = {}) {
         <span class="sessionMetaChip">${escapeHtml(sourceKindLabel(session.sourceKind))}</span>
         ${relationship ? `<span class="sessionMetaChip">${escapeHtml(relationship)}</span>` : ''}
         ${session.forkStorageMode === 'pointer' ? `<span class="sessionMetaChip">${escapeHtml(t('pointerFork'))}</span>` : ''}
+        ${session.forkStorageMode === 'materialized' ? `<span class="sessionMetaChip">${escapeHtml(t('materializedFork'))}</span>` : ''}
         ${session.forkContinuationState === 'waiting_for_prompt' ? `<span class="sessionMetaChip">${escapeHtml(t('forkWaitingForPrompt'))}</span>` : ''}
         <span class="sessionMetaChip">${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</span>
         <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
@@ -3851,6 +4510,7 @@ async function changeLayer(layerId) {
   const focusAnchor = state.searchScope === 'session' ? captureFocusAnchor() : { hadSelection: false };
   if (focusAnchor.hadSelection || isSelectedEventDetailView()) resetDetailPane();
   clearContextReveal({ render: false });
+  clearNavigationEventReveal();
   resetSearchTransientExpansions();
   state.layerId = layerId;
   if (layerId !== 'main' && state.searchFilters.codeModeRequest) {
@@ -4164,12 +4824,27 @@ function naturalDisplayState(event) {
   return evaluateDisplayStateFromRules(event, profile?.rules || defaultRules());
 }
 
+function clearNavigationEventReveal(eventId = '') {
+  if (!state.navigationEventReveal || (eventId && state.navigationEventReveal.eventId !== eventId)) return false;
+  state.navigationEventReveal = null;
+  return true;
+}
+
+function isNavigationEventRevealed(event) {
+  const reveal = state.navigationEventReveal;
+  return Boolean(reveal
+    && reveal.sessionId === state.selectedSessionId
+    && reveal.layerId === activeLayerId()
+    && reveal.eventId === event.id);
+}
+
 function hasActiveStructuredEventFilter() {
   const search = currentSearchState();
   return Boolean(search.file || search.kind || search.status || search.codeModeRequest);
 }
 
 function displayState(event) {
+  if (isNavigationEventRevealed(event)) return 'summary';
   const sessionOverrides = state.overrides[state.selectedSessionId] || {};
   if (sessionOverrides[event.id]) return sessionOverrides[event.id];
   if (currentSearchTransientExpansionIds().includes(event.id)) return 'expanded';
@@ -4195,7 +4870,7 @@ function renderEventBody(event, display) {
     return `<div class="eventBody">${renderTimelineSections(detail.timelineSections, preview)}</div>`;
   }
   if (error) {
-    return `<div class="eventBody"><div class="notice error"><p>${escapeHtml(error)}</p></div><button class="smallBtn" type="button" data-action="retry-detail">${escapeHtml(t('retryDetail'))}</button></div>`;
+    return `<div class="eventBody">${renderDetailFailure(error, 'data-action')}</div>`;
   }
   const snippet = event.hasSearchHit && event.snippet
     ? `<div class="eventPreview eventLoadingSnippet">${escapeHtml(event.snippet)}</div>`
@@ -4352,6 +5027,16 @@ function cssToken(value) {
   return String(value || 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown';
 }
 
+function renderRawForkSegmentHeading(event, previousEvent) {
+  if (activeLayerId() !== 'raw' || !event.forkSegment || event.forkSegment === previousEvent?.forkSegment) return '';
+  const key = {
+    fork_metadata: 'rawForkMetadata',
+    inherited_context: 'rawInheritedContext',
+    continuation: 'rawForkContinuation',
+  }[event.forkSegment];
+  return key ? `<h3 class="rawForkSegmentHeading" data-fork-segment="${escapeHtml(event.forkSegment)}">${escapeHtml(t(key))}</h3>` : '';
+}
+
 function renderTimeline() {
   if (state.searchScope !== 'session') {
     clearContextReveal({ render: false });
@@ -4360,7 +5045,8 @@ function renderTimeline() {
   }
   reconcileContextRevealState();
   const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
-  el.timeline.innerHTML = `${renderProjectReturnBanner()}${renderInheritedContextCard()}${renderedTimelineEvents().map((event) => {
+  const timelineEvents = renderedTimelineEvents();
+  el.timeline.innerHTML = `${renderProjectReturnBanner()}${renderInheritedContextCard()}${timelineEvents.map((event, index) => {
     const ds = displayState(event);
     const presentation = codeModeEventPresentation(event);
     const compactWebLifecycle = event.kind === 'web_search' && compactWebLifecycleIds.has(event.id);
@@ -4390,7 +5076,7 @@ function renderTimeline() {
       temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
     ].join('');
     const toggleLabel = ds === 'expanded' ? t('collapseEvent') : t('expandEvent');
-    return `${renderContextRevealSlot(event)}<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
+    return `${renderRawForkSegmentHeading(event, timelineEvents[index - 1])}${renderContextRevealSlot(event)}<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
       <div class="eventHeader">
         <button class="eventToggle" type="button" data-action="toggle" aria-label="${toggleLabel}" title="${toggleLabel}">
           <span class="srOnly">${toggleLabel}</span>
@@ -4416,6 +5102,7 @@ function renderTimeline() {
 
 function setOverride(eventId, value) {
   clearContextReveal({ render: false });
+  clearNavigationEventReveal(eventId);
   clearSearchTransientExpansion(eventId);
   if (!state.overrides[state.selectedSessionId]) state.overrides[state.selectedSessionId] = {};
   state.overrides[state.selectedSessionId][eventId] = value;
@@ -4448,7 +5135,7 @@ function loadEventDetail(event) {
         if (detailRequestControllers.get(key) !== controller
             || state.selectedSessionId !== sessionId
             || state.detailCacheGeneration !== generation) return false;
-        state.detailErrors[key] = error.message;
+        state.detailErrors[key] = detailErrorState(error);
         return true;
       })
       .finally(() => {
@@ -5207,7 +5894,7 @@ function renderProfileRulesPane(options = {}) {
     .map((item) => [String(item?.value || '').trim(), Number(item?.count || 0)]));
   const renderKindRow = (kind) => {
     const display = rules.kindStates[kind] || '';
-    const inheritedAgentCoordinationDisplay = kind === 'agent_coordination' && !display
+    const inheritedOtherToolDisplay = ['agent_coordination', 'read'].includes(kind) && !display
       ? evaluateDisplayStateFromRules({
         kind,
         subtype: '',
@@ -5228,8 +5915,8 @@ function renderProfileRulesPane(options = {}) {
         <span class="profileRuleMeta">${metadata}</span>
       </span>
       <select data-profile-kind="${escapeHtml(kind)}">
-        <option value=""${display ? '' : ' selected'}>${inheritedAgentCoordinationDisplay
-    ? escapeHtml(t('inheritOrdinaryToolState', { state: displayStateLabel(inheritedAgentCoordinationDisplay) }))
+        <option value=""${display ? '' : ' selected'}>${inheritedOtherToolDisplay
+    ? escapeHtml(t('inheritOrdinaryToolState', { state: displayStateLabel(inheritedOtherToolDisplay) }))
     : `${escapeHtml(displayStateLabel(rules.fallback))} (${escapeHtml(t('default'))})`}</option>
         ${DISPLAY_STATES.map((stateId) => `<option value="${stateId}"${stateId === display ? ' selected' : ''}>${escapeHtml(displayStateLabel(stateId))}</option>`).join('')}
       </select>
@@ -5538,6 +6225,18 @@ async function showRaw(event, options = {}) {
     return true;
   } catch (error) {
     if (isIntentionalAbort(error)) return false;
+    owner.controller.abort();
+    if (isIndexedSourceStaleError(error)
+        && requestOwners.rawReferences.isCurrent(owner)
+        && isCurrentDetailSelection('rawRefs', rawKey, event.id, selectionContext)) {
+      renderDetailShell({
+        title: t('rawRefs'),
+        subtitle: rawRefsSubtitle(event),
+        actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
+        body: `<div class="rawRefsView">${renderDetailFailure(detailErrorState(error), 'data-detail-action')}</div>`,
+      });
+      return true;
+    }
     throw error;
   } finally {
     requestOwners.rawReferences.finish(owner);
@@ -5551,6 +6250,7 @@ function ensureProfileDraft() {
 
 function setProfileId(profileId, options = {}) {
   clearContextReveal({ render: false });
+  clearNavigationEventReveal();
   state.profileId = profileId;
   localStorage.setItem('sessionAnalyzer.profile', state.profileId);
   el.profileSelect.value = state.profileId;
@@ -5690,7 +6390,7 @@ el.projectList?.addEventListener('click', (event) => {
 });
 
 el.projectSwitchControl?.addEventListener('click', () => {
-  if (state.projectLoadingRoot || state.projectJobId || state.projectRefreshJobId || state.projectRefreshing) return;
+  if (sourceConfigBusy()) return;
   const action = state.selectingProject && state.repoRoot ? exitProjectChooser : showProjectChooser;
   action({ autoRestore: false }).catch(showError);
 });
@@ -5710,6 +6410,24 @@ el.projectCancelBtn?.addEventListener('click', () => {
   api(`/api/project/status?jobId=${encodeURIComponent(jobId)}`, { method: 'DELETE' })
     .then((data) => handleProjectJobResponse(data))
     .catch((error) => handleProjectJobError(jobId, error));
+});
+
+el.projectSourceAction?.addEventListener('click', () => {
+  if (state.pendingSourceAction) {
+    performPendingSourceAction().catch(showError);
+    return;
+  }
+  armSourceSwitch();
+});
+
+el.projectSourceCancel?.addEventListener('click', cancelPendingSourceAction);
+
+el.projectHomeApplyBtn?.addEventListener('click', armHomeChange);
+
+el.projectHomeFields?.addEventListener('input', (event) => {
+  if (!event.target.matches('input[data-source-home]')) return;
+  state.homeEditorDirty = true;
+  clearSourceError();
 });
 
 el.sessionList.addEventListener('click', (event) => {
@@ -5758,8 +6476,7 @@ el.timeline.addEventListener('click', (event) => {
   }
   const inheritedParent = event.target.closest('[data-inherited-parent-session]');
   if (inheritedParent) {
-    state.projectReturnContext = null;
-    selectSession(inheritedParent.dataset.inheritedParentSession, { mobileView: 'events' }).catch(showError);
+    openInheritedSourceSession(inheritedParent).catch(showError);
     return;
   }
   const contextAction = event.target.closest('[data-action="reveal-context-parent"], [data-action="inspect-context-parent"]');
@@ -5784,7 +6501,9 @@ el.timeline.addEventListener('click', (event) => {
   const item = currentTimelineEvent(article.dataset.eventId);
   if (!item) return;
   const action = event.target.closest('[data-action]')?.dataset.action || 'inspect';
-  if (action === 'toggle') {
+  if (action === 'reindex-project') {
+    refreshCurrentProject().catch(handleProjectRefreshError);
+  } else if (action === 'toggle') {
     const next = article.classList.contains('expanded') ? foldedDisplayState(item) : 'expanded';
     setOverride(item.id, next);
     renderTimeline();
@@ -5852,6 +6571,10 @@ el.detail.addEventListener('click', (event) => {
   }
   if (action === 'jump-event-ref') {
     inspectEventRef(event.target.closest('[data-event-ref-id]')?.dataset.eventRefId || '').catch(showError);
+    return;
+  }
+  if (action === 'reindex-project') {
+    refreshCurrentProject().catch(handleProjectRefreshError);
     return;
   }
   const key = state.detailSelectionKey.replace(/^raw:/, '');

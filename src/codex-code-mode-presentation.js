@@ -46,11 +46,11 @@ function codeModeOperationExecSource(operation, rawById) {
   if (raw?.recordType !== 'response_item'
       || raw?.payloadType !== 'custom_tool_call'
       || raw?.toolName !== 'exec'
-      || payload?.name !== 'exec'
+      || (payload && payload.name !== 'exec')
       || !callId
       || String(raw?.callId || '') !== callId
       || String(operation?.outerCallId || '') !== callId) return '';
-  const source = Object.hasOwn(payload, 'input') ? payload.input : raw.output;
+  const source = payload && Object.hasOwn(payload, 'input') ? payload.input : raw.output;
   return typeof source === 'string' ? source : '';
 }
 
@@ -123,6 +123,12 @@ function codeModePresentationFactsForEvent(session = {}, eventId = '') {
   };
 }
 
+function codeModeRequestMatches(event = {}, session = {}, request = '') {
+  if (event.layer !== 'main' || event.kind !== CODE_MODE_OPERATION_KIND) return false;
+  const fact = codeModeDeclaredRequestFactForEvent(session, event.id);
+  return Boolean(fact?.toolNames?.includes(request));
+}
+
 function codeModeRequestCatalog(sessions, options = {}) {
   const counts = new Map();
   for (const session of sessions || []) {
@@ -157,6 +163,7 @@ module.exports = {
   codeModeExecSource,
   codeModeOperationExecSource,
   codeModePresentationFactsForEvent,
+  codeModeRequestMatches,
   codeModeRequestCatalog,
   isCodeModeScriptOperation,
   normalizeCodeModeRequest,

@@ -26,6 +26,7 @@
     'proposed_plan',
     'reasoning',
     'command',
+    'read',
     'patch',
     'mcp_call',
     'js_repl',
@@ -33,7 +34,6 @@
     'other_tool_call',
     'web_search',
     'goal',
-    'developer_message',
     'error',
     'warning',
     'abort',
@@ -66,6 +66,7 @@
       kindOrder: [
         'command',
         'user_shell_command',
+        'read',
         'patch',
         'web_search',
         'mcp_call',
@@ -87,7 +88,6 @@
       kindOrder: [
         'reasoning',
         'hook',
-        'developer_message',
         'review',
         'subagent',
         'agent_coordination',
@@ -132,12 +132,12 @@
     {
       id: 'importantEvent',
       name: 'Important event',
-      description: 'User/assistant messages, patches, goals, errors, aborts, rollbacks, compactions, plans, plan updates, update_plan calls, failed events, and abnormal severity.',
+      description: 'User/assistant messages, patches, goals, errors, aborts, rollbacks, compactions, plan artifacts, plan updates, failed events, and abnormal severity.',
     },
     {
       id: 'updatePlanCall',
-      name: 'update_plan call',
-      description: 'Calls to the update_plan tool and protocol plan updates.',
+      name: 'Plan update',
+      description: 'Observed plan updates from supported tools or protocol evidence.',
     },
     {
       id: 'userInputRequest',
@@ -270,7 +270,8 @@
     const matches = [];
     if (event.kind !== 'code_mode_operation' && Object.hasOwn(normalized.kindStates, event.kind)) {
       matches.push(normalized.kindStates[event.kind]);
-    } else if (event.kind === 'agent_coordination' && Object.hasOwn(normalized.kindStates, 'other_tool_call')) {
+    } else if (['agent_coordination', 'read'].includes(event.kind)
+        && Object.hasOwn(normalized.kindStates, 'other_tool_call')) {
       matches.push(normalized.kindStates.other_tool_call);
     }
     for (const condition of normalized.conditions) {
