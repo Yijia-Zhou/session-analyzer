@@ -15,6 +15,7 @@ const {
 } = require('../src/claude');
 const { getTimeline } = require('../src/codex');
 const { buildClaudeEventDetail } = require('../src/claude-detail');
+const { queryForIndex } = require('../src/source-adapters');
 const { createServer, parseArgs } = require('../server');
 
 async function makeClaudeHome(t) {
@@ -212,7 +213,7 @@ async function buildRichClaudeFixture(t) {
           type: 'tool_use',
           id: 'call-read',
           name: 'Read',
-          input: { file_path: '/outside/secret' },
+          input: { file_path: path.join(repoRoot, 'src', 'read-only.js') },
         }],
         usage: { input_tokens: 15, output_tokens: 3 },
       },
@@ -758,10 +759,15 @@ test('Claude index preserves every JSONL record while projecting messages, tools
   const toolEvents = session.logicalEvents.filter((event) => event.toolName);
   assert.equal(toolEvents.length, 3);
   assert.equal(toolEvents.find((event) => event.toolName === 'Bash').status, 'success');
-  assert.equal(toolEvents.find((event) => event.toolName === 'Read').kind, 'read');
-  assert.equal(toolEvents.find((event) => event.toolName === 'Read').label, 'Read');
-  assert.equal(toolEvents.find((event) => event.toolName === 'Read').status, 'declined');
-  assert.equal(toolEvents.find((event) => event.toolName === 'Read').severity, 'warning');
+  const readRaw = session.rawEvents.find((raw) => raw.toolName === 'Read');
+  const readEvent = toolEvents.find((event) => event.toolName === 'Read');
+  const readPath = path.join(fixture.repoRoot, 'src', 'read-only.js');
+  assert.deepEqual(readRaw.touchedFiles, [readPath]);
+  assert.deepEqual(readEvent.touchedFiles, [readPath]);
+  assert.equal(readEvent.kind, 'read');
+  assert.equal(readEvent.label, 'Read');
+  assert.equal(readEvent.status, 'declined');
+  assert.equal(readEvent.severity, 'warning');
   assert.equal(toolEvents.find((event) => event.toolName === 'Agent').agentId, 'agent-one');
   assert.deepEqual(index.eventKinds.main.find((item) => item.value === 'read'), {
     value: 'read', label: 'read', count: 1,
@@ -770,6 +776,19 @@ test('Claude index preserves every JSONL record while projecting messages, tools
   assert.deepEqual(
     getTimeline(index, session.id, { offset: 0, limit: 100, layer: 'main', kind: 'read' })
       .events.map((event) => event.toolName),
+    ['Read'],
+  );
+  const query = queryForIndex(index);
+  assert.deepEqual(query.fileSuggestions(index, { layer: 'main' }), [
+    { file: 'src/read-only.js', count: 1 },
+  ]);
+  assert.deepEqual(
+    query.getTimeline(index, session.id, {
+      offset: 0,
+      limit: 100,
+      layer: 'main',
+      file: 'src/read-only.js',
+    }).events.map((event) => event.toolName),
     ['Read'],
   );
   assert.equal(

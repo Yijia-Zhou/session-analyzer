@@ -124,6 +124,13 @@ function claudeRawRef(raw) {
 function toolInputFiles(name, input) {
   if (!input || typeof input !== 'object') return [];
   const normalized = String(name || '').toLowerCase();
+  if (normalized === 'read') {
+    return [
+      input.file_path,
+      input.filePath,
+      input.path,
+    ].filter((value) => typeof value === 'string' && value.trim());
+  }
   if (!['write', 'edit', 'multiedit', 'notebookedit'].includes(normalized)) return [];
   return [
     input.file_path,
