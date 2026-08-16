@@ -4209,6 +4209,8 @@ test('browser user scroll during the search-scroll guard still loads the next pa
     .filter((value) => value.includes('/timeline?'))
     .map((value) => new URL(value, 'http://local'));
   assert.equal(paginationRequests.some((url) => url.searchParams.get('offset') === '150'), true);
+  await page.waitForFunction(() => !document.querySelector('#loadMoreBtn')?.textContent.includes('Loading'));
+  await page.waitForLoadState('networkidle');
 });
 
 test('browser an above-threshold user scroll cannot authorize a later programmatic bottom scroll', async (t) => {
@@ -4386,6 +4388,7 @@ test('browser replacement pagination requires current-context intent while expli
   const deepEventId = await page.locator('#timeline .event[data-event-id]').nth(501).getAttribute('data-event-id');
   await page.locator(`[data-event-id="${deepEventId}"]`).click();
   await waitForDetailView(page, 'inspector');
+  await page.waitForSelector('#detail .eventNavigator .navPosition');
 
   const filterRequestStart = requestedUrls.length;
   const filterPageZero = page.waitForResponse((response) => {

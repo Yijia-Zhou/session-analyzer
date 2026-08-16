@@ -337,13 +337,13 @@ test('English and Chinese README capacity guidance preserves aligned operational
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
   const readmeZh = fs.readFileSync(path.join(__dirname, '..', 'README.zh-CN.md'), 'utf8');
   for (const content of [readme, readmeZh]) {
-    assert.match(content, /488/u);
-    assert.match(content, /300,997/u);
-    assert.match(content, /484 MB/u);
-    assert.match(content, /1\.90 GB/u);
-    assert.match(content, /1\.044 GB/u);
-    assert.match(content, /6\.55/u);
-    assert.match(content, /0\.3 ms/u);
+    assert.match(content, /490/u);
+    assert.match(content, /305,485/u);
+    assert.match(content, /788 MB/u);
+    assert.match(content, /2\.16 GB/u);
+    assert.match(content, /1\.055 GB/u);
+    assert.match(content, /10\.84/u);
+    assert.match(content, /0\.14 ms/u);
     assert.match(content, /800 MiB/u);
     assert.match(content, /SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY/u);
     assert.match(content, /JavaScript heap out of memory/u);
