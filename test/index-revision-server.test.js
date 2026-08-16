@@ -5,6 +5,7 @@ const test = require('node:test');
 const { createServer } = require('../server');
 const { buildProjectQueryStore } = require('../src/project-query-store');
 const { getSourceAdapter } = require('../src/source-adapters');
+const { materializationBusyError } = require('../src/materialized-session-owner');
 const { strictClaudeIndexFromComplete } = require('./strict-claude-fixture');
 
 const SOURCE_KIND = 'claude-code';
@@ -109,6 +110,132 @@ test('server retires an in-flight packed query and never emits a mixed revision 
     const state = await stateResponse.json();
     assert.equal(state.indexRevision, 2);
     assert.equal(state.repoRoot, replacement.repoRoot);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('server event routes coalesce and reuse one revision-owned Materialized Session', async () => {
+  const completeIndex = index('cached-session', 2);
+  const completeSession = completeIndex.sessions[0];
+  const strictIndex = strictClaudeIndexFromComplete(completeIndex);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const server = createServer(strictIndex, 1, {
+    materializeSession: async (_index, indexedSession) => {
+      assert.equal(indexedSession.id, completeSession.id);
+      calls += 1;
+      await gate;
+      return completeSession;
+    },
+  });
+  const base = await listen(server);
+  try {
+    const id = encodeURIComponent(completeSession.id);
+    const first = fetch(`${base}/api/sessions/${id}/analysis`);
+    const second = fetch(`${base}/api/sessions/${id}/analysis?locale=zh-CN`);
+    while (calls === 0) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 1);
+    release();
+    const [analysisResponse, secondAnalysisResponse] = await Promise.all([first, second]);
+    assert.equal(analysisResponse.status, 200);
+    assert.equal(secondAnalysisResponse.status, 200);
+    assert.deepEqual(await analysisResponse.json(), completeSession.analysis);
+    assert.deepEqual(await secondAnalysisResponse.json(), completeSession.analysis);
+
+    const cached = await fetch(`${base}/api/sessions/${id}/analysis`);
+    assert.equal(cached.status, 200);
+    assert.equal(calls, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('server exposes bounded materialization admission as retryable 503', async () => {
+  const completeIndex = index('busy-session');
+  const strictIndex = strictClaudeIndexFromComplete(completeIndex);
+  const server = createServer(strictIndex, 1, {
+    materializeSession: async () => {
+      throw materializationBusyError();
+    },
+  });
+  const base = await listen(server);
+  try {
+    const response = await fetch(`${base}/api/sessions/busy-session/analysis`);
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('retry-after'), '1');
+    const body = await response.json();
+    assert.equal(body.code, 'MATERIALIZATION_BUSY');
+    assert.equal(body.error, 'Internal server error');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('server preserves materialization contract error code and never caches the failure', async () => {
+  const completeIndex = index('invalid-session');
+  const strictIndex = strictClaudeIndexFromComplete(completeIndex);
+  let calls = 0;
+  const server = createServer(strictIndex, 1, {
+    materializeSession: async () => {
+      calls += 1;
+      const error = new Error('synthetic validator rejection');
+      error.code = 'MATERIALIZATION_CONTRACT_VIOLATION';
+      error.statusCode = 500;
+      throw error;
+    },
+  });
+  const base = await listen(server);
+  try {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const response = await fetch(`${base}/api/sessions/invalid-session/analysis`);
+      assert.equal(response.status, 500);
+      assert.equal((await response.json()).code, 'MATERIALIZATION_CONTRACT_VIOLATION');
+      assert.equal(calls, attempt);
+    }
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('failed replacement leaves the current revision Materialized Session cache usable', async () => {
+  const completeIndex = index('preserved-cache');
+  const completeSession = completeIndex.sessions[0];
+  const strictIndex = strictClaudeIndexFromComplete(completeIndex);
+  let materializationCalls = 0;
+  const server = createServer(strictIndex, 1, {
+    materializeSession: async () => {
+      materializationCalls += 1;
+      return completeSession;
+    },
+    buildIndex: async () => {
+      throw new Error('synthetic replacement failure');
+    },
+  });
+  const base = await listen(server);
+  try {
+    const analysisUrl = `${base}/api/sessions/preserved-cache/analysis`;
+    assert.equal((await fetch(analysisUrl)).status, 200);
+    assert.equal(materializationCalls, 1);
+
+    const start = await fetch(`${base}/api/project`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repoRoot: 'G:\\repo\\replacement-fails' }),
+    });
+    assert.equal(start.status, 202);
+    const jobId = (await start.json()).job.id;
+    let status;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const response = await fetch(`${base}/api/project/status?jobId=${encodeURIComponent(jobId)}`);
+      status = await response.json();
+      if (status.job.status === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(status.job.status, 'failed');
+    assert.equal((await fetch(analysisUrl)).status, 200);
+    assert.equal(materializationCalls, 1);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

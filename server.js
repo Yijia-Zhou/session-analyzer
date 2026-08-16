@@ -27,6 +27,7 @@ const {
   clearIndexRevision,
   initializeIndexRevisionState,
   installIndexRevision,
+  materializeSessionWithLease,
   withIndexRevisionLease,
 } = require('./src/index-revision-lease');
 const { isPathInsideOrSame, normalizeFsPath } = require('./src/shared/fs-path');
@@ -43,6 +44,11 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
 };
+
+const PUBLIC_RUNTIME_ERROR_CODES = new Set([
+  'MATERIALIZATION_BUSY',
+  'MATERIALIZATION_CONTRACT_VIOLATION',
+]);
 
 function parseArgs(argv) {
   const opts = {
@@ -324,6 +330,18 @@ function requireIndex(state, res) {
     projectSelected: false,
   });
   return null;
+}
+
+function materializeLeasedSession(capture, indexedSession, materializeSession) {
+  return materializeSessionWithLease(
+    capture.lease,
+    indexedSession,
+    capture.signal,
+    ({ index, indexRevision, signal }) => materializeSession(index, indexedSession, {
+      indexRevision,
+      signal,
+    }),
+  );
 }
 
 function projectJobPayload(job) {
@@ -816,6 +834,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     adapter,
     sourceRevision: 0,
     buildIndexOverride: options.buildIndex || null,
+    materializeSession: options.materializeSession || materializeSessionForIndex,
     nextProjectJobId: 1,
     activeProjectJob: null,
     projectCache: null,
@@ -937,16 +956,18 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         const { value: files, lease } = await withIndexRevisionLease(
           state,
           requestAbort.signal,
-          async ({ index, indexRevision, signal }) => {
+          async (capture) => {
+            const { index, signal } = capture;
             const query = queryForIndex(index);
             const options = { layer: searchParams.get('layer') || 'main' };
             if (!sessionId) return query.projectFileSuggestions(index, options, { signal });
             const indexedSession = index.sessionsById.get(sessionId);
             if (!indexedSession) return null;
-            const materializedSession = await materializeSessionForIndex(index, indexedSession, {
-              indexRevision,
-              signal,
-            });
+            const materializedSession = await materializeLeasedSession(
+              capture,
+              indexedSession,
+              state.materializeSession,
+            );
             return query.sessionFileSuggestions(index, materializedSession, options);
           },
         );
@@ -965,10 +986,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         const { value: result } = await withIndexRevisionLease(
           state,
           requestAbort.signal,
-          async ({ index, indexRevision, signal }) => {
+          async (capture) => {
+            const { index } = capture;
             const indexedSession = index.sessionsById.get(sessionId);
             if (!indexedSession) return null;
-            const session = await materializeSessionForIndex(index, indexedSession, { indexRevision, signal });
+            const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
             const query = queryForIndex(index);
             return query.getTimeline(index, session, query.filtersFromSearchParams(searchParams, {
               offset: asNumber(searchParams.get('offset'), 0, 0, 1_000_000),
@@ -993,10 +1015,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         const { value: event } = await withIndexRevisionLease(
           state,
           requestAbort.signal,
-          async ({ index, indexRevision, signal }) => {
+          async (capture) => {
+            const { index } = capture;
             const indexedSession = index.sessionsById.get(sessionId);
             if (!indexedSession) return null;
-            const session = await materializeSessionForIndex(index, indexedSession, { indexRevision, signal });
+            const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
             return queryForIndex(index).getEvent(index, session, eventId, {
               layer: searchParams.get('layer') || 'main',
               locale,
@@ -1019,10 +1042,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         const { value: detail } = await withIndexRevisionLease(
           state,
           requestAbort.signal,
-          async ({ index, indexRevision, signal }) => {
+          async (capture) => {
+            const { index, signal } = capture;
             const indexedSession = index.sessionsById.get(sessionId);
             if (!indexedSession) return null;
-            const session = await materializeSessionForIndex(index, indexedSession, { indexRevision, signal });
+            const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
             return buildEventDetailForSession(
               index,
               session,
@@ -1047,10 +1071,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         const { value: image } = await withIndexRevisionLease(
           state,
           requestAbort.signal,
-          async ({ index, indexRevision, signal }) => {
+          async (capture) => {
+            const { index, signal } = capture;
             const indexedSession = index.sessionsById.get(sessionId);
             if (!indexedSession) return { statusCode: 404, error: 'Unknown session' };
-            const session = await materializeSessionForIndex(index, indexedSession, { indexRevision, signal });
+            const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
             return readImagePreviewForSession(
               index,
               session,
@@ -1061,7 +1086,15 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           },
         );
         if (image.error) {
-          sendError(res, image.statusCode, image.error, undefined, image.code);
+          sendError(
+            res,
+            image.statusCode,
+            image.code === 'INDEXED_SOURCE_STALE'
+              ? 'Indexed source changed; reindex required'
+              : image.error,
+            undefined,
+            image.code,
+          );
           return;
         }
         sendImage(res, image);
@@ -1075,10 +1108,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         const { value: analysis } = await withIndexRevisionLease(
           state,
           requestAbort.signal,
-          async ({ index, indexRevision, signal }) => {
+          async (capture) => {
+            const { index } = capture;
             const indexedSession = index.sessionsById.get(sessionId);
             if (!indexedSession) return null;
-            const session = await materializeSessionForIndex(index, indexedSession, { indexRevision, signal });
+            const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
             return session.analysis;
           },
         );
@@ -1097,10 +1131,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         const { value: raw } = await withIndexRevisionLease(
           state,
           requestAbort.signal,
-          async ({ index, indexRevision, signal }) => {
+          async (capture) => {
+            const { index, signal } = capture;
             const indexedSession = index.sessionsById.get(sessionId);
             if (!indexedSession) return null;
-            const session = await materializeSessionForIndex(index, indexedSession, { indexRevision, signal });
+            const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
             return readIndexedRawRecord(index, session, decodePathSegment(rawRecordMatch[2]), { signal });
           },
         );
@@ -1123,12 +1158,13 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         const { value: raw } = await withIndexRevisionLease(
           state,
           requestAbort.signal,
-          async ({ index, indexRevision, signal }) => {
+          async (capture) => {
+            const { index, signal } = capture;
             const owner = resolveLegacyRawOwnerForIndex(index, file, line);
             if (!owner) return null;
             const indexedSession = index.sessionsById.get(owner.sessionId);
             if (!indexedSession) return null;
-            const session = await materializeSessionForIndex(index, indexedSession, { indexRevision, signal });
+            const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
             return readLegacyRawLineForSession(index, session, owner, owner.adapter, { signal });
           },
         );
@@ -1145,6 +1181,9 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       if (res.destroyed) return;
       if (error.name === 'AbortError') return;
       const statusCode = error.statusCode || 500;
+      if (error.retryAfterSeconds && !res.headersSent) {
+        res.setHeader('retry-after', String(error.retryAfterSeconds));
+      }
       const details = debugErrors
         ? (statusCode >= 500 ? error.stack || error.message : error.message)
         : undefined;
@@ -1153,7 +1192,9 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         statusCode,
         statusCode >= 500 ? 'Internal server error' : error.message,
         details,
-        statusCode < 500 ? error.code : undefined,
+        statusCode < 500 || PUBLIC_RUNTIME_ERROR_CODES.has(error.code)
+          ? error.code
+          : undefined,
       );
     } finally {
       requestAbort.cleanup();

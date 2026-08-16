@@ -10,6 +10,10 @@ const {
   materializeSessionForIndex,
   validateIndexOwnership,
 } = require('../src/source-adapters');
+const {
+  initializeIndexRevisionState,
+  materializeSessionWithLease,
+} = require('../src/index-revision-lease');
 
 const FIXTURE_HOME = path.join(__dirname, 'fixtures', 'codex-home');
 const FIXTURE_REPO = 'G:\\vibe\\term-agent';
@@ -443,6 +447,34 @@ test('strict Codex Index retains no complete event graph and reconstructs exact 
     assert.deepEqual(first.analysis, expected.analysis);
     assert.deepEqual(first.presentationIndexes, expected.presentationIndexes);
   }
+});
+
+test('revision owner coalesces and caches exact strict Codex materialization identity', async () => {
+  const index = await codex.buildSourceBackedIndex({
+    repoRoot: FIXTURE_REPO,
+    codexHome: FIXTURE_HOME,
+  });
+  const indexedSession = index.sessions[0];
+  const state = initializeIndexRevisionState({ index });
+  let calls = 0;
+  const materialize = ({ index: capturedIndex, indexRevision, signal }) => {
+    calls += 1;
+    return materializeSessionForIndex(capturedIndex, indexedSession, { indexRevision, signal });
+  };
+
+  const [first, second] = await Promise.all([
+    materializeSessionWithLease(state.revisionLease, indexedSession, null, materialize),
+    materializeSessionWithLease(state.revisionLease, indexedSession, null, materialize),
+  ]);
+  assert.equal(first, second);
+  assert.equal(calls, 1);
+  assert.equal(await materializeSessionWithLease(
+    state.revisionLease,
+    indexedSession,
+    null,
+    materialize,
+  ), first);
+  assert.equal(calls, 1);
 });
 
 test('trusted Codex materialization stays bounded away from unrelated Index collections', async () => {

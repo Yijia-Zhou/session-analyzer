@@ -22,6 +22,10 @@ const {
   queryForIndex,
   validateIndexOwnership,
 } = require('../src/source-adapters');
+const {
+  initializeIndexRevisionState,
+  materializeSessionWithLease,
+} = require('../src/index-revision-lease');
 const { createServer, parseArgs } = require('../server');
 
 const FORBIDDEN_STRICT_CLAUDE_FIELDS = new Set([
@@ -1361,6 +1365,35 @@ test('strict Claude indexing releases complete graphs and rematerializes exact p
     get() { throw new Error('unrelated strict Index collection was scanned'); },
   });
   assert.equal((await materializeSessionForIndex(indexed, selected)).id, selected.id);
+});
+
+test('revision owner coalesces and caches exact strict Claude materialization identity', async (t) => {
+  const fixture = await buildRichClaudeFixture(t);
+  const index = await buildClaudeSourceBackedIndex({
+    repoRoot: fixture.repoRoot,
+    claudeHome: fixture.claudeHome,
+  });
+  const indexedSession = index.sessions[0];
+  const state = initializeIndexRevisionState({ index });
+  let calls = 0;
+  const materialize = ({ index: capturedIndex, indexRevision, signal }) => {
+    calls += 1;
+    return materializeSessionForIndex(capturedIndex, indexedSession, { indexRevision, signal });
+  };
+
+  const [first, second] = await Promise.all([
+    materializeSessionWithLease(state.revisionLease, indexedSession, null, materialize),
+    materializeSessionWithLease(state.revisionLease, indexedSession, null, materialize),
+  ]);
+  assert.equal(first, second);
+  assert.equal(calls, 1);
+  assert.equal(await materializeSessionWithLease(
+    state.revisionLease,
+    indexedSession,
+    null,
+    materialize,
+  ), first);
+  assert.equal(calls, 1);
 });
 
 test('strict Claude snapshots ignore append-only growth but reject accepted-prefix and owner rewrites', async (t) => {

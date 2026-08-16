@@ -6,20 +6,33 @@ const {
   clearIndexRevision,
   initializeIndexRevisionState,
   installIndexRevision,
+  materializeSessionWithLease,
   withIndexRevisionLease,
 } = require('../src/index-revision-lease');
 
-test('IndexRevisionLease installs and clears with monotonic revisions', () => {
+test('IndexRevisionLease installs and clears cache with monotonic revisions', async () => {
   const first = { id: 'first' };
   const state = initializeIndexRevisionState({ index: first });
   assert.equal(state.indexRevision, 1);
   assert.equal(state.revisionLease.index, first);
   const firstLease = state.revisionLease;
+  const indexedSession = { id: 'session-a' };
+  first.sessionsById = new Map([[indexedSession.id, indexedSession]]);
+  const materializedSession = { id: indexedSession.id, rawEvents: [], logicalEvents: [] };
+  assert.equal(await materializeSessionWithLease(
+    firstLease,
+    indexedSession,
+    null,
+    async () => materializedSession,
+  ), materializedSession);
+  assert.equal(firstLease.materializedSessionOwner.cache.size, 1);
 
   clearIndexRevision(state);
   assert.equal(state.index, null);
   assert.equal(state.indexRevision, 2);
   assert.equal(firstLease.retirementController.signal.aborted, true);
+  assert.equal(firstLease.materializedSessionOwner.cache.size, 0);
+  assert.equal(firstLease.materializedSessionOwner.retired, true);
 
   const second = { id: 'second' };
   installIndexRevision(state, second);

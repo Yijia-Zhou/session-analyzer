@@ -748,6 +748,35 @@ async function makeHookCodexHome(t) {
   return { codexHome, repoRoot: hookRepoRoot, sessionId };
 }
 
+test('browser retries one bounded materialization-busy GET before showing an error', async (t) => {
+  const index = await buildFixtureIndex();
+  let attempts = 0;
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: async (targetPage) => {
+      await targetPage.route('**/api/sessions/*/timeline?*', async (route) => {
+        const requestUrl = new URL(route.request().url());
+        if (requestUrl.searchParams.get('offset') === '0' && attempts === 0) {
+          attempts += 1;
+          await route.fulfill({
+            status: 503,
+            headers: { 'content-type': 'application/json', 'retry-after': '0' },
+            body: JSON.stringify({
+              error: 'Internal server error',
+              code: 'MATERIALIZATION_BUSY',
+            }),
+          });
+          return;
+        }
+        attempts += 1;
+        await route.continue();
+      });
+    },
+  });
+  assert.ok(attempts >= 2);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('Internal server error'), false);
+});
+
 test('browser locale bootstrap keeps narrow screens on sessions view', async (t) => {
   const index = await buildFixtureIndex();
   const { page } = await openApp(t, index, { viewport: { width: 390, height: 760 }, locale: 'zh-CN', activeSessionState: 'attached' });

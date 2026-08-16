@@ -431,6 +431,30 @@ function writeJsonStorage(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
+function abortableDelay(ms, signal) {
+  const abortError = () => (signal?.reason instanceof Error
+    ? signal.reason
+    : Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+  if (signal?.aborted) return Promise.reject(abortError());
+  if (!ms) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let timer = 0;
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(abortError());
+    }
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 function api(path, options = {}) {
   const init = { ...options };
   let requestPath = path;
@@ -444,9 +468,23 @@ function api(path, options = {}) {
     init.body = JSON.stringify(options.body);
     init.headers = { 'content-type': 'application/json', ...(options.headers || {}) };
   }
-  return fetch(requestPath, init).then(async (res) => {
+  const request = (allowBusyRetry) => fetch(requestPath, init).then(async (res) => {
     const body = await res.json();
     if (!res.ok) {
+      if (allowBusyRetry
+          && method === 'GET'
+          && res.status === 503
+          && body.code === 'MATERIALIZATION_BUSY') {
+        const retryAfterHeader = res.headers.get('retry-after');
+        const retryAfter = retryAfterHeader && retryAfterHeader.trim()
+          ? Number(retryAfterHeader)
+          : Number.NaN;
+        const delayMs = Number.isFinite(retryAfter)
+          ? Math.max(0, Math.min(5, retryAfter)) * 1000
+          : 1000;
+        await abortableDelay(delayMs, init.signal);
+        return request(false);
+      }
       const error = new Error(body.error || `HTTP ${res.status}`);
       error.status = res.status;
       error.code = body.code;
@@ -455,6 +493,7 @@ function api(path, options = {}) {
     }
     return body;
   });
+  return request(true);
 }
 
 function debounce(fn, ms) {

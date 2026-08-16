@@ -1,5 +1,10 @@
 'use strict';
 
+const {
+  createMaterializationScheduler,
+  createMaterializedSessionOwner,
+} = require('./materialized-session-owner');
+
 function abortError(signal) {
   if (signal?.reason instanceof Error) return signal.reason;
   const error = new Error('The operation was aborted');
@@ -15,26 +20,38 @@ function retiredError() {
   return error;
 }
 
-function createIndexRevisionLease(index, indexRevision) {
+function createIndexRevisionLease(index, indexRevision, scheduler = createMaterializationScheduler()) {
   if (!index || !Number.isSafeInteger(indexRevision) || indexRevision < 1) {
     throw new TypeError('A revision lease requires an Index and positive revision');
   }
-  return {
+  const lease = {
     index,
     indexRevision,
     retirementController: new AbortController(),
   };
+  lease.materializedSessionOwner = createMaterializedSessionOwner({
+    index,
+    indexRevision,
+    retirementController: lease.retirementController,
+    scheduler,
+  });
+  return lease;
 }
 
 function initializeIndexRevisionState(state, initialIndex = state.index || null) {
+  state.materializationScheduler ||= createMaterializationScheduler({ warn: state.warn });
   state.indexRevision = initialIndex ? 1 : 0;
-  state.revisionLease = initialIndex ? createIndexRevisionLease(initialIndex, 1) : null;
+  state.revisionLease = initialIndex
+    ? createIndexRevisionLease(initialIndex, 1, state.materializationScheduler)
+    : null;
   return state;
 }
 
 function retireLease(lease) {
   if (lease && !lease.retirementController.signal.aborted) {
-    lease.retirementController.abort(retiredError());
+    const error = retiredError();
+    lease.materializedSessionOwner?.retire(error);
+    lease.retirementController.abort(error);
   }
 }
 
@@ -43,7 +60,7 @@ function installIndexRevision(state, index) {
   const previous = state.revisionLease;
   const nextRevision = (state.indexRevision || 0) + 1;
   retireLease(previous);
-  const lease = createIndexRevisionLease(index, nextRevision);
+  const lease = createIndexRevisionLease(index, nextRevision, state.materializationScheduler);
   state.index = index;
   state.indexRevision = nextRevision;
   state.revisionLease = lease;
@@ -66,10 +83,28 @@ function captureIndexRevisionLease(state) {
   if (!lease
       || lease.index !== state.index
       || lease.indexRevision !== state.indexRevision
+      || lease.materializedSessionOwner?.retired
       || lease.retirementController.signal.aborted) {
     throw retiredError();
   }
   return lease;
+}
+
+function materializeSessionWithLease(lease, indexedSession, waiterSignal, materialize) {
+  if (!lease?.materializedSessionOwner
+      || lease.materializedSessionOwner.index !== lease.index
+      || lease.materializedSessionOwner.indexRevision !== lease.indexRevision) {
+    return Promise.reject(retiredError());
+  }
+  return lease.materializedSessionOwner.get(
+    indexedSession,
+    waiterSignal,
+    ({ signal }) => materialize({
+      index: lease.index,
+      indexRevision: lease.indexRevision,
+      signal,
+    }),
+  );
 }
 
 function joinedAbortSignal(...signals) {
@@ -133,6 +168,7 @@ module.exports = {
   initializeIndexRevisionState,
   installIndexRevision,
   joinedAbortSignal,
+  materializeSessionWithLease,
   retiredError,
   withIndexRevisionLease,
 };
