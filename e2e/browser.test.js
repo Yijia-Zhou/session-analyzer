@@ -3271,6 +3271,87 @@ test('browser discards revision-mismatched file suggestions and coalesces recove
   assert.equal(await page.evaluate(() => window.__sawRevisionMismatchMarker), false);
 });
 
+test('browser retries coalesced recovery when a nested query detects another revision', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+  const sessionMarker = 'stale-session-from-first-revision-change';
+  const suggestionMarker = 'stale-suggestion-from-nested-revision-change';
+  let sessionMismatchPending = true;
+  let suggestionMismatchPending = true;
+  let nestedMismatchArmed = false;
+
+  await page.route('**/api/sessions*', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (!sessionMismatchPending
+        || requestUrl.pathname !== '/api/sessions'
+        || requestUrl.searchParams.get('sort') !== 'events-desc'
+        || requestUrl.searchParams.get('q')) {
+      await route.continue();
+      return;
+    }
+    sessionMismatchPending = false;
+    const response = await route.fetch();
+    const body = await response.json();
+    nestedMismatchArmed = true;
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        indexRevision: body.indexRevision + 1,
+        sessions: body.sessions.map((session, itemIndex) => (
+          itemIndex === 0 ? { ...session, title: sessionMarker } : session
+        )),
+      },
+    });
+  });
+  await page.route('**/api/file-suggestions*', async (route) => {
+    if (!nestedMismatchArmed || !suggestionMismatchPending) {
+      await route.continue();
+      return;
+    }
+    suggestionMismatchPending = false;
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        indexRevision: body.indexRevision + 1,
+        files: [{ file: suggestionMarker, count: 999 }],
+      },
+    });
+  });
+  await page.evaluate(([firstMarker, secondMarker]) => {
+    window.__sawOverlappingRevisionMarker = document.body.textContent.includes(firstMarker)
+      || document.body.textContent.includes(secondMarker);
+    new MutationObserver(() => {
+      if (document.body.textContent.includes(firstMarker)
+          || document.body.textContent.includes(secondMarker)) {
+        window.__sawOverlappingRevisionMarker = true;
+      }
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  }, [sessionMarker, suggestionMarker]);
+
+  const requestStart = requestedUrls.length;
+  let recoveryStateResponses = 0;
+  const secondRecoveryState = page.waitForResponse((response) => {
+    if (new URL(response.url()).pathname !== '/api/state') return false;
+    recoveryStateResponses += 1;
+    return recoveryStateResponses === 2;
+  });
+  await page.locator('#sortSelect').selectOption('events-desc');
+  await secondRecoveryState;
+  await page.waitForFunction(() => document.querySelectorAll('[data-session-id]').length > 0);
+
+  const recoveryStateRequests = requestedUrls.slice(requestStart).filter((value) => (
+    new URL(value, 'http://local').pathname === '/api/state'
+  ));
+  assert.equal(sessionMismatchPending, false);
+  assert.equal(suggestionMismatchPending, false);
+  assert.ok(recoveryStateRequests.length >= 2);
+  assert.equal(await page.evaluate(() => window.__sawOverlappingRevisionMarker), false);
+});
+
 test('browser project return ignores stale selected-session analysis responses', async (t) => {
   const index = await buildFixtureIndex();
   const { page } = await openApp(t, index, { locale: 'en' });

@@ -131,6 +131,7 @@ const state = {
   indexRevision: 0,
   projectResultsRevision: 0,
   revisionRecoveryPending: null,
+  revisionRecoveryRequested: false,
   repoRoot: '',
   projects: [],
   projectSelected: false,
@@ -3197,13 +3198,15 @@ function isRetiredIndexRevisionError(error) {
 async function acceptRevisionBearingQueryResponse(data) {
   if (Number.isSafeInteger(data?.indexRevision)
       && data.indexRevision === state.indexRevision) return true;
-  if (!state.revisionRecoveryPending) await recoverIndexRevision();
+  if (state.revisionRecoveryPending) state.revisionRecoveryRequested = true;
+  else await recoverIndexRevision();
   return false;
 }
 
 async function recoverRetiredIndexRevision(error) {
   if (!isRetiredIndexRevisionError(error)) return false;
-  if (!state.revisionRecoveryPending) await recoverIndexRevision();
+  if (state.revisionRecoveryPending) state.revisionRecoveryRequested = true;
+  else await recoverIndexRevision();
   return true;
 }
 
@@ -3962,13 +3965,13 @@ async function loadSessions() {
     if (state.searchScope === 'project') {
       state.searchStructureKey = structuredSearchKey();
       syncSearchScopeUi();
-      await loadProjectResults();
+      if (!(await loadProjectResults())) return false;
     } else {
       await selectSession(state.selectedSessionId);
     }
   }
   renderSearchAssistChips();
-  await refreshFileSuggestions();
+  if (!(await refreshFileSuggestions())) return false;
   return true;
 }
 
@@ -4058,11 +4061,12 @@ async function recoverIndexRevision() {
   renderProjectSearchView();
   const recovery = (async () => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      state.revisionRecoveryRequested = false;
       const appState = await api('/api/state');
       const currentState = appState.currentState || appState;
       if (!currentState?.projectSelected) return false;
       await applyAppState(currentState);
-      if (await loadSessions()) return true;
+      if (await loadSessions() && !state.revisionRecoveryRequested) return true;
     }
     return false;
   })();
@@ -4070,7 +4074,13 @@ async function recoverIndexRevision() {
   try {
     return await recovery;
   } finally {
-    if (state.revisionRecoveryPending === recovery) state.revisionRecoveryPending = null;
+    if (state.revisionRecoveryPending === recovery) {
+      state.revisionRecoveryPending = null;
+      if (state.revisionRecoveryRequested) {
+        state.revisionRecoveryRequested = false;
+        Promise.resolve().then(() => recoverIndexRevision()).catch(showError);
+      }
+    }
   }
 }
 

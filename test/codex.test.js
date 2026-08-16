@@ -4244,6 +4244,16 @@ test('legacy Raw ownership uses the bounded Index projection before materializat
   assert.equal(owner.rawIdHint, raw.rawId);
   assert.equal(owner.line, raw.source.line);
   assert.equal(owner.adapter.kind, 'codex');
+
+  const zeroLineOwners = buildCodexLegacyRawOwnerIndex([{
+    id: 'zero-line-session',
+    rawEvents: [{
+      rawId: 'zero-line-raw',
+      source: { file: raw.source.file, line: 0 },
+    }],
+  }]);
+  assert.equal(zeroLineOwners.entryCount, 0);
+  assert.deepEqual(zeroLineOwners.payload.files, {});
 });
 
 test('legacy raw endpoint rejects malformed canonical Raw Event ownership', async (t) => {

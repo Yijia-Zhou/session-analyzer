@@ -148,7 +148,7 @@ function buildCodexLegacyRawOwnerIndex(sessions) {
       const file = normalizeFsPath(raw?.source?.file || '');
       const line = raw?.source?.line;
       const rawId = String(raw?.rawId || '');
-      if (!file || !Number.isSafeInteger(line) || line < 0 || !rawId) continue;
+      if (!file || !Number.isSafeInteger(line) || line < 1 || !rawId) continue;
       const ownerKey = `${file}\u0000${line}`;
       if (seenSessionOwners.has(ownerKey)) continue;
       seenSessionOwners.add(ownerKey);
