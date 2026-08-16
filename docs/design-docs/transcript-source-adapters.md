@@ -2,7 +2,7 @@
 
 ## Status / 状态
 
-- Status: accepted `0.1.4` detail contract and M2/M3 lifecycle boundary; the M4 candidate makes Codex source-backed while Claude remains resident-compatible pending M5 / 状态：已接受 `0.1.4` 详情契约与 M2／M3 生命周期边界；M4 候选已让 Codex 来源回读，Claude 在 M5 前继续保持 resident-compatible
+- Status: accepted `0.1.4` detail contract and M2–M4 lifecycle boundary through exact Codex implementation head `1a04a255754165a52edba2efa3b4657250102075`; Claude remains resident-compatible pending M5 / 状态：已接受 `0.1.4` 详情契约及 M2 至 M4 生命周期边界，精确至 Codex 实现 head `1a04a255754165a52edba2efa3b4657250102075`；Claude 在 M5 前继续保持 resident-compatible
 - Last updated: 2026-08-16 / 最近更新：2026-08-16
 - Related product spec: `docs/product-specs/session-transcript-analyzer.md` / 相关产品规格：`docs/product-specs/session-transcript-analyzer.md`
 - Related timeline design: `docs/design-docs/logical-event-timeline.md` / 相关时间线设计：`docs/design-docs/logical-event-timeline.md`

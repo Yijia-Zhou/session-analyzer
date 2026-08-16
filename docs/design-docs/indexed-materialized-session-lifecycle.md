@@ -2,7 +2,7 @@
 
 ## Status / 状态
 
-- Status: M1 through M3 accepted; the M4 Codex source-backed candidate is correcting findings from its first independent implementation checkpoint and awaits immutable-head re-review; M5 remains blocked / 状态：M1 至 M3 已接受；M4 Codex 来源回读候选正在修正首次独立实现检查点的 finding，并等待不可变 head 复审；M5 仍被阻塞
+- Status: M1 through M4 accepted through exact Codex implementation head `1a04a255754165a52edba2efa3b4657250102075`; M5 Claude migration may start / 状态：M1 至 M4 已接受至精确 Codex 实现 head `1a04a255754165a52edba2efa3b4657250102075`；M5 Claude 迁移可以开始
 - Last updated: 2026-08-16 / 最近更新：2026-08-16
 - Review base: `6f8fa085fbd18344a973c8169be1998b5a71943d` on `towards-0.2.0` / 评审基线：`towards-0.2.0` 上的 `6f8fa085fbd18344a973c8169be1998b5a71943d`
 - Accepted review heads: M1 contract `e29fb566116eb1f30bdf5e8660ebc72a2c156e38`, authoritative-sequence reconciliation `7c3db8dfd9895a57a63020035a6278e0c410f1a0`, M2 lifecycle seam `7eaa317da1e6ca7fb8a6bcea6f24f0770a9f3530`, and M3 shared-query implementation `d2ff26e92104c83b17e46a11f3bb1566a1c65fb2` on branch `indexed-materialized-session-lifecycle` / 已接受评审 head：分支 `indexed-materialized-session-lifecycle` 上的 M1 契约 `e29fb566116eb1f30bdf5e8660ebc72a2c156e38`、权威顺序对齐 `7c3db8dfd9895a57a63020035a6278e0c410f1a0`、M2 生命周期 seam `7eaa317da1e6ca7fb8a6bcea6f24f0770a9f3530` 与 M3 共享查询实现 `d2ff26e92104c83b17e46a11f3bb1566a1c65fb2`
