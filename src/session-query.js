@@ -18,6 +18,7 @@ const {
   validateCanonicalSessionShape,
 } = require('./canonical-contract');
 const {
+  readProjectQueryRowPreview,
   scanProjectQueryShard,
   requireValidatedProjectQueryStore,
 } = require('./project-query-store');
@@ -578,28 +579,42 @@ function createSessionQuery(options = {}) {
       (index.sessions || []).map((session) => session.id),
     );
     const layer = filters.layer || 'main';
+    const hasTextQuery = Boolean(String(filters.q || '').trim());
     const eligibleSessions = (index.sessions || []).filter((session) => sessionWithinDateRange(session, filters));
     const scanned = await mapProjectQuerySessions(eligibleSessions, queryOptions.signal, async (session) => {
       let structuralOrdinal = 0;
       let eventCount = 0;
       let latest = null;
       await scanProjectQueryShard(store, session.id, layer, {
-        includeText: true,
+        includeText: hasTextQuery,
         signal: queryOptions.signal,
         onChunk: queryOptions.onChunk,
-      }, (row) => {
+        onTextChunk: queryOptions.onTextChunk,
+      }, (row, rowIndex) => {
         if (!projectRowMatches(row, filters)) return;
         const timelineIndex = structuralOrdinal;
         structuralOrdinal += 1;
-        if (filters.q && !eventHasSearchHit(row, filters.q)) return;
+        if (hasTextQuery && !eventHasSearchHit(row, filters.q)) return;
         eventCount += 1;
-        const candidate = { row, timelineIndex };
+        const candidate = { row, rowIndex, timelineIndex };
         if (!latest
             || String(row.timestamp).localeCompare(String(latest.row.timestamp)) > 0
             || (row.timestamp === latest.row.timestamp && timelineIndex > latest.timelineIndex)) {
           latest = candidate;
         }
       });
+      if (latest && !hasTextQuery) {
+        latest.row.preview = await readProjectQueryRowPreview(
+          store,
+          session.id,
+          layer,
+          latest.rowIndex,
+          {
+            signal: queryOptions.signal,
+            onTextChunk: queryOptions.onTextChunk,
+          },
+        );
+      }
       return latest ? { session, eventCount, latest } : null;
     });
     const results = scanned.filter(Boolean);

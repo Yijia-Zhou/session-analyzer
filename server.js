@@ -22,6 +22,7 @@ const {
   supportedSourceOptions,
   supportedSourceKinds,
   validateIndexOwnership,
+  validateIndexOwnershipForCommit,
 } = require('./src/source-adapters');
 const {
   clearIndexRevision,
@@ -737,7 +738,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       job.diagnostics?.progress(job.progress);
       job.capacityWarning.observe(job.progress);
     },
-  })).then((index) => {
+  })).then(async (index) => {
     if (controller.signal.aborted) {
       job.status = 'cancelled';
       job.error = 'Indexing cancelled';
@@ -752,7 +753,10 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       error.code = 'SOURCE_OWNERSHIP_MISMATCH';
       throw error;
     }
-    validateIndexOwnership(index);
+    await validateIndexOwnershipForCommit(index, {
+      signal: controller.signal,
+      onChunk: state.onIndexValidationChunk,
+    });
     if (controller.signal.aborted) {
       job.status = 'cancelled';
       job.error = 'Indexing cancelled';
@@ -834,6 +838,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     adapter,
     sourceRevision: 0,
     buildIndexOverride: options.buildIndex || null,
+    onIndexValidationChunk: options.onIndexValidationChunk || null,
     materializeSession: options.materializeSession || materializeSessionForIndex,
     nextProjectJobId: 1,
     activeProjectJob: null,

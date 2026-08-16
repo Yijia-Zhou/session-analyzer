@@ -75,6 +75,7 @@ test('source adapter descriptor accepts explicit paired optional capabilities', 
 test('source adapter descriptor discriminates resident and indexed materialization modes', () => {
   const resident = defineSourceAdapter(descriptor());
   assert.equal(resident.sessionLifecycle, SESSION_LIFECYCLE.RESIDENT_COMPLETE);
+  assert.deepEqual(resident.materializationContextFields, []);
   assert.deepEqual(resident.materializedPrivateFields, []);
 
   const strict = defineSourceAdapter(descriptor({
@@ -82,9 +83,12 @@ test('source adapter descriptor discriminates resident and indexed materializati
     validateMaterializationDescriptor() {},
     validateLegacyRawOwnerIndex() {},
     validateMaterializedPrivateState() {},
+    materializationContextFields: ['fixtureRoot'],
     materializedPrivateFields: ['_fixtureIndex'],
   }));
   assert.equal(strict.sessionLifecycle, SESSION_LIFECYCLE.INDEXED_MATERIALIZED);
+  assert.deepEqual(strict.materializationContextFields, ['fixtureRoot']);
+  assert.equal(Object.isFrozen(strict.materializationContextFields), true);
   assert.deepEqual(strict.materializedPrivateFields, ['_fixtureIndex']);
   assert.equal(Object.isFrozen(strict.materializedPrivateFields), true);
 });
@@ -146,6 +150,32 @@ test('indexed materialization mode requires its closed validation hooks', () => 
     (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
       && /only valid in indexed-materialized-v1/.test(error.message),
   );
+  assert.throws(
+    () => defineSourceAdapter(descriptor({
+      materializationContextFields: [],
+    })),
+    (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
+      && /only valid in indexed-materialized-v1/.test(error.message),
+  );
+  for (const materializationContextFields of [
+    ['repoRoot'],
+    ['sourceKind'],
+    ['not-kebab-case'],
+    ['fixtureRoot', 'fixtureRoot'],
+    Array.from({ length: 17 }, (_, index) => `field${index}`),
+  ]) {
+    assert.throws(
+      () => defineSourceAdapter(descriptor({
+        sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+        validateMaterializationDescriptor() {},
+        validateLegacyRawOwnerIndex() {},
+        validateMaterializedPrivateState() {},
+        materializationContextFields,
+        materializedPrivateFields: [],
+      })),
+      { code: 'SOURCE_ADAPTER_CONTRACT_VIOLATION' },
+    );
+  }
   for (const operation of [
     'validateMaterializationDescriptor',
     'validateLegacyRawOwnerIndex',
@@ -156,6 +186,7 @@ test('indexed materialization mode requires its closed validation hooks', () => 
       validateMaterializationDescriptor() {},
       validateLegacyRawOwnerIndex() {},
       validateMaterializedPrivateState() {},
+      materializationContextFields: [],
       materializedPrivateFields: [],
     };
     strict[operation] = async function asyncValidator() {};

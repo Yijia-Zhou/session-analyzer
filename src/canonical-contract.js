@@ -72,6 +72,7 @@ const INDEXED_SESSION_ALLOWED_FIELDS = new Set([
   ...INDEXED_SESSION_CARRIED_FIELDS,
   'materializationDescriptor',
   'queryShardId',
+  'queryProjectionDigest',
 ]);
 const STRICT_INDEXED_FORBIDDEN_FIELDS = Object.freeze([
   'rawEvents',
@@ -450,6 +451,10 @@ function validateCanonicalIndexedSessionShape(
   }
   requireString(session.queryShardId, owner, 'queryShardId', { nonEmpty: true });
   if (session.queryShardId !== session.id) throw contractError(owner, 'queryShardId', 'must equal id');
+  requireString(session.queryProjectionDigest, owner, 'queryProjectionDigest', { nonEmpty: true });
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(session.queryProjectionDigest)) {
+    throw contractError(owner, 'queryProjectionDigest', 'must be a SHA-256 base64url digest');
+  }
 
   if (Object.hasOwn(session, 'derivedRelationship') && session.derivedRelationship !== null) {
     validateBoundedPlainValue(session.derivedRelationship, `${owner}.derivedRelationship`);

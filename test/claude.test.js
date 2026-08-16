@@ -1396,7 +1396,7 @@ test('revision owner coalesces and caches exact strict Claude materialization id
   assert.equal(calls, 1);
 });
 
-test('strict Claude snapshots ignore append-only growth but reject accepted-prefix and owner rewrites', async (t) => {
+test('strict Claude snapshots ignore append-only growth, reject selected-prefix rewrites, and preserve copied owner facts', async (t) => {
   const fixture = await buildRichClaudeFixture(t);
   const index = await buildClaudeSourceBackedIndex({
     repoRoot: fixture.repoRoot,
@@ -1428,10 +1428,9 @@ test('strict Claude snapshots ignore append-only growth but reject accepted-pref
     materializeSessionForIndex(index, primary),
     { code: 'INDEXED_SOURCE_STALE', statusCode: 409 },
   );
-  await assert.rejects(
-    materializeSessionForIndex(index, derived),
-    { code: 'INDEXED_SOURCE_STALE', statusCode: 409 },
-  );
+  const derivedAfterOwnerRewrite = await materializeSessionForIndex(index, derived);
+  assert.equal(derivedAfterOwnerRewrite.id, derived.id);
+  assert.equal(derivedAfterOwnerRewrite.parentSessionId, derived.parentSessionId);
 
   const controller = new AbortController();
   controller.abort();
@@ -1441,7 +1440,7 @@ test('strict Claude snapshots ignore append-only growth but reject accepted-pref
   );
 });
 
-test('strict Claude sidecar dependencies preserve old absence and unchanged reindex identities', async (t) => {
+test('strict Claude sidecar evidence drives reindex while old body reconstruction uses copied facts', async (t) => {
   const fixture = await buildRichClaudeFixture(t);
   const first = await buildClaudeSourceBackedIndex({
     repoRoot: fixture.repoRoot,
@@ -1471,10 +1470,13 @@ test('strict Claude sidecar dependencies preserve old absence and unchanged rein
   );
   const metadata = await fsp.readFile(metadataFile, 'utf8');
   await fsp.writeFile(metadataFile, metadata.replace('"spawnDepth":1', '"spawnDepth":2'), 'utf8');
-  await assert.rejects(
-    materializeSessionForIndex(first, indexedDerived),
-    { code: 'INDEXED_SOURCE_STALE' },
-  );
+  assert.equal((await materializeSessionForIndex(first, indexedDerived)).id, derivedId);
+  const metadataChanged = await buildClaudeSourceBackedIndex({
+    repoRoot: fixture.repoRoot,
+    claudeHome: fixture.claudeHome,
+    previousIndex: first,
+  });
+  assert.notEqual(metadataChanged.sessions, first.sessions);
   await fsp.writeFile(metadataFile, metadata, 'utf8');
   assert.equal((await materializeSessionForIndex(first, indexedDerived)).id, derivedId);
   const absentSidecar = path.join(
@@ -1494,6 +1496,60 @@ test('strict Claude sidecar dependencies preserve old absence and unchanged rein
   });
   assert.equal(changed.sessionsById.has(derivedId), false);
   assert.notEqual(changed.sessions, first.sessions);
+});
+
+test('strict Claude dependency closure stays linear across 100 same-container primary Sessions', async (t) => {
+  const claudeHome = await makeClaudeHome(t);
+  const repoRoot = path.join(claudeHome, 'repo');
+  const container = path.join(claudeHome, 'projects', '-linear-dependency-fixture');
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const sessionIds = Array.from({ length: 100 }, (_, index) => (
+    `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`
+  ));
+  const files = [];
+  for (let index = 0; index < sessionIds.length; index += 1) {
+    const sessionId = sessionIds[index];
+    const file = path.join(container, `${sessionId}.jsonl`);
+    files.push(file);
+    await writeJsonl(file, [userRecord(sessionId, repoRoot, {
+      parentUuid: null,
+      uuid: `user-${index}`,
+      timestamp: `2026-08-16T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+      message: { role: 'user', content: `session ${String(index).padStart(3, '0')}` },
+    })]);
+  }
+  const started = Date.now();
+  const index = await buildClaudeSourceBackedIndex({ repoRoot, claudeHome });
+  const buildMs = Date.now() - started;
+  assert.equal(index.sessions.length, sessionIds.length);
+  assert.equal(index.materializationDependencies.size, sessionIds.length);
+  const dependencyEntries = [...index.materializationDependencies.values()]
+    .reduce((sum, dependencySet) => sum + dependencySet.entries.length, 0);
+  const dependencyBytes = Buffer.byteLength(
+    JSON.stringify([...index.materializationDependencies.values()]),
+    'utf8',
+  );
+  assert.equal(dependencyEntries, sessionIds.length);
+  assert.ok(dependencyBytes < 512 * 1024, `expected bounded linear dependency bytes, received ${dependencyBytes}`);
+
+  const target = index.sessionsById.get(analyzerSessionId(sessionIds[0]));
+  const siblingSource = await fsp.readFile(files[1], 'utf8');
+  await fsp.writeFile(files[1], siblingSource.replace('session 001', 'session x01'), 'utf8');
+  assert.equal((await materializeSessionForIndex(index, target)).id, target.id);
+
+  const targetSource = await fsp.readFile(files[0], 'utf8');
+  await fsp.writeFile(files[0], targetSource.replace('session 000', 'session x00'), 'utf8');
+  await assert.rejects(
+    materializeSessionForIndex(index, target),
+    { code: 'INDEXED_SOURCE_STALE', statusCode: 409 },
+  );
+  t.diagnostic(JSON.stringify({
+    sessions: sessionIds.length,
+    dependencySets: index.materializationDependencies.size,
+    dependencyEntries,
+    dependencyBytes,
+    buildMs,
+  }));
 });
 
 test('Claude detail localizes adapter-generated file change fallback copy', async (t) => {

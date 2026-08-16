@@ -20,6 +20,7 @@ const SOURCE_ADAPTER_DESCRIPTOR_KEYS = Object.freeze([
   'validateMaterializationDescriptor',
   'validateLegacyRawOwnerIndex',
   'validateMaterializedPrivateState',
+  'materializationContextFields',
   'materializedPrivateFields',
 ]);
 
@@ -138,6 +139,31 @@ function validateMaterializedPrivateFields(value, kind) {
   return Object.freeze([...value]);
 }
 
+function validateMaterializationContextFields(value, kind) {
+  if (!Array.isArray(value)) {
+    throw adapterContractError(`adapter ${kind}.materializationContextFields must be an array`);
+  }
+  if (value.length > 16) {
+    throw adapterContractError(`adapter ${kind}.materializationContextFields must contain at most 16 entries`);
+  }
+  const reserved = new Set(['sourceKind', 'repoRoot']);
+  const seen = new Set();
+  for (const field of value) {
+    requireNonEmptyString(field, `adapter ${kind}.materializationContextFields entry`);
+    if (!/^[a-z][A-Za-z0-9]*$/.test(field)) {
+      throw adapterContractError(`adapter ${kind}.materializationContextFields entries must be lower camel-case identifiers`);
+    }
+    if (reserved.has(field)) {
+      throw adapterContractError(`adapter ${kind}.materializationContextFields must not redeclare ${field}`);
+    }
+    if (seen.has(field)) {
+      throw adapterContractError(`adapter ${kind}.materializationContextFields must not contain duplicates`);
+    }
+    seen.add(field);
+  }
+  return Object.freeze([...value]);
+}
+
 function validateSynchronousValidator(callback, owner) {
   if (typeof callback !== 'function') {
     throw adapterContractError(`${owner} must be a function`);
@@ -208,6 +234,7 @@ function defineSourceAdapter(descriptor) {
   }
 
   let materializedPrivateFields = Object.freeze([]);
+  let materializationContextFields = Object.freeze([]);
   if (sessionLifecycle === SESSION_LIFECYCLE.INDEXED_MATERIALIZED) {
     for (const operation of [
       'validateMaterializationDescriptor',
@@ -223,6 +250,10 @@ function defineSourceAdapter(descriptor) {
       descriptor.materializedPrivateFields,
       kind,
     );
+    materializationContextFields = validateMaterializationContextFields(
+      descriptor.materializationContextFields,
+      kind,
+    );
   } else {
     for (const operation of [
       'validateMaterializationDescriptor',
@@ -235,6 +266,9 @@ function defineSourceAdapter(descriptor) {
     }
     if (descriptor.materializedPrivateFields !== undefined) {
       throw adapterContractError(`adapter ${kind}.materializedPrivateFields is only valid in indexed-materialized-v1`);
+    }
+    if (descriptor.materializationContextFields !== undefined) {
+      throw adapterContractError(`adapter ${kind}.materializationContextFields is only valid in indexed-materialized-v1`);
     }
   }
 
@@ -258,6 +292,7 @@ function defineSourceAdapter(descriptor) {
     validateMaterializationDescriptor: descriptor.validateMaterializationDescriptor,
     validateLegacyRawOwnerIndex: descriptor.validateLegacyRawOwnerIndex,
     validateMaterializedPrivateState: descriptor.validateMaterializedPrivateState,
+    materializationContextFields,
     materializedPrivateFields,
   });
 }

@@ -1,16 +1,18 @@
 'use strict';
 
+const { createHash } = require('node:crypto');
 const { promisify } = require('node:util');
-const { gzipSync, gunzip } = require('node:zlib');
+const { gzipSync, gunzip, gunzipSync } = require('node:zlib');
 
 const gunzipAsync = promisify(gunzip);
 
-const PROJECT_QUERY_STORE_SCHEMA_VERSION = 1;
+const PROJECT_QUERY_STORE_SCHEMA_VERSION = 2;
 const PROJECT_QUERY_STORE_MAX_ROWS = 5_000_000;
 const PROJECT_QUERY_STORE_MAX_BYTES = 8 * 1024 * 1024 * 1024;
 const PROJECT_QUERY_CHUNK_MAX_ROWS = 4_096;
 const PROJECT_QUERY_CHUNK_MAX_BYTES = 4 * 1024 * 1024;
 const PROJECT_QUERY_GZIP_MIN_BYTES = 7 * 512 * 1024;
+const PROJECT_QUERY_VERIFICATION_ROWS_PER_YIELD = 512;
 const PROJECT_QUERY_LAYERS = Object.freeze(['main', 'protocol', 'raw']);
 const EMPTY_STRING_ID = 0;
 const validatedStores = new WeakMap();
@@ -63,45 +65,155 @@ function eventIdFor(layer, event) {
   return layer === 'raw' ? asString(event?.rawId) : asString(event?.id);
 }
 
-function rowsForSession(session, layer, presentationForEvent) {
-  const source = layer === 'raw'
+function eventsForSessionLayer(session, layer) {
+  return layer === 'raw'
     ? session.rawEvents
     : session.logicalEvents.filter((event) => event.layer === layer);
-  return source.map((event, physicalLayerOrdinal) => {
-    const presentation = layer === 'main'
-      ? presentationForEvent(session, event)
-      : null;
-    const declaredRequestNames = Array.isArray(presentation?.declaredRequestNames)
-      ? [...new Set(presentation.declaredRequestNames.map(asString).filter(Boolean))]
-      : [];
-    const touchedFiles = Array.isArray(event.touchedFiles)
-      ? event.touchedFiles.map(asString).filter(Boolean)
-      : [];
-    const filterFiles = [
-      asString(event.source?.file),
-      ...touchedFiles,
-      ...(Array.isArray(event.rawRefs) ? event.rawRefs.map((reference) => asString(reference?.file)) : []),
-    ].filter(Boolean);
-    return {
-      eventId: eventIdFor(layer, event),
-      timestamp: asString(event.timestamp),
-      physicalLayerOrdinal,
-      kind: layer === 'raw' ? asString(event.payloadType || event.recordType) : asString(event.kind),
-      subtype: layer === 'raw' ? asString(event.role) : asString(event.subtype),
-      status: asString(event.status),
-      toolName: asString(event.toolName),
-      sourceLabel: layer === 'raw' ? '' : asString(event.label),
-      recordType: layer === 'raw' ? asString(event.recordType) : '',
-      payloadType: layer === 'raw' ? asString(event.payloadType) : asString(event.subtype),
-      preview: asString(event.preview),
-      searchText: asString(event.searchText),
-      filterFiles: [...new Set(filterFiles)],
-      suggestionFiles: [...new Set(touchedFiles)],
-      scriptOperation: Boolean(presentation?.scriptOperation),
-      declaredRequestNames,
-      requestEvidence: asString(presentation?.requestEvidence),
-    };
-  });
+}
+
+function eventCountForSessionLayer(session, layer) {
+  if (layer === 'raw') return session.rawEvents.length;
+  let count = 0;
+  for (const event of session.logicalEvents) {
+    if (event.layer === layer) count += 1;
+  }
+  return count;
+}
+
+function rowForEvent(session, layer, event, physicalLayerOrdinal, presentationForEvent) {
+  const presentation = layer === 'main'
+    ? presentationForEvent(session, event)
+    : null;
+  const declaredRequestNames = Array.isArray(presentation?.declaredRequestNames)
+    ? [...new Set(presentation.declaredRequestNames.map(asString).filter(Boolean))]
+    : [];
+  const touchedFiles = Array.isArray(event.touchedFiles)
+    ? event.touchedFiles.map(asString).filter(Boolean)
+    : [];
+  const filterFiles = [
+    asString(event.source?.file),
+    ...touchedFiles,
+    ...(Array.isArray(event.rawRefs) ? event.rawRefs.map((reference) => asString(reference?.file)) : []),
+  ].filter(Boolean);
+  return {
+    eventId: eventIdFor(layer, event),
+    timestamp: asString(event.timestamp),
+    physicalLayerOrdinal,
+    kind: layer === 'raw' ? asString(event.payloadType || event.recordType) : asString(event.kind),
+    subtype: layer === 'raw' ? asString(event.role) : asString(event.subtype),
+    status: asString(event.status),
+    toolName: asString(event.toolName),
+    sourceLabel: layer === 'raw' ? '' : asString(event.label),
+    recordType: layer === 'raw' ? asString(event.recordType) : '',
+    payloadType: layer === 'raw' ? asString(event.payloadType) : asString(event.subtype),
+    preview: asString(event.preview),
+    searchText: asString(event.searchText),
+    filterFiles: [...new Set(filterFiles)],
+    suggestionFiles: [...new Set(touchedFiles)],
+    scriptOperation: Boolean(presentation?.scriptOperation),
+    declaredRequestNames,
+    requestEvidence: asString(presentation?.requestEvidence),
+  };
+}
+
+function rowsForSession(session, layer, presentationForEvent) {
+  return eventsForSessionLayer(session, layer).map((event, physicalLayerOrdinal) => (
+    rowForEvent(session, layer, event, physicalLayerOrdinal, presentationForEvent)
+  ));
+}
+
+function createProjectionDigestWriter() {
+  const hash = createHash('sha256');
+  const write = (value) => {
+    const text = typeof value === 'string' ? value : String(value);
+    hash.update(`${Buffer.byteLength(text, 'utf8')}:`, 'utf8');
+    hash.update(text, 'utf8');
+  };
+  const writeList = (values) => {
+    write(values.length);
+    for (const value of values) write(value);
+  };
+  const writeRow = (row) => {
+    write(row.eventId);
+    write(row.timestamp);
+    write(row.physicalLayerOrdinal);
+    write(row.kind);
+    write(row.subtype);
+    write(row.status);
+    write(row.toolName);
+    write(row.sourceLabel);
+    write(row.recordType);
+    write(row.payloadType);
+    write(row.preview);
+    write(row.searchText);
+    writeList(row.filterFiles);
+    writeList(row.suggestionFiles);
+    write(row.scriptOperation ? '1' : '0');
+    writeList(row.declaredRequestNames);
+    write(row.requestEvidence);
+  };
+  write('project-query-projection-v1');
+  return {
+    writeLayer(layer, rowCount) {
+      write(layer);
+      write(rowCount);
+    },
+    writeRow,
+    finish() {
+      return hash.digest('base64url');
+    },
+  };
+}
+
+function projectQueryProjectionDigest(session, presentationForEvent = () => null) {
+  const writer = createProjectionDigestWriter();
+  for (const layer of PROJECT_QUERY_LAYERS) {
+    const rows = rowsForSession(session, layer, presentationForEvent);
+    writer.writeLayer(layer, rows.length);
+    for (const row of rows) writer.writeRow(row);
+  }
+  return writer.finish();
+}
+
+async function projectQueryProjectionDigestAsync(
+  session,
+  presentationForEvent = () => null,
+  options = {},
+) {
+  const { signal, onChunk } = options;
+  const writer = createProjectionDigestWriter();
+  let rowsSinceYield = 0;
+  let chunkIndex = 0;
+  const checkpoint = async (layer) => {
+    throwIfAborted(signal);
+    onChunk?.({ phase: 'materialized_projection', layer, chunkIndex, rowCount: rowsSinceYield });
+    chunkIndex += 1;
+    rowsSinceYield = 0;
+    await yieldToEventLoop();
+    throwIfAborted(signal);
+  };
+  for (const layer of PROJECT_QUERY_LAYERS) {
+    writer.writeLayer(layer, eventCountForSessionLayer(session, layer));
+    const events = layer === 'raw' ? session.rawEvents : session.logicalEvents;
+    let physicalLayerOrdinal = 0;
+    for (const event of events) {
+      if (layer !== 'raw' && event.layer !== layer) continue;
+      writer.writeRow(rowForEvent(
+        session,
+        layer,
+        event,
+        physicalLayerOrdinal,
+        presentationForEvent,
+      ));
+      physicalLayerOrdinal += 1;
+      rowsSinceYield += 1;
+      if (rowsSinceYield >= PROJECT_QUERY_VERIFICATION_ROWS_PER_YIELD) {
+        await checkpoint(layer);
+      }
+    }
+    await checkpoint(layer);
+  }
+  return writer.finish();
 }
 
 function createStringInterner() {
@@ -284,14 +396,19 @@ function createProjectQueryStoreBuilder(options = {}) {
       throw contractError(`session ${sessionId} must expose complete event arrays while building`);
     }
     const shards = {};
+    const projectionWriter = createProjectionDigestWriter();
     for (const layer of PROJECT_QUERY_LAYERS) {
       const rows = rowsForSession(session, layer, presentationForEvent);
+      projectionWriter.writeLayer(layer, rows.length);
+      for (const row of rows) projectionWriter.writeRow(row);
       totalRows += rows.length;
       if (totalRows > PROJECT_QUERY_STORE_MAX_ROWS) throw contractError('row count exceeds 5,000,000');
       shards[layer] = buildLayerShard(rows, layer, interner);
     }
+    shards.projectionDigest = projectionWriter.finish();
     shardsBySessionId.set(sessionId, shards);
     sessionIds.push(sessionId);
+    return shards.projectionDigest;
   };
 
   const finish = () => {
@@ -305,7 +422,17 @@ function createProjectQueryStoreBuilder(options = {}) {
     };
     store.accountedBytes = storeAccountedBytes(store);
     if (store.accountedBytes > PROJECT_QUERY_STORE_MAX_BYTES) throw contractError('encoded bytes exceed 8 GiB');
-    validateProjectQueryStore(store, sessionIds);
+    validateProjectQueryStore(store, sessionIds, { verifyProjectionDigest: false });
+    // The shared builder derives encoded rows and their digest from the same
+    // closed row projection. Mark that construction result as query-ready;
+    // adapter Index commit still calls the public validator and recomputes the
+    // digest from encoded bytes before accepting an arbitrary built Index.
+    validatedStores.set(store, {
+      accountedBytes: store.accountedBytes,
+      dictionaries: store.dictionaries,
+      projectionDigestVerified: true,
+      shardsBySessionId: store.shardsBySessionId,
+    });
     return store;
   };
 
@@ -425,12 +552,159 @@ function validateLayerShard(store, shard, layer) {
   if (expectedRowStart !== rowCount) throw contractError(`${layer} text chunks must cover every row`);
 }
 
-function validateProjectQueryStore(store, expectedSessionIds = null) {
+function projectionDigestFromStoredShards(store, shards) {
+  const writer = createProjectionDigestWriter();
+  for (const layer of PROJECT_QUERY_LAYERS) {
+    const shard = shards[layer];
+    writer.writeLayer(layer, shard.rowCount);
+    for (const chunk of shard.textChunks) {
+      let decoded;
+      try {
+        decoded = chunk.codec === 'identity' ? chunk.data : gunzipSync(chunk.data);
+      } catch (error) {
+        throw contractError(`${layer} text chunk cannot be decoded: ${error.message}`);
+      }
+      if (decoded.length !== chunk.uncompressedBytes) {
+        throw contractError(`${layer} chunk inflated length mismatch`);
+      }
+      for (let localIndex = 0; localIndex < chunk.rowCount; localIndex += 1) {
+        const rowIndex = chunk.rowStart + localIndex;
+        const metadata = metadataRow(store, shard, rowIndex);
+        const text = decodeTextFrame(
+          decoded,
+          chunk.rowOffsets[localIndex],
+          chunk.rowOffsets[localIndex + 1],
+        );
+        writer.writeRow({
+          eventId: metadata.eventId,
+          timestamp: metadata.timestamp,
+          physicalLayerOrdinal: metadata.physicalLayerOrdinal,
+          kind: metadata.kind,
+          subtype: metadata.subtype,
+          status: metadata.status,
+          toolName: metadata.toolName,
+          sourceLabel: metadata.labelFact.sourceLabel,
+          recordType: metadata.labelFact.recordType,
+          payloadType: metadata.labelFact.payloadType,
+          preview: text.preview,
+          searchText: text.searchText,
+          filterFiles: metadata.filterFiles,
+          suggestionFiles: metadata.suggestionFiles,
+          scriptOperation: metadata.presentation.scriptOperation,
+          declaredRequestNames: metadata.presentation.declaredRequestNames,
+          requestEvidence: metadata.presentation.requestEvidence,
+        });
+      }
+      decoded = null;
+    }
+  }
+  return writer.finish();
+}
+
+async function projectionDigestFromStoredShardsAsync(store, shards, options = {}) {
+  const { signal, onChunk, sessionId = '' } = options;
+  const writer = createProjectionDigestWriter();
+  let chunkIndex = 0;
+  for (const layer of PROJECT_QUERY_LAYERS) {
+    const shard = shards[layer];
+    writer.writeLayer(layer, shard.rowCount);
+    for (const chunk of shard.textChunks) {
+      throwIfAborted(signal);
+      let decoded;
+      try {
+        decoded = chunk.codec === 'identity' ? chunk.data : await gunzipAsync(chunk.data);
+      } catch (error) {
+        if (signal?.aborted) throw abortError(signal);
+        throw contractError(`${layer} text chunk cannot be decoded: ${error.message}`);
+      }
+      throwIfAborted(signal);
+      if (decoded.length !== chunk.uncompressedBytes) {
+        throw contractError(`${layer} chunk inflated length mismatch`);
+      }
+      let rowsSinceYield = 0;
+      const checkpoint = async () => {
+        throwIfAborted(signal);
+        onChunk?.({
+          phase: 'stored_projection',
+          sessionId,
+          layer,
+          chunkIndex,
+          rowCount: rowsSinceYield,
+        });
+        chunkIndex += 1;
+        rowsSinceYield = 0;
+        await yieldToEventLoop();
+        throwIfAborted(signal);
+      };
+      for (let localIndex = 0; localIndex < chunk.rowCount; localIndex += 1) {
+        const rowIndex = chunk.rowStart + localIndex;
+        const metadata = metadataRow(store, shard, rowIndex);
+        const text = decodeTextFrame(
+          decoded,
+          chunk.rowOffsets[localIndex],
+          chunk.rowOffsets[localIndex + 1],
+        );
+        writer.writeRow({
+          eventId: metadata.eventId,
+          timestamp: metadata.timestamp,
+          physicalLayerOrdinal: metadata.physicalLayerOrdinal,
+          kind: metadata.kind,
+          subtype: metadata.subtype,
+          status: metadata.status,
+          toolName: metadata.toolName,
+          sourceLabel: metadata.labelFact.sourceLabel,
+          recordType: metadata.labelFact.recordType,
+          payloadType: metadata.labelFact.payloadType,
+          preview: text.preview,
+          searchText: text.searchText,
+          filterFiles: metadata.filterFiles,
+          suggestionFiles: metadata.suggestionFiles,
+          scriptOperation: metadata.presentation.scriptOperation,
+          declaredRequestNames: metadata.presentation.declaredRequestNames,
+          requestEvidence: metadata.presentation.requestEvidence,
+        });
+        rowsSinceYield += 1;
+        if (rowsSinceYield >= PROJECT_QUERY_VERIFICATION_ROWS_PER_YIELD) {
+          await checkpoint();
+        }
+      }
+      if (rowsSinceYield > 0) await checkpoint();
+      decoded = null;
+    }
+  }
+  return writer.finish();
+}
+
+function currentValidationForStore(store) {
+  const prior = store && typeof store === 'object' ? validatedStores.get(store) : null;
+  if (!prior
+      || store.schemaVersion !== PROJECT_QUERY_STORE_SCHEMA_VERSION
+      || store.shardsBySessionId !== prior.shardsBySessionId
+      || store.dictionaries !== prior.dictionaries
+      || store.accountedBytes !== prior.accountedBytes) {
+    return null;
+  }
+  return prior;
+}
+
+function validateExpectedSessionIds(store, expectedSessionIds) {
+  if (!expectedSessionIds) return;
+  const expected = new Set(expectedSessionIds);
+  if (expected.size !== store.shardsBySessionId.size
+      || [...expected].some((id) => !store.shardsBySessionId.has(id))) {
+    throw contractError('session shard ownership does not match the Index');
+  }
+}
+
+function validateProjectQueryStore(store, expectedSessionIds = null, options = {}) {
+  const verifyProjectionDigest = options.verifyProjectionDigest !== false;
   if (!store || typeof store !== 'object' || Array.isArray(store)) throw contractError('store must be an object');
   requireExactDataKeys(store, [
     'schemaVersion', 'shardsBySessionId', 'dictionaries', 'accountedBytes',
   ], 'store');
-  if (store.schemaVersion !== PROJECT_QUERY_STORE_SCHEMA_VERSION) throw contractError('schemaVersion must be 1');
+  if (store.schemaVersion !== PROJECT_QUERY_STORE_SCHEMA_VERSION) {
+    throw contractError(`schemaVersion must be ${PROJECT_QUERY_STORE_SCHEMA_VERSION}`);
+  }
   if (!(store.shardsBySessionId instanceof Map)) throw contractError('shardsBySessionId must be a Map');
   requireExactDataKeys(store.dictionaries, ['utf8', 'offsets'], 'dictionaries');
   if (!Buffer.isBuffer(store.dictionaries.utf8)) {
@@ -463,20 +737,22 @@ function validateProjectQueryStore(store, expectedSessionIds = null) {
   let totalRows = 0;
   for (const [sessionId, shards] of store.shardsBySessionId) {
     if (typeof sessionId !== 'string' || !sessionId) throw contractError('session shard keys must be non-empty strings');
-    requireExactDataKeys(shards, PROJECT_QUERY_LAYERS, `session ${sessionId} shards`);
+    requireExactDataKeys(shards, [...PROJECT_QUERY_LAYERS, 'projectionDigest'], `session ${sessionId} shards`);
+    if (typeof shards.projectionDigest !== 'string'
+        || !/^[A-Za-z0-9_-]{43}$/u.test(shards.projectionDigest)) {
+      throw contractError(`session ${sessionId} projection digest is invalid`);
+    }
     for (const layer of PROJECT_QUERY_LAYERS) {
       validateLayerShard(store, shards[layer], layer);
       totalRows += shards[layer].rowCount;
     }
-  }
-  if (totalRows > PROJECT_QUERY_STORE_MAX_ROWS) throw contractError('row count exceeds 5,000,000');
-  if (expectedSessionIds) {
-    const expected = new Set(expectedSessionIds);
-    if (expected.size !== store.shardsBySessionId.size
-        || [...expected].some((id) => !store.shardsBySessionId.has(id))) {
-      throw contractError('session shard ownership does not match the Index');
+    if (verifyProjectionDigest
+        && projectionDigestFromStoredShards(store, shards) !== shards.projectionDigest) {
+      throw contractError(`session ${sessionId} projection digest does not match encoded rows`);
     }
   }
+  if (totalRows > PROJECT_QUERY_STORE_MAX_ROWS) throw contractError('row count exceeds 5,000,000');
+  validateExpectedSessionIds(store, expectedSessionIds);
   const accountedBytes = storeAccountedBytes(store);
   if (!Number.isSafeInteger(store.accountedBytes)
       || store.accountedBytes !== accountedBytes
@@ -486,27 +762,50 @@ function validateProjectQueryStore(store, expectedSessionIds = null) {
   validatedStores.set(store, {
     accountedBytes: store.accountedBytes,
     dictionaries: store.dictionaries,
+    projectionDigestVerified: verifyProjectionDigest,
+    shardsBySessionId: store.shardsBySessionId,
+  });
+  return store;
+}
+
+async function validateProjectQueryStoreForCommit(store, expectedSessionIds = null, options = {}) {
+  const { signal, onChunk, structurallyValidated = false } = options;
+  throwIfAborted(signal);
+  if (!structurallyValidated || !currentValidationForStore(store)) {
+    validateProjectQueryStore(store, expectedSessionIds, { verifyProjectionDigest: false });
+  } else {
+    validateExpectedSessionIds(store, expectedSessionIds);
+  }
+  // Structural validation above is synchronous. Always yield before digest
+  // admission so cancellation queued during that work becomes observable.
+  await yieldToEventLoop();
+  throwIfAborted(signal);
+  for (const [sessionId, shards] of store.shardsBySessionId) {
+    const digest = await projectionDigestFromStoredShardsAsync(store, shards, {
+      signal,
+      onChunk,
+      sessionId,
+    });
+    if (digest !== shards.projectionDigest) {
+      throw contractError(`session ${sessionId} projection digest does not match encoded rows`);
+    }
+  }
+  throwIfAborted(signal);
+  validatedStores.set(store, {
+    accountedBytes: store.accountedBytes,
+    dictionaries: store.dictionaries,
+    projectionDigestVerified: true,
     shardsBySessionId: store.shardsBySessionId,
   });
   return store;
 }
 
 function requireValidatedProjectQueryStore(store, expectedSessionIds = null) {
-  const prior = store && typeof store === 'object' ? validatedStores.get(store) : null;
-  if (!prior
-      || store.schemaVersion !== PROJECT_QUERY_STORE_SCHEMA_VERSION
-      || store.shardsBySessionId !== prior.shardsBySessionId
-      || store.dictionaries !== prior.dictionaries
-      || store.accountedBytes !== prior.accountedBytes) {
+  const prior = currentValidationForStore(store);
+  if (!prior || prior.projectionDigestVerified !== true) {
     return validateProjectQueryStore(store, expectedSessionIds);
   }
-  if (expectedSessionIds) {
-    const expected = new Set(expectedSessionIds);
-    if (expected.size !== store.shardsBySessionId.size
-        || [...expected].some((id) => !store.shardsBySessionId.has(id))) {
-      throw contractError('session shard ownership does not match the Index');
-    }
-  }
+  validateExpectedSessionIds(store, expectedSessionIds);
   return store;
 }
 
@@ -568,6 +867,16 @@ function decodeTextFrame(buffer, start, end) {
   };
 }
 
+function decodePreviewFrame(buffer, start, end) {
+  if (end - start < 8) throw contractError('text frame is truncated');
+  const previewLength = buffer.readUInt32LE(start);
+  const searchLength = buffer.readUInt32LE(start + 4);
+  const previewStart = start + 8;
+  const searchStart = previewStart + previewLength;
+  if (searchStart + searchLength !== end) throw contractError('text frame lengths are invalid');
+  return buffer.toString('utf8', previewStart, searchStart);
+}
+
 async function scanProjectQueryShard(store, sessionId, layer, options, visit) {
   requireValidatedProjectQueryStore(store);
   if (!PROJECT_QUERY_LAYERS.includes(layer)) throw contractError(`unsupported layer ${layer}`);
@@ -583,6 +892,12 @@ async function scanProjectQueryShard(store, sessionId, layer, options, visit) {
       decoded = chunk.codec === 'identity' ? chunk.data : await gunzipAsync(chunk.data);
       throwIfAborted(signal);
       if (decoded.length !== chunk.uncompressedBytes) throw contractError(`${layer} chunk inflated length mismatch`);
+      options?.onTextChunk?.({
+        sessionId,
+        layer,
+        rowStart: chunk.rowStart,
+        rowCount: chunk.rowCount,
+      });
     }
     for (let localIndex = 0; localIndex < chunk.rowCount; localIndex += 1) {
       if ((localIndex & 0xfff) === 0) throwIfAborted(signal);
@@ -605,6 +920,49 @@ async function scanProjectQueryShard(store, sessionId, layer, options, visit) {
   return true;
 }
 
+function projectQueryProjectionDigestForSession(store, sessionId, options = {}) {
+  if (options.requireVerified === false) {
+    if (!currentValidationForStore(store)) {
+      validateProjectQueryStore(store, null, { verifyProjectionDigest: false });
+    }
+  } else {
+    requireValidatedProjectQueryStore(store);
+  }
+  const digest = store.shardsBySessionId.get(sessionId)?.projectionDigest;
+  if (!digest) throw contractError(`missing projection digest for session ${sessionId}`);
+  return digest;
+}
+
+async function readProjectQueryRowPreview(store, sessionId, layer, rowIndex, options = {}) {
+  requireValidatedProjectQueryStore(store);
+  if (!PROJECT_QUERY_LAYERS.includes(layer)) throw contractError(`unsupported layer ${layer}`);
+  const shard = store.shardsBySessionId.get(sessionId)?.[layer];
+  if (!shard || !Number.isSafeInteger(rowIndex) || rowIndex < 0 || rowIndex >= shard.rowCount) {
+    throw contractError(`row ${rowIndex} is outside ${sessionId}/${layer}`);
+  }
+  const signal = options.signal;
+  throwIfAborted(signal);
+  const chunk = shard.textChunks.find((candidate) => (
+    rowIndex >= candidate.rowStart && rowIndex < candidate.rowStart + candidate.rowCount
+  ));
+  if (!chunk) throw contractError(`row ${rowIndex} has no text chunk`);
+  const decoded = chunk.codec === 'identity' ? chunk.data : await gunzipAsync(chunk.data);
+  throwIfAborted(signal);
+  if (decoded.length !== chunk.uncompressedBytes) throw contractError(`${layer} chunk inflated length mismatch`);
+  options.onTextChunk?.({
+    sessionId,
+    layer,
+    rowStart: chunk.rowStart,
+    rowCount: chunk.rowCount,
+  });
+  const localIndex = rowIndex - chunk.rowStart;
+  return decodePreviewFrame(
+    decoded,
+    chunk.rowOffsets[localIndex],
+    chunk.rowOffsets[localIndex + 1],
+  );
+}
+
 module.exports = {
   PROJECT_QUERY_CHUNK_MAX_BYTES,
   PROJECT_QUERY_CHUNK_MAX_ROWS,
@@ -614,7 +972,12 @@ module.exports = {
   buildProjectQueryStore,
   createProjectQueryStoreBuilder,
   dictionaryString,
+  projectQueryProjectionDigest,
+  projectQueryProjectionDigestAsync,
+  projectQueryProjectionDigestForSession,
+  readProjectQueryRowPreview,
   requireValidatedProjectQueryStore,
   scanProjectQueryShard,
   validateProjectQueryStore,
+  validateProjectQueryStoreForCommit,
 };

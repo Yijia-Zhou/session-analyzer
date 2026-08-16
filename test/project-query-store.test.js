@@ -164,6 +164,26 @@ test('ProjectQueryStore validates exact Index session ownership and counted stor
   );
 });
 
+test('ProjectQueryStore projection digest is derived from encoded row facts', () => {
+  const claimedDigestStore = buildProjectQueryStore([fixtureSession()]);
+  claimedDigestStore.shardsBySessionId.get('session-1').projectionDigest = 'A'.repeat(43);
+  assert.throws(
+    () => validateProjectQueryStore(claimedDigestStore, ['session-1']),
+    (error) => error.code === 'PROJECT_QUERY_STORE_CONTRACT_VIOLATION'
+      && /projection digest does not match encoded rows/.test(error.message),
+  );
+
+  const mutatedRowStore = buildProjectQueryStore([fixtureSession()]);
+  const main = mutatedRowStore.shardsBySessionId.get('session-1').main;
+  assert.notEqual(main.kind[0], 0);
+  main.kind[0] = 0;
+  assert.throws(
+    () => validateProjectQueryStore(mutatedRowStore, ['session-1']),
+    (error) => error.code === 'PROJECT_QUERY_STORE_CONTRACT_VIOLATION'
+      && /projection digest does not match encoded rows/.test(error.message),
+  );
+});
+
 test('ProjectQueryStore schema is closed and rejects accessors without invoking them', () => {
   const extraStore = buildProjectQueryStore([fixtureSession()]);
   extraStore.unregisteredRows = [];

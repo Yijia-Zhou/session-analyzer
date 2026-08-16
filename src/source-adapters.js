@@ -18,7 +18,12 @@ const {
   validateCanonicalSessionShape,
   validateCanonicalSessionsProperty,
 } = require('./canonical-contract');
-const { validateProjectQueryStore } = require('./project-query-store');
+const {
+  projectQueryProjectionDigestAsync,
+  projectQueryProjectionDigestForSession,
+  validateProjectQueryStore,
+  validateProjectQueryStoreForCommit,
+} = require('./project-query-store');
 const {
   sanitizeStructuredLogicalDetailDto,
   validateLogicalDetailEnvelope,
@@ -180,6 +185,181 @@ function graphFingerprintMatches(value, captured) {
   return graphFingerprint(value, captured.identityState) === captured.digest;
 }
 
+async function graphFingerprintAsync(value, identityState = {
+  objectIds: new WeakMap(),
+  symbolIds: new Map(),
+  nextObjectId: 0,
+  nextSymbolId: 0,
+}, options = {}) {
+  const { signal, onChunk, phase = 'materialized_fingerprint' } = options;
+  const hash = createHash('sha256');
+  const seen = new WeakSet();
+  const objectId = (current) => {
+    if (!identityState.objectIds.has(current)) {
+      identityState.objectIds.set(current, identityState.nextObjectId);
+      identityState.nextObjectId += 1;
+    }
+    return identityState.objectIds.get(current);
+  };
+  const symbolId = (current) => {
+    if (!identityState.symbolIds.has(current)) {
+      identityState.symbolIds.set(current, identityState.nextSymbolId);
+      identityState.nextSymbolId += 1;
+    }
+    return identityState.symbolIds.get(current);
+  };
+  const write = (text) => {
+    const valueText = String(text);
+    hash.update(`${Buffer.byteLength(valueText, 'utf8')}:`);
+    hash.update(valueText, 'utf8');
+  };
+  const appendWriteKey = (sequence, key) => {
+    if (typeof key === 'symbol') {
+      sequence.push({ type: 'write', value: 'symbol-key' });
+      sequence.push({ type: 'write', value: symbolId(key) });
+      sequence.push({ type: 'write', value: Symbol.keyFor(key) || '' });
+      sequence.push({ type: 'write', value: key.description || '' });
+      return;
+    }
+    sequence.push({ type: 'write', value: 'string-key' });
+    sequence.push({ type: 'write', value: key });
+  };
+  const pushSequence = (stack, sequence) => {
+    for (let index = sequence.length - 1; index >= 0; index -= 1) stack.push(sequence[index]);
+  };
+  const stack = [{ type: 'visit', value }];
+  let operations = 0;
+  let chunkIndex = 0;
+  throwIfAborted(signal);
+  while (stack.length > 0) {
+    const task = stack.pop();
+    if (task.type === 'write') {
+      write(task.value);
+    } else if (task.type === 'bytes') {
+      const end = Math.min(task.buffer.length, task.offset + 256 * 1024);
+      hash.update(task.buffer.subarray(task.offset, end));
+      if (end < task.buffer.length) {
+        stack.push({ ...task, offset: end });
+      }
+    } else {
+      const current = task.value;
+      if (current === null) {
+        write('null');
+      } else {
+        const type = typeof current;
+        write(type);
+        if (type === 'string') {
+          write(current);
+        } else if (type === 'number') {
+          write(Number.isNaN(current) ? 'NaN' : (Object.is(current, -0) ? '-0' : current));
+        } else if (type === 'bigint' || type === 'boolean') {
+          write(current);
+        } else if (type === 'symbol') {
+          write(symbolId(current));
+          write(Symbol.keyFor(current) || '');
+          write(current.description || '');
+        } else if (type !== 'undefined') {
+          if (type === 'function') write(Function.prototype.toString.call(current));
+          const referenceId = objectId(current);
+          if (seen.has(current)) {
+            write('reference');
+            write(referenceId);
+          } else {
+            seen.add(current);
+            write('object');
+            write(referenceId);
+            const prototype = Object.getPrototypeOf(current);
+            if (prototype === null) {
+              write('null-prototype');
+            } else {
+              write(objectId(prototype));
+              const constructorDescriptor = Object.getOwnPropertyDescriptor(prototype, 'constructor');
+              write(constructorDescriptor?.value?.name || 'anonymous-prototype');
+            }
+            const sequence = [];
+            if (current instanceof Date) sequence.push({ type: 'write', value: current.getTime() });
+            if (current instanceof RegExp) {
+              sequence.push({ type: 'write', value: current.source });
+              sequence.push({ type: 'write', value: current.flags });
+              sequence.push({ type: 'write', value: current.lastIndex });
+            }
+            if (current instanceof Map) {
+              sequence.push({ type: 'write', value: 'map' });
+              sequence.push({ type: 'write', value: current.size });
+              for (const [key, nested] of current) {
+                sequence.push({ type: 'visit', value: key });
+                sequence.push({ type: 'visit', value: nested });
+              }
+            } else if (current instanceof Set) {
+              sequence.push({ type: 'write', value: 'set' });
+              sequence.push({ type: 'write', value: current.size });
+              for (const nested of current) sequence.push({ type: 'visit', value: nested });
+            } else if (ArrayBuffer.isView(current)) {
+              sequence.push({ type: 'write', value: 'array-buffer-view' });
+              sequence.push({
+                type: 'bytes',
+                buffer: Buffer.from(current.buffer, current.byteOffset, current.byteLength),
+                offset: 0,
+              });
+            } else if (current instanceof ArrayBuffer) {
+              sequence.push({ type: 'write', value: 'array-buffer' });
+              sequence.push({ type: 'bytes', buffer: Buffer.from(current), offset: 0 });
+            }
+            const keys = Reflect.ownKeys(current);
+            sequence.push({ type: 'write', value: keys.length });
+            for (const key of keys) {
+              appendWriteKey(sequence, key);
+              const descriptor = Object.getOwnPropertyDescriptor(current, key);
+              sequence.push({ type: 'write', value: descriptor.enumerable });
+              sequence.push({ type: 'write', value: descriptor.configurable });
+              if (Object.hasOwn(descriptor, 'value')) {
+                sequence.push({ type: 'write', value: 'data' });
+                sequence.push({ type: 'write', value: descriptor.writable });
+                sequence.push({ type: 'visit', value: descriptor.value });
+              } else {
+                sequence.push({ type: 'write', value: 'accessor' });
+                sequence.push({ type: 'visit', value: descriptor.get });
+                sequence.push({ type: 'visit', value: descriptor.set });
+              }
+            }
+            pushSequence(stack, sequence);
+          }
+        }
+      }
+    }
+    operations += 1;
+    if (operations >= 4_096) {
+      throwIfAborted(signal);
+      onChunk?.({ phase, chunkIndex, operations });
+      chunkIndex += 1;
+      operations = 0;
+      await new Promise((resolve) => setImmediate(resolve));
+      throwIfAborted(signal);
+    }
+  }
+  onChunk?.({ phase, chunkIndex, operations });
+  await new Promise((resolve) => setImmediate(resolve));
+  throwIfAborted(signal);
+  return hash.digest('hex');
+}
+
+async function captureGraphFingerprintAsync(value, options = {}) {
+  const identityState = {
+    objectIds: new WeakMap(),
+    symbolIds: new Map(),
+    nextObjectId: 0,
+    nextSymbolId: 0,
+  };
+  return {
+    digest: await graphFingerprintAsync(value, identityState, options),
+    identityState,
+  };
+}
+
+async function graphFingerprintMatchesAsync(value, captured, options = {}) {
+  return await graphFingerprintAsync(value, captured.identityState, options) === captured.digest;
+}
+
 function materializationContractViolation(message, cause, retainCause = cause !== undefined) {
   const error = new Error(message);
   error.code = 'MATERIALIZATION_CONTRACT_VIOLATION';
@@ -203,7 +383,16 @@ function invokeReadOnlyMaterializationValidator({
   guardedValues,
   label,
 }) {
-  const fingerprints = guardedValues.map((value) => captureGraphFingerprint(value));
+  let fingerprints;
+  try {
+    fingerprints = guardedValues.map((value) => captureGraphFingerprint(value));
+  } catch (error) {
+    throw materializationContractViolation(
+      `${label} inputs could not be fingerprinted`,
+      error,
+      true,
+    );
+  }
   let callbackRejected = false;
   let callbackError;
   let callbackResult;
@@ -250,6 +439,86 @@ function invokeReadOnlyMaterializationValidator({
   }
 }
 
+async function invokeReadOnlyMaterializationValidatorAsync({
+  callback,
+  args,
+  guardedValues,
+  label,
+  signal,
+  onChunk,
+}) {
+  const fingerprints = [];
+  try {
+    for (const value of guardedValues) {
+      fingerprints.push(await captureGraphFingerprintAsync(value, {
+        signal,
+        onChunk,
+        phase: 'materialized_private_validator_capture',
+      }));
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error;
+    throw materializationContractViolation(
+      `${label} inputs could not be fingerprinted`,
+      error,
+      true,
+    );
+  }
+  let callbackRejected = false;
+  let callbackError;
+  let callbackResult;
+  try {
+    callbackResult = callback(args);
+  } catch (error) {
+    callbackRejected = true;
+    callbackError = error;
+  }
+  if (!callbackRejected && callbackResult !== undefined) {
+    try {
+      if (callbackResult instanceof Promise) callbackResult.catch(() => {});
+    } catch {
+      // The return value is already a contract violation; suppressing is best-effort only.
+    }
+    callbackRejected = true;
+    callbackError = new Error(`${label} must return undefined synchronously`);
+  }
+  let inputsUnchanged = false;
+  try {
+    inputsUnchanged = true;
+    for (let index = 0; index < guardedValues.length; index += 1) {
+      if (!await graphFingerprintMatchesAsync(guardedValues[index], fingerprints[index], {
+        signal,
+        onChunk,
+        phase: 'materialized_private_validator_recheck',
+      })) {
+        inputsUnchanged = false;
+        break;
+      }
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error;
+    throw materializationContractViolation(
+      `${label} left inputs unverifiable`,
+      callbackRejected ? callbackError : error,
+      true,
+    );
+  }
+  if (!inputsUnchanged) {
+    throw materializationContractViolation(
+      `${label} must not mutate inputs`,
+      callbackRejected ? callbackError : undefined,
+      callbackRejected,
+    );
+  }
+  if (callbackRejected) {
+    throw materializationContractViolation(
+      `${label} rejected: ${callbackErrorText(callbackError)}`,
+      callbackError,
+      true,
+    );
+  }
+}
+
 function abortError(signal) {
   if (signal?.reason instanceof Error) return signal.reason;
   const error = new Error('The operation was aborted');
@@ -260,6 +529,14 @@ function abortError(signal) {
 
 function throwIfAborted(signal) {
   if (signal?.aborted) throw abortError(signal);
+}
+
+function notifyProjectionPhase(options, phase, state) {
+  try {
+    options.onProjectionPhase?.({ phase, state });
+  } catch {
+    // Profiling hooks are observational and must never affect admission.
+  }
 }
 
 async function materializeResidentSession({ index, indexedSession, signal }) {
@@ -273,45 +550,7 @@ async function materializeResidentSession({ index, indexedSession, signal }) {
   return indexedSession;
 }
 
-// This boundary is deliberately non-extensible: only exact repository-owned
-// strict adapters receive a bounded Index view. Custom and future strict
-// adapters retain the complete exception-safe graph fingerprint.
-function trustedRepositoryStrictBoundary(adapter) {
-  const candidates = [
-    {
-      sourceKind: SOURCE_KIND.CODEX,
-      rootField: 'sessionsRoot',
-      materializeSession: codex.materializeCodexSession,
-      validateMaterializationDescriptor: codex.validateCodexMaterializationDescriptor,
-      validateLegacyRawOwnerIndex: codex.validateCodexLegacyRawOwnerIndex,
-      validateMaterializedPrivateState: codex.validateCodexMaterializedPrivateState,
-      materializedPrivateFields: codex.materializedPrivateFields,
-    },
-    {
-      sourceKind: SOURCE_KIND.CLAUDE_CODE,
-      rootField: 'sourceRoot',
-      materializeSession: claude.materializeClaudeSession,
-      validateMaterializationDescriptor: claude.validateClaudeMaterializationDescriptor,
-      validateLegacyRawOwnerIndex: claude.validateClaudeLegacyRawOwnerIndex,
-      validateMaterializedPrivateState: claude.validateClaudeMaterializedPrivateState,
-      materializedPrivateFields: claude.materializedPrivateFields,
-    },
-  ];
-  return candidates.find((candidate) => (
-    adapter.kind === candidate.sourceKind
-    && adapter.sessionLifecycle === SESSION_LIFECYCLE.INDEXED_MATERIALIZED
-    && adapter.materializeSession === candidate.materializeSession
-    && adapter.validateMaterializationDescriptor === candidate.validateMaterializationDescriptor
-    && adapter.validateLegacyRawOwnerIndex === candidate.validateLegacyRawOwnerIndex
-    && adapter.validateMaterializedPrivateState === candidate.validateMaterializedPrivateState
-    && adapter.materializedPrivateFields.length === candidate.materializedPrivateFields.length
-    && adapter.materializedPrivateFields.every((field, index) => (
-      field === candidate.materializedPrivateFields[index]
-    ))
-  )) || null;
-}
-
-function trustedStrictBoundaryError(message) {
+function strictBoundaryError(message) {
   const error = new Error(message);
   error.code = 'CANONICAL_CONTRACT_VIOLATION';
   return error;
@@ -320,28 +559,36 @@ function trustedStrictBoundaryError(message) {
 function captureOwnDataProperty(value, field, owner) {
   const descriptor = Object.getOwnPropertyDescriptor(value, field);
   if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
-    throw trustedStrictBoundaryError(`${owner}.${field} must be an own data property`);
+    throw strictBoundaryError(`${owner}.${field} must be an own data property`);
   }
   return descriptor.value;
 }
 
-function createTrustedRepositoryIndexView(index, boundary) {
-  const owner = `${boundary.sourceKind} Index`;
+function createStrictMaterializationContext(index, adapter) {
+  const owner = `${adapter.kind} Index`;
   const sourceKind = captureOwnDataProperty(index, 'sourceKind', owner);
   const repoRoot = captureOwnDataProperty(index, 'repoRoot', owner);
-  const sourceRoot = captureOwnDataProperty(index, boundary.rootField, owner);
-  if (sourceKind !== boundary.sourceKind
+  if (sourceKind !== adapter.kind
       || typeof repoRoot !== 'string'
       || repoRoot === ''
-      || typeof sourceRoot !== 'string'
-      || sourceRoot === '') {
-    throw trustedStrictBoundaryError(`${boundary.sourceKind} Index materialization roots are invalid`);
+      || Buffer.byteLength(repoRoot, 'utf8') > 64 * 1024) {
+    throw strictBoundaryError(`${adapter.kind} Index materialization ownership is invalid`);
   }
-  return Object.freeze({ sourceKind, repoRoot, [boundary.rootField]: sourceRoot });
+  const context = { sourceKind, repoRoot };
+  for (const field of adapter.materializationContextFields) {
+    const value = captureOwnDataProperty(index, field, owner);
+    if (typeof value !== 'string'
+        || value === ''
+        || Buffer.byteLength(value, 'utf8') > 64 * 1024) {
+      throw strictBoundaryError(`${adapter.kind} Index materialization context field ${field} is invalid`);
+    }
+    context[field] = value;
+  }
+  return context;
 }
 
-function captureTrustedStrictOwnership(index, indexedSession, dependencySet, indexView, boundary) {
-  const owner = `${boundary.sourceKind} Index`;
+function captureStrictOwnership(index, indexedSession, dependencySet, materializationContext, adapter) {
+  const owner = `${adapter.kind} Index`;
   const sessionsById = captureOwnDataProperty(index, 'sessionsById', owner);
   const materializationDependencies = captureOwnDataProperty(
     index,
@@ -352,25 +599,29 @@ function captureTrustedStrictOwnership(index, indexedSession, dependencySet, ind
       || sessionsById.get(indexedSession.id) !== indexedSession
       || !(materializationDependencies instanceof Map)
       || materializationDependencies.get(dependencySet.id) !== dependencySet) {
-    throw trustedStrictBoundaryError(`${boundary.sourceKind} Index does not own the selected materialization inputs`);
+    throw strictBoundaryError(`${adapter.kind} Index does not own the selected materialization inputs`);
   }
   return {
-    indexView,
-    boundary,
+    materializationContext,
+    adapter,
     sessionsById,
     materializationDependencies,
+    materializationContextFingerprint: captureGraphFingerprint(materializationContext),
     indexedSessionFingerprint: captureGraphFingerprint(indexedSession),
     dependencySetFingerprint: captureGraphFingerprint(dependencySet),
   };
 }
 
-function trustedStrictOwnershipMatches(index, indexedSession, dependencySet, captured) {
+function strictOwnershipMatches(index, indexedSession, dependencySet, captured) {
   try {
-    const owner = `${captured.boundary.sourceKind} Index`;
-    return captureOwnDataProperty(index, 'sourceKind', owner) === captured.indexView.sourceKind
-      && captureOwnDataProperty(index, 'repoRoot', owner) === captured.indexView.repoRoot
-      && captureOwnDataProperty(index, captured.boundary.rootField, owner)
-        === captured.indexView[captured.boundary.rootField]
+    const owner = `${captured.adapter.kind} Index`;
+    return captureOwnDataProperty(index, 'sourceKind', owner)
+        === captured.materializationContext.sourceKind
+      && captureOwnDataProperty(index, 'repoRoot', owner)
+        === captured.materializationContext.repoRoot
+      && captured.adapter.materializationContextFields.every((field) => (
+        captureOwnDataProperty(index, field, owner) === captured.materializationContext[field]
+      ))
       && captureOwnDataProperty(index, 'sessionsById', owner) === captured.sessionsById
       && captured.sessionsById.get(indexedSession.id) === indexedSession
       && captureOwnDataProperty(
@@ -379,6 +630,10 @@ function trustedStrictOwnershipMatches(index, indexedSession, dependencySet, cap
         owner,
       ) === captured.materializationDependencies
       && captured.materializationDependencies.get(dependencySet.id) === dependencySet
+      && graphFingerprintMatches(
+        captured.materializationContext,
+        captured.materializationContextFingerprint,
+      )
       && graphFingerprintMatches(indexedSession, captured.indexedSessionFingerprint)
       && graphFingerprintMatches(dependencySet, captured.dependencySetFingerprint);
   } catch {
@@ -418,6 +673,7 @@ const codexAdapter = {
     validateMaterializationDescriptor: codex.validateCodexMaterializationDescriptor,
     validateLegacyRawOwnerIndex: codex.validateCodexLegacyRawOwnerIndex,
     validateMaterializedPrivateState: codex.validateCodexMaterializedPrivateState,
+    materializationContextFields: ['sessionsRoot'],
     materializedPrivateFields: codex.materializedPrivateFields,
     async buildEventDetail(index, session, eventId, layer, options) {
       return codex.buildHydratedEventDetail(index, session, eventId, layer, options);
@@ -473,6 +729,7 @@ const claudeAdapter = {
     validateMaterializationDescriptor: claude.validateClaudeMaterializationDescriptor,
     validateLegacyRawOwnerIndex: claude.validateClaudeLegacyRawOwnerIndex,
     validateMaterializedPrivateState: claude.validateClaudeMaterializedPrivateState,
+    materializationContextFields: ['sourceRoot'],
     materializedPrivateFields: claude.materializedPrivateFields,
     async buildEventDetail(index, session, eventId, layer, options) {
       return buildClaudeEventDetail(session, eventId, layer, options);
@@ -524,6 +781,7 @@ function requireExplicitSourceKind(value, owner = 'source') {
 function validateIndexOwnership(index, {
   allowUninspectableSessions = false,
   adapter: adapterOverride = null,
+  verifyProjectQueryProjectionDigest = true,
 } = {}) {
   const indexKind = adapterOverride
     ? index?.sourceKind
@@ -589,7 +847,9 @@ function validateIndexOwnership(index, {
   validateCanonicalIndexFields(index);
   validateCanonicalSessionsProperty(index, { allowUninspectableSessions });
   if (index.projectQueryStore) {
-    validateProjectQueryStore(index.projectQueryStore, [...sessionsById.keys()]);
+    validateProjectQueryStore(index.projectQueryStore, [...sessionsById.keys()], {
+      verifyProjectionDigest: verifyProjectQueryProjectionDigest,
+    });
   } else if (!allowResidentComplete) {
     const error = new Error('Canonical strict Index.projectQueryStore is required');
     error.code = 'CANONICAL_CONTRACT_VIOLATION';
@@ -622,10 +882,7 @@ function validateIndexOwnership(index, {
       error.code = 'CANONICAL_CONTRACT_VIOLATION';
       throw error;
     }
-    const trustedStrictBoundary = trustedRepositoryStrictBoundary(adapter);
-    const descriptorIndex = trustedStrictBoundary
-      ? createTrustedRepositoryIndexView(index, trustedStrictBoundary)
-      : index;
+    const materializationContext = createStrictMaterializationContext(index, adapter);
     for (const session of validatedSessions) {
       const descriptor = session.materializationDescriptor;
       const dependencySet = index.materializationDependencies.get(descriptor.dependencySetId);
@@ -637,32 +894,56 @@ function validateIndexOwnership(index, {
       invokeReadOnlyMaterializationValidator({
         callback: adapter.validateMaterializationDescriptor,
         args: {
-          index: descriptorIndex,
+          materializationContext,
           indexedSession: session,
           descriptor,
           dependencySet,
         },
-        guardedValues: trustedStrictBoundary
-          ? [descriptorIndex, session, dependencySet]
-          : [index],
+        guardedValues: [materializationContext, session, dependencySet],
         label: 'Adapter materialization descriptor validation',
       });
+      if (projectQueryProjectionDigestForSession(
+        index.projectQueryStore,
+        session.queryShardId,
+        { requireVerified: verifyProjectQueryProjectionDigest },
+      ) !== session.queryProjectionDigest) {
+        const error = new Error(`Canonical Session ${session.id} query projection digest does not match its shard`);
+        error.code = 'CANONICAL_CONTRACT_VIOLATION';
+        throw error;
+      }
     }
-    const legacyValidationIndex = trustedStrictBoundary
-      ? Object.freeze({ sessionsById: new Map(index.sessionsById) })
-      : index;
+    const sessionIds = new Set(index.sessionsById.keys());
     invokeReadOnlyMaterializationValidator({
       callback: adapter.validateLegacyRawOwnerIndex,
       args: {
-        index: legacyValidationIndex,
+        materializationContext,
+        sessionIds,
         legacyRawOwners: index.legacyRawOwners,
       },
-      guardedValues: trustedStrictBoundary
-        ? [legacyValidationIndex, index.legacyRawOwners]
-        : [index],
+      guardedValues: [materializationContext, sessionIds, index.legacyRawOwners],
       label: 'Adapter legacy Raw owner validation',
     });
   }
+  return indexKind;
+}
+
+async function validateIndexOwnershipForCommit(index, options = {}) {
+  const { signal, onChunk } = options;
+  throwIfAborted(signal);
+  const indexKind = validateIndexOwnership(index, {
+    allowUninspectableSessions: options.allowUninspectableSessions === true,
+    adapter: options.adapter || null,
+    verifyProjectQueryProjectionDigest: false,
+  });
+  throwIfAborted(signal);
+  if (index.projectQueryStore) {
+    await validateProjectQueryStoreForCommit(
+      index.projectQueryStore,
+      [...index.sessionsById.keys()],
+      { signal, onChunk, structurallyValidated: true },
+    );
+  }
+  throwIfAborted(signal);
   return indexKind;
 }
 
@@ -676,8 +957,8 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
   const indexKind = validateCanonicalIndexFields(index);
   const trustedResidentBoundary = adapter.sessionLifecycle === SESSION_LIFECYCLE.RESIDENT_COMPLETE
     && adapter.materializeSession === materializeResidentSession;
-  const trustedStrictBoundary = trustedRepositoryStrictBoundary(adapter);
-  if (!trustedResidentBoundary && !trustedStrictBoundary) {
+  const allowResidentComplete = adapter.sessionLifecycle === SESSION_LIFECYCLE.RESIDENT_COMPLETE;
+  if (allowResidentComplete && !trustedResidentBoundary) {
     validateIndexOwnership(index, { adapter });
   }
   if (adapter.kind !== indexKind) {
@@ -691,7 +972,6 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
     error.code = 'CANONICAL_CONTRACT_VIOLATION';
     throw error;
   }
-  const allowResidentComplete = adapter.sessionLifecycle === SESSION_LIFECYCLE.RESIDENT_COMPLETE;
   validateCanonicalIndexedSessionShape(indexedSession, indexKind, { allowResidentComplete });
   throwIfAborted(options.signal);
 
@@ -717,14 +997,12 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
     return materializedSession;
   }
 
-  const dependencySet = allowResidentComplete
-    ? undefined
-    : index.materializationDependencies?.get(
+  if (!allowResidentComplete) {
+    const dependencySet = index.materializationDependencies?.get(
       indexedSession.materializationDescriptor.dependencySetId,
     );
-  if (trustedStrictBoundary) {
     if (!dependencySet) {
-      throw trustedStrictBoundaryError(
+      throw strictBoundaryError(
         `Missing materialization dependency set ${indexedSession.materializationDescriptor.dependencySetId}`,
       );
     }
@@ -733,31 +1011,49 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
       indexKind,
       indexedSession.materializationDescriptor.dependencySetId,
     );
-    const indexView = createTrustedRepositoryIndexView(index, trustedStrictBoundary);
+    const materializationContext = createStrictMaterializationContext(index, adapter);
     invokeReadOnlyMaterializationValidator({
       callback: adapter.validateMaterializationDescriptor,
       args: {
-        index: indexView,
+        materializationContext,
         indexedSession,
         descriptor: indexedSession.materializationDescriptor,
         dependencySet,
       },
-      guardedValues: [indexView, indexedSession, dependencySet],
+      guardedValues: [materializationContext, indexedSession, dependencySet],
       label: 'Adapter materialization descriptor validation',
     });
-    const capturedOwnership = captureTrustedStrictOwnership(
+    let storedProjectionDigest;
+    try {
+      storedProjectionDigest = projectQueryProjectionDigestForSession(
+        index.projectQueryStore,
+        indexedSession.queryShardId,
+      );
+    } catch (error) {
+      throw materializationContractViolation(
+        'Indexed Session query projection shard is invalid',
+        error,
+        true,
+      );
+    }
+    if (storedProjectionDigest !== indexedSession.queryProjectionDigest) {
+      throw materializationContractViolation(
+        'Indexed Session query projection digest does not match its committed shard',
+      );
+    }
+    const capturedOwnership = captureStrictOwnership(
       index,
       indexedSession,
       dependencySet,
-      indexView,
-      trustedStrictBoundary,
+      materializationContext,
+      adapter,
     );
     let materializedSession;
     let materializationRejected = false;
     let materializationError;
     try {
       materializedSession = await adapter.materializeSession({
-        index: indexView,
+        materializationContext,
         indexedSession,
         dependencySet,
         signal: options.signal,
@@ -767,7 +1063,7 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
       materializationRejected = true;
       materializationError = error;
     }
-    if (!trustedStrictOwnershipMatches(
+    if (!strictOwnershipMatches(
       index,
       indexedSession,
       dependencySet,
@@ -791,18 +1087,116 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
         allowedPrivateFields: adapter.materializedPrivateFields,
       },
     );
-    invokeReadOnlyMaterializationValidator({
-      callback: adapter.validateMaterializedPrivateState,
-      args: {
-        indexedSession,
-        session: materializedSession,
-      },
-      guardedValues: [indexedSession, materializedSession],
-      label: 'Adapter materialized private-state validation',
-    });
+    notifyProjectionPhase(options, 'materialized_private_validation', 'start');
+    try {
+      await invokeReadOnlyMaterializationValidatorAsync({
+        callback: adapter.validateMaterializedPrivateState,
+        args: {
+          materializationContext,
+          indexedSession,
+          session: materializedSession,
+        },
+        guardedValues: [materializationContext, indexedSession, materializedSession],
+        label: 'Adapter materialized private-state validation',
+        signal: options.signal,
+        onChunk: options.onProjectionChunk,
+      });
+    } finally {
+      notifyProjectionPhase(options, 'materialized_private_validation', 'end');
+    }
+    let materializedFingerprint;
+    notifyProjectionPhase(options, 'materialized_fingerprint_capture', 'start');
+    try {
+      materializedFingerprint = await captureGraphFingerprintAsync(materializedSession, {
+        signal: options.signal,
+        onChunk: options.onProjectionChunk,
+        phase: 'materialized_fingerprint_capture',
+      });
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      throw materializationContractViolation(
+        'Materialized Session could not be fingerprinted before query projection',
+        error,
+        true,
+      );
+    } finally {
+      notifyProjectionPhase(options, 'materialized_fingerprint_capture', 'end');
+    }
+    let materializedProjectionDigest;
+    let projectionRejected = false;
+    let projectionError;
+    notifyProjectionPhase(options, 'materialized_projection', 'start');
+    try {
+      materializedProjectionDigest = await projectQueryProjectionDigestAsync(
+        materializedSession,
+        adapter.query.projectQueryPresentation,
+        { signal: options.signal, onChunk: options.onProjectionChunk },
+      );
+    } catch (error) {
+      projectionRejected = true;
+      projectionError = error;
+    } finally {
+      notifyProjectionPhase(options, 'materialized_projection', 'end');
+    }
+    let projectionInputsUnchanged = false;
+    notifyProjectionPhase(options, 'materialized_fingerprint_recheck', 'start');
+    try {
+      projectionInputsUnchanged = await graphFingerprintMatchesAsync(
+        materializedSession,
+        materializedFingerprint,
+        {
+          signal: options.signal,
+          onChunk: options.onProjectionChunk,
+          phase: 'materialized_fingerprint_recheck',
+        },
+      );
+    } catch (fingerprintError) {
+      if (fingerprintError?.name === 'AbortError') throw fingerprintError;
+      throw materializationContractViolation(
+        'Query projection left the Materialized Session unverifiable',
+        projectionRejected ? projectionError : fingerprintError,
+        true,
+      );
+    } finally {
+      notifyProjectionPhase(options, 'materialized_fingerprint_recheck', 'end');
+    }
+    if (!projectionInputsUnchanged) {
+      throw materializationContractViolation(
+        'Query projection must not mutate the Materialized Session',
+        projectionRejected ? projectionError : undefined,
+        projectionRejected,
+      );
+    }
+    if (projectionRejected) {
+      if (projectionError?.name === 'AbortError') throw projectionError;
+      throw materializationContractViolation(
+        'Materialized Session query projection could not be reconstructed',
+        projectionError,
+        true,
+      );
+    }
+    throwIfAborted(options.signal);
+    if (materializedProjectionDigest !== indexedSession.queryProjectionDigest) {
+      throw materializationContractViolation(
+        'Materialized Session query projection does not match the committed Indexed projection',
+      );
+    }
     return materializedSession;
   }
-  const materializationInputFingerprint = captureGraphFingerprint(index);
+
+  // Non-repository resident compatibility adapters still receive the complete
+  // Index and retain the original exception-safe mutation guard. Strict
+  // adapters never enter this path.
+  let materializationInputFingerprint;
+  try {
+    materializationInputFingerprint = captureGraphFingerprint(index);
+  } catch (error) {
+    throw materializationContractViolation(
+      'Materialization inputs could not be fingerprinted',
+      error,
+      true,
+    );
+  }
   let materializedSession;
   let materializationRejected = false;
   let materializationError;
@@ -810,7 +1204,6 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
     materializedSession = await adapter.materializeSession({
       index,
       indexedSession,
-      dependencySet,
       signal: options.signal,
       indexRevision: options.indexRevision,
     });
@@ -850,17 +1243,6 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
       allowedPrivateFields: adapter.materializedPrivateFields,
     },
   );
-  if (!allowResidentComplete) {
-    invokeReadOnlyMaterializationValidator({
-      callback: adapter.validateMaterializedPrivateState,
-      args: {
-        indexedSession,
-        session: materializedSession,
-      },
-      guardedValues: [index, materializedSession],
-      label: 'Adapter materialized private-state validation',
-    });
-  }
   return materializedSession;
 }
 
@@ -1060,4 +1442,5 @@ module.exports = {
   supportedSourceOptions,
   supportedSourceKinds,
   validateIndexOwnership,
+  validateIndexOwnershipForCommit,
 };

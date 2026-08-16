@@ -3,7 +3,10 @@
 const assert = require('node:assert/strict');
 const { performance } = require('node:perf_hooks');
 const test = require('node:test');
-const { buildProjectQueryStore } = require('../src/project-query-store');
+const {
+  buildProjectQueryStore,
+  validateProjectQueryStore,
+} = require('../src/project-query-store');
 const { createSessionQuery } = require('../src/session-query');
 
 const ROWS_PER_LAYER = 4_097;
@@ -90,6 +93,7 @@ test('packed Main, Protocol, and Raw cold scans preserve the oracle within the M
     sessionsById: new Map(projectedSessions.map((session) => [session.id, session])),
     projectQueryStore: buildProjectQueryStore(projectedSessions),
   };
+  validateProjectQueryStore(packed.projectQueryStore, projectedSessions.map((session) => session.id));
   const timings = {};
   for (const layer of ['main', 'protocol', 'raw']) {
     const filters = { q: 'late layer needle', layer, locale: 'en' };
@@ -114,5 +118,41 @@ test('packed Main, Protocol, and Raw cold scans preserve the oracle within the M
     rowsPerLayer: ROWS_PER_LAYER,
     accountedBytes: packed.projectQueryStore.accountedBytes,
     timings,
+  }));
+});
+
+test('metadata-only structural filtering hydrates one preview chunk and no search text scan', async (t) => {
+  const query = createSessionQuery();
+  const oracle = fixtureIndex();
+  const projectedSessions = oracle.sessions.map((session) => ({
+    ...session,
+    ...query.projectSessionMetadata(session),
+  }));
+  const packed = {
+    ...oracle,
+    sessions: projectedSessions,
+    sessionsById: new Map(projectedSessions.map((session) => [session.id, session])),
+    projectQueryStore: buildProjectQueryStore(projectedSessions),
+  };
+  validateProjectQueryStore(packed.projectQueryStore, projectedSessions.map((session) => session.id));
+  const filters = { q: '', kind: 'message', layer: 'main', locale: 'en' };
+  const expected = query.filterSessions(oracle, filters);
+  let metadataChunks = 0;
+  let hydratedTextChunks = 0;
+  const started = performance.now();
+  const actual = await query.filterSessions(packed, filters, {
+    onChunk() { metadataChunks += 1; },
+    onTextChunk() { hydratedTextChunks += 1; },
+  });
+  const packedMs = performance.now() - started;
+  assert.deepEqual(actual, expected);
+  assert.equal(metadataChunks, 2);
+  assert.equal(hydratedTextChunks, 1);
+  assert.ok(packedMs < 2_000, `metadata-only packed scan ${packedMs.toFixed(1)}ms exceeded its bound`);
+  t.diagnostic(JSON.stringify({
+    rows: ROWS_PER_LAYER,
+    metadataChunks,
+    hydratedTextChunks,
+    packedMs,
   }));
 });

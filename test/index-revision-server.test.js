@@ -115,6 +115,60 @@ test('server retires an in-flight packed query and never emits a mixed revision 
   }
 });
 
+test('project cancellation during final query projection validation never installs the replacement Index', async () => {
+  const initial = strictClaudeIndexFromComplete(index('validation-initial', 1, true));
+  const replacement = strictClaudeIndexFromComplete(index('validation-replacement', 1_200, true));
+  let releaseBuild;
+  const buildGate = new Promise((resolve) => { releaseBuild = resolve; });
+  let jobId = '';
+  let cancelRequest = null;
+  let base = '';
+  const server = createServer(initial, 1, {
+    buildIndex: async () => {
+      await buildGate;
+      return replacement;
+    },
+    onIndexValidationChunk() {
+      if (!cancelRequest && jobId) {
+        cancelRequest = fetch(`${base}/api/project/status?jobId=${encodeURIComponent(jobId)}`, {
+          method: 'DELETE',
+        });
+      }
+    },
+  });
+  base = await listen(server);
+  try {
+    const start = await fetch(`${base}/api/project`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repoRoot: replacement.repoRoot }),
+    });
+    assert.equal(start.status, 202);
+    jobId = (await start.json()).job.id;
+    releaseBuild();
+    while (!cancelRequest) await new Promise((resolve) => setImmediate(resolve));
+    const cancelled = await cancelRequest;
+    assert.equal(cancelled.status, 200);
+    assert.equal((await cancelled.json()).job.status, 'cancelled');
+
+    let status;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const response = await fetch(`${base}/api/project/status?jobId=${encodeURIComponent(jobId)}`);
+      status = (await response.json()).job;
+      if (status.status === 'cancelled') break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(status.status, 'cancelled');
+    const stateResponse = await fetch(`${base}/api/state`);
+    assert.equal(stateResponse.status, 200);
+    const state = await stateResponse.json();
+    assert.equal(state.repoRoot, initial.repoRoot);
+    assert.equal(state.indexRevision, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('server event routes coalesce and reuse one revision-owned Materialized Session', async () => {
   const completeIndex = index('cached-session', 2);
   const completeSession = completeIndex.sessions[0];

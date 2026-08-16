@@ -5825,7 +5825,7 @@ async function buildSourceBackedIndex({
         logicalEventCount: session.logicalEvents.length,
       });
     }
-    queryStoreBuilder.addSession(session);
+    const queryProjectionDigest = queryStoreBuilder.addSession(session);
     legacyRawOwnerBuilder.addSession(session);
     catalogAccumulator.addSession(session);
     const summary = codexSearch.projectSessionMetadata(session).summary;
@@ -5841,6 +5841,7 @@ async function buildSourceBackedIndex({
       ...projectCodexCarriedSession(session, summary),
       materializationDescriptor: materializationState.descriptor,
       queryShardId: session.id,
+      queryProjectionDigest,
     };
     const previousSession = canReusePrevious
       ? previousIndex.sessionsById.get(projectedIndexedSession.id)
@@ -5967,8 +5968,9 @@ async function buildSourceBackedIndex({
   };
 }
 
-async function materializeCodexSession({ index, indexedSession, dependencySet, signal }) {
+async function materializeCodexSession({ materializationContext, indexedSession, dependencySet, signal }) {
   throwIfAborted(signal);
+  const index = materializationContext;
   const descriptor = indexedSession.materializationDescriptor;
   const entry = dependencySet.entries[0];
   const target = path.resolve(index.sessionsRoot, descriptor.payload.sourceFile);
@@ -6037,7 +6039,13 @@ function requireExactCodexKeys(value, keys, owner) {
   }
 }
 
-function validateCodexMaterializationDescriptor({ index, indexedSession, descriptor, dependencySet }) {
+function validateCodexMaterializationDescriptor({
+  materializationContext,
+  indexedSession,
+  descriptor,
+  dependencySet,
+}) {
+  const index = materializationContext;
   requireExactCodexKeys(
     descriptor.payload,
     ['sourceFile', 'rawSegments', 'copiedPrefixCount', 'copiedPrefixDigest', 'relationship'],
@@ -6146,7 +6154,7 @@ function validateCodexMaterializationDescriptor({ index, indexedSession, descrip
   }
 }
 
-function validateCodexLegacyRawOwnerIndex({ index, legacyRawOwners }) {
+function validateCodexLegacyRawOwnerIndex({ sessionIds: ownedSessionIds, legacyRawOwners }) {
   requireExactCodexKeys(legacyRawOwners.payload, ['sessionIds', 'files'], 'Codex legacy Raw owner payload');
   const { sessionIds, files } = legacyRawOwners.payload;
   if (!Array.isArray(sessionIds) || !files || typeof files !== 'object' || Array.isArray(files)) {
@@ -6154,7 +6162,8 @@ function validateCodexLegacyRawOwnerIndex({ index, legacyRawOwners }) {
   }
   const uniqueSessionIds = new Set(sessionIds);
   if (uniqueSessionIds.size !== sessionIds.length
-      || sessionIds.some((sessionId) => typeof sessionId !== 'string' || !index.sessionsById.has(sessionId))) {
+      || !(ownedSessionIds instanceof Set)
+      || sessionIds.some((sessionId) => typeof sessionId !== 'string' || !ownedSessionIds.has(sessionId))) {
     throw new Error('Codex legacy Raw owner Session dictionary is invalid');
   }
   let entryCount = 0;

@@ -12,7 +12,10 @@ const {
   validateCanonicalSessionShape,
 } = require('../src/canonical-contract');
 const { createSessionQuery } = require('../src/session-query');
-const { buildProjectQueryStore } = require('../src/project-query-store');
+const {
+  buildProjectQueryStore,
+  projectQueryProjectionDigest,
+} = require('../src/project-query-store');
 const {
   buildEventDetailForSession,
   getSourceAdapter,
@@ -26,6 +29,10 @@ const {
   defineSourceAdapter,
   SESSION_LIFECYCLE,
 } = require('../src/source-adapter-contract');
+const {
+  createMaterializationScheduler,
+  createMaterializedSessionOwner,
+} = require('../src/materialized-session-owner');
 
 function makeCanonicalIndex(sourceKind, options = {}) {
   const raw = {
@@ -61,7 +68,7 @@ function makeCanonicalIndex(sourceKind, options = {}) {
 
 function makeStrictIndexedSession(sourceKind = 'fixture-source') {
   const counts = Object.fromEntries(INDEXED_SESSION_COUNT_FIELDS.map((field) => [field, 0]));
-  return {
+  const session = {
     id: `${sourceKind}:session:strict`,
     sourceKind,
     sourceSessionId: 'source-session',
@@ -106,13 +113,21 @@ function makeStrictIndexedSession(sourceKind = 'fixture-source') {
       payload: { locator: 'opaque-fixture' },
     },
     queryShardId: `${sourceKind}:session:strict`,
+    queryProjectionDigest: 'A'.repeat(43),
   };
+  session.queryProjectionDigest = projectQueryProjectionDigest(
+    makeStrictMaterializedSession(session),
+    queryContract().projectQueryPresentation,
+  );
+  return session;
 }
 
 function makeStrictMaterializedSession(indexedSession) {
   const carried = {};
   for (const [key, value] of Object.entries(indexedSession)) {
-    if (key === 'materializationDescriptor' || key === 'queryShardId') continue;
+    if (key === 'materializationDescriptor'
+        || key === 'queryShardId'
+        || key === 'queryProjectionDigest') continue;
     carried[key] = value;
   }
   const raw = {
@@ -158,7 +173,14 @@ function queryContract() {
     indexPresentation() {},
     matchTerms() {},
     projectFileSuggestions() {},
-    projectQueryPresentation() {},
+    projectQueryPresentation(session, event) {
+      const fact = session?.presentationIndexes?.codeModeDeclaredRequests?.get(event?.id);
+      return fact ? {
+        scriptOperation: true,
+        declaredRequestNames: [...fact.toolNames],
+        requestEvidence: fact.requestEvidence,
+      } : null;
+    },
     projectSessionMetadata() {},
     sessionFileSuggestions() {},
   };
@@ -175,6 +197,7 @@ function makeLifecycleAdapter({
       validateMaterializationDescriptor() {},
       validateLegacyRawOwnerIndex() {},
       validateMaterializedPrivateState() {},
+      materializationContextFields: [],
       materializedPrivateFields: [],
     }
     : {};
@@ -195,6 +218,39 @@ function makeLifecycleAdapter({
     ...strictFields,
     ...strictOverrides,
   });
+}
+
+function makeStrictMaterializationBoundaryFixture(sourceKind = 'projection-source') {
+  const indexedSession = makeStrictIndexedSession(sourceKind);
+  const materializedSession = makeStrictMaterializedSession(indexedSession);
+  indexedSession.queryProjectionDigest = projectQueryProjectionDigest(
+    materializedSession,
+    queryContract().projectQueryPresentation,
+  );
+  const dependencySet = {
+    schemaVersion: 1,
+    id: 'dependencies-1',
+    sourceKind,
+    entries: [],
+  };
+  const index = {
+    sourceKind,
+    repoRoot: '/synthetic/repository',
+    sessions: [indexedSession],
+    sessionsById: new Map([[indexedSession.id, indexedSession]]),
+    projectQueryStore: buildProjectQueryStore([materializedSession], {
+      presentationForEvent: queryContract().projectQueryPresentation,
+    }),
+    materializationDependencies: new Map([[dependencySet.id, dependencySet]]),
+    legacyRawOwners: {
+      schemaVersion: 1,
+      sourceKind,
+      entryCount: 0,
+      accountedBytes: 2,
+      payload: {},
+    },
+  };
+  return { dependencySet, index, indexedSession, materializedSession };
 }
 
 test('Codex and Claude complete synthetic Sessions satisfy the same shared contract', () => {
@@ -259,6 +315,21 @@ test('compatibility materialization rejects cancellation, foreign ownership, and
   await assert.rejects(
     materializeSessionWithAdapter(brokenIndex, brokenIndex.sessions[0], residentAdapter),
     { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
+  );
+
+  const unverifiableIndex = makeCanonicalIndex('claude-code');
+  const revocable = Proxy.revocable({}, {});
+  unverifiableIndex.unrelatedAdapterState = revocable.proxy;
+  revocable.revoke();
+  await assert.rejects(
+    materializeSessionWithAdapter(
+      unverifiableIndex,
+      unverifiableIndex.sessions[0],
+      residentAdapter,
+    ),
+    (error) => error.code === 'MATERIALIZATION_CONTRACT_VIOLATION'
+      && /could not be fingerprinted/.test(error.message)
+      && error.cause instanceof TypeError,
   );
 });
 
@@ -522,8 +593,8 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
     sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
     materializeSession: async () => materializedSession,
     strictOverrides: {
-      validateMaterializationDescriptor({ index: callbackIndex }) {
-        callbackIndex.repoRoot = '/mutated-by-validator';
+      validateMaterializationDescriptor({ materializationContext }) {
+        materializationContext.repoRoot = '/mutated-by-validator';
       },
     },
   });
@@ -546,8 +617,8 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
   const mutatingMaterializerAdapter = makeLifecycleAdapter({
     kind: indexedSession.sourceKind,
     sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
-    materializeSession: async ({ index: callbackIndex }) => {
-      callbackIndex.repoRoot = '/mutated-by-materializer';
+    materializeSession: async ({ materializationContext }) => {
+      materializationContext.repoRoot = '/mutated-by-materializer';
       return materializedSession;
     },
   });
@@ -556,6 +627,23 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
       mutatingMaterializerIndex,
       indexedSession,
       mutatingMaterializerAdapter,
+    ),
+    { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
+  );
+
+  const extendingMaterializationContextAdapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async ({ materializationContext }) => {
+      materializationContext.unregistered = 'mutation';
+      return materializedSession;
+    },
+  });
+  await assert.rejects(
+    materializeSessionWithAdapter(
+      mutatingMaterializerIndex,
+      indexedSession,
+      extendingMaterializationContextAdapter,
     ),
     { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
   );
@@ -602,23 +690,9 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
         sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
         materializeSession: async () => makeStrictMaterializedSession(indexedSession),
         strictOverrides: {
-          validateMaterializationDescriptor({ index: callbackIndex }) {
-            callbackIndex.repoRoot = '/descriptor-mutated-before-throw';
+          validateMaterializationDescriptor({ materializationContext }) {
+            materializationContext.repoRoot = '/descriptor-mutated-before-throw';
             throw new Error('descriptor rejected');
-          },
-        },
-      }),
-    },
-    {
-      name: 'legacy validator',
-      adapter: makeLifecycleAdapter({
-        kind: indexedSession.sourceKind,
-        sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
-        materializeSession: async () => makeStrictMaterializedSession(indexedSession),
-        strictOverrides: {
-          validateLegacyRawOwnerIndex({ index: callbackIndex }) {
-            callbackIndex.repoRoot = '/legacy-mutated-before-throw';
-            throw new Error('legacy owner rejected');
           },
         },
       }),
@@ -628,8 +702,8 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
       adapter: makeLifecycleAdapter({
         kind: indexedSession.sourceKind,
         sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
-        materializeSession: async ({ index: callbackIndex }) => {
-          callbackIndex.repoRoot = '/materializer-mutated-before-throw';
+        materializeSession: async ({ materializationContext }) => {
+          materializationContext.repoRoot = '/materializer-mutated-before-throw';
           throw new Error('materializer rejected');
         },
       }),
@@ -663,6 +737,22 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
       },
     );
   }
+  const mutatingLegacyValidatorAdapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async () => makeStrictMaterializedSession(indexedSession),
+    strictOverrides: {
+      validateLegacyRawOwnerIndex({ sessionIds }) {
+        sessionIds.add('legacy-mutated-before-throw');
+        throw new Error('legacy owner rejected');
+      },
+    },
+  });
+  assert.throws(
+    () => validateIndexOwnership(freshStrictIndex(), { adapter: mutatingLegacyValidatorAdapter }),
+    (error) => error.code === 'MATERIALIZATION_CONTRACT_VIOLATION'
+      && error.cause instanceof Error,
+  );
 
   const validatorRejectionCases = [
     {
@@ -670,14 +760,6 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
       override: {
         validateMaterializationDescriptor() {
           throw new Error('descriptor rejected without mutation');
-        },
-      },
-    },
-    {
-      name: 'legacy validator',
-      override: {
-        validateLegacyRawOwnerIndex() {
-          throw new Error('legacy rejected without mutation');
         },
       },
     },
@@ -710,6 +792,21 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
       },
     );
   }
+  const rejectingLegacyValidatorAdapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async () => makeStrictMaterializedSession(indexedSession),
+    strictOverrides: {
+      validateLegacyRawOwnerIndex() {
+        throw new Error('legacy rejected without mutation');
+      },
+    },
+  });
+  assert.throws(
+    () => validateIndexOwnership(freshStrictIndex(), { adapter: rejectingLegacyValidatorAdapter }),
+    (error) => error.code === 'MATERIALIZATION_CONTRACT_VIOLATION'
+      && error.cause instanceof Error,
+  );
 
   const promiseReturningValidatorAdapter = makeLifecycleAdapter({
     kind: indexedSession.sourceKind,
@@ -768,6 +865,313 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
     ),
     (error) => error === sourceFailure,
   );
+});
+
+test('future strict adapters receive only bounded declared context and selected materialization inputs', async () => {
+  const indexedSession = makeStrictIndexedSession('future-source');
+  const materializedSession = makeStrictMaterializedSession(indexedSession);
+  const dependencySet = {
+    schemaVersion: 1,
+    id: 'dependencies-1',
+    sourceKind: indexedSession.sourceKind,
+    entries: [],
+  };
+  const projectQueryStore = buildProjectQueryStore([materializedSession], {
+    presentationForEvent: queryContract().projectQueryPresentation,
+  });
+  let unrelatedGraphInspected = false;
+  const index = {
+    sourceKind: indexedSession.sourceKind,
+    repoRoot: '/synthetic/repository',
+    fixtureRoot: '/synthetic/source-root',
+    sessions: [indexedSession],
+    sessionsById: new Map([[indexedSession.id, indexedSession]]),
+    projectQueryStore,
+    materializationDependencies: new Map([[dependencySet.id, dependencySet]]),
+    legacyRawOwners: {
+      schemaVersion: 1,
+      sourceKind: indexedSession.sourceKind,
+      entryCount: 0,
+      accountedBytes: 2,
+      payload: {},
+    },
+    unrelatedQueryBytes: Buffer.alloc(32 * 1024 * 1024),
+    unrelatedGraph: new Proxy({}, {
+      ownKeys() {
+        unrelatedGraphInspected = true;
+        throw new Error('unrelated Index graph must not be inspected');
+      },
+    }),
+  };
+  let materializerCalls = 0;
+  const adapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async ({ materializationContext, indexedSession: selected, dependencySet: selectedDependencies }) => {
+      materializerCalls += 1;
+      assert.deepEqual(materializationContext, {
+        sourceKind: indexedSession.sourceKind,
+        repoRoot: index.repoRoot,
+        fixtureRoot: index.fixtureRoot,
+      });
+      assert.equal(selected, indexedSession);
+      assert.equal(selectedDependencies, dependencySet);
+      assert.equal(Object.hasOwn(materializationContext, 'projectQueryStore'), false);
+      assert.equal(Object.hasOwn(materializationContext, 'sessionsById'), false);
+      return materializedSession;
+    },
+    strictOverrides: {
+      materializationContextFields: ['fixtureRoot'],
+      validateMaterializationDescriptor({ materializationContext }) {
+        assert.equal(materializationContext.fixtureRoot, index.fixtureRoot);
+      },
+    },
+  });
+  assert.equal(validateIndexOwnership(index, { adapter }), indexedSession.sourceKind);
+  assert.equal(
+    await materializeSessionWithAdapter(index, indexedSession, adapter),
+    materializedSession,
+  );
+  assert.equal(materializerCalls, 1);
+  assert.equal(unrelatedGraphInspected, false);
+});
+
+test('strict materialization fails closed when query projection facts drift at equal counts', async () => {
+  const indexedSession = makeStrictIndexedSession('projection-source');
+  const materializedSession = makeStrictMaterializedSession(indexedSession);
+  Object.assign(materializedSession.rawEvents[0], {
+    timestamp: '2026-08-16T00:00:00.000Z',
+    recordType: 'message',
+    payloadType: 'message',
+    role: 'user',
+    status: 'completed',
+    preview: 'raw one',
+    searchText: 'raw one searchable',
+    touchedFiles: ['/synthetic/repository/raw-one.txt'],
+    source: { file: '/synthetic/repository/source.jsonl' },
+  });
+  const secondRaw = {
+    ...materializedSession.rawEvents[0],
+    rawId: `${indexedSession.sourceKind}:raw:strict:2`,
+    preview: 'raw two',
+    searchText: 'raw two searchable',
+    touchedFiles: ['/synthetic/repository/raw-two.txt'],
+  };
+  materializedSession.rawEvents.push(secondRaw);
+  materializedSession.rawEventCount = 2;
+  indexedSession.rawEventCount = 2;
+  Object.assign(materializedSession.logicalEvents[0], {
+    status: 'completed',
+    toolName: 'fixture_tool',
+    preview: 'logical preview',
+    searchText: 'logical searchable text',
+    touchedFiles: ['/synthetic/repository/logical.txt'],
+    source: { file: '/synthetic/repository/source.jsonl' },
+    rawRefs: [
+      { rawId: materializedSession.rawEvents[0].rawId },
+      { rawId: materializedSession.rawEvents[1].rawId },
+    ],
+  });
+  materializedSession.presentationIndexes.codeModeDeclaredRequests.set(
+    materializedSession.logicalEvents[0].id,
+    { toolNames: ['fixture_tool'], requestEvidence: 'declared_source' },
+  );
+  indexedSession.queryProjectionDigest = projectQueryProjectionDigest(
+    materializedSession,
+    queryContract().projectQueryPresentation,
+  );
+  const dependencySet = {
+    schemaVersion: 1,
+    id: 'dependencies-1',
+    sourceKind: indexedSession.sourceKind,
+    entries: [],
+  };
+  const index = {
+    sourceKind: indexedSession.sourceKind,
+    repoRoot: '/synthetic/repository',
+    sessions: [indexedSession],
+    sessionsById: new Map([[indexedSession.id, indexedSession]]),
+    projectQueryStore: buildProjectQueryStore([materializedSession], {
+      presentationForEvent: queryContract().projectQueryPresentation,
+    }),
+    materializationDependencies: new Map([[dependencySet.id, dependencySet]]),
+    legacyRawOwners: {
+      schemaVersion: 1,
+      sourceKind: indexedSession.sourceKind,
+      entryCount: 0,
+      accountedBytes: 2,
+      payload: {},
+    },
+  };
+  const driftCases = [
+    ['event ID', (session) => {
+      const originalId = session.logicalEvents[0].id;
+      const presentation = session.presentationIndexes.codeModeDeclaredRequests.get(originalId);
+      session.logicalEvents[0].id = 'projection-source:event:other';
+      session.presentationIndexes.codeModeDeclaredRequests.delete(originalId);
+      session.presentationIndexes.codeModeDeclaredRequests.set(session.logicalEvents[0].id, presentation);
+    }],
+    ['kind/status', (session) => {
+      session.logicalEvents[0].kind = 'different_kind';
+      session.logicalEvents[0].status = 'failed';
+    }],
+    ['text', (session) => {
+      session.logicalEvents[0].preview = 'different preview';
+      session.logicalEvents[0].searchText = 'different searchable text';
+    }],
+    ['files', (session) => {
+      session.logicalEvents[0].touchedFiles = ['/synthetic/repository/different.txt'];
+    }],
+    ['presentation', (session) => {
+      session.presentationIndexes.codeModeDeclaredRequests.get(session.logicalEvents[0].id).toolNames = [
+        'different_tool',
+      ];
+    }],
+    ['Raw physical ordinal', (session) => { session.rawEvents.reverse(); }],
+  ];
+  for (const [name, mutate] of driftCases) {
+    const drifted = structuredClone(materializedSession);
+    mutate(drifted);
+    const adapter = makeLifecycleAdapter({
+      kind: indexedSession.sourceKind,
+      sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+      materializeSession: async () => drifted,
+    });
+    await assert.rejects(
+      materializeSessionWithAdapter(index, indexedSession, adapter),
+      (error) => error.code === 'MATERIALIZATION_CONTRACT_VIOLATION'
+        && /query projection does not match/.test(error.message),
+      name,
+    );
+  }
+
+  const projectionMutationError = new Error('query presentation rejected');
+  const mutatingProjectionQuery = queryContract();
+  mutatingProjectionQuery.projectQueryPresentation = (session) => {
+    session.title = 'mutated before query rejection';
+    throw projectionMutationError;
+  };
+  const mutatingProjectionAdapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async () => structuredClone(materializedSession),
+    strictOverrides: { query: mutatingProjectionQuery },
+  });
+  await assert.rejects(
+    materializeSessionWithAdapter(index, indexedSession, mutatingProjectionAdapter),
+    (error) => error.code === 'MATERIALIZATION_CONTRACT_VIOLATION'
+      && /must not mutate/.test(error.message)
+      && error.cause === projectionMutationError,
+  );
+});
+
+test('query projection normalizes an unverifiable post-hook mutation to the stable materialization code', async () => {
+  const { index, indexedSession, materializedSession } = makeStrictMaterializationBoundaryFixture();
+  const projectionQuery = queryContract();
+  projectionQuery.projectQueryPresentation = (session) => {
+    const revocable = Proxy.revocable({}, {});
+    session.analysis.tokenStats = revocable.proxy;
+    revocable.revoke();
+    return null;
+  };
+  const adapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async () => structuredClone(materializedSession),
+    strictOverrides: { query: projectionQuery },
+  });
+  await assert.rejects(
+    materializeSessionWithAdapter(index, indexedSession, adapter),
+    (error) => error.code === 'MATERIALIZATION_CONTRACT_VIOLATION'
+      && /left the Materialized Session unverifiable/.test(error.message)
+      && error.cause instanceof TypeError,
+  );
+});
+
+test('query projection keeps hook rejection precedence when mutation makes fingerprinting impossible', async () => {
+  const { index, indexedSession, materializedSession } = makeStrictMaterializationBoundaryFixture();
+  const projectionRejection = new Error('projection rejected after mutation');
+  const projectionQuery = queryContract();
+  projectionQuery.projectQueryPresentation = (session) => {
+    const revocable = Proxy.revocable({}, {});
+    session.analysis.tokenStats = revocable.proxy;
+    revocable.revoke();
+    throw projectionRejection;
+  };
+  const adapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async () => structuredClone(materializedSession),
+    strictOverrides: { query: projectionQuery },
+  });
+  await assert.rejects(
+    materializeSessionWithAdapter(index, indexedSession, adapter),
+    (error) => error.code === 'MATERIALIZATION_CONTRACT_VIOLATION'
+      && /left the Materialized Session unverifiable/.test(error.message)
+      && error.cause === projectionRejection,
+  );
+});
+
+test('adapter-private state that cannot be fingerprinted fails with the stable materialization code', async () => {
+  const { index, indexedSession, materializedSession } = makeStrictMaterializationBoundaryFixture();
+  const revocable = Proxy.revocable({}, {});
+  const returned = structuredClone(materializedSession);
+  returned._fixturePrivate = revocable.proxy;
+  revocable.revoke();
+  const adapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async () => returned,
+    strictOverrides: { materializedPrivateFields: ['_fixturePrivate'] },
+  });
+  await assert.rejects(
+    materializeSessionWithAdapter(index, indexedSession, adapter),
+    (error) => error.code === 'MATERIALIZATION_CONTRACT_VIOLATION'
+      && /inputs could not be fingerprinted/.test(error.message)
+      && error.cause instanceof TypeError,
+  );
+});
+
+test('last-waiter cancellation throughout final verification never admits the Session to cache', async () => {
+  const verificationPhases = [
+    'materialized_private_validator_capture',
+    'materialized_private_validator_recheck',
+    'materialized_fingerprint_capture',
+    'materialized_projection',
+    'materialized_fingerprint_recheck',
+  ];
+  for (const targetPhase of verificationPhases) {
+    const { index, indexedSession, materializedSession } = makeStrictMaterializationBoundaryFixture();
+    const adapter = makeLifecycleAdapter({
+      kind: indexedSession.sourceKind,
+      sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+      materializeSession: async () => structuredClone(materializedSession),
+    });
+    const scheduler = createMaterializationScheduler({ warn() {} });
+    const owner = createMaterializedSessionOwner({
+      index,
+      indexRevision: 1,
+      retirementController: new AbortController(),
+      scheduler,
+    });
+    const waiterController = new AbortController();
+    let notifyVerification;
+    const verificationStarted = new Promise((resolve) => { notifyVerification = resolve; });
+    const pending = owner.get(indexedSession, waiterController.signal, ({ signal }) => (
+      materializeSessionWithAdapter(index, indexedSession, adapter, {
+        signal,
+        onProjectionChunk(chunk) {
+          if (chunk.phase === targetPhase) notifyVerification();
+        },
+      })
+    ));
+    await verificationStarted;
+    waiterController.abort();
+    await assert.rejects(pending, { name: 'AbortError' }, targetPhase);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(owner.cache.has(indexedSession.id), false, targetPhase);
+    assert.equal(owner.stats().completed, 0, targetPhase);
+  }
 });
 
 test('source-specific locator fields remain optional and opaque to the shared contract', () => {
