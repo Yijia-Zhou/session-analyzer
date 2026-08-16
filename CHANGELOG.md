@@ -4,7 +4,15 @@
 
 ### English
 
+- Replaced corpus-wide resident complete Session graphs for both Codex and Claude Code with strict Indexed Sessions, packed source-neutral project queries, and source-backed Materialized Sessions reconstructed on demand while preserving timeline, detail, Raw, image, relationship, search, cancellation, and reindex behavior.
+- Added a revision-scoped exact-identity Materialized Session cache with same-Session request coalescing, one global active reconstruction, bounded FIFO admission, independent waiter cancellation, atomic release on successful project/source replacement, stable busy/contract error codes, and one bounded browser retry for busy GETs.
+- Updated large-history guidance from final aggregate profiling: a 488-Session, 300,997-Raw Codex corpus completed under the default heap with a 484 MB transient V8 heap peak and 1.90 GB process maximum RSS; the 1.044 GB packed query store remains a material external-memory owner, and the first cache intentionally has no eviction.
+
 ### 中文
+
+- 将 Codex 与 Claude Code 的语料级常驻完整 Session graph 替换为严格 Indexed Session、来源中立紧凑项目查询，以及按需从来源重建的 Materialized Session，同时保持时间线、详情、Raw、图片、关系、搜索、取消与重建索引行为。
+- 新增 revision-scoped、精确 identity 的 Materialized Session cache：合并同 Session request、全局只运行一个重建、有界 FIFO admission、waiter 独立取消、项目／来源成功替换时原子释放，并提供稳定 busy／contract error code，以及对 busy GET 的一次有界 browser retry。
+- 根据最终聚合 profiling 更新大型历史指导：包含 488 个 Session／300,997 条 Raw Record 的 Codex 语料在默认 heap 下完成，transient V8 heap 峰值为 484 MB，process maximum RSS 为 1.90 GB；1.044 GB 紧凑 query store 仍是不可忽略的 external-memory owner，且首版 cache 有意不实现 eviction。
 
 ## 0.1.4 - 2026-08-15
 

@@ -337,14 +337,19 @@ test('English and Chinese README capacity guidance preserves aligned operational
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
   const readmeZh = fs.readFileSync(path.join(__dirname, '..', 'README.zh-CN.md'), 'utf8');
   for (const content of [readme, readmeZh]) {
-    assert.match(content, /250 MB/u);
-    assert.match(content, /850–900 MB/u);
-    assert.match(content, /1\.9 GB/u);
+    assert.match(content, /488/u);
+    assert.match(content, /300,997/u);
+    assert.match(content, /484 MB/u);
+    assert.match(content, /1\.90 GB/u);
+    assert.match(content, /1\.044 GB/u);
+    assert.match(content, /6\.55/u);
+    assert.match(content, /0\.3 ms/u);
     assert.match(content, /800 MiB/u);
     assert.match(content, /SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY/u);
     assert.match(content, /JavaScript heap out of memory/u);
     assert.match(content, /--max-old-space-size=4096/u);
     assert.match(content, /--log-dir <path>/u);
+    assert.match(content, /no eviction|不实现 eviction/u);
     assert.match(content, /permanent product capacity limits|永久的产品容量上限/u);
   }
 });

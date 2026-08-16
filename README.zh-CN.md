@@ -125,7 +125,7 @@ Agent 转录可能包含提示词、命令输出、文件路径、环境详情�
 
 索引内存主要取决于与所选仓库匹配的 transcript 历史总量和形态，而不是源码仓库本身的大小。Candidate transcript 字节数、Raw Record 与 Logical Event 数量、记录组成，以及尤其异常庞大的单个 Session，都会影响内存使用。
 
-以当前实现的近似实测锚点为例：约 250 MB 匹配的 Codex JSONL 达到约 0.7 GB V8 heap 峰值；约 850–900 MB、约 250,000 条 Raw Record 达到约 1.9 GB V8 heap 峰值。接近约 1 GB 匹配 transcript 数据的历史应视为高内存工作负载。这些实测数据只是指导，不是保证、预测公式、内存耗尽边界或硬性容量上限；实际使用量会随记录形态、事件数量、Node 版本而变化，异常庞大的单个 Session 尤其会产生影响。
+在当前 Indexed／Materialized 生命周期下，一次只输出聚合数据、覆盖 488 个 Session 与 300,997 条 Raw Record 的 Codex 运行在默认 2.35 GB V8 heap 上限内完成。它观测到 484 MB transient V8 heap 峰值与 1.90 GB process maximum RSS；强制 GC 后保留 55.7 MB V8 heap，同时主要在 V8 heap 之外持有 1.044 GB 紧凑 query store。该运行中最大的已接受 transcript 为 116.9 MB：冷物化耗时 6.55 秒，精确 warm cache 命中耗时 0.3 ms 且没有再次调用 adapter；缓存的完整 Session 在 GC 后增加约 44.0 MB heap 与 15.6 MB external memory。即使来源回读生命周期显著降低了 V8 heap 压力，接近约 1 GB 匹配 transcript 数据的历史仍应视为高 process-memory 工作负载。这些实测数据只是指导，不是保证、预测公式、内存耗尽边界或硬性容量上限；实际使用量会随记录形态、事件数量、Node 版本、同一 revision 内打开的不同 Session 数量而变化，异常庞大的单个 Session 尤其会产生影响。
 
 当匹配历史达到经验性的 800 MiB 警告阈值时，CLI 会输出一次 `[SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY]`，然后照常继续索引。该警告只为用户和 agent 提供信息：应先尝试普通索引；若索引成功，无需调整 heap。它不会修改 `NODE_OPTIONS`、重启进程或改变退出码。
 
@@ -149,7 +149,7 @@ NODE_OPTIONS='--max-old-space-size=4096' npx session-analyzer --repo /path/to/pr
 
 调查问题时，推荐使用 `--log-dir <path>` 收集聚合索引诊断。Session Analyzer 会写入经过节流、有界的 JSONL 生命周期记录，其中包含 candidate 文件／字节数、Session／Raw／Logical 数量、耗时、V8 heap limit、当前与进程内峰值内存，以及稳定的容量警告信号。这些记录不包含仓库路径、transcript 路径、transcript 正文、提示词、命令或源码内容，并且最多保留 20 份索引日志。Fatal V8 OOM 的 stderr 仍是权威的最终崩溃证据；进程发生 fatal termination 时，诊断 logger 可能来不及写入最终记录。
 
-大型 transcript 历史的内存效率仍是持续改进方向。未来版本可能进一步降低索引与运行时内存使用量，因此以上数据描述的是当前实现，而不是永久的产品容量上限。
+来源回读生命周期消除了语料级完整 event graph，但紧凑 query store 与 revision-scoped Materialized Session cache 仍是不可忽略的内存 owner。首版 cache 不实现 eviction；项目成功替换或切换来源会释放旧 cache，而在一个 revision 内打开许多不同的大 Session 仍会使 cache 增长。未来版本可能进一步降低索引与运行时内存使用量，因此以上数据描述的是当前实现，而不是永久的产品容量上限。
 
 ## 从源码开发
 
