@@ -5,6 +5,7 @@ const test = require('node:test');
 const { createServer } = require('../server');
 const { buildProjectQueryStore } = require('../src/project-query-store');
 const { getSourceAdapter } = require('../src/source-adapters');
+const { strictClaudeIndexFromComplete } = require('./strict-claude-fixture');
 
 const SOURCE_KIND = 'claude-code';
 
@@ -76,8 +77,8 @@ async function listen(server) {
 }
 
 test('server retires an in-flight packed query and never emits a mixed revision response', async () => {
-  const initial = index('initial', 20_000, true);
-  const replacement = index('replacement');
+  const initial = strictClaudeIndexFromComplete(index('initial', 20_000, true));
+  const replacement = strictClaudeIndexFromComplete(index('replacement'));
   const server = createServer(initial, 1, {
     buildIndex: async () => replacement,
   });

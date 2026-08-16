@@ -11,6 +11,14 @@ function sourceContainerPath(session) {
   return normalizeFsPath(path.dirname(String(session?.sourceAbsFile || '')));
 }
 
+function relationshipRawFacts(session) {
+  return session?._relationshipRawFacts || session?.rawEvents || [];
+}
+
+function relationshipLogicalFacts(session) {
+  return session?._relationshipLogicalFacts || session?.logicalEvents || [];
+}
+
 function localCommandContent(raw) {
   if (raw?.recordType !== 'system' || raw?.payloadType !== 'local_command') return '';
   return String(raw.parsed?.content || '');
@@ -40,7 +48,7 @@ function rawAncestryAt(parent, forkPointUuid) {
   if (!forkPointUuid) return [];
   const byUuid = new Map();
   const ambiguousUuids = new Set();
-  for (const raw of parent.rawEvents || []) {
+  for (const raw of relationshipRawFacts(parent)) {
     if (!raw.uuid) continue;
     if (byUuid.has(raw.uuid)) ambiguousUuids.add(raw.uuid);
     else byUuid.set(raw.uuid, raw);
@@ -60,7 +68,7 @@ function rawAncestryAt(parent, forkPointUuid) {
 }
 
 function inheritedLogicalEvents(parent, rawIds) {
-  return (parent.logicalEvents || []).filter((event) => {
+  return relationshipLogicalFacts(parent).filter((event) => {
     const refs = event.rawRefs || [];
     return refs.length > 0 && refs.every((ref) => rawIds.has(ref.rawId));
   });
@@ -79,7 +87,7 @@ function inheritedEventPreview(event) {
 }
 
 function pointerForkPointTarget(parent, inheritedRawEvents, mainEvents) {
-  const mainTimeline = (parent.logicalEvents || []).filter((event) => event.layer !== 'protocol');
+  const mainTimeline = relationshipLogicalFacts(parent).filter((event) => event.layer !== 'protocol');
   const readableEvent = [...(mainEvents || [])].reverse().find((event) => (
     String(event.preview || event.searchText || '').trim()
     && (event.rawRefs || []).length > 0
@@ -97,7 +105,7 @@ function pointerForkPointTarget(parent, inheritedRawEvents, mainEvents) {
 
   const raw = (inheritedRawEvents || []).at(-1);
   if (!raw) return null;
-  const timelineIndex = (parent.rawEvents || []).findIndex((candidate) => candidate.rawId === raw.rawId);
+  const timelineIndex = relationshipRawFacts(parent).findIndex((candidate) => candidate.rawId === raw.rawId);
   if (timelineIndex < 0) return null;
   return {
     layer: 'raw',
@@ -107,7 +115,7 @@ function pointerForkPointTarget(parent, inheritedRawEvents, mainEvents) {
 }
 
 function pointerChildHasActivity(child) {
-  return (child.rawEvents || []).some((raw) => (
+  return relationshipRawFacts(child).some((raw) => (
     raw.recordType === 'user'
     || raw.recordType === 'assistant'
     || raw.recordType === 'last-prompt'
@@ -157,12 +165,36 @@ function attachPointerFork(child, parent, evidence) {
   }
 
   if (forkedAt) {
-    const ownTimestamps = (child.rawEvents || []).map((raw) => raw.timestamp).filter(Boolean);
+    const ownTimestamps = relationshipRawFacts(child).map((raw) => raw.timestamp).filter(Boolean);
     child.startedAt = [forkedAt, ...ownTimestamps].sort()[0];
     child.updatedAt = [forkedAt, ...ownTimestamps].sort().at(-1);
     child.transcriptUpdatedAt = child.updatedAt;
   }
   return true;
+}
+
+function materializedForkBoundary(session, parent) {
+  const rawFacts = relationshipRawFacts(session);
+  let copiedRawRecordCount = 0;
+  while (copiedRawRecordCount < rawFacts.length
+      && String(
+        rawFacts[copiedRawRecordCount].sourceSessionReference
+        || rawFacts[copiedRawRecordCount].parsed?.session_id
+        || '',
+      ) === parent.sourceSessionId) {
+    copiedRawRecordCount += 1;
+  }
+  if (copiedRawRecordCount === 0) return null;
+  const copiedIds = new Set(rawFacts
+    .slice(0, copiedRawRecordCount)
+    .map((raw) => raw.rawId));
+  for (const event of relationshipLogicalFacts(session)) {
+    const refs = event.rawRefs || [];
+    if (!refs.length) continue;
+    const copiedRefCount = refs.filter((ref) => copiedIds.has(ref.rawId)).length;
+    if (copiedRefCount > 0 && copiedRefCount !== refs.length) return null;
+  }
+  return { copiedRawRecordCount };
 }
 
 function inferMaterializedForks(mainSessions, bySourceId) {
@@ -178,8 +210,38 @@ function inferMaterializedForks(mainSessions, bySourceId) {
     }
     if (candidates.size !== 1) continue;
     const [parent] = candidates.values();
+    const boundary = materializedForkBoundary(session, parent);
+    if (!boundary) continue;
     session.forkedFromSessionId = parent.id;
     session.forkStorageMode = 'materialized';
+    session.forkEvidence = {
+      ownerSessionId: parent.id,
+      copiedRawRecordCount: boundary.copiedRawRecordCount,
+    };
+  }
+}
+
+function removeMaterializedForkCycles(mainSessions) {
+  const byId = new Map(mainSessions.map((session) => [session.id, session]));
+  const cycleMembers = new Set();
+  for (const origin of mainSessions) {
+    const order = [];
+    const positions = new Map();
+    let current = origin;
+    while (current?.forkStorageMode === 'materialized' && current.forkedFromSessionId) {
+      if (positions.has(current.id)) {
+        for (const member of order.slice(positions.get(current.id))) cycleMembers.add(member);
+        break;
+      }
+      positions.set(current.id, order.length);
+      order.push(current);
+      current = byId.get(current.forkedFromSessionId);
+    }
+  }
+  for (const session of cycleMembers) {
+    session.forkedFromSessionId = '';
+    session.forkStorageMode = '';
+    session.forkEvidence = null;
   }
 }
 
@@ -195,12 +257,12 @@ function pointerForkEvidence(mainSessions) {
   for (const parent of mainSessions) {
     const sameContainer = sessionsByContainer.get(sourceContainerPath(parent)) || [];
     const rawUuidCounts = new Map();
-    for (const raw of parent.rawEvents || []) {
+    for (const raw of relationshipRawFacts(parent)) {
       if (!raw.uuid) continue;
       rawUuidCounts.set(raw.uuid, (rawUuidCounts.get(raw.uuid) || 0) + 1);
     }
     const outputsByParentUuid = new Map();
-    for (const raw of parent.rawEvents || []) {
+    for (const raw of relationshipRawFacts(parent)) {
       if (!raw.parentUuid) continue;
       const output = pointerForkOutput(raw);
       if (!output) continue;
@@ -208,7 +270,7 @@ function pointerForkEvidence(mainSessions) {
       matches.push({ raw, output });
       outputsByParentUuid.set(raw.parentUuid, matches);
     }
-    for (const command of parent.rawEvents || []) {
+    for (const command of relationshipRawFacts(parent)) {
       if (!command.uuid || !command.parentUuid || !isPointerForkCommand(command)) continue;
       if (rawUuidCounts.get(command.uuid) !== 1) continue;
       const inheritedRawEvents = rawAncestryAt(parent, command.parentUuid);
@@ -251,11 +313,14 @@ function inferClaudeForkRelationships(sessions) {
   }
 
   inferMaterializedForks(mainSessions, bySourceId);
+  removeMaterializedForkCycles(mainSessions);
   inferPointerForks(mainSessions);
 
   for (const session of sessions) {
     delete session._foreignSessionIds;
     delete session._rawUuidSet;
+    delete session._relationshipRawFacts;
+    delete session._relationshipLogicalFacts;
   }
 }
 

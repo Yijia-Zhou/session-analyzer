@@ -12,6 +12,7 @@ const {
   queryForIndex,
   validateIndexOwnership,
 } = require('../src/source-adapters');
+const { strictClaudeIndexFromComplete } = require('./strict-claude-fixture');
 
 const codexFixtureHome = path.join(__dirname, 'fixtures', 'codex-home');
 const codexFixtureRepo = 'G:\\vibe\\term-agent';
@@ -547,12 +548,12 @@ test('canonical source ownership dispatch fails closed instead of defaulting to 
     counts: { messages: 0, toolCalls: 0, failedCommands: 0 },
   };
   assert.equal(
-    validateIndexOwnership({
+    validateIndexOwnership(strictClaudeIndexFromComplete({
       sourceKind: 'claude-code',
       repoRoot: '/repo',
       sessions: [rightSession],
       sessionsById: new Map([[rightSession.id, rightSession]]),
-    }),
+    })),
     'claude-code',
   );
   const unownedReachableSession = { id: 'reachable-without-source' };
@@ -574,12 +575,15 @@ test('canonical source ownership dispatch fails closed instead of defaulting to 
     counts: { messages: 0, toolCalls: 0, failedCommands: 0 },
   };
   const invalidArraySession = { id: 'invalid-array-session', sourceKind: 'codex' };
+  const mixedIndex = strictClaudeIndexFromComplete({
+    sourceKind: 'claude-code',
+    repoRoot: '/repo',
+    sessions: [validMapSession],
+    sessionsById: new Map([[validMapSession.id, validMapSession]]),
+  });
+  mixedIndex.sessions = [mixedIndex.sessions[0], invalidArraySession];
   assert.throws(
-    () => validateIndexOwnership({
-      sourceKind: 'claude-code',
-      sessionsById: new Map([[validMapSession.id, validMapSession]]),
-      sessions: [validMapSession, invalidArraySession],
-    }),
+    () => validateIndexOwnership(mixedIndex),
     { code: 'SOURCE_OWNERSHIP_MISMATCH' },
   );
 });

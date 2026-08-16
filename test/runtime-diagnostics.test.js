@@ -20,6 +20,7 @@ const {
   largeTranscriptHistoryWarning,
 } = require('../src/runtime-capacity');
 const { createServer } = require('../server');
+const { strictClaudeIndexFromComplete } = require('./strict-claude-fixture');
 
 async function makeTempDir(t) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-diagnostics-'));
@@ -209,7 +210,7 @@ test('server diagnostics record successful, failed, and cancelled indexing outco
     {
       name: 'succeeded',
       expectedStatus: 'succeeded',
-      buildIndex: async ({ repoRoot, sourceKind }) => ({
+      buildIndex: async ({ repoRoot, sourceKind }) => strictClaudeIndexFromComplete({
         repoRoot,
         sourceKind,
         sessions: [],
@@ -291,12 +292,12 @@ test('server emits one large-history warning without blocking successful indexin
       };
       onProgress(progress);
       onProgress({ ...progress, sessionCount: 1, rawEventCount: 2, eventCount: 1 });
-      return {
+      return strictClaudeIndexFromComplete({
         repoRoot,
         sourceKind,
         sessions: [],
         sessionsById: new Map(),
-      };
+      });
     },
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

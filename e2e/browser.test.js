@@ -6,7 +6,7 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { chromium } = require('playwright');
-const { analyzerSessionId, buildClaudeIndex } = require('../src/claude');
+const { analyzerSessionId, buildClaudeSourceBackedIndex } = require('../src/claude');
 const {
   buildIndex: buildResidentCodexIndex,
   buildSourceBackedIndex: buildIndex,
@@ -891,7 +891,7 @@ test('browser presents Claude pointer fork context without child search or event
     { type: 'agent-name', agentName: 'Pointer child ⑂', sessionId: childId },
   ]);
 
-  const index = await buildClaudeIndex({ repoRoot: claudeRepo, claudeHome });
+  const index = await buildClaudeSourceBackedIndex({ repoRoot: claudeRepo, claudeHome });
   const pointerChild = index.sessionsById.get(analyzerSessionId(childId));
   const forkPointTarget = pointerChild?.inheritedContext?.forkPointTarget;
   assert.equal(forkPointTarget?.layer, 'main');
@@ -951,9 +951,19 @@ test('browser presents Claude pointer fork context without child search or event
     document.querySelector('#timeline .event.selected')?.dataset.eventId === eventId
   ), forkPointTarget.eventId);
 
-  const targetlessIndex = await buildClaudeIndex({ repoRoot: claudeRepo, claudeHome });
-  targetlessIndex.sessionsById.get(analyzerSessionId(childId)).inheritedContext.forkPointTarget = null;
-  const { page: fallbackPage } = await openApp(t, targetlessIndex, { locale: 'en', skipProjectReindex: true });
+  const { page: fallbackPage } = await openApp(t, index, {
+    locale: 'en',
+    skipProjectReindex: true,
+    beforeGoto: async (targetlessPage) => {
+      await targetlessPage.route('**/api/sessions*', async (route) => {
+        const response = await route.fetch();
+        const data = await response.json();
+        const pointerSession = data.sessions.find((session) => session.id === analyzerSessionId(childId));
+        if (pointerSession) pointerSession.inheritedContext.forkPointTarget = null;
+        await route.fulfill({ response, json: data });
+      });
+    },
+  });
   await fallbackPage.locator(`[data-session-id="${analyzerSessionId(childId)}"]`).click();
   const fallbackContext = fallbackPage.locator('[data-inherited-context]');
   await fallbackContext.waitFor();
@@ -1127,7 +1137,7 @@ test('browser Raw refs preserve malformed Claude source text instead of renderin
   const malformedLine = '{"type":"assistant","message":';
   await fsp.appendFile(file, `${malformedLine}\n`, 'utf8');
 
-  const index = await buildClaudeIndex({ repoRoot: claudeRepo, claudeHome });
+  const index = await buildClaudeSourceBackedIndex({ repoRoot: claudeRepo, claudeHome });
   const { page } = await openApp(t, index, { locale: 'en' });
   await page.locator('#layerSelect').selectOption('protocol');
   await expectInputValue(page, '#layerSelect', 'protocol');
@@ -2962,20 +2972,10 @@ test('browser applies source config from a 202 indexing-job state', async (t) =>
 
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Claude Code/);
   assert.ok((await page.locator('#projectSourceHome').textContent()).includes(fixture.claudeHome));
-  resolveIndex({
+  resolveIndex(await buildClaudeSourceBackedIndex({
     repoRoot: fixture.claudeRepo,
-    sourceKind: 'claude-code',
-    sourceHome: fixture.claudeHome,
-    codexHome: path.join(fixture.claudeHome, 'unused-codex'),
     claudeHome: fixture.claudeHome,
-    generatedAt: new Date().toISOString(),
-    totals: { sessionCount: 0, eventCount: 0, rawEventCount: 0 },
-    eventKinds: { main: [], protocol: [], raw: [] },
-    codeModeRequests: [],
-    foldingProfiles: [],
-    sessions: [],
-    sessionsById: new Map(),
-  });
+  }));
   await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
 });
 

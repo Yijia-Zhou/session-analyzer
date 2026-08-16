@@ -18,11 +18,7 @@ const {
   validateCanonicalSessionShape,
   validateCanonicalSessionsProperty,
 } = require('./canonical-contract');
-const { createSessionQuery } = require('./session-query');
-const {
-  buildProjectQueryStore,
-  validateProjectQueryStore,
-} = require('./project-query-store');
+const { validateProjectQueryStore } = require('./project-query-store');
 const {
   sanitizeStructuredLogicalDetailDto,
   validateLogicalDetailEnvelope,
@@ -38,21 +34,6 @@ const SOURCE_KIND = Object.freeze({
   CODEX: 'codex',
   CLAUDE_CODE: 'claude-code',
 });
-
-const claudeQuery = createSessionQuery();
-
-function attachProjectQueryStore(index, query) {
-  const projectedSessions = index.sessions.map((session) => ({
-    ...session,
-    ...query.projectSessionMetadata(session),
-  }));
-  index.sessions = projectedSessions;
-  index.sessionsById = new Map(projectedSessions.map((session) => [session.id, session]));
-  index.projectQueryStore = buildProjectQueryStore(projectedSessions, {
-    presentationForEvent: query.projectQueryPresentation,
-  });
-  return index;
-}
 
 function graphFingerprint(value, identityState = {
   objectIds: new WeakMap(),
@@ -292,19 +273,42 @@ async function materializeResidentSession({ index, indexedSession, signal }) {
   return indexedSession;
 }
 
-// This boundary is deliberately non-extensible: only the exact repository-owned
-// Codex materializer and validators receive a bounded Index view. Custom and
-// future strict adapters retain the complete exception-safe graph fingerprint.
-function trustedCodexStrictBoundary(adapter) {
-  return adapter.sessionLifecycle === SESSION_LIFECYCLE.INDEXED_MATERIALIZED
-    && adapter.materializeSession === codex.materializeCodexSession
-    && adapter.validateMaterializationDescriptor === codex.validateCodexMaterializationDescriptor
-    && adapter.validateLegacyRawOwnerIndex === codex.validateCodexLegacyRawOwnerIndex
-    && adapter.validateMaterializedPrivateState === codex.validateCodexMaterializedPrivateState
-    && adapter.materializedPrivateFields.length === codex.materializedPrivateFields.length
+// This boundary is deliberately non-extensible: only exact repository-owned
+// strict adapters receive a bounded Index view. Custom and future strict
+// adapters retain the complete exception-safe graph fingerprint.
+function trustedRepositoryStrictBoundary(adapter) {
+  const candidates = [
+    {
+      sourceKind: SOURCE_KIND.CODEX,
+      rootField: 'sessionsRoot',
+      materializeSession: codex.materializeCodexSession,
+      validateMaterializationDescriptor: codex.validateCodexMaterializationDescriptor,
+      validateLegacyRawOwnerIndex: codex.validateCodexLegacyRawOwnerIndex,
+      validateMaterializedPrivateState: codex.validateCodexMaterializedPrivateState,
+      materializedPrivateFields: codex.materializedPrivateFields,
+    },
+    {
+      sourceKind: SOURCE_KIND.CLAUDE_CODE,
+      rootField: 'sourceRoot',
+      materializeSession: claude.materializeClaudeSession,
+      validateMaterializationDescriptor: claude.validateClaudeMaterializationDescriptor,
+      validateLegacyRawOwnerIndex: claude.validateClaudeLegacyRawOwnerIndex,
+      validateMaterializedPrivateState: claude.validateClaudeMaterializedPrivateState,
+      materializedPrivateFields: claude.materializedPrivateFields,
+    },
+  ];
+  return candidates.find((candidate) => (
+    adapter.kind === candidate.sourceKind
+    && adapter.sessionLifecycle === SESSION_LIFECYCLE.INDEXED_MATERIALIZED
+    && adapter.materializeSession === candidate.materializeSession
+    && adapter.validateMaterializationDescriptor === candidate.validateMaterializationDescriptor
+    && adapter.validateLegacyRawOwnerIndex === candidate.validateLegacyRawOwnerIndex
+    && adapter.validateMaterializedPrivateState === candidate.validateMaterializedPrivateState
+    && adapter.materializedPrivateFields.length === candidate.materializedPrivateFields.length
     && adapter.materializedPrivateFields.every((field, index) => (
-      field === codex.materializedPrivateFields[index]
-    ));
+      field === candidate.materializedPrivateFields[index]
+    ))
+  )) || null;
 }
 
 function trustedStrictBoundaryError(message) {
@@ -321,35 +325,38 @@ function captureOwnDataProperty(value, field, owner) {
   return descriptor.value;
 }
 
-function createTrustedCodexIndexView(index) {
-  const sourceKind = captureOwnDataProperty(index, 'sourceKind', 'Codex Index');
-  const repoRoot = captureOwnDataProperty(index, 'repoRoot', 'Codex Index');
-  const sessionsRoot = captureOwnDataProperty(index, 'sessionsRoot', 'Codex Index');
-  if (sourceKind !== SOURCE_KIND.CODEX
+function createTrustedRepositoryIndexView(index, boundary) {
+  const owner = `${boundary.sourceKind} Index`;
+  const sourceKind = captureOwnDataProperty(index, 'sourceKind', owner);
+  const repoRoot = captureOwnDataProperty(index, 'repoRoot', owner);
+  const sourceRoot = captureOwnDataProperty(index, boundary.rootField, owner);
+  if (sourceKind !== boundary.sourceKind
       || typeof repoRoot !== 'string'
       || repoRoot === ''
-      || typeof sessionsRoot !== 'string'
-      || sessionsRoot === '') {
-    throw trustedStrictBoundaryError('Codex Index materialization roots are invalid');
+      || typeof sourceRoot !== 'string'
+      || sourceRoot === '') {
+    throw trustedStrictBoundaryError(`${boundary.sourceKind} Index materialization roots are invalid`);
   }
-  return Object.freeze({ sourceKind, repoRoot, sessionsRoot });
+  return Object.freeze({ sourceKind, repoRoot, [boundary.rootField]: sourceRoot });
 }
 
-function captureTrustedStrictOwnership(index, indexedSession, dependencySet, indexView) {
-  const sessionsById = captureOwnDataProperty(index, 'sessionsById', 'Codex Index');
+function captureTrustedStrictOwnership(index, indexedSession, dependencySet, indexView, boundary) {
+  const owner = `${boundary.sourceKind} Index`;
+  const sessionsById = captureOwnDataProperty(index, 'sessionsById', owner);
   const materializationDependencies = captureOwnDataProperty(
     index,
     'materializationDependencies',
-    'Codex Index',
+    owner,
   );
   if (!(sessionsById instanceof Map)
       || sessionsById.get(indexedSession.id) !== indexedSession
       || !(materializationDependencies instanceof Map)
       || materializationDependencies.get(dependencySet.id) !== dependencySet) {
-    throw trustedStrictBoundaryError('Codex Index does not own the selected materialization inputs');
+    throw trustedStrictBoundaryError(`${boundary.sourceKind} Index does not own the selected materialization inputs`);
   }
   return {
     indexView,
+    boundary,
     sessionsById,
     materializationDependencies,
     indexedSessionFingerprint: captureGraphFingerprint(indexedSession),
@@ -359,15 +366,17 @@ function captureTrustedStrictOwnership(index, indexedSession, dependencySet, ind
 
 function trustedStrictOwnershipMatches(index, indexedSession, dependencySet, captured) {
   try {
-    return captureOwnDataProperty(index, 'sourceKind', 'Codex Index') === captured.indexView.sourceKind
-      && captureOwnDataProperty(index, 'repoRoot', 'Codex Index') === captured.indexView.repoRoot
-      && captureOwnDataProperty(index, 'sessionsRoot', 'Codex Index') === captured.indexView.sessionsRoot
-      && captureOwnDataProperty(index, 'sessionsById', 'Codex Index') === captured.sessionsById
+    const owner = `${captured.boundary.sourceKind} Index`;
+    return captureOwnDataProperty(index, 'sourceKind', owner) === captured.indexView.sourceKind
+      && captureOwnDataProperty(index, 'repoRoot', owner) === captured.indexView.repoRoot
+      && captureOwnDataProperty(index, captured.boundary.rootField, owner)
+        === captured.indexView[captured.boundary.rootField]
+      && captureOwnDataProperty(index, 'sessionsById', owner) === captured.sessionsById
       && captured.sessionsById.get(indexedSession.id) === indexedSession
       && captureOwnDataProperty(
         index,
         'materializationDependencies',
-        'Codex Index',
+        owner,
       ) === captured.materializationDependencies
       && captured.materializationDependencies.get(dependencySet.id) === dependencySet
       && graphFingerprintMatches(indexedSession, captured.indexedSessionFingerprint)
@@ -439,9 +448,9 @@ const claudeAdapter = {
     label: 'Claude Code',
     homeOption: 'claudeHome',
     homeLabel: 'Claude home',
-    sessionLifecycle: SESSION_LIFECYCLE.RESIDENT_COMPLETE,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
     defaultHome: () => path.join(os.homedir(), '.claude'),
-    query: claudeQuery,
+    query: claude.query,
     async discoverConfiguredProjects(context) {
       return claude.discoverClaudeConfiguredProjects({
         claudeHome: context.sourceHome,
@@ -455,13 +464,16 @@ const claudeAdapter = {
       });
     },
     async buildIndex(context) {
-      const index = await claude.buildClaudeIndex({
+      return claude.buildClaudeSourceBackedIndex({
         ...context,
         claudeHome: context.sourceHome,
       });
-      return attachProjectQueryStore(index, claudeQuery);
     },
-    materializeSession: materializeResidentSession,
+    materializeSession: claude.materializeClaudeSession,
+    validateMaterializationDescriptor: claude.validateClaudeMaterializationDescriptor,
+    validateLegacyRawOwnerIndex: claude.validateClaudeLegacyRawOwnerIndex,
+    validateMaterializedPrivateState: claude.validateClaudeMaterializedPrivateState,
+    materializedPrivateFields: claude.materializedPrivateFields,
     async buildEventDetail(index, session, eventId, layer, options) {
       return buildClaudeEventDetail(session, eventId, layer, options);
     },
@@ -610,9 +622,9 @@ function validateIndexOwnership(index, {
       error.code = 'CANONICAL_CONTRACT_VIOLATION';
       throw error;
     }
-    const trustedStrictBoundary = trustedCodexStrictBoundary(adapter);
+    const trustedStrictBoundary = trustedRepositoryStrictBoundary(adapter);
     const descriptorIndex = trustedStrictBoundary
-      ? createTrustedCodexIndexView(index)
+      ? createTrustedRepositoryIndexView(index, trustedStrictBoundary)
       : index;
     for (const session of validatedSessions) {
       const descriptor = session.materializationDescriptor;
@@ -664,7 +676,7 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
   const indexKind = validateCanonicalIndexFields(index);
   const trustedResidentBoundary = adapter.sessionLifecycle === SESSION_LIFECYCLE.RESIDENT_COMPLETE
     && adapter.materializeSession === materializeResidentSession;
-  const trustedStrictBoundary = trustedCodexStrictBoundary(adapter);
+  const trustedStrictBoundary = trustedRepositoryStrictBoundary(adapter);
   if (!trustedResidentBoundary && !trustedStrictBoundary) {
     validateIndexOwnership(index, { adapter });
   }
@@ -721,7 +733,7 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
       indexKind,
       indexedSession.materializationDescriptor.dependencySetId,
     );
-    const indexView = createTrustedCodexIndexView(index);
+    const indexView = createTrustedRepositoryIndexView(index, trustedStrictBoundary);
     invokeReadOnlyMaterializationValidator({
       callback: adapter.validateMaterializationDescriptor,
       args: {
@@ -738,6 +750,7 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
       indexedSession,
       dependencySet,
       indexView,
+      trustedStrictBoundary,
     );
     let materializedSession;
     let materializationRejected = false;
@@ -761,7 +774,7 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
       capturedOwnership,
     )) {
       throw materializationContractViolation(
-        'Materialization mutated the selected Codex ownership boundary',
+        'Materialization mutated the selected repository ownership boundary',
         materializationRejected ? materializationError : undefined,
         materializationRejected,
       );

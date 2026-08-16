@@ -293,14 +293,11 @@ test('resolveStaticAssetPath rejects sibling-prefix paths outside the public roo
 test('server hides 500 stack details by default but preserves thrown 4xx status codes', async () => {
   const stackError = new Error('Exploded while listing sessions');
   stackError.stack = `Error: ${stackError.message}\n    at G:\\vibe\\session-analyzer\\src\\boom.js:7:9`;
-  const errorIndex = {
-    repoRoot: 'G:\\vibe\\term-agent',
-    sourceKind: 'claude-code',
-    sessionsById: new Map(),
-    get sessions() {
-      throw stackError;
-    },
-  };
+  const errorIndex = await buildStrictFixtureIndex();
+  Object.defineProperty(errorIndex, 'sessions', {
+    configurable: true,
+    get() { throw stackError; },
+  });
   const server = createServer(errorIndex, 1, {
     codexHome: fixtureCodexHome,
     allowUninspectableSessions: true,
@@ -320,14 +317,11 @@ test('server hides 500 stack details by default but preserves thrown 4xx status 
 
   const notFoundError = new Error('Custom missing session');
   notFoundError.statusCode = 404;
-  const notFoundIndex = {
-    repoRoot: 'G:\\vibe\\term-agent',
-    sourceKind: 'claude-code',
-    sessionsById: new Map(),
-    get sessions() {
-      throw notFoundError;
-    },
-  };
+  const notFoundIndex = await buildStrictFixtureIndex();
+  Object.defineProperty(notFoundIndex, 'sessions', {
+    configurable: true,
+    get() { throw notFoundError; },
+  });
   const notFoundServer = createServer(notFoundIndex, 1, {
     codexHome: fixtureCodexHome,
     allowUninspectableSessions: true,
@@ -346,14 +340,11 @@ test('server hides 500 stack details by default but preserves thrown 4xx status 
 
   const internalStatusError = new Error('Internal path G:\\vibe\\session-analyzer\\src\\internal.js');
   internalStatusError.statusCode = 500;
-  const internalStatusIndex = {
-    repoRoot: 'G:\\vibe\\term-agent',
-    sourceKind: 'claude-code',
-    sessionsById: new Map(),
-    get sessions() {
-      throw internalStatusError;
-    },
-  };
+  const internalStatusIndex = await buildStrictFixtureIndex();
+  Object.defineProperty(internalStatusIndex, 'sessions', {
+    configurable: true,
+    get() { throw internalStatusError; },
+  });
   const internalStatusServer = createServer(internalStatusIndex, 1, {
     codexHome: fixtureCodexHome,
     allowUninspectableSessions: true,
@@ -375,14 +366,11 @@ test('server hides 500 stack details by default but preserves thrown 4xx status 
 test('server exposes 500 stack details only when debug mode is explicitly enabled', async () => {
   const stackError = new Error('Debug trace enabled');
   stackError.stack = `Error: ${stackError.message}\n    at G:\\vibe\\session-analyzer\\src\\debug.js:4:2`;
-  const debugIndex = {
-    repoRoot: 'G:\\vibe\\term-agent',
-    sourceKind: 'claude-code',
-    sessionsById: new Map(),
-    get sessions() {
-      throw stackError;
-    },
-  };
+  const debugIndex = await buildStrictFixtureIndex();
+  Object.defineProperty(debugIndex, 'sessions', {
+    configurable: true,
+    get() { throw stackError; },
+  });
   const server = createServer(debugIndex, 1, {
     codexHome: fixtureCodexHome,
     debugErrors: true,

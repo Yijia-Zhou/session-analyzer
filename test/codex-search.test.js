@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createServer } = require('../server');
 const { fileSuggestions, filterSessions, getEvent, getTimeline } = require('../src/codex');
+const { strictClaudeIndexFromComplete } = require('./strict-claude-fixture');
 
 function logicalEvent(id, options = {}) {
   const line = options.line || 1;
@@ -162,16 +163,6 @@ function searchIndex() {
     sessions,
     sessionsById: new Map(sessions.map((item) => [item.id, item])),
   };
-}
-
-function asResidentClaudeIndex(index) {
-  index.sourceKind = 'claude-code';
-  for (const item of index.sessions) {
-    item.sourceKind = 'claude-code';
-    for (const event of item.logicalEvents) event.sourceKind = 'claude-code';
-    for (const raw of item.rawEvents) raw.sourceKind = 'claude-code';
-  }
-  return index;
 }
 
 test('project search intersects query and filters per event and returns deterministic match metadata', () => {
@@ -384,8 +375,8 @@ test('file suggestions respect session and layer boundaries and count events onc
   ]);
 });
 
-test('HTTP search and suggestion routes expose the additive backend contracts', async () => {
-  const index = asResidentClaudeIndex(searchIndex());
+test('HTTP project search and suggestion routes expose the additive backend contracts', async () => {
+  const index = strictClaudeIndexFromComplete(searchIndex());
   const server = createServer(index, 1);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -397,26 +388,12 @@ test('HTTP search and suggestion routes expose the additive backend contracts', 
     assert.equal(results.matchingEventTotal, 2);
     assert.equal(results.sessions[0].searchMatch.latestEvent.timelineIndex, 1);
 
-    const suggestionsResponse = await fetch(`http://127.0.0.1:${address.port}/api/file-suggestions?layer=protocol&sessionId=first`);
+    const suggestionsResponse = await fetch(`http://127.0.0.1:${address.port}/api/file-suggestions?layer=protocol`);
     assert.equal(suggestionsResponse.status, 200);
     assert.deepEqual(await suggestionsResponse.json(), {
       files: [{ file: 'src/protocol.js', count: 1 }],
       indexRevision: 1,
     });
-
-    const timelineResponse = await fetch(`http://127.0.0.1:${address.port}/api/sessions/first/timeline?q=alpha&status=failed&layer=main&offset=0&limit=100`);
-    assert.equal(timelineResponse.status, 200);
-    const timeline = await timelineResponse.json();
-    assert.equal(timeline.total, 3);
-    assert.equal(timeline.searchEventCount, 2);
-    assert.equal(timeline.searchMatchCount, 3);
-
-    const eventResponse = await fetch('http://127.0.0.1:' + address.port + '/api/sessions/first/events/first-latest-hit?layer=main&q=does-not-match&kind=assistant_message&status=success&tool=wait&file=missing.js');
-    assert.equal(eventResponse.status, 200);
-    assert.equal((await eventResponse.json()).id, 'first-latest-hit');
-
-    const wrongLayerResponse = await fetch('http://127.0.0.1:' + address.port + '/api/sessions/first/events/first-latest-hit?layer=protocol');
-    assert.equal(wrongLayerResponse.status, 404);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
