@@ -82,6 +82,18 @@ async function buildCodeModeFixtureIndex(t) {
 
 async function assertAdapterIndexConforms(index, expectedPurposes) {
   assert.equal(validateIndexOwnership(index), index.sourceKind);
+  assert.ok(index.projectQueryStore, `${index.sourceKind} must install the shared project query store`);
+  for (const indexedSession of index.sessions) {
+    assert.equal(index.sessionsById.get(indexedSession.id), indexedSession);
+    assert.equal(indexedSession.rawEventCount, indexedSession.rawEvents.length);
+    assert.equal(indexedSession.logicalEventCount, indexedSession.logicalEvents.length);
+    assert.deepEqual(Object.keys(indexedSession.summary).sort(), [
+      'failedCommandCount',
+      'patchedFiles',
+      'protocolCount',
+      'topTools',
+    ]);
+  }
   const purposes = new Set();
   let detailCount = 0;
   let fallbackCount = 0;

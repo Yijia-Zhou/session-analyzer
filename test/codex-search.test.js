@@ -57,6 +57,15 @@ function rawEvent(id, options = {}) {
 }
 
 function session(id, logicalEvents, rawEvents = []) {
+  const ownedRawIds = new Set(rawEvents.map((raw) => raw.rawId));
+  const completeRawEvents = [...rawEvents];
+  for (const event of logicalEvents) {
+    for (const reference of event.rawRefs || []) {
+      if (ownedRawIds.has(reference.rawId)) continue;
+      completeRawEvents.push(rawEvent(reference.rawId, { timestamp: event.timestamp }));
+      ownedRawIds.add(reference.rawId);
+    }
+  }
   return {
     id,
     sourceKind: 'codex',
@@ -78,7 +87,7 @@ function session(id, logicalEvents, rawEvents = []) {
     },
     analysis: { toolUsage: [], failedCommands: [], patchedFiles: [], protocolStats: [] },
     logicalEvents,
-    rawEvents,
+    rawEvents: completeRawEvents,
     presentationIndexes: {
       codeModeDeclaredRequests: new Map(),
     },
@@ -380,7 +389,10 @@ test('HTTP search and suggestion routes expose the additive backend contracts', 
 
     const suggestionsResponse = await fetch(`http://127.0.0.1:${address.port}/api/file-suggestions?layer=protocol&sessionId=first`);
     assert.equal(suggestionsResponse.status, 200);
-    assert.deepEqual(await suggestionsResponse.json(), { files: [{ file: 'src/protocol.js', count: 1 }] });
+    assert.deepEqual(await suggestionsResponse.json(), {
+      files: [{ file: 'src/protocol.js', count: 1 }],
+      indexRevision: 1,
+    });
 
     const timelineResponse = await fetch(`http://127.0.0.1:${address.port}/api/sessions/first/timeline?q=alpha&status=failed&layer=main&offset=0&limit=100`);
     assert.equal(timelineResponse.status, 200);

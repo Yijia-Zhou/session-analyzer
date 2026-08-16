@@ -3155,6 +3155,44 @@ test('browser project result drill-down loads a deep latest event and returns to
   assert.equal(await page.locator('#timeline .projectSearchState').count(), 1);
 });
 
+test('browser discards a stale project ordinal and reloads before drill-down', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+  let staleResponsePending = true;
+  await page.route('**/api/sessions*', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (!staleResponsePending
+        || requestUrl.pathname !== '/api/sessions'
+        || requestUrl.searchParams.get('q') !== 'patch'
+        || requestUrl.searchParams.get('sort') !== 'latest-match-desc') {
+      await route.continue();
+      return;
+    }
+    staleResponsePending = false;
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...body, indexRevision: body.indexRevision + 1 },
+    });
+  });
+
+  await switchToProjectScope(page);
+  await fillSearch(page, 'patch');
+  await waitForProjectCards(page);
+  const requestStart = requestedUrls.length;
+  const stateReload = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/state');
+  await page.locator('[data-project-result-session-id]').first().click();
+  await stateReload;
+  await page.waitForFunction(() => (
+    document.body.dataset.searchScope === 'project'
+      && document.querySelectorAll('[data-project-result-session-id]').length > 0
+  ));
+  assert.equal(requestedUrls.slice(requestStart).some((value) => (
+    new URL(value, 'http://local').pathname.endsWith('/timeline')
+  )), false);
+});
+
 test('browser project return ignores stale selected-session analysis responses', async (t) => {
   const index = await buildFixtureIndex();
   const { page } = await openApp(t, index, { locale: 'en' });

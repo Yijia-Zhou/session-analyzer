@@ -12,6 +12,7 @@ const {
   validateCanonicalSessionShape,
 } = require('../src/canonical-contract');
 const { createSessionQuery } = require('../src/session-query');
+const { buildProjectQueryStore } = require('../src/project-query-store');
 const {
   buildEventDetailForSession,
   getSourceAdapter,
@@ -156,6 +157,10 @@ function queryContract() {
     getTimeline() {},
     indexPresentation() {},
     matchTerms() {},
+    projectFileSuggestions() {},
+    projectQueryPresentation() {},
+    projectSessionMetadata() {},
+    sessionFileSuggestions() {},
   };
 }
 
@@ -233,6 +238,18 @@ test('production adapters expose resident compatibility materialization through 
     assert.equal(indexedSession.logicalEvents, before.logicalEvents);
     assert.deepEqual(indexedSession.counts, before.counts);
   }
+});
+
+test('trusted resident materialization does not rescan unrelated Index collections', async () => {
+  const index = makeCanonicalIndex('codex');
+  const indexedSession = index.sessions[0];
+  Object.defineProperty(index, 'sessions', {
+    configurable: true,
+    get() {
+      throw new Error('full Index collection was inspected');
+    },
+  });
+  assert.equal(await materializeSessionForIndex(index, indexedSession), indexedSession);
 });
 
 test('compatibility materialization rejects cancellation, foreign ownership, and broken Raw references', async () => {
@@ -481,6 +498,7 @@ test('strict synthetic adapter traverses Indexed to Materialized dispatch withou
     repoRoot: '/synthetic/repository',
     sessions: [indexedSession],
     sessionsById: new Map([[indexedSession.id, indexedSession]]),
+    projectQueryStore: buildProjectQueryStore([materializedSession]),
     materializationDependencies: new Map([['dependencies-1', dependencySet]]),
     legacyRawOwners: {
       schemaVersion: 1,

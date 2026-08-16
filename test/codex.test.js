@@ -4403,6 +4403,7 @@ test('project endpoints require and select a browser-chosen project', async () =
     assert.equal(statusBody.job.status, 'succeeded');
     assert.equal(statusBody.state.locale, 'zh-CN');
     assert.equal(statusBody.state.repoRoot, 'G:\\vibe\\term-agent');
+    assert.equal(statusBody.state.indexRevision, 1);
     assert.equal(statusBody.state.totals.sessionCount, 10);
     assert.equal(statusBody.state.totals.skippedFileCount, 1);
 
@@ -4529,6 +4530,7 @@ test('cancelling an active project job preserves the previous index', async () =
     assert.equal(stateRes.status, 200);
     const stateBody = await stateRes.json();
     assert.equal(stateBody.repoRoot, 'G:\\vibe\\term-agent');
+    assert.equal(stateBody.indexRevision, 1);
     assert.equal(stateBody.totals.sessionCount, 10);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
@@ -4569,6 +4571,7 @@ test('a failed replacement build preserves the previous index', async () => {
     assert.equal(stateRes.status, 200);
     const stateBody = await stateRes.json();
     assert.equal(stateBody.repoRoot, 'G:\\vibe\\term-agent');
+    assert.equal(stateBody.indexRevision, 1);
     assert.equal(stateBody.totals.sessionCount, index.totals.sessionCount);
     assert.equal(stateBody.totals.rawEventCount, index.totals.rawEventCount);
   } finally {

@@ -128,6 +128,9 @@ const state = {
   sessions: [],
   expandedSessionGroups: new Set(),
   projectResults: [],
+  indexRevision: 0,
+  projectResultsRevision: 0,
+  revisionRecoveryPending: null,
   repoRoot: '',
   projects: [],
   projectSelected: false,
@@ -3513,6 +3516,7 @@ function resetProjectViewState() {
   state.sessions = [];
   state.expandedSessionGroups.clear();
   state.projectResults = [];
+  state.projectResultsRevision = 0;
   state.sessionsRequestId += 1;
   state.projectSearchRequestId += 1;
   state.projectSearchDataContext = '';
@@ -3686,6 +3690,7 @@ async function applyAppState(appState) {
   applyStaticLocale();
   applySourceConfig(appState);
   state.repoRoot = appState.repoRoot || '';
+  state.indexRevision = Number.isSafeInteger(appState.indexRevision) ? appState.indexRevision : 0;
   state.builtinProfiles = normalizeProfiles(appState.foldingProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
   state.eventKinds = appState.eventKinds;
@@ -3998,11 +4003,16 @@ async function loadProjectResults() {
     state.projectSearchDataContext = requestContext;
     state.projectSearchPendingContext = '';
     state.projectResults = data.sessions || [];
+    state.projectResultsRevision = Number.isSafeInteger(data.indexRevision) ? data.indexRevision : 0;
     state.projectSearchTotal = data.total || 0;
     state.projectSearchEventTotal = data.matchingEventTotal || 0;
     return true;
   } catch (error) {
     if (isIntentionalAbort(error)) return false;
+    if (error?.status === 409 && error?.code === 'INDEX_REVISION_RETIRED') {
+      await recoverIndexRevision();
+      return false;
+    }
     throw error;
   } finally {
     const currentOwner = requestOwners.projectResults.finish(owner);
@@ -4011,6 +4021,26 @@ async function loadProjectResults() {
       state.projectSearchPendingContext = '';
       renderProjectSearchView();
     }
+  }
+}
+
+async function recoverIndexRevision() {
+  if (state.revisionRecoveryPending) return state.revisionRecoveryPending;
+  state.projectResults = [];
+  state.projectResultsRevision = 0;
+  state.projectReturnContext = null;
+  state.revisionRecoveryPending = (async () => {
+    const appState = await api('/api/state');
+    const currentState = appState.currentState || appState;
+    if (!currentState?.projectSelected) return false;
+    await applyAppState(currentState);
+    await loadSessions();
+    return true;
+  })();
+  try {
+    return await state.revisionRecoveryPending;
+  } finally {
+    state.revisionRecoveryPending = null;
   }
 }
 
@@ -4096,6 +4126,10 @@ async function backToProjectResults() {
 
 async function drillDownProjectResult(sessionId) {
   if (state.searchScope !== 'project') return false;
+  if (state.projectResultsRevision !== state.indexRevision) {
+    await recoverIndexRevision();
+    return false;
+  }
   const result = state.projectResults.find((item) => item.id === sessionId);
   const latest = result?.searchMatch?.latestEvent;
   if (!result || !latest) return false;

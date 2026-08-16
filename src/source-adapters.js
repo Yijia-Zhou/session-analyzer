@@ -20,6 +20,10 @@ const {
 } = require('./canonical-contract');
 const { createSessionQuery } = require('./session-query');
 const {
+  buildProjectQueryStore,
+  validateProjectQueryStore,
+} = require('./project-query-store');
+const {
   sanitizeStructuredLogicalDetailDto,
   validateLogicalDetailEnvelope,
   validateStructuredLogicalDetailDto,
@@ -36,6 +40,19 @@ const SOURCE_KIND = Object.freeze({
 });
 
 const claudeQuery = createSessionQuery();
+
+function attachProjectQueryStore(index, query) {
+  const projectedSessions = index.sessions.map((session) => ({
+    ...session,
+    ...query.projectSessionMetadata(session),
+  }));
+  index.sessions = projectedSessions;
+  index.sessionsById = new Map(projectedSessions.map((session) => [session.id, session]));
+  index.projectQueryStore = buildProjectQueryStore(projectedSessions, {
+    presentationForEvent: query.projectQueryPresentation,
+  });
+  return index;
+}
 
 function graphFingerprint(value, identityState = {
   objectIds: new WeakMap(),
@@ -298,10 +315,11 @@ const codexAdapter = {
       return codex.discoverProjects({ codexHome: context.sourceHome });
     },
     async buildIndex(context) {
-      return codex.buildIndex({
+      const index = await codex.buildIndex({
         ...context,
         codexHome: context.sourceHome,
       });
+      return attachProjectQueryStore(index, codex.query);
     },
     materializeSession: materializeResidentSession,
     async buildEventDetail(index, session, eventId, layer, options) {
@@ -317,8 +335,8 @@ const codexAdapter = {
         sourceLocator: raw.sourceLocator,
       };
     },
-    async readImagePreview(index, sessionId, eventId, previewId, options) {
-      return codex.readImagePreview(index, sessionId, eventId, previewId, options);
+    async readImagePreview(index, session, eventId, previewId, options) {
+      return codex.readImagePreview(index, session, eventId, previewId, options);
     },
     resolveLegacyRaw(index, file, line) {
       return codex.resolveIndexedCodexLegacyRaw(index, file, line);
@@ -349,10 +367,11 @@ const claudeAdapter = {
       });
     },
     async buildIndex(context) {
-      return claude.buildClaudeIndex({
+      const index = await claude.buildClaudeIndex({
         ...context,
         claudeHome: context.sourceHome,
       });
+      return attachProjectQueryStore(index, claudeQuery);
     },
     materializeSession: materializeResidentSession,
     async buildEventDetail(index, session, eventId, layer, options) {
@@ -469,6 +488,13 @@ function validateIndexOwnership(index, {
 
   validateCanonicalIndexFields(index);
   validateCanonicalSessionsProperty(index, { allowUninspectableSessions });
+  if (index.projectQueryStore) {
+    validateProjectQueryStore(index.projectQueryStore, [...sessionsById.keys()]);
+  } else if (!allowResidentComplete) {
+    const error = new Error('Canonical strict Index.projectQueryStore is required');
+    error.code = 'CANONICAL_CONTRACT_VIOLATION';
+    throw error;
+  }
   if (!allowResidentComplete) {
     if (!(index.materializationDependencies instanceof Map)) {
       const error = new Error('Canonical strict Index.materializationDependencies must be a Map');
@@ -534,7 +560,15 @@ async function materializeSessionForIndex(index, indexedSession, options = {}) {
 }
 
 async function materializeSessionWithAdapter(index, indexedSession, adapter, options = {}) {
-  const indexKind = validateIndexOwnership(index, { adapter });
+  const indexKind = validateCanonicalIndexFields(index);
+  const trustedResidentBoundary = adapter.sessionLifecycle === SESSION_LIFECYCLE.RESIDENT_COMPLETE
+    && adapter.materializeSession === materializeResidentSession;
+  if (!trustedResidentBoundary) validateIndexOwnership(index, { adapter });
+  if (adapter.kind !== indexKind) {
+    const error = new Error(`Source ownership mismatch: index ${indexKind}, adapter ${adapter.kind}`);
+    error.code = 'SOURCE_OWNERSHIP_MISMATCH';
+    throw error;
+  }
   if (!(index?.sessionsById instanceof Map)
     || index.sessionsById.get(indexedSession?.id) !== indexedSession) {
     const error = new Error(`Canonical Index does not own Session ${indexedSession?.id || '<unknown>'}`);
@@ -544,6 +578,28 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
   const allowResidentComplete = adapter.sessionLifecycle === SESSION_LIFECYCLE.RESIDENT_COMPLETE;
   validateCanonicalIndexedSessionShape(indexedSession, indexKind, { allowResidentComplete });
   throwIfAborted(options.signal);
+
+  if (trustedResidentBoundary) {
+    const materializedSession = await adapter.materializeSession({
+      index,
+      indexedSession,
+      signal: options.signal,
+      indexRevision: options.indexRevision,
+    });
+    throwIfAborted(options.signal);
+    if (materializedSession !== indexedSession) {
+      throw materializationContractViolation(
+        'Compatibility materialization must return the exact resident Session identity',
+      );
+    }
+    validateCanonicalMaterializedSessionShape(
+      indexedSession,
+      materializedSession,
+      indexKind,
+      { allowResidentComplete: true, index },
+    );
+    return materializedSession;
+  }
 
   const dependencySet = allowResidentComplete
     ? undefined
@@ -709,7 +765,7 @@ async function readImagePreviewForSession(index, session, eventId, previewId, op
     error.code = 'SOURCE_OWNERSHIP_MISMATCH';
     throw error;
   }
-  return adapter.readImagePreview(index, session.id, eventId, previewId, {
+  return adapter.readImagePreview(index, session, eventId, previewId, {
     ...options,
     expectedSourceKind: sessionSourceKind,
   });
@@ -730,13 +786,31 @@ async function readIndexedRawRecord(index, session, rawId, options = {}) {
 }
 
 async function readLegacyRawLineForIndex(index, file, line, options = {}) {
+  const match = resolveLegacyRawOwnerForIndex(index, file, line);
+  if (!match) return null;
+  return match.adapter.readLegacyRaw(index, match, options);
+}
+
+function resolveLegacyRawOwnerForIndex(index, file, line) {
   const indexKind = requireExplicitSourceKind(index?.sourceKind, 'index');
   const adapter = requireSourceAdapter(indexKind);
   const match = adapter.resolveLegacyRaw(index, file, line);
   if (!match) return null;
   const sessionSourceKind = validateCanonicalSessionShape(match.session, indexKind);
   validateCanonicalRawEventShape(match.raw, sessionSourceKind);
-  return adapter.readLegacyRaw(index, match, options);
+  return { ...match, adapter };
+}
+
+async function readLegacyRawLineForSession(index, materializedSession, raw, adapter, options = {}) {
+  const indexKind = requireExplicitSourceKind(index?.sourceKind, 'index');
+  const sessionSourceKind = validateCanonicalSessionShape(materializedSession, indexKind);
+  const materializedRaw = materializedSession.rawEvents.find((candidate) => candidate.rawId === raw.rawId);
+  if (!materializedRaw) return null;
+  validateCanonicalRawEventShape(materializedRaw, sessionSourceKind);
+  return adapter.readLegacyRaw(index, {
+    session: materializedSession,
+    raw: materializedRaw,
+  }, options);
 }
 
 module.exports = {
@@ -754,6 +828,8 @@ module.exports = {
   readImagePreviewForSession,
   readIndexedRawRecord,
   readLegacyRawLineForIndex,
+  readLegacyRawLineForSession,
+  resolveLegacyRawOwnerForIndex,
   requireSourceAdapter,
   requireExplicitSourceKind,
   supportedSourceOptions,

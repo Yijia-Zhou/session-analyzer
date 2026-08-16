@@ -20,6 +20,10 @@ function queryContract() {
     getTimeline() {},
     indexPresentation() {},
     matchTerms() {},
+    projectFileSuggestions() {},
+    projectQueryPresentation() {},
+    projectSessionMetadata() {},
+    sessionFileSuggestions() {},
   };
 }
 

@@ -4991,17 +4991,19 @@ function decodeImagePreviewDataUrl(value, options = {}) {
   };
 }
 
-async function readImagePreview(index, sessionId, eventId, previewId, options = {}) {
+async function readImagePreview(index, sessionOrId, eventId, previewId, options = {}) {
   if (!options[CODEX_HYDRATION_SLOT_OWNED]) {
     return withCodexHydrationSlot(index, options.signal, () => readImagePreview(
       index,
-      sessionId,
+      sessionOrId,
       eventId,
       previewId,
       { ...options, [CODEX_HYDRATION_SLOT_OWNED]: true },
     ));
   }
-  const session = index.sessionsById.get(sessionId);
+  const session = sessionOrId && typeof sessionOrId === 'object'
+    ? sessionOrId
+    : index.sessionsById.get(sessionOrId);
   if (!session) return imagePreviewError(404, 'Unknown session');
   const event = session.logicalEvents.find((candidate) => candidate.id === eventId);
   if (!event) return imagePreviewError(404, 'Unknown event');

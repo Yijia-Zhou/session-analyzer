@@ -41,6 +41,10 @@ const REQUIRED_QUERY_OPERATIONS = Object.freeze([
   'getTimeline',
   'indexPresentation',
   'matchTerms',
+  'projectFileSuggestions',
+  'projectQueryPresentation',
+  'projectSessionMetadata',
+  'sessionFileSuggestions',
 ]);
 
 const REQUIRED_ADAPTER_OPERATIONS = Object.freeze([
