@@ -32,6 +32,7 @@ const FORBIDDEN_STRICT_CLAUDE_FIELDS = new Set([
   '_relationshipRawFacts',
   '_relationshipLogicalFacts',
   '_relationshipFacts',
+  '_materializedContinuationTimes',
   '_foreignSessionIds',
   '_rawUuidSet',
   'parsed',
@@ -1852,6 +1853,63 @@ test('strict Claude materialized-fork analysis and timestamps exclude copied-pre
   assert.equal(child.updatedAt, '2026-08-16T02:00:00.000Z');
 });
 
+test('strict Claude materialized-fork timestamps fall back exactly for copied-only and untimed continuations', async (t) => {
+  const claudeHome = await makeClaudeHome(t);
+  const repoRoot = path.join(claudeHome, 'repo');
+  const container = path.join(claudeHome, 'projects', '-materialized-timestamp-fallback');
+  const cases = [{
+    parentId: '13131313-1313-4313-8313-131313131313',
+    childId: '14141414-1414-4414-8414-141414141414',
+    uuid: 'copied-only-shared-uuid',
+    continuation: null,
+  }, {
+    parentId: '15151515-1515-4515-8515-151515151515',
+    childId: '16161616-1616-4616-8616-161616161616',
+    uuid: 'untimed-continuation-shared-uuid',
+    continuation: {
+      parentUuid: 'untimed-continuation-shared-uuid',
+      message: { role: 'user', content: 'Continuation without a timestamp' },
+      uuid: 'untimed-continuation-user-uuid',
+    },
+  }];
+  await fsp.mkdir(repoRoot, { recursive: true });
+
+  for (const fixture of cases) {
+    const copied = userRecord(fixture.parentId, repoRoot, {
+      parentUuid: null,
+      message: { role: 'user', content: `Inherited row for ${fixture.childId}` },
+      uuid: fixture.uuid,
+      timestamp: '2026-08-16T00:00:00.000Z',
+    });
+    await writeJsonl(path.join(container, `${fixture.parentId}.jsonl`), [copied]);
+    const childRows = [{
+      ...copied,
+      sessionId: fixture.childId,
+      session_id: fixture.parentId,
+    }];
+    if (fixture.continuation) {
+      childRows.push(userRecord(fixture.childId, repoRoot, fixture.continuation));
+    }
+    await writeJsonl(path.join(container, `${fixture.childId}.jsonl`), childRows);
+  }
+
+  const index = await buildClaudeSourceBackedIndex({ repoRoot, claudeHome });
+  for (const fixture of cases) {
+    const indexedChild = index.sessionsById.get(analyzerSessionId(fixture.childId));
+    assert.equal(indexedChild.forkStorageMode, 'materialized');
+    assert.ok(indexedChild.startedAt, 'source mtime fallback must be committed');
+    assert.equal(indexedChild.updatedAt, indexedChild.startedAt);
+    assert.equal(indexedChild.materializationDescriptor.payload.projection.startedAt, indexedChild.startedAt);
+    assert.equal(indexedChild.materializationDescriptor.payload.projection.updatedAt, indexedChild.updatedAt);
+
+    const child = await materializeSessionForIndex(index, indexedChild);
+    assert.equal(child.startedAt, indexedChild.startedAt);
+    assert.equal(child.updatedAt, indexedChild.updatedAt);
+    assert.equal(child.rawEvents.length, fixture.continuation ? 2 : 1);
+    assert.equal(child.logicalEvents.length, fixture.continuation ? 1 : 0);
+  }
+});
+
 test('strict Claude materialized-fork inference fails closed on a cross-boundary Logical Event', async (t) => {
   const claudeHome = await makeClaudeHome(t);
   const repoRoot = path.join(claudeHome, 'repo');
@@ -1927,9 +1985,22 @@ test('strict Claude materialized-fork inference removes cyclic ownership', async
   }]);
 
   const index = await buildClaudeSourceBackedIndex({ repoRoot, claudeHome });
+  const expectedTimestamps = new Map([
+    [analyzerSessionId(firstId), '2026-07-31T11:40:00.000Z'],
+    [analyzerSessionId(secondId), '2026-07-31T11:40:01.000Z'],
+  ]);
   for (const session of index.sessions) {
     assert.equal(session.forkStorageMode, '');
     assert.equal(session.forkedFromSessionId, '');
+    assert.equal(session.startedAt, expectedTimestamps.get(session.id));
+    assert.equal(session.updatedAt, expectedTimestamps.get(session.id));
+    assert.equal(session.materializationDescriptor.payload.projection.startedAt, session.startedAt);
+    assert.equal(session.materializationDescriptor.payload.projection.updatedAt, session.updatedAt);
+    const materialized = await materializeSessionForIndex(index, session);
+    assert.equal(materialized.startedAt, session.startedAt);
+    assert.equal(materialized.updatedAt, session.updatedAt);
+    assert.equal(materialized.forkStorageMode, '');
+    assert.equal(materialized.forkedFromSessionId, '');
   }
 });
 

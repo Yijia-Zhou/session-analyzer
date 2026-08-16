@@ -199,12 +199,13 @@ function compactMaterializedForkFact(session) {
     .map((raw) => String(raw.timestamp || ''))
     .filter(Boolean)
     .sort();
+  const continuationFallback = String(session.sourceUpdatedAt || '');
   return {
     sourceSessionId,
     copiedRawRecordCount,
     logicalBoundaryValid,
-    continuationStartedAt: continuationTimestamps[0] || '',
-    continuationUpdatedAt: continuationTimestamps.at(-1) || '',
+    continuationStartedAt: continuationTimestamps[0] || continuationFallback,
+    continuationUpdatedAt: continuationTimestamps.at(-1) || continuationFallback,
   };
 }
 
@@ -303,10 +304,11 @@ function materializedForkBoundary(session, parent) {
     .map((raw) => String(raw.timestamp || ''))
     .filter(Boolean)
     .sort();
+  const continuationFallback = String(session.sourceUpdatedAt || '');
   return {
     copiedRawRecordCount,
-    continuationStartedAt: continuationTimestamps[0] || '',
-    continuationUpdatedAt: continuationTimestamps.at(-1) || '',
+    continuationStartedAt: continuationTimestamps[0] || continuationFallback,
+    continuationUpdatedAt: continuationTimestamps.at(-1) || continuationFallback,
   };
 }
 
@@ -331,9 +333,10 @@ function inferMaterializedForks(mainSessions, bySourceId) {
       ownerSessionId: parent.id,
       copiedRawRecordCount: boundary.copiedRawRecordCount,
     };
-    session.startedAt = boundary.continuationStartedAt;
-    session.updatedAt = boundary.continuationUpdatedAt;
-    session.transcriptUpdatedAt = session.updatedAt;
+    session._materializedContinuationTimes = {
+      startedAt: boundary.continuationStartedAt,
+      updatedAt: boundary.continuationUpdatedAt,
+    };
   }
 }
 
@@ -358,6 +361,15 @@ function removeMaterializedForkCycles(mainSessions) {
     session.forkedFromSessionId = '';
     session.forkStorageMode = '';
     session.forkEvidence = null;
+  }
+  for (const session of mainSessions) {
+    const continuationTimes = session._materializedContinuationTimes;
+    if (session.forkStorageMode === 'materialized' && continuationTimes) {
+      session.startedAt = continuationTimes.startedAt;
+      session.updatedAt = continuationTimes.updatedAt;
+      session.transcriptUpdatedAt = session.updatedAt;
+    }
+    delete session._materializedContinuationTimes;
   }
 }
 
@@ -418,6 +430,7 @@ function inferClaudeForkRelationships(sessions) {
     delete session._relationshipRawFacts;
     delete session._relationshipLogicalFacts;
     delete session._relationshipFacts;
+    delete session._materializedContinuationTimes;
   }
 }
 
