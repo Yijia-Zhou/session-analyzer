@@ -2,7 +2,7 @@
 
 ## Status / 状态
 
-- Status: accepted `0.1.4` detail contract and complete M2–M7 Indexed/Materialized lifecycle through exact closeout-evidence head `0a2fba0f2897f3b29a233ff3cfe37908be21fc67`; both Codex and Claude Code use strict source-backed materialization / 状态：已接受 `0.1.4` 详情契约与完整 M2 至 M7 Indexed／Materialized 生命周期，精确至收尾证据 head `0a2fba0f2897f3b29a233ff3cfe37908be21fc67`；Codex 与 Claude Code 均使用严格来源回读物化
+- Status: accepted `0.1.4` detail contract and complete M2–M6 Indexed/Materialized implementation through exact runtime-owner correction head `82a4d3c4b6f45199ff1abe61410f35f14a6d8cad`; both Codex and Claude Code use strict source-backed materialization, while M7 evidence is reopened for a representative-small memory correction / 状态：已接受 `0.1.4` 详情契约与完整 M2 至 M6 Indexed／Materialized 实现，精确至 runtime owner 修正 head `82a4d3c4b6f45199ff1abe61410f35f14a6d8cad`；Codex 与 Claude Code 均使用严格来源回读物化，M7 证据因代表性 small Session 内存修正而重新打开
 - Last updated: 2026-08-16 / 最近更新：2026-08-16
 - Related product spec: `docs/product-specs/session-transcript-analyzer.md` / 相关产品规格：`docs/product-specs/session-transcript-analyzer.md`
 - Related timeline design: `docs/design-docs/logical-event-timeline.md` / 相关时间线设计：`docs/design-docs/logical-event-timeline.md`
@@ -14,7 +14,7 @@
 - Related completed plan: `docs/exec-plans/completed/2026-08-15-source-neutral-detail-and-adapter-contracts.md` / 相关已完成计划：`docs/exec-plans/completed/2026-08-15-source-neutral-detail-and-adapter-contracts.md`
 - Related completed plan: `docs/exec-plans/completed/2026-08-15-adapter-detail-contract-review-followups.md` / 相关已完成计划：`docs/exec-plans/completed/2026-08-15-adapter-detail-contract-review-followups.md`
 - Accepted lifecycle design: `docs/design-docs/indexed-materialized-session-lifecycle.md` / 已接受生命周期设计：`docs/design-docs/indexed-materialized-session-lifecycle.md`
-- Completed lifecycle plan: `docs/exec-plans/completed/2026-08-16-indexed-materialized-session-lifecycle.md` / 已完成生命周期计划：`docs/exec-plans/completed/2026-08-16-indexed-materialized-session-lifecycle.md`
+- Active lifecycle plan: `docs/exec-plans/active/2026-08-16-indexed-materialized-session-lifecycle.md` / 活跃生命周期计划：`docs/exec-plans/active/2026-08-16-indexed-materialized-session-lifecycle.md`
 
 ## Decision / 决策
 
