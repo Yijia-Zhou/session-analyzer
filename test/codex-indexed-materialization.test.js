@@ -178,6 +178,140 @@ test('strict Codex fork discovery retains only compact scalar relationship facts
   assertNoReachableCompleteEventGraph(index);
 });
 
+test('strict Codex materialized fork contexts match resident nested and cyclic relationships', async (t) => {
+  await t.test('nested materialized forks derive child targets from the projected parent timeline', async (subtest) => {
+    const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-strict-nested-fork-'));
+    subtest.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+    const repoRoot = path.join(codexHome, 'repo');
+    const sessionRoot = path.join(codexHome, 'sessions', '2026', '08', '16');
+    const grandparentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const parentId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const childId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const grandparentRecords = [
+      {
+        timestamp: '2026-08-16T10:00:00.000Z',
+        type: 'session_meta',
+        payload: { id: grandparentId, cwd: repoRoot },
+      },
+      {
+        timestamp: '2026-08-16T10:00:01.000Z',
+        type: 'event_msg',
+        payload: { type: 'user_message', message: 'grandparent context' },
+      },
+      {
+        timestamp: '2026-08-16T10:00:02.000Z',
+        type: 'event_msg',
+        payload: { type: 'agent_message', message: 'grandparent answer' },
+      },
+    ];
+    const parentRecords = [
+      {
+        timestamp: '2026-08-16T11:00:00.000Z',
+        type: 'session_meta',
+        payload: { id: parentId, cwd: repoRoot, forked_from_id: grandparentId },
+      },
+      ...structuredClone(grandparentRecords),
+      {
+        timestamp: '2026-08-16T11:00:01.000Z',
+        type: 'event_msg',
+        payload: { type: 'user_message', message: 'parent continuation' },
+      },
+    ];
+    const childRecords = [
+      {
+        timestamp: '2026-08-16T12:00:00.000Z',
+        type: 'session_meta',
+        payload: { id: childId, cwd: repoRoot, forked_from_id: parentId },
+      },
+      ...structuredClone(parentRecords),
+      {
+        timestamp: '2026-08-16T12:00:01.000Z',
+        type: 'event_msg',
+        payload: { type: 'user_message', message: 'child continuation' },
+      },
+    ];
+    await fsp.mkdir(repoRoot, { recursive: true });
+    await fsp.mkdir(sessionRoot, { recursive: true });
+    await Promise.all([
+      fsp.writeFile(path.join(sessionRoot, `rollout-grandparent-${grandparentId}.jsonl`), `${grandparentRecords.map(JSON.stringify).join('\n')}\n`, 'utf8'),
+      fsp.writeFile(path.join(sessionRoot, `rollout-parent-${parentId}.jsonl`), `${parentRecords.map(JSON.stringify).join('\n')}\n`, 'utf8'),
+      fsp.writeFile(path.join(sessionRoot, `rollout-child-${childId}.jsonl`), `${childRecords.map(JSON.stringify).join('\n')}\n`, 'utf8'),
+    ]);
+
+    const resident = await codex.buildIndex({ repoRoot, codexHome });
+    const strict = await codex.buildSourceBackedIndex({ repoRoot, codexHome });
+    for (const id of [grandparentId, parentId, childId]) {
+      const expected = resident.sessionsById.get(id);
+      const indexed = strict.sessionsById.get(id);
+      assert.equal(indexed.forkStorageMode, expected.forkStorageMode);
+      assert.deepEqual(indexed.inheritedContext, expected.inheritedContext);
+      const materialized = await materializeSessionForIndex(strict, indexed);
+      assert.deepEqual(materialized.rawEvents, expected.rawEvents);
+      assert.deepEqual(materialized.logicalEvents, expected.logicalEvents);
+      assert.deepEqual(materialized.analysis, expected.analysis);
+      assert.deepEqual(materialized.presentationIndexes, expected.presentationIndexes);
+    }
+    assert.equal(strict.sessionsById.get(childId).inheritedContext.forkPointTarget.timelineIndex, 0);
+  });
+
+  await t.test('cyclic materialized prefixes preserve resident inherited context', async (subtest) => {
+    const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-strict-cycle-fork-'));
+    subtest.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+    const repoRoot = path.join(codexHome, 'repo');
+    const sessionRoot = path.join(codexHome, 'sessions', '2026', '08', '16');
+    const firstId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const secondId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const firstMeta = {
+      timestamp: '2026-08-16T13:00:00.000Z',
+      type: 'session_meta',
+      payload: { id: firstId, cwd: repoRoot, forked_from_id: secondId },
+    };
+    const secondMeta = {
+      timestamp: '2026-08-16T13:00:01.000Z',
+      type: 'session_meta',
+      payload: { id: secondId, cwd: repoRoot, forked_from_id: firstId },
+    };
+    const firstRecords = [
+      firstMeta,
+      structuredClone(secondMeta),
+      {
+        timestamp: '2026-08-16T13:00:02.000Z',
+        type: 'event_msg',
+        payload: { type: 'user_message', message: 'first cycle continuation' },
+      },
+    ];
+    const secondRecords = [
+      secondMeta,
+      structuredClone(firstMeta),
+      {
+        timestamp: '2026-08-16T13:00:03.000Z',
+        type: 'event_msg',
+        payload: { type: 'user_message', message: 'second cycle continuation' },
+      },
+    ];
+    await fsp.mkdir(repoRoot, { recursive: true });
+    await fsp.mkdir(sessionRoot, { recursive: true });
+    await Promise.all([
+      fsp.writeFile(path.join(sessionRoot, `rollout-first-${firstId}.jsonl`), `${firstRecords.map(JSON.stringify).join('\n')}\n`, 'utf8'),
+      fsp.writeFile(path.join(sessionRoot, `rollout-second-${secondId}.jsonl`), `${secondRecords.map(JSON.stringify).join('\n')}\n`, 'utf8'),
+    ]);
+
+    const resident = await codex.buildIndex({ repoRoot, codexHome });
+    const strict = await codex.buildSourceBackedIndex({ repoRoot, codexHome });
+    for (const id of [firstId, secondId]) {
+      const expected = resident.sessionsById.get(id);
+      const indexed = strict.sessionsById.get(id);
+      assert.equal(indexed.forkStorageMode, 'materialized');
+      assert.deepEqual(indexed.inheritedContext, expected.inheritedContext);
+      const materialized = await materializeSessionForIndex(strict, indexed);
+      assert.deepEqual(materialized.rawEvents, expected.rawEvents);
+      assert.deepEqual(materialized.logicalEvents, expected.logicalEvents);
+      assert.deepEqual(materialized.analysis, expected.analysis);
+      assert.deepEqual(materialized.presentationIndexes, expected.presentationIndexes);
+    }
+  });
+});
+
 test('strict Codex materialization carries bounded shell context into command detail', async (t) => {
   const fixture = await makeSingleSessionFixture(t, {
     records: ({ id, repoRoot }) => [
@@ -194,7 +328,7 @@ test('strict Codex materialization carries bounded shell context into command de
           role: 'user',
           content: [{
             type: 'input_text',
-            text: `<environment_context>\n  <cwd>${repoRoot}</cwd>\n  <shell>powershell</shell>\n</environment_context>`,
+            text: `<environment_context>\n  <cwd>${repoRoot}</cwd>\n  <shell>C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe</shell>\n</environment_context>`,
           }],
         },
       },
@@ -231,6 +365,47 @@ test('strict Codex materialization carries bounded shell context into command de
     }),
     /at most 4096 UTF-8 bytes/,
   );
+});
+
+test('Codex parser bounds normalized shell context at exact UTF-8 boundaries', async (t) => {
+  const buildShellFixture = (shell) => makeSingleSessionFixture(t, {
+    records: ({ id, repoRoot }) => [
+      {
+        timestamp: '2026-08-16T10:00:00.000Z',
+        type: 'session_meta',
+        payload: { id, cwd: repoRoot },
+      },
+      {
+        timestamp: '2026-08-16T10:00:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{
+            type: 'input_text',
+            text: `<environment_context>\n  <cwd>${repoRoot}</cwd>\n  <shell>${shell}</shell>\n</environment_context>`,
+          }],
+        },
+      },
+    ],
+  });
+  for (const [label, shell, expected] of [
+    ['exact ASCII limit', 'x'.repeat(4_096), 'x'.repeat(4_096)],
+    ['one ASCII byte over', 'x'.repeat(4_097), ''],
+    ['multibyte below limit', '界'.repeat(1_365), '界'.repeat(1_365)],
+    ['multibyte over limit', '界'.repeat(1_366), ''],
+  ]) {
+    await t.test(label, async () => {
+      const fixture = await buildShellFixture(shell);
+      const indexedSession = fixture.index.sessionsById.get(fixture.id);
+      const materialized = await materializeSessionForIndex(fixture.index, indexedSession);
+      assert.equal(materialized._shell, expected);
+      assert.doesNotThrow(() => codex.validateCodexMaterializedPrivateState({
+        indexedSession,
+        session: materialized,
+      }));
+    });
+  }
 });
 
 test('strict Codex Index retains no complete event graph and reconstructs exact current Sessions', async () => {

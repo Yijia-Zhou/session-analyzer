@@ -1220,6 +1220,11 @@ function normalizedSessionShell(value) {
   return executableName(value);
 }
 
+function boundedSessionShellContext(value) {
+  const shell = normalizedSessionShell(value);
+  return Buffer.byteLength(shell, 'utf8') <= CODEX_MATERIALIZED_SHELL_MAX_BYTES ? shell : '';
+}
+
 function sessionUsesPowerShell(value) {
   const shell = normalizedSessionShell(value);
   return shell === 'powershell' || shell === 'pwsh';
@@ -4518,6 +4523,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   session.bytes = acceptedBytes;
   session._sourceIdentity = sourceFileIdentity(stat);
   let primarySessionMetaSeen = false;
+  let sessionShellCaptured = false;
   const includeCanonicalRawDigests = options.canonicalRawDigests === true;
   const sourceHash = crypto.createHash('sha256');
   let sourceBytesRead = 0;
@@ -4600,8 +4606,13 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
         session.sourceClientVersion = record.version;
       }
       updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
-      if (!session.shell && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
-        session.shell = readXmlTag(raw.messageText, 'shell');
+      if (!sessionShellCaptured
+          && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
+        const shellContext = readXmlTag(raw.messageText, 'shell');
+        if (shellContext) {
+          sessionShellCaptured = true;
+          session.shell = boundedSessionShellContext(shellContext);
+        }
       }
       session.rawEvents.push(raw);
     }
@@ -4944,6 +4955,38 @@ function orderCodexEvidenceParentsFirst(evidenceList) {
   };
   for (const evidence of evidenceList) visit(evidence);
   return ordered;
+}
+
+function codexMaterializedCycleEvidence(evidenceList) {
+  const uniqueById = new Map();
+  for (const evidence of evidenceList) {
+    if (uniqueById.has(evidence.id)) uniqueById.set(evidence.id, null);
+    else uniqueById.set(evidence.id, evidence);
+  }
+  const cycleEvidence = new Set();
+  const state = new Map();
+  const stack = [];
+  const stackIndexes = new Map();
+  const visit = (evidence) => {
+    state.set(evidence, 1);
+    stackIndexes.set(evidence, stack.length);
+    stack.push(evidence);
+    if (evidence.forkStorageMode === 'materialized') {
+      const parent = uniqueById.get(evidence.forkedFromSessionId);
+      if (parent && !state.has(parent)) visit(parent);
+      else if (parent && state.get(parent) === 1) {
+        const cycleStart = stackIndexes.get(parent);
+        for (const member of stack.slice(cycleStart)) cycleEvidence.add(member);
+      }
+    }
+    stack.pop();
+    stackIndexes.delete(evidence);
+    state.set(evidence, 2);
+  };
+  for (const evidence of evidenceList) {
+    if (!state.has(evidence)) visit(evidence);
+  }
+  return cycleEvidence;
 }
 
 function logicalForkSegment(event, rawSegments) {
@@ -5722,8 +5765,7 @@ async function buildSourceBackedIndex({
     materializedChildrenByParentId.set(evidence.forkedFromSessionId, children);
   }
 
-  for (const evidence of orderedRelationshipEvidence) {
-    throwIfAborted(signal);
+  const parseAcceptedRelationshipEvidence = async (evidence) => {
     const filePath = path.resolve(sessionsRoot, evidence.sourceFile);
     if (!isPathInsideOrSame(filePath, sessionsRoot)) throw sourceSnapshotChangedError();
     let session;
@@ -5746,6 +5788,25 @@ async function buildSourceBackedIndex({
         || session.lineCount !== evidence.lineCount) {
       throw sourceSnapshotChangedError();
     }
+    return session;
+  };
+
+  for (const evidence of codexMaterializedCycleEvidence(relationshipEvidence)) {
+    throwIfAborted(signal);
+    const session = await parseAcceptedRelationshipEvidence(evidence);
+    applyCodexRelationshipEvidence(session, evidence, sourceSnapshotChangedError);
+    for (const childEvidence of materializedChildrenByParentId.get(session.id) || []) {
+      childEvidence.inheritedContext = materializedForkInheritedContext(
+        session,
+        childEvidence.forkEvidence.matchedParentRawCount,
+      );
+    }
+  }
+
+  for (const evidence of orderedRelationshipEvidence) {
+    throwIfAborted(signal);
+    const session = await parseAcceptedRelationshipEvidence(evidence);
+    applyCodexRelationshipEvidence(session, evidence, sourceSnapshotChangedError);
     for (const childEvidence of materializedChildrenByParentId.get(session.id) || []) {
       childEvidence.inheritedContext = materializedForkInheritedContext(
         session,
@@ -5755,7 +5816,6 @@ async function buildSourceBackedIndex({
     if (evidence.forkStorageMode === 'materialized' && !evidence.inheritedContext) {
       throw sourceSnapshotChangedError();
     }
-    applyCodexRelationshipEvidence(session, evidence, sourceSnapshotChangedError);
     finalizeSession(session, sessionIndex.get(session.id));
     if (typeof onTransientMemorySample === 'function') {
       onTransientMemorySample({
