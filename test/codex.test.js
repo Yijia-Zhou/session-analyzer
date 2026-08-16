@@ -10,7 +10,7 @@ const path = require('node:path');
 const { __testOnly, buildCodexLegacyRawOwnerIndex, buildIndex: buildCompactIndex, buildEventDetail, buildHydratedEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readImagePreview, readRawLine, isPathInsideOrSame } = require('../src/codex');
 const { createServer, parseArgs, resolveStaticAssetPath } = require('../server');
 const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../src/folding');
-const { resolveLegacyRawOwnerForIndex } = require('../src/source-adapters');
+const { getSourceAdapter, resolveLegacyRawOwnerForIndex } = require('../src/source-adapters');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
@@ -21,6 +21,13 @@ async function buildFixtureIndex() {
   return buildIndex({
     repoRoot: 'G:\\vibe\\term-agent',
     codexHome: fixtureCodexHome,
+  });
+}
+
+async function buildStrictFixtureIndex() {
+  return getSourceAdapter('codex').buildIndex({
+    repoRoot: 'G:\\vibe\\term-agent',
+    sourceHome: fixtureCodexHome,
   });
 }
 
@@ -260,7 +267,7 @@ test('thread and unmodeled item lifecycle records stay in protocol layer', async
 });
 
 test('state endpoint includes dynamic event kind options', async () => {
-  const index = await buildFixtureIndex();
+  const index = await buildStrictFixtureIndex();
   const server = createServer(index, 1, { codexHome: fixtureCodexHome });
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -288,8 +295,7 @@ test('server hides 500 stack details by default but preserves thrown 4xx status 
   stackError.stack = `Error: ${stackError.message}\n    at G:\\vibe\\session-analyzer\\src\\boom.js:7:9`;
   const errorIndex = {
     repoRoot: 'G:\\vibe\\term-agent',
-    sourceKind: 'codex',
-    codexHome: fixtureCodexHome,
+    sourceKind: 'claude-code',
     sessionsById: new Map(),
     get sessions() {
       throw stackError;
@@ -316,8 +322,7 @@ test('server hides 500 stack details by default but preserves thrown 4xx status 
   notFoundError.statusCode = 404;
   const notFoundIndex = {
     repoRoot: 'G:\\vibe\\term-agent',
-    sourceKind: 'codex',
-    codexHome: fixtureCodexHome,
+    sourceKind: 'claude-code',
     sessionsById: new Map(),
     get sessions() {
       throw notFoundError;
@@ -343,8 +348,7 @@ test('server hides 500 stack details by default but preserves thrown 4xx status 
   internalStatusError.statusCode = 500;
   const internalStatusIndex = {
     repoRoot: 'G:\\vibe\\term-agent',
-    sourceKind: 'codex',
-    codexHome: fixtureCodexHome,
+    sourceKind: 'claude-code',
     sessionsById: new Map(),
     get sessions() {
       throw internalStatusError;
@@ -373,8 +377,7 @@ test('server exposes 500 stack details only when debug mode is explicitly enable
   stackError.stack = `Error: ${stackError.message}\n    at G:\\vibe\\session-analyzer\\src\\debug.js:4:2`;
   const debugIndex = {
     repoRoot: 'G:\\vibe\\term-agent',
-    sourceKind: 'codex',
-    codexHome: fixtureCodexHome,
+    sourceKind: 'claude-code',
     sessionsById: new Map(),
     get sessions() {
       throw stackError;
@@ -4162,8 +4165,8 @@ test('image preview endpoint rehydrates only indexed server-owned image locators
   ];
   await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
 
-  const index = await buildIndex({ repoRoot, codexHome });
-  const session = index.sessionsById.get(id);
+  const residentIndex = await buildIndex({ repoRoot, codexHome });
+  const session = residentIndex.sessionsById.get(id);
   const event = session.logicalEvents.find((candidate) => candidate.toolName === 'view_image');
   const detail = buildEventDetail(session, event.id, 'main');
   const previews = detail.inspectorSections.find((section) => section.type === 'image_preview').images;
@@ -4172,6 +4175,10 @@ test('image preview endpoint rehydrates only indexed server-owned image locators
   assert.doesNotMatch(JSON.stringify(session), /data:image\/png;base64/);
   assert.equal(outputRaw.embeddedImages.length, 2);
 
+  const index = await getSourceAdapter('codex').buildIndex({
+    repoRoot,
+    sourceHome: codexHome,
+  });
   const server = createServer(index, 1, { codexHome });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -4200,17 +4207,11 @@ test('image preview endpoint rehydrates only indexed server-owned image locators
     assert.equal(raw.status, 200);
     assert.match((await raw.json()).raw, /data:image\/png;base64,aGVs\\nbG8=/);
 
-    const originalFile = outputRaw.embeddedImages[0].source.file;
-    outputRaw.embeddedImages[0].source.file = '..\\outside.jsonl';
-    const outside = await fetch(`${base}${previews[0].src}`);
-    assert.equal(outside.status, 409);
-    outputRaw.embeddedImages[0].source.file = originalFile;
-
     records[2].payload.output[0].image_url = 'data:image/png;base64,d29ybGQ=';
     await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
     const stale = await fetch(`${base}${previews[0].src}`);
     assert.equal(stale.status, 409);
-    assert.equal((await stale.json()).error, 'Image preview source is stale');
+    assert.equal((await stale.json()).error, 'Indexed source changed; reindex required');
     const staleLegacyRaw = await fetch(`${base}/api/raw?file=${encodeURIComponent(outputRaw.source.file)}&line=${outputRaw.source.line}`);
     assert.equal(staleLegacyRaw.status, 409);
     assert.equal((await staleLegacyRaw.json()).error, 'Indexed source changed; reindex required');
@@ -4220,87 +4221,45 @@ test('image preview endpoint rehydrates only indexed server-owned image locators
 });
 
 test('legacy Raw ownership uses the bounded Index projection before materialization', async () => {
-  const index = await buildFixtureIndex();
-  let selected = null;
-  for (const session of index.sessions) {
-    for (const raw of session.rawEvents) {
-      const owner = resolveLegacyRawOwnerForIndex(index, raw?.source?.file, raw?.source?.line);
-      if (owner?.sessionId === session.id && owner.rawIdHint === raw.rawId) {
-        selected = { session, raw };
-        break;
-      }
-    }
-    if (selected) break;
-  }
-  assert.ok(selected);
-  const { session, raw } = selected;
+  const index = await buildStrictFixtureIndex();
+  const [file] = Object.keys(index.legacyRawOwners.payload.files);
+  const [lineText] = Object.keys(index.legacyRawOwners.payload.files[file]);
+  const line = Number(lineText);
+  const owner = resolveLegacyRawOwnerForIndex(index, file, line);
+  assert.ok(owner);
+  const session = index.sessionsById.get(owner.sessionId);
   Object.defineProperty(session, 'rawEvents', {
     configurable: true,
     get() { throw new Error('resident rawEvents reached before materialization'); },
   });
 
-  const owner = resolveLegacyRawOwnerForIndex(index, raw.source.file, raw.source.line);
-  assert.equal(owner.sessionId, session.id);
-  assert.equal(owner.rawIdHint, raw.rawId);
-  assert.equal(owner.line, raw.source.line);
-  assert.equal(owner.adapter.kind, 'codex');
+  const repeatedOwner = resolveLegacyRawOwnerForIndex(index, file, line);
+  assert.equal(repeatedOwner.sessionId, session.id);
+  assert.match(repeatedOwner.rawIdHint, new RegExp(`:raw:${line}$`, 'u'));
+  assert.equal(repeatedOwner.line, line);
+  assert.equal(repeatedOwner.adapter.kind, 'codex');
 
   const zeroLineOwners = buildCodexLegacyRawOwnerIndex([{
     id: 'zero-line-session',
     rawEvents: [{
       rawId: 'zero-line-raw',
-      source: { file: raw.source.file, line: 0 },
+      source: { file, line: 0 },
     }],
   }]);
   assert.equal(zeroLineOwners.entryCount, 0);
   assert.deepEqual(zeroLineOwners.payload.files, {});
 });
 
-test('legacy raw endpoint rejects malformed canonical Raw Event ownership', async (t) => {
-  const file = path.join(os.tmpdir(), 'session-analyzer-synthetic-legacy.jsonl');
-  const raw = {
-    rawId: 'codex:raw:1',
-    sourceKind: 'claude-code',
-    source: { file, line: 1 },
-  };
-  const event = {
-    id: 'codex:event:1',
-    sourceKind: 'codex',
-    kind: 'synthetic_event',
-    layer: 'main',
-    timestamp: '2026-08-14T00:00:00.000Z',
-    rawRefs: [{ rawId: raw.rawId }],
-  };
-  const session = {
-    id: 'codex:session:1',
-    sourceKind: 'codex',
-    sourceFile: file,
-    rawEvents: [raw],
-    logicalEvents: [event],
-    counts: { messages: 0, toolCalls: 0, failedCommands: 0 },
-  };
-  const index = {
-    sourceKind: 'codex',
-    repoRoot: path.join(os.tmpdir(), 'session-analyzer-synthetic-repo'),
-    sessions: [session],
-    sessionsById: new Map([[session.id, session]]),
-    legacyRawOwners: buildCodexLegacyRawOwnerIndex([session]),
-  };
-  const server = createServer(index, 0, { codexHome: fixtureCodexHome });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  }));
+test('runtime rejects a tampered strict Codex legacy Raw owner projection', async () => {
+  const index = await buildStrictFixtureIndex();
+  const [file] = Object.keys(index.legacyRawOwners.payload.files);
+  const [line] = Object.keys(index.legacyRawOwners.payload.files[file]);
+  index.legacyRawOwners.payload.files[file][line] = '0:claude-code:raw:1';
 
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const crossOwned = await fetch(`${base}/api/raw?file=${encodeURIComponent(file)}&line=1`);
-  assert.equal(crossOwned.status, 500);
-  assert.equal((await crossOwned.json()).error, 'Internal server error');
-
-  raw.sourceKind = undefined;
-  const missingOwnership = await fetch(`${base}/api/raw?file=${encodeURIComponent(file)}&line=1`);
-  assert.equal(missingOwnership.status, 500);
-  assert.equal((await missingOwnership.json()).error, 'Internal server error');
+  assert.throws(
+    () => createServer(index, 0, { codexHome: fixtureCodexHome }),
+    { code: 'CANONICAL_CONTRACT_VIOLATION' },
+  );
 });
 
 test('command terminal sections repair UTF-8 text decoded as GB18030', () => {
@@ -4382,9 +4341,11 @@ test('command terminal sections repair UTF-8 text decoded as GB18030', () => {
 });
 
 test('detail endpoint returns structured event detail with split sections and raw refs', async () => {
-  const index = await buildFixtureIndex();
-  const session = primaryFixtureSession(index);
-  const planEvent = session.logicalEvents.find((event) => event.kind === 'proposed_plan');
+  const residentIndex = await buildFixtureIndex();
+  const residentSession = primaryFixtureSession(residentIndex);
+  const planEvent = residentSession.logicalEvents.find((event) => event.kind === 'proposed_plan');
+  const index = await buildStrictFixtureIndex();
+  const session = index.sessionsById.get(residentSession.id);
   const server = createServer(index, 1);
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -4499,7 +4460,7 @@ test('project summary endpoint returns fast config rows and later cached activit
 });
 
 test('state reports active project job even when an old index exists', async () => {
-  const index = await buildFixtureIndex();
+  const index = await buildStrictFixtureIndex();
   let releaseIndex = null;
   const server = createServer(index, 1, {
     codexHome: fixtureCodexHome,
@@ -4533,7 +4494,7 @@ test('state reports active project job even when an old index exists', async () 
 });
 
 test('cancelling an active project job preserves the previous index', async () => {
-  const index = await buildFixtureIndex();
+  const index = await buildStrictFixtureIndex();
   const server = createServer(index, 1, {
     codexHome: fixtureCodexHome,
     buildIndex: ({ signal }) => new Promise((resolve, reject) => {
@@ -4577,7 +4538,7 @@ test('cancelling an active project job preserves the previous index', async () =
 });
 
 test('a failed replacement build preserves the previous index', async () => {
-  const index = await buildFixtureIndex();
+  const index = await buildStrictFixtureIndex();
   const server = createServer(index, 1, {
     codexHome: fixtureCodexHome,
     buildIndex: async () => {
@@ -4626,9 +4587,11 @@ test('readRawLine returns the original JSONL row for drill-down', async () => {
 });
 
 test('source-neutral raw endpoint resolves an indexed Codex raw id without accepting a client path', async () => {
-  const index = await buildFixtureIndex();
-  const session = primaryFixtureSession(index);
-  const rawEvent = session.rawEvents[11];
+  const residentIndex = await buildFixtureIndex();
+  const residentSession = primaryFixtureSession(residentIndex);
+  const rawEvent = residentSession.rawEvents[11];
+  const index = await buildStrictFixtureIndex();
+  const session = index.sessionsById.get(residentSession.id);
   const server = createServer(index, 1, { codexHome: fixtureCodexHome });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;

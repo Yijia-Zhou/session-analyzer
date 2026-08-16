@@ -292,6 +292,91 @@ async function materializeResidentSession({ index, indexedSession, signal }) {
   return indexedSession;
 }
 
+// This boundary is deliberately non-extensible: only the exact repository-owned
+// Codex materializer and validators receive a bounded Index view. Custom and
+// future strict adapters retain the complete exception-safe graph fingerprint.
+function trustedCodexStrictBoundary(adapter) {
+  return adapter.sessionLifecycle === SESSION_LIFECYCLE.INDEXED_MATERIALIZED
+    && adapter.materializeSession === codex.materializeCodexSession
+    && adapter.validateMaterializationDescriptor === codex.validateCodexMaterializationDescriptor
+    && adapter.validateLegacyRawOwnerIndex === codex.validateCodexLegacyRawOwnerIndex
+    && adapter.validateMaterializedPrivateState === codex.validateCodexMaterializedPrivateState
+    && adapter.materializedPrivateFields.length === codex.materializedPrivateFields.length
+    && adapter.materializedPrivateFields.every((field, index) => (
+      field === codex.materializedPrivateFields[index]
+    ));
+}
+
+function trustedStrictBoundaryError(message) {
+  const error = new Error(message);
+  error.code = 'CANONICAL_CONTRACT_VIOLATION';
+  return error;
+}
+
+function captureOwnDataProperty(value, field, owner) {
+  const descriptor = Object.getOwnPropertyDescriptor(value, field);
+  if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+    throw trustedStrictBoundaryError(`${owner}.${field} must be an own data property`);
+  }
+  return descriptor.value;
+}
+
+function createTrustedCodexIndexView(index) {
+  const sourceKind = captureOwnDataProperty(index, 'sourceKind', 'Codex Index');
+  const repoRoot = captureOwnDataProperty(index, 'repoRoot', 'Codex Index');
+  const sessionsRoot = captureOwnDataProperty(index, 'sessionsRoot', 'Codex Index');
+  if (sourceKind !== SOURCE_KIND.CODEX
+      || typeof repoRoot !== 'string'
+      || repoRoot === ''
+      || typeof sessionsRoot !== 'string'
+      || sessionsRoot === '') {
+    throw trustedStrictBoundaryError('Codex Index materialization roots are invalid');
+  }
+  return Object.freeze({ sourceKind, repoRoot, sessionsRoot });
+}
+
+function captureTrustedStrictOwnership(index, indexedSession, dependencySet, indexView) {
+  const sessionsById = captureOwnDataProperty(index, 'sessionsById', 'Codex Index');
+  const materializationDependencies = captureOwnDataProperty(
+    index,
+    'materializationDependencies',
+    'Codex Index',
+  );
+  if (!(sessionsById instanceof Map)
+      || sessionsById.get(indexedSession.id) !== indexedSession
+      || !(materializationDependencies instanceof Map)
+      || materializationDependencies.get(dependencySet.id) !== dependencySet) {
+    throw trustedStrictBoundaryError('Codex Index does not own the selected materialization inputs');
+  }
+  return {
+    indexView,
+    sessionsById,
+    materializationDependencies,
+    indexedSessionFingerprint: captureGraphFingerprint(indexedSession),
+    dependencySetFingerprint: captureGraphFingerprint(dependencySet),
+  };
+}
+
+function trustedStrictOwnershipMatches(index, indexedSession, dependencySet, captured) {
+  try {
+    return captureOwnDataProperty(index, 'sourceKind', 'Codex Index') === captured.indexView.sourceKind
+      && captureOwnDataProperty(index, 'repoRoot', 'Codex Index') === captured.indexView.repoRoot
+      && captureOwnDataProperty(index, 'sessionsRoot', 'Codex Index') === captured.indexView.sessionsRoot
+      && captureOwnDataProperty(index, 'sessionsById', 'Codex Index') === captured.sessionsById
+      && captured.sessionsById.get(indexedSession.id) === indexedSession
+      && captureOwnDataProperty(
+        index,
+        'materializationDependencies',
+        'Codex Index',
+      ) === captured.materializationDependencies
+      && captured.materializationDependencies.get(dependencySet.id) === dependencySet
+      && graphFingerprintMatches(indexedSession, captured.indexedSessionFingerprint)
+      && graphFingerprintMatches(dependencySet, captured.dependencySetFingerprint);
+  } catch {
+    return false;
+  }
+}
+
 function normalizeSourceKind(value) {
   const normalized = String(value || SOURCE_KIND.CODEX).trim().toLowerCase();
   if (normalized === 'claude' || normalized === 'claudecode' || normalized === 'claude_code') {
@@ -305,7 +390,7 @@ const codexAdapter = {
     label: 'Codex',
     homeOption: 'codexHome',
     homeLabel: 'Codex home',
-    sessionLifecycle: SESSION_LIFECYCLE.RESIDENT_COMPLETE,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
     defaultHome: () => path.join(os.homedir(), '.codex'),
     query: codex.query,
     async discoverConfiguredProjects(context) {
@@ -315,13 +400,16 @@ const codexAdapter = {
       return codex.discoverProjects({ codexHome: context.sourceHome });
     },
     async buildIndex(context) {
-      const index = await codex.buildIndex({
+      return codex.buildSourceBackedIndex({
         ...context,
         codexHome: context.sourceHome,
       });
-      return attachProjectQueryStore(index, codex.query);
     },
-    materializeSession: materializeResidentSession,
+    materializeSession: codex.materializeCodexSession,
+    validateMaterializationDescriptor: codex.validateCodexMaterializationDescriptor,
+    validateLegacyRawOwnerIndex: codex.validateCodexLegacyRawOwnerIndex,
+    validateMaterializedPrivateState: codex.validateCodexMaterializedPrivateState,
+    materializedPrivateFields: codex.materializedPrivateFields,
     async buildEventDetail(index, session, eventId, layer, options) {
       return codex.buildHydratedEventDetail(index, session, eventId, layer, options);
     },
@@ -522,6 +610,10 @@ function validateIndexOwnership(index, {
       error.code = 'CANONICAL_CONTRACT_VIOLATION';
       throw error;
     }
+    const trustedStrictBoundary = trustedCodexStrictBoundary(adapter);
+    const descriptorIndex = trustedStrictBoundary
+      ? createTrustedCodexIndexView(index)
+      : index;
     for (const session of validatedSessions) {
       const descriptor = session.materializationDescriptor;
       const dependencySet = index.materializationDependencies.get(descriptor.dependencySetId);
@@ -533,22 +625,29 @@ function validateIndexOwnership(index, {
       invokeReadOnlyMaterializationValidator({
         callback: adapter.validateMaterializationDescriptor,
         args: {
-          index,
+          index: descriptorIndex,
           indexedSession: session,
           descriptor,
           dependencySet,
         },
-        guardedValues: [index],
+        guardedValues: trustedStrictBoundary
+          ? [descriptorIndex, session, dependencySet]
+          : [index],
         label: 'Adapter materialization descriptor validation',
       });
     }
+    const legacyValidationIndex = trustedStrictBoundary
+      ? Object.freeze({ sessionsById: new Map(index.sessionsById) })
+      : index;
     invokeReadOnlyMaterializationValidator({
       callback: adapter.validateLegacyRawOwnerIndex,
       args: {
-        index,
+        index: legacyValidationIndex,
         legacyRawOwners: index.legacyRawOwners,
       },
-      guardedValues: [index],
+      guardedValues: trustedStrictBoundary
+        ? [legacyValidationIndex, index.legacyRawOwners]
+        : [index],
       label: 'Adapter legacy Raw owner validation',
     });
   }
@@ -565,7 +664,10 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
   const indexKind = validateCanonicalIndexFields(index);
   const trustedResidentBoundary = adapter.sessionLifecycle === SESSION_LIFECYCLE.RESIDENT_COMPLETE
     && adapter.materializeSession === materializeResidentSession;
-  if (!trustedResidentBoundary) validateIndexOwnership(index, { adapter });
+  const trustedStrictBoundary = trustedCodexStrictBoundary(adapter);
+  if (!trustedResidentBoundary && !trustedStrictBoundary) {
+    validateIndexOwnership(index, { adapter });
+  }
   if (adapter.kind !== indexKind) {
     const error = new Error(`Source ownership mismatch: index ${indexKind}, adapter ${adapter.kind}`);
     error.code = 'SOURCE_OWNERSHIP_MISMATCH';
@@ -608,6 +710,85 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
     : index.materializationDependencies?.get(
       indexedSession.materializationDescriptor.dependencySetId,
     );
+  if (trustedStrictBoundary) {
+    if (!dependencySet) {
+      throw trustedStrictBoundaryError(
+        `Missing materialization dependency set ${indexedSession.materializationDescriptor.dependencySetId}`,
+      );
+    }
+    validateCanonicalDependencySet(
+      dependencySet,
+      indexKind,
+      indexedSession.materializationDescriptor.dependencySetId,
+    );
+    const indexView = createTrustedCodexIndexView(index);
+    invokeReadOnlyMaterializationValidator({
+      callback: adapter.validateMaterializationDescriptor,
+      args: {
+        index: indexView,
+        indexedSession,
+        descriptor: indexedSession.materializationDescriptor,
+        dependencySet,
+      },
+      guardedValues: [indexView, indexedSession, dependencySet],
+      label: 'Adapter materialization descriptor validation',
+    });
+    const capturedOwnership = captureTrustedStrictOwnership(
+      index,
+      indexedSession,
+      dependencySet,
+      indexView,
+    );
+    let materializedSession;
+    let materializationRejected = false;
+    let materializationError;
+    try {
+      materializedSession = await adapter.materializeSession({
+        index: indexView,
+        indexedSession,
+        dependencySet,
+        signal: options.signal,
+        indexRevision: options.indexRevision,
+      });
+    } catch (error) {
+      materializationRejected = true;
+      materializationError = error;
+    }
+    if (!trustedStrictOwnershipMatches(
+      index,
+      indexedSession,
+      dependencySet,
+      capturedOwnership,
+    )) {
+      throw materializationContractViolation(
+        'Materialization mutated the selected Codex ownership boundary',
+        materializationRejected ? materializationError : undefined,
+        materializationRejected,
+      );
+    }
+    if (materializationRejected) throw materializationError;
+    throwIfAborted(options.signal);
+    validateCanonicalMaterializedSessionShape(
+      indexedSession,
+      materializedSession,
+      indexKind,
+      {
+        allowResidentComplete: false,
+        index,
+        allowedPrivateFields: adapter.materializedPrivateFields,
+      },
+    );
+    invokeReadOnlyMaterializationValidator({
+      callback: adapter.validateMaterializedPrivateState,
+      args: {
+        indexedSession,
+        session: materializedSession,
+      },
+      guardedValues: [indexedSession, materializedSession],
+      label: 'Adapter materialized private-state validation',
+    });
+    return materializedSession;
+  }
   const materializationInputFingerprint = captureGraphFingerprint(index);
   let materializedSession;
   let materializationRejected = false;

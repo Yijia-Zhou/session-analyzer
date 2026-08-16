@@ -164,6 +164,16 @@ function searchIndex() {
   };
 }
 
+function asResidentClaudeIndex(index) {
+  index.sourceKind = 'claude-code';
+  for (const item of index.sessions) {
+    item.sourceKind = 'claude-code';
+    for (const event of item.logicalEvents) event.sourceKind = 'claude-code';
+    for (const raw of item.rawEvents) raw.sourceKind = 'claude-code';
+  }
+  return index;
+}
+
 test('project search intersects query and filters per event and returns deterministic match metadata', () => {
   const index = searchIndex();
   assert.ok(index.sessions.every((item) => !Object.hasOwn(item, 'searchText')));
@@ -375,7 +385,7 @@ test('file suggestions respect session and layer boundaries and count events onc
 });
 
 test('HTTP search and suggestion routes expose the additive backend contracts', async () => {
-  const index = searchIndex();
+  const index = asResidentClaudeIndex(searchIndex());
   const server = createServer(index, 1);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();

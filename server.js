@@ -17,6 +17,7 @@ const {
   readIndexedRawRecord,
   readLegacyRawLineForSession,
   resolveLegacyRawOwnerForIndex,
+  requireExplicitSourceKind,
   requireSourceAdapter,
   supportedSourceOptions,
   supportedSourceKinds,
@@ -727,12 +728,13 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       job.diagnostics?.finish('cancelled', { buildMs: job.buildMs });
       return;
     }
-    const indexSourceKind = validateIndexOwnership(index);
-    if (indexSourceKind !== jobSourceKind) {
-      const error = new Error(`Source ownership mismatch: job ${jobSourceKind}, index ${indexSourceKind}`);
+    const claimedIndexSourceKind = requireExplicitSourceKind(index?.sourceKind, 'index');
+    if (claimedIndexSourceKind !== jobSourceKind) {
+      const error = new Error(`Source ownership mismatch: job ${jobSourceKind}, index ${claimedIndexSourceKind}`);
       error.code = 'SOURCE_OWNERSHIP_MISMATCH';
       throw error;
     }
+    validateIndexOwnership(index);
     if (controller.signal.aborted) {
       job.status = 'cancelled';
       job.error = 'Indexing cancelled';

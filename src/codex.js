@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
+const { Readable } = require('node:stream');
+const { isDeepStrictEqual } = require('node:util');
 const crypto = require('node:crypto');
 const MarkdownIt = require('markdown-it');
 const { SHELL_EXTERNAL_COMMAND_WORDS } = require('./shared/command-highlighting');
@@ -56,6 +58,7 @@ const {
 } = require('./codex-goal');
 const { createCodexLogicalBuilder } = require('./codex-logical');
 const { createCodexSearch } = require('./codex-search');
+const { createProjectQueryStoreBuilder } = require('./project-query-store');
 const {
   canonicalRawRecordDigest,
   hasCanonicalRawDigests,
@@ -92,6 +95,27 @@ const CODE_MODE_STRUCTURED_RESULT_MAX_CHARS = 32_000;
 const CODE_MODE_STRUCTURED_RESULT_MAX_DEPTH = 32;
 const CODE_MODE_STRUCTURED_RESULT_MAX_NODES = 1_000;
 const CODEX_COMPACT_SESSION_REPRESENTATION = 'codex-compact-v1';
+const CODEX_MATERIALIZATION_SCHEMA_VERSION = 1;
+const CODEX_MATERIALIZATION_PRIVATE_FIELDS = Object.freeze(['_forkSegmentsByRawId', '_shell']);
+const CODEX_RELATIONSHIP_FIELDS = Object.freeze([
+  'parentSessionId',
+  'parentSessionInferred',
+  'forkedFromSessionId',
+  'forkStorageMode',
+  'forkedAt',
+  'forkPointUuid',
+  'forkContinuationState',
+  'forkEvidence',
+  'inheritedContext',
+  'supersededBySessionId',
+  'supersededAt',
+  'supersededReason',
+]);
+const CODEX_FORK_SEGMENTS = Object.freeze([
+  'fork_metadata',
+  'inherited_context',
+  'continuation',
+]);
 const CODEX_SOURCE_HYDRATION_CONCURRENCY = 2;
 const CODEX_HYDRATION_SLOT_OWNED = Symbol('codexHydrationSlotOwned');
 
@@ -128,15 +152,17 @@ function normalizeFsPath(input) {
   return fsPath.normalizeFsPath(input);
 }
 
-function buildCodexLegacyRawOwnerIndex(sessions) {
+function createCodexLegacyRawOwnerIndexBuilder() {
   const sessionIds = [];
   const sessionIndexes = new Map();
   const files = {};
   let entryCount = 0;
+  let finished = false;
 
-  for (const session of sessions || []) {
+  const addSession = (session) => {
+    if (finished) throw new Error('Codex legacy Raw owner builder is already finished');
     const sessionId = String(session?.id || '');
-    if (!sessionId) continue;
+    if (!sessionId) return;
     let sessionIndex = sessionIndexes.get(sessionId);
     if (sessionIndex === undefined) {
       sessionIndex = sessionIds.length;
@@ -164,18 +190,30 @@ function buildCodexLegacyRawOwnerIndex(sessions) {
       files[file][lineKey] = `${sessionIndex}:${rawId}`;
       entryCount += 1;
     }
-  }
-
-  const payload = { sessionIds, files };
-  const legacyRawOwners = {
-    schemaVersion: 1,
-    sourceKind: CODEX_SOURCE_KIND,
-    entryCount,
-    accountedBytes: Buffer.byteLength(JSON.stringify(payload), 'utf8'),
-    payload,
   };
-  validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, CODEX_SOURCE_KIND);
-  return legacyRawOwners;
+
+  const finish = () => {
+    if (finished) throw new Error('Codex legacy Raw owner builder is already finished');
+    finished = true;
+    const payload = { sessionIds, files };
+    const legacyRawOwners = {
+      schemaVersion: 1,
+      sourceKind: CODEX_SOURCE_KIND,
+      entryCount,
+      accountedBytes: Buffer.byteLength(JSON.stringify(payload), 'utf8'),
+      payload,
+    };
+    validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, CODEX_SOURCE_KIND);
+    return legacyRawOwners;
+  };
+
+  return Object.freeze({ addSession, finish });
+}
+
+function buildCodexLegacyRawOwnerIndex(sessions) {
+  const builder = createCodexLegacyRawOwnerIndexBuilder();
+  for (const session of sessions || []) builder.addSession(session);
+  return builder.finish();
 }
 
 function isPathInsideOrSame(child, parent) {
@@ -996,6 +1034,19 @@ function taggedBlockEntries(text) {
   return entries;
 }
 
+function sourceFileIdentity(stat) {
+  return {
+    device: String(stat?.dev ?? ''),
+    inode: String(stat?.ino ?? ''),
+  };
+}
+
+function sameSourceIdentity(left, right) {
+  return Boolean(left && right
+    && left.device === right.device
+    && left.inode === right.inode);
+}
+
 function isKvRepresentableValue(value) {
   if (value == null || value === '') return false;
   if (typeof value !== 'object') return true;
@@ -1158,7 +1209,7 @@ function sessionUsesPowerShell(value) {
 }
 
 function commandLanguageContext(session = {}) {
-  return { sessionShell: session.shell || '' };
+  return { sessionShell: session.shell || session._shell || '' };
 }
 
 function inferCommandLanguage(commandText, args = {}, context = {}) {
@@ -4427,14 +4478,36 @@ function isReusableCompactSession(session) {
 
 async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {}) {
   throwIfAborted(signal);
-  const stat = await fsp.stat(filePath);
+  const acceptedSnapshot = options.acceptedSourceSnapshot || null;
+  let stat;
+  try {
+    stat = await fsp.stat(filePath);
+  } catch (error) {
+    if (acceptedSnapshot && (error?.code === 'ENOENT' || error?.code === 'ENOTDIR')) {
+      throw indexedSourceStaleError();
+    }
+    throw error;
+  }
+  const acceptedBytes = acceptedSnapshot ? acceptedSnapshot.acceptedBytes : stat.size;
+  const snapshotFailure = acceptedSnapshot ? indexedSourceStaleError : sourceSnapshotChangedError;
+  if (!Number.isSafeInteger(acceptedBytes)
+      || acceptedBytes < 0
+      || stat.size < acceptedBytes
+      || (acceptedSnapshot
+        && !sameSourceIdentity(sourceFileIdentity(stat), acceptedSnapshot.fileIdentity))) {
+    throw snapshotFailure();
+  }
   const session = makeEmptySession(filePath, relFile, stat);
+  session.bytes = acceptedBytes;
+  session._sourceIdentity = sourceFileIdentity(stat);
   let primarySessionMetaSeen = false;
   const includeCanonicalRawDigests = options.canonicalRawDigests === true;
   const sourceHash = crypto.createHash('sha256');
   let sourceBytesRead = 0;
 
-  const stream = fs.createReadStream(filePath, stat.size > 0 ? { start: 0, end: stat.size - 1 } : { start: 0, end: 0 });
+  const stream = acceptedBytes > 0
+    ? fs.createReadStream(filePath, { start: 0, end: acceptedBytes - 1 })
+    : Readable.from([]);
   stream.on('data', (chunk) => {
     sourceBytesRead += chunk.length;
     sourceHash.update(chunk);
@@ -4523,13 +4596,17 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   throwIfAborted(signal);
   const sourceFingerprint = sourceHash.digest('base64url');
   if (typeof options.beforeSourceSnapshotVerificationForTests === 'function') {
-    await options.beforeSourceSnapshotVerificationForTests({ filePath, snapshotBytes: stat.size });
+    await options.beforeSourceSnapshotVerificationForTests({ filePath, snapshotBytes: acceptedBytes });
   }
-  const verified = await hashFilePrefix(filePath, stat.size, signal);
-  if (sourceBytesRead !== stat.size
-      || verified.bytesRead !== stat.size
-      || verified.fingerprint !== sourceFingerprint) {
-    throw sourceSnapshotChangedError();
+  const verified = await hashFilePrefix(filePath, acceptedBytes, signal);
+  const verifiedStat = await fsp.stat(filePath);
+  if (sourceBytesRead !== acceptedBytes
+      || verified.bytesRead !== acceptedBytes
+      || verified.fingerprint !== sourceFingerprint
+      || verifiedStat.size < acceptedBytes
+      || !sameSourceIdentity(sourceFileIdentity(verifiedStat), session._sourceIdentity)
+      || (acceptedSnapshot && sourceFingerprint !== acceptedSnapshot.digest)) {
+    throw snapshotFailure();
   }
   session.sourceFingerprint = sourceFingerprint;
   session._parsedAncestry = {
@@ -4545,6 +4622,397 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
     session.residentRepresentation = CODEX_COMPACT_SESSION_REPRESENTATION;
   }
   return session;
+}
+
+function compactCodexRelationshipRaw(raw) {
+  return {
+    rawId: String(raw?.rawId || ''),
+    recordType: String(raw?.recordType || ''),
+    payloadType: String(raw?.payloadType || ''),
+    role: String(raw?.role || ''),
+    timestamp: String(raw?.timestamp || ''),
+    sessionMetaId: String(raw?.sessionMetaId || ''),
+    reviewLifecyclePhase: String(raw?.reviewLifecyclePhase || ''),
+    reviewThreadId: String(raw?.reviewThreadId || ''),
+  };
+}
+
+function compactCodexRelationshipLogical(event) {
+  return {
+    id: String(event?.id || ''),
+    layer: event?.layer === 'protocol' ? 'protocol' : 'main',
+    kind: String(event?.kind || ''),
+    subtype: String(event?.subtype || ''),
+    status: String(event?.status || ''),
+    timestamp: String(event?.timestamp || ''),
+    preview: String(event?.preview || ''),
+    searchText: String(event?.searchText || ''),
+    rawRefs: (event?.rawRefs || []).map((reference) => ({
+      rawId: String(reference?.rawId || ''),
+    })),
+  };
+}
+
+function buildCodexRelationshipEvidence(session, retainForkEvidence) {
+  const rawEvents = retainForkEvidence
+    ? session.rawEvents.map(compactCodexRelationshipRaw)
+    : session.rawEvents.slice(0, 2).map(compactCodexRelationshipRaw);
+  const logicalEvents = retainForkEvidence
+    ? (session._logicalEvents || session.logicalEvents).map(compactCodexRelationshipLogical)
+    : [];
+  return {
+    id: session.id,
+    sourceKind: session.sourceKind,
+    sourceFile: session.sourceFile,
+    sourceClientVersion: session.sourceClientVersion,
+    sourceFingerprint: session.sourceFingerprint,
+    sourceUpdatedAt: session.sourceUpdatedAt,
+    sourceIdentity: structuredClone(session._sourceIdentity),
+    bytes: session.bytes,
+    lineCount: session.lineCount,
+    cwdSet: [...session.cwdSet],
+    matchesRepo: session.matchesRepo,
+    startedAt: session.startedAt,
+    updatedAt: session.updatedAt,
+    parentSessionId: session.parentSessionId,
+    parentSessionInferred: false,
+    forkedFromSessionId: session.forkedFromSessionId,
+    forkStorageMode: '',
+    forkedAt: '',
+    forkPointUuid: '',
+    forkContinuationState: '',
+    forkEvidence: null,
+    inheritedContext: null,
+    supersededBySessionId: '',
+    supersededAt: '',
+    supersededReason: '',
+    agentNickname: session.agentNickname,
+    primarySessionMetaKind: session.primarySessionMetaKind,
+    _parsedAncestry: structuredClone(session._parsedAncestry),
+    _reviewMarkers: structuredClone(sessionReviewMarkers(session)),
+    _canonicalRawDigests: retainForkEvidence
+      ? [...(session._canonicalRawDigests || [])]
+      : [],
+    rawEvents,
+    _logicalEvents: logicalEvents,
+    logicalEvents,
+  };
+}
+
+function recomputeMaterializedForkEvidenceFacts(sessions) {
+  for (const session of sessions) {
+    if (session.forkStorageMode !== 'materialized') continue;
+    resetOwnedRawFacts(session);
+  }
+}
+
+function logicalForkSegment(event, rawSegments) {
+  if (!Array.isArray(event?.rawRefs) || event.rawRefs.length === 0) return '';
+  const segments = new Set();
+  for (const reference of event.rawRefs) {
+    const segment = rawSegments.get(reference.rawId);
+    if (!segment) return '';
+    segments.add(segment);
+  }
+  return segments.size === 1 ? [...segments][0] : '';
+}
+
+function applyCodexRelationshipEvidence(session, evidence, errorFactory = sourceSnapshotChangedError) {
+  for (const field of CODEX_RELATIONSHIP_FIELDS) {
+    session[field] = evidence[field] === null || typeof evidence[field] !== 'object'
+      ? evidence[field]
+      : structuredClone(evidence[field]);
+  }
+  session._forkSegmentsByRawId = new Map();
+  session.logicalEvents = session._logicalEvents || session.logicalEvents;
+  if (evidence.forkStorageMode !== 'materialized') return session;
+
+  const matchedParentRawCount = evidence.forkEvidence?.matchedParentRawCount;
+  const expectedRawEventCount = Number.isSafeInteger(evidence.rawEventCount)
+    ? evidence.rawEventCount
+    : evidence.rawEvents.length;
+  if (!Number.isSafeInteger(matchedParentRawCount)
+      || matchedParentRawCount < 1
+      || session.rawEvents.length !== expectedRawEventCount) {
+    throw errorFactory();
+  }
+  for (let index = 0; index < session.rawEvents.length; index += 1) {
+    const raw = session.rawEvents[index];
+    const segment = index === 0
+      ? 'fork_metadata'
+      : (index <= matchedParentRawCount ? 'inherited_context' : 'continuation');
+    session._forkSegmentsByRawId.set(raw.rawId, segment);
+  }
+  const kept = [];
+  for (const event of session._logicalEvents || []) {
+    const segment = logicalForkSegment(event, session._forkSegmentsByRawId);
+    if (!segment) throw errorFactory();
+    if (segment !== 'inherited_context') kept.push(event);
+  }
+  session.logicalEvents = kept;
+  return session;
+}
+
+function codexRelationshipSnapshot(session) {
+  const snapshot = {};
+  for (const field of CODEX_RELATIONSHIP_FIELDS) {
+    snapshot[field] = session[field] === null || typeof session[field] !== 'object'
+      ? session[field]
+      : structuredClone(session[field]);
+  }
+  return snapshot;
+}
+
+function codexForkSegmentRanges(session) {
+  if (session.forkStorageMode !== 'materialized') return [];
+  const inheritedCount = session.forkEvidence?.matchedParentRawCount;
+  if (!Number.isSafeInteger(inheritedCount) || inheritedCount < 1) throw sourceSnapshotChangedError();
+  return [
+    { segment: 'fork_metadata', start: 0, end: 1 },
+    { segment: 'inherited_context', start: 1, end: inheritedCount + 1 },
+    { segment: 'continuation', start: inheritedCount + 1, end: session.rawEvents.length },
+  ];
+}
+
+function hashCodexMaterializationValue(value) {
+  return crypto.createHash('sha256').update(JSON.stringify(value), 'utf8').digest('base64url');
+}
+
+function buildCodexMaterializationState(session, relationshipEvidence, sessionIndexEntry) {
+  const rawSegments = codexForkSegmentRanges(session);
+  const copiedPrefixCount = session.forkStorageMode === 'materialized'
+    ? session.forkEvidence.matchedParentRawCount
+    : 0;
+  const copiedPrefixDigest = copiedPrefixCount > 0
+    ? crypto.createHash('sha256').update(
+      relationshipEvidence._canonicalRawDigests.slice(1, copiedPrefixCount + 1).join('\n'),
+      'utf8',
+    ).digest('base64url')
+    : '';
+  const payload = {
+    sourceFile: session.sourceFile,
+    rawSegments,
+    copiedPrefixCount,
+    copiedPrefixDigest,
+    relationship: codexRelationshipSnapshot(session),
+  };
+  const dependencyEntry = {
+    role: 'primary_transcript',
+    pathIdentity: session.sourceFile,
+    existence: 'present',
+    kind: 'file',
+    policy: 'accepted_prefix',
+    acceptedBytes: session.bytes,
+    lineCount: session.lineCount,
+    digest: session.sourceFingerprint,
+    directoryEntries: [],
+    evidence: {
+      fileIdentity: structuredClone(session._sourceIdentity),
+    },
+  };
+  const copiedMetadataEntry = {
+    role: 'copied_session_metadata',
+    pathIdentity: `session_index.jsonl#${encodeURIComponent(session.id)}`,
+    existence: 'present',
+    kind: 'file',
+    policy: 'copied_value',
+    acceptedBytes: 0,
+    lineCount: 0,
+    digest: hashCodexMaterializationValue({
+      title: session.title,
+      updatedAt: session.updatedAt,
+    }),
+    directoryEntries: [],
+    evidence: {
+      title: session.title,
+      updatedAt: session.updatedAt,
+      sourceEntry: sessionIndexEntry
+        ? {
+          title: String(sessionIndexEntry.title || ''),
+          updatedAt: String(sessionIndexEntry.updatedAt || ''),
+        }
+        : null,
+    },
+  };
+  const dependencyEntries = [dependencyEntry, copiedMetadataEntry];
+  const dependencySetId = `codex-dependency:${hashCodexMaterializationValue(dependencyEntries)}`;
+  const dependencySet = {
+    schemaVersion: CODEX_MATERIALIZATION_SCHEMA_VERSION,
+    id: dependencySetId,
+    sourceKind: CODEX_SOURCE_KIND,
+    entries: dependencyEntries,
+  };
+  const sourceSnapshotId = `codex-snapshot:${hashCodexMaterializationValue({
+    dependencySet,
+    payload,
+  })}`;
+  return {
+    dependencySet,
+    descriptor: {
+      schemaVersion: CODEX_MATERIALIZATION_SCHEMA_VERSION,
+      dependencySetId,
+      sourceSnapshotId,
+      payload,
+    },
+  };
+}
+
+function projectCodexCarriedSession(session, summary) {
+  const projected = {
+    id: String(session.id || ''),
+    sourceKind: CODEX_SOURCE_KIND,
+    sourceSessionId: String(session.sourceSessionId || session.id || ''),
+    sourceDerivedId: String(session.sourceDerivedId || ''),
+    sourceClientVersion: String(session.sourceClientVersion || ''),
+    projectAssociation: String(session.projectAssociation || ''),
+    title: String(session.title || ''),
+    sourceFile: String(session.sourceFile || ''),
+    agentNickname: String(session.agentNickname || ''),
+    primarySessionMetaKind: String(session.primarySessionMetaKind || ''),
+    derivedRunId: String(session.derivedRunId || ''),
+    startedAt: String(session.startedAt || ''),
+    updatedAt: String(session.updatedAt || ''),
+    bytes: Number(session.bytes || 0),
+    lineCount: Number(session.lineCount || 0),
+    cwdSet: [...(session.cwdSet || [])].map(String),
+    counts: { ...emptySessionCounts(), ...(session.counts || {}) },
+    rawEventCount: session.rawEvents.length,
+    logicalEventCount: session.logicalEvents.length,
+    parentSessionId: String(session.parentSessionId || ''),
+    forkedFromSessionId: String(session.forkedFromSessionId || ''),
+    forkStorageMode: String(session.forkStorageMode || ''),
+    forkedAt: String(session.forkedAt || ''),
+    forkPointUuid: String(session.forkPointUuid || ''),
+    forkContinuationState: String(session.forkContinuationState || ''),
+    supersededBySessionId: String(session.supersededBySessionId || ''),
+    supersededAt: String(session.supersededAt || ''),
+    supersededReason: String(session.supersededReason || ''),
+    parentSessionInferred: Boolean(session.parentSessionInferred),
+    forkEvidence: session.forkEvidence === null ? null : structuredClone(session.forkEvidence),
+    inheritedContext: session.inheritedContext === null ? null : structuredClone(session.inheritedContext),
+    summary: structuredClone(summary),
+  };
+  for (const field of ['derivedRelationship', 'subagentToolUseId', 'spawnDepth']) {
+    if (Object.hasOwn(session, field)) {
+      projected[field] = session[field] === null || typeof session[field] !== 'object'
+        ? session[field]
+        : structuredClone(session[field]);
+    }
+  }
+  return projected;
+}
+
+function createCodexCatalogAccumulator() {
+  const eventCounts = { main: new Map(), protocol: new Map(), raw: new Map() };
+  const eventMatchFields = { main: new Map(), protocol: new Map(), raw: new Map() };
+  const requestCounts = new Map();
+  const addSession = (session) => {
+    const eventCatalog = eventKindCatalog([session]);
+    for (const layer of ['main', 'protocol', 'raw']) {
+      for (const item of eventCatalog[layer]) {
+        eventCounts[layer].set(item.value, (eventCounts[layer].get(item.value) || 0) + item.count);
+        if (item.matchField) eventMatchFields[layer].set(item.value, item.matchField);
+      }
+    }
+    for (const item of codeModeRequestCatalog([session])) {
+      requestCounts.set(item.value, (requestCounts.get(item.value) || 0) + item.count);
+    }
+  };
+  const finish = () => ({
+    eventKinds: {
+      main: eventKindOptionsFromCounts(eventCounts.main, i18n.DEFAULT_LOCALE, eventKindLabel, eventMatchFields.main),
+      protocol: eventKindOptionsFromCounts(eventCounts.protocol, i18n.DEFAULT_LOCALE, eventKindLabel, eventMatchFields.protocol),
+      raw: eventKindOptionsFromCounts(eventCounts.raw, i18n.DEFAULT_LOCALE, rawRecordValueLabel, eventMatchFields.raw),
+    },
+    codeModeRequests: [...requestCounts.entries()]
+      .map(([value, count]) => ({
+        value,
+        label: value,
+        count,
+        evidence: 'declared_source',
+      }))
+      .sort((left, right) => left.label.localeCompare(right.label) || left.value.localeCompare(right.value)),
+  });
+  return Object.freeze({ addSession, finish });
+}
+
+function copiedSessionIndexEntry(entry) {
+  return entry
+    ? {
+      title: String(entry.title || ''),
+      updatedAt: String(entry.updatedAt || ''),
+    }
+    : null;
+}
+
+async function canReuseWholeSourceBackedIndex({
+  previousIndex,
+  candidates,
+  candidateInspections,
+  sessionsRoot,
+  resolvedRepo,
+  resolvedCodex,
+  sessionIndex,
+  signal,
+}) {
+  if (previousIndex?.sourceKind !== CODEX_SOURCE_KIND
+      || normalizeFsPath(previousIndex.repoRoot || '') !== normalizeFsPath(resolvedRepo)
+      || path.resolve(previousIndex.codexHome || '') !== resolvedCodex
+      || !Array.isArray(previousIndex.sessions)
+      || previousIndex.sessions.length !== candidates.length
+      || !(previousIndex.sessionsById instanceof Map)
+      || !(previousIndex.materializationDependencies instanceof Map)
+      || !previousIndex.projectQueryStore
+      || !previousIndex.legacyRawOwners) {
+    return false;
+  }
+  const previousBySourceFile = new Map(
+    previousIndex.sessions.map((session) => [session.sourceFile, session]),
+  );
+  if (previousBySourceFile.size !== candidates.length) return false;
+
+  for (const filePath of candidates) {
+    throwIfAborted(signal);
+    const sourceFile = path.relative(sessionsRoot, filePath);
+    const indexedSession = previousBySourceFile.get(sourceFile);
+    if (!indexedSession || candidateInspections.get(filePath)?.bytes !== indexedSession.bytes) {
+      return false;
+    }
+    const dependencySet = previousIndex.materializationDependencies.get(
+      indexedSession.materializationDescriptor?.dependencySetId,
+    );
+    const transcriptEntry = dependencySet?.entries?.[0];
+    const copiedMetadataEntry = dependencySet?.entries?.[1];
+    if (transcriptEntry?.role !== 'primary_transcript'
+        || transcriptEntry.pathIdentity !== sourceFile
+        || transcriptEntry.acceptedBytes !== indexedSession.bytes
+        || copiedMetadataEntry?.role !== 'copied_session_metadata'
+        || !isDeepStrictEqual(
+          copiedMetadataEntry.evidence?.sourceEntry,
+          copiedSessionIndexEntry(sessionIndex.get(indexedSession.id)),
+        )) {
+      return false;
+    }
+    let before;
+    try {
+      before = await fsp.stat(filePath);
+    } catch {
+      return false;
+    }
+    if (before.size !== transcriptEntry.acceptedBytes
+        || !sameSourceIdentity(sourceFileIdentity(before), transcriptEntry.evidence?.fileIdentity)) {
+      return false;
+    }
+    const fingerprint = await hashFilePrefix(filePath, before.size, signal);
+    const after = await fsp.stat(filePath);
+    if (fingerprint.bytesRead !== before.size
+        || fingerprint.fingerprint !== transcriptEntry.digest
+        || after.size !== before.size
+        || !sameSourceIdentity(sourceFileIdentity(after), sourceFileIdentity(before))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 async function buildIndex({
@@ -4776,6 +5244,636 @@ async function buildIndex({
       candidateBytes,
     },
   };
+}
+
+async function buildSourceBackedIndex({
+  repoRoot,
+  codexHome,
+  onProgress,
+  signal,
+  previousIndex = null,
+  beforeSourceSnapshotVerificationForTests = null,
+}) {
+  const resolvedRepo = resolveFsPath(repoRoot);
+  const resolvedCodex = path.resolve(codexHome);
+  const sessionsRoot = path.join(resolvedCodex, 'sessions');
+  const startedAt = Date.now();
+  throwIfAborted(signal);
+  emitProgress(onProgress, {
+    phase: 'scanning',
+    repoRoot: resolvedRepo,
+    filesTotal: 0,
+    filesScanned: 0,
+    candidateFileCount: 0,
+    skippedFileCount: 0,
+    unknownFileCount: 0,
+    indexedFileCount: 0,
+    indexedBytes: 0,
+    elapsedMs: 0,
+  });
+  const sessionIndex = await readSessionIndex(resolvedCodex);
+  const files = await collectJsonlFiles(sessionsRoot);
+  const candidates = [];
+  const candidateInspections = new Map();
+  let skippedFileCount = 0;
+  let unknownFileCount = 0;
+  let candidateBytes = 0;
+  let filesScanned = 0;
+
+  emitProgress(onProgress, {
+    phase: 'selecting',
+    repoRoot: resolvedRepo,
+    filesTotal: files.length,
+    filesScanned: 0,
+    candidateFileCount: 0,
+    skippedFileCount,
+    unknownFileCount,
+    indexedFileCount: 0,
+    indexedBytes: 0,
+    elapsedMs: Date.now() - startedAt,
+  });
+  for (const filePath of files) {
+    throwIfAborted(signal);
+    const inspected = await inspectSessionFile(filePath, { repoRoot: resolvedRepo, signal });
+    const hasCwd = inspected.cwdSet.size > 0;
+    const matchesRepo = [...inspected.cwdSet].some((cwd) => isPathInsideOrSame(cwd, resolvedRepo));
+    if (matchesRepo) {
+      candidates.push(filePath);
+      candidateInspections.set(filePath, inspected);
+      candidateBytes += inspected.bytes;
+    } else if (!hasCwd) {
+      unknownFileCount += 1;
+    } else {
+      skippedFileCount += 1;
+    }
+    filesScanned += 1;
+    emitProgress(onProgress, {
+      phase: 'selecting',
+      repoRoot: resolvedRepo,
+      filesTotal: files.length,
+      filesScanned,
+      candidateFileCount: candidates.length,
+      skippedFileCount,
+      unknownFileCount,
+      indexedFileCount: 0,
+      indexedBytes: 0,
+      candidateBytes,
+      elapsedMs: Date.now() - startedAt,
+    });
+  }
+
+  if (await canReuseWholeSourceBackedIndex({
+    previousIndex,
+    candidates,
+    candidateInspections,
+    sessionsRoot,
+    resolvedRepo,
+    resolvedCodex,
+    sessionIndex,
+    signal,
+  })) {
+    const logicalEventCount = previousIndex.sessions.reduce(
+      (sum, session) => sum + session.logicalEventCount,
+      0,
+    );
+    const rawEventCount = previousIndex.sessions.reduce(
+      (sum, session) => sum + session.rawEventCount,
+      0,
+    );
+    const indexedBytes = previousIndex.sessions.reduce((sum, session) => sum + session.bytes, 0);
+    emitProgress(onProgress, {
+      phase: 'complete',
+      repoRoot: resolvedRepo,
+      filesTotal: files.length,
+      filesScanned: files.length,
+      candidateFileCount: candidates.length,
+      skippedFileCount,
+      unknownFileCount,
+      indexedFileCount: previousIndex.sessions.length,
+      analyzedFileCount: 0,
+      reusedFileCount: previousIndex.sessions.length,
+      indexedBytes,
+      candidateBytes,
+      sessionCount: previousIndex.sessions.length,
+      eventCount: logicalEventCount,
+      rawEventCount,
+      elapsedMs: Date.now() - startedAt,
+    });
+    return {
+      sourceKind: CODEX_SOURCE_KIND,
+      sourceHome: resolvedCodex,
+      sourceRoot: sessionsRoot,
+      repoRoot: resolvedRepo,
+      codexHome: resolvedCodex,
+      sessionsRoot,
+      generatedAt: new Date().toISOString(),
+      sessions: previousIndex.sessions,
+      sessionsById: previousIndex.sessionsById,
+      projectQueryStore: previousIndex.projectQueryStore,
+      materializationDependencies: previousIndex.materializationDependencies,
+      legacyRawOwners: previousIndex.legacyRawOwners,
+      eventKinds: previousIndex.eventKinds,
+      codeModeRequests: previousIndex.codeModeRequests,
+      totals: {
+        fileCount: files.length,
+        candidateFileCount: candidates.length,
+        indexedFileCount: previousIndex.sessions.length,
+        reusedFileCount: previousIndex.sessions.length,
+        skippedFileCount,
+        unknownFileCount,
+        sessionCount: previousIndex.sessions.length,
+        eventCount: logicalEventCount,
+        rawEventCount,
+        indexedBytes,
+        candidateBytes,
+      },
+    };
+  }
+
+  const canonicalDigestFilePaths = materializedForkDigestFilePaths(candidates, candidateInspections);
+  const relationshipEvidence = [];
+  let analyzedFileCount = 0;
+  let analyzedBytes = 0;
+  emitProgress(onProgress, {
+    phase: 'parsing',
+    repoRoot: resolvedRepo,
+    filesTotal: files.length,
+    filesScanned: files.length,
+    candidateFileCount: candidates.length,
+    skippedFileCount,
+    unknownFileCount,
+    indexedFileCount: 0,
+    reusedFileCount: 0,
+    indexedBytes: 0,
+    candidateBytes,
+    elapsedMs: Date.now() - startedAt,
+  });
+  for (const filePath of candidates) {
+    throwIfAborted(signal);
+    const relFile = path.relative(sessionsRoot, filePath);
+    const session = await parseSessionFile(filePath, relFile, resolvedRepo, signal, {
+      canonicalRawDigests: canonicalDigestFilePaths.has(filePath),
+      beforeSourceSnapshotVerificationForTests,
+    });
+    analyzedFileCount += 1;
+    analyzedBytes += session.bytes;
+    if (session.matchesRepo) {
+      relationshipEvidence.push(buildCodexRelationshipEvidence(
+        session,
+        canonicalDigestFilePaths.has(filePath),
+      ));
+    }
+    emitProgress(onProgress, {
+      phase: 'parsing',
+      repoRoot: resolvedRepo,
+      filesTotal: files.length,
+      filesScanned: files.length,
+      candidateFileCount: candidates.length,
+      skippedFileCount,
+      unknownFileCount,
+      indexedFileCount: 0,
+      analyzedFileCount,
+      reusedFileCount: 0,
+      indexedBytes: analyzedBytes,
+      candidateBytes,
+      sessionCount: relationshipEvidence.length,
+      elapsedMs: Date.now() - startedAt,
+    });
+  }
+
+  throwIfAborted(signal);
+  inferCodexMaterializedForks(relationshipEvidence);
+  recomputeMaterializedForkEvidenceFacts(relationshipEvidence);
+  inferReviewParentSessions(relationshipEvidence);
+  inferEarlierBranches(relationshipEvidence);
+
+  const canReusePrevious = previousIndex?.sourceKind === CODEX_SOURCE_KIND
+    && normalizeFsPath(previousIndex.repoRoot || '') === normalizeFsPath(resolvedRepo)
+    && path.resolve(previousIndex.codexHome || '') === resolvedCodex
+    && Array.isArray(previousIndex.sessions)
+    && previousIndex.sessionsById instanceof Map
+    && previousIndex.materializationDependencies instanceof Map;
+
+  let queryStoreBuilder = createProjectQueryStoreBuilder({
+    presentationForEvent: codexSearch.projectQueryPresentation,
+  });
+  const legacyRawOwnerBuilder = createCodexLegacyRawOwnerIndexBuilder();
+  const catalogAccumulator = createCodexCatalogAccumulator();
+  const materializationDependencies = new Map();
+  const indexedSessions = [];
+  const sessionsById = new Map();
+  let logicalEventCount = 0;
+  let rawEventCount = 0;
+  let indexedFileCount = 0;
+  let indexedBytes = 0;
+  let reusedFileCount = 0;
+
+  for (const evidence of relationshipEvidence) {
+    throwIfAborted(signal);
+    const filePath = path.resolve(sessionsRoot, evidence.sourceFile);
+    if (!isPathInsideOrSame(filePath, sessionsRoot)) throw sourceSnapshotChangedError();
+    let session;
+    try {
+      session = await parseSessionFile(filePath, evidence.sourceFile, resolvedRepo, signal, {
+        acceptedSourceSnapshot: {
+          acceptedBytes: evidence.bytes,
+          digest: evidence.sourceFingerprint,
+          fileIdentity: evidence.sourceIdentity,
+        },
+        beforeSourceSnapshotVerificationForTests,
+      });
+    } catch (error) {
+      if (error?.code === 'INDEXED_SOURCE_STALE') throw sourceSnapshotChangedError();
+      throw error;
+    }
+    if (session.id !== evidence.id
+        || session.sourceFingerprint !== evidence.sourceFingerprint
+        || session.lineCount !== evidence.lineCount) {
+      throw sourceSnapshotChangedError();
+    }
+    applyCodexRelationshipEvidence(session, evidence, sourceSnapshotChangedError);
+    finalizeSession(session, sessionIndex.get(session.id));
+    queryStoreBuilder.addSession(session);
+    legacyRawOwnerBuilder.addSession(session);
+    catalogAccumulator.addSession(session);
+    const summary = codexSearch.projectSessionMetadata(session).summary;
+    const materializationState = buildCodexMaterializationState(
+      session,
+      evidence,
+      sessionIndex.get(session.id),
+    );
+    if (materializationDependencies.has(materializationState.dependencySet.id)) {
+      throw sourceSnapshotChangedError();
+    }
+    const projectedIndexedSession = {
+      ...projectCodexCarriedSession(session, summary),
+      materializationDescriptor: materializationState.descriptor,
+      queryShardId: session.id,
+    };
+    const previousSession = canReusePrevious
+      ? previousIndex.sessionsById.get(projectedIndexedSession.id)
+      : null;
+    const previousDependencySet = previousSession
+      ? previousIndex.materializationDependencies.get(
+        previousSession.materializationDescriptor?.dependencySetId,
+      )
+      : null;
+    const reuseDependencySet = previousDependencySet
+      && isDeepStrictEqual(previousDependencySet, materializationState.dependencySet);
+    const reuseIndexedProjection = previousSession
+      && reuseDependencySet
+      && isDeepStrictEqual(previousSession, projectedIndexedSession);
+    const indexedSession = reuseIndexedProjection
+      ? previousSession
+      : projectedIndexedSession;
+    const dependencySet = reuseDependencySet
+      ? previousDependencySet
+      : materializationState.dependencySet;
+    materializationDependencies.set(dependencySet.id, dependencySet);
+    if (reuseIndexedProjection) reusedFileCount += 1;
+    indexedSessions.push(indexedSession);
+    sessionsById.set(indexedSession.id, indexedSession);
+    logicalEventCount += indexedSession.logicalEventCount;
+    rawEventCount += indexedSession.rawEventCount;
+    indexedFileCount += 1;
+    indexedBytes += indexedSession.bytes;
+    evidence.rawEvents = [];
+    evidence.logicalEvents = [];
+    evidence._logicalEvents = [];
+    evidence._canonicalRawDigests = [];
+    emitProgress(onProgress, {
+      phase: 'parsing',
+      repoRoot: resolvedRepo,
+      filesTotal: files.length,
+      filesScanned: files.length,
+      candidateFileCount: candidates.length,
+      skippedFileCount,
+      unknownFileCount,
+      indexedFileCount,
+      analyzedFileCount,
+      reusedFileCount,
+      indexedBytes,
+      candidateBytes,
+      sessionCount: indexedSessions.length,
+      eventCount: logicalEventCount,
+      rawEventCount,
+      elapsedMs: Date.now() - startedAt,
+    });
+  }
+
+  let projectQueryStore = queryStoreBuilder.finish();
+  queryStoreBuilder = null;
+  let legacyRawOwners = legacyRawOwnerBuilder.finish();
+  let catalogs = catalogAccumulator.finish();
+  if (canReusePrevious
+      && reusedFileCount === indexedSessions.length
+      && previousIndex.sessions.length === indexedSessions.length) {
+    if (previousIndex.projectQueryStore
+        && isDeepStrictEqual(previousIndex.projectQueryStore, projectQueryStore)) {
+      projectQueryStore = previousIndex.projectQueryStore;
+    }
+    if (previousIndex.legacyRawOwners
+        && isDeepStrictEqual(previousIndex.legacyRawOwners, legacyRawOwners)) {
+      legacyRawOwners = previousIndex.legacyRawOwners;
+    }
+    if (isDeepStrictEqual(previousIndex.eventKinds, catalogs.eventKinds)
+        && isDeepStrictEqual(previousIndex.codeModeRequests, catalogs.codeModeRequests)) {
+      catalogs = {
+        eventKinds: previousIndex.eventKinds,
+        codeModeRequests: previousIndex.codeModeRequests,
+      };
+    }
+  }
+  indexedSessions.sort((left, right) => (
+    String(right.updatedAt || right.startedAt).localeCompare(String(left.updatedAt || left.startedAt))
+  ));
+  emitProgress(onProgress, {
+    phase: 'complete',
+    repoRoot: resolvedRepo,
+    filesTotal: files.length,
+    filesScanned: files.length,
+    candidateFileCount: candidates.length,
+    skippedFileCount,
+    unknownFileCount,
+    indexedFileCount,
+    analyzedFileCount,
+    reusedFileCount,
+    indexedBytes,
+    candidateBytes,
+    sessionCount: indexedSessions.length,
+    eventCount: logicalEventCount,
+    rawEventCount,
+    elapsedMs: Date.now() - startedAt,
+  });
+  return {
+    sourceKind: CODEX_SOURCE_KIND,
+    sourceHome: resolvedCodex,
+    sourceRoot: sessionsRoot,
+    repoRoot: resolvedRepo,
+    codexHome: resolvedCodex,
+    sessionsRoot,
+    generatedAt: new Date().toISOString(),
+    sessions: indexedSessions,
+    sessionsById,
+    projectQueryStore,
+    materializationDependencies,
+    legacyRawOwners,
+    eventKinds: catalogs.eventKinds,
+    codeModeRequests: catalogs.codeModeRequests,
+    totals: {
+      fileCount: files.length,
+      candidateFileCount: candidates.length,
+      indexedFileCount,
+      reusedFileCount,
+      skippedFileCount,
+      unknownFileCount,
+      sessionCount: indexedSessions.length,
+      eventCount: logicalEventCount,
+      rawEventCount,
+      indexedBytes,
+      candidateBytes,
+    },
+  };
+}
+
+async function materializeCodexSession({ index, indexedSession, dependencySet, signal }) {
+  throwIfAborted(signal);
+  const descriptor = indexedSession.materializationDescriptor;
+  const entry = dependencySet.entries[0];
+  const target = path.resolve(index.sessionsRoot, descriptor.payload.sourceFile);
+  if (!isPathInsideOrSame(target, index.sessionsRoot)) throw indexedSourceStaleError();
+  const session = await parseSessionFile(
+    target,
+    descriptor.payload.sourceFile,
+    index.repoRoot,
+    signal,
+    {
+      acceptedSourceSnapshot: {
+        acceptedBytes: entry.acceptedBytes,
+        digest: entry.digest,
+        fileIdentity: entry.evidence.fileIdentity,
+      },
+      canonicalRawDigests: indexedSession.forkStorageMode === 'materialized',
+    },
+  );
+  if (session.id !== indexedSession.id || session.lineCount !== indexedSession.lineCount) {
+    throw indexedSourceStaleError();
+  }
+  if (indexedSession.forkStorageMode === 'materialized') {
+    const copiedPrefixDigest = crypto.createHash('sha256').update(
+      session._canonicalRawDigests
+        .slice(1, descriptor.payload.copiedPrefixCount + 1)
+        .join('\n'),
+      'utf8',
+    ).digest('base64url');
+    if (copiedPrefixDigest !== descriptor.payload.copiedPrefixDigest) {
+      throw indexedSourceStaleError();
+    }
+  }
+  applyCodexRelationshipEvidence(session, {
+    ...descriptor.payload.relationship,
+    rawEventCount: indexedSession.rawEventCount,
+  }, indexedSourceStaleError);
+  finalizeSession(session, {
+    title: indexedSession.title,
+    updatedAt: indexedSession.updatedAt,
+  });
+  const summary = codexSearch.projectSessionMetadata(session).summary;
+  const carried = projectCodexCarriedSession(session, summary);
+  const materialized = {
+    ...carried,
+    materializationSnapshotId: descriptor.sourceSnapshotId,
+    rawEvents: session.rawEvents,
+    logicalEvents: session.logicalEvents,
+    analysis: session.analysis,
+    presentationIndexes: session.presentationIndexes,
+    _shell: String(session.shell || ''),
+  };
+  if (indexedSession.forkStorageMode === 'materialized') {
+    materialized._forkSegmentsByRawId = session._forkSegmentsByRawId;
+  }
+  return materialized;
+}
+
+function requireExactCodexKeys(value, keys, owner) {
+  const actual = value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.keys(value).sort()
+    : [];
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length
+      || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`${owner} must contain exactly ${expected.join(', ')}`);
+  }
+}
+
+function validateCodexMaterializationDescriptor({ index, indexedSession, descriptor, dependencySet }) {
+  requireExactCodexKeys(
+    descriptor.payload,
+    ['sourceFile', 'rawSegments', 'copiedPrefixCount', 'copiedPrefixDigest', 'relationship'],
+    'Codex materialization payload',
+  );
+  const sourceFile = descriptor.payload.sourceFile;
+  if (typeof sourceFile !== 'string'
+      || !sourceFile
+      || path.isAbsolute(sourceFile)
+      || !isPathInsideOrSame(path.resolve(index.sessionsRoot, sourceFile), index.sessionsRoot)
+      || sourceFile !== indexedSession.sourceFile) {
+    throw new Error('Codex materialization sourceFile is invalid');
+  }
+  if (!isDeepStrictEqual(
+    descriptor.payload.relationship,
+    codexRelationshipSnapshot(indexedSession),
+  )) {
+    throw new Error('Codex materialization relationship snapshot is invalid');
+  }
+  if (!Array.isArray(dependencySet.entries) || dependencySet.entries.length !== 2) {
+    throw new Error('Codex materialization requires transcript and copied metadata dependencies');
+  }
+  const [entry, copiedMetadataEntry] = dependencySet.entries;
+  if (entry.role !== 'primary_transcript'
+      || entry.pathIdentity !== sourceFile
+      || entry.existence !== 'present'
+      || entry.kind !== 'file'
+      || entry.policy !== 'accepted_prefix'
+      || entry.acceptedBytes !== indexedSession.bytes
+      || entry.lineCount !== indexedSession.lineCount
+      || !/^[A-Za-z0-9_-]{43}$/.test(entry.digest)
+      || entry.directoryEntries.length !== 0) {
+    throw new Error('Codex transcript dependency is invalid');
+  }
+  requireExactCodexKeys(entry.evidence, ['fileIdentity'], 'Codex transcript dependency evidence');
+  requireExactCodexKeys(entry.evidence.fileIdentity, ['device', 'inode'], 'Codex file identity');
+  if (typeof entry.evidence.fileIdentity.device !== 'string'
+      || typeof entry.evidence.fileIdentity.inode !== 'string') {
+    throw new Error('Codex file identity is invalid');
+  }
+  requireExactCodexKeys(
+    copiedMetadataEntry.evidence,
+    ['title', 'updatedAt', 'sourceEntry'],
+    'Codex copied Session metadata evidence',
+  );
+  if (copiedMetadataEntry.evidence.sourceEntry !== null) {
+    requireExactCodexKeys(
+      copiedMetadataEntry.evidence.sourceEntry,
+      ['title', 'updatedAt'],
+      'Codex copied source metadata entry',
+    );
+    if (typeof copiedMetadataEntry.evidence.sourceEntry.title !== 'string'
+        || typeof copiedMetadataEntry.evidence.sourceEntry.updatedAt !== 'string') {
+      throw new Error('Codex copied source metadata entry is invalid');
+    }
+  }
+  if (copiedMetadataEntry.role !== 'copied_session_metadata'
+      || copiedMetadataEntry.pathIdentity !== `session_index.jsonl#${encodeURIComponent(indexedSession.id)}`
+      || copiedMetadataEntry.existence !== 'present'
+      || copiedMetadataEntry.kind !== 'file'
+      || copiedMetadataEntry.policy !== 'copied_value'
+      || copiedMetadataEntry.acceptedBytes !== 0
+      || copiedMetadataEntry.lineCount !== 0
+      || copiedMetadataEntry.directoryEntries.length !== 0
+      || copiedMetadataEntry.evidence.title !== indexedSession.title
+      || copiedMetadataEntry.evidence.updatedAt !== indexedSession.updatedAt
+      || copiedMetadataEntry.digest !== hashCodexMaterializationValue({
+        title: indexedSession.title,
+        updatedAt: indexedSession.updatedAt,
+      })) {
+    throw new Error('Codex copied Session metadata dependency is invalid');
+  }
+  const expectedDependencySetId = `codex-dependency:${hashCodexMaterializationValue(
+    dependencySet.entries,
+  )}`;
+  if (dependencySet.id !== expectedDependencySetId
+      || descriptor.dependencySetId !== expectedDependencySetId) {
+    throw new Error('Codex dependency identity is invalid');
+  }
+
+  const expectedCopiedCount = indexedSession.forkStorageMode === 'materialized'
+    ? indexedSession.forkEvidence?.matchedParentRawCount
+    : 0;
+  if (descriptor.payload.copiedPrefixCount !== expectedCopiedCount) {
+    throw new Error('Codex copied-prefix count is invalid');
+  }
+  const expectedRanges = indexedSession.forkStorageMode === 'materialized'
+    ? [
+      { segment: 'fork_metadata', start: 0, end: 1 },
+      { segment: 'inherited_context', start: 1, end: expectedCopiedCount + 1 },
+      { segment: 'continuation', start: expectedCopiedCount + 1, end: indexedSession.rawEventCount },
+    ]
+    : [];
+  if (!isDeepStrictEqual(descriptor.payload.rawSegments, expectedRanges)
+      || (expectedCopiedCount > 0
+        ? !/^[A-Za-z0-9_-]{43}$/.test(descriptor.payload.copiedPrefixDigest)
+        : descriptor.payload.copiedPrefixDigest !== '')) {
+    throw new Error('Codex fork segment projection is invalid');
+  }
+  const expectedSnapshotId = `codex-snapshot:${hashCodexMaterializationValue({
+    dependencySet,
+    payload: descriptor.payload,
+  })}`;
+  if (descriptor.sourceSnapshotId !== expectedSnapshotId) {
+    throw new Error('Codex materialization snapshot identity is invalid');
+  }
+}
+
+function validateCodexLegacyRawOwnerIndex({ index, legacyRawOwners }) {
+  requireExactCodexKeys(legacyRawOwners.payload, ['sessionIds', 'files'], 'Codex legacy Raw owner payload');
+  const { sessionIds, files } = legacyRawOwners.payload;
+  if (!Array.isArray(sessionIds) || !files || typeof files !== 'object' || Array.isArray(files)) {
+    throw new Error('Codex legacy Raw owner payload is invalid');
+  }
+  const uniqueSessionIds = new Set(sessionIds);
+  if (uniqueSessionIds.size !== sessionIds.length
+      || sessionIds.some((sessionId) => typeof sessionId !== 'string' || !index.sessionsById.has(sessionId))) {
+    throw new Error('Codex legacy Raw owner Session dictionary is invalid');
+  }
+  let entryCount = 0;
+  for (const [file, lines] of Object.entries(files)) {
+    if (!file || normalizeFsPath(file) !== file || !lines || typeof lines !== 'object' || Array.isArray(lines)) {
+      throw new Error('Codex legacy Raw owner file dictionary is invalid');
+    }
+    for (const [lineKey, encoded] of Object.entries(lines)) {
+      const line = Number(lineKey);
+      if (!Number.isSafeInteger(line) || line < 1 || String(line) !== lineKey || typeof encoded !== 'string') {
+        throw new Error('Codex legacy Raw owner line entry is invalid');
+      }
+      if (!encoded) continue;
+      const separator = encoded.indexOf(':');
+      const sessionIndex = Number(encoded.slice(0, separator));
+      const sessionId = sessionIds[sessionIndex];
+      const rawId = encoded.slice(separator + 1);
+      if (separator < 1
+          || !Number.isSafeInteger(sessionIndex)
+          || sessionIndex < 0
+          || !sessionId
+          || rawId !== `${sessionId}:raw:${line}`) {
+        throw new Error('Codex legacy Raw owner encoding is invalid');
+      }
+      entryCount += 1;
+    }
+  }
+  if (entryCount !== legacyRawOwners.entryCount) {
+    throw new Error('Codex legacy Raw owner entry count is invalid');
+  }
+}
+
+function validateCodexMaterializedPrivateState({ indexedSession, session }) {
+  if (typeof session._shell !== 'string') throw new Error('Codex Materialized Session shell must be a string');
+  const rawSegments = session._forkSegmentsByRawId;
+  if (indexedSession.forkStorageMode !== 'materialized') {
+    if (rawSegments !== undefined) throw new Error('Ordinary Codex Session must not retain fork segments');
+    return;
+  }
+  if (!(rawSegments instanceof Map) || rawSegments.size !== session.rawEvents.length) {
+    throw new Error('Materialized Codex fork segments must cover every Raw Record');
+  }
+  const expectedRanges = indexedSession.materializationDescriptor.payload.rawSegments;
+  for (let index = 0; index < session.rawEvents.length; index += 1) {
+    const expected = expectedRanges.find((range) => index >= range.start && index < range.end)?.segment || '';
+    if (!CODEX_FORK_SEGMENTS.includes(expected)
+        || rawSegments.get(session.rawEvents[index].rawId) !== expected) {
+      throw new Error('Materialized Codex fork segment ownership is invalid');
+    }
+  }
 }
 
 const codexSearch = createCodexSearch({
@@ -5131,6 +6229,7 @@ module.exports = {
   buildCodexLegacyRawOwnerIndex,
   buildHydratedEventDetail,
   buildIndex,
+  buildSourceBackedIndex,
   discoverProjects,
   decodeImagePreviewDataUrl,
   discoverConfiguredProjects,
@@ -5150,5 +6249,10 @@ module.exports = {
   isPathInsideOrSame,
   matchTerms,
   normalizeCodeModeRequest,
+  materializeCodexSession,
+  materializedPrivateFields: CODEX_MATERIALIZATION_PRIVATE_FIELDS,
   query: codexSearch,
+  validateCodexLegacyRawOwnerIndex,
+  validateCodexMaterializationDescriptor,
+  validateCodexMaterializedPrivateState,
 };

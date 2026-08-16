@@ -197,7 +197,7 @@ function makeLifecycleAdapter({
   });
 }
 
-test('Codex and Claude canonical synthetic indexes satisfy the same shared contract', () => {
+test('Codex and Claude complete synthetic Sessions satisfy the same shared contract', () => {
   assert.deepEqual(CANONICAL_CONTRACT.index, ['sourceKind', 'repoRoot', 'sessions', 'sessionsById']);
   assert.deepEqual(CANONICAL_CONTRACT.session.slice(0, 4), ['id', 'sourceKind', 'rawEvents', 'logicalEvents']);
   assert.deepEqual(CANONICAL_CONTRACT.logicalEvent, [
@@ -209,7 +209,11 @@ test('Codex and Claude canonical synthetic indexes satisfy the same shared contr
     ['claude-code', { type: 'jsonl_line', file: 'claude.jsonl', line: 1 }],
   ]) {
     const index = makeCanonicalIndex(sourceKind, { rawLocator: locator, eventLocator: locator });
-    assert.equal(validateIndexOwnership(index), sourceKind);
+    const residentAdapter = makeLifecycleAdapter({
+      kind: sourceKind,
+      materializeSession: async ({ indexedSession }) => indexedSession,
+    });
+    assert.equal(validateIndexOwnership(index, { adapter: residentAdapter }), sourceKind);
     const session = index.sessions[0];
     assert.equal(validateCanonicalSessionShape(session, sourceKind), sourceKind);
     assert.equal(validateCanonicalRawEventShape(session.rawEvents[0], sourceKind), sourceKind);
@@ -217,31 +221,36 @@ test('Codex and Claude canonical synthetic indexes satisfy the same shared contr
   }
 });
 
-test('production adapters expose resident compatibility materialization through one lifecycle seam', async () => {
-  for (const sourceKind of ['codex', 'claude-code']) {
-    const adapter = getSourceAdapter(sourceKind);
-    assert.equal(adapter.sessionLifecycle, SESSION_LIFECYCLE.RESIDENT_COMPLETE);
-    const index = makeCanonicalIndex(sourceKind);
-    const indexedSession = index.sessions[0];
-    const before = {
-      rawEvents: indexedSession.rawEvents,
-      logicalEvents: indexedSession.logicalEvents,
-      counts: { ...indexedSession.counts },
-    };
-    const materializedSession = await materializeSessionForIndex(index, indexedSession, {
-      indexRevision: 7,
-    });
+test('production adapters expose strict Codex and resident Claude through one lifecycle seam', async () => {
+  assert.equal(
+    getSourceAdapter('codex').sessionLifecycle,
+    SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+  );
+  assert.equal(
+    getSourceAdapter('claude-code').sessionLifecycle,
+    SESSION_LIFECYCLE.RESIDENT_COMPLETE,
+  );
 
-    assert.equal(materializedSession, indexedSession);
-    assert.equal(index.sessionsById.get(indexedSession.id), indexedSession);
-    assert.equal(indexedSession.rawEvents, before.rawEvents);
-    assert.equal(indexedSession.logicalEvents, before.logicalEvents);
-    assert.deepEqual(indexedSession.counts, before.counts);
-  }
+  const index = makeCanonicalIndex('claude-code');
+  const indexedSession = index.sessions[0];
+  const before = {
+    rawEvents: indexedSession.rawEvents,
+    logicalEvents: indexedSession.logicalEvents,
+    counts: { ...indexedSession.counts },
+  };
+  const materializedSession = await materializeSessionForIndex(index, indexedSession, {
+    indexRevision: 7,
+  });
+
+  assert.equal(materializedSession, indexedSession);
+  assert.equal(index.sessionsById.get(indexedSession.id), indexedSession);
+  assert.equal(indexedSession.rawEvents, before.rawEvents);
+  assert.equal(indexedSession.logicalEvents, before.logicalEvents);
+  assert.deepEqual(indexedSession.counts, before.counts);
 });
 
 test('trusted resident materialization does not rescan unrelated Index collections', async () => {
-  const index = makeCanonicalIndex('codex');
+  const index = makeCanonicalIndex('claude-code');
   const indexedSession = index.sessions[0];
   Object.defineProperty(index, 'sessions', {
     configurable: true,
@@ -255,7 +264,7 @@ test('trusted resident materialization does not rescan unrelated Index collectio
 test('compatibility materialization rejects cancellation, foreign ownership, and broken Raw references', async () => {
   const controller = new AbortController();
   controller.abort();
-  const cancelledIndex = makeCanonicalIndex('codex');
+  const cancelledIndex = makeCanonicalIndex('claude-code');
   await assert.rejects(
     materializeSessionForIndex(cancelledIndex, cancelledIndex.sessions[0], {
       signal: controller.signal,
@@ -263,8 +272,8 @@ test('compatibility materialization rejects cancellation, foreign ownership, and
     { name: 'AbortError' },
   );
 
-  const ownerIndex = makeCanonicalIndex('codex');
-  const foreignSession = makeCanonicalIndex('codex').sessions[0];
+  const ownerIndex = makeCanonicalIndex('claude-code');
+  const foreignSession = makeCanonicalIndex('claude-code').sessions[0];
   await assert.rejects(
     materializeSessionForIndex(ownerIndex, foreignSession),
     { code: 'CANONICAL_CONTRACT_VIOLATION' },
@@ -989,7 +998,7 @@ test('canonical logical and raw events reject surrounding sourceKind whitespace'
 });
 
 test('accessor-backed sessions are not canonical-valid without explicit opt-in', () => {
-  const index = makeCanonicalIndex('codex');
+  const index = makeCanonicalIndex('claude-code');
   Object.defineProperty(index, 'sessions', {
     configurable: true,
     get() {
@@ -1003,7 +1012,7 @@ test('accessor-backed sessions are not canonical-valid without explicit opt-in',
   );
   assert.equal(
     validateIndexOwnership(index, { allowUninspectableSessions: true }),
-    'codex',
+    'claude-code',
   );
 });
 

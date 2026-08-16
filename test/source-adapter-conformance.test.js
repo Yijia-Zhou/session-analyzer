@@ -85,8 +85,6 @@ async function assertAdapterIndexConforms(index, expectedPurposes) {
   assert.ok(index.projectQueryStore, `${index.sourceKind} must install the shared project query store`);
   for (const indexedSession of index.sessions) {
     assert.equal(index.sessionsById.get(indexedSession.id), indexedSession);
-    assert.equal(indexedSession.rawEventCount, indexedSession.rawEvents.length);
-    assert.equal(indexedSession.logicalEventCount, indexedSession.logicalEvents.length);
     assert.deepEqual(Object.keys(indexedSession.summary).sort(), [
       'failedCommandCount',
       'patchedFiles',
@@ -101,6 +99,8 @@ async function assertAdapterIndexConforms(index, expectedPurposes) {
 
   for (const indexedSession of index.sessions) {
     const session = await materializeSessionForIndex(index, indexedSession);
+    assert.equal(indexedSession.rawEventCount, session.rawEvents.length);
+    assert.equal(indexedSession.logicalEventCount, session.logicalEvents.length);
     for (const event of session.logicalEvents) {
       const detail = await buildEventDetailForSession(index, session, event.id, event.layer);
       assert.ok(detail, `${index.sourceKind} must hydrate ${event.id}`);

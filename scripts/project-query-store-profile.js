@@ -9,6 +9,7 @@ const {
   queryForIndex,
   validateIndexOwnership,
 } = require('../src/source-adapters');
+const { SESSION_LIFECYCLE } = require('../src/source-adapter-contract');
 
 const PROFILE_QUERY = '__session_analyzer_absent_project_query_profile_phrase__';
 const PROFILE_LAYERS = Object.freeze(['main', 'protocol', 'raw']);
@@ -91,6 +92,36 @@ function aggregateRows(store) {
   return rowCounts;
 }
 
+function jsonBytes(value) {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+function accountedIndexBytes(index) {
+  const sessionMetadataBytes = index.sessions.reduce((sum, session) => sum + jsonBytes(session), 0);
+  const dependencyBytes = index.materializationDependencies instanceof Map
+    ? [...index.materializationDependencies.values()]
+      .reduce((sum, dependencySet) => sum + jsonBytes(dependencySet), 0)
+    : 0;
+  const catalogBytes = jsonBytes({
+    eventKinds: index.eventKinds,
+    codeModeRequests: index.codeModeRequests,
+  });
+  const legacyRawOwnerBytes = Number(index.legacyRawOwners?.accountedBytes || 0);
+  const queryStoreBytes = Number(index.projectQueryStore?.accountedBytes || 0);
+  return {
+    sessionMetadataBytes,
+    dependencyBytes,
+    catalogBytes,
+    legacyRawOwnerBytes,
+    queryStoreBytes,
+    totalBytes: sessionMetadataBytes
+      + dependencyBytes
+      + catalogBytes
+      + legacyRawOwnerBytes
+      + queryStoreBytes,
+  };
+}
+
 function publicOptions(options) {
   return {
     source: options.source,
@@ -113,18 +144,24 @@ function runtimeCommand(execArgv = process.execArgv) {
 
 async function profile(options) {
   const beforeBuild = memorySample();
+  let buildPeak = beforeBuild;
   const buildStarted = performance.now();
   const index = await options.adapter.buildIndex({
     repoRoot: options.repo,
     sourceKind: options.source,
     sourceHome: options.sourceHome || options.adapter.defaultHome(),
+    onProgress() {
+      buildPeak = memoryMaximum(buildPeak, memorySample());
+    },
   });
+  buildPeak = memoryMaximum(buildPeak, memorySample());
   const buildMs = performance.now() - buildStarted;
   validateIndexOwnership(index);
   if (global.gc) global.gc();
   const afterBuild = memorySample();
   const query = queryForIndex(index);
-  const oracleIndex = { ...index, projectQueryStore: undefined };
+  const hasResidentOracle = options.adapter.sessionLifecycle === SESSION_LIFECYCLE.RESIDENT_COMPLETE;
+  const oracleIndex = hasResidentOracle ? { ...index, projectQueryStore: undefined } : null;
   const scans = {};
 
   for (const layer of PROFILE_LAYERS) {
@@ -134,9 +171,12 @@ async function profile(options) {
     let chunks = 0;
     for (let repeat = 0; repeat < options.repeats; repeat += 1) {
       const filters = { q: PROFILE_QUERY, layer, locale: 'en' };
-      const oracleStarted = performance.now();
-      const expected = await query.filterSessions(oracleIndex, filters);
-      oracleTimings.push(performance.now() - oracleStarted);
+      let expected = null;
+      if (oracleIndex) {
+        const oracleStarted = performance.now();
+        expected = await query.filterSessions(oracleIndex, filters);
+        oracleTimings.push(performance.now() - oracleStarted);
+      }
       const packedStarted = performance.now();
       const actual = await query.filterSessions(index, filters, {
         onChunk() {
@@ -145,14 +185,14 @@ async function profile(options) {
         },
       });
       packedTimings.push(performance.now() - packedStarted);
-      if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      if (oracleIndex && JSON.stringify(actual) !== JSON.stringify(expected)) {
         const error = new Error(`Packed ${layer} query result diverged from the complete-event oracle`);
         error.code = 'PROJECT_QUERY_PROFILE_PARITY_FAILURE';
         throw error;
       }
     }
     scans[layer] = {
-      oracle: timingStats(oracleTimings),
+      oracle: oracleTimings.length > 0 ? timingStats(oracleTimings) : null,
       packed: timingStats(packedTimings),
       chunks,
       transientDecodePeak: decodedPeak,
@@ -175,10 +215,13 @@ async function profile(options) {
       sessionCount: index.sessions.length,
       rowCounts: aggregateRows(index.projectQueryStore),
       queryStoreAccountedBytes: index.projectQueryStore.accountedBytes,
+      indexAccountedBytes: accountedIndexBytes(index),
     },
     build: {
       buildMs,
       before: beforeBuild,
+      peak: buildPeak,
+      peakOverBefore: memoryDelta(buildPeak, beforeBuild),
       committedAfterGc: afterBuild,
       committedDelta: memoryDelta(afterBuild, beforeBuild),
     },

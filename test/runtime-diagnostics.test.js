@@ -235,7 +235,11 @@ test('server diagnostics record successful, failed, and cancelled indexing outco
 
   for (const scenario of cases) {
     const logDir = path.join(root, scenario.name);
-    const server = createServer(null, 0, { logDir, buildIndex: scenario.buildIndex });
+    const server = createServer(null, 0, {
+      source: 'claude-code',
+      logDir,
+      buildIndex: scenario.buildIndex,
+    });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
     try {
@@ -273,9 +277,10 @@ test('server emits one large-history warning without blocking successful indexin
   const root = await makeTempDir(t);
   const messages = [];
   const server = createServer(null, 0, {
+    source: 'claude-code',
     logDir: root,
     warn: (message) => messages.push(message),
-    buildIndex: async ({ repoRoot, onProgress }) => {
+    buildIndex: async ({ repoRoot, sourceKind, onProgress }) => {
       const progress = {
         phase: 'parsing',
         candidateBytes: LARGE_TRANSCRIPT_HISTORY_WARNING_BYTES + 1,
@@ -288,7 +293,7 @@ test('server emits one large-history warning without blocking successful indexin
       onProgress({ ...progress, sessionCount: 1, rawEventCount: 2, eventCount: 1 });
       return {
         repoRoot,
-        sourceKind: 'codex',
+        sourceKind,
         sessions: [],
         sessionsById: new Map(),
       };

@@ -7,7 +7,11 @@ const os = require('node:os');
 const path = require('node:path');
 const { chromium } = require('playwright');
 const { analyzerSessionId, buildClaudeIndex } = require('../src/claude');
-const { buildIndex } = require('../src/codex');
+const {
+  buildIndex: buildResidentCodexIndex,
+  buildSourceBackedIndex: buildIndex,
+} = require('../src/codex');
+const { materializeSessionForIndex } = require('../src/source-adapters');
 const { createServer } = require('../server');
 const { createTimelineProfileFixture } = require('../scripts/timeline-profile-fixture');
 
@@ -17,6 +21,12 @@ const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 
 async function buildFixtureIndex() {
   return buildIndex({ repoRoot, codexHome: fixtureCodexHome });
+}
+
+async function materializeIndexedSession(index, sessionId = index.sessions[0]?.id) {
+  const indexedSession = index.sessionsById.get(sessionId);
+  assert.ok(indexedSession, `expected indexed session ${sessionId}`);
+  return materializeSessionForIndex(index, indexedSession);
 }
 
 async function startServer(t, index, options = {}) {
@@ -1178,12 +1188,19 @@ test('browser groups derived sessions under their parent and collapses them by d
 });
 
 test('browser uses singular child session labels for one derived child', async (t) => {
-  const index = await buildFixtureIndex();
+  const residentIndex = await buildResidentCodexIndex({ repoRoot, codexHome: fixtureCodexHome });
   const childSessionId = '33333333-3333-3333-3333-333333333333';
-  index.sessions = index.sessions.filter(
+  const retainedSessions = residentIndex.sessions.filter(
     (session) => session.parentSessionId !== primaryFixtureSessionId || session.id === childSessionId,
   );
-  index.sessionsById = new Map(index.sessions.map((session) => [session.id, session]));
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-single-child-browser-'));
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  const sessionsRoot = path.join(codexHome, 'sessions');
+  await fsp.mkdir(sessionsRoot, { recursive: true });
+  await Promise.all(retainedSessions.map((session) => (
+    fsp.copyFile(session.sourceAbsFile, path.join(sessionsRoot, path.basename(session.sourceAbsFile)))
+  )));
+  const index = await buildIndex({ repoRoot, codexHome });
   const { page } = await openApp(t, index, { locale: 'en', skipProjectReindex: true });
 
   const toggle = page.locator(`[data-session-children-toggle="${primaryFixtureSessionId}"]`);
@@ -1224,7 +1241,7 @@ test('browser locale switch reloads cached expanded event detail', async (t) => 
 test('browser single-tool Code Mode keeps native request and operation output primary while moving trace to inspector', async (t) => {
   const fixture = await makeCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = Array.from(index.sessionsById.values())[0];
+  const session = await materializeIndexedSession(index);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   assert.ok(operation, 'fixture should create one Code Mode operation');
   const { page } = await openApp(t, index, { locale: 'en' });
@@ -1290,7 +1307,7 @@ test('browser single-tool Code Mode keeps native request and operation output pr
 test('browser nested Code Mode context reveals a distinct parent row without changing search owners or fold overrides', async (t) => {
   const fixture = await makeContextCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = index.sessionsById.get(fixture.sessionId);
+  const session = await materializeIndexedSession(index, fixture.sessionId);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   const nested = session.logicalEvents.find((candidate) => candidate.toolName === 'nested-context-token');
   assert.ok(operation && nested);
@@ -1351,7 +1368,7 @@ test('browser nested Code Mode context reveals a distinct parent row without cha
 test('browser nested Code Mode context late responses are invalidated by same-source detail, fold, and profile transitions', async (t) => {
   const fixture = await makeContextCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = index.sessionsById.get(fixture.sessionId);
+  const session = await materializeIndexedSession(index, fixture.sessionId);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   const nested = session.logicalEvents.find((candidate) => candidate.toolName === 'nested-context-token');
   assert.ok(operation && nested);
@@ -1449,7 +1466,7 @@ test('browser nested Code Mode context late responses are invalidated by same-so
 test('browser Code Mode raw fallback keeps a shared origin tag instead of the outer exec tool tag', async (t) => {
   const fixture = await makeRawCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = Array.from(index.sessionsById.values())[0];
+  const session = await materializeIndexedSession(index);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   assert.ok(operation);
 
@@ -1479,7 +1496,7 @@ test('browser Code Mode raw fallback keeps a shared origin tag instead of the ou
 test('browser Code Mode summary presents a readable source excerpt instead of raw code', async (t) => {
   const fixture = await makeRawCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = Array.from(index.sessionsById.values())[0];
+  const session = await materializeIndexedSession(index);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   assert.ok(operation);
 
@@ -1561,7 +1578,7 @@ test('browser Code Mode summary presents a readable source excerpt instead of ra
 test('browser Code Mode summary keeps one logical source line to one visual row', async (t) => {
   const fixture = await makeSingleLineRawCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = Array.from(index.sessionsById.values())[0];
+  const session = await materializeIndexedSession(index);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   assert.ok(operation);
 
@@ -1611,7 +1628,7 @@ test('browser Code Mode summary keeps one logical source line to one visual row'
 test('browser Code Mode adaptively unwraps one declared tool and labels multiple declared tools without changing counts', async (t) => {
   const fixture = await makeAdaptiveCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = Array.from(index.sessionsById.values())[0];
+  const session = await materializeIndexedSession(index);
   const operations = session.logicalEvents.filter((candidate) => candidate.kind === 'code_mode_operation');
   const single = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-browser-single');
   const multi = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-browser-multi');
@@ -1712,7 +1729,7 @@ test('browser Code Mode adaptively unwraps one declared tool and labels multiple
 test('browser search-hit snippets stay navigable ahead of every folded Code Mode preview', async (t) => {
   const fixture = await makeCodeModeSearchPreviewCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = index.sessionsById.get(fixture.sessionId);
+  const session = await materializeIndexedSession(index, fixture.sessionId);
   const operations = session.logicalEvents.filter((candidate) => candidate.kind === 'code_mode_operation');
   const single = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-search-single');
   const multi = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-search-multi');
@@ -1765,7 +1782,7 @@ test('browser search-hit snippets stay navigable ahead of every folded Code Mode
 test('browser Code Mode presents web requests structurally, renders safe Markdown, and compacts associated lifecycle evidence', async (t) => {
   const fixture = await makeWebCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = Array.from(index.sessionsById.values())[0];
+  const session = await materializeIndexedSession(index);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   const webLifecycle = session.logicalEvents.find((candidate) => candidate.kind === 'web_search');
   assert.ok(operation && webLifecycle);

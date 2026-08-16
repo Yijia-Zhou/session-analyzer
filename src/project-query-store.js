@@ -264,15 +264,18 @@ function storeAccountedBytes(store) {
   return total;
 }
 
-function buildProjectQueryStore(sessions, options = {}) {
-  if (!Array.isArray(sessions)) throw contractError('sessions must be an array');
+function createProjectQueryStoreBuilder(options = {}) {
   const presentationForEvent = typeof options.presentationForEvent === 'function'
     ? options.presentationForEvent
     : () => null;
   const interner = createStringInterner();
   const shardsBySessionId = new Map();
+  const sessionIds = [];
   let totalRows = 0;
-  for (const session of sessions) {
+  let finished = false;
+
+  const addSession = (session) => {
+    if (finished) throw contractError('builder is already finished');
     const sessionId = asString(session?.id);
     if (!sessionId || shardsBySessionId.has(sessionId)) {
       throw contractError(`invalid or duplicate session ID ${JSON.stringify(sessionId)}`);
@@ -288,17 +291,32 @@ function buildProjectQueryStore(sessions, options = {}) {
       shards[layer] = buildLayerShard(rows, layer, interner);
     }
     shardsBySessionId.set(sessionId, shards);
-  }
-  const store = {
-    schemaVersion: PROJECT_QUERY_STORE_SCHEMA_VERSION,
-    shardsBySessionId,
-    dictionaries: interner.finish(),
-    accountedBytes: 0,
+    sessionIds.push(sessionId);
   };
-  store.accountedBytes = storeAccountedBytes(store);
-  if (store.accountedBytes > PROJECT_QUERY_STORE_MAX_BYTES) throw contractError('encoded bytes exceed 8 GiB');
-  validateProjectQueryStore(store, sessions.map((session) => session.id));
-  return store;
+
+  const finish = () => {
+    if (finished) throw contractError('builder is already finished');
+    finished = true;
+    const store = {
+      schemaVersion: PROJECT_QUERY_STORE_SCHEMA_VERSION,
+      shardsBySessionId,
+      dictionaries: interner.finish(),
+      accountedBytes: 0,
+    };
+    store.accountedBytes = storeAccountedBytes(store);
+    if (store.accountedBytes > PROJECT_QUERY_STORE_MAX_BYTES) throw contractError('encoded bytes exceed 8 GiB');
+    validateProjectQueryStore(store, sessionIds);
+    return store;
+  };
+
+  return Object.freeze({ addSession, finish });
+}
+
+function buildProjectQueryStore(sessions, options = {}) {
+  if (!Array.isArray(sessions)) throw contractError('sessions must be an array');
+  const builder = createProjectQueryStoreBuilder(options);
+  for (const session of sessions) builder.addSession(session);
+  return builder.finish();
 }
 
 function requireUintColumn(value, length, owner) {
@@ -594,6 +612,7 @@ module.exports = {
   PROJECT_QUERY_LAYERS,
   PROJECT_QUERY_STORE_SCHEMA_VERSION,
   buildProjectQueryStore,
+  createProjectQueryStoreBuilder,
   dictionaryString,
   requireValidatedProjectQueryStore,
   scanProjectQueryShard,

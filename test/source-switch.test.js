@@ -8,6 +8,7 @@ const path = require('node:path');
 const { createServer, discoverProjectsForSource, resolveSourceMutation } = require('../server');
 const {
   adapterForSession,
+  getSourceAdapter,
   queryForIndex,
   validateIndexOwnership,
 } = require('../src/source-adapters');
@@ -481,13 +482,12 @@ test('runtime initialization keeps canonical source configs authoritative and re
   assert.equal(state.json.details.sourceConfigs.codex.home, path.resolve(canonicalHome));
   assert.equal(state.json.details.codexHome, path.resolve(canonicalHome));
 
-  const initialIndexServer = createServer({
-    repoRoot: 'G:\\vibe\\initial-canonical-project',
-    sourceKind: 'codex',
-    sourceConfigs: { codex: { home: canonicalHome } },
-    sessions: [],
-    sessionsById: new Map(),
-  }, 0, {
+  const initialIndex = await getSourceAdapter('codex').buildIndex({
+    repoRoot: codexFixtureRepo,
+    sourceHome: codexFixtureHome,
+  });
+  initialIndex.sourceConfigs = { codex: { home: canonicalHome } };
+  const initialIndexServer = createServer(initialIndex, 0, {
     codexHome: legacyHome,
     sourceHome: conflictingActiveHome,
   });

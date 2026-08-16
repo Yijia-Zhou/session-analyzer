@@ -6,10 +6,12 @@ const { createServer } = require('../server');
 const { buildProjectQueryStore } = require('../src/project-query-store');
 const { getSourceAdapter } = require('../src/source-adapters');
 
+const SOURCE_KIND = 'claude-code';
+
 function session(id, eventCount = 0) {
   const logicalEvents = Array.from({ length: eventCount }, (_, index) => ({
     id: `${id}:event:${index}`,
-    sourceKind: 'codex',
+    sourceKind: SOURCE_KIND,
     layer: 'main',
     kind: 'message',
     subtype: 'assistant_message',
@@ -25,7 +27,7 @@ function session(id, eventCount = 0) {
   }));
   return {
     id,
-    sourceKind: 'codex',
+    sourceKind: SOURCE_KIND,
     title: id,
     sourceFile: `${id}.jsonl`,
     bytes: 1,
@@ -48,7 +50,7 @@ function session(id, eventCount = 0) {
 function index(id, eventCount = 0, withStore = false) {
   const item = session(id, eventCount);
   const value = {
-    sourceKind: 'codex',
+    sourceKind: SOURCE_KIND,
     repoRoot: `G:\\repo\\${id}`,
     generatedAt: '2026-08-16T00:00:00.000Z',
     sessions: [item],
@@ -57,7 +59,7 @@ function index(id, eventCount = 0, withStore = false) {
     totals: { sessionCount: 1, eventCount, rawEventCount: 0 },
   };
   if (withStore) {
-    const query = getSourceAdapter('codex').query;
+    const query = getSourceAdapter(SOURCE_KIND).query;
     const projected = { ...item, ...query.projectSessionMetadata(item) };
     value.sessions = [projected];
     value.sessionsById = new Map([[projected.id, projected]]);
