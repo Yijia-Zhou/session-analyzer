@@ -22,7 +22,10 @@ const {
   truncate,
 } = require('./claude-source');
 const { createClaudeLogicalBuilder } = require('./claude-logical');
-const { inferClaudeForkRelationships } = require('./claude-forks');
+const {
+  compactClaudeForkRelationshipFacts,
+  inferClaudeForkRelationships,
+} = require('./claude-forks');
 const { createProjectQueryStoreBuilder } = require('./project-query-store');
 const { createSessionQuery } = require('./session-query');
 const { validateCanonicalLegacyRawOwnerIndex } = require('./canonical-contract');
@@ -1657,29 +1660,7 @@ function compactClaudeRelationshipSession(session) {
     forkContinuationState: session.forkContinuationState,
     forkEvidence: cloneClaudeProjectionValue(session.forkEvidence),
     inheritedContext: cloneClaudeProjectionValue(session.inheritedContext),
-    _relationshipRawFacts: session.rawEvents.map((raw) => ({
-      rawId: String(raw.rawId || ''),
-      uuid: String(raw.uuid || ''),
-      parentUuid: String(raw.parentUuid || ''),
-      recordType: String(raw.recordType || ''),
-      payloadType: String(raw.payloadType || ''),
-      timestamp: String(raw.timestamp || ''),
-      sourceSessionReference: String(raw.parsed?.session_id || ''),
-      parsed: raw.recordType === 'system' && raw.payloadType === 'local_command'
-        ? { content: String(raw.parsed?.content || '') }
-        : null,
-    })),
-    _relationshipLogicalFacts: session.logicalEvents.map((event) => ({
-      id: String(event.id || ''),
-      layer: event.layer === 'protocol' ? 'protocol' : 'main',
-      kind: String(event.kind || ''),
-      subtype: String(event.subtype || ''),
-      status: String(event.status || ''),
-      timestamp: String(event.timestamp || ''),
-      preview: String(event.preview || ''),
-      searchText: String(event.searchText || ''),
-      rawRefs: structuredClone(event.rawRefs || []),
-    })),
+    _relationshipFacts: compactClaudeForkRelationshipFacts(session),
     _foreignSessionIds: new Set(session._foreignSessionIds || []),
     _rawUuidSet: new Set(session._rawUuidSet || []),
   };
@@ -1732,6 +1713,12 @@ function applyClaudeMaterializedForkOwnership(session, errorFactory) {
   session._agentName = '';
   session._lastPrompt = '';
   session._subagentDescription = '';
+  const continuationTimestamps = continuationRawEvents
+    .map((raw) => String(raw.timestamp || ''))
+    .filter(Boolean)
+    .sort();
+  session.startedAt = continuationTimestamps[0] || '';
+  session.updatedAt = continuationTimestamps.at(-1) || '';
   for (const raw of continuationRawEvents) {
     const record = raw.parsed;
     if (!isPlainObject(record)) continue;
@@ -1744,7 +1731,9 @@ function applyClaudeMaterializedForkOwnership(session, errorFactory) {
       session._lastPrompt = String(record.lastPrompt);
     }
   }
-  return finalizeSession(session);
+  const finalized = finalizeSession(session);
+  finalized.analysis.tokenStats = responseUsage(continuationRawEvents);
+  return finalized;
 }
 
 function projectClaudeCarriedSession(session, summary) {
@@ -3065,6 +3054,7 @@ async function readClaudeRawRecord(index, session, raw) {
 
 module.exports = {
   CLAUDE_SOURCE_KIND,
+  __testOnlyCompactClaudeRelationshipSession: compactClaudeRelationshipSession,
   analyzerForkedSkillSessionId,
   analyzerSessionId,
   analyzerSubagentSessionId,
