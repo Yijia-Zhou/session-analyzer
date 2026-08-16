@@ -195,4 +195,4 @@
 - Follow-up trigger: if a measured process that materializes distinct Sessions approaches 70% post-GC heap utilization, open a separate eviction architecture milestone. Do not silently raise the heap, weaken source freshness, share cache entries across Index revisions, or evict an entry still owned by a live request. / 后续触发条件：若量测进程因物化不同 Session 而接近 70% post-GC heap utilization，则开启独立 eviction 架构 milestone。不得静默提高 heap、削弱来源 freshness、跨 Index revision 共享 cache entry，或淘汰仍被活 request 拥有的 entry。
 - Related docs: / 相关文档：
   - `docs/design-docs/indexed-materialized-session-lifecycle.md`
-  - `docs/exec-plans/active/2026-08-16-indexed-materialized-session-lifecycle.md`
+  - `docs/exec-plans/completed/2026-08-16-indexed-materialized-session-lifecycle.md`
