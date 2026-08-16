@@ -145,17 +145,32 @@ function runtimeCommand(execArgv = process.execArgv) {
 async function profile(options) {
   const beforeBuild = memorySample();
   let buildPeak = beforeBuild;
+  const buildSampling = {
+    progressBoundarySamples: 0,
+    preRawCompactionSamples: 0,
+    postFinalizeSamples: 0,
+  };
+  const recordBuildSample = (kind = '') => {
+    buildPeak = memoryMaximum(buildPeak, memorySample());
+    if (Object.hasOwn(buildSampling, kind)) buildSampling[kind] += 1;
+  };
   const buildStarted = performance.now();
   const index = await options.adapter.buildIndex({
     repoRoot: options.repo,
     sourceKind: options.source,
     sourceHome: options.sourceHome || options.adapter.defaultHome(),
     onProgress() {
-      buildPeak = memoryMaximum(buildPeak, memorySample());
+      recordBuildSample('progressBoundarySamples');
+    },
+    onTransientMemorySample(sample) {
+      if (sample?.phase === 'pre_raw_compaction') recordBuildSample('preRawCompactionSamples');
+      else if (sample?.phase === 'post_finalize') recordBuildSample('postFinalizeSamples');
+      else recordBuildSample();
     },
   });
-  buildPeak = memoryMaximum(buildPeak, memorySample());
+  recordBuildSample();
   const buildMs = performance.now() - buildStarted;
+  const processMaxRssBytes = process.resourceUsage().maxRSS * 1024;
   validateIndexOwnership(index);
   if (global.gc) global.gc();
   const afterBuild = memorySample();
@@ -220,8 +235,10 @@ async function profile(options) {
     build: {
       buildMs,
       before: beforeBuild,
-      peak: buildPeak,
-      peakOverBefore: memoryDelta(buildPeak, beforeBuild),
+      observedTransientPeak: buildPeak,
+      observedTransientPeakOverBefore: memoryDelta(buildPeak, beforeBuild),
+      processMaxRssBytes,
+      sampling: buildSampling,
       committedAfterGc: afterBuild,
       committedDelta: memoryDelta(afterBuild, beforeBuild),
     },

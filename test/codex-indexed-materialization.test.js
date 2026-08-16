@@ -69,7 +69,7 @@ async function makeSingleSessionFixture(t, options = {}) {
   const sessionRoot = path.join(codexHome, 'sessions', '2026', '08', '16');
   const id = options.id || '16161616-1616-4616-8616-161616161616';
   const file = path.join(sessionRoot, `rollout-2026-08-16T10-00-00-${id}.jsonl`);
-  const records = [
+  const records = typeof options.records === 'function' ? options.records({ id, repoRoot }) : [
     {
       timestamp: '2026-08-16T10:00:00.000Z',
       type: 'session_meta',
@@ -108,12 +108,149 @@ async function makeSingleSessionFixture(t, options = {}) {
   };
 }
 
+test('strict Codex fork discovery retains only compact scalar relationship facts between passes', async (t) => {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-strict-fork-heavy-'));
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  const repoRoot = path.join(codexHome, 'repo');
+  const sessionRoot = path.join(codexHome, 'sessions', '2026', '08', '16');
+  const parentId = 'aaaaaaaa-1616-4616-8616-161616161616';
+  const childId = 'bbbbbbbb-1616-4616-8616-161616161616';
+  const parentRecords = [{
+    timestamp: '2026-08-16T10:00:00.000Z',
+    type: 'session_meta',
+    payload: { id: parentId, cwd: repoRoot },
+  }];
+  for (let index = 0; index < 2_000; index += 1) {
+    parentRecords.push({
+      timestamp: `2026-08-16T10:${String(Math.floor(index / 60) % 60).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}.000Z`,
+      type: 'event_msg',
+      payload: {
+        type: index % 2 ? 'agent_message' : 'user_message',
+        message: `fork-heavy row ${index}`,
+      },
+    });
+  }
+  const childRecords = [{
+    timestamp: '2026-08-16T11:00:00.000Z',
+    type: 'session_meta',
+    payload: { id: childId, cwd: repoRoot, forked_from_id: parentId },
+  }, ...parentRecords, {
+    timestamp: '2026-08-16T11:00:01.000Z',
+    type: 'event_msg',
+    payload: { type: 'user_message', message: 'owned continuation' },
+  }];
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(sessionRoot, { recursive: true });
+  await Promise.all([
+    fsp.writeFile(path.join(sessionRoot, `rollout-parent-${parentId}.jsonl`), `${parentRecords.map(JSON.stringify).join('\n')}\n`, 'utf8'),
+    fsp.writeFile(path.join(sessionRoot, `rollout-child-${childId}.jsonl`), `${childRecords.map(JSON.stringify).join('\n')}\n`, 'utf8'),
+  ]);
+
+  let inspected = false;
+  const index = await codex.buildSourceBackedIndex({
+    repoRoot,
+    codexHome,
+    beforeRelationshipInferenceForTests: ({ relationshipEvidence }) => {
+      inspected = true;
+      assert.equal(relationshipEvidence.length, 2);
+      assert.ok(relationshipEvidence.reduce((sum, evidence) => sum + evidence._forkRawFacts.length, 0) > 4_000);
+      for (const evidence of relationshipEvidence) {
+        for (const forbidden of ['rawEvents', 'logicalEvents', '_logicalEvents']) {
+          assert.equal(Object.hasOwn(evidence, forbidden), false, `Pass A retained ${forbidden}`);
+        }
+        assert.ok(evidence._forkRawFacts.every((fact) => (
+          Array.isArray(fact) && fact.every((value) => typeof value === 'string')
+        )));
+        assert.ok(evidence._forkLogicalRanges.every((range) => (
+          Array.isArray(range)
+          && range.length === 3
+          && range.every(Number.isSafeInteger)
+        )));
+      }
+    },
+  });
+  const child = index.sessionsById.get(childId);
+  assert.equal(inspected, true);
+  assert.equal(child.forkStorageMode, 'materialized');
+  assert.equal(child.counts.messages, 1);
+  assert.equal(child.inheritedContext.previewEventCount, 12);
+  assert.equal(child.inheritedContext.previewEvents.length, 12);
+  assertNoReachableCompleteEventGraph(index);
+});
+
+test('strict Codex materialization carries bounded shell context into command detail', async (t) => {
+  const fixture = await makeSingleSessionFixture(t, {
+    records: ({ id, repoRoot }) => [
+      {
+        timestamp: '2026-08-16T10:00:00.000Z',
+        type: 'session_meta',
+        payload: { id, cwd: repoRoot },
+      },
+      {
+        timestamp: '2026-08-16T10:00:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{
+            type: 'input_text',
+            text: `<environment_context>\n  <cwd>${repoRoot}</cwd>\n  <shell>powershell</shell>\n</environment_context>`,
+          }],
+        },
+      },
+      {
+        timestamp: '2026-08-16T10:00:02.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          name: 'shell_command',
+          call_id: 'call-shell-context',
+          arguments: JSON.stringify({ command: 'pip3 install tox; python3 -m pytest', workdir: repoRoot }),
+        },
+      },
+    ],
+  });
+  const indexedSession = fixture.index.sessionsById.get(fixture.id);
+  const materialized = await materializeSessionForIndex(fixture.index, indexedSession);
+  const command = materialized.logicalEvents.find((event) => event.kind === 'command');
+  const detail = await codex.buildHydratedEventDetail(fixture.index, materialized, command.id, 'main');
+  assert.equal(materialized._shell, 'powershell');
+  assert.equal(detail.timelineSections[0].language, 'powershell');
+  assert.doesNotThrow(() => codex.validateCodexMaterializedPrivateState({ indexedSession, session: materialized }));
+  assert.throws(
+    () => codex.validateCodexMaterializedPrivateState({
+      indexedSession,
+      session: { ...materialized, _shell: 42 },
+    }),
+    /shell must be a string/,
+  );
+  assert.throws(
+    () => codex.validateCodexMaterializedPrivateState({
+      indexedSession,
+      session: { ...materialized, _shell: 'x'.repeat(4_097) },
+    }),
+    /at most 4096 UTF-8 bytes/,
+  );
+});
+
 test('strict Codex Index retains no complete event graph and reconstructs exact current Sessions', async () => {
   const options = { repoRoot: FIXTURE_REPO, codexHome: FIXTURE_HOME };
   const resident = await codex.buildIndex(options);
-  const index = await codex.buildSourceBackedIndex(options);
+  const transientSamples = [];
+  const index = await codex.buildSourceBackedIndex({
+    ...options,
+    onTransientMemorySample: (sample) => transientSamples.push(sample),
+  });
 
   assert.equal(validateIndexOwnership(index), 'codex');
+  assert.equal(
+    transientSamples.filter((sample) => sample.phase === 'post_finalize').length,
+    index.sessions.length,
+  );
+  assert.ok(
+    transientSamples.filter((sample) => sample.phase === 'pre_raw_compaction').length
+      >= index.sessions.length,
+  );
   assertNoReachableCompleteEventGraph(index);
   for (const indexedSession of index.sessions) {
     assert.equal(Object.hasOwn(indexedSession, 'rawEvents'), false);

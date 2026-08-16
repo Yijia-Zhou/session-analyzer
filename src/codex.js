@@ -64,6 +64,7 @@ const {
   hasCanonicalRawDigests,
   inferCodexMaterializedForks,
   inferEarlierBranches,
+  materializedForkInheritedContext,
   rawForkSegment,
 } = require('./codex-forks');
 const { appendReviewLifecycleMarker, reviewLifecycleFromRaw } = require('./review-lifecycle');
@@ -96,6 +97,7 @@ const CODE_MODE_STRUCTURED_RESULT_MAX_DEPTH = 32;
 const CODE_MODE_STRUCTURED_RESULT_MAX_NODES = 1_000;
 const CODEX_COMPACT_SESSION_REPRESENTATION = 'codex-compact-v1';
 const CODEX_MATERIALIZATION_SCHEMA_VERSION = 1;
+const CODEX_MATERIALIZED_SHELL_MAX_BYTES = 4 * 1024;
 const CODEX_MATERIALIZATION_PRIVATE_FIELDS = Object.freeze(['_forkSegmentsByRawId', '_shell']);
 const CODEX_RELATIONSHIP_FIELDS = Object.freeze([
   'parentSessionId',
@@ -118,6 +120,21 @@ const CODEX_FORK_SEGMENTS = Object.freeze([
 ]);
 const CODEX_SOURCE_HYDRATION_CONCURRENCY = 2;
 const CODEX_HYDRATION_SLOT_OWNED = Symbol('codexHydrationSlotOwned');
+const CODEX_FORK_RAW_FACT = Object.freeze({
+  RAW_ID: 0,
+  TIMESTAMP: 1,
+  RECORD_TYPE: 2,
+  PAYLOAD_TYPE: 3,
+  ROLE: 4,
+  SESSION_META_ID: 5,
+  REVIEW_PHASE: 6,
+  REVIEW_THREAD_ID: 7,
+});
+const CODEX_FORK_LOGICAL_RANGE = Object.freeze({
+  START_RAW_ORDINAL: 0,
+  END_RAW_ORDINAL: 1,
+  PROTOCOL: 2,
+});
 
 const SAME_DAY_RESET_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
   hour: 'numeric',
@@ -4617,6 +4634,14 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   if (includeCanonicalRawDigests) {
     session._canonicalRawDigests = session.rawEvents.map((raw) => raw._canonicalRawDigest);
   }
+  if (typeof options.onTransientMemorySample === 'function') {
+    options.onTransientMemorySample({
+      phase: 'pre_raw_compaction',
+      sessionId: session.id,
+      rawEventCount: session.rawEvents.length,
+      logicalEventCount: session.logicalEvents.length,
+    });
+  }
   if (options.retainFullSourceRecordsForTests !== true) {
     session.rawEvents = session.rawEvents.map(compactCodexRawEvent);
     session.residentRepresentation = CODEX_COMPACT_SESSION_REPRESENTATION;
@@ -4624,42 +4649,55 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   return session;
 }
 
-function compactCodexRelationshipRaw(raw) {
-  return {
-    rawId: String(raw?.rawId || ''),
-    recordType: String(raw?.recordType || ''),
-    payloadType: String(raw?.payloadType || ''),
-    role: String(raw?.role || ''),
-    timestamp: String(raw?.timestamp || ''),
-    sessionMetaId: String(raw?.sessionMetaId || ''),
-    reviewLifecyclePhase: String(raw?.reviewLifecyclePhase || ''),
-    reviewThreadId: String(raw?.reviewThreadId || ''),
-  };
+function compactCodexForkRawFact(raw) {
+  return [
+    String(raw?.rawId || ''),
+    String(raw?.timestamp || ''),
+    String(raw?.recordType || ''),
+    String(raw?.payloadType || ''),
+    String(raw?.role || ''),
+    String(raw?.sessionMetaId || ''),
+    String(raw?.reviewLifecyclePhase || ''),
+    String(raw?.reviewThreadId || ''),
+  ];
 }
 
-function compactCodexRelationshipLogical(event) {
-  return {
-    id: String(event?.id || ''),
-    layer: event?.layer === 'protocol' ? 'protocol' : 'main',
-    kind: String(event?.kind || ''),
-    subtype: String(event?.subtype || ''),
-    status: String(event?.status || ''),
-    timestamp: String(event?.timestamp || ''),
-    preview: String(event?.preview || ''),
-    searchText: String(event?.searchText || ''),
-    rawRefs: (event?.rawRefs || []).map((reference) => ({
-      rawId: String(reference?.rawId || ''),
-    })),
-  };
+function compactCodexForkLogicalRanges(session) {
+  const rawOrdinals = new Map(session.rawEvents.map((raw, index) => [String(raw.rawId || ''), index]));
+  return (session._logicalEvents || session.logicalEvents).map((event) => {
+    const ordinals = (event.rawRefs || []).map((reference) => rawOrdinals.get(String(reference?.rawId || '')));
+    const valid = ordinals.length > 0 && ordinals.every(Number.isSafeInteger);
+    let start = -1;
+    let end = -1;
+    if (valid) {
+      start = ordinals[0];
+      end = ordinals[0];
+      for (const ordinal of ordinals.slice(1)) {
+        if (ordinal < start) start = ordinal;
+        if (ordinal > end) end = ordinal;
+      }
+    }
+    return [
+      start,
+      end,
+      event.layer === 'protocol' ? 1 : 0,
+    ];
+  });
 }
 
 function buildCodexRelationshipEvidence(session, retainForkEvidence) {
-  const rawEvents = retainForkEvidence
-    ? session.rawEvents.map(compactCodexRelationshipRaw)
-    : session.rawEvents.slice(0, 2).map(compactCodexRelationshipRaw);
-  const logicalEvents = retainForkEvidence
-    ? (session._logicalEvents || session.logicalEvents).map(compactCodexRelationshipLogical)
-    : [];
+  const rawFacts = retainForkEvidence
+    ? session.rawEvents.map(compactCodexForkRawFact)
+    : session.rawEvents.slice(0, 2).map(compactCodexForkRawFact);
+  const rawTimestampMs = session.rawEvents.map((raw) => Date.parse(raw.timestamp));
+  const allRawTimestampsValid = rawTimestampMs.every(Number.isFinite);
+  let latestRawTimestampMs = null;
+  if (rawTimestampMs.length && allRawTimestampsValid) {
+    latestRawTimestampMs = rawTimestampMs[0];
+    for (const timestampMs of rawTimestampMs.slice(1)) {
+      if (timestampMs > latestRawTimestampMs) latestRawTimestampMs = timestampMs;
+    }
+  }
   return {
     id: session.id,
     sourceKind: session.sourceKind,
@@ -4670,6 +4708,7 @@ function buildCodexRelationshipEvidence(session, retainForkEvidence) {
     sourceIdentity: structuredClone(session._sourceIdentity),
     bytes: session.bytes,
     lineCount: session.lineCount,
+    rawEventCount: session.rawEvents.length,
     cwdSet: [...session.cwdSet],
     matchesRepo: session.matchesRepo,
     startedAt: session.startedAt,
@@ -4693,17 +4732,218 @@ function buildCodexRelationshipEvidence(session, retainForkEvidence) {
     _canonicalRawDigests: retainForkEvidence
       ? [...(session._canonicalRawDigests || [])]
       : [],
-    rawEvents,
-    _logicalEvents: logicalEvents,
-    logicalEvents,
+    _forkRawFacts: rawFacts,
+    _forkLogicalRanges: retainForkEvidence ? compactCodexForkLogicalRanges(session) : [],
+    _allRawTimestampsValid: allRawTimestampsValid,
+    _latestRawTimestampMs: latestRawTimestampMs,
+    _continuationMainPresent: false,
   };
 }
 
-function recomputeMaterializedForkEvidenceFacts(sessions) {
-  for (const session of sessions) {
-    if (session.forkStorageMode !== 'materialized') continue;
-    resetOwnedRawFacts(session);
+function codexForkRawFactShape(fact) {
+  return [
+    fact?.[CODEX_FORK_RAW_FACT.RECORD_TYPE] || '',
+    fact?.[CODEX_FORK_RAW_FACT.PAYLOAD_TYPE] || '',
+    fact?.[CODEX_FORK_RAW_FACT.ROLE] || '',
+  ].join('\u0000');
+}
+
+function codexForkRawFactIsSessionMeta(fact, sessionId) {
+  return fact?.[CODEX_FORK_RAW_FACT.RECORD_TYPE] === 'session_meta'
+    && fact?.[CODEX_FORK_RAW_FACT.SESSION_META_ID] === sessionId;
+}
+
+function codexForkSegmentForOrdinal(ordinal, matchedParentRawCount) {
+  if (ordinal === 0) return 'fork_metadata';
+  if (ordinal <= matchedParentRawCount) return 'inherited_context';
+  return 'continuation';
+}
+
+function codexForkPrefixCanEndAt(parent, child, matchedParentRawCount, forkedAt) {
+  const forkedAtMs = Date.parse(forkedAt);
+  const parentTail = parent._forkRawFacts.slice(matchedParentRawCount);
+  const tailTimes = parentTail.map((fact) => Date.parse(fact[CODEX_FORK_RAW_FACT.TIMESTAMP]));
+  if (!Number.isFinite(forkedAtMs) || tailTimes.some((value) => !Number.isFinite(value))) return false;
+  if (tailTimes.every((value) => value > forkedAtMs)) return true;
+  const parentBoundary = parentTail[0];
+  const childBoundary = child._forkRawFacts[matchedParentRawCount + 1];
+  return Boolean(parentBoundary && childBoundary
+    && codexForkRawFactShape(parentBoundary) !== codexForkRawFactShape(childBoundary));
+}
+
+function resetCodexIndexedForkInference(evidence) {
+  evidence.forkedFromSessionId = String(evidence._parsedAncestry?.forkedFromSessionId || '').trim();
+  evidence.forkStorageMode = '';
+  evidence.forkedAt = '';
+  evidence.forkPointUuid = '';
+  evidence.forkContinuationState = '';
+  evidence.forkEvidence = null;
+  evidence.inheritedContext = null;
+  evidence.supersededBySessionId = '';
+  evidence.supersededAt = '';
+  evidence.supersededReason = '';
+  evidence._continuationMainPresent = false;
+}
+
+function recomputeCodexIndexedOwnedRawFacts(evidence) {
+  if (evidence.forkStorageMode !== 'materialized') return;
+  const inheritedCount = evidence.forkEvidence.matchedParentRawCount;
+  const ownedFacts = evidence._forkRawFacts.filter((fact, index) => index === 0 || index > inheritedCount);
+  evidence.startedAt = '';
+  evidence.updatedAt = '';
+  const reviewMarkers = [];
+  for (const fact of ownedFacts) {
+    updateTimeRangeFromNormalizedTimestamp(evidence, fact[CODEX_FORK_RAW_FACT.TIMESTAMP]);
+    appendReviewLifecycleMarker(reviewMarkers, {
+      timestamp: fact[CODEX_FORK_RAW_FACT.TIMESTAMP],
+      reviewLifecyclePhase: fact[CODEX_FORK_RAW_FACT.REVIEW_PHASE],
+      reviewThreadId: fact[CODEX_FORK_RAW_FACT.REVIEW_THREAD_ID],
+    }, { ownerId: evidence.id });
   }
+  evidence._reviewMarkers = reviewMarkers;
+}
+
+function inferCodexIndexedMaterializedForks(evidenceList) {
+  const byId = new Map();
+  for (const evidence of evidenceList) {
+    resetCodexIndexedForkInference(evidence);
+    const matches = byId.get(evidence.id) || [];
+    matches.push(evidence);
+    byId.set(evidence.id, matches);
+  }
+
+  let inferred = 0;
+  for (const child of evidenceList) {
+    const parentId = child.forkedFromSessionId;
+    const parentMatches = byId.get(parentId) || [];
+    if (!parentId || parentMatches.length !== 1) continue;
+    const [parent] = parentMatches;
+    if (parent === child
+        || !codexForkRawFactIsSessionMeta(parent._forkRawFacts[0], parent.id)
+        || !codexForkRawFactIsSessionMeta(child._forkRawFacts[0], child.id)
+        || !codexForkRawFactIsSessionMeta(child._forkRawFacts[1], parent.id)
+        || parent._canonicalRawDigests.length !== parent.rawEventCount
+        || child._canonicalRawDigests.length !== child.rawEventCount) continue;
+    let matchedParentRawCount = 0;
+    const comparableCount = Math.min(
+      parent._canonicalRawDigests.length,
+      Math.max(0, child._canonicalRawDigests.length - 1),
+    );
+    while (matchedParentRawCount < comparableCount
+        && child._canonicalRawDigests[matchedParentRawCount + 1]
+          === parent._canonicalRawDigests[matchedParentRawCount]) {
+      matchedParentRawCount += 1;
+    }
+    if (!matchedParentRawCount) continue;
+    const forkedAt = child._forkRawFacts[0]?.[CODEX_FORK_RAW_FACT.TIMESTAMP] || '';
+    if (matchedParentRawCount < parent._canonicalRawDigests.length
+        && !codexForkPrefixCanEndAt(parent, child, matchedParentRawCount, forkedAt)) continue;
+
+    let validLogicalOwnership = true;
+    let continuationMainPresent = false;
+    for (const range of child._forkLogicalRanges) {
+      const start = range?.[CODEX_FORK_LOGICAL_RANGE.START_RAW_ORDINAL];
+      const end = range?.[CODEX_FORK_LOGICAL_RANGE.END_RAW_ORDINAL];
+      if (!Number.isSafeInteger(start)
+          || !Number.isSafeInteger(end)
+          || start < 0
+          || end < start
+          || end >= child.rawEventCount
+          || codexForkSegmentForOrdinal(start, matchedParentRawCount)
+            !== codexForkSegmentForOrdinal(end, matchedParentRawCount)) {
+        validLogicalOwnership = false;
+        break;
+      }
+      if (range[CODEX_FORK_LOGICAL_RANGE.PROTOCOL] === 0
+          && codexForkSegmentForOrdinal(start, matchedParentRawCount) === 'continuation') {
+        continuationMainPresent = true;
+      }
+    }
+    if (!validLogicalOwnership) continue;
+
+    child.forkStorageMode = 'materialized';
+    child.forkedAt = forkedAt;
+    child.forkEvidence = {
+      sourceSessionId: parent.id,
+      childMetadataRawId: child._forkRawFacts[0][CODEX_FORK_RAW_FACT.RAW_ID],
+      embeddedParentMetadataRawId: child._forkRawFacts[1][CODEX_FORK_RAW_FACT.RAW_ID],
+      parentMetadataRawId: parent._forkRawFacts[0][CODEX_FORK_RAW_FACT.RAW_ID],
+      matchedParentRawCount,
+    };
+    child._continuationMainPresent = continuationMainPresent;
+    recomputeCodexIndexedOwnedRawFacts(child);
+    inferred += 1;
+  }
+  return inferred;
+}
+
+function codexIndexedForkRelationIsCycleSafe(child, byId) {
+  const visited = new Set([child.id]);
+  let current = child;
+  while (current?.forkedFromSessionId) {
+    if (visited.has(current.forkedFromSessionId)) return false;
+    visited.add(current.forkedFromSessionId);
+    current = byId.get(current.forkedFromSessionId);
+    if (!current) break;
+  }
+  return true;
+}
+
+function inferCodexIndexedEarlierBranches(evidenceList) {
+  const byId = new Map(evidenceList.map((evidence) => [evidence.id, evidence]));
+  const childrenByParent = new Map();
+  for (const evidence of evidenceList) {
+    evidence.supersededBySessionId = '';
+    evidence.supersededAt = '';
+    evidence.supersededReason = '';
+    if (!evidence.forkedFromSessionId || evidence.primarySessionMetaKind || evidence.parentSessionId) continue;
+    const children = childrenByParent.get(evidence.forkedFromSessionId) || [];
+    children.push(evidence);
+    childrenByParent.set(evidence.forkedFromSessionId, children);
+  }
+  for (const child of evidenceList) {
+    if (child.forkStorageMode !== 'materialized'
+        || child.primarySessionMetaKind
+        || child.parentSessionId
+        || !child._continuationMainPresent) continue;
+    const parent = byId.get(child.forkedFromSessionId);
+    const siblings = childrenByParent.get(child.forkedFromSessionId) || [];
+    const forkedAtMs = Date.parse(child.forkedAt);
+    if (!parent
+        || siblings.length !== 1
+        || siblings[0] !== child
+        || !codexIndexedForkRelationIsCycleSafe(child, byId)
+        || !Number.isFinite(forkedAtMs)
+        || !parent._allRawTimestampsValid
+        || parent._latestRawTimestampMs > forkedAtMs) continue;
+    parent.supersededBySessionId = child.id;
+    parent.supersededAt = child.forkedAt;
+    parent.supersededReason = 'inactive_after_fork';
+  }
+}
+
+function orderCodexEvidenceParentsFirst(evidenceList) {
+  const uniqueById = new Map();
+  for (const evidence of evidenceList) {
+    if (uniqueById.has(evidence.id)) uniqueById.set(evidence.id, null);
+    else uniqueById.set(evidence.id, evidence);
+  }
+  const ordered = [];
+  const visited = new Set();
+  const visiting = new Set();
+  const visit = (evidence) => {
+    if (visited.has(evidence) || visiting.has(evidence)) return;
+    visiting.add(evidence);
+    if (evidence.forkStorageMode === 'materialized') {
+      const parent = uniqueById.get(evidence.forkedFromSessionId);
+      if (parent) visit(parent);
+    }
+    visiting.delete(evidence);
+    visited.add(evidence);
+    ordered.push(evidence);
+  };
+  for (const evidence of evidenceList) visit(evidence);
+  return ordered;
 }
 
 function logicalForkSegment(event, rawSegments) {
@@ -5253,6 +5493,8 @@ async function buildSourceBackedIndex({
   signal,
   previousIndex = null,
   beforeSourceSnapshotVerificationForTests = null,
+  beforeRelationshipInferenceForTests = null,
+  onTransientMemorySample = null,
 }) {
   const resolvedRepo = resolveFsPath(repoRoot);
   const resolvedCodex = path.resolve(codexHome);
@@ -5414,6 +5656,7 @@ async function buildSourceBackedIndex({
     const session = await parseSessionFile(filePath, relFile, resolvedRepo, signal, {
       canonicalRawDigests: canonicalDigestFilePaths.has(filePath),
       beforeSourceSnapshotVerificationForTests,
+      onTransientMemorySample,
     });
     analyzedFileCount += 1;
     analyzedBytes += session.bytes;
@@ -5442,10 +5685,12 @@ async function buildSourceBackedIndex({
   }
 
   throwIfAborted(signal);
-  inferCodexMaterializedForks(relationshipEvidence);
-  recomputeMaterializedForkEvidenceFacts(relationshipEvidence);
+  if (typeof beforeRelationshipInferenceForTests === 'function') {
+    await beforeRelationshipInferenceForTests({ relationshipEvidence });
+  }
+  inferCodexIndexedMaterializedForks(relationshipEvidence);
   inferReviewParentSessions(relationshipEvidence);
-  inferEarlierBranches(relationshipEvidence);
+  inferCodexIndexedEarlierBranches(relationshipEvidence);
 
   const canReusePrevious = previousIndex?.sourceKind === CODEX_SOURCE_KIND
     && normalizeFsPath(previousIndex.repoRoot || '') === normalizeFsPath(resolvedRepo)
@@ -5468,7 +5713,16 @@ async function buildSourceBackedIndex({
   let indexedBytes = 0;
   let reusedFileCount = 0;
 
+  const orderedRelationshipEvidence = orderCodexEvidenceParentsFirst(relationshipEvidence);
+  const materializedChildrenByParentId = new Map();
   for (const evidence of relationshipEvidence) {
+    if (evidence.forkStorageMode !== 'materialized') continue;
+    const children = materializedChildrenByParentId.get(evidence.forkedFromSessionId) || [];
+    children.push(evidence);
+    materializedChildrenByParentId.set(evidence.forkedFromSessionId, children);
+  }
+
+  for (const evidence of orderedRelationshipEvidence) {
     throwIfAborted(signal);
     const filePath = path.resolve(sessionsRoot, evidence.sourceFile);
     if (!isPathInsideOrSame(filePath, sessionsRoot)) throw sourceSnapshotChangedError();
@@ -5481,6 +5735,7 @@ async function buildSourceBackedIndex({
           fileIdentity: evidence.sourceIdentity,
         },
         beforeSourceSnapshotVerificationForTests,
+        onTransientMemorySample,
       });
     } catch (error) {
       if (error?.code === 'INDEXED_SOURCE_STALE') throw sourceSnapshotChangedError();
@@ -5491,8 +5746,25 @@ async function buildSourceBackedIndex({
         || session.lineCount !== evidence.lineCount) {
       throw sourceSnapshotChangedError();
     }
+    for (const childEvidence of materializedChildrenByParentId.get(session.id) || []) {
+      childEvidence.inheritedContext = materializedForkInheritedContext(
+        session,
+        childEvidence.forkEvidence.matchedParentRawCount,
+      );
+    }
+    if (evidence.forkStorageMode === 'materialized' && !evidence.inheritedContext) {
+      throw sourceSnapshotChangedError();
+    }
     applyCodexRelationshipEvidence(session, evidence, sourceSnapshotChangedError);
     finalizeSession(session, sessionIndex.get(session.id));
+    if (typeof onTransientMemorySample === 'function') {
+      onTransientMemorySample({
+        phase: 'post_finalize',
+        sessionId: session.id,
+        rawEventCount: session.rawEvents.length,
+        logicalEventCount: session.logicalEvents.length,
+      });
+    }
     queryStoreBuilder.addSession(session);
     legacyRawOwnerBuilder.addSession(session);
     catalogAccumulator.addSession(session);
@@ -5537,9 +5809,8 @@ async function buildSourceBackedIndex({
     rawEventCount += indexedSession.rawEventCount;
     indexedFileCount += 1;
     indexedBytes += indexedSession.bytes;
-    evidence.rawEvents = [];
-    evidence.logicalEvents = [];
-    evidence._logicalEvents = [];
+    evidence._forkRawFacts = [];
+    evidence._forkLogicalRanges = [];
     evidence._canonicalRawDigests = [];
     emitProgress(onProgress, {
       phase: 'parsing',
@@ -5857,7 +6128,10 @@ function validateCodexLegacyRawOwnerIndex({ index, legacyRawOwners }) {
 }
 
 function validateCodexMaterializedPrivateState({ indexedSession, session }) {
-  if (typeof session._shell !== 'string') throw new Error('Codex Materialized Session shell must be a string');
+  if (typeof session._shell !== 'string'
+      || Buffer.byteLength(session._shell, 'utf8') > CODEX_MATERIALIZED_SHELL_MAX_BYTES) {
+    throw new Error(`Codex Materialized Session shell must be a string of at most ${CODEX_MATERIALIZED_SHELL_MAX_BYTES} UTF-8 bytes`);
+  }
   const rawSegments = session._forkSegmentsByRawId;
   if (indexedSession.forkStorageMode !== 'materialized') {
     if (rawSegments !== undefined) throw new Error('Ordinary Codex Session must not retain fork segments');

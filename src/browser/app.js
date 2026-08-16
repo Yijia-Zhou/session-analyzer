@@ -34,6 +34,7 @@ const paginationIntents = transitionSafety.createPaginationIntentState();
 const detailRequestControllers = new Map();
 
 const NAVIGATION_PAGE_LIMIT = 500;
+const NAVIGATION_BACKGROUND_PAGE_HANDOFF_MS = 500;
 const TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD = 96;
 const SEARCH_TARGET_PRELOAD_MIN = 5;
 const SEARCH_TARGET_PRELOAD_MAX_PAGES = 3;
@@ -3108,7 +3109,10 @@ function showSearchAssist({ mode = 'parameters', focusTarget = '' } = {}) {
     hideSearchAssist();
     return;
   }
-  if (mode === 'parameters') searchAssistInvoker = document.activeElement;
+  if (mode === 'parameters') {
+    searchAssistInvoker = document.activeElement;
+    abortPendingNavigationLoad();
+  }
   if (mode === 'results' && currentSearchMetricsModel().mode === 'idle') {
     hideSearchAssist();
     return;
@@ -4138,6 +4142,7 @@ async function setSearchScope(scope, options = {}) {
     state.timelineRequestId += 1;
     state.analysisRequestId += 1;
     state.timelineLoading = false;
+    resetSessionDetailCache();
     resetDetailPane();
     beginProjectSearchPendingTransition();
     await Promise.all([loadProjectResults(), refreshFileSuggestions()]);
@@ -5460,6 +5465,13 @@ function invalidateNavigationCache() {
   state.navigationLoadErrorKey = '';
 }
 
+function abortPendingNavigationLoad() {
+  if (!state.navigationCache.pending) return false;
+  requestOwners.navigation.abort();
+  state.navigationCache = { key: '', events: [], total: 0, pending: null };
+  return true;
+}
+
 function currentNavigationCache() {
   const key = navigationCacheKey();
   return state.navigationCache.key === key && !state.navigationCache.pending ? state.navigationCache : null;
@@ -5482,14 +5494,26 @@ function ensureNavigationEvents() {
     const events = [];
     let total = 0;
     while (events.length === 0 || events.length < total) {
-      if (navigationCacheKey() !== key) return null;
+      if (!requestOwners.navigation.isCurrent(owner) || navigationCacheKey() !== key) return null;
       const data = await api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/timeline${currentQuery({
         offset: events.length,
         limit: NAVIGATION_PAGE_LIMIT,
       })}`, { signal: owner.controller.signal });
+      if (!requestOwners.navigation.isCurrent(owner) || navigationCacheKey() !== key) return null;
       total = data.total;
       events.push(...data.events);
       if (!data.events.length) break;
+      if (events.length < total) {
+        const selectedDetailKey = detailKey(
+          state.selectedSessionId,
+          activeLayerId(),
+          state.detailView?.eventId || state.selectedEventId,
+        );
+        if (state.detailPending[selectedDetailKey]) {
+          await state.detailPending[selectedDetailKey];
+        }
+        await new Promise((resolve) => setTimeout(resolve, NAVIGATION_BACKGROUND_PAGE_HANDOFF_MS));
+      }
     }
     if (navigationCacheKey() !== key) return null;
     state.navigationCache = { key, events, total, pending: null };
@@ -6233,9 +6257,13 @@ function showInspector(event, options = {}) {
   if (shouldLoadNavigation) {
     navigationPending = ensureNavigationEvents();
     navigationPending.then(() => {
+      if (navigationCacheKey() !== navigationKey
+          || !isCurrentDetailSelection('inspector', key, event.id, selectionContext)) return;
       if (state.navigationLoadErrorKey === navigationKey) state.navigationLoadErrorKey = '';
       rerenderCurrentInspectorNavigation();
     }).catch((error) => {
+      if (navigationCacheKey() !== navigationKey
+          || !isCurrentDetailSelection('inspector', key, event.id, selectionContext)) return;
       if (state.navigationCache.key === navigationKey) {
         state.navigationCache = { key: '', events: [], total: 0, pending: null };
       }
