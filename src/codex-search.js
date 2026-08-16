@@ -88,7 +88,7 @@ function createCodexSearch(deps = {}) {
         const label = (value) => deps.codeModeRequestLabel?.(value, options.locale) || value;
         const items = Array.isArray(index?.codeModeRequests)
           ? index.codeModeRequests
-          : (deps.codeModeRequestCatalog?.(index?.sessions, { label }) || []);
+          : [];
         return {
           codeModeRequests: items.map((item) => ({
             ...item,

@@ -12,11 +12,14 @@ const {
   buildHydratedEventDetail,
   buildIndex,
   readImagePreview,
-  readIndexedCodexLegacyRawLine,
   readIndexedCodexRawRecord,
   readIndexedCodexSourceRows,
 } = codex;
 const { createServer } = require('../server');
+const {
+  readLegacyRawLineForSession,
+  resolveLegacyRawOwnerForIndex,
+} = require('../src/source-adapters');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 
@@ -205,10 +208,16 @@ test('all Codex hydration entry points share one index coordinator without seria
     preview.previewId,
     { onFileOpen: () => { sameIndexOrder.push('image'); } },
   );
-  const legacy = readIndexedCodexLegacyRawLine(
+  const legacyOwner = resolveLegacyRawOwnerForIndex(
     firstFixture.index,
     imageRaw.source.file,
     imageRaw.source.line,
+  );
+  const legacy = readLegacyRawLineForSession(
+    firstFixture.index,
+    firstSession,
+    legacyOwner,
+    legacyOwner.adapter,
     { onFileOpen: () => { sameIndexOrder.push('legacy'); } },
   );
   assert.deepEqual(sameIndexOrder, ['detail', 'raw']);

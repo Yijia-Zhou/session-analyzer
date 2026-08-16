@@ -495,6 +495,9 @@ function validateIndexOwnership(index, {
     error.code = 'CANONICAL_CONTRACT_VIOLATION';
     throw error;
   }
+  if (!allowResidentComplete || index.legacyRawOwners !== undefined) {
+    validateCanonicalLegacyRawOwnerIndex(index.legacyRawOwners, indexKind);
+  }
   if (!allowResidentComplete) {
     if (!(index.materializationDependencies instanceof Map)) {
       const error = new Error('Canonical strict Index.materializationDependencies must be a Map');
@@ -539,7 +542,6 @@ function validateIndexOwnership(index, {
         label: 'Adapter materialization descriptor validation',
       });
     }
-    validateCanonicalLegacyRawOwnerIndex(index.legacyRawOwners, indexKind);
     invokeReadOnlyMaterializationValidator({
       callback: adapter.validateLegacyRawOwnerIndex,
       args: {
@@ -785,31 +787,61 @@ async function readIndexedRawRecord(index, session, rawId, options = {}) {
   return adapter.readRawRecord(index, session, raw, options);
 }
 
-async function readLegacyRawLineForIndex(index, file, line, options = {}) {
-  const match = resolveLegacyRawOwnerForIndex(index, file, line);
-  if (!match) return null;
-  return match.adapter.readLegacyRaw(index, match, options);
-}
-
 function resolveLegacyRawOwnerForIndex(index, file, line) {
   const indexKind = requireExplicitSourceKind(index?.sourceKind, 'index');
   const adapter = requireSourceAdapter(indexKind);
-  const match = adapter.resolveLegacyRaw(index, file, line);
-  if (!match) return null;
-  const sessionSourceKind = validateCanonicalSessionShape(match.session, indexKind);
-  validateCanonicalRawEventShape(match.raw, sessionSourceKind);
-  return { ...match, adapter };
+  const owner = adapter.resolveLegacyRaw(index, file, line);
+  if (!owner) return null;
+  const keys = Object.keys(owner).sort();
+  if (keys.length !== 3
+      || keys[0] !== 'line'
+      || keys[1] !== 'rawIdHint'
+      || keys[2] !== 'sessionId'
+      || typeof owner.sessionId !== 'string'
+      || !owner.sessionId
+      || typeof owner.rawIdHint !== 'string'
+      || !owner.rawIdHint
+      || !Number.isSafeInteger(owner.line)
+      || owner.line < 0) {
+    const error = new Error('Adapter returned an invalid legacy Raw owner');
+    error.code = 'CANONICAL_CONTRACT_VIOLATION';
+    throw error;
+  }
+  const indexedSession = index.sessionsById.get(owner.sessionId);
+  if (!indexedSession) {
+    const error = new Error(`Legacy Raw owner references unknown Session ${owner.sessionId}`);
+    error.code = 'CANONICAL_CONTRACT_VIOLATION';
+    throw error;
+  }
+  const sessionSourceKind = requireExplicitSourceKind(
+    indexedSession.sourceKind,
+    `session ${indexedSession.id || '<unknown>'}`,
+  );
+  if (sessionSourceKind !== indexKind || indexedSession.id !== owner.sessionId) {
+    const error = new Error(`Source ownership mismatch for legacy Raw owner ${owner.sessionId}`);
+    error.code = 'SOURCE_OWNERSHIP_MISMATCH';
+    throw error;
+  }
+  return { ...owner, adapter };
 }
 
-async function readLegacyRawLineForSession(index, materializedSession, raw, adapter, options = {}) {
+async function readLegacyRawLineForSession(index, materializedSession, owner, adapter, options = {}) {
   const indexKind = requireExplicitSourceKind(index?.sourceKind, 'index');
   const sessionSourceKind = validateCanonicalSessionShape(materializedSession, indexKind);
-  const materializedRaw = materializedSession.rawEvents.find((candidate) => candidate.rawId === raw.rawId);
+  if (materializedSession.id !== owner.sessionId) {
+    const error = new Error(`Materialized Session ${materializedSession.id} does not own legacy Raw lookup`);
+    error.code = 'SOURCE_OWNERSHIP_MISMATCH';
+    throw error;
+  }
+  const materializedRaw = materializedSession.rawEvents.find((candidate) => (
+    candidate.rawId === owner.rawIdHint
+  ));
   if (!materializedRaw) return null;
   validateCanonicalRawEventShape(materializedRaw, sessionSourceKind);
   return adapter.readLegacyRaw(index, {
     session: materializedSession,
     raw: materializedRaw,
+    owner,
   }, options);
 }
 
@@ -827,7 +859,6 @@ module.exports = {
   queryForIndex,
   readImagePreviewForSession,
   readIndexedRawRecord,
-  readLegacyRawLineForIndex,
   readLegacyRawLineForSession,
   resolveLegacyRawOwnerForIndex,
   requireSourceAdapter,

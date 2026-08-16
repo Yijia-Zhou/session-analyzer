@@ -319,10 +319,17 @@ test('legacy production projections do not read retained complete arrays for lis
       configurable: true,
       get() { throw new Error('project query read retained analysis'); },
     });
+    Object.defineProperty(session, 'presentationIndexes', {
+      configurable: true,
+      get() { throw new Error('project query read retained presentationIndexes'); },
+    });
   }
   assert.equal((await query.filterSessions(packed, { sort: 'events-desc' })).total, 2);
   assert.equal((await query.filterSessions(packed, { q: 'alpha target', layer: 'main' })).total, 2);
   assert.deepEqual(await query.projectFileSuggestions(packed, { layer: 'main' }), [
     { file: 'src/a.js', count: 2 },
   ]);
+  assert.deepEqual(query.indexPresentation(packed, { locale: 'en' }), {
+    codeModeRequests: [],
+  });
 });

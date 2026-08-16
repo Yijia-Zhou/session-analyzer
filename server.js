@@ -1124,10 +1124,10 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           async ({ index, indexRevision, signal }) => {
             const owner = resolveLegacyRawOwnerForIndex(index, file, line);
             if (!owner) return null;
-            const indexedSession = index.sessionsById.get(owner.session.id);
+            const indexedSession = index.sessionsById.get(owner.sessionId);
             if (!indexedSession) return null;
             const session = await materializeSessionForIndex(index, indexedSession, { indexRevision, signal });
-            return readLegacyRawLineForSession(index, session, owner.raw, owner.adapter, { signal });
+            return readLegacyRawLineForSession(index, session, owner, owner.adapter, { signal });
           },
         );
         if (!raw) {

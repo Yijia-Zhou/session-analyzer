@@ -42,7 +42,10 @@ const { stripAnsiSequences } = require('./shared/terminal-text');
 const { deriveCodeModeFacts } = require('./codex-code-mode-facts');
 const { codeModePresentationContextMap } = require('./codex-presentation-context');
 const { createCodexDetailBuilder } = require('./codex-detail');
-const { validateCanonicalRawEventShape } = require('./canonical-contract');
+const {
+  validateCanonicalLegacyRawOwnerIndex,
+  validateCanonicalRawEventShape,
+} = require('./canonical-contract');
 const {
   goalResponseFromValue,
   goalSnapshotFromGoal,
@@ -123,6 +126,56 @@ function resolveFsPath(input) {
 
 function normalizeFsPath(input) {
   return fsPath.normalizeFsPath(input);
+}
+
+function buildCodexLegacyRawOwnerIndex(sessions) {
+  const sessionIds = [];
+  const sessionIndexes = new Map();
+  const files = {};
+  let entryCount = 0;
+
+  for (const session of sessions || []) {
+    const sessionId = String(session?.id || '');
+    if (!sessionId) continue;
+    let sessionIndex = sessionIndexes.get(sessionId);
+    if (sessionIndex === undefined) {
+      sessionIndex = sessionIds.length;
+      sessionIndexes.set(sessionId, sessionIndex);
+      sessionIds.push(sessionId);
+    }
+    const seenSessionOwners = new Set();
+    for (const raw of session.rawEvents || []) {
+      const file = normalizeFsPath(raw?.source?.file || '');
+      const line = raw?.source?.line;
+      const rawId = String(raw?.rawId || '');
+      if (!file || !Number.isSafeInteger(line) || line < 0 || !rawId) continue;
+      const ownerKey = `${file}\u0000${line}`;
+      if (seenSessionOwners.has(ownerKey)) continue;
+      seenSessionOwners.add(ownerKey);
+      if (!Object.hasOwn(files, file)) files[file] = {};
+      const lineKey = String(line);
+      if (Object.hasOwn(files[file], lineKey)) {
+        if (files[file][lineKey] !== '') {
+          files[file][lineKey] = '';
+          entryCount -= 1;
+        }
+        continue;
+      }
+      files[file][lineKey] = `${sessionIndex}:${rawId}`;
+      entryCount += 1;
+    }
+  }
+
+  const payload = { sessionIds, files };
+  const legacyRawOwners = {
+    schemaVersion: 1,
+    sourceKind: CODEX_SOURCE_KIND,
+    entryCount,
+    accountedBytes: Buffer.byteLength(JSON.stringify(payload), 'utf8'),
+    payload,
+  };
+  validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, CODEX_SOURCE_KIND);
+  return legacyRawOwners;
 }
 
 function isPathInsideOrSame(child, parent) {
@@ -4706,6 +4759,7 @@ async function buildIndex({
     generatedAt: new Date().toISOString(),
     sessions,
     sessionsById,
+    legacyRawOwners: buildCodexLegacyRawOwnerIndex(sessions),
     eventKinds: eventKindCatalog(sessions),
     codeModeRequests: codeModeRequestCatalog(sessions),
     totals: {
@@ -4938,24 +4992,20 @@ async function readIndexedCodexRawRecord(index, session, raw, options = {}) {
 function resolveIndexedCodexLegacyRaw(index, file, line) {
   if (typeof file !== 'string' || !file || !Number.isSafeInteger(line) || line < 1) return null;
   const normalizedFile = normalizeFsPath(file);
-  let match = null;
-  for (const session of index.sessions || []) {
-    if (normalizeFsPath(session.sourceFile || '') !== normalizedFile) continue;
-    const raw = session.rawEvents?.find((candidate) => (
-      candidate.source?.line === line
-      && normalizeFsPath(candidate.source?.file || '') === normalizedFile
-    ));
-    if (!raw) continue;
-    if (match) return null;
-    match = { session, raw };
-  }
-  return match;
-}
-
-async function readIndexedCodexLegacyRawLine(index, file, line, options = {}) {
-  const match = resolveIndexedCodexLegacyRaw(index, file, line);
-  if (!match) return null;
-  return readIndexedCodexRawRecord(index, match.session, match.raw, options);
+  const payload = index?.legacyRawOwners?.payload;
+  const encodedOwner = payload?.files?.[normalizedFile]?.[String(line)];
+  if (typeof encodedOwner !== 'string' || !encodedOwner) return null;
+  const separator = encodedOwner.indexOf(':');
+  if (separator < 1) return null;
+  const sessionIndex = Number(encodedOwner.slice(0, separator));
+  const rawIdHint = encodedOwner.slice(separator + 1);
+  const sessionId = payload?.sessionIds?.[sessionIndex];
+  if (!Number.isSafeInteger(sessionIndex)
+      || sessionIndex < 0
+      || typeof sessionId !== 'string'
+      || !sessionId
+      || !rawIdHint) return null;
+  return { sessionId, rawIdHint, line };
 }
 
 function jsonPathValue(value, jsonPath) {
@@ -5078,6 +5128,7 @@ const __testOnly = Object.freeze({
 
 module.exports = {
   __testOnly,
+  buildCodexLegacyRawOwnerIndex,
   buildHydratedEventDetail,
   buildIndex,
   discoverProjects,
@@ -5091,7 +5142,6 @@ module.exports = {
   eventKindCatalog,
   readImagePreview,
   resolveIndexedCodexLegacyRaw,
-  readIndexedCodexLegacyRawLine,
   readIndexedCodexRawRecord,
   readIndexedCodexSourceRows,
   readRawLine,

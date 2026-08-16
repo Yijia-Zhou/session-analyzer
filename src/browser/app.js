@@ -3190,6 +3190,23 @@ function fileSuggestionContextKey() {
   ]);
 }
 
+function isRetiredIndexRevisionError(error) {
+  return error?.status === 409 && error?.code === 'INDEX_REVISION_RETIRED';
+}
+
+async function acceptRevisionBearingQueryResponse(data) {
+  if (Number.isSafeInteger(data?.indexRevision)
+      && data.indexRevision === state.indexRevision) return true;
+  if (!state.revisionRecoveryPending) await recoverIndexRevision();
+  return false;
+}
+
+async function recoverRetiredIndexRevision(error) {
+  if (!isRetiredIndexRevisionError(error)) return false;
+  if (!state.revisionRecoveryPending) await recoverIndexRevision();
+  return true;
+}
+
 async function refreshFileSuggestions() {
   const requestId = state.fileSuggestionRequestId + 1;
   const requestContext = fileSuggestionContextKey();
@@ -3204,11 +3221,13 @@ async function refreshFileSuggestions() {
     if (!requestOwners.fileSuggestions.isCurrent(owner)
         || requestId !== state.fileSuggestionRequestId
         || requestContext !== fileSuggestionContextKey()) return false;
+    if (!(await acceptRevisionBearingQueryResponse(data))) return false;
     state.fileSuggestions = data.files || [];
     renderFileSuggestions();
     return true;
   } catch (error) {
     if (isIntentionalAbort(error)) return false;
+    if (await recoverRetiredIndexRevision(error)) return false;
     throw error;
   } finally {
     requestOwners.fileSuggestions.finish(owner);
@@ -3912,11 +3931,13 @@ async function loadSessions() {
     )}`, { signal: owner.controller.signal });
   } catch (error) {
     if (isIntentionalAbort(error)) return false;
+    if (await recoverRetiredIndexRevision(error)) return false;
     throw error;
   } finally {
     requestOwners.sessions.finish(owner);
   }
   if (requestId !== state.sessionsRequestId || requestContext !== sessionsDataContextKey()) return false;
+  if (!(await acceptRevisionBearingQueryResponse(data))) return false;
   state.sessionsDataContext = requestContext;
   state.sessions = data.sessions;
   state.sessionTotal = data.total;
@@ -4000,6 +4021,7 @@ async function loadProjectResults() {
     if (!requestOwners.projectResults.isCurrent(owner)
         || requestId !== state.projectSearchRequestId
         || requestContext !== projectSearchDataContextKey()) return false;
+    if (!(await acceptRevisionBearingQueryResponse(data))) return false;
     state.projectSearchDataContext = requestContext;
     state.projectSearchPendingContext = '';
     state.projectResults = data.sessions || [];
@@ -4009,10 +4031,7 @@ async function loadProjectResults() {
     return true;
   } catch (error) {
     if (isIntentionalAbort(error)) return false;
-    if (error?.status === 409 && error?.code === 'INDEX_REVISION_RETIRED') {
-      await recoverIndexRevision();
-      return false;
-    }
+    if (await recoverRetiredIndexRevision(error)) return false;
     throw error;
   } finally {
     const currentOwner = requestOwners.projectResults.finish(owner);
@@ -4026,21 +4045,32 @@ async function loadProjectResults() {
 
 async function recoverIndexRevision() {
   if (state.revisionRecoveryPending) return state.revisionRecoveryPending;
+  Object.values(requestOwners).forEach((owner) => owner.abort());
+  state.sessions = [];
+  state.sessionTotal = 0;
+  state.sessionsDataContext = '';
+  state.fileSuggestions = [];
   state.projectResults = [];
   state.projectResultsRevision = 0;
   state.projectReturnContext = null;
-  state.revisionRecoveryPending = (async () => {
-    const appState = await api('/api/state');
-    const currentState = appState.currentState || appState;
-    if (!currentState?.projectSelected) return false;
-    await applyAppState(currentState);
-    await loadSessions();
-    return true;
+  renderSessions();
+  renderFileSuggestions();
+  renderProjectSearchView();
+  const recovery = (async () => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const appState = await api('/api/state');
+      const currentState = appState.currentState || appState;
+      if (!currentState?.projectSelected) return false;
+      await applyAppState(currentState);
+      if (await loadSessions()) return true;
+    }
+    return false;
   })();
+  state.revisionRecoveryPending = recovery;
   try {
-    return await state.revisionRecoveryPending;
+    return await recovery;
   } finally {
-    state.revisionRecoveryPending = null;
+    if (state.revisionRecoveryPending === recovery) state.revisionRecoveryPending = null;
   }
 }
 

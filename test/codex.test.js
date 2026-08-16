@@ -7,9 +7,10 @@ const childProcess = require('node:child_process');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { __testOnly, buildIndex: buildCompactIndex, buildEventDetail, buildHydratedEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readImagePreview, readRawLine, isPathInsideOrSame } = require('../src/codex');
+const { __testOnly, buildCodexLegacyRawOwnerIndex, buildIndex: buildCompactIndex, buildEventDetail, buildHydratedEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readImagePreview, readRawLine, isPathInsideOrSame } = require('../src/codex');
 const { createServer, parseArgs, resolveStaticAssetPath } = require('../server');
 const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../src/folding');
+const { resolveLegacyRawOwnerForIndex } = require('../src/source-adapters');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
@@ -4218,6 +4219,33 @@ test('image preview endpoint rehydrates only indexed server-owned image locators
   }
 });
 
+test('legacy Raw ownership uses the bounded Index projection before materialization', async () => {
+  const index = await buildFixtureIndex();
+  let selected = null;
+  for (const session of index.sessions) {
+    for (const raw of session.rawEvents) {
+      const owner = resolveLegacyRawOwnerForIndex(index, raw?.source?.file, raw?.source?.line);
+      if (owner?.sessionId === session.id && owner.rawIdHint === raw.rawId) {
+        selected = { session, raw };
+        break;
+      }
+    }
+    if (selected) break;
+  }
+  assert.ok(selected);
+  const { session, raw } = selected;
+  Object.defineProperty(session, 'rawEvents', {
+    configurable: true,
+    get() { throw new Error('resident rawEvents reached before materialization'); },
+  });
+
+  const owner = resolveLegacyRawOwnerForIndex(index, raw.source.file, raw.source.line);
+  assert.equal(owner.sessionId, session.id);
+  assert.equal(owner.rawIdHint, raw.rawId);
+  assert.equal(owner.line, raw.source.line);
+  assert.equal(owner.adapter.kind, 'codex');
+});
+
 test('legacy raw endpoint rejects malformed canonical Raw Event ownership', async (t) => {
   const file = path.join(os.tmpdir(), 'session-analyzer-synthetic-legacy.jsonl');
   const raw = {
@@ -4246,6 +4274,7 @@ test('legacy raw endpoint rejects malformed canonical Raw Event ownership', asyn
     repoRoot: path.join(os.tmpdir(), 'session-analyzer-synthetic-repo'),
     sessions: [session],
     sessionsById: new Map([[session.id, session]]),
+    legacyRawOwners: buildCodexLegacyRawOwnerIndex([session]),
   };
   const server = createServer(index, 0, { codexHome: fixtureCodexHome });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
