@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
+const { isDeepStrictEqual } = require('node:util');
 const {
   fsPathApi,
   isPathInsideOrSame,
@@ -21,7 +22,13 @@ const {
   truncate,
 } = require('./claude-source');
 const { createClaudeLogicalBuilder } = require('./claude-logical');
-const { inferClaudeForkRelationships } = require('./claude-forks');
+const {
+  compactClaudeForkRelationshipFacts,
+  inferClaudeForkRelationships,
+} = require('./claude-forks');
+const { createProjectQueryStoreBuilder } = require('./project-query-store');
+const { createSessionQuery } = require('./session-query');
+const { validateCanonicalLegacyRawOwnerIndex } = require('./canonical-contract');
 const {
   isPlanArtifactEvent,
   isPlanEvent,
@@ -38,6 +45,36 @@ const CLAUDE_ID_COMPONENT_SAFE = /^[A-Za-z0-9\-._!~*'()]$/u;
 // and persisting these implementation details would make the public index shape
 // depend on an optimisation.
 const claudeReuseEvidenceBySession = new WeakMap();
+const claudeStrictReuseEvidenceByIndex = new WeakMap();
+const CLAUDE_MATERIALIZATION_SCHEMA_VERSION = 1;
+const claudeSearch = createSessionQuery();
+
+function sourceFileIdentity(stat) {
+  return {
+    device: String(stat?.dev ?? ''),
+    inode: String(stat?.ino ?? ''),
+  };
+}
+
+function sameSourceIdentity(left, right) {
+  return Boolean(left && right)
+    && left.device === right.device
+    && left.inode === right.inode;
+}
+
+function sourceSnapshotChangedError() {
+  const error = new Error('Claude source changed during indexing; retry required');
+  error.code = 'SOURCE_CHANGED_DURING_INDEX';
+  return error;
+}
+
+function indexedSourceStaleError() {
+  const error = new Error('Indexed Claude source changed; reindex required');
+  error.name = 'IndexedSourceStaleError';
+  error.code = 'INDEXED_SOURCE_STALE';
+  error.statusCode = 409;
+  return error;
+}
 
 function encodeClaudeIdentityComponent(value) {
   const source = String(value);
@@ -322,6 +359,8 @@ async function inspectClaudeSessionFile(candidate, options = {}) {
   const signal = options.signal;
   throwIfAborted(signal);
   const stat = await fsp.stat(candidate.filePath);
+  const acceptedBytes = stat.size;
+  const acceptedIdentity = sourceFileIdentity(stat);
   const transcriptFingerprint = crypto.createHash('sha256');
   const cwdSet = new Set();
   const uuids = new Set();
@@ -334,13 +373,18 @@ async function inspectClaudeSessionFile(candidate, options = {}) {
   let startedAt = '';
   let updatedAt = '';
 
-  const stream = fs.createReadStream(candidate.filePath, { encoding: 'utf8' });
+  const stream = acceptedBytes > 0
+    ? fs.createReadStream(candidate.filePath, { start: 0, end: acceptedBytes - 1 })
+    : fs.createReadStream(candidate.filePath, { start: 0, end: 0 });
+  let sourceBytesRead = 0;
+  stream.on('data', (chunk) => {
+    sourceBytesRead += chunk.length;
+    transcriptFingerprint.update(chunk);
+  });
   const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
   try {
     for await (const line of lines) {
       throwIfAborted(signal);
-      transcriptFingerprint.update(line, 'utf8');
-      transcriptFingerprint.update('\n');
       if (!line.trim()) continue;
       lineCount += 1;
       let record;
@@ -371,6 +415,13 @@ async function inspectClaudeSessionFile(candidate, options = {}) {
     stream.destroy();
   }
 
+  const verifiedStat = await fsp.stat(candidate.filePath);
+  if (sourceBytesRead !== acceptedBytes
+      || verifiedStat.size < acceptedBytes
+      || !sameSourceIdentity(sourceFileIdentity(verifiedStat), acceptedIdentity)) {
+    throw sourceSnapshotChangedError();
+  }
+
   const fileIdentity = usableSourceSessionIdentity(path.basename(candidate.filePath, '.jsonl'));
   let sourceIdentityConflict = invalidSourceSessionIdentity || declaredSourceSessionIds.size > 1;
   const sourceSessionId = sourceIdentityConflict
@@ -383,7 +434,8 @@ async function inspectClaudeSessionFile(candidate, options = {}) {
 
   return {
     ...candidate,
-    bytes: stat.size,
+    bytes: acceptedBytes,
+    sourceIdentity: acceptedIdentity,
     sourceUpdatedAt: safeIso(stat.mtime),
     lineCount,
     cwdSet,
@@ -808,8 +860,35 @@ const logicalBuilder = createClaudeLogicalBuilder({
 
 async function parseClaudeSession(candidate, context) {
   throwIfAborted(context.signal);
+  const acceptedSnapshot = context.acceptedSourceSnapshot || null;
+  let stat;
+  try {
+    stat = await fsp.stat(candidate.filePath);
+  } catch (error) {
+    if (acceptedSnapshot && (error?.code === 'ENOENT' || error?.code === 'ENOTDIR')) {
+      throw indexedSourceStaleError();
+    }
+    throw error;
+  }
+  const acceptedBytes = acceptedSnapshot ? acceptedSnapshot.acceptedBytes : stat.size;
+  const snapshotFailure = context.materialization ? indexedSourceStaleError : sourceSnapshotChangedError;
+  if (!Number.isSafeInteger(acceptedBytes)
+      || acceptedBytes < 0
+      || stat.size < acceptedBytes
+      || (acceptedSnapshot
+        && !sameSourceIdentity(sourceFileIdentity(stat), acceptedSnapshot.fileIdentity))) {
+    throw snapshotFailure();
+  }
   const session = makeSession(candidate, context);
-  const stream = fs.createReadStream(candidate.filePath, { encoding: 'utf8' });
+  const sourceHash = crypto.createHash('sha256');
+  let sourceBytesRead = 0;
+  const stream = acceptedBytes > 0
+    ? fs.createReadStream(candidate.filePath, { start: 0, end: acceptedBytes - 1 })
+    : fs.createReadStream(candidate.filePath, { start: 0, end: 0 });
+  stream.on('data', (chunk) => {
+    sourceBytesRead += chunk.length;
+    sourceHash.update(chunk);
+  });
   const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
   let lineNumber = 0;
   try {
@@ -839,6 +918,15 @@ async function parseClaudeSession(candidate, context) {
   } finally {
     lines.close();
     stream.destroy();
+  }
+  const sourceFingerprint = sourceHash.digest('hex');
+  const verifiedStat = await fsp.stat(candidate.filePath);
+  if (sourceBytesRead !== acceptedBytes
+      || verifiedStat.size < acceptedBytes
+      || (acceptedSnapshot && sourceFingerprint !== acceptedSnapshot.digest)
+      || (acceptedSnapshot
+        && !sameSourceIdentity(sourceFileIdentity(verifiedStat), acceptedSnapshot.fileIdentity))) {
+    throw snapshotFailure();
   }
   session.logicalEvents = logicalBuilder.buildLogicalEvents(session.rawEvents);
   return finalizeSession(session);
@@ -878,10 +966,15 @@ async function readContainedTextWithEvidence(sourceRoot, target) {
       },
     };
   }
-  const [stat, text] = await Promise.all([
-    fsp.stat(state.filePath),
-    fsp.readFile(state.filePath, 'utf8'),
-  ]);
+  const stat = await fsp.stat(state.filePath);
+  const bytes = await fsp.readFile(state.filePath);
+  const verifiedStat = await fsp.stat(state.filePath);
+  if (bytes.length !== stat.size
+      || verifiedStat.size !== stat.size
+      || !sameSourceIdentity(sourceFileIdentity(verifiedStat), sourceFileIdentity(stat))) {
+    throw sourceSnapshotChangedError();
+  }
+  const text = bytes.toString('utf8');
   return {
     text,
     valid: true,
@@ -891,7 +984,8 @@ async function readContainedTextWithEvidence(sourceRoot, target) {
       relFile: relativeSourceFile(sourceRoot, state.filePath),
       bytes: stat.size,
       sourceUpdatedAt: safeIso(stat.mtime),
-      fingerprint: crypto.createHash('sha256').update(text, 'utf8').digest('hex'),
+      sourceIdentity: sourceFileIdentity(stat),
+      fingerprint: crypto.createHash('sha256').update(bytes).digest('hex'),
     },
   };
 }
@@ -1008,7 +1102,14 @@ async function inspectDerivedTranscript(parentCandidate, filePath, signal) {
   }, { signal });
 }
 
-function normalSubagentCandidate(parentSession, inspected, agentId, metadataValue) {
+function normalSubagentCandidate(
+  parentSession,
+  inspected,
+  agentId,
+  metadataValue,
+  skillValue,
+  markerValue,
+) {
   if (!derivedTranscriptMatches(inspected, parentSession, agentId, false)) return null;
   const metadata = metadataValue.valid ? metadataValue.metadata : {};
   const metadataToolUseId = String(metadata.toolUseId || '');
@@ -1022,7 +1123,11 @@ function normalSubagentCandidate(parentSession, inspected, agentId, metadataValu
       kind: 'subagent',
       parentEventId: evidence.id,
       parentRawRefs: evidence.rawRefs,
-      files: reuseEvidenceFiles([{ role: 'metadata', evidence: metadataValue.evidence }]),
+      files: reuseEvidenceFiles([
+        { role: 'metadata', evidence: metadataValue.evidence },
+        { role: 'forked-skill', evidence: skillValue.evidence },
+        { role: 'forked-skill-marker', evidence: markerValue.evidence },
+      ]),
     },
     context: {
       id: analyzerSubagentSessionId(parentSession.sourceSessionId, agentId),
@@ -1281,7 +1386,14 @@ async function directDerivedCandidates(parentCandidate, parentSession, subagents
       forked.push({ inspected, agentId, metadataValue, skillValue, markerValue });
       continue;
     }
-    const candidate = normalSubagentCandidate(parentSession, inspected, agentId, metadataValue);
+    const candidate = normalSubagentCandidate(
+      parentSession,
+      inspected,
+      agentId,
+      metadataValue,
+      skillValue,
+      markerValue,
+    );
     if (candidate) candidates.push(candidate);
   }
 
@@ -1507,6 +1619,684 @@ function eventKindCatalog(sessions) {
     protocol: items(maps.protocol),
     raw: items(maps.raw),
   };
+}
+
+const CLAUDE_COMMITTED_PROJECTION_FIELDS = Object.freeze([
+  'projectAssociation',
+  'parentSessionId',
+  'parentSessionInferred',
+  'forkedFromSessionId',
+  'forkStorageMode',
+  'forkedAt',
+  'forkPointUuid',
+  'forkContinuationState',
+  'forkEvidence',
+  'inheritedContext',
+  'startedAt',
+  'updatedAt',
+]);
+
+function cloneClaudeProjectionValue(value) {
+  return value === null || typeof value !== 'object' ? value : structuredClone(value);
+}
+
+function compactClaudeRelationshipSession(session) {
+  return {
+    id: session.id,
+    sourceSessionId: session.sourceSessionId,
+    sourceAbsFile: session.sourceAbsFile,
+    parentSessionId: session.parentSessionId,
+    parentSessionInferred: session.parentSessionInferred,
+    projectAssociation: session.projectAssociation,
+    matchesRepo: session.matchesRepo,
+    cwdSet: new Set(session.cwdSet),
+    startedAt: session.startedAt,
+    updatedAt: session.updatedAt,
+    transcriptUpdatedAt: session.transcriptUpdatedAt,
+    forkedFromSessionId: session.forkedFromSessionId,
+    forkStorageMode: session.forkStorageMode,
+    forkedAt: session.forkedAt,
+    forkPointUuid: session.forkPointUuid,
+    forkContinuationState: session.forkContinuationState,
+    forkEvidence: cloneClaudeProjectionValue(session.forkEvidence),
+    inheritedContext: cloneClaudeProjectionValue(session.inheritedContext),
+    _relationshipFacts: compactClaudeForkRelationshipFacts(session),
+    _foreignSessionIds: new Set(session._foreignSessionIds || []),
+    _rawUuidSet: new Set(session._rawUuidSet || []),
+  };
+}
+
+function claudeCommittedProjection(session) {
+  const projection = {};
+  for (const field of CLAUDE_COMMITTED_PROJECTION_FIELDS) {
+    projection[field] = cloneClaudeProjectionValue(session[field]);
+  }
+  projection.cwdSet = [...(session.cwdSet || [])].map(String);
+  return projection;
+}
+
+function applyClaudeCommittedProjection(session, projection) {
+  for (const field of CLAUDE_COMMITTED_PROJECTION_FIELDS) {
+    session[field] = cloneClaudeProjectionValue(projection[field]);
+  }
+  session.cwdSet = new Set(projection.cwdSet || []);
+  session.matchesRepo = true;
+  session.transcriptUpdatedAt = session.updatedAt;
+  return session;
+}
+
+function applyClaudeMaterializedForkOwnership(session, errorFactory) {
+  if (session.forkStorageMode !== 'materialized') return session;
+  const copiedRawRecordCount = session.forkEvidence?.copiedRawRecordCount;
+  if (!Number.isSafeInteger(copiedRawRecordCount)
+      || copiedRawRecordCount <= 0
+      || copiedRawRecordCount > session.rawEvents.length) {
+    throw errorFactory();
+  }
+  const copiedRawIds = new Set(
+    session.rawEvents.slice(0, copiedRawRecordCount).map((raw) => raw.rawId),
+  );
+  const continuationEvents = [];
+  for (const event of session.logicalEvents) {
+    const refs = event.rawRefs || [];
+    const copiedRefCount = refs.filter((ref) => copiedRawIds.has(ref.rawId)).length;
+    if (copiedRefCount > 0 && copiedRefCount !== refs.length) throw errorFactory();
+    if (copiedRefCount === 0) continuationEvents.push(event);
+  }
+  const continuationRawEvents = session.rawEvents.slice(copiedRawRecordCount);
+  session.logicalEvents = continuationEvents;
+  session.counts = emptyCounts();
+  session.analysis = null;
+  session.presentationIndexes = { codeModeDeclaredRequests: new Map() };
+  session._customTitle = '';
+  session._aiTitle = '';
+  session._agentName = '';
+  session._lastPrompt = '';
+  session._subagentDescription = '';
+  const continuationTimestamps = continuationRawEvents
+    .map((raw) => String(raw.timestamp || ''))
+    .filter(Boolean)
+    .sort();
+  session.startedAt = continuationTimestamps[0] || '';
+  session.updatedAt = continuationTimestamps.at(-1) || '';
+  for (const raw of continuationRawEvents) {
+    const record = raw.parsed;
+    if (!isPlainObject(record)) continue;
+    if (record.type === 'custom-title' && record.customTitle) {
+      session._customTitle = String(record.customTitle);
+    }
+    if (record.type === 'ai-title' && record.aiTitle) session._aiTitle = String(record.aiTitle);
+    if (record.type === 'agent-name' && record.agentName) session._agentName = String(record.agentName);
+    if (record.type === 'last-prompt' && record.lastPrompt) {
+      session._lastPrompt = String(record.lastPrompt);
+    }
+  }
+  const finalized = finalizeSession(session);
+  finalized.analysis.tokenStats = responseUsage(continuationRawEvents);
+  return finalized;
+}
+
+function projectClaudeCarriedSession(session, summary) {
+  const projected = {
+    id: String(session.id || ''),
+    sourceKind: CLAUDE_SOURCE_KIND,
+    sourceSessionId: String(session.sourceSessionId || ''),
+    sourceDerivedId: String(session.sourceDerivedId || ''),
+    sourceClientVersion: String(session.sourceClientVersion || ''),
+    projectAssociation: String(session.projectAssociation || ''),
+    title: String(session.title || ''),
+    sourceFile: String(session.sourceFile || ''),
+    agentNickname: String(session.agentNickname || ''),
+    primarySessionMetaKind: String(session.primarySessionMetaKind || ''),
+    derivedRunId: String(session.derivedRunId || ''),
+    startedAt: String(session.startedAt || ''),
+    updatedAt: String(session.updatedAt || ''),
+    bytes: Number(session.bytes || 0),
+    lineCount: Number(session.lineCount || 0),
+    cwdSet: [...(session.cwdSet || [])].map(String),
+    counts: { ...emptyCounts(), ...(session.counts || {}) },
+    rawEventCount: session.rawEvents.length,
+    logicalEventCount: session.logicalEvents.length,
+    parentSessionId: String(session.parentSessionId || ''),
+    forkedFromSessionId: String(session.forkedFromSessionId || ''),
+    forkStorageMode: String(session.forkStorageMode || ''),
+    forkedAt: String(session.forkedAt || ''),
+    forkPointUuid: String(session.forkPointUuid || ''),
+    forkContinuationState: String(session.forkContinuationState || ''),
+    supersededBySessionId: '',
+    supersededAt: '',
+    supersededReason: '',
+    parentSessionInferred: Boolean(session.parentSessionInferred),
+    forkEvidence: cloneClaudeProjectionValue(session.forkEvidence),
+    inheritedContext: cloneClaudeProjectionValue(session.inheritedContext),
+    summary: structuredClone(summary),
+  };
+  for (const field of ['derivedRelationship', 'subagentToolUseId', 'spawnDepth']) {
+    if (Object.hasOwn(session, field)) projected[field] = cloneClaudeProjectionValue(session[field]);
+  }
+  return projected;
+}
+
+function createClaudeCatalogAccumulator() {
+  const counts = { main: new Map(), protocol: new Map(), raw: new Map() };
+  return {
+    addSession(session) {
+      const catalog = eventKindCatalog([session]);
+      for (const layer of ['main', 'protocol', 'raw']) {
+        for (const item of catalog[layer]) {
+          counts[layer].set(item.value, (counts[layer].get(item.value) || 0) + item.count);
+        }
+      }
+    },
+    finish() {
+      const items = (values) => [...values.entries()]
+        .sort((left, right) => left[0].localeCompare(right[0]))
+        .map(([value, count]) => ({ value, label: value, count }));
+      return {
+        main: items(counts.main),
+        protocol: items(counts.protocol),
+        raw: items(counts.raw),
+      };
+    },
+  };
+}
+
+function hashClaudeMaterializationValue(value) {
+  return crypto.createHash('sha256').update(JSON.stringify(value), 'utf8').digest('base64url');
+}
+
+function claudeTranscriptDependency(role, candidate) {
+  return {
+    role,
+    pathIdentity: candidate.relFile,
+    existence: 'present',
+    kind: 'file',
+    policy: 'accepted_prefix',
+    acceptedBytes: candidate.bytes,
+    lineCount: candidate.lineCount,
+    digest: candidate.transcriptFingerprint,
+    directoryEntries: [],
+    evidence: { fileIdentity: structuredClone(candidate.sourceIdentity) },
+  };
+}
+
+async function captureClaudeReuseTreeSnapshot(sourceRoot, containers, signal, knownCandidates = []) {
+  const roots = [...new Set(containers.map((container) => path.resolve(container.path)))];
+  const knownFiles = new Map(knownCandidates.map((candidate) => [
+    normalizeFsPath(candidate.relFile),
+    candidate,
+  ]));
+  const snapshot = [];
+  const visit = async (directory) => {
+    throwIfAborted(signal);
+    const safeDirectory = await containedRealPath(sourceRoot, directory);
+    if (!safeDirectory) return;
+    const stat = await fsp.stat(safeDirectory);
+    if (!stat.isDirectory()) return;
+    const entries = (await fsp.readdir(safeDirectory, { withFileTypes: true }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    snapshot.push({
+      pathIdentity: relativeSourceFile(sourceRoot, safeDirectory) || '.',
+      kind: 'directory',
+      fileIdentity: sourceFileIdentity(stat),
+      entries: entries.map((entry) => ({
+        name: entry.name,
+        kind: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other',
+      })),
+    });
+    if (snapshot.length > 65_536) throw sourceSnapshotChangedError();
+    for (const entry of entries) {
+      const target = path.join(safeDirectory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(target);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const pathIdentity = relativeSourceFile(sourceRoot, target);
+      const known = knownFiles.get(normalizeFsPath(pathIdentity));
+      if (known) {
+        snapshot.push({
+          pathIdentity,
+          kind: 'file',
+          fileIdentity: structuredClone(known.sourceIdentity),
+          bytes: known.bytes,
+          digest: known.transcriptFingerprint,
+        });
+        if (snapshot.length > 65_536) throw sourceSnapshotChangedError();
+        continue;
+      }
+      const before = await fsp.stat(target);
+      const value = await readClaudeDependencyPrefix(target, before.size, signal);
+      const after = await fsp.stat(target);
+      if (value.bytesRead !== before.size
+          || after.size !== before.size
+          || !sameSourceIdentity(sourceFileIdentity(before), sourceFileIdentity(after))) {
+        throw sourceSnapshotChangedError();
+      }
+      snapshot.push({
+        pathIdentity,
+        kind: 'file',
+        fileIdentity: sourceFileIdentity(before),
+        bytes: before.size,
+        digest: value.digest,
+      });
+      if (snapshot.length > 65_536) throw sourceSnapshotChangedError();
+    }
+  };
+  for (const root of roots.sort((left, right) => left.localeCompare(right))) await visit(root);
+  return snapshot;
+}
+
+async function canReuseStrictClaudeIndex(previousIndex, currentEvidence, signal) {
+  throwIfAborted(signal);
+  const previousEvidence = claudeStrictReuseEvidenceByIndex.get(previousIndex);
+  if (!previousEvidence || !isDeepStrictEqual(previousEvidence, currentEvidence)) return false;
+  return previousIndex.materializationDependencies instanceof Map;
+}
+
+function claudeAcceptedSourceSnapshot(candidate) {
+  return {
+    acceptedBytes: candidate.bytes,
+    digest: candidate.transcriptFingerprint,
+    fileIdentity: structuredClone(candidate.sourceIdentity),
+  };
+}
+
+function requireExactClaudeKeys(value, keys, owner) {
+  const actual = value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.keys(value).sort()
+    : [];
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length
+      || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`${owner} must contain exactly ${expected.join(', ')}`);
+  }
+}
+
+function isCanonicalClaudeDependencyPath(sourceRoot, value) {
+  if (typeof value !== 'string' || !value || path.isAbsolute(value)) return false;
+  const resolved = path.resolve(sourceRoot, value);
+  if (!isPathInsideOrSame(resolved, sourceRoot)) return false;
+  return (relativeSourceFile(sourceRoot, resolved) || '.') === value;
+}
+
+async function createClaudeMaterializationState(evidence) {
+  const entries = [claudeTranscriptDependency('session_transcript', evidence.candidate)];
+  const dependencySet = {
+    schemaVersion: CLAUDE_MATERIALIZATION_SCHEMA_VERSION,
+    id: '',
+    sourceKind: CLAUDE_SOURCE_KIND,
+    entries,
+  };
+  dependencySet.id = `claude-dependency:${hashClaudeMaterializationValue(entries)}`;
+  const payload = {
+    sourceFile: evidence.candidate.relFile,
+    description: String(evidence.context.description || ''),
+    projection: claudeCommittedProjection(evidence.stub),
+  };
+  const sourceSnapshotId = `claude-snapshot:${hashClaudeMaterializationValue({
+    dependencySet,
+    payload,
+  })}`;
+  return {
+    dependencySet,
+    descriptor: {
+      schemaVersion: CLAUDE_MATERIALIZATION_SCHEMA_VERSION,
+      dependencySetId: dependencySet.id,
+      sourceSnapshotId,
+      payload,
+    },
+  };
+}
+
+function claudeParseContextFromIndexed(indexedSession, descriptor, repoRoot, signal) {
+  return {
+    id: indexedSession.id,
+    derivedKind: indexedSession.primarySessionMetaKind,
+    derivedId: indexedSession.sourceDerivedId,
+    agentId: indexedSession.sourceDerivedId,
+    runId: indexedSession.derivedRunId,
+    parentSessionId: indexedSession.parentSessionId,
+    agentNickname: indexedSession.agentNickname,
+    description: descriptor.payload.description,
+    toolUseId: indexedSession.subagentToolUseId || '',
+    spawnDepth: Object.hasOwn(indexedSession, 'spawnDepth') ? indexedSession.spawnDepth : null,
+    inheritedCwds: indexedSession.cwdSet,
+    matchesRepo: true,
+    projectAssociation: indexedSession.projectAssociation,
+    derivedRelationship: indexedSession.derivedRelationship || null,
+    repoRoot,
+    signal,
+  };
+}
+
+async function buildClaudeSourceBackedIndex({
+  repoRoot,
+  claudeHome,
+  onProgress,
+  onTransientMemorySample,
+  signal,
+  previousIndex = null,
+}) {
+  const resolvedRepo = resolveFsPath(repoRoot);
+  const resolvedClaude = path.resolve(claudeHome);
+  const started = Date.now();
+  throwIfAborted(signal);
+  emitProgress(onProgress, {
+    phase: 'scanning',
+    repoRoot: resolvedRepo,
+    filesTotal: 0,
+    filesScanned: 0,
+    candidateFileCount: 0,
+    skippedFileCount: 0,
+    unknownFileCount: 0,
+    indexedFileCount: 0,
+    indexedBytes: 0,
+    elapsedMs: 0,
+  });
+
+  const discovery = await discoverMainCandidates(resolvedClaude);
+  const inspected = [];
+  for (const candidate of discovery.candidates) {
+    throwIfAborted(signal);
+    inspected.push(await inspectClaudeSessionFile(candidate, { signal }));
+    emitProgress(onProgress, {
+      phase: 'selecting',
+      repoRoot: resolvedRepo,
+      filesTotal: discovery.candidates.length,
+      filesScanned: inspected.length,
+      candidateFileCount: 0,
+      skippedFileCount: 0,
+      unknownFileCount: 0,
+      indexedFileCount: 0,
+      indexedBytes: 0,
+      elapsedMs: Date.now() - started,
+    });
+  }
+
+  const currentStrictReuseEvidence = {
+    sourceRoot: discovery.sourceRoot,
+    repoRoot: resolvedRepo,
+    candidates: inspected
+      .map(candidateReuseEvidence)
+      .sort((left, right) => left.relFile.localeCompare(right.relFile)),
+    tree: await captureClaudeReuseTreeSnapshot(
+      discovery.sourceRoot,
+      discovery.containers,
+      signal,
+      inspected,
+    ),
+  };
+  if (previousIndex?.sourceKind === CLAUDE_SOURCE_KIND
+      && normalizeFsPath(previousIndex.repoRoot || '') === normalizeFsPath(resolvedRepo)
+      && path.resolve(previousIndex.claudeHome || previousIndex.sourceHome || '') === resolvedClaude
+      && await canReuseStrictClaudeIndex(previousIndex, currentStrictReuseEvidence, signal)) {
+    const reusedIndex = {
+      ...previousIndex,
+      generatedAt: new Date().toISOString(),
+      totals: {
+        ...previousIndex.totals,
+        reusedFileCount: previousIndex.sessions.length,
+      },
+    };
+    claudeStrictReuseEvidenceByIndex.set(reusedIndex, currentStrictReuseEvidence);
+    emitProgress(onProgress, {
+      phase: 'complete',
+      repoRoot: resolvedRepo,
+      filesTotal: discovery.candidates.length,
+      filesScanned: discovery.candidates.length,
+      ...reusedIndex.totals,
+      elapsedMs: Date.now() - started,
+    });
+    return reusedIndex;
+  }
+
+  const identityResolution = resolvePrimaryIdentityCandidates(inspected);
+  const identityCandidates = identityResolution.accepted;
+  const clusters = containerCwdClusters(identityCandidates);
+  const candidates = identityCandidates
+    .map((candidate) => ({
+      ...candidate,
+      projectAssociation: candidateProjectAssociation(candidate, resolvedRepo, clusters),
+    }))
+    .filter((candidate) => candidate.projectAssociation || candidate.cwdSet.size === 0)
+    .map((candidate) => ({
+      ...candidate,
+      projectAssociation: candidate.projectAssociation || POINTER_PROVISIONAL_ASSOCIATION,
+    }));
+  const selectedCandidates = candidates.filter((candidate) => (
+    candidate.projectAssociation !== POINTER_PROVISIONAL_ASSOCIATION
+  ));
+  const skippedFileCount = identityCandidates.filter((candidate) => (
+    candidate.cwdSet.size && !candidateProjectAssociation(candidate, resolvedRepo, clusters)
+  )).length;
+  const relationshipEvidence = [];
+  const evidenceByStub = new WeakMap();
+  let indexedFileCount = 0;
+  let indexedBytes = 0;
+  emitProgress(onProgress, {
+    phase: 'parsing',
+    repoRoot: resolvedRepo,
+    filesTotal: discovery.candidates.length,
+    filesScanned: discovery.candidates.length,
+    candidateFileCount: selectedCandidates.length,
+    skippedFileCount,
+    unknownFileCount: inspected.length - selectedCandidates.length - skippedFileCount,
+    indexedFileCount,
+    reusedFileCount: 0,
+    indexedBytes,
+    candidateBytes: selectedCandidates.reduce((sum, item) => sum + item.bytes, 0),
+    sessionCount: 0,
+    eventCount: 0,
+    rawEventCount: 0,
+    elapsedMs: Date.now() - started,
+  });
+
+  const addEvidence = (candidate, context, session, relationshipReuseEvidence = null) => {
+    const stub = compactClaudeRelationshipSession(session);
+    const evidence = { candidate, context, relationshipReuseEvidence, stub };
+    relationshipEvidence.push(evidence);
+    evidenceByStub.set(stub, evidence);
+  };
+
+  for (const candidate of candidates) {
+    throwIfAborted(signal);
+    const isPointerProvisional = candidate.projectAssociation === POINTER_PROVISIONAL_ASSOCIATION;
+    const mainContext = {
+      repoRoot: resolvedRepo,
+      signal,
+      matchesRepo: !isPointerProvisional,
+      projectAssociation: candidate.projectAssociation,
+      acceptedSourceSnapshot: claudeAcceptedSourceSnapshot(candidate),
+    };
+    let mainSession = await parseClaudeSession(candidate, mainContext);
+    const derivedCandidates = isPointerProvisional
+      ? []
+      : await subagentCandidates(candidate, mainSession, signal);
+    if (typeof onTransientMemorySample === 'function') {
+      onTransientMemorySample({ phase: 'pre_raw_compaction' });
+    }
+    addEvidence(candidate, mainContext, mainSession);
+    mainSession = null;
+    if (!isPointerProvisional) {
+      indexedFileCount += 1;
+      indexedBytes += candidate.bytes;
+    }
+    for (const derived of derivedCandidates) {
+      throwIfAborted(signal);
+      const derivedContext = {
+        ...derived.context,
+        repoRoot: resolvedRepo,
+        signal,
+        acceptedSourceSnapshot: claudeAcceptedSourceSnapshot(derived.candidate),
+      };
+      let derivedSession = await parseClaudeSession(derived.candidate, derivedContext);
+      if (typeof onTransientMemorySample === 'function') {
+        onTransientMemorySample({ phase: 'pre_raw_compaction' });
+      }
+      addEvidence(
+        derived.candidate,
+        derivedContext,
+        derivedSession,
+        derived.relationshipReuseEvidence,
+      );
+      derivedSession = null;
+      indexedFileCount += 1;
+      indexedBytes += derived.candidate.bytes;
+    }
+  }
+
+  const analyzerIdentityResolution = resolveClaudeAnalyzerIdentities(
+    relationshipEvidence.map((evidence) => evidence.stub),
+  );
+  inferClaudeForkRelationships(analyzerIdentityResolution.accepted);
+  const retainedEvidence = analyzerIdentityResolution.accepted
+    .filter((session) => session.matchesRepo)
+    .map((session) => evidenceByStub.get(session));
+  const queryStoreBuilder = createProjectQueryStoreBuilder({
+    presentationForEvent: claudeSearch.projectQueryPresentation,
+  });
+  const catalogAccumulator = createClaudeCatalogAccumulator();
+  const indexedSessions = [];
+  const materializationDependencies = new Map();
+  let logicalEventCount = 0;
+  let rawEventCount = 0;
+  indexedFileCount = 0;
+  indexedBytes = 0;
+
+  for (const evidence of retainedEvidence) {
+    throwIfAborted(signal);
+    const context = {
+      ...evidence.context,
+      repoRoot: resolvedRepo,
+      signal,
+      acceptedSourceSnapshot: claudeAcceptedSourceSnapshot(evidence.candidate),
+    };
+    let session = await parseClaudeSession(evidence.candidate, context);
+    if (typeof onTransientMemorySample === 'function') {
+      onTransientMemorySample({ phase: 'pre_raw_compaction' });
+    }
+    applyClaudeCommittedProjection(session, claudeCommittedProjection(evidence.stub));
+    applyClaudeMaterializedForkOwnership(session, sourceSnapshotChangedError);
+    const queryProjectionDigest = queryStoreBuilder.addSession(session);
+    catalogAccumulator.addSession(session);
+    const summary = claudeSearch.projectSessionMetadata(session).summary;
+    const materializationState = await createClaudeMaterializationState(evidence);
+    const existingDependencySet = materializationDependencies.get(
+      materializationState.dependencySet.id,
+    );
+    const dependencySet = existingDependencySet || materializationState.dependencySet;
+    materializationDependencies.set(dependencySet.id, dependencySet);
+    const indexedSession = {
+      ...projectClaudeCarriedSession(session, summary),
+      materializationDescriptor: {
+        ...materializationState.descriptor,
+        dependencySetId: dependencySet.id,
+      },
+      queryShardId: session.id,
+      queryProjectionDigest,
+    };
+    indexedSessions.push(indexedSession);
+    logicalEventCount += indexedSession.logicalEventCount;
+    rawEventCount += indexedSession.rawEventCount;
+    indexedFileCount += 1;
+    indexedBytes += indexedSession.bytes;
+    session = null;
+    if (typeof onTransientMemorySample === 'function') {
+      onTransientMemorySample({ phase: 'post_finalize' });
+    }
+  }
+
+  indexedSessions.sort((left, right) => (
+    String(right.updatedAt || right.startedAt).localeCompare(String(left.updatedAt || left.startedAt))
+    || left.id.localeCompare(right.id)
+  ));
+  const sessionsById = new Map(indexedSessions.map((session) => [session.id, session]));
+  const projectQueryStore = queryStoreBuilder.finish();
+  const eventKinds = catalogAccumulator.finish();
+  const legacyRawOwners = {
+    schemaVersion: 1,
+    sourceKind: CLAUDE_SOURCE_KIND,
+    entryCount: 0,
+    accountedBytes: 2,
+    payload: {},
+  };
+  const candidateFileCount = indexedSessions.filter((session) => !session.parentSessionId).length;
+  const candidateBytes = indexedSessions
+    .filter((session) => !session.parentSessionId)
+    .reduce((sum, session) => sum + session.bytes, 0);
+  const unknownFileCount = inspected.length - candidateFileCount - skippedFileCount;
+  let reusedFileCount = 0;
+  let committedSessions = indexedSessions;
+  let committedSessionsById = sessionsById;
+  let committedQueryStore = projectQueryStore;
+  let committedDependencies = materializationDependencies;
+  let committedLegacyOwners = legacyRawOwners;
+  let committedEventKinds = eventKinds;
+  if (previousIndex?.sourceKind === CLAUDE_SOURCE_KIND
+      && normalizeFsPath(previousIndex.repoRoot || '') === normalizeFsPath(resolvedRepo)
+      && path.resolve(previousIndex.claudeHome || previousIndex.sourceHome || '') === resolvedClaude
+      && isDeepStrictEqual(previousIndex.sessions, indexedSessions)
+      && isDeepStrictEqual(previousIndex.materializationDependencies, materializationDependencies)
+      && isDeepStrictEqual(previousIndex.projectQueryStore, projectQueryStore)
+      && isDeepStrictEqual(previousIndex.legacyRawOwners, legacyRawOwners)
+      && isDeepStrictEqual(previousIndex.eventKinds, eventKinds)) {
+    reusedFileCount = indexedSessions.length;
+    committedSessions = previousIndex.sessions;
+    committedSessionsById = previousIndex.sessionsById;
+    committedQueryStore = previousIndex.projectQueryStore;
+    committedDependencies = previousIndex.materializationDependencies;
+    committedLegacyOwners = previousIndex.legacyRawOwners;
+    committedEventKinds = previousIndex.eventKinds;
+  }
+  emitProgress(onProgress, {
+    phase: 'complete',
+    repoRoot: resolvedRepo,
+    filesTotal: discovery.candidates.length,
+    filesScanned: discovery.candidates.length,
+    candidateFileCount,
+    skippedFileCount,
+    unknownFileCount,
+    indexedFileCount,
+    reusedFileCount,
+    indexedBytes,
+    candidateBytes,
+    sessionCount: indexedSessions.length,
+    eventCount: logicalEventCount,
+    rawEventCount,
+    elapsedMs: Date.now() - started,
+  });
+  const result = {
+    sourceKind: CLAUDE_SOURCE_KIND,
+    sourceHome: resolvedClaude,
+    sourceRoot: discovery.sourceRoot,
+    claudeHome: resolvedClaude,
+    projectsRoot: discovery.projectsRoot,
+    repoRoot: resolvedRepo,
+    generatedAt: new Date().toISOString(),
+    sessions: committedSessions,
+    sessionsById: committedSessionsById,
+    projectQueryStore: committedQueryStore,
+    materializationDependencies: committedDependencies,
+    legacyRawOwners: committedLegacyOwners,
+    eventKinds: committedEventKinds,
+    codeModeRequests: [],
+    totals: {
+      fileCount: discovery.candidates.length,
+      candidateFileCount,
+      indexedFileCount,
+      reusedFileCount,
+      skippedFileCount,
+      unknownFileCount,
+      sessionCount: indexedSessions.length,
+      eventCount: logicalEventCount,
+      rawEventCount,
+      indexedBytes,
+      candidateBytes,
+    },
+  };
+  claudeStrictReuseEvidenceByIndex.set(result, currentStrictReuseEvidence);
+  return result;
 }
 
 async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, previousIndex = null }) {
@@ -1781,6 +2571,206 @@ async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, prev
   };
 }
 
+async function readClaudeDependencyPrefix(target, acceptedBytes, signal) {
+  const hash = crypto.createHash('sha256');
+  let bytesRead = 0;
+  if (acceptedBytes === 0) return { bytesRead: 0, digest: hash.digest('hex') };
+  const stream = fs.createReadStream(target, { start: 0, end: acceptedBytes - 1 });
+  try {
+    for await (const chunk of stream) {
+      throwIfAborted(signal);
+      bytesRead += chunk.length;
+      hash.update(chunk);
+    }
+  } finally {
+    stream.destroy();
+  }
+  return { bytesRead, digest: hash.digest('hex') };
+}
+
+async function verifyClaudeMaterializationDependency(sourceRoot, entry, signal) {
+  throwIfAborted(signal);
+  if (entry.existence === 'absent' && entry.policy === 'copied_value') return;
+  const lexicalTarget = path.resolve(sourceRoot, entry.pathIdentity);
+  if (!isPathInsideOrSame(lexicalTarget, sourceRoot)) throw indexedSourceStaleError();
+  let realTarget;
+  try {
+    realTarget = await containedRealPath(sourceRoot, lexicalTarget);
+  } catch {
+    throw indexedSourceStaleError();
+  }
+  if (!realTarget) throw indexedSourceStaleError();
+  let stat;
+  try {
+    stat = await fsp.stat(realTarget);
+  } catch {
+    throw indexedSourceStaleError();
+  }
+  if (!sameSourceIdentity(sourceFileIdentity(stat), entry.evidence?.fileIdentity)) {
+    throw indexedSourceStaleError();
+  }
+  if (entry.kind === 'directory') {
+    if (!stat.isDirectory() || entry.policy !== 'directory_snapshot') {
+      throw indexedSourceStaleError();
+    }
+    let names;
+    try {
+      names = new Set((await fsp.readdir(realTarget, { withFileTypes: true })).map((value) => value.name));
+    } catch {
+      throw indexedSourceStaleError();
+    }
+    if (entry.directoryEntries.some((name) => !names.has(name))) throw indexedSourceStaleError();
+    return;
+  }
+  if (!stat.isFile() || stat.size < entry.acceptedBytes) throw indexedSourceStaleError();
+  if (entry.policy === 'exact' && stat.size !== entry.acceptedBytes) throw indexedSourceStaleError();
+  const value = await readClaudeDependencyPrefix(realTarget, entry.acceptedBytes, signal);
+  if (value.bytesRead !== entry.acceptedBytes || value.digest !== entry.digest) {
+    throw indexedSourceStaleError();
+  }
+}
+
+async function materializeClaudeSession({ materializationContext, indexedSession, dependencySet, signal }) {
+  throwIfAborted(signal);
+  const index = materializationContext;
+  const descriptor = indexedSession.materializationDescriptor;
+  for (const entry of dependencySet.entries) {
+    await verifyClaudeMaterializationDependency(index.sourceRoot, entry, signal);
+  }
+  const sourceEntry = dependencySet.entries[0];
+  const sourceFile = descriptor.payload.sourceFile;
+  const target = path.resolve(index.sourceRoot, sourceFile);
+  if (!isPathInsideOrSame(target, index.sourceRoot)) throw indexedSourceStaleError();
+  const realTarget = await containedRealPath(index.sourceRoot, target);
+  if (!realTarget) throw indexedSourceStaleError();
+  const candidate = {
+    filePath: realTarget,
+    containerKey: '',
+    containerPath: path.dirname(realTarget),
+    sourceRoot: index.sourceRoot,
+    relFile: sourceFile,
+    bytes: sourceEntry.acceptedBytes,
+    sourceIdentity: structuredClone(sourceEntry.evidence.fileIdentity),
+    sourceUpdatedAt: indexedSession.updatedAt,
+    lineCount: sourceEntry.lineCount,
+    cwdSet: new Set(indexedSession.cwdSet),
+    sourceSessionId: indexedSession.sourceSessionId,
+    sourceIdentityConflict: false,
+    transcriptFingerprint: sourceEntry.digest,
+    sourceClientVersion: indexedSession.sourceClientVersion,
+    uuids: new Set(),
+    agentIds: new Set(),
+    foreignSessionIds: new Set(),
+    startedAt: indexedSession.startedAt,
+    updatedAt: indexedSession.updatedAt,
+  };
+  const context = {
+    ...claudeParseContextFromIndexed(indexedSession, descriptor, index.repoRoot, signal),
+    materialization: true,
+    acceptedSourceSnapshot: {
+      acceptedBytes: sourceEntry.acceptedBytes,
+      digest: sourceEntry.digest,
+      fileIdentity: structuredClone(sourceEntry.evidence.fileIdentity),
+    },
+  };
+  const session = await parseClaudeSession(candidate, context);
+  applyClaudeCommittedProjection(session, descriptor.payload.projection);
+  applyClaudeMaterializedForkOwnership(session, indexedSourceStaleError);
+  const summary = claudeSearch.projectSessionMetadata(session).summary;
+  const carried = projectClaudeCarriedSession(session, summary);
+  if (Object.keys(carried).some((field) => !isDeepStrictEqual(carried[field], indexedSession[field]))) {
+    throw indexedSourceStaleError();
+  }
+  return {
+    ...carried,
+    materializationSnapshotId: descriptor.sourceSnapshotId,
+    rawEvents: session.rawEvents,
+    logicalEvents: session.logicalEvents,
+    analysis: session.analysis,
+    presentationIndexes: session.presentationIndexes,
+  };
+}
+
+function validateClaudeMaterializationDescriptor({
+  materializationContext,
+  indexedSession,
+  descriptor,
+  dependencySet,
+}) {
+  const index = materializationContext;
+  requireExactClaudeKeys(
+    descriptor.payload,
+    ['sourceFile', 'description', 'projection'],
+    'Claude materialization payload',
+  );
+  if (typeof descriptor.payload.sourceFile !== 'string'
+      || !descriptor.payload.sourceFile
+      || !isCanonicalClaudeDependencyPath(index.sourceRoot, descriptor.payload.sourceFile)
+      || descriptor.payload.sourceFile !== indexedSession.sourceFile
+      || typeof descriptor.payload.description !== 'string') {
+    throw new Error('Claude materialization source payload is invalid');
+  }
+  requireExactClaudeKeys(
+    descriptor.payload.projection,
+    [...CLAUDE_COMMITTED_PROJECTION_FIELDS, 'cwdSet'],
+    'Claude materialization projection',
+  );
+  if (!isDeepStrictEqual(descriptor.payload.projection, claudeCommittedProjection(indexedSession))) {
+    throw new Error('Claude materialization relationship projection is invalid');
+  }
+  if (!Array.isArray(dependencySet.entries) || dependencySet.entries.length !== 1) {
+    throw new Error('Claude materialization requires exactly the selected transcript dependency');
+  }
+  const sourceEntry = dependencySet.entries[0];
+  if (sourceEntry.role !== 'session_transcript'
+      || sourceEntry.pathIdentity !== indexedSession.sourceFile
+      || sourceEntry.existence !== 'present'
+      || sourceEntry.kind !== 'file'
+      || sourceEntry.policy !== 'accepted_prefix'
+      || sourceEntry.acceptedBytes !== indexedSession.bytes
+      || sourceEntry.lineCount !== indexedSession.lineCount
+      || !/^[a-f0-9]{64}$/u.test(sourceEntry.digest)
+      || sourceEntry.directoryEntries.length !== 0
+      || !isCanonicalClaudeDependencyPath(index.sourceRoot, sourceEntry.pathIdentity)) {
+    throw new Error('Claude transcript dependency is invalid');
+  }
+  requireExactClaudeKeys(sourceEntry.evidence, ['fileIdentity'], 'Claude dependency evidence');
+  requireExactClaudeKeys(sourceEntry.evidence.fileIdentity, ['device', 'inode'], 'Claude file identity');
+  if (typeof sourceEntry.evidence.fileIdentity.device !== 'string'
+      || typeof sourceEntry.evidence.fileIdentity.inode !== 'string') {
+    throw new Error('Claude dependency identity is invalid');
+  }
+  const expectedDependencySetId = `claude-dependency:${hashClaudeMaterializationValue(
+    dependencySet.entries,
+  )}`;
+  if (dependencySet.id !== expectedDependencySetId
+      || descriptor.dependencySetId !== expectedDependencySetId) {
+    throw new Error('Claude dependency identity is invalid');
+  }
+  const expectedSnapshotId = `claude-snapshot:${hashClaudeMaterializationValue({
+    dependencySet,
+    payload: descriptor.payload,
+  })}`;
+  if (descriptor.sourceSnapshotId !== expectedSnapshotId) {
+    throw new Error('Claude materialization snapshot identity is invalid');
+  }
+}
+
+function validateClaudeLegacyRawOwnerIndex({ legacyRawOwners }) {
+  validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, CLAUDE_SOURCE_KIND);
+  if (legacyRawOwners.entryCount !== 0
+      || legacyRawOwners.accountedBytes !== 2
+      || !isDeepStrictEqual(legacyRawOwners.payload, {})) {
+    throw new Error('Claude legacy Raw owner index must be empty');
+  }
+}
+
+function validateClaudeMaterializedPrivateState() {
+  // Claude materialization currently declares no adapter-private fields.
+}
+
+const materializedPrivateFields = Object.freeze([]);
+
 async function readLine(target, lineNumber) {
   const stream = fs.createReadStream(target, { encoding: 'utf8' });
   const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -1790,12 +2780,14 @@ async function readLine(target, lineNumber) {
       current += 1;
       if (current !== lineNumber) continue;
       let parsed = null;
+      let parseError = '';
       try {
         parsed = JSON.parse(line);
-      } catch {
+      } catch (error) {
+        parseError = error instanceof Error ? error.message : 'Invalid JSON';
         // Preserve the exact source text even if a concurrently written line is incomplete.
       }
-      return { line, parsed };
+      return { line, parsed, parseError };
     }
   } finally {
     lines.close();
@@ -1807,7 +2799,7 @@ async function readLine(target, lineNumber) {
 async function readClaudeRawRecord(index, session, raw) {
   if (!session || !raw || raw.sessionId !== session.id) return null;
   const sourceRoot = path.resolve(index.sourceRoot || session.sourceRoot || index.projectsRoot || index.claudeHome);
-  const target = path.resolve(session.sourceAbsFile);
+  const target = path.resolve(sourceRoot, session.sourceFile);
   const rootApi = fsPathApi(sourceRoot);
   const targetApi = fsPathApi(target);
   const rootAnchor = rootApi.parse(sourceRoot).root.toLowerCase();
@@ -1827,6 +2819,16 @@ async function readClaudeRawRecord(index, session, raw) {
   if (!isPathInsideOrSame(realTarget, realRoot)) return null;
   const value = await readLine(realTarget, raw.sourceLocator?.line || raw.line);
   if (!value) return null;
+  const reconstructed = makeClaudeRawEvent(
+    value.parsed,
+    raw.sourceLocator?.line || raw.line,
+    session.sourceFile,
+    session.id,
+    session.sourceSessionId,
+    { parseError: value.parseError, rawText: value.line },
+  );
+  reconstructed.turnId = raw.turnId;
+  if (!isDeepStrictEqual(reconstructed, raw)) throw indexedSourceStaleError();
   return {
     rawId: raw.rawId,
     sourceKind: CLAUDE_SOURCE_KIND,
@@ -1840,16 +2842,24 @@ async function readClaudeRawRecord(index, session, raw) {
 
 module.exports = {
   CLAUDE_SOURCE_KIND,
+  __testOnlyCompactClaudeRelationshipSession: compactClaudeRelationshipSession,
   analyzerForkedSkillSessionId,
   analyzerSessionId,
   analyzerSubagentSessionId,
   analyzerWorkflowAgentSessionId,
   buildClaudeIndex,
+  buildClaudeSourceBackedIndex,
   claudeLayout,
   discoverClaudeConfiguredProjects,
   discoverClaudeProjects,
   discoverMainCandidates,
   inspectClaudeSessionFile,
+  materializeClaudeSession,
+  materializedPrivateFields,
+  query: claudeSearch,
   readClaudeRawRecord,
   resolveClaudeAnalyzerIdentities,
+  validateClaudeLegacyRawOwnerIndex,
+  validateClaudeMaterializationDescriptor,
+  validateClaudeMaterializedPrivateState,
 };

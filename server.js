@@ -9,18 +9,28 @@ const os = require('node:os');
 const url = require('node:url');
 const {
   SOURCE_KIND,
-  adapterForSession,
   buildEventDetailForSession,
+  materializeSessionForIndex,
   normalizeSourceKind,
   queryForIndex,
   readImagePreviewForSession,
   readIndexedRawRecord,
-  readLegacyRawLineForIndex,
+  readLegacyRawLineForSession,
+  resolveLegacyRawOwnerForIndex,
+  requireExplicitSourceKind,
   requireSourceAdapter,
   supportedSourceOptions,
   supportedSourceKinds,
   validateIndexOwnership,
+  validateIndexOwnershipForCommit,
 } = require('./src/source-adapters');
+const {
+  clearIndexRevision,
+  initializeIndexRevisionState,
+  installIndexRevision,
+  materializeSessionWithLease,
+  withIndexRevisionLease,
+} = require('./src/index-revision-lease');
 const { isPathInsideOrSame, normalizeFsPath } = require('./src/shared/fs-path');
 const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
@@ -35,6 +45,11 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
 };
+
+const PUBLIC_RUNTIME_ERROR_CODES = new Set([
+  'MATERIALIZATION_BUSY',
+  'MATERIALIZATION_CONTRACT_VIOLATION',
+]);
 
 function parseArgs(argv) {
   const opts = {
@@ -288,6 +303,7 @@ function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
     supportedLocales: i18n.SUPPORTED_LOCALES,
     repoRoot: state.index.repoRoot,
     generatedAt: state.index.generatedAt,
+    indexRevision: state.indexRevision,
     buildMs: state.buildMs,
     totals: state.index.totals,
     eventKinds: state.index.eventKinds
@@ -315,6 +331,18 @@ function requireIndex(state, res) {
     projectSelected: false,
   });
   return null;
+}
+
+function materializeLeasedSession(capture, indexedSession, materializeSession) {
+  return materializeSessionWithLease(
+    capture.lease,
+    indexedSession,
+    capture.signal,
+    ({ index, indexRevision, signal }) => materializeSession(index, indexedSession, {
+      indexRevision,
+      signal,
+    }),
+  );
 }
 
 function projectJobPayload(job) {
@@ -632,7 +660,7 @@ function resolveSourceMutation(state, body) {
       || normalizeFsPath(nextActiveHome) !== normalizeFsPath(activeSourceHome(state, state.sourceKind, currentSourceConfigs));
     if (activeIdentityChanged) {
       cancelProjectJob(state.activeProjectJob);
-      state.index = null;
+      clearIndexRevision(state);
       state.projectCache = null;
       state.buildMs = 0;
       state.sourceKind = nextSourceKind;
@@ -710,7 +738,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       job.diagnostics?.progress(job.progress);
       job.capacityWarning.observe(job.progress);
     },
-  })).then((index) => {
+  })).then(async (index) => {
     if (controller.signal.aborted) {
       job.status = 'cancelled';
       job.error = 'Indexing cancelled';
@@ -719,12 +747,16 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       job.diagnostics?.finish('cancelled', { buildMs: job.buildMs });
       return;
     }
-    const indexSourceKind = validateIndexOwnership(index);
-    if (indexSourceKind !== jobSourceKind) {
-      const error = new Error(`Source ownership mismatch: job ${jobSourceKind}, index ${indexSourceKind}`);
+    const claimedIndexSourceKind = requireExplicitSourceKind(index?.sourceKind, 'index');
+    if (claimedIndexSourceKind !== jobSourceKind) {
+      const error = new Error(`Source ownership mismatch: job ${jobSourceKind}, index ${claimedIndexSourceKind}`);
       error.code = 'SOURCE_OWNERSHIP_MISMATCH';
       throw error;
     }
+    await validateIndexOwnershipForCommit(index, {
+      signal: controller.signal,
+      onChunk: state.onIndexValidationChunk,
+    });
     if (controller.signal.aborted) {
       job.status = 'cancelled';
       job.error = 'Indexing cancelled';
@@ -736,7 +768,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     job.status = 'succeeded';
     job.completedAt = new Date().toISOString();
     job.buildMs = Date.now() - startedAtMs;
-    state.index = index;
+    installIndexRevision(state, index);
     state.buildMs = job.buildMs;
     job.diagnostics?.finish('succeeded', { buildMs: job.buildMs });
   }).catch((error) => {
@@ -806,12 +838,15 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     adapter,
     sourceRevision: 0,
     buildIndexOverride: options.buildIndex || null,
+    onIndexValidationChunk: options.onIndexValidationChunk || null,
+    materializeSession: options.materializeSession || materializeSessionForIndex,
     nextProjectJobId: 1,
     activeProjectJob: null,
     projectCache: null,
     logDir: options.logDir ? path.resolve(options.logDir) : '',
     warn: options.warn || console.warn,
   };
+  initializeIndexRevisionState(state, state.index);
   if (options.repo) startProjectJob(state, options.repo, options.locale);
 
   return http.createServer(async (req, res) => {
@@ -903,37 +938,72 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       }
 
       if (pathname === '/api/sessions') {
-        const index = requireIndex(state, res);
-        if (!index) return;
-        const query = queryForIndex(index);
-        const result = query.filterSessions(index, query.filtersFromSearchParams(searchParams, { locale }));
-        sendJson(res, 200, result);
+        if (!requireIndex(state, res)) return;
+        const { value: result, lease } = await withIndexRevisionLease(
+          state,
+          requestAbort.signal,
+          ({ index, signal }) => {
+            const query = queryForIndex(index);
+            return query.filterSessions(
+              index,
+              query.filtersFromSearchParams(searchParams, { locale }),
+              { signal },
+            );
+          },
+        );
+        sendJson(res, 200, { ...result, indexRevision: lease.indexRevision });
         return;
       }
 
       if (pathname === '/api/file-suggestions') {
-        const index = requireIndex(state, res);
-        if (!index) return;
-        sendJson(res, 200, {
-          files: queryForIndex(index).fileSuggestions(index, {
-            layer: searchParams.get('layer') || 'main',
-            sessionId: searchParams.get('sessionId') || '',
-          }),
-        });
+        if (!requireIndex(state, res)) return;
+        const sessionId = searchParams.get('sessionId') || '';
+        const { value: files, lease } = await withIndexRevisionLease(
+          state,
+          requestAbort.signal,
+          async (capture) => {
+            const { index, signal } = capture;
+            const query = queryForIndex(index);
+            const options = { layer: searchParams.get('layer') || 'main' };
+            if (!sessionId) return query.projectFileSuggestions(index, options, { signal });
+            const indexedSession = index.sessionsById.get(sessionId);
+            if (!indexedSession) return null;
+            const materializedSession = await materializeLeasedSession(
+              capture,
+              indexedSession,
+              state.materializeSession,
+            );
+            return query.sessionFileSuggestions(index, materializedSession, options);
+          },
+        );
+        if (files === null) {
+          sendError(res, 404, 'Unknown session');
+          return;
+        }
+        sendJson(res, 200, { files, indexRevision: lease.indexRevision });
         return;
       }
 
       const timelineMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/timeline$/);
       if (timelineMatch) {
-        const index = requireIndex(state, res);
-        if (!index) return;
+        if (!requireIndex(state, res)) return;
         const sessionId = decodePathSegment(timelineMatch[1]);
-        const query = queryForIndex(index);
-        const result = query.getTimeline(index, sessionId, query.filtersFromSearchParams(searchParams, {
-          offset: asNumber(searchParams.get('offset'), 0, 0, 1_000_000),
-          limit: asNumber(searchParams.get('limit'), 150, 1, 500),
-          locale,
-        }));
+        const { value: result } = await withIndexRevisionLease(
+          state,
+          requestAbort.signal,
+          async (capture) => {
+            const { index } = capture;
+            const indexedSession = index.sessionsById.get(sessionId);
+            if (!indexedSession) return null;
+            const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
+            const query = queryForIndex(index);
+            return query.getTimeline(index, session, query.filtersFromSearchParams(searchParams, {
+              offset: asNumber(searchParams.get('offset'), 0, 0, 1_000_000),
+              limit: asNumber(searchParams.get('limit'), 150, 1, 500),
+              locale,
+            }));
+          },
+        );
         if (!result) {
           sendError(res, 404, 'Unknown session');
           return;
@@ -944,15 +1014,21 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
 
       const eventMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/events\/([^/]+)$/);
       if (eventMatch) {
-        const index = requireIndex(state, res);
-        if (!index) return;
-        const event = queryForIndex(index).getEvent(
-          index,
-          decodePathSegment(eventMatch[1]),
-          decodePathSegment(eventMatch[2]),
-          {
-            layer: searchParams.get('layer') || 'main',
-            locale,
+        if (!requireIndex(state, res)) return;
+        const sessionId = decodePathSegment(eventMatch[1]);
+        const eventId = decodePathSegment(eventMatch[2]);
+        const { value: event } = await withIndexRevisionLease(
+          state,
+          requestAbort.signal,
+          async (capture) => {
+            const { index } = capture;
+            const indexedSession = index.sessionsById.get(sessionId);
+            if (!indexedSession) return null;
+            const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
+            return queryForIndex(index).getEvent(index, session, eventId, {
+              layer: searchParams.get('layer') || 'main',
+              locale,
+            });
           },
         );
         if (!event) {
@@ -965,19 +1041,26 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
 
       const detailMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/events\/([^/]+)\/detail$/);
       if (detailMatch) {
-        const index = requireIndex(state, res);
-        if (!index) return;
-        const session = index.sessionsById.get(decodePathSegment(detailMatch[1]));
-        if (!session) {
-          sendError(res, 404, 'Unknown session');
-          return;
-        }
+        if (!requireIndex(state, res)) return;
+        const sessionId = decodePathSegment(detailMatch[1]);
         const layer = searchParams.get('layer') || 'main';
-        const detail = await buildEventDetailForSession(index, session, decodePathSegment(detailMatch[2]), layer, {
-          locale,
-          signal: requestAbort.signal,
-        });
-        if (requestAbort.signal.aborted) return;
+        const { value: detail } = await withIndexRevisionLease(
+          state,
+          requestAbort.signal,
+          async (capture) => {
+            const { index, signal } = capture;
+            const indexedSession = index.sessionsById.get(sessionId);
+            if (!indexedSession) return null;
+            const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
+            return buildEventDetailForSession(
+              index,
+              session,
+              decodePathSegment(detailMatch[2]),
+              layer,
+              { locale, signal },
+            );
+          },
+        );
         if (!detail) {
           sendError(res, 404, 'Unknown event');
           return;
@@ -988,24 +1071,35 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
 
       const imagePreviewMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/events\/([^/]+)\/image-previews\/([^/]+)$/);
       if (imagePreviewMatch) {
-        const index = requireIndex(state, res);
-        if (!index) return;
+        if (!requireIndex(state, res)) return;
         const sessionId = decodePathSegment(imagePreviewMatch[1]);
-        const session = index.sessionsById.get(sessionId);
-        if (!session) {
-          sendError(res, 404, 'Unknown session');
-          return;
-        }
-        const image = await readImagePreviewForSession(
-          index,
-          session,
-          decodePathSegment(imagePreviewMatch[2]),
-          decodePathSegment(imagePreviewMatch[3]),
-          { signal: requestAbort.signal },
+        const { value: image } = await withIndexRevisionLease(
+          state,
+          requestAbort.signal,
+          async (capture) => {
+            const { index, signal } = capture;
+            const indexedSession = index.sessionsById.get(sessionId);
+            if (!indexedSession) return { statusCode: 404, error: 'Unknown session' };
+            const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
+            return readImagePreviewForSession(
+              index,
+              session,
+              decodePathSegment(imagePreviewMatch[2]),
+              decodePathSegment(imagePreviewMatch[3]),
+              { signal },
+            );
+          },
         );
-        if (requestAbort.signal.aborted) return;
         if (image.error) {
-          sendError(res, image.statusCode, image.error, undefined, image.code);
+          sendError(
+            res,
+            image.statusCode,
+            image.code === 'INDEXED_SOURCE_STALE'
+              ? 'Indexed source changed; reindex required'
+              : image.error,
+            undefined,
+            image.code,
+          );
           return;
         }
         sendImage(res, image);
@@ -1014,30 +1108,42 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
 
       const analysisMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/analysis$/);
       if (analysisMatch) {
-        const index = requireIndex(state, res);
-        if (!index) return;
-        const session = index.sessionsById.get(decodePathSegment(analysisMatch[1]));
-        if (!session) {
+        if (!requireIndex(state, res)) return;
+        const sessionId = decodePathSegment(analysisMatch[1]);
+        const { value: analysis } = await withIndexRevisionLease(
+          state,
+          requestAbort.signal,
+          async (capture) => {
+            const { index } = capture;
+            const indexedSession = index.sessionsById.get(sessionId);
+            if (!indexedSession) return null;
+            const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
+            return session.analysis;
+          },
+        );
+        if (!analysis) {
           sendError(res, 404, 'Unknown session');
           return;
         }
-        sendJson(res, 200, session.analysis);
+        sendJson(res, 200, analysis);
         return;
       }
 
       const rawRecordMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/raw\/([^/]+)$/);
       if (rawRecordMatch) {
-        const index = requireIndex(state, res);
-        if (!index) return;
-        const session = index.sessionsById.get(decodePathSegment(rawRecordMatch[1]));
-        if (!session) {
-          sendError(res, 404, 'Unknown session');
-          return;
-        }
-        const raw = await readIndexedRawRecord(index, session, decodePathSegment(rawRecordMatch[2]), {
-          signal: requestAbort.signal,
-        });
-        if (requestAbort.signal.aborted) return;
+        if (!requireIndex(state, res)) return;
+        const sessionId = decodePathSegment(rawRecordMatch[1]);
+        const { value: raw } = await withIndexRevisionLease(
+          state,
+          requestAbort.signal,
+          async (capture) => {
+            const { index, signal } = capture;
+            const indexedSession = index.sessionsById.get(sessionId);
+            if (!indexedSession) return null;
+            const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
+            return readIndexedRawRecord(index, session, decodePathSegment(rawRecordMatch[2]), { signal });
+          },
+        );
         if (!raw) {
           sendError(res, 404, 'Raw record not found');
           return;
@@ -1047,18 +1153,26 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       }
 
       if (pathname === '/api/raw') {
-        const index = requireIndex(state, res);
-        if (!index) return;
+        if (!requireIndex(state, res)) return;
         const file = searchParams.get('file') || '';
         const line = asNumber(searchParams.get('line'), 0, 1, 1_000_000_000);
         if (!file || !line) {
           sendError(res, 400, 'file and line are required');
           return;
         }
-        const raw = await readLegacyRawLineForIndex(index, file, line, {
-          signal: requestAbort.signal,
-        });
-        if (requestAbort.signal.aborted) return;
+        const { value: raw } = await withIndexRevisionLease(
+          state,
+          requestAbort.signal,
+          async (capture) => {
+            const { index, signal } = capture;
+            const owner = resolveLegacyRawOwnerForIndex(index, file, line);
+            if (!owner) return null;
+            const indexedSession = index.sessionsById.get(owner.sessionId);
+            if (!indexedSession) return null;
+            const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
+            return readLegacyRawLineForSession(index, session, owner, owner.adapter, { signal });
+          },
+        );
         if (!raw) {
           sendError(res, 404, 'Raw line not found');
           return;
@@ -1070,7 +1184,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       await serveStatic(res, pathname);
     } catch (error) {
       if (res.destroyed) return;
+      if (error.name === 'AbortError') return;
       const statusCode = error.statusCode || 500;
+      if (error.retryAfterSeconds && !res.headersSent) {
+        res.setHeader('retry-after', String(error.retryAfterSeconds));
+      }
       const details = debugErrors
         ? (statusCode >= 500 ? error.stack || error.message : error.message)
         : undefined;
@@ -1079,7 +1197,9 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         statusCode,
         statusCode >= 500 ? 'Internal server error' : error.message,
         details,
-        statusCode < 500 ? error.code : undefined,
+        statusCode < 500 || PUBLIC_RUNTIME_ERROR_CODES.has(error.code)
+          ? error.code
+          : undefined,
       );
     } finally {
       requestAbort.cleanup();

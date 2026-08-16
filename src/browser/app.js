@@ -34,6 +34,7 @@ const paginationIntents = transitionSafety.createPaginationIntentState();
 const detailRequestControllers = new Map();
 
 const NAVIGATION_PAGE_LIMIT = 500;
+const NAVIGATION_BACKGROUND_PAGE_HANDOFF_MS = 500;
 const TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD = 96;
 const SEARCH_TARGET_PRELOAD_MIN = 5;
 const SEARCH_TARGET_PRELOAD_MAX_PAGES = 3;
@@ -128,6 +129,10 @@ const state = {
   sessions: [],
   expandedSessionGroups: new Set(),
   projectResults: [],
+  indexRevision: 0,
+  projectResultsRevision: 0,
+  revisionRecoveryPending: null,
+  revisionRecoveryRequested: false,
   repoRoot: '',
   projects: [],
   projectSelected: false,
@@ -426,6 +431,30 @@ function writeJsonStorage(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
+function abortableDelay(ms, signal) {
+  const abortError = () => (signal?.reason instanceof Error
+    ? signal.reason
+    : Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+  if (signal?.aborted) return Promise.reject(abortError());
+  if (!ms) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let timer = 0;
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(abortError());
+    }
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 function api(path, options = {}) {
   const init = { ...options };
   let requestPath = path;
@@ -439,9 +468,23 @@ function api(path, options = {}) {
     init.body = JSON.stringify(options.body);
     init.headers = { 'content-type': 'application/json', ...(options.headers || {}) };
   }
-  return fetch(requestPath, init).then(async (res) => {
+  const request = (allowBusyRetry) => fetch(requestPath, init).then(async (res) => {
     const body = await res.json();
     if (!res.ok) {
+      if (allowBusyRetry
+          && method === 'GET'
+          && res.status === 503
+          && body.code === 'MATERIALIZATION_BUSY') {
+        const retryAfterHeader = res.headers.get('retry-after');
+        const retryAfter = retryAfterHeader && retryAfterHeader.trim()
+          ? Number(retryAfterHeader)
+          : Number.NaN;
+        const delayMs = Number.isFinite(retryAfter)
+          ? Math.max(0, Math.min(5, retryAfter)) * 1000
+          : 1000;
+        await abortableDelay(delayMs, init.signal);
+        return request(false);
+      }
       const error = new Error(body.error || `HTTP ${res.status}`);
       error.status = res.status;
       error.code = body.code;
@@ -450,6 +493,7 @@ function api(path, options = {}) {
     }
     return body;
   });
+  return request(true);
 }
 
 function debounce(fn, ms) {
@@ -3104,7 +3148,10 @@ function showSearchAssist({ mode = 'parameters', focusTarget = '' } = {}) {
     hideSearchAssist();
     return;
   }
-  if (mode === 'parameters') searchAssistInvoker = document.activeElement;
+  if (mode === 'parameters') {
+    searchAssistInvoker = document.activeElement;
+    abortPendingNavigationLoad();
+  }
   if (mode === 'results' && currentSearchMetricsModel().mode === 'idle') {
     hideSearchAssist();
     return;
@@ -3187,6 +3234,25 @@ function fileSuggestionContextKey() {
   ]);
 }
 
+function isRetiredIndexRevisionError(error) {
+  return error?.status === 409 && error?.code === 'INDEX_REVISION_RETIRED';
+}
+
+async function acceptRevisionBearingQueryResponse(data) {
+  if (Number.isSafeInteger(data?.indexRevision)
+      && data.indexRevision === state.indexRevision) return true;
+  if (state.revisionRecoveryPending) state.revisionRecoveryRequested = true;
+  else await recoverIndexRevision();
+  return false;
+}
+
+async function recoverRetiredIndexRevision(error) {
+  if (!isRetiredIndexRevisionError(error)) return false;
+  if (state.revisionRecoveryPending) state.revisionRecoveryRequested = true;
+  else await recoverIndexRevision();
+  return true;
+}
+
 async function refreshFileSuggestions() {
   const requestId = state.fileSuggestionRequestId + 1;
   const requestContext = fileSuggestionContextKey();
@@ -3201,11 +3267,13 @@ async function refreshFileSuggestions() {
     if (!requestOwners.fileSuggestions.isCurrent(owner)
         || requestId !== state.fileSuggestionRequestId
         || requestContext !== fileSuggestionContextKey()) return false;
+    if (!(await acceptRevisionBearingQueryResponse(data))) return false;
     state.fileSuggestions = data.files || [];
     renderFileSuggestions();
     return true;
   } catch (error) {
     if (isIntentionalAbort(error)) return false;
+    if (await recoverRetiredIndexRevision(error)) return false;
     throw error;
   } finally {
     requestOwners.fileSuggestions.finish(owner);
@@ -3513,6 +3581,7 @@ function resetProjectViewState() {
   state.sessions = [];
   state.expandedSessionGroups.clear();
   state.projectResults = [];
+  state.projectResultsRevision = 0;
   state.sessionsRequestId += 1;
   state.projectSearchRequestId += 1;
   state.projectSearchDataContext = '';
@@ -3686,6 +3755,7 @@ async function applyAppState(appState) {
   applyStaticLocale();
   applySourceConfig(appState);
   state.repoRoot = appState.repoRoot || '';
+  state.indexRevision = Number.isSafeInteger(appState.indexRevision) ? appState.indexRevision : 0;
   state.builtinProfiles = normalizeProfiles(appState.foldingProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
   state.eventKinds = appState.eventKinds;
@@ -3907,11 +3977,13 @@ async function loadSessions() {
     )}`, { signal: owner.controller.signal });
   } catch (error) {
     if (isIntentionalAbort(error)) return false;
+    if (await recoverRetiredIndexRevision(error)) return false;
     throw error;
   } finally {
     requestOwners.sessions.finish(owner);
   }
   if (requestId !== state.sessionsRequestId || requestContext !== sessionsDataContextKey()) return false;
+  if (!(await acceptRevisionBearingQueryResponse(data))) return false;
   state.sessionsDataContext = requestContext;
   state.sessions = data.sessions;
   state.sessionTotal = data.total;
@@ -3936,13 +4008,13 @@ async function loadSessions() {
     if (state.searchScope === 'project') {
       state.searchStructureKey = structuredSearchKey();
       syncSearchScopeUi();
-      await loadProjectResults();
+      if (!(await loadProjectResults())) return false;
     } else {
       await selectSession(state.selectedSessionId);
     }
   }
   renderSearchAssistChips();
-  await refreshFileSuggestions();
+  if (!(await refreshFileSuggestions())) return false;
   return true;
 }
 
@@ -3995,14 +4067,17 @@ async function loadProjectResults() {
     if (!requestOwners.projectResults.isCurrent(owner)
         || requestId !== state.projectSearchRequestId
         || requestContext !== projectSearchDataContextKey()) return false;
+    if (!(await acceptRevisionBearingQueryResponse(data))) return false;
     state.projectSearchDataContext = requestContext;
     state.projectSearchPendingContext = '';
     state.projectResults = data.sessions || [];
+    state.projectResultsRevision = Number.isSafeInteger(data.indexRevision) ? data.indexRevision : 0;
     state.projectSearchTotal = data.total || 0;
     state.projectSearchEventTotal = data.matchingEventTotal || 0;
     return true;
   } catch (error) {
     if (isIntentionalAbort(error)) return false;
+    if (await recoverRetiredIndexRevision(error)) return false;
     throw error;
   } finally {
     const currentOwner = requestOwners.projectResults.finish(owner);
@@ -4010,6 +4085,44 @@ async function loadProjectResults() {
       state.projectSearchLoading = false;
       state.projectSearchPendingContext = '';
       renderProjectSearchView();
+    }
+  }
+}
+
+async function recoverIndexRevision() {
+  if (state.revisionRecoveryPending) return state.revisionRecoveryPending;
+  Object.values(requestOwners).forEach((owner) => owner.abort());
+  state.sessions = [];
+  state.sessionTotal = 0;
+  state.sessionsDataContext = '';
+  state.fileSuggestions = [];
+  state.projectResults = [];
+  state.projectResultsRevision = 0;
+  state.projectReturnContext = null;
+  renderSessions();
+  renderFileSuggestions();
+  renderProjectSearchView();
+  const recovery = (async () => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      state.revisionRecoveryRequested = false;
+      const appState = await api('/api/state');
+      const currentState = appState.currentState || appState;
+      if (!currentState?.projectSelected) return false;
+      await applyAppState(currentState);
+      if (await loadSessions() && !state.revisionRecoveryRequested) return true;
+    }
+    return false;
+  })();
+  state.revisionRecoveryPending = recovery;
+  try {
+    return await recovery;
+  } finally {
+    if (state.revisionRecoveryPending === recovery) {
+      state.revisionRecoveryPending = null;
+      if (state.revisionRecoveryRequested) {
+        state.revisionRecoveryRequested = false;
+        Promise.resolve().then(() => recoverIndexRevision()).catch(showError);
+      }
     }
   }
 }
@@ -4068,6 +4181,7 @@ async function setSearchScope(scope, options = {}) {
     state.timelineRequestId += 1;
     state.analysisRequestId += 1;
     state.timelineLoading = false;
+    resetSessionDetailCache();
     resetDetailPane();
     beginProjectSearchPendingTransition();
     await Promise.all([loadProjectResults(), refreshFileSuggestions()]);
@@ -4096,6 +4210,10 @@ async function backToProjectResults() {
 
 async function drillDownProjectResult(sessionId) {
   if (state.searchScope !== 'project') return false;
+  if (state.projectResultsRevision !== state.indexRevision) {
+    await recoverIndexRevision();
+    return false;
+  }
   const result = state.projectResults.find((item) => item.id === sessionId);
   const latest = result?.searchMatch?.latestEvent;
   if (!result || !latest) return false;
@@ -5386,6 +5504,13 @@ function invalidateNavigationCache() {
   state.navigationLoadErrorKey = '';
 }
 
+function abortPendingNavigationLoad() {
+  if (!state.navigationCache.pending) return false;
+  requestOwners.navigation.abort();
+  state.navigationCache = { key: '', events: [], total: 0, pending: null };
+  return true;
+}
+
 function currentNavigationCache() {
   const key = navigationCacheKey();
   return state.navigationCache.key === key && !state.navigationCache.pending ? state.navigationCache : null;
@@ -5408,14 +5533,26 @@ function ensureNavigationEvents() {
     const events = [];
     let total = 0;
     while (events.length === 0 || events.length < total) {
-      if (navigationCacheKey() !== key) return null;
+      if (!requestOwners.navigation.isCurrent(owner) || navigationCacheKey() !== key) return null;
       const data = await api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/timeline${currentQuery({
         offset: events.length,
         limit: NAVIGATION_PAGE_LIMIT,
       })}`, { signal: owner.controller.signal });
+      if (!requestOwners.navigation.isCurrent(owner) || navigationCacheKey() !== key) return null;
       total = data.total;
       events.push(...data.events);
       if (!data.events.length) break;
+      if (events.length < total) {
+        const selectedDetailKey = detailKey(
+          state.selectedSessionId,
+          activeLayerId(),
+          state.detailView?.eventId || state.selectedEventId,
+        );
+        if (state.detailPending[selectedDetailKey]) {
+          await state.detailPending[selectedDetailKey];
+        }
+        await new Promise((resolve) => setTimeout(resolve, NAVIGATION_BACKGROUND_PAGE_HANDOFF_MS));
+      }
     }
     if (navigationCacheKey() !== key) return null;
     state.navigationCache = { key, events, total, pending: null };
@@ -6159,9 +6296,13 @@ function showInspector(event, options = {}) {
   if (shouldLoadNavigation) {
     navigationPending = ensureNavigationEvents();
     navigationPending.then(() => {
+      if (navigationCacheKey() !== navigationKey
+          || !isCurrentDetailSelection('inspector', key, event.id, selectionContext)) return;
       if (state.navigationLoadErrorKey === navigationKey) state.navigationLoadErrorKey = '';
       rerenderCurrentInspectorNavigation();
     }).catch((error) => {
+      if (navigationCacheKey() !== navigationKey
+          || !isCurrentDetailSelection('inspector', key, event.id, selectionContext)) return;
       if (state.navigationCache.key === navigationKey) {
         state.navigationCache = { key: '', events: [], total: 0, pending: null };
       }

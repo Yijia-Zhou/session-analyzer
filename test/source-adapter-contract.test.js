@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   createSourceAdapterRegistry,
   defineSourceAdapter,
+  SESSION_LIFECYCLE,
   unsupportedImagePreview,
   unsupportedLegacyRawRead,
   unsupportedLegacyRawResolver,
@@ -19,6 +20,10 @@ function queryContract() {
     getTimeline() {},
     indexPresentation() {},
     matchTerms() {},
+    projectFileSuggestions() {},
+    projectQueryPresentation() {},
+    projectSessionMetadata() {},
+    sessionFileSuggestions() {},
   };
 }
 
@@ -28,11 +33,13 @@ function descriptor(overrides = {}) {
     label: 'Fixture Source',
     homeOption: 'fixtureHome',
     homeLabel: 'Fixture home',
+    sessionLifecycle: SESSION_LIFECYCLE.RESIDENT_COMPLETE,
     defaultHome() { return 'fixture'; },
     query: queryContract(),
     discoverConfiguredProjects() {},
     discoverProjects() {},
     buildIndex() {},
+    async materializeSession({ indexedSession }) { return indexedSession; },
     buildEventDetail() {},
     readRawRecord() {},
     ...overrides,
@@ -65,6 +72,27 @@ test('source adapter descriptor accepts explicit paired optional capabilities', 
   assert.equal(adapter.readImagePreview, readImagePreview);
 });
 
+test('source adapter descriptor discriminates resident and indexed materialization modes', () => {
+  const resident = defineSourceAdapter(descriptor());
+  assert.equal(resident.sessionLifecycle, SESSION_LIFECYCLE.RESIDENT_COMPLETE);
+  assert.deepEqual(resident.materializationContextFields, []);
+  assert.deepEqual(resident.materializedPrivateFields, []);
+
+  const strict = defineSourceAdapter(descriptor({
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    validateMaterializationDescriptor() {},
+    validateLegacyRawOwnerIndex() {},
+    validateMaterializedPrivateState() {},
+    materializationContextFields: ['fixtureRoot'],
+    materializedPrivateFields: ['_fixtureIndex'],
+  }));
+  assert.equal(strict.sessionLifecycle, SESSION_LIFECYCLE.INDEXED_MATERIALIZED);
+  assert.deepEqual(strict.materializationContextFields, ['fixtureRoot']);
+  assert.equal(Object.isFrozen(strict.materializationContextFields), true);
+  assert.deepEqual(strict.materializedPrivateFields, ['_fixtureIndex']);
+  assert.equal(Object.isFrozen(strict.materializedPrivateFields), true);
+});
+
 test('source adapter descriptor rejects unknown fields and missing operations', () => {
   assert.throws(
     () => defineSourceAdapter(descriptor({ capabilities: {} })),
@@ -75,6 +103,16 @@ test('source adapter descriptor rejects unknown fields and missing operations', 
     () => defineSourceAdapter(descriptor({ buildEventDetail: undefined })),
     (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
       && /buildEventDetail must be a function/.test(error.message),
+  );
+  assert.throws(
+    () => defineSourceAdapter(descriptor({ materializeSession: undefined })),
+    (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
+      && /materializeSession must be a function/.test(error.message),
+  );
+  assert.throws(
+    () => defineSourceAdapter(descriptor({ sessionLifecycle: 'future-mode' })),
+    (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
+      && /sessionLifecycle must be/.test(error.message),
   );
   assert.throws(
     () => defineSourceAdapter(descriptor({ query: { ...queryContract(), getTimeline: null } })),
@@ -95,6 +133,69 @@ test('source adapter descriptor rejects unknown fields and missing operations', 
     (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
       && /must not contain symbol properties/.test(error.message),
   );
+});
+
+test('indexed materialization mode requires its closed validation hooks', () => {
+  assert.throws(
+    () => defineSourceAdapter(descriptor({
+      sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    })),
+    (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
+      && /validateMaterializationDescriptor must be a function/.test(error.message),
+  );
+  assert.throws(
+    () => defineSourceAdapter(descriptor({
+      materializedPrivateFields: [],
+    })),
+    (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
+      && /only valid in indexed-materialized-v1/.test(error.message),
+  );
+  assert.throws(
+    () => defineSourceAdapter(descriptor({
+      materializationContextFields: [],
+    })),
+    (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
+      && /only valid in indexed-materialized-v1/.test(error.message),
+  );
+  for (const materializationContextFields of [
+    ['repoRoot'],
+    ['sourceKind'],
+    ['not-kebab-case'],
+    ['fixtureRoot', 'fixtureRoot'],
+    Array.from({ length: 17 }, (_, index) => `field${index}`),
+  ]) {
+    assert.throws(
+      () => defineSourceAdapter(descriptor({
+        sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+        validateMaterializationDescriptor() {},
+        validateLegacyRawOwnerIndex() {},
+        validateMaterializedPrivateState() {},
+        materializationContextFields,
+        materializedPrivateFields: [],
+      })),
+      { code: 'SOURCE_ADAPTER_CONTRACT_VIOLATION' },
+    );
+  }
+  for (const operation of [
+    'validateMaterializationDescriptor',
+    'validateLegacyRawOwnerIndex',
+    'validateMaterializedPrivateState',
+  ]) {
+    const strict = {
+      sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+      validateMaterializationDescriptor() {},
+      validateLegacyRawOwnerIndex() {},
+      validateMaterializedPrivateState() {},
+      materializationContextFields: [],
+      materializedPrivateFields: [],
+    };
+    strict[operation] = async function asyncValidator() {};
+    assert.throws(
+      () => defineSourceAdapter(descriptor(strict)),
+      (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
+        && new RegExp(`${operation} must be a synchronous non-generator function`).test(error.message),
+    );
+  }
 });
 
 test('source adapter descriptor requires canonical identity and paired legacy operations', () => {

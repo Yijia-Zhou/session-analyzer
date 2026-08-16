@@ -4,7 +4,19 @@
 
 ### English
 
+- Replaced corpus-wide resident complete Session graphs for both Codex and Claude Code with strict Indexed Sessions, packed source-neutral project queries, and source-backed Materialized Sessions reconstructed on demand while preserving timeline, detail, Raw, image, relationship, search, cancellation, and reindex behavior.
+- Added a revision-scoped exact-identity Materialized Session cache with same-Session request coalescing, one global active reconstruction, bounded FIFO admission, independent waiter cancellation, atomic release on successful project/source replacement, stable busy/contract error codes, and one bounded browser retry for busy GETs.
+- Generalized strict materialization to a declarative bounded adapter context without whole-Index fingerprints, added exact packed-query-to-Materialized projection digests, reduced Claude request dependencies to the selected transcript, and made no-text project filters hydrate only the latest matching preview.
+- Made final packed-query commit validation and Materialized projection validation asynchronous, bounded, signal-aware, and exception-safe, so cancellation cannot admit a replacement Index or an abandoned cold Session and unverifiable adapter graphs retain the stable contract error code.
+- Updated large-history guidance from final aggregate profiling: a 490-Session, 305,485-Raw Codex corpus completed build plus commit validation under the default heap with a 788 MB transient V8 heap peak and 2.16 GB process maximum RSS; the 1.055 GB packed query store remains a material external-memory owner, and the first cache intentionally has no eviction.
+
 ### 中文
+
+- 将 Codex 与 Claude Code 的语料级常驻完整 Session graph 替换为严格 Indexed Session、来源中立紧凑项目查询，以及按需从来源重建的 Materialized Session，同时保持时间线、详情、Raw、图片、关系、搜索、取消与重建索引行为。
+- 新增 revision-scoped、精确 identity 的 Materialized Session cache：合并同 Session request、全局只运行一个重建、有界 FIFO admission、waiter 独立取消、项目／来源成功替换时原子释放，并提供稳定 busy／contract error code，以及对 busy GET 的一次有界 browser retry。
+- 将严格物化泛化为声明式有界 adapter context，避免整 Index fingerprint；新增紧凑查询到 Materialized projection 的精确 digest；把 Claude request dependency 缩小为所选 transcript；并让无文本项目过滤只 hydration 最新匹配 preview。
+- 让最终紧凑查询 commit validation 与 Materialized projection validation 具备异步、有界、signal-aware 和异常安全性质，因此取消不会接纳 replacement Index 或已放弃的 cold Session，不可验证 adapter graph 也会保持稳定 contract error code。
+- 根据最终聚合 profiling 更新大型历史指导：包含 490 个 Session／305,485 条 Raw Record 的 Codex 语料在默认 heap 下完成 build 加 commit validation，transient V8 heap 峰值为 788 MB，process maximum RSS 为 2.16 GB；1.055 GB 紧凑 query store 仍是不可忽略的 external-memory owner，且首版 cache 有意不实现 eviction。
 
 ## 0.1.4 - 2026-08-15
 

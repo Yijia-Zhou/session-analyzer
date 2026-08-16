@@ -47,9 +47,12 @@ When changing product behavior or repository structure:
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Transcript source adapters: `docs/design-docs/transcript-source-adapters.md`
+- Indexed/Materialized Session lifecycle: `docs/design-docs/indexed-materialized-session-lifecycle.md`
 - Active plans:
   - None.
 - Completed plans:
+  - `docs/exec-plans/completed/2026-08-16-indexed-materialized-lifecycle-third-adapter-gate.md`
+  - `docs/exec-plans/completed/2026-08-16-indexed-materialized-session-lifecycle.md`
   - `docs/exec-plans/completed/2026-08-15-adapter-detail-contract-review-followups.md`
   - `docs/exec-plans/completed/2026-08-15-source-neutral-detail-and-adapter-contracts.md`
   - `docs/exec-plans/completed/2026-08-15-v0.1.4-release.md`

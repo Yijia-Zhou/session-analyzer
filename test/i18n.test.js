@@ -7,6 +7,7 @@ const http = require('node:http');
 const i18n = require('../src/shared/i18n');
 const { __testOnly, getTimeline, buildEventDetail, eventKindCatalog } = require('../src/codex');
 const { createServer } = require('../server');
+const { getSourceAdapter } = require('../src/source-adapters');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const fixtureRepo = 'G:\\vibe\\term-agent';
@@ -393,7 +394,10 @@ test('raw timeline and detail labels localize display text without changing raw 
 });
 
 test('state API localizes display resources while preserving ids', async () => {
-  const index = await buildIndex({ codexHome: fixtureCodexHome, repoRoot: fixtureRepo });
+  const index = await getSourceAdapter('codex').buildIndex({
+    sourceHome: fixtureCodexHome,
+    repoRoot: fixtureRepo,
+  });
   const server = createServer(index, 1, { codexHome: fixtureCodexHome });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {

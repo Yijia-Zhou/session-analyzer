@@ -6,8 +6,12 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { chromium } = require('playwright');
-const { analyzerSessionId, buildClaudeIndex } = require('../src/claude');
-const { buildIndex } = require('../src/codex');
+const { analyzerSessionId, buildClaudeSourceBackedIndex } = require('../src/claude');
+const {
+  buildIndex: buildResidentCodexIndex,
+  buildSourceBackedIndex: buildIndex,
+} = require('../src/codex');
+const { materializeSessionForIndex } = require('../src/source-adapters');
 const { createServer } = require('../server');
 const { createTimelineProfileFixture } = require('../scripts/timeline-profile-fixture');
 
@@ -17,6 +21,12 @@ const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 
 async function buildFixtureIndex() {
   return buildIndex({ repoRoot, codexHome: fixtureCodexHome });
+}
+
+async function materializeIndexedSession(index, sessionId = index.sessions[0]?.id) {
+  const indexedSession = index.sessionsById.get(sessionId);
+  assert.ok(indexedSession, `expected indexed session ${sessionId}`);
+  return materializeSessionForIndex(index, indexedSession);
 }
 
 async function startServer(t, index, options = {}) {
@@ -738,6 +748,35 @@ async function makeHookCodexHome(t) {
   return { codexHome, repoRoot: hookRepoRoot, sessionId };
 }
 
+test('browser retries one bounded materialization-busy GET before showing an error', async (t) => {
+  const index = await buildFixtureIndex();
+  let attempts = 0;
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: async (targetPage) => {
+      await targetPage.route('**/api/sessions/*/timeline?*', async (route) => {
+        const requestUrl = new URL(route.request().url());
+        if (requestUrl.searchParams.get('offset') === '0' && attempts === 0) {
+          attempts += 1;
+          await route.fulfill({
+            status: 503,
+            headers: { 'content-type': 'application/json', 'retry-after': '0' },
+            body: JSON.stringify({
+              error: 'Internal server error',
+              code: 'MATERIALIZATION_BUSY',
+            }),
+          });
+          return;
+        }
+        attempts += 1;
+        await route.continue();
+      });
+    },
+  });
+  assert.ok(attempts >= 2);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('Internal server error'), false);
+});
+
 test('browser locale bootstrap keeps narrow screens on sessions view', async (t) => {
   const index = await buildFixtureIndex();
   const { page } = await openApp(t, index, { viewport: { width: 390, height: 760 }, locale: 'zh-CN', activeSessionState: 'attached' });
@@ -881,7 +920,7 @@ test('browser presents Claude pointer fork context without child search or event
     { type: 'agent-name', agentName: 'Pointer child ⑂', sessionId: childId },
   ]);
 
-  const index = await buildClaudeIndex({ repoRoot: claudeRepo, claudeHome });
+  const index = await buildClaudeSourceBackedIndex({ repoRoot: claudeRepo, claudeHome });
   const pointerChild = index.sessionsById.get(analyzerSessionId(childId));
   const forkPointTarget = pointerChild?.inheritedContext?.forkPointTarget;
   assert.equal(forkPointTarget?.layer, 'main');
@@ -941,9 +980,19 @@ test('browser presents Claude pointer fork context without child search or event
     document.querySelector('#timeline .event.selected')?.dataset.eventId === eventId
   ), forkPointTarget.eventId);
 
-  const targetlessIndex = await buildClaudeIndex({ repoRoot: claudeRepo, claudeHome });
-  targetlessIndex.sessionsById.get(analyzerSessionId(childId)).inheritedContext.forkPointTarget = null;
-  const { page: fallbackPage } = await openApp(t, targetlessIndex, { locale: 'en', skipProjectReindex: true });
+  const { page: fallbackPage } = await openApp(t, index, {
+    locale: 'en',
+    skipProjectReindex: true,
+    beforeGoto: async (targetlessPage) => {
+      await targetlessPage.route('**/api/sessions*', async (route) => {
+        const response = await route.fetch();
+        const data = await response.json();
+        const pointerSession = data.sessions.find((session) => session.id === analyzerSessionId(childId));
+        if (pointerSession) pointerSession.inheritedContext.forkPointTarget = null;
+        await route.fulfill({ response, json: data });
+      });
+    },
+  });
   await fallbackPage.locator(`[data-session-id="${analyzerSessionId(childId)}"]`).click();
   const fallbackContext = fallbackPage.locator('[data-inherited-context]');
   await fallbackContext.waitFor();
@@ -1117,7 +1166,7 @@ test('browser Raw refs preserve malformed Claude source text instead of renderin
   const malformedLine = '{"type":"assistant","message":';
   await fsp.appendFile(file, `${malformedLine}\n`, 'utf8');
 
-  const index = await buildClaudeIndex({ repoRoot: claudeRepo, claudeHome });
+  const index = await buildClaudeSourceBackedIndex({ repoRoot: claudeRepo, claudeHome });
   const { page } = await openApp(t, index, { locale: 'en' });
   await page.locator('#layerSelect').selectOption('protocol');
   await expectInputValue(page, '#layerSelect', 'protocol');
@@ -1178,12 +1227,19 @@ test('browser groups derived sessions under their parent and collapses them by d
 });
 
 test('browser uses singular child session labels for one derived child', async (t) => {
-  const index = await buildFixtureIndex();
+  const residentIndex = await buildResidentCodexIndex({ repoRoot, codexHome: fixtureCodexHome });
   const childSessionId = '33333333-3333-3333-3333-333333333333';
-  index.sessions = index.sessions.filter(
+  const retainedSessions = residentIndex.sessions.filter(
     (session) => session.parentSessionId !== primaryFixtureSessionId || session.id === childSessionId,
   );
-  index.sessionsById = new Map(index.sessions.map((session) => [session.id, session]));
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-single-child-browser-'));
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  const sessionsRoot = path.join(codexHome, 'sessions');
+  await fsp.mkdir(sessionsRoot, { recursive: true });
+  await Promise.all(retainedSessions.map((session) => (
+    fsp.copyFile(session.sourceAbsFile, path.join(sessionsRoot, path.basename(session.sourceAbsFile)))
+  )));
+  const index = await buildIndex({ repoRoot, codexHome });
   const { page } = await openApp(t, index, { locale: 'en', skipProjectReindex: true });
 
   const toggle = page.locator(`[data-session-children-toggle="${primaryFixtureSessionId}"]`);
@@ -1224,7 +1280,7 @@ test('browser locale switch reloads cached expanded event detail', async (t) => 
 test('browser single-tool Code Mode keeps native request and operation output primary while moving trace to inspector', async (t) => {
   const fixture = await makeCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = Array.from(index.sessionsById.values())[0];
+  const session = await materializeIndexedSession(index);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   assert.ok(operation, 'fixture should create one Code Mode operation');
   const { page } = await openApp(t, index, { locale: 'en' });
@@ -1290,7 +1346,7 @@ test('browser single-tool Code Mode keeps native request and operation output pr
 test('browser nested Code Mode context reveals a distinct parent row without changing search owners or fold overrides', async (t) => {
   const fixture = await makeContextCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = index.sessionsById.get(fixture.sessionId);
+  const session = await materializeIndexedSession(index, fixture.sessionId);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   const nested = session.logicalEvents.find((candidate) => candidate.toolName === 'nested-context-token');
   assert.ok(operation && nested);
@@ -1351,7 +1407,7 @@ test('browser nested Code Mode context reveals a distinct parent row without cha
 test('browser nested Code Mode context late responses are invalidated by same-source detail, fold, and profile transitions', async (t) => {
   const fixture = await makeContextCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = index.sessionsById.get(fixture.sessionId);
+  const session = await materializeIndexedSession(index, fixture.sessionId);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   const nested = session.logicalEvents.find((candidate) => candidate.toolName === 'nested-context-token');
   assert.ok(operation && nested);
@@ -1449,7 +1505,7 @@ test('browser nested Code Mode context late responses are invalidated by same-so
 test('browser Code Mode raw fallback keeps a shared origin tag instead of the outer exec tool tag', async (t) => {
   const fixture = await makeRawCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = Array.from(index.sessionsById.values())[0];
+  const session = await materializeIndexedSession(index);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   assert.ok(operation);
 
@@ -1479,7 +1535,7 @@ test('browser Code Mode raw fallback keeps a shared origin tag instead of the ou
 test('browser Code Mode summary presents a readable source excerpt instead of raw code', async (t) => {
   const fixture = await makeRawCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = Array.from(index.sessionsById.values())[0];
+  const session = await materializeIndexedSession(index);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   assert.ok(operation);
 
@@ -1561,7 +1617,7 @@ test('browser Code Mode summary presents a readable source excerpt instead of ra
 test('browser Code Mode summary keeps one logical source line to one visual row', async (t) => {
   const fixture = await makeSingleLineRawCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = Array.from(index.sessionsById.values())[0];
+  const session = await materializeIndexedSession(index);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   assert.ok(operation);
 
@@ -1611,7 +1667,7 @@ test('browser Code Mode summary keeps one logical source line to one visual row'
 test('browser Code Mode adaptively unwraps one declared tool and labels multiple declared tools without changing counts', async (t) => {
   const fixture = await makeAdaptiveCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = Array.from(index.sessionsById.values())[0];
+  const session = await materializeIndexedSession(index);
   const operations = session.logicalEvents.filter((candidate) => candidate.kind === 'code_mode_operation');
   const single = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-browser-single');
   const multi = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-browser-multi');
@@ -1712,7 +1768,7 @@ test('browser Code Mode adaptively unwraps one declared tool and labels multiple
 test('browser search-hit snippets stay navigable ahead of every folded Code Mode preview', async (t) => {
   const fixture = await makeCodeModeSearchPreviewCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = index.sessionsById.get(fixture.sessionId);
+  const session = await materializeIndexedSession(index, fixture.sessionId);
   const operations = session.logicalEvents.filter((candidate) => candidate.kind === 'code_mode_operation');
   const single = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-search-single');
   const multi = operations.find((candidate) => candidate.codeModeOperation?.outerCallId === 'exec-search-multi');
@@ -1765,7 +1821,7 @@ test('browser search-hit snippets stay navigable ahead of every folded Code Mode
 test('browser Code Mode presents web requests structurally, renders safe Markdown, and compacts associated lifecycle evidence', async (t) => {
   const fixture = await makeWebCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
-  const session = Array.from(index.sessionsById.values())[0];
+  const session = await materializeIndexedSession(index);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   const webLifecycle = session.logicalEvents.find((candidate) => candidate.kind === 'web_search');
   assert.ok(operation && webLifecycle);
@@ -2945,20 +3001,10 @@ test('browser applies source config from a 202 indexing-job state', async (t) =>
 
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Claude Code/);
   assert.ok((await page.locator('#projectSourceHome').textContent()).includes(fixture.claudeHome));
-  resolveIndex({
+  resolveIndex(await buildClaudeSourceBackedIndex({
     repoRoot: fixture.claudeRepo,
-    sourceKind: 'claude-code',
-    sourceHome: fixture.claudeHome,
-    codexHome: path.join(fixture.claudeHome, 'unused-codex'),
     claudeHome: fixture.claudeHome,
-    generatedAt: new Date().toISOString(),
-    totals: { sessionCount: 0, eventCount: 0, rawEventCount: 0 },
-    eventKinds: { main: [], protocol: [], raw: [] },
-    codeModeRequests: [],
-    foldingProfiles: [],
-    sessions: [],
-    sessionsById: new Map(),
-  });
+  }));
   await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
 });
 
@@ -3153,6 +3199,203 @@ test('browser project result drill-down loads a deep latest event and returns to
   ));
   await page.waitForFunction((sessionId) => document.activeElement?.dataset.projectResultSessionId === sessionId, longFixture.sessionId);
   assert.equal(await page.locator('#timeline .projectSearchState').count(), 1);
+});
+
+test('browser discards a stale project response before exposing drill-down', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+  let staleResponsePending = true;
+  await page.route('**/api/sessions*', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (!staleResponsePending
+        || requestUrl.pathname !== '/api/sessions'
+        || requestUrl.searchParams.get('q') !== 'patch'
+        || requestUrl.searchParams.get('sort') !== 'latest-match-desc') {
+      await route.continue();
+      return;
+    }
+    staleResponsePending = false;
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...body, indexRevision: body.indexRevision + 1 },
+    });
+  });
+
+  await switchToProjectScope(page);
+  const requestStart = requestedUrls.length;
+  const stateReload = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/state');
+  await fillSearch(page, 'patch');
+  await stateReload;
+  await waitForProjectCards(page);
+  assert.equal(requestedUrls.slice(requestStart).some((value) => (
+    new URL(value, 'http://local').pathname.endsWith('/timeline')
+  )), false);
+  await page.locator('[data-project-result-session-id]').first().click();
+  await page.waitForFunction(() => document.body.dataset.searchScope === 'session');
+});
+
+test('browser discards revision-mismatched ordinary Session rows before rendering', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en' });
+  const marker = 'stale-session-row-from-newer-revision';
+  let staleResponsePending = true;
+  await page.route('**/api/sessions*', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (!staleResponsePending
+        || requestUrl.pathname !== '/api/sessions'
+        || requestUrl.searchParams.get('sort') !== 'events-desc'
+        || requestUrl.searchParams.get('q')) {
+      await route.continue();
+      return;
+    }
+    staleResponsePending = false;
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        indexRevision: body.indexRevision + 1,
+        sessions: body.sessions.map((session, itemIndex) => (
+          itemIndex === 0 ? { ...session, title: marker } : session
+        )),
+      },
+    });
+  });
+  await page.evaluate((text) => {
+    window.__sawRevisionMismatchMarker = document.body.textContent.includes(text);
+    new MutationObserver(() => {
+      if (document.body.textContent.includes(text)) window.__sawRevisionMismatchMarker = true;
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  }, marker);
+
+  const stateReload = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/state');
+  await page.locator('#sortSelect').selectOption('events-desc');
+  await stateReload;
+  await page.waitForFunction(() => document.querySelectorAll('[data-session-id]').length > 0);
+  assert.equal(staleResponsePending, false);
+  assert.equal(await page.evaluate(() => window.__sawRevisionMismatchMarker), false);
+});
+
+test('browser discards revision-mismatched file suggestions and coalesces recovery', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en' });
+  const marker = 'stale-file-suggestion-from-newer-revision';
+  let staleResponsePending = true;
+  await page.route('**/api/file-suggestions*', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (!staleResponsePending || requestUrl.searchParams.get('layer') !== 'protocol') {
+      await route.continue();
+      return;
+    }
+    staleResponsePending = false;
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        indexRevision: body.indexRevision + 1,
+        files: [{ file: marker, count: 999 }],
+      },
+    });
+  });
+  await page.evaluate((text) => {
+    window.__sawRevisionMismatchMarker = document.body.textContent.includes(text);
+    new MutationObserver(() => {
+      if (document.body.textContent.includes(text)) window.__sawRevisionMismatchMarker = true;
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  }, marker);
+
+  const stateReload = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/state');
+  await page.locator('#layerSelect').selectOption('protocol');
+  await stateReload;
+  await page.waitForFunction(() => document.querySelectorAll('[data-session-id]').length > 0);
+  assert.equal(staleResponsePending, false);
+  assert.equal(await page.evaluate(() => window.__sawRevisionMismatchMarker), false);
+});
+
+test('browser retries coalesced recovery when a nested query detects another revision', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
+  const sessionMarker = 'stale-session-from-first-revision-change';
+  const suggestionMarker = 'stale-suggestion-from-nested-revision-change';
+  let sessionMismatchPending = true;
+  let suggestionMismatchPending = true;
+  let nestedMismatchArmed = false;
+
+  await page.route('**/api/sessions*', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (!sessionMismatchPending
+        || requestUrl.pathname !== '/api/sessions'
+        || requestUrl.searchParams.get('sort') !== 'events-desc'
+        || requestUrl.searchParams.get('q')) {
+      await route.continue();
+      return;
+    }
+    sessionMismatchPending = false;
+    const response = await route.fetch();
+    const body = await response.json();
+    nestedMismatchArmed = true;
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        indexRevision: body.indexRevision + 1,
+        sessions: body.sessions.map((session, itemIndex) => (
+          itemIndex === 0 ? { ...session, title: sessionMarker } : session
+        )),
+      },
+    });
+  });
+  await page.route('**/api/file-suggestions*', async (route) => {
+    if (!nestedMismatchArmed || !suggestionMismatchPending) {
+      await route.continue();
+      return;
+    }
+    suggestionMismatchPending = false;
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        indexRevision: body.indexRevision + 1,
+        files: [{ file: suggestionMarker, count: 999 }],
+      },
+    });
+  });
+  await page.evaluate(([firstMarker, secondMarker]) => {
+    window.__sawOverlappingRevisionMarker = document.body.textContent.includes(firstMarker)
+      || document.body.textContent.includes(secondMarker);
+    new MutationObserver(() => {
+      if (document.body.textContent.includes(firstMarker)
+          || document.body.textContent.includes(secondMarker)) {
+        window.__sawOverlappingRevisionMarker = true;
+      }
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  }, [sessionMarker, suggestionMarker]);
+
+  const requestStart = requestedUrls.length;
+  let recoveryStateResponses = 0;
+  const secondRecoveryState = page.waitForResponse((response) => {
+    if (new URL(response.url()).pathname !== '/api/state') return false;
+    recoveryStateResponses += 1;
+    return recoveryStateResponses === 2;
+  });
+  await page.locator('#sortSelect').selectOption('events-desc');
+  await secondRecoveryState;
+  await page.waitForFunction(() => document.querySelectorAll('[data-session-id]').length > 0);
+
+  const recoveryStateRequests = requestedUrls.slice(requestStart).filter((value) => (
+    new URL(value, 'http://local').pathname === '/api/state'
+  ));
+  assert.equal(sessionMismatchPending, false);
+  assert.equal(suggestionMismatchPending, false);
+  assert.ok(recoveryStateRequests.length >= 2);
+  assert.equal(await page.evaluate(() => window.__sawOverlappingRevisionMarker), false);
 });
 
 test('browser project return ignores stale selected-session analysis responses', async (t) => {
@@ -3966,6 +4209,8 @@ test('browser user scroll during the search-scroll guard still loads the next pa
     .filter((value) => value.includes('/timeline?'))
     .map((value) => new URL(value, 'http://local'));
   assert.equal(paginationRequests.some((url) => url.searchParams.get('offset') === '150'), true);
+  await page.waitForFunction(() => !document.querySelector('#loadMoreBtn')?.textContent.includes('Loading'));
+  await page.waitForLoadState('networkidle');
 });
 
 test('browser an above-threshold user scroll cannot authorize a later programmatic bottom scroll', async (t) => {
@@ -4143,6 +4388,7 @@ test('browser replacement pagination requires current-context intent while expli
   const deepEventId = await page.locator('#timeline .event[data-event-id]').nth(501).getAttribute('data-event-id');
   await page.locator(`[data-event-id="${deepEventId}"]`).click();
   await waitForDetailView(page, 'inspector');
+  await page.waitForSelector('#detail .eventNavigator .navPosition');
 
   const filterRequestStart = requestedUrls.length;
   const filterPageZero = page.waitForResponse((response) => {

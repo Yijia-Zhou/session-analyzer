@@ -20,6 +20,7 @@ const {
   largeTranscriptHistoryWarning,
 } = require('../src/runtime-capacity');
 const { createServer } = require('../server');
+const { strictClaudeIndexFromComplete } = require('./strict-claude-fixture');
 
 async function makeTempDir(t) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-diagnostics-'));
@@ -209,7 +210,7 @@ test('server diagnostics record successful, failed, and cancelled indexing outco
     {
       name: 'succeeded',
       expectedStatus: 'succeeded',
-      buildIndex: async ({ repoRoot, sourceKind }) => ({
+      buildIndex: async ({ repoRoot, sourceKind }) => strictClaudeIndexFromComplete({
         repoRoot,
         sourceKind,
         sessions: [],
@@ -235,7 +236,11 @@ test('server diagnostics record successful, failed, and cancelled indexing outco
 
   for (const scenario of cases) {
     const logDir = path.join(root, scenario.name);
-    const server = createServer(null, 0, { logDir, buildIndex: scenario.buildIndex });
+    const server = createServer(null, 0, {
+      source: 'claude-code',
+      logDir,
+      buildIndex: scenario.buildIndex,
+    });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
     try {
@@ -273,9 +278,10 @@ test('server emits one large-history warning without blocking successful indexin
   const root = await makeTempDir(t);
   const messages = [];
   const server = createServer(null, 0, {
+    source: 'claude-code',
     logDir: root,
     warn: (message) => messages.push(message),
-    buildIndex: async ({ repoRoot, onProgress }) => {
+    buildIndex: async ({ repoRoot, sourceKind, onProgress }) => {
       const progress = {
         phase: 'parsing',
         candidateBytes: LARGE_TRANSCRIPT_HISTORY_WARNING_BYTES + 1,
@@ -286,12 +292,12 @@ test('server emits one large-history warning without blocking successful indexin
       };
       onProgress(progress);
       onProgress({ ...progress, sessionCount: 1, rawEventCount: 2, eventCount: 1 });
-      return {
+      return strictClaudeIndexFromComplete({
         repoRoot,
-        sourceKind: 'codex',
+        sourceKind,
         sessions: [],
         sessionsById: new Map(),
-      };
+      });
     },
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -331,14 +337,19 @@ test('English and Chinese README capacity guidance preserves aligned operational
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
   const readmeZh = fs.readFileSync(path.join(__dirname, '..', 'README.zh-CN.md'), 'utf8');
   for (const content of [readme, readmeZh]) {
-    assert.match(content, /250 MB/u);
-    assert.match(content, /850–900 MB/u);
-    assert.match(content, /1\.9 GB/u);
+    assert.match(content, /490/u);
+    assert.match(content, /305,485/u);
+    assert.match(content, /788 MB/u);
+    assert.match(content, /2\.16 GB/u);
+    assert.match(content, /1\.055 GB/u);
+    assert.match(content, /10\.84/u);
+    assert.match(content, /0\.14 ms/u);
     assert.match(content, /800 MiB/u);
     assert.match(content, /SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY/u);
     assert.match(content, /JavaScript heap out of memory/u);
     assert.match(content, /--max-old-space-size=4096/u);
     assert.match(content, /--log-dir <path>/u);
+    assert.match(content, /no eviction|不实现 eviction/u);
     assert.match(content, /permanent product capacity limits|永久的产品容量上限/u);
   }
 });
