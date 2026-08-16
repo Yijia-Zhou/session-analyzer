@@ -2,10 +2,10 @@
 
 ## Status / 状态
 
-- Status: M1 accepted; M2 checkpoint re-review pass 2 requested exception-safe mutation, nested-retainer closure, and validator-error normalization fixes, which are in progress; M3 remains blocked / 状态：M1 已接受；M2 checkpoint 第 2 轮复审要求修复异常安全 mutation、嵌套 retainer 闭包与 validator error 归一化缺口，修复进行中；M3 继续阻断
+- Status: M1 and M2 accepted; M3 shared project-query independence may start, with the full-Index fingerprint performance gate mandatory before routes depend on compatibility materialization / 状态：M1 与 M2 已接受；M3 共享项目查询独立可以开始，但在 route 依赖兼容物化前必须通过完整 Index fingerprint 性能门槛
 - Last updated: 2026-08-16 / 最近更新：2026-08-16
 - Review base: `6f8fa085fbd18344a973c8169be1998b5a71943d` on `towards-0.2.0` / 评审基线：`towards-0.2.0` 上的 `6f8fa085fbd18344a973c8169be1998b5a71943d`
-- Accepted review heads: contract head `e29fb566116eb1f30bdf5e8660ebc72a2c156e38` and authoritative-sequence reconciliation head `7c3db8dfd9895a57a63020035a6278e0c410f1a0` on branch `indexed-materialized-session-lifecycle`; both exact diffs contain only M0/M1 documentation / 已接受评审 head：分支 `indexed-materialized-session-lifecycle` 上的契约 head `e29fb566116eb1f30bdf5e8660ebc72a2c156e38` 与权威顺序对齐 head `7c3db8dfd9895a57a63020035a6278e0c410f1a0`；两个精确 diff 都只包含 M0／M1 文档
+- Accepted review heads: M1 contract `e29fb566116eb1f30bdf5e8660ebc72a2c156e38`, authoritative-sequence reconciliation `7c3db8dfd9895a57a63020035a6278e0c410f1a0`, and M2 lifecycle seam `7eaa317da1e6ca7fb8a6bcea6f24f0770a9f3530` on branch `indexed-materialized-session-lifecycle` / 已接受评审 head：分支 `indexed-materialized-session-lifecycle` 上的 M1 契约 `e29fb566116eb1f30bdf5e8660ebc72a2c156e38`、权威顺序对齐 `7c3db8dfd9895a57a63020035a6278e0c410f1a0` 与 M2 生命周期 seam `7eaa317da1e6ca7fb8a6bcea6f24f0770a9f3530`
 - Related adapter design: `docs/design-docs/transcript-source-adapters.md` / 相关 adapter 设计：`docs/design-docs/transcript-source-adapters.md`
 - Related timeline design: `docs/design-docs/logical-event-timeline.md` / 相关时间线设计：`docs/design-docs/logical-event-timeline.md`
 - Related performance design: `docs/design-docs/timeline-loading-and-rendering-performance.md` / 相关性能设计：`docs/design-docs/timeline-loading-and-rendering-performance.md`
