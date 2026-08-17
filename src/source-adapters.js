@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const codex = require('./codex');
 const claude = require('./claude');
+const deepseekHarness = require('./deepseek-harness');
 const { buildClaudeEventDetail } = require('./claude-detail');
 const {
   inspectDataProperty,
@@ -38,6 +39,7 @@ const {
 const SOURCE_KIND = Object.freeze({
   CODEX: 'codex',
   CLAUDE_CODE: 'claude-code',
+  DEEPSEEK_HARNESS: 'deepseek-harness',
 });
 
 function graphFingerprint(value, identityState = {
@@ -646,6 +648,9 @@ function normalizeSourceKind(value) {
   if (normalized === 'claude' || normalized === 'claudecode' || normalized === 'claude_code') {
     return SOURCE_KIND.CLAUDE_CODE;
   }
+  if (normalized === 'dsh' || normalized === 'deepseek' || normalized === 'deepseekharness' || normalized === 'deepseek_harness') {
+    return SOURCE_KIND.DEEPSEEK_HARNESS;
+  }
   return normalized;
 }
 
@@ -742,6 +747,7 @@ const claudeAdapter = {
 const adapters = createSourceAdapterRegistry([
   codexAdapter,
   claudeAdapter,
+  deepseekHarness.deepSeekAdapter,
 ]);
 
 function getSourceAdapter(value) {

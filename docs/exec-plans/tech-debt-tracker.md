@@ -196,3 +196,12 @@
 - Related docs: / 相关文档：
   - `docs/design-docs/indexed-materialized-session-lifecycle.md`
   - `docs/exec-plans/completed/2026-08-16-indexed-materialized-session-lifecycle.md`
+
+### 19. DeepSeek Harness Phase 1 deferred architecture findings / DeepSeek Harness 第一阶段推迟的架构发现
+- Status: open; recorded by the real third-adapter pressure test / 状态：开放；由真实第三 adapter 压力测试记录
+- Problem: Phase 1 proved the strict lifecycle and Detail purpose × responsibility contracts work for a source whose Raw unit is a packed physical storage record rather than a JSONL line. It also exposed three non-blocking follow-ups: (1) `legacyRawOwners` is mandatory even for a typed-locator-only source, so DeepSeek carries an empty byte-accounted envelope; (2) the shared adapter-conformance runner replaces Indexed Sessions with Materialized Sessions, forcing a small adapter-local descriptor fallback; (3) the generic `home` terminology is semantically awkward for `~/.dsh/sessions`, which is a persistence root rather than an application home. / 问题：第一阶段证明严格生命周期与 Detail purpose × responsibility 契约对 Raw 单位为打包物理存储记录而非 JSONL 行的来源成立。同时暴露三个非阻断 follow-up：（1）即使来源只使用 typed locator，`legacyRawOwners` 仍是必填项，因此 DeepSeek 携带空且计字节的 envelope；（2）共享 adapter-conformance runner 会用 Materialized Session 替换 Indexed Session，迫使 adapter 本地增加小 descriptor fallback；（3）通用 `home` 术语对 `~/.dsh/sessions` 语义尴尬，它是持久化根而非应用 home。
+- Follow-up direction: before Phase 2, decide whether the legacy Raw owner envelope should become optional for typed-locator-only adapters; decide whether conformance should retain Indexed identities and pass an explicit hydration context; and revisit source-root terminology before a second persistence-root-shaped source appears. Future DeepSeek format versions, compaction, goals, hooks, approvals, retries, subagents, workflows, and Code Mode dispatch remain explicitly inventoried in the active plan, not hidden as “unknown”. / 后续方向：在 Phase 2 前，决定 typed-locator-only adapter 的 legacy Raw owner envelope 是否应改为可选；决定 conformance 是否保留 Indexed identity 并传入显式 hydration context；在出现第二个 persistence-root 形态来源前重新审视 source-root 术语。未来 DeepSeek format version、compaction、goal、hook、approval、retry、subagent、workflow 与 Code Mode dispatch 已显式清点于 active plan，而不是隐藏为“unknown”。
+- Related docs: / 相关文档：
+  - `docs/exec-plans/active/2026-08-16-deepseek-harness-phase-1.md`
+  - `docs/design-docs/transcript-source-adapters.md`
+  - `docs/design-docs/indexed-materialized-session-lifecycle.md`

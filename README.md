@@ -2,7 +2,7 @@
 
 [中文 README](README.zh-CN.md)
 
-Session Analyzer turns local Codex and Claude Code session transcripts into readable work history, organized by repository. Revisit what an agent did, find specific work across a project, and trace related sessions without reading raw JSONL.
+Session Analyzer turns local Codex, Claude Code, and DeepSeek Harness session transcripts into readable work history, organized by repository. Revisit what an agent did, find specific work across a project, and trace related sessions without reading raw JSONL.
 
 ![Session Analyzer showing repository session history, a readable Main timeline, and structured command detail](docs/assets/readme/session-analyzer-overview.png)
 
@@ -66,7 +66,19 @@ Use `--claude-home` for a non-default Claude home or an exported project-contain
 npx session-analyzer --source claude-code --claude-home /path/to/.claude
 ```
 
-`--source claude` is accepted as an alias for `--source claude-code`. You can also switch the active transcript source or edit either source home later from the project chooser. One source is active at a time; Session Analyzer does not build a mixed Codex-and-Claude index.
+DeepSeek Harness reads its JSONL persistence root (`session.jsonl` or `session.jsonl.zstd`) and defaults to `~/.dsh/sessions`:
+
+```sh
+npx session-analyzer --source deepseek-harness --repo /path/to/project
+```
+
+Use `--dsh-home` for a non-default DeepSeek sessions persistence root:
+
+```sh
+npx session-analyzer --source deepseek-harness --dsh-home /path/to/sessions
+```
+
+`--source claude` is accepted as an alias for `--source claude-code`, and `--source dsh` or `--source deepseek` is accepted for DeepSeek Harness. You can also switch the active transcript source or edit any source root later from the project chooser. One source is active at a time; Session Analyzer does not build a mixed-source index.
 
 You can also install the CLI globally:
 
@@ -79,7 +91,7 @@ The default host is `127.0.0.1`. `--host` is an advanced option; binding outside
 
 ## How to Use It
 
-1. Start with the default Codex source or select Claude Code on the CLI, then choose a target project in the browser or pass `--repo` when starting the server.
+1. Start with the default Codex source, or select Claude Code or DeepSeek Harness on the CLI, then choose a target project in the browser or pass `--repo` when starting the server.
 2. Use the project chooser to switch projects at runtime. From the same chooser, you can switch the active transcript source or edit its home directory; the project list is then rediscovered for that source.
 3. Pick a session from the left pane.
 4. Use `Main timeline` for normal reading, `Protocol layer` for injected context and lifecycle records, or `Raw records` for exact transcript rows.
@@ -90,7 +102,7 @@ The npm package does not promise a stable programmatic API. The supported v0.1 i
 
 ## What You Can Inspect
 
-- Discover and switch among projects from Codex or Claude Code session working directories, or start directly with a target repository.
+- Discover and switch among projects from Codex, Claude Code, or DeepSeek Harness session working directories, or start directly with a target repository.
 - Switch the active transcript source and configure source home directories from the project chooser without restarting the server.
 - Show only sessions that match the selected repository.
 - Keep Claude Code subagents separately selectable; distinguish materialized and pointer-backed forks, and show parent-owned inherited context without duplicate metrics or Raw Records.
@@ -110,7 +122,7 @@ This project is intentionally local-first:
 - Derived indexes are held in memory only.
 - Raw transcript drill-down is explicit, so sensitive content is not hidden from the user but is not sent anywhere by this app.
 
-Agent transcripts can contain prompts, command output, file paths, environment details, and other private material. Do not commit your real `.codex/sessions`, `.claude/projects`, or exported transcript data to a public repository.
+Agent transcripts can contain prompts, command output, file paths, environment details, and other private material. Do not commit your real `.codex/sessions`, `.claude/projects`, `.dsh/sessions`, or exported transcript data to a public repository.
 
 This tool is a local viewer, not a hosted multi-user analytics service. If you expose the server beyond localhost, anyone with network access to it may be able to read transcript content available to the process.
 
@@ -118,7 +130,7 @@ Before publishing a fork or issue reproduction, check that any attached transcri
 
 ## Requirements
 
-- Installed CLI: a supported Node.js LTS release, Node.js 22 or newer (Node.js 24 recommended), plus npm for installation
+- Installed CLI: a supported Node.js LTS release, Node.js 22 or newer (Node.js 24 recommended), plus npm for installation. DeepSeek Harness `session.jsonl.zstd` artifacts use Node's built-in `node:zlib` Zstandard API; uncompressed `session.jsonl` remains readable where that API is unavailable
 - Source development and release work: Node.js `^22.22.2 || ^24.15.0` and exactly npm `12.0.2`
 
 ### Large transcript histories and Node/V8 memory
@@ -153,7 +165,7 @@ The source-backed lifecycle removes corpus-wide complete event graphs, but the p
 
 ## Develop From Source
 
-The published CLI keeps the broader Node.js 22-or-newer runtime requirement above. A source checkout is deliberately stricter because npm 12 enforces the reviewed dependency install-script policy. Before any repository-local `npm install`, `npm ci`, or `npm run`, select a supported Node.js version and, from a directory outside the source checkout, bootstrap the exact npm CLI globally. This first npm command updates the toolchain and does not install project dependencies:
+The published CLI keeps the broader Node.js 22-or-newer runtime requirement above. DeepSeek Harness compressed artifacts require the built-in `node:zlib` Zstandard API present on the supported development Node releases; uncompressed `session.jsonl` artifacts remain readable elsewhere. A source checkout is deliberately stricter because npm 12 enforces the reviewed dependency install-script policy. Before any repository-local `npm install`, `npm ci`, or `npm run`, select a supported Node.js version and, from a directory outside the source checkout, bootstrap the exact npm CLI globally. This first npm command updates the toolchain and does not install project dependencies:
 
 ```sh
 node --version
@@ -223,9 +235,10 @@ Browser JavaScript source lives in `src/browser/`, and browser-and-Node shared l
 
 ## Known Limits
 
-- Mixed Codex-and-Claude indexing and source filters are not supported in v0.1.4.
+- Mixed-source indexing and source filters are not supported in v0.1.4.
+- DeepSeek Harness Phase 1 models human messages, finalized and partial assistant messages, reasoning, tool call/result pairs, and lifecycle protocol; other known upstream DeepSeek event families are inventoried as deferred rather than modeled.
 - Claude Code external `tool-results/*` payloads are not loaded or searched. Their source records and references remain available through protocol/raw fallback.
-- Future or unknown Codex and Claude Code protocol events remain inspectable through protocol/raw fallback views, but not every event family has a polished structured renderer.
+- Future or unknown Codex, Claude Code, and DeepSeek Harness protocol events remain inspectable through protocol/raw fallback views, but not every event family has a polished structured renderer. DeepSeek Harness Phase 1 models human messages, finalized/partial assistant messages, reasoning, tool call/result pairs, and lifecycle protocol; other known upstream event families are inventoried as deferred.
 - Transcript fixture coverage is targeted rather than exhaustive; newly observed historical shapes may need additional fixtures and display adjustments.
 - Review finding rendering has synthetic coverage and real non-empty `review_output.findings[]` examples have been observed locally; sanitized fixture strengthening is still useful for future regressions.
 
@@ -235,6 +248,7 @@ Browser JavaScript source lives in `src/browser/`, and browser-and-Node shared l
 - `src/source-adapters.js`: source selection and the source-neutral dispatch boundary.
 - `src/codex*.js`: Codex parsing, discovery, logical mapping, indexing, and detail construction.
 - `src/claude*.js`: Claude Code discovery, parsing, logical mapping, indexing, and detail construction.
+- `src/deepseek-harness*.js`: DeepSeek Harness storage/decoder, discovery, strict Indexed/Materialized mapping, and Detail construction.
 - `src/folding.js`: built-in timeline folding profiles.
 - `src/shared/`: browser-and-Node shared logic such as folding rule evaluation and command highlighting metadata.
 - `src/browser/`: browser UI source, search controls and state models, renderers, navigation, and app wiring.

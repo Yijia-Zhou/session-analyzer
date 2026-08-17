@@ -1,10 +1,11 @@
 {
   "name": "session-analyzer",
   "version": "0.1.4",
-  "description": "Local interactive viewer for Codex and Claude Code session transcripts.",
+  "description": "Local interactive viewer for Codex, Claude Code, and DeepSeek Harness session transcripts.",
   "keywords": [
     "codex",
     "claude-code",
+    "deepseek-harness",
     "transcript",
     "viewer",
     "session",
@@ -50,6 +51,9 @@
     "src/codex-goal.js",
     "src/codex-logical.js",
     "src/codex-search.js",
+    "src/deepseek-harness.js",
+    "src/deepseek-harness-detail.js",
+    "src/deepseek-harness-storage.js",
     "src/codex-source.js",
     "src/codex-tool-lifecycle-contract.js",
     "src/folding.js",

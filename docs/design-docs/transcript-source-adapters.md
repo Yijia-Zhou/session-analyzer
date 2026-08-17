@@ -2,7 +2,7 @@
 
 ## Status / 状态
 
-- Status: accepted `0.1.4` detail contract and M2–M7 implementation through `b1d0b0a2a8d0fb419618ab376a8a3330513eee16`; source-neutral third-adapter materialization-boundary follow-up completed and independently accepted / 状态：已接受至 `b1d0b0a2a8d0fb419618ab376a8a3330513eee16` 的 `0.1.4` 详情契约与 M2 至 M7 实现；来源中立的第三 adapter 物化边界 follow-up 已完成并经独立评审接受
+- Status: accepted `0.1.4` detail contract and M2–M7 implementation through `b1d0b0a2a8d0fb419618ab376a8a3330513eee16`; source-neutral third-adapter materialization-boundary follow-up completed and independently accepted; DeepSeek Harness Phase 1 is the real third-adapter pressure test (active plan `docs/exec-plans/active/2026-08-16-deepseek-harness-phase-1.md`) / 状态：已接受至 `b1d0b0a2a8d0fb419618ab376a8a3330513eee16` 的 `0.1.4` 详情契约与 M2 至 M7 实现；来源中立的第三 adapter 物化边界 follow-up 已完成并经独立评审接受；DeepSeek Harness 第一阶段是真实第三 adapter 压力测试（active plan `docs/exec-plans/active/2026-08-16-deepseek-harness-phase-1.md`）
 - Last updated: 2026-08-16 / 最近更新：2026-08-16
 - Related product spec: `docs/product-specs/session-transcript-analyzer.md` / 相关产品规格：`docs/product-specs/session-transcript-analyzer.md`
 - Related timeline design: `docs/design-docs/logical-event-timeline.md` / 相关时间线设计：`docs/design-docs/logical-event-timeline.md`
@@ -19,9 +19,9 @@
 
 ## Decision / 决策
 
-Session Analyzer supports Codex and Claude Code through source-specific adapters behind one source-neutral server, search, timeline, and browser contract. Claude Code records are interpreted directly; they are not translated into synthetic Codex rollout items. Claude Code requires explicit user selection, while Codex remains the initial default. Selection can occur through CLI startup configuration or the runtime project chooser. / Session Analyzer 通过来源专属适配器，在统一且来源中立的服务器、搜索、时间线与浏览器契约后支持 Codex 和 Claude Code。Claude Code 记录会被直接解释，不会被转换成合成的 Codex rollout item。Claude Code 需要用户显式选择，Codex 则继续作为初始默认来源。用户既可以通过 CLI 启动配置选择来源，也可以在运行期项目选择界面中切换。
+Session Analyzer supports Codex, Claude Code, and DeepSeek Harness through source-specific adapters behind one source-neutral server, search, timeline, and browser contract. Claude Code and DeepSeek Harness records are interpreted directly; they are not translated into synthetic Codex rollout items. Claude Code and DeepSeek Harness require explicit user selection, while Codex remains the initial default. Selection can occur through CLI startup configuration or the runtime project chooser. / Session Analyzer 通过来源专属适配器，在统一且来源中立的服务器、搜索、时间线与浏览器契约后支持 Codex、Claude Code 与 DeepSeek Harness。Claude Code 与 DeepSeek Harness 记录会被直接解释，不会被转换成合成的 Codex rollout item。Claude Code 与 DeepSeek Harness 需要用户显式选择，Codex 则继续作为初始默认来源。用户既可以通过 CLI 启动配置选择来源，也可以在运行期项目选择界面中切换。
 
-This decision preserves source evidence that has no Codex equivalent: Claude `uuid`/`parentUuid`, response grouping by `message.id`, exact `tool_use_id` pairing, sidechain/subagent identity, compact boundaries, file-history records, queue metadata, and source-owned external-output references. / 该决策会保留没有 Codex 等价物的来源证据：Claude 的 `uuid`/`parentUuid`、按 `message.id` 形成的响应分组、精确的 `tool_use_id` 配对、sidechain/subagent 标识、compact boundary、文件历史记录、队列 metadata，以及由来源拥有的外置输出引用。
+This decision preserves source evidence that has no Codex equivalent: Claude `uuid`/`parentUuid`, response grouping by `message.id`, exact `tool_use_id` pairing, sidechain/subagent identity, compact boundaries, file-history records, queue metadata, and source-owned external-output references; DeepSeek Harness format version, `source.kind` message provenance, exact `callId` tool pairing, durable request/turn/step events, append-origin surface provenance, packed chunk storage rows, and typed physical-record locators. / 该决策会保留没有 Codex 等价物的来源证据：Claude 的 `uuid`/`parentUuid`、按 `message.id` 形成的响应分组、精确的 `tool_use_id` 配对、sidechain/subagent 标识、compact boundary、文件历史记录、队列 metadata，以及由来源拥有的外置输出引用；DeepSeek Harness 的 format version、`source.kind` message provenance、精确 `callId` 工具配对、持久化 request/turn/step 事件、append-origin surface provenance、打包 chunk 存储行与带类型的物理记录 locator。
 
 ## Adapter boundary / 适配器边界
 
@@ -310,7 +310,7 @@ Code Mode presentation fields remain an intentional source-specific compatibilit
 
 `0.1.4` deliberately does not: / `0.1.4` 有意不做：
 
-- create a mixed Codex + Claude index / 建立 Codex + Claude 混合索引；
+- create a mixed Codex + Claude + DeepSeek Harness index / 建立 Codex + Claude + DeepSeek Harness 混合索引；
 - persist an import ledger or adapter cache / 持久化 import ledger 或 adapter cache；
 - load or search external `tool-results/*` payloads / 加载或搜索外置 `tool-results/*` payload；
 - infer a schema version from Claude's client version / 从 Claude 客户端版本推断 schema 版本；
@@ -321,4 +321,4 @@ External result support, if added, must be lazy, size-bounded, and real-path-con
 
 ## Validation / 验证
 
-Committed tests use synthetic records only. A local, uncommitted Claude Code 2.1.220 corpus was used as an implementation pressure test: 39 primary JSONL files, 2 evidence-correlated subagent JSONL files, 662 Raw Records, 79 exactly paired tools, 107 usage-deduplicated model responses, 2 Derived Sessions, 1 lineage-backed materialized Fork Session, and 1 pointer-backed Fork Session were all represented without JSON parse loss or metric growth. The pointer sample resolves to 19 inherited parent Raw Records, 8 Main events, and 8 Protocol events after local-command envelopes are kept out of human activity, while retaining only its own 2 Raw Records and 0 Main events. Real transcripts remain outside the package and repository history. / 已提交测试只使用合成记录。本地未提交的 Claude Code 2.1.220 语料作为实现压力测试：39 个主要 JSONL、2 个通过证据关联的 subagent JSONL、662 条原始记录、79 个精确配对工具、107 个完成 usage 去重的模型响应、2 个派生会话、1 个具有 lineage 证据的物化式分叉会话，以及 1 个指针式分叉会话均被表示，且没有 JSON 解析丢失或指标增长。在把 local-command envelope 排除于人类活动后，指针样本解析出 19 条继承的父会话原始记录、8 个 Main 事件与 8 个 Protocol 事件，同时自身仍只拥有 2 条原始记录与 0 个 Main 事件。真实转录继续留在 package 与仓库历史之外。
+Committed tests use synthetic records only. DeepSeek Harness Phase 1 is covered by curated synthetic `@deepseek-ai/dsh` 0.1.0-rc.6 writer artifacts under `test/fixtures/deepseek-harness*`. A local, uncommitted Claude Code 2.1.220 corpus was used as an implementation pressure test: 39 primary JSONL files, 2 evidence-correlated subagent JSONL files, 662 Raw Records, 79 exactly paired tools, 107 usage-deduplicated model responses, 2 Derived Sessions, 1 lineage-backed materialized Fork Session, and 1 pointer-backed Fork Session were all represented without JSON parse loss or metric growth. The pointer sample resolves to 19 inherited parent Raw Records, 8 Main events, and 8 Protocol events after local-command envelopes are kept out of human activity, while retaining only its own 2 Raw Records and 0 Main events. Real transcripts remain outside the package and repository history. / 已提交测试只使用合成记录。本地未提交的 Claude Code 2.1.220 语料作为实现压力测试：39 个主要 JSONL、2 个通过证据关联的 subagent JSONL、662 条原始记录、79 个精确配对工具、107 个完成 usage 去重的模型响应、2 个派生会话、1 个具有 lineage 证据的物化式分叉会话，以及 1 个指针式分叉会话均被表示，且没有 JSON 解析丢失或指标增长。在把 local-command envelope 排除于人类活动后，指针样本解析出 19 条继承的父会话原始记录、8 个 Main 事件与 8 个 Protocol 事件，同时自身仍只拥有 2 条原始记录与 0 个 Main 事件。真实转录继续留在 package 与仓库历史之外。

@@ -8,6 +8,7 @@
 - Added a revision-scoped exact-identity Materialized Session cache with same-Session request coalescing, one global active reconstruction, bounded FIFO admission, independent waiter cancellation, atomic release on successful project/source replacement, stable busy/contract error codes, and one bounded browser retry for busy GETs.
 - Generalized strict materialization to a declarative bounded adapter context without whole-Index fingerprints, added exact packed-query-to-Materialized projection digests, reduced Claude request dependencies to the selected transcript, and made no-text project filters hydrate only the latest matching preview.
 - Made final packed-query commit validation and Materialized projection validation asynchronous, bounded, signal-aware, and exception-safe, so cancellation cannot admit a replacement Index or an abandoned cold Session and unverifiable adapter graphs retain the stable contract error code.
+- Added DeepSeek Harness as a selectable third transcript source with a read-only JSONL/Zstandard storage layer, header-only discovery, packed chunk rows kept as one Raw Record per physical storage row, a narrow user/assistant/tool/lifecycle mapping, partial-assistant reconstruction, exact lazy Raw readback, and adapter-assigned Detail purpose/responsibility. Known-but-unmodeled upstream event families are inventoried in the Phase 1 execution plan.
 - Updated large-history guidance from final aggregate profiling: a 490-Session, 305,485-Raw Codex corpus completed build plus commit validation under the default heap with a 788 MB transient V8 heap peak and 2.16 GB process maximum RSS; the 1.055 GB packed query store remains a material external-memory owner, and the first cache intentionally has no eviction.
 
 ### 中文
@@ -16,6 +17,7 @@
 - 新增 revision-scoped、精确 identity 的 Materialized Session cache：合并同 Session request、全局只运行一个重建、有界 FIFO admission、waiter 独立取消、项目／来源成功替换时原子释放，并提供稳定 busy／contract error code，以及对 busy GET 的一次有界 browser retry。
 - 将严格物化泛化为声明式有界 adapter context，避免整 Index fingerprint；新增紧凑查询到 Materialized projection 的精确 digest；把 Claude request dependency 缩小为所选 transcript；并让无文本项目过滤只 hydration 最新匹配 preview。
 - 让最终紧凑查询 commit validation 与 Materialized projection validation 具备异步、有界、signal-aware 和异常安全性质，因此取消不会接纳 replacement Index 或已放弃的 cold Session，不可验证 adapter graph 也会保持稳定 contract error code。
+- 新增 DeepSeek Harness 作为可选择的第三个转录来源：只读 JSONL／Zstandard 存储层、仅读 header 的发现、打包 chunk row 按物理存储行保留为单条 Raw Record、收窄的用户／助手／工具／生命周期映射、partial assistant 重建、精确惰性 Raw 回读，以及由 adapter 分配的 Detail purpose/responsibility。已知但未建模的上游事件族已在第一阶段执行计划中清点。
 - 根据最终聚合 profiling 更新大型历史指导：包含 490 个 Session／305,485 条 Raw Record 的 Codex 语料在默认 heap 下完成 build 加 commit validation，transient V8 heap 峰值为 788 MB，process maximum RSS 为 2.16 GB；1.055 GB 紧凑 query store 仍是不可忽略的 external-memory owner，且首版 cache 有意不实现 eviction。
 
 ## 0.1.4 - 2026-08-15

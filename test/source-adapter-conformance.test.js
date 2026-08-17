@@ -23,6 +23,8 @@ const { CANONICAL_SCHEMA_VERSION } = require('../src/shared/canonical-schema');
 
 const CODEX_FIXTURE_HOME = path.join(__dirname, 'fixtures', 'codex-home');
 const CODEX_FIXTURE_REPO = 'G:\\vibe\\term-agent';
+const DEEPSEEK_FIXTURE_HOME = path.join(__dirname, 'fixtures', 'deepseek-harness', 'sessions');
+const DEEPSEEK_FIXTURE_REPO = '/home/joejack/dsh_playground/spike/ws/normal';
 
 function visitSections(sections, visitor) {
   for (const section of sections) {
@@ -341,7 +343,7 @@ async function assertResponsibilityFixture(fixture) {
 }
 
 test('all registered adapters satisfy one source-neutral detail and Raw readback suite', async (t) => {
-  assert.deepEqual(supportedSourceKinds(), ['codex', 'claude-code']);
+  assert.deepEqual(supportedSourceKinds(), ['codex', 'claude-code', 'deepseek-harness']);
   const fixtures = [
     {
       kind: 'codex',
@@ -375,6 +377,27 @@ test('all registered adapters satisfy one source-neutral detail and Raw readback
           matchOwner: ({ event }) => event.kind === 'plan_update'
             && event.subtype === 'plan_update'
             && event.preview === 'Protocol plan update fixture',
+        },
+      },
+    },
+    {
+      kind: 'deepseek-harness',
+      index: await getSourceAdapter('deepseek-harness').buildIndex({
+        repoRoot: DEEPSEEK_FIXTURE_REPO,
+        sourceHome: DEEPSEEK_FIXTURE_HOME,
+      }),
+      expectedArchetypes: {
+        'readable-user-message': {
+          eventId: 'deepseek-harness:session-695bc3a2-78cb-4585-8acc-e637c327efa1:logical:user_message:7',
+        },
+        'readable-assistant-message': {
+          eventId: 'deepseek-harness:session-695bc3a2-78cb-4585-8acc-e637c327efa1:logical:assistant_message:117',
+        },
+        'completed-command': {
+          eventId: 'deepseek-harness:session-695bc3a2-78cb-4585-8acc-e637c327efa1:logical:tool:call_00_UDYo7TZyac4i2atwrd6S1907',
+          fullRequestEvidence: (section) => section?.type === 'code'
+            && section.purpose === 'request'
+            && /"description"/.test(section.code || ''),
         },
       },
     },
@@ -417,7 +440,9 @@ test('all registered adapters satisfy one source-neutral detail and Raw readback
       fixture.index,
       fixture.kind === 'codex'
         ? ['content', 'request', 'result', 'context', 'fallback']
-        : ['content', 'request', 'result', 'context'],
+        : (fixture.kind === 'deepseek-harness'
+          ? ['content', 'request', 'result', 'context', 'traceability']
+          : ['content', 'request', 'result', 'context']),
     ));
     await t.test(`${fixture.kind} conditional responsibility scenarios`, () => (
       assertResponsibilityFixture(fixture)
