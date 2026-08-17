@@ -19,6 +19,7 @@ const {
   buildEventDetailForSession,
   materializeSessionForIndex,
   normalizeSourceKind,
+  readIndexedRawRecord,
   supportedSourceKinds,
   validateIndexOwnershipForCommit,
 } = require('../src/source-adapters');
@@ -41,6 +42,27 @@ async function buildFor(repoRoot, root = FIXTURE_ROOT) {
   });
   await validateIndexOwnershipForCommit(index);
   return index;
+}
+
+async function makeSyntheticDeepSeekFixture(t, id, records) {
+  const repoRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-dsh-synth-repo-'));
+  const sourceHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-dsh-synth-home-'));
+  t.after(() => fsp.rm(sourceHome, { recursive: true, force: true }));
+  t.after(() => fsp.rm(repoRoot, { recursive: true, force: true }));
+  const sessionDir = path.join(sourceHome, '--synthetic-project--', id);
+  await fsp.mkdir(sessionDir, { recursive: true });
+  const file = path.join(sessionDir, 'session.jsonl');
+  const header = {
+    type: 'session',
+    version: 0,
+    id,
+    createdAt: 1,
+    cwd: repoRoot,
+    delegationDepth: 0,
+  };
+  const text = `${[header, ...records].map((record) => JSON.stringify(record)).join('\n')}\n`;
+  await fsp.writeFile(file, text, 'utf8');
+  return { sourceHome, repoRoot, file, id, text };
 }
 
 test('DeepSeek Harness is a selectable indexed-materialized third source', () => {
@@ -149,6 +171,162 @@ test('packed chunk rows stay one Raw Record per physical row and partial output 
   assert.ok(detail.inspectorSections.some((section) => (
     section.purpose === 'traceability' && /no finalized assistant\/message/.test(section.text)
   )));
+});
+
+test('indexing/materialization keep large packed rows structural and never invoke per-member expansion', async (t) => {
+  const memberCount = 4096;
+  const fixture = await makeSyntheticDeepSeekFixture(t, 'large-packed-row', [
+    { type: 'step/start', seq: 0, time: 1001, data: { turn: 1, step: 1 } },
+    {
+      type: 'reasoning-chunks',
+      seq0: 1,
+      time0: 1002,
+      data: {
+        turn: 1,
+        step: 1,
+        index: 0,
+        dt: Array(memberCount - 1).fill(0),
+        texts: Array(memberCount).fill('x'),
+      },
+    },
+    {
+      type: 'step/end',
+      seq: memberCount + 1,
+      time: 1003,
+      data: { turn: 1, step: 1 },
+    },
+  ]);
+
+  const originalDecoder = storage.decodeStorageRecord;
+  let expansionCalls = 0;
+  storage.decodeStorageRecord = function countExpansionCall(...args) {
+    expansionCalls += 1;
+    return originalDecoder(...args);
+  };
+  try {
+    const index = await buildDeepSeekIndex({
+      sourceHome: fixture.sourceHome,
+      repoRoot: fixture.repoRoot,
+    });
+    const indexed = index.sessions[0];
+    assert.equal(indexed.lineCount, 4);
+    assert.equal(indexed.rawEventCount, 4);
+    assert.equal(indexed.logicalEventCount, 3);
+    assert.equal(expansionCalls, 0, 'indexing must not decode packed rows into per-member events');
+
+    const materialized = await materializeSessionForIndex(index, indexed);
+    assert.equal(expansionCalls, 0, 'materialization must not decode packed rows into per-member events');
+    const packedRaw = materialized.rawEvents.find((raw) => raw.payloadType === 'reasoning-chunks');
+    assert.equal(packedRaw.memberCount, memberCount);
+    assert.equal(packedRaw.seq0, 1);
+    assert.equal(packedRaw.seqEnd, memberCount);
+    const partial = materialized.logicalEvents.find((event) => event.subtype === 'partial_assistant_stream');
+    assert.ok(partial);
+    assert.equal(partial.searchText.length, memberCount);
+  } finally {
+    storage.decodeStorageRecord = originalDecoder;
+  }
+});
+
+test('Detail and Raw readback reject changed source after Index/materialization instead of mixing snapshots', async (t) => {
+  const baseRecords = () => [
+    { type: 'turn/start', seq: 0, time: 1001, data: { turn: 1 } },
+    {
+      type: 'user/message',
+      seq: 1,
+      time: 1002,
+      surfaceOp: 'append',
+      data: {
+        turn: 1,
+        step: 1,
+        source: { kind: 'user' },
+        content: [{ type: 'text', text: 'original question' }],
+      },
+    },
+    {
+      type: 'assistant/message',
+      seq: 2,
+      time: 1003,
+      surfaceOp: 'append',
+      data: {
+        turn: 1,
+        step: 1,
+        message: {
+          id: 'message-1',
+          content: [{ type: 'text', text: 'original answer' }],
+        },
+      },
+    },
+  ];
+
+  await t.test('append after materialization is stale for logical Detail and Raw readback', async (subtest) => {
+    const fixture = await makeSyntheticDeepSeekFixture(subtest, 'freshness-append', baseRecords());
+    const index = await buildDeepSeekIndex({
+      sourceHome: fixture.sourceHome,
+      repoRoot: fixture.repoRoot,
+    });
+    const indexed = index.sessions[0];
+    const materialized = await materializeSessionForIndex(index, indexed);
+    const user = materialized.logicalEvents.find((event) => event.kind === 'user_message');
+    const rawId = user.rawRefs[0].rawId;
+
+    await fsp.appendFile(
+      fixture.file,
+      `${JSON.stringify({ type: 'turn/end', seq: 3, time: 1004, data: { turn: 1 } })}\n`,
+      'utf8',
+    );
+
+    await assert.rejects(
+      buildEventDetailForSession(index, materialized, user.id, 'main'),
+      { code: 'INDEXED_SOURCE_STALE', statusCode: 409 },
+    );
+    await assert.rejects(
+      readIndexedRawRecord(index, materialized, rawId),
+      { code: 'INDEXED_SOURCE_STALE', statusCode: 409 },
+    );
+  });
+
+  await t.test('same-length replacement after materialization is stale for logical Detail and Raw readback', async (subtest) => {
+    const fixture = await makeSyntheticDeepSeekFixture(subtest, 'freshness-replace', baseRecords());
+    const index = await buildDeepSeekIndex({
+      sourceHome: fixture.sourceHome,
+      repoRoot: fixture.repoRoot,
+    });
+    const indexed = index.sessions[0];
+    const materialized = await materializeSessionForIndex(index, indexed);
+    const user = materialized.logicalEvents.find((event) => event.kind === 'user_message');
+    const rawId = user.rawRefs[0].rawId;
+    const replaced = [...baseRecords()];
+    replaced[1] = {
+      ...replaced[1],
+      data: {
+        ...replaced[1].data,
+        content: [{ type: 'text', text: 'replacement query' }],
+      },
+    };
+    const replacementText = [
+      JSON.stringify({
+        type: 'session',
+        version: 0,
+        id: fixture.id,
+        createdAt: 1,
+        cwd: fixture.repoRoot,
+        delegationDepth: 0,
+      }),
+      ...replaced.map((record) => JSON.stringify(record)),
+    ].join('\n').concat('\n');
+    assert.equal(Buffer.byteLength(replacementText), Buffer.byteLength(fixture.text));
+    await fsp.writeFile(fixture.file, replacementText, 'utf8');
+
+    await assert.rejects(
+      buildEventDetailForSession(index, materialized, user.id, 'main'),
+      { code: 'INDEXED_SOURCE_STALE', statusCode: 409 },
+    );
+    await assert.rejects(
+      readIndexedRawRecord(index, materialized, rawId),
+      { code: 'INDEXED_SOURCE_STALE', statusCode: 409 },
+    );
+  });
 });
 
 test('SIGKILL/open-turn artifact adds no synthetic turn/end and remains inspectable', async () => {

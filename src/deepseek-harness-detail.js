@@ -1,7 +1,5 @@
 'use strict';
 
-const path = require('node:path');
-const { isPathInsideOrSame } = require('./shared/fs-path');
 const i18n = require('./shared/i18n');
 const storage = require('./deepseek-harness-storage');
 
@@ -415,27 +413,19 @@ function rawRefFor(raw) {
 }
 
 async function parsedRecordsForSession(index, session, signal) {
-  const indexedSession = index.sessionsById?.get(session?.id);
-  const payload = indexedSession?.materializationDescriptor?.payload;
-  const sourceFile = payload?.sourceFile || session?.sourceFile || '';
-  const compression = payload?.compression || (
-    String(sourceFile).endsWith('.jsonl.zstd') ? 'zstd' : 'none'
+  const evidence = storage.materializationEvidenceForSession(index, session);
+  if (!evidence) throw storage.indexedSourceStaleError();
+  const committedRead = await storage.readCommittedArtifactPrefix(
+    evidence.target,
+    evidence.compression,
+    signal,
+    evidence.acceptedSnapshot,
   );
-  if (!sourceFile || !['zstd', 'none'].includes(compression)) return new Map();
-  const sessionsRoot = index.sessionsRoot;
-  const target = path.resolve(sessionsRoot, sourceFile);
-  if (!isPathInsideOrSame(target, sessionsRoot)) {
-    const error = new Error('Indexed source changed; reindex required');
-    error.code = 'INDEXED_SOURCE_STALE';
-    throw error;
-  }
-  const stable = await storage.readStableFile(target, signal);
-  const prefix = storage.committedArtifactPrefix(stable.buffer, compression);
   const parsed = new Map();
-  for (let ordinal = 0; ordinal < prefix.recordTexts.length; ordinal += 1) {
+  for (let ordinal = 0; ordinal < committedRead.prefix.recordTexts.length; ordinal += 1) {
     storage.throwIfAborted(signal);
     try {
-      parsed.set(ordinal, JSON.parse(prefix.recordTexts[ordinal]));
+      parsed.set(ordinal, JSON.parse(committedRead.prefix.recordTexts[ordinal]));
     } catch {
       // Keep committed-prefix evidence; a later malformed record should not
       // make already indexed Raw records uninspectable.

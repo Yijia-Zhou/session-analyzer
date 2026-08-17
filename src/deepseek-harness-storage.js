@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { zstdDecompressSync } = require('node:zlib');
+const { isPathInsideOrSame } = require('./shared/fs-path');
 
 const DEEPSEEK_SOURCE_KIND = 'deepseek-harness';
 const DEEPSEEK_FORMAT_VERSION = 0;
@@ -30,6 +31,13 @@ function storageError(message, code = 'DEEPSEEK_STORAGE_INVALID', cause = undefi
   const error = new Error(message);
   error.code = code;
   if (cause !== undefined) error.cause = cause;
+  return error;
+}
+
+function indexedSourceStaleError() {
+  const error = new Error('Indexed source changed; reindex required');
+  error.code = 'INDEXED_SOURCE_STALE';
+  error.statusCode = 409;
   return error;
 }
 
@@ -111,6 +119,17 @@ function hashBuffer(buffer) {
 
 function hashPlainValue(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('base64url');
+}
+
+function dependencySetId(entries) {
+  return `dsh-dependency:${hashPlainValue(entries)}`;
+}
+
+function materializationSnapshotId(dependencySet, descriptorPayload) {
+  return `dsh-snapshot:${hashPlainValue({
+    dependencySet,
+    payload: descriptorPayload,
+  })}`;
 }
 
 function fileIdentity(stat) {
@@ -395,12 +414,56 @@ async function readSessionHeader(filePath, compression = compressionForArtifact(
   throw storageError(`unsupported DeepSeek compression: ${compression}`);
 }
 
-async function readPhysicalRecordText(filePath, compression, recordOrdinal, signal) {
+// DeepSeek-owned accepted-snapshot read boundary. Indexing reads the current
+// stable artifact without an accepted snapshot; every request-time read of an
+// already Indexed/Materialized Session must pass the committed dependency
+// evidence (file identity, accepted byte length, and accepted-prefix digest)
+// before any physical record is exposed.
+async function readCommittedArtifactPrefix(filePath, compression, signal, acceptedSnapshot = null) {
+  throwIfAborted(signal);
+  let stable;
+  try {
+    stable = await readStableFile(filePath, signal);
+  } catch (error) {
+    if (acceptedSnapshot && (error?.code === 'ENOENT' || error?.code === 'ENOTDIR')) {
+      throw indexedSourceStaleError();
+    }
+    throw error;
+  }
+  let buffer = stable.buffer;
+  if (acceptedSnapshot) {
+    const expectedIdentity = acceptedSnapshot.fileIdentity;
+    const acceptedBytes = acceptedSnapshot.acceptedBytes;
+    const digest = acceptedSnapshot.digest;
+    if (!Number.isSafeInteger(acceptedBytes)
+        || acceptedBytes < 0
+        || typeof digest !== 'string'
+        || !sameFileIdentity(expectedIdentity, stable.identity)
+        || stable.buffer.length < acceptedBytes
+        || hashBuffer(stable.buffer.subarray(0, acceptedBytes)) !== digest) {
+      throw indexedSourceStaleError();
+    }
+    buffer = stable.buffer.subarray(0, acceptedBytes);
+  }
+  const prefix = committedArtifactPrefix(buffer, compression);
+  return {
+    prefix,
+    buffer,
+    fileIdentity: stable.identity,
+    fullLength: stable.buffer.length,
+  };
+}
+
+async function readPhysicalRecordText(filePath, compression, recordOrdinal, signal, acceptedSnapshot = null) {
   if (!Number.isSafeInteger(recordOrdinal) || recordOrdinal < 0) {
     throw storageError(`invalid DeepSeek storage record ordinal: ${recordOrdinal}`);
   }
-  const { buffer } = await readStableFile(filePath, signal);
-  const prefix = committedArtifactPrefix(buffer, compression);
+  const { prefix } = await readCommittedArtifactPrefix(
+    filePath,
+    compression,
+    signal,
+    acceptedSnapshot,
+  );
   const recordText = prefix.recordTexts[recordOrdinal];
   if (recordText === undefined) {
     throw storageError(`DeepSeek storage record ${recordOrdinal} is outside the committed prefix`);
@@ -412,13 +475,15 @@ async function readPhysicalRecordText(filePath, compression, recordOrdinal, sign
   };
 }
 
-// Lossless packed-row decoder. It returns the exact `assistant/chunk` events
-// stored by one physical record without retaining any per-delta object.
-function decodeStorageRecord(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return [value];
+// Structural packed-row reader. It validates the exact storage envelope and
+// returns only scalar/range facts plus a reference to the existing member
+// array; it never allocates one object per packed member. Indexing uses this
+// path so packed rows stay packed.
+function decodePackedStorageRecordFacts(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const tag = value.type;
   if (tag !== 'text-chunks' && tag !== 'reasoning-chunks' && tag !== 'tool-call-chunks') {
-    return [value];
+    return null;
   }
   const malformed = (message) => storageError(`malformed ${tag} storage row: ${message}`);
   const exactKeys = (candidate, keys) => {
@@ -457,16 +522,39 @@ function decodeStorageRecord(value) {
   if (!Number.isSafeInteger(value.seq0 + members.length - 1)) {
     throw malformed('member seqs must stay safe integers');
   }
-  let time = value.time0;
+  let finalTime = value.time0;
   for (const gap of data.dt) {
-    time += gap;
-    if (!Number.isSafeInteger(time)) throw malformed('member times must stay safe integers');
+    finalTime += gap;
+    if (!Number.isSafeInteger(finalTime)) throw malformed('member times must stay safe integers');
   }
-  const chunkKind = tag === 'text-chunks'
-    ? 'text-delta'
-    : (tag === 'reasoning-chunks' ? 'reasoning-delta' : 'tool-call-delta');
+  return {
+    type: tag,
+    seq0: value.seq0,
+    seqEnd: value.seq0 + members.length - 1,
+    time0: value.time0,
+    finalTime,
+    memberCount: members.length,
+    turn: data.turn,
+    step: data.step,
+    index: data.index,
+    chunkKind: tag === 'text-chunks'
+      ? 'text-delta'
+      : (tag === 'reasoning-chunks' ? 'reasoning-delta' : 'tool-call-delta'),
+    members,
+    tool,
+  };
+}
+
+// Lossless per-member decoder for targeted inspection paths only. Ordinary
+// indexing/materialization must use decodePackedStorageRecordFacts instead so
+// a packed row is never expanded into per-member SessionEvent objects.
+function decodeStorageRecord(value) {
+  const packed = decodePackedStorageRecordFacts(value);
+  if (!packed) return [value];
+  const { members, tool } = packed;
+  const data = value.data;
   const events = [];
-  let memberTime = value.time0;
+  let memberTime = packed.time0;
   for (let index = 0; index < members.length; index += 1) {
     if (index > 0) memberTime += data.dt[index - 1];
     const chunk = tool
@@ -478,18 +566,91 @@ function decodeStorageRecord(value) {
         argumentsDelta: members[index],
       }
       : {
-        type: chunkKind,
+        type: packed.chunkKind,
         index: data.index,
         text: members[index],
       };
     events.push({
       type: 'assistant/chunk',
-      seq: value.seq0 + index,
+      seq: packed.seq0 + index,
       time: memberTime,
       data: { turn: data.turn, step: data.step, chunk },
     });
   }
   return events;
+}
+
+function inferDescriptorPayload(session) {
+  const sourceFile = session?.sourceFile || '';
+  const compression = String(sourceFile).endsWith('.jsonl.zstd')
+    ? 'zstd'
+    : (String(sourceFile).endsWith('.jsonl') ? 'none' : '');
+  if (!sourceFile
+      || !['zstd', 'none'].includes(compression)
+      || !Number.isSafeInteger(session?.lineCount)
+      || !Number.isSafeInteger(session?.bytes)) {
+    return null;
+  }
+  return {
+    sourceFile,
+    compression,
+    storageRecordCount: session.lineCount,
+    acceptedBytes: session.bytes,
+  };
+}
+
+function dependencyEvidenceForSession(index, session) {
+  const indexedSession = index?.sessionsById?.get(session?.id);
+  const descriptor = indexedSession?.materializationDescriptor;
+  const dependencies = index?.materializationDependencies;
+  if (descriptor?.payload && dependencies instanceof Map) {
+    const dependencySet = dependencies.get(descriptor.dependencySetId);
+    if (dependencySet) return { payload: descriptor.payload, dependencySet };
+  }
+  // Adapter-local recovery for the existing shared conformance runner, which
+  // replaces Indexed Session identities with Materialized Session identities.
+  // The materialization snapshot ID still binds the carried payload facts to
+  // exactly one committed dependency set; no unverified current-artifact
+  // fallback remains.
+  const payload = inferDescriptorPayload(session);
+  if (!payload || typeof session?.materializationSnapshotId !== 'string') return null;
+  for (const candidate of dependencies instanceof Map ? dependencies.values() : []) {
+    if (materializationSnapshotId(candidate, payload) === session.materializationSnapshotId) {
+      return { payload, dependencySet: candidate };
+    }
+  }
+  return null;
+}
+
+// Resolve the one accepted-source snapshot that owns a Detail or Raw read.
+// Callers feed the returned acceptedSnapshot back through
+// readCommittedArtifactPrefix/readPhysicalRecordText; they never read the
+// current artifact directly.
+function materializationEvidenceForSession(index, session) {
+  const resolved = dependencyEvidenceForSession(index, session);
+  if (!resolved) return null;
+  const { payload, dependencySet } = resolved;
+  const entry = dependencySet?.entries?.[0];
+  if (!entry
+      || entry.role !== 'primary_transcript'
+      || entry.kind !== 'file'
+      || !entry.evidence?.fileIdentity) {
+    return null;
+  }
+  const sessionsRoot = index?.sessionsRoot;
+  if (typeof sessionsRoot !== 'string' || !sessionsRoot) return null;
+  const target = path.resolve(sessionsRoot, payload.sourceFile);
+  if (!isPathInsideOrSame(target, sessionsRoot)) throw indexedSourceStaleError();
+  return {
+    target,
+    sourceFile: payload.sourceFile,
+    compression: payload.compression,
+    acceptedSnapshot: {
+      acceptedBytes: entry.acceptedBytes,
+      digest: entry.digest,
+      fileIdentity: entry.evidence.fileIdentity,
+    },
+  };
 }
 
 module.exports = {
@@ -499,14 +660,20 @@ module.exports = {
   MAX_FIRST_RECORD_BYTES,
   committedArtifactPrefix,
   compressionForArtifact,
+  decodePackedStorageRecordFacts,
   decodeStorageRecord,
+  dependencySetId,
   fileIdentity,
   flattenBounded,
   hasBuiltInZstd,
   hashBuffer,
   hashPlainValue,
+  indexedSourceStaleError,
+  materializationEvidenceForSession,
+  materializationSnapshotId,
   parseHeaderLine,
   parseHeaderText,
+  readCommittedArtifactPrefix,
   readPhysicalRecordText,
   readSessionHeader,
   readStableFile,

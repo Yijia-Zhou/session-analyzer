@@ -750,25 +750,13 @@ function makeIncompleteToolEvent(session, call) {
 async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options = {}) {
   const compression = options.compression || storage.compressionForArtifact(filePath);
   const acceptedSnapshot = options.acceptedSnapshot || null;
-  throwIfAborted(signal);
-  let stable;
-  try {
-    stable = await storage.readStableFile(filePath, signal);
-  } catch (error) {
-    if (acceptedSnapshot && (error?.code === 'ENOENT' || error?.code === 'ENOTDIR')) {
-      throw indexedSourceStaleError();
-    }
-    throw error;
-  }
-  if (acceptedSnapshot) {
-    if (!storage.sameFileIdentity(acceptedSnapshot.fileIdentity, stable.identity)
-        || stable.buffer.length < acceptedSnapshot.acceptedBytes
-        || storage.hashBuffer(stable.buffer.subarray(0, acceptedSnapshot.acceptedBytes)) !== acceptedSnapshot.digest) {
-      throw indexedSourceStaleError();
-    }
-    stable.buffer = stable.buffer.subarray(0, acceptedSnapshot.acceptedBytes);
-  }
-  const prefix = storage.committedArtifactPrefix(stable.buffer, compression);
+  const committedRead = await storage.readCommittedArtifactPrefix(
+    filePath,
+    compression,
+    signal,
+    acceptedSnapshot,
+  );
+  const prefix = committedRead.prefix;
   if (prefix.recordTexts.length === 0) throw storage.storageError('empty or header-less session log');
   const header = storage.parseHeaderText(prefix.recordTexts[0]);
   if (header.cwd) {
@@ -780,9 +768,9 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   }
   const session = makeEmptySession(filePath, relFile, header, prefix.committedBytes);
   session.lineCount = prefix.recordTexts.length;
-  session._sourceIdentity = stable.identity;
+  session._sourceIdentity = committedRead.fileIdentity;
   session._committedPrefixDigest = storage.hashBuffer(
-    stable.buffer.subarray(0, prefix.committedBytes),
+    committedRead.buffer.subarray(0, prefix.committedBytes),
   );
   session._compression = compression;
   session._torn = prefix.torn === true;
@@ -794,7 +782,6 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   );
   rawHeader.sourceLocator.sessionId = session.id;
   session.rawEvents.push(rawHeader);
-  const seqToRaw = new Map();
   let expectedSeq = 0;
   let lastTime = header.createdAt;
   let currentStep = null;
@@ -830,25 +817,22 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
     if (!record || typeof record !== 'object' || Array.isArray(record) || typeof record.type !== 'string') {
       throw storage.storageError(`corrupt session log: invalid committed record at record ${index}`);
     }
-    const decoded = storage.decodeStorageRecord(record);
+    // Indexing/materialization keeps packed rows packed: it reads seq/member
+    // facts directly from the physical row and never calls the lossless
+    // per-member decoder.
+    const packed = storage.decodePackedStorageRecordFacts(record);
     const raw = makeRawEvent(record, index, relFile, session.id);
     raw.sourceLocator.sessionId = session.id;
     session.rawEvents.push(raw);
-    for (const event of decoded) {
-      if (!Number.isSafeInteger(event.seq) || event.seq !== expectedSeq) {
+    if (packed) {
+      if (packed.seq0 !== expectedSeq) {
         throw storage.storageError(
-          `corrupt session log: seq gap at record ${index} (expected ${expectedSeq}, got ${event.seq})`,
+          `corrupt session log: seq gap at record ${index} (expected ${expectedSeq}, got ${packed.seq0})`,
         );
       }
-      expectedSeq += 1;
-      lastTime = eventTime(event) || lastTime;
-      seqToRaw.set(event.seq, raw);
-    }
-
-    if (record.type === 'text-chunks'
-        || record.type === 'reasoning-chunks'
-        || record.type === 'tool-call-chunks') {
-      const step = stepStateFor(record.data?.turn, record.data?.step);
+      expectedSeq = packed.seqEnd + 1;
+      lastTime = packed.finalTime || lastTime;
+      const step = stepStateFor(packed.turn, packed.step);
       if (step) {
         step.chunkRows.push(raw);
         appendPackedRowToStep(step, record);
@@ -856,7 +840,14 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
       continue;
     }
 
-    const event = decoded[0];
+    const event = record;
+    if (!Number.isSafeInteger(event.seq) || event.seq !== expectedSeq) {
+      throw storage.storageError(
+        `corrupt session log: seq gap at record ${index} (expected ${expectedSeq}, got ${event.seq})`,
+      );
+    }
+    expectedSeq += 1;
+    lastTime = eventTime(event) || lastTime;
     const data = event?.data && typeof event.data === 'object' ? event.data : {};
     if (event.type === 'turn/start') {
       session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
@@ -1006,15 +997,11 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   session.title = title;
   session.updatedAt = safeIso(lastTime) || session.startedAt;
   session._lastEventTime = lastTime;
-  session._seqToRaw = seqToRaw;
   return finalizeSession(session, repoRoot);
 }
 
 function indexedSourceStaleError() {
-  const error = new Error('Indexed source changed; reindex required');
-  error.code = 'INDEXED_SOURCE_STALE';
-  error.statusCode = 409;
-  return error;
+  return storage.indexedSourceStaleError();
 }
 
 function throwIfAborted(signal) {
@@ -1220,12 +1207,12 @@ function projectCarriedSession(session, summary) {
 }
 
 function buildMaterializationState(session, dependencySet, descriptorPayload) {
-  const dependencyId = `dsh-dependency:${storage.hashPlainValue(dependencySet.entries)}`;
+  const dependencyId = storage.dependencySetId(dependencySet.entries);
   dependencySet.id = dependencyId;
-  const sourceSnapshotId = `dsh-snapshot:${storage.hashPlainValue({
+  const sourceSnapshotId = storage.materializationSnapshotId(
     dependencySet,
-    payload: descriptorPayload,
-  })}`;
+    descriptorPayload,
+  );
   const descriptor = {
     schemaVersion: 1,
     dependencySetId: dependencyId,
@@ -1491,15 +1478,15 @@ function validateDeepSeekMaterializationDescriptor({
   if (entry.evidence.compression !== compression || typeof entry.evidence.torn !== 'boolean') {
     throw new Error('DeepSeek transcript evidence is invalid');
   }
-  const expectedDependencySetId = `dsh-dependency:${storage.hashPlainValue(dependencySet.entries)}`;
+  const expectedDependencySetId = storage.dependencySetId(dependencySet.entries);
   if (dependencySet.id !== expectedDependencySetId
       || descriptor.dependencySetId !== expectedDependencySetId) {
     throw new Error('DeepSeek dependency identity is invalid');
   }
-  const expectedSnapshotId = `dsh-snapshot:${storage.hashPlainValue({
+  const expectedSnapshotId = storage.materializationSnapshotId(
     dependencySet,
-    payload: descriptor.payload,
-  })}`;
+    descriptor.payload,
+  );
   if (descriptor.sourceSnapshotId !== expectedSnapshotId) {
     throw new Error('DeepSeek materialization snapshot identity is invalid');
   }
@@ -1529,29 +1516,23 @@ async function buildDeepSeekEventDetailForSession(index, session, eventId, layer
 }
 
 function materializationTargetForSession(index, session) {
-  const indexedSession = index.sessionsById?.get(session?.id);
-  const payload = indexedSession?.materializationDescriptor?.payload;
-  let sourceFile = payload?.sourceFile || session?.sourceFile || '';
-  let compression = payload?.compression || (
-    String(sourceFile).endsWith('.jsonl.zstd') ? 'zstd' : 'none'
-  );
-  if (!sourceFile || !['zstd', 'none'].includes(compression)) return null;
-  const target = path.resolve(index.sessionsRoot, sourceFile);
-  if (!isPathInsideOrSame(target, index.sessionsRoot)) throw indexedSourceStaleError();
-  return { target, sourceFile, compression };
+  return storage.materializationEvidenceForSession(index, session);
 }
 
 async function readDeepSeekRawRecord(index, session, raw, options = {}) {
   const targetState = materializationTargetForSession(index, session);
   if (!targetState) return null;
-  const target = targetState.target;
-  const payload = targetState;
-  if (!isPathInsideOrSame(target, index.sessionsRoot)) throw indexedSourceStaleError();
   const ordinal = Number.isSafeInteger(raw?.sourceLocator?.recordOrdinal)
     ? raw.sourceLocator.recordOrdinal
     : Number.isSafeInteger(raw?.rawIndex) ? raw.rawIndex : -1;
   if (ordinal < 0) return null;
-  const result = await storage.readPhysicalRecordText(target, payload.compression, ordinal, options.signal);
+  const result = await storage.readPhysicalRecordText(
+    targetState.target,
+    targetState.compression,
+    ordinal,
+    options.signal,
+    targetState.acceptedSnapshot,
+  );
   throwIfAborted(options.signal);
   return {
     raw: result.recordText,
