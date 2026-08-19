@@ -49,7 +49,7 @@ When changing product behavior or repository structure:
 - Transcript source adapters: `docs/design-docs/transcript-source-adapters.md`
 - Indexed/Materialized Session lifecycle: `docs/design-docs/indexed-materialized-session-lifecycle.md`
 - Active plans:
-  - _None_ / 无
+  - `docs/exec-plans/active/2026-08-20-deepseek-harness-phase-2a-session-semantics.md` / `2026-08-20 DeepSeek Harness 第二阶段 A`
 - Completed plans:
   - `docs/exec-plans/completed/2026-08-16-deepseek-harness-phase-1.md`
   - `docs/exec-plans/completed/2026-08-16-indexed-materialized-lifecycle-third-adapter-gate.md`

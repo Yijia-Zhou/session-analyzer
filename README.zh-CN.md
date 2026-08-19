@@ -236,9 +236,9 @@ Release gate 会检查生成资产、运行完整 Node 测试，并重复执行�
 ## 已知限制
 
 - v0.1.4 暂不支持混合来源索引或来源筛选。
-- DeepSeek Harness 第一阶段建模人类消息、最终与部分助手消息、reasoning、工具调用／结果配对和生命周期 protocol；其他已知上游 DeepSeek 事件族明确列为推迟而非建模。
+- DeepSeek Harness 第二阶段 A 建模人类消息、最终与部分助手消息、reasoning、工具调用／结果配对、生命周期 protocol、生效 agent preset、父子 lineage、subagent descriptor、带 seed／无 seed 的 fork ownership，以及 compaction 生命周期。其他已知上游 DeepSeek 事件族仍明确列为推迟。
 - Claude Code 外置的 `tool-results/*` payload 暂不加载或搜索；其来源记录和引用仍可通过 protocol/raw 兜底查看。
-- 未来或未知的 Codex、Claude Code 与 DeepSeek Harness protocol event 仍可通过 protocol/raw 兜底视图检查，但并非每个事件族都有完整精致的结构化渲染器。DeepSeek Harness 第一阶段建模人类消息、最终／部分助手消息、reasoning、工具调用／结果配对与生命周期 protocol；其他已知上游事件族已在执行计划中明确列为推迟。
+- 未来或未知的 Codex、Claude Code 与 DeepSeek Harness protocol event 仍可通过 protocol/raw 兜底视图检查，但并非每个事件族都有完整精致的结构化渲染器。DeepSeek Harness 第二阶段 A 新增生效 preset、lineage／seed ownership，以及单一连贯 compaction 投影；其余事件族仍在执行计划中明确列为推迟。
 - 转录 fixture 覆盖是有重点的，不是穷尽式的；后续观察到新的历史形态时，可能仍需要补充 fixture 和展示调整。
 - Review finding 渲染已有合成数据覆盖，本地也已观察到真实的非空 `review_output.findings[]` 示例；后续仍适合补充脱敏 fixture 来防止回归。
 

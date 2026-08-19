@@ -236,9 +236,9 @@ Browser JavaScript source lives in `src/browser/`, and browser-and-Node shared l
 ## Known Limits
 
 - Mixed-source indexing and source filters are not supported in v0.1.4.
-- DeepSeek Harness Phase 1 models human messages, finalized and partial assistant messages, reasoning, tool call/result pairs, and lifecycle protocol; other known upstream DeepSeek event families are inventoried as deferred rather than modeled.
+- DeepSeek Harness Phase 2A models human messages, finalized and partial assistant messages, reasoning, tool call/result pairs, lifecycle protocol, effective agent presets, child/parent lineage, subagent descriptors, seeded/seedless fork ownership, and compaction lifecycle. Other known upstream DeepSeek event families remain inventoried as deferred.
 - Claude Code external `tool-results/*` payloads are not loaded or searched. Their source records and references remain available through protocol/raw fallback.
-- Future or unknown Codex, Claude Code, and DeepSeek Harness protocol events remain inspectable through protocol/raw fallback views, but not every event family has a polished structured renderer. DeepSeek Harness Phase 1 models human messages, finalized/partial assistant messages, reasoning, tool call/result pairs, and lifecycle protocol; other known upstream event families are inventoried as deferred.
+- Future or unknown Codex, Claude Code, and DeepSeek Harness protocol events remain inspectable through protocol/raw fallback views, but not every event family has a polished structured renderer. DeepSeek Harness Phase 2A adds effective presets, lineage/seed ownership, and one coherent compaction projection; remaining event families are inventoried as deferred.
 - Transcript fixture coverage is targeted rather than exhaustive; newly observed historical shapes may need additional fixtures and display adjustments.
 - Review finding rendering has synthetic coverage and real non-empty `review_output.findings[]` examples have been observed locally; sanitized fixture strengthening is still useful for future regressions.
 
