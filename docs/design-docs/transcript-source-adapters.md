@@ -2,8 +2,8 @@
 
 ## Status / 状态
 
-- Status: accepted `0.1.4` detail contract and M2–M7 implementation through `b1d0b0a2a8d0fb419618ab376a8a3330513eee16`; source-neutral third-adapter materialization-boundary follow-up completed and independently accepted; DeepSeek Harness Phase 1 is the real third-adapter pressure test (active plan `docs/exec-plans/active/2026-08-16-deepseek-harness-phase-1.md`) / 状态：已接受至 `b1d0b0a2a8d0fb419618ab376a8a3330513eee16` 的 `0.1.4` 详情契约与 M2 至 M7 实现；来源中立的第三 adapter 物化边界 follow-up 已完成并经独立评审接受；DeepSeek Harness 第一阶段是真实第三 adapter 压力测试（active plan `docs/exec-plans/active/2026-08-16-deepseek-harness-phase-1.md`）
-- Last updated: 2026-08-16 / 最近更新：2026-08-16
+- Status: accepted `0.1.4` detail contract and M2–M7 implementation through `b1d0b0a2a8d0fb419618ab376a8a3330513eee16`; source-neutral third-adapter materialization-boundary follow-up completed and independently accepted; DeepSeek Harness Phase 1 is the real third-adapter pressure test (completed plan `docs/exec-plans/completed/2026-08-16-deepseek-harness-phase-1.md`) / 状态：已接受至 `b1d0b0a2a8d0fb419618ab376a8a3330513eee16` 的 `0.1.4` 详情契约与 M2 至 M7 实现；来源中立的第三 adapter 物化边界 follow-up 已完成并经独立评审接受；DeepSeek Harness 第一阶段是真实第三 adapter 压力测试（completed plan `docs/exec-plans/completed/2026-08-16-deepseek-harness-phase-1.md`）
+- Last updated: 2026-08-19 / 最近更新：2026-08-19
 - Related product spec: `docs/product-specs/session-transcript-analyzer.md` / 相关产品规格：`docs/product-specs/session-transcript-analyzer.md`
 - Related timeline design: `docs/design-docs/logical-event-timeline.md` / 相关时间线设计：`docs/design-docs/logical-event-timeline.md`
 - Related pressure test: `docs/design-docs/external-source-mapping-pressure-tests.md` / 相关压力测试：`docs/design-docs/external-source-mapping-pressure-tests.md`
