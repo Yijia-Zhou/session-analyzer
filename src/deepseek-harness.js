@@ -137,6 +137,19 @@ function isAppendSurfaceOp(value) {
   return value === 'append';
 }
 
+function isReplaceSurfaceOp(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value) && value.op === 'replace');
+}
+
+function replaceSurfaceRange(value) {
+  if (!isReplaceSurfaceOp(value)) return null;
+  if (!Number.isSafeInteger(value.start) || value.start < 0
+      || !Number.isSafeInteger(value.end) || value.end < 0) {
+    return null;
+  }
+  return { start: value.start, end: value.end };
+}
+
 function parseSubagentDescriptorData(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   if (value.version !== 2) return null;
@@ -301,6 +314,16 @@ function protocolPreview(type, data) {
       return 'Seed boundary: inherited prefix ends here';
     case 'subagent/descriptor':
       return descriptorPreview(parseSubagentDescriptorData(value)) || 'Subagent descriptor';
+    case 'compaction/start':
+      return `Compaction started (${value.compactionId || 'unknown id'})`;
+    case 'compaction/summary':
+      return `Compaction summary: ${Array.isArray(value.shadowedSeqs) ? value.shadowedSeqs.length : 0} surface events shadowed`
+        + (Number.isFinite(value.shadowedTokenCount) ? ` (${value.shadowedTokenCount} tokens)` : '');
+    case 'compaction/end':
+      return value.error ? `Compaction failed: ${truncatePreview(value.error)}` : 'Compaction completed';
+    case 'compaction/prune':
+      return `Tool-result prune: ${Array.isArray(value.shadowedSeqs) ? value.shadowedSeqs.length : 0} surface events shadowed`
+        + (Number.isFinite(value.shadowedTokenCount) ? ` (${value.shadowedTokenCount} tokens)` : '');
     case 'assistant/chunk': {
       const chunk = value.chunk || {};
       return truncatePreview(chunk.type === 'text-delta' || chunk.type === 'reasoning-delta'
@@ -339,6 +362,32 @@ function protocolSearchText(type, data) {
       return 'session/end-seed\nInherited seed prefix boundary'.slice(0, SEARCH_TEXT_LIMIT);
     case 'subagent/descriptor':
       return descriptorSearchText(parseSubagentDescriptorData(value));
+    case 'compaction/start':
+      return `compaction/start\ncompactionId=${value.compactionId || ''}\nturn=${value.turn ?? ''}`.slice(0, SEARCH_TEXT_LIMIT);
+    case 'compaction/summary':
+      return [
+        'compaction/summary',
+        `compactionId=${value.compactionId || ''}`,
+        `shadowedRange=${value.shadowedRange?.start ?? ''}..${value.shadowedRange?.end ?? ''}`,
+        `shadowedSeqs=${Array.isArray(value.shadowedSeqs) ? value.shadowedSeqs.join(',') : ''}`,
+        `shadowedTokenCount=${value.shadowedTokenCount ?? ''}`,
+        `provider=${value.provider || ''}`,
+        `model=${value.model || ''}`,
+        visibleText(value.summary),
+      ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
+    case 'compaction/end':
+      return [
+        'compaction/end',
+        `compactionId=${value.compactionId || ''}`,
+        `error=${value.error || ''}`,
+      ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
+    case 'compaction/prune':
+      return [
+        'compaction/prune',
+        `shadowedRange=${value.shadowedRange?.start ?? ''}..${value.shadowedRange?.end ?? ''}`,
+        `shadowedSeqs=${Array.isArray(value.shadowedSeqs) ? value.shadowedSeqs.join(',') : ''}`,
+        `shadowedTokenCount=${value.shadowedTokenCount ?? ''}`,
+      ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
     default:
       return storage.flattenBounded(value, SEARCH_TEXT_LIMIT).slice(0, SEARCH_TEXT_LIMIT);
   }
@@ -772,6 +821,7 @@ function finalizeSession(session, repoRoot) {
       }
     }
     if (event.status === 'failed' || event.severity !== 'normal') session.counts.issueEvents += 1;
+    if (event.kind === 'compaction') session.counts.compactions += 1;
     if (event.kind === 'abort') session.counts.aborts += 1;
     if (event.kind === 'error') session.counts.errors += 1;
   }
@@ -855,6 +905,67 @@ function makeIncompleteToolEvent(session, call) {
     rawRefs: [dshRawRef(call.raw)],
     channels: ['tool/call'],
   }));
+}
+
+function makeCompactionEvent(sessionId, compaction) {
+  const rawRefs = [
+    compaction.startRaw,
+    compaction.summaryRaw,
+    compaction.replacementRaw,
+    compaction.endRaw,
+  ].filter(Boolean).map(dshRawRef);
+  const start = compaction.startEvent;
+  const summary = compaction.summaryEvent;
+  const end = compaction.endEvent;
+  const error = typeof end?.data?.error === 'string' ? end.data.error : '';
+  const summaryText = summary ? visibleText(summary.data?.summary) : '';
+  const shadowedSeqs = Array.isArray(summary?.data?.shadowedSeqs)
+    ? summary.data.shadowedSeqs
+    : [];
+  const shadowedTokenCount = Number.isFinite(summary?.data?.shadowedTokenCount)
+    ? summary.data.shadowedTokenCount
+    : null;
+  const succeeded = Boolean(end && !error && summary && compaction.replacementRaw);
+  const failed = Boolean(end && error);
+  const status = failed ? 'failed' : (succeeded ? 'success' : 'incomplete');
+  let preview;
+  if (failed) {
+    preview = truncatePreview(`Compaction failed: ${error}`);
+  } else if (succeeded) {
+    preview = truncatePreview(`Context compacted: ${shadowedSeqs.length} surface events replaced`
+      + (Number.isSafeInteger(shadowedTokenCount) ? ` (${shadowedTokenCount} estimated tokens)` : ''));
+  } else {
+    preview = truncatePreview(`Compaction incomplete: ${compaction.compactionId}`);
+  }
+  const searchText = [
+    preview,
+    `compactionId=${compaction.compactionId}`,
+    summaryText,
+    summary?.data?.provider ? `provider=${summary.data.provider}` : '',
+    summary?.data?.model ? `model=${summary.data.model}` : '',
+    error ? `error=${error}` : '',
+  ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
+  return makeLogicalEvent({
+    id: `${sessionId}:logical:compaction:${start.seq}`,
+    timestamp: safeIso(start.time),
+    turnId: '',
+    kind: 'compaction',
+    subtype: 'compaction',
+    layer: 'main',
+    role: 'system',
+    label: failed ? 'Compaction failed' : (succeeded ? 'Context compacted' : 'Compaction incomplete'),
+    preview,
+    searchText,
+    severity: failed ? 'error' : 'warning',
+    status,
+    rawRefs,
+    channels: [...new Set([
+      start.type,
+      ...(summary ? [summary.type] : []),
+      ...(compaction.replacementEvent ? [compaction.replacementEvent.type] : []),
+      ...(end ? [end.type] : []),
+    ])],
+  });
 }
 
 function resolveSeedBoundary(session, expectedSeq) {
@@ -1050,6 +1161,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   let lastTime = header.createdAt;
   let currentStep = null;
   const pendingToolCalls = new Map();
+  const pendingCompactions = new Map();
   let pendingPartialEvent = null;
 
   const flushCurrentStep = (status = 'incomplete') => {
@@ -1066,6 +1178,13 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   const stepStateFor = (turn, step) => {
     if (currentStep && currentStep.turn === turn && currentStep.step === step) return currentStep;
     return null;
+  };
+
+  const flushPendingCompaction = (compaction) => {
+    if (!compaction) return null;
+    const logical = makeCompactionEvent(session.id, compaction);
+    session.logicalEvents.push(logical);
+    return logical;
   };
 
   for (let index = 1; index < prefix.recordTexts.length; index += 1) {
@@ -1169,7 +1288,26 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
         session.logicalEvents.push(makeAssistantMessageEvent(session.id, event, raw));
       }
     } else if (event.type === 'user/message') {
-      if (data.source?.kind === 'user' && isAppendSurfaceOp(event.surfaceOp)) {
+      if (isReplaceSurfaceOp(event.surfaceOp)) {
+        const range = replaceSurfaceRange(event.surfaceOp);
+        // Upstream replacement/user pairing is the immediately preceding
+        // `compaction/summary` plus the shared surface-op range; the compact
+        // plugin's replacement carries source.kind "plugin". Pair with the
+        // newest pending lifecycle that has a summary and no replacement yet.
+        const compaction = [...pendingCompactions.values()].reverse().find((candidate) => (
+          candidate.summaryRaw && !candidate.replacementRaw
+        )) || null;
+        if (compaction && !compaction.replacementRaw && range) {
+          compaction.replacementRaw = raw;
+          compaction.replacementEvent = event;
+        } else {
+          session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, 'user/message', {
+            label: 'Surface replacement user message',
+            role: 'system',
+            preview: truncatePreview(visibleText(data.content) || 'Surface replacement user message'),
+          }));
+        }
+      } else if (data.source?.kind === 'user' && isAppendSurfaceOp(event.surfaceOp)) {
         // Human transcript follows append-origin evidence. A compaction
         // replacement user/message is model-only surface material and must
         // not become a Main human message.
@@ -1289,6 +1427,71 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
         preview: `Seed boundary: ${event.seq} inherited events end here`,
         searchText: `session/end-seed\nseq=${event.seq}\nInherited seed prefix boundary`,
       }));
+    } else if (event.type === 'compaction/start') {
+      const compactionId = typeof data.compactionId === 'string' && data.compactionId.trim()
+        ? data.compactionId.trim()
+        : '';
+      if (compactionId) {
+        const previous = pendingCompactions.get(compactionId);
+        if (previous) {
+          flushPendingCompaction(previous);
+          pendingCompactions.delete(compactionId);
+        }
+        pendingCompactions.set(compactionId, {
+          compactionId,
+          startRaw: raw,
+          startEvent: event,
+          summaryRaw: null,
+          summaryEvent: null,
+          replacementRaw: null,
+          replacementEvent: null,
+          endRaw: null,
+          endEvent: null,
+        });
+      } else {
+        session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
+          label: 'Compaction started',
+          role: 'system',
+        }));
+      }
+    } else if (event.type === 'compaction/summary') {
+      const compactionId = typeof data.compactionId === 'string' && data.compactionId.trim()
+        ? data.compactionId.trim()
+        : '';
+      const pending = compactionId ? pendingCompactions.get(compactionId) : null;
+      if (pending && !pending.summaryRaw) {
+        pending.summaryRaw = raw;
+        pending.summaryEvent = event;
+      } else {
+        session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
+          label: 'Compaction summary',
+          role: 'system',
+        }));
+      }
+    } else if (event.type === 'compaction/end') {
+      const compactionId = typeof data.compactionId === 'string' && data.compactionId.trim()
+        ? data.compactionId.trim()
+        : '';
+      const pending = compactionId ? pendingCompactions.get(compactionId) : null;
+      if (pending && !pending.endRaw) {
+        pending.endRaw = raw;
+        pending.endEvent = event;
+        flushPendingCompaction(pending);
+        pendingCompactions.delete(compactionId);
+      } else {
+        session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
+          label: 'Compaction ended',
+          role: 'system',
+        }));
+      }
+    } else if (event.type === 'compaction/prune') {
+      // Upstream vocabulary exists, but no current-writer physical fixture has
+      // been observed. Keep the exact row as recognized/deferred Protocol; do
+      // not fabricate replacement semantics from the event name alone.
+      session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
+        label: 'Tool-result prune',
+        role: 'system',
+      }));
     } else {
       const knownUnmodeled = KNOWN_DS_EVENT_TYPES.has(event.type);
       const subtype = knownUnmodeled ? event.type : 'unknown_event';
@@ -1303,6 +1506,9 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   if (currentStep && !currentStep.sawAssistantMessage && currentStep.chunkRows.length > 0) {
     currentStep.partialEvent = makePartialAssistantEvent(session.id, currentStep, 'incomplete');
     session.logicalEvents.push(currentStep.partialEvent);
+  }
+  for (const pending of pendingCompactions.values()) {
+    flushPendingCompaction(pending);
   }
   applyDeepSeekLineage(session);
   const seedBoundary = resolveSeedBoundary(session, expectedSeq);

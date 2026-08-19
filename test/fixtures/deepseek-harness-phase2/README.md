@@ -9,6 +9,8 @@ All transcripts are synthetic. No real user session transcript is stored here. /
 | spawned subagent | `session-fcf6d004…` (parent) → `43e17fdc…` (child) | byte copies of current-writer artifacts from `spike/fx-home/sessions/…`, writer `@deepseek-ai/dsh` npm `0.1.0-rc.6` / 从 `spike/fx-home` 逐字节复制的当前 writer 产物 |
 | seedless parented fork | `session-0b3a0d49…` (parent) → `3a7dda0f…` (child) | same byte-copy provenance / 同上 |
 | seeded fork | `session-142314a5…` (parent) → `1e7def20…` (child, `seedLength:54` + `session/end-seed` at seq 54) | same byte-copy provenance / 同上 |
+| successful compaction | `session-7a361413…` (`compaction/start` → `compaction/summary` → replacement `user/message` → `compaction/end`) | same byte-copy provenance / 同上 |
+| failed compaction | `session-febafccb…` (`compaction/start` → `compaction/end{error}`, no summary/replacement) | same byte-copy provenance / 同上 |
 | effective preset, no selection | `preset-header-code` | uncompressed `session.jsonl` written through the `0.1.0-rc.6` `JsonlSessionPersistence` backend (`compression:"none"`, `packChunks:false`) with a synthetic header/event sequence; no current-writer runtime produced an `agent-preset/selected` artifact in the spike, so this is persistence-writer serialization evidence plus upstream source semantics / 通过 `0.1.0-rc.6` `JsonlSessionPersistence` 写入的合成序列；spike 未产生 `agent-preset/selected` 运行时产物 |
 | effective preset, one selection | `preset-selected-code` | same writer serialization provenance / 同上 |
 | effective preset, multiple selections | `preset-selected-latest` | same writer serialization provenance / 同上 |

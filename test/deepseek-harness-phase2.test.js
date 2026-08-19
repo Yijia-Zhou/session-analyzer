@@ -359,3 +359,146 @@ test('M1 seedLength and session/end-seed consistency is validated; header-only b
     assert.equal(indexed.forkEvidence.seedBoundaryRawId, '');
   });
 });
+
+test('M2 successful compaction is one coherent model-only projection and never erases human transcript', async () => {
+  const index = await buildFor(COMPACTION_REPO);
+  const { indexed, materialized } = await materializeFor(index, COMPACTION_OK_SOURCE);
+  assert.equal(indexed.counts.compactions, 1);
+
+  const compactionEvents = materialized.logicalEvents.filter((event) => event.kind === 'compaction');
+  assert.equal(compactionEvents.length, 1);
+  const compaction = compactionEvents[0];
+  assert.equal(compaction.layer, 'main');
+  assert.equal(compaction.status, 'success');
+  assert.match(compaction.preview, /10 surface events replaced/);
+  assert.deepEqual(compaction.rawRefs.map((ref) => ref.sourceEventType), [
+    'compaction/start',
+    'compaction/summary',
+    'user/message',
+    'compaction/end',
+  ]);
+
+  // Lifecycle rows are not four unrelated opaque protocol events.
+  assert.equal(materialized.logicalEvents.some((event) => (
+    event.layer === 'protocol' && event.subtype.startsWith('compaction/')
+  )), false);
+  // The replacement user/message is model-only and never becomes a human Main prompt.
+  assert.equal(materialized.logicalEvents.some((event) => (
+    event.kind === 'user_message' && /automatically generated checkpoint/.test(event.preview + event.searchText)
+  )), false);
+  // Append-origin conversation the user saw remains in Main history.
+  const humanMessages = materialized.logicalEvents.filter((event) => event.kind === 'user_message');
+  assert.equal(humanMessages.length, 4);
+  for (const expected of ['fx-alpha-ok', 'fx-compact-beta-ok', 'fx-gamma-ok', 'fx-delta-ok']) {
+    assert.ok(humanMessages.some((event) => (event.preview + event.searchText).includes(expected)));
+  }
+
+  for (const ref of compaction.rawRefs) {
+    const raw = materialized.rawEvents.find((candidate) => candidate.rawId === ref.rawId);
+    assert.ok(raw);
+    const readback = await readDeepSeekRawRecord(index, materialized, raw);
+    assert.equal(JSON.parse(readback.raw).type, ref.sourceEventType);
+  }
+
+  const detail = await buildEventDetailForSession(index, materialized, compaction.id, 'main');
+  validateStructuredLogicalDetailDto(detail);
+  assert.deepEqual(detail.timelineSections.map((section) => section.purpose), ['content', 'result']);
+  assert.ok(detail.inspectorSections.some((section) => section.purpose === 'traceability' && section.type === 'kv'));
+  assert.ok(detail.inspectorSections.some((section) => section.purpose === 'context' && section.type === 'token_usage'));
+  assert.equal(detail.inspectorSections.some((section) => section.type === 'raw_json'), false);
+
+  await assertProjectionParity(index, indexed, materialized);
+});
+
+test('M2 failed compaction is represented coherently without inventing summary or replacement', async () => {
+  const index = await buildFor(COMPACTION_REPO);
+  const { indexed, materialized } = await materializeFor(index, COMPACTION_FAILED_SOURCE);
+  assert.equal(indexed.counts.compactions, 1);
+  assert.ok(indexed.counts.issueEvents >= 1);
+
+  const compactions = materialized.logicalEvents.filter((event) => event.kind === 'compaction');
+  assert.equal(compactions.length, 1);
+  const compaction = compactions[0];
+  assert.equal(compaction.status, 'failed');
+  assert.equal(compaction.severity, 'error');
+  assert.match(compaction.preview, /summary is not smaller/);
+  assert.deepEqual(compaction.rawRefs.map((ref) => ref.sourceEventType), [
+    'compaction/start',
+    'compaction/end',
+  ]);
+  assert.equal(materialized.logicalEvents.some((event) => (
+    event.layer === 'protocol' && event.subtype.startsWith('compaction/')
+  )), false);
+  assert.equal(materialized.rawEvents.some((raw) => raw.payloadType === 'compaction/summary'), false);
+
+  const detail = await buildEventDetailForSession(index, materialized, compaction.id, 'main');
+  validateStructuredLogicalDetailDto(detail);
+  assert.deepEqual(detail.timelineSections.map((section) => section.purpose), ['result']);
+  assert.ok(detail.inspectorSections.some((section) => section.purpose === 'traceability'));
+  assert.equal(detail.inspectorSections.some((section) => section.type === 'raw_json'), false);
+  await assertProjectionParity(index, indexed, materialized);
+});
+
+test('M2 unobserved compaction/prune stays recognized Protocol and is never fabricated into compaction semantics', async (t) => {
+  const fixture = await makeSyntheticFixture(t, 'prune-only', {
+    records: [
+      { type: 'turn/start', seq: 0, time: 1001, data: { turn: 1 } },
+      { type: 'step/start', seq: 1, time: 1002, data: { turn: 1, step: 1 } },
+      { type: 'step/end', seq: 2, time: 1003, data: { turn: 1, step: 1 } },
+      { type: 'turn/end', seq: 3, time: 1004, data: { turn: 1 } },
+      {
+        type: 'compaction/prune', seq: 4, time: 1005,
+        data: { shadowedRange: { start: 1, end: 1 }, shadowedSeqs: [1], shadowedTokenCount: 42 },
+      },
+      {
+        type: 'tool/result', seq: 5, time: 1006,
+        surfaceOp: { op: 'replace', start: 1, end: 1 },
+        data: {
+          turn: 1, step: 1,
+          message: { source: { callId: 'call-prune' }, content: [{ type: 'tool-result', content: [{ type: 'text', text: 'pruned' }] }] },
+        },
+      },
+    ],
+  });
+  const index = await buildDeepSeekIndex({ sourceHome: fixture.sourceHome, repoRoot: fixture.repoRoot });
+  const indexed = index.sessions[0];
+  const materialized = await materializeSessionForIndex(index, indexed);
+  const prune = materialized.logicalEvents.find((event) => event.subtype === 'compaction/prune');
+  assert.ok(prune);
+  assert.equal(prune.layer, 'protocol');
+  assert.equal(materialized.logicalEvents.some((event) => event.kind === 'compaction'), false);
+  const replacement = materialized.logicalEvents.find((event) => (
+    event.subtype === 'tool/result' && event.label === 'Surface replacement tool result'
+  ));
+  assert.ok(replacement);
+  assert.equal(replacement.layer, 'protocol');
+  const pruneRaw = await readDeepSeekRawRecord(
+    index,
+    materialized,
+    materialized.rawEvents.find((raw) => raw.payloadType === 'compaction/prune'),
+  );
+  assert.equal(JSON.parse(pruneRaw.raw).type, 'compaction/prune');
+});
+
+test('M2 orphan replacement user/message stays model-only Protocol and not Main human history', async (t) => {
+  const fixture = await makeSyntheticFixture(t, 'orphan-replacement', {
+    records: [
+      { type: 'turn/start', seq: 0, time: 1001, data: { turn: 1 } },
+      {
+        type: 'user/message', seq: 1, time: 1002,
+        surfaceOp: { op: 'replace', start: 0, end: 0 },
+        data: {
+          turn: 1, step: 1, source: { kind: 'plugin', plugin: 'compact' },
+          content: [{ type: 'text', text: 'model-only orphan checkpoint' }],
+        },
+      },
+    ],
+  });
+  const index = await buildDeepSeekIndex({ sourceHome: fixture.sourceHome, repoRoot: fixture.repoRoot });
+  const materialized = await materializeSessionForIndex(index, index.sessions[0]);
+  assert.equal(materialized.logicalEvents.some((event) => event.kind === 'user_message'), false);
+  const protocol = materialized.logicalEvents.find((event) => (
+    event.subtype === 'user/message' && event.label === 'Surface replacement user message'
+  ));
+  assert.equal(protocol.layer, 'protocol');
+});

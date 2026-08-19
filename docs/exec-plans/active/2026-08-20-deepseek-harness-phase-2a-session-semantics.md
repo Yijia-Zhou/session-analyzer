@@ -2,7 +2,7 @@
 
 ## Status / 状态
 
-- Status: M1 implemented and validated; M2 compaction is the next planned step in this plan. / 状态：M1 已实现并验证；M2 compaction 是本计划的下一步。
+- Status: M1 and M2 implemented; focused/full Node validation and browser suite green; stop for review after closeout. / 状态：M1 与 M2 已实现；聚焦与完整 Node 验证及浏览器套件通过；收尾后停下等待评审。
 - Branch: `support-dsh` / 分支：`support-dsh`
 - Baseline HEAD: `dac66373e3b3dc612c91c5b726cb146540cb6b75` / 基线 HEAD：`dac66373e3b3dc612c91c5b726cb146540cb6b75`
 - Scope: M1 effective preset + lineage + seed ownership; M2 compaction semantics and presentation. Stop after M2. / 范围：M1 生效 preset ＋ lineage ＋ seed ownership；M2 compaction 语义与呈现。M2 后停止。
@@ -120,4 +120,5 @@ Phase 1 is accepted and archived; this plan does not reopen its architecture dec
 
 - 2026-08-20 (Checkpoint A): verified baseline `dac6637…`, clean `support-dsh`, upstream clone `47f9438…`, located current-writer spike artifacts (subagent, subagent-fork, fork-seed, compaction-ok/failed). Created this plan. No production code changed yet. / 核验基线、上游与 writer 证据并创建本计划，尚未改生产代码。
 - 2026-08-20 (M1 implementation): header validation for `parentSession`/`seedLength`/`origin`/`agentPreset`; effective preset via last valid `agent-preset/selected` with header fallback; modeled `agent-preset/selected`, `subagent/descriptor`, and `session/end-seed` Protocol events; child-owned `parentSessionId` for all parented children plus source-owned `derivedSessionKind`; seeded `forkStorageMode:"materialized"` with `_forkSegmentsByRawId` Raw ownership and `inheritedContext`; inherited logical events filtered before counts/analysis. Curated 6 physical writer lineage fixtures plus 3 preset fixtures serialized through the `0.1.0-rc.6` JSONL persistence backend. / 实现 M1：header 校验、生效 preset、Protocol 建模、seed ownership 与 fixture。
-- 2026-08-20 (M1 validation): focused DeepSeek tests 29/29 (including the new Phase 2A M1 file), source-adapter conformance 41/41, and full Node suite 640/640 PASS under local Node v24.18.1/npm 12.0.2. Browser validation is deferred to the full Phase 2A closeout after M2. / M1 验证：DeepSeek 聚焦 29/29、conformance 41/41、完整 Node 640/640 通过；浏览器验证在 M2 后的整体收尾进行。
+- 2026-08-20 (M2 implementation): successful/failed compaction projected as one Main `compaction` event with exact ordered Raw References; replacement `user/message` is paired only as model-only surface evidence; append-origin human conversation stays visible; `compaction/prune` remains recognized/deferred Protocol. Added compaction-ok/failed physical writer fixtures and focused tests. / 实现 M2：compaction 单事件投影、模型专属替换、fixture 与测试。
+- 2026-08-20 (Validation): focused DeepSeek 29/29, source-adapter conformance 41/41, full Node 640/640, `build:check`, package smoke, and browser 117/117 (local WSL launch shim) PASS under local Node v24.18.1/npm 12.0.2. / 验证：DeepSeek 聚焦 29/29、conformance 41/41、完整 Node 640/640、build:check、package smoke 与浏览器 117/117（本地 WSL 启动 shim）通过。

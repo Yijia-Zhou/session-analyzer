@@ -315,6 +315,114 @@ function detailForToolOperation(event, session, parsedByOrdinal) {
   return detail;
 }
 
+function tokenUsageSection(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const items = [
+    ['Input', 'inputTokens', usage.inputTokens],
+    ['Output', 'outputTokens', usage.outputTokens],
+    ['Cache read', 'cacheReadTokens', usage.cacheReadTokens],
+    ['Cache write', 'cacheWriteTokens', usage.cacheWriteTokens],
+    ['Reasoning', 'reasoningTokens', usage.reasoningTokens],
+  ].filter(([, , value]) => Number.isFinite(value)).map(([label, field, value]) => ({
+    key: field,
+    field,
+    label,
+    value: Number(value) || 0,
+    formatted: String(value ?? ''),
+    primary: field === 'outputTokens',
+  }));
+  if (!items.length) return null;
+  return {
+    purpose: 'context',
+    type: 'token_usage',
+    title: 'Compaction summary usage',
+    items,
+  };
+}
+
+function detailForCompaction(event, session, parsedByOrdinal) {
+  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
+  const records = parsedEventsForRawIds(
+    session,
+    parsedByOrdinal,
+    (event.rawRefs || []).map((ref) => ref.rawId),
+  );
+  const start = records.find((candidate) => candidate.type === 'compaction/start');
+  const summary = records.find((candidate) => candidate.type === 'compaction/summary');
+  const replacement = records.find((candidate) => (
+    candidate.type === 'user/message' && candidate.surfaceOp?.op === 'replace'
+  ));
+  const end = records.find((candidate) => candidate.type === 'compaction/end');
+  const shadowedSeqs = Array.isArray(summary?.data?.shadowedSeqs) ? summary.data.shadowedSeqs : [];
+  const shadowedTokenCount = Number.isFinite(summary?.data?.shadowedTokenCount)
+    ? summary.data.shadowedTokenCount
+    : null;
+  const summaryText = visibleTextFromContent(summary?.data?.summary || []);
+
+  const entries = [];
+  if (start?.data?.compactionId) entries.push({ key: 'Compaction ID', value: start.data.compactionId });
+  if (summary?.data?.provider) entries.push({ key: 'Provider', value: summary.data.provider, fact: 'provider' });
+  if (summary?.data?.model) entries.push({ key: 'Model', value: summary.data.model, fact: 'model' });
+  if (shadowedSeqs.length) {
+    entries.push({ key: 'Shadowed surface events', value: String(shadowedSeqs.length) });
+  }
+  if (Number.isSafeInteger(shadowedTokenCount)) {
+    entries.push({ key: 'Shadowed token estimate', value: String(shadowedTokenCount) });
+  }
+  if (summary?.data?.shadowedRange) {
+    entries.push({
+      key: 'Shadowed range',
+      value: `${summary.data.shadowedRange.start}..${summary.data.shadowedRange.end}`,
+    });
+  }
+  if (replacement) {
+    entries.push({
+      key: 'Model-only replacement',
+      value: `user/message seq ${replacement.seq} (surface replace)`,
+    });
+  }
+
+  if (event.status === 'failed') {
+    const error = String(end?.data?.error || event.preview || 'Compaction failed');
+    const notice = sectionNotice(error, 'result', 'Compaction failed', 'error');
+    if (notice) detail.timelineSections.push(notice);
+  } else if (event.status === 'success') {
+    const content = sectionMarkdown(summaryText.slice(0, 100_000), 'content', 'Compaction summary');
+    if (content) detail.timelineSections.push(content);
+    const result = sectionNotice(
+      `Compaction completed: ${shadowedSeqs.length} surface events were replaced in model history. `
+      + 'Earlier append-origin conversation remains visible in this transcript.',
+      'result',
+      'Compaction completed',
+      'info',
+    );
+    if (result) detail.timelineSections.push(result);
+  } else {
+    const incomplete = sectionNotice(
+      'Compaction started but did not produce a successful model-only replacement.',
+      'result',
+      'Compaction incomplete',
+      'warning',
+    );
+    if (incomplete) detail.timelineSections.push(incomplete);
+  }
+
+  const kv = sectionKv(entries, 'traceability', 'Compaction evidence');
+  if (kv) detail.inspectorSections.push(kv);
+  const usage = tokenUsageSection(summary?.data?.usage);
+  if (usage) detail.inspectorSections.push(usage);
+  if (replacement) {
+    const replacementNotice = sectionNotice(
+      'The replacement user/message is model-only surface material. It is preserved as an exact Raw '
+      + 'Reference here and never rendered as a new human prompt or used to delete earlier Main history.',
+      'traceability',
+      'Model-only replacement',
+    );
+    if (replacementNotice) detail.inspectorSections.push(replacementNotice);
+  }
+  return detail;
+}
+
 function detailForProtocolEvent(event, session, parsedByOrdinal) {
   const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
   const sourceEvent = parsedEventsForRawIds(session, parsedByOrdinal, [event.rawRefs?.[0]?.rawId])[0];
@@ -383,6 +491,18 @@ function detailForProtocolEvent(event, session, parsedByOrdinal) {
       { key: 'Tool filter', value: data.toolFilter ? JSON.stringify(data.toolFilter) : '' },
     ], 'traceability', 'Descriptor provenance');
     if (supplemental) detail.inspectorSections.push(supplemental);
+  } else if (event.subtype === 'compaction/prune') {
+    detail.timelineSections.push(sectionNotice(
+      event.preview || 'Tool-result prune',
+      'content',
+      'Tool-result prune',
+    ));
+    detail.inspectorSections.push(sectionNotice(
+      'No current-writer physical fixture has been observed for compaction/prune yet. '
+      + 'The event is preserved as recognized Protocol/Raw evidence without manufactured replacement semantics.',
+      'traceability',
+      'Evidence gap',
+    ));
   } else {
     const notice = sectionNotice(event.preview || i18n.humanize(event.subtype || event.kind), 'content', '');
     if (notice) detail.timelineSections.push(notice);
@@ -400,6 +520,7 @@ function buildLogicalDetail(event, session, parsedByOrdinal) {
   if (event.kind === 'user_message') return detailForUserMessage(event);
   if (event.kind === 'assistant_message') return detailForAssistantMessage(event, session, parsedByOrdinal);
   if (event.kind === 'reasoning') return detailForReasoning(event, session, parsedByOrdinal);
+  if (event.kind === 'compaction') return detailForCompaction(event, session, parsedByOrdinal);
   if (event.kind === 'command' || event.kind === 'other_tool_call') {
     return detailForToolOperation(event, session, parsedByOrdinal);
   }
