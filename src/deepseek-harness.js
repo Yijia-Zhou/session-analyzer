@@ -20,6 +20,13 @@ const SEARCH_TEXT_LIMIT = 16_000;
 const PARTIAL_BLOCK_TEXT_LIMIT = SEARCH_TEXT_LIMIT;
 const TITLE_LIMIT = 120;
 const REASONING_LIMIT = SEARCH_TEXT_LIMIT;
+const INHERITED_PREVIEW_LIMIT = 12;
+const DSH_FORK_SEGMENTS = Object.freeze([
+  'fork_metadata',
+  'inherited_context',
+  'continuation',
+]);
+
 
 // Generated upstream vocabulary at tmp/deepseek-harness HEAD 47f9438…:
 // packages/core/session/src/known-event-types.ts. Known-but-unmodeled types
@@ -126,6 +133,63 @@ function reasoningText(content) {
 function toolCallBlocks(content) {
   return textContentBlocks(content).filter((block) => block && block.type === 'tool-call');
 }
+function isAppendSurfaceOp(value) {
+  return value === 'append';
+}
+
+function parseSubagentDescriptorData(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (value.version !== 2) return null;
+  if (value.mode !== 'one-shot' && value.mode !== 'continuable') return null;
+  if (typeof value.provider !== 'string' || !value.provider.trim()) return null;
+  const base = {
+    version: 2,
+    mode: value.mode,
+    provider: value.provider,
+    ...(typeof value.label === 'string' && value.label.trim() ? { label: value.label } : {}),
+  };
+  if (value.mode === 'one-shot') return base;
+  const continuable = {
+    ...base,
+    ...(typeof value.agentProvider === 'string' && value.agentProvider.trim()
+      ? { agentProvider: value.agentProvider }
+      : {}),
+    ...(typeof value.agentModel === 'string' && value.agentModel.trim()
+      ? { agentModel: value.agentModel }
+      : {}),
+    ...(typeof value.persona === 'string' && value.persona.trim() ? { persona: value.persona } : {}),
+    ...(value.toolFilter && typeof value.toolFilter === 'object' && !Array.isArray(value.toolFilter)
+      ? { toolFilter: value.toolFilter }
+      : {}),
+  };
+  return continuable;
+}
+
+function descriptorPreview(descriptor) {
+  if (!descriptor) return '';
+  const parts = [
+    `provider=${descriptor.provider}`,
+    `mode=${descriptor.mode}`,
+    descriptor.label ? `label=${truncatePreview(descriptor.label, 120)}` : '',
+  ].filter(Boolean);
+  return `Subagent descriptor: ${parts.join(' ')}`;
+}
+
+function descriptorSearchText(descriptor) {
+  if (!descriptor) return '';
+  return [
+    'subagent/descriptor',
+    `version=${descriptor.version}`,
+    `provider=${descriptor.provider}`,
+    `mode=${descriptor.mode}`,
+    descriptor.label ? `label=${descriptor.label}` : '',
+    descriptor.agentProvider ? `agentProvider=${descriptor.agentProvider}` : '',
+    descriptor.agentModel ? `agentModel=${descriptor.agentModel}` : '',
+    descriptor.persona ? `persona=${descriptor.persona}` : '',
+  ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
+}
+
+
 
 function truncatePreview(value, limit = PREVIEW_LIMIT) {
   const text = String(value ?? '').trim();
@@ -231,6 +295,12 @@ function protocolPreview(type, data) {
       return `Approval policy: ${value.policy || ''}`;
     case 'agent/inbox/spliced':
       return truncatePreview(`Inbox splice ${value.target || ''}${value.outcome ? ` (${value.outcome})` : ''}`);
+    case 'agent-preset/selected':
+      return `Agent preset selected: ${value.agentPreset || ''}`;
+    case 'session/end-seed':
+      return 'Seed boundary: inherited prefix ends here';
+    case 'subagent/descriptor':
+      return descriptorPreview(parseSubagentDescriptorData(value)) || 'Subagent descriptor';
     case 'assistant/chunk': {
       const chunk = value.chunk || {};
       return truncatePreview(chunk.type === 'text-delta' || chunk.type === 'reasoning-delta'
@@ -263,6 +333,12 @@ function protocolSearchText(type, data) {
         'request/context', value.provider || '', value.model || '',
         Number.isFinite(value.contextWindow) ? `contextWindow=${value.contextWindow}` : '',
       ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
+    case 'agent-preset/selected':
+      return `agent-preset/selected\nagentPreset=${value.agentPreset || ''}`.slice(0, SEARCH_TEXT_LIMIT);
+    case 'session/end-seed':
+      return 'session/end-seed\nInherited seed prefix boundary'.slice(0, SEARCH_TEXT_LIMIT);
+    case 'subagent/descriptor':
+      return descriptorSearchText(parseSubagentDescriptorData(value));
     default:
       return storage.flattenBounded(value, SEARCH_TEXT_LIMIT).slice(0, SEARCH_TEXT_LIMIT);
   }
@@ -311,8 +387,20 @@ function makeRawEvent(record, recordOrdinal, sourceFile, sessionId) {
   let preview;
   let searchText;
   if (recordType === 'session') {
+    const lineage = [
+      record.parentSession ? `parent=${record.parentSession}` : '',
+      Number.isSafeInteger(record.seedLength) ? `seedLength=${record.seedLength}` : '',
+      record.origin ? `origin=${record.origin}` : '',
+      Number.isSafeInteger(record.delegationDepth) ? `delegationDepth=${record.delegationDepth}` : '',
+      record.agentPreset ? `agentPreset=${record.agentPreset}` : '',
+    ].filter(Boolean).join(' ');
     preview = truncatePreview(`Session header ${record.id || ''} (format v${record.version})`);
-    searchText = `session header ${record.id || ''} format-v${record.version} cwd=${record.cwd || ''}`.slice(0, SEARCH_TEXT_LIMIT);
+    searchText = [
+      `session header ${record.id || ''}`,
+      `format-v${record.version}`,
+      `cwd=${record.cwd || ''}`,
+      lineage,
+    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
   } else if (packed) {
     preview = `${recordType} seqs ${record.seq0}..${packedSummary.end} (${packedSummary.count} members)`;
     searchText = `${recordType}\nturn=${packedSummary.turn}\nstep=${packedSummary.step}\n`
@@ -363,8 +451,9 @@ function makeRawEvent(record, recordOrdinal, sourceFile, sessionId) {
     touchedFiles: [],
     rawIndex: recordOrdinal,
     memberCount: packedSummary ? packedSummary.count : 1,
-    seq0: packedSummary ? record.seq0 : null,
-    seqEnd: packedSummary ? packedSummary.end : null,
+    seq0: packedSummary ? record.seq0 : (Number.isSafeInteger(record?.seq) ? record.seq : null),
+    seqEnd: packedSummary ? packedSummary.end : (Number.isSafeInteger(record?.seq) ? record.seq : null),
+    forkSegment: '',
   };
   return raw;
 }
@@ -568,6 +657,14 @@ function appendPackedRowToStep(stepState, record) {
 function makeEmptySession(filePath, relFile, header, committedBytes) {
   const cwdSet = [];
   if (typeof header.cwd === 'string' && header.cwd) cwdSet.push(resolveFsPath(header.cwd));
+  const sourceParentSessionId = header.parentSession || '';
+  const parentSessionId = sourceParentSessionId ? `${SOURCE_KIND}:${sourceParentSessionId}` : '';
+  const subagent = header.origin === 'subagent';
+  // `parentSession` is durable lineage, not subagent classification. A normal
+  // fork has the header field without `origin:"subagent"` and keeps its fork
+  // relationship; only the explicit origin classifies a child as a subagent.
+  const forkedFromSessionId = sourceParentSessionId && !subagent ? parentSessionId : '';
+  const seedLength = Number.isSafeInteger(header.seedLength) ? header.seedLength : null;
   return {
     id: `${SOURCE_KIND}:${header.id}`,
     sourceKind: SOURCE_KIND,
@@ -577,8 +674,12 @@ function makeEmptySession(filePath, relFile, header, committedBytes) {
     projectAssociation: header.cwd || '',
     title: '',
     sourceFile: relFile,
+    // `agentNickname` is the existing user-visible carried name surface. The
+    // useful DeepSeek fact is the effective running preset, resolved below
+    // from the last durable `agent-preset/selected` with the creation-time
+    // header preset as fallback. The header remains byte-exact in Raw.
     agentNickname: header.agentPreset || '',
-    primarySessionMetaKind: header.origin === 'subagent' ? 'subagent' : '',
+    primarySessionMetaKind: subagent ? 'subagent' : '',
     derivedRunId: '',
     startedAt: safeIso(header.createdAt),
     updatedAt: safeIso(header.createdAt),
@@ -588,12 +689,9 @@ function makeEmptySession(filePath, relFile, header, committedBytes) {
     counts: emptyCounts(),
     rawEventCount: 0,
     logicalEventCount: 0,
-    // Phase 1 only models subagent lineage. A fork seed (`parentSession`
-    // without `origin:"subagent"`) is kept in the known-unmodeled inventory
-    // instead of being presented as a subagent relationship.
-    parentSessionId: header.origin === 'subagent' ? header.parentSession || '' : '',
-    forkedFromSessionId: '',
-    forkStorageMode: '',
+    parentSessionId,
+    forkedFromSessionId,
+    forkStorageMode: seedLength !== null ? 'materialized' : '',
     forkedAt: '',
     forkPointUuid: '',
     forkContinuationState: '',
@@ -603,12 +701,24 @@ function makeEmptySession(filePath, relFile, header, committedBytes) {
     parentSessionInferred: false,
     forkEvidence: null,
     inheritedContext: null,
+    derivedRelationship: null,
+    spawnDepth: header.delegationDepth,
     summary: emptySummary(),
     rawEvents: [],
     logicalEvents: [],
     analysis: null,
     presentationIndexes: { codeModeDeclaredRequests: new Map() },
     matchesRepo: false,
+    _sourceParentSessionId: sourceParentSessionId,
+    _origin: header.origin || '',
+    _creationAgentPreset: header.agentPreset || '',
+    _effectiveAgentPreset: header.agentPreset || '',
+    _agentPresetSelections: [],
+    _seedLength: seedLength,
+    _seedMarkers: [],
+    _titleCandidates: [],
+    _subagentDescriptor: null,
+    _forkSegmentsByRawId: new Map(),
   };
 }
 
@@ -747,6 +857,165 @@ function makeIncompleteToolEvent(session, call) {
   }));
 }
 
+function resolveSeedBoundary(session, expectedSeq) {
+  const headerLength = session._seedLength;
+  const markers = session._seedMarkers || [];
+  if (headerLength !== null) {
+    if (headerLength > expectedSeq) {
+      throw storage.storageError(
+        `corrupt session log: header seedLength ${headerLength} exceeds the committed event count ${expectedSeq}`,
+      );
+    }
+    // The header boundary is authoritative. A marker may sit at the boundary
+    // (the current writer) or earlier when the inherited seed already ended
+    // with its own marker; a marker after the declared boundary is corrupt.
+    if (markers.some((marker) => marker.seq > headerLength)) {
+      throw storage.storageError(
+        `corrupt session log: session/end-seed does not match header seedLength ${headerLength}`,
+      );
+    }
+    return headerLength;
+  }
+  if (markers.length) return markers[markers.length - 1].seq;
+  return null;
+}
+
+function seedSegmentForRaw(raw, boundary) {
+  if (!raw || !Number.isSafeInteger(boundary)) return '';
+  if (raw.rawIndex === 0) return 'fork_metadata';
+  if (!Number.isSafeInteger(raw.seq0) || !Number.isSafeInteger(raw.seqEnd)) {
+    throw storage.storageError('corrupt session log: seed boundary crosses a storage record without a seq range');
+  }
+  if (raw.seqEnd < boundary) return 'inherited_context';
+  if (raw.seq0 >= boundary) return 'continuation';
+  throw storage.storageError('corrupt session log: seed boundary crosses a packed storage record');
+}
+
+function inheritedContextForSession(session, boundary, inheritedEvents, inheritedRaws) {
+  if (!inheritedRaws.length) return null;
+  const mainEvents = inheritedEvents.filter((event) => event.layer !== 'protocol');
+  const previewEvents = mainEvents.slice(-INHERITED_PREVIEW_LIMIT).map((event) => ({
+    kind: event.kind,
+    timestamp: event.timestamp,
+    preview: event.preview,
+  }));
+  return {
+    sourceSessionId: session.parentSessionId || `${SOURCE_KIND}:${session._sourceParentSessionId}`,
+    seedLength: boundary,
+    seedBoundarySeq: boundary,
+    rawRecordCount: inheritedRaws.length,
+    logicalEventCount: inheritedEvents.length,
+    mainEventCount: mainEvents.length,
+    protocolEventCount: inheritedEvents.length - mainEvents.length,
+    previewEventCount: previewEvents.length,
+    omittedPreviewEventCount: Math.max(0, mainEvents.length - previewEvents.length),
+    startedAt: inheritedRaws[0]?.timestamp || '',
+    updatedAt: inheritedRaws[inheritedRaws.length - 1]?.timestamp || '',
+    forkPointRawId: inheritedRaws[inheritedRaws.length - 1]?.rawId || '',
+    forkPointTarget: null,
+    previewEvents,
+  };
+}
+
+function applyDeepSeekSeedOwnership(session, boundary, expectedSeq) {
+  if (boundary === null) {
+    session._forkSegmentsByRawId.clear();
+    return;
+  }
+  if (boundary > expectedSeq) {
+    throw storage.storageError(
+      `corrupt session log: seed boundary ${boundary} exceeds the committed event count ${expectedSeq}`,
+    );
+  }
+  const segments = session._forkSegmentsByRawId;
+  segments.clear();
+  for (const raw of session.rawEvents) {
+    const segment = seedSegmentForRaw(raw, boundary);
+    raw.forkSegment = segment;
+    segments.set(raw.rawId, segment);
+  }
+  const segmentByRawId = new Map(session.rawEvents.map((raw) => [raw.rawId, raw.forkSegment]));
+  const ownedEvents = [];
+  const inheritedEvents = [];
+  for (const event of session.logicalEvents) {
+    const eventSegments = new Set(
+      (event.rawRefs || []).map((ref) => segmentByRawId.get(ref.rawId)).filter(Boolean),
+    );
+    if (eventSegments.size === 0) {
+      ownedEvents.push(event);
+      continue;
+    }
+    if (eventSegments.size > 1) {
+      throw storage.storageError('corrupt session log: logical event crosses the seed boundary');
+    }
+    if (eventSegments.has('inherited_context')) inheritedEvents.push(event);
+    else ownedEvents.push(event);
+  }
+  const inheritedRaws = session.rawEvents.filter((raw) => raw.forkSegment === 'inherited_context');
+  const marker = session._seedMarkers.find((candidate) => candidate.seq === boundary) || null;
+  session.logicalEvents = ownedEvents;
+  session.forkStorageMode = 'materialized';
+  session.forkEvidence = {
+    sourceSessionId: session._sourceParentSessionId,
+    parentSessionId: session.parentSessionId,
+    origin: session._origin,
+    delegationDepth: session.spawnDepth,
+    seedLength: boundary,
+    seedBoundarySeq: boundary,
+    seedBoundaryRawId: marker?.rawId || '',
+    seedBoundaryRecordOrdinal: marker?.recordOrdinal ?? null,
+    inheritedRawRecordCount: inheritedRaws.length,
+    inheritedLogicalEventCount: inheritedEvents.length,
+  };
+  session.inheritedContext = inheritedContextForSession(
+    session,
+    boundary,
+    inheritedEvents,
+    inheritedRaws,
+  );
+  return { inheritedEvents, inheritedRaws };
+}
+
+function chooseDeepSeekTitle(session, boundary) {
+  const startSeq = Number.isSafeInteger(boundary) ? boundary : -1;
+  const candidates = session._titleCandidates.filter((candidate) => candidate.seq >= startSeq);
+  const title = candidates.length ? candidates[candidates.length - 1].title : '';
+  if (title) return truncatePreview(title, TITLE_LIMIT);
+  if (session._subagentDescriptor?.label) {
+    return truncatePreview(session._subagentDescriptor.label, TITLE_LIMIT);
+  }
+  return '';
+}
+
+function applyDeepSeekLineage(session) {
+  const descriptor = session._subagentDescriptor;
+  if (session.primarySessionMetaKind === 'subagent') {
+    const forked = descriptor?.provider === 'fork' || session._seedLength !== null;
+    if (forked && session.parentSessionId) session.forkedFromSessionId = session.parentSessionId;
+    session.derivedRelationship = {
+      kind: 'subagent',
+      ownerSessionId: session.parentSessionId,
+      sourceParentSessionId: session._sourceParentSessionId,
+      delegationDepth: session.spawnDepth,
+      ...(descriptor ? { descriptor } : {}),
+    };
+    return;
+  }
+  // A normal parented fork keeps `forkedFromSessionId` from the header and
+  // `parentSessionId` as lineage; neither fact classifies it as a subagent.
+  session.derivedRelationship = null;
+}
+
+function deepSeekDerivedSessionKind(session) {
+  if (session?.primarySessionMetaKind) return session.primarySessionMetaKind;
+  return '';
+}
+
+function deepSeekRawForkSegment(session, rawId) {
+  return session?._forkSegmentsByRawId?.get(rawId) || '';
+}
+
+
 async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options = {}) {
   const compression = options.compression || storage.compressionForArtifact(filePath);
   const acceptedSnapshot = options.acceptedSnapshot || null;
@@ -774,12 +1043,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   );
   session._compression = compression;
   session._torn = prefix.torn === true;
-  const rawHeader = makeRawEvent(
-    { type: 'session', version: header.version, id: header.id, createdAt: header.createdAt, cwd: header.cwd },
-    0,
-    relFile,
-    session.id,
-  );
+  const rawHeader = makeRawEvent({ ...header, type: 'session' }, 0, relFile, session.id);
   rawHeader.sourceLocator.sessionId = session.id;
   session.rawEvents.push(rawHeader);
   let expectedSeq = 0;
@@ -787,7 +1051,6 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   let currentStep = null;
   const pendingToolCalls = new Map();
   let pendingPartialEvent = null;
-  let title = '';
 
   const flushCurrentStep = (status = 'incomplete') => {
     if (!currentStep) return null;
@@ -892,7 +1155,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
       }
     } else if (event.type === 'assistant/message') {
       const step = stepStateFor(data.turn, data.step);
-      if (step && event.surfaceOp === 'append') {
+      if (step && isAppendSurfaceOp(event.surfaceOp)) {
         step.sawAssistantMessage = true;
         if (step.partialEvent) {
           step.partialEvent = null;
@@ -900,13 +1163,13 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
           step.blockText.clear();
         }
       }
-      if (event.surfaceOp === 'append') {
+      if (isAppendSurfaceOp(event.surfaceOp)) {
         const reasoning = reasoningText(event.data?.message?.content || []).trim();
         if (reasoning) session.logicalEvents.push(makeReasoningEvent(session.id, event, raw));
         session.logicalEvents.push(makeAssistantMessageEvent(session.id, event, raw));
       }
     } else if (event.type === 'user/message') {
-      if (data.source?.kind === 'user' && event.surfaceOp === 'append') {
+      if (data.source?.kind === 'user' && isAppendSurfaceOp(event.surfaceOp)) {
         // Human transcript follows append-origin evidence. A compaction
         // replacement user/message is model-only surface material and must
         // not become a Main human message.
@@ -933,10 +1196,11 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
         turn: data.turn,
         step: data.step,
         time: event.time,
+        eventSeq: event.seq,
         raw,
       });
     } else if (event.type === 'tool/result') {
-      if (event.surfaceOp !== 'append') {
+      if (!isAppendSurfaceOp(event.surfaceOp)) {
         session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, 'tool/result', {
           label: 'Surface replacement tool result',
           role: 'system',
@@ -972,9 +1236,58 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
         }));
       }
     } else if (event.type === 'session/title') {
-      if (typeof data.title === 'string' && data.title.trim()) title = data.title.trim();
+      if (typeof data.title === 'string' && data.title.trim()) {
+        session._titleCandidates.push({ seq: event.seq, title: data.title.trim() });
+      }
       session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
         label: 'Session title',
+      }));
+    } else if (event.type === 'agent-preset/selected') {
+      const selected = typeof data.agentPreset === 'string' && data.agentPreset.trim()
+        ? data.agentPreset.trim()
+        : '';
+      if (selected) {
+        session._agentPresetSelections.push({ seq: event.seq, agentPreset: selected, rawId: raw.rawId });
+        session._effectiveAgentPreset = selected;
+        session.agentNickname = selected;
+        session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
+          label: 'Agent preset selected',
+          role: 'system',
+          preview: `Agent preset selected: ${selected}`,
+          searchText: `agent-preset/selected\nagentPreset=${selected}\nseq=${event.seq}`,
+        }));
+      } else {
+        session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
+          label: 'Agent preset selected',
+          role: 'system',
+          preview: 'Agent preset selected (invalid payload)',
+          severity: 'warning',
+        }));
+      }
+    } else if (event.type === 'subagent/descriptor') {
+      const descriptor = parseSubagentDescriptorData(data);
+      if (descriptor) session._subagentDescriptor = descriptor;
+      session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
+        label: descriptor ? 'Subagent descriptor' : 'Subagent descriptor (unsupported version)',
+        role: 'system',
+        preview: descriptor
+          ? descriptorPreview(descriptor)
+          : truncatePreview('Subagent descriptor: unsupported or invalid version'),
+        searchText: descriptor ? descriptorSearchText(descriptor) : protocolSearchText(event.type, data),
+        severity: descriptor ? 'normal' : 'warning',
+      }));
+    } else if (event.type === 'session/end-seed') {
+      const marker = {
+        seq: event.seq,
+        rawId: raw.rawId,
+        recordOrdinal: raw.sourceLocator?.recordOrdinal ?? raw.rawIndex,
+      };
+      session._seedMarkers.push(marker);
+      session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
+        label: 'Seed boundary',
+        role: 'system',
+        preview: `Seed boundary: ${event.seq} inherited events end here`,
+        searchText: `session/end-seed\nseq=${event.seq}\nInherited seed prefix boundary`,
       }));
     } else {
       const knownUnmodeled = KNOWN_DS_EVENT_TYPES.has(event.type);
@@ -991,10 +1304,17 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
     currentStep.partialEvent = makePartialAssistantEvent(session.id, currentStep, 'incomplete');
     session.logicalEvents.push(currentStep.partialEvent);
   }
+  applyDeepSeekLineage(session);
+  const seedBoundary = resolveSeedBoundary(session, expectedSeq);
+  // Only calls that belong to the child continuation may become child-owned
+  // incomplete operations. An inherited open call would be parent history.
   for (const call of pendingToolCalls.values()) {
-    makeIncompleteToolEvent(session, call);
+    if (seedBoundary === null || call.eventSeq >= seedBoundary) {
+      makeIncompleteToolEvent(session, call);
+    }
   }
-  session.title = title;
+  applyDeepSeekSeedOwnership(session, seedBoundary, expectedSeq);
+  session.title = chooseDeepSeekTitle(session, seedBoundary);
   session.updatedAt = safeIso(lastTime) || session.startedAt;
   session._lastEventTime = lastTime;
   return finalizeSession(session, repoRoot);
@@ -1196,11 +1516,15 @@ function projectCarriedSession(session, summary) {
     supersededAt: String(session.supersededAt || ''),
     supersededReason: String(session.supersededReason || ''),
     parentSessionInferred: Boolean(session.parentSessionInferred),
-    forkEvidence: null,
-    inheritedContext: null,
+    forkEvidence: session.forkEvidence === null ? null : structuredClone(session.forkEvidence),
+    inheritedContext: session.inheritedContext === null ? null : structuredClone(session.inheritedContext),
     summary: structuredClone(summary),
   };
-  if (Object.hasOwn(session, 'derivedRelationship')) projected.derivedRelationship = session.derivedRelationship;
+  if (Object.hasOwn(session, 'derivedRelationship')) {
+    projected.derivedRelationship = session.derivedRelationship === null
+      ? null
+      : structuredClone(session.derivedRelationship);
+  }
   if (Object.hasOwn(session, 'subagentToolUseId')) projected.subagentToolUseId = session.subagentToolUseId;
   if (Object.hasOwn(session, 'spawnDepth')) projected.spawnDepth = session.spawnDepth;
   return projected;
@@ -1415,6 +1739,9 @@ async function materializeDeepSeekSession({
     logicalEvents: session.logicalEvents,
     analysis: session.analysis,
     presentationIndexes: session.presentationIndexes,
+    ...(session.forkStorageMode === 'materialized' && session._forkSegmentsByRawId instanceof Map
+      ? { _forkSegmentsByRawId: session._forkSegmentsByRawId }
+      : {}),
   };
 }
 
@@ -1507,8 +1834,23 @@ function validateDeepSeekLegacyRawOwnerIndex({ sessionIds: ownedSessionIds, lega
   }
 }
 
-function validateDeepSeekMaterializedPrivateState() {
-  // DeepSeek Phase 1 has no registered private Materialized Session fields.
+function validateDeepSeekMaterializedPrivateState({ indexedSession, session }) {
+  const segments = session._forkSegmentsByRawId;
+  if (indexedSession.forkStorageMode !== 'materialized') {
+    if (segments !== undefined) {
+      throw new Error('Ordinary DeepSeek Session must not retain fork segments');
+    }
+    return;
+  }
+  if (!(segments instanceof Map) || segments.size !== session.rawEvents.length) {
+    throw new Error('Materialized DeepSeek fork segments must cover every Raw Record');
+  }
+  for (const raw of session.rawEvents) {
+    const segment = segments.get(raw.rawId);
+    if (!DSH_FORK_SEGMENTS.includes(segment) || raw.forkSegment !== segment) {
+      throw new Error('Materialized DeepSeek fork segment ownership is invalid');
+    }
+  }
 }
 
 async function buildDeepSeekEventDetailForSession(index, session, eventId, layer, options = {}) {
@@ -1548,6 +1890,10 @@ async function readDeepSeekRawRecord(index, session, raw, options = {}) {
 const deepSeekQuery = createSessionQuery({
   schemaVersion: CANONICAL_SCHEMA_VERSION,
   rawRef: dshRawRef,
+  derivedSessionKind: deepSeekDerivedSessionKind,
+  presentation: {
+    rawForkSegment: deepSeekRawForkSegment,
+  },
   rawRecordLabel(raw) {
     return i18n.rawRecordLabel(raw?.payloadType || raw?.recordType || '', i18n.DEFAULT_LOCALE);
   },
@@ -1580,7 +1926,7 @@ const deepSeekAdapter = {
   validateLegacyRawOwnerIndex: validateDeepSeekLegacyRawOwnerIndex,
   validateMaterializedPrivateState: validateDeepSeekMaterializedPrivateState,
   materializationContextFields: ['sessionsRoot'],
-  materializedPrivateFields: [],
+  materializedPrivateFields: ['_forkSegmentsByRawId'],
 };
 
 const markdownRenderer = new MarkdownIt({

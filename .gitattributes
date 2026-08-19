@@ -2,3 +2,5 @@ public/assets/app.js text eol=lf
 public/vendor/highlightjs/highlight.min.js text eol=lf
 # Physical DeepSeek Harness current-writer fixture: preserve exact bytes (no CRLF conversion)
 test/fixtures/deepseek-harness-uncompressed/sessions/--home-joejack-dsh_playground-spike-ws-normal--/session-695bc3a2-78cb-4585-8acc-e637c327efa1/session.jsonl -text
+# Phase 2A DeepSeek current-writer fixtures: preserve exact uncompressed bytes (no CRLF conversion)
+test/fixtures/deepseek-harness-phase2/**/session.jsonl -text

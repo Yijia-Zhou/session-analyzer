@@ -262,6 +262,21 @@ function parseHeaderLine(text) {
   if (Object.hasOwn(parsed, 'cwd') && typeof parsed.cwd !== 'string') {
     throw storageError('corrupt session log: header cwd is invalid');
   }
+  if (Object.hasOwn(parsed, 'parentSession')
+      && (typeof parsed.parentSession !== 'string' || !parsed.parentSession.trim())) {
+    throw storageError('corrupt session log: header parentSession is invalid');
+  }
+  if (Object.hasOwn(parsed, 'seedLength')
+      && (!Number.isSafeInteger(parsed.seedLength) || parsed.seedLength < 0 || Object.is(parsed.seedLength, -0))) {
+    throw storageError('corrupt session log: header seedLength is invalid');
+  }
+  if (Object.hasOwn(parsed, 'origin') && parsed.origin !== 'subagent') {
+    throw storageError('corrupt session log: header origin is invalid');
+  }
+  if (Object.hasOwn(parsed, 'agentPreset')
+      && (typeof parsed.agentPreset !== 'string' || !parsed.agentPreset.trim())) {
+    throw storageError('corrupt session log: header agentPreset is invalid');
+  }
   if (!Number.isSafeInteger(parsed.delegationDepth)
       || parsed.delegationDepth < 0
       || Object.is(parsed.delegationDepth, -0)) {

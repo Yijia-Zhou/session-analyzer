@@ -72,7 +72,7 @@ test('DeepSeek Harness is a selectable indexed-materialized third source', () =>
   assert.equal(deepSeekAdapter.sessionLifecycle, 'indexed-materialized-v1');
   assert.equal(path.basename(deepSeekAdapter.defaultHome()), 'sessions');
   assert.deepEqual(deepSeekAdapter.materializationContextFields, ['sessionsRoot']);
-  assert.deepEqual(deepSeekAdapter.materializedPrivateFields, []);
+  assert.deepEqual(deepSeekAdapter.materializedPrivateFields, ['_forkSegmentsByRawId']);
 });
 
 test('header-only discovery finds synthetic current-writer projects', async () => {

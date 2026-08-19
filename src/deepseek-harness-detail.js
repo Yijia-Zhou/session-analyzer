@@ -344,6 +344,45 @@ function detailForProtocolEvent(event, session, parsedByOrdinal) {
       'result',
       'Turn ended',
     ));
+  } else if (event.subtype === 'agent-preset/selected') {
+    const selected = typeof data.agentPreset === 'string' ? data.agentPreset : '';
+    detail.timelineSections.push(sectionKv([
+      { key: 'Selected preset', value: selected },
+    ], 'context', 'Agent preset') || sectionNotice(event.preview, 'content'));
+    detail.inspectorSections.push(sectionNotice(
+      'This durable selection overrides the creation-time SessionHeader preset for the blank session '
+      + 'and persists into later turns. The header itself remains byte-exact in Raw evidence.',
+      'traceability',
+      'Effective preset evidence',
+    ));
+  } else if (event.subtype === 'session/end-seed') {
+    detail.timelineSections.push(sectionNotice(
+      `The first ${sourceEvent?.seq ?? ''} events were inherited from the parent Session seed. `
+      + 'They remain inspectable as provenance but are not counted as child work.',
+      'content',
+      'Seed boundary',
+    ));
+  } else if (event.subtype === 'subagent/descriptor') {
+    const entries = [
+      { key: 'Mode', value: data.mode },
+      { key: 'Provider', value: data.provider },
+      { key: 'Label', value: data.label },
+    ];
+    const primary = sectionKv(entries, 'context', 'Subagent descriptor');
+    if (primary) {
+      detail.timelineSections.push(primary);
+    } else {
+      const fallback = sectionNotice(event.preview || 'Subagent descriptor', 'content', 'Subagent descriptor');
+      if (fallback) detail.timelineSections.push(fallback);
+    }
+    const supplemental = sectionKv([
+      { key: 'Descriptor version', value: data.version },
+      { key: 'Agent provider', value: data.agentProvider },
+      { key: 'Agent model', value: data.agentModel },
+      { key: 'Persona', value: data.persona },
+      { key: 'Tool filter', value: data.toolFilter ? JSON.stringify(data.toolFilter) : '' },
+    ], 'traceability', 'Descriptor provenance');
+    if (supplemental) detail.inspectorSections.push(supplemental);
   } else {
     const notice = sectionNotice(event.preview || i18n.humanize(event.subtype || event.kind), 'content', '');
     if (notice) detail.timelineSections.push(notice);
