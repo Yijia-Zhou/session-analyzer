@@ -51,6 +51,7 @@ When changing product behavior or repository structure:
 - Active plans:
   - None.
 - Completed plans:
+  - `docs/exec-plans/completed/2026-08-19-cold-session-materialization-performance.md`
   - `docs/exec-plans/completed/2026-08-16-indexed-materialized-lifecycle-third-adapter-gate.md`
   - `docs/exec-plans/completed/2026-08-16-indexed-materialized-session-lifecycle.md`
   - `docs/exec-plans/completed/2026-08-15-adapter-detail-contract-review-followups.md`

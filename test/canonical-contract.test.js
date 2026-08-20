@@ -1132,11 +1132,98 @@ test('adapter-private state that cannot be fingerprinted fails with the stable m
   );
 });
 
+test('materialization phase observation is content-free and preserves strict admission', async () => {
+  const { index, indexedSession, materializedSession } = makeStrictMaterializationBoundaryFixture();
+  const adapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async () => structuredClone(materializedSession),
+  });
+  const events = [];
+  const result = await materializeSessionWithAdapter(index, indexedSession, adapter, {
+    onMaterializationPhase(event) {
+      events.push(event);
+    },
+  });
+
+  assert.equal(result.id, indexedSession.id);
+  assert.ok(events.length > 0);
+  assert.ok(events.every((event) => Object.keys(event).every((key) => (
+    key === 'phase' || key === 'state'
+  ))));
+  assert.deepEqual(events.map(({ phase, state }) => `${phase}:${state}`), [
+    'materialized_pre_adapter_validation:start',
+    'materialized_pre_adapter_validation:end',
+    'adapter_materialization:start',
+    'adapter_materialization:end',
+    'materialized_post_adapter_ownership:start',
+    'materialized_post_adapter_ownership:end',
+    'materialized_canonical_validation:start',
+    'materialized_canonical_validation:end',
+    'materialized_private_validation:start',
+    'materialized_private_fingerprint_capture:start',
+    'materialized_private_fingerprint_capture:end',
+    'materialized_private_callback:start',
+    'materialized_private_callback:end',
+    'materialized_private_fingerprint_recheck:start',
+    'materialized_private_fingerprint_recheck:end',
+    'materialized_private_validation:end',
+    'materialized_fingerprint_reuse:start',
+    'materialized_fingerprint_reuse:end',
+    'materialized_projection:start',
+    'materialized_projection:end',
+    'materialized_fingerprint_recheck:start',
+    'materialized_fingerprint_recheck:end',
+    'materialized_final_admission_check:start',
+    'materialized_final_admission_check:end',
+  ]);
+});
+
+test('strict materialization reuses the verified private fingerprint for query guarding', async () => {
+  const { index, indexedSession, materializedSession } = makeStrictMaterializationBoundaryFixture();
+  const adapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async () => structuredClone(materializedSession),
+  });
+  const phaseEvents = [];
+  const operationTotals = new Map();
+  await materializeSessionWithAdapter(index, indexedSession, adapter, {
+    onMaterializationPhase({ phase, state }) {
+      phaseEvents.push(`${phase}:${state}`);
+    },
+    onProjectionChunk({ phase, operations }) {
+      operationTotals.set(phase, (operationTotals.get(phase) || 0) + operations);
+    },
+  });
+
+  assert.equal(operationTotals.has('materialized_fingerprint_capture'), false);
+  assert.ok(operationTotals.get('materialized_private_validator_capture') > 0);
+  assert.equal(
+    operationTotals.get('materialized_private_validator_recheck'),
+    operationTotals.get('materialized_private_validator_capture'),
+  );
+  assert.ok(operationTotals.get('materialized_fingerprint_recheck') > 0);
+  assert.ok(
+    operationTotals.get('materialized_private_validator_capture')
+      > operationTotals.get('materialized_fingerprint_recheck'),
+  );
+  assert.deepEqual(
+    phaseEvents.filter((event) => event.startsWith('materialized_fingerprint_')),
+    [
+      'materialized_fingerprint_reuse:start',
+      'materialized_fingerprint_reuse:end',
+      'materialized_fingerprint_recheck:start',
+      'materialized_fingerprint_recheck:end',
+    ],
+  );
+});
+
 test('last-waiter cancellation throughout final verification never admits the Session to cache', async () => {
   const verificationPhases = [
     'materialized_private_validator_capture',
     'materialized_private_validator_recheck',
-    'materialized_fingerprint_capture',
+    'materialized_fingerprint_reuse',
     'materialized_projection',
     'materialized_fingerprint_recheck',
   ];
@@ -1163,10 +1250,18 @@ test('last-waiter cancellation throughout final verification never admits the Se
         onProjectionChunk(chunk) {
           if (chunk.phase === targetPhase) notifyVerification();
         },
+        onMaterializationPhase({ phase, state }) {
+          if (targetPhase === 'materialized_fingerprint_reuse'
+              && phase === targetPhase
+              && state === 'start') {
+            notifyVerification();
+            waiterController.abort();
+          }
+        },
       })
     ));
     await verificationStarted;
-    waiterController.abort();
+    if (targetPhase !== 'materialized_fingerprint_reuse') waiterController.abort();
     await assert.rejects(pending, { name: 'AbortError' }, targetPhase);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(owner.cache.has(indexedSession.id), false, targetPhase);

@@ -1364,7 +1364,19 @@ test('strict Claude indexing releases complete graphs and rematerializes exact p
     configurable: true,
     get() { throw new Error('unrelated strict Index collection was scanned'); },
   });
-  assert.equal((await materializeSessionForIndex(indexed, selected)).id, selected.id);
+  const observedPhases = [];
+  assert.equal((await materializeSessionForIndex(indexed, selected, {
+    onMaterializationPhase(event) {
+      observedPhases.push(event);
+    },
+  })).id, selected.id);
+  assert.deepEqual(
+    observedPhases.filter((event) => event.phase === 'adapter_source_stream'),
+    [
+      { phase: 'adapter_source_stream', state: 'start' },
+      { phase: 'adapter_source_stream', state: 'end' },
+    ],
+  );
 });
 
 test('revision owner coalesces and caches exact strict Claude materialization identity', async (t) => {

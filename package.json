@@ -40,6 +40,7 @@
     "src/runtime-capacity.js",
     "src/runtime-diagnostics.js",
     "src/index-revision-lease.js",
+    "src/materialization-observer.js",
     "src/materialized-session-owner.js",
     "src/project-query-store.js",
     "src/session-query.js",
