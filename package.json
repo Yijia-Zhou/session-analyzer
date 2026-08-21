@@ -79,6 +79,7 @@
     "release:verify-public": "node scripts/release-automation.js verify-public",
     "prepublishOnly": "npm run release:check",
     "profile:project-query": "node scripts/project-query-store-profile.js",
+    "profile:materialized-cache": "node scripts/materialized-session-cache-profile.js",
     "profile:timeline": "node scripts/timeline-profile.js",
     "browser:install": "playwright install chromium",
     "vendor:highlight": "node scripts/build-client.js --vendor-highlight-only"

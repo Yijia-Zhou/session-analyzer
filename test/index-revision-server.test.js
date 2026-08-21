@@ -259,6 +259,7 @@ test('server schedules prewarm after project success without delaying state and 
       consideredCount: 1,
       attemptedCount: 1,
       completedCount: 1,
+      notAdmittedCount: 0,
       promotedCount: 0,
       preemptedCount: 0,
       failedCount: 0,

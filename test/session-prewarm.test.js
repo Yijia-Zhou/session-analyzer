@@ -6,7 +6,11 @@ const {
   initializeIndexRevisionState,
   installIndexRevision,
 } = require('../src/index-revision-lease');
-const { estimateMaterializedSessionBytes } = require('../src/materialized-session-owner');
+const {
+  createMaterializationScheduler,
+  createMaterializedSessionOwner,
+  estimateMaterializedSessionBytes,
+} = require('../src/materialized-session-owner');
 const { runWithMaterializationObserver } = require('../src/materialization-observer');
 const {
   DEFAULT_SESSION_PREWARM_POLICY,
@@ -42,6 +46,24 @@ function fixtureIndex(specifications) {
   return {
     sessions,
     sessionsById: new Map(sessions.map((session) => [session.id, session])),
+  };
+}
+
+function fixtureLease(specifications, cacheOptions = {}) {
+  const index = fixtureIndex(specifications);
+  const retirementController = new AbortController();
+  const materializedSessionOwner = createMaterializedSessionOwner({
+    index,
+    indexRevision: 1,
+    retirementController,
+    scheduler: createMaterializationScheduler(),
+    ...cacheOptions,
+  });
+  return {
+    index,
+    indexRevision: 1,
+    retirementController,
+    materializedSessionOwner,
   };
 }
 
@@ -85,6 +107,7 @@ test('bounded policy skips a large recent candidate and prewarms only the next t
     consideredCount: 3,
     attemptedCount: 2,
     completedCount: 2,
+    notAdmittedCount: 0,
     promotedCount: 0,
     preemptedCount: 0,
     failedCount: 0,
@@ -153,6 +176,49 @@ test('prewarm stops immediately when foreground cache already meets the admissio
   assert.equal(result.consideredCount, 1);
   assert.equal(result.attemptedCount, 0);
   assert.equal(owner.stats().prewarmSkippedBudget, 1);
+});
+
+test('bounded prewarm reports completed work that weighted cache cannot admit without foreground eviction', async () => {
+  const lease = fixtureLease([
+    { id: 'recent-speculative', bytes: 1_000 },
+    { id: 'foreground', bytes: 1_000, updatedAt: '2026-01-01T00:00:00.000Z' },
+  ], {
+    maxCachedSessions: 1,
+    maxEstimatedMaterializedBytes: 100_000,
+  });
+  const owner = lease.materializedSessionOwner;
+  const foreground = { id: 'foreground-value' };
+  await owner.get(lease.index.sessionsById.get('foreground'), null, async () => foreground);
+  let speculativeCalls = 0;
+  const result = await runBoundedSessionPrewarm(
+    lease,
+    async () => {
+      speculativeCalls += 1;
+      return { id: 'speculative-value' };
+    },
+    {
+      candidateCap: 1,
+      scanLimit: 1,
+      budgetBytes: 30_000,
+      individualBytes: 20_000,
+    },
+  );
+
+  assert.deepEqual(result, {
+    status: 'completed',
+    consideredCount: 1,
+    attemptedCount: 1,
+    completedCount: 0,
+    notAdmittedCount: 1,
+    promotedCount: 0,
+    preemptedCount: 0,
+    failedCount: 0,
+  });
+  assert.equal(speculativeCalls, 1);
+  assert.deepEqual([...owner.cache.keys()], ['foreground']);
+  assert.equal(owner.cache.get('foreground').value, foreground);
+  assert.equal(owner.stats().prewarmSkippedCacheCapacity, 1);
+  assert.equal(owner.stats().foregroundEvictions, 0);
 });
 
 test('scheduled prewarm defers behind foreground and retirement cancels a pending revision wakeup', async () => {
@@ -249,9 +315,11 @@ test('prewarm observation emits fixed content-free phase and state fields only',
   assert.ok(events.length >= 5);
   assert.ok(events.every((event) => (
     Object.keys(event).sort().join(',') === 'phase,state'
-      && event.phase.startsWith('session_prewarm_')
+      && (event.phase.startsWith('session_prewarm_') || event.phase.startsWith('cache_'))
       && event.state === 'event'
   )));
+  assert.ok(events.some((event) => event.phase === 'cache_admitted'));
+  assert.ok(events.some((event) => event.phase === 'session_prewarm_completed'));
   assert.equal(JSON.stringify(events).includes('secret-session-id'), false);
   assert.equal(JSON.stringify(events).includes('materialized-value'), false);
 });

@@ -59,6 +59,7 @@ function emptyResult(status = 'completed') {
     consideredCount: 0,
     attemptedCount: 0,
     completedCount: 0,
+    notAdmittedCount: 0,
     promotedCount: 0,
     preemptedCount: 0,
     failedCount: 0,
@@ -147,6 +148,7 @@ async function runBoundedSessionPrewarm(lease, materialize, options = {}) {
 
       result.attemptedCount += 1;
       if (outcome.status === 'completed') result.completedCount += 1;
+      else if (outcome.status === 'completed-not-admitted') result.notAdmittedCount += 1;
       else if (outcome.status === 'promoted') result.promotedCount += 1;
       else if (outcome.status === 'preempted') result.preemptedCount += 1;
       else if (outcome.status === 'failed') result.failedCount += 1;

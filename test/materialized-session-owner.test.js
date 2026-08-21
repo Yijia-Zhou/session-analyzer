@@ -9,10 +9,15 @@ const {
   retiredError,
 } = require('../src/index-revision-lease');
 const {
+  CACHE_ORIGIN_FOREGROUND,
+  CACHE_ORIGIN_SPECULATIVE,
+  DEFAULT_MATERIALIZED_SESSION_CACHE_POLICY,
   MAX_QUEUED_MATERIALIZATIONS,
   createMaterializationScheduler,
   createMaterializedSessionOwner,
+  estimateMaterializedSessionBytes,
 } = require('../src/materialized-session-owner');
+const { runWithMaterializationObserver } = require('../src/materialization-observer');
 
 function deferred() {
   let resolve;
@@ -28,13 +33,16 @@ function tick() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-function fixtureIndex(ids) {
-  const sessions = ids.map((id, index) => ({
-    id,
-    bytes: 100 + index,
-    rawEventCount: index + 1,
-    logicalEventCount: index + 2,
-  }));
+function fixtureIndex(specifications) {
+  const sessions = specifications.map((specification, index) => {
+    const fields = typeof specification === 'string' ? { id: specification } : specification;
+    return {
+      id: fields.id,
+      bytes: fields.bytes ?? (100 + index),
+      rawEventCount: fields.rawEventCount ?? (index + 1),
+      logicalEventCount: fields.logicalEventCount ?? (index + 2),
+    };
+  });
   return {
     sessions,
     sessionsById: new Map(sessions.map((session) => [session.id, session])),
@@ -52,8 +60,28 @@ function fixtureOwner(ids, options = {}) {
     indexRevision: options.indexRevision || 1,
     retirementController,
     scheduler,
+    maxEstimatedMaterializedBytes: options.maxEstimatedMaterializedBytes,
+    maxCachedSessions: options.maxCachedSessions,
   });
   return { index, owner, retirementController, scheduler };
+}
+
+function assertCacheAccounting(owner) {
+  const entries = [...owner.cache.values()];
+  const estimatedBytes = entries.reduce((total, entry) => total + entry.estimatedBytes, 0);
+  assert.equal(owner.estimatedMaterializedBytes, estimatedBytes);
+  assert.equal(owner.stats().estimatedMaterializedBytes, estimatedBytes);
+  assert.equal(owner.stats().cacheSessionCount, entries.length);
+  const oversize = entries.filter(
+    (entry) => entry.estimatedBytes > owner.maxEstimatedMaterializedBytes,
+  );
+  if (oversize.length > 0) {
+    assert.equal(entries.length, 1);
+    assert.equal(oversize[0].origin, CACHE_ORIGIN_FOREGROUND);
+  } else {
+    assert.ok(estimatedBytes <= owner.maxEstimatedMaterializedBytes);
+    assert.ok(entries.length <= owner.maxCachedSessions);
+  }
 }
 
 test('MaterializedSessionOwner coalesces one cold job and caches exact object identity', async () => {
@@ -78,6 +106,8 @@ test('MaterializedSessionOwner coalesces one cold job and caches exact object id
   assert.deepEqual(owner.stats(), {
     indexRevision: 1,
     retired: false,
+    maxEstimatedMaterializedBytes: 256 * 1024 * 1024,
+    maxCachedSessions: 12,
     cacheSessionCount: 1,
     estimatedMaterializedBytes: 6756,
     queuedJobCount: 0,
@@ -96,6 +126,15 @@ test('MaterializedSessionOwner coalesces one cold job and caches exact object id
     retiredJobs: 0,
     peakCacheSessionCount: 1,
     peakEstimatedMaterializedBytes: 6756,
+    cacheAdmissions: 1,
+    cacheTouches: 1,
+    cachePromotions: 0,
+    evictions: 0,
+    evictedEstimatedBytes: 0,
+    speculativeEvictions: 0,
+    foregroundEvictions: 0,
+    oversizeForegroundAdmissions: 0,
+    speculativeAdmissionRejections: 0,
     prewarmScheduled: 0,
     prewarmStarted: 0,
     prewarmCompleted: 0,
@@ -106,9 +145,348 @@ test('MaterializedSessionOwner coalesces one cold job and caches exact object id
     prewarmSkippedSize: 0,
     prewarmSkippedBudget: 0,
     prewarmSkippedCached: 0,
+    prewarmSkippedCacheCapacity: 0,
     prewarmRetired: 0,
     prewarmCacheHits: 0,
   });
+});
+
+test('weighted cache defaults are fixed and invalid injected limits fail closed', () => {
+  assert.deepEqual(DEFAULT_MATERIALIZED_SESSION_CACHE_POLICY, {
+    maxEstimatedMaterializedBytes: 256 * 1024 * 1024,
+    maxCachedSessions: 12,
+  });
+  assert.throws(
+    () => fixtureOwner(['session-a'], { maxEstimatedMaterializedBytes: 0 }),
+    /maxEstimatedMaterializedBytes must be a positive safe integer/,
+  );
+  assert.throws(
+    () => fixtureOwner(['session-a'], { maxCachedSessions: 0 }),
+    /maxCachedSessions must be a positive safe integer/,
+  );
+});
+
+test('foreground cache hit touches MRU and count admission evicts true foreground LRU', async () => {
+  const { index, owner } = fixtureOwner(['session-a', 'session-b', 'session-c'], {
+    maxCachedSessions: 2,
+    maxEstimatedMaterializedBytes: 100_000,
+  });
+  const values = new Map(index.sessions.map((session) => [session.id, { id: session.id }]));
+  const materialize = async (session) => values.get(session.id);
+  await owner.get(index.sessions[0], null, () => materialize(index.sessions[0]));
+  await owner.get(index.sessions[1], null, () => materialize(index.sessions[1]));
+  const beforeTouch = owner.cache.get('session-a').lastAccessSequence;
+  assert.equal(await owner.get(index.sessions[0], null, () => assert.fail('cache miss')), values.get('session-a'));
+  assert.ok(owner.cache.get('session-a').lastAccessSequence > beforeTouch);
+
+  await owner.get(index.sessions[2], null, () => materialize(index.sessions[2]));
+  assertCacheAccounting(owner);
+  assert.deepEqual([...owner.cache.keys()].sort(), ['session-a', 'session-c']);
+  assert.equal(owner.stats().foregroundEvictions, 1);
+  assert.equal(owner.stats().evictions, 1);
+  assert.equal(owner.stats().cacheSessionCount, 2);
+  assert.equal(
+    owner.stats().evictedEstimatedBytes,
+    estimateMaterializedSessionBytes(index.sessions[1]),
+  );
+});
+
+test('access sequence rebases deterministically before safe-integer exhaustion', async () => {
+  const { index, owner } = fixtureOwner(['session-a', 'session-b', 'session-c'], {
+    maxCachedSessions: 2,
+    maxEstimatedMaterializedBytes: 100_000,
+  });
+  await owner.get(index.sessions[0], null, async () => ({ id: 'a' }));
+  await owner.get(index.sessions[1], null, async () => ({ id: 'b' }));
+  owner.cache.get('session-a').lastAccessSequence = Number.MAX_SAFE_INTEGER - 1;
+  owner.cache.get('session-b').lastAccessSequence = Number.MAX_SAFE_INTEGER;
+  owner.accessSequence = Number.MAX_SAFE_INTEGER;
+
+  await owner.get(index.sessions[0], null, () => assert.fail('cache miss'));
+  assert.equal(owner.accessSequence, 3);
+  assert.equal(owner.cache.get('session-b').lastAccessSequence, 2);
+  assert.equal(owner.cache.get('session-a').lastAccessSequence, 3);
+  await owner.get(index.sessions[2], null, async () => ({ id: 'c' }));
+  assert.deepEqual([...owner.cache.keys()].sort(), ['session-a', 'session-c']);
+});
+
+test('estimated byte budget evicts LRU even while the count cap has room', async () => {
+  const specifications = ['session-a', 'session-b', 'session-c'].map((id) => ({
+    id,
+    bytes: 1_000,
+    rawEventCount: 0,
+    logicalEventCount: 0,
+  }));
+  const perEntryBytes = estimateMaterializedSessionBytes(specifications[0]);
+  const { index, owner } = fixtureOwner(specifications, {
+    maxCachedSessions: 3,
+    maxEstimatedMaterializedBytes: perEntryBytes * 2,
+  });
+  for (const session of index.sessions) {
+    await owner.get(session, null, async () => ({ id: session.id }));
+    assertCacheAccounting(owner);
+  }
+  assert.deepEqual([...owner.cache.keys()], ['session-b', 'session-c']);
+  assert.equal(owner.estimatedMaterializedBytes, perEntryBytes * 2);
+  assert.equal(owner.stats().cacheSessionCount, 2);
+  assert.equal(owner.stats().foregroundEvictions, 1);
+  assert.equal(owner.stats().evictions, 1);
+  assert.equal(owner.stats().evictedEstimatedBytes, perEntryBytes);
+  assert.equal(owner.stats().cacheAdmissions, 3);
+  assert.equal(owner.stats().peakCacheSessionCount, 2);
+  assert.equal(owner.stats().peakEstimatedMaterializedBytes, perEntryBytes * 2);
+});
+
+test('foreground admission prefers a newer speculative victim over older foreground state', async () => {
+  const { index, owner } = fixtureOwner(['foreground-a', 'speculative-p', 'foreground-b'], {
+    maxCachedSessions: 2,
+    maxEstimatedMaterializedBytes: 100_000,
+  });
+  const foregroundA = { id: 'foreground-a' };
+  const speculativeP = { id: 'speculative-p' };
+  const foregroundB = { id: 'foreground-b' };
+  await owner.get(index.sessions[0], null, async () => foregroundA);
+  await tick();
+  assert.deepEqual(await owner.prewarm(index.sessions[1], async () => speculativeP), {
+    status: 'completed',
+  });
+  assert.equal(owner.cache.get('speculative-p').origin, CACHE_ORIGIN_SPECULATIVE);
+
+  await owner.get(index.sessions[2], null, async () => foregroundB);
+  assertCacheAccounting(owner);
+  assert.deepEqual([...owner.cache.keys()].sort(), ['foreground-a', 'foreground-b']);
+  assert.equal(owner.stats().speculativeEvictions, 1);
+  assert.equal(owner.stats().foregroundEvictions, 0);
+});
+
+test('evicted prewarm leaves no stale hit metadata and foreground rematerializes normally', async () => {
+  const { index, owner } = fixtureOwner(['predicted', 'foreground'], {
+    maxCachedSessions: 1,
+    maxEstimatedMaterializedBytes: 100_000,
+  });
+  let predictedCalls = 0;
+  await owner.prewarm(index.sessions[0], async () => {
+    predictedCalls += 1;
+    return { id: `predicted-${predictedCalls}` };
+  });
+  await owner.get(index.sessions[1], null, async () => ({ id: 'foreground' }));
+  assert.equal(owner.cache.has('predicted'), false);
+  assert.equal(owner.stats().speculativeEvictions, 1);
+
+  const reopened = await owner.get(index.sessions[0], null, async () => {
+    predictedCalls += 1;
+    return { id: `predicted-${predictedCalls}` };
+  });
+  assert.equal(reopened.id, 'predicted-2');
+  assert.equal(predictedCalls, 2);
+  assert.equal(owner.cache.get('predicted').origin, CACHE_ORIGIN_FOREGROUND);
+  assert.equal(owner.stats().prewarmCacheHits, 0);
+  assert.equal(owner.stats().cachePromotions, 0);
+  assertCacheAccounting(owner);
+});
+
+test('foreground use promotes a cached prewarm once and protects it as normal LRU state', async () => {
+  const { index, owner } = fixtureOwner(['predicted', 'unused', 'foreground'], {
+    maxCachedSessions: 2,
+    maxEstimatedMaterializedBytes: 100_000,
+  });
+  const predicted = { id: 'predicted' };
+  assert.deepEqual(await owner.prewarm(index.sessions[0], async () => predicted), {
+    status: 'completed',
+  });
+  assert.equal(owner.cache.get('predicted').origin, CACHE_ORIGIN_SPECULATIVE);
+  assert.equal(await owner.get(index.sessions[0], null, () => assert.fail('cache miss')), predicted);
+  assert.equal(await owner.get(index.sessions[0], null, () => assert.fail('cache miss')), predicted);
+  assert.equal(owner.cache.get('predicted').origin, CACHE_ORIGIN_FOREGROUND);
+  assert.equal(owner.stats().prewarmCacheHits, 1);
+  assert.equal(owner.stats().cachePromotions, 1);
+
+  assert.deepEqual(await owner.prewarm(index.sessions[1], async () => ({ id: 'unused' })), {
+    status: 'completed',
+  });
+  await owner.get(index.sessions[2], null, async () => ({ id: 'foreground' }));
+  assertCacheAccounting(owner);
+  assert.equal(owner.cache.has('predicted'), true);
+  assert.equal(owner.cache.has('unused'), false);
+  assert.equal(owner.stats().speculativeEvictions, 1);
+});
+
+test('speculative admission replaces only older speculative state', async () => {
+  const { index, owner } = fixtureOwner(['speculative-a', 'speculative-b'], {
+    maxCachedSessions: 1,
+    maxEstimatedMaterializedBytes: 100_000,
+  });
+  await owner.prewarm(index.sessions[0], async () => ({ id: 'a' }));
+  assert.deepEqual(await owner.prewarm(index.sessions[1], async () => ({ id: 'b' })), {
+    status: 'completed',
+  });
+  assert.deepEqual([...owner.cache.keys()], ['speculative-b']);
+  assertCacheAccounting(owner);
+  assert.equal(owner.stats().speculativeEvictions, 1);
+  assert.equal(owner.stats().speculativeAdmissionRejections, 0);
+});
+
+test('speculative rejection is atomic when evicting speculative state would still require foreground eviction', async () => {
+  const specifications = [
+    { id: 'foreground', bytes: 1_000, rawEventCount: 0, logicalEventCount: 0 },
+    { id: 'speculative-kept', bytes: 1_000, rawEventCount: 0, logicalEventCount: 0 },
+    { id: 'speculative-rejected', bytes: 6_000, rawEventCount: 0, logicalEventCount: 0 },
+  ];
+  const smallBytes = estimateMaterializedSessionBytes(specifications[0]);
+  const { index, owner } = fixtureOwner(specifications, {
+    maxCachedSessions: 3,
+    maxEstimatedMaterializedBytes: smallBytes * 2,
+  });
+  await owner.get(index.sessions[0], null, async () => ({ id: 'foreground' }));
+  await tick();
+  await owner.prewarm(index.sessions[1], async () => ({ id: 'speculative-kept' }));
+  const beforeEntries = [...owner.cache.keys()];
+  const beforeBytes = owner.estimatedMaterializedBytes;
+
+  assert.deepEqual(await owner.prewarm(index.sessions[2], async () => ({ id: 'rejected' })), {
+    status: 'completed-not-admitted',
+  });
+  assert.deepEqual([...owner.cache.keys()], beforeEntries);
+  assertCacheAccounting(owner);
+  assert.equal(owner.estimatedMaterializedBytes, beforeBytes);
+  assert.equal(owner.stats().evictions, 0);
+  assert.equal(owner.stats().speculativeAdmissionRejections, 1);
+  assert.equal(owner.stats().prewarmSkippedCacheCapacity, 1);
+});
+
+test('speculative admission never evicts foreground state at the count cap', async () => {
+  const { index, owner } = fixtureOwner(['foreground', 'speculative'], {
+    maxCachedSessions: 1,
+    maxEstimatedMaterializedBytes: 100_000,
+  });
+  const foreground = { id: 'foreground' };
+  await owner.get(index.sessions[0], null, async () => foreground);
+  await tick();
+  assert.deepEqual(await owner.prewarm(index.sessions[1], async () => ({ id: 'speculative' })), {
+    status: 'completed-not-admitted',
+  });
+  assert.equal(owner.cache.get('foreground').value, foreground);
+  assert.equal(owner.cache.has('speculative'), false);
+  assertCacheAccounting(owner);
+  assert.equal(owner.stats().foregroundEvictions, 0);
+});
+
+test('oversize foreground becomes the sole warm resident and later normal admission recovers policy bounds', async () => {
+  const specifications = [
+    { id: 'small-a', bytes: 0, rawEventCount: 0, logicalEventCount: 0 },
+    { id: 'oversize', bytes: 10_000, rawEventCount: 0, logicalEventCount: 0 },
+    { id: 'small-b', bytes: 0, rawEventCount: 0, logicalEventCount: 0 },
+  ];
+  const { index, owner } = fixtureOwner(specifications, {
+    maxCachedSessions: 3,
+    maxEstimatedMaterializedBytes: 5_000,
+  });
+  let oversizeCalls = 0;
+  await owner.get(index.sessions[0], null, async () => ({ id: 'small-a' }));
+  const oversize = { id: 'oversize' };
+  assert.equal(await owner.get(index.sessions[1], null, async () => {
+    oversizeCalls += 1;
+    return oversize;
+  }), oversize);
+  assert.deepEqual([...owner.cache.keys()], ['oversize']);
+  assertCacheAccounting(owner);
+  assert.ok(owner.estimatedMaterializedBytes > owner.maxEstimatedMaterializedBytes);
+  assert.equal(await owner.get(index.sessions[1], null, () => assert.fail('cache miss')), oversize);
+  assert.equal(oversizeCalls, 1);
+  assert.equal(owner.stats().oversizeForegroundAdmissions, 1);
+  assert.equal(
+    owner.stats().peakEstimatedMaterializedBytes,
+    estimateMaterializedSessionBytes(index.sessions[1]),
+  );
+
+  await owner.get(index.sessions[2], null, async () => ({ id: 'small-b' }));
+  assertCacheAccounting(owner);
+  assert.deepEqual([...owner.cache.keys()], ['small-b']);
+  assert.ok(owner.estimatedMaterializedBytes <= owner.maxEstimatedMaterializedBytes);
+  assert.equal(owner.stats().foregroundEvictions, 2);
+  assert.equal(
+    owner.stats().evictedEstimatedBytes,
+    estimateMaterializedSessionBytes(index.sessions[0])
+      + estimateMaterializedSessionBytes(index.sessions[1]),
+  );
+});
+
+test('oversize speculative completion is not admitted and leaves foreground cache untouched', async () => {
+  const specifications = [
+    { id: 'foreground', bytes: 0, rawEventCount: 0, logicalEventCount: 0 },
+    { id: 'oversize-speculative', bytes: 10_000, rawEventCount: 0, logicalEventCount: 0 },
+  ];
+  const { index, owner } = fixtureOwner(specifications, {
+    maxCachedSessions: 2,
+    maxEstimatedMaterializedBytes: 5_000,
+  });
+  const foreground = { id: 'foreground' };
+  await owner.get(index.sessions[0], null, async () => foreground);
+  await tick();
+  assert.deepEqual(await owner.prewarm(index.sessions[1], async () => ({ id: 'oversize' })), {
+    status: 'completed-not-admitted',
+  });
+  assert.deepEqual([...owner.cache.keys()], ['foreground']);
+  assertCacheAccounting(owner);
+  assert.equal(owner.cache.get('foreground').value, foreground);
+  assert.equal(owner.stats().evictions, 0);
+  assert.equal(owner.stats().speculativeAdmissionRejections, 1);
+});
+
+test('eviction removes owner retention without invalidating an in-flight local Session reference', async () => {
+  const { index, owner } = fixtureOwner(['session-a', 'session-b'], {
+    maxCachedSessions: 1,
+    maxEstimatedMaterializedBytes: 100_000,
+  });
+  const release = deferred();
+  const sessionA = { id: 'session-a', analysis: { retained: true } };
+  const request = (async () => {
+    const localSession = await owner.get(index.sessions[0], null, async () => sessionA);
+    await release.promise;
+    return localSession.analysis.retained;
+  })();
+  await tick();
+  await owner.get(index.sessions[1], null, async () => ({ id: 'session-b' }));
+  assert.equal(owner.cache.has('session-a'), false);
+  release.resolve();
+  assert.equal(await request, true);
+});
+
+test('cache observer phases remain fixed and content-free across promotion, eviction, oversize, and rejection', async () => {
+  const specifications = [
+    { id: 'secret-predicted', bytes: 0, rawEventCount: 0, logicalEventCount: 0 },
+    { id: 'secret-oversize', bytes: 10_000, rawEventCount: 0, logicalEventCount: 0 },
+    { id: 'secret-rejected', bytes: 11_000, rawEventCount: 0, logicalEventCount: 0 },
+  ];
+  const { index, owner } = fixtureOwner(specifications, {
+    maxCachedSessions: 1,
+    maxEstimatedMaterializedBytes: 5_000,
+  });
+  const events = [];
+  await runWithMaterializationObserver((event) => events.push(event), async () => {
+    await owner.prewarm(index.sessions[0], async () => ({ secret: 'predicted-value' }));
+    await owner.get(index.sessions[0], null, () => assert.fail('cache miss'));
+    await owner.get(index.sessions[1], null, async () => ({ secret: 'oversize-value' }));
+    await tick();
+    await owner.prewarm(index.sessions[2], async () => ({ secret: 'rejected-value' }));
+  });
+  const phases = new Set(events.map((event) => event.phase));
+  for (const phase of [
+    'cache_admitted',
+    'cache_promoted',
+    'cache_touched',
+    'cache_evicted',
+    'cache_oversize_admitted',
+    'cache_speculative_rejected',
+  ]) {
+    assert.equal(phases.has(phase), true, phase);
+  }
+  assert.ok(events.every((event) => (
+    Object.keys(event).sort().join(',') === 'phase,state' && event.state === 'event'
+  )));
+  const serialized = JSON.stringify(events);
+  assert.equal(serialized.includes('secret-'), false);
+  assert.equal(serialized.includes('predicted-value'), false);
 });
 
 test('one waiter abort does not cancel another waiter for the same active Session', async () => {
@@ -129,7 +507,7 @@ test('one waiter abort does not cancel another waiter for the same active Sessio
   const value = { id: 'shared-value' };
   gate.resolve(value);
   assert.equal(await second, value);
-  assert.equal(owner.cache.get('session-a'), value);
+  assert.equal(owner.cache.get('session-a').value, value);
 });
 
 test('successful prewarm populates the normal cache with exact foreground identity', async () => {
@@ -144,7 +522,7 @@ test('successful prewarm populates the normal cache with exact foreground identi
   assert.deepEqual(await owner.prewarm(index.sessions[0], materialize), { status: 'completed' });
   assert.equal(await owner.get(index.sessions[0], null, materialize), value);
   assert.equal(calls, 1);
-  assert.equal(owner.cache.get('session-a'), value);
+  assert.equal(owner.cache.get('session-a').value, value);
 });
 
 test('foreground get promotes an active same-Session prewarm without restart or cancellation', async () => {
@@ -167,8 +545,10 @@ test('foreground get promotes an active same-Session prewarm without restart or 
   const value = { id: 'promoted-a' };
   gate.resolve(value);
   assert.equal(await foreground, value);
-  assert.equal(owner.cache.get('session-a'), value);
+  assert.equal(owner.cache.get('session-a').value, value);
+  assert.equal(owner.cache.get('session-a').origin, CACHE_ORIGIN_FOREGROUND);
   assert.equal(owner.stats().prewarmPromoted, 1);
+  assert.equal(owner.stats().prewarmCacheHits, 0);
 });
 
 test('foreground get for a different Session preempts speculative work before starting', async () => {
@@ -196,7 +576,7 @@ test('foreground get for a different Session preempts speculative work before st
   assert.equal(await foreground, foregroundValue);
   assert.deepEqual(order, ['a:start', 'a:abort', 'b:start']);
   assert.equal(owner.cache.has('session-a'), false);
-  assert.equal(owner.cache.get('session-b'), foregroundValue);
+  assert.equal(owner.cache.get('session-b').value, foregroundValue);
 });
 
 test('foreground get removes a queued unrelated prewarm before its materializer starts', async () => {
@@ -213,7 +593,7 @@ test('foreground get removes a queued unrelated prewarm before its materializer 
   assert.equal(await foreground, foregroundValue);
   assert.equal(prewarmCalls, 0);
   assert.equal(owner.cache.has('session-a'), false);
-  assert.equal(owner.cache.get('session-b'), foregroundValue);
+  assert.equal(owner.cache.get('session-b').value, foregroundValue);
 });
 
 test('only one speculative materialization may be active or pending', async () => {
@@ -242,7 +622,7 @@ test('failed speculative materialization is silent, uncached, and retryable by f
 
   const value = { id: 'foreground-retry' };
   assert.equal(await owner.get(index.sessions[0], null, async () => value), value);
-  assert.equal(owner.cache.get('session-a'), value);
+  assert.equal(owner.cache.get('session-a').value, value);
 });
 
 test('last queued waiter abort removes the FIFO job without calling its adapter', async () => {
@@ -380,7 +760,7 @@ test('same-Session retry after the last active waiter aborts waits for the old a
   const value = { id: 'retry-value' };
   retryGate.resolve(value);
   assert.equal(await retry, value);
-  assert.equal(owner.cache.get('session-a'), value);
+  assert.equal(owner.cache.get('session-a').value, value);
 });
 
 test('revision replacement retires waiters and cache while the new owner shares the old global slot', async () => {
@@ -474,7 +854,7 @@ test('failed materialization is never cached and the next request retries', asyn
   });
   assert.equal(recovered, value);
   assert.equal(calls, 2);
-  assert.equal(owner.cache.get('session-a'), value);
+  assert.equal(owner.cache.get('session-a').value, value);
   assert.equal(owner.stats().failed, 1);
 });
 
@@ -511,6 +891,6 @@ test('oversized single-Session failure coalesces one allocation and leaves the o
   retainedAllocation = null;
   const recovered = { id: 'recovered' };
   assert.equal(await owner.get(index.sessions[0], null, async () => recovered), recovered);
-  assert.equal(owner.cache.get('session-a'), recovered);
+  assert.equal(owner.cache.get('session-a').value, recovered);
   t.diagnostic(`oversized fixture peak allocation bytes: ${observedAllocationBytes}`);
 });
