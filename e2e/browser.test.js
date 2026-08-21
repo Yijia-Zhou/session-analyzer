@@ -19,6 +19,16 @@ const fixtureCodexHome = path.join(__dirname, '..', 'test', 'fixtures', 'codex-h
 const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 async function buildFixtureIndex() {
   return buildIndex({ repoRoot, codexHome: fixtureCodexHome });
 }
@@ -33,6 +43,10 @@ async function startServer(t, index, options = {}) {
   const server = createServer(index, 1, {
     codexHome: index.codexHome,
     ...(options.skipProjectReindex ? {} : { repo: index.repoRoot }),
+    sessionPrewarm: Object.hasOwn(options, 'sessionPrewarm')
+      ? options.sessionPrewarm
+      : false,
+    ...(options.serverOptions || {}),
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve, reject) => {
@@ -480,6 +494,26 @@ async function makeLongCodexHome(t, options = {}) {
   return { sourceKind: 'codex', codexHome, repoRoot: longRepoRoot, sessionId };
 }
 
+async function makePrewarmSizeCodexHome(t) {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-prewarm-size-'));
+  const fixtureRepo = path.join(codexHome, 'repo');
+  const sessionDir = path.join(codexHome, 'sessions', '2026', '08', '21');
+  const largeId = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+  const smallId = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb';
+  await fsp.mkdir(fixtureRepo, { recursive: true });
+  await writeJsonl(path.join(sessionDir, `large-${largeId}.jsonl`), [
+    { timestamp: '2026-08-21T10:00:00.000Z', type: 'session_meta', payload: { id: largeId, cwd: fixtureRepo } },
+    { timestamp: '2026-08-21T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'L'.repeat(64 * 1024) }] } },
+  ]);
+  await writeJsonl(path.join(sessionDir, `small-${smallId}.jsonl`), [
+    { timestamp: '2026-08-21T09:00:00.000Z', type: 'session_meta', payload: { id: smallId, cwd: fixtureRepo } },
+    { timestamp: '2026-08-21T09:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'small eligible Session' }] } },
+  ]);
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  const index = await buildIndex({ repoRoot: fixtureRepo, codexHome });
+  return { index, largeId, smallId };
+}
+
 async function makeTransitionProfileIndex(t, options = {}) {
   const baseDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-transition-'));
   const fixture = await createTimelineProfileFixture(baseDir, {
@@ -775,6 +809,250 @@ test('browser retries one bounded materialization-busy GET before showing an err
   });
   assert.ok(attempts >= 2);
   assert.equal((await page.locator('#stateLine').textContent()).includes('Internal server error'), false);
+});
+
+test('browser receives a prewarm cache hit before first Session paint', async (t) => {
+  const fixture = await makeLongCodexHome(t, { eventCount: 20 });
+  const index = await buildIndex(fixture);
+  const wakeReady = deferred();
+  let wake;
+  let wakeOutcome;
+  let materializationCalls = 0;
+  let releasedSessionsAt = 0;
+  let timelineRequestedAt = 0;
+  let timelineRespondedAt = 0;
+  let releasedSessions = false;
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    sessionPrewarm: {
+      delayMs: 150,
+      candidateCap: 1,
+      scanLimit: 1,
+      budgetBytes: 8 * 1024 * 1024,
+      individualBytes: 4 * 1024 * 1024,
+      setTimer(callback) {
+        wake = callback;
+        wakeReady.resolve();
+        return 61;
+      },
+      clearTimer() {},
+    },
+    serverOptions: {
+      materializeSession: async (currentIndex, indexedSession, options) => {
+        materializationCalls += 1;
+        return materializeSessionForIndex(currentIndex, indexedSession, options);
+      },
+    },
+    beforeGoto: async (targetPage) => {
+      targetPage.on('request', (request) => {
+        if (new URL(request.url()).pathname.endsWith('/timeline')) timelineRequestedAt ||= performance.now();
+      });
+      targetPage.on('response', (response) => {
+        if (new URL(response.url()).pathname.endsWith('/timeline')) timelineRespondedAt ||= performance.now();
+      });
+      await targetPage.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
+        if (!releasedSessions && new URL(route.request().url()).pathname === '/api/sessions') {
+          releasedSessions = true;
+          await wakeReady.promise;
+          wakeOutcome = await wake();
+          releasedSessionsAt = performance.now();
+        }
+        await route.continue();
+      });
+    },
+  });
+
+  assert.equal(materializationCalls, 1);
+  assert.equal(wakeOutcome.completedCount, 1);
+  assert.equal(wakeOutcome.failedCount, 0);
+  assert.equal(await page.locator('.sessionItem.active').getAttribute('data-session-id'), fixture.sessionId);
+  assert.equal(await page.locator('#stateLine[data-state="error"]').count(), 0);
+  t.diagnostic(JSON.stringify({
+    scenario: 'prewarm-hit',
+    requestHeaderMs: timelineRespondedAt - timelineRequestedAt,
+    sessionsReleaseToPaintMs: performance.now() - releasedSessionsAt,
+    materializationCalls,
+  }));
+});
+
+test('browser foreground selection beats the idle timer without duplicate materialization', async (t) => {
+  const fixture = await makeLongCodexHome(t, { eventCount: 20 });
+  const index = await buildIndex(fixture);
+  const wakeReady = deferred();
+  let wake;
+  let materializationCalls = 0;
+  let navigationStartedAt = 0;
+  let timelineRequestedAt = 0;
+  let timelineRespondedAt = 0;
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    sessionPrewarm: {
+      delayMs: 150,
+      candidateCap: 1,
+      scanLimit: 1,
+      budgetBytes: 8 * 1024 * 1024,
+      individualBytes: 4 * 1024 * 1024,
+      setTimer(callback) {
+        wake = callback;
+        wakeReady.resolve();
+        return 71;
+      },
+      clearTimer() {},
+    },
+    serverOptions: {
+      materializeSession: async (currentIndex, indexedSession, options) => {
+        materializationCalls += 1;
+        return materializeSessionForIndex(currentIndex, indexedSession, options);
+      },
+    },
+    beforeGoto: async (targetPage) => {
+      navigationStartedAt = performance.now();
+      targetPage.on('request', (request) => {
+        if (new URL(request.url()).pathname.endsWith('/timeline')) timelineRequestedAt ||= performance.now();
+      });
+      targetPage.on('response', (response) => {
+        if (new URL(response.url()).pathname.endsWith('/timeline')) timelineRespondedAt ||= performance.now();
+      });
+    },
+  });
+  await wakeReady.promise;
+  const outcome = await wake();
+
+  assert.equal(materializationCalls, 1);
+  assert.equal(outcome.attemptedCount, 0);
+  assert.equal(await page.locator('.sessionItem.active').getAttribute('data-session-id'), fixture.sessionId);
+  assert.equal(await page.locator('#stateLine[data-state="error"]').count(), 0);
+  t.diagnostic(JSON.stringify({
+    scenario: 'foreground-beats-timer',
+    requestHeaderMs: timelineRespondedAt - timelineRequestedAt,
+    navigationToPaintMs: performance.now() - navigationStartedAt,
+    materializationCalls,
+  }));
+});
+
+test('browser wrong prediction preempts a speculative derived Session before opening the visible root', async (t) => {
+  const fixture = await makeMaterializedCodexForkFixture(t, { derived: true });
+  const wakeReady = deferred();
+  const speculativeStarted = deferred();
+  let wake;
+  let waking;
+  let releasedSessions = false;
+  let abortObservedAt = 0;
+  let foregroundStartedAt = 0;
+  const order = [];
+  const { page } = await openApp(t, fixture.index, {
+    locale: 'en',
+    sessionPrewarm: {
+      delayMs: 150,
+      candidateCap: 1,
+      scanLimit: 3,
+      budgetBytes: 8 * 1024 * 1024,
+      individualBytes: 4 * 1024 * 1024,
+      setTimer(callback) {
+        wake = callback;
+        wakeReady.resolve();
+        return 81;
+      },
+      clearTimer() {},
+    },
+    serverOptions: {
+      materializeSession: async (currentIndex, indexedSession, options) => {
+        if (indexedSession.id === fixture.derivedId) {
+          order.push('speculative:start');
+          speculativeStarted.resolve();
+          return new Promise((resolve, reject) => {
+            options.signal.addEventListener('abort', () => {
+              abortObservedAt = performance.now();
+              order.push('speculative:abort');
+              reject(options.signal.reason);
+            }, { once: true });
+          });
+        }
+        if (indexedSession.id === fixture.childId) {
+          foregroundStartedAt = performance.now();
+          order.push('foreground:start');
+        }
+        return materializeSessionForIndex(currentIndex, indexedSession, options);
+      },
+    },
+    beforeGoto: async (targetPage) => {
+      await targetPage.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
+        if (!releasedSessions && new URL(route.request().url()).pathname === '/api/sessions') {
+          releasedSessions = true;
+          await wakeReady.promise;
+          waking = wake();
+          await speculativeStarted.promise;
+        }
+        await route.continue();
+      });
+    },
+  });
+  const outcome = await waking;
+
+  assert.equal(await page.locator('.sessionItem.active').getAttribute('data-session-id'), fixture.childId);
+  assert.deepEqual(order.slice(0, 3), [
+    'speculative:start',
+    'speculative:abort',
+    'foreground:start',
+  ]);
+  assert.equal(outcome.preemptedCount, 1);
+  assert.equal(await page.locator('#stateLine[data-state="error"]').count(), 0);
+  t.diagnostic(JSON.stringify({
+    scenario: 'wrong-prediction',
+    abortToForegroundStartMs: foregroundStartedAt - abortObservedAt,
+  }));
+});
+
+test('browser startup prewarm skips an oversized top candidate and continues to one eligible recent Session', async (t) => {
+  const fixture = await makePrewarmSizeCodexHome(t);
+  const wakeReady = deferred();
+  let wake;
+  let wakeOutcome;
+  let releasedSessions = false;
+  const materializedIds = [];
+  const { page } = await openApp(t, fixture.index, {
+    locale: 'en',
+    sessionPrewarm: {
+      delayMs: 150,
+      candidateCap: 1,
+      scanLimit: 2,
+      budgetBytes: 1024 * 1024,
+      individualBytes: 32 * 1024,
+      setTimer(callback) {
+        wake = callback;
+        wakeReady.resolve();
+        return 91;
+      },
+      clearTimer() {},
+    },
+    serverOptions: {
+      materializeSession: async (currentIndex, indexedSession, options) => {
+        materializedIds.push(indexedSession.id);
+        return materializeSessionForIndex(currentIndex, indexedSession, options);
+      },
+    },
+    beforeGoto: async (targetPage) => {
+      await targetPage.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
+        if (!releasedSessions && new URL(route.request().url()).pathname === '/api/sessions') {
+          releasedSessions = true;
+          await wakeReady.promise;
+          wakeOutcome = await wake();
+        }
+        await route.continue();
+      });
+    },
+  });
+
+  assert.deepEqual(materializedIds, [fixture.smallId, fixture.largeId]);
+  assert.equal(wakeOutcome.consideredCount, 2);
+  assert.equal(wakeOutcome.completedCount, 1);
+  assert.equal(await page.locator('.sessionItem.active').getAttribute('data-session-id'), fixture.largeId);
+  assert.equal(await page.locator('#stateLine[data-state="error"]').count(), 0);
+  t.diagnostic(JSON.stringify({
+    scenario: 'large-candidate-skip',
+    prewarmMaterializationCalls: 1,
+    foregroundMaterializationCalls: 1,
+  }));
 });
 
 test('browser locale bootstrap keeps narrow screens on sessions view', async (t) => {
@@ -2580,8 +2858,11 @@ test('browser home directory edits preserve or drop Return by active identity', 
 
   const inactiveClaudeHome = path.join(fixture.claudeHome, 'inactive-claude');
   await page.locator('#projectClaudeHomeInput').fill(inactiveClaudeHome);
+  const sourcePostsBeforeInactiveEdit = sourcePosts;
   await page.locator('#projectHomeApplyBtn').click();
   await page.waitForFunction((value) => document.querySelector('#projectClaudeHomeInput')?.value === value, inactiveClaudeHome);
+  await page.waitForFunction(() => document.querySelector('#projectHomeApplyBtn')?.disabled === false);
+  assert.ok(sourcePosts > sourcePostsBeforeInactiveEdit);
   assert.equal(await page.locator('.projectSwitchHint').textContent(), 'Return');
 
   const emptyCodexHome = path.join(fixture.claudeHome, 'empty-codex');
@@ -3177,7 +3458,14 @@ test('browser project result drill-down loads a deep latest event and returns to
       && document.body.dataset.mobileView === 'events'
       && document.querySelector('#timeline .event.selected')?.textContent.includes('Long timeline row 170')
   ));
-  await assertEventCount(page, 171);
+  const clickedBackToProject = await page.waitForFunction(() => {
+    if (document.querySelectorAll('#timeline .event[data-event-id]').length !== 171) return false;
+    const button = document.querySelector('#timeline [data-search-back-to-project], #resultSummary [data-search-back-to-project]');
+    if (!button) return false;
+    button.click();
+    return true;
+  }).then((handle) => handle.jsonValue());
+  assert.equal(clickedBackToProject, true);
   assert.equal(requestedUrls.slice(requestStart).some((value) => {
     const url = new URL(value, 'http://local');
     return url.pathname.endsWith('/timeline')
@@ -3185,13 +3473,6 @@ test('browser project result drill-down loads a deep latest event and returns to
       && url.searchParams.get('limit') === '171'
       && url.searchParams.get('q') === 'needle';
   }), true);
-
-  const clickedBackToProject = await page.evaluate(() => {
-    const button = document.querySelector('#timeline [data-search-back-to-project], #resultSummary [data-search-back-to-project]');
-    button?.click();
-    return Boolean(button);
-  });
-  assert.equal(clickedBackToProject, true);
   await page.waitForFunction(() => (
     document.body.dataset.searchScope === 'project'
       && document.body.dataset.mobileView === 'sessions'

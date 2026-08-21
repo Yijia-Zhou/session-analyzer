@@ -96,6 +96,18 @@ test('MaterializedSessionOwner coalesces one cold job and caches exact object id
     retiredJobs: 0,
     peakCacheSessionCount: 1,
     peakEstimatedMaterializedBytes: 6756,
+    prewarmScheduled: 0,
+    prewarmStarted: 0,
+    prewarmCompleted: 0,
+    prewarmPromoted: 0,
+    prewarmPreempted: 0,
+    prewarmFailed: 0,
+    prewarmSkippedBusy: 0,
+    prewarmSkippedSize: 0,
+    prewarmSkippedBudget: 0,
+    prewarmSkippedCached: 0,
+    prewarmRetired: 0,
+    prewarmCacheHits: 0,
   });
 });
 
@@ -117,6 +129,119 @@ test('one waiter abort does not cancel another waiter for the same active Sessio
   const value = { id: 'shared-value' };
   gate.resolve(value);
   assert.equal(await second, value);
+  assert.equal(owner.cache.get('session-a'), value);
+});
+
+test('successful prewarm populates the normal cache with exact foreground identity', async () => {
+  const { index, owner } = fixtureOwner(['session-a']);
+  const value = { id: 'prewarmed-a' };
+  let calls = 0;
+  const materialize = async () => {
+    calls += 1;
+    return value;
+  };
+
+  assert.deepEqual(await owner.prewarm(index.sessions[0], materialize), { status: 'completed' });
+  assert.equal(await owner.get(index.sessions[0], null, materialize), value);
+  assert.equal(calls, 1);
+  assert.equal(owner.cache.get('session-a'), value);
+});
+
+test('foreground get promotes an active same-Session prewarm without restart or cancellation', async () => {
+  const { index, owner } = fixtureOwner(['session-a']);
+  const gate = deferred();
+  let calls = 0;
+  let jobSignal;
+  const materialize = async ({ signal }) => {
+    calls += 1;
+    jobSignal = signal;
+    return gate.promise;
+  };
+
+  const prewarm = owner.prewarm(index.sessions[0], materialize);
+  await tick();
+  const foreground = owner.get(index.sessions[0], null, materialize);
+  assert.deepEqual(await prewarm, { status: 'promoted' });
+  assert.equal(calls, 1);
+  assert.equal(jobSignal.aborted, false);
+  const value = { id: 'promoted-a' };
+  gate.resolve(value);
+  assert.equal(await foreground, value);
+  assert.equal(owner.cache.get('session-a'), value);
+  assert.equal(owner.stats().prewarmPromoted, 1);
+});
+
+test('foreground get for a different Session preempts speculative work before starting', async () => {
+  const { index, owner } = fixtureOwner(['session-a', 'session-b']);
+  const order = [];
+  const never = deferred();
+  const prewarm = owner.prewarm(index.sessions[0], async ({ signal }) => {
+    order.push('a:start');
+    await new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        order.push('a:abort');
+        reject(signal.reason);
+      }, { once: true });
+    });
+    return never.promise;
+  });
+  await tick();
+
+  const foregroundValue = { id: 'foreground-b' };
+  const foreground = owner.get(index.sessions[1], null, async () => {
+    order.push('b:start');
+    return foregroundValue;
+  });
+  assert.deepEqual(await prewarm, { status: 'preempted' });
+  assert.equal(await foreground, foregroundValue);
+  assert.deepEqual(order, ['a:start', 'a:abort', 'b:start']);
+  assert.equal(owner.cache.has('session-a'), false);
+  assert.equal(owner.cache.get('session-b'), foregroundValue);
+});
+
+test('foreground get removes a queued unrelated prewarm before its materializer starts', async () => {
+  const { index, owner } = fixtureOwner(['session-a', 'session-b']);
+  let prewarmCalls = 0;
+  const prewarm = owner.prewarm(index.sessions[0], async () => {
+    prewarmCalls += 1;
+    return { id: 'unexpected-a' };
+  });
+  const foregroundValue = { id: 'foreground-b' };
+  const foreground = owner.get(index.sessions[1], null, async () => foregroundValue);
+
+  assert.deepEqual(await prewarm, { status: 'preempted' });
+  assert.equal(await foreground, foregroundValue);
+  assert.equal(prewarmCalls, 0);
+  assert.equal(owner.cache.has('session-a'), false);
+  assert.equal(owner.cache.get('session-b'), foregroundValue);
+});
+
+test('only one speculative materialization may be active or pending', async () => {
+  const { index, owner } = fixtureOwner(['session-a', 'session-b']);
+  const gate = deferred();
+  let secondCalls = 0;
+  const first = owner.prewarm(index.sessions[0], () => gate.promise);
+  await tick();
+  assert.deepEqual(await owner.prewarm(index.sessions[1], async () => {
+    secondCalls += 1;
+    return { id: 'unexpected-b' };
+  }), { status: 'skipped-busy' });
+  assert.equal(secondCalls, 0);
+  gate.resolve({ id: 'prewarmed-a' });
+  assert.deepEqual(await first, { status: 'completed' });
+});
+
+test('failed speculative materialization is silent, uncached, and retryable by foreground', async () => {
+  const { index, owner } = fixtureOwner(['session-a']);
+  const failure = new Error('synthetic speculative failure');
+  failure.code = 'INDEXED_SOURCE_STALE';
+  assert.deepEqual(await owner.prewarm(index.sessions[0], async () => {
+    throw failure;
+  }), { status: 'failed', code: 'INDEXED_SOURCE_STALE' });
+  assert.equal(owner.cache.size, 0);
+
+  const value = { id: 'foreground-retry' };
+  assert.equal(await owner.get(index.sessions[0], null, async () => value), value);
   assert.equal(owner.cache.get('session-a'), value);
 });
 
@@ -302,6 +427,31 @@ test('revision replacement retires waiters and cache while the new owner shares 
   const currentValue = { id: 'current-value' };
   newGate.resolve(currentValue);
   assert.equal(await current, currentValue);
+});
+
+test('revision replacement aborts active prewarm and never admits it into the next owner', async () => {
+  const oldIndex = fixtureIndex(['prewarm-old']);
+  const state = initializeIndexRevisionState({ index: oldIndex, warn: () => {} });
+  let activeSignal;
+  const prewarm = state.revisionLease.materializedSessionOwner.prewarm(
+    oldIndex.sessions[0],
+    ({ signal }) => {
+      activeSignal = signal;
+      return new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    },
+  );
+  await tick();
+  const oldOwner = state.revisionLease.materializedSessionOwner;
+  const nextIndex = fixtureIndex(['replacement']);
+  const nextLease = installIndexRevision(state, nextIndex);
+
+  assert.deepEqual(await prewarm, { status: 'retired' });
+  assert.equal(activeSignal.aborted, true);
+  assert.equal(oldOwner.cache.size, 0);
+  assert.equal(nextLease.materializedSessionOwner.cache.size, 0);
+  assert.equal(oldOwner.stats().prewarmRetired, 1);
 });
 
 test('failed materialization is never cached and the next request retries', async () => {

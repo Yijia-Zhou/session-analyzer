@@ -4,6 +4,7 @@ const {
   createMaterializationScheduler,
   createMaterializedSessionOwner,
 } = require('./materialized-session-owner');
+const { cancelBoundedSessionPrewarm } = require('./session-prewarm');
 
 function abortError(signal) {
   if (signal?.reason instanceof Error) return signal.reason;
@@ -50,6 +51,7 @@ function initializeIndexRevisionState(state, initialIndex = state.index || null)
 function retireLease(lease) {
   if (lease && !lease.retirementController.signal.aborted) {
     const error = retiredError();
+    cancelBoundedSessionPrewarm(lease);
     lease.materializedSessionOwner?.retire(error);
     lease.retirementController.abort(error);
   }

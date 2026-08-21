@@ -31,6 +31,8 @@ const {
   materializeSessionWithLease,
   withIndexRevisionLease,
 } = require('./src/index-revision-lease');
+const { SESSION_LIFECYCLE } = require('./src/source-adapter-contract');
+const { scheduleBoundedSessionPrewarm } = require('./src/session-prewarm');
 const { isPathInsideOrSame, normalizeFsPath } = require('./src/shared/fs-path');
 const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
@@ -343,6 +345,29 @@ function materializeLeasedSession(capture, indexedSession, materializeSession) {
       signal,
     }),
   );
+}
+
+function scheduleRevisionPrewarm(state, lease) {
+  if (!state.sessionPrewarmPolicy
+      || state.adapter.sessionLifecycle !== SESSION_LIFECYCLE.INDEXED_MATERIALIZED) return null;
+  try {
+    return scheduleBoundedSessionPrewarm(
+      lease,
+      (indexedSession, { index, indexRevision, signal }) => state.materializeSession(
+        index,
+        indexedSession,
+        { indexRevision, signal },
+      ),
+      state.sessionPrewarmPolicy,
+    );
+  } catch (error) {
+    try {
+      state.warn(`Session prewarm scheduling skipped (${String(error?.code || error?.name || 'ERROR')}).`);
+    } catch {
+      // Background diagnostics must never change a committed project revision.
+    }
+    return null;
+  }
 }
 
 function projectJobPayload(job) {
@@ -768,9 +793,10 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     job.status = 'succeeded';
     job.completedAt = new Date().toISOString();
     job.buildMs = Date.now() - startedAtMs;
-    installIndexRevision(state, index);
+    const lease = installIndexRevision(state, index);
     state.buildMs = job.buildMs;
     job.diagnostics?.finish('succeeded', { buildMs: job.buildMs });
+    scheduleRevisionPrewarm(state, lease);
   }).catch((error) => {
     job.completedAt ||= new Date().toISOString();
     job.buildMs = Date.now() - startedAtMs;
@@ -840,6 +866,9 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     buildIndexOverride: options.buildIndex || null,
     onIndexValidationChunk: options.onIndexValidationChunk || null,
     materializeSession: options.materializeSession || materializeSessionForIndex,
+    sessionPrewarmPolicy: options.sessionPrewarm === false
+      ? null
+      : { ...(options.sessionPrewarm || {}) },
     nextProjectJobId: 1,
     activeProjectJob: null,
     projectCache: null,
@@ -849,7 +878,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
   initializeIndexRevisionState(state, state.index);
   if (options.repo) startProjectJob(state, options.repo, options.locale);
 
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     const requestAbort = requestAbortContext(req, res);
     try {
       const { pathname, searchParams } = parseQuery(req.url);
@@ -1205,6 +1234,8 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       requestAbort.cleanup();
     }
   });
+  server.on('close', () => clearIndexRevision(state));
+  return server;
 }
 
 async function main() {

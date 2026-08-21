@@ -42,6 +42,7 @@
     "src/index-revision-lease.js",
     "src/materialization-observer.js",
     "src/materialized-session-owner.js",
+    "src/session-prewarm.js",
     "src/project-query-store.js",
     "src/session-query.js",
     "src/source-adapter-contract.js",
