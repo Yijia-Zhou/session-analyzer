@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
+const { performance } = require('node:perf_hooks');
 const { Readable } = require('node:stream');
 const { isDeepStrictEqual } = require('node:util');
 const crypto = require('node:crypto');
@@ -41,6 +42,12 @@ const {
   normalizeCodeModeRequest,
 } = require('./codex-code-mode-presentation');
 const { stripAnsiSequences } = require('./shared/terminal-text');
+const {
+  hasMaterializationObserver,
+  notifyMaterializationObserver,
+  observeMaterializationPhase,
+  recordMaterializationDuration,
+} = require('./materialization-observer');
 const { deriveCodeModeFacts } = require('./codex-code-mode-facts');
 const { codeModePresentationContextMap } = require('./codex-presentation-context');
 const { createCodexDetailBuilder } = require('./codex-detail');
@@ -4537,15 +4544,25 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   let lineNumber = 0;
+  const observeSourcePhases = hasMaterializationObserver();
+  const sourceStreamStartedAt = observeSourcePhases ? performance.now() : 0;
+  let sourceRecordParseMs = 0;
+  if (observeSourcePhases) {
+    notifyMaterializationObserver({ phase: 'adapter_source_stream', state: 'start' });
+  }
 
   try {
     for await (const line of rl) {
       throwIfAborted(signal);
       lineNumber += 1;
       if (!line.trim()) continue;
+      const recordStartedAt = observeSourcePhases ? performance.now() : 0;
       session.lineCount += 1;
       const record = safeJsonParse(line);
-      if (!record) continue;
+      if (!record) {
+        if (observeSourcePhases) sourceRecordParseMs += performance.now() - recordStartedAt;
+        continue;
+      }
       const recordType = typeof record.type === 'string' ? record.type : '';
       const payload = record.payload && typeof record.payload === 'object' && !Array.isArray(record.payload)
         ? record.payload
@@ -4615,10 +4632,20 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
         }
       }
       session.rawEvents.push(raw);
+      if (observeSourcePhases) sourceRecordParseMs += performance.now() - recordStartedAt;
     }
   } finally {
     rl.close();
     stream.destroy();
+    if (observeSourcePhases) {
+      const sourceStreamMs = performance.now() - sourceStreamStartedAt;
+      notifyMaterializationObserver({ phase: 'adapter_source_stream', state: 'end' });
+      recordMaterializationDuration('adapter_source_record_parse', sourceRecordParseMs);
+      recordMaterializationDuration(
+        'adapter_source_read_wait',
+        Math.max(0, sourceStreamMs - sourceRecordParseMs),
+      );
+    }
   }
 
   throwIfAborted(signal);
@@ -4626,8 +4653,12 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   if (typeof options.beforeSourceSnapshotVerificationForTests === 'function') {
     await options.beforeSourceSnapshotVerificationForTests({ filePath, snapshotBytes: acceptedBytes });
   }
-  const verified = await hashFilePrefix(filePath, acceptedBytes, signal);
-  const verifiedStat = await fsp.stat(filePath);
+  let verified;
+  let verifiedStat;
+  await observeMaterializationPhase('adapter_source_verification_read', async () => {
+    verified = await hashFilePrefix(filePath, acceptedBytes, signal);
+    verifiedStat = await fsp.stat(filePath);
+  });
   if (sourceBytesRead !== acceptedBytes
       || verified.bytesRead !== acceptedBytes
       || verified.fingerprint !== sourceFingerprint
@@ -4636,27 +4667,29 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       || (acceptedSnapshot && sourceFingerprint !== acceptedSnapshot.digest)) {
     throw snapshotFailure();
   }
-  session.sourceFingerprint = sourceFingerprint;
-  session._parsedAncestry = {
-    forkedFromSessionId: String(session.forkedFromSessionId || '').trim(),
-  };
-  session._logicalEvents = codexLogicalBuilder.buildLogicalEvents(session.rawEvents);
-  session.logicalEvents = session._logicalEvents;
-  if (includeCanonicalRawDigests) {
-    session._canonicalRawDigests = session.rawEvents.map((raw) => raw._canonicalRawDigest);
-  }
-  if (typeof options.onTransientMemorySample === 'function') {
-    options.onTransientMemorySample({
-      phase: 'pre_raw_compaction',
-      sessionId: session.id,
-      rawEventCount: session.rawEvents.length,
-      logicalEventCount: session.logicalEvents.length,
-    });
-  }
-  if (options.retainFullSourceRecordsForTests !== true) {
-    session.rawEvents = session.rawEvents.map(compactCodexRawEvent);
-    session.residentRepresentation = CODEX_COMPACT_SESSION_REPRESENTATION;
-  }
+  observeMaterializationPhase('adapter_source_canonical_construction', () => {
+    session.sourceFingerprint = sourceFingerprint;
+    session._parsedAncestry = {
+      forkedFromSessionId: String(session.forkedFromSessionId || '').trim(),
+    };
+    session._logicalEvents = codexLogicalBuilder.buildLogicalEvents(session.rawEvents);
+    session.logicalEvents = session._logicalEvents;
+    if (includeCanonicalRawDigests) {
+      session._canonicalRawDigests = session.rawEvents.map((raw) => raw._canonicalRawDigest);
+    }
+    if (typeof options.onTransientMemorySample === 'function') {
+      options.onTransientMemorySample({
+        phase: 'pre_raw_compaction',
+        sessionId: session.id,
+        rawEventCount: session.rawEvents.length,
+        logicalEventCount: session.logicalEvents.length,
+      });
+    }
+    if (options.retainFullSourceRecordsForTests !== true) {
+      session.rawEvents = session.rawEvents.map(compactCodexRawEvent);
+      session.residentRepresentation = CODEX_COMPACT_SESSION_REPRESENTATION;
+    }
+  });
   return session;
 }
 
@@ -5989,43 +6022,45 @@ async function materializeCodexSession({ materializationContext, indexedSession,
       canonicalRawDigests: indexedSession.forkStorageMode === 'materialized',
     },
   );
-  if (session.id !== indexedSession.id || session.lineCount !== indexedSession.lineCount) {
-    throw indexedSourceStaleError();
-  }
-  if (indexedSession.forkStorageMode === 'materialized') {
-    const copiedPrefixDigest = crypto.createHash('sha256').update(
-      session._canonicalRawDigests
-        .slice(1, descriptor.payload.copiedPrefixCount + 1)
-        .join('\n'),
-      'utf8',
-    ).digest('base64url');
-    if (copiedPrefixDigest !== descriptor.payload.copiedPrefixDigest) {
+  return observeMaterializationPhase('adapter_source_finalization', () => {
+    if (session.id !== indexedSession.id || session.lineCount !== indexedSession.lineCount) {
       throw indexedSourceStaleError();
     }
-  }
-  applyCodexRelationshipEvidence(session, {
-    ...descriptor.payload.relationship,
-    rawEventCount: indexedSession.rawEventCount,
-  }, indexedSourceStaleError);
-  finalizeSession(session, {
-    title: indexedSession.title,
-    updatedAt: indexedSession.updatedAt,
+    if (indexedSession.forkStorageMode === 'materialized') {
+      const copiedPrefixDigest = crypto.createHash('sha256').update(
+        session._canonicalRawDigests
+          .slice(1, descriptor.payload.copiedPrefixCount + 1)
+          .join('\n'),
+        'utf8',
+      ).digest('base64url');
+      if (copiedPrefixDigest !== descriptor.payload.copiedPrefixDigest) {
+        throw indexedSourceStaleError();
+      }
+    }
+    applyCodexRelationshipEvidence(session, {
+      ...descriptor.payload.relationship,
+      rawEventCount: indexedSession.rawEventCount,
+    }, indexedSourceStaleError);
+    finalizeSession(session, {
+      title: indexedSession.title,
+      updatedAt: indexedSession.updatedAt,
+    });
+    const summary = codexSearch.projectSessionMetadata(session).summary;
+    const carried = projectCodexCarriedSession(session, summary);
+    const materialized = {
+      ...carried,
+      materializationSnapshotId: descriptor.sourceSnapshotId,
+      rawEvents: session.rawEvents,
+      logicalEvents: session.logicalEvents,
+      analysis: session.analysis,
+      presentationIndexes: session.presentationIndexes,
+      _shell: String(session.shell || ''),
+    };
+    if (indexedSession.forkStorageMode === 'materialized') {
+      materialized._forkSegmentsByRawId = session._forkSegmentsByRawId;
+    }
+    return materialized;
   });
-  const summary = codexSearch.projectSessionMetadata(session).summary;
-  const carried = projectCodexCarriedSession(session, summary);
-  const materialized = {
-    ...carried,
-    materializationSnapshotId: descriptor.sourceSnapshotId,
-    rawEvents: session.rawEvents,
-    logicalEvents: session.logicalEvents,
-    analysis: session.analysis,
-    presentationIndexes: session.presentationIndexes,
-    _shell: String(session.shell || ''),
-  };
-  if (indexedSession.forkStorageMode === 'materialized') {
-    materialized._forkSegmentsByRawId = session._forkSegmentsByRawId;
-  }
-  return materialized;
 }
 
 function requireExactCodexKeys(value, keys, owner) {

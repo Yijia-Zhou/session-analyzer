@@ -6,6 +6,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
 const { isDeepStrictEqual } = require('node:util');
+const { performance } = require('node:perf_hooks');
 const {
   fsPathApi,
   isPathInsideOrSame,
@@ -29,6 +30,12 @@ const {
 const { createProjectQueryStoreBuilder } = require('./project-query-store');
 const { createSessionQuery } = require('./session-query');
 const { validateCanonicalLegacyRawOwnerIndex } = require('./canonical-contract');
+const {
+  hasMaterializationObserver,
+  notifyMaterializationObserver,
+  observeMaterializationPhase,
+  recordMaterializationDuration,
+} = require('./materialization-observer');
 const {
   isPlanArtifactEvent,
   isPlanEvent,
@@ -863,7 +870,10 @@ async function parseClaudeSession(candidate, context) {
   const acceptedSnapshot = context.acceptedSourceSnapshot || null;
   let stat;
   try {
-    stat = await fsp.stat(candidate.filePath);
+    stat = await observeMaterializationPhase(
+      'adapter_source_metadata',
+      () => fsp.stat(candidate.filePath),
+    );
   } catch (error) {
     if (acceptedSnapshot && (error?.code === 'ENOENT' || error?.code === 'ENOTDIR')) {
       throw indexedSourceStaleError();
@@ -891,36 +901,59 @@ async function parseClaudeSession(candidate, context) {
   });
   const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
   let lineNumber = 0;
+  const observeSourcePhases = hasMaterializationObserver();
+  const streamStartedAt = observeSourcePhases ? performance.now() : 0;
+  let recordCpuMs = 0;
+  if (observeSourcePhases) {
+    notifyMaterializationObserver({ phase: 'adapter_source_stream', state: 'start' });
+  }
   try {
     for await (const line of lines) {
       throwIfAborted(context.signal);
       lineNumber += 1;
       if (!line.trim()) continue;
-      let record;
-      let parseError = '';
+      const recordStartedAt = observeSourcePhases ? performance.now() : 0;
       try {
-        record = JSON.parse(line);
-      } catch (error) {
-        parseError = error instanceof Error ? error.message : 'Invalid JSON';
+        let record;
+        let parseError = '';
+        try {
+          record = JSON.parse(line);
+        } catch (error) {
+          parseError = error instanceof Error ? error.message : 'Invalid JSON';
+        }
+        session.lineCount += 1;
+        const raw = makeClaudeRawEvent(
+          record,
+          lineNumber,
+          candidate.relFile,
+          session.id,
+          session.sourceSessionId,
+          { parseError, rawText: line },
+        );
+        if (!parseError) updateSessionMetadata(session, record, raw, context.repoRoot);
+        session.rawEvents.push(raw);
+      } finally {
+        if (observeSourcePhases) recordCpuMs += performance.now() - recordStartedAt;
       }
-      session.lineCount += 1;
-      const raw = makeClaudeRawEvent(
-        record,
-        lineNumber,
-        candidate.relFile,
-        session.id,
-        session.sourceSessionId,
-        { parseError, rawText: line },
-      );
-      if (!parseError) updateSessionMetadata(session, record, raw, context.repoRoot);
-      session.rawEvents.push(raw);
     }
   } finally {
     lines.close();
     stream.destroy();
+    if (observeSourcePhases) {
+      const streamDurationMs = performance.now() - streamStartedAt;
+      notifyMaterializationObserver({ phase: 'adapter_source_stream', state: 'end' });
+      recordMaterializationDuration('adapter_source_record_parse', recordCpuMs);
+      recordMaterializationDuration(
+        'adapter_source_read_wait',
+        Math.max(0, streamDurationMs - recordCpuMs),
+      );
+    }
   }
   const sourceFingerprint = sourceHash.digest('hex');
-  const verifiedStat = await fsp.stat(candidate.filePath);
+  const verifiedStat = await observeMaterializationPhase(
+    'adapter_source_parse_final_verification',
+    () => fsp.stat(candidate.filePath),
+  );
   if (sourceBytesRead !== acceptedBytes
       || verifiedStat.size < acceptedBytes
       || (acceptedSnapshot && sourceFingerprint !== acceptedSnapshot.digest)
@@ -928,8 +961,10 @@ async function parseClaudeSession(candidate, context) {
         && !sameSourceIdentity(sourceFileIdentity(verifiedStat), acceptedSnapshot.fileIdentity))) {
     throw snapshotFailure();
   }
-  session.logicalEvents = logicalBuilder.buildLogicalEvents(session.rawEvents);
-  return finalizeSession(session);
+  return observeMaterializationPhase('adapter_source_canonical_construction', () => {
+    session.logicalEvents = logicalBuilder.buildLogicalEvents(session.rawEvents);
+    return finalizeSession(session);
+  });
 }
 
 function relativeSourceFile(sourceRoot, filePath) {
@@ -2634,14 +2669,19 @@ async function materializeClaudeSession({ materializationContext, indexedSession
   throwIfAborted(signal);
   const index = materializationContext;
   const descriptor = indexedSession.materializationDescriptor;
-  for (const entry of dependencySet.entries) {
-    await verifyClaudeMaterializationDependency(index.sourceRoot, entry, signal);
-  }
+  await observeMaterializationPhase('adapter_source_verification_read', async () => {
+    for (const entry of dependencySet.entries) {
+      await verifyClaudeMaterializationDependency(index.sourceRoot, entry, signal);
+    }
+  });
   const sourceEntry = dependencySet.entries[0];
   const sourceFile = descriptor.payload.sourceFile;
   const target = path.resolve(index.sourceRoot, sourceFile);
   if (!isPathInsideOrSame(target, index.sourceRoot)) throw indexedSourceStaleError();
-  const realTarget = await containedRealPath(index.sourceRoot, target);
+  const realTarget = await observeMaterializationPhase(
+    'adapter_source_path_resolution',
+    () => containedRealPath(index.sourceRoot, target),
+  );
   if (!realTarget) throw indexedSourceStaleError();
   const candidate = {
     filePath: realTarget,
@@ -2674,21 +2714,23 @@ async function materializeClaudeSession({ materializationContext, indexedSession
     },
   };
   const session = await parseClaudeSession(candidate, context);
-  applyClaudeCommittedProjection(session, descriptor.payload.projection);
-  applyClaudeMaterializedForkOwnership(session, indexedSourceStaleError);
-  const summary = claudeSearch.projectSessionMetadata(session).summary;
-  const carried = projectClaudeCarriedSession(session, summary);
-  if (Object.keys(carried).some((field) => !isDeepStrictEqual(carried[field], indexedSession[field]))) {
-    throw indexedSourceStaleError();
-  }
-  return {
-    ...carried,
-    materializationSnapshotId: descriptor.sourceSnapshotId,
-    rawEvents: session.rawEvents,
-    logicalEvents: session.logicalEvents,
-    analysis: session.analysis,
-    presentationIndexes: session.presentationIndexes,
-  };
+  return observeMaterializationPhase('adapter_source_finalization', () => {
+    applyClaudeCommittedProjection(session, descriptor.payload.projection);
+    applyClaudeMaterializedForkOwnership(session, indexedSourceStaleError);
+    const summary = claudeSearch.projectSessionMetadata(session).summary;
+    const carried = projectClaudeCarriedSession(session, summary);
+    if (Object.keys(carried).some((field) => !isDeepStrictEqual(carried[field], indexedSession[field]))) {
+      throw indexedSourceStaleError();
+    }
+    return {
+      ...carried,
+      materializationSnapshotId: descriptor.sourceSnapshotId,
+      rawEvents: session.rawEvents,
+      logicalEvents: session.logicalEvents,
+      analysis: session.analysis,
+      presentationIndexes: session.presentationIndexes,
+    };
+  });
 }
 
 function validateClaudeMaterializationDescriptor({

@@ -349,7 +349,11 @@ test('English and Chinese README capacity guidance preserves aligned operational
     assert.match(content, /JavaScript heap out of memory/u);
     assert.match(content, /--max-old-space-size=4096/u);
     assert.match(content, /--log-dir <path>/u);
-    assert.match(content, /no eviction|不实现 eviction/u);
+    assert.match(content, /weighted LRU|加权 LRU/u);
+    assert.match(content, /256 MiB/u);
+    assert.match(content, /12 Sessions|12 个 Session/u);
+    assert.match(content, /not a V8 heap or RSS ceiling|不是 V8 heap 或 RSS 上限/u);
+    assert.match(content, /no derived disk cache|不会使用派生 disk cache/u);
     assert.match(content, /permanent product capacity limits|永久的产品容量上限/u);
   }
 });

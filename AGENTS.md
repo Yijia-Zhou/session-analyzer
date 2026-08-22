@@ -51,6 +51,9 @@ When changing product behavior or repository structure:
 - Active plans:
   - `docs/exec-plans/active/2026-08-20-deepseek-harness-phase-2a-session-semantics.md` / `2026-08-20 DeepSeek Harness 第二阶段 A`
 - Completed plans:
+  - `docs/exec-plans/completed/2026-08-22-weighted-materialized-session-cache.md`
+  - `docs/exec-plans/completed/2026-08-20-bounded-idle-session-prewarm.md`
+  - `docs/exec-plans/completed/2026-08-19-cold-session-materialization-performance.md`
   - `docs/exec-plans/completed/2026-08-16-deepseek-harness-phase-1.md`
   - `docs/exec-plans/completed/2026-08-16-indexed-materialized-lifecycle-third-adapter-gate.md`
   - `docs/exec-plans/completed/2026-08-16-indexed-materialized-session-lifecycle.md`

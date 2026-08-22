@@ -75,6 +75,15 @@ function memoryMaximum(left, right) {
   return Object.fromEntries(Object.keys(left).map((key) => [key, Math.max(left[key], right[key])]));
 }
 
+function redactedSessionSelection(session) {
+  return {
+    sessionId: '<redacted>',
+    sourceBytes: session.bytes,
+    rawRows: session.rawEventCount,
+    logicalRows: session.logicalEventCount,
+  };
+}
+
 function timingStats(values) {
   const sorted = [...values].sort((left, right) => left - right);
   const middle = Math.floor(sorted.length / 2);
@@ -147,12 +156,27 @@ function runtimeCommand(execArgv = process.execArgv) {
   ].filter(Boolean).join(' ');
 }
 
+const MATERIALIZATION_TOP_LEVEL_PHASES = Object.freeze([
+  'materialized_pre_adapter_validation',
+  'adapter_materialization',
+  'materialized_post_adapter_ownership',
+  'materialized_canonical_validation',
+  'materialized_private_validation',
+  'materialized_fingerprint_reuse',
+  'materialized_projection',
+  'materialized_fingerprint_recheck',
+  'materialized_final_admission_check',
+]);
+
 function phaseTimingRecorder(recordSample) {
   const active = new Map();
   const durations = new Map();
   return {
-    observe({ phase, state }) {
+    observe({ phase, state, durationMs }) {
       recordSample();
+      if (state === 'duration' && Number.isFinite(durationMs) && durationMs >= 0) {
+        durations.set(phase, (durations.get(phase) || 0) + durationMs);
+      }
       if (state === 'start') active.set(phase, performance.now());
       if (state === 'end' && active.has(phase)) {
         durations.set(phase, (durations.get(phase) || 0) + performance.now() - active.get(phase));
@@ -197,7 +221,7 @@ async function profileMaterializedSession(index, session, indexRevision) {
           projectionChunkSamples += 1;
           recordSample();
         },
-        onProjectionPhase: phaseTimings.observe,
+        onMaterializationPhase: phaseTimings.observe,
       });
     });
   } finally {
@@ -225,13 +249,13 @@ async function profileMaterializedSession(index, session, indexRevision) {
   await new Promise((resolve) => setImmediate(resolve));
   if (global.gc) global.gc();
   const afterRetirement = memorySample();
+  const materializationPhaseMs = phaseTimings.result();
+  const attributedColdMs = MATERIALIZATION_TOP_LEVEL_PHASES.reduce(
+    (total, phase) => total + Number(materializationPhaseMs[phase] || 0),
+    0,
+  );
   return {
-    selection: {
-      sessionId: '<redacted>',
-      sourceBytes: session.bytes,
-      rawRows: session.rawEventCount,
-      logicalRows: session.logicalEventCount,
-    },
+    selection: redactedSessionSelection(session),
     coldMs,
     warmMs,
     adapterCalls,
@@ -239,7 +263,9 @@ async function profileMaterializedSession(index, session, indexRevision) {
     estimatedOwnerBytes: ownerStats.peakEstimatedMaterializedBytes,
     processMaxRssBefore,
     processMaxRssAfter: process.resourceUsage().maxRSS * 1024,
-    projectionPhaseMs: phaseTimings.result(),
+    materializationPhaseMs,
+    attributedColdMs,
+    unattributedColdMs: Math.max(0, coldMs - attributedColdMs),
     projectionChunkSamples,
     transientPeak,
     transientPeakOverBefore: memoryDelta(transientPeak, before),
@@ -288,12 +314,7 @@ async function profileLargeMaterializationCancellation(index, session, indexRevi
     throw new Error(`Large materialization cancellation profile did not observe AbortError for ${session.id}`);
   }
   const result = {
-    selection: {
-      sessionId: '<redacted>',
-      sourceBytes: session.bytes,
-      rawRows: session.rawEventCount,
-      logicalRows: session.logicalEventCount,
-    },
+    selection: redactedSessionSelection(session),
     queuedToAbortMs: abortObservedAt - cancellationQueuedAt,
     queuedToWaiterRejectionMs: waiterRejectedAt - cancellationQueuedAt,
     queuedToJobSettlementMs: jobSettledAt - cancellationQueuedAt,
@@ -306,21 +327,186 @@ async function profileLargeMaterializationCancellation(index, session, indexRevi
   return result;
 }
 
-async function profileMaterialization(index, adapter) {
-  if (adapter.sessionLifecycle !== SESSION_LIFECYCLE.INDEXED_MATERIALIZED) return null;
-  const candidates = [...index.sessions]
+function selectMaterializationCandidates(sessions) {
+  const candidates = [...sessions]
     .filter((session) => session.bytes > 0)
     .sort((left, right) => left.bytes - right.bytes || left.id.localeCompare(right.id));
   if (candidates.length === 0) return null;
-  const lowerDecileIndex = Math.max(0, Math.ceil(candidates.length * 0.1) - 1);
-  const small = candidates[lowerDecileIndex];
-  const large = candidates.at(-1);
+  const ordinalAt = (fraction) => Math.min(
+    candidates.length,
+    Math.max(1, Math.ceil(candidates.length * fraction)),
+  );
+  const select = (ordinal) => ({ ordinal, session: candidates[ordinal - 1] });
   return {
-    lowerDecileOrdinal: lowerDecileIndex + 1,
     candidateCount: candidates.length,
-    small: await profileMaterializedSession(index, small, 1),
-    large: await profileMaterializedSession(index, large, 2),
-    largeCancellation: await profileLargeMaterializationCancellation(index, large, 3),
+    small: select(ordinalAt(0.1)),
+    medium: select(ordinalAt(0.5)),
+    large: select(ordinalAt(0.9)),
+    largest: select(candidates.length),
+  };
+}
+
+async function profileColdQueueing(index, first, second, indexRevision) {
+  const retirementController = new AbortController();
+  const scheduler = createMaterializationScheduler({ warn() {} });
+  const owner = createMaterializedSessionOwner({
+    index,
+    indexRevision,
+    retirementController,
+    scheduler,
+  });
+  let resolveFirstStarted;
+  const firstStarted = new Promise((resolve) => { resolveFirstStarted = resolve; });
+  let firstStartedAt = 0;
+  let firstCompletedAt = 0;
+  let secondStartedAt = 0;
+  let secondCompletedAt = 0;
+  let adapterCalls = 0;
+  try {
+    const firstRequestedAt = performance.now();
+    const firstPending = owner.get(first, null, ({ signal }) => {
+      adapterCalls += 1;
+      firstStartedAt = performance.now();
+      resolveFirstStarted();
+      return materializeSessionForIndex(index, first, { signal });
+    }).then((value) => {
+      firstCompletedAt = performance.now();
+      return value;
+    });
+    await firstStarted;
+    const secondRequestedAt = performance.now();
+    const secondPending = owner.get(second, null, ({ signal }) => {
+      adapterCalls += 1;
+      secondStartedAt = performance.now();
+      return materializeSessionForIndex(index, second, { signal });
+    }).then((value) => {
+      secondCompletedAt = performance.now();
+      return value;
+    });
+    const admissionStats = owner.stats();
+    await Promise.all([firstPending, secondPending]);
+    while (scheduler.active.size > 0) await new Promise((resolve) => setImmediate(resolve));
+    return {
+      first: redactedSessionSelection(first),
+      second: redactedSessionSelection(second),
+      firstWaitToStartMs: firstStartedAt - firstRequestedAt,
+      firstMaterializationMs: firstCompletedAt - firstStartedAt,
+      secondQueueWaitMs: secondStartedAt - secondRequestedAt,
+      secondMaterializationMs: secondCompletedAt - secondStartedAt,
+      secondTotalMs: secondCompletedAt - secondRequestedAt,
+      queueDepthAtSecondAdmission: admissionStats.queuedJobCount,
+      activeCountAtSecondAdmission: admissionStats.activeJobCount,
+      adapterCalls,
+      finalStats: owner.stats(),
+    };
+  } finally {
+    const retirement = new Error('Materialization queue profile retirement');
+    owner.retire(retirement);
+    retirementController.abort(retirement);
+  }
+}
+
+async function profileQuickSessionSwitch(index, first, second, indexRevision) {
+  const retirementController = new AbortController();
+  const scheduler = createMaterializationScheduler({ warn() {} });
+  const owner = createMaterializedSessionOwner({
+    index,
+    indexRevision,
+    retirementController,
+    scheduler,
+  });
+  const firstWaiterController = new AbortController();
+  let resolveSourceStreamStarted;
+  const sourceStreamStarted = new Promise((resolve) => { resolveSourceStreamStarted = resolve; });
+  let firstSourceStreamStartedAt = 0;
+  let firstAbortObservedAt = 0;
+  let firstWaiterRejectedAt = 0;
+  let secondStartedAt = 0;
+  let secondCompletedAt = 0;
+  let adapterCalls = 0;
+  try {
+    const firstPending = owner.get(first, firstWaiterController.signal, ({ signal }) => {
+      adapterCalls += 1;
+      signal.addEventListener('abort', () => { firstAbortObservedAt = performance.now(); }, { once: true });
+      return materializeSessionForIndex(index, first, {
+        signal,
+        onMaterializationPhase({ phase, state }) {
+          if (phase !== 'adapter_source_stream' || state !== 'start' || firstSourceStreamStartedAt) return;
+          firstSourceStreamStartedAt = performance.now();
+          resolveSourceStreamStarted();
+        },
+      });
+    });
+    const firstOutcome = firstPending.then(
+      () => ({ error: null }),
+      (error) => {
+        firstWaiterRejectedAt = performance.now();
+        return { error };
+      },
+    );
+    await sourceStreamStarted;
+    const switchStartedAt = performance.now();
+    firstWaiterController.abort();
+    const secondRequestedAt = performance.now();
+    const secondPending = owner.get(second, null, ({ signal }) => {
+      adapterCalls += 1;
+      secondStartedAt = performance.now();
+      return materializeSessionForIndex(index, second, { signal });
+    }).then((value) => {
+      secondCompletedAt = performance.now();
+      return value;
+    });
+    const admissionStats = owner.stats();
+    const [outcome] = await Promise.all([firstOutcome, secondPending]);
+    while (scheduler.active.size > 0) await new Promise((resolve) => setImmediate(resolve));
+    if (outcome.error?.name !== 'AbortError' || firstAbortObservedAt === 0) {
+      throw new Error(`Quick switch did not cancel the first materialization for ${first.id}`);
+    }
+    return {
+      first: redactedSessionSelection(first),
+      second: redactedSessionSelection(second),
+      sourceStreamToSwitchMs: switchStartedAt - firstSourceStreamStartedAt,
+      switchToAbortObservationMs: firstAbortObservedAt - switchStartedAt,
+      switchToWaiterRejectionMs: firstWaiterRejectedAt - switchStartedAt,
+      secondQueueWaitMs: secondStartedAt - secondRequestedAt,
+      switchToSecondCompletionMs: secondCompletedAt - switchStartedAt,
+      queueDepthAtSecondAdmission: admissionStats.queuedJobCount,
+      activeCountAtSecondAdmission: admissionStats.activeJobCount,
+      adapterCalls,
+      finalStats: owner.stats(),
+    };
+  } finally {
+    const retirement = new Error('Quick Session-switch profile retirement');
+    owner.retire(retirement);
+    retirementController.abort(retirement);
+  }
+}
+
+async function profileMaterialization(index, adapter) {
+  if (adapter.sessionLifecycle !== SESSION_LIFECYCLE.INDEXED_MATERIALIZED) return null;
+  const selected = selectMaterializationCandidates(index.sessions);
+  if (!selected) return null;
+  const canProfileTransition = selected.large.session.id !== selected.medium.session.id;
+  return {
+    candidateCount: selected.candidateCount,
+    ordinals: Object.fromEntries(
+      ['small', 'medium', 'large', 'largest'].map((name) => [name, selected[name].ordinal]),
+    ),
+    small: await profileMaterializedSession(index, selected.small.session, 1),
+    medium: await profileMaterializedSession(index, selected.medium.session, 2),
+    large: await profileMaterializedSession(index, selected.large.session, 3),
+    largest: await profileMaterializedSession(index, selected.largest.session, 4),
+    coldQueueing: canProfileTransition
+      ? await profileColdQueueing(index, selected.large.session, selected.medium.session, 5)
+      : null,
+    quickSessionSwitch: canProfileTransition
+      ? await profileQuickSessionSwitch(index, selected.large.session, selected.medium.session, 6)
+      : null,
+    largestCancellation: await profileLargeMaterializationCancellation(
+      index,
+      selected.largest.session,
+      7,
+    ),
   };
 }
 
@@ -476,5 +662,6 @@ module.exports = {
   parseArgs,
   publicOptions,
   runtimeCommand,
+  selectMaterializationCandidates,
   timingStats,
 };
