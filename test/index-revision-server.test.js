@@ -206,6 +206,158 @@ test('server event routes coalesce and reuse one revision-owned Materialized Ses
   }
 });
 
+test('server schedules prewarm after project success without delaying state and reuses its cache', async () => {
+  const initial = strictClaudeIndexFromComplete(index('prewarm-initial', 1));
+  const replacementComplete = index('prewarm-replacement', 2);
+  const replacementSession = replacementComplete.sessions[0];
+  const replacement = strictClaudeIndexFromComplete(replacementComplete);
+  let wake;
+  let materializationCalls = 0;
+  const server = createServer(initial, 1, {
+    buildIndex: async () => replacement,
+    materializeSession: async (_index, indexedSession) => {
+      assert.equal(indexedSession.id, replacementSession.id);
+      materializationCalls += 1;
+      return replacementSession;
+    },
+    sessionPrewarm: {
+      delayMs: 150,
+      candidateCap: 1,
+      scanLimit: 1,
+      budgetBytes: 30_000,
+      individualBytes: 20_000,
+      setTimer(callback, delayMs) {
+        assert.equal(delayMs, 150);
+        wake = callback;
+        return 41;
+      },
+      clearTimer() {},
+    },
+  });
+  const base = await listen(server);
+  try {
+    const start = await fetch(`${base}/api/project`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repoRoot: replacement.repoRoot }),
+    });
+    const jobId = (await start.json()).job.id;
+    let status;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const response = await fetch(`${base}/api/project/status?jobId=${encodeURIComponent(jobId)}`);
+      status = await response.json();
+      if (status.job.status === 'succeeded') break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(status.job.status, 'succeeded');
+    assert.equal(status.state.repoRoot, replacement.repoRoot);
+    assert.equal(materializationCalls, 0);
+    assert.equal(typeof wake, 'function');
+
+    assert.deepEqual(await wake(), {
+      status: 'completed',
+      consideredCount: 1,
+      attemptedCount: 1,
+      completedCount: 1,
+      notAdmittedCount: 0,
+      promotedCount: 0,
+      preemptedCount: 0,
+      failedCount: 0,
+    });
+    assert.equal(materializationCalls, 1);
+    const analysis = await fetch(`${base}/api/sessions/${encodeURIComponent(replacementSession.id)}/analysis`);
+    assert.equal(analysis.status, 200);
+    assert.equal(materializationCalls, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('failed post-commit prewarm remains a silent background outcome', async () => {
+  const initial = strictClaudeIndexFromComplete(index('prewarm-failure-initial', 1));
+  const replacement = strictClaudeIndexFromComplete(index('prewarm-failure-replacement', 1));
+  let wake;
+  const server = createServer(initial, 1, {
+    buildIndex: async () => replacement,
+    materializeSession: async () => {
+      const error = new Error('synthetic background failure');
+      error.code = 'INDEXED_SOURCE_STALE';
+      throw error;
+    },
+    sessionPrewarm: {
+      delayMs: 0,
+      candidateCap: 1,
+      scanLimit: 1,
+      budgetBytes: 30_000,
+      individualBytes: 20_000,
+      setTimer(callback) {
+        wake = callback;
+        return 51;
+      },
+      clearTimer() {},
+    },
+  });
+  const base = await listen(server);
+  try {
+    const start = await fetch(`${base}/api/project`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repoRoot: replacement.repoRoot }),
+    });
+    const jobId = (await start.json()).job.id;
+    let status;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      status = await (await fetch(`${base}/api/project/status?jobId=${encodeURIComponent(jobId)}`)).json();
+      if (status.job.status === 'succeeded') break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(status.job.status, 'succeeded');
+    const outcome = await wake();
+    assert.equal(outcome.status, 'completed');
+    assert.equal(outcome.failedCount, 1);
+
+    const current = await fetch(`${base}/api/state`);
+    assert.equal(current.status, 200);
+    const currentState = await current.json();
+    assert.equal(currentState.repoRoot, replacement.repoRoot);
+    assert.equal(currentState.indexRevision, 2);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('invalid prewarm diagnostics cannot overturn a committed project success', async () => {
+  const initial = strictClaudeIndexFromComplete(index('prewarm-warning-initial', 1));
+  const replacement = strictClaudeIndexFromComplete(index('prewarm-warning-replacement', 1));
+  const server = createServer(initial, 1, {
+    buildIndex: async () => replacement,
+    sessionPrewarm: { candidateCap: 4 },
+    warn() {
+      throw new Error('synthetic warning sink failure');
+    },
+  });
+  const base = await listen(server);
+  try {
+    const start = await fetch(`${base}/api/project`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repoRoot: replacement.repoRoot }),
+    });
+    const jobId = (await start.json()).job.id;
+    let status;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      status = await (await fetch(`${base}/api/project/status?jobId=${encodeURIComponent(jobId)}`)).json();
+      if (status.job.status === 'succeeded') break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(status.job.status, 'succeeded');
+    assert.equal(status.state.repoRoot, replacement.repoRoot);
+    assert.equal(status.state.indexRevision, 2);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('server exposes bounded materialization admission as retryable 503', async () => {
   const completeIndex = index('busy-session');
   const strictIndex = strictClaudeIndexFromComplete(completeIndex);

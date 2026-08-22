@@ -26,12 +26,16 @@ test('IndexRevisionLease installs and clears cache with monotonic revisions', as
     async () => materializedSession,
   ), materializedSession);
   assert.equal(firstLease.materializedSessionOwner.cache.size, 1);
+  assert.ok(firstLease.materializedSessionOwner.estimatedMaterializedBytes > 0);
+  assert.ok(firstLease.materializedSessionOwner.accessSequence > 0);
 
   clearIndexRevision(state);
   assert.equal(state.index, null);
   assert.equal(state.indexRevision, 2);
   assert.equal(firstLease.retirementController.signal.aborted, true);
   assert.equal(firstLease.materializedSessionOwner.cache.size, 0);
+  assert.equal(firstLease.materializedSessionOwner.estimatedMaterializedBytes, 0);
+  assert.equal(firstLease.materializedSessionOwner.accessSequence, 0);
   assert.equal(firstLease.materializedSessionOwner.retired, true);
 
   const second = { id: 'second' };

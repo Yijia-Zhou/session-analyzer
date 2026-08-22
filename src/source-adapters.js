@@ -34,6 +34,7 @@ const {
   defineSourceAdapter,
   SESSION_LIFECYCLE,
 } = require('./source-adapter-contract');
+const { runWithMaterializationObserver } = require('./materialization-observer');
 
 const SOURCE_KIND = Object.freeze({
   CODEX: 'codex',
@@ -446,8 +447,18 @@ async function invokeReadOnlyMaterializationValidatorAsync({
   label,
   signal,
   onChunk,
+  onPhase,
+  reusableGuardedValueIndex,
 }) {
+  const notifyPhase = (phase, state) => {
+    try {
+      onPhase?.({ phase, state });
+    } catch {
+      // Profiling hooks are observational and must never affect validation.
+    }
+  };
   const fingerprints = [];
+  notifyPhase('materialized_private_fingerprint_capture', 'start');
   try {
     for (const value of guardedValues) {
       fingerprints.push(await captureGraphFingerprintAsync(value, {
@@ -463,15 +474,20 @@ async function invokeReadOnlyMaterializationValidatorAsync({
       error,
       true,
     );
+  } finally {
+    notifyPhase('materialized_private_fingerprint_capture', 'end');
   }
   let callbackRejected = false;
   let callbackError;
   let callbackResult;
+  notifyPhase('materialized_private_callback', 'start');
   try {
     callbackResult = callback(args);
   } catch (error) {
     callbackRejected = true;
     callbackError = error;
+  } finally {
+    notifyPhase('materialized_private_callback', 'end');
   }
   if (!callbackRejected && callbackResult !== undefined) {
     try {
@@ -483,6 +499,7 @@ async function invokeReadOnlyMaterializationValidatorAsync({
     callbackError = new Error(`${label} must return undefined synchronously`);
   }
   let inputsUnchanged = false;
+  notifyPhase('materialized_private_fingerprint_recheck', 'start');
   try {
     inputsUnchanged = true;
     for (let index = 0; index < guardedValues.length; index += 1) {
@@ -502,6 +519,8 @@ async function invokeReadOnlyMaterializationValidatorAsync({
       callbackRejected ? callbackError : error,
       true,
     );
+  } finally {
+    notifyPhase('materialized_private_fingerprint_recheck', 'end');
   }
   if (!inputsUnchanged) {
     throw materializationContractViolation(
@@ -517,6 +536,12 @@ async function invokeReadOnlyMaterializationValidatorAsync({
       true,
     );
   }
+  if (!Number.isSafeInteger(reusableGuardedValueIndex)
+      || reusableGuardedValueIndex < 0
+      || reusableGuardedValueIndex >= fingerprints.length) {
+    throw new TypeError('Reusable guarded fingerprint index is invalid');
+  }
+  return fingerprints[reusableGuardedValueIndex];
 }
 
 function abortError(signal) {
@@ -533,7 +558,8 @@ function throwIfAborted(signal) {
 
 function notifyProjectionPhase(options, phase, state) {
   try {
-    options.onProjectionPhase?.({ phase, state });
+    const observer = options.onMaterializationPhase || options.onProjectionPhase;
+    observer?.({ phase, state });
   } catch {
     // Profiling hooks are observational and must never affect admission.
   }
@@ -998,98 +1024,123 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
   }
 
   if (!allowResidentComplete) {
-    const dependencySet = index.materializationDependencies?.get(
-      indexedSession.materializationDescriptor.dependencySetId,
-    );
-    if (!dependencySet) {
-      throw strictBoundaryError(
-        `Missing materialization dependency set ${indexedSession.materializationDescriptor.dependencySetId}`,
-      );
-    }
-    validateCanonicalDependencySet(
-      dependencySet,
-      indexKind,
-      indexedSession.materializationDescriptor.dependencySetId,
-    );
-    const materializationContext = createStrictMaterializationContext(index, adapter);
-    invokeReadOnlyMaterializationValidator({
-      callback: adapter.validateMaterializationDescriptor,
-      args: {
-        materializationContext,
-        indexedSession,
-        descriptor: indexedSession.materializationDescriptor,
-        dependencySet,
-      },
-      guardedValues: [materializationContext, indexedSession, dependencySet],
-      label: 'Adapter materialization descriptor validation',
-    });
-    let storedProjectionDigest;
+    let dependencySet;
+    let materializationContext;
+    let capturedOwnership;
+    notifyProjectionPhase(options, 'materialized_pre_adapter_validation', 'start');
     try {
-      storedProjectionDigest = projectQueryProjectionDigestForSession(
-        index.projectQueryStore,
-        indexedSession.queryShardId,
+      dependencySet = index.materializationDependencies?.get(
+        indexedSession.materializationDescriptor.dependencySetId,
       );
-    } catch (error) {
-      throw materializationContractViolation(
-        'Indexed Session query projection shard is invalid',
-        error,
-        true,
+      if (!dependencySet) {
+        throw strictBoundaryError(
+          `Missing materialization dependency set ${indexedSession.materializationDescriptor.dependencySetId}`,
+        );
+      }
+      validateCanonicalDependencySet(
+        dependencySet,
+        indexKind,
+        indexedSession.materializationDescriptor.dependencySetId,
       );
+      materializationContext = createStrictMaterializationContext(index, adapter);
+      invokeReadOnlyMaterializationValidator({
+        callback: adapter.validateMaterializationDescriptor,
+        args: {
+          materializationContext,
+          indexedSession,
+          descriptor: indexedSession.materializationDescriptor,
+          dependencySet,
+        },
+        guardedValues: [materializationContext, indexedSession, dependencySet],
+        label: 'Adapter materialization descriptor validation',
+      });
+      let storedProjectionDigest;
+      try {
+        storedProjectionDigest = projectQueryProjectionDigestForSession(
+          index.projectQueryStore,
+          indexedSession.queryShardId,
+        );
+      } catch (error) {
+        throw materializationContractViolation(
+          'Indexed Session query projection shard is invalid',
+          error,
+          true,
+        );
+      }
+      if (storedProjectionDigest !== indexedSession.queryProjectionDigest) {
+        throw materializationContractViolation(
+          'Indexed Session query projection digest does not match its committed shard',
+        );
+      }
+      capturedOwnership = captureStrictOwnership(
+        index,
+        indexedSession,
+        dependencySet,
+        materializationContext,
+        adapter,
+      );
+    } finally {
+      notifyProjectionPhase(options, 'materialized_pre_adapter_validation', 'end');
     }
-    if (storedProjectionDigest !== indexedSession.queryProjectionDigest) {
-      throw materializationContractViolation(
-        'Indexed Session query projection digest does not match its committed shard',
-      );
-    }
-    const capturedOwnership = captureStrictOwnership(
-      index,
-      indexedSession,
-      dependencySet,
-      materializationContext,
-      adapter,
-    );
     let materializedSession;
     let materializationRejected = false;
     let materializationError;
+    notifyProjectionPhase(options, 'adapter_materialization', 'start');
     try {
-      materializedSession = await adapter.materializeSession({
-        materializationContext,
-        indexedSession,
-        dependencySet,
-        signal: options.signal,
-        indexRevision: options.indexRevision,
-      });
+      const observer = options.onMaterializationPhase || options.onProjectionPhase;
+      materializedSession = await runWithMaterializationObserver(observer, () => (
+        adapter.materializeSession({
+          materializationContext,
+          indexedSession,
+          dependencySet,
+          signal: options.signal,
+          indexRevision: options.indexRevision,
+        })
+      ));
     } catch (error) {
       materializationRejected = true;
       materializationError = error;
+    } finally {
+      notifyProjectionPhase(options, 'adapter_materialization', 'end');
     }
-    if (!strictOwnershipMatches(
-      index,
-      indexedSession,
-      dependencySet,
-      capturedOwnership,
-    )) {
-      throw materializationContractViolation(
-        'Materialization mutated the selected repository ownership boundary',
-        materializationRejected ? materializationError : undefined,
-        materializationRejected,
-      );
+    notifyProjectionPhase(options, 'materialized_post_adapter_ownership', 'start');
+    try {
+      if (!strictOwnershipMatches(
+        index,
+        indexedSession,
+        dependencySet,
+        capturedOwnership,
+      )) {
+        throw materializationContractViolation(
+          'Materialization mutated the selected repository ownership boundary',
+          materializationRejected ? materializationError : undefined,
+          materializationRejected,
+        );
+      }
+    } finally {
+      notifyProjectionPhase(options, 'materialized_post_adapter_ownership', 'end');
     }
     if (materializationRejected) throw materializationError;
     throwIfAborted(options.signal);
-    validateCanonicalMaterializedSessionShape(
-      indexedSession,
-      materializedSession,
-      indexKind,
-      {
-        allowResidentComplete: false,
-        index,
-        allowedPrivateFields: adapter.materializedPrivateFields,
-      },
-    );
+    notifyProjectionPhase(options, 'materialized_canonical_validation', 'start');
+    try {
+      validateCanonicalMaterializedSessionShape(
+        indexedSession,
+        materializedSession,
+        indexKind,
+        {
+          allowResidentComplete: false,
+          index,
+          allowedPrivateFields: adapter.materializedPrivateFields,
+        },
+      );
+    } finally {
+      notifyProjectionPhase(options, 'materialized_canonical_validation', 'end');
+    }
+    let materializedFingerprint;
     notifyProjectionPhase(options, 'materialized_private_validation', 'start');
     try {
-      await invokeReadOnlyMaterializationValidatorAsync({
+      materializedFingerprint = await invokeReadOnlyMaterializationValidatorAsync({
         callback: adapter.validateMaterializedPrivateState,
         args: {
           materializationContext,
@@ -1100,27 +1151,22 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
         label: 'Adapter materialized private-state validation',
         signal: options.signal,
         onChunk: options.onProjectionChunk,
+        onPhase: options.onMaterializationPhase || options.onProjectionPhase,
+        reusableGuardedValueIndex: 2,
       });
     } finally {
       notifyProjectionPhase(options, 'materialized_private_validation', 'end');
     }
-    let materializedFingerprint;
-    notifyProjectionPhase(options, 'materialized_fingerprint_capture', 'start');
+    notifyProjectionPhase(options, 'materialized_fingerprint_reuse', 'start');
     try {
-      materializedFingerprint = await captureGraphFingerprintAsync(materializedSession, {
-        signal: options.signal,
-        onChunk: options.onProjectionChunk,
-        phase: 'materialized_fingerprint_capture',
-      });
-    } catch (error) {
-      if (error?.name === 'AbortError') throw error;
-      throw materializationContractViolation(
-        'Materialized Session could not be fingerprinted before query projection',
-        error,
-        true,
-      );
+      throwIfAborted(options.signal);
+      if (!materializedFingerprint) {
+        throw materializationContractViolation(
+          'Materialized Session could not be fingerprinted before query projection',
+        );
+      }
     } finally {
-      notifyProjectionPhase(options, 'materialized_fingerprint_capture', 'end');
+      notifyProjectionPhase(options, 'materialized_fingerprint_reuse', 'end');
     }
     let materializedProjectionDigest;
     let projectionRejected = false;
@@ -1175,11 +1221,16 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
         true,
       );
     }
-    throwIfAborted(options.signal);
-    if (materializedProjectionDigest !== indexedSession.queryProjectionDigest) {
-      throw materializationContractViolation(
-        'Materialized Session query projection does not match the committed Indexed projection',
-      );
+    notifyProjectionPhase(options, 'materialized_final_admission_check', 'start');
+    try {
+      throwIfAborted(options.signal);
+      if (materializedProjectionDigest !== indexedSession.queryProjectionDigest) {
+        throw materializationContractViolation(
+          'Materialized Session query projection does not match the committed Indexed projection',
+        );
+      }
+    } finally {
+      notifyProjectionPhase(options, 'materialized_final_admission_check', 'end');
     }
     return materializedSession;
   }

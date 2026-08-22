@@ -149,7 +149,7 @@ NODE_OPTIONS='--max-old-space-size=4096' npx session-analyzer --repo /path/to/pr
 
 调查问题时，推荐使用 `--log-dir <path>` 收集聚合索引诊断。Session Analyzer 会写入经过节流、有界的 JSONL 生命周期记录，其中包含 candidate 文件／字节数、Session／Raw／Logical 数量、耗时、V8 heap limit、当前与进程内峰值内存，以及稳定的容量警告信号。这些记录不包含仓库路径、transcript 路径、transcript 正文、提示词、命令或源码内容，并且最多保留 20 份索引日志。Fatal V8 OOM 的 stderr 仍是权威的最终崩溃证据；进程发生 fatal termination 时，诊断 logger 可能来不及写入最终记录。
 
-来源回读生命周期消除了语料级完整 event graph，但紧凑 query store 与 revision-scoped Materialized Session cache 仍是不可忽略的内存 owner。首版 cache 不实现 eviction；项目成功替换或切换来源会释放旧 cache，而在一个 revision 内打开许多不同的大 Session 仍会使 cache 增长。未来版本可能进一步降低索引与运行时内存使用量，因此以上数据描述的是当前实现，而不是永久的产品容量上限。
+来源回读生命周期消除了语料级完整 event graph，但紧凑 query store 与 revision-scoped Materialized Session cache 仍是不可忽略的内存 owner。完整 Session 现在使用来源中立的加权 LRU working set：普通保留 cache state 受 256 MiB 估算权重与 12 个 Session 的双重限制，speculative prewarm 的准入与淘汰权更弱。若 foreground Session 的估算值超过 byte budget，它可以作为唯一 cached entry 常驻，避免后续 timeline、detail 与 Raw request 反复重建。该估算是确定性 cache weight，不是 V8 heap 或 RSS 上限；in-flight request 也可能暂时让已淘汰 object 继续可达。项目成功替换或切换来源仍会释放整个旧 revision cache。这些工程默认值不是永久的产品容量上限，也不会使用派生 disk cache。
 
 ## 从源码开发
 
