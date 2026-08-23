@@ -49,8 +49,9 @@ When changing product behavior or repository structure:
 - Transcript source adapters: `docs/design-docs/transcript-source-adapters.md`
 - Indexed/Materialized Session lifecycle: `docs/design-docs/indexed-materialized-session-lifecycle.md`
 - Active plans:
-  - `docs/exec-plans/active/2026-08-23-deepseek-harness-phase-2d-permission-inbox-provenance.md` / `2026-08-23 DeepSeek Harness 第二阶段 D`
+  - None / 无
 - Completed plans:
+  - `docs/exec-plans/completed/2026-08-23-deepseek-harness-phase-2d-permission-inbox-provenance.md` / `2026-08-23 DeepSeek Harness 第二阶段 D`
   - `docs/exec-plans/completed/2026-08-23-deepseek-harness-phase-2c-retry-goal-todo.md` / `2026-08-23 DeepSeek Harness 第二阶段 C`
   - `docs/exec-plans/completed/2026-08-23-deepseek-harness-phase-2b-code-mode-workflow.md` / `2026-08-23 DeepSeek Harness 第二阶段 B`
   - `docs/exec-plans/completed/2026-08-20-deepseek-harness-phase-2a-session-semantics.md` / `2026-08-20 DeepSeek Harness 第二阶段 A`
