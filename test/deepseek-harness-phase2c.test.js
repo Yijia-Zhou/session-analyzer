@@ -172,16 +172,28 @@ test('M1 malformed or cross-policy retry identity fails closed row by row', asyn
       type: 'llm/retry-started', seq: 6, time: 8,
       data: { retryId: 'conflicted-retry', turn: 1, step: 1, retry: 1 },
     },
-    { type: 'step/end', seq: 7, time: 9, data: { turn: 1, step: 1 } },
-    { type: 'turn/end', seq: 8, time: 10, data: { turn: 1, reason: { kind: 'completed' } } },
+    {
+      type: 'request/header', seq: 7, time: 9,
+      data: { header: { config: { model: 'missing-provider' } }, reason: 'change' },
+    },
+    {
+      type: 'llm/retry', seq: 8, time: 10,
+      data: {
+        retryId: 'stale-provider-retry', turn: 1, step: 1, provider: 'provider-b', mode: 'normal',
+        policyKey: 'policy-b', retry: 1, maxRetries: 2, delayMs: 20,
+        failure: { message: 'synthetic stale provider failure', code: 'SERVER' },
+      },
+    },
+    { type: 'step/end', seq: 9, time: 11, data: { turn: 1, step: 1 } },
+    { type: 'turn/end', seq: 10, time: 12, data: { turn: 1, reason: { kind: 'completed' } } },
   ]);
   const { materialized } = await buildFor(fixture.repoRoot, fixture.sourceHome);
   assert.equal(materialized.logicalEvents.some((event) => event.subtype === 'llm/retry-lifecycle'), false);
   const fallbacks = materialized.logicalEvents.filter((event) => (
     event.label === 'Uncorrelated LLM retry lifecycle'
   ));
-  assert.equal(fallbacks.length, 3);
-  assert.deepEqual(fallbacks.map(rawSeqs), [[3], [5], [6]]);
+  assert.equal(fallbacks.length, 4);
+  assert.deepEqual(fallbacks.map(rawSeqs), [[3], [5], [6], [8]]);
   assert.ok(fallbacks.every((event) => event.layer === 'protocol' && event.status === 'incomplete'));
 });
 

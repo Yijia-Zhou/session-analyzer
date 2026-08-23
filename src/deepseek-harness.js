@@ -2463,7 +2463,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
       todoRows.push({ event, raw });
     } else if (event.type === 'request/header') {
       const provider = data.header?.config?.provider;
-      if (typeof provider === 'string' && provider) effectiveRequestProvider = provider;
+      effectiveRequestProvider = typeof provider === 'string' && provider ? provider : '';
       session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type));
     } else if (event.type === 'llm/retry' || event.type === 'llm/retry-started') {
       retryRows.push({
