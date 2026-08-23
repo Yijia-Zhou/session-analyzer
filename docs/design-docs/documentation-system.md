@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-07-13 / 最近更新：2026-07-13
+- Last updated: 2026-08-23 / 最近更新：2026-08-23
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -24,6 +24,7 @@ This repository started as a small local tool, but it already has user-facing be
 - Keep filenames searchable by topic and status. / 让文件名可按主题和状态搜索。
 - Keep bilingual docs synchronized when either language changes. / 当任一语言发生变更时，保持双语文档同步。
 - Keep project-specific domain terms canonical and easy to discover. / 让项目特有的领域术语保持规范且易于发现。
+- Avoid append-only global document indexes that make unrelated feature branches edit the same lines. / 避免使用追加式全局文档索引，以免不相关的 feature branch 修改同一组文本行。
 
 ## Proposed design / 提议设计
 
@@ -37,8 +38,15 @@ This repository started as a small local tool, but it already has user-facing be
 
 - Repository navigation only / 仅用于仓库导航
 - Update rules for documentation / 文档更新规则
-- Pointers to the current spec, design docs, and plans / 指向当前规格、设计文档和计划的链接
+- Pointers to the current spec and design docs, plus the authoritative active and completed plan directories / 指向当前规格与设计文档，以及权威的活跃计划和已完成计划目录
+- A small set of genuinely current active-plan entrypoints may be grouped by subsystem; completed plans are discovered from their archive directory and are not itemized here / 可以按 subsystem 分组保留少量真正当前有效的 active-plan 入口；已完成计划从其归档目录发现，不在此逐条枚举
 - Lightweight bilingual sync rule for translated docs / 面向已翻译文档的轻量双语同步规则
+
+### `CHANGELOG.md` / 变更日志
+
+- Keep a single changelog file; organize the current development release by stable subsystem or transcript source instead of a global implementation timeline / 保持单一 changelog 文件；当前开发版本按稳定的 subsystem 或 transcript source 组织，而不是采用全局实现时间线
+- Keep each module's English and Chinese facts together and semantically aligned; do not duplicate one fact across modules / 将每个模块的英文与中文事实放在一起并保持语义一致；不要在多个模块中重复同一事实
+- Omit empty modules and preserve the established release history below the current development section / 省略空模块，并保留当前开发区段以下既有的发布历史
 
 ### `docs/product-specs/` / 产品规格目录
 
@@ -115,6 +123,7 @@ This repository started as a small local tool, but it already has user-facing be
 
 ## Decision log / 决策日志
 
+- 2026-08-23: Made the execution-plan directories authoritative, removed the itemized completed-plan registry from `AGENTS.md`, and organized the current changelog release by stable modules so unrelated branches no longer share append-only documentation hotspots. / 2026-08-23：将执行计划目录确立为权威来源，从 `AGENTS.md` 移除逐条维护的 completed-plan registry，并按稳定模块组织当前 changelog release，避免不相关 branch 共用追加式文档热点。
 - 2026-07-13: Added a root bilingual domain glossary to distinguish source history, interpreted history, event layers, session relationships, and search boundaries. / 2026-07-13：新增根目录双语领域词汇表，用于区分来源历史、解释后历史、事件层、会话关系和搜索边界。
 - 2026-05-04: Added `docs/backlog/` as a separate parking area for rough long-horizon ideas. / 2026-05-04：新增 `docs/backlog/`，作为粗略远期想法的独立暂存区。
 - 2026-05-03: Added a lightweight rule requiring translated docs to keep English and Chinese text synchronized. / 2026-05-03：添加轻量规则，要求已翻译文档保持英文和中文文本同步。
