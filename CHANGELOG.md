@@ -8,11 +8,11 @@
 
 ##### English
 
-- Added DeepSeek Harness as a selectable third transcript source with read-only JSONL/Zstandard, strict Indexed/Materialized lifecycle, and packed physical Raw rows. Structured support covers transcript/tool/session lifecycle, effective preset/lineage/seed ownership/compaction, explicit-ID Code Mode and conservative workflow provenance, retry, Goal/Todo, observed Permission state, and exact inbox Supplemental provenance; known but unsupported current-upstream families remain Protocol/Raw.
+- Added DeepSeek Harness as a selectable third transcript source with read-only JSONL/Zstandard, strict Indexed/Materialized lifecycle, and packed physical Raw rows. Structured support covers transcript/tool/session lifecycle, effective preset/lineage/seed ownership/compaction, exact tool-result prune provenance, explicit-ID Code Mode and conservative workflow provenance, retry, Goal/Todo, observed Permission state, and exact inbox Supplemental provenance; known but unsupported current-upstream families remain Protocol/Raw.
 
 ##### 中文
 
-- 新增 DeepSeek Harness 作为可选择的第三个转录来源，采用只读 JSONL／Zstandard、严格 Indexed／Materialized lifecycle 与紧凑物理 Raw row。结构化支持覆盖 transcript／tool／session lifecycle、effective preset／lineage／seed ownership／compaction、显式 ID Code Mode 与保守 workflow provenance、retry、Goal／Todo、observed Permission state，以及精确 inbox Supplemental provenance；当前上游已知但不受支持的 family 继续保留为 Protocol／Raw。
+- 新增 DeepSeek Harness 作为可选择的第三个转录来源，采用只读 JSONL／Zstandard、严格 Indexed／Materialized lifecycle 与紧凑物理 Raw row。结构化支持覆盖 transcript／tool／session lifecycle、effective preset／lineage／seed ownership／compaction、精确工具结果 prune provenance、显式 ID Code Mode 与保守 workflow provenance、retry、Goal／Todo、observed Permission state，以及精确 inbox Supplemental provenance；当前上游已知但不受支持的 family 继续保留为 Protocol／Raw。
 
 ### Session model and provenance / Session 模型与来源追溯
 

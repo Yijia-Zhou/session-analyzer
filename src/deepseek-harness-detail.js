@@ -253,6 +253,64 @@ function detailForReasoning(event, session, parsedByOrdinal) {
   return detail;
 }
 
+function pruneEventRefItem(session, id, fallbackLabel, fallbackStatus) {
+  const target = (session.logicalEvents || []).find(candidate => candidate.id === id);
+  if (!target) return null;
+  return {
+    id: target.id,
+    label: logicalTitle(target, i18n.DEFAULT_LOCALE) || fallbackLabel,
+    kind: target.kind || 'protocol',
+    status: target.status || fallbackStatus,
+  };
+}
+
+function pruneEventRefsSection(session, title, references) {
+  const items = references
+    .map(reference => pruneEventRefItem(
+      session,
+      reference.id,
+      reference.label,
+      reference.status,
+    ))
+    .filter(Boolean);
+  return items.length ? {
+    purpose: 'traceability',
+    type: 'event_refs',
+    title,
+    items,
+  } : null;
+}
+
+function appendOriginalToolResultPruneDetail(detail, event, session) {
+  const provenance = event.toolResultPrune;
+  if (!provenance) return detail;
+  const facts = sectionKv([
+    { key: 'Original result seq', value: provenance.originalResultSeq },
+    { key: 'Replacement result seq', value: provenance.replacementResultSeq },
+  ], 'traceability', 'Tool-result prune provenance');
+  if (facts) detail.inspectorSections.push(facts);
+  const refs = pruneEventRefsSection(session, 'Model-surface prune events', [
+    {
+      id: provenance.pruneEventId,
+      label: 'Tool-result prune',
+      status: 'recorded',
+    },
+    {
+      id: provenance.replacementEventId,
+      label: 'Pruned surface result',
+      status: 'replacement',
+    },
+  ]);
+  if (refs) detail.inspectorSections.push(refs);
+  detail.inspectorSections.push(sectionNotice(
+    'This operation keeps the original tool result as historical evidence. A later lifecycle pruned only '
+      + 'the model-visible surface; it did not rerun the tool or transfer Raw ownership.',
+    'traceability',
+    'Result later pruned for model context',
+  ));
+  return detail;
+}
+
 function detailForToolOperation(event, session, parsedByOrdinal) {
   const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
   const records = parsedEventsForRawIds(
@@ -311,7 +369,7 @@ function detailForToolOperation(event, session, parsedByOrdinal) {
       'Incomplete operation',
     ));
   }
-  return detail;
+  return appendOriginalToolResultPruneDetail(detail, event, session);
 }
 
 function dispatchTopologyForEvent(session, eventId) {
@@ -386,7 +444,7 @@ function detailForCodeModeOperation(event, session, parsedByOrdinal) {
   if (metadata) detail.inspectorSections.push(metadata);
   const refs = codeModeEventRefsSection(event, session);
   if (refs) detail.inspectorSections.push(refs);
-  return detail;
+  return appendOriginalToolResultPruneDetail(detail, event, session);
 }
 
 function detailForCodeDispatch(event, session, parsedByOrdinal, topology) {
@@ -825,6 +883,85 @@ function detailForCompaction(event, session, parsedByOrdinal) {
   return detail;
 }
 
+function detailForToolResultPrune(event, session) {
+  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
+  const provenance = event.toolResultPrune || {};
+  const primary = sectionKv([
+    { key: 'Original result seq', value: provenance.originalResultSeq },
+    { key: 'Shadowed token count', value: provenance.shadowedTokenCount },
+    { key: 'Replacement result seq', value: provenance.replacementResultSeq },
+  ], 'context', 'Tool-result prune');
+  if (primary) detail.timelineSections.push(primary);
+  const refs = pruneEventRefsSection(session, 'Related tool-result events', [
+    {
+      id: provenance.originalOperationEventId,
+      label: 'Original tool operation',
+      status: 'observed',
+    },
+    {
+      id: provenance.replacementEventId,
+      label: 'Pruned surface result',
+      status: 'replacement',
+    },
+  ]);
+  if (refs) detail.inspectorSections.push(refs);
+  const trace = sectionKv([
+    { key: 'Writer adjacency observed', value: provenance.writerAdjacent === true ? 'yes' : 'no' },
+    { key: 'Correlation authority', value: 'exact source seq identities and durable call ID' },
+  ], 'traceability', 'Prune correlation');
+  if (trace) detail.inspectorSections.push(trace);
+  detail.inspectorSections.push(sectionNotice(
+    'This lifecycle replaces an oversized result only on the model-visible surface. The underlying tool '
+      + 'was not rerun, and the original operation keeps its historical result and Raw ownership.',
+    'traceability',
+    'Model-surface replacement',
+  ));
+  return detail;
+}
+
+function detailForPrunedToolResult(event, session, parsedByOrdinal) {
+  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
+  const records = parsedEventsForRawIds(
+    session,
+    parsedByOrdinal,
+    (event.rawRefs || []).map(ref => ref.rawId),
+  );
+  const replacement = records.find(candidate => candidate.type === 'tool/result');
+  const result = sectionTerminal(
+    replacement ? toolResultTextFromEvent(replacement) : '',
+    'result',
+    'Pruned surface result',
+    '',
+  );
+  if (result) detail.timelineSections.push(result);
+  const provenance = event.toolResultPrune || {};
+  const trace = sectionKv([
+    { key: 'Original result seq', value: provenance.originalResultSeq },
+    { key: 'Replacement result seq', value: replacement?.seq },
+  ], 'traceability', 'Surface replacement provenance');
+  if (trace) detail.inspectorSections.push(trace);
+  const refs = pruneEventRefsSection(session, 'Tool-result prune provenance', [
+    {
+      id: provenance.originalOperationEventId,
+      label: 'Original tool operation',
+      status: 'observed',
+    },
+    {
+      id: provenance.pruneEventId,
+      label: 'Tool-result prune',
+      status: 'recorded',
+    },
+  ]);
+  if (refs) detail.inspectorSections.push(refs);
+  detail.inspectorSections.push(sectionNotice(
+    'This is the pruned replacement used for later model context, not a second tool return. '
+      + 'The original full result remains on its Main operation and is not duplicated here.',
+    'traceability',
+    'Replacement surface only',
+  ));
+  return detail;
+}
+
 function detailForProtocolEvent(event, session, parsedByOrdinal) {
   const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
   const sourceEvent = parsedEventsForRawIds(session, parsedByOrdinal, [event.rawRefs?.[0]?.rawId])[0];
@@ -900,10 +1037,10 @@ function detailForProtocolEvent(event, session, parsedByOrdinal) {
       'Tool-result prune',
     ));
     detail.inspectorSections.push(sectionNotice(
-      'No current-writer physical fixture has been observed for compaction/prune yet. '
-      + 'The event is preserved as recognized Protocol/Raw evidence without manufactured replacement semantics.',
+      'This prune row did not resolve to one exact, unique, child-owned original/replacement chain. '
+      + 'It remains generic Protocol/Raw evidence without a manufactured relationship.',
       'traceability',
-      'Evidence gap',
+      'Uncorrelated prune provenance',
     ));
   } else {
     const notice = sectionNotice(event.preview || i18n.humanize(event.subtype || event.kind), 'content', '');
@@ -953,6 +1090,12 @@ function buildLogicalDetail(event, session, parsedByOrdinal) {
   }
   if (event.kind === 'plan_update' && event.subtype === 'plan_update' && Array.isArray(event.planSnapshot)) {
     return detailForTodoSnapshot(event);
+  }
+  if (event.layer === 'protocol' && event.subtype === 'compaction/prune' && event.toolResultPrune) {
+    return detailForToolResultPrune(event, session);
+  }
+  if (event.layer === 'protocol' && event.subtype === 'tool/result' && event.toolResultPrune) {
+    return detailForPrunedToolResult(event, session, parsedByOrdinal);
   }
   if (event.kind === 'command' || event.kind === 'other_tool_call') {
     return detailForToolOperation(event, session, parsedByOrdinal);
