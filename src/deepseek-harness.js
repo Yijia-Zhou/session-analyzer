@@ -900,6 +900,139 @@ function makePermissionProtocolEvent(sessionId, event, raw, observedState) {
   return logical;
 }
 
+function createInboxReplay() {
+  return {
+    queues: { 'next-turn': [], 'next-step': [] },
+    claimedByMessageId: new Map(),
+    disabled: false,
+  };
+}
+
+function disableInboxReplay(replay) {
+  replay.disabled = true;
+  replay.queues['next-turn'] = [];
+  replay.queues['next-step'] = [];
+  replay.claimedByMessageId.clear();
+}
+
+function decodeInboxSplice(data, replay) {
+  if (!isPlainRecord(data)) return null;
+  const expectedKeys = [
+    'target', 'start', 'inserted',
+    ...(Object.hasOwn(data, 'removedCount') ? ['removedCount'] : []),
+    ...(Object.hasOwn(data, 'outcome') ? ['outcome'] : []),
+  ];
+  if (!hasExactKeys(data, expectedKeys)
+      || (data.target !== 'next-turn' && data.target !== 'next-step')
+      || !Number.isSafeInteger(data.start)
+      || !Array.isArray(data.inserted)
+      || (data.outcome !== undefined && data.outcome !== 'canceled')) return null;
+  const removedCount = data.removedCount ?? 0;
+  const queue = replay.queues[data.target];
+  if (!Number.isSafeInteger(removedCount) || removedCount < 0
+      || data.start < 0 || data.start > queue.length
+      || data.start + removedCount > queue.length
+      || (removedCount === 0 && data.inserted.length === 0)
+      || (data.outcome === 'canceled' && removedCount === 0)) return null;
+  for (const message of data.inserted) {
+    if (!hasExactKeys(message, ['id', 'role', 'content', 'source'])
+        || typeof message.id !== 'string' || !message.id
+        || message.role !== 'user' || !Array.isArray(message.content)
+        || !isPlainRecord(message.source) || typeof message.source.kind !== 'string' || !message.source.kind) return null;
+  }
+  const shape = removedCount === 0
+    ? 'insertion'
+    : (data.inserted.length === 0 ? 'deletion' : 'replacement');
+  const exactClaim = shape === 'deletion' && data.outcome === undefined && data.start === 0
+    && ((data.target === 'next-turn' && removedCount === 1)
+      || (data.target === 'next-step' && removedCount === queue.length));
+  const operation = shape === 'insertion' && data.outcome === undefined
+    ? 'enqueue'
+    : (exactClaim ? 'claim' : 'generic');
+  const removed = queue.slice(data.start, data.start + removedCount);
+  const inserted = data.inserted.map(message => ({ message, eligible: operation === 'enqueue' }));
+  const candidate = queue.toSpliced(data.start, removedCount, ...inserted);
+  const all = data.target === 'next-turn'
+    ? [...candidate, ...replay.queues['next-step']]
+    : [...replay.queues['next-turn'], ...candidate];
+  const ids = new Set();
+  for (const item of all) {
+    if (ids.has(item.message.id)) return null;
+    ids.add(item.message.id);
+  }
+  return { target: data.target, start: data.start, removedCount, operation, removed, inserted, candidate };
+}
+
+function makeInboxProtocolEvent(sessionId, event, raw, replay) {
+  const logical = makeProtocolEvent(sessionId, event, raw, event.type, { role: 'system' });
+  if (replay.disabled) return logical;
+  const splice = decodeInboxSplice(event.data, replay);
+  if (!splice) {
+    disableInboxReplay(replay);
+    return logical;
+  }
+  replay.queues[splice.target] = splice.candidate;
+  if (splice.operation === 'enqueue') {
+    for (const item of splice.inserted) {
+      item.insertionEventId = logical.id;
+      item.insertionSeq = event.seq;
+      item.target = splice.target;
+    }
+    logical.inboxSplice = {
+      operation: 'enqueue',
+      target: splice.target,
+      start: splice.start,
+      removedCount: 0,
+      insertedCount: splice.inserted.length,
+      messageIds: splice.inserted.map(item => item.message.id),
+      sourceSeq: event.seq,
+    };
+  } else if (splice.operation === 'claim') {
+    const claimedIds = [];
+    for (const item of splice.removed) {
+      if (!item.eligible || !item.insertionEventId) continue;
+      const candidates = replay.claimedByMessageId.get(item.message.id) || [];
+      candidates.push({
+        ...item,
+        claimEventId: logical.id,
+        claimSeq: event.seq,
+        consumed: false,
+      });
+      replay.claimedByMessageId.set(item.message.id, candidates);
+      claimedIds.push(item.message.id);
+    }
+    logical.inboxSplice = {
+      operation: 'claim',
+      target: splice.target,
+      start: splice.start,
+      removedCount: splice.removedCount,
+      insertedCount: 0,
+      messageIds: claimedIds,
+      sourceSeq: event.seq,
+    };
+  }
+  return logical;
+}
+
+function attachInboxProvenance(logical, event, replay) {
+  if (replay.disabled || !isAppendSurfaceOp(event.surfaceOp)
+      || typeof event.data?.id !== 'string' || !event.data.id) return;
+  const candidates = (replay.claimedByMessageId.get(event.data.id) || [])
+    .filter(candidate => !candidate.consumed && candidate.claimSeq < event.seq);
+  if (candidates.length !== 1) return;
+  const candidate = candidates[0];
+  if (!isDeepStrictEqual(candidate.message, event.data)) return;
+  candidate.consumed = true;
+  logical.inboxProvenance = {
+    messageId: event.data.id,
+    target: candidate.target,
+    enqueuedAtSeq: candidate.insertionSeq,
+    claimedAtSeq: candidate.claimSeq,
+    insertionEventId: candidate.insertionEventId,
+    claimEventId: candidate.claimEventId,
+  };
+}
+
 function finalizeSession(session, repoRoot) {
   session.matchesRepo = session.cwdSet.some((cwd) => isPathInsideOrSame(cwd, repoRoot));
   if (!session.title) {
@@ -2296,6 +2429,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   let effectiveRequestProvider = '';
   const childOwnedStartSeq = session._seedLength ?? 0;
   const observedPermissionState = { preset: null, sandboxMode: null, approvalPolicy: null };
+  const inboxReplay = createInboxReplay();
 
   const flushCurrentStep = (status = 'incomplete') => {
     if (!currentStep) return null;
@@ -2446,7 +2580,9 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
         // Human transcript follows append-origin evidence. A compaction
         // replacement user/message is model-only surface material and must
         // not become a Main human message.
-        session.logicalEvents.push(makeUserEvent(session.id, event, raw, 'user_message', 'user_message'));
+        const logical = makeUserEvent(session.id, event, raw, 'user_message', 'user_message');
+        attachInboxProvenance(logical, event, inboxReplay);
+        session.logicalEvents.push(logical);
       } else if (data.source?.kind === 'user') {
         session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, 'user/message', {
           label: 'Surface replacement user message',
@@ -2455,11 +2591,13 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
         }));
       } else {
         const plugin = typeof data.source?.plugin === 'string' ? data.source.plugin : '';
-        session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, 'user/message', {
+        const logical = makeProtocolEvent(session.id, event, raw, 'user/message', {
           label: plugin || 'Runtime context',
           role: 'system',
           preview: truncatePreview(visibleText(data.content) || 'Runtime context'),
-        }));
+        });
+        attachInboxProvenance(logical, event, inboxReplay);
+        session.logicalEvents.push(logical);
       }
     } else if (event.type === 'tool/call') {
       const call = {
@@ -2523,6 +2661,10 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
       session.logicalEvents.push(event.seq < childOwnedStartSeq
         ? makeProtocolEvent(session.id, event, raw, event.type, { role: 'system' })
         : makePermissionProtocolEvent(session.id, event, raw, observedPermissionState));
+    } else if (event.type === 'agent/inbox/spliced') {
+      session.logicalEvents.push(event.seq < childOwnedStartSeq
+        ? makeProtocolEvent(session.id, event, raw, event.type, { role: 'system' })
+        : makeInboxProtocolEvent(session.id, event, raw, inboxReplay));
     } else if (event.type === 'request/header') {
       const provider = data.header?.config?.provider;
       effectiveRequestProvider = typeof provider === 'string' && provider ? provider : '';

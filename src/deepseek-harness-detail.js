@@ -172,11 +172,10 @@ function parsedEventsForRawIds(session, parsedByOrdinal, rawIds) {
 }
 
 function detailForUserMessage(event) {
-  const raws = event.rawRefs;
   const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
   const content = sectionMarkdown(event.searchText || event.preview || '', 'content', '');
   if (content) detail.timelineSections.push(content);
-  return detail;
+  return appendInboxProvenanceDetail(detail, event);
 }
 
 function detailForAssistantMessage(event, session, parsedByOrdinal) {
@@ -512,6 +511,59 @@ function detailForPermissionState(event) {
     'traceability',
     'Observed durable state only',
   ));
+  return detail;
+}
+
+function appendInboxProvenanceDetail(detail, event) {
+  const provenance = event.inboxProvenance;
+  if (!provenance) return detail;
+  const facts = sectionKv([
+    { key: 'Queue target', value: provenance.target },
+    { key: 'Message ID', value: provenance.messageId },
+    { key: 'Enqueued at seq', value: provenance.enqueuedAtSeq },
+    { key: 'Claimed at seq', value: provenance.claimedAtSeq },
+  ], 'traceability', 'Pending-message provenance');
+  if (facts) detail.inspectorSections.push(facts);
+  detail.inspectorSections.push({
+    purpose: 'traceability',
+    type: 'event_refs',
+    title: 'Inbox lifecycle events',
+    items: [
+      { id: provenance.insertionEventId, label: `Queued for ${provenance.target}`, kind: 'protocol', status: 'queued' },
+      { id: provenance.claimEventId, label: `Claimed from ${provenance.target}`, kind: 'protocol', status: 'claimed' },
+    ],
+  });
+  detail.inspectorSections.push(sectionNotice(
+    'These links use the exact durable MessageId and queue replay. Inbox rows keep their own Raw ownership; this message keeps only its user/message Raw row.',
+    'traceability',
+    'Logical relation, not Raw ownership',
+  ));
+  return detail;
+}
+
+function detailForInboxMessage(event, session, parsedByOrdinal) {
+  return appendInboxProvenanceDetail(
+    detailForProtocolEvent(event, session, parsedByOrdinal),
+    event,
+  );
+}
+
+function detailForInboxSplice(event) {
+  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
+  const splice = event.inboxSplice || {};
+  const lifecycle = sectionKv([
+    { key: 'Operation', value: splice.operation },
+    { key: 'Queue target', value: splice.target },
+    { key: 'Start', value: splice.start },
+    { key: 'Inserted messages', value: splice.insertedCount },
+    { key: 'Removed messages', value: splice.removedCount },
+  ], 'context', 'Inbox splice');
+  if (lifecycle) detail.timelineSections.push(lifecycle);
+  const trace = sectionKv([
+    { key: 'Source seq', value: splice.sourceSeq },
+    { key: 'Message IDs', value: Array.isArray(splice.messageIds) ? splice.messageIds.join(', ') : '' },
+  ], 'traceability', 'Inbox lifecycle provenance');
+  if (trace) detail.inspectorSections.push(trace);
   return detail;
 }
 
@@ -877,6 +929,12 @@ function buildLogicalDetail(event, session, parsedByOrdinal) {
   const dispatchTopology = dispatchTopologyForEvent(session, event.id);
   if (dispatchTopology) {
     return detailForCodeDispatch(event, session, parsedByOrdinal, dispatchTopology);
+  }
+  if (event.inboxProvenance) {
+    return detailForInboxMessage(event, session, parsedByOrdinal);
+  }
+  if (event.layer === 'protocol' && event.inboxSplice) {
+    return detailForInboxSplice(event);
   }
   if (event.layer === 'protocol' && event.subtype === 'tool-workflow/run') {
     return detailForWorkflowRun(event, session, parsedByOrdinal);
