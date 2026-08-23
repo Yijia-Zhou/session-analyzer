@@ -315,6 +315,172 @@ function detailForToolOperation(event, session, parsedByOrdinal) {
   return detail;
 }
 
+function dispatchTopologyForEvent(session, eventId) {
+  for (const outer of session.logicalEvents || []) {
+    if (outer?.kind !== 'code_mode_operation') continue;
+    const dispatches = outer.codeModeOperation?.dispatches;
+    if (!Array.isArray(dispatches)) continue;
+    const dispatch = dispatches.find((candidate) => candidate?.eventId === eventId);
+    if (dispatch) return { outer, dispatch };
+  }
+  return null;
+}
+
+function codeModeEventRefsSection(event, session) {
+  const dispatches = Array.isArray(event.codeModeOperation?.dispatches)
+    ? event.codeModeOperation.dispatches
+    : [];
+  const items = dispatches.map((dispatch) => {
+    const target = session.logicalEvents.find((candidate) => candidate.id === dispatch.eventId);
+    if (!target) return null;
+    const depthPrefix = dispatch.depth > 1 ? `${'↳ '.repeat(dispatch.depth - 1)}` : '';
+    return {
+      id: target.id,
+      label: `${depthPrefix}${logicalTitle(target, i18n.DEFAULT_LOCALE)}`,
+      kind: target.kind,
+      status: target.status,
+    };
+  }).filter(Boolean);
+  return items.length
+    ? { purpose: 'traceability', type: 'event_refs', title: 'Observed nested activity', items }
+    : null;
+}
+
+function detailForCodeModeOperation(event, session, parsedByOrdinal) {
+  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
+  const records = parsedEventsForRawIds(
+    session,
+    parsedByOrdinal,
+    (event.rawRefs || []).map((ref) => ref.rawId),
+  );
+  const call = records.find((candidate) => candidate.type === 'tool/call');
+  const result = records.find((candidate) => candidate.type === 'tool/result');
+  const args = parseToolArguments(call?.data?.arguments);
+  const code = typeof args?.code === 'string' ? args.code : '';
+  const request = sectionCode(code || call?.data?.arguments, code ? 'javascript' : 'json', 'request', 'Code', 'command');
+  if (request) detail.timelineSections.push(request);
+  const resultText = result ? toolResultTextFromEvent(result) : '';
+  const resultSection = sectionTerminal(
+    resultText,
+    'result',
+    event.status === 'failed' ? 'Code Mode error' : 'Code Mode result',
+    event.status === 'failed' ? 'stderr' : 'stdout',
+  );
+  if (resultSection) detail.timelineSections.push(resultSection);
+  if (!result) {
+    detail.timelineSections.push(sectionNotice(
+      'The durable log contains the outer run_code call without a matching tool/result.',
+      'result',
+      'Code Mode operation incomplete',
+      'warning',
+    ));
+  }
+  const operation = event.codeModeOperation || {};
+  const metadata = sectionKv([
+    { key: 'Outer call ID', value: operation.outerCallId },
+    { key: 'Root call ID', value: operation.rootCallId },
+    { key: 'Evidence', value: operation.evidenceState },
+    { key: 'Observation', value: operation.observationState },
+    { key: 'Nested activities', value: Array.isArray(operation.eventRefs) ? operation.eventRefs.length : 0 },
+    { key: 'Description', value: args?.description },
+  ], 'context', 'Code Mode evidence');
+  if (metadata) detail.inspectorSections.push(metadata);
+  const refs = codeModeEventRefsSection(event, session);
+  if (refs) detail.inspectorSections.push(refs);
+  return detail;
+}
+
+function detailForCodeDispatch(event, session, parsedByOrdinal, topology) {
+  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
+  const records = parsedEventsForRawIds(
+    session,
+    parsedByOrdinal,
+    (event.rawRefs || []).map((ref) => ref.rawId),
+  );
+  const start = records.find((candidate) => candidate.type === 'tool/code-dispatch-start');
+  const settled = records.find((candidate) => candidate.type === 'tool/code-dispatch');
+  const source = start || settled;
+  const request = sectionCode(
+    source ? JSON.stringify(source.data?.arguments, null, 2) : '',
+    'json',
+    'request',
+    'Tool arguments',
+  );
+  if (request) detail.timelineSections.push(request);
+  const resultText = settled ? visibleTextFromContent(settled.data?.content) : '';
+  const result = sectionTerminal(
+    resultText,
+    'result',
+    settled?.data?.isError === true ? 'Nested tool error' : 'Nested tool result',
+    settled?.data?.isError === true ? 'stderr' : 'stdout',
+  );
+  if (result) detail.timelineSections.push(result);
+  if (!settled) {
+    detail.timelineSections.push(sectionNotice(
+      'A nested dispatch started but no durable settlement is present in the committed Session prefix.',
+      'result',
+      'Nested activity incomplete',
+      'warning',
+    ));
+  }
+  const dispatch = topology.dispatch;
+  const metadata = sectionKv([
+    { key: 'Root call ID', value: dispatch.rootCallId },
+    { key: 'Parent call ID', value: dispatch.parentCallId },
+    { key: 'Sub-call ID', value: dispatch.subCallId },
+    { key: 'Nesting depth', value: dispatch.depth },
+    { key: 'Parent Logical Event', value: dispatch.parentEventId },
+  ], 'traceability', 'Durable dispatch topology');
+  if (metadata) detail.inspectorSections.push(metadata);
+  return detail;
+}
+
+function detailForWorkflowRun(event, session, parsedByOrdinal) {
+  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
+  const records = parsedEventsForRawIds(
+    session,
+    parsedByOrdinal,
+    (event.rawRefs || []).map((ref) => ref.rawId),
+  );
+  const start = records.find((candidate) => candidate.type === 'tool-workflow/run-start');
+  const end = records.find((candidate) => candidate.type === 'tool-workflow/run-end');
+  const memberStarts = records.filter((candidate) => candidate.type === 'tool-workflow/agent-start');
+  const memberEnds = new Map(records
+    .filter((candidate) => candidate.type === 'tool-workflow/agent-end')
+    .map((candidate) => [candidate.data?.seq, candidate]));
+  const primary = sectionKv([
+    { key: 'Name', value: start?.data?.name },
+    { key: 'Status', value: event.status },
+    { key: 'Started agents', value: memberStarts.length },
+  ], 'context', 'Workflow run');
+  if (primary) detail.timelineSections.push(primary);
+  for (const member of memberStarts) {
+    const settled = memberEnds.get(member.data?.seq);
+    const section = sectionKv([
+      { key: 'Label', value: member.data?.label },
+      { key: 'Phase', value: member.data?.phase },
+      { key: 'Child Session ID', value: member.data?.childId },
+      { key: 'Outcome', value: settled?.data?.outcome || 'incomplete' },
+    ], 'context', `Workflow agent ${member.data?.seq}`);
+    if (section) detail.timelineSections.push(section);
+  }
+  const trace = sectionKv([
+    { key: 'Run ID', value: start?.data?.runId },
+    { key: 'Stop reason', value: end?.data?.stopReason || 'not recorded' },
+    { key: 'Lifecycle rows', value: records.length },
+  ], 'traceability', 'Workflow provenance');
+  if (trace) detail.inspectorSections.push(trace);
+  if (!end) {
+    detail.inspectorSections.push(sectionNotice(
+      'The committed Session prefix does not contain tool-workflow/run-end. No completion is manufactured.',
+      'traceability',
+      'Incomplete workflow record',
+      'warning',
+    ));
+  }
+  return detail;
+}
+
 function tokenUsageSection(usage) {
   if (!usage || typeof usage !== 'object') return null;
   const items = [
@@ -521,6 +687,16 @@ function buildLogicalDetail(event, session, parsedByOrdinal) {
   if (event.kind === 'assistant_message') return detailForAssistantMessage(event, session, parsedByOrdinal);
   if (event.kind === 'reasoning') return detailForReasoning(event, session, parsedByOrdinal);
   if (event.kind === 'compaction') return detailForCompaction(event, session, parsedByOrdinal);
+  if (event.kind === 'code_mode_operation') {
+    return detailForCodeModeOperation(event, session, parsedByOrdinal);
+  }
+  const dispatchTopology = dispatchTopologyForEvent(session, event.id);
+  if (dispatchTopology) {
+    return detailForCodeDispatch(event, session, parsedByOrdinal, dispatchTopology);
+  }
+  if (event.layer === 'protocol' && event.subtype === 'tool-workflow/run') {
+    return detailForWorkflowRun(event, session, parsedByOrdinal);
+  }
   if (event.kind === 'command' || event.kind === 'other_tool_call') {
     return detailForToolOperation(event, session, parsedByOrdinal);
   }

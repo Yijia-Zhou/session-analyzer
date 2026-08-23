@@ -236,9 +236,9 @@ Browser JavaScript source lives in `src/browser/`, and browser-and-Node shared l
 ## Known Limits
 
 - Mixed-source indexing and source filters are not supported in v0.1.4.
-- DeepSeek Harness Phase 2A models human messages, finalized and partial assistant messages, reasoning, tool call/result pairs, lifecycle protocol, effective agent presets, child/parent lineage, subagent descriptors, seeded/seedless fork ownership, and compaction lifecycle. Other known upstream DeepSeek event families remain inventoried as deferred.
+- DeepSeek Harness Phase 2A models human messages, finalized and partial assistant messages, reasoning, tool call/result pairs, lifecycle protocol, effective agent presets, child/parent lineage, subagent descriptors, header-seeded fork ownership, constructor-seed markers, and compaction lifecycle. Phase 2B adds explicit-ID Code Mode dispatch and conservative Protocol workflow provenance. Other known upstream DeepSeek event families remain inventoried as deferred.
 - Claude Code external `tool-results/*` payloads are not loaded or searched. Their source records and references remain available through protocol/raw fallback.
-- Future or unknown Codex, Claude Code, and DeepSeek Harness protocol events remain inspectable through protocol/raw fallback views, but not every event family has a polished structured renderer. DeepSeek Harness Phase 2A adds effective presets, lineage/seed ownership, and one coherent compaction projection; remaining event families are inventoried as deferred.
+- Future or unknown Codex, Claude Code, and DeepSeek Harness protocol events remain inspectable through protocol/raw fallback views, but not every event family has a polished structured renderer. DeepSeek Code Mode uses durable source IDs and does not parse outer programs for declared requests; workflow support is source-backed but was observed in 0/6 copied real Sessions.
 - Transcript fixture coverage is targeted rather than exhaustive; newly observed historical shapes may need additional fixtures and display adjustments.
 - Review finding rendering has synthetic coverage and real non-empty `review_output.findings[]` examples have been observed locally; sanitized fixture strengthening is still useful for future regressions.
 

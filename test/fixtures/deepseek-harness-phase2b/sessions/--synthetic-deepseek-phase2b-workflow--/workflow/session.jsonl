@@ -1,0 +1,22 @@
+{"type":"session","version":0,"id":"phase2b-workflow","createdAt":2000,"cwd":"/synthetic/deepseek-phase2b-workflow","agentPreset":"standard","delegationDepth":0}
+{"type":"turn/start","seq":0,"time":2001,"data":{"turn":1}}
+{"type":"step/start","seq":1,"time":2002,"data":{"turn":1,"step":1}}
+{"type":"tool/call","seq":2,"time":2003,"data":{"turn":1,"step":1,"callId":"workflow-call-complete","name":"workflow","arguments":"{\"script\":\"return await agent('synthetic task')\",\"meta\":{\"name\":\"synthetic-complete\",\"description\":\"Synthetic completed workflow\"}}"}}
+{"type":"tool-workflow/run-start","seq":3,"time":2004,"data":{"runId":"workflow-run-complete","name":"synthetic-complete"}}
+{"type":"tool-workflow/agent-start","seq":4,"time":2005,"data":{"runId":"workflow-run-complete","seq":1,"label":"synthetic agent","phase":"inspect","childId":"synthetic-child-complete"}}
+{"type":"tool-workflow/agent-end","seq":5,"time":2006,"data":{"runId":"workflow-run-complete","seq":1,"outcome":"completed"}}
+{"type":"tool-workflow/run-end","seq":6,"time":2007,"data":{"runId":"workflow-run-complete","stopReason":"completed"}}
+{"type":"tool/result","seq":7,"time":2008,"data":{"turn":1,"step":1,"message":{"source":{"kind":"tool","callId":"workflow-call-complete"},"content":[{"type":"tool-result","toolCallId":"workflow-call-complete","content":[{"type":"text","text":"synthetic workflow complete"}],"isError":false}],"role":"user","id":"workflow-result-complete"}},"sourceEventSeqs":[2],"surfaceOp":"append"}
+{"type":"step/end","seq":8,"time":2009,"data":{"turn":1,"step":1}}
+{"type":"step/start","seq":9,"time":2010,"data":{"turn":1,"step":2}}
+{"type":"tool/call","seq":10,"time":2011,"data":{"turn":1,"step":2,"callId":"workflow-call-error","name":"workflow","arguments":"{\"script\":\"return await agent('synthetic failing task')\",\"meta\":{\"name\":\"synthetic-error\",\"description\":\"Synthetic failed workflow\"}}"}}
+{"type":"tool-workflow/run-start","seq":11,"time":2012,"data":{"runId":"workflow-run-error","name":"synthetic-error"}}
+{"type":"tool-workflow/agent-start","seq":12,"time":2013,"data":{"runId":"workflow-run-error","seq":1,"label":"synthetic failing agent","childId":"synthetic-child-error"}}
+{"type":"tool-workflow/agent-end","seq":13,"time":2014,"data":{"runId":"workflow-run-error","seq":1,"outcome":"failed"}}
+{"type":"tool-workflow/run-end","seq":14,"time":2015,"data":{"runId":"workflow-run-error","stopReason":"error"}}
+{"type":"tool/result","seq":15,"time":2016,"data":{"turn":1,"step":2,"message":{"source":{"kind":"tool","callId":"workflow-call-error"},"content":[{"type":"tool-result","toolCallId":"workflow-call-error","content":[{"type":"text","text":"synthetic workflow error"}],"isError":true}],"role":"user","id":"workflow-result-error"}},"sourceEventSeqs":[10],"surfaceOp":"append"}
+{"type":"step/end","seq":16,"time":2017,"data":{"turn":1,"step":2}}
+{"type":"step/start","seq":17,"time":2018,"data":{"turn":1,"step":3}}
+{"type":"tool/call","seq":18,"time":2019,"data":{"turn":1,"step":3,"callId":"workflow-call-incomplete","name":"workflow","arguments":"{\"script\":\"return await agent('synthetic unfinished task')\",\"meta\":{\"name\":\"synthetic-incomplete\",\"description\":\"Synthetic incomplete workflow\"}}"}}
+{"type":"tool-workflow/run-start","seq":19,"time":2020,"data":{"runId":"workflow-run-incomplete","name":"synthetic-incomplete"}}
+{"type":"tool-workflow/agent-start","seq":20,"time":2021,"data":{"runId":"workflow-run-incomplete","seq":1,"label":"synthetic unfinished agent","phase":"pending","childId":"synthetic-child-incomplete"}}

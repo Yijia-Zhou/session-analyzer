@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const fsp = require('node:fs/promises');
+const { isDeepStrictEqual } = require('node:util');
 const MarkdownIt = require('markdown-it');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 const { sanitizeLogicalDetailValue } = require('./shared/logical-detail-sanitizer');
@@ -11,6 +12,7 @@ const {
   createProjectQueryStoreBuilder,
 } = require('./project-query-store');
 const { createSessionQuery } = require('./session-query');
+const { codeModePresentationContextMap } = require('./shared/code-mode-presentation-context');
 const storage = require('./deepseek-harness-storage');
 const { buildDeepSeekEventDetail } = require('./deepseek-harness-detail');
 
@@ -21,6 +23,14 @@ const PARTIAL_BLOCK_TEXT_LIMIT = SEARCH_TEXT_LIMIT;
 const TITLE_LIMIT = 120;
 const REASONING_LIMIT = SEARCH_TEXT_LIMIT;
 const INHERITED_PREVIEW_LIMIT = 12;
+const MAX_CODE_DISPATCH_DEPTH = 256;
+const CODE_MODE_SCRIPT_OPERATION_KIND = 'code_mode_script_operation';
+const TOOL_WORKFLOW_EVENT_TYPES = new Set([
+  'tool-workflow/run-start',
+  'tool-workflow/run-end',
+  'tool-workflow/agent-start',
+  'tool-workflow/agent-end',
+]);
 const DSH_FORK_SEGMENTS = Object.freeze([
   'fork_metadata',
   'inherited_context',
@@ -245,6 +255,14 @@ function parseToolArguments(value) {
     return parsed && typeof parsed === 'object' ? parsed : null;
   } catch {
     return null;
+  }
+}
+
+function boundedJsonText(value, limit = SEARCH_TEXT_LIMIT) {
+  try {
+    return JSON.stringify(value, null, 2).slice(0, limit);
+  } catch {
+    return '';
   }
 }
 
@@ -486,6 +504,7 @@ function makeRawEvent(record, recordOrdinal, sourceFile, sessionId) {
     role,
     status: '',
     toolName: recordType === 'tool/call' || recordType === 'tool/result'
+      || recordType === 'tool/code-dispatch-start' || recordType === 'tool/code-dispatch'
       ? safeString(data.name || data.message?.source?.callId || data.callId)
       : '',
     messageText: '',
@@ -550,6 +569,55 @@ function makeLogicalEvent(fields) {
     source: fields.rawRefs?.[0] || null,
     sourceLocator: fields.rawRefs?.[0]?.sourceLocator || null,
   };
+}
+
+function codeModePhysicalRef(raw) {
+  return {
+    rawId: String(raw?.rawId || ''),
+    file: String(raw?.source?.file || ''),
+    line: Number.isSafeInteger(raw?.source?.line) ? raw.source.line : null,
+  };
+}
+
+function attachCodeModeOperation(event, sessionId, call, resultRaw = null) {
+  const callRef = codeModePhysicalRef(call.raw);
+  const outputRef = resultRaw ? codeModePhysicalRef(resultRaw) : null;
+  const span = resultRaw && callRef.file === outputRef.file
+    ? {
+      file: callRef.file,
+      startLine: callRef.line,
+      endLine: outputRef.line,
+      startRawId: callRef.rawId,
+      endRawId: outputRef.rawId,
+    }
+    : null;
+  const phase = {
+    kind: 'exec',
+    callId: call.callId,
+    targetCellId: '',
+    evidenceState: resultRaw ? 'output_observed' : 'call_only',
+    observationState: resultRaw ? 'terminal' : 'unknown',
+    observedCellId: '',
+    callRef,
+    outputRef,
+    span,
+  };
+  event.codeModeOperation = {
+    id: event.id,
+    sessionId,
+    outerCallId: call.callId,
+    rootCallId: call.callId,
+    turnId: event.turnId,
+    cellId: '',
+    evidenceState: phase.evidenceState,
+    observationState: phase.observationState,
+    pairingIssue: resultRaw ? '' : 'missing_output',
+    phases: [phase],
+    phaseSpans: span ? [{ phaseIndex: 0, kind: 'exec', callId: call.callId, ...span }] : [],
+    eventRefs: [],
+    dispatches: [],
+  };
+  return event;
 }
 
 function makeProtocolEvent(sessionId, event, raw, subtype, options = {}) {
@@ -801,7 +869,7 @@ function finalizeSession(session, repoRoot) {
     if (event.kind === 'user_message') session.counts.userMessages += 1;
     if (event.kind === 'assistant_message') session.counts.assistantMessages += 1;
     if (event.kind === 'reasoning') session.counts.reasoning += 1;
-    if (event.kind === 'command' || event.kind === 'other_tool_call') {
+    if (event.kind === 'command' || event.kind === 'other_tool_call' || event.kind === 'code_mode_operation') {
       session.counts.toolCalls += 1;
     }
     if (event.toolName) toolUsage.set(event.toolName, (toolUsage.get(event.toolName) || 0) + 1);
@@ -853,12 +921,19 @@ function addPendingToolResult(session, call, resultRaw, resultEvent) {
   const resultText = toolResultText(resultEvent);
   const failed = toolResultIsError(resultEvent);
   const status = failed ? 'failed' : 'success';
-  const kind = String(call.name || '').toLowerCase() === 'bash' ? 'command' : 'other_tool_call';
+  const normalizedName = String(call.name || '').toLowerCase();
+  const kind = normalizedName === 'bash'
+    ? 'command'
+    : (normalizedName === 'run_code' ? 'code_mode_operation' : 'other_tool_call');
   const command = call.name === 'bash' ? commandTextForTool(call.name, call.arguments) : '';
+  const args = parseToolArguments(call.arguments);
+  const codeDescription = normalizedName === 'run_code' && typeof args?.description === 'string'
+    ? args.description
+    : '';
   const preview = kind === 'command'
     ? truncatePreview(command || resultText || call.name)
-    : truncatePreview(resultText || call.name);
-  session.logicalEvents.push(makeLogicalEvent({
+    : truncatePreview(codeDescription || resultText || call.name);
+  const logical = makeLogicalEvent({
     id: `${session.id}:logical:tool:${call.callId}`,
     timestamp: safeIso(call.time || resultEvent.time),
     turnId: call.turn ? `turn:${call.turn}` : turnIdFor(resultEvent),
@@ -881,13 +956,25 @@ function addPendingToolResult(session, call, resultRaw, resultEvent) {
     outputStats: {},
     rawRefs: [dshRawRef(call.raw), dshRawRef(resultRaw)],
     channels: ['tool/call', 'tool/result'],
-  }));
+  });
+  if (kind === 'code_mode_operation') {
+    attachCodeModeOperation(logical, session.id, call, resultRaw);
+  }
+  session.logicalEvents.push(logical);
+  return logical;
 }
 
 function makeIncompleteToolEvent(session, call) {
-  const kind = String(call.name || '').toLowerCase() === 'bash' ? 'command' : 'other_tool_call';
+  const normalizedName = String(call.name || '').toLowerCase();
+  const kind = normalizedName === 'bash'
+    ? 'command'
+    : (normalizedName === 'run_code' ? 'code_mode_operation' : 'other_tool_call');
   const command = call.name === 'bash' ? commandTextForTool(call.name, call.arguments) : '';
-  session.logicalEvents.push(makeLogicalEvent({
+  const args = parseToolArguments(call.arguments);
+  const codeDescription = normalizedName === 'run_code' && typeof args?.description === 'string'
+    ? args.description
+    : '';
+  const logical = makeLogicalEvent({
     id: `${session.id}:logical:tool:${call.callId}`,
     timestamp: safeIso(call.time),
     turnId: call.turn ? `turn:${call.turn}` : '',
@@ -896,7 +983,7 @@ function makeIncompleteToolEvent(session, call) {
     layer: 'main',
     role: 'assistant',
     label: call.name ? i18n.humanize(call.name) : kind,
-    preview: truncatePreview(command || call.arguments || call.name),
+    preview: truncatePreview(command || codeDescription || call.arguments || call.name),
     searchText: [call.name || '', call.arguments || '', command].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
     severity: 'warning',
     status: 'incomplete',
@@ -904,7 +991,394 @@ function makeIncompleteToolEvent(session, call) {
     outputStats: {},
     rawRefs: [dshRawRef(call.raw)],
     channels: ['tool/call'],
+  });
+  if (kind === 'code_mode_operation') {
+    attachCodeModeOperation(logical, session.id, call);
+  }
+  session.logicalEvents.push(logical);
+  return logical;
+}
+
+function dispatchFacts(row) {
+  const data = row?.event?.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const rootCallId = safeString(data.rootCallId);
+  const parentCallId = safeString(data.parentCallId);
+  const subCallId = safeString(data.subCallId);
+  const name = safeString(data.name);
+  if (!rootCallId || !parentCallId || !subCallId || !name) return null;
+  return {
+    rootCallId,
+    parentCallId,
+    subCallId,
+    name,
+    arguments: data.arguments,
+    argumentsKey: boundedJsonText(data.arguments, SEARCH_TEXT_LIMIT),
+  };
+}
+
+function makeDispatchFallback(session, row, reason) {
+  session.logicalEvents.push(makeProtocolEvent(
+    session.id,
+    row.event,
+    row.raw,
+    row.event.type,
+    {
+      label: 'Uncorrelated Code Mode dispatch',
+      role: 'system',
+      preview: `Uncorrelated ${row.event.type}: ${reason}`,
+      searchText: `${row.event.type}\n${reason}\n${protocolSearchText(row.event.type, row.event.data)}`,
+      severity: 'warning',
+      status: 'incomplete',
+    },
+  ));
+}
+
+function dispatchResultText(data) {
+  const text = visibleText(data?.content);
+  if (text) return text;
+  return storage.flattenBounded(data?.content || [], SEARCH_TEXT_LIMIT);
+}
+
+function makeCodeDispatchEvent(session, node, outerCall) {
+  const start = node.start;
+  const settled = node.settled;
+  const facts = node.facts;
+  const resultText = settled ? dispatchResultText(settled.event.data) : '';
+  const failed = settled?.event?.data?.isError === true;
+  const status = settled ? (failed ? 'failed' : 'success') : 'incomplete';
+  const kind = facts.name.toLowerCase() === 'bash' ? 'command' : 'other_tool_call';
+  const rawRows = [start, settled]
+    .filter(Boolean)
+    .sort((left, right) => left.event.seq - right.event.seq);
+  const logical = makeLogicalEvent({
+    id: `${session.id}:logical:code-dispatch:${facts.subCallId}`,
+    timestamp: safeIso((start || settled).event.time),
+    turnId: outerCall.turn ? `turn:${outerCall.turn}` : '',
+    kind,
+    subtype: facts.name,
+    layer: 'main',
+    role: 'assistant',
+    label: i18n.humanize(facts.name),
+    preview: truncatePreview(resultText || facts.argumentsKey || facts.name),
+    searchText: [
+      facts.name,
+      facts.argumentsKey,
+      resultText,
+      `rootCallId=${facts.rootCallId}`,
+      `parentCallId=${facts.parentCallId}`,
+      `subCallId=${facts.subCallId}`,
+    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    severity: failed ? 'error' : (settled ? 'normal' : 'warning'),
+    status,
+    toolName: facts.name,
+    outputStats: {},
+    rawRefs: rawRows.map((row) => dshRawRef(row.raw)),
+    channels: rawRows.map((row) => row.event.type),
+  });
+  node.logical = logical;
+  return logical;
+}
+
+function projectCodeDispatches(session, rows, toolCallsById) {
+  if (!rows.length) return;
+  const rowsBySubCall = new Map();
+  const invalidRows = [];
+  for (const row of rows) {
+    const facts = dispatchFacts(row);
+    if (!facts) {
+      invalidRows.push({ row, reason: 'missing durable dispatch identity' });
+      continue;
+    }
+    const group = rowsBySubCall.get(facts.subCallId) || [];
+    group.push({ ...row, facts });
+    rowsBySubCall.set(facts.subCallId, group);
+  }
+
+  const nodes = new Map();
+  for (const [subCallId, group] of rowsBySubCall) {
+    const starts = group.filter((row) => row.event.type === 'tool/code-dispatch-start');
+    const settlements = group.filter((row) => row.event.type === 'tool/code-dispatch');
+    const firstFacts = group[0].facts;
+    const consistent = group.every((row) => (
+      row.facts.rootCallId === firstFacts.rootCallId
+      && row.facts.parentCallId === firstFacts.parentCallId
+      && row.facts.name === firstFacts.name
+      && isDeepStrictEqual(row.facts.arguments, firstFacts.arguments)
+    ));
+    if (!consistent || starts.length > 1 || settlements.length > 1) {
+      for (const row of group) invalidRows.push({ row, reason: `ambiguous dispatch identity ${subCallId}` });
+      continue;
+    }
+    const start = starts[0] || null;
+    const settled = settlements[0] || null;
+    if (start && settled && settled.event.seq < start.event.seq) {
+      for (const row of group) invalidRows.push({ row, reason: `settlement precedes start for ${subCallId}` });
+      continue;
+    }
+    nodes.set(subCallId, {
+      facts: firstFacts,
+      start,
+      settled,
+      rows: group,
+      anchorSeq: (start || settled).event.seq,
+      depth: 0,
+      logical: null,
+      invalidReason: '',
+    });
+  }
+
+  const depthFor = (node, trail = new Set()) => {
+    if (node.invalidReason) return null;
+    const { rootCallId, parentCallId, subCallId } = node.facts;
+    const outerCall = toolCallsById.get(rootCallId);
+    if (!outerCall || String(outerCall.name || '').toLowerCase() !== 'run_code') {
+      node.invalidReason = `root ${rootCallId} is not an outer run_code call`;
+      return null;
+    }
+    if (parentCallId === rootCallId) return 1;
+    if (parentCallId === subCallId || trail.has(subCallId)) {
+      node.invalidReason = `cyclic dispatch ancestry at ${subCallId}`;
+      return null;
+    }
+    if (trail.size >= MAX_CODE_DISPATCH_DEPTH) {
+      node.invalidReason = `dispatch ancestry exceeds the supported depth for ${subCallId}`;
+      return null;
+    }
+    const parent = nodes.get(parentCallId);
+    if (!parent || parent.anchorSeq >= node.anchorSeq || parent.facts.rootCallId !== rootCallId) {
+      node.invalidReason = `parent ${parentCallId} is not an earlier dispatch in root ${rootCallId}`;
+      return null;
+    }
+    trail.add(subCallId);
+    const parentDepth = depthFor(parent, trail);
+    trail.delete(subCallId);
+    if (parentDepth === null || parentDepth + 1 > MAX_CODE_DISPATCH_DEPTH) {
+      node.invalidReason = `dispatch ancestry exceeds the supported depth for ${subCallId}`;
+      return null;
+    }
+    return parentDepth + 1;
+  };
+
+  for (const node of nodes.values()) {
+    const depth = depthFor(node);
+    if (depth === null) {
+      for (const row of node.rows) invalidRows.push({ row, reason: node.invalidReason });
+    } else {
+      node.depth = depth;
+    }
+  }
+  for (const { row, reason } of invalidRows.sort((left, right) => left.row.event.seq - right.row.event.seq)) {
+    makeDispatchFallback(session, row, reason);
+  }
+
+  const validNodes = [...nodes.values()]
+    .filter((node) => node.depth > 0)
+    .sort((left, right) => left.anchorSeq - right.anchorSeq);
+  for (const node of validNodes) {
+    const outerCall = toolCallsById.get(node.facts.rootCallId);
+    session.logicalEvents.push(makeCodeDispatchEvent(session, node, outerCall));
+  }
+
+  const outerEvents = new Map(session.logicalEvents
+    .filter((event) => event.kind === 'code_mode_operation' && event.codeModeOperation?.outerCallId)
+    .map((event) => [event.codeModeOperation.outerCallId, event]));
+  const nodesByRoot = new Map();
+  for (const node of validNodes) {
+    const grouped = nodesByRoot.get(node.facts.rootCallId) || [];
+    grouped.push(node);
+    nodesByRoot.set(node.facts.rootCallId, grouped);
+  }
+  for (const [rootCallId, groupedNodes] of nodesByRoot) {
+    const outer = outerEvents.get(rootCallId);
+    if (!outer) {
+      for (const node of groupedNodes) {
+        session.logicalEvents = session.logicalEvents.filter((event) => event !== node.logical);
+        for (const row of node.rows) makeDispatchFallback(session, row, `missing outer operation ${rootCallId}`);
+      }
+      continue;
+    }
+    outer.codeModeOperation.eventRefs = groupedNodes.map((node) => node.logical.id);
+    outer.codeModeOperation.dispatches = groupedNodes.map((node) => ({
+      eventId: node.logical.id,
+      rootCallId: node.facts.rootCallId,
+      parentCallId: node.facts.parentCallId,
+      subCallId: node.facts.subCallId,
+      parentEventId: node.facts.parentCallId === rootCallId
+        ? outer.id
+        : nodes.get(node.facts.parentCallId)?.logical?.id || '',
+      depth: node.depth,
+      startSeq: node.start?.event.seq ?? null,
+      settledSeq: node.settled?.event.seq ?? null,
+    }));
+  }
+}
+
+function workflowFallback(session, row, reason) {
+  session.logicalEvents.push(makeProtocolEvent(session.id, row.event, row.raw, row.event.type, {
+    label: 'Uncorrelated workflow lifecycle',
+    role: 'system',
+    preview: `Uncorrelated ${row.event.type}: ${reason}`,
+    searchText: `${row.event.type}\n${reason}\n${protocolSearchText(row.event.type, row.event.data)}`,
+    severity: 'warning',
+    status: 'incomplete',
   }));
+}
+
+function validateWorkflowRows(rows) {
+  const ordered = [...rows].sort((left, right) => left.event.seq - right.event.seq);
+  const starts = ordered.filter((row) => row.event.type === 'tool-workflow/run-start');
+  const ends = ordered.filter((row) => row.event.type === 'tool-workflow/run-end');
+  if (starts.length !== 1 || starts[0] !== ordered[0]) return { reason: 'run must have one leading run-start' };
+  if (ends.length > 1 || (ends.length === 1 && ends[0] !== ordered.at(-1))) {
+    return { reason: 'run must have at most one trailing run-end' };
+  }
+  const startData = starts[0].event.data;
+  if (typeof startData.name !== 'string' || !startData.name) return { reason: 'run-start name is invalid' };
+  const members = new Map();
+  for (const row of ordered.slice(1)) {
+    const data = row.event.data;
+    if (row.event.type === 'tool-workflow/agent-start') {
+      if (!Number.isSafeInteger(data.seq) || data.seq < 1 || members.has(data.seq)
+          || typeof data.label !== 'string'
+          || (data.phase !== undefined && typeof data.phase !== 'string')
+          || typeof data.childId !== 'string' || !data.childId) {
+        return { reason: `invalid or repeated workflow member ${String(data.seq)}` };
+      }
+      members.set(data.seq, { start: row, end: null });
+    } else if (row.event.type === 'tool-workflow/agent-end') {
+      const member = members.get(data.seq);
+      if (!member || member.end
+          || !['completed', 'failed', 'cancelled'].includes(data.outcome)) {
+        return { reason: `unmatched or invalid workflow member end ${String(data.seq)}` };
+      }
+      member.end = row;
+    } else if (row.event.type === 'tool-workflow/run-end') {
+      if (!['completed', 'cancelled', 'error'].includes(data.stopReason)) {
+        return { reason: `invalid workflow stop reason ${String(data.stopReason)}` };
+      }
+      if ([...members.values()].some((member) => !member.end)) {
+        return { reason: 'run-end leaves a workflow member open' };
+      }
+    } else {
+      return { reason: `unexpected workflow event ${row.event.type}` };
+    }
+  }
+  return { ordered, start: starts[0], end: ends[0] || null, members };
+}
+
+function makeWorkflowRunEvent(session, runId, projection) {
+  const { ordered, start, end, members } = projection;
+  const stopReason = end?.event?.data?.stopReason || '';
+  const status = stopReason === 'completed'
+    ? 'success'
+    : (stopReason === 'error' ? 'failed' : (stopReason === 'cancelled' ? 'cancelled' : 'incomplete'));
+  const memberFacts = [...members.values()].map((member) => ({
+    seq: member.start.event.data.seq,
+    label: member.start.event.data.label,
+    phase: member.start.event.data.phase,
+    childId: member.start.event.data.childId,
+    outcome: member.end?.event?.data?.outcome || 'incomplete',
+  }));
+  return makeLogicalEvent({
+    id: `${session.id}:logical:workflow:${start.event.seq}`,
+    timestamp: safeIso(start.event.time),
+    turnId: '',
+    kind: 'protocol',
+    subtype: 'tool-workflow/run',
+    layer: 'protocol',
+    role: 'system',
+    label: 'Workflow run',
+    preview: truncatePreview(`Workflow ${start.event.data.name}: ${status}`),
+    searchText: [
+      'tool-workflow/run',
+      `runId=${runId}`,
+      `name=${start.event.data.name}`,
+      `status=${status}`,
+      ...memberFacts.flatMap((member) => [
+        `member=${member.seq}`,
+        `label=${member.label}`,
+        member.phase === undefined ? '' : `phase=${member.phase}`,
+        `childId=${member.childId}`,
+        `outcome=${member.outcome}`,
+      ]),
+    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    severity: status === 'failed' ? 'error' : (status === 'success' ? 'normal' : 'warning'),
+    status,
+    rawRefs: ordered.map((row) => dshRawRef(row.raw)),
+    channels: [...new Set(ordered.map((row) => row.event.type))],
+  });
+}
+
+function projectWorkflowRuns(session, rows) {
+  if (!rows.length) return;
+  const groups = new Map();
+  for (const row of rows) {
+    const runId = safeString(row.event.data?.runId);
+    if (!runId) {
+      workflowFallback(session, row, 'missing runId');
+      continue;
+    }
+    const group = groups.get(runId) || [];
+    group.push(row);
+    groups.set(runId, group);
+  }
+  for (const [runId, group] of groups) {
+    const projection = validateWorkflowRows(group);
+    if (projection.reason) {
+      for (const row of group) workflowFallback(session, row, projection.reason);
+      continue;
+    }
+    session.logicalEvents.push(makeWorkflowRunEvent(session, runId, projection));
+  }
+}
+
+function sortLogicalEventsByRawOrder(session) {
+  const isPhase2BProjection = (event) => {
+    if (event.kind === 'code_mode_operation') return true;
+    const channels = Array.isArray(event.channels) ? event.channels : [];
+    return channels.some((channel) => (
+      channel === 'tool/code-dispatch-start'
+      || channel === 'tool/code-dispatch'
+      || TOOL_WORKFLOW_EVENT_TYPES.has(channel)
+    ));
+  };
+  const existing = session.logicalEvents.filter((event) => !isPhase2BProjection(event));
+  const projected = session.logicalEvents
+    .filter(isPhase2BProjection)
+    .map((event, index) => ({
+      event,
+      index,
+      ordinal: event.rawRefs?.[0]?.sourceLocator?.recordOrdinal ?? Number.MAX_SAFE_INTEGER,
+    }))
+    .sort((left, right) => left.ordinal - right.ordinal || left.index - right.index);
+  const existingEntries = [];
+  let monotonicOrdinal = -1;
+  for (const event of existing) {
+    let emissionOrdinal = -1;
+    for (const ref of event.rawRefs || []) {
+      const ordinal = ref.sourceLocator?.recordOrdinal;
+      if (Number.isSafeInteger(ordinal) && ordinal > emissionOrdinal) emissionOrdinal = ordinal;
+    }
+    if (emissionOrdinal < 0) emissionOrdinal = Number.MAX_SAFE_INTEGER;
+    monotonicOrdinal = Math.max(monotonicOrdinal, emissionOrdinal);
+    existingEntries.push({ event, ordinal: monotonicOrdinal });
+  }
+  const merged = [];
+  let projectedIndex = 0;
+  for (const existingEntry of existingEntries) {
+    while (projectedIndex < projected.length
+        && projected[projectedIndex].ordinal < existingEntry.ordinal) {
+      merged.push(projected[projectedIndex].event);
+      projectedIndex += 1;
+    }
+    merged.push(existingEntry.event);
+  }
+  while (projectedIndex < projected.length) {
+    merged.push(projected[projectedIndex].event);
+    projectedIndex += 1;
+  }
+  session.logicalEvents = merged;
 }
 
 function makeCompactionEvent(sessionId, compaction) {
@@ -1154,6 +1628,9 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   let lastTime = header.createdAt;
   let currentStep = null;
   const pendingToolCalls = new Map();
+  const toolCallsById = new Map();
+  const codeDispatchRows = [];
+  const workflowRows = [];
   const pendingCompactions = new Map();
   let pendingPartialEvent = null;
 
@@ -1320,7 +1797,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
         }));
       }
     } else if (event.type === 'tool/call') {
-      pendingToolCalls.set(data.callId, {
+      const call = {
         callId: data.callId,
         name: data.name,
         arguments: data.arguments,
@@ -1329,7 +1806,14 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
         time: event.time,
         eventSeq: event.seq,
         raw,
-      });
+      };
+      pendingToolCalls.set(data.callId, call);
+      if (typeof data.callId === 'string' && data.callId) {
+        // A durable dispatch root must resolve to exactly one outer call. Keep
+        // ordinary tool pairing behavior unchanged, but make duplicate root
+        // identity permanently ambiguous for the Phase 2B topology projector.
+        toolCallsById.set(data.callId, toolCallsById.has(data.callId) ? null : call);
+      }
     } else if (event.type === 'tool/result') {
       if (!isAppendSurfaceOp(event.surfaceOp)) {
         session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, 'tool/result', {
@@ -1366,6 +1850,10 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
           channels: ['tool/result'],
         }));
       }
+    } else if (event.type === 'tool/code-dispatch-start' || event.type === 'tool/code-dispatch') {
+      codeDispatchRows.push({ event, raw });
+    } else if (TOOL_WORKFLOW_EVENT_TYPES.has(event.type)) {
+      workflowRows.push({ event, raw });
     } else if (event.type === 'session/title') {
       if (typeof data.title === 'string' && data.title.trim()) {
         session._titleCandidates.push({ seq: event.seq, title: data.title.trim() });
@@ -1512,6 +2000,9 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
       makeIncompleteToolEvent(session, call);
     }
   }
+  projectCodeDispatches(session, codeDispatchRows, toolCallsById);
+  projectWorkflowRuns(session, workflowRows);
+  sortLogicalEventsByRawOrder(session);
   applyDeepSeekSeedOwnership(session, seedBoundary, expectedSeq);
   session.title = chooseDeepSeekTitle(session, seedBoundary);
   session.updatedAt = safeIso(lastTime) || session.startedAt;
@@ -1623,24 +2114,33 @@ async function collectArtifactFiles(root, signal) {
 
 function eventKindCatalogForSession(session) {
   const counts = { main: new Map(), protocol: new Map(), raw: new Map() };
+  const matchFields = { main: new Map(), protocol: new Map(), raw: new Map() };
   for (const event of session.logicalEvents) {
     const layer = event.layer === 'protocol' ? 'protocol' : 'main';
     const value = layer === 'protocol' ? (event.subtype || event.kind) : event.kind;
     if (value) counts[layer].set(value, (counts[layer].get(value) || 0) + 1);
+    if (layer === 'main' && event.kind === 'code_mode_operation') {
+      counts.main.set(
+        CODE_MODE_SCRIPT_OPERATION_KIND,
+        (counts.main.get(CODE_MODE_SCRIPT_OPERATION_KIND) || 0) + 1,
+      );
+      matchFields.main.set(CODE_MODE_SCRIPT_OPERATION_KIND, 'presentation_fallback');
+    }
   }
   for (const raw of session.rawEvents) {
     const value = raw.payloadType || raw.recordType;
     if (value) counts.raw.set(value, (counts.raw.get(value) || 0) + 1);
   }
-  const optionsFor = (map, labelFn) => [...map.entries()]
+  const optionsFor = (map, labelFn, fields = new Map()) => [...map.entries()]
     .sort((a, b) => labelFn(a[0]).localeCompare(labelFn(b[0])) || a[0].localeCompare(b[0]))
     .map(([value, count]) => ({
       value,
       label: labelFn(value),
       count,
+      ...(fields.has(value) ? { matchField: fields.get(value) } : {}),
     }));
   return {
-    main: optionsFor(counts.main, (value) => i18n.eventKindLabel(value, i18n.DEFAULT_LOCALE)),
+    main: optionsFor(counts.main, (value) => i18n.eventKindLabel(value, i18n.DEFAULT_LOCALE), matchFields.main),
     protocol: optionsFor(counts.protocol, (value) => i18n.eventKindLabel(value, i18n.DEFAULT_LOCALE)),
     raw: optionsFor(counts.raw, (value) => i18n.rawRecordLabel(value, i18n.DEFAULT_LOCALE)),
   };
@@ -1648,12 +2148,14 @@ function eventKindCatalogForSession(session) {
 
 function createCatalogAccumulator() {
   const counts = { main: new Map(), protocol: new Map(), raw: new Map() };
+  const matchFields = { main: new Map(), protocol: new Map(), raw: new Map() };
   return {
     addSession(session) {
       const catalog = eventKindCatalogForSession(session);
       for (const layer of ['main', 'protocol', 'raw']) {
         for (const item of catalog[layer]) {
           counts[layer].set(item.value, (counts[layer].get(item.value) || 0) + item.count);
+          if (item.matchField) matchFields[layer].set(item.value, item.matchField);
         }
       }
     },
@@ -1661,7 +2163,12 @@ function createCatalogAccumulator() {
       return {
         main: [...counts.main.entries()]
           .sort((a, b) => a[0].localeCompare(b[0]))
-          .map(([value, count]) => ({ value, label: i18n.eventKindLabel(value, i18n.DEFAULT_LOCALE), count })),
+          .map(([value, count]) => ({
+            value,
+            label: i18n.eventKindLabel(value, i18n.DEFAULT_LOCALE),
+            count,
+            ...(matchFields.main.has(value) ? { matchField: matchFields.main.get(value) } : {}),
+          })),
         protocol: [...counts.protocol.entries()]
           .sort((a, b) => a[0].localeCompare(b[0]))
           .map(([value, count]) => ({ value, label: i18n.eventKindLabel(value, i18n.DEFAULT_LOCALE), count })),
@@ -1785,7 +2292,7 @@ async function buildDeepSeekIndex({ sourceHome, repoRoot, signal, onProgress }) 
   }
 
   const queryStoreBuilder = createProjectQueryStoreBuilder({
-    presentationForEvent: () => null,
+    presentationForEvent: deepSeekProjectQueryPresentation,
   });
   const catalog = createCatalogAccumulator();
   const materializationDependencies = new Map();
@@ -2086,11 +2593,49 @@ async function readDeepSeekRawRecord(index, session, raw, options = {}) {
   };
 }
 
+function deepSeekCodeModeScriptOperation(event) {
+  return event?.layer === 'main' && event.kind === 'code_mode_operation';
+}
+
+function deepSeekProjectQueryPresentation(_session, event) {
+  return {
+    scriptOperation: deepSeekCodeModeScriptOperation(event),
+    declaredRequestNames: [],
+    requestEvidence: '',
+  };
+}
+
 const deepSeekQuery = createSessionQuery({
   schemaVersion: CANONICAL_SCHEMA_VERSION,
   rawRef: dshRawRef,
   derivedSessionKind: deepSeekDerivedSessionKind,
+  eventKindCatalog(sessions) {
+    const catalog = createCatalogAccumulator();
+    for (const session of sessions || []) catalog.addSession(session);
+    return catalog.finish();
+  },
   presentation: {
+    normalizeFilters(filters) {
+      const normalized = { ...filters };
+      const sourcePresentation = { ...(normalized.sourcePresentation || {}) };
+      if (normalized.kind === CODE_MODE_SCRIPT_OPERATION_KIND) {
+        normalized.kind = '';
+        sourcePresentation.scriptOperation = true;
+      }
+      normalized.sourcePresentation = sourcePresentation;
+      return normalized;
+    },
+    matchesEvent(event, filters) {
+      return !filters.sourcePresentation?.scriptOperation || deepSeekCodeModeScriptOperation(event);
+    },
+    hasActiveFilter(filters) {
+      return filters.sourcePresentation?.scriptOperation === true;
+    },
+    contextMap: codeModePresentationContextMap,
+    projectRowFacts: deepSeekProjectQueryPresentation,
+    matchesProjectRow(presentationFact, filters) {
+      return !filters.sourcePresentation?.scriptOperation || presentationFact?.scriptOperation === true;
+    },
     rawForkSegment: deepSeekRawForkSegment,
   },
   rawRecordLabel(raw) {
