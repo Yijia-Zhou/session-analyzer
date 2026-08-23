@@ -61,10 +61,11 @@ test('package metadata exposes the session-analyzer CLI', () => {
 
   assert.equal(pkg.name, 'session-analyzer');
   assert.equal(pkg.version, '0.1.4');
-  assert.equal(pkg.description, 'Local interactive viewer for Codex and Claude Code session transcripts.');
+  assert.equal(pkg.description, 'Local interactive viewer for Codex, Claude Code, and DeepSeek Harness session transcripts.');
   assert.deepEqual(pkg.keywords, [
     'codex',
     'claude-code',
+    'deepseek-harness',
     'transcript',
     'viewer',
     'session',
@@ -321,6 +322,9 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'src/codex-presentation-context.js',
     'src/codex-search.js',
     'src/codex-source.js',
+    'src/deepseek-harness.js',
+    'src/deepseek-harness-detail.js',
+    'src/deepseek-harness-storage.js',
     'src/codex-tool-lifecycle-contract.js',
     'src/codex.js',
     'src/folding.js',
@@ -338,6 +342,7 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'src/shared/command-highlighting.js',
     'src/shared/canonical-schema.js',
     'src/shared/code-mode-detail-contract.js',
+    'src/shared/code-mode-presentation-context.js',
     'src/shared/detail-purpose.js',
     'src/shared/code-mode-presentation-contract.js',
     'src/shared/code-mode-tools.js',

@@ -154,12 +154,14 @@ test('POST /api/source validates source, homes, body shape, and payload size', a
   assert.deepEqual(state.json.details.sourceConfigs, {
     codex: { home: path.resolve(codexFixtureHome) },
     'claude-code': { home: path.resolve(fixture.claudeHome, 'unused') },
+    'deepseek-harness': { home: path.join(os.homedir(), '.dsh', 'sessions') },
   });
   assert.deepEqual(state.json.details.sourceOptions, [
     { kind: 'codex', label: 'Codex', homeOption: 'codexHome', homeLabel: 'Codex home' },
     { kind: 'claude-code', label: 'Claude Code', homeOption: 'claudeHome', homeLabel: 'Claude home' },
+    { kind: 'deepseek-harness', label: 'DeepSeek Harness', homeOption: 'dshHome', homeLabel: 'DeepSeek sessions root' },
   ]);
-  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code']);
+  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code', 'deepseek-harness']);
 });
 
 test('POST /api/source switches source and exposes unified configuration payloads', async (t) => {
@@ -177,7 +179,7 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(initialProjects.json.claudeHome, path.resolve(fixture.claudeHome, 'unused'));
   assert.equal(initialProjects.json.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
   assert.equal(initialProjects.json.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome, 'unused'));
-  assert.deepEqual(initialProjects.json.supportedSources, ['codex', 'claude-code']);
+  assert.deepEqual(initialProjects.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness']);
   assert.ok(initialProjects.json.projects.some((project) => project.repoRoot === codexFixtureRepo));
 
   const switched = await requestJson(
@@ -192,7 +194,7 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(switched.json.claudeHome, path.resolve(fixture.claudeHome));
   assert.equal(switched.json.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
   assert.equal(switched.json.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome));
-  assert.deepEqual(switched.json.supportedSources, ['codex', 'claude-code']);
+  assert.deepEqual(switched.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness']);
   assert.equal(switched.json.projectSelected, false);
 
   const state = await requestJson(base, '/api/state');
@@ -203,7 +205,7 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(state.json.details.claudeHome, path.resolve(fixture.claudeHome));
   assert.equal(state.json.details.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
   assert.equal(state.json.details.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome));
-  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code']);
+  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code', 'deepseek-harness']);
 
   const projects = await requestJson(base, '/api/projects');
   assert.equal(projects.status, 200);
@@ -675,7 +677,7 @@ test('source switch cancels the active job and never commits a stale index', asy
   assert.equal(runningState.json.sourceKind, 'codex');
   assert.equal(runningState.json.projectSelected, false);
   assert.equal(runningState.json.job.status, 'running');
-  assert.deepEqual(runningState.json.supportedSources, ['codex', 'claude-code']);
+  assert.deepEqual(runningState.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness']);
 
   const switched = await requestJson(
     base,

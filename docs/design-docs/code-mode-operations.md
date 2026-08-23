@@ -3,8 +3,8 @@
 ## Metadata / 元数据
 
 - Owner: repository maintainers / 负责人：仓库维护者
-- Status: accepted; composite Logical Event selected / 状态：已接受；选用复合逻辑事件
-- Last updated: 2026-07-30 / 最近更新：2026-07-30
+- Status: accepted; composite Logical Event selected; DeepSeek explicit-ID projection added in Phase 2B / 状态：已接受；选用复合逻辑事件；Phase 2B 已加入 DeepSeek 显式 ID 投影
+- Last updated: 2026-08-23 / 最近更新：2026-08-23
 - Related spec: `docs/product-specs/session-transcript-analyzer.md` / 相关规格：`docs/product-specs/session-transcript-analyzer.md`
 - Related design docs: / 相关设计文档：
   - `docs/design-docs/logical-event-timeline.md`
@@ -15,7 +15,8 @@
   - `docs/exec-plans/completed/2026-07-14-code-mode-operation-grouping.md`
   - `docs/exec-plans/completed/2026-07-15-code-mode-structured-nested-projections.md`
   - `docs/exec-plans/completed/2026-07-22-code-mode-context-and-discoverability.md`
-  - `docs/exec-plans/active/2026-07-25-code-mode-request-facets-and-folding.md`
+  - `docs/exec-plans/completed/2026-07-25-code-mode-request-facets-and-folding.md`
+  - `docs/exec-plans/completed/2026-08-23-deepseek-harness-phase-2b-code-mode-workflow.md`
 
 ## Context / 背景
 
@@ -72,6 +73,14 @@ CodeModeOperation
 The accepted public reverse relation is presentation-only. At a logical timeline DTO or layer-aware event-envelope response boundary, a nested event may receive exactly `{ relation: 'enclosed_by_code_mode_operation', codeModeParentId }` under optional `presentationContext` only when one existing canonical `code_mode_operation` parent has an existing ID and lists that nested ID in `eventRefs`. It is omitted for zero or multiple parents, missing/malformed refs, self/ambiguous/cross-span associations, and declaration/projection-only facts. It is never inferred from JavaScript, tool names, timestamps, adjacency, or similar call IDs, and it is not written into raw DTOs or the canonical event graph. Parent and child identities, Raw refs, status, counts, search owners/targets, metrics, and evidence ownership remain unchanged.
 
 已接受的公开反向关系只用于呈现。在逻辑 timeline DTO 或感知事件层 event-envelope 响应边界，nested event 只有在一个已有规范 `code_mode_operation` 父操作具有已有 ID 且其 `eventRefs` 列出该 nested ID 时，才可以在可选 `presentationContext` 下获得精确的 `{ relation: 'enclosed_by_code_mode_operation', codeModeParentId }`。父操作为零或多个、refs 缺失/格式错误、自引用/歧义/跨区间关联，以及仅有声明/投影事实时都会省略。它绝不从 JavaScript、工具名称、timestamp、相邻关系或相似 call ID 推断，也不会写入 raw DTO 或规范事件图。父子 identity、Raw refs、status、计数、搜索 owner/target、指标和证据 ownership 均保持不变。
+
+### DeepSeek explicit durable topology / DeepSeek 显式持久拓扑
+
+DeepSeek Harness reaches the accepted composite presentation through different source evidence than Codex. The outer `tool/call(name = run_code)` plus its exact `tool/result` owns one `code_mode_operation` and only those outer Raw References. Every valid `tool/code-dispatch-start`／`tool/code-dispatch` identity owns a separate ordinary Main tool event and only its own start/settlement Raw References. Correlation and ancestry come exclusively from exact durable `rootCallId`／`parentCallId`／`subCallId`; the adapter never parses the outer program, guesses from intervals, or copies nested request/result text into the outer search owner. / DeepSeek Harness 通过与 Codex 不同的来源证据进入已接受的复合呈现。Outer `tool/call(name = run_code)` 与其精确 `tool/result` 拥有一条 `code_mode_operation`，并且只拥有这两类 outer Raw Reference。每个有效 `tool/code-dispatch-start`／`tool/code-dispatch` identity 都拥有一条独立普通 Main 工具 event，并且只拥有自身 start／settlement Raw Reference。关联与 ancestry 完全来自精确持久 `rootCallId`／`parentCallId`／`subCallId`；adapter 绝不解析 outer program、不根据区间猜测，也不把 nested request／result 文本复制给 outer 搜索 owner。
+
+Starts establish stable source order even when settlements interleave. A settlement may complete as success or error independently of the outer result; a start-only committed prefix remains incomplete, and the source-permitted settlement-only history fallback remains one observed result. The current upstream graph admits bounded ancestry, while the copied real PTC artifact validates only depth 1. The adapter retains bounded `parentEventId`／`depth` facts for source-backed synthetic deeper cases and exposes them in adapter-owned traceability Detail; the shared public reverse context remains the already accepted outer-enclosure relation rather than widening the canonical event graph. Malformed, cyclic, ambiguous, over-depth, or unowned identities fall back to separate Protocol/Raw evidence. / Start 即使面对交错 settlement 也建立稳定来源顺序。Settlement 可以独立于 outer result 成为 success 或 error；仅有 start 的 committed prefix 保持 incomplete，而源码允许的仅 settlement 历史回退仍表示一条 observed result。当前上游图允许有界 ancestry，而复制的真实 PTC 工件只验证 depth 1。Adapter 为源码支撑的合成更深场景保留有界 `parentEventId`／`depth` fact，并在 adapter 自有 traceability Detail 中暴露；共享公开反向 context 继续使用已接受的 outer-enclosure 关系，不扩大 canonical event graph。畸形、循环、歧义、超深或没有 owner 的 identity 回退为分离 Protocol／Raw 证据。
+
+DeepSeek operations intentionally expose no declared-request facts: outer source parsing is not a DSH provenance fact. They therefore use the existing `Scripted operation` presentation fallback and the existing enclosing-operation context projector. This requires no canonical expansion and no DeepSeek browser branch. / DeepSeek operation 有意不暴露 declared-request fact：outer source 解析不是 DSH provenance fact。因此它们使用既有 `Scripted operation` 呈现兜底与 enclosing-operation context projector；无需扩大 canonical，也无需 DeepSeek browser 分支。
 
 ### Main discoverability and canonical folding / Main 可发现性与规范折叠
 

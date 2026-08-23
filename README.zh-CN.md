@@ -2,7 +2,7 @@
 
 [English README](README.md)
 
-Session Analyzer 把本地 Codex 与 Claude Code 会话转录整理成按仓库组织的可读工作历史。无需翻阅原始 JSONL，就能回顾 agent 做过什么、在整个项目中找回具体工作，并理解相关会话之间的来龙去脉。
+Session Analyzer 把本地 Codex、Claude Code 与 DeepSeek Harness 会话转录整理成按仓库组织的可读工作历史。无需翻阅原始 JSONL，就能回顾 agent 做过什么、在整个项目中找回具体工作，并理解相关会话之间的来龙去脉。
 
 ![Session Analyzer 展示仓库会话历史、可读的主时间线和结构化命令详情](docs/assets/readme/session-analyzer-overview.png)
 
@@ -66,7 +66,19 @@ npx session-analyzer --source claude-code --repo /path/to/project
 npx session-analyzer --source claude-code --claude-home /path/to/.claude
 ```
 
-`--source claude` 是 `--source claude-code` 的别名。之后也可以在项目选择界面切换当前转录来源，或编辑任一来源 home。任一时刻只有一个活跃来源；Session Analyzer 不会构建 Codex 与 Claude 的混合索引。
+DeepSeek Harness 读取其 JSONL 持久化根（`session.jsonl` 或 `session.jsonl.zstd`），默认根为 `~/.dsh/sessions`：
+
+```sh
+npx session-analyzer --source deepseek-harness --repo /path/to/project
+```
+
+如果 DeepSeek 会话持久化根不在默认位置，可以使用 `--dsh-home`：
+
+```sh
+npx session-analyzer --source deepseek-harness --dsh-home /path/to/sessions
+```
+
+`--source claude` 是 `--source claude-code` 的别名，`--source dsh` 或 `--source deepseek` 是 DeepSeek Harness 的别名。之后也可以在项目选择界面切换当前转录来源，或编辑任一来源根。任一时刻只有一个活跃来源；Session Analyzer 不会构建混合来源索引。
 
 也可以全局安装 CLI：
 
@@ -79,7 +91,7 @@ session-analyzer --repo /path/to/project
 
 ## 使用方式
 
-1. 使用默认的 Codex 来源或在 CLI 选择 Claude Code，然后在浏览器中选择目标项目，也可以在启动服务器时传入 `--repo`。
+1. 使用默认的 Codex 来源，或在 CLI 选择 Claude Code 或 DeepSeek Harness，然后在浏览器中选择目标项目，也可以在启动服务器时传入 `--repo`。
 2. 使用项目选择界面在运行期切换项目；同一界面还可以切换当前转录来源或编辑其 home 目录，随后会针对该来源重新发现项目。
 3. 从左侧面板选择一个会话。
 4. 使用 `Main timeline` 进行日常阅读，使用 `Protocol layer` 查看注入上下文和生命周期记录，使用 `Raw records` 查看精确转录行。
@@ -90,7 +102,7 @@ npm 包不承诺稳定的程序接口。v0.1 支持的接口是 `session-analyze
 
 ## 可检查的内容
 
-- 从 Codex 或 Claude Code 会话工作目录中发现并切换项目，也可以启动时直接指定目标仓库。
+- 从 Codex、Claude Code 或 DeepSeek Harness 会话工作目录中发现并切换项目，也可以启动时直接指定目标仓库。
 - 无需重启服务器，即可在项目选择界面切换当前转录来源并配置来源 home 目录。
 - 只显示与所选仓库匹配的会话。
 - 保持 Claude Code subagent 可单独选择；区分物化式与指针式分叉，并在不重复指标或原始记录的前提下展示归父会话所有的继承上下文。
@@ -110,7 +122,7 @@ npm 包不承诺稳定的程序接口。v0.1 支持的接口是 `session-analyze
 - 派生索引只保存在内存中。
 - 原始转录下钻需要用户显式打开，所以敏感内容不会被应用隐藏，但本应用也不会把它发送到外部。
 
-Agent 转录可能包含提示词、命令输出、文件路径、环境详情以及其他私有材料。不要把真实的 `.codex/sessions`、`.claude/projects` 目录或导出的转录数据提交到公开仓库。
+Agent 转录可能包含提示词、命令输出、文件路径、环境详情以及其他私有材料。不要把真实的 `.codex/sessions`、`.claude/projects`、`.dsh/sessions` 目录或导出的转录数据提交到公开仓库。
 
 这个工具是本地查看器，不是托管的多用户分析服务。如果你把服务器暴露到 localhost 之外，任何能访问该服务的人都可能读取当前进程可访问的转录内容。
 
@@ -118,7 +130,7 @@ Agent 转录可能包含提示词、命令输出、文件路径、环境详情�
 
 ## 环境要求
 
-- 已安装 CLI：受支持的 Node.js LTS，最低 Node.js 22（推荐 Node.js 24），以及用于安装的 npm
+- 已安装 CLI：受支持的 Node.js LTS，最低 Node.js 22（推荐 Node.js 24），以及用于安装的 npm。DeepSeek Harness 的 `session.jsonl.zstd` 使用 Node 内置 `node:zlib` Zstandard API；该 API 不可用时，未压缩的 `session.jsonl` 仍可读取
 - 源码开发与发布工作：Node.js `^22.22.2 || ^24.15.0`，并且 npm 必须精确为 `12.0.2`
 
 ### 大型 transcript 历史与 Node/V8 内存
@@ -153,7 +165,7 @@ NODE_OPTIONS='--max-old-space-size=4096' npx session-analyzer --repo /path/to/pr
 
 ## 从源码开发
 
-已发布 CLI 继续采用上文 Node.js 22 或更高版本的宽泛运行时要求。源码 checkout 有意采用更严格的工具链，因为 npm 12 会执行经过审查的依赖 install-script 策略。在运行仓库内任何 `npm install`、`npm ci` 或 `npm run` 前，先选择受支持的 Node.js 版本，并从源码 checkout 之外的目录全局 bootstrap 精确的 npm CLI。下面第一条 npm 命令只更新工具链，不安装项目依赖：
+已发布 CLI 继续采用上文 Node.js 22 或更高版本的宽泛运行时要求；DeepSeek Harness 压缩工件依赖受支持开发 Node 版本中内置的 `node:zlib` Zstandard API，未压缩 `session.jsonl` 在其他环境仍可读取。源码 checkout 有意采用更严格的工具链，因为 npm 12 会执行经过审查的依赖 install-script 策略。在运行仓库内任何 `npm install`、`npm ci` 或 `npm run` 前，先选择受支持的 Node.js 版本，并从源码 checkout 之外的目录全局 bootstrap 精确的 npm CLI。下面第一条 npm 命令只更新工具链，不安装项目依赖：
 
 ```sh
 node --version
@@ -223,9 +235,10 @@ Release gate 会检查生成资产、运行完整 Node 测试，并重复执行�
 
 ## 已知限制
 
-- v0.1.4 暂不支持 Codex 与 Claude 混合索引或来源筛选。
+- v0.1.4 暂不支持混合来源索引或来源筛选。
+- DeepSeek Harness 第二阶段 A 建模人类消息、最终与部分助手消息、reasoning、工具调用／结果配对、生命周期 protocol、生效 agent preset、父子 lineage、subagent descriptor、带 seed／无 seed 的 fork ownership，以及 compaction 生命周期。其他已知上游 DeepSeek 事件族仍明确列为推迟。
 - Claude Code 外置的 `tool-results/*` payload 暂不加载或搜索；其来源记录和引用仍可通过 protocol/raw 兜底查看。
-- 未来或未知的 Codex 与 Claude Code protocol event 仍可通过 protocol/raw 兜底视图检查，但并非每个事件族都有完整精致的结构化渲染器。
+- 未来或未知的 Codex、Claude Code 与 DeepSeek Harness protocol event 仍可通过 protocol/raw 兜底视图检查，但并非每个事件族都有完整精致的结构化渲染器。DeepSeek Harness 第二阶段 A 新增生效 preset、lineage／seed ownership，以及单一连贯 compaction 投影；其余事件族仍在执行计划中明确列为推迟。
 - 转录 fixture 覆盖是有重点的，不是穷尽式的；后续观察到新的历史形态时，可能仍需要补充 fixture 和展示调整。
 - Review finding 渲染已有合成数据覆盖，本地也已观察到真实的非空 `review_output.findings[]` 示例；后续仍适合补充脱敏 fixture 来防止回归。
 
@@ -235,6 +248,7 @@ Release gate 会检查生成资产、运行完整 Node 测试，并重复执行�
 - `src/source-adapters.js`：来源选择与来源中立的分派边界。
 - `src/codex*.js`：Codex 解析、发现、逻辑映射、索引和详情构建。
 - `src/claude*.js`：Claude Code 发现、解析、逻辑映射、索引和详情构建。
+- `src/deepseek-harness*.js`：DeepSeek Harness 存储／解码、发现、严格 Indexed／Materialized 映射与详情构建。
 - `src/folding.js`：内置时间线折叠策略。
 - `src/shared/`：浏览器与 Node 共用逻辑，例如折叠规则求值和命令高亮元数据。
 - `src/browser/`：浏览器 UI 源码、搜索控件与状态模型、渲染器、导航和应用接线。

@@ -49,7 +49,7 @@ const {
   recordMaterializationDuration,
 } = require('./materialization-observer');
 const { deriveCodeModeFacts } = require('./codex-code-mode-facts');
-const { codeModePresentationContextMap } = require('./codex-presentation-context');
+const { codeModePresentationContextMap } = require('./shared/code-mode-presentation-context');
 const { createCodexDetailBuilder } = require('./codex-detail');
 const {
   validateCanonicalLegacyRawOwnerIndex,

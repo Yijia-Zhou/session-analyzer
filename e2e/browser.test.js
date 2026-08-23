@@ -2444,7 +2444,11 @@ test('browser project chrome separates project switching from session-list reind
 
 test('browser chooser switches transcript source and refreshes project candidates', async (t) => {
   const fixture = await makeClaudeSwitchFixture(t);
-  const { page } = await openSourceSwitchChooser(t, { server: { claudeHome: fixture.claudeHome } });
+  const dshHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-dsh-'));
+  t.after(() => fsp.rm(dshHome, { recursive: true, force: true }));
+  const { page } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: fixture.claudeHome, dshHome },
+  });
 
   await waitForProjectRoot(page, repoRoot);
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Codex/);
@@ -2456,6 +2460,13 @@ test('browser chooser switches transcript source and refreshes project candidate
   await waitForProjectRoot(page, fixture.claudeRepo);
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Claude Code/);
   assert.ok((await page.locator('#projectSourceHome').textContent()).includes(fixture.claudeHome));
+  // With DeepSeek Harness registered as the third source, the generic
+  // chooser cycles Claude Code -> DeepSeek Harness -> Codex.
+  assert.equal(await page.locator('#projectSourceAction').textContent(), 'Switch to DeepSeek Harness');
+
+  await page.locator('#projectSourceAction').click();
+  await confirmSourceAction(page, 'Confirm switch to DeepSeek Harness');
+  await page.waitForFunction(() => document.querySelector('#projectSourceSwitch')?.dataset.source === 'deepseek-harness');
   assert.equal(await page.locator('#projectSourceAction').textContent(), 'Switch to Codex');
 
   await page.locator('#projectSourceAction').click();
@@ -2468,11 +2479,13 @@ test('browser source switch cycles through every supported registry source', asy
   const sourceOptions = [
     { kind: 'codex', label: 'Codex', homeOption: 'codexHome', homeLabel: 'Codex home' },
     { kind: 'claude-code', label: 'Claude Code', homeOption: 'claudeHome', homeLabel: 'Claude home' },
+    { kind: 'deepseek-harness', label: 'DeepSeek Harness', homeOption: 'dshHome', homeLabel: 'DeepSeek sessions root' },
     { kind: 'future-source', label: 'Future Source', homeOption: 'futureSourceHome', homeLabel: 'Future Source home' },
   ];
   const homes = {
     codex: path.join(os.tmpdir(), 'browser-cycle-codex'),
     'claude-code': path.join(os.tmpdir(), 'browser-cycle-claude'),
+    'deepseek-harness': path.join(os.tmpdir(), 'browser-cycle-dsh'),
     'future-source': path.join(os.tmpdir(), 'browser-cycle-future'),
   };
   let currentSource = 'codex';
@@ -2482,6 +2495,7 @@ test('browser source switch cycles through every supported registry source', asy
     sourceConfigs: Object.fromEntries(Object.keys(homes).map((kind) => [kind, { home: homes[kind] }])),
     codexHome: homes.codex,
     claudeHome: homes['claude-code'],
+    dshHome: homes['deepseek-harness'],
     futureSourceHome: homes['future-source'],
     supportedSources: sourceOptions.map((option) => option.kind),
     sourceOptions,
@@ -2521,12 +2535,16 @@ test('browser source switch cycles through every supported registry source', asy
   assert.equal(await page.locator('#projectSourceAction').textContent(), 'Switch to Claude Code');
   await page.locator('#projectSourceAction').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
+  await page.waitForFunction(() => document.querySelector('#projectSourceAction')?.textContent === 'Switch to DeepSeek Harness');
+
+  await page.locator('#projectSourceAction').click();
+  await confirmSourceAction(page, 'Confirm switch to DeepSeek Harness');
   await page.waitForFunction(() => document.querySelector('#projectSourceAction')?.textContent === 'Switch to Future Source');
 
   await page.locator('#projectSourceAction').click();
   await confirmSourceAction(page, 'Confirm switch to Future Source');
   await page.waitForFunction(() => document.querySelector('#projectSourceAction')?.textContent === 'Switch to Codex');
-  assert.deepEqual(posts, ['claude-code', 'future-source']);
+  assert.deepEqual(posts, ['claude-code', 'deepseek-harness', 'future-source']);
 });
 
 test('browser hydration prefers canonical source configs over conflicting legacy home fields', async (t) => {
@@ -2776,7 +2794,7 @@ test('browser chooser shows the server source before any switch', async (t) => {
   await waitForProjectRoot(page, fixture.claudeRepo);
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Claude Code/);
   assert.ok((await page.locator('#projectSourceHome').textContent()).includes(fixture.claudeHome));
-  assert.equal(await page.locator('#projectSourceAction').textContent(), 'Switch to Codex');
+  assert.equal(await page.locator('#projectSourceAction').textContent(), 'Switch to DeepSeek Harness');
   const chooserOrder = await page.locator('.projectChooserHeader').evaluate((header) => (
     [...header.children].map((child) => child.id || child.tagName)
   ));
@@ -3166,6 +3184,7 @@ test('browser treats backslashes as literal characters in POSIX home paths', asy
   const fixture = await makeClaudeSwitchFixture(t);
   let sourcePosts = 0;
   const posixCodexHome = '/home/me/.codex';
+  const posixDshHome = '/home/me/.dsh/sessions';
   const { page } = await openSourceSwitchChooser(t, {
     server: { claudeHome: fixture.claudeHome },
     localStorage: { 'sessionAnalyzer.repoRoot.codex': repoRoot },
@@ -3178,10 +3197,12 @@ test('browser treats backslashes as literal characters in POSIX home paths', asy
           sourceHome: posixCodexHome,
           codexHome: posixCodexHome,
           claudeHome: '/home/me/.claude',
+          dshHome: posixDshHome,
           sourceConfigs: {
             ...data.sourceConfigs,
             codex: { home: posixCodexHome },
             'claude-code': { home: '/home/me/.claude' },
+            'deepseek-harness': { home: posixDshHome },
           },
         });
         await route.fulfill({ response, json: data });
