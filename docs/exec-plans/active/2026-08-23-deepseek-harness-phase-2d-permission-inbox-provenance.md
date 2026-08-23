@@ -43,7 +43,7 @@ Add adapter-owned structured permission state at the Logical Event／Detail boun
 ## Milestones / 里程碑
 
 - [x] M0 — accepted focused real-corpus/source audit; no repeat. / 已接受聚焦真实语料／源码审计；不重复。
-- [ ] M1 — permission durable-state snapshots, Structured Detail, malformed/custom/partial/runtime tests, parity/freshness, and six-artifact gate. / Permission 持久状态 snapshot、结构化 Detail、malformed／custom／partial／runtime 测试、parity／freshness 与六工件门禁。
+- [x] M1 — permission durable-state snapshots, Structured Detail, malformed/custom/partial/runtime tests, parity/freshness, and six-artifact gate. / Permission 持久状态 snapshot、结构化 Detail、malformed／custom／partial／runtime 测试、parity／freshness 与六工件门禁。
 - [ ] M2 — strict inbox replay, exact relation metadata/event refs, optional splice Detail, defensive fallback tests, and exact 19-message gate. / 严格 inbox replay、精确 relation metadata／event ref、可选 splice Detail、防御回退测试与精确 19-message 门禁。
 - [ ] M3 — full local gates, read-only replay, remote CI, docs closeout, archive, and stop. / 完整本地门禁、只读 replay、远程 CI、文档收尾、归档并停止。
 
@@ -68,3 +68,4 @@ Prefer four reviewable commits: (1) plan／accepted M0; (2) M1 Permission; (3) M
 ## Progress log / 进展记录
 
 - 2026-08-23 (baseline): verified clean `support-dsh` at `dc7bcb354…`, equal to origin; verified clean upstream `b150a551…`, package `0.1.1-rc.2`. / 核验干净 `support-dsh@dc7bcb354…` 与 origin 相同；核验干净 upstream `b150a551…`、package `0.1.1-rc.2`。
+- 2026-08-23 (M1): each valid permission row remains one Protocol event with one Raw ref and receives an adapter-owned observed-state snapshot; custom preset names are preserved, unknown knobs stay null, malformed rows receive no snapshot, and inherited prefix facts do not enter child state. Focused tests pass 4/4 and the full DeepSeek／conformance gate passes 69/69. Six-artifact replay yields exactly three rows per Session, partial／partial／complete states ending at `workspace-write／workspace-write／ask`, unchanged Main counts, zero interactive approvals, and zero Raw collision. No shared or canonical change. / 每条有效 permission row 保持一条拥有单 Raw ref 的 Protocol event，并获得 adapter 自有 observed-state snapshot；保留 custom preset name，未知 knob 保持 null，畸形 row 不获得 snapshot，继承 prefix fact 不进入 child state。聚焦测试 4／4、完整 DeepSeek／conformance 门禁 69／69 通过。六工件 replay 每个 Session 精确三条 row，状态依次 partial／partial／complete 并最终为 `workspace-write／workspace-write／ask`；Main count 不变、interactive approval 为零、Raw collision 为零。无共享或 canonical 修改。

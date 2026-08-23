@@ -481,6 +481,40 @@ function detailForWorkflowRun(event, session, parsedByOrdinal) {
   return detail;
 }
 
+function detailForPermissionState(event) {
+  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
+  const change = event.permissionChange || {};
+  const state = event.permissionState || {};
+  const changed = sectionKv([
+    { key: 'Source event', value: change.eventType },
+    { key: 'Changed knob', value: change.field },
+    { key: 'Observed value', value: change.value },
+  ], 'context', 'Durable permission change');
+  if (changed) detail.timelineSections.push(changed);
+  const observed = sectionKv([
+    { key: 'Preset', value: state.preset ?? 'unknown' },
+    { key: 'Sandbox', value: state.sandboxMode ?? 'unknown' },
+    { key: 'Approval policy', value: state.approvalPolicy ?? 'unknown' },
+  ], 'context', 'Permission state after this event');
+  if (observed) detail.timelineSections.push(observed);
+  const known = [state.preset, state.sandboxMode, state.approvalPolicy]
+    .filter(value => value !== null && value !== undefined).length;
+  const trace = sectionKv([
+    { key: 'Source event type', value: change.eventType },
+    { key: 'Source seq', value: change.sourceSeq },
+    { key: 'Observed fields', value: `${known} / 3` },
+    { key: 'Observed state', value: state.complete === true ? 'complete' : 'partial' },
+    { key: 'Source', value: change.source ?? 'session' },
+  ], 'traceability', 'Permission state provenance');
+  if (trace) detail.inspectorSections.push(trace);
+  detail.inspectorSections.push(sectionNotice(
+    'This state contains only durable permission rows observed in this Session. Missing values remain unknown; deployment defaults and preset bundles are not reconstructed.',
+    'traceability',
+    'Observed durable state only',
+  ));
+  return detail;
+}
+
 function detailForRetryLifecycle(event) {
   const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
   const lifecycle = event.retryLifecycle || {};
@@ -846,6 +880,9 @@ function buildLogicalDetail(event, session, parsedByOrdinal) {
   }
   if (event.layer === 'protocol' && event.subtype === 'tool-workflow/run') {
     return detailForWorkflowRun(event, session, parsedByOrdinal);
+  }
+  if (event.layer === 'protocol' && event.permissionState && event.permissionChange) {
+    return detailForPermissionState(event);
   }
   if (event.layer === 'protocol' && event.subtype === 'llm/retry-lifecycle') {
     return detailForRetryLifecycle(event);

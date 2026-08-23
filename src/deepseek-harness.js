@@ -28,6 +28,9 @@ const MAX_CODE_DISPATCH_DEPTH = 256;
 const MAX_RETRY_DELAY_MS = 2_147_483_647;
 const CODE_MODE_SCRIPT_OPERATION_KIND = 'code_mode_script_operation';
 const LLM_RETRY_EVENT_TYPES = new Set(['llm/retry', 'llm/retry-started']);
+const PERMISSION_EVENT_TYPES = new Set(['permission/preset', 'sandbox/mode', 'approval/policy']);
+const SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
+const APPROVAL_POLICIES = new Set(['ask', 'never']);
 const GOAL_SNAPSHOT_OPERATIONS = new Set(['create', 'edit', 'pause', 'resume', 'complete', 'block']);
 const GOAL_PHASES = new Set(['active', 'paused', 'blocked', 'complete']);
 const TOOL_WORKFLOW_EVENT_TYPES = new Set([
@@ -842,6 +845,59 @@ function makeEmptySession(filePath, relFile, header, committedBytes) {
     _subagentDescriptor: null,
     _forkSegmentsByRawId: new Map(),
   };
+}
+
+function decodePermissionChange(event) {
+  const data = event.data;
+  if (event.type === 'permission/preset') {
+    if (!hasExactKeys(data, ['preset']) || typeof data.preset !== 'string' || data.preset.length === 0) return null;
+    return { field: 'preset', value: data.preset };
+  }
+  const keys = Object.hasOwn(data || {}, 'source') ? ['mode', 'source'] : ['mode'];
+  if (event.type === 'sandbox/mode') {
+    if (!hasExactKeys(data, keys) || !SANDBOX_MODES.has(data.mode)
+        || (data.source !== undefined && data.source !== 'delegation')) return null;
+    return { field: 'sandboxMode', value: data.mode, ...(data.source ? { source: data.source } : {}) };
+  }
+  const policyKeys = Object.hasOwn(data || {}, 'source') ? ['policy', 'source'] : ['policy'];
+  if (event.type === 'approval/policy') {
+    if (!hasExactKeys(data, policyKeys) || !APPROVAL_POLICIES.has(data.policy)
+        || (data.source !== undefined && data.source !== 'delegation')) return null;
+    return { field: 'approvalPolicy', value: data.policy, ...(data.source ? { source: data.source } : {}) };
+  }
+  return null;
+}
+
+function observedPermissionSnapshot(state) {
+  return {
+    preset: state.preset,
+    sandboxMode: state.sandboxMode,
+    approvalPolicy: state.approvalPolicy,
+    complete: state.preset !== null && state.sandboxMode !== null && state.approvalPolicy !== null,
+  };
+}
+
+function makePermissionProtocolEvent(sessionId, event, raw, observedState) {
+  const change = decodePermissionChange(event);
+  if (!change) {
+    return makeProtocolEvent(sessionId, event, raw, event.type, {
+      role: 'system',
+      severity: 'warning',
+      status: 'incomplete',
+      preview: `${protocolPreview(event.type, event.data)} (invalid durable payload)`,
+    });
+  }
+  observedState[change.field] = change.value;
+  const logical = makeProtocolEvent(sessionId, event, raw, event.type, { role: 'system' });
+  logical.permissionChange = {
+    eventType: event.type,
+    field: change.field,
+    value: change.value,
+    sourceSeq: event.seq,
+    ...(change.source ? { source: change.source } : {}),
+  };
+  logical.permissionState = observedPermissionSnapshot(observedState);
+  return logical;
 }
 
 function finalizeSession(session, repoRoot) {
@@ -2238,6 +2294,8 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   const pendingCompactions = new Map();
   let pendingPartialEvent = null;
   let effectiveRequestProvider = '';
+  const childOwnedStartSeq = session._seedLength ?? 0;
+  const observedPermissionState = { preset: null, sandboxMode: null, approvalPolicy: null };
 
   const flushCurrentStep = (status = 'incomplete') => {
     if (!currentStep) return null;
@@ -2461,6 +2519,10 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
       goalRows.push({ event, raw });
     } else if (event.type === 'todo/write') {
       todoRows.push({ event, raw });
+    } else if (PERMISSION_EVENT_TYPES.has(event.type)) {
+      session.logicalEvents.push(event.seq < childOwnedStartSeq
+        ? makeProtocolEvent(session.id, event, raw, event.type, { role: 'system' })
+        : makePermissionProtocolEvent(session.id, event, raw, observedPermissionState));
     } else if (event.type === 'request/header') {
       const provider = data.header?.config?.provider;
       effectiveRequestProvider = typeof provider === 'string' && provider ? provider : '';
