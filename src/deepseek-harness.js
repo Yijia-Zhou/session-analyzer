@@ -7,6 +7,7 @@ const MarkdownIt = require('markdown-it');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 const { sanitizeLogicalDetailValue } = require('./shared/logical-detail-sanitizer');
 const { isPathInsideOrSame, resolveFsPath } = require('./shared/fs-path');
+const planFacet = require('./shared/plan-facet');
 const i18n = require('./shared/i18n');
 const {
   createProjectQueryStoreBuilder,
@@ -896,6 +897,8 @@ function finalizeSession(session, repoRoot) {
     if (event.kind === 'compaction') session.counts.compactions += 1;
     if (event.kind === 'abort') session.counts.aborts += 1;
     if (event.kind === 'error') session.counts.errors += 1;
+    if (planFacet.isPlanArtifactEvent(event)) session.counts.planArtifacts += 1;
+    if (planFacet.isPlanEvent(event)) session.counts.planEvents += 1;
   }
   session.counts.turns = turnIds.size;
   session.rawEventCount = session.rawEvents.length;
@@ -1847,6 +1850,85 @@ function projectGoalState(session, rows) {
   }
 }
 
+function decodeTodoSnapshot(value) {
+  if (!hasExactKeys(value, ['todos']) || !Array.isArray(value.todos)) return null;
+  const seen = new Set();
+  const todos = [];
+  for (const item of value.todos) {
+    if (!hasExactKeys(item, ['content', 'status'])
+        || typeof item.content !== 'string' || !item.content || item.content.trim() !== item.content
+        || !['pending', 'in_progress', 'completed'].includes(item.status)
+        || seen.has(item.content)) return null;
+    seen.add(item.content);
+    todos.push({ content: item.content, status: item.status });
+  }
+  return todos;
+}
+
+function todoFallback(session, row, reason) {
+  session.logicalEvents.push(makeProtocolEvent(session.id, row.event, row.raw, 'todo/write', {
+    label: 'Unmodeled Todo snapshot',
+    role: 'system',
+    preview: `Unmodeled todo/write: ${reason}`,
+    searchText: `todo/write\n${reason}\n${protocolSearchText(row.event.type, row.event.data)}`,
+    severity: 'warning',
+    status: 'incomplete',
+  }));
+}
+
+function todoStatusCounts(todos) {
+  const counts = new Map();
+  for (const todo of todos) counts.set(todo.status, (counts.get(todo.status) || 0) + 1);
+  return counts;
+}
+
+function makeTodoSnapshotEvent(session, row, todos) {
+  const counts = todoStatusCounts(todos);
+  const summary = [
+    `${todos.length} task${todos.length === 1 ? '' : 's'}`,
+    ...['pending', 'in_progress', 'completed']
+      .filter((status) => counts.has(status))
+      .map((status) => `${counts.get(status)} ${status}`),
+  ].join(' · ');
+  const event = makeLogicalEvent({
+    id: `${session.id}:logical:todo:${row.event.seq}`,
+    timestamp: safeIso(row.event.time),
+    turnId: turnIdFor(row.event),
+    kind: 'plan_update',
+    subtype: 'plan_update',
+    layer: 'main',
+    role: 'system',
+    label: 'Todo list updated',
+    preview: truncatePreview(summary),
+    searchText: [
+      'todo/write',
+      summary,
+      ...todos.flatMap((todo, index) => [
+        `item=${index + 1}`,
+        `status=${todo.status}`,
+        todo.content,
+      ]),
+    ].join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    severity: 'normal',
+    status: '',
+    rawRefs: [dshRawRef(row.raw)],
+    channels: ['todo/write'],
+  });
+  event.planSnapshot = todos.map((todo) => ({ step: todo.content, status: todo.status }));
+  return event;
+}
+
+function projectTodoSnapshots(session, rows) {
+  for (const row of rows) {
+    const todos = decodeTodoSnapshot(row.event.data);
+    if (!todos) {
+      todoFallback(session, row, 'invalid whole-list Todo payload');
+      continue;
+    }
+    session.logicalEvents.push(makeTodoSnapshotEvent(session, row, todos));
+  }
+}
+
 function sortProjectedLogicalEventsByRawOrder(session) {
   const isStagedProjection = (event) => {
     if (event.kind === 'code_mode_operation') return true;
@@ -1857,6 +1939,7 @@ function sortProjectedLogicalEventsByRawOrder(session) {
       || TOOL_WORKFLOW_EVENT_TYPES.has(channel)
       || LLM_RETRY_EVENT_TYPES.has(channel)
       || channel === 'goal/change'
+      || channel === 'todo/write'
       || event.subtype === 'goal/continuation'
       || event.subtype === 'goal/continuation-invalid'
     ));
@@ -2151,6 +2234,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   const workflowRows = [];
   const retryRows = [];
   const goalRows = [];
+  const todoRows = [];
   const pendingCompactions = new Map();
   let pendingPartialEvent = null;
   let effectiveRequestProvider = '';
@@ -2375,6 +2459,8 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
       }
     } else if (event.type === 'goal/change') {
       goalRows.push({ event, raw });
+    } else if (event.type === 'todo/write') {
+      todoRows.push({ event, raw });
     } else if (event.type === 'request/header') {
       const provider = data.header?.config?.provider;
       if (typeof provider === 'string' && provider) effectiveRequestProvider = provider;
@@ -2541,6 +2627,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   projectWorkflowRuns(session, workflowRows);
   projectRetryLifecycles(session, retryRows);
   projectGoalState(session, goalRows);
+  projectTodoSnapshots(session, todoRows);
   sortProjectedLogicalEventsByRawOrder(session);
   applyDeepSeekSeedOwnership(session, seedBoundary, expectedSeq);
   session.title = chooseDeepSeekTitle(session, seedBoundary);

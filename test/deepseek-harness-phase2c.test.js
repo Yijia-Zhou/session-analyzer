@@ -16,10 +16,12 @@ const {
 } = require('../src/source-adapters');
 const { validateStructuredLogicalDetailDto } = require('../src/shared/logical-detail-contract');
 const { projectQueryProjectionDigestAsync } = require('../src/project-query-store');
+const planFacet = require('../src/shared/plan-facet');
 
 const FIXTURE_ROOT = path.join(__dirname, 'fixtures', 'deepseek-harness-phase2c', 'sessions');
 const RETRY_REPO = '/synthetic/deepseek-phase2c-retry';
 const GOAL_REPO = '/synthetic/deepseek-phase2c-goal';
+const TODO_REPO = '/synthetic/deepseek-phase2c-todo';
 
 async function buildFor(repoRoot, sourceHome = FIXTURE_ROOT) {
   const index = await buildDeepSeekIndex({ sourceHome, repoRoot });
@@ -370,4 +372,90 @@ test('M2 malformed Goal changes and continuation attribution fail closed without
     updatedAt: 11,
   });
   assert.equal(Object.hasOwn(current.goal, 'activation'), false);
+});
+
+test('M3 Todo writes are independent whole-list plan updates without item or tool-call identity', async () => {
+  const { index, indexed, materialized } = await buildFor(TODO_REPO);
+  const todos = materialized.logicalEvents.filter((event) => (
+    event.kind === 'plan_update' && event.subtype === 'plan_update'
+  ));
+  const tool = materialized.logicalEvents.find((event) => event.toolName === 'todo_write');
+  assert.equal(todos.length, 4);
+  assert.deepEqual(todos.map(rawSeqs), [[3], [5], [6], [7]]);
+  assert.ok(todos.every((event) => planFacet.isPlanUpdateEvent(event)));
+  assert.deepEqual(todos[0].planSnapshot, [
+    { step: 'Prepare synthetic input', status: 'pending' },
+    { step: 'Run synthetic work', status: 'in_progress' },
+    { step: 'Verify synthetic output', status: 'pending' },
+  ]);
+  assert.deepEqual(todos[1].planSnapshot.map((item) => item.status), [
+    'completed', 'in_progress', 'pending',
+  ]);
+  assert.deepEqual(todos[2].planSnapshot.map((item) => item.status), [
+    'in_progress', 'in_progress',
+  ]);
+  assert.deepEqual(todos[3].planSnapshot, []);
+  assert.ok(todos.flatMap((event) => event.planSnapshot).every((item) => (
+    Object.keys(item).sort().join(',') === 'status,step'
+    && !Object.hasOwn(item, 'id')
+  )));
+  assert.ok(tool);
+  assert.deepEqual(rawSeqs(tool), [2, 4]);
+  const todoRawIds = new Set(todos.flatMap((event) => event.rawRefs.map((ref) => ref.rawId)));
+  assert.ok(tool.rawRefs.every((ref) => !todoRawIds.has(ref.rawId)));
+  assert.equal(indexed.counts.toolCalls, 1);
+  assert.equal(indexed.counts.planArtifacts, 0);
+  assert.equal(indexed.counts.planEvents, 4);
+
+  const timeline = deepSeekAdapter.query.getTimeline(index, materialized, {
+    layer: 'main', kind: 'plan_update', offset: 0, limit: 100,
+  });
+  assert.deepEqual(timeline.events.map((event) => event.id), todos.map((event) => event.id));
+  const detail = await buildEventDetailForSession(index, materialized, todos[2].id, 'main');
+  validateStructuredLogicalDetailDto(detail);
+  const plan = detail.timelineSections.find((section) => section.type === 'plan_update');
+  assert.ok(plan);
+  assert.deepEqual(plan.steps, todos[2].planSnapshot);
+  assert.ok(detail.inspectorSections.some((section) => (
+    section.type === 'notice' && section.title === 'Whole-list provenance'
+  )));
+  await assertProjectionParity(index, indexed, materialized);
+});
+
+test('M3 malformed Todo items fail closed while empty and parallel-active snapshots remain valid', async (t) => {
+  const fixture = await makeSyntheticFixture(t, 'malformed-todo', [
+    { type: 'turn/start', seq: 0, time: 2, data: { turn: 1 } },
+    {
+      type: 'todo/write', seq: 1, time: 3,
+      data: { todos: [{ content: 'Unknown status', status: 'blocked' }] },
+    },
+    {
+      type: 'todo/write', seq: 2, time: 4,
+      data: { todos: [{ id: 'invented', content: 'Extra identity', status: 'pending' }] },
+    },
+    {
+      type: 'todo/write', seq: 3, time: 5,
+      data: { todos: [
+        { content: 'Duplicate item', status: 'pending' },
+        { content: 'Duplicate item', status: 'completed' },
+      ] },
+    },
+    {
+      type: 'todo/write', seq: 4, time: 6,
+      data: { todos: [{ content: ' Not normalized ', status: 'pending' }] },
+    },
+    { type: 'todo/write', seq: 5, time: 7, data: { todos: [] } },
+    { type: 'turn/end', seq: 6, time: 8, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]);
+  const { materialized } = await buildFor(fixture.repoRoot, fixture.sourceHome);
+  const valid = materialized.logicalEvents.filter((event) => event.kind === 'plan_update');
+  assert.equal(valid.length, 1);
+  assert.deepEqual(valid[0].planSnapshot, []);
+  assert.deepEqual(rawSeqs(valid[0]), [5]);
+  const fallbacks = materialized.logicalEvents.filter((event) => (
+    event.label === 'Unmodeled Todo snapshot'
+  ));
+  assert.equal(fallbacks.length, 4);
+  assert.deepEqual(fallbacks.map(rawSeqs), [[1], [2], [3], [4]]);
+  assert.ok(fallbacks.every((event) => event.layer === 'protocol' && event.status === 'incomplete'));
 });

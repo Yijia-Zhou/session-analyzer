@@ -604,6 +604,33 @@ function detailForGoalContinuation(event) {
   return detail;
 }
 
+function detailForTodoSnapshot(event) {
+  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
+  const steps = Array.isArray(event.planSnapshot) ? event.planSnapshot : [];
+  detail.timelineSections.push({
+    purpose: 'content',
+    type: 'plan_update',
+    title: 'Todo snapshot',
+    explanationHtml: '',
+    steps: steps.map((step) => ({ step: String(step.step || ''), status: String(step.status || '') })),
+  });
+  const counts = new Map();
+  for (const step of steps) counts.set(step.status, (counts.get(step.status) || 0) + 1);
+  const summary = sectionKv([
+    { key: 'Items', value: steps.length },
+    { key: 'Pending', value: counts.get('pending') || 0 },
+    { key: 'In progress', value: counts.get('in_progress') || 0 },
+    { key: 'Completed', value: counts.get('completed') || 0 },
+  ], 'context', 'Todo snapshot summary');
+  if (summary) detail.inspectorSections.push(summary);
+  detail.inspectorSections.push(sectionNotice(
+    'This durable event is one complete ordered replacement list. It carries no stable item IDs or patch/delta identity, and no nearby todo_write call is claimed as its owner.',
+    'traceability',
+    'Whole-list provenance',
+  ));
+  return detail;
+}
+
 function tokenUsageSection(usage) {
   if (!usage || typeof usage !== 'object') return null;
   const items = [
@@ -828,6 +855,9 @@ function buildLogicalDetail(event, session, parsedByOrdinal) {
   }
   if (event.layer === 'protocol' && event.subtype === 'goal/continuation') {
     return detailForGoalContinuation(event);
+  }
+  if (event.kind === 'plan_update' && event.subtype === 'plan_update' && Array.isArray(event.planSnapshot)) {
+    return detailForTodoSnapshot(event);
   }
   if (event.kind === 'command' || event.kind === 'other_tool_call') {
     return detailForToolOperation(event, session, parsedByOrdinal);
