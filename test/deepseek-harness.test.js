@@ -387,21 +387,37 @@ test('future format versions fail closed rather than being guessed', async () =>
   }
 });
 
-test('unknown non-ignorable v0 events stay traceable through Protocol and Raw', async () => {
+test('current known-unmodeled and genuinely unknown v0 events keep distinct Protocol/Raw fallback', async () => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-dsh-unknown-'));
   const artifactDir = path.join(root, '--tmp-synthetic--', 'unknown-session');
   await fsp.mkdir(artifactDir, { recursive: true });
   const lines = [
     '{"type":"session","version":0,"id":"unknown-session","createdAt":1,"cwd":"/tmp/synthetic","delegationDepth":0}',
     '{"type":"turn/start","seq":0,"time":2,"data":{"turn":1}}',
-    '{"type":"plugin/unknown-thing","seq":1,"time":3,"data":{"opaque":"evidence","count":2}}',
+    '{"type":"team/task","seq":1,"time":3,"data":{"version":1,"teamId":"synthetic-team","task":{"id":"synthetic-task"}}}',
+    '{"type":"plugin/unknown-thing","seq":2,"time":4,"data":{"opaque":"evidence","count":2}}',
   ];
   await fsp.writeFile(path.join(artifactDir, 'session.jsonl'), `${lines.join('\n')}\n`);
   try {
     const index = await buildFor('/tmp/synthetic', root);
     const indexed = index.sessions[0];
-    assert.equal(indexed.logicalEventCount, 2);
+    assert.equal(indexed.logicalEventCount, 3);
     const materialized = await materializeSessionForIndex(index, indexed);
+    const team = materialized.logicalEvents.find((event) => event.subtype === 'team/task');
+    assert.ok(team);
+    assert.equal(team.layer, 'protocol');
+    assert.equal(team.severity, 'normal');
+    assert.equal(team.rawRefs.length, 1);
+    const teamRaw = materialized.rawEvents.find((raw) => raw.rawId === team.rawRefs[0].rawId);
+    assert.ok(teamRaw);
+    assert.equal(teamRaw.payloadType, 'team/task');
+    const teamReadback = await readDeepSeekRawRecord(index, materialized, teamRaw);
+    assert.deepEqual(JSON.parse(teamReadback.raw), {
+      type: 'team/task',
+      seq: 1,
+      time: 3,
+      data: { version: 1, teamId: 'synthetic-team', task: { id: 'synthetic-task' } },
+    });
     const unknown = materialized.logicalEvents.find((event) => event.subtype === 'unknown_event');
     assert.equal(unknown.subtype, 'unknown_event');
     assert.equal(unknown.severity, 'warning');

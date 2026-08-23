@@ -46,7 +46,8 @@ const DSH_FORK_SEGMENTS = Object.freeze([
 ]);
 
 
-// Generated upstream vocabulary at tmp/deepseek-harness HEAD 47f9438…:
+// Current generated upstream vocabulary at tmp/deepseek-harness-current HEAD
+// b150a551… (0.1.1-rc.2), refreshed from the original 47f9438… baseline:
 // packages/core/session/src/known-event-types.ts. Known-but-unmodeled types
 // stay explicit Protocol fallback; anything outside this set is an unknown
 // plugin/third-party event and must never be silently dropped.
@@ -82,6 +83,10 @@ const KNOWN_DS_EVENT_TYPES = new Set([
   'step/end',
   'step/start',
   'subagent/descriptor',
+  'team/member',
+  'team/message/delivered',
+  'team/message/queued',
+  'team/task',
   'todo/write',
   'tool-workflow/agent-end',
   'tool-workflow/agent-start',
