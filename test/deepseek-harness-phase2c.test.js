@@ -19,6 +19,7 @@ const { projectQueryProjectionDigestAsync } = require('../src/project-query-stor
 
 const FIXTURE_ROOT = path.join(__dirname, 'fixtures', 'deepseek-harness-phase2c', 'sessions');
 const RETRY_REPO = '/synthetic/deepseek-phase2c-retry';
+const GOAL_REPO = '/synthetic/deepseek-phase2c-goal';
 
 async function buildFor(repoRoot, sourceHome = FIXTURE_ROOT) {
   const index = await buildDeepSeekIndex({ sourceHome, repoRoot });
@@ -214,4 +215,159 @@ test('M1 accepted snapshot rejects stale retry Materialized, Detail, and Raw rea
     deepSeekAdapter.readRawRecord(index, materialized, raw),
     (error) => error?.code === 'INDEXED_SOURCE_STALE',
   );
+});
+
+test('M2 durable Goal state uses independent Main events and never invents tool-call ownership or activation', async () => {
+  const { index, indexed, materialized } = await buildFor(GOAL_REPO);
+  const goals = materialized.logicalEvents.filter((event) => event.kind === 'goal');
+  const continuation = materialized.logicalEvents.find((event) => event.subtype === 'goal/continuation');
+  const tools = materialized.logicalEvents.filter((event) => (
+    event.layer === 'main' && ['create_goal', 'update_goal'].includes(event.toolName)
+  ));
+  assert.equal(goals.length, 8);
+  assert.equal(tools.length, 2);
+  assert.deepEqual(
+    goals.map((event) => event.goalChange.operation),
+    ['create', 'edit', 'pause', 'resume', 'block', 'resume', 'complete', 'clear'],
+  );
+  assert.deepEqual(
+    goals.map((event) => event.status),
+    ['active', 'active', 'paused', 'active', 'blocked', 'active', 'complete', 'cleared'],
+  );
+  assert.deepEqual(
+    goals.map((event) => (
+      event.goalChange.operation === 'clear'
+        ? event.goalChange.cleared.revision
+        : event.goalChange.goal.revision
+    )),
+    [1, 2, 3, 4, 5, 6, 7, 8],
+  );
+  assert.ok(goals.every((event) => event.rawRefs.length === 1 && !event.toolName));
+  assert.deepEqual(goals.map(rawSeqs), [[3], [6], [7], [8], [9], [10], [12], [14]]);
+  assert.deepEqual(tools.map(rawSeqs), [[2, 4], [11, 13]]);
+  const stateRawIds = new Set(goals.flatMap((event) => event.rawRefs.map((ref) => ref.rawId)));
+  assert.ok(tools.every((event) => event.rawRefs.every((ref) => !stateRawIds.has(ref.rawId))));
+
+  assert.ok(continuation);
+  assert.equal(continuation.layer, 'protocol');
+  assert.equal(continuation.role, 'system');
+  assert.deepEqual(continuation.goalContinuation, {
+    kind: 'goal',
+    goalId: 'synthetic-goal',
+    revision: 1,
+    round: 1,
+    text: 'Continue the synthetic objective for round one.',
+  });
+  assert.equal(materialized.logicalEvents.some((event) => (
+    event.kind === 'user_message' && event.rawRefs.some((ref) => ref.sourceLocator.seq === 5)
+  )), false);
+  assert.equal(indexed.counts.userMessages, 0);
+  assert.equal(indexed.counts.messages, 0);
+  assert.equal(indexed.counts.toolCalls, 2);
+  assert.equal(indexed.counts.issueEvents, 1);
+  assert.equal(goals.at(-1).goalChange.operation, 'clear');
+  assert.deepEqual(goals.at(-1).goalChange.cleared, { id: 'synthetic-goal', revision: 8 });
+  assert.equal(goals.some((event) => Object.hasOwn(event.goalChange, 'activation')), false);
+
+  const blocked = goals.find((event) => event.goalChange.operation === 'block');
+  assert.deepEqual(blocked.goalChange.goal.blockedReason, {
+    code: 'synthetic-block',
+    message: 'Synthetic external dependency is unavailable.',
+  });
+  const blockedDetail = await buildEventDetailForSession(index, materialized, blocked.id, 'main');
+  validateStructuredLogicalDetailDto(blockedDetail);
+  assert.ok(blockedDetail.timelineSections.some((section) => (
+    section.type === 'kv' && section.title === 'Blocked reason'
+  )));
+  assert.ok(blockedDetail.inspectorSections.some((section) => (
+    section.type === 'notice' && section.title === 'Activation is not durable'
+  )));
+  const clear = goals.at(-1);
+  const clearDetail = await buildEventDetailForSession(index, materialized, clear.id, 'main');
+  validateStructuredLogicalDetailDto(clearDetail);
+  assert.ok(clearDetail.timelineSections.some((section) => (
+    section.type === 'notice' && section.title === 'Goal cleared'
+  )));
+  const continuationDetail = await buildEventDetailForSession(index, materialized, continuation.id, 'protocol');
+  validateStructuredLogicalDetailDto(continuationDetail);
+  assert.ok(continuationDetail.inspectorSections.some((section) => (
+    section.type === 'notice' && section.title === 'Non-human message provenance'
+  )));
+  await assertProjectionParity(index, indexed, materialized);
+});
+
+test('M2 malformed Goal changes and continuation attribution fail closed without poisoning later valid state', async (t) => {
+  const baseGoal = (revision, phase) => ({
+    id: 'goal-safe-fold', revision, objective: 'Synthetic safe fold', phase, maxGoalRounds: 3,
+  });
+  const fixture = await makeSyntheticFixture(t, 'malformed-goal', [
+    { type: 'turn/start', seq: 0, time: 2, data: { turn: 1 } },
+    {
+      type: 'goal/change', seq: 1, time: 3,
+      data: {
+        kind: 'goal/change', version: 2, operation: 'create', goal: baseGoal(1, 'active'),
+        roundsStarted: 0, createdAt: 10, updatedAt: 10,
+      },
+    },
+    {
+      type: 'goal/change', seq: 2, time: 4,
+      data: {
+        kind: 'goal/change', version: 1, operation: 'create', goal: baseGoal(1, 'active'),
+        roundsStarted: 0, createdAt: 10, updatedAt: 10,
+      },
+    },
+    {
+      type: 'user/message', seq: 3, time: 5, surfaceOp: 'append',
+      data: {
+        source: { kind: 'goal', goalId: 'goal-safe-fold', revision: 1, round: 2 },
+        content: [{ type: 'text', text: 'Invalid synthetic skipped round.' }],
+      },
+    },
+    {
+      type: 'user/message', seq: 4, time: 6, surfaceOp: 'append',
+      data: {
+        source: { kind: 'goal', goalId: 'goal-safe-fold', revision: 1, round: 1 },
+        content: [{ type: 'text', text: 'Valid synthetic first round.' }],
+      },
+    },
+    {
+      type: 'goal/change', seq: 5, time: 7,
+      data: {
+        kind: 'goal/change', version: 1, operation: 'edit', goal: baseGoal(3, 'active'),
+        roundsStarted: 1, createdAt: 10, updatedAt: 11,
+      },
+    },
+    {
+      type: 'goal/change', seq: 6, time: 8,
+      data: {
+        kind: 'goal/change', version: 1, operation: 'pause', goal: baseGoal(2, 'paused'),
+        roundsStarted: 1, createdAt: 10, updatedAt: 11,
+      },
+    },
+    { type: 'turn/end', seq: 7, time: 9, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]);
+  const { materialized } = await buildFor(fixture.repoRoot, fixture.sourceHome);
+  const goals = materialized.logicalEvents.filter((event) => event.kind === 'goal');
+  assert.deepEqual(goals.map((event) => event.goalChange.operation), ['create', 'pause']);
+  assert.deepEqual(goals.map((event) => event.goalChange.goal.revision), [1, 2]);
+  assert.equal(materialized.logicalEvents.filter((event) => (
+    event.label === 'Unmodeled Goal state change'
+  )).length, 2);
+  assert.equal(materialized.logicalEvents.filter((event) => (
+    event.subtype === 'goal/continuation-invalid'
+  )).length, 1);
+  assert.equal(materialized.logicalEvents.filter((event) => (
+    event.subtype === 'goal/continuation'
+  )).length, 1);
+  const current = goals.at(-1).goalChange;
+  assert.deepEqual(current, {
+    kind: 'goal/change',
+    version: 1,
+    operation: 'pause',
+    goal: baseGoal(2, 'paused'),
+    roundsStarted: 1,
+    createdAt: 10,
+    updatedAt: 11,
+  });
+  assert.equal(Object.hasOwn(current.goal, 'activation'), false);
 });

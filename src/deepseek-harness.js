@@ -27,6 +27,8 @@ const MAX_CODE_DISPATCH_DEPTH = 256;
 const MAX_RETRY_DELAY_MS = 2_147_483_647;
 const CODE_MODE_SCRIPT_OPERATION_KIND = 'code_mode_script_operation';
 const LLM_RETRY_EVENT_TYPES = new Set(['llm/retry', 'llm/retry-started']);
+const GOAL_SNAPSHOT_OPERATIONS = new Set(['create', 'edit', 'pause', 'resume', 'complete', 'block']);
+const GOAL_PHASES = new Set(['active', 'paused', 'blocked', 'complete']);
 const TOOL_WORKFLOW_EVENT_TYPES = new Set([
   'tool-workflow/run-start',
   'tool-workflow/run-end',
@@ -1553,6 +1555,298 @@ function projectRetryLifecycles(session, rows) {
   }
 }
 
+function isPlainRecord(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function hasExactKeys(value, keys) {
+  return isPlainRecord(value)
+    && Object.keys(value).sort().join(',') === [...keys].sort().join(',');
+}
+
+function positiveSafeInteger(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function nonNegativeSafeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function decodeGoalRef(value) {
+  if (!hasExactKeys(value, ['id', 'revision'])
+      || typeof value.id !== 'string' || !value.id
+      || !positiveSafeInteger(value.revision)) return null;
+  return { id: value.id, revision: value.revision };
+}
+
+function decodeGoalBlockedReason(value) {
+  if (!hasExactKeys(value, ['code', 'message'])
+      || typeof value.code !== 'string' || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value.code)
+      || typeof value.message !== 'string' || !value.message.trim() || value.message !== value.message.trim()) return null;
+  return { code: value.code, message: value.message };
+}
+
+function decodeGoalSnapshot(value) {
+  if (!isPlainRecord(value)
+      || typeof value.id !== 'string' || !value.id
+      || !positiveSafeInteger(value.revision)
+      || typeof value.objective !== 'string' || !value.objective.trim() || value.objective !== value.objective.trim()
+      || !GOAL_PHASES.has(value.phase)
+      || !positiveSafeInteger(value.maxGoalRounds)) return null;
+  const expected = value.phase === 'blocked'
+    ? ['blockedReason', 'id', 'maxGoalRounds', 'objective', 'phase', 'revision']
+    : ['id', 'maxGoalRounds', 'objective', 'phase', 'revision'];
+  if (!hasExactKeys(value, expected)) return null;
+  const blockedReason = value.phase === 'blocked' ? decodeGoalBlockedReason(value.blockedReason) : null;
+  if (value.phase === 'blocked' && !blockedReason) return null;
+  return {
+    id: value.id,
+    revision: value.revision,
+    objective: value.objective,
+    phase: value.phase,
+    maxGoalRounds: value.maxGoalRounds,
+    ...(blockedReason ? { blockedReason } : {}),
+  };
+}
+
+function decodeGoalChange(value) {
+  if (!isPlainRecord(value) || value.kind !== 'goal/change' || value.version !== 1) return null;
+  if (value.operation === 'clear') {
+    if (!hasExactKeys(value, ['kind', 'version', 'operation', 'cleared', 'clearedAt'])
+        || !nonNegativeSafeInteger(value.clearedAt)) return null;
+    const cleared = decodeGoalRef(value.cleared);
+    return cleared ? {
+      kind: 'goal/change', version: 1, operation: 'clear', cleared, clearedAt: value.clearedAt,
+    } : null;
+  }
+  if (!GOAL_SNAPSHOT_OPERATIONS.has(value.operation)
+      || !hasExactKeys(value, ['kind', 'version', 'operation', 'goal', 'roundsStarted', 'createdAt', 'updatedAt'])
+      || !nonNegativeSafeInteger(value.roundsStarted)
+      || !nonNegativeSafeInteger(value.createdAt)
+      || !nonNegativeSafeInteger(value.updatedAt)
+      || value.updatedAt < value.createdAt) return null;
+  const goal = decodeGoalSnapshot(value.goal);
+  return goal ? {
+    kind: 'goal/change',
+    version: 1,
+    operation: value.operation,
+    goal,
+    roundsStarted: value.roundsStarted,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  } : null;
+}
+
+function emptyGoalState() {
+  return {
+    goal: null,
+    roundsStarted: 0,
+    createdAt: null,
+    updatedAt: null,
+    lastRef: null,
+    seenGoalIds: new Set(),
+  };
+}
+
+function sameGoalDefinition(left, right) {
+  return left.objective === right.objective && left.maxGoalRounds === right.maxGoalRounds;
+}
+
+function applyGoalChange(state, change) {
+  if (change.operation === 'clear') {
+    const current = state.goal;
+    if (!current
+        || change.cleared.id !== current.id
+        || change.cleared.revision !== current.revision + 1
+        || state.updatedAt === null
+        || change.clearedAt < state.updatedAt) return 'clear does not advance the current Goal exactly';
+    state.goal = null;
+    state.roundsStarted = 0;
+    state.createdAt = null;
+    state.updatedAt = null;
+    state.lastRef = { ...change.cleared };
+    return '';
+  }
+  const next = change.goal;
+  if (change.operation === 'create') {
+    if (next.revision !== 1 || next.phase !== 'active' || change.roundsStarted !== 0
+        || (state.goal && state.goal.phase !== 'complete') || state.seenGoalIds.has(next.id)) {
+      return 'create is not a fresh active revision-one Goal with zero rounds';
+    }
+  } else {
+    const current = state.goal;
+    if (!current || next.id !== current.id || next.revision !== current.revision + 1) {
+      return `${change.operation} does not advance the current Goal revision exactly`;
+    }
+    if (change.createdAt !== state.createdAt || state.updatedAt === null
+        || change.updatedAt < state.updatedAt || change.roundsStarted !== state.roundsStarted) {
+      return `${change.operation} does not preserve Goal counters and timestamps`;
+    }
+    if (change.operation === 'edit') {
+      if (next.phase !== current.phase || !isDeepStrictEqual(next.blockedReason, current.blockedReason)) {
+        return 'edit changes Goal phase or blocked reason';
+      }
+    } else if (change.operation === 'pause') {
+      if (!sameGoalDefinition(current, next) || current.phase !== 'active' || next.phase !== 'paused') {
+        return 'pause has an invalid Goal transition';
+      }
+    } else if (change.operation === 'resume') {
+      if (!sameGoalDefinition(current, next)
+          || !['active', 'paused', 'blocked'].includes(current.phase)
+          || next.phase !== 'active' || state.roundsStarted >= next.maxGoalRounds) {
+        return 'resume has an invalid Goal transition or exhausted round budget';
+      }
+    } else if (change.operation === 'complete') {
+      if (!sameGoalDefinition(current, next) || current.phase === 'complete' || next.phase !== 'complete') {
+        return 'complete has an invalid Goal transition';
+      }
+    } else if (change.operation === 'block') {
+      if (!sameGoalDefinition(current, next) || current.phase !== 'active' || next.phase !== 'blocked') {
+        return 'block has an invalid Goal transition';
+      }
+    }
+  }
+  if (change.operation === 'create') state.seenGoalIds.add(next.id);
+  state.goal = structuredClone(next);
+  state.roundsStarted = change.roundsStarted;
+  state.createdAt = change.createdAt;
+  state.updatedAt = change.updatedAt;
+  state.lastRef = { id: next.id, revision: next.revision };
+  return '';
+}
+
+function goalChangeFallback(session, row, reason) {
+  session.logicalEvents.push(makeProtocolEvent(session.id, row.event, row.raw, 'goal/change', {
+    label: 'Unmodeled Goal state change',
+    role: 'system',
+    preview: `Unmodeled goal/change: ${reason}`,
+    searchText: `goal/change\n${reason}\n${protocolSearchText(row.event.type, row.event.data)}`,
+    severity: 'warning',
+    status: 'incomplete',
+  }));
+}
+
+function makeGoalStateEvent(session, row, change) {
+  const clear = change.operation === 'clear';
+  const snapshot = clear ? change.cleared : change.goal;
+  const phase = clear ? 'cleared' : change.goal.phase;
+  const label = clear ? 'Goal cleared' : `Goal ${change.operation}`;
+  const event = makeLogicalEvent({
+    id: `${session.id}:logical:goal:${row.event.seq}`,
+    timestamp: safeIso(row.event.time),
+    turnId: turnIdFor(row.event),
+    kind: 'goal',
+    subtype: `goal/change:${change.operation}`,
+    layer: 'main',
+    role: 'system',
+    label,
+    preview: truncatePreview(clear
+      ? `Goal cleared · revision ${snapshot.revision}`
+      : `${change.goal.objective} · ${phase} · revision ${snapshot.revision}`),
+    searchText: [
+      'goal/change',
+      `operation=${change.operation}`,
+      `goalId=${snapshot.id}`,
+      `revision=${snapshot.revision}`,
+      clear ? '' : `phase=${phase}`,
+      clear ? '' : change.goal.objective,
+      clear ? '' : change.goal.blockedReason?.code,
+      clear ? '' : change.goal.blockedReason?.message,
+      boundedJsonText(change, SEARCH_TEXT_LIMIT),
+    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    severity: phase === 'blocked' ? 'warning' : 'normal',
+    status: phase,
+    rawRefs: [dshRawRef(row.raw)],
+    channels: ['goal/change'],
+  });
+  event.goalChange = structuredClone(change);
+  return event;
+}
+
+function decodeGoalMessageSource(value) {
+  if (!isPlainRecord(value) || value.kind !== 'goal'
+      || typeof value.goalId !== 'string' || !value.goalId
+      || !positiveSafeInteger(value.revision)
+      || !positiveSafeInteger(value.round)) return null;
+  return {
+    kind: 'goal', goalId: value.goalId, revision: value.revision, round: value.round,
+  };
+}
+
+function applyGoalContinuation(state, source) {
+  const current = state.goal;
+  if (!current || current.phase !== 'active'
+      || source.goalId !== current.id || source.revision !== current.revision
+      || source.round !== state.roundsStarted + 1 || source.round > current.maxGoalRounds) {
+    return 'Goal continuation is not the next admitted round of the active Goal';
+  }
+  state.roundsStarted = source.round;
+  return '';
+}
+
+function goalContinuationFallback(session, row, reason) {
+  session.logicalEvents.push(makeProtocolEvent(session.id, row.event, row.raw, 'goal/continuation-invalid', {
+    label: 'Uncorrelated Goal continuation',
+    role: 'system',
+    preview: `Uncorrelated Goal continuation: ${reason}`,
+    searchText: `goal/continuation\n${reason}\n${protocolSearchText(row.event.type, row.event.data)}`,
+    severity: 'warning',
+    status: 'incomplete',
+  }));
+}
+
+function makeGoalContinuationEvent(session, row, source) {
+  const text = sanitizeLogicalDetailValue(visibleText(row.event.data?.content), {
+    marker: '[data URL omitted]',
+  }).slice(0, SEARCH_TEXT_LIMIT);
+  const event = makeProtocolEvent(session.id, row.event, row.raw, 'goal/continuation', {
+    label: 'Goal continuation context',
+    role: 'system',
+    preview: truncatePreview(text || `Goal continuation round ${source.round}`),
+    searchText: [
+      'goal/continuation',
+      `goalId=${source.goalId}`,
+      `revision=${source.revision}`,
+      `round=${source.round}`,
+      text,
+    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+  });
+  event.goalContinuation = { ...source, text: text.slice(0, SEARCH_TEXT_LIMIT) };
+  return event;
+}
+
+function projectGoalState(session, rows) {
+  if (!rows.length) return;
+  const state = emptyGoalState();
+  for (const row of [...rows].sort((left, right) => left.event.seq - right.event.seq)) {
+    if (row.event.type === 'goal/change') {
+      const change = decodeGoalChange(row.event.data);
+      if (!change) {
+        goalChangeFallback(session, row, 'invalid Goal change payload');
+        continue;
+      }
+      const reason = applyGoalChange(state, change);
+      if (reason) {
+        goalChangeFallback(session, row, reason);
+        continue;
+      }
+      session.logicalEvents.push(makeGoalStateEvent(session, row, change));
+    } else {
+      const source = decodeGoalMessageSource(row.event.data?.source);
+      if (!source) {
+        goalContinuationFallback(session, row, 'invalid Goal message source');
+        continue;
+      }
+      const reason = applyGoalContinuation(state, source);
+      if (reason) {
+        goalContinuationFallback(session, row, reason);
+        continue;
+      }
+      session.logicalEvents.push(makeGoalContinuationEvent(session, row, source));
+    }
+  }
+}
+
 function sortProjectedLogicalEventsByRawOrder(session) {
   const isStagedProjection = (event) => {
     if (event.kind === 'code_mode_operation') return true;
@@ -1562,6 +1856,9 @@ function sortProjectedLogicalEventsByRawOrder(session) {
       || channel === 'tool/code-dispatch'
       || TOOL_WORKFLOW_EVENT_TYPES.has(channel)
       || LLM_RETRY_EVENT_TYPES.has(channel)
+      || channel === 'goal/change'
+      || event.subtype === 'goal/continuation'
+      || event.subtype === 'goal/continuation-invalid'
     ));
   };
   const existing = session.logicalEvents.filter((event) => !isStagedProjection(event));
@@ -1853,6 +2150,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   const codeDispatchRows = [];
   const workflowRows = [];
   const retryRows = [];
+  const goalRows = [];
   const pendingCompactions = new Map();
   let pendingPartialEvent = null;
   let effectiveRequestProvider = '';
@@ -1981,7 +2279,9 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
         session.logicalEvents.push(makeAssistantMessageEvent(session.id, event, raw));
       }
     } else if (event.type === 'user/message') {
-      if (isReplaceSurfaceOp(event.surfaceOp)) {
+      if (data.source?.kind === 'goal') {
+        goalRows.push({ event, raw });
+      } else if (isReplaceSurfaceOp(event.surfaceOp)) {
         const range = replaceSurfaceRange(event.surfaceOp);
         // Upstream replacement/user pairing is the immediately preceding
         // `compaction/summary` plus the shared surface-op range; the compact
@@ -2073,6 +2373,8 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
           channels: ['tool/result'],
         }));
       }
+    } else if (event.type === 'goal/change') {
+      goalRows.push({ event, raw });
     } else if (event.type === 'request/header') {
       const provider = data.header?.config?.provider;
       if (typeof provider === 'string' && provider) effectiveRequestProvider = provider;
@@ -2238,6 +2540,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   projectCodeDispatches(session, codeDispatchRows, toolCallsById);
   projectWorkflowRuns(session, workflowRows);
   projectRetryLifecycles(session, retryRows);
+  projectGoalState(session, goalRows);
   sortProjectedLogicalEventsByRawOrder(session);
   applyDeepSeekSeedOwnership(session, seedBoundary, expectedSeq);
   session.title = chooseDeepSeekTitle(session, seedBoundary);
