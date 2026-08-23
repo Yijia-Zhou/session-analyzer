@@ -481,6 +481,60 @@ function detailForWorkflowRun(event, session, parsedByOrdinal) {
   return detail;
 }
 
+function detailForRetryLifecycle(event) {
+  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
+  const lifecycle = event.retryLifecycle || {};
+  const attempts = Array.isArray(lifecycle.attempts) ? lifecycle.attempts : [];
+  const latest = attempts.at(-1);
+  if (latest) {
+    detail.timelineSections.push(sectionNotice(
+      `${latest.failure?.code || 'REQUEST_FAILURE'}: ${latest.failure?.message || 'The provider request failed.'}`,
+      'result',
+      'Request failure',
+      'warning',
+    ));
+    const maxRetries = Object.hasOwn(latest, 'maxRetries') ? latest.maxRetries : '∞';
+    const schedule = sectionKv([
+      { key: 'Retry state', value: latest.state },
+      { key: 'Provider', value: lifecycle.provider },
+      { key: 'Retry', value: `${latest.retry} / ${maxRetries}` },
+      { key: 'Delay', value: `${latest.delayMs} ms`, fact: 'duration' },
+    ], 'context', 'Retry schedule');
+    if (schedule) detail.timelineSections.push(schedule);
+  }
+  for (const attempt of attempts) {
+    const failure = attempt.failure || {};
+    const facts = sectionKv([
+      { key: 'Retry number', value: attempt.retry },
+      { key: 'State', value: attempt.state },
+      { key: 'Scheduled seq', value: attempt.scheduledSeq },
+      { key: 'Started seq', value: attempt.startedSeq ?? 'not observed' },
+      { key: 'Failure code', value: failure.code },
+      { key: 'HTTP status', value: failure.status ?? '' },
+      { key: 'Provider retry-after', value: failure.providerRetryAfterMs ?? '' },
+      { key: 'Provider request ID', value: failure.requestId ?? '' },
+    ], 'context', `Retry attempt ${attempt.retry}`);
+    if (facts) detail.inspectorSections.push(facts);
+  }
+  const trace = sectionKv([
+    { key: 'Retry ID', value: lifecycle.retryId },
+    { key: 'Turn / Step', value: `${lifecycle.turn} / ${lifecycle.step}` },
+    { key: 'Mode', value: lifecycle.mode },
+    { key: 'Policy key', value: lifecycle.policyKey },
+    { key: 'Lifecycle rows', value: event.rawRefs?.length || 0 },
+  ], 'traceability', 'Retry provenance');
+  if (trace) detail.inspectorSections.push(trace);
+  if (latest?.state === 'scheduled') {
+    detail.inspectorSections.push(sectionNotice(
+      'No matching llm/retry-started row is present. The durable evidence proves scheduling only; it does not distinguish an active wait, cancellation, or an incomplete committed prefix.',
+      'traceability',
+      'Retry start not observed',
+      'warning',
+    ));
+  }
+  return detail;
+}
+
 function tokenUsageSection(usage) {
   if (!usage || typeof usage !== 'object') return null;
   const items = [
@@ -696,6 +750,9 @@ function buildLogicalDetail(event, session, parsedByOrdinal) {
   }
   if (event.layer === 'protocol' && event.subtype === 'tool-workflow/run') {
     return detailForWorkflowRun(event, session, parsedByOrdinal);
+  }
+  if (event.layer === 'protocol' && event.subtype === 'llm/retry-lifecycle') {
+    return detailForRetryLifecycle(event);
   }
   if (event.kind === 'command' || event.kind === 'other_tool_call') {
     return detailForToolOperation(event, session, parsedByOrdinal);

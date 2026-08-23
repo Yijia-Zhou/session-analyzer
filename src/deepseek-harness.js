@@ -24,7 +24,9 @@ const TITLE_LIMIT = 120;
 const REASONING_LIMIT = SEARCH_TEXT_LIMIT;
 const INHERITED_PREVIEW_LIMIT = 12;
 const MAX_CODE_DISPATCH_DEPTH = 256;
+const MAX_RETRY_DELAY_MS = 2_147_483_647;
 const CODE_MODE_SCRIPT_OPERATION_KIND = 'code_mode_script_operation';
+const LLM_RETRY_EVENT_TYPES = new Set(['llm/retry', 'llm/retry-started']);
 const TOOL_WORKFLOW_EVENT_TYPES = new Set([
   'tool-workflow/run-start',
   'tool-workflow/run-end',
@@ -1333,19 +1335,238 @@ function projectWorkflowRuns(session, rows) {
   }
 }
 
-function sortLogicalEventsByRawOrder(session) {
-  const isPhase2BProjection = (event) => {
+function retryFallback(session, row, reason) {
+  session.logicalEvents.push(makeProtocolEvent(session.id, row.event, row.raw, row.event.type, {
+    label: 'Uncorrelated LLM retry lifecycle',
+    role: 'system',
+    preview: `Uncorrelated ${row.event.type}: ${reason}`,
+    searchText: `${row.event.type}\n${reason}\n${protocolSearchText(row.event.type, row.event.data)}`,
+    severity: 'warning',
+    status: 'incomplete',
+  }));
+}
+
+function retryFailureFacts(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (typeof value.message !== 'string' || !value.message
+      || typeof value.code !== 'string' || !value.code) return null;
+  if (value.status !== undefined
+      && (!Number.isInteger(value.status) || value.status < 100 || value.status > 599)) return null;
+  if (value.providerRetryAfterMs !== undefined
+      && (!Number.isFinite(value.providerRetryAfterMs) || value.providerRetryAfterMs <= 0)) return null;
+  if (value.requestId !== undefined
+      && (typeof value.requestId !== 'string' || !value.requestId)) return null;
+  return {
+    message: sanitizeLogicalDetailValue(value.message, { marker: '[data URL omitted]' }).slice(0, SEARCH_TEXT_LIMIT),
+    code: sanitizeLogicalDetailValue(value.code, { marker: '[data URL omitted]' }).slice(0, 1000),
+    ...(value.status === undefined ? {} : { status: value.status }),
+    ...(value.providerRetryAfterMs === undefined ? {} : { providerRetryAfterMs: value.providerRetryAfterMs }),
+    ...(value.requestId === undefined ? {} : {
+      requestId: sanitizeLogicalDetailValue(value.requestId, { marker: '[data URL omitted]' }).slice(0, 4000),
+    }),
+  };
+}
+
+function scheduledRetryFacts(row) {
+  const data = row.event.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const retryId = safeString(data.retryId);
+  const provider = safeString(data.provider);
+  const policyKey = safeString(data.policyKey);
+  if (!retryId || !provider || !policyKey
+      || !Number.isSafeInteger(data.turn) || data.turn < 1
+      || !Number.isSafeInteger(data.step) || data.step < 1
+      || !Number.isSafeInteger(data.retry) || data.retry < 1
+      || !Number.isFinite(data.delayMs) || data.delayMs < 0 || data.delayMs > MAX_RETRY_DELAY_MS) return null;
+  if (row.openTurn !== data.turn || row.openStep !== data.step || row.providerAtEvent !== provider) return null;
+  if (data.mode === 'normal') {
+    if (!Number.isSafeInteger(data.maxRetries) || data.maxRetries < 1 || data.retry > data.maxRetries) return null;
+  } else if (data.mode === 'always') {
+    if (Object.hasOwn(data, 'maxRetries')) return null;
+  } else {
+    return null;
+  }
+  const failure = retryFailureFacts(data.failure);
+  if (!failure) return null;
+  return {
+    retryId,
+    turn: data.turn,
+    step: data.step,
+    provider,
+    mode: data.mode,
+    policyKey,
+    retry: data.retry,
+    ...(data.mode === 'normal' ? { maxRetries: data.maxRetries } : {}),
+    delayMs: data.delayMs,
+    failure,
+  };
+}
+
+function startedRetryFacts(row) {
+  const data = row.event.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const retryId = safeString(data.retryId);
+  if (!retryId
+      || !Number.isSafeInteger(data.turn) || data.turn < 1
+      || !Number.isSafeInteger(data.step) || data.step < 1
+      || !Number.isSafeInteger(data.retry) || data.retry < 1
+      || row.openTurn !== data.turn || row.openStep !== data.step) return null;
+  return {
+    retryId,
+    turn: data.turn,
+    step: data.step,
+    retry: data.retry,
+    providerAtEvent: row.providerAtEvent,
+  };
+}
+
+function validateRetryChain(rows) {
+  const ordered = [...rows].sort((left, right) => left.event.seq - right.event.seq);
+  const schedules = [];
+  const starts = [];
+  for (const row of ordered) {
+    if (row.event.type === 'llm/retry') {
+      const facts = scheduledRetryFacts(row);
+      if (!facts) return { reason: 'invalid scheduled retry payload or open-step context' };
+      schedules.push({ row, facts });
+    } else if (row.event.type === 'llm/retry-started') {
+      const facts = startedRetryFacts(row);
+      if (!facts) return { reason: 'invalid retry-started payload or open-step context' };
+      starts.push({ row, facts });
+    }
+  }
+  if (!schedules.length) return { reason: 'retryId has no scheduled retry' };
+  const first = schedules[0].facts;
+  if (schedules.some(({ facts }, index) => (
+    facts.turn !== first.turn
+    || facts.step !== first.step
+    || facts.provider !== first.provider
+    || facts.mode !== first.mode
+    || facts.policyKey !== first.policyKey
+    || facts.retry !== index + 1
+    || (facts.mode === 'normal' && facts.maxRetries !== first.maxRetries)
+  ))) return { reason: 'retryId spans inconsistent provider-policy identity or numbering' };
+  const attempts = [];
+  for (const schedule of schedules) {
+    const matching = starts.filter(({ facts }) => (
+      facts.retry === schedule.facts.retry
+      && facts.turn === schedule.facts.turn
+      && facts.step === schedule.facts.step
+      && facts.providerAtEvent === schedule.facts.provider
+    ));
+    if (matching.length > 1) return { reason: `retry ${schedule.facts.retry} repeats retry-started` };
+    const started = matching[0] || null;
+    if (started && started.row.event.seq < schedule.row.event.seq) {
+      return { reason: `retry ${schedule.facts.retry} starts before it is scheduled` };
+    }
+    if (!started && schedule !== schedules.at(-1)) {
+      return { reason: `retry ${schedule.facts.retry} lacks started evidence before a later retry` };
+    }
+    attempts.push({ schedule, started });
+  }
+  if (starts.length !== attempts.filter((attempt) => attempt.started).length) {
+    return { reason: 'retry-started does not match one numbered scheduled retry' };
+  }
+  return { ordered, first, attempts };
+}
+
+function makeRetryLifecycleEvent(session, projection) {
+  const { ordered, first, attempts } = projection;
+  const latest = attempts.at(-1);
+  const status = latest.started ? 'started' : 'scheduled';
+  const maxText = first.mode === 'always' ? '∞' : String(first.maxRetries);
+  const event = makeLogicalEvent({
+    id: `${session.id}:logical:llm-retry:${attempts[0].schedule.row.event.seq}`,
+    timestamp: safeIso(attempts[0].schedule.row.event.time),
+    turnId: `turn:${first.turn}`,
+    kind: 'protocol',
+    subtype: 'llm/retry-lifecycle',
+    layer: 'protocol',
+    role: 'system',
+    label: 'Model request retry',
+    preview: truncatePreview(`Retry ${latest.schedule.facts.retry}/${maxText} ${status} after ${latest.schedule.facts.delayMs} ms · ${latest.schedule.facts.failure.code}`),
+    searchText: attempts.flatMap(({ schedule, started }) => {
+      const facts = schedule.facts;
+      return [
+        'llm/retry',
+        `retryId=${facts.retryId}`,
+        `provider=${facts.provider}`,
+        `mode=${facts.mode}`,
+        `policyKey=${facts.policyKey}`,
+        `retry=${facts.retry}`,
+        facts.mode === 'normal' ? `maxRetries=${facts.maxRetries}` : 'maxRetries=∞',
+        `delayMs=${facts.delayMs}`,
+        `failure.code=${facts.failure.code}`,
+        facts.failure.message,
+        started ? 'llm/retry-started' : 'retry-started=not observed',
+      ];
+    }).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    severity: 'warning',
+    status,
+    rawRefs: ordered.map((row) => dshRawRef(row.raw)),
+    channels: [...new Set(ordered.map((row) => row.event.type))],
+  });
+  event.retryLifecycle = {
+    retryId: first.retryId,
+    turn: first.turn,
+    step: first.step,
+    provider: first.provider,
+    mode: first.mode,
+    policyKey: first.policyKey,
+    attempts: attempts.map(({ schedule, started }) => ({
+      retry: schedule.facts.retry,
+      ...(schedule.facts.mode === 'normal' ? { maxRetries: schedule.facts.maxRetries } : {}),
+      delayMs: schedule.facts.delayMs,
+      failure: schedule.facts.failure,
+      state: started ? 'started' : 'scheduled',
+      scheduledSeq: schedule.row.event.seq,
+      startedSeq: started?.row.event.seq ?? null,
+    })),
+  };
+  return event;
+}
+
+function projectRetryLifecycles(session, rows) {
+  if (!rows.length) return;
+  const groups = new Map();
+  const invalid = [];
+  for (const row of rows) {
+    const retryId = safeString(row.event.data?.retryId);
+    if (!retryId) {
+      invalid.push({ row, reason: 'missing retryId' });
+      continue;
+    }
+    const group = groups.get(retryId) || [];
+    group.push(row);
+    groups.set(retryId, group);
+  }
+  for (const group of groups.values()) {
+    const projection = validateRetryChain(group);
+    if (projection.reason) {
+      for (const row of group) invalid.push({ row, reason: projection.reason });
+    } else {
+      session.logicalEvents.push(makeRetryLifecycleEvent(session, projection));
+    }
+  }
+  for (const { row, reason } of invalid.sort((left, right) => left.row.event.seq - right.row.event.seq)) {
+    retryFallback(session, row, reason);
+  }
+}
+
+function sortProjectedLogicalEventsByRawOrder(session) {
+  const isStagedProjection = (event) => {
     if (event.kind === 'code_mode_operation') return true;
     const channels = Array.isArray(event.channels) ? event.channels : [];
     return channels.some((channel) => (
       channel === 'tool/code-dispatch-start'
       || channel === 'tool/code-dispatch'
       || TOOL_WORKFLOW_EVENT_TYPES.has(channel)
+      || LLM_RETRY_EVENT_TYPES.has(channel)
     ));
   };
-  const existing = session.logicalEvents.filter((event) => !isPhase2BProjection(event));
+  const existing = session.logicalEvents.filter((event) => !isStagedProjection(event));
   const projected = session.logicalEvents
-    .filter(isPhase2BProjection)
+    .filter(isStagedProjection)
     .map((event, index) => ({
       event,
       index,
@@ -1631,8 +1852,10 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   const toolCallsById = new Map();
   const codeDispatchRows = [];
   const workflowRows = [];
+  const retryRows = [];
   const pendingCompactions = new Map();
   let pendingPartialEvent = null;
+  let effectiveRequestProvider = '';
 
   const flushCurrentStep = (status = 'incomplete') => {
     if (!currentStep) return null;
@@ -1850,6 +2073,18 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
           channels: ['tool/result'],
         }));
       }
+    } else if (event.type === 'request/header') {
+      const provider = data.header?.config?.provider;
+      if (typeof provider === 'string' && provider) effectiveRequestProvider = provider;
+      session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type));
+    } else if (event.type === 'llm/retry' || event.type === 'llm/retry-started') {
+      retryRows.push({
+        event,
+        raw,
+        openTurn: currentStep?.turn ?? null,
+        openStep: currentStep?.step ?? null,
+        providerAtEvent: effectiveRequestProvider,
+      });
     } else if (event.type === 'tool/code-dispatch-start' || event.type === 'tool/code-dispatch') {
       codeDispatchRows.push({ event, raw });
     } else if (TOOL_WORKFLOW_EVENT_TYPES.has(event.type)) {
@@ -2002,7 +2237,8 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   }
   projectCodeDispatches(session, codeDispatchRows, toolCallsById);
   projectWorkflowRuns(session, workflowRows);
-  sortLogicalEventsByRawOrder(session);
+  projectRetryLifecycles(session, retryRows);
+  sortProjectedLogicalEventsByRawOrder(session);
   applyDeepSeekSeedOwnership(session, seedBoundary, expectedSeq);
   session.title = chooseDeepSeekTitle(session, seedBoundary);
   session.updatedAt = safeIso(lastTime) || session.startedAt;

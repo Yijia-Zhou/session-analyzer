@@ -6,3 +6,5 @@ test/fixtures/deepseek-harness-uncompressed/sessions/--home-joejack-dsh_playgrou
 test/fixtures/deepseek-harness-phase2/**/session.jsonl -text
 # Phase 2B DeepSeek source-compatible synthetic fixtures: preserve exact physical JSONL bytes
 test/fixtures/deepseek-harness-phase2b/**/session.jsonl -text
+# Phase 2C DeepSeek source-compatible synthetic fixtures: preserve exact physical JSONL bytes
+test/fixtures/deepseek-harness-phase2c/**/session.jsonl -text
