@@ -16,7 +16,7 @@
   - `docs/exec-plans/completed/2026-07-15-code-mode-structured-nested-projections.md`
   - `docs/exec-plans/completed/2026-07-22-code-mode-context-and-discoverability.md`
   - `docs/exec-plans/completed/2026-07-25-code-mode-request-facets-and-folding.md`
-  - `docs/exec-plans/active/2026-08-23-deepseek-harness-phase-2b-code-mode-workflow.md`
+  - `docs/exec-plans/completed/2026-08-23-deepseek-harness-phase-2b-code-mode-workflow.md`
 
 ## Context / 背景
 
