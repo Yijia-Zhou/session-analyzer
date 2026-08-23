@@ -465,10 +465,10 @@ function detailForProtocolEvent(event, session, parsedByOrdinal) {
     ));
   } else if (event.subtype === 'session/end-seed') {
     detail.timelineSections.push(sectionNotice(
-      `The first ${sourceEvent?.seq ?? ''} events were inherited from the parent Session seed. `
-      + 'They remain inspectable as provenance but are not counted as child work.',
+      `This durable marker records the end of one Session constructor seed at seq ${sourceEvent?.seq ?? ''}. `
+      + 'The seed may come from resume, fork, or replay; this marker alone does not establish inherited ownership.',
       'content',
-      'Seed boundary',
+      'Session constructor seed ended',
     ));
   } else if (event.subtype === 'subagent/descriptor') {
     const entries = [

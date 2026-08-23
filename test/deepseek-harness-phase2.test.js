@@ -238,7 +238,7 @@ test('M1 seeded fork: explicit seed ownership, inherited Raw inspectability, and
 
   const boundary = child.materialized.logicalEvents.find((event) => event.subtype === 'session/end-seed');
   assert.equal(boundary.layer, 'protocol');
-  assert.equal(boundary.preview, 'Seed boundary: 54 inherited events end here');
+  assert.equal(boundary.preview, 'Session constructor seed ended at seq 54');
   const boundaryRaw = await readDeepSeekRawRecord(
     index,
     child.materialized,
@@ -306,21 +306,230 @@ test('M1 normal parentSession without origin is lineage, not subagent classifica
   assert.equal(summary.parentSessionId, indexed.parentSessionId);
 });
 
-test('M1 seedLength and session/end-seed consistency is validated; header-only boundary remains explicit evidence', async (t) => {
-  await t.test('a marker after the header boundary fails closed', async (subtest) => {
-    const fixture = await makeSyntheticFixture(subtest, 'seed-mismatch', {
-      header: { seedLength: 1 },
+test('M1 SessionHeader seedLength alone owns inherited history; constructor seed markers remain Protocol', async (t) => {
+  await t.test('top-level resume marker does not manufacture inherited ownership', async (subtest) => {
+    const fixture = await makeSyntheticFixture(subtest, 'top-level-resume', {
       records: [
         { type: 'turn/start', seq: 0, time: 1001, data: { turn: 1 } },
-        { type: 'turn/end', seq: 1, time: 1002, data: { turn: 1 } },
-        { type: 'session/end-seed', seq: 2, time: 1003, data: {} },
+        { type: 'step/start', seq: 1, time: 1002, data: { turn: 1, step: 1 } },
+        {
+          type: 'user/message', seq: 2, time: 1003, surfaceOp: 'append',
+          data: { turn: 1, step: 1, source: { kind: 'user' }, content: [{ type: 'text', text: 'before resume' }] },
+        },
+        {
+          type: 'assistant/message', seq: 3, time: 1004, surfaceOp: 'append',
+          data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'before answer' }] } },
+        },
+        { type: 'step/end', seq: 4, time: 1005, data: { turn: 1, step: 1 } },
+        { type: 'turn/end', seq: 5, time: 1006, data: { turn: 1, reason: { kind: 'completed' } } },
+        { type: 'session/end-seed', seq: 6, time: 1007, data: {} },
+        { type: 'turn/start', seq: 7, time: 1008, data: { turn: 2 } },
+        { type: 'step/start', seq: 8, time: 1009, data: { turn: 2, step: 1 } },
+        {
+          type: 'user/message', seq: 9, time: 1010, surfaceOp: 'append',
+          data: { turn: 2, step: 1, source: { kind: 'user' }, content: [{ type: 'text', text: 'after resume' }] },
+        },
+        {
+          type: 'tool/call', seq: 10, time: 1011,
+          data: { turn: 2, step: 1, callId: 'resume-call', name: 'read', arguments: '{"path":"synthetic"}' },
+        },
+        {
+          type: 'tool/result', seq: 11, time: 1012, surfaceOp: 'append',
+          data: {
+            turn: 2, step: 1,
+            message: {
+              source: { kind: 'tool', callId: 'resume-call' }, role: 'user',
+              content: [{ type: 'tool-result', toolCallId: 'resume-call', content: [{ type: 'text', text: 'synthetic result' }], isError: false }],
+            },
+          },
+        },
+        { type: 'step/end', seq: 12, time: 1013, data: { turn: 2, step: 1 } },
+        { type: 'turn/end', seq: 13, time: 1014, data: { turn: 2, reason: { kind: 'completed' } } },
       ],
     });
-    await assert.rejects(
-      buildDeepSeekIndex({ sourceHome: fixture.sourceHome, repoRoot: fixture.repoRoot }),
-      (error) => error?.code === 'DEEPSEEK_STORAGE_INVALID'
-        && /does not match header seedLength/.test(error.message),
+    const index = await buildDeepSeekIndex({ sourceHome: fixture.sourceHome, repoRoot: fixture.repoRoot });
+    const indexed = index.sessions[0];
+    assert.equal(indexed.forkStorageMode, '');
+    assert.equal(indexed.forkEvidence, null);
+    assert.equal(indexed.inheritedContext, null);
+    assert.equal(indexed.counts.messages, 3);
+    assert.equal(indexed.counts.userMessages, 2);
+    assert.equal(indexed.counts.toolCalls, 1);
+    assert.equal(indexed.counts.turns, 2);
+    assert.equal(indexed.title, 'before resume');
+    assert.deepEqual(indexed.summary.topTools, [{ name: 'read', count: 1 }]);
+    const materialized = await materializeSessionForIndex(index, indexed);
+    assert.equal(materialized._forkSegmentsByRawId, undefined);
+    assert.deepEqual(
+      materialized.logicalEvents.filter((event) => event.kind === 'user_message').map((event) => event.preview),
+      ['before resume', 'after resume'],
     );
+    const marker = materialized.logicalEvents.find((event) => event.subtype === 'session/end-seed');
+    assert.equal(marker.layer, 'protocol');
+    assert.equal(marker.preview, 'Session constructor seed ended at seq 6');
+    const detail = await buildEventDetailForSession(index, materialized, marker.id, 'protocol');
+    assert.match(detail.timelineSections[0].text, /does not establish inherited ownership/);
+    await assertProjectionParity(index, indexed, materialized);
+  });
+
+  await t.test('repeated resume markers preserve work before, between, and after boundaries', async (subtest) => {
+    const fixture = await makeSyntheticFixture(subtest, 'repeated-resume', {
+      records: [
+        { type: 'turn/start', seq: 0, time: 1101, data: { turn: 1 } },
+        { type: 'step/start', seq: 1, time: 1102, data: { turn: 1, step: 1 } },
+        {
+          type: 'user/message', seq: 2, time: 1103, surfaceOp: 'append',
+          data: { turn: 1, step: 1, source: { kind: 'user' }, content: [{ type: 'text', text: 'before first marker' }] },
+        },
+        { type: 'step/end', seq: 3, time: 1104, data: { turn: 1, step: 1 } },
+        { type: 'turn/end', seq: 4, time: 1105, data: { turn: 1, reason: { kind: 'completed' } } },
+        { type: 'session/end-seed', seq: 5, time: 1106, data: {} },
+        { type: 'turn/start', seq: 6, time: 1107, data: { turn: 2 } },
+        { type: 'step/start', seq: 7, time: 1108, data: { turn: 2, step: 1 } },
+        {
+          type: 'user/message', seq: 8, time: 1109, surfaceOp: 'append',
+          data: { turn: 2, step: 1, source: { kind: 'user' }, content: [{ type: 'text', text: 'between markers' }] },
+        },
+        {
+          type: 'tool/call', seq: 9, time: 1110,
+          data: { turn: 2, step: 1, callId: 'between-call', name: 'read', arguments: '{"path":"synthetic"}' },
+        },
+        {
+          type: 'tool/result', seq: 10, time: 1111, surfaceOp: 'append',
+          data: {
+            turn: 2, step: 1,
+            message: {
+              source: { kind: 'tool', callId: 'between-call' }, role: 'user',
+              content: [{ type: 'tool-result', toolCallId: 'between-call', content: [{ type: 'text', text: 'synthetic result' }], isError: false }],
+            },
+          },
+        },
+        { type: 'step/end', seq: 11, time: 1112, data: { turn: 2, step: 1 } },
+        { type: 'turn/end', seq: 12, time: 1113, data: { turn: 2, reason: { kind: 'completed' } } },
+        { type: 'session/end-seed', seq: 13, time: 1114, data: {} },
+        { type: 'turn/start', seq: 14, time: 1115, data: { turn: 3 } },
+        { type: 'step/start', seq: 15, time: 1116, data: { turn: 3, step: 1 } },
+        {
+          type: 'user/message', seq: 16, time: 1117, surfaceOp: 'append',
+          data: { turn: 3, step: 1, source: { kind: 'user' }, content: [{ type: 'text', text: 'after second marker' }] },
+        },
+        {
+          type: 'assistant/message', seq: 17, time: 1118, surfaceOp: 'append',
+          data: { turn: 3, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'final answer' }] } },
+        },
+        { type: 'step/end', seq: 18, time: 1119, data: { turn: 3, step: 1 } },
+        { type: 'turn/end', seq: 19, time: 1120, data: { turn: 3, reason: { kind: 'completed' } } },
+      ],
+    });
+    const index = await buildDeepSeekIndex({ sourceHome: fixture.sourceHome, repoRoot: fixture.repoRoot });
+    const indexed = index.sessions[0];
+    assert.equal(indexed.forkStorageMode, '');
+    assert.equal(indexed.inheritedContext, null);
+    assert.equal(indexed.counts.messages, 4);
+    assert.equal(indexed.counts.userMessages, 3);
+    assert.equal(indexed.counts.toolCalls, 1);
+    assert.equal(indexed.counts.turns, 3);
+    assert.equal(indexed.title, 'before first marker');
+    assert.deepEqual(indexed.summary.topTools, [{ name: 'read', count: 1 }]);
+    const materialized = await materializeSessionForIndex(index, indexed);
+    assert.equal(materialized._forkSegmentsByRawId, undefined);
+    assert.deepEqual(
+      materialized.logicalEvents.filter((event) => event.kind === 'user_message').map((event) => event.preview),
+      ['before first marker', 'between markers', 'after second marker'],
+    );
+    assert.deepEqual(
+      materialized.logicalEvents.filter((event) => event.subtype === 'session/end-seed').map((event) => event.preview),
+      ['Session constructor seed ended at seq 5', 'Session constructor seed ended at seq 13'],
+    );
+    await assertProjectionParity(index, indexed, materialized);
+  });
+
+  await t.test('seeded derived Session keeps its header boundary across a later resume marker', async (subtest) => {
+    const fixture = await makeSyntheticFixture(subtest, 'seeded-derived-resume', {
+      header: { parentSession: 'synthetic-parent', seedLength: 5 },
+      records: [
+        { type: 'turn/start', seq: 0, time: 1201, data: { turn: 1 } },
+        { type: 'step/start', seq: 1, time: 1202, data: { turn: 1, step: 1 } },
+        {
+          type: 'user/message', seq: 2, time: 1203, surfaceOp: 'append',
+          data: { turn: 1, step: 1, source: { kind: 'user' }, content: [{ type: 'text', text: 'inherited parent work' }] },
+        },
+        { type: 'step/end', seq: 3, time: 1204, data: { turn: 1, step: 1 } },
+        { type: 'turn/end', seq: 4, time: 1205, data: { turn: 1, reason: { kind: 'completed' } } },
+        { type: 'session/end-seed', seq: 5, time: 1206, data: {} },
+        { type: 'turn/start', seq: 6, time: 1207, data: { turn: 2 } },
+        { type: 'step/start', seq: 7, time: 1208, data: { turn: 2, step: 1 } },
+        {
+          type: 'user/message', seq: 8, time: 1209, surfaceOp: 'append',
+          data: { turn: 2, step: 1, source: { kind: 'user' }, content: [{ type: 'text', text: 'first child work' }] },
+        },
+        {
+          type: 'tool/call', seq: 9, time: 1210,
+          data: { turn: 2, step: 1, callId: 'child-call', name: 'read', arguments: '{"path":"synthetic"}' },
+        },
+        {
+          type: 'tool/result', seq: 10, time: 1211, surfaceOp: 'append',
+          data: {
+            turn: 2, step: 1,
+            message: {
+              source: { kind: 'tool', callId: 'child-call' }, role: 'user',
+              content: [{ type: 'tool-result', toolCallId: 'child-call', content: [{ type: 'text', text: 'synthetic result' }], isError: false }],
+            },
+          },
+        },
+        { type: 'step/end', seq: 11, time: 1212, data: { turn: 2, step: 1 } },
+        { type: 'turn/end', seq: 12, time: 1213, data: { turn: 2, reason: { kind: 'completed' } } },
+        { type: 'session/end-seed', seq: 13, time: 1214, data: {} },
+        { type: 'turn/start', seq: 14, time: 1215, data: { turn: 3 } },
+        { type: 'step/start', seq: 15, time: 1216, data: { turn: 3, step: 1 } },
+        {
+          type: 'user/message', seq: 16, time: 1217, surfaceOp: 'append',
+          data: { turn: 3, step: 1, source: { kind: 'user' }, content: [{ type: 'text', text: 'resumed child work' }] },
+        },
+        {
+          type: 'assistant/message', seq: 17, time: 1218, surfaceOp: 'append',
+          data: { turn: 3, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'resumed answer' }] } },
+        },
+        { type: 'step/end', seq: 18, time: 1219, data: { turn: 3, step: 1 } },
+        { type: 'turn/end', seq: 19, time: 1220, data: { turn: 3, reason: { kind: 'completed' } } },
+      ],
+    });
+    const index = await buildDeepSeekIndex({ sourceHome: fixture.sourceHome, repoRoot: fixture.repoRoot });
+    const indexed = index.sessions[0];
+    assert.equal(indexed.forkStorageMode, 'materialized');
+    assert.equal(indexed.forkEvidence.seedLength, 5);
+    assert.equal(indexed.forkEvidence.seedBoundarySeq, 5);
+    assert.equal(indexed.forkEvidence.inheritedRawRecordCount, 5);
+    assert.equal(indexed.inheritedContext.seedLength, 5);
+    assert.equal(indexed.inheritedContext.mainEventCount, 1);
+    assert.equal(indexed.counts.messages, 3);
+    assert.equal(indexed.counts.userMessages, 2);
+    assert.equal(indexed.counts.toolCalls, 1);
+    assert.equal(indexed.counts.turns, 2);
+    assert.equal(indexed.title, 'first child work');
+    assert.deepEqual(indexed.summary.topTools, [{ name: 'read', count: 1 }]);
+    const materialized = await materializeSessionForIndex(index, indexed);
+    assert.deepEqual(
+      materialized.logicalEvents.filter((event) => event.kind === 'user_message').map((event) => event.preview),
+      ['first child work', 'resumed child work'],
+    );
+    assert.equal(materialized.logicalEvents.some((event) => /inherited parent work/.test(event.preview)), false);
+    assert.deepEqual(
+      materialized.logicalEvents.filter((event) => event.subtype === 'session/end-seed').map((event) => event.preview),
+      ['Session constructor seed ended at seq 5', 'Session constructor seed ended at seq 13'],
+    );
+    const rawTimeline = deepSeekAdapter.query.getTimeline(index, materialized, { layer: 'raw', offset: 0, limit: 100 });
+    assert.deepEqual(rawTimeline.events.slice(0, 7).map((event) => event.forkSegment), [
+      'fork_metadata',
+      'inherited_context',
+      'inherited_context',
+      'inherited_context',
+      'inherited_context',
+      'inherited_context',
+      'continuation',
+    ]);
+    assert.ok(rawTimeline.events.slice(7).every((event) => event.forkSegment === 'continuation'));
+    await assertProjectionParity(index, indexed, materialized);
   });
 
   await t.test('a marker inside the inherited prefix does not move the authoritative header boundary', async (subtest) => {

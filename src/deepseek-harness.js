@@ -311,7 +311,7 @@ function protocolPreview(type, data) {
     case 'agent-preset/selected':
       return `Agent preset selected: ${value.agentPreset || ''}`;
     case 'session/end-seed':
-      return 'Seed boundary: inherited prefix ends here';
+      return 'Session constructor seed ended';
     case 'subagent/descriptor':
       return descriptorPreview(parseSubagentDescriptorData(value)) || 'Subagent descriptor';
     case 'compaction/start':
@@ -359,7 +359,7 @@ function protocolSearchText(type, data) {
     case 'agent-preset/selected':
       return `agent-preset/selected\nagentPreset=${value.agentPreset || ''}`.slice(0, SEARCH_TEXT_LIMIT);
     case 'session/end-seed':
-      return 'session/end-seed\nInherited seed prefix boundary'.slice(0, SEARCH_TEXT_LIMIT);
+      return 'session/end-seed\nSession constructor seed lifecycle boundary'.slice(0, SEARCH_TEXT_LIMIT);
     case 'subagent/descriptor':
       return descriptorSearchText(parseSubagentDescriptorData(value));
     case 'compaction/start':
@@ -970,24 +970,17 @@ function makeCompactionEvent(sessionId, compaction) {
 
 function resolveSeedBoundary(session, expectedSeq) {
   const headerLength = session._seedLength;
-  const markers = session._seedMarkers || [];
   if (headerLength !== null) {
     if (headerLength > expectedSeq) {
       throw storage.storageError(
         `corrupt session log: header seedLength ${headerLength} exceeds the committed event count ${expectedSeq}`,
       );
     }
-    // The header boundary is authoritative. A marker may sit at the boundary
-    // (the current writer) or earlier when the inherited seed already ended
-    // with its own marker; a marker after the declared boundary is corrupt.
-    if (markers.some((marker) => marker.seq > headerLength)) {
-      throw storage.storageError(
-        `corrupt session log: session/end-seed does not match header seedLength ${headerLength}`,
-      );
-    }
     return headerLength;
   }
-  if (markers.length) return markers[markers.length - 1].seq;
+  // SessionHeader.seedLength is the only durable inherited-history ownership
+  // boundary. session/end-seed marks one constructor's replay/fork/resume seed
+  // ending and may occur (or recur) in an ordinary top-level Session.
   return null;
 }
 
@@ -1422,10 +1415,10 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
       };
       session._seedMarkers.push(marker);
       session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
-        label: 'Seed boundary',
+        label: 'Session constructor seed ended',
         role: 'system',
-        preview: `Seed boundary: ${event.seq} inherited events end here`,
-        searchText: `session/end-seed\nseq=${event.seq}\nInherited seed prefix boundary`,
+        preview: `Session constructor seed ended at seq ${event.seq}`,
+        searchText: `session/end-seed\nseq=${event.seq}\nSession constructor seed lifecycle boundary`,
       }));
     } else if (event.type === 'compaction/start') {
       const compactionId = typeof data.compactionId === 'string' && data.compactionId.trim()
