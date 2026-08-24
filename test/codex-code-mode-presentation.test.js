@@ -12,6 +12,7 @@ const {
   isCodeModeScriptOperation,
   normalizeCodeModeRequest,
 } = require('../src/codex-code-mode-presentation');
+const i18n = require('../src/shared/i18n');
 
 function operation(id, rawId) {
   return {
@@ -50,6 +51,7 @@ test('Code Mode exec source follows the exact exec phase raw identity', () => {
 
 test('Code Mode request query values accept only stable projector tool names', () => {
   assert.equal(normalizeCodeModeRequest(' shell_command '), 'shell_command');
+  assert.equal(normalizeCodeModeRequest(' exec_command '), 'exec_command');
   assert.equal(normalizeCodeModeRequest('web__run'), 'web__run');
   assert.equal(normalizeCodeModeRequest('Shell command'), '');
   assert.equal(normalizeCodeModeRequest('unknown_tool'), '');
@@ -125,20 +127,44 @@ test('request facts do not mutate canonical events and projector failure contrib
   assert.deepEqual(event, before);
 });
 
-test('request catalog counts operations once per tool and keeps stable machine values', () => {
+test('request catalogs keep stable machine values and distinct command labels across scopes', () => {
   const sessions = [{
     presentationIndexes: {
       codeModeDeclaredRequests: new Map([
-        ['first', { toolNames: ['shell_command', 'shell_command'], requestEvidence: CODE_MODE_REQUEST_EVIDENCE }],
+        ['first', { toolNames: ['exec_command', 'shell_command', 'shell_command'], requestEvidence: CODE_MODE_REQUEST_EVIDENCE }],
         ['second', { toolNames: ['shell_command', 'update_plan'], requestEvidence: CODE_MODE_REQUEST_EVIDENCE }],
       ]),
     },
   }];
-  assert.deepEqual(codeModeRequestCatalog(sessions, {
-    label: (value) => ({ shell_command: 'Shell command', update_plan: 'Plan update' }[value]),
-  }), [
+  const label = (value) => i18n.codeModeRequestLabel(value, 'en');
+  const projectCatalog = codeModeRequestCatalog(sessions, { label });
+  assert.deepEqual(projectCatalog, [
+    { value: 'exec_command', label: 'Exec command', count: 1, evidence: CODE_MODE_REQUEST_EVIDENCE },
     { value: 'update_plan', label: 'Plan update', count: 1, evidence: CODE_MODE_REQUEST_EVIDENCE },
     { value: 'shell_command', label: 'Shell command', count: 2, evidence: CODE_MODE_REQUEST_EVIDENCE },
+  ]);
+  assert.equal(new Set(projectCatalog.map((item) => item.label)).size, projectCatalog.length);
+
+  const execOnly = codeModeRequestCatalog([{
+    presentationIndexes: {
+      codeModeDeclaredRequests: new Map([
+        ['exec-only', { toolNames: ['exec_command'], requestEvidence: CODE_MODE_REQUEST_EVIDENCE }],
+      ]),
+    },
+  }], { label });
+  assert.deepEqual(execOnly, [
+    { value: 'exec_command', label: 'Exec command', count: 1, evidence: CODE_MODE_REQUEST_EVIDENCE },
+  ]);
+
+  const shellOnly = codeModeRequestCatalog([{
+    presentationIndexes: {
+      codeModeDeclaredRequests: new Map([
+        ['shell-only', { toolNames: ['shell_command'], requestEvidence: CODE_MODE_REQUEST_EVIDENCE }],
+      ]),
+    },
+  }], { label });
+  assert.deepEqual(shellOnly, [
+    { value: 'shell_command', label: 'Shell command', count: 1, evidence: CODE_MODE_REQUEST_EVIDENCE },
   ]);
 });
 

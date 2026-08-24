@@ -25,7 +25,7 @@
   const CODE_MODE_TOOL_DEFINITIONS = Object.freeze({
     apply_patch: definition('Apply patch', 'patch', ['patch']),
     create_goal: definition('Create goal', 'goal', ['objective']),
-    exec_command: definition('Shell command', 'command', ['command', 'cmd', 'workdir']),
+    exec_command: definition('Exec command', 'command', ['command', 'cmd', 'workdir']),
     get_goal: definition('Get goal', 'goal', []),
     image_gen__imagegen: definition('Image generation', DEFAULT_ORDINARY_KIND, ['prompt']),
     list_available_plugins_to_install: definition('List available plugins', DEFAULT_ORDINARY_KIND, []),

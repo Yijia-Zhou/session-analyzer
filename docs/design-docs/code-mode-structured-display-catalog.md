@@ -166,7 +166,7 @@ Generic summaries currently truncate strings to 4,000 characters, arrays to 12 i
 - **Acceptance / 验收:** Bounded and unbounded budgets, Unicode objective, empty acknowledgement, explicit goal snapshot, rejected creation, and request-only display. / 覆盖有界与无界预算、Unicode objective、空确认、明确 goal snapshot、创建被拒与仅 request 显示。
 - **Decision / 决定:** `TBD / 待定`
 
-### `exec_command` — Shell command / 终端命令
+### `exec_command` — Exec command / Exec 命令
 
 - **Current / 当前:** Shares the same projection policy as `shell_command`: highlighted Command, a `Run context` table, parsed exit code/wall time/output when the exact formatted envelope matches, otherwise one raw terminal Result, plus the folded full associated fragment. / 与 `shell_command` 共用投影策略：高亮 Command、`Run context` 表；精确匹配格式化 envelope 时解析 exit code、wall time 与 output，否则显示一个 raw terminal Result；另保留折叠的完整关联 fragment。
 - **Fine-tune / 调优建议:** Implement command-card refinements once for both aliases. Keep command and stdout/stderr dominant, compress cwd/timeout/permission into a single secondary row, and provide an adjustable long-output fold. Keep exit code visually explicit but do not turn unparsed text into an outcome. / 两个别名共用一次命令卡片改进。让 command 与 stdout/stderr 占主要空间，把 cwd/timeout/permission 压缩为一行次要信息，并为长输出提供可调折叠。明确显示 exit code，但不从未解析文本推断 outcome。
@@ -236,7 +236,7 @@ Generic summaries currently truncate strings to 4,000 characters, arrays to 12 i
 - **Acceptance / 验收:** Short and canonical target, Markdown message, very long message, explicit receiver, missing response, and target resolution ambiguity. / 覆盖短 target、canonical target、Markdown message、超长 message、明确 receiver、缺失响应与 target 解析歧义。
 - **Decision / 决定:** `TBD / 待定`
 
-### `shell_command` — Shell command / 终端命令
+### `shell_command` — Shell command / Shell 命令
 
 - **Current / 当前:** Renders Command plus cwd/workdir, timeout, and sandbox permission. An exactly formatted result becomes `Run result` with Exit code and Wall time plus terminal Output; all other result text is one terminal Result. The complete associated fragment remains folded. / 当前显示 Command 以及 cwd/workdir、timeout 与 sandbox permission。精确匹配格式的结果会变成含 Exit code 与 Wall time 的 `Run result` 加 terminal Output；其他结果文本显示为单个 terminal Result。完整关联 fragment 仍默认折叠。
 - **Fine-tune / 调优建议:** Same shared command-card change as `exec_command`: command and output dominate; context becomes compact; stdout/stderr or channel distinctions are shown only when structurally available; users can expand long output without expanding metadata. / 与 `exec_command` 共用同一命令卡片改进：command 与 output 占主导，context 紧凑显示；只有结构化可用时才区分 stdout/stderr 或 channel；用户无需展开 metadata 即可展开长输出。
