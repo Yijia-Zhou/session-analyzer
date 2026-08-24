@@ -961,6 +961,69 @@ function detailForPrunedToolResult(event, session, parsedByOrdinal) {
   return detail;
 }
 
+function detailForCommandLifecycle(event) {
+  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
+  const lifecycle = event.commandLifecycle || {};
+  const summary = sectionKv([
+    { key: 'Command', value: lifecycle.name },
+    ...(Object.hasOwn(lifecycle, 'args') && lifecycle.args === ''
+      ? [{ key: 'Input', value: '' }]
+      : []),
+    { key: 'Settlement', value: lifecycle.settlementKind },
+  ], 'context', 'DSH application command');
+  if (summary) detail.timelineSections.push(summary);
+  if (Object.hasOwn(lifecycle, 'args')) {
+    const input = sectionCode(lifecycle.args, '', 'request', 'Command input', 'user');
+    if (input) detail.timelineSections.push(input);
+  }
+  if (Object.hasOwn(lifecycle, 'resultText')) {
+    const result = sectionNotice(
+      lifecycle.resultText || '(empty result)',
+      'result',
+      lifecycle.settlementKind === 'error' ? 'Command error' : 'Command result',
+      lifecycle.settlementKind === 'error' ? 'error' : 'info',
+    );
+    if (result) detail.timelineSections.push(result);
+  }
+  const trace = sectionKv([
+    { key: 'Command ID', value: lifecycle.commandId },
+    { key: 'Run source seq', value: lifecycle.runSeq },
+    { key: 'Done source seq', value: lifecycle.doneSeq },
+    ...(Object.hasOwn(lifecycle, 'sourceEventSeq')
+      ? [{ key: 'Source event seq', value: lifecycle.sourceEventSeq }]
+      : []),
+    { key: 'Source kind', value: lifecycle.sourceKind },
+  ], 'traceability', 'Command lifecycle source');
+  if (trace) detail.inspectorSections.push(trace);
+  detail.inspectorSections.push(sectionNotice(
+    'This is a DeepSeek Harness UI/application command lifecycle, not a model tool execution. '
+      + 'Its settlement records handler completion only; it does not prove a separate domain-state change.',
+    'traceability',
+    'Application control evidence',
+  ));
+  return detail;
+}
+
+function detailForPlanModeState(event) {
+  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
+  const state = event.planModeState || {};
+  detail.timelineSections.push(sectionKv([
+    { key: 'Plan mode', value: state.active === true ? 'enabled' : 'disabled' },
+  ], 'context', 'DSH plan mode state'));
+  const trace = sectionKv([
+    { key: 'Source event type', value: 'plan/mode' },
+    { key: 'Source seq', value: state.sourceSeq },
+  ], 'traceability', 'Plan mode source');
+  if (trace) detail.inspectorSections.push(trace);
+  detail.inspectorSections.push(sectionNotice(
+    'This durable source row marks the logged DSH plan-mode state boundary. It is Protocol state, '
+      + 'not a Main planning artifact and not evidence of which command caused the transition.',
+    'traceability',
+    'Source state boundary',
+  ));
+  return detail;
+}
+
 function detailForProtocolEvent(event, session, parsedByOrdinal) {
   const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
   const sourceEvent = parsedEventsForRawIds(session, parsedByOrdinal, [event.rawRefs?.[0]?.rawId])[0];
@@ -1080,6 +1143,12 @@ function buildLogicalDetail(event, session, parsedByOrdinal) {
   }
   if (event.layer === 'protocol' && event.subtype === 'llm/retry-lifecycle') {
     return detailForRetryLifecycle(event);
+  }
+  if (event.layer === 'protocol' && event.subtype === 'command/lifecycle' && event.commandLifecycle) {
+    return detailForCommandLifecycle(event);
+  }
+  if (event.layer === 'protocol' && event.subtype === 'plan/mode' && event.planModeState) {
+    return detailForPlanModeState(event);
   }
   if (event.kind === 'goal' && event.goalChange) {
     return detailForGoalState(event);

@@ -912,6 +912,158 @@ function makePermissionProtocolEvent(sessionId, event, raw, observedState) {
   return logical;
 }
 
+function decodeCommandIdentity(event) {
+  const commandId = event?.data?.commandId;
+  return typeof commandId === 'string' && commandId.trim() ? commandId : '';
+}
+
+function decodeCommandRun(event) {
+  const data = event?.data;
+  const commandId = decodeCommandIdentity(event);
+  const keys = ['commandId', 'name', 'source', ...(Object.hasOwn(data || {}, 'args') ? ['args'] : [])];
+  if (event?.type !== 'command/run'
+      || !commandId
+      || !hasExactKeys(data, keys)
+      || typeof data.name !== 'string' || !/^[a-z][a-z0-9_-]*$/u.test(data.name)
+      || (data.args !== undefined && typeof data.args !== 'string')
+      || !hasExactKeys(data.source, ['kind'])
+      || data.source.kind !== 'user') return null;
+  return {
+    commandId,
+    name: data.name,
+    ...(data.args !== undefined ? { args: data.args } : {}),
+    sourceKind: data.source.kind,
+  };
+}
+
+function decodeCommandDone(event, commandSeqs) {
+  const data = event?.data;
+  const commandId = decodeCommandIdentity(event);
+  const keys = [
+    'commandId', 'kind',
+    ...(Object.hasOwn(data || {}, 'text') ? ['text'] : []),
+    ...(Object.hasOwn(data || {}, 'sourceEventSeq') ? ['sourceEventSeq'] : []),
+  ];
+  if (event?.type !== 'command/done'
+      || !commandId
+      || !hasExactKeys(data, keys)
+      || (data.kind !== 'success' && data.kind !== 'error')
+      || (data.text !== undefined && typeof data.text !== 'string')
+      || (data.kind === 'error' && (typeof data.text !== 'string' || !data.text.trim()))) return null;
+  if (data.sourceEventSeq !== undefined) {
+    if (data.kind !== 'success'
+        || !Number.isSafeInteger(data.sourceEventSeq) || data.sourceEventSeq < 0
+        || data.sourceEventSeq >= event.seq
+        || commandSeqs.has(data.sourceEventSeq)) return null;
+  }
+  return {
+    commandId,
+    kind: data.kind,
+    ...(data.text !== undefined ? { text: data.text } : {}),
+    ...(data.sourceEventSeq !== undefined ? { sourceEventSeq: data.sourceEventSeq } : {}),
+  };
+}
+
+function makeCommandLifecycleEvent(session, run, done, runFacts, doneFacts) {
+  const failed = doneFacts.kind === 'error';
+  const label = `${i18n.humanize(runFacts.name)} command`;
+  const resultText = doneFacts.text || '';
+  const logical = makeLogicalEvent({
+    id: `${session.id}:logical:command-lifecycle:${run.event.seq}`,
+    timestamp: safeIso(run.event.time),
+    turnId: turnIdFor(run.event),
+    kind: 'protocol',
+    subtype: 'command/lifecycle',
+    layer: 'protocol',
+    role: 'system',
+    label,
+    preview: truncatePreview(resultText || `${label} ${failed ? 'failed' : 'completed'}`),
+    searchText: [
+      'DSH UI/application command lifecycle',
+      `commandId=${runFacts.commandId}`,
+      `name=${runFacts.name}`,
+      Object.hasOwn(runFacts, 'args') ? `args=${runFacts.args}` : '',
+      `sourceKind=${runFacts.sourceKind}`,
+      `settlement=${doneFacts.kind}`,
+      resultText,
+      `runSeq=${run.event.seq}`,
+      `doneSeq=${done.event.seq}`,
+      Object.hasOwn(doneFacts, 'sourceEventSeq') ? `sourceEventSeq=${doneFacts.sourceEventSeq}` : '',
+    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    severity: failed ? 'error' : 'normal',
+    status: failed ? 'failed' : 'success',
+    rawRefs: [dshRawRef(run.raw), dshRawRef(done.raw)],
+    channels: ['command/run', 'command/done'],
+  });
+  logical.commandLifecycle = {
+    commandId: runFacts.commandId,
+    name: runFacts.name,
+    ...(Object.hasOwn(runFacts, 'args') ? { args: runFacts.args } : {}),
+    sourceKind: runFacts.sourceKind,
+    settlementKind: doneFacts.kind,
+    ...(Object.hasOwn(doneFacts, 'text') ? { resultText: doneFacts.text } : {}),
+    runSeq: run.event.seq,
+    doneSeq: done.event.seq,
+    ...(Object.hasOwn(doneFacts, 'sourceEventSeq') ? { sourceEventSeq: doneFacts.sourceEventSeq } : {}),
+  };
+  return logical;
+}
+
+function projectCommandLifecycles(session, rows, seedBoundary) {
+  const grouped = new Map();
+  const commandSeqs = new Set();
+  for (const row of rows) {
+    commandSeqs.add(row.event.seq);
+    const commandId = decodeCommandIdentity(row.event);
+    if (!commandId) continue;
+    const group = grouped.get(commandId) || { runs: [], dones: [] };
+    if (row.event.type === 'command/run') group.runs.push(row);
+    else group.dones.push(row);
+    grouped.set(commandId, group);
+  }
+  const childStart = Number.isSafeInteger(seedBoundary) ? seedBoundary : 0;
+  const replacedIds = new Set();
+  const projected = [];
+  for (const group of grouped.values()) {
+    if (group.runs.length !== 1 || group.dones.length !== 1) continue;
+    const run = group.runs[0];
+    const done = group.dones[0];
+    const runFacts = decodeCommandRun(run.event);
+    const doneFacts = decodeCommandDone(done.event, commandSeqs);
+    if (!runFacts || !doneFacts
+        || run.event.seq < childStart || done.event.seq < childStart
+        || done.event.seq <= run.event.seq) continue;
+    replacedIds.add(run.logical.id);
+    replacedIds.add(done.logical.id);
+    projected.push(makeCommandLifecycleEvent(session, run, done, runFacts, doneFacts));
+  }
+  if (!projected.length) return;
+  session.logicalEvents = session.logicalEvents.filter(event => !replacedIds.has(event.id));
+  session.logicalEvents.push(...projected);
+}
+
+function makePlanModeProtocolEvent(sessionId, event, raw) {
+  const data = event?.data;
+  if (!hasExactKeys(data, ['active']) || typeof data.active !== 'boolean') {
+    return makeProtocolEvent(sessionId, event, raw, event.type, {
+      role: 'system',
+      severity: 'warning',
+      status: 'incomplete',
+      preview: `${protocolPreview(event.type, event.data)} (invalid durable payload)`,
+    });
+  }
+  const enabled = data.active === true;
+  const logical = makeProtocolEvent(sessionId, event, raw, event.type, {
+    role: 'system',
+    label: 'Plan mode state',
+    status: 'recorded',
+    preview: `Plan mode: ${enabled ? 'enabled' : 'disabled'}`,
+    searchText: `plan/mode\nactive=${String(enabled)}\nseq=${event.seq}`,
+  });
+  logical.planModeState = { active: enabled, sourceSeq: event.seq };
+  return logical;
+}
+
 function createInboxReplay() {
   return {
     queues: { 'next-turn': [], 'next-step': [] },
@@ -2277,6 +2429,7 @@ function sortProjectedLogicalEventsByRawOrder(session) {
       || LLM_RETRY_EVENT_TYPES.has(channel)
       || channel === 'goal/change'
       || channel === 'todo/write'
+      || event.subtype === 'command/lifecycle'
       || event.subtype === 'goal/continuation'
       || event.subtype === 'goal/continuation-invalid'
     ));
@@ -2572,6 +2725,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   const retryRows = [];
   const goalRows = [];
   const todoRows = [];
+  const commandRows = [];
   const pruneRows = [];
   const replacementToolResultRows = [];
   const originalToolResultsBySeq = new Map();
@@ -2814,6 +2968,14 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
       goalRows.push({ event, raw });
     } else if (event.type === 'todo/write') {
       todoRows.push({ event, raw });
+    } else if (event.type === 'command/run' || event.type === 'command/done') {
+      const logical = makeProtocolEvent(session.id, event, raw, event.type, { role: 'system' });
+      session.logicalEvents.push(logical);
+      commandRows.push({ event, raw, logical });
+    } else if (event.type === 'plan/mode') {
+      session.logicalEvents.push(event.seq < childOwnedStartSeq
+        ? makeProtocolEvent(session.id, event, raw, event.type, { role: 'system' })
+        : makePlanModeProtocolEvent(session.id, event, raw));
     } else if (PERMISSION_EVENT_TYPES.has(event.type)) {
       session.logicalEvents.push(event.seq < childOwnedStartSeq
         ? makeProtocolEvent(session.id, event, raw, event.type, { role: 'system' })
@@ -2988,6 +3150,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   projectRetryLifecycles(session, retryRows);
   projectGoalState(session, goalRows);
   projectTodoSnapshots(session, todoRows);
+  projectCommandLifecycles(session, commandRows, seedBoundary);
   sortProjectedLogicalEventsByRawOrder(session);
   applyDeepSeekSeedOwnership(session, seedBoundary, expectedSeq);
   projectToolResultPrunes(
