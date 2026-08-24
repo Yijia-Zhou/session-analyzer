@@ -185,7 +185,6 @@ test('current-writer-shaped prune fixture keeps exact bytes and relates three di
     originalResultSeq: 3,
     replacementResultSeq: 6,
     shadowedTokenCount: 17,
-    writerAdjacent: true,
   });
   assert.deepEqual(replacement.toolResultPrune, {
     originalOperationEventId: operation.id,
@@ -227,6 +226,8 @@ test('current-writer-shaped prune fixture keeps exact bytes and relates three di
 });
 
 test('malformed or ambiguous prune evidence stays generic Protocol/Raw without provenance', async (t) => {
+  const mismatchedEnvelopeRows = baseRows();
+  mismatchedEnvelopeRows.find(event => event.surfaceOp?.op === 'replace').data.step = 2;
   const noncausalPruneRows = [
     { type: 'turn/start', seq: 0, time: 1000, data: { turn: 1 } },
     { type: 'step/start', seq: 1, time: 1001, data: { turn: 1, step: 1 } },
@@ -302,6 +303,10 @@ test('malformed or ambiguous prune evidence stays generic Protocol/Raw without p
       rows: baseRows({ replacementCallId: 'call-prune-other' }),
     },
     {
+      name: 'mismatched-preserved-envelope-field',
+      rows: mismatchedEnvelopeRows,
+    },
+    {
       name: 'duplicate-replacement',
       rows: baseRows({ duplicateReplacement: true }),
     },
@@ -336,7 +341,7 @@ test('malformed or ambiguous prune evidence stays generic Protocol/Raw without p
   }
 });
 
-test('exact source identities correlate without requiring writer adjacency', async (t) => {
+test('non-adjacent prune and replacement evidence fails closed despite exact relation identities', async (t) => {
   const rows = baseRows();
   for (const event of rows) {
     if (event.seq >= 6) event.seq += 1;
@@ -348,13 +353,18 @@ test('exact source identities correlate without requiring writer adjacency', asy
     data: { title: 'Synthetic intervening protocol event', source: 'fallback', messageSeqs: [] },
   });
   const fixture = await makeSyntheticFixture(t, 'nonadjacent-prune', rows);
-  const { materialized } = await buildFor(fixture.repoRoot, fixture.sourceHome);
+  const { index, indexed, materialized } = await buildFor(fixture.repoRoot, fixture.sourceHome);
   const { operation, prune, replacement } = relatedEvents(materialized);
-  assert.ok(operation?.toolResultPrune);
-  assert.ok(prune?.toolResultPrune);
-  assert.ok(replacement?.toolResultPrune);
-  assert.equal(prune.toolResultPrune.writerAdjacent, false);
-  assert.equal(prune.toolResultPrune.replacementResultSeq, 7);
+  assert.ok(operation);
+  assert.ok(prune);
+  assert.ok(replacement);
+  assertNoPruneRelation(materialized);
+  assert.equal(prune.layer, 'protocol');
+  assert.equal(replacement.layer, 'protocol');
+  assert.deepEqual(rawSeqs(operation), [2, 3]);
+  assert.deepEqual(rawSeqs(prune), [5]);
+  assert.deepEqual(rawSeqs(replacement), [7]);
+  await assertProjectionParity(index, indexed, materialized);
 });
 
 test('seeded child continuation never attaches inherited parent result provenance', async (t) => {

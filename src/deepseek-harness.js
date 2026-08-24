@@ -1239,6 +1239,41 @@ function decodePrunedToolResultReplacement(event) {
   };
 }
 
+function normalizedPruneToolResultEnvelope(event) {
+  const data = event?.data;
+  if (!isPlainRecord(data) || !isPlainRecord(data.message)) return null;
+  const message = data.message;
+  if (!isPlainRecord(message.source)
+      || typeof message.source.callId !== 'string'
+      || !message.source.callId
+      || !Array.isArray(message.content)
+      || message.content.length !== 1) return null;
+  const result = message.content[0];
+  if (!isPlainRecord(result)
+      || result.type !== 'tool-result'
+      || !Array.isArray(result.content)) return null;
+  return {
+    ...data,
+    message: {
+      ...message,
+      content: [{
+        ...result,
+        // Current writer replaces only this nested content payload. Every
+        // surrounding durable envelope fact remains part of strict equality.
+        content: null,
+      }],
+    },
+  };
+}
+
+function pruneToolResultEnvelopesMatch(original, replacement) {
+  const originalEnvelope = normalizedPruneToolResultEnvelope(original);
+  const replacementEnvelope = normalizedPruneToolResultEnvelope(replacement);
+  return originalEnvelope !== null
+    && replacementEnvelope !== null
+    && isDeepStrictEqual(originalEnvelope, replacementEnvelope);
+}
+
 function appendGroupedRow(map, key, row) {
   const rows = map.get(key) || [];
   rows.push(row);
@@ -1282,7 +1317,8 @@ function projectToolResultPrunes(
         || !ownedLogicalIds.has(original.logical.id)
         || toolCallsById.get(original.call.callId) !== original.call
         || prune.event.seq <= original.event.seq
-        || replacement.event.seq <= prune.event.seq) continue;
+        || replacement.event.seq !== prune.event.seq + 1
+        || !pruneToolResultEnvelopesMatch(original.event, replacement.event)) continue;
     const originalCallId = toolResultCallId(original.event);
     if (!originalCallId || originalCallId !== replacement.facts.callId) continue;
 
@@ -1298,7 +1334,6 @@ function projectToolResultPrunes(
       originalResultSeq,
       replacementResultSeq: replacement.event.seq,
       shadowedTokenCount: prune.facts.shadowedTokenCount,
-      writerAdjacent: replacement.event.seq === prune.event.seq + 1,
     };
     replacement.logical.toolResultPrune = {
       originalOperationEventId: original.logical.id,

@@ -906,7 +906,6 @@ function detailForToolResultPrune(event, session) {
   ]);
   if (refs) detail.inspectorSections.push(refs);
   const trace = sectionKv([
-    { key: 'Writer adjacency observed', value: provenance.writerAdjacent === true ? 'yes' : 'no' },
     { key: 'Correlation authority', value: 'exact source seq identities and durable call ID' },
   ], 'traceability', 'Prune correlation');
   if (trace) detail.inspectorSections.push(trace);
