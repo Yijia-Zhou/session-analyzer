@@ -940,6 +940,92 @@ test('buildIndex links canonical review lifecycle children through explicit pare
   assert.ok(reusedParent.logicalEvents.some((event) => event.kind === 'review' && event.subtype === 'exited_review_mode'));
 });
 
+test('buildIndex preserves explicit top-level parent linkage only for independently derived Codex sessions', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const parentId = '10000000-0000-4000-8000-000000000001';
+  const spawnedChildId = '10000000-0000-4000-8000-000000000002';
+  const reviewChildId = '10000000-0000-4000-8000-000000000003';
+  const guardianChildId = '10000000-0000-4000-8000-000000000004';
+  const genericChildId = '10000000-0000-4000-8000-000000000005';
+  const primaryId = '10000000-0000-4000-8000-000000000006';
+  const sessionDir = path.join(codexHome, 'sessions', '2026', '08', '24');
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(sessionDir, { recursive: true });
+
+  const payloads = [
+    [parentId, { id: parentId, cwd: repoRoot }],
+    [spawnedChildId, {
+      id: spawnedChildId,
+      cwd: repoRoot,
+      parent_thread_id: 'top-level-parent-must-not-win',
+      source: { subagent: { thread_spawn: { parent_thread_id: parentId } } },
+    }],
+    [reviewChildId, {
+      id: reviewChildId,
+      cwd: repoRoot,
+      parent_thread_id: parentId,
+      thread_source: 'subagent',
+      source: { subagent: 'review' },
+    }],
+    [guardianChildId, {
+      id: guardianChildId,
+      cwd: repoRoot,
+      parent_thread_id: parentId,
+      thread_source: 'subagent',
+      source: { subagent: { other: 'guardian' } },
+    }],
+    [genericChildId, {
+      id: genericChildId,
+      cwd: repoRoot,
+      parent_thread_id: parentId,
+      thread_source: 'subagent',
+    }],
+    [primaryId, {
+      id: primaryId,
+      cwd: repoRoot,
+      parent_thread_id: 'should-not-be-used',
+      thread_source: 'user',
+      source: 'cli',
+    }],
+  ];
+  await Promise.all(payloads.map(([id, payload]) => fsp.writeFile(
+    path.join(sessionDir, `rollout-2026-08-24T10-00-00-${id}.jsonl`),
+    `${JSON.stringify({ timestamp: '2026-08-24T10:00:00.000Z', type: 'session_meta', payload })}\n`,
+    'utf8',
+  )));
+
+  const index = await buildCompactIndex({ repoRoot, codexHome });
+  const spawnedChild = index.sessionsById.get(spawnedChildId);
+  const reviewChild = index.sessionsById.get(reviewChildId);
+  const guardianChild = index.sessionsById.get(guardianChildId);
+  const genericChild = index.sessionsById.get(genericChildId);
+  const primary = index.sessionsById.get(primaryId);
+  assert.equal(spawnedChild.parentSessionId, parentId);
+  assert.equal(spawnedChild.primarySessionMetaKind, 'subagent');
+  assert.equal(reviewChild.parentSessionId, parentId);
+  assert.equal(reviewChild.primarySessionMetaKind, 'review');
+  assert.equal(guardianChild.parentSessionId, parentId);
+  assert.equal(guardianChild.parentSessionInferred, false);
+  assert.equal(guardianChild.primarySessionMetaKind, 'subagent');
+  assert.equal(genericChild.parentSessionId, parentId);
+  assert.equal(genericChild.primarySessionMetaKind, 'subagent');
+  assert.equal(primary.parentSessionId, '');
+  assert.equal(primary.primarySessionMetaKind, '');
+
+  const summaries = filterSessions(index, { q: '', sort: 'updated-desc', layer: 'main' }).sessions;
+  const summariesById = new Map(summaries.map((session) => [session.id, session]));
+  assert.equal(summariesById.get(guardianChildId).parentSessionId, parentId);
+  assert.equal(summariesById.get(guardianChildId).isDerivedSession, true);
+  assert.equal(summariesById.get(guardianChildId).derivedKind, 'subagent');
+  assert.equal(summariesById.get(genericChildId).parentSessionId, parentId);
+  assert.equal(summariesById.get(genericChildId).isDerivedSession, true);
+  assert.equal(summariesById.get(genericChildId).derivedKind, 'subagent');
+  assert.equal(summariesById.get(primaryId).parentSessionId, '');
+  assert.equal(summariesById.get(primaryId).isDerivedSession, false);
+  assert.equal(summariesById.get(primaryId).derivedKind, '');
+});
+
 test('buildIndex prefers an explicit review parent over temporal inference', async (t) => {
   const codexHome = await makeTempCodexHome(t);
   const repoRoot = path.join(codexHome, 'repo');

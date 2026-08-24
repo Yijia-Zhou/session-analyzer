@@ -1592,10 +1592,10 @@ function parentSessionIdFromMeta(payload) {
   const nestedValue = subagentSpawnSource(payload)?.parent_thread_id;
   const nestedParent = typeof nestedValue === 'string' ? nestedValue : '';
   if (nestedParent) return nestedParent;
-  // Top-level parent_thread_id is accepted only for sessions whose metadata
-  // already classifies them as review-derived children. A generic
-  // parent_thread_id alone must not visually demote an unknown session.
-  if (derivedSessionKindFromMeta(payload) === 'review') {
+  // Top-level parent_thread_id is accepted only after independent metadata
+  // already classifies the session as derived. A generic parent_thread_id
+  // alone must not visually demote an unknown primary session.
+  if (derivedSessionKindFromMeta(payload)) {
     return typeof payload?.parent_thread_id === 'string' ? payload.parent_thread_id : '';
   }
   return '';
