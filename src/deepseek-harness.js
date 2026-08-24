@@ -304,6 +304,13 @@ function toolResultIsError(event) {
   ));
 }
 
+function toolResultCallId(event) {
+  const callId = event?.data?.message?.source?.callId
+    || event?.data?.message?.content?.[0]?.toolCallId
+    || '';
+  return typeof callId === 'string' && callId ? callId : '';
+}
+
 function protocolPreview(type, data) {
   const value = data && typeof data === 'object' ? data : {};
   switch (type) {
@@ -1198,6 +1205,142 @@ function makeIncompleteToolEvent(session, call) {
   }
   session.logicalEvents.push(logical);
   return logical;
+}
+
+function decodeToolResultPrune(event) {
+  if (event?.type !== 'compaction/prune') return null;
+  const data = event.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  if (!Array.isArray(data.shadowedSeqs) || data.shadowedSeqs.length !== 1) return null;
+  const originalResultSeq = data.shadowedSeqs[0];
+  if (!Number.isSafeInteger(originalResultSeq) || originalResultSeq < 0) return null;
+  const range = data.shadowedRange;
+  if (!range || typeof range !== 'object' || Array.isArray(range)
+      || range.start !== originalResultSeq || range.end !== originalResultSeq) return null;
+  if (!Number.isSafeInteger(data.shadowedTokenCount) || data.shadowedTokenCount < 0) return null;
+  return {
+    originalResultSeq,
+    shadowedTokenCount: data.shadowedTokenCount,
+  };
+}
+
+function decodePrunedToolResultReplacement(event) {
+  if (event?.type !== 'tool/result' || !isReplaceSurfaceOp(event.surfaceOp)) return null;
+  const range = replaceSurfaceRange(event.surfaceOp);
+  if (!range || range.start !== range.end) return null;
+  if (!Array.isArray(event.sourceEventSeqs)
+      || event.sourceEventSeqs.length !== 1
+      || event.sourceEventSeqs[0] !== range.start) return null;
+  const originalResultSeq = range.start;
+  if (!Number.isSafeInteger(originalResultSeq) || originalResultSeq < 0) return null;
+  return {
+    originalResultSeq,
+    callId: toolResultCallId(event),
+  };
+}
+
+function normalizedPruneToolResultEnvelope(event) {
+  const data = event?.data;
+  if (!isPlainRecord(data) || !isPlainRecord(data.message)) return null;
+  const message = data.message;
+  if (!isPlainRecord(message.source)
+      || typeof message.source.callId !== 'string'
+      || !message.source.callId
+      || !Array.isArray(message.content)
+      || message.content.length !== 1) return null;
+  const result = message.content[0];
+  if (!isPlainRecord(result)
+      || result.type !== 'tool-result'
+      || !Array.isArray(result.content)) return null;
+  return {
+    ...data,
+    message: {
+      ...message,
+      content: [{
+        ...result,
+        // Current writer replaces only this nested content payload. Every
+        // surrounding durable envelope fact remains part of strict equality.
+        content: null,
+      }],
+    },
+  };
+}
+
+function pruneToolResultEnvelopesMatch(original, replacement) {
+  const originalEnvelope = normalizedPruneToolResultEnvelope(original);
+  const replacementEnvelope = normalizedPruneToolResultEnvelope(replacement);
+  return originalEnvelope !== null
+    && replacementEnvelope !== null
+    && isDeepStrictEqual(originalEnvelope, replacementEnvelope);
+}
+
+function appendGroupedRow(map, key, row) {
+  const rows = map.get(key) || [];
+  rows.push(row);
+  map.set(key, rows);
+}
+
+function projectToolResultPrunes(
+  session,
+  pruneRows,
+  replacementRows,
+  originalResultsBySeq,
+  toolCallsById,
+  seedBoundary,
+) {
+  const childStart = Number.isSafeInteger(seedBoundary) ? seedBoundary : 0;
+  const ownedLogicalIds = new Set(session.logicalEvents.map(event => event.id));
+  const prunesByOriginalSeq = new Map();
+  const replacementsByOriginalSeq = new Map();
+
+  for (const row of pruneRows) {
+    if (row.event.seq < childStart || !ownedLogicalIds.has(row.logical.id)) continue;
+    const facts = decodeToolResultPrune(row.event);
+    if (!facts) continue;
+    appendGroupedRow(prunesByOriginalSeq, facts.originalResultSeq, { ...row, facts });
+  }
+  for (const row of replacementRows) {
+    if (row.event.seq < childStart || !ownedLogicalIds.has(row.logical.id)) continue;
+    const facts = decodePrunedToolResultReplacement(row.event);
+    if (!facts) continue;
+    appendGroupedRow(replacementsByOriginalSeq, facts.originalResultSeq, { ...row, facts });
+  }
+
+  for (const [originalResultSeq, prunes] of prunesByOriginalSeq) {
+    const replacements = replacementsByOriginalSeq.get(originalResultSeq) || [];
+    if (prunes.length !== 1 || replacements.length !== 1) continue;
+    const prune = prunes[0];
+    const replacement = replacements[0];
+    const original = originalResultsBySeq.get(originalResultSeq);
+    if (!original
+        || original.event.seq < childStart
+        || !ownedLogicalIds.has(original.logical.id)
+        || toolCallsById.get(original.call.callId) !== original.call
+        || prune.event.seq <= original.event.seq
+        || replacement.event.seq !== prune.event.seq + 1
+        || !pruneToolResultEnvelopesMatch(original.event, replacement.event)) continue;
+    const originalCallId = toolResultCallId(original.event);
+    if (!originalCallId || originalCallId !== replacement.facts.callId) continue;
+
+    original.logical.toolResultPrune = {
+      pruneEventId: prune.logical.id,
+      replacementEventId: replacement.logical.id,
+      originalResultSeq,
+      replacementResultSeq: replacement.event.seq,
+    };
+    prune.logical.toolResultPrune = {
+      originalOperationEventId: original.logical.id,
+      replacementEventId: replacement.logical.id,
+      originalResultSeq,
+      replacementResultSeq: replacement.event.seq,
+      shadowedTokenCount: prune.facts.shadowedTokenCount,
+    };
+    replacement.logical.toolResultPrune = {
+      originalOperationEventId: original.logical.id,
+      pruneEventId: prune.logical.id,
+      originalResultSeq,
+    };
+  }
 }
 
 function dispatchFacts(row) {
@@ -2429,6 +2572,9 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   const retryRows = [];
   const goalRows = [];
   const todoRows = [];
+  const pruneRows = [];
+  const replacementToolResultRows = [];
+  const originalToolResultsBySeq = new Map();
   const pendingCompactions = new Map();
   let pendingPartialEvent = null;
   let effectiveRequestProvider = '';
@@ -2624,20 +2770,26 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
       }
     } else if (event.type === 'tool/result') {
       if (!isAppendSurfaceOp(event.surfaceOp)) {
-        session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, 'tool/result', {
+        const logical = makeProtocolEvent(session.id, event, raw, 'tool/result', {
           label: 'Surface replacement tool result',
           role: 'system',
           preview: truncatePreview(toolResultText(event) || 'Surface replacement tool result'),
-        }));
+        });
+        session.logicalEvents.push(logical);
+        replacementToolResultRows.push({ event, raw, logical });
         continue;
       }
-      const callId = data.message?.source?.callId
-        || data.message?.content?.[0]?.toolCallId
-        || '';
+      const callId = toolResultCallId(event);
       const pending = pendingToolCalls.get(callId);
       if (pending) {
         pendingToolCalls.delete(callId);
-        addPendingToolResult(session, pending, raw, event);
+        const logical = addPendingToolResult(session, pending, raw, event);
+        originalToolResultsBySeq.set(event.seq, {
+          event,
+          raw,
+          logical,
+          call: pending,
+        });
       } else {
         const failed = toolResultIsError(event);
         session.logicalEvents.push(makeLogicalEvent({
@@ -2798,13 +2950,12 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
         }));
       }
     } else if (event.type === 'compaction/prune') {
-      // Upstream vocabulary exists, but no current-writer physical fixture has
-      // been observed. Keep the exact row as recognized/deferred Protocol; do
-      // not fabricate replacement semantics from the event name alone.
-      session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
+      const logical = makeProtocolEvent(session.id, event, raw, event.type, {
         label: 'Tool-result prune',
         role: 'system',
-      }));
+      });
+      session.logicalEvents.push(logical);
+      pruneRows.push({ event, raw, logical });
     } else {
       const knownUnmodeled = KNOWN_DS_EVENT_TYPES.has(event.type);
       const subtype = knownUnmodeled ? event.type : 'unknown_event';
@@ -2839,6 +2990,14 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   projectTodoSnapshots(session, todoRows);
   sortProjectedLogicalEventsByRawOrder(session);
   applyDeepSeekSeedOwnership(session, seedBoundary, expectedSeq);
+  projectToolResultPrunes(
+    session,
+    pruneRows,
+    replacementToolResultRows,
+    originalToolResultsBySeq,
+    toolCallsById,
+    seedBoundary,
+  );
   session.title = chooseDeepSeekTitle(session, seedBoundary);
   session.updatedAt = safeIso(lastTime) || session.startedAt;
   session._lastEventTime = lastTime;
