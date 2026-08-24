@@ -518,7 +518,7 @@ test('Code Mode single shell presentation unwraps the native command run and mov
   const id = 'dddddddd-7777-4444-9999-dddddddddddd';
   await writeTranscript(codexHome, repoRoot, id, [
     { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
-    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-single-shell', input: "const result = await tools.shell_command({ command: 'Write-Output native', workdir: 'G:\\\\fixture', timeout_ms: 1000, timeoutMs: 2000 }); text(typeof result === 'string' ? result : JSON.stringify(result));" } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-single-shell', input: "const result = await tools.shell_command({ command: 'Write-Output native', workdir: 'G:\\\\fixture', timeout_ms: 1000, timeoutMs: 2000 }); text(result.output);" } },
     {
       type: 'response_item',
       timestamp: '2026-06-12T10:00:02.000Z',
