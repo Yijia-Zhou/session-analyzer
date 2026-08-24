@@ -9,6 +9,7 @@ const {
   codeModeExecSource,
   codeModePresentationFactsForEvent,
   codeModeRequestCatalog,
+  isCodeModeScriptOperation,
   normalizeCodeModeRequest,
 } = require('../src/codex-code-mode-presentation');
 
@@ -86,6 +87,31 @@ test('presentation index keeps only whole-program safe declared request facts', 
   assert.deepEqual(codeModePresentationFactsForEvent(session, multiple.id), {
     codeModeDeclaredRequests: {
       toolNames: ['update_plan', 'web__run'],
+      requestEvidence: CODE_MODE_REQUEST_EVIDENCE,
+    },
+  });
+});
+
+test('presentation index keeps a direct output-member emission as a safe declared request', () => {
+  const event = operation('output-member', 'raw-output-member');
+  const session = {
+    logicalEvents: [event],
+    rawEvents: [raw(
+      'raw-output-member',
+      'const result = await tools.exec_command({ command: "pwd" }); text(result.output);',
+      event.id,
+    )],
+  };
+  session.presentationIndexes = buildCodeModePresentationIndexes(session);
+
+  assert.equal(isCodeModeScriptOperation(event, session.presentationIndexes), false);
+  assert.deepEqual(session.presentationIndexes.codeModeDeclaredRequests.get(event.id), {
+    toolNames: ['exec_command'],
+    requestEvidence: CODE_MODE_REQUEST_EVIDENCE,
+  });
+  assert.deepEqual(codeModePresentationFactsForEvent(session, event.id), {
+    codeModeDeclaredRequests: {
+      toolNames: ['exec_command'],
       requestEvidence: CODE_MODE_REQUEST_EVIDENCE,
     },
   });

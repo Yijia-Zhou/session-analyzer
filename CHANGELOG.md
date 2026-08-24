@@ -9,10 +9,12 @@
 ##### English
 
 - Preserved explicit parent linkage for recently persisted Codex Sessions explicitly marked as derived/subagent when their parent is stored in top-level `parent_thread_id`, while a stray field on an otherwise primary Session still creates no derived relationship.
+- Restored declared Code Mode projection for safe outer programs that emit a declared result's `.output` through `text(result.output)`, instead of falling back to `Scripted operation`.
 
 ##### 中文
 
 - 近期持久化且明确标记为派生／subagent 的 Codex Session 若将父会话存储在顶层 `parent_thread_id`，现在会保留显式父级关联；其他仍属 primary 的 Session 即使出现孤立字段也不会创建错误的派生关系。
+- 修复安全的 Code Mode outer program 通过 `text(result.output)` 输出已声明结果的 `.output` 时错误回退为“脚本化操作”的问题，现会恢复声明式投影。
 
 #### DeepSeek Harness
 
