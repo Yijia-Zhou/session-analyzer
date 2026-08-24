@@ -62,6 +62,8 @@ const allowedZhTermsByPath = new Map([
   ['kind.code_mode_operation', new Set(['code', 'mode'])],
   ['logicalLabel.Code Mode operation', new Set(['code', 'mode'])],
   ['section.Code Mode operation', new Set(['code', 'mode'])],
+  ['section.Exec command', new Set(['exec'])],
+  ['section.Shell command', new Set(['shell'])],
   ['ui.enclosingOperation', new Set(['code', 'mode'])],
   ['ui.entireProjectScopeShort', new Set(['project'])],
   ['ui.anyCodeModeRequest', new Set(['code', 'mode'])],
@@ -122,6 +124,7 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.resolveLocale('fr-FR'), 'en');
   assert.equal(i18n.t('zh-CN', 'ui', 'mainTimeline'), '主时间线');
   assert.equal(i18n.displayStateLabel('expanded', 'zh-CN'), '展开');
+  assert.equal(i18n.eventKindLabel('command', 'en'), 'Command');
   assert.equal(i18n.eventKindLabel('command', 'zh-CN'), '命令');
   assert.equal(i18n.eventKindLabel('read', 'en'), 'Read');
   assert.equal(i18n.eventKindLabel('read', 'zh-CN'), '文件读取');
@@ -157,7 +160,7 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.t('en', 'ui', 'codeModeRequest'), 'Code Mode request');
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequest'), 'Code Mode 请求');
   assert.equal(i18n.t('en', 'ui', 'declaredRequestOption', { value: 'Shell command' }), 'Declared: Shell command');
-  assert.equal(i18n.t('zh-CN', 'ui', 'declaredRequestOption', { value: '终端命令' }), '声明：终端命令');
+  assert.equal(i18n.t('zh-CN', 'ui', 'declaredRequestOption', { value: 'Shell 命令' }), '声明：Shell 命令');
   assert.equal(i18n.t('en', 'ui', 'anyCodeModeRequest'), 'Any Code Mode request');
   assert.equal(i18n.t('zh-CN', 'ui', 'anyCodeModeRequest'), '任意 Code Mode 请求');
   assert.equal(i18n.t('en', 'ui', 'kindGroupCommonWorkName'), 'Work and tools');
@@ -276,8 +279,9 @@ test('zh-CN protocol and section labels avoid mechanical schema wording', () => 
 
 test('Code Mode request labels localize display text while preserving machine values separately', () => {
   assert.equal(i18n.codeModeRequestLabel('shell_command', 'en'), 'Shell command');
-  assert.equal(i18n.codeModeRequestLabel('exec_command', 'en'), 'Shell command');
-  assert.equal(i18n.codeModeRequestLabel('shell_command', 'zh-CN'), '终端命令');
+  assert.equal(i18n.codeModeRequestLabel('exec_command', 'en'), 'Exec command');
+  assert.equal(i18n.codeModeRequestLabel('shell_command', 'zh-CN'), 'Shell 命令');
+  assert.equal(i18n.codeModeRequestLabel('exec_command', 'zh-CN'), 'Exec 命令');
   assert.equal(i18n.codeModeRequestLabel('web__run', 'zh-CN'), '网络请求');
 });
 

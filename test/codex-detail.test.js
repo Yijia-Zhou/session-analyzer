@@ -488,7 +488,7 @@ test('Code Mode detail restores declared plan and shell structure with explicitl
   assert.equal(operation.tags.includes('Escalation requested'), false);
   assert.deepEqual(chineseDetail.timelineSections.map((section) => section.title), [
     '计划更新',
-    '终端命令',
+    'Shell 命令',
     '代码模式源码',
   ]);
   assert.equal(chineseDetail.presentation.label, '多个操作');
@@ -502,7 +502,7 @@ test('Code Mode detail restores declared plan and shell structure with explicitl
         detailKind: 'steps',
         detailCount: 2,
       },
-      { label: '终端命令', detail: 'Write-Output fixture' },
+      { label: 'Shell 命令', detail: 'Write-Output fixture' },
     ],
     omittedCount: 0,
   });
@@ -575,7 +575,7 @@ test('Code Mode single shell presentation unwraps the native command run and mov
     value: '1000',
   });
   assert.equal(detail.timelineSections.some((section) => section.type === 'code_mode_tool_projection'), false);
-  assert.equal(chineseDetail.presentation.label, '终端命令');
+  assert.equal(chineseDetail.presentation.label, 'Shell 命令');
   assert.equal(session.counts.toolCalls, 1);
   assert.deepEqual(session.analysis.toolUsage, [{ name: 'exec', count: 1 }]);
 });
@@ -667,6 +667,13 @@ test('Code Mode single request summaries cover every safely projected tool type'
     assert.equal(preview.text, cases[index].expected, cases[index].tool);
     assert.equal(preview.detailKind || '', cases[index].detailKind || '', cases[index].tool);
   });
+
+  const execOperation = operations[cases.findIndex((item) => item.tool === 'exec_command')];
+  const shellOperation = operations[cases.findIndex((item) => item.tool === 'shell_command')];
+  assert.equal(buildEventDetail(session, execOperation.id, 'main').presentation.label, 'Exec command');
+  assert.equal(buildEventDetail(session, shellOperation.id, 'main').presentation.label, 'Shell command');
+  assert.equal(buildEventDetail(session, execOperation.id, 'main', { locale: 'zh-CN' }).presentation.label, 'Exec 命令');
+  assert.equal(buildEventDetail(session, shellOperation.id, 'main', { locale: 'zh-CN' }).presentation.label, 'Shell 命令');
 
   const noArgumentOperation = operations[cases.findIndex((item) => item.tool === 'get_goal')];
   const chineseDetail = buildEventDetail(session, noArgumentOperation.id, 'main', { locale: 'zh-CN' });

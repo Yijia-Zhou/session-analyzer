@@ -687,6 +687,10 @@ async function makeCodeModeSearchPreviewCodexHome(t) {
     'text(plan);',
     'text(command);',
   ].join('\n');
+  const execSource = [
+    "const command = await tools.exec_command({ command: 'Write-Output visible-exec-command' });",
+    'text(command.output);',
+  ].join('\n');
   const rawSource = [
     'const args = { plan: [] };',
     'const plan = await tools.update_plan(args);',
@@ -700,6 +704,8 @@ async function makeCodeModeSearchPreviewCodexHome(t) {
     { timestamp: '2026-07-16T01:30:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-search-single', output: 'Script completed\nOutput:\n{"message":"single result navigation needle"}' } },
     { timestamp: '2026-07-16T01:30:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-search-multi', input: multiSource } },
     { timestamp: '2026-07-16T01:30:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-search-multi', output: [{ type: 'input_text', text: 'Script completed\nOutput:\n' }, { type: 'input_text', text: '{"message":"multi result navigation needle"}' }, { type: 'input_text', text: 'Exit code: 0\nOutput:\nordinary output' }] } },
+    { timestamp: '2026-07-16T01:30:04.500Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-search-exec', input: execSource } },
+    { timestamp: '2026-07-16T01:30:04.750Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'exec-search-exec', output: 'Script completed\nOutput:\nexec command output' } },
     { timestamp: '2026-07-16T01:30:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-search-raw', input: rawSource } },
   ];
   await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
@@ -2038,7 +2044,7 @@ test('browser Code Mode adaptively unwraps one declared tool and labels multiple
   assert.doesNotMatch(await multiEvent.locator('.eventHeader').textContent(), /结果输出/);
   assert.equal((await multiEvent.locator('.eventHeader').textContent()).includes('代码模式'), true, 'the Code Mode chip retains the shared origin identity');
   assert.equal(await multiEvent.locator('.codeModeChip').count(), 1);
-  assert.match(await multiPreview.textContent(), /声明顺序.*计划更新.*1 个步骤.*Inspect multi.*终端命令.*Write-Output multi/s);
+  assert.match(await multiPreview.textContent(), /声明顺序.*计划更新.*1 个步骤.*Inspect multi.*Shell 命令.*Write-Output multi/s);
   assert.doesNotMatch(await requestOnlyEvent.locator('.eventHeader').textContent(), /结果输出|未关联输出/);
   assert.match(await requestOnlyPreview.textContent(), /请求.*1 个步骤.*Request only/s);
 });
@@ -6134,14 +6140,31 @@ test('browser structured filters keep profile-hidden Code Mode request results v
     await page.locator('#searchKindSelect optgroup[data-kind-group="code-mode"]').getAttribute('label'),
     '↳ Code Mode tool call',
   );
+  const execRequestOption = page.locator('#searchKindSelect option[value="code_mode_request:exec_command"]');
+  assert.equal(await execRequestOption.count(), 1);
+  assert.match(await execRequestOption.textContent(), /^Declared: Exec command \(1\)$/);
+  assert.doesNotMatch(await execRequestOption.textContent(), /\(exec_command\)/);
   assert.match(
     await page.locator('#searchKindSelect option[value="code_mode_request:shell_command"]').textContent(),
     /Declared: Shell command \(1\)/,
+  );
+  assert.doesNotMatch(
+    await page.locator('#searchKindSelect option[value="code_mode_request:shell_command"]').textContent(),
+    /\(shell_command\)/,
   );
   assert.match(
     await page.locator('#searchKindSelect option[value="code_mode_script_operation"]').textContent(),
     /Scripted operation \(1\)/,
   );
+  await addSearchFilter(page, 'kind', 'code_mode_request:exec_command');
+  await page.waitForFunction(() => {
+    const events = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    return events.length === 1
+      && events[0].classList.contains('collapsed')
+      && !events[0].classList.contains('hiddenByProfile');
+  });
+  await expectInputValue(page, '#searchKindSelect', 'code_mode_request:exec_command');
+
   await addSearchFilter(page, 'kind', 'code_mode_request:shell_command');
   await page.waitForFunction(() => {
     const events = [...document.querySelectorAll('#timeline .event[data-event-id]')];
@@ -6165,6 +6188,13 @@ test('browser structured filters keep profile-hidden Code Mode request results v
   await clearAllSearch(page);
   await page.waitForFunction(() => (
     document.querySelectorAll('#timeline .event.hiddenByProfile').length >= 3
+  ));
+  await switchToProjectScope(page);
+  await page.waitForFunction(() => (
+    document.querySelector('#searchKindSelect option[value="code_mode_request:exec_command"]')?.textContent
+      === 'Declared: Exec command (1)'
+    && document.querySelector('#searchKindSelect option[value="code_mode_request:shell_command"]')?.textContent
+      === 'Declared: Shell command (1)'
   ));
 });
 
