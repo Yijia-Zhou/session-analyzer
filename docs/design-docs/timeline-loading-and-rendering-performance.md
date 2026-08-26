@@ -20,7 +20,7 @@
   - `docs/exec-plans/completed/2026-07-06-search-hud-integration.md`
   - `docs/exec-plans/completed/2026-07-22-code-mode-context-and-discoverability.md`
   - `docs/exec-plans/completed/2026-07-25-code-mode-request-facets-and-folding.md`
-  - `docs/exec-plans/active/2026-08-24-performance-wave-0-baseline.md`
+  - `docs/exec-plans/completed/2026-08-24-performance-wave-0-baseline.md`
 
 ## Context / 背景
 

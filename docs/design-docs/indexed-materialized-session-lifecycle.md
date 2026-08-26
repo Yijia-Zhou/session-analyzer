@@ -12,7 +12,7 @@
 - Related performance design: `docs/design-docs/timeline-loading-and-rendering-performance.md` / 相关性能设计：`docs/design-docs/timeline-loading-and-rendering-performance.md`
 - Completed execution plan: `docs/exec-plans/completed/2026-08-16-indexed-materialized-session-lifecycle.md` / 已完成执行计划：`docs/exec-plans/completed/2026-08-16-indexed-materialized-session-lifecycle.md`
 - Completed third-adapter gate plan: `docs/exec-plans/completed/2026-08-16-indexed-materialized-lifecycle-third-adapter-gate.md` / 已完成第三 adapter 门槛计划：`docs/exec-plans/completed/2026-08-16-indexed-materialized-lifecycle-third-adapter-gate.md`
-- Active Wave 0 baseline plan: `docs/exec-plans/active/2026-08-24-performance-wave-0-baseline.md` / Active Wave 0 基线计划：`docs/exec-plans/active/2026-08-24-performance-wave-0-baseline.md`
+- Completed Wave 0 baseline plan: `docs/exec-plans/completed/2026-08-24-performance-wave-0-baseline.md` / 已完成 Wave 0 基线计划：`docs/exec-plans/completed/2026-08-24-performance-wave-0-baseline.md`
 
 ## Decision summary / 决策摘要
 
