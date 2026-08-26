@@ -12,3 +12,5 @@ test/fixtures/deepseek-harness-phase2c/**/session.jsonl -text
 test/fixtures/deepseek-harness-phase2d/**/session.jsonl -text
 # DeepSeek current-writer prune-provenance fixture: preserve exact physical JSONL bytes
 test/fixtures/deepseek-harness-prune-provenance/**/session.jsonl -text
+# DeepSeek command/plan-state source-compatible synthetic fixture: preserve exact physical JSONL bytes
+test/fixtures/deepseek-harness-command-plan-state/**/session.jsonl -text
