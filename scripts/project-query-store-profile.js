@@ -1267,6 +1267,7 @@ if (require.main === module) {
 module.exports = {
   PROFILE_SCHEMA_VERSION,
   PRIVATE_PROOF_VERSION,
+  assertNoPrivateLeak,
   computePrivateSnapshotDigest,
   enumeratePrivateSnapshotFiles,
   invocationTemplate,

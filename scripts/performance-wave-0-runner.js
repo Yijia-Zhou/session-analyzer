@@ -7,6 +7,7 @@ const { spawn } = require('node:child_process');
 const { getSourceAdapter } = require('../src/source-adapters');
 const {
   PRIVATE_PROOF_VERSION,
+  assertNoPrivateLeak,
   computePrivateSnapshotDigest,
   snapshotProofVerdict,
   validatePrivateArtifact,
@@ -21,9 +22,12 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const PROFILE_KINDS = new Set(['synthetic-browser', 'private-corpus']);
 const MODES = new Set(['smoke', 'calibration', 'baseline']);
 const PRIVATE_COPY_METHOD = 'independent-byte-copy';
+const SEALED_COPY_PROBE_PHASE = 'after-seal-before-private-group';
+const DIRECT_FAILURE_CODES = new Set(['CHILD_SPAWN_FAILED', 'WORKER_SIGNALLED']);
 const FAILURE_CODES = new Set([
   'INVALID_PROFILE_ARGUMENT',
   'CHILD_SPAWN_FAILED',
+  'WORKER_SIGNALLED',
   'WORKER_EXIT',
   'INVALID_JSON',
   'SCHEMA_OR_PRIVACY',
@@ -89,6 +93,10 @@ function parseArgs(argv) {
     snapshotGroup: '',
     readOnlyAttested: false,
     copyMethod: '',
+    probeReadExisting: '',
+    probeCreateNew: '',
+    probeAppendExisting: '',
+    sealedCopyProbe: null,
     calibrationFile: '',
     candidateSha: '',
     targetSyncSha: '',
@@ -99,6 +107,7 @@ function parseArgs(argv) {
     '--profile', '--mode', '--output-dir', '--repetitions', '--source', '--repo', '--source-home',
     '--snapshot-root', '--snapshot-group', '--calibration-file', '--event-count', '--text-bytes',
     '--copy-method', '--candidate-sha', '--target-sync-sha',
+    '--probe-read-existing', '--probe-create-new', '--probe-append-existing',
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const name = argv[index];
@@ -120,6 +129,9 @@ function parseArgs(argv) {
     if (name === '--snapshot-root') options.snapshotRoot = path.resolve(value);
     if (name === '--snapshot-group') options.snapshotGroup = value;
     if (name === '--copy-method') options.copyMethod = value;
+    if (name === '--probe-read-existing') options.probeReadExisting = value;
+    if (name === '--probe-create-new') options.probeCreateNew = value;
+    if (name === '--probe-append-existing') options.probeAppendExisting = value;
     if (name === '--calibration-file') options.calibrationFile = path.resolve(value);
     if (name === '--candidate-sha') options.candidateSha = value;
     if (name === '--target-sync-sha') options.targetSyncSha = value;
@@ -162,7 +174,24 @@ function parseArgs(argv) {
     }
     if (!options.readOnlyAttested) throw usageError('private profile requires --read-only-attested');
     if (!getSourceAdapter(options.source)) throw usageError('--source is unsupported');
+    options.sealedCopyProbe = {
+      schemaVersion: 1,
+      phase: SEALED_COPY_PROBE_PHASE,
+      readExisting: options.probeReadExisting,
+      createNew: options.probeCreateNew,
+      appendExisting: options.probeAppendExisting,
+    };
+    try {
+      validateSealedCopyProbe(options.sealedCopyProbe);
+    } catch {
+      throw usageError('private profile requires the closed sealed-copy probe outcomes');
+    }
+  } else if (options.probeReadExisting || options.probeCreateNew || options.probeAppendExisting) {
+    throw usageError('sealed-copy probe outcomes are private-profile only');
   }
+  delete options.probeReadExisting;
+  delete options.probeCreateNew;
+  delete options.probeAppendExisting;
   if (options.mode === 'baseline'
       && options.profileKind === 'synthetic-browser'
       && !options.calibrationFile) {
@@ -354,7 +383,8 @@ async function writeJsonAtomic(file, value, options = {}) {
 
 function runChild(command, args, options = {}) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, {
+    const spawnImpl = options.spawnImpl || spawn;
+    const child = spawnImpl(command, args, {
       cwd: options.cwd || REPO_ROOT,
       env: options.env || process.env,
       windowsHide: true,
@@ -373,18 +403,21 @@ function runChild(command, args, options = {}) {
       stderrObserved,
       failureCode: 'CHILD_SPAWN_FAILED',
     }));
-    child.on('close', (exitCode) => resolve({
-      pid: child.pid,
-      exitCode,
-      stdout,
-      stderrObserved,
-      failureCode: exitCode === 0 ? '' : 'WORKER_EXIT',
-    }));
+    child.on('close', (exitCode, signal) => {
+      const signalled = signal !== null && signal !== undefined;
+      resolve({
+        pid: child.pid,
+        exitCode: signalled ? -2 : exitCode,
+        stdout,
+        stderrObserved,
+        failureCode: signalled ? 'WORKER_SIGNALLED' : (exitCode === 0 ? '' : 'WORKER_EXIT'),
+      });
+    });
   });
 }
 
-function preserveDirectSpawnFailure(currentFailureReason, replacementFailureReason) {
-  return currentFailureReason === 'CHILD_SPAWN_FAILED'
+function preserveDirectFailure(currentFailureReason, replacementFailureReason) {
+  return DIRECT_FAILURE_CODES.has(currentFailureReason)
     ? currentFailureReason
     : replacementFailureReason;
 }
@@ -428,6 +461,20 @@ function validateClosedKeys(value, fields, label) {
   }
 }
 
+function validateSealedCopyProbe(value) {
+  validateClosedKeys(value, [
+    'schemaVersion', 'phase', 'readExisting', 'createNew', 'appendExisting',
+  ], 'Sealed copy probe');
+  if (value.schemaVersion !== 1
+      || value.phase !== SEALED_COPY_PROBE_PHASE
+      || value.readExisting !== 'passed'
+      || value.createNew !== 'rejected'
+      || value.appendExisting !== 'rejected') {
+    throw new Error('Sealed copy probe is invalid');
+  }
+  return true;
+}
+
 function validateManifest(manifest) {
   validateClosedKeys(manifest, ['schemaVersion', 'artifactKind', 'groups'], 'Manifest');
   if (manifest.schemaVersion !== 3
@@ -439,15 +486,22 @@ function validateManifest(manifest) {
   }
   for (const [groupName, group] of Object.entries(manifest.groups)) {
     validateClosedKeys(group, [
-      'profileKind', 'mode', 'readOnlyAttested', 'copyMethod', 'attempts',
+      'profileKind', 'mode', 'readOnlyAttested', 'copyMethod', 'snapshotGroup',
+      'sealedCopyProbe', 'attempts',
     ], `Manifest ${groupName}`);
+    if (group.profileKind === 'private-corpus') validateSealedCopyProbe(group.sealedCopyProbe);
     if (!PROFILE_KINDS.has(group.profileKind)
         || !MODES.has(group.mode)
         || groupName !== `${group.profileKind}:${group.mode}`
         || !Array.isArray(group.attempts)
         || (group.profileKind === 'private-corpus'
-          ? (group.readOnlyAttested !== true || group.copyMethod !== PRIVATE_COPY_METHOD)
-          : (group.readOnlyAttested !== null || group.copyMethod !== null))) {
+          ? (group.readOnlyAttested !== true
+            || group.copyMethod !== PRIVATE_COPY_METHOD
+            || !/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(group.snapshotGroup))
+          : (group.readOnlyAttested !== null
+            || group.copyMethod !== null
+            || group.snapshotGroup !== null
+            || group.sealedCopyProbe !== null))) {
       throw new Error('Manifest group is invalid');
     }
     for (const attempt of group.attempts) {
@@ -455,11 +509,15 @@ function validateManifest(manifest) {
         'run', 'pid', 'exitStatus', 'valid', 'failureReason', 'artifactSha256',
       ], `Manifest ${groupName} attempt`);
       const childSpawnFailed = attempt.failureReason === 'CHILD_SPAWN_FAILED';
+      const workerSignalled = attempt.failureReason === 'WORKER_SIGNALLED';
       const missingPid = attempt.pid === null;
       if (!/^run-[0-9]{3}\.json$/.test(attempt.run)
           || (missingPid !== childSpawnFailed)
           || (!missingPid && (!Number.isSafeInteger(attempt.pid) || attempt.pid < 1))
           || (childSpawnFailed && (attempt.valid !== false || attempt.exitStatus !== -1))
+          || (workerSignalled && (attempt.valid !== false || attempt.exitStatus !== -2))
+          || (attempt.exitStatus === -1 && !childSpawnFailed)
+          || (attempt.exitStatus === -2 && !workerSignalled)
           || !Number.isSafeInteger(attempt.exitStatus)
           || typeof attempt.valid !== 'boolean'
           || typeof attempt.failureReason !== 'string'
@@ -469,6 +527,7 @@ function validateManifest(manifest) {
       }
     }
   }
+  assertNoPrivateLeak(manifest);
   return true;
 }
 
@@ -875,6 +934,7 @@ async function readJsonIfPresent(file, fallback, fsApi = fsp) {
 }
 
 async function runRepetitionGroup(options, dependencies = {}) {
+  if (options.profileKind === 'private-corpus') validateSealedCopyProbe(options.sealedCopyProbe);
   const fsApi = dependencies.fsp || fsp;
   const runOptions = await prepareRunBoundaries(options, dependencies);
   const outputDir = runOptions.outputDir;
@@ -947,7 +1007,7 @@ async function runRepetitionGroup(options, dependencies = {}) {
       }
       if (beforeDigest !== referenceDigest || afterDigest !== referenceDigest) {
         valid = false;
-        failureReason = preserveDirectSpawnFailure(failureReason, 'SNAPSHOT_MISMATCH');
+        failureReason = preserveDirectFailure(failureReason, 'SNAPSHOT_MISMATCH');
       }
     }
     let artifactSafeToPersist = false;
@@ -957,13 +1017,13 @@ async function runRepetitionGroup(options, dependencies = {}) {
         artifactSafeToPersist = true;
       } catch {
         valid = false;
-        failureReason = preserveDirectSpawnFailure(failureReason, 'SCHEMA_OR_PRIVACY');
+        failureReason = preserveDirectFailure(failureReason, 'SCHEMA_OR_PRIVACY');
       }
       if (artifactSafeToPersist
           && runOptions.profileKind === 'synthetic-browser'
           && !artifact.acceptance?.passed) {
         valid = false;
-        failureReason = preserveDirectSpawnFailure(failureReason, 'STRUCTURAL_ACCEPTANCE');
+        failureReason = preserveDirectFailure(failureReason, 'STRUCTURAL_ACCEPTANCE');
       }
       if (artifactSafeToPersist
           && runOptions.profileKind === 'private-corpus'
@@ -971,7 +1031,7 @@ async function runRepetitionGroup(options, dependencies = {}) {
             || !artifact.acceptance?.privacyAuditPassed
             || !artifact.acceptance?.snapshotProofVerifiedByRunner)) {
         valid = false;
-        failureReason = preserveDirectSpawnFailure(failureReason, 'STRUCTURAL_ACCEPTANCE');
+        failureReason = preserveDirectFailure(failureReason, 'STRUCTURAL_ACCEPTANCE');
       }
     }
     if (artifact && artifactSafeToPersist) {
@@ -1003,7 +1063,7 @@ async function runRepetitionGroup(options, dependencies = {}) {
     if (!groupProof.allMatched) {
       for (const attempt of attempts) {
         attempt.valid = false;
-        attempt.failureReason = preserveDirectSpawnFailure(
+        attempt.failureReason = preserveDirectFailure(
           attempt.failureReason,
           'SNAPSHOT_GROUP_MISMATCH',
         );
@@ -1032,7 +1092,7 @@ async function runRepetitionGroup(options, dependencies = {}) {
     if (!calibrationMatches) {
       for (const attempt of attempts) {
         attempt.valid = false;
-        attempt.failureReason = preserveDirectSpawnFailure(
+        attempt.failureReason = preserveDirectFailure(
           attempt.failureReason,
           'CALIBRATION_MISMATCH',
         );
@@ -1094,6 +1154,10 @@ async function runRepetitionGroup(options, dependencies = {}) {
       ? runOptions.readOnlyAttested
       : null,
     copyMethod: runOptions.profileKind === 'private-corpus' ? runOptions.copyMethod : null,
+    snapshotGroup: runOptions.profileKind === 'private-corpus' ? runOptions.snapshotGroup : null,
+    sealedCopyProbe: runOptions.profileKind === 'private-corpus'
+      ? runOptions.sealedCopyProbe
+      : null,
     attempts,
   };
   validateManifest(manifest);
@@ -1152,6 +1216,7 @@ module.exports = {
   runnerCliErrorLine,
   timingStats,
   validateManifest,
+  validateSealedCopyProbe,
   validateCalibrationArtifact,
   validateTimelineArtifact,
   writeJsonAtomic,

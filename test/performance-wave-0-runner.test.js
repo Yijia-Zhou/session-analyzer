@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
+const { EventEmitter } = require('node:events');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
@@ -13,9 +14,11 @@ const {
   canonicalizePrivateBoundaries,
   parseArgs,
   prepareOutputBoundary,
+  runChild,
   runRepetitionGroup,
   runnerCliErrorLine,
   validateManifest,
+  validateSealedCopyProbe,
   validateTimelineArtifact,
 } = require('../scripts/performance-wave-0-runner');
 const {
@@ -238,6 +241,26 @@ function encodedWorker(artifact, exitCode = 0) {
   return { command: process.execPath, args: ['-e', script, encoded] };
 }
 
+function passingSealedCopyProbe() {
+  return {
+    schemaVersion: 1,
+    phase: 'after-seal-before-private-group',
+    readExisting: 'passed',
+    createNew: 'rejected',
+    appendExisting: 'rejected',
+  };
+}
+
+function signalledChildResult(pid = 4242) {
+  return {
+    pid,
+    exitCode: -2,
+    stdout: '',
+    stderrObserved: false,
+    failureCode: 'WORKER_SIGNALLED',
+  };
+}
+
 async function privateSpawnFailureFixture(t, prefix) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
   const snapshotRoot = path.join(root, 'snapshot');
@@ -303,6 +326,80 @@ test('runner rejects canonical repository output and enforces baseline repetitio
     ]),
     /opaque lowercase label/,
   );
+  const privateOptions = parseArgs([
+    '--profile', 'private-corpus', '--mode', 'smoke', '--output-dir', external,
+    '--repo', process.cwd(), '--source-home', external, '--snapshot-root', external,
+    '--snapshot-group', 'private-probe-a', '--read-only-attested',
+    '--copy-method', 'independent-byte-copy',
+    '--probe-read-existing', 'passed',
+    '--probe-create-new', 'rejected',
+    '--probe-append-existing', 'rejected',
+  ]);
+  assert.deepEqual(privateOptions.sealedCopyProbe, passingSealedCopyProbe());
+});
+
+test('sealed-copy probe and private manifest acceptance use one closed path-free record', () => {
+  const validProbe = passingSealedCopyProbe();
+  assert.equal(validateSealedCopyProbe(validProbe), true);
+  for (const field of Object.keys(validProbe)) {
+    const missing = { ...validProbe };
+    delete missing[field];
+    assert.throws(() => validateSealedCopyProbe(missing), /Sealed copy probe/);
+  }
+  for (const [field, value] of [
+    ['readExisting', 'rejected'],
+    ['createNew', 'passed'],
+    ['appendExisting', 'passed'],
+    ['phase', 'after-private-group'],
+    ['schemaVersion', 2],
+  ]) {
+    assert.throws(
+      () => validateSealedCopyProbe({ ...validProbe, [field]: value }),
+      /Sealed copy probe/,
+    );
+  }
+  assert.throws(
+    () => validateSealedCopyProbe({ ...validProbe, error: 'none' }),
+    /closed schema/,
+  );
+  for (const value of ['C:\\private\\secret', 'EACCES /private/secret']) {
+    assert.throws(
+      () => validateSealedCopyProbe({ ...validProbe, readExisting: value }),
+      /Sealed copy probe is invalid/,
+    );
+  }
+  const privateManifest = {
+    schemaVersion: 3,
+    artifactKind: 'performance-wave-0-manifest',
+    groups: {
+      'private-corpus:baseline': {
+        profileKind: 'private-corpus',
+        mode: 'baseline',
+        readOnlyAttested: true,
+        copyMethod: 'independent-byte-copy',
+        snapshotGroup: 'private-probe-a',
+        sealedCopyProbe: validProbe,
+        attempts: [{
+          run: 'run-001.json',
+          pid: 404,
+          exitStatus: 0,
+          valid: true,
+          failureReason: '',
+          artifactSha256: 'a'.repeat(64),
+        }],
+      },
+    },
+  };
+  assert.equal(validateManifest(privateManifest), true);
+  assert.throws(() => validateManifest({
+    ...privateManifest,
+    groups: {
+      'private-corpus:baseline': {
+        ...privateManifest.groups['private-corpus:baseline'],
+        sealedCopyProbe: { ...validProbe, createNew: 'passed' },
+      },
+    },
+  }), /Sealed copy probe is invalid/);
 });
 
 test('private canonical boundaries reject live roots, source escapes, and output links', async (t) => {
@@ -327,6 +424,7 @@ test('private canonical boundaries reject live roots, source escapes, and output
     snapshotGroup: 'private-v2-a',
     readOnlyAttested: true,
     copyMethod: 'independent-byte-copy',
+    sealedCopyProbe: passingSealedCopyProbe(),
     calibrationFile: '',
   };
 
@@ -565,6 +663,59 @@ test('runner uses independent PIDs, retains invalid attempts and outliers, and w
   assert.equal(manifestText.includes(outputDir), false);
 });
 
+test('runChild normalizes close(null, signal) without serializing the signal', async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stdout.setEncoding = () => {};
+  child.stderr.setEncoding = () => {};
+  const resultPromise = runChild('unused', [], {
+    spawnImpl() {
+      queueMicrotask(() => child.emit('close', null, 'SIGTERM'));
+      return child;
+    },
+  });
+  const result = await resultPromise;
+  assert.deepEqual(result, {
+    pid: 4242,
+    exitCode: -2,
+    stdout: '',
+    stderrObserved: false,
+    failureCode: 'WORKER_SIGNALLED',
+  });
+  assert.equal(JSON.stringify(result).includes('SIGTERM'), false);
+});
+
+test('signal termination finalizes and reloads as one closed invalid manifest attempt', async (t) => {
+  const outputDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-wave0-signal-'));
+  t.after(() => fsp.rm(outputDir, { recursive: true, force: true }));
+  const result = await runRepetitionGroup({
+    profileKind: 'synthetic-browser',
+    mode: 'smoke',
+    outputDir,
+    repetitions: 1,
+    calibrationFile: '',
+  }, {
+    workerFactory() { return { command: 'unused', args: [] }; },
+    async runChild() { return signalledChildResult(); },
+    validateArtifact() { return true; },
+  });
+  assert.deepEqual(result.attempts[0], {
+    run: 'run-001.json',
+    pid: 4242,
+    exitStatus: -2,
+    valid: false,
+    failureReason: 'WORKER_SIGNALLED',
+    artifactSha256: result.attempts[0].artifactSha256,
+  });
+  assert.match(result.attempts[0].artifactSha256, /^[0-9a-f]{64}$/);
+  const attempt = await persistedAttempt(outputDir, 'synthetic-browser:smoke');
+  assert.equal(attempt.pid, 4242);
+  assert.equal(attempt.exitStatus, -2);
+  assert.equal(attempt.failureReason, 'WORKER_SIGNALLED');
+});
+
 test('runner failure stderr and manifests retain only closed redacted categories', async (t) => {
   const outputDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-wave0-redacted-failure-'));
   t.after(() => fsp.rm(outputDir, { recursive: true, force: true }));
@@ -638,6 +789,8 @@ test('runner failure stderr and manifests retain only closed redacted categories
         mode: 'smoke',
         readOnlyAttested: null,
         copyMethod: null,
+        snapshotGroup: null,
+        sealedCopyProbe: null,
         attempts: [{
           run: 'run-001.json',
           pid: 404,
@@ -663,6 +816,41 @@ test('runner failure stderr and manifests retain only closed redacted categories
     valid: false,
     failureReason: 'CHILD_SPAWN_FAILED',
     artifactSha256: 'a'.repeat(64),
+  }, {
+    run: 'run-001.json',
+    pid: null,
+    exitStatus: -2,
+    valid: false,
+    failureReason: 'WORKER_SIGNALLED',
+    artifactSha256: 'a'.repeat(64),
+  }, {
+    run: 'run-001.json',
+    pid: 404,
+    exitStatus: -1,
+    valid: false,
+    failureReason: 'WORKER_SIGNALLED',
+    artifactSha256: 'a'.repeat(64),
+  }, {
+    run: 'run-001.json',
+    pid: 404,
+    exitStatus: -2,
+    valid: true,
+    failureReason: 'WORKER_SIGNALLED',
+    artifactSha256: 'a'.repeat(64),
+  }, {
+    run: 'run-001.json',
+    pid: 404,
+    exitStatus: -2,
+    valid: false,
+    failureReason: 'WORKER_EXIT',
+    artifactSha256: 'a'.repeat(64),
+  }, {
+    run: 'run-001.json',
+    pid: 404,
+    exitStatus: -1,
+    valid: false,
+    failureReason: 'WORKER_EXIT',
+    artifactSha256: 'a'.repeat(64),
   }]) {
     assert.throws(() => validateManifest({
       schemaVersion: 3,
@@ -673,6 +861,8 @@ test('runner failure stderr and manifests retain only closed redacted categories
           mode: 'smoke',
           readOnlyAttested: null,
           copyMethod: null,
+          snapshotGroup: null,
+          sealedCopyProbe: null,
           attempts: [attempt],
         },
       },
@@ -699,6 +889,7 @@ test('spawn failure survives per-run snapshot mismatch and final group mismatch'
     snapshotGroup: 'private-combined-snapshot',
     readOnlyAttested: true,
     copyMethod: 'independent-byte-copy',
+    sealedCopyProbe: passingSealedCopyProbe(),
     calibrationFile: '',
   }, {
     defaultLiveHome: fixture.defaultLiveHome,
@@ -750,6 +941,7 @@ test('spawn failure survives a final-only snapshot group mismatch', async (t) =>
     snapshotGroup: 'private-combined-group',
     readOnlyAttested: true,
     copyMethod: 'independent-byte-copy',
+    sealedCopyProbe: passingSealedCopyProbe(),
     calibrationFile: '',
   }, {
     defaultLiveHome: fixture.defaultLiveHome,
@@ -813,6 +1005,133 @@ test('spawn failure survives calibration mismatch while group acceptance fails',
   const attempt = await persistedAttempt(outputDir, 'synthetic-browser:baseline');
   assert.equal(attempt.pid, null);
   assert.equal(attempt.failureReason, 'CHILD_SPAWN_FAILED');
+});
+
+test('signal failure survives per-run snapshot mismatch and manifest reload', async (t) => {
+  const fixture = await privateSpawnFailureFixture(
+    t,
+    'session-analyzer-wave0-signal-snapshot-mismatch-',
+  );
+  const digests = ['reference', 'changed-before-run', 'reference', 'reference'];
+  let digestIndex = 0;
+  const result = await runRepetitionGroup({
+    profileKind: 'private-corpus',
+    mode: 'smoke',
+    outputDir: fixture.outputDir,
+    repetitions: 1,
+    source: 'codex',
+    repo: process.cwd(),
+    sourceHome: fixture.sourceHome,
+    snapshotRoot: fixture.snapshotRoot,
+    snapshotGroup: 'private-signal-snapshot',
+    readOnlyAttested: true,
+    copyMethod: 'independent-byte-copy',
+    sealedCopyProbe: passingSealedCopyProbe(),
+    calibrationFile: '',
+  }, {
+    defaultLiveHome: fixture.defaultLiveHome,
+    workerFactory() { return { command: 'unused', args: [] }; },
+    async runChild() { return signalledChildResult(505); },
+    validateArtifact() { return true; },
+    async computeSnapshotDigest() {
+      const digest = digests[digestIndex];
+      digestIndex += 1;
+      return digest;
+    },
+  });
+  assert.equal(result.attempts[0].pid, 505);
+  assert.equal(result.attempts[0].exitStatus, -2);
+  assert.equal(result.attempts[0].valid, false);
+  assert.equal(result.attempts[0].failureReason, 'WORKER_SIGNALLED');
+  assert.equal(result.summary.snapshotEquality.allMatched, false);
+  assert.equal(result.summary.acceptance.passed, false);
+  const attempt = await persistedAttempt(fixture.outputDir, 'private-corpus:smoke');
+  assert.equal(attempt.exitStatus, -2);
+  assert.equal(attempt.failureReason, 'WORKER_SIGNALLED');
+});
+
+test('signal failure survives final snapshot-group mismatch and manifest reload', async (t) => {
+  const fixture = await privateSpawnFailureFixture(
+    t,
+    'session-analyzer-wave0-signal-group-mismatch-',
+  );
+  const digests = ['reference', 'reference', 'reference', 'changed-final'];
+  let digestIndex = 0;
+  const result = await runRepetitionGroup({
+    profileKind: 'private-corpus',
+    mode: 'smoke',
+    outputDir: fixture.outputDir,
+    repetitions: 1,
+    source: 'codex',
+    repo: process.cwd(),
+    sourceHome: fixture.sourceHome,
+    snapshotRoot: fixture.snapshotRoot,
+    snapshotGroup: 'private-signal-group',
+    readOnlyAttested: true,
+    copyMethod: 'independent-byte-copy',
+    sealedCopyProbe: passingSealedCopyProbe(),
+    calibrationFile: '',
+  }, {
+    defaultLiveHome: fixture.defaultLiveHome,
+    workerFactory() { return { command: 'unused', args: [] }; },
+    async runChild() { return signalledChildResult(506); },
+    validateArtifact() { return true; },
+    async computeSnapshotDigest() {
+      const digest = digests[digestIndex];
+      digestIndex += 1;
+      return digest;
+    },
+  });
+  assert.equal(result.attempts[0].pid, 506);
+  assert.equal(result.attempts[0].exitStatus, -2);
+  assert.equal(result.attempts[0].failureReason, 'WORKER_SIGNALLED');
+  assert.equal(result.summary.snapshotEquality.allMatched, false);
+  assert.equal(result.summary.acceptance.passed, false);
+  const attempt = await persistedAttempt(fixture.outputDir, 'private-corpus:smoke');
+  assert.equal(attempt.exitStatus, -2);
+  assert.equal(attempt.failureReason, 'WORKER_SIGNALLED');
+});
+
+test('signal failure survives calibration mismatch and manifest reload', async (t) => {
+  const root = await fsp.mkdtemp(path.join(
+    os.tmpdir(),
+    'session-analyzer-wave0-signal-calibration-mismatch-',
+  ));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const outputDir = path.join(root, 'output');
+  const calibrationFile = path.join(root, 'calibration.json');
+  await fsp.writeFile(calibrationFile, JSON.stringify({
+    schemaVersion: 3,
+    artifactKind: 'performance-wave-0-calibration',
+    profileKind: 'synthetic-browser',
+    accepted: true,
+    candidateCommitSha: '1'.repeat(40),
+    targetSyncSha: '2'.repeat(40),
+    targetToCandidateDiffAlgorithm: TARGET_TO_REF_DIFF_ALGORITHM,
+    targetToCandidateDiffSha256: '3'.repeat(64),
+    profiledImplementationTreeHash: '4'.repeat(64),
+    semanticFixtureProof: '5'.repeat(64),
+    exactCounterSet: {},
+  }));
+  const result = await runRepetitionGroup({
+    profileKind: 'synthetic-browser',
+    mode: 'baseline',
+    outputDir,
+    repetitions: 1,
+    calibrationFile,
+  }, {
+    workerFactory() { return { command: 'unused', args: [] }; },
+    async runChild() { return signalledChildResult(507); },
+    validateArtifact() { return true; },
+  });
+  assert.equal(result.attempts[0].pid, 507);
+  assert.equal(result.attempts[0].exitStatus, -2);
+  assert.equal(result.attempts[0].valid, false);
+  assert.equal(result.attempts[0].failureReason, 'WORKER_SIGNALLED');
+  assert.equal(result.summary.acceptance.passed, false);
+  const attempt = await persistedAttempt(outputDir, 'synthetic-browser:baseline');
+  assert.equal(attempt.exitStatus, -2);
+  assert.equal(attempt.failureReason, 'WORKER_SIGNALLED');
 });
 
 test('browser invocation template rejects unknown fields', () => {
@@ -917,6 +1236,7 @@ test('private runner checks snapshot before, during, and after without publishin
     snapshotGroup: 'private-a',
     readOnlyAttested: true,
     copyMethod: 'independent-byte-copy',
+    sealedCopyProbe: passingSealedCopyProbe(),
     calibrationFile: '',
   }, {
     defaultLiveHome,
@@ -933,10 +1253,19 @@ test('private runner checks snapshot before, during, and after without publishin
   assert.equal(result.summary.snapshotEquality.proofVersion, 2);
   assert.equal(result.summary.snapshotEquality.copyMethod, 'independent-byte-copy');
   assert.equal(result.summary.acceptance.passed, true);
+  const manifestText = await fsp.readFile(path.join(outputDir, 'manifest.json'), 'utf8');
+  const manifest = JSON.parse(manifestText);
+  assert.equal(validateManifest(manifest), true);
+  assert.equal(manifest.groups['private-corpus:smoke'].snapshotGroup, 'private-a');
+  assert.deepEqual(
+    manifest.groups['private-corpus:smoke'].sealedCopyProbe,
+    passingSealedCopyProbe(),
+  );
   const runText = await fsp.readFile(path.join(outputDir, 'private-corpus', 'run-001.json'), 'utf8');
   const summaryText = await fsp.readFile(path.join(outputDir, 'private-corpus', 'summary.json'), 'utf8');
   assert.equal(runText.includes('private-reference-digest'), false);
   assert.equal(summaryText.includes('private-reference-digest'), false);
+  assert.equal(manifestText.includes('private-reference-digest'), false);
   const proofStateText = await fsp.readFile(path.join(outputDir, '.private-proof-state.json'), 'utf8');
   assert.equal(proofStateText.includes('private-reference-digest'), true);
   assert.equal(JSON.parse(proofStateText).proofVersion, 2);
