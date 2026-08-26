@@ -1143,7 +1143,7 @@ test('browser invocation template rejects unknown fields', () => {
   }), /Timeline invocationTemplate violates its closed schema/);
 });
 
-test('calibration freezes only stable eligible counters and ignores sibling request order', () => {
+test('calibration keeps demonstrated late-hit and cold-switch counters observational', () => {
   const first = browserArtifact(1, 10);
   const second = browserArtifact(2, 20);
   second.scenarios.warmSearchPreload.work.targetDiscoveryPasses = 4;
@@ -1160,6 +1160,18 @@ test('calibration freezes only stable eligible counters and ignores sibling requ
         targetDiscoveryPasses: 31,
       },
     };
+    artifact.scenarios.coldSessionSwitchDuringQuery = {
+      ...artifact.scenarios.warmSearchPreload,
+      work: {
+        ...artifact.scenarios.warmSearchPreload.work,
+        fullRenders: 9,
+        cardGenerations: 320,
+        highlightPasses: 4,
+        highlightMarksCreated: 0,
+        highlightedOwnerCount: 0,
+        targetDiscoveryPasses: 13,
+      },
+    };
   }
   const exactCounterSet = calibrateExactCounters([first, second]);
   assert.deepEqual(exactCounterSet.warmSearchPreload, [
@@ -1169,6 +1181,11 @@ test('calibration freezes only stable eligible counters and ignores sibling requ
   ]);
   assert.deepEqual(exactCounterSet.warmJumpToLateHit, [
     'highlightPasses',
+    'highlightedOwnerCount',
+  ]);
+  assert.deepEqual(exactCounterSet.coldSessionSwitchDuringQuery, [
+    'highlightPasses',
+    'highlightMarksCreated',
     'highlightedOwnerCount',
   ]);
   const summary = aggregateArtifacts(

@@ -57,6 +57,11 @@ const DEMONSTRATED_OBSERVATIONAL_COUNTERS = Object.freeze({
     'highlightMarksCreated',
     'targetDiscoveryPasses',
   ]),
+  coldSessionSwitchDuringQuery: Object.freeze([
+    'fullRenders',
+    'cardGenerations',
+    'targetDiscoveryPasses',
+  ]),
 });
 
 function sha256(value) {
