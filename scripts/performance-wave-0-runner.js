@@ -90,13 +90,15 @@ function parseArgs(argv) {
     readOnlyAttested: false,
     copyMethod: '',
     calibrationFile: '',
+    candidateSha: '',
+    targetSyncSha: '',
     eventCount: 0,
     textBytes: 0,
   };
   const valueOptions = new Set([
     '--profile', '--mode', '--output-dir', '--repetitions', '--source', '--repo', '--source-home',
     '--snapshot-root', '--snapshot-group', '--calibration-file', '--event-count', '--text-bytes',
-    '--copy-method',
+    '--copy-method', '--candidate-sha', '--target-sync-sha',
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const name = argv[index];
@@ -119,12 +121,20 @@ function parseArgs(argv) {
     if (name === '--snapshot-group') options.snapshotGroup = value;
     if (name === '--copy-method') options.copyMethod = value;
     if (name === '--calibration-file') options.calibrationFile = path.resolve(value);
+    if (name === '--candidate-sha') options.candidateSha = value;
+    if (name === '--target-sync-sha') options.targetSyncSha = value;
     if (name === '--event-count') options.eventCount = Number(value);
     if (name === '--text-bytes') options.textBytes = Number(value);
   }
   if (!PROFILE_KINDS.has(options.profileKind)) throw usageError('--profile is required');
   if (!MODES.has(options.mode)) throw usageError('--mode is invalid');
   if (!options.outputDir) throw usageError('--output-dir is required');
+  for (const [name, value] of [
+    ['--candidate-sha', options.candidateSha],
+    ['--target-sync-sha', options.targetSyncSha],
+  ]) {
+    if (value && !/^[0-9a-f]{40}$/.test(value)) throw usageError(`${name} must be a full commit SHA`);
+  }
   if (!options.repetitions) {
     options.repetitions = options.mode === 'smoke'
       ? 1
@@ -387,6 +397,8 @@ function defaultWorkerFactory(options, repetition) {
       '--repetition-index', String(repetition),
       '--repetition-count', String(options.repetitions),
     ];
+    if (options.candidateSha) args.push('--candidate-sha', options.candidateSha);
+    if (options.targetSyncSha) args.push('--target-sync-sha', options.targetSyncSha);
     if (options.eventCount) args.push('--event-count', String(options.eventCount));
     if (options.textBytes) args.push('--text-bytes', String(options.textBytes));
     return { command: process.execPath, args };
@@ -403,6 +415,8 @@ function defaultWorkerFactory(options, repetition) {
       '--snapshot-group', options.snapshotGroup,
       '--repetition-index', String(repetition),
       '--repetition-count', String(options.repetitions),
+      ...(options.candidateSha ? ['--candidate-sha', options.candidateSha] : []),
+      ...(options.targetSyncSha ? ['--target-sync-sha', options.targetSyncSha] : []),
     ],
   };
 }
@@ -458,6 +472,32 @@ function validateManifest(manifest) {
   return true;
 }
 
+function validateCalibrationArtifact(calibration) {
+  validateClosedKeys(calibration, [
+    'schemaVersion', 'artifactKind', 'profileKind', 'exactCounterSet',
+    'candidateCommitSha', 'targetSyncSha', 'targetToCandidateDiffAlgorithm',
+    'targetToCandidateDiffSha256', 'profiledImplementationTreeHash',
+    'semanticFixtureProof', 'accepted',
+  ], 'Calibration artifact');
+  if (calibration.schemaVersion !== 3
+      || calibration.artifactKind !== 'performance-wave-0-calibration'
+      || calibration.profileKind !== 'synthetic-browser'
+      || !calibration.exactCounterSet
+      || typeof calibration.exactCounterSet !== 'object'
+      || Array.isArray(calibration.exactCounterSet)
+      || !/^[0-9a-f]{40}$/.test(calibration.candidateCommitSha)
+      || !/^[0-9a-f]{40}$/.test(calibration.targetSyncSha)
+      || calibration.targetToCandidateDiffAlgorithm
+        !== 'git-diff-binary-no-ext-diff-full-index-v1'
+      || !/^[0-9a-f]{64}$/.test(calibration.targetToCandidateDiffSha256)
+      || !/^[0-9a-f]{64}$/.test(calibration.profiledImplementationTreeHash)
+      || !/^[0-9a-f]{64}$/.test(calibration.semanticFixtureProof)
+      || typeof calibration.accepted !== 'boolean') {
+    throw new Error('Calibration artifact identity is invalid');
+  }
+  return true;
+}
+
 function validateTimelineArtifact(artifact) {
   const expectedFields = [
     'schemaVersion', 'artifactKind', 'identity', 'environment', 'invocationTemplate', 'fixture',
@@ -479,7 +519,9 @@ function validateTimelineArtifact(artifact) {
   }
   validateClosedKeys(artifact.identity, [
     'repository', 'targetBranch', 'currentBranch', 'inspectedBaseSha', 'preWave0Head', 'head',
-    'dirty', 'profiledTrackedDiffSha256AtRun', 'profiledImplementationTreeHash',
+    'candidateCommitSha', 'targetSyncSha', 'targetToCandidateDiffAlgorithm',
+    'targetToCandidateDiffSha256', 'dirty', 'profiledTrackedDiffSha256AtRun',
+    'profiledImplementationTreeHash',
     'runLabel', 'repetitionIndex',
     'repetitionCount', 'recordedAt',
   ], 'Timeline identity');
@@ -508,6 +550,12 @@ function validateTimelineArtifact(artifact) {
       || !Number.isSafeInteger(artifact.identity.repetitionCount)
       || artifact.identity.repetitionIndex < 1
       || artifact.identity.repetitionIndex > artifact.identity.repetitionCount
+      || artifact.identity.dirty !== false
+      || !/^[0-9a-f]{40}$/.test(artifact.identity.candidateCommitSha)
+      || !/^[0-9a-f]{40}$/.test(artifact.identity.targetSyncSha)
+      || artifact.identity.targetToCandidateDiffAlgorithm
+        !== 'git-diff-binary-no-ext-diff-full-index-v1'
+      || !/^[0-9a-f]{64}$/.test(artifact.identity.targetToCandidateDiffSha256)
       || artifact.acceptance.privacyAuditPassed !== true
       || artifact.acceptance.cleanupPassed !== true) {
     throw new Error('Timeline repetition or acceptance metadata is invalid');
@@ -614,6 +662,8 @@ function exactPaths(profileKind, artifacts, exactCounterSet) {
   const identityPaths = [
     'identity.repository', 'identity.targetBranch', 'identity.currentBranch',
     'identity.inspectedBaseSha', 'identity.preWave0Head', 'identity.head', 'identity.dirty',
+    'identity.candidateCommitSha', 'identity.targetSyncSha',
+    'identity.targetToCandidateDiffAlgorithm', 'identity.targetToCandidateDiffSha256',
     'identity.profiledTrackedDiffSha256AtRun', 'identity.profiledImplementationTreeHash',
     'identity.repetitionCount',
   ];
@@ -965,10 +1015,17 @@ async function runRepetitionGroup(options, dependencies = {}) {
   if (runOptions.mode === 'calibration') exactCounterSet = calibrateExactCounters(validArtifacts);
   if (runOptions.calibrationFile) {
     const calibration = JSON.parse(await fsApi.readFile(runOptions.calibrationFile, 'utf8'));
+    validateCalibrationArtifact(calibration);
     const calibrationMatches = calibration.schemaVersion === 3
       && calibration.artifactKind === 'performance-wave-0-calibration'
       && calibration.profileKind === 'synthetic-browser'
       && calibration.accepted === true
+      && calibration.candidateCommitSha === validArtifacts[0]?.identity?.candidateCommitSha
+      && calibration.targetSyncSha === validArtifacts[0]?.identity?.targetSyncSha
+      && calibration.targetToCandidateDiffAlgorithm
+        === validArtifacts[0]?.identity?.targetToCandidateDiffAlgorithm
+      && calibration.targetToCandidateDiffSha256
+        === validArtifacts[0]?.identity?.targetToCandidateDiffSha256
       && calibration.profiledImplementationTreeHash
         === validArtifacts[0]?.identity?.profiledImplementationTreeHash
       && calibration.semanticFixtureProof === validArtifacts[0]?.fixture?.semanticFixtureProof;
@@ -1010,6 +1067,12 @@ async function runRepetitionGroup(options, dependencies = {}) {
       artifactKind: 'performance-wave-0-calibration',
       profileKind: runOptions.profileKind,
       exactCounterSet,
+      candidateCommitSha: validArtifacts[0]?.identity?.candidateCommitSha || '',
+      targetSyncSha: validArtifacts[0]?.identity?.targetSyncSha || '',
+      targetToCandidateDiffAlgorithm:
+        validArtifacts[0]?.identity?.targetToCandidateDiffAlgorithm || '',
+      targetToCandidateDiffSha256:
+        validArtifacts[0]?.identity?.targetToCandidateDiffSha256 || '',
       profiledImplementationTreeHash:
         validArtifacts[0]?.identity?.profiledImplementationTreeHash || '',
       semanticFixtureProof: validArtifacts[0]?.fixture?.semanticFixtureProof || '',
@@ -1089,6 +1152,7 @@ module.exports = {
   runnerCliErrorLine,
   timingStats,
   validateManifest,
+  validateCalibrationArtifact,
   validateTimelineArtifact,
   writeJsonAtomic,
 };

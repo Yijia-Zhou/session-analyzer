@@ -20,8 +20,7 @@ const {
   createMaterializedSessionOwner,
 } = require('../src/materialized-session-owner');
 const {
-  profiledImplementationTreeHash,
-  profiledTrackedDiffSha256AtRun,
+  captureGitIdentity,
   utf8OrdinalCompare,
 } = require('./performance-wave-0-identity');
 
@@ -93,12 +92,14 @@ function parseArgs(argv) {
     snapshotGroup: 'unassigned',
     repetitionIndex: 1,
     repetitionCount: 1,
+    candidateSha: '',
+    targetSyncSha: '',
   };
   for (let index = 0; index < argv.length; index += 1) {
     const name = argv[index];
     if (![
       '--source', '--repo', '--source-home', '--repeats', '--snapshot-group',
-      '--repetition-index', '--repetition-count',
+      '--repetition-index', '--repetition-count', '--candidate-sha', '--target-sync-sha',
     ].includes(name)) {
       throw usageError(`Unknown option: ${name}`);
     }
@@ -108,6 +109,8 @@ function parseArgs(argv) {
     if (name === '--source') options.source = normalizeSourceKind(value);
     if (name === '--repo') options.repo = path.resolve(value);
     if (name === '--source-home') options.sourceHome = path.resolve(value);
+    if (name === '--candidate-sha') options.candidateSha = value;
+    if (name === '--target-sync-sha') options.targetSyncSha = value;
     if (name === '--snapshot-group') {
       if (!/^[a-z0-9][a-z0-9-]{0,63}$/i.test(value)) {
         throw usageError('--snapshot-group must be an opaque alphanumeric/hyphen label of at most 64 characters');
@@ -133,6 +136,12 @@ function parseArgs(argv) {
   if (!options.repo) throw usageError('--repo is required');
   if (options.repetitionIndex > options.repetitionCount) {
     throw usageError('--repetition-index must not exceed --repetition-count');
+  }
+  for (const [name, value] of [
+    ['--candidate-sha', options.candidateSha],
+    ['--target-sync-sha', options.targetSyncSha],
+  ]) {
+    if (value && !/^[0-9a-f]{40}$/.test(value)) throw usageError(`${name} must be a full commit SHA`);
   }
   const adapter = getSourceAdapter(options.source);
   if (!adapter) throw usageError(`Unsupported source: ${options.source}`);
@@ -480,7 +489,9 @@ function validateMaterializedClass(value, label) {
 function validatePrivateNestedSchema(artifact) {
   assertClosedKeys(artifact.identity, [
     'repository', 'targetBranch', 'currentBranch', 'inspectedBaseSha', 'preWave0Head', 'head',
-    'dirty', 'profiledTrackedDiffSha256AtRun', 'profiledImplementationTreeHash',
+    'candidateCommitSha', 'targetSyncSha', 'targetToCandidateDiffAlgorithm',
+    'targetToCandidateDiffSha256', 'dirty', 'profiledTrackedDiffSha256AtRun',
+    'profiledImplementationTreeHash',
     'repetitionIndex', 'repetitionCount',
     'recordedAt',
   ], 'identity');
@@ -597,6 +608,16 @@ function validatePrivateArtifact(artifact) {
   }
   validateInvocationTemplate(artifact.invocationTemplate);
   validatePrivateNestedSchema(artifact);
+  if (artifact.identity.dirty !== false
+      || !/^[0-9a-f]{40}$/.test(artifact.identity.candidateCommitSha)
+      || !/^[0-9a-f]{40}$/.test(artifact.identity.targetSyncSha)
+      || artifact.identity.targetToCandidateDiffAlgorithm
+        !== 'git-diff-binary-no-ext-diff-full-index-v1'
+      || !/^[0-9a-f]{64}$/.test(artifact.identity.targetToCandidateDiffSha256)
+      || !/^[0-9a-f]{64}$/.test(artifact.identity.profiledTrackedDiffSha256AtRun)
+      || !/^[0-9a-f]{64}$/.test(artifact.identity.profiledImplementationTreeHash)) {
+    throw new Error('Private artifact capture identity is invalid');
+  }
   assertNoPrivateLeak(artifact);
   return true;
 }
@@ -630,23 +651,18 @@ function validatePrivateSummary(summary) {
   return true;
 }
 
-function gitText(args) {
-  return execFileSync('git', args, { cwd: path.join(__dirname, '..'), encoding: 'utf8' }).trim();
-}
-
 async function collectIdentity(options) {
   const repoRoot = path.join(__dirname, '..');
-  const status = gitText(['status', '--porcelain', '--untracked-files=all']);
+  const gitIdentity = await captureGitIdentity(repoRoot, {
+    candidateCommitSha: options.candidateSha,
+    targetSyncSha: options.targetSyncSha,
+  });
   return {
     repository: 'Yijia-Zhou/session-analyzer',
     targetBranch: 'towards-0.2.0',
-    currentBranch: gitText(['branch', '--show-current']),
     inspectedBaseSha: INSPECTED_BASE_SHA,
     preWave0Head: PRE_WAVE_0_HEAD,
-    head: gitText(['rev-parse', 'HEAD']),
-    dirty: Boolean(status),
-    profiledTrackedDiffSha256AtRun: profiledTrackedDiffSha256AtRun(repoRoot),
-    profiledImplementationTreeHash: await profiledImplementationTreeHash(repoRoot),
+    ...gitIdentity,
     repetitionIndex: options.repetitionIndex,
     repetitionCount: options.repetitionCount,
     recordedAt: new Date().toISOString(),

@@ -16,8 +16,7 @@ const {
 } = require('../src/source-adapters');
 const { createTimelineProfileFixture } = require('./timeline-profile-fixture');
 const {
-  profiledImplementationTreeHash,
-  profiledTrackedDiffSha256AtRun,
+  captureGitIdentity,
 } = require('./performance-wave-0-identity');
 
 const MIN_PROFILE_EVENT_COUNT = 1651;
@@ -35,6 +34,8 @@ function parseArgs(argv) {
     headed: false,
     repetitionIndex: 1,
     repetitionCount: 1,
+    candidateSha: '',
+    targetSyncSha: '',
   };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -64,6 +65,12 @@ function parseArgs(argv) {
       }
       if (value === '--repetition-index') options.repetitionIndex = parsed;
       else options.repetitionCount = parsed;
+    }
+    else if (value === '--candidate-sha' || value === '--target-sync-sha') {
+      const sha = argv[++index] || '';
+      if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`${value} must be a full commit SHA`);
+      if (value === '--candidate-sha') options.candidateSha = sha;
+      else options.targetSyncSha = sha;
     }
     else throw new Error(`Unknown option: ${value}`);
   }
@@ -99,10 +106,6 @@ function reportDiagnosticStage(stage) {
   if (process.env.SESSION_ANALYZER_PROFILE_DIAGNOSTIC === '1') {
     process.stderr.write(`timeline-profile-stage:${stage}\n`);
   }
-}
-
-function gitText(args) {
-  return execFileSync('git', args, { cwd: path.join(__dirname, '..'), encoding: 'utf8' }).trim();
 }
 
 function countBy(values) {
@@ -1257,20 +1260,17 @@ async function runBrowserScenarios(browser, fixture, built) {
 }
 
 async function collectIdentity(options) {
-  const head = gitText(['rev-parse', 'HEAD']);
-  const branch = gitText(['branch', '--show-current']);
-  const status = gitText(['status', '--porcelain', '--untracked-files=all']);
   const repoRoot = path.join(__dirname, '..');
+  const gitIdentity = await captureGitIdentity(repoRoot, {
+    candidateCommitSha: options.candidateSha,
+    targetSyncSha: options.targetSyncSha,
+  });
   return {
     repository: REPOSITORY_SLUG,
     targetBranch: TARGET_BRANCH,
-    currentBranch: branch,
     inspectedBaseSha: INSPECTED_BASE_SHA,
     preWave0Head: '377a0356fe884a5a95f234bd5d6f22240ca8052b',
-    head,
-    dirty: Boolean(status),
-    profiledTrackedDiffSha256AtRun: profiledTrackedDiffSha256AtRun(repoRoot),
-    profiledImplementationTreeHash: await profiledImplementationTreeHash(repoRoot),
+    ...gitIdentity,
     runLabel: options.label,
     repetitionIndex: options.repetitionIndex,
     repetitionCount: options.repetitionCount,

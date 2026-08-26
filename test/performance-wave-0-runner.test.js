@@ -5,6 +5,7 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { execFileSync } = require('node:child_process');
 const {
   aggregateArtifacts,
   buildReviewIdentity,
@@ -18,8 +19,12 @@ const {
   validateTimelineArtifact,
 } = require('../scripts/performance-wave-0-runner');
 const {
+  TARGET_TO_REF_DIFF_ALGORITHM,
+  captureGitIdentity,
+  createPacketIndex,
   postRunDocumentationHash,
   profiledImplementationTreeHash,
+  verifyPacketIndex,
 } = require('../scripts/performance-wave-0-identity');
 
 function browserArtifact(repetition, durationMs = repetition, repetitionCount = 2) {
@@ -145,9 +150,13 @@ function closedTimelineArtifact() {
       inspectedBaseSha: 'base-sha',
       preWave0Head: 'pre-wave-head',
       head: 'head-sha',
-      dirty: true,
-      profiledTrackedDiffSha256AtRun: 'tracked-diff',
-      profiledImplementationTreeHash: 'implementation-tree',
+      candidateCommitSha: '1'.repeat(40),
+      targetSyncSha: '2'.repeat(40),
+      targetToCandidateDiffAlgorithm: TARGET_TO_REF_DIFF_ALGORITHM,
+      targetToCandidateDiffSha256: '3'.repeat(64),
+      dirty: false,
+      profiledTrackedDiffSha256AtRun: '4'.repeat(64),
+      profiledImplementationTreeHash: '5'.repeat(64),
       runLabel: 'run-label',
       repetitionIndex: 1,
       repetitionCount: 1,
@@ -438,11 +447,82 @@ test('implementation and post-run documentation identities are separate', async 
   assert.deepEqual(buildReviewIdentity({
     profiledImplementationTreeHash: thirdImplementation,
     profiledTrackedDiffSha256AtRun: 'run-diff-hash',
+    candidateCommitSha: '1'.repeat(40),
+    targetSyncSha: '2'.repeat(40),
+    targetToCandidateDiffAlgorithm: TARGET_TO_REF_DIFF_ALGORITHM,
+    targetToCandidateDiffSha256: '3'.repeat(64),
   }, secondDocumentation), {
     profiledImplementationTreeHash: thirdImplementation,
     profiledTrackedDiffSha256AtRun: 'run-diff-hash',
+    candidateCommitSha: '1'.repeat(40),
+    targetSyncSha: '2'.repeat(40),
+    targetToCandidateDiffAlgorithm: TARGET_TO_REF_DIFF_ALGORITHM,
+    targetToCandidateDiffSha256: '3'.repeat(64),
     postRunDocumentationHash: secondDocumentation,
   });
+});
+
+test('clean capture identity separates candidate, capture HEAD, worktree diff, and target diff', async (t) => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-wave0-clean-identity-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+  git(['init', '--initial-branch=target']);
+  git(['config', 'user.name', 'Wave 0 Test']);
+  git(['config', 'user.email', 'wave0-test@example.invalid']);
+  await fsp.mkdir(path.join(root, 'scripts'));
+  await fsp.mkdir(path.join(root, 'test'));
+  await fsp.mkdir(path.join(root, 'docs'));
+  await fsp.writeFile(path.join(root, 'scripts', 'profile.js'), 'implementation-a\n');
+  await fsp.writeFile(path.join(root, 'test', 'profile.test.js'), 'test-a\n');
+  await fsp.writeFile(path.join(root, 'docs', 'evidence.md'), 'evidence-a\n');
+  git(['add', '.']);
+  git(['commit', '-m', 'target']);
+  const targetSyncSha = git(['rev-parse', 'HEAD']);
+  await fsp.writeFile(path.join(root, 'scripts', 'profile.js'), 'implementation-b\n');
+  git(['add', 'scripts/profile.js']);
+  git(['commit', '-m', 'candidate']);
+  const candidateCommitSha = git(['rev-parse', 'HEAD']);
+  await fsp.writeFile(path.join(root, 'docs', 'evidence.md'), 'evidence-b\n');
+  git(['add', 'docs/evidence.md']);
+  git(['commit', '-m', 'capture docs']);
+  const captureHead = git(['rev-parse', 'HEAD']);
+  const identity = await captureGitIdentity(root, { candidateCommitSha, targetSyncSha });
+  assert.equal(identity.head, captureHead);
+  assert.equal(identity.candidateCommitSha, candidateCommitSha);
+  assert.equal(identity.targetSyncSha, targetSyncSha);
+  assert.equal(identity.dirty, false);
+  assert.equal(identity.profiledTrackedDiffSha256AtRun, 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+  assert.equal(identity.targetToCandidateDiffAlgorithm, TARGET_TO_REF_DIFF_ALGORITHM);
+  assert.match(identity.targetToCandidateDiffSha256, /^[0-9a-f]{64}$/);
+  assert.notEqual(identity.targetToCandidateDiffSha256, identity.profiledTrackedDiffSha256AtRun);
+  await fsp.writeFile(path.join(root, 'docs', 'evidence.md'), 'dirty documentation\n');
+  await assert.rejects(
+    captureGitIdentity(root, { candidateCommitSha, targetSyncSha }),
+    /requires a clean worktree/,
+  );
+});
+
+test('packet index binds the exact file set, raw lengths, checksums, and review packet hash', async (t) => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-wave0-packet-index-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  await fsp.mkdir(path.join(root, 'runs', 'synthetic'), { recursive: true });
+  await fsp.writeFile(path.join(root, 'review-safe-summary.md'), 'review-safe\n');
+  await fsp.writeFile(path.join(root, 'runs', 'synthetic', 'run-001.json'), '{"safe":true}\n');
+  const created = await createPacketIndex(root);
+  assert.equal(created.passed, true);
+  assert.equal(created.packetFileCount, 3);
+  assert.equal(created.indexedPayloadCount, 2);
+  assert.deepEqual(created.index.payloads.map((entry) => entry.filename), [
+    'review-safe-summary.md',
+    'runs/synthetic/run-001.json',
+  ]);
+  assert.match(created.reviewPacketHash, /^[0-9a-f]{64}$/);
+  assert.deepEqual(await verifyPacketIndex(root), created);
+  await fsp.writeFile(path.join(root, 'runs', 'synthetic', 'run-001.json'), '{"safe":false}\n');
+  await assert.rejects(verifyPacketIndex(root), /payload verification failed/);
+  await createPacketIndex(root);
+  await fsp.writeFile(path.join(root, 'unindexed.txt'), 'not indexed\n');
+  await assert.rejects(verifyPacketIndex(root), /file set does not match/);
 });
 
 test('runner uses independent PIDs, retains invalid attempts and outliers, and writes atomically', async (t) => {
@@ -705,8 +785,12 @@ test('spawn failure survives calibration mismatch while group acceptance fails',
     artifactKind: 'performance-wave-0-calibration',
     profileKind: 'synthetic-browser',
     accepted: true,
-    profiledImplementationTreeHash: 'different-tree',
-    semanticFixtureProof: 'different-fixture',
+    candidateCommitSha: '1'.repeat(40),
+    targetSyncSha: '2'.repeat(40),
+    targetToCandidateDiffAlgorithm: TARGET_TO_REF_DIFF_ALGORITHM,
+    targetToCandidateDiffSha256: '3'.repeat(64),
+    profiledImplementationTreeHash: '4'.repeat(64),
+    semanticFixtureProof: '5'.repeat(64),
     exactCounterSet: {},
   }));
   const result = await runRepetitionGroup({
