@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 
@@ -13,6 +14,102 @@ function normalizePositions(values, eventCount) {
   return new Set((Array.isArray(values) ? values : [])
     .map((value) => Number(value))
     .filter((value) => Number.isInteger(value) && value >= 0 && value < eventCount));
+}
+
+function stableCanonicalValue(value) {
+  if (Array.isArray(value)) return value.map(stableCanonicalValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [
+      key,
+      stableCanonicalValue(value[key]),
+    ]));
+  }
+  if (typeof value === 'number' && !Number.isFinite(value)) {
+    throw new TypeError('Semantic fixture proof cannot serialize a non-finite number');
+  }
+  return value;
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function pathLiteralPattern(value) {
+  const normalized = path.resolve(value).replace(/\\/g, '/');
+  const prefix = normalized.startsWith('/') ? '[\\\\/]' : '';
+  const body = normalized.split('/').filter(Boolean).map(escapeRegex).join('[\\\\/]');
+  return new RegExp(`${prefix}${body}`, process.platform === 'win32' ? 'gi' : 'g');
+}
+
+function replaceEvery(value, needle, replacement) {
+  return needle ? value.split(needle).join(replacement) : value;
+}
+
+function assertNoFixtureIdentityLiterals(value, { repoRoot, sessionIds }) {
+  const text = String(value);
+  if (pathLiteralPattern(repoRoot).test(text)
+      || sessionIds.some((sessionId) => sessionId && text.includes(sessionId))) {
+    throw new Error('Semantic fixture proof retained a generated absolute path or literal Session ID');
+  }
+}
+
+function semanticFixtureValue(value, replacements, forbiddenLiterals, fieldName = '') {
+  if (Array.isArray(value)) {
+    return value.map((entry) => semanticFixtureValue(entry, replacements, forbiddenLiterals, fieldName));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+      key,
+      semanticFixtureValue(entry, replacements, forbiddenLiterals, key),
+    ]));
+  }
+  if (typeof value !== 'string') return value;
+  let normalized = value;
+  const pathToken = fieldName === 'cwd' ? '<cwd>' : '<repoRoot>';
+  normalized = normalized.replace(pathLiteralPattern(replacements.repoRoot), pathToken);
+  for (const [literal, token] of replacements.sessionLiterals) {
+    normalized = replaceEvery(normalized, literal, token);
+  }
+  assertNoFixtureIdentityLiterals(normalized, forbiddenLiterals);
+  return normalized;
+}
+
+async function readJsonlRecords(file) {
+  const text = await fsp.readFile(file, 'utf8');
+  return text.split(/\r?\n/).filter((line) => line.trim()).map((line) => JSON.parse(line));
+}
+
+async function computeTimelineProfileFixtureProof({
+  files,
+  parameters,
+  repoRoot,
+  longSessionId,
+  secondarySessionId,
+}) {
+  const replacements = {
+    repoRoot,
+    sessionLiterals: [
+      [longSessionId, '<session:primary>'],
+      [secondarySessionId, '<session:secondary>'],
+    ],
+  };
+  const forbiddenLiterals = { repoRoot, sessionIds: [longSessionId, secondarySessionId] };
+  const semanticFiles = [];
+  for (const descriptor of files) {
+    const records = await readJsonlRecords(descriptor.file);
+    semanticFiles.push({
+      name: descriptor.name,
+      records: semanticFixtureValue(records, replacements, forbiddenLiterals),
+    });
+  }
+  const document = stableCanonicalValue({
+    proofVersion: 1,
+    parameters: stableCanonicalValue(parameters),
+    files: semanticFiles,
+  });
+  const serialized = `${JSON.stringify(document)}\n`;
+  assertNoFixtureIdentityLiterals(serialized, forbiddenLiterals);
+  return crypto.createHash('sha256').update(serialized, 'utf8').digest('hex');
 }
 
 function syntheticText(index, options = {}) {
@@ -246,21 +343,43 @@ async function createTimelineProfileFixture(baseDir, options = {}) {
     '',
   ].join('\n'), 'utf8');
 
+  const parameters = {
+    eventCount,
+    searchableTextBytes,
+    hitPositions: [...normalizePositions(hitPositions, eventCount)].sort((left, right) => left - right),
+    commonTermEvery,
+    detailHeavyPositions: [...normalizePositions(detailHeavyPositions, eventCount)].sort((left, right) => left - right),
+    secondaryEventCount,
+    includeContextReveal,
+    contextRevealIndex: includeContextReveal ? contextRevealIndex : null,
+  };
+  const sessionIndexFile = path.join(codexHome, 'session_index.jsonl');
+  const proofFiles = [
+    { name: 'primary-session.jsonl', file: longFile },
+    { name: 'secondary-session.jsonl', file: secondaryFile },
+    { name: 'session-index.jsonl', file: sessionIndexFile },
+  ];
+  const semanticFixtureProof = await computeTimelineProfileFixtureProof({
+    files: proofFiles,
+    parameters,
+    repoRoot,
+    longSessionId,
+    secondarySessionId,
+  });
+
   return {
     codexHome,
     repoRoot,
     longSessionId,
     secondarySessionId,
-    parameters: {
-      eventCount,
-      searchableTextBytes,
-      hitPositions: [...normalizePositions(hitPositions, eventCount)],
-      commonTermEvery,
-      detailHeavyPositions: [...normalizePositions(detailHeavyPositions, eventCount)],
-      secondaryEventCount,
-      includeContextReveal,
-      contextRevealIndex: includeContextReveal ? contextRevealIndex : null,
-    },
+    parameters,
+    semanticFixtureProof,
+    proofVersion: 1,
+    generatedFiles: Object.freeze({
+      primary: longFile,
+      secondary: secondaryFile,
+      sessionIndex: sessionIndexFile,
+    }),
     contextReveal: includeContextReveal ? { toolName: CONTEXT_REVEAL_TOOL_NAME } : null,
   };
 }
@@ -270,5 +389,7 @@ module.exports = {
   DEFAULT_SEARCHABLE_TEXT_BYTES,
   DEFAULT_HIT_POSITIONS,
   CONTEXT_REVEAL_TOOL_NAME,
+  assertNoFixtureIdentityLiterals,
+  computeTimelineProfileFixtureProof,
   createTimelineProfileFixture,
 };
