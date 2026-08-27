@@ -56,6 +56,17 @@ function toolResult(callId, isError = false) {
   }, { sourceEventSeqs: [0], surfaceOp: 'append' });
 }
 
+function dispatch(type, rootCallId, subCallId, extra = {}) {
+  return row(type, {
+    rootCallId,
+    parentCallId: rootCallId,
+    subCallId,
+    name: 'write',
+    arguments: { path: 'nested-sanitized.txt' },
+    ...extra,
+  });
+}
+
 function inTurn(...rows) {
   return [
     row('turn/start', { turn: 1 }),
@@ -170,7 +181,7 @@ test('all source-contract outcomes keep exact values and intended neutral count 
     asked('unavailable'), decided('unavailable', 'unavailable'),
   );
   const fixture = await makeSyntheticFixture(t, 'all-outcomes', rows);
-  const { indexed, materialized } = await buildFor(fixture.repoRoot, fixture.sourceHome);
+  const { index, indexed, materialized } = await buildFor(fixture.repoRoot, fixture.sourceHome);
   const events = approvals(materialized);
   assert.deepEqual(events.map(event => event.approvalLifecycle.outcome).sort(), [
     'allowed-once', 'cancelled', 'rejected', 'unavailable',
@@ -178,6 +189,11 @@ test('all source-contract outcomes keep exact values and intended neutral count 
   assert.ok(events.every(event => event.status === 'recorded'));
   assert.deepEqual(events.map(event => event.severity), ['normal', 'normal', 'normal', 'warning']);
   assert.equal(indexed.counts.issueEvents, 0, 'Protocol warning severity does not increment issueEvents');
+  const unavailable = events.find(event => event.approvalLifecycle.outcome === 'unavailable');
+  const en = await buildEventDetailForSession(index, materialized, unavailable.id, 'protocol', { locale: 'en' });
+  const zh = await buildEventDetailForSession(index, materialized, unavailable.id, 'protocol', { locale: 'zh-CN' });
+  assert.ok(en.timelineSections.some(section => section.text === 'Approval was unavailable.'));
+  assert.ok(zh.timelineSections.some(section => section.text === '审批不可用。'));
 });
 
 test('asked-only, absent callId, and unresolved callId remain valid incomplete or complete evidence without a toolRef', async (t) => {
@@ -214,6 +230,32 @@ test('unique exact callId resolves only to an existing child-owned tool Logical 
   assert.deepEqual(rawSeqs(tool), [2, 5]);
 });
 
+test('exact nested Code Mode subCallId resolves to the existing nested dispatch Logical Event', async (t) => {
+  const fixture = await makeSyntheticFixture(t, 'nested-code-tool-ref', inTurn(
+    toolCall('outer-code-call', 'run_code'),
+    dispatch('tool/code-dispatch-start', 'outer-code-call', 'outer-code-call:code:1'),
+    asked('nested-request', 'write', { callId: 'outer-code-call:code:1' }),
+    decided('nested-request', 'allowed-once'),
+    dispatch('tool/code-dispatch', 'outer-code-call', 'outer-code-call:code:1', {
+      isError: false,
+      content: [{ type: 'text', text: 'nested write complete' }],
+    }),
+    toolResult('outer-code-call'),
+  ));
+  const { materialized } = await buildFor(fixture.repoRoot, fixture.sourceHome);
+  const approval = approvals(materialized)[0];
+  const nested = materialized.logicalEvents.find(event => (
+    event.id.endsWith(':logical:code-dispatch:outer-code-call:code:1')
+  ));
+  assert.ok(nested);
+  assert.deepEqual(approval.approvalLifecycle.toolRef, {
+    callId: 'outer-code-call:code:1',
+    eventId: nested.id,
+  });
+  assert.deepEqual(rawSeqs(approval), [4, 5]);
+  assert.deepEqual(rawSeqs(nested), [3, 6]);
+});
+
 test('duplicate tool identity is ambiguous and never receives a manufactured relation', async (t) => {
   const fixture = await makeSyntheticFixture(t, 'ambiguous-tool-ref', inTurn(
     toolCall('duplicate-call'),
@@ -226,6 +268,24 @@ test('duplicate tool identity is ambiguous and never receives a manufactured rel
   const approval = approvals(materialized)[0];
   assert.equal(approval.approvalLifecycle.callId, 'duplicate-call');
   assert.equal(Object.hasOwn(approval.approvalLifecycle, 'toolRef'), false);
+
+  const crossKind = await makeSyntheticFixture(t, 'direct-nested-ambiguous-tool-ref', inTurn(
+    toolCall('shared-call'),
+    toolCall('outer-shared-code', 'run_code'),
+    dispatch('tool/code-dispatch-start', 'outer-shared-code', 'shared-call'),
+    asked('shared-request', 'write', { callId: 'shared-call' }),
+    decided('shared-request', 'allowed-once'),
+    dispatch('tool/code-dispatch', 'outer-shared-code', 'shared-call', {
+      isError: false,
+      content: [{ type: 'text', text: 'nested complete' }],
+    }),
+    toolResult('shared-call'),
+    toolResult('outer-shared-code'),
+  ));
+  const crossKindBuilt = await buildFor(crossKind.repoRoot, crossKind.sourceHome);
+  const crossKindApproval = approvals(crossKindBuilt.materialized)[0];
+  assert.equal(crossKindApproval.approvalLifecycle.callId, 'shared-call');
+  assert.equal(Object.hasOwn(crossKindApproval.approvalLifecycle, 'toolRef'), false);
 });
 
 test('recoverable malformed counterparts poison their whole requestId group', async (t) => {
@@ -309,10 +369,23 @@ test('approval endpoints outside an open turn stay generic warnings and cannot a
     decided('inside-a', 'rejected'),
   ]);
   const decidedBuilt = await buildFor(decidedOutside.repoRoot, decidedOutside.sourceHome);
-  assert.equal(approvals(decidedBuilt.materialized).length, 1);
-  assert.equal(approvals(decidedBuilt.materialized)[0].status, 'incomplete');
-  assert.equal(genericEndpoints(decidedBuilt.materialized).length, 1);
-  assert.equal(genericEndpoints(decidedBuilt.materialized)[0].severity, 'warning');
+  assert.equal(approvals(decidedBuilt.materialized).length, 0);
+  assert.equal(genericEndpoints(decidedBuilt.materialized).length, 2);
+  assert.ok(genericEndpoints(decidedBuilt.materialized).every(event => event.severity === 'warning'));
+
+  const askedCounterpartOutside = await makeSyntheticFixture(t, 'asked-counterpart-outside', [
+    asked('inside-b'),
+    row('turn/start', { turn: 1 }),
+    decided('inside-b', 'rejected'),
+    row('turn/end', { turn: 1, reason: { kind: 'completed' } }),
+  ]);
+  const askedCounterpartBuilt = await buildFor(
+    askedCounterpartOutside.repoRoot,
+    askedCounterpartOutside.sourceHome,
+  );
+  assert.equal(approvals(askedCounterpartBuilt.materialized).length, 0);
+  assert.equal(genericEndpoints(askedCounterpartBuilt.materialized).length, 2);
+  assert.ok(genericEndpoints(askedCounterpartBuilt.materialized).every(event => event.severity === 'warning'));
 });
 
 test('open-turn enclosure does not invent a same-turn pairing requirement', async (t) => {

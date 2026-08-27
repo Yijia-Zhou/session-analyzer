@@ -440,7 +440,7 @@
         outcome_allowed_once: 'Allowed for this single operation only.',
         outcome_rejected: 'The approval request was rejected.',
         outcome_cancelled: 'The approval request was cancelled.',
-        outcome_unavailable: 'No approval channel was available.',
+        outcome_unavailable: 'Approval was unavailable.',
       },
       logicalLabel: {
         'Code Mode operation': 'Code Mode tool call',
@@ -1167,7 +1167,7 @@
         outcome_allowed_once: '仅对此次操作允许。',
         outcome_rejected: '该审批请求已被拒绝。',
         outcome_cancelled: '该审批请求已取消。',
-        outcome_unavailable: '没有可用的审批渠道。',
+        outcome_unavailable: '审批不可用。',
       },
       logicalLabel: {
         'Code Mode operation': 'Code Mode 工具调用',

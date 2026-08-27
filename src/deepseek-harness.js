@@ -960,17 +960,35 @@ function markApprovalFallback(row) {
 
 function resolveApprovalToolRef(session, asked, askedFacts, toolCallsById, seedBoundary) {
   if (!Object.hasOwn(askedFacts, 'callId')) return null;
-  const call = toolCallsById.get(askedFacts.callId);
-  if (!call) return null;
   const childStart = Number.isSafeInteger(seedBoundary) ? seedBoundary : 0;
-  if (asked.event.seq < childStart || call.eventSeq < childStart) return null;
-  const candidates = session.logicalEvents.filter(event => (
-    event.layer === 'main'
-    && (event.kind === 'command' || event.kind === 'other_tool_call' || event.kind === 'code_mode_operation')
-    && event.rawRefs.some(ref => ref.rawId === call.raw.rawId)
-  ));
-  if (candidates.length !== 1) return null;
-  return { callId: askedFacts.callId, eventId: candidates[0].id };
+  if (asked.event.seq < childStart) return null;
+  const targets = new Map();
+  const call = toolCallsById.get(askedFacts.callId);
+  if (call && call.eventSeq >= childStart) {
+    for (const event of session.logicalEvents) {
+      if (event.layer !== 'main'
+          || (event.kind !== 'command' && event.kind !== 'other_tool_call' && event.kind !== 'code_mode_operation')
+          || !event.rawRefs.some(ref => ref.rawId === call.raw.rawId)) continue;
+      targets.set(event.id, event);
+    }
+  }
+  for (const outer of session.logicalEvents) {
+    if (outer.layer !== 'main' || outer.kind !== 'code_mode_operation') continue;
+    const dispatches = outer.codeModeOperation?.dispatches || [];
+    for (const dispatch of dispatches) {
+      if (dispatch.subCallId !== askedFacts.callId) continue;
+      const target = session.logicalEvents.find(event => event.id === dispatch.eventId);
+      if (!target || target.layer !== 'main') continue;
+      const childOwned = target.rawRefs.length > 0 && target.rawRefs.every(ref => {
+        const start = ref.sourceLocator?.seq;
+        const end = ref.sourceLocator?.seqEnd ?? start;
+        return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start >= childStart && end >= childStart;
+      });
+      if (childOwned) targets.set(target.id, target);
+    }
+  }
+  if (targets.size !== 1) return null;
+  return { callId: askedFacts.callId, eventId: [...targets.keys()][0] };
 }
 
 function makeApprovalLifecycleEvent(session, asked, decided, askedFacts, decidedFacts, toolCallsById, seedBoundary) {
@@ -1027,7 +1045,7 @@ function projectApprovalLifecycles(session, rows, toolCallsById, seedBoundary) {
   const childStart = Number.isSafeInteger(seedBoundary) ? seedBoundary : 0;
   const grouped = new Map();
   for (const row of rows) {
-    if (row.event.seq < childStart || row.openTurn === null) continue;
+    if (row.event.seq < childStart) continue;
     if (!row.requestId) {
       markApprovalFallback(row);
       continue;
@@ -1039,7 +1057,7 @@ function projectApprovalLifecycles(session, rows, toolCallsById, seedBoundary) {
   const replacedIds = new Set();
   const projected = [];
   for (const group of grouped.values()) {
-    const malformed = group.some(row => !row.facts);
+    const malformed = group.some(row => !row.facts || row.openTurn === null);
     const askedRows = group.filter(row => row.event.type === 'approval/asked');
     const decidedRows = group.filter(row => row.event.type === 'approval/decided');
     const validShape = !malformed
