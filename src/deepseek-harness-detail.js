@@ -572,6 +572,44 @@ function detailForPermissionState(event) {
   return detail;
 }
 
+function detailForApprovalLifecycle(event, locale) {
+  const detail = commonDetail(event, locale);
+  const lifecycle = event.approvalLifecycle || {};
+  const t = (key, vars = {}) => i18n.t(locale, 'deepseekApproval', key, vars);
+  const primary = sectionKv([
+    { key: t('tool'), value: lifecycle.toolName },
+    ...(lifecycle.outcome ? [{ key: t('outcome'), value: lifecycle.outcome }] : []),
+    ...(Object.hasOwn(lifecycle, 'reason') ? [{ key: t('reason'), value: String(lifecycle.reason).slice(0, 4000) }] : []),
+  ], 'content', t('factsTitle'));
+  if (primary) detail.timelineSections.push(primary);
+  if (lifecycle.outcome) {
+    detail.timelineSections.push(sectionNotice(
+      t(`outcome_${lifecycle.outcome.replaceAll('-', '_')}`),
+      'result',
+      t('decisionTitle'),
+      lifecycle.outcome === 'unavailable' ? 'warning' : 'info',
+    ));
+  } else {
+    detail.timelineSections.push(sectionNotice(
+      t('noDurableDecision'),
+      'result',
+      t('decisionTitle'),
+    ));
+  }
+  const trace = sectionKv([
+    { key: t('requestId'), value: lifecycle.requestId },
+    ...(Object.hasOwn(lifecycle, 'callId') ? [{ key: t('callId'), value: lifecycle.callId }] : []),
+    ...(lifecycle.toolRef ? [{ key: t('relatedToolEvent'), value: lifecycle.toolRef.eventId }] : []),
+    { key: t('askedSeq'), value: lifecycle.askedSeq },
+    { key: t('askedTime'), value: lifecycle.askedTime },
+    ...(Object.hasOwn(lifecycle, 'decidedSeq') ? [{ key: t('decidedSeq'), value: lifecycle.decidedSeq }] : []),
+    ...(Object.hasOwn(lifecycle, 'decidedTime') ? [{ key: t('decidedTime'), value: lifecycle.decidedTime }] : []),
+    { key: t('sourceEventTypes'), value: (lifecycle.sourceEventTypes || []).join(', ') },
+  ], 'traceability', t('provenanceTitle'));
+  if (trace) detail.inspectorSections.push(trace);
+  return detail;
+}
+
 function appendInboxProvenanceDetail(detail, event) {
   const provenance = event.inboxProvenance;
   if (!provenance) return detail;
@@ -1117,7 +1155,7 @@ function detailForProtocolEvent(event, session, parsedByOrdinal) {
   return detail;
 }
 
-function buildLogicalDetail(event, session, parsedByOrdinal) {
+function buildLogicalDetail(event, session, parsedByOrdinal, locale = i18n.DEFAULT_LOCALE) {
   if (event.kind === 'user_message') return detailForUserMessage(event);
   if (event.kind === 'assistant_message') return detailForAssistantMessage(event, session, parsedByOrdinal);
   if (event.kind === 'reasoning') return detailForReasoning(event, session, parsedByOrdinal);
@@ -1140,6 +1178,9 @@ function buildLogicalDetail(event, session, parsedByOrdinal) {
   }
   if (event.layer === 'protocol' && event.permissionState && event.permissionChange) {
     return detailForPermissionState(event);
+  }
+  if (event.layer === 'protocol' && event.subtype === 'approval/lifecycle' && event.approvalLifecycle) {
+    return detailForApprovalLifecycle(event, locale);
   }
   if (event.layer === 'protocol' && event.subtype === 'llm/retry-lifecycle') {
     return detailForRetryLifecycle(event);
@@ -1253,7 +1294,7 @@ async function buildDeepSeekEventDetail(index, session, eventId, layer, options 
   ));
   if (!event) return null;
   const parsedByOrdinal = await parsedRecordsForSession(index, session, options.signal);
-  return buildLogicalDetail(event, session, parsedByOrdinal);
+  return buildLogicalDetail(event, session, parsedByOrdinal, locale);
 }
 
 module.exports = {
