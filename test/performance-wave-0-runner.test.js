@@ -30,12 +30,83 @@ const {
   verifyPacketIndex,
 } = require('../scripts/performance-wave-0-identity');
 
+function timelineEventStateEvidence(options = {}) {
+  const purpose = () => ({
+    lookupRequests: 0,
+    mapGets: 0,
+    arrayComparisons: 0,
+    cardIterations: 0,
+    mapBackendRequests: 0,
+    otherBackendRequests: 0,
+  });
+  const enclosingAffordance = {
+    lookupRequests: 1,
+    mapGets: 1,
+    arrayComparisons: 0,
+    cardIterations: 1,
+    mapBackendRequests: 1,
+    otherBackendRequests: 0,
+  };
+  return {
+    observerInstalled: true,
+    automaticSelectionSettlementCount: options.automaticSelectionSettlementCount || 0,
+    sampleCount: 1,
+    parityFailureCount: 0,
+    latestState: {
+      arrayLength: 600,
+      mapSize: 600,
+      uniqueIdCount: 600,
+      objectIdentityParity: true,
+      committedContextBound: true,
+      offsetMatches: true,
+      pendingReplacement: false,
+      backend: 'map',
+      parityPassed: true,
+      ...options.latestState,
+    },
+    purposes: {
+      canonical: purpose(),
+      enclosingAffordance,
+      other: purpose(),
+      ...options.purposes,
+    },
+    relations: {
+      allLookupsMapBacked: true,
+      zeroArrayComparisons: true,
+      enclosingCardGetsMatch: true,
+      parityPassed: true,
+      passed: true,
+      ...options.relations,
+    },
+  };
+}
+
+function bootstrapEvidence() {
+  return {
+    automaticSelectionSettlementCount: 1,
+    fileSuggestions: {
+      records: [{
+        sequence: 1,
+        scope: 'session',
+        layerAlias: 'main',
+        outcome: 'success',
+        httpStatus: 200,
+        startedAfterAutomaticSelectionSettled: false,
+      }],
+      settlementWatermark: 1,
+      scopeCounts: { session: 1, project: 0 },
+      postSettlementSessionCount: 0,
+    },
+    timelineEventState: timelineEventStateEvidence({ automaticSelectionSettlementCount: 1 }),
+  };
+}
+
 function browserArtifact(repetition, durationMs = repetition, repetitionCount = 2) {
   const requestRecords = repetition % 2
     ? [{ sequence: 1, family: 'analysis' }, { sequence: 2, family: 'timeline' }, { sequence: 3, family: 'fileSuggestions' }]
     : [{ sequence: 1, family: 'fileSuggestions' }, { sequence: 2, family: 'timeline' }, { sequence: 3, family: 'analysis' }];
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     artifactKind: 'timeline-browser-run',
     identity: {
       head: 'head-a',
@@ -52,6 +123,7 @@ function browserArtifact(repetition, durationMs = repetition, repetitionCount = 
       outputRole: 'external-artifact-directory',
     },
     fixture: { semanticFixtureProof: 'fixture-a' },
+    bootstrap: bootstrapEvidence(),
     serverSetup: {
       buildInvocationCount: 1,
       commitValidationInvocationCount: 1,
@@ -85,6 +157,7 @@ function browserArtifact(repetition, durationMs = repetition, repetitionCount = 
           targetDiscoveryPasses: 3,
           materializerCalls: 0,
           materializerCallsByRole: {},
+          timelineEventState: timelineEventStateEvidence(),
         },
       },
     },
@@ -141,10 +214,10 @@ function closedTimelineArtifact() {
       domCommitLedger: [],
       constraints: { passed: true },
     },
-    work: {},
+    work: { timelineEventState: timelineEventStateEvidence() },
   });
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     artifactKind: 'timeline-browser-run',
     identity: {
       repository: 'repository-role',
@@ -200,6 +273,7 @@ function closedTimelineArtifact() {
       generatorSha256: 'generator-hash',
       semanticFixtureProof: 'fixture-proof',
     },
+    bootstrap: bootstrapEvidence(),
     serverSetup: {
       sourceKind: 'codex',
       sessionLifecycle: 'strict',
@@ -1143,6 +1217,269 @@ test('browser invocation template rejects unknown fields', () => {
   }), /Timeline invocationTemplate violates its closed schema/);
 });
 
+test('synthetic browser schema and aggregation keep Wave 1A evidence closed and structural', () => {
+  const artifact = closedTimelineArtifact();
+  assert.equal(validateTimelineArtifact(artifact), true);
+  assert.deepEqual(artifact.bootstrap.timelineEventState.purposes.enclosingAffordance, {
+    lookupRequests: 1,
+    mapGets: 1,
+    arrayComparisons: 0,
+    cardIterations: 1,
+    mapBackendRequests: 1,
+    otherBackendRequests: 0,
+  });
+  const missingSettlementMarker = closedTimelineArtifact();
+  missingSettlementMarker.bootstrap.automaticSelectionSettlementCount = 0;
+  missingSettlementMarker.bootstrap.fileSuggestions.settlementWatermark = 0;
+  missingSettlementMarker.bootstrap.timelineEventState.automaticSelectionSettlementCount = 0;
+  assert.throws(
+    () => validateTimelineArtifact(missingSettlementMarker),
+    /accepted worker has failing bootstrap structural evidence/,
+  );
+  assert.throws(() => validateTimelineArtifact({
+    ...artifact,
+    bootstrap: {
+      ...artifact.bootstrap,
+      fileSuggestions: {
+        ...artifact.bootstrap.fileSuggestions,
+        records: [{
+          ...artifact.bootstrap.fileSuggestions.records[0],
+          sessionId: 'private-session-identity',
+        }],
+      },
+    },
+  }), /closed schema/);
+  assert.throws(() => validateTimelineArtifact({
+    ...artifact,
+    bootstrap: {
+      ...artifact.bootstrap,
+      timelineEventState: {
+        ...artifact.bootstrap.timelineEventState,
+        relations: {
+          ...artifact.bootstrap.timelineEventState.relations,
+          enclosingCardGetsMatch: false,
+          passed: false,
+        },
+      },
+    },
+  }), /relations do not match its counters and state/);
+  assert.throws(() => validateTimelineArtifact({
+    ...artifact,
+    bootstrap: {
+      ...artifact.bootstrap,
+      timelineEventState: {
+        ...artifact.bootstrap.timelineEventState,
+        latestState: {
+          ...artifact.bootstrap.timelineEventState.latestState,
+          content: 'private transcript content',
+        },
+      },
+    },
+  }), /closed schema/);
+  const forgedWatermark = closedTimelineArtifact();
+  forgedWatermark.bootstrap.fileSuggestions.settlementWatermark = 0;
+  assert.throws(
+    () => validateTimelineArtifact(forgedWatermark),
+    /Timeline bootstrap\.fileSuggestions record is invalid/,
+  );
+  const nonMonotonicSuggestionSequence = closedTimelineArtifact();
+  nonMonotonicSuggestionSequence.bootstrap.fileSuggestions.records[0].sequence = 2;
+  assert.throws(
+    () => validateTimelineArtifact(nonMonotonicSuggestionSequence),
+    /Timeline bootstrap\.fileSuggestions record is invalid/,
+  );
+
+  const failingBootstrapParity = closedTimelineArtifact();
+  failingBootstrapParity.bootstrap.timelineEventState = timelineEventStateEvidence({
+    automaticSelectionSettlementCount: 1,
+    latestState: { mapSize: 599, parityPassed: false },
+    relations: { parityPassed: false, passed: false },
+  });
+  assert.throws(
+    () => validateTimelineArtifact(failingBootstrapParity),
+    /accepted worker has failing bootstrap structural evidence/,
+  );
+
+  const zeroEnclosingCounters = {
+    lookupRequests: 0,
+    mapGets: 0,
+    arrayComparisons: 0,
+    cardIterations: 0,
+    mapBackendRequests: 0,
+    otherBackendRequests: 0,
+  };
+  const zeroEnclosingEvidence = (automaticSelectionSettlementCount = 0) => (
+    timelineEventStateEvidence({
+      automaticSelectionSettlementCount,
+      purposes: { enclosingAffordance: zeroEnclosingCounters },
+      relations: { enclosingCardGetsMatch: false, passed: false },
+    })
+  );
+  const zeroBootstrap = closedTimelineArtifact();
+  zeroBootstrap.bootstrap.timelineEventState = zeroEnclosingEvidence(1);
+  zeroBootstrap.acceptance.passed = false;
+  assert.equal(validateTimelineArtifact(zeroBootstrap), true,
+    'honest zero-work bootstrap evidence remains structurally parseable');
+  zeroBootstrap.acceptance.passed = true;
+  assert.throws(
+    () => validateTimelineArtifact(zeroBootstrap),
+    /accepted worker has failing bootstrap structural evidence/,
+  );
+
+  const zeroScenario = closedTimelineArtifact();
+  zeroScenario.scenarios.warmSearchPreload.work.timelineEventState = zeroEnclosingEvidence();
+  zeroScenario.acceptance.passed = false;
+  assert.equal(validateTimelineArtifact(zeroScenario), true,
+    'honest zero-work scenario evidence remains structurally parseable');
+  zeroScenario.acceptance.passed = true;
+  assert.throws(
+    () => validateTimelineArtifact(zeroScenario),
+    /accepted worker has failing scenario structural evidence/,
+  );
+
+  const failedBootstrapSuggestion = closedTimelineArtifact();
+  failedBootstrapSuggestion.bootstrap.fileSuggestions.records[0] = {
+    ...failedBootstrapSuggestion.bootstrap.fileSuggestions.records[0],
+    outcome: 'failed',
+    httpStatus: 0,
+  };
+  assert.throws(
+    () => validateTimelineArtifact(failedBootstrapSuggestion),
+    /accepted worker has failing bootstrap structural evidence/,
+  );
+
+  const counterCases = [
+    {
+      purpose: 'canonical',
+      counters: {
+        lookupRequests: 1,
+        mapGets: 1,
+        arrayComparisons: 0,
+        cardIterations: 0,
+        mapBackendRequests: 2,
+        otherBackendRequests: 0,
+      },
+      error: /backend counters do not match lookup requests/,
+    },
+    {
+      purpose: 'canonical',
+      counters: {
+        lookupRequests: 1,
+        mapGets: 2,
+        arrayComparisons: 0,
+        cardIterations: 0,
+        mapBackendRequests: 1,
+        otherBackendRequests: 0,
+      },
+      error: /Map counters violate lookup arithmetic/,
+    },
+    {
+      purpose: 'enclosingAffordance',
+      counters: {
+        lookupRequests: 1,
+        mapGets: 1,
+        arrayComparisons: 0,
+        cardIterations: 2,
+        mapBackendRequests: 1,
+        otherBackendRequests: 0,
+      },
+      error: /enclosing-affordance counters violate exact arithmetic/,
+    },
+    {
+      purpose: 'enclosingAffordance',
+      counters: {
+        lookupRequests: 1,
+        mapGets: 1,
+        arrayComparisons: 1,
+        cardIterations: 1,
+        mapBackendRequests: 1,
+        otherBackendRequests: 0,
+      },
+      error: /enclosing-affordance counters violate exact arithmetic/,
+    },
+    {
+      purpose: 'enclosingAffordance',
+      counters: {
+        lookupRequests: 1,
+        mapGets: 0,
+        arrayComparisons: 0,
+        cardIterations: 1,
+        mapBackendRequests: 0,
+        otherBackendRequests: 1,
+      },
+      error: /enclosing-affordance counters violate exact arithmetic/,
+    },
+  ];
+  for (const { purpose, counters, error } of counterCases) {
+    const impossible = closedTimelineArtifact();
+    impossible.bootstrap.timelineEventState = timelineEventStateEvidence({
+      automaticSelectionSettlementCount: 1,
+      purposes: { [purpose]: counters },
+    });
+    assert.throws(() => validateTimelineArtifact(impossible), error);
+  }
+
+  const first = browserArtifact(1, 10);
+  const second = browserArtifact(2, 20);
+  const summary = aggregateArtifacts(
+    'synthetic-browser',
+    'calibration',
+    [first, second],
+    [{ valid: true, pid: 101 }, { valid: true, pid: 102 }],
+  );
+  assert.deepEqual(summary.browserStructural.bootstrap.suggestionOwnership, {
+    passCount: 2,
+    repeatCount: 2,
+  });
+  assert.deepEqual(
+    summary.browserStructural.scenarios.warmSearchPreload.enclosingCardGetsMatch,
+    { passCount: 2, repeatCount: 2 },
+  );
+  assert.equal(
+    summary.hardExact['bootstrap.fileSuggestions.scopeCounts'].distinctValueCount,
+    1,
+  );
+  assert.equal(
+    summary.hardExact[
+      'scenarios.warmSearchPreload.work.timelineEventState.relations'
+    ].distinctValueCount,
+    1,
+  );
+  assert.equal(summary.acceptance.passed, true);
+
+  const zeroObserved = browserArtifact(2, 20);
+  zeroObserved.scenarios.warmSearchPreload.work.timelineEventState = zeroEnclosingEvidence();
+  zeroObserved.acceptance.passed = false;
+  const zeroRejected = aggregateArtifacts(
+    'synthetic-browser',
+    'calibration',
+    [first, zeroObserved],
+    [{ valid: true, pid: 101 }, { valid: true, pid: 102 }],
+  );
+  assert.deepEqual(
+    zeroRejected.browserStructural.scenarios.warmSearchPreload.enclosingCardGetsMatch,
+    { passCount: 1, repeatCount: 2 },
+  );
+  assert.equal(zeroRejected.acceptance.passed, false);
+
+  second.scenarios.warmSearchPreload.work.timelineEventState.relations = {
+    ...second.scenarios.warmSearchPreload.work.timelineEventState.relations,
+    zeroArrayComparisons: false,
+    passed: false,
+  };
+  const rejected = aggregateArtifacts(
+    'synthetic-browser',
+    'calibration',
+    [first, second],
+    [{ valid: true, pid: 101 }, { valid: true, pid: 102 }],
+  );
+  assert.deepEqual(
+    rejected.browserStructural.scenarios.warmSearchPreload.zeroArrayComparisons,
+    { passCount: 1, repeatCount: 2 },
+  );
+  assert.equal(rejected.acceptance.passed, false);
+});
+
 test('calibration keeps demonstrated late-hit and cold-switch counters observational', () => {
   const first = browserArtifact(1, 10);
   const second = browserArtifact(2, 20);
@@ -1228,6 +1565,13 @@ test('private corpus shape is exact while logical accounted bytes are observatio
     min: 10,
     max: 12,
   });
+  assert.equal(Object.hasOwn(summary, 'browserStructural'), false);
+  assert.deepEqual(Object.keys(summary).sort(), [
+    'acceptance', 'artifactKind', 'categoricalObservations', 'causal', 'exactCounterSet',
+    'expectedRepeatCount', 'hardExact', 'identityEquality', 'invalidAttemptCount', 'mode',
+    'observational', 'outliersRetained', 'processIsolation', 'profileKind', 'proofEquality',
+    'schemaVersion', 'validAttemptCount',
+  ]);
   assert.equal(summary.acceptance.passed, true);
 });
 
