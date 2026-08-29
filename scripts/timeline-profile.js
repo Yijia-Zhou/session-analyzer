@@ -22,7 +22,7 @@ const {
 const MIN_PROFILE_EVENT_COUNT = 1651;
 const MIN_PROFILE_TEXT_BYTES = 256;
 const MAX_PROFILE_TEXT_BYTES = 65536;
-const PROFILE_SCHEMA_VERSION = 3;
+const PROFILE_SCHEMA_VERSION = 4;
 const INSPECTED_BASE_SHA = 'd370cc7bca56380457c147dc4c33637a0baedf68';
 const REPOSITORY_SLUG = 'Yijia-Zhou/session-analyzer';
 const TARGET_BRANCH = 'towards-0.2.0';
@@ -112,6 +112,35 @@ function countBy(values) {
   const result = {};
   for (const value of values) result[value] = (result[value] || 0) + 1;
   return Object.fromEntries(Object.entries(result).sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function classifySuggestionScope(url) {
+  if (url.pathname !== '/api/file-suggestions') return 'notApplicable';
+  return url.searchParams.has('sessionId') ? 'session' : 'project';
+}
+
+function suggestionRequestEvidence(requests, settlementWatermark = 0, settlementObserved = false) {
+  const records = requests
+    .map((request) => ({
+      sequence: request.sequence,
+      scope: request.suggestionScope,
+      layerAlias: request.filterAlias,
+      outcome: request.outcome,
+      httpStatus: request.httpStatus,
+      startedAfterAutomaticSelectionSettled: settlementObserved
+        && request.sequence > settlementWatermark,
+    }));
+  return {
+    records,
+    settlementWatermark,
+    scopeCounts: {
+      session: records.filter((record) => record.scope === 'session').length,
+      project: records.filter((record) => record.scope === 'project').length,
+    },
+    postSettlementSessionCount: records.filter((record) => (
+      record.scope === 'session' && record.startedAfterAutomaticSelectionSettled
+    )).length,
+  };
 }
 
 function timingStats(values) {
@@ -274,7 +303,101 @@ async function installPageInstrumentation(context, fixture) {
       commitSequence: 0,
       scenarioPhase: 'beforeSelectSecondary',
       domCommitLedger: [],
+      automaticSelectionSettlementCount: 0,
+      automaticSelectionSettledWatermark: 0,
+      fileSuggestionSequence: 0,
+      fileSuggestionLedger: [],
+      timelineEventState: {
+        sampleCount: 0,
+        parityFailureCount: 0,
+        latestState: {
+          arrayLength: 0,
+          mapSize: 0,
+          uniqueIdCount: 0,
+          objectIdentityParity: false,
+          committedContextBound: false,
+          offsetMatches: false,
+          pendingReplacement: false,
+          backend: 'none',
+          parityPassed: false,
+        },
+        purposes: {},
+      },
     };
+    const emptyPurposeMetrics = () => ({
+      lookupRequests: 0,
+      mapGets: 0,
+      arrayComparisons: 0,
+      cardIterations: 0,
+      mapBackendRequests: 0,
+      otherBackendRequests: 0,
+    });
+    const resetHotPathMetrics = () => {
+      metrics.automaticSelectionSettlementCount = 0;
+      metrics.automaticSelectionSettledWatermark = 0;
+      metrics.fileSuggestionSequence = 0;
+      metrics.fileSuggestionLedger = [];
+      metrics.timelineEventState.sampleCount = 0;
+      metrics.timelineEventState.parityFailureCount = 0;
+      metrics.timelineEventState.purposes = {
+        canonical: emptyPurposeMetrics(),
+        enclosingAffordance: emptyPurposeMetrics(),
+        other: emptyPurposeMetrics(),
+      };
+    };
+    const closedPurpose = (value) => (
+      ['canonical', 'enclosingAffordance'].includes(value) ? value : 'other'
+    );
+    const exactKeys = (value, keys) => (
+      value && typeof value === 'object' && !Array.isArray(value)
+      && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort())
+    );
+    const nonnegativeIntegers = (values) => values.every((value) => (
+      Number.isSafeInteger(value) && value >= 0
+    ));
+    resetHotPathMetrics();
+    const profileObserver = Object.freeze({
+      recordAutomaticSelectionSettled() {
+        metrics.automaticSelectionSettlementCount += 1;
+        metrics.automaticSelectionSettledWatermark = metrics.fileSuggestionSequence;
+      },
+      recordLookup(value) {
+        if (!exactKeys(value, ['purpose', 'backend', 'lookupRequests', 'mapGets', 'arrayComparisons'])
+            || !['map', 'other'].includes(value.backend)
+            || !nonnegativeIntegers([value.lookupRequests, value.mapGets, value.arrayComparisons])) return;
+        const bucket = metrics.timelineEventState.purposes[closedPurpose(value.purpose)];
+        bucket.lookupRequests += value.lookupRequests;
+        bucket.mapGets += value.mapGets;
+        bucket.arrayComparisons += value.arrayComparisons;
+        if (value.backend === 'map') bucket.mapBackendRequests += value.lookupRequests;
+        else bucket.otherBackendRequests += value.lookupRequests;
+      },
+      recordCardIteration(value) {
+        if (!exactKeys(value, ['purpose', 'cardIterations'])
+            || !nonnegativeIntegers([value.cardIterations])) return;
+        metrics.timelineEventState.purposes[closedPurpose(value.purpose)].cardIterations += value.cardIterations;
+      },
+      recordStateSnapshot(value) {
+        if (!exactKeys(value, [
+          'arrayLength', 'mapSize', 'uniqueIdCount', 'objectIdentityParity',
+          'committedContextBound', 'offsetMatches', 'pendingReplacement', 'backend',
+          'parityPassed',
+        ])
+            || !nonnegativeIntegers([value.arrayLength, value.mapSize, value.uniqueIdCount])
+            || !['map', 'other'].includes(value.backend)
+            || [
+              value.objectIdentityParity, value.committedContextBound, value.offsetMatches,
+              value.pendingReplacement, value.parityPassed,
+            ].some((entry) => typeof entry !== 'boolean')) return;
+        metrics.timelineEventState.sampleCount += 1;
+        if (!value.parityPassed) metrics.timelineEventState.parityFailureCount += 1;
+        metrics.timelineEventState.latestState = { ...value };
+      },
+    });
+    Object.defineProperty(window, '__sessionAnalyzerProfileObserver', {
+      value: profileObserver,
+      configurable: false,
+    });
     const reset = () => {
       captureTimelineState();
       metrics.startedAt = performance.now();
@@ -291,6 +414,7 @@ async function installPageInstrumentation(context, fixture) {
       metrics.commitSequence = 0;
       metrics.scenarioPhase = 'beforeSelectSecondary';
       metrics.domCommitLedger = [];
+      resetHotPathMetrics();
       performance.clearResourceTimings();
     };
     const markSelectSecondary = () => {
@@ -298,13 +422,39 @@ async function installPageInstrumentation(context, fixture) {
     };
     const originalFetch = window.fetch.bind(window);
     window.fetch = async (...args) => {
-      const response = await originalFetch(...args);
+      let requestUrl = null;
+      let suggestionRecord = null;
       try {
-        const requestUrl = new URL(args[0] instanceof Request ? args[0].url : String(args[0]), location.href);
+        requestUrl = new URL(
+          args[0] instanceof Request ? args[0].url : String(args[0]),
+          location.href,
+        );
+        if (requestUrl.pathname === '/api/file-suggestions') {
+          metrics.fileSuggestionSequence += 1;
+          const layer = requestUrl.searchParams.get('layer') || '';
+          suggestionRecord = {
+            sequence: metrics.fileSuggestionSequence,
+            suggestionScope: requestUrl.searchParams.has('sessionId') ? 'session' : 'project',
+            filterAlias: ['main', 'protocol', 'raw'].includes(layer)
+              ? layer
+              : (layer ? 'other' : 'none'),
+            outcome: 'pending',
+            httpStatus: 0,
+          };
+          metrics.fileSuggestionLedger.push(suggestionRecord);
+        }
+      } catch {}
+      try {
+        const response = await originalFetch(...args);
+        if (suggestionRecord) {
+          suggestionRecord.outcome = 'success';
+          suggestionRecord.httpStatus = response.status;
+        }
+        try {
         const matchedSessionId = [roleConfig.primarySessionId, roleConfig.secondarySessionId]
-          .find((sessionId) => requestUrl.pathname.includes(encodeURIComponent(sessionId)));
+          .find((sessionId) => requestUrl?.pathname.includes(encodeURIComponent(sessionId)));
         const role = sessionRole(matchedSessionId || '');
-        if (role !== 'unknown' && requestUrl.pathname.endsWith('/timeline')) {
+        if (role !== 'unknown' && requestUrl?.pathname.endsWith('/timeline')) {
           const parseJson = response.json.bind(response);
           Object.defineProperty(response, 'json', {
             configurable: true,
@@ -317,8 +467,14 @@ async function installPageInstrumentation(context, fixture) {
             },
           });
         }
-      } catch {}
-      return response;
+        } catch {}
+        return response;
+      } catch (error) {
+        if (suggestionRecord) {
+          suggestionRecord.outcome = error?.name === 'AbortError' ? 'intentionalAbort' : 'failed';
+        }
+        throw error;
+      }
     };
     const installSearchTargetInstrumentation = () => {
       const targets = window.sessionSearchTargets;
@@ -355,6 +511,43 @@ async function installPageInstrumentation(context, fixture) {
           const style = getComputedStyle(node);
           return style.display !== 'none' && style.visibility !== 'hidden' && node.getClientRects().length > 0;
         }).length;
+      const purposeValues = Object.values(metrics.timelineEventState.purposes);
+      const totalLookupRequests = purposeValues.reduce((sum, value) => sum + value.lookupRequests, 0);
+      const totalMapBackendRequests = purposeValues.reduce((sum, value) => sum + value.mapBackendRequests, 0);
+      const totalOtherBackendRequests = purposeValues.reduce((sum, value) => sum + value.otherBackendRequests, 0);
+      const totalArrayComparisons = purposeValues.reduce((sum, value) => sum + value.arrayComparisons, 0);
+      const enclosing = metrics.timelineEventState.purposes.enclosingAffordance;
+      const timelineEventState = {
+        observerInstalled: true,
+        automaticSelectionSettlementCount: metrics.automaticSelectionSettlementCount,
+        sampleCount: metrics.timelineEventState.sampleCount,
+        parityFailureCount: metrics.timelineEventState.parityFailureCount,
+        latestState: { ...metrics.timelineEventState.latestState },
+        purposes: Object.fromEntries(Object.entries(metrics.timelineEventState.purposes)
+          .map(([purpose, value]) => [purpose, { ...value }])),
+        relations: {
+          allLookupsMapBacked: totalLookupRequests === totalMapBackendRequests
+            && totalOtherBackendRequests === 0,
+          zeroArrayComparisons: totalArrayComparisons === 0,
+          enclosingCardGetsMatch: enclosing.cardIterations > 0
+            && enclosing.cardIterations === enclosing.lookupRequests
+            && enclosing.cardIterations === enclosing.mapBackendRequests
+            && enclosing.cardIterations === enclosing.mapGets
+            && enclosing.otherBackendRequests === 0
+            && enclosing.arrayComparisons === 0,
+          parityPassed: metrics.timelineEventState.latestState.parityPassed
+            && metrics.timelineEventState.parityFailureCount === 0,
+          passed: false,
+        },
+      };
+      timelineEventState.relations.passed = Object.entries(timelineEventState.relations)
+        .filter(([key]) => key !== 'passed')
+        .every(([, value]) => value === true);
+      const fileSuggestionLedger = {
+        automaticSelectionSettlementCount: metrics.automaticSelectionSettlementCount,
+        settlementWatermark: metrics.automaticSelectionSettledWatermark,
+        records: metrics.fileSuggestionLedger.map((record) => ({ ...record })),
+      };
       return {
         fullRenders: metrics.fullRenders,
         cardGenerations: metrics.cardGenerations,
@@ -388,6 +581,8 @@ async function installPageInstrumentation(context, fixture) {
         activeSessionId: document.querySelector('.sessionItem.active')?.dataset.sessionId || '',
         timelineScrollTop: document.querySelector('.timelinePane')?.scrollTop || 0,
         visibleErrorCount,
+        fileSuggestionLedger,
+        timelineEventState,
         domCommitLedger: metrics.domCommitLedger.map((entry) => ({
           sequence: entry.sequence,
           phase: entry.phase,
@@ -539,6 +734,7 @@ function normalizedRequest(url, method, fixture, sequence) {
     sequence,
     method,
     family: classifyApiFamily(url.pathname),
+    suggestionScope: classifySuggestionScope(url),
     sessionRole: fixtureRole(fixture, sessionId),
     offset: Number(url.searchParams.get('offset') || 0),
     limit: Number(url.searchParams.get('limit') || 0),
@@ -604,7 +800,23 @@ async function openProfilePage(browser, baseUrl, fixture) {
   await page.evaluate(() => window.__timelineProfile.installSearchTargetInstrumentation());
   await waitForTimelineIdle(page);
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  return { context, page, requests, failures };
+  const browserMetrics = await page.evaluate(() => window.__timelineProfile.snapshot());
+  const suggestionLedger = browserMetrics.fileSuggestionLedger;
+  return {
+    context,
+    page,
+    requests,
+    failures,
+    bootstrap: {
+      automaticSelectionSettlementCount: suggestionLedger.automaticSelectionSettlementCount,
+      fileSuggestions: suggestionRequestEvidence(
+        suggestionLedger.records,
+        suggestionLedger.settlementWatermark,
+        suggestionLedger.automaticSelectionSettlementCount > 0,
+      ),
+      timelineEventState: browserMetrics.timelineEventState,
+    },
+  };
 }
 
 async function resetScenario(page, requests, failures, tracker) {
@@ -752,6 +964,7 @@ async function scenarioSummary(page, requests, failures, start, tracker, fixture
         sequence: request.sequence - start.requestIndex,
         method: request.method,
         family: request.family,
+        suggestionScope: request.suggestionScope,
         sessionRole: request.sessionRole,
         offset: request.offset,
         limit: request.limit,
@@ -795,6 +1008,7 @@ async function scenarioSummary(page, requests, failures, start, tracker, fixture
       materializationPhaseEvents: scenarioName === 'coldSessionSwitchDuringQuery'
         ? materializer.phaseEvents
         : {},
+      timelineEventState: browserMetrics.timelineEventState,
     },
   };
 }
@@ -911,13 +1125,37 @@ async function runContextRevealProfile(baseUrl, browser, fixture, tracker) {
   }
 }
 
-function profileAcceptance(scenarios, serverSetup) {
+function profileAcceptance(scenarios, serverSetup, bootstrap) {
   const failures = [];
   if (serverSetup.buildInvocationCount !== 1) failures.push('serverSetup: build invocation count must be 1');
   if (serverSetup.commitValidationInvocationCount !== 1) failures.push('serverSetup: commit validation count must be 1');
   if (serverSetup.projectJobCount !== 0) failures.push('serverSetup: project job count must be 0');
   if (!serverSetup.prewarmDisabled) failures.push('serverSetup: prewarm must be disabled');
   if (serverSetup.createServerCount !== 2) failures.push('serverSetup: createServer count must be 2');
+  if (bootstrap?.automaticSelectionSettlementCount !== 1
+      || bootstrap?.fileSuggestions?.settlementWatermark !== 1
+      || bootstrap?.fileSuggestions?.scopeCounts?.session !== 1
+      || bootstrap?.fileSuggestions?.scopeCounts?.project !== 0
+      || bootstrap?.fileSuggestions?.postSettlementSessionCount !== 0) {
+    failures.push('bootstrap: automatic Session suggestion ownership changed');
+  }
+  const bootstrapSuggestion = bootstrap?.fileSuggestions?.records;
+  if (!Array.isArray(bootstrapSuggestion)
+      || bootstrapSuggestion.length !== 1
+      || bootstrapSuggestion[0]?.scope !== 'session'
+      || bootstrapSuggestion[0]?.outcome !== 'success'
+      || !Number.isSafeInteger(bootstrapSuggestion[0]?.httpStatus)
+      || bootstrapSuggestion[0]?.httpStatus < 200
+      || bootstrapSuggestion[0]?.httpStatus >= 300
+      || bootstrapSuggestion[0]?.startedAfterAutomaticSelectionSettled !== false) {
+    failures.push('bootstrap: automatic Session suggestion did not succeed exactly once');
+  }
+  if (bootstrap?.timelineEventState?.observerInstalled !== true) {
+    failures.push('bootstrap: browser hot-path observer is not installed');
+  }
+  if (bootstrap?.timelineEventState?.relations?.passed !== true) {
+    failures.push('bootstrap: timeline event state structural relations failed');
+  }
   const warmOwner = serverSetup.ownerMaterializerTotals?.warm;
   const coldOwner = serverSetup.ownerMaterializerTotals?.coldSwitch;
   if (warmOwner?.totalCalls !== 1
@@ -935,6 +1173,9 @@ function profileAcceptance(scenarios, serverSetup) {
     if (scenario.functional.visibleErrorCount !== 0) failures.push(`${name}: visible error present`);
     if (scenario.classification.path === 'warm' && scenario.work.materializerCalls !== 0) {
       failures.push(`${name}: warm scenario invoked materializer`);
+    }
+    if (scenario.work.timelineEventState?.relations?.passed !== true) {
+      failures.push(`${name}: timeline event state structural relations failed`);
     }
   }
   const preload = scenarios.warmSearchPreload;
@@ -1097,10 +1338,13 @@ async function runWarmProfile(baseUrl, browser, fixture, tracker) {
 
   const warmContextReveal = await runContextRevealProfile(baseUrl, browser, fixture, tracker);
   return {
-    warmSearchPreload,
-    warmJumpToLateHit,
-    warmDeepStructuredFilter,
-    warmContextReveal,
+    bootstrap: first.bootstrap,
+    scenarios: {
+      warmSearchPreload,
+      warmJumpToLateHit,
+      warmDeepStructuredFilter,
+      warmContextReveal,
+    },
   };
 }
 
@@ -1238,7 +1482,8 @@ async function runBrowserScenarios(browser, fixture, built) {
     await closeServer(coldOwner.server);
   }
   return {
-    scenarios: { ...warmScenarios, coldSessionSwitchDuringQuery },
+    bootstrap: warmScenarios.bootstrap,
+    scenarios: { ...warmScenarios.scenarios, coldSessionSwitchDuringQuery },
     serverSetup: {
       sourceKind: 'codex',
       sessionLifecycle: built.adapter.sessionLifecycle,
@@ -1289,7 +1534,7 @@ async function profile(options, dependencies = {}) {
     const asset = await fsp.readFile(path.join(__dirname, '..', 'public', 'assets', 'app.js'));
     const generator = await fsp.readFile(path.join(__dirname, 'timeline-profile-fixture.js'));
     const measured = await runBrowserScenarios(browser, fixture, built);
-    const acceptance = profileAcceptance(measured.scenarios, measured.serverSetup);
+    const acceptance = profileAcceptance(measured.scenarios, measured.serverSetup, measured.bootstrap);
     return {
       schemaVersion: PROFILE_SCHEMA_VERSION,
       artifactKind: 'timeline-browser-run',
@@ -1329,6 +1574,7 @@ async function profile(options, dependencies = {}) {
         generatorSha256: sha256(generator),
         semanticFixtureProof: fixture.semanticFixtureProof,
       },
+      bootstrap: measured.bootstrap,
       serverSetup: measured.serverSetup,
       scenarios: measured.scenarios,
       acceptance,
@@ -1369,6 +1615,7 @@ module.exports = {
   MAX_PROFILE_TEXT_BYTES,
   PROFILE_SCHEMA_VERSION,
   buildStrictProfileIndex,
+  classifySuggestionScope,
   createProfileMaterializationTracker,
   createProfileServer,
   matchesContextTimelineResponse,
@@ -1378,4 +1625,5 @@ module.exports = {
   profileAcceptance,
   profileServerOptions,
   requestConstraints,
+  suggestionRequestEvidence,
 };

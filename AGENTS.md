@@ -49,7 +49,6 @@ When changing product behavior or repository structure:
 - Transcript source adapters: `docs/design-docs/transcript-source-adapters.md`
 - Indexed/Materialized Session lifecycle: `docs/design-docs/indexed-materialized-session-lifecycle.md`
 - Active execution plans (authoritative directory): `docs/exec-plans/active/`
-  - None / 无
 - Completed execution plans (authoritative archive; not itemized here): `docs/exec-plans/completed/`
 
 ## Tips
