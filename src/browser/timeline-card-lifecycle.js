@@ -289,6 +289,37 @@ function createTimelineCardLifecycle() {
       && presentationTokensEqual(mountedPresentationToken, capturePresentationToken(presentationToken));
   }
 
+  function adoptMountedPresentationToken({
+    canonicalContext,
+    expectedPreviousToken,
+    nextToken,
+  }) {
+    const expectedContext = validateCanonicalContext(canonicalContext);
+    const previousToken = capturePresentationToken(expectedPreviousToken);
+    const capturedNextToken = capturePresentationToken(nextToken);
+    if (!previousToken.valid || !capturedNextToken.valid) {
+      throw invariant('mounted presentation token adoption requires valid tokens');
+    }
+    if (mountedCanonicalContext !== expectedContext
+        || !presentationTokensEqual(mountedPresentationToken, previousToken)) {
+      throw invariant('mounted presentation token adoption requires the expected context and token');
+    }
+    for (const owner of ownersById.values()) {
+      if (owner.mountedCanonicalContext !== expectedContext
+          || !presentationTokensEqual(owner.mountedPresentationToken, previousToken)) {
+        throw invariant('mounted presentation token adoption requires consistent owner metadata');
+      }
+    }
+    mountedPresentationToken = capturedNextToken;
+    for (const owner of ownersById.values()) {
+      owner.mountedPresentationToken = capturedNextToken;
+    }
+    return {
+      adoptedOwnerCount: ownersById.size,
+      ownerCount: ownersById.size,
+    };
+  }
+
   function paritySnapshot({ expectedEventIds, cards }) {
     if (!expectedEventIds || typeof expectedEventIds[Symbol.iterator] !== 'function') {
       throw invariant('expected event IDs must be iterable');
@@ -384,6 +415,7 @@ function createTimelineCardLifecycle() {
   }
 
   return {
+    adoptMountedPresentationToken,
     contentFreeObservation,
     lookup,
     mountedContextAndTokenMatch,

@@ -45,6 +45,34 @@ test('binding replacement does not change membership or active identity', () => 
   assert.equal(targets.length, 2);
 });
 
+test('surface-local binding reset preserves target, order, and the other surface', () => {
+  const { targets } = searchTargets.discover([], 'key', [
+    { id: 'event-1', timelineIndex: 1, hasSearchHit: true },
+    { id: 'event-2', timelineIndex: 2, hasSearchHit: true },
+  ]);
+  const target = targets[0];
+  const otherTarget = targets[1];
+  const timelineBinding = { isConnected: true };
+  const inspectorBinding = { isConnected: true };
+  const otherBinding = { isConnected: true };
+  searchTargets.bind(target, 'timeline', timelineBinding);
+  searchTargets.bind(target, 'inspector', inspectorBinding);
+  searchTargets.bind(otherTarget, 'timeline', otherBinding);
+  const originalTargets = [...targets];
+  const originalInspectorBindings = target.bindings.inspector;
+  const originalOtherBindings = otherTarget.bindings.timeline;
+
+  assert.deepEqual(searchTargets.resetSurfaceBindings(target, 'timeline'), [timelineBinding]);
+  assert.deepEqual(target.bindings.timeline, []);
+  assert.equal(target.bindings.inspector, originalInspectorBindings);
+  assert.deepEqual(target.bindings.inspector, [inspectorBinding]);
+  assert.equal(otherTarget.bindings.timeline, originalOtherBindings);
+  assert.deepEqual(otherTarget.bindings.timeline, [otherBinding]);
+  assert.deepEqual(targets, originalTargets);
+  assert.equal(searchTargets.resetSurfaceBindings(target, 'unknown'), null);
+  assert.equal(searchTargets.resetSurfaceBindings(null, 'timeline'), null);
+});
+
 test('late discovery preserves active lookup after deterministic insertion', () => {
   const initial = searchTargets.discover([], 'key', [
     { id: 'event-2', timelineIndex: 2, hasSearchHit: true },
