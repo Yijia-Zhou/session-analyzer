@@ -26,10 +26,10 @@ function recordProfileEvent(observer, method, value) {
   } catch {}
 }
 
-function requireCanonicalEvents(events, existingMap = null) {
+function validateTimelineEventAdditions(events, existingMaps = []) {
   if (!Array.isArray(events)) throw invariant('canonical events must be an array');
-  if (existingMap !== null && !(existingMap instanceof Map)) {
-    throw invariant('existing lookup must be a Map');
+  if (!Array.isArray(existingMaps) || existingMaps.some((lookup) => !(lookup instanceof Map))) {
+    throw invariant('existing lookups must be Maps');
   }
   const nextMap = new Map();
   for (const event of events) {
@@ -37,7 +37,7 @@ function requireCanonicalEvents(events, existingMap = null) {
     if (typeof event.id !== 'string' || event.id.length === 0) {
       throw invariant('canonical event ID must be a non-empty string');
     }
-    if (nextMap.has(event.id) || existingMap?.has(event.id)) {
+    if (nextMap.has(event.id) || existingMaps.some((lookup) => lookup.has(event.id))) {
       throw invariant('canonical event IDs must be unique');
     }
     nextMap.set(event.id, event);
@@ -61,7 +61,7 @@ function commitTimelineEventReplacement(state, timelineDataContext, currentEvent
   if (typeof timelineDataContext !== 'string') {
     throw invariant('committed timeline context must be a string');
   }
-  const currentEventsById = requireCanonicalEvents(currentEvents);
+  const currentEventsById = validateTimelineEventAdditions(currentEvents);
   committedMapContexts.set(currentEventsById, timelineDataContext);
   state.timelineDataContext = timelineDataContext;
   state.currentEvents = currentEvents;
@@ -144,7 +144,7 @@ function assertTimelineEventState(state) {
 
 function appendTimelineEvents(state, nextEvents) {
   assertTimelineEventState(state);
-  const additionsById = requireCanonicalEvents(nextEvents, state.currentEventsById);
+  const additionsById = validateTimelineEventAdditions(nextEvents, [state.currentEventsById]);
   const currentEvents = state.currentEvents.concat(nextEvents);
   const currentEventsById = new Map(state.currentEventsById);
   for (const [eventId, event] of additionsById) currentEventsById.set(eventId, event);
@@ -216,4 +216,5 @@ module.exports = {
   resetTimelineEventState,
   timelineEventById,
   timelineEventStateParitySnapshot,
+  validateTimelineEventAdditions,
 };

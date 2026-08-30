@@ -18,6 +18,19 @@ const transitionSafety = require('./transition-safety');
 const isIntentionalAbort = transitionSafety.isIntentionalAbort;
 const isRetriableTransportError = transitionSafety.isRetriableTransportError;
 const timelineEventStateApi = require('./timeline-event-state');
+const timelineSearchBatchApi = require('./timeline-search-batch');
+const {
+  SEARCH_BATCH_KINDS,
+  acceptTimelineSearchBatchPage,
+  beginTimelineSearchBatchAttempt,
+  createTimelineSearchBatch,
+  failTimelineSearchBatchAttempt,
+  retireTimelineSearchBatch,
+  takeTimelineSearchBatchPublication,
+  takeTimelineSearchPreloadSuccessor,
+  timelineSearchBatchIdentityMatches,
+  timelineSearchBatchSnapshot,
+} = timelineSearchBatchApi;
 const { sameProjectRoot } = require('../shared/project-root');
 
 const requestOwners = {
@@ -167,6 +180,8 @@ const state = {
   limit: 150,
   timelineLoading: false,
   timelineRequestId: 0,
+  timelineSearchBatchGeneration: 0,
+  timelineSearchBatchInvocationId: 0,
   sessionsDataContext: '',
   timelineDataContext: initialTimelineEventState.timelineDataContext,
   sessionGrandTotal: 0,
@@ -1670,13 +1685,29 @@ function maybePreloadSearchTargets() {
   }
   if (state.searchTargetPreload.pages >= SEARCH_TARGET_PRELOAD_MAX_PAGES) return;
 
-  state.searchTargetPreload.pages += 1;
+  const invocation = beginTimelineSearchBatchInvocation(SEARCH_BATCH_KINDS.PRELOAD, key);
   state.searchTargetPreload.pending = true;
-  loadTimeline(true, { paginationIntent: paginationIntent('search-preload') })
-    .catch(showError)
+  state.searchTargetPreload.ownerId = invocation.id;
+  updateSearchMatchControls();
+  loadTimelineSearchBatch({
+    kind: SEARCH_BATCH_KINDS.PRELOAD,
+    searchKey: key,
+    invocation,
+    consumedPreloadAttempts: state.searchTargetPreload.pages,
+    knownTargetOwnerIds: state.searchTargetRegistry.targets.map((target) => target.ownerId),
+    paginationIntent: paginationIntent('search-preload'),
+  })
+    .catch((error) => {
+      if (timelineSearchBatchInvocationIsCurrent(invocation)
+          && state.searchTargetPreload.ownerId === invocation.id) showError(error);
+    })
     .finally(() => {
-      if (state.searchTargetPreload.key !== key) return;
+      if (!timelineSearchBatchInvocationIsCurrent(invocation)
+          || state.searchTargetPreload.key !== key
+          || state.searchTargetPreload.ownerId !== invocation.id) return;
       state.searchTargetPreload.pending = false;
+      state.searchTargetPreload.ownerId = 0;
+      updateSearchMatchControls();
       if (state.searchTargetRegistry.targets.length < SEARCH_TARGET_PRELOAD_MIN) {
         maybePreloadSearchTargets();
       }
@@ -1819,43 +1850,49 @@ function timelineSearchTargets(eventId) {
   ));
 }
 
+function searchOperationIsCurrent(searchKey, invocation) {
+  return searchTargetPreloadKey() === searchKey
+    && (!invocation || timelineSearchBatchInvocationIsCurrent(invocation));
+}
+
 async function materializeSearchEvent(event, direction, options = {}) {
+  if (!searchOperationIsCurrent(options.searchKey, options.invocation)) return false;
   await ensureEventLoaded(event.id, { allowSearchTargetPreload: false });
-  if (options.searchKey && searchTargetPreloadKey() !== options.searchKey) return false;
+  if (!searchOperationIsCurrent(options.searchKey, options.invocation)) return false;
   const loaded = canonicalTimelineEvent(event.id) || event;
   let targets = timelineSearchTargets(loaded.id);
   if (targets.length) return direction < 0 ? targets[targets.length - 1] : targets[0];
 
   const override = persistedDisplayOverride(loaded.id);
   if (override && override !== 'expanded') return false;
-  if (!override && displayState(loaded) !== 'expanded') {
-    addSearchTransientExpansion(loaded.id);
-    renderTimeline();
-  }
+  const needsTransientExpansion = !override && displayState(loaded) !== 'expanded';
 
   await loadEventDetail(loaded);
-  if (options.searchKey && searchTargetPreloadKey() !== options.searchKey) return false;
+  if (!searchOperationIsCurrent(options.searchKey, options.invocation)) return false;
+  if (needsTransientExpansion) addSearchTransientExpansion(loaded.id);
   renderTimeline();
   refreshSearchHighlights({ preserveActive: true, allowPreload: false });
   targets = timelineSearchTargets(loaded.id);
   return (direction < 0 ? targets[targets.length - 1] : targets[0]) || false;
 }
 
-async function resolveSearchTargetNode(target, searchKey) {
+async function resolveSearchTargetNode(target, searchKey, invocation) {
+  if (!searchOperationIsCurrent(searchKey, invocation)) return null;
   let node = liveSearchTargetNode(target);
-  if (node || !target || searchTargetPreloadKey() !== searchKey) return node;
+  if (node || !target || !searchOperationIsCurrent(searchKey, invocation)) return node;
 
   await ensureEventLoaded(target.ownerId, { allowSearchTargetPreload: false });
-  if (searchTargetPreloadKey() !== searchKey) return null;
+  if (!searchOperationIsCurrent(searchKey, invocation)) return null;
   node = liveSearchTargetNode(target);
 
   const event = canonicalTimelineEvent(target.ownerId);
   if (!event) return null;
   if (!node) {
     const override = persistedDisplayOverride(event.id);
-    if (!override && displayState(event) !== 'expanded') addSearchTransientExpansion(event.id);
+    const needsTransientExpansion = !override && displayState(event) !== 'expanded';
     await loadEventDetail(event);
-    if (searchTargetPreloadKey() !== searchKey) return null;
+    if (!searchOperationIsCurrent(searchKey, invocation)) return null;
+    if (needsTransientExpansion) addSearchTransientExpansion(event.id);
     renderTimeline();
     refreshSearchHighlights({ preserveActive: true, allowPreload: false });
   }
@@ -1865,12 +1902,10 @@ async function resolveSearchTargetNode(target, searchKey) {
 async function activateSearchTarget(target, options = {}) {
   if (!target) return false;
   const searchKey = state.searchTargetRegistry.key;
-  const previousActiveTargetId = state.searchTargetRegistry.activeTargetId;
-  state.searchTargetRegistry.activeTargetId = target.id;
-  const node = await resolveSearchTargetNode(target, searchKey);
-  if (searchTargetPreloadKey() !== searchKey) return false;
+  if (!searchOperationIsCurrent(searchKey, options.invocation)) return false;
+  const node = await resolveSearchTargetNode(target, searchKey, options.invocation);
+  if (!searchOperationIsCurrent(searchKey, options.invocation)) return false;
   if (!node) {
-    state.searchTargetRegistry.activeTargetId = previousActiveTargetId;
     setActiveSearchTarget(activeSearchTarget());
     return false;
   }
@@ -1879,18 +1914,20 @@ async function activateSearchTarget(target, options = {}) {
 
 async function activateSearchTargetCandidates(candidates, options, attempted, searchKey) {
   for (const target of candidates) {
+    if (!searchOperationIsCurrent(searchKey, options.invocation)) return false;
     if (!target || attempted.has(target.id)) continue;
     attempted.add(target.id);
     if (await activateSearchTarget(target, options)) return true;
-    if (searchTargetPreloadKey() !== searchKey) return false;
+    if (!searchOperationIsCurrent(searchKey, options.invocation)) return false;
   }
   return false;
 }
 
-async function materializeNextSearchTarget(direction) {
+async function materializeNextSearchTarget(direction, invocation) {
   const search = currentSearchState();
   if (!search.q || !state.timelineSearchMatchCount || !searchDiscoveryContextReady()) return false;
   const searchKey = searchTargetPreloadKey();
+  if (!searchOperationIsCurrent(searchKey, invocation)) return false;
   const currentTarget = activeSearchTarget();
   const activeEventId = currentTarget?.ownerId || '';
   const activeEventIndex = state.currentEvents.findIndex((event) => event.id === activeEventId);
@@ -1899,6 +1936,7 @@ async function materializeNextSearchTarget(direction) {
 
   const tryEvents = async (events) => {
     for (const event of events) {
+      if (!searchOperationIsCurrent(searchKey, invocation)) return false;
       if (!event.hasSearchHit || attempted.has(event.id)) continue;
       attempted.add(event.id);
       const newlyDiscovered = timelineSearchTargets(event.id)
@@ -1906,37 +1944,30 @@ async function materializeNextSearchTarget(direction) {
       if (newlyDiscovered.length) {
         return direction < 0 ? newlyDiscovered[newlyDiscovered.length - 1] : newlyDiscovered[0];
       }
-      const target = await materializeSearchEvent(event, direction, { searchKey });
+      const target = await materializeSearchEvent(event, direction, { searchKey, invocation });
       if (target) return target;
-      if (searchTargetPreloadKey() !== searchKey) return false;
+      if (!searchOperationIsCurrent(searchKey, invocation)) return false;
     }
     return false;
   };
 
-  const appendNextPage = async () => {
-    const previousOffset = state.offset;
-    await waitForTimelineIdle();
-    if (searchTargetPreloadKey() !== searchKey) return false;
-    if (state.offset > previousOffset) return true;
-    if (state.offset >= state.timelineTotal) return false;
-    await loadTimeline(true, {
-      allowSearchTargetPreload: false,
-      paginationIntent: paginationIntent('search-navigation'),
-    });
-    await waitForTimelineIdle();
-    if (searchTargetPreloadKey() !== searchKey) return false;
-    return state.offset > previousOffset;
-  };
-
   if (direction >= 0) {
-    let scanOffset = activeEventIndex >= 0 ? activeEventIndex + 1 : 0;
-    while (true) {
-      const loadedEnd = state.currentEvents.length;
-      const target = await tryEvents(state.currentEvents.slice(scanOffset, loadedEnd));
+    const scanOffset = activeEventIndex >= 0 ? activeEventIndex + 1 : 0;
+    let target = await tryEvents(state.currentEvents.slice(scanOffset));
+    if (target) return target;
+    if (!searchOperationIsCurrent(searchKey, invocation)) return false;
+    if (state.offset < state.timelineTotal) {
+      const batchStart = state.currentEvents.length;
+      const outcome = await loadTimelineSearchBatch({
+        kind: SEARCH_BATCH_KINDS.NAVIGATION,
+        navigationDirection: 'forward',
+        searchKey,
+        invocation,
+        paginationIntent: paginationIntent('search-navigation'),
+      });
+      if (!timelineSearchBatchOutcomeIsCurrent(outcome, invocation)) return false;
+      target = await tryEvents(state.currentEvents.slice(batchStart));
       if (target) return target;
-      if (searchTargetPreloadKey() !== searchKey || state.offset >= state.timelineTotal) break;
-      scanOffset = loadedEnd;
-      if (!await appendNextPage()) break;
     }
     if (activeEventIndex >= 0) {
       return tryEvents(state.currentEvents.slice(0, activeEventIndex));
@@ -1947,13 +1978,20 @@ async function materializeNextSearchTarget(direction) {
   if (activeEventIndex >= 0) {
     const target = await tryEvents(state.currentEvents.slice(0, activeEventIndex).reverse());
     if (target) return target;
-    if (searchTargetPreloadKey() !== searchKey) return false;
+    if (!searchOperationIsCurrent(searchKey, invocation)) return false;
   }
 
-  while (state.offset < state.timelineTotal) {
-    if (!await appendNextPage()) break;
+  if (state.offset < state.timelineTotal) {
+    const outcome = await loadTimelineSearchBatch({
+      kind: SEARCH_BATCH_KINDS.NAVIGATION,
+      navigationDirection: 'reverse',
+      searchKey,
+      invocation,
+      paginationIntent: paginationIntent('search-navigation'),
+    });
+    if (!timelineSearchBatchOutcomeIsCurrent(outcome, invocation)) return false;
   }
-  if (searchTargetPreloadKey() !== searchKey) return false;
+  if (!searchOperationIsCurrent(searchKey, invocation)) return false;
   const wrapStart = activeEventIndex >= 0 ? activeEventIndex + 1 : 0;
   return tryEvents(state.currentEvents.slice(wrapStart).reverse());
 }
@@ -1967,31 +2005,43 @@ async function loadMoreSearchTargets() {
     state.searchTargetPreload = { key: searchKey, pages: 0, pending: false, exhausted: false };
   }
   const beforeIds = new Set(state.searchTargetRegistry.targets.map((target) => target.id));
+  const knownTargetOwnerIds = state.searchTargetRegistry.targets.map((target) => target.ownerId);
+  const previousExhausted = state.searchTargetPreload.exhausted;
+  const invocation = beginTimelineSearchBatchInvocation(SEARCH_BATCH_KINDS.LOAD_MORE, searchKey);
   state.searchTargetPreload.pending = true;
+  state.searchTargetPreload.ownerId = invocation.id;
   updateSearchMatchControls();
   try {
-    while (searchTargetPreloadKey() === searchKey && state.offset < state.timelineTotal) {
-      const previousOffset = state.offset;
-      await loadTimeline(true, {
-        allowSearchTargetPreload: false,
-        paginationIntent: paginationIntent('search-load-more'),
-      });
-      await waitForTimelineIdle();
-      if (searchTargetPreloadKey() !== searchKey) return false;
-      const addedIds = state.searchTargetRegistry.targets
-        .map((target) => target.id)
-        .filter((id) => !beforeIds.has(id));
-      if (addedIds.length) {
-        state.searchTargetPreload.exhausted = false;
-        return true;
-      }
-      if (state.offset <= previousOffset) break;
+    const outcome = await loadTimelineSearchBatch({
+      kind: SEARCH_BATCH_KINDS.LOAD_MORE,
+      searchKey,
+      invocation,
+      knownTargetOwnerIds,
+      priorLoadMoreExhausted: previousExhausted,
+      paginationIntent: paginationIntent('search-load-more'),
+    });
+    if (!timelineSearchBatchOutcomeIsCurrent(outcome, invocation)) return false;
+    const addedIds = state.searchTargetRegistry.targets
+      .map((target) => target.id)
+      .filter((id) => !beforeIds.has(id));
+    if (addedIds.length) {
+      state.searchTargetPreload.exhausted = false;
+      return true;
     }
-    state.searchTargetPreload.exhausted = state.offset >= state.timelineTotal;
+    state.searchTargetPreload.exhausted = Boolean(outcome?.decision?.exhausted);
     return false;
+  } catch (error) {
+    if (timelineSearchBatchInvocationIsCurrent(invocation)
+        && state.searchTargetPreload.ownerId === invocation.id) {
+      state.searchTargetPreload.exhausted = previousExhausted;
+    }
+    throw error;
   } finally {
-    if (state.searchTargetPreload.key === searchKey) {
+    if (timelineSearchBatchInvocationIsCurrent(invocation)
+        && state.searchTargetPreload.key === searchKey
+        && state.searchTargetPreload.ownerId === invocation.id) {
       state.searchTargetPreload.pending = false;
+      state.searchTargetPreload.ownerId = 0;
       updateSearchMatchControls();
     }
   }
@@ -2002,17 +2052,27 @@ async function navigateSearchMatch(direction) {
   await waitForTimelineIdle();
   if (searchTargetPreloadKey() !== searchKey) return false;
   if (!searchDiscoveryContextReady()) return false;
+  const invocation = beginTimelineSearchBatchInvocation(
+    SEARCH_BATCH_KINDS.NAVIGATION,
+    searchKey,
+  );
+  if (!timelineSearchBatchInvocationIsCurrent(invocation)) return false;
   reconcileSearchTransientExpansions();
   if (!state.searchTargetRegistry.targets.length) {
     refreshSearchHighlights({ preserveActive: true, syncDetail: true });
   }
   const targets = state.searchTargetRegistry.targets;
   if (!targets.length) {
-    const materialized = await materializeNextSearchTarget(direction);
-    return activateSearchTarget(materialized, { scroll: true, syncDetail: true });
+    const materialized = await materializeNextSearchTarget(direction, invocation);
+    if (!timelineSearchBatchInvocationIsCurrent(invocation)) return false;
+    return activateSearchTarget(materialized, {
+      scroll: true,
+      syncDetail: true,
+      invocation,
+    });
   }
 
-  const options = { scroll: true, syncDetail: true };
+  const options = { scroll: true, syncDetail: true, invocation };
   const attempted = new Set();
   const activeTargetId = state.searchTargetRegistry.activeTargetId;
   const current = searchTargetIndex();
@@ -2022,16 +2082,16 @@ async function navigateSearchMatch(direction) {
       ? targets.slice(0, current).reverse()
       : targets.slice(current + 1);
   if (await activateSearchTargetCandidates(beforeBoundary, options, attempted, searchKey)) return true;
-  if (searchTargetPreloadKey() !== searchKey) return false;
+  if (!timelineSearchBatchInvocationIsCurrent(invocation)) return false;
 
   const knownBeforeMaterialization = new Set(
     state.searchTargetRegistry.targets.map((target) => target.id),
   );
-  const materialized = await materializeNextSearchTarget(direction);
+  const materialized = await materializeNextSearchTarget(direction, invocation);
   if (materialized && await activateSearchTargetCandidates(
     [materialized], options, attempted, searchKey,
   )) return true;
-  if (searchTargetPreloadKey() !== searchKey) return false;
+  if (!timelineSearchBatchInvocationIsCurrent(invocation)) return false;
 
   const newlyRegistered = state.searchTargetRegistry.targets.filter(
     (target) => !knownBeforeMaterialization.has(target.id),
@@ -2042,7 +2102,7 @@ async function navigateSearchMatch(direction) {
     attempted,
     searchKey,
   )) return true;
-  if (searchTargetPreloadKey() !== searchKey) return false;
+  if (!timelineSearchBatchInvocationIsCurrent(invocation)) return false;
 
   const updatedTargets = state.searchTargetRegistry.targets;
   const updatedCurrent = updatedTargets.findIndex((target) => target.id === activeTargetId);
@@ -4809,9 +4869,244 @@ function beginTimelineReplacement(requestContext) {
   clearContextReveal({ render: false });
   clearTimelineUserPaginationIntent();
   state.timelineReplacementRetry = null;
+  state.timelineSearchBatchGeneration += 1;
+  if (state.searchTargetPreload.pending) {
+    state.searchTargetPreload.pending = false;
+    state.searchTargetPreload.ownerId = 0;
+  }
   recordTimelineEventState(requestContext);
   const epoch = paginationIntents.beginReplacement(requestContext);
   return epoch;
+}
+
+function beginTimelineSearchBatchInvocation(kind, searchKey) {
+  return Object.freeze({
+    id: state.timelineSearchBatchInvocationId += 1,
+    generation: state.timelineSearchBatchGeneration,
+    kind,
+    searchKey,
+  });
+}
+
+function timelineSearchBatchInvocationIsCurrent(invocation) {
+  return Boolean(invocation)
+    && invocation.id === state.timelineSearchBatchInvocationId
+    && invocation.generation === state.timelineSearchBatchGeneration
+    && invocation.searchKey === searchTargetPreloadKey();
+}
+
+function timelineSearchBatchOutcomeIsCurrent(outcome, invocation) {
+  return Boolean(outcome)
+    && outcome.stale !== true
+    && outcome.invocationId === invocation.id
+    && outcome.generation === invocation.generation
+    && timelineSearchBatchInvocationIsCurrent(invocation);
+}
+
+function timelineSearchBatchIdentity(requestId, requestOwnerId) {
+  return {
+    selectedSessionId: state.selectedSessionId,
+    timelineContext: timelineDataContextKey(),
+    committedTimelineContext: state.timelineDataContext,
+    searchKey: searchTargetPreloadKey(),
+    indexRevision: state.indexRevision,
+    requestId,
+    requestOwnerId,
+    batchGeneration: state.timelineSearchBatchGeneration,
+    batchInvocationId: state.timelineSearchBatchInvocationId,
+  };
+}
+
+function timelineSearchBatchIsCurrent(batch, owner, requestId) {
+  return requestOwners.timeline.isCurrent(owner)
+    && requestId === state.timelineRequestId
+    && state.timelineDataContext === batch.identity.timelineContext
+    && timelineSearchBatchIdentityMatches(
+      batch,
+      timelineSearchBatchIdentity(requestId, owner.id),
+    );
+}
+
+function timelineSearchBatchOutcome(invocation, values) {
+  return {
+    invocationId: invocation.id,
+    generation: invocation.generation,
+    ...values,
+  };
+}
+
+function retireStaleTimelineSearchBatch(batch, invocation) {
+  retireTimelineSearchBatch(batch);
+  return timelineSearchBatchOutcome(invocation, {
+    started: true,
+    stale: true,
+    published: false,
+    decision: null,
+  });
+}
+
+function publishTimelineSearchBatch(batch, owner, requestId) {
+  if (!timelineSearchBatchIsCurrent(batch, owner, requestId)) return false;
+  const snapshot = timelineSearchBatchSnapshot(batch);
+  if (state.offset !== snapshot.baseOffset || state.currentEvents.length !== snapshot.baseOffset) {
+    return false;
+  }
+  const publication = takeTimelineSearchBatchPublication(
+    batch,
+    timelineSearchBatchIdentity(requestId, owner.id),
+  );
+  commitTimelineEventAppend(publication.events);
+  if (state.temporaryEventReveal
+      && hasCanonicalTimelineEvent(state.temporaryEventReveal.event.id)) {
+    state.temporaryEventReveal = null;
+  }
+  state.timelineTotal = publication.metadata.total;
+  state.timelineSearchMatchCount = publication.metadata.searchMatchCount || 0;
+  state.timelineSearchEventCount = publication.metadata.searchEventCount || 0;
+  state.sessionEventKinds = publication.metadata.eventKinds;
+  state.sessionCodeModeRequests = Array.isArray(publication.metadata.codeModeRequests)
+    ? publication.metadata.codeModeRequests
+    : [];
+  syncSearchAssistControls();
+  if (state.detailView.type === 'profileRules') renderProfileRulesPane();
+  renderTimeline();
+  convergeSelectedEventDetailView({ refreshedHitState: true });
+  paginationIntents.commitReplacement();
+  renderResultSummary();
+  return true;
+}
+
+async function loadTimelineSearchBatch(options) {
+  const outcome = (values) => timelineSearchBatchOutcome(options.invocation, values);
+  if (!timelineSearchBatchInvocationIsCurrent(options.invocation)) {
+    return outcome({ started: false, stale: true, published: false, decision: null });
+  }
+  if (!state.selectedSessionId || state.timelineLoading) {
+    return outcome({ started: false, stale: false, published: false, decision: null });
+  }
+  if (!paginationIntents.claim(options.paginationIntent)) {
+    return outcome({ started: false, stale: false, published: false, decision: null });
+  }
+  const sessionId = state.selectedSessionId;
+  const requestContext = timelineDataContextKey();
+  if (state.timelineDataContext !== requestContext || options.searchKey !== searchTargetPreloadKey()) {
+    return outcome({ started: false, stale: true, published: false, decision: null });
+  }
+  const requestId = state.timelineRequestId + 1;
+  state.timelineRequestId = requestId;
+  const owner = requestOwners.timeline.start(requestContext);
+  let batch;
+  state.timelineLoading = true;
+  updateLoadMoreButton();
+  try {
+    batch = createTimelineSearchBatch({
+      kind: options.kind,
+      identity: timelineSearchBatchIdentity(requestId, owner.id),
+      baseOffset: state.offset,
+      baseTimelineTotal: state.timelineTotal,
+      navigationDirection: options.navigationDirection,
+      consumedPreloadAttempts: options.consumedPreloadAttempts,
+      preloadMaxAttempts: SEARCH_TARGET_PRELOAD_MAX_PAGES,
+      preloadMinTargetCount: SEARCH_TARGET_PRELOAD_MIN,
+      knownTargetOwnerIds: options.knownTargetOwnerIds || [],
+      priorLoadMoreExhausted: options.priorLoadMoreExhausted,
+    });
+    while (true) {
+      if (!timelineSearchBatchIsCurrent(batch, owner, requestId)) {
+        return retireStaleTimelineSearchBatch(batch, options.invocation);
+      }
+      const attempt = beginTimelineSearchBatchAttempt(batch);
+      if (!attempt.started) {
+        return outcome({
+          started: false,
+          stale: false,
+          published: false,
+          decision: attempt.decision,
+        });
+      }
+      if (batch.kind === SEARCH_BATCH_KINDS.PRELOAD
+          && state.searchTargetPreload.key === options.searchKey) {
+        state.searchTargetPreload.pages = attempt.attemptsConsumed;
+      }
+
+      let decision;
+      try {
+        const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
+          offset: attempt.offset,
+          limit: state.limit,
+        })}`, { signal: owner.controller.signal });
+        if (!timelineSearchBatchIsCurrent(batch, owner, requestId)) {
+          return retireStaleTimelineSearchBatch(batch, options.invocation);
+        }
+        const additionsById = timelineEventStateApi.validateTimelineEventAdditions(
+          data.events,
+          [state.currentEventsById, batch.acceptedById],
+        );
+        decision = acceptTimelineSearchBatchPage(batch, {
+          events: data.events,
+          additionsById,
+          metadata: {
+            total: data.total,
+            searchMatchCount: data.searchMatchCount,
+            searchEventCount: data.searchEventCount,
+            eventKinds: data.eventKinds,
+            codeModeRequests: data.codeModeRequests,
+          },
+        });
+      } catch (error) {
+        if (isIntentionalAbort(error) || !timelineSearchBatchIsCurrent(batch, owner, requestId)) {
+          return retireStaleTimelineSearchBatch(batch, options.invocation);
+        }
+        const failure = failTimelineSearchBatchAttempt(batch);
+        let published = false;
+        let successor = null;
+        if (failure.flush) {
+          published = publishTimelineSearchBatch(batch, owner, requestId);
+          if (!published) return retireStaleTimelineSearchBatch(batch, options.invocation);
+          if (batch.kind === SEARCH_BATCH_KINDS.PRELOAD && failure.continueAfterError) {
+            successor = takeTimelineSearchPreloadSuccessor(
+              batch,
+              timelineSearchBatchIdentity(requestId, owner.id),
+            );
+          }
+        }
+        if (batch.kind !== SEARCH_BATCH_KINDS.PRELOAD) throw error;
+        showError(error);
+        if (failure.continueAfterError) {
+          successor ||= batch;
+          if (timelineSearchBatchIsCurrent(successor, owner, requestId)) {
+            batch = successor;
+            continue;
+          }
+        }
+        return outcome({
+          started: true,
+          stale: false,
+          published,
+          decision: failure,
+        });
+      }
+
+      if (decision.action === 'continue') continue;
+      let published = false;
+      if (decision.flush) {
+        published = publishTimelineSearchBatch(batch, owner, requestId);
+        if (!published) return retireStaleTimelineSearchBatch(batch, options.invocation);
+      }
+      return outcome({
+        started: true,
+        stale: false,
+        published,
+        decision,
+      });
+    }
+  } finally {
+    const currentOwner = requestOwners.timeline.finish(owner);
+    if (currentOwner && requestId === state.timelineRequestId) {
+      state.timelineLoading = false;
+      updateLoadMoreButton();
+    }
+  }
 }
 
 async function loadTimeline(append, options = {}) {
