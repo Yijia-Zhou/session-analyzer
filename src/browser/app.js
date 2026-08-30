@@ -18,6 +18,7 @@ const transitionSafety = require('./transition-safety');
 const isIntentionalAbort = transitionSafety.isIntentionalAbort;
 const isRetriableTransportError = transitionSafety.isRetriableTransportError;
 const timelineEventStateApi = require('./timeline-event-state');
+const timelineCardLifecycleApi = require('./timeline-card-lifecycle');
 const timelineSearchBatchApi = require('./timeline-search-batch');
 const {
   SEARCH_BATCH_KINDS,
@@ -107,6 +108,7 @@ const LAYER_LABELS = {
 };
 const NAVIGATION_CATEGORIES = navigationApi.NAVIGATION_CATEGORIES;
 const initialTimelineEventState = timelineEventStateApi.createTimelineEventState();
+const timelineCardLifecycle = timelineCardLifecycleApi.createTimelineCardLifecycle();
 
 function browserLocale() {
   const saved = localStorage.getItem(LOCALE_STORAGE_KEY);
@@ -217,6 +219,16 @@ const state = {
   detailErrors: {},
   detailPending: {},
   detailCacheGeneration: 0,
+  presentationRevisions: {
+    localePresentationRevision: 0,
+    foldingPresentationRevision: 0,
+    overridesRevision: 0,
+    navigationRevealRevision: 0,
+    searchTransientRevision: 0,
+    temporaryRevealRevision: 0,
+    detailPresentationRevision: 0,
+  },
+  presentationRevisionOverflowed: false,
   detailViewportTimer: 0,
   detailView: { type: 'profileRules' },
   detailHistory: [],
@@ -310,6 +322,100 @@ const el = {
   projectHomeApplyBtn: document.getElementById('projectHomeApplyBtn'),
   projectSourceError: document.getElementById('projectSourceError'),
 };
+
+function notifyTimelineLifecycleObserver(methodName, createPayload) {
+  let observer;
+  try {
+    observer = globalThis.__sessionAnalyzerTimelineLifecycleObserver;
+  } catch {
+    return;
+  }
+  timelineCardLifecycleApi.notifyObserverSafely(observer, methodName, createPayload);
+}
+
+function advancePresentationRevision(field) {
+  if (!Object.hasOwn(state.presentationRevisions, field)) {
+    throw new Error(`Unknown presentation revision: ${field}`);
+  }
+  const next = timelineCardLifecycleApi.advanceMonotonicRevision(state.presentationRevisions[field]);
+  state.presentationRevisions[field] = next.value;
+  if (next.overflowed) state.presentationRevisionOverflowed = true;
+  notifyTimelineLifecycleObserver('recordRevision', () => ({
+    revisionKind: field,
+    revisionValue: state.presentationRevisions[field],
+    overflowed: state.presentationRevisionOverflowed,
+  }));
+}
+
+function currentTimelinePresentationToken() {
+  const revisions = state.presentationRevisions;
+  return timelineCardLifecycleApi.capturePresentationToken({
+    valid: !state.presentationRevisionOverflowed,
+    localePresentationRevision: revisions.localePresentationRevision,
+    foldingPresentationRevision: revisions.foldingPresentationRevision,
+    overridesRevision: revisions.overridesRevision,
+    navigationRevealRevision: revisions.navigationRevealRevision,
+    searchTransientRevision: revisions.searchTransientRevision,
+    temporaryRevealRevision: revisions.temporaryRevealRevision,
+    detailPresentationRevision: revisions.detailPresentationRevision,
+  });
+}
+
+function mountedCanonicalMainCardDescriptors(events = state.currentEvents) {
+  const articlesById = new Map(
+    [...el.timeline.querySelectorAll('.event[data-event-id]')]
+      .map((articleNode) => [articleNode.dataset.eventId, articleNode]),
+  );
+  return events.map((event) => {
+    const articleNode = articlesById.get(event.id);
+    if (!articleNode) throw new Error('Mounted Main Timeline card parity failed');
+    const candidateSlot = articleNode.previousElementSibling;
+    const contextSlotNode = candidateSlot?.classList.contains('contextRevealSlot')
+        && candidateSlot.dataset.contextSourceId === event.id
+      ? candidateSlot
+      : null;
+    return { eventId: event.id, articleNode, contextSlotNode };
+  });
+}
+
+function recordTimelineLifecycle(operation, mode, result) {
+  notifyTimelineLifecycleObserver('recordLifecycle', () => ({
+    operation,
+    mode,
+    ...result,
+    ...timelineCardLifecycle.contentFreeObservation(),
+  }));
+}
+
+function replaceTimelineRoot(markup, mode) {
+  if (mode !== 'main' && mode !== 'non-main') {
+    throw new Error(`Unknown Timeline root replacement mode: ${mode}`);
+  }
+  let retiredResult = null;
+  if (mode === 'non-main') {
+    retiredResult = timelineCardLifecycle.retireAll();
+  }
+
+  el.timeline.innerHTML = markup;
+  if (retiredResult) {
+    recordTimelineLifecycle('replace', mode, retiredResult);
+    return retiredResult;
+  }
+  try {
+    const cards = mountedCanonicalMainCardDescriptors();
+    const result = timelineCardLifecycle.reconcileMain({
+      canonicalContext: state.timelineDataContext,
+      presentationToken: currentTimelinePresentationToken(),
+      cards,
+    });
+    recordTimelineLifecycle('replace', mode, result);
+    return result;
+  } catch (error) {
+    const result = timelineCardLifecycle.retireAll();
+    recordTimelineLifecycle('replace-failed', 'non-main', result);
+    throw error;
+  }
+}
 
 let profileInfoSlot = null;
 
@@ -1369,6 +1475,19 @@ function commitTimelineEventAppend(events) {
   return recordTimelineEventState(state.timelineDataContext);
 }
 
+function captureTimelineAppendBoundary(prefixLength) {
+  if (!Number.isSafeInteger(prefixLength) || prefixLength < 0
+      || state.currentEvents.length !== prefixLength) return null;
+  return {
+    canonicalContext: state.timelineDataContext,
+    mountedPresentationToken: currentTimelinePresentationToken(),
+    prefixLength,
+    prefixEventIds: state.currentEvents.map((event) => event.id),
+    searchTargetKey: searchTargetKey(),
+    searchHighlightQuery: state.searchHighlight.query,
+  };
+}
+
 function canonicalTimelineEvent(eventId, purpose = 'canonical') {
   return timelineEventStateApi.timelineEventById(state, eventId, { purpose });
 }
@@ -1509,8 +1628,11 @@ function bindSearchTarget(owner, occurrence, mark, targetsById) {
 }
 
 function resetSearchTransientExpansions() {
-  const hadExpansions = state.searchTransientExpansion.eventIds.length > 0;
+  const hadExpansions = Boolean(
+    state.searchTransientExpansion.key || state.searchTransientExpansion.eventIds.length,
+  );
   state.searchTransientExpansion = { key: '', eventIds: [] };
+  if (hadExpansions) advancePresentationRevision('searchTransientRevision');
   return hadExpansions;
 }
 
@@ -1534,18 +1656,26 @@ function addSearchTransientExpansion(eventId) {
   const search = currentSearchState();
   if (!search.q || !eventId) return;
   const key = searchTargetPreloadKey();
+  let changed = false;
   if (state.searchTransientExpansion.key !== key) {
     state.searchTransientExpansion = { key, eventIds: [] };
+    changed = true;
   }
   if (!state.searchTransientExpansion.eventIds.includes(eventId)) {
     state.searchTransientExpansion.eventIds.push(eventId);
+    changed = true;
   }
+  if (changed) advancePresentationRevision('searchTransientRevision');
 }
 
 function clearSearchTransientExpansion(eventId) {
   if (!eventId || !state.searchTransientExpansion.eventIds.length) return;
+  const previousLength = state.searchTransientExpansion.eventIds.length;
   state.searchTransientExpansion.eventIds = state.searchTransientExpansion.eventIds.filter((id) => id !== eventId);
   if (!state.searchTransientExpansion.eventIds.length) state.searchTransientExpansion.key = '';
+  if (state.searchTransientExpansion.eventIds.length !== previousLength) {
+    advancePresentationRevision('searchTransientRevision');
+  }
 }
 
 function structuredSearchKey() {
@@ -1828,6 +1958,56 @@ function refreshSearchHighlights(options = {}) {
   if (options.allowPreload !== false) maybePreloadSearchTargets();
 }
 
+function refreshAppendedSearchHighlights(suffixEvents, owners, baseTimelineIndex, expectedSearchKey) {
+  const searchKey = syncSearchTargetRegistryKey();
+  if (searchKey !== expectedSearchKey) throw new Error('Search target context changed during Timeline append');
+  const previousActiveTargetId = state.searchTargetRegistry.activeTargetId;
+  const query = currentSearchState().q;
+  const terms = highlightTerms();
+  const appendedMarks = [];
+
+  if (terms.length) {
+    const result = searchTargets.discover(
+      state.searchTargetRegistry.targets,
+      searchKey,
+      suffixEvents,
+      { baseTimelineIndex },
+    );
+    state.searchTargetRegistry.targets = result.targets;
+    const targetsById = new Map(result.targets.map((target) => [target.id, target]));
+    for (const owner of owners) {
+      if (owner.articleNode.classList.contains('hiddenByProfile')) continue;
+      const searchableOwner = {
+        surface: 'timeline',
+        ownerId: owner.eventId,
+        root: owner.articleNode,
+      };
+      const ownerMarks = searchHighlighter.apply(owner.articleNode, terms);
+      ownerMarks.forEach((mark, occurrence) => (
+        bindSearchTarget(searchableOwner, occurrence, mark, targetsById)
+      ));
+      appendedMarks.push(...ownerMarks);
+    }
+  }
+
+  state.searchHighlight = {
+    query,
+    marks: [...state.searchHighlight.marks, ...appendedMarks],
+  };
+  const preservedActive = state.searchTargetRegistry.targets.find((target) => (
+    target.id === previousActiveTargetId && liveSearchTargetNode(target)
+  ));
+  const active = preservedActive
+    || state.searchTargetRegistry.targets.find((target) => liveSearchTargetNode(target))
+    || null;
+  state.searchTargetRegistry.activeTargetId = active?.id || '';
+  const activeMark = active ? liveSearchTargetNode(active) : null;
+  if (activeMark) activeMark.classList.add('activeSearchMark');
+  updateSearchMatchControls();
+  convergeSelectedEventDetailView();
+  maybePreloadSearchTargets();
+}
+
 function persistedDisplayOverride(eventId) {
   const sessionOverrides = state.overrides[state.selectedSessionId] || {};
   return sessionOverrides[eventId] || '';
@@ -1871,7 +2051,6 @@ async function materializeSearchEvent(event, direction, options = {}) {
   if (!searchOperationIsCurrent(options.searchKey, options.invocation)) return false;
   if (needsTransientExpansion) addSearchTransientExpansion(loaded.id);
   renderTimeline();
-  refreshSearchHighlights({ preserveActive: true, allowPreload: false });
   targets = timelineSearchTargets(loaded.id);
   return (direction < 0 ? targets[targets.length - 1] : targets[0]) || false;
 }
@@ -1894,7 +2073,6 @@ async function resolveSearchTargetNode(target, searchKey, invocation) {
     if (!searchOperationIsCurrent(searchKey, invocation)) return null;
     if (needsTransientExpansion) addSearchTransientExpansion(event.id);
     renderTimeline();
-    refreshSearchHighlights({ preserveActive: true, allowPreload: false });
   }
   return liveSearchTargetNode(target);
 }
@@ -2360,6 +2538,7 @@ function activeProfileRules() {
 
 function resetProfileDraft() {
   state.profileDraft = cloneProfile(activeProfile());
+  advancePresentationRevision('foldingPresentationRevision');
 }
 
 function isBuiltinProfile(profileId) {
@@ -2375,6 +2554,7 @@ function saveCustomProfiles() {
   state.customProfiles = normalizeProfiles(state.customProfiles);
   writeJsonStorage(CUSTOM_PROFILES_KEY, state.customProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
+  advancePresentationRevision('foldingPresentationRevision');
 }
 
 function hasOwnRuleForKind(profile, kind) {
@@ -3631,6 +3811,7 @@ function clearCurrentSessionOverrides() {
 function saveOverrides() {
   state.overrides = normalizeOverrides(state.overrides);
   writeJsonStorage(OVERRIDES_KEY, state.overrides);
+  advancePresentationRevision('overridesRevision');
 }
 
 function hasCurrentSessionOverrides() {
@@ -3742,7 +3923,7 @@ function resetProjectViewState() {
   invalidateNavigationCache();
   el.sessionList.innerHTML = '';
   el.analysisPanel.innerHTML = '';
-  el.timeline.innerHTML = '';
+  replaceTimelineRoot('', 'non-main');
   el.resultSummary.textContent = '';
   el.sessionHeader.innerHTML = `<h2>${escapeHtml(t('chooseSession'))}</h2><p>${escapeHtml(t('selectSessionFirst'))}</p>`;
   el.loadMoreBtn.disabled = true;
@@ -3819,6 +4000,7 @@ function resetSessionDetailCache() {
   state.detailErrors = {};
   state.detailPending = {};
   state.detailCacheGeneration += 1;
+  advancePresentationRevision('detailPresentationRevision');
 }
 
 async function cancelProjectJob(jobId) {
@@ -3876,13 +4058,20 @@ async function exitProjectChooser() {
 
 async function applyAppState(appState) {
   const totals = appState.totals || {};
-  if (appState.locale) state.locale = i18n.resolveLocale(appState.locale);
+  if (appState.locale) {
+    const nextLocale = i18n.resolveLocale(appState.locale);
+    if (nextLocale !== state.locale) {
+      state.locale = nextLocale;
+      advancePresentationRevision('localePresentationRevision');
+    }
+  }
   applyStaticLocale();
   applySourceConfig(appState);
   state.repoRoot = appState.repoRoot || '';
   state.indexRevision = Number.isSafeInteger(appState.indexRevision) ? appState.indexRevision : 0;
   state.builtinProfiles = normalizeProfiles(appState.foldingProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
+  advancePresentationRevision('foldingPresentationRevision');
   state.eventKinds = appState.eventKinds;
   state.codeModeRequests = Array.isArray(appState.codeModeRequests) ? appState.codeModeRequests : [];
   state.sessionGrandTotal = totals.sessionCount || 0;
@@ -3899,6 +4088,7 @@ async function applyAppState(appState) {
   el.profileSelect.value = state.profileId;
   if (!el.profileSelect.value) {
     state.profileId = 'narrative';
+    advancePresentationRevision('foldingPresentationRevision');
     el.profileSelect.value = state.profileId;
     localStorage.setItem('sessionAnalyzer.profile', state.profileId);
   }
@@ -3934,6 +4124,7 @@ async function changeLocale(locale) {
     ? { profileId: state.profileId, rules: normalizeRules(cloneProfile(state.profileDraft).rules || defaultRules()) }
     : null;
   state.locale = next;
+  advancePresentationRevision('localePresentationRevision');
   clearContextReveal({ render: false });
   beginSearchTargetContextTransition();
   localStorage.setItem(LOCALE_STORAGE_KEY, state.locale);
@@ -3946,6 +4137,7 @@ async function changeLocale(locale) {
     if (dirtyDraft && state.profileId === dirtyDraft.profileId && state.profiles.some((profile) => profile.id === dirtyDraft.profileId)) {
       state.profileDraft = cloneProfile(activeProfile());
       state.profileDraft.rules = normalizeRules(dirtyDraft.rules);
+      advancePresentationRevision('foldingPresentationRevision');
       renderTimeline();
       updateMetricActionStates();
       if (state.detailView.type === 'profileRules') renderProfileRulesPane();
@@ -4528,7 +4720,7 @@ function renderProjectSearchView() {
     : (state.projectSearchLoading ? t('searching') : (noResults ? t('projectNoResults') : t('projectResultsGuidance')));
   el.sessionHeader.innerHTML = `<h2>${escapeHtml(t('projectSearchTitle'))}</h2><p>${escapeHtml(message)}</p>`;
   el.analysisPanel.innerHTML = '';
-  el.timeline.innerHTML = `<div class="projectSearchState"><h3>${escapeHtml(t('projectSearchTitle'))}</h3><p>${escapeHtml(message)}</p></div>`;
+  replaceTimelineRoot(`<div class="projectSearchState"><h3>${escapeHtml(t('projectSearchTitle'))}</h3><p>${escapeHtml(message)}</p></div>`, 'non-main');
   el.detail.innerHTML = '';
   state.searchSurfaceContexts.timeline = '';
   state.searchSurfaceContexts.detail = '';
@@ -4623,11 +4815,11 @@ async function openInheritedSourceSession(button) {
   const target = canonicalTimelineEvent(targetEventId);
   if (!target) return;
   if (displayState(target) === 'hidden') {
-    state.navigationEventReveal = {
+    setNavigationEventReveal({
       sessionId,
       layerId: targetLayer,
       eventId: target.id,
-    };
+    });
     renderTimeline();
   }
   state.selectedEventId = target.id;
@@ -4955,10 +5147,11 @@ function publishTimelineSearchBatch(batch, owner, requestId) {
     batch,
     timelineSearchBatchIdentity(requestId, owner.id),
   );
+  const appendBoundary = captureTimelineAppendBoundary(snapshot.baseOffset);
   commitTimelineEventAppend(publication.events);
   if (state.temporaryEventReveal
       && hasCanonicalTimelineEvent(state.temporaryEventReveal.event.id)) {
-    state.temporaryEventReveal = null;
+    setTemporaryEventReveal(null);
   }
   state.timelineTotal = publication.metadata.total;
   state.timelineSearchMatchCount = publication.metadata.searchMatchCount || 0;
@@ -4968,8 +5161,10 @@ function publishTimelineSearchBatch(batch, owner, requestId) {
     ? publication.metadata.codeModeRequests
     : [];
   syncSearchAssistControls();
-  if (state.detailView.type === 'profileRules') renderProfileRulesPane();
-  renderTimeline();
+  if (state.detailView.type === 'profileRules') {
+    renderProfileRulesPane({ preserveTimelinePresentation: true, refreshSearch: false });
+  }
+  presentCommittedTimelineAppend(appendBoundary, publication.events);
   convergeSelectedEventDetailView({ refreshedHitState: true });
   paginationIntents.commitReplacement();
   renderResultSummary();
@@ -5113,11 +5308,12 @@ async function loadTimeline(append, options = {}) {
   if (!state.selectedSessionId) return false;
   if (append && state.timelineLoading) return false;
   if (append && !paginationIntents.claim(options.paginationIntent)) return false;
-  if (!append) state.temporaryEventReveal = null;
+  if (!append) setTemporaryEventReveal(null);
   const sessionId = state.selectedSessionId;
   const requestContext = timelineDataContextKey();
   if (append && state.timelineDataContext !== requestContext) return false;
   const appendOffset = append ? state.offset : 0;
+  let appendBoundary = null;
   const selectedBeforeReplacement = append ? '' : state.selectedEventId;
   const replacementEpoch = append ? 0 : beginTimelineReplacement(requestContext);
   const requestId = state.timelineRequestId + 1;
@@ -5136,13 +5332,14 @@ async function loadTimeline(append, options = {}) {
         || requestContext !== timelineDataContextKey()) return false;
     if (append) {
       if (appendOffset !== state.offset || appendOffset !== state.currentEvents.length) return false;
+      appendBoundary = captureTimelineAppendBoundary(appendOffset);
       commitTimelineEventAppend(data.events);
     } else {
       commitTimelineEventReplacement(requestContext, data.events);
     }
     if (state.temporaryEventReveal
         && hasCanonicalTimelineEvent(state.temporaryEventReveal.event.id)) {
-      state.temporaryEventReveal = null;
+      setTemporaryEventReveal(null);
     }
     state.timelineTotal = data.total;
     state.timelineSearchMatchCount = data.searchMatchCount || 0;
@@ -5150,8 +5347,13 @@ async function loadTimeline(append, options = {}) {
     state.sessionEventKinds = data.eventKinds;
     state.sessionCodeModeRequests = Array.isArray(data.codeModeRequests) ? data.codeModeRequests : [];
     syncSearchAssistControls();
-    if (state.detailView.type === 'profileRules') renderProfileRulesPane();
-    renderTimeline();
+    if (state.detailView.type === 'profileRules') {
+      renderProfileRulesPane(append
+        ? { preserveTimelinePresentation: true, refreshSearch: false }
+        : {});
+    }
+    if (append) presentCommittedTimelineAppend(appendBoundary, data.events);
+    else renderTimeline();
     convergeSelectedEventDetailView({ refreshedHitState: true });
     if (!append && options.viewportPolicy === 'structured-filter') {
       const selected = selectedBeforeReplacement
@@ -5345,9 +5547,22 @@ function naturalDisplayState(event) {
   return evaluateDisplayStateFromRules(event, profile?.rules || defaultRules());
 }
 
+function setNavigationEventReveal(nextReveal) {
+  if (state.navigationEventReveal === nextReveal) return false;
+  state.navigationEventReveal = nextReveal;
+  advancePresentationRevision('navigationRevealRevision');
+  return true;
+}
+
 function clearNavigationEventReveal(eventId = '') {
   if (!state.navigationEventReveal || (eventId && state.navigationEventReveal.eventId !== eventId)) return false;
-  state.navigationEventReveal = null;
+  return setNavigationEventReveal(null);
+}
+
+function setTemporaryEventReveal(nextReveal) {
+  if (state.temporaryEventReveal === nextReveal) return false;
+  state.temporaryEventReveal = nextReveal;
+  advancePresentationRevision('temporaryRevealRevision');
   return true;
 }
 
@@ -5441,10 +5656,11 @@ function renderContextRevealRowContents(event) {
     <button class="contextRevealAction" type="button" data-action="inspect-context-parent" data-context-parent-id="${escapeHtml(parent.id)}">${escapeHtml(t('inspectEnclosingOperation'))}</button>`;
 }
 
-function syncContextRevealDom() {
+function syncContextRevealDom(slots = null) {
   if (!el.timeline) return;
   const reveal = state.contextReveal;
-  for (const slot of el.timeline.querySelectorAll('.contextRevealSlot')) {
+  const mountedSlots = slots || el.timeline.querySelectorAll('.contextRevealSlot');
+  for (const slot of mountedSlots) {
     const active = Boolean(reveal && slot.dataset.contextSourceId === reveal.sourceEventId && reveal.parentEvent);
     slot.hidden = !active;
     slot.classList.toggle('contextRevealRow', active);
@@ -5454,11 +5670,11 @@ function syncContextRevealDom() {
   }
 }
 
-function syncEnclosingOperationAffordances() {
+function syncEnclosingOperationAffordances(articles = null) {
   if (!el.timeline) return;
   const search = currentSearchState();
   timelineEventStateApi.forEachIndexedTimelineCard(
-    el.timeline.querySelectorAll('.event[data-event-id]'),
+    articles || el.timeline.querySelectorAll('.event[data-event-id]'),
     (eventId, purpose) => currentTimelineEvent(eventId, purpose),
     (article, item) => {
       const button = article.querySelector('[data-action="reveal-context-parent"]');
@@ -5562,46 +5778,37 @@ function renderRawForkSegmentHeading(event, previousEvent) {
   return key ? `<h3 class="rawForkSegmentHeading" data-fork-segment="${escapeHtml(event.forkSegment)}">${escapeHtml(t(key))}</h3>` : '';
 }
 
-function renderTimeline() {
-  if (state.searchScope !== 'session') {
-    clearContextReveal({ render: false });
-    renderProjectSearchView();
-    return;
-  }
-  reconcileContextRevealState();
-  const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
-  const timelineEvents = renderedTimelineEvents();
-  el.timeline.innerHTML = `${renderProjectReturnBanner()}${renderInheritedContextCard()}${timelineEvents.map((event, index) => {
-    const ds = displayState(event);
-    const presentation = codeModeEventPresentation(event);
-    const compactWebLifecycle = event.kind === 'web_search' && compactWebLifecycleIds.has(event.id);
-    const temporaryReveal = state.temporaryEventReveal?.event.id === event.id
-      && !hasCanonicalTimelineEvent(event.id);
-    const classes = [
-      'event',
-      ds,
-      `state-${cssToken(ds)}`,
-      `kind-${cssToken(event.kind)}`,
-      event.severity,
-      event.status ? `status-${cssToken(event.status)}` : '',
-      event.id === state.selectedEventId ? 'selected' : '',
-      event.hasSearchHit ? 'searchHit' : '',
-      ds === 'hidden' ? 'hiddenByProfile' : '',
-      temporaryReveal ? 'temporaryReferenceReveal' : '',
-      presentation ? `code-mode-${cssToken(presentation.variant)}` : '',
-      compactWebLifecycle ? 'code-mode-web-lifecycle' : '',
-    ].filter(Boolean).join(' ');
-    const displayToolName = compactWebLifecycle || event.kind === 'code_mode_operation' ? '' : event.toolName;
-    const chips = [
-      event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
-      ...(Array.isArray(event.tags) ? event.tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`) : []),
-      renderCodeModePresentationChips(presentation, event.kind === 'code_mode_operation'),
-      displayToolName ? `<span class="chip toolChip">${escapeHtml(displayToolName)}</span>` : '',
-      event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t('files'))}</span>` : '',
-      temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
-    ].join('');
-    const toggleLabel = ds === 'expanded' ? t('collapseEvent') : t('expandEvent');
-    return `${renderRawForkSegmentHeading(event, timelineEvents[index - 1])}${renderContextRevealSlot(event)}<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
+function renderTimelineCardMarkup(event, compactWebLifecycleIds) {
+  const ds = displayState(event);
+  const presentation = codeModeEventPresentation(event);
+  const compactWebLifecycle = event.kind === 'web_search' && compactWebLifecycleIds.has(event.id);
+  const temporaryReveal = state.temporaryEventReveal?.event.id === event.id
+    && !hasCanonicalTimelineEvent(event.id);
+  const classes = [
+    'event',
+    ds,
+    `state-${cssToken(ds)}`,
+    `kind-${cssToken(event.kind)}`,
+    event.severity,
+    event.status ? `status-${cssToken(event.status)}` : '',
+    event.id === state.selectedEventId ? 'selected' : '',
+    event.hasSearchHit ? 'searchHit' : '',
+    ds === 'hidden' ? 'hiddenByProfile' : '',
+    temporaryReveal ? 'temporaryReferenceReveal' : '',
+    presentation ? `code-mode-${cssToken(presentation.variant)}` : '',
+    compactWebLifecycle ? 'code-mode-web-lifecycle' : '',
+  ].filter(Boolean).join(' ');
+  const displayToolName = compactWebLifecycle || event.kind === 'code_mode_operation' ? '' : event.toolName;
+  const chips = [
+    event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
+    ...(Array.isArray(event.tags) ? event.tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`) : []),
+    renderCodeModePresentationChips(presentation, event.kind === 'code_mode_operation'),
+    displayToolName ? `<span class="chip toolChip">${escapeHtml(displayToolName)}</span>` : '',
+    event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t('files'))}</span>` : '',
+    temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
+  ].join('');
+  const toggleLabel = ds === 'expanded' ? t('collapseEvent') : t('expandEvent');
+  return `${renderContextRevealSlot(event)}<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
       <div class="eventHeader">
         <button class="eventToggle" type="button" data-action="toggle" aria-label="${toggleLabel}" title="${toggleLabel}">
           <span class="srOnly">${toggleLabel}</span>
@@ -5615,7 +5822,157 @@ function renderTimeline() {
       ${renderEventBody(event, ds)}
       ${renderEventFooterActions(ds)}
     </article>`;
-  }).join('')}`;
+}
+
+function validateIncrementalMainAppend(boundary, suffixEvents) {
+  if (!boundary || state.searchScope !== 'session' || activeLayerId() !== 'main') {
+    throw new Error('Timeline append presentation context is not Main Session Scope');
+  }
+  if (!Array.isArray(suffixEvents) || suffixEvents.length === 0
+      || !Number.isSafeInteger(boundary.prefixLength) || boundary.prefixLength <= 0) {
+    throw new Error('Timeline append must be a non-empty canonical suffix');
+  }
+  if (state.timelineDataContext !== boundary.canonicalContext
+      || state.timelineDataContext !== timelineDataContextKey()) {
+    throw new Error('Timeline append canonical context is not current');
+  }
+  if (state.currentEvents.length !== boundary.prefixLength + suffixEvents.length
+      || boundary.prefixEventIds.length !== boundary.prefixLength) {
+    throw new Error('Timeline append canonical length is not contiguous');
+  }
+  for (let index = 0; index < boundary.prefixLength; index += 1) {
+    if (state.currentEvents[index]?.id !== boundary.prefixEventIds[index]) {
+      throw new Error('Timeline append canonical prefix changed');
+    }
+  }
+  for (let index = 0; index < suffixEvents.length; index += 1) {
+    if (state.currentEvents[boundary.prefixLength + index] !== suffixEvents[index]) {
+      throw new Error('Timeline append suffix is not the committed canonical suffix');
+    }
+  }
+  if (state.temporaryEventReveal || state.timelineReplacementRetry || state.selectingProject) {
+    throw new Error('Timeline append has incompatible temporary presentation state');
+  }
+  const presentationToken = currentTimelinePresentationToken();
+  if (!timelineCardLifecycleApi.presentationTokensEqual(
+    boundary.mountedPresentationToken,
+    presentationToken,
+  ) || !timelineCardLifecycle.mountedContextAndTokenMatch(
+    boundary.canonicalContext,
+    presentationToken,
+  )) {
+    throw new Error('Timeline append mounted presentation token is stale');
+  }
+  if (searchTargetKey() !== boundary.searchTargetKey
+      || state.searchTargetRegistry.key !== boundary.searchTargetKey
+      || state.searchHighlight.query !== boundary.searchHighlightQuery
+      || state.searchHighlight.query !== currentSearchState().q) {
+    throw new Error('Timeline append search presentation context is stale');
+  }
+  const prefixEvents = state.currentEvents.slice(0, boundary.prefixLength);
+  const prefixCards = mountedCanonicalMainCardDescriptors(prefixEvents);
+  const parity = timelineCardLifecycle.paritySnapshot({
+    expectedEventIds: boundary.prefixEventIds,
+    cards: prefixCards,
+  });
+  if (!parity.parityPassed) throw new Error('Timeline append owner/card/order parity failed');
+  return { presentationToken, prefixCards };
+}
+
+function prepareIncrementalMainAppend(boundary, suffixEvents) {
+  const eligibility = validateIncrementalMainAppend(boundary, suffixEvents);
+  const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
+  const template = document.createElement('template');
+  template.innerHTML = suffixEvents.map((event) => (
+    renderTimelineCardMarkup(event, compactWebLifecycleIds)
+  )).join('');
+  const fragment = template.content;
+  const articles = [...fragment.querySelectorAll('.event[data-event-id]')];
+  if (articles.length !== suffixEvents.length
+      || articles.some((article) => article.parentNode !== fragment)) {
+    throw new Error('Timeline append fragment card count is invalid');
+  }
+  const cards = articles.map((articleNode, index) => {
+    const event = suffixEvents[index];
+    if (articleNode.dataset.eventId !== event.id) {
+      throw new Error('Timeline append fragment card order is invalid');
+    }
+    const candidateSlot = articleNode.previousElementSibling;
+    const contextSlotNode = candidateSlot?.classList.contains('contextRevealSlot')
+        && candidateSlot.dataset.contextSourceId === event.id
+      ? candidateSlot
+      : null;
+    return { eventId: event.id, articleNode, contextSlotNode };
+  });
+  timelineCardLifecycle.validateMainOwnerRegistration({
+    canonicalContext: boundary.canonicalContext,
+    presentationToken: eligibility.presentationToken,
+    cards,
+  });
+  return {
+    ...eligibility,
+    fragment,
+    cards,
+  };
+}
+
+function finalizeIncrementalMainAppend(boundary, suffixEvents, prepared) {
+  const lifecycleResult = timelineCardLifecycle.registerMainOwners({
+    canonicalContext: boundary.canonicalContext,
+    presentationToken: prepared.presentationToken,
+    cards: prepared.cards,
+  });
+  syncContextRevealDom(prepared.cards.map((owner) => owner.contextSlotNode).filter(Boolean));
+  syncEnclosingOperationAffordances(prepared.cards.map((owner) => owner.articleNode));
+  state.searchSurfaceContexts.timeline = state.timelineDataContext === timelineDataContextKey()
+    ? timelineSearchSurfaceContextKey()
+    : '';
+  if (!searchDiscoveryContextReady()) throw new Error('Timeline append search surface is not ready');
+  refreshAppendedSearchHighlights(
+    suffixEvents,
+    prepared.cards,
+    boundary.prefixLength,
+    boundary.searchTargetKey,
+  );
+  queueVisibleDetailLoad();
+  recordTimelineLifecycle('append', 'main', lifecycleResult);
+}
+
+function presentCommittedTimelineAppend(boundary, suffixEvents) {
+  let prepared;
+  try {
+    prepared = prepareIncrementalMainAppend(boundary, suffixEvents);
+  } catch {
+    renderTimeline();
+    return false;
+  }
+
+  try {
+    el.timeline.append(prepared.fragment);
+    finalizeIncrementalMainAppend(boundary, suffixEvents, prepared);
+    return true;
+  } catch {
+    renderTimeline();
+    return false;
+  }
+}
+
+function renderTimeline() {
+  if (state.searchScope !== 'session') {
+    clearContextReveal({ render: false });
+    renderProjectSearchView();
+    return;
+  }
+  reconcileContextRevealState();
+  const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
+  const timelineEvents = renderedTimelineEvents();
+  const markup = `${renderProjectReturnBanner()}${renderInheritedContextCard()}${timelineEvents.map((event, index) => (
+    `${renderRawForkSegmentHeading(event, timelineEvents[index - 1])}${renderTimelineCardMarkup(event, compactWebLifecycleIds)}`
+  )).join('')}`;
+  const ownsMountedMainCards = activeLayerId() === 'main'
+    && state.currentEvents.length > 0
+    && Boolean(state.timelineDataContext);
+  replaceTimelineRoot(markup, ownsMountedMainCards ? 'main' : 'non-main');
   state.searchSurfaceContexts.timeline = state.timelineDataContext === timelineDataContextKey()
     ? timelineSearchSurfaceContextKey()
     : '';
@@ -5653,6 +6010,7 @@ function loadEventDetail(event) {
             || state.detailCacheGeneration !== generation) return false;
         state.detailCache[key] = detail;
         delete state.detailErrors[key];
+        advancePresentationRevision('detailPresentationRevision');
         return true;
       })
       .catch((error) => {
@@ -5661,6 +6019,7 @@ function loadEventDetail(event) {
             || state.selectedSessionId !== sessionId
             || state.detailCacheGeneration !== generation) return false;
         state.detailErrors[key] = detailErrorState(error);
+        advancePresentationRevision('detailPresentationRevision');
         return true;
       })
       .finally(() => {
@@ -6135,10 +6494,10 @@ async function revealEnclosingOperation(sourceEvent) {
 
 async function inspectAndRevealEvent(target, options = {}) {
   if (options.temporary) {
-    state.temporaryEventReveal = {
+    setTemporaryEventReveal({
       sourceEventId: options.sourceEventId || '',
       event: target,
-    };
+    });
     renderTimeline();
   } else {
     await ensureEventLoaded(target.id);
@@ -6271,7 +6630,7 @@ function reconcileDetailViewState() {
     history: state.detailHistory,
   });
   state.selectedEventId = reconciled.selectedEventId;
-  state.temporaryEventReveal = reconciled.reveal;
+  setTemporaryEventReveal(reconciled.reveal);
   state.detailHistory = reconciled.history;
   return reconciled.cleared;
 }
@@ -6284,7 +6643,7 @@ function closeDetailView() {
   state.navigationCategoryId = '';
   state.navigationCategoryManualId = '';
   const hadTemporaryReveal = Boolean(state.temporaryEventReveal);
-  state.temporaryEventReveal = null;
+  setTemporaryEventReveal(null);
   state.detailView = { type: 'profileRules' };
   renderProfileRulesPane();
   if (hadTemporaryReveal) renderTimeline();
@@ -6347,7 +6706,16 @@ async function readFromSelectedEvent() {
   updateMetricActionStates();
 }
 
-function renderDetailShell({ title, subtitle = '', actions = '', body = '', closeable = true, backable = state.detailHistory.length > 0, headerClass = '' }) {
+function renderDetailShell({
+  title,
+  subtitle = '',
+  actions = '',
+  body = '',
+  closeable = true,
+  backable = state.detailHistory.length > 0,
+  headerClass = '',
+  refreshSearch = true,
+}) {
   updateDetailViewChrome();
   const hasChromeControls = backable || closeable;
   const resolvedHeaderClass = [headerClass, hasChromeControls ? 'detailChromeHeader' : ''].filter(Boolean).join(' ');
@@ -6371,18 +6739,20 @@ function renderDetailShell({ title, subtitle = '', actions = '', body = '', clos
   </article>`;
   state.searchSurfaceContexts.detail = detailSearchSurfaceContextKey();
   syncProfileInfoSlot();
-  refreshSearchHighlights({ preserveActive: true });
+  if (refreshSearch) refreshSearchHighlights({ preserveActive: true });
 }
 
 function renderProfileRulesPane(options = {}) {
-  clearContextReveal({ render: false });
-  invalidateDetailSelection();
-  state.detailView = { type: 'profileRules' };
-  const clearedTemporaryReveal = reconcileDetailViewState();
-  state.selectedEventId = '';
-  state.navigationCategoryId = '';
-  state.navigationCategoryManualId = '';
-  if (clearedTemporaryReveal) renderTimeline();
+  if (!options.preserveTimelinePresentation) {
+    clearContextReveal({ render: false });
+    invalidateDetailSelection();
+    state.detailView = { type: 'profileRules' };
+    const clearedTemporaryReveal = reconcileDetailViewState();
+    state.selectedEventId = '';
+    state.navigationCategoryId = '';
+    state.navigationCategoryManualId = '';
+    if (clearedTemporaryReveal) renderTimeline();
+  }
   if (options.reveal === true) setMobileView('detail', { scroll: false });
   updateSelectedTimelineEvent();
   if (state.searchScope === 'project') {
@@ -6402,6 +6772,7 @@ function renderProfileRulesPane(options = {}) {
       headerClass: 'profileDetailHeader',
       closeable: false,
       backable: false,
+      refreshSearch: options.refreshSearch !== false,
       body: `<section class="profileRules profileRulesInactive">
         <div class="notice info">
           <p>${escapeHtml(t('fixedProfileRules'))}</p>
@@ -6597,6 +6968,7 @@ function renderProfileRulesPane(options = {}) {
     headerClass: 'profileDetailHeader',
     closeable: false,
     backable: false,
+    refreshSearch: options.refreshSearch !== false,
     body: `<section class="profileRules">
       ${draft.description ? `<p class="profileStrategyDescription">${escapeHtml(draft.description)}</p>` : ''}
       <section class="profileRuleSection">
@@ -6797,6 +7169,7 @@ function setProfileId(profileId, options = {}) {
   clearContextReveal({ render: false });
   clearNavigationEventReveal();
   state.profileId = profileId;
+  advancePresentationRevision('foldingPresentationRevision');
   localStorage.setItem('sessionAnalyzer.profile', state.profileId);
   el.profileSelect.value = state.profileId;
   resetSearchTransientExpansions();
@@ -6904,6 +7277,7 @@ function saveProfileDraft(name = '') {
     state.customProfiles.push(saved);
     saveCustomProfiles();
     state.profileId = saved.id;
+    advancePresentationRevision('foldingPresentationRevision');
   } else {
     state.customProfiles = state.customProfiles.map((profile) => (
       profile.id === state.profileId
@@ -7057,6 +7431,7 @@ el.timeline.addEventListener('click', (event) => {
     const key = detailKey(state.selectedSessionId, activeLayerId(), item.id);
     delete state.detailErrors[key];
     delete state.detailCache[key];
+    advancePresentationRevision('detailPresentationRevision');
     ensureEventDetail(item);
   } else if (action === 'raw') {
     showRaw(item).catch(showError);
@@ -7132,6 +7507,7 @@ el.detail.addEventListener('click', (event) => {
   } else if (action === 'retry-detail') {
     delete state.detailErrors[key];
     delete state.detailCache[key];
+    advancePresentationRevision('detailPresentationRevision');
     showInspector(item, { replace: true });
   }
 });
@@ -7148,6 +7524,7 @@ el.detail.addEventListener('change', (event) => {
     ensureProfileDraft();
     state.profileDraft.rules.fallback = fallback.value;
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
+    advancePresentationRevision('foldingPresentationRevision');
     renderTimeline();
     renderProfileRulesPane();
     return;
@@ -7160,6 +7537,7 @@ el.detail.addEventListener('change', (event) => {
     if (kindSelect.value) state.profileDraft.rules.kindStates[kind] = kindSelect.value;
     else delete state.profileDraft.rules.kindStates[kind];
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
+    advancePresentationRevision('foldingPresentationRevision');
     renderTimeline();
     renderProfileRulesPane();
     return;
@@ -7172,6 +7550,7 @@ el.detail.addEventListener('change', (event) => {
     if (codeModeRequestSelect.value) state.profileDraft.rules.codeModeRequestStates[request] = codeModeRequestSelect.value;
     else delete state.profileDraft.rules.codeModeRequestStates[request];
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
+    advancePresentationRevision('foldingPresentationRevision');
     renderTimeline();
     renderProfileRulesPane();
     return;
@@ -7184,6 +7563,7 @@ el.detail.addEventListener('change', (event) => {
     state.profileDraft.rules.conditions = state.profileDraft.rules.conditions.filter((condition) => condition.id !== conditionId);
     if (conditionSelect.value) state.profileDraft.rules.conditions.push({ id: conditionId, state: conditionSelect.value });
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
+    advancePresentationRevision('foldingPresentationRevision');
     renderTimeline();
     renderProfileRulesPane();
     return;

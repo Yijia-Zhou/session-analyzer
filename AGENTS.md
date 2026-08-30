@@ -49,6 +49,7 @@ When changing product behavior or repository structure:
 - Transcript source adapters: `docs/design-docs/transcript-source-adapters.md`
 - Indexed/Materialized Session lifecycle: `docs/design-docs/indexed-materialized-session-lifecycle.md`
 - Active execution plans (authoritative directory): `docs/exec-plans/active/`
+  - `docs/exec-plans/active/2026-08-30-performance-wave-1c-keyed-main-append.md`
 - Completed execution plans (authoritative archive; not itemized here): `docs/exec-plans/completed/`
 
 ## Tips
