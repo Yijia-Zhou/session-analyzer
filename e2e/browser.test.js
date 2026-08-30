@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const esbuild = require('esbuild');
 const { chromium } = require('playwright');
 const { analyzerSessionId, buildClaudeSourceBackedIndex } = require('../src/claude');
 const {
@@ -19,6 +20,52 @@ const { suggestionRequestEvidence } = require('../scripts/timeline-profile');
 const fixtureCodexHome = path.join(__dirname, '..', 'test', 'fixtures', 'codex-home');
 const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
+let wave1bM2SourceBundlePromise;
+
+function wave1bM2SourceBundle() {
+  if (!wave1bM2SourceBundlePromise) {
+    wave1bM2SourceBundlePromise = esbuild.build({
+      entryPoints: [path.join(__dirname, '..', 'src', 'browser', 'entry.js')],
+      bundle: true,
+      platform: 'browser',
+      format: 'iife',
+      sourcemap: false,
+      splitting: false,
+      minify: true,
+      logLevel: 'silent',
+      write: false,
+    }).then((result) => result.outputFiles[0].text);
+  }
+  return wave1bM2SourceBundlePromise;
+}
+
+async function installWave1bM2SourceBundle(page) {
+  const body = await wave1bM2SourceBundle();
+  await page.route('**/assets/app.js', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/javascript; charset=utf-8',
+    body,
+  }));
+}
+
+async function installWave1bM2BrowserSeam(page) {
+  await page.addInitScript(() => {
+    const evidence = { renderCardCounts: [] };
+    window.__wave1bM2 = {
+      evidence,
+      resetRenders() { evidence.renderCardCounts.length = 0; },
+    };
+    document.addEventListener('DOMContentLoaded', () => {
+      const timeline = document.querySelector('#timeline');
+      if (!timeline) return;
+      new MutationObserver(() => {
+        evidence.renderCardCounts.push(
+          timeline.querySelectorAll('.event[data-event-id]').length,
+        );
+      }).observe(timeline, { childList: true });
+    }, { once: true });
+  });
+}
 
 async function installWave1aM2BrowserSeam(page) {
   await page.addInitScript(() => {
@@ -240,6 +287,30 @@ async function openApp(t, index, options = {}) {
   }
   await page.waitForFunction(() => document.querySelector('#projectRefreshBtn')?.dataset.refreshing !== 'true');
   return { page, baseUrl, requestedPaths, requestedUrls };
+}
+
+async function openWave1bM2App(t, index, options = {}) {
+  const callerBeforeGoto = options.beforeGoto;
+  return openApp(t, index, {
+    ...options,
+    beforeGoto: async (page) => {
+      await installWave1bM2SourceBundle(page);
+      await installWave1bM2BrowserSeam(page);
+      if (callerBeforeGoto) await callerBeforeGoto(page);
+    },
+  });
+}
+
+async function resetWave1bM2RenderEvidence(page) {
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => {
+    window.__wave1bM2.resetRenders();
+    resolve();
+  })));
+}
+
+async function wave1bM2RenderCardCounts(page) {
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  return page.evaluate(() => [...window.__wave1bM2.evidence.renderCardCounts]);
 }
 
 async function openSourceSwitchChooser(t, options = {}) {
@@ -6416,6 +6487,608 @@ test('browser search navigation loads only the next hit page before wrapping', a
   assert.equal(boundaryRequests[0].searchParams.get('q'), 'needle');
   assert.equal(boundaryRequests.some((url) => url.searchParams.get('limit') === '500'), false);
   assert.equal(boundaryRequests.some((url) => Number(url.searchParams.get('offset')) >= 300), false);
+});
+
+test('browser Wave 1B M2 automatic preload coalesces three pages into one append flush', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 700,
+    needleIndices: [650],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+
+  const requestStart = requestedUrls.length;
+  await resetWave1bM2RenderEvidence(page);
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+
+  const requests = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('q') === 'needle');
+  assert.deepEqual(requests.map((url) => ({
+    offset: url.searchParams.get('offset'),
+    limit: url.searchParams.get('limit'),
+  })), [
+    { offset: '0', limit: '150' },
+    { offset: '150', limit: '150' },
+    { offset: '300', limit: '150' },
+    { offset: '450', limit: '150' },
+  ]);
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 600);
+  assert.equal((await searchNavigationSnapshot(page)).total, 0);
+  assert.equal(await page.locator('[data-search-load-more-targets]').count(), 1);
+  assert.deepEqual(
+    [...new Set(await wave1bM2RenderCardCounts(page))],
+    [150, 600],
+  );
+});
+
+test('browser Wave 1B M2 navigation later-page failure flushes earlier current-owner progress once and stops', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 900,
+    needleIndices: [800],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+  let failed = false;
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (!failed && url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '750') {
+      failed = true;
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'synthetic Wave 1B navigation failure' }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  const requestStart = requestedUrls.length;
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('#searchInput').press('Enter');
+  await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('synthetic Wave 1B navigation failure'));
+  await assertEventCount(page, 750);
+  await page.waitForFunction(() => !document.querySelector('[data-search-navigation-pending]'));
+
+  const offsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('q') === 'needle')
+    .map((url) => url.searchParams.get('offset'));
+  assert.deepEqual(offsets, ['600', '750']);
+  assert.equal(failed, true);
+  const finalSearch = await searchNavigationSnapshot(page);
+  assert.equal(finalSearch.id, '');
+  assert.equal(finalSearch.total, 0);
+  assert.deepEqual(await wave1bM2RenderCardCounts(page), [750]);
+});
+
+test('browser Wave 1B M2 forward late-target navigation flushes at the first hit page and settles detail', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 1_000,
+    needleIndices: [800],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+  const requestStart = requestedUrls.length;
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('#searchInput').press('Enter');
+  await assertEventCount(page, 900);
+  await page.waitForFunction(() => (
+    document.querySelector('#timeline mark.searchMark.activeSearchMark')
+      ?.closest('[data-event-id]')
+      ?.textContent
+      ?.includes('Long timeline row 800')
+  ));
+  await waitForDetailView(page, 'inspector');
+  await page.waitForFunction(() => !document.querySelector('#detail')?.textContent.includes('Loading structured detail'));
+
+  const offsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('q') === 'needle')
+    .map((url) => url.searchParams.get('offset'));
+  assert.deepEqual(offsets, ['600', '750']);
+  assert.deepEqual(
+    [...new Set(await wave1bM2RenderCardCounts(page))],
+    [900],
+  );
+  assert.ok((await page.locator('#timeline .event.selected').textContent()).includes('Long timeline row 800'));
+});
+
+test('browser Wave 1B M2 reverse navigation loads the remaining suffix to end before wrapping', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 1_000,
+    needleIndices: [100, 800],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+  await page.waitForFunction(() => (
+    JSON.parse(document.querySelector('#searchMetricsPanel')?.dataset.searchTargetIds || '[]').length === 1
+  ));
+  const requestStart = requestedUrls.length;
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('#searchInput').press('Shift+Enter');
+  await assertEventCount(page, 1_000);
+  await page.waitForFunction(() => (
+    document.querySelector('#timeline mark.searchMark.activeSearchMark')
+      ?.closest('[data-event-id]')
+      ?.textContent
+      ?.includes('Long timeline row 800')
+  ));
+
+  const offsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('q') === 'needle')
+    .map((url) => url.searchParams.get('offset'));
+  assert.deepEqual(offsets, ['600', '750', '900']);
+  assert.deepEqual(
+    [...new Set(await wave1bM2RenderCardCounts(page))],
+    [1_000],
+  );
+});
+
+test('browser Wave 1B M2 explicit load-more coalesces no-hit pages through the first new hit', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 1_000,
+    needleIndices: [100, 800],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+  await page.waitForFunction(() => !document.querySelector('[data-search-load-more-targets]')?.disabled);
+  const beforeTargets = (await searchNavigationSnapshot(page)).total;
+  assert.equal(beforeTargets, 1);
+  const requestStart = requestedUrls.length;
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('[data-search-load-more-targets]').click();
+  await assertEventCount(page, 900);
+  await page.waitForFunction(() => (
+    JSON.parse(document.querySelector('#searchMetricsPanel')?.dataset.searchTargetIds || '[]').length === 2
+  ));
+
+  const offsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('q') === 'needle')
+    .map((url) => url.searchParams.get('offset'));
+  assert.deepEqual(offsets, ['600', '750']);
+  assert.deepEqual(
+    [...new Set(await wave1bM2RenderCardCounts(page))],
+    [900],
+  );
+  assert.equal(await page.locator('[data-search-load-more-targets]').count(), 1);
+});
+
+test('browser Wave 1B M2 failed preload attempt consumes budget and current preload continues', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 700,
+    needleIndices: [650],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+  let failed = false;
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (!failed && url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '300') {
+      failed = true;
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'synthetic Wave 1B preload failure' }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  const requestStart = requestedUrls.length;
+  await resetWave1bM2RenderEvidence(page);
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 450);
+  await page.waitForFunction(() => !document.querySelector('[data-search-load-more-targets]')?.disabled);
+  assert.ok((await page.locator('#stateLine').textContent()).includes('synthetic Wave 1B preload failure'));
+
+  const offsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('q') === 'needle')
+    .map((url) => url.searchParams.get('offset'));
+  assert.deepEqual(offsets, ['0', '150', '300', '300']);
+  assert.equal(failed, true);
+  assert.deepEqual(
+    [...new Set(await wave1bM2RenderCardCounts(page))],
+    [150, 300, 450],
+  );
+});
+
+test('browser Wave 1B M2 load-more later-page failure flushes progress and clears pending without exhausting', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 1_000,
+    needleIndices: [100],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+  let failed = false;
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (!failed && url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '750') {
+      failed = true;
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'synthetic Wave 1B load-more failure' }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  const requestStart = requestedUrls.length;
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('[data-search-load-more-targets]').click();
+  await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('synthetic Wave 1B load-more failure'));
+  await assertEventCount(page, 750);
+  await page.waitForFunction(() => !document.querySelector('[data-search-load-more-targets]')?.disabled);
+
+  const offsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('q') === 'needle')
+    .map((url) => url.searchParams.get('offset'));
+  assert.deepEqual(offsets, ['600', '750']);
+  assert.equal(failed, true);
+  assert.deepEqual(await wave1bM2RenderCardCounts(page), [750]);
+  assert.equal(await page.locator('[data-search-load-more-targets]').count(), 1);
+});
+
+for (const invalidIdKind of ['duplicate', 'empty']) {
+  test(`browser Wave 1B M2 later-page ${invalidIdKind} ID failure excludes that page and flushes prior progress`, async (t) => {
+    const longFixture = await makeLongCodexHome(t, {
+      eventCount: 900,
+      needleIndices: [800],
+    });
+    const index = await buildIndex(longFixture);
+    const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+    await fillSearch(page, 'needle');
+    await assertEventCount(page, 600);
+    let corrupted = false;
+    await page.route('**/timeline*', async (route) => {
+      const url = new URL(route.request().url());
+      if (!corrupted && url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '750') {
+        corrupted = true;
+        const response = await route.fetch();
+        const body = await response.json();
+        body.events[0].id = invalidIdKind === 'duplicate' ? body.events[1].id : '';
+        await route.fulfill({ response, json: body });
+        return;
+      }
+      await route.continue();
+    });
+
+    const requestStart = requestedUrls.length;
+    await resetWave1bM2RenderEvidence(page);
+    await page.locator('#searchInput').press('Enter');
+    await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('Timeline event state invariant'));
+    await assertEventCount(page, 750);
+    await page.waitForFunction(() => !document.querySelector('[data-search-navigation-pending]'));
+
+    const offsets = requestedUrls.slice(requestStart)
+      .filter((value) => value.includes('/timeline?'))
+      .map((value) => new URL(value, 'http://local'))
+      .filter((url) => url.searchParams.get('q') === 'needle')
+      .map((url) => url.searchParams.get('offset'));
+    assert.deepEqual(offsets, ['600', '750']);
+    assert.equal(corrupted, true);
+    assert.deepEqual(await wave1bM2RenderCardCounts(page), [750]);
+  });
+}
+
+test('browser Wave 1B M2 query supersession discards accepted local pages without an old flush', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 900,
+    needleIndices: [800],
+  });
+  const index = await buildIndex(longFixture);
+  const { page } = await openWave1bM2App(t, index, { locale: 'en' });
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+
+  const paused = deferred();
+  const release = deferred();
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '750') {
+      paused.resolve();
+      await release.promise;
+      try { await route.continue(); } catch {}
+      return;
+    }
+    await route.continue();
+  });
+
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('#searchInput').press('Enter');
+  await paused.promise;
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 600);
+  const replacement = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('q') === 'ordinary'
+      && url.searchParams.get('offset') === '500';
+  });
+  await fillSearch(page, 'ordinary');
+  await replacement;
+  await assertEventCount(page, 600);
+  release.resolve();
+  await page.waitForTimeout(300);
+
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 600);
+  assert.equal(await page.locator('#searchInput').inputValue(), 'ordinary');
+  assert.equal((await wave1bM2RenderCardCounts(page)).includes(750), false);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+});
+
+test('browser Wave 1B M2 Session supersession discards primary local pages and preserves the 40-card secondary state', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t, {
+    eventCount: 900,
+    hitPositions: [800],
+  });
+  const { page } = await openWave1bM2App(t, index, { locale: 'en' });
+  await fillSearch(page, 'far-needle');
+  await assertEventCount(page, 600);
+
+  const paused = deferred();
+  const release = deferred();
+  await page.route(`**/api/sessions/${fixture.longSessionId}/timeline?*`, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') === 'far-needle' && url.searchParams.get('offset') === '750') {
+      paused.resolve();
+      await release.promise;
+      try { await route.continue(); } catch {}
+      return;
+    }
+    await route.continue();
+  });
+
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('#searchInput').press('Enter');
+  await paused.promise;
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 600);
+  await page.locator(`[data-session-id="${fixture.secondarySessionId}"]`).click();
+  await page.waitForSelector(`[data-session-id="${fixture.secondarySessionId}"].active`);
+  await assertEventCount(page, 40);
+  release.resolve();
+  await page.waitForTimeout(300);
+
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 40);
+  assert.equal((await wave1bM2RenderCardCounts(page)).includes(750), false);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+  assert.equal(await page.locator('[data-search-navigation-pending]').count(), 0);
+});
+
+test('browser Wave 1B M2 same-key replacement keeps newer preload pending ownership', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 700,
+    needleIndices: [650],
+  });
+  const index = await buildIndex(longFixture);
+  const { page } = await openWave1bM2App(t, index, { locale: 'en' });
+  const oldPaused = deferred();
+  const oldRelease = deferred();
+  const newPaused = deferred();
+  const newRelease = deferred();
+  let offset300Count = 0;
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '300') {
+      offset300Count += 1;
+      const gate = offset300Count === 1
+        ? { paused: oldPaused, release: oldRelease }
+        : { paused: newPaused, release: newRelease };
+      gate.paused.resolve();
+      await gate.release.promise;
+      try { await route.continue(); } catch {}
+      return;
+    }
+    await route.continue();
+  });
+
+  await fillSearch(page, 'needle');
+  await oldPaused.promise;
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 150);
+  await page.locator(`[data-session-id="${longFixture.sessionId}"]`).click();
+  await newPaused.promise;
+  assert.equal(await page.locator('[data-search-load-more-targets]').isDisabled(), true);
+  oldRelease.resolve();
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator('[data-search-load-more-targets]').isDisabled(), true);
+  newRelease.resolve();
+  await assertEventCount(page, 600);
+  await page.waitForFunction(() => !document.querySelector('[data-search-load-more-targets]')?.disabled);
+
+  assert.equal(offset300Count, 2);
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 600);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+});
+
+test('browser Wave 1B M2 same-key replacement makes stale navigation skip replacement-state scanning', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 900,
+    needleIndices: [800],
+  });
+  const index = await buildIndex(longFixture);
+  const { page } = await openWave1bM2App(t, index, { locale: 'en' });
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+  const oldPaused = deferred();
+  const oldRelease = deferred();
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '750') {
+      oldPaused.resolve();
+      await oldRelease.promise;
+      try { await route.continue(); } catch {}
+      return;
+    }
+    await route.continue();
+  });
+
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('#searchInput').press('Enter');
+  await oldPaused.promise;
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 600);
+  const replacement = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('q') === 'needle'
+      && url.searchParams.get('offset') === '0';
+  });
+  await page.locator(`[data-session-id="${longFixture.sessionId}"]`).click();
+  await replacement;
+  oldRelease.resolve();
+  await assertEventCount(page, 600);
+  await page.waitForFunction(() => !document.querySelector('[data-search-navigation-pending]'));
+
+  assert.equal((await wave1bM2RenderCardCounts(page)).includes(750), false);
+  assert.equal((await searchNavigationSnapshot(page)).id, '');
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+});
+
+test('browser Wave 1B M2 same-key replacement invalidates navigation during async detail activation', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 1,
+    includeFoldableSearchTargets: true,
+  });
+  const index = await buildIndex(longFixture);
+  const hiddenCommandProfile = {
+    id: 'custom:wave1b-stale-navigation-detail',
+    name: 'Wave 1B stale navigation detail test',
+    description: 'Keep command body matches unavailable until search navigation expands them.',
+    rules: {
+      kindStates: { command: 'hidden' },
+      fallback: 'summary',
+      conditions: [],
+    },
+  };
+  const { page } = await openWave1bM2App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([hiddenCommandProfile]),
+      'sessionAnalyzer.profile': hiddenCommandProfile.id,
+    },
+  });
+
+  await fillSearch(page, 'fold only target');
+  await page.waitForFunction(() => (
+    document.querySelector('.searchInlineCount')?.textContent?.endsWith('/ 3 targets')
+      && document.querySelector('#searchMetricsPanel')?.textContent.includes('6 occurrences')
+  ));
+  await waitForDetailView(page, 'profileRules');
+
+  const detailStarted = deferred();
+  const detailRelease = deferred();
+  let detailRequestCount = 0;
+  await page.route('**/api/sessions/*/events/*/detail*', async (route) => {
+    detailRequestCount += 1;
+    if (detailRequestCount > 1) {
+      await route.continue();
+      return;
+    }
+    detailStarted.resolve();
+    await detailRelease.promise;
+    try { await route.continue(); } catch {}
+  });
+
+  await page.locator('.searchInlineMatches [data-search-match-nav="next"]').click();
+  await detailStarted.promise;
+  const replacement = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('q') === 'fold only target'
+      && url.searchParams.get('offset') === '0';
+  });
+  await page.locator(`[data-session-id="${longFixture.sessionId}"]`).click();
+  await replacement;
+  detailRelease.resolve();
+  await page.waitForFunction(() => !document.querySelector('[data-search-navigation-pending]'));
+  await waitForDetailView(page, 'profileRules');
+
+  assert.equal(detailRequestCount, 1);
+  assert.equal((await searchNavigationSnapshot(page)).id, '');
+  assert.equal(await page.locator('#timeline .event.selected').count(), 0);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+});
+
+test('browser Wave 1B M2 same-key replacement protects newer pending and exhausted from stale load-more cleanup', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 1_000,
+    needleIndices: [100],
+  });
+  const index = await buildIndex(longFixture);
+  const { page } = await openWave1bM2App(t, index, { locale: 'en' });
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+  const oldPaused = deferred();
+  const oldRelease = deferred();
+  const newPaused = deferred();
+  const newRelease = deferred();
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '750') {
+      oldPaused.resolve();
+      await oldRelease.promise;
+      try { await route.continue(); } catch {}
+      return;
+    }
+    if (url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '300') {
+      newPaused.resolve();
+      await newRelease.promise;
+      try { await route.continue(); } catch {}
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.locator('[data-search-load-more-targets]').click();
+  await oldPaused.promise;
+  const replacement = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('q') === 'needle'
+      && url.searchParams.get('offset') === '0';
+  });
+  await page.locator(`[data-session-id="${longFixture.sessionId}"]`).click();
+  await replacement;
+  await newPaused.promise;
+  assert.equal(await page.locator('[data-search-load-more-targets]').isDisabled(), true);
+  oldRelease.resolve();
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator('[data-search-load-more-targets]').isDisabled(), true);
+  newRelease.resolve();
+  await assertEventCount(page, 600);
+  await page.waitForFunction(() => !document.querySelector('[data-search-load-more-targets]')?.disabled);
+
+  assert.equal(await page.locator('[data-search-load-more-targets]').count(), 1);
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 600);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
 });
 
 test('browser search inspector hides idle navigation and user confirmation loads it', async (t) => {

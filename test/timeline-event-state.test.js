@@ -15,6 +15,7 @@ const {
   resetTimelineEventState,
   timelineEventById,
   timelineEventStateParitySnapshot,
+  validateTimelineEventAdditions,
 } = require('../src/browser/timeline-event-state');
 
 function event(id, label = '') {
@@ -104,6 +105,32 @@ test('append validates before publish and preserves every prior event identity',
     assert.equal(state.currentEventsById, committedMap);
     assert.equal(state.offset, 2);
   }
+});
+
+test('page validation preserves exact objects and mutates neither committed nor local lookups', () => {
+  const committed = new Map([['committed', event('committed')]]);
+  const local = new Map([['local', event('local')]]);
+  const first = event('first');
+  const second = event('second');
+  const additions = validateTimelineEventAdditions([first, second], [committed, local]);
+  assert.deepEqual([...additions.keys()], ['first', 'second']);
+  assert.equal(additions.get('first'), first);
+  assert.equal(additions.get('second'), second);
+  assert.deepEqual([...committed.keys()], ['committed']);
+  assert.deepEqual([...local.keys()], ['local']);
+
+  for (const invalid of [
+    [event('committed')],
+    [event('local')],
+    [event('duplicate'), event('duplicate')],
+    [event('')],
+    [{}],
+  ]) {
+    assertInvariant(() => validateTimelineEventAdditions(invalid, [committed, local]));
+    assert.deepEqual([...committed.keys()], ['committed']);
+    assert.deepEqual([...local.keys()], ['local']);
+  }
+  assertInvariant(() => validateTimelineEventAdditions([event('third')], [committed, {}]));
 });
 
 test('parity detects a foreign Map, wrong identity, size, context, and offset', () => {
