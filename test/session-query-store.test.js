@@ -247,28 +247,159 @@ test('packed project query path has exact full-event oracle parity', async () =>
   );
 });
 
-test('shared packed query implementation preserves Claude project semantics in both locales', async () => {
-  const query = getSourceAdapter('claude-code').query;
-  const sessions = fixture().map((source) => {
-    const session = structuredClone(source);
-    session.sourceKind = 'claude-code';
-    for (const event of session.logicalEvents) event.sourceKind = 'claude-code';
-    for (const raw of session.rawEvents) raw.sourceKind = 'claude-code';
-    session.presentationIndexes = { codeModeDeclaredRequests: new Map() };
-    return session;
+test('Project Scope q semantics count matching Events rather than text occurrences', async () => {
+  const query = getSourceAdapter('codex').query;
+  const sessions = fixture();
+  sessions[0].logicalEvents[0].preview = 'alpha target alpha target alpha target';
+  sessions[0].logicalEvents[0].searchText = 'alpha target alpha target alpha target alpha target';
+  sessions[1].logicalEvents[0].searchText = 'alpha target alpha target';
+  const oracle = fullIndex(sessions);
+  const result = await query.filterSessions(
+    packedIndex(oracle, query),
+    { q: 'alpha target', layer: 'main', locale: 'en' },
+  );
+  assert.equal(result.total, 2);
+  assert.equal(result.matchingEventTotal, 2);
+  assert.deepEqual(result.sessions.map((session) => session.searchMatch.eventCount), [1, 1]);
+  assert.deepEqual(
+    Object.keys(result.sessions[0].searchMatch).sort(),
+    ['eventCount', 'latestEvent'],
+  );
+});
+
+test('packed Project Scope boolean matching avoids occurrence enumeration and preserves expression semantics', async () => {
+  const query = getSourceAdapter('codex').query;
+  const sessions = fixture();
+  sessions[0].logicalEvents[0].preview = 'prefix Alpha [target]\n value suffix';
+  sessions[0].logicalEvents[0].searchText = 'Alpha [target] value Alpha [target] value';
+  sessions[1].logicalEvents[0].preview = 'no matching preview';
+  sessions[1].logicalEvents[0].searchText = 'no matching canonical search text';
+  const packed = packedIndex(fullIndex(sessions), query);
+  const descriptor = Object.getOwnPropertyDescriptor(String.prototype, 'matchAll');
+  let matchAllCalls = 0;
+  let result;
+  Object.defineProperty(String.prototype, 'matchAll', {
+    ...descriptor,
+    value() {
+      matchAllCalls += 1;
+      throw new Error('Project Scope boolean matching enumerated occurrences');
+    },
   });
-  const oracle = {
-    ...fullIndex(sessions),
-    sourceKind: 'claude-code',
+  try {
+    result = await query.filterSessions(packed, {
+      q: '  alpha [target]   value  ',
+      layer: 'main',
+      locale: 'en',
+    });
+  } finally {
+    Object.defineProperty(String.prototype, 'matchAll', descriptor);
+  }
+  assert.equal(matchAllCalls, 0);
+  assert.equal(result.total, 1);
+  assert.equal(result.matchingEventTotal, 1);
+  assert.equal(result.sessions[0].searchMatch.eventCount, 1);
+  assert.deepEqual(result.sessions[0].searchMatch.latestEvent, {
+    id: 'first-main',
+    timestamp: '2026-08-16T01:00:00.000Z',
+    label: 'Command',
+    snippet: 'prefix Alpha [target] value suffix',
+    timelineIndex: 0,
+  });
+});
+
+test('packed Project Scope boolean matching short-circuits searchText after a preview hit', async () => {
+  const query = getSourceAdapter('codex').query;
+  const sessions = fixture();
+  const packed = packedIndex(fullIndex(sessions), query);
+  const descriptor = Object.getOwnPropertyDescriptor(RegExp.prototype, 'test');
+  const testedFields = [];
+  Object.defineProperty(RegExp.prototype, 'test', {
+    ...descriptor,
+    value(text) {
+      if (this.source === 'alpha\\s+target' && this.flags === 'i') {
+        testedFields.push(String(text));
+      }
+      return descriptor.value.call(this, text);
+    },
+  });
+  try {
+    const result = await query.filterSessions(packed, {
+      q: 'alpha target',
+      layer: 'main',
+      locale: 'en',
+    });
+    assert.equal(result.total, 2);
+    assert.equal(result.matchingEventTotal, 2);
+  } finally {
+    Object.defineProperty(RegExp.prototype, 'test', descriptor);
+  }
+  assert.deepEqual(testedFields, [
+    'alpha\n target in preview',
+    'no preview hit',
+    'alpha target in canonical search',
+  ]);
+});
+
+test('Current Session search retains exact occurrence counts and empty-query false semantics', () => {
+  const query = getSourceAdapter('codex').query;
+  const sessions = fixture();
+  sessions[0].logicalEvents[0].preview = 'alpha target alpha target alpha target';
+  sessions[0].logicalEvents[0].searchText = 'alpha target alpha target alpha target alpha target';
+  const packed = packedIndex(fullIndex(sessions), query);
+  const materialized = {
+    ...sessions[0],
+    ...query.projectSessionMetadata(sessions[0]),
   };
-  const packed = packedIndex(oracle, query);
-  for (const locale of ['en', 'zh-CN']) {
-    for (const filters of [
-      { q: 'alpha target', layer: 'main', locale },
-      { q: 'protocol alpha', status: 'failed', layer: 'protocol', locale },
-      { q: '', tool: 'shell', layer: 'main', sort: 'events-desc', locale },
-    ]) {
-      assert.deepEqual(await query.filterSessions(packed, filters), query.filterSessions(oracle, filters));
+  const filters = {
+    layer: 'main',
+    offset: 0,
+    limit: 20,
+    q: 'alpha target',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    locale: 'en',
+  };
+  const counted = query.getTimeline(packed, materialized, filters);
+  assert.equal(counted.searchMatchCount, 4);
+  assert.equal(counted.searchEventCount, 1);
+  assert.equal(counted.events[0].hasSearchHit, true);
+
+  const empty = query.getTimeline(packed, materialized, { ...filters, q: '   ' });
+  assert.equal(empty.searchMatchCount, 0);
+  assert.equal(empty.searchEventCount, 0);
+  assert.equal(empty.events[0].hasSearchHit, false);
+});
+
+test('shared packed query implementation preserves Claude and DeepSeek project semantics', async () => {
+  for (const sourceKind of ['claude-code', 'deepseek-harness']) {
+    const query = getSourceAdapter(sourceKind).query;
+    const sessions = fixture().map((source) => {
+      const session = structuredClone(source);
+      session.sourceKind = sourceKind;
+      for (const event of session.logicalEvents) event.sourceKind = sourceKind;
+      for (const raw of session.rawEvents) raw.sourceKind = sourceKind;
+      session.presentationIndexes = { codeModeDeclaredRequests: new Map() };
+      return session;
+    });
+    const oracle = {
+      ...fullIndex(sessions),
+      sourceKind,
+    };
+    const packed = packedIndex(oracle, query);
+    for (const locale of ['en', 'zh-CN']) {
+      for (const filters of [
+        { q: 'alpha target', layer: 'main', locale },
+        { q: 'protocol alpha', status: 'failed', layer: 'protocol', locale },
+        { q: '', tool: 'shell', layer: 'main', sort: 'events-desc', locale },
+      ]) {
+        assert.deepEqual(
+          await query.filterSessions(packed, filters),
+          query.filterSessions(oracle, filters),
+          `${sourceKind}/${locale}/${JSON.stringify(filters)}`,
+        );
+      }
     }
   }
 });

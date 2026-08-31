@@ -237,7 +237,10 @@ function createSessionQuery(options = {}) {
   }
 
   function eventHasSearchHit(event, q) {
-    return eventSearchMatchCount(event, q) > 0;
+    const regex = searchPhraseRegex(q);
+    if (!regex) return false;
+    return regex.test(String(event.preview || ''))
+      || regex.test(String(event.searchText || ''));
   }
 
   function makeSnippet(text, q) {
