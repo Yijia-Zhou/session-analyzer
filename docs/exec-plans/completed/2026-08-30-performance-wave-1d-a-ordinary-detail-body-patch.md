@@ -3,7 +3,7 @@
 ## 1. Status, identity, and authorization / 状态、身份与授权
 
 ```text
-Technical design: FORMAL PLAN — ACCEPTED; M0 AND M1 EXECUTOR COMPLETE
+Technical design: ACCEPTED — COMPLETE
 Repository: Yijia-Zhou/session-analyzer
 Target branch: towards-0.2.0
 Accepted inspected base: b7ca3bff12fd5061410aaa3483341023498b23d4
@@ -11,22 +11,28 @@ Accepted inspected tree: cad8ff765804bbc0b5c4d2bbec48784da98814e7
 Live target: b7ca3bff12fd5061410aaa3483341023498b23d4
 Live target tree: cad8ff765804bbc0b5c4d2bbec48784da98814e7
 Implementation branch: perf/wave-1d-a-ordinary-detail-body-patch
-Formal plan: docs/exec-plans/active/2026-08-30-performance-wave-1d-a-ordinary-detail-body-patch.md
+Formal plan: docs/exec-plans/completed/2026-08-30-performance-wave-1d-a-ordinary-detail-body-patch.md
 
 Primary decision: RECOMMEND_SMALL_WAVE_1D_THEN_SERVER_CHECKPOINT
 Independent plan review: PLAN_1D_A — ACCEPTED; NORMATIVE_BLOCKERS — CLOSED; ARCHITECTURAL_BLOCKERS — NONE
-Implementation authorization: M1 ONLY — COMPLETE; R1/M2 NOT AUTHORIZED
 M0 authorization: GRANTED 2026-08-30 — PASS
-M1 authorization: GRANTED 2026-08-30; EXECUTOR COMPLETED 2026-08-31 — PASS_M1_EXECUTOR
-Active-plan registration in AGENTS.md: PERFORMED
-Product/test changes: BOUNDED M1 IMPLEMENTATION — SEE SECTION 31
-Generated asset changes: NONE
-Profiling/evidence capture: NONE
+M1 authorization: GRANTED 2026-08-30; FINAL REPAIR COMPLETED 2026-08-31 — PASS_M1
+Fresh R1: PASS_M1 — ACCEPTED
+M2: PASS — IMMUTABLE CANDIDATE FROZEN
+Candidate SHA: ee210b38e699bf86a5f36b720fd399344692d68b
+Candidate tree: 3b08fd22f28ec34df40daebe682a267b24546893
+M3: PASS — FOCUSED CAUSAL + SCHEMA-4 EVIDENCE ACCEPTED
+Fresh R2: ACCEPTED_FOR_CANDIDATE / INTEGRATION_READY / SERVER_CHECKPOINT_NEXT
+M4 authorization: DOCUMENTATION-ONLY CLOSEOUT — COMPLETE
+Active-plan registration in AGENTS.md: REMOVED BY M4
+Product/test changes: IMMUTABLE ACCEPTED CANDIDATE — SEE SECTIONS 31–35
+Generated asset: CANDIDATE-BOUND; NO M4 GENERATED DELTA
+Profiling/evidence capture: COMPLETE IN M3; NO M4 RECAPTURE
 ```
 
-M0 and M1 were separately authorized. Section 30 records the accepted M0 contract freeze; Section 31 records the bounded M1 implementation and focused executor validation. R1 and M2 remain unauthorized. No generated-asset update, formal profiling, evidence capture, candidate commit, push, PR, merge, publish, or release is authorized or performed. / M0 与 M1 均获另行授权。第 30 节记录 accepted M0 contract freeze；第 31 节记录 bounded M1 implementation 与 focused executor validation。R1 与 M2 仍未授权。未授权或执行 generated asset 更新、formal profiling、evidence capture、candidate commit、push、PR、merge、publish 或 release。
+M0 through M3 were separately authorized and completed. Section 30 records the accepted M0 contract freeze; Sections 31–34 preserve the bounded M1 implementation and both repair histories; Section 35 records M2 validation and immutable candidate freeze; Sections 36–37 record M3 evidence and fresh R2 acceptance. M4 is separately authorized only to archive this plan, remove active registration, update the bilingual performance design, validate the documentation-only envelope, and create one closeout commit directly on the immutable candidate. No executable repair, evidence recapture, push, PR, merge, publish, or release is authorized. / M0 至 M3 均获另行授权并已完成。第 30 节记录 accepted M0 contract freeze；第 31 至 34 节保留 bounded M1 implementation 与两次 repair history；第 35 节记录 M2 validation 与 immutable candidate freeze；第 36 至 37 节记录 M3 evidence 与 fresh R2 acceptance。M4 仅获授权 archive 本 plan、移除 active registration、更新双语 performance design、验证 documentation-only envelope，并在 immutable candidate 之上直接创建一个 closeout commit。不授权 executable repair、evidence recapture、push、PR、merge、publish 或 release。
 
-This plan is bounded to Wave 1D-A and now stops after passed M1 executor validation, before fresh independent R1. It does not authorize Wave 1D-B or a server wave. / 本计划仅覆盖 Wave 1D-A，现于 M1 executor validation 通过后、fresh independent R1 前停止。它不授权 Wave 1D-B 或 server wave。
+This plan remains bounded to Wave 1D-A and closes the Browser Stage 2 checkpoint after accepted R2. The next performance checkpoint is the server/cold-server track, but this plan creates no server plan and authorizes no server implementation. Wave 1D-B, Code Mode fanout, fold/selection localization, virtualization, render windows, and `IntersectionObserver` architecture remain unapproved future decisions. / 本计划继续仅覆盖 Wave 1D-A，并在 R2 接受后关闭 Browser Stage 2 checkpoint。下一 performance checkpoint 为 server／cold-server track，但本计划不创建 server plan，也不授权 server implementation。Wave 1D-B、Code Mode fanout、fold／selection localization、virtualization、render window 与 `IntersectionObserver` architecture 继续属于未获批准的未来 decision。
 
 ---
 
@@ -1369,6 +1375,11 @@ The candidate server direction remains a separate planning decision and receives
 - 2026-08-30: Fresh independent review accepted the repaired plan: `PLAN_1D_A: ACCEPTED`, `NORMATIVE_BLOCKERS: CLOSED`, `ARCHITECTURAL_BLOCKERS: NONE`. / 2026-08-30：Fresh independent review 接受修复后的计划：`PLAN_1D_A: ACCEPTED`、`NORMATIVE_BLOCKERS: CLOSED`、`ARCHITECTURAL_BLOCKERS: NONE`。
 - 2026-08-30: M0 was separately authorized, revalidated the exact live target with no descendant drift, froze the contracts below, created the implementation branch at the live target, registered this plan, and stopped before M1. / 2026-08-30：M0 获另行授权，重新核验无 descendant drift 的精确 live target，冻结下述 contract，在 live target 创建 implementation branch，登记本计划，并于 M1 前停止。
 - 2026-08-31: The separately authorized M1 completed only ordinary body/no-DOM detail settlement, request-owned presentation/error separation, lifecycle token adoption, scoped search/Inspector work, candidate-first visible scanning, and focused content-free observation. Focused executor validation passed and stopped before R1/M2. / 2026-08-31：另行授权的 M1 仅完成 ordinary body／no-DOM detail settlement、request-owned presentation／error separation、lifecycle token adoption、scoped search／Inspector work、candidate-first visible scan 与 focused content-free observation。Focused executor validation 已通过，并于 R1／M2 前停止。
+- 2026-08-31: Two bounded review repairs first fixed real Timeline-scroller preservation and removed absent-observer production evidence work, then gated the final evidence-only pending-Promise transaction pointer on an installed request observer. Each repair retained the accepted product model and passed its complete focused executor gates. / 2026-08-31：两次 bounded review repair 先修复真实 Timeline scroller preservation 并移除 observer 缺失时的 production evidence work，随后把最终仅供 evidence 使用的 pending-Promise transaction pointer 限制为只在 request observer 已安装时存在。每次 repair 均保留 accepted product model，并通过完整 focused executor gate。
+- 2026-08-31: Fresh R1 returned `PASS_M1`. M2 then passed all full gates, generated and inspected the client bundle, and froze the direct-base immutable candidate `ee210b38e699bf86a5f36b720fd399344692d68b`／tree `3b08fd22f28ec34df40daebe682a267b24546893` without amendment. / 2026-08-31：Fresh R1 返回 `PASS_M1`。随后 M2 通过全部 full gate，生成并检查 client bundle，并在未 amend 的情况下冻结 direct-base immutable candidate `ee210b38e699bf86a5f36b720fd399344692d68b`／tree `3b08fd22f28ec34df40daebe682a267b24546893`。
+- 2026-08-31: M3 captured separate focused causal evidence and unchanged schema-4 evidence. Focused Wave 1D-A passed `27/27`, inherited controls passed `13/13`, one smoke plus three formal processes passed with `0` invalid runs, and late-hit card generations/root observations were `1200/1200/1200` and `1/1/1`. / 2026-08-31：M3 分别采集 focused causal evidence 与 unchanged schema-4 evidence。Focused Wave 1D-A 通过 `27/27`，inherited control 通过 `13/13`，一次 smoke 加三个 formal process 全部通过且 invalid run 为 `0`；late-hit card generation／root observation 为 `1200/1200/1200` 与 `1/1/1`。
+- 2026-08-31: Fresh R2 independently replayed identities, validation, evidence, privacy, structural series, Resource Timing, and the exact nine-entry manifest, then returned `ACCEPTED_FOR_CANDIDATE`, `INTEGRATION_READY`, and `SERVER_CHECKPOINT_NEXT`. / 2026-08-31：Fresh R2 独立 replay identity、validation、evidence、privacy、structural series、Resource Timing 与精确 nine-entry manifest，随后返回 `ACCEPTED_FOR_CANDIDATE`、`INTEGRATION_READY` 与 `SERVER_CHECKPOINT_NEXT`。
+- 2026-08-31: M4 was separately authorized as documentation-only closeout: archive this full history, remove active registration, update the bilingual performance design, verify evidence unchanged, and create one documentation-only child commit before any remote integration. / 2026-08-31：M4 获另行授权作为 documentation-only closeout：archive 本完整历史、移除 active registration、更新双语 performance design、验证 evidence unchanged，并在任何 remote integration 前创建一个 documentation-only child commit。
 
 ---
 
@@ -2257,3 +2268,181 @@ push / PR / merge / publish / release:
 ```
 
 After the single commit, perform only the read-only post-freeze checks in M2 and stop before M3. / 单次 commit 后，仅执行 M2 的 read-only post-freeze check，并在 M3 前停止。
+
+---
+
+## 36. M3 two-layer evidence record / M3 双层 evidence 记录
+
+### 36.1 Exact candidate and target-to-candidate identity / 精确 candidate 与 target-to-candidate identity
+
+M3 revalidated the immutable candidate before every evidence process. The exact direct identity remained: / M3 在每个 evidence process 前重新验证 immutable candidate。精确 direct identity 保持为：
+
+```text
+candidate SHA:     ee210b38e699bf86a5f36b720fd399344692d68b
+candidate tree:    3b08fd22f28ec34df40daebe682a267b24546893
+candidate parent:  b7ca3bff12fd5061410aaa3483341023498b23d4
+target/base:       b7ca3bff12fd5061410aaa3483341023498b23d4
+
+target-to-candidate binary diff:
+  938290 bytes
+  d0af895295d384f4fbff6f9337eca1be5edb9753f2f59b16d988dd26cdddb68d
+
+target-to-candidate name-status:
+  308 bytes
+  c75afb80934b6f473fcd0e4a2fd346b2b3df10ad9c7923af32b5f381d1ed6977
+
+public/assets/app.js:
+  325513 bytes
+  900f083ff0874c200ee13c6f87310a46140d08885256a0daa185288b214b929e
+```
+
+The locally regenerated binary diff and name-status contained exactly the accepted nine candidate paths. Every evidence run began and ended with `HEAD` equal to the candidate and a clean worktree. No tracked byte, candidate commit, generated asset, profiler, runner, validator, or package file changed during M3. / 本地重新生成的 binary diff 与 name-status 精确包含已接受的九个 candidate path。每次 evidence run 开始与结束时，`HEAD` 均等于 candidate 且 worktree clean。M3 期间没有修改任何 tracked byte、candidate commit、generated asset、profiler、runner、validator 或 package file。
+
+### 36.2 M3a focused Chromium causal evidence / M3a focused Chromium causal evidence
+
+The exact Wave 1D-A focused Chromium set passed `27/27`; the directly relevant inherited Wave 1B/1C controls passed `13/13`. The focused tests are authoritative for the new causal facts: one accepted mutation→one request-owned settlement; ordinary expanded body-only presentation; ordinary collapsed no-DOM adoption; eligible ordinary settlement with zero whole-Timeline replacement; one coherent Code Mode fallback; request/presentation error separation; transaction-owned selected-Inspector outcome; candidate-first geometry; real scroller preservation; and optional-observer absence/failure isolation. / 精确 Wave 1D-A focused Chromium set 通过 `27/27`；直接相关 inherited Wave 1B／1C control 通过 `13/13`。Focused test 是以下新 causal fact 的权威：one accepted mutation→one request-owned settlement、ordinary expanded body-only presentation、ordinary collapsed no-DOM adoption、eligible ordinary settlement 的 zero whole-Timeline replacement、一次 coherent Code Mode fallback、request／presentation error separation、transaction-owned selected-Inspector outcome、candidate-first geometry、真实 scroller preservation，以及 optional observer absence／failure isolation。
+
+The durable content-free focused artifacts are: / Durable content-free focused artifact 为：
+
+```text
+focused/focused-test-output.txt
+  5161 bytes
+  18587f326cbe2571bc5665cf7ad90da971ba31e69f15f302a651ec0d0cea6599
+
+focused/focused-summary.json
+  2470 bytes
+  027841badf9cf629fcc9161b2d4c691dae7f3765cdcf1181934aeebeb0ad93aa
+```
+
+### 36.3 M3b unchanged schema-4 checkpoint / M3b 不变 schema-4 checkpoint
+
+Only after M3a passed, M3 ran exactly one fresh schema-4 smoke and then exactly three fresh independent formal processes. Schema version remained `4`; smoke passed; formal acceptance was `3/3`; invalid count was `0`. No calibration, Wave 0 runner, Wave 1B validator, extra replacement run, numerical latency gate, or percentage-improvement gate ran. Schema-4 artifacts retain only existing generic fields and contain no Wave 1D-A settlement/body/scan ledger. / 仅在 M3a 通过后，M3 精确运行一次 fresh schema-4 smoke，随后精确运行三个 fresh independent formal process。Schema version 保持 `4`；smoke 通过；formal acceptance 为 `3/3`；invalid count 为 `0`。未运行 calibration、Wave 0 runner、Wave 1B validator、额外 replacement run、numerical latency gate 或 percentage-improvement gate。Schema-4 artifact 只保留既有 generic field，不包含 Wave 1D-A settlement／body／scan ledger。
+
+The raw schema-4 artifact identities are: / Raw schema-4 artifact identity 为：
+
+```text
+schema4/smoke.json
+  66499 bytes
+  32234ca4a468c3c47ef071b015bbe893c5f942db93a9e105f478ffc512b215c2
+
+schema4/run-01.json
+  66491 bytes
+  5cd4d4462b4cfe9935f8ff84c4d76b24d9c76f3a590b3620935e6227849c36d1
+
+schema4/run-02.json
+  66500 bytes
+  b6216d5fceeb650d6085e53938821e78b7776d64930ae3c226dd1d2848f8bfea
+
+schema4/run-03.json
+  66500 bytes
+  40d443c693e40de2449b5aee54d20e86f5b1a0b437b776ab85ce6e8b6a660a7c
+```
+
+The accepted candidate-specific late-hit structural result and its Wave 1C comparison are: / 已接受的 candidate-specific late-hit structural result 及其 Wave 1C comparison 为：
+
+```text
+                              Wave 1C                  Wave 1D-A
+cardGenerations               22800 / 24600 / 24600   1200 / 1200 / 1200
+Timeline-root observations    13 / 14 / 14            1 / 1 / 1
+timeline requests             8 / 8 / 8               8 / 8 / 8
+detail requests               8 / 8 / 8               8 / 8 / 8
+```
+
+Focused causal evidence proves eligible ordinary settlements generate no whole-prefix Timeline cards. The stable `1200` generic value is a fixture/candidate-specific structural observation for reviewer judgment, not a universal future threshold. Unchanged request counts show that the wave removed post-pagination ordinary-detail presentation amplification rather than canonical paging/detail request work. It does not explain every remaining Long Task. / Focused causal evidence 证明 eligible ordinary settlement 不生成 whole-prefix Timeline card。稳定的 generic `1200` 值是供 reviewer 判断的 fixture／candidate-specific structural observation，不是 universal future threshold。不变 request count 表明本 wave 移除的是 pagination 后 ordinary-detail presentation amplification，而不是 canonical paging／detail request work。它不解释每个剩余 Long Task。
+
+Formal timing medians `[min,max]` are descriptive only: / Formal timing 中位数 `[min,max]` 只作描述：
+
+```text
+preload
+  duration:             1053 ms [1053,1069]
+  Long Task total:        86 ms [86,139]
+
+late hit
+  duration:             1539 ms [1531,1541]
+  Long Task total:       548 ms [526,562]
+  Long Task count:         2 [2,2]
+  Long Task maximum:     413 ms [401,442]
+
+deep filter
+  duration:             1635 ms [1634,1635]
+  Long Task total:       362 ms [361,419]
+
+context reveal
+  duration:              599 ms [598,617]
+  Long Task total:         0 ms
+
+cold switch
+  duration:              968 ms [950,1018]
+  Long Task total:         0 ms
+```
+
+Resource Timing `durationTotal` medians `[min,max]` are preload timeline `71.6 [69.9,73]`; late-hit detail/timeline `309 [286.1,387.9]`／`111.9 [106.5,112]`; deep-filter timeline `12.8 [12.7,14.8]`; context event-envelope `2.6 [2.2,3.4]`; and cold-switch analysis/detail/file-suggestions/timeline `43.3 [41.7,48.5]`／`36.5 [32.4,48.6]`／`42.9 [41.4,48]`／`82.7 [80.6,96.2]`. / Resource Timing `durationTotal` 中位数 `[min,max]` 为 preload timeline `71.6 [69.9,73]`；late-hit detail／timeline `309 [286.1,387.9]`／`111.9 [106.5,112]`；deep-filter timeline `12.8 [12.7,14.8]`；context event-envelope `2.6 [2.2,3.4]`；cold-switch analysis／detail／file-suggestions／timeline `43.3 [41.7,48.5]`／`36.5 [32.4,48.6]`／`42.9 [41.4,48]`／`82.7 [80.6,96.2]`。
+
+### 36.4 Durable evidence integrity / Durable evidence integrity
+
+The repository-external candidate-keyed root is: / Repository-external candidate-keyed root 为：
+
+```text
+G:\vibe\session-analyzer-evidence\performance-wave-1d-a\
+ee210b38e699bf86a5f36b720fd399344692d68b
+```
+
+Final combined identities are: / 最终 combined identity 为：
+
+```text
+summary.json
+  44999 bytes
+  68a8cd068869a21c1899a7384f60351dbfde0dd800d60bb887410a727452ebcc
+
+manifest.json
+  2770 bytes
+  9cde262ea98dbe27672072db2eaa24d85abe76b77c1c6eb504cb4b0fe116eb3a
+```
+
+The manifest indexes nine artifacts and excludes itself. M3 independently replayed every indexed byte length and SHA-256, reparsed every raw artifact, recomputed structural/timing/Resource summaries, confirmed exact candidate/tree/base/bundle/diff identity, and passed the content-free privacy audit. No indexed artifact changed after manifest creation. / Manifest 索引九份 artifact 并排除自身。M3 独立 replay 每个 indexed byte length 与 SHA-256，重新 parse 每份 raw artifact，重算 structural／timing／Resource summary，确认精确 candidate／tree／base／bundle／diff identity，并通过 content-free privacy audit。Manifest 创建后没有修改任何 indexed artifact。
+
+---
+
+## 37. Fresh R2 candidate/evidence acceptance / Fresh R2 candidate／evidence acceptance
+
+Fresh independent R2 reviewed the real target-to-candidate diff in the correct direction, the exact nine-path envelope, generated bundle, request and presentation error-domain separation, one-request/one-settlement ownership, body-only/no-DOM ordinary presentation, Code Mode fallback, closed Inspector outcome, fixed-width token transaction, DOM-free mounted-token adoption, scoped search identity, candidate-first scan, optional observer boundaries, unchanged schema-4 tooling, M2 validation, M3 raw evidence, privacy, and manifest integrity. No executable repair or evidence recapture was required. / Fresh independent R2 以正确方向 review 真实 target-to-candidate diff、精确 nine-path envelope、generated bundle、request 与 presentation error-domain separation、one-request／one-settlement ownership、body-only／no-DOM ordinary presentation、Code Mode fallback、封闭 Inspector outcome、fixed-width token transaction、不访问 DOM 的 mounted-token adoption、scoped search identity、candidate-first scan、optional observer boundary、不变 schema-4 tooling、M2 validation、M3 raw evidence、privacy 与 manifest integrity。无需 executable repair 或 evidence recapture。
+
+The accepted M2 full validation was focused Node `21/21`, Wave 1D-A Chromium `27/27`, inherited Wave 1B/1C `13/13`, full Node `826/826`, full browser `190/190`, release Node `826/826`, and package smoke PASS for Codex, Claude Code, and DeepSeek Harness. R2 independently reran focused Node `21/21`, Wave 1D-A `27/27`, and inherited Wave 1B/1C `13/13`; every rerun passed and the worktree remained clean. / 已接受 M2 full validation 为 focused Node `21/21`、Wave 1D-A Chromium `27/27`、inherited Wave 1B／1C `13/13`、full Node `826/826`、full browser `190/190`、release Node `826/826`，以及 Codex、Claude Code、DeepSeek Harness package smoke PASS。R2 独立重跑 focused Node `21/21`、Wave 1D-A `27/27` 与 inherited Wave 1B／1C `13/13`；每项 rerun 均通过，worktree 保持 clean。
+
+Exact R2 verdict: / R2 精确 verdict：
+
+```text
+ACCEPTED_FOR_CANDIDATE
+INTEGRATION_READY
+SERVER_CHECKPOINT_NEXT
+```
+
+R2 accepts `cardGenerations = 1200` and one root observation in all three formal late-hit runs only as a fixture-specific candidate fact. The accepted causal conclusion is that ordinary detail settlement ceased whole-prefix generation. Browser Stage 2 is complete; the next checkpoint is server/cold-server assessment, not automatic Wave 1D-B or virtualization. / R2 仅把三个 formal late-hit run 中 `cardGenerations = 1200` 与一次 root observation 接受为 fixture-specific candidate fact。已接受 causal conclusion 是 ordinary detail settlement 已停止 whole-prefix generation。Browser Stage 2 已完成；下一 checkpoint 为 server／cold-server assessment，而不是自动进入 Wave 1D-B 或 virtualization。
+
+---
+
+## 38. M4 documentation-only closeout / M4 仅文档收口
+
+M4 was separately authorized after the immutable candidate and exact R2 verdict were accepted. It changes only the closed documentation envelope: remove this plan's active registration from `AGENTS.md`; update the bilingual Timeline performance design with the accepted Wave 1D-A architecture, identity, validation, evidence, Stage 2 completion, and server checkpoint; and move this complete plan without history loss from `docs/exec-plans/active/` to `docs/exec-plans/completed/`. / Immutable candidate 与精确 R2 verdict 获接受后，M4 获单独授权。它只修改封闭 documentation envelope：从 `AGENTS.md` 移除本 plan 的 active registration；以已接受 Wave 1D-A architecture、identity、validation、evidence、Stage 2 completion 与 server checkpoint 更新双语 Timeline performance design；并在不丢失历史的情况下，把本完整 plan 从 `docs/exec-plans/active/` 移至 `docs/exec-plans/completed/`。
+
+M4 performs no executable, test, generated, package, workflow, product-spec, profiler/tooling, server, query, or evidence change. It does not recapture profiling, create a server active plan, select a server implementation, push, open or update a PR, merge, publish, or release. The immutable profiled implementation remains candidate `ee210b38e699bf86a5f36b720fd399344692d68b`; the M4 closeout commit is a documentation-only child and must never be described as the profiled candidate. / M4 不执行 executable、test、generated、package、workflow、product-spec、profiler／tooling、server、query 或 evidence change。不 recapture profiling，不创建 server active plan，不选择 server implementation，也不 push、open／update PR、merge、publish 或 release。Immutable profiled implementation 继续为 candidate `ee210b38e699bf86a5f36b720fd399344692d68b`；M4 closeout commit 是 documentation-only child，绝不能描述为接受 profiling 的 candidate。
+
+Before closeout commit, M4 reopens the existing evidence read-only and requires the exact `summary.json` and `manifest.json` identities in Section 36.4. Documentation-safe validation and the final commit transaction are recorded below after they pass; any executable/generated delta or evidence mismatch blocks closeout. / Closeout commit 前，M4 以 read-only 方式重新打开既有 evidence，并要求第 36.4 节中的精确 `summary.json` 与 `manifest.json` identity。Documentation-safe validation 与最终 commit transaction 会在通过后记录于下方；任何 executable／generated delta 或 evidence mismatch 都阻止 closeout。
+
+```text
+npm run build:check:                         PASS — generated assets current
+git diff --check:                            PASS
+documentation link/path audit:               PASS
+active/completed registration audit:         PASS — active 0 / completed 1
+original plan headings preserved in order:   PASS — 92/92
+exact M4 changed-path audit:                  PASS — authorized four-path lifecycle only
+candidate-to-closeout executable delta:       ZERO
+evidence summary/manifest hash check:          PASS — all 9 entries replayed
+closeout parent:                              ee210b38e699bf86a5f36b720fd399344692d68b
+```
+
+The exact M4 lifecycle paths are `AGENTS.md`, `docs/design-docs/timeline-loading-and-rendering-performance.md`, deletion of the active plan path, and addition of this completed plan path. There is zero candidate-to-closeout diff in `src/**`, `test/**`, `e2e/**`, `public/assets/**`, `scripts/**`, `server.js`, package/lockfiles, workflows, or product specs. The active Wave 1D-A registration count is zero, the completed archive count is one, no server/cold active plan exists, and every one of the original 92 plan headings remains present in order. / 精确 M4 lifecycle path 为 `AGENTS.md`、`docs/design-docs/timeline-loading-and-rendering-performance.md`、删除 active plan path，以及新增本 completed plan path。`src/**`、`test/**`、`e2e/**`、`public/assets/**`、`scripts/**`、`server.js`、package／lockfile、workflow 或 product spec 的 candidate-to-closeout diff 为零。Active Wave 1D-A registration count 为零，completed archive count 为一，不存在 server／cold active plan，并且原始 92 个 plan heading 全部按原顺序保留。
+
+The existing evidence was reopened read-only immediately before closeout. `summary.json` remains `44999` bytes／SHA-256 `68a8cd068869a21c1899a7384f60351dbfde0dd800d60bb887410a727452ebcc`; `manifest.json` remains `2770` bytes／SHA-256 `9cde262ea98dbe27672072db2eaa24d85abe76b77c1c6eb504cb4b0fe116eb3a`; the self-excluding manifest still indexes nine artifacts and all nine byte lengths/hashes replay exactly. No profiling, evidence capture, or artifact mutation occurred. / Closeout 前立即以 read-only 方式重新打开既有 evidence。`summary.json` 继续为 `44999` bytes／SHA-256 `68a8cd068869a21c1899a7384f60351dbfde0dd800d60bb887410a727452ebcc`；`manifest.json` 继续为 `2770` bytes／SHA-256 `9cde262ea98dbe27672072db2eaa24d85abe76b77c1c6eb504cb4b0fe116eb3a`；排除自身的 manifest 继续索引九份 artifact，全部九项 byte length／hash 均精确 replay。未执行 profiling、evidence capture 或 artifact mutation。
+
+M4 creates exactly one documentation-only closeout commit directly on immutable candidate `ee210b38e699bf86a5f36b720fd399344692d68b` and leaves a clean worktree. Its SHA/tree are reported in the executor handoff because a commit cannot contain its own cryptographic identity without circularity. No push, PR, merge, publish, or release is part of M4. M4 result after that commit: `PASS_M4_READY_FOR_REMOTE_INTEGRATION`. / M4 在 immutable candidate `ee210b38e699bf86a5f36b720fd399344692d68b` 之上直接创建精确一个 documentation-only closeout commit，并留下 clean worktree。由于 commit 无法在自身内容中包含其 cryptographic identity 而不形成循环，其 SHA／tree 会在 executor handoff 中报告。M4 不包含 push、PR、merge、publish 或 release。该 commit 后的 M4 结果：`PASS_M4_READY_FOR_REMOTE_INTEGRATION`。
