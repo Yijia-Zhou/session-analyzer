@@ -48,7 +48,6 @@ When changing product behavior or repository structure:
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Transcript source adapters: `docs/design-docs/transcript-source-adapters.md`
 - Indexed/Materialized Session lifecycle: `docs/design-docs/indexed-materialized-session-lifecycle.md`
-- Performance Server S1 Project Scope q-active scan: `docs/exec-plans/active/2026-08-31-performance-server-s1-project-q-scan.md`
 - Active execution plans (authoritative directory): `docs/exec-plans/active/`
 - Completed execution plans (authoritative archive; not itemized here): `docs/exec-plans/completed/`
 

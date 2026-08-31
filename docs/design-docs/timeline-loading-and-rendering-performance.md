@@ -413,18 +413,146 @@ This checkpoint does not authorize Wave 1D-B, Code Mode multi-owner detail patch
 
 ### Stage 3: server/cold-server residual checkpoint / 阶段 3：server／cold-server residual checkpoint
 
-The next performance task is a fresh server/cold residual assessment or equivalent planning checkpoint, not an already selected implementation and not an active plan created by this closeout. It must keep distinct the current costs and ownership of: / 下一项 performance task 是 fresh server／cold residual assessment 或等价 planning checkpoint，而不是已经选定的 implementation，也不是本 closeout 创建的 active plan。它必须区分以下当前 cost 与 ownership：
+#### Server Wave S1: Project Scope q-active scan narrowing — COMPLETE / Server Wave S1：Project Scope q-active 扫描收窄——完成
 
+Server Wave S1 is complete under `docs/exec-plans/completed/2026-08-31-performance-server-s1-project-q-scan.md`. It changes one shared boolean Event-hit boundary while preserving every exact-count consumer and Project Scope result semantic. / Server Wave S1 已在 `docs/exec-plans/completed/2026-08-31-performance-server-s1-project-q-scan.md` 下完成。它只改变一个 shared boolean Event-hit boundary，同时保留每个 exact-count consumer 与 Project Scope result semantic。
+
+```text
+Before:
+Project Scope boolean Event hit
+→ eventSearchMatchCount(...)
+→ enumerate all occurrences
+→ compare count > 0
+
+After:
+Project Scope/shared boolean Event hit
+→ direct non-global short-circuit existence test
+→ preview first
+→ searchText only on preview miss
+```
+
+`eventHasSearchHit()` now means boolean existence. `eventSearchMatchCount()` still means exact occurrence count; S1 does not remove occurrence counting globally. The implementation continues to compile `searchPhraseRegex(q)` and evaluates non-global `regex.test(preview) || regex.test(searchText)`, with JavaScript short-circuiting the second field after a preview hit. `searchPhraseRegex()`, `countSearchMatches()`, and `eventSearchMatchCount()` remain unchanged. No query-level matcher cache or retained matcher state was added. Production behavior changed only in `src/session-query.js`; there is no source-specific optimization branch. / `eventHasSearchHit()` 现在表示 boolean existence。`eventSearchMatchCount()` 仍表示 exact occurrence count；S1 并未全局移除 occurrence counting。Implementation 继续编译 `searchPhraseRegex(q)`，并计算 non-global `regex.test(preview) || regex.test(searchText)`；preview 命中后，JavaScript 会 short-circuit 第二个 field。`searchPhraseRegex()`、`countSearchMatches()` 与 `eventSearchMatchCount()` 保持不变。未增加 query-level matcher cache 或 retained matcher state。Production behavior 仅在 `src/session-query.js` 中改变；不存在 source-specific optimization branch。
+
+Exact result semantics remain: / 精确 result semantic 保持如下：
+
+| Contract / 契约 | Preserved meaning / 保留含义 |
+| --- | --- |
+| Project Scope `matchingEventTotal` | Matching Event count, not text occurrences / Matching Event count，而非 text occurrence |
+| Session `searchMatch.eventCount` | Matching Event count within that Session / 该 Session 内的 matching Event count |
+| Current Session `searchMatchCount` | Exact text occurrence count / 精确 text occurrence count |
+| Current Session `searchEventCount` | Matching Event count / Matching Event count |
+
+Project Scope does not require a corpus-wide text-occurrence total. Latest Event selection, structural-filter `timelineIndex`, result ordering, snippet content, and result DTO semantics are unchanged. / Project Scope 不需要 corpus-wide text-occurrence total。Latest Event selection、structural-filter `timelineIndex`、result ordering、snippet content 与 result DTO semantic 均保持不变。
+
+M0 classified the q-active cost as `Q7 — mixed`: / M0 把 q-active cost 分类为 `Q7 — mixed`：
+
+| Layer/category / Layer／类别 | Accepted attribution / 已接受归因 |
+| --- | --- |
+| Main | Q3 frame/string materialization + Q4 full occurrence counting |
+| Protocol / Raw | Q2 gzip/text decode + Q3 frame/string materialization + Q4 full occurrence counting |
+| Q1 metadata/shard traversal | Secondary / 次要 |
+| Q5 aggregation | Not material / 不显著 |
+| Q6 presentation | Not material / 不显著 |
+
+The privacy-safe absent-query scale anchor was descriptive only: / 隐私安全的 absent-query scale anchor 仅作描述：
+
+| Layer / 层 | Rows / Row 数 | Production query median / Production query 中位数 |
+| --- | ---: | ---: |
+| Main | 87,843 | 720.481 ms |
+| Protocol | 192,078 | 1,166.837 ms |
+| Raw | 375,761 | 2,696.793 ms |
+
+That sealed snapshot contained 581 Sessions and a `ProjectQueryStore` with 1,360,674,546 accounted bytes. These measurements are scale observations, not regression thresholds. / 该 sealed snapshot 包含 581 个 Session，`ProjectQueryStore` accounted bytes 为 1,360,674,546。这些 measurement 是 scale observation，不是 regression threshold。
+
+The deterministic synthetic fixture contains 9,216 Main rows, 12 identity chunks, and 23,154,240 text bytes. Same-fixture timing remained descriptive: / 确定性 synthetic fixture 包含 9,216 个 Main row、12 个 identity chunk 与 23,154,240 text bytes。同 fixture timing 继续只作描述：
+
+| Query class / Query 类别 | Full-occurrence model / Full-occurrence model | Short-circuit model / Short-circuit model |
+| --- | ---: | ---: |
+| absent | 53.005 ms | 31.505 ms |
+| sparse | 47.755 ms | 31.293 ms |
+| dense | 64.552 ms | 20.939 ms |
+
+The structural evidence is authoritative: / Structural evidence 为权威事实：
+
+| Query class / Query 类别 | Hit Events | Occurrences | Avoided work / 避免的工作 |
+| --- | ---: | ---: | --- |
+| absent | 0 | 0 | No hit-dependent work / 无 hit-dependent work |
+| sparse | 96 | 96 | 48 second-field searches avoided / 避免 48 次 second-field search |
+| dense | 9,216 | 294,912 | 9,216 second-field searches and 285,696 occurrence iterations avoided / 避免 9,216 次 second-field search 与 285,696 次 occurrence iteration |
+
+The hard causal acceptance fact is not a timing percentage: boolean Project Scope hit detection no longer performs full occurrence enumeration. A packed q-active regression completed with exactly zero `String.prototype.matchAll` calls; a separate observer proved the exact preview-first field-test sequence. Current Session retained `searchMatchCount = 4` and `searchEventCount = 1`, while whitespace-only `q` retained false hit semantics. / Hard causal acceptance fact 不是 timing percentage：boolean Project Scope hit detection 不再执行 full occurrence enumeration。Packed q-active regression 在 `String.prototype.matchAll` 调用精确为零时完成；独立 observer 证明精确 preview-first field-test sequence。Current Session 保留 `searchMatchCount = 4` 与 `searchEventCount = 1`，whitespace-only `q` 继续保持 false hit semantic。
+
+Source-neutral parity remained exact: / Source-neutral parity 保持精确：
+
+| Source / 来源 | Accepted vectors / 已接受 vector |
+| --- | --- |
+| Codex | 5 packed/resident filter + 2 suggestion vectors |
+| Claude Code | 6 packed/resident vectors |
+| DeepSeek Harness | 6 packed/resident vectors |
+| Registered-adapter conformance | 6 / 6 source/scenario subtests |
+
+The immutable implementation candidate is: / Immutable implementation candidate 为：
+
+| Identity / Identity | Value / 值 |
+| --- | --- |
+| Candidate | `9188aaffee92766df70a1086c987032607ecc167` |
+| Tree | `dd10793c2783d151d5fb2c314bf70bab661daf45` |
+| Parent/base | `f9eaa5f686e98d814c3e3ac29c2ff3cc3ba1e7aa` |
+| Canonical diff bytes | `120648` |
+| Canonical diff SHA-256 | `e32bc55bcd837d8a0c264a3eb6176fceee516ddf812b131c2ae0020f8f4b7cdb` |
+
+Its exact implementation-candidate paths are: / 其精确 implementation-candidate path 为：
+
+- `AGENTS.md`
+- `docs/exec-plans/active/2026-08-31-performance-server-s1-project-q-scan.md`
+- `scripts/project-query-store-profile.js`
+- `src/session-query.js`
+- `test/project-query-store-profile.test.js`
+- `test/session-query-store.test.js`
+
+The later M5 documentation-only closeout is a direct child and is not the implementation candidate. M3 candidate validation is exact: / 后续 M5 documentation-only closeout 是 direct child，并非 implementation candidate。M3 candidate validation 精确如下：
+
+| Gate / Gate | Result / 结果 |
+| --- | --- |
+| Syntax | 4 / 4 |
+| Focused | 68 / 68 |
+| Full Node | 832 / 832 |
+| Full browser | 190 / 190 |
+| Release Node | 832 / 832 |
+| Package smoke — Codex | PASS |
+| Package smoke — Claude Code | PASS |
+| Package smoke — DeepSeek Harness | PASS |
+| `npm run build:check` | PASS |
+| `git diff --check` | PASS |
+
+The locked dependency restore and sandbox registry retry were environmental setup history; neither changed a manifest, and the complete approved gates passed. / Locked dependency restore 与 sandbox registry retry 属于环境设置历史；二者都未改变 manifest，且完整获准 gate 最终通过。
+
+The first M4 review was temporarily blocked as `BLOCKED_S1_M4_CANDIDATE_IDENTITY_MISMATCH` because that reviewer inspected the repository-root worktree rather than the dedicated candidate worktree. The candidate object already had the correct tree, parent, diff identity, and six-path envelope; no candidate repair or replacement occurred. A fresh candidate-bound review returned exactly: / 首次 M4 review 暂时以 `BLOCKED_S1_M4_CANDIDATE_IDENTITY_MISMATCH` 阻塞，因为该 reviewer 检查了 repository-root worktree，而不是 dedicated candidate worktree。Candidate object 当时已具有正确 tree、parent、diff identity 与 six-path envelope；未发生 candidate repair 或 replacement。Fresh candidate-bound review 精确返回：
+
+```text
+ACCEPTED_FOR_CANDIDATE
+INTEGRATION_READY
+S1_SCOPE_COMPLETE
+```
+
+```text
+Server Wave S1: COMPLETE
+```
+
+S1 does not solve every Project Scope q-active cost. Q2 gzip/text decode and Q3 frame/string materialization remain measured, unimplemented residuals; they are observations, not an automatically authorized S2. S1 also does not promote query caching, query-extension reuse, chunk-negative metadata, inverted indexes, worker pools, or persistent stores. / S1 并未解决每项 Project Scope q-active cost。Q2 gzip／text decode 与 Q3 frame／string materialization 仍是已测量、未实现的 residual；它们只是 observation，不会自动获准成为 S2。S1 也不推进 query caching、query-extension reuse、chunk-negative metadata、inverted index、worker pool 或 persistent store。
+
+#### Next server/cold-server checkpoint / 下一 server／cold-server checkpoint
+
+The next performance decision is again a fresh server/cold-server assessment or equivalent planning checkpoint, not an already selected implementation and not an active plan created by S1 closeout. It must keep distinct the current costs and ownership of: / 下一项 performance decision 仍是 fresh server／cold-server assessment 或等价 planning checkpoint，而不是已选定的 implementation，也不是 S1 closeout 创建的 active plan。它必须区分以下当前 cost 与 ownership：
+
+- Project Scope Q2/Q3 residual; / Project Scope Q2／Q3 residual；
 - cold source/index build; / cold source／index build；
 - commit validation; / commit validation；
 - cold Session materialization; / cold Session materialization；
-- warm Project Scope repeated-query work retained by `ProjectQueryStore`; / `ProjectQueryStore` 保留的 warm Project Scope repeated-query work；
 - Raw DTO/filter construction; and / Raw DTO／filter construction；以及
 - detail/reference lookup work. / detail／reference lookup work。
 
-The per-revision exact-identity Materialized Session warm cache, request coalescing/scheduling, and source-neutral weighted LRU already solve exact warm Session reuse at that layer. The server checkpoint must not propose another Session cache as if this ownership were absent. It should inspect current source and accepted cold evidence, measure frequency and user-blocking impact rather than rank by raw milliseconds alone, and select at most one coherent first boundary only after that assessment. / Per-revision exact-identity Materialized Session warm cache、request coalescing／scheduling 与 source-neutral weighted LRU 已在该 layer 解决 exact warm Session reuse。Server checkpoint 不得在忽略该 ownership 的情况下再次提出另一个 Session cache。它应检查当前源码与已接受 cold evidence，按 frequency 与 user-blocking impact 评估，而不是只按 raw milliseconds 排序；只有在该 assessment 后才选择至多一个 coherent initial boundary。
-
-Server optimization now follows the completed browser checkpoint, but no specific validation/build, repeated-query/index, Raw DTO, or lookup optimization is selected or authorized here. / Server optimization 现于已完成 browser checkpoint 后继续，但本文不选择或授权具体 validation／build、repeated-query／index、Raw DTO 或 lookup optimization。
+The decision must compare frequency, user-blocking impact, absolute cost, implementation risk, retained-memory cost, and ownership boundaries rather than selecting Q2/Q3 merely because S1 measured them. The per-revision exact-identity Materialized Session warm cache, request coalescing/scheduling, and source-neutral weighted LRU already solve exact warm Session reuse at that layer; a future checkpoint must not propose another Session cache as if this ownership were absent. No specific next optimization is selected or authorized here. / Decision 必须比较 frequency、user-blocking impact、absolute cost、implementation risk、retained-memory cost 与 ownership boundary，而不能仅因 S1 已测量 Q2／Q3 就选择它们。Per-revision exact-identity Materialized Session warm cache、request coalescing／scheduling 与 source-neutral weighted LRU 已在该 layer 解决 exact warm Session reuse；未来 checkpoint 不得在忽略该 ownership 的情况下再次提出另一个 Session cache。本文不选择或授权任何具体 next optimization。
 
 ### Stage 4: decide whether virtualization is still necessary / 阶段 4：决定是否仍需虚拟化
 
