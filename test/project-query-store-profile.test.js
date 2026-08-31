@@ -7,15 +7,20 @@ const path = require('node:path');
 const test = require('node:test');
 const {
   PRIVATE_PROOF_VERSION,
+  S1_M0_BASELINE_SHA,
   computePrivateSnapshotDigest,
   enumeratePrivateSnapshotFiles,
   invocationTemplate,
+  m0CliErrorLine,
   parseArgs,
+  parseM0Args,
   privateCliErrorLine,
+  profileM0Synthetic,
   publicOptions,
   selectMaterializationCandidates,
   snapshotProofVerdict,
   timingStats,
+  validateM0Artifact,
   validatePrivateArtifact,
   validatePrivateSummary,
 } = require('../scripts/project-query-store-profile');
@@ -59,6 +64,172 @@ test('project query profile reports exact repeat count, median, and range', () =
     inputRole: 'external-private-copy',
     outputRole: 'external-artifact-directory',
   });
+});
+
+test('S1 M0 parser keeps synthetic and sealed-private modes distinct', () => {
+  assert.deepEqual(parseM0Args([
+    '--m0-q-scan', 'synthetic',
+    '--repeats', '2',
+  ]), {
+    profileKind: 'synthetic',
+    source: 'synthetic',
+    repo: '',
+    sourceHome: '',
+    repeats: 2,
+    snapshotGroup: 'synthetic',
+    adapter: null,
+  });
+  const privateOptions = parseM0Args([
+    '--m0-q-scan', 'private',
+    '--source', 'codex',
+    '--repo', 'private-project',
+    '--source-home', 'private-copy',
+    '--snapshot-group', 's1-m0-a',
+    '--repeats', '3',
+  ]);
+  assert.equal(privateOptions.profileKind, 'private');
+  assert.equal(privateOptions.source, 'codex');
+  assert.equal(privateOptions.repeats, 3);
+  assert.equal(privateOptions.snapshotGroup, 's1-m0-a');
+  assert.equal(privateOptions.adapter.kind, 'codex');
+  assert.throws(
+    () => parseM0Args(['--m0-q-scan', 'private', '--source', 'codex', '--repo', '.']),
+    { code: 'INVALID_PROFILE_ARGUMENT' },
+  );
+  assert.equal(
+    m0CliErrorLine(new Error('private path and source text')),
+    'PERFORMANCE_SERVER_S1_M0_ERROR:M0_PROFILE_FAILURE\n',
+  );
+});
+
+test('S1 M0 synthetic attribution is exact for absent, sparse, and dense q classes', async () => {
+  const artifact = await profileM0Synthetic({
+    repeats: 1,
+    fixtureOptions: {
+      sessionCount: 2,
+      rowsPerSession: 6,
+      sparseEvery: 4,
+      densePreviewOccurrences: 2,
+      denseSearchTextOccurrences: 3,
+    },
+  });
+  assert.equal(validateM0Artifact(artifact), true);
+  assert.equal(artifact.baselineSha, S1_M0_BASELINE_SHA);
+  assert.deepEqual(artifact.corpus.rowCounts, { main: 12, protocol: 0, raw: 0 });
+  assert.equal(artifact.corpus.sessionCount, 2);
+  assert.equal(artifact.acceptance.structural, true);
+  assert.deepEqual(artifact.abort, {
+    layer: 'main',
+    abortRequested: true,
+    abortObserved: true,
+    rowsProcessedBeforeAbort: 6,
+    textChunksProcessedBeforeAbort: 1,
+    textChunksDecodedBeforeAbort: 1,
+    abortToSettlementMs: artifact.abort.abortToSettlementMs,
+  });
+  assert.ok(artifact.abort.abortToSettlementMs >= 0);
+
+  const { absent, sparse, dense } = artifact.layers.main.queryClasses;
+  const structural = {
+    eligibleSessions: 2,
+    sessionsScanned: 2,
+    rowsScanned: 12,
+    structurallyEligibleRows: 12,
+    textChunksDecoded: 2,
+    identityTextChunks: 2,
+    gzipTextChunks: 0,
+    compressedTextBytes: 18270,
+    uncompressedTextBytes: 18270,
+  };
+  for (const result of [absent, sparse, dense]) {
+    assert.deepEqual(
+      Object.fromEntries(Object.keys(structural).map((field) => [field, result.metrics[field]])),
+      structural,
+    );
+    assert.equal(result.metrics.previewSearchInvocations, 12);
+    assert.equal(result.metrics.searchTextSearchInvocations, 12);
+    assert.equal(result.metrics.booleanHitChecks, 12);
+    assert.equal(result.parity.profilerModelMatchesProduction, true);
+    assert.equal(result.parity.shortCircuitMatchesCurrent, true);
+    assert.equal(result.candidateAssessment.exactProjectResultParity, true);
+    assert.equal(result.phaseTimings.gzipDecodeOnly, null);
+    assert.equal(result.phaseTimings.latestResultPresentationHydration, null);
+    assert.equal(result.phaseTimings.productionProjectScopeQuery.repeatCount, 1);
+  }
+
+  assert.deepEqual({
+    rowsHit: absent.metrics.rowsHit,
+    matchingEvents: absent.metrics.matchingEvents,
+    matchingSessions: absent.metrics.matchingSessions,
+    fullOccurrenceIterations: absent.metrics.fullOccurrenceIterations,
+    candidateSearchTextInvocations: absent.candidateAssessment.searchTextSearchInvocations,
+  }, {
+    rowsHit: 0,
+    matchingEvents: 0,
+    matchingSessions: 0,
+    fullOccurrenceIterations: 0,
+    candidateSearchTextInvocations: 12,
+  });
+  assert.deepEqual({
+    rowsHit: sparse.metrics.rowsHit,
+    matchingEvents: sparse.metrics.matchingEvents,
+    matchingSessions: sparse.metrics.matchingSessions,
+    latestEventSelections: sparse.metrics.latestEventSelections,
+    latestEventComparisons: sparse.metrics.latestEventComparisons,
+    fullOccurrenceIterations: sparse.metrics.fullOccurrenceIterations,
+    candidateSearchTextInvocations: sparse.candidateAssessment.searchTextSearchInvocations,
+    candidateSearchTextInvocationsAvoided: sparse.candidateAssessment.searchTextInvocationsAvoided,
+  }, {
+    rowsHit: 3,
+    matchingEvents: 3,
+    matchingSessions: 2,
+    latestEventSelections: 3,
+    latestEventComparisons: 1,
+    fullOccurrenceIterations: 3,
+    candidateSearchTextInvocations: 10,
+    candidateSearchTextInvocationsAvoided: 2,
+  });
+  assert.deepEqual({
+    rowsHit: dense.metrics.rowsHit,
+    matchingEvents: dense.metrics.matchingEvents,
+    matchingSessions: dense.metrics.matchingSessions,
+    latestEventSelections: dense.metrics.latestEventSelections,
+    latestEventComparisons: dense.metrics.latestEventComparisons,
+    previewMatchOccurrences: dense.metrics.previewMatchOccurrences,
+    searchTextMatchOccurrences: dense.metrics.searchTextMatchOccurrences,
+    fullOccurrenceIterations: dense.metrics.fullOccurrenceIterations,
+    candidateSearchTextInvocations: dense.candidateAssessment.searchTextSearchInvocations,
+    candidateSearchTextInvocationsAvoided: dense.candidateAssessment.searchTextInvocationsAvoided,
+    fullOccurrenceIterationsAvoided: dense.candidateAssessment.fullOccurrenceIterationsAvoided,
+  }, {
+    rowsHit: 12,
+    matchingEvents: 12,
+    matchingSessions: 2,
+    latestEventSelections: 12,
+    latestEventComparisons: 10,
+    previewMatchOccurrences: 24,
+    searchTextMatchOccurrences: 36,
+    fullOccurrenceIterations: 60,
+    candidateSearchTextInvocations: 0,
+    candidateSearchTextInvocationsAvoided: 12,
+    fullOccurrenceIterationsAvoided: 48,
+  });
+
+  const serialized = JSON.stringify(artifact);
+  assert.equal(serialized.includes('synthetic-session-'), false);
+  assert.equal(serialized.includes('synthetic-event-'), false);
+  assert.equal(serialized.includes('__session_analyzer_'), false);
+  assert.throws(
+    () => validateM0Artifact({ ...artifact, unexpected: true }),
+    /closed nested schema/,
+  );
+  const mislabeledAbsent = structuredClone(artifact);
+  mislabeledAbsent.layers.main.queryClasses.absent.metrics.rowsHit = 1;
+  mislabeledAbsent.layers.main.queryClasses.absent.metrics.matchingEvents = 1;
+  assert.throws(
+    () => validateM0Artifact(mislabeledAbsent),
+    /cross-field accounting is invalid/,
+  );
 });
 
 function minimalPrivateArtifact() {
