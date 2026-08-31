@@ -47,6 +47,15 @@
     targets.forEach((target) => { target.bindings = { timeline: [], inspector: [] }; });
   }
 
+  function resetSurfaceBindings(target, surface) {
+    if (!['timeline', 'inspector'].includes(surface)
+        || !target?.bindings || !Object.hasOwn(target.bindings, surface)) return null;
+    const previous = target.bindings[surface];
+    if (!Array.isArray(previous)) return null;
+    target.bindings[surface] = [];
+    return previous;
+  }
+
   function bind(target, surface, node) {
     if (!target || !Object.hasOwn(target.bindings, surface)) return false;
     target.bindings[surface].push(node);
@@ -73,6 +82,7 @@
     discoveryOutcome,
     liveBinding,
     resetBindings,
+    resetSurfaceBindings,
     targetId,
     targetOrder,
   };

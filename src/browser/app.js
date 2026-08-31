@@ -47,6 +47,9 @@ const requestOwners = {
 };
 const paginationIntents = transitionSafety.createPaginationIntentState();
 const detailRequestControllers = new Map();
+const DETAIL_REQUEST_TRANSACTION = Symbol('detailRequestTransaction');
+let nextObservedDetailRequestSerial = 1;
+let nextObservedVisibleDetailScanSerial = 1;
 
 const NAVIGATION_PAGE_LIMIT = 500;
 const NAVIGATION_BACKGROUND_PAGE_HANDOFF_MS = 500;
@@ -328,9 +331,70 @@ function notifyTimelineLifecycleObserver(methodName, createPayload) {
   try {
     observer = globalThis.__sessionAnalyzerTimelineLifecycleObserver;
   } catch {
-    return;
+    return false;
   }
-  timelineCardLifecycleApi.notifyObserverSafely(observer, methodName, createPayload);
+  return timelineCardLifecycleApi.notifyObserverSafely(observer, methodName, createPayload);
+}
+
+function timelineLifecycleObserverMethodIsCallable(methodName) {
+  try {
+    const observer = globalThis.__sessionAnalyzerTimelineLifecycleObserver;
+    return typeof observer?.[methodName] === 'function';
+  } catch {
+    return false;
+  }
+}
+
+function observedDetailRequestSerial(transaction) {
+  if (!Object.hasOwn(transaction, 'observerSerial')) {
+    transaction.observerSerial = nextObservedDetailRequestSerial;
+    nextObservedDetailRequestSerial += 1;
+  }
+  return transaction.observerSerial;
+}
+
+function recordDetailRequestObservation(transaction, phase, fields = {}) {
+  return notifyTimelineLifecycleObserver('recordDetailRequest', () => ({
+    requestSerial: observedDetailRequestSerial(transaction),
+    phase,
+    requestCreated: phase === 'requestCreated',
+    requestReused: phase === 'requestReused',
+    acceptedMutation: fields.acceptedMutation || 'none',
+    presentationSettlement: phase === 'presentationSettlement',
+    settlementOutcome: fields.settlementOutcome || 'none',
+    presentationErrorStage: fields.presentationErrorStage || 'none',
+    acceptedStateReclassified: fields.acceptedStateReclassified === true,
+    presentationFailed: fields.presentationFailed === true,
+  }));
+}
+
+function recordDetailBodyObservation(transaction, createFields) {
+  notifyTimelineLifecycleObserver('recordDetailBody', () => {
+    const fields = createFields();
+    return {
+      requestSerial: observedDetailRequestSerial(transaction),
+      eventClassification: fields.eventClassification,
+      expanded: fields.expanded === true,
+      bodyPresent: fields.bodyPresent === true,
+      articleIdentityPreserved: fields.articleIdentityPreserved === true,
+      contextSlotIdentityPreserved: fields.contextSlotIdentityPreserved === true,
+      headerIdentityPreserved: fields.headerIdentityPreserved === true,
+      toggleIdentityPreserved: fields.toggleIdentityPreserved === true,
+      previewIdentityPreserved: fields.previewIdentityPreserved === true,
+      footerIdentityPreserved: fields.footerIdentityPreserved === true,
+    };
+  });
+}
+
+function recordVisibleDetailScanObservation(fields) {
+  notifyTimelineLifecycleObserver('recordVisibleDetailScan', () => ({
+    scanSerial: nextObservedVisibleDetailScanSerial++,
+    mountedArticleCount: fields.mountedArticleCount,
+    candidateArticleCount: fields.candidateArticleCount,
+    articleGeometryReadCount: fields.articleGeometryReadCount,
+    scrollportGeometryReadCount: fields.scrollportGeometryReadCount,
+    ensuredDetailCount: fields.ensuredDetailCount,
+  }));
 }
 
 function advancePresentationRevision(field) {
@@ -1956,6 +2020,111 @@ function refreshSearchHighlights(options = {}) {
   }
   convergeSelectedEventDetailView();
   if (options.allowPreload !== false) maybePreloadSearchTargets();
+}
+
+function prepareScopedSearchOwnerRefresh(surface, ownerId, root) {
+  if (!['timeline', 'inspector'].includes(surface) || !root?.isConnected) {
+    throw new Error('Scoped search owner is not mounted');
+  }
+  const query = currentSearchState().q;
+  if (state.searchScope !== 'session'
+      || !searchDiscoveryContextReady()
+      || state.searchHighlight.query !== query
+      || state.searchTargetRegistry.key !== searchTargetKey()) {
+    throw new Error('Scoped search context is stale');
+  }
+  const expectedSurfaceContext = surface === 'timeline'
+    ? timelineSearchSurfaceContextKey()
+    : detailSearchSurfaceContextKey();
+  if (state.searchSurfaceContexts[surface === 'timeline' ? 'timeline' : 'detail']
+      !== expectedSurfaceContext) {
+    throw new Error('Scoped search surface is stale');
+  }
+  const rootMarks = [...root.querySelectorAll('mark.searchMark')];
+  const trackedMarks = new Set(state.searchHighlight.marks);
+  if (rootMarks.some((mark) => !trackedMarks.has(mark))) {
+    throw new Error('Scoped search marks are not tracked');
+  }
+  const targets = state.searchTargetRegistry.targets.filter((target) => target.ownerId === ownerId);
+  if (targets.length > 1) throw new Error('Scoped search owner has duplicate canonical targets');
+  const target = targets[0] || null;
+  const terms = highlightTerms();
+  const canonicalEvent = canonicalTimelineEvent(ownerId);
+  if (terms.length && canonicalEvent?.hasSearchHit && !target) {
+    throw new Error('Scoped search owner is missing its canonical target');
+  }
+  if (target) {
+    const bindings = target.bindings?.[surface];
+    if (!Array.isArray(bindings)
+        || bindings.some((node) => !node?.isConnected || !root.contains(node))) {
+      throw new Error('Scoped search target bindings are stale');
+    }
+    const boundMarks = rootMarks.filter((mark) => mark.dataset.searchTargetId === target.id);
+    if (rootMarks.length !== bindings.length
+        || boundMarks.length !== bindings.length
+        || boundMarks.some((mark) => !bindings.includes(mark))) {
+      throw new Error('Scoped search target binding parity failed');
+    }
+  } else if (rootMarks.some((mark) => mark.dataset.searchTargetId)) {
+    throw new Error('Scoped visual marks reference an unknown target');
+  }
+  return {
+    surface,
+    ownerId,
+    root,
+    rootMarks,
+    target,
+    targetBindings: target?.bindings[surface] || null,
+    terms,
+  };
+}
+
+function detachScopedSearchOwner(prepared) {
+  const affectedMarks = new Set(prepared.rootMarks);
+  state.searchHighlight = {
+    query: state.searchHighlight.query,
+    marks: state.searchHighlight.marks.filter((mark) => !affectedMarks.has(mark)),
+  };
+  if (prepared.target) {
+    const removed = searchTargets.resetSurfaceBindings(prepared.target, prepared.surface);
+    if (removed !== prepared.targetBindings) {
+      throw new Error('Scoped search target reset failed');
+    }
+  }
+  searchHighlighter.clear(prepared.root);
+}
+
+function applyScopedSearchOwner(prepared, root = prepared.root) {
+  if (!root?.isConnected) throw new Error('Scoped search replacement root is not mounted');
+  const marks = prepared.terms.length ? searchHighlighter.apply(root, prepared.terms) : [];
+  if (prepared.target) {
+    const owner = { surface: prepared.surface, ownerId: prepared.ownerId, root };
+    marks.forEach((mark, occurrence) => {
+      if (!bindSearchTarget(owner, occurrence, mark, new Map([[prepared.target.id, prepared.target]]))) {
+        throw new Error('Scoped search target rebind failed');
+      }
+    });
+  }
+  state.searchHighlight = {
+    query: state.searchHighlight.query,
+    marks: [...state.searchHighlight.marks, ...marks],
+  };
+  return marks;
+}
+
+function restoreScopedActiveSearchPresentation(ownerId, refreshedSurfaces) {
+  const target = activeSearchTarget();
+  if (target?.ownerId === ownerId) {
+    for (const surface of refreshedSurfaces) {
+      for (const mark of target.bindings?.[surface] || []) {
+        mark.classList.remove('activeSearchMark');
+      }
+    }
+    const liveMark = liveSearchTargetNode(target);
+    if (liveMark && !liveMark.classList.contains('activeSearchMark')) {
+      liveMark.classList.add('activeSearchMark');
+    }
+  }
 }
 
 function refreshAppendedSearchHighlights(suffixEvents, owners, baseTimelineIndex, expectedSearchKey) {
@@ -5992,58 +6161,501 @@ function setOverride(eventId, value) {
   updateResetFoldsButton();
 }
 
+function closedDetailRequestResult({
+  requestOutcome,
+  acceptedMutation = false,
+  settlementOutcome = 'none',
+  presentationFailed = false,
+}) {
+  return Object.freeze({
+    requestOutcome,
+    acceptedMutation,
+    settlementOutcome,
+    presentationFailed,
+  });
+}
+
+function detailMutationTokensAreCompatible(beforeToken, afterToken) {
+  if (!beforeToken?.valid || !afterToken?.valid) return false;
+  for (const field of timelineCardLifecycleApi.PRESENTATION_TOKEN_FIELDS) {
+    if (field === 'detailPresentationRevision') continue;
+    if (beforeToken[field] !== afterToken[field]) return false;
+  }
+  return Number.isSafeInteger(beforeToken.detailPresentationRevision)
+    && beforeToken.detailPresentationRevision < Number.MAX_SAFE_INTEGER
+    && afterToken.detailPresentationRevision === beforeToken.detailPresentationRevision + 1;
+}
+
+function directChildrenMatching(root, selector) {
+  return [...(root?.children || [])].filter((node) => node.matches(selector));
+}
+
+function sameNodeList(left, right) {
+  return left.length === right.length && left.every((node, index) => node === right[index]);
+}
+
+function captureOrdinaryOwnerIdentity(owner) {
+  const article = owner.articleNode;
+  const timelineScroller = el.timeline.closest('.timelinePane');
+  if (!timelineScroller?.isConnected) {
+    throw new Error('Mounted Timeline scroll container is incompatible');
+  }
+  const headers = directChildrenMatching(article, '.eventHeader');
+  const toggles = headers.length === 1
+    ? [...headers[0].querySelectorAll(':scope > .eventToggle')]
+    : [];
+  const previews = directChildrenMatching(article, '.eventPreview');
+  const affordances = directChildrenMatching(article, '.enclosingOperationAffordance');
+  const footers = directChildrenMatching(article, '.eventFooterActions');
+  const footerControls = footers.flatMap((footer) => [...footer.querySelectorAll('button')]);
+  if (headers.length !== 1 || toggles.length !== 1 || footers.length !== 1) {
+    throw new Error('Ordinary expanded owner structure is incompatible');
+  }
+  return {
+    article,
+    contextSlot: owner.contextSlotNode,
+    headers,
+    toggles,
+    previews,
+    affordances,
+    footers,
+    footerControls,
+    className: article.className,
+    selected: article.classList.contains('selected'),
+    timelineScroller,
+    timelineScrollTop: timelineScroller.scrollTop,
+    windowScrollX: window.scrollX,
+    windowScrollY: window.scrollY,
+  };
+}
+
+function restoreAndValidateOrdinaryOwnerIdentity(identity, owner) {
+  const timelineScroller = el.timeline.closest('.timelinePane');
+  if (timelineScroller !== identity.timelineScroller || !timelineScroller?.isConnected) {
+    throw new Error('Mounted Timeline scroll container changed during detail patch');
+  }
+  if (timelineScroller.scrollTop !== identity.timelineScrollTop) {
+    timelineScroller.scrollTop = identity.timelineScrollTop;
+  }
+  if (window.scrollX !== identity.windowScrollX || window.scrollY !== identity.windowScrollY) {
+    window.scrollTo(identity.windowScrollX, identity.windowScrollY);
+  }
+  const article = owner.articleNode;
+  const headers = directChildrenMatching(article, '.eventHeader');
+  const toggles = headers.length === 1
+    ? [...headers[0].querySelectorAll(':scope > .eventToggle')]
+    : [];
+  const previews = directChildrenMatching(article, '.eventPreview');
+  const affordances = directChildrenMatching(article, '.enclosingOperationAffordance');
+  const footers = directChildrenMatching(article, '.eventFooterActions');
+  const footerControls = footers.flatMap((footer) => [...footer.querySelectorAll('button')]);
+  const facts = {
+    articleIdentityPreserved: article === identity.article,
+    contextSlotIdentityPreserved: owner.contextSlotNode === identity.contextSlot,
+    headerIdentityPreserved: sameNodeList(identity.headers, headers),
+    toggleIdentityPreserved: sameNodeList(identity.toggles, toggles),
+    previewIdentityPreserved: sameNodeList(identity.previews, previews),
+    footerIdentityPreserved: sameNodeList(identity.footers, footers)
+      && sameNodeList(identity.footerControls, footerControls),
+  };
+  const exact = Object.values(facts).every(Boolean)
+    && sameNodeList(identity.affordances, affordances)
+    && article.className === identity.className
+    && article.classList.contains('selected') === identity.selected
+    && el.timeline.closest('.timelinePane') === identity.timelineScroller
+    && identity.timelineScroller.isConnected
+    && identity.timelineScroller.scrollTop === identity.timelineScrollTop
+    && window.scrollX === identity.windowScrollX
+    && window.scrollY === identity.windowScrollY;
+  if (!exact) throw new Error('Ordinary detail patch changed owner identity or scroll state');
+  return facts;
+}
+
+function prepareOrdinaryDetailBody(event) {
+  const template = document.createElement('template');
+  template.innerHTML = renderEventBody(event, 'expanded');
+  const elementChildren = [...template.content.children];
+  const nonWhitespaceText = [...template.content.childNodes].some((node) => (
+    node.nodeType === Node.TEXT_NODE && node.textContent.trim()
+  ));
+  if (nonWhitespaceText || elementChildren.length !== 1
+      || !elementChildren[0].classList.contains('eventBody')) {
+    throw new Error('Ordinary detail body shape is incompatible');
+  }
+  return elementChildren[0];
+}
+
+function prepareSelectedInspectorDetailSettlement(transaction, event) {
+  if (state.detailView?.type !== 'inspector' || state.detailView.eventId !== event.id) {
+    return { kind: 'unaffected' };
+  }
+  const selectionContext = detailSelectionContextKey();
+  if (state.detailSelectionKey !== transaction.key
+      || !isCurrentDetailSelection('inspector', transaction.key, event.id, selectionContext)
+      || eventForDetailView() !== event) {
+    throw new Error('Selected Inspector detail context is incompatible');
+  }
+  const root = el.detail?.querySelector('.inspector');
+  if (!root?.isConnected) throw new Error('Selected Inspector root is not mounted');
+  return {
+    kind: 'scoped',
+    selectionContext,
+    search: prepareScopedSearchOwnerRefresh('inspector', event.id, root),
+  };
+}
+
+function applySelectedInspectorDetailSettlement(transaction, event, prepared) {
+  if (prepared.kind === 'unaffected') return;
+  detachScopedSearchOwner(prepared.search);
+  renderInspectorPresentation(event, {
+    navigationPending: currentNavigationPending(),
+    refreshSearch: false,
+  });
+  if (!isCurrentDetailSelection('inspector', transaction.key, event.id, prepared.selectionContext)) {
+    throw new Error('Selected Inspector changed during scoped settlement');
+  }
+  const nextRoot = el.detail?.querySelector('.inspector');
+  applyScopedSearchOwner(prepared.search, nextRoot);
+}
+
+function ordinaryDetailSettlementEligibility(transaction, accepted) {
+  if (state.searchScope !== 'session' || activeLayerId() !== 'main'
+      || state.selectedSessionId !== transaction.sessionId
+      || state.detailCacheGeneration !== transaction.generation
+      || state.timelineDataContext !== timelineDataContextKey()
+      || !state.timelineDataContext
+      || state.temporaryEventReveal
+      || state.timelineReplacementRetry
+      || state.selectingProject) return null;
+  const event = canonicalTimelineEvent(transaction.event.id);
+  if (event !== transaction.event || event.kind === 'code_mode_operation'
+      || (accepted.requestOutcome === 'success' && accepted.detail?.kind === 'code_mode_operation')) {
+    return null;
+  }
+  if (!detailMutationTokensAreCompatible(accepted.beforeToken, accepted.afterToken)
+      || !timelineCardLifecycleApi.presentationTokensEqual(
+        currentTimelinePresentationToken(),
+        accepted.afterToken,
+      )
+      || !timelineCardLifecycle.mountedContextAndTokenMatch(
+        state.timelineDataContext,
+        accepted.beforeToken,
+      )) return null;
+  if (state.searchSurfaceContexts.timeline !== timelineSearchSurfaceContextKey()
+      || state.searchHighlight.query !== currentSearchState().q
+      || state.searchTargetRegistry.key !== searchTargetKey()
+      || !searchDiscoveryContextReady()) return null;
+  const owner = timelineCardLifecycle.lookup(event.id);
+  const article = owner?.articleNode;
+  if (!owner || owner.mountedCanonicalContext !== state.timelineDataContext
+      || !article?.isConnected || article.parentElement !== el.timeline
+      || article.dataset.eventId !== event.id
+      || article.classList.contains('temporaryReferenceReveal')) return null;
+  const adjacentContextSlot = article.previousElementSibling?.classList.contains('contextRevealSlot')
+      && article.previousElementSibling.dataset.contextSourceId === event.id
+    ? article.previousElementSibling
+    : null;
+  if (owner.contextSlotNode !== adjacentContextSlot) return null;
+  if (owner.contextSlotNode) {
+    if (!owner.contextSlotNode.isConnected
+        || owner.contextSlotNode.parentElement !== el.timeline
+        || owner.contextSlotNode.nextElementSibling !== article
+        || owner.contextSlotNode.dataset.contextSourceId !== event.id) return null;
+  }
+  return { event, owner, canonicalContext: state.timelineDataContext };
+}
+
+function validateLocalDetailSettlementStillCurrent(canonicalContext, accepted) {
+  if (state.timelineDataContext !== canonicalContext
+      || timelineDataContextKey() !== canonicalContext
+      || !timelineCardLifecycleApi.presentationTokensEqual(
+        currentTimelinePresentationToken(),
+        accepted.afterToken,
+      )
+      || state.searchSurfaceContexts.timeline !== timelineSearchSurfaceContextKey()
+      || state.searchHighlight.query !== currentSearchState().q
+      || state.searchTargetRegistry.key !== searchTargetKey()
+      || !searchDiscoveryContextReady()) {
+    throw new Error('Ordinary detail transaction changed during local presentation');
+  }
+}
+
+function presentOrdinaryDetailLocally(transaction, accepted) {
+  const eligible = ordinaryDetailSettlementEligibility(transaction, accepted);
+  if (!eligible) return null;
+  const { event, owner, canonicalContext } = eligible;
+  const inspector = prepareSelectedInspectorDetailSettlement(transaction, event);
+  const display = displayState(event);
+  if (display !== 'expanded') {
+    if (owner.articleNode.classList.contains('expanded')
+        || directChildrenMatching(owner.articleNode, '.eventBody').length !== 0) {
+      throw new Error('Collapsed ordinary owner retains an unexpected detail body');
+    }
+    applySelectedInspectorDetailSettlement(transaction, event, inspector);
+    restoreScopedActiveSearchPresentation(
+      event.id,
+      inspector.kind === 'scoped' ? ['inspector'] : [],
+    );
+    validateLocalDetailSettlementStillCurrent(canonicalContext, accepted);
+    const adoption = timelineCardLifecycle.adoptMountedPresentationToken({
+      canonicalContext,
+      expectedPreviousToken: accepted.beforeToken,
+      nextToken: accepted.afterToken,
+    });
+    recordTimelineLifecycle('adopt', 'main', adoption);
+    return {
+      outcome: 'noDomAdoption',
+      bodyFacts: {
+        eventClassification: 'ordinary',
+        expanded: false,
+        bodyPresent: false,
+        articleIdentityPreserved: true,
+        contextSlotIdentityPreserved: true,
+        headerIdentityPreserved: true,
+        toggleIdentityPreserved: true,
+        previewIdentityPreserved: true,
+        footerIdentityPreserved: true,
+      },
+    };
+  }
+
+  const bodies = directChildrenMatching(owner.articleNode, '.eventBody');
+  if (!owner.articleNode.classList.contains('expanded') || bodies.length !== 1) {
+    throw new Error('Expanded ordinary owner body is missing, duplicated, or stale');
+  }
+  const nextBody = prepareOrdinaryDetailBody(event);
+  const identity = captureOrdinaryOwnerIdentity(owner);
+  const timelineSearch = prepareScopedSearchOwnerRefresh('timeline', event.id, owner.articleNode);
+  detachScopedSearchOwner(timelineSearch);
+  bodies[0].replaceWith(nextBody);
+  applyScopedSearchOwner(timelineSearch, owner.articleNode);
+  applySelectedInspectorDetailSettlement(transaction, event, inspector);
+  restoreScopedActiveSearchPresentation(
+    event.id,
+    inspector.kind === 'scoped' ? ['timeline', 'inspector'] : ['timeline'],
+  );
+  const bodyFacts = restoreAndValidateOrdinaryOwnerIdentity(identity, owner);
+  validateLocalDetailSettlementStillCurrent(canonicalContext, accepted);
+  const adoption = timelineCardLifecycle.adoptMountedPresentationToken({
+    canonicalContext,
+    expectedPreviousToken: accepted.beforeToken,
+    nextToken: accepted.afterToken,
+  });
+  recordTimelineLifecycle('adopt', 'main', adoption);
+  return {
+    outcome: 'bodyPatch',
+    bodyFacts: {
+      eventClassification: 'ordinary',
+      expanded: true,
+      bodyPresent: true,
+      ...bodyFacts,
+    },
+  };
+}
+
+function selectedInspectorNeedsDetailFallback(transaction) {
+  return state.detailView?.type === 'inspector'
+    && state.detailView.eventId === transaction.event.id
+    && state.detailSelectionKey === transaction.key;
+}
+
+function presentDetailWithFullRenderFallback(transaction) {
+  if (selectedInspectorNeedsDetailFallback(transaction)) {
+    const current = currentTimelineEvent(transaction.event.id)
+      || detachedContextEvent(transaction.event.id);
+    if (current) {
+      renderInspectorPresentation(current, {
+        navigationPending: currentNavigationPending(),
+        refreshSearch: false,
+      });
+    }
+  }
+  renderTimeline();
+}
+
+function acceptedDetailStateWasReclassified(transaction, accepted) {
+  if (accepted.requestOutcome === 'success') {
+    return state.detailCache[transaction.key] !== accepted.detail
+      || Boolean(state.detailErrors[transaction.key]);
+  }
+  return state.detailErrors[transaction.key] !== accepted.errorState;
+}
+
+function presentAcceptedDetailMutation(transaction, accepted) {
+  if (transaction.presentationSettled) {
+    throw new Error('Detail request attempted duplicate presentation settlement');
+  }
+  transaction.presentationSettled = true;
+  let local = null;
+  let settlementOutcome = 'fullRenderFallback';
+  let presentationErrorStage = 'none';
+  let presentationFailed = false;
+  let fallbackError = null;
+  try {
+    local = presentOrdinaryDetailLocally(transaction, accepted);
+  } catch {
+    presentationErrorStage = 'local';
+  }
+  if (local) {
+    settlementOutcome = local.outcome;
+  } else {
+    try {
+      presentDetailWithFullRenderFallback(transaction);
+    } catch (error) {
+      presentationErrorStage = 'fallback';
+      presentationFailed = true;
+      fallbackError = error;
+    }
+  }
+  const acceptedStateReclassified = acceptedDetailStateWasReclassified(transaction, accepted);
+  recordDetailRequestObservation(transaction, 'presentationSettlement', {
+    acceptedMutation: accepted.requestOutcome,
+    settlementOutcome,
+    presentationErrorStage,
+    acceptedStateReclassified,
+    presentationFailed,
+  });
+  recordDetailBodyObservation(transaction, () => {
+    if (local?.bodyFacts) return local.bodyFacts;
+    const fallbackEvent = canonicalTimelineEvent(transaction.event.id);
+    const fallbackOwner = fallbackEvent ? timelineCardLifecycle.lookup(fallbackEvent.id) : null;
+    return {
+      eventClassification: transaction.event.kind === 'code_mode_operation'
+          || accepted.detail?.kind === 'code_mode_operation'
+        ? 'codeMode'
+        : 'ordinary',
+      expanded: fallbackEvent ? displayState(fallbackEvent) === 'expanded' : false,
+      bodyPresent: directChildrenMatching(fallbackOwner?.articleNode, '.eventBody').length === 1,
+      articleIdentityPreserved: false,
+      contextSlotIdentityPreserved: false,
+      headerIdentityPreserved: false,
+      toggleIdentityPreserved: false,
+      previewIdentityPreserved: false,
+      footerIdentityPreserved: false,
+    };
+  });
+  const result = closedDetailRequestResult({
+    requestOutcome: accepted.requestOutcome,
+    acceptedMutation: true,
+    settlementOutcome,
+    presentationFailed,
+  });
+  if (fallbackError) showError(fallbackError);
+  return result;
+}
+
 function loadEventDetail(event) {
   const layer = activeLayerId();
   const sessionId = state.selectedSessionId;
   const generation = state.detailCacheGeneration;
   const key = detailKey(sessionId, layer, event.id);
-  if (state.detailCache[key] || state.detailErrors[key]) return Promise.resolve(false);
+  if (state.detailCache[key] || state.detailErrors[key]) {
+    return Promise.resolve(closedDetailRequestResult({ requestOutcome: 'alreadyAvailable' }));
+  }
   if (!state.detailPending[key]) {
     const controller = new AbortController();
+    const transaction = {
+      event,
+      key,
+      sessionId,
+      layer,
+      generation,
+      presentationSettled: false,
+    };
     detailRequestControllers.set(key, controller);
-    const pending = api(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(layer)}`, {
+    const transportPromise = api(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(layer)}`, {
       signal: controller.signal,
-    })
-      .then((detail) => {
+    });
+    const classifiedPromise = transportPromise.then(
+      (detail) => {
         if (detailRequestControllers.get(key) !== controller
             || state.selectedSessionId !== sessionId
-            || state.detailCacheGeneration !== generation) return false;
+            || state.detailCacheGeneration !== generation) {
+          return { requestOutcome: 'stale', acceptedMutation: false };
+        }
+        const beforeToken = currentTimelinePresentationToken();
         state.detailCache[key] = detail;
         delete state.detailErrors[key];
         advancePresentationRevision('detailPresentationRevision');
-        return true;
-      })
-      .catch((error) => {
-        if (isIntentionalAbort(error)) return false;
+        const accepted = {
+          requestOutcome: 'success',
+          acceptedMutation: true,
+          detail,
+          beforeToken,
+          afterToken: currentTimelinePresentationToken(),
+        };
+        recordDetailRequestObservation(transaction, 'acceptedMutation', {
+          acceptedMutation: 'success',
+        });
+        return accepted;
+      },
+      (error) => {
+        if (isIntentionalAbort(error)) {
+          return { requestOutcome: 'abort', acceptedMutation: false };
+        }
         if (detailRequestControllers.get(key) !== controller
             || state.selectedSessionId !== sessionId
-            || state.detailCacheGeneration !== generation) return false;
-        state.detailErrors[key] = detailErrorState(error);
+            || state.detailCacheGeneration !== generation) {
+          return { requestOutcome: 'stale', acceptedMutation: false };
+        }
+        const beforeToken = currentTimelinePresentationToken();
+        const errorState = detailErrorState(error);
+        state.detailErrors[key] = errorState;
         advancePresentationRevision('detailPresentationRevision');
-        return true;
+        const accepted = {
+          requestOutcome: 'error',
+          acceptedMutation: true,
+          errorState,
+          beforeToken,
+          afterToken: currentTimelinePresentationToken(),
+        };
+        recordDetailRequestObservation(transaction, 'acceptedMutation', {
+          acceptedMutation: 'error',
+        });
+        return accepted;
+      },
+    );
+    let pending;
+    pending = classifiedPromise
+      .then((classified) => {
+        if (classified.acceptedMutation) {
+          return presentAcceptedDetailMutation(transaction, classified);
+        }
+        recordDetailRequestObservation(transaction, 'requestSettled', {
+          settlementOutcome: classified.requestOutcome,
+        });
+        return closedDetailRequestResult({
+          requestOutcome: classified.requestOutcome,
+          settlementOutcome: classified.requestOutcome,
+        });
       })
       .finally(() => {
         if (detailRequestControllers.get(key) === controller) detailRequestControllers.delete(key);
         if (state.detailPending[key] === pending) delete state.detailPending[key];
       });
     state.detailPending[key] = pending;
+    const detailRequestObservationActive = recordDetailRequestObservation(
+      transaction,
+      'requestCreated',
+    );
+    if (detailRequestObservationActive) {
+      Object.defineProperty(pending, DETAIL_REQUEST_TRANSACTION, { value: transaction });
+    }
+  } else if (timelineLifecycleObserverMethodIsCallable('recordDetailRequest')) {
+    const transaction = state.detailPending[key][DETAIL_REQUEST_TRANSACTION];
+    if (transaction) recordDetailRequestObservation(transaction, 'requestReused');
   }
   return state.detailPending[key];
 }
 
 function ensureEventDetail(event) {
   const key = detailKey(state.selectedSessionId, activeLayerId(), event.id);
-  if (state.detailCache[key] || state.detailErrors[key]) return;
-  loadEventDetail(event).then((settled) => {
-    if (settled && key === detailKey(state.selectedSessionId, activeLayerId(), event.id)) renderTimeline();
-  });
+  if (state.detailCache[key] || state.detailErrors[key]) return undefined;
+  return loadEventDetail(event);
 }
 
-function isInScrollport(element) {
-  const rect = element.getBoundingClientRect();
-  const scroller = element.closest('.timelinePane');
-  const bounds = scroller ? scroller.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
-  if ((scroller && (bounds.width <= 0 || bounds.height <= 0))
+function rectIntersectsScrollport(rect, bounds, hasScroller) {
+  if ((hasScroller && (bounds.width <= 0 || bounds.height <= 0))
       || (rect.width <= 0 && rect.height <= 0)) return false;
   return rect.bottom >= bounds.top && rect.top <= bounds.bottom;
 }
@@ -6051,14 +6663,40 @@ function isInScrollport(element) {
 function loadVisibleExpandedDetails() {
   state.detailViewportTimer = 0;
   if (!searchDiscoveryContextReady()) return;
-  for (const article of el.timeline.querySelectorAll('.event[data-event-id]')) {
-    if (!isInScrollport(article)) continue;
+  const articles = [...el.timeline.querySelectorAll('.event[data-event-id]')];
+  const candidates = [];
+  const candidateNodes = new Set();
+  for (const article of articles) {
+    if (article.classList.contains('hiddenByProfile')) continue;
     const item = currentTimelineEvent(article.dataset.eventId);
     if (item && (article.classList.contains('expanded')
         || (activeLayerId() === 'main' && item.kind === 'code_mode_operation'))) {
-      ensureEventDetail(item);
+      if (!candidateNodes.has(article)) {
+        candidateNodes.add(article);
+        candidates.push({ article, item });
+      }
     }
   }
+  const scroller = el.timeline.closest('.timelinePane');
+  const bounds = scroller
+    ? scroller.getBoundingClientRect()
+    : { top: 0, bottom: window.innerHeight, width: window.innerWidth, height: window.innerHeight };
+  let articleGeometryReadCount = 0;
+  let ensuredDetailCount = 0;
+  for (const { article, item } of candidates) {
+    const rect = article.getBoundingClientRect();
+    articleGeometryReadCount += 1;
+    if (!rectIntersectsScrollport(rect, bounds, Boolean(scroller))) continue;
+    ensureEventDetail(item);
+    ensuredDetailCount += 1;
+  }
+  recordVisibleDetailScanObservation({
+    mountedArticleCount: articles.length,
+    candidateArticleCount: candidates.length,
+    articleGeometryReadCount,
+    scrollportGeometryReadCount: scroller ? 1 : 0,
+    ensuredDetailCount,
+  });
 }
 
 function queueVisibleDetailLoad() {
@@ -7008,12 +7646,8 @@ function rerenderCurrentInspectorNavigation() {
   if (item) showInspector(item, { replace: true });
 }
 
-function showInspector(event, options = {}) {
-  if (state.contextReveal || state.contextRevealPending) clearContextReveal({ render: false });
-  const layer = activeLayerId();
-  const key = detailKey(state.selectedSessionId, layer, event.id);
-  if (state.detailSelectionKey !== key) invalidateDetailSelection();
-  else requestOwners.rawReferences.abort();
+function renderInspectorPresentation(event, options = {}) {
+  const key = detailKey(state.selectedSessionId, activeLayerId(), event.id);
   const refs = sourceRefs(event);
   const preview = event.snippet || event.preview || '';
   const detail = state.detailCache[key];
@@ -7026,6 +7660,31 @@ function showInspector(event, options = {}) {
     ]
     : [];
   const chips = renderChips([...inspectorChipValues(event), ...presentationChipValues]);
+  renderDetailShell({
+    title: presentedEventLabel(event, presentation),
+    actions: [
+      renderBackToProjectResultsAction(),
+      renderReadFromHereAction(),
+      renderInspectorRawAction(refs),
+      renderInspectorNavigation(event, { pending: Boolean(options.navigationPending) }),
+    ].filter(Boolean).join(''),
+    body: `<div class="inspector">
+    ${chips ? `<div class="chips">${chips}</div>` : ''}
+    ${shouldShowInspectorSummary(event, preview, detail) ? `<section class="inspectorSection"><h3>${escapeHtml(t('summary'))}</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
+    ${renderInspectorDetail(event)}
+    ${renderInspectorMetadataSection(event, refs, detail)}
+    ${renderInspectorSource(event, detail)}
+  </div>`,
+    refreshSearch: options.refreshSearch !== false,
+  });
+}
+
+function showInspector(event, options = {}) {
+  if (state.contextReveal || state.contextRevealPending) clearContextReveal({ render: false });
+  const layer = activeLayerId();
+  const key = detailKey(state.selectedSessionId, layer, event.id);
+  if (state.detailSelectionKey !== key) invalidateDetailSelection();
+  else requestOwners.rawReferences.abort();
   state.detailSelectionKey = key;
   const clearedTemporaryReveal = options.replace
     ? replaceDetailView(eventDetailView('inspector', event.id, options))
@@ -7063,24 +7722,10 @@ function showInspector(event, options = {}) {
       rerenderCurrentInspectorNavigation();
     });
   }
-  renderDetailShell({
-    title: presentedEventLabel(event, presentation),
-    actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), renderInspectorRawAction(refs), renderInspectorNavigation(event, { pending: Boolean(navigationPending) })].filter(Boolean).join(''),
-    body: `<div class="inspector">
-    ${chips ? `<div class="chips">${chips}</div>` : ''}
-    ${shouldShowInspectorSummary(event, preview, detail) ? `<section class="inspectorSection"><h3>${escapeHtml(t('summary'))}</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
-    ${renderInspectorDetail(event)}
-    ${renderInspectorMetadataSection(event, refs, detail)}
-    ${renderInspectorSource(event, detail)}
-  </div>`,
-  });
+  renderInspectorPresentation(event, { navigationPending });
 
   if (!state.detailCache[key] && !state.detailErrors[key]) {
-    loadEventDetail(event).then((settled) => {
-      if (!settled || !isCurrentDetailSelection('inspector', key, event.id, selectionContext)) return;
-      const current = currentTimelineEvent(event.id) || detachedContextEvent(event.id);
-      if (current) showInspector(current, { replace: true });
-    });
+    loadEventDetail(event);
   }
 }
 

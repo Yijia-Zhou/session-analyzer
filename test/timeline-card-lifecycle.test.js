@@ -276,6 +276,96 @@ test('mounted compatibility is fixed-cost and invalid tokens fail closed', () =>
   assert.equal(lifecycle.mountedContextAndTokenMatch('context-a', token({ detailPresentationRevision: Number.MAX_SAFE_INTEGER + 1 })), false);
 });
 
+test('mounted presentation token adoption preflights every owner before one metadata-only write', () => {
+  const lifecycle = createTimelineCardLifecycle();
+  const firstArticle = new Proxy(article('event-a'), {
+    get(target, key) {
+      if (key !== 'dataset' && key !== 'isConnected') throw new Error(`DOM read during adoption: ${String(key)}`);
+      return target[key];
+    },
+  });
+  const previousToken = token();
+  const nextToken = token({ detailPresentationRevision: 1 });
+  lifecycle.reconcileMain({
+    canonicalContext: 'context-a',
+    presentationToken: previousToken,
+    cards: [card('event-a', { articleNode: firstArticle }), card('event-b')],
+  });
+  const firstOwner = lifecycle.lookup('event-a');
+  const secondOwner = lifecycle.lookup('event-b');
+
+  assert.deepEqual(lifecycle.adoptMountedPresentationToken({
+    canonicalContext: 'context-a',
+    expectedPreviousToken: previousToken,
+    nextToken,
+  }), { adoptedOwnerCount: 2, ownerCount: 2 });
+  assert.equal(firstOwner.mountedPresentationToken, secondOwner.mountedPresentationToken);
+  assert.equal(firstOwner.mountedPresentationToken.detailPresentationRevision, 1);
+  assert.equal(lifecycle.mountedContextAndTokenMatch('context-a', nextToken), true);
+});
+
+test('mounted presentation token adoption fails closed without partial metadata writes', () => {
+  const lifecycle = createTimelineCardLifecycle();
+  const previousToken = token();
+  const nextToken = token({ detailPresentationRevision: 1 });
+  lifecycle.reconcileMain({
+    canonicalContext: 'context-a',
+    presentationToken: previousToken,
+    cards: [card('event-a'), card('event-b')],
+  });
+  const firstOwner = lifecycle.lookup('event-a');
+  const secondOwner = lifecycle.lookup('event-b');
+  secondOwner.mountedPresentationToken = token({ overridesRevision: 1 });
+
+  assert.throws(() => lifecycle.adoptMountedPresentationToken({
+    canonicalContext: 'context-a',
+    expectedPreviousToken: previousToken,
+    nextToken,
+  }), { code: TIMELINE_CARD_LIFECYCLE_INVARIANT });
+  assert.equal(firstOwner.mountedPresentationToken.detailPresentationRevision, 0);
+  assert.equal(secondOwner.mountedPresentationToken.overridesRevision, 1);
+  assert.equal(lifecycle.mountedContextAndTokenMatch('context-a', previousToken), true);
+
+  assert.throws(() => lifecycle.adoptMountedPresentationToken({
+    canonicalContext: 'context-b',
+    expectedPreviousToken: previousToken,
+    nextToken,
+  }), { code: TIMELINE_CARD_LIFECYCLE_INVARIANT });
+  assert.throws(() => lifecycle.adoptMountedPresentationToken({
+    canonicalContext: 'context-a',
+    expectedPreviousToken: token({ detailPresentationRevision: 9 }),
+    nextToken,
+  }), { code: TIMELINE_CARD_LIFECYCLE_INVARIANT });
+  assert.throws(() => lifecycle.adoptMountedPresentationToken({
+    canonicalContext: 'context-a',
+    expectedPreviousToken: previousToken,
+    nextToken: token({ valid: false }),
+  }), { code: TIMELINE_CARD_LIFECYCLE_INVARIANT });
+});
+
+test('mounted presentation token adoption rejects inconsistent owner context before any write', () => {
+  const lifecycle = createTimelineCardLifecycle();
+  const previousToken = token();
+  const nextToken = token({ detailPresentationRevision: 1 });
+  lifecycle.reconcileMain({
+    canonicalContext: 'context-a',
+    presentationToken: previousToken,
+    cards: [card('event-a'), card('event-b')],
+  });
+  const firstOwner = lifecycle.lookup('event-a');
+  const secondOwner = lifecycle.lookup('event-b');
+  secondOwner.mountedCanonicalContext = 'context-b';
+
+  assert.throws(() => lifecycle.adoptMountedPresentationToken({
+    canonicalContext: 'context-a',
+    expectedPreviousToken: previousToken,
+    nextToken,
+  }), { code: TIMELINE_CARD_LIFECYCLE_INVARIANT });
+  assert.equal(firstOwner.mountedPresentationToken.detailPresentationRevision, 0);
+  assert.equal(secondOwner.mountedPresentationToken.detailPresentationRevision, 0);
+  assert.equal(lifecycle.mountedContextAndTokenMatch('context-a', previousToken), true);
+});
+
 test('monotonic revisions never wrap and overflow fails closed', () => {
   assert.deepEqual(advanceMonotonicRevision(0), { value: 1, overflowed: false });
   assert.deepEqual(advanceMonotonicRevision(Number.MAX_SAFE_INTEGER - 1), {
