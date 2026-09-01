@@ -2003,7 +2003,7 @@ function makeEmptySession(filePath, relFile, stat) {
     agentNickname: '',
     shell: '',
     primarySessionMetaKind: '',
-    _reviewMarkers: [],
+    _reviewMarkers: null,
     rawEvents: [],
     logicalEvents: [],
     counts: emptySessionCounts(),
@@ -4772,7 +4772,9 @@ function buildCodexRelationshipEvidence(session, retainForkEvidence) {
     agentNickname: session.agentNickname,
     primarySessionMetaKind: session.primarySessionMetaKind,
     _parsedAncestry: structuredClone(session._parsedAncestry),
-    _reviewMarkers: structuredClone(sessionReviewMarkers(session)),
+    _reviewMarkers: retainForkEvidence
+      ? null
+      : structuredClone(sessionReviewMarkers(session)),
     _canonicalRawDigests: retainForkEvidence
       ? [...(session._canonicalRawDigests || [])]
       : [],
@@ -4835,11 +4837,19 @@ function recomputeCodexIndexedOwnedRawFacts(evidence) {
   const ownedFacts = evidence._forkRawFacts.filter((fact, index) => index === 0 || index > inheritedCount);
   evidence.startedAt = '';
   evidence.updatedAt = '';
-  const reviewMarkers = [];
   for (const fact of ownedFacts) {
     updateTimeRangeFromNormalizedTimestamp(evidence, fact[CODEX_FORK_RAW_FACT.TIMESTAMP]);
+  }
+  finalizeCodexIndexedReviewMarkers(evidence, ownedFacts);
+}
+
+function finalizeCodexIndexedReviewMarkers(evidence, facts = evidence._forkRawFacts) {
+  const reviewMarkers = [];
+  for (const fact of facts) {
     appendReviewLifecycleMarker(reviewMarkers, {
       timestamp: fact[CODEX_FORK_RAW_FACT.TIMESTAMP],
+      recordType: fact[CODEX_FORK_RAW_FACT.RECORD_TYPE],
+      payloadType: fact[CODEX_FORK_RAW_FACT.PAYLOAD_TYPE],
       reviewLifecyclePhase: fact[CODEX_FORK_RAW_FACT.REVIEW_PHASE],
       reviewThreadId: fact[CODEX_FORK_RAW_FACT.REVIEW_THREAD_ID],
     }, { ownerId: evidence.id });
@@ -4917,6 +4927,9 @@ function inferCodexIndexedMaterializedForks(evidenceList) {
     child._continuationMainPresent = continuationMainPresent;
     recomputeCodexIndexedOwnedRawFacts(child);
     inferred += 1;
+  }
+  for (const evidence of evidenceList) {
+    if (!Array.isArray(evidence._reviewMarkers)) finalizeCodexIndexedReviewMarkers(evidence);
   }
   return inferred;
 }
