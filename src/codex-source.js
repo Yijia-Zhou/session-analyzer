@@ -71,6 +71,16 @@ function subAgentActivityEventId(raw) {
   return typeof eventId === 'string' ? eventId : '';
 }
 
+function codexSourceEnvelope(record) {
+  const payload = record?.payload && typeof record.payload === 'object' && !Array.isArray(record.payload)
+    ? record.payload
+    : {};
+  const recordType = typeof record?.type === 'string' ? record.type : '';
+  const payloadType = typeof payload.type === 'string' ? payload.type : '';
+  const role = typeof payload.role === 'string' ? payload.role : '';
+  return { payload, recordType, payloadType, role };
+}
+
 function createCodexRawParser(deps) {
   const {
     commandToText,
@@ -89,12 +99,12 @@ function createCodexRawParser(deps) {
   } = deps;
 
   function makeRawEvent(record, lineNumber, relFile, sessionId, embeddedImages = []) {
-    const payload = record?.payload && typeof record.payload === 'object' && !Array.isArray(record.payload)
-      ? record.payload
-      : {};
-    const recordType = typeof record?.type === 'string' ? record.type : '';
-    const payloadType = typeof payload.type === 'string' ? payload.type : '';
-    const role = typeof payload.role === 'string' ? payload.role : '';
+    const {
+      payload,
+      recordType,
+      payloadType,
+      role,
+    } = codexSourceEnvelope(record);
     const stringField = (...values) => values.find((value) => typeof value === 'string') || '';
     const raw = {
       rawId: `${sessionId}:raw:${lineNumber}`,
@@ -281,6 +291,7 @@ module.exports = {
   SUB_AGENT_ACTIVITY_EVENT_TYPE,
   canonicalEventType,
   codexSourceLocator,
+  codexSourceEnvelope,
   createCodexRawParser,
   rawEventsForLogicalEvent,
   rawMatchesEvent,
