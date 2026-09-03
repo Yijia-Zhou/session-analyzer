@@ -14,3 +14,5 @@ test/fixtures/deepseek-harness-phase2d/**/session.jsonl -text
 test/fixtures/deepseek-harness-prune-provenance/**/session.jsonl -text
 # DeepSeek command/plan-state source-compatible synthetic fixture: preserve exact physical JSONL bytes
 test/fixtures/deepseek-harness-command-plan-state/**/session.jsonl -text
+# DeepSeek approval-lifecycle source-compatible synthetic fixture: preserve exact physical JSONL bytes
+test/fixtures/deepseek-harness-approval-lifecycle/**/session.jsonl -text

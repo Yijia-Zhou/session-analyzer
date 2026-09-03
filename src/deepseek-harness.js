@@ -913,6 +913,185 @@ function makePermissionProtocolEvent(sessionId, event, raw, observedState) {
   return logical;
 }
 
+function recoverApprovalRequestId(event) {
+  const requestId = event?.data?.id;
+  return typeof requestId === 'string' && requestId.length > 0 ? requestId : '';
+}
+
+function decodeApprovalAsked(event) {
+  if (event?.type !== 'approval/asked') return null;
+  const data = event.data;
+  const keys = [
+    'id',
+    'toolName',
+    ...(Object.hasOwn(data || {}, 'callId') ? ['callId'] : []),
+    ...(Object.hasOwn(data || {}, 'reason') ? ['reason'] : []),
+  ];
+  if (!hasExactKeys(data, keys)
+      || typeof data.id !== 'string' || data.id.length === 0
+      || typeof data.toolName !== 'string' || data.toolName.length === 0
+      || (Object.hasOwn(data, 'callId') && typeof data.callId !== 'string')
+      || (Object.hasOwn(data, 'reason') && typeof data.reason !== 'string')) return null;
+  return {
+    requestId: data.id,
+    toolName: data.toolName,
+    ...(Object.hasOwn(data, 'callId') ? { callId: data.callId } : {}),
+    ...(Object.hasOwn(data, 'reason') ? { reason: data.reason } : {}),
+  };
+}
+
+const APPROVAL_OUTCOMES = new Set(['allowed-once', 'rejected', 'cancelled', 'unavailable']);
+
+function decodeApprovalDecided(event) {
+  const data = event?.data;
+  if (event?.type !== 'approval/decided'
+      || !hasExactKeys(data, ['id', 'outcome'])
+      || typeof data.id !== 'string' || data.id.length === 0
+      || !APPROVAL_OUTCOMES.has(data.outcome)) return null;
+  return { requestId: data.id, outcome: data.outcome };
+}
+
+function markApprovalFallback(row) {
+  row.logical.severity = 'warning';
+  row.logical.status = 'incomplete';
+  if (!row.logical.preview.includes('(invalid durable approval lifecycle)')) {
+    row.logical.preview = `${row.logical.preview} (invalid durable approval lifecycle)`;
+  }
+}
+
+function resolveApprovalToolRef(session, asked, askedFacts, toolCallsById, seedBoundary) {
+  if (!Object.hasOwn(askedFacts, 'callId')) return null;
+  const childStart = Number.isSafeInteger(seedBoundary) ? seedBoundary : 0;
+  if (asked.event.seq < childStart) return null;
+  const targets = new Map();
+  const call = toolCallsById.get(askedFacts.callId);
+  if (call && call.eventSeq >= childStart) {
+    for (const event of session.logicalEvents) {
+      if (event.layer !== 'main'
+          || (event.kind !== 'command' && event.kind !== 'other_tool_call' && event.kind !== 'code_mode_operation')
+          || !event.rawRefs.some(ref => ref.rawId === call.raw.rawId)) continue;
+      targets.set(event.id, event);
+    }
+  }
+  for (const outer of session.logicalEvents) {
+    if (outer.layer !== 'main' || outer.kind !== 'code_mode_operation') continue;
+    const dispatches = outer.codeModeOperation?.dispatches || [];
+    for (const dispatch of dispatches) {
+      if (dispatch.subCallId !== askedFacts.callId) continue;
+      const target = session.logicalEvents.find(event => event.id === dispatch.eventId);
+      if (!target || target.layer !== 'main') continue;
+      const childOwned = target.rawRefs.length > 0 && target.rawRefs.every(ref => {
+        const start = ref.sourceLocator?.seq;
+        const end = ref.sourceLocator?.seqEnd ?? start;
+        return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start >= childStart && end >= childStart;
+      });
+      if (childOwned) targets.set(target.id, target);
+    }
+  }
+  if (targets.size !== 1) return null;
+  return { callId: askedFacts.callId, eventId: [...targets.keys()][0] };
+}
+
+function makeApprovalLifecycleEvent(session, asked, decided, askedFacts, decidedFacts, toolCallsById, seedBoundary) {
+  const complete = Boolean(decided && decidedFacts);
+  const outcome = complete ? decidedFacts.outcome : '';
+  const unavailable = outcome === 'unavailable';
+  const rawRefs = [dshRawRef(asked.raw), ...(decided ? [dshRawRef(decided.raw)] : [])];
+  const preview = complete
+    ? `Approval for ${askedFacts.toolName}: ${outcome}`
+    : `Approval requested for ${askedFacts.toolName} — no durable decision recorded`;
+  const logical = makeLogicalEvent({
+    id: `${session.id}:logical:approval:${asked.event.seq}`,
+    timestamp: safeIso(asked.event.time),
+    turnId: asked.openTurn !== null ? `turn:${asked.openTurn}` : '',
+    kind: 'protocol',
+    subtype: 'approval/lifecycle',
+    layer: 'protocol',
+    role: 'system',
+    label: 'Interactive approval',
+    preview,
+    searchText: [
+      'approval/lifecycle',
+      `requestId=${askedFacts.requestId}`,
+      `toolName=${askedFacts.toolName}`,
+      Object.hasOwn(askedFacts, 'callId') ? `callId=${askedFacts.callId}` : '',
+      Object.hasOwn(askedFacts, 'reason') ? askedFacts.reason : '',
+      outcome ? `outcome=${outcome}` : 'no durable decision recorded',
+    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    severity: unavailable ? 'warning' : 'normal',
+    status: complete ? 'recorded' : 'incomplete',
+    toolName: askedFacts.toolName,
+    rawRefs,
+    channels: complete ? ['approval/asked', 'approval/decided'] : ['approval/asked'],
+  });
+  const toolRef = resolveApprovalToolRef(session, asked, askedFacts, toolCallsById, seedBoundary);
+  logical.approvalLifecycle = {
+    requestId: askedFacts.requestId,
+    toolName: askedFacts.toolName,
+    ...(Object.hasOwn(askedFacts, 'callId') ? { callId: askedFacts.callId } : {}),
+    ...(Object.hasOwn(askedFacts, 'reason') ? {
+      reason: sanitizeLogicalDetailValue(askedFacts.reason, { marker: '[data URL omitted]' }).slice(0, 4000),
+    } : {}),
+    ...(outcome ? { outcome } : {}),
+    ...(toolRef ? { toolRef } : {}),
+    askedSeq: asked.event.seq,
+    askedTime: safeIso(asked.event.time),
+    ...(decided ? { decidedSeq: decided.event.seq, decidedTime: safeIso(decided.event.time) } : {}),
+    sourceEventTypes: complete ? ['approval/asked', 'approval/decided'] : ['approval/asked'],
+  };
+  return logical;
+}
+
+function projectApprovalLifecycles(session, rows, toolCallsById, seedBoundary) {
+  const childStart = Number.isSafeInteger(seedBoundary) ? seedBoundary : 0;
+  const grouped = new Map();
+  for (const row of rows) {
+    if (row.event.seq < childStart) continue;
+    if (!row.requestId) {
+      markApprovalFallback(row);
+      continue;
+    }
+    const group = grouped.get(row.requestId) || [];
+    group.push(row);
+    grouped.set(row.requestId, group);
+  }
+  const replacedIds = new Set();
+  const projected = [];
+  for (const group of grouped.values()) {
+    const malformed = group.some(row => !row.facts || row.openTurn === null);
+    const askedRows = group.filter(row => row.event.type === 'approval/asked');
+    const decidedRows = group.filter(row => row.event.type === 'approval/decided');
+    const validShape = !malformed
+      && askedRows.length === 1
+      && decidedRows.length <= 1
+      && (decidedRows.length === 0 || decidedRows[0].event.seq > askedRows[0].event.seq);
+    if (!validShape) {
+      for (const row of group) markApprovalFallback(row);
+      continue;
+    }
+    const asked = askedRows[0];
+    const decided = decidedRows[0] || null;
+    if (!asked) {
+      for (const row of group) markApprovalFallback(row);
+      continue;
+    }
+    replacedIds.add(asked.logical.id);
+    if (decided) replacedIds.add(decided.logical.id);
+    projected.push(makeApprovalLifecycleEvent(
+      session,
+      asked,
+      decided,
+      asked.facts,
+      decided?.facts || null,
+      toolCallsById,
+      seedBoundary,
+    ));
+  }
+  if (!projected.length) return;
+  session.logicalEvents = session.logicalEvents.filter(event => !replacedIds.has(event.id));
+  session.logicalEvents.push(...projected);
+}
+
 function decodeCommandIdentity(event) {
   const commandId = event?.data?.commandId;
   return typeof commandId === 'string' && commandId.trim() ? commandId : '';
@@ -2718,6 +2897,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   session.rawEvents.push(rawHeader);
   let expectedSeq = 0;
   let lastTime = header.createdAt;
+  let currentTurn = null;
   let currentStep = null;
   const pendingToolCalls = new Map();
   const toolCallsById = new Map();
@@ -2727,6 +2907,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   const goalRows = [];
   const todoRows = [];
   const commandRows = [];
+  const approvalRows = [];
   const pruneRows = [];
   const replacementToolResultRows = [];
   const originalToolResultsBySeq = new Map();
@@ -2805,6 +2986,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
     lastTime = eventTime(event) || lastTime;
     const data = event?.data && typeof event.data === 'object' ? event.data : {};
     if (event.type === 'turn/start') {
+      currentTurn = Object.hasOwn(data, 'turn') ? data.turn : null;
       session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
         label: 'Turn started',
       }));
@@ -2835,6 +3017,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
         currentStep.partialEvent.severity = endStatus === 'failed' ? 'error' : 'warning';
       }
       currentStep = null;
+      currentTurn = null;
       pendingPartialEvent = null;
       session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
         label: 'Turn ended',
@@ -2973,6 +3156,23 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
       const logical = makeProtocolEvent(session.id, event, raw, event.type, { role: 'system' });
       session.logicalEvents.push(logical);
       commandRows.push({ event, raw, logical });
+    } else if (event.type === 'approval/asked' || event.type === 'approval/decided') {
+      const facts = event.type === 'approval/asked'
+        ? decodeApprovalAsked(event)
+        : decodeApprovalDecided(event);
+      const logical = makeProtocolEvent(session.id, event, raw, event.type, {
+        role: 'system',
+        ...(currentTurn === null || !facts ? { severity: 'warning', status: 'incomplete' } : {}),
+      });
+      session.logicalEvents.push(logical);
+      approvalRows.push({
+        event,
+        raw,
+        logical,
+        facts,
+        requestId: recoverApprovalRequestId(event),
+        openTurn: currentTurn,
+      });
     } else if (event.type === 'plan/mode') {
       session.logicalEvents.push(event.seq < childOwnedStartSeq
         ? makeProtocolEvent(session.id, event, raw, event.type, { role: 'system' })
@@ -3152,6 +3352,7 @@ async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options
   projectGoalState(session, goalRows);
   projectTodoSnapshots(session, todoRows);
   projectCommandLifecycles(session, commandRows, seedBoundary);
+  projectApprovalLifecycles(session, approvalRows, toolCallsById, seedBoundary);
   sortProjectedLogicalEventsByRawOrder(session);
   applyDeepSeekSeedOwnership(session, seedBoundary, expectedSeq);
   projectToolResultPrunes(
