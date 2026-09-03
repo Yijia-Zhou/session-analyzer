@@ -937,14 +937,14 @@ function renderTrajectoryOverview(documentRef, model, options) {
     pointerStartX = event.clientX;
     pointerStartScrollLeft = viewport.scrollLeft;
     pointerMoved = false;
-    viewport.setPointerCapture?.(pointerId);
   });
   viewport.addEventListener('pointermove', (event) => {
     if (event.pointerId !== pointerId) return;
     const delta = event.clientX - pointerStartX;
-    if (Math.abs(delta) > 3) {
+    if (!pointerMoved && Math.abs(delta) > 3) {
       pointerMoved = true;
       viewport.classList.add('panning');
+      viewport.setPointerCapture?.(pointerId);
     }
     if (!pointerMoved) return;
     event.preventDefault();

@@ -2347,6 +2347,44 @@ test('browser Trajectory sequence zoom keeps long overviews bounded and selectio
   assert.ok(zoomedShape.scrollWidth <= (zoomedShape.clientWidth * 8) + 8);
   assert.ok(zoomedShape.scrollWidth >= (zoomedShape.clientWidth * 8) - 8);
 
+  const zoomedClickTarget = await viewport.evaluate((node, count) => {
+    const viewportBounds = node.getBoundingClientRect();
+    const drawing = node.querySelector('.trajectoryOverviewCanvas');
+    const canvasBounds = drawing.getBoundingClientRect();
+    const visibleTargetX = viewportBounds.left + (viewportBounds.width * 0.35);
+    let sequenceIndex = Math.round(
+      ((((visibleTargetX - canvasBounds.left) / canvasBounds.width) * count) - 0.5),
+    );
+    sequenceIndex = Math.max(0, Math.min(count - 1, sequenceIndex));
+    if (sequenceIndex % 2 !== 0) sequenceIndex += sequenceIndex < count - 1 ? 1 : -1;
+    const narrative = document.querySelector(
+      `[data-trajectory-event-id][data-sequence-index="${sequenceIndex}"]`,
+    );
+    return {
+      eventId: narrative?.dataset.trajectoryEventId || '',
+      sequenceIndex,
+      x: canvasBounds.left + (((sequenceIndex + 0.5) / count) * canvasBounds.width),
+      y: canvasBounds.top + (canvasBounds.height / 6),
+      expectedTitle: narrative?.querySelector('.trajectoryEventType')?.textContent.trim() || '',
+    };
+  }, eventCount);
+  assert.ok(zoomedClickTarget.eventId);
+  assert.ok(zoomedClickTarget.expectedTitle);
+  assert.notEqual(zoomedClickTarget.eventId, anchorId);
+  const zoomedDetailResponse = page.waitForResponse((response) => (
+    decodeURIComponent(new URL(response.url()).pathname)
+      .endsWith(`/events/${zoomedClickTarget.eventId}/detail`)
+      && response.ok()
+  ));
+  await page.mouse.click(zoomedClickTarget.x, zoomedClickTarget.y);
+  await zoomedDetailResponse;
+  await page.waitForFunction(({ eventId, expectedTitle }) => (
+    document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId === eventId
+      && document.querySelector(`[data-trajectory-event-id="${CSS.escape(eventId)}"]`)?.classList.contains('selected')
+      && document.querySelector('#detail .inspector')
+      && document.querySelector('#detail .detailViewTitle h2')?.textContent.trim() === expectedTitle
+  ), zoomedClickTarget);
+
   await viewport.evaluate((node) => { node.scrollLeft = 0; });
   await viewport.hover();
   await page.mouse.wheel(0, 420);
@@ -2356,7 +2394,7 @@ test('browser Trajectory sequence zoom keeps long overviews bounded and selectio
   assert.ok(Math.abs((await viewport.evaluate((node) => node.scrollLeft)) - freelyPanned) <= 1);
   assert.equal(
     await page.locator('.trajectoryOverviewLocator').getAttribute('data-trajectory-overview-selected-id'),
-    anchorId,
+    zoomedClickTarget.eventId,
   );
 
   await page.waitForTimeout(100);
@@ -2391,6 +2429,18 @@ test('browser Trajectory sequence zoom keeps long overviews bounded and selectio
   assert.ok(draggedScroll > freelyPanned + 50);
   await page.waitForTimeout(100);
   assert.ok(Math.abs((await viewport.evaluate((node) => node.scrollLeft)) - draggedScroll) <= 1);
+  assert.equal(
+    await page.locator('.trajectoryOverviewLocator').getAttribute('data-trajectory-overview-selected-id'),
+    zoomedClickTarget.eventId,
+  );
+  assert.equal(
+    await page.locator('[data-trajectory-event-id].selected').getAttribute('data-trajectory-event-id'),
+    zoomedClickTarget.eventId,
+  );
+  assert.equal(
+    (await page.locator('#detail .detailViewTitle h2').textContent()).trim(),
+    zoomedClickTarget.expectedTitle,
+  );
 
   const firstRow = page.locator('[data-trajectory-event-id]').first();
   const firstId = await firstRow.getAttribute('data-trajectory-event-id');
