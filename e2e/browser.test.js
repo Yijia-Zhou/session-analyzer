@@ -1873,6 +1873,888 @@ test('browser locale bootstrap keeps narrow screens on sessions view', async (t)
   assert.equal(await page.locator('body').getAttribute('data-mobile-view'), 'sessions');
 });
 
+test('browser Main presentation switches to a reversible Trajectory ledger and remembers it across Layers', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:trajectory-ledger-browser',
+    name: 'Trajectory ledger browser fixture',
+    description: 'Keep every event compact so lazy tool groups are observable.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const index = await buildFixtureIndex();
+  const { page, requestedUrls } = await openWave1cM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+  });
+  await selectPrimarySession(page);
+
+  const control = page.locator('#mainPresentationControl');
+  assert.equal(await control.isVisible(), true);
+  assert.equal(
+    await control.locator('[data-main-presentation="timeline"]').getAttribute('aria-pressed'),
+    'true',
+  );
+  const timelineIds = await page.locator('#timeline .event[data-event-id]').evaluateAll(
+    (nodes) => nodes.map((node) => node.dataset.eventId),
+  );
+  const timelineRequestCount = requestedUrls.filter((url) => url.includes('/timeline?')).length;
+  const lifecycleStart = await page.evaluate(() => window.__wave1cM1.evidence.lifecycle.length);
+
+  await control.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForSelector('#timeline .trajectoryPresentation');
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 0);
+  assert.equal(
+    Number(await page.locator('.trajectoryPresentation').getAttribute('data-event-count')),
+    timelineIds.length,
+  );
+  const ledgerIdentity = await page.evaluate(() => {
+    const narrativeEventIds = [...document.querySelectorAll(
+      '.trajectoryNarrativeRow [data-trajectory-event-id]',
+    )].map((node) => node.dataset.trajectoryEventId);
+    const groups = [...document.querySelectorAll('.trajectoryToolGroup')].map((group) => ({
+      open: group.open,
+      eventCount: Number(group.dataset.eventCount),
+      materializedCount: group.querySelectorAll('[data-trajectory-event-id]').length,
+    }));
+    return {
+      representedCount: narrativeEventIds.length
+        + groups.reduce((sum, group) => sum + group.eventCount, 0),
+      groups,
+      hasDuration: Boolean(document.querySelector('[class*="Duration"], [data-duration]')),
+      hasMissingTurnSection: document.querySelector('#timeline')?.textContent.includes('No reliable turn'),
+    };
+  });
+  assert.equal(ledgerIdentity.representedCount, timelineIds.length);
+  assert.ok(ledgerIdentity.groups.length > 0);
+  assert.ok(ledgerIdentity.groups.some((group) => !group.open && group.materializedCount === 0));
+  assert.equal(ledgerIdentity.hasDuration, false);
+  assert.equal(ledgerIdentity.hasMissingTurnSection, false);
+  assert.equal(requestedUrls.filter((url) => url.includes('/timeline?')).length, timelineRequestCount);
+
+  const enteredLifecycle = await page.evaluate((start) => (
+    window.__wave1cM1.evidence.lifecycle.slice(start)
+  ), lifecycleStart);
+  assert.ok(enteredLifecycle.some((row) => row.mode === 'non-main' && row.ownerCount === 0));
+
+  const closedGroup = page.locator('.trajectoryToolGroup:not([open])').first();
+  const closedGroupId = await closedGroup.getAttribute('data-trajectory-tool-group-id');
+  assert.ok(closedGroupId);
+  assert.equal(await closedGroup.locator('[data-trajectory-event-id]').count(), 0);
+  await closedGroup.locator(':scope > summary').click();
+  const openedGroup = page.locator(`[data-trajectory-tool-group-id="${closedGroupId}"]`);
+  await openedGroup.locator('[data-members-materialized="true"], [data-trajectory-event-id]').first().waitFor();
+  const toolEvent = openedGroup.locator('[data-trajectory-event-id]:not(.hiddenByProfile)').first();
+  const toolEventId = await toolEvent.getAttribute('data-trajectory-event-id');
+  assert.ok(toolEventId);
+  await toolEvent.click();
+  await page.waitForFunction((eventId) => (
+    document.querySelector('[data-trajectory-event-id].selected')?.dataset.trajectoryEventId === eventId
+      && Boolean(document.querySelector('#detail .inspector'))
+  ), toolEventId);
+
+  await page.locator('[data-detail-action="raw"]').click();
+  await page.waitForSelector('#detail .rawRefsView');
+  assert.equal(await page.locator('[data-trajectory-event-id].selected').getAttribute('data-trajectory-event-id'), toolEventId);
+
+  const presentationRequestCount = requestedUrls.filter((url) => url.includes('/timeline?')).length;
+  await control.locator('[data-main-presentation="timeline"]').click();
+  await page.waitForSelector(`#timeline .event[data-event-id="${toolEventId}"].selected`);
+  assert.equal(
+    await page.locator(`#timeline .event[data-event-id="${toolEventId}"]`).evaluate((node) => node.classList.contains('collapsed')),
+    true,
+  );
+  await control.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForSelector(`[data-trajectory-event-id="${toolEventId}"].selected`);
+  assert.equal(requestedUrls.filter((url) => url.includes('/timeline?')).length, presentationRequestCount);
+
+  await page.locator('#layerSelect').selectOption('protocol');
+  await page.waitForFunction(() => (
+    document.querySelector('#layerSelect')?.value === 'protocol'
+      && document.querySelectorAll('#timeline .event[data-event-id]').length > 0
+  ));
+  assert.equal(await control.isVisible(), false);
+  assert.equal(await page.locator('body').getAttribute('data-remembered-main-presentation'), 'trajectory');
+  assert.equal(await page.locator('body').getAttribute('data-main-presentation'), 'timeline');
+
+  await page.locator('#layerSelect').selectOption('main');
+  await page.waitForSelector('#timeline .trajectoryPresentation');
+  assert.equal(await control.isVisible(), true);
+  assert.equal(
+    await control.locator('[data-main-presentation="trajectory"]').getAttribute('aria-pressed'),
+    'true',
+  );
+});
+
+test('browser Trajectory localizes presentation, lanes, grouping, and Sequence Zoom controls', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openWave1cM1App(t, index, { locale: 'zh-CN' });
+  await selectPrimarySession(page);
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForSelector('.trajectoryPresentation');
+
+  assert.deepEqual(
+    await page.locator('#mainPresentationControl button').allTextContents(),
+    ['时间线', '轨迹'],
+  );
+  assert.deepEqual(
+    await page.locator('.trajectoryOverviewLabels span').allTextContents(),
+    ['输入', '模型', '工具'],
+  );
+  assert.equal(await page.locator('.trajectoryOverviewTitle').textContent(), '序列');
+  assert.match(await page.locator('.trajectoryOverviewStatus').textContent(), /^已加载序列/);
+  assert.equal(await page.locator('.trajectoryZoomScale').textContent(), '全览');
+  assert.equal(await page.locator('[data-trajectory-sequence-zoom="fit"]').textContent(), '全览');
+  assert.equal(await page.locator('.trajectoryToolGroupLabel').first().textContent(), '工具活动');
+  assert.equal((await page.locator('#timeline').textContent()).includes('No reliable turn'), false);
+
+  await switchHiddenLocale(page, 'en');
+  await page.waitForFunction(() => document.documentElement.lang === 'en');
+  await page.waitForFunction(() => document.querySelector('.trajectoryOverviewTitle')?.textContent === 'Sequence');
+  assert.deepEqual(
+    await page.locator('.trajectoryOverviewLabels span').allTextContents(),
+    ['Input', 'Model', 'Tools'],
+  );
+  assert.equal(await page.locator('.trajectoryZoomScale').textContent(), 'Fit all');
+});
+
+test('browser Trajectory keeps compact controls and Inspector selection usable in the mobile Events flow', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openWave1cM1App(t, index, {
+    locale: 'en',
+    viewport: { width: 390, height: 760 },
+  });
+  await page.locator('.mobileViewTab[data-mobile-view="events"]').click();
+  await page.waitForFunction(() => document.body.dataset.mobileView === 'events');
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForSelector('.trajectoryPresentation');
+
+  const mobileLayout = await page.locator('.trajectoryOverview').evaluate((overview) => {
+    const controls = overview.querySelector('.trajectoryOverviewHeaderActions').getBoundingClientRect();
+    const bounds = overview.getBoundingClientRect();
+    return {
+      overviewLeft: bounds.left,
+      overviewRight: bounds.right,
+      controlsLeft: controls.left,
+      controlsRight: controls.right,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  assert.ok(mobileLayout.overviewLeft >= 0 && mobileLayout.overviewRight <= mobileLayout.viewportWidth);
+  assert.ok(mobileLayout.controlsLeft >= mobileLayout.overviewLeft);
+  assert.ok(mobileLayout.controlsRight <= mobileLayout.overviewRight);
+
+  const firstEvent = page.locator('[data-trajectory-event-id]:not(.hiddenByProfile)').first();
+  const firstEventId = await firstEvent.getAttribute('data-trajectory-event-id');
+  await firstEvent.click();
+  await page.waitForFunction((eventId) => (
+    document.body.dataset.mobileView === 'detail'
+      && Boolean(document.querySelector('#detail .inspector'))
+      && document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId === eventId
+  ), firstEventId);
+  await page.locator('.mobileViewTab[data-mobile-view="events"]').click();
+  await page.waitForFunction((eventId) => (
+    document.body.dataset.mobileView === 'events'
+      && document.querySelector('[data-trajectory-event-id].selected')?.dataset.trajectoryEventId === eventId
+  ), firstEventId);
+});
+
+test('browser Trajectory overview exposes only the loaded canonical sequence and shares selection identity', async (t) => {
+  const { index } = await makeTransitionProfileIndex(t, {
+    eventCount: 300,
+    hitPositions: [],
+    commonTermEvery: 0,
+  });
+  const { page } = await openWave1cM1App(t, index, { locale: 'en' });
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForSelector('.trajectoryOverviewCanvas[data-render-mode]');
+
+  assert.deepEqual(
+    await page.locator('.trajectoryOverviewLabels span').allTextContents(),
+    ['Input', 'Model', 'Tools'],
+  );
+  assert.equal(await page.locator('.trajectoryOverviewStatus').textContent(), 'Loaded prefix · 150/300');
+  assert.equal(await page.locator('.trajectoryOverview [data-event-id]').count(), 0);
+  const initialOverviewShape = await page.locator('.trajectoryOverview').evaluate((overview) => ({
+    nodeCount: overview.querySelectorAll('*').length,
+    canvasCount: overview.querySelectorAll('canvas').length,
+    locatorCount: overview.querySelectorAll('.trajectoryOverviewLocator').length,
+    eventCount: Number(overview.querySelector('canvas')?.dataset.eventCount),
+    renderedItemCount: Number(overview.querySelector('canvas')?.dataset.renderedItemCount),
+    plotWidth: Number(overview.querySelector('canvas')?.dataset.plotWidth),
+  }));
+  assert.deepEqual(
+    { canvasCount: initialOverviewShape.canvasCount, locatorCount: initialOverviewShape.locatorCount },
+    { canvasCount: 1, locatorCount: 1 },
+  );
+  assert.equal(initialOverviewShape.eventCount, 150);
+  assert.ok(initialOverviewShape.nodeCount < 30);
+  assert.ok(initialOverviewShape.renderedItemCount <= initialOverviewShape.plotWidth);
+
+  const canvas = page.locator('.trajectoryOverviewCanvas');
+  const canvasBox = await canvas.boundingBox();
+  assert.ok(canvasBox);
+  await canvas.click({ position: { x: canvasBox.width * 0.52, y: canvasBox.height * 0.5 } });
+  await page.waitForFunction(() => (
+    Boolean(document.querySelector('.trajectoryOverviewLocator[data-trajectory-overview-selected-id]:not([hidden])'))
+      && Boolean(document.querySelector('[data-trajectory-event-id].selected'))
+      && Boolean(document.querySelector('#detail .inspector'))
+  ));
+  const selectedId = await page.locator('.trajectoryOverviewLocator').getAttribute(
+    'data-trajectory-overview-selected-id',
+  );
+  assert.ok(selectedId);
+  assert.equal(
+    await page.locator('[data-trajectory-event-id].selected').getAttribute('data-trajectory-event-id'),
+    selectedId,
+  );
+  const locatorVisibility = await page.locator('.trajectoryOverviewLocator').evaluate((locator) => {
+    const viewport = locator.closest('.trajectoryOverviewViewport').getBoundingClientRect();
+    const bounds = locator.getBoundingClientRect();
+    return bounds.left >= viewport.left && bounds.right <= viewport.right;
+  });
+  assert.equal(locatorVisibility, true);
+
+  await page.locator('.trajectoryOverviewViewport').press('ArrowRight');
+  await page.waitForFunction((previousId) => (
+    document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId !== previousId
+  ), selectedId);
+  const keyboardSelectedId = await page.locator('.trajectoryOverviewLocator').getAttribute(
+    'data-trajectory-overview-selected-id',
+  );
+  assert.equal(
+    await page.locator('[data-trajectory-event-id].selected').getAttribute('data-trajectory-event-id'),
+    keyboardSelectedId,
+  );
+
+  await page.locator('#loadMoreBtn').click();
+  await page.waitForFunction(() => (
+    document.querySelector('.trajectoryPresentation')?.dataset.eventCount === '300'
+      && document.querySelector('.trajectoryOverviewStatus')?.textContent === 'Loaded sequence · 300'
+      && document.querySelector('.trajectoryOverviewCanvas')?.dataset.eventCount === '300'
+  ));
+  const loadedOverviewShape = await page.locator('.trajectoryOverview').evaluate((overview) => ({
+    nodeCount: overview.querySelectorAll('*').length,
+    mode: overview.querySelector('canvas')?.dataset.renderMode,
+    renderedItemCount: Number(overview.querySelector('canvas')?.dataset.renderedItemCount),
+    plotWidth: Number(overview.querySelector('canvas')?.dataset.plotWidth),
+  }));
+  assert.equal(loadedOverviewShape.nodeCount, initialOverviewShape.nodeCount);
+  assert.equal(loadedOverviewShape.mode, 'density');
+  assert.ok(loadedOverviewShape.renderedItemCount <= loadedOverviewShape.plotWidth);
+  assert.equal(
+    await page.locator('.trajectoryOverviewLocator').getAttribute('data-trajectory-overview-selected-id'),
+    keyboardSelectedId,
+  );
+
+  const firstInput = page.locator('[data-trajectory-event-id][data-lane="input"]:not(.hiddenByProfile)').first();
+  const firstInputId = await firstInput.getAttribute('data-trajectory-event-id');
+  assert.ok(firstInputId);
+  await firstInput.click();
+  const nextEvent = page.locator('[data-detail-action="navigate-event"][data-nav-direction="next"]');
+  await nextEvent.waitFor();
+  await page.waitForFunction(() => (
+    !document.querySelector('[data-detail-action="navigate-event"][data-nav-direction="next"]')?.disabled
+  ));
+  await nextEvent.click();
+  await page.waitForFunction((previousId) => (
+    document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId !== previousId
+      && document.querySelector('[data-trajectory-event-id].selected')?.dataset.trajectoryEventId
+        === document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId
+  ), firstInputId);
+});
+
+test('browser Trajectory sequence zoom keeps long overviews bounded and selection-aware without pan snapback', async (t) => {
+  const eventCount = 1000;
+  const { index } = await makeTransitionProfileIndex(t, {
+    eventCount,
+    hitPositions: [],
+    commonTermEvery: 0,
+  });
+  const { page, requestedUrls } = await openWave1cM1App(t, index, { locale: 'en' });
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForSelector('.trajectoryOverviewCanvas[data-render-mode]');
+
+  let expected = 150;
+  while (expected < eventCount) {
+    await page.locator('#loadMoreBtn').click();
+    expected = Math.min(eventCount, expected + 150);
+    await page.waitForFunction((count) => (
+      document.querySelector('.trajectoryPresentation')?.dataset.eventCount === String(count)
+    ), expected);
+  }
+  assert.equal(await page.locator('.trajectoryPresentation').getAttribute('data-event-count'), '1000');
+
+  const overview = page.locator('.trajectoryOverview');
+  const viewport = page.locator('.trajectoryOverviewViewport');
+  const canvas = page.locator('.trajectoryOverviewCanvas');
+  const initialShape = await overview.evaluate((node) => {
+    const scroll = node.querySelector('.trajectoryOverviewViewport');
+    const drawing = node.querySelector('.trajectoryOverviewCanvas');
+    return {
+      nodeCount: node.querySelectorAll('*').length,
+      zoom: Number(node.dataset.sequenceZoom),
+      clientWidth: scroll.clientWidth,
+      scrollWidth: scroll.scrollWidth,
+      mode: drawing.dataset.renderMode,
+      renderedItemCount: Number(drawing.dataset.renderedItemCount),
+      plotWidth: Number(drawing.dataset.plotWidth),
+    };
+  });
+  assert.equal(initialShape.zoom, 1);
+  assert.equal(initialShape.mode, 'density');
+  assert.ok(initialShape.nodeCount < 40);
+  assert.ok(initialShape.scrollWidth <= initialShape.clientWidth + 1);
+  assert.ok(initialShape.renderedItemCount <= initialShape.plotWidth);
+
+  const anchorRow = page.locator('[data-trajectory-event-id]').nth(799);
+  const anchorId = await anchorRow.getAttribute('data-trajectory-event-id');
+  assert.ok(anchorId);
+  await anchorRow.click();
+  await page.waitForFunction((eventId) => (
+    document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId === eventId
+  ), anchorId);
+
+  await page.locator('[data-trajectory-sequence-zoom="in"]').click();
+  await page.waitForFunction(() => (
+    document.querySelector('.trajectoryOverview')?.dataset.sequenceZoom === '2'
+      && document.querySelector('.trajectoryOverviewViewport')?.scrollLeft > 0
+  ));
+  const firstZoomAnchor = await page.locator('.trajectoryOverviewLocator').evaluate((locator) => {
+    const viewportNode = locator.closest('.trajectoryOverviewViewport');
+    const viewportBounds = viewportNode.getBoundingClientRect();
+    const locatorBounds = locator.getBoundingClientRect();
+    return {
+      visible: locatorBounds.left >= viewportBounds.left && locatorBounds.right <= viewportBounds.right,
+      relative: (locatorBounds.left - viewportBounds.left) / viewportBounds.width,
+    };
+  });
+  assert.equal(firstZoomAnchor.visible, true);
+  assert.ok(firstZoomAnchor.relative >= 0.35 && firstZoomAnchor.relative <= 0.7);
+
+  await page.locator('[data-trajectory-sequence-zoom="in"]').click();
+  await page.waitForFunction(() => document.querySelector('.trajectoryOverview')?.dataset.sequenceZoom === '4');
+  await page.locator('[data-trajectory-sequence-zoom="in"]').click();
+  await page.waitForFunction(() => (
+    document.querySelector('.trajectoryOverview')?.dataset.sequenceZoom === '8'
+      && document.querySelector('.trajectoryOverviewCanvas')?.dataset.renderMode === 'markers'
+  ));
+  const zoomedShape = await overview.evaluate((node) => {
+    const scroll = node.querySelector('.trajectoryOverviewViewport');
+    const drawing = node.querySelector('.trajectoryOverviewCanvas');
+    return {
+      nodeCount: node.querySelectorAll('*').length,
+      clientWidth: scroll.clientWidth,
+      scrollWidth: scroll.scrollWidth,
+      eventCount: Number(drawing.dataset.eventCount),
+      renderedItemCount: Number(drawing.dataset.renderedItemCount),
+      plotWidth: Number(drawing.dataset.plotWidth),
+    };
+  });
+  assert.equal(zoomedShape.nodeCount, initialShape.nodeCount);
+  assert.equal(zoomedShape.eventCount, eventCount);
+  assert.equal(zoomedShape.renderedItemCount, eventCount);
+  t.diagnostic(JSON.stringify({ initialShape, zoomedShape }));
+  assert.ok(zoomedShape.scrollWidth <= (zoomedShape.clientWidth * 8) + 8);
+  assert.ok(zoomedShape.scrollWidth >= (zoomedShape.clientWidth * 8) - 8);
+
+  await viewport.evaluate((node) => { node.scrollLeft = 0; });
+  await viewport.hover();
+  await page.mouse.wheel(0, 420);
+  await page.waitForFunction(() => document.querySelector('.trajectoryOverviewViewport')?.scrollLeft > 300);
+  const freelyPanned = await viewport.evaluate((node) => node.scrollLeft);
+  await page.waitForTimeout(100);
+  assert.ok(Math.abs((await viewport.evaluate((node) => node.scrollLeft)) - freelyPanned) <= 1);
+  assert.equal(
+    await page.locator('.trajectoryOverviewLocator').getAttribute('data-trajectory-overview-selected-id'),
+    anchorId,
+  );
+
+  await page.waitForTimeout(100);
+  const timelineRequestUrls = requestedUrls.filter((url) => url.includes('/timeline?'));
+  await page.locator('[data-main-presentation="timeline"]').click();
+  await page.waitForSelector('#timeline .event[data-event-id]');
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForFunction((expectedScroll) => {
+    const node = document.querySelector('.trajectoryOverviewViewport');
+    return document.querySelector('.trajectoryOverview')?.dataset.sequenceZoom === '8'
+      && Math.abs(node.scrollLeft - expectedScroll) <= 2;
+  }, freelyPanned);
+  const switchedTimelineRequestUrls = requestedUrls.filter((url) => url.includes('/timeline?'));
+  t.diagnostic(JSON.stringify({
+    presentationSwitchRequests: switchedTimelineRequestUrls.slice(timelineRequestUrls.length),
+  }));
+  assert.equal(switchedTimelineRequestUrls.length, timelineRequestUrls.length);
+
+  await viewport.scrollIntoViewIfNeeded();
+  const viewportBox = await viewport.boundingBox();
+  assert.ok(viewportBox);
+  await page.mouse.move(viewportBox.x + (viewportBox.width * 0.7), viewportBox.y + (viewportBox.height * 0.5));
+  await page.mouse.down();
+  await page.mouse.move(
+    viewportBox.x + (viewportBox.width * 0.45),
+    viewportBox.y + (viewportBox.height * 0.5),
+    { steps: 5 },
+  );
+  await page.mouse.up();
+  const draggedScroll = await viewport.evaluate((node) => node.scrollLeft);
+  t.diagnostic(JSON.stringify({ freelyPanned, draggedScroll }));
+  assert.ok(draggedScroll > freelyPanned + 50);
+  await page.waitForTimeout(100);
+  assert.ok(Math.abs((await viewport.evaluate((node) => node.scrollLeft)) - draggedScroll) <= 1);
+
+  const firstRow = page.locator('[data-trajectory-event-id]').first();
+  const firstId = await firstRow.getAttribute('data-trajectory-event-id');
+  await firstRow.click();
+  await page.waitForFunction((eventId) => {
+    const locator = document.querySelector('.trajectoryOverviewLocator');
+    const viewportNode = document.querySelector('.trajectoryOverviewViewport');
+    if (locator?.dataset.trajectoryOverviewSelectedId !== eventId || !viewportNode) return false;
+    const viewportBounds = viewportNode.getBoundingClientRect();
+    const locatorBounds = locator.getBoundingClientRect();
+    return locatorBounds.left >= viewportBounds.left && locatorBounds.right <= viewportBounds.right;
+  }, firstId);
+  assert.ok((await viewport.evaluate((node) => node.scrollLeft)) < initialShape.clientWidth);
+
+  await page.locator('[data-trajectory-sequence-zoom="fit"]').click();
+  await page.waitForFunction(() => {
+    const overviewNode = document.querySelector('.trajectoryOverview');
+    const viewportNode = document.querySelector('.trajectoryOverviewViewport');
+    return overviewNode?.dataset.sequenceZoom === '1'
+      && viewportNode?.scrollLeft === 0
+      && document.querySelector('.trajectoryOverviewCanvas')?.dataset.renderMode === 'density';
+  });
+});
+
+test('browser Trajectory characterizes the existing 1800-event performance shape without overview DOM growth', async (t) => {
+  const eventCount = 1800;
+  const { index } = await makeTransitionProfileIndex(t, {
+    eventCount,
+    hitPositions: [],
+    commonTermEvery: 0,
+  });
+  const { page, requestedUrls } = await openWave1cM1App(t, index, { locale: 'en' });
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForSelector('.trajectoryOverviewCanvas[data-render-mode]');
+  const initialOverviewNodeCount = await page.locator('.trajectoryOverview').evaluate(
+    (node) => node.querySelectorAll('*').length,
+  );
+
+  const loadMoreStartedAt = Date.now();
+  let expected = 150;
+  while (expected < eventCount) {
+    await page.locator('#loadMoreBtn').click();
+    expected = Math.min(eventCount, expected + 150);
+    await page.waitForFunction((count) => (
+      document.querySelector('.trajectoryPresentation')?.dataset.eventCount === String(count)
+    ), expected);
+  }
+  const loadMoreElapsedMs = Date.now() - loadMoreStartedAt;
+  const fitShape = await page.locator('.trajectoryPresentation').evaluate((presentation) => {
+    const overview = presentation.querySelector('.trajectoryOverview');
+    const drawing = presentation.querySelector('.trajectoryOverviewCanvas');
+    return {
+      eventCount: Number(presentation.dataset.eventCount),
+      overviewNodeCount: overview.querySelectorAll('*').length,
+      narrativeRowCount: presentation.querySelectorAll('.trajectoryNarrativeRow').length,
+      toolGroupCount: presentation.querySelectorAll('.trajectoryToolGroup').length,
+      fitMode: drawing.dataset.renderMode,
+      fitRenderedItemCount: Number(drawing.dataset.renderedItemCount),
+      fitPlotWidth: Number(drawing.dataset.plotWidth),
+    };
+  });
+  assert.equal(fitShape.eventCount, eventCount);
+  assert.equal(fitShape.overviewNodeCount, initialOverviewNodeCount);
+  assert.equal(fitShape.narrativeRowCount, eventCount);
+  assert.equal(fitShape.toolGroupCount, 0);
+  assert.equal(fitShape.fitMode, 'density');
+  assert.ok(fitShape.fitRenderedItemCount <= fitShape.fitPlotWidth);
+
+  const timelineRequestCount = requestedUrls.filter((url) => url.includes('/timeline?')).length;
+  const timelineStartedAt = Date.now();
+  await page.locator('[data-main-presentation="timeline"]').click();
+  await page.waitForFunction((count) => (
+    document.querySelectorAll('#timeline .event[data-event-id]').length === count
+  ), eventCount);
+  const timelineReturnMs = Date.now() - timelineStartedAt;
+  const trajectoryStartedAt = Date.now();
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForFunction((count) => (
+    document.querySelector('.trajectoryPresentation')?.dataset.eventCount === String(count)
+  ), eventCount);
+  const trajectoryReturnMs = Date.now() - trajectoryStartedAt;
+  assert.equal(requestedUrls.filter((url) => url.includes('/timeline?')).length, timelineRequestCount);
+
+  const zoomStartedAt = Date.now();
+  for (const zoom of ['2', '4', '8', '16']) {
+    await page.locator('[data-trajectory-sequence-zoom="in"]').click();
+    await page.waitForFunction((value) => (
+      document.querySelector('.trajectoryOverview')?.dataset.sequenceZoom === value
+    ), zoom);
+  }
+  await page.waitForFunction(() => (
+    document.querySelector('.trajectoryOverviewCanvas')?.dataset.renderMode === 'markers'
+  ));
+  const zoomElapsedMs = Date.now() - zoomStartedAt;
+  const zoomedShape = await page.locator('.trajectoryOverview').evaluate((overview) => {
+    const viewport = overview.querySelector('.trajectoryOverviewViewport');
+    const drawing = overview.querySelector('.trajectoryOverviewCanvas');
+    return {
+      overviewNodeCount: overview.querySelectorAll('*').length,
+      zoom: Number(overview.dataset.sequenceZoom),
+      viewportWidth: viewport.clientWidth,
+      canvasWidth: Number(drawing.dataset.plotWidth),
+      mode: drawing.dataset.renderMode,
+      renderedItemCount: Number(drawing.dataset.renderedItemCount),
+    };
+  });
+  assert.equal(zoomedShape.overviewNodeCount, initialOverviewNodeCount);
+  assert.equal(zoomedShape.zoom, 16);
+  assert.equal(zoomedShape.mode, 'markers');
+  assert.equal(zoomedShape.renderedItemCount, eventCount);
+  assert.ok(zoomedShape.canvasWidth <= (zoomedShape.viewportWidth * 16) + 16);
+  t.diagnostic(JSON.stringify({
+    shape: fitShape,
+    loadMoreElapsedMs,
+    timelineReturnMs,
+    trajectoryReturnMs,
+    zoomElapsedMs,
+    zoomedShape,
+  }));
+});
+
+test('browser project-search drill-down restores Trajectory and anchors the exact loaded-prefix event', async (t) => {
+  const { index } = await makeTransitionProfileIndex(t, {
+    eventCount: 300,
+    hitPositions: [250],
+    commonTermEvery: 30,
+  });
+  const { page } = await openWave1cM1App(t, index, { locale: 'en' });
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForSelector('.trajectoryPresentation');
+
+  await switchToProjectScope(page);
+  assert.equal(await page.locator('#mainPresentationControl').isVisible(), false);
+  assert.equal(await page.locator('body').getAttribute('data-remembered-main-presentation'), 'trajectory');
+  await fillSearch(page, 'far-needle');
+  await page.waitForFunction(() => document.querySelectorAll('#sessionList .projectResultCard').length === 1);
+  await page.locator('#sessionList .projectResultCard').click();
+  await page.waitForFunction(() => (
+    document.body.dataset.searchScope === 'session'
+      && Boolean(document.querySelector('.trajectoryPresentation'))
+      && Boolean(document.querySelector('.trajectoryOverviewLocator[data-trajectory-overview-selected-id]'))
+  ));
+
+  const targetId = await page.locator('.trajectoryOverviewLocator').getAttribute(
+    'data-trajectory-overview-selected-id',
+  );
+  assert.ok(targetId);
+  assert.equal(
+    await page.locator('[data-trajectory-event-id].selected').getAttribute('data-trajectory-event-id'),
+    targetId,
+  );
+  const loadedState = await page.locator('.trajectoryPresentation').evaluate((presentation) => ({
+    loaded: Number(presentation.dataset.eventCount),
+    status: presentation.querySelector('.trajectoryOverviewStatus')?.textContent || '',
+  }));
+  assert.ok(loadedState.loaded >= 251 && loadedState.loaded <= 300);
+  assert.equal(
+    loadedState.status,
+    loadedState.loaded < 300
+      ? `Loaded prefix · ${loadedState.loaded}/300`
+      : 'Loaded sequence · 300',
+  );
+  assert.equal(
+    await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').getAttribute('aria-pressed'),
+    'true',
+  );
+  assert.equal(await page.locator('#timeline [data-search-back-to-project]').count(), 1);
+});
+
+test('browser Trajectory search reveals a collapsed Tool Activity Group and structured filters reuse folding semantics', async (t) => {
+  const index = await buildFixtureIndex();
+  const session = await materializeIndexedSession(index, primaryFixtureSessionId);
+  const commandEvents = session.logicalEvents.filter((event) => event.kind === 'command');
+  const failedCommand = commandEvents.find((event) => (
+    event.kind === 'command' && event.status === 'failed'
+  ));
+  assert.ok(failedCommand);
+  const hiddenCommandProfile = {
+    id: 'custom:trajectory-hidden-command',
+    name: 'Trajectory hidden command search test',
+    description: 'Hide commands so canonical search navigation must reveal a lazy tool member.',
+    rules: {
+      kindStates: { command: 'hidden' },
+      fallback: 'summary',
+      conditions: [],
+    },
+  };
+  const { page } = await openWave1cM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([hiddenCommandProfile]),
+      'sessionAnalyzer.profile': hiddenCommandProfile.id,
+    },
+  });
+  await selectPrimarySession(page);
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForSelector('.trajectoryPresentation');
+
+  const initialGroupState = await page.evaluate((eventId) => {
+    const group = [...document.querySelectorAll('.trajectoryToolGroup')]
+      .find((candidate) => candidate.__trajectoryEventIds?.has(eventId));
+    return group && {
+      open: group.open,
+      hidden: group.classList.contains('hiddenByProfile'),
+      memberCount: group.querySelectorAll('[data-trajectory-event-id]').length,
+    };
+  }, failedCommand.id);
+  assert.deepEqual(initialGroupState, { open: false, hidden: false, memberCount: 0 });
+
+  await page.evaluate(() => window.__wave1cM1.reset());
+  await fillSearch(page, 'alpha failed');
+  await page.waitForFunction(() => (
+    document.querySelector('.searchInlineCount')?.textContent?.endsWith('/ 1 targets')
+      && document.querySelector('#searchMetricsPanel')?.textContent.includes('1 occurrences')
+  ));
+  assert.equal(
+    await page.locator(`[data-trajectory-event-id="${failedCommand.id}"]`).count(),
+    0,
+    'search discovery keeps a hidden lazy member unmaterialized until canonical navigation requests it',
+  );
+
+  await page.locator('.searchInlineMatches [data-search-match-nav="next"]').click();
+  await page.waitForTimeout(500);
+  const searchReveal = await page.evaluate((eventId) => {
+    const member = document.querySelector(`[data-trajectory-event-id="${CSS.escape(eventId)}"]`);
+    const group = [...document.querySelectorAll('.trajectoryToolGroup')]
+      .find((candidate) => candidate.__trajectoryEventIds?.has(eventId));
+    return {
+      hasMember: Boolean(member),
+      groupOpen: Boolean(group?.open),
+      memberClasses: member?.className || '',
+      memberMarkCount: member?.querySelectorAll('mark.searchMark').length || 0,
+      memberActiveMarkCount: member?.querySelectorAll('mark.searchMark.activeSearchMark').length || 0,
+      selectedId: document.querySelector('[data-trajectory-event-id].selected')?.dataset.trajectoryEventId || '',
+      locatorId: document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId || '',
+      inspector: Boolean(document.querySelector('#detail .inspector')),
+    };
+  }, failedCommand.id);
+  t.diagnostic(JSON.stringify({ searchReveal, failedCommandId: failedCommand.id }));
+  assert.equal(searchReveal.hasMember, true);
+  assert.equal(searchReveal.groupOpen, true);
+  assert.match(searchReveal.memberClasses, /(?:^|\s)state-expanded(?:\s|$)/);
+  assert.match(searchReveal.memberClasses, /(?:^|\s)selected(?:\s|$)/);
+  assert.ok(searchReveal.memberActiveMarkCount > 0);
+  assert.equal(searchReveal.selectedId, failedCommand.id);
+  assert.equal(searchReveal.locatorId, failedCommand.id);
+  assert.equal(searchReveal.inspector, true);
+  assert.equal(await page.evaluate(() => window.__wave1cM1.evidence.revisions.some(
+    (item) => item.revisionKind === 'searchTransientRevision',
+  )), true);
+  assert.equal(await page.locator('#detail .inspector').count(), 1);
+
+  await fillSearch(page, '');
+  await expectInputValue(page, '#searchInput', '');
+  await page.waitForFunction((eventId) => {
+    const group = [...document.querySelectorAll('.trajectoryToolGroup')]
+      .find((candidate) => candidate.__trajectoryEventIds?.has(eventId));
+    const member = group?.querySelector(`[data-trajectory-event-id="${CSS.escape(eventId)}"]`);
+    return group && !group.querySelector('mark.searchMark')
+      && ((!group.open && !member) || (group.open && member?.classList.contains('hiddenByProfile')));
+  }, failedCommand.id);
+
+  await addSearchFilter(page, 'kind', 'command');
+  await page.waitForTimeout(500);
+  const structuredFilterState = await page.evaluate((eventId) => {
+    const presentation = document.querySelector('.trajectoryPresentation');
+    const group = [...document.querySelectorAll('.trajectoryToolGroup')]
+      .find((candidate) => candidate.__trajectoryEventIds?.has(eventId));
+    return {
+      eventCount: presentation?.dataset.eventCount || '',
+      groupCount: document.querySelectorAll('.trajectoryToolGroup').length,
+      groupEventCount: group?.dataset.eventCount || '',
+      groupClasses: group?.className || '',
+      containsEvent: Boolean(group?.__trajectoryEventIds?.has(eventId)),
+      selectedId: document.querySelector('[data-trajectory-event-id].selected')?.dataset.trajectoryEventId || '',
+    };
+  }, failedCommand.id);
+  t.diagnostic(JSON.stringify({ structuredFilterState }));
+  assert.equal(structuredFilterState.eventCount, String(commandEvents.length));
+  assert.ok(structuredFilterState.groupCount > 0);
+  assert.ok(Number(structuredFilterState.groupEventCount) > 0);
+  assert.match(structuredFilterState.groupClasses, /(?:^|\s)state-collapsed(?:\s|$)/);
+  assert.doesNotMatch(structuredFilterState.groupClasses, /(?:^|\s)hiddenByProfile(?:\s|$)/);
+  assert.equal(structuredFilterState.containsEvent, true);
+  assert.equal(
+    await page.locator('.trajectoryOverviewCanvas').getAttribute('data-event-count'),
+    String(commandEvents.length),
+  );
+  await page.evaluate((eventId) => {
+    const group = [...document.querySelectorAll('.trajectoryToolGroup')]
+      .find((candidate) => candidate.__trajectoryEventIds?.has(eventId));
+    group.querySelector(':scope > summary').click();
+  }, failedCommand.id);
+  await page.waitForSelector(`[data-trajectory-event-id="${failedCommand.id}"]`);
+  assert.equal(
+    await page.locator(`[data-trajectory-event-id="${failedCommand.id}"]`).getAttribute('data-display-state'),
+    'collapsed',
+  );
+
+  await clearAllSearch(page);
+  await page.waitForFunction(() => document.querySelector('.trajectoryPresentation')?.dataset.eventCount === '29');
+  const savedOverrides = await page.evaluate(() => JSON.parse(
+    localStorage.getItem('sessionAnalyzer.overrides') || '{}',
+  ));
+  assert.equal(savedOverrides[primaryFixtureSessionId]?.[failedCommand.id], undefined);
+  await page.locator('[data-main-presentation="timeline"]').click();
+  await page.locator(
+    `#timeline .event[data-event-id="${failedCommand.id}"].hiddenByProfile`,
+  ).waitFor({ state: 'attached' });
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.evaluate(() => {
+    const select = document.querySelector('#profileSelect');
+    select.value = 'narrative';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.waitForFunction((eventId) => {
+    const member = document.querySelector(`[data-trajectory-event-id="${CSS.escape(eventId)}"]`);
+    return member?.classList.contains('state-expanded')
+      && member.closest('.trajectoryToolGroup')?.open;
+  }, failedCommand.id);
+  assert.equal(await page.locator('#profileSelect').inputValue(), 'narrative');
+});
+
+test('browser Timeline remains keyed after a Trajectory round trip and the next Main Load more append', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:trajectory-keyed-round-trip',
+    name: 'Trajectory keyed round-trip fixture',
+    description: 'Keep the Main prefix stable while proving the accepted Wave 1C append path.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 320 });
+  const { page } = await openWave1cM2App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+  });
+  await assertEventCount(page, 150);
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForFunction(() => document.querySelector('.trajectoryPresentation')?.dataset.eventCount === '150');
+  await page.locator('[data-main-presentation="timeline"]').click();
+  await assertEventCount(page, 150);
+
+  await page.evaluate(() => {
+    const cards = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    window.__trajectoryKeyedRoundTrip = {
+      cards,
+      byId: new Map(cards.map((card) => [card.dataset.eventId, card])),
+    };
+  });
+  const operationId = await beginWave1cM2Operation(page);
+  await page.locator('#loadMoreBtn').click();
+  await assertEventCount(page, 300);
+  const rows = await wave1cM2OperationRows(page, operationId);
+  const identity = await page.evaluate(() => {
+    const before = window.__trajectoryKeyedRoundTrip;
+    return {
+      preserved: before.cards.filter((card) => (
+        card.isConnected
+          && before.byId.get(card.dataset.eventId) === card
+          && document.querySelector(`#timeline .event[data-event-id="${CSS.escape(card.dataset.eventId)}"]`) === card
+      )).length,
+      prefixCount: before.cards.length,
+    };
+  });
+  assert.deepEqual(identity, { preserved: 150, prefixCount: 150 });
+  assert.deepEqual(rows.filter((row) => row.commitKind === 'appendOnly').map((row) => ({
+    pre: row.preCanonicalCount,
+    added: row.addedCanonicalCount,
+    removed: row.removedCanonicalCount,
+    final: row.finalCanonicalCount,
+  })), [{ pre: 150, added: 150, removed: 0, final: 300 }]);
+  assert.equal(rows.some((row) => row.commitKind === 'replacement'), false);
+});
+
+test('browser Trajectory overview pan stays isolated while timeline-pane user scroll retains automatic pagination', async (t) => {
+  const { index } = await makeTransitionProfileIndex(t, {
+    eventCount: 300,
+    hitPositions: [],
+    commonTermEvery: 0,
+  });
+  const { page, requestedUrls } = await openWave1cM1App(t, index, { locale: 'en' });
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForFunction(() => document.querySelector('.trajectoryPresentation')?.dataset.eventCount === '150');
+  await page.locator('[data-trajectory-sequence-zoom="in"]').click();
+  await page.waitForFunction(() => document.querySelector('.trajectoryOverview')?.dataset.sequenceZoom === '2');
+
+  const requestStart = requestedUrls.length;
+  const overviewViewport = page.locator('.trajectoryOverviewViewport');
+  await overviewViewport.hover();
+  await page.mouse.wheel(0, 100000);
+  await page.waitForFunction(() => document.querySelector('.trajectoryOverviewViewport')?.scrollLeft > 0);
+  await page.mouse.wheel(0, 100000);
+  await page.waitForTimeout(200);
+  assert.equal(await page.locator('.trajectoryPresentation').getAttribute('data-event-count'), '150');
+  assert.equal(requestedUrls.slice(requestStart).some((url) => (
+    url.includes('/timeline?') && new URL(url, 'http://local').searchParams.get('offset') === '150'
+  )), false);
+
+  const timelinePane = page.locator('.timelinePane');
+  await timelinePane.hover();
+  await page.mouse.wheel(0, 100000);
+  await page.waitForFunction(() => document.querySelector('.trajectoryPresentation')?.dataset.eventCount === '300');
+  assert.equal(requestedUrls.slice(requestStart).some((url) => (
+    url.includes('/timeline?') && new URL(url, 'http://local').searchParams.get('offset') === '150'
+  )), true);
+});
+
+test('browser Trajectory discards stale long-session search pages after a Session transition', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t, {
+    eventCount: 900,
+    hitPositions: [800],
+  });
+  const { page } = await openWave1bM2App(t, index, { locale: 'en' });
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForSelector('.trajectoryPresentation');
+  await fillSearch(page, 'far-needle');
+  await page.waitForFunction(() => document.querySelector('.trajectoryPresentation')?.dataset.eventCount === '600');
+
+  const paused = deferred();
+  const release = deferred();
+  await page.route(`**/api/sessions/${fixture.longSessionId}/timeline?*`, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') === 'far-needle' && url.searchParams.get('offset') === '750') {
+      paused.resolve();
+      await release.promise;
+      try { await route.continue(); } catch {}
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.locator('#searchInput').press('Enter');
+  await paused.promise;
+  assert.equal(await page.locator('.trajectoryPresentation').getAttribute('data-event-count'), '600');
+  await page.locator(`[data-session-id="${fixture.secondarySessionId}"]`).click();
+  await page.waitForFunction((sessionId) => (
+    document.querySelector('.sessionItem.active')?.dataset.sessionId === sessionId
+      && document.querySelector('.trajectoryPresentation')?.dataset.eventCount === '40'
+      && document.querySelector('.trajectoryOverview')?.dataset.sequenceZoom === '1'
+  ), fixture.secondarySessionId);
+  release.resolve();
+  await page.waitForTimeout(300);
+
+  assert.equal(await page.locator('.trajectoryPresentation').getAttribute('data-event-count'), '40');
+  assert.equal(await page.locator('.sessionItem.active').getAttribute('data-session-id'), fixture.secondarySessionId);
+  assert.equal(await page.locator('body').getAttribute('data-remembered-main-presentation'), 'trajectory');
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+  assert.equal(await page.locator('[data-search-navigation-pending]').count(), 0);
+});
+
 test('browser locale localizes static shell and dirty profile dialog', async (t) => {
   const index = await buildFixtureIndex();
   const { page } = await openApp(t, index, { locale: 'en' });
@@ -2500,7 +3382,7 @@ test('browser nested Code Mode context reveals a distinct parent row without cha
   await page.waitForFunction((operationId) => document.querySelector(`#timeline .event.selected[data-event-id="${CSS.escape(operationId)}"]`), operation.id);
 });
 
-test('browser nested Code Mode context late responses are invalidated by same-source detail, fold, and profile transitions', async (t) => {
+test('browser nested Code Mode context late responses are invalidated by detail, fold, profile, and Main presentation transitions', async (t) => {
   const fixture = await makeContextCodeModeCodexHome(t);
   const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
   const session = await materializeIndexedSession(index, fixture.sessionId);
@@ -2596,6 +3478,15 @@ test('browser nested Code Mode context late responses are invalidated by same-so
   await assertContextRowGone();
   profileGate.release();
   await profileGate.finished;
+
+  const presentationGate = queueParentGate();
+  await revealAndWaitForRequest(presentationGate);
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForSelector('.trajectoryPresentation');
+  await assertContextRowGone();
+  presentationGate.release();
+  await presentationGate.finished;
+  assert.equal(await page.locator('.contextRevealRow').count(), 0);
 });
 
 test('browser Code Mode raw fallback keeps a shared origin tag instead of the outer exec tool tag', async (t) => {
@@ -3291,6 +4182,57 @@ test('browser chooser switches transcript source and refreshes project candidate
   await confirmSourceAction(page, 'Confirm switch to Codex');
   await waitForProjectRoot(page, repoRoot);
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Codex/);
+});
+
+test('browser source replacement preserves the remembered Main Trajectory presentation without stale event ownership', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  const { page } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: fixture.claudeHome },
+    localStorage: { 'sessionAnalyzer.repoRoot': repoRoot },
+  });
+  await page.waitForFunction(() => (
+    document.body.dataset.projectMode === 'analyzing'
+      && Boolean(document.querySelector('.sessionItem.active'))
+      && document.querySelectorAll('#timeline .event[data-event-id]').length > 0
+  ));
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForSelector('.trajectoryPresentation');
+  const originalEvent = page.locator('[data-trajectory-event-id]').first();
+  const originalEventId = await originalEvent.getAttribute('data-trajectory-event-id');
+  assert.ok(originalEventId);
+  await originalEvent.click();
+  await page.waitForFunction((eventId) => (
+    document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId === eventId
+  ), originalEventId);
+
+  await page.locator('#projectSwitchControl').click();
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'selecting');
+  assert.equal(await page.locator('#mainPresentationControl').isVisible(), false);
+  assert.equal(await page.locator('body').getAttribute('data-remembered-main-presentation'), 'trajectory');
+  await page.locator('#projectSourceAction').click();
+  await confirmSourceAction(page, 'Confirm switch to Claude Code');
+  await waitForProjectRoot(page, fixture.claudeRepo);
+  await page.evaluate((root) => {
+    const project = [...document.querySelectorAll('.projectItem[data-project-root]')]
+      .find((item) => item.dataset.projectRoot === root);
+    project?.click();
+  }, fixture.claudeRepo);
+  await page.waitForFunction((sessionId) => (
+    document.body.dataset.projectMode === 'analyzing'
+      && document.querySelector('.sessionItem.active')?.dataset.sessionId === sessionId
+      && Boolean(document.querySelector('.trajectoryPresentation'))
+  ), analyzerSessionId(fixture.sessionId));
+
+  assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Claude Code/);
+  assert.equal(await page.locator('body').getAttribute('data-remembered-main-presentation'), 'trajectory');
+  assert.equal(await page.locator('body').getAttribute('data-main-presentation'), 'trajectory');
+  assert.equal(
+    await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').getAttribute('aria-pressed'),
+    'true',
+  );
+  assert.equal(await page.locator(`[data-event-id="${originalEventId}"]`).count(), 0);
+  assert.equal(await page.locator('.trajectoryOverviewLocator[data-trajectory-overview-selected-id]').count(), 0);
+  assert.equal(await page.locator('.trajectoryPresentation').getAttribute('data-event-count'), '2');
 });
 
 test('browser source switch cycles through every supported registry source', async (t) => {

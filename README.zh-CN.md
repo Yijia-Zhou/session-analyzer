@@ -8,6 +8,8 @@ Session Analyzer 把本地 Codex、Claude Code 与 DeepSeek Harness 会话转录
 
 左侧始终显示仓库会话历史，中间的主时间线还原工作过程，右侧则可随时查看结构化详情。
 
+Main 默认使用既有 Timeline 呈现。通过中间面板上方的 `Timeline | Trajectory`，可以把同一批已加载 Main event 切换为紧凑轨迹：Input／Model 叙事行、可逆且非因果的工具活动组，以及支持全览、缩放和横向平移的三 lane 序列概览。Protocol 与 Raw 始终只使用 Timeline；loaded-prefix 文案会明确提示长 Session 尚未完整加载。
+
 默认在本地运行，只读分析转录文件，不会上传转录内容。
 
 ## 快速找回某次具体工作
@@ -94,7 +96,7 @@ session-analyzer --repo /path/to/project
 1. 使用默认的 Codex 来源，或在 CLI 选择 Claude Code 或 DeepSeek Harness，然后在浏览器中选择目标项目，也可以在启动服务器时传入 `--repo`。
 2. 使用项目选择界面在运行期切换项目；同一界面还可以切换当前转录来源或编辑其 home 目录，随后会针对该来源重新发现项目。
 3. 从左侧面板选择一个会话。
-4. 使用 `Main timeline` 进行日常阅读，使用 `Protocol layer` 查看注入上下文和生命周期记录，使用 `Raw records` 查看精确转录行。
+4. 使用 `Main timeline` 进行日常阅读，并在默认 `Timeline` 呈现与紧凑 `Trajectory` 呈现之间选择；使用 `Protocol layer` 查看注入上下文和生命周期记录，使用 `Raw records` 查看精确转录行。
 5. 在搜索 HUD 中输入忽略大小写的普通文本短语；短语中的空白可以匹配空格、Tab 或换行。打开“搜索选项”可在当前会话与整个项目之间切换，编辑始终可见的“涉及文件”“类型”或“状态”筛选，查看完整计数，或跳到相邻的全局层级选择器。`status:failed` 等类似操作符的输入仍按字面文本搜索。
 6. 打开事件以检查结构化详情和原始引用。
 
@@ -107,6 +109,7 @@ npm 包不承诺稳定的程序接口。v0.1 支持的接口是 `session-analyze
 - 只显示与所选仓库匹配的会话。
 - 保持 Claude Code subagent 可单独选择；区分物化式与指针式分叉，并在不重复指标或原始记录的前提下展示归父会话所有的继承上下文。
 - 浏览三种层级：去重后的主时间线、协议事件、原始 JSONL 记录。
+- 在不改变逻辑事件、搜索、Inspector 或原始引用 identity 的前提下，通过默认 Timeline 或紧凑 Trajectory 概览与叙事阅读 Main。
 - 对于 Codex，可检查单次请求的 Token 使用情况与保守推断的缓存复用中断，并在主时间线上下文与对应的协议层证据之间跳转。
 - 搜索消息、命令、文件、输出、状态、事件类型和层级。
 - 检查消息、命令、补丁、计划、MCP/工具调用、Web 搜索、生命周期事件和原始记录的结构化详情。

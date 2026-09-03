@@ -2914,6 +2914,524 @@ body[data-project-mode='selecting'] .searchAssist {
   gap: 0.55rem;
 }
 
+.mainPresentationControl[hidden] {
+  display: none;
+}
+
+.mainPresentationControl {
+  align-items: center;
+  background: #eef2f3;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: inline-grid;
+  gap: 2px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  justify-self: start;
+  margin: 0 0 0.65rem;
+  padding: 3px;
+}
+
+.mainPresentationControl button {
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+  min-height: 30px;
+  padding: 0.28rem 0.72rem;
+}
+
+.mainPresentationControl button:hover,
+.mainPresentationControl button:focus-visible {
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  color: var(--accent);
+  outline: none;
+}
+
+.mainPresentationControl button[aria-pressed='true'] {
+  background: var(--panel);
+  box-shadow: 0 1px 3px rgba(24, 32, 36, 0.13);
+  color: var(--ink);
+}
+
+.mainPresentationControl button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.timeline.trajectoryPresentationRoot {
+  display: block;
+}
+
+.trajectoryPresentation {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.trajectoryOverview {
+  background: #f8fafb;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  display: grid;
+  gap: 0.55rem;
+  overflow: hidden;
+  padding: 0.62rem 0.7rem 0.7rem;
+}
+
+.trajectoryOverviewHeader {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.trajectoryOverviewHeading {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.55rem;
+  min-width: 0;
+}
+
+.trajectoryOverviewTitle {
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 780;
+}
+
+.trajectoryOverviewStatus,
+.trajectoryOverviewHint {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.trajectoryOverviewStatus {
+  font-family: var(--mono);
+}
+
+.trajectoryOverviewHint {
+  flex: 0 0 auto;
+}
+
+.trajectoryOverviewHeaderActions,
+.trajectoryZoomControls {
+  align-items: center;
+  display: flex;
+}
+
+.trajectoryOverviewHeaderActions {
+  gap: 0.65rem;
+}
+
+.trajectoryZoomControls {
+  background: color-mix(in srgb, var(--panel) 88%, var(--line));
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  flex: 0 0 auto;
+  gap: 0.1rem;
+  padding: 0.12rem;
+}
+
+.trajectoryZoomScale {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  min-width: 2.5rem;
+  padding-inline: 0.25rem;
+  text-align: center;
+}
+
+.trajectoryZoomControls button {
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.72rem;
+  line-height: 1;
+  min-height: 22px;
+  min-width: 24px;
+  padding: 0.22rem 0.35rem;
+}
+
+.trajectoryZoomControls button:hover:not(:disabled),
+.trajectoryZoomControls button:focus-visible {
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  color: var(--accent);
+  outline: none;
+}
+
+.trajectoryZoomControls button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.trajectoryOverviewBody {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-width: 0;
+}
+
+.trajectoryOverviewLabels {
+  color: var(--muted);
+  display: grid;
+  font-size: 0.64rem;
+  font-weight: 700;
+  grid-template-rows: repeat(3, 1fr);
+  height: 72px;
+  line-height: 1;
+  text-align: right;
+}
+
+.trajectoryOverviewLabels span {
+  align-items: center;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.trajectoryOverviewViewport {
+  background: var(--panel);
+  border: 1px solid #dce4e7;
+  border-radius: 5px;
+  cursor: grab;
+  min-width: 0;
+  overscroll-behavior-x: contain;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-color: color-mix(in srgb, var(--accent) 40%, transparent) transparent;
+  scrollbar-width: thin;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.trajectoryOverviewViewport.panning {
+  cursor: grabbing;
+}
+
+.trajectoryOverviewViewport:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(22, 107, 92, 0.14);
+  outline: none;
+}
+
+.trajectoryOverviewPlot {
+  flex: 0 0 auto;
+  height: 72px;
+  min-width: 100%;
+  position: relative;
+  width: 100%;
+}
+
+.trajectoryOverviewCanvas {
+  cursor: crosshair;
+  display: block;
+  height: 72px;
+  width: 100%;
+}
+
+.trajectoryOverviewLocator[hidden] {
+  display: none;
+}
+
+.trajectoryOverviewLocator {
+  background: color-mix(in srgb, var(--accent) 78%, transparent);
+  bottom: 3px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.86);
+  pointer-events: none;
+  position: absolute;
+  top: 3px;
+  transform: translateX(-1px);
+  width: 2px;
+  z-index: 2;
+}
+
+.trajectoryOverviewLocator::before {
+  background: var(--accent);
+  border: 2px solid var(--panel);
+  border-radius: 999px;
+  content: '';
+  height: 7px;
+  left: 50%;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 7px;
+}
+
+.trajectoryEmpty {
+  background: #f8fafb;
+  border: 1px dashed var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  margin: 0;
+  padding: 0.9rem;
+}
+
+.trajectoryNarrative {
+  display: grid;
+  gap: 0.38rem;
+  min-width: 0;
+  position: relative;
+}
+
+.trajectoryNarrative::before {
+  background: color-mix(in srgb, var(--accent) 22%, var(--line));
+  content: '';
+  inset-block: 0;
+  left: 9px;
+  position: absolute;
+  width: 1px;
+}
+
+.trajectoryTurnBoundary {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  gap: 0.45rem;
+  letter-spacing: 0.035em;
+  min-height: 18px;
+  padding-left: 1.5rem;
+  position: relative;
+  text-transform: uppercase;
+}
+
+.trajectoryTurnBoundary::before {
+  background: var(--panel);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 999px;
+  content: '';
+  height: 7px;
+  left: 6px;
+  position: absolute;
+  width: 7px;
+}
+
+.trajectoryTurnBoundary::after {
+  background: var(--line);
+  content: '';
+  flex: 1;
+  height: 1px;
+}
+
+.trajectoryNarrativeRow,
+.trajectoryToolGroup {
+  margin-left: 1.5rem;
+  min-width: 0;
+  position: relative;
+}
+
+.trajectoryNarrativeRow::before,
+.trajectoryToolGroup::before {
+  background: var(--line);
+  content: '';
+  height: 1px;
+  left: -0.9rem;
+  position: absolute;
+  top: 50%;
+  width: 0.9rem;
+}
+
+.trajectoryEvent {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid #91a2a9;
+  border-radius: 6px;
+  color: var(--ink);
+  display: grid;
+  gap: 0.25rem 0.6rem;
+  grid-template-columns: minmax(7rem, auto) minmax(0, 1fr) auto;
+  min-height: 42px;
+  padding: 0.46rem 0.6rem;
+  text-align: left;
+  width: 100%;
+}
+
+.trajectoryEvent.lane-input {
+  border-left-color: #2f7b6d;
+}
+
+.trajectoryEvent.lane-model {
+  border-left-color: #527f90;
+}
+
+.trajectoryEvent.lane-tools {
+  border-left-color: #987331;
+}
+
+.trajectoryEvent.lane-other {
+  border-left-color: #8c6475;
+  border-style: dashed;
+}
+
+.trajectoryEvent:hover,
+.trajectoryEvent:focus-visible {
+  background: color-mix(in srgb, var(--accent) 5%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  outline: none;
+}
+
+.trajectoryEvent.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.trajectoryEvent.searchHit {
+  background: var(--soft);
+}
+
+.trajectoryEvent.error {
+  border-left-color: var(--accent-2);
+}
+
+.trajectoryEvent.hiddenByProfile,
+.trajectoryToolGroup.hiddenByProfile {
+  display: none;
+}
+
+.trajectoryEventType {
+  color: var(--ink);
+  font-size: 0.73rem;
+  font-weight: 750;
+  line-height: 1.25;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trajectoryEventPreview {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trajectoryEventStatus {
+  background: #eef2f3;
+  border-radius: 999px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  padding: 0.12rem 0.34rem;
+  white-space: nowrap;
+}
+
+.trajectoryEventStatus[data-status='failed'],
+.trajectoryEventStatus[data-status='error'],
+.trajectoryEventStatus[data-status='blocked'],
+.trajectoryEventStatus[data-status='declined'] {
+  background: #fff0f0;
+  color: var(--accent-2);
+}
+
+.trajectoryEvent.state-collapsed {
+  min-height: 34px;
+  padding-block: 0.34rem;
+}
+
+.trajectoryEvent.state-collapsed .trajectoryEventPreview {
+  color: #6f7c81;
+}
+
+.trajectoryToolGroup {
+  background: #faf8f2;
+  border: 1px solid #e1d9c6;
+  border-radius: 6px;
+}
+
+.trajectoryToolGroup[open] {
+  background: #fffdf8;
+}
+
+.trajectoryToolGroupSummary {
+  align-items: center;
+  cursor: pointer;
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  list-style: none;
+  min-height: 36px;
+  padding: 0.4rem 0.62rem;
+}
+
+.trajectoryToolGroupSummary::-webkit-details-marker {
+  display: none;
+}
+
+.trajectoryToolGroupSummary::before {
+  color: #8b6c2f;
+  content: '›';
+  font-size: 1rem;
+  font-weight: 800;
+  margin-right: -0.25rem;
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+}
+
+.trajectoryToolGroup[open] > .trajectoryToolGroupSummary::before {
+  transform: rotate(90deg);
+}
+
+.trajectoryToolGroupSummary:hover,
+.trajectoryToolGroupSummary:focus-visible {
+  background: rgba(152, 115, 49, 0.08);
+  outline: none;
+}
+
+.trajectoryToolGroupLabel {
+  color: #76591f;
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.trajectoryToolGroupCount {
+  color: var(--muted);
+  font-size: 0.73rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trajectoryToolGroupFailures {
+  align-items: center;
+  background: #fff0f0;
+  border-radius: 999px;
+  color: var(--accent-2);
+  display: inline-flex;
+  font-size: 0.68rem;
+  font-weight: 750;
+  height: 1.25rem;
+  justify-content: center;
+  min-width: 1.25rem;
+  padding: 0 0.3rem;
+}
+
+.trajectoryToolGroupEvents {
+  border-top: 1px solid #e1d9c6;
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.45rem;
+}
+
+.trajectoryToolGroup:not([open]) > .trajectoryToolGroupEvents {
+  display: none;
+}
+
+.trajectoryToolEvent {
+  background: var(--panel);
+  min-height: 36px;
+}
+
 .inheritedContextCard {
   background: #f3f7f8;
   border: 1px solid #cbdde3;
