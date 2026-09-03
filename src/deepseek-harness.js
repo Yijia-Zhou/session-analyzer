@@ -16,6 +16,7 @@ const { createSessionQuery } = require('./session-query');
 const { codeModePresentationContextMap } = require('./shared/code-mode-presentation-context');
 const storage = require('./deepseek-harness-storage');
 const { buildDeepSeekEventDetail } = require('./deepseek-harness-detail');
+const { createEmptyMaterializedPresentationIndexes } = require('./canonical-contract');
 
 const SOURCE_KIND = storage.DEEPSEEK_SOURCE_KIND;
 const PREVIEW_LIMIT = 240;
@@ -844,7 +845,7 @@ function makeEmptySession(filePath, relFile, header, committedBytes) {
     rawEvents: [],
     logicalEvents: [],
     analysis: null,
-    presentationIndexes: { codeModeDeclaredRequests: new Map() },
+    presentationIndexes: createEmptyMaterializedPresentationIndexes(),
     matchesRepo: false,
     _sourceParentSessionId: sourceParentSessionId,
     _origin: header.origin || '',

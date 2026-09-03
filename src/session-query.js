@@ -22,6 +22,10 @@ const {
   scanProjectQueryShard,
   requireValidatedProjectQueryStore,
 } = require('./project-query-store');
+const {
+  cachePresentationFactsForEvent,
+  mergePresentationFacts,
+} = require('./cache-observation-presentation');
 
 const PROJECT_QUERY_SCAN_CONCURRENCY = 8;
 
@@ -237,7 +241,10 @@ function createSessionQuery(options = {}) {
   }
 
   function eventHasSearchHit(event, q) {
-    return eventSearchMatchCount(event, q) > 0;
+    const regex = searchPhraseRegex(q);
+    if (!regex) return false;
+    return regex.test(String(event.preview || ''))
+      || regex.test(String(event.searchText || ''));
   }
 
   function makeSnippet(text, q) {
@@ -840,6 +847,13 @@ function createSessionQuery(options = {}) {
     throw error;
   }
 
+  function sessionPresentationFactsForEvent(session, event) {
+    return mergePresentationFacts(
+      cachePresentationFactsForEvent(session, event),
+      presentationFactsForEvent(session, event.id),
+    );
+  }
+
   function getTimeline(index, materializedSession, filters) {
     filters = normalizeFilters(filters);
     const locale = resolveLocale(filters.locale);
@@ -874,7 +888,7 @@ function createSessionQuery(options = {}) {
         filters.q,
         locale,
         presentationContexts,
-        layer === 'main' ? presentationFactsForEvent(session, event.id) : null,
+        sessionPresentationFactsForEvent(session, event),
         session.sourceKind,
       )),
     };
@@ -897,7 +911,7 @@ function createSessionQuery(options = {}) {
       '',
       locale,
       presentationContexts,
-      layer === 'main' ? presentationFactsForEvent(session, event.id) : null,
+      sessionPresentationFactsForEvent(session, event),
       session.sourceKind,
     );
   }

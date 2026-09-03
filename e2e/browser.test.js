@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const esbuild = require('esbuild');
 const { chromium } = require('playwright');
 const { analyzerSessionId, buildClaudeSourceBackedIndex } = require('../src/claude');
 const {
@@ -14,10 +15,390 @@ const {
 const { materializeSessionForIndex } = require('../src/source-adapters');
 const { createServer } = require('../server');
 const { createTimelineProfileFixture } = require('../scripts/timeline-profile-fixture');
+const { suggestionRequestEvidence } = require('../scripts/timeline-profile');
 
 const fixtureCodexHome = path.join(__dirname, '..', 'test', 'fixtures', 'codex-home');
 const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
+let wave1bM2SourceBundlePromise;
+
+function wave1bM2SourceBundle() {
+  if (!wave1bM2SourceBundlePromise) {
+    wave1bM2SourceBundlePromise = esbuild.build({
+      entryPoints: [path.join(__dirname, '..', 'src', 'browser', 'entry.js')],
+      bundle: true,
+      platform: 'browser',
+      format: 'iife',
+      sourcemap: false,
+      splitting: false,
+      minify: true,
+      logLevel: 'silent',
+      write: false,
+    }).then((result) => result.outputFiles[0].text);
+  }
+  return wave1bM2SourceBundlePromise;
+}
+
+async function installWave1bM2SourceBundle(page) {
+  const body = await wave1bM2SourceBundle();
+  await page.route('**/assets/app.js', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/javascript; charset=utf-8',
+    body,
+  }));
+}
+
+async function installWave1bM2BrowserSeam(page) {
+  await page.addInitScript(() => {
+    const evidence = { renderCardCounts: [] };
+    window.__wave1bM2 = {
+      evidence,
+      resetRenders() { evidence.renderCardCounts.length = 0; },
+    };
+    document.addEventListener('DOMContentLoaded', () => {
+      const timeline = document.querySelector('#timeline');
+      if (!timeline) return;
+      new MutationObserver(() => {
+        evidence.renderCardCounts.push(
+          timeline.querySelectorAll('.event[data-event-id]').length,
+        );
+      }).observe(timeline, { childList: true });
+    }, { once: true });
+  });
+}
+
+async function installWave1cM1BrowserSeam(page) {
+  await page.addInitScript(() => {
+    const evidence = {
+      lifecycle: [],
+      revisions: [],
+    };
+    window.__wave1cM1 = {
+      evidence,
+      reset() {
+        evidence.lifecycle.length = 0;
+        evidence.revisions.length = 0;
+      },
+    };
+    window.__sessionAnalyzerTimelineLifecycleObserver = {
+      recordLifecycle(value) {
+        evidence.lifecycle.push(structuredClone(value));
+      },
+      recordRevision(value) {
+        evidence.revisions.push(structuredClone(value));
+      },
+    };
+  });
+}
+
+async function installWave1cM1FailingObserver(page) {
+  await page.addInitScript(() => {
+    const evidence = {
+      lifecycle: [],
+      revisions: [],
+    };
+    window.__wave1cM1FailingObserver = evidence;
+    window.__sessionAnalyzerTimelineLifecycleObserver = {
+      recordRevision(value) {
+        evidence.revisions.push(structuredClone(value));
+        throw new Error('synthetic recordRevision observer failure');
+      },
+      recordLifecycle(value) {
+        evidence.lifecycle.push(structuredClone(value));
+        throw new Error('synthetic recordLifecycle observer failure');
+      },
+    };
+  });
+}
+
+async function installWave1dAM1BrowserSeam(page) {
+  await page.addInitScript(() => {
+    const evidence = {
+      detailRequests: [],
+      detailBodies: [],
+      visibleScans: [],
+      lifecycle: [],
+      revisions: [],
+      detailRequestTransactionAssociations: 0,
+      observerFailuresArmed: false,
+      failNextTimelineInnerHtml: false,
+    };
+    window.__wave1dAM1 = {
+      evidence,
+      reset() {
+        evidence.detailRequests.length = 0;
+        evidence.detailBodies.length = 0;
+        evidence.visibleScans.length = 0;
+        evidence.lifecycle.length = 0;
+        evidence.revisions.length = 0;
+        evidence.detailRequestTransactionAssociations = 0;
+      },
+      armObserverFailures() { evidence.observerFailuresArmed = true; },
+      disarmObserverFailures() { evidence.observerFailuresArmed = false; },
+      armTimelineRenderFailure() { evidence.failNextTimelineInnerHtml = true; },
+    };
+    const record = (collection, value) => {
+      collection.push(structuredClone(value));
+      if (evidence.observerFailuresArmed) throw new Error('synthetic Wave 1D-A observer failure');
+    };
+    window.__sessionAnalyzerTimelineLifecycleObserver = {
+      recordLifecycle(value) { record(evidence.lifecycle, value); },
+      recordRevision(value) { record(evidence.revisions, value); },
+      recordDetailRequest(value) { record(evidence.detailRequests, value); },
+      recordDetailBody(value) { record(evidence.detailBodies, value); },
+      recordVisibleDetailScan(value) { record(evidence.visibleScans, value); },
+    };
+
+    const defineProperty = Object.defineProperty.bind(Object);
+    Object.defineProperty = (target, property, descriptor) => {
+      if (target instanceof Promise
+          && typeof property === 'symbol'
+          && property.description === 'detailRequestTransaction') {
+        evidence.detailRequestTransactionAssociations += 1;
+      }
+      return defineProperty(target, property, descriptor);
+    };
+    const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+    Object.defineProperty(Element.prototype, 'innerHTML', {
+      configurable: descriptor.configurable,
+      enumerable: descriptor.enumerable,
+      get() { return descriptor.get.call(this); },
+      set(value) {
+        if (this.id === 'timeline' && evidence.failNextTimelineInnerHtml) {
+          evidence.failNextTimelineInnerHtml = false;
+          throw new Error('synthetic Timeline fallback render failure');
+        }
+        return descriptor.set.call(this, value);
+      },
+    });
+  });
+}
+
+async function installWave1cM2MutationLedger(page) {
+  await page.addInitScript(() => {
+    const evidence = { rows: [] };
+    let activeOperationId = 0;
+    let nextOperationId = 1;
+    let sequence = 0;
+    window.__wave1cM2 = {
+      evidence,
+      beginOperation() {
+        activeOperationId = nextOperationId;
+        nextOperationId += 1;
+        return activeOperationId;
+      },
+      endOperation() { activeOperationId = 0; },
+      reset() { evidence.rows.length = 0; },
+    };
+    document.addEventListener('DOMContentLoaded', () => {
+      const timeline = document.querySelector('#timeline');
+      if (!timeline) return;
+      const directCanonicalCards = (nodes) => [...nodes].filter((node) => (
+        node.nodeType === Node.ELEMENT_NODE
+          && node.matches('.event[data-event-id]:not(.temporaryReferenceReveal)')
+      ));
+      let canonicalById = new Map(
+        directCanonicalCards(timeline.children).map((node) => [node.dataset.eventId, node]),
+      );
+      new MutationObserver((records) => {
+        for (const record of records) {
+          if (record.target !== timeline || record.type !== 'childList') continue;
+          const preCanonical = new Map(canonicalById);
+          const removedCards = directCanonicalCards(record.removedNodes);
+          const addedCards = directCanonicalCards(record.addedNodes);
+          for (const node of removedCards) {
+            if (canonicalById.get(node.dataset.eventId) === node) {
+              canonicalById.delete(node.dataset.eventId);
+            }
+          }
+          const addedIdsAbsentFromPreState = addedCards.every((node) => (
+            !preCanonical.has(node.dataset.eventId)
+          ));
+          for (const node of addedCards) canonicalById.set(node.dataset.eventId, node);
+          const everyPreExistingNodePreserved = [...preCanonical].every(([eventId, node]) => (
+            canonicalById.get(eventId) === node
+          ));
+          const preCanonicalCount = preCanonical.size;
+          const removedCanonicalCount = removedCards.length;
+          const addedCanonicalCount = addedCards.length;
+          const finalCanonicalCount = canonicalById.size;
+          let commitKind = 'other';
+          if (preCanonicalCount === 0
+              && removedCanonicalCount === 0
+              && addedCanonicalCount > 0
+              && finalCanonicalCount === addedCanonicalCount) {
+            commitKind = 'initialMount';
+          } else if (preCanonicalCount > 0
+              && removedCanonicalCount === 0
+              && addedCanonicalCount > 0
+              && addedIdsAbsentFromPreState
+              && everyPreExistingNodePreserved
+              && finalCanonicalCount === preCanonicalCount + addedCanonicalCount) {
+            commitKind = 'appendOnly';
+          } else if (preCanonicalCount > 0
+              && removedCanonicalCount > 0
+              && addedCanonicalCount === 0
+              && finalCanonicalCount === 0) {
+            commitKind = 'clear';
+          } else if (removedCanonicalCount > 0 && finalCanonicalCount > 0) {
+            commitKind = 'replacement';
+          }
+          sequence += 1;
+          evidence.rows.push({
+            sequence,
+            operationId: activeOperationId,
+            commitKind,
+            preCanonicalCount,
+            removedCanonicalCount,
+            addedCanonicalCount,
+            finalCanonicalCount,
+            addedIdsAbsentFromPreState,
+            everyPreExistingNodePreserved,
+          });
+        }
+      }).observe(timeline, { childList: true });
+    }, { once: true });
+  });
+}
+
+async function installWave1aM2BrowserSeam(page) {
+  await page.addInitScript(() => {
+    const nativeFreeze = Object.freeze;
+    const nativePromiseAll = Promise.all.bind(Promise);
+    const nativeFetch = window.fetch.bind(window);
+    const contextAliases = new Map();
+    const evidence = {
+      outcomes: [],
+      handoffs: [],
+      automaticSelectionSettlementCount: 0,
+      settlementWatermark: 0,
+      suggestionSequence: 0,
+      suggestionRecords: [],
+      pauseNextTriple: false,
+      paused: false,
+      release: null,
+    };
+    const contextAlias = (context) => {
+      if (!contextAliases.has(context)) contextAliases.set(context, contextAliases.size + 1);
+      return contextAliases.get(context);
+    };
+    window.__wave1aM2 = {
+      evidence,
+      armHandoffPause() {
+        evidence.pauseNextTriple = true;
+        evidence.paused = false;
+        evidence.release = null;
+      },
+      releaseHandoff() {
+        evidence.release?.();
+      },
+    };
+    window.__sessionAnalyzerProfileObserver = {
+      recordAutomaticSelectionSettled() {
+        evidence.automaticSelectionSettlementCount += 1;
+        evidence.settlementWatermark = evidence.suggestionSequence;
+      },
+      recordSuggestionHandoff(value) {
+        evidence.handoffs.push(structuredClone(value));
+      },
+    };
+    window.fetch = async (...args) => {
+      let record = null;
+      try {
+        const url = new URL(
+          args[0] instanceof Request ? args[0].url : String(args[0]),
+          location.href,
+        );
+        if (url.pathname === '/api/file-suggestions') {
+          evidence.suggestionSequence += 1;
+          const layer = url.searchParams.get('layer') || '';
+          record = {
+            sequence: evidence.suggestionSequence,
+            suggestionScope: url.searchParams.has('sessionId') ? 'session' : 'project',
+            filterAlias: ['main', 'protocol', 'raw'].includes(layer)
+              ? layer
+              : (layer ? 'other' : 'none'),
+            outcome: 'pending',
+            httpStatus: 0,
+          };
+          evidence.suggestionRecords.push(record);
+        }
+      } catch {}
+      try {
+        const response = await nativeFetch(...args);
+        if (record) {
+          record.outcome = 'success';
+          record.httpStatus = response.status;
+        }
+        return response;
+      } catch (error) {
+        if (record) record.outcome = 'failed';
+        throw error;
+      }
+    };
+    Object.freeze = function freeze(value) {
+      const result = nativeFreeze(value);
+      if (value && typeof value === 'object') {
+        const keys = Object.keys(value);
+        if (keys.length === 3
+            && keys[0] === 'suggestionRequestId'
+            && keys[1] === 'suggestionContext'
+            && keys[2] === 'suggestionCommitted') {
+          evidence.outcomes.push({
+            keys,
+            suggestionRequestId: value.suggestionRequestId,
+            suggestionContextAlias: contextAlias(value.suggestionContext),
+            suggestionCommitted: value.suggestionCommitted,
+            frozen: Object.isFrozen(result),
+          });
+        }
+      }
+      return result;
+    };
+    Promise.all = function all(iterable) {
+      const values = Array.from(iterable);
+      const result = nativePromiseAll(values);
+      if (!evidence.pauseNextTriple || values.length !== 3) return result;
+      evidence.pauseNextTriple = false;
+      return result.then((resolved) => new Promise((resolve) => {
+        evidence.paused = true;
+        evidence.release = () => {
+          evidence.paused = false;
+          evidence.release = null;
+          resolve(resolved);
+        };
+      }));
+    };
+  });
+}
+
+async function installWave1aM3BrowserSeam(page) {
+  await page.addInitScript(() => {
+    const evidence = {
+      snapshots: [],
+      lookups: [],
+      cardIterations: [],
+    };
+    window.__wave1aM3 = {
+      evidence,
+      resetOperations() {
+        evidence.lookups.length = 0;
+        evidence.cardIterations.length = 0;
+      },
+    };
+    window.__sessionAnalyzerProfileObserver = {
+      recordStateSnapshot(value) {
+        evidence.snapshots.push(structuredClone(value));
+      },
+      recordLookup(value) {
+        evidence.lookups.push(structuredClone(value));
+      },
+      recordCardIteration(value) {
+        evidence.cardIterations.push(structuredClone(value));
+      },
+    };
+  });
+}
 
 function deferred() {
   let resolve;
@@ -95,9 +476,220 @@ async function openApp(t, index, options = {}) {
   }
   await page.waitForFunction(() => window.sessionFolding && window.sessionRenderers && window.sessionSearchControls);
   await page.waitForSelector('.sessionItem.active', { state: options.activeSessionState || 'visible' });
-  await page.waitForFunction(() => document.querySelectorAll('#timeline .event[data-event-id]').length > 0);
+  if (options.expectTimeline !== false) {
+    await page.waitForFunction(() => document.querySelectorAll('#timeline .event[data-event-id]').length > 0);
+  }
   await page.waitForFunction(() => document.querySelector('#projectRefreshBtn')?.dataset.refreshing !== 'true');
   return { page, baseUrl, requestedPaths, requestedUrls };
+}
+
+async function openWave1bM2App(t, index, options = {}) {
+  const callerBeforeGoto = options.beforeGoto;
+  return openApp(t, index, {
+    ...options,
+    beforeGoto: async (page) => {
+      await installWave1bM2SourceBundle(page);
+      await installWave1bM2BrowserSeam(page);
+      if (callerBeforeGoto) await callerBeforeGoto(page);
+    },
+  });
+}
+
+async function openWave1cM1App(t, index, options = {}) {
+  const callerBeforeGoto = options.beforeGoto;
+  return openApp(t, index, {
+    ...options,
+    beforeGoto: async (page) => {
+      await installWave1bM2SourceBundle(page);
+      await installWave1cM1BrowserSeam(page);
+      if (callerBeforeGoto) await callerBeforeGoto(page);
+    },
+  });
+}
+
+async function openWave1cM2App(t, index, options = {}) {
+  const callerBeforeGoto = options.beforeGoto;
+  return openApp(t, index, {
+    ...options,
+    beforeGoto: async (page) => {
+      await installWave1bM2SourceBundle(page);
+      await installWave1cM1BrowserSeam(page);
+      await installWave1cM2MutationLedger(page);
+      if (callerBeforeGoto) await callerBeforeGoto(page);
+    },
+  });
+}
+
+async function openWave1dAM1App(t, index, options = {}) {
+  const callerBeforeGoto = options.beforeGoto;
+  return openApp(t, index, {
+    ...options,
+    beforeGoto: async (page) => {
+      await installWave1bM2SourceBundle(page);
+      await installWave1dAM1BrowserSeam(page);
+      await installWave1cM2MutationLedger(page);
+      if (callerBeforeGoto) await callerBeforeGoto(page);
+    },
+  });
+}
+
+async function installWave1dAM1SearchTracking(page) {
+  await page.evaluate(() => {
+    const targetsApi = window.sessionSearchTargets;
+    const highlighter = window.sessionSearchHighlighter;
+    const originalDiscover = targetsApi.discover.bind(targetsApi);
+    const originalResetBindings = targetsApi.resetBindings.bind(targetsApi);
+    const originalResetSurfaceBindings = targetsApi.resetSurfaceBindings.bind(targetsApi);
+    const originalClear = highlighter.clear.bind(highlighter);
+    const originalApply = highlighter.apply.bind(highlighter);
+    const evidence = {
+      latestTargets: [],
+      resetBindingsCount: 0,
+      resetSurfaceRows: [],
+      clearRoots: [],
+      applyRoots: [],
+    };
+    const rootKind = (root) => {
+      if (root?.id === 'timeline') return 'timelineRoot';
+      if (root?.id === 'detail') return 'detailRoot';
+      if (root?.classList?.contains('event')) return 'timelineOwner';
+      if (root?.classList?.contains('inspector')) return 'inspectorOwner';
+      return 'other';
+    };
+    window.__wave1dAM1Search = {
+      evidence,
+      resetOperations() {
+        evidence.resetBindingsCount = 0;
+        evidence.resetSurfaceRows.length = 0;
+        evidence.clearRoots.length = 0;
+        evidence.applyRoots.length = 0;
+      },
+    };
+    targetsApi.discover = (...args) => {
+      const result = originalDiscover(...args);
+      evidence.latestTargets = result.targets;
+      return result;
+    };
+    targetsApi.resetBindings = (...args) => {
+      evidence.resetBindingsCount += 1;
+      return originalResetBindings(...args);
+    };
+    targetsApi.resetSurfaceBindings = (target, surface) => {
+      evidence.resetSurfaceRows.push({ surface, targetKnown: evidence.latestTargets.includes(target) });
+      return originalResetSurfaceBindings(target, surface);
+    };
+    highlighter.clear = (root, ...args) => {
+      evidence.clearRoots.push(rootKind(root));
+      return originalClear(root, ...args);
+    };
+    highlighter.apply = (root, ...args) => {
+      evidence.applyRoots.push(rootKind(root));
+      return originalApply(root, ...args);
+    };
+  });
+}
+
+async function openWave1dAM1ControlledOrdinaryDetail(t, options = {}) {
+  const collapsedProfile = {
+    id: `custom:wave-1d-a-controlled-${options.requestError ? 'error' : 'success'}`,
+    name: 'Wave 1D-A controlled ordinary fixture',
+    description: 'Delay one explicit ordinary detail request for settlement controls.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [] });
+  const gate = deferred();
+  const started = deferred();
+  const requests = { count: 0 };
+  const app = await openWave1dAM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+    beforeGoto: async (page) => {
+      await page.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+        requests.count += 1;
+        started.resolve();
+        await gate.promise;
+        if (options.requestError) {
+          await route.fulfill({
+            status: 503,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: 'Synthetic Wave 1D-A controlled request failure' }),
+          });
+        } else if (options.tallDetail) {
+          const response = await route.fetch();
+          const detail = await response.json();
+          detail.timelineSections = [{
+            type: 'markdown',
+            purpose: 'content',
+            html: `<p>${Array.from({ length: 160 }, (_, index) => (
+              `material detail line ${index}<br>`
+            )).join('')}</p>`,
+          }];
+          await route.fulfill({
+            status: response.status(),
+            contentType: 'application/json',
+            body: JSON.stringify(detail),
+          });
+        } else {
+          await route.continue();
+        }
+      });
+    },
+  });
+  const owner = app.page.locator('#timeline .event[data-event-id]:not(.kind-code-mode-operation)').first();
+  const eventId = await owner.getAttribute('data-event-id');
+  assert.ok(eventId);
+  await app.page.evaluate(() => window.__wave1dAM1.reset());
+  if (options.observerAbsentBeforeRequest) {
+    await app.page.evaluate(() => { delete window.__sessionAnalyzerTimelineLifecycleObserver; });
+  } else if (options.observerFailuresBeforeRequest) {
+    await app.page.evaluate(() => window.__wave1dAM1.armObserverFailures());
+  }
+  if (options.inspect) await owner.locator(':scope > .eventHeader > .eventKind').click();
+  else await owner.locator(':scope > .eventHeader > .eventToggle').click();
+  await started.promise;
+  await app.page.locator(`#timeline .event[data-event-id="${eventId}"].expanded .eventBody`).waitFor();
+  if (options.inspect) await waitForDetailView(app.page, 'inspector');
+  return { ...app, eventId, gate, requests };
+}
+
+async function beginWave1cM2Operation(page) {
+  return page.evaluate(() => {
+    window.__wave1cM2.reset();
+    return window.__wave1cM2.beginOperation();
+  });
+}
+
+async function endWave1cM2Operation(page) {
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => {
+    window.__wave1cM2.endOperation();
+    resolve();
+  })));
+}
+
+async function wave1cM2OperationRows(page, operationId) {
+  await endWave1cM2Operation(page);
+  return page.evaluate((id) => (
+    window.__wave1cM2.evidence.rows.filter((row) => row.operationId === id)
+  ), operationId);
+}
+
+async function latestWave1cM1Lifecycle(page) {
+  return page.evaluate(() => structuredClone(window.__wave1cM1.evidence.lifecycle.at(-1)));
+}
+
+async function resetWave1bM2RenderEvidence(page) {
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => {
+    window.__wave1bM2.resetRenders();
+    resolve();
+  })));
+}
+
+async function wave1bM2RenderCardCounts(page) {
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  return page.evaluate(() => [...window.__wave1bM2.evidence.renderCardCounts]);
 }
 
 async function openSourceSwitchChooser(t, options = {}) {
@@ -172,7 +764,7 @@ async function makeClaudeSwitchFixture(t) {
       },
     }),
   ]);
-  return { claudeHome, claudeRepo };
+  return { claudeHome, claudeRepo, sessionId };
 }
 
 async function confirmSourceAction(page, expectedLabel) {
@@ -310,6 +902,19 @@ async function waitForSearchMarks(page, minimum = 1) {
 
 async function waitForNoSearchMarks(page) {
   await page.waitForFunction(() => document.querySelectorAll('.searchMark').length === 0);
+}
+
+async function recordFileSuggestionResponse(route, ledger) {
+  const requestUrl = new URL(route.request().url());
+  const response = await route.fetch();
+  const body = await response.json();
+  ledger.push({
+    scope: requestUrl.searchParams.has('sessionId') ? 'session' : 'project',
+    sessionId: requestUrl.searchParams.get('sessionId') || '',
+    layer: requestUrl.searchParams.get('layer') || '',
+    files: (body.files || []).map((item) => ({ file: item.file, count: item.count })),
+  });
+  await route.fulfill({ response, json: body });
 }
 
 async function searchNavigationSnapshot(page) {
@@ -494,6 +1099,185 @@ async function makeLongCodexHome(t, options = {}) {
   return { sourceKind: 'codex', codexHome, repoRoot: longRepoRoot, sessionId };
 }
 
+async function makeCacheObservationBrowserFixture(t) {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-cache-browser-'));
+  const cacheRepoRoot = path.join(codexHome, 'repo');
+  const dir = path.join(codexHome, 'sessions', '2026', '09', '03');
+  const discontinuitySessionId = 'abababab-3333-4333-8333-abababababab';
+  const ordinarySessionId = 'cdcdcdcd-3333-4333-8333-cdcdcdcdcdcd';
+  const singleSessionId = 'efefefef-3333-4333-8333-efefefefefef';
+  const codeModeSessionId = 'acacacac-3333-4333-8333-acacacacacac';
+  await fsp.mkdir(cacheRepoRoot, { recursive: true });
+  const timestamp = (seconds) => new Date(Date.parse('2026-09-03T10:00:00.000Z') + seconds * 1_000).toISOString();
+  const tokenCount = (seconds, inputTokens, cachedInputTokens, outputTokens) => ({
+    timestamp: timestamp(seconds),
+    type: 'event_msg',
+    payload: {
+      type: 'token_count',
+      info: {
+        last_token_usage: {
+          input_tokens: inputTokens,
+          cached_input_tokens: cachedInputTokens,
+          output_tokens: outputTokens,
+        },
+        total_token_usage: {
+          input_tokens: 9_999_999,
+          cached_input_tokens: 9_999_999,
+          output_tokens: 9_999_999,
+        },
+      },
+    },
+  });
+  const padding = Array.from({ length: 151 }, (_, index) => ({
+    timestamp: timestamp(index + 2),
+    type: 'turn_context',
+    payload: {
+      turn_id: 'turn-cache-browser',
+      cwd: cacheRepoRoot,
+      model: 'gpt-cache-browser',
+      fixture_index: index,
+    },
+  }));
+  await writeJsonl(path.join(dir, `cache-${discontinuitySessionId}.jsonl`), [
+    {
+      timestamp: timestamp(0),
+      type: 'session_meta',
+      payload: { id: discontinuitySessionId, cwd: cacheRepoRoot },
+    },
+    {
+      timestamp: timestamp(1),
+      type: 'event_msg',
+      payload: { type: 'turn_started', turn_id: 'turn-cache-browser' },
+    },
+    ...padding,
+    tokenCount(154, 16_384, 16_384, 233),
+    {
+      timestamp: timestamp(155),
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Synthetic cache browser anchor' }],
+      },
+    },
+    tokenCount(168, 12_288, 0, 589),
+    tokenCount(169, 24_576, 24_576, 377),
+    tokenCount(171, 18_432, 0, 610),
+    {
+      timestamp: timestamp(172),
+      type: 'event_msg',
+      payload: { type: 'turn_complete', turn_id: 'turn-cache-browser' },
+    },
+  ]);
+  await writeJsonl(path.join(dir, `ordinary-${ordinarySessionId}.jsonl`), [
+    {
+      timestamp: timestamp(-100),
+      type: 'session_meta',
+      payload: { id: ordinarySessionId, cwd: cacheRepoRoot },
+    },
+    {
+      timestamp: timestamp(-99),
+      type: 'event_msg',
+      payload: { type: 'turn_started', turn_id: 'turn-cache-ordinary' },
+    },
+    tokenCount(-98, 16_384, 16_384, 200),
+    {
+      timestamp: timestamp(-97),
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Synthetic ordinary cache usage' }],
+      },
+    },
+    tokenCount(-96, 17_000, 16_000, 250),
+    {
+      timestamp: timestamp(-95),
+      type: 'event_msg',
+      payload: { type: 'turn_complete', turn_id: 'turn-cache-ordinary' },
+    },
+  ]);
+  await writeJsonl(path.join(dir, `single-${singleSessionId}.jsonl`), [
+    {
+      timestamp: timestamp(200),
+      type: 'session_meta',
+      payload: { id: singleSessionId, cwd: cacheRepoRoot },
+    },
+    {
+      timestamp: timestamp(201),
+      type: 'event_msg',
+      payload: { type: 'turn_started', turn_id: 'turn-cache-single' },
+    },
+    tokenCount(202, 16_384, 16_384, 200),
+    {
+      timestamp: timestamp(203),
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Synthetic single discontinuity anchor' }],
+      },
+    },
+    tokenCount(204, 12_288, 0, 250),
+    {
+      timestamp: timestamp(205),
+      type: 'event_msg',
+      payload: { type: 'turn_complete', turn_id: 'turn-cache-single' },
+    },
+  ]);
+  await writeJsonl(path.join(dir, `code-mode-${codeModeSessionId}.jsonl`), [
+    {
+      timestamp: timestamp(300),
+      type: 'session_meta',
+      payload: { id: codeModeSessionId, cwd: cacheRepoRoot },
+    },
+    {
+      timestamp: timestamp(301),
+      type: 'event_msg',
+      payload: { type: 'turn_started', turn_id: 'turn-cache-code-mode' },
+    },
+    tokenCount(302, 16_384, 16_384, 200),
+    {
+      timestamp: timestamp(303),
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        name: 'exec',
+        call_id: 'exec-cache-navigation',
+        turn_id: 'turn-cache-code-mode',
+        input: "const result = await tools.exec_command({ cmd: 'Write-Output cache-navigation' }); text(result);",
+      },
+    },
+    {
+      timestamp: timestamp(304),
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call_output',
+        call_id: 'exec-cache-navigation',
+        turn_id: 'turn-cache-code-mode',
+        output: 'Script completed\nExit code: 0\nOutput:\ncache-navigation',
+      },
+    },
+    tokenCount(305, 12_288, 0, 250),
+    {
+      timestamp: timestamp(306),
+      type: 'event_msg',
+      payload: { type: 'turn_complete', turn_id: 'turn-cache-code-mode' },
+    },
+  ]);
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  const index = await buildIndex({ repoRoot: cacheRepoRoot, codexHome });
+  return {
+    codexHome,
+    index,
+    repoRoot: cacheRepoRoot,
+    discontinuitySessionId,
+    ordinarySessionId,
+    singleSessionId,
+    codeModeSessionId,
+  };
+}
+
 async function makePrewarmSizeCodexHome(t) {
   const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-prewarm-size-'));
   const fixtureRepo = path.join(codexHome, 'repo');
@@ -521,6 +1305,9 @@ async function makeTransitionProfileIndex(t, options = {}) {
     searchableTextBytes: options.searchableTextBytes || 512,
     hitPositions: options.hitPositions || [650],
     commonTermEvery: options.commonTermEvery || 1,
+    detailHeavyPositions: options.detailHeavyPositions || [],
+    includeContextReveal: options.includeContextReveal === true,
+    contextRevealIndex: options.contextRevealIndex,
     secondaryEventCount: options.secondaryEventCount || 40,
   });
   t.after(() => fsp.rm(baseDir, { recursive: true, force: true }));
@@ -552,7 +1339,7 @@ async function makeCodeModeCodexHome(t) {
   return { codexHome, repoRoot: codeModeRepoRoot };
 }
 
-async function makeContextCodeModeCodexHome(t) {
+async function makeContextCodeModeCodexHome(t, options = {}) {
   const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-code-mode-context-'));
   const contextRepoRoot = path.join(codexHome, 'repo');
   const sessionId = 'cacacaca-caca-caca-caca-cacacacacaca';
@@ -568,6 +1355,20 @@ async function makeContextCodeModeCodexHome(t) {
     { timestamp: '2026-07-22T01:00:04.000Z', type: 'event_msg', payload: { type: 'mcp_tool_call_end', call_id: 'nested-browser-context', turn_id: 'turn-context', tool_name: 'nested-context-token', status: 'failed' } },
     { timestamp: '2026-07-22T01:00:05.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'wait-browser-context', turn_id: 'turn-context', output: 'Script completed\ncontext-wait-output' } },
   ];
+  for (let index = 0; index < Number(options.extraMessageCount || 0); index += 1) {
+    rows.push({
+      timestamp: new Date(Date.parse('2026-07-22T01:01:00.000Z') + (index * 1000)).toISOString(),
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        content: [{
+          type: index % 2 === 0 ? 'input_text' : 'output_text',
+          text: `Context append filler ${index}`,
+        }],
+      },
+    });
+  }
   await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
   t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
   return { codexHome, repoRoot: contextRepoRoot, sessionId };
@@ -1392,7 +2193,7 @@ test('browser fork-point navigation temporarily reveals a profile-hidden target 
   const savedOverrides = {
     [fixture.parentId]: { [targetEventId]: 'hidden' },
   };
-  const { page } = await openApp(t, fixture.index, {
+  const { page } = await openWave1cM1App(t, fixture.index, {
     locale: 'en',
     skipProjectReindex: true,
     localStorage: {
@@ -1404,6 +2205,7 @@ test('browser fork-point navigation temporarily reveals a profile-hidden target 
 
   const context = page.locator('[data-inherited-context]');
   await context.waitFor();
+  await page.evaluate(() => window.__wave1cM1.reset());
   await context.getByRole('button', { name: 'Open parent session' }).click();
   await page.waitForFunction((id) => document.querySelector('.sessionItem.active')?.dataset.sessionId === id, fixture.parentId);
   const selected = page.locator(`#timeline .event[data-event-id="${targetEventId}"].selected`);
@@ -1412,12 +2214,22 @@ test('browser fork-point navigation temporarily reveals a profile-hidden target 
   assert.equal(await selected.evaluate((node) => node.classList.contains('hiddenByProfile')), false);
   assert.equal(await selected.evaluate((node) => node.classList.contains('summary')), true);
   assert.equal(
+    await selected.evaluate((node) => node.classList.contains('temporaryReferenceReveal')),
+    false,
+    'fork-point navigation reveal is not a temporaryEventReveal membership probe',
+  );
+  assert.equal(
     await page.evaluate(({ sessionId, eventId }) => (
       JSON.parse(localStorage.getItem('sessionAnalyzer.overrides'))?.[sessionId]?.[eventId]
     ), { sessionId: fixture.parentId, eventId: targetEventId }),
     'hidden',
     'fork-point reveal must not overwrite the saved folding override',
   );
+  assert.equal(await page.evaluate(() => window.__wave1cM1.evidence.revisions.some(
+    (item) => item.revisionKind === 'navigationRevealRevision',
+  )), true);
+  assert.ok((await latestWave1cM1Lifecycle(page))
+    .mountedPresentationToken.navigationRevealRevision > 0);
 });
 
 test('browser labels mixed Derived and Earlier children as related sessions', async (t) => {
@@ -3509,6 +4321,1206 @@ test('browser project result drill-down loads a deep latest event and returns to
   assert.equal(await page.locator('#timeline .projectSearchState').count(), 1);
 });
 
+test('Wave 1A M2 browser preserves exact suggestion ownership, parameters, and content', async (t) => {
+  const index = await buildFixtureIndex();
+  const suggestions = [];
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: async (targetPage) => {
+      await installWave1aM2BrowserSeam(targetPage);
+      await targetPage.route('**/api/file-suggestions*', (route) => (
+        recordFileSuggestionResponse(route, suggestions)
+      ));
+    },
+  });
+  const waitForSuggestion = () => page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/file-suggestions'
+  ));
+  const activeSessionId = await page.locator('.sessionItem.active').getAttribute('data-session-id');
+
+  assert.deepEqual(suggestions.map(({ scope, sessionId, layer }) => ({ scope, sessionId, layer })), [{
+    scope: 'session',
+    sessionId: activeSessionId,
+    layer: 'main',
+  }]);
+  await page.locator('#searchFileInput').focus();
+  const renderedSuggestionFiles = await page.locator('[data-search-file-suggestion]').evaluateAll((items) => (
+    items.map((item) => item.dataset.searchFileSuggestion)
+  ));
+  assert.deepEqual(renderedSuggestionFiles, suggestions[0].files.slice(0, 12).map((item) => item.file));
+  assert.equal(
+    await page.locator('#searchFileSuggestions .fileSuggestionEmpty').count(),
+    suggestions[0].files.length ? 0 : 1,
+    'empty suggestion content must remain exactly empty',
+  );
+  const initialEvidence = await page.evaluate(() => structuredClone(window.__wave1aM2.evidence));
+  assert.equal(initialEvidence.outcomes.length, 1);
+  assert.deepEqual(initialEvidence.outcomes[0], {
+    keys: ['suggestionRequestId', 'suggestionContext', 'suggestionCommitted'],
+    suggestionRequestId: initialEvidence.outcomes[0].suggestionRequestId,
+    suggestionContextAlias: 1,
+    suggestionCommitted: true,
+    frozen: true,
+  });
+  assert.ok(Number.isSafeInteger(initialEvidence.outcomes[0].suggestionRequestId));
+  assert.deepEqual(initialEvidence.handoffs, [{
+    sessionsRequest: true,
+    sessionsContext: true,
+    delegatedSession: true,
+    sessionScope: true,
+    suggestionContext: true,
+    suggestionRequest: true,
+    passed: true,
+  }]);
+  assert.equal(initialEvidence.automaticSelectionSettlementCount, 1);
+  assert.equal(initialEvidence.settlementWatermark, 1);
+  assert.deepEqual(suggestionRequestEvidence(
+    initialEvidence.suggestionRecords,
+    initialEvidence.settlementWatermark,
+    true,
+  ), {
+    records: [{
+      sequence: 1,
+      scope: 'session',
+      layerAlias: 'main',
+      outcome: 'success',
+      httpStatus: 200,
+      startedAfterAutomaticSelectionSettled: false,
+    }],
+    settlementWatermark: 1,
+    scopeCounts: { session: 1, project: 0 },
+    postSettlementSessionCount: 0,
+  });
+
+  const laterSession = page.locator('[data-session-id]:not(.active)').first();
+  const laterSessionId = await laterSession.getAttribute('data-session-id');
+  let response = waitForSuggestion();
+  await laterSession.click();
+  await response;
+  await page.waitForFunction((sessionId) => (
+    document.querySelector('.sessionItem.active')?.dataset.sessionId === sessionId
+  ), laterSessionId);
+  assert.deepEqual(suggestions.at(-1), {
+    ...suggestions.at(-1),
+    scope: 'session',
+    sessionId: laterSessionId,
+    layer: 'main',
+  });
+  assert.equal(suggestions.length, 2, 'explicit Session selection owns one suggestion request');
+  assert.deepEqual(await page.evaluate(() => ({
+    count: window.__wave1aM2.evidence.automaticSelectionSettlementCount,
+    watermark: window.__wave1aM2.evidence.settlementWatermark,
+  })), { count: 1, watermark: 1 }, 'an explicit Session click must not record automatic settlement');
+
+  response = waitForSuggestion();
+  await switchToProjectScope(page);
+  await response;
+  assert.deepEqual(suggestions.at(-1), {
+    ...suggestions.at(-1),
+    scope: 'project',
+    sessionId: '',
+    layer: 'main',
+  });
+
+  response = waitForSuggestion();
+  await page.locator('#layerSelect').selectOption('protocol');
+  await response;
+  assert.deepEqual(suggestions.at(-1), {
+    ...suggestions.at(-1),
+    scope: 'project',
+    sessionId: '',
+    layer: 'protocol',
+  });
+
+  response = waitForSuggestion();
+  await page.locator('#searchHudScope').click();
+  await page.locator('[data-search-scope="session"]').click();
+  await response;
+  await page.waitForFunction(() => document.body.dataset.searchScope === 'session');
+  assert.deepEqual(suggestions.at(-1), {
+    ...suggestions.at(-1),
+    scope: 'session',
+    sessionId: laterSessionId,
+    layer: 'protocol',
+  });
+
+  response = waitForSuggestion();
+  await page.locator('#layerSelect').selectOption('main');
+  await response;
+  assert.deepEqual(suggestions.at(-1), {
+    ...suggestions.at(-1),
+    scope: 'session',
+    sessionId: laterSessionId,
+    layer: 'main',
+  });
+
+  const beforeLocale = suggestions.length;
+  response = waitForSuggestion();
+  await switchHiddenLocale(page, 'zh-CN');
+  await response;
+  await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
+  assert.equal(suggestions.length, beforeLocale + 1, 'locale reload owns one Session suggestion');
+  assert.deepEqual(suggestions.at(-1), {
+    ...suggestions.at(-1),
+    scope: 'session',
+    sessionId: laterSessionId,
+    layer: 'main',
+  });
+
+  const beforeProjectRefresh = suggestions.length;
+  response = waitForSuggestion();
+  await page.locator('#projectRefreshBtn').click();
+  await response;
+  await page.waitForFunction(() => document.querySelector('#projectRefreshBtn')?.dataset.refreshing === 'false');
+  assert.equal(suggestions.length, beforeProjectRefresh + 1, 'project replacement owns one Session suggestion');
+  assert.deepEqual(suggestions.at(-1), {
+    ...suggestions.at(-1),
+    scope: 'session',
+    sessionId: laterSessionId,
+    layer: 'main',
+  });
+
+});
+
+test('Wave 1A M2 browser project-result drill-down owns one Session suggestion', async (t) => {
+  const index = await buildFixtureIndex();
+  const suggestions = [];
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: async (targetPage) => {
+      await installWave1aM2BrowserSeam(targetPage);
+      await targetPage.route('**/api/file-suggestions*', (route) => (
+        recordFileSuggestionResponse(route, suggestions)
+      ));
+    },
+  });
+  let response = page.waitForResponse((value) => new URL(value.url()).pathname === '/api/file-suggestions');
+  await switchToProjectScope(page);
+  await response;
+  await fillSearch(page, 'patch');
+  await waitForProjectCards(page);
+  const drillSessionId = await page.locator('[data-project-result-session-id]').first().getAttribute('data-project-result-session-id');
+  const beforeDrillDown = suggestions.length;
+  response = page.waitForResponse((value) => new URL(value.url()).pathname === '/api/file-suggestions');
+  await page.locator('[data-project-result-session-id]').first().click();
+  await response;
+  await page.waitForFunction(() => document.body.dataset.searchScope === 'session');
+  assert.equal(suggestions.length, beforeDrillDown + 1);
+  assert.deepEqual(suggestions.at(-1), {
+    ...suggestions.at(-1),
+    scope: 'session',
+    sessionId: drillSessionId,
+    layer: 'main',
+  });
+});
+
+test('Wave 1A M2 browser keeps empty Sessions under one Project suggestion owner', async (t) => {
+  const index = await buildFixtureIndex();
+  const suggestions = [];
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    activeSessionState: 'hidden',
+    expectTimeline: false,
+    beforeGoto: async (targetPage) => {
+      await installWave1aM2BrowserSeam(targetPage);
+      await targetPage.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        await route.fulfill({
+          response,
+          json: { ...body, sessions: [], total: 0 },
+        });
+      });
+      await targetPage.route('**/api/file-suggestions*', (route) => (
+        recordFileSuggestionResponse(route, suggestions)
+      ));
+    },
+  });
+
+  await page.waitForFunction(() => document.body.dataset.searchScope === 'project');
+  assert.deepEqual(suggestions.map(({ scope, sessionId, layer }) => ({ scope, sessionId, layer })), [{
+    scope: 'project',
+    sessionId: '',
+    layer: 'main',
+  }]);
+  assert.equal(await page.locator('[data-session-id]').count(), 0);
+  assert.deepEqual(await page.evaluate(() => window.__wave1aM2.evidence), {
+    outcomes: [],
+    handoffs: [],
+    automaticSelectionSettlementCount: 0,
+    settlementWatermark: 0,
+    suggestionSequence: 1,
+    suggestionRecords: [{
+      sequence: 1,
+      suggestionScope: 'project',
+      filterAlias: 'main',
+      outcome: 'success',
+      httpStatus: 200,
+    }],
+    pauseNextTriple: false,
+    paused: false,
+    release: null,
+  });
+});
+
+test('Wave 1A M2 browser source and project replacements each own one Session suggestion', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  const suggestions = [];
+  const { page } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: fixture.claudeHome },
+    beforeGoto: async (targetPage) => {
+      await installWave1aM2BrowserSeam(targetPage);
+      await targetPage.route('**/api/file-suggestions*', (route) => (
+        recordFileSuggestionResponse(route, suggestions)
+      ));
+    },
+  });
+  const suggestionResponse = () => page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/file-suggestions'
+  ));
+  const chooseProject = async (root) => {
+    const response = suggestionResponse();
+    await page.evaluate((projectRoot) => {
+      const project = [...document.querySelectorAll('.projectItem[data-project-root]')]
+        .find((item) => item.dataset.projectRoot === projectRoot);
+      project?.click();
+    }, root);
+    await response;
+    await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
+    await page.waitForSelector('.sessionItem.active');
+  };
+
+  await waitForProjectRoot(page, repoRoot);
+  await chooseProject(repoRoot);
+  assert.equal(suggestions.length, 1);
+  assert.equal(suggestions[0].scope, 'session');
+  assert.ok(suggestions[0].sessionId);
+  assert.equal(suggestions[0].layer, 'main');
+
+  await page.locator('#projectSwitchControl').click();
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'selecting');
+  await page.locator('#projectSourceAction').click();
+  await confirmSourceAction(page, 'Confirm switch to Claude Code');
+  await waitForProjectRoot(page, fixture.claudeRepo);
+  await chooseProject(fixture.claudeRepo);
+  assert.equal(suggestions.length, 2);
+  assert.deepEqual(suggestions[1], {
+    ...suggestions[1],
+    scope: 'session',
+    sessionId: analyzerSessionId(fixture.sessionId),
+    layer: 'main',
+  });
+  assert.equal(
+    await page.locator('.sessionItem.active').getAttribute('data-session-id'),
+    analyzerSessionId(fixture.sessionId),
+  );
+  await page.locator('#searchFileInput').focus();
+  assert.deepEqual(
+    await page.locator('[data-search-file-suggestion]').evaluateAll((items) => (
+      items.map((item) => item.dataset.searchFileSuggestion)
+    )),
+    suggestions[1].files.slice(0, 12).map((item) => item.file),
+  );
+});
+
+test('Wave 1A M2 browser executes every outer handoff guard before skip or fallback', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: installWave1aM2BrowserSeam,
+  });
+  const suggestionResponse = () => page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/file-suggestions'
+  ));
+  const handoffCount = () => page.evaluate(() => window.__wave1aM2.evidence.handoffs.length);
+  const pauseOuterLoad = async () => {
+    const before = await handoffCount();
+    await page.evaluate(() => window.__wave1aM2.armHandoffPause());
+    const response = suggestionResponse();
+    await page.locator('#sortSelect').dispatchEvent('change');
+    await response;
+    await page.waitForFunction(() => window.__wave1aM2.evidence.paused);
+    return before;
+  };
+  const releaseAndRead = async (before) => {
+    await page.evaluate(() => window.__wave1aM2.releaseHandoff());
+    await page.waitForFunction((count) => window.__wave1aM2.evidence.handoffs.length > count, before);
+    return page.evaluate(() => structuredClone(window.__wave1aM2.evidence.handoffs.at(-1)));
+  };
+
+  let heldSessions = false;
+  let sessionsStarted = deferred();
+  let sessionsRelease = deferred();
+  await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
+    if (heldSessions) {
+      sessionsStarted.resolve();
+      await sessionsRelease.promise;
+      heldSessions = false;
+    }
+    await route.continue();
+  });
+  t.after(() => sessionsRelease.resolve());
+
+  let before = await pauseOuterLoad();
+  heldSessions = true;
+  sessionsStarted = deferred();
+  sessionsRelease = deferred();
+  await page.locator('#sortSelect').dispatchEvent('change');
+  await sessionsStarted.promise;
+  assert.deepEqual(await releaseAndRead(before), {
+    sessionsRequest: false,
+    sessionsContext: true,
+    delegatedSession: true,
+    sessionScope: true,
+    suggestionContext: true,
+    suggestionRequest: true,
+    passed: false,
+  });
+  sessionsRelease.resolve();
+  await page.waitForFunction((count) => window.__wave1aM2.evidence.handoffs.length > count, before + 1);
+
+  before = await pauseOuterLoad();
+  const committedSort = await page.locator('#sortSelect').inputValue();
+  const mismatchedSort = committedSort === 'events-desc' ? 'updated-desc' : 'events-desc';
+  await page.evaluate((value) => {
+    document.querySelector('#sortSelect').value = value;
+  }, mismatchedSort);
+  assert.deepEqual(await releaseAndRead(before), {
+    sessionsRequest: true,
+    sessionsContext: false,
+    delegatedSession: true,
+    sessionScope: true,
+    suggestionContext: true,
+    suggestionRequest: true,
+    passed: false,
+  });
+  await page.evaluate((value) => {
+    document.querySelector('#sortSelect').value = value;
+  }, committedSort);
+
+  before = await pauseOuterLoad();
+  let response = suggestionResponse();
+  await page.locator('#layerSelect').selectOption('protocol');
+  await response;
+  assert.deepEqual(await releaseAndRead(before), {
+    sessionsRequest: true,
+    sessionsContext: true,
+    delegatedSession: true,
+    sessionScope: true,
+    suggestionContext: false,
+    suggestionRequest: false,
+    passed: false,
+  });
+
+  before = await pauseOuterLoad();
+  const laterSession = page.locator('[data-session-id]:not(.active)').first();
+  response = suggestionResponse();
+  await laterSession.click();
+  await response;
+  assert.deepEqual(await releaseAndRead(before), {
+    sessionsRequest: true,
+    sessionsContext: true,
+    delegatedSession: false,
+    sessionScope: true,
+    suggestionContext: false,
+    suggestionRequest: false,
+    passed: false,
+  });
+
+  before = await pauseOuterLoad();
+  response = suggestionResponse();
+  await switchToProjectScope(page);
+  await response;
+  assert.deepEqual(await releaseAndRead(before), {
+    sessionsRequest: true,
+    sessionsContext: true,
+    delegatedSession: true,
+    sessionScope: false,
+    suggestionContext: false,
+    suggestionRequest: false,
+    passed: false,
+  });
+});
+
+test('Wave 1A M2 browser leaves revision recovery as the bounded suggestion owner', async (t) => {
+  const index = await buildFixtureIndex();
+  const requests = [];
+  const marker = 'wave-1a-revision-stale-suggestion';
+  let mismatchPending = true;
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: installWave1aM2BrowserSeam,
+  });
+  const initialOutcomeCount = await page.evaluate(() => window.__wave1aM2.evidence.outcomes.length);
+  await page.route('**/api/file-suggestions*', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const response = await route.fetch();
+    const body = await response.json();
+    requests.push({
+      scope: requestUrl.searchParams.has('sessionId') ? 'session' : 'project',
+      layer: requestUrl.searchParams.get('layer') || '',
+      mismatched: mismatchPending,
+    });
+    if (mismatchPending) {
+      mismatchPending = false;
+      await route.fulfill({
+        response,
+        json: {
+          ...body,
+          indexRevision: body.indexRevision + 1,
+          files: [{ file: marker, count: 999 }],
+        },
+      });
+      return;
+    }
+    await route.fulfill({ response, json: body });
+  });
+  await page.evaluate((text) => {
+    window.__wave1aRevisionMarkerSeen = document.body.textContent.includes(text);
+    new MutationObserver(() => {
+      if (document.body.textContent.includes(text)) window.__wave1aRevisionMarkerSeen = true;
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  }, marker);
+
+  await page.locator('#layerSelect').selectOption('protocol');
+  await page.waitForFunction((count) => (
+    window.__wave1aM2.evidence.outcomes.length > count
+      && window.__wave1aM2.evidence.outcomes.at(-1).suggestionCommitted === true
+      && window.__wave1aM2.evidence.handoffs.at(-1).passed === true
+  ), initialOutcomeCount);
+  assert.equal(mismatchPending, false);
+  assert.deepEqual(requests, [
+    { scope: 'session', layer: 'protocol', mismatched: true },
+    { scope: 'session', layer: 'protocol', mismatched: false },
+  ]);
+  assert.equal(await page.evaluate(() => window.__wave1aRevisionMarkerSeen), false);
+});
+
+test('Wave 1A M2 browser keeps the newer same-context suggestion pending without a third fallback', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page, baseUrl } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: installWave1aM2BrowserSeam,
+  });
+  const statePayload = await (await fetch(`${baseUrl}/api/state`)).json();
+  const indexRevision = (statePayload.currentState || statePayload).indexRevision;
+  const initialRequestId = await page.evaluate(() => window.__wave1aM2.evidence.outcomes.at(-1).suggestionRequestId);
+  const oldRelease = deferred();
+  const newerRelease = deferred();
+  const oldStarted = deferred();
+  const newerStarted = deferred();
+  const failed = [];
+  let requestCount = 0;
+  page.on('requestfailed', (request) => {
+    if (new URL(request.url()).pathname === '/api/file-suggestions') failed.push(request.url());
+  });
+  await page.route('**/api/file-suggestions*', async (route) => {
+    requestCount += 1;
+    const ordinal = requestCount;
+    if (ordinal === 1) {
+      oldStarted.resolve();
+      await oldRelease.promise;
+    } else if (ordinal === 2) {
+      newerStarted.resolve();
+      await newerRelease.promise;
+    }
+    try {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          indexRevision,
+          files: [{ file: `wave-1a-pending-${ordinal}`, count: ordinal }],
+        }),
+      });
+    } catch {
+      // The deliberately superseded request is expected to be gone.
+    }
+  });
+  t.after(() => {
+    oldRelease.resolve();
+    newerRelease.resolve();
+  });
+
+  const sortValue = await page.locator('#sortSelect').inputValue();
+  const nextSort = sortValue === 'events-desc' ? 'updated-desc' : 'events-desc';
+  await page.evaluate(() => window.__wave1aM2.armHandoffPause());
+  await page.locator('#sortSelect').selectOption(nextSort);
+  await oldStarted.promise;
+  const selectedSessionId = await page.locator('.sessionItem.active').getAttribute('data-session-id');
+  await page.locator(`[data-session-id="${selectedSessionId}"]`).click();
+  await newerStarted.promise;
+  await page.waitForFunction(() => window.__wave1aM2.evidence.paused);
+
+  await page.evaluate(() => window.__wave1aM2.releaseHandoff());
+  await page.waitForFunction(() => window.__wave1aM2.evidence.handoffs.length >= 2);
+  assert.equal(requestCount, 2, 'the superseded outer load must not start a third fallback');
+  assert.deepEqual((await page.evaluate(() => window.__wave1aM2.evidence.handoffs.at(-1))), {
+    sessionsRequest: true,
+    sessionsContext: true,
+    delegatedSession: true,
+    sessionScope: true,
+    suggestionContext: true,
+    suggestionRequest: false,
+    passed: false,
+  });
+  assert.equal(failed.length, 1, 'only the older delegated request should be aborted');
+
+  newerRelease.resolve();
+  await page.locator('#searchFileInput').focus();
+  await page.waitForFunction(() => (
+    document.querySelector('[data-search-file-suggestion]')?.dataset.searchFileSuggestion === 'wave-1a-pending-2'
+  ));
+  oldRelease.resolve();
+  assert.equal(requestCount, 2);
+  assert.equal(failed.length, 1, 'the newer pending request must not be aborted');
+  assert.deepEqual((await page.evaluate(() => window.__wave1aM2.evidence.outcomes.slice(-2))), [
+    {
+      keys: ['suggestionRequestId', 'suggestionContext', 'suggestionCommitted'],
+      suggestionRequestId: initialRequestId + 1,
+      suggestionContextAlias: 1,
+      suggestionCommitted: false,
+      frozen: true,
+    },
+    {
+      keys: ['suggestionRequestId', 'suggestionContext', 'suggestionCommitted'],
+      suggestionRequestId: initialRequestId + 2,
+      suggestionContextAlias: 1,
+      suggestionCommitted: true,
+      frozen: true,
+    },
+  ]);
+});
+
+test('Wave 1A M2 browser keeps a newer committed same-context suggestion authoritative', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page, baseUrl } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: installWave1aM2BrowserSeam,
+  });
+  const statePayload = await (await fetch(`${baseUrl}/api/state`)).json();
+  const indexRevision = (statePayload.currentState || statePayload).indexRevision;
+  const initialRequestId = await page.evaluate(() => window.__wave1aM2.evidence.outcomes.at(-1).suggestionRequestId);
+  const oldRelease = deferred();
+  const oldStarted = deferred();
+  let requestCount = 0;
+  const failed = [];
+  page.on('requestfailed', (request) => {
+    if (new URL(request.url()).pathname === '/api/file-suggestions') failed.push(request.url());
+  });
+  await page.route('**/api/file-suggestions*', async (route) => {
+    requestCount += 1;
+    const ordinal = requestCount;
+    if (ordinal === 1) {
+      oldStarted.resolve();
+      await oldRelease.promise;
+    }
+    try {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          indexRevision,
+          files: [{ file: `wave-1a-committed-${ordinal}`, count: ordinal }],
+        }),
+      });
+    } catch {
+      // The deliberately superseded request is expected to be gone.
+    }
+  });
+  t.after(() => oldRelease.resolve());
+
+  const sortValue = await page.locator('#sortSelect').inputValue();
+  const nextSort = sortValue === 'events-desc' ? 'updated-desc' : 'events-desc';
+  await page.evaluate(() => window.__wave1aM2.armHandoffPause());
+  await page.locator('#sortSelect').selectOption(nextSort);
+  await oldStarted.promise;
+  const selectedSessionId = await page.locator('.sessionItem.active').getAttribute('data-session-id');
+  await page.locator(`[data-session-id="${selectedSessionId}"]`).click();
+  await page.locator('#searchFileInput').focus();
+  await page.waitForFunction(() => (
+    document.querySelector('[data-search-file-suggestion]')?.dataset.searchFileSuggestion === 'wave-1a-committed-2'
+  ));
+  await page.waitForFunction(() => window.__wave1aM2.evidence.paused);
+
+  await page.evaluate(() => window.__wave1aM2.releaseHandoff());
+  await page.waitForFunction(() => window.__wave1aM2.evidence.handoffs.length >= 2);
+  oldRelease.resolve();
+  assert.equal(requestCount, 2, 'the superseded outer load must not start a third fallback');
+  assert.equal(failed.length, 1, 'the committed newer request must not be aborted');
+  assert.equal(await page.locator('[data-search-file-suggestion]').first().getAttribute('data-search-file-suggestion'), 'wave-1a-committed-2');
+  assert.deepEqual((await page.evaluate(() => window.__wave1aM2.evidence.handoffs.at(-1))), {
+    sessionsRequest: true,
+    sessionsContext: true,
+    delegatedSession: true,
+    sessionScope: true,
+    suggestionContext: true,
+    suggestionRequest: false,
+    passed: false,
+  });
+  assert.deepEqual((await page.evaluate(() => window.__wave1aM2.evidence.outcomes.slice(-2))), [
+    {
+      keys: ['suggestionRequestId', 'suggestionContext', 'suggestionCommitted'],
+      suggestionRequestId: initialRequestId + 1,
+      suggestionContextAlias: 1,
+      suggestionCommitted: false,
+      frozen: true,
+    },
+    {
+      keys: ['suggestionRequestId', 'suggestionContext', 'suggestionCommitted'],
+      suggestionRequestId: initialRequestId + 2,
+      suggestionContextAlias: 1,
+      suggestionCommitted: true,
+      frozen: true,
+    },
+  ]);
+});
+
+test('Wave 1A M3 browser publishes first-page, append, and Session-switch Map parity with positive card gets', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t, { eventCount: 320 });
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: installWave1aM3BrowserSeam,
+  });
+  await assertEventCount(page, 150);
+
+  const initial = await page.evaluate(() => {
+    const evidence = window.__wave1aM3.evidence;
+    const enclosingLookups = evidence.lookups.filter((item) => item.purpose === 'enclosingAffordance');
+    const enclosingCards = evidence.cardIterations.filter((item) => item.purpose === 'enclosingAffordance');
+    return {
+      snapshot: evidence.snapshots.at(-1),
+      cardIterations: enclosingCards.reduce((total, item) => total + item.cardIterations, 0),
+      lookupRequests: enclosingLookups.reduce((total, item) => total + item.lookupRequests, 0),
+      mapGets: enclosingLookups.reduce((total, item) => total + item.mapGets, 0),
+      arrayComparisons: enclosingLookups.reduce((total, item) => total + item.arrayComparisons, 0),
+      backends: [...new Set(enclosingLookups.map((item) => item.backend))],
+    };
+  });
+  assert.deepEqual(initial.snapshot, {
+    arrayLength: 150,
+    mapSize: 150,
+    uniqueIdCount: 150,
+    objectIdentityParity: true,
+    committedContextBound: true,
+    offsetMatches: true,
+    pendingReplacement: false,
+    backend: 'map',
+    parityPassed: true,
+  });
+  assert.ok(initial.cardIterations > 0, 'enclosing-affordance evidence must have a positive card count');
+  assert.equal(initial.lookupRequests, initial.cardIterations);
+  assert.equal(initial.mapGets, initial.cardIterations);
+  assert.equal(initial.arrayComparisons, 0);
+  assert.deepEqual(initial.backends, ['map']);
+
+  await page.locator('#loadMoreBtn').click();
+  await assertEventCount(page, 300);
+  assert.deepEqual(await page.evaluate(() => window.__wave1aM3.evidence.snapshots.at(-1)), {
+    arrayLength: 300,
+    mapSize: 300,
+    uniqueIdCount: 300,
+    objectIdentityParity: true,
+    committedContextBound: true,
+    offsetMatches: true,
+    pendingReplacement: false,
+    backend: 'map',
+    parityPassed: true,
+  });
+
+  await page.locator('#loadMoreBtn').click();
+  await assertEventCount(page, 320);
+  assert.equal((await page.evaluate(() => window.__wave1aM3.evidence.snapshots.at(-1).parityPassed)), true);
+
+  await page.locator(`[data-session-id="${fixture.secondarySessionId}"]`).click();
+  await page.waitForSelector(`[data-session-id="${fixture.secondarySessionId}"].active`);
+  await assertEventCount(page, 40);
+  assert.deepEqual(await page.evaluate(() => window.__wave1aM3.evidence.snapshots.at(-1)), {
+    arrayLength: 40,
+    mapSize: 40,
+    uniqueIdCount: 40,
+    objectIdentityParity: true,
+    committedContextBound: true,
+    offsetMatches: true,
+    pendingReplacement: false,
+    backend: 'map',
+    parityPassed: true,
+  });
+  assert.ok((await page.evaluate(() => window.__wave1aM3.evidence.snapshots)).some((snapshot) => (
+    snapshot.arrayLength === 0 && snapshot.mapSize === 0 && snapshot.parityPassed
+  )), 'Session switch must retire the prior pair through an empty committed reset');
+});
+
+test('Wave 1A M3 browser keeps delayed-replacement cards interactive and measures exact positive C-to-C gets', async (t) => {
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 320 });
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: installWave1aM3BrowserSeam,
+  });
+  await assertEventCount(page, 150);
+  const kind = await page.locator('#searchKindSelect option').evaluateAll((options) => (
+    options.map((option) => option.value).find(Boolean) || ''
+  ));
+  assert.ok(kind, 'fixture should expose a structural Kind filter');
+  const replacementStarted = deferred();
+  const replacementRelease = deferred();
+  await page.route('**/api/sessions/*/timeline?*', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.searchParams.get('kind') === kind && requestUrl.searchParams.get('offset') === '0') {
+      replacementStarted.resolve();
+      await replacementRelease.promise;
+    }
+    await route.continue();
+  });
+  t.after(() => replacementRelease.resolve());
+
+  const oldCard = page.locator('#timeline .event[data-event-id]').first();
+  const oldEventId = await oldCard.getAttribute('data-event-id');
+  await addSearchFilter(page, 'kind', kind);
+  await replacementStarted.promise;
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 150);
+  const pendingSnapshot = await page.evaluate(() => window.__wave1aM3.evidence.snapshots.at(-1));
+  assert.equal(pendingSnapshot.arrayLength, 150);
+  assert.equal(pendingSnapshot.mapSize, 150);
+  assert.equal(pendingSnapshot.parityPassed, true);
+  assert.equal(pendingSnapshot.pendingReplacement, true);
+
+  await page.evaluate(() => window.__wave1aM3.resetOperations());
+  await oldCard.click();
+  await page.waitForFunction((eventId) => (
+    document.querySelector('#timeline .event.selected')?.dataset.eventId === eventId
+      && document.body.dataset.detailView === 'inspector'
+  ), oldEventId);
+  const pendingOperations = await page.evaluate(() => {
+    const evidence = window.__wave1aM3.evidence;
+    const lookups = evidence.lookups.filter((item) => item.purpose === 'enclosingAffordance');
+    const cards = evidence.cardIterations.filter((item) => item.purpose === 'enclosingAffordance');
+    return {
+      cardIterations: cards.reduce((total, item) => total + item.cardIterations, 0),
+      lookupRequests: lookups.reduce((total, item) => total + item.lookupRequests, 0),
+      mapGets: lookups.reduce((total, item) => total + item.mapGets, 0),
+      arrayComparisons: lookups.reduce((total, item) => total + item.arrayComparisons, 0),
+    };
+  });
+  assert.equal(pendingOperations.cardIterations, 150);
+  assert.equal(pendingOperations.lookupRequests, 150);
+  assert.equal(pendingOperations.mapGets, 150);
+  assert.equal(pendingOperations.arrayComparisons, 0);
+
+  replacementRelease.resolve();
+  await page.waitForFunction(() => (
+    window.__wave1aM3.evidence.snapshots.at(-1)?.pendingReplacement === false
+      && window.__wave1aM3.evidence.snapshots.at(-1)?.parityPassed === true
+  ));
+  const committedSnapshot = await page.evaluate(() => window.__wave1aM3.evidence.snapshots.at(-1));
+  assert.equal(committedSnapshot.arrayLength, committedSnapshot.mapSize);
+  assert.equal(committedSnapshot.arrayLength, committedSnapshot.uniqueIdCount);
+  assert.equal(committedSnapshot.objectIdentityParity, true);
+  assert.equal(committedSnapshot.committedContextBound, true);
+  assert.equal(committedSnapshot.offsetMatches, true);
+});
+
+test('Wave 1A M3 browser rejects duplicate replacement IDs before publishing either committed structure', async (t) => {
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 320 });
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: installWave1aM3BrowserSeam,
+  });
+  await assertEventCount(page, 150);
+  const before = await page.evaluate(() => window.__wave1aM3.evidence.snapshots.at(-1));
+  const kind = await page.locator('#searchKindSelect option').evaluateAll((options) => (
+    options.map((option) => option.value).find(Boolean) || ''
+  ));
+  let injected = false;
+  await page.route('**/api/sessions/*/timeline?*', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (injected || requestUrl.searchParams.get('kind') !== kind || requestUrl.searchParams.get('offset') !== '0') {
+      await route.continue();
+      return;
+    }
+    injected = true;
+    const response = await route.fetch();
+    const body = await response.json();
+    assert.ok(body.events.length > 0);
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        events: [body.events[0], body.events[0]],
+        total: 2,
+      },
+    });
+  });
+
+  await addSearchFilter(page, 'kind', kind);
+  await page.waitForFunction(() => (
+    document.querySelector('#stateLine')?.dataset.state === 'error'
+      && document.querySelector('#stateLine')?.textContent.includes('Timeline event state invariant')
+  ));
+  assert.equal(injected, true);
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 150);
+  const rejected = await page.evaluate(() => window.__wave1aM3.evidence.snapshots.at(-1));
+  assert.equal(rejected.arrayLength, before.arrayLength);
+  assert.equal(rejected.mapSize, before.mapSize);
+  assert.equal(rejected.uniqueIdCount, before.uniqueIdCount);
+  assert.equal(rejected.objectIdentityParity, true);
+  assert.equal(rejected.committedContextBound, true);
+  assert.equal(rejected.offsetMatches, true);
+  assert.equal(rejected.pendingReplacement, true);
+  assert.equal(rejected.parityPassed, true);
+
+  const retryResponse = page.waitForResponse((response) => {
+    const requestUrl = new URL(response.url());
+    return requestUrl.pathname.endsWith('/timeline')
+      && requestUrl.searchParams.get('kind') === kind
+      && requestUrl.searchParams.get('offset') === '0';
+  });
+  await page.locator('#loadMoreBtn').click();
+  await retryResponse;
+  await page.waitForFunction(() => (
+    window.__wave1aM3.evidence.snapshots.at(-1)?.pendingReplacement === false
+      && window.__wave1aM3.evidence.snapshots.at(-1)?.parityPassed === true
+  ));
+  const recovered = await page.evaluate(() => window.__wave1aM3.evidence.snapshots.at(-1));
+  assert.equal(recovered.arrayLength, recovered.mapSize);
+  assert.equal(recovered.arrayLength, recovered.uniqueIdCount);
+});
+
+test('Wave 1A M3 browser prevents a delayed stale Layer response from publishing', async (t) => {
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 320 });
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: installWave1aM3BrowserSeam,
+  });
+  const staleStarted = deferred();
+  const staleRelease = deferred();
+  const failures = [];
+  page.on('requestfailed', (request) => {
+    const requestUrl = new URL(request.url());
+    if (requestUrl.pathname.endsWith('/timeline') && requestUrl.searchParams.get('layer') === 'protocol') {
+      failures.push(request.url());
+    }
+  });
+  await page.route('**/api/sessions/*/timeline?*', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.searchParams.get('layer') === 'protocol' && requestUrl.searchParams.get('offset') === '0') {
+      staleStarted.resolve();
+      await staleRelease.promise;
+    }
+    try {
+      await route.continue();
+    } catch {
+      // The superseded protocol request is intentionally gone.
+    }
+  });
+  t.after(() => staleRelease.resolve());
+
+  await page.locator('#layerSelect').selectOption('protocol');
+  await staleStarted.promise;
+  await page.locator('#layerSelect').selectOption('raw');
+  await page.waitForFunction(() => (
+    document.querySelector('#layerSelect')?.value === 'raw'
+      && window.__wave1aM3.evidence.snapshots.at(-1)?.pendingReplacement === false
+      && window.__wave1aM3.evidence.snapshots.at(-1)?.parityPassed === true
+  ));
+  const rawSnapshot = await page.evaluate(() => window.__wave1aM3.evidence.snapshots.at(-1));
+  staleRelease.resolve();
+  await page.waitForFunction(() => document.querySelector('#layerSelect')?.value === 'raw');
+  assert.equal(failures.length, 1);
+  assert.deepEqual(await page.evaluate(() => window.__wave1aM3.evidence.snapshots.at(-1)), rawSnapshot);
+  assert.equal(rawSnapshot.arrayLength, rawSnapshot.mapSize);
+  assert.equal(rawSnapshot.arrayLength, rawSnapshot.uniqueIdCount);
+});
+
+test('Wave 1A M3 browser keeps a Code Mode context row outside the canonical Map', async (t) => {
+  const fixture = await makeContextCodeModeCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const session = await materializeIndexedSession(index, fixture.sessionId);
+  const nested = session.logicalEvents.find((candidate) => candidate.toolName === 'nested-context-token');
+  assert.ok(nested);
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: installWave1aM3BrowserSeam,
+  });
+  await addSearchFilter(page, 'status', 'failed');
+  await page.waitForFunction((nestedId) => {
+    const cards = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    return cards.length === 1 && cards[0].dataset.eventId === nestedId;
+  }, nested.id);
+  await page.locator('#searchAssistClose').click();
+  const before = await page.evaluate(() => structuredClone(window.__wave1aM3.evidence.snapshots.at(-1)));
+  assert.equal(before.arrayLength, 1);
+  assert.equal(before.mapSize, 1);
+  assert.equal(before.parityPassed, true);
+
+  await page.locator(`#timeline .event[data-event-id="${nested.id}"] [data-action="reveal-context-parent"]`).click();
+  await page.waitForSelector('.contextRevealRow');
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 1);
+  assert.equal(await page.locator('.contextRevealRow').count(), 1);
+  assert.deepEqual(await page.evaluate(() => window.__wave1aM3.evidence.snapshots.at(-1)), before);
+});
+
+test('Wave 1A M3 browser keeps true temporary-event enclosing affordances on the indexed Map seam', async (t) => {
+  const fixture = await makeContextCodeModeCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const session = await materializeIndexedSession(index, fixture.sessionId);
+  const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
+  const nested = session.logicalEvents.find((candidate) => candidate.toolName === 'nested-context-token');
+  assert.ok(operation && nested);
+  const temporaryEventId = 'wave-1a-true-temporary-event';
+  const temporaryParentId = 'wave-1a-true-temporary-parent';
+  const parentStarted = deferred();
+  const parentRelease = deferred();
+  t.after(() => parentRelease.resolve());
+
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: async (targetPage) => {
+      await installWave1bM2SourceBundle(targetPage);
+      await installWave1cM1BrowserSeam(targetPage);
+      await installWave1aM3BrowserSeam(targetPage);
+      await targetPage.route('**/api/sessions/*/events/**', async (route) => {
+        const requestUrl = new URL(route.request().url());
+        const decodedPath = decodeURIComponent(requestUrl.pathname);
+        const fetchActualEvent = async (actualEventId, requestedEventId) => {
+          const actualUrl = new URL(requestUrl);
+          actualUrl.pathname = requestUrl.pathname.replace(
+            encodeURIComponent(requestedEventId),
+            encodeURIComponent(actualEventId),
+          );
+          const response = await route.fetch({ url: actualUrl.href });
+          assert.equal(response.ok(), true);
+          return { response, body: await response.json() };
+        };
+
+        if (decodedPath.endsWith(`/events/${operation.id}/detail`)) {
+          const response = await route.fetch();
+          const body = await response.json();
+          const refs = [...(body.timelineSections || []), ...(body.inspectorSections || [])]
+            .find((section) => section.type === 'event_refs');
+          assert.ok(refs?.items?.length, 'Code Mode detail must expose its nested event reference');
+          refs.items[0] = {
+            ...refs.items[0],
+            id: temporaryEventId,
+            label: 'True temporary nested activity',
+          };
+          await route.fulfill({ response, json: body });
+          return;
+        }
+        if (decodedPath.endsWith(`/events/${temporaryEventId}`)) {
+          const { response, body } = await fetchActualEvent(nested.id, temporaryEventId);
+          await targetPage.evaluate(() => window.__wave1aM3.resetOperations());
+          await route.fulfill({
+            response,
+            json: {
+              ...body,
+              id: temporaryEventId,
+              presentationContext: {
+                relation: 'enclosed_by_code_mode_operation',
+                codeModeParentId: temporaryParentId,
+              },
+            },
+          });
+          return;
+        }
+        if (decodedPath.endsWith(`/events/${temporaryParentId}`)) {
+          const { response, body } = await fetchActualEvent(operation.id, temporaryParentId);
+          parentStarted.resolve();
+          await parentRelease.promise;
+          await route.fulfill({ response, json: { ...body, id: temporaryParentId } });
+          return;
+        }
+        await route.continue();
+      });
+    },
+  });
+
+  const before = await page.evaluate(() => structuredClone(window.__wave1aM3.evidence.snapshots.at(-1)));
+  assert.equal(before.parityPassed, true);
+  await page.locator(`#timeline .event[data-event-id="${operation.id}"]`).click();
+  const eventRef = page.locator(`#detail [data-event-ref-id="${temporaryEventId}"]`);
+  await eventRef.waitFor();
+  await page.evaluate(() => window.__wave1cM1.reset());
+  await eventRef.click();
+
+  const temporaryCard = page.locator(`#timeline .event[data-event-id="${temporaryEventId}"]`);
+  await temporaryCard.waitFor();
+  await page.waitForFunction((eventId) => (
+    document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`)
+      ?.classList.contains('selected')
+  ), temporaryEventId);
+  assert.equal(await temporaryCard.getAttribute('class').then((value) => value.includes('temporaryReferenceReveal')), true);
+  assert.equal(await temporaryCard.locator('.temporaryReferenceChip').count(), 1);
+  assert.equal(await page.evaluate(() => window.__wave1cM1.evidence.revisions.some(
+    (item) => item.revisionKind === 'temporaryRevealRevision',
+  )), true);
+  assert.ok((await latestWave1cM1Lifecycle(page))
+    .mountedPresentationToken.temporaryRevealRevision > 0);
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), before.arrayLength + 1);
+  assert.deepEqual(await page.evaluate(() => window.__wave1aM3.evidence.snapshots.at(-1)), before);
+
+  const affordance = temporaryCard.locator('[data-action="reveal-context-parent"]');
+  assert.equal(await affordance.isHidden(), false, 'selection must reveal the temporary card affordance');
+  assert.equal(await affordance.getAttribute('aria-hidden'), 'false');
+  assert.equal(await affordance.isDisabled(), false);
+  const afterTemporaryRender = await page.evaluate(() => structuredClone(window.__wave1aM3.evidence));
+  assert.deepEqual(afterTemporaryRender.lookups[0], {
+    purpose: 'canonical',
+    backend: 'map',
+    lookupRequests: 1,
+    mapGets: 0,
+    arrayComparisons: 0,
+  }, 'the first post-envelope lookup is the specific renderTimeline temporary-membership Map has');
+
+  await affordance.click();
+  await parentStarted.promise;
+  assert.equal(await affordance.isHidden(), false);
+  assert.equal(await affordance.getAttribute('aria-hidden'), 'false');
+  assert.equal(await affordance.isDisabled(), true, 'pending context reveal must disable the temporary card affordance');
+  assert.deepEqual(await page.evaluate(() => window.__wave1aM3.evidence.snapshots.at(-1)), before);
+  parentRelease.resolve();
+  await page.waitForSelector('.contextRevealRow');
+  await page.waitForFunction((eventId) => !document.querySelector(
+    `#timeline .event[data-event-id="${CSS.escape(eventId)}"] [data-action="reveal-context-parent"]`,
+  )?.disabled, temporaryEventId);
+
+  const operations = await page.evaluate(() => {
+    const evidence = window.__wave1aM3.evidence;
+    const enclosingLookups = evidence.lookups.filter((item) => item.purpose === 'enclosingAffordance');
+    const enclosingCards = evidence.cardIterations.filter((item) => item.purpose === 'enclosingAffordance');
+    return {
+      cardIterations: enclosingCards.reduce((total, item) => total + item.cardIterations, 0),
+      lookupRequests: enclosingLookups.reduce((total, item) => total + item.lookupRequests, 0),
+      mapGets: enclosingLookups.reduce((total, item) => total + item.mapGets, 0),
+      arrayComparisons: evidence.lookups.reduce((total, item) => total + item.arrayComparisons, 0),
+      backends: [...new Set(enclosingLookups.map((item) => item.backend))],
+      snapshot: structuredClone(evidence.snapshots.at(-1)),
+    };
+  });
+  assert.ok(operations.cardIterations > 0);
+  assert.equal(operations.lookupRequests, operations.cardIterations);
+  assert.equal(operations.mapGets, operations.cardIterations);
+  assert.equal(operations.arrayComparisons, 0);
+  assert.deepEqual(operations.backends, ['map']);
+  assert.deepEqual(operations.snapshot, before, 'temporary and context rows must not mutate canonical parity or size');
+});
+
+test('Wave 1A M3 browser distinguishes retained query replacement from full locale, project, and revision resets', async (t) => {
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 320 });
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    beforeGoto: async (targetPage) => {
+      await installWave1bM2SourceBundle(targetPage);
+      await installWave1cM1BrowserSeam(targetPage);
+      await installWave1aM3BrowserSeam(targetPage);
+    },
+  });
+  const assertLatestParity = async () => {
+    const snapshot = await page.evaluate(() => window.__wave1aM3.evidence.snapshots.at(-1));
+    assert.equal(snapshot.arrayLength, snapshot.mapSize);
+    assert.equal(snapshot.arrayLength, snapshot.uniqueIdCount);
+    assert.equal(snapshot.objectIdentityParity, true);
+    assert.equal(snapshot.committedContextBound, true);
+    assert.equal(snapshot.offsetMatches, true);
+    assert.equal(snapshot.pendingReplacement, false);
+    assert.equal(snapshot.backend, 'map');
+    assert.equal(snapshot.parityPassed, true);
+    return snapshot;
+  };
+
+  let beforeSnapshots = await page.evaluate(() => window.__wave1aM3.evidence.snapshots.length);
+  const queryResponse = page.waitForResponse((response) => {
+    const requestUrl = new URL(response.url());
+    return requestUrl.pathname.endsWith('/timeline')
+      && requestUrl.searchParams.get('q') === 'far-needle'
+      && requestUrl.searchParams.get('offset') === '0';
+  });
+  await fillSearch(page, 'far-needle');
+  await queryResponse;
+  await page.waitForFunction((count) => (
+    window.__wave1aM3.evidence.snapshots.length > count
+      && window.__wave1aM3.evidence.snapshots.at(-1)?.pendingReplacement === false
+  ), beforeSnapshots);
+  await page.waitForLoadState('networkidle');
+  await page.waitForFunction(() => window.__wave1aM3.evidence.snapshots.at(-1)?.pendingReplacement === false);
+  await assertLatestParity();
+
+  beforeSnapshots = await page.evaluate(() => window.__wave1aM3.evidence.snapshots.length);
+  await switchHiddenLocale(page, 'zh-CN');
+  await page.waitForFunction((count) => (
+    document.documentElement.lang === 'zh-CN'
+      && window.__wave1aM3.evidence.snapshots.length > count
+      && window.__wave1aM3.evidence.snapshots.at(-1)?.arrayLength > 0
+      && window.__wave1aM3.evidence.snapshots.at(-1)?.pendingReplacement === false
+  ), beforeSnapshots);
+  await page.waitForLoadState('networkidle');
+  await page.waitForFunction(() => window.__wave1aM3.evidence.snapshots.at(-1)?.pendingReplacement === false);
+  await assertLatestParity();
+  const localeSnapshots = await page.evaluate((start) => window.__wave1aM3.evidence.snapshots.slice(start), beforeSnapshots);
+  assert.ok(localeSnapshots.some((snapshot) => (
+    snapshot.arrayLength === 0 && snapshot.mapSize === 0 && snapshot.parityPassed
+  )), `locale reload through loadSessions must retire the prior Session pair: ${JSON.stringify(localeSnapshots)}`);
+
+  beforeSnapshots = await page.evaluate(() => window.__wave1aM3.evidence.snapshots.length);
+  await page.locator('#projectRefreshBtn').click();
+  await page.waitForFunction((count) => (
+    document.querySelector('#projectRefreshBtn')?.dataset.refreshing === 'false'
+      && window.__wave1aM3.evidence.snapshots.length > count
+      && window.__wave1aM3.evidence.snapshots.at(-1)?.pendingReplacement === false
+  ), beforeSnapshots);
+  await assertLatestParity();
+  assert.ok((await page.evaluate((start) => window.__wave1aM3.evidence.snapshots.slice(start), beforeSnapshots)).some((snapshot) => (
+    snapshot.arrayLength === 0 && snapshot.mapSize === 0 && snapshot.parityPassed
+  )), 'project replacement must retire the prior committed pair');
+
+  let mismatchPending = true;
+  let suggestionRequests = 0;
+  let protocolTimelineResponses = 0;
+  const secondSuggestion = deferred();
+  const secondProtocolTimeline = deferred();
+  page.on('response', (response) => {
+    const requestUrl = new URL(response.url());
+    if (requestUrl.pathname.endsWith('/timeline') && requestUrl.searchParams.get('layer') === 'protocol') {
+      protocolTimelineResponses += 1;
+      if (protocolTimelineResponses === 2) secondProtocolTimeline.resolve();
+    }
+  });
+  await page.route('**/api/file-suggestions*', async (route) => {
+    suggestionRequests += 1;
+    if (suggestionRequests === 2) secondSuggestion.resolve();
+    const response = await route.fetch();
+    const body = await response.json();
+    if (mismatchPending) {
+      mismatchPending = false;
+      await route.fulfill({ response, json: { ...body, indexRevision: body.indexRevision + 1 } });
+      return;
+    }
+    await route.fulfill({ response, json: body });
+  });
+  beforeSnapshots = await page.evaluate(() => window.__wave1aM3.evidence.snapshots.length);
+  await page.evaluate(() => {
+    window.__wave1cM1RevisionRecoveryArticle = document.querySelector('#timeline .event[data-event-id]');
+    window.__wave1cM1.reset();
+  });
+  await page.locator('#layerSelect').selectOption('protocol');
+  await Promise.all([secondSuggestion.promise, secondProtocolTimeline.promise]);
+  await page.waitForFunction((count) => (
+    window.__wave1aM3.evidence.snapshots.length > count
+      && window.__wave1aM3.evidence.snapshots.at(-1)?.pendingReplacement === false
+      && window.__wave1aM3.evidence.snapshots.at(-1)?.parityPassed === true
+  ), beforeSnapshots);
+  assert.equal(mismatchPending, false);
+  assert.equal(suggestionRequests, 2);
+  await assertLatestParity();
+  assert.ok((await page.evaluate((start) => window.__wave1aM3.evidence.snapshots.slice(start), beforeSnapshots)).some((snapshot) => (
+    snapshot.arrayLength === 0 && snapshot.mapSize === 0 && snapshot.parityPassed
+  )), 'revision recovery must make prior entries unreachable before rebuilding');
+  assert.equal(await page.evaluate(() => window.__wave1cM1RevisionRecoveryArticle.isConnected), false);
+  assert.equal(await page.evaluate(() => window.__wave1cM1.evidence.lifecycle.some((snapshot) => (
+    snapshot.mode === 'non-main' && snapshot.ownerCount === 0
+  ))), true, 'revision recovery root replacement must not retain a retired Main owner');
+});
+
 test('browser discards a stale project response before exposing drill-down', async (t) => {
   const index = await buildFixtureIndex();
   const { page, requestedUrls } = await openApp(t, index, { locale: 'en' });
@@ -5078,6 +7090,3235 @@ test('browser search navigation loads only the next hit page before wrapping', a
   assert.equal(boundaryRequests.some((url) => Number(url.searchParams.get('offset')) >= 300), false);
 });
 
+test('browser Wave 1C M1 production lifecycle reconciles Main renders and retires every non-Main root', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openWave1cM1App(t, index, { locale: 'en', skipProjectReindex: true });
+  await selectPrimarySession(page);
+
+  const initial = await page.evaluate(() => structuredClone(
+    window.__wave1cM1.evidence.lifecycle.findLast((row) => (
+      row.operation === 'replace' && row.mode === 'main'
+    )),
+  ));
+  const initialCardCount = await page.locator('#timeline .event[data-event-id]').count();
+  assert.equal(initial.mode, 'main');
+  assert.equal(initial.ownerCount, initialCardCount);
+  assert.equal(initial.createdOwnerCount + initial.reusedOwnerCount, initialCardCount);
+  assert.deepEqual(Object.keys(initial.mountedPresentationToken).sort(), [
+    'valid',
+    'localePresentationRevision',
+    'foldingPresentationRevision',
+    'overridesRevision',
+    'navigationRevealRevision',
+    'searchTransientRevision',
+    'temporaryRevealRevision',
+    'detailPresentationRevision',
+  ].sort(), 'mounted compatibility is a fixed-width scalar snapshot');
+
+  const held = await page.evaluate(() => {
+    const cards = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    const index = cards.findIndex((card) => card.classList.contains('kind-command')
+      && !card.classList.contains('expanded'));
+    if (index < 0) throw new Error('expected a collapsed command card');
+    window.__wave1cM1HeldArticle = cards[index];
+    return { index };
+  });
+  const initialOwnerSerial = initial.ownerSerials[held.index];
+  await page.evaluate(() => window.__wave1cM1.reset());
+  await page.locator('#timeline .event[data-event-id]').nth(held.index).locator('[data-action="toggle"]').click();
+  await page.waitForFunction(() => window.__wave1cM1.evidence.revisions.some(
+    (item) => item.revisionKind === 'overridesRevision',
+  ));
+  await page.waitForFunction(() => window.__wave1cM1.evidence.revisions.some(
+    (item) => item.revisionKind === 'detailPresentationRevision',
+  ));
+  const sameContext = await latestWave1cM1Lifecycle(page);
+  assert.equal(sameContext.operation, 'adopt');
+  assert.equal(sameContext.mode, 'main');
+  assert.equal(sameContext.ownerCount, initialCardCount);
+  assert.equal(sameContext.ownerSerials[held.index], initialOwnerSerial);
+  assert.ok(sameContext.mountedPresentationToken.overridesRevision
+    > initial.mountedPresentationToken.overridesRevision);
+  assert.ok(sameContext.mountedPresentationToken.detailPresentationRevision
+    > initial.mountedPresentationToken.detailPresentationRevision);
+  assert.equal(await page.evaluate(() => window.__wave1cM1HeldArticle.isConnected), false);
+  assert.equal(await page.evaluate((index) => (
+    window.__wave1cM1HeldArticle === document.querySelectorAll('#timeline .event[data-event-id]')[index]
+  ), held.index), false);
+
+  await page.evaluate(() => window.__wave1cM1.reset());
+  const nextProfile = await page.locator('#profileSelect option').evaluateAll((options) => {
+    const select = document.querySelector('#profileSelect');
+    return options.find((option) => option.value && option.value !== select.value)?.value || '';
+  });
+  assert.ok(nextProfile);
+  await page.evaluate((profileId) => {
+    const select = document.querySelector('#profileSelect');
+    select.value = profileId;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }, nextProfile);
+  await page.waitForFunction(() => window.__wave1cM1.evidence.revisions.some(
+    (item) => item.revisionKind === 'foldingPresentationRevision',
+  ));
+  await page.waitForFunction(() => window.__wave1cM1.evidence.lifecycle.at(-1)
+    ?.mountedPresentationToken.foldingPresentationRevision > 0);
+
+  await page.locator('#layerSelect').selectOption('protocol');
+  await page.waitForFunction(() => {
+    const latest = window.__wave1cM1.evidence.lifecycle.at(-1);
+    return document.querySelector('#layerSelect')?.value === 'protocol'
+      && latest?.mode === 'non-main' && latest.ownerCount === 0;
+  });
+  await page.locator('#layerSelect').selectOption('raw');
+  await page.waitForFunction(() => {
+    const latest = window.__wave1cM1.evidence.lifecycle.at(-1);
+    return document.querySelector('#layerSelect')?.value === 'raw'
+      && latest?.mode === 'non-main' && latest.ownerCount === 0;
+  });
+  await page.locator('#layerSelect').selectOption('main');
+  await page.waitForFunction(() => {
+    const latest = window.__wave1cM1.evidence.lifecycle.at(-1);
+    return document.querySelector('#layerSelect')?.value === 'main'
+      && latest?.mode === 'main' && latest.ownerCount > 0;
+  });
+  const beforeProject = await latestWave1cM1Lifecycle(page);
+
+  await switchToProjectScope(page);
+  await page.waitForFunction(() => {
+    const latest = window.__wave1cM1.evidence.lifecycle.at(-1);
+    return latest?.mode === 'non-main' && latest.ownerCount === 0;
+  });
+  await page.locator('#searchHudScope').click();
+  await page.locator('#searchAssist').getByRole('button', { name: 'Current session' }).click();
+  await page.waitForFunction(() => {
+    const latest = window.__wave1cM1.evidence.lifecycle.at(-1);
+    return document.body.dataset.searchScope === 'session'
+      && latest?.mode === 'main' && latest.ownerCount > 0;
+  });
+  const afterProject = await latestWave1cM1Lifecycle(page);
+  assert.notEqual(afterProject.ownerSerials[0], beforeProject.ownerSerials[0]);
+  assert.equal(afterProject.ownerCount, await page.locator('#timeline .event[data-event-id]').count());
+
+  await page.evaluate(() => window.__wave1cM1.reset());
+  await switchHiddenLocale(page, 'zh-CN');
+  await page.waitForFunction(() => window.__wave1cM1.evidence.revisions.some(
+    (item) => item.revisionKind === 'localePresentationRevision',
+  ));
+  await page.waitForLoadState('networkidle');
+  await page.waitForFunction(() => {
+    const latest = window.__wave1cM1.evidence.lifecycle.at(-1);
+    return latest?.mode === 'main'
+      && latest.mountedPresentationToken?.localePresentationRevision > 0;
+  });
+  const localized = await latestWave1cM1Lifecycle(page);
+  assert.ok(localized.mountedPresentationToken.localePresentationRevision > 0);
+
+  await page.locator('#projectSwitchControl').click();
+  await page.waitForFunction(() => {
+    const latest = window.__wave1cM1.evidence.lifecycle.at(-1);
+    return document.body.dataset.projectMode === 'selecting'
+      && latest?.mode === 'non-main' && latest.ownerCount === 0;
+  });
+});
+
+test('browser Wave 1C M1 canonical-context changes reject colliding-ID owner reuse across repeated Session switches', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t, { eventCount: 320, secondaryEventCount: 40 });
+  const { page } = await openWave1cM1App(t, index, { locale: 'en' });
+  await page.waitForSelector(`[data-session-id="${fixture.longSessionId}"].active`);
+  const collisionId = await page.locator('#timeline .event[data-event-id]').first().getAttribute('data-event-id');
+  assert.ok(collisionId);
+  await page.route(`**/api/sessions/${fixture.secondarySessionId}/timeline*`, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    if (body.events?.length) body.events[0] = { ...body.events[0], id: collisionId };
+    await route.fulfill({ response, json: body });
+  });
+
+  const initial = await latestWave1cM1Lifecycle(page);
+  const initialOwnerSerial = initial.ownerSerials[0];
+  await page.evaluate(() => {
+    window.__wave1cM1RetiredArticles = [document.querySelector('#timeline .event[data-event-id]')];
+    window.__wave1cM1.reset();
+  });
+  await page.locator(`[data-session-id="${fixture.secondarySessionId}"]`).click();
+  await page.waitForSelector(`[data-session-id="${fixture.secondarySessionId}"].active`);
+  await page.waitForFunction((eventId) => (
+    document.querySelector('#timeline .event[data-event-id]')?.dataset.eventId === eventId
+  ), collisionId);
+  const secondary = await latestWave1cM1Lifecycle(page);
+  assert.equal(secondary.sameCanonicalContext, false);
+  assert.notEqual(secondary.ownerSerials[0], initialOwnerSerial);
+  assert.equal(await page.evaluate(() => window.__wave1cM1RetiredArticles[0].isConnected), false);
+
+  for (const sessionId of [fixture.longSessionId, fixture.secondarySessionId, fixture.longSessionId]) {
+    await page.evaluate(() => {
+      window.__wave1cM1RetiredArticles.push(document.querySelector('#timeline .event[data-event-id]'));
+    });
+    await page.locator(`[data-session-id="${sessionId}"]`).click();
+    await page.waitForSelector(`[data-session-id="${sessionId}"].active`);
+    await page.waitForFunction(() => window.__wave1cM1.evidence.lifecycle.at(-1)?.mode === 'main');
+    const snapshot = await latestWave1cM1Lifecycle(page);
+    assert.equal(snapshot.ownerCount, await page.locator('#timeline .event[data-event-id]').count());
+    assert.ok(snapshot.ownerCount <= 150, 'owner count must describe only the current Session mount');
+  }
+  assert.equal(await page.evaluate(() => window.__wave1cM1RetiredArticles.every((node) => !node.isConnected)), true);
+});
+
+test('browser Wave 1C M1 empty Session rendering and project reset keep the Main owner registry empty', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openWave1cM1App(t, index, {
+    locale: 'en',
+    expectTimeline: false,
+    beforeGoto: async (targetPage) => {
+      await targetPage.route('**/api/sessions/*/timeline*', async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        await route.fulfill({
+          response,
+          json: {
+            ...body,
+            events: [],
+            total: 0,
+            searchMatchCount: 0,
+            searchEventCount: 0,
+          },
+        });
+      });
+    },
+  });
+  await page.waitForFunction(() => window.__wave1cM1.evidence.lifecycle.length > 0);
+  const empty = await latestWave1cM1Lifecycle(page);
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 0);
+  assert.equal(empty.mode, 'non-main');
+  assert.equal(empty.ownerCount, 0);
+
+  await page.locator('#projectSwitchControl').click();
+  await page.waitForFunction(() => (
+    document.body.dataset.projectMode === 'selecting'
+      && window.__wave1cM1.evidence.lifecycle.at(-1)?.ownerCount === 0
+  ));
+});
+
+test('browser Wave 1C M2 manual Main append preserves prefix presentation through one atomic append', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1c-collapsed',
+    name: 'Wave 1C collapsed fixture',
+    description: 'Keep unrelated visible owners from requesting detail during the append identity assertion.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { fixture, index } = await makeTransitionProfileIndex(t, {
+    eventCount: 320,
+    detailHeavyPositions: [100],
+  });
+  const { page } = await openWave1cM2App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+  });
+  await page.waitForSelector(`[data-session-id="${fixture.longSessionId}"].active`);
+  await assertEventCount(page, 150);
+  const detailCard = page.locator('#timeline .event[data-event-id]').nth(100);
+  const detailEventId = await detailCard.getAttribute('data-event-id');
+  const detailResponse = page.waitForResponse((response) => (
+    decodeURIComponent(new URL(response.url()).pathname).endsWith(`/events/${detailEventId}/detail`)
+      && response.ok()
+  ));
+  await detailCard.click();
+  await detailResponse;
+  await page.waitForFunction((eventId) => {
+    const card = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`);
+    return card?.classList.contains('selected')
+      && card.classList.contains('expanded')
+      && card.querySelector('.eventBody')
+      && !card.textContent.includes('Loading structured detail');
+  }, detailEventId);
+
+  await page.evaluate((eventId) => {
+    const cards = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    const selectedArticle = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`);
+    const focusedControl = selectedArticle.querySelector('.eventToggle');
+    focusedControl.focus();
+    const pane = document.querySelector('.timelinePane');
+    pane.scrollTop = Math.max(1, Math.min(5000, pane.scrollHeight - pane.clientHeight));
+    window.__wave1cM2Manual = {
+      prefixCards: cards,
+      prefixById: new Map(cards.map((card) => [card.dataset.eventId, card])),
+      selectedArticle,
+      detailBody: selectedArticle.querySelector('.eventBody'),
+      focusedControl,
+      scrollTop: pane.scrollTop,
+    };
+    window.__wave1cM1.reset();
+  }, detailEventId);
+  const operationId = await beginWave1cM2Operation(page);
+
+  await page.evaluate(() => document.querySelector('#loadMoreBtn').click());
+  await assertEventCount(page, 300);
+  const rows = await wave1cM2OperationRows(page, operationId);
+  const identity = await page.evaluate(() => {
+    const before = window.__wave1cM2Manual;
+    const afterCards = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    const pane = document.querySelector('.timelinePane');
+    return {
+      preserved: before.prefixCards.filter((card) => (
+        card.isConnected && before.prefixById.get(card.dataset.eventId) === card
+          && document.querySelector(`#timeline .event[data-event-id="${CSS.escape(card.dataset.eventId)}"]`) === card
+      )).length,
+      prefixCount: before.prefixCards.length,
+      newCount: afterCards.filter((card) => !before.prefixCards.includes(card)).length,
+      focusPreserved: document.activeElement === before.focusedControl,
+      selectionPreserved: before.selectedArticle.isConnected
+        && before.selectedArticle.classList.contains('selected'),
+      detailPreserved: before.detailBody.isConnected
+        && before.selectedArticle.querySelector('.eventBody') === before.detailBody,
+      scrollTop: pane.scrollTop,
+      beforeScrollTop: before.scrollTop,
+    };
+  });
+  assert.deepEqual(identity, {
+    preserved: 150,
+    prefixCount: 150,
+    newCount: 150,
+    focusPreserved: true,
+    selectionPreserved: true,
+    detailPreserved: true,
+    scrollTop: identity.beforeScrollTop,
+    beforeScrollTop: identity.beforeScrollTop,
+  });
+  assert.ok(identity.beforeScrollTop > 0);
+  assert.equal(rows.filter((row) => row.commitKind === 'appendOnly').length, 1);
+  assert.equal(rows.filter((row) => row.commitKind === 'replacement').length, 0);
+  assert.deepEqual(rows.filter((row) => row.commitKind === 'appendOnly').map((row) => ({
+    pre: row.preCanonicalCount,
+    added: row.addedCanonicalCount,
+    removed: row.removedCanonicalCount,
+    final: row.finalCanonicalCount,
+  })), [{ pre: 150, added: 150, removed: 0, final: 300 }]);
+  const lifecycle = await page.evaluate(() => structuredClone(
+    window.__wave1cM1.evidence.lifecycle.find((item) => (
+      item.operation === 'append' && item.ownerCount === 300
+    )),
+  ));
+  assert.equal(lifecycle.createdOwnerCount, 150);
+});
+
+test('browser Wave 1C M2 append preserves the active prefix context reveal slot and row', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1c-context-collapsed',
+    name: 'Wave 1C context collapsed fixture',
+    description: 'Keep context append presentation stable.',
+    rules: { fallback: 'collapsed', kindStates: { code_mode_operation: 'hidden' }, conditions: [] },
+  };
+  const fixture = await makeContextCodeModeCodexHome(t, { extraMessageCount: 320 });
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const session = await materializeIndexedSession(index, fixture.sessionId);
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
+  const nested = session.logicalEvents.find((event) => event.toolName === 'nested-context-token');
+  assert.ok(operation && nested);
+  const { page } = await openWave1cM2App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+      'sessionAnalyzer.overrides': JSON.stringify({
+        [fixture.sessionId]: { [operation.id]: 'hidden' },
+      }),
+    },
+  });
+  const nestedCard = page.locator(`#timeline .event[data-event-id="${nested.id}"]`);
+  await nestedCard.click();
+  const affordance = nestedCard.locator('[data-action="reveal-context-parent"]');
+  await affordance.waitFor({ state: 'visible' });
+  await page.waitForLoadState('networkidle');
+  await page.waitForFunction((eventId) => {
+    const button = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"] [data-action="reveal-context-parent"]`);
+    return button && !button.disabled;
+  }, nested.id);
+  await affordance.click();
+  await page.waitForSelector('.contextRevealRow');
+  await page.waitForLoadState('networkidle');
+  await page.evaluate((eventId) => {
+    const slot = document.querySelector(`.contextRevealSlot[data-context-source-id="${CSS.escape(eventId)}"]`);
+    window.__wave1cM2Context = {
+      article: document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`),
+      slot,
+      rowChild: slot.firstElementChild,
+    };
+  }, nested.id);
+  const operationId = await beginWave1cM2Operation(page);
+  await page.evaluate(() => document.querySelector('#loadMoreBtn').click());
+  await assertEventCount(page, 300);
+  const rows = await wave1cM2OperationRows(page, operationId);
+  assert.deepEqual(await page.evaluate(() => {
+    const held = window.__wave1cM2Context;
+    return {
+      article: held.article.isConnected
+        && document.querySelector(`#timeline .event[data-event-id="${CSS.escape(held.article.dataset.eventId)}"]`) === held.article,
+      slot: held.slot.isConnected && held.slot.classList.contains('contextRevealRow'),
+      rowChild: held.rowChild.isConnected && held.slot.firstElementChild === held.rowChild,
+      rowCount: document.querySelectorAll('.contextRevealRow').length,
+    };
+  }), { article: true, slot: true, rowChild: true, rowCount: 1 });
+  assert.equal(rows.filter((row) => row.commitKind === 'appendOnly').length, 1);
+  assert.equal(rows.filter((row) => row.commitKind === 'replacement').length, 0);
+});
+
+test('browser Wave 1C M2 suffix search discovery preserves prefix mark, target, binding, and active identity', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1c-search-collapsed',
+    name: 'Wave 1C search collapsed fixture',
+    description: 'Expose stable summary text without detail fallback.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { fixture, index } = await makeTransitionProfileIndex(t, {
+    eventCount: 320,
+    hitPositions: [],
+    commonTermEvery: 1,
+  });
+  const { page } = await openWave1cM2App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+  });
+  await page.evaluate(() => {
+    const targetsApi = window.sessionSearchTargets;
+    const highlighter = window.sessionSearchHighlighter;
+    const originalDiscover = targetsApi.discover.bind(targetsApi);
+    const originalApply = highlighter.apply.bind(highlighter);
+    const evidence = {
+      captureAppend: false,
+      discoverCalls: [],
+      prefixApplyCount: 0,
+      suffixApplyCount: 0,
+      initialTarget: null,
+      initialMark: null,
+      prefixNodes: null,
+      latestTargets: [],
+    };
+    window.__wave1cM2Search = evidence;
+    targetsApi.discover = (targets, searchKey, events, options) => {
+      const existingTarget = evidence.initialTarget;
+      const result = originalDiscover(targets, searchKey, events, options);
+      evidence.latestTargets = result.targets;
+      if (!evidence.initialTarget && result.targets.length) evidence.initialTarget = result.targets[0];
+      if (evidence.captureAppend) {
+        evidence.discoverCalls.push({
+          eventCount: events.length,
+          baseTimelineIndex: Number(options?.baseTimelineIndex || 0),
+          existingTargetPreserved: !existingTarget || result.targets.includes(existingTarget),
+          addedTimelineIndices: result.addedIds.map((id) => (
+            result.targets.find((target) => target.id === id)?.timelineIndex
+          )),
+        });
+      }
+      return result;
+    };
+    highlighter.apply = (root, terms) => {
+      if (evidence.captureAppend) {
+        if (evidence.prefixNodes.has(root)) evidence.prefixApplyCount += 1;
+        else evidence.suffixApplyCount += 1;
+      }
+      return originalApply(root, terms);
+    };
+  });
+  await fillSearch(page, 'common-term');
+  await assertEventCount(page, 150);
+  await waitForSearchMarks(page, 5);
+  await page.waitForFunction(() => window.__wave1cM2Search.initialTarget?.bindings.timeline.some(
+    (node) => node.isConnected,
+  ));
+  await page.evaluate(() => {
+    const evidence = window.__wave1cM2Search;
+    const activeMark = document.querySelector('#timeline mark.searchMark.activeSearchMark');
+    const target = evidence.latestTargets.find((candidate) => candidate.id === activeMark?.dataset.searchTargetId)
+      || evidence.initialTarget;
+    evidence.initialTarget = target;
+    evidence.initialMark = activeMark || target.bindings.timeline.find((node) => node.isConnected);
+    evidence.initialTargetId = target.id;
+    evidence.initialBinding = window.sessionSearchTargets.liveBinding(target, 'timeline');
+    evidence.prefixNodes = new Set(document.querySelectorAll('#timeline .event[data-event-id]'));
+    evidence.captureAppend = true;
+  });
+  const operationId = await beginWave1cM2Operation(page);
+  await page.evaluate(() => document.querySelector('#loadMoreBtn').click());
+  await assertEventCount(page, 300);
+  const rows = await wave1cM2OperationRows(page, operationId);
+  const searchIdentity = await page.evaluate(() => {
+    const evidence = window.__wave1cM2Search;
+    const target = evidence.initialTarget;
+    return {
+      targetObjectPreserved: evidence.discoverCalls.every((call) => call.existingTargetPreserved),
+      bindingPreserved: target.bindings.timeline.includes(evidence.initialBinding)
+        && window.sessionSearchTargets.liveBinding(target, 'timeline') === evidence.initialBinding,
+      markPreserved: evidence.initialMark.isConnected
+        && evidence.initialBinding === evidence.initialMark,
+      activePreserved: evidence.initialMark.classList.contains('activeSearchMark')
+        && evidence.initialMark.dataset.searchTargetId === evidence.initialTargetId,
+      discoverCalls: structuredClone(evidence.discoverCalls),
+      prefixApplyCount: evidence.prefixApplyCount,
+      suffixApplyCount: evidence.suffixApplyCount,
+    };
+  });
+  assert.equal(searchIdentity.targetObjectPreserved, true);
+  assert.equal(searchIdentity.bindingPreserved, true);
+  assert.equal(searchIdentity.markPreserved, true);
+  assert.equal(searchIdentity.activePreserved, true);
+  assert.equal(searchIdentity.prefixApplyCount, 0);
+  assert.equal(searchIdentity.suffixApplyCount, 150);
+  assert.deepEqual(searchIdentity.discoverCalls.map((call) => ({
+    eventCount: call.eventCount,
+    baseTimelineIndex: call.baseTimelineIndex,
+  })), [{ eventCount: 150, baseTimelineIndex: 150 }]);
+  assert.deepEqual(searchIdentity.discoverCalls[0].addedTimelineIndices, Array.from({ length: 150 }, (_, index) => index + 150));
+  assert.equal(rows.filter((row) => row.commitKind === 'appendOnly').length, 1);
+  assert.equal(rows.filter((row) => row.commitKind === 'replacement').length, 0);
+});
+
+test('browser Wave 1C M2 appended visible Code Mode owner starts existing detail hydration', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1c-hydration-collapsed',
+    name: 'Wave 1C hydration collapsed fixture',
+    description: 'Only Code Mode auto-hydration should run.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { fixture, index } = await makeTransitionProfileIndex(t, {
+    eventCount: 320,
+    includeContextReveal: true,
+    contextRevealIndex: 150,
+  });
+  const session = await materializeIndexedSession(index, fixture.longSessionId);
+  const operation = session.logicalEvents.find((event, indexValue) => (
+    indexValue >= 150 && event.kind === 'code_mode_operation'
+  ));
+  assert.ok(operation);
+  const { page } = await openWave1cM2App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+  });
+  const detailStarted = deferred();
+  const detailRelease = deferred();
+  t.after(() => detailRelease.resolve());
+  await page.route('**/api/sessions/*/events/*/detail*', async (route) => {
+    const pathName = decodeURIComponent(new URL(route.request().url()).pathname);
+    if (pathName.endsWith(`/events/${operation.id}/detail`)) {
+      detailStarted.resolve();
+      await detailRelease.promise;
+    }
+    await route.continue();
+  });
+  await page.locator('.timelinePane').evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+  const operationId = await beginWave1cM2Operation(page);
+  await page.evaluate(() => document.querySelector('#loadMoreBtn').click());
+  await detailStarted.promise;
+  await assertEventCount(page, 300);
+  const rows = await wave1cM2OperationRows(page, operationId);
+  assert.equal(rows.filter((row) => row.commitKind === 'appendOnly').length, 1);
+  assert.equal(rows.filter((row) => row.commitKind === 'replacement').length, 0);
+  detailRelease.resolve();
+});
+
+test('browser Wave 1C M2 preparation and post-insertion failures retain honest separate fallback mutations', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1c-fallback-collapsed',
+    name: 'Wave 1C fallback collapsed fixture',
+    description: 'Avoid unrelated detail replacement during fallback assertions.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 500 });
+  const { page } = await openWave1cM2App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+  });
+  await page.evaluate(() => {
+    const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+    let armed = true;
+    Object.defineProperty(Element.prototype, 'innerHTML', {
+      configurable: descriptor.configurable,
+      enumerable: descriptor.enumerable,
+      get: descriptor.get,
+      set(value) {
+        if (armed && this instanceof HTMLTemplateElement) {
+          armed = false;
+          Object.defineProperty(Element.prototype, 'innerHTML', descriptor);
+          throw new Error('synthetic detached preparation failure');
+        }
+        return descriptor.set.call(this, value);
+      },
+    });
+    window.__wave1cM2FailurePrefix = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+  });
+  let operationId = await beginWave1cM2Operation(page);
+  await page.evaluate(() => document.querySelector('#loadMoreBtn').click());
+  await assertEventCount(page, 300);
+  let rows = await wave1cM2OperationRows(page, operationId);
+  assert.equal(rows.filter((row) => row.commitKind === 'appendOnly').length, 0);
+  assert.equal(rows.filter((row) => row.commitKind === 'replacement').length, 1);
+  assert.equal(await page.evaluate(() => window.__wave1cM2FailurePrefix.every((node) => !node.isConnected)), true);
+
+  await page.evaluate(() => {
+    const descriptor = Object.getOwnPropertyDescriptor(Node.prototype, 'isConnected');
+    const prefixNodes = new Set(document.querySelectorAll('#timeline .event[data-event-id]'));
+    let armed = true;
+    Object.defineProperty(Node.prototype, 'isConnected', {
+      configurable: descriptor.configurable,
+      enumerable: descriptor.enumerable,
+      get() {
+        const connected = descriptor.get.call(this);
+        if (armed && connected && this.nodeType === Node.ELEMENT_NODE
+            && this.matches?.('.event[data-event-id]') && !prefixNodes.has(this)) {
+          armed = false;
+          Object.defineProperty(Node.prototype, 'isConnected', descriptor);
+          throw new Error('synthetic post-insertion registration failure');
+        }
+        return connected;
+      },
+    });
+    window.__wave1cM2PostInsertionPrefix = [...prefixNodes];
+  });
+  operationId = await beginWave1cM2Operation(page);
+  await page.evaluate(() => document.querySelector('#loadMoreBtn').click());
+  await assertEventCount(page, 450);
+  rows = await wave1cM2OperationRows(page, operationId);
+  assert.equal(rows.filter((row) => row.commitKind === 'appendOnly').length, 1);
+  assert.equal(rows.filter((row) => row.commitKind === 'replacement').length, 1);
+  assert.ok(rows.findIndex((row) => row.commitKind === 'appendOnly')
+    < rows.findIndex((row) => row.commitKind === 'replacement'));
+  assert.equal(await page.evaluate(() => window.__wave1cM2PostInsertionPrefix.every((node) => !node.isConnected)), true);
+  const latest = await latestWave1cM1Lifecycle(page);
+  assert.equal(latest.ownerCount, 450);
+  assert.equal(latest.ownerSerials.length, 450);
+});
+
+test('browser Wave 1C M2 temporary reveal makes Main append fall back without incremental publication', async (t) => {
+  const fixture = await makeContextCodeModeCodexHome(t, { extraMessageCount: 320 });
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const session = await materializeIndexedSession(index, fixture.sessionId);
+  const operation = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
+  const nested = session.logicalEvents.find((event) => event.toolName === 'nested-context-token');
+  assert.ok(operation && nested);
+  const temporaryEventId = 'wave-1c-temporary-append-event';
+  const { page } = await openWave1cM2App(t, index, {
+    locale: 'en',
+    beforeGoto: async (targetPage) => {
+      await targetPage.route('**/api/sessions/*/events/**', async (route) => {
+        const requestUrl = new URL(route.request().url());
+        const decodedPath = decodeURIComponent(requestUrl.pathname);
+        if (decodedPath.endsWith(`/events/${operation.id}/detail`)) {
+          const response = await route.fetch();
+          const body = await response.json();
+          const refs = [...(body.timelineSections || []), ...(body.inspectorSections || [])]
+            .find((section) => section.type === 'event_refs');
+          assert.ok(refs?.items?.length);
+          refs.items[0] = { ...refs.items[0], id: temporaryEventId, label: 'Temporary append reference' };
+          await route.fulfill({ response, json: body });
+          return;
+        }
+        if (decodedPath.endsWith(`/events/${temporaryEventId}`)) {
+          const actualUrl = new URL(requestUrl);
+          actualUrl.pathname = requestUrl.pathname.replace(
+            encodeURIComponent(temporaryEventId),
+            encodeURIComponent(nested.id),
+          );
+          const response = await route.fetch({ url: actualUrl.href });
+          const body = await response.json();
+          await route.fulfill({ response, json: { ...body, id: temporaryEventId } });
+          return;
+        }
+        await route.continue();
+      });
+    },
+  });
+  await page.locator(`#timeline .event[data-event-id="${operation.id}"]`).click();
+  const ref = page.locator(`#detail [data-event-ref-id="${temporaryEventId}"]`);
+  await ref.waitFor();
+  await ref.click();
+  await page.waitForSelector(`#timeline .event[data-event-id="${temporaryEventId}"].temporaryReferenceReveal`);
+  await page.evaluate(() => {
+    window.__wave1cM2TemporaryPrefix = [...document.querySelectorAll(
+      '#timeline .event[data-event-id]:not(.temporaryReferenceReveal)',
+    )];
+  });
+  const operationId = await beginWave1cM2Operation(page);
+  await page.evaluate(() => document.querySelector('#loadMoreBtn').click());
+  await page.waitForFunction(() => document.querySelectorAll(
+    '#timeline .event[data-event-id]:not(.temporaryReferenceReveal)',
+  ).length === 300);
+  const rows = await wave1cM2OperationRows(page, operationId);
+  assert.equal(rows.filter((row) => row.commitKind === 'appendOnly').length, 0);
+  assert.equal(rows.filter((row) => row.commitKind === 'replacement').length, 1);
+  assert.equal(await page.evaluate(() => window.__wave1cM2TemporaryPrefix.every((node) => !node.isConnected)), true);
+  assert.equal(await page.locator(`#timeline .event[data-event-id="${temporaryEventId}"].temporaryReferenceReveal`).count(), 1);
+  const latest = await latestWave1cM1Lifecycle(page);
+  assert.equal(latest.ownerCount, 300);
+});
+
+test('browser Wave 1C M2 replacements, Session switch, Protocol, and Raw remain full-render controls', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1c-controls-collapsed',
+    name: 'Wave 1C controls collapsed fixture',
+    description: 'Avoid detail fallback during replacement controls.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { fixture, index } = await makeTransitionProfileIndex(t, { eventCount: 320 });
+  const { page } = await openWave1cM2App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+  });
+
+  let oldArticle = await page.locator('#timeline .event[data-event-id]').first().elementHandle();
+  let operationId = await beginWave1cM2Operation(page);
+  const queryResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline') && url.searchParams.get('q') === 'common-term'
+      && url.searchParams.get('offset') === '0';
+  });
+  await fillSearch(page, 'common-term');
+  await queryResponse;
+  let rows = await wave1cM2OperationRows(page, operationId);
+  assert.ok(rows.some((row) => row.commitKind === 'replacement'));
+  assert.equal(rows.some((row) => row.commitKind === 'appendOnly'), false);
+  assert.equal(await oldArticle.evaluate((node) => node.isConnected), false);
+
+  operationId = await beginWave1cM2Operation(page);
+  const filterResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline') && url.searchParams.get('kind') === 'user_message'
+      && url.searchParams.get('offset') === '0';
+  });
+  await addSearchFilter(page, 'kind', 'user_message');
+  await filterResponse;
+  rows = await wave1cM2OperationRows(page, operationId);
+  assert.ok(rows.some((row) => ['replacement', 'clear', 'initialMount'].includes(row.commitKind)));
+  assert.equal(rows.some((row) => row.commitKind === 'appendOnly'), false);
+
+  await clearAllSearch(page);
+  await assertEventCount(page, 150);
+  oldArticle = await page.locator('#timeline .event[data-event-id]').first().elementHandle();
+  operationId = await beginWave1cM2Operation(page);
+  await page.locator(`[data-session-id="${fixture.secondarySessionId}"]`).click();
+  await page.waitForSelector(`[data-session-id="${fixture.secondarySessionId}"].active`);
+  await assertEventCount(page, 40);
+  rows = await wave1cM2OperationRows(page, operationId);
+  assert.equal(rows.some((row) => row.commitKind === 'appendOnly'), false);
+  assert.equal(await oldArticle.evaluate((node) => node.isConnected), false);
+  assert.equal((await latestWave1cM1Lifecycle(page)).sameCanonicalContext, false);
+
+  await page.locator(`[data-session-id="${fixture.longSessionId}"]`).click();
+  await page.waitForSelector(`[data-session-id="${fixture.longSessionId}"].active`);
+  await page.locator('#layerSelect').selectOption('raw');
+  await page.waitForFunction(() => document.querySelector('#layerSelect')?.value === 'raw'
+    && document.querySelectorAll('#timeline .event[data-event-id]').length === 150
+    && window.__wave1cM1.evidence.lifecycle.at(-1)?.mode === 'non-main'
+    && window.__wave1cM1.evidence.lifecycle.at(-1)?.ownerCount === 0);
+  assert.equal((await latestWave1cM1Lifecycle(page)).ownerCount, 0);
+  operationId = await beginWave1cM2Operation(page);
+  await page.evaluate(() => document.querySelector('#loadMoreBtn').click());
+  await page.waitForFunction(() => document.querySelectorAll('#timeline .event[data-event-id]').length > 150);
+  rows = await wave1cM2OperationRows(page, operationId);
+  assert.equal(rows.some((row) => row.commitKind === 'appendOnly'), false);
+  assert.ok(rows.some((row) => ['replacement', 'clear', 'initialMount'].includes(row.commitKind)));
+  assert.equal((await latestWave1cM1Lifecycle(page)).ownerCount, 0);
+
+  await page.locator('#layerSelect').selectOption('protocol');
+  await page.waitForFunction(() => document.querySelector('#layerSelect')?.value === 'protocol'
+    && window.__wave1cM1.evidence.lifecycle.at(-1)?.mode === 'non-main'
+    && window.__wave1cM1.evidence.lifecycle.at(-1)?.ownerCount === 0);
+  assert.equal((await latestWave1cM1Lifecycle(page)).ownerCount, 0);
+});
+
+test('browser Wave 1C M2 late-hit batch publication preserves 600 prefix cards and appends 1200', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1c-late-hit-collapsed',
+    name: 'Wave 1C late-hit collapsed fixture',
+    description: 'Keep publication identity observable before target detail refinement.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, {
+    eventCount: 1800,
+    hitPositions: [1700],
+    commonTermEvery: 1,
+  });
+  const { page } = await openWave1cM2App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+  });
+  await fillSearch(page, 'far-needle');
+  await assertEventCount(page, 600);
+  await page.evaluate(() => {
+    const cards = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    window.__wave1cM2LatePrefix = cards;
+    window.__wave1cM2LatePrefixById = new Map(cards.map((card) => [card.dataset.eventId, card]));
+  });
+  const operationId = await beginWave1cM2Operation(page);
+  await page.locator('#searchInput').press('Enter');
+  await assertEventCount(page, 1800);
+  const rows = await wave1cM2OperationRows(page, operationId);
+  const identity = await page.evaluate(() => ({
+    preserved: window.__wave1cM2LatePrefix.filter((card) => (
+      card.isConnected
+        && window.__wave1cM2LatePrefixById.get(card.dataset.eventId) === card
+        && document.querySelector(`#timeline .event[data-event-id="${CSS.escape(card.dataset.eventId)}"]`) === card
+    )).length,
+    newCount: [...document.querySelectorAll('#timeline .event[data-event-id]')]
+      .filter((card) => !window.__wave1cM2LatePrefix.includes(card)).length,
+  }));
+  assert.deepEqual(identity, { preserved: 600, newCount: 1200 });
+  assert.deepEqual(rows.filter((row) => row.commitKind === 'appendOnly').map((row) => ({
+    pre: row.preCanonicalCount,
+    added: row.addedCanonicalCount,
+    final: row.finalCanonicalCount,
+  })), [{ pre: 600, added: 1200, final: 1800 }]);
+  assert.equal(rows.some((row) => row.commitKind === 'replacement'), false);
+});
+
+test('browser Wave 1C M1 observer failures cannot interrupt revision, detail, render, parity, or highlight effects', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    skipProjectReindex: true,
+    beforeGoto: async (targetPage) => {
+      await installWave1bM2SourceBundle(targetPage);
+      await installWave1cM1FailingObserver(targetPage);
+    },
+  });
+  await selectPrimarySession(page);
+
+  const initialLifecycleCount = await page.evaluate(() => (
+    window.__wave1cM1FailingObserver.lifecycle.length
+  ));
+  assert.ok(initialLifecycleCount > 0);
+  const command = page.locator('#timeline .event.kind-command:not(.expanded)').first();
+  const eventId = await command.getAttribute('data-event-id');
+  assert.ok(eventId);
+  const detailResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith(`/events/${encodeURIComponent(eventId)}/detail`)
+      && response.ok();
+  });
+  await command.locator('[data-action="toggle"]').click();
+  await detailResponse;
+  await page.waitForFunction((id) => {
+    const article = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(id)}"]`);
+    return article?.classList.contains('expanded')
+      && article.querySelector('.eventBody')
+      && !article.textContent.includes('Loading structured detail');
+  }, eventId);
+
+  const observerOutcome = await page.evaluate(() => {
+    const evidence = window.__wave1cM1FailingObserver;
+    const latest = evidence.lifecycle.at(-1);
+    const cards = document.querySelectorAll('#timeline .event[data-event-id]').length;
+    return {
+      lifecycleAttempts: evidence.lifecycle.length,
+      revisionKinds: evidence.revisions.map((item) => item.revisionKind),
+      ownerCount: latest.ownerCount,
+      ownerSerialCount: latest.ownerSerials.length,
+      cards,
+      stateError: document.querySelector('#stateLine')?.dataset.state === 'error',
+      observerTextVisible: document.body.textContent.includes('synthetic record'),
+    };
+  });
+  assert.ok(observerOutcome.lifecycleAttempts > initialLifecycleCount);
+  assert.ok(observerOutcome.revisionKinds.includes('overridesRevision'));
+  assert.ok(observerOutcome.revisionKinds.includes('detailPresentationRevision'));
+  assert.equal(observerOutcome.ownerCount, observerOutcome.cards);
+  assert.equal(observerOutcome.ownerSerialCount, observerOutcome.cards);
+  assert.equal(observerOutcome.stateError, false);
+  assert.equal(observerOutcome.observerTextVisible, false);
+
+  await fillSearch(page, 'src');
+  await waitForSearchMarks(page);
+  assert.ok(await page.locator('#timeline mark.searchMark').count() > 0,
+    'post-render search/highlight synchronization must continue after lifecycle observation throws');
+  assert.equal(await page.locator('#stateLine[data-state="error"]').count(), 0);
+});
+
+test('browser Wave 1D-A M1 ordinary detail settles once with a body-only Timeline patch and scoped Inspector search', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1d-a-collapsed',
+    name: 'Wave 1D-A collapsed fixture',
+    description: 'Start ordinary detail only from explicit user intent.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, {
+    eventCount: 320,
+    hitPositions: [],
+    commonTermEvery: 1,
+  });
+  const detailGate = deferred();
+  const detailStarted = deferred();
+  let detailRequestCount = 0;
+  const { page } = await openWave1dAM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+    beforeGoto: async (targetPage) => {
+      await targetPage.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+        detailRequestCount += 1;
+        detailStarted.resolve();
+        await detailGate.promise;
+        await route.continue();
+      });
+    },
+  });
+  await installWave1dAM1SearchTracking(page);
+  await fillSearch(page, 'common-term');
+  await waitForSearchMarks(page, 5);
+  const eventId = await page.evaluate(() => (
+    document.querySelector('#timeline mark.searchMark.activeSearchMark')
+      ?.closest('.event[data-event-id]')?.dataset.eventId || ''
+  ));
+  assert.ok(eventId);
+  await page.evaluate(() => window.__wave1dAM1.reset());
+  await page.locator(`#timeline .event[data-event-id="${eventId}"] .eventKind`).click();
+  await detailStarted.promise;
+  await page.waitForSelector(`#timeline .event[data-event-id="${eventId}"].expanded .eventBody`);
+  await waitForDetailView(page, 'inspector');
+  await page.evaluate((ownerId) => {
+    const article = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"]`);
+    const activeMark = article.querySelector('mark.searchMark.activeSearchMark')
+      || article.querySelector('mark.searchMark');
+    const target = window.__wave1dAM1Search.evidence.latestTargets.find(
+      (candidate) => candidate.id === activeMark?.dataset.searchTargetId,
+    );
+    const unrelatedMark = [...document.querySelectorAll('#timeline mark.searchMark')]
+      .find((mark) => !article.contains(mark));
+    const unrelatedTarget = window.__wave1dAM1Search.evidence.latestTargets.find(
+      (candidate) => candidate.id === unrelatedMark?.dataset.searchTargetId,
+    );
+    window.__wave1dAM1Identity = {
+      article,
+      contextSlot: article.previousElementSibling?.classList.contains('contextRevealSlot')
+        ? article.previousElementSibling
+        : null,
+      header: article.querySelector(':scope > .eventHeader'),
+      toggle: article.querySelector(':scope > .eventHeader > .eventToggle'),
+      previews: [...article.querySelectorAll(':scope > .eventPreview')],
+      affordance: article.querySelector(':scope > .enclosingOperationAffordance'),
+      footer: article.querySelector(':scope > .eventFooterActions'),
+      footerControls: [...article.querySelectorAll(':scope > .eventFooterActions button')],
+      className: article.className,
+      selected: article.classList.contains('selected'),
+      unrelatedArticle: [...document.querySelectorAll('#timeline .event[data-event-id]')]
+        .find((candidate) => candidate !== article),
+      activeMark,
+      activeTargetId: target?.id || '',
+      target,
+      unrelatedMark,
+      unrelatedTarget,
+      unrelatedTimelineBindings: unrelatedTarget?.bindings.timeline,
+      unrelatedInspectorBindings: unrelatedTarget?.bindings.inspector,
+      targetOrder: window.__wave1dAM1Search.evidence.latestTargets.map((candidate) => candidate.id),
+    };
+    window.__wave1dAM1Search.resetOperations();
+  }, eventId);
+  const settlementOperationId = await beginWave1cM2Operation(page);
+  detailGate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement,
+  ));
+  await page.waitForFunction((ownerId) => {
+    const body = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"] > .eventBody`);
+    return body && !body.textContent.includes('Loading structured detail');
+  }, eventId);
+  await page.waitForFunction(() => (
+    document.querySelector('#detail .inspector')
+      && !document.querySelector('#detail').textContent.includes('Loading structured detail')
+  ));
+  await endWave1cM2Operation(page);
+
+  assert.equal(detailRequestCount, 1);
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const createdRows = causal.detailRequests.filter((row) => row.requestCreated);
+  const reusedRows = causal.detailRequests.filter((row) => row.requestReused);
+  assert.equal(createdRows.length, 1);
+  assert.ok(reusedRows.length >= 1);
+  assert.ok(reusedRows.every((row) => row.requestSerial === createdRows[0].requestSerial));
+  assert.equal(causal.detailRequestTransactionAssociations, 1);
+  assert.equal(causal.detailRequests.filter((row) => row.phase === 'acceptedMutation').length, 1);
+  const settlements = causal.detailRequests.filter((row) => row.presentationSettlement);
+  assert.equal(settlements.length, 1);
+  assert.equal(settlements[0].acceptedMutation, 'success');
+  assert.equal(settlements[0].settlementOutcome, 'bodyPatch');
+  assert.equal(settlements[0].presentationFailed, false);
+  assert.equal(settlements[0].acceptedStateReclassified, false);
+  assert.equal(causal.revisions.filter((row) => row.revisionKind === 'detailPresentationRevision').length, 1);
+  assert.equal(causal.detailBodies.length, 1);
+  assert.equal(Object.hasOwn(causal.detailBodies[0], 'timelineRootReplacementCount'), false,
+    'direct Timeline-root causality belongs to the focused MutationRecord ledger');
+  assert.deepEqual({
+    eventClassification: causal.detailBodies[0].eventClassification,
+    expanded: causal.detailBodies[0].expanded,
+    bodyPresent: causal.detailBodies[0].bodyPresent,
+    articleIdentityPreserved: causal.detailBodies[0].articleIdentityPreserved,
+    contextSlotIdentityPreserved: causal.detailBodies[0].contextSlotIdentityPreserved,
+    headerIdentityPreserved: causal.detailBodies[0].headerIdentityPreserved,
+    toggleIdentityPreserved: causal.detailBodies[0].toggleIdentityPreserved,
+    previewIdentityPreserved: causal.detailBodies[0].previewIdentityPreserved,
+    footerIdentityPreserved: causal.detailBodies[0].footerIdentityPreserved,
+  }, {
+    eventClassification: 'ordinary',
+    expanded: true,
+    bodyPresent: true,
+    articleIdentityPreserved: true,
+    contextSlotIdentityPreserved: true,
+    headerIdentityPreserved: true,
+    toggleIdentityPreserved: true,
+    previewIdentityPreserved: true,
+    footerIdentityPreserved: true,
+  });
+  const settlementRows = await wave1cM2OperationRows(page, settlementOperationId);
+  assert.equal(settlementRows.length, 0, 'body settlement must not mutate direct Timeline children');
+
+  const identity = await page.evaluate(() => {
+    const before = window.__wave1dAM1Identity;
+    const article = before.article;
+    const active = document.querySelector('#timeline mark.searchMark.activeSearchMark');
+    return {
+      article: article.isConnected
+        && article === document.querySelector(`#timeline .event[data-event-id="${CSS.escape(article.dataset.eventId)}"]`),
+      contextSlot: before.contextSlot === null || before.contextSlot.isConnected,
+      header: before.header === article.querySelector(':scope > .eventHeader'),
+      toggle: before.toggle === article.querySelector(':scope > .eventHeader > .eventToggle'),
+      previews: before.previews.length === article.querySelectorAll(':scope > .eventPreview').length
+        && before.previews.every((node, index) => node === article.querySelectorAll(':scope > .eventPreview')[index]),
+      affordance: before.affordance === article.querySelector(':scope > .enclosingOperationAffordance'),
+      footer: before.footer === article.querySelector(':scope > .eventFooterActions'),
+      footerControls: before.footerControls.every((node, index) => (
+        node === article.querySelectorAll(':scope > .eventFooterActions button')[index]
+      )),
+      className: before.className === article.className,
+      selected: before.selected === article.classList.contains('selected'),
+      unrelatedArticle: before.unrelatedArticle.isConnected,
+      unrelatedMark: before.unrelatedMark.isConnected,
+      activeMarkRecreated: !before.activeMark.isConnected,
+      activeTargetRestored: active?.dataset.searchTargetId === before.activeTargetId,
+      targetObject: window.__wave1dAM1Search.evidence.latestTargets.includes(before.target),
+      targetOrder: JSON.stringify(window.__wave1dAM1Search.evidence.latestTargets.map((candidate) => candidate.id))
+        === JSON.stringify(before.targetOrder),
+      unrelatedTarget: window.__wave1dAM1Search.evidence.latestTargets.includes(before.unrelatedTarget),
+      unrelatedTimelineBindings: before.unrelatedTarget.bindings.timeline === before.unrelatedTimelineBindings,
+      unrelatedInspectorBindings: before.unrelatedTarget.bindings.inspector === before.unrelatedInspectorBindings,
+      activeTargetId: document.querySelector('#searchMetricsPanel').dataset.searchActiveTargetId,
+      expectedActiveTargetId: before.activeTargetId,
+      searchOps: {
+        resetBindingsCount: window.__wave1dAM1Search.evidence.resetBindingsCount,
+        resetSurfaceRows: structuredClone(window.__wave1dAM1Search.evidence.resetSurfaceRows),
+        clearRoots: [...window.__wave1dAM1Search.evidence.clearRoots],
+        applyRoots: [...window.__wave1dAM1Search.evidence.applyRoots],
+      },
+    };
+  });
+  assert.deepEqual({
+    article: identity.article,
+    contextSlot: identity.contextSlot,
+    header: identity.header,
+    toggle: identity.toggle,
+    previews: identity.previews,
+    affordance: identity.affordance,
+    footer: identity.footer,
+    footerControls: identity.footerControls,
+    className: identity.className,
+    selected: identity.selected,
+    unrelatedArticle: identity.unrelatedArticle,
+    unrelatedMark: identity.unrelatedMark,
+    activeMarkRecreated: identity.activeMarkRecreated,
+    activeTargetRestored: identity.activeTargetRestored,
+    targetObject: identity.targetObject,
+    targetOrder: identity.targetOrder,
+    unrelatedTarget: identity.unrelatedTarget,
+    unrelatedTimelineBindings: identity.unrelatedTimelineBindings,
+    unrelatedInspectorBindings: identity.unrelatedInspectorBindings,
+  }, {
+    article: true,
+    contextSlot: true,
+    header: true,
+    toggle: true,
+    previews: true,
+    affordance: true,
+    footer: true,
+    footerControls: true,
+    className: true,
+    selected: true,
+    unrelatedArticle: true,
+    unrelatedMark: true,
+    activeMarkRecreated: true,
+    activeTargetRestored: true,
+    targetObject: true,
+    targetOrder: true,
+    unrelatedTarget: true,
+    unrelatedTimelineBindings: true,
+    unrelatedInspectorBindings: true,
+  });
+  assert.equal(identity.activeTargetId, identity.expectedActiveTargetId);
+  assert.equal(identity.searchOps.resetBindingsCount, 0);
+  assert.deepEqual(identity.searchOps.resetSurfaceRows.map((row) => row.surface).sort(), ['inspector', 'timeline']);
+  assert.ok(identity.searchOps.resetSurfaceRows.every((row) => row.targetKnown));
+  assert.deepEqual(identity.searchOps.clearRoots.sort(), ['inspectorOwner', 'timelineOwner']);
+  assert.deepEqual(identity.searchOps.applyRoots.sort(), ['inspectorOwner', 'timelineOwner']);
+
+  await page.evaluate(() => {
+    window.__wave1dAM1Identity.prefixArticle = window.__wave1dAM1Identity.article;
+  });
+  const appendOperationId = await beginWave1cM2Operation(page);
+  await page.locator('#loadMoreBtn').click();
+  await assertEventCount(page, 300);
+  await endWave1cM2Operation(page);
+  const appendRows = await wave1cM2OperationRows(page, appendOperationId);
+  assert.equal(appendRows.filter((row) => row.commitKind === 'appendOnly').length, 1);
+  assert.equal(appendRows.filter((row) => row.commitKind === 'replacement').length, 0);
+  assert.equal(await page.evaluate(() => window.__wave1dAM1Identity.prefixArticle.isConnected), true);
+});
+
+test('browser Wave 1D-A M1 preserves the non-zero mounted Timeline scroller across a material body patch', async (t) => {
+  const { page, eventId, gate, requests } = await openWave1dAM1ControlledOrdinaryDetail(t, {
+    tallDetail: true,
+  });
+  await page.evaluate((ownerId) => {
+    const timeline = document.querySelector('#timeline');
+    const scroller = timeline.closest('.timelinePane');
+    const article = timeline.querySelector(`.event[data-event-id="${CSS.escape(ownerId)}"]`);
+    const body = article.querySelector(':scope > .eventBody');
+    const maxScrollTop = scroller.scrollHeight - scroller.clientHeight;
+    scroller.scrollTop = Math.min(400, maxScrollTop);
+    if (scroller.scrollTop <= 0) throw new Error('expected a non-zero Timeline scroll position');
+
+    const originalClear = window.sessionSearchHighlighter.clear.bind(
+      window.sessionSearchHighlighter,
+    );
+    const capturedScrollTop = scroller.scrollTop;
+    const identity = {
+      timeline,
+      scroller,
+      capturedScrollTop,
+      article,
+      contextSlot: article.previousElementSibling?.classList.contains('contextRevealSlot')
+        ? article.previousElementSibling
+        : null,
+      header: article.querySelector(':scope > .eventHeader'),
+      toggle: article.querySelector(':scope > .eventHeader > .eventToggle'),
+      previews: [...article.querySelectorAll(':scope > .eventPreview')],
+      footer: article.querySelector(':scope > .eventFooterActions'),
+      beforeBodyHeight: body.getBoundingClientRect().height,
+      scrollPerturbed: false,
+    };
+    window.sessionSearchHighlighter.clear = (root, ...args) => {
+      const result = originalClear(root, ...args);
+      if (!identity.scrollPerturbed && root === article) {
+        const nextScrollTop = Math.min(
+          scroller.scrollHeight - scroller.clientHeight,
+          capturedScrollTop + 137,
+        );
+        scroller.scrollTop = nextScrollTop === capturedScrollTop
+          ? Math.max(0, capturedScrollTop - 137)
+          : nextScrollTop;
+        identity.scrollPerturbed = scroller.scrollTop !== capturedScrollTop;
+      }
+      return result;
+    };
+    window.__wave1dAM1ScrollIdentity = identity;
+  }, eventId);
+  const operationId = await beginWave1cM2Operation(page);
+  gate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement && row.settlementOutcome === 'bodyPatch',
+  ));
+  await page.waitForFunction((ownerId) => {
+    const body = document.querySelector(
+      `#timeline .event[data-event-id="${CSS.escape(ownerId)}"] > .eventBody`,
+    );
+    return body && !body.textContent.includes('Loading structured detail');
+  }, eventId);
+  await endWave1cM2Operation(page);
+
+  assert.equal(requests.count, 1);
+  assert.equal((await wave1cM2OperationRows(page, operationId)).length, 0);
+  assert.deepEqual(await page.evaluate(() => {
+    const before = window.__wave1dAM1ScrollIdentity;
+    const article = before.article;
+    const currentScroller = before.timeline.closest('.timelinePane');
+    const currentPreviews = [...article.querySelectorAll(':scope > .eventPreview')];
+    const nextBody = article.querySelector(':scope > .eventBody');
+    return {
+      scrollWasExplicitlyPerturbed: before.scrollPerturbed,
+      scrollerIdentity: before.scroller === currentScroller && before.scroller.isConnected,
+      scrollTop: currentScroller.scrollTop,
+      expectedScrollTop: before.capturedScrollTop,
+      bodyHeightChangedMaterially: nextBody.getBoundingClientRect().height
+        > before.beforeBodyHeight + 1000,
+      articleIdentity: article.isConnected
+        && article === document.querySelector(
+          `#timeline .event[data-event-id="${CSS.escape(article.dataset.eventId)}"]`,
+        ),
+      contextSlotIdentity: before.contextSlot === null || before.contextSlot.isConnected,
+      headerIdentity: before.header === article.querySelector(':scope > .eventHeader'),
+      toggleIdentity: before.toggle === article.querySelector(':scope > .eventHeader > .eventToggle'),
+      previewIdentity: before.previews.length === currentPreviews.length
+        && before.previews.every((node, index) => node === currentPreviews[index]),
+      footerIdentity: before.footer === article.querySelector(':scope > .eventFooterActions'),
+    };
+  }), {
+    scrollWasExplicitlyPerturbed: true,
+    scrollerIdentity: true,
+    scrollTop: await page.evaluate(() => window.__wave1dAM1ScrollIdentity.capturedScrollTop),
+    expectedScrollTop: await page.evaluate(() => window.__wave1dAM1ScrollIdentity.capturedScrollTop),
+    bodyHeightChangedMaterially: true,
+    articleIdentity: true,
+    contextSlotIdentity: true,
+    headerIdentity: true,
+    toggleIdentity: true,
+    previewIdentity: true,
+    footerIdentity: true,
+  });
+});
+
+test('browser Wave 1D-A M1 no-observer body patch shares one request without a Promise evidence pointer', async (t) => {
+  const { page, eventId, gate, requests } = await openWave1dAM1ControlledOrdinaryDetail(t, {
+    observerAbsentBeforeRequest: true,
+  });
+  await page.evaluate((ownerId) => {
+    const originalMapGet = Map.prototype.get;
+    const probe = {
+      ownerId,
+      armed: false,
+      adoptionCount: 0,
+      fallbackOnlyCanonicalGetCount: 0,
+      restore() { Map.prototype.get = originalMapGet; },
+    };
+    Map.prototype.get = function get(key) {
+      if (probe.armed && key === probe.ownerId) probe.fallbackOnlyCanonicalGetCount += 1;
+      return originalMapGet.call(this, key);
+    };
+    window.__wave1dAM1NoObserverBody = probe;
+    window.__sessionAnalyzerTimelineLifecycleObserver = {
+      recordLifecycle(value) {
+        if (value.operation !== 'adopt') return;
+        probe.adoptionCount += 1;
+        probe.armed = true;
+        queueMicrotask(() => { probe.armed = false; });
+      },
+    };
+  }, eventId);
+  await page.locator(
+    `#timeline .event[data-event-id="${eventId}"] > .eventHeader > .eventKind`,
+  ).click();
+  await waitForDetailView(page, 'inspector');
+  const operationId = await beginWave1cM2Operation(page);
+  gate.resolve();
+  await page.waitForFunction((ownerId) => {
+    const body = document.querySelector(
+      `#timeline .event[data-event-id="${CSS.escape(ownerId)}"] > .eventBody`,
+    );
+    return window.__wave1dAM1NoObserverBody.adoptionCount === 1
+      && body
+      && !body.textContent.includes('Loading structured detail');
+  }, eventId);
+  await page.waitForFunction(() => (
+    document.querySelector('#detail .inspector')
+      && !document.querySelector('#detail').textContent.includes('Loading structured detail')
+  ));
+  await page.evaluate(() => new Promise((resolve) => queueMicrotask(resolve)));
+  await endWave1cM2Operation(page);
+
+  assert.equal(requests.count, 1);
+  assert.equal((await wave1cM2OperationRows(page, operationId)).length, 0);
+  assert.deepEqual(await page.evaluate(() => {
+    const probe = window.__wave1dAM1NoObserverBody;
+    probe.restore();
+    return {
+      adoptionCount: probe.adoptionCount,
+      fallbackOnlyCanonicalGetCount: probe.fallbackOnlyCanonicalGetCount,
+      detailRequestRecords: window.__wave1dAM1.evidence.detailRequests.length,
+      detailBodyRecords: window.__wave1dAM1.evidence.detailBodies.length,
+      revisionRecords: window.__wave1dAM1.evidence.revisions.length,
+      detailRequestTransactionAssociations:
+        window.__wave1dAM1.evidence.detailRequestTransactionAssociations,
+    };
+  }), {
+    adoptionCount: 1,
+    fallbackOnlyCanonicalGetCount: 0,
+    detailRequestRecords: 0,
+    detailBodyRecords: 0,
+    revisionRecords: 0,
+    detailRequestTransactionAssociations: 0,
+  });
+});
+
+test('browser Wave 1D-A M1 no-observer full fallback performs no fallback-only DOM probe', async (t) => {
+  const { page, eventId, gate, requests } = await openWave1dAM1ControlledOrdinaryDetail(t);
+  await page.evaluate((ownerId) => {
+    document.querySelector(
+      `#timeline .event[data-event-id="${CSS.escape(ownerId)}"] > .eventBody`,
+    )?.remove();
+    const innerHtmlDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+    const childrenDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'children');
+    const probe = {
+      ownerId,
+      armed: false,
+      timelineReplacementSetCount: 0,
+      fallbackOnlyArticleChildrenReadCount: 0,
+      restore() {
+        Object.defineProperty(Element.prototype, 'innerHTML', innerHtmlDescriptor);
+        Object.defineProperty(Element.prototype, 'children', childrenDescriptor);
+      },
+    };
+    Object.defineProperty(Element.prototype, 'innerHTML', {
+      ...innerHtmlDescriptor,
+      get() { return innerHtmlDescriptor.get.call(this); },
+      set(value) {
+        const result = innerHtmlDescriptor.set.call(this, value);
+        if (this.id === 'timeline') {
+          probe.timelineReplacementSetCount += 1;
+          probe.armed = true;
+          queueMicrotask(() => { probe.armed = false; });
+        }
+        return result;
+      },
+    });
+    Object.defineProperty(Element.prototype, 'children', {
+      ...childrenDescriptor,
+      get() {
+        if (probe.armed && this.dataset?.eventId === probe.ownerId) {
+          probe.fallbackOnlyArticleChildrenReadCount += 1;
+        }
+        return childrenDescriptor.get.call(this);
+      },
+    });
+    window.__wave1dAM1NoObserverFallback = probe;
+    window.__wave1dAM1.reset();
+    window.__sessionAnalyzerTimelineLifecycleObserver = {};
+  }, eventId);
+  const operationId = await beginWave1cM2Operation(page);
+  gate.resolve();
+  await page.waitForFunction((ownerId) => {
+    const body = document.querySelector(
+      `#timeline .event[data-event-id="${CSS.escape(ownerId)}"] > .eventBody`,
+    );
+    return window.__wave1dAM1NoObserverFallback.timelineReplacementSetCount === 1
+      && body
+      && !body.textContent.includes('Loading structured detail');
+  }, eventId);
+  await page.evaluate(() => new Promise((resolve) => queueMicrotask(resolve)));
+  await endWave1cM2Operation(page);
+
+  assert.equal(requests.count, 1);
+  assert.equal((await wave1cM2OperationRows(page, operationId))
+    .filter((row) => row.commitKind === 'replacement').length, 1);
+  assert.deepEqual(await page.evaluate(() => {
+    const probe = window.__wave1dAM1NoObserverFallback;
+    probe.restore();
+    return {
+      timelineReplacementSetCount: probe.timelineReplacementSetCount,
+      fallbackOnlyArticleChildrenReadCount: probe.fallbackOnlyArticleChildrenReadCount,
+      detailRequestRecords: window.__wave1dAM1.evidence.detailRequests.length,
+      detailBodyRecords: window.__wave1dAM1.evidence.detailBodies.length,
+      revisionRecords: window.__wave1dAM1.evidence.revisions.length,
+    };
+  }), {
+    timelineReplacementSetCount: 1,
+    fallbackOnlyArticleChildrenReadCount: 0,
+    detailRequestRecords: 0,
+    detailBodyRecords: 0,
+    revisionRecords: 0,
+  });
+});
+
+test('browser Wave 1D-A M1 collapsed-before-settlement adopts the token without Timeline DOM or highlight work', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1d-a-no-dom',
+    name: 'Wave 1D-A no-DOM fixture',
+    description: 'Collapse an ordinary owner before its detail settles.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [] });
+  const detailGate = deferred();
+  const detailStarted = deferred();
+  let detailRequestCount = 0;
+  const { page } = await openWave1dAM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+    beforeGoto: async (targetPage) => {
+      await targetPage.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+        detailRequestCount += 1;
+        detailStarted.resolve();
+        await detailGate.promise;
+        await route.continue();
+      });
+    },
+  });
+  await installWave1dAM1SearchTracking(page);
+  const owner = page.locator('#timeline .event[data-event-id]:not(.kind-code-mode-operation)').first();
+  const eventId = await owner.getAttribute('data-event-id');
+  assert.ok(eventId);
+  await page.evaluate(() => window.__wave1dAM1.reset());
+  await owner.locator(':scope > .eventHeader > .eventToggle').click();
+  await detailStarted.promise;
+  await page.locator(`#timeline .event[data-event-id="${eventId}"].expanded .eventBody`).waitFor();
+  await page.locator(`#timeline .event[data-event-id="${eventId}"] > .eventHeader > .eventToggle`).click();
+  await page.locator(`#timeline .event[data-event-id="${eventId}"].collapsed`).waitFor();
+  await page.evaluate((ownerId) => {
+    const article = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"]`);
+    window.__wave1dAM1NoDomIdentity = {
+      article,
+      header: article.querySelector(':scope > .eventHeader'),
+      toggle: article.querySelector(':scope > .eventHeader > .eventToggle'),
+      marks: [...document.querySelectorAll('#timeline mark.searchMark')],
+    };
+    window.__wave1dAM1Search.resetOperations();
+  }, eventId);
+  const operationId = await beginWave1cM2Operation(page);
+  detailGate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement,
+  ));
+  await endWave1cM2Operation(page);
+
+  assert.equal(detailRequestCount, 1);
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const settlements = causal.detailRequests.filter((row) => row.presentationSettlement);
+  assert.equal(settlements.length, 1);
+  assert.equal(settlements[0].acceptedMutation, 'success');
+  assert.equal(settlements[0].settlementOutcome, 'noDomAdoption');
+  assert.equal(settlements[0].presentationFailed, false);
+  assert.equal(causal.revisions.filter((row) => row.revisionKind === 'detailPresentationRevision').length, 1);
+  assert.equal(causal.lifecycle.filter((row) => row.operation === 'adopt').length, 1);
+  assert.deepEqual(causal.detailBodies.map((row) => ({
+    expanded: row.expanded,
+    bodyPresent: row.bodyPresent,
+  })), [{ expanded: false, bodyPresent: false }]);
+  assert.equal((await wave1cM2OperationRows(page, operationId)).length, 0);
+  const noDom = await page.evaluate(() => {
+    const before = window.__wave1dAM1NoDomIdentity;
+    const article = before.article;
+    return {
+      article: article.isConnected
+        && article === document.querySelector(`#timeline .event[data-event-id="${CSS.escape(article.dataset.eventId)}"]`),
+      header: before.header === article.querySelector(':scope > .eventHeader'),
+      toggle: before.toggle === article.querySelector(':scope > .eventHeader > .eventToggle'),
+      bodyCount: article.querySelectorAll(':scope > .eventBody').length,
+      marks: before.marks.every((mark) => mark.isConnected),
+      searchOps: {
+        resetBindingsCount: window.__wave1dAM1Search.evidence.resetBindingsCount,
+        resetSurfaceCount: window.__wave1dAM1Search.evidence.resetSurfaceRows.length,
+        clearCount: window.__wave1dAM1Search.evidence.clearRoots.length,
+        applyCount: window.__wave1dAM1Search.evidence.applyRoots.length,
+      },
+    };
+  });
+  assert.deepEqual(noDom, {
+    article: true,
+    header: true,
+    toggle: true,
+    bodyCount: 0,
+    marks: true,
+    searchOps: { resetBindingsCount: 0, resetSurfaceCount: 0, clearCount: 0, applyCount: 0 },
+  });
+  await page.locator(`#timeline .event[data-event-id="${eventId}"] > .eventHeader > .eventToggle`).click();
+  await page.waitForFunction((ownerId) => {
+    const body = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"] > .eventBody`);
+    return body && !body.textContent.includes('Loading structured detail');
+  }, eventId);
+  assert.equal(detailRequestCount, 1, 'cached accepted detail must not create a second request');
+});
+
+test('browser Wave 1D-A M1 accepted ordinary request errors patch only the mounted detail body', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1d-a-error',
+    name: 'Wave 1D-A error fixture',
+    description: 'Keep the ordinary error settlement body-local.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [] });
+  const detailGate = deferred();
+  const detailStarted = deferred();
+  let detailRequestCount = 0;
+  const { page } = await openWave1dAM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+    beforeGoto: async (targetPage) => {
+      await targetPage.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+        detailRequestCount += 1;
+        detailStarted.resolve();
+        await detailGate.promise;
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'Synthetic Wave 1D-A detail failure' }),
+        });
+      });
+    },
+  });
+  const owner = page.locator('#timeline .event[data-event-id]:not(.kind-code-mode-operation)').first();
+  const eventId = await owner.getAttribute('data-event-id');
+  assert.ok(eventId);
+  await page.evaluate(() => window.__wave1dAM1.reset());
+  await owner.locator(':scope > .eventHeader > .eventToggle').click();
+  await detailStarted.promise;
+  await page.evaluate((ownerId) => {
+    const article = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"]`);
+    window.__wave1dAM1ErrorIdentity = {
+      article,
+      header: article.querySelector(':scope > .eventHeader'),
+      toggle: article.querySelector(':scope > .eventHeader > .eventToggle'),
+      footer: article.querySelector(':scope > .eventFooterActions'),
+    };
+  }, eventId);
+  const operationId = await beginWave1cM2Operation(page);
+  detailGate.resolve();
+  await page.locator(`#timeline .event[data-event-id="${eventId}"] > .eventBody [data-action="retry-detail"]`).waitFor();
+  await endWave1cM2Operation(page);
+
+  assert.equal(detailRequestCount, 1);
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const settlements = causal.detailRequests.filter((row) => row.presentationSettlement);
+  assert.equal(settlements.length, 1);
+  assert.equal(settlements[0].acceptedMutation, 'error');
+  assert.equal(settlements[0].settlementOutcome, 'bodyPatch');
+  assert.equal(settlements[0].presentationFailed, false);
+  assert.equal(settlements[0].acceptedStateReclassified, false);
+  assert.equal(causal.revisions.filter((row) => row.revisionKind === 'detailPresentationRevision').length, 1);
+  assert.equal((await wave1cM2OperationRows(page, operationId)).length, 0);
+  assert.deepEqual(await page.evaluate(() => {
+    const before = window.__wave1dAM1ErrorIdentity;
+    return {
+      article: before.article.isConnected,
+      header: before.header === before.article.querySelector(':scope > .eventHeader'),
+      toggle: before.toggle === before.article.querySelector(':scope > .eventHeader > .eventToggle'),
+      footer: before.footer === before.article.querySelector(':scope > .eventFooterActions'),
+    };
+  }), { article: true, header: true, toggle: true, footer: true });
+});
+
+test('browser Wave 1D-A M1 visible collapsed Main Code Mode remains hydrated through one full fallback', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1d-a-code-mode',
+    name: 'Wave 1D-A Code Mode fixture',
+    description: 'Keep every owner collapsed while preserving Code Mode hydration.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { fixture, index } = await makeTransitionProfileIndex(t, {
+    eventCount: 200,
+    hitPositions: [],
+    includeContextReveal: true,
+    contextRevealIndex: 0,
+  });
+  const session = await materializeIndexedSession(index, fixture.longSessionId);
+  const operation = session.logicalEvents.find((event, indexValue) => (
+    indexValue < 5 && event.kind === 'code_mode_operation'
+  ));
+  assert.ok(operation);
+  const detailGate = deferred();
+  const detailStarted = deferred();
+  let detailRequestCount = 0;
+  const { page } = await openWave1dAM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+    beforeGoto: async (targetPage) => {
+      await targetPage.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+        detailRequestCount += 1;
+        detailStarted.resolve();
+        await detailGate.promise;
+        await route.continue();
+      });
+    },
+  });
+  await detailStarted.promise;
+  const operationId = await beginWave1cM2Operation(page);
+  detailGate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement && row.settlementOutcome === 'fullRenderFallback',
+  ));
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.visibleScans.some(
+    (row) => row.mountedArticleCount > row.candidateArticleCount,
+  ));
+
+  assert.equal(detailRequestCount, 1, 'collapsed visible Main Code Mode should hydrate exactly once');
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  assert.equal(causal.detailRequests.filter((row) => row.requestCreated).length, 1);
+  assert.equal(causal.detailRequests.filter((row) => row.phase === 'acceptedMutation').length, 1);
+  const settlements = causal.detailRequests.filter((row) => row.presentationSettlement);
+  assert.equal(settlements.length, 1);
+  assert.equal(settlements[0].acceptedMutation, 'success');
+  assert.equal(settlements[0].settlementOutcome, 'fullRenderFallback');
+  assert.equal(settlements[0].presentationErrorStage, 'none');
+  assert.equal(settlements[0].presentationFailed, false);
+  assert.equal(settlements[0].acceptedStateReclassified, false);
+  assert.equal(causal.revisions.filter((row) => row.revisionKind === 'detailPresentationRevision').length, 1);
+  assert.deepEqual(causal.detailBodies.map((row) => row.eventClassification), ['codeMode']);
+  assert.equal(Object.hasOwn(causal.detailBodies[0], 'timelineRootReplacementCount'), false);
+  assert.equal((await wave1cM2OperationRows(page, operationId))
+    .filter((row) => row.commitKind === 'replacement').length, 1);
+  assert.equal(causal.lifecycle.filter((row) => row.operation === 'adopt').length, 0);
+  const scans = causal.visibleScans.filter((row) => row.mountedArticleCount > 0);
+  assert.ok(scans.length > 0);
+  assert.ok(scans.some((row) => row.candidateArticleCount > 0
+    && row.candidateArticleCount < row.mountedArticleCount));
+  assert.ok(scans.every((row) => row.articleGeometryReadCount === row.candidateArticleCount));
+  assert.ok(scans.every((row) => row.scrollportGeometryReadCount === 1));
+  const operationCard = page.locator(`#timeline .event[data-event-id="${operation.id}"]`);
+  await operationCard.waitFor();
+  assert.equal(await operationCard.evaluate((node) => node.classList.contains('collapsed')), true);
+});
+
+test('browser Wave 1D-A M1 accepted Code Mode request error remains one full fallback', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1d-a-code-mode-error',
+    name: 'Wave 1D-A Code Mode error fixture',
+    description: 'Keep the visible Code Mode request collapsed and fail its detail request.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, {
+    eventCount: 50,
+    hitPositions: [],
+    includeContextReveal: true,
+    contextRevealIndex: 0,
+  });
+  const detailGate = deferred();
+  const detailStarted = deferred();
+  let detailRequestCount = 0;
+  const { page } = await openWave1dAM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+    beforeGoto: async (targetPage) => {
+      await targetPage.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+        detailRequestCount += 1;
+        detailStarted.resolve();
+        await detailGate.promise;
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'Synthetic Code Mode detail failure' }),
+        });
+      });
+    },
+  });
+  await detailStarted.promise;
+  const operationId = await beginWave1cM2Operation(page);
+  detailGate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement,
+  ));
+  assert.equal(detailRequestCount, 1);
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const settlement = causal.detailRequests.find((row) => row.presentationSettlement);
+  assert.equal(settlement.acceptedMutation, 'error');
+  assert.equal(settlement.settlementOutcome, 'fullRenderFallback');
+  assert.equal(settlement.presentationFailed, false);
+  assert.equal(settlement.acceptedStateReclassified, false);
+  assert.equal(causal.revisions.filter((row) => row.revisionKind === 'detailPresentationRevision').length, 1);
+  assert.deepEqual(causal.detailBodies.map((row) => row.eventClassification), ['codeMode']);
+  assert.equal((await wave1cM2OperationRows(page, operationId))
+    .filter((row) => row.commitKind === 'replacement').length, 1);
+});
+
+test('browser Wave 1D-A M1 local presentation failure falls back without reclassifying accepted success', async (t) => {
+  const { page, eventId, gate, requests } = await openWave1dAM1ControlledOrdinaryDetail(t);
+  await page.evaluate((ownerId) => {
+    document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"] > .eventBody`)?.remove();
+  }, eventId);
+  const operationId = await beginWave1cM2Operation(page);
+  gate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement,
+  ));
+  await page.waitForFunction((ownerId) => {
+    const body = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"] > .eventBody`);
+    return body && !body.textContent.includes('Loading structured detail');
+  }, eventId);
+  await endWave1cM2Operation(page);
+
+  assert.equal(requests.count, 1);
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const settlements = causal.detailRequests.filter((row) => row.presentationSettlement);
+  assert.equal(settlements.length, 1);
+  assert.deepEqual({
+    acceptedMutation: settlements[0].acceptedMutation,
+    settlementOutcome: settlements[0].settlementOutcome,
+    presentationErrorStage: settlements[0].presentationErrorStage,
+    acceptedStateReclassified: settlements[0].acceptedStateReclassified,
+    presentationFailed: settlements[0].presentationFailed,
+  }, {
+    acceptedMutation: 'success',
+    settlementOutcome: 'fullRenderFallback',
+    presentationErrorStage: 'local',
+    acceptedStateReclassified: false,
+    presentationFailed: false,
+  });
+  assert.equal(causal.revisions.filter((row) => row.revisionKind === 'detailPresentationRevision').length, 1);
+  assert.equal((await wave1cM2OperationRows(page, operationId))
+    .filter((row) => row.commitKind === 'replacement').length, 1);
+  assert.equal(await page.locator(`#timeline .event[data-event-id="${eventId}"] [data-action="retry-detail"]`).count(), 0);
+});
+
+test('browser Wave 1D-A M1 fallback render failure preserves accepted success and one settlement', async (t) => {
+  const { page, eventId, gate, requests } = await openWave1dAM1ControlledOrdinaryDetail(t);
+  await page.evaluate((ownerId) => {
+    document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"] > .eventBody`)?.remove();
+    window.__wave1dAM1.armTimelineRenderFailure();
+  }, eventId);
+  gate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement,
+  ));
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const settlements = causal.detailRequests.filter((row) => row.presentationSettlement);
+  assert.equal(settlements.length, 1);
+  assert.deepEqual({
+    acceptedMutation: settlements[0].acceptedMutation,
+    settlementOutcome: settlements[0].settlementOutcome,
+    presentationErrorStage: settlements[0].presentationErrorStage,
+    acceptedStateReclassified: settlements[0].acceptedStateReclassified,
+    presentationFailed: settlements[0].presentationFailed,
+  }, {
+    acceptedMutation: 'success',
+    settlementOutcome: 'fullRenderFallback',
+    presentationErrorStage: 'fallback',
+    acceptedStateReclassified: false,
+    presentationFailed: true,
+  });
+  assert.equal(causal.revisions.filter((row) => row.revisionKind === 'detailPresentationRevision').length, 1);
+  assert.match(await page.locator('#stateLine').innerText(), /synthetic Timeline fallback render failure/i);
+
+  await page.locator(`#timeline .event[data-event-id="${eventId}"] > .eventHeader > .eventToggle`).click();
+  await page.locator(`#timeline .event[data-event-id="${eventId}"] > .eventHeader > .eventToggle`).click();
+  await page.waitForFunction((ownerId) => {
+    const body = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"] > .eventBody`);
+    return body && !body.textContent.includes('Loading structured detail');
+  }, eventId);
+  assert.equal(requests.count, 1);
+  assert.equal(await page.locator(`#timeline .event[data-event-id="${eventId}"] [data-action="retry-detail"]`).count(), 0);
+  assert.equal((await page.evaluate(() => window.__wave1dAM1.evidence.revisions.filter(
+    (row) => row.revisionKind === 'detailPresentationRevision',
+  ).length)), 1);
+});
+
+test('browser Wave 1D-A M1 fallback render failure preserves accepted request error authority', async (t) => {
+  const { page, eventId, gate, requests } = await openWave1dAM1ControlledOrdinaryDetail(t, {
+    requestError: true,
+  });
+  await page.evaluate((ownerId) => {
+    document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"] > .eventBody`)?.remove();
+    window.__wave1dAM1.armTimelineRenderFailure();
+  }, eventId);
+  gate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement,
+  ));
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const settlements = causal.detailRequests.filter((row) => row.presentationSettlement);
+  assert.equal(settlements.length, 1);
+  assert.deepEqual({
+    acceptedMutation: settlements[0].acceptedMutation,
+    settlementOutcome: settlements[0].settlementOutcome,
+    presentationErrorStage: settlements[0].presentationErrorStage,
+    acceptedStateReclassified: settlements[0].acceptedStateReclassified,
+    presentationFailed: settlements[0].presentationFailed,
+  }, {
+    acceptedMutation: 'error',
+    settlementOutcome: 'fullRenderFallback',
+    presentationErrorStage: 'fallback',
+    acceptedStateReclassified: false,
+    presentationFailed: true,
+  });
+  assert.equal(causal.revisions.filter((row) => row.revisionKind === 'detailPresentationRevision').length, 1);
+
+  await page.locator(`#timeline .event[data-event-id="${eventId}"] > .eventHeader > .eventToggle`).click();
+  await page.locator(`#timeline .event[data-event-id="${eventId}"] > .eventHeader > .eventToggle`).click();
+  await page.locator(`#timeline .event[data-event-id="${eventId}"] [data-action="retry-detail"]`).waitFor();
+  assert.match(await page.locator(`#timeline .event[data-event-id="${eventId}"]`).innerText(), /controlled request failure/i);
+  assert.equal(requests.count, 1);
+  assert.equal((await page.evaluate(() => window.__wave1dAM1.evidence.detailRequests.filter(
+    (row) => row.presentationSettlement,
+  ).length)), 1);
+});
+
+test('browser Wave 1D-A M1 focused observer failures cannot interrupt an ordinary body settlement', async (t) => {
+  const { page, eventId, gate } = await openWave1dAM1ControlledOrdinaryDetail(t, {
+    observerFailuresBeforeRequest: true,
+  });
+  gate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement,
+  ));
+  await page.waitForFunction((ownerId) => {
+    const body = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"] > .eventBody`);
+    return body && !body.textContent.includes('Loading structured detail');
+  }, eventId);
+  const settlement = await page.evaluate(() => structuredClone(
+    window.__wave1dAM1.evidence.detailRequests.find((row) => row.presentationSettlement),
+  ));
+  assert.equal(settlement.settlementOutcome, 'bodyPatch');
+  assert.equal(settlement.presentationFailed, false);
+  assert.equal(await page.evaluate(() => (
+    window.__wave1dAM1.evidence.detailRequestTransactionAssociations
+  )), 1, 'a throwing installed observer still activates the evidence association');
+  assert.equal(await page.locator('#stateLine[data-state="error"]').count(), 0);
+});
+
+test('browser Wave 1D-A M1 unsafe selected Inspector makes the complete transaction one full fallback', async (t) => {
+  const { page, eventId, gate, requests } = await openWave1dAM1ControlledOrdinaryDetail(t, {
+    inspect: true,
+  });
+  await page.evaluate(() => document.querySelector('#detail .inspector')?.remove());
+  const operationId = await beginWave1cM2Operation(page);
+  gate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement,
+  ));
+  await page.waitForFunction(() => (
+    document.querySelector('#detail .inspector')
+      && !document.querySelector('#detail').textContent.includes('Loading structured detail')
+  ));
+  await endWave1cM2Operation(page);
+
+  assert.equal(requests.count, 1);
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  assert.ok(causal.detailRequests.filter((row) => row.requestReused).length >= 1);
+  const settlements = causal.detailRequests.filter((row) => row.presentationSettlement);
+  assert.equal(settlements.length, 1);
+  assert.deepEqual({
+    settlementOutcome: settlements[0].settlementOutcome,
+    presentationErrorStage: settlements[0].presentationErrorStage,
+    presentationFailed: settlements[0].presentationFailed,
+    acceptedStateReclassified: settlements[0].acceptedStateReclassified,
+  }, {
+    settlementOutcome: 'fullRenderFallback',
+    presentationErrorStage: 'local',
+    presentationFailed: false,
+    acceptedStateReclassified: false,
+  });
+  assert.equal((await wave1cM2OperationRows(page, operationId))
+    .filter((row) => row.commitKind === 'replacement').length, 1);
+  assert.equal(await page.locator(`#timeline .event[data-event-id="${eventId}"]`).count(), 1);
+});
+
+test('browser Wave 1D-A M1 intentional detail abort produces no accepted mutation or Timeline settlement', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1d-a-abort',
+    name: 'Wave 1D-A abort fixture',
+    description: 'Abort one pending ordinary detail through a Layer transition.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [] });
+  const { page } = await openWave1dAM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+  });
+  await page.evaluate(() => {
+    const nativeFetch = window.fetch.bind(window);
+    const control = { count: 0, started: false };
+    window.__wave1dAbortControl = control;
+    window.fetch = (input, init = {}) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      if (!url.pathname.includes('/events/') || !url.pathname.endsWith('/detail')) {
+        return nativeFetch(input, init);
+      }
+      if (control.started) return nativeFetch(input, init);
+      control.count += 1;
+      control.started = true;
+      return new Promise((resolve, reject) => {
+        const rejectAbort = () => reject(new DOMException('Synthetic detail abort', 'AbortError'));
+        if (init.signal?.aborted) rejectAbort();
+        else init.signal?.addEventListener('abort', rejectAbort, { once: true });
+      });
+    };
+  });
+  const owner = page.locator('#timeline .event[data-event-id]:not(.kind-code-mode-operation)').first();
+  await page.evaluate(() => window.__wave1dAM1.reset());
+  await owner.locator(':scope > .eventHeader > .eventKind').click();
+  await page.waitForFunction(() => window.__wave1dAbortControl.started);
+  await waitForDetailView(page, 'inspector');
+  await page.locator('#layerSelect').selectOption('protocol');
+  await expectInputValue(page, '#layerSelect', 'protocol');
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.phase === 'requestSettled' && row.settlementOutcome === 'abort',
+  ));
+
+  assert.equal(await page.evaluate(() => window.__wave1dAbortControl.count), 1);
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const requestSettlement = causal.detailRequests.find((row) => row.phase === 'requestSettled');
+  const abortedRequestRows = causal.detailRequests.filter(
+    (row) => row.requestSerial === requestSettlement.requestSerial,
+  );
+  assert.equal(abortedRequestRows.filter((row) => row.requestCreated).length, 1);
+  assert.equal(abortedRequestRows.filter((row) => row.phase === 'acceptedMutation').length, 0);
+  assert.equal(abortedRequestRows.filter((row) => row.presentationSettlement).length, 0);
+  assert.equal(requestSettlement.acceptedMutation, 'none');
+  assert.equal(requestSettlement.settlementOutcome, 'abort');
+  assert.equal(requestSettlement.acceptedStateReclassified, false);
+  assert.equal(causal.detailBodies.filter(
+    (row) => row.requestSerial === requestSettlement.requestSerial,
+  ).length, 0);
+});
+
+test('browser Wave 1D-A M1 stale detail response produces no accepted mutation or Timeline settlement', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1d-a-stale',
+    name: 'Wave 1D-A stale fixture',
+    description: 'Resolve an obsolete background detail after a Session switch.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { fixture, index } = await makeTransitionProfileIndex(t, {
+    eventCount: 200,
+    hitPositions: [],
+    secondaryEventCount: 40,
+  });
+  const { page } = await openWave1dAM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+  });
+  await page.evaluate(() => {
+    const nativeFetch = window.fetch.bind(window);
+    const control = { count: 0, started: false, release: null };
+    window.__wave1dStaleControl = control;
+    window.fetch = (input, init = {}) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      if (!url.pathname.includes('/events/') || !url.pathname.endsWith('/detail') || control.started) {
+        return nativeFetch(input, init);
+      }
+      control.count += 1;
+      control.started = true;
+      return new Promise((resolve, reject) => {
+        control.release = () => nativeFetch(input, { ...init, signal: undefined }).then(resolve, reject);
+      });
+    };
+  });
+  const owner = page.locator('#timeline .event[data-event-id]:not(.kind-code-mode-operation)').first();
+  await page.evaluate(() => window.__wave1dAM1.reset());
+  await owner.locator(':scope > .eventHeader > .eventToggle').click();
+  await page.waitForFunction(() => window.__wave1dStaleControl.started);
+  await page.locator(`[data-session-id="${fixture.secondarySessionId}"]`).click();
+  await page.waitForSelector(`[data-session-id="${fixture.secondarySessionId}"].active`);
+  await assertEventCount(page, 40);
+  await page.evaluate(() => window.__wave1dStaleControl.release());
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.phase === 'requestSettled' && row.settlementOutcome === 'stale',
+  ));
+
+  assert.equal(await page.evaluate(() => window.__wave1dStaleControl.count), 1);
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const staleRow = causal.detailRequests.find((row) => row.settlementOutcome === 'stale');
+  const staleRequestRows = causal.detailRequests.filter((row) => row.requestSerial === staleRow.requestSerial);
+  assert.equal(staleRequestRows.filter((row) => row.requestCreated).length, 1);
+  assert.equal(staleRequestRows.filter((row) => row.phase === 'acceptedMutation').length, 0);
+  assert.equal(staleRequestRows.filter((row) => row.presentationSettlement).length, 0);
+  assert.equal(staleRow.acceptedMutation, 'none');
+  assert.equal(staleRow.acceptedStateReclassified, false);
+  assert.equal(causal.detailBodies.filter((row) => row.requestSerial === staleRow.requestSerial).length, 0);
+});
+
+test('browser Wave 1D-A M1 detail-only phrase marks do not invent a canonical navigation target', async (t) => {
+  const detailOnlyPhrase = 'detail-only-wave-token';
+  const collapsedProfile = {
+    id: 'custom:wave-1d-a-detail-only-search',
+    name: 'Wave 1D-A detail-only search fixture',
+    description: 'Add one visual phrase only when ordinary detail settles.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [] });
+  const { page } = await openWave1dAM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+    beforeGoto: async (targetPage) => {
+      await targetPage.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+        const response = await route.fetch();
+        const detail = await response.json();
+        detail.timelineSections = [{
+          type: 'markdown',
+          purpose: 'content',
+          html: `<p>${detailOnlyPhrase}</p>`,
+        }];
+        await route.fulfill({
+          status: response.status(),
+          contentType: 'application/json',
+          body: JSON.stringify(detail),
+        });
+      });
+    },
+  });
+  await installWave1dAM1SearchTracking(page);
+  const searchResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline') && url.searchParams.get('q') === detailOnlyPhrase;
+  });
+  await fillSearch(page, detailOnlyPhrase);
+  await searchResponse;
+  await assertEventCount(page, 150);
+  await waitForNoSearchMarks(page);
+  assert.equal(await page.locator('#searchMetricsPanel').getAttribute('data-search-target-ids'), '[]');
+
+  const owner = page.locator('#timeline .event[data-event-id]:not(.kind-code-mode-operation)').first();
+  const eventId = await owner.getAttribute('data-event-id');
+  assert.ok(eventId);
+  await page.evaluate(() => window.__wave1dAM1.reset());
+  await owner.locator(':scope > .eventHeader > .eventToggle').click();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement,
+  ));
+  const visualMark = page.locator(
+    `#timeline .event[data-event-id="${eventId}"] > .eventBody mark.searchMark`,
+  );
+  await visualMark.waitFor();
+  assert.equal(await visualMark.textContent(), detailOnlyPhrase);
+  assert.equal(await visualMark.getAttribute('data-search-target-id'), null);
+  assert.equal(await page.locator('#searchMetricsPanel').getAttribute('data-search-target-ids'), '[]');
+  assert.equal(await page.evaluate(() => window.__wave1dAM1Search.evidence.latestTargets.length), 0);
+  const settlement = await page.evaluate(() => structuredClone(
+    window.__wave1dAM1.evidence.detailRequests.find((row) => row.presentationSettlement),
+  ));
+  assert.equal(settlement.settlementOutcome, 'bodyPatch');
+  assert.equal(settlement.acceptedStateReclassified, false);
+});
+
+test('browser Wave 1D-A M1 ordinary body phrase removal recreates only affected-owner marks', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1d-a-remove-body-phrase',
+    name: 'Wave 1D-A phrase removal fixture',
+    description: 'Remove the query phrase when ordinary detail replaces its loading body.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, {
+    eventCount: 200,
+    hitPositions: [],
+    commonTermEvery: 1,
+  });
+  const gate = deferred();
+  const started = deferred();
+  const { page } = await openWave1dAM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+    beforeGoto: async (targetPage) => {
+      await targetPage.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+        started.resolve();
+        await gate.promise;
+        const response = await route.fetch();
+        const detail = await response.json();
+        detail.timelineSections = [{
+          type: 'markdown',
+          purpose: 'content',
+          html: '<p>replacement detail without the searched phrase</p>',
+        }];
+        await route.fulfill({
+          status: response.status(),
+          contentType: 'application/json',
+          body: JSON.stringify(detail),
+        });
+      });
+    },
+  });
+  await installWave1dAM1SearchTracking(page);
+  await fillSearch(page, 'common-term');
+  await waitForSearchMarks(page, 5);
+  const owner = page.locator('#timeline .event[data-event-id]:not(.kind-code-mode-operation)').first();
+  const eventId = await owner.getAttribute('data-event-id');
+  assert.ok(eventId);
+  await owner.locator(':scope > .eventHeader > .eventToggle').click();
+  await started.promise;
+  const loadingMark = page.locator(
+    `#timeline .event[data-event-id="${eventId}"] > .eventBody mark.searchMark`,
+  ).first();
+  await loadingMark.waitFor();
+  await page.evaluate((ownerId) => {
+    const article = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"]`);
+    window.__wave1dAM1RemovedBodyMark = article.querySelector(':scope > .eventBody mark.searchMark');
+    window.__wave1dAM1RemovedBodyTarget = window.__wave1dAM1Search.evidence.latestTargets.find(
+      (target) => target.id === window.__wave1dAM1RemovedBodyMark.dataset.searchTargetId,
+    );
+    window.__wave1dAM1UnrelatedPhraseMark = [...document.querySelectorAll('#timeline mark.searchMark')]
+      .find((mark) => !article.contains(mark));
+    window.__wave1dAM1.reset();
+    window.__wave1dAM1Search.resetOperations();
+  }, eventId);
+  gate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement,
+  ));
+  const marks = await page.evaluate((ownerId) => {
+    const article = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"]`);
+    return {
+      oldBodyMarkDisconnected: !window.__wave1dAM1RemovedBodyMark.isConnected,
+      bodyMarkCount: article.querySelectorAll(':scope > .eventBody mark.searchMark').length,
+      ownerMarkCount: article.querySelectorAll('mark.searchMark').length,
+      targetPreserved: window.__wave1dAM1Search.evidence.latestTargets.includes(
+        window.__wave1dAM1RemovedBodyTarget,
+      ),
+      targetTimelineBindingCount: window.__wave1dAM1RemovedBodyTarget.bindings.timeline.length,
+      unrelatedMarkPreserved: window.__wave1dAM1UnrelatedPhraseMark.isConnected,
+      resetBindingsCount: window.__wave1dAM1Search.evidence.resetBindingsCount,
+      resetSurfaces: window.__wave1dAM1Search.evidence.resetSurfaceRows.map((row) => row.surface),
+      clearRoots: [...window.__wave1dAM1Search.evidence.clearRoots],
+      applyRoots: [...window.__wave1dAM1Search.evidence.applyRoots],
+    };
+  }, eventId);
+  assert.equal(marks.oldBodyMarkDisconnected, true);
+  assert.equal(marks.bodyMarkCount, 0);
+  assert.equal(marks.ownerMarkCount, 0);
+  assert.equal(marks.targetPreserved, true);
+  assert.equal(marks.targetTimelineBindingCount, 0);
+  assert.equal(marks.unrelatedMarkPreserved, true);
+  assert.equal(marks.resetBindingsCount, 0);
+  assert.deepEqual(marks.resetSurfaces, ['timeline']);
+  assert.deepEqual(marks.clearRoots, ['timelineOwner']);
+  assert.deepEqual(marks.applyRoots, ['timelineOwner']);
+});
+
+test('browser Wave 1D-A M1 eight accepted ordinary details produce eight request-owned settlements', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1d-a-eight',
+    name: 'Wave 1D-A eight-detail fixture',
+    description: 'Hold eight explicitly expanded ordinary detail requests.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 50, hitPositions: [] });
+  const detailGate = deferred();
+  const allStarted = deferred();
+  let detailRequestCount = 0;
+  const { page } = await openWave1dAM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+    beforeGoto: async (targetPage) => {
+      await targetPage.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+        detailRequestCount += 1;
+        if (detailRequestCount === 8) allStarted.resolve();
+        await detailGate.promise;
+        await route.continue();
+      });
+    },
+  });
+  await page.evaluate(() => window.__wave1dAM1.reset());
+  const ownerIds = await page.locator(
+    '#timeline .event[data-event-id]:not(.kind-code-mode-operation)',
+  ).evaluateAll((events) => events.slice(0, 8).map((event) => event.dataset.eventId));
+  assert.equal(ownerIds.length, 8);
+  for (const eventId of ownerIds) {
+    await page.locator(
+      `#timeline .event[data-event-id="${eventId}"] > .eventHeader > .eventToggle`,
+    ).click();
+  }
+  await allStarted.promise;
+  const operationId = await beginWave1cM2Operation(page);
+  detailGate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.filter(
+    (row) => row.presentationSettlement,
+  ).length === 8);
+  await endWave1cM2Operation(page);
+
+  assert.equal(detailRequestCount, 8);
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const created = causal.detailRequests.filter((row) => row.requestCreated);
+  const accepted = causal.detailRequests.filter((row) => row.phase === 'acceptedMutation');
+  const settlements = causal.detailRequests.filter((row) => row.presentationSettlement);
+  assert.equal(created.length, 8);
+  assert.equal(accepted.length, 8);
+  assert.equal(settlements.length, 8);
+  assert.equal(new Set(settlements.map((row) => row.requestSerial)).size, 8);
+  assert.ok(settlements.every((row) => row.acceptedMutation === 'success'
+    && row.settlementOutcome === 'bodyPatch'
+    && row.presentationFailed === false
+    && row.acceptedStateReclassified === false));
+  assert.equal(causal.revisions.filter((row) => row.revisionKind === 'detailPresentationRevision').length, 8);
+  assert.equal(causal.detailBodies.length, 8);
+  assert.equal((await wave1cM2OperationRows(page, operationId)).length, 0);
+});
+
+test('browser Wave 1D-A M1 no-DOM outcome completes affected Inspector scope before classification', async (t) => {
+  const { page, eventId, gate, requests } = await openWave1dAM1ControlledOrdinaryDetail(t, {
+    inspect: true,
+  });
+  await installWave1dAM1SearchTracking(page);
+  await page.locator(
+    `#timeline .event[data-event-id="${eventId}"] > .eventHeader > .eventToggle`,
+  ).click();
+  await page.locator(`#timeline .event[data-event-id="${eventId}"].collapsed`).waitFor();
+  await page.evaluate((ownerId) => {
+    window.__wave1dAM1NoDomInspectorArticle = document.querySelector(
+      `#timeline .event[data-event-id="${CSS.escape(ownerId)}"]`,
+    );
+    window.__wave1dAM1Search.resetOperations();
+  }, eventId);
+  const operationId = await beginWave1cM2Operation(page);
+  gate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement,
+  ));
+  await page.waitForFunction(() => (
+    document.querySelector('#detail .inspector')
+      && !document.querySelector('#detail').textContent.includes('Loading structured detail')
+  ));
+  await endWave1cM2Operation(page);
+
+  assert.equal(requests.count, 1);
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const settlement = causal.detailRequests.find((row) => row.presentationSettlement);
+  assert.equal(settlement.settlementOutcome, 'noDomAdoption');
+  assert.equal(settlement.presentationFailed, false);
+  assert.equal((await wave1cM2OperationRows(page, operationId)).length, 0);
+  const scoped = await page.evaluate(() => ({
+    articlePreserved: window.__wave1dAM1NoDomInspectorArticle.isConnected,
+    timelineBodyCount: window.__wave1dAM1NoDomInspectorArticle.querySelectorAll(
+      ':scope > .eventBody',
+    ).length,
+    resetBindingsCount: window.__wave1dAM1Search.evidence.resetBindingsCount,
+    clearRoots: [...window.__wave1dAM1Search.evidence.clearRoots],
+    applyRoots: [...window.__wave1dAM1Search.evidence.applyRoots],
+  }));
+  assert.deepEqual(scoped, {
+    articlePreserved: true,
+    timelineBodyCount: 0,
+    resetBindingsCount: 0,
+    clearRoots: ['inspectorOwner'],
+    applyRoots: [],
+  });
+});
+
+for (const ownerFault of ['duplicate-body', 'disconnected-article']) {
+  test(`browser Wave 1D-A M1 ${ownerFault} fails closed to one full fallback`, async (t) => {
+    const { page, eventId, gate, requests } = await openWave1dAM1ControlledOrdinaryDetail(t);
+    await page.evaluate(({ ownerId, fault }) => {
+      const article = document.querySelector(
+        `#timeline .event[data-event-id="${CSS.escape(ownerId)}"]`,
+      );
+      if (fault === 'duplicate-body') {
+        const body = article.querySelector(':scope > .eventBody');
+        body.after(body.cloneNode(true));
+      } else {
+        article.remove();
+      }
+    }, { ownerId: eventId, fault: ownerFault });
+    const operationId = await beginWave1cM2Operation(page);
+    gate.resolve();
+    await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+      (row) => row.presentationSettlement,
+    ));
+    await page.locator(`#timeline .event[data-event-id="${eventId}"]`).waitFor();
+    await endWave1cM2Operation(page);
+
+    assert.equal(requests.count, 1);
+    const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+    const settlement = causal.detailRequests.find((row) => row.presentationSettlement);
+    assert.equal(settlement.settlementOutcome, 'fullRenderFallback');
+    assert.equal(settlement.presentationFailed, false);
+    assert.equal(settlement.acceptedStateReclassified, false);
+    assert.equal((await wave1cM2OperationRows(page, operationId))
+      .filter((row) => row.commitKind === 'replacement').length, 1);
+  });
+}
+
+test('browser Wave 1D-A M1 stale context-slot ownership fails closed to one full fallback', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1d-a-context-slot',
+    name: 'Wave 1D-A context-slot fixture',
+    description: 'Corrupt one ordinary owner context-slot relation before settlement.',
+    rules: {
+      fallback: 'collapsed',
+      kindStates: { code_mode_operation: 'hidden' },
+      conditions: [],
+    },
+  };
+  const { fixture, index } = await makeTransitionProfileIndex(t, {
+    eventCount: 50,
+    hitPositions: [],
+    includeContextReveal: true,
+    contextRevealIndex: 0,
+  });
+  const session = await materializeIndexedSession(index, fixture.longSessionId);
+  const nested = session.logicalEvents.find((event) => (
+    event.toolName === fixture.contextReveal.toolName
+  ));
+  assert.ok(nested);
+  assert.notEqual(nested.kind, 'code_mode_operation');
+  const gate = deferred();
+  const started = deferred();
+  const { page } = await openWave1dAM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+    beforeGoto: async (targetPage) => {
+      await targetPage.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+        started.resolve();
+        await gate.promise;
+        await route.continue();
+      });
+    },
+  });
+  const owner = page.locator(`#timeline .event[data-event-id="${nested.id}"]`);
+  await owner.waitFor();
+  await page.evaluate(() => window.__wave1dAM1.reset());
+  await owner.locator(':scope > .eventHeader > .eventToggle').click();
+  await started.promise;
+  await page.evaluate((ownerId) => {
+    const article = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"]`);
+    const slot = article.previousElementSibling;
+    if (!slot?.classList.contains('contextRevealSlot')) throw new Error('expected context slot');
+    article.parentElement.append(slot);
+  }, nested.id);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  const operationId = await beginWave1cM2Operation(page);
+  gate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement,
+  ));
+  await endWave1cM2Operation(page);
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const settlement = causal.detailRequests.find((row) => row.presentationSettlement);
+  assert.equal(settlement.settlementOutcome, 'fullRenderFallback');
+  assert.equal(settlement.presentationFailed, false);
+  assert.equal((await wave1cM2OperationRows(page, operationId))
+    .filter((row) => row.commitKind === 'replacement').length, 1);
+});
+
+test('browser Wave 1D-A M1 another presentation revision between detail tokens forces full fallback', async (t) => {
+  const { page, gate, requests } = await openWave1dAM1ControlledOrdinaryDetail(t);
+  await page.evaluate(() => {
+    const observer = window.__sessionAnalyzerTimelineLifecycleObserver;
+    let injected = false;
+    window.__sessionAnalyzerTimelineLifecycleObserver = {
+      ...observer,
+      recordRevision(value) {
+        observer.recordRevision(value);
+        if (!injected && value.revisionKind === 'detailPresentationRevision') {
+          injected = true;
+          document.querySelector('#resetFoldsBtn').click();
+        }
+      },
+    };
+  });
+  const operationId = await beginWave1cM2Operation(page);
+  gate.resolve();
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.presentationSettlement,
+  ));
+  await endWave1cM2Operation(page);
+
+  assert.equal(requests.count, 1);
+  const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const settlement = causal.detailRequests.find((row) => row.presentationSettlement);
+  assert.equal(settlement.settlementOutcome, 'fullRenderFallback');
+  assert.equal(settlement.presentationFailed, false);
+  assert.equal(settlement.acceptedStateReclassified, false);
+  assert.equal(causal.revisions.filter((row) => row.revisionKind === 'detailPresentationRevision').length, 1);
+  assert.equal(causal.revisions.filter((row) => row.revisionKind === 'overridesRevision').length, 2,
+    'the initial expansion and injected reset each own one override revision');
+  assert.equal(causal.lifecycle.filter((row) => row.operation === 'adopt').length, 0);
+  assert.equal((await wave1cM2OperationRows(page, operationId))
+    .filter((row) => row.commitKind === 'replacement').length, 2,
+  'the concurrent override render and request-owned fallback remain distinct');
+});
+
+for (const retrySurface of ['timeline', 'inspector']) {
+  test(`browser Wave 1D-A M1 ${retrySurface} retry revision remains fail-closed`, async (t) => {
+    const collapsedProfile = {
+      id: `custom:wave-1d-a-${retrySurface}-retry`,
+      name: 'Wave 1D-A retry fixture',
+      description: 'Make one accepted error precede an explicit retry.',
+      rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+    };
+    const { index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [] });
+    let detailRequestCount = 0;
+    const { page } = await openWave1dAM1App(t, index, {
+      locale: 'en',
+      localStorage: {
+        'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+        'sessionAnalyzer.profile': collapsedProfile.id,
+      },
+      beforeGoto: async (targetPage) => {
+        await targetPage.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+          detailRequestCount += 1;
+          if (detailRequestCount === 1) {
+            await route.fulfill({
+              status: 503,
+              contentType: 'application/json',
+              body: JSON.stringify({ error: 'Synthetic retry precursor' }),
+            });
+          } else {
+            await route.continue();
+          }
+        });
+      },
+    });
+    const owner = page.locator('#timeline .event[data-event-id]:not(.kind-code-mode-operation)').first();
+    const eventId = await owner.getAttribute('data-event-id');
+    assert.ok(eventId);
+    if (retrySurface === 'inspector') {
+      await owner.locator(':scope > .eventHeader > .eventKind').click();
+      await page.locator('#detail [data-detail-action="retry-detail"]').waitFor();
+    } else {
+      await owner.locator(':scope > .eventHeader > .eventToggle').click();
+      await page.locator(
+        `#timeline .event[data-event-id="${eventId}"] [data-action="retry-detail"]`,
+      ).waitFor();
+    }
+    assert.equal(detailRequestCount, 1);
+    await page.evaluate(() => window.__wave1dAM1.reset());
+    const operationId = await beginWave1cM2Operation(page);
+    if (retrySurface === 'inspector') {
+      await page.locator('#detail [data-detail-action="retry-detail"]').click();
+    } else {
+      await page.locator(
+        `#timeline .event[data-event-id="${eventId}"] [data-action="retry-detail"]`,
+      ).click();
+    }
+    await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
+      (row) => row.presentationSettlement,
+    ));
+    await endWave1cM2Operation(page);
+
+    assert.equal(detailRequestCount, 2);
+    const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+    const settlement = causal.detailRequests.find((row) => row.presentationSettlement);
+    assert.equal(settlement.acceptedMutation, 'success');
+    assert.equal(settlement.settlementOutcome, 'fullRenderFallback');
+    assert.equal(settlement.presentationFailed, false);
+    assert.equal(settlement.acceptedStateReclassified, false);
+    assert.equal(causal.revisions.filter((row) => row.revisionKind === 'detailPresentationRevision').length, 2);
+    assert.equal(causal.lifecycle.filter((row) => row.operation === 'adopt').length, 0);
+    assert.equal((await wave1cM2OperationRows(page, operationId))
+      .filter((row) => row.commitKind === 'replacement').length, 1);
+    assert.equal(await page.locator(
+      retrySurface === 'inspector'
+        ? '#detail [data-detail-action="retry-detail"]'
+        : `#timeline .event[data-event-id="${eventId}"] [data-action="retry-detail"]`,
+    ).count(), 0);
+  });
+}
+
+test('browser Wave 1D-A M1 visible-detail scheduling keeps candidate-first geometry across every trigger', async (t) => {
+  const hiddenProfile = {
+    id: 'custom:wave-1d-a-hidden-scan',
+    name: 'Wave 1D-A hidden scan fixture',
+    description: 'Keep non-candidates mounted but hidden before geometry.',
+    rules: { fallback: 'hidden', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [] });
+  const { page } = await openWave1dAM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([hiddenProfile]),
+      'sessionAnalyzer.profile': hiddenProfile.id,
+    },
+  });
+  await page.waitForTimeout(50);
+  await page.evaluate(() => window.__wave1dAM1.reset());
+
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.visibleScans.length >= 1);
+  await page.evaluate(() => document.querySelector('.timelinePane').dispatchEvent(new Event('scroll')));
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.visibleScans.length >= 2);
+  await page.evaluate(() => document.querySelector('[data-mobile-view="events"]').click());
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.visibleScans.length >= 3);
+
+  await page.evaluate(() => {
+    document.querySelector(
+      '#timeline .event[data-event-id]:not(.kind-code-mode-operation) > .eventHeader > .eventToggle',
+    ).click();
+  });
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.visibleScans.length >= 4);
+  await page.locator('#loadMoreBtn').click();
+  await assertEventCount(page, 200);
+  await page.waitForFunction(() => window.__wave1dAM1.evidence.visibleScans.some(
+    (scan) => scan.mountedArticleCount === 200,
+  ));
+
+  const scans = await page.evaluate(() => structuredClone(
+    window.__wave1dAM1.evidence.visibleScans,
+  ));
+  assert.ok(scans.length >= 5);
+  for (const scan of scans) {
+    assert.equal(scan.articleGeometryReadCount, scan.candidateArticleCount);
+    assert.equal(scan.scrollportGeometryReadCount, 1);
+    assert.ok(scan.candidateArticleCount < scan.mountedArticleCount);
+  }
+  assert.ok(scans.slice(0, 3).every((scan) => scan.mountedArticleCount === 150
+    && scan.candidateArticleCount === 0
+    && scan.articleGeometryReadCount === 0));
+  const expandedScan = scans.slice(3).find((scan) => (
+    scan.mountedArticleCount === 150 && scan.candidateArticleCount === 1
+  ));
+  assert.ok(expandedScan);
+  assert.equal(expandedScan.articleGeometryReadCount, 1);
+  const appendScan = scans.find((scan) => scan.mountedArticleCount === 200);
+  assert.ok(appendScan);
+  assert.equal(appendScan.candidateArticleCount, 1);
+  assert.equal(appendScan.articleGeometryReadCount, 1);
+});
+
+test('browser Wave 1D-A M1 query, profile, and locale transitions remain full-render controls', async (t) => {
+  const firstProfile = {
+    id: 'custom:wave-1d-a-control-one',
+    name: 'Wave 1D-A control one',
+    description: 'First collapsed full-render control.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const secondProfile = {
+    id: 'custom:wave-1d-a-control-two',
+    name: 'Wave 1D-A control two',
+    description: 'Second collapsed full-render control.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, {
+    eventCount: 200,
+    hitPositions: [],
+    commonTermEvery: 1,
+  });
+  const { page } = await openWave1dAM1App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([firstProfile, secondProfile]),
+      'sessionAnalyzer.profile': firstProfile.id,
+    },
+  });
+
+  let operationId = await beginWave1cM2Operation(page);
+  await page.evaluate((profileId) => {
+    const select = document.querySelector('#profileSelect');
+    select.value = profileId;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }, secondProfile.id);
+  await expectInputValue(page, '#profileSelect', secondProfile.id);
+  let rows = await wave1cM2OperationRows(page, operationId);
+  assert.equal(rows.some((row) => row.commitKind === 'appendOnly'), false);
+  assert.equal(rows.filter((row) => row.commitKind === 'replacement').length, 1);
+
+  operationId = await beginWave1cM2Operation(page);
+  const queryResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline') && url.searchParams.get('q') === 'common-term';
+  });
+  await fillSearch(page, 'common-term');
+  await queryResponse;
+  rows = await wave1cM2OperationRows(page, operationId);
+  assert.equal(rows.some((row) => row.commitKind === 'appendOnly'), false);
+  assert.ok(rows.some((row) => row.commitKind === 'replacement'));
+
+  operationId = await beginWave1cM2Operation(page);
+  await page.evaluate(() => {
+    window.__wave1dAM1LocaleOldArticle = document.querySelector(
+      '#timeline .event[data-event-id]',
+    );
+  });
+  const localeResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline') && url.searchParams.get('locale') === 'zh-CN';
+  });
+  await switchHiddenLocale(page, 'zh-CN');
+  await localeResponse;
+  await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
+  await page.waitForFunction(() => (
+    window.__wave1dAM1LocaleOldArticle
+      && !window.__wave1dAM1LocaleOldArticle.isConnected
+      && document.querySelectorAll('#timeline .event[data-event-id]').length > 0
+  ));
+  rows = await wave1cM2OperationRows(page, operationId);
+  assert.equal(rows.some((row) => row.commitKind === 'appendOnly'), false);
+  assert.ok(rows.some((row) => ['replacement', 'clear', 'initialMount'].includes(row.commitKind)));
+});
+
+test('browser Wave 1B M2 automatic preload coalesces three pages into one append flush', async (t) => {
+  const collapsedProfile = {
+    id: 'custom:wave-1c-preload-collapsed',
+    name: 'Wave 1C preload collapsed fixture',
+    description: 'Avoid unrelated detail fallback during the publication-phase assertion.',
+    rules: { fallback: 'collapsed', kindStates: {}, conditions: [] },
+  };
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 700,
+    needleIndices: [650],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openWave1bM2App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([collapsedProfile]),
+      'sessionAnalyzer.profile': collapsedProfile.id,
+    },
+    beforeGoto: async (targetPage) => {
+      await installWave1cM1BrowserSeam(targetPage);
+      await installWave1cM2MutationLedger(targetPage);
+    },
+  });
+  const suffixStarted = deferred();
+  const suffixRelease = deferred();
+  t.after(() => suffixRelease.resolve());
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '150') {
+      suffixStarted.resolve();
+      await suffixRelease.promise;
+    }
+    await route.continue();
+  });
+
+  const requestStart = requestedUrls.length;
+  await resetWave1bM2RenderEvidence(page);
+  const operationId = await beginWave1cM2Operation(page);
+  await fillSearch(page, 'needle');
+  await suffixStarted.promise;
+  await assertEventCount(page, 150);
+  const prefix = await latestWave1cM1Lifecycle(page);
+  await page.evaluate(() => {
+    const cards = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    window.__wave1cM1SearchPrefix = cards;
+    window.__wave1cM1SearchPrefixById = new Map(cards.map((card) => [card.dataset.eventId, card]));
+    window.__wave1cM1.reset();
+  });
+  suffixRelease.resolve();
+  await assertEventCount(page, 600);
+  const rows = await wave1cM2OperationRows(page, operationId);
+
+  const requests = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('q') === 'needle');
+  assert.deepEqual(requests.map((url) => ({
+    offset: url.searchParams.get('offset'),
+    limit: url.searchParams.get('limit'),
+  })), [
+    { offset: '0', limit: '150' },
+    { offset: '150', limit: '150' },
+    { offset: '300', limit: '150' },
+    { offset: '450', limit: '150' },
+  ]);
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 600);
+  assert.equal((await searchNavigationSnapshot(page)).total, 0);
+  assert.equal(await page.locator('[data-search-load-more-targets]').count(), 1);
+  assert.deepEqual(
+    [...new Set(await wave1bM2RenderCardCounts(page))],
+    [150, 600],
+  );
+  const publication = await page.evaluate(() => structuredClone(
+    window.__wave1cM1.evidence.lifecycle.find((item) => (
+      item.operation === 'append' && item.ownerCount === 600 && item.createdOwnerCount === 450
+    )),
+  ));
+  assert.ok(publication, 'search batch publication must register only the 450-card suffix');
+  assert.equal(publication.sameCanonicalContext, true);
+  assert.equal(publication.reusedOwnerCount, 0);
+  assert.equal(publication.createdOwnerCount, 450);
+  assert.equal(publication.ownerSerials[0], prefix.ownerSerials[0]);
+  assert.equal(await page.evaluate(() => window.__wave1cM1SearchPrefix.filter((card) => (
+    card.isConnected
+      && window.__wave1cM1SearchPrefixById.get(card.dataset.eventId) === card
+      && document.querySelector(`#timeline .event[data-event-id="${CSS.escape(card.dataset.eventId)}"]`) === card
+  )).length), 150);
+  assert.equal(rows.filter((row) => row.commitKind === 'replacement').length, 1);
+  assert.equal(rows.filter((row) => row.commitKind === 'appendOnly').length, 1);
+  assert.equal(rows.reduce((total, row) => total + row.addedCanonicalCount, 0), 600);
+});
+
+test('browser Wave 1B M2 navigation later-page failure flushes earlier current-owner progress once and stops', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 900,
+    needleIndices: [800],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+  let failed = false;
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (!failed && url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '750') {
+      failed = true;
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'synthetic Wave 1B navigation failure' }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  const requestStart = requestedUrls.length;
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('#searchInput').press('Enter');
+  await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('synthetic Wave 1B navigation failure'));
+  await assertEventCount(page, 750);
+  await page.waitForFunction(() => !document.querySelector('[data-search-navigation-pending]'));
+
+  const offsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('q') === 'needle')
+    .map((url) => url.searchParams.get('offset'));
+  assert.deepEqual(offsets, ['600', '750']);
+  assert.equal(failed, true);
+  const finalSearch = await searchNavigationSnapshot(page);
+  assert.equal(finalSearch.id, '');
+  assert.equal(finalSearch.total, 0);
+  assert.deepEqual(await wave1bM2RenderCardCounts(page), [750]);
+});
+
+test('browser Wave 1B M2 forward late-target navigation flushes at the first hit page and settles detail', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 1_000,
+    needleIndices: [800],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+  const requestStart = requestedUrls.length;
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('#searchInput').press('Enter');
+  await assertEventCount(page, 900);
+  await page.waitForFunction(() => (
+    document.querySelector('#timeline mark.searchMark.activeSearchMark')
+      ?.closest('[data-event-id]')
+      ?.textContent
+      ?.includes('Long timeline row 800')
+  ));
+  await waitForDetailView(page, 'inspector');
+  await page.waitForFunction(() => !document.querySelector('#detail')?.textContent.includes('Loading structured detail'));
+
+  const offsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('q') === 'needle')
+    .map((url) => url.searchParams.get('offset'));
+  assert.deepEqual(offsets, ['600', '750']);
+  assert.deepEqual(
+    [...new Set(await wave1bM2RenderCardCounts(page))],
+    [900],
+  );
+  assert.ok((await page.locator('#timeline .event.selected').textContent()).includes('Long timeline row 800'));
+});
+
+test('browser Wave 1B M2 reverse navigation loads the remaining suffix to end before wrapping', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 1_000,
+    needleIndices: [100, 800],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+  await page.waitForFunction(() => (
+    JSON.parse(document.querySelector('#searchMetricsPanel')?.dataset.searchTargetIds || '[]').length === 1
+  ));
+  const requestStart = requestedUrls.length;
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('#searchInput').press('Shift+Enter');
+  await assertEventCount(page, 1_000);
+  await page.waitForFunction(() => (
+    document.querySelector('#timeline mark.searchMark.activeSearchMark')
+      ?.closest('[data-event-id]')
+      ?.textContent
+      ?.includes('Long timeline row 800')
+  ));
+
+  const offsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('q') === 'needle')
+    .map((url) => url.searchParams.get('offset'));
+  assert.deepEqual(offsets, ['600', '750', '900']);
+  assert.deepEqual(
+    [...new Set(await wave1bM2RenderCardCounts(page))],
+    [1_000],
+  );
+});
+
+test('browser Wave 1B M2 explicit load-more coalesces no-hit pages through the first new hit', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 1_000,
+    needleIndices: [100, 800],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+  await page.waitForFunction(() => !document.querySelector('[data-search-load-more-targets]')?.disabled);
+  const beforeTargets = (await searchNavigationSnapshot(page)).total;
+  assert.equal(beforeTargets, 1);
+  const requestStart = requestedUrls.length;
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('[data-search-load-more-targets]').click();
+  await assertEventCount(page, 900);
+  await page.waitForFunction(() => (
+    JSON.parse(document.querySelector('#searchMetricsPanel')?.dataset.searchTargetIds || '[]').length === 2
+  ));
+
+  const offsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('q') === 'needle')
+    .map((url) => url.searchParams.get('offset'));
+  assert.deepEqual(offsets, ['600', '750']);
+  assert.deepEqual(
+    [...new Set(await wave1bM2RenderCardCounts(page))],
+    [900],
+  );
+  assert.equal(await page.locator('[data-search-load-more-targets]').count(), 1);
+});
+
+test('browser Wave 1B M2 failed preload attempt consumes budget and current preload continues', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 700,
+    needleIndices: [650],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+  let failed = false;
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (!failed && url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '300') {
+      failed = true;
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'synthetic Wave 1B preload failure' }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  const requestStart = requestedUrls.length;
+  await resetWave1bM2RenderEvidence(page);
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 450);
+  await page.waitForFunction(() => !document.querySelector('[data-search-load-more-targets]')?.disabled);
+  assert.ok((await page.locator('#stateLine').textContent()).includes('synthetic Wave 1B preload failure'));
+
+  const offsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('q') === 'needle')
+    .map((url) => url.searchParams.get('offset'));
+  assert.deepEqual(offsets, ['0', '150', '300', '300']);
+  assert.equal(failed, true);
+  assert.deepEqual(
+    [...new Set(await wave1bM2RenderCardCounts(page))],
+    [150, 300, 450],
+  );
+});
+
+test('browser Wave 1B M2 load-more later-page failure flushes progress and clears pending without exhausting', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 1_000,
+    needleIndices: [100],
+  });
+  const index = await buildIndex(longFixture);
+  const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+  let failed = false;
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (!failed && url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '750') {
+      failed = true;
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'synthetic Wave 1B load-more failure' }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  const requestStart = requestedUrls.length;
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('[data-search-load-more-targets]').click();
+  await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('synthetic Wave 1B load-more failure'));
+  await assertEventCount(page, 750);
+  await page.waitForFunction(() => !document.querySelector('[data-search-load-more-targets]')?.disabled);
+
+  const offsets = requestedUrls.slice(requestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('q') === 'needle')
+    .map((url) => url.searchParams.get('offset'));
+  assert.deepEqual(offsets, ['600', '750']);
+  assert.equal(failed, true);
+  assert.deepEqual(await wave1bM2RenderCardCounts(page), [750]);
+  assert.equal(await page.locator('[data-search-load-more-targets]').count(), 1);
+});
+
+for (const invalidIdKind of ['duplicate', 'empty']) {
+  test(`browser Wave 1B M2 later-page ${invalidIdKind} ID failure excludes that page and flushes prior progress`, async (t) => {
+    const longFixture = await makeLongCodexHome(t, {
+      eventCount: 900,
+      needleIndices: [800],
+    });
+    const index = await buildIndex(longFixture);
+    const { page, requestedUrls } = await openWave1bM2App(t, index, { locale: 'en' });
+    await fillSearch(page, 'needle');
+    await assertEventCount(page, 600);
+    let corrupted = false;
+    await page.route('**/timeline*', async (route) => {
+      const url = new URL(route.request().url());
+      if (!corrupted && url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '750') {
+        corrupted = true;
+        const response = await route.fetch();
+        const body = await response.json();
+        body.events[0].id = invalidIdKind === 'duplicate' ? body.events[1].id : '';
+        await route.fulfill({ response, json: body });
+        return;
+      }
+      await route.continue();
+    });
+
+    const requestStart = requestedUrls.length;
+    await resetWave1bM2RenderEvidence(page);
+    await page.locator('#searchInput').press('Enter');
+    await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('Timeline event state invariant'));
+    await assertEventCount(page, 750);
+    await page.waitForFunction(() => !document.querySelector('[data-search-navigation-pending]'));
+
+    const offsets = requestedUrls.slice(requestStart)
+      .filter((value) => value.includes('/timeline?'))
+      .map((value) => new URL(value, 'http://local'))
+      .filter((url) => url.searchParams.get('q') === 'needle')
+      .map((url) => url.searchParams.get('offset'));
+    assert.deepEqual(offsets, ['600', '750']);
+    assert.equal(corrupted, true);
+    assert.deepEqual(await wave1bM2RenderCardCounts(page), [750]);
+  });
+}
+
+test('browser Wave 1B M2 query supersession discards accepted local pages without an old flush', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 900,
+    needleIndices: [800],
+  });
+  const index = await buildIndex(longFixture);
+  const { page } = await openWave1bM2App(t, index, { locale: 'en' });
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+
+  const paused = deferred();
+  const release = deferred();
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '750') {
+      paused.resolve();
+      await release.promise;
+      try { await route.continue(); } catch {}
+      return;
+    }
+    await route.continue();
+  });
+
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('#searchInput').press('Enter');
+  await paused.promise;
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 600);
+  const replacement = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('q') === 'ordinary'
+      && url.searchParams.get('offset') === '500';
+  });
+  await fillSearch(page, 'ordinary');
+  await replacement;
+  await assertEventCount(page, 600);
+  release.resolve();
+  await page.waitForTimeout(300);
+
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 600);
+  assert.equal(await page.locator('#searchInput').inputValue(), 'ordinary');
+  assert.equal((await wave1bM2RenderCardCounts(page)).includes(750), false);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+});
+
+test('browser Wave 1B M2 Session supersession discards primary local pages and preserves the 40-card secondary state', async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t, {
+    eventCount: 900,
+    hitPositions: [800],
+  });
+  const { page } = await openWave1bM2App(t, index, { locale: 'en' });
+  await fillSearch(page, 'far-needle');
+  await assertEventCount(page, 600);
+
+  const paused = deferred();
+  const release = deferred();
+  await page.route(`**/api/sessions/${fixture.longSessionId}/timeline?*`, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') === 'far-needle' && url.searchParams.get('offset') === '750') {
+      paused.resolve();
+      await release.promise;
+      try { await route.continue(); } catch {}
+      return;
+    }
+    await route.continue();
+  });
+
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('#searchInput').press('Enter');
+  await paused.promise;
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 600);
+  await page.locator(`[data-session-id="${fixture.secondarySessionId}"]`).click();
+  await page.waitForSelector(`[data-session-id="${fixture.secondarySessionId}"].active`);
+  await assertEventCount(page, 40);
+  release.resolve();
+  await page.waitForTimeout(300);
+
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 40);
+  assert.equal((await wave1bM2RenderCardCounts(page)).includes(750), false);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+  assert.equal(await page.locator('[data-search-navigation-pending]').count(), 0);
+});
+
+test('browser Wave 1B M2 same-key replacement keeps newer preload pending ownership', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 700,
+    needleIndices: [650],
+  });
+  const index = await buildIndex(longFixture);
+  const { page } = await openWave1bM2App(t, index, { locale: 'en' });
+  const oldPaused = deferred();
+  const oldRelease = deferred();
+  const newPaused = deferred();
+  const newRelease = deferred();
+  let offset300Count = 0;
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '300') {
+      offset300Count += 1;
+      const gate = offset300Count === 1
+        ? { paused: oldPaused, release: oldRelease }
+        : { paused: newPaused, release: newRelease };
+      gate.paused.resolve();
+      await gate.release.promise;
+      try { await route.continue(); } catch {}
+      return;
+    }
+    await route.continue();
+  });
+
+  await fillSearch(page, 'needle');
+  await oldPaused.promise;
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 150);
+  await page.locator(`[data-session-id="${longFixture.sessionId}"]`).click();
+  await newPaused.promise;
+  assert.equal(await page.locator('[data-search-load-more-targets]').isDisabled(), true);
+  oldRelease.resolve();
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator('[data-search-load-more-targets]').isDisabled(), true);
+  newRelease.resolve();
+  await assertEventCount(page, 600);
+  await page.waitForFunction(() => !document.querySelector('[data-search-load-more-targets]')?.disabled);
+
+  assert.equal(offset300Count, 2);
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 600);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+});
+
+test('browser Wave 1B M2 same-key replacement makes stale navigation skip replacement-state scanning', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 900,
+    needleIndices: [800],
+  });
+  const index = await buildIndex(longFixture);
+  const { page } = await openWave1bM2App(t, index, { locale: 'en' });
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+  const oldPaused = deferred();
+  const oldRelease = deferred();
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '750') {
+      oldPaused.resolve();
+      await oldRelease.promise;
+      try { await route.continue(); } catch {}
+      return;
+    }
+    await route.continue();
+  });
+
+  await resetWave1bM2RenderEvidence(page);
+  await page.locator('#searchInput').press('Enter');
+  await oldPaused.promise;
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 600);
+  const replacement = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('q') === 'needle'
+      && url.searchParams.get('offset') === '0';
+  });
+  await page.locator(`[data-session-id="${longFixture.sessionId}"]`).click();
+  await replacement;
+  oldRelease.resolve();
+  await assertEventCount(page, 600);
+  await page.waitForFunction(() => !document.querySelector('[data-search-navigation-pending]'));
+
+  assert.equal((await wave1bM2RenderCardCounts(page)).includes(750), false);
+  assert.equal((await searchNavigationSnapshot(page)).id, '');
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+});
+
+test('browser Wave 1B M2 same-key replacement invalidates navigation during async detail activation', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 1,
+    includeFoldableSearchTargets: true,
+  });
+  const index = await buildIndex(longFixture);
+  const hiddenCommandProfile = {
+    id: 'custom:wave1b-stale-navigation-detail',
+    name: 'Wave 1B stale navigation detail test',
+    description: 'Keep command body matches unavailable until search navigation expands them.',
+    rules: {
+      kindStates: { command: 'hidden' },
+      fallback: 'summary',
+      conditions: [],
+    },
+  };
+  const { page } = await openWave1bM2App(t, index, {
+    locale: 'en',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([hiddenCommandProfile]),
+      'sessionAnalyzer.profile': hiddenCommandProfile.id,
+    },
+  });
+
+  await fillSearch(page, 'fold only target');
+  await page.waitForFunction(() => (
+    document.querySelector('.searchInlineCount')?.textContent?.endsWith('/ 3 targets')
+      && document.querySelector('#searchMetricsPanel')?.textContent.includes('6 occurrences')
+  ));
+  await waitForDetailView(page, 'profileRules');
+
+  const detailStarted = deferred();
+  const detailRelease = deferred();
+  let detailRequestCount = 0;
+  await page.route('**/api/sessions/*/events/*/detail*', async (route) => {
+    detailRequestCount += 1;
+    if (detailRequestCount > 1) {
+      await route.continue();
+      return;
+    }
+    detailStarted.resolve();
+    await detailRelease.promise;
+    try { await route.continue(); } catch {}
+  });
+
+  await page.locator('.searchInlineMatches [data-search-match-nav="next"]').click();
+  await detailStarted.promise;
+  const replacement = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('q') === 'fold only target'
+      && url.searchParams.get('offset') === '0';
+  });
+  await page.locator(`[data-session-id="${longFixture.sessionId}"]`).click();
+  await replacement;
+  detailRelease.resolve();
+  await page.waitForFunction(() => !document.querySelector('[data-search-navigation-pending]'));
+  await waitForDetailView(page, 'profileRules');
+
+  assert.equal(detailRequestCount, 1);
+  assert.equal((await searchNavigationSnapshot(page)).id, '');
+  assert.equal(await page.locator('#timeline .event.selected').count(), 0);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+});
+
+test('browser Wave 1B M2 same-key replacement protects newer pending and exhausted from stale load-more cleanup', async (t) => {
+  const longFixture = await makeLongCodexHome(t, {
+    eventCount: 1_000,
+    needleIndices: [100],
+  });
+  const index = await buildIndex(longFixture);
+  const { page } = await openWave1bM2App(t, index, { locale: 'en' });
+  await fillSearch(page, 'needle');
+  await assertEventCount(page, 600);
+  const oldPaused = deferred();
+  const oldRelease = deferred();
+  const newPaused = deferred();
+  const newRelease = deferred();
+  await page.route('**/timeline*', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '750') {
+      oldPaused.resolve();
+      await oldRelease.promise;
+      try { await route.continue(); } catch {}
+      return;
+    }
+    if (url.searchParams.get('q') === 'needle' && url.searchParams.get('offset') === '300') {
+      newPaused.resolve();
+      await newRelease.promise;
+      try { await route.continue(); } catch {}
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.locator('[data-search-load-more-targets]').click();
+  await oldPaused.promise;
+  const replacement = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline')
+      && url.searchParams.get('q') === 'needle'
+      && url.searchParams.get('offset') === '0';
+  });
+  await page.locator(`[data-session-id="${longFixture.sessionId}"]`).click();
+  await replacement;
+  await newPaused.promise;
+  assert.equal(await page.locator('[data-search-load-more-targets]').isDisabled(), true);
+  oldRelease.resolve();
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator('[data-search-load-more-targets]').isDisabled(), true);
+  newRelease.resolve();
+  await assertEventCount(page, 600);
+  await page.waitForFunction(() => !document.querySelector('[data-search-load-more-targets]')?.disabled);
+
+  assert.equal(await page.locator('[data-search-load-more-targets]').count(), 1);
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 600);
+  assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
+});
+
 test('browser search inspector hides idle navigation and user confirmation loads it', async (t) => {
   const longFixture = await makeLongCodexHome(t, { eventCount: 620 });
   const index = await buildIndex(longFixture);
@@ -5351,7 +10592,7 @@ test('browser search navigation temporarily expands hidden command detail target
       conditions: [],
     },
   };
-  const { page } = await openApp(t, index, {
+  const { page } = await openWave1cM1App(t, index, {
     locale: 'en',
     localStorage: {
       'sessionAnalyzer.customProfiles': JSON.stringify([hiddenCommandProfile]),
@@ -5361,11 +10602,17 @@ test('browser search navigation temporarily expands hidden command detail target
   await selectPrimarySession(page);
 
   await page.waitForFunction(() => document.querySelector('#timeline .event.kind-command.hiddenByProfile'));
+  await page.evaluate(() => window.__wave1cM1.reset());
   await fillSearch(page, 'alpha failed');
   await page.waitForFunction(() => document.querySelector('.searchInlineCount')?.textContent?.endsWith('/ 1 targets')
     && document.querySelector('#searchMetricsPanel')?.textContent.includes('1 occurrences'));
 
   await page.locator('.searchInlineMatches [data-search-match-nav="next"]').click();
+  await page.waitForFunction(() => window.__wave1cM1.evidence.revisions.some(
+    (item) => item.revisionKind === 'searchTransientRevision',
+  ));
+  assert.ok((await latestWave1cM1Lifecycle(page))
+    .mountedPresentationToken.searchTransientRevision > 0);
   await page.waitForSelector('#timeline .event.kind-command.expanded .eventBody mark.searchMark.activeSearchMark');
 
   await fillSearch(page, '');
@@ -6270,4 +11517,215 @@ test('browser expanded event collapse works with mouse and keyboard controls', a
   await footerToggle.focus();
   await page.keyboard.press('Space');
   await page.waitForFunction(() => !document.querySelector('#timeline .event[data-event-id]')?.classList.contains('expanded'));
+});
+
+test('browser projects source-backed Cache Observation evidence and navigates Main to Protocol to Main', async (t) => {
+  const fixture = await makeCacheObservationBrowserFixture(t);
+  const materialized = await materializeIndexedSession(
+    fixture.index,
+    fixture.discontinuitySessionId,
+  );
+  const links = materialized.presentationIndexes.cacheDiscontinuityLinks;
+  assert.equal(links.protocolEventIdsByMainEventId.size, 1);
+  const [mainEventId, protocolEventIds] = [...links.protocolEventIdsByMainEventId][0];
+  assert.equal(protocolEventIds.length, 2);
+  const protocolEvents = materialized.logicalEvents.filter((event) => event.layer === 'protocol');
+  assert.ok(protocolEvents.findIndex((event) => event.id === protocolEventIds[0]) >= 150);
+  const codeModeMaterialized = await materializeIndexedSession(
+    fixture.index,
+    fixture.codeModeSessionId,
+  );
+  const codeModeLinks = codeModeMaterialized.presentationIndexes.cacheDiscontinuityLinks;
+  assert.equal(codeModeLinks.protocolEventIdsByMainEventId.size, 1);
+  const [codeModeMainEventId, codeModeProtocolEventIds] = [...codeModeLinks.protocolEventIdsByMainEventId][0];
+  assert.equal(codeModeProtocolEventIds.length, 1);
+  assert.equal(
+    codeModeMaterialized.logicalEvents.find((event) => event.id === codeModeMainEventId)?.kind,
+    'code_mode_operation',
+  );
+
+  const consoleProblems = [];
+  const { page, requestedUrls } = await openApp(t, fixture.index, {
+    locale: 'en',
+    skipProjectReindex: true,
+    beforeGoto: async (browserPage) => {
+      browserPage.on('console', (message) => {
+        if (message.type() === 'error' || message.type() === 'warning') {
+          consoleProblems.push(`${message.type()}: ${message.text()}`);
+        }
+      });
+    },
+  });
+  await page.locator(`[data-session-id="${fixture.discontinuitySessionId}"]`).click();
+  await page.waitForFunction((sessionId) => (
+    document.querySelector('.sessionItem.active')?.dataset.sessionId === sessionId
+  ), fixture.discontinuitySessionId);
+
+  const mainAnchor = page.locator(`#timeline .event[data-event-id="${mainEventId}"]`);
+  const affordance = mainAnchor.locator('.cacheDiscontinuityAffordance');
+  await affordance.waitFor();
+  assert.equal(await page.locator('#timeline .cacheDiscontinuityAffordance').count(), 1);
+  assert.equal((await affordance.textContent()).trim(), '2 cache discontinuities · View evidence');
+  assert.equal(await mainAnchor.locator('.cacheUsagePreview').count(), 0);
+  assert.equal(await page.locator('#analysisPanel').getByText(/Cache reuse|Discontinuities|Cache health/).count(), 0);
+
+  await addSearchFilter(page, 'kind', 'assistant_message');
+  await page.waitForFunction((eventId) => (
+    document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"] .cacheDiscontinuityAffordance`)
+  ), mainEventId);
+  await page.keyboard.press('Escape');
+  const overridesBeforeNavigation = await page.evaluate(() => localStorage.getItem('sessionAnalyzer.overrides'));
+
+  await affordance.click();
+  await page.waitForFunction(({ eventId }) => (
+    document.querySelector('#layerSelect')?.value === 'protocol'
+      && document.querySelector('#timeline .event.selected')?.dataset.eventId === eventId
+  ), { eventId: protocolEventIds[0] });
+  const protocolTarget = page.locator(`#timeline .event[data-event-id="${protocolEventIds[0]}"]`);
+  assert.equal(await protocolTarget.count(), 1);
+  assert.equal(await protocolTarget.evaluate((element) => element.classList.contains('temporaryReferenceReveal')), true);
+  assert.ok(requestedUrls.some((url) => (
+    url.includes('/timeline?')
+      && url.includes('layer=protocol')
+      && url.includes('kind=assistant_message')
+  )));
+  assert.equal((await protocolTarget.locator('.eventKind').textContent()).trim(), 'Token usage');
+  assert.equal(await protocolTarget.locator('.cacheDiscontinuityChip').textContent(), 'Cache discontinuity');
+  assert.match(await protocolTarget.locator('.cacheUsagePreview').textContent(), /Input.*12\.3k.*Cached.*0.*0%.*Output.*589/s);
+  assert.match(await protocolTarget.locator('.cacheDiscontinuityContext').textContent(), /after 14s.*cached 16\.4k → 0/s);
+  assert.ok(requestedUrls.some((url) => (
+    url.includes(`/events/${encodeURIComponent(protocolEventIds[0])}?`)
+      && !url.includes('/detail')
+  )));
+
+  await page.waitForFunction(() => (
+    document.querySelector('#detail')?.textContent.includes('Comparison Context')
+      && document.querySelector('#detail')?.textContent.includes('explicit cache-expiry evidence')
+  ));
+  const inspectorText = await page.locator('#detail').textContent();
+  assert.match(inspectorText, /Input12,288/);
+  assert.match(inspectorText, /Cached input0/);
+  assert.match(inspectorText, /Input-token delta−4,096 \(−25%\)/);
+  assert.match(inspectorText, /Cache-read delta−16,384/);
+  assert.match(inspectorText, /Cache reuse100% → 0%/);
+  assert.match(inspectorText, /Comparison stateCache discontinuity/);
+  assert.equal(inspectorText.includes('reasonCodes'), false);
+
+  const reverse = page.locator('#detail [data-detail-action="navigate-linked-event"]');
+  assert.equal((await reverse.textContent()).trim(), 'View Main context');
+  await reverse.click();
+  await page.waitForFunction(({ eventId }) => (
+    document.querySelector('#layerSelect')?.value === 'main'
+      && document.querySelector('#timeline .event.selected')?.dataset.eventId === eventId
+  ), { eventId: mainEventId });
+  await expectInputValue(page, '#searchKindSelect', 'assistant_message');
+  assert.equal(await page.locator('#timeline .temporaryReferenceReveal').count(), 0);
+  assert.equal(
+    await page.evaluate(() => localStorage.getItem('sessionAnalyzer.overrides')),
+    overridesBeforeNavigation,
+  );
+  assert.equal(await page.locator(`#timeline .event[data-event-id="${mainEventId}"] .cacheDiscontinuityAffordance`).count(), 1);
+
+  await switchHiddenLocale(page, 'zh-CN');
+  await page.waitForFunction(() => (
+    document.querySelector('#timeline .cacheDiscontinuityAffordance')?.textContent
+      === '2 次缓存复用中断 · 查看证据'
+  ));
+
+  await clearAllSearch(page);
+
+  await page.locator(`[data-session-id="${fixture.singleSessionId}"]`).click();
+  await page.waitForFunction((sessionId) => (
+    document.querySelector('.sessionItem.active')?.dataset.sessionId === sessionId
+  ), fixture.singleSessionId);
+  assert.equal(
+    (await page.locator('#timeline .cacheDiscontinuityAffordance').textContent()).trim(),
+    '缓存复用中断 · 查看证据',
+  );
+
+  await page.locator(`[data-session-id="${fixture.ordinarySessionId}"]`).click();
+  await page.waitForFunction((sessionId) => (
+    document.querySelector('.sessionItem.active')?.dataset.sessionId === sessionId
+  ), fixture.ordinarySessionId);
+  assert.equal(await page.locator('#timeline .cacheDiscontinuityAffordance').count(), 0);
+  assert.equal(await page.locator('#analysisPanel').getByText(/缓存复用|缓存健康/).count(), 0);
+  await page.locator('#layerSelect').selectOption('protocol');
+  await page.waitForFunction(() => document.querySelectorAll('#timeline .cacheUsageEvent').length === 2);
+  assert.equal(await page.locator('#timeline .cacheDiscontinuityChip').count(), 0);
+  assert.equal(await page.locator('#timeline .cacheDiscontinuityContext').count(), 0);
+  assert.equal(await page.locator('#timeline .cacheUsageEvent .eventKind').last().textContent(), 'Token 使用情况');
+  await page.locator('#timeline .cacheUsageEvent').last().click();
+  await page.locator('#detail .tokenUsageBlock').waitFor();
+  assert.equal(await page.locator('#detail [data-detail-action="navigate-linked-event"]').count(), 0);
+
+  await switchHiddenLocale(page, 'en');
+  const mainLayerResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline') && url.searchParams.get('layer') === 'main';
+  });
+  await page.locator('#layerSelect').selectOption('main');
+  await mainLayerResponse;
+  await page.locator(`[data-session-id="${fixture.codeModeSessionId}"]`).click();
+  await page.waitForFunction((sessionId) => (
+    document.querySelector('.sessionItem.active')?.dataset.sessionId === sessionId
+  ), fixture.codeModeSessionId);
+  const codeModeAnchor = page.locator(`#timeline .event[data-event-id="${codeModeMainEventId}"]`);
+  const codeModeAffordance = codeModeAnchor.locator('.cacheDiscontinuityAffordance');
+  await codeModeAffordance.waitFor();
+
+  await addSearchFilter(page, 'kind', 'code_mode_request:exec_command');
+  await expectInputValue(page, '#searchKindSelect', 'code_mode_request:exec_command');
+  await page.waitForFunction((eventId) => (
+    document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"] .cacheDiscontinuityAffordance`)
+  ), codeModeMainEventId);
+  await page.keyboard.press('Escape');
+  const linkedRequestStart = requestedUrls.length;
+
+  await codeModeAffordance.click();
+  await page.waitForFunction(({ eventId }) => (
+    document.querySelector('#layerSelect')?.value === 'protocol'
+      && document.querySelector('#timeline .event.selected')?.dataset.eventId === eventId
+  ), { eventId: codeModeProtocolEventIds[0] });
+  const codeModeProtocolTarget = page.locator(`#timeline .event[data-event-id="${codeModeProtocolEventIds[0]}"]`);
+  assert.equal(await codeModeProtocolTarget.evaluate((element) => element.classList.contains('temporaryReferenceReveal')), true);
+  const linkedProtocolRequests = requestedUrls.slice(linkedRequestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('layer') === 'protocol');
+  assert.ok(linkedProtocolRequests.length > 0);
+  assert.ok(linkedProtocolRequests.every((url) => !url.searchParams.has('codeModeRequest')));
+  assert.ok(linkedProtocolRequests.some((url) => url.searchParams.get('kind') === 'code_mode_operation'));
+  assert.equal(await page.locator('#searchKindSelect').inputValue(), '');
+  assert.equal((await page.locator('#searchFilterCount').textContent()).trim(), 'Filters · 1');
+  assert.match(await page.locator('#searchFilterBtn').getAttribute('title'), /Code Mode tool call/);
+  assert.doesNotMatch(await page.locator('#searchFilterBtn').getAttribute('title'), /Exec command|Declared/);
+
+  await page.locator('#detail [data-detail-action="navigate-linked-event"]').click();
+  await page.waitForFunction(({ eventId }) => (
+    document.querySelector('#layerSelect')?.value === 'main'
+      && document.querySelector('#timeline .event.selected')?.dataset.eventId === eventId
+  ), { eventId: codeModeMainEventId });
+  assert.equal(await page.locator('#searchKindSelect').inputValue(), '');
+  assert.equal((await page.locator('#searchFilterCount').textContent()).trim(), 'Filters · 1');
+  assert.doesNotMatch(await page.locator('#searchFilterBtn').getAttribute('title'), /Exec command|Declared/);
+
+  await addSearchFilter(page, 'kind', 'code_mode_request:exec_command');
+  await expectInputValue(page, '#searchKindSelect', 'code_mode_request:exec_command');
+  await page.keyboard.press('Escape');
+  const manualRequestStart = requestedUrls.length;
+  const manualProtocolResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline') && url.searchParams.get('layer') === 'protocol';
+  });
+  await page.locator('#layerSelect').selectOption('protocol');
+  await manualProtocolResponse;
+  const manualProtocolRequests = requestedUrls.slice(manualRequestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('layer') === 'protocol');
+  assert.ok(manualProtocolRequests.length > 0);
+  assert.ok(manualProtocolRequests.every((url) => !url.searchParams.has('codeModeRequest')));
+  assert.equal(await page.locator('#searchKindSelect').inputValue(), '');
+  assert.equal((await page.locator('#searchFilterCount').textContent()).trim(), 'Filters · 1');
+  assert.deepEqual(consoleProblems, []);
 });

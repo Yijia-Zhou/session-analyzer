@@ -40,6 +40,14 @@ _Avoid_: Source link, raw link / 来源链接、原始链接
 A user-meaningful unit of work interpreted from one or more Raw Records while preserving traceability to them. / 从一条或多条原始记录解释得到、对用户有意义且保留原始可追溯性的工作单元。
 _Avoid_: Normalized record, timeline item / 归一化记录、时间线条目
 
+**Cache Observation / 缓存观测**:
+A structured fact attached to an existing Logical Event, normalized from token accounting exposed by a Transcript Source. It records transcript-visible accounting, not the service's internal cache state. / 附着于既有逻辑事件、由转录来源提供的 token accounting 归一化得到的结构化事实。它记录转录中可见的计量信息，不代表服务端缓存的内部状态。
+_Avoid_: Cache event, cache state / 缓存事件、缓存状态
+
+**Cache Discontinuity / 缓存复用中断**:
+A significant cache-reuse drop inferred by a conservative rule between adjacent, comparable Cache Observations. It is not Cache Expiry; that term is reserved for explicit upstream expiry evidence. / 在相邻且可比较的缓存观测之间，依据保守规则推断出的显著缓存复用下降。它不等同于缓存过期；只有上游提供显式过期证据时才使用后者。
+_Avoid_: Causal or expiration claims without explicit upstream evidence / 没有上游显式证据的因果或过期断言
+
 **Structured Detail / 结构化详情**:
 A bounded, source-interpreted presentation of one Logical Event that keeps its supporting Raw References available without becoming canonical history or a lossless payload store; Raw Record detail is a separate source-evidence surface. / 对一个逻辑事件进行的有界、由来源解释的呈现；它保留可用的支撑原始引用，但不会成为规范历史或无损 payload 存储；原始记录详情是独立的来源证据界面。
 _Avoid_: Canonical detail, normalized payload / 规范详情、归一化 payload

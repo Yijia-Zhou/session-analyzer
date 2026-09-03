@@ -6,7 +6,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { performance } = require('node:perf_hooks');
+const { promisify } = require('node:util');
 const v8 = require('node:v8');
+const { gunzip } = require('node:zlib');
 const {
   getSourceAdapter,
   materializeSessionForIndex,
@@ -20,10 +22,15 @@ const {
   createMaterializedSessionOwner,
 } = require('../src/materialized-session-owner');
 const {
+  buildProjectQueryStore,
+  scanProjectQueryShard,
+} = require('../src/project-query-store');
+const {
   captureGitIdentity,
   utf8OrdinalCompare,
 } = require('./performance-wave-0-identity');
 
+const gunzipAsync = promisify(gunzip);
 const PROFILE_QUERY = '__session_analyzer_absent_project_query_profile_phrase__';
 const PROFILE_LAYERS = Object.freeze(['main', 'protocol', 'raw']);
 const PROFILE_SCHEMA_VERSION = 3;
@@ -31,6 +38,62 @@ const PRIVATE_PROOF_VERSION = 2;
 const PRIVATE_PROOF_TAG = 'performance-wave-0-private-copy-v2';
 const INSPECTED_BASE_SHA = 'd370cc7bca56380457c147dc4c33637a0baedf68';
 const PRE_WAVE_0_HEAD = '377a0356fe884a5a95f234bd5d6f22240ca8052b';
+const S1_M0_SCHEMA_VERSION = 1;
+const S1_M0_BASELINE_SHA = 'f9eaa5f686e98d814c3e3ac29c2ff3cc3ba1e7aa';
+const S1_M0_SCAN_CONCURRENCY = 8;
+const S1_M0_QUERY_TEXT = Object.freeze({
+  absent: PROFILE_QUERY,
+  sparse: '__session_analyzer_s1_m0_sparse_hit__',
+  dense: '__session_analyzer_s1_m0_dense_hit__',
+});
+const S1_M0_QUERY_CLASSES = Object.freeze(Object.keys(S1_M0_QUERY_TEXT));
+const S1_M0_METRIC_FIELDS = Object.freeze([
+  'eligibleSessions',
+  'sessionsScanned',
+  'rowsScanned',
+  'structurallyEligibleRows',
+  'rowsHit',
+  'textChunksDecoded',
+  'identityTextChunks',
+  'gzipTextChunks',
+  'compressedTextBytes',
+  'uncompressedTextBytes',
+  'previewSearchInvocations',
+  'searchTextSearchInvocations',
+  'booleanHitChecks',
+  'previewMatchOccurrences',
+  'searchTextMatchOccurrences',
+  'fullOccurrenceIterations',
+  'matchingEvents',
+  'matchingSessions',
+  'latestEventSelections',
+  'latestEventComparisons',
+  'snippetHydrations',
+  'resultDtoConstructions',
+]);
+const S1_M0_CANDIDATE_FIELDS = Object.freeze([
+  'previewSearchInvocations',
+  'searchTextSearchInvocations',
+  'booleanHitChecks',
+  'firstMatchDetections',
+  'searchTextInvocationsAvoided',
+  'fullOccurrenceIterationsAvoided',
+  'rowHitMismatches',
+  'exactRowHitParity',
+  'exactProjectResultParity',
+]);
+const S1_M0_PHASE_FIELDS = Object.freeze([
+  'eligibleSessionSelection',
+  'packedMetadataTraversal',
+  'gzipDecodeOnly',
+  'frameStringMaterializationOnly',
+  'textDecodeMaterializationTraversal',
+  'currentFullOccurrenceHitDetection',
+  'shortCircuitBooleanHitDetection',
+  'resultAggregationLatestSelection',
+  'productionProjectScopeQuery',
+  'latestResultPresentationHydration',
+]);
 const SERVER_ARTIFACT_FIELDS = Object.freeze([
   'schemaVersion',
   'artifactKind',
@@ -148,6 +211,67 @@ function parseArgs(argv) {
   return { ...options, adapter };
 }
 
+function m0UsageError(message) {
+  const error = new Error(`${message}\nUsage: node scripts/project-query-store-profile.js --m0-q-scan <synthetic|private> [--source <codex|claude-code> --repo <path> --source-home <external-copy> --snapshot-group <opaque-label>] [--repeats <1..20>]`);
+  error.code = 'INVALID_PROFILE_ARGUMENT';
+  return error;
+}
+
+function parseM0Args(argv) {
+  const options = {
+    profileKind: '',
+    source: '',
+    repo: '',
+    sourceHome: '',
+    repeats: 5,
+    snapshotGroup: 'synthetic',
+  };
+  const allowed = new Set([
+    '--m0-q-scan', '--source', '--repo', '--source-home', '--repeats', '--snapshot-group',
+  ]);
+  for (let index = 0; index < argv.length; index += 1) {
+    const name = argv[index];
+    if (!allowed.has(name)) throw m0UsageError(`Unknown option: ${name}`);
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith('--')) throw m0UsageError(`Missing value for ${name}`);
+    index += 1;
+    if (name === '--m0-q-scan') options.profileKind = value;
+    if (name === '--source') options.source = normalizeSourceKind(value);
+    if (name === '--repo') options.repo = path.resolve(value);
+    if (name === '--source-home') options.sourceHome = path.resolve(value);
+    if (name === '--repeats') {
+      options.repeats = Number(value);
+      if (!Number.isSafeInteger(options.repeats) || options.repeats < 1 || options.repeats > 20) {
+        throw m0UsageError('--repeats must be an integer from 1 through 20');
+      }
+    }
+    if (name === '--snapshot-group') {
+      if (!/^[a-z0-9][a-z0-9-]{0,63}$/i.test(value)) {
+        throw m0UsageError('--snapshot-group must be an opaque alphanumeric/hyphen label of at most 64 characters');
+      }
+      options.snapshotGroup = value;
+    }
+  }
+  if (!['synthetic', 'private'].includes(options.profileKind)) {
+    throw m0UsageError('--m0-q-scan must be synthetic or private');
+  }
+  if (options.profileKind === 'synthetic') {
+    if (options.source || options.repo || options.sourceHome || options.snapshotGroup !== 'synthetic') {
+      throw m0UsageError('synthetic M0 profiling does not accept private-corpus options');
+    }
+    return { ...options, source: 'synthetic', adapter: null };
+  }
+  if (!options.source || !options.repo || !options.sourceHome) {
+    throw m0UsageError('private M0 profiling requires --source, --repo, and --source-home');
+  }
+  if (options.snapshotGroup === 'synthetic') {
+    throw m0UsageError('private M0 profiling requires an opaque --snapshot-group');
+  }
+  const adapter = getSourceAdapter(options.source);
+  if (!adapter) throw m0UsageError(`Unsupported source: ${options.source}`);
+  return { ...options, adapter };
+}
+
 function memorySample() {
   const memory = process.memoryUsage();
   return {
@@ -186,6 +310,850 @@ function timingStats(values) {
     minMs: sorted[0],
     maxMs: sorted[sorted.length - 1],
   };
+}
+
+async function m0TimeAsync(repeats, task) {
+  const values = [];
+  for (let repeat = 0; repeat < repeats; repeat += 1) {
+    const started = performance.now();
+    await task();
+    values.push(performance.now() - started);
+  }
+  return timingStats(values);
+}
+
+function m0TimeSync(repeats, task) {
+  const values = [];
+  for (let repeat = 0; repeat < repeats; repeat += 1) {
+    const started = performance.now();
+    task();
+    values.push(performance.now() - started);
+  }
+  return timingStats(values);
+}
+
+function createM0SyntheticIndex(options = {}) {
+  const sessionCount = options.sessionCount ?? 12;
+  const rowsPerSession = options.rowsPerSession ?? 768;
+  const sparseEvery = options.sparseEvery ?? 97;
+  const densePreviewOccurrences = options.densePreviewOccurrences ?? 8;
+  const denseSearchTextOccurrences = options.denseSearchTextOccurrences ?? 24;
+  for (const [name, value] of Object.entries({
+    sessionCount,
+    rowsPerSession,
+    sparseEvery,
+    densePreviewOccurrences,
+    denseSearchTextOccurrences,
+  })) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw m0UsageError(`Synthetic fixture ${name} must be a positive integer`);
+    }
+  }
+  const densePreview = Array(densePreviewOccurrences).fill(S1_M0_QUERY_TEXT.dense).join(' ');
+  const denseSearchText = Array(denseSearchTextOccurrences).fill(S1_M0_QUERY_TEXT.dense).join(' ');
+  const sessions = [];
+  let globalOrdinal = 0;
+  for (let sessionOrdinal = 0; sessionOrdinal < sessionCount; sessionOrdinal += 1) {
+    const logicalEvents = [];
+    for (let rowOrdinal = 0; rowOrdinal < rowsPerSession; rowOrdinal += 1) {
+      const sparseOrdinal = globalOrdinal % sparseEvery === 0
+        ? Math.floor(globalOrdinal / sparseEvery)
+        : -1;
+      const sparseInPreview = sparseOrdinal >= 0 && sparseOrdinal % 2 === 0;
+      const sparseInSearchText = sparseOrdinal >= 0 && !sparseInPreview;
+      const preview = [
+        'synthetic-preview',
+        densePreview,
+        sparseInPreview ? S1_M0_QUERY_TEXT.sparse : '',
+        'p'.repeat(320),
+      ].filter(Boolean).join(' ');
+      const searchText = [
+        'synthetic-search-text',
+        denseSearchText,
+        sparseInSearchText ? S1_M0_QUERY_TEXT.sparse : '',
+        's'.repeat(960),
+      ].filter(Boolean).join(' ');
+      logicalEvents.push({
+        id: `synthetic-event-${sessionOrdinal}-${rowOrdinal}`,
+        layer: 'main',
+        timestamp: new Date(Date.UTC(2026, 7, 31) + globalOrdinal * 1000).toISOString(),
+        kind: 'message',
+        subtype: 'assistant_message',
+        status: '',
+        toolName: '',
+        label: 'Synthetic Event',
+        preview,
+        searchText,
+        source: { file: 'synthetic-source' },
+        touchedFiles: [],
+        rawRefs: [],
+      });
+      globalOrdinal += 1;
+    }
+    sessions.push({
+      id: `synthetic-session-${sessionOrdinal}`,
+      logicalEvents,
+      rawEvents: [],
+    });
+  }
+  const projectQueryStore = buildProjectQueryStore(sessions);
+  const projectedSessions = sessions.map((session, sessionOrdinal) => ({
+    id: session.id,
+    sourceKind: 'codex',
+    sourceSessionId: session.id,
+    sourceDerivedId: '',
+    sourceClientVersion: '',
+    projectAssociation: '',
+    title: `Synthetic Session ${sessionOrdinal + 1}`,
+    sourceFile: 'synthetic-source',
+    bytes: session.logicalEvents.reduce((sum, event) => (
+      sum + Buffer.byteLength(event.preview, 'utf8') + Buffer.byteLength(event.searchText, 'utf8')
+    ), 0),
+    lineCount: rowsPerSession,
+    cwdSet: [],
+    parentSessionId: '',
+    parentSessionInferred: false,
+    forkedFromSessionId: '',
+    forkStorageMode: '',
+    forkedAt: '',
+    forkPointUuid: '',
+    forkContinuationState: '',
+    forkEvidence: null,
+    inheritedContext: null,
+    supersededBySessionId: '',
+    supersededAt: '',
+    supersededReason: '',
+    agentNickname: '',
+    primarySessionMetaKind: '',
+    derivedRunId: '',
+    derivedRelationship: null,
+    startedAt: session.logicalEvents[0]?.timestamp || '',
+    updatedAt: session.logicalEvents.at(-1)?.timestamp || '',
+    counts: {},
+    rawEventCount: 0,
+    logicalEventCount: rowsPerSession,
+    summary: {
+      topTools: [],
+      failedCommandCount: 0,
+      patchedFiles: [],
+      protocolCount: 0,
+    },
+    queryShardId: session.id,
+  }));
+  return {
+    sourceKind: 'codex',
+    repoRoot: 'synthetic-project',
+    sessions: projectedSessions,
+    sessionsById: new Map(projectedSessions.map((session) => [session.id, session])),
+    projectQueryStore,
+    materializationDependencies: new Map(),
+  };
+}
+
+function selectM0EligibleSessions(index, filters = {}) {
+  return (index.sessions || []).filter((session) => {
+    const activityAt = String(session.updatedAt || session.startedAt || '');
+    if (filters.from && activityAt < `${filters.from}T00:00:00.000Z`) return false;
+    if (filters.to && activityAt > `${filters.to}T23:59:59.999Z`) return false;
+    return true;
+  });
+}
+
+function m0LayerChunks(index, eligibleSessions, layer) {
+  const chunks = [];
+  for (const session of eligibleSessions) {
+    const shard = index.projectQueryStore.shardsBySessionId.get(session.id)?.[layer];
+    if (!shard) continue;
+    for (const chunk of shard.textChunks) chunks.push(chunk);
+  }
+  return chunks;
+}
+
+function m0LayerInventory(index, eligibleSessions, layer) {
+  const inventory = {
+    eligibleSessions: eligibleSessions.length,
+    sessionsScanned: eligibleSessions.length,
+    rowsScanned: 0,
+    structurallyEligibleRows: 0,
+    textChunksDecoded: 0,
+    identityTextChunks: 0,
+    gzipTextChunks: 0,
+    compressedTextBytes: 0,
+    uncompressedTextBytes: 0,
+  };
+  for (const session of eligibleSessions) {
+    const shard = index.projectQueryStore.shardsBySessionId.get(session.id)?.[layer];
+    if (!shard) continue;
+    inventory.rowsScanned += shard.rowCount;
+    inventory.structurallyEligibleRows += shard.rowCount;
+    for (const chunk of shard.textChunks) {
+      inventory.textChunksDecoded += 1;
+      if (chunk.codec === 'identity') inventory.identityTextChunks += 1;
+      if (chunk.codec === 'gzip-1') inventory.gzipTextChunks += 1;
+      inventory.compressedTextBytes += chunk.data.byteLength;
+      inventory.uncompressedTextBytes += chunk.uncompressedBytes;
+    }
+  }
+  return inventory;
+}
+
+async function scanM0Layer(index, eligibleSessions, layer, options, visit) {
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < eligibleSessions.length) {
+      options.signal?.throwIfAborted?.();
+      const sessionIndex = nextIndex;
+      nextIndex += 1;
+      const session = eligibleSessions[sessionIndex];
+      await scanProjectQueryShard(index.projectQueryStore, session.id, layer, options, (row, rowIndex) => {
+        visit(row, rowIndex, session, sessionIndex);
+      });
+    }
+  }
+  const workerCount = Math.min(S1_M0_SCAN_CONCURRENCY, eligibleSessions.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+}
+
+async function decodeM0GzipChunks(chunks) {
+  let nextIndex = 0;
+  let decodedBytes = 0;
+  async function worker() {
+    while (nextIndex < chunks.length) {
+      const chunkIndex = nextIndex;
+      nextIndex += 1;
+      const chunk = chunks[chunkIndex];
+      const decoded = await gunzipAsync(chunk.data);
+      if (decoded.length !== chunk.uncompressedBytes) {
+        throw new Error('M0 gzip-only decode observed an inflated length mismatch');
+      }
+      decodedBytes += decoded.length;
+    }
+  }
+  const workerCount = Math.min(S1_M0_SCAN_CONCURRENCY, chunks.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return decodedBytes;
+}
+
+function materializeM0FrameStrings(decodedChunks) {
+  let materializedCharacters = 0;
+  for (const descriptor of decodedChunks) {
+    const { buffer, chunk } = descriptor;
+    for (let localIndex = 0; localIndex < chunk.rowCount; localIndex += 1) {
+      const start = chunk.rowOffsets[localIndex];
+      const end = chunk.rowOffsets[localIndex + 1];
+      if (end - start < 8) throw new Error('M0 frame materialization observed a truncated frame');
+      const previewLength = buffer.readUInt32LE(start);
+      const searchLength = buffer.readUInt32LE(start + 4);
+      const previewStart = start + 8;
+      const searchStart = previewStart + previewLength;
+      if (searchStart + searchLength !== end) {
+        throw new Error('M0 frame materialization observed invalid frame lengths');
+      }
+      const preview = buffer.toString('utf8', previewStart, searchStart);
+      const searchText = buffer.toString('utf8', searchStart, end);
+      materializedCharacters += preview.length + searchText.length;
+    }
+  }
+  return materializedCharacters;
+}
+
+async function profileM0DecodePhases(chunks, repeats) {
+  const gzipChunks = chunks.filter((chunk) => chunk.codec === 'gzip-1');
+  let gzipDecodeOnly = null;
+  if (gzipChunks.length > 0) {
+    await decodeM0GzipChunks(gzipChunks);
+    gzipDecodeOnly = await m0TimeAsync(repeats, () => decodeM0GzipChunks(gzipChunks));
+  }
+  const decodedChunks = [];
+  for (const chunk of chunks) {
+    const buffer = chunk.codec === 'identity' ? chunk.data : await gunzipAsync(chunk.data);
+    if (buffer.length !== chunk.uncompressedBytes) {
+      throw new Error('M0 frame materialization setup observed an inflated length mismatch');
+    }
+    decodedChunks.push({ buffer, chunk });
+  }
+  materializeM0FrameStrings(decodedChunks);
+  const frameStringMaterializationOnly = m0TimeSync(
+    repeats,
+    () => materializeM0FrameStrings(decodedChunks),
+  );
+  return { gzipDecodeOnly, frameStringMaterializationOnly };
+}
+
+async function captureM0Rows(index, eligibleSessions, layer) {
+  const captured = eligibleSessions.map((session) => ({ session, rows: [] }));
+  await scanM0Layer(index, eligibleSessions, layer, { includeText: true }, (
+    row,
+    rowIndex,
+    _session,
+    sessionIndex,
+  ) => {
+    captured[sessionIndex].rows.push({ row, rowIndex });
+  });
+  return captured;
+}
+
+function m0SearchPhraseRegex(q, flags = '') {
+  const phrase = String(q || '').trim();
+  if (!phrase) return null;
+  const pattern = phrase
+    .split(/\s+/)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('\\s+');
+  return new RegExp(pattern, flags.includes('i') ? flags : `${flags}i`);
+}
+
+function m0CountSearchMatches(text, q) {
+  const regex = m0SearchPhraseRegex(q, 'g');
+  return regex ? [...String(text || '').matchAll(regex)].length : 0;
+}
+
+function m0CurrentEventHasSearchHit(row, q) {
+  return Math.max(
+    m0CountSearchMatches(row.preview, q),
+    m0CountSearchMatches(row.searchText, q),
+  ) > 0;
+}
+
+function m0BooleanSearch(text, q) {
+  const regex = m0SearchPhraseRegex(q);
+  return regex ? regex.test(String(text || '')) : true;
+}
+
+function m0ShortCircuitEventHasSearchHit(row, q) {
+  return m0BooleanSearch(row.preview, q) || m0BooleanSearch(row.searchText, q);
+}
+
+function evaluateM0Matchers(captured, q) {
+  const current = {
+    previewSearchInvocations: 0,
+    searchTextSearchInvocations: 0,
+    booleanHitChecks: 0,
+    previewMatchOccurrences: 0,
+    searchTextMatchOccurrences: 0,
+    fullOccurrenceIterations: 0,
+  };
+  const candidate = {
+    previewSearchInvocations: 0,
+    searchTextSearchInvocations: 0,
+    booleanHitChecks: 0,
+    firstMatchDetections: 0,
+    searchTextInvocationsAvoided: 0,
+    fullOccurrenceIterationsAvoided: 0,
+    rowHitMismatches: 0,
+    exactRowHitParity: false,
+    exactProjectResultParity: false,
+  };
+  const currentHits = captured.map(() => []);
+  const candidateHits = captured.map(() => []);
+  for (let sessionIndex = 0; sessionIndex < captured.length; sessionIndex += 1) {
+    for (const { row } of captured[sessionIndex].rows) {
+      current.booleanHitChecks += 1;
+      current.previewSearchInvocations += 1;
+      const previewOccurrences = m0CountSearchMatches(row.preview, q);
+      current.previewMatchOccurrences += previewOccurrences;
+      current.searchTextSearchInvocations += 1;
+      const searchTextOccurrences = m0CountSearchMatches(row.searchText, q);
+      current.searchTextMatchOccurrences += searchTextOccurrences;
+      const currentHit = Math.max(previewOccurrences, searchTextOccurrences) > 0;
+      currentHits[sessionIndex].push(currentHit);
+
+      candidate.booleanHitChecks += 1;
+      candidate.previewSearchInvocations += 1;
+      let candidateHit = m0BooleanSearch(row.preview, q);
+      if (!candidateHit) {
+        candidate.searchTextSearchInvocations += 1;
+        candidateHit = m0BooleanSearch(row.searchText, q);
+      }
+      if (candidateHit) candidate.firstMatchDetections += 1;
+      candidateHits[sessionIndex].push(candidateHit);
+      if (candidateHit !== currentHit) candidate.rowHitMismatches += 1;
+    }
+  }
+  current.fullOccurrenceIterations = current.previewMatchOccurrences
+    + current.searchTextMatchOccurrences;
+  candidate.searchTextInvocationsAvoided = current.searchTextSearchInvocations
+    - candidate.searchTextSearchInvocations;
+  candidate.fullOccurrenceIterationsAvoided = Math.max(
+    0,
+    current.fullOccurrenceIterations - candidate.firstMatchDetections,
+  );
+  candidate.exactRowHitParity = candidate.rowHitMismatches === 0;
+  return { current, candidate, currentHits, candidateHits };
+}
+
+function m0AggregateHits(captured, hitsBySession) {
+  const results = [];
+  let matchingEvents = 0;
+  let latestEventSelections = 0;
+  let latestEventComparisons = 0;
+  for (let sessionIndex = 0; sessionIndex < captured.length; sessionIndex += 1) {
+    const { session, rows } = captured[sessionIndex];
+    let eventCount = 0;
+    let latest = null;
+    for (let timelineIndex = 0; timelineIndex < rows.length; timelineIndex += 1) {
+      if (!hitsBySession[sessionIndex][timelineIndex]) continue;
+      const candidate = { ...rows[timelineIndex], timelineIndex };
+      eventCount += 1;
+      matchingEvents += 1;
+      if (!latest) {
+        latest = candidate;
+        latestEventSelections += 1;
+        continue;
+      }
+      latestEventComparisons += 1;
+      if (String(candidate.row.timestamp).localeCompare(String(latest.row.timestamp)) > 0
+          || (candidate.row.timestamp === latest.row.timestamp
+            && candidate.timelineIndex > latest.timelineIndex)) {
+        latest = candidate;
+        latestEventSelections += 1;
+      }
+    }
+    if (latest) results.push({ session, eventCount, latest });
+  }
+  results.sort((left, right) => {
+    const timestampOrder = String(right.latest.row.timestamp)
+      .localeCompare(String(left.latest.row.timestamp));
+    if (timestampOrder) return timestampOrder;
+    const timelineOrder = right.latest.timelineIndex - left.latest.timelineIndex;
+    if (timelineOrder) return timelineOrder;
+    return String(left.session.id).localeCompare(String(right.session.id));
+  });
+  return {
+    matchingEvents,
+    matchingSessions: results.length,
+    latestEventSelections,
+    latestEventComparisons,
+    snippetHydrations: results.length,
+    resultDtoConstructions: results.length,
+    signature: {
+      total: results.length,
+      matchingEventTotal: matchingEvents,
+      sessions: results.map(({ session, eventCount, latest }) => ({
+        sessionId: session.id,
+        eventCount,
+        eventId: latest.row.eventId,
+        timestamp: latest.row.timestamp,
+        timelineIndex: latest.timelineIndex,
+      })),
+    },
+  };
+}
+
+function m0ProductionSignature(result) {
+  return {
+    total: result.total,
+    matchingEventTotal: result.matchingEventTotal,
+    sessions: result.sessions.map((session) => ({
+      sessionId: session.id,
+      eventCount: session.searchMatch.eventCount,
+      eventId: session.searchMatch.latestEvent.id,
+      timestamp: session.searchMatch.latestEvent.timestamp,
+      timelineIndex: session.searchMatch.latestEvent.timelineIndex,
+    })),
+  };
+}
+
+function timeM0Matcher(rows, q, matcher, repeats) {
+  let checksum = 0;
+  const run = () => {
+    let hits = 0;
+    for (const row of rows) {
+      if (matcher(row, q)) hits += 1;
+    }
+    checksum ^= hits;
+  };
+  run();
+  const result = m0TimeSync(repeats, run);
+  if (checksum < 0) throw new Error('M0 matcher checksum is invalid');
+  return result;
+}
+
+async function profileM0QueryClass({
+  index,
+  query,
+  layer,
+  queryClass,
+  q,
+  repeats,
+  captured,
+  inventory,
+  traversalTimings,
+}) {
+  const evaluated = evaluateM0Matchers(captured, q);
+  const currentAggregate = m0AggregateHits(captured, evaluated.currentHits);
+  const candidateAggregate = m0AggregateHits(captured, evaluated.candidateHits);
+  const rows = captured.flatMap((entry) => entry.rows.map(({ row }) => row));
+  const currentFullOccurrenceHitDetection = timeM0Matcher(
+    rows,
+    q,
+    m0CurrentEventHasSearchHit,
+    repeats,
+  );
+  const shortCircuitBooleanHitDetection = timeM0Matcher(
+    rows,
+    q,
+    m0ShortCircuitEventHasSearchHit,
+    repeats,
+  );
+  m0AggregateHits(captured, evaluated.currentHits);
+  const resultAggregationLatestSelection = m0TimeSync(
+    repeats,
+    () => m0AggregateHits(captured, evaluated.currentHits),
+  );
+  const filters = { q, layer, locale: 'en' };
+  await query.filterSessions(index, filters);
+  let productionResult = null;
+  const productionProjectScopeQuery = await m0TimeAsync(repeats, async () => {
+    productionResult = await query.filterSessions(index, filters);
+  });
+  const profilerModelMatchesProduction = JSON.stringify(currentAggregate.signature)
+    === JSON.stringify(m0ProductionSignature(productionResult));
+  const shortCircuitMatchesCurrent = evaluated.candidate.exactRowHitParity
+    && JSON.stringify(currentAggregate.signature) === JSON.stringify(candidateAggregate.signature);
+  evaluated.candidate.exactProjectResultParity = profilerModelMatchesProduction
+    && shortCircuitMatchesCurrent;
+  return {
+    metrics: {
+      ...inventory,
+      rowsHit: currentAggregate.matchingEvents,
+      previewSearchInvocations: evaluated.current.previewSearchInvocations,
+      searchTextSearchInvocations: evaluated.current.searchTextSearchInvocations,
+      booleanHitChecks: evaluated.current.booleanHitChecks,
+      previewMatchOccurrences: evaluated.current.previewMatchOccurrences,
+      searchTextMatchOccurrences: evaluated.current.searchTextMatchOccurrences,
+      fullOccurrenceIterations: evaluated.current.fullOccurrenceIterations,
+      matchingEvents: currentAggregate.matchingEvents,
+      matchingSessions: currentAggregate.matchingSessions,
+      latestEventSelections: currentAggregate.latestEventSelections,
+      latestEventComparisons: currentAggregate.latestEventComparisons,
+      snippetHydrations: currentAggregate.snippetHydrations,
+      resultDtoConstructions: currentAggregate.resultDtoConstructions,
+    },
+    candidateAssessment: evaluated.candidate,
+    phaseTimings: {
+      ...traversalTimings,
+      currentFullOccurrenceHitDetection,
+      shortCircuitBooleanHitDetection,
+      resultAggregationLatestSelection,
+      productionProjectScopeQuery,
+      latestResultPresentationHydration: null,
+    },
+    parity: {
+      profilerModelMatchesProduction,
+      shortCircuitMatchesCurrent,
+    },
+  };
+}
+
+async function profileM0Layer(
+  index,
+  layer,
+  queryClasses,
+  repeats,
+  queryTexts = S1_M0_QUERY_TEXT,
+) {
+  const filters = { layer };
+  selectM0EligibleSessions(index, filters);
+  const eligibleSessionSelection = m0TimeSync(
+    repeats,
+    () => selectM0EligibleSessions(index, filters),
+  );
+  const eligibleSessions = selectM0EligibleSessions(index, filters);
+  const inventory = m0LayerInventory(index, eligibleSessions, layer);
+  await scanM0Layer(index, eligibleSessions, layer, { includeText: false }, () => {});
+  const packedMetadataTraversal = await m0TimeAsync(repeats, () => (
+    scanM0Layer(index, eligibleSessions, layer, { includeText: false }, () => {})
+  ));
+  await scanM0Layer(index, eligibleSessions, layer, { includeText: true }, () => {});
+  const textDecodeMaterializationTraversal = await m0TimeAsync(repeats, () => (
+    scanM0Layer(index, eligibleSessions, layer, { includeText: true }, () => {})
+  ));
+  const chunks = m0LayerChunks(index, eligibleSessions, layer);
+  const decodePhases = await profileM0DecodePhases(chunks, repeats);
+  const captured = await captureM0Rows(index, eligibleSessions, layer);
+  const query = queryForIndex(index);
+  const traversalTimings = {
+    eligibleSessionSelection,
+    packedMetadataTraversal,
+    gzipDecodeOnly: decodePhases.gzipDecodeOnly,
+    frameStringMaterializationOnly: decodePhases.frameStringMaterializationOnly,
+    textDecodeMaterializationTraversal,
+  };
+  const profiledClasses = {};
+  for (const queryClass of queryClasses) {
+    profiledClasses[queryClass] = await profileM0QueryClass({
+      index,
+      query,
+      layer,
+      queryClass,
+      q: queryTexts[queryClass],
+      repeats,
+      captured,
+      inventory,
+      traversalTimings,
+    });
+  }
+  return { queryClasses: profiledClasses };
+}
+
+async function profileM0Abort(index, layer, q = S1_M0_QUERY_TEXT.absent) {
+  const query = queryForIndex(index);
+  const controller = new AbortController();
+  let completedRows = 0;
+  let completedChunks = 0;
+  let decodedTextChunks = 0;
+  let rowsProcessedBeforeAbort = 0;
+  let textChunksProcessedBeforeAbort = 0;
+  let textChunksDecodedBeforeAbort = 0;
+  let abortRequestedAt = 0;
+  let abortObserved = false;
+  try {
+    await query.filterSessions(index, {
+      q,
+      layer,
+      locale: 'en',
+    }, {
+      signal: controller.signal,
+      onTextChunk() {
+        decodedTextChunks += 1;
+      },
+      onChunk({ rowCount }) {
+        completedChunks += 1;
+        completedRows += rowCount;
+        if (abortRequestedAt !== 0) return;
+        rowsProcessedBeforeAbort = completedRows;
+        textChunksProcessedBeforeAbort = completedChunks;
+        textChunksDecodedBeforeAbort = decodedTextChunks;
+        abortRequestedAt = performance.now();
+        controller.abort();
+      },
+    });
+  } catch (error) {
+    abortObserved = error?.name === 'AbortError' && controller.signal.aborted;
+    if (!abortObserved) throw error;
+  }
+  const settledAt = performance.now();
+  return {
+    layer,
+    abortRequested: abortRequestedAt !== 0,
+    abortObserved,
+    rowsProcessedBeforeAbort,
+    textChunksProcessedBeforeAbort,
+    textChunksDecodedBeforeAbort,
+    abortToSettlementMs: abortRequestedAt === 0 ? 0 : settledAt - abortRequestedAt,
+  };
+}
+
+function m0CorpusFacts(index) {
+  return {
+    sourceKind: index.sourceKind,
+    sessionCount: index.sessions.length,
+    rowCounts: aggregateRows(index.projectQueryStore),
+    sourceBytes: index.sessions.reduce((sum, session) => sum + Number(session.bytes || 0), 0),
+    dependencyCount: index.materializationDependencies instanceof Map
+      ? index.materializationDependencies.size
+      : 0,
+    queryStoreAccountedBytes: Number(index.projectQueryStore.accountedBytes || 0),
+  };
+}
+
+function m0ArtifactOptions(options, layers, queryClasses) {
+  return {
+    source: options.source,
+    repo: options.profileKind === 'private' ? '<redacted>' : '<synthetic>',
+    sourceHome: options.profileKind === 'private' ? '<redacted>' : '<synthetic>',
+    repeats: options.repeats,
+    layers,
+    queryClasses,
+  };
+}
+
+function m0StructuralAcceptance(layers, abort) {
+  const queryResults = Object.values(layers).flatMap((layer) => (
+    Object.entries(layer.queryClasses)
+  ));
+  return abort.abortRequested === true
+    && abort.abortObserved === true
+    && queryResults.length > 0
+    && queryResults.every(([queryClass, result]) => (
+      (queryClass !== 'absent' || result.metrics.rowsHit === 0)
+      && result.metrics.matchingEvents === result.metrics.rowsHit
+      && result.parity.profilerModelMatchesProduction === true
+      && result.parity.shortCircuitMatchesCurrent === true
+      && result.candidateAssessment.exactProjectResultParity === true
+    ));
+}
+
+function createM0Artifact({
+  options,
+  index,
+  layers,
+  queryClasses,
+  snapshotProof,
+  fixtureShape,
+  abort,
+}) {
+  const layerNames = Object.keys(layers);
+  const sourceSnapshotUnchanged = snapshotProof ? snapshotProof.allMatched : null;
+  const artifact = {
+    schemaVersion: S1_M0_SCHEMA_VERSION,
+    artifactKind: 'performance-server-s1-project-q-scan-m0',
+    baselineSha: S1_M0_BASELINE_SHA,
+    corpusKind: options.profileKind === 'private' ? 'private-copy' : 'synthetic',
+    recordedAt: new Date().toISOString(),
+    runtime: {
+      node: process.version,
+      platform: process.platform,
+      architecture: os.arch(),
+      cpuCount: os.cpus().length,
+    },
+    semantics: {
+      requirement: 'boolean-hit-per-event',
+      currentImplementation: 'full-occurrence-count-both-fields',
+      projectWideOccurrenceCountRequired: false,
+    },
+    options: m0ArtifactOptions(options, layerNames, queryClasses),
+    snapshotProof,
+    corpus: m0CorpusFacts(index),
+    fixtureShape,
+    layers,
+    abort,
+    privacy: {
+      contentFree: true,
+      queryTextPersisted: false,
+      externalPrivateCopy: options.profileKind === 'private',
+      sourceSnapshotUnchanged,
+    },
+    acceptance: {
+      structural: m0StructuralAcceptance(layers, abort),
+      privacyAuditPassed: true,
+      numericalLatencyGate: false,
+    },
+  };
+  validateM0Artifact(artifact);
+  return artifact;
+}
+
+async function profileM0Synthetic(options = {}) {
+  const repeats = options.repeats ?? 5;
+  const fixtureOptions = options.fixtureOptions || {};
+  const normalizedOptions = {
+    profileKind: 'synthetic',
+    source: 'synthetic',
+    repeats,
+  };
+  const fixtureShape = {
+    sessionCount: fixtureOptions.sessionCount ?? 12,
+    rowsPerSession: fixtureOptions.rowsPerSession ?? 768,
+    sparseEvery: fixtureOptions.sparseEvery ?? 97,
+    densePreviewOccurrences: fixtureOptions.densePreviewOccurrences ?? 8,
+    denseSearchTextOccurrences: fixtureOptions.denseSearchTextOccurrences ?? 24,
+  };
+  const index = createM0SyntheticIndex(fixtureShape);
+  const layers = {
+    main: await profileM0Layer(index, 'main', S1_M0_QUERY_CLASSES, repeats),
+  };
+  const abort = await profileM0Abort(index, 'main');
+  return createM0Artifact({
+    options: normalizedOptions,
+    index,
+    layers,
+    queryClasses: S1_M0_QUERY_CLASSES,
+    snapshotProof: null,
+    fixtureShape,
+    abort,
+  });
+}
+
+async function requireM0ExternalPrivateCopy(options) {
+  const { canonicalRoot } = await enumeratePrivateSnapshotFiles(options.sourceHome);
+  let canonicalLiveHome;
+  try {
+    canonicalLiveHome = await fsp.realpath(options.adapter.defaultHome());
+  } catch (error) {
+    const wrapped = new Error('M0 private-copy live-home validation failed');
+    wrapped.code = 'M0_PRIVATE_COPY_INVALID';
+    throw wrapped;
+  }
+  if (canonicalPathInsideOrSame(canonicalRoot, canonicalLiveHome)
+      || canonicalPathInsideOrSame(canonicalLiveHome, canonicalRoot)) {
+    const error = new Error('M0 private-copy input overlaps the adapter live home');
+    error.code = 'M0_PRIVATE_COPY_INVALID';
+    throw error;
+  }
+  return canonicalRoot;
+}
+
+function deriveM0PrivateAbsentQuery(referenceProof) {
+  const opaque = crypto.createHash('sha256')
+    .update('performance-server-s1-m0-private-absent-v1', 'utf8')
+    .update(referenceProof, 'utf8')
+    .digest('hex');
+  return `__session_analyzer_s1_m0_private_absent_${opaque}__`;
+}
+
+async function profileM0Private(options) {
+  await requireM0ExternalPrivateCopy(options);
+  const referenceProof = await computePrivateSnapshotDigest(options.sourceHome);
+  const privateAbsentQuery = deriveM0PrivateAbsentQuery(referenceProof);
+  const privateQueryTexts = { absent: privateAbsentQuery };
+  const index = await options.adapter.buildIndex({
+    repoRoot: options.repo,
+    sourceKind: options.source,
+    sourceHome: options.sourceHome,
+  });
+  await validateIndexOwnershipForCommit(index);
+  const afterBuildProof = await computePrivateSnapshotDigest(options.sourceHome);
+  const rowCounts = aggregateRows(index.projectQueryStore);
+  if (index.sessions.length === 0 || PROFILE_LAYERS.every((layer) => rowCounts[layer] === 0)) {
+    const error = new Error('M0 private-copy corpus has no eligible Project Scope rows');
+    error.code = 'M0_PRIVATE_CORPUS_EMPTY';
+    throw error;
+  }
+  const layers = {};
+  for (const layer of PROFILE_LAYERS) {
+    layers[layer] = await profileM0Layer(
+      index,
+      layer,
+      ['absent'],
+      options.repeats,
+      privateQueryTexts,
+    );
+  }
+  const abortLayer = PROFILE_LAYERS.find((layer) => rowCounts[layer] > 0);
+  const abort = await profileM0Abort(index, abortLayer, privateAbsentQuery);
+  const afterProfileProof = await computePrivateSnapshotDigest(options.sourceHome);
+  const snapshotProof = snapshotProofVerdict(
+    referenceProof,
+    [afterBuildProof, afterProfileProof],
+    options.snapshotGroup,
+  );
+  if (!snapshotProof.allMatched) {
+    const error = new Error('M0 private-copy snapshot changed during profiling');
+    error.code = 'M0_PRIVATE_SNAPSHOT_CHANGED';
+    throw error;
+  }
+  const artifact = createM0Artifact({
+    options,
+    index,
+    layers,
+    queryClasses: ['absent'],
+    snapshotProof,
+    fixtureShape: null,
+    abort,
+  });
+  if (JSON.stringify(artifact).includes(privateAbsentQuery)) {
+    const error = new Error('M0 private artifact persisted the opaque absent query');
+    error.code = 'M0_PRIVATE_QUERY_LEAK';
+    throw error;
+  }
+  return artifact;
+}
+
+async function profileM0(options) {
+  if (options.profileKind === 'synthetic') return profileM0Synthetic(options);
+  return profileM0Private(options);
 }
 
 function aggregateRows(store) {
@@ -617,6 +1585,227 @@ function validatePrivateArtifact(artifact) {
       || !/^[0-9a-f]{64}$/.test(artifact.identity.profiledTrackedDiffSha256AtRun)
       || !/^[0-9a-f]{64}$/.test(artifact.identity.profiledImplementationTreeHash)) {
     throw new Error('Private artifact capture identity is invalid');
+  }
+  assertNoPrivateLeak(artifact);
+  return true;
+}
+
+function validateM0Timing(value, label, repeatCount) {
+  validateTimingStats(value, label);
+  if (!Number.isSafeInteger(value.repeatCount) || value.repeatCount !== repeatCount) {
+    throw new Error(`M0 artifact ${label}.repeatCount is invalid`);
+  }
+  for (const field of ['medianMs', 'minMs', 'maxMs']) {
+    if (!Number.isFinite(value[field]) || value[field] < 0) {
+      throw new Error(`M0 artifact ${label}.${field} is invalid`);
+    }
+  }
+}
+
+function validateM0Artifact(artifact) {
+  assertClosedKeys(artifact, [
+    'schemaVersion', 'artifactKind', 'baselineSha', 'corpusKind', 'recordedAt', 'runtime',
+    'semantics', 'options', 'snapshotProof', 'corpus', 'fixtureShape', 'layers', 'abort',
+    'privacy', 'acceptance',
+  ], 'M0 top level');
+  if (artifact.schemaVersion !== S1_M0_SCHEMA_VERSION
+      || artifact.artifactKind !== 'performance-server-s1-project-q-scan-m0'
+      || artifact.baselineSha !== S1_M0_BASELINE_SHA
+      || !['synthetic', 'private-copy'].includes(artifact.corpusKind)
+      || Number.isNaN(Date.parse(artifact.recordedAt))) {
+    throw new Error('M0 artifact identity is invalid');
+  }
+  assertClosedKeys(artifact.runtime, [
+    'node', 'platform', 'architecture', 'cpuCount',
+  ], 'M0 runtime');
+  assertClosedKeys(artifact.semantics, [
+    'requirement', 'currentImplementation', 'projectWideOccurrenceCountRequired',
+  ], 'M0 semantics');
+  if (artifact.semantics.requirement !== 'boolean-hit-per-event'
+      || artifact.semantics.currentImplementation !== 'full-occurrence-count-both-fields'
+      || artifact.semantics.projectWideOccurrenceCountRequired !== false) {
+    throw new Error('M0 artifact semantic identity is invalid');
+  }
+  assertClosedKeys(artifact.options, [
+    'source', 'repo', 'sourceHome', 'repeats', 'layers', 'queryClasses',
+  ], 'M0 options');
+  if (!Number.isSafeInteger(artifact.options.repeats)
+      || artifact.options.repeats < 1
+      || artifact.options.repeats > 20
+      || !Array.isArray(artifact.options.layers)
+      || !Array.isArray(artifact.options.queryClasses)
+      || artifact.options.layers.some((layer) => !PROFILE_LAYERS.includes(layer))
+      || artifact.options.queryClasses.some((queryClass) => !S1_M0_QUERY_CLASSES.includes(queryClass))) {
+    throw new Error('M0 artifact options are invalid');
+  }
+  if (artifact.corpusKind === 'private-copy') {
+    assertClosedKeys(artifact.snapshotProof, [
+      'proofVersion', 'algorithm', 'group', 'checkpointCount', 'allMatched', 'matches',
+    ], 'M0 snapshotProof');
+    if (artifact.snapshotProof.proofVersion !== PRIVATE_PROOF_VERSION
+        || artifact.snapshotProof.algorithm !== 'SHA-256'
+        || artifact.snapshotProof.checkpointCount !== 2
+        || artifact.snapshotProof.allMatched !== true
+        || JSON.stringify(artifact.snapshotProof.matches) !== JSON.stringify([true, true])) {
+      throw new Error('M0 artifact private snapshot proof is invalid');
+    }
+  } else if (artifact.snapshotProof !== null) {
+    throw new Error('M0 synthetic artifact must not contain private snapshot proof');
+  }
+  assertClosedKeys(artifact.corpus, [
+    'sourceKind', 'sessionCount', 'rowCounts', 'sourceBytes', 'dependencyCount',
+    'queryStoreAccountedBytes',
+  ], 'M0 corpus');
+  assertClosedKeys(artifact.corpus.rowCounts, PROFILE_LAYERS, 'M0 corpus.rowCounts');
+  for (const [field, value] of Object.entries({
+    sessionCount: artifact.corpus.sessionCount,
+    sourceBytes: artifact.corpus.sourceBytes,
+    dependencyCount: artifact.corpus.dependencyCount,
+    queryStoreAccountedBytes: artifact.corpus.queryStoreAccountedBytes,
+    ...artifact.corpus.rowCounts,
+  })) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`M0 artifact corpus ${field} is invalid`);
+    }
+  }
+  if (artifact.fixtureShape !== null) {
+    assertClosedKeys(artifact.fixtureShape, [
+      'sessionCount', 'rowsPerSession', 'sparseEvery', 'densePreviewOccurrences',
+      'denseSearchTextOccurrences',
+    ], 'M0 fixtureShape');
+    if (Object.values(artifact.fixtureShape).some((value) => (
+      !Number.isSafeInteger(value) || value < 1
+    ))) {
+      throw new Error('M0 artifact fixtureShape is invalid');
+    }
+  } else if (artifact.corpusKind !== 'private-copy') {
+    throw new Error('M0 synthetic artifact requires fixtureShape');
+  }
+  assertClosedKeys(artifact.layers, artifact.options.layers, 'M0 layers');
+  for (const layer of artifact.options.layers) {
+    assertClosedKeys(artifact.layers[layer], ['queryClasses'], `M0 layers.${layer}`);
+    assertClosedKeys(
+      artifact.layers[layer].queryClasses,
+      artifact.options.queryClasses,
+      `M0 layers.${layer}.queryClasses`,
+    );
+    for (const queryClass of artifact.options.queryClasses) {
+      const result = artifact.layers[layer].queryClasses[queryClass];
+      const label = `M0 layers.${layer}.queryClasses.${queryClass}`;
+      assertClosedKeys(result, [
+        'metrics', 'candidateAssessment', 'phaseTimings', 'parity',
+      ], label);
+      assertClosedKeys(result.metrics, S1_M0_METRIC_FIELDS, `${label}.metrics`);
+      for (const [field, value] of Object.entries(result.metrics)) {
+        if (!Number.isSafeInteger(value) || value < 0) {
+          throw new Error(`M0 artifact ${label}.metrics.${field} is invalid`);
+        }
+      }
+      if ((queryClass === 'absent' && result.metrics.rowsHit !== 0)
+          || result.metrics.rowsScanned !== result.metrics.structurallyEligibleRows
+          || result.metrics.textChunksDecoded !== (
+            result.metrics.identityTextChunks + result.metrics.gzipTextChunks
+          )
+          || result.metrics.booleanHitChecks !== result.metrics.structurallyEligibleRows
+          || result.metrics.previewSearchInvocations !== result.metrics.booleanHitChecks
+          || result.metrics.searchTextSearchInvocations !== result.metrics.booleanHitChecks
+          || result.metrics.fullOccurrenceIterations !== (
+            result.metrics.previewMatchOccurrences + result.metrics.searchTextMatchOccurrences
+          )
+          || result.metrics.rowsHit !== result.metrics.matchingEvents
+          || result.metrics.snippetHydrations !== result.metrics.matchingSessions
+          || result.metrics.resultDtoConstructions !== result.metrics.matchingSessions) {
+        throw new Error(`M0 artifact ${label}.metrics cross-field accounting is invalid`);
+      }
+      assertClosedKeys(
+        result.candidateAssessment,
+        S1_M0_CANDIDATE_FIELDS,
+        `${label}.candidateAssessment`,
+      );
+      for (const field of S1_M0_CANDIDATE_FIELDS) {
+        const value = result.candidateAssessment[field];
+        if (field.startsWith('exact')) {
+          if (typeof value !== 'boolean') {
+            throw new Error(`M0 artifact ${label}.candidateAssessment.${field} is invalid`);
+          }
+        } else if (!Number.isSafeInteger(value) || value < 0) {
+          throw new Error(`M0 artifact ${label}.candidateAssessment.${field} is invalid`);
+        }
+      }
+      if (result.candidateAssessment.booleanHitChecks !== result.metrics.booleanHitChecks
+          || result.candidateAssessment.previewSearchInvocations
+            !== result.candidateAssessment.booleanHitChecks
+          || result.candidateAssessment.searchTextSearchInvocations
+            + result.candidateAssessment.searchTextInvocationsAvoided
+            !== result.metrics.searchTextSearchInvocations
+          || result.candidateAssessment.fullOccurrenceIterationsAvoided
+            > result.metrics.fullOccurrenceIterations
+          || result.candidateAssessment.rowHitMismatches !== 0
+          || result.candidateAssessment.exactRowHitParity !== true
+          || result.candidateAssessment.exactProjectResultParity !== true) {
+        throw new Error(`M0 artifact ${label}.candidateAssessment accounting is invalid`);
+      }
+      assertClosedKeys(result.phaseTimings, S1_M0_PHASE_FIELDS, `${label}.phaseTimings`);
+      for (const field of S1_M0_PHASE_FIELDS) {
+        const value = result.phaseTimings[field];
+        if (value === null) {
+          if (!['gzipDecodeOnly', 'latestResultPresentationHydration'].includes(field)) {
+            throw new Error(`M0 artifact ${label}.phaseTimings.${field} cannot be null`);
+          }
+          continue;
+        }
+        validateM0Timing(value, `${label}.phaseTimings.${field}`, artifact.options.repeats);
+      }
+      assertClosedKeys(
+        result.parity,
+        ['profilerModelMatchesProduction', 'shortCircuitMatchesCurrent'],
+        `${label}.parity`,
+      );
+      if (result.parity.profilerModelMatchesProduction !== true
+          || result.parity.shortCircuitMatchesCurrent !== true) {
+        throw new Error(`M0 artifact ${label} parity failed`);
+      }
+    }
+  }
+  assertClosedKeys(artifact.abort, [
+    'layer', 'abortRequested', 'abortObserved', 'rowsProcessedBeforeAbort',
+    'textChunksProcessedBeforeAbort', 'textChunksDecodedBeforeAbort',
+    'abortToSettlementMs',
+  ], 'M0 abort');
+  if (!PROFILE_LAYERS.includes(artifact.abort.layer)
+      || artifact.abort.abortRequested !== true
+      || artifact.abort.abortObserved !== true
+      || !Number.isSafeInteger(artifact.abort.rowsProcessedBeforeAbort)
+      || artifact.abort.rowsProcessedBeforeAbort < 0
+      || !Number.isSafeInteger(artifact.abort.textChunksProcessedBeforeAbort)
+      || artifact.abort.textChunksProcessedBeforeAbort < 0
+      || !Number.isSafeInteger(artifact.abort.textChunksDecodedBeforeAbort)
+      || artifact.abort.textChunksDecodedBeforeAbort < 0
+      || !Number.isFinite(artifact.abort.abortToSettlementMs)
+      || artifact.abort.abortToSettlementMs < 0) {
+    throw new Error('M0 artifact abort result is invalid');
+  }
+  assertClosedKeys(artifact.privacy, [
+    'contentFree', 'queryTextPersisted', 'externalPrivateCopy', 'sourceSnapshotUnchanged',
+  ], 'M0 privacy');
+  const privateArtifact = artifact.corpusKind === 'private-copy';
+  if (artifact.privacy.contentFree !== true
+      || artifact.privacy.queryTextPersisted !== false
+      || artifact.privacy.externalPrivateCopy !== privateArtifact
+      || artifact.privacy.sourceSnapshotUnchanged !== (privateArtifact ? true : null)) {
+    throw new Error('M0 artifact privacy result is invalid');
+  }
+  assertClosedKeys(artifact.acceptance, [
+    'structural', 'privacyAuditPassed', 'numericalLatencyGate',
+  ], 'M0 acceptance');
+  if (artifact.acceptance.structural !== true
+      || artifact.acceptance.privacyAuditPassed !== true
+      || artifact.acceptance.numericalLatencyGate !== false) {
+    throw new Error('M0 artifact acceptance failed');
+  }
+  const serialized = JSON.stringify(artifact);
+  if (Object.values(S1_M0_QUERY_TEXT).some((queryText) => serialized.includes(queryText))) {
+    throw new Error('M0 artifact persisted query text');
   }
   assertNoPrivateLeak(artifact);
   return true;
@@ -1245,8 +2434,9 @@ async function profile(options) {
 }
 
 async function main(argv = process.argv.slice(2)) {
-  const options = parseArgs(argv);
-  const result = await profile(options);
+  const m0Mode = argv.includes('--m0-q-scan');
+  const options = m0Mode ? parseM0Args(argv) : parseArgs(argv);
+  const result = m0Mode ? await profileM0(options) : await profile(options);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
@@ -1257,9 +2447,19 @@ function privateCliErrorLine(error) {
   return `PERFORMANCE_WAVE_0_ERROR:${code}\n`;
 }
 
+function m0CliErrorLine(error) {
+  const code = error?.code === 'INVALID_PROFILE_ARGUMENT'
+    ? 'INVALID_PROFILE_ARGUMENT'
+    : 'M0_PROFILE_FAILURE';
+  return `PERFORMANCE_SERVER_S1_M0_ERROR:${code}\n`;
+}
+
 if (require.main === module) {
-  main().catch((error) => {
-    process.stderr.write(privateCliErrorLine(error));
+  const argv = process.argv.slice(2);
+  main(argv).catch((error) => {
+    process.stderr.write(argv.includes('--m0-q-scan')
+      ? m0CliErrorLine(error)
+      : privateCliErrorLine(error));
     process.exitCode = 1;
   });
 }
@@ -1267,17 +2467,25 @@ if (require.main === module) {
 module.exports = {
   PROFILE_SCHEMA_VERSION,
   PRIVATE_PROOF_VERSION,
+  S1_M0_BASELINE_SHA,
+  S1_M0_SCHEMA_VERSION,
   assertNoPrivateLeak,
   computePrivateSnapshotDigest,
+  createM0SyntheticIndex,
   enumeratePrivateSnapshotFiles,
   invocationTemplate,
+  m0CliErrorLine,
   parseArgs,
+  parseM0Args,
   profile,
+  profileM0,
+  profileM0Synthetic,
   privateCliErrorLine,
   publicOptions,
   selectMaterializationCandidates,
   snapshotProofVerdict,
   timingStats,
+  validateM0Artifact,
   validatePrivateArtifact,
   validatePrivateSummary,
 };

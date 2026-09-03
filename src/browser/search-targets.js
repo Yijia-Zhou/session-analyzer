@@ -15,10 +15,13 @@
     return leftIndex - rightIndex || left.ownerId.localeCompare(right.ownerId);
   }
 
-  function discover(targets, searchKey, events) {
+  function discover(targets, searchKey, events, options = {}) {
     const next = [...targets];
     const targetsById = new Map(next.map((target) => [target.id, target]));
     const addedIds = [];
+    const baseTimelineIndex = Number.isFinite(Number(options.baseTimelineIndex))
+      ? Number(options.baseTimelineIndex)
+      : 0;
     events.forEach((event, loadedIndex) => {
       if (!event?.hasSearchHit) return;
       const id = targetId(searchKey, event.id);
@@ -27,7 +30,9 @@
         id,
         searchKey,
         ownerId: event.id,
-        timelineIndex: Number.isFinite(Number(event.timelineIndex)) ? Number(event.timelineIndex) : loadedIndex,
+        timelineIndex: Number.isFinite(Number(event.timelineIndex))
+          ? Number(event.timelineIndex)
+          : baseTimelineIndex + loadedIndex,
         bindings: { timeline: [], inspector: [] },
       };
       next.push(target);
@@ -40,6 +45,15 @@
 
   function resetBindings(targets) {
     targets.forEach((target) => { target.bindings = { timeline: [], inspector: [] }; });
+  }
+
+  function resetSurfaceBindings(target, surface) {
+    if (!['timeline', 'inspector'].includes(surface)
+        || !target?.bindings || !Object.hasOwn(target.bindings, surface)) return null;
+    const previous = target.bindings[surface];
+    if (!Array.isArray(previous)) return null;
+    target.bindings[surface] = [];
+    return previous;
   }
 
   function bind(target, surface, node) {
@@ -68,6 +82,7 @@
     discoveryOutcome,
     liveBinding,
     resetBindings,
+    resetSurfaceBindings,
     targetId,
     targetOrder,
   };

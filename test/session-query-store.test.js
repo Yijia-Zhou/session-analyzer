@@ -2,6 +2,8 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { createEmptyMaterializedPresentationIndexes } = require('../src/canonical-contract');
+const { createCacheObservation } = require('../src/cache-observation');
 const { buildProjectQueryStore } = require('../src/project-query-store');
 const { getSourceAdapter } = require('../src/source-adapters');
 
@@ -111,7 +113,7 @@ function completeSession(id, events) {
     },
     logicalEvents: events,
     rawEvents,
-    presentationIndexes: { codeModeDeclaredRequests: new Map() },
+    presentationIndexes: createEmptyMaterializedPresentationIndexes(),
   };
 }
 
@@ -247,28 +249,264 @@ test('packed project query path has exact full-event oracle parity', async () =>
   );
 });
 
-test('shared packed query implementation preserves Claude project semantics in both locales', async () => {
-  const query = getSourceAdapter('claude-code').query;
-  const sessions = fixture().map((source) => {
-    const session = structuredClone(source);
-    session.sourceKind = 'claude-code';
-    for (const event of session.logicalEvents) event.sourceKind = 'claude-code';
-    for (const raw of session.rawEvents) raw.sourceKind = 'claude-code';
-    session.presentationIndexes = { codeModeDeclaredRequests: new Map() };
-    return session;
+test('Session timeline projects bounded cache facts without changing ProjectQueryStore inputs', () => {
+  const previous = logicalEvent('cache-previous', {
+    layer: 'protocol',
+    kind: 'protocol',
+    subtype: 'token_count',
+    label: 'Token count',
+    timestamp: '2026-08-16T01:00:00.000Z',
+    preview: 'canonical previous preview',
+    searchText: 'canonical previous search',
   });
-  const oracle = {
-    ...fullIndex(sessions),
-    sourceKind: 'claude-code',
+  const anchor = logicalEvent('cache-anchor', {
+    kind: 'assistant_message',
+    subtype: 'assistant_message',
+    label: 'Assistant message',
+    timestamp: '2026-08-16T01:00:05.000Z',
+    preview: 'canonical main preview',
+    searchText: 'canonical main search',
+  });
+  const current = logicalEvent('cache-current', {
+    layer: 'protocol',
+    kind: 'protocol',
+    subtype: 'token_count',
+    label: 'Token count',
+    timestamp: '2026-08-16T01:00:14.000Z',
+    preview: 'canonical current preview',
+    searchText: 'canonical current search',
+  });
+  previous.cacheObservation = createCacheObservation({
+    inputTokens: 16_384,
+    cachedInputTokens: 16_384,
+    outputTokens: 233,
+  }).cacheObservation;
+  current.cacheObservation = createCacheObservation({
+    inputTokens: 12_288,
+    cachedInputTokens: 0,
+    outputTokens: 589,
+  }, previous.cacheObservation, {
+    previousEventId: previous.id,
+    previousTimestamp: previous.timestamp,
+    currentTimestamp: current.timestamp,
+  }).cacheObservation;
+  const item = completeSession('cache-presentation', [previous, anchor, current]);
+  item.presentationIndexes.cacheDiscontinuityLinks.protocolEventIdsByMainEventId.set(
+    anchor.id,
+    [current.id],
+  );
+  item.presentationIndexes.cacheDiscontinuityLinks.mainEventIdByProtocolEventId.set(
+    current.id,
+    anchor.id,
+  );
+  const query = getSourceAdapter('codex').query;
+  const index = fullIndex([item]);
+  const withoutCache = structuredClone(item);
+  for (const event of withoutCache.logicalEvents) delete event.cacheObservation;
+  withoutCache.presentationIndexes.cacheDiscontinuityLinks.protocolEventIdsByMainEventId.clear();
+  withoutCache.presentationIndexes.cacheDiscontinuityLinks.mainEventIdByProtocolEventId.clear();
+  const packedBefore = buildProjectQueryStore([withoutCache], {
+    presentationForEvent: query.projectQueryPresentation,
+  });
+
+  const mainTimeline = query.getTimeline(index, item, {
+    layer: 'main', offset: 0, limit: 50, locale: 'en',
+  });
+  assert.deepEqual(mainTimeline.events[0].presentationFacts, {
+    cacheDiscontinuityLink: { protocolEventId: current.id, count: 1 },
+  });
+  const protocolTimeline = query.getTimeline(index, item, {
+    layer: 'protocol', offset: 0, limit: 50, locale: 'en',
+  });
+  const currentDto = protocolTimeline.events.find((event) => event.id === current.id);
+  const previousDto = protocolTimeline.events.find((event) => event.id === previous.id);
+  assert.equal(previousDto.presentationFacts.cacheUsage.discontinuity, null);
+  assert.deepEqual(currentDto.presentationFacts, {
+    cacheUsage: {
+      inputTokens: 12_288,
+      cachedInputTokens: 0,
+      reuseBasisPoints: 0,
+      outputTokens: 589,
+      discontinuity: {
+        elapsedMs: 14_000,
+        previousCachedInputTokens: 16_384,
+      },
+      mainContextEventId: anchor.id,
+    },
+  });
+  assert.equal(currentDto.label, 'Token count');
+  assert.equal(currentDto.preview, current.preview);
+  assert.equal(JSON.stringify(currentDto).includes('reasonCodes'), false);
+  assert.equal(JSON.stringify(currentDto).includes('previousInputTokens'), false);
+  assert.equal(JSON.stringify(currentDto).includes('cacheObservation'), false);
+  assert.equal(JSON.stringify(protocolTimeline).includes('explicit_lifecycle'), false);
+  assert.equal(query.getEvent(index, item, current.id, {
+    layer: 'protocol', locale: 'en',
+  }).presentationFacts.cacheUsage.mainContextEventId, anchor.id);
+  const rawTimeline = query.getTimeline(index, item, {
+    layer: 'raw', offset: 0, limit: 50, locale: 'en',
+  });
+  assert.equal(rawTimeline.events.some((event) => Object.hasOwn(event, 'presentationFacts')), false);
+
+  const packedAfter = buildProjectQueryStore([item], {
+    presentationForEvent: query.projectQueryPresentation,
+  });
+  assert.deepEqual(packedAfter, packedBefore);
+});
+
+test('Project Scope q semantics count matching Events rather than text occurrences', async () => {
+  const query = getSourceAdapter('codex').query;
+  const sessions = fixture();
+  sessions[0].logicalEvents[0].preview = 'alpha target alpha target alpha target';
+  sessions[0].logicalEvents[0].searchText = 'alpha target alpha target alpha target alpha target';
+  sessions[1].logicalEvents[0].searchText = 'alpha target alpha target';
+  const oracle = fullIndex(sessions);
+  const result = await query.filterSessions(
+    packedIndex(oracle, query),
+    { q: 'alpha target', layer: 'main', locale: 'en' },
+  );
+  assert.equal(result.total, 2);
+  assert.equal(result.matchingEventTotal, 2);
+  assert.deepEqual(result.sessions.map((session) => session.searchMatch.eventCount), [1, 1]);
+  assert.deepEqual(
+    Object.keys(result.sessions[0].searchMatch).sort(),
+    ['eventCount', 'latestEvent'],
+  );
+});
+
+test('packed Project Scope boolean matching avoids occurrence enumeration and preserves expression semantics', async () => {
+  const query = getSourceAdapter('codex').query;
+  const sessions = fixture();
+  sessions[0].logicalEvents[0].preview = 'prefix Alpha [target]\n value suffix';
+  sessions[0].logicalEvents[0].searchText = 'Alpha [target] value Alpha [target] value';
+  sessions[1].logicalEvents[0].preview = 'no matching preview';
+  sessions[1].logicalEvents[0].searchText = 'no matching canonical search text';
+  const packed = packedIndex(fullIndex(sessions), query);
+  const descriptor = Object.getOwnPropertyDescriptor(String.prototype, 'matchAll');
+  let matchAllCalls = 0;
+  let result;
+  Object.defineProperty(String.prototype, 'matchAll', {
+    ...descriptor,
+    value() {
+      matchAllCalls += 1;
+      throw new Error('Project Scope boolean matching enumerated occurrences');
+    },
+  });
+  try {
+    result = await query.filterSessions(packed, {
+      q: '  alpha [target]   value  ',
+      layer: 'main',
+      locale: 'en',
+    });
+  } finally {
+    Object.defineProperty(String.prototype, 'matchAll', descriptor);
+  }
+  assert.equal(matchAllCalls, 0);
+  assert.equal(result.total, 1);
+  assert.equal(result.matchingEventTotal, 1);
+  assert.equal(result.sessions[0].searchMatch.eventCount, 1);
+  assert.deepEqual(result.sessions[0].searchMatch.latestEvent, {
+    id: 'first-main',
+    timestamp: '2026-08-16T01:00:00.000Z',
+    label: 'Command',
+    snippet: 'prefix Alpha [target] value suffix',
+    timelineIndex: 0,
+  });
+});
+
+test('packed Project Scope boolean matching short-circuits searchText after a preview hit', async () => {
+  const query = getSourceAdapter('codex').query;
+  const sessions = fixture();
+  const packed = packedIndex(fullIndex(sessions), query);
+  const descriptor = Object.getOwnPropertyDescriptor(RegExp.prototype, 'test');
+  const testedFields = [];
+  Object.defineProperty(RegExp.prototype, 'test', {
+    ...descriptor,
+    value(text) {
+      if (this.source === 'alpha\\s+target' && this.flags === 'i') {
+        testedFields.push(String(text));
+      }
+      return descriptor.value.call(this, text);
+    },
+  });
+  try {
+    const result = await query.filterSessions(packed, {
+      q: 'alpha target',
+      layer: 'main',
+      locale: 'en',
+    });
+    assert.equal(result.total, 2);
+    assert.equal(result.matchingEventTotal, 2);
+  } finally {
+    Object.defineProperty(RegExp.prototype, 'test', descriptor);
+  }
+  assert.deepEqual(testedFields, [
+    'alpha\n target in preview',
+    'no preview hit',
+    'alpha target in canonical search',
+  ]);
+});
+
+test('Current Session search retains exact occurrence counts and empty-query false semantics', () => {
+  const query = getSourceAdapter('codex').query;
+  const sessions = fixture();
+  sessions[0].logicalEvents[0].preview = 'alpha target alpha target alpha target';
+  sessions[0].logicalEvents[0].searchText = 'alpha target alpha target alpha target alpha target';
+  const packed = packedIndex(fullIndex(sessions), query);
+  const materialized = {
+    ...sessions[0],
+    ...query.projectSessionMetadata(sessions[0]),
   };
-  const packed = packedIndex(oracle, query);
-  for (const locale of ['en', 'zh-CN']) {
-    for (const filters of [
-      { q: 'alpha target', layer: 'main', locale },
-      { q: 'protocol alpha', status: 'failed', layer: 'protocol', locale },
-      { q: '', tool: 'shell', layer: 'main', sort: 'events-desc', locale },
-    ]) {
-      assert.deepEqual(await query.filterSessions(packed, filters), query.filterSessions(oracle, filters));
+  const filters = {
+    layer: 'main',
+    offset: 0,
+    limit: 20,
+    q: 'alpha target',
+    kind: '',
+    status: '',
+    tool: '',
+    file: '',
+    locale: 'en',
+  };
+  const counted = query.getTimeline(packed, materialized, filters);
+  assert.equal(counted.searchMatchCount, 4);
+  assert.equal(counted.searchEventCount, 1);
+  assert.equal(counted.events[0].hasSearchHit, true);
+
+  const empty = query.getTimeline(packed, materialized, { ...filters, q: '   ' });
+  assert.equal(empty.searchMatchCount, 0);
+  assert.equal(empty.searchEventCount, 0);
+  assert.equal(empty.events[0].hasSearchHit, false);
+});
+
+test('shared packed query implementation preserves Claude and DeepSeek project semantics', async () => {
+  for (const sourceKind of ['claude-code', 'deepseek-harness']) {
+    const query = getSourceAdapter(sourceKind).query;
+    const sessions = fixture().map((source) => {
+      const session = structuredClone(source);
+      session.sourceKind = sourceKind;
+      for (const event of session.logicalEvents) event.sourceKind = sourceKind;
+      for (const raw of session.rawEvents) raw.sourceKind = sourceKind;
+      session.presentationIndexes = createEmptyMaterializedPresentationIndexes();
+      return session;
+    });
+    const oracle = {
+      ...fullIndex(sessions),
+      sourceKind,
+    };
+    const packed = packedIndex(oracle, query);
+    for (const locale of ['en', 'zh-CN']) {
+      for (const filters of [
+        { q: 'alpha target', layer: 'main', locale },
+        { q: 'protocol alpha', status: 'failed', layer: 'protocol', locale },
+        { q: '', tool: 'shell', layer: 'main', sort: 'events-desc', locale },
+      ]) {
+        assert.deepEqual(
+          await query.filterSessions(packed, filters),
+          query.filterSessions(oracle, filters),
+          `${sourceKind}/${locale}/${JSON.stringify(filters)}`,
+        );
+      }
     }
   }
 });

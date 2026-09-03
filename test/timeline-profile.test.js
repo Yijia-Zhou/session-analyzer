@@ -13,6 +13,7 @@ const {
   MIN_PROFILE_TEXT_BYTES,
   MAX_PROFILE_TEXT_BYTES,
   buildStrictProfileIndex,
+  classifySuggestionScope,
   createProfileMaterializationTracker,
   createProfileServer,
   matchesContextTimelineResponse,
@@ -21,12 +22,140 @@ const {
   profileAcceptance,
   profileServerOptions,
   requestConstraints,
+  suggestionRequestEvidence,
 } = require('../scripts/timeline-profile');
 const {
   assertNoFixtureIdentityLiterals,
   computeTimelineProfileFixtureProof,
   createTimelineProfileFixture,
 } = require('../scripts/timeline-profile-fixture');
+
+function timelineEventStateEvidence() {
+  const purpose = () => ({
+    lookupRequests: 0,
+    mapGets: 0,
+    arrayComparisons: 0,
+    cardIterations: 0,
+    mapBackendRequests: 0,
+    otherBackendRequests: 0,
+  });
+  const enclosingAffordance = {
+    lookupRequests: 1,
+    mapGets: 1,
+    arrayComparisons: 0,
+    cardIterations: 1,
+    mapBackendRequests: 1,
+    otherBackendRequests: 0,
+  };
+  return {
+    observerInstalled: true,
+    automaticSelectionSettlementCount: 0,
+    sampleCount: 1,
+    parityFailureCount: 0,
+    latestState: {
+      arrayLength: 1,
+      mapSize: 1,
+      uniqueIdCount: 1,
+      objectIdentityParity: true,
+      committedContextBound: true,
+      offsetMatches: true,
+      pendingReplacement: false,
+      backend: 'map',
+      parityPassed: true,
+    },
+    purposes: {
+      canonical: purpose(),
+      enclosingAffordance,
+      other: purpose(),
+    },
+    relations: {
+      allLookupsMapBacked: true,
+      zeroArrayComparisons: true,
+      enclosingCardGetsMatch: true,
+      parityPassed: true,
+      passed: true,
+    },
+  };
+}
+
+test('file-suggestion classifier distinguishes scope without retaining identity or URL content', () => {
+  const privateSessionId = 'private-session-identity';
+  const sessionUrl = new URL(`http://127.0.0.1/api/file-suggestions?sessionId=${privateSessionId}&layer=main`);
+  const projectUrl = new URL('http://127.0.0.1/api/file-suggestions?layer=protocol');
+  assert.equal(classifySuggestionScope(sessionUrl), 'session');
+  assert.equal(classifySuggestionScope(projectUrl), 'project');
+  assert.equal(classifySuggestionScope(new URL('http://127.0.0.1/api/state')), 'notApplicable');
+  const evidence = suggestionRequestEvidence([
+    {
+      sequence: 1,
+      family: 'fileSuggestions',
+      suggestionScope: classifySuggestionScope(sessionUrl),
+      filterAlias: 'main',
+      outcome: 'success',
+      httpStatus: 200,
+      startedAt: 42,
+    },
+    {
+      sequence: 2,
+      family: 'fileSuggestions',
+      suggestionScope: classifySuggestionScope(projectUrl),
+      filterAlias: 'protocol',
+      outcome: 'success',
+      httpStatus: 200,
+      startedAt: 42,
+    },
+  ], 1, true);
+  assert.deepEqual(evidence, {
+    records: [
+      {
+        sequence: 1,
+        scope: 'session',
+        layerAlias: 'main',
+        outcome: 'success',
+        httpStatus: 200,
+        startedAfterAutomaticSelectionSettled: false,
+      },
+      {
+        sequence: 2,
+        scope: 'project',
+        layerAlias: 'protocol',
+        outcome: 'success',
+        httpStatus: 200,
+        startedAfterAutomaticSelectionSettled: true,
+      },
+    ],
+    settlementWatermark: 1,
+    scopeCounts: { session: 1, project: 1 },
+    postSettlementSessionCount: 0,
+  });
+  const serialized = JSON.stringify(evidence);
+  assert.equal(serialized.includes(privateSessionId), false);
+  assert.equal(serialized.includes('127.0.0.1'), false);
+  const sameMillisecondSessionEvidence = suggestionRequestEvidence([
+    {
+      sequence: 1,
+      suggestionScope: 'session',
+      filterAlias: 'main',
+      outcome: 'success',
+      httpStatus: 200,
+      startedAt: 42,
+    },
+    {
+      sequence: 2,
+      suggestionScope: 'session',
+      filterAlias: 'main',
+      outcome: 'success',
+      httpStatus: 200,
+      startedAt: 42,
+    },
+  ], 1, true);
+  assert.deepEqual(
+    sameMillisecondSessionEvidence.records
+      .map((record) => record.startedAfterAutomaticSelectionSettled),
+    [false, true],
+  );
+  assert.equal(sameMillisecondSessionEvidence.postSettlementSessionCount, 1);
+});
 
 test('timeline profile accepts only corpus sizes that satisfy its fixed late-hit scenarios', () => {
   assert.equal(MIN_PROFILE_EVENT_COUNT, 1651);
@@ -150,6 +279,7 @@ test('profile acceptance enforces exact contracts without a total request order 
       contextRowInsertions: contextRows,
       materializerCalls,
       materializerCallsByRole,
+      timelineEventState: timelineEventStateEvidence(),
     },
   });
   const context = scenario({ contextRows: 1 });
@@ -194,8 +324,25 @@ test('profile acceptance enforces exact contracts without a total request order 
       coldSwitch: { totalCalls: 2, callsByRole: { primary: 1, secondary: 1 } },
     },
   };
+  const bootstrap = {
+    automaticSelectionSettlementCount: 1,
+    fileSuggestions: {
+      records: [{
+        sequence: 1,
+        scope: 'session',
+        layerAlias: 'main',
+        outcome: 'success',
+        httpStatus: 200,
+        startedAfterAutomaticSelectionSettled: false,
+      }],
+      settlementWatermark: 1,
+      scopeCounts: { session: 1, project: 0 },
+      postSettlementSessionCount: 0,
+    },
+    timelineEventState: timelineEventStateEvidence(),
+  };
 
-  assert.deepEqual(profileAcceptance(scenarios, serverSetup), {
+  assert.deepEqual(profileAcceptance(scenarios, serverSetup, bootstrap), {
     structural: true,
     correctness: true,
     privacyAuditPassed: true,
@@ -204,6 +351,41 @@ test('profile acceptance enforces exact contracts without a total request order 
     failures: [],
     numericalLatencyGate: false,
   });
+  assert.deepEqual(bootstrap.timelineEventState.purposes.enclosingAffordance, {
+    lookupRequests: 1,
+    mapGets: 1,
+    arrayComparisons: 0,
+    cardIterations: 1,
+    mapBackendRequests: 1,
+    otherBackendRequests: 0,
+  });
+  const zeroEnclosingEvidence = timelineEventStateEvidence();
+  zeroEnclosingEvidence.purposes.enclosingAffordance = {
+    lookupRequests: 0,
+    mapGets: 0,
+    arrayComparisons: 0,
+    cardIterations: 0,
+    mapBackendRequests: 0,
+    otherBackendRequests: 0,
+  };
+  zeroEnclosingEvidence.relations.enclosingCardGetsMatch = false;
+  zeroEnclosingEvidence.relations.passed = false;
+  assert.deepEqual(profileAcceptance(scenarios, serverSetup, {
+    ...bootstrap,
+    timelineEventState: zeroEnclosingEvidence,
+  }).failures, ['bootstrap: timeline event state structural relations failed']);
+  assert.deepEqual(profileAcceptance({
+    ...scenarios,
+    warmSearchPreload: {
+      ...scenarios.warmSearchPreload,
+      work: {
+        ...scenarios.warmSearchPreload.work,
+        timelineEventState: zeroEnclosingEvidence,
+      },
+    },
+  }, serverSetup, bootstrap).failures, [
+    'warmSearchPreload: timeline event state structural relations failed',
+  ]);
   assert.deepEqual(profileAcceptance({
     ...scenarios,
     warmSearchPreload: {
@@ -213,7 +395,7 @@ test('profile acceptance enforces exact contracts without a total request order 
         constraints: { passed: false },
       },
     },
-  }, serverSetup).failures, ['warmSearchPreload: causal request constraints failed']);
+  }, serverSetup, bootstrap).failures, ['warmSearchPreload: causal request constraints failed']);
 
   const changedSelection = {
     ...context,
@@ -227,7 +409,7 @@ test('profile acceptance enforces exact contracts without a total request order 
   assert.deepEqual(profileAcceptance({
     ...scenarios,
     warmContextReveal: changedSelection,
-  }, serverSetup).failures, [
+  }, serverSetup, bootstrap).failures, [
     'warmContextReveal: context row changed canonical state or isolation',
   ]);
   assert.deepEqual(profileAcceptance({
@@ -236,8 +418,74 @@ test('profile acceptance enforces exact contracts without a total request order 
       ...context,
       work: { ...context.work, highlightedOwnerCount: 1 },
     },
-  }, serverSetup).failures, [
+  }, serverSetup, bootstrap).failures, [
     'warmContextReveal: canonical work reran',
+  ]);
+  for (const invalidSessionCount of [0, 2]) {
+    assert.deepEqual(profileAcceptance(scenarios, serverSetup, {
+      ...bootstrap,
+      fileSuggestions: {
+        ...bootstrap.fileSuggestions,
+        scopeCounts: { session: invalidSessionCount, project: 0 },
+      },
+    }).failures, ['bootstrap: automatic Session suggestion ownership changed']);
+  }
+  assert.deepEqual(profileAcceptance(scenarios, serverSetup, {
+    ...bootstrap,
+    fileSuggestions: {
+      ...bootstrap.fileSuggestions,
+      postSettlementSessionCount: 1,
+    },
+  }).failures, ['bootstrap: automatic Session suggestion ownership changed']);
+  assert.deepEqual(profileAcceptance(scenarios, serverSetup, {
+    ...bootstrap,
+    fileSuggestions: {
+      ...bootstrap.fileSuggestions,
+      settlementWatermark: 0,
+    },
+  }).failures, ['bootstrap: automatic Session suggestion ownership changed']);
+  for (const [outcome, httpStatus] of [['failed', 0], ['success', 503]]) {
+    assert.deepEqual(profileAcceptance(scenarios, serverSetup, {
+      ...bootstrap,
+      fileSuggestions: {
+        ...bootstrap.fileSuggestions,
+        records: [{
+          ...bootstrap.fileSuggestions.records[0],
+          outcome,
+          httpStatus,
+        }],
+      },
+    }).failures, ['bootstrap: automatic Session suggestion did not succeed exactly once']);
+  }
+  assert.deepEqual(profileAcceptance(scenarios, serverSetup, {
+    ...bootstrap,
+    timelineEventState: {
+      ...bootstrap.timelineEventState,
+      relations: {
+        ...bootstrap.timelineEventState.relations,
+        parityPassed: false,
+        passed: false,
+      },
+    },
+  }).failures, ['bootstrap: timeline event state structural relations failed']);
+  assert.deepEqual(profileAcceptance({
+    ...scenarios,
+    warmSearchPreload: {
+      ...scenarios.warmSearchPreload,
+      work: {
+        ...scenarios.warmSearchPreload.work,
+        timelineEventState: {
+          ...scenarios.warmSearchPreload.work.timelineEventState,
+          relations: {
+            ...scenarios.warmSearchPreload.work.timelineEventState.relations,
+            zeroArrayComparisons: false,
+            passed: false,
+          },
+        },
+      },
+    },
+  }, serverSetup, bootstrap).failures, [
+    'warmSearchPreload: timeline event state structural relations failed',
   ]);
 });
 

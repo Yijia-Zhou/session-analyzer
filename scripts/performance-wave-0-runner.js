@@ -562,15 +562,172 @@ function validateCalibrationArtifact(calibration) {
   return true;
 }
 
+function validateTimelineEventStateEvidence(evidence, label) {
+  validateClosedKeys(evidence, [
+    'observerInstalled', 'automaticSelectionSettlementCount', 'sampleCount',
+    'parityFailureCount', 'latestState', 'purposes', 'relations',
+  ], label);
+  validateClosedKeys(evidence.latestState, [
+    'arrayLength', 'mapSize', 'uniqueIdCount', 'objectIdentityParity',
+    'committedContextBound', 'offsetMatches', 'pendingReplacement', 'backend',
+    'parityPassed',
+  ], `${label}.latestState`);
+  validateClosedKeys(evidence.purposes, [
+    'canonical', 'enclosingAffordance', 'other',
+  ], `${label}.purposes`);
+  for (const [purpose, counters] of Object.entries(evidence.purposes)) {
+    validateClosedKeys(counters, [
+      'lookupRequests', 'mapGets', 'arrayComparisons', 'cardIterations',
+      'mapBackendRequests', 'otherBackendRequests',
+    ], `${label}.purposes.${purpose}`);
+    if (Object.values(counters).some((value) => !Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(`${label} purpose counters are invalid`);
+    }
+    if (counters.mapBackendRequests + counters.otherBackendRequests !== counters.lookupRequests) {
+      throw new Error(`${label} backend counters do not match lookup requests`);
+    }
+    if (counters.mapGets > counters.mapBackendRequests
+        || counters.mapBackendRequests > counters.lookupRequests) {
+      throw new Error(`${label} Map counters violate lookup arithmetic`);
+    }
+    if (purpose === 'enclosingAffordance'
+        && (counters.cardIterations !== counters.lookupRequests
+          || counters.cardIterations !== counters.mapBackendRequests
+          || counters.cardIterations !== counters.mapGets
+          || counters.otherBackendRequests !== 0
+          || counters.arrayComparisons !== 0)) {
+      throw new Error(`${label} enclosing-affordance counters violate exact arithmetic`);
+    }
+  }
+  validateClosedKeys(evidence.relations, [
+    'allLookupsMapBacked', 'zeroArrayComparisons', 'enclosingCardGetsMatch',
+    'parityPassed', 'passed',
+  ], `${label}.relations`);
+  if (evidence.observerInstalled !== true
+      || [
+        evidence.automaticSelectionSettlementCount, evidence.sampleCount,
+        evidence.parityFailureCount, evidence.latestState.arrayLength,
+        evidence.latestState.mapSize, evidence.latestState.uniqueIdCount,
+      ].some((value) => !Number.isSafeInteger(value) || value < 0)
+      || !['none', 'map', 'other'].includes(evidence.latestState.backend)
+      || [
+        evidence.latestState.objectIdentityParity,
+        evidence.latestState.committedContextBound,
+        evidence.latestState.offsetMatches,
+        evidence.latestState.pendingReplacement,
+        evidence.latestState.parityPassed,
+        ...Object.values(evidence.relations),
+      ].some((value) => typeof value !== 'boolean')) {
+    throw new Error(`${label} is invalid`);
+  }
+  const purposeValues = Object.values(evidence.purposes);
+  const totalLookupRequests = purposeValues.reduce((sum, value) => sum + value.lookupRequests, 0);
+  const totalMapBackendRequests = purposeValues.reduce((sum, value) => sum + value.mapBackendRequests, 0);
+  const totalOtherBackendRequests = purposeValues.reduce((sum, value) => sum + value.otherBackendRequests, 0);
+  const totalArrayComparisons = purposeValues.reduce((sum, value) => sum + value.arrayComparisons, 0);
+  const enclosing = evidence.purposes.enclosingAffordance;
+  const parityFieldsPassed = evidence.latestState.backend === 'map'
+    && evidence.latestState.arrayLength === evidence.latestState.mapSize
+    && evidence.latestState.arrayLength === evidence.latestState.uniqueIdCount
+    && evidence.latestState.objectIdentityParity
+    && evidence.latestState.committedContextBound
+    && evidence.latestState.offsetMatches;
+  const expectedRelations = {
+    allLookupsMapBacked: totalLookupRequests === totalMapBackendRequests
+      && totalOtherBackendRequests === 0,
+    zeroArrayComparisons: totalArrayComparisons === 0,
+    enclosingCardGetsMatch: enclosing.cardIterations > 0
+      && enclosing.cardIterations === enclosing.lookupRequests
+      && enclosing.cardIterations === enclosing.mapBackendRequests
+      && enclosing.cardIterations === enclosing.mapGets
+      && enclosing.otherBackendRequests === 0
+      && enclosing.arrayComparisons === 0,
+    parityPassed: evidence.latestState.parityPassed
+      && parityFieldsPassed
+      && evidence.parityFailureCount === 0,
+    passed: false,
+  };
+  expectedRelations.passed = Object.entries(expectedRelations)
+    .filter(([key]) => key !== 'passed')
+    .every(([, value]) => value === true);
+  if (evidence.latestState.parityPassed !== parityFieldsPassed
+      || JSON.stringify(evidence.relations) !== JSON.stringify(expectedRelations)) {
+    throw new Error(`${label} relations do not match its counters and state`);
+  }
+}
+
+function validateSuggestionEvidence(evidence, label, automaticSelectionSettlementCount = 0) {
+  validateClosedKeys(evidence, [
+    'records', 'settlementWatermark', 'scopeCounts', 'postSettlementSessionCount',
+  ], label);
+  validateClosedKeys(evidence.scopeCounts, ['session', 'project'], `${label}.scopeCounts`);
+  if (!Array.isArray(evidence.records)
+      || [
+        evidence.settlementWatermark,
+        evidence.scopeCounts.session, evidence.scopeCounts.project,
+        evidence.postSettlementSessionCount,
+      ].some((value) => !Number.isSafeInteger(value) || value < 0)) {
+    throw new Error(`${label} is invalid`);
+  }
+  if ((automaticSelectionSettlementCount === 0 && evidence.settlementWatermark !== 0)
+      || evidence.settlementWatermark > evidence.records.length) {
+    throw new Error(`${label} settlement watermark is invalid`);
+  }
+  for (const [index, record] of evidence.records.entries()) {
+    validateClosedKeys(record, [
+      'sequence', 'scope', 'layerAlias', 'outcome', 'httpStatus',
+      'startedAfterAutomaticSelectionSettled',
+    ], `${label}.record`);
+    if (record.sequence !== index + 1
+        || !['session', 'project'].includes(record.scope)
+        || !['main', 'protocol', 'raw', 'none', 'other'].includes(record.layerAlias)
+        || !['pending', 'success', 'intentionalAbort', 'failed'].includes(record.outcome)
+        || !Number.isSafeInteger(record.httpStatus) || record.httpStatus < 0
+        || typeof record.startedAfterAutomaticSelectionSettled !== 'boolean'
+        || record.startedAfterAutomaticSelectionSettled !== (
+          automaticSelectionSettlementCount > 0
+          && record.sequence > evidence.settlementWatermark
+        )) {
+      throw new Error(`${label} record is invalid`);
+    }
+  }
+  const sessionCount = evidence.records.filter((record) => record.scope === 'session').length;
+  const projectCount = evidence.records.filter((record) => record.scope === 'project').length;
+  const postSettlementSessionCount = evidence.records.filter((record) => (
+    record.scope === 'session' && record.startedAfterAutomaticSelectionSettled
+  )).length;
+  if (sessionCount !== evidence.scopeCounts.session
+      || projectCount !== evidence.scopeCounts.project
+      || postSettlementSessionCount !== evidence.postSettlementSessionCount) {
+    throw new Error(`${label} counts do not match its records`);
+  }
+}
+
+function bootstrapStructuralEvidencePassed(bootstrap) {
+  const records = bootstrap?.fileSuggestions?.records;
+  const suggestion = Array.isArray(records) && records.length === 1 ? records[0] : null;
+  return bootstrap?.automaticSelectionSettlementCount === 1
+    && bootstrap?.fileSuggestions?.settlementWatermark === 1
+    && bootstrap?.fileSuggestions?.scopeCounts?.session === 1
+    && bootstrap?.fileSuggestions?.scopeCounts?.project === 0
+    && bootstrap?.fileSuggestions?.postSettlementSessionCount === 0
+    && suggestion?.scope === 'session'
+    && suggestion?.outcome === 'success'
+    && suggestion?.httpStatus >= 200
+    && suggestion?.httpStatus < 300
+    && suggestion?.startedAfterAutomaticSelectionSettled === false
+    && bootstrap?.timelineEventState?.relations?.passed === true;
+}
+
 function validateTimelineArtifact(artifact) {
   const expectedFields = [
     'schemaVersion', 'artifactKind', 'identity', 'environment', 'invocationTemplate', 'fixture',
-    'serverSetup', 'scenarios', 'acceptance',
+    'bootstrap', 'serverSetup', 'scenarios', 'acceptance',
   ].sort();
   if (JSON.stringify(Object.keys(artifact).sort()) !== JSON.stringify(expectedFields)
-      || artifact.schemaVersion !== 3
+      || artifact.schemaVersion !== 4
       || artifact.artifactKind !== 'timeline-browser-run') {
-    throw new Error('Timeline artifact violates schema v3');
+    throw new Error('Timeline artifact violates schema v4');
   }
   validateClosedKeys(artifact.invocationTemplate, [
     'worker', 'runtime', 'inputRole', 'outputRole',
@@ -597,6 +754,26 @@ function validateTimelineArtifact(artifact) {
   validateClosedKeys(artifact.fixture, [
     'parameters', 'roles', 'proofVersion', 'generatorSha256', 'semanticFixtureProof',
   ], 'Timeline fixture');
+  validateClosedKeys(artifact.bootstrap, [
+    'automaticSelectionSettlementCount', 'fileSuggestions', 'timelineEventState',
+  ], 'Timeline bootstrap');
+  if (!Number.isSafeInteger(artifact.bootstrap.automaticSelectionSettlementCount)
+      || artifact.bootstrap.automaticSelectionSettlementCount < 0) {
+    throw new Error('Timeline bootstrap is invalid');
+  }
+  validateSuggestionEvidence(
+    artifact.bootstrap.fileSuggestions,
+    'Timeline bootstrap.fileSuggestions',
+    artifact.bootstrap.automaticSelectionSettlementCount,
+  );
+  validateTimelineEventStateEvidence(
+    artifact.bootstrap.timelineEventState,
+    'Timeline bootstrap.timelineEventState',
+  );
+  if (artifact.bootstrap.automaticSelectionSettlementCount
+      !== artifact.bootstrap.timelineEventState.automaticSelectionSettlementCount) {
+    throw new Error('Timeline bootstrap settlement counts do not match');
+  }
   validateClosedKeys(artifact.serverSetup, [
     'sourceKind', 'sessionLifecycle', 'buildInvocationCount', 'commitValidationInvocationCount',
     'commitValidationChunkCount', 'createServerCount', 'projectJobCount', 'prewarmDisabled',
@@ -624,6 +801,17 @@ function validateTimelineArtifact(artifact) {
       || artifact.acceptance.cleanupPassed !== true) {
     throw new Error('Timeline repetition or acceptance metadata is invalid');
   }
+  if ([
+    artifact.acceptance.structural, artifact.acceptance.correctness,
+    artifact.acceptance.privacyAuditPassed, artifact.acceptance.cleanupPassed,
+    artifact.acceptance.passed, artifact.acceptance.numericalLatencyGate,
+  ].some((value) => typeof value !== 'boolean')
+      || !Array.isArray(artifact.acceptance.failures)) {
+    throw new Error('Timeline acceptance fields are invalid');
+  }
+  if (artifact.acceptance.passed && !bootstrapStructuralEvidencePassed(artifact.bootstrap)) {
+    throw new Error('Timeline accepted worker has failing bootstrap structural evidence');
+  }
   for (const [scenarioName, scenario] of Object.entries(artifact.scenarios)) {
     validateClosedKeys(scenario, ['classification', 'functional', 'requests', 'work'], `Timeline ${scenarioName}`);
     validateClosedKeys(scenario.classification, ['path', 'ownerInstance', 'scenarioVersion'], `Timeline ${scenarioName}.classification`);
@@ -632,6 +820,36 @@ function validateTimelineArtifact(artifact) {
       'detailCount', 'eventEnvelopeCount', 'failedCount', 'intentionalAbortCount',
       'resourceTimingByFamily', 'domCommitLedger', 'constraints',
     ], `Timeline ${scenarioName}.requests`);
+    validateTimelineEventStateEvidence(
+      scenario.work.timelineEventState,
+      `Timeline ${scenarioName}.work.timelineEventState`,
+    );
+    for (const record of scenario.requests.records) {
+      validateClosedKeys(record, [
+        'sequence', 'method', 'family', 'suggestionScope', 'sessionRole', 'offset', 'limit',
+        'queryAlias', 'kindAlias', 'statusAlias', 'filterAlias', 'outcome', 'httpStatus',
+      ], `Timeline ${scenarioName}.requests.record`);
+      if (!Number.isSafeInteger(record.sequence) || record.sequence < 1
+          || record.method !== 'GET'
+          || ![
+            'state', 'sessions', 'fileSuggestions', 'timeline', 'detail', 'eventEnvelope',
+            'analysis', 'rawRecord', 'legacyRaw', 'otherApi',
+          ].includes(record.family)
+          || !['session', 'project', 'notApplicable'].includes(record.suggestionScope)
+          || (record.family === 'fileSuggestions') !== (record.suggestionScope !== 'notApplicable')
+          || !['primary', 'secondary', 'unknown'].includes(record.sessionRole)
+          || !Number.isSafeInteger(record.offset) || record.offset < 0
+          || !Number.isSafeInteger(record.limit) || record.limit < 0
+          || !['none', 'rareHit', 'commonTerm', 'switchQuery', 'contextReveal', 'otherSynthetic']
+            .includes(record.queryAlias)
+          || !['none', 'assistant_message', 'other'].includes(record.kindAlias)
+          || !['none', 'failed', 'other'].includes(record.statusAlias)
+          || !['none', 'main', 'protocol', 'raw', 'other'].includes(record.filterAlias)
+          || !['pending', 'success', 'intentionalAbort', 'failed'].includes(record.outcome)
+          || !Number.isSafeInteger(record.httpStatus) || record.httpStatus < 0) {
+        throw new Error(`Timeline ${scenarioName} request record is invalid`);
+      }
+    }
     let priorCommitSequence = 0;
     for (const commit of scenario.requests.domCommitLedger) {
       validateClosedKeys(commit, [
@@ -653,6 +871,11 @@ function validateTimelineArtifact(artifact) {
       }
       priorCommitSequence = commit.sequence;
     }
+  }
+  if (artifact.acceptance.passed && Object.values(artifact.scenarios).some((scenario) => (
+    scenario.work.timelineEventState.relations.passed !== true
+  ))) {
+    throw new Error('Timeline accepted worker has failing scenario structural evidence');
   }
   const serialized = JSON.stringify(artifact);
   if (/[A-Za-z]:[\\/]|\\\\[^\\]|"(?:url|sessionId|rawUrl)"\s*:/i.test(serialized)
@@ -787,6 +1010,21 @@ function exactPaths(profileKind, artifacts, exactCounterSet) {
     'acceptance.structural', 'acceptance.correctness',
     'acceptance.privacyAuditPassed', 'acceptance.cleanupPassed', 'acceptance.passed',
     'acceptance.numericalLatencyGate',
+    'bootstrap.automaticSelectionSettlementCount',
+    'bootstrap.fileSuggestions.scopeCounts',
+    'bootstrap.fileSuggestions.settlementWatermark',
+    'bootstrap.fileSuggestions.postSettlementSessionCount',
+    'bootstrap.timelineEventState.observerInstalled',
+    'bootstrap.timelineEventState.latestState.arrayLength',
+    'bootstrap.timelineEventState.latestState.mapSize',
+    'bootstrap.timelineEventState.latestState.uniqueIdCount',
+    'bootstrap.timelineEventState.latestState.objectIdentityParity',
+    'bootstrap.timelineEventState.latestState.committedContextBound',
+    'bootstrap.timelineEventState.latestState.offsetMatches',
+    'bootstrap.timelineEventState.latestState.backend',
+    'bootstrap.timelineEventState.latestState.parityPassed',
+    'bootstrap.timelineEventState.parityFailureCount',
+    'bootstrap.timelineEventState.relations',
   ];
   for (const scenarioName of Object.keys(artifacts[0]?.scenarios || {})) {
     const base = `scenarios.${scenarioName}`;
@@ -807,6 +1045,17 @@ function exactPaths(profileKind, artifacts, exactCounterSet) {
       `${base}.work.materializerCallsByRole`,
       `${base}.work.finalDomNodeCount`,
       `${base}.work.finalTimelineNodeCount`,
+      `${base}.work.timelineEventState.latestState.arrayLength`,
+      `${base}.work.timelineEventState.latestState.mapSize`,
+      `${base}.work.timelineEventState.latestState.uniqueIdCount`,
+      `${base}.work.timelineEventState.latestState.objectIdentityParity`,
+      `${base}.work.timelineEventState.latestState.committedContextBound`,
+      `${base}.work.timelineEventState.latestState.offsetMatches`,
+      `${base}.work.timelineEventState.latestState.pendingReplacement`,
+      `${base}.work.timelineEventState.latestState.backend`,
+      `${base}.work.timelineEventState.latestState.parityPassed`,
+      `${base}.work.timelineEventState.parityFailureCount`,
+      `${base}.work.timelineEventState.relations`,
     );
     for (const counter of exactCounterSet[scenarioName] || []) paths.push(`${base}.work.${counter}`);
   }
@@ -836,6 +1085,44 @@ function calibrateExactCounters(artifacts) {
     }
   }
   return result;
+}
+
+function passSummary(artifacts, predicate) {
+  return {
+    passCount: artifacts.filter(predicate).length,
+    repeatCount: artifacts.length,
+  };
+}
+
+function syntheticBrowserStructuralSummary(artifacts) {
+  const relationNames = [
+    'allLookupsMapBacked', 'zeroArrayComparisons', 'enclosingCardGetsMatch',
+    'parityPassed', 'passed',
+  ];
+  const bootstrap = {
+    suggestionOwnership: passSummary(artifacts, (artifact) => (
+      bootstrapStructuralEvidencePassed(artifact.bootstrap)
+    )),
+    timelineEventState: Object.fromEntries(relationNames.map((relation) => [
+      relation,
+      passSummary(artifacts, (artifact) => (
+        artifact.bootstrap?.timelineEventState?.relations?.[relation] === true
+      )),
+    ])),
+  };
+  const scenarios = Object.fromEntries(
+    Object.keys(artifacts[0]?.scenarios || {}).map((scenarioName) => [
+      scenarioName,
+      Object.fromEntries(relationNames.map((relation) => [
+        relation,
+        passSummary(artifacts, (artifact) => (
+          artifact.scenarios?.[scenarioName]?.work?.timelineEventState?.relations?.[relation]
+            === true
+        )),
+      ])),
+    ]),
+  );
+  return { bootstrap, scenarios };
 }
 
 function aggregateArtifacts(profileKind, mode, artifacts, attempts, exactCounterSet = {}) {
@@ -894,6 +1181,14 @@ function aggregateArtifacts(profileKind, mode, artifacts, attempts, exactCounter
       Number.isSafeInteger(index) && index >= 1 && index <= attempts.length
     ))
     && new Set(repetitionIndexes).size === repetitionIndexes.length;
+  const browserStructural = profileKind === 'synthetic-browser'
+    ? syntheticBrowserStructuralSummary(artifacts)
+    : null;
+  const browserStructuralPassed = browserStructural === null || [
+    browserStructural.bootstrap.suggestionOwnership,
+    ...Object.values(browserStructural.bootstrap.timelineEventState),
+    ...Object.values(browserStructural.scenarios).flatMap((scenario) => Object.values(scenario)),
+  ].every((entry) => entry.passCount === entry.repeatCount);
   return {
     schemaVersion: 3,
     artifactKind: 'performance-wave-0-summary',
@@ -915,12 +1210,14 @@ function aggregateArtifacts(profileKind, mode, artifacts, attempts, exactCounter
     exactCounterSet,
     observational,
     categoricalObservations: categoricalObservations(profileKind, artifacts),
+    ...(browserStructural === null ? {} : { browserStructural }),
     outliersRetained: true,
     acceptance: {
       passed: artifacts.length === attempts.length
         && processIsolationPassed
         && hardExactPassed
         && causalPassed
+        && browserStructuralPassed
         && new Set(treeValues).size === 1
         && new Set(proofValues.map(JSON.stringify)).size === 1
         && proofValues.every(Boolean),

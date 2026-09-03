@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { __testOnly, buildEventDetail } = require('../src/codex');
+const { __testOnly, buildEventDetail, buildHydratedEventDetail } = require('../src/codex');
 const { createCodexDetailBuilder } = require('../src/codex-detail');
 const { knownCodeModeToolNames } = require('../src/codex-code-mode-declared');
 
@@ -82,6 +82,122 @@ test('logical detail keeps source locator, meta, and raw refs without aggregate 
   assert.ok(detail.meta);
   assert.equal(Object.hasOwn(detail, 'sourceRecordType'), false);
   assert.equal(Object.hasOwn(detail, 'sourceEventType'), false);
+});
+
+test('cache-observed token_count detail uses canonical accounting and keeps usage limits separate', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = '98989898-3333-4444-8888-989898989898';
+  await writeTranscript(codexHome, repoRoot, id, [
+    {
+      type: 'session_meta',
+      timestamp: '2026-09-03T00:00:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-09-03T00:00:01.000Z',
+      payload: { type: 'turn_started', turn_id: 'turn-cache-detail' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-09-03T00:00:02.000Z',
+      payload: {
+        type: 'token_count',
+        info: {
+          last_token_usage: {
+            input_tokens: 16_384,
+            cached_input_tokens: 16_384,
+            output_tokens: 233,
+          },
+          total_token_usage: {
+            input_tokens: 999_999,
+            cached_input_tokens: 999_999,
+          },
+        },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-09-03T00:00:03.000Z',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'synthetic cache detail anchor' }],
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-09-03T00:00:16.000Z',
+      payload: {
+        type: 'token_count',
+        info: {
+          last_token_usage: {
+            input_tokens: 12_288,
+            cached_input_tokens: 0,
+            output_tokens: 589,
+          },
+          total_token_usage: {
+            input_tokens: 1_000_000,
+            cached_input_tokens: 999_999,
+          },
+        },
+        rate_limits: {
+          primary: {
+            used_percent: 20,
+            resets_at: '2026-09-04T00:00:00.000Z',
+          },
+        },
+      },
+    },
+  ]);
+
+  const index = await __testOnly.buildCacheObservationResidentOracleForTests({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const event = session.logicalEvents.find((candidate) => (
+    candidate.subtype === 'token_count'
+      && candidate.cacheObservation?.comparison?.state === 'cache_discontinuity'
+  ));
+  assert.ok(event);
+  const detail = await buildHydratedEventDetail(index, session, event.id, event.layer, { locale: 'en' });
+  assert.equal(detail.timelineSections[0].type, 'token_usage');
+  assert.deepEqual(detail.timelineSections[0].items.map((item) => [item.label, item.formatted]), [
+    ['Input', '12,288'],
+    ['Cached input', '0'],
+    ['Cache reuse', '0%'],
+    ['Output', '589'],
+  ]);
+  assert.equal(JSON.stringify(detail).includes('9999999'), false);
+  assert.equal(detail.inspectorSections.filter((section) => section.type === 'usage_limits').length, 1);
+  assert.equal(detail.timelineSections.filter((section) => section.type === 'usage_limits').length, 0);
+  const comparison = detail.inspectorSections.find((section) => section.title === 'Comparison Context');
+  assert.deepEqual(comparison.entries.map((entry) => entry.key), [
+    'Elapsed',
+    'Input tokens',
+    'Input-token delta',
+    'Cached input',
+    'Cache-read delta',
+    'Cache reuse',
+    'Comparison state',
+  ]);
+  assert.equal(comparison.entries.at(-1).value, 'Cache discontinuity');
+  assert.equal(
+    detail.inspectorSections.find((section) => section.type === 'notice').text,
+    'This cache discontinuity is inferred from adjacent token accounting; the transcript does not provide explicit cache-expiry evidence.',
+  );
+
+  const localized = await buildHydratedEventDetail(index, session, event.id, event.layer, { locale: 'zh-CN' });
+  assert.equal(localized.timelineSections[0].title, 'Token 使用情况');
+  assert.deepEqual(localized.timelineSections[0].items.map((item) => item.label), [
+    '输入',
+    '缓存输入',
+    '缓存复用',
+    '输出',
+  ]);
+  assert.equal(
+    localized.inspectorSections.find((section) => section.type === 'notice').text,
+    '该缓存复用中断由相邻的 token accounting 推断；转录中没有提供显式的缓存过期证据。',
+  );
 });
 
 test('command, patch, and tool details keep stable section type boundaries', async () => {

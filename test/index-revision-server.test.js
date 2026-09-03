@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createServer } = require('../server');
+const { createEmptyMaterializedPresentationIndexes } = require('../src/canonical-contract');
 const { buildProjectQueryStore } = require('../src/project-query-store');
 const { getSourceAdapter } = require('../src/source-adapters');
 const { materializationBusyError } = require('../src/materialized-session-owner');
@@ -45,7 +46,7 @@ function session(id, eventCount = 0) {
     analysis: { toolUsage: [], failedCommands: [], patchedFiles: [], protocolStats: [] },
     logicalEvents,
     rawEvents: [],
-    presentationIndexes: { codeModeDeclaredRequests: new Map() },
+    presentationIndexes: createEmptyMaterializedPresentationIndexes(),
   };
 }
 

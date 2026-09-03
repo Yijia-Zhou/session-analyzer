@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createServer } = require('../server');
+const { createEmptyMaterializedPresentationIndexes } = require('../src/canonical-contract');
 const { fileSuggestions, filterSessions, getEvent, getTimeline } = require('../src/codex');
 const { strictClaudeIndexFromComplete } = require('./strict-claude-fixture');
 
@@ -89,9 +90,7 @@ function session(id, logicalEvents, rawEvents = []) {
     analysis: { toolUsage: [], failedCommands: [], patchedFiles: [], protocolStats: [] },
     logicalEvents,
     rawEvents: completeRawEvents,
-    presentationIndexes: {
-      codeModeDeclaredRequests: new Map(),
-    },
+    presentationIndexes: createEmptyMaterializedPresentationIndexes(),
   };
 }
 

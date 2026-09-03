@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   CANONICAL_CONTRACT,
   INDEXED_SESSION_COUNT_FIELDS,
+  createEmptyMaterializedPresentationIndexes,
   validateCanonicalIndexedSessionShape,
   validateCanonicalLogicalEventShape,
   validateCanonicalMaterializedSessionShape,
@@ -33,6 +34,10 @@ const {
   createMaterializationScheduler,
   createMaterializedSessionOwner,
 } = require('../src/materialized-session-owner');
+const {
+  COMPARISON_STATE,
+  createCacheObservation,
+} = require('../src/cache-observation');
 
 function makeCanonicalIndex(sourceKind, options = {}) {
   const raw = {
@@ -159,7 +164,7 @@ function makeStrictMaterializedSession(indexedSession) {
       timelineStats: {},
       protocolStats: {},
     },
-    presentationIndexes: { codeModeDeclaredRequests: new Map() },
+    presentationIndexes: createEmptyMaterializedPresentationIndexes(),
   };
 }
 
@@ -251,6 +256,73 @@ function makeStrictMaterializationBoundaryFixture(sourceKind = 'projection-sourc
     },
   };
   return { dependencySet, index, indexedSession, materializedSession };
+}
+
+function makeCacheObservationMaterializationFixture(sourceKind = 'fixture-source') {
+  const fixture = makeStrictMaterializationBoundaryFixture(sourceKind);
+  const { index, indexedSession, materializedSession } = fixture;
+  const mainEvent = materializedSession.logicalEvents[0];
+  const previousRaw = {
+    rawId: `${sourceKind}:raw:cache:previous`,
+    sourceKind,
+  };
+  const currentRaw = {
+    rawId: `${sourceKind}:raw:cache:current`,
+    sourceKind,
+  };
+  const previousCandidate = { inputTokens: 16_384, cachedInputTokens: 16_384 };
+  const currentCandidate = { inputTokens: 12_288, cachedInputTokens: 8_192 };
+  const previousEvent = {
+    id: `${sourceKind}:event:cache:previous`,
+    sourceKind,
+    kind: 'protocol',
+    subtype: 'token_count',
+    layer: 'protocol',
+    timestamp: '2026-08-16T00:01:00.000Z',
+    rawRefs: [{ rawId: previousRaw.rawId }],
+    cacheObservation: createCacheObservation(previousCandidate).cacheObservation,
+  };
+  const currentEvent = {
+    id: `${sourceKind}:event:cache:current`,
+    sourceKind,
+    kind: 'protocol',
+    subtype: 'token_count',
+    layer: 'protocol',
+    timestamp: '2026-08-16T00:02:00.000Z',
+    rawRefs: [{ rawId: currentRaw.rawId }],
+    cacheObservation: createCacheObservation(currentCandidate, previousCandidate, {
+      previousEventId: previousEvent.id,
+      previousTimestamp: previousEvent.timestamp,
+      currentTimestamp: '2026-08-16T00:02:00.000Z',
+    }).cacheObservation,
+  };
+  materializedSession.rawEvents.push(previousRaw, currentRaw);
+  materializedSession.logicalEvents.push(previousEvent, currentEvent);
+  indexedSession.rawEventCount = materializedSession.rawEvents.length;
+  indexedSession.logicalEventCount = materializedSession.logicalEvents.length;
+  materializedSession.rawEventCount = indexedSession.rawEventCount;
+  materializedSession.logicalEventCount = indexedSession.logicalEventCount;
+  indexedSession.counts.protocol = 2;
+  materializedSession.counts.protocol = 2;
+  materializedSession.analysis.counts = materializedSession.counts;
+  materializedSession.presentationIndexes.cacheDiscontinuityLinks
+    .protocolEventIdsByMainEventId.set(mainEvent.id, [currentEvent.id]);
+  materializedSession.presentationIndexes.cacheDiscontinuityLinks
+    .mainEventIdByProtocolEventId.set(currentEvent.id, mainEvent.id);
+  indexedSession.queryProjectionDigest = projectQueryProjectionDigest(
+    materializedSession,
+    queryContract().projectQueryPresentation,
+  );
+  return { ...fixture, mainEvent, previousEvent, currentEvent };
+}
+
+function validateStrictFixture(fixture) {
+  return validateCanonicalMaterializedSessionShape(
+    fixture.indexedSession,
+    fixture.materializedSession,
+    fixture.indexedSession.sourceKind,
+    { index: fixture.index },
+  );
 }
 
 test('Codex and Claude complete synthetic Sessions satisfy the same shared contract', () => {
@@ -1639,4 +1711,163 @@ test('sessions and sessionsById must contain the same canonical Session set', ()
     () => validateIndexOwnership({ ...index, sessionsById: new Map() }),
     { code: 'CANONICAL_CONTRACT_VIOLATION' },
   );
+});
+
+test('canonical optional cacheObservation accepts the exact protocol token_count shape', () => {
+  const fixture = makeCacheObservationMaterializationFixture();
+  assert.equal(
+    validateCanonicalLogicalEventShape(fixture.currentEvent, fixture.indexedSession.sourceKind),
+    fixture.indexedSession.sourceKind,
+  );
+  assert.equal(
+    fixture.currentEvent.cacheObservation.comparison.state,
+    COMPARISON_STATE.CACHE_DISCONTINUITY,
+  );
+  assert.equal(Object.hasOwn(fixture.currentEvent.cacheObservation, 'isDiscontinuity'), false);
+  assert.equal(validateStrictFixture(fixture), fixture.materializedSession);
+
+  const withoutObservation = structuredClone(fixture.currentEvent);
+  delete withoutObservation.cacheObservation;
+  assert.equal(
+    validateCanonicalLogicalEventShape(withoutObservation, fixture.indexedSession.sourceKind),
+    fixture.indexedSession.sourceKind,
+  );
+});
+
+test('canonical cacheObservation rejects malformed shape, vocabulary, and event ownership', () => {
+  const fixture = makeCacheObservationMaterializationFixture();
+  const cases = [
+    ['redundant boolean', (event) => { event.cacheObservation.isDiscontinuity = true; }],
+    ['schema version', (event) => { event.cacheObservation.schemaVersion = 2; }],
+    ['unsafe accounting', (event) => { event.cacheObservation.inputTokens = Infinity; }],
+    ['inconsistent uncached input', (event) => { event.cacheObservation.uncachedInputTokens += 1; }],
+    ['unknown state', (event) => { event.cacheObservation.comparison.state = 'cache_valid'; }],
+    ['prototype-only missing state', (event) => {
+      event.cacheObservation.comparison.state = 'missing_token_accounting';
+    }],
+    ['unknown reason code', (event) => {
+      event.cacheObservation.comparison.state = COMPARISON_STATE.COMPARABLE;
+      event.cacheObservation.comparison.reasonCodes = ['unknown_gate'];
+    }],
+    ['non-token subtype', (event) => { event.subtype = 'turn_context'; }],
+    ['non-protocol layer', (event) => { event.layer = 'main'; }],
+  ];
+  for (const [name, mutate] of cases) {
+    const event = structuredClone(fixture.currentEvent);
+    mutate(event);
+    assert.throws(
+      () => validateCanonicalLogicalEventShape(event, fixture.indexedSession.sourceKind),
+      { code: 'CANONICAL_CONTRACT_VIOLATION' },
+      name,
+    );
+  }
+});
+
+test('Materialized cache context validates previous ownership, values, and Raw order', () => {
+  for (const [name, mutate] of [
+    ['foreign previous event', (fixture) => {
+      fixture.currentEvent.cacheObservation.comparison.previousEventId = 'missing-event';
+    }],
+    ['mismatched previous values', (fixture) => {
+      fixture.previousEvent.cacheObservation.inputTokens += 1;
+      fixture.previousEvent.cacheObservation.uncachedInputTokens += 1;
+      fixture.previousEvent.cacheObservation.reuseBasisPoints = 9_999;
+    }],
+    ['non-causal Raw order', (fixture) => {
+      const previousIndex = fixture.materializedSession.rawEvents.indexOf(
+        fixture.materializedSession.rawEvents.find(
+          (raw) => raw.rawId === fixture.previousEvent.rawRefs[0].rawId,
+        ),
+      );
+      const currentIndex = fixture.materializedSession.rawEvents.indexOf(
+        fixture.materializedSession.rawEvents.find(
+          (raw) => raw.rawId === fixture.currentEvent.rawRefs[0].rawId,
+        ),
+      );
+      [fixture.materializedSession.rawEvents[previousIndex], fixture.materializedSession.rawEvents[currentIndex]] = [
+        fixture.materializedSession.rawEvents[currentIndex],
+        fixture.materializedSession.rawEvents[previousIndex],
+      ];
+    }],
+  ]) {
+    const fixture = makeCacheObservationMaterializationFixture();
+    mutate(fixture);
+    assert.throws(
+      () => validateStrictFixture(fixture),
+      { code: 'MATERIALIZATION_CONTRACT_VIOLATION' },
+      name,
+    );
+  }
+});
+
+test('canonical empty cache-link shape is uniform for every production source kind', () => {
+  for (const sourceKind of ['codex', 'claude-code', 'deepseek-harness']) {
+    const fixture = makeStrictMaterializationBoundaryFixture(sourceKind);
+    assert.deepEqual(
+      Object.keys(fixture.materializedSession.presentationIndexes),
+      ['codeModeDeclaredRequests', 'cacheDiscontinuityLinks'],
+    );
+    assert.equal(
+      fixture.materializedSession.presentationIndexes.cacheDiscontinuityLinks
+        .protocolEventIdsByMainEventId.size,
+      0,
+    );
+    assert.equal(
+      fixture.materializedSession.presentationIndexes.cacheDiscontinuityLinks
+        .mainEventIdByProtocolEventId.size,
+      0,
+    );
+    assert.equal(validateStrictFixture(fixture), fixture.materializedSession);
+  }
+});
+
+test('canonical cache-link indexes reject missing, extra, custom, and non-inverse structures', () => {
+  const cases = [
+    ['missing nested key', (fixture) => {
+      delete fixture.materializedSession.presentationIndexes.cacheDiscontinuityLinks
+        .mainEventIdByProtocolEventId;
+    }],
+    ['extra nested key', (fixture) => {
+      fixture.materializedSession.presentationIndexes.cacheDiscontinuityLinks.extra = new Map();
+    }],
+    ['custom Map property', (fixture) => {
+      fixture.materializedSession.presentationIndexes.cacheDiscontinuityLinks
+        .protocolEventIdsByMainEventId.extra = true;
+    }],
+    ['custom Map accessor', (fixture) => {
+      Object.defineProperty(
+        fixture.materializedSession.presentationIndexes.cacheDiscontinuityLinks
+          .mainEventIdByProtocolEventId,
+        'unsafe',
+        { enumerable: true, get() { throw new Error('must not run'); } },
+      );
+    }],
+    ['missing reverse link', (fixture) => {
+      fixture.materializedSession.presentationIndexes.cacheDiscontinuityLinks
+        .mainEventIdByProtocolEventId.clear();
+    }],
+    ['duplicate forward target', (fixture) => {
+      fixture.materializedSession.presentationIndexes.cacheDiscontinuityLinks
+        .protocolEventIdsByMainEventId.set(
+          fixture.mainEvent.id,
+          [fixture.currentEvent.id, fixture.currentEvent.id],
+        );
+    }],
+    ['non-discontinuity target', (fixture) => {
+      const links = fixture.materializedSession.presentationIndexes.cacheDiscontinuityLinks;
+      links.protocolEventIdsByMainEventId.set(fixture.mainEvent.id, [fixture.previousEvent.id]);
+      links.mainEventIdByProtocolEventId.clear();
+      links.mainEventIdByProtocolEventId.set(fixture.previousEvent.id, fixture.mainEvent.id);
+    }],
+  ];
+  for (const [name, mutate] of cases) {
+    const fixture = makeCacheObservationMaterializationFixture();
+    mutate(fixture);
+    assert.throws(
+      () => validateStrictFixture(fixture),
+      (error) => error?.code === 'MATERIALIZATION_CONTRACT_VIOLATION'
+        && !/must not run/u.test(error.message),
+      name,
+    );
+  }
 });
