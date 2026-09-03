@@ -1107,6 +1107,7 @@ async function makeCacheObservationBrowserFixture(t) {
   const ordinarySessionId = 'cdcdcdcd-3333-4333-8333-cdcdcdcdcdcd';
   const singleSessionId = 'efefefef-3333-4333-8333-efefefefefef';
   const codeModeSessionId = 'acacacac-3333-4333-8333-acacacacacac';
+  const trajectoryDeepSessionId = 'adadadad-3333-4333-8333-adadadadadad';
   await fsp.mkdir(cacheRepoRoot, { recursive: true });
   const timestamp = (seconds) => new Date(Date.parse('2026-09-03T10:00:00.000Z') + seconds * 1_000).toISOString();
   const tokenCount = (seconds, inputTokens, cachedInputTokens, outputTokens) => ({
@@ -1265,6 +1266,60 @@ async function makeCacheObservationBrowserFixture(t) {
       payload: { type: 'turn_complete', turn_id: 'turn-cache-code-mode' },
     },
   ]);
+  const deepMainPadding = Array.from({ length: 170 }, (_, index) => ({
+    timestamp: timestamp(400 + index),
+    type: 'response_item',
+    payload: {
+      type: 'message',
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      content: [{
+        type: index % 2 === 0 ? 'input_text' : 'output_text',
+        text: `Trajectory deep cache padding ${index}`,
+      }],
+    },
+  }));
+  const deepMainSuffix = Array.from({ length: 20 }, (_, index) => ({
+    timestamp: timestamp(585 + index),
+    type: 'response_item',
+    payload: {
+      type: 'message',
+      role: index % 2 === 0 ? 'assistant' : 'user',
+      content: [{
+        type: index % 2 === 0 ? 'output_text' : 'input_text',
+        text: `Trajectory deep cache suffix ${index}`,
+      }],
+    },
+  }));
+  await writeJsonl(path.join(dir, `trajectory-deep-${trajectoryDeepSessionId}.jsonl`), [
+    {
+      timestamp: timestamp(398),
+      type: 'session_meta',
+      payload: { id: trajectoryDeepSessionId, cwd: cacheRepoRoot },
+    },
+    {
+      timestamp: timestamp(399),
+      type: 'event_msg',
+      payload: { type: 'turn_started', turn_id: 'turn-cache-trajectory-deep' },
+    },
+    ...deepMainPadding,
+    tokenCount(570, 16_384, 16_384, 200),
+    {
+      timestamp: timestamp(571),
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Trajectory deep cache anchor' }],
+      },
+    },
+    tokenCount(584, 12_288, 0, 250),
+    ...deepMainSuffix,
+    {
+      timestamp: timestamp(605),
+      type: 'event_msg',
+      payload: { type: 'turn_complete', turn_id: 'turn-cache-trajectory-deep' },
+    },
+  ]);
   t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
   const index = await buildIndex({ repoRoot: cacheRepoRoot, codexHome });
   return {
@@ -1275,6 +1330,7 @@ async function makeCacheObservationBrowserFixture(t) {
     ordinarySessionId,
     singleSessionId,
     codeModeSessionId,
+    trajectoryDeepSessionId,
   };
 }
 
@@ -2165,6 +2221,38 @@ test('browser Trajectory overview exposes only the loaded canonical sequence and
   ), firstInputId);
 });
 
+test('browser Trajectory overview selects a full-height Other marker before the clicked lane', async (t) => {
+  const index = await buildFixtureIndex();
+  const materialized = await materializeIndexedSession(index, primaryFixtureSessionId);
+  const mainEvents = materialized.logicalEvents.filter((event) => event.layer === 'main');
+  const otherIndex = mainEvents.findIndex((event) => event.kind === 'error');
+  assert.ok(otherIndex >= 0);
+  const otherEvent = mainEvents[otherIndex];
+  const { page } = await openWave1cM1App(t, index, { locale: 'en' });
+  await selectPrimarySession(page);
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  const canvas = page.locator('.trajectoryOverviewCanvas[data-render-mode="markers"]');
+  await canvas.waitFor();
+  const bounds = await canvas.boundingBox();
+  assert.ok(bounds);
+
+  await canvas.click({
+    position: {
+      x: bounds.width * ((otherIndex + 0.5) / mainEvents.length),
+      y: bounds.height / 6,
+    },
+  });
+  await page.waitForFunction((eventId) => (
+    document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId === eventId
+      && document.querySelector(`[data-trajectory-event-id="${CSS.escape(eventId)}"]`)?.classList.contains('selected')
+      && Boolean(document.querySelector('#detail .inspector'))
+  ), otherEvent.id);
+  assert.equal(
+    await page.locator('[data-trajectory-event-id].selected').getAttribute('data-lane'),
+    'other',
+  );
+});
+
 test('browser Trajectory sequence zoom keeps long overviews bounded and selection-aware without pan snapback', async (t) => {
   const eventCount = 1000;
   const { index } = await makeTransitionProfileIndex(t, {
@@ -2753,6 +2841,119 @@ test('browser Trajectory discards stale long-session search pages after a Sessio
   assert.equal(await page.locator('body').getAttribute('data-remembered-main-presentation'), 'trajectory');
   assert.equal((await page.locator('#stateLine').textContent()).includes('AbortError'), false);
   assert.equal(await page.locator('[data-search-navigation-pending]').count(), 0);
+});
+
+test('browser Trajectory keeps an unloaded Cache Main context detached from canonical sequence', async (t) => {
+  const fixture = await makeCacheObservationBrowserFixture(t);
+  const materialized = await materializeIndexedSession(
+    fixture.index,
+    fixture.trajectoryDeepSessionId,
+  );
+  const links = materialized.presentationIndexes.cacheDiscontinuityLinks;
+  assert.equal(links.protocolEventIdsByMainEventId.size, 1);
+  const [mainEventId, protocolEventIds] = [...links.protocolEventIdsByMainEventId][0];
+  assert.equal(protocolEventIds.length, 1);
+  const mainEvents = materialized.logicalEvents.filter((event) => event.layer === 'main');
+  const mainIndex = mainEvents.findIndex((event) => event.id === mainEventId);
+  assert.ok(mainIndex >= 150);
+  assert.ok(mainIndex < mainEvents.length - 1);
+
+  const { page } = await openApp(t, fixture.index, {
+    locale: 'en',
+    skipProjectReindex: true,
+  });
+  await page.locator(`[data-session-id="${fixture.trajectoryDeepSessionId}"]`).click();
+  await page.waitForFunction((sessionId) => (
+    document.querySelector('.sessionItem.active')?.dataset.sessionId === sessionId
+  ), fixture.trajectoryDeepSessionId);
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.waitForFunction(() => (
+    document.querySelector('.trajectoryPresentation')?.dataset.eventCount === '150'
+  ));
+  assert.equal(
+    (await page.locator('.trajectoryOverviewStatus').textContent()).trim(),
+    `Loaded prefix · 150/${mainEvents.length}`,
+  );
+
+  await page.locator('#loadMoreBtn').click();
+  await page.waitForFunction((eventCount) => (
+    document.querySelector('.trajectoryPresentation')?.dataset.eventCount === String(eventCount)
+  ), mainEvents.length);
+  const deepMainEvent = page.locator(`[data-trajectory-event-id="${mainEventId}"]`);
+  await deepMainEvent.waitFor();
+  assert.equal(await deepMainEvent.getAttribute('data-sequence-index'), String(mainIndex));
+  await deepMainEvent.click();
+
+  await page.locator('#layerSelect').selectOption('protocol');
+  const protocolEvent = page.locator(`#timeline .event[data-event-id="${protocolEventIds[0]}"]`);
+  await protocolEvent.waitFor();
+  await protocolEvent.click();
+  const reverse = page.locator('#detail [data-detail-action="navigate-linked-event"]');
+  await reverse.waitFor();
+  assert.equal((await reverse.textContent()).trim(), 'View Main context');
+  await reverse.click();
+
+  await page.waitForFunction(({ eventId }) => {
+    const detached = document.querySelector(`[data-trajectory-detached-event-id="${CSS.escape(eventId)}"]`);
+    return document.querySelector('#layerSelect')?.value === 'main'
+      && Boolean(document.querySelector('.trajectoryPresentation'))
+      && detached?.querySelector('.event.temporaryReferenceReveal.selected');
+  }, { eventId: mainEventId });
+  const detachedState = await page.evaluate((eventId) => {
+    const presentation = document.querySelector('.trajectoryPresentation');
+    const detached = document.querySelector(`[data-trajectory-detached-event-id="${CSS.escape(eventId)}"]`);
+    const representedCount = presentation.querySelectorAll('.trajectoryNarrativeRow').length
+      + [...presentation.querySelectorAll('.trajectoryToolGroup')]
+        .reduce((sum, group) => sum + Number(group.dataset.eventCount || 0), 0);
+    return {
+      detachedOutsidePresentation: !detached.closest('.trajectoryPresentation'),
+      detachedCardId: detached.querySelector('.event')?.dataset.eventId || '',
+      detachedSelected: detached.querySelector('.event')?.classList.contains('selected') || false,
+      presentationCount: Number(presentation.dataset.eventCount),
+      representedCount,
+      overviewEventCount: Number(presentation.querySelector('.trajectoryOverviewCanvas')?.dataset.eventCount),
+      loadedStatus: presentation.querySelector('.trajectoryOverviewStatus')?.textContent || '',
+      targetInNarrative: Boolean(presentation.querySelector(`[data-trajectory-event-id="${CSS.escape(eventId)}"]`)),
+      targetInGroup: [...presentation.querySelectorAll('.trajectoryToolGroup')]
+        .some((group) => group.__trajectoryEventIds?.has(eventId)),
+      locatorId: presentation.querySelector('.trajectoryOverviewLocator')
+        ?.dataset.trajectoryOverviewSelectedId || '',
+    };
+  }, mainEventId);
+  assert.deepEqual(detachedState, {
+    detachedOutsidePresentation: true,
+    detachedCardId: mainEventId,
+    detachedSelected: true,
+    presentationCount: 150,
+    representedCount: 150,
+    overviewEventCount: 150,
+    loadedStatus: `Loaded prefix · 150/${mainEvents.length}`,
+    targetInNarrative: false,
+    targetInGroup: false,
+    locatorId: '',
+  });
+  assert.equal(
+    (await page.locator('.trajectoryDetachedReferenceHeader h3').textContent()).trim(),
+    'Referenced event outside loaded sequence',
+  );
+
+  await page.locator('#loadMoreBtn').click();
+  await page.waitForFunction(({ eventId, eventCount, sequenceIndex }) => {
+    const target = document.querySelector(`[data-trajectory-event-id="${CSS.escape(eventId)}"]`);
+    return !document.querySelector('[data-trajectory-detached-event-id]')
+      && document.querySelector('.trajectoryPresentation')?.dataset.eventCount === String(eventCount)
+      && target?.dataset.sequenceIndex === String(sequenceIndex)
+      && target.classList.contains('selected')
+      && document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId === eventId;
+  }, { eventId: mainEventId, eventCount: mainEvents.length, sequenceIndex: mainIndex });
+  assert.equal(
+    await page.locator('.trajectoryOverviewCanvas').getAttribute('data-event-count'),
+    String(mainEvents.length),
+  );
+  assert.equal(
+    (await page.locator('.trajectoryOverviewStatus').textContent()).trim(),
+    `Loaded sequence · ${mainEvents.length}`,
+  );
 });
 
 test('browser locale localizes static shell and dirty profile dialog', async (t) => {

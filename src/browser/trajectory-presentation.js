@@ -380,6 +380,13 @@ function nearestTrajectoryEventIndex(projectedEvents, fraction, preferredLane = 
   return nearest.index;
 }
 
+function nearestTrajectoryOverviewEventIndex(projectedEvents, fraction, preferredLane = '') {
+  const globalIndex = nearestTrajectoryEventIndex(projectedEvents, fraction);
+  if (globalIndex < 0) return -1;
+  if (projectedEvents[globalIndex]?.lane === TRAJECTORY_LANES.OTHER) return globalIndex;
+  return nearestTrajectoryEventIndex(projectedEvents, fraction, preferredLane);
+}
+
 const DEFAULT_LABELS = Object.freeze({
   region: 'Trajectory presentation',
   overview: 'Trajectory overview',
@@ -866,7 +873,7 @@ function renderTrajectoryOverview(documentRef, model, options) {
     return true;
   };
   const selectAt = (fraction, lane) => {
-    const index = nearestTrajectoryEventIndex(model.projectedEvents, fraction, lane);
+    const index = nearestTrajectoryOverviewEventIndex(model.projectedEvents, fraction, lane);
     if (index < 0) return false;
     options.onSelect?.(model.projectedEvents[index].event);
     return true;
@@ -1092,6 +1099,7 @@ module.exports = {
   compactTrajectoryText,
   disposeTrajectoryPresentation,
   nearestTrajectoryEventIndex,
+  nearestTrajectoryOverviewEventIndex,
   projectTrajectoryEvents,
   reliableTrajectoryTurnId,
   renderTrajectoryPresentation,

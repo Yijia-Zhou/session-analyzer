@@ -85,7 +85,7 @@ The alternate Main Presentation that combines a compact canonical-sequence overv
 _Avoid_: Trajectory Layer, workflow reconstruction, step trace / 轨迹层、工作流重建、步骤轨迹
 
 **Trajectory Overview / 轨迹概览**:
-The three-row Input／Model／Tools sequence summary inside Trajectory Presentation. Its horizontal axis represents canonical sequence only and covers only Main events currently materialized in the browser; it is not a time axis, duration chart, concurrency model, or proof that the complete Session is loaded. / 轨迹呈现中的三行 Input／Model／Tools 序列摘要。其横轴只表示 canonical 顺序，并且只覆盖 browser 当前已 materialize 的 Main event；它不是时间轴、duration 图、并发模型，也不证明完整 Session 已加载。
+The three-row Input／Model／Tools sequence summary inside Trajectory Presentation. Its horizontal axis represents canonical sequence only and covers only committed Main events currently materialized in the browser; a temporary referenced event whose canonical position is not loaded remains separately visible but is excluded. It is not a time axis, duration chart, concurrency model, or proof that the complete Session is loaded. / 轨迹呈现中的三行 Input／Model／Tools 序列摘要。其横轴只表示 canonical 顺序，并且只覆盖 browser 当前已提交且已 materialize 的 Main event；canonical 位置尚未加载的临时引用 event 会在序列外单独保持可见。它不是时间轴、duration 图、并发模型，也不证明完整 Session 已加载。
 _Avoid_: Timeline layer, duration chart, complete-session map / 时间线层、时长图、完整会话地图
 
 **Tool Activity Group / 工具活动组**:

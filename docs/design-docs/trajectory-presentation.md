@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 
 - Status: accepted for production implementation / 状态：已接受，进入正式实现
-- Last updated: 2026-09-03 / 最近更新：2026-09-03
+- Last updated: 2026-09-04 / 最近更新：2026-09-04
 - Base: `origin/towards-0.2.0` at `3419a49ae2c1c9a6ff7e1e34ecb3b550ba1f9ec1`
 - Related product spec: `docs/product-specs/session-transcript-analyzer.md`
 - Related design docs: / 相关设计文档：
@@ -32,7 +32,7 @@ The production implementation starts again from the accepted `towards-0.2.0` arc
 
 ## Source-neutral projection / 来源中立 projection
 
-`src/browser/trajectory-presentation.js` owns a pure projection before it owns DOM rendering. Its input is the ordered array of currently materialized canonical Main Logical Event DTOs. Source identity is deliberately absent from classification and grouping. / `src/browser/trajectory-presentation.js` 先拥有纯 projection，再拥有 DOM rendering。输入是当前已 materialize、按顺序排列的 canonical Main Logical Event DTO 数组。分类与归组有意不读取来源 identity。
+`src/browser/trajectory-presentation.js` owns a pure projection before it owns DOM rendering. Its input is the ordered `state.currentEvents` array of currently committed and materialized canonical Main Logical Event DTOs. Presentation-only temporary reference reveals are deliberately excluded because their canonical position is not established by insertion beside a source card or at the loaded prefix tail. Source identity is deliberately absent from classification and grouping. / `src/browser/trajectory-presentation.js` 先拥有纯 projection，再拥有 DOM rendering。输入是 `state.currentEvents` 中当前已提交、已 materialize 且按顺序排列的 canonical Main Logical Event DTO 数组。仅用于呈现的临时引用 reveal 会被明确排除，因为插在 source card 之后或 loaded prefix 尾部都不能证明其 canonical 位置。分类与归组有意不读取来源 identity。
 
 ```text
 ordered, materialized Main Logical Events
@@ -93,11 +93,13 @@ Every materialized visible individual row has exactly one `data-event-id` owner.
 
 If search navigation targets an event inside a closed group, the existing detail-backed transient reveal makes the event visible, Trajectory opens and materializes that group, then the existing target registry binds and scrolls to the individual row. Manual group expansion never changes saved Folding Strategy rules or event overrides. / 如果搜索导航的目标位于关闭的 group 内，既有 detail-backed transient reveal 会使该 event 可见；Trajectory 随后打开并 materialize 该 group，再由既有 target registry 绑定并滚动到 individual row。手动展开 group 绝不改变已保存的折叠策略规则或 event override。
 
+An event-envelope target absent from committed `state.currentEvents` remains selectable through a labeled detached reference card outside the Trajectory sequence. It retains the existing temporary-reveal identity, Inspector, Detail, and Raw Reference behavior, but owns no overview position, turn boundary, or Tool Activity Group membership. If later pagination materializes that event canonically, the temporary reveal is removed and the same selected ID rejoins the sequence at its committed index. / Event-envelope target 若不在已提交的 `state.currentEvents` 中，会通过 Trajectory sequence 外带明确标签的 detached reference card 保持可选择。它继续复用既有 temporary-reveal identity、Inspector、Detail 与原始引用行为，但不拥有 overview position、turn boundary 或工具活动组 membership。若后续 pagination 把该 event canonical materialize，temporary reveal 会被移除，同一个 selected ID 会在已提交 index 上重新进入序列。
+
 Inspector selection, previous/next navigation, project-search drill-down, `Read from here`, Main↔Protocol Cache links, and Raw Reference navigation continue to call the existing event-envelope and contiguous-prefix loading paths. Once an event is loaded, selection synchronization opens its group and locates the same ID. / Inspector 选择、previous／next 导航、project-search drill-down、`Read from here`、Main↔Protocol Cache link 与原始引用导航继续调用既有 event-envelope 和连续 prefix loading 路径。Event 加载后，selection synchronization 打开其 group 并定位同一个 ID。
 
 ## Trajectory Overview / 轨迹概览
 
-The overview has exactly three labeled rows: Input, Model, and Tools. It covers only the ordered Main events currently materialized in the browser. When `offset < timelineTotal`, copy and accessible state explicitly say that the display is a loaded prefix and report loaded/total result counts; it never implies that the complete Session is visible. / Overview 恰好有三条标注行：Input、Model 与 Tools。它只覆盖 browser 当前已 materialize 的有序 Main event。当 `offset < timelineTotal` 时，文案与无障碍状态会明确说明当前是 loaded prefix，并报告 loaded／total result count；绝不暗示完整 Session 已全部可见。
+The overview has exactly three labeled rows: Input, Model, and Tools. It covers only the ordered Main events currently committed and materialized in the browser; detached temporary references are excluded. When `offset < timelineTotal`, copy and accessible state explicitly say that the display is a loaded prefix and report loaded/total result counts; it never implies that the complete Session is visible. / Overview 恰好有三条标注行：Input、Model 与 Tools。它只覆盖 browser 当前已提交且已 materialize 的有序 Main event；detached temporary reference 不进入其中。当 `offset < timelineTotal` 时，文案与无障碍状态会明确说明当前是 loaded prefix，并报告 loaded／total result count；绝不暗示完整 Session 已全部可见。
 
 The overview uses a bounded canvas plus a constant-size selected-event locator rather than one permanent DOM marker per event. The canvas width is bounded by the viewport and the supported zoom range, not by event count. Unknown/Other events draw a cross-lane fail-safe mark. The selected locator spans lanes lightly, remains visible at Fit even for 1,000+ events, and carries the canonical selected event ID. / Overview 使用有界 canvas 与固定数量的 selected-event locator，而不是为每条 event 长期保留一个 DOM marker。Canvas 宽度由 viewport 和受支持 zoom range 限定，而不随 event 数增长。Unknown／Other event 绘制跨 lane fail-safe mark。Selected locator 轻量跨越 lanes，即使在 1000+ event 的 Fit 状态也保持可见，并携带 canonical selected event ID。
 
@@ -106,7 +108,7 @@ Rendering mode depends on available horizontal pixels per event: / Rendering mod
 - At low zoom, events are accumulated into lane/pixel bins and rendered as density. A bin is aggregate presence/intensity, not an individual marker. / 低 zoom 下，event 按 lane／pixel bin 聚合并渲染为 density。Bin 表示聚合存在性／强度，不是 individual marker。
 - At medium/high zoom, sufficient pixel separation allows individual canvas markers. These remain canvas marks, not persistent DOM nodes. / 中高 zoom 下，当像素间隔足够时绘制 individual canvas marker；它们仍是 canvas mark，而不是持久 DOM node。
 
-Pointer selection maps the click to the nearest canonical sequence event, preferring the clicked lane when possible. The narrative remains the accessible, identity-complete event list. / Pointer selection把点击映射到最近的 canonical sequence event，并在可能时优先选择被点击 lane；narrative 继续作为具备无障碍能力且 identity 完整的 event list。
+Pointer selection maps the click to the nearest canonical sequence event, preferring a globally nearest Other event because its fallback marker spans all three rows; otherwise it prefers the clicked Input／Model／Tools lane when possible. The narrative remains the accessible, identity-complete event list. / Pointer selection 把点击映射到最近的 canonical sequence event；由于 Other fallback marker 贯穿三行，全局最近 event 若为 Other 则优先选择它，否则在可能时优先选择被点击的 Input／Model／Tools lane。Narrative 继续作为具备无障碍能力且 identity 完整的 event list。
 
 ## Sequence Zoom / 序列缩放
 

@@ -2969,6 +2969,38 @@ body[data-project-mode='selecting'] .searchAssist {
   gap: 0.8rem;
 }
 
+.trajectoryDetachedReference {
+  background: #fff8e8;
+  border: 1px solid #dfc889;
+  border-left: 4px solid #987331;
+  border-radius: 7px;
+  display: grid;
+  gap: 0.55rem;
+  margin-bottom: 0.8rem;
+  padding: 0.65rem;
+}
+
+.trajectoryDetachedReferenceHeader {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.trajectoryDetachedReferenceHeader h3,
+.trajectoryDetachedReferenceHeader p {
+  margin: 0;
+}
+
+.trajectoryDetachedReferenceHeader h3 {
+  color: #76591f;
+  font-size: 0.76rem;
+}
+
+.trajectoryDetachedReferenceHeader p {
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
 .trajectoryOverview {
   background: #f8fafb;
   border: 1px solid var(--line);

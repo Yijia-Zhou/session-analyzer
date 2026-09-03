@@ -6392,12 +6392,32 @@ function prependTrajectoryContextCards() {
   el.timeline.prepend(template.content);
 }
 
+function trajectoryDetachedReferenceEvent() {
+  const event = state.temporaryEventReveal?.event;
+  if (!event?.id || hasCanonicalTimelineEvent(event.id)) return null;
+  return event;
+}
+
+function prependTrajectoryDetachedReference() {
+  const event = trajectoryDetachedReferenceEvent();
+  if (!event) return;
+  const template = document.createElement('template');
+  template.innerHTML = `<section class="trajectoryDetachedReference" data-trajectory-detached-event-id="${escapeHtml(event.id)}" aria-label="${escapeHtml(t('trajectoryDetachedReference'))}">
+    <header class="trajectoryDetachedReferenceHeader">
+      <h3>${escapeHtml(t('trajectoryDetachedReference'))}</h3>
+      <p>${escapeHtml(t('trajectoryDetachedReferenceHint'))}</p>
+    </header>
+    ${renderTimelineCardMarkup(event, new Set())}
+  </section>`;
+  el.timeline.prepend(template.content);
+}
+
 function renderTrajectoryProjection() {
   const trajectoryState = trajectoryStateForCurrentContext();
   replaceTimelineRoot('', 'non-main');
   const model = trajectoryPresentationApi.renderTrajectoryPresentation({
     root: el.timeline,
-    events: renderedTimelineEvents(),
+    events: state.currentEvents,
     selectedEventId: state.selectedEventId,
     loadedEventCount: state.offset,
     totalEventCount: state.timelineTotal,
@@ -6415,6 +6435,7 @@ function renderTrajectoryProjection() {
     onGroupMaterialized: () => scheduleTrajectorySearchRefresh(),
     onSelect: (item) => selectTrajectoryEvent(item),
   });
+  prependTrajectoryDetachedReference();
   prependTrajectoryContextCards();
   state.searchSurfaceContexts.timeline = state.timelineDataContext === timelineDataContextKey()
     ? timelineSearchSurfaceContextKey()

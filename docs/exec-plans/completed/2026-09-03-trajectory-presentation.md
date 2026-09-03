@@ -2,7 +2,7 @@
 
 ## Status / 状态
 
-- Status: complete — M0–M6 accepted and ready for local review / 状态：已完成——M0–M6 已验收，可供本地 review
+- Status: complete — M0–M6 and the 2026-09-04 external-review corrections are validated / 状态：已完成——M0–M6 与 2026-09-04 external-review 修正均已验证
 - Started: 2026-09-03 / 开始日期：2026-09-03
 - Production worktree: `G:\vibe\session-analyzer\tmp\worktrees\trajectory-view`
 - Branch: `feat/trajectory-view`
@@ -132,20 +132,34 @@ Actual evidence / 实际证据：
 - Read-only real DeepSeek Harness: one retained corpus shape projected 150 events as 79 rows／40 groups with 71 selectable tool members; the current-writer Zstandard shape projected 150 as 96 rows／54 lazy groups with exact identity and a 20-node loaded-prefix overview. The current-writer Protocol showed one durable permission preset, sandbox mode, and approval policy row each. No durable approval lifecycle occurred in that selected real corpus, and the four retained DSH Sessions exposed no Code Mode operation; this is “not observed,” while adapter/fixture gates cover both contracts. / 真实 DSH retained 与 current-writer Zstandard 语料通过；permission 三行各观测一条。该真实语料未出现 durable approval lifecycle，四个 retained Session 也未出现 Code Mode operation；这是“未观察到”，不是“不支持”。
 - Acceptance server PID 3280 was launched from this production worktree with `--repo G:\vibe\session-analyzer --port 17893`. Final state is HTTP 200, Codex, original project selected, index revision 8; the served `assets/app.js` SHA-256 equals this worktree asset. Prototype 17892 and live DSH 3080 both remained HTTP 200. Playwright's two temporary page snapshots were deleted after acceptance so no real transcript artifact remains in the worktree. / 17893 最终状态与 served asset 均已核验；17892／3080 未受影响；真实 transcript 的临时 snapshot 已删除。
 
+### M7 — External-review correctness fixes / 外部 review 正确性修复
+
+- [x] Exclude presentation-only temporary reference reveals from canonical Trajectory projection, overview, turn boundaries, and Tool Activity Groups. / 从 canonical Trajectory projection、overview、turn boundary 与工具活动组中排除仅用于呈现的 temporary reference reveal。
+- [x] Keep an unloaded event-envelope target selectable in a labeled detached card, then reattach the same identity at its committed sequence index after Load more materializes it. / 让尚未加载的 event-envelope target 在带标签的 detached card 中保持可选择；Load more 将其 materialize 后，再把同一 identity 接回已提交 sequence index。
+- [x] Make a globally nearest full-height Other marker win before Input／Model／Tools row-specific hit testing. / 让全局最近的贯穿三行 Other marker 优先于 Input／Model／Tools 的 row-specific hit-test。
+- [x] Repair the documentation index to reference the completed Trajectory plan. / 修正文档索引，使其引用已完成的 Trajectory plan。
+
+Actual evidence / 实际证据：
+
+- The source-backed Cache browser case materialized a Main anchor at index 170 of 191, switched through Protocol evidence, then returned to remembered Trajectory with only the committed 150-event prefix in its overview. The target remained selected in a detached card with no locator, group membership, or sequence index; one Load more removed the detached card and restored the same ID at canonical index 170 with the locator synchronized. / Source-backed Cache browser case 将 Main anchor materialize 在 191 条事件中的 index 170，经 Protocol evidence 返回 remembered Trajectory 后，overview 只保留已提交的 150-event prefix。Target 在 detached card 中保持 selected，但没有 locator、group membership 或 sequence index；一次 Load more 后 detached card 消失，同一 ID 回到 canonical index 170 并同步 locator。
+- The Other-marker browser case clicked the Input-row coordinate at the exact horizontal position of a canonical `error` event and selected that Other event in narrative, overview locator, and Inspector. The pure helper test preserves ordinary lane preference when the globally nearest event is not Other. / Other-marker browser case 在 canonical `error` event 的精确横向位置点击 Input row，narrative、overview locator 与 Inspector 均选择该 Other event；pure helper test 同时证明全局最近 event 不是 Other 时仍保留普通 lane preference。
+- Focused projection/i18n/navigation/event-state tests passed 43/43; all 14 Trajectory-named browser cases and the existing Cache round-trip case passed. Full `npm test` passed 953/953, `npm run test:browser` passed 205/205 in 237.23 s, installed Codex／Claude Code／DeepSeek Harness package smoke passed, and `npm run release:check` passed with generated assets current. / Focused test 通过 43／43；全部 14 个 Trajectory browser case 与既有 Cache round-trip case 通过。完整 Node 953／953、browser 205／205（237.23 s）、三来源 installed-package smoke 与 release gate 全部通过，generated asset 保持 current。
+- Acceptance ports 17892, 3080, and 17893 remained HTTP 200; 17893 served the updated production bundle with SHA-256 `f959c71fd9754c663704d41e050a8c81ce964b1f7898b4782caaa581848a18c0`, exactly matching this worktree. / 验收端口 17892、3080 与 17893 均保持 HTTP 200；17893 提供的更新后 production bundle SHA-256 为 `f959c71fd9754c663704d41e050a8c81ce964b1f7898b4782caaa581848a18c0`，与本 worktree 精确一致。
+
 ## Validation ledger / 验证台账
 
 | Command or observation / 命令或观察 | Status / 状态 | Evidence / 证据 |
 | --- | --- | --- |
 | Focused baseline (6 files) | passed | 82 tests, 0 failed / 82 tests，0 failed |
 | `npm run build:check` baseline | passed | generated assets current |
-| M1 projection tests | passed | 10 tests; exact identity at 300／1,000／1,800 events / 10 tests；300／1,000／1,800 event 精确 identity |
-| Relevant Trajectory browser tests | passed | 12 Trajectory-named cases plus context-transition coverage / 12 个 Trajectory 命名 case，另含 context transition |
+| M1 projection tests | passed | 11 tests; exact identity at 300／1,000／1,800 events plus Other-marker selection / 11 tests；300／1,000／1,800 event 精确 identity 与 Other-marker selection |
+| Relevant Trajectory browser tests | passed | 14 Trajectory-named cases plus context-transition coverage / 14 个 Trajectory 命名 case，另含 context transition |
 | `npm run build:client` | passed | generated `public/assets/app.js` from production source |
 | `npm run build:check` final | passed | generated assets current |
-| `npm test` | passed | 952 tests, 0 failed, 9.80 s |
-| `npm run test:browser` | passed | 203 tests, 0 failed, 223.87 s |
-| `npm run test:package` | passed | Codex／Claude Code／DeepSeek Harness installed smoke, 9.97 s |
-| `npm run release:check` | passed | build check + 952 tests + three-source package smoke, 20.65 s |
+| `npm test` | passed | 953 tests, 0 failed, 15.45 s |
+| `npm run test:browser` | passed | 205 tests, 0 failed, 237.23 s |
+| `npm run test:package` | passed | Codex／Claude Code／DeepSeek Harness installed smoke, 10.2 s |
+| `npm run release:check` | passed | build check + 953 tests + three-source package smoke, 21.9 s |
 | Codex ordinary real transcript | passed | 9 events, 9 rows, 0 groups; navigation／Layer memory passed |
 | Codex tool-heavy/Code Mode real transcript | passed | 69 events, 8 rows, 7 groups; zoom／Inspector／Raw passed |
 | Claude Code real transcript | passed | 150→300 events; exact identity and constant 20-node overview |
@@ -178,3 +192,4 @@ Record actual browser measurements without turning them into permanent product p
 - 2026-09-03 M4: added process-local Sequence Zoom state, Fit／`−`／`+`, selected-first and viewport-center anchoring, wheel/pointer free pan, selection bring-into-view, pixel-dependent density/marker canvas rendering, and 1,000／1,800-event browser characterization. / 2026-09-03 M4：增加 process-local Sequence Zoom state、Fit／`−`／`+`、selection-first 与 viewport-center anchor、wheel／pointer free pan、selection bring-into-view、随像素密度切换的 density／marker canvas rendering，以及 1,000／1,800-event browser characterization。
 - 2026-09-03 M5: proved canonical search reveal inside lazy groups, structured-filter and Folding Strategy reuse, explicit/automatic pagination, Inspector/project drill-down identity, keyed Timeline append after presentation round-trip, and stale Session/source transition ownership. / 2026-09-03 M5：证明 lazy group 内 canonical search reveal、structured-filter 与 Folding Strategy 复用、显式／自动分页、Inspector／project drill-down identity、presentation 往返后的 keyed Timeline append，以及 stale Session／source transition ownership。
 - 2026-09-03 M6: completed bilingual public/repository documentation, all requested release gates, 300／1,000／1,800-event performance evidence, read-only Codex／Claude Code／DeepSeek Harness acceptance, sensitive temporary-artifact cleanup, and a verified persistent 17893 acceptance server. / 2026-09-03 M6：完成 bilingual public／repository 文档、全部指定 release gate、300／1,000／1,800-event performance evidence、只读 Codex／Claude Code／DeepSeek Harness 验收、敏感临时 artifact 清理，以及持久 17893 验收 server 核验。
+- 2026-09-04 M7: accepted all three external-review findings; detached temporary references from canonical Trajectory sequence, made full-height Other markers directly selectable, repaired the completed-plan link, and reran focused plus full release validation. / 2026-09-04 M7：接受全部三项 external-review finding；把 temporary reference 从 canonical Trajectory sequence 中分离、让贯穿三行的 Other marker 可直接选择、修复 completed-plan 链接，并重新运行 focused 与完整 release validation。

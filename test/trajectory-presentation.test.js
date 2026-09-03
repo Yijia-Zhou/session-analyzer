@@ -10,6 +10,7 @@ const {
   buildTrajectoryPresentation,
   compactTrajectoryText,
   nearestTrajectoryEventIndex,
+  nearestTrajectoryOverviewEventIndex,
   projectTrajectoryEvents,
   reliableTrajectoryTurnId,
   trajectoryEventFraction,
@@ -170,6 +171,29 @@ test('trajectory overview click mapping prefers the requested lane and falls bac
   assert.equal(nearestTrajectoryEventIndex([], 0.5, TRAJECTORY_LANES.MODEL), -1);
   assert.equal(trajectoryEventFraction(2, 4), 0.625);
   assert.equal(trajectoryEventFraction(4, 4), null);
+});
+
+test('trajectory overview selection prioritizes exact Other marks before lane preference', () => {
+  const projected = projectTrajectoryEvents([
+    { id: 'input', kind: 'user_message' },
+    { id: 'other', kind: 'review' },
+    { id: 'model', kind: 'assistant_message' },
+  ]);
+  const inputFraction = trajectoryEventFraction(0, projected.length);
+  const otherFraction = trajectoryEventFraction(1, projected.length);
+  const modelFraction = trajectoryEventFraction(2, projected.length);
+
+  assert.equal(nearestTrajectoryOverviewEventIndex(projected, inputFraction, TRAJECTORY_LANES.INPUT), 0);
+  assert.equal(nearestTrajectoryOverviewEventIndex(projected, otherFraction, TRAJECTORY_LANES.INPUT), 1);
+  assert.equal(nearestTrajectoryOverviewEventIndex(projected, modelFraction, TRAJECTORY_LANES.MODEL), 2);
+  assert.equal(
+    nearestTrajectoryOverviewEventIndex(projected, inputFraction, TRAJECTORY_LANES.MODEL),
+    2,
+  );
+  assert.equal(
+    nearestTrajectoryOverviewEventIndex(projected, modelFraction, TRAJECTORY_LANES.INPUT),
+    0,
+  );
 });
 
 test('trajectory compact text and zoom levels remain bounded presentation helpers', () => {
