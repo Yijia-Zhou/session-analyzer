@@ -51,7 +51,13 @@ const {
 const { deriveCodeModeFacts } = require('./codex-code-mode-facts');
 const { codeModePresentationContextMap } = require('./shared/code-mode-presentation-context');
 const { createCodexDetailBuilder } = require('./codex-detail');
+const cacheObservationPresentation = require('./cache-observation-presentation');
 const {
+  createCodexCacheObservationSeed,
+  finalizeCodexCacheObservation,
+} = require('./codex-cache-observation');
+const {
+  createEmptyMaterializedPresentationIndexes,
   validateCanonicalLegacyRawOwnerIndex,
   validateCanonicalRawEventShape,
 } = require('./canonical-contract');
@@ -3659,11 +3665,11 @@ function extractProtocolDetailSections(event, raws) {
   if (event.subtype === 'token_count') {
     const usageLimits = collectUsageLimitItems(primary.parsed?.payload);
     if (usageLimits.length) inspectorSections.push({ purpose: 'context', type: 'usage_limits', title: 'Usage limits', items: usageLimits });
-    const tokenItems = tokenUsageItems(primary.parsed?.payload);
+    const tokenItems = event.cacheObservation ? [] : tokenUsageItems(primary.parsed?.payload);
     if (tokenItems.length && !usageLimits.length) inspectorSections.push({ purpose: 'context', type: 'token_usage', title: 'Token usage', items: tokenItems });
     maybePushKvSection(inspectorSections, 'Event fields', toKvEntries(primary.parsed?.payload, ['type', 'turn_id', 'thread_id', 'thread_name']), 'context');
     const consumedKeys = new Set(kvRepresentedKeys(primary.parsed?.payload));
-    if (usageLimits.length || tokenItems.length) {
+    if (event.cacheObservation || usageLimits.length || tokenItems.length) {
       consumedKeys.add('info');
       consumedKeys.add('rate_limits');
     }
@@ -3833,6 +3839,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
     sanitizeLogicalDetailSections,
     sanitizeLogicalEnvelopeValue,
   },
+  cacheObservationPresentation,
   sourceTrace: {
     classifyProtocolText,
     codexSourceLocator,
@@ -4302,7 +4309,10 @@ function finalizeSession(session, sessionIndexEntry) {
     timelineStats: countBy(session.logicalEvents.filter((event) => event.layer !== 'protocol'), (event) => event.kind),
     protocolStats: countBy(session.logicalEvents.filter((event) => event.layer === 'protocol'), (event) => event.subtype),
   };
-  session.presentationIndexes = buildCodeModePresentationIndexes(session);
+  session.presentationIndexes = {
+    ...createEmptyMaterializedPresentationIndexes(),
+    ...buildCodeModePresentationIndexes(session),
+  };
   session.eventKinds = eventKindCatalog([session]);
 
   delete session._turnIds;
@@ -4425,7 +4435,7 @@ const COMPACT_SESSION_STRING_FIELDS = [
   'transcriptUpdatedAt', 'updatedAt',
 ];
 const COMPACT_LOGICAL_KEYS = new Set([
-  'channels', 'codeModeOperation', 'hasLongOutput', 'hasReadableReasoning', 'id', 'kind', 'label', 'layer',
+  'cacheObservation', 'channels', 'codeModeOperation', 'hasLongOutput', 'hasReadableReasoning', 'id', 'kind', 'label', 'layer',
   'outputStats', 'preview', 'rawRefs', 'role', 'schemaVersion', 'searchText', 'severity',
   'source', 'sourceKind', 'sourceLocator', 'status', 'subtype', 'tags', 'timestamp',
   'tokenUsage', 'toolName', 'touchedFiles', 'turnId', 'usageLimits',
@@ -4593,6 +4603,8 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
     throw snapshotFailure();
   }
   const session = makeEmptySession(filePath, relFile, stat);
+  const captureCacheObservationSeeds = options.captureCacheObservationSeeds === true;
+  if (captureCacheObservationSeeds) session._cacheObservationSeeds = [];
   session.bytes = acceptedBytes;
   session._sourceIdentity = sourceFileIdentity(stat);
   let primarySessionMetaSeen = false;
@@ -4616,6 +4628,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   const observeSourcePhases = hasMaterializationObserver();
   const sourceStreamStartedAt = observeSourcePhases ? performance.now() : 0;
   let sourceRecordParseMs = 0;
+  let cacheSeedCaptureMs = 0;
   if (observeSourcePhases) {
     notifyMaterializationObserver({ phase: 'adapter_source_stream', state: 'start' });
   }
@@ -4664,6 +4677,14 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       if (canonicalDigest) raw._canonicalRawDigest = canonicalDigest;
       raw.sourceClientVersion = typeof record.version === 'string' ? record.version : '';
       extractResidentRawFacts(raw, record);
+      if (captureCacheObservationSeeds) {
+        const seedCaptureStartedAt = observeSourcePhases ? performance.now() : 0;
+        const seed = createCodexCacheObservationSeed(raw, payload);
+        if (seed) session._cacheObservationSeeds.push(seed);
+        if (observeSourcePhases) {
+          cacheSeedCaptureMs += performance.now() - seedCaptureStartedAt;
+        }
+      }
       if (!session.sourceClientVersion && typeof record.version === 'string' && record.version) {
         session.sourceClientVersion = record.version;
       }
@@ -4690,6 +4711,10 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
         'adapter_source_read_wait',
         Math.max(0, sourceStreamMs - sourceRecordParseMs),
       );
+      if (captureCacheObservationSeeds) {
+        notifyMaterializationObserver({ phase: 'codex_cache_seed_capture', state: 'event' });
+        recordMaterializationDuration('codex_cache_seed_capture_duration', cacheSeedCaptureMs);
+      }
     }
   }
 
@@ -5595,6 +5620,7 @@ async function buildIndex({
   previousIndex = null,
   retainFullSourceRecordsForTests = false,
   beforeSourceSnapshotVerificationForTests = null,
+  cacheObservationForTests = false,
 }) {
   const resolvedRepo = resolveFsPath(repoRoot);
   const resolvedCodex = path.resolve(codexHome);
@@ -5702,6 +5728,7 @@ async function buildIndex({
     const currentStat = previousSession ? await fsp.stat(filePath) : null;
     const requiresCanonicalRawDigests = canonicalDigestFilePaths.has(filePath);
     const statReusable = previousSession
+      && !cacheObservationForTests
       && previousSession.bytes === currentStat.size
       && previousSession.sourceUpdatedAt === safeIso(currentStat.mtime)
       && typeof previousSession.sourceFingerprint === 'string'
@@ -5730,6 +5757,7 @@ async function buildIndex({
         canonicalRawDigests: requiresCanonicalRawDigests,
         retainFullSourceRecordsForTests,
         beforeSourceSnapshotVerificationForTests,
+        captureCacheObservationSeeds: cacheObservationForTests,
       });
     }
     indexedFileCount += 1;
@@ -5764,6 +5792,7 @@ async function buildIndex({
   for (const session of sessions) {
     throwIfAborted(signal);
     finalizeSession(session, sessionIndex.get(session.id));
+    if (cacheObservationForTests) finalizeCapturedCodexCacheObservation(session);
   }
   throwIfAborted(signal);
   inferReviewParentSessions(sessions);
@@ -6366,7 +6395,21 @@ async function buildSourceBackedIndex({
   };
 }
 
-async function materializeCodexSession({ materializationContext, indexedSession, dependencySet, signal }) {
+function finalizeCapturedCodexCacheObservation(session) {
+  if (!Array.isArray(session?._cacheObservationSeeds)) {
+    throw new Error('Codex cache finalization requires captured materialization seeds');
+  }
+  try {
+    return finalizeCodexCacheObservation(session, session._cacheObservationSeeds);
+  } finally {
+    delete session._cacheObservationSeeds;
+  }
+}
+
+async function materializeCodexSessionInternal(
+  { materializationContext, indexedSession, dependencySet, signal },
+  { cacheObservation = true } = {},
+) {
   throwIfAborted(signal);
   const index = materializationContext;
   const descriptor = indexedSession.materializationDescriptor;
@@ -6385,6 +6428,7 @@ async function materializeCodexSession({ materializationContext, indexedSession,
         fileIdentity: entry.evidence.fileIdentity,
       },
       canonicalRawDigests: indexedSession.forkStorageMode === 'materialized',
+      captureCacheObservationSeeds: cacheObservation,
     },
   );
   return observeMaterializationPhase('adapter_source_finalization', () => {
@@ -6402,14 +6446,19 @@ async function materializeCodexSession({ materializationContext, indexedSession,
         throw indexedSourceStaleError();
       }
     }
-    applyCodexRelationshipEvidence(session, {
-      ...descriptor.payload.relationship,
-      rawEventCount: indexedSession.rawEventCount,
-    }, indexedSourceStaleError);
-    finalizeSession(session, {
-      title: indexedSession.title,
-      updatedAt: indexedSession.updatedAt,
+    observeMaterializationPhase('codex_relationship_application', () => {
+      applyCodexRelationshipEvidence(session, {
+        ...descriptor.payload.relationship,
+        rawEventCount: indexedSession.rawEventCount,
+      }, indexedSourceStaleError);
     });
+    observeMaterializationPhase('codex_base_session_finalization', () => {
+      finalizeSession(session, {
+        title: indexedSession.title,
+        updatedAt: indexedSession.updatedAt,
+      });
+    });
+    if (cacheObservation) finalizeCapturedCodexCacheObservation(session);
     const summary = codexSearch.projectSessionMetadata(session).summary;
     const carried = projectCodexCarriedSession(session, summary);
     const materialized = {
@@ -6426,6 +6475,10 @@ async function materializeCodexSession({ materializationContext, indexedSession,
     }
     return materialized;
   });
+}
+
+async function materializeCodexSession(args) {
+  return materializeCodexSessionInternal(args, { cacheObservation: true });
 }
 
 function requireExactCodexKeys(value, keys, owner) {
@@ -6957,9 +7010,16 @@ const __testOnly = Object.freeze({
     ...options,
     retainFullSourceRecordsForTests: true,
   }),
+  buildCacheObservationResidentOracleForTests: (options) => buildIndex({
+    ...options,
+    cacheObservationForTests: true,
+  }),
   compactCodexRawEvent,
   formatResetTime,
   isReusableCompactSession,
+  materializeCodexSessionWithoutCacheForTests: (args) => (
+    materializeCodexSessionInternal(args, { cacheObservation: false })
+  ),
   isEcmaScriptWhitespace,
   resetTimeCacheLimit: RESET_TIME_CACHE_LIMIT,
   resetTimeCacheSize: () => resetTimeCache.size,

@@ -107,6 +107,7 @@ npm 包不承诺稳定的程序接口。v0.1 支持的接口是 `session-analyze
 - 只显示与所选仓库匹配的会话。
 - 保持 Claude Code subagent 可单独选择；区分物化式与指针式分叉，并在不重复指标或原始记录的前提下展示归父会话所有的继承上下文。
 - 浏览三种层级：去重后的主时间线、协议事件、原始 JSONL 记录。
+- 对于 Codex，可检查单次请求的 Token 使用情况与保守推断的缓存复用中断，并在主时间线上下文与对应的协议层证据之间跳转。
 - 搜索消息、命令、文件、输出、状态、事件类型和层级。
 - 检查消息、命令、补丁、计划、MCP/工具调用、Web 搜索、生命周期事件和原始记录的结构化详情。
 - 从逻辑事件跳回精确的源 JSONL 行。
@@ -236,6 +237,7 @@ Release gate 会检查生成资产、运行完整 Node 测试，并重复执行�
 ## 已知限制
 
 - v0.1.4 暂不支持混合来源索引或来源筛选。
+- 缓存复用中断目前仅支持 Codex，并依据转录中的 token accounting 推断；它不是显式的缓存过期证据。
 - DeepSeek Harness 第二阶段 A 建模人类消息、最终与部分助手消息、reasoning、工具调用／结果配对、生命周期 protocol、生效 agent preset、父子 lineage、subagent descriptor、带 seed／无 seed 的 fork ownership，以及 compaction 生命周期。其他已知上游 DeepSeek 事件族仍明确列为推迟。
 - Claude Code 外置的 `tool-results/*` payload 暂不加载或搜索；其来源记录和引用仍可通过 protocol/raw 兜底查看。
 - 未来或未知的 Codex、Claude Code 与 DeepSeek Harness protocol event 仍可通过 protocol/raw 兜底视图检查，但并非每个事件族都有完整精致的结构化渲染器。DeepSeek Harness 第二阶段 A 新增生效 preset、lineage／seed ownership，以及单一连贯 compaction 投影；其余事件族仍在执行计划中明确列为推迟。

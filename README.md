@@ -107,6 +107,7 @@ The npm package does not promise a stable programmatic API. The supported v0.1 i
 - Show only sessions that match the selected repository.
 - Keep Claude Code subagents separately selectable; distinguish materialized and pointer-backed forks, and show parent-owned inherited context without duplicate metrics or Raw Records.
 - Browse three layers: a deduplicated Main timeline, protocol events, and raw JSONL records.
+- For Codex, inspect per-request token usage and conservatively inferred cache-reuse discontinuities, with links between Main context and the supporting Protocol evidence.
 - Search messages, commands, files, outputs, status, event kinds, and layers.
 - Inspect structured details for messages, commands, patches, plans, MCP/tool calls, web searches, lifecycle events, and raw records.
 - Jump from logical events back to the exact source JSONL rows.
@@ -236,6 +237,7 @@ Browser JavaScript source lives in `src/browser/`, and browser-and-Node shared l
 ## Known Limits
 
 - Mixed-source indexing and source filters are not supported in v0.1.4.
+- Cache discontinuity is currently Codex-only and inferred from transcript token accounting; it is not explicit cache-expiry evidence.
 - DeepSeek Harness Phase 2A models human messages, finalized and partial assistant messages, reasoning, tool call/result pairs, lifecycle protocol, effective agent presets, child/parent lineage, subagent descriptors, header-seeded fork ownership, constructor-seed markers, and compaction lifecycle. Phase 2B adds explicit-ID Code Mode dispatch and conservative Protocol workflow provenance. Phase 2C adds Protocol LLM retry lifecycle, durable Main Goal state, non-human Goal continuation provenance, and whole-list Todo snapshots through the existing Plan update presentation. Phase 2D adds adapter-owned observed Permission state on the three independent configuration rows and exact-MessageId inbox Supplemental provenance without promoting queue bookkeeping or duplicating Raw ownership. Other known upstream DeepSeek event families remain inventoried as deferred.
 - Claude Code external `tool-results/*` payloads are not loaded or searched. Their source records and references remain available through protocol/raw fallback.
 - Future or unknown Codex, Claude Code, and DeepSeek Harness protocol events remain inspectable through protocol/raw fallback views, but not every event family has a polished structured renderer. DeepSeek Code Mode uses durable source IDs and does not parse outer programs for declared requests; workflow support is source-backed but was observed in 0/6 copied real Sessions.

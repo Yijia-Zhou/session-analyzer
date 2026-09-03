@@ -1189,7 +1189,58 @@ function renderCodeModePresentationChips(presentation, isCodeMode = false) {
 
 function presentedEventLabel(event, presentation = codeModeEventPresentation(event), compactWebLifecycle = false) {
   if (compactWebLifecycle) return t('webActivityObserved');
+  if (event?.presentationFacts?.cacheUsage) return t('tokenUsage');
   return presentation ? presentation.label : event.label;
+}
+
+function cacheUsageFact(event) {
+  const fact = event?.presentationFacts?.cacheUsage;
+  return fact && typeof fact === 'object' ? fact : null;
+}
+
+function cacheDiscontinuityLinkFact(event) {
+  const fact = event?.presentationFacts?.cacheDiscontinuityLink;
+  return fact && typeof fact === 'object' ? fact : null;
+}
+
+function formatCompactCacheNumber(value) {
+  if (!Number.isSafeInteger(value) || value < 0) return '';
+  const units = [
+    { threshold: 1_000_000_000, suffix: 'b' },
+    { threshold: 1_000_000, suffix: 'm' },
+    { threshold: 1_000, suffix: 'k' },
+  ];
+  const unit = units.find((candidate) => value >= candidate.threshold);
+  if (!unit) return new Intl.NumberFormat(state.locale).format(value);
+  const scaled = value / unit.threshold;
+  const formatted = new Intl.NumberFormat(state.locale, {
+    maximumFractionDigits: scaled < 100 ? 1 : 0,
+    minimumFractionDigits: 0,
+  }).format(scaled);
+  return `${formatted}${unit.suffix}`;
+}
+
+function formatCacheReuseBasisPoints(value) {
+  if (!Number.isSafeInteger(value)) return '';
+  const percentage = value / 100;
+  return `${new Intl.NumberFormat(state.locale, {
+    maximumFractionDigits: value % 100 === 0 ? 0 : (value % 10 === 0 ? 1 : 2),
+  }).format(percentage)}%`;
+}
+
+function formatCacheElapsed(value) {
+  if (!Number.isSafeInteger(value) || value < 0) return '';
+  if (value < 1_000) return `${value}ms`;
+  if (value < 60_000) {
+    const seconds = value / 1_000;
+    return `${new Intl.NumberFormat(state.locale, { maximumFractionDigits: seconds < 10 ? 1 : 0 }).format(seconds)}s`;
+  }
+  if (value < 3_600_000) {
+    const minutes = value / 60_000;
+    return `${new Intl.NumberFormat(state.locale, { maximumFractionDigits: minutes < 10 ? 1 : 0 }).format(minutes)}m`;
+  }
+  const hours = value / 3_600_000;
+  return `${new Intl.NumberFormat(state.locale, { maximumFractionDigits: hours < 10 ? 1 : 0 }).format(hours)}h`;
 }
 
 function projectProgressPercent(progress) {
@@ -3213,6 +3264,12 @@ function renderInspectorRawAction(refs) {
   return `<button class="smallBtn inspectorRawAction" type="button" data-detail-action="raw" aria-label="${escapeHtml(t('rawRefs'))}">${escapeHtml(t('rawAction', { count: refs.length }))}</button>`;
 }
 
+function renderCacheMainContextAction(event) {
+  const mainEventId = cacheUsageFact(event)?.mainContextEventId;
+  if (!mainEventId) return '';
+  return `<button class="smallBtn cacheMainContextAction" type="button" data-detail-action="navigate-linked-event" data-target-layer="main" data-target-event-id="${escapeHtml(mainEventId)}">${escapeHtml(t('viewMainContext'))}</button>`;
+}
+
 function renderInspectorSource(event, detail = null) {
   const meta = detail?.meta || event;
   const source = sourceLabel(meta.source || event.source);
@@ -3252,10 +3309,13 @@ function renderInspectorDetail(event) {
   const detail = state.detailCache[key];
   const error = state.detailErrors[key];
   if (detail) {
-    if (!detail.inspectorSections?.length) return '';
+    const sections = cacheUsageFact(event)
+      ? [...(detail.timelineSections || []), ...(detail.inspectorSections || [])]
+      : (detail.inspectorSections || []);
+    if (!sections.length) return '';
     return `<section class="inspectorSection">
       <h3>${escapeHtml(t('details'))}</h3>
-      <div class="inspectorDetailBody">${renderInspectorSections(detail.inspectorSections)}</div>
+      <div class="inspectorDetailBody">${renderInspectorSections(sections)}</div>
     </section>`;
   }
   if (error) {
@@ -5157,9 +5217,12 @@ async function applyMetricLayer(targetLayerId) {
   await changeLayer(targetLayerId);
 }
 
-async function changeLayer(layerId) {
+async function changeLayer(layerId, options = {}) {
   if (!['main', 'protocol', 'raw'].includes(layerId)) return;
-  const focusAnchor = state.searchScope === 'session' ? captureFocusAnchor() : { hadSelection: false };
+  const restoreFocusAfterChange = options.restoreFocus !== false;
+  const focusAnchor = restoreFocusAfterChange && state.searchScope === 'session'
+    ? captureFocusAnchor()
+    : { hadSelection: false };
   if (focusAnchor.hadSelection || isSelectedEventDetailView()) resetDetailPane();
   clearContextReveal({ render: false });
   clearNavigationEventReveal();
@@ -5181,7 +5244,7 @@ async function changeLayer(layerId) {
     refreshActiveSearch({ structural: true, transitionKind: 'focus-restore' }),
     refreshFileSuggestions(),
   ]);
-  if (focusAnchor.hadSelection) await restoreFocus(focusAnchor);
+  if (restoreFocusAfterChange && focusAnchor.hadSelection) await restoreFocus(focusAnchor);
   updateMetricActionStates();
 }
 
@@ -5904,6 +5967,51 @@ function renderCodeModeCollapsedPreview(presentation, display) {
   return '';
 }
 
+function renderCacheUsagePreview(event) {
+  const usage = cacheUsageFact(event);
+  if (!usage) return '';
+  const parts = [
+    { label: t('cacheInput'), value: formatCompactCacheNumber(usage.inputTokens) },
+    {
+      label: t('cacheCached'),
+      value: `${formatCompactCacheNumber(usage.cachedInputTokens)}${Number.isSafeInteger(usage.reuseBasisPoints) ? ` (${formatCacheReuseBasisPoints(usage.reuseBasisPoints)})` : ''}`,
+    },
+    Number.isSafeInteger(usage.outputTokens)
+      ? { label: t('cacheOutput'), value: formatCompactCacheNumber(usage.outputTokens) }
+      : null,
+  ].filter((part) => part?.value);
+  const body = parts.map((part) => (
+    `<span class="cacheUsageMetric"><span>${escapeHtml(part.label)}</span> <strong>${escapeHtml(part.value)}</strong></span>`
+  )).join('<span class="cacheUsageSeparator" aria-hidden="true">·</span>');
+  return body ? `<div class="eventPreview cacheUsagePreview">${body}</div>` : '';
+}
+
+function renderCacheDiscontinuityContext(event) {
+  const usage = cacheUsageFact(event);
+  const discontinuity = usage?.discontinuity;
+  if (!discontinuity) return '';
+  const parts = [];
+  const elapsed = formatCacheElapsed(discontinuity.elapsedMs);
+  if (elapsed) parts.push(t('cacheDiscontinuityAfter', { elapsed }));
+  const previous = formatCompactCacheNumber(discontinuity.previousCachedInputTokens);
+  const current = formatCompactCacheNumber(usage.cachedInputTokens);
+  if (previous && current) {
+    parts.push(t('cacheDiscontinuityCachedChange', { previous, current }));
+  }
+  return parts.length
+    ? `<div class="cacheDiscontinuityContext">${parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('<span class="cacheUsageSeparator" aria-hidden="true">·</span>')}</div>`
+    : '';
+}
+
+function renderMainCacheDiscontinuityAffordance(event) {
+  const link = cacheDiscontinuityLinkFact(event);
+  if (!link?.protocolEventId || !Number.isSafeInteger(link.count) || link.count < 1) return '';
+  const label = link.count === 1
+    ? t('cacheDiscontinuitySingleLink')
+    : t('cacheDiscontinuityMultipleLink', { count: link.count });
+  return `<button class="cacheDiscontinuityAffordance" type="button" data-action="navigate-linked-event" data-target-layer="protocol" data-target-event-id="${escapeHtml(link.protocolEventId)}">${escapeHtml(label)}</button>`;
+}
+
 function renderEventPreview(event, display, presentation = null) {
   if (display === 'expanded') return '';
   if (event.kind === 'usage_limit_warning' && event.usageLimits?.length) {
@@ -5911,6 +6019,13 @@ function renderEventPreview(event, display, presentation = null) {
   }
   if (event.kind === 'usage_limit_warning' && event.tokenUsage?.length) {
     return `<div class="eventPreview tokenPreview">${renderTokenUsageBadges(event.tokenUsage)}</div>`;
+  }
+  const cacheUsagePreview = renderCacheUsagePreview(event);
+  if (cacheUsagePreview) {
+    const searchPreview = event.hasSearchHit && event.snippet
+      ? `<div class="eventPreview cacheUsageSearchSnippet">${escapeHtml(event.snippet)}</div>`
+      : '';
+    return `${cacheUsagePreview}${renderCacheDiscontinuityContext(event)}${searchPreview}`;
   }
   if (event.hasSearchHit && event.snippet) {
     return `<div class="eventPreview">${escapeHtml(event.snippet)}</div>`;
@@ -5953,6 +6068,7 @@ function renderTimelineCardMarkup(event, compactWebLifecycleIds) {
   const compactWebLifecycle = event.kind === 'web_search' && compactWebLifecycleIds.has(event.id);
   const temporaryReveal = state.temporaryEventReveal?.event.id === event.id
     && !hasCanonicalTimelineEvent(event.id);
+  const cacheUsage = cacheUsageFact(event);
   const classes = [
     'event',
     ds,
@@ -5966,12 +6082,17 @@ function renderTimelineCardMarkup(event, compactWebLifecycleIds) {
     temporaryReveal ? 'temporaryReferenceReveal' : '',
     presentation ? `code-mode-${cssToken(presentation.variant)}` : '',
     compactWebLifecycle ? 'code-mode-web-lifecycle' : '',
+    cacheUsage ? 'cacheUsageEvent' : '',
+    cacheUsage?.discontinuity ? 'cacheDiscontinuityEvent' : '',
   ].filter(Boolean).join(' ');
   const displayToolName = compactWebLifecycle || event.kind === 'code_mode_operation' ? '' : event.toolName;
   const chips = [
     event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
     ...(Array.isArray(event.tags) ? event.tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`) : []),
     renderCodeModePresentationChips(presentation, event.kind === 'code_mode_operation'),
+    cacheUsage?.discontinuity
+      ? `<span class="chip cacheDiscontinuityChip">${escapeHtml(t('cacheDiscontinuity'))}</span>`
+      : '',
     displayToolName ? `<span class="chip toolChip">${escapeHtml(displayToolName)}</span>` : '',
     event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t('files'))}</span>` : '',
     temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
@@ -5987,6 +6108,7 @@ function renderTimelineCardMarkup(event, compactWebLifecycleIds) {
         <span class="eventTime">${escapeHtml(fmtDate(event.timestamp))}</span>
       </div>
       ${compactWebLifecycle && !event.hasSearchHit ? '' : renderEventPreview(event, ds, presentation)}
+      ${renderMainCacheDiscontinuityAffordance(event)}
       ${renderEnclosingOperationAffordance(event, ds)}
       ${renderEventBody(event, ds)}
       ${renderEventFooterActions(ds)}
@@ -7149,6 +7271,64 @@ async function inspectAndRevealEvent(target, options = {}) {
   scrollToTimelineEvent(loaded.id);
 }
 
+async function navigateToLayerEvent(targetLayerId, targetEventId) {
+  if (!['main', 'protocol'].includes(targetLayerId)
+      || !targetEventId
+      || !state.selectedSessionId
+      || state.searchScope !== 'session') return false;
+  const sessionId = state.selectedSessionId;
+  const sourceEventId = state.selectedEventId;
+  if (activeLayerId() !== targetLayerId) {
+    await changeLayer(targetLayerId, {
+      restoreFocus: false,
+    });
+  }
+  if (state.selectedSessionId !== sessionId
+      || state.searchScope !== 'session'
+      || activeLayerId() !== targetLayerId) return false;
+
+  let target = canonicalTimelineEvent(targetEventId);
+  if (!target) {
+    const requestLocale = state.locale;
+    const requestContext = JSON.stringify([
+      sessionId,
+      targetLayerId,
+      targetEventId,
+      requestLocale,
+    ]);
+    const owner = requestOwners.eventEnvelope.start(requestContext);
+    try {
+      target = await api(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(targetEventId)}?layer=${encodeURIComponent(targetLayerId)}&locale=${encodeURIComponent(requestLocale)}`, {
+        signal: owner.controller.signal,
+      });
+      if (!requestOwners.eventEnvelope.isCurrent(owner)
+          || state.selectedSessionId !== sessionId
+          || state.searchScope !== 'session'
+          || activeLayerId() !== targetLayerId
+          || state.locale !== requestLocale) return false;
+    } catch (error) {
+      if (isIntentionalAbort(error)) return false;
+      throw error;
+    } finally {
+      requestOwners.eventEnvelope.finish(owner);
+    }
+  }
+  if (!target || target.id !== targetEventId || target.layer !== targetLayerId) return false;
+
+  const canonical = canonicalTimelineEvent(targetEventId);
+  setTemporaryEventReveal(canonical ? null : { sourceEventId, event: target });
+  setNavigationEventReveal({
+    sessionId,
+    layerId: targetLayerId,
+    eventId: targetEventId,
+  });
+  renderTimeline();
+  const selected = currentTimelineEvent(targetEventId) || target;
+  showInspector(selected, { replace: true, origin: DETAIL_VIEW_ORIGIN_USER });
+  scrollToTimelineEvent(targetEventId);
+  return true;
+}
+
 async function inspectEventRef(eventId) {
   if (!eventId) return;
   const sourceEventId = state.selectedEventId;
@@ -7659,12 +7839,14 @@ function renderInspectorPresentation(event, options = {}) {
       codeModeResultAssociationBadge(presentation.resultAssociation)?.label,
     ]
     : [];
+  if (cacheUsageFact(event)?.discontinuity) presentationChipValues.push(t('cacheDiscontinuity'));
   const chips = renderChips([...inspectorChipValues(event), ...presentationChipValues]);
   renderDetailShell({
     title: presentedEventLabel(event, presentation),
     actions: [
       renderBackToProjectResultsAction(),
       renderReadFromHereAction(),
+      renderCacheMainContextAction(event),
       renderInspectorRawAction(refs),
       renderInspectorNavigation(event, { pending: Boolean(options.navigationPending) }),
     ].filter(Boolean).join(''),
@@ -8064,9 +8246,17 @@ el.timeline.addEventListener('click', (event) => {
   hideSearchAssist();
   const item = currentTimelineEvent(article.dataset.eventId);
   if (!item) return;
-  const action = event.target.closest('[data-action]')?.dataset.action || 'inspect';
+  const actionTarget = event.target.closest('[data-action]');
+  const action = actionTarget?.dataset.action || 'inspect';
   if (action === 'reindex-project') {
     refreshCurrentProject().catch(handleProjectRefreshError);
+  } else if (action === 'navigate-linked-event') {
+    event.preventDefault();
+    event.stopPropagation();
+    navigateToLayerEvent(
+      actionTarget.dataset.targetLayer || '',
+      actionTarget.dataset.targetEventId || '',
+    ).catch(showError);
   } else if (action === 'toggle') {
     const next = article.classList.contains('expanded') ? foldedDisplayState(item) : 'expanded';
     setOverride(item.id, next);
@@ -8136,6 +8326,14 @@ el.detail.addEventListener('click', (event) => {
   }
   if (action === 'jump-event-ref') {
     inspectEventRef(event.target.closest('[data-event-ref-id]')?.dataset.eventRefId || '').catch(showError);
+    return;
+  }
+  if (action === 'navigate-linked-event') {
+    const target = event.target.closest('[data-target-event-id]');
+    navigateToLayerEvent(
+      target?.dataset.targetLayer || '',
+      target?.dataset.targetEventId || '',
+    ).catch(showError);
     return;
   }
   if (action === 'reindex-project') {

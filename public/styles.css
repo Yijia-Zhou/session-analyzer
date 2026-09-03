@@ -3091,7 +3091,8 @@ body[data-project-mode='selecting'] .searchAssist {
 }
 
 .contextRevealAction,
-.enclosingOperationAffordance {
+.enclosingOperationAffordance,
+.cacheDiscontinuityAffordance {
   background: transparent;
   border: 0;
   color: var(--muted);
@@ -3107,7 +3108,9 @@ body[data-project-mode='selecting'] .searchAssist {
 .contextRevealAction:hover,
 .contextRevealAction:focus-visible,
 .enclosingOperationAffordance:hover,
-.enclosingOperationAffordance:focus-visible {
+.enclosingOperationAffordance:focus-visible,
+.cacheDiscontinuityAffordance:hover,
+.cacheDiscontinuityAffordance:focus-visible {
   color: var(--accent);
   text-decoration-color: currentColor;
 }
@@ -3117,12 +3120,80 @@ body[data-project-mode='selecting'] .searchAssist {
   opacity: 0.64;
 }
 
+.cacheDiscontinuityAffordance {
+  justify-self: start;
+  opacity: 0.78;
+}
+
 .enclosingOperationAffordance[hidden] {
   display: none;
 }
 
 .temporaryReferenceChip {
   color: var(--warn);
+}
+
+.event .cacheDiscontinuityChip {
+  background: #edf2ff;
+  box-shadow: inset 0 0 0 1px #b7c4e9;
+  color: #405b9a;
+  font-weight: 700;
+}
+
+.event.cacheUsageEvent.collapsed {
+  gap: 0.18rem;
+  padding-bottom: 0.34rem;
+  padding-top: 0.34rem;
+}
+
+.cacheUsagePreview {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+  gap: 0.12rem 0.42rem;
+  line-height: 1.35;
+}
+
+.cacheUsageMetric {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.cacheUsageMetric strong {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.cacheUsageSeparator {
+  color: #a6b1b6;
+}
+
+.cacheUsageEvent.collapsed .cacheUsagePreview {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.cacheDiscontinuityContext {
+  align-items: baseline;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.72rem;
+  gap: 0.1rem 0.34rem;
+  line-height: 1.25;
+  opacity: 0.8;
+}
+
+.cacheDiscontinuityContext > span {
+  white-space: nowrap;
+}
+
+.cacheUsageSearchSnippet {
+  color: var(--muted);
+  font-size: 0.76rem;
 }
 
 .eventHeader {

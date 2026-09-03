@@ -414,7 +414,7 @@ test('Codex parser bounds normalized shell context at exact UTF-8 boundaries', a
 
 test('strict Codex Index retains no complete event graph and reconstructs exact current Sessions', async () => {
   const options = { repoRoot: FIXTURE_REPO, codexHome: FIXTURE_HOME };
-  const resident = await codex.buildIndex(options);
+  const resident = await codex.__testOnly.buildCacheObservationResidentOracleForTests(options);
   const transientSamples = [];
   const index = await codex.buildSourceBackedIndex({
     ...options,

@@ -11,6 +11,7 @@ function createCodexDetailBuilder(deps) {
     codeModeTools,
     codeModePresentationContract,
     agentCoordination,
+    cacheObservationPresentation,
   } = deps;
   const {
     codeModeAssociableOutputFragments,
@@ -902,6 +903,14 @@ function createCodexDetailBuilder(deps) {
     if (!logical) return null;
     const raws = rawEventsForLogicalEvent(session, logical);
     const detailSections = extractLogicalDetailSections(logical, raws, session);
+    if (logical.cacheObservation) {
+      const cacheSections = cacheObservationPresentation.cacheObservationDetailSections(
+        logical.cacheObservation,
+        { locale },
+      );
+      detailSections.timelineSections.unshift(...cacheSections.timelineSections);
+      detailSections.inspectorSections.unshift(...cacheSections.inspectorSections);
+    }
     const eventRefsSection = logical.kind === 'code_mode_operation'
       ? codeModeEventRefsSection(logical, session, locale)
       : null;

@@ -1,14 +1,19 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const {
   PROJECT_QUERY_CHUNK_MAX_ROWS,
   PROJECT_QUERY_GZIP_MIN_BYTES,
+  PROJECT_QUERY_STORE_SCHEMA_VERSION,
   buildProjectQueryStore,
+  projectQueryProjectionDigest,
   scanProjectQueryShard,
   validateProjectQueryStore,
 } = require('../src/project-query-store');
+const { createEmptyMaterializedPresentationIndexes } = require('../src/canonical-contract');
 
 function fixtureSession() {
   return {
@@ -106,6 +111,31 @@ test('ProjectQueryStore packs three source-neutral layer shards and decodes boun
     preview: 'alpha target',
     searchText: 'alpha target in output',
   }]);
+});
+
+test('empty cache presentation indexes preserve token_count query inputs, rows, and digest domain', () => {
+  const before = fixtureSession();
+  const tokenCount = before.logicalEvents[1];
+  tokenCount.subtype = 'token_count';
+  tokenCount.label = 'Token count';
+  tokenCount.preview = 'canonical token_count preview';
+  tokenCount.searchText = 'canonical token_count search text';
+  const after = structuredClone(before);
+  after.presentationIndexes = createEmptyMaterializedPresentationIndexes();
+
+  assert.deepEqual(
+    ['label', 'preview', 'searchText'].map((field) => after.logicalEvents[1][field]),
+    ['label', 'preview', 'searchText'].map((field) => before.logicalEvents[1][field]),
+  );
+  assert.equal(PROJECT_QUERY_STORE_SCHEMA_VERSION, 2);
+  assert.equal(projectQueryProjectionDigest(after), projectQueryProjectionDigest(before));
+  assert.deepEqual(buildProjectQueryStore([after]), buildProjectQueryStore([before]));
+
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'project-query-store.js'),
+    'utf8',
+  );
+  assert.equal(source.split("write('project-query-projection-v1')").length - 1, 1);
 });
 
 test('ProjectQueryStore compresses only large Protocol and Raw text chunks', async () => {

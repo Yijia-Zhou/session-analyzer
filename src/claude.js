@@ -29,7 +29,10 @@ const {
 } = require('./claude-forks');
 const { createProjectQueryStoreBuilder } = require('./project-query-store');
 const { createSessionQuery } = require('./session-query');
-const { validateCanonicalLegacyRawOwnerIndex } = require('./canonical-contract');
+const {
+  createEmptyMaterializedPresentationIndexes,
+  validateCanonicalLegacyRawOwnerIndex,
+} = require('./canonical-contract');
 const {
   hasMaterializationObserver,
   notifyMaterializationObserver,
@@ -668,7 +671,7 @@ function makeSession(candidate, context) {
     logicalEvents: [],
     counts: emptyCounts(),
     analysis: null,
-    presentationIndexes: { codeModeDeclaredRequests: new Map() },
+    presentationIndexes: createEmptyMaterializedPresentationIndexes(),
     _customTitle: '',
     _aiTitle: '',
     _agentName: '',
@@ -1742,7 +1745,7 @@ function applyClaudeMaterializedForkOwnership(session, errorFactory) {
   session.logicalEvents = continuationEvents;
   session.counts = emptyCounts();
   session.analysis = null;
-  session.presentationIndexes = { codeModeDeclaredRequests: new Map() };
+  session.presentationIndexes = createEmptyMaterializedPresentationIndexes();
   session._customTitle = '';
   session._aiTitle = '';
   session._agentName = '';

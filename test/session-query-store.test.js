@@ -2,6 +2,8 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { createEmptyMaterializedPresentationIndexes } = require('../src/canonical-contract');
+const { createCacheObservation } = require('../src/cache-observation');
 const { buildProjectQueryStore } = require('../src/project-query-store');
 const { getSourceAdapter } = require('../src/source-adapters');
 
@@ -111,7 +113,7 @@ function completeSession(id, events) {
     },
     logicalEvents: events,
     rawEvents,
-    presentationIndexes: { codeModeDeclaredRequests: new Map() },
+    presentationIndexes: createEmptyMaterializedPresentationIndexes(),
   };
 }
 
@@ -247,6 +249,111 @@ test('packed project query path has exact full-event oracle parity', async () =>
   );
 });
 
+test('Session timeline projects bounded cache facts without changing ProjectQueryStore inputs', () => {
+  const previous = logicalEvent('cache-previous', {
+    layer: 'protocol',
+    kind: 'protocol',
+    subtype: 'token_count',
+    label: 'Token count',
+    timestamp: '2026-08-16T01:00:00.000Z',
+    preview: 'canonical previous preview',
+    searchText: 'canonical previous search',
+  });
+  const anchor = logicalEvent('cache-anchor', {
+    kind: 'assistant_message',
+    subtype: 'assistant_message',
+    label: 'Assistant message',
+    timestamp: '2026-08-16T01:00:05.000Z',
+    preview: 'canonical main preview',
+    searchText: 'canonical main search',
+  });
+  const current = logicalEvent('cache-current', {
+    layer: 'protocol',
+    kind: 'protocol',
+    subtype: 'token_count',
+    label: 'Token count',
+    timestamp: '2026-08-16T01:00:14.000Z',
+    preview: 'canonical current preview',
+    searchText: 'canonical current search',
+  });
+  previous.cacheObservation = createCacheObservation({
+    inputTokens: 16_384,
+    cachedInputTokens: 16_384,
+    outputTokens: 233,
+  }).cacheObservation;
+  current.cacheObservation = createCacheObservation({
+    inputTokens: 12_288,
+    cachedInputTokens: 0,
+    outputTokens: 589,
+  }, previous.cacheObservation, {
+    previousEventId: previous.id,
+    previousTimestamp: previous.timestamp,
+    currentTimestamp: current.timestamp,
+  }).cacheObservation;
+  const item = completeSession('cache-presentation', [previous, anchor, current]);
+  item.presentationIndexes.cacheDiscontinuityLinks.protocolEventIdsByMainEventId.set(
+    anchor.id,
+    [current.id],
+  );
+  item.presentationIndexes.cacheDiscontinuityLinks.mainEventIdByProtocolEventId.set(
+    current.id,
+    anchor.id,
+  );
+  const query = getSourceAdapter('codex').query;
+  const index = fullIndex([item]);
+  const withoutCache = structuredClone(item);
+  for (const event of withoutCache.logicalEvents) delete event.cacheObservation;
+  withoutCache.presentationIndexes.cacheDiscontinuityLinks.protocolEventIdsByMainEventId.clear();
+  withoutCache.presentationIndexes.cacheDiscontinuityLinks.mainEventIdByProtocolEventId.clear();
+  const packedBefore = buildProjectQueryStore([withoutCache], {
+    presentationForEvent: query.projectQueryPresentation,
+  });
+
+  const mainTimeline = query.getTimeline(index, item, {
+    layer: 'main', offset: 0, limit: 50, locale: 'en',
+  });
+  assert.deepEqual(mainTimeline.events[0].presentationFacts, {
+    cacheDiscontinuityLink: { protocolEventId: current.id, count: 1 },
+  });
+  const protocolTimeline = query.getTimeline(index, item, {
+    layer: 'protocol', offset: 0, limit: 50, locale: 'en',
+  });
+  const currentDto = protocolTimeline.events.find((event) => event.id === current.id);
+  const previousDto = protocolTimeline.events.find((event) => event.id === previous.id);
+  assert.equal(previousDto.presentationFacts.cacheUsage.discontinuity, null);
+  assert.deepEqual(currentDto.presentationFacts, {
+    cacheUsage: {
+      inputTokens: 12_288,
+      cachedInputTokens: 0,
+      reuseBasisPoints: 0,
+      outputTokens: 589,
+      discontinuity: {
+        elapsedMs: 14_000,
+        previousCachedInputTokens: 16_384,
+      },
+      mainContextEventId: anchor.id,
+    },
+  });
+  assert.equal(currentDto.label, 'Token count');
+  assert.equal(currentDto.preview, current.preview);
+  assert.equal(JSON.stringify(currentDto).includes('reasonCodes'), false);
+  assert.equal(JSON.stringify(currentDto).includes('previousInputTokens'), false);
+  assert.equal(JSON.stringify(currentDto).includes('cacheObservation'), false);
+  assert.equal(JSON.stringify(protocolTimeline).includes('explicit_lifecycle'), false);
+  assert.equal(query.getEvent(index, item, current.id, {
+    layer: 'protocol', locale: 'en',
+  }).presentationFacts.cacheUsage.mainContextEventId, anchor.id);
+  const rawTimeline = query.getTimeline(index, item, {
+    layer: 'raw', offset: 0, limit: 50, locale: 'en',
+  });
+  assert.equal(rawTimeline.events.some((event) => Object.hasOwn(event, 'presentationFacts')), false);
+
+  const packedAfter = buildProjectQueryStore([item], {
+    presentationForEvent: query.projectQueryPresentation,
+  });
+  assert.deepEqual(packedAfter, packedBefore);
+});
+
 test('Project Scope q semantics count matching Events rather than text occurrences', async () => {
   const query = getSourceAdapter('codex').query;
   const sessions = fixture();
@@ -380,7 +487,7 @@ test('shared packed query implementation preserves Claude and DeepSeek project s
       session.sourceKind = sourceKind;
       for (const event of session.logicalEvents) event.sourceKind = sourceKind;
       for (const raw of session.rawEvents) raw.sourceKind = sourceKind;
-      session.presentationIndexes = { codeModeDeclaredRequests: new Map() };
+      session.presentationIndexes = createEmptyMaterializedPresentationIndexes();
       return session;
     });
     const oracle = {

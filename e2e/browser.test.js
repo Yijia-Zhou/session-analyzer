@@ -1099,6 +1099,185 @@ async function makeLongCodexHome(t, options = {}) {
   return { sourceKind: 'codex', codexHome, repoRoot: longRepoRoot, sessionId };
 }
 
+async function makeCacheObservationBrowserFixture(t) {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-cache-browser-'));
+  const cacheRepoRoot = path.join(codexHome, 'repo');
+  const dir = path.join(codexHome, 'sessions', '2026', '09', '03');
+  const discontinuitySessionId = 'abababab-3333-4333-8333-abababababab';
+  const ordinarySessionId = 'cdcdcdcd-3333-4333-8333-cdcdcdcdcdcd';
+  const singleSessionId = 'efefefef-3333-4333-8333-efefefefefef';
+  const codeModeSessionId = 'acacacac-3333-4333-8333-acacacacacac';
+  await fsp.mkdir(cacheRepoRoot, { recursive: true });
+  const timestamp = (seconds) => new Date(Date.parse('2026-09-03T10:00:00.000Z') + seconds * 1_000).toISOString();
+  const tokenCount = (seconds, inputTokens, cachedInputTokens, outputTokens) => ({
+    timestamp: timestamp(seconds),
+    type: 'event_msg',
+    payload: {
+      type: 'token_count',
+      info: {
+        last_token_usage: {
+          input_tokens: inputTokens,
+          cached_input_tokens: cachedInputTokens,
+          output_tokens: outputTokens,
+        },
+        total_token_usage: {
+          input_tokens: 9_999_999,
+          cached_input_tokens: 9_999_999,
+          output_tokens: 9_999_999,
+        },
+      },
+    },
+  });
+  const padding = Array.from({ length: 151 }, (_, index) => ({
+    timestamp: timestamp(index + 2),
+    type: 'turn_context',
+    payload: {
+      turn_id: 'turn-cache-browser',
+      cwd: cacheRepoRoot,
+      model: 'gpt-cache-browser',
+      fixture_index: index,
+    },
+  }));
+  await writeJsonl(path.join(dir, `cache-${discontinuitySessionId}.jsonl`), [
+    {
+      timestamp: timestamp(0),
+      type: 'session_meta',
+      payload: { id: discontinuitySessionId, cwd: cacheRepoRoot },
+    },
+    {
+      timestamp: timestamp(1),
+      type: 'event_msg',
+      payload: { type: 'turn_started', turn_id: 'turn-cache-browser' },
+    },
+    ...padding,
+    tokenCount(154, 16_384, 16_384, 233),
+    {
+      timestamp: timestamp(155),
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Synthetic cache browser anchor' }],
+      },
+    },
+    tokenCount(168, 12_288, 0, 589),
+    tokenCount(169, 24_576, 24_576, 377),
+    tokenCount(171, 18_432, 0, 610),
+    {
+      timestamp: timestamp(172),
+      type: 'event_msg',
+      payload: { type: 'turn_complete', turn_id: 'turn-cache-browser' },
+    },
+  ]);
+  await writeJsonl(path.join(dir, `ordinary-${ordinarySessionId}.jsonl`), [
+    {
+      timestamp: timestamp(-100),
+      type: 'session_meta',
+      payload: { id: ordinarySessionId, cwd: cacheRepoRoot },
+    },
+    {
+      timestamp: timestamp(-99),
+      type: 'event_msg',
+      payload: { type: 'turn_started', turn_id: 'turn-cache-ordinary' },
+    },
+    tokenCount(-98, 16_384, 16_384, 200),
+    {
+      timestamp: timestamp(-97),
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Synthetic ordinary cache usage' }],
+      },
+    },
+    tokenCount(-96, 17_000, 16_000, 250),
+    {
+      timestamp: timestamp(-95),
+      type: 'event_msg',
+      payload: { type: 'turn_complete', turn_id: 'turn-cache-ordinary' },
+    },
+  ]);
+  await writeJsonl(path.join(dir, `single-${singleSessionId}.jsonl`), [
+    {
+      timestamp: timestamp(200),
+      type: 'session_meta',
+      payload: { id: singleSessionId, cwd: cacheRepoRoot },
+    },
+    {
+      timestamp: timestamp(201),
+      type: 'event_msg',
+      payload: { type: 'turn_started', turn_id: 'turn-cache-single' },
+    },
+    tokenCount(202, 16_384, 16_384, 200),
+    {
+      timestamp: timestamp(203),
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Synthetic single discontinuity anchor' }],
+      },
+    },
+    tokenCount(204, 12_288, 0, 250),
+    {
+      timestamp: timestamp(205),
+      type: 'event_msg',
+      payload: { type: 'turn_complete', turn_id: 'turn-cache-single' },
+    },
+  ]);
+  await writeJsonl(path.join(dir, `code-mode-${codeModeSessionId}.jsonl`), [
+    {
+      timestamp: timestamp(300),
+      type: 'session_meta',
+      payload: { id: codeModeSessionId, cwd: cacheRepoRoot },
+    },
+    {
+      timestamp: timestamp(301),
+      type: 'event_msg',
+      payload: { type: 'turn_started', turn_id: 'turn-cache-code-mode' },
+    },
+    tokenCount(302, 16_384, 16_384, 200),
+    {
+      timestamp: timestamp(303),
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        name: 'exec',
+        call_id: 'exec-cache-navigation',
+        turn_id: 'turn-cache-code-mode',
+        input: "const result = await tools.exec_command({ cmd: 'Write-Output cache-navigation' }); text(result);",
+      },
+    },
+    {
+      timestamp: timestamp(304),
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call_output',
+        call_id: 'exec-cache-navigation',
+        turn_id: 'turn-cache-code-mode',
+        output: 'Script completed\nExit code: 0\nOutput:\ncache-navigation',
+      },
+    },
+    tokenCount(305, 12_288, 0, 250),
+    {
+      timestamp: timestamp(306),
+      type: 'event_msg',
+      payload: { type: 'turn_complete', turn_id: 'turn-cache-code-mode' },
+    },
+  ]);
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  const index = await buildIndex({ repoRoot: cacheRepoRoot, codexHome });
+  return {
+    codexHome,
+    index,
+    repoRoot: cacheRepoRoot,
+    discontinuitySessionId,
+    ordinarySessionId,
+    singleSessionId,
+    codeModeSessionId,
+  };
+}
+
 async function makePrewarmSizeCodexHome(t) {
   const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-prewarm-size-'));
   const fixtureRepo = path.join(codexHome, 'repo');
@@ -11338,4 +11517,215 @@ test('browser expanded event collapse works with mouse and keyboard controls', a
   await footerToggle.focus();
   await page.keyboard.press('Space');
   await page.waitForFunction(() => !document.querySelector('#timeline .event[data-event-id]')?.classList.contains('expanded'));
+});
+
+test('browser projects source-backed Cache Observation evidence and navigates Main to Protocol to Main', async (t) => {
+  const fixture = await makeCacheObservationBrowserFixture(t);
+  const materialized = await materializeIndexedSession(
+    fixture.index,
+    fixture.discontinuitySessionId,
+  );
+  const links = materialized.presentationIndexes.cacheDiscontinuityLinks;
+  assert.equal(links.protocolEventIdsByMainEventId.size, 1);
+  const [mainEventId, protocolEventIds] = [...links.protocolEventIdsByMainEventId][0];
+  assert.equal(protocolEventIds.length, 2);
+  const protocolEvents = materialized.logicalEvents.filter((event) => event.layer === 'protocol');
+  assert.ok(protocolEvents.findIndex((event) => event.id === protocolEventIds[0]) >= 150);
+  const codeModeMaterialized = await materializeIndexedSession(
+    fixture.index,
+    fixture.codeModeSessionId,
+  );
+  const codeModeLinks = codeModeMaterialized.presentationIndexes.cacheDiscontinuityLinks;
+  assert.equal(codeModeLinks.protocolEventIdsByMainEventId.size, 1);
+  const [codeModeMainEventId, codeModeProtocolEventIds] = [...codeModeLinks.protocolEventIdsByMainEventId][0];
+  assert.equal(codeModeProtocolEventIds.length, 1);
+  assert.equal(
+    codeModeMaterialized.logicalEvents.find((event) => event.id === codeModeMainEventId)?.kind,
+    'code_mode_operation',
+  );
+
+  const consoleProblems = [];
+  const { page, requestedUrls } = await openApp(t, fixture.index, {
+    locale: 'en',
+    skipProjectReindex: true,
+    beforeGoto: async (browserPage) => {
+      browserPage.on('console', (message) => {
+        if (message.type() === 'error' || message.type() === 'warning') {
+          consoleProblems.push(`${message.type()}: ${message.text()}`);
+        }
+      });
+    },
+  });
+  await page.locator(`[data-session-id="${fixture.discontinuitySessionId}"]`).click();
+  await page.waitForFunction((sessionId) => (
+    document.querySelector('.sessionItem.active')?.dataset.sessionId === sessionId
+  ), fixture.discontinuitySessionId);
+
+  const mainAnchor = page.locator(`#timeline .event[data-event-id="${mainEventId}"]`);
+  const affordance = mainAnchor.locator('.cacheDiscontinuityAffordance');
+  await affordance.waitFor();
+  assert.equal(await page.locator('#timeline .cacheDiscontinuityAffordance').count(), 1);
+  assert.equal((await affordance.textContent()).trim(), '2 cache discontinuities · View evidence');
+  assert.equal(await mainAnchor.locator('.cacheUsagePreview').count(), 0);
+  assert.equal(await page.locator('#analysisPanel').getByText(/Cache reuse|Discontinuities|Cache health/).count(), 0);
+
+  await addSearchFilter(page, 'kind', 'assistant_message');
+  await page.waitForFunction((eventId) => (
+    document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"] .cacheDiscontinuityAffordance`)
+  ), mainEventId);
+  await page.keyboard.press('Escape');
+  const overridesBeforeNavigation = await page.evaluate(() => localStorage.getItem('sessionAnalyzer.overrides'));
+
+  await affordance.click();
+  await page.waitForFunction(({ eventId }) => (
+    document.querySelector('#layerSelect')?.value === 'protocol'
+      && document.querySelector('#timeline .event.selected')?.dataset.eventId === eventId
+  ), { eventId: protocolEventIds[0] });
+  const protocolTarget = page.locator(`#timeline .event[data-event-id="${protocolEventIds[0]}"]`);
+  assert.equal(await protocolTarget.count(), 1);
+  assert.equal(await protocolTarget.evaluate((element) => element.classList.contains('temporaryReferenceReveal')), true);
+  assert.ok(requestedUrls.some((url) => (
+    url.includes('/timeline?')
+      && url.includes('layer=protocol')
+      && url.includes('kind=assistant_message')
+  )));
+  assert.equal((await protocolTarget.locator('.eventKind').textContent()).trim(), 'Token usage');
+  assert.equal(await protocolTarget.locator('.cacheDiscontinuityChip').textContent(), 'Cache discontinuity');
+  assert.match(await protocolTarget.locator('.cacheUsagePreview').textContent(), /Input.*12\.3k.*Cached.*0.*0%.*Output.*589/s);
+  assert.match(await protocolTarget.locator('.cacheDiscontinuityContext').textContent(), /after 14s.*cached 16\.4k → 0/s);
+  assert.ok(requestedUrls.some((url) => (
+    url.includes(`/events/${encodeURIComponent(protocolEventIds[0])}?`)
+      && !url.includes('/detail')
+  )));
+
+  await page.waitForFunction(() => (
+    document.querySelector('#detail')?.textContent.includes('Comparison Context')
+      && document.querySelector('#detail')?.textContent.includes('explicit cache-expiry evidence')
+  ));
+  const inspectorText = await page.locator('#detail').textContent();
+  assert.match(inspectorText, /Input12,288/);
+  assert.match(inspectorText, /Cached input0/);
+  assert.match(inspectorText, /Input-token delta−4,096 \(−25%\)/);
+  assert.match(inspectorText, /Cache-read delta−16,384/);
+  assert.match(inspectorText, /Cache reuse100% → 0%/);
+  assert.match(inspectorText, /Comparison stateCache discontinuity/);
+  assert.equal(inspectorText.includes('reasonCodes'), false);
+
+  const reverse = page.locator('#detail [data-detail-action="navigate-linked-event"]');
+  assert.equal((await reverse.textContent()).trim(), 'View Main context');
+  await reverse.click();
+  await page.waitForFunction(({ eventId }) => (
+    document.querySelector('#layerSelect')?.value === 'main'
+      && document.querySelector('#timeline .event.selected')?.dataset.eventId === eventId
+  ), { eventId: mainEventId });
+  await expectInputValue(page, '#searchKindSelect', 'assistant_message');
+  assert.equal(await page.locator('#timeline .temporaryReferenceReveal').count(), 0);
+  assert.equal(
+    await page.evaluate(() => localStorage.getItem('sessionAnalyzer.overrides')),
+    overridesBeforeNavigation,
+  );
+  assert.equal(await page.locator(`#timeline .event[data-event-id="${mainEventId}"] .cacheDiscontinuityAffordance`).count(), 1);
+
+  await switchHiddenLocale(page, 'zh-CN');
+  await page.waitForFunction(() => (
+    document.querySelector('#timeline .cacheDiscontinuityAffordance')?.textContent
+      === '2 次缓存复用中断 · 查看证据'
+  ));
+
+  await clearAllSearch(page);
+
+  await page.locator(`[data-session-id="${fixture.singleSessionId}"]`).click();
+  await page.waitForFunction((sessionId) => (
+    document.querySelector('.sessionItem.active')?.dataset.sessionId === sessionId
+  ), fixture.singleSessionId);
+  assert.equal(
+    (await page.locator('#timeline .cacheDiscontinuityAffordance').textContent()).trim(),
+    '缓存复用中断 · 查看证据',
+  );
+
+  await page.locator(`[data-session-id="${fixture.ordinarySessionId}"]`).click();
+  await page.waitForFunction((sessionId) => (
+    document.querySelector('.sessionItem.active')?.dataset.sessionId === sessionId
+  ), fixture.ordinarySessionId);
+  assert.equal(await page.locator('#timeline .cacheDiscontinuityAffordance').count(), 0);
+  assert.equal(await page.locator('#analysisPanel').getByText(/缓存复用|缓存健康/).count(), 0);
+  await page.locator('#layerSelect').selectOption('protocol');
+  await page.waitForFunction(() => document.querySelectorAll('#timeline .cacheUsageEvent').length === 2);
+  assert.equal(await page.locator('#timeline .cacheDiscontinuityChip').count(), 0);
+  assert.equal(await page.locator('#timeline .cacheDiscontinuityContext').count(), 0);
+  assert.equal(await page.locator('#timeline .cacheUsageEvent .eventKind').last().textContent(), 'Token 使用情况');
+  await page.locator('#timeline .cacheUsageEvent').last().click();
+  await page.locator('#detail .tokenUsageBlock').waitFor();
+  assert.equal(await page.locator('#detail [data-detail-action="navigate-linked-event"]').count(), 0);
+
+  await switchHiddenLocale(page, 'en');
+  const mainLayerResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline') && url.searchParams.get('layer') === 'main';
+  });
+  await page.locator('#layerSelect').selectOption('main');
+  await mainLayerResponse;
+  await page.locator(`[data-session-id="${fixture.codeModeSessionId}"]`).click();
+  await page.waitForFunction((sessionId) => (
+    document.querySelector('.sessionItem.active')?.dataset.sessionId === sessionId
+  ), fixture.codeModeSessionId);
+  const codeModeAnchor = page.locator(`#timeline .event[data-event-id="${codeModeMainEventId}"]`);
+  const codeModeAffordance = codeModeAnchor.locator('.cacheDiscontinuityAffordance');
+  await codeModeAffordance.waitFor();
+
+  await addSearchFilter(page, 'kind', 'code_mode_request:exec_command');
+  await expectInputValue(page, '#searchKindSelect', 'code_mode_request:exec_command');
+  await page.waitForFunction((eventId) => (
+    document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"] .cacheDiscontinuityAffordance`)
+  ), codeModeMainEventId);
+  await page.keyboard.press('Escape');
+  const linkedRequestStart = requestedUrls.length;
+
+  await codeModeAffordance.click();
+  await page.waitForFunction(({ eventId }) => (
+    document.querySelector('#layerSelect')?.value === 'protocol'
+      && document.querySelector('#timeline .event.selected')?.dataset.eventId === eventId
+  ), { eventId: codeModeProtocolEventIds[0] });
+  const codeModeProtocolTarget = page.locator(`#timeline .event[data-event-id="${codeModeProtocolEventIds[0]}"]`);
+  assert.equal(await codeModeProtocolTarget.evaluate((element) => element.classList.contains('temporaryReferenceReveal')), true);
+  const linkedProtocolRequests = requestedUrls.slice(linkedRequestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('layer') === 'protocol');
+  assert.ok(linkedProtocolRequests.length > 0);
+  assert.ok(linkedProtocolRequests.every((url) => !url.searchParams.has('codeModeRequest')));
+  assert.ok(linkedProtocolRequests.some((url) => url.searchParams.get('kind') === 'code_mode_operation'));
+  assert.equal(await page.locator('#searchKindSelect').inputValue(), '');
+  assert.equal((await page.locator('#searchFilterCount').textContent()).trim(), 'Filters · 1');
+  assert.match(await page.locator('#searchFilterBtn').getAttribute('title'), /Code Mode tool call/);
+  assert.doesNotMatch(await page.locator('#searchFilterBtn').getAttribute('title'), /Exec command|Declared/);
+
+  await page.locator('#detail [data-detail-action="navigate-linked-event"]').click();
+  await page.waitForFunction(({ eventId }) => (
+    document.querySelector('#layerSelect')?.value === 'main'
+      && document.querySelector('#timeline .event.selected')?.dataset.eventId === eventId
+  ), { eventId: codeModeMainEventId });
+  assert.equal(await page.locator('#searchKindSelect').inputValue(), '');
+  assert.equal((await page.locator('#searchFilterCount').textContent()).trim(), 'Filters · 1');
+  assert.doesNotMatch(await page.locator('#searchFilterBtn').getAttribute('title'), /Exec command|Declared/);
+
+  await addSearchFilter(page, 'kind', 'code_mode_request:exec_command');
+  await expectInputValue(page, '#searchKindSelect', 'code_mode_request:exec_command');
+  await page.keyboard.press('Escape');
+  const manualRequestStart = requestedUrls.length;
+  const manualProtocolResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/timeline') && url.searchParams.get('layer') === 'protocol';
+  });
+  await page.locator('#layerSelect').selectOption('protocol');
+  await manualProtocolResponse;
+  const manualProtocolRequests = requestedUrls.slice(manualRequestStart)
+    .filter((value) => value.includes('/timeline?'))
+    .map((value) => new URL(value, 'http://local'))
+    .filter((url) => url.searchParams.get('layer') === 'protocol');
+  assert.ok(manualProtocolRequests.length > 0);
+  assert.ok(manualProtocolRequests.every((url) => !url.searchParams.has('codeModeRequest')));
+  assert.equal(await page.locator('#searchKindSelect').inputValue(), '');
+  assert.equal((await page.locator('#searchFilterCount').textContent()).trim(), 'Filters · 1');
+  assert.deepEqual(consoleProblems, []);
 });
