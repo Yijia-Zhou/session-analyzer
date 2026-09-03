@@ -262,33 +262,36 @@ function listColumn(rows, valuesForRow, intern) {
   return { offsets, values: Uint32Array.from(values) };
 }
 
-function encodeTextFrame(row) {
-  const preview = Buffer.from(row.preview, 'utf8');
-  const searchText = Buffer.from(row.searchText, 'utf8');
-  const frame = Buffer.allocUnsafe(8 + preview.length + searchText.length);
-  frame.writeUInt32LE(preview.length, 0);
-  frame.writeUInt32LE(searchText.length, 4);
-  preview.copy(frame, 8);
-  searchText.copy(frame, 8 + preview.length);
-  return frame;
-}
-
-function makeTextChunk(layer, frames, rowStart) {
-  const rowOffsets = new Uint32Array(frames.length + 1);
-  let uncompressedBytes = 0;
-  for (let index = 0; index < frames.length; index += 1) {
-    rowOffsets[index] = uncompressedBytes;
-    uncompressedBytes += frames[index].length;
+function buildDirectTextChunk(
+  rows,
+  layer,
+  rowStart,
+  rowCount,
+  uncompressedBytes,
+  textByteLengths,
+) {
+  const rowOffsets = new Uint32Array(rowCount + 1);
+  const plain = Buffer.allocUnsafe(uncompressedBytes);
+  let offset = 0;
+  for (let localIndex = 0; localIndex < rowCount; localIndex += 1) {
+    const row = rows[rowStart + localIndex];
+    const previewBytes = textByteLengths[2 * localIndex];
+    const searchBytes = textByteLengths[(2 * localIndex) + 1];
+    rowOffsets[localIndex] = offset;
+    plain.writeUInt32LE(previewBytes, offset);
+    plain.writeUInt32LE(searchBytes, offset + 4);
+    plain.write(row.preview, offset + 8, previewBytes, 'utf8');
+    plain.write(row.searchText, offset + 8 + previewBytes, searchBytes, 'utf8');
+    offset += 8 + previewBytes + searchBytes;
   }
-  rowOffsets[frames.length] = uncompressedBytes;
-  const plain = Buffer.concat(frames, uncompressedBytes);
+  rowOffsets[rowCount] = offset;
   const codec = layer === 'main' || uncompressedBytes < PROJECT_QUERY_GZIP_MIN_BYTES
     ? 'identity'
     : 'gzip-1';
   const data = codec === 'identity' ? plain : gzipSync(plain, { level: 1 });
   return {
     rowStart,
-    rowCount: frames.length,
+    rowCount,
     uncompressedBytes,
     codec,
     data,
@@ -298,27 +301,52 @@ function makeTextChunk(layer, frames, rowStart) {
 
 function buildTextChunks(rows, layer) {
   const chunks = [];
-  let frames = [];
-  let frameBytes = 0;
+  if (rows.length === 0) return chunks;
+  const textByteLengths = new Uint32Array(
+    2 * Math.min(rows.length, PROJECT_QUERY_CHUNK_MAX_ROWS),
+  );
   let rowStart = 0;
-  const flush = () => {
-    if (!frames.length) return;
-    chunks.push(makeTextChunk(layer, frames, rowStart));
-    rowStart += frames.length;
-    frames = [];
-    frameBytes = 0;
-  };
-  for (const row of rows) {
-    const frame = encodeTextFrame(row);
-    if (frame.length > PROJECT_QUERY_CHUNK_MAX_BYTES) {
+  let rowCount = 0;
+  let uncompressedBytes = 0;
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex];
+    const previewBytes = Buffer.byteLength(row.preview, 'utf8');
+    const searchBytes = Buffer.byteLength(row.searchText, 'utf8');
+    const frameBytes = 8 + previewBytes + searchBytes;
+    if (frameBytes > PROJECT_QUERY_CHUNK_MAX_BYTES) {
       throw contractError(`single ${layer} text row exceeds 4 MiB`);
     }
-    if (frames.length >= PROJECT_QUERY_CHUNK_MAX_ROWS
-        || frameBytes + frame.length > PROJECT_QUERY_CHUNK_MAX_BYTES) flush();
-    frames.push(frame);
-    frameBytes += frame.length;
+    const mustFlush = rowCount >= PROJECT_QUERY_CHUNK_MAX_ROWS
+      || (rowCount > 0
+        && uncompressedBytes + frameBytes > PROJECT_QUERY_CHUNK_MAX_BYTES);
+    if (mustFlush) {
+      chunks.push(buildDirectTextChunk(
+        rows,
+        layer,
+        rowStart,
+        rowCount,
+        uncompressedBytes,
+        textByteLengths,
+      ));
+      rowStart += rowCount;
+      rowCount = 0;
+      uncompressedBytes = 0;
+    }
+    textByteLengths[2 * rowCount] = previewBytes;
+    textByteLengths[(2 * rowCount) + 1] = searchBytes;
+    rowCount += 1;
+    uncompressedBytes += frameBytes;
   }
-  flush();
+  if (rowCount > 0) {
+    chunks.push(buildDirectTextChunk(
+      rows,
+      layer,
+      rowStart,
+      rowCount,
+      uncompressedBytes,
+      textByteLengths,
+    ));
+  }
   return chunks;
 }
 
