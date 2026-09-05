@@ -864,6 +864,59 @@ async function fillSearch(page, value) {
   await page.locator('#searchInput').dispatchEvent('input');
 }
 
+async function trajectoryStickySnapshot(page, eventId = '') {
+  return page.locator('.timelinePane').evaluate((pane, selectedEventId) => {
+    const overview = pane.querySelector('.trajectoryOverview');
+    const presentation = pane.querySelector('.trajectoryPresentation');
+    const selected = selectedEventId
+      ? pane.querySelector(`[data-trajectory-event-id="${CSS.escape(selectedEventId)}"]`)
+      : pane.querySelector('[data-trajectory-event-id].selected');
+    const sessionHeader = pane.querySelector('.sessionHeader');
+    const presentationControl = pane.querySelector('.mainPresentationControl');
+    const paneBounds = pane.getBoundingClientRect();
+    const overviewBounds = overview?.getBoundingClientRect();
+    const presentationBounds = presentation?.getBoundingClientRect();
+    const selectedBounds = selected?.getBoundingClientRect();
+    const sessionHeaderBounds = sessionHeader?.getBoundingClientRect();
+    const presentationControlBounds = presentationControl?.getBoundingClientRect();
+    const mobileTabs = document.querySelector('.mobileViewTabs');
+    const mobileTabsBounds = mobileTabs?.getBoundingClientRect();
+    const mobileTabsVisible = mobileTabs && getComputedStyle(mobileTabs).display !== 'none';
+    return {
+      scrollTop: pane.scrollTop,
+      windowScrollY: window.scrollY,
+      maxScrollTop: pane.scrollHeight - pane.clientHeight,
+      paneTop: paneBounds.top,
+      paneBottom: paneBounds.bottom,
+      stickyBoundaryTop: mobileTabsVisible ? mobileTabsBounds.bottom : paneBounds.top,
+      stickyViewportBottom: mobileTabsVisible ? window.innerHeight : paneBounds.bottom,
+      overviewTop: overviewBounds?.top ?? null,
+      overviewBottom: overviewBounds?.bottom ?? null,
+      presentationBottom: presentationBounds?.bottom ?? null,
+      selectedTop: selectedBounds?.top ?? null,
+      selectedBottom: selectedBounds?.bottom ?? null,
+      sessionHeaderBottom: sessionHeaderBounds?.bottom ?? null,
+      presentationControlBottom: presentationControlBounds?.bottom ?? null,
+      position: overview ? getComputedStyle(overview).position : '',
+      backgroundColor: overview ? getComputedStyle(overview).backgroundColor : '',
+    };
+  }, eventId);
+}
+
+function assertTrajectoryOverviewPinned(snapshot) {
+  assert.equal(snapshot.position, 'sticky');
+  assert.ok(
+    Math.abs(snapshot.overviewTop - snapshot.stickyBoundaryTop) <= 1.5,
+    JSON.stringify(snapshot),
+  );
+  assert.ok(snapshot.overviewBottom <= snapshot.stickyViewportBottom + 1, JSON.stringify(snapshot));
+}
+
+function assertTrajectoryTargetUnobscured(snapshot) {
+  assert.ok(snapshot.selectedTop >= snapshot.overviewBottom - 1, JSON.stringify(snapshot));
+  assert.ok(snapshot.selectedBottom <= snapshot.stickyViewportBottom + 1, JSON.stringify(snapshot));
+}
+
 async function addSearchFilter(page, key, value) {
   await page.locator('#searchFilterBtn').click();
   const control = page.locator(`[data-search-filter-control="${key}"]`);
@@ -2076,7 +2129,11 @@ test('browser Trajectory localizes presentation, lanes, grouping, and Sequence Z
 });
 
 test('browser Trajectory keeps compact controls and Inspector selection usable in the mobile Events flow', async (t) => {
-  const index = await buildFixtureIndex();
+  const { index } = await makeTransitionProfileIndex(t, {
+    eventCount: 300,
+    hitPositions: [],
+    commonTermEvery: 0,
+  });
   const { page } = await openWave1cM1App(t, index, {
     locale: 'en',
     viewport: { width: 390, height: 760 },
@@ -2100,6 +2157,25 @@ test('browser Trajectory keeps compact controls and Inspector selection usable i
   assert.ok(mobileLayout.overviewLeft >= 0 && mobileLayout.overviewRight <= mobileLayout.viewportWidth);
   assert.ok(mobileLayout.controlsLeft >= mobileLayout.overviewLeft);
   assert.ok(mobileLayout.controlsRight <= mobileLayout.overviewRight);
+
+  await page.evaluate(() => {
+    const pane = document.querySelector('.timelinePane');
+    const rows = [...pane.querySelectorAll('[data-trajectory-event-id]')];
+    const target = rows[Math.min(rows.length - 1, 40)];
+    window.scrollTo({
+      top: window.scrollY + target.getBoundingClientRect().top - (window.innerHeight / 2),
+      behavior: 'auto',
+    });
+  });
+  await page.waitForTimeout(100);
+  const mobileSticky = await trajectoryStickySnapshot(page);
+  t.diagnostic(JSON.stringify({ mobileSticky }));
+  assertTrajectoryOverviewPinned(mobileSticky);
+  assert.ok(mobileSticky.windowScrollY > 0);
+  assert.ok(mobileSticky.sessionHeaderBottom < mobileSticky.stickyBoundaryTop);
+  assert.ok(mobileSticky.presentationControlBottom < mobileSticky.stickyBoundaryTop);
+  assert.equal(mobileSticky.backgroundColor, 'rgb(248, 250, 251)');
+  assert.ok(mobileSticky.overviewBottom <= mobileSticky.presentationBottom + 1);
 
   const firstEvent = page.locator('[data-trajectory-event-id]:not(.hiddenByProfile)').first();
   const firstEventId = await firstEvent.getAttribute('data-trajectory-event-id');
@@ -2172,13 +2248,23 @@ test('browser Trajectory overview exposes only the loaded canonical sequence and
   });
   assert.equal(locatorVisibility, true);
 
-  await page.locator('.trajectoryOverviewViewport').press('ArrowRight');
-  await page.waitForFunction((previousId) => (
-    document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId !== previousId
-  ), selectedId);
-  const keyboardSelectedId = await page.locator('.trajectoryOverviewLocator').getAttribute(
-    'data-trajectory-overview-selected-id',
+  const sequenceIds = await page.locator('[data-trajectory-event-id]').evaluateAll(
+    (events) => events.map((event) => event.dataset.trajectoryEventId),
   );
+  assert.equal(sequenceIds.length, 150);
+  const overviewViewport = page.locator('.trajectoryOverviewViewport');
+  const pressSequenceKey = async (key, eventId) => {
+    await overviewViewport.press(key);
+    await page.waitForFunction((expectedId) => (
+      document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId === expectedId
+        && document.querySelector('[data-trajectory-event-id].selected')?.dataset.trajectoryEventId === expectedId
+    ), eventId);
+  };
+  await pressSequenceKey('Home', sequenceIds[0]);
+  await pressSequenceKey('End', sequenceIds.at(-1));
+  await pressSequenceKey('ArrowLeft', sequenceIds.at(-2));
+  await pressSequenceKey('ArrowRight', sequenceIds.at(-1));
+  const keyboardSelectedId = sequenceIds.at(-1);
   assert.equal(
     await page.locator('[data-trajectory-event-id].selected').getAttribute('data-trajectory-event-id'),
     keyboardSelectedId,
@@ -2221,7 +2307,7 @@ test('browser Trajectory overview exposes only the loaded canonical sequence and
   ), firstInputId);
 });
 
-test('browser Trajectory overview selects a full-height Other marker before the clicked lane', async (t) => {
+test('browser Trajectory overview selects a full-height Other marker by canonical X', async (t) => {
   const index = await buildFixtureIndex();
   const materialized = await materializeIndexedSession(index, primaryFixtureSessionId);
   const mainEvents = materialized.logicalEvents.filter((event) => event.layer === 'main');
@@ -2250,6 +2336,131 @@ test('browser Trajectory overview selects a full-height Other marker before the 
   assert.equal(
     await page.locator('[data-trajectory-event-id].selected').getAttribute('data-lane'),
     'other',
+  );
+});
+
+test('browser Trajectory locator follows its lane and selected detail owns Primary content only in Trajectory', async (t) => {
+  const index = await buildFixtureIndex();
+  const session = await materializeIndexedSession(index, primaryFixtureSessionId);
+  const mainEvents = session.logicalEvents.filter((event) => event.layer === 'main');
+  const inputEvent = mainEvents.find((event) => event.kind === 'user_message');
+  const modelEvent = mainEvents.find((event) => event.kind === 'assistant_message');
+  const toolEvent = mainEvents.find((event) => (
+    event.kind === 'command' && event.toolName === 'shell_command' && event.status === 'failed'
+  ));
+  assert.ok(inputEvent);
+  assert.ok(modelEvent);
+  assert.ok(toolEvent);
+
+  const { page } = await openWave1cM1App(t, index, { locale: 'en' });
+  await selectPrimarySession(page);
+  await page.locator('[data-main-presentation="trajectory"]').click();
+  const canvas = page.locator('.trajectoryOverviewCanvas[data-render-mode="markers"]');
+  await canvas.waitFor();
+  const bounds = await canvas.boundingBox();
+  assert.ok(bounds);
+
+  const selectOverviewEvent = async (event, laneFraction) => {
+    const sequenceIndex = mainEvents.findIndex((candidate) => candidate.id === event.id);
+    assert.ok(sequenceIndex >= 0);
+    await canvas.click({
+      position: {
+        x: bounds.width * ((sequenceIndex + 0.5) / mainEvents.length),
+        y: bounds.height * laneFraction,
+      },
+    });
+    await page.waitForFunction(({ eventId, title }) => (
+      document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId === eventId
+        && document.querySelector(`[data-trajectory-event-id="${CSS.escape(eventId)}"]`)?.classList.contains('selected')
+        && document.querySelector('#detail .detailViewTitle h2')?.textContent.trim() === title
+    ), { eventId: event.id, title: event.label });
+  };
+  const assertLocatorLane = async (lane, laneFraction) => {
+    const position = await page.locator('.trajectoryOverviewLocator').evaluate((locator) => {
+      const plotBounds = locator.parentElement.getBoundingClientRect();
+      const locatorBounds = locator.getBoundingClientRect();
+      const knobTop = Number.parseFloat(getComputedStyle(locator, '::before').top);
+      return {
+        lane: locator.dataset.lane,
+        knobY: (locatorBounds.top - plotBounds.top) + knobTop,
+        plotHeight: plotBounds.height,
+      };
+    });
+    assert.equal(position.lane, lane);
+    assert.ok(Math.abs(position.knobY - (position.plotHeight * laneFraction)) <= 0.75);
+  };
+
+  await selectOverviewEvent(toolEvent, 1 / 2);
+  await assertLocatorLane('tools', 5 / 6);
+
+  await selectOverviewEvent(inputEvent, 1 / 6);
+  await assertLocatorLane('input', 1 / 6);
+  await page.waitForSelector('#detail .inspectorDetailBody .mdBlock h1');
+  assert.match(
+    await page.locator('#detail .inspectorDetailBody').innerText(),
+    /Fix the alpha parser regression.*parser.*inspect/s,
+  );
+  assert.equal(
+    (await page.locator('#detail .detailViewHeader [data-detail-action="raw"]').textContent()).trim(),
+    `Raw · ${inputEvent.rawRefs.length}`,
+  );
+  assert.equal(await page.locator('#detail .inspectorMetadataSection').count(), 1);
+  assert.equal(await page.locator('#detail .inspectorSourcePath').count(), 1);
+
+  await selectOverviewEvent(modelEvent, 1 / 2);
+  await assertLocatorLane('model', 1 / 2);
+
+  await selectOverviewEvent(toolEvent, 5 / 6);
+  await assertLocatorLane('tools', 5 / 6);
+  await page.waitForSelector('#detail .inspectorDetailBody .commandRun');
+  const selectedToolState = await page.locator(
+    `[data-trajectory-event-id="${toolEvent.id}"]`,
+  ).evaluate((event) => ({
+    selected: event.classList.contains('selected'),
+    groupOpen: event.closest('.trajectoryToolGroup')?.open === true,
+    membersMaterialized: event.closest('.trajectoryToolGroup')?.dataset.membersMaterialized === 'true',
+  }));
+  assert.deepEqual(selectedToolState, {
+    selected: true,
+    groupOpen: true,
+    membersMaterialized: true,
+  });
+  const trajectoryDetailText = await page.locator('#detail .inspectorDetailBody').innerText();
+  const commandIndex = trajectoryDetailText.indexOf('powershell.exe -Command npm test');
+  const stdoutIndex = trajectoryDetailText.indexOf('alpha failed');
+  const stderrIndex = trajectoryDetailText.indexOf('parser stack');
+  const argumentsIndex = trajectoryDetailText.indexOf('ARGUMENTS');
+  const contextIndex = trajectoryDetailText.indexOf('RUN CONTEXT');
+  assert.ok(commandIndex >= 0);
+  assert.ok(stdoutIndex > commandIndex);
+  assert.ok(stderrIndex > stdoutIndex);
+  assert.ok(argumentsIndex > stderrIndex);
+  assert.ok(contextIndex > argumentsIndex);
+  assert.equal(
+    (await page.locator('#detail .detailViewHeader [data-detail-action="raw"]').textContent()).trim(),
+    `Raw · ${toolEvent.rawRefs.length}`,
+  );
+  assert.equal(await page.locator('#detail .inspectorMetadataSection').count(), 1);
+  assert.equal(await page.locator('#detail .inspectorSourcePath').count(), 1);
+
+  await page.locator('[data-main-presentation="timeline"]').click();
+  const timelineCard = page.locator(`#timeline .event[data-event-id="${toolEvent.id}"]`);
+  await timelineCard.waitFor();
+  await page.waitForFunction(() => (
+    Boolean(document.querySelector('#detail .inspectorDetailBody .jsonBlock'))
+      && Boolean(document.querySelector('#detail .inspectorDetailBody .kvWrap'))
+      && !document.querySelector('#detail .inspectorDetailBody .commandRun')
+  ));
+  assert.doesNotMatch(await page.locator('#detail .inspectorDetailBody').innerText(), /alpha failed|parser stack/);
+  if (!await timelineCard.evaluate((card) => card.classList.contains('expanded'))) {
+    await timelineCard.locator('[data-action="toggle"]').first().click();
+  }
+  await timelineCard.locator('.eventBody .commandRun').waitFor();
+  assert.match(await timelineCard.locator('.eventBody').innerText(), /npm test.*alpha failed.*parser stack/s);
+  assert.equal(await page.locator('#detail .inspectorDetailBody .commandRun').count(), 0);
+  assert.equal(
+    (await page.locator('#detail .detailViewHeader [data-detail-action="raw"]').textContent()).trim(),
+    `Raw · ${toolEvent.rawRefs.length}`,
   );
 });
 
@@ -2295,6 +2506,59 @@ test('browser Trajectory sequence zoom keeps long overviews bounded and selectio
   assert.ok(initialShape.nodeCount < 40);
   assert.ok(initialShape.scrollWidth <= initialShape.clientWidth + 1);
   assert.ok(initialShape.renderedItemCount <= initialShape.plotWidth);
+
+  const densityHitTargets = await overview.evaluate((node) => {
+    const drawing = node.querySelector('.trajectoryOverviewCanvas');
+    const eventCount = Number(drawing.dataset.eventCount);
+    const plotWidth = Number(drawing.dataset.plotWidth);
+    const binCount = Math.max(1, Math.min(eventCount, Math.floor(plotWidth)));
+    const events = [...document.querySelectorAll('[data-trajectory-event-id][data-sequence-index]')]
+      .map((event) => ({
+        eventId: event.dataset.trajectoryEventId,
+        index: Number(event.dataset.sequenceIndex),
+        lane: event.dataset.lane,
+      }));
+    const binIndex = (sequenceIndex) => Math.min(
+      binCount - 1,
+      Math.floor(((sequenceIndex + 0.5) / eventCount) * binCount),
+    );
+    const input = events.find((event) => {
+      if (event.lane !== 'input') return false;
+      const localBin = binIndex(event.index);
+      return events.some((candidate) => (
+        candidate.lane === 'model' && binIndex(candidate.index) === localBin
+      ));
+    });
+    const localModel = events
+      .filter((event) => event.lane === 'model' && binIndex(event.index) === binIndex(input.index))
+      .sort((left, right) => (
+        Math.abs(left.index - input.index) - Math.abs(right.index - input.index)
+        || left.index - right.index
+      ))[0];
+    return {
+      fraction: (input.index + 0.5) / eventCount,
+      xNearestId: input.eventId,
+      localModelId: localModel.eventId,
+    };
+  });
+  assert.ok(densityHitTargets.xNearestId);
+  assert.ok(densityHitTargets.localModelId);
+  const clickDensityLane = async (laneFraction, eventId) => {
+    const bounds = await canvas.boundingBox();
+    assert.ok(bounds);
+    await canvas.click({
+      position: {
+        x: bounds.width * densityHitTargets.fraction,
+        y: bounds.height * laneFraction,
+      },
+    });
+    await page.waitForFunction((expectedId) => (
+      document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId === expectedId
+        && document.querySelector('[data-trajectory-event-id].selected')?.dataset.trajectoryEventId === expectedId
+    ), eventId);
+  };
+  await clickDensityLane(1 / 2, densityHitTargets.localModelId);
+  await clickDensityLane(5 / 6, densityHitTargets.xNearestId);
 
   const anchorRow = page.locator('[data-trajectory-event-id]').nth(799);
   const anchorId = await anchorRow.getAttribute('data-trajectory-event-id');
@@ -2347,6 +2611,95 @@ test('browser Trajectory sequence zoom keeps long overviews bounded and selectio
   assert.ok(zoomedShape.scrollWidth <= (zoomedShape.clientWidth * 8) + 8);
   assert.ok(zoomedShape.scrollWidth >= (zoomedShape.clientWidth * 8) - 8);
 
+  const readInputMarkerGlyph = (sequenceIndex) => canvas.evaluate((drawing, args) => {
+    const plotWidth = Number(drawing.dataset.plotWidth);
+    const plotHeight = drawing.getBoundingClientRect().height;
+    const pixelScaleX = drawing.width / plotWidth;
+    const pixelScaleY = drawing.height / plotHeight;
+    const centerX = ((args.sequenceIndex + 0.5) / args.eventCount) * plotWidth;
+    const centerY = plotHeight / 6;
+    const sampleLeft = Math.max(0, Math.floor((centerX - 4) * pixelScaleX));
+    const sampleTop = Math.max(0, Math.floor((centerY - 6) * pixelScaleY));
+    const sampleRight = Math.min(drawing.width, Math.ceil((centerX + 4) * pixelScaleX));
+    const sampleBottom = Math.min(drawing.height, Math.ceil((centerY + 6) * pixelScaleY));
+    const sampleWidth = sampleRight - sampleLeft;
+    const sampleHeight = sampleBottom - sampleTop;
+    const pixels = drawing.getContext('2d').getImageData(
+      sampleLeft,
+      sampleTop,
+      sampleWidth,
+      sampleHeight,
+    ).data;
+    let minX = sampleWidth;
+    let minY = sampleHeight;
+    let maxX = -1;
+    let maxY = -1;
+    for (let y = 0; y < sampleHeight; y += 1) {
+      for (let x = 0; x < sampleWidth; x += 1) {
+        const offset = ((y * sampleWidth) + x) * 4;
+        const red = pixels[offset];
+        const green = pixels[offset + 1];
+        const blue = pixels[offset + 2];
+        const alpha = pixels[offset + 3];
+        if (alpha === 0 || red >= 120 || green < 90 || green > 170 || blue >= 160) continue;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+    return {
+      width: maxX < minX ? 0 : (maxX - minX + 1) / pixelScaleX,
+      height: maxY < minY ? 0 : (maxY - minY + 1) / pixelScaleY,
+    };
+  }, { sequenceIndex, eventCount });
+  const markerGlyphAt8x = await readInputMarkerGlyph(400);
+  assert.ok(markerGlyphAt8x.width >= 2.5 && markerGlyphAt8x.width <= 3.5);
+  assert.ok(markerGlyphAt8x.height >= 7.5 && markerGlyphAt8x.height <= 8.5);
+
+  await page.locator('[data-trajectory-sequence-zoom="in"]').click();
+  await page.waitForFunction(() => (
+    document.querySelector('.trajectoryOverview')?.dataset.sequenceZoom === '16'
+      && document.querySelector('.trajectoryOverviewCanvas')?.dataset.renderMode === 'markers'
+  ));
+  const markerGlyphAt16x = await readInputMarkerGlyph(400);
+  assert.ok(Math.abs(markerGlyphAt16x.width - markerGlyphAt8x.width) <= 0.1);
+  assert.ok(Math.abs(markerGlyphAt16x.height - markerGlyphAt8x.height) <= 0.1);
+  t.diagnostic(JSON.stringify({ markerGlyphAt8x, markerGlyphAt16x }));
+  await page.locator('[data-trajectory-sequence-zoom="out"]').click();
+  await page.waitForFunction(() => document.querySelector('.trajectoryOverview')?.dataset.sequenceZoom === '8');
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+
+  const timelinePane = page.locator('.timelinePane');
+  const horizontalBeforeNarrativeScroll = await overview.evaluate((node) => ({
+    zoom: node.dataset.sequenceZoom,
+    scrollLeft: node.querySelector('.trajectoryOverviewViewport').scrollLeft,
+  }));
+  await timelinePane.evaluate((pane) => {
+    const rows = [...pane.querySelectorAll('[data-trajectory-event-id]')];
+    const target = rows[Math.min(rows.length - 1, 80)];
+    const paneBounds = pane.getBoundingClientRect();
+    pane.scrollTop += target.getBoundingClientRect().top - paneBounds.top - (pane.clientHeight / 2);
+  });
+  await page.waitForFunction(() => {
+    const pane = document.querySelector('.timelinePane');
+    const overviewNode = pane?.querySelector('.trajectoryOverview');
+    if (!pane || !overviewNode || pane.scrollTop <= 0) return false;
+    return Math.abs(overviewNode.getBoundingClientRect().top - pane.getBoundingClientRect().top) <= 1.5;
+  });
+  const afterNarrativeScroll = await overview.evaluate((node) => ({
+    zoom: node.dataset.sequenceZoom,
+    scrollLeft: node.querySelector('.trajectoryOverviewViewport').scrollLeft,
+  }));
+  assert.deepEqual(afterNarrativeScroll, horizontalBeforeNarrativeScroll);
+  const beforeOverviewClick = await trajectoryStickySnapshot(page);
+  assert.ok(beforeOverviewClick.scrollTop > 0);
+  assertTrajectoryOverviewPinned(beforeOverviewClick);
+  assert.ok(beforeOverviewClick.sessionHeaderBottom < beforeOverviewClick.paneTop);
+  assert.ok(beforeOverviewClick.presentationControlBottom < beforeOverviewClick.paneTop);
+
   const zoomedClickTarget = await viewport.evaluate((node, count) => {
     const viewportBounds = node.getBoundingClientRect();
     const drawing = node.querySelector('.trajectoryOverviewCanvas');
@@ -2384,6 +2737,22 @@ test('browser Trajectory sequence zoom keeps long overviews bounded and selectio
       && document.querySelector('#detail .inspector')
       && document.querySelector('#detail .detailViewTitle h2')?.textContent.trim() === expectedTitle
   ), zoomedClickTarget);
+  await page.waitForTimeout(300);
+  const afterOverviewClick = await trajectoryStickySnapshot(page, zoomedClickTarget.eventId);
+  t.diagnostic(JSON.stringify({ beforeOverviewClick, afterOverviewClick }));
+  assert.ok(Math.abs(afterOverviewClick.scrollTop - beforeOverviewClick.scrollTop) <= 1);
+  assertTrajectoryOverviewPinned(afterOverviewClick);
+
+  await page.locator('[data-trajectory-sequence-zoom="in"]').click();
+  await page.waitForFunction(() => document.querySelector('.trajectoryOverview')?.dataset.sequenceZoom === '16');
+  const stickyZoomed = await trajectoryStickySnapshot(page, zoomedClickTarget.eventId);
+  assertTrajectoryOverviewPinned(stickyZoomed);
+  assert.ok(Math.abs(stickyZoomed.scrollTop - afterOverviewClick.scrollTop) <= 1);
+  await page.locator('[data-trajectory-sequence-zoom="out"]').click();
+  await page.waitForFunction(() => document.querySelector('.trajectoryOverview')?.dataset.sequenceZoom === '8');
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
 
   await viewport.evaluate((node) => { node.scrollLeft = 0; });
   await viewport.hover();
@@ -2399,14 +2768,17 @@ test('browser Trajectory sequence zoom keeps long overviews bounded and selectio
 
   await page.waitForTimeout(100);
   const timelineRequestUrls = requestedUrls.filter((url) => url.includes('/timeline?'));
-  await page.locator('[data-main-presentation="timeline"]').click();
+  await page.locator('[data-main-presentation="timeline"]').evaluate((button) => button.click());
   await page.waitForSelector('#timeline .event[data-event-id]');
-  await page.locator('[data-main-presentation="trajectory"]').click();
+  await page.locator('[data-main-presentation="trajectory"]').evaluate((button) => button.click());
   await page.waitForFunction((expectedScroll) => {
     const node = document.querySelector('.trajectoryOverviewViewport');
     return document.querySelector('.trajectoryOverview')?.dataset.sequenceZoom === '8'
       && Math.abs(node.scrollLeft - expectedScroll) <= 2;
   }, freelyPanned);
+  const continuityGeometry = await trajectoryStickySnapshot(page, zoomedClickTarget.eventId);
+  assertTrajectoryOverviewPinned(continuityGeometry);
+  assertTrajectoryTargetUnobscured(continuityGeometry);
   const switchedTimelineRequestUrls = requestedUrls.filter((url) => url.includes('/timeline?'));
   t.diagnostic(JSON.stringify({
     presentationSwitchRequests: switchedTimelineRequestUrls.slice(timelineRequestUrls.length),
@@ -2463,6 +2835,15 @@ test('browser Trajectory sequence zoom keeps long overviews bounded and selectio
       && viewportNode?.scrollLeft === 0
       && document.querySelector('.trajectoryOverviewCanvas')?.dataset.renderMode === 'density';
   });
+  await timelinePane.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+  await page.waitForFunction(() => {
+    const pane = document.querySelector('.timelinePane');
+    return pane && Math.abs(pane.scrollTop - (pane.scrollHeight - pane.clientHeight)) <= 1;
+  });
+  const tailContainment = await trajectoryStickySnapshot(page);
+  assert.ok(tailContainment.maxScrollTop > 0);
+  assert.ok(tailContainment.overviewBottom <= tailContainment.presentationBottom + 1, JSON.stringify(tailContainment));
+  t.diagnostic(JSON.stringify({ continuityGeometry, tailContainment }));
 });
 
 test('browser Trajectory characterizes the existing 1800-event performance shape without overview DOM growth', async (t) => {
@@ -2592,6 +2973,23 @@ test('browser project-search drill-down restores Trajectory and anchors the exac
     await page.locator('[data-trajectory-event-id].selected').getAttribute('data-trajectory-event-id'),
     targetId,
   );
+  await page.waitForFunction((eventId) => {
+    const pane = document.querySelector('.timelinePane');
+    const overview = pane?.querySelector('.trajectoryOverview');
+    const selected = pane?.querySelector(
+      `[data-trajectory-event-id="${CSS.escape(eventId)}"]`,
+    );
+    if (!pane || !overview || !selected) return false;
+    const paneBounds = pane.getBoundingClientRect();
+    const overviewBounds = overview.getBoundingClientRect();
+    const selectedBounds = selected.getBoundingClientRect();
+    return Math.abs(overviewBounds.top - paneBounds.top) <= 1.5
+      && selectedBounds.top >= overviewBounds.bottom - 1
+      && selectedBounds.bottom <= paneBounds.bottom + 1;
+  }, targetId);
+  const drillDownGeometry = await trajectoryStickySnapshot(page, targetId);
+  assertTrajectoryOverviewPinned(drillDownGeometry);
+  assertTrajectoryTargetUnobscured(drillDownGeometry);
   const loadedState = await page.locator('.trajectoryPresentation').evaluate((presentation) => ({
     loaded: Number(presentation.dataset.eventCount),
     status: presentation.querySelector('.trajectoryOverviewStatus')?.textContent || '',
@@ -2656,6 +3054,8 @@ test('browser Trajectory search reveals a collapsed Tool Activity Group and stru
     document.querySelector('.searchInlineCount')?.textContent?.endsWith('/ 1 targets')
       && document.querySelector('#searchMetricsPanel')?.textContent.includes('1 occurrences')
   ));
+  const searchTargetsBeforeDetail = await searchNavigationSnapshot(page);
+  assert.equal(searchTargetsBeforeDetail.total, 1);
   assert.equal(
     await page.locator(`[data-trajectory-event-id="${failedCommand.id}"]`).count(),
     0,
@@ -2692,6 +3092,10 @@ test('browser Trajectory search reveals a collapsed Tool Activity Group and stru
     (item) => item.revisionKind === 'searchTransientRevision',
   )), true);
   assert.equal(await page.locator('#detail .inspector').count(), 1);
+  await page.waitForSelector('#detail .commandRun mark.searchMark');
+  const searchTargetsAfterDetail = await searchNavigationSnapshot(page);
+  assert.equal(searchTargetsAfterDetail.total, searchTargetsBeforeDetail.total);
+  assert.deepEqual(searchTargetsAfterDetail.ids, searchTargetsBeforeDetail.ids);
 
   await fillSearch(page, '');
   await expectInputValue(page, '#searchInput', '');

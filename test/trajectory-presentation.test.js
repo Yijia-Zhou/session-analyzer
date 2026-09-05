@@ -158,42 +158,74 @@ test('trajectory overview density is pixel-bounded and retains exact identity se
   );
 });
 
-test('trajectory overview click mapping prefers the requested lane and falls back safely', () => {
-  const projected = projectTrajectoryEvents([
-    { id: 'u', kind: 'user_message' },
-    { id: 'a', kind: 'assistant_message' },
-    { id: 't', kind: 'command' },
-    { id: 'x', kind: 'future_kind' },
+test('trajectory marker hit testing follows canonical X without lane jumps', () => {
+  const sparseModelLane = projectTrajectoryEvents([
+    { id: 'model-start', kind: 'assistant_message' },
+    { id: 'tool-1', kind: 'command' },
+    { id: 'tool-2', kind: 'command' },
+    { id: 'tool-nearest', kind: 'command' },
+    { id: 'tool-4', kind: 'command' },
+    { id: 'model-end', kind: 'assistant_message' },
   ]);
-  assert.equal(nearestTrajectoryEventIndex(projected, 0.7, TRAJECTORY_LANES.TOOLS), 2);
-  assert.equal(nearestTrajectoryEventIndex(projected, 0.99, TRAJECTORY_LANES.INPUT), 0);
-  assert.equal(nearestTrajectoryEventIndex(projected, 0.99, 'not-a-lane'), 3);
-  assert.equal(nearestTrajectoryEventIndex([], 0.5, TRAJECTORY_LANES.MODEL), -1);
+  const toolFraction = trajectoryEventFraction(3, sparseModelLane.length);
+  assert.equal(nearestTrajectoryEventIndex(sparseModelLane, toolFraction), 3);
+  assert.equal(nearestTrajectoryOverviewEventIndex(sparseModelLane, toolFraction, {
+    mode: 'markers',
+    preferredLane: TRAJECTORY_LANES.MODEL,
+    plotWidth: 120,
+  }), 3);
+
+  const visibleTicks = projectTrajectoryEvents([
+    { id: 'input', kind: 'user_message' },
+    { id: 'model', kind: 'assistant_message' },
+    { id: 'tools', kind: 'command' },
+    { id: 'other', kind: 'review' },
+  ]);
+  for (let index = 0; index < visibleTicks.length; index += 1) {
+    assert.equal(nearestTrajectoryOverviewEventIndex(
+      visibleTicks,
+      trajectoryEventFraction(index, visibleTicks.length),
+      { mode: 'markers', preferredLane: TRAJECTORY_LANES.INPUT, plotWidth: 120 },
+    ), index);
+  }
+  assert.equal(nearestTrajectoryEventIndex([], 0.5), -1);
   assert.equal(trajectoryEventFraction(2, 4), 0.625);
   assert.equal(trajectoryEventFraction(4, 4), null);
 });
 
-test('trajectory overview selection prioritizes exact Other marks before lane preference', () => {
-  const projected = projectTrajectoryEvents([
-    { id: 'input', kind: 'user_message' },
-    { id: 'other', kind: 'review' },
-    { id: 'model', kind: 'assistant_message' },
+test('trajectory density hit testing applies lane preference only inside the local bin', () => {
+  const withLocalModel = projectTrajectoryEvents([
+    { id: 'tool-nearest', kind: 'command' },
+    { id: 'input-local', kind: 'user_message' },
+    { id: 'model-local', kind: 'assistant_message' },
+    { id: 'tool-local', kind: 'command' },
+    { id: 'model-next', kind: 'assistant_message' },
+    { id: 'input-next', kind: 'user_message' },
+    { id: 'tool-next', kind: 'command' },
+    { id: 'other-next', kind: 'review' },
   ]);
-  const inputFraction = trajectoryEventFraction(0, projected.length);
-  const otherFraction = trajectoryEventFraction(1, projected.length);
-  const modelFraction = trajectoryEventFraction(2, projected.length);
+  const firstFraction = trajectoryEventFraction(0, withLocalModel.length);
+  assert.equal(nearestTrajectoryOverviewEventIndex(withLocalModel, firstFraction, {
+    mode: 'density',
+    preferredLane: TRAJECTORY_LANES.MODEL,
+    plotWidth: 2,
+  }), 2);
 
-  assert.equal(nearestTrajectoryOverviewEventIndex(projected, inputFraction, TRAJECTORY_LANES.INPUT), 0);
-  assert.equal(nearestTrajectoryOverviewEventIndex(projected, otherFraction, TRAJECTORY_LANES.INPUT), 1);
-  assert.equal(nearestTrajectoryOverviewEventIndex(projected, modelFraction, TRAJECTORY_LANES.MODEL), 2);
-  assert.equal(
-    nearestTrajectoryOverviewEventIndex(projected, inputFraction, TRAJECTORY_LANES.MODEL),
-    2,
-  );
-  assert.equal(
-    nearestTrajectoryOverviewEventIndex(projected, modelFraction, TRAJECTORY_LANES.INPUT),
-    0,
-  );
+  const withoutLocalModel = projectTrajectoryEvents([
+    { id: 'tool-nearest', kind: 'command' },
+    { id: 'input-local', kind: 'user_message' },
+    { id: 'tool-local-2', kind: 'command' },
+    { id: 'input-local-2', kind: 'user_message' },
+    { id: 'model-next', kind: 'assistant_message' },
+    { id: 'input-next', kind: 'user_message' },
+    { id: 'tool-next', kind: 'command' },
+    { id: 'other-next', kind: 'review' },
+  ]);
+  assert.equal(nearestTrajectoryOverviewEventIndex(withoutLocalModel, firstFraction, {
+    mode: 'density',
+    preferredLane: TRAJECTORY_LANES.MODEL,
+    plotWidth: 2,
+  }), 0);
 });
 
 test('trajectory compact text and zoom levels remain bounded presentation helpers', () => {

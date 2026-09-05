@@ -3367,13 +3367,19 @@ function renderInspectorDetail(event) {
   const detail = state.detailCache[key];
   const error = state.detailErrors[key];
   if (detail) {
-    const sections = cacheUsageFact(event)
+    const includePrimary = trajectoryPresentationActive();
+    const primary = includePrimary
+      ? renderTimelineSections(detail.timelineSections || [])
+      : '';
+    const supplementalSections = !includePrimary && cacheUsageFact(event)
       ? [...(detail.timelineSections || []), ...(detail.inspectorSections || [])]
       : (detail.inspectorSections || []);
-    if (!sections.length) return '';
+    const supplemental = renderInspectorSections(supplementalSections);
+    const body = `${primary}${supplemental}`;
+    if (!body) return '';
     return `<section class="inspectorSection">
       <h3>${escapeHtml(t('details'))}</h3>
-      <div class="inspectorDetailBody">${renderInspectorSections(sections)}</div>
+      <div class="inspectorDetailBody">${body}</div>
     </section>`;
   }
   if (error) {
@@ -5307,6 +5313,10 @@ function changeMainPresentation(presentationId) {
   syncMainPresentationUi();
   renderTimeline();
   updateSelectedTimelineEvent();
+  if (state.detailView.type === 'inspector') {
+    const item = eventForDetailView();
+    if (item) renderInspectorPresentation(item, { navigationPending: currentNavigationPending() });
+  }
   if (state.selectedEventId) {
     scrollToTimelineEvent(state.selectedEventId, { behavior: 'auto' });
   }
@@ -6380,7 +6390,6 @@ function selectTrajectoryEvent(item) {
   }
   const current = currentTimelineEvent(item.id) || item;
   showInspector(current, { origin: DETAIL_VIEW_ORIGIN_USER });
-  requestAnimationFrame(() => scrollToTimelineEvent(item.id));
   return true;
 }
 

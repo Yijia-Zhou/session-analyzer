@@ -2107,7 +2107,8 @@ body[data-project-mode='selecting'] .searchAssist {
 }
 
 .timelinePane {
-  padding: 1rem;
+  --timeline-pane-content-inset: 1rem;
+  padding: var(--timeline-pane-content-inset);
 }
 
 .sessionHeader {
@@ -3002,13 +3003,18 @@ body[data-project-mode='selecting'] .searchAssist {
 }
 
 .trajectoryOverview {
+  align-self: start;
   background: #f8fafb;
   border: 1px solid var(--line);
   border-radius: 7px;
+  box-shadow: 0 5px 12px rgba(24, 32, 36, 0.1);
   display: grid;
   gap: 0.55rem;
   overflow: hidden;
   padding: 0.62rem 0.7rem 0.7rem;
+  position: sticky;
+  top: calc(0px - var(--timeline-pane-content-inset));
+  z-index: 4;
 }
 
 .trajectoryOverviewHeader {
@@ -3169,6 +3175,7 @@ body[data-project-mode='selecting'] .searchAssist {
 }
 
 .trajectoryOverviewLocator {
+  --trajectory-locator-knob-y: 50%;
   background: color-mix(in srgb, var(--accent) 78%, transparent);
   bottom: 3px;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.86);
@@ -3180,6 +3187,20 @@ body[data-project-mode='selecting'] .searchAssist {
   z-index: 2;
 }
 
+/* Compensate for the locator line's 3px inset while aligning to the 72px plot lanes. */
+.trajectoryOverviewLocator[data-lane='input'] {
+  --trajectory-locator-knob-y: calc(16.6667% - 2px);
+}
+
+.trajectoryOverviewLocator[data-lane='model'],
+.trajectoryOverviewLocator[data-lane='other'] {
+  --trajectory-locator-knob-y: 50%;
+}
+
+.trajectoryOverviewLocator[data-lane='tools'] {
+  --trajectory-locator-knob-y: calc(83.3333% + 2px);
+}
+
 .trajectoryOverviewLocator::before {
   background: var(--accent);
   border: 2px solid var(--panel);
@@ -3188,7 +3209,7 @@ body[data-project-mode='selecting'] .searchAssist {
   height: 7px;
   left: 50%;
   position: absolute;
-  top: 50%;
+  top: var(--trajectory-locator-knob-y);
   transform: translate(-50%, -50%);
   width: 7px;
 }
@@ -5841,6 +5862,18 @@ pre {
   .timelinePane,
   .detailPane {
     padding: 0.85rem;
+  }
+
+  .timelinePane {
+    --timeline-pane-content-inset: 0.85rem;
+  }
+
+  body[data-mobile-view='events'] .timelinePane {
+    overflow: visible;
+  }
+
+  body[data-mobile-view='events'] .trajectoryOverview {
+    top: 44px;
   }
 
   .resultSummary {

@@ -359,32 +359,74 @@ function trajectoryEventFraction(sequenceIndex, eventCount) {
   return (sequenceIndex + 0.5) / eventCount;
 }
 
-function nearestTrajectoryEventIndex(projectedEvents, fraction, preferredLane = '') {
-  if (!Array.isArray(projectedEvents) || projectedEvents.length === 0) return -1;
+function trajectoryTargetSequenceIndex(eventCount, fraction) {
   const clampedFraction = Math.max(0, Math.min(1, Number(fraction) || 0));
-  const targetIndex = (clampedFraction * projectedEvents.length) - 0.5;
-  const lane = Object.values(TRAJECTORY_LANES).includes(preferredLane) ? preferredLane : '';
-  const candidates = lane
-    ? projectedEvents.filter((event) => event.lane === lane)
-    : projectedEvents;
-  const pool = candidates.length ? candidates : projectedEvents;
-  let nearest = pool[0];
+  return (clampedFraction * eventCount) - 0.5;
+}
+
+function nearestProjectedEventIndex(projectedEvents, targetIndex) {
+  if (!projectedEvents.length) return -1;
+  let nearest = projectedEvents[0];
   let distance = Math.abs(nearest.index - targetIndex);
-  for (let index = 1; index < pool.length; index += 1) {
-    const candidateDistance = Math.abs(pool[index].index - targetIndex);
+  for (let index = 1; index < projectedEvents.length; index += 1) {
+    const candidateDistance = Math.abs(projectedEvents[index].index - targetIndex);
     if (candidateDistance < distance) {
-      nearest = pool[index];
+      nearest = projectedEvents[index];
       distance = candidateDistance;
     }
   }
   return nearest.index;
 }
 
-function nearestTrajectoryOverviewEventIndex(projectedEvents, fraction, preferredLane = '') {
+function nearestTrajectoryEventIndex(projectedEvents, fraction) {
+  if (!Array.isArray(projectedEvents) || projectedEvents.length === 0) return -1;
+  return nearestProjectedEventIndex(
+    projectedEvents,
+    trajectoryTargetSequenceIndex(projectedEvents.length, fraction),
+  );
+}
+
+function nearestTrajectoryDensityEventIndex(projectedEvents, fraction, preferredLane, plotWidth) {
   const globalIndex = nearestTrajectoryEventIndex(projectedEvents, fraction);
   if (globalIndex < 0) return -1;
-  if (projectedEvents[globalIndex]?.lane === TRAJECTORY_LANES.OTHER) return globalIndex;
-  return nearestTrajectoryEventIndex(projectedEvents, fraction, preferredLane);
+  const bins = buildTrajectoryDensityBins(projectedEvents, plotWidth);
+  if (!bins.length) return globalIndex;
+  const binCount = Math.max(1, Math.min(projectedEvents.length, Math.floor(plotWidth)));
+  const clampedFraction = Math.max(0, Math.min(1, Number(fraction) || 0));
+  const targetBinIndex = Math.min(binCount - 1, Math.floor(clampedFraction * binCount));
+  let localBin = bins[0];
+  let binDistance = Math.abs(localBin.index - targetBinIndex);
+  for (let index = 1; index < bins.length; index += 1) {
+    const candidateDistance = Math.abs(bins[index].index - targetBinIndex);
+    if (candidateDistance < binDistance) {
+      localBin = bins[index];
+      binDistance = candidateDistance;
+    }
+  }
+  const localEvents = projectedEvents.filter((event) => (
+    densityBinIndex(event.index, projectedEvents.length, binCount) === localBin.index
+  ));
+  const lane = [
+    TRAJECTORY_LANES.INPUT,
+    TRAJECTORY_LANES.MODEL,
+    TRAJECTORY_LANES.TOOLS,
+  ].includes(preferredLane) ? preferredLane : '';
+  const laneEvents = lane ? localEvents.filter((event) => event.lane === lane) : [];
+  if (!laneEvents.length) return globalIndex;
+  return nearestProjectedEventIndex(
+    laneEvents,
+    trajectoryTargetSequenceIndex(projectedEvents.length, fraction),
+  );
+}
+
+function nearestTrajectoryOverviewEventIndex(projectedEvents, fraction, options = {}) {
+  if (options.mode !== 'density') return nearestTrajectoryEventIndex(projectedEvents, fraction);
+  return nearestTrajectoryDensityEventIndex(
+    projectedEvents,
+    fraction,
+    options.preferredLane,
+    options.plotWidth,
+  );
 }
 
 const DEFAULT_LABELS = Object.freeze({
@@ -642,6 +684,8 @@ function drawTrajectoryOverview(canvas, projectedEvents, width, height) {
   const mode = trajectoryOverviewRenderMode(projectedEvents.length, width);
   if (mode === 'empty') return { mode, renderedItemCount: 0 };
   if (mode === 'markers') {
+    const markerWidth = 3;
+    const markerHeight = 8;
     for (const event of projectedEvents) {
       const x = trajectoryEventFraction(event.index, projectedEvents.length) * width;
       context.globalAlpha = event.displayState === 'hidden' ? 0.28 : 0.9;
@@ -649,9 +693,12 @@ function drawTrajectoryOverview(canvas, projectedEvents, width, height) {
       if (event.lane === TRAJECTORY_LANES.OTHER) {
         context.fillRect(Math.round(x), 5, 1.5, Math.max(1, height - 10));
       } else {
-        context.beginPath();
-        context.arc(x, laneCenterY(event.lane, height), 2.2, 0, Math.PI * 2);
-        context.fill();
+        context.fillRect(
+          Math.round(x - (markerWidth / 2)),
+          Math.round(laneCenterY(event.lane, height) - (markerHeight / 2)),
+          markerWidth,
+          markerHeight,
+        );
       }
     }
     context.globalAlpha = 1;
@@ -873,7 +920,11 @@ function renderTrajectoryOverview(documentRef, model, options) {
     return true;
   };
   const selectAt = (fraction, lane) => {
-    const index = nearestTrajectoryOverviewEventIndex(model.projectedEvents, fraction, lane);
+    const index = nearestTrajectoryOverviewEventIndex(model.projectedEvents, fraction, {
+      mode: canvas.dataset.renderMode,
+      plotWidth: Number(canvas.dataset.plotWidth),
+      preferredLane: lane,
+    });
     if (index < 0) return false;
     options.onSelect?.(model.projectedEvents[index].event);
     return true;
