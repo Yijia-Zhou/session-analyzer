@@ -53,6 +53,13 @@ const { codeModePresentationContextMap } = require('./shared/code-mode-presentat
 const { createCodexDetailBuilder } = require('./codex-detail');
 const cacheObservationPresentation = require('./cache-observation-presentation');
 const {
+  acquireCodexSourceStat,
+  sameCodexSourceIdentity,
+  sourceSizeCoversAcceptedBytes,
+  sourceSizeEqualsAcceptedBytes,
+  sourceSizeToSafeNumber,
+} = require('./shared/codex-source-stat');
+const {
   createCodexCacheObservationSeed,
   finalizeCodexCacheObservation,
 } = require('./codex-cache-observation');
@@ -845,7 +852,7 @@ async function hashFilePrefix(filePath, byteLength, signal) {
 
 function sameSourceStat(left, right) {
   return Boolean(left && right
-    && left.size === right.size
+    && left.sizeBigInt === right.sizeBigInt
     && left.mtimeMs === right.mtimeMs);
 }
 
@@ -1063,19 +1070,6 @@ function taggedBlockEntries(text) {
     if (value) entries.push({ key: match[1], value });
   }
   return entries;
-}
-
-function sourceFileIdentity(stat) {
-  return {
-    device: String(stat?.dev ?? ''),
-    inode: String(stat?.ino ?? ''),
-  };
-}
-
-function sameSourceIdentity(left, right) {
-  return Boolean(left && right
-    && left.device === right.device
-    && left.inode === right.inode);
 }
 
 function isKvRepresentableValue(value) {
@@ -2040,7 +2034,7 @@ function codexSessionIdFromFilePath(filePath) {
   return path.basename(filePath).match(UUID_RE)?.[1] || path.basename(filePath, '.jsonl');
 }
 
-function makeEmptySession(filePath, relFile, stat) {
+function makeEmptySession(filePath, relFile, acceptedBytes, sourceUpdatedAt) {
   const idFromName = codexSessionIdFromFilePath(filePath);
   return {
     id: idFromName,
@@ -2051,9 +2045,9 @@ function makeEmptySession(filePath, relFile, stat) {
     title: '',
     sourceFile: relFile,
     sourceAbsFile: filePath,
-    sourceUpdatedAt: safeIso(stat.mtime),
+    sourceUpdatedAt,
     sourceFingerprint: '',
-    bytes: stat.size,
+    bytes: acceptedBytes,
     lineCount: 0,
     cwdSet: new Set(),
     startedAt: '',
@@ -4581,32 +4575,46 @@ function isReusableCompactSession(session) {
     && (session._logicalEvents || session.logicalEvents).every(isReusableCompactLogicalEvent);
 }
 
+function hasExpectedSourceIdentityShape(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === 2
+    && keys.includes('device')
+    && keys.includes('inode')
+    && typeof value.device === 'string'
+    && typeof value.inode === 'string';
+}
+
 async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {}) {
   throwIfAborted(signal);
   const acceptedSnapshot = options.acceptedSourceSnapshot || null;
-  let stat;
+  let initial;
   try {
-    stat = await fsp.stat(filePath);
+    initial = await acquireCodexSourceStat(filePath);
   } catch (error) {
     if (acceptedSnapshot && (error?.code === 'ENOENT' || error?.code === 'ENOTDIR')) {
       throw indexedSourceStaleError();
     }
     throw error;
   }
-  const acceptedBytes = acceptedSnapshot ? acceptedSnapshot.acceptedBytes : stat.size;
   const snapshotFailure = acceptedSnapshot ? indexedSourceStaleError : sourceSnapshotChangedError;
+  const acceptedBytes = acceptedSnapshot
+    ? acceptedSnapshot.acceptedBytes
+    : sourceSizeToSafeNumber(initial.sizeBigInt);
   if (!Number.isSafeInteger(acceptedBytes)
       || acceptedBytes < 0
-      || stat.size < acceptedBytes
+      || !sourceSizeCoversAcceptedBytes(initial.sizeBigInt, acceptedBytes)
       || (acceptedSnapshot
-        && !sameSourceIdentity(sourceFileIdentity(stat), acceptedSnapshot.fileIdentity))) {
+        && !sameCodexSourceIdentity(initial.fileIdentity, acceptedSnapshot.fileIdentity))) {
     throw snapshotFailure();
   }
-  const session = makeEmptySession(filePath, relFile, stat);
+  const session = makeEmptySession(filePath, relFile, acceptedBytes, safeIso(initial.mtime));
   const captureCacheObservationSeeds = options.captureCacheObservationSeeds === true;
   if (captureCacheObservationSeeds) session._cacheObservationSeeds = [];
-  session.bytes = acceptedBytes;
-  session._sourceIdentity = sourceFileIdentity(stat);
+  session._sourceIdentity = {
+    device: initial.fileIdentity.device,
+    inode: initial.fileIdentity.inode,
+  };
   let primarySessionMetaSeen = false;
   const relationshipPlanningFacts = typeof options.onAcceptedRelationshipPlanningProjection === 'function'
     ? createCodexLeadingSessionFacts()
@@ -4727,13 +4735,13 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   let verifiedStat;
   await observeMaterializationPhase('adapter_source_verification_read', async () => {
     verified = await hashFilePrefix(filePath, acceptedBytes, signal);
-    verifiedStat = await fsp.stat(filePath);
+    verifiedStat = await acquireCodexSourceStat(filePath);
   });
   if (sourceBytesRead !== acceptedBytes
       || verified.bytesRead !== acceptedBytes
       || verified.fingerprint !== sourceFingerprint
-      || verifiedStat.size < acceptedBytes
-      || !sameSourceIdentity(sourceFileIdentity(verifiedStat), session._sourceIdentity)
+      || !sourceSizeCoversAcceptedBytes(verifiedStat.sizeBigInt, acceptedBytes)
+      || !sameCodexSourceIdentity(verifiedStat.fileIdentity, initial.fileIdentity)
       || (acceptedSnapshot && sourceFingerprint !== acceptedSnapshot.digest)) {
     throw snapshotFailure();
   }
@@ -4869,9 +4877,13 @@ async function scanCodexRelationshipEvidence(
   options = {},
 ) {
   throwIfAborted(signal);
-  const stat = await fsp.stat(filePath);
-  const acceptedBytes = stat.size;
-  const sourceIdentity = sourceFileIdentity(stat);
+  const stat = await acquireCodexSourceStat(filePath);
+  const acceptedBytes = sourceSizeToSafeNumber(stat.sizeBigInt);
+  if (!Number.isSafeInteger(acceptedBytes)
+      || acceptedBytes < 0
+      || !sourceSizeCoversAcceptedBytes(stat.sizeBigInt, acceptedBytes)) {
+    throw sourceSnapshotChangedError();
+  }
   const idFromName = codexSessionIdFromFilePath(filePath);
   const relationshipState = {
     id: idFromName,
@@ -4991,13 +5003,13 @@ async function scanCodexRelationshipEvidence(
   }
   throwIfAborted(signal);
   const verified = await hashFilePrefix(filePath, acceptedBytes, signal);
-  const verifiedStat = await fsp.stat(filePath);
+  const verifiedStat = await acquireCodexSourceStat(filePath);
   throwIfAborted(signal);
   if (sourceBytesRead !== acceptedBytes
       || verified.bytesRead !== acceptedBytes
       || verified.fingerprint !== sourceFingerprint
-      || verifiedStat.size < acceptedBytes
-      || !sameSourceIdentity(sourceFileIdentity(verifiedStat), sourceIdentity)) {
+      || !sourceSizeCoversAcceptedBytes(verifiedStat.sizeBigInt, acceptedBytes)
+      || !sameCodexSourceIdentity(verifiedStat.fileIdentity, stat.fileIdentity)) {
     throw sourceSnapshotChangedError();
   }
 
@@ -5012,7 +5024,7 @@ async function scanCodexRelationshipEvidence(
     sourceClientVersion: relationshipState.sourceClientVersion,
     sourceFingerprint,
     sourceUpdatedAt: safeIso(stat.mtime),
-    sourceIdentity: structuredClone(sourceIdentity),
+    sourceIdentity: structuredClone(stat.fileIdentity),
     bytes: acceptedBytes,
     lineCount,
     rawEventCount,
@@ -5592,20 +5604,21 @@ async function canReuseWholeSourceBackedIndex({
     }
     let before;
     try {
-      before = await fsp.stat(filePath);
+      before = await acquireCodexSourceStat(filePath);
     } catch {
       return false;
     }
-    if (before.size !== transcriptEntry.acceptedBytes
-        || !sameSourceIdentity(sourceFileIdentity(before), transcriptEntry.evidence?.fileIdentity)) {
+    const acceptedBytes = transcriptEntry.acceptedBytes;
+    if (!sourceSizeEqualsAcceptedBytes(before.sizeBigInt, acceptedBytes)
+        || !sameCodexSourceIdentity(before.fileIdentity, transcriptEntry.evidence?.fileIdentity)) {
       return false;
     }
-    const fingerprint = await hashFilePrefix(filePath, before.size, signal);
-    const after = await fsp.stat(filePath);
-    if (fingerprint.bytesRead !== before.size
+    const fingerprint = await hashFilePrefix(filePath, acceptedBytes, signal);
+    const after = await acquireCodexSourceStat(filePath);
+    if (fingerprint.bytesRead !== acceptedBytes
         || fingerprint.fingerprint !== transcriptEntry.digest
-        || after.size !== before.size
-        || !sameSourceIdentity(sourceFileIdentity(after), sourceFileIdentity(before))) {
+        || !sourceSizeEqualsAcceptedBytes(after.sizeBigInt, acceptedBytes)
+        || !sameCodexSourceIdentity(after.fileIdentity, before.fileIdentity)) {
       return false;
     }
   }
@@ -5725,11 +5738,13 @@ async function buildIndex({
     throwIfAborted(signal);
     const relFile = path.relative(sessionsRoot, filePath);
     const previousSession = previousSessionsBySource.get(relFile);
-    const currentStat = previousSession ? await fsp.stat(filePath) : null;
+    const currentStat = previousSession ? await acquireCodexSourceStat(filePath) : null;
     const requiresCanonicalRawDigests = canonicalDigestFilePaths.has(filePath);
     const statReusable = previousSession
       && !cacheObservationForTests
-      && previousSession.bytes === currentStat.size
+      && hasExpectedSourceIdentityShape(previousSession._sourceIdentity)
+      && sameCodexSourceIdentity(currentStat.fileIdentity, previousSession._sourceIdentity)
+      && sourceSizeEqualsAcceptedBytes(currentStat.sizeBigInt, previousSession.bytes)
       && previousSession.sourceUpdatedAt === safeIso(currentStat.mtime)
       && typeof previousSession.sourceFingerprint === 'string'
       && previousSession.sourceFingerprint.length > 0
@@ -5737,11 +5752,13 @@ async function buildIndex({
       && (!requiresCanonicalRawDigests || hasCanonicalRawDigests(previousSession));
     let reusable = false;
     if (statReusable) {
-      const currentSource = await hashFilePrefix(filePath, currentStat.size, signal);
-      const verifiedStat = await fsp.stat(filePath);
-      reusable = currentSource.bytesRead === currentStat.size
+      const acceptedBytes = previousSession.bytes;
+      const currentSource = await hashFilePrefix(filePath, acceptedBytes, signal);
+      const verifiedStat = await acquireCodexSourceStat(filePath);
+      reusable = currentSource.bytesRead === acceptedBytes
         && currentSource.fingerprint === previousSession.sourceFingerprint
-        && sameSourceStat(currentStat, verifiedStat);
+        && sameSourceStat(currentStat, verifiedStat)
+        && sameCodexSourceIdentity(currentStat.fileIdentity, verifiedStat.fileIdentity);
     }
     let session;
     if (reusable) {

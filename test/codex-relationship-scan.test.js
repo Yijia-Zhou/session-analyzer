@@ -562,7 +562,7 @@ test('accepted-prefix planning promotes newly deep paths without downgrading or 
           || progress.analyzedFileCount !== 2
           || progress.indexedFileCount !== 0) return;
       const pText = fs.readFileSync(fixture.childFile, 'utf8');
-      const pStat = fs.statSync(fixture.childFile);
+      const pStat = fs.statSync(fixture.childFile, { bigint: true });
       const pLineCount = pText.trimEnd().split(/\r?\n/).length;
       acceptedP = {
         bytes: Buffer.byteLength(pText, 'utf8'),
@@ -570,8 +570,8 @@ test('accepted-prefix planning promotes newly deep paths without downgrading or 
         rawEventCount: pLineCount,
         sourceFingerprint: fingerprintForText(pText),
         sourceIdentity: {
-          device: String(pStat.dev),
-          inode: String(pStat.ino),
+          device: pStat.dev.toString(),
+          inode: pStat.ino.toString(),
         },
         updatedAt: '2026-09-01T17:05:01.000Z',
       };
@@ -582,15 +582,15 @@ test('accepted-prefix planning promotes newly deep paths without downgrading or 
         'utf8',
       );
       const p2Text = fs.readFileSync(fixture.childFile, 'utf8');
-      const p2Stat = fs.statSync(fixture.childFile);
+      const p2Stat = fs.statSync(fixture.childFile, { bigint: true });
       physicalP2 = {
         bytes: Buffer.byteLength(p2Text, 'utf8'),
         lineCount: pLineCount + 1,
         rawEventCount: pLineCount + 1,
         sourceFingerprint: fingerprintForText(p2Text),
         sourceIdentity: {
-          device: String(p2Stat.dev),
-          inode: String(p2Stat.ino),
+          device: p2Stat.dev.toString(),
+          inode: p2Stat.ino.toString(),
         },
         updatedAt: postSnapshotTimestamp,
         containsSentinel: p2Text.includes(postSnapshotSentinel),
@@ -766,9 +766,22 @@ async function runAcceptedPrefixTransition(t, forceFullRelationshipPassForTests,
           await fsp.rename(fixture.file, `${fixture.file}.removed`);
         } else if (transition === 'replace-identity') {
           const replacement = `${fixture.file}.replacement`;
+          const displaced = `${fixture.file}.displaced`;
           await fsp.writeFile(replacement, fixture.originalText, 'utf8');
-          await fsp.rename(fixture.file, `${fixture.file}.displaced`);
+          const originalRaw = await fsp.stat(fixture.file, { bigint: true });
+          const replacementRaw = await fsp.stat(replacement, { bigint: true });
+          assert.equal(
+            originalRaw.dev !== replacementRaw.dev || originalRaw.ino !== replacementRaw.ino,
+            true,
+          );
+          await fsp.rename(fixture.file, displaced);
           await fsp.rename(replacement, fixture.file);
+          const currentRaw = await fsp.stat(fixture.file, { bigint: true });
+          const displacedRaw = await fsp.stat(displaced, { bigint: true });
+          assert.equal(currentRaw.dev, replacementRaw.dev);
+          assert.equal(currentRaw.ino, replacementRaw.ino);
+          assert.equal(displacedRaw.dev, originalRaw.dev);
+          assert.equal(displacedRaw.ino, originalRaw.ino);
         }
       },
     });

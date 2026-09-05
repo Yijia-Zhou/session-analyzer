@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -110,6 +111,37 @@ async function makeSingleSessionFixture(t, options = {}) {
     originalText,
     repoRoot,
   };
+}
+
+function hashMaterializationValue(value) {
+  return crypto.createHash('sha256').update(JSON.stringify(value), 'utf8').digest('base64url');
+}
+
+function syntheticHistoricalInode(actualInode) {
+  const preferred = '129478489286935540';
+  const fallback = String(Number(129478489286935568n));
+  const selected = preferred === actualInode ? fallback : preferred;
+  assert.notEqual(selected, actualInode);
+  return selected;
+}
+
+function cloneStrictWithHistoricalIdentity(index, id, inode) {
+  const previous = structuredClone(index);
+  const session = previous.sessionsById.get(id);
+  const descriptor = session.materializationDescriptor;
+  const oldDependencySetId = descriptor.dependencySetId;
+  const dependencySet = previous.materializationDependencies.get(oldDependencySetId);
+  dependencySet.entries[0].evidence.fileIdentity.inode = inode;
+  const dependencySetId = `codex-dependency:${hashMaterializationValue(dependencySet.entries)}`;
+  dependencySet.id = dependencySetId;
+  descriptor.dependencySetId = dependencySetId;
+  descriptor.sourceSnapshotId = `codex-snapshot:${hashMaterializationValue({
+    dependencySet,
+    payload: descriptor.payload,
+  })}`;
+  previous.materializationDependencies.delete(oldDependencySetId);
+  previous.materializationDependencies.set(dependencySetId, dependencySet);
+  return previous;
 }
 
 test('strict Codex fork discovery retains only compact scalar relationship facts between passes', async (t) => {
@@ -541,13 +573,100 @@ test('Codex accepted-prefix materialization allows append and rejects every stal
     const replacement = `${fixture.file}.replacement`;
     const displaced = `${fixture.file}.displaced`;
     await fsp.writeFile(replacement, fixture.originalText, 'utf8');
+    const originalRaw = await fsp.stat(fixture.file, { bigint: true });
+    const replacementRaw = await fsp.stat(replacement, { bigint: true });
+    assert.equal(
+      originalRaw.dev !== replacementRaw.dev || originalRaw.ino !== replacementRaw.ino,
+      true,
+    );
     await fsp.rename(fixture.file, displaced);
     await fsp.rename(replacement, fixture.file);
+    const currentRaw = await fsp.stat(fixture.file, { bigint: true });
+    const displacedRaw = await fsp.stat(displaced, { bigint: true });
+    assert.equal(currentRaw.dev, replacementRaw.dev);
+    assert.equal(currentRaw.ino, replacementRaw.ino);
+    assert.equal(displacedRaw.dev, originalRaw.dev);
+    assert.equal(displacedRaw.ino, originalRaw.ino);
     await assert.rejects(
       materializeSessionForIndex(fixture.index, fixture.index.sessionsById.get(fixture.id)),
       { code: 'INDEXED_SOURCE_STALE' },
     );
   });
+});
+
+test('Codex source-backed rebuild migrates historical lossy dependency identity without stale errors', async (t) => {
+  const fixture = await makeSingleSessionFixture(t);
+  const first = fixture.index;
+  const firstSession = first.sessionsById.get(fixture.id);
+  const firstDependency = first.materializationDependencies.get(
+    firstSession.materializationDescriptor.dependencySetId,
+  );
+  const direct = await fsp.stat(fixture.file, { bigint: true });
+  const expectedIdentity = {
+    device: direct.dev.toString(),
+    inode: direct.ino.toString(),
+  };
+  const migrated = cloneStrictWithHistoricalIdentity(
+    first,
+    fixture.id,
+    syntheticHistoricalInode(expectedIdentity.inode),
+  );
+  const migratedSession = migrated.sessionsById.get(fixture.id);
+  const migratedDependency = migrated.materializationDependencies.get(
+    migratedSession.materializationDescriptor.dependencySetId,
+  );
+  const migratedSessionBefore = JSON.stringify(migratedSession);
+  const migratedDependencyBefore = JSON.stringify(migratedDependency);
+  const rebuilt = await codex.buildSourceBackedIndex({
+    repoRoot: fixture.repoRoot,
+    codexHome: fixture.codexHome,
+    previousIndex: migrated,
+  });
+  const session = rebuilt.sessionsById.get(fixture.id);
+  const dependency = rebuilt.materializationDependencies.get(session.materializationDescriptor.dependencySetId);
+  assert.equal(rebuilt.totals.reusedFileCount, 0);
+  assert.deepEqual(dependency.entries[0].evidence.fileIdentity, expectedIdentity);
+  assert.equal(dependency.entries[0].acceptedBytes, firstDependency.entries[0].acceptedBytes);
+  assert.equal(dependency.entries[0].digest, firstDependency.entries[0].digest);
+  assert.notDeepEqual(dependency.entries[0].evidence.fileIdentity, migratedDependency.entries[0].evidence.fileIdentity);
+  assert.deepEqual(firstDependency.entries[0].evidence.fileIdentity, expectedIdentity);
+  assert.equal(JSON.stringify(migratedSession), migratedSessionBefore);
+  assert.equal(JSON.stringify(migratedDependency), migratedDependencyBefore);
+  assert.equal(validateIndexOwnership(rebuilt), 'codex');
+  await materializeSessionForIndex(rebuilt, session);
+
+  const unchanged = await codex.buildSourceBackedIndex({
+    repoRoot: fixture.repoRoot,
+    codexHome: fixture.codexHome,
+    previousIndex: rebuilt,
+  });
+  assert.equal(unchanged.totals.reusedFileCount, 1);
+  assert.deepEqual(
+    unchanged.materializationDependencies.get(
+      unchanged.sessionsById.get(fixture.id).materializationDescriptor.dependencySetId,
+    ).entries[0].evidence.fileIdentity,
+    expectedIdentity,
+  );
+});
+
+test('Codex exact dependency identities remain canonical and JSON-compatible', async (t) => {
+  const fixture = await makeSingleSessionFixture(t);
+  const index = fixture.index;
+  const session = index.sessionsById.get(fixture.id);
+  const dependency = index.materializationDependencies.get(session.materializationDescriptor.dependencySetId);
+  const expectedDependencyId = `codex-dependency:${hashMaterializationValue(dependency.entries)}`;
+  assert.equal(dependency.id, expectedDependencyId);
+  assert.equal(session.materializationDescriptor.dependencySetId, expectedDependencyId);
+  assert.equal(
+    session.materializationDescriptor.sourceSnapshotId,
+    `codex-snapshot:${hashMaterializationValue({
+      dependencySet: dependency,
+      payload: session.materializationDescriptor.payload,
+    })}`,
+  );
+  assert.doesNotThrow(() => JSON.stringify(dependency));
+  assert.doesNotThrow(() => JSON.stringify(session.materializationDescriptor));
+  assert.equal(validateIndexOwnership(index), 'codex');
 });
 
 test('Codex reindex reuses only strict evidence and old copied metadata stays immutable', async (t) => {
