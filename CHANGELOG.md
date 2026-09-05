@@ -2,6 +2,16 @@
 
 ## Unreleased / 未发布
 
+### Main presentation / 主时间线呈现
+
+#### English
+
+- Added an optional Main Trajectory presentation alongside the default Timeline: a bounded Input/Model/Tools sequence overview with Fit/zoom/pan, a narrative-first ledger, and lazy reversible Tool Activity Groups. It reuses canonical event, search, folding, Inspector, Raw Reference, pagination, and stale-request ownership; Protocol and Raw remain Timeline-only. Temporary reference targets without a loaded canonical position stay in a labeled detached card outside the sequence, and full-height Other markers remain directly selectable.
+
+#### 中文
+
+- 在默认 Timeline 之外新增可选的 Main Trajectory 呈现：包含有界的 Input／Model／Tools 序列概览与全览／缩放／平移、叙事优先 ledger，以及 lazy 且可逆的工具活动组。它复用 canonical event、search、folding、Inspector、原始引用、pagination 与 stale-request ownership；Protocol 和 Raw 仍只使用 Timeline。尚无已加载 canonical 位置的临时引用 target 会保留在序列外带明确标签的 detached card 中，贯穿三行的 Other marker 也保持可直接选择。
+
 ### Transcript sources / 转录来源
 
 #### Codex

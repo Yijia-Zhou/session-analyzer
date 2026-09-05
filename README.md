@@ -8,6 +8,8 @@ Session Analyzer turns local Codex, Claude Code, and DeepSeek Harness session tr
 
 Repository history stays visible on the left, the Main timeline keeps the work readable in the center, and structured detail remains one click away on the right.
 
+Main opens in the existing Timeline presentation. Use `Timeline | Trajectory` above the center pane to switch the same loaded Main events into a compact trajectory: Input/Model narrative rows, reversible non-causal Tool Activity Groups, and a three-lane sequence overview with Fit, zoom, and horizontal pan. Protocol and Raw remain Timeline-only, and a loaded-prefix label makes partial long-session coverage explicit.
+
 Runs locally by default, reads transcripts without modifying them, and does not upload transcript content.
 
 ## Find what happened
@@ -94,7 +96,7 @@ The default host is `127.0.0.1`. `--host` is an advanced option; binding outside
 1. Start with the default Codex source, or select Claude Code or DeepSeek Harness on the CLI, then choose a target project in the browser or pass `--repo` when starting the server.
 2. Use the project chooser to switch projects at runtime. From the same chooser, you can switch the active transcript source or edit its home directory; the project list is then rediscovered for that source.
 3. Pick a session from the left pane.
-4. Use `Main timeline` for normal reading, `Protocol layer` for injected context and lifecycle records, or `Raw records` for exact transcript rows.
+4. Use `Main timeline` for normal reading, then choose its default `Timeline` presentation or the compact `Trajectory` presentation. Use `Protocol layer` for injected context and lifecycle records, or `Raw records` for exact transcript rows.
 5. Enter a case-insensitive plain-text phrase in the search HUD; whitespace inside a phrase matches spaces, tabs, or newlines. Open Search options to switch between the current session and the entire project, edit the always-visible `Touched file`, `Kind`, or `Status` filters, inspect complete counts, or jump to the adjacent global Layer selector. Operator-like input such as `status:failed` remains literal text.
 6. Open an event to inspect structured detail and raw references.
 
@@ -107,6 +109,7 @@ The npm package does not promise a stable programmatic API. The supported v0.1 i
 - Show only sessions that match the selected repository.
 - Keep Claude Code subagents separately selectable; distinguish materialized and pointer-backed forks, and show parent-owned inherited context without duplicate metrics or Raw Records.
 - Browse three layers: a deduplicated Main timeline, protocol events, and raw JSONL records.
+- Read Main through the default Timeline or a compact Trajectory overview and narrative without changing Logical Event, search, Inspector, or Raw Reference identity.
 - For Codex, inspect per-request token usage and conservatively inferred cache-reuse discontinuities, with links between Main context and the supporting Protocol evidence.
 - Search messages, commands, files, outputs, status, event kinds, and layers.
 - Inspect structured details for messages, commands, patches, plans, MCP/tool calls, web searches, lifecycle events, and raw records.

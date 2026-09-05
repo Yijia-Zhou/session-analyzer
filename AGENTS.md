@@ -40,6 +40,7 @@ When changing product behavior or repository structure:
 - Product spec: `docs/product-specs/session-transcript-analyzer.md`
 - Design doc: `docs/design-docs/logical-event-timeline.md`
 - Timeline loading/rendering performance: `docs/design-docs/timeline-loading-and-rendering-performance.md`
+- Trajectory Main Presentation: `docs/design-docs/trajectory-presentation.md`
 - Code Mode operations design: `docs/design-docs/code-mode-operations.md`
 - Code Mode structured display catalog: `docs/design-docs/code-mode-structured-display-catalog.md`
 - Schema update runbook: `docs/design-docs/schema-update-runbook.md`

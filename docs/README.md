@@ -20,6 +20,7 @@ This repository uses three formal document classes plus one idea parking area:
 
 - `product-specs/session-transcript-analyzer.md` / 会话转录分析器产品规格
 - `design-docs/logical-event-timeline.md` / 逻辑事件时间线设计文档
+- `design-docs/trajectory-presentation.md` / 轨迹主时间线呈现设计文档
 - `design-docs/codex-protocol-event-coverage.md` / Codex 协议事件覆盖设计文档
 - `design-docs/cross-surface-contract-consistency-tech-debt.md` / 跨表面契约一致性技术债
 - `design-docs/schema-update-runbook.md` / Schema 更新运行手册
@@ -28,6 +29,7 @@ This repository uses three formal document classes plus one idea parking area:
 - `design-docs/external-source-mapping-pressure-tests.md` / 外部 source 映射压力测试设计文档
 - `design-docs/transcript-source-adapters.md` / 转录来源适配器设计文档
 - `design-docs/documentation-system.md` / 文档系统设计文档
+- `exec-plans/completed/2026-09-03-trajectory-presentation.md` / 轨迹呈现正式实现已完成执行计划
 - `exec-plans/completed/2026-08-15-v0.1.4-release.md` / v0.1.4 发布已完成执行计划
 - `exec-plans/completed/2026-07-31-claude-code-source-adapter.md` / Claude Code 来源适配器已完成执行计划
 - `exec-plans/completed/2026-07-31-claude-pointer-fork-context.md` / Claude 指针式分叉上下文已完成执行计划

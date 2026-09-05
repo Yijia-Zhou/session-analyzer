@@ -73,8 +73,28 @@ One of the product's distinct views of session history, defined by how much sour
 _Avoid_: View mode, timeline mode / 视图模式、时间线模式
 
 **Main Timeline / 主时间线**:
-The default Event Layer containing the Logical Events that best represent the flow of user-relevant work. / 默认事件层，包含最能代表用户相关工作流程的逻辑事件。
+The default Event Layer containing the Logical Events that best represent the flow of user-relevant work. It may be read through the Timeline or Trajectory Main Presentation without changing its membership. / 默认事件层，包含最能代表用户相关工作流程的逻辑事件。它可以通过 Timeline 或 Trajectory 主时间线呈现阅读，而不改变成员集合。
 _Avoid_: Main layer, logical layer / 主层、逻辑层
+
+**Main Presentation / 主时间线呈现**:
+One of the alternate browser presentations of the same canonical Main Timeline membership. `Timeline` is the default and `Trajectory` is the compact alternate; changing presentation does not change Event Layer, Logical Event identity, search identity, metrics, Structured Detail, or Raw Reference ownership. / Browser 对同一 canonical 主时间线成员集合提供的可替换呈现之一。`Timeline` 是默认呈现，`Trajectory` 是紧凑的替代呈现；切换呈现不会改变事件层、逻辑事件 identity、搜索 identity、指标、结构化详情或原始引用 ownership。
+_Avoid_: View layer, fourth layer, timeline mode / 视图层、第四层、时间线模式
+
+**Trajectory Presentation / 轨迹呈现**:
+The alternate Main Presentation that combines a compact canonical-sequence overview with a narrative-first ledger while retaining individual Main Logical Event identity and existing inspection paths. / 一种替代的主时间线呈现：把紧凑的 canonical sequence 概览与 narrative-first ledger 组合起来，同时保留每条 Main 逻辑事件 identity 与既有检查路径。
+_Avoid_: Trajectory Layer, workflow reconstruction, step trace / 轨迹层、工作流重建、步骤轨迹
+
+**Trajectory Overview / 轨迹概览**:
+The three-row Input／Model／Tools sequence summary inside Trajectory Presentation. Its horizontal axis represents canonical sequence only and covers only committed Main events currently materialized in the browser; a temporary referenced event whose canonical position is not loaded remains separately visible but is excluded. It is not a time axis, duration chart, concurrency model, or proof that the complete Session is loaded. / 轨迹呈现中的三行 Input／Model／Tools 序列摘要。其横轴只表示 canonical 顺序，并且只覆盖 browser 当前已提交且已 materialize 的 Main event；canonical 位置尚未加载的临时引用 event 会在序列外单独保持可见。它不是时间轴、duration 图、并发模型，也不证明完整 Session 已加载。
+_Avoid_: Timeline layer, duration chart, complete-session map / 时间线层、时长图、完整会话地图
+
+**Tool Activity Group / 工具活动组**:
+A display-only, reversible grouping of canonically adjacent tool-like Main Logical Events in Trajectory Presentation. It preserves the ordered individual event IDs and never claims Assistant-to-tool causality, request or step ownership, shared outcome, shared duration, metrics ownership, search ownership, or Raw Reference ownership. / 轨迹呈现中对 canonical 相邻的工具式 Main 逻辑事件进行的仅展示、可逆归组。它保留有序的 individual event ID，绝不声称 Assistant 到工具的因果关系、request 或 step ownership、共享 outcome、共享 duration、指标 ownership、搜索 ownership或原始引用 ownership。
+_Avoid_: Assistant tool group, request, step, causal group / Assistant 工具组、请求、步骤、因果组
+
+**Sequence Zoom / 序列缩放**:
+A bounded Trajectory Overview presentation control for fitting the loaded sequence, zooming, and horizontally panning around canonical sequence positions. Selection may anchor zoom or be brought into view, while free pan does not continuously snap back to selection. / 一种有界的轨迹概览呈现控制，用于全览 loaded sequence、缩放并围绕 canonical sequence position 横向平移。Selection 可以作为 zoom anchor 或被带入可视范围，而自由平移不会持续吸回 selection。
+_Avoid_: Time zoom, duration scale, event loading / 时间缩放、时长比例、事件加载
 
 **Protocol Layer / 协议层**:
 The Event Layer containing agent runtime and coordination activity that remains useful for inspection but does not belong in the Main Timeline. / 包含 agent 运行时及协调活动的事件层；这些活动仍有检查价值，但不属于主时间线。

@@ -20,6 +20,7 @@ const isRetriableTransportError = transitionSafety.isRetriableTransportError;
 const timelineEventStateApi = require('./timeline-event-state');
 const timelineCardLifecycleApi = require('./timeline-card-lifecycle');
 const timelineSearchBatchApi = require('./timeline-search-batch');
+const trajectoryPresentationApi = require('./trajectory-presentation');
 const {
   SEARCH_BATCH_KINDS,
   acceptTimelineSearchBatchPage,
@@ -217,6 +218,14 @@ const state = {
   dirtyProfileDecisionPending: null,
   profileDraft: null,
   layerId: localStorage.getItem('sessionAnalyzer.layer') || 'main',
+  mainPresentationId: 'timeline',
+  trajectoryPresentationState: {
+    context: '',
+    expandedGroupIds: new Set(),
+    zoom: 1,
+    scrollLeft: 0,
+  },
+  trajectorySearchRefreshFrame: 0,
   overrides: normalizeOverrides(readJsonStorage(OVERRIDES_KEY, {})),
   detailCache: {},
   detailErrors: {},
@@ -294,6 +303,8 @@ const el = {
   searchFileSuggestions: document.getElementById('searchFileSuggestions'),
   profileSelect: document.getElementById('profileSelect'),
   layerSelect: document.getElementById('layerSelect'),
+  mainPresentationControl: document.getElementById('mainPresentationControl'),
+  mainPresentationButtons: document.querySelectorAll('[data-main-presentation]'),
   sortSelect: document.getElementById('sortSelect'),
   sessionList: document.getElementById('sessionList'),
   sessionHeader: document.getElementById('sessionHeader'),
@@ -460,6 +471,8 @@ function replaceTimelineRoot(markup, mode) {
     retiredResult = timelineCardLifecycle.retireAll();
   }
 
+  trajectoryPresentationApi.disposeTrajectoryPresentation(el.timeline);
+  el.timeline.classList.remove('trajectoryPresentationRoot');
   el.timeline.innerHTML = markup;
   if (retiredResult) {
     recordTimelineLifecycle('replace', mode, retiredResult);
@@ -557,6 +570,14 @@ function applyStaticLocale() {
   setSelectOptionText(el.layerSelect, 'main', t('mainTimeline'));
   setSelectOptionText(el.layerSelect, 'protocol', t('protocolLayer'));
   setSelectOptionText(el.layerSelect, 'raw', t('rawRecords'));
+  if (el.mainPresentationControl) {
+    el.mainPresentationControl.setAttribute('aria-label', t('mainPresentation'));
+  }
+  for (const button of el.mainPresentationButtons) {
+    button.textContent = button.dataset.mainPresentation === 'trajectory'
+      ? t('trajectoryPresentation')
+      : t('timelinePresentation');
+  }
   setSelectOptionText(el.sortSelect, 'updated-desc', t('updatedDesc'));
   setSelectOptionText(el.sortSelect, 'started-asc', t('startedAsc'));
   setSelectOptionText(el.sortSelect, 'events-desc', t('eventsDesc'));
@@ -604,6 +625,7 @@ function applyStaticLocale() {
   renderSourceSwitch();
   updateProjectChooserHeader();
   updateProjectSwitchControl();
+  syncMainPresentationUi();
 }
 
 function readJsonStorage(key, fallback) {
@@ -1510,6 +1532,38 @@ function activeLayerId() {
   return currentSearchState().layer || 'main';
 }
 
+function rememberedMainPresentationId() {
+  return state.mainPresentationId === 'trajectory' ? 'trajectory' : 'timeline';
+}
+
+function effectiveMainPresentationId() {
+  return activeLayerId() === 'main' ? rememberedMainPresentationId() : 'timeline';
+}
+
+function trajectoryPresentationActive() {
+  return state.searchScope === 'session'
+    && activeLayerId() === 'main'
+    && rememberedMainPresentationId() === 'trajectory';
+}
+
+function syncMainPresentationUi(analyzerDisabled = isAnalyzerInteractionDisabled()) {
+  const visible = state.searchScope === 'session'
+    && activeLayerId() === 'main'
+    && Boolean(state.selectedSessionId);
+  const remembered = rememberedMainPresentationId();
+  if (el.mainPresentationControl) {
+    el.mainPresentationControl.hidden = !visible;
+    el.mainPresentationControl.setAttribute('aria-label', t('mainPresentation'));
+  }
+  for (const button of el.mainPresentationButtons) {
+    const selected = button.dataset.mainPresentation === remembered;
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    button.disabled = analyzerDisabled || !visible;
+  }
+  document.body.dataset.mainPresentation = effectiveMainPresentationId();
+  document.body.dataset.rememberedMainPresentation = remembered;
+}
+
 function profileAppliesToActiveLayer() {
   return activeLayerId() === 'main';
 }
@@ -1622,6 +1676,7 @@ function timelineSearchSurfaceContextKey() {
   return JSON.stringify([
     timelineDataContextKey(),
     foldingProfileSearchContextKey(),
+    effectiveMainPresentationId(),
     el.sortSelect?.value || '',
   ]);
 }
@@ -1687,6 +1742,9 @@ function beginSearchTargetContextTransition() {
   resetSearchTargetRegistry(key);
   state.timelineSearchMatchCount = 0;
   state.timelineSearchEventCount = 0;
+  state.trajectoryPresentationState = {
+    context: '', expandedGroupIds: new Set(), zoom: 1, scrollLeft: 0,
+  };
   updateSearchMatchControls();
   return true;
 }
@@ -3309,13 +3367,19 @@ function renderInspectorDetail(event) {
   const detail = state.detailCache[key];
   const error = state.detailErrors[key];
   if (detail) {
-    const sections = cacheUsageFact(event)
+    const includePrimary = trajectoryPresentationActive();
+    const primary = includePrimary
+      ? renderTimelineSections(detail.timelineSections || [])
+      : '';
+    const supplementalSections = !includePrimary && cacheUsageFact(event)
       ? [...(detail.timelineSections || []), ...(detail.inspectorSections || [])]
       : (detail.inspectorSections || []);
-    if (!sections.length) return '';
+    const supplemental = renderInspectorSections(supplementalSections);
+    const body = `${primary}${supplemental}`;
+    if (!body) return '';
     return `<section class="inspectorSection">
       <h3>${escapeHtml(t('details'))}</h3>
-      <div class="inspectorDetailBody">${renderInspectorSections(sections)}</div>
+      <div class="inspectorDetailBody">${body}</div>
     </section>`;
   }
   if (error) {
@@ -4084,6 +4148,7 @@ function setAnalyzerDisabled(disabled) {
     el.resetFoldsBtn,
     el.loadMoreBtn,
     ...el.searchScopeButtons,
+    ...el.mainPresentationButtons,
   ].filter(Boolean));
   el.searchAssist?.querySelectorAll('button, input, select').forEach((control) => controls.add(control));
   el.searchField?.querySelectorAll('[data-search-match-nav]').forEach((control) => controls.add(control));
@@ -4095,6 +4160,7 @@ function setAnalyzerDisabled(disabled) {
   renderSearchAssistChips();
   updateSearchMatchControls();
   updateProjectRefreshControl();
+  syncMainPresentationUi(analyzerDisabled);
 }
 
 function setProjectMode(selecting) {
@@ -4140,6 +4206,9 @@ function resetProjectViewState() {
   state.timelineTotal = 0;
   state.timelineSearchMatchCount = 0;
   state.timelineSearchEventCount = 0;
+  state.trajectoryPresentationState = {
+    context: '', expandedGroupIds: new Set(), zoom: 1, scrollLeft: 0,
+  };
   state.searchSurfaceContexts = { sessions: '', timeline: '', detail: '' };
   state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
   state.fileSuggestions = [];
@@ -4159,6 +4228,7 @@ function resetProjectViewState() {
   el.loadMoreBtn.textContent = t('loadMore');
   updateResetFoldsButton();
   resetDetailPane();
+  syncMainPresentationUi();
 }
 
 function renderProjects() {
@@ -4732,6 +4802,7 @@ async function setSearchScope(scope, options = {}) {
   }
   clearContextReveal({ render: false });
   state.searchScope = scope;
+  syncMainPresentationUi();
   state.searchStructureKey = structuredSearchKey();
   beginSearchTargetContextTransition();
   syncSearchScopeUi();
@@ -4942,6 +5013,7 @@ function renderSessions() {
 
 function renderProjectSearchView() {
   if (state.searchScope !== 'project') return;
+  syncMainPresentationUi();
   const active = hasActiveSearchExpression();
   const noResults = active && !state.projectSearchLoading && state.projectSearchTotal === 0;
   const message = !active
@@ -5217,6 +5289,40 @@ async function applyMetricLayer(targetLayerId) {
   await changeLayer(targetLayerId);
 }
 
+function trajectoryStateForCurrentContext() {
+  const context = timelineDataContextKey();
+  if (state.trajectoryPresentationState.context !== context) {
+    state.trajectoryPresentationState = {
+      context,
+      expandedGroupIds: new Set(),
+      zoom: 1,
+      scrollLeft: 0,
+    };
+  }
+  return state.trajectoryPresentationState;
+}
+
+function changeMainPresentation(presentationId) {
+  if (!['timeline', 'trajectory'].includes(presentationId)
+      || activeLayerId() !== 'main'
+      || state.searchScope !== 'session'
+      || !state.selectedSessionId
+      || rememberedMainPresentationId() === presentationId) return false;
+  clearContextReveal({ render: false });
+  state.mainPresentationId = presentationId;
+  syncMainPresentationUi();
+  renderTimeline();
+  updateSelectedTimelineEvent();
+  if (state.detailView.type === 'inspector') {
+    const item = eventForDetailView();
+    if (item) renderInspectorPresentation(item, { navigationPending: currentNavigationPending() });
+  }
+  if (state.selectedEventId) {
+    scrollToTimelineEvent(state.selectedEventId, { behavior: 'auto' });
+  }
+  return true;
+}
+
 async function changeLayer(layerId, options = {}) {
   if (!['main', 'protocol', 'raw'].includes(layerId)) return;
   const restoreFocusAfterChange = options.restoreFocus !== false;
@@ -5232,6 +5338,7 @@ async function changeLayer(layerId, options = {}) {
     state.searchFilters = { ...state.searchFilters, codeModeRequest: '' };
   }
   el.layerSelect.value = state.layerId;
+  syncMainPresentationUi();
   state.searchStructureKey = structuredSearchKey();
   beginProjectSearchPendingTransition();
   beginSearchTargetContextTransition();
@@ -6229,7 +6336,128 @@ function finalizeIncrementalMainAppend(boundary, suffixEvents, prepared) {
   recordTimelineLifecycle('append', 'main', lifecycleResult);
 }
 
+function trajectoryPresentationLabels() {
+  return {
+    region: t('trajectoryPresentationRegion'),
+    overview: t('trajectoryOverview'),
+    sequence: t('trajectorySequence'),
+    loadedSequence: t('trajectoryLoadedSequence', { loaded: state.offset }),
+    overviewHint: t('trajectoryOverviewHint'),
+    overviewSelect: t('trajectoryOverviewSelect'),
+    selectedEvent: t('trajectorySelectedEvent'),
+    zoomOut: t('trajectoryZoomOut'),
+    zoomIn: t('trajectoryZoomIn'),
+    fitAll: t('trajectoryFitAll'),
+    fitSequence: t('trajectoryFitSequence'),
+    panSequence: t('trajectoryPanSequence'),
+    narrative: t('trajectoryNarrative'),
+    input: t('trajectoryInputLane'),
+    model: t('trajectoryModelLane'),
+    tools: t('trajectoryToolsLane'),
+    other: t('trajectoryOtherLane'),
+    event: t('event'),
+    turn: t('trajectoryTurn'),
+    toolActivity: t('trajectoryToolActivity'),
+    toolCall: t('trajectoryToolCall'),
+    toolCalls: t('trajectoryToolCalls'),
+    failed: statusLabel('failed'),
+    empty: t('trajectoryNoEvents'),
+  };
+}
+
+function scheduleTrajectorySearchRefresh() {
+  if (!currentSearchState().q || state.trajectorySearchRefreshFrame) return;
+  state.trajectorySearchRefreshFrame = requestAnimationFrame(() => {
+    state.trajectorySearchRefreshFrame = 0;
+    if (!trajectoryPresentationActive() || !el.timeline.querySelector('.trajectoryPresentation')) return;
+    state.searchSurfaceContexts.timeline = state.timelineDataContext === timelineDataContextKey()
+      ? timelineSearchSurfaceContextKey()
+      : '';
+    refreshSearchHighlights({ preserveActive: true });
+  });
+}
+
+function selectTrajectoryEvent(item) {
+  if (!item?.id || !trajectoryPresentationActive()) return false;
+  hideSearchAssist();
+  if (displayState(item) === 'hidden') {
+    setNavigationEventReveal({
+      sessionId: state.selectedSessionId,
+      layerId: 'main',
+      eventId: item.id,
+    });
+    renderTimeline();
+  }
+  const current = currentTimelineEvent(item.id) || item;
+  showInspector(current, { origin: DETAIL_VIEW_ORIGIN_USER });
+  return true;
+}
+
+function prependTrajectoryContextCards() {
+  const markup = `${renderProjectReturnBanner()}${renderInheritedContextCard()}`;
+  if (!markup) return;
+  const template = document.createElement('template');
+  template.innerHTML = markup;
+  el.timeline.prepend(template.content);
+}
+
+function trajectoryDetachedReferenceEvent() {
+  const event = state.temporaryEventReveal?.event;
+  if (!event?.id || hasCanonicalTimelineEvent(event.id)) return null;
+  return event;
+}
+
+function prependTrajectoryDetachedReference() {
+  const event = trajectoryDetachedReferenceEvent();
+  if (!event) return;
+  const template = document.createElement('template');
+  template.innerHTML = `<section class="trajectoryDetachedReference" data-trajectory-detached-event-id="${escapeHtml(event.id)}" aria-label="${escapeHtml(t('trajectoryDetachedReference'))}">
+    <header class="trajectoryDetachedReferenceHeader">
+      <h3>${escapeHtml(t('trajectoryDetachedReference'))}</h3>
+      <p>${escapeHtml(t('trajectoryDetachedReferenceHint'))}</p>
+    </header>
+    ${renderTimelineCardMarkup(event, new Set())}
+  </section>`;
+  el.timeline.prepend(template.content);
+}
+
+function renderTrajectoryProjection() {
+  const trajectoryState = trajectoryStateForCurrentContext();
+  replaceTimelineRoot('', 'non-main');
+  const model = trajectoryPresentationApi.renderTrajectoryPresentation({
+    root: el.timeline,
+    events: state.currentEvents,
+    selectedEventId: state.selectedEventId,
+    loadedEventCount: state.offset,
+    totalEventCount: state.timelineTotal,
+    loadedStatus: state.offset < state.timelineTotal
+      ? t('trajectoryLoadedPrefix', { loaded: state.offset, total: state.timelineTotal })
+      : t('trajectoryLoadedSequence', { loaded: state.offset }),
+    viewState: trajectoryState,
+    displayStateForEvent: (event) => displayState(event),
+    labels: trajectoryPresentationLabels(),
+    expandedGroupIds: trajectoryState.expandedGroupIds,
+    onGroupToggle: (groupId, open) => {
+      if (open) trajectoryState.expandedGroupIds.add(groupId);
+      else trajectoryState.expandedGroupIds.delete(groupId);
+    },
+    onGroupMaterialized: () => scheduleTrajectorySearchRefresh(),
+    onSelect: (item) => selectTrajectoryEvent(item),
+  });
+  prependTrajectoryDetachedReference();
+  prependTrajectoryContextCards();
+  state.searchSurfaceContexts.timeline = state.timelineDataContext === timelineDataContextKey()
+    ? timelineSearchSurfaceContextKey()
+    : '';
+  refreshSearchHighlights({ preserveActive: true });
+  return model;
+}
+
 function presentCommittedTimelineAppend(boundary, suffixEvents) {
+  if (trajectoryPresentationActive()) {
+    renderTimeline();
+    return true;
+  }
   let prepared;
   try {
     prepared = prepareIncrementalMainAppend(boundary, suffixEvents);
@@ -6249,12 +6477,17 @@ function presentCommittedTimelineAppend(boundary, suffixEvents) {
 }
 
 function renderTimeline() {
+  syncMainPresentationUi();
   if (state.searchScope !== 'session') {
     clearContextReveal({ render: false });
     renderProjectSearchView();
     return;
   }
   reconcileContextRevealState();
+  if (trajectoryPresentationActive()) {
+    renderTrajectoryProjection();
+    return;
+  }
   const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
   const timelineEvents = renderedTimelineEvents();
   const markup = `${renderProjectReturnBanner()}${renderInheritedContextCard()}${timelineEvents.map((event, index) => (
@@ -6981,6 +7214,7 @@ function updateSelectedTimelineEvent() {
   for (const article of el.timeline.querySelectorAll('.event[data-event-id]')) {
     article.classList.toggle('selected', article.dataset.eventId === state.selectedEventId);
   }
+  trajectoryPresentationApi.syncTrajectorySelection(el.timeline, state.selectedEventId);
   syncEnclosingOperationAffordances();
 }
 
@@ -8426,6 +8660,13 @@ el.profileSelect.addEventListener('change', () => {
 el.layerSelect.addEventListener('change', () => {
   changeLayer(el.layerSelect.value).catch(showError);
 });
+
+for (const button of el.mainPresentationButtons) {
+  button.addEventListener('click', () => {
+    if (button.disabled) return;
+    changeMainPresentation(button.dataset.mainPresentation || '');
+  });
+}
 
 el.resetFoldsBtn.addEventListener('click', () => {
   clearContextReveal({ render: false });
