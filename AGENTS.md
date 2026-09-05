@@ -40,6 +40,7 @@ When changing product behavior or repository structure:
 - Product spec: `docs/product-specs/session-transcript-analyzer.md`
 - Design doc: `docs/design-docs/logical-event-timeline.md`
 - Timeline loading/rendering performance: `docs/design-docs/timeline-loading-and-rendering-performance.md`
+- Trajectory Main Presentation: `docs/design-docs/trajectory-presentation.md`
 - Code Mode operations design: `docs/design-docs/code-mode-operations.md`
 - Code Mode structured display catalog: `docs/design-docs/code-mode-structured-display-catalog.md`
 - Schema update runbook: `docs/design-docs/schema-update-runbook.md`
@@ -47,51 +48,10 @@ When changing product behavior or repository structure:
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
 - Transcript source adapters: `docs/design-docs/transcript-source-adapters.md`
-- Active plans:
-  - None.
-- Completed plans:
-  - `docs/exec-plans/completed/2026-08-15-v0.1.4-release.md`
-  - `docs/exec-plans/completed/2026-08-14-source-neutral-runtime-cleanup.md`
-  - `docs/exec-plans/completed/2026-08-13-memory-runtime-reliability-review-followup.md`
-  - `docs/exec-plans/completed/2026-08-12-index-memory-and-runtime-reliability.md`
-  - `docs/exec-plans/completed/2026-08-10-claude-compatibility-hardening.md`
-  - `docs/exec-plans/completed/2026-08-09-codex-materialized-fork-ownership.md`
-  - `docs/exec-plans/completed/2026-08-07-source-switch-frontend.md`
-  - `docs/exec-plans/completed/2026-08-07-source-runtime-switch.md`
-  - `docs/exec-plans/completed/2026-08-02-v0.1.3-release.md`
-  - `docs/exec-plans/completed/2026-08-02-npm-trusted-publishing.md`
-  - `docs/exec-plans/completed/2026-08-02-v0.1.3-review-followups.md`
-  - `docs/exec-plans/completed/2026-07-31-first-public-npm-release.md`
-  - `docs/exec-plans/completed/2026-07-31-claude-pointer-fork-context.md`
-  - `docs/exec-plans/completed/2026-07-31-claude-code-source-adapter.md`
-  - `docs/exec-plans/completed/2026-07-31-planning-semantic-facet.md`
-  - `docs/exec-plans/completed/2026-07-30-subagent-activity-correlation.md`
-  - `docs/exec-plans/completed/2026-07-30-tool-lifecycle-family-contract.md`
-  - `docs/exec-plans/completed/2026-07-30-code-mode-detail-presentation-contract.md`
-  - `docs/exec-plans/completed/2026-07-25-code-mode-request-facets-and-folding.md`
-  - `docs/exec-plans/completed/2026-07-22-code-mode-context-and-discoverability.md`
-  - `docs/exec-plans/completed/2026-07-20-timeline-transition-safety-and-profiling.md`
-  - `docs/exec-plans/completed/2026-07-16-code-mode-adaptive-presentation.md`
-  - `docs/exec-plans/completed/2026-07-15-code-mode-structured-nested-projections.md`
-  - `docs/exec-plans/completed/2026-07-14-code-mode-operation-grouping.md`
-  - `docs/exec-plans/completed/2026-07-13-codex-event-schema-review.md`
-  - `docs/exec-plans/completed/2026-07-12-search-jump-target-canonicalization.md`
-  - `docs/exec-plans/completed/2026-07-06-search-hud-integration.md`
-  - `docs/exec-plans/completed/2026-06-29-search-scope-mental-model-convergence.md`
-  - `docs/exec-plans/completed/2026-06-28-search-navigation-state-convergence.md`
-  - `docs/exec-plans/completed/2026-06-26-search-count-and-jump-target-convergence.md`
-  - `docs/exec-plans/completed/2026-06-26-search-detail-state-convergence.md`
-  - `docs/exec-plans/completed/2026-06-15-external-review-followups.md`
-  - `docs/exec-plans/completed/2026-06-10-v0.1-release-hardening.md`
-  - `docs/exec-plans/completed/2026-06-02-inspector-search-target-reveal.md`
-  - `docs/exec-plans/completed/2026-06-02-find-in-page-phrase-search.md`
-  - `docs/exec-plans/completed/2026-05-31-folding-rule-priority-governance.md`
-  - `docs/exec-plans/completed/2026-05-31-lazy-image-preview-payload-externalization.md`
-  - `docs/exec-plans/completed/2026-05-26-event-body-inspector-responsibility-split.md`
-  - `docs/exec-plans/completed/2026-05-21-codex-protocol-event-coverage-followup.md`
-  - `docs/exec-plans/completed/2026-04-20-session-analyzer-v1.md`
-  - `docs/exec-plans/completed/2026-04-21-transcript-normalization-followups.md`
-  - `docs/exec-plans/completed/2026-05-04-viewer-ux-inspector-and-search.md`
+- Cache observation and discontinuity: `docs/design-docs/cache-observation-and-discontinuity.md`
+- Indexed/Materialized Session lifecycle: `docs/design-docs/indexed-materialized-session-lifecycle.md`
+- Active execution plans (authoritative directory): `docs/exec-plans/active/`
+- Completed execution plans (authoritative archive; not itemized here): `docs/exec-plans/completed/`
 
 ## Tips
 

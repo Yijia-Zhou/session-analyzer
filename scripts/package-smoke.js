@@ -210,10 +210,11 @@ function isPackageStatePayload(response) {
   const sourceKind = response?.json?.sourceKind;
   const sourcePresentationShape = sourceKind === 'codex'
     ? Array.isArray(response.json.codeModeRequests)
-    : sourceKind === 'claude-code' && !Object.hasOwn(response.json, 'codeModeRequests');
+    : (sourceKind === 'claude-code' || sourceKind === 'deepseek-harness')
+      && !Object.hasOwn(response.json, 'codeModeRequests');
   return response.statusCode === 200
     && response.json
-    && (sourceKind === 'codex' || sourceKind === 'claude-code')
+    && ['codex', 'claude-code', 'deepseek-harness'].includes(sourceKind)
     && response.json.totals
     && Array.isArray(response.json.supportedLocales)
     && response.json.eventKinds
@@ -301,11 +302,14 @@ async function main() {
     const projectDir = path.join(smokeRoot, 'project');
     const codexHome = path.join(smokeRoot, 'codex-home');
     const claudeHome = path.join(smokeRoot, 'claude-home');
+    const dshHome = path.join(smokeRoot, 'dsh-sessions');
     const claudeContainer = path.join(claudeHome, 'projects', '-package-smoke');
     const claudeSessionId = '11111111-1111-4111-8111-111111111111';
     await fsp.mkdir(projectDir, { recursive: true });
     await fsp.mkdir(path.join(codexHome, 'sessions'), { recursive: true });
     await fsp.mkdir(claudeContainer, { recursive: true });
+    const dshSessionDir = path.join(dshHome, '-package-smoke-project-', 'session-package-smoke');
+    await fsp.mkdir(dshSessionDir, { recursive: true });
     const claudeBase = {
       isSidechain: false,
       userType: 'external',
@@ -337,6 +341,42 @@ async function main() {
     await fsp.writeFile(
       path.join(claudeContainer, `${claudeSessionId}.jsonl`),
       `${claudeRecords.map((record) => JSON.stringify(record)).join('\n')}\n`,
+      'utf8',
+    );
+    const dshSessionId = 'session-package-smoke';
+    const dshRecords = [
+      {
+        type: 'session', version: 0, id: dshSessionId, createdAt: 1,
+        cwd: projectDir, delegationDepth: 0,
+      },
+      { type: 'turn/start', seq: 0, time: 2, data: { turn: 1 } },
+      { type: 'step/start', seq: 1, time: 3, data: { turn: 1, step: 1 } },
+      {
+        type: 'user/message', seq: 2, time: 4, surfaceOp: 'append',
+        data: {
+          role: 'user', source: { kind: 'user' },
+          id: 'package-smoke-user-message',
+          content: [{ type: 'text', text: 'Verify the installed DeepSeek Harness adapter.' }],
+        },
+      },
+      {
+        type: 'assistant/message', seq: 3, time: 5, surfaceOp: 'append',
+        data: {
+          turn: 1, step: 1,
+          message: {
+            role: 'assistant',
+            source: { kind: 'model', provider: 'smoke', model: 'smoke-model' },
+            id: 'package-smoke-assistant-message',
+            content: [{ type: 'text', text: 'DeepSeek Harness package smoke passed.' }],
+          },
+        },
+      },
+      { type: 'step/end', seq: 4, time: 6, data: { turn: 1, step: 1 } },
+      { type: 'turn/end', seq: 5, time: 7, data: { turn: 1, reason: { kind: 'completed' } } },
+    ];
+    await fsp.writeFile(
+      path.join(dshSessionDir, 'session.jsonl'),
+      `${dshRecords.map((record) => JSON.stringify(record)).join('\n')}\n`,
       'utf8',
     );
     await fsp.writeFile(path.join(smokeRoot, 'package.json'), JSON.stringify({
@@ -405,7 +445,28 @@ async function main() {
     if (html.statusCode !== 200 || !html.body.includes('src="/assets/app.js"')) {
       throw new Error('Installed Claude root HTML did not reference the generated browser bundle');
     }
-    console.log('Codex and Claude Code package smoke passed.');
+
+    await stopChild(child);
+    child = null;
+    launched = await launchPackagedServer(packagedServer, smokeRoot, [
+      '--source', 'deepseek-harness',
+      '--repo', projectDir,
+      '--dsh-home', dshHome,
+    ]);
+    child = launched.child;
+    baseUrl = `http://127.0.0.1:${launched.port}`;
+    const dshState = await waitForPackageState(baseUrl);
+    if (dshState.json.sourceKind !== 'deepseek-harness') {
+      throw new Error(`Installed DeepSeek Harness package smoke reported unexpected sourceKind: ${dshState.json.sourceKind}`);
+    }
+    if (dshState.json.totals.sessionCount !== 1) {
+      throw new Error(`Installed DeepSeek Harness package smoke expected one indexed Session, received: ${dshState.json.totals.sessionCount}`);
+    }
+    html = await requestText(`${baseUrl}/`);
+    if (html.statusCode !== 200 || !html.body.includes('src="/assets/app.js"')) {
+      throw new Error('Installed DeepSeek Harness root HTML did not reference the generated browser bundle');
+    }
+    console.log('Codex, Claude Code, and DeepSeek Harness package smoke passed.');
   } finally {
     await stopChild(child);
     if (tarballPath) {

@@ -12,11 +12,14 @@ const {
   buildHydratedEventDetail,
   buildIndex,
   readImagePreview,
-  readIndexedCodexLegacyRawLine,
   readIndexedCodexRawRecord,
   readIndexedCodexSourceRows,
 } = codex;
 const { createServer } = require('../server');
+const {
+  readLegacyRawLineForSession,
+  resolveLegacyRawOwnerForIndex,
+} = require('../src/source-adapters');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 
@@ -56,7 +59,10 @@ async function makeSyntheticIndex(t, options = {}) {
   const originalText = `${records.map(JSON.stringify).join('\n')}\n`;
   await fsp.writeFile(file, originalText, 'utf8');
   const index = await buildIndex({ repoRoot, codexHome });
-  return { file, id, index, originalText, records };
+  const strictIndex = options.includeStrictIndex
+    ? await codex.buildSourceBackedIndex({ repoRoot, codexHome })
+    : null;
+  return { file, id, index, strictIndex, originalText, records };
 }
 
 test('source-backed detail equals resident detail without retaining parsed records', async () => {
@@ -205,10 +211,16 @@ test('all Codex hydration entry points share one index coordinator without seria
     preview.previewId,
     { onFileOpen: () => { sameIndexOrder.push('image'); } },
   );
-  const legacy = readIndexedCodexLegacyRawLine(
+  const legacyOwner = resolveLegacyRawOwnerForIndex(
     firstFixture.index,
     imageRaw.source.file,
     imageRaw.source.line,
+  );
+  const legacy = readLegacyRawLineForSession(
+    firstFixture.index,
+    firstSession,
+    legacyOwner,
+    legacyOwner.adapter,
     { onFileOpen: () => { sameIndexOrder.push('legacy'); } },
   );
   assert.deepEqual(sameIndexOrder, ['detail', 'raw']);
@@ -261,7 +273,7 @@ test('active hydration abort stops a late scan without corrupting an independent
 });
 
 test('HTTP disconnect aborts the source-neutral detail signal', async (t) => {
-  const { index, id } = await makeSyntheticIndex(t);
+  const { index, strictIndex, id } = await makeSyntheticIndex(t, { includeStrictIndex: true });
   const session = index.sessionsById.get(id);
   const command = session.logicalEvents.find((event) => event.kind === 'command');
   const original = codex.buildHydratedEventDetail;
@@ -282,7 +294,7 @@ test('HTTP disconnect aborts the source-neutral detail signal', async (t) => {
   };
   t.after(() => { codex.buildHydratedEventDetail = original; });
 
-  const server = createServer(index, 1);
+  const server = createServer(strictIndex, 1);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => server.close(() => resolve())));
   const controller = new AbortController();
@@ -334,7 +346,13 @@ test('hydration accepts append-only growth but rejects rewrite, shrink, shift, a
 });
 
 test('detail and Raw-ref endpoints reject changed source instead of mixing snapshots', async (t) => {
-  const { file, id, index, records } = await makeSyntheticIndex(t);
+  const {
+    file,
+    id,
+    index,
+    strictIndex,
+    records,
+  } = await makeSyntheticIndex(t, { includeStrictIndex: true });
   const session = index.sessionsById.get(id);
   const command = session.logicalEvents.find((event) => event.kind === 'command');
   const raw = session.rawEvents.find((event) => event.callId === 'call-1');
@@ -342,7 +360,7 @@ test('detail and Raw-ref endpoints reject changed source instead of mixing snaps
   rewritten[1] = { ...rewritten[1], payload: { ...rewritten[1].payload, arguments: '{"command":"changed"}' } };
   await fsp.writeFile(file, `${rewritten.map(JSON.stringify).join('\n')}\n`, 'utf8');
 
-  const server = createServer(index, 1);
+  const server = createServer(strictIndex, 1);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {

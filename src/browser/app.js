@@ -2,6 +2,7 @@
 
 const rendererApi = window.sessionRenderers;
 const escapeHtml = rendererApi.escapeHtml;
+const renderInspectorSections = rendererApi.renderInspectorSections;
 const renderSections = rendererApi.renderSections;
 const renderTimelineSections = rendererApi.renderTimelineSections;
 const searchControls = window.sessionSearchControls;
@@ -11,10 +12,27 @@ const foldingApi = window.sessionFolding;
 const i18n = window.sessionI18n;
 const navigationApi = window.sessionNavigation;
 const eventChipsApi = window.sessionEventChips;
+const detailPresentationApi = window.sessionDetailPresentation;
 const codeModePresentationContract = window.sessionCodeModePresentationContract;
 const transitionSafety = require('./transition-safety');
 const isIntentionalAbort = transitionSafety.isIntentionalAbort;
 const isRetriableTransportError = transitionSafety.isRetriableTransportError;
+const timelineEventStateApi = require('./timeline-event-state');
+const timelineCardLifecycleApi = require('./timeline-card-lifecycle');
+const timelineSearchBatchApi = require('./timeline-search-batch');
+const trajectoryPresentationApi = require('./trajectory-presentation');
+const {
+  SEARCH_BATCH_KINDS,
+  acceptTimelineSearchBatchPage,
+  beginTimelineSearchBatchAttempt,
+  createTimelineSearchBatch,
+  failTimelineSearchBatchAttempt,
+  retireTimelineSearchBatch,
+  takeTimelineSearchBatchPublication,
+  takeTimelineSearchPreloadSuccessor,
+  timelineSearchBatchIdentityMatches,
+  timelineSearchBatchSnapshot,
+} = timelineSearchBatchApi;
 const { sameProjectRoot } = require('../shared/project-root');
 
 const requestOwners = {
@@ -30,8 +48,12 @@ const requestOwners = {
 };
 const paginationIntents = transitionSafety.createPaginationIntentState();
 const detailRequestControllers = new Map();
+const DETAIL_REQUEST_TRANSACTION = Symbol('detailRequestTransaction');
+let nextObservedDetailRequestSerial = 1;
+let nextObservedVisibleDetailScanSerial = 1;
 
 const NAVIGATION_PAGE_LIMIT = 500;
+const NAVIGATION_BACKGROUND_PAGE_HANDOFF_MS = 500;
 const TIMELINE_AUTO_LOAD_SCROLL_THRESHOLD = 96;
 const SEARCH_TARGET_PRELOAD_MIN = 5;
 const SEARCH_TARGET_PRELOAD_MAX_PAGES = 3;
@@ -89,6 +111,8 @@ const LAYER_LABELS = {
   raw: 'Raw records',
 };
 const NAVIGATION_CATEGORIES = navigationApi.NAVIGATION_CATEGORIES;
+const initialTimelineEventState = timelineEventStateApi.createTimelineEventState();
+const timelineCardLifecycle = timelineCardLifecycleApi.createTimelineCardLifecycle();
 
 function browserLocale() {
   const saved = localStorage.getItem(LOCALE_STORAGE_KEY);
@@ -126,6 +150,10 @@ const state = {
   sessions: [],
   expandedSessionGroups: new Set(),
   projectResults: [],
+  indexRevision: 0,
+  projectResultsRevision: 0,
+  revisionRecoveryPending: null,
+  revisionRecoveryRequested: false,
   repoRoot: '',
   projects: [],
   projectSelected: false,
@@ -154,18 +182,21 @@ const state = {
   analysisRequestId: 0,
   selectedSessionId: '',
   selectedEventId: '',
-  offset: 0,
+  offset: initialTimelineEventState.offset,
   limit: 150,
   timelineLoading: false,
   timelineRequestId: 0,
+  timelineSearchBatchGeneration: 0,
+  timelineSearchBatchInvocationId: 0,
   sessionsDataContext: '',
-  timelineDataContext: '',
+  timelineDataContext: initialTimelineEventState.timelineDataContext,
   sessionGrandTotal: 0,
   sessionTotal: 0,
   timelineTotal: 0,
   timelineSearchMatchCount: 0,
   timelineSearchEventCount: 0,
-  currentEvents: [],
+  currentEvents: initialTimelineEventState.currentEvents,
+  currentEventsById: initialTimelineEventState.currentEventsById,
   navigationEventReveal: null,
   temporaryEventReveal: null,
   contextReveal: null,
@@ -187,11 +218,29 @@ const state = {
   dirtyProfileDecisionPending: null,
   profileDraft: null,
   layerId: localStorage.getItem('sessionAnalyzer.layer') || 'main',
+  mainPresentationId: 'timeline',
+  trajectoryPresentationState: {
+    context: '',
+    expandedGroupIds: new Set(),
+    zoom: 1,
+    scrollLeft: 0,
+  },
+  trajectorySearchRefreshFrame: 0,
   overrides: normalizeOverrides(readJsonStorage(OVERRIDES_KEY, {})),
   detailCache: {},
   detailErrors: {},
   detailPending: {},
   detailCacheGeneration: 0,
+  presentationRevisions: {
+    localePresentationRevision: 0,
+    foldingPresentationRevision: 0,
+    overridesRevision: 0,
+    navigationRevealRevision: 0,
+    searchTransientRevision: 0,
+    temporaryRevealRevision: 0,
+    detailPresentationRevision: 0,
+  },
+  presentationRevisionOverflowed: false,
   detailViewportTimer: 0,
   detailView: { type: 'profileRules' },
   detailHistory: [],
@@ -254,6 +303,8 @@ const el = {
   searchFileSuggestions: document.getElementById('searchFileSuggestions'),
   profileSelect: document.getElementById('profileSelect'),
   layerSelect: document.getElementById('layerSelect'),
+  mainPresentationControl: document.getElementById('mainPresentationControl'),
+  mainPresentationButtons: document.querySelectorAll('[data-main-presentation]'),
   sortSelect: document.getElementById('sortSelect'),
   sessionList: document.getElementById('sessionList'),
   sessionHeader: document.getElementById('sessionHeader'),
@@ -285,6 +336,163 @@ const el = {
   projectHomeApplyBtn: document.getElementById('projectHomeApplyBtn'),
   projectSourceError: document.getElementById('projectSourceError'),
 };
+
+function notifyTimelineLifecycleObserver(methodName, createPayload) {
+  let observer;
+  try {
+    observer = globalThis.__sessionAnalyzerTimelineLifecycleObserver;
+  } catch {
+    return false;
+  }
+  return timelineCardLifecycleApi.notifyObserverSafely(observer, methodName, createPayload);
+}
+
+function timelineLifecycleObserverMethodIsCallable(methodName) {
+  try {
+    const observer = globalThis.__sessionAnalyzerTimelineLifecycleObserver;
+    return typeof observer?.[methodName] === 'function';
+  } catch {
+    return false;
+  }
+}
+
+function observedDetailRequestSerial(transaction) {
+  if (!Object.hasOwn(transaction, 'observerSerial')) {
+    transaction.observerSerial = nextObservedDetailRequestSerial;
+    nextObservedDetailRequestSerial += 1;
+  }
+  return transaction.observerSerial;
+}
+
+function recordDetailRequestObservation(transaction, phase, fields = {}) {
+  return notifyTimelineLifecycleObserver('recordDetailRequest', () => ({
+    requestSerial: observedDetailRequestSerial(transaction),
+    phase,
+    requestCreated: phase === 'requestCreated',
+    requestReused: phase === 'requestReused',
+    acceptedMutation: fields.acceptedMutation || 'none',
+    presentationSettlement: phase === 'presentationSettlement',
+    settlementOutcome: fields.settlementOutcome || 'none',
+    presentationErrorStage: fields.presentationErrorStage || 'none',
+    acceptedStateReclassified: fields.acceptedStateReclassified === true,
+    presentationFailed: fields.presentationFailed === true,
+  }));
+}
+
+function recordDetailBodyObservation(transaction, createFields) {
+  notifyTimelineLifecycleObserver('recordDetailBody', () => {
+    const fields = createFields();
+    return {
+      requestSerial: observedDetailRequestSerial(transaction),
+      eventClassification: fields.eventClassification,
+      expanded: fields.expanded === true,
+      bodyPresent: fields.bodyPresent === true,
+      articleIdentityPreserved: fields.articleIdentityPreserved === true,
+      contextSlotIdentityPreserved: fields.contextSlotIdentityPreserved === true,
+      headerIdentityPreserved: fields.headerIdentityPreserved === true,
+      toggleIdentityPreserved: fields.toggleIdentityPreserved === true,
+      previewIdentityPreserved: fields.previewIdentityPreserved === true,
+      footerIdentityPreserved: fields.footerIdentityPreserved === true,
+    };
+  });
+}
+
+function recordVisibleDetailScanObservation(fields) {
+  notifyTimelineLifecycleObserver('recordVisibleDetailScan', () => ({
+    scanSerial: nextObservedVisibleDetailScanSerial++,
+    mountedArticleCount: fields.mountedArticleCount,
+    candidateArticleCount: fields.candidateArticleCount,
+    articleGeometryReadCount: fields.articleGeometryReadCount,
+    scrollportGeometryReadCount: fields.scrollportGeometryReadCount,
+    ensuredDetailCount: fields.ensuredDetailCount,
+  }));
+}
+
+function advancePresentationRevision(field) {
+  if (!Object.hasOwn(state.presentationRevisions, field)) {
+    throw new Error(`Unknown presentation revision: ${field}`);
+  }
+  const next = timelineCardLifecycleApi.advanceMonotonicRevision(state.presentationRevisions[field]);
+  state.presentationRevisions[field] = next.value;
+  if (next.overflowed) state.presentationRevisionOverflowed = true;
+  notifyTimelineLifecycleObserver('recordRevision', () => ({
+    revisionKind: field,
+    revisionValue: state.presentationRevisions[field],
+    overflowed: state.presentationRevisionOverflowed,
+  }));
+}
+
+function currentTimelinePresentationToken() {
+  const revisions = state.presentationRevisions;
+  return timelineCardLifecycleApi.capturePresentationToken({
+    valid: !state.presentationRevisionOverflowed,
+    localePresentationRevision: revisions.localePresentationRevision,
+    foldingPresentationRevision: revisions.foldingPresentationRevision,
+    overridesRevision: revisions.overridesRevision,
+    navigationRevealRevision: revisions.navigationRevealRevision,
+    searchTransientRevision: revisions.searchTransientRevision,
+    temporaryRevealRevision: revisions.temporaryRevealRevision,
+    detailPresentationRevision: revisions.detailPresentationRevision,
+  });
+}
+
+function mountedCanonicalMainCardDescriptors(events = state.currentEvents) {
+  const articlesById = new Map(
+    [...el.timeline.querySelectorAll('.event[data-event-id]')]
+      .map((articleNode) => [articleNode.dataset.eventId, articleNode]),
+  );
+  return events.map((event) => {
+    const articleNode = articlesById.get(event.id);
+    if (!articleNode) throw new Error('Mounted Main Timeline card parity failed');
+    const candidateSlot = articleNode.previousElementSibling;
+    const contextSlotNode = candidateSlot?.classList.contains('contextRevealSlot')
+        && candidateSlot.dataset.contextSourceId === event.id
+      ? candidateSlot
+      : null;
+    return { eventId: event.id, articleNode, contextSlotNode };
+  });
+}
+
+function recordTimelineLifecycle(operation, mode, result) {
+  notifyTimelineLifecycleObserver('recordLifecycle', () => ({
+    operation,
+    mode,
+    ...result,
+    ...timelineCardLifecycle.contentFreeObservation(),
+  }));
+}
+
+function replaceTimelineRoot(markup, mode) {
+  if (mode !== 'main' && mode !== 'non-main') {
+    throw new Error(`Unknown Timeline root replacement mode: ${mode}`);
+  }
+  let retiredResult = null;
+  if (mode === 'non-main') {
+    retiredResult = timelineCardLifecycle.retireAll();
+  }
+
+  trajectoryPresentationApi.disposeTrajectoryPresentation(el.timeline);
+  el.timeline.classList.remove('trajectoryPresentationRoot');
+  el.timeline.innerHTML = markup;
+  if (retiredResult) {
+    recordTimelineLifecycle('replace', mode, retiredResult);
+    return retiredResult;
+  }
+  try {
+    const cards = mountedCanonicalMainCardDescriptors();
+    const result = timelineCardLifecycle.reconcileMain({
+      canonicalContext: state.timelineDataContext,
+      presentationToken: currentTimelinePresentationToken(),
+      cards,
+    });
+    recordTimelineLifecycle('replace', mode, result);
+    return result;
+  } catch (error) {
+    const result = timelineCardLifecycle.retireAll();
+    recordTimelineLifecycle('replace-failed', 'non-main', result);
+    throw error;
+  }
+}
 
 let profileInfoSlot = null;
 
@@ -362,6 +570,14 @@ function applyStaticLocale() {
   setSelectOptionText(el.layerSelect, 'main', t('mainTimeline'));
   setSelectOptionText(el.layerSelect, 'protocol', t('protocolLayer'));
   setSelectOptionText(el.layerSelect, 'raw', t('rawRecords'));
+  if (el.mainPresentationControl) {
+    el.mainPresentationControl.setAttribute('aria-label', t('mainPresentation'));
+  }
+  for (const button of el.mainPresentationButtons) {
+    button.textContent = button.dataset.mainPresentation === 'trajectory'
+      ? t('trajectoryPresentation')
+      : t('timelinePresentation');
+  }
   setSelectOptionText(el.sortSelect, 'updated-desc', t('updatedDesc'));
   setSelectOptionText(el.sortSelect, 'started-asc', t('startedAsc'));
   setSelectOptionText(el.sortSelect, 'events-desc', t('eventsDesc'));
@@ -409,6 +625,7 @@ function applyStaticLocale() {
   renderSourceSwitch();
   updateProjectChooserHeader();
   updateProjectSwitchControl();
+  syncMainPresentationUi();
 }
 
 function readJsonStorage(key, fallback) {
@@ -424,6 +641,30 @@ function writeJsonStorage(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
+function abortableDelay(ms, signal) {
+  const abortError = () => (signal?.reason instanceof Error
+    ? signal.reason
+    : Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+  if (signal?.aborted) return Promise.reject(abortError());
+  if (!ms) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let timer = 0;
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(abortError());
+    }
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 function api(path, options = {}) {
   const init = { ...options };
   let requestPath = path;
@@ -437,9 +678,23 @@ function api(path, options = {}) {
     init.body = JSON.stringify(options.body);
     init.headers = { 'content-type': 'application/json', ...(options.headers || {}) };
   }
-  return fetch(requestPath, init).then(async (res) => {
+  const request = (allowBusyRetry) => fetch(requestPath, init).then(async (res) => {
     const body = await res.json();
     if (!res.ok) {
+      if (allowBusyRetry
+          && method === 'GET'
+          && res.status === 503
+          && body.code === 'MATERIALIZATION_BUSY') {
+        const retryAfterHeader = res.headers.get('retry-after');
+        const retryAfter = retryAfterHeader && retryAfterHeader.trim()
+          ? Number(retryAfterHeader)
+          : Number.NaN;
+        const delayMs = Number.isFinite(retryAfter)
+          ? Math.max(0, Math.min(5, retryAfter)) * 1000
+          : 1000;
+        await abortableDelay(delayMs, init.signal);
+        return request(false);
+      }
       const error = new Error(body.error || `HTTP ${res.status}`);
       error.status = res.status;
       error.code = body.code;
@@ -448,6 +703,7 @@ function api(path, options = {}) {
     }
     return body;
   });
+  return request(true);
 }
 
 function debounce(fn, ms) {
@@ -955,7 +1211,58 @@ function renderCodeModePresentationChips(presentation, isCodeMode = false) {
 
 function presentedEventLabel(event, presentation = codeModeEventPresentation(event), compactWebLifecycle = false) {
   if (compactWebLifecycle) return t('webActivityObserved');
+  if (event?.presentationFacts?.cacheUsage) return t('tokenUsage');
   return presentation ? presentation.label : event.label;
+}
+
+function cacheUsageFact(event) {
+  const fact = event?.presentationFacts?.cacheUsage;
+  return fact && typeof fact === 'object' ? fact : null;
+}
+
+function cacheDiscontinuityLinkFact(event) {
+  const fact = event?.presentationFacts?.cacheDiscontinuityLink;
+  return fact && typeof fact === 'object' ? fact : null;
+}
+
+function formatCompactCacheNumber(value) {
+  if (!Number.isSafeInteger(value) || value < 0) return '';
+  const units = [
+    { threshold: 1_000_000_000, suffix: 'b' },
+    { threshold: 1_000_000, suffix: 'm' },
+    { threshold: 1_000, suffix: 'k' },
+  ];
+  const unit = units.find((candidate) => value >= candidate.threshold);
+  if (!unit) return new Intl.NumberFormat(state.locale).format(value);
+  const scaled = value / unit.threshold;
+  const formatted = new Intl.NumberFormat(state.locale, {
+    maximumFractionDigits: scaled < 100 ? 1 : 0,
+    minimumFractionDigits: 0,
+  }).format(scaled);
+  return `${formatted}${unit.suffix}`;
+}
+
+function formatCacheReuseBasisPoints(value) {
+  if (!Number.isSafeInteger(value)) return '';
+  const percentage = value / 100;
+  return `${new Intl.NumberFormat(state.locale, {
+    maximumFractionDigits: value % 100 === 0 ? 0 : (value % 10 === 0 ? 1 : 2),
+  }).format(percentage)}%`;
+}
+
+function formatCacheElapsed(value) {
+  if (!Number.isSafeInteger(value) || value < 0) return '';
+  if (value < 1_000) return `${value}ms`;
+  if (value < 60_000) {
+    const seconds = value / 1_000;
+    return `${new Intl.NumberFormat(state.locale, { maximumFractionDigits: seconds < 10 ? 1 : 0 }).format(seconds)}s`;
+  }
+  if (value < 3_600_000) {
+    const minutes = value / 60_000;
+    return `${new Intl.NumberFormat(state.locale, { maximumFractionDigits: minutes < 10 ? 1 : 0 }).format(minutes)}m`;
+  }
+  const hours = value / 3_600_000;
+  return `${new Intl.NumberFormat(state.locale, { maximumFractionDigits: hours < 10 ? 1 : 0 }).format(hours)}h`;
 }
 
 function projectProgressPercent(progress) {
@@ -1057,8 +1364,9 @@ async function finishProjectRefresh(appState, requestId) {
   clearContextReveal({ render: false });
   beginSearchTargetContextTransition();
   state.sessionsDataContext = '';
-  state.timelineDataContext = '';
+  resetCommittedTimelineEventState();
   state.timelineReplacementRetry = null;
+  renderTimeline();
   resetSessionDetailCache();
   invalidateNavigationCache();
   await applyAppState(appState);
@@ -1224,6 +1532,38 @@ function activeLayerId() {
   return currentSearchState().layer || 'main';
 }
 
+function rememberedMainPresentationId() {
+  return state.mainPresentationId === 'trajectory' ? 'trajectory' : 'timeline';
+}
+
+function effectiveMainPresentationId() {
+  return activeLayerId() === 'main' ? rememberedMainPresentationId() : 'timeline';
+}
+
+function trajectoryPresentationActive() {
+  return state.searchScope === 'session'
+    && activeLayerId() === 'main'
+    && rememberedMainPresentationId() === 'trajectory';
+}
+
+function syncMainPresentationUi(analyzerDisabled = isAnalyzerInteractionDisabled()) {
+  const visible = state.searchScope === 'session'
+    && activeLayerId() === 'main'
+    && Boolean(state.selectedSessionId);
+  const remembered = rememberedMainPresentationId();
+  if (el.mainPresentationControl) {
+    el.mainPresentationControl.hidden = !visible;
+    el.mainPresentationControl.setAttribute('aria-label', t('mainPresentation'));
+  }
+  for (const button of el.mainPresentationButtons) {
+    const selected = button.dataset.mainPresentation === remembered;
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    button.disabled = analyzerDisabled || !visible;
+  }
+  document.body.dataset.mainPresentation = effectiveMainPresentationId();
+  document.body.dataset.rememberedMainPresentation = remembered;
+}
+
 function profileAppliesToActiveLayer() {
   return activeLayerId() === 'main';
 }
@@ -1285,6 +1625,46 @@ function timelineDataContextKey() {
   ]);
 }
 
+function recordTimelineEventState(desiredContext = state.timelineDataContext) {
+  return timelineEventStateApi.profileTimelineEventStateSnapshot(state, desiredContext);
+}
+
+function resetCommittedTimelineEventState() {
+  timelineEventStateApi.resetTimelineEventState(state);
+  return recordTimelineEventState('');
+}
+
+function commitTimelineEventReplacement(requestContext, events) {
+  timelineEventStateApi.commitTimelineEventReplacement(state, requestContext, events);
+  return recordTimelineEventState(requestContext);
+}
+
+function commitTimelineEventAppend(events) {
+  timelineEventStateApi.appendTimelineEvents(state, events);
+  return recordTimelineEventState(state.timelineDataContext);
+}
+
+function captureTimelineAppendBoundary(prefixLength) {
+  if (!Number.isSafeInteger(prefixLength) || prefixLength < 0
+      || state.currentEvents.length !== prefixLength) return null;
+  return {
+    canonicalContext: state.timelineDataContext,
+    mountedPresentationToken: currentTimelinePresentationToken(),
+    prefixLength,
+    prefixEventIds: state.currentEvents.map((event) => event.id),
+    searchTargetKey: searchTargetKey(),
+    searchHighlightQuery: state.searchHighlight.query,
+  };
+}
+
+function canonicalTimelineEvent(eventId, purpose = 'canonical') {
+  return timelineEventStateApi.timelineEventById(state, eventId, { purpose });
+}
+
+function hasCanonicalTimelineEvent(eventId, purpose = 'canonical') {
+  return timelineEventStateApi.hasTimelineEvent(state, eventId, { purpose });
+}
+
 function foldingProfileSearchContextKey() {
   return JSON.stringify([
     state.profileId,
@@ -1296,6 +1676,7 @@ function timelineSearchSurfaceContextKey() {
   return JSON.stringify([
     timelineDataContextKey(),
     foldingProfileSearchContextKey(),
+    effectiveMainPresentationId(),
     el.sortSelect?.value || '',
   ]);
 }
@@ -1361,6 +1742,9 @@ function beginSearchTargetContextTransition() {
   resetSearchTargetRegistry(key);
   state.timelineSearchMatchCount = 0;
   state.timelineSearchEventCount = 0;
+  state.trajectoryPresentationState = {
+    context: '', expandedGroupIds: new Set(), zoom: 1, scrollLeft: 0,
+  };
   updateSearchMatchControls();
   return true;
 }
@@ -1417,8 +1801,11 @@ function bindSearchTarget(owner, occurrence, mark, targetsById) {
 }
 
 function resetSearchTransientExpansions() {
-  const hadExpansions = state.searchTransientExpansion.eventIds.length > 0;
+  const hadExpansions = Boolean(
+    state.searchTransientExpansion.key || state.searchTransientExpansion.eventIds.length,
+  );
   state.searchTransientExpansion = { key: '', eventIds: [] };
+  if (hadExpansions) advancePresentationRevision('searchTransientRevision');
   return hadExpansions;
 }
 
@@ -1442,18 +1829,26 @@ function addSearchTransientExpansion(eventId) {
   const search = currentSearchState();
   if (!search.q || !eventId) return;
   const key = searchTargetPreloadKey();
+  let changed = false;
   if (state.searchTransientExpansion.key !== key) {
     state.searchTransientExpansion = { key, eventIds: [] };
+    changed = true;
   }
   if (!state.searchTransientExpansion.eventIds.includes(eventId)) {
     state.searchTransientExpansion.eventIds.push(eventId);
+    changed = true;
   }
+  if (changed) advancePresentationRevision('searchTransientRevision');
 }
 
 function clearSearchTransientExpansion(eventId) {
   if (!eventId || !state.searchTransientExpansion.eventIds.length) return;
+  const previousLength = state.searchTransientExpansion.eventIds.length;
   state.searchTransientExpansion.eventIds = state.searchTransientExpansion.eventIds.filter((id) => id !== eventId);
   if (!state.searchTransientExpansion.eventIds.length) state.searchTransientExpansion.key = '';
+  if (state.searchTransientExpansion.eventIds.length !== previousLength) {
+    advancePresentationRevision('searchTransientRevision');
+  }
 }
 
 function structuredSearchKey() {
@@ -1593,13 +1988,29 @@ function maybePreloadSearchTargets() {
   }
   if (state.searchTargetPreload.pages >= SEARCH_TARGET_PRELOAD_MAX_PAGES) return;
 
-  state.searchTargetPreload.pages += 1;
+  const invocation = beginTimelineSearchBatchInvocation(SEARCH_BATCH_KINDS.PRELOAD, key);
   state.searchTargetPreload.pending = true;
-  loadTimeline(true, { paginationIntent: paginationIntent('search-preload') })
-    .catch(showError)
+  state.searchTargetPreload.ownerId = invocation.id;
+  updateSearchMatchControls();
+  loadTimelineSearchBatch({
+    kind: SEARCH_BATCH_KINDS.PRELOAD,
+    searchKey: key,
+    invocation,
+    consumedPreloadAttempts: state.searchTargetPreload.pages,
+    knownTargetOwnerIds: state.searchTargetRegistry.targets.map((target) => target.ownerId),
+    paginationIntent: paginationIntent('search-preload'),
+  })
+    .catch((error) => {
+      if (timelineSearchBatchInvocationIsCurrent(invocation)
+          && state.searchTargetPreload.ownerId === invocation.id) showError(error);
+    })
     .finally(() => {
-      if (state.searchTargetPreload.key !== key) return;
+      if (!timelineSearchBatchInvocationIsCurrent(invocation)
+          || state.searchTargetPreload.key !== key
+          || state.searchTargetPreload.ownerId !== invocation.id) return;
       state.searchTargetPreload.pending = false;
+      state.searchTargetPreload.ownerId = 0;
+      updateSearchMatchControls();
       if (state.searchTargetRegistry.targets.length < SEARCH_TARGET_PRELOAD_MIN) {
         maybePreloadSearchTargets();
       }
@@ -1659,7 +2070,7 @@ function setActiveSearchTarget(target, options = {}) {
       state.selectedEventId = target.ownerId;
       updateSelectedTimelineEvent();
       if (options.syncDetail) {
-        const item = state.currentEvents.find((event) => event.id === target.ownerId);
+        const item = canonicalTimelineEvent(target.ownerId);
         const confirmedCurrentEvent = confirmedEventDetail && state.detailView.eventId === item?.id;
         if (item && !confirmedCurrentEvent) {
           showInspector(item, { replace: true, origin: DETAIL_VIEW_ORIGIN_SEARCH });
@@ -1720,6 +2131,161 @@ function refreshSearchHighlights(options = {}) {
   if (options.allowPreload !== false) maybePreloadSearchTargets();
 }
 
+function prepareScopedSearchOwnerRefresh(surface, ownerId, root) {
+  if (!['timeline', 'inspector'].includes(surface) || !root?.isConnected) {
+    throw new Error('Scoped search owner is not mounted');
+  }
+  const query = currentSearchState().q;
+  if (state.searchScope !== 'session'
+      || !searchDiscoveryContextReady()
+      || state.searchHighlight.query !== query
+      || state.searchTargetRegistry.key !== searchTargetKey()) {
+    throw new Error('Scoped search context is stale');
+  }
+  const expectedSurfaceContext = surface === 'timeline'
+    ? timelineSearchSurfaceContextKey()
+    : detailSearchSurfaceContextKey();
+  if (state.searchSurfaceContexts[surface === 'timeline' ? 'timeline' : 'detail']
+      !== expectedSurfaceContext) {
+    throw new Error('Scoped search surface is stale');
+  }
+  const rootMarks = [...root.querySelectorAll('mark.searchMark')];
+  const trackedMarks = new Set(state.searchHighlight.marks);
+  if (rootMarks.some((mark) => !trackedMarks.has(mark))) {
+    throw new Error('Scoped search marks are not tracked');
+  }
+  const targets = state.searchTargetRegistry.targets.filter((target) => target.ownerId === ownerId);
+  if (targets.length > 1) throw new Error('Scoped search owner has duplicate canonical targets');
+  const target = targets[0] || null;
+  const terms = highlightTerms();
+  const canonicalEvent = canonicalTimelineEvent(ownerId);
+  if (terms.length && canonicalEvent?.hasSearchHit && !target) {
+    throw new Error('Scoped search owner is missing its canonical target');
+  }
+  if (target) {
+    const bindings = target.bindings?.[surface];
+    if (!Array.isArray(bindings)
+        || bindings.some((node) => !node?.isConnected || !root.contains(node))) {
+      throw new Error('Scoped search target bindings are stale');
+    }
+    const boundMarks = rootMarks.filter((mark) => mark.dataset.searchTargetId === target.id);
+    if (rootMarks.length !== bindings.length
+        || boundMarks.length !== bindings.length
+        || boundMarks.some((mark) => !bindings.includes(mark))) {
+      throw new Error('Scoped search target binding parity failed');
+    }
+  } else if (rootMarks.some((mark) => mark.dataset.searchTargetId)) {
+    throw new Error('Scoped visual marks reference an unknown target');
+  }
+  return {
+    surface,
+    ownerId,
+    root,
+    rootMarks,
+    target,
+    targetBindings: target?.bindings[surface] || null,
+    terms,
+  };
+}
+
+function detachScopedSearchOwner(prepared) {
+  const affectedMarks = new Set(prepared.rootMarks);
+  state.searchHighlight = {
+    query: state.searchHighlight.query,
+    marks: state.searchHighlight.marks.filter((mark) => !affectedMarks.has(mark)),
+  };
+  if (prepared.target) {
+    const removed = searchTargets.resetSurfaceBindings(prepared.target, prepared.surface);
+    if (removed !== prepared.targetBindings) {
+      throw new Error('Scoped search target reset failed');
+    }
+  }
+  searchHighlighter.clear(prepared.root);
+}
+
+function applyScopedSearchOwner(prepared, root = prepared.root) {
+  if (!root?.isConnected) throw new Error('Scoped search replacement root is not mounted');
+  const marks = prepared.terms.length ? searchHighlighter.apply(root, prepared.terms) : [];
+  if (prepared.target) {
+    const owner = { surface: prepared.surface, ownerId: prepared.ownerId, root };
+    marks.forEach((mark, occurrence) => {
+      if (!bindSearchTarget(owner, occurrence, mark, new Map([[prepared.target.id, prepared.target]]))) {
+        throw new Error('Scoped search target rebind failed');
+      }
+    });
+  }
+  state.searchHighlight = {
+    query: state.searchHighlight.query,
+    marks: [...state.searchHighlight.marks, ...marks],
+  };
+  return marks;
+}
+
+function restoreScopedActiveSearchPresentation(ownerId, refreshedSurfaces) {
+  const target = activeSearchTarget();
+  if (target?.ownerId === ownerId) {
+    for (const surface of refreshedSurfaces) {
+      for (const mark of target.bindings?.[surface] || []) {
+        mark.classList.remove('activeSearchMark');
+      }
+    }
+    const liveMark = liveSearchTargetNode(target);
+    if (liveMark && !liveMark.classList.contains('activeSearchMark')) {
+      liveMark.classList.add('activeSearchMark');
+    }
+  }
+}
+
+function refreshAppendedSearchHighlights(suffixEvents, owners, baseTimelineIndex, expectedSearchKey) {
+  const searchKey = syncSearchTargetRegistryKey();
+  if (searchKey !== expectedSearchKey) throw new Error('Search target context changed during Timeline append');
+  const previousActiveTargetId = state.searchTargetRegistry.activeTargetId;
+  const query = currentSearchState().q;
+  const terms = highlightTerms();
+  const appendedMarks = [];
+
+  if (terms.length) {
+    const result = searchTargets.discover(
+      state.searchTargetRegistry.targets,
+      searchKey,
+      suffixEvents,
+      { baseTimelineIndex },
+    );
+    state.searchTargetRegistry.targets = result.targets;
+    const targetsById = new Map(result.targets.map((target) => [target.id, target]));
+    for (const owner of owners) {
+      if (owner.articleNode.classList.contains('hiddenByProfile')) continue;
+      const searchableOwner = {
+        surface: 'timeline',
+        ownerId: owner.eventId,
+        root: owner.articleNode,
+      };
+      const ownerMarks = searchHighlighter.apply(owner.articleNode, terms);
+      ownerMarks.forEach((mark, occurrence) => (
+        bindSearchTarget(searchableOwner, occurrence, mark, targetsById)
+      ));
+      appendedMarks.push(...ownerMarks);
+    }
+  }
+
+  state.searchHighlight = {
+    query,
+    marks: [...state.searchHighlight.marks, ...appendedMarks],
+  };
+  const preservedActive = state.searchTargetRegistry.targets.find((target) => (
+    target.id === previousActiveTargetId && liveSearchTargetNode(target)
+  ));
+  const active = preservedActive
+    || state.searchTargetRegistry.targets.find((target) => liveSearchTargetNode(target))
+    || null;
+  state.searchTargetRegistry.activeTargetId = active?.id || '';
+  const activeMark = active ? liveSearchTargetNode(active) : null;
+  if (activeMark) activeMark.classList.add('activeSearchMark');
+  updateSearchMatchControls();
+  convergeSelectedEventDetailView();
+  maybePreloadSearchTargets();
+}
+
 function persistedDisplayOverride(eventId) {
   const sessionOverrides = state.overrides[state.selectedSessionId] || {};
   return sessionOverrides[eventId] || '';
@@ -1742,45 +2308,49 @@ function timelineSearchTargets(eventId) {
   ));
 }
 
+function searchOperationIsCurrent(searchKey, invocation) {
+  return searchTargetPreloadKey() === searchKey
+    && (!invocation || timelineSearchBatchInvocationIsCurrent(invocation));
+}
+
 async function materializeSearchEvent(event, direction, options = {}) {
+  if (!searchOperationIsCurrent(options.searchKey, options.invocation)) return false;
   await ensureEventLoaded(event.id, { allowSearchTargetPreload: false });
-  if (options.searchKey && searchTargetPreloadKey() !== options.searchKey) return false;
-  const loaded = state.currentEvents.find((candidate) => candidate.id === event.id) || event;
+  if (!searchOperationIsCurrent(options.searchKey, options.invocation)) return false;
+  const loaded = canonicalTimelineEvent(event.id) || event;
   let targets = timelineSearchTargets(loaded.id);
   if (targets.length) return direction < 0 ? targets[targets.length - 1] : targets[0];
 
   const override = persistedDisplayOverride(loaded.id);
   if (override && override !== 'expanded') return false;
-  if (!override && displayState(loaded) !== 'expanded') {
-    addSearchTransientExpansion(loaded.id);
-    renderTimeline();
-  }
+  const needsTransientExpansion = !override && displayState(loaded) !== 'expanded';
 
   await loadEventDetail(loaded);
-  if (options.searchKey && searchTargetPreloadKey() !== options.searchKey) return false;
+  if (!searchOperationIsCurrent(options.searchKey, options.invocation)) return false;
+  if (needsTransientExpansion) addSearchTransientExpansion(loaded.id);
   renderTimeline();
-  refreshSearchHighlights({ preserveActive: true, allowPreload: false });
   targets = timelineSearchTargets(loaded.id);
   return (direction < 0 ? targets[targets.length - 1] : targets[0]) || false;
 }
 
-async function resolveSearchTargetNode(target, searchKey) {
+async function resolveSearchTargetNode(target, searchKey, invocation) {
+  if (!searchOperationIsCurrent(searchKey, invocation)) return null;
   let node = liveSearchTargetNode(target);
-  if (node || !target || searchTargetPreloadKey() !== searchKey) return node;
+  if (node || !target || !searchOperationIsCurrent(searchKey, invocation)) return node;
 
   await ensureEventLoaded(target.ownerId, { allowSearchTargetPreload: false });
-  if (searchTargetPreloadKey() !== searchKey) return null;
+  if (!searchOperationIsCurrent(searchKey, invocation)) return null;
   node = liveSearchTargetNode(target);
 
-  const event = state.currentEvents.find((candidate) => candidate.id === target.ownerId);
+  const event = canonicalTimelineEvent(target.ownerId);
   if (!event) return null;
   if (!node) {
     const override = persistedDisplayOverride(event.id);
-    if (!override && displayState(event) !== 'expanded') addSearchTransientExpansion(event.id);
+    const needsTransientExpansion = !override && displayState(event) !== 'expanded';
     await loadEventDetail(event);
-    if (searchTargetPreloadKey() !== searchKey) return null;
+    if (!searchOperationIsCurrent(searchKey, invocation)) return null;
+    if (needsTransientExpansion) addSearchTransientExpansion(event.id);
     renderTimeline();
-    refreshSearchHighlights({ preserveActive: true, allowPreload: false });
   }
   return liveSearchTargetNode(target);
 }
@@ -1788,12 +2358,10 @@ async function resolveSearchTargetNode(target, searchKey) {
 async function activateSearchTarget(target, options = {}) {
   if (!target) return false;
   const searchKey = state.searchTargetRegistry.key;
-  const previousActiveTargetId = state.searchTargetRegistry.activeTargetId;
-  state.searchTargetRegistry.activeTargetId = target.id;
-  const node = await resolveSearchTargetNode(target, searchKey);
-  if (searchTargetPreloadKey() !== searchKey) return false;
+  if (!searchOperationIsCurrent(searchKey, options.invocation)) return false;
+  const node = await resolveSearchTargetNode(target, searchKey, options.invocation);
+  if (!searchOperationIsCurrent(searchKey, options.invocation)) return false;
   if (!node) {
-    state.searchTargetRegistry.activeTargetId = previousActiveTargetId;
     setActiveSearchTarget(activeSearchTarget());
     return false;
   }
@@ -1802,18 +2370,20 @@ async function activateSearchTarget(target, options = {}) {
 
 async function activateSearchTargetCandidates(candidates, options, attempted, searchKey) {
   for (const target of candidates) {
+    if (!searchOperationIsCurrent(searchKey, options.invocation)) return false;
     if (!target || attempted.has(target.id)) continue;
     attempted.add(target.id);
     if (await activateSearchTarget(target, options)) return true;
-    if (searchTargetPreloadKey() !== searchKey) return false;
+    if (!searchOperationIsCurrent(searchKey, options.invocation)) return false;
   }
   return false;
 }
 
-async function materializeNextSearchTarget(direction) {
+async function materializeNextSearchTarget(direction, invocation) {
   const search = currentSearchState();
   if (!search.q || !state.timelineSearchMatchCount || !searchDiscoveryContextReady()) return false;
   const searchKey = searchTargetPreloadKey();
+  if (!searchOperationIsCurrent(searchKey, invocation)) return false;
   const currentTarget = activeSearchTarget();
   const activeEventId = currentTarget?.ownerId || '';
   const activeEventIndex = state.currentEvents.findIndex((event) => event.id === activeEventId);
@@ -1822,6 +2392,7 @@ async function materializeNextSearchTarget(direction) {
 
   const tryEvents = async (events) => {
     for (const event of events) {
+      if (!searchOperationIsCurrent(searchKey, invocation)) return false;
       if (!event.hasSearchHit || attempted.has(event.id)) continue;
       attempted.add(event.id);
       const newlyDiscovered = timelineSearchTargets(event.id)
@@ -1829,37 +2400,30 @@ async function materializeNextSearchTarget(direction) {
       if (newlyDiscovered.length) {
         return direction < 0 ? newlyDiscovered[newlyDiscovered.length - 1] : newlyDiscovered[0];
       }
-      const target = await materializeSearchEvent(event, direction, { searchKey });
+      const target = await materializeSearchEvent(event, direction, { searchKey, invocation });
       if (target) return target;
-      if (searchTargetPreloadKey() !== searchKey) return false;
+      if (!searchOperationIsCurrent(searchKey, invocation)) return false;
     }
     return false;
   };
 
-  const appendNextPage = async () => {
-    const previousOffset = state.offset;
-    await waitForTimelineIdle();
-    if (searchTargetPreloadKey() !== searchKey) return false;
-    if (state.offset > previousOffset) return true;
-    if (state.offset >= state.timelineTotal) return false;
-    await loadTimeline(true, {
-      allowSearchTargetPreload: false,
-      paginationIntent: paginationIntent('search-navigation'),
-    });
-    await waitForTimelineIdle();
-    if (searchTargetPreloadKey() !== searchKey) return false;
-    return state.offset > previousOffset;
-  };
-
   if (direction >= 0) {
-    let scanOffset = activeEventIndex >= 0 ? activeEventIndex + 1 : 0;
-    while (true) {
-      const loadedEnd = state.currentEvents.length;
-      const target = await tryEvents(state.currentEvents.slice(scanOffset, loadedEnd));
+    const scanOffset = activeEventIndex >= 0 ? activeEventIndex + 1 : 0;
+    let target = await tryEvents(state.currentEvents.slice(scanOffset));
+    if (target) return target;
+    if (!searchOperationIsCurrent(searchKey, invocation)) return false;
+    if (state.offset < state.timelineTotal) {
+      const batchStart = state.currentEvents.length;
+      const outcome = await loadTimelineSearchBatch({
+        kind: SEARCH_BATCH_KINDS.NAVIGATION,
+        navigationDirection: 'forward',
+        searchKey,
+        invocation,
+        paginationIntent: paginationIntent('search-navigation'),
+      });
+      if (!timelineSearchBatchOutcomeIsCurrent(outcome, invocation)) return false;
+      target = await tryEvents(state.currentEvents.slice(batchStart));
       if (target) return target;
-      if (searchTargetPreloadKey() !== searchKey || state.offset >= state.timelineTotal) break;
-      scanOffset = loadedEnd;
-      if (!await appendNextPage()) break;
     }
     if (activeEventIndex >= 0) {
       return tryEvents(state.currentEvents.slice(0, activeEventIndex));
@@ -1870,13 +2434,20 @@ async function materializeNextSearchTarget(direction) {
   if (activeEventIndex >= 0) {
     const target = await tryEvents(state.currentEvents.slice(0, activeEventIndex).reverse());
     if (target) return target;
-    if (searchTargetPreloadKey() !== searchKey) return false;
+    if (!searchOperationIsCurrent(searchKey, invocation)) return false;
   }
 
-  while (state.offset < state.timelineTotal) {
-    if (!await appendNextPage()) break;
+  if (state.offset < state.timelineTotal) {
+    const outcome = await loadTimelineSearchBatch({
+      kind: SEARCH_BATCH_KINDS.NAVIGATION,
+      navigationDirection: 'reverse',
+      searchKey,
+      invocation,
+      paginationIntent: paginationIntent('search-navigation'),
+    });
+    if (!timelineSearchBatchOutcomeIsCurrent(outcome, invocation)) return false;
   }
-  if (searchTargetPreloadKey() !== searchKey) return false;
+  if (!searchOperationIsCurrent(searchKey, invocation)) return false;
   const wrapStart = activeEventIndex >= 0 ? activeEventIndex + 1 : 0;
   return tryEvents(state.currentEvents.slice(wrapStart).reverse());
 }
@@ -1890,31 +2461,43 @@ async function loadMoreSearchTargets() {
     state.searchTargetPreload = { key: searchKey, pages: 0, pending: false, exhausted: false };
   }
   const beforeIds = new Set(state.searchTargetRegistry.targets.map((target) => target.id));
+  const knownTargetOwnerIds = state.searchTargetRegistry.targets.map((target) => target.ownerId);
+  const previousExhausted = state.searchTargetPreload.exhausted;
+  const invocation = beginTimelineSearchBatchInvocation(SEARCH_BATCH_KINDS.LOAD_MORE, searchKey);
   state.searchTargetPreload.pending = true;
+  state.searchTargetPreload.ownerId = invocation.id;
   updateSearchMatchControls();
   try {
-    while (searchTargetPreloadKey() === searchKey && state.offset < state.timelineTotal) {
-      const previousOffset = state.offset;
-      await loadTimeline(true, {
-        allowSearchTargetPreload: false,
-        paginationIntent: paginationIntent('search-load-more'),
-      });
-      await waitForTimelineIdle();
-      if (searchTargetPreloadKey() !== searchKey) return false;
-      const addedIds = state.searchTargetRegistry.targets
-        .map((target) => target.id)
-        .filter((id) => !beforeIds.has(id));
-      if (addedIds.length) {
-        state.searchTargetPreload.exhausted = false;
-        return true;
-      }
-      if (state.offset <= previousOffset) break;
+    const outcome = await loadTimelineSearchBatch({
+      kind: SEARCH_BATCH_KINDS.LOAD_MORE,
+      searchKey,
+      invocation,
+      knownTargetOwnerIds,
+      priorLoadMoreExhausted: previousExhausted,
+      paginationIntent: paginationIntent('search-load-more'),
+    });
+    if (!timelineSearchBatchOutcomeIsCurrent(outcome, invocation)) return false;
+    const addedIds = state.searchTargetRegistry.targets
+      .map((target) => target.id)
+      .filter((id) => !beforeIds.has(id));
+    if (addedIds.length) {
+      state.searchTargetPreload.exhausted = false;
+      return true;
     }
-    state.searchTargetPreload.exhausted = state.offset >= state.timelineTotal;
+    state.searchTargetPreload.exhausted = Boolean(outcome?.decision?.exhausted);
     return false;
+  } catch (error) {
+    if (timelineSearchBatchInvocationIsCurrent(invocation)
+        && state.searchTargetPreload.ownerId === invocation.id) {
+      state.searchTargetPreload.exhausted = previousExhausted;
+    }
+    throw error;
   } finally {
-    if (state.searchTargetPreload.key === searchKey) {
+    if (timelineSearchBatchInvocationIsCurrent(invocation)
+        && state.searchTargetPreload.key === searchKey
+        && state.searchTargetPreload.ownerId === invocation.id) {
       state.searchTargetPreload.pending = false;
+      state.searchTargetPreload.ownerId = 0;
       updateSearchMatchControls();
     }
   }
@@ -1925,17 +2508,27 @@ async function navigateSearchMatch(direction) {
   await waitForTimelineIdle();
   if (searchTargetPreloadKey() !== searchKey) return false;
   if (!searchDiscoveryContextReady()) return false;
+  const invocation = beginTimelineSearchBatchInvocation(
+    SEARCH_BATCH_KINDS.NAVIGATION,
+    searchKey,
+  );
+  if (!timelineSearchBatchInvocationIsCurrent(invocation)) return false;
   reconcileSearchTransientExpansions();
   if (!state.searchTargetRegistry.targets.length) {
     refreshSearchHighlights({ preserveActive: true, syncDetail: true });
   }
   const targets = state.searchTargetRegistry.targets;
   if (!targets.length) {
-    const materialized = await materializeNextSearchTarget(direction);
-    return activateSearchTarget(materialized, { scroll: true, syncDetail: true });
+    const materialized = await materializeNextSearchTarget(direction, invocation);
+    if (!timelineSearchBatchInvocationIsCurrent(invocation)) return false;
+    return activateSearchTarget(materialized, {
+      scroll: true,
+      syncDetail: true,
+      invocation,
+    });
   }
 
-  const options = { scroll: true, syncDetail: true };
+  const options = { scroll: true, syncDetail: true, invocation };
   const attempted = new Set();
   const activeTargetId = state.searchTargetRegistry.activeTargetId;
   const current = searchTargetIndex();
@@ -1945,16 +2538,16 @@ async function navigateSearchMatch(direction) {
       ? targets.slice(0, current).reverse()
       : targets.slice(current + 1);
   if (await activateSearchTargetCandidates(beforeBoundary, options, attempted, searchKey)) return true;
-  if (searchTargetPreloadKey() !== searchKey) return false;
+  if (!timelineSearchBatchInvocationIsCurrent(invocation)) return false;
 
   const knownBeforeMaterialization = new Set(
     state.searchTargetRegistry.targets.map((target) => target.id),
   );
-  const materialized = await materializeNextSearchTarget(direction);
+  const materialized = await materializeNextSearchTarget(direction, invocation);
   if (materialized && await activateSearchTargetCandidates(
     [materialized], options, attempted, searchKey,
   )) return true;
-  if (searchTargetPreloadKey() !== searchKey) return false;
+  if (!timelineSearchBatchInvocationIsCurrent(invocation)) return false;
 
   const newlyRegistered = state.searchTargetRegistry.targets.filter(
     (target) => !knownBeforeMaterialization.has(target.id),
@@ -1965,7 +2558,7 @@ async function navigateSearchMatch(direction) {
     attempted,
     searchKey,
   )) return true;
-  if (searchTargetPreloadKey() !== searchKey) return false;
+  if (!timelineSearchBatchInvocationIsCurrent(invocation)) return false;
 
   const updatedTargets = state.searchTargetRegistry.targets;
   const updatedCurrent = updatedTargets.findIndex((target) => target.id === activeTargetId);
@@ -2223,6 +2816,7 @@ function activeProfileRules() {
 
 function resetProfileDraft() {
   state.profileDraft = cloneProfile(activeProfile());
+  advancePresentationRevision('foldingPresentationRevision');
 }
 
 function isBuiltinProfile(profileId) {
@@ -2238,6 +2832,7 @@ function saveCustomProfiles() {
   state.customProfiles = normalizeProfiles(state.customProfiles);
   writeJsonStorage(CUSTOM_PROFILES_KEY, state.customProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
+  advancePresentationRevision('foldingPresentationRevision');
 }
 
 function hasOwnRuleForKind(profile, kind) {
@@ -2688,33 +3283,58 @@ function metadataRow(label, value) {
 function renderInspectorMetadata(event, refs, detail = null) {
   const meta = detail?.meta || event;
   const outputStats = meta.outputStats || event.outputStats || {};
-  return [
-    metadataRow(t('time'), fmtDate(meta.timestamp || event.timestamp)),
-    metadataRow(t('status'), meta.status || event.status),
-    metadataRow(t('severity'), meta.severity && meta.severity !== 'normal' ? meta.severity : ''),
-    metadataRow(t('tool'), meta.toolName || event.toolName),
-    metadataRow(t('provider'), meta.provider || event.provider),
-    metadataRow(t('model'), meta.model || event.model),
-    metadataRow(t('reasoningEffort'), meta.effort || event.effort),
-    metadataRow(t('attributionSkill'), meta.provenance?.attributionSkill || event.provenance?.attributionSkill),
-    metadataRow(t('exitCode'), outputStats.exitCode == null ? '' : String(outputStats.exitCode)),
-    metadataRow(t('duration'), outputStats.durationMs == null ? '' : `${outputStats.durationMs} ms`),
-    metadataRow(t('recordType'), event.recordType),
-    metadataRow(t('channels'), formatList(meta.channels || event.channels)),
-    metadataRow(t('touchedFiles'), formatList(meta.touchedFiles || event.touchedFiles)),
-  ].join('');
+  const channels = meta.channels || event.channels || [];
+  const touchedFiles = meta.touchedFiles || event.touchedFiles || [];
+  const items = [
+    { id: 'time', label: t('time'), value: fmtDate(meta.timestamp || event.timestamp) },
+    { id: 'tool', label: t('tool'), value: meta.toolName || event.toolName },
+    { id: 'provider', label: t('provider'), value: meta.provider || event.provider },
+    { id: 'model', label: t('model'), value: meta.model || event.model },
+    { id: 'effort', label: t('reasoningEffort'), value: meta.effort || event.effort },
+    { id: 'attributionSkill', label: t('attributionSkill'), value: meta.provenance?.attributionSkill || event.provenance?.attributionSkill },
+    { id: 'exitCode', label: t('exitCode'), value: outputStats.exitCode == null ? '' : String(outputStats.exitCode) },
+    {
+      id: 'duration',
+      label: t('duration'),
+      value: outputStats.durationMs == null ? '' : `${outputStats.durationMs} ms`,
+      aliases: outputStats.durationMs == null ? [] : [String(outputStats.durationMs)],
+    },
+    { id: 'recordType', label: t('recordType'), value: event.recordType },
+    { id: 'channels', label: t('channels'), value: formatList(channels), sourceValues: channels },
+    { id: 'touchedFiles', label: t('touchedFiles'), value: formatList(touchedFiles), sourceValues: touchedFiles },
+  ];
+  return detailPresentationApi
+    .filterInspectorMetadata(items, detail?.inspectorSections)
+    .map((item) => metadataRow(item.label, item.value))
+    .join('');
 }
 
-function renderInspectorSource(event, refs, detail = null) {
+function renderInspectorMetadataSection(event, refs, detail = null) {
+  const rows = renderInspectorMetadata(event, refs, detail);
+  if (!rows) return '';
+  return `<section class="inspectorSection inspectorMetadataSection">
+    <h3>${escapeHtml(t('metadata'))}</h3>
+    <dl class="inspectorMeta">${rows}</dl>
+  </section>`;
+}
+
+function renderInspectorRawAction(refs) {
+  return `<button class="smallBtn inspectorRawAction" type="button" data-detail-action="raw" aria-label="${escapeHtml(t('rawRefs'))}">${escapeHtml(t('rawAction', { count: refs.length }))}</button>`;
+}
+
+function renderCacheMainContextAction(event) {
+  const mainEventId = cacheUsageFact(event)?.mainContextEventId;
+  if (!mainEventId) return '';
+  return `<button class="smallBtn cacheMainContextAction" type="button" data-detail-action="navigate-linked-event" data-target-layer="main" data-target-event-id="${escapeHtml(mainEventId)}">${escapeHtml(t('viewMainContext'))}</button>`;
+}
+
+function renderInspectorSource(event, detail = null) {
   const meta = detail?.meta || event;
-  const source = sourceLabel(meta.source || event.source || refs[0]);
+  const source = sourceLabel(meta.source || event.source);
+  if (!source) return '';
   return `<section class="inspectorSection">
     <h3>${escapeHtml(t('source'))}</h3>
-    ${source ? `<div class="inspectorSourcePath">${escapeHtml(source)}</div>` : ''}
-    <div class="inspectorActions">
-      <button class="smallBtn" type="button" data-detail-action="raw">${escapeHtml(t('rawRefs'))}</button>
-      <span class="rawMeta">${escapeHtml(refs.length ? t('rawRows', { count: refs.length, plural: refs.length === 1 ? '' : 's' }) : t('noRawRefs'))}</span>
-    </div>
+    <div class="inspectorSourcePath">${escapeHtml(source)}</div>
   </section>`;
 }
 
@@ -2747,10 +3367,19 @@ function renderInspectorDetail(event) {
   const detail = state.detailCache[key];
   const error = state.detailErrors[key];
   if (detail) {
-    if (!detail.inspectorSections?.length) return '';
+    const includePrimary = trajectoryPresentationActive();
+    const primary = includePrimary
+      ? renderTimelineSections(detail.timelineSections || [])
+      : '';
+    const supplementalSections = !includePrimary && cacheUsageFact(event)
+      ? [...(detail.timelineSections || []), ...(detail.inspectorSections || [])]
+      : (detail.inspectorSections || []);
+    const supplemental = renderInspectorSections(supplementalSections);
+    const body = `${primary}${supplemental}`;
+    if (!body) return '';
     return `<section class="inspectorSection">
       <h3>${escapeHtml(t('details'))}</h3>
-      <div class="inspectorDetailBody">${renderSections(detail.inspectorSections)}</div>
+      <div class="inspectorDetailBody">${body}</div>
     </section>`;
   }
   if (error) {
@@ -2770,6 +3399,13 @@ function shouldShowInspectorSummary(event, preview, detail = null) {
   if (!source) return false;
   if (source === String(event.label || '').trim()) return false;
   if (event.layer === 'raw') return true;
+  if (detail) {
+    return !detail.timelineSections?.some((section) => (
+      section.purpose === 'content'
+      || section.purpose === 'request'
+      || section.purpose === 'result'
+    ));
+  }
   const bodyOwnedKinds = new Set([
     'user_message',
     'assistant_message',
@@ -2781,7 +3417,6 @@ function shouldShowInspectorSummary(event, preview, detail = null) {
     'js_repl',
   ]);
   if (bodyOwnedKinds.has(event.kind)) return false;
-  if (detail?.timelineSections?.some((section) => ['markdown', 'code', 'terminal', 'patch', 'diff', 'user_input', 'plan_update', 'collaboration', 'code_mode_tool_projection', 'code_mode_source'].includes(section.type))) return false;
   return true;
 }
 
@@ -3077,7 +3712,10 @@ function showSearchAssist({ mode = 'parameters', focusTarget = '' } = {}) {
     hideSearchAssist();
     return;
   }
-  if (mode === 'parameters') searchAssistInvoker = document.activeElement;
+  if (mode === 'parameters') {
+    searchAssistInvoker = document.activeElement;
+    abortPendingNavigationLoad();
+  }
   if (mode === 'results' && currentSearchMetricsModel().mode === 'idle') {
     hideSearchAssist();
     return;
@@ -3160,9 +3798,36 @@ function fileSuggestionContextKey() {
   ]);
 }
 
-async function refreshFileSuggestions() {
+function isRetiredIndexRevisionError(error) {
+  return error?.status === 409 && error?.code === 'INDEX_REVISION_RETIRED';
+}
+
+async function acceptRevisionBearingQueryResponse(data) {
+  if (Number.isSafeInteger(data?.indexRevision)
+      && data.indexRevision === state.indexRevision) return true;
+  if (state.revisionRecoveryPending) state.revisionRecoveryRequested = true;
+  else await recoverIndexRevision();
+  return false;
+}
+
+async function recoverRetiredIndexRevision(error) {
+  if (!isRetiredIndexRevisionError(error)) return false;
+  if (state.revisionRecoveryPending) state.revisionRecoveryRequested = true;
+  else await recoverIndexRevision();
+  return true;
+}
+
+async function refreshFileSuggestions(options = {}) {
   const requestId = state.fileSuggestionRequestId + 1;
   const requestContext = fileSuggestionContextKey();
+  const result = (suggestionCommitted) => {
+    if (!options.returnOutcome) return suggestionCommitted;
+    return Object.freeze({
+      suggestionRequestId: requestId,
+      suggestionContext: requestContext,
+      suggestionCommitted,
+    });
+  };
   state.fileSuggestionRequestId = requestId;
   const owner = requestOwners.fileSuggestions.start(requestContext);
   const params = new URLSearchParams({ layer: activeLayerId() });
@@ -3173,16 +3838,46 @@ async function refreshFileSuggestions() {
     const data = await api(`/api/file-suggestions?${params.toString()}`, { signal: owner.controller.signal });
     if (!requestOwners.fileSuggestions.isCurrent(owner)
         || requestId !== state.fileSuggestionRequestId
-        || requestContext !== fileSuggestionContextKey()) return false;
+        || requestContext !== fileSuggestionContextKey()) return result(false);
+    if (!(await acceptRevisionBearingQueryResponse(data))) return result(false);
     state.fileSuggestions = data.files || [];
     renderFileSuggestions();
-    return true;
+    return result(true);
   } catch (error) {
-    if (isIntentionalAbort(error)) return false;
+    if (isIntentionalAbort(error)) return result(false);
+    if (await recoverRetiredIndexRevision(error)) return result(false);
     throw error;
   } finally {
     requestOwners.fileSuggestions.finish(owner);
   }
+}
+
+function sessionsSuggestionHandoffCurrent({
+  requestId,
+  requestContext,
+  delegatedSessionId,
+  suggestionResult,
+}) {
+  const guards = {
+    sessionsRequest: requestId === state.sessionsRequestId,
+    sessionsContext: requestContext === state.sessionsDataContext
+      && requestContext === sessionsDataContextKey(),
+    delegatedSession: delegatedSessionId === state.selectedSessionId,
+    sessionScope: state.searchScope === 'session',
+    suggestionContext: suggestionResult.suggestionContext === fileSuggestionContextKey(),
+    suggestionRequest: suggestionResult.suggestionRequestId === state.fileSuggestionRequestId,
+  };
+  const passed = Object.values(guards).every(Boolean);
+  try {
+    globalThis.__sessionAnalyzerProfileObserver?.recordSuggestionHandoff?.({ ...guards, passed });
+  } catch {}
+  return passed;
+}
+
+function recordAutomaticSelectionSettled() {
+  try {
+    globalThis.__sessionAnalyzerProfileObserver?.recordAutomaticSelectionSettled?.();
+  } catch {}
 }
 
 function visibleFileSuggestions() {
@@ -3392,7 +4087,7 @@ async function restoreFocus(anchor) {
     return null;
   }
   await ensureEventLoaded(target.id);
-  const loaded = state.currentEvents.find((event) => event.id === target.id) || target;
+  const loaded = canonicalTimelineEvent(target.id) || target;
   if (anchor?.detailType === 'rawRefs') await showRaw(loaded, { replace: true });
   else showInspector(loaded, { replace: true });
   scrollToTimelineEvent(loaded.id);
@@ -3409,6 +4104,7 @@ function clearCurrentSessionOverrides() {
 function saveOverrides() {
   state.overrides = normalizeOverrides(state.overrides);
   writeJsonStorage(OVERRIDES_KEY, state.overrides);
+  advancePresentationRevision('overridesRevision');
 }
 
 function hasCurrentSessionOverrides() {
@@ -3452,6 +4148,7 @@ function setAnalyzerDisabled(disabled) {
     el.resetFoldsBtn,
     el.loadMoreBtn,
     ...el.searchScopeButtons,
+    ...el.mainPresentationButtons,
   ].filter(Boolean));
   el.searchAssist?.querySelectorAll('button, input, select').forEach((control) => controls.add(control));
   el.searchField?.querySelectorAll('[data-search-match-nav]').forEach((control) => controls.add(control));
@@ -3463,6 +4160,7 @@ function setAnalyzerDisabled(disabled) {
   renderSearchAssistChips();
   updateSearchMatchControls();
   updateProjectRefreshControl();
+  syncMainPresentationUi(analyzerDisabled);
 }
 
 function setProjectMode(selecting) {
@@ -3486,6 +4184,7 @@ function resetProjectViewState() {
   state.sessions = [];
   state.expandedSessionGroups.clear();
   state.projectResults = [];
+  state.projectResultsRevision = 0;
   state.sessionsRequestId += 1;
   state.projectSearchRequestId += 1;
   state.projectSearchDataContext = '';
@@ -3497,18 +4196,19 @@ function resetProjectViewState() {
   state.analysisRequestId += 1;
   state.selectedSessionId = '';
   state.selectedEventId = '';
-  state.offset = 0;
   state.timelineLoading = false;
   state.timelineRequestId += 1;
   state.sessionsDataContext = '';
-  state.timelineDataContext = '';
+  resetCommittedTimelineEventState();
   state.timelineReplacementRetry = null;
   state.sessionGrandTotal = 0;
   state.sessionTotal = 0;
   state.timelineTotal = 0;
   state.timelineSearchMatchCount = 0;
   state.timelineSearchEventCount = 0;
-  state.currentEvents = [];
+  state.trajectoryPresentationState = {
+    context: '', expandedGroupIds: new Set(), zoom: 1, scrollLeft: 0,
+  };
   state.searchSurfaceContexts = { sessions: '', timeline: '', detail: '' };
   state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
   state.fileSuggestions = [];
@@ -3521,13 +4221,14 @@ function resetProjectViewState() {
   invalidateNavigationCache();
   el.sessionList.innerHTML = '';
   el.analysisPanel.innerHTML = '';
-  el.timeline.innerHTML = '';
+  replaceTimelineRoot('', 'non-main');
   el.resultSummary.textContent = '';
   el.sessionHeader.innerHTML = `<h2>${escapeHtml(t('chooseSession'))}</h2><p>${escapeHtml(t('selectSessionFirst'))}</p>`;
   el.loadMoreBtn.disabled = true;
   el.loadMoreBtn.textContent = t('loadMore');
   updateResetFoldsButton();
   resetDetailPane();
+  syncMainPresentationUi();
 }
 
 function renderProjects() {
@@ -3598,6 +4299,7 @@ function resetSessionDetailCache() {
   state.detailErrors = {};
   state.detailPending = {};
   state.detailCacheGeneration += 1;
+  advancePresentationRevision('detailPresentationRevision');
 }
 
 async function cancelProjectJob(jobId) {
@@ -3655,12 +4357,20 @@ async function exitProjectChooser() {
 
 async function applyAppState(appState) {
   const totals = appState.totals || {};
-  if (appState.locale) state.locale = i18n.resolveLocale(appState.locale);
+  if (appState.locale) {
+    const nextLocale = i18n.resolveLocale(appState.locale);
+    if (nextLocale !== state.locale) {
+      state.locale = nextLocale;
+      advancePresentationRevision('localePresentationRevision');
+    }
+  }
   applyStaticLocale();
   applySourceConfig(appState);
   state.repoRoot = appState.repoRoot || '';
+  state.indexRevision = Number.isSafeInteger(appState.indexRevision) ? appState.indexRevision : 0;
   state.builtinProfiles = normalizeProfiles(appState.foldingProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
+  advancePresentationRevision('foldingPresentationRevision');
   state.eventKinds = appState.eventKinds;
   state.codeModeRequests = Array.isArray(appState.codeModeRequests) ? appState.codeModeRequests : [];
   state.sessionGrandTotal = totals.sessionCount || 0;
@@ -3677,6 +4387,7 @@ async function applyAppState(appState) {
   el.profileSelect.value = state.profileId;
   if (!el.profileSelect.value) {
     state.profileId = 'narrative';
+    advancePresentationRevision('foldingPresentationRevision');
     el.profileSelect.value = state.profileId;
     localStorage.setItem('sessionAnalyzer.profile', state.profileId);
   }
@@ -3712,6 +4423,7 @@ async function changeLocale(locale) {
     ? { profileId: state.profileId, rules: normalizeRules(cloneProfile(state.profileDraft).rules || defaultRules()) }
     : null;
   state.locale = next;
+  advancePresentationRevision('localePresentationRevision');
   clearContextReveal({ render: false });
   beginSearchTargetContextTransition();
   localStorage.setItem(LOCALE_STORAGE_KEY, state.locale);
@@ -3724,6 +4436,7 @@ async function changeLocale(locale) {
     if (dirtyDraft && state.profileId === dirtyDraft.profileId && state.profiles.some((profile) => profile.id === dirtyDraft.profileId)) {
       state.profileDraft = cloneProfile(activeProfile());
       state.profileDraft.rules = normalizeRules(dirtyDraft.rules);
+      advancePresentationRevision('foldingPresentationRevision');
       renderTimeline();
       updateMetricActionStates();
       if (state.detailView.type === 'profileRules') renderProfileRulesPane();
@@ -3880,19 +4593,23 @@ async function loadSessions() {
     )}`, { signal: owner.controller.signal });
   } catch (error) {
     if (isIntentionalAbort(error)) return false;
+    if (await recoverRetiredIndexRevision(error)) return false;
     throw error;
   } finally {
     requestOwners.sessions.finish(owner);
   }
   if (requestId !== state.sessionsRequestId || requestContext !== sessionsDataContextKey()) return false;
+  if (!(await acceptRevisionBearingQueryResponse(data))) return false;
   state.sessionsDataContext = requestContext;
   state.sessions = data.sessions;
   state.sessionTotal = data.total;
+  let delegatedSessionId = '';
+  let suggestionResult = null;
   if (!data.sessions.length) {
     state.selectedSessionId = '';
     state.searchScope = 'project';
     state.timelineRequestId += 1;
-    state.currentEvents = [];
+    resetCommittedTimelineEventState();
     state.timelineTotal = 0;
     state.timelineSearchMatchCount = 0;
     state.timelineSearchEventCount = 0;
@@ -3909,13 +4626,24 @@ async function loadSessions() {
     if (state.searchScope === 'project') {
       state.searchStructureKey = structuredSearchKey();
       syncSearchScopeUi();
-      await loadProjectResults();
+      if (!(await loadProjectResults())) return false;
     } else {
-      await selectSession(state.selectedSessionId);
+      delegatedSessionId = state.selectedSessionId;
+      suggestionResult = await selectSession(delegatedSessionId);
+      recordAutomaticSelectionSettled();
     }
   }
   renderSearchAssistChips();
-  await refreshFileSuggestions();
+  if (suggestionResult) {
+    if (!sessionsSuggestionHandoffCurrent({
+      requestId,
+      requestContext,
+      delegatedSessionId,
+      suggestionResult,
+    })) return false;
+    if (suggestionResult.suggestionCommitted) return true;
+  }
+  if (!(await refreshFileSuggestions())) return false;
   return true;
 }
 
@@ -3968,14 +4696,17 @@ async function loadProjectResults() {
     if (!requestOwners.projectResults.isCurrent(owner)
         || requestId !== state.projectSearchRequestId
         || requestContext !== projectSearchDataContextKey()) return false;
+    if (!(await acceptRevisionBearingQueryResponse(data))) return false;
     state.projectSearchDataContext = requestContext;
     state.projectSearchPendingContext = '';
     state.projectResults = data.sessions || [];
+    state.projectResultsRevision = Number.isSafeInteger(data.indexRevision) ? data.indexRevision : 0;
     state.projectSearchTotal = data.total || 0;
     state.projectSearchEventTotal = data.matchingEventTotal || 0;
     return true;
   } catch (error) {
     if (isIntentionalAbort(error)) return false;
+    if (await recoverRetiredIndexRevision(error)) return false;
     throw error;
   } finally {
     const currentOwner = requestOwners.projectResults.finish(owner);
@@ -3983,6 +4714,49 @@ async function loadProjectResults() {
       state.projectSearchLoading = false;
       state.projectSearchPendingContext = '';
       renderProjectSearchView();
+    }
+  }
+}
+
+async function recoverIndexRevision() {
+  if (state.revisionRecoveryPending) return state.revisionRecoveryPending;
+  Object.values(requestOwners).forEach((owner) => owner.abort());
+  state.sessions = [];
+  state.sessionTotal = 0;
+  state.sessionsDataContext = '';
+  resetCommittedTimelineEventState();
+  state.timelineTotal = 0;
+  state.timelineSearchMatchCount = 0;
+  state.timelineSearchEventCount = 0;
+  state.fileSuggestions = [];
+  state.projectResults = [];
+  state.projectResultsRevision = 0;
+  state.projectReturnContext = null;
+  renderSessions();
+  renderTimeline();
+  renderFileSuggestions();
+  renderProjectSearchView();
+  const recovery = (async () => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      state.revisionRecoveryRequested = false;
+      const appState = await api('/api/state');
+      const currentState = appState.currentState || appState;
+      if (!currentState?.projectSelected) return false;
+      await applyAppState(currentState);
+      if (await loadSessions() && !state.revisionRecoveryRequested) return true;
+    }
+    return false;
+  })();
+  state.revisionRecoveryPending = recovery;
+  try {
+    return await recovery;
+  } finally {
+    if (state.revisionRecoveryPending === recovery) {
+      state.revisionRecoveryPending = null;
+      if (state.revisionRecoveryRequested) {
+        state.revisionRecoveryRequested = false;
+        Promise.resolve().then(() => recoverIndexRevision()).catch(showError);
+      }
     }
   }
 }
@@ -4028,6 +4802,7 @@ async function setSearchScope(scope, options = {}) {
   }
   clearContextReveal({ render: false });
   state.searchScope = scope;
+  syncMainPresentationUi();
   state.searchStructureKey = structuredSearchKey();
   beginSearchTargetContextTransition();
   syncSearchScopeUi();
@@ -4041,6 +4816,7 @@ async function setSearchScope(scope, options = {}) {
     state.timelineRequestId += 1;
     state.analysisRequestId += 1;
     state.timelineLoading = false;
+    resetSessionDetailCache();
     resetDetailPane();
     beginProjectSearchPendingTransition();
     await Promise.all([loadProjectResults(), refreshFileSuggestions()]);
@@ -4069,6 +4845,10 @@ async function backToProjectResults() {
 
 async function drillDownProjectResult(sessionId) {
   if (state.searchScope !== 'project') return false;
+  if (state.projectResultsRevision !== state.indexRevision) {
+    await recoverIndexRevision();
+    return false;
+  }
   const result = state.projectResults.find((item) => item.id === sessionId);
   const latest = result?.searchMatch?.latestEvent;
   if (!result || !latest) return false;
@@ -4090,10 +4870,9 @@ async function drillDownProjectResult(sessionId) {
   state.searchStructureKey = structuredSearchKey();
   syncSearchScopeUi();
   beginSearchTargetContextTransition();
-  state.offset = 0;
   state.timelineLoading = false;
   state.timelineRequestId += 1;
-  state.currentEvents = [];
+  resetCommittedTimelineEventState();
   state.sessionEventKinds = { main: [], protocol: [], raw: [] };
   state.sessionCodeModeRequests = [];
   state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
@@ -4119,7 +4898,7 @@ async function drillDownProjectResult(sessionId) {
       || state.selectedSessionId !== sessionId
       || !state.projectReturnContext
       || state.projectReturnContext.eventId !== latest.id) return false;
-  const event = state.currentEvents.find((item) => item.id === latest.id);
+  const event = canonicalTimelineEvent(latest.id);
   if (!event) return false;
   state.selectedEventId = event.id;
   updateSelectedTimelineEvent();
@@ -4234,6 +5013,7 @@ function renderSessions() {
 
 function renderProjectSearchView() {
   if (state.searchScope !== 'project') return;
+  syncMainPresentationUi();
   const active = hasActiveSearchExpression();
   const noResults = active && !state.projectSearchLoading && state.projectSearchTotal === 0;
   const message = !active
@@ -4241,7 +5021,7 @@ function renderProjectSearchView() {
     : (state.projectSearchLoading ? t('searching') : (noResults ? t('projectNoResults') : t('projectResultsGuidance')));
   el.sessionHeader.innerHTML = `<h2>${escapeHtml(t('projectSearchTitle'))}</h2><p>${escapeHtml(message)}</p>`;
   el.analysisPanel.innerHTML = '';
-  el.timeline.innerHTML = `<div class="projectSearchState"><h3>${escapeHtml(t('projectSearchTitle'))}</h3><p>${escapeHtml(message)}</p></div>`;
+  replaceTimelineRoot(`<div class="projectSearchState"><h3>${escapeHtml(t('projectSearchTitle'))}</h3><p>${escapeHtml(message)}</p></div>`, 'non-main');
   el.detail.innerHTML = '';
   state.searchSurfaceContexts.timeline = '';
   state.searchSurfaceContexts.detail = '';
@@ -4329,18 +5109,18 @@ async function openInheritedSourceSession(button) {
   updateProfileApplicabilityUi();
   await selectSession(sessionId, { mobileView: 'events' });
   if (state.selectedSessionId !== sessionId) return;
-  if (!state.currentEvents.some((event) => event.id === targetEventId)
+  if (!hasCanonicalTimelineEvent(targetEventId)
       && Number.isInteger(targetIndex) && targetIndex >= 0) {
     await loadTimelineThroughIndex(targetIndex);
   }
-  const target = state.currentEvents.find((event) => event.id === targetEventId);
+  const target = canonicalTimelineEvent(targetEventId);
   if (!target) return;
   if (displayState(target) === 'hidden') {
-    state.navigationEventReveal = {
+    setNavigationEventReveal({
       sessionId,
       layerId: targetLayer,
       eventId: target.id,
-    };
+    });
     renderTimeline();
   }
   state.selectedEventId = target.id;
@@ -4360,10 +5140,9 @@ async function selectSession(sessionId, options = {}) {
   state.searchStructureKey = structuredSearchKey();
   syncSearchScopeUi();
   beginSearchTargetContextTransition();
-  state.offset = 0;
   state.timelineLoading = false;
   state.timelineRequestId += 1;
-  state.currentEvents = [];
+  resetCommittedTimelineEventState();
   state.sessionEventKinds = { main: [], protocol: [], raw: [] };
   state.sessionCodeModeRequests = [];
   state.searchTargetPreload = { key: '', pages: 0, pending: false, exhausted: false };
@@ -4388,8 +5167,13 @@ async function selectSession(sessionId, options = {}) {
   }
   renderSearchAssistChips();
   renderTimeline();
-  await Promise.all([loadAnalysis(sessionId), loadTimeline(false), refreshFileSuggestions()]);
+  const loaded = await Promise.all([
+    loadAnalysis(sessionId),
+    loadTimeline(false),
+    refreshFileSuggestions({ returnOutcome: true }),
+  ]);
   if (options.mobileView) setMobileView(options.mobileView);
+  return loaded[2];
 }
 
 async function loadAnalysis(sessionId) {
@@ -4505,9 +5289,46 @@ async function applyMetricLayer(targetLayerId) {
   await changeLayer(targetLayerId);
 }
 
-async function changeLayer(layerId) {
+function trajectoryStateForCurrentContext() {
+  const context = timelineDataContextKey();
+  if (state.trajectoryPresentationState.context !== context) {
+    state.trajectoryPresentationState = {
+      context,
+      expandedGroupIds: new Set(),
+      zoom: 1,
+      scrollLeft: 0,
+    };
+  }
+  return state.trajectoryPresentationState;
+}
+
+function changeMainPresentation(presentationId) {
+  if (!['timeline', 'trajectory'].includes(presentationId)
+      || activeLayerId() !== 'main'
+      || state.searchScope !== 'session'
+      || !state.selectedSessionId
+      || rememberedMainPresentationId() === presentationId) return false;
+  clearContextReveal({ render: false });
+  state.mainPresentationId = presentationId;
+  syncMainPresentationUi();
+  renderTimeline();
+  updateSelectedTimelineEvent();
+  if (state.detailView.type === 'inspector') {
+    const item = eventForDetailView();
+    if (item) renderInspectorPresentation(item, { navigationPending: currentNavigationPending() });
+  }
+  if (state.selectedEventId) {
+    scrollToTimelineEvent(state.selectedEventId, { behavior: 'auto' });
+  }
+  return true;
+}
+
+async function changeLayer(layerId, options = {}) {
   if (!['main', 'protocol', 'raw'].includes(layerId)) return;
-  const focusAnchor = state.searchScope === 'session' ? captureFocusAnchor() : { hadSelection: false };
+  const restoreFocusAfterChange = options.restoreFocus !== false;
+  const focusAnchor = restoreFocusAfterChange && state.searchScope === 'session'
+    ? captureFocusAnchor()
+    : { hadSelection: false };
   if (focusAnchor.hadSelection || isSelectedEventDetailView()) resetDetailPane();
   clearContextReveal({ render: false });
   clearNavigationEventReveal();
@@ -4517,6 +5338,7 @@ async function changeLayer(layerId) {
     state.searchFilters = { ...state.searchFilters, codeModeRequest: '' };
   }
   el.layerSelect.value = state.layerId;
+  syncMainPresentationUi();
   state.searchStructureKey = structuredSearchKey();
   beginProjectSearchPendingTransition();
   beginSearchTargetContextTransition();
@@ -4529,7 +5351,7 @@ async function changeLayer(layerId) {
     refreshActiveSearch({ structural: true, transitionKind: 'focus-restore' }),
     refreshFileSuggestions(),
   ]);
-  if (focusAnchor.hadSelection) await restoreFocus(focusAnchor);
+  if (restoreFocusAfterChange && focusAnchor.hadSelection) await restoreFocus(focusAnchor);
   updateMetricActionStates();
 }
 
@@ -4578,19 +5400,259 @@ function beginTimelineReplacement(requestContext) {
   clearContextReveal({ render: false });
   clearTimelineUserPaginationIntent();
   state.timelineReplacementRetry = null;
+  state.timelineSearchBatchGeneration += 1;
+  if (state.searchTargetPreload.pending) {
+    state.searchTargetPreload.pending = false;
+    state.searchTargetPreload.ownerId = 0;
+  }
+  recordTimelineEventState(requestContext);
   const epoch = paginationIntents.beginReplacement(requestContext);
   return epoch;
+}
+
+function beginTimelineSearchBatchInvocation(kind, searchKey) {
+  return Object.freeze({
+    id: state.timelineSearchBatchInvocationId += 1,
+    generation: state.timelineSearchBatchGeneration,
+    kind,
+    searchKey,
+  });
+}
+
+function timelineSearchBatchInvocationIsCurrent(invocation) {
+  return Boolean(invocation)
+    && invocation.id === state.timelineSearchBatchInvocationId
+    && invocation.generation === state.timelineSearchBatchGeneration
+    && invocation.searchKey === searchTargetPreloadKey();
+}
+
+function timelineSearchBatchOutcomeIsCurrent(outcome, invocation) {
+  return Boolean(outcome)
+    && outcome.stale !== true
+    && outcome.invocationId === invocation.id
+    && outcome.generation === invocation.generation
+    && timelineSearchBatchInvocationIsCurrent(invocation);
+}
+
+function timelineSearchBatchIdentity(requestId, requestOwnerId) {
+  return {
+    selectedSessionId: state.selectedSessionId,
+    timelineContext: timelineDataContextKey(),
+    committedTimelineContext: state.timelineDataContext,
+    searchKey: searchTargetPreloadKey(),
+    indexRevision: state.indexRevision,
+    requestId,
+    requestOwnerId,
+    batchGeneration: state.timelineSearchBatchGeneration,
+    batchInvocationId: state.timelineSearchBatchInvocationId,
+  };
+}
+
+function timelineSearchBatchIsCurrent(batch, owner, requestId) {
+  return requestOwners.timeline.isCurrent(owner)
+    && requestId === state.timelineRequestId
+    && state.timelineDataContext === batch.identity.timelineContext
+    && timelineSearchBatchIdentityMatches(
+      batch,
+      timelineSearchBatchIdentity(requestId, owner.id),
+    );
+}
+
+function timelineSearchBatchOutcome(invocation, values) {
+  return {
+    invocationId: invocation.id,
+    generation: invocation.generation,
+    ...values,
+  };
+}
+
+function retireStaleTimelineSearchBatch(batch, invocation) {
+  retireTimelineSearchBatch(batch);
+  return timelineSearchBatchOutcome(invocation, {
+    started: true,
+    stale: true,
+    published: false,
+    decision: null,
+  });
+}
+
+function publishTimelineSearchBatch(batch, owner, requestId) {
+  if (!timelineSearchBatchIsCurrent(batch, owner, requestId)) return false;
+  const snapshot = timelineSearchBatchSnapshot(batch);
+  if (state.offset !== snapshot.baseOffset || state.currentEvents.length !== snapshot.baseOffset) {
+    return false;
+  }
+  const publication = takeTimelineSearchBatchPublication(
+    batch,
+    timelineSearchBatchIdentity(requestId, owner.id),
+  );
+  const appendBoundary = captureTimelineAppendBoundary(snapshot.baseOffset);
+  commitTimelineEventAppend(publication.events);
+  if (state.temporaryEventReveal
+      && hasCanonicalTimelineEvent(state.temporaryEventReveal.event.id)) {
+    setTemporaryEventReveal(null);
+  }
+  state.timelineTotal = publication.metadata.total;
+  state.timelineSearchMatchCount = publication.metadata.searchMatchCount || 0;
+  state.timelineSearchEventCount = publication.metadata.searchEventCount || 0;
+  state.sessionEventKinds = publication.metadata.eventKinds;
+  state.sessionCodeModeRequests = Array.isArray(publication.metadata.codeModeRequests)
+    ? publication.metadata.codeModeRequests
+    : [];
+  syncSearchAssistControls();
+  if (state.detailView.type === 'profileRules') {
+    renderProfileRulesPane({ preserveTimelinePresentation: true, refreshSearch: false });
+  }
+  presentCommittedTimelineAppend(appendBoundary, publication.events);
+  convergeSelectedEventDetailView({ refreshedHitState: true });
+  paginationIntents.commitReplacement();
+  renderResultSummary();
+  return true;
+}
+
+async function loadTimelineSearchBatch(options) {
+  const outcome = (values) => timelineSearchBatchOutcome(options.invocation, values);
+  if (!timelineSearchBatchInvocationIsCurrent(options.invocation)) {
+    return outcome({ started: false, stale: true, published: false, decision: null });
+  }
+  if (!state.selectedSessionId || state.timelineLoading) {
+    return outcome({ started: false, stale: false, published: false, decision: null });
+  }
+  if (!paginationIntents.claim(options.paginationIntent)) {
+    return outcome({ started: false, stale: false, published: false, decision: null });
+  }
+  const sessionId = state.selectedSessionId;
+  const requestContext = timelineDataContextKey();
+  if (state.timelineDataContext !== requestContext || options.searchKey !== searchTargetPreloadKey()) {
+    return outcome({ started: false, stale: true, published: false, decision: null });
+  }
+  const requestId = state.timelineRequestId + 1;
+  state.timelineRequestId = requestId;
+  const owner = requestOwners.timeline.start(requestContext);
+  let batch;
+  state.timelineLoading = true;
+  updateLoadMoreButton();
+  try {
+    batch = createTimelineSearchBatch({
+      kind: options.kind,
+      identity: timelineSearchBatchIdentity(requestId, owner.id),
+      baseOffset: state.offset,
+      baseTimelineTotal: state.timelineTotal,
+      navigationDirection: options.navigationDirection,
+      consumedPreloadAttempts: options.consumedPreloadAttempts,
+      preloadMaxAttempts: SEARCH_TARGET_PRELOAD_MAX_PAGES,
+      preloadMinTargetCount: SEARCH_TARGET_PRELOAD_MIN,
+      knownTargetOwnerIds: options.knownTargetOwnerIds || [],
+      priorLoadMoreExhausted: options.priorLoadMoreExhausted,
+    });
+    while (true) {
+      if (!timelineSearchBatchIsCurrent(batch, owner, requestId)) {
+        return retireStaleTimelineSearchBatch(batch, options.invocation);
+      }
+      const attempt = beginTimelineSearchBatchAttempt(batch);
+      if (!attempt.started) {
+        return outcome({
+          started: false,
+          stale: false,
+          published: false,
+          decision: attempt.decision,
+        });
+      }
+      if (batch.kind === SEARCH_BATCH_KINDS.PRELOAD
+          && state.searchTargetPreload.key === options.searchKey) {
+        state.searchTargetPreload.pages = attempt.attemptsConsumed;
+      }
+
+      let decision;
+      try {
+        const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/timeline${currentQuery({
+          offset: attempt.offset,
+          limit: state.limit,
+        })}`, { signal: owner.controller.signal });
+        if (!timelineSearchBatchIsCurrent(batch, owner, requestId)) {
+          return retireStaleTimelineSearchBatch(batch, options.invocation);
+        }
+        const additionsById = timelineEventStateApi.validateTimelineEventAdditions(
+          data.events,
+          [state.currentEventsById, batch.acceptedById],
+        );
+        decision = acceptTimelineSearchBatchPage(batch, {
+          events: data.events,
+          additionsById,
+          metadata: {
+            total: data.total,
+            searchMatchCount: data.searchMatchCount,
+            searchEventCount: data.searchEventCount,
+            eventKinds: data.eventKinds,
+            codeModeRequests: data.codeModeRequests,
+          },
+        });
+      } catch (error) {
+        if (isIntentionalAbort(error) || !timelineSearchBatchIsCurrent(batch, owner, requestId)) {
+          return retireStaleTimelineSearchBatch(batch, options.invocation);
+        }
+        const failure = failTimelineSearchBatchAttempt(batch);
+        let published = false;
+        let successor = null;
+        if (failure.flush) {
+          published = publishTimelineSearchBatch(batch, owner, requestId);
+          if (!published) return retireStaleTimelineSearchBatch(batch, options.invocation);
+          if (batch.kind === SEARCH_BATCH_KINDS.PRELOAD && failure.continueAfterError) {
+            successor = takeTimelineSearchPreloadSuccessor(
+              batch,
+              timelineSearchBatchIdentity(requestId, owner.id),
+            );
+          }
+        }
+        if (batch.kind !== SEARCH_BATCH_KINDS.PRELOAD) throw error;
+        showError(error);
+        if (failure.continueAfterError) {
+          successor ||= batch;
+          if (timelineSearchBatchIsCurrent(successor, owner, requestId)) {
+            batch = successor;
+            continue;
+          }
+        }
+        return outcome({
+          started: true,
+          stale: false,
+          published,
+          decision: failure,
+        });
+      }
+
+      if (decision.action === 'continue') continue;
+      let published = false;
+      if (decision.flush) {
+        published = publishTimelineSearchBatch(batch, owner, requestId);
+        if (!published) return retireStaleTimelineSearchBatch(batch, options.invocation);
+      }
+      return outcome({
+        started: true,
+        stale: false,
+        published,
+        decision,
+      });
+    }
+  } finally {
+    const currentOwner = requestOwners.timeline.finish(owner);
+    if (currentOwner && requestId === state.timelineRequestId) {
+      state.timelineLoading = false;
+      updateLoadMoreButton();
+    }
+  }
 }
 
 async function loadTimeline(append, options = {}) {
   if (!state.selectedSessionId) return false;
   if (append && state.timelineLoading) return false;
   if (append && !paginationIntents.claim(options.paginationIntent)) return false;
-  if (!append) state.temporaryEventReveal = null;
+  if (!append) setTemporaryEventReveal(null);
   const sessionId = state.selectedSessionId;
   const requestContext = timelineDataContextKey();
   if (append && state.timelineDataContext !== requestContext) return false;
   const appendOffset = append ? state.offset : 0;
+  let appendBoundary = null;
   const selectedBeforeReplacement = append ? '' : state.selectedEventId;
   const replacementEpoch = append ? 0 : beginTimelineReplacement(requestContext);
   const requestId = state.timelineRequestId + 1;
@@ -4609,28 +5671,32 @@ async function loadTimeline(append, options = {}) {
         || requestContext !== timelineDataContextKey()) return false;
     if (append) {
       if (appendOffset !== state.offset || appendOffset !== state.currentEvents.length) return false;
-      state.currentEvents = state.currentEvents.concat(data.events);
+      appendBoundary = captureTimelineAppendBoundary(appendOffset);
+      commitTimelineEventAppend(data.events);
     } else {
-      state.currentEvents = data.events;
+      commitTimelineEventReplacement(requestContext, data.events);
     }
     if (state.temporaryEventReveal
-        && state.currentEvents.some((event) => event.id === state.temporaryEventReveal.event.id)) {
-      state.temporaryEventReveal = null;
+        && hasCanonicalTimelineEvent(state.temporaryEventReveal.event.id)) {
+      setTemporaryEventReveal(null);
     }
-    state.offset = state.currentEvents.length;
     state.timelineTotal = data.total;
     state.timelineSearchMatchCount = data.searchMatchCount || 0;
     state.timelineSearchEventCount = data.searchEventCount || 0;
     state.sessionEventKinds = data.eventKinds;
     state.sessionCodeModeRequests = Array.isArray(data.codeModeRequests) ? data.codeModeRequests : [];
-    state.timelineDataContext = requestContext;
     syncSearchAssistControls();
-    if (state.detailView.type === 'profileRules') renderProfileRulesPane();
-    renderTimeline();
+    if (state.detailView.type === 'profileRules') {
+      renderProfileRulesPane(append
+        ? { preserveTimelinePresentation: true, refreshSearch: false }
+        : {});
+    }
+    if (append) presentCommittedTimelineAppend(appendBoundary, data.events);
+    else renderTimeline();
     convergeSelectedEventDetailView({ refreshedHitState: true });
     if (!append && options.viewportPolicy === 'structured-filter') {
       const selected = selectedBeforeReplacement
-        ? state.currentEvents.find((event) => event.id === selectedBeforeReplacement)
+        ? canonicalTimelineEvent(selectedBeforeReplacement)
         : null;
       if (selected) scrollToTimelineEvent(selected.id, { behavior: 'auto' });
       else resetTimelineScroll();
@@ -4703,14 +5769,12 @@ async function loadTimelineThroughIndex(timelineIndex) {
       events.push(...data.events);
       if (!data.events.length || events.length >= total) break;
     }
-    state.currentEvents = events;
-    state.offset = events.length;
+    commitTimelineEventReplacement(requestContext, events);
     state.timelineTotal = total;
     state.timelineSearchMatchCount = searchMatchCount;
     state.timelineSearchEventCount = searchEventCount;
     state.sessionEventKinds = eventKinds || { main: [], protocol: [], raw: [] };
     state.sessionCodeModeRequests = Array.isArray(codeModeRequests) ? codeModeRequests : [];
-    state.timelineDataContext = requestContext;
     syncSearchAssistControls();
     renderTimeline();
     renderResultSummary();
@@ -4775,14 +5839,12 @@ async function refreshTimelineFindState(options = {}) {
       events.push(...data.events);
       if (!data.events.length || events.length >= total) break;
     }
-    state.currentEvents = events;
-    state.offset = events.length;
+    commitTimelineEventReplacement(requestContext, events);
     state.timelineTotal = total;
     state.timelineSearchMatchCount = searchMatchCount;
     state.timelineSearchEventCount = searchEventCount;
     state.sessionEventKinds = eventKinds;
     state.sessionCodeModeRequests = Array.isArray(codeModeRequests) ? codeModeRequests : [];
-    state.timelineDataContext = requestContext;
     syncSearchAssistControls();
     if (state.detailView.type === 'profileRules') renderProfileRulesPane();
     renderTimeline();
@@ -4824,9 +5886,22 @@ function naturalDisplayState(event) {
   return evaluateDisplayStateFromRules(event, profile?.rules || defaultRules());
 }
 
+function setNavigationEventReveal(nextReveal) {
+  if (state.navigationEventReveal === nextReveal) return false;
+  state.navigationEventReveal = nextReveal;
+  advancePresentationRevision('navigationRevealRevision');
+  return true;
+}
+
 function clearNavigationEventReveal(eventId = '') {
   if (!state.navigationEventReveal || (eventId && state.navigationEventReveal.eventId !== eventId)) return false;
-  state.navigationEventReveal = null;
+  return setNavigationEventReveal(null);
+}
+
+function setTemporaryEventReveal(nextReveal) {
+  if (state.temporaryEventReveal === nextReveal) return false;
+  state.temporaryEventReveal = nextReveal;
+  advancePresentationRevision('temporaryRevealRevision');
   return true;
 }
 
@@ -4920,10 +5995,11 @@ function renderContextRevealRowContents(event) {
     <button class="contextRevealAction" type="button" data-action="inspect-context-parent" data-context-parent-id="${escapeHtml(parent.id)}">${escapeHtml(t('inspectEnclosingOperation'))}</button>`;
 }
 
-function syncContextRevealDom() {
+function syncContextRevealDom(slots = null) {
   if (!el.timeline) return;
   const reveal = state.contextReveal;
-  for (const slot of el.timeline.querySelectorAll('.contextRevealSlot')) {
+  const mountedSlots = slots || el.timeline.querySelectorAll('.contextRevealSlot');
+  for (const slot of mountedSlots) {
     const active = Boolean(reveal && slot.dataset.contextSourceId === reveal.sourceEventId && reveal.parentEvent);
     slot.hidden = !active;
     slot.classList.toggle('contextRevealRow', active);
@@ -4933,23 +6009,27 @@ function syncContextRevealDom() {
   }
 }
 
-function syncEnclosingOperationAffordances() {
+function syncEnclosingOperationAffordances(articles = null) {
   if (!el.timeline) return;
   const search = currentSearchState();
-  for (const article of el.timeline.querySelectorAll('.event[data-event-id]')) {
-    const item = currentTimelineEvent(article.dataset.eventId);
-    const button = article.querySelector('[data-action="reveal-context-parent"]');
-    if (!item || !button) continue;
-    const visible = navigationApi.shouldShowEnclosingOperationAffordance(
-      item,
-      displayState(item),
-      search,
-      state.selectedEventId,
-    );
-    button.hidden = !visible;
-    button.setAttribute('aria-hidden', visible ? 'false' : 'true');
-    button.toggleAttribute('disabled', state.contextRevealPending?.sourceEventId === item.id);
-  }
+  timelineEventStateApi.forEachIndexedTimelineCard(
+    articles || el.timeline.querySelectorAll('.event[data-event-id]'),
+    (eventId, purpose) => currentTimelineEvent(eventId, purpose),
+    (article, item) => {
+      const button = article.querySelector('[data-action="reveal-context-parent"]');
+      if (!item || !button) return;
+      const visible = navigationApi.shouldShowEnclosingOperationAffordance(
+        item,
+        displayState(item),
+        search,
+        state.selectedEventId,
+      );
+      button.hidden = !visible;
+      button.setAttribute('aria-hidden', visible ? 'false' : 'true');
+      button.toggleAttribute('disabled', state.contextRevealPending?.sourceEventId === item.id);
+    },
+    { purpose: 'enclosingAffordance' },
+  );
 }
 
 function renderCodeModeCollapsedPreview(presentation, display) {
@@ -4994,6 +6074,51 @@ function renderCodeModeCollapsedPreview(presentation, display) {
   return '';
 }
 
+function renderCacheUsagePreview(event) {
+  const usage = cacheUsageFact(event);
+  if (!usage) return '';
+  const parts = [
+    { label: t('cacheInput'), value: formatCompactCacheNumber(usage.inputTokens) },
+    {
+      label: t('cacheCached'),
+      value: `${formatCompactCacheNumber(usage.cachedInputTokens)}${Number.isSafeInteger(usage.reuseBasisPoints) ? ` (${formatCacheReuseBasisPoints(usage.reuseBasisPoints)})` : ''}`,
+    },
+    Number.isSafeInteger(usage.outputTokens)
+      ? { label: t('cacheOutput'), value: formatCompactCacheNumber(usage.outputTokens) }
+      : null,
+  ].filter((part) => part?.value);
+  const body = parts.map((part) => (
+    `<span class="cacheUsageMetric"><span>${escapeHtml(part.label)}</span> <strong>${escapeHtml(part.value)}</strong></span>`
+  )).join('<span class="cacheUsageSeparator" aria-hidden="true">·</span>');
+  return body ? `<div class="eventPreview cacheUsagePreview">${body}</div>` : '';
+}
+
+function renderCacheDiscontinuityContext(event) {
+  const usage = cacheUsageFact(event);
+  const discontinuity = usage?.discontinuity;
+  if (!discontinuity) return '';
+  const parts = [];
+  const elapsed = formatCacheElapsed(discontinuity.elapsedMs);
+  if (elapsed) parts.push(t('cacheDiscontinuityAfter', { elapsed }));
+  const previous = formatCompactCacheNumber(discontinuity.previousCachedInputTokens);
+  const current = formatCompactCacheNumber(usage.cachedInputTokens);
+  if (previous && current) {
+    parts.push(t('cacheDiscontinuityCachedChange', { previous, current }));
+  }
+  return parts.length
+    ? `<div class="cacheDiscontinuityContext">${parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('<span class="cacheUsageSeparator" aria-hidden="true">·</span>')}</div>`
+    : '';
+}
+
+function renderMainCacheDiscontinuityAffordance(event) {
+  const link = cacheDiscontinuityLinkFact(event);
+  if (!link?.protocolEventId || !Number.isSafeInteger(link.count) || link.count < 1) return '';
+  const label = link.count === 1
+    ? t('cacheDiscontinuitySingleLink')
+    : t('cacheDiscontinuityMultipleLink', { count: link.count });
+  return `<button class="cacheDiscontinuityAffordance" type="button" data-action="navigate-linked-event" data-target-layer="protocol" data-target-event-id="${escapeHtml(link.protocolEventId)}">${escapeHtml(label)}</button>`;
+}
+
 function renderEventPreview(event, display, presentation = null) {
   if (display === 'expanded') return '';
   if (event.kind === 'usage_limit_warning' && event.usageLimits?.length) {
@@ -5001,6 +6126,13 @@ function renderEventPreview(event, display, presentation = null) {
   }
   if (event.kind === 'usage_limit_warning' && event.tokenUsage?.length) {
     return `<div class="eventPreview tokenPreview">${renderTokenUsageBadges(event.tokenUsage)}</div>`;
+  }
+  const cacheUsagePreview = renderCacheUsagePreview(event);
+  if (cacheUsagePreview) {
+    const searchPreview = event.hasSearchHit && event.snippet
+      ? `<div class="eventPreview cacheUsageSearchSnippet">${escapeHtml(event.snippet)}</div>`
+      : '';
+    return `${cacheUsagePreview}${renderCacheDiscontinuityContext(event)}${searchPreview}`;
   }
   if (event.hasSearchHit && event.snippet) {
     return `<div class="eventPreview">${escapeHtml(event.snippet)}</div>`;
@@ -5037,46 +6169,43 @@ function renderRawForkSegmentHeading(event, previousEvent) {
   return key ? `<h3 class="rawForkSegmentHeading" data-fork-segment="${escapeHtml(event.forkSegment)}">${escapeHtml(t(key))}</h3>` : '';
 }
 
-function renderTimeline() {
-  if (state.searchScope !== 'session') {
-    clearContextReveal({ render: false });
-    renderProjectSearchView();
-    return;
-  }
-  reconcileContextRevealState();
-  const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
-  const timelineEvents = renderedTimelineEvents();
-  el.timeline.innerHTML = `${renderProjectReturnBanner()}${renderInheritedContextCard()}${timelineEvents.map((event, index) => {
-    const ds = displayState(event);
-    const presentation = codeModeEventPresentation(event);
-    const compactWebLifecycle = event.kind === 'web_search' && compactWebLifecycleIds.has(event.id);
-    const temporaryReveal = state.temporaryEventReveal?.event.id === event.id
-      && !state.currentEvents.some((candidate) => candidate.id === event.id);
-    const classes = [
-      'event',
-      ds,
-      `state-${cssToken(ds)}`,
-      `kind-${cssToken(event.kind)}`,
-      event.severity,
-      event.status ? `status-${cssToken(event.status)}` : '',
-      event.id === state.selectedEventId ? 'selected' : '',
-      event.hasSearchHit ? 'searchHit' : '',
-      ds === 'hidden' ? 'hiddenByProfile' : '',
-      temporaryReveal ? 'temporaryReferenceReveal' : '',
-      presentation ? `code-mode-${cssToken(presentation.variant)}` : '',
-      compactWebLifecycle ? 'code-mode-web-lifecycle' : '',
-    ].filter(Boolean).join(' ');
-    const displayToolName = compactWebLifecycle || event.kind === 'code_mode_operation' ? '' : event.toolName;
-    const chips = [
-      event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
-      ...(Array.isArray(event.tags) ? event.tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`) : []),
-      renderCodeModePresentationChips(presentation, event.kind === 'code_mode_operation'),
-      displayToolName ? `<span class="chip toolChip">${escapeHtml(displayToolName)}</span>` : '',
-      event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t('files'))}</span>` : '',
-      temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
-    ].join('');
-    const toggleLabel = ds === 'expanded' ? t('collapseEvent') : t('expandEvent');
-    return `${renderRawForkSegmentHeading(event, timelineEvents[index - 1])}${renderContextRevealSlot(event)}<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
+function renderTimelineCardMarkup(event, compactWebLifecycleIds) {
+  const ds = displayState(event);
+  const presentation = codeModeEventPresentation(event);
+  const compactWebLifecycle = event.kind === 'web_search' && compactWebLifecycleIds.has(event.id);
+  const temporaryReveal = state.temporaryEventReveal?.event.id === event.id
+    && !hasCanonicalTimelineEvent(event.id);
+  const cacheUsage = cacheUsageFact(event);
+  const classes = [
+    'event',
+    ds,
+    `state-${cssToken(ds)}`,
+    `kind-${cssToken(event.kind)}`,
+    event.severity,
+    event.status ? `status-${cssToken(event.status)}` : '',
+    event.id === state.selectedEventId ? 'selected' : '',
+    event.hasSearchHit ? 'searchHit' : '',
+    ds === 'hidden' ? 'hiddenByProfile' : '',
+    temporaryReveal ? 'temporaryReferenceReveal' : '',
+    presentation ? `code-mode-${cssToken(presentation.variant)}` : '',
+    compactWebLifecycle ? 'code-mode-web-lifecycle' : '',
+    cacheUsage ? 'cacheUsageEvent' : '',
+    cacheUsage?.discontinuity ? 'cacheDiscontinuityEvent' : '',
+  ].filter(Boolean).join(' ');
+  const displayToolName = compactWebLifecycle || event.kind === 'code_mode_operation' ? '' : event.toolName;
+  const chips = [
+    event.status ? `<span class="chip statusChip statusChip-${cssToken(event.status)}">${escapeHtml(event.status)}</span>` : '',
+    ...(Array.isArray(event.tags) ? event.tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`) : []),
+    renderCodeModePresentationChips(presentation, event.kind === 'code_mode_operation'),
+    cacheUsage?.discontinuity
+      ? `<span class="chip cacheDiscontinuityChip">${escapeHtml(t('cacheDiscontinuity'))}</span>`
+      : '',
+    displayToolName ? `<span class="chip toolChip">${escapeHtml(displayToolName)}</span>` : '',
+    event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t('files'))}</span>` : '',
+    temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
+  ].join('');
+  const toggleLabel = ds === 'expanded' ? t('collapseEvent') : t('expandEvent');
+  return `${renderContextRevealSlot(event)}<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
       <div class="eventHeader">
         <button class="eventToggle" type="button" data-action="toggle" aria-label="${toggleLabel}" title="${toggleLabel}">
           <span class="srOnly">${toggleLabel}</span>
@@ -5086,11 +6215,288 @@ function renderTimeline() {
         <span class="eventTime">${escapeHtml(fmtDate(event.timestamp))}</span>
       </div>
       ${compactWebLifecycle && !event.hasSearchHit ? '' : renderEventPreview(event, ds, presentation)}
+      ${renderMainCacheDiscontinuityAffordance(event)}
       ${renderEnclosingOperationAffordance(event, ds)}
       ${renderEventBody(event, ds)}
       ${renderEventFooterActions(ds)}
     </article>`;
-  }).join('')}`;
+}
+
+function validateIncrementalMainAppend(boundary, suffixEvents) {
+  if (!boundary || state.searchScope !== 'session' || activeLayerId() !== 'main') {
+    throw new Error('Timeline append presentation context is not Main Session Scope');
+  }
+  if (!Array.isArray(suffixEvents) || suffixEvents.length === 0
+      || !Number.isSafeInteger(boundary.prefixLength) || boundary.prefixLength <= 0) {
+    throw new Error('Timeline append must be a non-empty canonical suffix');
+  }
+  if (state.timelineDataContext !== boundary.canonicalContext
+      || state.timelineDataContext !== timelineDataContextKey()) {
+    throw new Error('Timeline append canonical context is not current');
+  }
+  if (state.currentEvents.length !== boundary.prefixLength + suffixEvents.length
+      || boundary.prefixEventIds.length !== boundary.prefixLength) {
+    throw new Error('Timeline append canonical length is not contiguous');
+  }
+  for (let index = 0; index < boundary.prefixLength; index += 1) {
+    if (state.currentEvents[index]?.id !== boundary.prefixEventIds[index]) {
+      throw new Error('Timeline append canonical prefix changed');
+    }
+  }
+  for (let index = 0; index < suffixEvents.length; index += 1) {
+    if (state.currentEvents[boundary.prefixLength + index] !== suffixEvents[index]) {
+      throw new Error('Timeline append suffix is not the committed canonical suffix');
+    }
+  }
+  if (state.temporaryEventReveal || state.timelineReplacementRetry || state.selectingProject) {
+    throw new Error('Timeline append has incompatible temporary presentation state');
+  }
+  const presentationToken = currentTimelinePresentationToken();
+  if (!timelineCardLifecycleApi.presentationTokensEqual(
+    boundary.mountedPresentationToken,
+    presentationToken,
+  ) || !timelineCardLifecycle.mountedContextAndTokenMatch(
+    boundary.canonicalContext,
+    presentationToken,
+  )) {
+    throw new Error('Timeline append mounted presentation token is stale');
+  }
+  if (searchTargetKey() !== boundary.searchTargetKey
+      || state.searchTargetRegistry.key !== boundary.searchTargetKey
+      || state.searchHighlight.query !== boundary.searchHighlightQuery
+      || state.searchHighlight.query !== currentSearchState().q) {
+    throw new Error('Timeline append search presentation context is stale');
+  }
+  const prefixEvents = state.currentEvents.slice(0, boundary.prefixLength);
+  const prefixCards = mountedCanonicalMainCardDescriptors(prefixEvents);
+  const parity = timelineCardLifecycle.paritySnapshot({
+    expectedEventIds: boundary.prefixEventIds,
+    cards: prefixCards,
+  });
+  if (!parity.parityPassed) throw new Error('Timeline append owner/card/order parity failed');
+  return { presentationToken, prefixCards };
+}
+
+function prepareIncrementalMainAppend(boundary, suffixEvents) {
+  const eligibility = validateIncrementalMainAppend(boundary, suffixEvents);
+  const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
+  const template = document.createElement('template');
+  template.innerHTML = suffixEvents.map((event) => (
+    renderTimelineCardMarkup(event, compactWebLifecycleIds)
+  )).join('');
+  const fragment = template.content;
+  const articles = [...fragment.querySelectorAll('.event[data-event-id]')];
+  if (articles.length !== suffixEvents.length
+      || articles.some((article) => article.parentNode !== fragment)) {
+    throw new Error('Timeline append fragment card count is invalid');
+  }
+  const cards = articles.map((articleNode, index) => {
+    const event = suffixEvents[index];
+    if (articleNode.dataset.eventId !== event.id) {
+      throw new Error('Timeline append fragment card order is invalid');
+    }
+    const candidateSlot = articleNode.previousElementSibling;
+    const contextSlotNode = candidateSlot?.classList.contains('contextRevealSlot')
+        && candidateSlot.dataset.contextSourceId === event.id
+      ? candidateSlot
+      : null;
+    return { eventId: event.id, articleNode, contextSlotNode };
+  });
+  timelineCardLifecycle.validateMainOwnerRegistration({
+    canonicalContext: boundary.canonicalContext,
+    presentationToken: eligibility.presentationToken,
+    cards,
+  });
+  return {
+    ...eligibility,
+    fragment,
+    cards,
+  };
+}
+
+function finalizeIncrementalMainAppend(boundary, suffixEvents, prepared) {
+  const lifecycleResult = timelineCardLifecycle.registerMainOwners({
+    canonicalContext: boundary.canonicalContext,
+    presentationToken: prepared.presentationToken,
+    cards: prepared.cards,
+  });
+  syncContextRevealDom(prepared.cards.map((owner) => owner.contextSlotNode).filter(Boolean));
+  syncEnclosingOperationAffordances(prepared.cards.map((owner) => owner.articleNode));
+  state.searchSurfaceContexts.timeline = state.timelineDataContext === timelineDataContextKey()
+    ? timelineSearchSurfaceContextKey()
+    : '';
+  if (!searchDiscoveryContextReady()) throw new Error('Timeline append search surface is not ready');
+  refreshAppendedSearchHighlights(
+    suffixEvents,
+    prepared.cards,
+    boundary.prefixLength,
+    boundary.searchTargetKey,
+  );
+  queueVisibleDetailLoad();
+  recordTimelineLifecycle('append', 'main', lifecycleResult);
+}
+
+function trajectoryPresentationLabels() {
+  return {
+    region: t('trajectoryPresentationRegion'),
+    overview: t('trajectoryOverview'),
+    sequence: t('trajectorySequence'),
+    loadedSequence: t('trajectoryLoadedSequence', { loaded: state.offset }),
+    overviewHint: t('trajectoryOverviewHint'),
+    overviewSelect: t('trajectoryOverviewSelect'),
+    selectedEvent: t('trajectorySelectedEvent'),
+    zoomOut: t('trajectoryZoomOut'),
+    zoomIn: t('trajectoryZoomIn'),
+    fitAll: t('trajectoryFitAll'),
+    fitSequence: t('trajectoryFitSequence'),
+    panSequence: t('trajectoryPanSequence'),
+    narrative: t('trajectoryNarrative'),
+    input: t('trajectoryInputLane'),
+    model: t('trajectoryModelLane'),
+    tools: t('trajectoryToolsLane'),
+    other: t('trajectoryOtherLane'),
+    event: t('event'),
+    turn: t('trajectoryTurn'),
+    toolActivity: t('trajectoryToolActivity'),
+    toolCall: t('trajectoryToolCall'),
+    toolCalls: t('trajectoryToolCalls'),
+    failed: statusLabel('failed'),
+    empty: t('trajectoryNoEvents'),
+  };
+}
+
+function scheduleTrajectorySearchRefresh() {
+  if (!currentSearchState().q || state.trajectorySearchRefreshFrame) return;
+  state.trajectorySearchRefreshFrame = requestAnimationFrame(() => {
+    state.trajectorySearchRefreshFrame = 0;
+    if (!trajectoryPresentationActive() || !el.timeline.querySelector('.trajectoryPresentation')) return;
+    state.searchSurfaceContexts.timeline = state.timelineDataContext === timelineDataContextKey()
+      ? timelineSearchSurfaceContextKey()
+      : '';
+    refreshSearchHighlights({ preserveActive: true });
+  });
+}
+
+function selectTrajectoryEvent(item) {
+  if (!item?.id || !trajectoryPresentationActive()) return false;
+  hideSearchAssist();
+  if (displayState(item) === 'hidden') {
+    setNavigationEventReveal({
+      sessionId: state.selectedSessionId,
+      layerId: 'main',
+      eventId: item.id,
+    });
+    renderTimeline();
+  }
+  const current = currentTimelineEvent(item.id) || item;
+  showInspector(current, { origin: DETAIL_VIEW_ORIGIN_USER });
+  return true;
+}
+
+function prependTrajectoryContextCards() {
+  const markup = `${renderProjectReturnBanner()}${renderInheritedContextCard()}`;
+  if (!markup) return;
+  const template = document.createElement('template');
+  template.innerHTML = markup;
+  el.timeline.prepend(template.content);
+}
+
+function trajectoryDetachedReferenceEvent() {
+  const event = state.temporaryEventReveal?.event;
+  if (!event?.id || hasCanonicalTimelineEvent(event.id)) return null;
+  return event;
+}
+
+function prependTrajectoryDetachedReference() {
+  const event = trajectoryDetachedReferenceEvent();
+  if (!event) return;
+  const template = document.createElement('template');
+  template.innerHTML = `<section class="trajectoryDetachedReference" data-trajectory-detached-event-id="${escapeHtml(event.id)}" aria-label="${escapeHtml(t('trajectoryDetachedReference'))}">
+    <header class="trajectoryDetachedReferenceHeader">
+      <h3>${escapeHtml(t('trajectoryDetachedReference'))}</h3>
+      <p>${escapeHtml(t('trajectoryDetachedReferenceHint'))}</p>
+    </header>
+    ${renderTimelineCardMarkup(event, new Set())}
+  </section>`;
+  el.timeline.prepend(template.content);
+}
+
+function renderTrajectoryProjection() {
+  const trajectoryState = trajectoryStateForCurrentContext();
+  replaceTimelineRoot('', 'non-main');
+  const model = trajectoryPresentationApi.renderTrajectoryPresentation({
+    root: el.timeline,
+    events: state.currentEvents,
+    selectedEventId: state.selectedEventId,
+    loadedEventCount: state.offset,
+    totalEventCount: state.timelineTotal,
+    loadedStatus: state.offset < state.timelineTotal
+      ? t('trajectoryLoadedPrefix', { loaded: state.offset, total: state.timelineTotal })
+      : t('trajectoryLoadedSequence', { loaded: state.offset }),
+    viewState: trajectoryState,
+    displayStateForEvent: (event) => displayState(event),
+    labels: trajectoryPresentationLabels(),
+    expandedGroupIds: trajectoryState.expandedGroupIds,
+    onGroupToggle: (groupId, open) => {
+      if (open) trajectoryState.expandedGroupIds.add(groupId);
+      else trajectoryState.expandedGroupIds.delete(groupId);
+    },
+    onGroupMaterialized: () => scheduleTrajectorySearchRefresh(),
+    onSelect: (item) => selectTrajectoryEvent(item),
+  });
+  prependTrajectoryDetachedReference();
+  prependTrajectoryContextCards();
+  state.searchSurfaceContexts.timeline = state.timelineDataContext === timelineDataContextKey()
+    ? timelineSearchSurfaceContextKey()
+    : '';
+  refreshSearchHighlights({ preserveActive: true });
+  return model;
+}
+
+function presentCommittedTimelineAppend(boundary, suffixEvents) {
+  if (trajectoryPresentationActive()) {
+    renderTimeline();
+    return true;
+  }
+  let prepared;
+  try {
+    prepared = prepareIncrementalMainAppend(boundary, suffixEvents);
+  } catch {
+    renderTimeline();
+    return false;
+  }
+
+  try {
+    el.timeline.append(prepared.fragment);
+    finalizeIncrementalMainAppend(boundary, suffixEvents, prepared);
+    return true;
+  } catch {
+    renderTimeline();
+    return false;
+  }
+}
+
+function renderTimeline() {
+  syncMainPresentationUi();
+  if (state.searchScope !== 'session') {
+    clearContextReveal({ render: false });
+    renderProjectSearchView();
+    return;
+  }
+  reconcileContextRevealState();
+  if (trajectoryPresentationActive()) {
+    renderTrajectoryProjection();
+    return;
+  }
+  const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
+  const timelineEvents = renderedTimelineEvents();
+  const markup = `${renderProjectReturnBanner()}${renderInheritedContextCard()}${timelineEvents.map((event, index) => (
+    `${renderRawForkSegmentHeading(event, timelineEvents[index - 1])}${renderTimelineCardMarkup(event, compactWebLifecycleIds)}`
+  )).join('')}`;
+  const ownsMountedMainCards = activeLayerId() === 'main'
+    && state.currentEvents.length > 0
+    && Boolean(state.timelineDataContext);
+  replaceTimelineRoot(markup, ownsMountedMainCards ? 'main' : 'non-main');
   state.searchSurfaceContexts.timeline = state.timelineDataContext === timelineDataContextKey()
     ? timelineSearchSurfaceContextKey()
     : '';
@@ -5110,56 +6516,501 @@ function setOverride(eventId, value) {
   updateResetFoldsButton();
 }
 
+function closedDetailRequestResult({
+  requestOutcome,
+  acceptedMutation = false,
+  settlementOutcome = 'none',
+  presentationFailed = false,
+}) {
+  return Object.freeze({
+    requestOutcome,
+    acceptedMutation,
+    settlementOutcome,
+    presentationFailed,
+  });
+}
+
+function detailMutationTokensAreCompatible(beforeToken, afterToken) {
+  if (!beforeToken?.valid || !afterToken?.valid) return false;
+  for (const field of timelineCardLifecycleApi.PRESENTATION_TOKEN_FIELDS) {
+    if (field === 'detailPresentationRevision') continue;
+    if (beforeToken[field] !== afterToken[field]) return false;
+  }
+  return Number.isSafeInteger(beforeToken.detailPresentationRevision)
+    && beforeToken.detailPresentationRevision < Number.MAX_SAFE_INTEGER
+    && afterToken.detailPresentationRevision === beforeToken.detailPresentationRevision + 1;
+}
+
+function directChildrenMatching(root, selector) {
+  return [...(root?.children || [])].filter((node) => node.matches(selector));
+}
+
+function sameNodeList(left, right) {
+  return left.length === right.length && left.every((node, index) => node === right[index]);
+}
+
+function captureOrdinaryOwnerIdentity(owner) {
+  const article = owner.articleNode;
+  const timelineScroller = el.timeline.closest('.timelinePane');
+  if (!timelineScroller?.isConnected) {
+    throw new Error('Mounted Timeline scroll container is incompatible');
+  }
+  const headers = directChildrenMatching(article, '.eventHeader');
+  const toggles = headers.length === 1
+    ? [...headers[0].querySelectorAll(':scope > .eventToggle')]
+    : [];
+  const previews = directChildrenMatching(article, '.eventPreview');
+  const affordances = directChildrenMatching(article, '.enclosingOperationAffordance');
+  const footers = directChildrenMatching(article, '.eventFooterActions');
+  const footerControls = footers.flatMap((footer) => [...footer.querySelectorAll('button')]);
+  if (headers.length !== 1 || toggles.length !== 1 || footers.length !== 1) {
+    throw new Error('Ordinary expanded owner structure is incompatible');
+  }
+  return {
+    article,
+    contextSlot: owner.contextSlotNode,
+    headers,
+    toggles,
+    previews,
+    affordances,
+    footers,
+    footerControls,
+    className: article.className,
+    selected: article.classList.contains('selected'),
+    timelineScroller,
+    timelineScrollTop: timelineScroller.scrollTop,
+    windowScrollX: window.scrollX,
+    windowScrollY: window.scrollY,
+  };
+}
+
+function restoreAndValidateOrdinaryOwnerIdentity(identity, owner) {
+  const timelineScroller = el.timeline.closest('.timelinePane');
+  if (timelineScroller !== identity.timelineScroller || !timelineScroller?.isConnected) {
+    throw new Error('Mounted Timeline scroll container changed during detail patch');
+  }
+  if (timelineScroller.scrollTop !== identity.timelineScrollTop) {
+    timelineScroller.scrollTop = identity.timelineScrollTop;
+  }
+  if (window.scrollX !== identity.windowScrollX || window.scrollY !== identity.windowScrollY) {
+    window.scrollTo(identity.windowScrollX, identity.windowScrollY);
+  }
+  const article = owner.articleNode;
+  const headers = directChildrenMatching(article, '.eventHeader');
+  const toggles = headers.length === 1
+    ? [...headers[0].querySelectorAll(':scope > .eventToggle')]
+    : [];
+  const previews = directChildrenMatching(article, '.eventPreview');
+  const affordances = directChildrenMatching(article, '.enclosingOperationAffordance');
+  const footers = directChildrenMatching(article, '.eventFooterActions');
+  const footerControls = footers.flatMap((footer) => [...footer.querySelectorAll('button')]);
+  const facts = {
+    articleIdentityPreserved: article === identity.article,
+    contextSlotIdentityPreserved: owner.contextSlotNode === identity.contextSlot,
+    headerIdentityPreserved: sameNodeList(identity.headers, headers),
+    toggleIdentityPreserved: sameNodeList(identity.toggles, toggles),
+    previewIdentityPreserved: sameNodeList(identity.previews, previews),
+    footerIdentityPreserved: sameNodeList(identity.footers, footers)
+      && sameNodeList(identity.footerControls, footerControls),
+  };
+  const exact = Object.values(facts).every(Boolean)
+    && sameNodeList(identity.affordances, affordances)
+    && article.className === identity.className
+    && article.classList.contains('selected') === identity.selected
+    && el.timeline.closest('.timelinePane') === identity.timelineScroller
+    && identity.timelineScroller.isConnected
+    && identity.timelineScroller.scrollTop === identity.timelineScrollTop
+    && window.scrollX === identity.windowScrollX
+    && window.scrollY === identity.windowScrollY;
+  if (!exact) throw new Error('Ordinary detail patch changed owner identity or scroll state');
+  return facts;
+}
+
+function prepareOrdinaryDetailBody(event) {
+  const template = document.createElement('template');
+  template.innerHTML = renderEventBody(event, 'expanded');
+  const elementChildren = [...template.content.children];
+  const nonWhitespaceText = [...template.content.childNodes].some((node) => (
+    node.nodeType === Node.TEXT_NODE && node.textContent.trim()
+  ));
+  if (nonWhitespaceText || elementChildren.length !== 1
+      || !elementChildren[0].classList.contains('eventBody')) {
+    throw new Error('Ordinary detail body shape is incompatible');
+  }
+  return elementChildren[0];
+}
+
+function prepareSelectedInspectorDetailSettlement(transaction, event) {
+  if (state.detailView?.type !== 'inspector' || state.detailView.eventId !== event.id) {
+    return { kind: 'unaffected' };
+  }
+  const selectionContext = detailSelectionContextKey();
+  if (state.detailSelectionKey !== transaction.key
+      || !isCurrentDetailSelection('inspector', transaction.key, event.id, selectionContext)
+      || eventForDetailView() !== event) {
+    throw new Error('Selected Inspector detail context is incompatible');
+  }
+  const root = el.detail?.querySelector('.inspector');
+  if (!root?.isConnected) throw new Error('Selected Inspector root is not mounted');
+  return {
+    kind: 'scoped',
+    selectionContext,
+    search: prepareScopedSearchOwnerRefresh('inspector', event.id, root),
+  };
+}
+
+function applySelectedInspectorDetailSettlement(transaction, event, prepared) {
+  if (prepared.kind === 'unaffected') return;
+  detachScopedSearchOwner(prepared.search);
+  renderInspectorPresentation(event, {
+    navigationPending: currentNavigationPending(),
+    refreshSearch: false,
+  });
+  if (!isCurrentDetailSelection('inspector', transaction.key, event.id, prepared.selectionContext)) {
+    throw new Error('Selected Inspector changed during scoped settlement');
+  }
+  const nextRoot = el.detail?.querySelector('.inspector');
+  applyScopedSearchOwner(prepared.search, nextRoot);
+}
+
+function ordinaryDetailSettlementEligibility(transaction, accepted) {
+  if (state.searchScope !== 'session' || activeLayerId() !== 'main'
+      || state.selectedSessionId !== transaction.sessionId
+      || state.detailCacheGeneration !== transaction.generation
+      || state.timelineDataContext !== timelineDataContextKey()
+      || !state.timelineDataContext
+      || state.temporaryEventReveal
+      || state.timelineReplacementRetry
+      || state.selectingProject) return null;
+  const event = canonicalTimelineEvent(transaction.event.id);
+  if (event !== transaction.event || event.kind === 'code_mode_operation'
+      || (accepted.requestOutcome === 'success' && accepted.detail?.kind === 'code_mode_operation')) {
+    return null;
+  }
+  if (!detailMutationTokensAreCompatible(accepted.beforeToken, accepted.afterToken)
+      || !timelineCardLifecycleApi.presentationTokensEqual(
+        currentTimelinePresentationToken(),
+        accepted.afterToken,
+      )
+      || !timelineCardLifecycle.mountedContextAndTokenMatch(
+        state.timelineDataContext,
+        accepted.beforeToken,
+      )) return null;
+  if (state.searchSurfaceContexts.timeline !== timelineSearchSurfaceContextKey()
+      || state.searchHighlight.query !== currentSearchState().q
+      || state.searchTargetRegistry.key !== searchTargetKey()
+      || !searchDiscoveryContextReady()) return null;
+  const owner = timelineCardLifecycle.lookup(event.id);
+  const article = owner?.articleNode;
+  if (!owner || owner.mountedCanonicalContext !== state.timelineDataContext
+      || !article?.isConnected || article.parentElement !== el.timeline
+      || article.dataset.eventId !== event.id
+      || article.classList.contains('temporaryReferenceReveal')) return null;
+  const adjacentContextSlot = article.previousElementSibling?.classList.contains('contextRevealSlot')
+      && article.previousElementSibling.dataset.contextSourceId === event.id
+    ? article.previousElementSibling
+    : null;
+  if (owner.contextSlotNode !== adjacentContextSlot) return null;
+  if (owner.contextSlotNode) {
+    if (!owner.contextSlotNode.isConnected
+        || owner.contextSlotNode.parentElement !== el.timeline
+        || owner.contextSlotNode.nextElementSibling !== article
+        || owner.contextSlotNode.dataset.contextSourceId !== event.id) return null;
+  }
+  return { event, owner, canonicalContext: state.timelineDataContext };
+}
+
+function validateLocalDetailSettlementStillCurrent(canonicalContext, accepted) {
+  if (state.timelineDataContext !== canonicalContext
+      || timelineDataContextKey() !== canonicalContext
+      || !timelineCardLifecycleApi.presentationTokensEqual(
+        currentTimelinePresentationToken(),
+        accepted.afterToken,
+      )
+      || state.searchSurfaceContexts.timeline !== timelineSearchSurfaceContextKey()
+      || state.searchHighlight.query !== currentSearchState().q
+      || state.searchTargetRegistry.key !== searchTargetKey()
+      || !searchDiscoveryContextReady()) {
+    throw new Error('Ordinary detail transaction changed during local presentation');
+  }
+}
+
+function presentOrdinaryDetailLocally(transaction, accepted) {
+  const eligible = ordinaryDetailSettlementEligibility(transaction, accepted);
+  if (!eligible) return null;
+  const { event, owner, canonicalContext } = eligible;
+  const inspector = prepareSelectedInspectorDetailSettlement(transaction, event);
+  const display = displayState(event);
+  if (display !== 'expanded') {
+    if (owner.articleNode.classList.contains('expanded')
+        || directChildrenMatching(owner.articleNode, '.eventBody').length !== 0) {
+      throw new Error('Collapsed ordinary owner retains an unexpected detail body');
+    }
+    applySelectedInspectorDetailSettlement(transaction, event, inspector);
+    restoreScopedActiveSearchPresentation(
+      event.id,
+      inspector.kind === 'scoped' ? ['inspector'] : [],
+    );
+    validateLocalDetailSettlementStillCurrent(canonicalContext, accepted);
+    const adoption = timelineCardLifecycle.adoptMountedPresentationToken({
+      canonicalContext,
+      expectedPreviousToken: accepted.beforeToken,
+      nextToken: accepted.afterToken,
+    });
+    recordTimelineLifecycle('adopt', 'main', adoption);
+    return {
+      outcome: 'noDomAdoption',
+      bodyFacts: {
+        eventClassification: 'ordinary',
+        expanded: false,
+        bodyPresent: false,
+        articleIdentityPreserved: true,
+        contextSlotIdentityPreserved: true,
+        headerIdentityPreserved: true,
+        toggleIdentityPreserved: true,
+        previewIdentityPreserved: true,
+        footerIdentityPreserved: true,
+      },
+    };
+  }
+
+  const bodies = directChildrenMatching(owner.articleNode, '.eventBody');
+  if (!owner.articleNode.classList.contains('expanded') || bodies.length !== 1) {
+    throw new Error('Expanded ordinary owner body is missing, duplicated, or stale');
+  }
+  const nextBody = prepareOrdinaryDetailBody(event);
+  const identity = captureOrdinaryOwnerIdentity(owner);
+  const timelineSearch = prepareScopedSearchOwnerRefresh('timeline', event.id, owner.articleNode);
+  detachScopedSearchOwner(timelineSearch);
+  bodies[0].replaceWith(nextBody);
+  applyScopedSearchOwner(timelineSearch, owner.articleNode);
+  applySelectedInspectorDetailSettlement(transaction, event, inspector);
+  restoreScopedActiveSearchPresentation(
+    event.id,
+    inspector.kind === 'scoped' ? ['timeline', 'inspector'] : ['timeline'],
+  );
+  const bodyFacts = restoreAndValidateOrdinaryOwnerIdentity(identity, owner);
+  validateLocalDetailSettlementStillCurrent(canonicalContext, accepted);
+  const adoption = timelineCardLifecycle.adoptMountedPresentationToken({
+    canonicalContext,
+    expectedPreviousToken: accepted.beforeToken,
+    nextToken: accepted.afterToken,
+  });
+  recordTimelineLifecycle('adopt', 'main', adoption);
+  return {
+    outcome: 'bodyPatch',
+    bodyFacts: {
+      eventClassification: 'ordinary',
+      expanded: true,
+      bodyPresent: true,
+      ...bodyFacts,
+    },
+  };
+}
+
+function selectedInspectorNeedsDetailFallback(transaction) {
+  return state.detailView?.type === 'inspector'
+    && state.detailView.eventId === transaction.event.id
+    && state.detailSelectionKey === transaction.key;
+}
+
+function presentDetailWithFullRenderFallback(transaction) {
+  if (selectedInspectorNeedsDetailFallback(transaction)) {
+    const current = currentTimelineEvent(transaction.event.id)
+      || detachedContextEvent(transaction.event.id);
+    if (current) {
+      renderInspectorPresentation(current, {
+        navigationPending: currentNavigationPending(),
+        refreshSearch: false,
+      });
+    }
+  }
+  renderTimeline();
+}
+
+function acceptedDetailStateWasReclassified(transaction, accepted) {
+  if (accepted.requestOutcome === 'success') {
+    return state.detailCache[transaction.key] !== accepted.detail
+      || Boolean(state.detailErrors[transaction.key]);
+  }
+  return state.detailErrors[transaction.key] !== accepted.errorState;
+}
+
+function presentAcceptedDetailMutation(transaction, accepted) {
+  if (transaction.presentationSettled) {
+    throw new Error('Detail request attempted duplicate presentation settlement');
+  }
+  transaction.presentationSettled = true;
+  let local = null;
+  let settlementOutcome = 'fullRenderFallback';
+  let presentationErrorStage = 'none';
+  let presentationFailed = false;
+  let fallbackError = null;
+  try {
+    local = presentOrdinaryDetailLocally(transaction, accepted);
+  } catch {
+    presentationErrorStage = 'local';
+  }
+  if (local) {
+    settlementOutcome = local.outcome;
+  } else {
+    try {
+      presentDetailWithFullRenderFallback(transaction);
+    } catch (error) {
+      presentationErrorStage = 'fallback';
+      presentationFailed = true;
+      fallbackError = error;
+    }
+  }
+  const acceptedStateReclassified = acceptedDetailStateWasReclassified(transaction, accepted);
+  recordDetailRequestObservation(transaction, 'presentationSettlement', {
+    acceptedMutation: accepted.requestOutcome,
+    settlementOutcome,
+    presentationErrorStage,
+    acceptedStateReclassified,
+    presentationFailed,
+  });
+  recordDetailBodyObservation(transaction, () => {
+    if (local?.bodyFacts) return local.bodyFacts;
+    const fallbackEvent = canonicalTimelineEvent(transaction.event.id);
+    const fallbackOwner = fallbackEvent ? timelineCardLifecycle.lookup(fallbackEvent.id) : null;
+    return {
+      eventClassification: transaction.event.kind === 'code_mode_operation'
+          || accepted.detail?.kind === 'code_mode_operation'
+        ? 'codeMode'
+        : 'ordinary',
+      expanded: fallbackEvent ? displayState(fallbackEvent) === 'expanded' : false,
+      bodyPresent: directChildrenMatching(fallbackOwner?.articleNode, '.eventBody').length === 1,
+      articleIdentityPreserved: false,
+      contextSlotIdentityPreserved: false,
+      headerIdentityPreserved: false,
+      toggleIdentityPreserved: false,
+      previewIdentityPreserved: false,
+      footerIdentityPreserved: false,
+    };
+  });
+  const result = closedDetailRequestResult({
+    requestOutcome: accepted.requestOutcome,
+    acceptedMutation: true,
+    settlementOutcome,
+    presentationFailed,
+  });
+  if (fallbackError) showError(fallbackError);
+  return result;
+}
+
 function loadEventDetail(event) {
   const layer = activeLayerId();
   const sessionId = state.selectedSessionId;
   const generation = state.detailCacheGeneration;
   const key = detailKey(sessionId, layer, event.id);
-  if (state.detailCache[key] || state.detailErrors[key]) return Promise.resolve(false);
+  if (state.detailCache[key] || state.detailErrors[key]) {
+    return Promise.resolve(closedDetailRequestResult({ requestOutcome: 'alreadyAvailable' }));
+  }
   if (!state.detailPending[key]) {
     const controller = new AbortController();
+    const transaction = {
+      event,
+      key,
+      sessionId,
+      layer,
+      generation,
+      presentationSettled: false,
+    };
     detailRequestControllers.set(key, controller);
-    const pending = api(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(layer)}`, {
+    const transportPromise = api(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(event.id)}/detail?layer=${encodeURIComponent(layer)}`, {
       signal: controller.signal,
-    })
-      .then((detail) => {
+    });
+    const classifiedPromise = transportPromise.then(
+      (detail) => {
         if (detailRequestControllers.get(key) !== controller
             || state.selectedSessionId !== sessionId
-            || state.detailCacheGeneration !== generation) return false;
+            || state.detailCacheGeneration !== generation) {
+          return { requestOutcome: 'stale', acceptedMutation: false };
+        }
+        const beforeToken = currentTimelinePresentationToken();
         state.detailCache[key] = detail;
         delete state.detailErrors[key];
-        return true;
-      })
-      .catch((error) => {
-        if (isIntentionalAbort(error)) return false;
+        advancePresentationRevision('detailPresentationRevision');
+        const accepted = {
+          requestOutcome: 'success',
+          acceptedMutation: true,
+          detail,
+          beforeToken,
+          afterToken: currentTimelinePresentationToken(),
+        };
+        recordDetailRequestObservation(transaction, 'acceptedMutation', {
+          acceptedMutation: 'success',
+        });
+        return accepted;
+      },
+      (error) => {
+        if (isIntentionalAbort(error)) {
+          return { requestOutcome: 'abort', acceptedMutation: false };
+        }
         if (detailRequestControllers.get(key) !== controller
             || state.selectedSessionId !== sessionId
-            || state.detailCacheGeneration !== generation) return false;
-        state.detailErrors[key] = detailErrorState(error);
-        return true;
+            || state.detailCacheGeneration !== generation) {
+          return { requestOutcome: 'stale', acceptedMutation: false };
+        }
+        const beforeToken = currentTimelinePresentationToken();
+        const errorState = detailErrorState(error);
+        state.detailErrors[key] = errorState;
+        advancePresentationRevision('detailPresentationRevision');
+        const accepted = {
+          requestOutcome: 'error',
+          acceptedMutation: true,
+          errorState,
+          beforeToken,
+          afterToken: currentTimelinePresentationToken(),
+        };
+        recordDetailRequestObservation(transaction, 'acceptedMutation', {
+          acceptedMutation: 'error',
+        });
+        return accepted;
+      },
+    );
+    let pending;
+    pending = classifiedPromise
+      .then((classified) => {
+        if (classified.acceptedMutation) {
+          return presentAcceptedDetailMutation(transaction, classified);
+        }
+        recordDetailRequestObservation(transaction, 'requestSettled', {
+          settlementOutcome: classified.requestOutcome,
+        });
+        return closedDetailRequestResult({
+          requestOutcome: classified.requestOutcome,
+          settlementOutcome: classified.requestOutcome,
+        });
       })
       .finally(() => {
         if (detailRequestControllers.get(key) === controller) detailRequestControllers.delete(key);
         if (state.detailPending[key] === pending) delete state.detailPending[key];
       });
     state.detailPending[key] = pending;
+    const detailRequestObservationActive = recordDetailRequestObservation(
+      transaction,
+      'requestCreated',
+    );
+    if (detailRequestObservationActive) {
+      Object.defineProperty(pending, DETAIL_REQUEST_TRANSACTION, { value: transaction });
+    }
+  } else if (timelineLifecycleObserverMethodIsCallable('recordDetailRequest')) {
+    const transaction = state.detailPending[key][DETAIL_REQUEST_TRANSACTION];
+    if (transaction) recordDetailRequestObservation(transaction, 'requestReused');
   }
   return state.detailPending[key];
 }
 
 function ensureEventDetail(event) {
   const key = detailKey(state.selectedSessionId, activeLayerId(), event.id);
-  if (state.detailCache[key] || state.detailErrors[key]) return;
-  loadEventDetail(event).then((settled) => {
-    if (settled && key === detailKey(state.selectedSessionId, activeLayerId(), event.id)) renderTimeline();
-  });
+  if (state.detailCache[key] || state.detailErrors[key]) return undefined;
+  return loadEventDetail(event);
 }
 
-function isInScrollport(element) {
-  const rect = element.getBoundingClientRect();
-  const scroller = element.closest('.timelinePane');
-  const bounds = scroller ? scroller.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
-  if ((scroller && (bounds.width <= 0 || bounds.height <= 0))
+function rectIntersectsScrollport(rect, bounds, hasScroller) {
+  if ((hasScroller && (bounds.width <= 0 || bounds.height <= 0))
       || (rect.width <= 0 && rect.height <= 0)) return false;
   return rect.bottom >= bounds.top && rect.top <= bounds.bottom;
 }
@@ -5167,14 +7018,40 @@ function isInScrollport(element) {
 function loadVisibleExpandedDetails() {
   state.detailViewportTimer = 0;
   if (!searchDiscoveryContextReady()) return;
-  for (const article of el.timeline.querySelectorAll('.event[data-event-id]')) {
-    if (!isInScrollport(article)) continue;
+  const articles = [...el.timeline.querySelectorAll('.event[data-event-id]')];
+  const candidates = [];
+  const candidateNodes = new Set();
+  for (const article of articles) {
+    if (article.classList.contains('hiddenByProfile')) continue;
     const item = currentTimelineEvent(article.dataset.eventId);
     if (item && (article.classList.contains('expanded')
         || (activeLayerId() === 'main' && item.kind === 'code_mode_operation'))) {
-      ensureEventDetail(item);
+      if (!candidateNodes.has(article)) {
+        candidateNodes.add(article);
+        candidates.push({ article, item });
+      }
     }
   }
+  const scroller = el.timeline.closest('.timelinePane');
+  const bounds = scroller
+    ? scroller.getBoundingClientRect()
+    : { top: 0, bottom: window.innerHeight, width: window.innerWidth, height: window.innerHeight };
+  let articleGeometryReadCount = 0;
+  let ensuredDetailCount = 0;
+  for (const { article, item } of candidates) {
+    const rect = article.getBoundingClientRect();
+    articleGeometryReadCount += 1;
+    if (!rectIntersectsScrollport(rect, bounds, Boolean(scroller))) continue;
+    ensureEventDetail(item);
+    ensuredDetailCount += 1;
+  }
+  recordVisibleDetailScanObservation({
+    mountedArticleCount: articles.length,
+    candidateArticleCount: candidates.length,
+    articleGeometryReadCount,
+    scrollportGeometryReadCount: scroller ? 1 : 0,
+    ensuredDetailCount,
+  });
 }
 
 function queueVisibleDetailLoad() {
@@ -5337,6 +7214,7 @@ function updateSelectedTimelineEvent() {
   for (const article of el.timeline.querySelectorAll('.event[data-event-id]')) {
     article.classList.toggle('selected', article.dataset.eventId === state.selectedEventId);
   }
+  trajectoryPresentationApi.syncTrajectorySelection(el.timeline, state.selectedEventId);
   syncEnclosingOperationAffordances();
 }
 
@@ -5357,6 +7235,13 @@ function invalidateNavigationCache() {
   requestOwners.navigation.abort();
   state.navigationCache = { key: '', events: [], total: 0, pending: null };
   state.navigationLoadErrorKey = '';
+}
+
+function abortPendingNavigationLoad() {
+  if (!state.navigationCache.pending) return false;
+  requestOwners.navigation.abort();
+  state.navigationCache = { key: '', events: [], total: 0, pending: null };
+  return true;
 }
 
 function currentNavigationCache() {
@@ -5381,14 +7266,26 @@ function ensureNavigationEvents() {
     const events = [];
     let total = 0;
     while (events.length === 0 || events.length < total) {
-      if (navigationCacheKey() !== key) return null;
+      if (!requestOwners.navigation.isCurrent(owner) || navigationCacheKey() !== key) return null;
       const data = await api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/timeline${currentQuery({
         offset: events.length,
         limit: NAVIGATION_PAGE_LIMIT,
       })}`, { signal: owner.controller.signal });
+      if (!requestOwners.navigation.isCurrent(owner) || navigationCacheKey() !== key) return null;
       total = data.total;
       events.push(...data.events);
       if (!data.events.length) break;
+      if (events.length < total) {
+        const selectedDetailKey = detailKey(
+          state.selectedSessionId,
+          activeLayerId(),
+          state.detailView?.eventId || state.selectedEventId,
+        );
+        if (state.detailPending[selectedDetailKey]) {
+          await state.detailPending[selectedDetailKey];
+        }
+        await new Promise((resolve) => setTimeout(resolve, NAVIGATION_BACKGROUND_PAGE_HANDOFF_MS));
+      }
     }
     if (navigationCacheKey() !== key) return null;
     state.navigationCache = { key, events, total, pending: null };
@@ -5477,20 +7374,20 @@ function renderedTimelineEvents() {
   return navigationApi.withTemporaryEventReveal(state.currentEvents, state.temporaryEventReveal);
 }
 
-function currentTimelineEvent(eventId) {
-  return state.currentEvents.find((candidate) => candidate.id === eventId)
+function currentTimelineEvent(eventId, purpose = 'canonical') {
+  return canonicalTimelineEvent(eventId, purpose)
     || (state.temporaryEventReveal?.event.id === eventId ? state.temporaryEventReveal.event : null);
 }
 
 async function ensureEventLoaded(eventId, options = {}) {
-  if (state.currentEvents.some((event) => event.id === eventId)) return;
+  if (hasCanonicalTimelineEvent(eventId)) return;
   while (state.offset < state.timelineTotal) {
     await waitForTimelineIdle();
     await loadTimeline(true, {
       ...options,
       paginationIntent: paginationIntent(options.paginationIntentKind || 'selected-event-navigation'),
     });
-    if (state.currentEvents.some((event) => event.id === eventId)) return;
+    if (hasCanonicalTimelineEvent(eventId)) return;
   }
 }
 
@@ -5507,7 +7404,7 @@ function inspectContextParent(parent, sourceEventId = '') {
   state.contextParentCache[String(parent.id)] = parent;
   clearContextReveal({ render: false, clearParentCache: false });
   showInspector(parent, { origin: DETAIL_VIEW_ORIGIN_USER });
-  if (state.currentEvents.some((event) => event.id === parent.id)) scrollToTimelineEvent(parent.id);
+  if (hasCanonicalTimelineEvent(parent.id)) scrollToTimelineEvent(parent.id);
   return true;
 }
 
@@ -5515,7 +7412,7 @@ async function revealEnclosingOperation(sourceEvent) {
   const source = sourceEvent && currentTimelineEvent(sourceEvent.id) || sourceEvent;
   const parentId = navigationApi.enclosingOperationParentId(source);
   if (!source?.id || !parentId || !state.selectedSessionId || state.searchScope !== 'session') return false;
-  const materialized = state.currentEvents.find((event) => event.id === parentId);
+  const materialized = canonicalTimelineEvent(parentId);
   if (materialized && displayState(materialized) !== 'hidden') {
     return inspectContextParent(materialized, source.id);
   }
@@ -5591,10 +7488,10 @@ async function revealEnclosingOperation(sourceEvent) {
 
 async function inspectAndRevealEvent(target, options = {}) {
   if (options.temporary) {
-    state.temporaryEventReveal = {
+    setTemporaryEventReveal({
       sourceEventId: options.sourceEventId || '',
       event: target,
-    };
+    });
     renderTimeline();
   } else {
     await ensureEventLoaded(target.id);
@@ -5606,6 +7503,64 @@ async function inspectAndRevealEvent(target, options = {}) {
   }
   showInspector(loaded, { replace: options.replace !== false, origin: DETAIL_VIEW_ORIGIN_USER });
   scrollToTimelineEvent(loaded.id);
+}
+
+async function navigateToLayerEvent(targetLayerId, targetEventId) {
+  if (!['main', 'protocol'].includes(targetLayerId)
+      || !targetEventId
+      || !state.selectedSessionId
+      || state.searchScope !== 'session') return false;
+  const sessionId = state.selectedSessionId;
+  const sourceEventId = state.selectedEventId;
+  if (activeLayerId() !== targetLayerId) {
+    await changeLayer(targetLayerId, {
+      restoreFocus: false,
+    });
+  }
+  if (state.selectedSessionId !== sessionId
+      || state.searchScope !== 'session'
+      || activeLayerId() !== targetLayerId) return false;
+
+  let target = canonicalTimelineEvent(targetEventId);
+  if (!target) {
+    const requestLocale = state.locale;
+    const requestContext = JSON.stringify([
+      sessionId,
+      targetLayerId,
+      targetEventId,
+      requestLocale,
+    ]);
+    const owner = requestOwners.eventEnvelope.start(requestContext);
+    try {
+      target = await api(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(targetEventId)}?layer=${encodeURIComponent(targetLayerId)}&locale=${encodeURIComponent(requestLocale)}`, {
+        signal: owner.controller.signal,
+      });
+      if (!requestOwners.eventEnvelope.isCurrent(owner)
+          || state.selectedSessionId !== sessionId
+          || state.searchScope !== 'session'
+          || activeLayerId() !== targetLayerId
+          || state.locale !== requestLocale) return false;
+    } catch (error) {
+      if (isIntentionalAbort(error)) return false;
+      throw error;
+    } finally {
+      requestOwners.eventEnvelope.finish(owner);
+    }
+  }
+  if (!target || target.id !== targetEventId || target.layer !== targetLayerId) return false;
+
+  const canonical = canonicalTimelineEvent(targetEventId);
+  setTemporaryEventReveal(canonical ? null : { sourceEventId, event: target });
+  setNavigationEventReveal({
+    sessionId,
+    layerId: targetLayerId,
+    eventId: targetEventId,
+  });
+  renderTimeline();
+  const selected = currentTimelineEvent(targetEventId) || target;
+  showInspector(selected, { replace: true, origin: DETAIL_VIEW_ORIGIN_USER });
+  scrollToTimelineEvent(targetEventId);
+  return true;
 }
 
 async function inspectEventRef(eventId) {
@@ -5727,7 +7682,7 @@ function reconcileDetailViewState() {
     history: state.detailHistory,
   });
   state.selectedEventId = reconciled.selectedEventId;
-  state.temporaryEventReveal = reconciled.reveal;
+  setTemporaryEventReveal(reconciled.reveal);
   state.detailHistory = reconciled.history;
   return reconciled.cleared;
 }
@@ -5740,7 +7695,7 @@ function closeDetailView() {
   state.navigationCategoryId = '';
   state.navigationCategoryManualId = '';
   const hadTemporaryReveal = Boolean(state.temporaryEventReveal);
-  state.temporaryEventReveal = null;
+  setTemporaryEventReveal(null);
   state.detailView = { type: 'profileRules' };
   renderProfileRulesPane();
   if (hadTemporaryReveal) renderTimeline();
@@ -5803,7 +7758,16 @@ async function readFromSelectedEvent() {
   updateMetricActionStates();
 }
 
-function renderDetailShell({ title, subtitle = '', actions = '', body = '', closeable = true, backable = state.detailHistory.length > 0, headerClass = '' }) {
+function renderDetailShell({
+  title,
+  subtitle = '',
+  actions = '',
+  body = '',
+  closeable = true,
+  backable = state.detailHistory.length > 0,
+  headerClass = '',
+  refreshSearch = true,
+}) {
   updateDetailViewChrome();
   const hasChromeControls = backable || closeable;
   const resolvedHeaderClass = [headerClass, hasChromeControls ? 'detailChromeHeader' : ''].filter(Boolean).join(' ');
@@ -5827,18 +7791,20 @@ function renderDetailShell({ title, subtitle = '', actions = '', body = '', clos
   </article>`;
   state.searchSurfaceContexts.detail = detailSearchSurfaceContextKey();
   syncProfileInfoSlot();
-  refreshSearchHighlights({ preserveActive: true });
+  if (refreshSearch) refreshSearchHighlights({ preserveActive: true });
 }
 
 function renderProfileRulesPane(options = {}) {
-  clearContextReveal({ render: false });
-  invalidateDetailSelection();
-  state.detailView = { type: 'profileRules' };
-  const clearedTemporaryReveal = reconcileDetailViewState();
-  state.selectedEventId = '';
-  state.navigationCategoryId = '';
-  state.navigationCategoryManualId = '';
-  if (clearedTemporaryReveal) renderTimeline();
+  if (!options.preserveTimelinePresentation) {
+    clearContextReveal({ render: false });
+    invalidateDetailSelection();
+    state.detailView = { type: 'profileRules' };
+    const clearedTemporaryReveal = reconcileDetailViewState();
+    state.selectedEventId = '';
+    state.navigationCategoryId = '';
+    state.navigationCategoryManualId = '';
+    if (clearedTemporaryReveal) renderTimeline();
+  }
   if (options.reveal === true) setMobileView('detail', { scroll: false });
   updateSelectedTimelineEvent();
   if (state.searchScope === 'project') {
@@ -5858,6 +7824,7 @@ function renderProfileRulesPane(options = {}) {
       headerClass: 'profileDetailHeader',
       closeable: false,
       backable: false,
+      refreshSearch: options.refreshSearch !== false,
       body: `<section class="profileRules profileRulesInactive">
         <div class="notice info">
           <p>${escapeHtml(t('fixedProfileRules'))}</p>
@@ -6053,6 +8020,7 @@ function renderProfileRulesPane(options = {}) {
     headerClass: 'profileDetailHeader',
     closeable: false,
     backable: false,
+    refreshSearch: options.refreshSearch !== false,
     body: `<section class="profileRules">
       ${draft.description ? `<p class="profileStrategyDescription">${escapeHtml(draft.description)}</p>` : ''}
       <section class="profileRuleSection">
@@ -6092,12 +8060,8 @@ function rerenderCurrentInspectorNavigation() {
   if (item) showInspector(item, { replace: true });
 }
 
-function showInspector(event, options = {}) {
-  if (state.contextReveal || state.contextRevealPending) clearContextReveal({ render: false });
-  const layer = activeLayerId();
-  const key = detailKey(state.selectedSessionId, layer, event.id);
-  if (state.detailSelectionKey !== key) invalidateDetailSelection();
-  else requestOwners.rawReferences.abort();
+function renderInspectorPresentation(event, options = {}) {
+  const key = detailKey(state.selectedSessionId, activeLayerId(), event.id);
   const refs = sourceRefs(event);
   const preview = event.snippet || event.preview || '';
   const detail = state.detailCache[key];
@@ -6109,7 +8073,34 @@ function showInspector(event, options = {}) {
       codeModeResultAssociationBadge(presentation.resultAssociation)?.label,
     ]
     : [];
+  if (cacheUsageFact(event)?.discontinuity) presentationChipValues.push(t('cacheDiscontinuity'));
   const chips = renderChips([...inspectorChipValues(event), ...presentationChipValues]);
+  renderDetailShell({
+    title: presentedEventLabel(event, presentation),
+    actions: [
+      renderBackToProjectResultsAction(),
+      renderReadFromHereAction(),
+      renderCacheMainContextAction(event),
+      renderInspectorRawAction(refs),
+      renderInspectorNavigation(event, { pending: Boolean(options.navigationPending) }),
+    ].filter(Boolean).join(''),
+    body: `<div class="inspector">
+    ${chips ? `<div class="chips">${chips}</div>` : ''}
+    ${shouldShowInspectorSummary(event, preview, detail) ? `<section class="inspectorSection"><h3>${escapeHtml(t('summary'))}</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
+    ${renderInspectorDetail(event)}
+    ${renderInspectorMetadataSection(event, refs, detail)}
+    ${renderInspectorSource(event, detail)}
+  </div>`,
+    refreshSearch: options.refreshSearch !== false,
+  });
+}
+
+function showInspector(event, options = {}) {
+  if (state.contextReveal || state.contextRevealPending) clearContextReveal({ render: false });
+  const layer = activeLayerId();
+  const key = detailKey(state.selectedSessionId, layer, event.id);
+  if (state.detailSelectionKey !== key) invalidateDetailSelection();
+  else requestOwners.rawReferences.abort();
   state.detailSelectionKey = key;
   const clearedTemporaryReveal = options.replace
     ? replaceDetailView(eventDetailView('inspector', event.id, options))
@@ -6132,9 +8123,13 @@ function showInspector(event, options = {}) {
   if (shouldLoadNavigation) {
     navigationPending = ensureNavigationEvents();
     navigationPending.then(() => {
+      if (navigationCacheKey() !== navigationKey
+          || !isCurrentDetailSelection('inspector', key, event.id, selectionContext)) return;
       if (state.navigationLoadErrorKey === navigationKey) state.navigationLoadErrorKey = '';
       rerenderCurrentInspectorNavigation();
     }).catch((error) => {
+      if (navigationCacheKey() !== navigationKey
+          || !isCurrentDetailSelection('inspector', key, event.id, selectionContext)) return;
       if (state.navigationCache.key === navigationKey) {
         state.navigationCache = { key: '', events: [], total: 0, pending: null };
       }
@@ -6143,27 +8138,10 @@ function showInspector(event, options = {}) {
       rerenderCurrentInspectorNavigation();
     });
   }
-  renderDetailShell({
-    title: presentedEventLabel(event, presentation),
-    actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), renderInspectorNavigation(event, { pending: Boolean(navigationPending) })].filter(Boolean).join(''),
-    body: `<div class="inspector">
-    ${chips ? `<div class="chips">${chips}</div>` : ''}
-    ${shouldShowInspectorSummary(event, preview, detail) ? `<section class="inspectorSection"><h3>${escapeHtml(t('summary'))}</h3><div class="inspectorLead">${escapeHtml(preview)}</div></section>` : ''}
-    <section class="inspectorSection">
-      <h3>${escapeHtml(t('metadata'))}</h3>
-      <dl class="inspectorMeta">${renderInspectorMetadata(event, refs, detail)}</dl>
-    </section>
-    ${renderInspectorSource(event, refs, detail)}
-    ${renderInspectorDetail(event)}
-  </div>`,
-  });
+  renderInspectorPresentation(event, { navigationPending });
 
   if (!state.detailCache[key] && !state.detailErrors[key]) {
-    loadEventDetail(event).then((settled) => {
-      if (!settled || !isCurrentDetailSelection('inspector', key, event.id, selectionContext)) return;
-      const current = currentTimelineEvent(event.id) || detachedContextEvent(event.id);
-      if (current) showInspector(current, { replace: true });
-    });
+    loadEventDetail(event);
   }
 }
 
@@ -6252,6 +8230,7 @@ function setProfileId(profileId, options = {}) {
   clearContextReveal({ render: false });
   clearNavigationEventReveal();
   state.profileId = profileId;
+  advancePresentationRevision('foldingPresentationRevision');
   localStorage.setItem('sessionAnalyzer.profile', state.profileId);
   el.profileSelect.value = state.profileId;
   resetSearchTransientExpansions();
@@ -6359,6 +8338,7 @@ function saveProfileDraft(name = '') {
     state.customProfiles.push(saved);
     saveCustomProfiles();
     state.profileId = saved.id;
+    advancePresentationRevision('foldingPresentationRevision');
   } else {
     state.customProfiles = state.customProfiles.map((profile) => (
       profile.id === state.profileId
@@ -6500,9 +8480,17 @@ el.timeline.addEventListener('click', (event) => {
   hideSearchAssist();
   const item = currentTimelineEvent(article.dataset.eventId);
   if (!item) return;
-  const action = event.target.closest('[data-action]')?.dataset.action || 'inspect';
+  const actionTarget = event.target.closest('[data-action]');
+  const action = actionTarget?.dataset.action || 'inspect';
   if (action === 'reindex-project') {
     refreshCurrentProject().catch(handleProjectRefreshError);
+  } else if (action === 'navigate-linked-event') {
+    event.preventDefault();
+    event.stopPropagation();
+    navigateToLayerEvent(
+      actionTarget.dataset.targetLayer || '',
+      actionTarget.dataset.targetEventId || '',
+    ).catch(showError);
   } else if (action === 'toggle') {
     const next = article.classList.contains('expanded') ? foldedDisplayState(item) : 'expanded';
     setOverride(item.id, next);
@@ -6512,6 +8500,7 @@ el.timeline.addEventListener('click', (event) => {
     const key = detailKey(state.selectedSessionId, activeLayerId(), item.id);
     delete state.detailErrors[key];
     delete state.detailCache[key];
+    advancePresentationRevision('detailPresentationRevision');
     ensureEventDetail(item);
   } else if (action === 'raw') {
     showRaw(item).catch(showError);
@@ -6573,6 +8562,14 @@ el.detail.addEventListener('click', (event) => {
     inspectEventRef(event.target.closest('[data-event-ref-id]')?.dataset.eventRefId || '').catch(showError);
     return;
   }
+  if (action === 'navigate-linked-event') {
+    const target = event.target.closest('[data-target-event-id]');
+    navigateToLayerEvent(
+      target?.dataset.targetLayer || '',
+      target?.dataset.targetEventId || '',
+    ).catch(showError);
+    return;
+  }
   if (action === 'reindex-project') {
     refreshCurrentProject().catch(handleProjectRefreshError);
     return;
@@ -6587,6 +8584,7 @@ el.detail.addEventListener('click', (event) => {
   } else if (action === 'retry-detail') {
     delete state.detailErrors[key];
     delete state.detailCache[key];
+    advancePresentationRevision('detailPresentationRevision');
     showInspector(item, { replace: true });
   }
 });
@@ -6603,6 +8601,7 @@ el.detail.addEventListener('change', (event) => {
     ensureProfileDraft();
     state.profileDraft.rules.fallback = fallback.value;
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
+    advancePresentationRevision('foldingPresentationRevision');
     renderTimeline();
     renderProfileRulesPane();
     return;
@@ -6615,6 +8614,7 @@ el.detail.addEventListener('change', (event) => {
     if (kindSelect.value) state.profileDraft.rules.kindStates[kind] = kindSelect.value;
     else delete state.profileDraft.rules.kindStates[kind];
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
+    advancePresentationRevision('foldingPresentationRevision');
     renderTimeline();
     renderProfileRulesPane();
     return;
@@ -6627,6 +8627,7 @@ el.detail.addEventListener('change', (event) => {
     if (codeModeRequestSelect.value) state.profileDraft.rules.codeModeRequestStates[request] = codeModeRequestSelect.value;
     else delete state.profileDraft.rules.codeModeRequestStates[request];
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
+    advancePresentationRevision('foldingPresentationRevision');
     renderTimeline();
     renderProfileRulesPane();
     return;
@@ -6639,6 +8640,7 @@ el.detail.addEventListener('change', (event) => {
     state.profileDraft.rules.conditions = state.profileDraft.rules.conditions.filter((condition) => condition.id !== conditionId);
     if (conditionSelect.value) state.profileDraft.rules.conditions.push({ id: conditionId, state: conditionSelect.value });
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
+    advancePresentationRevision('foldingPresentationRevision');
     renderTimeline();
     renderProfileRulesPane();
     return;
@@ -6658,6 +8660,13 @@ el.profileSelect.addEventListener('change', () => {
 el.layerSelect.addEventListener('change', () => {
   changeLayer(el.layerSelect.value).catch(showError);
 });
+
+for (const button of el.mainPresentationButtons) {
+  button.addEventListener('click', () => {
+    if (button.disabled) return;
+    changeMainPresentation(button.dataset.mainPresentation || '');
+  });
+}
 
 el.resetFoldsBtn.addEventListener('click', () => {
   clearContextReveal({ render: false });

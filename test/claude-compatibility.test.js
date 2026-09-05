@@ -125,12 +125,13 @@ test('Claude local Workflow launch extends async lifecycle and fails closed on c
   const successDetailZh = buildClaudeEventDetail(session, success.id, 'main', { locale: 'zh-CN' });
   assert.equal(successDetailEn.title, 'Async workflow');
   assert.equal(successDetailZh.title, '异步工作流');
-  assert.match(JSON.stringify(successDetailEn.timelineSections), /Async workflow launched/);
-  assert.match(JSON.stringify(successDetailEn.timelineSections), /workflow-success\.txt/);
-  assert.match(JSON.stringify(successDetailEn.timelineSections), /Synthetic recovery is not needed/);
-  assert.match(JSON.stringify(successDetailEn.timelineSections), /agentCount/);
-  assert.match(JSON.stringify(successDetailZh.timelineSections), /异步工作流已启动/);
-  assert.match(JSON.stringify(successDetailZh.timelineSections), /工作流终态/);
+  assert.match(JSON.stringify(successDetailEn.timelineSections), /Synthetic workflow completed/);
+  assert.match(JSON.stringify(successDetailEn.inspectorSections), /Async workflow launched/);
+  assert.match(JSON.stringify(successDetailEn.inspectorSections), /workflow-success\.txt/);
+  assert.match(JSON.stringify(successDetailEn.inspectorSections), /Synthetic recovery is not needed/);
+  assert.match(JSON.stringify(successDetailEn.inspectorSections), /agentCount/);
+  assert.match(JSON.stringify(successDetailZh.inspectorSections), /异步工作流已启动/);
+  assert.match(JSON.stringify(successDetailZh.inspectorSections), /工作流终态/);
 
   assert.equal(failed.status, 'failed');
   assert.equal(failed.lifecycle.kind, 'async_workflow');

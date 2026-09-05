@@ -11,6 +11,7 @@ function createCodexDetailBuilder(deps) {
     codeModeTools,
     codeModePresentationContract,
     agentCoordination,
+    cacheObservationPresentation,
   } = deps;
   const {
     codeModeAssociableOutputFragments,
@@ -49,6 +50,7 @@ function createCodexDetailBuilder(deps) {
   } = localization;
   const {
     filterDetailSections,
+    logicalFallbackPayload,
     makeNoticeSection,
     makeRawJsonSection,
     maybePushCodeSection,
@@ -67,10 +69,12 @@ function createCodexDetailBuilder(deps) {
     extractConversationSections,
     extractGoalSections,
     extractJsReplSections,
+    extractLifecycleDetailSections,
     extractLifecycleSections,
     extractMcpSections,
     extractPatchSections,
     extractPlanSections,
+    extractProtocolDetailSections,
     extractProtocolSections,
     extractReasoningSections,
     extractToolOperationSections,
@@ -138,18 +142,18 @@ function createCodexDetailBuilder(deps) {
     return { sections: [], omitPayloadKeys: [] };
   }
 
-  function sectionIsInspectorSupplement(section) {
+  function legacyRawSectionIsInspectorSupplement(section) {
     if (!section) return false;
     if (section.type === 'raw_json' || section.type === 'kv' || section.type === 'json') return true;
     if (section.type === 'notice' && /(metadata|status|fields|raw json)$/i.test(section.title || '')) return true;
     return false;
   }
 
-  function splitSectionsForDetail(sections) {
+  function splitLegacyRawSectionsForDisplay(sections) {
     const timelineSections = [];
     const inspectorSections = [];
     for (const section of sections || []) {
-      if (sectionIsInspectorSupplement(section)) inspectorSections.push(section);
+      if (legacyRawSectionIsInspectorSupplement(section)) inspectorSections.push(section);
       else timelineSections.push(section);
     }
     return { timelineSections, inspectorSections };
@@ -190,37 +194,47 @@ function createCodexDetailBuilder(deps) {
     switch (event.kind) {
       case 'user_message':
       case 'assistant_message':
-      case 'developer_message':
-        return splitSectionsForDetail(extractConversationSections(raws));
+      case 'developer_message': {
+        const sections = extractConversationSections(raws);
+        return {
+          timelineSections: sections.filter((section) => section.purpose === 'content'),
+          inspectorSections: sections.filter((section) => section.purpose === 'fallback'),
+        };
+      }
       case 'proposed_plan':
-      case 'plan_update':
-        return splitSectionsForDetail(extractPlanSections(raws));
+      case 'plan_update': {
+        const sections = extractPlanSections(raws);
+        return {
+          timelineSections: sections.filter((section) => section.purpose === 'content'),
+          inspectorSections: sections.filter((section) => section.purpose === 'fallback'),
+        };
+      }
       case 'reasoning':
-        return splitSectionsForDetail(extractReasoningSections(raws));
+        return { timelineSections: extractReasoningSections(raws), inspectorSections: [] };
       case 'command':
         return extractCommandSections(raws, event, session);
       case 'patch':
         return extractPatchSections(raws, event, session);
       case 'js_repl':
-        return splitSectionsForDetail(extractJsReplSections(raws, event));
+        return extractJsReplSections(raws, event);
       case 'mcp_call':
-        return extractMcpSections(raws, event, splitSectionsForDetail);
+        return extractMcpSections(raws, event);
       case 'hook':
-        return extractToolOperationSections(raws, event, splitSectionsForDetail);
+        return extractToolOperationSections(raws, event);
       case 'code_mode_operation':
         return extractCodeModeOperationSections(event, raws, session);
       case 'agent_coordination':
       case 'other_tool_call':
-        if (event.toolName === 'update_plan') return extractUpdatePlanSections(raws, event, splitSectionsForDetail);
-        return extractToolOperationSections(raws, event, splitSectionsForDetail);
+        if (event.toolName === 'update_plan') return extractUpdatePlanSections(raws, event);
+        return extractToolOperationSections(raws, event);
       case 'web_search':
-        return splitSectionsForDetail(extractWebSearchSections(raws, event));
+        return extractWebSearchSections(raws, event);
       case 'goal':
-        return extractGoalSections(raws, event, splitSectionsForDetail);
+        return extractGoalSections(raws, event);
       case 'user_shell_command':
-        return splitSectionsForDetail(extractProtocolSections(event, raws));
+        return extractProtocolDetailSections(event, raws);
       case 'protocol':
-        return splitSectionsForDetail(extractProtocolSections(event, raws));
+        return extractProtocolDetailSections(event, raws);
       case 'usage_limit_warning':
       case 'compaction':
       case 'abort':
@@ -229,9 +243,9 @@ function createCodexDetailBuilder(deps) {
       case 'warning':
       case 'subagent':
       case 'review':
-        return splitSectionsForDetail(extractLifecycleSections(event, raws));
+        return extractLifecycleDetailSections(event, raws);
       default:
-        return { timelineSections: [], inspectorSections: [makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed))] };
+        return { timelineSections: [], inspectorSections: [makeRawJsonSection('Unmodeled fields', logicalFallbackPayload(raws), false, 'fallback')] };
     }
   }
 
@@ -681,7 +695,7 @@ function createCodexDetailBuilder(deps) {
         ? [{ key: 'Result association note', value: 'No result output matched the supported shape' }]
         : []),
     ].filter((entry) => entry.value !== '');
-    return { type: 'kv', title: 'Projection evidence', entries };
+    return { purpose: 'traceability', type: 'kv', title: 'Projection evidence', entries };
   }
 
   function splitSingleCodeModeProjection(projection) {
@@ -719,6 +733,7 @@ function createCodexDetailBuilder(deps) {
     const pollCount = phases.filter((phase) => phase.kind === 'wait').length;
     const timelineSections = [];
     const inspectorSections = [{
+      purpose: 'context',
       type: 'kv',
       title: 'Operation metadata',
       entries: [
@@ -764,6 +779,7 @@ function createCodexDetailBuilder(deps) {
         codeModeProjectionEvidenceSection(singleProjection, 1),
         ...split.inspectorSections,
         {
+          purpose: 'context',
           type: 'code_mode_source',
           title: 'Code Mode source',
           code: execSource,
@@ -782,6 +798,7 @@ function createCodexDetailBuilder(deps) {
     } else if (projections.length > 1) {
       timelineSections.push(...projections);
       timelineSections.push({
+        purpose: 'context',
         type: 'code_mode_source',
         title: 'Code Mode source',
         code: execSource,
@@ -797,7 +814,7 @@ function createCodexDetailBuilder(deps) {
         collapsedPreview: codeModeDeclaredSequenceCollapsedPreview(projections, declaredProjection.calls),
       });
     } else {
-      maybePushCodeSection(timelineSections, 'Command', execSource, 'javascript');
+      maybePushCodeSection(timelineSections, 'Command', execSource, 'javascript', 'request');
       if (timelineSections.at(-1)?.type === 'code') timelineSections.at(-1).role = 'command';
     }
 
@@ -807,6 +824,8 @@ function createCodexDetailBuilder(deps) {
         singleProjection ? 'Operation output' : 'Final output',
         finalObservedOutput.text,
         'stdout',
+        '',
+        'result',
       );
     }
 
@@ -830,9 +849,8 @@ function createCodexDetailBuilder(deps) {
       });
     }
     if (pollCount > 0) {
-      const traceSection = { type: 'code_mode_trace', title: 'Execution trace', phases: tracePhases };
-      if (singleProjection) inspectorSections.push(traceSection);
-      else timelineSections.push(traceSection);
+      const traceSection = { purpose: 'traceability', type: 'code_mode_trace', title: 'Execution trace', phases: tracePhases };
+      inspectorSections.push(traceSection);
     }
     return { timelineSections, inspectorSections, presentation };
   }
@@ -849,7 +867,7 @@ function createCodexDetailBuilder(deps) {
         status: target.status,
       };
     }).filter(Boolean);
-    return items.length ? { type: 'event_refs', title: 'Observed nested activity', items } : null;
+    return items.length ? { purpose: 'traceability', type: 'event_refs', title: 'Observed nested activity', items } : null;
   }
 
   function buildEventDetail(session, eventId, layer = 'main', options = {}) {
@@ -862,7 +880,7 @@ function createCodexDetailBuilder(deps) {
       for (const section of sections) {
         if (section.type === 'raw_json') section.expanded = true;
       }
-      const split = splitSectionsForDetail(sections);
+      const split = splitLegacyRawSectionsForDisplay(sections);
       return {
         id: raw.rawId,
         schemaVersion: CANONICAL_SCHEMA_VERSION,
@@ -885,12 +903,20 @@ function createCodexDetailBuilder(deps) {
     if (!logical) return null;
     const raws = rawEventsForLogicalEvent(session, logical);
     const detailSections = extractLogicalDetailSections(logical, raws, session);
+    if (logical.cacheObservation) {
+      const cacheSections = cacheObservationPresentation.cacheObservationDetailSections(
+        logical.cacheObservation,
+        { locale },
+      );
+      detailSections.timelineSections.unshift(...cacheSections.timelineSections);
+      detailSections.inspectorSections.unshift(...cacheSections.inspectorSections);
+    }
     const eventRefsSection = logical.kind === 'code_mode_operation'
       ? codeModeEventRefsSection(logical, session, locale)
       : null;
     if (eventRefsSection) detailSections.inspectorSections.push(eventRefsSection);
     if (!detailSections.timelineSections.length && !detailSections.inspectorSections.length) {
-      detailSections.inspectorSections.push(makeRawJsonSection('Raw JSON', raws.map((raw) => raw.parsed)));
+      detailSections.inspectorSections.push(makeRawJsonSection('Unmodeled fields', logicalFallbackPayload(raws), false, 'fallback'));
     }
     const sanitizedDetailSections = sanitizeLogicalDetailSections(detailSections);
     const presentation = logical.kind === 'code_mode_operation'
@@ -917,7 +943,6 @@ function createCodexDetailBuilder(deps) {
     buildEventDetail,
     extractLogicalDetailSections,
     extractRawSections,
-    splitSectionsForDetail,
   };
 }
 

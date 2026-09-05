@@ -12,10 +12,38 @@ const {
   resolveFsPath,
 } = require('./shared/fs-path');
 const {
+  validateCanonicalIndexedSessionShape,
   validateCanonicalLogicalEventShape,
   validateCanonicalRawEventShape,
   validateCanonicalSessionShape,
 } = require('./canonical-contract');
+const {
+  readProjectQueryRowPreview,
+  scanProjectQueryShard,
+  requireValidatedProjectQueryStore,
+} = require('./project-query-store');
+const {
+  cachePresentationFactsForEvent,
+  mergePresentationFacts,
+} = require('./cache-observation-presentation');
+
+const PROJECT_QUERY_SCAN_CONCURRENCY = 8;
+
+async function mapProjectQuerySessions(sessions, signal, visit) {
+  const results = new Array(sessions.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < sessions.length) {
+      signal?.throwIfAborted?.();
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await visit(sessions[index], index);
+    }
+  }
+  const workerCount = Math.min(PROJECT_QUERY_SCAN_CONCURRENCY, sessions.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
 
 function defaultNormalizeSearchPath(input) {
   return String(input || '').replace(/\\/g, '/').toLowerCase();
@@ -142,6 +170,8 @@ function createSessionQuery(options = {}) {
     hasActiveFilter: presentationHasActiveFilter = () => false,
     contextMap: presentationContextMap = () => null,
     factsForEvent: presentationFactsForEvent = () => null,
+    projectRowFacts: presentationProjectRowFacts = () => null,
+    matchesProjectRow: presentationMatchesProjectRow = () => true,
     facets: presentationFacets = () => [],
     indexPresentation = () => ({}),
   } = presentation;
@@ -211,7 +241,10 @@ function createSessionQuery(options = {}) {
   }
 
   function eventHasSearchHit(event, q) {
-    return eventSearchMatchCount(event, q) > 0;
+    const regex = searchPhraseRegex(q);
+    if (!regex) return false;
+    return regex.test(String(event.preview || ''))
+      || regex.test(String(event.searchText || ''));
   }
 
   function makeSnippet(text, q) {
@@ -249,8 +282,42 @@ function createSessionQuery(options = {}) {
     return true;
   }
 
+  function projectRowMatches(row, filters) {
+    if (!presentationMatchesProjectRow(row.presentation, filters)) return false;
+    if (filters.kind && row.kind !== filters.kind && row.subtype !== filters.kind) return false;
+    if (filters.status && row.status !== filters.status) return false;
+    if (filters.tool && !row.toolName.toLowerCase().includes(filters.tool.toLowerCase())) return false;
+    if (filters.file) {
+      const needle = normalizeSearchPath(filters.file);
+      if (!row.filterFiles.some((file) => normalizeSearchPath(file).includes(needle))) return false;
+    }
+    return true;
+  }
+
   function sessionSummary(session, index) {
-    const sessionSourceKind = validateCanonicalSessionShape(session, index?.sourceKind);
+    const projected = Boolean(index?.projectQueryStore);
+    const residentComplete = !projected
+      && Array.isArray(session?.rawEvents)
+      && Array.isArray(session?.logicalEvents);
+    let sessionSourceKind;
+    if (projected) {
+      if (typeof session?.id !== 'string' || !session.id
+          || typeof session.sourceKind !== 'string' || !session.sourceKind
+          || session.sourceKind !== index.sourceKind
+          || !session.counts || typeof session.counts !== 'object'
+          || !Number.isSafeInteger(session.rawEventCount) || session.rawEventCount < 0
+          || !Number.isSafeInteger(session.logicalEventCount) || session.logicalEventCount < 0
+          || !session.summary || typeof session.summary !== 'object') {
+        const error = new Error(`Project query Session projection is invalid for ${session?.id || '<unknown>'}`);
+        error.code = 'PROJECT_QUERY_STORE_CONTRACT_VIOLATION';
+        throw error;
+      }
+      sessionSourceKind = session.sourceKind;
+    } else {
+      sessionSourceKind = residentComplete
+        ? validateCanonicalSessionShape(session, index?.sourceKind)
+        : validateCanonicalIndexedSessionShape(session, index?.sourceKind);
+    }
     const derivedKind = derivedSessionKind(session);
     const parentSession = session.parentSessionId ? index?.sessionsById?.get(session.parentSessionId) : null;
     const forkedFromSession = session.forkedFromSessionId ? index?.sessionsById?.get(session.forkedFromSessionId) : null;
@@ -291,11 +358,33 @@ function createSessionQuery(options = {}) {
       startedAt: session.startedAt,
       updatedAt: session.updatedAt,
       counts: session.counts,
-      topTools: (session.analysis?.toolUsage || []).slice(0, 5),
-      failedCommands: (session.analysis?.failedCommands || []).length,
-      patchedFiles: (session.analysis?.patchedFiles || []).slice(0, 5),
-      protocolCount: (session.analysis?.protocolStats || []).reduce((sum, item) => sum + item.count, 0),
-      rawEventCount: (session.rawEvents || []).length,
+      topTools: projected || !residentComplete
+        ? session.summary.topTools
+        : (session.analysis?.toolUsage || []).slice(0, 5),
+      failedCommands: projected || !residentComplete
+        ? session.summary.failedCommandCount
+        : (session.analysis?.failedCommands || []).length,
+      patchedFiles: projected || !residentComplete
+        ? session.summary.patchedFiles
+        : (session.analysis?.patchedFiles || []).slice(0, 5),
+      protocolCount: projected || !residentComplete
+        ? session.summary.protocolCount
+        : (session.analysis?.protocolStats || []).reduce((sum, item) => sum + item.count, 0),
+      rawEventCount: projected || !residentComplete ? session.rawEventCount : session.rawEvents.length,
+    };
+  }
+
+  function projectSessionMetadata(session) {
+    validateCanonicalSessionShape(session, session?.sourceKind);
+    return {
+      rawEventCount: session.rawEvents.length,
+      logicalEventCount: session.logicalEvents.length,
+      summary: {
+        topTools: sanitizeLogicalEnvelopeValue((session.analysis?.toolUsage || []).slice(0, 5)),
+        failedCommandCount: (session.analysis?.failedCommands || []).length,
+        patchedFiles: sanitizeLogicalEnvelopeValue((session.analysis?.patchedFiles || []).slice(0, 5)),
+        protocolCount: (session.analysis?.protocolStats || []).reduce((sum, item) => sum + item.count, 0),
+      },
     };
   }
 
@@ -476,6 +565,95 @@ function createSessionQuery(options = {}) {
     };
   }
 
+  function projectRowLabel(row, layer, locale) {
+    if (layer === 'raw') {
+      return rawRecordLabel({
+        payloadType: row.labelFact.payloadType,
+        recordType: row.labelFact.recordType,
+      }, locale);
+    }
+    return localizedLogicalLabel({
+      label: row.labelFact.sourceLabel,
+      layer,
+      kind: row.kind,
+      subtype: row.subtype,
+    }, locale);
+  }
+
+  async function packedProjectSearchResult(index, filters, locale, queryOptions = {}) {
+    const store = requireValidatedProjectQueryStore(
+      index.projectQueryStore,
+      (index.sessions || []).map((session) => session.id),
+    );
+    const layer = filters.layer || 'main';
+    const hasTextQuery = Boolean(String(filters.q || '').trim());
+    const eligibleSessions = (index.sessions || []).filter((session) => sessionWithinDateRange(session, filters));
+    const scanned = await mapProjectQuerySessions(eligibleSessions, queryOptions.signal, async (session) => {
+      let structuralOrdinal = 0;
+      let eventCount = 0;
+      let latest = null;
+      await scanProjectQueryShard(store, session.id, layer, {
+        includeText: hasTextQuery,
+        signal: queryOptions.signal,
+        onChunk: queryOptions.onChunk,
+        onTextChunk: queryOptions.onTextChunk,
+      }, (row, rowIndex) => {
+        if (!projectRowMatches(row, filters)) return;
+        const timelineIndex = structuralOrdinal;
+        structuralOrdinal += 1;
+        if (hasTextQuery && !eventHasSearchHit(row, filters.q)) return;
+        eventCount += 1;
+        const candidate = { row, rowIndex, timelineIndex };
+        if (!latest
+            || String(row.timestamp).localeCompare(String(latest.row.timestamp)) > 0
+            || (row.timestamp === latest.row.timestamp && timelineIndex > latest.timelineIndex)) {
+          latest = candidate;
+        }
+      });
+      if (latest && !hasTextQuery) {
+        latest.row.preview = await readProjectQueryRowPreview(
+          store,
+          session.id,
+          layer,
+          latest.rowIndex,
+          {
+            signal: queryOptions.signal,
+            onTextChunk: queryOptions.onTextChunk,
+          },
+        );
+      }
+      return latest ? { session, eventCount, latest } : null;
+    });
+    const results = scanned.filter(Boolean);
+    const matchingEventTotal = results.reduce((sum, result) => sum + result.eventCount, 0);
+    results.sort((left, right) => {
+      const timestampOrder = String(right.latest.row.timestamp).localeCompare(String(left.latest.row.timestamp));
+      if (timestampOrder) return timestampOrder;
+      const timelineOrder = right.latest.timelineIndex - left.latest.timelineIndex;
+      if (timelineOrder) return timelineOrder;
+      return String(left.session.id).localeCompare(String(right.session.id));
+    });
+    return {
+      total: results.length,
+      matchingEventTotal,
+      sessions: results.map(({ session, eventCount, latest }) => ({
+        ...sessionSummary(session, index),
+        searchMatch: {
+          eventCount,
+          latestEvent: {
+            id: latest.row.eventId,
+            timestamp: latest.row.timestamp,
+            label: sanitizeLogicalEnvelopeValue(projectRowLabel(latest.row, layer, locale)),
+            snippet: sanitizeLogicalEnvelopeValue(
+              filters.q ? eventSearchSnippet(latest.row, filters.q) : latest.row.preview,
+            ),
+            timelineIndex: latest.timelineIndex,
+          },
+        },
+      })),
+    };
+  }
+
   function ordinarySessionResult(index, filters, locale) {
     let sessions = (index.sessions || []).filter((session) => {
       if (!sessionWithinDateRange(session, filters)) return false;
@@ -503,14 +681,59 @@ function createSessionQuery(options = {}) {
     };
   }
 
-  function filterSessions(index, filters = {}) {
+  async function packedOrdinarySessionResult(index, filters, locale, queryOptions = {}) {
+    const store = requireValidatedProjectQueryStore(
+      index.projectQueryStore,
+      (index.sessions || []).map((session) => session.id),
+    );
+    const eligibleSessions = (index.sessions || []).filter((session) => sessionWithinDateRange(session, filters));
+    let sessions = eligibleSessions;
+    if (filters.tool) {
+      const matches = await mapProjectQuerySessions(eligibleSessions, queryOptions.signal, async (session) => {
+        let matched = false;
+        await scanProjectQueryShard(store, session.id, filters.layer || 'main', {
+          includeText: false,
+          signal: queryOptions.signal,
+          onChunk: queryOptions.onChunk,
+        }, (row) => {
+          if (!matched && projectRowMatches(row, filters)) matched = true;
+        });
+        return matched;
+      });
+      sessions = eligibleSessions.filter((session, index) => matches[index]);
+    }
+    if (filters.sort === 'started-asc') {
+      sessions.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+    } else if (filters.sort === 'events-desc') {
+      sessions.sort((a, b) => (
+        (b.logicalEventCount ?? b.logicalEvents?.length ?? 0)
+        - (a.logicalEventCount ?? a.logicalEvents?.length ?? 0)
+      ));
+    } else if (filters.sort === 'failures-desc') {
+      sessions.sort((a, b) => b.counts.failedCommands - a.counts.failedCommands);
+    } else {
+      sessions.sort((a, b) => String(b.updatedAt || b.startedAt).localeCompare(String(a.updatedAt || a.startedAt)));
+    }
+    return {
+      total: sessions.length,
+      sessions: sessions.map((session) => sessionSummary(session, index)),
+    };
+  }
+
+  function filterSessions(index, filters = {}, queryOptions = {}) {
     filters = normalizeFilters(filters);
     const locale = resolveLocale(filters.locale);
+    if (index?.projectQueryStore) {
+      if (hasActiveProjectExpression(filters)) {
+        return packedProjectSearchResult(index, filters, locale, queryOptions);
+      }
+      return packedOrdinarySessionResult(index, filters, locale, queryOptions);
+    }
     if (hasActiveProjectExpression(filters)) return projectSearchResult(index, filters, locale);
     return ordinarySessionResult(index, filters, locale);
   }
 
-  function fileSuggestions(index, options = {}) {
+  function residentFileSuggestions(index, options = {}) {
     const normalizedOptions = typeof options === 'number' ? { limit: options } : options;
     const layer = normalizedOptions.layer || 'main';
     const limit = normalizedOptions.limit ?? 80;
@@ -550,10 +773,91 @@ function createSessionQuery(options = {}) {
       .slice(0, limit);
   }
 
-  function getTimeline(index, sessionId, filters) {
+  async function projectFileSuggestions(index, options = {}, queryOptions = {}) {
+    if (!index?.projectQueryStore) return residentFileSuggestions(index, options);
+    const normalizedOptions = typeof options === 'number' ? { limit: options } : options;
+    if (normalizedOptions.sessionId) {
+      const error = new Error('Session-scoped suggestions require an explicit Materialized Session');
+      error.code = 'MATERIALIZED_SESSION_REQUIRED';
+      throw error;
+    }
+    const store = requireValidatedProjectQueryStore(
+      index.projectQueryStore,
+      (index.sessions || []).map((session) => session.id),
+    );
+    const layer = normalizedOptions.layer || 'main';
+    const limit = normalizedOptions.limit ?? 80;
+    const counts = new Map();
+    const sessionCounts = await mapProjectQuerySessions(index.sessions || [], queryOptions.signal, async (session) => {
+      const localCounts = new Map();
+      await scanProjectQueryShard(store, session.id, layer, {
+        includeText: false,
+        signal: queryOptions.signal,
+        onChunk: queryOptions.onChunk,
+      }, (row) => {
+        const eventFiles = new Map();
+        for (const file of row.suggestionFiles) {
+          const display = displayProjectFile(file, index.repoRoot);
+          const key = normalizeSearchPath(display);
+          if (display && key && !eventFiles.has(key)) eventFiles.set(key, display);
+        }
+        for (const [key, file] of eventFiles) {
+          const current = localCounts.get(key) || { file, count: 0 };
+          current.count += 1;
+          localCounts.set(key, current);
+        }
+      });
+      return localCounts;
+    });
+    for (const localCounts of sessionCounts) {
+      for (const [key, item] of localCounts) {
+        const current = counts.get(key) || { file: item.file, count: 0 };
+        current.count += item.count;
+        counts.set(key, current);
+      }
+    }
+    return [...counts.values()]
+      .sort((a, b) => b.count - a.count || a.file.localeCompare(b.file))
+      .slice(0, limit);
+  }
+
+  function sessionFileSuggestions(index, materializedSession, options = {}) {
+    if (!materializedSession || typeof materializedSession !== 'object') {
+      const error = new Error('Session-scoped suggestions require an explicit Materialized Session');
+      error.code = 'MATERIALIZED_SESSION_REQUIRED';
+      throw error;
+    }
+    return residentFileSuggestions({
+      ...index,
+      sessions: [materializedSession],
+      sessionsById: new Map([[materializedSession.id, materializedSession]]),
+    }, { ...options, sessionId: materializedSession.id });
+  }
+
+  function fileSuggestions(index, options = {}, queryOptions = {}) {
+    if (index?.projectQueryStore) return projectFileSuggestions(index, options, queryOptions);
+    return residentFileSuggestions(index, options);
+  }
+
+  function materializedSessionInput(index, value) {
+    if (value && typeof value === 'object') return value;
+    if (!index?.projectQueryStore) return index.sessionsById.get(value);
+    const error = new Error('Event-level queries require an explicit Materialized Session');
+    error.code = 'MATERIALIZED_SESSION_REQUIRED';
+    throw error;
+  }
+
+  function sessionPresentationFactsForEvent(session, event) {
+    return mergePresentationFacts(
+      cachePresentationFactsForEvent(session, event),
+      presentationFactsForEvent(session, event.id),
+    );
+  }
+
+  function getTimeline(index, materializedSession, filters) {
     filters = normalizeFilters(filters);
     const locale = resolveLocale(filters.locale);
-    const session = index.sessionsById.get(sessionId);
+    const session = materializedSessionInput(index, materializedSession);
     if (!session) return null;
     const layer = filters.layer || 'main';
     const sourceEvents = sourceEventsForLayer(index, session, layer, locale, layer === 'raw' ? filters.q : '');
@@ -584,15 +888,15 @@ function createSessionQuery(options = {}) {
         filters.q,
         locale,
         presentationContexts,
-        layer === 'main' ? presentationFactsForEvent(session, event.id) : null,
+        sessionPresentationFactsForEvent(session, event),
         session.sourceKind,
       )),
     };
   }
 
-  function getEvent(index, sessionId, eventId, options = {}) {
+  function getEvent(index, materializedSession, eventId, options = {}) {
     const locale = resolveLocale(options.locale);
-    const session = index.sessionsById.get(sessionId);
+    const session = materializedSessionInput(index, materializedSession);
     if (!session) return null;
     const layer = options.layer || 'main';
     const sourceEvents = sourceEventsForLayer(index, session, layer, locale);
@@ -607,7 +911,7 @@ function createSessionQuery(options = {}) {
       '',
       locale,
       presentationContexts,
-      layer === 'main' ? presentationFactsForEvent(session, event.id) : null,
+      sessionPresentationFactsForEvent(session, event),
       session.sourceKind,
     );
   }
@@ -620,6 +924,10 @@ function createSessionQuery(options = {}) {
     getTimeline,
     indexPresentation,
     matchTerms,
+    projectFileSuggestions,
+    projectQueryPresentation: presentationProjectRowFacts,
+    projectSessionMetadata,
+    sessionFileSuggestions,
   };
 }
 

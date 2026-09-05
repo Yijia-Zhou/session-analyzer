@@ -1,2 +1,18 @@
 public/assets/app.js text eol=lf
 public/vendor/highlightjs/highlight.min.js text eol=lf
+# Physical DeepSeek Harness current-writer fixture: preserve exact bytes (no CRLF conversion)
+test/fixtures/deepseek-harness-uncompressed/sessions/--home-joejack-dsh_playground-spike-ws-normal--/session-695bc3a2-78cb-4585-8acc-e637c327efa1/session.jsonl -text
+# Phase 2A DeepSeek current-writer fixtures: preserve exact uncompressed bytes (no CRLF conversion)
+test/fixtures/deepseek-harness-phase2/**/session.jsonl -text
+# Phase 2B DeepSeek source-compatible synthetic fixtures: preserve exact physical JSONL bytes
+test/fixtures/deepseek-harness-phase2b/**/session.jsonl -text
+# Phase 2C DeepSeek source-compatible synthetic fixtures: preserve exact physical JSONL bytes
+test/fixtures/deepseek-harness-phase2c/**/session.jsonl -text
+# Phase 2D DeepSeek source-compatible synthetic fixtures: preserve exact physical JSONL bytes
+test/fixtures/deepseek-harness-phase2d/**/session.jsonl -text
+# DeepSeek current-writer prune-provenance fixture: preserve exact physical JSONL bytes
+test/fixtures/deepseek-harness-prune-provenance/**/session.jsonl -text
+# DeepSeek command/plan-state source-compatible synthetic fixture: preserve exact physical JSONL bytes
+test/fixtures/deepseek-harness-command-plan-state/**/session.jsonl -text
+# DeepSeek approval-lifecycle source-compatible synthetic fixture: preserve exact physical JSONL bytes
+test/fixtures/deepseek-harness-approval-lifecycle/**/session.jsonl -text

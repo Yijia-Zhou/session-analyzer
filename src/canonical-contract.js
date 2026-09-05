@@ -1,10 +1,155 @@
 'use strict';
 
+const {
+  CACHE_OBSERVATION_SCHEMA_VERSION,
+  COMPARISON_STATE,
+  POLICY_GATE_REASON_CODE_ORDER,
+  cacheDiscontinuityReasonCodesForValidatedObservations,
+  cachedInputDeltaTokens,
+  createEmptyCacheDiscontinuityLinks,
+  inputDeltaBasisPoints,
+  inputDeltaTokens,
+  isNormalizedCacheObservation,
+  isPolicyGateReasonCode,
+  isPublicComparisonState,
+  reuseBasisPoints,
+} = require('./cache-observation');
+
 // Small adapter -> shared-runtime contract. This is deliberately structural:
 // source adapters keep ownership of source-specific interpretation, locators,
 // and raw payloads. The shared runtime only requires the identity and
 // collection fields it actually consumes.
 const CANONICAL_LAYERS = new Set(['main', 'protocol']);
+const INDEXED_SESSION_STRING_FIELDS = Object.freeze([
+  'id',
+  'sourceKind',
+  'sourceSessionId',
+  'sourceDerivedId',
+  'sourceClientVersion',
+  'projectAssociation',
+  'title',
+  'sourceFile',
+  'agentNickname',
+  'primarySessionMetaKind',
+  'derivedRunId',
+  'startedAt',
+  'updatedAt',
+]);
+const INDEXED_SESSION_COUNT_FIELDS = Object.freeze([
+  'turns',
+  'messages',
+  'userMessages',
+  'assistantMessages',
+  'reasoning',
+  'toolCalls',
+  'failedCommands',
+  'issueEvents',
+  'patches',
+  'compactions',
+  'aborts',
+  'errors',
+  'protocol',
+  'planArtifacts',
+  'planEvents',
+]);
+const INDEXED_SESSION_RELATIONSHIP_STRING_FIELDS = Object.freeze([
+  'parentSessionId',
+  'forkedFromSessionId',
+  'forkStorageMode',
+  'forkedAt',
+  'forkPointUuid',
+  'forkContinuationState',
+  'supersededBySessionId',
+  'supersededAt',
+  'supersededReason',
+]);
+const INDEXED_SESSION_OPTIONAL_FIELDS = Object.freeze([
+  'derivedRelationship',
+  'subagentToolUseId',
+  'spawnDepth',
+]);
+const INDEXED_SESSION_CARRIED_FIELDS = Object.freeze([
+  ...INDEXED_SESSION_STRING_FIELDS,
+  'bytes',
+  'lineCount',
+  'cwdSet',
+  'counts',
+  'rawEventCount',
+  'logicalEventCount',
+  ...INDEXED_SESSION_RELATIONSHIP_STRING_FIELDS,
+  'parentSessionInferred',
+  'forkEvidence',
+  'inheritedContext',
+  'summary',
+  ...INDEXED_SESSION_OPTIONAL_FIELDS,
+]);
+const INDEXED_SESSION_ALLOWED_FIELDS = new Set([
+  ...INDEXED_SESSION_CARRIED_FIELDS,
+  'materializationDescriptor',
+  'queryShardId',
+  'queryProjectionDigest',
+]);
+const STRICT_INDEXED_FORBIDDEN_FIELDS = Object.freeze([
+  'rawEvents',
+  'logicalEvents',
+  'analysis',
+  'presentationIndexes',
+  '_logicalEvents',
+  '_canonicalRawDigests',
+  '_reviewMarkers',
+]);
+const MATERIALIZED_ALWAYS_FORBIDDEN_PRIVATE_FIELDS = new Set([
+  '_logicalEvents',
+  '_canonicalRawDigests',
+  '_reviewMarkers',
+]);
+const MATERIALIZED_SESSION_ALLOWED_PUBLIC_FIELDS = new Set([
+  ...INDEXED_SESSION_CARRIED_FIELDS,
+  'materializationSnapshotId',
+  'rawEvents',
+  'logicalEvents',
+  'analysis',
+  'presentationIndexes',
+]);
+const MATERIALIZED_ANALYSIS_FIELDS = Object.freeze([
+  'sessionId',
+  'title',
+  'counts',
+  'toolUsage',
+  'failedCommands',
+  'slowCommands',
+  'patchedFiles',
+  'tokenStats',
+  'timelineStats',
+  'protocolStats',
+]);
+const MATERIALIZED_PRESENTATION_INDEX_FIELDS = Object.freeze([
+  'codeModeDeclaredRequests',
+  'cacheDiscontinuityLinks',
+]);
+const CACHE_OBSERVATION_FIELDS = Object.freeze([
+  'schemaVersion',
+  'inputTokens',
+  'cachedInputTokens',
+  'uncachedInputTokens',
+  'outputTokens',
+  'totalTokens',
+  'reuseBasisPoints',
+  'comparison',
+]);
+const CACHE_OBSERVATION_COMPARISON_FIELDS = Object.freeze([
+  'state',
+  'reasonCodes',
+  'previousEventId',
+  'elapsedMs',
+  'previousInputTokens',
+  'inputDeltaTokens',
+  'inputDeltaBasisPoints',
+  'previousCachedInputTokens',
+  'cachedInputDeltaTokens',
+  'previousReuseBasisPoints',
+]);
+const CODE_MODE_REQUEST_EVIDENCE = 'declared_source';
 
 const CANONICAL_CONTRACT = Object.freeze({
   index: Object.freeze([
@@ -83,6 +228,139 @@ function requireNonNegativeNumber(value, owner, field) {
   return value;
 }
 
+function requireNonNegativeSafeInteger(value, owner, field) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw contractError(owner, field, 'must be a non-negative safe integer');
+  }
+  return value;
+}
+
+function requireBoolean(value, owner, field) {
+  if (typeof value !== 'boolean') throw contractError(owner, field, 'must be a boolean');
+  return value;
+}
+
+function requireNullableNonNegativeSafeInteger(value, owner, field) {
+  if (value !== null) requireNonNegativeSafeInteger(value, owner, field);
+  return value;
+}
+
+function requireNullableSafeInteger(value, owner, field) {
+  if (value !== null && !Number.isSafeInteger(value)) {
+    throw contractError(owner, field, 'must be a safe integer or null');
+  }
+  return value;
+}
+
+function requirePlainObject(value, owner, field = '<value>') {
+  requireObject(value, owner);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw contractError(owner, field, 'must be a plain object');
+  }
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key === 'symbol') throw contractError(owner, field, 'must not contain symbol properties');
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!Object.hasOwn(descriptor, 'value') || !descriptor.enumerable) {
+      throw contractError(owner, `${field}.${key}`, 'must be an enumerable data property');
+    }
+  }
+  return value;
+}
+
+function requireExactOwnKeys(value, expectedKeys, owner) {
+  const actualKeys = Object.keys(value).sort();
+  const sortedExpected = [...expectedKeys].sort();
+  if (actualKeys.length !== sortedExpected.length
+    || actualKeys.some((key, index) => key !== sortedExpected[index])) {
+    throw contractError(owner, '<keys>', `must contain exactly ${sortedExpected.join(', ')}`);
+  }
+}
+
+function requirePlainMap(value, owner, field) {
+  if (!(value instanceof Map)
+      || Object.getPrototypeOf(value) !== Map.prototype
+      || Reflect.ownKeys(value).length !== 0) {
+    throw contractError(owner, field, 'must be a plain Map without custom properties');
+  }
+  return value;
+}
+
+function createEmptyMaterializedPresentationIndexes() {
+  return {
+    codeModeDeclaredRequests: new Map(),
+    cacheDiscontinuityLinks: createEmptyCacheDiscontinuityLinks(),
+  };
+}
+
+function validateBoundedPlainValue(value, owner, limits = {}) {
+  const state = {
+    entries: 0,
+    seen: new Set(),
+    maxDepth: limits.maxDepth ?? 8,
+    maxEntries: limits.maxEntries ?? 16_384,
+    maxStringBytes: limits.maxStringBytes ?? 64 * 1024,
+    allowUndefined: limits.allowUndefined === true,
+  };
+  const visit = (current, depth, path) => {
+    if (depth > state.maxDepth) throw contractError(owner, path, 'exceeds maximum depth');
+    if (current === undefined && state.allowUndefined) {
+      state.entries += 1;
+    } else if (current === null || typeof current === 'boolean') {
+      return;
+    } else if (typeof current === 'string') {
+      if (Buffer.byteLength(current, 'utf8') > state.maxStringBytes) {
+        throw contractError(owner, path, 'exceeds maximum string bytes');
+      }
+      state.entries += 1;
+    } else if (typeof current === 'number') {
+      if (!Number.isFinite(current)) throw contractError(owner, path, 'must be finite');
+      state.entries += 1;
+    } else if (Array.isArray(current)) {
+      if (state.seen.has(current)) throw contractError(owner, path, 'must be acyclic');
+      state.seen.add(current);
+      const keys = Reflect.ownKeys(current);
+      const indexedDescriptors = new Map();
+      for (const key of keys) {
+        if (typeof key === 'symbol') throw contractError(owner, path, 'must not contain symbol properties');
+        if (key === 'length') continue;
+        if (!/^(?:0|[1-9]\d*)$/.test(key) || Number(key) >= current.length) {
+          throw contractError(owner, `${path}.${key}`, 'must not contain extra properties');
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(current, key);
+        if (!Object.hasOwn(descriptor, 'value') || !descriptor.enumerable) {
+          throw contractError(owner, `${path}[${key}]`, 'must be an enumerable data property');
+        }
+        indexedDescriptors.set(Number(key), descriptor);
+      }
+      for (let index = 0; index < current.length; index += 1) {
+        const descriptor = indexedDescriptors.get(index);
+        if (!descriptor) throw contractError(owner, `${path}[${index}]`, 'must not be sparse');
+        visit(descriptor.value, depth + 1, `${path}[${index}]`);
+      }
+      state.seen.delete(current);
+      state.entries += current.length;
+    } else if (current && typeof current === 'object') {
+      requirePlainObject(current, owner, path);
+      if (state.seen.has(current)) throw contractError(owner, path, 'must be acyclic');
+      state.seen.add(current);
+      for (const [key, nested] of Object.entries(current)) {
+        if (Buffer.byteLength(key, 'utf8') > state.maxStringBytes) {
+          throw contractError(owner, `${path}.${key}`, 'has an overlong key');
+        }
+        visit(nested, depth + 1, `${path}.${key}`);
+      }
+      state.seen.delete(current);
+      state.entries += Object.keys(current).length;
+    } else {
+      throw contractError(owner, path, 'must be a JSON-compatible plain value');
+    }
+    if (state.entries > state.maxEntries) throw contractError(owner, path, 'exceeds maximum entries');
+  };
+  visit(value, 0, '<value>');
+  return value;
+}
+
 function requireCanonicalSourceKind(value, owner) {
   if (typeof value !== 'string' || value.trim() === '') throw missingOwnership(owner);
   const sourceKind = value.trim();
@@ -133,6 +411,259 @@ function validateCanonicalSessionShape(session, expectedSourceKind = '') {
   return sourceKind;
 }
 
+function validateCanonicalIndexedSessionShape(
+  session,
+  expectedSourceKind = '',
+  { allowResidentComplete = false } = {},
+) {
+  if (allowResidentComplete) return validateCanonicalSessionShape(session, expectedSourceKind);
+
+  requirePlainObject(session, 'indexed session');
+  const owner = `indexed session ${session.id || '<unknown>'}`;
+  for (const field of Object.keys(session)) {
+    if (!INDEXED_SESSION_ALLOWED_FIELDS.has(field)) {
+      throw contractError(owner, field, 'is not an allowed indexed field');
+    }
+  }
+  for (const field of STRICT_INDEXED_FORBIDDEN_FIELDS) {
+    if (Object.hasOwn(session, field)) throw contractError(owner, field, 'must not be retained');
+  }
+  for (const field of INDEXED_SESSION_STRING_FIELDS) {
+    requireString(session[field], owner, field, { nonEmpty: field === 'id' });
+  }
+  const sourceKind = requireCanonicalSourceKind(session.sourceKind, owner);
+  if (expectedSourceKind && sourceKind !== expectedSourceKind) {
+    throw ownershipMismatch(owner, expectedSourceKind, sourceKind);
+  }
+  requireNonNegativeSafeInteger(session.bytes, owner, 'bytes');
+  requireNonNegativeSafeInteger(session.lineCount, owner, 'lineCount');
+  const cwdSet = requireArray(session.cwdSet, owner, 'cwdSet');
+  if (cwdSet.length > 16_384) throw contractError(owner, 'cwdSet', 'exceeds maximum entries');
+  const cwdSeen = new Set();
+  let cwdBytes = 0;
+  for (const cwd of cwdSet) {
+    requireString(cwd, owner, 'cwdSet entry');
+    cwdBytes += Buffer.byteLength(cwd, 'utf8');
+    if (cwdSeen.has(cwd)) throw contractError(owner, 'cwdSet', 'must be deduplicated');
+    cwdSeen.add(cwd);
+  }
+  if (cwdBytes > 4 * 1024 * 1024) throw contractError(owner, 'cwdSet', 'exceeds maximum bytes');
+
+  requirePlainObject(session.counts, `${owner}.counts`);
+  requireExactOwnKeys(session.counts, INDEXED_SESSION_COUNT_FIELDS, `${owner}.counts`);
+  for (const field of INDEXED_SESSION_COUNT_FIELDS) {
+    requireNonNegativeSafeInteger(session.counts[field], owner, `counts.${field}`);
+  }
+  requireNonNegativeSafeInteger(session.rawEventCount, owner, 'rawEventCount');
+  requireNonNegativeSafeInteger(session.logicalEventCount, owner, 'logicalEventCount');
+  for (const field of INDEXED_SESSION_RELATIONSHIP_STRING_FIELDS) {
+    requireString(session[field], owner, field);
+  }
+  requireBoolean(session.parentSessionInferred, owner, 'parentSessionInferred');
+  for (const field of ['forkEvidence', 'inheritedContext']) {
+    if (session[field] !== null) {
+      validateBoundedPlainValue(session[field], `${owner}.${field}`);
+      if (Buffer.byteLength(JSON.stringify(session[field]), 'utf8') > 256 * 1024) {
+        throw contractError(owner, field, 'exceeds maximum accounted bytes');
+      }
+    }
+  }
+
+  requirePlainObject(session.summary, `${owner}.summary`);
+  requireExactOwnKeys(
+    session.summary,
+    ['topTools', 'failedCommandCount', 'patchedFiles', 'protocolCount'],
+    `${owner}.summary`,
+  );
+  const topTools = requireArray(session.summary.topTools, owner, 'summary.topTools');
+  const patchedFiles = requireArray(session.summary.patchedFiles, owner, 'summary.patchedFiles');
+  if (topTools.length > 5) throw contractError(owner, 'summary.topTools', 'must contain at most 5 entries');
+  if (patchedFiles.length > 5) throw contractError(owner, 'summary.patchedFiles', 'must contain at most 5 entries');
+  topTools.forEach((entry, index) => {
+    requirePlainObject(entry, `${owner}.summary.topTools[${index}]`);
+    validateBoundedPlainValue(entry, `${owner}.summary.topTools[${index}]`);
+  });
+  patchedFiles.forEach((entry, index) => validateBoundedPlainValue(entry, `${owner}.summary.patchedFiles[${index}]`));
+  requireNonNegativeSafeInteger(session.summary.failedCommandCount, owner, 'summary.failedCommandCount');
+  requireNonNegativeSafeInteger(session.summary.protocolCount, owner, 'summary.protocolCount');
+  if (Buffer.byteLength(JSON.stringify(session.summary), 'utf8') > 256 * 1024) {
+    throw contractError(owner, 'summary', 'exceeds maximum accounted bytes');
+  }
+
+  requirePlainObject(session.materializationDescriptor, `${owner}.materializationDescriptor`);
+  requireExactOwnKeys(
+    session.materializationDescriptor,
+    ['schemaVersion', 'dependencySetId', 'sourceSnapshotId', 'payload'],
+    `${owner}.materializationDescriptor`,
+  );
+  if (session.materializationDescriptor.schemaVersion !== 1) {
+    throw contractError(owner, 'materializationDescriptor.schemaVersion', 'must equal 1');
+  }
+  requireString(
+    session.materializationDescriptor.dependencySetId,
+    owner,
+    'materializationDescriptor.dependencySetId',
+    { nonEmpty: true },
+  );
+  requireString(
+    session.materializationDescriptor.sourceSnapshotId,
+    owner,
+    'materializationDescriptor.sourceSnapshotId',
+    { nonEmpty: true },
+  );
+  validateBoundedPlainValue(session.materializationDescriptor.payload, `${owner}.materializationDescriptor.payload`);
+  if (Buffer.byteLength(JSON.stringify(session.materializationDescriptor), 'utf8') > 512 * 1024) {
+    throw contractError(owner, 'materializationDescriptor', 'exceeds maximum accounted bytes');
+  }
+  requireString(session.queryShardId, owner, 'queryShardId', { nonEmpty: true });
+  if (session.queryShardId !== session.id) throw contractError(owner, 'queryShardId', 'must equal id');
+  requireString(session.queryProjectionDigest, owner, 'queryProjectionDigest', { nonEmpty: true });
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(session.queryProjectionDigest)) {
+    throw contractError(owner, 'queryProjectionDigest', 'must be a SHA-256 base64url digest');
+  }
+
+  if (Object.hasOwn(session, 'derivedRelationship') && session.derivedRelationship !== null) {
+    validateBoundedPlainValue(session.derivedRelationship, `${owner}.derivedRelationship`);
+    if (Buffer.byteLength(JSON.stringify(session.derivedRelationship), 'utf8') > 256 * 1024) {
+      throw contractError(owner, 'derivedRelationship', 'exceeds maximum accounted bytes');
+    }
+  }
+  if (Object.hasOwn(session, 'subagentToolUseId')) {
+    requireString(session.subagentToolUseId, owner, 'subagentToolUseId');
+  }
+  if (Object.hasOwn(session, 'spawnDepth')
+    && session.spawnDepth !== null) {
+    requireNonNegativeSafeInteger(session.spawnDepth, owner, 'spawnDepth');
+  }
+  return sourceKind;
+}
+
+function validateCanonicalDependencySet(dependencySet, expectedSourceKind, expectedId = '') {
+  requirePlainObject(dependencySet, 'materialization dependency set');
+  requireExactOwnKeys(
+    dependencySet,
+    ['schemaVersion', 'id', 'sourceKind', 'entries'],
+    'materialization dependency set',
+  );
+  if (dependencySet.schemaVersion !== 1) {
+    throw contractError('materialization dependency set', 'schemaVersion', 'must equal 1');
+  }
+  requireString(dependencySet.id, 'materialization dependency set', 'id', { nonEmpty: true });
+  if (expectedId && dependencySet.id !== expectedId) {
+    throw contractError('materialization dependency set', 'id', `must equal ${expectedId}`);
+  }
+  const sourceKind = requireCanonicalSourceKind(
+    dependencySet.sourceKind,
+    `materialization dependency set ${dependencySet.id}`,
+  );
+  if (expectedSourceKind && sourceKind !== expectedSourceKind) {
+    throw ownershipMismatch(
+      `materialization dependency set ${dependencySet.id}`,
+      expectedSourceKind,
+      sourceKind,
+    );
+  }
+  const entries = requireArray(
+    dependencySet.entries,
+    `materialization dependency set ${dependencySet.id}`,
+    'entries',
+  );
+  if (entries.length > 65_536) {
+    throw contractError('materialization dependency set', 'entries', 'exceeds maximum entries');
+  }
+  const existenceValues = new Set(['present', 'absent']);
+  const kindValues = new Set(['file', 'directory']);
+  const policyValues = new Set(['accepted_prefix', 'exact', 'copied_value', 'directory_snapshot']);
+  entries.forEach((entry, index) => {
+    const owner = `materialization dependency set ${dependencySet.id}.entries[${index}]`;
+    requirePlainObject(entry, owner);
+    requireExactOwnKeys(entry, [
+      'role',
+      'pathIdentity',
+      'existence',
+      'kind',
+      'policy',
+      'acceptedBytes',
+      'lineCount',
+      'digest',
+      'directoryEntries',
+      'evidence',
+    ], owner);
+    requireString(entry.role, owner, 'role', { nonEmpty: true });
+    requireString(entry.pathIdentity, owner, 'pathIdentity', { nonEmpty: true });
+    if (!existenceValues.has(entry.existence)) {
+      throw contractError(owner, 'existence', 'must be present or absent');
+    }
+    if (!kindValues.has(entry.kind)) throw contractError(owner, 'kind', 'must be file or directory');
+    if (!policyValues.has(entry.policy)) throw contractError(owner, 'policy', 'is invalid');
+    requireNonNegativeSafeInteger(entry.acceptedBytes, owner, 'acceptedBytes');
+    requireNonNegativeSafeInteger(entry.lineCount, owner, 'lineCount');
+    requireString(entry.digest, owner, 'digest');
+    const directoryEntries = requireArray(entry.directoryEntries, owner, 'directoryEntries');
+    directoryEntries.forEach((value) => requireString(value, owner, 'directoryEntries entry'));
+    if (entry.evidence !== null) {
+      validateBoundedPlainValue(entry.evidence, `${owner}.evidence`, {
+        maxEntries: 65_536,
+      });
+    }
+    if (entry.existence === 'absent'
+      && (entry.acceptedBytes !== 0
+        || entry.lineCount !== 0
+        || entry.digest !== ''
+        || entry.directoryEntries.length !== 0)) {
+      throw contractError(owner, '<absence>', 'must use zero/empty accepted values');
+    }
+  });
+  const accountedBytes = Buffer.byteLength(JSON.stringify(dependencySet), 'utf8');
+  if (accountedBytes > 4 * 1024 * 1024) {
+    throw contractError('materialization dependency set', '<value>', 'exceeds maximum accounted bytes');
+  }
+  return accountedBytes;
+}
+
+function validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, expectedSourceKind) {
+  requirePlainObject(legacyRawOwners, 'legacy Raw owner index');
+  requireExactOwnKeys(
+    legacyRawOwners,
+    ['schemaVersion', 'sourceKind', 'entryCount', 'accountedBytes', 'payload'],
+    'legacy Raw owner index',
+  );
+  if (legacyRawOwners.schemaVersion !== 1) {
+    throw contractError('legacy Raw owner index', 'schemaVersion', 'must equal 1');
+  }
+  const sourceKind = requireCanonicalSourceKind(
+    legacyRawOwners.sourceKind,
+    'legacy Raw owner index',
+  );
+  if (expectedSourceKind && sourceKind !== expectedSourceKind) {
+    throw ownershipMismatch('legacy Raw owner index', expectedSourceKind, sourceKind);
+  }
+  requireNonNegativeSafeInteger(legacyRawOwners.entryCount, 'legacy Raw owner index', 'entryCount');
+  requireNonNegativeSafeInteger(
+    legacyRawOwners.accountedBytes,
+    'legacy Raw owner index',
+    'accountedBytes',
+  );
+  if (legacyRawOwners.entryCount > 1_000_000) {
+    throw contractError('legacy Raw owner index', 'entryCount', 'exceeds maximum entries');
+  }
+  if (legacyRawOwners.accountedBytes > 64 * 1024 * 1024) {
+    throw contractError('legacy Raw owner index', 'accountedBytes', 'exceeds maximum bytes');
+  }
+  validateBoundedPlainValue(legacyRawOwners.payload, 'legacy Raw owner index.payload', {
+    maxEntries: 1_000_000,
+  });
+  const actualAccountedBytes = Buffer.byteLength(JSON.stringify(legacyRawOwners.payload), 'utf8');
+  if (legacyRawOwners.accountedBytes !== actualAccountedBytes) {
+    throw contractError(
+      'legacy Raw owner index',
+      'accountedBytes',
+      `must equal the payload byte count ${actualAccountedBytes}`,
+    );
+  }
+  return legacyRawOwners;
+}
+
 function validateCanonicalRawReferenceShape(reference, owner = 'raw reference') {
   requireObject(reference, owner);
   requireString(reference.rawId, owner, 'rawId', { nonEmpty: true });
@@ -147,6 +678,206 @@ function validateCanonicalRawEventShape(raw, expectedSourceKind = '') {
     throw ownershipMismatch(`raw event ${raw.rawId}`, expectedSourceKind, sourceKind);
   }
   return sourceKind;
+}
+
+function sameStringArray(left, right) {
+  return left.length === right.length
+    && left.every((value, index) => value === right[index]);
+}
+
+function requireExactDenseArray(value, owner, field, maximumLength) {
+  const array = requireArray(value, owner, field);
+  if (array.length > maximumLength) {
+    throw contractError(owner, field, `must contain no more than ${maximumLength} entries`);
+  }
+  const keys = Reflect.ownKeys(array);
+  if (keys.length !== array.length + 1 || !keys.includes('length')) {
+    throw contractError(owner, field, 'must be a dense array without custom properties');
+  }
+  for (let index = 0; index < array.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(array, String(index));
+    if (!descriptor || !Object.hasOwn(descriptor, 'value') || !descriptor.enumerable) {
+      throw contractError(owner, field, 'must use enumerable dense data entries');
+    }
+  }
+  return array;
+}
+
+function validateCanonicalCacheObservationShape(cacheObservation, owner = 'cache observation') {
+  requirePlainObject(cacheObservation, owner);
+  requireExactOwnKeys(cacheObservation, CACHE_OBSERVATION_FIELDS, owner);
+  if (cacheObservation.schemaVersion !== CACHE_OBSERVATION_SCHEMA_VERSION) {
+    throw contractError(owner, 'schemaVersion', `must equal ${CACHE_OBSERVATION_SCHEMA_VERSION}`);
+  }
+  requireNonNegativeSafeInteger(cacheObservation.inputTokens, owner, 'inputTokens');
+  requireNonNegativeSafeInteger(cacheObservation.cachedInputTokens, owner, 'cachedInputTokens');
+  requireNonNegativeSafeInteger(cacheObservation.uncachedInputTokens, owner, 'uncachedInputTokens');
+  requireNullableNonNegativeSafeInteger(cacheObservation.outputTokens, owner, 'outputTokens');
+  requireNullableNonNegativeSafeInteger(cacheObservation.totalTokens, owner, 'totalTokens');
+  requireNullableNonNegativeSafeInteger(
+    cacheObservation.reuseBasisPoints,
+    owner,
+    'reuseBasisPoints',
+  );
+  if (!isNormalizedCacheObservation(cacheObservation)) {
+    throw contractError(owner, '<values>', 'must contain consistent normalized token accounting');
+  }
+
+  const comparisonOwner = `${owner}.comparison`;
+  const comparison = requirePlainObject(cacheObservation.comparison, comparisonOwner);
+  requireExactOwnKeys(comparison, CACHE_OBSERVATION_COMPARISON_FIELDS, comparisonOwner);
+  requireString(comparison.state, comparisonOwner, 'state', { nonEmpty: true });
+  if (!isPublicComparisonState(comparison.state)) {
+    throw contractError(comparisonOwner, 'state', 'must use the public comparison-state vocabulary');
+  }
+  const reasonCodes = requireExactDenseArray(
+    comparison.reasonCodes,
+    comparisonOwner,
+    'reasonCodes',
+    POLICY_GATE_REASON_CODE_ORDER.length,
+  );
+  let previousReasonIndex = -1;
+  for (const reasonCode of reasonCodes) {
+    requireString(reasonCode, comparisonOwner, 'reasonCodes entry', { nonEmpty: true });
+    if (!isPolicyGateReasonCode(reasonCode)) {
+      throw contractError(comparisonOwner, 'reasonCodes', `contains unknown code ${reasonCode}`);
+    }
+    const reasonIndex = POLICY_GATE_REASON_CODE_ORDER.indexOf(reasonCode);
+    if (reasonIndex <= previousReasonIndex) {
+      throw contractError(comparisonOwner, 'reasonCodes', 'must be unique and deterministically ordered');
+    }
+    previousReasonIndex = reasonIndex;
+  }
+  if (comparison.previousEventId !== null) {
+    requireString(comparison.previousEventId, comparisonOwner, 'previousEventId', { nonEmpty: true });
+  }
+  requireNullableNonNegativeSafeInteger(comparison.elapsedMs, comparisonOwner, 'elapsedMs');
+  requireNullableNonNegativeSafeInteger(
+    comparison.previousInputTokens,
+    comparisonOwner,
+    'previousInputTokens',
+  );
+  requireNullableSafeInteger(comparison.inputDeltaTokens, comparisonOwner, 'inputDeltaTokens');
+  requireNullableSafeInteger(
+    comparison.inputDeltaBasisPoints,
+    comparisonOwner,
+    'inputDeltaBasisPoints',
+  );
+  requireNullableNonNegativeSafeInteger(
+    comparison.previousCachedInputTokens,
+    comparisonOwner,
+    'previousCachedInputTokens',
+  );
+  requireNullableSafeInteger(
+    comparison.cachedInputDeltaTokens,
+    comparisonOwner,
+    'cachedInputDeltaTokens',
+  );
+  requireNullableNonNegativeSafeInteger(
+    comparison.previousReuseBasisPoints,
+    comparisonOwner,
+    'previousReuseBasisPoints',
+  );
+
+  const previousFields = [
+    'previousEventId',
+    'elapsedMs',
+    'previousInputTokens',
+    'inputDeltaTokens',
+    'inputDeltaBasisPoints',
+    'previousCachedInputTokens',
+    'cachedInputDeltaTokens',
+    'previousReuseBasisPoints',
+  ];
+  if (comparison.state === COMPARISON_STATE.NO_PREVIOUS_OBSERVATION) {
+    if (previousFields.some((field) => comparison[field] !== null)) {
+      throw contractError(comparisonOwner, '<previous>', 'must be null without a previous observation');
+    }
+    if (reasonCodes.length !== 0) {
+      throw contractError(comparisonOwner, 'reasonCodes', 'must be empty without a previous observation');
+    }
+    return cacheObservation;
+  }
+
+  if (comparison.previousEventId === null
+      || comparison.previousInputTokens === null
+      || comparison.previousCachedInputTokens === null) {
+    throw contractError(comparisonOwner, '<previous>', 'must contain complete previous accounting');
+  }
+  if (comparison.previousCachedInputTokens > comparison.previousInputTokens) {
+    throw contractError(
+      comparisonOwner,
+      'previousCachedInputTokens',
+      'must not exceed previousInputTokens',
+    );
+  }
+  const expectedInputDelta = inputDeltaTokens(
+    comparison.previousInputTokens,
+    cacheObservation.inputTokens,
+  );
+  const expectedInputDeltaBasisPoints = inputDeltaBasisPoints(
+    comparison.previousInputTokens,
+    cacheObservation.inputTokens,
+  );
+  const expectedCachedInputDelta = cachedInputDeltaTokens(
+    comparison.previousCachedInputTokens,
+    cacheObservation.cachedInputTokens,
+  );
+  const expectedPreviousReuse = reuseBasisPoints(
+    comparison.previousInputTokens,
+    comparison.previousCachedInputTokens,
+  );
+  for (const [field, expected] of [
+    ['inputDeltaTokens', expectedInputDelta],
+    ['inputDeltaBasisPoints', expectedInputDeltaBasisPoints],
+    ['cachedInputDeltaTokens', expectedCachedInputDelta],
+    ['previousReuseBasisPoints', expectedPreviousReuse],
+  ]) {
+    if (comparison[field] !== expected) {
+      throw contractError(comparisonOwner, field, `must equal the derived value ${expected}`);
+    }
+  }
+
+  if (comparison.state === COMPARISON_STATE.UNKNOWN_OR_NON_MONOTONIC_TIMESTAMP) {
+    if (comparison.elapsedMs !== null) {
+      throw contractError(comparisonOwner, 'elapsedMs', 'must be null for an excluded timestamp edge');
+    }
+  } else if (comparison.elapsedMs === null || comparison.elapsedMs <= 0) {
+    throw contractError(comparisonOwner, 'elapsedMs', 'must be a positive safe integer for this state');
+  }
+
+  const previous = {
+    inputTokens: comparison.previousInputTokens,
+    cachedInputTokens: comparison.previousCachedInputTokens,
+    uncachedInputTokens: comparison.previousInputTokens - comparison.previousCachedInputTokens,
+    outputTokens: null,
+    totalTokens: null,
+    reuseBasisPoints: comparison.previousReuseBasisPoints,
+  };
+  const expectedPolicyReasons = cacheDiscontinuityReasonCodesForValidatedObservations(
+    previous,
+    cacheObservation,
+  );
+  if (comparison.state === COMPARISON_STATE.COMPARABLE) {
+    if (expectedPolicyReasons.length === 0 || !sameStringArray(reasonCodes, expectedPolicyReasons)) {
+      throw contractError(
+        comparisonOwner,
+        'reasonCodes',
+        'must exactly identify the failed v1 policy gates',
+      );
+    }
+  } else if (comparison.state === COMPARISON_STATE.CACHE_DISCONTINUITY) {
+    if (expectedPolicyReasons.length !== 0 || reasonCodes.length !== 0) {
+      throw contractError(comparisonOwner, 'state', 'requires every v1 policy gate to pass');
+    }
+  } else if (reasonCodes.length !== 0) {
+    throw contractError(
+      comparisonOwner,
+      'reasonCodes',
+      'must be empty when the comparison state already explains exclusion',
+    );
+  }
+  return cacheObservation;
 }
 
 function validateCanonicalLogicalEventShape(event, expectedSourceKind = '') {
@@ -167,7 +898,414 @@ function validateCanonicalLogicalEventShape(event, expectedSourceKind = '') {
     reference,
     `logical event ${event.id}.rawRefs[${index}]`,
   ));
+  if (Object.hasOwn(event, 'cacheObservation')) {
+    if (event.layer !== 'protocol' || event.subtype !== 'token_count') {
+      throw contractError(
+        `logical event ${event.id}`,
+        'cacheObservation',
+        'is allowed only on protocol token_count events',
+      );
+    }
+    validateCanonicalCacheObservationShape(
+      event.cacheObservation,
+      `logical event ${event.id}.cacheObservation`,
+    );
+  }
   return sourceKind;
+}
+
+function materializationContractError(message, cause) {
+  const error = new Error(message);
+  error.code = 'MATERIALIZATION_CONTRACT_VIOLATION';
+  if (cause) error.cause = cause;
+  return error;
+}
+
+function deepEqualPlainValue(left, right, seen = new Map()) {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    return left.every((value, index) => deepEqualPlainValue(value, right[index], seen));
+  }
+  if (Object.getPrototypeOf(left) !== Object.getPrototypeOf(right)) return false;
+  if (seen.get(left) === right) return true;
+  seen.set(left, right);
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (leftKeys.length !== rightKeys.length
+    || leftKeys.some((key, index) => key !== rightKeys[index])) return false;
+  return leftKeys.every((key) => deepEqualPlainValue(left[key], right[key], seen));
+}
+
+function validateMaterializedAnalysis(analysis) {
+  requirePlainObject(analysis, 'materialized session.analysis');
+  requireExactOwnKeys(
+    analysis,
+    MATERIALIZED_ANALYSIS_FIELDS,
+    'materialized session.analysis',
+  );
+  validateBoundedPlainValue(analysis, 'materialized session.analysis', {
+    maxDepth: 32,
+    maxEntries: 1_000_000,
+    maxStringBytes: 16 * 1024 * 1024,
+    allowUndefined: true,
+  });
+}
+
+function logicalEventRawOrder(event, rawOrdinals) {
+  let latest = -1;
+  for (const reference of event?.rawRefs || []) {
+    const ordinal = rawOrdinals.get(reference.rawId);
+    if (Number.isSafeInteger(ordinal) && ordinal > latest) latest = ordinal;
+  }
+  return latest;
+}
+
+function validateMaterializedCacheObservationContext(logicalEvents, validationContext = null) {
+  if (validationContext && !validationContext.hasPreviousCacheObservation) return;
+  if (!validationContext
+      && !logicalEvents.some((event) => event.cacheObservation?.comparison?.previousEventId)) return;
+  const logicalById = validationContext?.logicalById
+    || new Map(logicalEvents.map((event) => [event.id, event]));
+  const rawOrdinals = validationContext?.rawOrdinals || new Map();
+  for (const event of logicalEvents) {
+    const cacheObservation = event.cacheObservation;
+    const previousEventId = cacheObservation?.comparison?.previousEventId;
+    if (!previousEventId) continue;
+    const previousEvent = logicalById.get(previousEventId);
+    if (!previousEvent
+        || previousEvent.layer !== 'protocol'
+        || previousEvent.subtype !== 'token_count'
+        || !previousEvent.cacheObservation) {
+      throw contractError(
+        `logical event ${event.id}.cacheObservation.comparison`,
+        'previousEventId',
+        `must identify an owned cache-observed protocol token_count event: ${previousEventId}`,
+      );
+    }
+    const previousRawOrder = logicalEventRawOrder(previousEvent, rawOrdinals);
+    const currentRawOrder = logicalEventRawOrder(event, rawOrdinals);
+    if (previousRawOrder < 0 || currentRawOrder < 0 || previousRawOrder >= currentRawOrder) {
+      throw contractError(
+        `logical event ${event.id}.cacheObservation.comparison`,
+        'previousEventId',
+        'must identify an earlier owned event in Raw order',
+      );
+    }
+    const comparison = cacheObservation.comparison;
+    for (const [field, expected] of [
+      ['previousInputTokens', previousEvent.cacheObservation.inputTokens],
+      ['previousCachedInputTokens', previousEvent.cacheObservation.cachedInputTokens],
+      ['previousReuseBasisPoints', previousEvent.cacheObservation.reuseBasisPoints],
+    ]) {
+      if (comparison[field] !== expected) {
+        throw contractError(
+          `logical event ${event.id}.cacheObservation.comparison`,
+          field,
+          `must equal the referenced previous observation value ${expected}`,
+        );
+      }
+    }
+  }
+}
+
+function validateMaterializedPresentationIndexes(
+  presentationIndexes,
+  logicalEvents,
+  rawEvents,
+  validationContext = null,
+) {
+  requirePlainObject(presentationIndexes, 'materialized session.presentationIndexes');
+  requireExactOwnKeys(
+    presentationIndexes,
+    MATERIALIZED_PRESENTATION_INDEX_FIELDS,
+    'materialized session.presentationIndexes',
+  );
+  const declaredRequests = requirePlainMap(
+    presentationIndexes.codeModeDeclaredRequests,
+    'materialized session.presentationIndexes',
+    'codeModeDeclaredRequests',
+  );
+  const logicalById = validationContext?.logicalById
+    || new Map(logicalEvents.map((event) => [event.id, event]));
+  for (const [eventId, fact] of Map.prototype.entries.call(declaredRequests)) {
+    requireString(eventId, 'materialized session.presentationIndexes', 'eventId', { nonEmpty: true });
+    if (!logicalById.has(eventId)) {
+      throw contractError(
+        'materialized session.presentationIndexes',
+        'eventId',
+        `must identify an owned Logical Event: ${eventId}`,
+      );
+    }
+    requirePlainObject(fact, 'materialized session.presentationIndexes.codeModeDeclaredRequests');
+    requireExactOwnKeys(
+      fact,
+      ['toolNames', 'requestEvidence'],
+      'materialized session.presentationIndexes.codeModeDeclaredRequests fact',
+    );
+    requireArray(
+      fact.toolNames,
+      'materialized session.presentationIndexes.codeModeDeclaredRequests fact',
+      'toolNames',
+    );
+    if (fact.toolNames.length === 0) {
+      throw contractError(
+        'materialized session.presentationIndexes.codeModeDeclaredRequests fact',
+        'toolNames',
+        'must not be empty',
+      );
+    }
+    validateBoundedPlainValue(
+      fact.toolNames,
+      'materialized session.presentationIndexes.codeModeDeclaredRequests fact.toolNames',
+    );
+    const uniqueNames = new Set();
+    for (const toolName of fact.toolNames) {
+      requireString(
+        toolName,
+        'materialized session.presentationIndexes.codeModeDeclaredRequests fact',
+        'toolNames entry',
+        { nonEmpty: true },
+      );
+      if (uniqueNames.has(toolName)) {
+        throw contractError(
+          'materialized session.presentationIndexes.codeModeDeclaredRequests fact',
+          'toolNames',
+          'must contain unique names',
+        );
+      }
+      uniqueNames.add(toolName);
+    }
+    if (fact.requestEvidence !== CODE_MODE_REQUEST_EVIDENCE) {
+      throw contractError(
+        'materialized session.presentationIndexes.codeModeDeclaredRequests fact',
+        'requestEvidence',
+        `must equal ${CODE_MODE_REQUEST_EVIDENCE}`,
+      );
+    }
+  }
+
+  const linksOwner = 'materialized session.presentationIndexes.cacheDiscontinuityLinks';
+  const links = requirePlainObject(presentationIndexes.cacheDiscontinuityLinks, linksOwner);
+  requireExactOwnKeys(
+    links,
+    ['protocolEventIdsByMainEventId', 'mainEventIdByProtocolEventId'],
+    linksOwner,
+  );
+  const protocolIdsByMain = requirePlainMap(
+    links.protocolEventIdsByMainEventId,
+    linksOwner,
+    'protocolEventIdsByMainEventId',
+  );
+  const mainIdByProtocol = requirePlainMap(
+    links.mainEventIdByProtocolEventId,
+    linksOwner,
+    'mainEventIdByProtocolEventId',
+  );
+  if (protocolIdsByMain.size === 0 && mainIdByProtocol.size === 0) return;
+  const rawOrdinals = validationContext?.rawOrdinals
+    || new Map(rawEvents.map((raw, index) => [raw.rawId, index]));
+  const linkedProtocolIds = new Set();
+  for (const [mainEventId, protocolEventIds] of Map.prototype.entries.call(protocolIdsByMain)) {
+    requireString(mainEventId, linksOwner, 'Main event ID', { nonEmpty: true });
+    const mainEvent = logicalById.get(mainEventId);
+    if (!mainEvent || mainEvent.layer !== 'main') {
+      throw contractError(linksOwner, 'protocolEventIdsByMainEventId', 'must key owned Main events');
+    }
+    requireArray(protocolEventIds, linksOwner, `protocolEventIdsByMainEventId.${mainEventId}`);
+    validateBoundedPlainValue(protocolEventIds, `${linksOwner}.${mainEventId}`);
+    if (protocolEventIds.length === 0) {
+      throw contractError(linksOwner, `protocolEventIdsByMainEventId.${mainEventId}`, 'must not be empty');
+    }
+    let previousRawOrder = -1;
+    for (const protocolEventId of protocolEventIds) {
+      requireString(protocolEventId, linksOwner, 'Protocol event ID', { nonEmpty: true });
+      if (linkedProtocolIds.has(protocolEventId)) {
+        throw contractError(linksOwner, 'protocolEventIdsByMainEventId', 'must not duplicate Protocol IDs');
+      }
+      linkedProtocolIds.add(protocolEventId);
+      const protocolEvent = logicalById.get(protocolEventId);
+      if (!protocolEvent
+          || protocolEvent.layer !== 'protocol'
+          || protocolEvent.subtype !== 'token_count'
+          || protocolEvent.cacheObservation?.comparison?.state
+            !== COMPARISON_STATE.CACHE_DISCONTINUITY) {
+        throw contractError(
+          linksOwner,
+          'protocolEventIdsByMainEventId',
+          'must reference owned discontinuity protocol token_count events',
+        );
+      }
+      const rawOrder = logicalEventRawOrder(protocolEvent, rawOrdinals);
+      if (rawOrder < 0 || rawOrder <= previousRawOrder) {
+        throw contractError(
+          linksOwner,
+          `protocolEventIdsByMainEventId.${mainEventId}`,
+          'must follow strict Raw order',
+        );
+      }
+      previousRawOrder = rawOrder;
+      if (Map.prototype.get.call(mainIdByProtocol, protocolEventId) !== mainEventId) {
+        throw contractError(linksOwner, 'mainEventIdByProtocolEventId', 'must be the exact inverse');
+      }
+    }
+  }
+  for (const [protocolEventId, mainEventId] of Map.prototype.entries.call(mainIdByProtocol)) {
+    requireString(protocolEventId, linksOwner, 'Protocol event ID', { nonEmpty: true });
+    requireString(mainEventId, linksOwner, 'Main event ID', { nonEmpty: true });
+    const protocolEventIds = Map.prototype.get.call(protocolIdsByMain, mainEventId);
+    if (!linkedProtocolIds.has(protocolEventId)
+        || !Array.isArray(protocolEventIds)
+        || !protocolEventIds.includes(protocolEventId)) {
+      throw contractError(linksOwner, 'mainEventIdByProtocolEventId', 'must be the exact inverse');
+    }
+  }
+}
+
+function validateCompleteSessionEventOwnership(session, expectedSourceKind, { strictReferences = false } = {}) {
+  validateCanonicalSessionShape(session, expectedSourceKind);
+  const rawById = new Map();
+  for (let rawIndex = 0; rawIndex < session.rawEvents.length; rawIndex += 1) {
+    const raw = session.rawEvents[rawIndex];
+    validateCanonicalRawEventShape(raw, expectedSourceKind);
+    if (rawById.has(raw.rawId)) {
+      throw contractError(`session ${session.id}`, 'rawEvents', `contains duplicate rawId ${raw.rawId}`);
+    }
+    rawById.set(raw.rawId, raw);
+  }
+  const logicalById = new Map();
+  let hasPreviousCacheObservation = false;
+  for (const event of session.logicalEvents) {
+    validateCanonicalLogicalEventShape(event, expectedSourceKind);
+    if (logicalById.has(event.id)) {
+      throw contractError(`session ${session.id}`, 'logicalEvents', `contains duplicate id ${event.id}`);
+    }
+    logicalById.set(event.id, event);
+    if (event.cacheObservation?.comparison?.previousEventId) {
+      hasPreviousCacheObservation = true;
+    }
+    for (const reference of event.rawRefs) {
+      const raw = rawById.get(reference.rawId);
+      if (!raw) {
+        throw contractError(
+          `logical event ${event.id}`,
+          'rawRefs',
+          `references missing raw event ${reference.rawId}`,
+        );
+      }
+      validateCanonicalRawEventShape(raw, expectedSourceKind);
+      if (strictReferences) {
+        for (const field of ['sourceKind', 'sourceLocator']) {
+          if (Object.hasOwn(reference, field)
+            && !deepEqualPlainValue(reference[field], raw[field])) {
+            throw contractError(
+              `logical event ${event.id}`,
+              `rawRefs.${field}`,
+              `must equal owned raw event ${reference.rawId}`,
+            );
+          }
+        }
+      }
+    }
+  }
+  const rawOrdinals = hasPreviousCacheObservation
+    ? new Map(session.rawEvents.map((raw, index) => [raw.rawId, index]))
+    : null;
+  const validationContext = { logicalById, rawOrdinals, hasPreviousCacheObservation };
+  validateMaterializedCacheObservationContext(session.logicalEvents, validationContext);
+  return validationContext;
+}
+
+function validateCanonicalMaterializedSessionShape(
+  indexedSession,
+  materializedSession,
+  expectedSourceKind = '',
+  {
+    allowResidentComplete = false,
+    index = null,
+    allowedPrivateFields = [],
+  } = {},
+) {
+  try {
+    if (allowResidentComplete) {
+      if (!index || !(index.sessionsById instanceof Map)) {
+        throw contractError('materialized session', 'index', 'must own sessionsById');
+      }
+      if (materializedSession !== indexedSession
+        || index.sessionsById.get(indexedSession?.id) !== indexedSession) {
+        throw contractError(
+          'materialized session',
+          'identity',
+          'must equal the resident indexed Session owned by the captured Index',
+        );
+      }
+      validateCompleteSessionEventOwnership(materializedSession, expectedSourceKind);
+      return materializedSession;
+    }
+
+    validateCanonicalIndexedSessionShape(indexedSession, expectedSourceKind);
+    if (materializedSession === indexedSession) {
+      throw contractError('materialized session', 'identity', 'must be distinct from the Indexed Session');
+    }
+    const validationContext = validateCompleteSessionEventOwnership(materializedSession, expectedSourceKind, {
+      strictReferences: true,
+    });
+    requirePlainObject(materializedSession, 'materialized session');
+    requireString(
+      materializedSession.materializationSnapshotId,
+      'materialized session',
+      'materializationSnapshotId',
+      { nonEmpty: true },
+    );
+    if (materializedSession.materializationSnapshotId
+      !== indexedSession.materializationDescriptor.sourceSnapshotId) {
+      throw contractError(
+        'materialized session',
+        'materializationSnapshotId',
+        'must equal indexed materializationDescriptor.sourceSnapshotId',
+      );
+    }
+    if (materializedSession.rawEvents.length !== indexedSession.rawEventCount) {
+      throw contractError('materialized session', 'rawEvents.length', 'must equal indexed rawEventCount');
+    }
+    if (materializedSession.logicalEvents.length !== indexedSession.logicalEventCount) {
+      throw contractError('materialized session', 'logicalEvents.length', 'must equal indexed logicalEventCount');
+    }
+    for (const field of INDEXED_SESSION_CARRIED_FIELDS) {
+      const indexedHasField = Object.hasOwn(indexedSession, field);
+      if (!indexedHasField && INDEXED_SESSION_OPTIONAL_FIELDS.includes(field)) {
+        if (Object.hasOwn(materializedSession, field)) {
+          throw contractError('materialized session', field, 'must remain absent when absent from Indexed Session');
+        }
+        continue;
+      }
+      if (!Object.hasOwn(materializedSession, field)
+        || !deepEqualPlainValue(materializedSession[field], indexedSession[field])) {
+        throw contractError('materialized session', field, 'must equal the Indexed Session copied fact');
+      }
+    }
+    validateMaterializedAnalysis(materializedSession.analysis);
+    validateMaterializedPresentationIndexes(
+      materializedSession.presentationIndexes,
+      materializedSession.logicalEvents,
+      materializedSession.rawEvents,
+      validationContext,
+    );
+    const allowedPrivate = new Set(allowedPrivateFields);
+    for (const key of Object.keys(materializedSession)) {
+      if (MATERIALIZED_SESSION_ALLOWED_PUBLIC_FIELDS.has(key)) continue;
+      if (MATERIALIZED_ALWAYS_FORBIDDEN_PRIVATE_FIELDS.has(key)
+        || !key.startsWith('_')
+        || !allowedPrivate.has(key)) {
+        throw contractError('materialized session', key, 'is not an allowed Materialized Session field');
+      }
+    }
+    return materializedSession;
+  } catch (error) {
+    if (error?.code === 'MATERIALIZATION_CONTRACT_VIOLATION') throw error;
+    throw materializationContractError(`Materialized Session validation failed: ${error.message}`, error);
+  }
 }
 
 function inspectDataProperty(value, property) {
@@ -186,8 +1324,16 @@ function inspectDataProperty(value, property) {
 
 module.exports = {
   CANONICAL_CONTRACT,
+  INDEXED_SESSION_COUNT_FIELDS,
+  INDEXED_SESSION_STRING_FIELDS,
+  createEmptyMaterializedPresentationIndexes,
   inspectDataProperty,
+  validateCanonicalCacheObservationShape,
   validateCanonicalIndexFields,
+  validateCanonicalDependencySet,
+  validateCanonicalIndexedSessionShape,
+  validateCanonicalLegacyRawOwnerIndex,
+  validateCanonicalMaterializedSessionShape,
   validateCanonicalSessionsProperty,
   validateCanonicalLogicalEventShape,
   validateCanonicalRawEventShape,

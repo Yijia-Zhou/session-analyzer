@@ -7,6 +7,7 @@ const http = require('node:http');
 const i18n = require('../src/shared/i18n');
 const { __testOnly, getTimeline, buildEventDetail, eventKindCatalog } = require('../src/codex');
 const { createServer } = require('../server');
+const { getSourceAdapter } = require('../src/source-adapters');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const fixtureRepo = 'G:\\vibe\\term-agent';
@@ -52,6 +53,8 @@ const allowedZhTerms = new Set([
   'agent',
   'review',
   'subagent',
+  'token',
+  'accounting',
 ]);
 const allowedZhPhrases = [
   'JS REPL',
@@ -61,6 +64,8 @@ const allowedZhTermsByPath = new Map([
   ['kind.code_mode_operation', new Set(['code', 'mode'])],
   ['logicalLabel.Code Mode operation', new Set(['code', 'mode'])],
   ['section.Code Mode operation', new Set(['code', 'mode'])],
+  ['section.Exec command', new Set(['exec'])],
+  ['section.Shell command', new Set(['shell'])],
   ['ui.enclosingOperation', new Set(['code', 'mode'])],
   ['ui.entireProjectScopeShort', new Set(['project'])],
   ['ui.anyCodeModeRequest', new Set(['code', 'mode'])],
@@ -121,6 +126,7 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.resolveLocale('fr-FR'), 'en');
   assert.equal(i18n.t('zh-CN', 'ui', 'mainTimeline'), '主时间线');
   assert.equal(i18n.displayStateLabel('expanded', 'zh-CN'), '展开');
+  assert.equal(i18n.eventKindLabel('command', 'en'), 'Command');
   assert.equal(i18n.eventKindLabel('command', 'zh-CN'), '命令');
   assert.equal(i18n.eventKindLabel('read', 'en'), 'Read');
   assert.equal(i18n.eventKindLabel('read', 'zh-CN'), '文件读取');
@@ -156,7 +162,7 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.t('en', 'ui', 'codeModeRequest'), 'Code Mode request');
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeRequest'), 'Code Mode 请求');
   assert.equal(i18n.t('en', 'ui', 'declaredRequestOption', { value: 'Shell command' }), 'Declared: Shell command');
-  assert.equal(i18n.t('zh-CN', 'ui', 'declaredRequestOption', { value: '终端命令' }), '声明：终端命令');
+  assert.equal(i18n.t('zh-CN', 'ui', 'declaredRequestOption', { value: 'Shell 命令' }), '声明：Shell 命令');
   assert.equal(i18n.t('en', 'ui', 'anyCodeModeRequest'), 'Any Code Mode request');
   assert.equal(i18n.t('zh-CN', 'ui', 'anyCodeModeRequest'), '任意 Code Mode 请求');
   assert.equal(i18n.t('en', 'ui', 'kindGroupCommonWorkName'), 'Work and tools');
@@ -175,6 +181,18 @@ test('i18n resolves supported locales and falls back predictably', () => {
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeSourceExcerptMore'), '还有未显示的源码。');
   assert.equal(i18n.t('en', 'ui', 'codeModeStepCountOne'), '1 step');
   assert.equal(i18n.t('zh-CN', 'ui', 'codeModeStepCount', { count: 2 }), '2 个步骤');
+  assert.equal(i18n.t('en', 'ui', 'tokenUsage'), 'Token usage');
+  assert.equal(i18n.t('zh-CN', 'ui', 'tokenUsage'), 'Token 使用情况');
+  assert.equal(i18n.t('en', 'ui', 'cacheDiscontinuitySingleLink'), 'Cache discontinuity · View protocol evidence');
+  assert.equal(i18n.t('en', 'ui', 'cacheDiscontinuityMultipleLink', { count: 2 }), '2 cache discontinuities · View evidence');
+  assert.equal(i18n.t('zh-CN', 'ui', 'cacheDiscontinuityMultipleLink', { count: 2 }), '2 次缓存复用中断 · 查看证据');
+  assert.equal(i18n.t('zh-CN', 'ui', 'viewMainContext'), '查看主时间线上下文');
+  assert.equal(i18n.sectionTitle('Comparison Context', 'zh-CN'), '对比上下文');
+  assert.equal(i18n.sectionTitle('Comparable; no discontinuity inferred', 'zh-CN'), '可对比；未推断出缓存复用中断');
+  assert.equal(
+    i18n.sectionTitle('This cache discontinuity is inferred from adjacent token accounting; the transcript does not provide explicit cache-expiry evidence.', 'zh-CN'),
+    '该缓存复用中断由相邻的 token accounting 推断；转录中没有提供显式的缓存过期证据。',
+  );
   assert.equal(
     i18n.t('en', 'ui', 'chooseProject'),
     'Choose a session working directory from the selected transcript source to analyze.',
@@ -217,6 +235,36 @@ test('known label lookup translates exact keys and English catalog values withou
   assert.equal(i18n.lookupKnownLabel('Developer message', 'zh-CN'), '开发者消息');
   assert.equal(i18n.lookupKnownLabel('No such label', 'zh-CN'), '');
   assert.equal(i18n.knownLabel('No such label', 'zh-CN'), 'No such label');
+});
+
+test('Cache Observation copy avoids causal or expiry claims outside the fixed negative notice', () => {
+  const notice = 'This cache discontinuity is inferred from adjacent token accounting; the transcript does not provide explicit cache-expiry evidence.';
+  const cacheUiKeys = [
+    'tokenUsage',
+    'cacheInput',
+    'cacheCached',
+    'cacheReuse',
+    'cacheOutput',
+    'cacheDiscontinuity',
+    'cacheDiscontinuityAfter',
+    'cacheDiscontinuityCachedChange',
+    'cacheDiscontinuitySingleLink',
+    'cacheDiscontinuityMultipleLink',
+    'viewMainContext',
+  ];
+  const forbidden = /\b(?:expired|expiration|ttl|likely expired|probably expired|likely cause|cache health)\b/i;
+  for (const locale of ['en', 'zh-CN']) {
+    for (const key of cacheUiKeys) {
+      assert.doesNotMatch(i18n.t(locale, 'ui', key, { count: 2, elapsed: '14s', previous: '16k', current: '0' }), forbidden);
+    }
+  }
+  assert.equal(i18n.sectionTitle(notice, 'en'), notice);
+  assert.match(notice, /inferred from adjacent token accounting/);
+  assert.match(notice, /does not provide explicit cache-expiry evidence/);
+  assert.equal(
+    i18n.sectionTitle(notice, 'zh-CN'),
+    '该缓存复用中断由相邻的 token accounting 推断；转录中没有提供显式的缓存过期证据。',
+  );
 });
 
 test('strict known label lookup does not treat default-locale fallback as a zh-CN hit', () => {
@@ -275,8 +323,9 @@ test('zh-CN protocol and section labels avoid mechanical schema wording', () => 
 
 test('Code Mode request labels localize display text while preserving machine values separately', () => {
   assert.equal(i18n.codeModeRequestLabel('shell_command', 'en'), 'Shell command');
-  assert.equal(i18n.codeModeRequestLabel('exec_command', 'en'), 'Shell command');
-  assert.equal(i18n.codeModeRequestLabel('shell_command', 'zh-CN'), '终端命令');
+  assert.equal(i18n.codeModeRequestLabel('exec_command', 'en'), 'Exec command');
+  assert.equal(i18n.codeModeRequestLabel('shell_command', 'zh-CN'), 'Shell 命令');
+  assert.equal(i18n.codeModeRequestLabel('exec_command', 'zh-CN'), 'Exec 命令');
   assert.equal(i18n.codeModeRequestLabel('web__run', 'zh-CN'), '网络请求');
 });
 
@@ -393,7 +442,10 @@ test('raw timeline and detail labels localize display text without changing raw 
 });
 
 test('state API localizes display resources while preserving ids', async () => {
-  const index = await buildIndex({ codexHome: fixtureCodexHome, repoRoot: fixtureRepo });
+  const index = await getSourceAdapter('codex').buildIndex({
+    sourceHome: fixtureCodexHome,
+    repoRoot: fixtureRepo,
+  });
   const server = createServer(index, 1, { codexHome: fixtureCodexHome });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {

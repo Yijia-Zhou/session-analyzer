@@ -2,9 +2,71 @@
 
 ## Unreleased / 未发布
 
-### English
+### Main presentation / 主时间线呈现
 
-### 中文
+#### English
+
+- Added an optional Main Trajectory presentation alongside the default Timeline: a bounded Input/Model/Tools sequence overview with Fit/zoom/pan, a narrative-first ledger, and lazy reversible Tool Activity Groups. It reuses canonical event, search, folding, Inspector, Raw Reference, pagination, and stale-request ownership; Protocol and Raw remain Timeline-only. Temporary reference targets without a loaded canonical position stay in a labeled detached card outside the sequence, and full-height Other markers remain directly selectable.
+
+#### 中文
+
+- 在默认 Timeline 之外新增可选的 Main Trajectory 呈现：包含有界的 Input／Model／Tools 序列概览与全览／缩放／平移、叙事优先 ledger，以及 lazy 且可逆的工具活动组。它复用 canonical event、search、folding、Inspector、原始引用、pagination 与 stale-request ownership；Protocol 和 Raw 仍只使用 Timeline。尚无已加载 canonical 位置的临时引用 target 会保留在序列外带明确标签的 detached card 中，贯穿三行的 Other marker 也保持可直接选择。
+
+### Transcript sources / 转录来源
+
+#### Codex
+
+##### English
+
+- Preserved explicit parent linkage for recently persisted Codex Sessions explicitly marked as derived/subagent when their parent is stored in top-level `parent_thread_id`, while a stray field on an otherwise primary Session still creates no derived relationship.
+- Restored declared Code Mode projection for safe outer programs that emit a declared result's `.output` through `text(result.output)`, instead of falling back to `Scripted operation`.
+- Code Mode presentation now distinguishes `exec_command` as `Exec command` from `shell_command` as `Shell command`, while both remain in the shared `Command` semantic family.
+- Added Codex Token usage presentation and conservative cache-reuse discontinuity inference from adjacent token accounting, with Main-to-Protocol evidence navigation and structured comparison detail; the diagnostic does not claim explicit cache expiry.
+
+##### 中文
+
+- 近期持久化且明确标记为派生／subagent 的 Codex Session 若将父会话存储在顶层 `parent_thread_id`，现在会保留显式父级关联；其他仍属 primary 的 Session 即使出现孤立字段也不会创建错误的派生关系。
+- 修复安全的 Code Mode outer program 通过 `text(result.output)` 输出已声明结果的 `.output` 时错误回退为“脚本化操作”的问题，现会恢复声明式投影。
+- Code Mode 呈现现在把 `exec_command` 显示为“Exec 命令”，并把 `shell_command` 显示为“Shell 命令”；两者仍属于共享的 `Command` 语义族。
+- 新增 Codex Token 使用情况呈现，以及基于相邻 token accounting 的保守缓存复用中断推断，并支持从主时间线上下文跳转到协议层证据与结构化对比详情；该诊断不声称存在显式缓存过期。
+
+#### DeepSeek Harness
+
+##### English
+
+- Added DeepSeek Harness as a selectable third transcript source with read-only JSONL/Zstandard, strict Indexed/Materialized lifecycle, and packed physical Raw rows. Structured support covers transcript/tool/session lifecycle, effective preset/lineage/seed ownership/compaction, exact tool-result prune provenance, explicit-ID Code Mode and conservative workflow provenance, retry, Goal/Todo, observed Permission state, and exact inbox Supplemental provenance; known but unsupported current-upstream families remain Protocol/Raw.
+
+##### 中文
+
+- 新增 DeepSeek Harness 作为可选择的第三个转录来源，采用只读 JSONL／Zstandard、严格 Indexed／Materialized lifecycle 与紧凑物理 Raw row。结构化支持覆盖 transcript／tool／session lifecycle、effective preset／lineage／seed ownership／compaction、精确工具结果 prune provenance、显式 ID Code Mode 与保守 workflow provenance、retry、Goal／Todo、observed Permission state，以及精确 inbox Supplemental provenance；当前上游已知但不受支持的 family 继续保留为 Protocol／Raw。
+
+### Session model and provenance / Session 模型与来源追溯
+
+#### English
+
+- Replaced corpus-wide resident complete Session graphs for both Codex and Claude Code with strict Indexed Sessions, packed source-neutral project queries, and source-backed Materialized Sessions reconstructed on demand while preserving timeline, detail, Raw, image, relationship, search, cancellation, and reindex behavior.
+- Generalized strict materialization to a declarative bounded adapter context without whole-Index fingerprints, added exact packed-query-to-Materialized projection digests, reduced Claude request dependencies to the selected transcript, and made no-text project filters hydrate only the latest matching preview.
+- Made final packed-query commit validation and Materialized projection validation asynchronous, bounded, signal-aware, and exception-safe, so cancellation cannot admit a replacement Index or an abandoned cold Session and unverifiable adapter graphs retain the stable contract error code.
+
+#### 中文
+
+- 将 Codex 与 Claude Code 的语料级常驻完整 Session graph 替换为严格 Indexed Session、来源中立紧凑项目查询，以及按需从来源重建的 Materialized Session，同时保持时间线、详情、Raw、图片、关系、搜索、取消与重建索引行为。
+- 将严格物化泛化为声明式有界 adapter context，避免整 Index fingerprint；新增紧凑查询到 Materialized projection 的精确 digest；把 Claude request dependency 缩小为所选 transcript；并让无文本项目过滤只 hydration 最新匹配 preview。
+- 让最终紧凑查询 commit validation 与 Materialized projection validation 具备异步、有界、signal-aware 和异常安全性质，因此取消不会接纳 replacement Index 或已放弃的 cold Session，不可验证 adapter graph 也会保持稳定 contract error code。
+
+### Performance and memory / 性能与内存
+
+#### English
+
+- Added a revision-scoped exact-identity Materialized Session cache with same-Session request coalescing, one global active reconstruction, bounded FIFO admission, independent waiter cancellation, atomic release on successful project/source replacement, stable busy/contract error codes, and one bounded browser retry for busy GETs.
+- Bounded complete-Session retention with a source-neutral weighted LRU working set: ordinary cache state is limited by an estimated 256 MiB and 12 Sessions, foreground admission prefers speculative victims, foreground use promotes prewarmed entries, speculation never evicts foreground-used Sessions, and an oversize foreground Session may remain as the sole warm resident. The estimate is not an RSS guarantee, and no derived disk cache was added.
+- Updated large-history guidance from aggregate profiling: a 490-Session, 305,485-Raw Codex corpus completed build plus commit validation under the default heap with a 788 MB transient V8 heap peak and 2.16 GB process maximum RSS; the 1.055 GB packed query store remains a material external-memory owner, and the weighted cache budget governs deterministic retained weight rather than process RSS.
+
+#### 中文
+
+- 新增 revision-scoped、精确 identity 的 Materialized Session cache：合并同 Session request、全局只运行一个重建、有界 FIFO admission、waiter 独立取消、项目／来源成功替换时原子释放，并提供稳定 busy／contract error code，以及对 busy GET 的一次有界 browser retry。
+- 通过来源中立的加权 LRU working set 限制完整 Session 保留：普通 cache state 受 256 MiB 估算权重与 12 个 Session 双重约束；foreground admission 优先淘汰 speculative victim；foreground 使用会 promote 预热 entry；speculation 绝不淘汰 foreground-used Session；oversize foreground Session 可作为唯一 warm resident。该估算不是 RSS 保证，也未增加派生 disk cache。
+- 根据聚合 profiling 更新大型历史指导：包含 490 个 Session／305,485 条 Raw Record 的 Codex 语料在默认 heap 下完成 build 加 commit validation，transient V8 heap 峰值为 788 MB，process maximum RSS 为 2.16 GB；1.055 GB 紧凑 query store 仍是不可忽略的 external-memory owner，加权 cache budget 管理的是确定性 retained weight，而不是 process RSS。
 
 ## 0.1.4 - 2026-08-15
 

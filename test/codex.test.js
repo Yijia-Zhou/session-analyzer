@@ -7,9 +7,10 @@ const childProcess = require('node:child_process');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { __testOnly, buildIndex: buildCompactIndex, buildEventDetail, buildHydratedEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readImagePreview, readRawLine, isPathInsideOrSame } = require('../src/codex');
+const { __testOnly, buildCodexLegacyRawOwnerIndex, buildIndex: buildCompactIndex, buildEventDetail, buildHydratedEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readImagePreview, readRawLine, isPathInsideOrSame } = require('../src/codex');
 const { createServer, parseArgs, resolveStaticAssetPath } = require('../server');
 const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../src/folding');
+const { getSourceAdapter, resolveLegacyRawOwnerForIndex } = require('../src/source-adapters');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
@@ -20,6 +21,13 @@ async function buildFixtureIndex() {
   return buildIndex({
     repoRoot: 'G:\\vibe\\term-agent',
     codexHome: fixtureCodexHome,
+  });
+}
+
+async function buildStrictFixtureIndex() {
+  return getSourceAdapter('codex').buildIndex({
+    repoRoot: 'G:\\vibe\\term-agent',
+    sourceHome: fixtureCodexHome,
   });
 }
 
@@ -259,7 +267,7 @@ test('thread and unmodeled item lifecycle records stay in protocol layer', async
 });
 
 test('state endpoint includes dynamic event kind options', async () => {
-  const index = await buildFixtureIndex();
+  const index = await buildStrictFixtureIndex();
   const server = createServer(index, 1, { codexHome: fixtureCodexHome });
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -285,15 +293,11 @@ test('resolveStaticAssetPath rejects sibling-prefix paths outside the public roo
 test('server hides 500 stack details by default but preserves thrown 4xx status codes', async () => {
   const stackError = new Error('Exploded while listing sessions');
   stackError.stack = `Error: ${stackError.message}\n    at G:\\vibe\\session-analyzer\\src\\boom.js:7:9`;
-  const errorIndex = {
-    repoRoot: 'G:\\vibe\\term-agent',
-    sourceKind: 'codex',
-    codexHome: fixtureCodexHome,
-    sessionsById: new Map(),
-    get sessions() {
-      throw stackError;
-    },
-  };
+  const errorIndex = await buildStrictFixtureIndex();
+  Object.defineProperty(errorIndex, 'sessions', {
+    configurable: true,
+    get() { throw stackError; },
+  });
   const server = createServer(errorIndex, 1, {
     codexHome: fixtureCodexHome,
     allowUninspectableSessions: true,
@@ -313,15 +317,11 @@ test('server hides 500 stack details by default but preserves thrown 4xx status 
 
   const notFoundError = new Error('Custom missing session');
   notFoundError.statusCode = 404;
-  const notFoundIndex = {
-    repoRoot: 'G:\\vibe\\term-agent',
-    sourceKind: 'codex',
-    codexHome: fixtureCodexHome,
-    sessionsById: new Map(),
-    get sessions() {
-      throw notFoundError;
-    },
-  };
+  const notFoundIndex = await buildStrictFixtureIndex();
+  Object.defineProperty(notFoundIndex, 'sessions', {
+    configurable: true,
+    get() { throw notFoundError; },
+  });
   const notFoundServer = createServer(notFoundIndex, 1, {
     codexHome: fixtureCodexHome,
     allowUninspectableSessions: true,
@@ -340,15 +340,11 @@ test('server hides 500 stack details by default but preserves thrown 4xx status 
 
   const internalStatusError = new Error('Internal path G:\\vibe\\session-analyzer\\src\\internal.js');
   internalStatusError.statusCode = 500;
-  const internalStatusIndex = {
-    repoRoot: 'G:\\vibe\\term-agent',
-    sourceKind: 'codex',
-    codexHome: fixtureCodexHome,
-    sessionsById: new Map(),
-    get sessions() {
-      throw internalStatusError;
-    },
-  };
+  const internalStatusIndex = await buildStrictFixtureIndex();
+  Object.defineProperty(internalStatusIndex, 'sessions', {
+    configurable: true,
+    get() { throw internalStatusError; },
+  });
   const internalStatusServer = createServer(internalStatusIndex, 1, {
     codexHome: fixtureCodexHome,
     allowUninspectableSessions: true,
@@ -370,15 +366,11 @@ test('server hides 500 stack details by default but preserves thrown 4xx status 
 test('server exposes 500 stack details only when debug mode is explicitly enabled', async () => {
   const stackError = new Error('Debug trace enabled');
   stackError.stack = `Error: ${stackError.message}\n    at G:\\vibe\\session-analyzer\\src\\debug.js:4:2`;
-  const debugIndex = {
-    repoRoot: 'G:\\vibe\\term-agent',
-    sourceKind: 'codex',
-    codexHome: fixtureCodexHome,
-    sessionsById: new Map(),
-    get sessions() {
-      throw stackError;
-    },
-  };
+  const debugIndex = await buildStrictFixtureIndex();
+  Object.defineProperty(debugIndex, 'sessions', {
+    configurable: true,
+    get() { throw stackError; },
+  });
   const server = createServer(debugIndex, 1, {
     codexHome: fixtureCodexHome,
     debugErrors: true,
@@ -923,11 +915,13 @@ test('buildIndex links canonical review lifecycle children through explicit pare
   assert.ok(startedRequest);
   assert.ok(startedRequest.entries.some((entry) => entry.key === 'Target' && entry.value === 'Uncommitted changes'));
   assert.ok(startedRequest.entries.some((entry) => entry.key === 'Hint' && entry.value === 'current changes'));
+  assert.equal(allSections(startedDetail).some((section) => section.type === 'raw_json'), false);
   const completedDetail = await buildHydratedEventDetail(index, parent, reviewCompleted.id, 'main');
   const completedResult = allSections(completedDetail).find((section) => section.title === 'Review result');
   assert.ok(completedResult);
   assert.ok(completedResult.entries.some((entry) => entry.key === 'Correctness' && entry.value === 'patch is correct'));
   assert.ok(allSections(completedDetail).some((section) => section.title === 'Findings'));
+  assert.equal(allSections(completedDetail).some((section) => section.type === 'raw_json'), false);
 
   const summaries = filterSessions(index, { q: '', sort: 'updated-desc', layer: 'main' }).sessions;
   const childSummary = summaries.find((session) => session.id === childId);
@@ -944,6 +938,92 @@ test('buildIndex links canonical review lifecycle children through explicit pare
   assert.equal(reusedChild.parentSessionInferred, false);
   assert.ok(reusedParent.logicalEvents.some((event) => event.kind === 'review' && event.subtype === 'entered_review_mode'));
   assert.ok(reusedParent.logicalEvents.some((event) => event.kind === 'review' && event.subtype === 'exited_review_mode'));
+});
+
+test('buildIndex preserves explicit top-level parent linkage only for independently derived Codex sessions', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const parentId = '10000000-0000-4000-8000-000000000001';
+  const spawnedChildId = '10000000-0000-4000-8000-000000000002';
+  const reviewChildId = '10000000-0000-4000-8000-000000000003';
+  const guardianChildId = '10000000-0000-4000-8000-000000000004';
+  const genericChildId = '10000000-0000-4000-8000-000000000005';
+  const primaryId = '10000000-0000-4000-8000-000000000006';
+  const sessionDir = path.join(codexHome, 'sessions', '2026', '08', '24');
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(sessionDir, { recursive: true });
+
+  const payloads = [
+    [parentId, { id: parentId, cwd: repoRoot }],
+    [spawnedChildId, {
+      id: spawnedChildId,
+      cwd: repoRoot,
+      parent_thread_id: 'top-level-parent-must-not-win',
+      source: { subagent: { thread_spawn: { parent_thread_id: parentId } } },
+    }],
+    [reviewChildId, {
+      id: reviewChildId,
+      cwd: repoRoot,
+      parent_thread_id: parentId,
+      thread_source: 'subagent',
+      source: { subagent: 'review' },
+    }],
+    [guardianChildId, {
+      id: guardianChildId,
+      cwd: repoRoot,
+      parent_thread_id: parentId,
+      thread_source: 'subagent',
+      source: { subagent: { other: 'guardian' } },
+    }],
+    [genericChildId, {
+      id: genericChildId,
+      cwd: repoRoot,
+      parent_thread_id: parentId,
+      thread_source: 'subagent',
+    }],
+    [primaryId, {
+      id: primaryId,
+      cwd: repoRoot,
+      parent_thread_id: 'should-not-be-used',
+      thread_source: 'user',
+      source: 'cli',
+    }],
+  ];
+  await Promise.all(payloads.map(([id, payload]) => fsp.writeFile(
+    path.join(sessionDir, `rollout-2026-08-24T10-00-00-${id}.jsonl`),
+    `${JSON.stringify({ timestamp: '2026-08-24T10:00:00.000Z', type: 'session_meta', payload })}\n`,
+    'utf8',
+  )));
+
+  const index = await buildCompactIndex({ repoRoot, codexHome });
+  const spawnedChild = index.sessionsById.get(spawnedChildId);
+  const reviewChild = index.sessionsById.get(reviewChildId);
+  const guardianChild = index.sessionsById.get(guardianChildId);
+  const genericChild = index.sessionsById.get(genericChildId);
+  const primary = index.sessionsById.get(primaryId);
+  assert.equal(spawnedChild.parentSessionId, parentId);
+  assert.equal(spawnedChild.primarySessionMetaKind, 'subagent');
+  assert.equal(reviewChild.parentSessionId, parentId);
+  assert.equal(reviewChild.primarySessionMetaKind, 'review');
+  assert.equal(guardianChild.parentSessionId, parentId);
+  assert.equal(guardianChild.parentSessionInferred, false);
+  assert.equal(guardianChild.primarySessionMetaKind, 'subagent');
+  assert.equal(genericChild.parentSessionId, parentId);
+  assert.equal(genericChild.primarySessionMetaKind, 'subagent');
+  assert.equal(primary.parentSessionId, '');
+  assert.equal(primary.primarySessionMetaKind, '');
+
+  const summaries = filterSessions(index, { q: '', sort: 'updated-desc', layer: 'main' }).sessions;
+  const summariesById = new Map(summaries.map((session) => [session.id, session]));
+  assert.equal(summariesById.get(guardianChildId).parentSessionId, parentId);
+  assert.equal(summariesById.get(guardianChildId).isDerivedSession, true);
+  assert.equal(summariesById.get(guardianChildId).derivedKind, 'subagent');
+  assert.equal(summariesById.get(genericChildId).parentSessionId, parentId);
+  assert.equal(summariesById.get(genericChildId).isDerivedSession, true);
+  assert.equal(summariesById.get(genericChildId).derivedKind, 'subagent');
+  assert.equal(summariesById.get(primaryId).parentSessionId, '');
+  assert.equal(summariesById.get(primaryId).isDerivedSession, false);
+  assert.equal(summariesById.get(primaryId).derivedKind, '');
 });
 
 test('buildIndex prefers an explicit review parent over temporal inference', async (t) => {
@@ -1953,7 +2033,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(parserTimeline.events[0].status, 'success');
   const parserDetail = buildEventDetail(session, parserTimeline.events[0].id, 'main');
   assert.deepEqual(allSections(parserDetail).find((section) => section.title === 'Files').entries, [
-    { key: 'G:/vibe/term-agent/src/parser.js', value: '+1 / -1' },
+    { key: 'G:/vibe/term-agent/src/parser.js', value: '+1 / -1', fact: 'touchedFile' },
   ]);
   const parserPreviewSearch = getTimeline(index, primaryFixtureSessionId, {
     offset: 0,
@@ -1984,7 +2064,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(legacyTimeline.events[0].status, 'success');
   const legacyDetail = buildEventDetail(session, legacyTimeline.events[0].id, 'main');
   assert.deepEqual(allSections(legacyDetail).find((section) => section.title === 'Files').entries, [
-    { key: 'src/legacy.js', value: '+1 / -1' },
+    { key: 'src/legacy.js', value: '+1 / -1', fact: 'touchedFile' },
   ]);
 
   const statsTimeline = getTimeline(index, primaryFixtureSessionId, {
@@ -2002,7 +2082,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(statsTimeline.events[0].status, 'success');
   const statsDetail = buildEventDetail(session, statsTimeline.events[0].id, 'main');
   assert.deepEqual(allSections(statsDetail).find((section) => section.title === 'Files').entries, [
-    { key: 'G:/vibe/term-agent/src/stats.js', value: '+2 / -1' },
+    { key: 'G:/vibe/term-agent/src/stats.js', value: '+2 / -1', fact: 'touchedFile' },
   ]);
 
   const failedTimeline = getTimeline(index, primaryFixtureSessionId, {
@@ -2021,7 +2101,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(failedTimeline.events[0].status, 'failed');
   const failedDetail = buildEventDetail(session, failedTimeline.events[0].id, 'main');
   assert.deepEqual(allSections(failedDetail).find((section) => section.title === 'Files').entries, [
-    { key: 'src/failed.js', value: '+1 / -1' },
+    { key: 'src/failed.js', value: '+1 / -1', fact: 'touchedFile' },
   ]);
 
   const outputOnlyCommandTimeline = getTimeline(index, primaryFixtureSessionId, {
@@ -2509,7 +2589,7 @@ test('patch detail preserves changed lines that begin with diff marker character
     ['context', 'omega', 3, 3],
   ]);
   assert.deepEqual(detail.inspectorSections.find((section) => section.title === 'Files').entries, [
-    { key: 'sample.md', value: '+1 / -1' },
+    { key: 'sample.md', value: '+1 / -1', fact: 'touchedFile' },
   ]);
 });
 
@@ -2610,7 +2690,7 @@ test('patch detail preserves applied unified diff lines that look like file head
     ['context', 'context', 2, 2],
   ]);
   assert.deepEqual(detail.inspectorSections.find((section) => section.title === 'Files').entries, [
-    { key: 'src/markers.txt', value: '+1 / -1' },
+    { key: 'src/markers.txt', value: '+1 / -1', fact: 'touchedFile' },
   ]);
 });
 
@@ -2663,8 +2743,8 @@ test('patch detail keeps mixed applied diff and content changes with display pat
     ['added', 'export default created;', false],
   ]);
   assert.deepEqual(detail.inspectorSections.find((section) => section.title === 'Files').entries, [
-    { key: 'src/app.js', value: '+1 / -1' },
-    { key: 'src/created.js', value: '+2 / -0' },
+    { key: 'src/app.js', value: '+1 / -1', fact: 'touchedFile' },
+    { key: 'src/created.js', value: '+2 / -0', fact: 'touchedFile' },
   ]);
 });
 
@@ -2833,12 +2913,12 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   assert.equal(allSections(planDetail)[0].type, 'markdown');
   assert.equal(allSections(planDetail)[0].hideTitle, true);
   assert.doesNotMatch(allSections(planDetail)[0].html, /proposed_plan/i);
-  assert.ok(allSections(planDetail).some((section) => section.type === 'raw_json'));
-  assert.equal(allSections(planDetail).find((section) => section.type === 'raw_json').expanded, false);
+  assert.equal(allSections(planDetail).some((section) => section.type === 'raw_json'), false);
+  assert.ok(planDetail.rawRefs.length > 0);
 
   const updatePlanEvent = session.logicalEvents.find((event) => event.toolName === 'update_plan');
   const updatePlanDetail = buildEventDetail(session, updatePlanEvent.id, 'main');
-  assert.equal(updatePlanDetail.timelineSections.length, 2);
+  assert.equal(updatePlanDetail.timelineSections.length, 1);
   assert.equal(updatePlanDetail.timelineSections[0].type, 'plan_update');
   assert.equal(updatePlanDetail.timelineSections[0].title, 'Plan update');
   assert.match(updatePlanDetail.timelineSections[0].explanationHtml, /Parser inspection is complete/);
@@ -2846,8 +2926,9 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
     { step: 'Inspect parser', status: 'completed' },
     { step: 'Patch regression', status: 'in_progress' },
   ]);
-  assert.equal(updatePlanDetail.timelineSections[1].type, 'code');
-  assert.match(updatePlanDetail.timelineSections[1].code, /Plan updated/);
+  const updatePlanResponse = updatePlanDetail.inspectorSections.find((section) => section.title === 'Response');
+  assert.equal(updatePlanResponse.type, 'code');
+  assert.match(updatePlanResponse.code, /Plan updated/);
   assert.ok(updatePlanDetail.inspectorSections.some((section) => section.type === 'json' && section.title === 'Request'));
 
   const protocolEvent = session.logicalEvents.find((event) => event.subtype === 'agents_instructions');
@@ -2858,12 +2939,30 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   const envEvent = session.logicalEvents.find((event) => event.subtype === 'environment_context');
   const envDetail = buildEventDetail(session, envEvent.id, 'protocol');
   assert.equal(allSections(envDetail)[0].type, 'kv');
-  assert.equal(allSections(envDetail)[1].type, 'raw_json');
+  assert.equal(allSections(envDetail).some((section) => section.type === 'raw_json'), false);
 
   const sessionMetaEvent = session.logicalEvents.find((event) => event.subtype === 'session_meta');
   const sessionMetaDetail = buildEventDetail(session, sessionMetaEvent.id, 'protocol');
   assert.equal(allSections(sessionMetaDetail)[0].type, 'kv');
-  assert.equal(allSections(sessionMetaDetail)[1].type, 'raw_json');
+  assert.equal(allSections(sessionMetaDetail).some((section) => section.type === 'raw_json'), false);
+
+  const residualSession = index.sessionsById.get('33333333-3333-3333-3333-333333333333');
+  const residualMetaEvent = residualSession.logicalEvents.find((event) => event.subtype === 'session_meta');
+  const residualMetaDetail = buildEventDetail(residualSession, residualMetaEvent.id, 'protocol');
+  const residualMetaFallback = allSections(residualMetaDetail).find((section) => section.type === 'raw_json');
+  assert.deepEqual(residualMetaFallback.value, {
+    source: {
+      subagent: {
+        thread_spawn: {
+          parent_thread_id: primaryFixtureSessionId,
+          depth: 1,
+          agent_nickname: 'Fixture',
+        },
+      },
+    },
+  });
+  assert.equal(Object.hasOwn(residualMetaFallback.value, 'id'), false);
+  assert.equal(Object.hasOwn(residualMetaFallback.value, 'cwd'), false);
 
   const emptyReasoningEvent = session.logicalEvents.find((event) => event.kind === 'reasoning' && event.label === 'Empty reasoning');
   const emptyReasoningDetail = buildEventDetail(session, emptyReasoningEvent.id, 'protocol');
@@ -2878,6 +2977,20 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
     ['5 hour usage limit', '12%'],
     ['Weekly usage limit', '67%'],
   ]);
+  assert.equal(allSections(tokenDetail).some((section) => section.type === 'raw_json'), false);
+
+  const modeledLifecycleEvents = session.logicalEvents.filter((event) => (
+    event.layer === 'main' && ['compaction', 'warning', 'error'].includes(event.kind)
+  ));
+  assert.ok(modeledLifecycleEvents.length > 0);
+  for (const lifecycleEvent of modeledLifecycleEvents) {
+    const lifecycleDetail = buildEventDetail(session, lifecycleEvent.id, 'main');
+    assert.equal(
+      allSections(lifecycleDetail).some((section) => section.type === 'raw_json'),
+      false,
+      `${lifecycleEvent.kind}/${lifecycleEvent.subtype} must not copy a modeled payload into fallback JSON`,
+    );
+  }
 
   const taskStartedEvent = session.logicalEvents.find((event) => event.layer === 'protocol' && event.subtype === 'task_started');
   const taskStartedDetail = buildEventDetail(session, taskStartedEvent.id, 'protocol');
@@ -2885,6 +2998,8 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   assert.equal(taskStartedDetail.inspectorSections[0].type, 'raw_json');
 
   const rawRecord = session.rawEvents.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'task_started');
+  assert.deepEqual(taskStartedDetail.inspectorSections[0].value, rawRecord.parsed.payload);
+  assert.notDeepEqual(taskStartedDetail.inspectorSections[0].value, rawRecord.parsed);
   const rawDetail = buildEventDetail(session, rawRecord.rawId, 'raw');
   assert.equal(allSections(rawDetail).at(-1).type, 'raw_json');
   assert.equal(allSections(rawDetail).at(-1).expanded, true);
@@ -2920,6 +3035,50 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   const rawPatchEndDetail = buildEventDetail(session, rawPatchEnd.rawId, 'raw');
   assert.equal(allSections(rawPatchEndDetail)[0].type, 'patch');
   assert.equal(allSections(rawPatchEndDetail).some((section) => section.title === 'Result'), true);
+});
+
+test('session metadata KV rendering and residual subtraction share array representability', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const fixtureRepo = path.join(codexHome, 'repo');
+  const sessionId = '12121212-1212-4212-8212-121212121212';
+  const sessionDir = path.join(codexHome, 'sessions', '2026', '08', '16');
+  await fsp.mkdir(fixtureRepo, { recursive: true });
+  await fsp.mkdir(sessionDir, { recursive: true });
+  await fsp.writeFile(
+    path.join(sessionDir, `rollout-2026-08-16T10-00-00-${sessionId}.jsonl`),
+    `${JSON.stringify({
+      timestamp: '2026-08-16T10:00:00.000Z',
+      type: 'session_meta',
+      payload: {
+        id: sessionId,
+        cwd: fixtureRepo,
+        numeric_list: [1, 2],
+        string_list: ['a', 'b'],
+        nullable_list: [null, 'b'],
+        object_list: [{ a: 1 }],
+      },
+    })}\n`,
+    'utf8',
+  );
+
+  const index = await buildIndex({ repoRoot: fixtureRepo, codexHome });
+  const session = index.sessionsById.get(sessionId);
+  const event = session.logicalEvents.find((candidate) => candidate.subtype === 'session_meta');
+  const detail = buildEventDetail(session, event.id, 'protocol');
+  const protocolFields = detail.inspectorSections.find((section) => section.type === 'kv');
+  const fallback = detail.inspectorSections.find((section) => section.type === 'raw_json');
+
+  assert.deepEqual(
+    protocolFields.entries.filter((entry) => entry.key.endsWith('_list')),
+    [
+      { key: 'numeric_list', value: '1, 2' },
+      { key: 'string_list', value: 'a, b' },
+    ],
+  );
+  assert.deepEqual(fallback.value, {
+    nullable_list: [null, 'b'],
+    object_list: [{ a: 1 }],
+  });
 });
 
 test('object-shaped protocol and tool fields stay readable', async (t) => {
@@ -3017,7 +3176,7 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
   const reviewFinished = session.logicalEvents.find((candidate) => candidate.subtype === 'exited_review_mode');
   const detail = buildEventDetail(session, event.id, 'main');
   const goalDetail = buildEventDetail(session, goalEvent.id, 'main');
-  const goalUsage = goalDetail.timelineSections.find((section) => section.title === 'Goal usage');
+  const goalUsage = goalDetail.inspectorSections.find((section) => section.title === 'Goal usage');
   const request = detail.inspectorSections.find((section) => section.title === 'Request');
   const response = detail.inspectorSections.find((section) => section.title === 'Response');
   const imagePreview = detail.inspectorSections.find((section) => section.type === 'image_preview');
@@ -3052,9 +3211,9 @@ test('object-shaped protocol and tool fields stay readable', async (t) => {
     { key: 'Created', value: '100' },
     { key: 'Updated', value: '112' },
   ]);
-  assert.equal(goalDetail.inspectorSections[0].title, 'Goal status');
-  assert.equal(goalDetail.inspectorSections[0].value.status, 'active');
-  assert.equal(goalDetail.inspectorSections[0].value.token_budget, 5000);
+  const goalStatus = goalDetail.inspectorSections.find((section) => section.title === 'Goal status');
+  assert.equal(goalStatus.value.status, 'active');
+  assert.equal(goalStatus.value.token_budget, 5000);
   assert.equal(request.type, 'json');
   assert.equal(request.value.path, 'G:\\vibe\\session-analyzer\\output\\image.png');
   assert.equal(response.type, 'json');
@@ -3283,9 +3442,9 @@ Budget:
   const incomplete = goalEvents.filter((event) => event.status === 'incomplete');
   const incompleteUpdate = incomplete.find((event) => event.toolName === 'update_goal');
   const detail = buildEventDetail(session, complete.id, 'main');
-  const detailUsage = detail.timelineSections.find((section) => section.title === 'Goal usage');
+  const detailUsage = detail.inspectorSections.find((section) => section.title === 'Goal usage');
   const budgetUpdateDetail = buildEventDetail(session, budgetUpdate.id, 'main');
-  const budgetUpdateUsage = budgetUpdateDetail.timelineSections.find((section) => section.title === 'Goal usage');
+  const budgetUpdateUsage = budgetUpdateDetail.inspectorSections.find((section) => section.title === 'Goal usage');
   const incompleteUpdateDetail = buildEventDetail(session, incompleteUpdate.id, 'main');
   const protocolDetail = buildEventDetail(session, goalContextEvent.id, 'protocol');
 
@@ -3322,13 +3481,14 @@ Budget:
   assert.ok(EDITABLE_EVENT_KINDS.includes('goal'));
   assert.equal(foldingProfiles.find((profile) => profile.id === 'planning').rules.kindStates.goal, 'expanded');
   assert.equal(detail.timelineSections.some((section) => section.title === 'Goal'), true);
-  assert.equal(detail.timelineSections.some((section) => section.title === 'Goal usage'), true);
+  assert.equal(detail.inspectorSections.some((section) => section.title === 'Goal usage'), true);
   assert.equal(detailUsage.entries.some((entry) => entry.key === 'Token budget' && entry.value === '200000'), true);
   assert.equal(detailUsage.entries.some((entry) => entry.key === 'Remaining tokens' && entry.value === 'Unbounded'), true);
-  assert.equal(detail.timelineSections.some((section) => section.title === 'Completion budget'), true);
+  assert.equal(detail.inspectorSections.some((section) => section.title === 'Completion budget'), true);
   assert.equal(detail.inspectorSections.some((section) => section.title === 'Request'), true);
   assert.equal(detail.inspectorSections.some((section) => section.title === 'Response'), true);
   assert.equal(protocolDetail.timelineSections.some((section) => section.title === 'Goal objective'), true);
+  assert.equal(allSections(protocolDetail).some((section) => section.type === 'raw_json'), false);
 });
 
 test('other tool call detail renders readable summaries and omits large data URLs', async (t) => {
@@ -3701,6 +3861,7 @@ test('other tool call detail renders readable summaries and omits large data URL
   assert.equal(listOutputDetail.timelineSections.some((section) => section.title === 'Response summary'), false);
   assert.equal(sendFallbackDetail.timelineSections[0].type, 'collaboration');
   assert.deepEqual(sendFallbackDetail.timelineSections[1], {
+    purpose: 'result',
     type: 'code',
     title: 'Response summary',
     language: 'json',
@@ -3949,10 +4110,10 @@ test('other tool call sanitization covers structured cards, embedded URLs, objec
   }
   assert.match(question.detail.timelineSections[0].questions[0].prompt, /before \[embedded data URL omitted; see raw refs\] after/);
   assert.match(send.detail.timelineSections[0].messageHtml, /before \[embedded data URL omitted; see raw refs\] after/);
-  assert.deepEqual(plan.detail.timelineSections.map((section) => section.type), ['plan_update', 'code']);
+  assert.deepEqual(plan.detail.timelineSections.map((section) => section.type), ['plan_update']);
   assert.match(plan.detail.timelineSections[0].explanationHtml, /before \[embedded data URL omitted; see raw refs\] after/);
   assert.match(plan.detail.timelineSections[0].steps[0].step, /Inspect \[embedded data URL omitted; see raw refs\] after/);
-  assert.match(plan.detail.timelineSections[1].code, /response before \[data URL omitted\] after/);
+  assert.match(plan.detail.inspectorSections.find((section) => section.title === 'Response').code, /response before \[embedded data URL omitted; see raw refs\] after/);
   assert.match(JSON.stringify(plan.detail.inspectorSections), /\[embedded data URL omitted; see raw refs\]/);
   assert.match(JSON.stringify(dynamic.detail.timelineSections), /\[data URL omitted\]/);
   assert.match(JSON.stringify(dynamic.detail.inspectorSections), /field-\[embedded data URL omitted; see raw refs\]/);
@@ -4078,8 +4239,8 @@ test('image preview endpoint rehydrates only indexed server-owned image locators
   ];
   await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
 
-  const index = await buildIndex({ repoRoot, codexHome });
-  const session = index.sessionsById.get(id);
+  const residentIndex = await buildIndex({ repoRoot, codexHome });
+  const session = residentIndex.sessionsById.get(id);
   const event = session.logicalEvents.find((candidate) => candidate.toolName === 'view_image');
   const detail = buildEventDetail(session, event.id, 'main');
   const previews = detail.inspectorSections.find((section) => section.type === 'image_preview').images;
@@ -4088,6 +4249,10 @@ test('image preview endpoint rehydrates only indexed server-owned image locators
   assert.doesNotMatch(JSON.stringify(session), /data:image\/png;base64/);
   assert.equal(outputRaw.embeddedImages.length, 2);
 
+  const index = await getSourceAdapter('codex').buildIndex({
+    repoRoot,
+    sourceHome: codexHome,
+  });
   const server = createServer(index, 1, { codexHome });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -4116,17 +4281,11 @@ test('image preview endpoint rehydrates only indexed server-owned image locators
     assert.equal(raw.status, 200);
     assert.match((await raw.json()).raw, /data:image\/png;base64,aGVs\\nbG8=/);
 
-    const originalFile = outputRaw.embeddedImages[0].source.file;
-    outputRaw.embeddedImages[0].source.file = '..\\outside.jsonl';
-    const outside = await fetch(`${base}${previews[0].src}`);
-    assert.equal(outside.status, 409);
-    outputRaw.embeddedImages[0].source.file = originalFile;
-
     records[2].payload.output[0].image_url = 'data:image/png;base64,d29ybGQ=';
     await fsp.writeFile(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
     const stale = await fetch(`${base}${previews[0].src}`);
     assert.equal(stale.status, 409);
-    assert.equal((await stale.json()).error, 'Image preview source is stale');
+    assert.equal((await stale.json()).error, 'Indexed source changed; reindex required');
     const staleLegacyRaw = await fetch(`${base}/api/raw?file=${encodeURIComponent(outputRaw.source.file)}&line=${outputRaw.source.line}`);
     assert.equal(staleLegacyRaw.status, 409);
     assert.equal((await staleLegacyRaw.json()).error, 'Indexed source changed; reindex required');
@@ -4135,50 +4294,46 @@ test('image preview endpoint rehydrates only indexed server-owned image locators
   }
 });
 
-test('legacy raw endpoint rejects malformed canonical Raw Event ownership', async (t) => {
-  const file = path.join(os.tmpdir(), 'session-analyzer-synthetic-legacy.jsonl');
-  const raw = {
-    rawId: 'codex:raw:1',
-    sourceKind: 'claude-code',
-    source: { file, line: 1 },
-  };
-  const event = {
-    id: 'codex:event:1',
-    sourceKind: 'codex',
-    kind: 'synthetic_event',
-    layer: 'main',
-    timestamp: '2026-08-14T00:00:00.000Z',
-    rawRefs: [{ rawId: raw.rawId }],
-  };
-  const session = {
-    id: 'codex:session:1',
-    sourceKind: 'codex',
-    sourceFile: file,
-    rawEvents: [raw],
-    logicalEvents: [event],
-    counts: { messages: 0, toolCalls: 0, failedCommands: 0 },
-  };
-  const index = {
-    sourceKind: 'codex',
-    repoRoot: path.join(os.tmpdir(), 'session-analyzer-synthetic-repo'),
-    sessions: [session],
-    sessionsById: new Map([[session.id, session]]),
-  };
-  const server = createServer(index, 0, { codexHome: fixtureCodexHome });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  }));
+test('legacy Raw ownership uses the bounded Index projection before materialization', async () => {
+  const index = await buildStrictFixtureIndex();
+  const [file] = Object.keys(index.legacyRawOwners.payload.files);
+  const [lineText] = Object.keys(index.legacyRawOwners.payload.files[file]);
+  const line = Number(lineText);
+  const owner = resolveLegacyRawOwnerForIndex(index, file, line);
+  assert.ok(owner);
+  const session = index.sessionsById.get(owner.sessionId);
+  Object.defineProperty(session, 'rawEvents', {
+    configurable: true,
+    get() { throw new Error('resident rawEvents reached before materialization'); },
+  });
 
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const crossOwned = await fetch(`${base}/api/raw?file=${encodeURIComponent(file)}&line=1`);
-  assert.equal(crossOwned.status, 500);
-  assert.equal((await crossOwned.json()).error, 'Internal server error');
+  const repeatedOwner = resolveLegacyRawOwnerForIndex(index, file, line);
+  assert.equal(repeatedOwner.sessionId, session.id);
+  assert.match(repeatedOwner.rawIdHint, new RegExp(`:raw:${line}$`, 'u'));
+  assert.equal(repeatedOwner.line, line);
+  assert.equal(repeatedOwner.adapter.kind, 'codex');
 
-  raw.sourceKind = undefined;
-  const missingOwnership = await fetch(`${base}/api/raw?file=${encodeURIComponent(file)}&line=1`);
-  assert.equal(missingOwnership.status, 500);
-  assert.equal((await missingOwnership.json()).error, 'Internal server error');
+  const zeroLineOwners = buildCodexLegacyRawOwnerIndex([{
+    id: 'zero-line-session',
+    rawEvents: [{
+      rawId: 'zero-line-raw',
+      source: { file, line: 0 },
+    }],
+  }]);
+  assert.equal(zeroLineOwners.entryCount, 0);
+  assert.deepEqual(zeroLineOwners.payload.files, {});
+});
+
+test('runtime rejects a tampered strict Codex legacy Raw owner projection', async () => {
+  const index = await buildStrictFixtureIndex();
+  const [file] = Object.keys(index.legacyRawOwners.payload.files);
+  const [line] = Object.keys(index.legacyRawOwners.payload.files[file]);
+  index.legacyRawOwners.payload.files[file][line] = '0:claude-code:raw:1';
+
+  assert.throws(
+    () => createServer(index, 0, { codexHome: fixtureCodexHome }),
+    { code: 'CANONICAL_CONTRACT_VIOLATION' },
+  );
 });
 
 test('command terminal sections repair UTF-8 text decoded as GB18030', () => {
@@ -4260,9 +4415,11 @@ test('command terminal sections repair UTF-8 text decoded as GB18030', () => {
 });
 
 test('detail endpoint returns structured event detail with split sections and raw refs', async () => {
-  const index = await buildFixtureIndex();
-  const session = primaryFixtureSession(index);
-  const planEvent = session.logicalEvents.find((event) => event.kind === 'proposed_plan');
+  const residentIndex = await buildFixtureIndex();
+  const residentSession = primaryFixtureSession(residentIndex);
+  const planEvent = residentSession.logicalEvents.find((event) => event.kind === 'proposed_plan');
+  const index = await buildStrictFixtureIndex();
+  const session = index.sessionsById.get(residentSession.id);
   const server = createServer(index, 1);
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -4275,7 +4432,7 @@ test('detail endpoint returns structured event detail with split sections and ra
     assert.equal(body.layer, 'main');
     assert.equal(body.sections, undefined);
     assert.equal(body.timelineSections[0].type, 'markdown');
-    assert.ok(body.inspectorSections.some((section) => section.type === 'raw_json'));
+    assert.equal(body.inspectorSections.some((section) => section.type === 'raw_json'), false);
     assert.ok(body.rawRefs.length >= 1);
     assert.deepEqual(Object.keys(body.meta), ['timestamp', 'turnId', 'status', 'severity', 'toolName', 'touchedFiles', 'outputStats', 'channels', 'source']);
   } finally {
@@ -4320,6 +4477,7 @@ test('project endpoints require and select a browser-chosen project', async () =
     assert.equal(statusBody.job.status, 'succeeded');
     assert.equal(statusBody.state.locale, 'zh-CN');
     assert.equal(statusBody.state.repoRoot, 'G:\\vibe\\term-agent');
+    assert.equal(statusBody.state.indexRevision, 1);
     assert.equal(statusBody.state.totals.sessionCount, 10);
     assert.equal(statusBody.state.totals.skippedFileCount, 1);
 
@@ -4376,7 +4534,7 @@ test('project summary endpoint returns fast config rows and later cached activit
 });
 
 test('state reports active project job even when an old index exists', async () => {
-  const index = await buildFixtureIndex();
+  const index = await buildStrictFixtureIndex();
   let releaseIndex = null;
   const server = createServer(index, 1, {
     codexHome: fixtureCodexHome,
@@ -4410,7 +4568,7 @@ test('state reports active project job even when an old index exists', async () 
 });
 
 test('cancelling an active project job preserves the previous index', async () => {
-  const index = await buildFixtureIndex();
+  const index = await buildStrictFixtureIndex();
   const server = createServer(index, 1, {
     codexHome: fixtureCodexHome,
     buildIndex: ({ signal }) => new Promise((resolve, reject) => {
@@ -4446,6 +4604,7 @@ test('cancelling an active project job preserves the previous index', async () =
     assert.equal(stateRes.status, 200);
     const stateBody = await stateRes.json();
     assert.equal(stateBody.repoRoot, 'G:\\vibe\\term-agent');
+    assert.equal(stateBody.indexRevision, 1);
     assert.equal(stateBody.totals.sessionCount, 10);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
@@ -4453,7 +4612,7 @@ test('cancelling an active project job preserves the previous index', async () =
 });
 
 test('a failed replacement build preserves the previous index', async () => {
-  const index = await buildFixtureIndex();
+  const index = await buildStrictFixtureIndex();
   const server = createServer(index, 1, {
     codexHome: fixtureCodexHome,
     buildIndex: async () => {
@@ -4486,6 +4645,7 @@ test('a failed replacement build preserves the previous index', async () => {
     assert.equal(stateRes.status, 200);
     const stateBody = await stateRes.json();
     assert.equal(stateBody.repoRoot, 'G:\\vibe\\term-agent');
+    assert.equal(stateBody.indexRevision, 1);
     assert.equal(stateBody.totals.sessionCount, index.totals.sessionCount);
     assert.equal(stateBody.totals.rawEventCount, index.totals.rawEventCount);
   } finally {
@@ -4501,9 +4661,11 @@ test('readRawLine returns the original JSONL row for drill-down', async () => {
 });
 
 test('source-neutral raw endpoint resolves an indexed Codex raw id without accepting a client path', async () => {
-  const index = await buildFixtureIndex();
-  const session = primaryFixtureSession(index);
-  const rawEvent = session.rawEvents[11];
+  const residentIndex = await buildFixtureIndex();
+  const residentSession = primaryFixtureSession(residentIndex);
+  const rawEvent = residentSession.rawEvents[11];
+  const index = await buildStrictFixtureIndex();
+  const session = index.sessionsById.get(residentSession.id);
   const server = createServer(index, 1, { codexHome: fixtureCodexHome });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;

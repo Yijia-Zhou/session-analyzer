@@ -5,7 +5,18 @@ const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { buildIndex, fileSuggestions, filterSessions, getTimeline } = require('../src/codex');
+const {
+  buildIndex,
+  buildSourceBackedIndex,
+  fileSuggestions,
+  filterSessions,
+  getTimeline,
+} = require('../src/codex');
+const {
+  getSourceAdapter,
+  materializeSessionForIndex,
+  validateIndexOwnership,
+} = require('../src/source-adapters');
 const {
   canonicalRawRecord,
   canonicalRawRecordDigest,
@@ -440,6 +451,65 @@ test('materialized Codex forks expose only continuation ownership while Raw stay
   assert.equal(reindexed.sessionsById.get(child.id).title, 'Explicit materialized fork title');
 });
 
+test('strict Codex materialization preserves fork ownership without materializing the parent', async (t) => {
+  const fixture = await makeForkFixture(t);
+  const resident = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const index = await buildSourceBackedIndex({
+    repoRoot: fixture.repoRoot,
+    codexHome: fixture.codexHome,
+  });
+  assert.equal(validateIndexOwnership(index), 'codex');
+  const indexedParent = index.sessionsById.get(fixture.parentId);
+  const indexedChild = index.sessionsById.get(fixture.childId);
+  assert.equal(Object.hasOwn(indexedChild, 'rawEvents'), false);
+  assert.equal(indexedChild.forkStorageMode, 'materialized');
+  const parentTitle = indexedParent.title;
+  Object.defineProperty(indexedParent, 'title', {
+    configurable: true,
+    get() {
+      throw new Error('parent Indexed Session was inspected during child materialization');
+    },
+  });
+
+  const child = await materializeSessionForIndex(index, indexedChild);
+  Object.defineProperty(indexedParent, 'title', {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: parentTitle,
+  });
+  const expected = resident.sessionsById.get(fixture.childId);
+  assert.deepEqual(child.rawEvents, expected.rawEvents);
+  assert.deepEqual(child.logicalEvents, expected.logicalEvents);
+  assert.deepEqual(child.analysis, expected.analysis);
+  assert.deepEqual(child.presentationIndexes, expected.presentationIndexes);
+  assert.ok(child._forkSegmentsByRawId instanceof Map);
+  assert.equal(child.rawEvents.length, fixture.parentRecords.length + 4);
+  assert.equal(child.logicalEvents.some((event) => event.searchText.includes('Inherited parent task')), false);
+
+  const query = getSourceAdapter('codex').query;
+  assert.equal(
+    (await query.filterSessions(index, { q: 'Inherited parent task', layer: 'main' }))
+      .sessions.some((session) => session.id === indexedChild.id),
+    false,
+  );
+  assert.equal(
+    (await query.filterSessions(index, { q: 'Inherited parent task', layer: 'raw' }))
+      .sessions.some((session) => session.id === indexedChild.id),
+    true,
+  );
+  const raw = await query.getTimeline(index, child, {
+    q: '',
+    offset: 0,
+    limit: 100,
+    layer: 'raw',
+  });
+  assert.deepEqual(
+    raw.events.map((event) => event.forkSegment),
+    ['fork_metadata', ...fixture.parentRecords.map(() => 'inherited_context'), 'continuation', 'continuation', 'continuation'],
+  );
+});
+
 test('materialized fork inference fails closed for interrupted prefixes and cross-boundary logical refs', () => {
   const parentId = 'parent';
   const childId = 'child';
@@ -654,4 +724,34 @@ test('reindex reuses an unchanged child but retracts earlier-branch folding afte
   assert.equal(secondChild.inheritedContext.rawRecordCount, fixture.parentRecords.length);
   assert.equal(second.sessionsById.get(fixture.parentId).supersededBySessionId, '');
   assert.equal(second.totals.reusedFileCount, 1);
+});
+
+test('strict reindex reuses only the unchanged child projection and retracts parent supersession', async (t) => {
+  const fixture = await makeForkFixture(t);
+  const first = await buildSourceBackedIndex({
+    repoRoot: fixture.repoRoot,
+    codexHome: fixture.codexHome,
+  });
+  const firstChild = first.sessionsById.get(fixture.childId);
+  const firstMaterializedChild = await materializeSessionForIndex(first, firstChild);
+  assert.equal(first.sessionsById.get(fixture.parentId).supersededBySessionId, fixture.childId);
+  assert.equal(Object.hasOwn(firstChild, 'rawEvents'), false);
+
+  await fsp.appendFile(fixture.parentFile, `${JSON.stringify({
+    timestamp: '2026-08-09T10:06:00.000Z',
+    type: 'event_msg',
+    payload: { type: 'warning', message: 'parent continued after fork' },
+  })}\n`, 'utf8');
+  const second = await buildSourceBackedIndex({
+    repoRoot: fixture.repoRoot,
+    codexHome: fixture.codexHome,
+    previousIndex: first,
+  });
+  const secondChild = second.sessionsById.get(fixture.childId);
+  assert.equal(secondChild, firstChild);
+  assert.equal(second.sessionsById.get(fixture.parentId).supersededBySessionId, '');
+  assert.equal(second.totals.reusedFileCount, 1);
+  const secondMaterializedChild = await materializeSessionForIndex(second, secondChild);
+  assert.notEqual(secondMaterializedChild, firstMaterializedChild);
+  assert.deepEqual(secondMaterializedChild, firstMaterializedChild);
 });

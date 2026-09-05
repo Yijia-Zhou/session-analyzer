@@ -4,13 +4,13 @@ const {
   TOOL_LIFECYCLE_FAMILY,
   toolLifecycleDescriptorFor,
 } = require('./codex-tool-lifecycle-contract');
+const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 
 const CANONICAL_EVENT_TYPES = Object.freeze({
   turn_started: 'task_started',
   turn_complete: 'task_complete',
 });
 
-const CANONICAL_SCHEMA_VERSION = 1;
 const CODEX_SOURCE_KIND = 'codex';
 const CODEX_JSONL_LINE_LOCATOR_TYPE = 'jsonl_line';
 const SUB_AGENT_ACTIVITY_EVENT_TYPE = 'sub_agent_activity';
@@ -71,6 +71,16 @@ function subAgentActivityEventId(raw) {
   return typeof eventId === 'string' ? eventId : '';
 }
 
+function codexSourceEnvelope(record) {
+  const payload = record?.payload && typeof record.payload === 'object' && !Array.isArray(record.payload)
+    ? record.payload
+    : {};
+  const recordType = typeof record?.type === 'string' ? record.type : '';
+  const payloadType = typeof payload.type === 'string' ? payload.type : '';
+  const role = typeof payload.role === 'string' ? payload.role : '';
+  return { payload, recordType, payloadType, role };
+}
+
 function createCodexRawParser(deps) {
   const {
     commandToText,
@@ -89,12 +99,12 @@ function createCodexRawParser(deps) {
   } = deps;
 
   function makeRawEvent(record, lineNumber, relFile, sessionId, embeddedImages = []) {
-    const payload = record?.payload && typeof record.payload === 'object' && !Array.isArray(record.payload)
-      ? record.payload
-      : {};
-    const recordType = typeof record?.type === 'string' ? record.type : '';
-    const payloadType = typeof payload.type === 'string' ? payload.type : '';
-    const role = typeof payload.role === 'string' ? payload.role : '';
+    const {
+      payload,
+      recordType,
+      payloadType,
+      role,
+    } = codexSourceEnvelope(record);
     const stringField = (...values) => values.find((value) => typeof value === 'string') || '';
     const raw = {
       rawId: `${sessionId}:raw:${lineNumber}`,
@@ -281,6 +291,7 @@ module.exports = {
   SUB_AGENT_ACTIVITY_EVENT_TYPE,
   canonicalEventType,
   codexSourceLocator,
+  codexSourceEnvelope,
   createCodexRawParser,
   rawEventsForLogicalEvent,
   rawMatchesEvent,

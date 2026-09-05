@@ -6,17 +6,169 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {
+  __testOnlyCompactClaudeRelationshipSession,
   analyzerSessionId,
   analyzerSubagentSessionId,
   buildClaudeIndex,
+  buildClaudeSourceBackedIndex,
   discoverClaudeProjects,
   readClaudeRawRecord,
   resolveClaudeAnalyzerIdentities,
 } = require('../src/claude');
 const { getTimeline } = require('../src/codex');
 const { buildClaudeEventDetail } = require('../src/claude-detail');
-const { queryForIndex } = require('../src/source-adapters');
+const {
+  materializeSessionForIndex,
+  queryForIndex,
+  validateIndexOwnership,
+} = require('../src/source-adapters');
+const {
+  initializeIndexRevisionState,
+  materializeSessionWithLease,
+} = require('../src/index-revision-lease');
 const { createServer, parseArgs } = require('../server');
+
+const FORBIDDEN_STRICT_CLAUDE_FIELDS = new Set([
+  'rawEvents',
+  'logicalEvents',
+  'analysis',
+  'presentationIndexes',
+  '_relationshipRawFacts',
+  '_relationshipLogicalFacts',
+  '_relationshipFacts',
+  '_materializedContinuationTimes',
+  '_foreignSessionIds',
+  '_rawUuidSet',
+  'parsed',
+]);
+
+function assertNoReachableClaudeEventGraph(index) {
+  const seen = new WeakSet();
+  const stack = [index];
+  while (stack.length) {
+    const value = stack.pop();
+    if (!value || (typeof value !== 'object' && typeof value !== 'function')) continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    for (const field of FORBIDDEN_STRICT_CLAUDE_FIELDS) {
+      assert.equal(Object.hasOwn(value, field), false, `strict Claude Index retained ${field}`);
+    }
+    assert.equal(
+      Object.hasOwn(value, 'rawId')
+        && (Object.hasOwn(value, 'recordType') || Object.hasOwn(value, 'sourceKind')),
+      false,
+      'strict Claude Index retained a Raw Event',
+    );
+    assert.equal(
+      Object.hasOwn(value, 'rawRefs') && Object.hasOwn(value, 'layer'),
+      false,
+      'strict Claude Index retained a Logical Event',
+    );
+    if (value instanceof Map) {
+      for (const [key, nested] of value) stack.push(key, nested);
+    } else if (value instanceof Set) {
+      for (const nested of value) stack.push(nested);
+    }
+    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) continue;
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor && Object.hasOwn(descriptor, 'value')) stack.push(descriptor.value);
+    }
+  }
+}
+
+test('Claude Pass A relationship evidence stays scalar and bounded for fork-heavy source text', () => {
+  const omittedMarker = 'must-not-survive-pass-a';
+  const oversizedText = `${'x'.repeat(200_000)}${omittedMarker}`;
+  const rawEvents = [{
+    rawId: 'raw-root',
+    uuid: 'root-uuid',
+    parentUuid: '',
+    recordType: 'user',
+    payloadType: 'user',
+    timestamp: '2026-08-16T01:00:00.000Z',
+    parsed: { message: { content: oversizedText } },
+  }];
+  for (let index = 0; index < 32; index += 1) {
+    rawEvents.push({
+      rawId: `raw-command-${index}`,
+      uuid: `command-${index}`,
+      parentUuid: 'root-uuid',
+      recordType: 'system',
+      payloadType: 'local_command',
+      timestamp: `2026-08-16T01:00:${String(index).padStart(2, '0')}.000Z`,
+      parsed: {
+        content: `<command-name>/fork</command-name>\n<command-message>${oversizedText}</command-message>`,
+      },
+    }, {
+      rawId: `raw-output-${index}`,
+      uuid: `output-${index}`,
+      parentUuid: `command-${index}`,
+      recordType: 'system',
+      payloadType: 'local_command',
+      timestamp: `2026-08-16T01:01:${String(index).padStart(2, '0')}.000Z`,
+      parsed: {
+        content: `<local-command-stdout>session waiting for a prompt · ${oversizedText} · abcdef${String(index).padStart(2, '0')}</local-command-stdout>`,
+      },
+    });
+  }
+  const session = {
+    id: 'claude-code:pass-a-fixture',
+    sourceSessionId: 'pass-a-fixture',
+    sourceAbsFile: 'C:\\fixture\\pass-a-fixture.jsonl',
+    parentSessionId: '',
+    parentSessionInferred: false,
+    projectAssociation: 'embedded-cwd',
+    matchesRepo: true,
+    cwdSet: new Set(['C:\\fixture']),
+    startedAt: '2026-08-16T01:00:00.000Z',
+    updatedAt: '2026-08-16T01:01:31.000Z',
+    transcriptUpdatedAt: '2026-08-16T01:01:31.000Z',
+    forkedFromSessionId: '',
+    forkStorageMode: '',
+    forkedAt: '',
+    forkPointUuid: '',
+    forkContinuationState: '',
+    forkEvidence: null,
+    inheritedContext: null,
+    rawEvents,
+    logicalEvents: [{
+      id: 'logical-root',
+      layer: 'main',
+      kind: 'user_message',
+      subtype: '',
+      status: 'completed',
+      timestamp: '2026-08-16T01:00:00.000Z',
+      preview: oversizedText,
+      searchText: oversizedText,
+      rawRefs: [{ rawId: 'raw-root' }],
+    }],
+    _foreignSessionIds: new Set(),
+    _rawUuidSet: new Set(rawEvents.map((raw) => raw.uuid)),
+  };
+
+  const retained = __testOnlyCompactClaudeRelationshipSession(session);
+  assert.equal(Object.hasOwn(retained, '_relationshipRawFacts'), false);
+  assert.equal(Object.hasOwn(retained, '_relationshipLogicalFacts'), false);
+  assert.equal(retained._relationshipFacts.pointerForks.length, 32);
+  const serializedFacts = JSON.stringify(retained._relationshipFacts);
+  assert.equal(serializedFacts.includes(omittedMarker), false);
+  assert.ok(serializedFacts.length < 50_000, `expected bounded relationship facts, received ${serializedFacts.length} bytes`);
+  const seen = new WeakSet();
+  const stack = [retained._relationshipFacts];
+  while (stack.length) {
+    const value = stack.pop();
+    if (!value || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
+    for (const forbidden of ['parsed', 'searchText', 'rawRefs', 'recordType', 'payloadType', 'content']) {
+      assert.equal(Object.hasOwn(value, forbidden), false, `Pass A retained ${forbidden}`);
+    }
+    for (const nested of Object.values(value)) {
+      if (typeof nested === 'string') assert.ok(nested.length <= 240);
+      else if (nested && typeof nested === 'object') stack.push(nested);
+    }
+  }
+});
 
 async function makeClaudeHome(t) {
   const claudeHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-claude-'));
@@ -543,6 +695,10 @@ test('Claude primary identity fails closed for conflicting files and contradicto
   assert.equal(index.totals.unknownFileCount, 4);
   assert.equal(index.totals.sessionCount, 1);
   assert.equal(index.totals.rawEventCount, 1);
+  const strictIndex = await buildClaudeSourceBackedIndex({ repoRoot, claudeHome });
+  assert.deepEqual(strictIndex.sessions.map((session) => session.sourceSessionId), [validId]);
+  assert.equal(strictIndex.totals.unknownFileCount, 4);
+  assert.equal(validateIndexOwnership(strictIndex), 'claude-code');
 });
 
 test('Claude subagent discovery cannot escape the selected source root through record sessionId', async (t) => {
@@ -957,7 +1113,7 @@ test('Claude projects background, async Agent, and planning records into source-
   assert.match(JSON.stringify(agentDetail.timelineSections), /First stop retained/);
   assert.match(JSON.stringify(agentDetail.timelineSections), /Final findings retained/);
   assert.match(
-    JSON.stringify(buildClaudeEventDetail(session, agent.id, 'main', { locale: 'zh-CN' }).timelineSections),
+    JSON.stringify(buildClaudeEventDetail(session, agent.id, 'main', { locale: 'zh-CN' }).inspectorSections),
     /异步 Agent 已启动/,
   );
 
@@ -1100,7 +1256,8 @@ test('Claude sessions work with shared timeline, detail, and indexed raw-record 
   const detail = buildClaudeEventDetail(session, command.id, 'main', { locale: 'en' });
   assert.equal(detail.sourceKind, 'claude-code');
   assert.ok(detail.timelineSections.some((section) => section.type === 'code'));
-  assert.ok(detail.inspectorSections.some((section) => section.type === 'raw_json'));
+  assert.ok(detail.inspectorSections.some((section) => section.type === 'json' && section.purpose === 'request'));
+  assert.equal(detail.inspectorSections.some((section) => section.type === 'raw_json'), false);
 
   const agentEvent = session.logicalEvents.find((event) => event.callId === 'call-agent');
   const compactionEvent = session.logicalEvents.find((event) => event.kind === 'compaction');
@@ -1118,20 +1275,29 @@ test('Claude sessions work with shared timeline, detail, and indexed raw-record 
   const agentDetailZh = buildClaudeEventDetail(session, agentEvent.id, 'main', { locale: 'zh-CN' });
   assert.deepEqual(
     agentDetailZh.timelineSections.map((section) => section.title),
+    ['异步 Agent'],
+  );
+  assert.deepEqual(
+    agentDetailZh.inspectorSections.map((section) => section.title),
     ['请求', '启动结果', '生命周期', '生命周期数据'],
   );
   const compactionDetailZh = buildClaudeEventDetail(session, compactionEvent.id, 'main', { locale: 'zh-CN' });
   assert.deepEqual(
     compactionDetailZh.timelineSections.map((section) => section.title),
-    ['压缩元数据', '压缩摘要'],
+    ['压缩摘要'],
   );
+  assert.deepEqual(compactionDetailZh.inspectorSections.map((section) => section.title), ['压缩元数据']);
   const agentCallDetailZh = buildClaudeEventDetail(session, agentCallRaw.rawId, 'raw', { locale: 'zh-CN' });
   assert.ok(agentCallDetailZh.timelineSections.some((section) => section.title === 'Agent 请求'));
   const agentResultDetailZh = buildClaudeEventDetail(session, agentResultRaw.rawId, 'raw', { locale: 'zh-CN' });
   assert.ok(agentResultDetailZh.timelineSections.some((section) => section.title === '工具结果'));
   assert.ok(agentResultDetailZh.timelineSections.some((section) => section.title === '结构化结果'));
 
-  const server = createServer(index, 1, {
+  const serverIndex = await buildClaudeSourceBackedIndex({
+    repoRoot: fixture.repoRoot,
+    claudeHome: fixture.claudeHome,
+  });
+  const server = createServer(serverIndex, 1, {
     source: 'claude-code',
     claudeHome: fixture.claudeHome,
   });
@@ -1146,7 +1312,7 @@ test('Claude sessions work with shared timeline, detail, and indexed raw-record 
     const rawResponse = await fetch(
       `${base}/api/sessions/${encodeURIComponent(session.id)}/raw/${encodeURIComponent(rawRef.rawId)}`,
     );
-    assert.equal(rawResponse.status, 200);
+    assert.equal(rawResponse.status, 200, await rawResponse.clone().text());
     const raw = await rawResponse.json();
     assert.equal(raw.rawId, rawRef.rawId);
     assert.equal(raw.sourceKind, 'claude-code');
@@ -1163,6 +1329,239 @@ test('Claude sessions work with shared timeline, detail, and indexed raw-record 
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
+});
+
+test('strict Claude indexing releases complete graphs and rematerializes exact primary and derived sessions', async (t) => {
+  const fixture = await buildRichClaudeFixture(t);
+  const [resident, indexed] = await Promise.all([
+    buildClaudeIndex({ repoRoot: fixture.repoRoot, claudeHome: fixture.claudeHome }),
+    buildClaudeSourceBackedIndex({ repoRoot: fixture.repoRoot, claudeHome: fixture.claudeHome }),
+  ]);
+  assert.equal(validateIndexOwnership(indexed), 'claude-code');
+  assertNoReachableClaudeEventGraph(indexed);
+  assert.equal(indexed.sessions.length, resident.sessions.length);
+  assert.ok(indexed.sessions.every((session) => (
+    !Object.hasOwn(session, 'rawEvents')
+    && !Object.hasOwn(session, 'logicalEvents')
+    && !Object.hasOwn(session, 'analysis')
+    && !Object.hasOwn(session, 'presentationIndexes')
+  )));
+
+  for (const indexedSession of indexed.sessions) {
+    const expected = resident.sessionsById.get(indexedSession.id);
+    assert.ok(expected);
+    const first = await materializeSessionForIndex(indexed, indexedSession);
+    const second = await materializeSessionForIndex(indexed, indexedSession);
+    assert.notEqual(first, second);
+    assert.deepEqual(first.rawEvents, expected.rawEvents);
+    assert.deepEqual(first.logicalEvents, expected.logicalEvents);
+    assert.deepEqual(first.analysis, expected.analysis);
+    assert.deepEqual(first.presentationIndexes, expected.presentationIndexes);
+    assert.equal(first.materializationSnapshotId, indexedSession.materializationDescriptor.sourceSnapshotId);
+  }
+  const selected = indexed.sessionsById.get(analyzerSessionId(fixture.sessionId));
+  Object.defineProperty(indexed, 'sessions', {
+    configurable: true,
+    get() { throw new Error('unrelated strict Index collection was scanned'); },
+  });
+  const observedPhases = [];
+  assert.equal((await materializeSessionForIndex(indexed, selected, {
+    onMaterializationPhase(event) {
+      observedPhases.push(event);
+    },
+  })).id, selected.id);
+  assert.deepEqual(
+    observedPhases.filter((event) => event.phase === 'adapter_source_stream'),
+    [
+      { phase: 'adapter_source_stream', state: 'start' },
+      { phase: 'adapter_source_stream', state: 'end' },
+    ],
+  );
+});
+
+test('revision owner coalesces and caches exact strict Claude materialization identity', async (t) => {
+  const fixture = await buildRichClaudeFixture(t);
+  const index = await buildClaudeSourceBackedIndex({
+    repoRoot: fixture.repoRoot,
+    claudeHome: fixture.claudeHome,
+  });
+  const indexedSession = index.sessions[0];
+  const state = initializeIndexRevisionState({ index });
+  let calls = 0;
+  const materialize = ({ index: capturedIndex, indexRevision, signal }) => {
+    calls += 1;
+    return materializeSessionForIndex(capturedIndex, indexedSession, { indexRevision, signal });
+  };
+
+  const [first, second] = await Promise.all([
+    materializeSessionWithLease(state.revisionLease, indexedSession, null, materialize),
+    materializeSessionWithLease(state.revisionLease, indexedSession, null, materialize),
+  ]);
+  assert.equal(first, second);
+  assert.equal(calls, 1);
+  assert.equal(await materializeSessionWithLease(
+    state.revisionLease,
+    indexedSession,
+    null,
+    materialize,
+  ), first);
+  assert.equal(calls, 1);
+});
+
+test('strict Claude snapshots ignore append-only growth, reject selected-prefix rewrites, and preserve copied owner facts', async (t) => {
+  const fixture = await buildRichClaudeFixture(t);
+  const index = await buildClaudeSourceBackedIndex({
+    repoRoot: fixture.repoRoot,
+    claudeHome: fixture.claudeHome,
+  });
+  const primary = index.sessionsById.get(analyzerSessionId(fixture.sessionId));
+  const derived = index.sessionsById.get(analyzerSubagentSessionId(fixture.sessionId, 'agent-one'));
+  const original = await fsp.readFile(fixture.file, 'utf8');
+  await fsp.appendFile(fixture.file, `${JSON.stringify(baseRecord(fixture.sessionId, fixture.repoRoot, {
+    type: 'queue-operation',
+    operation: 'enqueue',
+    content: 'append ignored by old snapshot',
+    uuid: 'late-append',
+    timestamp: '2026-07-31T10:30:00.000Z',
+  }))}\n`, 'utf8');
+  const appended = await materializeSessionForIndex(index, primary);
+  assert.equal(appended.rawEvents.length, primary.rawEventCount);
+
+  const rewritten = original.replace('Inspect this project', 'Inspect that project');
+  assert.equal(Buffer.byteLength(rewritten), Buffer.byteLength(original));
+  await fsp.writeFile(fixture.file, rewritten, 'utf8');
+  const rewrittenRaw = appended.rawEvents.find((raw) => raw.sourceLocator?.line === 2);
+  assert.ok(rewrittenRaw);
+  await assert.rejects(
+    readClaudeRawRecord(index, appended, rewrittenRaw),
+    { code: 'INDEXED_SOURCE_STALE' },
+  );
+  await assert.rejects(
+    materializeSessionForIndex(index, primary),
+    { code: 'INDEXED_SOURCE_STALE', statusCode: 409 },
+  );
+  const derivedAfterOwnerRewrite = await materializeSessionForIndex(index, derived);
+  assert.equal(derivedAfterOwnerRewrite.id, derived.id);
+  assert.equal(derivedAfterOwnerRewrite.parentSessionId, derived.parentSessionId);
+
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    materializeSessionForIndex(index, primary, { signal: controller.signal }),
+    { name: 'AbortError' },
+  );
+});
+
+test('strict Claude sidecar evidence drives reindex while old body reconstruction uses copied facts', async (t) => {
+  const fixture = await buildRichClaudeFixture(t);
+  const first = await buildClaudeSourceBackedIndex({
+    repoRoot: fixture.repoRoot,
+    claudeHome: fixture.claudeHome,
+  });
+  const reindexProgress = [];
+  const unchanged = await buildClaudeSourceBackedIndex({
+    repoRoot: fixture.repoRoot,
+    claudeHome: fixture.claudeHome,
+    previousIndex: first,
+    onProgress: (entry) => reindexProgress.push(entry),
+  });
+  assert.equal(unchanged.sessions, first.sessions);
+  assert.equal(unchanged.sessionsById, first.sessionsById);
+  assert.equal(unchanged.projectQueryStore, first.projectQueryStore);
+  assert.equal(unchanged.materializationDependencies, first.materializationDependencies);
+  assert.equal(unchanged.totals.reusedFileCount, first.sessions.length);
+  assert.equal(reindexProgress.some((entry) => entry.phase === 'parsing'), false);
+
+  const derivedId = analyzerSubagentSessionId(fixture.sessionId, 'agent-one');
+  const indexedDerived = first.sessionsById.get(derivedId);
+  const metadataFile = path.join(
+    fixture.container,
+    fixture.sessionId,
+    'subagents',
+    'agent-agent-one.meta.json',
+  );
+  const metadata = await fsp.readFile(metadataFile, 'utf8');
+  await fsp.writeFile(metadataFile, metadata.replace('"spawnDepth":1', '"spawnDepth":2'), 'utf8');
+  assert.equal((await materializeSessionForIndex(first, indexedDerived)).id, derivedId);
+  const metadataChanged = await buildClaudeSourceBackedIndex({
+    repoRoot: fixture.repoRoot,
+    claudeHome: fixture.claudeHome,
+    previousIndex: first,
+  });
+  assert.notEqual(metadataChanged.sessions, first.sessions);
+  await fsp.writeFile(metadataFile, metadata, 'utf8');
+  assert.equal((await materializeSessionForIndex(first, indexedDerived)).id, derivedId);
+  const absentSidecar = path.join(
+    fixture.container,
+    fixture.sessionId,
+    'subagents',
+    'agent-agent-one.forked-skill.json',
+  );
+  await fsp.writeFile(absentSidecar, JSON.stringify({ skillName: 'late-sidecar' }), 'utf8');
+  const oldMaterialized = await materializeSessionForIndex(first, indexedDerived);
+  assert.equal(oldMaterialized.id, derivedId);
+
+  const changed = await buildClaudeSourceBackedIndex({
+    repoRoot: fixture.repoRoot,
+    claudeHome: fixture.claudeHome,
+    previousIndex: first,
+  });
+  assert.equal(changed.sessionsById.has(derivedId), false);
+  assert.notEqual(changed.sessions, first.sessions);
+});
+
+test('strict Claude dependency closure stays linear across 100 same-container primary Sessions', async (t) => {
+  const claudeHome = await makeClaudeHome(t);
+  const repoRoot = path.join(claudeHome, 'repo');
+  const container = path.join(claudeHome, 'projects', '-linear-dependency-fixture');
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const sessionIds = Array.from({ length: 100 }, (_, index) => (
+    `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`
+  ));
+  const files = [];
+  for (let index = 0; index < sessionIds.length; index += 1) {
+    const sessionId = sessionIds[index];
+    const file = path.join(container, `${sessionId}.jsonl`);
+    files.push(file);
+    await writeJsonl(file, [userRecord(sessionId, repoRoot, {
+      parentUuid: null,
+      uuid: `user-${index}`,
+      timestamp: `2026-08-16T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+      message: { role: 'user', content: `session ${String(index).padStart(3, '0')}` },
+    })]);
+  }
+  const started = Date.now();
+  const index = await buildClaudeSourceBackedIndex({ repoRoot, claudeHome });
+  const buildMs = Date.now() - started;
+  assert.equal(index.sessions.length, sessionIds.length);
+  assert.equal(index.materializationDependencies.size, sessionIds.length);
+  const dependencyEntries = [...index.materializationDependencies.values()]
+    .reduce((sum, dependencySet) => sum + dependencySet.entries.length, 0);
+  const dependencyBytes = Buffer.byteLength(
+    JSON.stringify([...index.materializationDependencies.values()]),
+    'utf8',
+  );
+  assert.equal(dependencyEntries, sessionIds.length);
+  assert.ok(dependencyBytes < 512 * 1024, `expected bounded linear dependency bytes, received ${dependencyBytes}`);
+
+  const target = index.sessionsById.get(analyzerSessionId(sessionIds[0]));
+  const siblingSource = await fsp.readFile(files[1], 'utf8');
+  await fsp.writeFile(files[1], siblingSource.replace('session 001', 'session x01'), 'utf8');
+  assert.equal((await materializeSessionForIndex(index, target)).id, target.id);
+
+  const targetSource = await fsp.readFile(files[0], 'utf8');
+  await fsp.writeFile(files[0], targetSource.replace('session 000', 'session x00'), 'utf8');
+  await assert.rejects(
+    materializeSessionForIndex(index, target),
+    { code: 'INDEXED_SOURCE_STALE', statusCode: 409 },
+  );
+  t.diagnostic(JSON.stringify({
+    sessions: sessionIds.length,
+    dependencySets: index.materializationDependencies.size,
+    dependencyEntries,
+    dependencyBytes,
+    buildMs,
+  }));
 });
 
 test('Claude detail localizes adapter-generated file change fallback copy', async (t) => {
@@ -1413,7 +1812,8 @@ test('Claude detail sanitizes inline payloads and keeps exact source only in ind
   });
   assert.ok(preservedSearch.events.some((event) => event.id === message.id && event.hasSearchHit));
 
-  const server = createServer(index, 1, {
+  const serverIndex = await buildClaudeSourceBackedIndex({ repoRoot, claudeHome });
+  const server = createServer(serverIndex, 1, {
     source: 'claude-code',
     claudeHome,
   });
@@ -1473,12 +1873,236 @@ test('Claude fork inference requires foreign source identity and shared UUID lin
       timestamp: '2026-07-31T11:00:02.000Z',
       session_id: parentId,
     }),
+    userRecord(forkId, repoRoot, {
+      parentUuid: 'fork-title',
+      promptId: 'fork-continuation',
+      message: { role: 'user', content: 'Fork continuation' },
+      uuid: 'fork-continuation-user',
+      timestamp: '2026-07-31T11:00:03.000Z',
+    }),
   ]);
 
   const index = await buildClaudeIndex({ repoRoot, claudeHome });
   const fork = index.sessionsById.get(analyzerSessionId(forkId));
   assert.equal(fork.forkedFromSessionId, analyzerSessionId(parentId));
   assert.equal(fork.forkStorageMode, 'materialized');
+
+  const strictIndex = await buildClaudeSourceBackedIndex({ repoRoot, claudeHome });
+  const indexedFork = strictIndex.sessionsById.get(analyzerSessionId(forkId));
+  assert.equal(indexedFork.forkStorageMode, 'materialized');
+  assert.equal(indexedFork.rawEventCount, 3);
+  assert.equal(indexedFork.logicalEventCount, 1);
+  assert.equal(indexedFork.counts.messages, 1);
+  assert.equal(indexedFork.title, 'Fork continuation');
+  const materializedFork = await materializeSessionForIndex(strictIndex, indexedFork);
+  assert.equal(materializedFork.rawEvents.length, 3);
+  assert.deepEqual(materializedFork.logicalEvents.map((event) => event.preview), ['Fork continuation']);
+  assert.equal(materializedFork.analysis.counts.messages, 1);
+});
+
+test('strict Claude materialized-fork analysis and timestamps exclude copied-prefix ownership', async (t) => {
+  const claudeHome = await makeClaudeHome(t);
+  const repoRoot = path.join(claudeHome, 'repo');
+  const container = path.join(claudeHome, 'projects', '-materialized-analysis');
+  const parentId = '12121212-1212-4212-8212-121212121212';
+  const childId = '34343434-3434-4434-8434-343434343434';
+  const copiedAssistant = assistantRecord(parentId, repoRoot, {
+    parentUuid: null,
+    message: {
+      id: 'copied-usage-message',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Inherited answer with usage' }],
+      usage: {
+        input_tokens: 123,
+        output_tokens: 45,
+        cache_creation_input_tokens: 6,
+        cache_read_input_tokens: 7,
+      },
+    },
+    uuid: 'copied-usage-uuid',
+    timestamp: '2026-08-16T01:00:00.000Z',
+  });
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await writeJsonl(path.join(container, `${parentId}.jsonl`), [copiedAssistant]);
+  await writeJsonl(path.join(container, `${childId}.jsonl`), [
+    { ...copiedAssistant, sessionId: childId, session_id: parentId },
+    userRecord(childId, repoRoot, {
+      parentUuid: 'copied-usage-uuid',
+      message: { role: 'user', content: 'Continuation without assistant usage' },
+      uuid: 'continuation-user-uuid',
+      timestamp: '2026-08-16T02:00:00.000Z',
+    }),
+  ]);
+
+  const index = await buildClaudeSourceBackedIndex({ repoRoot, claudeHome });
+  const indexedChild = index.sessionsById.get(analyzerSessionId(childId));
+  assert.equal(indexedChild.forkStorageMode, 'materialized');
+  assert.equal(indexedChild.startedAt, '2026-08-16T02:00:00.000Z');
+  assert.equal(indexedChild.updatedAt, '2026-08-16T02:00:00.000Z');
+  const child = await materializeSessionForIndex(index, indexedChild);
+  assert.equal(child.rawEvents.length, 2);
+  assert.deepEqual(child.logicalEvents.map((event) => event.preview), ['Continuation without assistant usage']);
+  assert.deepEqual(child.analysis.tokenStats, {
+    maxObserved: 0,
+    responseCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+  });
+  assert.equal(child.startedAt, '2026-08-16T02:00:00.000Z');
+  assert.equal(child.updatedAt, '2026-08-16T02:00:00.000Z');
+});
+
+test('strict Claude materialized-fork timestamps fall back exactly for copied-only and untimed continuations', async (t) => {
+  const claudeHome = await makeClaudeHome(t);
+  const repoRoot = path.join(claudeHome, 'repo');
+  const container = path.join(claudeHome, 'projects', '-materialized-timestamp-fallback');
+  const cases = [{
+    parentId: '13131313-1313-4313-8313-131313131313',
+    childId: '14141414-1414-4414-8414-141414141414',
+    uuid: 'copied-only-shared-uuid',
+    continuation: null,
+  }, {
+    parentId: '15151515-1515-4515-8515-151515151515',
+    childId: '16161616-1616-4616-8616-161616161616',
+    uuid: 'untimed-continuation-shared-uuid',
+    continuation: {
+      parentUuid: 'untimed-continuation-shared-uuid',
+      message: { role: 'user', content: 'Continuation without a timestamp' },
+      uuid: 'untimed-continuation-user-uuid',
+    },
+  }];
+  await fsp.mkdir(repoRoot, { recursive: true });
+
+  for (const fixture of cases) {
+    const copied = userRecord(fixture.parentId, repoRoot, {
+      parentUuid: null,
+      message: { role: 'user', content: `Inherited row for ${fixture.childId}` },
+      uuid: fixture.uuid,
+      timestamp: '2026-08-16T00:00:00.000Z',
+    });
+    await writeJsonl(path.join(container, `${fixture.parentId}.jsonl`), [copied]);
+    const childRows = [{
+      ...copied,
+      sessionId: fixture.childId,
+      session_id: fixture.parentId,
+    }];
+    if (fixture.continuation) {
+      childRows.push(userRecord(fixture.childId, repoRoot, fixture.continuation));
+    }
+    await writeJsonl(path.join(container, `${fixture.childId}.jsonl`), childRows);
+  }
+
+  const index = await buildClaudeSourceBackedIndex({ repoRoot, claudeHome });
+  for (const fixture of cases) {
+    const indexedChild = index.sessionsById.get(analyzerSessionId(fixture.childId));
+    assert.equal(indexedChild.forkStorageMode, 'materialized');
+    assert.ok(indexedChild.startedAt, 'source mtime fallback must be committed');
+    assert.equal(indexedChild.updatedAt, indexedChild.startedAt);
+    assert.equal(indexedChild.materializationDescriptor.payload.projection.startedAt, indexedChild.startedAt);
+    assert.equal(indexedChild.materializationDescriptor.payload.projection.updatedAt, indexedChild.updatedAt);
+
+    const child = await materializeSessionForIndex(index, indexedChild);
+    assert.equal(child.startedAt, indexedChild.startedAt);
+    assert.equal(child.updatedAt, indexedChild.updatedAt);
+    assert.equal(child.rawEvents.length, fixture.continuation ? 2 : 1);
+    assert.equal(child.logicalEvents.length, fixture.continuation ? 1 : 0);
+  }
+});
+
+test('strict Claude materialized-fork inference fails closed on a cross-boundary Logical Event', async (t) => {
+  const claudeHome = await makeClaudeHome(t);
+  const repoRoot = path.join(claudeHome, 'repo');
+  const container = path.join(claudeHome, 'projects', '-cross-boundary');
+  const parentId = '24242424-2424-4424-8424-242424242424';
+  const childId = '35353535-3535-4535-8535-353535353535';
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const call = assistantRecord(parentId, repoRoot, {
+    parentUuid: null,
+    message: {
+      id: 'cross-boundary-message',
+      role: 'assistant',
+      content: [{
+        type: 'tool_use',
+        id: 'cross-boundary-call',
+        name: 'Bash',
+        input: { command: 'echo cross-boundary' },
+      }],
+    },
+    uuid: 'cross-boundary-shared',
+    timestamp: '2026-07-31T11:30:00.000Z',
+  });
+  await writeJsonl(path.join(container, `${parentId}.jsonl`), [call]);
+  await writeJsonl(path.join(container, `${childId}.jsonl`), [
+    { ...call, sessionId: childId, session_id: parentId },
+    userRecord(childId, repoRoot, {
+      parentUuid: 'cross-boundary-shared',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'cross-boundary-call',
+          content: 'done',
+          is_error: false,
+        }],
+      },
+      toolUseResult: { stdout: 'done', stderr: '', interrupted: false },
+      uuid: 'cross-boundary-result',
+      timestamp: '2026-07-31T11:30:01.000Z',
+    }),
+  ]);
+
+  const index = await buildClaudeSourceBackedIndex({ repoRoot, claudeHome });
+  const child = index.sessionsById.get(analyzerSessionId(childId));
+  assert.equal(child.forkStorageMode, '');
+  assert.equal(child.forkedFromSessionId, '');
+});
+
+test('strict Claude materialized-fork inference removes cyclic ownership', async (t) => {
+  const claudeHome = await makeClaudeHome(t);
+  const repoRoot = path.join(claudeHome, 'repo');
+  const container = path.join(claudeHome, 'projects', '-materialized-cycle');
+  const firstId = '46464646-4646-4646-8646-464646464646';
+  const secondId = '57575757-5757-4757-8757-575757575757';
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await writeJsonl(path.join(container, `${firstId}.jsonl`), [{
+    ...userRecord(firstId, repoRoot, {
+      parentUuid: null,
+      message: { role: 'user', content: 'cycle first' },
+      uuid: 'materialized-cycle-shared',
+      timestamp: '2026-07-31T11:40:00.000Z',
+    }),
+    session_id: secondId,
+  }]);
+  await writeJsonl(path.join(container, `${secondId}.jsonl`), [{
+    ...userRecord(secondId, repoRoot, {
+      parentUuid: null,
+      message: { role: 'user', content: 'cycle second' },
+      uuid: 'materialized-cycle-shared',
+      timestamp: '2026-07-31T11:40:01.000Z',
+    }),
+    session_id: firstId,
+  }]);
+
+  const index = await buildClaudeSourceBackedIndex({ repoRoot, claudeHome });
+  const expectedTimestamps = new Map([
+    [analyzerSessionId(firstId), '2026-07-31T11:40:00.000Z'],
+    [analyzerSessionId(secondId), '2026-07-31T11:40:01.000Z'],
+  ]);
+  for (const session of index.sessions) {
+    assert.equal(session.forkStorageMode, '');
+    assert.equal(session.forkedFromSessionId, '');
+    assert.equal(session.startedAt, expectedTimestamps.get(session.id));
+    assert.equal(session.updatedAt, expectedTimestamps.get(session.id));
+    assert.equal(session.materializationDescriptor.payload.projection.startedAt, session.startedAt);
+    assert.equal(session.materializationDescriptor.payload.projection.updatedAt, session.updatedAt);
+    const materialized = await materializeSessionForIndex(index, session);
+    assert.equal(materialized.startedAt, session.startedAt);
+    assert.equal(materialized.updatedAt, session.updatedAt);
+    assert.equal(materialized.forkStorageMode, '');
+    assert.equal(materialized.forkedFromSessionId, '');
+  }
 });
 
 test('Claude pointer fork uses exact parent command evidence and keeps inherited context parent-owned', async (t) => {
@@ -1596,6 +2220,20 @@ test('Claude pointer fork uses exact parent command evidence and keeps inherited
   assert.equal(childTimeline.session.inheritedContext.mainEventCount, 2);
   assert.equal(childTimeline.session.inheritedContext.ownerSessionId, parent.id);
   assert.equal(childTimeline.session.rawEventCount, 2);
+
+  const strictIndex = await buildClaudeSourceBackedIndex({ repoRoot, claudeHome });
+  const indexedChild = strictIndex.sessionsById.get(child.id);
+  assert.equal(indexedChild.forkStorageMode, 'pointer');
+  assert.deepEqual(indexedChild.inheritedContext, child.inheritedContext);
+  const strictChild = await materializeSessionForIndex(strictIndex, indexedChild);
+  assert.deepEqual(strictChild.rawEvents, child.rawEvents);
+  assert.deepEqual(strictChild.logicalEvents, child.logicalEvents);
+  assert.deepEqual(strictChild.analysis, child.analysis);
+  Object.defineProperty(strictIndex.sessionsById.get(parent.id), 'title', {
+    configurable: true,
+    get() { throw new Error('pointer parent Session was materialized or inspected'); },
+  });
+  assert.equal((await materializeSessionForIndex(strictIndex, indexedChild)).id, indexedChild.id);
 });
 
 test('Claude pointer fork navigation falls back to the exact parent Raw Record without readable Main ancestry', async (t) => {
@@ -2193,7 +2831,8 @@ test('Claude lifecycle correlation fails closed for untrusted, duplicate, and no
       JSON.stringify(detail.timelineSections),
       /pending|completed|updatedFields|statusChange/,
     );
-    assert.match(JSON.stringify(detail.inspectorSections), /statusChange/);
+    assert.doesNotMatch(JSON.stringify(detail.inspectorSections), /statusChange/);
+    assert.ok(detail.rawRefs.length > 0);
   }
   assert.ok(session.logicalEvents.some((event) => (
     event.kind === 'user_message' && event.searchText.includes('Forged completion')

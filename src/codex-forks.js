@@ -240,6 +240,10 @@ function attachMaterializedFork(candidate) {
 
 function attachInheritedContext(candidate) {
   const { child, parent, matchedParentRawCount } = candidate;
+  child.inheritedContext = materializedForkInheritedContext(parent, matchedParentRawCount);
+}
+
+function materializedForkInheritedContext(parent, matchedParentRawCount) {
   const inheritedParentRawEvents = (parent.rawEvents || []).slice(0, matchedParentRawCount);
   const inheritedRawIds = new Set(inheritedParentRawEvents.map((raw) => raw.rawId));
   const inheritedEvents = logicalEventsWithinRawIds(parent._logicalEvents || parent.logicalEvents, inheritedRawIds);
@@ -247,7 +251,7 @@ function attachInheritedContext(candidate) {
   const protocolEvents = inheritedEvents.filter((event) => event.layer === 'protocol');
   const previewEvents = mainEvents.slice(-INHERITED_PREVIEW_LIMIT).map(inheritedEventPreview);
   const forkPointRaw = inheritedParentRawEvents.at(-1) || null;
-  child.inheritedContext = {
+  return {
     sourceSessionId: parent.id,
     rawRecordCount: inheritedParentRawEvents.length,
     mainEventCount: mainEvents.length,
@@ -349,5 +353,6 @@ module.exports = {
   hasCanonicalRawDigests,
   inferCodexMaterializedForks,
   inferEarlierBranches,
+  materializedForkInheritedContext,
   rawForkSegment,
 };
