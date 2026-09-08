@@ -165,6 +165,7 @@ const state = {
   projectLoadingRoot: '',
   projectJobId: '',
   projectPollTimer: 0,
+  projectObservation: null,
   projectRefreshJobId: '',
   projectRefreshPollTimer: 0,
   projectRefreshRequestId: 0,
@@ -325,6 +326,7 @@ const el = {
   projectStatus: document.getElementById('projectStatus'),
   projectProgress: document.getElementById('projectProgress'),
   projectCancelBtn: document.getElementById('projectCancelBtn'),
+  projectPollRecovery: document.getElementById('projectPollRecovery'),
   projectList: document.getElementById('projectList'),
   projectChooserTitle: document.querySelector('.projectChooserHeader h2'),
   projectChooserDescription: document.querySelector('.projectChooserHeader p'),
@@ -596,6 +598,7 @@ function applyStaticLocale() {
   setText(document.querySelector('.projectChooserHeader h2'), t('selectProject'));
   setText(document.querySelector('.projectChooserHeader p'), t('chooseProject'));
   setText(el.projectCancelBtn, t('cancelIndexing'));
+  renderProjectPollRecovery();
   setText(document.querySelector('#projectHomeEditor summary'), t('customHomeDirectories'));
   setText(el.projectHomeApplyBtn, t('applyHomeDirectories'));
   setText(el.projectSourceCancel, t('cancelSwitch'));
@@ -685,12 +688,18 @@ function api(path, options = {}) {
     init.headers = { 'content-type': 'application/json', ...(options.headers || {}) };
   }
   const request = (allowBusyRetry) => fetch(requestPath, init).then(async (res) => {
-    const body = await res.json();
+    let body;
+    try {
+      body = await res.json();
+    } catch (error) {
+      if (!res.ok) error.status = res.status;
+      throw error;
+    }
     if (!res.ok) {
       if (allowBusyRetry
           && method === 'GET'
           && res.status === 503
-          && body.code === 'MATERIALIZATION_BUSY') {
+          && body?.code === 'MATERIALIZATION_BUSY') {
         const retryAfterHeader = res.headers.get('retry-after');
         const retryAfter = retryAfterHeader && retryAfterHeader.trim()
           ? Number(retryAfterHeader)
@@ -701,10 +710,10 @@ function api(path, options = {}) {
         await abortableDelay(delayMs, init.signal);
         return request(false);
       }
-      const error = new Error(body.error || `HTTP ${res.status}`);
+      const error = new Error(body?.error || `HTTP ${res.status}`);
       error.status = res.status;
-      error.code = body.code;
-      error.details = body.details;
+      error.code = body?.code;
+      error.details = body?.details;
       throw error;
     }
     return body;
@@ -889,6 +898,7 @@ function renderProjectFailure() {
 }
 
 async function showFailedProjectJob(job) {
+  resetProjectObservation();
   clearProjectPollTimer();
   state.failedProjectJob = job;
   state.projectJobId = '';
@@ -4394,6 +4404,7 @@ async function cancelProjectJob(jobId) {
 }
 
 async function showProjectChooser(options = {}) {
+  resetProjectObservation();
   state.projectReturning = false;
   state.pendingSourceAction = null;
   state.homeEditorDirty = false;
@@ -4417,6 +4428,7 @@ async function showProjectChooser(options = {}) {
 }
 
 async function exitProjectChooser() {
+  resetProjectObservation();
   state.projectChooserRequestId += 1;
   const jobId = state.projectJobId;
   state.projectReturning = true;
@@ -4482,6 +4494,7 @@ async function applyAppState(appState) {
 }
 
 async function finishProjectSelection(appState, options = {}) {
+  resetProjectObservation();
   state.failedProjectJob = null;
   writeLastSelectedRepo(appState.sourceKind || state.sourceKind, appState.repoRoot);
   state.projectLoadingRoot = '';
@@ -4529,19 +4542,64 @@ async function changeLocale(locale) {
   }
 }
 
-async function handleProjectJobResponse(data, options = {}) {
-  const job = data.job || {};
-  if (job.id !== state.projectJobId) return;
+function resetProjectObservation() {
+  clearProjectPollTimer();
+  state.projectObservation = null;
+  renderProjectPollRecovery();
+}
+
+function projectObservationCurrent(owner) {
+  return owner && state.projectObservation === owner
+    && state.projectJobId === owner.jobId
+    && state.projectChooserRequestId === owner.requestId
+    && state.sourceKind === owner.sourceKind && state.sourceHome === owner.sourceHome;
+}
+
+function beginProjectObservation(jobId, options = {}) {
+  resetProjectObservation();
+  const owner = { jobId, options, requestId: state.projectChooserRequestId,
+    sourceKind: state.sourceKind, sourceHome: state.sourceHome,
+    failures: 0, pending: false, paused: false, error: '' };
+  state.projectObservation = owner;
+  return owner;
+}
+
+function renderProjectPollRecovery() {
+  if (!el.projectPollRecovery) return;
+  const owner = state.projectObservation;
+  el.projectPollRecovery.hidden = !owner?.error;
+  el.projectPollRecovery.innerHTML = owner?.error
+    ? `<p>${escapeHtml(t(owner.paused ? 'projectStatusCheckPaused' : 'projectStatusCheckRetrying'))}</p><p>${escapeHtml(owner.error)}</p>${owner.paused ? `<button type="button" class="ghostBtn" data-project-continue${owner.pending ? ' disabled' : ''}>${escapeHtml(t('continueProjectStatusCheck'))}</button>` : ''}`
+    : '';
+}
+
+function handleProjectJobError(owner, error) {
+  if (!projectObservationCurrent(owner)) return;
+  owner.error = error.message || String(error);
+  const retryable = error instanceof TypeError || error.status === 408 || error.status === 429
+    || (error.status >= 500 && error.status <= 599);
+  const delays = [500, 1000, 2000];
+  if (retryable && owner.failures < delays.length) {
+    scheduleProjectJobPoll(owner, delays[owner.failures++]);
+  } else {
+    owner.paused = true;
+  }
+  renderProjectPollRecovery();
+}
+
+function validateProjectJobResponse(data, owner) {
+  if (!data?.job || data.job.id !== owner.jobId
+      || !['queued', 'running', 'succeeded', 'failed', 'cancelled'].includes(data.job.status)) {
+    throw new Error(t('projectStatusInvalid'));
+  }
+}
+
+async function handleProjectJobResponse(data, owner) {
+  if (!projectObservationCurrent(owner)) return;
+  const job = data.job;
   renderProjectJob(job);
   if (job.status === 'succeeded') {
-    let appState = data.state;
-    if (!appState) appState = (await api(`/api/project/status?jobId=${encodeURIComponent(job.id)}`)).state;
-    if (!appState) {
-      const current = await api('/api/state');
-      if (!current.job) appState = current;
-    }
-    if (!appState) throw new Error(t('projectIndexUnavailable'));
-    await finishProjectSelection(appState, options);
+    await finishProjectSelection(data.state, owner.options);
     return;
   }
   if (job.status === 'failed') {
@@ -4549,6 +4607,7 @@ async function handleProjectJobResponse(data, options = {}) {
     return;
   }
   if (job.status === 'cancelled') {
+    resetProjectObservation();
     state.projectLoadingRoot = '';
     state.projectJobId = '';
     state.projectReturning = false;
@@ -4561,29 +4620,56 @@ async function handleProjectJobResponse(data, options = {}) {
     else await showProjectChooser({ autoRestore: false });
     return;
   }
-  scheduleProjectJobPoll(job.id, options);
+  scheduleProjectJobPoll(owner);
 }
 
-async function pollProjectJob(jobId, options = {}) {
+async function pollProjectJob(jobId, options = {}, observation = null) {
+  const owner = observation || state.projectObservation || beginProjectObservation(jobId, options);
+  if (!projectObservationCurrent(owner) || owner.pending) return;
   clearProjectPollTimer();
-  const data = await api(`/api/project/status?jobId=${encodeURIComponent(jobId)}`);
-  if (jobId !== state.projectJobId) return;
-  await handleProjectJobResponse(data, options);
+  owner.pending = true;
+  renderProjectPollRecovery();
+  let data;
+  try {
+    data = await api(`/api/project/status?jobId=${encodeURIComponent(jobId)}`);
+    if (!projectObservationCurrent(owner)) return;
+    validateProjectJobResponse(data, owner);
+    if (data.job.status === 'succeeded' && !data.state) {
+      const current = await api('/api/state');
+      if (!projectObservationCurrent(owner)) return;
+      data.state = current.currentState || (!current.job ? current : null);
+    }
+    if (data.job.status === 'succeeded' && (!data.state?.projectSelected
+        || !sameProjectRoot(data.state.repoRoot, data.job.repoRoot))) {
+      throw new Error(t('projectIndexUnavailable'));
+    }
+  } catch (error) {
+    handleProjectJobError(owner, error);
+    return;
+  } finally {
+    owner.pending = false;
+    if (projectObservationCurrent(owner)) renderProjectPollRecovery();
+  }
+  if (!projectObservationCurrent(owner)) return;
+  owner.failures = 0;
+  owner.error = '';
+  owner.paused = false;
+  renderProjectPollRecovery();
+  // UI failures are separate from status transport failures.
+  try { await handleProjectJobResponse(data, owner); } catch (error) { showError(error); }
 }
 
-function handleProjectJobError(jobId, error) {
-  if (jobId !== state.projectJobId) return;
-  showError(error);
-}
-
-function scheduleProjectJobPoll(jobId, options = {}) {
+function scheduleProjectJobPoll(owner, delay = 400) {
+  if (!projectObservationCurrent(owner)) return;
+  clearProjectPollTimer();
   state.projectPollTimer = setTimeout(() => {
-    pollProjectJob(jobId, options).catch((error) => handleProjectJobError(jobId, error));
-  }, 400);
+    pollProjectJob(owner.jobId, owner.options, owner);
+  }, delay);
 }
 
 async function selectProject(repoRoot, options = {}) {
   if (!repoRoot || sourceConfigBusy()) return;
+  resetProjectObservation();
   const requestId = state.projectChooserRequestId + 1;
   state.projectChooserRequestId = requestId;
   state.projectReturning = false;
@@ -8482,13 +8568,46 @@ el.localeSelect?.addEventListener('change', () => {
   changeLocale(el.localeSelect.value).catch(showError);
 });
 
-el.projectCancelBtn?.addEventListener('click', () => {
+el.projectCancelBtn?.addEventListener('click', async () => {
   const jobId = state.projectJobId;
-  if (!jobId) return;
-  clearProjectPollTimer();
-  api(`/api/project/status?jobId=${encodeURIComponent(jobId)}`, { method: 'DELETE' })
-    .then((data) => handleProjectJobResponse(data))
-    .catch((error) => handleProjectJobError(jobId, error));
+  if (!jobId || el.projectCancelBtn.disabled) return;
+  const owner = beginProjectObservation(jobId, state.projectObservation?.options || {});
+  owner.pending = true;
+  el.projectCancelBtn.disabled = true;
+  let data;
+  try {
+    data = await api(`/api/project/status?jobId=${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+    if (!projectObservationCurrent(owner)) return;
+    validateProjectJobResponse(data, owner);
+  } catch (error) {
+    if (!projectObservationCurrent(owner)) return;
+    if (error.status === 404) {
+      data = { job: { id: jobId, status: 'cancelled' } };
+    } else {
+      owner.pending = false;
+      owner.error = error.message || String(error);
+      renderProjectPollRecovery();
+      // The DELETE outcome is uncertain. Observe it without repeating DELETE.
+      await pollProjectJob(jobId, owner.options, owner);
+      return;
+    }
+  } finally {
+    owner.pending = false;
+    el.projectCancelBtn.disabled = false;
+  }
+  if (!projectObservationCurrent(owner)) return;
+  if (data.job.status === 'succeeded') await pollProjectJob(jobId, owner.options, owner);
+  else {
+    try { await handleProjectJobResponse(data, owner); } catch (error) { showError(error); }
+  }
+});
+
+el.projectPollRecovery?.addEventListener('click', (event) => {
+  const owner = state.projectObservation;
+  if (!event.target.closest('[data-project-continue]') || !projectObservationCurrent(owner) || owner.pending) return;
+  owner.failures = 0;
+  owner.paused = false;
+  pollProjectJob(owner.jobId, owner.options, owner);
 });
 
 el.projectSourceAction?.addEventListener('click', () => {

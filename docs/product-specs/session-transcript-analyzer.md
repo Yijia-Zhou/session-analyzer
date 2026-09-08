@@ -69,6 +69,8 @@ An initial indexing failure remains visible when the browser first opens, with i
 
 Continuously changing DeepSeek artifacts have a bounded stable-read retry path and an actionable temporary failure. External cancellation and accepted-snapshot consistency remain intact; the analyzer never repairs or modifies the source to obtain a readable result. / 持续变化的 DeepSeek 工件采用有界稳定读取重试，并提供可操作的临时失败。外部取消与 accepted-snapshot 一致性保持不变；分析器绝不通过修复或修改来源取得可读结果。
 
+While opening a project, temporary failures to query indexing status are retried with bounded backoff. If automatic recovery stops, the browser explains that status could not be checked and offers Continue checking status for the same job; it does not claim indexing failed or create a replacement job. Cancelled or abandoned observations cannot reopen the project through a late response. / 打开项目时，查询索引状态的临时失败采用有界退避重试；自动恢复停止后，浏览器说明无法检查状态，并提供针对原任务的“继续检查状态”入口，不宣称索引失败，也不创建替代任务。已取消或放弃的观察不能通过迟到响应重新打开项目。
+
 ## Non-goals / 非目标
 
 - Cloud sync, shared collaboration, or hosted dashboards / 云同步、共享协作或托管仪表板

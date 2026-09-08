@@ -13544,3 +13544,204 @@ test('browser onboarding retains startup failure through discovery errors and in
   assert.equal(await page.locator('#projectFailure').isHidden(), true);
   assert.equal(await page.locator('.sessionItem.active').count(), 1);
 });
+
+async function openPollingRecoveryChooser(t, respond) {
+  const counts = { posts: 0, gets: 0, deletes: 0, jobIds: [] };
+  const app = await openSourceSwitchChooser(t, {
+    beforeGoto: async (page) => {
+      await page.route('**/api/project', async (route) => {
+        counts.posts += 1;
+        await route.continue();
+      });
+      await page.route('**/api/project/status*', async (route) => {
+        const jobId = new URL(route.request().url()).searchParams.get('jobId');
+        if (route.request().method() === 'DELETE') counts.deletes += 1;
+        else { counts.gets += 1; counts.jobIds.push(jobId); }
+        await respond(route, counts, jobId);
+      });
+    },
+  });
+  await waitForProjectRoot(app.page, repoRoot);
+  await app.page.locator('.projectItem[data-project-root]').first().click();
+  return { ...app, counts };
+}
+
+for (const firstFailure of [false, true]) {
+  test(`browser polling recovery resumes original job after ${firstFailure ? 'initial' : 'scheduled'} transport failure`, async (t) => {
+    const { page, counts } = await openPollingRecoveryChooser(t, async (route, counts, jobId) => {
+      if (!firstFailure && counts.gets === 1) {
+        await route.fulfill({ json: { job: { id: jobId, status: 'running', repoRoot } } });
+      } else if (counts.gets === (firstFailure ? 1 : 2)) await route.abort('failed');
+      else await route.continue();
+    });
+    await page.waitForSelector('.sessionItem.active');
+    assert.equal(counts.posts, 1);
+    assert.equal(new Set(counts.jobIds).size, 1);
+    assert.ok(counts.gets >= (firstFailure ? 2 : 3));
+    assert.equal(await page.locator('#projectPollRecovery').isHidden(), true);
+  });
+}
+
+test('browser polling recovery exhausts budget and manually continues original job', async (t) => {
+  let recover = false;
+  const { page, counts } = await openPollingRecoveryChooser(t, async (route) => {
+    if (recover) await route.continue();
+    else await route.fulfill({ status: 503, json: { error: '<b>temporary status failure</b>' } });
+  });
+  await page.waitForSelector('[data-project-continue]');
+  assert.equal(counts.gets, 4);
+  assert.equal(await page.locator('#projectPollRecovery b').count(), 0);
+  assert.match(await page.locator('#projectPollRecovery').textContent(), /task may still be running/);
+  await page.waitForTimeout(600);
+  assert.equal(counts.gets, 4);
+  recover = true;
+  await page.locator('[data-project-continue]').click();
+  await page.waitForSelector('.sessionItem.active');
+  assert.equal(counts.posts, 1);
+  assert.equal(new Set(counts.jobIds).size, 1);
+});
+
+for (const invalid of ['404', '404-null', 'malformed', 'unknown', 'wrong-job']) {
+  test(`browser polling recovery pauses ${invalid} status and permits cancellation`, async (t) => {
+    const { page, counts } = await openPollingRecoveryChooser(t, async (route, counts, jobId) => {
+      if (invalid === '404-null') {
+        await route.fulfill({ status: 404, body: 'null', contentType: 'application/json' });
+      } else if (route.request().method() === 'DELETE' || invalid === '404') {
+        await route.fulfill({ status: 404, json: { error: 'Job unavailable' } });
+      } else if (invalid === 'malformed') await route.fulfill({ body: 'not json', contentType: 'application/json' });
+      else await route.fulfill({ json: { job: { id: invalid === 'wrong-job' ? 'other' : jobId, status: invalid === 'unknown' ? 'surprise' : 'running' } } });
+    });
+    await page.waitForSelector('[data-project-continue]');
+    await page.waitForTimeout(600);
+    assert.equal(counts.gets, 1);
+    await page.locator('#projectCancelBtn').click();
+    await page.waitForFunction(() => document.querySelector('#projectCancelBtn').hidden);
+    assert.equal(await page.locator('#projectPollRecovery').isHidden(), true);
+    assert.equal(counts.deletes, 1);
+  });
+}
+
+test('browser polling recovery observes original job after cancellation transport failure', async (t) => {
+  const { page, counts } = await openPollingRecoveryChooser(t, async (route, counts, jobId) => {
+    if (route.request().method() === 'DELETE') await route.abort('failed');
+    else if (!counts.deletes) await route.fulfill({ json: { job: { id: jobId, status: 'running', repoRoot } } });
+    else await route.continue();
+  });
+  await page.locator('#projectCancelBtn').click();
+  await page.waitForSelector('.sessionItem.active');
+  assert.equal(counts.posts, 1);
+  assert.equal(counts.deletes, 1);
+  assert.equal(new Set(counts.jobIds).size, 1);
+});
+
+test('browser polling recovery ignores a delayed success after cancellation', async (t) => {
+  let release;
+  let pending;
+  const delayed = new Promise((resolve) => { release = resolve; });
+  const observed = new Promise((resolve) => { pending = resolve; });
+  const { page, counts } = await openPollingRecoveryChooser(t, async (route, counts, jobId) => {
+    if (route.request().method() === 'DELETE') {
+      await route.fulfill({ json: { job: { id: jobId, status: 'cancelled', repoRoot } } });
+    } else {
+      const response = await route.fetch();
+      pending();
+      await delayed;
+      await route.fulfill({ response });
+    }
+  });
+  await observed;
+  await page.locator('#projectCancelBtn').click();
+  await page.waitForFunction(() => document.querySelector('#projectCancelBtn').hidden);
+  release();
+  await page.waitForTimeout(650);
+  assert.equal(await page.locator('body').getAttribute('data-project-mode'), 'selecting');
+  assert.equal(await page.locator('.sessionItem.active').count(), 0);
+  assert.equal(counts.posts, 1);
+});
+
+test('browser polling recovery resumes startup job after initial query failure without POST', async (t) => {
+  const index = await buildFixtureIndex();
+  let appState;
+  let gets = 0;
+  let posts = 0;
+  const { page } = await openApp(t, index, {
+    locale: 'en', skipProjectReindex: true,
+    beforeGoto: async (page) => {
+      await page.route('**/api/state*', async (route) => {
+        const response = await route.fetch();
+        appState = await response.json();
+        await route.fulfill({ json: { ...appState, projectSelected: false, job: { id: 'startup-job', status: 'running', repoRoot } } });
+      });
+      await page.route('**/api/project', async (route) => { posts += 1; await route.continue(); });
+      await page.route('**/api/project/status*', async (route) => {
+        gets += 1;
+        assert.equal(new URL(route.request().url()).searchParams.get('jobId'), 'startup-job');
+        if (gets === 1) await route.abort('failed');
+        else await route.fulfill({ json: { job: { id: 'startup-job', status: 'succeeded', repoRoot }, state: appState } });
+      });
+    },
+  });
+  assert.equal(gets, 2);
+  assert.equal(posts, 0);
+  assert.equal(await page.locator('#projectPollRecovery').isHidden(), true);
+});
+
+test('browser polling recovery ignores delayed fallback state after cancellation', async (t) => {
+  let release;
+  let pending;
+  const delayed = new Promise((resolve) => { release = resolve; });
+  const observed = new Promise((resolve) => { pending = resolve; });
+  const { page, counts } = await openPollingRecoveryChooser(t, async (route, counts, jobId) => {
+    if (route.request().method() === 'DELETE') {
+      await route.fulfill({ json: { job: { id: jobId, status: 'cancelled', repoRoot } } });
+    } else {
+      const response = await route.fetch();
+      const data = await response.json();
+      delete data.state;
+      await route.fulfill({ json: data });
+    }
+  });
+  // The initial poll may already have fetched state; re-enter with interception installed.
+  await page.waitForSelector('.sessionItem.active');
+  await page.locator('#projectSwitchControl').click();
+  await waitForProjectRoot(page, repoRoot);
+  await page.route('**/api/state*', async (route) => {
+    const response = await route.fetch();
+    pending();
+    await delayed;
+    await route.fulfill({ response });
+  });
+  await page.locator('.projectItem[data-project-root]').first().click();
+  await observed;
+  await page.locator('#projectCancelBtn').click();
+  await page.waitForFunction(() => document.querySelector('#projectCancelBtn').hidden);
+  release();
+  await page.waitForTimeout(650);
+  assert.equal(await page.locator('body').getAttribute('data-project-mode'), 'selecting');
+  assert.equal(counts.posts, 2);
+});
+
+test('browser polling recovery retries non-JSON temporary HTTP response', async (t) => {
+  const { page, counts } = await openPollingRecoveryChooser(t, async (route, counts) => {
+    if (counts.gets === 1) await route.fulfill({ status: 503, body: '<html>Temporarily unavailable</html>', contentType: 'text/html' });
+    else await route.continue();
+  });
+  await page.waitForSelector('.sessionItem.active');
+  assert.equal(counts.posts, 1);
+  assert.ok(counts.gets >= 2);
+  assert.equal(await page.locator('#projectPollRecovery').isHidden(), true);
+});
+
+test('browser polling recovery resets consecutive error budget after valid running status', async (t) => {
+  const { page, counts } = await openPollingRecoveryChooser(t, async (route, counts, jobId) => {
+    if (counts.gets === 4) {
+      await route.fulfill({ json: { job: { id: jobId, status: 'running', repoRoot } } });
+    } else if (counts.gets < 8) await route.abort('failed');
+    else await route.continue();
+  });
+  await page.waitForSelector('.sessionItem.active');
+  assert.equal(counts.posts, 1);
+  assert.equal(counts.gets, 8);
+  assert.equal(new Set(counts.jobIds).size, 1);
+  assert.equal(await page.locator('#projectPollRecovery').isHidden(), true);
+});
