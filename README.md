@@ -91,6 +91,20 @@ session-analyzer --repo /path/to/project
 
 The default host is `127.0.0.1`. `--host` is an advanced option; binding outside localhost can expose transcript content available to this process to other machines on the network.
 
+## Start for a user and verify readiness
+
+Identify the program version, Transcript Source, target repository, and source root first. `--repo` is the repository whose history the user wants to inspect; it need not be the Analyzer checkout. `--codex-home`, `--claude-home`, and `--dsh-home` identify transcript roots, not the target repository.
+
+The `npx session-analyzer` examples above run the npm release and do not guarantee this branch's features. To try this branch, install dependencies and build using the source-development requirements below, then run from that checkout:
+
+```sh
+node server.js --source deepseek-harness --repo /path/to/target-project --dsh-home /path/to/sessions
+```
+
+Record `git rev-parse HEAD` and `node --version` so an npm release is not mistaken for branch acceptance. The project chooser directly names Codex, Claude Code, and DeepSeek Harness; choosing a source takes effect immediately when there is no existing project or configuration draft.
+
+Wait for a terminal CLI indexing result or the completed browser view. An accessible HTTP root page only means the service started: indexing may still be running, failed, successful with zero sessions, or successful with skipped artifacts. Startup failure retains its cause and retry/configuration actions; source diagnostics explain missing paths, unreadable artifacts, or missing Zstd capability while valid sessions remain readable. Local automated acceptance can poll `/api/project/status`, then check the target repository, session count, and `sourceDiagnostics` in `/api/state`; these are checks of the current implementation, not a stable public API promise.
+
 ## How to Use It
 
 1. Start with the default Codex source, or select Claude Code or DeepSeek Harness on the CLI, then choose a target project in the browser or pass `--repo` when starting the server.
@@ -134,7 +148,7 @@ Before publishing a fork or issue reproduction, check that any attached transcri
 
 ## Requirements
 
-- Installed CLI: a supported Node.js LTS release, Node.js 22 or newer (Node.js 24 recommended), plus npm for installation. DeepSeek Harness `session.jsonl.zstd` artifacts use Node's built-in `node:zlib` Zstandard API; uncompressed `session.jsonl` remains readable where that API is unavailable
+- Installed CLI: a supported Node.js LTS release, Node.js 22 or newer (Node.js 24 recommended), plus npm for installation. DeepSeek Harness `session.jsonl.zstd` artifacts require Node's built-in `node:zlib` Zstandard API (available in 22.x from 22.15.0; actual capability is checked); uncompressed `session.jsonl` remains readable where that API is unavailable
 - Source development and release work: Node.js `^22.22.2 || ^24.15.0` and exactly npm `12.0.2`
 
 ### Large transcript histories and Node/V8 memory
@@ -241,9 +255,9 @@ Browser JavaScript source lives in `src/browser/`, and browser-and-Node shared l
 
 - Mixed-source indexing and source filters are not supported in v0.1.4.
 - Cache discontinuity is currently Codex-only and inferred from transcript token accounting; it is not explicit cache-expiry evidence.
-- DeepSeek Harness Phase 2A models human messages, finalized and partial assistant messages, reasoning, tool call/result pairs, lifecycle protocol, effective agent presets, child/parent lineage, subagent descriptors, header-seeded fork ownership, constructor-seed markers, and compaction lifecycle. Phase 2B adds explicit-ID Code Mode dispatch and conservative Protocol workflow provenance. Phase 2C adds Protocol LLM retry lifecycle, durable Main Goal state, non-human Goal continuation provenance, and whole-list Todo snapshots through the existing Plan update presentation. Phase 2D adds adapter-owned observed Permission state on the three independent configuration rows and exact-MessageId inbox Supplemental provenance without promoting queue bookkeeping or duplicating Raw ownership. Other known upstream DeepSeek event families remain inventoried as deferred.
+- DeepSeek Harness Phase 2A models human messages, finalized and partial assistant messages, reasoning, tool call/result pairs, lifecycle protocol, effective agent presets, child/parent lineage, subagent descriptors, header-seeded fork ownership, constructor-seed markers, and compaction lifecycle. Phase 2B adds explicit-ID Code Mode dispatch and conservative Protocol workflow provenance. Phase 2C adds Protocol LLM retry lifecycle, durable Main Goal state, non-human Goal continuation provenance, and whole-list Todo snapshots through the existing Plan update presentation. Phase 2D adds adapter-owned observed Permission state on the three independent configuration rows and exact-MessageId inbox Supplemental provenance without promoting queue bookkeeping or duplicating Raw ownership. Generic command run/done, boolean plan-mode, and interactive approval lifecycle are also adapter-owned Protocol projections. Approvals correlate only by exact request ID, with optional tool relations only for uniquely resolved callId; they do not infer approval-to-retry causality or change Permission state. Other known upstream DeepSeek event families remain inventoried as deferred.
 - Claude Code external `tool-results/*` payloads are not loaded or searched. Their source records and references remain available through protocol/raw fallback.
-- Future or unknown Codex, Claude Code, and DeepSeek Harness protocol events remain inspectable through protocol/raw fallback views, but not every event family has a polished structured renderer. DeepSeek Code Mode uses durable source IDs and does not parse outer programs for declared requests; workflow support is source-backed but was observed in 0/6 copied real Sessions.
+- Unknown Codex, Claude Code, and supported-version DeepSeek protocol events remain inspectable through protocol/raw fallback views, but not every event family has a polished structured renderer. Unsupported DeepSeek format versions are isolated with source diagnostics rather than guessed. DeepSeek Code Mode uses durable source IDs and does not parse outer programs for declared requests; workflow support is source-backed but was observed in 0/6 copied real Sessions.
 - Transcript fixture coverage is targeted rather than exhaustive; newly observed historical shapes may need additional fixtures and display adjustments.
 - Review finding rendering has synthetic coverage and real non-empty `review_output.findings[]` examples have been observed locally; sanitized fixture strengthening is still useful for future regressions.
 

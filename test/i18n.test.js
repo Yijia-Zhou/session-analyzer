@@ -60,6 +60,7 @@ const allowedZhPhrases = [
   'JS REPL',
 ];
 const allowedZhTermsByPath = new Map([
+  ['ui.sourceZstdUnavailable', new Set(['node', 'zstd'])],
   ['foldingCondition.codeModeScriptOperation.1', new Set(['code', 'mode'])],
   ['kind.code_mode_operation', new Set(['code', 'mode'])],
   ['logicalLabel.Code Mode operation', new Set(['code', 'mode'])],

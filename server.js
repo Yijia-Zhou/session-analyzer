@@ -2,6 +2,7 @@
 'use strict';
 
 const http = require('node:http');
+const { createSourceDiagnostics } = require('./src/source-diagnostics');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
@@ -50,6 +51,7 @@ const MIME = {
 
 const PUBLIC_RUNTIME_ERROR_CODES = new Set([
   'MATERIALIZATION_BUSY',
+  'DEEPSEEK_SOURCE_BUSY',
   'MATERIALIZATION_CONTRACT_VIOLATION',
 ]);
 
@@ -322,6 +324,7 @@ function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
     indexRevision: state.indexRevision,
     buildMs: state.buildMs,
     totals: state.index.totals,
+    sourceDiagnostics: state.index.sourceDiagnostics || createSourceDiagnostics().summary,
     eventKinds: state.index.eventKinds
       ? {
         main: state.index.eventKinds.main.map((item) => ({ ...item, label: i18n.eventKindLabel(item.value, resolvedLocale) })),
@@ -395,6 +398,7 @@ function projectJobPayload(job) {
     completedAt: job.completedAt,
     buildMs: job.buildMs,
     error: job.error,
+    errorCode: job.errorCode || '',
     progress: job.progress,
   };
 }
@@ -575,7 +579,9 @@ async function discoverProjectsForSource(state, mode) {
   const revision = state.sourceRevision;
   const adapter = state.adapter;
   const sourceConfigs = sourceConfigsFromState(state);
+  const diagnostics = createSourceDiagnostics();
   const context = {
+    onDiagnostic: diagnostics.add,
     sourceKind: state.sourceKind,
     sourceHome: activeSourceHome(state, state.sourceKind, sourceConfigs),
     sourceConfigs,
@@ -591,6 +597,7 @@ async function discoverProjectsForSource(state, mode) {
         projects,
         summary: true,
         cached: Boolean(state.projectCache),
+        sourceDiagnostics: state.projectCache?.sourceDiagnostics || diagnostics.summary,
       },
     };
   }
@@ -600,12 +607,14 @@ async function discoverProjectsForSource(state, mode) {
   state.projectCache = {
     generatedAt: new Date().toISOString(),
     projects: projectCachePayload(projects),
+    sourceDiagnostics: diagnostics.summary,
   };
   return {
     stale: false,
     payload: {
       ...sourceConfigurationPayload(state),
       projects,
+      sourceDiagnostics: diagnostics.summary,
     },
   };
 }
@@ -698,6 +707,7 @@ function resolveSourceMutation(state, body) {
     const activeIdentityChanged = nextSourceKind !== state.sourceKind
       || normalizeFsPath(nextActiveHome) !== normalizeFsPath(activeSourceHome(state, state.sourceKind, currentSourceConfigs));
     if (activeIdentityChanged) {
+      state.activeSourceRevision = (state.activeSourceRevision || 0) + 1;
       cancelProjectJob(state.activeProjectJob);
       clearIndexRevision(state);
       state.projectCache = null;
@@ -764,6 +774,9 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   const jobSourceConfigs = sourceConfigsFromState(state);
   const jobSourceKind = state.sourceKind;
   const jobSourceHome = activeSourceHome(state, jobSourceKind, jobSourceConfigs);
+  job.sourceKind = jobSourceKind;
+  job.sourceHome = jobSourceHome;
+  job.activeSourceRevision = state.activeSourceRevision || 0;
   const buildIndex = state.buildIndexOverride || ((context) => state.adapter.buildIndex(context));
   job.promise = Promise.resolve().then(() => buildIndex({
     repoRoot,
@@ -805,6 +818,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       return;
     }
     job.status = 'succeeded';
+    job.resultSummary = { totals: index.totals, sourceDiagnostics: index.sourceDiagnostics || createSourceDiagnostics().summary };
     job.completedAt = new Date().toISOString();
     job.buildMs = Date.now() - startedAtMs;
     const lease = installIndexRevision(state, index);
@@ -822,11 +836,22 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     }
     job.status = 'failed';
     job.error = error.message || 'Indexing failed';
+    job.errorCode = error.code || '';
     job.diagnostics?.finish('failed', {
       buildMs: job.buildMs,
       errorName: error.name || 'Error',
       errorCode: error.code || '',
     });
+  }).then(async () => {
+    // Observability cannot change a settled job or invalidate its committed index.
+    try {
+      await state.onProjectJobSettled?.({
+        ...projectJobPayload(job),
+        ...(job.status === 'succeeded' ? job.resultSummary : {}),
+      });
+    } catch {
+      // The consumer owns reporting failures in its optional callback.
+    }
   });
 
   return job;
@@ -877,7 +902,9 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     sourceConfigs,
     adapter,
     sourceRevision: 0,
+    activeSourceRevision: 0,
     buildIndexOverride: options.buildIndex || null,
+    onProjectJobSettled: options.onProjectJobSettled || null,
     onIndexValidationChunk: options.onIndexValidationChunk || null,
     materializeSession: options.materializeSession || materializeSessionForIndex,
     sessionPrewarmPolicy: options.sessionPrewarm === false
@@ -973,6 +1000,16 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
             payload.currentState = statePayload(state, stateLocale);
           }
           sendJson(res, 202, payload);
+          return;
+        }
+        if (!state.index && state.activeProjectJob?.status === 'failed'
+            && state.activeProjectJob.activeSourceRevision === state.activeSourceRevision
+            && state.activeProjectJob.sourceKind === state.sourceKind
+            && normalizeFsPath(state.activeProjectJob.sourceHome) === normalizeFsPath(activeSourceHome(state))) {
+          sendJson(res, 200, {
+            ...sourceConfigurationPayload(state), projectSelected: false,
+            job: projectJobPayload(state.activeProjectJob),
+          });
           return;
         }
         if (!requireIndex(state, res)) return;
@@ -1238,7 +1275,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       sendError(
         res,
         statusCode,
-        statusCode >= 500 ? 'Internal server error' : error.message,
+        statusCode >= 500 && error.code !== 'DEEPSEEK_SOURCE_BUSY' ? 'Internal server error' : error.message,
         details,
         statusCode < 500 || PUBLIC_RUNTIME_ERROR_CODES.has(error.code)
           ? error.code
@@ -1274,6 +1311,19 @@ async function main() {
     dshHome: opts.dshHome,
     repo: opts.repo,
     logDir: opts.logDir,
+    onProjectJobSettled(job) {
+      if (job.status === 'succeeded') {
+        const count = job.totals?.sessionCount || 0;
+        const warnings = job.sourceDiagnostics?.totalCount || 0;
+        console.log('Repo: indexing succeeded for ' + job.repoRoot + ' (' + count + ' sessions, ' + warnings + ' source diagnostics)');
+        if (!count) console.log(warnings ? 'No readable matching sessions; inspect source diagnostics in the browser.' : 'No matching sessions found; check the selected source and target repository.');
+        for (const diagnostic of job.sourceDiagnostics?.samples || []) {
+          console.warn(diagnostic.code + ': ' + diagnostic.path + ': ' + diagnostic.message);
+        }
+      } else {
+        console.error('Repo: indexing ' + job.status + ' for ' + job.repoRoot + ': ' + (job.errorCode ? job.errorCode + ': ' : '') + job.error);
+      }
+    },
   });
   const startupSourceConfigs = createInitialSourceConfigs(null, opts, opts.source);
   const startupAdapter = requireSourceAdapter(opts.source);

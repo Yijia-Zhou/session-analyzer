@@ -4,6 +4,7 @@ const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const { performance } = require('node:perf_hooks');
 const { zstdDecompressSync } = require('node:zlib');
 const { isPathInsideOrSame } = require('./shared/fs-path');
 
@@ -14,6 +15,8 @@ const ZSTD_MAGIC = 0xFD2FB528;
 const FIRST_FRAME_READ_CHUNK = 64 * 1024;
 const FIRST_LINE_READ_CHUNK = 64 * 1024;
 const MAX_FIRST_RECORD_BYTES = 4 * 1024 * 1024;
+const STABLE_READ_MAX_ATTEMPTS = 4;
+const STABLE_READ_BUDGET_MS = 2000;
 
 function abortError(signal) {
   if (signal?.reason instanceof Error) return signal.reason;
@@ -50,7 +53,7 @@ function requireBuiltInZstd(pathForError = '') {
   throw storageError(
     `DeepSeek Harness Zstandard artifacts require Node's built-in node:zlib zstd support, `
     + `which is unavailable on this Node ${process.version} runtime${pathForError ? ` (while reading ${pathForError})` : ''}. `
-    + 'Uncompressed session.jsonl artifacts remain readable.',
+    + 'Upgrade to Node 22.15.0 or newer with built-in Zstd support. Uncompressed session.jsonl artifacts remain readable.',
     'DEEPSEEK_ZSTD_UNAVAILABLE',
   );
 }
@@ -152,15 +155,32 @@ function sameFileIdentity(left, right) {
 }
 
 async function readStableFile(filePath, signal) {
-  for (;;) {
-    throwIfAborted(signal);
-    const before = await fsp.stat(filePath, { bigint: true });
-    const buffer = await fsp.readFile(filePath, { signal });
-    throwIfAborted(signal);
-    const after = await fsp.stat(filePath, { bigint: true });
-    if (sameFileIdentity(fileIdentity(before), fileIdentity(after))) {
-      return { buffer, identity: fileIdentity(after) };
+  const startedAt = performance.now();
+  try {
+    for (let attempt = 0; attempt < STABLE_READ_MAX_ATTEMPTS; attempt += 1) {
+      throwIfAborted(signal);
+      // The budget limits retries, not the duration of an individual read.
+      if (attempt > 0 && performance.now() - startedAt >= STABLE_READ_BUDGET_MS) break;
+      const before = await fsp.stat(filePath, { bigint: true });
+      throwIfAborted(signal);
+      const buffer = await fsp.readFile(filePath, { signal });
+      throwIfAborted(signal);
+      const after = await fsp.stat(filePath, { bigint: true });
+      throwIfAborted(signal);
+      if (sameFileIdentity(fileIdentity(before), fileIdentity(after))) {
+        return { buffer, identity: fileIdentity(after) };
+      }
     }
+    const error = storageError(
+      'DeepSeek session artifact changed repeatedly while reading. Retry when the session has paused writing.',
+      'DEEPSEEK_SOURCE_BUSY',
+    );
+    error.statusCode = 503;
+    error.retryAfterSeconds = 1;
+    throw error;
+  } catch (error) {
+    throwIfAborted(signal);
+    throw error;
   }
 }
 

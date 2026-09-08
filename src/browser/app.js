@@ -145,6 +145,9 @@ const state = {
   supportedSources: [],
   projectDiscoveryLoading: false,
   pendingSourceAction: null,
+  pendingSourceTarget: '',
+  sourceDiagnostics: null,
+  failedProjectJob: null,
   sourceSwitchBusy: false,
   homeEditorDirty: false,
   sessions: [],
@@ -162,6 +165,7 @@ const state = {
   projectLoadingRoot: '',
   projectJobId: '',
   projectPollTimer: 0,
+  projectObservation: null,
   projectRefreshJobId: '',
   projectRefreshPollTimer: 0,
   projectRefreshRequestId: 0,
@@ -322,6 +326,7 @@ const el = {
   projectStatus: document.getElementById('projectStatus'),
   projectProgress: document.getElementById('projectProgress'),
   projectCancelBtn: document.getElementById('projectCancelBtn'),
+  projectPollRecovery: document.getElementById('projectPollRecovery'),
   projectList: document.getElementById('projectList'),
   projectChooserTitle: document.querySelector('.projectChooserHeader h2'),
   projectChooserDescription: document.querySelector('.projectChooserHeader p'),
@@ -329,6 +334,9 @@ const el = {
   projectSourceKind: document.getElementById('projectSourceKind'),
   projectSourceHome: document.getElementById('projectSourceHome'),
   projectSourceAction: document.getElementById('projectSourceAction'),
+  projectSourceChoices: document.getElementById('projectSourceChoices'),
+  sourceDiagnostics: document.getElementById('sourceDiagnostics'),
+  projectFailure: document.getElementById('projectFailure'),
   projectSourceCancel: document.getElementById('projectSourceCancel'),
   projectSourceConfirm: document.getElementById('projectSourceConfirm'),
   projectHomeEditor: document.getElementById('projectHomeEditor'),
@@ -590,6 +598,7 @@ function applyStaticLocale() {
   setText(document.querySelector('.projectChooserHeader h2'), t('selectProject'));
   setText(document.querySelector('.projectChooserHeader p'), t('chooseProject'));
   setText(el.projectCancelBtn, t('cancelIndexing'));
+  renderProjectPollRecovery();
   setText(document.querySelector('#projectHomeEditor summary'), t('customHomeDirectories'));
   setText(el.projectHomeApplyBtn, t('applyHomeDirectories'));
   setText(el.projectSourceCancel, t('cancelSwitch'));
@@ -679,12 +688,18 @@ function api(path, options = {}) {
     init.headers = { 'content-type': 'application/json', ...(options.headers || {}) };
   }
   const request = (allowBusyRetry) => fetch(requestPath, init).then(async (res) => {
-    const body = await res.json();
+    let body;
+    try {
+      body = await res.json();
+    } catch (error) {
+      if (!res.ok) error.status = res.status;
+      throw error;
+    }
     if (!res.ok) {
       if (allowBusyRetry
           && method === 'GET'
           && res.status === 503
-          && body.code === 'MATERIALIZATION_BUSY') {
+          && body?.code === 'MATERIALIZATION_BUSY') {
         const retryAfterHeader = res.headers.get('retry-after');
         const retryAfter = retryAfterHeader && retryAfterHeader.trim()
           ? Number(retryAfterHeader)
@@ -695,10 +710,10 @@ function api(path, options = {}) {
         await abortableDelay(delayMs, init.signal);
         return request(false);
       }
-      const error = new Error(body.error || `HTTP ${res.status}`);
+      const error = new Error(body?.error || `HTTP ${res.status}`);
       error.status = res.status;
-      error.code = body.code;
-      error.details = body.details;
+      error.code = body?.code;
+      error.details = body?.details;
       throw error;
     }
     return body;
@@ -770,6 +785,8 @@ function sourceConfigBusy() {
 }
 
 function renderSourceSwitch() {
+  renderSourceDiagnostics();
+  renderProjectFailure();
   if (!el.projectSourceSwitch) return;
   const sourceKinds = supportedSourceKindsForUi();
   const hasConfig = Boolean(state.sourceHome || sourceKinds.length);
@@ -778,12 +795,11 @@ function renderSourceSwitch() {
   const configBusy = sourceConfigBusy();
   el.projectSourceSwitch.dataset.source = state.sourceKind;
   el.projectSourceSwitch.dataset.pending = state.pendingSourceAction || '';
-  const other = otherSourceKind();
-  const otherLabel = sourceKindLabel(other);
+  const targetLabel = sourceKindLabel(state.pendingSourceTarget);
   const emptyState = !state.projects.length && !state.projectLoadingRoot && !state.projectDiscoveryLoading;
   if (el.projectSourceKind) {
     el.projectSourceKind.textContent = emptyState
-      ? t('noProjectsHint', { source: otherLabel })
+      ? t('chooseTranscriptSource')
       : `${t('transcriptSource')}: ${sourceKindLabel(state.sourceKind)}`;
     const summary = el.projectSourceKind.parentElement;
     if (summary) {
@@ -792,24 +808,32 @@ function renderSourceSwitch() {
     }
   }
   if (el.projectSourceHome) {
-    el.projectSourceHome.textContent = emptyState ? '' : state.sourceHome;
+    el.projectSourceHome.textContent = state.sourceHome;
+  }
+  if (el.projectSourceChoices) {
+    el.projectSourceChoices.setAttribute('aria-label', t('transcriptSource'));
+    el.projectSourceChoices.innerHTML = sourceKinds.map((kind) => `<button type="button" class="ghostBtn" data-source-choice="${escapeHtml(kind)}" aria-pressed="${kind === state.sourceKind}"${configBusy ? ' disabled' : ''}>${escapeHtml(sourceKindLabel(kind))}</button>`).join('');
   }
   if (el.projectSourceAction) {
-    el.projectSourceAction.hidden = false;
+    el.projectSourceAction.hidden = !state.pendingSourceAction;
     el.projectSourceAction.textContent = state.pendingSourceAction === 'switch'
-      ? t('confirmSwitchToSource', { source: otherLabel })
-      : state.pendingSourceAction === 'home'
-        ? t('confirmHomeChange')
-        : t('switchToSource', { source: otherLabel });
+      ? t('confirmSwitchToSource', { source: targetLabel })
+      : t('confirmHomeChange');
     el.projectSourceAction.disabled = configBusy;
   }
-  if (el.projectSourceCancel) el.projectSourceCancel.hidden = !state.pendingSourceAction;
+  if (el.projectSourceCancel) {
+    el.projectSourceCancel.hidden = !state.pendingSourceAction;
+    el.projectSourceCancel.disabled = configBusy;
+  }
   if (el.projectSourceConfirm) {
-    const confirmText = state.pendingSourceAction === 'switch' && state.repoRoot
-      ? t('switchClosesProject', { source: otherLabel, root: state.repoRoot })
+    let confirmText = state.pendingSourceAction === 'switch' && state.repoRoot
+      ? t('switchClosesProject', { source: targetLabel, root: state.repoRoot })
       : state.pendingSourceAction === 'home' && state.repoRoot
         ? t('homeChangeClosesProject', { root: state.repoRoot })
         : '';
+    if (state.pendingSourceAction === 'switch' && state.homeEditorDirty) {
+      confirmText += `${confirmText ? ' ' : ''}${t('switchAppliesDraft', { source: targetLabel })}`;
+    }
     el.projectSourceConfirm.textContent = confirmText;
     el.projectSourceConfirm.hidden = !confirmText;
   }
@@ -834,6 +858,55 @@ function renderHomeFields({ configBusy = false, preserveHomeInputs = false, sour
 
 function clearSourceError() {
   if (el.projectSourceError) el.projectSourceError.textContent = '';
+}
+
+function renderSourceDiagnostics() {
+  if (!el.sourceDiagnostics) return;
+  const diagnostics = state.sourceDiagnostics;
+  el.sourceDiagnostics.hidden = !diagnostics?.totalCount;
+  if (el.sourceDiagnostics.hidden) {
+    el.sourceDiagnostics.innerHTML = '';
+    return;
+  }
+  const explanations = {
+    SOURCE_ROOT_NOT_FOUND: 'sourceRootNotFound',
+    SOURCE_ROOT_NOT_DIRECTORY: 'sourceRootNotDirectory',
+    SOURCE_ROOT_UNREADABLE: 'sourceRootUnreadable',
+    DEEPSEEK_STORAGE_INVALID: 'sourceStorageInvalid',
+    DEEPSEEK_FORMAT_VERSION_UNSUPPORTED: 'sourceFormatUnsupported',
+    DEEPSEEK_ZSTD_UNAVAILABLE: 'sourceZstdUnavailable',
+    DEEPSEEK_SOURCE_BUSY: 'sourceBusy',
+  };
+  const counts = Object.entries(diagnostics.counts || {}).map(([code, count]) => (
+    `<li>${escapeHtml(t(explanations[code] || 'sourceUnreadable'))} (${escapeHtml(count)})</li>`
+  )).join('');
+  const samples = (diagnostics.samples || []).slice(0, 20).map((sample) => (
+    `<li><code>${escapeHtml(sample.path || '')}</code><p>${escapeHtml(sample.message || sample.code || '')}</p></li>`
+  )).join('');
+  el.sourceDiagnostics.innerHTML = `<strong>${escapeHtml(t('sourceDiagnosticsTitle', { count: diagnostics.totalCount }))}</strong><p>${escapeHtml(t('sourceDiagnosticsPartial'))}</p><ul>${counts}</ul><details><summary>${escapeHtml(t('sourceDiagnosticsDetails'))}</summary><ul>${samples}</ul>${diagnostics.truncatedCount ? `<p>${escapeHtml(t('sourceDiagnosticsTruncated', { count: diagnostics.truncatedCount }))}</p>` : ''}</details>`;
+}
+
+function renderProjectFailure() {
+  if (!el.projectFailure) return;
+  const job = state.failedProjectJob;
+  el.projectFailure.hidden = !job;
+  if (!job) {
+    el.projectFailure.innerHTML = '';
+    return;
+  }
+  el.projectFailure.innerHTML = `<strong>${escapeHtml(t('projectStartupFailed'))}</strong><p>${escapeHtml(job.repoRoot || '')}</p><p>${escapeHtml(job.error || t('indexingFailed'))}</p><button type="button" class="ghostBtn" data-project-retry${sourceConfigBusy() ? ' disabled' : ''}>${escapeHtml(t('retryProject'))}</button> <button type="button" class="ghostBtn" data-project-config${sourceConfigBusy() ? ' disabled' : ''}>${escapeHtml(t('changeSourceConfiguration'))}</button>`;
+}
+
+async function showFailedProjectJob(job) {
+  resetProjectObservation();
+  clearProjectPollTimer();
+  state.failedProjectJob = job;
+  state.projectJobId = '';
+  state.projectLoadingRoot = '';
+  setProjectMode(true);
+  renderProjectFailure();
+  await showProjectChooser({ autoRestore: false });
+  renderProjectFailure();
 }
 
 function clearSubmittedHomeDraft(homes) {
@@ -894,6 +967,15 @@ function applyAuthoritativeSourceMutationState(payload) {
   return result;
 }
 
+function clearRetiredSourceContext(previousKind, previousHome, payload) {
+  if (previousKind === state.sourceKind
+      && normalizeHomePathForCompare(previousHome) === normalizeHomePathForCompare(state.sourceHome)) return;
+  state.sourceDiagnostics = payload.sourceDiagnostics || null;
+  state.failedProjectJob = null;
+  renderSourceDiagnostics();
+  renderProjectFailure();
+}
+
 async function reconcileUncertainSourceMutation(source, homes) {
   let authoritative;
   try {
@@ -902,8 +984,12 @@ async function reconcileUncertainSourceMutation(source, homes) {
     if (error.status !== 409 || !error.details) throw error;
     authoritative = error.details;
   }
+  const previousKind = state.sourceKind;
+  const previousHome = state.sourceHome;
   const result = applyAuthoritativeSourceMutationState(authoritative);
-  return sourceConfigMatchesMutation(result, source, homes) ? result : null;
+  clearRetiredSourceContext(previousKind, previousHome, result);
+  if (!sourceConfigMatchesMutation(result, source, homes)) return null;
+  return result;
 }
 
 async function commitSourceConfig(source, homes = null) {
@@ -919,7 +1005,10 @@ async function commitSourceConfig(source, homes = null) {
       );
     }
     const result = await api('/api/source', { method: 'POST', body });
+    const previousKind = state.sourceKind;
+    const previousHome = state.sourceHome;
     applySourceConfig(result);
+    clearRetiredSourceContext(previousKind, previousHome, result);
     return result;
   } catch (error) {
     if (typeof error.status !== 'number') {
@@ -1006,7 +1095,8 @@ async function refreshProjectList() {
 
 async function performPendingSourceAction() {
   if (state.pendingSourceAction === 'switch') {
-    const target = otherSourceKind();
+    const target = state.pendingSourceTarget;
+    if (!target || target === state.sourceKind || sourceConfigBusy()) return;
     const homes = state.homeEditorDirty ? readHomeDraft() : null;
     if (homes && !validateHomePaths(homes)) return;
     invalidateProjectDiscovery();
@@ -1056,13 +1146,16 @@ async function performHomeChange(homes) {
   await refreshProjectList();
 }
 
-function armSourceSwitch() {
-  if (state.pendingSourceAction) {
+function armSourceSwitch(target) {
+  if (sourceConfigBusy() || !supportedSourceKindsForUi().includes(target)) return;
+  if (target === state.sourceKind) return cancelPendingSourceAction();
+  state.pendingSourceAction = 'switch';
+  state.pendingSourceTarget = target;
+  clearSourceError();
+  if (!state.repoRoot && !state.homeEditorDirty) {
     performPendingSourceAction().catch(showError);
     return;
   }
-  state.pendingSourceAction = 'switch';
-  clearSourceError();
   renderSourceSwitch();
 }
 
@@ -1082,6 +1175,7 @@ function armHomeChange() {
 
 function cancelPendingSourceAction() {
   state.pendingSourceAction = null;
+  state.pendingSourceTarget = '';
   clearSourceError();
   renderSourceSwitch();
 }
@@ -3075,6 +3169,9 @@ function writeLastSelectedRepo(sourceKind, repoRoot) {
 
 function applySourceConfig(payload) {
   if (!payload || typeof payload !== 'object') return;
+  if (Object.hasOwn(payload, 'sourceDiagnostics')) state.sourceDiagnostics = payload.sourceDiagnostics;
+  renderSourceDiagnostics();
+  renderProjectFailure();
   if (Array.isArray(payload.sourceOptions)) state.sourceOptions = payload.sourceOptions;
   if (Array.isArray(payload.supportedSources)) state.supportedSources = payload.supportedSources;
   if (payload.sourceKind) state.sourceKind = payload.sourceKind;
@@ -3098,13 +3195,6 @@ function applySourceConfig(payload) {
   if (canonicalSourceConfigs !== undefined) state.sourceHome = sourceHomeFor(state.sourceKind);
   else if (typeof payload.sourceHome === 'string') state.sourceHome = payload.sourceHome;
   else state.sourceHome = sourceHomeFor(state.sourceKind) || state.sourceHome;
-}
-
-function otherSourceKind() {
-  const sourceKinds = supportedSourceKindsForUi();
-  if (sourceKinds.length < 2) return '';
-  const currentIndex = sourceKinds.indexOf(state.sourceKind);
-  return sourceKinds[(currentIndex + 1 + sourceKinds.length) % sourceKinds.length] || '';
 }
 
 function absoluteHomePathKind(value) {
@@ -4232,6 +4322,8 @@ function resetProjectViewState() {
 }
 
 function renderProjects() {
+  renderSourceDiagnostics();
+  renderProjectFailure();
   if (!el.projectList) return;
   const loadingRoot = state.projectLoadingRoot;
   const selectionLocked = Boolean(loadingRoot || state.sourceSwitchBusy);
@@ -4240,7 +4332,7 @@ function renderProjects() {
   if (!state.projects.length) {
     el.projectList.innerHTML = (loadingRoot || state.projectDiscoveryLoading)
       ? ''
-      : `<div class="notice warning"><p>${escapeHtml(t('noTranscriptProjects'))}</p></div>`;
+      : `<div class="notice warning"><p>${escapeHtml(t(state.sourceDiagnostics?.totalCount ? 'noReadableProjects' : 'noTranscriptProjects'))}</p></div>`;
     renderSourceSwitch();
     return;
   }
@@ -4312,6 +4404,7 @@ async function cancelProjectJob(jobId) {
 }
 
 async function showProjectChooser(options = {}) {
+  resetProjectObservation();
   state.projectReturning = false;
   state.pendingSourceAction = null;
   state.homeEditorDirty = false;
@@ -4335,6 +4428,7 @@ async function showProjectChooser(options = {}) {
 }
 
 async function exitProjectChooser() {
+  resetProjectObservation();
   state.projectChooserRequestId += 1;
   const jobId = state.projectJobId;
   state.projectReturning = true;
@@ -4400,6 +4494,8 @@ async function applyAppState(appState) {
 }
 
 async function finishProjectSelection(appState, options = {}) {
+  resetProjectObservation();
+  state.failedProjectJob = null;
   writeLastSelectedRepo(appState.sourceKind || state.sourceKind, appState.repoRoot);
   state.projectLoadingRoot = '';
   state.projectJobId = '';
@@ -4446,23 +4542,72 @@ async function changeLocale(locale) {
   }
 }
 
-async function handleProjectJobResponse(data, options = {}) {
-  const job = data.job || {};
-  if (job.id !== state.projectJobId) return;
+function resetProjectObservation() {
+  clearProjectPollTimer();
+  state.projectObservation = null;
+  renderProjectPollRecovery();
+}
+
+function projectObservationCurrent(owner) {
+  return owner && state.projectObservation === owner
+    && state.projectJobId === owner.jobId
+    && state.projectChooserRequestId === owner.requestId
+    && state.sourceKind === owner.sourceKind && state.sourceHome === owner.sourceHome;
+}
+
+function beginProjectObservation(jobId, options = {}) {
+  resetProjectObservation();
+  const owner = { jobId, options, requestId: state.projectChooserRequestId,
+    sourceKind: state.sourceKind, sourceHome: state.sourceHome,
+    failures: 0, pending: false, paused: false, error: '' };
+  state.projectObservation = owner;
+  return owner;
+}
+
+function renderProjectPollRecovery() {
+  if (!el.projectPollRecovery) return;
+  const owner = state.projectObservation;
+  el.projectPollRecovery.hidden = !owner?.error;
+  el.projectPollRecovery.innerHTML = owner?.error
+    ? `<p>${escapeHtml(t(owner.paused ? 'projectStatusCheckPaused' : 'projectStatusCheckRetrying'))}</p><p>${escapeHtml(owner.error)}</p>${owner.paused ? `<button type="button" class="ghostBtn" data-project-continue${owner.pending ? ' disabled' : ''}>${escapeHtml(t('continueProjectStatusCheck'))}</button>` : ''}`
+    : '';
+}
+
+function handleProjectJobError(owner, error) {
+  if (!projectObservationCurrent(owner)) return;
+  owner.error = error.message || String(error);
+  const retryable = error instanceof TypeError || error.status === 408 || error.status === 429
+    || (error.status >= 500 && error.status <= 599);
+  const delays = [500, 1000, 2000];
+  if (retryable && owner.failures < delays.length) {
+    scheduleProjectJobPoll(owner, delays[owner.failures++]);
+  } else {
+    owner.paused = true;
+  }
+  renderProjectPollRecovery();
+}
+
+function validateProjectJobResponse(data, owner) {
+  if (!data?.job || data.job.id !== owner.jobId
+      || !['queued', 'running', 'succeeded', 'failed', 'cancelled'].includes(data.job.status)) {
+    throw new Error(t('projectStatusInvalid'));
+  }
+}
+
+async function handleProjectJobResponse(data, owner) {
+  if (!projectObservationCurrent(owner)) return;
+  const job = data.job;
   renderProjectJob(job);
   if (job.status === 'succeeded') {
-    let appState = data.state;
-    if (!appState) appState = (await api(`/api/project/status?jobId=${encodeURIComponent(job.id)}`)).state;
-    if (!appState) {
-      const current = await api('/api/state');
-      if (!current.job) appState = current;
-    }
-    if (!appState) throw new Error(t('projectIndexUnavailable'));
-    await finishProjectSelection(appState, options);
+    await finishProjectSelection(data.state, owner.options);
     return;
   }
-  if (job.status === 'failed') throw new Error(job.error || t('indexingFailed'));
+  if (job.status === 'failed') {
+    await showFailedProjectJob(job);
+    return;
+  }
   if (job.status === 'cancelled') {
+    resetProjectObservation();
     state.projectLoadingRoot = '';
     state.projectJobId = '';
     state.projectReturning = false;
@@ -4475,29 +4620,56 @@ async function handleProjectJobResponse(data, options = {}) {
     else await showProjectChooser({ autoRestore: false });
     return;
   }
-  scheduleProjectJobPoll(job.id, options);
+  scheduleProjectJobPoll(owner);
 }
 
-async function pollProjectJob(jobId, options = {}) {
+async function pollProjectJob(jobId, options = {}, observation = null) {
+  const owner = observation || state.projectObservation || beginProjectObservation(jobId, options);
+  if (!projectObservationCurrent(owner) || owner.pending) return;
   clearProjectPollTimer();
-  const data = await api(`/api/project/status?jobId=${encodeURIComponent(jobId)}`);
-  if (jobId !== state.projectJobId) return;
-  await handleProjectJobResponse(data, options);
+  owner.pending = true;
+  renderProjectPollRecovery();
+  let data;
+  try {
+    data = await api(`/api/project/status?jobId=${encodeURIComponent(jobId)}`);
+    if (!projectObservationCurrent(owner)) return;
+    validateProjectJobResponse(data, owner);
+    if (data.job.status === 'succeeded' && !data.state) {
+      const current = await api('/api/state');
+      if (!projectObservationCurrent(owner)) return;
+      data.state = current.currentState || (!current.job ? current : null);
+    }
+    if (data.job.status === 'succeeded' && (!data.state?.projectSelected
+        || !sameProjectRoot(data.state.repoRoot, data.job.repoRoot))) {
+      throw new Error(t('projectIndexUnavailable'));
+    }
+  } catch (error) {
+    handleProjectJobError(owner, error);
+    return;
+  } finally {
+    owner.pending = false;
+    if (projectObservationCurrent(owner)) renderProjectPollRecovery();
+  }
+  if (!projectObservationCurrent(owner)) return;
+  owner.failures = 0;
+  owner.error = '';
+  owner.paused = false;
+  renderProjectPollRecovery();
+  // UI failures are separate from status transport failures.
+  try { await handleProjectJobResponse(data, owner); } catch (error) { showError(error); }
 }
 
-function handleProjectJobError(jobId, error) {
-  if (jobId !== state.projectJobId) return;
-  showError(error);
-}
-
-function scheduleProjectJobPoll(jobId, options = {}) {
+function scheduleProjectJobPoll(owner, delay = 400) {
+  if (!projectObservationCurrent(owner)) return;
+  clearProjectPollTimer();
   state.projectPollTimer = setTimeout(() => {
-    pollProjectJob(jobId, options).catch((error) => handleProjectJobError(jobId, error));
-  }, 400);
+    pollProjectJob(owner.jobId, owner.options, owner);
+  }, delay);
 }
 
 async function selectProject(repoRoot, options = {}) {
   if (!repoRoot || sourceConfigBusy()) return;
+  resetProjectObservation();
   const requestId = state.projectChooserRequestId + 1;
   state.projectChooserRequestId = requestId;
   state.projectReturning = false;
@@ -4543,6 +4715,10 @@ async function init() {
     if (appState.job) {
       const job = appState.job;
       const currentState = appState.currentState;
+      if (job.status === 'failed' && !currentState?.projectSelected) {
+        await showFailedProjectJob(job);
+        return;
+      }
       if (currentState?.projectSelected && sameProjectRoot(currentState.repoRoot, job.repoRoot)) {
         state.projectRefreshRequestId += 1;
         state.projectRefreshing = true;
@@ -4943,6 +5119,15 @@ function renderProjectResultCard(session, relationships = sessionRelationshipInd
 }
 
 function renderSessions() {
+  const visibleSessions = state.searchScope === 'project' && hasActiveSearchExpression() ? state.projectResults : state.sessions;
+  if (!visibleSessions.length && !state.selectingProject && !state.projectSearchLoading
+      && state.sessionsDataContext === sessionsDataContextKey()) {
+    const key = state.sessionGrandTotal ? 'filteredSessionsEmpty'
+      : state.sourceDiagnostics?.totalCount ? 'noReadableSessions' : 'noRepositorySessions';
+    el.sessionList.innerHTML = `<p class="notice warning" data-session-empty>${escapeHtml(t(key))}</p>`;
+    state.searchSurfaceContexts.sessions = '';
+    return;
+  }
   const relationships = sessionRelationshipIndex();
   if (state.searchScope === 'project' && hasActiveSearchExpression()) {
     el.sessionList.innerHTML = state.projectResults.map((session) => renderProjectResultCard(session, relationships)).join('');
@@ -8383,24 +8568,66 @@ el.localeSelect?.addEventListener('change', () => {
   changeLocale(el.localeSelect.value).catch(showError);
 });
 
-el.projectCancelBtn?.addEventListener('click', () => {
+el.projectCancelBtn?.addEventListener('click', async () => {
   const jobId = state.projectJobId;
-  if (!jobId) return;
-  clearProjectPollTimer();
-  api(`/api/project/status?jobId=${encodeURIComponent(jobId)}`, { method: 'DELETE' })
-    .then((data) => handleProjectJobResponse(data))
-    .catch((error) => handleProjectJobError(jobId, error));
+  if (!jobId || el.projectCancelBtn.disabled) return;
+  const owner = beginProjectObservation(jobId, state.projectObservation?.options || {});
+  owner.pending = true;
+  el.projectCancelBtn.disabled = true;
+  let data;
+  try {
+    data = await api(`/api/project/status?jobId=${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+    if (!projectObservationCurrent(owner)) return;
+    validateProjectJobResponse(data, owner);
+  } catch (error) {
+    if (!projectObservationCurrent(owner)) return;
+    if (error.status === 404) {
+      data = { job: { id: jobId, status: 'cancelled' } };
+    } else {
+      owner.pending = false;
+      owner.error = error.message || String(error);
+      renderProjectPollRecovery();
+      // The DELETE outcome is uncertain. Observe it without repeating DELETE.
+      await pollProjectJob(jobId, owner.options, owner);
+      return;
+    }
+  } finally {
+    owner.pending = false;
+    el.projectCancelBtn.disabled = false;
+  }
+  if (!projectObservationCurrent(owner)) return;
+  if (data.job.status === 'succeeded') await pollProjectJob(jobId, owner.options, owner);
+  else {
+    try { await handleProjectJobResponse(data, owner); } catch (error) { showError(error); }
+  }
+});
+
+el.projectPollRecovery?.addEventListener('click', (event) => {
+  const owner = state.projectObservation;
+  if (!event.target.closest('[data-project-continue]') || !projectObservationCurrent(owner) || owner.pending) return;
+  owner.failures = 0;
+  owner.paused = false;
+  pollProjectJob(owner.jobId, owner.options, owner);
 });
 
 el.projectSourceAction?.addEventListener('click', () => {
-  if (state.pendingSourceAction) {
-    performPendingSourceAction().catch(showError);
-    return;
-  }
-  armSourceSwitch();
+  if (state.pendingSourceAction) performPendingSourceAction().catch(showError);
+});
+el.projectSourceChoices?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-source-choice]');
+  if (button) armSourceSwitch(button.dataset.sourceChoice);
 });
 
 el.projectSourceCancel?.addEventListener('click', cancelPendingSourceAction);
+el.projectFailure?.addEventListener('click', (event) => {
+  if (sourceConfigBusy()) return;
+  if (event.target.closest('[data-project-retry]')) {
+    selectProject(state.failedProjectJob?.repoRoot).catch(showError);
+  } else if (event.target.closest('[data-project-config]')) {
+    el.projectHomeEditor.open = true;
+    el.projectHomeFields?.querySelector('input')?.focus();
+  }
+});
 
 el.projectHomeApplyBtn?.addEventListener('click', armHomeChange);
 

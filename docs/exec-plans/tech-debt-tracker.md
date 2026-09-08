@@ -210,9 +210,10 @@
 ### 20. DeepSeek whole-file Detail/Raw readback cost / DeepSeek 全文件 Detail／Raw 回读成本
 - Status: deferred by the Phase 1 acceptance-hardening follow-up / 状态：由 Phase 1 验收加固后续推迟
 - Problem: opening one DeepSeek Detail or Raw record currently reads the entire stable artifact, decompresses every committed Zstd frame, and (for Detail) parses every committed physical record before selecting the requested record(s). For future very large DSH Sessions this makes one Detail/Raw click cost proportional to the whole Session. / 问题：当前打开一条 DeepSeek Detail 或 Raw 记录会读取整个稳定工件、解压所有已提交 Zstd frame，并且 Detail 在选取所需记录前会解析所有已提交物理记录。对未来的超大型 DSH Session，这会让单次 Detail/Raw 点击成本与整个 Session 成正比。
-- Current observation: confirmed in the acceptance-hardening follow-up after the source-freshness fix; the new accepted-snapshot boundary preserves this behavior while making it revision-safe. Focused and full Node application tests remain green; no large-Session latency measurement exists yet. / 当前观察：来源新鲜度修复后的验收加固后续确认了该行为；新的 accepted-snapshot 边界在保证 revision 安全的同时保留了此行为。聚焦与完整 Node 应用测试保持绿色；尚无大 Session 延迟量测。
+- Current observation: confirmed in the acceptance-hardening follow-up after the source-freshness fix; the new accepted-snapshot boundary preserves this behavior while making it revision-safe. A 2026-09-08 synthetic real-HTTP measurement now covers 10k/50k records and plain/multi-frame Zstd. In the quieter 50k repeat (25.23 MiB uncompressed), distinct warm Detail median was 252/239 ms and eight-concurrent-Raw batch median was 368/742 ms (plain/Zstd). These are workstation observations, not an SLA or browser cache-hit timing; see the measurement report. / 当前观察：来源新鲜度修复后的验收加固后续确认了该行为；新的 accepted-snapshot 边界在保证 revision 安全的同时保留了此行为。2026-09-08 已增加合成真实 HTTP 的 10k／50k 记录、未压缩／多帧 Zstd 量测；较安静的 50k 复测（未压缩体积 25.23 MiB）中，不同热态 Detail 中位数为 252／239 ms，八并发 Raw 批次中位数为 368／742 ms（未压缩／Zstd）。这是工作站观测，不是 SLA 或浏览器缓存命中时延，详见量测报告。
 - Follow-up direction: add bounded/sequential Zstd frame scanning that stops once the required physical record ordinal(s) have been recovered, and avoid parsing unrelated physical records for Detail. Preserve the accepted-snapshot boundary and read-only no-repair semantics while doing so. / 后续方向：增加有界／顺序 Zstd frame 扫描，在取得所需物理 record ordinal 后停止；Detail 应避免解析无关物理记录。实现时保留 accepted-snapshot 边界与只读不修复语义。
 - Related docs: / 相关文档：
+  - `docs/design-docs/deepseek-readback-measurement.md`
   - `docs/exec-plans/completed/2026-08-16-deepseek-harness-phase-1.md`
   - `docs/design-docs/transcript-source-adapters.md`
   - `docs/design-docs/indexed-materialized-session-lifecycle.md`
@@ -227,3 +228,11 @@
   - `docs/exec-plans/completed/2026-08-20-deepseek-harness-phase-2a-session-semantics.md`
   - `docs/exec-plans/completed/2026-08-23-deepseek-harness-phase-2b-code-mode-workflow.md`
   - `docs/design-docs/transcript-source-adapters.md`
+
+### 22. DeepSeek large-Session first materialization latency / DeepSeek 大会话首次物化时延
+- Status: measured, investigation pending; not included in the onboarding reliability fix. / 状态：已量测，待定位；不包含在上手可靠性修复中。
+- Evidence: the quieter 2026-09-08 synthetic 50k-row repeat observed a first HTTP Detail at 28.08 s (plain) and 25.71 s (Zstd), with prewarm disabled and exactly one materialization per case. The worker lifetime maxRSS was about 1152/819 MiB; this includes generation, indexing, server, and client and is not a per-request memory measurement. / 证据：2026-09-08 较安静的合成 50k 记录复测中，首次 HTTP Detail 为 28.08 秒（未压缩）及 25.71 秒（Zstd），关闭 prewarm，每场景恰好一次物化。Worker 生命周期 maxRSS 约为 1152／819 MiB；包含生成、索引、服务器和客户端，不是单请求内存量测。
+- Boundary: cold here means no Materialized Session, not cold OS buffers. This is synthetic tool-dense history on one development workstation. It does not prove that every real Session is slow, but it prevents claiming that large-Session first reading has been accepted as responsive. This cost must not be attributed solely to item 20's repeated Detail parsing. / 边界：此处冷态指不存在已物化会话，不是 OS 缓冲冷态。数据为单台开发工作站上的合成密集工具历史；不证明每个真实会话都慢，但不能据此声称大会话首次阅读响应体验已验收。该成本不得全部归因于第 20 项的重复 Detail 解析。
+- Follow-up: profile reconstruction, query-projection parity/validation, and Detail construction separately; inspect scaling across record/event shapes before choosing an optimization. Preserve canonical ownership, accepted-snapshot validation, bounded retention, and read-only source behavior. Record cold first-read acceptance separately from warm readback. / 后续：分别剖析重建、查询投影等价性／校验及 Detail 构建；在选择优化前检查不同记录／事件形状下的规模变化。保持 canonical ownership、accepted-snapshot 校验、有界保留与来源只读；将冷态首次阅读验收与热态回读分开记录。
+- Related docs: / 相关文档：
+  - `docs/design-docs/deepseek-readback-measurement.md`

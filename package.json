@@ -63,6 +63,7 @@
     "src/codex-tool-lifecycle-contract.js",
     "src/folding.js",
     "src/source-adapters.js",
+    "src/source-diagnostics.js",
     "src/shared/",
     "public/",
     "README.md",
