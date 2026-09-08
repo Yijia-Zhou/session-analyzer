@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "readme-capture-storyboard",
+  "source": "showcase/scenarios/readme/scenario.js",
+  "story": "Find an older session and continue reading",
+  "sourceKind": "codex",
+  "startSessionKey": "parent",
+  "targetSessionKey": "stale-rows",
+  "query": "npm test -- project-switch",
+  "captureOutput": "output/readme-capture/entry/project-search/",
+  "viewport": { "width": 1600, "height": 900 },
+  "captureClip": { "x": 0, "y": 0, "width": 1240, "height": 900 },
+  "locale": "en",
+  "fps": 10,
+  "frames": [
+    { "file": "01-session-a.png", "durationMs": 1200, "state": "Parent session A; Main Timeline; current-session scope; empty query; routine tool events collapsed, messages readable." },
+    { "file": "02-current-no-match.png", "durationMs": 1800, "state": "Enter the query in A; No matches and 0 / 0 targets confirm the remembered command is absent here." },
+    { "file": "03-scope-options.png", "durationMs": 1600, "state": "Open the session scope pill; Current session and Entire project choices are visible." },
+    { "file": "04-project-result.png", "durationMs": 2400, "state": "Choose Entire project and close the search popover; exactly one matching session and one matching event identify B." },
+    { "file": "05-session-b.png", "durationMs": 4000, "state": "Open B, expand and select the command; npm test -- project-switch, Project switch suite, 8 tests passed, and surrounding user/assistant messages remain readable." }
+  ],
+  "interactionSequence": [
+    "Start in Add project-wide search navigation, distinct from the target session.",
+    "Search npm test -- project-switch in current-session scope and confirm No matches.",
+    "Click the session scope pill and choose Entire project.",
+    "Close the search popover and confirm the sole result is Fix stale project rows after source switch.",
+    "Open the result, expand its Command event, select it, and read the output and surrounding work."
+  ],
+  "keep": [
+    "Actual transition from A to B in one project and one source",
+    "Scope selection and unique result counts",
+    "Command output and surrounding context after retrieval"
+  ],
+  "remove": [
+    "Inspector and unrelated top-right controls from this search-focused crop",
+    "Per-character typing, mouse travel, loading waits",
+    "Claims of mixed-source or cross-project search"
+  ]
+}

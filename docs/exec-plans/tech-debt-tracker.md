@@ -236,3 +236,10 @@
 - Follow-up: profile reconstruction, query-projection parity/validation, and Detail construction separately; inspect scaling across record/event shapes before choosing an optimization. Preserve canonical ownership, accepted-snapshot validation, bounded retention, and read-only source behavior. Record cold first-read acceptance separately from warm readback. / 后续：分别剖析重建、查询投影等价性／校验及 Detail 构建；在选择优化前检查不同记录／事件形状下的规模变化。保持 canonical ownership、accepted-snapshot 校验、有界保留与来源只读；将冷态首次阅读验收与热态回读分开记录。
 - Related docs: / 相关文档：
   - `docs/design-docs/deepseek-readback-measurement.md`
+
+### 23. Reading-control overflow and repeated project return controls / 阅读控件溢出与重复项目返回控件
+- Status: observed during the 2026-09-08 README capture; product fix deferred outside the documentation task. / 状态：2026-09-08 README 捕获中观察到，产品修复留待文档任务之外处理。
+- Evidence: in the synthetic Codex showcase, selecting a command after manual fold overrides exposes a `Reset folds` control beyond the right edge of a 1600px viewport (`documentElement.scrollWidth` 1661px). After project search drill-down, multiple `Back to project results` controls are visible in the center pane. These were observed through normal controls, without CSS changes. / 证据：合成 Codex showcase 中，手动折叠后选择命令，`Reset folds` 超出 1600px 视口右边界（文档宽 1661px）；项目搜索进入会话后，中间面板同时出现多个返回项目结果控件。均通过正常控件观察，未修改 CSS。
+- Impact and boundary: reading and search navigation remain functional, but controls consume space or clip. The search demonstration deliberately captures the complete search/list/reading region and does not claim to verify the omitted top-right controls. / 影响与边界：阅读及搜索导航仍可用，但控件占据空间或被裁切；搜索演示有意捕获完整搜索／列表／阅读区域，不声称核验未包含的右上角控件。
+- Follow-up: reproduce responsive control layout and the intended visibility of each project-return affordance; fix with focused browser layout coverage without changing search or event ownership semantics. / 后续：复现响应式控件布局及每个返回入口的预期可见性，以定向浏览器布局覆盖修复，不改变搜索或事件 ownership 语义。
+- Related docs: `docs/design-docs/readme-visual-capture-runbook.md`; `showcase/captures/readme/project-search.json`. / 相关文档：上述捕获运行手册与项目搜索分镜。

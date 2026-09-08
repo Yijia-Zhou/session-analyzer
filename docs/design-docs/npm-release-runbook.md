@@ -4,7 +4,7 @@
 
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-08-03 / 最近更新：2026-08-03
+- Last updated: 2026-09-08 / 最近更新：2026-09-08
 - Applies to: the public `session-analyzer` npm package / 适用范围：公共 `session-analyzer` npm package
 - Related product spec: / 相关产品规格：
   - `docs/product-specs/session-transcript-analyzer.md`
@@ -23,6 +23,43 @@ This is the durable release procedure for `session-analyzer`. The preferred path
 Trusted Publishing replaces reusable publication credentials, not release governance. Version closure, CI, package inspection, source identity, public verification, evidence recording, and recovery rules remain mandatory. The OIDC trust is intentionally stage-only: automation cannot make a version public, and approval still requires maintainer 2FA. / Trusted Publishing 替代的是可复用发布凭据，而不是 release governance。版本收口、CI、package 检查、来源身份、公共验证、证据记录与恢复规则继续为强制要求。OIDC trust 有意限制为 stage-only：自动化不能让版本公开，approve 仍要求维护者 2FA。
 
 ## Release model / 发布模型
+
+### README and online guide synchronization / README 与在线指南同步
+
+Before preparing the final release candidate, review both READMEs and the online
+usage/development guides against the actual candidate's capabilities. Replace
+temporary branch-preview commands and dated package baselines with the intended
+release's successful startup path. Preserve a branch warning on the public
+development entry until that release is available; a staged artifact is not
+publicly installable. / 准备最终发布候选前，对照实际候选能力审查双语 README 与在线
+使用／开发指南，将临时分支命令和有日期的包基线更新为目标发布版成功路径。
+该版本可公开安装前，公开开发入口仍保留分支提示；staged 制品不能公开安装。
+
+Usage guides are online-only and need not be added to `package.json.files`.
+For a published package, point README documentation links (including the Chinese
+README link) to `https://github.com/Yijia-Zhou/session-analyzer/blob/<release-tag>/...`
+and media links to the corresponding immutable raw-content URLs. Replace the
+placeholder with the actual matching release tag or another matching immutable
+revision; never leave a placeholder in the candidate. Relative links are suitable
+for the development checkout but must not silently send an older package reader
+to future `main` instructions. / 使用指南仅在线提供，无需加入包文件清单。发布包的
+README 文档链接（含中文 README 入口）应指向上述路径的实际匹配 release tag，
+素材链接指向相应不可变 raw 内容地址。候选中不得遗留占位符。相对链接适合开发
+checkout，但不得让旧包读者静默进入未来 `main` 指南。
+
+Check intended-tag targets against the exact release tree before packaging and
+record public URL resolution as pending until the tag exists. After publication,
+verify the package page's README, description, keywords, guide links, images, and
+the exact-version first-use path, then remove the public branch warning. GitHub
+README updates alone do not update the npm README. Record GitHub About metadata
+separately from npm package metadata; do not rebuild the existing npm homepage
+merely because GitHub's homepage field was empty. / 打包前按精确发布树检查预期 tag
+目标；tag 存在前公开 URL 核验记为待完成。发布后核验包页面 README、简介、关键词、
+指南链接、图片及精确版本首次使用路径，再移除公开分支提示。仅修改 GitHub README
+不会更新 npm README。分别记录 GitHub About 与 npm 包元数据；不能因 GitHub
+主页字段为空就重建已有 npm homepage。
+
+### Release objects / 发布对象
 
 The release has four distinct objects or states. They must not be conflated. / 发布过程中存在四个不同对象或状态，不得混为一谈。
 
