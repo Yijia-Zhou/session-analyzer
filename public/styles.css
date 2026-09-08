@@ -3325,13 +3325,10 @@ body[data-project-mode='selecting'] .searchAssist {
 .trajectoryEvent:hover,
 .trajectoryEvent:focus-visible {
   background: color-mix(in srgb, var(--accent) 5%, var(--panel));
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-top-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-right-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-bottom-color: color-mix(in srgb, var(--accent) 55%, var(--line));
   outline: none;
-}
-
-.trajectoryEvent.selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .trajectoryEvent.searchHit {
@@ -3605,11 +3602,6 @@ body[data-project-mode='selecting'] .searchAssist {
 
 .event.searchHit {
   background: var(--soft);
-}
-
-.event.selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .event.temporaryReferenceReveal {
@@ -4287,6 +4279,28 @@ body[data-project-mode='selecting'] .searchAssist {
   opacity: 1;
 }
 
+/* Keep selection visible in every folding state without changing card geometry
+   or the semantic marker / Trajectory lane color. */
+.event.selected,
+.event.selected:hover,
+.trajectoryEvent.selected,
+.trajectoryEvent.selected:hover {
+  --selected-event-bg: color-mix(in srgb, var(--accent) 4%, var(--panel));
+  background: var(--selected-event-bg);
+  border-top-color: transparent;
+  border-right-color: transparent;
+  border-bottom-color: transparent;
+  box-shadow: none;
+  outline: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
+  outline-offset: -1px;
+  opacity: 1;
+}
+
+.event.selected.searchHit,
+.trajectoryEvent.selected.searchHit {
+  --selected-event-bg: var(--soft);
+}
+
 .eventHeader {
   gap: 0.42rem;
   grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
@@ -4344,6 +4358,12 @@ body[data-project-mode='selecting'] .searchAssist {
 .event.summary:hover::after,
 .event.collapsed:hover::after {
   opacity: 0.48;
+}
+
+.event.selected::after {
+  background: linear-gradient(180deg, transparent, var(--selected-event-bg) 68%);
+  bottom: 1px;
+  right: 1px;
 }
 
 .eventKind {
