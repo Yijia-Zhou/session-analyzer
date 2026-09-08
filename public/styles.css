@@ -4291,7 +4291,8 @@ body[data-project-mode='selecting'] .searchAssist {
   border-right-color: transparent;
   border-bottom-color: transparent;
   box-shadow: none;
-  outline: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
+  /* At least 3:1 against both the selected tint and search-hit background. */
+  outline: 1px solid color-mix(in srgb, var(--accent) 68%, var(--line));
   outline-offset: -1px;
   opacity: 1;
 }
@@ -4361,9 +4362,7 @@ body[data-project-mode='selecting'] .searchAssist {
 }
 
 .event.selected::after {
-  background: linear-gradient(180deg, transparent, var(--selected-event-bg) 68%);
-  bottom: 1px;
-  right: 1px;
+  display: none;
 }
 
 .eventKind {
@@ -4406,6 +4405,15 @@ body[data-project-mode='selecting'] .searchAssist {
 .event.collapsed .eventTime,
 .event.collapsed .eventToggle {
   opacity: 0.66;
+}
+
+/* Selected cards keep their visible text readable, including metadata. */
+.event.selected .chips,
+.event.selected .eventTime,
+.event.selected .cacheDiscontinuityContext,
+.event.selected .cacheDiscontinuityAffordance,
+.event.selected .enclosingOperationAffordance {
+  opacity: 1;
 }
 
 .event.expanded .eventBody {
