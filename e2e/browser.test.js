@@ -1982,6 +1982,42 @@ test('browser locale bootstrap keeps narrow screens on sessions view', async (t)
   assert.equal(await page.locator('body').getAttribute('data-mobile-view'), 'sessions');
 });
 
+test('browser Trajectory preserves lane and error colors through selection, hover, and keyboard focus', async (t) => {
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.setContent('<button id="before">Before card</button><button class="trajectoryEvent">Event</button>');
+  await page.addStyleTag({ path: path.join(__dirname, '..', 'public', 'styles.css') });
+  const card = page.locator('.trajectoryEvent');
+  const appearance = () => card.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const bounds = element.getBoundingClientRect();
+    return { left: style.borderLeftColor, width: bounds.width, height: bounds.height };
+  });
+  for (const lane of ['input', 'model', 'tools', 'other']) {
+    for (const failed of [false, true]) {
+      const classes = `trajectoryEvent lane-${lane}${failed ? ' error' : ''}`;
+      await card.evaluate((element, value) => { element.className = value; }, classes);
+      await page.mouse.move(1000, 700);
+      await page.locator('#before').focus();
+      const baseline = await appearance();
+      for (const selected of [false, true]) {
+        await card.evaluate((element, value) => element.classList.toggle('selected', value), selected);
+        await page.mouse.move(1000, 700);
+        await page.locator('#before').focus();
+        assert.deepEqual(await appearance(), baseline, `${classes}: selected=${selected}`);
+        await card.hover();
+        assert.deepEqual(await appearance(), baseline, `${classes}: selected=${selected}, hover`);
+        await page.mouse.move(1000, 700);
+        await page.locator('#before').focus();
+        await page.keyboard.press('Tab');
+        assert.equal(await card.evaluate((element) => element.matches(':focus-visible')), true);
+        assert.deepEqual(await appearance(), baseline, `${classes}: selected=${selected}, keyboard focus`);
+      }
+    }
+  }
+});
+
 test('browser Main presentation switches to a reversible Trajectory ledger and remembers it across Layers', async (t) => {
   const collapsedProfile = {
     id: 'custom:trajectory-ledger-browser',

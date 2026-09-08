@@ -3325,13 +3325,10 @@ body[data-project-mode='selecting'] .searchAssist {
 .trajectoryEvent:hover,
 .trajectoryEvent:focus-visible {
   background: color-mix(in srgb, var(--accent) 5%, var(--panel));
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-top-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-right-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-bottom-color: color-mix(in srgb, var(--accent) 55%, var(--line));
   outline: none;
-}
-
-.trajectoryEvent.selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .trajectoryEvent.searchHit {
@@ -3605,11 +3602,6 @@ body[data-project-mode='selecting'] .searchAssist {
 
 .event.searchHit {
   background: var(--soft);
-}
-
-.event.selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .event.temporaryReferenceReveal {
@@ -4287,6 +4279,29 @@ body[data-project-mode='selecting'] .searchAssist {
   opacity: 1;
 }
 
+/* Keep selection visible in every folding state without changing card geometry
+   or the semantic marker / Trajectory lane color. */
+.event.selected,
+.event.selected:hover,
+.trajectoryEvent.selected,
+.trajectoryEvent.selected:hover {
+  --selected-event-bg: color-mix(in srgb, var(--accent) 4%, var(--panel));
+  background: var(--selected-event-bg);
+  border-top-color: transparent;
+  border-right-color: transparent;
+  border-bottom-color: transparent;
+  box-shadow: none;
+  /* At least 3:1 against both the selected tint and search-hit background. */
+  outline: 1px solid color-mix(in srgb, var(--accent) 68%, var(--line));
+  outline-offset: -1px;
+  opacity: 1;
+}
+
+.event.selected.searchHit,
+.trajectoryEvent.selected.searchHit {
+  --selected-event-bg: var(--soft);
+}
+
 .eventHeader {
   gap: 0.42rem;
   grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
@@ -4346,6 +4361,10 @@ body[data-project-mode='selecting'] .searchAssist {
   opacity: 0.48;
 }
 
+.event.selected::after {
+  display: none;
+}
+
 .eventKind {
   background: var(--event-kind-soft);
   border: 1px solid color-mix(in srgb, var(--event-kind) 22%, #d7dee2);
@@ -4386,6 +4405,15 @@ body[data-project-mode='selecting'] .searchAssist {
 .event.collapsed .eventTime,
 .event.collapsed .eventToggle {
   opacity: 0.66;
+}
+
+/* Selected cards keep their visible text readable, including metadata. */
+.event.selected .chips,
+.event.selected .eventTime,
+.event.selected .cacheDiscontinuityContext,
+.event.selected .cacheDiscontinuityAffordance,
+.event.selected .enclosingOperationAffordance {
+  opacity: 1;
 }
 
 .event.expanded .eventBody {
