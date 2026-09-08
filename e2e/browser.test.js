@@ -768,8 +768,9 @@ async function makeClaudeSwitchFixture(t) {
 }
 
 async function confirmSourceAction(page, expectedLabel) {
-  await page.waitForFunction((label) => document.querySelector('#projectSourceAction')?.textContent === label, expectedLabel);
-  await page.locator('#projectSourceAction').click();
+  const target = { 'Confirm switch to Claude Code': 'claude-code', 'Confirm switch to DeepSeek Harness': 'deepseek-harness', 'Confirm switch to Codex': 'codex', 'Confirm switch to Future Source': 'future-source' }[expectedLabel];
+  await page.waitForFunction(({ label, target }) => document.querySelector('#projectSourceAction')?.textContent === label || document.querySelector('#projectSourceSwitch')?.dataset.source === target, { label: expectedLabel, target });
+  if (await page.locator('#projectSourceAction').isVisible()) await page.locator('#projectSourceAction').click();
 }
 
 async function waitForProjectRoot(page, repoRootPath) {
@@ -4853,23 +4854,22 @@ test('browser chooser switches transcript source and refreshes project candidate
   await waitForProjectRoot(page, repoRoot);
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Codex/);
   assert.ok((await page.locator('#projectSourceHome').textContent()).includes(fixtureCodexHome));
-  assert.equal(await page.locator('#projectSourceAction').textContent(), 'Switch to Claude Code');
+  assert.equal(await page.locator('[data-source-choice="claude-code"]').isVisible(), true);
 
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="claude-code"]').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
   await waitForProjectRoot(page, fixture.claudeRepo);
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Claude Code/);
   assert.ok((await page.locator('#projectSourceHome').textContent()).includes(fixture.claudeHome));
-  // With DeepSeek Harness registered as the third source, the generic
-  // chooser cycles Claude Code -> DeepSeek Harness -> Codex.
-  assert.equal(await page.locator('#projectSourceAction').textContent(), 'Switch to DeepSeek Harness');
+  // Every registered source is directly selectable.
+  assert.equal(await page.locator('[data-source-choice="deepseek-harness"]').isVisible(), true);
 
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="deepseek-harness"]').click();
   await confirmSourceAction(page, 'Confirm switch to DeepSeek Harness');
   await page.waitForFunction(() => document.querySelector('#projectSourceSwitch')?.dataset.source === 'deepseek-harness');
-  assert.equal(await page.locator('#projectSourceAction').textContent(), 'Switch to Codex');
+  assert.equal(await page.locator('[data-source-choice="codex"]').isVisible(), true);
 
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="codex"]').click();
   await confirmSourceAction(page, 'Confirm switch to Codex');
   await waitForProjectRoot(page, repoRoot);
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Codex/);
@@ -4900,7 +4900,7 @@ test('browser source replacement preserves the remembered Main Trajectory presen
   await page.waitForFunction(() => document.body.dataset.projectMode === 'selecting');
   assert.equal(await page.locator('#mainPresentationControl').isVisible(), false);
   assert.equal(await page.locator('body').getAttribute('data-remembered-main-presentation'), 'trajectory');
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="claude-code"]').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
   await waitForProjectRoot(page, fixture.claudeRepo);
   await page.evaluate((root) => {
@@ -4926,7 +4926,7 @@ test('browser source replacement preserves the remembered Main Trajectory presen
   assert.equal(await page.locator('.trajectoryPresentation').getAttribute('data-event-count'), '2');
 });
 
-test('browser source switch cycles through every supported registry source', async (t) => {
+test('browser source selector exposes every supported registry source', async (t) => {
   const sourceOptions = [
     { kind: 'codex', label: 'Codex', homeOption: 'codexHome', homeLabel: 'Codex home' },
     { kind: 'claude-code', label: 'Claude Code', homeOption: 'claudeHome', homeLabel: 'Claude home' },
@@ -4983,18 +4983,18 @@ test('browser source switch cycles through every supported registry source', asy
     },
   });
 
-  assert.equal(await page.locator('#projectSourceAction').textContent(), 'Switch to Claude Code');
-  await page.locator('#projectSourceAction').click();
+  assert.equal(await page.locator('[data-source-choice="claude-code"]').isVisible(), true);
+  await page.locator('[data-source-choice="claude-code"]').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
-  await page.waitForFunction(() => document.querySelector('#projectSourceAction')?.textContent === 'Switch to DeepSeek Harness');
+  await page.waitForFunction(() => !document.querySelector('[data-source-choice="deepseek-harness"]')?.disabled);
 
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="deepseek-harness"]').click();
   await confirmSourceAction(page, 'Confirm switch to DeepSeek Harness');
-  await page.waitForFunction(() => document.querySelector('#projectSourceAction')?.textContent === 'Switch to Future Source');
+  await page.waitForFunction(() => !document.querySelector('[data-source-choice="future-source"]')?.disabled);
 
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="future-source"]').click();
   await confirmSourceAction(page, 'Confirm switch to Future Source');
-  await page.waitForFunction(() => document.querySelector('#projectSourceAction')?.textContent === 'Switch to Codex');
+  await page.waitForFunction(() => !document.querySelector('[data-source-choice="codex"]')?.disabled);
   assert.deepEqual(posts, ['claude-code', 'deepseek-harness', 'future-source']);
 });
 
@@ -5037,7 +5037,7 @@ test('browser hydration prefers canonical source configs over conflicting legacy
     document.querySelector('#projectCodexHomeInput')?.value === codex
       && document.querySelector('#projectClaudeHomeInput')?.value === claude
   ), { codex: canonicalCodexHome, claude: canonicalClaudeHome });
-  assert.equal(await page.locator('#projectSourceHome').textContent(), '');
+  assert.ok(await page.locator('#projectSourceHome').textContent());
 });
 
 test('browser does not fall back to a legacy home when a canonical source config is malformed', async (t) => {
@@ -5182,7 +5182,7 @@ test('browser clears old project rows before successor discovery settles after a
   t.after(() => releaseSuccessorFull());
 
   await waitForProjectRoot(page, repoRoot);
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="claude-code"]').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
   await successorFullStarted;
 
@@ -5245,7 +5245,7 @@ test('browser chooser shows the server source before any switch', async (t) => {
   await waitForProjectRoot(page, fixture.claudeRepo);
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Claude Code/);
   assert.ok((await page.locator('#projectSourceHome').textContent()).includes(fixture.claudeHome));
-  assert.equal(await page.locator('#projectSourceAction').textContent(), 'Switch to DeepSeek Harness');
+  assert.equal(await page.locator('[data-source-choice="deepseek-harness"]').isVisible(), true);
   const chooserOrder = await page.locator('.projectChooserHeader').evaluate((header) => (
     [...header.children].map((child) => child.id || child.tagName)
   ));
@@ -5298,7 +5298,7 @@ test('browser last-selected repo is scoped per source and migrates legacy Codex 
   await page.locator('#projectSwitchControl').click();
   await page.waitForFunction(() => document.body.dataset.projectMode === 'selecting');
   await page.waitForFunction(() => localStorage.getItem('sessionAnalyzer.repoRoot') === null);
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="claude-code"]').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
   await waitForProjectRoot(page, fixture.claudeRepo);
   assert.equal(await page.locator('.projectItem.lastSelected').count(), 0);
@@ -5386,9 +5386,7 @@ test('browser re-enables source controls and reconciles discovery after a failed
     },
   });
 
-  await page.locator('#projectSourceAction').click();
-  await page.waitForFunction(() => document.querySelector('#projectSourceAction')?.textContent === 'Confirm switch to Claude Code');
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="claude-code"]').click();
   await page.waitForFunction(() => document.querySelector('#projectSourceError')?.textContent.includes('Source switch failed'));
   assert.equal(sourcePosts, 1);
   assert.equal(await page.locator('#projectSourceAction').isDisabled(), false);
@@ -5431,7 +5429,7 @@ test('browser reconciles lost source mutation responses against authoritative st
   assert.equal(await page.locator('.projectSwitchHint').textContent(), 'Return');
   assert.equal(await page.locator('#projectSourceError').textContent(), '');
 
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="claude-code"]').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
   await waitForProjectRoot(page, fixture.claudeRepo);
   assert.equal(sourcePosts, 2);
@@ -5474,7 +5472,7 @@ test('browser locks Return, project selection, and home inputs while a source mu
   await page.locator('#projectSwitchControl').click();
   await page.waitForFunction(() => document.body.dataset.projectMode === 'selecting');
   await waitForProjectRoot(page, repoRoot);
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="claude-code"]').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
   await sourcePostStarted;
 
@@ -5546,7 +5544,7 @@ test('browser ignores a non-409 failure from invalidated project discovery', asy
   t.after(() => releaseObsoleteFull());
 
   await obsoleteFullStarted;
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="claude-code"]').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
   await waitForProjectRoot(page, fixture.claudeRepo);
   const successorStatus = await page.locator('#projectStatus').textContent();
@@ -5603,7 +5601,7 @@ test('browser shows empty-state guidance after project discovery fails', async (
     },
   });
 
-  await page.waitForFunction(() => document.querySelector('#projectSourceKind')?.textContent.includes('Try switching to'));
+  await page.waitForFunction(() => document.querySelector('#projectSourceKind')?.textContent.includes('Choose a transcript source'));
   const emptySummary = page.locator('.projectSourceSummary[data-empty="true"]');
   await emptySummary.waitFor();
   assert.equal(await emptySummary.evaluate((element) => getComputedStyle(element).fontWeight), '600');
@@ -5688,7 +5686,7 @@ test('browser source switch carries unapplied home-directory edits', async (t) =
   await page.locator('#projectHomeEditor summary').click();
   const draftClaudeHome = fixture.claudeHome;
   await page.locator('#projectClaudeHomeInput').fill(draftClaudeHome);
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="claude-code"]').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
   await waitForProjectRoot(page, fixture.claudeRepo);
   await page.waitForFunction((value) => document.querySelector('#projectClaudeHomeInput')?.value === value, draftClaudeHome);
@@ -5791,7 +5789,7 @@ test('browser keeps discovery alive when source confirmation fails empty or rela
 
   await page.locator('#projectHomeEditor summary').click();
   await page.locator('#projectClaudeHomeInput').fill('');
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="claude-code"]').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
   await page.waitForFunction(() => document.querySelector('#projectSourceError')?.textContent.includes('Home paths must not be empty'));
   assert.equal(sourcePosts, 0);
@@ -6232,7 +6230,7 @@ test('Wave 1A M2 browser source and project replacements each own one Session su
 
   await page.locator('#projectSwitchControl').click();
   await page.waitForFunction(() => document.body.dataset.projectMode === 'selecting');
-  await page.locator('#projectSourceAction').click();
+  await page.locator('[data-source-choice="claude-code"]').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
   await waitForProjectRoot(page, fixture.claudeRepo);
   await chooseProject(fixture.claudeRepo);
@@ -13361,4 +13359,188 @@ test('browser projects source-backed Cache Observation evidence and navigates Ma
   assert.equal(await page.locator('#searchKindSelect').inputValue(), '');
   assert.equal((await page.locator('#searchFilterCount').textContent()).trim(), 'Filters · 1');
   assert.deepEqual(consoleProblems, []);
+});
+
+test('browser onboarding selects DeepSeek directly from an empty Codex source', async (t) => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'analyzer-direct-source-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const posts = [];
+  const scans = [];
+  let selected = 'codex';
+  const { page } = await openSourceSwitchChooser(t, {
+    server: { codexHome: home, claudeHome: home, dshHome: home },
+    beforeGoto: async (p) => {
+      p.on('request', (request) => {
+        const url = new URL(request.url());
+        if (url.pathname === '/api/source') {
+          selected = request.postDataJSON().source;
+          posts.push(selected);
+        }
+        if (url.pathname === '/api/projects') scans.push(selected);
+      });
+    },
+  });
+  await page.waitForFunction(() => document.querySelector('#projectList')?.textContent.includes('No transcript projects'));
+  assert.deepEqual(await page.locator('[data-source-choice]').allTextContents(), ['Codex', 'Claude Code', 'DeepSeek Harness']);
+  await page.locator('[data-source-choice="deepseek-harness"]').click();
+  await page.waitForFunction(() => document.querySelector('#projectSourceSwitch')?.dataset.source === 'deepseek-harness' && !document.querySelector('[data-source-choice]')?.disabled);
+  assert.deepEqual(posts, ['deepseek-harness']);
+  assert.ok(!scans.includes('claude-code'));
+  assert.equal(await page.locator('#projectSourceAction').isHidden(), true);
+  assert.equal(await page.locator('[data-source-choice="deepseek-harness"]').getAttribute('aria-pressed'), 'true');
+});
+
+test('browser onboarding source confirmation cancel preserves project and directory draft', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  const posts = [];
+  const { page } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: fixture.claudeHome },
+    localStorage: { 'sessionAnalyzer.repoRoot.codex': repoRoot },
+    beforeGoto: async (p) => p.on('request', (request) => {
+      if (new URL(request.url()).pathname === '/api/source') posts.push(request.postDataJSON());
+    }),
+  });
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
+  await page.locator('#projectSwitchControl').click();
+  await waitForProjectRoot(page, repoRoot);
+  await page.locator('#projectHomeEditor summary').click();
+  const draft = path.join(fixture.claudeHome, 'edited');
+  await page.locator('#projectClaudeHomeInput').fill(draft);
+  await page.locator('[data-source-choice="deepseek-harness"]').click();
+  assert.match(await page.locator('#projectSourceConfirm').textContent(), /close the current project.*also apply the edited directories/);
+  assert.match(await page.locator('#projectSourceAction').textContent(), /DeepSeek Harness/);
+  await page.locator('#projectSourceCancel').click();
+  assert.deepEqual(posts, []);
+  assert.equal(await page.locator('#projectClaudeHomeInput').inputValue(), draft);
+  assert.equal(await page.locator('.projectSwitchHint').textContent(), 'Return');
+  assert.equal(await page.locator('[data-source-choice="codex"]').getAttribute('aria-pressed'), 'true');
+});
+
+test('browser onboarding distinguishes source diagnostics from an empty source and bounds escaped details', async (t) => {
+  const diagnostics = {
+    totalCount: 23, counts: { DEEPSEEK_ZSTD_UNAVAILABLE: 23 }, truncatedCount: 3,
+    samples: Array.from({ length: 20 }, (_, i) => ({ code: 'DEEPSEEK_ZSTD_UNAVAILABLE', path: `/session-${i}/<img src=x>.zstd`, message: 'Node v22.0.0 lacks zstdDecompressSync <script>alert(1)</script>' })),
+  };
+  const { page } = await openSourceSwitchChooser(t, {
+    beforeGoto: async (p) => p.route('**/api/projects*', async (route) => {
+      const response = await route.fetch();
+      const payload = await response.json();
+      await route.fulfill({ json: { ...payload, projects: [], sourceDiagnostics: diagnostics } });
+    }),
+  });
+  await page.waitForFunction(() => !document.querySelector('#sourceDiagnostics')?.hidden);
+  assert.match(await page.locator('#projectList').textContent(), /No readable project/);
+  assert.doesNotMatch(await page.locator('#projectList').textContent(), /No transcript projects/);
+  assert.match(await page.locator('#sourceDiagnostics').textContent(), /22.15.0/);
+  assert.equal(await page.locator('#sourceDiagnostics details').getAttribute('open'), null);
+  await page.locator('#sourceDiagnostics summary').click();
+  assert.equal(await page.locator('#sourceDiagnostics details li').count(), 20);
+  assert.equal(await page.locator('#sourceDiagnostics img, #sourceDiagnostics script').count(), 0);
+  assert.match(await page.locator('#sourceDiagnostics').textContent(), /Node v22.0.0/);
+  await page.locator('#localeSelect').selectOption('zh-CN', { force: true });
+  assert.match(await page.locator('#sourceDiagnostics').textContent(), /来源读取问题/);
+});
+
+test('browser onboarding keeps mixed source diagnostics visible beside readable indexed sessions', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, {
+    locale: 'en', skipProjectReindex: true,
+    beforeGoto: async (p) => p.route('**/api/state*', async (route) => {
+      const response = await route.fetch();
+      const payload = await response.json();
+      await route.fulfill({ json: { ...payload, sourceDiagnostics: { totalCount: 1, counts: { DEEPSEEK_FORMAT_VERSION_UNSUPPORTED: 1 }, samples: [{ code: 'DEEPSEEK_FORMAT_VERSION_UNSUPPORTED', path: '/other/session.jsonl', message: 'Unsupported version 99' }], truncatedCount: 0 } } });
+    }),
+  });
+  assert.equal(await page.locator('#sourceDiagnostics').isVisible(), true);
+  assert.match(await page.locator('#sourceDiagnostics').textContent(), /unsupported format/);
+  assert.equal(await page.locator('.sessionItem.active').count(), 1);
+});
+
+test('browser onboarding preserves failed startup across reload and retries the specified project', async (t) => {
+  let postCount = 0;
+  let statusCount = 0;
+  const failure = { id: 'failed-before-open', status: 'failed', repoRoot, error: 'Source snapshot is busy; retry shortly', errorCode: 'DEEPSEEK_SOURCE_BUSY' };
+  const { page } = await openSourceSwitchChooser(t, {
+    beforeGoto: async (p) => {
+      await p.route('**/api/state*', async (route) => {
+        const response = await route.fetch();
+        const payload = await response.json();
+        await route.fulfill({ status: 200, json: { ...(payload.details || payload), projectSelected: false, job: failure } });
+      });
+      await p.route('**/api/project', async (route) => {
+        assert.equal(route.request().postDataJSON().repoRoot, repoRoot);
+        postCount += 1;
+        await route.fulfill({ status: 202, json: { job: { ...failure, id: 'retry-job', status: 'queued' } } });
+      });
+      await p.route('**/api/project/status*', async (route) => {
+        statusCount += 1;
+        await route.fulfill({ json: { job: { ...failure, id: 'retry-job' } } });
+      });
+    },
+  });
+  await page.waitForFunction(() => !document.querySelector('#projectFailure')?.hidden);
+  assert.match(await page.locator('#projectFailure').textContent(), /Source snapshot is busy/);
+  assert.equal(statusCount, 0);
+  assert.equal(await page.locator('body').getAttribute('data-project-mode'), 'selecting');
+  await page.reload();
+  await page.waitForFunction(() => !document.querySelector('#projectFailure')?.hidden);
+  assert.equal(statusCount, 0);
+  await page.locator('[data-project-config]').click();
+  assert.equal(await page.locator('#projectHomeEditor').getAttribute('open'), '');
+  await page.locator('[data-project-retry]').click();
+  await page.waitForFunction(() => document.querySelector('[data-project-retry]')?.disabled === false);
+  assert.equal(postCount, 1);
+  assert.equal(statusCount, 1);
+  assert.match(await page.locator('#projectFailure').textContent(), /Source snapshot is busy/);
+});
+
+test('browser onboarding zero-session indexes distinguish unreadable files from repository mismatch', async (t) => {
+  const index = await buildIndex({ repoRoot: path.join(os.tmpdir(), 'analyzer-no-matching-repo'), codexHome: fixtureCodexHome });
+  let withDiagnostics = true;
+  const { page } = await openApp(t, index, {
+    locale: 'en', skipProjectReindex: true, activeSessionState: 'hidden', expectTimeline: false,
+    beforeGoto: async (p) => p.route('**/api/state*', async (route) => {
+      const response = await route.fetch();
+      const payload = await response.json();
+      await route.fulfill({ json: { ...payload, sourceDiagnostics: withDiagnostics ? { totalCount: 1, counts: { SOURCE_ARTIFACT_UNREADABLE: 1 }, samples: [{ code: 'SOURCE_ARTIFACT_UNREADABLE', path: '/session.jsonl', message: 'Cannot read session' }], truncatedCount: 0 } : { totalCount: 0, counts: {}, samples: [], truncatedCount: 0 } } });
+    }),
+  });
+  await page.waitForSelector('[data-session-empty]');
+  assert.match(await page.locator('[data-session-empty]').textContent(), /No readable sessions/);
+  withDiagnostics = false;
+  await page.reload();
+  await page.waitForSelector('[data-session-empty]');
+  assert.match(await page.locator('[data-session-empty]').textContent(), /No sessions match this repository/);
+  assert.equal(await page.locator('#sourceDiagnostics').isHidden(), true);
+});
+
+test('browser onboarding retains startup failure through discovery errors and inactive config then successfully retries', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  const { page } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: fixture.claudeHome },
+    beforeGoto: async (p) => {
+      await p.route('**/api/state*', async (route) => {
+        const response = await route.fetch();
+        const payload = await response.json();
+        await route.fulfill({ status: 200, json: { ...(payload.details || payload), projectSelected: false, job: { id: 'initial-failure', status: 'failed', repoRoot, error: 'Original startup failure' } } });
+      });
+      await p.route('**/api/projects*', (route) => route.fulfill({ status: 500, json: { error: 'Discovery temporarily failed' } }));
+    },
+  });
+  await page.waitForFunction(() => document.querySelector('#projectStatus')?.textContent.includes('Discovery temporarily failed'));
+  assert.match(await page.locator('#projectFailure').textContent(), /Original startup failure/);
+  await page.unroute('**/api/projects*');
+  await page.locator('[data-project-config]').click();
+  await page.locator('#projectClaudeHomeInput').fill(path.join(fixture.claudeHome, 'inactive-draft'));
+  await page.locator('#projectHomeApplyBtn').click();
+  await waitForProjectRoot(page, repoRoot);
+  assert.match(await page.locator('#projectFailure').textContent(), /Original startup failure/);
+  await page.locator('#projectHomeApplyBtn').click();
+  await page.waitForFunction(() => !document.querySelector('#projectHomeApplyBtn')?.disabled);
+  assert.match(await page.locator('#projectFailure').textContent(), /Original startup failure/);
+  await page.unroute('**/api/state*');
+  await page.locator('[data-project-retry]').click();
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing' && Boolean(document.querySelector('.sessionItem.active')));
+  assert.equal(await page.locator('#projectFailure').isHidden(), true);
+  assert.equal(await page.locator('.sessionItem.active').count(), 1);
 });

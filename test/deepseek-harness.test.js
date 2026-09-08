@@ -378,10 +378,11 @@ test('future format versions fail closed rather than being guessed', async () =>
     '{"type":"session","version":1,"id":"future-session","createdAt":1,"cwd":"/tmp/synthetic","delegationDepth":0}\n',
   );
   try {
-    await assert.rejects(
-      buildDeepSeekIndex({ sourceHome: root, repoRoot: '/tmp/synthetic' }),
-      (error) => error?.code === 'DEEPSEEK_FORMAT_VERSION_UNSUPPORTED',
-    );
+    const index = await buildDeepSeekIndex({ sourceHome: root, repoRoot: '/tmp/synthetic' });
+    assert.equal(index.sessions.length, 0);
+    assert.equal(index.sourceDiagnostics.counts.DEEPSEEK_FORMAT_VERSION_UNSUPPORTED, 1);
+    await assert.rejects(storage.readSessionHeader(path.join(artifactDir, 'session.jsonl'), 'none'),
+      (error) => error.code === 'DEEPSEEK_FORMAT_VERSION_UNSUPPORTED');
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }

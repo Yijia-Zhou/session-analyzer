@@ -152,6 +152,7 @@
         <div id="projectStatus" class="projectStatus" aria-live="polite"></div>
         <progress id="projectProgress" class="projectProgress" max="100" value="0" hidden></progress>
         <button id="projectCancelBtn" class="ghostBtn projectCancelBtn" type="button" hidden>Cancel indexing</button>
+        <div id="projectFailure" class="notice warning" role="status" hidden></div>
         <div id="projectSourceSwitch" class="projectSourceSwitch" hidden>
           <div class="projectSourceRow">
             <div class="projectSourceIdentity">
@@ -167,6 +168,7 @@
               </span>
             </div>
             <div class="projectSourceControls">
+              <div id="projectSourceChoices" class="projectSourceChoices" role="group"></div>
               <button id="projectSourceAction" class="ghostBtn projectSourceAction" type="button" hidden></button>
               <button id="projectSourceCancel" class="ghostBtn projectSourceCancel" type="button" hidden>Cancel</button>
             </div>
@@ -187,6 +189,7 @@
       <div id="projectList" class="projectList"></div>
     </section>
 
+    <section id="sourceDiagnostics" class="notice warning sourceDiagnostics" aria-live="polite" hidden></section>
     <main class="layout">
       <aside class="sessionsPane">
         <div class="sessionListHeader">

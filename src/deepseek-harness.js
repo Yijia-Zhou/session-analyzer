@@ -1,5 +1,7 @@
 'use strict';
 
+const { createSourceDiagnostics } = require('./source-diagnostics');
+
 const path = require('node:path');
 const fsp = require('node:fs/promises');
 const { isDeepStrictEqual } = require('node:util');
@@ -3381,9 +3383,19 @@ async function discoverConfiguredProjects() {
   return [];
 }
 
-async function discoverDeepSeekProjects({ sourceHome, signal }) {
+function reportArtifactFailure(error, filePath, onDiagnostic, signal) {
+  throwIfAborted(signal);
+  if (error?.name === 'AbortError') throw error;
+  const expected = new Set(['DEEPSEEK_STORAGE_INVALID', 'DEEPSEEK_FORMAT_VERSION_UNSUPPORTED',
+    'DEEPSEEK_ZSTD_UNAVAILABLE', 'DEEPSEEK_SOURCE_BUSY', 'ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EIO']);
+  if (!expected.has(error?.code)) throw error;
+  onDiagnostic?.({ code: error.code.startsWith('DEEPSEEK_') ? error.code : 'SOURCE_ARTIFACT_UNREADABLE',
+    path: filePath, message: error.message });
+}
+
+async function discoverDeepSeekProjects({ sourceHome, signal, onDiagnostic }) {
   const sessionsRoot = path.resolve(sourceHome);
-  const files = await collectArtifactFiles(sessionsRoot, signal);
+  const { files } = await collectArtifactFiles(sessionsRoot, signal, onDiagnostic);
   const projects = new Map();
   for (const filePath of files) {
     throwIfAborted(signal);
@@ -3393,12 +3405,7 @@ async function discoverDeepSeekProjects({ sourceHome, signal }) {
       stat = await fsp.stat(filePath);
       header = await storage.readSessionHeader(filePath, storage.compressionForArtifact(filePath), signal);
     } catch (error) {
-      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue;
-      if (error?.code === 'DEEPSEEK_FORMAT_VERSION_UNSUPPORTED') {
-        console.warn(`DeepSeek Harness session ${filePath} uses ${error.message}; raw-preserving future-format inspection is deferred`);
-        continue;
-      }
-      console.warn(`Unable to inspect DeepSeek Harness session ${filePath}: ${error.message}`);
+      reportArtifactFailure(error, filePath, onDiagnostic, signal);
       continue;
     }
     if (!header.cwd) continue;
@@ -3425,6 +3432,7 @@ async function discoverDeepSeekProjects({ sourceHome, signal }) {
       project.exists = false;
     }
   }
+  throwIfAborted(signal);
   return [...projects.values()].sort((a, b) => (
     String(b.updatedAt).localeCompare(String(a.updatedAt))
     || b.sessionCount - a.sessionCount
@@ -3432,43 +3440,41 @@ async function discoverDeepSeekProjects({ sourceHome, signal }) {
   ));
 }
 
-async function collectArtifactFiles(root, signal) {
+async function collectArtifactFiles(root, signal, onDiagnostic) {
   const out = [];
+  let fileCount = 0;
+  let excludedFileCount = 0;
   async function walk(dir) {
     throwIfAborted(signal);
     let entries;
     try {
       entries = await fsp.readdir(dir, { withFileTypes: true });
     } catch (error) {
-      if (error?.code === 'ENOENT') return;
-      throw error;
+      throwIfAborted(signal);
+      if (!['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EIO'].includes(error?.code)) throw error;
+      const code = dir === root
+        ? (error.code === 'ENOENT' ? 'SOURCE_ROOT_NOT_FOUND'
+          : error.code === 'ENOTDIR' ? 'SOURCE_ROOT_NOT_DIRECTORY' : 'SOURCE_ROOT_UNREADABLE')
+        : 'SOURCE_ARTIFACT_UNREADABLE';
+      onDiagnostic?.({ code, path: dir, message: error.message });
+      return;
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
+    const artifacts = entries.filter((entry) => entry.isFile()
+      && ['session.jsonl', 'session.jsonl.zstd'].includes(entry.name));
+    fileCount += artifacts.length;
+    if (artifacts.length > 1) {
+      excludedFileCount += artifacts.length;
+      onDiagnostic?.({ code: 'DEEPSEEK_STORAGE_INVALID', path: dir,
+        message: 'DeepSeek session directory contains both session.jsonl and session.jsonl.zstd; keep only one artifact in the source directory.' });
+    } else if (artifacts.length) out.push(path.join(dir, artifacts[0].name));
     for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(full);
-      } else if (entry.isFile() && (entry.name === 'session.jsonl' || entry.name === 'session.jsonl.zstd')) {
-        out.push(full);
-      }
+      if (entry.isDirectory()) await walk(path.join(dir, entry.name));
     }
   }
   await walk(root);
-  const byDirectory = new Map();
-  for (const filePath of out) {
-    const directory = path.dirname(filePath);
-    const names = byDirectory.get(directory) || new Set();
-    names.add(path.basename(filePath));
-    byDirectory.set(directory, names);
-  }
-  for (const [directory, names] of byDirectory) {
-    if (names.has('session.jsonl') && names.has('session.jsonl.zstd')) {
-      throw storage.storageError(
-        `DeepSeek session directory contains both session.jsonl and session.jsonl.zstd: ${directory}`,
-      );
-    }
-  }
-  return out;
+  throwIfAborted(signal);
+  return { files: out, fileCount, excludedFileCount };
 }
 
 function eventKindCatalogForSession(session) {
@@ -3616,9 +3622,10 @@ async function buildDeepSeekIndex({ sourceHome, repoRoot, signal, onProgress }) 
   const sessionsRoot = path.resolve(sourceHome);
   const startedAt = Date.now();
   throwIfAborted(signal);
-  const files = await collectArtifactFiles(sessionsRoot, signal);
+  const diagnostics = createSourceDiagnostics();
+  const { files, fileCount, excludedFileCount } = await collectArtifactFiles(sessionsRoot, signal, diagnostics.add);
   const candidates = [];
-  let skippedFileCount = 0;
+  let skippedFileCount = excludedFileCount;
   let unknownFileCount = 0;
   let candidateBytes = 0;
   for (const filePath of files) {
@@ -3629,14 +3636,12 @@ async function buildDeepSeekIndex({ sourceHome, repoRoot, signal, onProgress }) 
       continue;
     }
     let header;
+    let stat;
     try {
       header = await storage.readSessionHeader(filePath, storage.compressionForArtifact(filePath), signal);
+      stat = await fsp.stat(filePath);
     } catch (error) {
-      if (error?.code === 'DEEPSEEK_FORMAT_VERSION_UNSUPPORTED') {
-        throw error;
-      }
-      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue;
-      console.warn(`Unable to inspect DeepSeek Harness session ${filePath}: ${error.message}`);
+      reportArtifactFailure(error, filePath, diagnostics.add, signal);
       skippedFileCount += 1;
       continue;
     }
@@ -3645,7 +3650,6 @@ async function buildDeepSeekIndex({ sourceHome, repoRoot, signal, onProgress }) 
       else skippedFileCount += 1;
       continue;
     }
-    const stat = await fsp.stat(filePath);
     candidateBytes += stat.size;
     candidates.push({ filePath, relFile, header, bytes: stat.size });
   }
@@ -3665,13 +3669,17 @@ async function buildDeepSeekIndex({ sourceHome, repoRoot, signal, onProgress }) 
   for (const candidate of candidates) {
     throwIfAborted(signal);
     onProgress?.({ phase: 'parsing', sessionId: candidate.header.id });
-    const session = await parseSessionArtifact(
-      candidate.filePath,
-      candidate.relFile,
-      resolvedRepo,
-      signal,
-      { compression: storage.compressionForArtifact(candidate.filePath) },
-    );
+    let session;
+    try {
+      session = await parseSessionArtifact(
+        candidate.filePath, candidate.relFile, resolvedRepo, signal,
+        { compression: storage.compressionForArtifact(candidate.filePath) },
+      );
+    } catch (error) {
+      reportArtifactFailure(error, candidate.filePath, diagnostics.add, signal);
+      skippedFileCount += 1;
+      continue;
+    }
     const summary = {
       topTools: session.analysis.toolUsage.slice(0, 5).map((item) => ({ ...item })),
       failedCommandCount: session.analysis.failedCommands.length,
@@ -3733,7 +3741,7 @@ async function buildDeepSeekIndex({ sourceHome, repoRoot, signal, onProgress }) 
   sessions.sort((a, b) => String(b.updatedAt || b.startedAt).localeCompare(String(a.updatedAt || a.startedAt)));
   const projectQueryStore = queryStoreBuilder.finish();
   const totals = {
-    fileCount: files.length,
+    fileCount,
     candidateFileCount: candidates.length,
     indexedFileCount,
     skippedFileCount,
@@ -3746,6 +3754,7 @@ async function buildDeepSeekIndex({ sourceHome, repoRoot, signal, onProgress }) 
     elapsedMs: Date.now() - startedAt,
   };
   return {
+    sourceDiagnostics: diagnostics.summary,
     sourceKind: SOURCE_KIND,
     sourceHome: sessionsRoot,
     sourceRoot: sessionsRoot,

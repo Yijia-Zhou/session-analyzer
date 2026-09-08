@@ -91,6 +91,20 @@ session-analyzer --repo /path/to/project
 
 默认 host 是 `127.0.0.1`。`--host` 是高级选项；绑定到 localhost 之外可能让网络上的其他机器读取当前进程可访问的转录内容。
 
+## 替用户启动与确认就绪
+
+先明确程序版本、转录来源、目标仓库及来源根。`--repo` 是用户要查看历史的仓库，不一定是 Analyzer 的源码 checkout；`--codex-home`、`--claude-home` 与 `--dsh-home` 指转录来源根，不能用目标仓库替代。
+
+上面的 `npx session-analyzer` 运行 npm 发布版本，不保证包含当前分支功能。试用此分支时，按下方源码开发要求安装依赖并构建，然后从该 checkout 执行：
+
+```sh
+node server.js --source deepseek-harness --repo /path/to/target-project --dsh-home /path/to/sessions
+```
+
+记录 `git rev-parse HEAD` 和 `node --version`，以免把 npm 发布版本的行为当作分支验收。项目选择界面直接显示 Codex、Claude Code、DeepSeek Harness；没有已有项目或配置草稿时，选择来源立即生效。
+
+等待 CLI 索引终态或界面完成加载。HTTP 根页面可访问只表示服务已启动：索引仍可能运行、失败、成功但零会话，或成功且存在被跳过工件。启动失败会保留原因与重试／更改配置入口；来源诊断显示缺失路径、不可读工件或缺失 Zstd 能力，正常会话仍可阅读。自动化本地验收可轮询 `/api/project/status`，再核对 `/api/state` 的目标仓库、会话数及 `sourceDiagnostics`；这些接口用于当前实现的验收，不代表稳定公共 API 承诺。
+
 ## 使用方式
 
 1. 使用默认的 Codex 来源，或在 CLI 选择 Claude Code 或 DeepSeek Harness，然后在浏览器中选择目标项目，也可以在启动服务器时传入 `--repo`。
@@ -134,7 +148,7 @@ Agent 转录可能包含提示词、命令输出、文件路径、环境详情�
 
 ## 环境要求
 
-- 已安装 CLI：受支持的 Node.js LTS，最低 Node.js 22（推荐 Node.js 24），以及用于安装的 npm。DeepSeek Harness 的 `session.jsonl.zstd` 使用 Node 内置 `node:zlib` Zstandard API；该 API 不可用时，未压缩的 `session.jsonl` 仍可读取
+- 已安装 CLI：受支持的 Node.js LTS，最低 Node.js 22（推荐 Node.js 24），以及用于安装的 npm。DeepSeek Harness 的 `session.jsonl.zstd` 需要 Node 内置 `node:zlib` Zstandard API（22.x 从 22.15.0 起提供；以实际能力检查为准）；该 API 不可用时，未压缩的 `session.jsonl` 仍可读取
 - 源码开发与发布工作：Node.js `^22.22.2 || ^24.15.0`，并且 npm 必须精确为 `12.0.2`
 
 ### 大型 transcript 历史与 Node/V8 内存
@@ -241,9 +255,9 @@ Release gate 会检查生成资产、运行完整 Node 测试，并重复执行�
 
 - v0.1.4 暂不支持混合来源索引或来源筛选。
 - 缓存复用中断目前仅支持 Codex，并依据转录中的 token accounting 推断；它不是显式的缓存过期证据。
-- DeepSeek Harness 第二阶段 A 建模人类消息、最终与部分助手消息、reasoning、工具调用／结果配对、生命周期 protocol、生效 agent preset、父子 lineage、subagent descriptor、带 seed／无 seed 的 fork ownership，以及 compaction 生命周期。其他已知上游 DeepSeek 事件族仍明确列为推迟。
+- DeepSeek Harness 支持消息、reasoning、工具生命周期、preset、父子 lineage／fork ownership、compaction、基于精确 ID 的 Code Mode、保守的 Protocol workflow、LLM retry、Goal／Todo、独立的 Permission 配置状态及精确 MessageId inbox provenance。Generic command run／done、boolean plan-mode 与 interactive approval lifecycle 是 adapter 自有的 Protocol 投影；审批仅按精确 request ID 关联，并在 callId 唯一解析时关联工具。它不推断审批到重试的因果关系，也不让审批修改 Permission 状态。其余已知上游事件族仍明确推迟。
 - Claude Code 外置的 `tool-results/*` payload 暂不加载或搜索；其来源记录和引用仍可通过 protocol/raw 兜底查看。
-- 未来或未知的 Codex、Claude Code 与 DeepSeek Harness protocol event 仍可通过 protocol/raw 兜底视图检查，但并非每个事件族都有完整精致的结构化渲染器。DeepSeek Harness 第二阶段 A 新增生效 preset、lineage／seed ownership，以及单一连贯 compaction 投影；其余事件族仍在执行计划中明确列为推迟。
+- 未知的 Codex、Claude Code 与受支持版本内的 DeepSeek protocol event 保留 protocol/raw 兜底，但并非每个事件族都有专门渲染器。未支持的 DeepSeek 格式版本被隔离并显示来源诊断，不猜测解析。DeepSeek Code Mode 使用持久化来源 ID，不解析外层程序来推导 declared request；workflow 支持有来源依据，但在复制的 6 条真实 Session 中尚未观察到。
 - 转录 fixture 覆盖是有重点的，不是穷尽式的；后续观察到新的历史形态时，可能仍需要补充 fixture 和展示调整。
 - Review finding 渲染已有合成数据覆盖，本地也已观察到真实的非空 `review_output.findings[]` 示例；后续仍适合补充脱敏 fixture 来防止回归。
 

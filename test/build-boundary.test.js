@@ -202,7 +202,10 @@ test('runtime source configuration is registry-driven across server and browser'
   assert.doesNotMatch(serverText, /state(?:\.(?:codexHome|claudeHome)\b|\[['"](?:codexHome|claudeHome)['"]\])/);
   assert.match(browserText, /sourceConfigs/);
   assert.match(browserText, /supportedSourceKindsForUi\(\)/);
-  assert.doesNotMatch(browserText, /deepseek/i);
+  // Source selection remains registry-driven; adapter diagnostic codes may be localized by the UI.
+  assert.match(browserText, /data-source-choice/);
+  assert.match(browserText, /supportedSourceKindsForUi\(\)\.includes\(target\)/);
+  assert.doesNotMatch(browserText, /otherSourceKind/);
   assert.match(browserText, /data-source-home/);
   assert.doesNotMatch(browserText, /state(?:\.(?:codexHome|claudeHome)\b|\[['"](?:codexHome|claudeHome)['"]\])/);
   assert.doesNotMatch(browserText, /project(?:Codex|Claude)HomeInput/);

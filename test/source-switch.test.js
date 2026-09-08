@@ -601,7 +601,10 @@ test('an adapter index without canonical ownership is rejected before runtime co
   const job = await waitForJob(base, started.json.job.id);
   assert.equal(job.status, 'failed');
   assert.match(job.error, /Missing source ownership on index/);
-  assert.equal((await requestJson(base, '/api/state')).status, 409);
+  const failedState = await requestJson(base, '/api/state');
+  assert.equal(failedState.status, 200);
+  assert.equal(failedState.json.projectSelected, false);
+  assert.equal(failedState.json.job.status, 'failed');
 });
 
 test('an adapter index with accessor-backed sessions is rejected before runtime commit', async (t) => {
@@ -628,7 +631,10 @@ test('an adapter index with accessor-backed sessions is rejected before runtime 
   const job = await waitForJob(base, started.json.job.id);
   assert.equal(job.status, 'failed');
   assert.match(job.error, /Canonical index\.sessions must be a data-property array/);
-  assert.equal((await requestJson(base, '/api/state')).status, 409);
+  const failedState = await requestJson(base, '/api/state');
+  assert.equal(failedState.status, 200);
+  assert.equal(failedState.json.projectSelected, false);
+  assert.equal(failedState.json.job.status, 'failed');
 });
 
 test('an adapter index owned by another source is rejected before runtime commit', async (t) => {
@@ -652,8 +658,10 @@ test('an adapter index owned by another source is rejected before runtime commit
   assert.equal(job.status, 'failed');
   assert.match(job.error, /Source ownership mismatch: job claude-code, index codex/);
   const state = await requestJson(base, '/api/state');
-  assert.equal(state.status, 409);
-  assert.equal(state.json.details.sourceKind, 'claude-code');
+  assert.equal(state.status, 200);
+  assert.equal(state.json.projectSelected, false);
+  assert.equal(state.json.job.status, 'failed');
+  assert.equal(state.json.sourceKind, 'claude-code');
 });
 
 test('source switch cancels the active job and never commits a stale index', async (t) => {

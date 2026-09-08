@@ -1202,7 +1202,33 @@ body[data-project-mode='selecting'] .searchAssist {
 
 .projectSourceControls {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.45rem;
+}
+
+.projectSourceChoices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.projectSourceChoices button[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+.sourceDiagnostics {
+  margin: 0.6rem 1rem;
+  max-height: 24rem;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
+.sourceDiagnostics p,
+#projectFailure p {
+  margin: 0.35rem 0;
+  overflow-wrap: anywhere;
 }
 
 .projectSourceAction,

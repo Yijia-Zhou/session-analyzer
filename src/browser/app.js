@@ -145,6 +145,9 @@ const state = {
   supportedSources: [],
   projectDiscoveryLoading: false,
   pendingSourceAction: null,
+  pendingSourceTarget: '',
+  sourceDiagnostics: null,
+  failedProjectJob: null,
   sourceSwitchBusy: false,
   homeEditorDirty: false,
   sessions: [],
@@ -329,6 +332,9 @@ const el = {
   projectSourceKind: document.getElementById('projectSourceKind'),
   projectSourceHome: document.getElementById('projectSourceHome'),
   projectSourceAction: document.getElementById('projectSourceAction'),
+  projectSourceChoices: document.getElementById('projectSourceChoices'),
+  sourceDiagnostics: document.getElementById('sourceDiagnostics'),
+  projectFailure: document.getElementById('projectFailure'),
   projectSourceCancel: document.getElementById('projectSourceCancel'),
   projectSourceConfirm: document.getElementById('projectSourceConfirm'),
   projectHomeEditor: document.getElementById('projectHomeEditor'),
@@ -770,6 +776,8 @@ function sourceConfigBusy() {
 }
 
 function renderSourceSwitch() {
+  renderSourceDiagnostics();
+  renderProjectFailure();
   if (!el.projectSourceSwitch) return;
   const sourceKinds = supportedSourceKindsForUi();
   const hasConfig = Boolean(state.sourceHome || sourceKinds.length);
@@ -778,12 +786,11 @@ function renderSourceSwitch() {
   const configBusy = sourceConfigBusy();
   el.projectSourceSwitch.dataset.source = state.sourceKind;
   el.projectSourceSwitch.dataset.pending = state.pendingSourceAction || '';
-  const other = otherSourceKind();
-  const otherLabel = sourceKindLabel(other);
+  const targetLabel = sourceKindLabel(state.pendingSourceTarget);
   const emptyState = !state.projects.length && !state.projectLoadingRoot && !state.projectDiscoveryLoading;
   if (el.projectSourceKind) {
     el.projectSourceKind.textContent = emptyState
-      ? t('noProjectsHint', { source: otherLabel })
+      ? t('chooseTranscriptSource')
       : `${t('transcriptSource')}: ${sourceKindLabel(state.sourceKind)}`;
     const summary = el.projectSourceKind.parentElement;
     if (summary) {
@@ -792,24 +799,32 @@ function renderSourceSwitch() {
     }
   }
   if (el.projectSourceHome) {
-    el.projectSourceHome.textContent = emptyState ? '' : state.sourceHome;
+    el.projectSourceHome.textContent = state.sourceHome;
+  }
+  if (el.projectSourceChoices) {
+    el.projectSourceChoices.setAttribute('aria-label', t('transcriptSource'));
+    el.projectSourceChoices.innerHTML = sourceKinds.map((kind) => `<button type="button" class="ghostBtn" data-source-choice="${escapeHtml(kind)}" aria-pressed="${kind === state.sourceKind}"${configBusy ? ' disabled' : ''}>${escapeHtml(sourceKindLabel(kind))}</button>`).join('');
   }
   if (el.projectSourceAction) {
-    el.projectSourceAction.hidden = false;
+    el.projectSourceAction.hidden = !state.pendingSourceAction;
     el.projectSourceAction.textContent = state.pendingSourceAction === 'switch'
-      ? t('confirmSwitchToSource', { source: otherLabel })
-      : state.pendingSourceAction === 'home'
-        ? t('confirmHomeChange')
-        : t('switchToSource', { source: otherLabel });
+      ? t('confirmSwitchToSource', { source: targetLabel })
+      : t('confirmHomeChange');
     el.projectSourceAction.disabled = configBusy;
   }
-  if (el.projectSourceCancel) el.projectSourceCancel.hidden = !state.pendingSourceAction;
+  if (el.projectSourceCancel) {
+    el.projectSourceCancel.hidden = !state.pendingSourceAction;
+    el.projectSourceCancel.disabled = configBusy;
+  }
   if (el.projectSourceConfirm) {
-    const confirmText = state.pendingSourceAction === 'switch' && state.repoRoot
-      ? t('switchClosesProject', { source: otherLabel, root: state.repoRoot })
+    let confirmText = state.pendingSourceAction === 'switch' && state.repoRoot
+      ? t('switchClosesProject', { source: targetLabel, root: state.repoRoot })
       : state.pendingSourceAction === 'home' && state.repoRoot
         ? t('homeChangeClosesProject', { root: state.repoRoot })
         : '';
+    if (state.pendingSourceAction === 'switch' && state.homeEditorDirty) {
+      confirmText += `${confirmText ? ' ' : ''}${t('switchAppliesDraft', { source: targetLabel })}`;
+    }
     el.projectSourceConfirm.textContent = confirmText;
     el.projectSourceConfirm.hidden = !confirmText;
   }
@@ -834,6 +849,54 @@ function renderHomeFields({ configBusy = false, preserveHomeInputs = false, sour
 
 function clearSourceError() {
   if (el.projectSourceError) el.projectSourceError.textContent = '';
+}
+
+function renderSourceDiagnostics() {
+  if (!el.sourceDiagnostics) return;
+  const diagnostics = state.sourceDiagnostics;
+  el.sourceDiagnostics.hidden = !diagnostics?.totalCount;
+  if (el.sourceDiagnostics.hidden) {
+    el.sourceDiagnostics.innerHTML = '';
+    return;
+  }
+  const explanations = {
+    SOURCE_ROOT_NOT_FOUND: 'sourceRootNotFound',
+    SOURCE_ROOT_NOT_DIRECTORY: 'sourceRootNotDirectory',
+    SOURCE_ROOT_UNREADABLE: 'sourceRootUnreadable',
+    DEEPSEEK_STORAGE_INVALID: 'sourceStorageInvalid',
+    DEEPSEEK_FORMAT_VERSION_UNSUPPORTED: 'sourceFormatUnsupported',
+    DEEPSEEK_ZSTD_UNAVAILABLE: 'sourceZstdUnavailable',
+    DEEPSEEK_SOURCE_BUSY: 'sourceBusy',
+  };
+  const counts = Object.entries(diagnostics.counts || {}).map(([code, count]) => (
+    `<li>${escapeHtml(t(explanations[code] || 'sourceUnreadable'))} (${escapeHtml(count)})</li>`
+  )).join('');
+  const samples = (diagnostics.samples || []).slice(0, 20).map((sample) => (
+    `<li><code>${escapeHtml(sample.path || '')}</code><p>${escapeHtml(sample.message || sample.code || '')}</p></li>`
+  )).join('');
+  el.sourceDiagnostics.innerHTML = `<strong>${escapeHtml(t('sourceDiagnosticsTitle', { count: diagnostics.totalCount }))}</strong><p>${escapeHtml(t('sourceDiagnosticsPartial'))}</p><ul>${counts}</ul><details><summary>${escapeHtml(t('sourceDiagnosticsDetails'))}</summary><ul>${samples}</ul>${diagnostics.truncatedCount ? `<p>${escapeHtml(t('sourceDiagnosticsTruncated', { count: diagnostics.truncatedCount }))}</p>` : ''}</details>`;
+}
+
+function renderProjectFailure() {
+  if (!el.projectFailure) return;
+  const job = state.failedProjectJob;
+  el.projectFailure.hidden = !job;
+  if (!job) {
+    el.projectFailure.innerHTML = '';
+    return;
+  }
+  el.projectFailure.innerHTML = `<strong>${escapeHtml(t('projectStartupFailed'))}</strong><p>${escapeHtml(job.repoRoot || '')}</p><p>${escapeHtml(job.error || t('indexingFailed'))}</p><button type="button" class="ghostBtn" data-project-retry${sourceConfigBusy() ? ' disabled' : ''}>${escapeHtml(t('retryProject'))}</button> <button type="button" class="ghostBtn" data-project-config${sourceConfigBusy() ? ' disabled' : ''}>${escapeHtml(t('changeSourceConfiguration'))}</button>`;
+}
+
+async function showFailedProjectJob(job) {
+  clearProjectPollTimer();
+  state.failedProjectJob = job;
+  state.projectJobId = '';
+  state.projectLoadingRoot = '';
+  setProjectMode(true);
+  renderProjectFailure();
+  await showProjectChooser({ autoRestore: false });
+  renderProjectFailure();
 }
 
 function clearSubmittedHomeDraft(homes) {
@@ -894,6 +957,15 @@ function applyAuthoritativeSourceMutationState(payload) {
   return result;
 }
 
+function clearRetiredSourceContext(previousKind, previousHome, payload) {
+  if (previousKind === state.sourceKind
+      && normalizeHomePathForCompare(previousHome) === normalizeHomePathForCompare(state.sourceHome)) return;
+  state.sourceDiagnostics = payload.sourceDiagnostics || null;
+  state.failedProjectJob = null;
+  renderSourceDiagnostics();
+  renderProjectFailure();
+}
+
 async function reconcileUncertainSourceMutation(source, homes) {
   let authoritative;
   try {
@@ -902,8 +974,12 @@ async function reconcileUncertainSourceMutation(source, homes) {
     if (error.status !== 409 || !error.details) throw error;
     authoritative = error.details;
   }
+  const previousKind = state.sourceKind;
+  const previousHome = state.sourceHome;
   const result = applyAuthoritativeSourceMutationState(authoritative);
-  return sourceConfigMatchesMutation(result, source, homes) ? result : null;
+  clearRetiredSourceContext(previousKind, previousHome, result);
+  if (!sourceConfigMatchesMutation(result, source, homes)) return null;
+  return result;
 }
 
 async function commitSourceConfig(source, homes = null) {
@@ -919,7 +995,10 @@ async function commitSourceConfig(source, homes = null) {
       );
     }
     const result = await api('/api/source', { method: 'POST', body });
+    const previousKind = state.sourceKind;
+    const previousHome = state.sourceHome;
     applySourceConfig(result);
+    clearRetiredSourceContext(previousKind, previousHome, result);
     return result;
   } catch (error) {
     if (typeof error.status !== 'number') {
@@ -1006,7 +1085,8 @@ async function refreshProjectList() {
 
 async function performPendingSourceAction() {
   if (state.pendingSourceAction === 'switch') {
-    const target = otherSourceKind();
+    const target = state.pendingSourceTarget;
+    if (!target || target === state.sourceKind || sourceConfigBusy()) return;
     const homes = state.homeEditorDirty ? readHomeDraft() : null;
     if (homes && !validateHomePaths(homes)) return;
     invalidateProjectDiscovery();
@@ -1056,13 +1136,16 @@ async function performHomeChange(homes) {
   await refreshProjectList();
 }
 
-function armSourceSwitch() {
-  if (state.pendingSourceAction) {
+function armSourceSwitch(target) {
+  if (sourceConfigBusy() || !supportedSourceKindsForUi().includes(target)) return;
+  if (target === state.sourceKind) return cancelPendingSourceAction();
+  state.pendingSourceAction = 'switch';
+  state.pendingSourceTarget = target;
+  clearSourceError();
+  if (!state.repoRoot && !state.homeEditorDirty) {
     performPendingSourceAction().catch(showError);
     return;
   }
-  state.pendingSourceAction = 'switch';
-  clearSourceError();
   renderSourceSwitch();
 }
 
@@ -1082,6 +1165,7 @@ function armHomeChange() {
 
 function cancelPendingSourceAction() {
   state.pendingSourceAction = null;
+  state.pendingSourceTarget = '';
   clearSourceError();
   renderSourceSwitch();
 }
@@ -3075,6 +3159,9 @@ function writeLastSelectedRepo(sourceKind, repoRoot) {
 
 function applySourceConfig(payload) {
   if (!payload || typeof payload !== 'object') return;
+  if (Object.hasOwn(payload, 'sourceDiagnostics')) state.sourceDiagnostics = payload.sourceDiagnostics;
+  renderSourceDiagnostics();
+  renderProjectFailure();
   if (Array.isArray(payload.sourceOptions)) state.sourceOptions = payload.sourceOptions;
   if (Array.isArray(payload.supportedSources)) state.supportedSources = payload.supportedSources;
   if (payload.sourceKind) state.sourceKind = payload.sourceKind;
@@ -3098,13 +3185,6 @@ function applySourceConfig(payload) {
   if (canonicalSourceConfigs !== undefined) state.sourceHome = sourceHomeFor(state.sourceKind);
   else if (typeof payload.sourceHome === 'string') state.sourceHome = payload.sourceHome;
   else state.sourceHome = sourceHomeFor(state.sourceKind) || state.sourceHome;
-}
-
-function otherSourceKind() {
-  const sourceKinds = supportedSourceKindsForUi();
-  if (sourceKinds.length < 2) return '';
-  const currentIndex = sourceKinds.indexOf(state.sourceKind);
-  return sourceKinds[(currentIndex + 1 + sourceKinds.length) % sourceKinds.length] || '';
 }
 
 function absoluteHomePathKind(value) {
@@ -4232,6 +4312,8 @@ function resetProjectViewState() {
 }
 
 function renderProjects() {
+  renderSourceDiagnostics();
+  renderProjectFailure();
   if (!el.projectList) return;
   const loadingRoot = state.projectLoadingRoot;
   const selectionLocked = Boolean(loadingRoot || state.sourceSwitchBusy);
@@ -4240,7 +4322,7 @@ function renderProjects() {
   if (!state.projects.length) {
     el.projectList.innerHTML = (loadingRoot || state.projectDiscoveryLoading)
       ? ''
-      : `<div class="notice warning"><p>${escapeHtml(t('noTranscriptProjects'))}</p></div>`;
+      : `<div class="notice warning"><p>${escapeHtml(t(state.sourceDiagnostics?.totalCount ? 'noReadableProjects' : 'noTranscriptProjects'))}</p></div>`;
     renderSourceSwitch();
     return;
   }
@@ -4400,6 +4482,7 @@ async function applyAppState(appState) {
 }
 
 async function finishProjectSelection(appState, options = {}) {
+  state.failedProjectJob = null;
   writeLastSelectedRepo(appState.sourceKind || state.sourceKind, appState.repoRoot);
   state.projectLoadingRoot = '';
   state.projectJobId = '';
@@ -4461,7 +4544,10 @@ async function handleProjectJobResponse(data, options = {}) {
     await finishProjectSelection(appState, options);
     return;
   }
-  if (job.status === 'failed') throw new Error(job.error || t('indexingFailed'));
+  if (job.status === 'failed') {
+    await showFailedProjectJob(job);
+    return;
+  }
   if (job.status === 'cancelled') {
     state.projectLoadingRoot = '';
     state.projectJobId = '';
@@ -4543,6 +4629,10 @@ async function init() {
     if (appState.job) {
       const job = appState.job;
       const currentState = appState.currentState;
+      if (job.status === 'failed' && !currentState?.projectSelected) {
+        await showFailedProjectJob(job);
+        return;
+      }
       if (currentState?.projectSelected && sameProjectRoot(currentState.repoRoot, job.repoRoot)) {
         state.projectRefreshRequestId += 1;
         state.projectRefreshing = true;
@@ -4943,6 +5033,15 @@ function renderProjectResultCard(session, relationships = sessionRelationshipInd
 }
 
 function renderSessions() {
+  const visibleSessions = state.searchScope === 'project' && hasActiveSearchExpression() ? state.projectResults : state.sessions;
+  if (!visibleSessions.length && !state.selectingProject && !state.projectSearchLoading
+      && state.sessionsDataContext === sessionsDataContextKey()) {
+    const key = state.sessionGrandTotal ? 'filteredSessionsEmpty'
+      : state.sourceDiagnostics?.totalCount ? 'noReadableSessions' : 'noRepositorySessions';
+    el.sessionList.innerHTML = `<p class="notice warning" data-session-empty>${escapeHtml(t(key))}</p>`;
+    state.searchSurfaceContexts.sessions = '';
+    return;
+  }
   const relationships = sessionRelationshipIndex();
   if (state.searchScope === 'project' && hasActiveSearchExpression()) {
     el.sessionList.innerHTML = state.projectResults.map((session) => renderProjectResultCard(session, relationships)).join('');
@@ -8393,14 +8492,23 @@ el.projectCancelBtn?.addEventListener('click', () => {
 });
 
 el.projectSourceAction?.addEventListener('click', () => {
-  if (state.pendingSourceAction) {
-    performPendingSourceAction().catch(showError);
-    return;
-  }
-  armSourceSwitch();
+  if (state.pendingSourceAction) performPendingSourceAction().catch(showError);
+});
+el.projectSourceChoices?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-source-choice]');
+  if (button) armSourceSwitch(button.dataset.sourceChoice);
 });
 
 el.projectSourceCancel?.addEventListener('click', cancelPendingSourceAction);
+el.projectFailure?.addEventListener('click', (event) => {
+  if (sourceConfigBusy()) return;
+  if (event.target.closest('[data-project-retry]')) {
+    selectProject(state.failedProjectJob?.repoRoot).catch(showError);
+  } else if (event.target.closest('[data-project-config]')) {
+    el.projectHomeEditor.open = true;
+    el.projectHomeFields?.querySelector('input')?.focus();
+  }
+});
 
 el.projectHomeApplyBtn?.addEventListener('click', armHomeChange);
 
