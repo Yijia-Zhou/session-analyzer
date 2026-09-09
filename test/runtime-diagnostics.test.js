@@ -334,10 +334,12 @@ test('server emits one large-history warning without blocking successful indexin
 });
 
 test('both READMEs link to operational recovery and performance guidance', () => {
+  const troubleshootingGuide = 'https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/troubleshooting.md';
+  const performanceGuide = 'https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/timeline-loading-and-rendering-performance.md';
   for (const file of ['README.md', 'README.zh-CN.md']) {
     const content = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
-    assert.ok(content.includes('](docs/usage/troubleshooting.md)'));
-    assert.ok(content.includes('](docs/design-docs/timeline-loading-and-rendering-performance.md)'));
+    assert.ok(content.includes(`](${troubleshootingGuide})`));
+    assert.ok(content.includes(`](${performanceGuide})`));
   }
 });
 

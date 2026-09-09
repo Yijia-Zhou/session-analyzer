@@ -77,7 +77,7 @@ While opening a project, temporary failures to query indexing status are retried
 - LLM-based summarization or semantic clustering / 基于 LLM 的摘要或语义聚类
 - Editing or mutating source transcript files / 编辑或变更来源转录文件
 - Supporting every historical Codex or Claude Code transcript variant perfectly on day one / 在第一天就完美支持每一种历史 Codex 或 Claude Code 转录变体
-- Mixed-source indexing or source-filtered mixed views are not supported in v0.1.4 / v0.1.4 不支持混合来源索引或按来源筛选的混合视图
+- Mixed-source indexing or source-filtered mixed views are not supported in v0.2.0 / v0.2.0 不支持混合来源索引或按来源筛选的混合视图
 - A dynamic adapter/plugin SDK remains outside the source-neutral detail and adapter-contract goal; DeepSeek Harness is added as a real third static adapter, not as a plugin capability / 动态 adapter／plugin SDK 仍不属于来源中立详情与 adapter 契约目标；DeepSeek Harness 作为真实第三个静态 adapter 加入，而不是 plugin capability
 - Cache Observation producers for Claude Code or DeepSeek Harness / Claude Code 或 DeepSeek Harness 的缓存观测 producer
 - Project-wide Cache search/filter, Session-list Cache summaries, or Cache metrics in the analysis panel / 项目范围 Cache 搜索／筛选、Session 列表 Cache 摘要或 analysis panel 中的 Cache 指标

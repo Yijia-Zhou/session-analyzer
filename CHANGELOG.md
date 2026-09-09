@@ -2,6 +2,12 @@
 
 ## Unreleased / 未发布
 
+### English
+
+### 中文
+
+## 0.2.0 - 2026-09-09
+
 ### Main presentation / 主时间线呈现
 
 #### English

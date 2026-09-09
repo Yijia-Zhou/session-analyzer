@@ -4,7 +4,7 @@ The installed CLI supports Node.js 22 or newer on a supported LTS line (Node.js 
 
 ## Toolchain and dependencies / 工具链与依赖
 
-For a fresh branch-preview checkout, install Git and clone the public branch into a new directory. These commands leave the terminal outside the checkout so the toolchain bootstrap below runs in the correct place. The branch was verified at `cc09021` on 2026-09-08; record the actual commit after cloning because the branch can advance. / 首次试用分支时，准备 Git 并将公开分支克隆到新目录。以下命令不会进入 checkout，使后续工具链 bootstrap 在正确位置运行。2026-09-08 核验的分支 commit 为 `cc09021`；分支可能推进，克隆后应记录实际 commit。
+For a fresh 0.2.0 release-candidate checkout, install Git and clone the public branch into a new directory. These commands leave the terminal outside the checkout so the toolchain bootstrap below runs in the correct place. The accepted feature-freeze baseline is `e9b7a1923c12f18d2f283dacb998bc51a11cfa66`; record the actual commit after cloning because the branch can advance. / 首次试用 0.2.0 release candidate 时，准备 Git 并将公开分支克隆到新目录。以下命令不会进入 checkout，使后续工具链 bootstrap 在正确位置运行。已接受的功能冻结基线为 `e9b7a1923c12f18d2f283dacb998bc51a11cfa66`；分支可能推进，克隆后应记录实际 commit。
 
 ```sh
 git clone --branch towards-0.2.0 https://github.com/Yijia-Zhou/session-analyzer.git

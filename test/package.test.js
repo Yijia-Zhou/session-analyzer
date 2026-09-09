@@ -60,7 +60,7 @@ test('package metadata exposes the session-analyzer CLI', () => {
   const server = fs.readFileSync(path.join(repoRoot, 'server.js'), 'utf8');
 
   assert.equal(pkg.name, 'session-analyzer');
-  assert.equal(pkg.version, '0.1.4');
+  assert.equal(pkg.version, '0.2.0');
   assert.equal(typeof pkg.description, 'string');
   assert.ok(pkg.description.trim().length > 0);
   assert.ok(Array.isArray(pkg.keywords));
@@ -213,9 +213,10 @@ test('packaged third-party notice preserves the Highlight.js license', () => {
 test('source setup docs bootstrap exact npm before strict installation', () => {
   const bootstrap = 'npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/';
   const strictInstall = 'npm ci --strict-allow-scripts --registry=https://registry.npmjs.org/';
+  const developmentGuide = 'https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/development.md';
   for (const readme of ['README.md', 'README.zh-CN.md']) {
     const content = fs.readFileSync(path.join(repoRoot, readme), 'utf8');
-    assert.match(content, /\]\(docs\/development\.md(?:#[^)]*)?\)/u);
+    assert.ok(content.includes(`](${developmentGuide})`));
   }
   const content = fs.readFileSync(path.join(repoRoot, 'docs/development.md'), 'utf8');
   const commands = [...content.matchAll(/```sh\r?\n([\s\S]*?)```/gu)]

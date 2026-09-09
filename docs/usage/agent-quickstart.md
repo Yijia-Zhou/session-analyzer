@@ -1,8 +1,8 @@
 # Start for a user / 替用户启动
 
-Use this guide to start the user's selected project and verify that its recorded work can actually be read. It documents the accompanying checkout; the CLI is the supported v0.1 interface, and the HTTP checks below are version-specific internal implementation checks, not a stable public API. / 本指南用于启动用户所选项目并核验记录中的工作确实可读。本文对应所在 checkout；v0.1 支持的接口是 CLI，下列 HTTP 检查属于版本相关内部实现核验，不是稳定公共 API。
+Use this guide to start the user's selected project and verify that its recorded work can actually be read. It documents the accompanying checkout; the CLI is the supported v0.2 interface, and the HTTP checks below are version-specific internal implementation checks, not a stable public API. / 本指南用于启动用户所选项目并核验记录中的工作确实可读。本文对应所在 checkout；v0.2 支持的接口是 CLI，下列 HTTP 检查属于版本相关内部实现核验，不是稳定公共 API。
 
-This is an online guide, not a promised npm package file. Follow documentation at the installed release's tag or matching immutable revision. The 2026-09-08 release baseline is npm `0.1.4`; this checkout also declares `0.1.4` but contains later features, including DeepSeek Harness and startup diagnostics. A matching package version string does not establish matching code. / 本文是在线指南，不承诺随 npm 包分发。应阅读安装版本对应 tag 或匹配不可变 revision 的文档。2026-09-08 的发布基线是 npm `0.1.4`；此 checkout 同样声明 `0.1.4`，但包含后续功能，包括 DeepSeek Harness 与启动诊断。包版本字符串一致不代表代码一致。
+This is an online guide, not a promised npm package file. Follow documentation at the installed release's tag or matching immutable revision. The intended release is npm `0.2.0`; this checkout is its pre-publication release candidate and staged artifacts are not publicly installable. A matching package version string does not establish matching code until the exact release source is published. / 本文是在线指南，不承诺随 npm 包分发。应阅读安装版本对应 tag 或匹配不可变 revision 的文档。预期发布版本是 npm `0.2.0`；当前 checkout 是尚未公开的 release candidate，staged 制品不能公开安装。只有精确 release source 公开后，匹配的包版本字符串才与代码对应。
 
 ## 1. Identify and start the intended program / 确定并启动目标程序
 
@@ -19,7 +19,7 @@ Record the actual installed package version and executable location, or checkout
 For the public release, start an explicitly selected version after checking its supported features, for example: / 对公开发布包，检查其支持能力后启动明确选定的版本，例如：
 
 ```sh
-npx session-analyzer@0.1.4 --repo /path/to/target-project
+npx session-analyzer@0.2.0 --repo /path/to/target-project
 ```
 
 For this checkout's features, complete the [source setup](../development.md), including the build, then run from that checkout. Replace the example paths with the user's target project and DeepSeek sessions persistence root: / 要使用此 checkout 的功能，先完成[源码配置](../development.md)及构建，再从该 checkout 运行。将示例路径替换为用户目标项目及 DeepSeek sessions 持久化根：

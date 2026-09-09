@@ -2,7 +2,7 @@
 
 ## Status / 状态
 
-- Status: accepted `0.1.4` detail contract and M2–M7 implementation through `b1d0b0a2a8d0fb419618ab376a8a3330513eee16`; source-neutral third-adapter materialization-boundary follow-up completed and independently accepted; DeepSeek Harness Phase 1 is the real third-adapter pressure test (completed plan `docs/exec-plans/completed/2026-08-16-deepseek-harness-phase-1.md`); DeepSeek Harness Phase 2A was initially accepted at `f59dbf5…`, then corrected at `08e078e…` after real-corpus replay exposed the marker-only resume/fork ownership defect and finally archived at `b7ea5c27…` after successful run `32628926797`; Phase 2B Code Mode and workflow support at `b4e8f60…` passed all seven jobs in run `32633025427`; Phase 2C retry, Goal, and Todo support at `44cdc91…` passed all seven jobs in run `32635411409`; Phase 2D Permission/inbox support at `a02cd31…` passed all seven jobs in run `32643953770` and is archived under `docs/exec-plans/completed/2026-08-23-deepseek-harness-phase-2d-permission-inbox-provenance.md`. / 状态：已接受至 `b1d0b0a2a8d0fb419618ab376a8a3330513eee16` 的 `0.1.4` 详情契约与 M2 至 M7 实现；来源中立的第三 adapter 物化边界 follow-up 已完成并经独立评审接受；DeepSeek Harness 第一阶段是真实第三 adapter 压力测试；DeepSeek Harness 第二阶段 A 在真实语料修正 marker-only ownership 后于 `b7ea5c27…` 归档；Phase 2B Code Mode／workflow 在 `b4e8f60…` 通过 run `32633025427`；Phase 2C retry／Goal／Todo 在 `44cdc91…` 通过 run `32635411409`；Phase 2D Permission／inbox 在 `a02cd31…` 通过 run `32643953770` 的全部七个 job，现已归档至 `docs/exec-plans/completed/2026-08-23-deepseek-harness-phase-2d-permission-inbox-provenance.md`。
+- Status: the accepted detail contract and M2–M7 implementation remain part of the current `0.2.0` baseline through `b1d0b0a2a8d0fb419618ab376a8a3330513eee16`; source-neutral third-adapter materialization-boundary follow-up completed and independently accepted; DeepSeek Harness Phase 1 is the real third-adapter pressure test (completed plan `docs/exec-plans/completed/2026-08-16-deepseek-harness-phase-1.md`); DeepSeek Harness Phase 2A was initially accepted at `f59dbf5…`, then corrected at `08e078e…` after real-corpus replay exposed the marker-only resume/fork ownership defect and finally archived at `b7ea5c27…` after successful run `32628926797`; Phase 2B Code Mode and workflow support at `b4e8f60…` passed all seven jobs in run `32633025427`; Phase 2C retry, Goal, and Todo support at `44cdc91…` passed all seven jobs in run `32635411409`; Phase 2D Permission/inbox support at `a02cd31…` passed all seven jobs in run `32643953770` and is archived under `docs/exec-plans/completed/2026-08-23-deepseek-harness-phase-2d-permission-inbox-provenance.md`. / 状态：已接受的详情契约与 M2 至 M7 实现在 `b1d0b0a2a8d0fb419618ab376a8a3330513eee16` 之后仍属于当前 `0.2.0` 基线；来源中立的第三 adapter 物化边界 follow-up 已完成并经独立评审接受；DeepSeek Harness 第一阶段是真实第三 adapter 压力测试；DeepSeek Harness 第二阶段 A 在真实语料修正 marker-only ownership 后于 `b7ea5c27…` 归档；Phase 2B Code Mode／workflow 在 `b4e8f60…` 通过 run `32633025427`；Phase 2C retry／Goal／Todo 在 `44cdc91…` 通过 run `32635411409`；Phase 2D Permission／inbox 在 `a02cd31…` 通过 run `32643953770` 的全部七个 job，现已归档至 `docs/exec-plans/completed/2026-08-23-deepseek-harness-phase-2d-permission-inbox-provenance.md`。
 - Last updated: 2026-09-08 / 最近更新：2026-09-08
 - Related product spec: `docs/product-specs/session-transcript-analyzer.md` / 相关产品规格：`docs/product-specs/session-transcript-analyzer.md`
 - Related timeline design: `docs/design-docs/logical-event-timeline.md` / 相关时间线设计：`docs/design-docs/logical-event-timeline.md`
@@ -121,7 +121,7 @@ session-analyzer --source claude-code --claude-home <path>
 
 The runtime project chooser provides the other explicit selection path. `--source claude` is accepted as a convenience alias and normalizes to the stable machine value `claude-code`. The default Claude home is `~/.claude`, but it is not scanned unless Claude is selected through either path. This prevents an upgrade from silently expanding the set of sensitive local transcripts read by the process. / 运行期项目选择界面提供另一条显式选择路径。`--source claude` 作为便利别名被接受，并归一化为稳定机器值 `claude-code`。默认 Claude home 为 `~/.claude`，但只有通过任一入口选择 Claude 后才会扫描。这样可避免升级后在无提示的情况下扩大进程读取的本地敏感转录范围。
 
-`0.1.4` keeps exactly one active source per process, even though the user can switch that source at runtime. A mixed `--source all` index, source filter, and aggregate source counts remain deferred. / `0.1.4` 的每个进程在任一时刻仍只有一个活跃来源，但用户可以在运行期切换该来源。混合 `--source all` 索引、来源筛选与聚合来源计数继续推迟。
+`0.2.0` keeps exactly one active source per process, even though the user can switch that source at runtime. A mixed `--source all` index, source filter, and aggregate source counts remain deferred. / `0.2.0` 的每个进程在任一时刻仍只有一个活跃来源，但用户可以在运行期切换该来源。混合 `--source all` 索引、来源筛选与聚合来源计数继续推迟。
 
 ## Runtime source switching / 运行期来源切换
 
@@ -351,7 +351,7 @@ Non-success HTTP responses retain their status even when the body is non-JSON or
 
 ## Deferred work / 推迟事项
 
-`0.1.4` deliberately does not: / `0.1.4` 有意不做：
+`0.2.0` deliberately does not: / `0.2.0` 有意不做：
 
 - create a mixed Codex + Claude + DeepSeek Harness index / 建立 Codex + Claude + DeepSeek Harness 混合索引；
 - persist an import ledger or adapter cache / 持久化 import ledger 或 adapter cache；

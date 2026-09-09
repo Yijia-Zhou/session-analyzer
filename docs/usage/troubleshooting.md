@@ -1,6 +1,6 @@
 # Troubleshooting / 故障排查
 
-This online guide describes the accompanying checkout. Use the matching release documentation for an installed package; npm `0.1.4` and a checkout declaring `0.1.4` can have different capabilities. See [agent startup and verification](agent-quickstart.md) for version identification and bounded internal-API checks. / 本在线指南描述所在 checkout。安装包应使用对应发布版文档；npm `0.1.4` 与声明 `0.1.4` 的 checkout 可能能力不同。版本识别与有界内部 API 核验见 [agent 启动与验收](agent-quickstart.md)。
+This online guide describes the accompanying checkout. Use the matching release documentation for an installed package; the intended npm `0.2.0` and a checkout declaring `0.2.0` must still be matched by exact release source. See [agent startup and verification](agent-quickstart.md) for version identification and bounded internal-API checks. / 本在线指南描述所在 checkout。安装包应使用对应发布版文档；预期 npm `0.2.0` 与声明 `0.2.0` 的 checkout 仍必须通过精确 release source 匹配。版本识别与有界内部 API 核验见[启动与验收指南](agent-quickstart.md)。
 
 ## No projects, zero sessions, or missing history / 无项目、零会话或历史缺失
 
