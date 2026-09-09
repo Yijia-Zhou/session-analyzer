@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-08-23 / 最近更新：2026-08-23
+- Last updated: 2026-09-08 / 最近更新：2026-09-08
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -36,7 +36,7 @@ This repository started as a small local tool, but it already has user-facing be
 
 ### `AGENTS.md` / 仓库导航文件
 
-- Repository navigation only / 仅用于仓库导航
+- Repository navigation and concise local development startup/acceptance reminders / 仓库导航与简短本地开发启动／验收提醒
 - Update rules for documentation / 文档更新规则
 - Pointers to the current spec and design docs, plus the authoritative active and completed plan directories / 指向当前规格与设计文档，以及权威的活跃计划和已完成计划目录
 - A small set of genuinely current active-plan entrypoints may be grouped by subsystem; completed plans are discovered from their archive directory and are not itemized here / 可以按 subsystem 分组保留少量真正当前有效的 active-plan 入口；已完成计划从其归档目录发现，不在此逐条枚举
@@ -47,6 +47,14 @@ This repository started as a small local tool, but it already has user-facing be
 - Keep a single changelog file; organize the current development release by stable subsystem or transcript source instead of a global implementation timeline / 保持单一 changelog 文件；当前开发版本按稳定的 subsystem 或 transcript source 组织，而不是采用全局实现时间线
 - Keep each module's English and Chinese facts together and semantically aligned; do not duplicate one fact across modules / 将每个模块的英文与中文事实放在一起并保持语义一致；不要在多个模块中重复同一事实
 - Omit empty modules and preserve the established release history below the current development section / 省略空模块，并保留当前开发区段以下既有的发布历史
+
+### `docs/usage/` and `docs/development.md` / 使用与开发指南
+
+- Online operational guides complement the three formal intent-document classes; they do not introduce a new specification layer / 在线操作指南补充三类正式意图文档，不引入新的规格层
+- `usage/agent-quickstart.md` owns detailed consumer-agent startup and result verification; `usage/troubleshooting.md` owns recovery actions; `development.md` owns the exact source toolchain, install policy, commands, and repository layout / `usage/agent-quickstart.md` 负责消费端 agent 启动与结果核验细节；`usage/troubleshooting.md` 负责恢复操作；`development.md` 负责精确源码工具链、安装策略、命令与仓库布局
+- README remains the product/first-run entry and links to these guides; AGENTS retains concise development reminders and links to the canonical consumer instructions / README 保持产品／首次运行入口并链接指南；AGENTS 保留简短开发提醒并链接规范消费端说明
+- Guides are online-only, not promised npm tarball contents; links from a published package must resolve at its matching release tag or immutable revision, not future `main` instructions / 指南仅在线提供，不承诺作为 npm tarball 内容；发布包中的链接必须指向匹配 release tag 或不可变 revision，不能指向未来 `main` 说明
+- Quantitative performance evidence and architectural tradeoffs remain in the existing design documents; guides link to that evidence rather than duplicate measurement catalogs / 量化性能证据与架构取舍仍由既有设计文档负责；指南链接证据，不重复量测目录
 
 ### `docs/product-specs/` / 产品规格目录
 
@@ -123,6 +131,7 @@ This repository started as a small local tool, but it already has user-facing be
 
 ## Decision log / 决策日志
 
+- 2026-09-08: Added online usage/development guides and made the consumer-agent startup guide canonical, keeping README focused on first use and quantitative evidence in existing designs. / 2026-09-08：新增在线使用／开发指南，将消费端 agent 启动指南设为规范来源，让 README 聚焦首次使用，量化证据保留在既有设计中。
 - 2026-08-23: Made the execution-plan directories authoritative, removed the itemized completed-plan registry from `AGENTS.md`, and organized the current changelog release by stable modules so unrelated branches no longer share append-only documentation hotspots. / 2026-08-23：将执行计划目录确立为权威来源，从 `AGENTS.md` 移除逐条维护的 completed-plan registry，并按稳定模块组织当前 changelog release，避免不相关 branch 共用追加式文档热点。
 - 2026-07-13: Added a root bilingual domain glossary to distinguish source history, interpreted history, event layers, session relationships, and search boundaries. / 2026-07-13：新增根目录双语领域词汇表，用于区分来源历史、解释后历史、事件层、会话关系和搜索边界。
 - 2026-05-04: Added `docs/backlog/` as a separate parking area for rough long-horizon ideas. / 2026-05-04：新增 `docs/backlog/`，作为粗略远期想法的独立暂存区。

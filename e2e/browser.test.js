@@ -8191,6 +8191,10 @@ test('browser an above-threshold user scroll cannot authorize a later programmat
   await timelinePane.hover();
   await page.mouse.wheel(0, 100000);
   await assertEventCount(page, 300);
+  // Rendering the appended events can precede follow-up transcript reads.
+  // Let those requests finish before the fixture's cleanup removes the JSONL.
+  await page.waitForFunction(() => !document.querySelector('#loadMoreBtn')?.textContent.includes('Loading'));
+  await page.waitForLoadState('networkidle');
 });
 
 test('browser a scroll during an in-flight append cannot leak pagination authority after loading settles', async (t) => {

@@ -1,16 +1,19 @@
 # Documentation Overview / 文档概览
 
-This repository uses three formal document classes plus one idea parking area:
+This repository uses three formal intent-document classes plus one idea parking area, with online guides for usage and development:
 
-本仓库使用三类正式文档，并设置一个想法暂存区：
+本仓库使用三类正式意图文档，并设置一个想法暂存区，另以在线指南说明使用与开发操作：
 
 - `product-specs/`: what the product should do / 产品应该做什么
 - `design-docs/`: why the system is designed this way / 系统为什么这样设计
 - `exec-plans/`: how a concrete change is being executed / 一项具体变更如何执行
 - `backlog/`: rough long-horizon ideas that are not yet accepted plans / 尚未成为已接受计划的粗略远期想法
+- `usage/`: version-aware consumer startup, acceptance, and troubleshooting / 注明版本的消费端启动、验收与故障排查
+- `development.md`: exact source toolchain, install policy, build/test workflow, and repository layout / 精确源码工具链、安装策略、构建／测试流程与仓库布局
 
 ## How to use this tree / 如何使用这棵文档树
 
+- To run the app for a user, start with [agent quickstart](usage/agent-quickstart.md) and [troubleshooting](usage/troubleshooting.md); for source work, use [development](development.md). These are online guides, not promised npm package contents. / 替用户运行应用先看 [agent 快速开始](usage/agent-quickstart.md)与[故障排查](usage/troubleshooting.md)；源码工作看[开发指南](development.md)。这些指南在线提供，不承诺随 npm 包分发。
 - Start with a product spec when adding or changing user-facing behavior. / 添加或修改面向用户的行为时，先从产品规格开始。
 - Add or update a design doc when changing the transcript model, APIs, storage, or UI architecture. / 修改转录模型、API、存储或 UI 架构时，新增或更新设计文档。
 - Create an exec plan for any non-trivial implementation that spans multiple files or milestones. / 对任何跨多个文件或里程碑的非平凡实现创建执行计划。

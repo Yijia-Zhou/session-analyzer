@@ -25,7 +25,9 @@ The tracked capture storyboards are:
 ```text
 showcase/captures/readme/
 ├── search.json
-└── branching.json
+├── branching.json
+├── reading.json
+└── project-search.json
 ```
 
 They preserve the canonical README interaction sequences, frame timing, viewport
@@ -33,6 +35,19 @@ intent, and semantic keep/remove rules. Local manifests under
 `output/readme-capture/` may add capture-specific details, but they are optional
 generated artifacts and are not required for a fresh clone to reproduce the
 storyboard.
+
+The user-entry refresh uses `reading.json` for Timeline/Trajectory and patch
+inspection, and `project-search.json` for a true transition from the parent
+session to `Fix stale project rows after source switch`. Its query,
+`npm test -- project-switch`, occurs only in that neighbor. The older
+`search.json` remains a within-session navigation demonstration. The passing
+parent command now has a longer synthetic TAP output while retaining the same
+eight Main events and `12 tests passed` conclusion.
+
+用户入口重排使用 `reading.json` 展示 Timeline／Trajectory 与补丁检查，使用
+`project-search.json` 展示从父会话真正跳转到另一个会话。查询只存在于该相邻会话；
+既有 `search.json` 仍负责会话内导航。父会话成功命令改为较长的合成 TAP 输出，
+仍保留八个 Main 事件及 `12 tests passed` 结论。
 
 Materialize a disposable Codex home and workspace with:
 

@@ -1,7 +1,7 @@
 {
   "name": "session-analyzer",
   "version": "0.1.4",
-  "description": "Local interactive viewer for Codex, Claude Code, and DeepSeek Harness session transcripts.",
+  "description": "Local session history viewer for Codex, Claude Code, and DeepSeek Harness. Review agent work, inspect tool calls and results, and search sessions by project.",
   "keywords": [
     "codex",
     "claude-code",
@@ -9,7 +9,15 @@
     "transcript",
     "viewer",
     "session",
-    "local"
+    "local",
+    "history",
+    "search",
+    "coding-agent",
+    "tool-calls",
+    "ai-agents",
+    "session-history",
+    "transcript-viewer",
+    "local-first"
   ],
   "homepage": "https://github.com/Yijia-Zhou/session-analyzer#readme",
   "bugs": {

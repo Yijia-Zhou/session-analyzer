@@ -6,6 +6,8 @@ This repository keeps long-lived project intent in `docs/` rather than expanding
 
 - `CONTEXT.md`
   - Canonical bilingual domain terminology and words to avoid.
+- `docs/usage/` and `docs/development.md`
+  - Online consumer startup/troubleshooting guides and source-development instructions. / 在线消费端启动／故障排查指南与源码开发说明。
 - `docs/product-specs/`
   - External behavior, user value, scope boundaries, acceptance criteria.
 - `docs/design-docs/`
@@ -31,15 +33,13 @@ When changing product behavior or repository structure:
 
 - Start: `$repo = (git rev-parse --show-toplevel); $node = (Get-Command 'node.exe' -ErrorAction Stop).Source; $process = Start-Process -FilePath $node -ArgumentList @('server.js', '--repo', $repo) -WorkingDirectory $repo -WindowStyle Hidden -PassThru; $process.Id`
 - HTTP readiness only: `Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:17890/' -TimeoutSec 10`. This does not verify indexing. / 此检查只证明 HTTP 就绪，不证明索引完成。
-- Project acceptance: poll `GET /api/project/status` until `job.status` is `succeeded`, `failed`, or `cancelled` (use a bounded wait and report `queued`/`running` if it expires). A failure must include `job.error` and `job.errorCode` in the report. On success, request `GET /api/state`, verify `projectSelected`, the intended `repoRoot`, `totals.sessionCount`, and `sourceDiagnostics`; report zero sessions and any diagnostics explicitly instead of claiming readable history. If no `--repo` was supplied, HTTP 409 from `/api/state` means selection is still required. / 项目验收：轮询 `GET /api/project/status` 至 `job.status` 为 `succeeded`、`failed` 或 `cancelled`，采用有界等待，超时仍应报告排队／运行状态。失败时报告 `job.error` 与 `job.errorCode`；成功后检查 `GET /api/state` 的 `projectSelected`、预期 `repoRoot`、`totals.sessionCount` 与 `sourceDiagnostics`，明确报告零会话及诊断，不能直接声称历史可读。未传 `--repo` 时，`/api/state` 的 HTTP 409 表示仍需选择项目。
+- Project acceptance: use the bounded checks and result contract in [agent quickstart](docs/usage/agent-quickstart.md). Verify the intended project/source/root, indexing outcome, count, diagnostics, and actual reading; report errors/codes, zero, pending, or cancellation explicitly. These are internal API checks. / 项目验收：按 [agent 快速开始](docs/usage/agent-quickstart.md)执行有界检查与结果契约，核验预期项目／来源／根、索引结果、数量、诊断及实际阅读，明确报告错误／错误码、零会话、等待或取消；这些是内部 API 检查。
 - In Codex sandboxed tool sessions, background `Start-Process` server launches may be cleaned up when the command finishes. For a persistent browser-verification server, start this command outside the sandbox / with escalated execution.
 - 当代码修改完成但需要重启local server才能生效时，进行重启供用户验收。
 
 ## Starting for a user / 替用户启动
 
-- The command above targets this checkout for repository development acceptance. For a user session, set `--repo` to the user's intended target repository; the Analyzer checkout and transcript root are separate paths. / 上面的命令用于当前 checkout 的开发验收；替用户启动时，`--repo` 应指向用户要查看的目标仓库，Analyzer checkout 与转录根是另外两个路径。
-- Record the checkout commit (branch trial) or the installed package version (npm release), choose `--source codex|claude-code|deepseek-harness`, and specify the relevant `--codex-home`, `--claude-home`, or `--dsh-home` only when needed. `--dsh-home` points to the sessions persistence root. Branch functionality is not guaranteed in `npx session-analyzer`'s published package. / 记录 checkout commit（分支试用）或已安装包版本（npm 发布版），选择 `--source codex|claude-code|deepseek-harness`，必要时指定对应来源根。`--dsh-home` 指 sessions 持久化根；`npx session-analyzer` 的发布包不保证包含分支功能。
-- Use the project acceptance checks above before reporting success. These are current internal API checks, not a stable public API commitment. / 报告成功前执行上述项目验收；这些是当前内部 API 核验，不构成稳定公共 API 承诺。
+- Follow [the canonical consumer agent guide](docs/usage/agent-quickstart.md) for version-aware startup and acceptance. The command above targets this checkout for development; a user session targets the user's intended repository. / 按[规范消费端 agent 指南](docs/usage/agent-quickstart.md)执行版本感知启动与验收。上面的命令面向本 checkout 的开发验收；替用户启动时应选择用户的目标仓库。
 
 ## Current anchors
 

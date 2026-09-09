@@ -2,279 +2,133 @@
 
 [English README](README.md)
 
-Session Analyzer 把本地 Codex、Claude Code 与 DeepSeek Harness 会话转录整理成按仓库组织的可读工作历史。无需翻阅原始 JSONL，就能回顾 agent 做过什么、在整个项目中找回具体工作，并理解相关会话之间的来龙去脉。
+**Codex、Claude Code 与 DeepSeek Harness 的本地会话历史查看器。**
 
-![Session Analyzer 展示仓库会话历史、可读的主时间线和结构化命令详情](docs/assets/readme/session-analyzer-overview.png)
+**回看 AI 做了什么、具体怎么做的。** 消息容易被工具调用和长输出淹没，想检查某一步的细节也不方便。Session Analyzer 把消息与工具活动放在一起连贯呈现，让你结合上下文展开命令、文件修改和执行结果。需要先找回旧工作时，还可以按项目浏览和搜索历史会话。
 
-左侧始终显示仓库会话历史，中间的主时间线还原工作过程，右侧则可随时查看结构化详情。
+Session Analyzer 在本地读取已有转录，不修改或上传其内容。在浏览器中即可回顾当前或历史会话已保存的工作记录。
 
-Main 默认使用既有 Timeline 呈现。通过中间面板上方的 `Timeline | Trajectory`，可以把同一批已加载 Main event 切换为紧凑轨迹：Input／Model 叙事行、可逆且非因果的工具活动组，以及支持全览、缩放和横向平移的三 lane 序列概览。Protocol 与 Raw 始终只使用 Timeline；loaded-prefix 文案会明确提示长 Session 尚未完整加载。
+[快速开始](#快速开始) · [回顾会话](#回顾一次会话做了什么) · [查看操作](#查看一次具体操作怎么做的) · [搜索历史](#找回旧会话继续阅读)
 
-默认在本地运行，只读分析转录文件，不会上传转录内容。
+![Session Analyzer 左侧显示项目会话，中间连贯呈现工作过程，右侧展示命令详情](docs/assets/readme/session-analyzer-overview.png)
 
-## 快速找回某次具体工作
-
-搜索消息、命令、文件、输出、状态和事件类型，在匹配项之间移动并直接跳到相关事件，无需逐行翻阅转录。
-
-![搜索测试文件并跳转到匹配的补丁事件](docs/assets/readme/search-and-jump.gif)
-
-## 理解工作的来龙去脉
-
-从 review 和委派工作追溯到它们开始的地方，查看继承的上下文，并在需要时重新打开父会话。
-
-![打开 review 派生会话、检查继承上下文并返回父会话](docs/assets/readme/derived-session-provenance.gif)
+查看具体操作时，周围的工作上下文始终可见。下方演示均使用合成 Codex 转录。
 
 ## 快速开始
 
-不指定仓库启动，然后在浏览器中从发现的项目里选择：
+准备 **Node.js 24**（推荐）和 npm。
+
+**选择运行版本：**npm **0.1.4** 支持 Codex 与 Claude Code。体验本文展示的完整功能（包括 DeepSeek Harness 与 Trajectory），请使用[源码 checkout](docs/development.md)。npm 版本已于 2026-09-09 核验。
+
+按转录来源选择一个启动命令：
 
 ```sh
-npx session-analyzer
+# Codex
+npx session-analyzer@0.1.4
 ```
-
-或者启动时显式指定仓库：
 
 ```sh
-npx session-analyzer --repo /path/to/project
+# Claude Code
+npx session-analyzer@0.1.4 --source claude-code
 ```
 
-Windows 示例：
+使用**本分支的 DeepSeek Harness 支持**时，先完成源码环境准备，再从 Analyzer checkout 运行：
+
+```sh
+node server.js --source deepseek-harness
+```
+
+打开 **<http://127.0.0.1:17890/>**，选择项目，等待索引完成，再从左侧打开一个会话。从 **Main timeline（主时间线）** 开始阅读。查找旧会话时，点击搜索旁的 **session（会话）** 范围按钮，再选择 **Entire project（整个项目）**。
+
+启动时指定项目可添加 `--repo /path/to/project`。Windows 示例：
 
 ```powershell
-npx session-analyzer --repo 'C:\path\to\project'
+npx session-analyzer@0.1.4 --repo 'C:\path\to\project'
 ```
 
-然后打开：
+`--repo` 是你想查看历史的项目。Analyzer checkout 或安装目录、目标项目和转录根目录是不同的位置。也可以让 agent 按[启动与验收指南](docs/usage/agent-quickstart.md)替你配置。
+
+## 回顾一次会话做了什么
+
+下方示例中，agent 修改两个文件，遇到测试失败，补充修复后再次运行测试。在默认 **Timeline** 中按顺序阅读消息与工具活动，收起输出，并随时展开需要的细节。
+
+![工具密集的合成会话在折叠 Timeline 中仍能连贯阅读消息与工具活动](docs/assets/readme/session-reading-timeline.png)
+
+工具调用太多时，切换到 **Trajectory**（源码分支预览），用紧凑视图回看同一段对话与工具活动。展开工具组可查看具体操作，也可以通过序列概览导航。
+
+![同一会话片段的 Trajectory 呈现，保留可读消息并紧凑归组可展开的工具活动](docs/assets/readme/session-reading-trajectory.png)
+
+两种视图都显示当前已加载的事件；长会话可继续加载更多。
+
+## 查看一次具体操作怎么做的
+
+需要核查某次修改或失败命令时，在 **Timeline** 中展开对应事件，或在 **Trajectory** 中选择该操作。Timeline 在事件内显示命令输出与高亮修改，并在右侧提供补充详情；Trajectory 则在右侧打开所选操作的详情。结合周围的工作上下文，看清请求了什么、返回了什么。
+
+![展开的 Timeline 补丁在中间显示高亮修改，右侧提供结果、文件与来源信息](docs/assets/readme/operation-detail.png)
+
+看清请求了什么、修改了什么、工具返回了什么，再继续阅读会话。**Protocol layer（协议层）** 提供支持这些活动的运行记录。结构化详情不足时，可通过 **Raw records（原始记录）** 或事件的原始引用核对最初的转录条目。
+
+## 找回旧会话，继续阅读
+
+记得文件名、命令或一句话，却忘了在哪次会话中？点击搜索旁的 **session（会话）** 范围按钮，选择 **Entire project（整个项目）**，搜索消息、命令、文件路径与输出。打开命中即可进入另一个会话的对应事件，再接着阅读周围的工作。
+
+![从一个会话发起整个项目搜索，打开另一个会话中的命中并继续阅读](docs/assets/readme/project-search-and-read.gif)
+
+演示从会话 A 开始，搜索 `npm test -- project-switch`，在会话 B 中找到该命令，最后停在 B 的对应操作与上下文。实际使用时，换成自己历史中记得的文件名、命令或短语。搜索按忽略大小写的普通文本匹配；通过独立的文件、类型和状态筛选缩小范围。`status:failed` 等文字仍按字面搜索。
+
+## 需要时，补全上下文
+
+- **关联会话：**沿受支持的 review、subagent 与 fork 关系查看继承上下文、返回父会话。可用性取决于各来源实际记录的关系。
+- **Code Mode：**通过结构化请求与结果查看工具编排中受支持的操作。展示覆盖取决于来源与已记录的证据。
+- **Codex Token 与缓存观测：**查看单次请求的 Token 计量，以及保守推断的缓存复用下降，并跳转到对应的协议层证据。这些观测不证明缓存过期，也不代表服务端缓存状态。
+
+![合成 Codex review 派生会话展示继承上下文，并导航返回父会话](docs/assets/readme/derived-session-provenance.gif)
+
+这个 Codex review 示例展示继承上下文导航。不同来源之间的差异见[来源支持与边界](docs/design-docs/transcript-source-adapters.md)。
+
+## 来源与环境要求
+
+| 来源 | 默认转录根目录 | 自定义根目录参数 |
+| --- | --- | --- |
+| Codex（默认） | `~/.codex` | `--codex-home` |
+| Claude Code | `~/.claude` | `--claude-home` |
+| DeepSeek Harness（分支预览） | `~/.dsh/sessions` | `--dsh-home` |
+
+在对应参数后填写转录根目录。DeepSeek Harness 使用会话持久化目录作为根。也可以在项目选择界面切换来源或编辑根目录，无需重启。任一时刻只扫描活跃来源，不构建混合来源索引。
+
+已安装 CLI 支持 **Node.js 22 起的 LTS 版本**，推荐 **24**，并使用 npm 安装。DeepSeek `session.jsonl.zstd` 需要 Node 内置 Zstandard API；Node 22 从 **22.15.0** 起提供，最终以实际能力检查为准。没有该能力时，未压缩的 `session.jsonl` 仍可读取。[源码开发](docs/development.md)另有更严格的 Node/npm 策略。
+
+当前会话阅读基于已持久化的历史，不承诺实时监控或自动刷新。视图呈现记录中的操作与结果，不推断隐藏思维或因果关系。
+
+Claude Code 外置的 `tool-results/*` payload 暂不加载或搜索。受支持格式中未识别的事件保留 Protocol／Raw 兜底，但并非每类事件都有专门的展示。未支持的 DeepSeek 格式版本会被跳过，并显示诊断。
+
+服务器默认绑定 `127.0.0.1`。通过 `--host` 暴露到 localhost 之外，可能让其他机器读取当前进程可访问的转录。v0.1 支持的接口是 CLI；内部 HTTP API 与具体版本相关。
+
+## 常见问题与故障排查
+
+**没有项目或会话？** 核对当前来源、转录根目录与项目路径，再清除筛选。零匹配不代表没有历史。见[故障排查](docs/usage/troubleshooting.md)。
+
+**页面打开了，历史就能读了吗？** 等待索引完成，检查会话数与诊断。页面可访问只证明 HTTP 就绪；可读会话也可能与被跳过的工件同时存在。[Agent 指南](docs/usage/agent-quickstart.md)区分这些结果。
+
+**历史很大，或索引失败？** 先尝试普通索引。[诊断与内存恢复指南](docs/usage/troubleshooting.md)提供聚合日志收集方法，以及仅在相关失败后临时调整 heap 的步骤。
+
+## 让 agent 替你启动
+
+复制以下请求，填写项目与来源后交给 agent：
 
 ```text
-http://127.0.0.1:17890/
+请为我在本地启动 Session Analyzer：https://github.com/Yijia-Zhou/session-analyzer
+目标项目：<项目路径>
+转录来源：<Codex / Claude Code / DeepSeek Harness>
+选择支持该来源的版本，并按对应 README 及其链接的启动指南操作。
+核验索引完成，再实际打开一个会话确认可读。
+告诉我本地访问地址、实际版本、会话数及任何诊断。
 ```
 
-Codex 是默认的启动转录来源，应用会从 `~/.codex` 读取数据。如果该目录位于其他位置，可以使用 `--codex-home`：
+[在线启动与验收指南](docs/usage/agent-quickstart.md)涵盖版本选择、配置及实际阅读核验。使用指南是在线文档，不承诺包含在 npm 包内。
 
-```sh
-npx session-analyzer --repo /path/to/project --codex-home /path/to/.codex --port 17890
-```
+## 开发与贡献
 
-可以在启动时选择 Claude Code。只有当 Claude Code 是当前来源时，应用才会扫描 `~/.claude`：
-
-```sh
-npx session-analyzer --source claude-code --repo /path/to/project
-```
-
-如果 Claude home 不在默认位置，或者要检查导出的 project-container 目录，可以使用 `--claude-home`：
-
-```sh
-npx session-analyzer --source claude-code --claude-home /path/to/.claude
-```
-
-DeepSeek Harness 读取其 JSONL 持久化根（`session.jsonl` 或 `session.jsonl.zstd`），默认根为 `~/.dsh/sessions`：
-
-```sh
-npx session-analyzer --source deepseek-harness --repo /path/to/project
-```
-
-如果 DeepSeek 会话持久化根不在默认位置，可以使用 `--dsh-home`：
-
-```sh
-npx session-analyzer --source deepseek-harness --dsh-home /path/to/sessions
-```
-
-`--source claude` 是 `--source claude-code` 的别名，`--source dsh` 或 `--source deepseek` 是 DeepSeek Harness 的别名。之后也可以在项目选择界面切换当前转录来源，或编辑任一来源根。任一时刻只有一个活跃来源；Session Analyzer 不会构建混合来源索引。
-
-也可以全局安装 CLI：
-
-```sh
-npm install -g session-analyzer
-session-analyzer --repo /path/to/project
-```
-
-默认 host 是 `127.0.0.1`。`--host` 是高级选项；绑定到 localhost 之外可能让网络上的其他机器读取当前进程可访问的转录内容。
-
-## 替用户启动与确认就绪
-
-先明确程序版本、转录来源、目标仓库及来源根。`--repo` 是用户要查看历史的仓库，不一定是 Analyzer 的源码 checkout；`--codex-home`、`--claude-home` 与 `--dsh-home` 指转录来源根，不能用目标仓库替代。
-
-上面的 `npx session-analyzer` 运行 npm 发布版本，不保证包含当前分支功能。试用此分支时，按下方源码开发要求安装依赖并构建，然后从该 checkout 执行：
-
-```sh
-node server.js --source deepseek-harness --repo /path/to/target-project --dsh-home /path/to/sessions
-```
-
-记录 `git rev-parse HEAD` 和 `node --version`，以免把 npm 发布版本的行为当作分支验收。项目选择界面直接显示 Codex、Claude Code、DeepSeek Harness；没有已有项目或配置草稿时，选择来源立即生效。
-
-等待 CLI 索引终态或界面完成加载。HTTP 根页面可访问只表示服务已启动：索引仍可能运行、失败、成功但零会话，或成功且存在被跳过工件。启动失败会保留原因与重试／更改配置入口；来源诊断显示缺失路径、不可读工件或缺失 Zstd 能力，正常会话仍可阅读。自动化本地验收可轮询 `/api/project/status`，再核对 `/api/state` 的目标仓库、会话数及 `sourceDiagnostics`；这些接口用于当前实现的验收，不代表稳定公共 API 承诺。
-
-## 使用方式
-
-1. 使用默认的 Codex 来源，或在 CLI 选择 Claude Code 或 DeepSeek Harness，然后在浏览器中选择目标项目，也可以在启动服务器时传入 `--repo`。
-2. 使用项目选择界面在运行期切换项目；同一界面还可以切换当前转录来源或编辑其 home 目录，随后会针对该来源重新发现项目。
-3. 从左侧面板选择一个会话。
-4. 使用 `Main timeline` 进行日常阅读，并在默认 `Timeline` 呈现与紧凑 `Trajectory` 呈现之间选择；使用 `Protocol layer` 查看注入上下文和生命周期记录，使用 `Raw records` 查看精确转录行。
-5. 在搜索 HUD 中输入忽略大小写的普通文本短语；短语中的空白可以匹配空格、Tab 或换行。打开“搜索选项”可在当前会话与整个项目之间切换，编辑始终可见的“涉及文件”“类型”或“状态”筛选，查看完整计数，或跳到相邻的全局层级选择器。`status:failed` 等类似操作符的输入仍按字面文本搜索。
-6. 打开事件以检查结构化详情和原始引用。
-
-npm 包不承诺稳定的程序接口。v0.1 支持的接口是 `session-analyzer` CLI。
-
-## 可检查的内容
-
-- 从 Codex、Claude Code 或 DeepSeek Harness 会话工作目录中发现并切换项目，也可以启动时直接指定目标仓库。
-- 无需重启服务器，即可在项目选择界面切换当前转录来源并配置来源 home 目录。
-- 只显示与所选仓库匹配的会话。
-- 保持 Claude Code subagent 可单独选择；区分物化式与指针式分叉，并在不重复指标或原始记录的前提下展示归父会话所有的继承上下文。
-- 浏览三种层级：去重后的主时间线、协议事件、原始 JSONL 记录。
-- 在不改变逻辑事件、搜索、Inspector 或原始引用 identity 的前提下，通过默认 Timeline 或紧凑 Trajectory 概览与叙事阅读 Main。
-- 对于 Codex，可检查单次请求的 Token 使用情况与保守推断的缓存复用中断，并在主时间线上下文与对应的协议层证据之间跳转。
-- 搜索消息、命令、文件、输出、状态、事件类型和层级。
-- 检查消息、命令、补丁、计划、MCP/工具调用、Web 搜索、生命周期事件和原始记录的结构化详情。
-- 从逻辑事件跳回精确的源 JSONL 行。
-- 使用适合叙事阅读、对话回顾、错误聚焦、改动审查、计划阅读、搜索聚焦和紧凑浏览的折叠策略。
-- 安全渲染转录中的 Markdown：禁用原始 HTML，并拒绝危险链接协议。
-
-## 隐私与安全
-
-本项目刻意采用本地优先设计：
-
-- 服务器默认绑定到 `127.0.0.1`。
-- 转录文件只从磁盘读取，不会被修改。
-- 派生索引只保存在内存中。
-- 原始转录下钻需要用户显式打开，所以敏感内容不会被应用隐藏，但本应用也不会把它发送到外部。
-
-Agent 转录可能包含提示词、命令输出、文件路径、环境详情以及其他私有材料。不要把真实的 `.codex/sessions`、`.claude/projects`、`.dsh/sessions` 目录或导出的转录数据提交到公开仓库。
-
-这个工具是本地查看器，不是托管的多用户分析服务。如果你把服务器暴露到 localhost 之外，任何能访问该服务的人都可能读取当前进程可访问的转录内容。
-
-发布 fork、issue 复现或示例数据之前，请确认附带的转录样本是合成的或已脱敏。
-
-## 环境要求
-
-- 已安装 CLI：受支持的 Node.js LTS，最低 Node.js 22（推荐 Node.js 24），以及用于安装的 npm。DeepSeek Harness 的 `session.jsonl.zstd` 需要 Node 内置 `node:zlib` Zstandard API（22.x 从 22.15.0 起提供；以实际能力检查为准）；该 API 不可用时，未压缩的 `session.jsonl` 仍可读取
-- 源码开发与发布工作：Node.js `^22.22.2 || ^24.15.0`，并且 npm 必须精确为 `12.0.2`
-
-### 大型 transcript 历史与 Node/V8 内存
-
-索引内存主要取决于与所选仓库匹配的 transcript 历史总量和形态，而不是源码仓库本身的大小。Candidate transcript 字节数、Raw Record 与 Logical Event 数量、记录组成，以及尤其异常庞大的单个 Session，都会影响内存使用。
-
-在当前 Indexed／Materialized 生命周期下，一次只输出聚合数据、覆盖 490 个 Session 与 305,485 条 Raw Record 的 Codex 运行在默认 2.35 GB V8 heap 上限内完成。它观测到 788 MB transient V8 heap 峰值与 2.16 GB process maximum RSS；强制 GC 后保留 56.5 MB V8 heap，同时主要在 V8 heap 之外持有 1.055 GB 紧凑 query store。该运行中最大的已接受 transcript 为 116.9 MB：冷物化耗时 10.84 秒，精确 warm cache 命中耗时 0.14 ms 且没有再次调用 adapter；缓存的完整 Session 在 GC 后增加约 37.0 MB heap。即使来源回读生命周期显著降低了 V8 heap 压力，接近约 1 GB 匹配 transcript 数据的历史仍应视为高 process-memory 工作负载。这些实测数据只是指导，不是保证、预测公式、内存耗尽边界或硬性容量上限；实际使用量会随记录形态、事件数量、Node 版本、同一 revision 内打开的不同 Session 数量而变化，异常庞大的单个 Session 尤其会产生影响。
-
-当匹配历史达到经验性的 800 MiB 警告阈值时，CLI 会输出一次 `[SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY]`，然后照常继续索引。该警告只为用户和 agent 提供信息：应先尝试普通索引；若索引成功，无需调整 heap。它不会修改 `NODE_OPTIONS`、重启进程或改变退出码。
-
-对 Claude Code，当前警告依据的是所选 primary transcript 的字节数；derived subagent transcript 可能进一步增加实际索引工作量，目前尚未完成大型 Claude 语料的容量校准。
-
-只有当索引因 `JavaScript heap out of memory` 等 V8 heap exhaustion 错误终止时，才使用适度增大的临时 heap 重试。这是为异常庞大历史提供的临时规避方式，不是新的产品默认值。PowerShell 示例：
-
-```powershell
-$env:NODE_OPTIONS='--max-old-space-size=4096'
-npx session-analyzer --repo 'C:\path\to\project' --log-dir '.\session-analyzer-logs'
-Remove-Item 'Env:NODE_OPTIONS'
-```
-
-如果原本已设置 `NODE_OPTIONS`，请先保存旧值，并在运行后恢复旧值，而不是直接删除该环境变量。
-
-在 POSIX shell 中，把覆盖限制在单条命令内：
-
-```sh
-NODE_OPTIONS='--max-old-space-size=4096' npx session-analyzer --repo /path/to/project --log-dir ./session-analyzer-logs
-```
-
-调查问题时，推荐使用 `--log-dir <path>` 收集聚合索引诊断。Session Analyzer 会写入经过节流、有界的 JSONL 生命周期记录，其中包含 candidate 文件／字节数、Session／Raw／Logical 数量、耗时、V8 heap limit、当前与进程内峰值内存，以及稳定的容量警告信号。这些记录不包含仓库路径、transcript 路径、transcript 正文、提示词、命令或源码内容，并且最多保留 20 份索引日志。Fatal V8 OOM 的 stderr 仍是权威的最终崩溃证据；进程发生 fatal termination 时，诊断 logger 可能来不及写入最终记录。
-
-来源回读生命周期消除了语料级完整 event graph，但紧凑 query store 与 revision-scoped Materialized Session cache 仍是不可忽略的内存 owner。完整 Session 现在使用来源中立的加权 LRU working set：普通保留 cache state 受 256 MiB 估算权重与 12 个 Session 的双重限制，speculative prewarm 的准入与淘汰权更弱。若 foreground Session 的估算值超过 byte budget，它可以作为唯一 cached entry 常驻，避免后续 timeline、detail 与 Raw request 反复重建。该估算是确定性 cache weight，不是 V8 heap 或 RSS 上限；in-flight request 也可能暂时让已淘汰 object 继续可达。项目成功替换或切换来源仍会释放整个旧 revision cache。这些工程默认值不是永久的产品容量上限，也不会使用派生 disk cache。
-
-## 从源码开发
-
-已发布 CLI 继续采用上文 Node.js 22 或更高版本的宽泛运行时要求；DeepSeek Harness 压缩工件依赖受支持开发 Node 版本中内置的 `node:zlib` Zstandard API，未压缩 `session.jsonl` 在其他环境仍可读取。源码 checkout 有意采用更严格的工具链，因为 npm 12 会执行经过审查的依赖 install-script 策略。在运行仓库内任何 `npm install`、`npm ci` 或 `npm run` 前，先选择受支持的 Node.js 版本，并从源码 checkout 之外的目录全局 bootstrap 精确的 npm CLI。下面第一条 npm 命令只更新工具链，不安装项目依赖：
-
-```sh
-node --version
-npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/
-npm --version
-```
-
-完成 bootstrap 后才能返回源码 checkout。只有 Node.js 满足 `^22.22.2 || ^24.15.0` 且 `npm --version` 精确输出 `12.0.2` 时才能继续。随后在 strict 默认拒绝脚本策略下安装 lockfile 固定的依赖：
-
-```sh
-npm ci --strict-allow-scripts --registry=https://registry.npmjs.org/
-npm install-scripts ls --json
-```
-
-最后一条命令不得报告 pending install script。
-
-从源码仓库启动：
-
-```sh
-npm start
-```
-
-或者直接运行 server 文件：
-
-```powershell
-node server.js --repo 'C:\path\to\project'
-```
-
-构建浏览器 bundle：
-
-```sh
-npm run build
-```
-
-运行测试：
-
-```sh
-npm test
-```
-
-安装 Chromium 并运行浏览器覆盖：
-
-```sh
-npm run browser:install
-npm run test:browser
-```
-
-发布打包前运行 package smoke 验证：
-
-```sh
-npm run test:package
-```
-
-package smoke 命令会执行 `npm pack`，把 tarball 安装到全新的临时项目中，检查已安装 CLI 的 help，并启动打包后的 server。
-
-运行可重复的非浏览器 release gate：
-
-```sh
-npm run release:check
-```
-
-Release gate 会检查生成资产、运行完整 Node 测试，并重复执行安装后 package smoke。Browser coverage 继续作为独立的 CI 与本地发布要求。
-
-`test/fixtures/codex-home` 下的 fixture 以及 `test/claude.test.js` 中的内联 Claude fixture 都是合成转录数据。它们有意包含假的路径和示例转录形态，用于覆盖解析器行为。
-
-浏览器 JavaScript 源码位于 `src/browser/`，浏览器与 Node 共用逻辑位于 `src/shared/`。生成的运行时 bundle 是 `public/assets/app.js`；不要直接编辑它。
-
-## 已知限制
-
-- v0.1.4 暂不支持混合来源索引或来源筛选。
-- 缓存复用中断目前仅支持 Codex，并依据转录中的 token accounting 推断；它不是显式的缓存过期证据。
-- DeepSeek Harness 支持消息、reasoning、工具生命周期、preset、父子 lineage／fork ownership、compaction、基于精确 ID 的 Code Mode、保守的 Protocol workflow、LLM retry、Goal／Todo、独立的 Permission 配置状态及精确 MessageId inbox provenance。Generic command run／done、boolean plan-mode 与 interactive approval lifecycle 是 adapter 自有的 Protocol 投影；审批仅按精确 request ID 关联，并在 callId 唯一解析时关联工具。它不推断审批到重试的因果关系，也不让审批修改 Permission 状态。其余已知上游事件族仍明确推迟。
-- Claude Code 外置的 `tool-results/*` payload 暂不加载或搜索；其来源记录和引用仍可通过 protocol/raw 兜底查看。
-- 未知的 Codex、Claude Code 与受支持版本内的 DeepSeek protocol event 保留 protocol/raw 兜底，但并非每个事件族都有专门渲染器。未支持的 DeepSeek 格式版本被隔离并显示来源诊断，不猜测解析。DeepSeek Code Mode 使用持久化来源 ID，不解析外层程序来推导 declared request；workflow 支持有来源依据，但在复制的 6 条真实 Session 中尚未观察到。
-- 转录 fixture 覆盖是有重点的，不是穷尽式的；后续观察到新的历史形态时，可能仍需要补充 fixture 和展示调整。
-- Review finding 渲染已有合成数据覆盖，本地也已观察到真实的非空 `review_output.findings[]` 示例；后续仍适合补充脱敏 fixture 来防止回归。
-
-## 仓库结构
-
-- `server.js`：本地 HTTP 服务器和 API 路由。
-- `src/source-adapters.js`：来源选择与来源中立的分派边界。
-- `src/codex*.js`：Codex 解析、发现、逻辑映射、索引和详情构建。
-- `src/claude*.js`：Claude Code 发现、解析、逻辑映射、索引和详情构建。
-- `src/deepseek-harness*.js`：DeepSeek Harness 存储／解码、发现、严格 Indexed／Materialized 映射与详情构建。
-- `src/folding.js`：内置时间线折叠策略。
-- `src/shared/`：浏览器与 Node 共用逻辑，例如折叠规则求值和命令高亮元数据。
-- `src/browser/`：浏览器 UI 源码、搜索控件与状态模型、渲染器、导航和应用接线。
-- `public/`：静态 HTML/CSS 和生成的浏览器运行时资产。
-- `test/`：Node 测试套件和合成转录 fixture。
-- `docs/`：产品规格、设计文档、执行计划和 backlog 笔记。
-
-## 许可证
+参阅[开发环境、检查命令与仓库结构](docs/development.md)、[文档索引](docs/README.md)、[架构](docs/design-docs/logical-event-timeline.md)及[性能设计](docs/design-docs/timeline-loading-and-rendering-performance.md)。反馈问题时请附版本、来源和复现步骤；公开报告中使用合成或脱敏转录。
 
 BSD 3-Clause。见 [LICENSE](LICENSE)。

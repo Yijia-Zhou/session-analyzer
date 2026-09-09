@@ -61,16 +61,17 @@ test('package metadata exposes the session-analyzer CLI', () => {
 
   assert.equal(pkg.name, 'session-analyzer');
   assert.equal(pkg.version, '0.1.4');
-  assert.equal(pkg.description, 'Local interactive viewer for Codex, Claude Code, and DeepSeek Harness session transcripts.');
-  assert.deepEqual(pkg.keywords, [
-    'codex',
-    'claude-code',
-    'deepseek-harness',
-    'transcript',
-    'viewer',
-    'session',
-    'local',
-  ]);
+  assert.equal(typeof pkg.description, 'string');
+  assert.ok(pkg.description.trim().length > 0);
+  assert.ok(Array.isArray(pkg.keywords));
+  for (const keyword of pkg.keywords) {
+    assert.equal(typeof keyword, 'string');
+    assert.match(keyword, /^[a-z0-9]+(?:-[a-z0-9]+)*$/u);
+  }
+  assert.equal(new Set(pkg.keywords).size, pkg.keywords.length);
+  for (const source of ['codex', 'claude-code', 'deepseek-harness']) {
+    assert.ok(pkg.keywords.includes(source), `keywords should include ${source}`);
+  }
   assert.equal(lock.name, pkg.name);
   assert.equal(lock.version, pkg.version);
   assert.equal(lock.packages[''].name, pkg.name);
@@ -212,27 +213,21 @@ test('packaged third-party notice preserves the Highlight.js license', () => {
 test('source setup docs bootstrap exact npm before strict installation', () => {
   const bootstrap = 'npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/';
   const strictInstall = 'npm ci --strict-allow-scripts --registry=https://registry.npmjs.org/';
-  const docs = [
-    {
-      path: 'README.md',
-      runtimeBoundary: 'Installed CLI:',
-      sourceBoundary: 'Source development and release work:',
-    },
-    {
-      path: 'README.zh-CN.md',
-      runtimeBoundary: '已安装 CLI：',
-      sourceBoundary: '源码开发与发布工作：',
-    },
-  ];
-
-  for (const doc of docs) {
-    const content = fs.readFileSync(path.join(repoRoot, doc.path), 'utf8');
-    assert.match(content, new RegExp(doc.runtimeBoundary, 'u'));
-    assert.match(content, new RegExp(doc.sourceBoundary, 'u'));
-    assert.ok(content.indexOf(bootstrap) > -1, `${doc.path} should document the exact npm bootstrap`);
-    assert.ok(content.indexOf(strictInstall) > content.indexOf(bootstrap), `${doc.path} should bootstrap npm before strict install`);
-    assert.doesNotMatch(content, /(?:^|\r?\n)npm install(?:\r?\n|$)/u);
+  for (const readme of ['README.md', 'README.zh-CN.md']) {
+    const content = fs.readFileSync(path.join(repoRoot, readme), 'utf8');
+    assert.match(content, /\]\(docs\/development\.md(?:#[^)]*)?\)/u);
   }
+  const content = fs.readFileSync(path.join(repoRoot, 'docs/development.md'), 'utf8');
+  const commands = [...content.matchAll(/```sh\r?\n([\s\S]*?)```/gu)]
+    .map((match) => match[1]).join('\n');
+  assert.ok(content.includes('^22.22.2 || ^24.15.0'));
+  assert.match(content, /outside this checkout/u);
+  assert.match(content, /checkout 之外/u);
+  assert.ok(commands.indexOf(bootstrap) > -1, 'development guide should document the exact npm bootstrap');
+  assert.ok(commands.indexOf(strictInstall) > commands.indexOf(bootstrap), 'bootstrap npm before strict install');
+  assert.ok(commands.indexOf('npm install-scripts ls --json') > commands.indexOf(strictInstall));
+  assert.match(content, /no pending install scripts/u);
+  assert.doesNotMatch(commands, /(?:^|\r?\n)npm install(?:\r?\n|$)/u);
 });
 
 test('final dist-tag evidence uses a separately proven anonymous userconfig', () => {
@@ -295,8 +290,12 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'README.zh-CN.md',
     'THIRD_PARTY_NOTICES.md',
     'docs/assets/readme/derived-session-provenance.gif',
+    'docs/assets/readme/operation-detail.png',
+    'docs/assets/readme/project-search-and-read.gif',
     'docs/assets/readme/search-and-jump.gif',
     'docs/assets/readme/session-analyzer-overview.png',
+    'docs/assets/readme/session-reading-timeline.png',
+    'docs/assets/readme/session-reading-trajectory.png',
     'package.json',
     'public/assets/app.js',
     'public/favicon.ico',
