@@ -239,6 +239,16 @@ function sendError(res, status, message, details, code) {
   sendJson(res, status, { error: message, details, code });
 }
 
+// Promise rejection reasons may be any value, including null or undefined.
+function normalizeCaughtError(error) {
+  if (error !== null && (typeof error === 'object' || typeof error === 'function')) {
+    return error;
+  }
+  const normalized = new Error('Unhandled rejection');
+  normalized.cause = error;
+  return normalized;
+}
+
 function sendImage(res, image) {
   res.writeHead(200, {
     'content-type': image.mimeType,
@@ -826,21 +836,22 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     job.diagnostics?.finish('succeeded', { buildMs: job.buildMs });
     scheduleRevisionPrewarm(state, lease);
   }).catch((error) => {
+    const safeError = normalizeCaughtError(error);
     job.completedAt ||= new Date().toISOString();
     job.buildMs = Date.now() - startedAtMs;
-    if (controller.signal.aborted || job.status === 'cancelled' || error.name === 'AbortError') {
+    if (controller.signal.aborted || job.status === 'cancelled' || safeError.name === 'AbortError') {
       job.status = 'cancelled';
       job.error = 'Indexing cancelled';
       job.diagnostics?.finish('cancelled', { buildMs: job.buildMs });
       return;
     }
     job.status = 'failed';
-    job.error = error.message || 'Indexing failed';
-    job.errorCode = error.code || '';
+    job.error = safeError.message || 'Indexing failed';
+    job.errorCode = safeError.code || '';
     job.diagnostics?.finish('failed', {
       buildMs: job.buildMs,
-      errorName: error.name || 'Error',
-      errorCode: error.code || '',
+      errorName: safeError.name || 'Error',
+      errorCode: safeError.code || '',
     });
   }).then(async () => {
     // Observability cannot change a settled job or invalidate its committed index.
@@ -1264,21 +1275,22 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       await serveStatic(res, pathname);
     } catch (error) {
       if (res.destroyed) return;
-      if (error.name === 'AbortError') return;
-      const statusCode = error.statusCode || 500;
-      if (error.retryAfterSeconds && !res.headersSent) {
-        res.setHeader('retry-after', String(error.retryAfterSeconds));
+      const safeError = normalizeCaughtError(error);
+      if (safeError.name === 'AbortError') return;
+      const statusCode = safeError.statusCode || 500;
+      if (safeError.retryAfterSeconds && !res.headersSent) {
+        res.setHeader('retry-after', String(safeError.retryAfterSeconds));
       }
       const details = debugErrors
-        ? (statusCode >= 500 ? error.stack || error.message : error.message)
+        ? (statusCode >= 500 ? safeError.stack || safeError.message : safeError.message)
         : undefined;
       sendError(
         res,
         statusCode,
-        statusCode >= 500 && error.code !== 'DEEPSEEK_SOURCE_BUSY' ? 'Internal server error' : error.message,
+        statusCode >= 500 && safeError.code !== 'DEEPSEEK_SOURCE_BUSY' ? 'Internal server error' : safeError.message,
         details,
-        statusCode < 500 || PUBLIC_RUNTIME_ERROR_CODES.has(error.code)
-          ? error.code
+        statusCode < 500 || PUBLIC_RUNTIME_ERROR_CODES.has(safeError.code)
+          ? safeError.code
           : undefined,
       );
     } finally {
@@ -1343,7 +1355,8 @@ async function main() {
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error(error.stack || error.message);
+    const safeError = normalizeCaughtError(error);
+    console.error(safeError.stack || safeError.message);
     process.exitCode = 1;
   });
 }
