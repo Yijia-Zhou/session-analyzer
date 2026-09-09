@@ -33,6 +33,52 @@ function tick() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+for (const reason of [undefined, null, false, 0, '', NaN]) {
+  test(`falsy rejection ${String(reason)} rejects all waiters without caching and allows retry`, async () => {
+    const { index, owner, scheduler } = fixtureOwner(['falsy']);
+    const session = index.sessions[0];
+    let calls = 0;
+    const materialize = () => {
+      calls += 1;
+      return Promise.reject(reason);
+    };
+    const results = await Promise.allSettled([
+      owner.get(session, null, materialize),
+      owner.get(session, null, materialize),
+    ]);
+    await scheduler.whenIdle();
+    assert.deepEqual(results, [
+      { status: 'rejected', reason },
+      { status: 'rejected', reason },
+    ]);
+    assert.equal(calls, 1);
+    assert.equal(owner.cache.size, 0);
+    assert.equal(owner.metrics.cacheAdmissions, 0);
+    assert.equal(owner.metrics.completed, 0);
+    assert.equal(owner.metrics.failed, 1);
+    const value = { id: session.id };
+    assert.equal(await owner.get(session, null, () => { calls += 1; return value; }), value);
+    await scheduler.whenIdle();
+    assert.equal(calls, 2);
+    assert.equal(owner.metrics.completed, 1);
+    assert.equal(owner.metrics.failed, 1);
+    assert.equal(owner.cache.get(session.id).value, value);
+  });
+
+  test(`falsy rejection ${String(reason)} records prewarm failure`, async () => {
+    const { index, owner, scheduler } = fixtureOwner(['falsy']);
+    assert.deepEqual(await owner.prewarm(index.sessions[0], () => Promise.reject(reason)), {
+      status: 'failed', code: 'ERROR',
+    });
+    await scheduler.whenIdle();
+    assert.equal(owner.cache.size, 0);
+    assert.equal(owner.metrics.completed, 0);
+    assert.equal(owner.metrics.failed, 1);
+    assert.equal(owner.metrics.prewarmCompleted, 0);
+    assert.equal(owner.metrics.prewarmFailed, 1);
+  });
+}
+
 function fixtureIndex(specifications) {
   const sessions = specifications.map((specification, index) => {
     const fields = typeof specification === 'string' ? { id: specification } : specification;

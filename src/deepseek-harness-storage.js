@@ -383,6 +383,7 @@ async function readFirstLineBytes(filePath, signal) {
   const handle = await fsp.open(filePath, 'r');
   try {
     let offset = 0;
+    const chunks = [];
     for (;;) {
       throwIfAborted(signal);
       const length = Math.min(FIRST_LINE_READ_CHUNK, MAX_FIRST_RECORD_BYTES - offset);
@@ -392,7 +393,11 @@ async function readFirstLineBytes(filePath, signal) {
       throwIfAborted(signal);
       if (bytesRead === 0) break;
       const newline = buffer.indexOf(0x0A, 0, bytesRead);
-      if (newline >= 0) return buffer.subarray(0, newline + 1);
+      if (newline >= 0) {
+        chunks.push(buffer.subarray(0, newline + 1));
+        return Buffer.concat(chunks, offset + newline + 1);
+      }
+      chunks.push(buffer.subarray(0, bytesRead));
       offset += bytesRead;
     }
     return Buffer.alloc(0);
