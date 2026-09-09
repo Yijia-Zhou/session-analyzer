@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {
@@ -11,6 +12,7 @@ const {
   normalizePackManifest,
   normalizeTarEntries,
   parseOptions,
+  prepareGlobalPrefix,
   sha512FromIntegrity,
   validateAttestationResponse,
   validateProvenance,
@@ -100,6 +102,18 @@ test('release automation accepts only a temporary isolated stage-review userconf
   assert.equal(isTemporaryUserconfigPath(path.join(os.tmpdir(), 'session-analyzer-stage-auth-example', 'config.txt')), false);
   assert.equal(isTemporaryUserconfigPath(path.join(os.homedir(), '.npmrc')), false);
   assert.equal(isTemporaryUserconfigPath(''), false);
+});
+
+test('public verifier prepares a POSIX-compatible global prefix', async () => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-global-prefix-'));
+  const prefix = path.join(root, 'global');
+  try {
+    await prepareGlobalPrefix(prefix);
+    const stats = await fsp.stat(path.join(prefix, 'lib'));
+    assert.equal(stats.isDirectory(), true);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
 });
 
 test('release automation normalizes npm pack and tar manifest shapes', () => {
