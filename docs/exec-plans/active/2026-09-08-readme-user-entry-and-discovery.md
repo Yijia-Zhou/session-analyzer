@@ -194,6 +194,12 @@ The maintainer reviewed the updated preview on 2026-09-09 and reported no issues
 - Recorded non-brand query hypotheses: `Codex session history viewer tool calls local` and `Claude Code history viewer tool output search`. A small search sample is wording/discovery exploration, not evidence of indexing status, ranking, or increased traffic. Revisit after the public entry changes are observable. / 记录上述两条非品牌需求查询假设；小样本搜索只用于措辞／发现探索，不证明收录状态、排名或流量增长。公开入口变更可见后再复查。
 - Validation: all 73 local link targets resolve, eight first-screen anchors match their headings, bilingual shell commands agree, and diff whitespace checks pass. No runtime behavior or package file boundary changed. / 验证：73 个本地链接目标有效、八个首屏锚点与标题匹配、双语 shell 命令一致、diff 空白检查通过；未改变运行行为或包文件边界。
 
+### PR integration test migration, 2026-09-09 / PR 集成测试迁移，2026-09-09
+
+- Confirmed four stale assertion groups after the README migration: promotional metadata, source setup instructions, the exact tarball manifest, and README memory measurements. Moved the checks to their owning guides/designs, retained strict toolchain order and OOM recovery safeguards, and added the four approved assets to the exact manifest. Metadata checks now validate a nonempty description, unique formatted keywords, and required source names instead of freezing promotional wording. / 确认 README 迁移后四组断言过时：宣传元数据、源码安装说明、精确 tarball 清单及 README 内存量测。将检查迁至所属指南／设计，保留严格工具链顺序与 OOM 恢复边界，将四份已批准素材加入精确清单。元数据检查改为验证描述非空、关键词格式及唯一性、必要来源名称，不再锁死宣传措辞。
+- Added the relevant npm keywords `ai-agents`, `session-history`, `transcript-viewer`, and `local-first`; the approved README narrative and package version remain unchanged. / 补充上述四个相关 npm 关键词；已认可的 README 叙事与包版本保持不变。
+- Validation on Windows, Node 24.18.1 / npm 12.0.2: focused tests 25/25, full Node suite 1046/1046, generated build check passed. The combined `release:check` reached package smoke but npm registry access returned sandbox `EACCES`; stopped that attempt and reran `test:package` with network access, passing all three sources. Thus all constituent non-browser release checks passed, without claiming a new remote CI matrix result. / Windows、Node 24.18.1／npm 12.0.2 验证：聚焦测试 25/25、全部 Node 测试 1046/1046、生成资源检查通过。组合 `release:check` 到安装包冒烟时因沙箱访问 npm registry 返回 `EACCES`，停止该次运行并在允许联网的环境重跑 `test:package`，三个来源全部通过。因此非浏览器发布检查的各组成项均通过，不声称远端 CI 矩阵已重新通过。
+
 ## Deferred follow-ups / 后续事项
 
 ### 1. Align installation with the demonstrated experience / 对齐安装与演示体验

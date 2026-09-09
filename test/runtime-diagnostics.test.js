@@ -333,27 +333,61 @@ test('server emits one large-history warning without blocking successful indexin
   assert.equal(capacityEntries[0].warningCode, LARGE_TRANSCRIPT_HISTORY_WARNING_CODE);
 });
 
-test('English and Chinese README capacity guidance preserves aligned operational anchors', () => {
-  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
-  const readmeZh = fs.readFileSync(path.join(__dirname, '..', 'README.zh-CN.md'), 'utf8');
-  for (const content of [readme, readmeZh]) {
-    assert.match(content, /490/u);
-    assert.match(content, /305,485/u);
-    assert.match(content, /788 MB/u);
-    assert.match(content, /2\.16 GB/u);
-    assert.match(content, /1\.055 GB/u);
-    assert.match(content, /10\.84/u);
-    assert.match(content, /0\.14 ms/u);
-    assert.match(content, /800 MiB/u);
-    assert.match(content, /SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY/u);
-    assert.match(content, /JavaScript heap out of memory/u);
-    assert.match(content, /--max-old-space-size=4096/u);
-    assert.match(content, /--log-dir <path>/u);
-    assert.match(content, /weighted LRU|加权 LRU/u);
-    assert.match(content, /256 MiB/u);
-    assert.match(content, /12 Sessions|12 个 Session/u);
-    assert.match(content, /not a V8 heap or RSS ceiling|不是 V8 heap 或 RSS 上限/u);
-    assert.match(content, /no derived disk cache|不会使用派生 disk cache/u);
-    assert.match(content, /permanent product capacity limits|永久的产品容量上限/u);
+test('both READMEs link to operational recovery and performance guidance', () => {
+  for (const file of ['README.md', 'README.zh-CN.md']) {
+    const content = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    assert.ok(content.includes('](docs/usage/troubleshooting.md)'));
+    assert.ok(content.includes('](docs/design-docs/timeline-loading-and-rendering-performance.md)'));
+  }
+});
+
+test('troubleshooting preserves logging and temporary OOM recovery safeguards', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'docs/usage/troubleshooting.md'), 'utf8');
+  for (const anchor of [
+    'SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY',
+    'indexing continues normally',
+    'do not change the heap if it succeeds',
+    '--log-dir <path>',
+    'at most 20 indexing logs',
+    'They omit repository/transcript paths',
+    'not necessarily terminal stderr or source-diagnostic samples',
+    'Fatal V8 OOM stderr is the authoritative crash evidence',
+    'Only after a V8 heap-exhaustion failure',
+    'JavaScript heap out of memory',
+    'replace that flag temporarily instead of adding a second one',
+    '$previousNodeOptions = $env:NODE_OPTIONS',
+    '--max-old-space-size=4096',
+    '& $analyzerProgram @analyzerArguments',
+    '} finally {',
+    "Remove-Item 'Env:NODE_OPTIONS'",
+    '$env:NODE_OPTIONS = $previousNodeOptions',
+    'executable, checkout or pinned installed version, source, repository, and source root',
+    'Retest indexing and actual reading',
+    'not V8 heap or RSS ceilings',
+    '](../design-docs/indexed-materialized-session-lifecycle.md)',
+    '](../design-docs/timeline-loading-and-rendering-performance.md)',
+  ]) {
+    assert.ok(content.includes(anchor), 'recovery guide should preserve: ' + anchor);
+  }
+});
+
+test('performance evidence retains measured context and cache capacity boundaries', () => {
+  const performance = fs.readFileSync(path.join(__dirname, '..', 'docs/design-docs/timeline-loading-and-rendering-performance.md'), 'utf8');
+  const lifecycle = fs.readFileSync(path.join(__dirname, '..', 'docs/design-docs/indexed-materialized-session-lifecycle.md'), 'utf8');
+  for (const anchor of [
+    '2026-08-16', '490', '305,485', '788,048,864', '2,159,792,128',
+    '1,055,031,867', '10,841.37', '0.14 ms', '800 MiB',
+    'not a causal comparison or stable latency guarantee',
+    'not guaranteed failures or permanent product limits',
+  ]) {
+    assert.ok(performance.includes(anchor), 'performance evidence should preserve: ' + anchor);
+  }
+  for (const anchor of [
+    'weighted LRU', 'maxEstimatedMaterializedBytes = 256 MiB',
+    'maxCachedSessions = 12', 'not permanent product contracts',
+    'exactly one oversize foreground resident',
+    'No TTL, cross-revision materialization reuse, persistent／derived disk cache',
+  ]) {
+    assert.ok(lifecycle.includes(anchor), 'lifecycle design should preserve: ' + anchor);
   }
 });

@@ -13,7 +13,11 @@
     "history",
     "search",
     "coding-agent",
-    "tool-calls"
+    "tool-calls",
+    "ai-agents",
+    "session-history",
+    "transcript-viewer",
+    "local-first"
   ],
   "homepage": "https://github.com/Yijia-Zhou/session-analyzer#readme",
   "bugs": {
