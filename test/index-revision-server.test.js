@@ -380,6 +380,33 @@ test('server exposes bounded materialization admission as retryable 503', async 
   }
 });
 
+for (const reason of [undefined, null, false, 0, '', NaN]) {
+  test(`server safely handles ${String(reason)} materialization rejection`, async () => {
+    const completeIndex = index(`falsy-rejection-${String(reason)}`);
+    const strictIndex = strictClaudeIndexFromComplete(completeIndex);
+    let calls = 0;
+    const server = createServer(strictIndex, 1, {
+      materializeSession: async () => {
+        calls += 1;
+        return Promise.reject(reason);
+      },
+    });
+    const base = await listen(server);
+    try {
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const response = await fetch(`${base}/api/sessions/${encodeURIComponent(completeIndex.sessions[0].id)}/analysis`);
+        assert.equal(response.status, 500);
+        const body = await response.json();
+        assert.equal(body.error, 'Internal server error');
+        assert.equal(body.code, undefined);
+        assert.equal(calls, attempt);
+      }
+    } finally {
+      await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+}
+
 test('server preserves materialization contract error code and never caches the failure', async () => {
   const completeIndex = index('invalid-session');
   const strictIndex = strictClaudeIndexFromComplete(completeIndex);

@@ -173,8 +173,8 @@ function createMaterializationScheduler(options = {}) {
         Promise.resolve()
           .then(() => job.materialize({ signal: job.controller.signal }))
           .then(
-            (value) => job.owner._completeJob(job, null, value),
-            (error) => job.owner._completeJob(job, error),
+            (value) => job.owner._completeJob(job, { rejected: false, value }),
+            (error) => job.owner._completeJob(job, { rejected: true, error }),
           )
           .finally(() => {
             job.owner.activeJobs.delete(job);
@@ -189,14 +189,14 @@ function createMaterializationScheduler(options = {}) {
   return scheduler;
 }
 
-function settleWaiter(job, waiter, error, value) {
+function settleWaiter(job, waiter, { rejected, error, value }) {
   if (!waiter.live) return;
   waiter.live = false;
   job.waiters.delete(waiter);
   if (waiter.signal && waiter.onAbort) {
     waiter.signal.removeEventListener('abort', waiter.onAbort);
   }
-  if (error) waiter.reject(error);
+  if (rejected) waiter.reject(error);
   else waiter.resolve(value);
 }
 
@@ -526,7 +526,7 @@ function createMaterializedSessionOwner(options = {}) {
         this.jobs.delete(sessionId);
         this.metrics.prewarmSkippedBusy += 1;
         for (const waiter of [...job.waiters]) {
-          settleWaiter(job, waiter, prewarmAbortError('PREWARM_BUSY'));
+          settleWaiter(job, waiter, { rejected: true, error: prewarmAbortError('PREWARM_BUSY') });
         }
       }
       return pending.then(
@@ -560,7 +560,7 @@ function createMaterializedSessionOwner(options = {}) {
         waiter.onAbort = () => {
           if (!waiter.live) return;
           this.metrics.waiterAborts += 1;
-          settleWaiter(job, waiter, abortError(signal));
+          settleWaiter(job, waiter, { rejected: true, error: abortError(signal) });
           if (job.waiters.size === 0) this._cancelUnobservedJob(job);
         };
         job.waiters.add(waiter);
@@ -574,7 +574,7 @@ function createMaterializedSessionOwner(options = {}) {
       observePrewarm('promoted');
       for (const waiter of [...job.waiters]) {
         if (waiter.kind === 'speculative') {
-          settleWaiter(job, waiter, null, PROMOTED_PREWARM);
+          settleWaiter(job, waiter, { rejected: false, value: PROMOTED_PREWARM });
         }
       }
     },
@@ -584,7 +584,7 @@ function createMaterializedSessionOwner(options = {}) {
       observePrewarm('preempted');
       const reason = prewarmAbortError('PREWARM_PREEMPTED');
       for (const waiter of [...job.waiters]) {
-        if (waiter.kind === 'speculative') settleWaiter(job, waiter, reason);
+        if (waiter.kind === 'speculative') settleWaiter(job, waiter, { rejected: true, error: reason });
       }
       if (job.waiters.size === 0) this._cancelUnobservedJob(job);
       return true;
@@ -617,13 +617,13 @@ function createMaterializedSessionOwner(options = {}) {
       if (job.status === 'queued') job.status = 'cancelled';
       if (this.jobs.get(job.sessionId) === job) this.jobs.delete(job.sessionId);
     },
-    _completeJob(job, error, value) {
+    _completeJob(job, { rejected, error, value }) {
       if (this.jobs.get(job.sessionId) === job) this.jobs.delete(job.sessionId);
       const discarded = this.retired
         || this.retirementController.signal.aborted
         || job.controller.signal.aborted
         || job.waiters.size === 0;
-      if (!error && !discarded) {
+      if (!rejected && !discarded) {
         const origin = job.speculativeOnly
           ? CACHE_ORIGIN_SPECULATIVE
           : CACHE_ORIGIN_FOREGROUND;
@@ -643,25 +643,25 @@ function createMaterializedSessionOwner(options = {}) {
         const waiterValue = job.speculativeOnly && !cacheAdmitted
           ? SPECULATIVE_NOT_ADMITTED
           : value;
-        for (const waiter of [...job.waiters]) settleWaiter(job, waiter, null, waiterValue);
+        for (const waiter of [...job.waiters]) settleWaiter(job, waiter, { rejected: false, value: waiterValue });
         return;
       }
-      if (error && !discarded) {
+      if (rejected && !discarded) {
         this.metrics.failed += 1;
         if (job.speculativeOnly) {
           this.metrics.prewarmFailed += 1;
           observePrewarm('failed');
         }
-        for (const waiter of [...job.waiters]) settleWaiter(job, waiter, error);
+        for (const waiter of [...job.waiters]) settleWaiter(job, waiter, { rejected: true, error: error });
         return;
       }
-      if (!error && job.controller.signal.aborted) {
+      if (!rejected && job.controller.signal.aborted) {
         this.scheduler.warn('Materialization completed after cancellation; result discarded.');
       }
       const rejection = this.retired || this.retirementController.signal.aborted
         ? (this.retirementController.signal.reason || abortError(this.retirementController.signal))
-        : (error || abortError(job.controller.signal));
-      for (const waiter of [...job.waiters]) settleWaiter(job, waiter, rejection);
+        : (rejected ? error : abortError(job.controller.signal));
+      for (const waiter of [...job.waiters]) settleWaiter(job, waiter, { rejected: true, error: rejection });
     },
     retire(reason) {
       if (this.retired) return;
@@ -678,7 +678,7 @@ function createMaterializedSessionOwner(options = {}) {
           this.metrics.prewarmRetired += 1;
           observePrewarm('retired');
         }
-        for (const waiter of [...job.waiters]) settleWaiter(job, waiter, reason);
+        for (const waiter of [...job.waiters]) settleWaiter(job, waiter, { rejected: true, error: reason });
       }
       for (const job of this.activeJobs) {
         this.metrics.retiredJobs += 1;
@@ -686,7 +686,7 @@ function createMaterializedSessionOwner(options = {}) {
           this.metrics.prewarmRetired += 1;
           observePrewarm('retired');
         }
-        for (const waiter of [...job.waiters]) settleWaiter(job, waiter, reason);
+        for (const waiter of [...job.waiters]) settleWaiter(job, waiter, { rejected: true, error: reason });
         if (!job.controller.signal.aborted) job.controller.abort(reason);
       }
       this.scheduler.pump();
