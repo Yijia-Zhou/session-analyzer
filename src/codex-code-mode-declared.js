@@ -148,6 +148,14 @@ function emittedVariable(statement) {
   }
   const emitted = expression.arguments[0];
   if (emitted?.type === 'Identifier') return emitted.name;
+  if (emitted?.type === 'MemberExpression'
+      && !emitted.optional
+      && !emitted.computed
+      && emitted.object?.type === 'Identifier'
+      && emitted.property?.type === 'Identifier'
+      && emitted.property.name === 'output') {
+    return emitted.object.name;
+  }
 
   if (emitted?.type !== 'ConditionalExpression'
       || emitted.test?.type !== 'BinaryExpression'

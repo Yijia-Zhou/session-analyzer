@@ -87,14 +87,46 @@ test('recognizes the standard string-or-JSON result emission wrapper', () => {
   assert.equal(projection.calls[0].resultAssociation, 'bounded');
 });
 
-test('rejects lookalike conditional result emissions', () => {
+test('recognizes a direct output-member result emission', () => {
+  const projection = projectDeclaredCodeModeCalls(`
+    const result = await tools.exec_command({ command: 'Write-Output fixture' });
+    text(result.output);
+  `, { outputFragments: ['fixture'] });
+
+  assert.equal(projection.supported, true);
+  assert.equal(projection.hasCompleteOutputAssociation, true);
+  assert.deepEqual(projection.calls.map((call) => ({
+    toolName: call.toolName,
+    resultVariable: call.resultVariable,
+    resultAssociation: call.resultAssociation,
+    resultText: call.resultText,
+  })), [{
+    toolName: 'exec_command',
+    resultVariable: 'result',
+    resultAssociation: 'bounded',
+    resultText: 'fixture',
+  }]);
+});
+
+test('rejects lookalike conditional and non-static member result emissions', () => {
   const sources = [
     'const result = await tools.shell_command({ command: "fixture" }); text(typeof other === "string" ? result : JSON.stringify(result));',
     'const result = await tools.shell_command({ command: "fixture" }); text(typeof result === "string" ? other : JSON.stringify(result));',
     'const result = await tools.shell_command({ command: "fixture" }); text(typeof result === "string" ? result : JSON.parse(result));',
+    'const result = await tools.shell_command({ command: "fixture" }); text(result.stderr);',
+    'const result = await tools.shell_command({ command: "fixture" }); text(result["output"]);',
+    'const result = await tools.shell_command({ command: "fixture" }); text(other.output);',
+    'const result = await tools.shell_command({ command: "fixture" }); text(result?.output);',
+    'const result = await tools.shell_command({ command: "fixture" }); text(result.output.foo);',
+    'const result = await tools.shell_command({ command: "fixture" }); text(transform(result.output));',
   ];
 
-  for (const source of sources) assert.equal(projectDeclaredCodeModeCalls(source).supported, false, source);
+  for (const source of sources) {
+    const projection = projectDeclaredCodeModeCalls(source);
+    assert.equal(projection.supported, false, source);
+    assert.deepEqual(projection.calls, [], source);
+    assert.equal(projection.hasCompleteOutputAssociation, false, source);
+  }
 });
 
 test('fails closed when a declared result shadows projector runtime identifiers', () => {

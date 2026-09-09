@@ -61,6 +61,25 @@ function createCodexSearch(deps = {}) {
       },
       contextMap: deps.codeModePresentationContextMap,
       factsForEvent: deps.codeModePresentationFactsForEvent,
+      projectRowFacts(session, event) {
+        const fact = deps.codeModePresentationFactsForEvent?.(session, event.id)?.codeModeDeclaredRequests;
+        const declaredRequestNames = [...(fact?.toolNames || [])].filter((request) => (
+          deps.codeModeRequestMatches?.(event, session, request)
+        ));
+        return {
+          scriptOperation: Boolean(deps.isCodeModeScriptOperation?.(event, session?.presentationIndexes)),
+          declaredRequestNames,
+          requestEvidence: declaredRequestNames.length ? fact?.requestEvidence || '' : '',
+        };
+      },
+      matchesProjectRow(presentationFact, filters) {
+        const sourcePresentation = filters.sourcePresentation || {};
+        if (sourcePresentation.scriptOperation && !presentationFact?.scriptOperation) return false;
+        if (sourcePresentation.requestSpecified) return false;
+        if (sourcePresentation.request
+            && !presentationFact?.declaredRequestNames?.includes(sourcePresentation.request)) return false;
+        return true;
+      },
       facets(sessions, options = {}) {
         const label = (value) => deps.codeModeRequestLabel?.(value, options.locale) || value;
         return deps.codeModeRequestCatalog?.(sessions, { label }) || [];
@@ -69,7 +88,7 @@ function createCodexSearch(deps = {}) {
         const label = (value) => deps.codeModeRequestLabel?.(value, options.locale) || value;
         const items = Array.isArray(index?.codeModeRequests)
           ? index.codeModeRequests
-          : (deps.codeModeRequestCatalog?.(index?.sessions, { label }) || []);
+          : [];
         return {
           codeModeRequests: items.map((item) => ({
             ...item,

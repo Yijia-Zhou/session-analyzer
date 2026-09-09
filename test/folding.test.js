@@ -176,6 +176,30 @@ test('Code Mode request rules use presentation facts and most-visible priority',
   }), 'hidden');
 });
 
+test('Code Mode command request rules retain separate stable machine keys', () => {
+  const operation = (toolName) => ({
+    kind: 'code_mode_operation',
+    severity: 'normal',
+    presentationFacts: {
+      codeModeDeclaredRequests: {
+        toolNames: [toolName],
+        requestEvidence: 'declared_source',
+      },
+    },
+  });
+  const rules = {
+    kindStates: { command: 'collapsed' },
+    codeModeRequestStates: {
+      exec_command: 'expanded',
+      shell_command: 'hidden',
+    },
+    fallback: 'summary',
+  };
+
+  assert.equal(folding.displayStateFromRules(operation('exec_command'), rules), 'expanded');
+  assert.equal(folding.displayStateFromRules(operation('shell_command'), rules), 'hidden');
+});
+
 test('unset Code Mode request rules inherit corresponding ordinary tool folding', () => {
   const rules = {
     kindStates: {
@@ -203,6 +227,7 @@ test('unset Code Mode request rules inherit corresponding ordinary tool folding'
   assert.equal(folding.ordinaryKindForCodeModeRequest('list_agents'), 'agent_coordination');
 
   assert.equal(folding.inheritedCodeModeRequestState('shell_command', rules), 'collapsed');
+  assert.equal(folding.inheritedCodeModeRequestState('exec_command', rules), 'collapsed');
   assert.equal(folding.inheritedCodeModeRequestState('apply_patch', rules), 'expanded');
   assert.equal(folding.inheritedCodeModeRequestState('create_goal', rules), 'summary');
   assert.equal(folding.inheritedCodeModeRequestState('update_plan', rules), 'expanded');
@@ -222,6 +247,7 @@ test('unset Code Mode request rules inherit corresponding ordinary tool folding'
     },
   });
   assert.equal(folding.displayStateFromRules(operation(['shell_command']), rules), 'collapsed');
+  assert.equal(folding.displayStateFromRules(operation(['exec_command']), rules), 'collapsed');
   assert.equal(folding.displayStateFromRules(operation(['apply_patch']), rules), 'expanded');
   assert.equal(folding.displayStateFromRules(operation(['shell_command', 'request_user_input']), rules), 'summary');
   assert.equal(folding.displayStateFromRules(operation(['update_plan']), {

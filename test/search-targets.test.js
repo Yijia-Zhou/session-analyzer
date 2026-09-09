@@ -45,6 +45,34 @@ test('binding replacement does not change membership or active identity', () => 
   assert.equal(targets.length, 2);
 });
 
+test('surface-local binding reset preserves target, order, and the other surface', () => {
+  const { targets } = searchTargets.discover([], 'key', [
+    { id: 'event-1', timelineIndex: 1, hasSearchHit: true },
+    { id: 'event-2', timelineIndex: 2, hasSearchHit: true },
+  ]);
+  const target = targets[0];
+  const otherTarget = targets[1];
+  const timelineBinding = { isConnected: true };
+  const inspectorBinding = { isConnected: true };
+  const otherBinding = { isConnected: true };
+  searchTargets.bind(target, 'timeline', timelineBinding);
+  searchTargets.bind(target, 'inspector', inspectorBinding);
+  searchTargets.bind(otherTarget, 'timeline', otherBinding);
+  const originalTargets = [...targets];
+  const originalInspectorBindings = target.bindings.inspector;
+  const originalOtherBindings = otherTarget.bindings.timeline;
+
+  assert.deepEqual(searchTargets.resetSurfaceBindings(target, 'timeline'), [timelineBinding]);
+  assert.deepEqual(target.bindings.timeline, []);
+  assert.equal(target.bindings.inspector, originalInspectorBindings);
+  assert.deepEqual(target.bindings.inspector, [inspectorBinding]);
+  assert.equal(otherTarget.bindings.timeline, originalOtherBindings);
+  assert.deepEqual(otherTarget.bindings.timeline, [otherBinding]);
+  assert.deepEqual(targets, originalTargets);
+  assert.equal(searchTargets.resetSurfaceBindings(target, 'unknown'), null);
+  assert.equal(searchTargets.resetSurfaceBindings(null, 'timeline'), null);
+});
+
 test('late discovery preserves active lookup after deterministic insertion', () => {
   const initial = searchTargets.discover([], 'key', [
     { id: 'event-2', timelineIndex: 2, hasSearchHit: true },
@@ -55,6 +83,44 @@ test('late discovery preserves active lookup after deterministic insertion', () 
   ]).targets;
   assert.equal(searchTargets.activeIndex(next, activeId), 1);
   assert.equal(next[1].id, activeId);
+});
+
+test('suffix discovery uses a canonical base index and preserves one-shot identity and order', () => {
+  const events = [
+    { id: 'event-0', hasSearchHit: false },
+    { id: 'event-1', hasSearchHit: true },
+    { id: 'event-2', hasSearchHit: true },
+    { id: 'event-3', hasSearchHit: false },
+    { id: 'event-4', hasSearchHit: true },
+  ];
+  const oneShot = searchTargets.discover([], 'key', events);
+  const prefix = searchTargets.discover([], 'key', events.slice(0, 2));
+  const prefixTarget = prefix.targets[0];
+  const suffix = searchTargets.discover(prefix.targets, 'key', events.slice(2), {
+    baseTimelineIndex: 2,
+  });
+
+  assert.deepEqual(
+    suffix.targets.map(({ id, ownerId, timelineIndex }) => ({ id, ownerId, timelineIndex })),
+    oneShot.targets.map(({ id, ownerId, timelineIndex }) => ({ id, ownerId, timelineIndex })),
+  );
+  assert.equal(suffix.targets.find((target) => target.id === prefixTarget.id), prefixTarget);
+  assert.deepEqual(suffix.targets.map((target) => target.timelineIndex), [1, 2, 4]);
+  assert.equal(new Set(suffix.targets.map((target) => target.id)).size, suffix.targets.length);
+});
+
+test('base index defaults to zero while explicit finite timeline indices win', () => {
+  const legacy = searchTargets.discover([], 'key', [
+    { id: 'event-a', hasSearchHit: true },
+    { id: 'event-b', hasSearchHit: true },
+  ]);
+  assert.deepEqual(legacy.targets.map((target) => target.timelineIndex), [0, 1]);
+
+  const offset = searchTargets.discover([], 'key', [
+    { id: 'event-a', hasSearchHit: true },
+    { id: 'event-b', timelineIndex: 7, hasSearchHit: true },
+  ], { baseTimelineIndex: 20 });
+  assert.deepEqual(offset.targets.map((target) => target.timelineIndex), [7, 20]);
 });
 
 test('discovery exhaustion and context reset are explicit', () => {

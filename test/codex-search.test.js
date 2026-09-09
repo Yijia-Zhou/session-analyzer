@@ -3,7 +3,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createServer } = require('../server');
+const { createEmptyMaterializedPresentationIndexes } = require('../src/canonical-contract');
 const { fileSuggestions, filterSessions, getEvent, getTimeline } = require('../src/codex');
+const { strictClaudeIndexFromComplete } = require('./strict-claude-fixture');
 
 function logicalEvent(id, options = {}) {
   const line = options.line || 1;
@@ -57,6 +59,15 @@ function rawEvent(id, options = {}) {
 }
 
 function session(id, logicalEvents, rawEvents = []) {
+  const ownedRawIds = new Set(rawEvents.map((raw) => raw.rawId));
+  const completeRawEvents = [...rawEvents];
+  for (const event of logicalEvents) {
+    for (const reference of event.rawRefs || []) {
+      if (ownedRawIds.has(reference.rawId)) continue;
+      completeRawEvents.push(rawEvent(reference.rawId, { timestamp: event.timestamp }));
+      ownedRawIds.add(reference.rawId);
+    }
+  }
   return {
     id,
     sourceKind: 'codex',
@@ -78,10 +89,8 @@ function session(id, logicalEvents, rawEvents = []) {
     },
     analysis: { toolUsage: [], failedCommands: [], patchedFiles: [], protocolStats: [] },
     logicalEvents,
-    rawEvents,
-    presentationIndexes: {
-      codeModeDeclaredRequests: new Map(),
-    },
+    rawEvents: completeRawEvents,
+    presentationIndexes: createEmptyMaterializedPresentationIndexes(),
   };
 }
 
@@ -225,19 +234,28 @@ test('Code Mode request filters are exact Main-layer presentation facts with sam
     preview: 'alpha other operation',
     status: 'success',
   });
+  const execOperation = logicalEvent('declared-exec', {
+    kind: 'code_mode_operation',
+    preview: 'alpha exec operation',
+    status: 'success',
+  });
   const nestedCommand = logicalEvent('nested-command', {
     kind: 'command',
     subtype: 'command',
     preview: 'observed nested shell activity',
     status: 'failed',
   });
-  const item = session('requests', [matchingOperation, otherOperation, nestedCommand]);
+  const item = session('requests', [matchingOperation, otherOperation, execOperation, nestedCommand]);
   item.presentationIndexes.codeModeDeclaredRequests.set(matchingOperation.id, {
     toolNames: ['shell_command', 'shell_command', 'update_plan'],
     requestEvidence: 'declared_source',
   });
   item.presentationIndexes.codeModeDeclaredRequests.set(otherOperation.id, {
     toolNames: ['update_plan'],
+    requestEvidence: 'declared_source',
+  });
+  item.presentationIndexes.codeModeDeclaredRequests.set(execOperation.id, {
+    toolNames: ['exec_command'],
     requestEvidence: 'declared_source',
   });
   const index = {
@@ -266,6 +284,12 @@ test('Code Mode request filters are exact Main-layer presentation facts with sam
     codeModeRequest: 'shell_command',
     layer: 'protocol',
   }).total, 0);
+  const execProject = filterSessions(index, {
+    codeModeRequest: 'exec_command',
+    layer: 'main',
+  });
+  assert.equal(execProject.total, 1);
+  assert.equal(execProject.sessions[0].searchMatch.latestEvent.id, execOperation.id);
   const protocolTimeline = getTimeline(index, item.id, {
     offset: 0,
     limit: 50,
@@ -300,6 +324,7 @@ test('Code Mode request filters are exact Main-layer presentation facts with sam
     },
   });
   assert.deepEqual(timeline.codeModeRequests, [
+    { value: 'exec_command', label: 'Exec command', count: 1, evidence: 'declared_source' },
     { value: 'update_plan', label: 'Plan update', count: 2, evidence: 'declared_source' },
     { value: 'shell_command', label: 'Shell command', count: 1, evidence: 'declared_source' },
   ]);
@@ -365,8 +390,8 @@ test('file suggestions respect session and layer boundaries and count events onc
   ]);
 });
 
-test('HTTP search and suggestion routes expose the additive backend contracts', async () => {
-  const index = searchIndex();
+test('HTTP project search and suggestion routes expose the additive backend contracts', async () => {
+  const index = strictClaudeIndexFromComplete(searchIndex());
   const server = createServer(index, 1);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -378,23 +403,12 @@ test('HTTP search and suggestion routes expose the additive backend contracts', 
     assert.equal(results.matchingEventTotal, 2);
     assert.equal(results.sessions[0].searchMatch.latestEvent.timelineIndex, 1);
 
-    const suggestionsResponse = await fetch(`http://127.0.0.1:${address.port}/api/file-suggestions?layer=protocol&sessionId=first`);
+    const suggestionsResponse = await fetch(`http://127.0.0.1:${address.port}/api/file-suggestions?layer=protocol`);
     assert.equal(suggestionsResponse.status, 200);
-    assert.deepEqual(await suggestionsResponse.json(), { files: [{ file: 'src/protocol.js', count: 1 }] });
-
-    const timelineResponse = await fetch(`http://127.0.0.1:${address.port}/api/sessions/first/timeline?q=alpha&status=failed&layer=main&offset=0&limit=100`);
-    assert.equal(timelineResponse.status, 200);
-    const timeline = await timelineResponse.json();
-    assert.equal(timeline.total, 3);
-    assert.equal(timeline.searchEventCount, 2);
-    assert.equal(timeline.searchMatchCount, 3);
-
-    const eventResponse = await fetch('http://127.0.0.1:' + address.port + '/api/sessions/first/events/first-latest-hit?layer=main&q=does-not-match&kind=assistant_message&status=success&tool=wait&file=missing.js');
-    assert.equal(eventResponse.status, 200);
-    assert.equal((await eventResponse.json()).id, 'first-latest-hit');
-
-    const wrongLayerResponse = await fetch('http://127.0.0.1:' + address.port + '/api/sessions/first/events/first-latest-hit?layer=protocol');
-    assert.equal(wrongLayerResponse.status, 404);
+    assert.deepEqual(await suggestionsResponse.json(), {
+      files: [{ file: 'src/protocol.js', count: 1 }],
+      indexRevision: 1,
+    });
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }

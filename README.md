@@ -1,247 +1,139 @@
 # Session Analyzer
 
-[中文 README](README.zh-CN.md)
+[中文说明](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/README.zh-CN.md)
 
-Session Analyzer turns local Codex and Claude Code session transcripts into readable work history, organized by repository. Revisit what an agent did, find specific work across a project, and trace related sessions without reading raw JSONL.
+**Local session history viewer for Codex, Claude Code, and DeepSeek Harness.**
 
-![Session Analyzer showing repository session history, a readable Main timeline, and structured command detail](docs/assets/readme/session-analyzer-overview.png)
+**See what your AI did and how it did it.** Tool calls and long outputs can bury the conversation and make individual operations hard to review. Session Analyzer keeps messages and tool activity readable together, with commands, file changes, and results you can open in context. Browse and search earlier sessions by project when you need to find the work first.
 
-Repository history stays visible on the left, the Main timeline keeps the work readable in the center, and structured detail remains one click away on the right.
+Session Analyzer reads existing transcripts locally, without modifying or uploading their contents. Review the saved history of a current or past session in your browser.
 
-Runs locally by default, reads transcripts without modifying them, and does not upload transcript content.
+[Quick Start](#quick-start) · [Read a session](#review-what-happened-in-a-session) · [Inspect an operation](#inspect-how-a-concrete-operation-was-performed) · [Search history](#find-an-older-session-and-continue-reading)
 
-## Find what happened
+![Session Analyzer with project sessions on the left, readable work in the middle, and command details on the right](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/session-analyzer-overview.png)
 
-Search messages, commands, files, outputs, status, and event kinds. Move through matches and jump directly to the relevant event without manually scanning the transcript.
-
-![Searching for a test file and jumping to its matching patch](docs/assets/readme/search-and-jump.gif)
-
-## See where work came from
-
-Follow reviews and delegated work back to where they started. See what context they inherited, then reopen the parent session when you need it.
-
-![Opening a review-derived session, inspecting inherited context, and returning to its parent](docs/assets/readme/derived-session-provenance.gif)
+Keep the surrounding work in view while checking a specific operation. All demonstrations below use synthetic Codex transcripts.
 
 ## Quick Start
 
-Start without a repository to choose from discovered projects in the browser:
+Use **Node.js 24** (recommended) and npm.
+
+**Choose your version:** the intended npm **0.2.0** release supports Codex, Claude Code, and DeepSeek Harness, including Timeline and Trajectory. This checkout is the pre-publication 0.2.0 release candidate; a staged artifact is not publicly installable. After `0.2.0` is publicly available, use the matching package commands below.
+
+Choose one command for your transcript source:
 
 ```sh
-npx session-analyzer
+# Codex
+npx session-analyzer@0.2.0
 ```
-
-Or start with an explicit repository:
 
 ```sh
-npx session-analyzer --repo /path/to/project
+# Claude Code
+npx session-analyzer@0.2.0 --source claude-code
 ```
 
-On Windows:
+```sh
+# DeepSeek Harness
+npx session-analyzer@0.2.0 --source deepseek-harness
+```
+
+For pre-publication checkout validation, run from the Analyzer checkout only until the package is publicly available:
+
+```sh
+node server.js --source deepseek-harness
+```
+
+Open **<http://127.0.0.1:17890/>**, choose your project, wait for indexing, and open a session from the left panel. Start reading in **Main timeline**. To search older sessions, click the **session** scope pill beside search, then choose **Entire project**.
+
+To select a project at startup, add `--repo /path/to/project`. On Windows:
 
 ```powershell
-npx session-analyzer --repo 'C:\path\to\project'
+npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
 ```
 
-Then open:
+`--repo` is the project whose history you want to read. The Analyzer checkout or installation and the transcript root are separate locations. An agent can follow the [startup and verification guide](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/agent-quickstart.md) to configure them for you.
+
+## Review what happened in a session
+
+In the example below, the agent changes two files, encounters a failed test, applies a follow-up patch, and reruns the test. Read messages and tool activity in order in the default **Timeline**, folding output and opening details as needed.
+
+![Folded Timeline keeps messages and tool activity readable in a tool-heavy synthetic session](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/session-reading-timeline.png)
+
+When tool calls get noisy, switch to **Trajectory** to review the same conversation and tool activity in a compact view. Expand a tool group to inspect individual operations; use the sequence overview to navigate.
+
+![The same session segment in Trajectory, with readable messages and compact, expandable tool activity](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/session-reading-trajectory.png)
+
+Both views show currently loaded events; load more to continue through a long session.
+
+## Inspect how a concrete operation was performed
+
+To check a particular change or failed command, expand its event in **Timeline**, or select the operation in **Trajectory**. Timeline shows command output and highlighted changes within the event, with supporting details on the right; Trajectory opens the selected operation's details on the right. Inspect what was requested and returned while keeping the surrounding work in view.
+
+![An expanded Timeline patch shows highlighted changes in the center, with its result, files, and source information on the right](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/operation-detail.png)
+
+Read what was requested, what changed, and what the tool returned, then continue through the session. **Protocol layer** exposes supporting runtime records. **Raw records** and an event's Raw References let you check the original transcript entries when structured detail is insufficient.
+
+## Find an older session and continue reading
+
+Remember a filename, command, or phrase but not the session? Click the **session** scope pill beside search, choose **Entire project**, and search messages, commands, file paths, and outputs. Open a match to reach the other session and its matching event, then read the surrounding work.
+
+![Starting in one session, searching the entire project, and opening a match in another session to resume reading](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/project-search-and-read.gif)
+
+The demonstration starts in session A, searches for `npm test -- project-switch`, and finds the command in session B. It ends at B's matching operation and context. For your own history, use a filename, command, or phrase you remember. Search is case-insensitive plain text; separate file, type, and status filters narrow results. Text such as `status:failed` is searched literally.
+
+## More context when you need it
+
+- **Related sessions:** follow supported review, subagent, and fork relationships, inspect inherited context, and return to the parent session. Availability follows each source's recorded relationships.
+- **Code Mode:** inspect supported operations inside tool orchestration through structured requests and results. Coverage depends on the source and recorded evidence.
+- **Codex token and cache observations:** inspect per-request token accounting and conservatively inferred drops in cache reuse, with supporting Protocol evidence. These do not establish cache expiry or server-side cache state.
+
+![A synthetic Codex review-derived session shows inherited context and navigation back to its parent](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/derived-session-provenance.gif)
+
+This Codex review example demonstrates inherited-context navigation. See [source support and boundaries](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/transcript-source-adapters.md) for differences between sources.
+
+## Sources and requirements
+
+| Source | Default transcript root | Custom-root option |
+| --- | --- | --- |
+| Codex (default) | `~/.codex` | `--codex-home` |
+| Claude Code | `~/.claude` | `--claude-home` |
+| DeepSeek Harness | `~/.dsh/sessions` | `--dsh-home` |
+
+Pass the relevant option followed by your transcript root. For DeepSeek Harness, this is the sessions persistence directory. You can also switch source or edit roots in the project chooser without restarting. Only the active source is scanned; there is no mixed-source index.
+
+The installed CLI supports Node.js LTS releases starting at **22**, with **24 recommended**, and npm for installation. DeepSeek `session.jsonl.zstd` needs Node's built-in Zstandard API, available in Node 22 from **22.15.0**, subject to the actual capability check. Uncompressed `session.jsonl` remains readable without it. [Source development](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/development.md) has a separate, stricter Node/npm policy.
+
+Current-session reading uses persisted history; it does not promise live monitoring or automatic refresh. The views present recorded operations and results without inferring hidden reasoning or causal relationships.
+
+Claude Code external `tool-results/*` payloads are not loaded or searched. Unrecognized events in supported formats retain Protocol/Raw fallback, but not every event has a dedicated renderer. Unsupported DeepSeek format versions are skipped with diagnostics.
+
+The server binds to `127.0.0.1` by default. Exposing it beyond localhost with `--host` can let other machines read transcripts accessible to the process. The supported v0.2 interface is the CLI; internal HTTP APIs are version-specific.
+
+## Questions and troubleshooting
+
+**No projects or sessions?** Check the selected source, transcript root, and project path, then clear filters. Zero matches do not establish that no history exists. See [troubleshooting](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/troubleshooting.md).
+
+**The page opens, but is my history ready?** Wait for indexing and check the session count and diagnostics. A reachable page only proves HTTP readiness; readable sessions may coexist with skipped artifacts. The [agent guide](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/agent-quickstart.md) distinguishes these outcomes.
+
+**Large history or indexing failure?** Try normal indexing first. See [diagnostics and memory recovery](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/troubleshooting.md) for aggregate logging and temporary heap changes only after a relevant failure.
+
+## Let an agent start it for you
+
+Copy this request and fill in your project and source:
 
 ```text
-http://127.0.0.1:17890/
+Start Session Analyzer locally for me: https://github.com/Yijia-Zhou/session-analyzer
+Project: <project path>
+Transcript source: <Codex / Claude Code / DeepSeek Harness>
+Choose a version that supports this source and follow its README and linked
+startup guide. Verify indexing and open a session to check that it is readable.
+Report the local URL, actual version, session count, and any diagnostics.
 ```
 
-Codex is the default startup transcript source and is read from `~/.codex`. Use `--codex-home` if it lives elsewhere:
+The [online startup and verification guide](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/agent-quickstart.md) covers version selection, configuration, and actual reading checks. Usage guides are online documentation and are not promised inside the npm package.
 
-```sh
-npx session-analyzer --repo /path/to/project --codex-home /path/to/.codex --port 17890
-```
+## Development and contribution
 
-Claude Code can be selected at startup. The app does not scan `~/.claude` unless Claude Code is the active source:
+See [development setup, checks, and repository layout](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/development.md), the [documentation index](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/README.md), [architecture](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/logical-event-timeline.md), and [performance](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/timeline-loading-and-rendering-performance.md). For issues, include the version, source, and reproduction steps; use synthetic or redacted transcripts in public reports.
 
-```sh
-npx session-analyzer --source claude-code --repo /path/to/project
-```
-
-Use `--claude-home` for a non-default Claude home or an exported project-container directory:
-
-```sh
-npx session-analyzer --source claude-code --claude-home /path/to/.claude
-```
-
-`--source claude` is accepted as an alias for `--source claude-code`. You can also switch the active transcript source or edit either source home later from the project chooser. One source is active at a time; Session Analyzer does not build a mixed Codex-and-Claude index.
-
-You can also install the CLI globally:
-
-```sh
-npm install -g session-analyzer
-session-analyzer --repo /path/to/project
-```
-
-The default host is `127.0.0.1`. `--host` is an advanced option; binding outside localhost can expose transcript content available to this process to other machines on the network.
-
-## How to Use It
-
-1. Start with the default Codex source or select Claude Code on the CLI, then choose a target project in the browser or pass `--repo` when starting the server.
-2. Use the project chooser to switch projects at runtime. From the same chooser, you can switch the active transcript source or edit its home directory; the project list is then rediscovered for that source.
-3. Pick a session from the left pane.
-4. Use `Main timeline` for normal reading, `Protocol layer` for injected context and lifecycle records, or `Raw records` for exact transcript rows.
-5. Enter a case-insensitive plain-text phrase in the search HUD; whitespace inside a phrase matches spaces, tabs, or newlines. Open Search options to switch between the current session and the entire project, edit the always-visible `Touched file`, `Kind`, or `Status` filters, inspect complete counts, or jump to the adjacent global Layer selector. Operator-like input such as `status:failed` remains literal text.
-6. Open an event to inspect structured detail and raw references.
-
-The npm package does not promise a stable programmatic API. The supported v0.1 interface is the `session-analyzer` CLI.
-
-## What You Can Inspect
-
-- Discover and switch among projects from Codex or Claude Code session working directories, or start directly with a target repository.
-- Switch the active transcript source and configure source home directories from the project chooser without restarting the server.
-- Show only sessions that match the selected repository.
-- Keep Claude Code subagents separately selectable; distinguish materialized and pointer-backed forks, and show parent-owned inherited context without duplicate metrics or Raw Records.
-- Browse three layers: a deduplicated Main timeline, protocol events, and raw JSONL records.
-- Search messages, commands, files, outputs, status, event kinds, and layers.
-- Inspect structured details for messages, commands, patches, plans, MCP/tool calls, web searches, lifecycle events, and raw records.
-- Jump from logical events back to the exact source JSONL rows.
-- Use folding profiles for narrative reading, conversation review, error focus, change review, planning, search focus, and compact browsing.
-- Render transcript Markdown safely with raw HTML disabled and dangerous link protocols rejected.
-
-## Privacy and Security
-
-This project is intentionally local-first:
-
-- The server binds to `127.0.0.1` by default.
-- Transcript files are read from disk and are not modified.
-- Derived indexes are held in memory only.
-- Raw transcript drill-down is explicit, so sensitive content is not hidden from the user but is not sent anywhere by this app.
-
-Agent transcripts can contain prompts, command output, file paths, environment details, and other private material. Do not commit your real `.codex/sessions`, `.claude/projects`, or exported transcript data to a public repository.
-
-This tool is a local viewer, not a hosted multi-user analytics service. If you expose the server beyond localhost, anyone with network access to it may be able to read transcript content available to the process.
-
-Before publishing a fork or issue reproduction, check that any attached transcript samples are synthetic or sanitized.
-
-## Requirements
-
-- Installed CLI: a supported Node.js LTS release, Node.js 22 or newer (Node.js 24 recommended), plus npm for installation
-- Source development and release work: Node.js `^22.22.2 || ^24.15.0` and exactly npm `12.0.2`
-
-### Large transcript histories and Node/V8 memory
-
-Indexing memory depends mainly on the amount and shape of transcript history that matches the selected repository—not on the source-code repository's size. Candidate transcript bytes, Raw Record and Logical Event counts, record composition, and especially an unusually large individual Session all affect memory use.
-
-As approximate anchors for the current implementation, about 250 MB of matching Codex JSONL reached about 0.7 GB peak V8 heap, while about 850–900 MB with around 250,000 Raw Records reached about 1.9 GB peak V8 heap. Treat histories approaching roughly 1 GB of matching transcript data as high-memory workloads. These empirical measurements are guidance, not guarantees, a prediction formula, an out-of-memory boundary, or hard capacity limits; actual use varies with record shapes, event counts, Node version, and unusually large individual Sessions.
-
-When matching history reaches the empirical 800 MiB warning threshold, the CLI emits `[SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY]` once and continues indexing normally. The warning is informational for people and agents: attempt normal indexing first, and do not change the heap when indexing succeeds. It does not change `NODE_OPTIONS`, restart the process, or alter the exit code.
-
-For Claude Code, the current warning uses selected primary transcript bytes; derived subagent transcript data may add to the actual indexed workload, and large-scale Claude capacity has not yet been calibrated.
-
-Only if indexing terminates with a V8 heap-exhaustion error such as `JavaScript heap out of memory`, retry with a moderately larger temporary heap. This is a workaround for unusually large history, not a new product default. In PowerShell:
-
-```powershell
-$env:NODE_OPTIONS='--max-old-space-size=4096'
-npx session-analyzer --repo 'C:\path\to\project' --log-dir '.\session-analyzer-logs'
-Remove-Item 'Env:NODE_OPTIONS'
-```
-
-If `NODE_OPTIONS` was already set, preserve its previous value and restore it afterward instead of removing it.
-
-On POSIX shells, scope the override to one command:
-
-```sh
-NODE_OPTIONS='--max-old-space-size=4096' npx session-analyzer --repo /path/to/project --log-dir ./session-analyzer-logs
-```
-
-`--log-dir <path>` is the preferred way to collect aggregate indexing diagnostics for investigation. Session Analyzer writes throttled, bounded JSONL lifecycle records containing candidate file/byte counts, Session/Raw/Logical counts, timing, V8 heap limits, current and process-local peak memory, and the stable capacity-warning signal. These records omit repository paths, transcript paths, transcript text, prompts, commands, and source content, and at most 20 indexing logs are retained. Fatal V8 OOM stderr remains the authoritative final crash evidence; a fatal process termination may prevent the diagnostic logger from writing a final record.
-
-Memory efficiency for large transcript histories remains an active area of improvement. Future releases may further reduce indexing and runtime memory use, so these figures describe the current implementation rather than permanent product capacity limits.
-
-## Develop From Source
-
-The published CLI keeps the broader Node.js 22-or-newer runtime requirement above. A source checkout is deliberately stricter because npm 12 enforces the reviewed dependency install-script policy. Before any repository-local `npm install`, `npm ci`, or `npm run`, select a supported Node.js version and, from a directory outside the source checkout, bootstrap the exact npm CLI globally. This first npm command updates the toolchain and does not install project dependencies:
-
-```sh
-node --version
-npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/
-npm --version
-```
-
-Return to the source checkout only after the bootstrap. Do not continue unless Node.js satisfies `^22.22.2 || ^24.15.0` and `npm --version` prints exactly `12.0.2`. Then install the locked dependencies under the strict default-deny script policy:
-
-```sh
-npm ci --strict-allow-scripts --registry=https://registry.npmjs.org/
-npm install-scripts ls --json
-```
-
-The final command must report no pending install scripts.
-
-Start from a source checkout:
-
-```sh
-npm start
-```
-
-Or run the server file directly:
-
-```powershell
-node server.js --repo 'C:\path\to\project'
-```
-
-Build the browser bundle:
-
-```sh
-npm run build
-```
-
-Run tests:
-
-```sh
-npm test
-```
-
-Install Chromium and run browser coverage:
-
-```sh
-npm run browser:install
-npm run test:browser
-```
-
-Run package smoke verification before release packaging:
-
-```sh
-npm run test:package
-```
-
-The package smoke command runs `npm pack`, installs the tarball into a fresh temporary project, checks installed CLI help, and starts the packaged server.
-
-Run the repeatable non-browser release gate:
-
-```sh
-npm run release:check
-```
-
-The release gate checks generated assets, runs the full Node test suite, and repeats the installed-package smoke. Browser coverage remains a separate CI and local release requirement.
-
-The test fixtures under `test/fixtures/codex-home` and the inline Claude fixtures in `test/claude.test.js` are synthetic transcript data. They intentionally include fake paths and sample transcript shapes for parser coverage.
-
-Browser JavaScript source lives in `src/browser/`, and browser-and-Node shared logic lives in `src/shared/`. The generated runtime bundle is `public/assets/app.js`; do not edit it directly.
-
-## Known Limits
-
-- Mixed Codex-and-Claude indexing and source filters are not supported in v0.1.4.
-- Claude Code external `tool-results/*` payloads are not loaded or searched. Their source records and references remain available through protocol/raw fallback.
-- Future or unknown Codex and Claude Code protocol events remain inspectable through protocol/raw fallback views, but not every event family has a polished structured renderer.
-- Transcript fixture coverage is targeted rather than exhaustive; newly observed historical shapes may need additional fixtures and display adjustments.
-- Review finding rendering has synthetic coverage and real non-empty `review_output.findings[]` examples have been observed locally; sanitized fixture strengthening is still useful for future regressions.
-
-## Repository Layout
-
-- `server.js`: local HTTP server and API routes.
-- `src/source-adapters.js`: source selection and the source-neutral dispatch boundary.
-- `src/codex*.js`: Codex parsing, discovery, logical mapping, indexing, and detail construction.
-- `src/claude*.js`: Claude Code discovery, parsing, logical mapping, indexing, and detail construction.
-- `src/folding.js`: built-in timeline folding profiles.
-- `src/shared/`: browser-and-Node shared logic such as folding rule evaluation and command highlighting metadata.
-- `src/browser/`: browser UI source, search controls and state models, renderers, navigation, and app wiring.
-- `public/`: static HTML/CSS and generated browser runtime assets.
-- `test/`: Node test suite and synthetic transcript fixtures.
-- `docs/`: product specs, design docs, execution plans, and backlog notes.
-
-## License
-
-BSD 3-Clause. See [LICENSE](LICENSE).
+BSD 3-Clause. See [LICENSE](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/LICENSE).

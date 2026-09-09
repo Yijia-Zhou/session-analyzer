@@ -12,7 +12,7 @@ const i18n = require('../src/shared/i18n');
 const EXPECTED_DIRECT_TOOLS = {
   apply_patch: { title: 'Apply patch', ordinaryKind: 'patch', previewFields: ['patch'] },
   create_goal: { title: 'Create goal', ordinaryKind: 'goal', previewFields: ['objective'] },
-  exec_command: { title: 'Shell command', ordinaryKind: 'command', previewFields: ['command', 'cmd', 'workdir'] },
+  exec_command: { title: 'Exec command', ordinaryKind: 'command', previewFields: ['command', 'cmd', 'workdir'] },
   get_goal: { title: 'Get goal', ordinaryKind: 'goal', previewFields: [] },
   image_gen__imagegen: { title: 'Image generation', ordinaryKind: 'other_tool_call', previewFields: ['prompt'] },
   list_available_plugins_to_install: { title: 'List available plugins', ordinaryKind: 'other_tool_call', previewFields: [] },

@@ -195,12 +195,17 @@ test('runtime source configuration is registry-driven across server and browser'
   assert.deepEqual(registry.supportedSourceOptions(), [
     { kind: 'codex', label: 'Codex', homeOption: 'codexHome', homeLabel: 'Codex home' },
     { kind: 'claude-code', label: 'Claude Code', homeOption: 'claudeHome', homeLabel: 'Claude home' },
+    { kind: 'deepseek-harness', label: 'DeepSeek Harness', homeOption: 'dshHome', homeLabel: 'DeepSeek sessions root' },
   ]);
   assert.match(serverText, /sourceConfigs/);
   assert.match(serverText, /supportedSourceOptions\(\)/);
   assert.doesNotMatch(serverText, /state(?:\.(?:codexHome|claudeHome)\b|\[['"](?:codexHome|claudeHome)['"]\])/);
   assert.match(browserText, /sourceConfigs/);
   assert.match(browserText, /supportedSourceKindsForUi\(\)/);
+  // Source selection remains registry-driven; adapter diagnostic codes may be localized by the UI.
+  assert.match(browserText, /data-source-choice/);
+  assert.match(browserText, /supportedSourceKindsForUi\(\)\.includes\(target\)/);
+  assert.doesNotMatch(browserText, /otherSourceKind/);
   assert.match(browserText, /data-source-home/);
   assert.doesNotMatch(browserText, /state(?:\.(?:codexHome|claudeHome)\b|\[['"](?:codexHome|claudeHome)['"]\])/);
   assert.doesNotMatch(browserText, /project(?:Codex|Claude)HomeInput/);
@@ -236,7 +241,7 @@ test('source adapter registry owns source dispatch without adding Claude branche
   const codexLogical = readText(path.join('src', 'codex-logical.js'));
   const codexDetail = readText(path.join('src', 'codex-detail.js'));
 
-  assert.deepEqual(registry.supportedSourceKinds(), ['codex', 'claude-code']);
+  assert.deepEqual(registry.supportedSourceKinds(), ['codex', 'claude-code', 'deepseek-harness']);
   assert.equal(registry.requireSourceAdapter('codex').kind, 'codex');
   assert.equal(registry.requireSourceAdapter(registry.normalizeSourceKind('claude')).kind, 'claude-code');
   assert.doesNotMatch(codexLogical, /claude/i);

@@ -8,9 +8,11 @@ const path = require('node:path');
 const { createServer, discoverProjectsForSource, resolveSourceMutation } = require('../server');
 const {
   adapterForSession,
+  getSourceAdapter,
   queryForIndex,
   validateIndexOwnership,
 } = require('../src/source-adapters');
+const { strictClaudeIndexFromComplete } = require('./strict-claude-fixture');
 
 const codexFixtureHome = path.join(__dirname, 'fixtures', 'codex-home');
 const codexFixtureRepo = 'G:\\vibe\\term-agent';
@@ -152,12 +154,14 @@ test('POST /api/source validates source, homes, body shape, and payload size', a
   assert.deepEqual(state.json.details.sourceConfigs, {
     codex: { home: path.resolve(codexFixtureHome) },
     'claude-code': { home: path.resolve(fixture.claudeHome, 'unused') },
+    'deepseek-harness': { home: path.join(os.homedir(), '.dsh', 'sessions') },
   });
   assert.deepEqual(state.json.details.sourceOptions, [
     { kind: 'codex', label: 'Codex', homeOption: 'codexHome', homeLabel: 'Codex home' },
     { kind: 'claude-code', label: 'Claude Code', homeOption: 'claudeHome', homeLabel: 'Claude home' },
+    { kind: 'deepseek-harness', label: 'DeepSeek Harness', homeOption: 'dshHome', homeLabel: 'DeepSeek sessions root' },
   ]);
-  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code']);
+  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code', 'deepseek-harness']);
 });
 
 test('POST /api/source switches source and exposes unified configuration payloads', async (t) => {
@@ -175,7 +179,7 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(initialProjects.json.claudeHome, path.resolve(fixture.claudeHome, 'unused'));
   assert.equal(initialProjects.json.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
   assert.equal(initialProjects.json.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome, 'unused'));
-  assert.deepEqual(initialProjects.json.supportedSources, ['codex', 'claude-code']);
+  assert.deepEqual(initialProjects.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness']);
   assert.ok(initialProjects.json.projects.some((project) => project.repoRoot === codexFixtureRepo));
 
   const switched = await requestJson(
@@ -190,7 +194,7 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(switched.json.claudeHome, path.resolve(fixture.claudeHome));
   assert.equal(switched.json.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
   assert.equal(switched.json.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome));
-  assert.deepEqual(switched.json.supportedSources, ['codex', 'claude-code']);
+  assert.deepEqual(switched.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness']);
   assert.equal(switched.json.projectSelected, false);
 
   const state = await requestJson(base, '/api/state');
@@ -201,7 +205,7 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(state.json.details.claudeHome, path.resolve(fixture.claudeHome));
   assert.equal(state.json.details.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
   assert.equal(state.json.details.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome));
-  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code']);
+  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code', 'deepseek-harness']);
 
   const projects = await requestJson(base, '/api/projects');
   assert.equal(projects.status, 200);
@@ -481,13 +485,12 @@ test('runtime initialization keeps canonical source configs authoritative and re
   assert.equal(state.json.details.sourceConfigs.codex.home, path.resolve(canonicalHome));
   assert.equal(state.json.details.codexHome, path.resolve(canonicalHome));
 
-  const initialIndexServer = createServer({
-    repoRoot: 'G:\\vibe\\initial-canonical-project',
-    sourceKind: 'codex',
-    sourceConfigs: { codex: { home: canonicalHome } },
-    sessions: [],
-    sessionsById: new Map(),
-  }, 0, {
+  const initialIndex = await getSourceAdapter('codex').buildIndex({
+    repoRoot: codexFixtureRepo,
+    sourceHome: codexFixtureHome,
+  });
+  initialIndex.sourceConfigs = { codex: { home: canonicalHome } };
+  const initialIndexServer = createServer(initialIndex, 0, {
     codexHome: legacyHome,
     sourceHome: conflictingActiveHome,
   });
@@ -547,12 +550,12 @@ test('canonical source ownership dispatch fails closed instead of defaulting to 
     counts: { messages: 0, toolCalls: 0, failedCommands: 0 },
   };
   assert.equal(
-    validateIndexOwnership({
+    validateIndexOwnership(strictClaudeIndexFromComplete({
       sourceKind: 'claude-code',
       repoRoot: '/repo',
       sessions: [rightSession],
       sessionsById: new Map([[rightSession.id, rightSession]]),
-    }),
+    })),
     'claude-code',
   );
   const unownedReachableSession = { id: 'reachable-without-source' };
@@ -574,12 +577,15 @@ test('canonical source ownership dispatch fails closed instead of defaulting to 
     counts: { messages: 0, toolCalls: 0, failedCommands: 0 },
   };
   const invalidArraySession = { id: 'invalid-array-session', sourceKind: 'codex' };
+  const mixedIndex = strictClaudeIndexFromComplete({
+    sourceKind: 'claude-code',
+    repoRoot: '/repo',
+    sessions: [validMapSession],
+    sessionsById: new Map([[validMapSession.id, validMapSession]]),
+  });
+  mixedIndex.sessions = [mixedIndex.sessions[0], invalidArraySession];
   assert.throws(
-    () => validateIndexOwnership({
-      sourceKind: 'claude-code',
-      sessionsById: new Map([[validMapSession.id, validMapSession]]),
-      sessions: [validMapSession, invalidArraySession],
-    }),
+    () => validateIndexOwnership(mixedIndex),
     { code: 'SOURCE_OWNERSHIP_MISMATCH' },
   );
 });
@@ -595,7 +601,10 @@ test('an adapter index without canonical ownership is rejected before runtime co
   const job = await waitForJob(base, started.json.job.id);
   assert.equal(job.status, 'failed');
   assert.match(job.error, /Missing source ownership on index/);
-  assert.equal((await requestJson(base, '/api/state')).status, 409);
+  const failedState = await requestJson(base, '/api/state');
+  assert.equal(failedState.status, 200);
+  assert.equal(failedState.json.projectSelected, false);
+  assert.equal(failedState.json.job.status, 'failed');
 });
 
 test('an adapter index with accessor-backed sessions is rejected before runtime commit', async (t) => {
@@ -622,7 +631,10 @@ test('an adapter index with accessor-backed sessions is rejected before runtime 
   const job = await waitForJob(base, started.json.job.id);
   assert.equal(job.status, 'failed');
   assert.match(job.error, /Canonical index\.sessions must be a data-property array/);
-  assert.equal((await requestJson(base, '/api/state')).status, 409);
+  const failedState = await requestJson(base, '/api/state');
+  assert.equal(failedState.status, 200);
+  assert.equal(failedState.json.projectSelected, false);
+  assert.equal(failedState.json.job.status, 'failed');
 });
 
 test('an adapter index owned by another source is rejected before runtime commit', async (t) => {
@@ -646,8 +658,10 @@ test('an adapter index owned by another source is rejected before runtime commit
   assert.equal(job.status, 'failed');
   assert.match(job.error, /Source ownership mismatch: job claude-code, index codex/);
   const state = await requestJson(base, '/api/state');
-  assert.equal(state.status, 409);
-  assert.equal(state.json.details.sourceKind, 'claude-code');
+  assert.equal(state.status, 200);
+  assert.equal(state.json.projectSelected, false);
+  assert.equal(state.json.job.status, 'failed');
+  assert.equal(state.json.sourceKind, 'claude-code');
 });
 
 test('source switch cancels the active job and never commits a stale index', async (t) => {
@@ -671,7 +685,7 @@ test('source switch cancels the active job and never commits a stale index', asy
   assert.equal(runningState.json.sourceKind, 'codex');
   assert.equal(runningState.json.projectSelected, false);
   assert.equal(runningState.json.job.status, 'running');
-  assert.deepEqual(runningState.json.supportedSources, ['codex', 'claude-code']);
+  assert.deepEqual(runningState.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness']);
 
   const switched = await requestJson(
     base,

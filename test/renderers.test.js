@@ -2,7 +2,13 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { renderSection, renderSections, renderTimelineSections } = require('../src/browser/renderers');
+const {
+  orderDetailSections,
+  renderInspectorSections,
+  renderSection,
+  renderSections,
+  renderTimelineSections,
+} = require('../src/browser/renderers');
 
 test('renderer outputs safe markdown, code, terminal, json, diff, notice, and kv fragments', () => {
   const markdown = renderSection({ type: 'markdown', title: 'Message', html: '<p><strong>safe</strong></p>' });
@@ -279,9 +285,9 @@ test('renderer shows reliable patch line numbers when available', () => {
 
 test('renderer groups command and terminal sections as one command run', () => {
   const html = renderSections([
-    { type: 'code', title: 'Command', code: 'echo "<x>"', language: 'shell' },
-    { type: 'terminal', title: 'stdout', text: 'ok', stream: 'stdout', language: 'text' },
-    { type: 'terminal', title: 'stderr', text: '<boom>', stream: 'stderr', language: 'text' },
+    { purpose: 'request', type: 'code', title: 'Localized request title', code: 'echo "<x>"', language: 'shell', role: 'command' },
+    { purpose: 'result', type: 'terminal', title: 'Localized output title', text: 'ok', stream: 'stdout', language: 'text' },
+    { purpose: 'result', type: 'terminal', title: 'Localized error title', text: '<boom>', stream: 'stderr', language: 'text' },
   ]);
 
   assert.match(html, /class="eventSection commandRun"/);
@@ -292,6 +298,59 @@ test('renderer groups command and terminal sections as one command run', () => {
   assert.match(html, /&quot;&lt;x&gt;&quot;/);
   assert.match(html, /&lt;boom&gt;/);
   assert.doesNotMatch(html, /class="codeFence"/);
+
+  const titleLookalike = renderSections([
+    { purpose: 'request', type: 'code', title: 'Command', code: 'echo standalone', language: 'shell' },
+    { purpose: 'result', type: 'terminal', title: 'stdout', text: 'not grouped', language: 'text' },
+  ]);
+  assert.doesNotMatch(titleLookalike, /class="eventSection commandRun"/);
+  assert.match(titleLookalike, /class="codeFence"/);
+});
+
+test('Inspector ordering follows purpose while preserving producer order and atomic composites', () => {
+  const composite = {
+    purpose: 'content',
+    type: 'code_mode_tool_projection',
+    title: 'Atomic composite',
+    toolName: 'shell_command',
+    requestEvidence: 'declared_source',
+    resultAssociation: 'bounded',
+    requestSections: [{ purpose: 'request', type: 'notice', title: 'Nested request', text: 'request child' }],
+    resultSections: [{ purpose: 'result', type: 'notice', title: 'Nested result', text: 'result child' }],
+    resultObserved: true,
+    sourceOrder: 0,
+  };
+  const sections = [
+    { purpose: 'fallback', type: 'notice', title: 'Fallback', text: 'fallback body' },
+    { purpose: 'context', type: 'notice', title: 'Context one', text: 'context one body' },
+    composite,
+    { purpose: 'result', type: 'notice', title: 'Result', text: 'result body' },
+    { purpose: 'context', type: 'notice', title: 'Context two', text: 'context two body' },
+    { purpose: 'request', type: 'notice', title: 'Request', text: 'request body' },
+  ];
+
+  assert.deepEqual(orderDetailSections(sections).map((section) => section.title), [
+    'Atomic composite',
+    'Request',
+    'Result',
+    'Context one',
+    'Context two',
+    'Fallback',
+  ]);
+  const html = renderInspectorSections(sections);
+  const positions = [
+    'Atomic composite',
+    'request child',
+    'result child',
+    'request body',
+    'result body',
+    'context one body',
+    'context two body',
+    'fallback body',
+  ].map((value) => html.indexOf(value));
+  assert.ok(positions.every((position) => position >= 0));
+  assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
+  assert.equal((html.match(/Atomic composite/g) || []).length, 1);
 });
 
 test('renderer keeps an escaped preview when expanded timeline detail is inspector-only', () => {

@@ -20,6 +20,7 @@ const {
   largeTranscriptHistoryWarning,
 } = require('../src/runtime-capacity');
 const { createServer } = require('../server');
+const { strictClaudeIndexFromComplete } = require('./strict-claude-fixture');
 
 async function makeTempDir(t) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-diagnostics-'));
@@ -209,7 +210,7 @@ test('server diagnostics record successful, failed, and cancelled indexing outco
     {
       name: 'succeeded',
       expectedStatus: 'succeeded',
-      buildIndex: async ({ repoRoot, sourceKind }) => ({
+      buildIndex: async ({ repoRoot, sourceKind }) => strictClaudeIndexFromComplete({
         repoRoot,
         sourceKind,
         sessions: [],
@@ -235,7 +236,11 @@ test('server diagnostics record successful, failed, and cancelled indexing outco
 
   for (const scenario of cases) {
     const logDir = path.join(root, scenario.name);
-    const server = createServer(null, 0, { logDir, buildIndex: scenario.buildIndex });
+    const server = createServer(null, 0, {
+      source: 'claude-code',
+      logDir,
+      buildIndex: scenario.buildIndex,
+    });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
     try {
@@ -273,9 +278,10 @@ test('server emits one large-history warning without blocking successful indexin
   const root = await makeTempDir(t);
   const messages = [];
   const server = createServer(null, 0, {
+    source: 'claude-code',
     logDir: root,
     warn: (message) => messages.push(message),
-    buildIndex: async ({ repoRoot, onProgress }) => {
+    buildIndex: async ({ repoRoot, sourceKind, onProgress }) => {
       const progress = {
         phase: 'parsing',
         candidateBytes: LARGE_TRANSCRIPT_HISTORY_WARNING_BYTES + 1,
@@ -286,12 +292,12 @@ test('server emits one large-history warning without blocking successful indexin
       };
       onProgress(progress);
       onProgress({ ...progress, sessionCount: 1, rawEventCount: 2, eventCount: 1 });
-      return {
+      return strictClaudeIndexFromComplete({
         repoRoot,
-        sourceKind: 'codex',
+        sourceKind,
         sessions: [],
         sessionsById: new Map(),
-      };
+      });
     },
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -327,18 +333,63 @@ test('server emits one large-history warning without blocking successful indexin
   assert.equal(capacityEntries[0].warningCode, LARGE_TRANSCRIPT_HISTORY_WARNING_CODE);
 });
 
-test('English and Chinese README capacity guidance preserves aligned operational anchors', () => {
-  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
-  const readmeZh = fs.readFileSync(path.join(__dirname, '..', 'README.zh-CN.md'), 'utf8');
-  for (const content of [readme, readmeZh]) {
-    assert.match(content, /250 MB/u);
-    assert.match(content, /850–900 MB/u);
-    assert.match(content, /1\.9 GB/u);
-    assert.match(content, /800 MiB/u);
-    assert.match(content, /SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY/u);
-    assert.match(content, /JavaScript heap out of memory/u);
-    assert.match(content, /--max-old-space-size=4096/u);
-    assert.match(content, /--log-dir <path>/u);
-    assert.match(content, /permanent product capacity limits|永久的产品容量上限/u);
+test('both READMEs link to operational recovery and performance guidance', () => {
+  const troubleshootingGuide = 'https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/troubleshooting.md';
+  const performanceGuide = 'https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/timeline-loading-and-rendering-performance.md';
+  for (const file of ['README.md', 'README.zh-CN.md']) {
+    const content = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    assert.ok(content.includes(`](${troubleshootingGuide})`));
+    assert.ok(content.includes(`](${performanceGuide})`));
+  }
+});
+
+test('troubleshooting preserves logging and temporary OOM recovery safeguards', () => {
+  const content = fs.readFileSync(path.join(__dirname, '..', 'docs/usage/troubleshooting.md'), 'utf8');
+  for (const anchor of [
+    'SESSION_ANALYZER_LARGE_TRANSCRIPT_HISTORY',
+    'indexing continues normally',
+    'do not change the heap if it succeeds',
+    '--log-dir <path>',
+    'at most 20 indexing logs',
+    'They omit repository/transcript paths',
+    'not necessarily terminal stderr or source-diagnostic samples',
+    'Fatal V8 OOM stderr is the authoritative crash evidence',
+    'Only after a V8 heap-exhaustion failure',
+    'JavaScript heap out of memory',
+    'replace that flag temporarily instead of adding a second one',
+    '$previousNodeOptions = $env:NODE_OPTIONS',
+    '--max-old-space-size=4096',
+    '& $analyzerProgram @analyzerArguments',
+    '} finally {',
+    "Remove-Item 'Env:NODE_OPTIONS'",
+    '$env:NODE_OPTIONS = $previousNodeOptions',
+    'executable, checkout or pinned installed version, source, repository, and source root',
+    'Retest indexing and actual reading',
+    'not V8 heap or RSS ceilings',
+    '](../design-docs/indexed-materialized-session-lifecycle.md)',
+    '](../design-docs/timeline-loading-and-rendering-performance.md)',
+  ]) {
+    assert.ok(content.includes(anchor), 'recovery guide should preserve: ' + anchor);
+  }
+});
+
+test('performance evidence retains measured context and cache capacity boundaries', () => {
+  const performance = fs.readFileSync(path.join(__dirname, '..', 'docs/design-docs/timeline-loading-and-rendering-performance.md'), 'utf8');
+  const lifecycle = fs.readFileSync(path.join(__dirname, '..', 'docs/design-docs/indexed-materialized-session-lifecycle.md'), 'utf8');
+  for (const anchor of [
+    '2026-08-16', '490', '305,485', '788,048,864', '2,159,792,128',
+    '1,055,031,867', '10,841.37', '0.14 ms', '800 MiB',
+    'not a causal comparison or stable latency guarantee',
+    'not guaranteed failures or permanent product limits',
+  ]) {
+    assert.ok(performance.includes(anchor), 'performance evidence should preserve: ' + anchor);
+  }
+  for (const anchor of [
+    'weighted LRU', 'maxEstimatedMaterializedBytes = 256 MiB',
+    'maxCachedSessions = 12', 'not permanent product contracts',
+    'exactly one oversize foreground resident',
+    'No TTL, cross-revision materialization reuse, persistent／derived disk cache',
+  ]) {
+    assert.ok(lifecycle.includes(anchor), 'lifecycle design should preserve: ' + anchor);
   }
 });

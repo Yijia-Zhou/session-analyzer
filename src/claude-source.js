@@ -1,9 +1,9 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 const { sanitizeLogicalDetailValue } = require('./shared/logical-detail-sanitizer');
 
-const CANONICAL_SCHEMA_VERSION = 1;
 const CLAUDE_SOURCE_KIND = 'claude-code';
 const JSONL_LINE_LOCATOR_TYPE = 'jsonl_line';
 const TEXT_LIMIT = 16000;

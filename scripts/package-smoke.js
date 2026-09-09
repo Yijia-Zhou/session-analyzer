@@ -2,6 +2,8 @@
 'use strict';
 
 const childProcess = require('node:child_process');
+const assert = require('node:assert/strict');
+const { zstdCompressSync } = require('node:zlib');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const http = require('node:http');
@@ -210,10 +212,11 @@ function isPackageStatePayload(response) {
   const sourceKind = response?.json?.sourceKind;
   const sourcePresentationShape = sourceKind === 'codex'
     ? Array.isArray(response.json.codeModeRequests)
-    : sourceKind === 'claude-code' && !Object.hasOwn(response.json, 'codeModeRequests');
+    : (sourceKind === 'claude-code' || sourceKind === 'deepseek-harness')
+      && !Object.hasOwn(response.json, 'codeModeRequests');
   return response.statusCode === 200
     && response.json
-    && (sourceKind === 'codex' || sourceKind === 'claude-code')
+    && ['codex', 'claude-code', 'deepseek-harness'].includes(sourceKind)
     && response.json.totals
     && Array.isArray(response.json.supportedLocales)
     && response.json.eventKinds
@@ -278,6 +281,55 @@ async function waitForPackageState(baseUrl, options = {}) {
   throw new Error(`/api/state did not reach the expected package smoke JSON shape within ${timeoutMs}ms; last response: ${summarizeResponse(lastState)}`);
 }
 
+// Verify the installed artifact through the same lazy-reading HTTP boundaries as the UI.
+async function verifyPackageReading(baseUrl, state, expected) {
+  assert.equal(state.sourceKind, expected.sourceKind);
+  assert.equal(state.repoRoot, expected.repoRoot);
+  assert.equal(state.sourceHome, expected.sourceHome);
+  assert.equal(state.totals.sessionCount, expected.sessions.length);
+  assert.deepEqual(state.sourceDiagnostics, {
+    totalCount: 0, counts: {}, samples: [], truncatedCount: 0,
+  });
+  const get = async (route) => {
+    const response = await requestJson(baseUrl + route);
+    assert.equal(response.statusCode, 200, route + ': ' + summarizeResponse(response));
+    return response.json;
+  };
+  const listed = await get('/api/sessions');
+  assert.equal(listed.sessions.length, expected.sessions.length);
+  for (const fixture of expected.sessions) {
+    const session = listed.sessions.find((item) => item.sourceSessionId === fixture.id);
+    assert.ok(session, 'Missing installed fixture Session: ' + fixture.id);
+    assert.equal(session.sourceKind, expected.sourceKind);
+    const prefix = '/api/sessions/' + encodeURIComponent(session.id);
+    const timeline = await get(prefix + '/timeline?layer=main&limit=20');
+    const event = timeline.events.find((item) => item.kind === 'user_message');
+    assert.ok(event, 'Missing user message for ' + fixture.id);
+    assert.ok(event.preview.includes(fixture.text), 'Timeline content for ' + fixture.id);
+    const detail = await get(prefix + '/events/' + encodeURIComponent(event.id) + '/detail?layer=main');
+    assert.equal(detail.id, event.id);
+    assert.equal(detail.sourceKind, expected.sourceKind);
+    assert.ok(JSON.stringify(detail.timelineSections).includes(fixture.text), 'Detail content for ' + fixture.id);
+    assert.ok(event.rawRefs.length > 0);
+    assert.deepEqual(detail.rawRefs, event.rawRefs);
+    let matchedRecord = false;
+    for (const ref of detail.rawRefs) {
+      assert.ok(ref.rawId);
+      const raw = await get(prefix + '/raw/' + encodeURIComponent(ref.rawId));
+      assert.equal(raw.rawId, ref.rawId);
+      assert.equal(raw.sourceKind, expected.sourceKind);
+      assert.deepEqual(raw.sourceLocator, ref.sourceLocator);
+      const record = JSON.parse(raw.raw);
+      if (raw.raw.includes(fixture.text)) {
+        assert.deepEqual(record, fixture.record);
+        matchedRecord = true;
+      }
+    }
+    assert.ok(matchedRecord, 'Raw content for ' + fixture.id);
+    console.log(expected.sourceKind + ' ' + fixture.id + ': Timeline -> Detail -> Raw passed.');
+  }
+}
+
 async function main() {
   let cacheDir = null;
   let smokeRoot = null;
@@ -301,11 +353,27 @@ async function main() {
     const projectDir = path.join(smokeRoot, 'project');
     const codexHome = path.join(smokeRoot, 'codex-home');
     const claudeHome = path.join(smokeRoot, 'claude-home');
+    const dshHome = path.join(smokeRoot, 'dsh-sessions');
     const claudeContainer = path.join(claudeHome, 'projects', '-package-smoke');
     const claudeSessionId = '11111111-1111-4111-8111-111111111111';
     await fsp.mkdir(projectDir, { recursive: true });
     await fsp.mkdir(path.join(codexHome, 'sessions'), { recursive: true });
     await fsp.mkdir(claudeContainer, { recursive: true });
+    const dshSessionDir = path.join(dshHome, '-package-smoke-project-', 'session-package-smoke');
+    await fsp.mkdir(dshSessionDir, { recursive: true });
+    const codexSessionId = '22222222-2222-4222-8222-222222222222';
+    const codexText = 'Verify the installed Codex adapter.';
+    const codexUser = {
+      type: 'event_msg', timestamp: '2026-08-03T00:00:01.000Z',
+      payload: { type: 'user_message', message: codexText },
+    };
+    const codexRecords = [
+      { type: 'session_meta', timestamp: '2026-08-03T00:00:00.000Z',
+        payload: { id: codexSessionId, cwd: projectDir } },
+      codexUser,
+    ];
+    await fsp.writeFile(path.join(codexHome, 'sessions', 'rollout-package-smoke.jsonl'),
+      codexRecords.map((record) => JSON.stringify(record)).join('\n') + '\n', 'utf8');
     const claudeBase = {
       isSidechain: false,
       userType: 'external',
@@ -339,6 +407,57 @@ async function main() {
       `${claudeRecords.map((record) => JSON.stringify(record)).join('\n')}\n`,
       'utf8',
     );
+    const dshSessionId = 'session-package-smoke';
+    const dshRecords = [
+      {
+        type: 'session', version: 0, id: dshSessionId, createdAt: 1,
+        cwd: projectDir, delegationDepth: 0,
+      },
+      { type: 'turn/start', seq: 0, time: 2, data: { turn: 1 } },
+      { type: 'step/start', seq: 1, time: 3, data: { turn: 1, step: 1 } },
+      {
+        type: 'user/message', seq: 2, time: 4, surfaceOp: 'append',
+        data: {
+          role: 'user', source: { kind: 'user' },
+          id: 'package-smoke-user-message',
+          content: [{ type: 'text', text: 'Verify the installed DeepSeek Harness adapter.' }],
+        },
+      },
+      {
+        type: 'assistant/message', seq: 3, time: 5, surfaceOp: 'append',
+        data: {
+          turn: 1, step: 1,
+          message: {
+            role: 'assistant',
+            source: { kind: 'model', provider: 'smoke', model: 'smoke-model' },
+            id: 'package-smoke-assistant-message',
+            content: [{ type: 'text', text: 'DeepSeek Harness package smoke passed.' }],
+          },
+        },
+      },
+      { type: 'step/end', seq: 4, time: 6, data: { turn: 1, step: 1 } },
+      { type: 'turn/end', seq: 5, time: 7, data: { turn: 1, reason: { kind: 'completed' } } },
+    ];
+    await fsp.writeFile(
+      path.join(dshSessionDir, 'session.jsonl'),
+      `${dshRecords.map((record) => JSON.stringify(record)).join('\n')}\n`,
+      'utf8',
+    );
+    const dshSessions = [{ id: dshSessionId,
+      text: dshRecords[3].data.content[0].text, record: dshRecords[3] }];
+    if (typeof zstdCompressSync === 'function') {
+      const id = 'session-package-smoke-zstd';
+      const directory = path.join(dshHome, '-package-smoke-project-', id);
+      await fsp.mkdir(directory, { recursive: true });
+      const records = dshRecords.map((record, i) => i === 0 ? { ...record, id } : record);
+      // The writer stores the header in its own independently decodable frame.
+      await fsp.writeFile(path.join(directory, 'session.jsonl.zstd'), Buffer.concat(
+        records.map((record) => zstdCompressSync(Buffer.from(JSON.stringify(record) + '\n'))),
+      ));
+      dshSessions.push({ id, text: records[3].data.content[0].text, record: records[3] });
+    } else {
+      console.log('SKIP DeepSeek Zstd package reading: Node built-in Zstd is unavailable.');
+    }
     await fsp.writeFile(path.join(smokeRoot, 'package.json'), JSON.stringify({
       name: 'session-analyzer-package-smoke',
       version: '0.0.0',
@@ -377,6 +496,10 @@ async function main() {
     child = launched.child;
     let baseUrl = `http://127.0.0.1:${launched.port}`;
     const codexState = await waitForPackageState(baseUrl);
+    await verifyPackageReading(baseUrl, codexState.json, {
+      sourceKind: 'codex', repoRoot: projectDir, sourceHome: codexHome,
+      sessions: [{ id: codexSessionId, text: codexText, record: codexUser }],
+    });
     if (codexState.json.sourceKind !== 'codex') {
       throw new Error(`Installed Codex package smoke reported unexpected sourceKind: ${codexState.json.sourceKind}`);
     }
@@ -395,6 +518,10 @@ async function main() {
     child = launched.child;
     baseUrl = `http://127.0.0.1:${launched.port}`;
     const claudeState = await waitForPackageState(baseUrl);
+    await verifyPackageReading(baseUrl, claudeState.json, {
+      sourceKind: 'claude-code', repoRoot: projectDir, sourceHome: claudeHome,
+      sessions: [{ id: claudeSessionId, text: claudeRecords[1].message.content, record: claudeRecords[1] }],
+    });
     if (claudeState.json.sourceKind !== 'claude-code') {
       throw new Error(`Installed Claude package smoke reported unexpected sourceKind: ${claudeState.json.sourceKind}`);
     }
@@ -405,7 +532,26 @@ async function main() {
     if (html.statusCode !== 200 || !html.body.includes('src="/assets/app.js"')) {
       throw new Error('Installed Claude root HTML did not reference the generated browser bundle');
     }
-    console.log('Codex and Claude Code package smoke passed.');
+
+    await stopChild(child);
+    child = null;
+    launched = await launchPackagedServer(packagedServer, smokeRoot, [
+      '--source', 'deepseek-harness',
+      '--repo', projectDir,
+      '--dsh-home', dshHome,
+    ]);
+    child = launched.child;
+    baseUrl = `http://127.0.0.1:${launched.port}`;
+    const dshState = await waitForPackageState(baseUrl);
+    await verifyPackageReading(baseUrl, dshState.json, {
+      sourceKind: 'deepseek-harness', repoRoot: projectDir, sourceHome: dshHome,
+      sessions: dshSessions,
+    });
+    html = await requestText(`${baseUrl}/`);
+    if (html.statusCode !== 200 || !html.body.includes('src="/assets/app.js"')) {
+      throw new Error('Installed DeepSeek Harness root HTML did not reference the generated browser bundle');
+    }
+    console.log('Codex, Claude Code, and DeepSeek Harness package smoke passed.');
   } finally {
     await stopChild(child);
     if (tarballPath) {

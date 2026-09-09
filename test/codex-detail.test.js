@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { __testOnly, buildEventDetail } = require('../src/codex');
+const { __testOnly, buildEventDetail, buildHydratedEventDetail } = require('../src/codex');
 const { createCodexDetailBuilder } = require('../src/codex-detail');
 const { knownCodeModeToolNames } = require('../src/codex-code-mode-declared');
 
@@ -84,6 +84,122 @@ test('logical detail keeps source locator, meta, and raw refs without aggregate 
   assert.equal(Object.hasOwn(detail, 'sourceEventType'), false);
 });
 
+test('cache-observed token_count detail uses canonical accounting and keeps usage limits separate', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const repoRoot = path.join(codexHome, 'repo');
+  const id = '98989898-3333-4444-8888-989898989898';
+  await writeTranscript(codexHome, repoRoot, id, [
+    {
+      type: 'session_meta',
+      timestamp: '2026-09-03T00:00:00.000Z',
+      payload: { id, cwd: repoRoot },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-09-03T00:00:01.000Z',
+      payload: { type: 'turn_started', turn_id: 'turn-cache-detail' },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-09-03T00:00:02.000Z',
+      payload: {
+        type: 'token_count',
+        info: {
+          last_token_usage: {
+            input_tokens: 16_384,
+            cached_input_tokens: 16_384,
+            output_tokens: 233,
+          },
+          total_token_usage: {
+            input_tokens: 999_999,
+            cached_input_tokens: 999_999,
+          },
+        },
+      },
+    },
+    {
+      type: 'response_item',
+      timestamp: '2026-09-03T00:00:03.000Z',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'synthetic cache detail anchor' }],
+      },
+    },
+    {
+      type: 'event_msg',
+      timestamp: '2026-09-03T00:00:16.000Z',
+      payload: {
+        type: 'token_count',
+        info: {
+          last_token_usage: {
+            input_tokens: 12_288,
+            cached_input_tokens: 0,
+            output_tokens: 589,
+          },
+          total_token_usage: {
+            input_tokens: 1_000_000,
+            cached_input_tokens: 999_999,
+          },
+        },
+        rate_limits: {
+          primary: {
+            used_percent: 20,
+            resets_at: '2026-09-04T00:00:00.000Z',
+          },
+        },
+      },
+    },
+  ]);
+
+  const index = await __testOnly.buildCacheObservationResidentOracleForTests({ repoRoot, codexHome });
+  const session = index.sessionsById.get(id);
+  const event = session.logicalEvents.find((candidate) => (
+    candidate.subtype === 'token_count'
+      && candidate.cacheObservation?.comparison?.state === 'cache_discontinuity'
+  ));
+  assert.ok(event);
+  const detail = await buildHydratedEventDetail(index, session, event.id, event.layer, { locale: 'en' });
+  assert.equal(detail.timelineSections[0].type, 'token_usage');
+  assert.deepEqual(detail.timelineSections[0].items.map((item) => [item.label, item.formatted]), [
+    ['Input', '12,288'],
+    ['Cached input', '0'],
+    ['Cache reuse', '0%'],
+    ['Output', '589'],
+  ]);
+  assert.equal(JSON.stringify(detail).includes('9999999'), false);
+  assert.equal(detail.inspectorSections.filter((section) => section.type === 'usage_limits').length, 1);
+  assert.equal(detail.timelineSections.filter((section) => section.type === 'usage_limits').length, 0);
+  const comparison = detail.inspectorSections.find((section) => section.title === 'Comparison Context');
+  assert.deepEqual(comparison.entries.map((entry) => entry.key), [
+    'Elapsed',
+    'Input tokens',
+    'Input-token delta',
+    'Cached input',
+    'Cache-read delta',
+    'Cache reuse',
+    'Comparison state',
+  ]);
+  assert.equal(comparison.entries.at(-1).value, 'Cache discontinuity');
+  assert.equal(
+    detail.inspectorSections.find((section) => section.type === 'notice').text,
+    'This cache discontinuity is inferred from adjacent token accounting; the transcript does not provide explicit cache-expiry evidence.',
+  );
+
+  const localized = await buildHydratedEventDetail(index, session, event.id, event.layer, { locale: 'zh-CN' });
+  assert.equal(localized.timelineSections[0].title, 'Token 使用情况');
+  assert.deepEqual(localized.timelineSections[0].items.map((item) => item.label), [
+    '输入',
+    '缓存输入',
+    '缓存复用',
+    '输出',
+  ]);
+  assert.equal(
+    localized.inspectorSections.find((section) => section.type === 'notice').text,
+    '该缓存复用中断由相邻的 token accounting 推断；转录中没有提供显式的缓存过期证据。',
+  );
+});
+
 test('command, patch, and tool details keep stable section type boundaries', async () => {
   const session = await buildFixtureSession();
   const command = session.logicalEvents.find((candidate) => candidate.kind === 'command');
@@ -99,8 +215,8 @@ test('command, patch, and tool details keep stable section type boundaries', asy
     inspector: ['kv', 'notice'],
   });
   assert.deepEqual(sectionTypes(buildEventDetail(session, tool.id, tool.layer)), {
-    timeline: ['plan_update', 'code'],
-    inspector: ['kv', 'json'],
+    timeline: ['plan_update'],
+    inspector: ['kv', 'json', 'code'],
   });
 });
 
@@ -353,16 +469,13 @@ test('Code Mode detail prioritizes command and final output while folding wait t
   const chineseDetail = buildEventDetail(session, operation.id, 'main', { locale: 'zh-CN' });
 
   assert.deepEqual(detail.rawRefs.map((ref) => ref.line), [2, 3, 4, 6]);
-  assert.deepEqual(detail.timelineSections.map((section) => section.type), ['code', 'terminal', 'code_mode_trace']);
-  assert.deepEqual(detail.timelineSections.map((section) => section.title), ['Command', 'Final output', 'Execution trace']);
+  assert.deepEqual(detail.timelineSections.map((section) => section.type), ['code', 'terminal']);
+  assert.deepEqual(detail.timelineSections.map((section) => section.title), ['Command', 'Final output']);
   assert.equal(detail.timelineSections[0].role, 'command');
   assert.match(detail.timelineSections[0].code, /tools\.fixture/);
   assert.equal(detail.timelineSections[1].text, 'Script completed\nfixture result');
-  assert.equal(detail.timelineSections[2].expanded, undefined);
-  assert.deepEqual(detail.timelineSections[2].phases.map((phase) => phase.title), ['Exec phase', 'Wait phase 1']);
-  assert.match(detail.timelineSections[2].phases[0].output, /Script running with cell ID 4242/);
-  assert.equal(detail.timelineSections[2].phases[1].output, '');
   assert.deepEqual(detail.inspectorSections[0], {
+    purpose: 'context',
     type: 'kv',
     title: 'Operation metadata',
     entries: [
@@ -372,21 +485,29 @@ test('Code Mode detail prioritizes command and final output while folding wait t
       { key: 'Poll count', value: '1' },
     ],
   });
-  assert.deepEqual(detail.inspectorSections[1], {
+  assert.equal(detail.inspectorSections[1].type, 'code_mode_trace');
+  assert.equal(detail.inspectorSections[1].purpose, 'traceability');
+  assert.equal(detail.inspectorSections[1].expanded, undefined);
+  assert.deepEqual(detail.inspectorSections[1].phases.map((phase) => phase.title), ['Exec phase', 'Wait phase 1']);
+  assert.match(detail.inspectorSections[1].phases[0].output, /Script running with cell ID 4242/);
+  assert.equal(detail.inspectorSections[1].phases[1].output, '');
+  assert.deepEqual(detail.inspectorSections[2], {
+    purpose: 'traceability',
     type: 'event_refs',
     title: 'Observed nested activity',
     items: [{ id: nested.id, label: 'MCP tool', kind: 'mcp_call', status: 'failed' }],
   });
   assert.equal(Object.hasOwn(detail, 'eventRefs'), false);
-  assert.deepEqual(chineseDetail.timelineSections.map((section) => section.title), ['执行命令', '最终输出', '执行过程']);
-  assert.deepEqual(chineseDetail.timelineSections[2].phases.map((phase) => phase.title), ['执行阶段', '等待阶段 1']);
+  assert.deepEqual(chineseDetail.timelineSections.map((section) => section.title), ['执行命令', '最终输出']);
   assert.deepEqual(chineseDetail.inspectorSections[0].entries, [
     { key: '证据状态', value: 'output_observed' },
     { key: '观测状态', value: 'terminal' },
     { key: '运行单元', value: '4242' },
     { key: '轮询次数', value: '1' },
   ]);
-  assert.equal(chineseDetail.inspectorSections[1].title, '已观测嵌套活动');
+  assert.equal(chineseDetail.inspectorSections[1].title, '执行过程');
+  assert.deepEqual(chineseDetail.inspectorSections[1].phases.map((phase) => phase.title), ['执行阶段', '等待阶段 1']);
+  assert.equal(chineseDetail.inspectorSections[2].title, '已观测嵌套活动');
 });
 
 test('Code Mode detail restores declared plan and shell structure with explicitly bounded results', async (t) => {
@@ -483,7 +604,7 @@ test('Code Mode detail restores declared plan and shell structure with explicitl
   assert.equal(operation.tags.includes('Escalation requested'), false);
   assert.deepEqual(chineseDetail.timelineSections.map((section) => section.title), [
     '计划更新',
-    '终端命令',
+    'Shell 命令',
     '代码模式源码',
   ]);
   assert.equal(chineseDetail.presentation.label, '多个操作');
@@ -497,7 +618,7 @@ test('Code Mode detail restores declared plan and shell structure with explicitl
         detailKind: 'steps',
         detailCount: 2,
       },
-      { label: '终端命令', detail: 'Write-Output fixture' },
+      { label: 'Shell 命令', detail: 'Write-Output fixture' },
     ],
     omittedCount: 0,
   });
@@ -513,7 +634,7 @@ test('Code Mode single shell presentation unwraps the native command run and mov
   const id = 'dddddddd-7777-4444-9999-dddddddddddd';
   await writeTranscript(codexHome, repoRoot, id, [
     { type: 'session_meta', timestamp: '2026-06-12T10:00:00.000Z', payload: { id, cwd: repoRoot } },
-    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-single-shell', input: "const result = await tools.shell_command({ command: 'Write-Output native', workdir: 'G:\\\\fixture', timeout_ms: 1000, timeoutMs: 2000 }); text(typeof result === 'string' ? result : JSON.stringify(result));" } },
+    { type: 'response_item', timestamp: '2026-06-12T10:00:01.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-single-shell', input: "const result = await tools.shell_command({ command: 'Write-Output native', workdir: 'G:\\\\fixture', timeout_ms: 1000, timeoutMs: 2000 }); text(result.output);" } },
     {
       type: 'response_item',
       timestamp: '2026-06-12T10:00:02.000Z',
@@ -570,7 +691,7 @@ test('Code Mode single shell presentation unwraps the native command run and mov
     value: '1000',
   });
   assert.equal(detail.timelineSections.some((section) => section.type === 'code_mode_tool_projection'), false);
-  assert.equal(chineseDetail.presentation.label, '终端命令');
+  assert.equal(chineseDetail.presentation.label, 'Shell 命令');
   assert.equal(session.counts.toolCalls, 1);
   assert.deepEqual(session.analysis.toolUsage, [{ name: 'exec', count: 1 }]);
 });
@@ -662,6 +783,13 @@ test('Code Mode single request summaries cover every safely projected tool type'
     assert.equal(preview.text, cases[index].expected, cases[index].tool);
     assert.equal(preview.detailKind || '', cases[index].detailKind || '', cases[index].tool);
   });
+
+  const execOperation = operations[cases.findIndex((item) => item.tool === 'exec_command')];
+  const shellOperation = operations[cases.findIndex((item) => item.tool === 'shell_command')];
+  assert.equal(buildEventDetail(session, execOperation.id, 'main').presentation.label, 'Exec command');
+  assert.equal(buildEventDetail(session, shellOperation.id, 'main').presentation.label, 'Shell command');
+  assert.equal(buildEventDetail(session, execOperation.id, 'main', { locale: 'zh-CN' }).presentation.label, 'Exec 命令');
+  assert.equal(buildEventDetail(session, shellOperation.id, 'main', { locale: 'zh-CN' }).presentation.label, 'Shell 命令');
 
   const noArgumentOperation = operations[cases.findIndex((item) => item.tool === 'get_goal')];
   const chineseDetail = buildEventDetail(session, noArgumentOperation.id, 'main', { locale: 'zh-CN' });

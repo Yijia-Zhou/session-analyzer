@@ -1,16 +1,19 @@
 # Documentation Overview / 文档概览
 
-This repository uses three formal document classes plus one idea parking area:
+This repository uses three formal intent-document classes plus one idea parking area, with online guides for usage and development:
 
-本仓库使用三类正式文档，并设置一个想法暂存区：
+本仓库使用三类正式意图文档，并设置一个想法暂存区，另以在线指南说明使用与开发操作：
 
 - `product-specs/`: what the product should do / 产品应该做什么
 - `design-docs/`: why the system is designed this way / 系统为什么这样设计
 - `exec-plans/`: how a concrete change is being executed / 一项具体变更如何执行
 - `backlog/`: rough long-horizon ideas that are not yet accepted plans / 尚未成为已接受计划的粗略远期想法
+- `usage/`: version-aware consumer startup, acceptance, and troubleshooting / 注明版本的消费端启动、验收与故障排查
+- `development.md`: exact source toolchain, install policy, build/test workflow, and repository layout / 精确源码工具链、安装策略、构建／测试流程与仓库布局
 
 ## How to use this tree / 如何使用这棵文档树
 
+- To run the app for a user, start with [agent quickstart](usage/agent-quickstart.md) and [troubleshooting](usage/troubleshooting.md); for source work, use [development](development.md). These are online guides, not promised npm package contents. / 替用户运行应用先看 [agent 快速开始](usage/agent-quickstart.md)与[故障排查](usage/troubleshooting.md)；源码工作看[开发指南](development.md)。这些指南在线提供，不承诺随 npm 包分发。
 - Start with a product spec when adding or changing user-facing behavior. / 添加或修改面向用户的行为时，先从产品规格开始。
 - Add or update a design doc when changing the transcript model, APIs, storage, or UI architecture. / 修改转录模型、API、存储或 UI 架构时，新增或更新设计文档。
 - Create an exec plan for any non-trivial implementation that spans multiple files or milestones. / 对任何跨多个文件或里程碑的非平凡实现创建执行计划。
@@ -20,6 +23,7 @@ This repository uses three formal document classes plus one idea parking area:
 
 - `product-specs/session-transcript-analyzer.md` / 会话转录分析器产品规格
 - `design-docs/logical-event-timeline.md` / 逻辑事件时间线设计文档
+- `design-docs/trajectory-presentation.md` / 轨迹主时间线呈现设计文档
 - `design-docs/codex-protocol-event-coverage.md` / Codex 协议事件覆盖设计文档
 - `design-docs/cross-surface-contract-consistency-tech-debt.md` / 跨表面契约一致性技术债
 - `design-docs/schema-update-runbook.md` / Schema 更新运行手册
@@ -28,6 +32,7 @@ This repository uses three formal document classes plus one idea parking area:
 - `design-docs/external-source-mapping-pressure-tests.md` / 外部 source 映射压力测试设计文档
 - `design-docs/transcript-source-adapters.md` / 转录来源适配器设计文档
 - `design-docs/documentation-system.md` / 文档系统设计文档
+- `exec-plans/completed/2026-09-03-trajectory-presentation.md` / 轨迹呈现正式实现已完成执行计划
 - `exec-plans/completed/2026-08-15-v0.1.4-release.md` / v0.1.4 发布已完成执行计划
 - `exec-plans/completed/2026-07-31-claude-code-source-adapter.md` / Claude Code 来源适配器已完成执行计划
 - `exec-plans/completed/2026-07-31-claude-pointer-fork-context.md` / Claude 指针式分叉上下文已完成执行计划

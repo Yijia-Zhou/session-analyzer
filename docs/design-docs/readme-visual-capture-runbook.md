@@ -3,10 +3,11 @@
 ## Status and scope
 
 - Status: accepted documentation baseline for the synthetic README showcase.
-- Last updated: 2026-08-14.
+- Last updated: 2026-09-09.
 - Canonical source: showcase/ and scripts/materialize-showcase.js.
 - Tracked storyboards: showcase/captures/readme/search.json and
-  showcase/captures/readme/branching.json.
+  showcase/captures/readme/branching.json, plus reading.json and project-search.json
+  in the same directory.
 - Candidate capture output: output/readme-capture/.
 - Final public media: docs/assets/readme/, published only after manual approval.
 
@@ -254,7 +255,43 @@ explicit generated home is the privacy and reproducibility boundary.
 
 ## 5. Selected README narrative and current state
 
-The selected package has three non-duplicative jobs.
+The 2026-09-08 user-entry refresh leads with reviewing session work, inspecting
+one operation, and finding an older session to continue reading. Its tracked
+contracts are `showcase/captures/readme/reading.json` and `project-search.json`.
+The overview and branching assets remain reusable; the descriptions below record
+the previously accepted package, rather than proving the new project-search
+scenario. Candidate refresh media lives in `output/readme-capture/entry/` until
+the existing human review boundary is satisfied.
+
+2026-09-08 用户入口重排优先展示回顾会话工作、查看一次操作、找回旧会话继续阅读，
+分镜记录在上述两个新增文件中。总览与关联素材可复用；下文记录此前已接受的素材，
+不能作为新的项目搜索场景证据。新候选素材在既有人工审阅完成前保存在
+`output/readme-capture/entry/`。
+
+On 2026-09-09, the maintainer reviewed and approved all four refresh assets.
+`session-reading-timeline.png`, `session-reading-trajectory.png`,
+`operation-detail.png`, and `project-search-and-read.gif` were copied unchanged
+into `docs/assets/readme/`; SHA-256 comparisons confirmed candidate identity,
+and the npm pack manifest includes all four. The README references now resolve
+without the local preview mapping.
+
+2026-09-09，维护者审阅并认可全部四份新素材。上述文件已原样复制至正式素材目录，
+SHA-256 核验确认与认可候选一致，npm 打包清单包含全部四份文件。
+README 引用已无需本地预览映射即可解析。
+
+Timeline places the expanded patch changes in the center and its result/files
+in Supplemental Detail on the right. Trajectory places the selected event's
+Primary Detail on the right. Reading captions must describe the actual placement.
+For the search story, capture the complete search/session-list/reading region;
+the Inspector is not required because the matching command and output are visible
+in the expanded Timeline event. Do not use CSS edits to hide layout overflow.
+
+Timeline 将展开的补丁修改放在中间，将结果／文件放在右侧补充详情；Trajectory
+将所选事件的主体详情放在右侧。图注必须描述实际位置。搜索故事捕获完整的搜索、
+会话列表与阅读区域；命中命令与输出已在展开事件内可见，因此不要求包含 Inspector。
+不得通过修改 CSS 隐藏布局溢出。
+
+The previously selected package had three non-duplicative jobs.
 
 ### Hero: what is Session Analyzer?
 

@@ -10,10 +10,12 @@ const {
   analyzerSubagentSessionId,
   analyzerWorkflowAgentSessionId,
   buildClaudeIndex,
+  buildClaudeSourceBackedIndex,
   readClaudeRawRecord,
 } = require('../src/claude');
 const { filterSessions, getTimeline } = require('../src/codex');
 const { buildClaudeEventDetail } = require('../src/claude-detail');
+const { materializeSessionForIndex, validateIndexOwnership } = require('../src/source-adapters');
 
 const TEMPLATE_ROOT = path.join(
   __dirname,
@@ -364,6 +366,25 @@ test('Milestone 2 positive bundle admits forked-skill/workflow children and pres
         (event.rawRefs || []).some((ref) => ref.rawId === raw.rawId)
       )), `${value.id}: Raw ${raw.line} remains reachable`);
     }
+  }
+});
+
+test('strict Claude materialization preserves forked-skill and workflow ownership exactly', async (t) => {
+  const fixture = await makeFixture(t);
+  const [resident, indexed] = await Promise.all([
+    build(fixture),
+    buildClaudeSourceBackedIndex({ repoRoot: fixture.repoRoot, claudeHome: fixture.home }),
+  ]);
+  assert.equal(validateIndexOwnership(indexed), 'claude-code');
+  assert.deepEqual(retainedIds(indexed), retainedIds(resident));
+  for (const id of [FORK_ID, NORMAL_ID, WORKFLOW_ONE_ID, WORKFLOW_TWO_ID]) {
+    const expected = resident.sessionsById.get(id);
+    const indexedSession = indexed.sessionsById.get(id);
+    const materialized = await materializeSessionForIndex(indexed, indexedSession);
+    assert.deepEqual(materialized.derivedRelationship, expected.derivedRelationship);
+    assert.deepEqual(materialized.rawEvents, expected.rawEvents);
+    assert.deepEqual(materialized.logicalEvents, expected.logicalEvents);
+    assert.deepEqual(materialized.analysis, expected.analysis);
   }
 });
 

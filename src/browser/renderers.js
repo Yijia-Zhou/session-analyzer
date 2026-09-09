@@ -8,10 +8,13 @@
   const codeModePresentationContract = typeof module === 'object' && module.exports
     ? require('../shared/code-mode-presentation-contract')
     : root.sessionCodeModePresentationContract;
-  const api = factory(commandHighlighting, i18n, codeModePresentationContract);
+  const detailPurpose = typeof module === 'object' && module.exports
+    ? require('../shared/detail-purpose')
+    : root.sessionDetailPurpose;
+  const api = factory(commandHighlighting, i18n, codeModePresentationContract, detailPurpose);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.sessionRenderers = api;
-}(typeof globalThis !== 'undefined' ? globalThis : this, (commandHighlighting, i18n, codeModePresentationContract) => {
+}(typeof globalThis !== 'undefined' ? globalThis : this, (commandHighlighting, i18n, codeModePresentationContract, detailPurpose) => {
   'use strict';
 
   function locale() {
@@ -227,11 +230,15 @@
   }
 
   function isCommandSection(section) {
-    return section?.type === 'code' && (section.role === 'command' || String(section.title || '').toLowerCase() === 'command');
+    return section?.type === 'code'
+      && section.role === 'command'
+      && (section.purpose === 'request' || section.purpose === undefined);
   }
 
   function isTerminalOutputSection(section) {
-    return section?.type === 'terminal' && ['stdout', 'stderr'].includes(section.stream || section.title);
+    return section?.type === 'terminal'
+      && ['stdout', 'stderr'].includes(section.stream)
+      && (section.purpose === 'result' || section.purpose === undefined);
   }
 
   function renderCommandRunSegment(section, role) {
@@ -504,8 +511,14 @@
     return preview ? `<div class="eventPreview eventExpandedFallback">${escapeHtml(preview)}</div>` : '';
   }
 
+  function renderInspectorSections(sections) {
+    return renderSections(detailPurpose.orderDetailSections(sections));
+  }
+
   return {
     escapeHtml,
+    orderDetailSections: detailPurpose.orderDetailSections,
+    renderInspectorSections,
     renderSection,
     renderSections,
     renderTimelineSections,

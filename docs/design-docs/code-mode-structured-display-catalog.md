@@ -7,6 +7,8 @@
 - Snapshot date: 2026-07-30 / 快照日期：2026-07-30
 - Canonical design: `docs/design-docs/code-mode-operations.md` / 规范设计：`docs/design-docs/code-mode-operations.md`
 - Main implementation: `src/shared/code-mode-tools.js`, `src/codex-code-mode-declared.js`, `src/codex-detail.js`, `src/codex.js`, `src/browser/renderers.js`, and `src/shared/i18n.js` / 主要实现：`src/shared/code-mode-tools.js`、`src/codex-code-mode-declared.js`、`src/codex-detail.js`、`src/codex.js`、`src/browser/renderers.js` 与 `src/shared/i18n.js`
+- Implemented source-neutral Detail Purpose contract: `docs/exec-plans/completed/2026-08-15-source-neutral-detail-and-adapter-contracts.md` / 已实现的来源中立详情用途契约：`docs/exec-plans/completed/2026-08-15-source-neutral-detail-and-adapter-contracts.md`
+- Completed Detail Responsibility hardening follow-up: `docs/exec-plans/completed/2026-08-15-adapter-detail-contract-review-followups.md` / 已完成的详情职责加固跟进：`docs/exec-plans/completed/2026-08-15-adapter-detail-contract-review-followups.md`
 
 ## Purpose and reading rules / 目的与阅读规则
 
@@ -20,6 +22,10 @@ Each tool entry uses these labels: / 每个工具条目使用以下标签：
 - **Decision / 决定** is intentionally left `TBD / 待定` for review. / **Decision / 决定** 有意保留为 `TBD / 待定`，供评审填写。
 
 In this catalog, “projection” or “display event” means an operation-owned UI fragment. It does not mean an independently counted Logical Event. / 本目录中的“投影”或“显示 event”指 operation 自有的 UI 片段，并不表示一个可独立计数的逻辑事件。
+
+Codex Code Mode remains a reference implementation rather than the normative structured-detail contract. The accepted contract classifies declared calls as `request`, observed outputs as `result`, outer source and run facts as `context`, and projection evidence／execution traces／event links as `traceability`; renderer types, titles, and the ordering recorded by this snapshot do not define those meanings. An atomic tool projection uses outer `content`, while its request and result children keep renderer-local purposes and are never split by shared Inspector ordering. / Codex Code Mode 继续只是参考实现，而不是规范化结构详情契约。已接受的契约把声明调用归为 `request`、已观测输出归为 `result`、outer source 与运行事实归为 `context`，并把投影证据／执行 trace／event link 归为 `traceability`；本快照记录的 renderer type、title 与顺序均不定义这些含义。原子工具投影使用外层 `content`，其 request 与 result 子项保留 renderer-local purpose，绝不会被共享 Inspector 排序拆分。
+
+The two responsibility containers add an independent reading axis. Outer JavaScript source and final observed operation output can be Primary Detail when they are the readable event body; operation metadata, wait trace, projection evidence, event links, and secondary structured projections are Supplemental Detail. Atomic projection children remain local to the responsibility of their enclosing composite. Code Mode examples do not define the general contract, and renderer names or titles never assign responsibility. / 两个 responsibility container 增加一条独立阅读轴。当 outer JavaScript source 与最终已观测 operation output 构成可读事件主体时，它们可以属于主体详情；operation metadata、wait trace、projection evidence、event link 与第二份结构化投影属于补充详情。原子投影的子项继续局部归属于其外层 composite 的 responsibility。Code Mode 示例不定义通用契约，renderer 名称或 title 绝不分配 responsibility。
 
 ## Shared outer display / 共同的外层显示
 
@@ -78,7 +84,7 @@ For `single_tool`, folded states use a frameless `Request / 请求` row without 
 - If eligibility fails anywhere, no partial cards are shown. The operation falls back to a normal JavaScript `Command` section under the `Scripted operation / 脚本化操作` title; before expansion it shows one sanitized `Source / 源码` preview chosen from the outer JavaScript, not a tool-list inference. / 只要任一位置未通过资格检查，就不显示局部卡片；整个 operation 回退为普通 JavaScript `Command` section，标题为“脚本化操作”；展开前会显示从 outer JavaScript 选出的一条已脱敏“源码”预览，而不是工具列表推断。
 - If every declared result is conservatively associated, the aggregate `Final output` is suppressed because each full result fragment is retained in the single native body or its owning multi-tool card. / 如果每一个声明结果都被保守关联，聚合 `Final output` 会被抑制，因为每个完整结果 fragment 已保留在单工具原生正文或对应多工具卡片内。
 - If a single declaration has an observed final output that does not meet the supported result-output shape, it remains primary under `Operation output / 操作输出`; multi-tool and raw fallback keep `Final output / 最终输出`. / 如果单个声明存在不满足受支持结果输出形态的最终已观测输出，它继续以 `Operation output / 操作输出` 作为主要内容；多工具与 raw fallback 继续使用 `Final output / 最终输出`。
-- If waits exist, all exec/wait phase IDs, evidence states, observation states, cells, and intermediate outputs are placed in one collapsed `Execution trace`. Single-tool trace lives in the inspector; multi-tool and raw-fallback trace stays in the timeline. The final observed output is not duplicated inside the trace. / 如果存在 wait，全部 exec/wait phase 的 ID、证据状态、观测状态、cell 与中间输出都放入一个默认折叠的 `Execution trace`。单工具 trace 位于 inspector；多工具与 raw fallback trace 继续位于时间线。最终已观测输出不会在 trace 中重复。
+- If waits exist, all exec/wait phase IDs, evidence states, observation states, cells, and intermediate outputs are placed in one collapsed Supplemental `Execution trace` in the Inspector. The final observed output is not duplicated inside the trace. / 如果存在 wait，全部 exec/wait phase 的 ID、证据状态、观测状态、cell 与中间输出都放入 Inspector 中一个默认折叠的补充性 `Execution trace`。最终已观测输出不会在 trace 中重复。
 - ANSI terminal control sequences are removed from display text. Raw refs retain the source bytes and original fragments. / 展示文本会移除 ANSI 终端控制序列；Raw refs 仍保留来源字节和原始 fragments。
 
 ### Inspector composition / Inspector 组成
@@ -108,6 +114,7 @@ The accepted top-level grammar is limited to: / 可接受的顶层语法仅包�
 - `const result = await tools.<known_tool>(<bounded literal>);` / `const result = await tools.<known_tool>(<受限 literal>);`
 - `await tools.<known_tool>(<bounded literal>);` / `await tools.<known_tool>(<受限 literal>);`
 - `text(result);` for a previously declared result variable / 对先前声明的结果变量调用 `text(result);`
+- `text(result.output);` for a previously declared result variable, only with non-computed, non-optional `.output` access / 对先前声明的结果变量调用 `text(result.output);`，且只允许非 computed、非 optional 的 `.output` 访问
 - Empty statements / 空语句
 
 Accepted literal values are `null`, booleans, finite numbers, strings, static template literals, arrays, ordinary object literals, and unary `+` or `-` numeric values. Control flow, loops, concurrency, dynamic arguments or tool properties, spread, computed or shorthand properties, unsafe `__proto__`, unknown tools, duplicate/complex bindings, and parse errors force whole-program raw fallback. / 可接受的 literal 值包括 `null`、布尔值、有限数字、字符串、静态模板字符串、数组、普通对象 literal，以及一元 `+` 或 `-` 数字。控制流、循环、并发、动态参数或工具属性、spread、computed 或 shorthand 属性、不安全的 `__proto__`、未知工具、重复或复杂 binding 与解析错误，都会触发整段程序 raw fallback。
@@ -117,7 +124,7 @@ Accepted literal values are `null`, booleans, finite numbers, strings, static te
 - Current projections always use `requestEvidence: declared_source`, displayed as `Declared request / 声明的请求`. This means the source declared the request; it does not prove execution. / 当前投影始终使用 `requestEvidence: declared_source`，显示为 `Declared request / 声明的请求`。它只表示源码声明了该 request，并不证明实际执行。
 - The producer currently emits only `resultAssociation: bounded` or `none`. Inspector evidence retains those machine values, but compact timeline headers render no association badge. When an observed final operation output exists with `none`, it remains in a separate `Operation output / 操作输出` section. / 当前 producer 只会发出 `resultAssociation: bounded` 或 `none`。Inspector 证据继续保留这些机器值，但紧凑时间线 header 不显示关联标记。当 `none` 存在最终已观测操作输出时，它会保留在独立的 `Operation output / 操作输出` 区域。
 - The browser renderer recognizes an `exact` badge, but the production projection path does not emit exact associations or populate exact-result sections. `exact` remains reserved for a future persisted identity edge. / 浏览器 renderer 能识别 `exact` badge，但生产投影路径不会发出 exact 关联，也不会填充 exact 结果 section；`exact` 仍保留给未来持久化的 identity 边。
-- `bounded` is considered only for a single direct terminal exec phase with no waits. The outer output must be a typed text array whose first fragment is the canonical `Script completed` status-only envelope; all later non-empty fragments must match bound calls and `text(variable)` emissions one-to-one and in order. / 只有单个直接终态 exec phase 且没有 wait 时才考虑 `bounded`。外层输出必须是带类型的 text 数组，首个 fragment 必须是 canonical、仅包含状态的 `Script completed` envelope；之后的非空 fragments 必须与带 binding 的调用和 `text(variable)` emission 按顺序一一对应。
+- `bounded` is considered only for a single direct terminal exec phase with no waits. The outer output must be a typed text array whose first fragment is the canonical `Script completed` status-only envelope; all later non-empty fragments must match bound calls and accepted `text(variable)` or `text(variable.output)` emissions one-to-one and in order. / 只有单个直接终态 exec phase 且没有 wait 时才考虑 `bounded`。外层输出必须是带类型的 text 数组，首个 fragment 必须是 canonical、仅包含状态的 `Script completed` envelope；之后的非空 fragments 必须与带 binding 的调用，以及已接受的 `text(variable)` 或 `text(variable.output)` emission 按顺序一一对应。
 - Structured result interpretation has separate limits of 32,000 characters, object depth 32, and 1,000 object/array nodes. Over-budget or non-JSON results stay text. The complete sanitized associated fragment is still kept in a collapsed `Associated result`. / 结构化结果解释另有 32,000 字符、对象深度 32 与 1,000 个对象/数组节点的限制。超预算或非 JSON 结果保持文本；完整的脱敏关联 fragment 仍保存在默认折叠的 `Associated result` 中。
 
 ## Current renderer families / 当前 renderer 家族
@@ -159,7 +166,7 @@ Generic summaries currently truncate strings to 4,000 characters, arrays to 12 i
 - **Acceptance / 验收:** Bounded and unbounded budgets, Unicode objective, empty acknowledgement, explicit goal snapshot, rejected creation, and request-only display. / 覆盖有界与无界预算、Unicode objective、空确认、明确 goal snapshot、创建被拒与仅 request 显示。
 - **Decision / 决定:** `TBD / 待定`
 
-### `exec_command` — Shell command / 终端命令
+### `exec_command` — Exec command / Exec 命令
 
 - **Current / 当前:** Shares the same projection policy as `shell_command`: highlighted Command, a `Run context` table, parsed exit code/wall time/output when the exact formatted envelope matches, otherwise one raw terminal Result, plus the folded full associated fragment. / 与 `shell_command` 共用投影策略：高亮 Command、`Run context` 表；精确匹配格式化 envelope 时解析 exit code、wall time 与 output，否则显示一个 raw terminal Result；另保留折叠的完整关联 fragment。
 - **Fine-tune / 调优建议:** Implement command-card refinements once for both aliases. Keep command and stdout/stderr dominant, compress cwd/timeout/permission into a single secondary row, and provide an adjustable long-output fold. Keep exit code visually explicit but do not turn unparsed text into an outcome. / 两个别名共用一次命令卡片改进。让 command 与 stdout/stderr 占主要空间，把 cwd/timeout/permission 压缩为一行次要信息，并为长输出提供可调折叠。明确显示 exit code，但不从未解析文本推断 outcome。
@@ -229,7 +236,7 @@ Generic summaries currently truncate strings to 4,000 characters, arrays to 12 i
 - **Acceptance / 验收:** Short and canonical target, Markdown message, very long message, explicit receiver, missing response, and target resolution ambiguity. / 覆盖短 target、canonical target、Markdown message、超长 message、明确 receiver、缺失响应与 target 解析歧义。
 - **Decision / 决定:** `TBD / 待定`
 
-### `shell_command` — Shell command / 终端命令
+### `shell_command` — Shell command / Shell 命令
 
 - **Current / 当前:** Renders Command plus cwd/workdir, timeout, and sandbox permission. An exactly formatted result becomes `Run result` with Exit code and Wall time plus terminal Output; all other result text is one terminal Result. The complete associated fragment remains folded. / 当前显示 Command 以及 cwd/workdir、timeout 与 sandbox permission。精确匹配格式的结果会变成含 Exit code 与 Wall time 的 `Run result` 加 terminal Output；其他结果文本显示为单个 terminal Result。完整关联 fragment 仍默认折叠。
 - **Fine-tune / 调优建议:** Same shared command-card change as `exec_command`: command and output dominate; context becomes compact; stdout/stderr or channel distinctions are shown only when structurally available; users can expand long output without expanding metadata. / 与 `exec_command` 共用同一命令卡片改进：command 与 output 占主导，context 紧凑显示；只有结构化可用时才区分 stdout/stderr 或 channel；用户无需展开 metadata 即可展开长输出。

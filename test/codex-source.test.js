@@ -8,6 +8,7 @@ const {
   CODEX_SOURCE_KIND,
   SUB_AGENT_ACTIVITY_EVENT_TYPE,
   codexSourceLocator,
+  codexSourceEnvelope,
   createCodexRawParser,
   rawEventsForLogicalEvent,
   rawMatchesEvent,
@@ -63,6 +64,28 @@ test('Codex source constants and typed locator are stable', () => {
     line: 42,
   });
   assert.equal(codexSourceLocator({ file: 'missing-line.jsonl' }), null);
+});
+
+test('Codex source envelope normalization is shared and narrow', () => {
+  const payload = { type: 'message', role: 'assistant', content: ['not projected'] };
+  assert.deepEqual(codexSourceEnvelope({ type: 'response_item', payload }), {
+    payload,
+    recordType: 'response_item',
+    payloadType: 'message',
+    role: 'assistant',
+  });
+  assert.deepEqual(codexSourceEnvelope({ type: 42, payload: [] }), {
+    payload: {},
+    recordType: '',
+    payloadType: '',
+    role: '',
+  });
+  assert.deepEqual(codexSourceEnvelope(true), {
+    payload: {},
+    recordType: '',
+    payloadType: '',
+    role: '',
+  });
 });
 
 test('raw refs preserve legacy fields and source metadata', () => {
