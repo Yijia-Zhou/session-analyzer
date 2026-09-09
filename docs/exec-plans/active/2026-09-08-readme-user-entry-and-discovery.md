@@ -200,6 +200,11 @@ The maintainer reviewed the updated preview on 2026-09-09 and reported no issues
 - Added the relevant npm keywords `ai-agents`, `session-history`, `transcript-viewer`, and `local-first`; the approved README narrative and package version remain unchanged. / 补充上述四个相关 npm 关键词；已认可的 README 叙事与包版本保持不变。
 - Validation on Windows, Node 24.18.1 / npm 12.0.2: focused tests 25/25, full Node suite 1046/1046, generated build check passed. The combined `release:check` reached package smoke but npm registry access returned sandbox `EACCES`; stopped that attempt and reran `test:package` with network access, passing all three sources. Thus all constituent non-browser release checks passed, without claiming a new remote CI matrix result. / Windows、Node 24.18.1／npm 12.0.2 验证：聚焦测试 25/25、全部 Node 测试 1046/1046、生成资源检查通过。组合 `release:check` 到安装包冒烟时因沙箱访问 npm registry 返回 `EACCES`，停止该次运行并在允许联网的环境重跑 `test:package`，三个来源全部通过。因此非浏览器发布检查的各组成项均通过，不声称远端 CI 矩阵已重新通过。
 
+### Browser CI follow-up, 2026-09-09 / 浏览器 CI 跟进，2026-09-09
+
+- The reported above-threshold scroll test ended after observing 300 rendered events, before requiring follow-up requests to settle; fixture cleanup is registered before server/browser cleanup. Added the same pagination-idle and network-idle waits used by the neighboring scroll test to avoid deleting the transcript while requests may still read it. Pagination assertions and production behavior are unchanged. / 报告失败的滚动测试看到 300 条事件后即结束，未要求后续请求完成；fixture 清理早于服务器／浏览器清理注册。补上相邻滚动测试已有的分页空闲与网络空闲等待，避免请求仍可能读取转录时删除文件；分页断言和生产行为不变。
+- Local Windows validation: the original test passed before the change, so the Linux CI failure was not independently reproduced. After the change, all four related scroll tests passed and the reported test passed ten consecutive runs. Linux CI remains the cross-platform confirmation. / Windows 本地修改前原测试通过，未独立复现 Linux CI 失败；修改后四条相关滚动测试通过，原报错测试连续十次通过。跨平台确认仍待 Linux CI。
+
 ## Deferred follow-ups / 后续事项
 
 ### 1. Align installation with the demonstrated experience / 对齐安装与演示体验
