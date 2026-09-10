@@ -7000,6 +7000,10 @@ function selectedInspectorNeedsDetailFallback(transaction) {
 }
 
 function presentDetailWithFullRenderFallback(transaction) {
+  // A detail settlement replaces Trajectory's DOM, but must not interrupt keyboard reading.
+  // Capture focus at settlement time, not request time: the user may have moved elsewhere.
+  const restoreOverviewFocus = trajectoryPresentationActive()
+    && document.activeElement === el.timeline.querySelector('.trajectoryOverviewViewport');
   if (selectedInspectorNeedsDetailFallback(transaction)) {
     const current = currentTimelineEvent(transaction.event.id)
       || detachedContextEvent(transaction.event.id);
@@ -7011,6 +7015,9 @@ function presentDetailWithFullRenderFallback(transaction) {
     }
   }
   renderTimeline();
+  if (restoreOverviewFocus && trajectoryPresentationActive() && document.activeElement === document.body) {
+    el.timeline.querySelector('.trajectoryOverviewViewport')?.focus({ preventScroll: true });
+  }
 }
 
 function acceptedDetailStateWasReclassified(transaction, accepted) {

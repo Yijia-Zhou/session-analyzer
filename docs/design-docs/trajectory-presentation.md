@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 
 - Status: accepted for production implementation / 状态：已接受，进入正式实现
-- Last updated: 2026-09-04 / 最近更新：2026-09-04
+- Last updated: 2026-09-10 / 最近更新：2026-09-10
 - Base: `origin/towards-0.2.0` at `3419a49ae2c1c9a6ff7e1e34ecb3b550ba1f9ec1`
 - Related product spec: `docs/product-specs/session-transcript-analyzer.md`
 - Related design docs: / 相关设计文档：
@@ -86,6 +86,8 @@ Protocol or Raw, regardless of remembered Main -> existing Timeline presentation
 Changing presentation does not fetch data, rewrite the timeline data context, clear structured filters, change folding rules, or close a selected-event Inspector. It replaces only the center presentation, resets stale DOM search bindings, and binds the same canonical target identities to the new surface. / 切换呈现不会获取数据、改写 timeline data context、清空结构化筛选、改变折叠规则或关闭已选 event 的 Inspector。它只替换中心呈现、重置过期 DOM 搜索 binding，并把相同 canonical target identity 绑定到新 surface。
 
 ## Narrative, folding, search, and navigation / Narrative、折叠、搜索与导航
+
+Detail settlement may rebuild the Trajectory DOM. If the overview viewport still owns focus when that synchronous settlement starts, restore focus to its replacement with `preventScroll`; do not capture focus at request start or reclaim it after the user moves elsewhere. This preservation is local to detail settlement, not a general Session/Layer/presentation-transition focus policy. / Detail settlement 可能重建 Trajectory DOM。若同步 settlement 开始时 overview viewport 仍持有焦点，则用 `preventScroll` 将焦点恢复到替代节点；不在请求开始时记录焦点，也不在用户已移到别处后抢回。此保留逻辑仅用于 detail settlement，不是通用 Session／Layer／presentation 切换焦点策略。
 
 Trajectory asks the existing `displayState(event)` owner for each event. `hidden` members remain present in projection and overview but do not become searchable narrative DOM owners. `collapsed`, `summary`, and `expanded` remain distinct CSS/presentation states without importing Timeline detail bodies into the compact ledger. Structured filters remain server-owned membership filters and therefore change the input event array exactly as they do for Timeline. / Trajectory 向既有 `displayState(event)` owner 请求每个 event 的状态。`hidden` member 保留在 projection 与 overview 中，但不会成为可搜索的 narrative DOM owner。`collapsed`、`summary` 与 `expanded` 继续是不同的 CSS／呈现状态，同时不会把 Timeline detail body 导入紧凑 ledger。结构化筛选继续由 server 拥有 membership，因此会像 Timeline 一样改变输入 event 数组。
 
