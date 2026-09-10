@@ -233,6 +233,8 @@ Publication progress, 2026-09-10: the corrected guide is public at commit `51a9e
 
 ### 2. Observe discovery after release / 发布后观察发现效果
 
+PR #47 review follow-up, 2026-09-10: the two development README language links now use sibling-relative paths, so switching language stays on the current ref rather than returning to the old `v0.2.0` snapshot. The release runbook explicitly requires converting both links to matching immutable URLs before packing a release candidate. Existing guide/media pins remain unchanged. Fourteen package/documentation tests and focused link checks passed locally; merge/default-branch readback remain pending. / PR #47 审阅跟进（2026-09-10）：两个开发 README 语言链接已改为同目录相对路径，切换语言保持当前 ref，不再返回旧 `v0.2.0` 快照。发布手册明确要求在发布候选打包前，将两个链接转换为匹配的不可变 URL。既有指南／素材固定链接保持不变。14 项包／文档测试及定向链接检查本地通过；合入／默认分支回查仍待完成。
+
 - [x] Initial observation completed on 2026-09-10 after checking the public entry and matching npm release. See the [observation attachment](2026-09-10-post-release-discovery-observation.md). / 核对公共入口及匹配 npm 版本后，已于 2026-09-10 完成首次观察，见[观察附件](2026-09-10-post-release-discovery-observation.md)。
 - [ ] Repeat the recorded queries between 2026-09-24 and 2026-10-08; record the actual date and any tool/model/public-documentation changes. No automatic job has been scheduled. / 于 2026-09-24 至 2026-10-08 之间复查已记录查询，注明实际日期及工具／模型／公共文档变化；未创建自动任务。
 - [x] Use a small, stable set of non-brand needs in both languages: `Codex session history viewer tool calls local`, `Claude Code history viewer tool output search`, `查看 Codex 会话中 AI 做了什么`, and `搜索 Claude Code 历史会话和工具调用`. Use equivalent natural-language requests with a search-capable AI agent, without supplying the product name or repository URL. / 使用上述少量固定中英文非品牌需求查询；向具备搜索能力的 AI agent 提出等价自然语言请求，不提供项目名称或仓库 URL。

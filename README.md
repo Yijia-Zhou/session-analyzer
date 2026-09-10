@@ -1,6 +1,6 @@
 # Session Analyzer
 
-[中文说明](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/README.zh-CN.md)
+[中文说明](README.zh-CN.md)
 
 **Local session history viewer for Codex, Claude Code, and DeepSeek Harness.**
 

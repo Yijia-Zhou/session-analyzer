@@ -1,6 +1,6 @@
 # Session Analyzer
 
-[English README](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/README.md)
+[English README](README.md)
 
 **Codex、Claude Code 与 DeepSeek Harness 的本地会话历史查看器。**
 
