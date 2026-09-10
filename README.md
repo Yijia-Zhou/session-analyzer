@@ -18,7 +18,7 @@ Keep the surrounding work in view while checking a specific operation. All demon
 
 Use **Node.js 24** (recommended) and npm.
 
-**Choose your version:** the intended npm **0.2.0** release supports Codex, Claude Code, and DeepSeek Harness, including Timeline and Trajectory. This checkout is the pre-publication 0.2.0 release candidate; a staged artifact is not publicly installable. After `0.2.0` is publicly available, use the matching package commands below.
+**Choose your version:** npm **0.2.0** is publicly available and supports Codex, Claude Code, and DeepSeek Harness, including Timeline and Trajectory. Use the matching package commands below.
 
 Choose one command for your transcript source:
 
@@ -37,7 +37,7 @@ npx session-analyzer@0.2.0 --source claude-code
 npx session-analyzer@0.2.0 --source deepseek-harness
 ```
 
-For pre-publication checkout validation, run from the Analyzer checkout only until the package is publicly available:
+For local checkout development or validation, run from the Analyzer checkout:
 
 ```sh
 node server.js --source deepseek-harness

@@ -18,7 +18,7 @@ Session Analyzer 在本地读取已有转录，不修改或上传其内容。在
 
 准备 **Node.js 24**（推荐）和 npm。
 
-**选择运行版本：**预期 npm **0.2.0** 将支持 Codex、Claude Code 与 DeepSeek Harness，包括 Timeline 与 Trajectory。本 checkout 是尚未公开的 0.2.0 release candidate；staged 制品不能公开安装。`0.2.0` 公开后，请使用下方匹配的 package 命令。
+**选择运行版本：**npm **0.2.0** 已公开，支持 Codex、Claude Code 与 DeepSeek Harness，包括 Timeline 与 Trajectory。请使用下方匹配的 package 命令。
 
 按转录来源选择一个启动命令：
 
@@ -37,7 +37,7 @@ npx session-analyzer@0.2.0 --source claude-code
 npx session-analyzer@0.2.0 --source deepseek-harness
 ```
 
-在 package 尚未公开前验证 checkout 时，才从 Analyzer checkout 运行：
+如需从 Analyzer checkout 进行本地开发或验证，请运行：
 
 ```sh
 node server.js --source deepseek-harness
