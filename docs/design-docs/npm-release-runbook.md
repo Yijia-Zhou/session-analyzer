@@ -35,15 +35,24 @@ publicly installable. / 准备最终发布候选前，对照实际候选能力�
 使用／开发指南，将临时分支命令和有日期的包基线更新为目标发布版成功路径。
 该版本可公开安装前，公开开发入口仍保留分支提示；staged 制品不能公开安装。
 
+For the development entry, use sibling-relative language links between
+`README.md` and `README.zh-CN.md` so GitHub keeps language switching on the
+current branch or ref. Do not hardcode `main` or an older release tag for this
+navigation. During release-candidate preparation, convert both language links
+to the matching immutable release URLs before packing, as required below. /
+开发入口中，`README.md` 与 `README.zh-CN.md` 使用同目录相对语言链接，让 GitHub
+在切换语言时保持当前分支或 ref；不要将此导航硬编码为 `main` 或旧 release tag。
+准备发布候选时，打包前须按下述规则将两个语言链接转换为匹配的不可变发布 URL。
+
 Usage guides are online-only and need not be added to `package.json.files`.
-For a published package, point README documentation links (including the Chinese
-README link) to `https://github.com/Yijia-Zhou/session-analyzer/blob/<release-tag>/...`
+For a published package, point README documentation links (including both
+README language links) to `https://github.com/Yijia-Zhou/session-analyzer/blob/<release-tag>/...`
 and media links to the corresponding immutable raw-content URLs. Replace the
 placeholder with the actual matching release tag or another matching immutable
 revision; never leave a placeholder in the candidate. Relative links are suitable
 for the development checkout but must not silently send an older package reader
 to future `main` instructions. / 使用指南仅在线提供，无需加入包文件清单。发布包的
-README 文档链接（含中文 README 入口）应指向上述路径的实际匹配 release tag，
+README 文档链接（含两个 README 语言入口）应指向上述路径的实际匹配 release tag，
 素材链接指向相应不可变 raw 内容地址。候选中不得遗留占位符。相对链接适合开发
 checkout，但不得让旧包读者静默进入未来 `main` 指南。
 

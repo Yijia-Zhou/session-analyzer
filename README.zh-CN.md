@@ -1,6 +1,6 @@
 # Session Analyzer
 
-[English README](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/README.md)
+[English README](README.md)
 
 **Codex、Claude Code 与 DeepSeek Harness 的本地会话历史查看器。**
 
@@ -51,7 +51,7 @@ node server.js --source deepseek-harness
 npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
 ```
 
-`--repo` 是你想查看历史的项目。Analyzer checkout 或安装目录、目标项目和转录根目录是不同的位置。也可以让 agent 按[启动与验收指南](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/agent-quickstart.md)替你配置。
+`--repo` 是你想查看历史的项目。Analyzer checkout 或安装目录、目标项目和转录根目录是不同的位置。也可以让 agent 按[启动与验收指南](https://github.com/Yijia-Zhou/session-analyzer/blob/51a9ec530b1a9c03f3d96761632baa05590ccefe/docs/usage/agent-quickstart.md)替你配置。
 
 ## 回顾一次会话做了什么
 
@@ -113,7 +113,7 @@ Claude Code 外置的 `tool-results/*` payload 暂不加载或搜索。受支持
 
 **没有项目或会话？** 核对当前来源、转录根目录与项目路径，再清除筛选。零匹配不代表没有历史。见[故障排查](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/troubleshooting.md)。
 
-**页面打开了，历史就能读了吗？** 等待索引完成，检查会话数与诊断。页面可访问只证明 HTTP 就绪；可读会话也可能与被跳过的工件同时存在。[Agent 指南](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/agent-quickstart.md)区分这些结果。
+**页面打开了，历史就能读了吗？** 等待索引完成，检查会话数与诊断。页面可访问只证明 HTTP 就绪；可读会话也可能与被跳过的工件同时存在。[Agent 指南](https://github.com/Yijia-Zhou/session-analyzer/blob/51a9ec530b1a9c03f3d96761632baa05590ccefe/docs/usage/agent-quickstart.md)区分这些结果。
 
 **历史很大，或索引失败？** 先尝试普通索引。[诊断与内存恢复指南](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/troubleshooting.md)提供聚合日志收集方法，以及仅在相关失败后临时调整 heap 的步骤。
 
@@ -130,7 +130,7 @@ Claude Code 外置的 `tool-results/*` payload 暂不加载或搜索。受支持
 告诉我本地访问地址、实际版本、会话数及任何诊断。
 ```
 
-[在线启动与验收指南](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/agent-quickstart.md)涵盖版本选择、配置及实际阅读核验。使用指南是在线文档，不承诺包含在 npm 包内。
+[在线启动与验收指南](https://github.com/Yijia-Zhou/session-analyzer/blob/51a9ec530b1a9c03f3d96761632baa05590ccefe/docs/usage/agent-quickstart.md)涵盖版本选择、配置及实际阅读核验。使用指南是在线文档，不承诺包含在 npm 包内。
 
 ## 开发与贡献
 

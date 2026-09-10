@@ -1,6 +1,6 @@
 # Session Analyzer
 
-[中文说明](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/README.zh-CN.md)
+[中文说明](README.zh-CN.md)
 
 **Local session history viewer for Codex, Claude Code, and DeepSeek Harness.**
 
@@ -51,7 +51,7 @@ To select a project at startup, add `--repo /path/to/project`. On Windows:
 npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
 ```
 
-`--repo` is the project whose history you want to read. The Analyzer checkout or installation and the transcript root are separate locations. An agent can follow the [startup and verification guide](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/agent-quickstart.md) to configure them for you.
+`--repo` is the project whose history you want to read. The Analyzer checkout or installation and the transcript root are separate locations. An agent can follow the [startup and verification guide](https://github.com/Yijia-Zhou/session-analyzer/blob/51a9ec530b1a9c03f3d96761632baa05590ccefe/docs/usage/agent-quickstart.md) to configure them for you.
 
 ## Review what happened in a session
 
@@ -113,7 +113,7 @@ The server binds to `127.0.0.1` by default. Exposing it beyond localhost with `-
 
 **No projects or sessions?** Check the selected source, transcript root, and project path, then clear filters. Zero matches do not establish that no history exists. See [troubleshooting](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/troubleshooting.md).
 
-**The page opens, but is my history ready?** Wait for indexing and check the session count and diagnostics. A reachable page only proves HTTP readiness; readable sessions may coexist with skipped artifacts. The [agent guide](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/agent-quickstart.md) distinguishes these outcomes.
+**The page opens, but is my history ready?** Wait for indexing and check the session count and diagnostics. A reachable page only proves HTTP readiness; readable sessions may coexist with skipped artifacts. The [agent guide](https://github.com/Yijia-Zhou/session-analyzer/blob/51a9ec530b1a9c03f3d96761632baa05590ccefe/docs/usage/agent-quickstart.md) distinguishes these outcomes.
 
 **Large history or indexing failure?** Try normal indexing first. See [diagnostics and memory recovery](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/troubleshooting.md) for aggregate logging and temporary heap changes only after a relevant failure.
 
@@ -130,7 +130,7 @@ startup guide. Verify indexing and open a session to check that it is readable.
 Report the local URL, actual version, session count, and any diagnostics.
 ```
 
-The [online startup and verification guide](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/agent-quickstart.md) covers version selection, configuration, and actual reading checks. Usage guides are online documentation and are not promised inside the npm package.
+The [online startup and verification guide](https://github.com/Yijia-Zhou/session-analyzer/blob/51a9ec530b1a9c03f3d96761632baa05590ccefe/docs/usage/agent-quickstart.md) covers version selection, configuration, and actual reading checks. Usage guides are online documentation and are not promised inside the npm package.
 
 ## Development and contribution
 
