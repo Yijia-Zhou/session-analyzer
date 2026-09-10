@@ -5558,6 +5558,90 @@ test('browser ignores a non-409 failure from invalidated project discovery', asy
   await waitForProjectRoot(page, fixture.claudeRepo);
 });
 
+test('browser ignores successful stale full-scan discovery after manual project selection', { timeout: 45000 }, async (t) => {
+  const fullStarted = deferred();
+  const releaseFull = deferred();
+  t.after(() => releaseFull.resolve());
+  const projectPosts = [];
+  const staleRoot = `${repoRoot}\\stale-full-scan-only`;
+  let fullCalls = 0;
+  const { page, baseUrl } = await openSourceSwitchChooser(t, {
+    // init() must have a saved project eligible for auto-restore after discovery.
+    localStorage: { 'sessionAnalyzer.repoRoot.codex': repoRoot },
+    beforeGoto: async (p) => {
+      p.on('request', (request) => {
+        const url = new URL(request.url());
+        if (url.pathname === '/api/project' && request.method() === 'POST') {
+          projectPosts.push(request.postDataJSON().repoRoot);
+        }
+      });
+      await p.route('**/api/projects*', async (route) => {
+        const url = new URL(route.request().url());
+        if (url.searchParams.has('summary')) {
+          const response = await route.fetch();
+          const payload = await response.json();
+          // The shared fixture has transcripts but no config.toml summary project.
+          await route.fulfill({ response, json: { ...payload, projects: [{ repoRoot }] } });
+          return;
+        }
+        fullCalls += 1;
+        const response = await route.fetch();
+        assert.equal(response.status(), 200);
+        const payload = await response.json();
+        assert.ok(payload.projects.some((project) => project.repoRoot === repoRoot));
+        payload.projects.push({ repoRoot: staleRoot, sessionCount: 1 });
+        fullStarted.resolve();
+        await releaseFull.promise;
+        await route.fulfill({ response, json: payload });
+      });
+    },
+  });
+
+  await fullStarted.promise;
+  await waitForProjectRoot(page, repoRoot);
+  assert.deepEqual(projectPosts, [], 'summary must be selectable before full discovery/auto-restore');
+  const project = page.locator('.projectItem[data-project-root]').filter({
+    hasText: repoRoot,
+  }).first();
+  assert.equal(await project.getAttribute('data-project-root'), repoRoot);
+  await project.click();
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing');
+  await selectPrimarySession(page);
+  const message = page.locator('#timeline .kind-user-message').first();
+  await message.waitFor();
+  const messageText = await message.innerText();
+  assert.ok(messageText.trim(), 'selected project must expose readable history');
+  const eventIds = await page.locator('#timeline .event[data-event-id]').evaluateAll(
+    (nodes) => nodes.map((node) => node.dataset.eventId),
+  );
+  assert.deepEqual(projectPosts, [repoRoot]);
+
+  const fullResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/projects' && !url.searchParams.has('summary');
+  });
+  releaseFull.resolve();
+  const response = await fullResponse;
+  assert.equal(response.status(), 200);
+  await response.finished();
+  // Include response consumption, its auto-restore continuation, and any resulting requests.
+  await page.waitForLoadState('networkidle');
+  assert.equal(fullCalls, 1);
+  assert.deepEqual(projectPosts, [repoRoot], 'stale success must not issue a second auto-restore POST');
+  assert.equal(await page.locator('body').getAttribute('data-project-mode'), 'analyzing');
+  assert.equal(await page.locator('.sessionItem.active').getAttribute('data-session-id'), primaryFixtureSessionId);
+  assert.equal(await message.innerText(), messageText);
+  assert.deepEqual(await page.locator('#timeline .event[data-event-id]').evaluateAll(
+    (nodes) => nodes.map((node) => node.dataset.eventId),
+  ), eventIds);
+  assert.equal(await page.locator('[data-project-root]').evaluateAll(
+    (nodes, root) => nodes.some((node) => node.dataset.projectRoot === root), staleRoot,
+  ), false, 'stale success must not replace the project list');
+  const state = await (await page.request.get(`${baseUrl}/api/state`)).json();
+  assert.equal(state.repoRoot, repoRoot);
+  assert.equal(state.sourceKind, 'codex');
+});
+
 test('browser keeps home-directory edits while project discovery settles', async (t) => {
   const fixture = await makeClaudeSwitchFixture(t);
   let releaseFull;
