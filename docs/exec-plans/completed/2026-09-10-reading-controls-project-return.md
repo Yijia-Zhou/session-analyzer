@@ -1,6 +1,6 @@
 # Debt #23: reading controls and project return / 债务 #23：阅读控件与项目返回
 
-Status: implementation and local acceptance complete; not committed or published. / 状态：实现与本地验收完成，尚未提交或发布。
+Status: implementation and local acceptance complete. / 状态：实现与本地验收完成。
 
 ## Scope and decision / 范围与决策
 
@@ -12,6 +12,8 @@ Keep two small UX contracts in one reviewable change: desktop reading-control ge
 - Track the pre-existing stale context-slot flake independently as debt #24. / 将既有 stale context-slot flake 独立记录为债务 #24。
 
 ## Acceptance / 验收
+
+- CI follow-up: run #156 on `2394346` failed in the new project-return browser test while a selected row was replaced during drill-down. Header return now runs without first opening Inspector. Inspector/sorted-header cases wait for network idle and target the exact latest-event identity from the project response; return assertions wait for network idle before reading cards. This test synchronization issue is separate from debt #24. / CI 后续：`2394346` 的 run #156 在新增项目返回测试中失败，下钻期间 selected row 被替换。Header 返回现在无需先打开 Inspector；Inspector／sorted-header 分支等待 network idle，并定位项目响应中的确切 latest-event identity；返回断言在 network idle 后读取卡片。此测试同步问题独立于债务 #24。
 
 - Review follow-up: sorting after project drill-down called `selectSession()` and removed the sole center return action while retaining `projectReturnContext`. Reproduced with a browser assertion (`0 !== 1`); both header render paths now share a context-guarded return renderer. The regression test sorts after opening Inspector, waits for the session reload and Inspector reset, then clicks the remaining header action and checks query/filter/Layer/cards/scope/focus continuity. Six focused browser tests and generated-asset validation passed after this follow-up; the full-suite counts below belong to the preceding implementation. / Review 后续：项目下钻后排序调用 `selectSession()`，在保留 `projectReturnContext` 的同时移除了中间唯一返回入口。浏览器断言已复现（`0 !== 1`）；两个 header 渲染路径现共用按 context 判断的返回入口 renderer。回归测试打开 Inspector 后排序，等待 session 重载与 Inspector 重置，再点击保留的 header 入口，检查 query／筛选／Layer／卡片／scope／焦点连续性。本次修复后六项定向浏览器测试与构建产物校验通过；下方全量测试数字属于此前实现。
 

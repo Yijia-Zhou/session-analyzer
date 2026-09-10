@@ -8,7 +8,7 @@ The drill-down and ordinary `selectSession()` header render paths share the cont
 
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted baseline; conditional fixture coverage and shared KV-residual semantics implemented / 状态：既有基线已接受；条件式 fixture coverage 与共享 KV residual 语义均已实现
-- Last updated: 2026-09-03 / 最近更新：2026-09-03
+- Last updated: 2026-09-10 / 最近更新：2026-09-10
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：

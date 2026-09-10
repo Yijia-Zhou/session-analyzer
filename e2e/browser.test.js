@@ -6083,27 +6083,57 @@ test('browser project scope renders cards, aggregate summary, and filter-only re
   }), true);
 });
 
-test('browser project return surfaces preserve query, filters, cards, scope and focus', async (t) => {
+test('browser project return surfaces preserve query, filters, cards, scope and focus', { timeout: 45000 }, async (t) => {
   const index = await buildFixtureIndex();
   const { page } = await openApp(t, index, { locale: 'en', viewport: { width: 1600, height: 900 } });
   await switchToProjectScope(page);
   await fillSearch(page, 'patch');
+  const projectResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/sessions' && url.searchParams.get('q') === 'patch'
+      && url.searchParams.get('kind') === 'patch' && url.searchParams.get('sort') === 'latest-match-desc';
+  });
   await addSearchFilter(page, 'kind', 'patch');
+  const projectResults = (await (await projectResponse).json()).sessions;
+  await page.waitForLoadState('networkidle');
   await waitForProjectCards(page);
   const cards = () => page.locator('[data-project-result-session-id]').evaluateAll((elements) =>
     elements.map((element) => ({ id: element.dataset.projectResultSessionId, text: element.textContent })));
   const expectedCards = await cards();
   assert.ok(expectedCards.length > 0);
+  const latestEventId = projectResults.find((session) => session.id === expectedCards[0].id).searchMatch.latestEvent.id;
   for (const surface of ['header', 'sorted-header', 'inspector', 'mobile-inspector']) {
+    let releaseAnalysis;
+    let analysisStarted;
+    const analysisGate = new Promise((resolve) => { releaseAnalysis = resolve; });
+    const analysisRequest = new Promise((resolve) => { analysisStarted = resolve; });
+    const holdAnalysis = async (route) => {
+      analysisStarted();
+      await analysisGate;
+      await route.continue();
+    };
+    if (surface === 'header') {
+      t.after(() => releaseAnalysis());
+      await page.route('**/api/sessions/*/analysis*', holdAnalysis);
+    }
     await page.setViewportSize({ width: surface === 'mobile-inspector' ? 390 : 1600, height: 900 });
     await page.locator('[data-project-result-session-id]').first().click();
-    await page.waitForSelector('#timeline .event.selected', { state: 'attached' });
+    const headerReturn = page.locator('#sessionHeader [data-search-back-to-project]');
+    await headerReturn.waitFor({ state: 'visible' });
+    if (surface === 'header') await analysisRequest;
     assert.equal(await page.locator('.timelinePane [data-search-back-to-project]').count(), 1);
     assert.equal(await page.locator('#timeline [data-search-back-to-project], #resultSummary [data-search-back-to-project]').count(), 0);
-    await page.locator('#timeline .event.selected > .eventHeader > .eventKind').click();
     const inspector = page.locator('.detailPane [data-detail-action="back-to-project-results"]');
-    await inspector.waitFor({ state: 'attached' });
-    assert.equal(await inspector.count(), 1);
+    if (surface !== 'header') {
+      // A selected row can precede the final drill-down render. Let its analysis,
+      // suggestions and search-detail work settle before opening the Inspector.
+      await page.waitForLoadState('networkidle');
+      const latestEvent = page.locator(`#timeline .event[data-event-id="${latestEventId}"].selected`);
+      await latestEvent.waitFor({ state: 'visible' });
+      await latestEvent.locator(':scope > .eventHeader > .eventKind').click();
+      await inspector.waitFor({ state: 'visible' });
+      assert.equal(await inspector.count(), 1);
+    }
     if (surface === 'sorted-header') {
       await page.locator('#sortSelect').selectOption('events-desc');
       await page.waitForFunction(() => document.querySelectorAll('#timeline .event').length > 0
@@ -6116,7 +6146,13 @@ test('browser project return surfaces preserve query, filters, cards, scope and 
     if (surface === 'mobile-inspector') {
       await page.locator('.mobileViewTab[data-mobile-view="detail"]').click();
     }
-    await (surface.endsWith('header') ? page.locator('#sessionHeader [data-search-back-to-project]') : inspector).click();
+    await (surface.endsWith('header') ? headerReturn : inspector).click();
+    if (surface === 'header') {
+      await waitForProjectCards(page);
+      releaseAnalysis();
+    }
+    await page.waitForLoadState('networkidle');
+    if (surface === 'header') await page.unroute('**/api/sessions/*/analysis*', holdAnalysis);
     await waitForProjectCards(page);
     assert.equal(await page.locator('body').getAttribute('data-search-scope'), 'project');
     assert.equal(await page.locator('#searchInput').inputValue(), 'patch');
