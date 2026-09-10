@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-09-08 / 最近更新：2026-09-08
+- Last updated: 2026-09-10 / 最近更新：2026-09-10
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/trajectory-presentation.md`
@@ -210,6 +210,8 @@ Completed v0.1 follow-up: zh-CN catalog completeness, raw-record display labels,
 The event-anchor contract in item 25 supersedes the earlier occurrence-level wording in item 11: “rendered or materialized jump targets,” “additional jump targets,” and “an Inspector match” now mean one canonical matching logical-event anchor and one of its disposable live bindings. They do not mean one member per DOM phrase occurrence. Inspector-only supplemental text has no navigation fallback and contributes zero membership; an Inspector binding is usable only when its owner already matches the canonical event corpus. / 第 25 项的事件锚点 contract 取代第 11 项早先的 occurrence 级表述：“已渲染或已物化跳转目标”“更多跳转目标”和“Inspector 命中”现在都表示一个 canonical 匹配逻辑事件锚点及其某个可丢弃实时 binding，不再表示每个 DOM 短语 occurrence 各有一个成员。仅存在于 Inspector 补充文本中的内容没有导航 fallback，成员贡献为零；只有 owner 已属于 canonical 事件语料时，Inspector binding 才可用于导航。
 
 ## Acceptance criteria / 验收标准
+
+- Trajectory overview keyboard navigation remains usable when asynchronous detail loading completes: preserve focus if it is still on the overview, without scrolling merely to restore focus or stealing focus from another control. / 异步详情加载完成后，Trajectory overview 键盘导航仍可继续使用：若焦点仍在 overview 则保留，不因恢复焦点而滚动，也不从其他控件抢回焦点。
 
 - [x] Selected event cards in Timeline and Trajectory have a restrained accent tint and thin outline with at least 3:1 contrast against the selected, search-hit, and surrounding backgrounds in the current theme. Selection remains visible in collapsed, summary, expanded, and hovered states without changing card geometry; event-kind/status markers and search-hit cues remain visible. Selected cards omit the bottom text fade and restore full opacity for metadata that is otherwise dimmed. / Timeline 与 Trajectory 中的选中 event 卡片使用克制的强调色底色与细轮廓；在当前主题下，轮廓与选中底色、搜索命中底色及周围背景的对比度均至少为 3:1。在折叠、摘要、展开及悬停状态下，选中状态均保持可辨认且不改变卡片尺寸；事件类型／状态标记与搜索命中提示保持可见。选中卡片移除底部文字渐隐，并恢复原本被透明度弱化的元数据的不透明显示。
 

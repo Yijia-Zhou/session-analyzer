@@ -2237,6 +2237,60 @@ test('browser Trajectory keeps compact controls and Inspector selection usable i
   ), firstEventId);
 });
 
+for (const moveFocus of [false, true]) {
+  test(`browser Trajectory detail settlement ${moveFocus ? 'does not steal moved focus' : 'preserves overview keyboard focus'}`, { timeout: 15000 }, async (t) => {
+    const { index } = await makeTransitionProfileIndex(t, {
+      eventCount: 300, hitPositions: [], commonTermEvery: 0,
+    });
+    const { page } = await openApp(t, index, { locale: 'en' });
+    await page.locator('[data-main-presentation="trajectory"]').click();
+    await page.waitForSelector('.trajectoryOverviewCanvas[data-render-mode]');
+    await page.waitForLoadState('networkidle');
+    const sequenceIds = await page.locator('[data-trajectory-event-id]').evaluateAll(
+      (events) => events.map((event) => event.dataset.trajectoryEventId),
+    );
+    const targetId = sequenceIds.at(-1);
+    const detailReady = deferred();
+    const releaseDetail = deferred();
+    await page.route('**/events/*/detail?*', async (route) => {
+      if (!new URL(route.request().url()).pathname.endsWith(`/${encodeURIComponent(targetId)}/detail`)) {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      detailReady.resolve();
+      await releaseDetail.promise;
+      await route.fulfill({ response });
+    });
+    try {
+      await page.locator('.trajectoryOverviewViewport').press('End');
+      await detailReady.promise;
+      const oldViewport = await page.locator('.trajectoryOverviewViewport').elementHandle();
+      if (moveFocus) await page.locator('#searchInput').focus();
+      else await page.locator('.trajectoryOverviewViewport').focus();
+      releaseDetail.resolve();
+      await page.waitForFunction((node) => !node.isConnected, oldViewport);
+      assert.equal(await page.evaluate((moved) => (
+        document.activeElement === document.querySelector(moved ? '#searchInput' : '.trajectoryOverviewViewport')
+      ), moveFocus), true);
+      if (!moveFocus) {
+        // Real keyboard input must work without Locator.press silently refocusing the new node.
+        await page.keyboard.press('ArrowLeft');
+        await page.waitForFunction((expected) => (
+          document.querySelector('.trajectoryOverviewLocator')?.dataset.trajectoryOverviewSelectedId === expected
+            && document.querySelector('[data-trajectory-event-id].selected')?.dataset.trajectoryEventId === expected
+        ), sequenceIds.at(-2));
+      } else {
+        assert.equal(await page.locator('.trajectoryOverviewLocator').getAttribute('data-trajectory-overview-selected-id'), targetId);
+      }
+      await oldViewport.dispose();
+    } finally {
+      releaseDetail.resolve();
+      await page.waitForLoadState('networkidle');
+    }
+  });
+}
+
 test('browser Trajectory overview exposes only the loaded canonical sequence and shares selection identity', async (t) => {
   const { index } = await makeTransitionProfileIndex(t, {
     eventCount: 300,
