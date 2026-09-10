@@ -1,5 +1,7 @@
 # Session Transcript Analyzer / 会话转录分析器
 
+Reading controls must remain visible and operable without document-level horizontal overflow at desktop widths, including manual fold overrides that expose Reset folds. Project drill-down offers one return action in the center session header (including while loading), plus one in the Inspector when open. Returning preserves the active query, filters, Layer and project cards, restores Project Scope and focuses the originating card. / 桌面宽度下阅读控件必须可见、可操作，且不产生文档级横向溢出，包括手动折叠后显示 Reset folds 的状态。项目下钻在中间 session header 提供一个返回入口（加载期间也可用），Inspector 打开时另有一个。返回保留当前 query、筛选、Layer 与项目卡片，恢复项目范围并聚焦来源卡片。
+
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案

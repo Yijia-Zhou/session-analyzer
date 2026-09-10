@@ -3546,6 +3546,11 @@ function renderBackToProjectResultsAction() {
   return `<button class="smallBtn" type="button" data-detail-action="back-to-project-results">${escapeHtml(t('backToProjectResults'))}</button>`;
 }
 
+function renderHeaderProjectReturnAction() {
+  if (!state.projectReturnContext || state.searchScope !== 'session') return '';
+  return `<button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>`;
+}
+
 function renderSearchAssistChips() {
   const filters = activeFilters();
   const filterSummary = filters.map((filter) => filter.label).join(' · ');
@@ -4054,11 +4059,7 @@ function renderResultSummary() {
     return;
   }
   if (!filters.length && !search.q) {
-    if (state.projectReturnContext) {
-      el.resultSummary.innerHTML = `<button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>`;
-    } else {
-      el.resultSummary.replaceChildren();
-    }
+    el.resultSummary.replaceChildren();
     return;
   }
   const eventText = filters.length && state.selectedSessionId
@@ -4069,10 +4070,7 @@ function renderResultSummary() {
   const projectFallback = committed && hasActiveSearchExpression() && matchingEventCount === 0
     ? `<button class="smallBtn projectFallbackBtn" type="button" data-search-project-fallback>${escapeHtml(t('searchEntireProject'))}</button>`
     : '';
-  const backToProject = state.projectReturnContext
-    ? `<button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>`
-    : '';
-  el.resultSummary.innerHTML = `${eventText ? `<div class="resultCounts">${escapeHtml(eventText)}</div>` : ''}${projectFallback}${backToProject}`;
+  el.resultSummary.innerHTML = `${eventText ? `<div class="resultCounts">${escapeHtml(eventText)}</div>` : ''}${projectFallback}`;
   updateSearchMatchControls();
 }
 
@@ -5063,7 +5061,7 @@ async function drillDownProjectResult(sessionId) {
       <span class="sessionMetaChip">${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</span>
       <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
     </div>
-    <button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>`;
+    ${renderHeaderProjectReturnAction()}`;
   const loaded = await Promise.all([
     loadAnalysis(sessionId),
     loadTimelineThroughIndex(latest.timelineIndex),
@@ -5216,13 +5214,6 @@ function renderProjectSearchView() {
   renderResultSummary();
 }
 
-function renderProjectReturnBanner() {
-  if (!state.projectReturnContext || state.searchScope !== 'session') return '';
-  return `<div class="projectReturnBanner">
-    <button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>
-  </div>`;
-}
-
 function renderInheritedContextCard() {
   const session = state.sessions.find((item) => item.id === state.selectedSessionId);
   const context = session?.inheritedContext;
@@ -5348,7 +5339,7 @@ async function selectSession(sessionId, options = {}) {
         ${session.forkContinuationState === 'waiting_for_prompt' ? `<span class="sessionMetaChip">${escapeHtml(t('forkWaitingForPrompt'))}</span>` : ''}
         <span class="sessionMetaChip">${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</span>
         <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
-      </div>`;
+      </div>${renderHeaderProjectReturnAction()}`;
   }
   renderSearchAssistChips();
   renderTimeline();
@@ -6579,7 +6570,7 @@ function selectTrajectoryEvent(item) {
 }
 
 function prependTrajectoryContextCards() {
-  const markup = `${renderProjectReturnBanner()}${renderInheritedContextCard()}`;
+  const markup = renderInheritedContextCard();
   if (!markup) return;
   const template = document.createElement('template');
   template.innerHTML = markup;
@@ -6675,7 +6666,7 @@ function renderTimeline() {
   }
   const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
   const timelineEvents = renderedTimelineEvents();
-  const markup = `${renderProjectReturnBanner()}${renderInheritedContextCard()}${timelineEvents.map((event, index) => (
+  const markup = `${renderInheritedContextCard()}${timelineEvents.map((event, index) => (
     `${renderRawForkSegmentHeading(event, timelineEvents[index - 1])}${renderTimelineCardMarkup(event, compactWebLifecycleIds)}`
   )).join('')}`;
   const ownsMountedMainCards = activeLayerId() === 'main'
