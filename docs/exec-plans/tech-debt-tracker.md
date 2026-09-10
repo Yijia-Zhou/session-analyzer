@@ -238,8 +238,13 @@
   - `docs/design-docs/deepseek-readback-measurement.md`
 
 ### 23. Reading-control overflow and repeated project return controls / 阅读控件溢出与重复项目返回控件
-- Status: observed during the 2026-09-08 README capture; product fix deferred outside the documentation task. / 状态：2026-09-08 README 捕获中观察到，产品修复留待文档任务之外处理。
+- Status: focused fix implemented on 2026-09-10; acceptance recorded in `completed/2026-09-10-reading-controls-project-return.md`. / 状态：2026-09-10 已实现定向修复；验收见 `completed/2026-09-10-reading-controls-project-return.md`。
 - Evidence: in the synthetic Codex showcase, selecting a command after manual fold overrides exposes a `Reset folds` control beyond the right edge of a 1600px viewport (`documentElement.scrollWidth` 1661px). After project search drill-down, multiple `Back to project results` controls are visible in the center pane. These were observed through normal controls, without CSS changes. / 证据：合成 Codex showcase 中，手动折叠后选择命令，`Reset folds` 超出 1600px 视口右边界（文档宽 1661px）；项目搜索进入会话后，中间面板同时出现多个返回项目结果控件。均通过正常控件观察，未修改 CSS。
 - Impact and boundary: reading and search navigation remain functional, but controls consume space or clip. The search demonstration deliberately captures the complete search/list/reading region and does not claim to verify the omitted top-right controls. / 影响与边界：阅读及搜索导航仍可用，但控件占据空间或被裁切；搜索演示有意捕获完整搜索／列表／阅读区域，不声称核验未包含的右上角控件。
 - Follow-up: reproduce responsive control layout and the intended visibility of each project-return affordance; fix with focused browser layout coverage without changing search or event ownership semantics. / 后续：复现响应式控件布局及每个返回入口的预期可见性，以定向浏览器布局覆盖修复，不改变搜索或事件 ownership 语义。
 - Related docs: `docs/design-docs/readme-visual-capture-runbook.md`; `showcase/captures/readme/project-search.json`. / 相关文档：上述捕获运行手册与项目搜索分镜。
+
+### 24. Wave 1D-A stale context-slot browser flake / Wave 1D-A stale context-slot 浏览器偶发失败
+- Status: tracked independently as CI hygiene; not a prerequisite for debt #23. / 状态：作为 CI 稳定性问题独立跟踪，不作为债务 #23 的前置条件。
+- Evidence: recurring stale context-slot `2 !== 1` reported in prior CI; no corresponding product failure established. The completed Wave 1D-A plan documents the MutationObserver settlement boundary. / 证据：此前 CI 反复报告 stale context-slot `2 !== 1`，尚无对应产品故障证据；已完成的 Wave 1D-A 计划记录了 MutationObserver settlement 边界。
+- Follow-up: on the next main/PR CI occurrence, retain the run URL, commit, assertion and trace; investigate observer delivery and operation-window ownership in a separate fix. / 后续：下次 main／PR CI 命中时保留 run URL、commit、断言与 trace，在独立修复中调查 observer delivery 与 operation-window ownership。

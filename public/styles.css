@@ -314,6 +314,12 @@ button:hover,
   grid-template-columns: minmax(120px, 1fr) auto;
 }
 
+@container topbar-detail (max-width: 440px) {
+  .foldControls[data-has-reset-folds] {
+    grid-column: 1 / -1;
+  }
+}
+
 .foldControls button {
   white-space: nowrap;
   width: auto;
@@ -2004,16 +2010,6 @@ body[data-project-mode='selecting'] .searchAssist {
 .projectSearchState p {
   color: var(--muted);
   margin: 0;
-}
-
-.projectReturnBanner {
-  align-items: center;
-  background: var(--soft);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  display: flex;
-  justify-content: flex-start;
-  padding: 0.5rem;
 }
 
 .sessionItem.secondarySession {

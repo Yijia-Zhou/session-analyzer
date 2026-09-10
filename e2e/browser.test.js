@@ -3104,7 +3104,8 @@ test('browser project-search drill-down restores Trajectory and anchors the exac
     await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').getAttribute('aria-pressed'),
     'true',
   );
-  assert.equal(await page.locator('#timeline [data-search-back-to-project]').count(), 1);
+  assert.equal(await page.locator('#timeline [data-search-back-to-project]').count(), 0);
+  assert.equal(await page.locator('#sessionHeader [data-search-back-to-project]').count(), 1);
 });
 
 test('browser Trajectory search reveals a collapsed Tool Activity Group and structured filters reuse folding semantics', async (t) => {
@@ -4609,6 +4610,38 @@ test('browser Code Mode presents web requests structurally, renders safe Markdow
   assert.match(await operationEvent.locator('.webResultMarkdown').textContent(), /网页结果.*Example browser result/s);
 });
 
+test('browser reading controls stay inside desktop viewport with manual fold overrides', async (t) => {
+  const index = await buildFixtureIndex();
+  const session = await materializeIndexedSession(index, primaryFixtureSessionId);
+  const commandId = session.logicalEvents.find((event) => event.kind === 'command').id;
+  const { page } = await openApp(t, index, { viewport: { width: 1600, height: 900 }, locale: 'en' });
+  await selectPrimarySession(page);
+  const command = page.locator(`#timeline .event[data-event-id="${commandId}"]`);
+  await command.locator('.eventToggle').click();
+  await command.click();
+  await page.locator('#resetFoldsBtn').waitFor({ state: 'visible' });
+  for (const width of [1600, 1440, 1280, 1101, 1024, 820]) {
+    await page.setViewportSize({ width, height: 900 });
+    const geometry = await page.evaluate(() => ({
+      width: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+      controls: ['#layerSelect', '.profilePickerTopbar select', '#resetFoldsBtn'].map((selector) => {
+        const rect = document.querySelector(selector).getBoundingClientRect();
+        return { selector, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width };
+      }),
+    }));
+    assert.ok(geometry.scrollWidth <= geometry.width, JSON.stringify({ width, ...geometry }));
+    for (const control of geometry.controls) {
+      assert.ok(control.width > 0 && control.left >= 0 && control.right <= geometry.width
+        && control.top >= 0 && control.bottom <= 900, JSON.stringify({ width, control }));
+    }
+  }
+  await page.locator('#resetFoldsBtn').click();
+  assert.equal(await page.locator('#resetFoldsBtn').isHidden(), true);
+  await page.locator('#layerSelect').selectOption('raw');
+  assert.equal(await page.locator('#layerSelect').inputValue(), 'raw');
+});
+
 test('browser topbar width priorities keep search, Layer, and folding controls responsive', async (t) => {
   const index = await buildFixtureIndex();
   const { page } = await openApp(t, index, { viewport: { width: 1280, height: 900 }, locale: 'en' });
@@ -6050,6 +6083,86 @@ test('browser project scope renders cards, aggregate summary, and filter-only re
   }), true);
 });
 
+test('browser project return surfaces preserve query, filters, cards, scope and focus', { timeout: 45000 }, async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en', viewport: { width: 1600, height: 900 } });
+  await switchToProjectScope(page);
+  await fillSearch(page, 'patch');
+  const projectResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/sessions' && url.searchParams.get('q') === 'patch'
+      && url.searchParams.get('kind') === 'patch' && url.searchParams.get('sort') === 'latest-match-desc';
+  });
+  await addSearchFilter(page, 'kind', 'patch');
+  const projectResults = (await (await projectResponse).json()).sessions;
+  await page.waitForLoadState('networkidle');
+  await waitForProjectCards(page);
+  const cards = () => page.locator('[data-project-result-session-id]').evaluateAll((elements) =>
+    elements.map((element) => ({ id: element.dataset.projectResultSessionId, text: element.textContent })));
+  const expectedCards = await cards();
+  assert.ok(expectedCards.length > 0);
+  const latestEventId = projectResults.find((session) => session.id === expectedCards[0].id).searchMatch.latestEvent.id;
+  for (const surface of ['header', 'sorted-header', 'inspector', 'mobile-inspector']) {
+    let releaseAnalysis;
+    let analysisStarted;
+    const analysisGate = new Promise((resolve) => { releaseAnalysis = resolve; });
+    const analysisRequest = new Promise((resolve) => { analysisStarted = resolve; });
+    const holdAnalysis = async (route) => {
+      analysisStarted();
+      await analysisGate;
+      await route.continue();
+    };
+    if (surface === 'header') {
+      t.after(() => releaseAnalysis());
+      await page.route('**/api/sessions/*/analysis*', holdAnalysis);
+    }
+    await page.setViewportSize({ width: surface === 'mobile-inspector' ? 390 : 1600, height: 900 });
+    await page.locator('[data-project-result-session-id]').first().click();
+    const headerReturn = page.locator('#sessionHeader [data-search-back-to-project]');
+    await headerReturn.waitFor({ state: 'visible' });
+    if (surface === 'header') await analysisRequest;
+    assert.equal(await page.locator('.timelinePane [data-search-back-to-project]').count(), 1);
+    assert.equal(await page.locator('#timeline [data-search-back-to-project], #resultSummary [data-search-back-to-project]').count(), 0);
+    const inspector = page.locator('.detailPane [data-detail-action="back-to-project-results"]');
+    if (surface !== 'header') {
+      // A selected row can precede the final drill-down render. Let its analysis,
+      // suggestions and search-detail work settle before opening the Inspector.
+      await page.waitForLoadState('networkidle');
+      const latestEvent = page.locator(`#timeline .event[data-event-id="${latestEventId}"].selected`);
+      await latestEvent.waitFor({ state: 'visible' });
+      await latestEvent.locator(':scope > .eventHeader > .eventKind').click();
+      await inspector.waitFor({ state: 'visible' });
+      assert.equal(await inspector.count(), 1);
+    }
+    if (surface === 'sorted-header') {
+      await page.locator('#sortSelect').selectOption('events-desc');
+      await page.waitForFunction(() => document.querySelectorAll('#timeline .event').length > 0
+        && !document.querySelector('#timeline .event.selected')
+        && document.body.dataset.detailView === 'profileRules');
+      assert.equal(await page.locator('.timelinePane [data-search-back-to-project]').count(), 1,
+        'session reload must preserve the sole center return action after resetting Inspector');
+      assert.equal(await inspector.count(), 0);
+    }
+    if (surface === 'mobile-inspector') {
+      await page.locator('.mobileViewTab[data-mobile-view="detail"]').click();
+    }
+    await (surface.endsWith('header') ? headerReturn : inspector).click();
+    if (surface === 'header') {
+      await waitForProjectCards(page);
+      releaseAnalysis();
+    }
+    await page.waitForLoadState('networkidle');
+    if (surface === 'header') await page.unroute('**/api/sessions/*/analysis*', holdAnalysis);
+    await waitForProjectCards(page);
+    assert.equal(await page.locator('body').getAttribute('data-search-scope'), 'project');
+    assert.equal(await page.locator('#searchInput').inputValue(), 'patch');
+    assert.equal(await page.locator('#searchKindSelect').inputValue(), 'patch');
+    assert.equal(await page.locator('#layerSelect').inputValue(), 'main');
+    assert.deepEqual(await cards(), expectedCards);
+    await page.waitForFunction((id) => document.activeElement?.dataset.projectResultSessionId === id, expectedCards[0].id);
+  }
+});
+
 test('browser project result drill-down loads a deep latest event and returns to project cards', async (t) => {
   const longFixture = await makeLongCodexHome(t);
   const index = await buildIndex(longFixture);
@@ -6076,7 +6189,7 @@ test('browser project result drill-down loads a deep latest event and returns to
   ));
   const clickedBackToProject = await page.waitForFunction(() => {
     if (document.querySelectorAll('#timeline .event[data-event-id]').length !== 171) return false;
-    const button = document.querySelector('#timeline [data-search-back-to-project], #resultSummary [data-search-back-to-project]');
+    const button = document.querySelector('#sessionHeader [data-search-back-to-project]');
     if (!button) return false;
     button.click();
     return true;
