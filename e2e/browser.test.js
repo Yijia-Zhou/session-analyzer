@@ -853,6 +853,14 @@ async function assertEventCount(page, expected) {
   await page.waitForFunction((count) => document.querySelectorAll('#timeline .event[data-event-id]').length === count, expected);
 }
 
+async function waitForTimelineAppendIdle(page) {
+  // Rendering appended events can precede follow-up transcript reads.
+  // Use only after releasing request gates, before fixture cleanup or final request assertions.
+  // These callers use the English locale for the loading label.
+  await page.waitForFunction(() => !document.querySelector('#loadMoreBtn')?.textContent.includes('Loading'));
+  await page.waitForLoadState('networkidle');
+}
+
 async function expectInputValue(page, selector, expected) {
   await page.waitForFunction(
     ({ selector: target, expected: value }) => document.querySelector(target)?.value === value,
@@ -8239,13 +8247,12 @@ test('browser user scroll during the search-scroll guard still loads the next pa
   await timelinePane.hover();
   await page.mouse.wheel(0, 100000);
   await assertEventCount(page, 300);
+  await waitForTimelineAppendIdle(page);
 
   const paginationRequests = requestedUrls.slice(requestStart)
     .filter((value) => value.includes('/timeline?'))
     .map((value) => new URL(value, 'http://local'));
   assert.equal(paginationRequests.some((url) => url.searchParams.get('offset') === '150'), true);
-  await page.waitForFunction(() => !document.querySelector('#loadMoreBtn')?.textContent.includes('Loading'));
-  await page.waitForLoadState('networkidle');
 });
 
 test('browser an above-threshold user scroll cannot authorize a later programmatic bottom scroll', async (t) => {
@@ -8275,10 +8282,7 @@ test('browser an above-threshold user scroll cannot authorize a later programmat
   await timelinePane.hover();
   await page.mouse.wheel(0, 100000);
   await assertEventCount(page, 300);
-  // Rendering the appended events can precede follow-up transcript reads.
-  // Let those requests finish before the fixture's cleanup removes the JSONL.
-  await page.waitForFunction(() => !document.querySelector('#loadMoreBtn')?.textContent.includes('Loading'));
-  await page.waitForLoadState('networkidle');
+  await waitForTimelineAppendIdle(page);
 });
 
 test('browser a scroll during an in-flight append cannot leak pagination authority after loading settles', async (t) => {
@@ -8317,6 +8321,7 @@ test('browser a scroll during an in-flight append cannot leak pagination authori
     pane.querySelector('.event[data-event-id]:last-of-type')?.scrollIntoView({ block: 'end', behavior: 'auto' });
   });
   await page.waitForTimeout(300);
+  await waitForTimelineAppendIdle(page);
   assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 300);
   const leakedRequests = requestedUrls.slice(programmaticScrollStart)
     .filter((value) => value.includes('/timeline?'))
@@ -8342,6 +8347,7 @@ test('browser touch inertia keeps one pagination sequence until its later bottom
     await nextFrame();
   });
   await assertEventCount(page, 300);
+  await waitForTimelineAppendIdle(page);
   const paginationRequests = requestedUrls.slice(requestStart)
     .filter((value) => value.includes('/timeline?'))
     .map((value) => new URL(value, 'http://local'));
@@ -8793,6 +8799,7 @@ test('browser search navigation loads only the next hit page before wrapping', a
       ?.textContent
       ?.includes('Long timeline row 153')
   ));
+  await waitForTimelineAppendIdle(page);
   const afterBoundary = await searchNavigationSnapshot(page);
   assert.ok(afterBoundary.total > beforeBoundary.total);
   assert.ok(afterBoundary.current > beforeBoundary.current);
@@ -12231,6 +12238,7 @@ test('browser previous search navigation scans backward wrap through UI pages', 
         ?.includes('Long timeline row 612')
     )),
   ]);
+  await waitForTimelineAppendIdle(page);
 
   const boundaryRequests = requestedUrls.slice(boundaryRequestStart)
     .filter((value) => value.includes('/timeline?'))
