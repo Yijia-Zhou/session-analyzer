@@ -532,6 +532,10 @@ async function stopChild(child) {
   });
 }
 
+async function prepareGlobalPrefix(globalPrefix) {
+  await fsp.mkdir(path.join(globalPrefix, 'lib'), { recursive: true });
+}
+
 async function verifyPackagedServer(globalPrefix, tempRoot) {
   const projectDir = path.join(tempRoot, 'project');
   const codexHome = path.join(tempRoot, 'codex-home');
@@ -679,7 +683,7 @@ async function verifyPublic(options) {
     if (!npxHelp.stdout.includes('session-analyzer [--repo <repo-path>]')) fail('Exact-version npx help did not contain the expected usage.');
 
     const globalPrefix = path.join(tempRoot, 'global');
-    await fsp.mkdir(globalPrefix);
+    await prepareGlobalPrefix(globalPrefix);
     runNpm(['install', '--global', '--prefix', globalPrefix, `${packageMetadata.name}@${options.version}`, '--ignore-scripts', '--no-fund', '--no-audit', '--registry', officialRegistry], { env });
     const globalBin = process.platform === 'win32'
       ? path.join(globalPrefix, 'session-analyzer.cmd')
@@ -739,6 +743,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  prepareGlobalPrefix,
   extractProvenance,
   isCredentialEnvironmentName,
   isTemporaryUserconfigPath,
