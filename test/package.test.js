@@ -109,6 +109,7 @@ test('package metadata exposes the session-analyzer CLI', () => {
     },
   });
   assert.equal(pkg.devDependencies['highlight.js'], '11.11.1');
+  assert.equal(pkg.main, 'server.js');
   assert.deepEqual(pkg.bin, { 'session-analyzer': 'server.js' });
   assert.ok(server.startsWith('#!/usr/bin/env node'));
 });
@@ -249,14 +250,36 @@ test('final dist-tag evidence uses a separately proven anonymous userconfig', ()
 });
 
 test('CLI help documents the npm command, diagnostics, and host privacy option', () => {
-  const result = run(process.execPath, ['server.js', '--help']);
+  const result = run(process.execPath, ['server.js', '--help'], { timeout: 10000 });
 
+  assert.equal(result.stdout, `${require('../src/cli').formatHelp()}\n`);
+  assert.equal(result.stderr, '');
   assert.match(result.stdout, /session-analyzer \[--repo <repo-path>\]/);
   assert.match(result.stdout, /--host <host>/);
   assert.match(result.stdout, /--log-dir <path>/);
   assert.match(result.stdout, /bounded JSONL logs/);
   assert.match(result.stdout, /Binding to another host can expose transcript content/);
   assert.doesNotMatch(result.stdout, /node server\.js \[--repo/);
+});
+
+test('CLI parse errors print ordered stderr and help without starting the server', () => {
+  const result = childProcess.spawnSync(process.execPath, [
+    'server.js', '--port', '0', '--source', 'invalid-value',
+  ], { cwd: repoRoot, encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, `${require('../src/cli').formatHelp()}\n`);
+  assert.equal(result.stderr, [
+    'Error: Invalid value for --port: "0". Expected an integer between 1 and 65535.',
+    'Error: Invalid value for --source: "invalid-value". Expected one of: codex, claude-code, deepseek-harness.',
+    '',
+  ].join('\n'));
+});
+
+test('CLI help takes precedence over parse errors', () => {
+  const result = run(process.execPath, ['server.js', '--port', '0', '--help'], { timeout: 10000 });
+  assert.equal(result.stdout, `${require('../src/cli').formatHelp()}\n`);
+  assert.equal(result.stderr, '');
 });
 
 test('npm pack manifest normalization supports npm 11 and npm 12 JSON shapes', () => {
@@ -312,6 +335,7 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'src/claude-logical.js',
     'src/claude-source.js',
     'src/claude.js',
+    'src/cli.js',
     'src/canonical-contract.js',
     'src/codex-code-mode-declared.js',
     'src/codex-cache-observation.js',
