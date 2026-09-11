@@ -3,13 +3,14 @@
 
 // Deterministic synthetic HTTP readback measurement; no user transcripts.
 const assert = require('node:assert/strict');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, execSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
 const { zstdCompressSync } = require('node:zlib');
+const { createPhaseCollector, coldAttribution } = require('./deepseek-phase-accounting');
 
 function option(name, fallback) {
   return process.argv.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
@@ -44,7 +45,17 @@ function distribution(samples) {
   };
 }
 
-async function writeFixture(root, dataRows, compression) {
+function shapesFrom(value) {
+  const shapes = [...new Set(value.split(','))];
+  if (shapes.some((shape) => !['tool-dense', 'message-dense'].includes(shape))) throw new Error('shape must be tool-dense or message-dense');
+  return shapes;
+}
+
+function eventTarget(shape, pair) {
+  return shape === 'tool-dense' ? `logical:tool:profile-call-${pair}` : `logical:user_message:${pair * 2}`;
+}
+
+async function writeFixture(root, dataRows, compression, shape = 'tool-dense') {
   const repoRoot = path.join(root, 'target-repo');
   const sourceHome = path.join(root, 'sessions');
   const sessionDir = path.join(sourceHome, '--synthetic-readback--', 'profile-session');
@@ -72,8 +83,13 @@ async function writeFixture(root, dataRows, compression) {
       const turn = pair + 1;
       // Eight hashes give deterministic varied text, without private content.
       const output = Array.from({ length: 8 }, (_, part) => createHash('sha256').update(`${pair}:${part}`).digest('hex')).join('');
-      batch.push({ type: 'tool/call', seq, time: 1_780_000_000_001 + seq, data: { turn, step: 1, callId, name: 'bash', arguments: JSON.stringify({ command: `printf synthetic-${pair}` }) } });
-      batch.push({ type: 'tool/result', seq: seq + 1, time: 1_780_000_000_002 + seq, data: { turn, step: 1, message: { source: { kind: 'tool', callId }, content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text: output }], isError: false }], role: 'user', id: `profile-result-${pair}` } }, sourceEventSeqs: [seq], surfaceOp: 'append' });
+      if (shape === 'tool-dense') {
+        batch.push({ type: 'tool/call', seq, time: 1_780_000_000_001 + seq, data: { turn, step: 1, callId, name: 'bash', arguments: JSON.stringify({ command: `printf synthetic-${pair}` }) } });
+        batch.push({ type: 'tool/result', seq: seq + 1, time: 1_780_000_000_002 + seq, data: { turn, step: 1, message: { source: { kind: 'tool', callId }, content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text: output }], isError: false }], role: 'user', id: `profile-result-${pair}` } }, sourceEventSeqs: [seq], surfaceOp: 'append' });
+      } else {
+        batch.push({ type: 'user/message', seq, time: 1_780_000_000_001 + seq, surfaceOp: 'append', data: { turn, step: 1, source: { kind: 'user' }, content: [{ type: 'text', text: `Synthetic question ${pair}` }] } });
+        batch.push({ type: 'assistant/message', seq: seq + 1, time: 1_780_000_000_002 + seq, surfaceOp: 'append', data: { turn, step: 1, message: { id: `profile-answer-${pair}`, content: [{ type: 'text', text: output }] } } });
+      }
       if (batch.length === 256) {
         await writeRows(batch);
         batch = [];
@@ -86,27 +102,52 @@ async function writeFixture(root, dataRows, compression) {
   return { repoRoot, sourceHome, file, plainBytes, artifactBytes, frameCount };
 }
 
-async function worker(dataRows, compression) {
+async function worker(dataRows, compression, shape = 'tool-dense') {
   if (compression === 'zstd' && typeof zstdCompressSync !== 'function') throw new Error('This profile needs built-in Zstd compression (Node 22.15+).');
   const { createServer } = require('../server');
-  const { materializeSessionForIndex } = require('../src/source-adapters');
+  const { materializeSessionForIndex, buildEventDetailForSession } = require('../src/source-adapters');
   const tempParent = path.resolve(os.tmpdir());
   const root = await fsp.mkdtemp(path.join(tempParent, 'session-analyzer-readback-profile-'));
   let server;
   const memory = [];
   const checkpoint = (stage) => memory.push({ stage, ...process.memoryUsage(), maxRSSKiB: process.resourceUsage().maxRSS });
   let materializationCalls = 0;
+  let collectingCold = false;
+  let materializationStart;
+  let materializationEnd;
+  let detailConstructionMs = 0;
+  let coldBuilderCalls = 0;
+  let rawEventCount;
+  let logicalEventCount;
+  const collector = createPhaseCollector();
   try {
     checkpoint('beforeFixture');
-    const fixture = await writeFixture(root, dataRows, compression);
+    const fixture = await writeFixture(root, dataRows, compression, shape);
     const identityBefore = await fsp.stat(fixture.file, { bigint: true });
     checkpoint('afterFixture');
     server = createServer(null, 0, {
       source: 'deepseek-harness', dshHome: fixture.sourceHome, sessionPrewarm: false,
       warn: (message) => process.stderr.write(`${message}\n`),
-      materializeSession: async (...args) => {
+      materializeSession: async (index, indexedSession, options) => {
         materializationCalls += 1;
-        return materializeSessionForIndex(...args);
+        if (!collectingCold) return materializeSessionForIndex(index, indexedSession, options);
+        materializationStart = performance.now();
+        let session;
+        try {
+          session = await materializeSessionForIndex(index, indexedSession, { ...options, onMaterializationPhase: collector.onPhase });
+        } finally {
+          materializationEnd = performance.now();
+        }
+        rawEventCount = session.rawEvents.length;
+        logicalEventCount = session.logicalEvents.length;
+        return session;
+      },
+      buildEventDetail: async (...args) => {
+        if (!collectingCold) return buildEventDetailForSession(...args);
+        coldBuilderCalls += 1;
+        const start = performance.now();
+        try { return await buildEventDetailForSession(...args); }
+        finally { detailConstructionMs += performance.now() - start; }
       },
     });
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -130,18 +171,31 @@ async function worker(dataRows, compression) {
     checkpoint('afterIndex');
     assert.equal(materializationCalls, 0, 'first detail must be cold materialization');
     const sessionId = 'deepseek-harness:profile-session';
-    // Adapter tool-event ID convention avoids a timeline read that would pre-materialize.
-    const detailPath = (pair) => `/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(`${sessionId}:logical:tool:profile-call-${pair}`)}/detail?layer=main`;
+    // Deterministic adapter event IDs avoid a timeline read that would pre-materialize.
+    const detailPath = (pair) => `/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(`${sessionId}:${eventTarget(shape, pair)}`)}/detail?layer=main`;
     const rawPath = (pair) => `/api/sessions/${encodeURIComponent(sessionId)}/raw/${encodeURIComponent(`${sessionId}:raw:${pair * 2 + 1}`)}`;
     async function timed(route, raw = false) {
       const start = performance.now();
       const body = await request(route);
       const duration = performance.now() - start;
-      if (raw) assert.match(body.raw, /"tool\/call"/);
-      else assert.ok(Array.isArray(body.timelineSections) && body.timelineSections.length > 0);
+      const targetId = decodeURIComponent(route.split('?')[0].split('/')[5]);
+      if (raw) {
+        assert.equal(body.rawId, targetId);
+        assert.equal(JSON.parse(body.raw).type, shape === 'tool-dense' ? 'tool/call' : 'user/message');
+      } else {
+        assert.equal(body.id, targetId);
+        assert.ok(Array.isArray(body.timelineSections) && body.timelineSections.length > 0);
+      }
       return duration;
     }
-    const coldDetailMs = await timed(detailPath(0));
+    collectingCold = true;
+    let coldDetailMs;
+    try { coldDetailMs = await timed(detailPath(0)); }
+    finally { collectingCold = false; }
+    assert.equal(coldBuilderCalls, 1);
+    const attribution = coldAttribution(collector, materializationStart, materializationEnd, detailConstructionMs, coldDetailMs);
+    assert.equal(rawEventCount, dataRows + 1);
+    assert.equal(logicalEventCount, shape === 'tool-dense' ? dataRows / 2 : dataRows);
     checkpoint('afterColdDetail');
     assert.equal(materializationCalls, 1);
     const pairs = Array.from({ length: 12 }, (_, i) => 1 + Math.floor(i * (dataRows / 2 - 2) / 12));
@@ -165,7 +219,9 @@ async function worker(dataRows, compression) {
     const identityAfter = await fsp.stat(fixture.file, { bigint: true });
     for (const field of ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs']) assert.equal(identityAfter[field], identityBefore[field]);
     return {
-      dataRows, physicalRows: dataRows + 1, logicalToolEvents: dataRows / 2, compression,
+      dataRows, physicalRows: dataRows + 1, logicalToolEvents: shape === 'tool-dense' ? dataRows / 2 : 0, compression,
+      shape, physicalRecordCount: dataRows + 1, rawEventCount, logicalEventCount, uncompressedBytes: fixture.plainBytes,
+      coldAttribution: attribution, materializationCallsBeforeColdDetail: 0, materializationCallsAfterColdDetail: 1,
       plainBytes: fixture.plainBytes, artifactBytes: fixture.artifactBytes, frameCount: fixture.frameCount,
       indexMs: rounded(indexMs), coldDetailMs: rounded(coldDetailMs),
       distinctDetails: distribution(distinct), repeatedDetail: distribution(repeated), singleRawMs: rounded(singleRawMs),
@@ -184,29 +240,41 @@ async function worker(dataRows, compression) {
 async function main() {
   const sizes = sizesFrom(option('sizes', '10000,50000'));
   const compressions = compressionsFrom(option('compression', 'plain,zstd'));
+  const shapes = shapesFrom(option('shape', 'tool-dense,message-dense'));
   if (process.argv.includes('--worker')) {
     assert.equal(sizes.length, 1);
     assert.equal(compressions.length, 1);
-    process.stdout.write(`${JSON.stringify(await worker(sizes[0], compressions[0]))}\n`);
+    assert.equal(shapes.length, 1);
+    process.stdout.write(`${JSON.stringify(await worker(sizes[0], compressions[0], shapes[0]))}\n`);
     return;
   }
+  const repositorySha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path.join(__dirname, '..'), encoding: 'utf8', windowsHide: true }).trim();
+  const gitOptions = { cwd: path.join(__dirname, '..'), windowsHide: true };
+  const repositoryDirty = execFileSync('git', ['status', '--porcelain'], gitOptions).length > 0;
+  const trackedDiffSha256 = createHash('sha256').update(execFileSync('git', ['diff', '--no-ext-diff', '--binary', 'HEAD'], gitOptions)).digest('hex');
+  const npmVersion = execSync('npm --version', { encoding: 'utf8', windowsHide: true }).trim();
   const results = [];
   for (const size of sizes) {
-    for (const compression of compressions) {
-      process.stderr.write(`Measuring ${size} rows / ${compression}\n`);
-      const output = execFileSync(process.execPath, [__filename, '--worker', `--sizes=${size}`, `--compression=${compression}`], {
-        encoding: 'utf8', timeout: 600_000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
-      });
-      results.push(JSON.parse(output));
+    for (const shape of shapes) {
+      for (const compression of compressions) {
+        process.stderr.write(`Measuring ${size} rows / ${shape} / ${compression}\n`);
+        const output = execFileSync(process.execPath, [__filename, '--worker', `--sizes=${size}`, `--compression=${compression}`, `--shape=${shape}`], {
+          encoding: 'utf8', timeout: 600_000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
+        });
+        results.push(JSON.parse(output));
+      }
     }
   }
   const report = {
+    repositorySha, repositoryDirty, trackedDiffSha256,
     measuredAt: new Date().toISOString(),
-    environment: { node: process.version, platform: process.platform, arch: process.arch, osRelease: os.release(), cpu: os.cpus()[0]?.model, logicalCpus: os.cpus().length, memoryBytes: os.totalmem() },
+    environment: { node: process.version, npm: npmVersion, platform: process.platform, arch: process.arch, osRelease: os.release(), cpu: os.cpus()[0]?.model, logicalCpus: os.cpus().length, memoryBytes: os.totalmem() },
     method: 'Isolated child per case; real loopback HTTP; prewarm disabled; one index and one materialization; cold means materialization cold, not OS-cache cold. Warm API reads bypass browser detail cache. Memory includes generator, server and client; checkpoints miss transient synchronous peaks, maxRSS is process lifetime high-water.',
     results,
   };
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }
 
-main().catch((error) => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
+module.exports = { writeFixture, eventTarget, worker, shapesFrom };
+
+if (require.main === module) main().catch((error) => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });

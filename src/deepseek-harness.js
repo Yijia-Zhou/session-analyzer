@@ -19,6 +19,7 @@ const { codeModePresentationContextMap } = require('./shared/code-mode-presentat
 const storage = require('./deepseek-harness-storage');
 const { buildDeepSeekEventDetail } = require('./deepseek-harness-detail');
 const { createEmptyMaterializedPresentationIndexes } = require('./canonical-contract');
+const { observeMaterializationPhase } = require('./materialization-observer');
 
 const SOURCE_KIND = storage.DEEPSEEK_SOURCE_KIND;
 const PREVIEW_LIMIT = 240;
@@ -2870,12 +2871,37 @@ function deepSeekRawForkSegment(session, rawId) {
 async function parseSessionArtifact(filePath, relFile, repoRoot, signal, options = {}) {
   const compression = options.compression || storage.compressionForArtifact(filePath);
   const acceptedSnapshot = options.acceptedSnapshot || null;
-  const committedRead = await storage.readCommittedArtifactPrefix(
-    filePath,
-    compression,
-    signal,
-    acceptedSnapshot,
+  const committedRead = await observeMaterializationPhase(
+    'deepseek_materialization_source_read',
+    () => storage.readCommittedArtifactPrefix(
+      filePath,
+      compression,
+      signal,
+      acceptedSnapshot,
+    ),
   );
+  return observeMaterializationPhase(
+    'deepseek_materialization_reconstruction',
+    () => reconstructSessionArtifact(
+      filePath,
+      relFile,
+      repoRoot,
+      signal,
+      options,
+      committedRead,
+    ),
+  );
+}
+
+async function reconstructSessionArtifact(
+  filePath,
+  relFile,
+  repoRoot,
+  signal,
+  options = {},
+  committedRead,
+) {
+  const compression = options.compression || storage.compressionForArtifact(filePath);
   const prefix = committedRead.prefix;
   if (prefix.recordTexts.length === 0) throw storage.storageError('empty or header-less session log');
   const header = storage.parseHeaderText(prefix.recordTexts[0]);
