@@ -21,4 +21,11 @@ The main checkout is clean at the base above. Clean merged PR54/55 worktrees and
 
 ## Progress / 进度
 
-Cleanup complete; implementation and validation in progress. / 清理完成，实现与验证进行中。
+Completed cleanup, implementation, exact-byte tests, independent review, 181 focused shared tests, six byte-stream tests, build check, the full 1,110-test Node suite and two-shape HTTP smoke. All 22 controlled before/after workers passed. / 已完成清理、实现、精确字节测试、独立复查、181 项共享聚焦测试、六项字节流测试、构建检查、完整 1,110 项 Node 测试和两形状 HTTP smoke；22 个受控前后 worker 全部通过。
+
+
+## Result and scope / 结果与范围
+
+Candidate `0c64434241565e492ccd3d14639b343e90b8997c` cuts 50k plain cold Detail medians by 47.5% / 42.4% for tool/message shapes, with identical graph/task/input-byte/yield counts and about 99.99% fewer physical hash updates per full pass. The 50k message Zstd case agrees. MaxRSS/heap observations vary and do not establish a memory improvement; 50k cold reading still takes roughly 12–17 seconds, so #22 stays open. / 候选将工具／消息形状 50k plain 冷 Detail 中位数降低 47.5%／42.4%，图／task／输入字节／yield 数精确不变，每次完整 pass 的物理 hash update 减少约 99.99%；50k 消息 Zstd 方向相同。MaxRSS／heap 波动不能证明内存改善，50k 冷阅读仍约 12–17 秒，因此 #22 保持开放。
+
+The focused local optimization experiment is complete and ready for review; no merge or release is performed. Evidence and limitations are recorded in [the measurement report](../../design-docs/deepseek-readback-measurement.md#equivalent-textual-hash-batching-experiment--等价文本-hash-批量写入实验). New raw data stays under main-checkout ignored `tmp/hash-batching-comparison/`; prior raw data remains preserved. / 聚焦本地优化实验已完成，可供评审；未执行合并或发布。证据及限制见测量报告；新原始数据保留在主 checkout 的 ignored 目录，既有原始数据继续保留。
