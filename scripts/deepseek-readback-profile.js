@@ -178,8 +178,14 @@ async function worker(dataRows, compression, shape = 'tool-dense') {
       const start = performance.now();
       const body = await request(route);
       const duration = performance.now() - start;
-      if (raw) assert.equal(JSON.parse(body.raw).type, shape === 'tool-dense' ? 'tool/call' : 'user/message');
-      else assert.ok(Array.isArray(body.timelineSections) && body.timelineSections.length > 0);
+      const targetId = decodeURIComponent(route.split('?')[0].split('/')[5]);
+      if (raw) {
+        assert.equal(body.rawId, targetId);
+        assert.equal(JSON.parse(body.raw).type, shape === 'tool-dense' ? 'tool/call' : 'user/message');
+      } else {
+        assert.equal(body.id, targetId);
+        assert.ok(Array.isArray(body.timelineSections) && body.timelineSections.length > 0);
+      }
       return duration;
     }
     collectingCold = true;
@@ -243,6 +249,9 @@ async function main() {
     return;
   }
   const repositorySha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path.join(__dirname, '..'), encoding: 'utf8', windowsHide: true }).trim();
+  const gitOptions = { cwd: path.join(__dirname, '..'), windowsHide: true };
+  const repositoryDirty = execFileSync('git', ['status', '--porcelain'], gitOptions).length > 0;
+  const trackedDiffSha256 = createHash('sha256').update(execFileSync('git', ['diff', '--no-ext-diff', '--binary', 'HEAD'], gitOptions)).digest('hex');
   const npmVersion = execSync('npm --version', { encoding: 'utf8', windowsHide: true }).trim();
   const results = [];
   for (const size of sizes) {
@@ -254,18 +263,18 @@ async function main() {
         });
         results.push(JSON.parse(output));
       }
-      }
     }
-    const report = {
-      repositorySha,
-      measuredAt: new Date().toISOString(),
-      environment: { node: process.version, npm: npmVersion, platform: process.platform, arch: process.arch, osRelease: os.release(), cpu: os.cpus()[0]?.model, logicalCpus: os.cpus().length, memoryBytes: os.totalmem() },
-      method: 'Isolated child per case; real loopback HTTP; prewarm disabled; one index and one materialization; cold means materialization cold, not OS-cache cold. Warm API reads bypass browser detail cache. Memory includes generator, server and client; checkpoints miss transient synchronous peaks, maxRSS is process lifetime high-water.',
-      results,
-    };
-    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   }
+  const report = {
+    repositorySha, repositoryDirty, trackedDiffSha256,
+    measuredAt: new Date().toISOString(),
+    environment: { node: process.version, npm: npmVersion, platform: process.platform, arch: process.arch, osRelease: os.release(), cpu: os.cpus()[0]?.model, logicalCpus: os.cpus().length, memoryBytes: os.totalmem() },
+    method: 'Isolated child per case; real loopback HTTP; prewarm disabled; one index and one materialization; cold means materialization cold, not OS-cache cold. Warm API reads bypass browser detail cache. Memory includes generator, server and client; checkpoints miss transient synchronous peaks, maxRSS is process lifetime high-water.',
+    results,
+  };
+  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+}
 
-  module.exports = { writeFixture, eventTarget, worker, shapesFrom };
+module.exports = { writeFixture, eventTarget, worker, shapesFrom };
 
-  if (require.main === module) main().catch((error) => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
+if (require.main === module) main().catch((error) => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });

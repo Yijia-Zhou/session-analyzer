@@ -6,7 +6,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { createPhaseCollector, coldAttribution, TOP_LEVEL, DEEPSEEK, PRIVATE } = require('../scripts/deepseek-phase-accounting');
-const { writeFixture, eventTarget } = require('../scripts/deepseek-readback-profile');
+const { writeFixture, eventTarget, worker } = require('../scripts/deepseek-readback-profile');
 const { parseSessionArtifact } = require('../src/deepseek-harness');
 
 test('phase collector keeps repeated nested names and duration metadata without double counting', () => {
@@ -64,6 +64,17 @@ test('cold accounting sums siblings and reports explicit residuals', () => {
 
 for (const shape of ['tool-dense', 'message-dense']) {
   for (const compression of ['plain', 'zstd']) {
+    test(`small real HTTP profile ${shape}/${compression} preserves cold ownership and attribution`, async () => {
+      const result = await worker(100, compression, shape);
+      assert.equal(result.materializationCallsBeforeColdDetail, 0);
+      assert.equal(result.materializationCallsAfterColdDetail, 1);
+      assert.equal(result.materializationCalls, 1);
+      assert.equal(result.sourceIdentityUnchanged, true);
+      assert.equal(result.physicalRecordCount, 101);
+      assert.equal(result.rawEventCount, 101);
+      assert.equal(result.logicalEventCount, shape === 'tool-dense' ? 50 : 100);
+      assert.deepEqual(Object.keys(result.coldAttribution.materializationTopLevelMs), TOP_LEVEL);
+    });
     test(`profile fixture ${shape}/${compression} has deterministic counts and first Detail target`, async (t) => {
       const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'deepseek-profile-test-'));
       t.after(() => fsp.rm(root, { recursive: true, force: true }));
