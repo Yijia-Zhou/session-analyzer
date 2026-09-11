@@ -387,7 +387,10 @@ async function graphFingerprintAsync(value, identityState = {
     profile.yieldCount = chunkIndex + 1;
     profile.hashInputBytes = profile.textPrefixBytes + profile.textValueUtf8Bytes + profile.binaryHashBytes;
     profile.hashUpdateCallCount = 2 * profile.writeTokenCount + profile.byteTaskCount;
-    try { options.onFingerprintProfile(profile); } catch {
+    try {
+      const result = options.onFingerprintProfile(profile);
+      if (result instanceof Promise) result.catch(() => {});
+    } catch {
       // Diagnostics must not affect mutation checks, admission or error precedence.
     }
   }

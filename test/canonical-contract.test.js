@@ -1937,6 +1937,10 @@ test('fingerprint profiles preserve strict success and expose stable content-fre
   assert.deepEqual(await materializeSessionWithAdapter(index, indexedSession, adapter, {
     onFingerprintProfile() { throw new Error('diagnostic callback failed'); },
   }), baseline);
+  assert.deepEqual(await materializeSessionWithAdapter(index, indexedSession, adapter, {
+    async onFingerprintProfile() { throw new Error('async diagnostic callback failed'); },
+  }), baseline);
+  await new Promise((resolve) => setImmediate(resolve));
 });
 
 test('throwing fingerprint profiles cannot mask private or projection mutation and rejection', async () => {
@@ -1966,18 +1970,22 @@ test('throwing fingerprint profiles cannot mask private or projection mutation a
         strictOverrides,
       });
       const errors = [];
-      for (const enabled of [false, true]) {
+      for (const enabled of [false, 'sync', 'async']) {
         let caught;
         try {
           await materializeSessionWithAdapter(index, indexedSession, adapter, enabled ? {
-            onFingerprintProfile() { throw new Error('diagnostic callback failed'); },
+            onFingerprintProfile: enabled === 'async'
+              ? async () => { throw new Error('async diagnostic callback failed'); }
+              : () => { throw new Error('diagnostic callback failed'); },
           } : {});
         } catch (error) { caught = error; }
         assert.equal(caught?.code, 'MATERIALIZATION_CONTRACT_VIOLATION');
         errors.push(caught);
       }
-      assert.equal(errors[1].message, errors[0].message);
-      assert.equal(errors[1].cause, errors[0].cause);
+      for (const observed of errors.slice(1)) {
+        assert.equal(observed.message, errors[0].message);
+        assert.equal(observed.cause, errors[0].cause);
+      }
       if (phase !== 'admission') assert.equal(errors[1].cause, rejection);
       if (mutate && phase !== 'admission') assert.match(errors[1].message, /must not mutate/);
     }
