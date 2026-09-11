@@ -60,7 +60,11 @@ function createCodexSearch(deps = {}) {
         );
       },
       contextMap: deps.codeModePresentationContextMap,
-      factsForEvent: deps.codeModePresentationFactsForEvent,
+      factsForEvent(session, eventId) {
+        const codeMode = deps.codeModePresentationFactsForEvent?.(session, eventId);
+        const backgroundTerminal = session?.presentationIndexes?.backgroundTerminalRequests?.get(eventId);
+        return backgroundTerminal ? { ...codeMode, backgroundTerminal: { ...backgroundTerminal } } : codeMode;
+      },
       projectRowFacts(session, event) {
         const fact = deps.codeModePresentationFactsForEvent?.(session, event.id)?.codeModeDeclaredRequests;
         const declaredRequestNames = [...(fact?.toolNames || [])].filter((request) => (

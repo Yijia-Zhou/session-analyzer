@@ -1,0 +1,11 @@
+{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"origin","arguments":"{\"cmd\":\"npm test\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"origin","output":"Wall time: 1.0000 seconds\nProcess running with session ID 123\nOutput:\n"}}
+{"type":"response_item","payload":{"type":"function_call","name":"write_stdin","call_id":"omitted","arguments":"{\"session_id\":123}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"omitted","output":"Wall time: 1.0000 seconds\nProcess running with session ID 123\nOutput:\n"}}
+{"type":"response_item","payload":{"type":"function_call","name":"write_stdin","call_id":"empty","arguments":"{\"session_id\":123,\"chars\":\"\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"empty","output":"Process exited with code 0\nOutput:\ndone"}}
+{"type":"response_item","payload":{"type":"function_call","name":"write_stdin","call_id":"input","arguments":"{\"session_id\":123,\"chars\":\"q \\n\\u0003\\u001b[31m中文\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"input","output":"write_stdin rejected: synthetic rejection"}}
+{"type":"response_item","payload":{"type":"function_call","name":"write_stdin","call_id":"pending","arguments":"{\"session_id\":123,\"chars\":\"\\n\"}"}}
+{"type":"response_item","payload":{"type":"function_call","name":"write_stdin","call_id":"invalid","arguments":"{\"session_id\":123,\"chars\":null}"}}
+{"type":"response_item","payload":{"type":"function_call","name":"write_stdin","call_id":"bad-id","arguments":"{\"session_id\":\"123\"}"}}

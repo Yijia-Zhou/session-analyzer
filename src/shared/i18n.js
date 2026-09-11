@@ -663,6 +663,12 @@
         Request: 'Request',
         Response: 'Response',
         'Request summary': 'Request summary',
+        'Background terminal poll request': 'Background terminal poll request',
+        'Background terminal input request': 'Background terminal input request',
+        'Process ID': 'Process ID',
+        'Request type': 'Request type',
+        'Requested input (JSON string)': 'Requested input (JSON string)',
+        Poll: 'Poll',
         'Response summary': 'Response summary',
         'Declared request': 'Declared request',
         'Run context': 'Run context',
@@ -1528,6 +1534,12 @@
         Request: '请求',
         Response: '响应',
         'Request summary': '请求摘要',
+        'Background terminal poll request': '后台终端轮询请求',
+        'Background terminal input request': '后台终端输入请求',
+        'Process ID': '进程 ID',
+        'Request type': '请求类型',
+        'Requested input (JSON string)': '请求输入（JSON 字符串）',
+        Poll: '轮询',
         'Response summary': '响应摘要',
         'Declared request': '声明请求',
         'Run context': '运行上下文',
@@ -1816,7 +1828,7 @@
       next.entries = next.entries.map((entry) => ({
         ...entry,
         key: sectionTitle(entry.key, locale),
-        value: ['Result association note', 'Comparison state'].includes(entry.key)
+        value: ['Result association note', 'Comparison state', 'Request type'].includes(entry.key)
           ? sectionTitle(entry.value, locale)
           : entry.value,
       }));

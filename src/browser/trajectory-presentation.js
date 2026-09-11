@@ -1,5 +1,7 @@
 'use strict';
 
+const { backgroundTerminalLabel } = require('../shared/background-terminal-presentation');
+
 const TRAJECTORY_LANES = Object.freeze({
   INPUT: 'input',
   MODEL: 'model',
@@ -116,14 +118,18 @@ function compactTrajectoryText(value, maxLength = 160) {
   return `${text.slice(0, Math.max(1, limit - 1)).trimEnd()}…`;
 }
 
-function trajectoryEventPreview(event) {
+function trajectoryEventPreview(event, locale) {
+  const terminalLabel = backgroundTerminalLabel(event?.presentationFacts?.backgroundTerminal, locale);
+  if (terminalLabel) return terminalLabel;
   const preview = event?.hasSearchHit && event?.snippet
     ? event.snippet
     : event?.preview || event?.snippet || event?.label || '';
   return compactTrajectoryText(preview);
 }
 
-function trajectoryEventType(event, fallback = 'Event') {
+function trajectoryEventType(event, fallback = 'Event', locale) {
+  const terminalLabel = backgroundTerminalLabel(event?.presentationFacts?.backgroundTerminal, locale);
+  if (terminalLabel) return terminalLabel;
   return compactTrajectoryText(event?.label || event?.kind || event?.subtype || fallback, 42);
 }
 
@@ -161,8 +167,8 @@ function projectTrajectoryEvents(events, options = {}) {
       index,
       lane: trajectoryLaneForEvent(event),
       turnId: reliableTrajectoryTurnId(event.turnId),
-      preview: trajectoryEventPreview(event),
-      type: trajectoryEventType(event, options.eventLabel || 'Event'),
+      preview: trajectoryEventPreview(event, options.locale),
+      type: trajectoryEventType(event, options.eventLabel || 'Event', options.locale),
       status: compactTrajectoryText(event.status || '', 28),
       displayState: projectedDisplayState(event, index, options),
     });
@@ -1036,6 +1042,7 @@ function renderTrajectoryOverview(documentRef, model, options) {
 function renderTrajectoryPresentation({
   root,
   events,
+  locale,
   selectedEventId = '',
   loadedEventCount,
   totalEventCount,
@@ -1053,6 +1060,7 @@ function renderTrajectoryPresentation({
   }
   const labels = { ...DEFAULT_LABELS, ...labelOverrides };
   const model = buildTrajectoryPresentation(events, {
+    locale,
     displayStateForEvent,
     eventLabel: labels.event,
   });

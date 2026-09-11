@@ -12,6 +12,7 @@ function createCodexDetailBuilder(deps) {
     codeModePresentationContract,
     agentCoordination,
     cacheObservationPresentation,
+    backgroundTerminalLabel = () => '',
   } = deps;
   const {
     codeModeAssociableOutputFragments,
@@ -929,7 +930,8 @@ function createCodexDetailBuilder(deps) {
       kind: sanitizeLogicalEnvelopeValue(logical.kind),
       subtype: sanitizeLogicalEnvelopeValue(logical.subtype),
       layer: sanitizeLogicalEnvelopeValue(logical.layer),
-      title: localizedLogicalLabel(logical, locale),
+      title: backgroundTerminalLabel(session.presentationIndexes?.backgroundTerminalRequests?.get(logical.id), locale)
+        || localizedLogicalLabel(logical, locale),
       sourceLocator: logical.sourceLocator,
       meta: logicalMeta(logical),
       rawRefs: logical.rawRefs,

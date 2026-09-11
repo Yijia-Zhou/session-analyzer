@@ -251,3 +251,8 @@
 - Status: tracked independently as CI hygiene; not a prerequisite for debt #23. / 状态：作为 CI 稳定性问题独立跟踪，不作为债务 #23 的前置条件。
 - Evidence: recurring stale context-slot `2 !== 1` reported in prior CI; no corresponding product failure established. The completed Wave 1D-A plan documents the MutationObserver settlement boundary. / 证据：此前 CI 反复报告 stale context-slot `2 !== 1`，尚无对应产品故障证据；已完成的 Wave 1D-A 计划记录了 MutationObserver settlement 边界。
 - Follow-up: on the next main/PR CI occurrence, retain the run URL, commit, assertion and trace; investigate observer delivery and operation-window ownership in a separate fix. / 后续：下次 main／PR CI 命中时保留 run URL、commit、断言与 trace，在独立修复中调查 observer delivery 与 operation-window ownership。
+
+### 25. Durable-only exec_command classification / 纯 durable exec_command 分类
+- Status: open; separate from write_stdin presentation. / 状态：开放，独立于 write_stdin 呈现。
+- Evidence: `buildToolLogicalEvent` recognizes `shell_command` or command lifecycle rows as `command`; `FunctionCall(name=exec_command)` plus output alone remains `other_tool_call`. The command-output parser also recognizes the older formatted envelope. / 证据：`buildToolLogicalEvent` 将 `shell_command` 或 command lifecycle rows 识别为 `command`；仅有 `FunctionCall(name=exec_command)` 及 output 时仍为 `other_tool_call`。command-output parser 也仅识别旧格式封装。
+- Impact: command kind distribution, metrics, filters, folding, detail and status extraction need an explicit compatibility decision and focused fixtures. Do not change these contracts as part of terminal request presentation. / 影响：command kind 分布、指标、筛选、折叠、详情和状态提取需要明确兼容决策及聚焦 fixture，不随 terminal 请求呈现一起修改。
