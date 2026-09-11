@@ -606,3 +606,18 @@ test('shared adapter boundary rejects envelope drift and malformed structured re
       && /must be a data property/.test(error.message),
   );
 });
+
+
+test('shared fingerprint diagnostics also observe strict Codex admission without changing results', async () => {
+  const index = await getSourceAdapter('codex').buildIndex({ repoRoot: CODEX_FIXTURE_REPO, sourceHome: CODEX_FIXTURE_HOME });
+  assert.ok(index.sessions.length > 0);
+  const baseline = await materializeSessionForIndex(index, index.sessions[0]);
+  const summaries = [];
+  const observed = await materializeSessionForIndex(index, index.sessions[0], {
+    onFingerprintProfile: (summary) => summaries.push(summary),
+  });
+  assert.deepEqual(observed, baseline);
+  assert.equal(summaries.length, 7);
+  assert.equal(summaries[0].role, 'private_capture/materialization_context');
+  assert.equal(summaries[6].role, 'projection_recheck/materialized_session');
+});

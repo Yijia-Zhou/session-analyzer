@@ -6,7 +6,14 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { createPhaseCollector, coldAttribution, TOP_LEVEL, DEEPSEEK, PRIVATE } = require('../scripts/deepseek-phase-accounting');
-const { writeFixture, eventTarget, worker } = require('../scripts/deepseek-readback-profile');
+const {
+  writeFixture,
+  eventTarget,
+  worker,
+  fingerprintProfileFrom,
+  fingerprintAttributionFrom,
+  FINGERPRINT_PROFILE_INVOCATIONS,
+} = require('../scripts/deepseek-readback-profile');
 const { parseSessionArtifact } = require('../src/deepseek-harness');
 
 test('phase collector keeps repeated nested names and duration metadata without double counting', () => {
@@ -62,6 +69,39 @@ test('cold accounting sums siblings and reports explicit residuals', () => {
   assert.throws(() => coldAttribution(createPhaseCollector(), 0, 1, 0, 1), /major phases/);
 });
 
+test('fingerprint profiling reports the seven ordered invocations and complete accounting after materialization', async () => {
+  const result = await worker(100, 'plain', 'tool-dense', { fingerprintProfile: true });
+  assert.equal(result.materializationCalls, 1);
+  assert.ok(result.fingerprintAttribution);
+  const { invocations, totals } = result.fingerprintAttribution;
+  assert.deepEqual(invocations.map((invocation) => invocation.role), FINGERPRINT_PROFILE_INVOCATIONS);
+  assert.equal(invocations.length, 7);
+  for (const invocation of invocations) {
+    assert.ok(invocation.elapsedMs >= 0);
+    assert.ok(invocation.yieldWaitMs >= 0);
+    assert.ok(invocation.activeComputeMs >= 0);
+    assert.ok(invocation.textPrefixBytes > 0);
+    assert.equal(
+      invocation.operationCount,
+      invocation.visitTaskCount + invocation.writeTaskCount + invocation.byteTaskCount,
+    );
+    assert.equal(invocation.hashInputBytes, invocation.textPrefixBytes + invocation.textValueUtf8Bytes + invocation.binaryHashBytes);
+    assert.equal(invocation.hashUpdateCallCount, 2 * invocation.writeTokenCount + invocation.byteTaskCount);
+  }
+  for (const metric of ['elapsedMs', 'yieldWaitMs', 'activeComputeMs', 'textPrefixBytes', 'operationCount']) {
+    assert.equal(totals[metric], invocations.reduce((sum, invocation) => sum + invocation[metric], 0));
+  }
+  const malformed = invocations.map((invocation) => ({ ...invocation }));
+  malformed[0].hashInputBytes += 1;
+  assert.throws(() => fingerprintAttributionFrom(malformed), /hash-input accounting/);
+});
+
+test('fingerprint profiling option accepts only on or off', () => {
+  assert.equal(fingerprintProfileFrom('on'), true);
+  assert.equal(fingerprintProfileFrom('off'), false);
+  assert.throws(() => fingerprintProfileFrom('enabled'), /fingerprint-profile must be on or off/);
+});
+
 for (const shape of ['tool-dense', 'message-dense']) {
   for (const compression of ['plain', 'zstd']) {
     test(`small real HTTP profile ${shape}/${compression} preserves cold ownership and attribution`, async () => {
@@ -74,6 +114,7 @@ for (const shape of ['tool-dense', 'message-dense']) {
       assert.equal(result.rawEventCount, 101);
       assert.equal(result.logicalEventCount, shape === 'tool-dense' ? 50 : 100);
       assert.deepEqual(Object.keys(result.coldAttribution.materializationTopLevelMs), TOP_LEVEL);
+      assert.equal(result.fingerprintAttribution, undefined);
     });
     test(`profile fixture ${shape}/${compression} has deterministic counts and first Detail target`, async (t) => {
       const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'deepseek-profile-test-'));

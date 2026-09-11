@@ -16,6 +16,108 @@ function option(name, fallback) {
   return process.argv.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
 }
 
+function fingerprintProfileFrom(value) {
+  if (value === 'on') return true;
+  if (value === 'off') return false;
+  throw new Error('fingerprint-profile must be on or off');
+}
+
+const FINGERPRINT_PROFILE_INVOCATIONS = Object.freeze([
+  'private_capture/materialization_context',
+  'private_capture/indexed_session',
+  'private_capture/materialized_session',
+  'private_recheck/materialization_context',
+  'private_recheck/indexed_session',
+  'private_recheck/materialized_session',
+  'projection_recheck/materialized_session',
+]);
+
+const FINGERPRINT_PROFILE_METRICS = ['elapsedMs', 'yieldWaitMs', 'activeComputeMs'];
+const FINGERPRINT_PROFILE_COUNTERS = [
+  'visitTaskCount', 'writeTaskCount', 'byteTaskCount', 'firstObjectVisitCount',
+  'repeatedReferenceCount', 'ownPropertyCount', 'mapEntryCount', 'setEntryCount',
+  'writeTokenCount', 'textValueUtf8Bytes', 'textPrefixBytes', 'binaryHashBytes',
+  'operationCount', 'chunkCount', 'yieldCount', 'hashInputBytes', 'hashUpdateCallCount',
+];
+const FINGERPRINT_PROFILE_FIELDS = [
+  'role', ...FINGERPRINT_PROFILE_METRICS, ...FINGERPRINT_PROFILE_COUNTERS,
+];
+
+function fingerprintAttributionFrom(summaries) {
+  assert.ok(Array.isArray(summaries), 'fingerprint profile must be an array');
+  assert.equal(
+    summaries.length,
+    FINGERPRINT_PROFILE_INVOCATIONS.length,
+    'fingerprint profile must contain exactly seven invocations',
+  );
+  const invocations = summaries.map((summary, index) => {
+    const expected = FINGERPRINT_PROFILE_INVOCATIONS[index];
+    assert.ok(summary && typeof summary === 'object', `fingerprint profile invocation ${index} is invalid`);
+    assert.equal(summary.role, expected, `unexpected fingerprint profile invocation ${index}`);
+    assert.deepEqual(
+      Object.keys(summary).sort(),
+      [...FINGERPRINT_PROFILE_FIELDS].sort(),
+      `fingerprint profile invocation ${index} has unexpected fields`,
+    );
+    const invocation = { ...summary };
+    for (const metric of FINGERPRINT_PROFILE_METRICS) {
+      assert.ok(
+        Number.isFinite(summary[metric]) && summary[metric] >= 0,
+        `fingerprint profile invocation ${index} has invalid ${metric}`,
+      );
+    }
+    for (const counter of FINGERPRINT_PROFILE_COUNTERS) {
+      assert.ok(
+        Number.isSafeInteger(summary[counter]) && summary[counter] >= 0,
+        `fingerprint profile invocation ${index} has invalid ${counter}`,
+      );
+    }
+    assert.ok(
+      Math.abs(invocation.elapsedMs - invocation.yieldWaitMs - invocation.activeComputeMs) <= 1e-7,
+      `fingerprint profile invocation ${index} has invalid wall-time accounting`,
+    );
+    assert.equal(
+      invocation.operationCount,
+      invocation.visitTaskCount + invocation.writeTaskCount + invocation.byteTaskCount,
+      `fingerprint profile invocation ${index} has invalid operation accounting`,
+    );
+    assert.equal(
+      invocation.chunkCount,
+      Math.floor(invocation.operationCount / 4_096) + 1,
+      `fingerprint profile invocation ${index} has invalid chunk accounting`,
+    );
+    assert.equal(
+      invocation.yieldCount,
+      invocation.chunkCount,
+      `fingerprint profile invocation ${index} has invalid yield accounting`,
+    );
+    assert.equal(
+      invocation.hashInputBytes,
+      invocation.textPrefixBytes + invocation.textValueUtf8Bytes + invocation.binaryHashBytes,
+      `fingerprint profile invocation ${index} has invalid hash-input accounting`,
+    );
+    assert.equal(
+      invocation.hashUpdateCallCount,
+      2 * invocation.writeTokenCount + invocation.byteTaskCount,
+      `fingerprint profile invocation ${index} has invalid hash-update accounting`,
+    );
+    assert.ok(
+      invocation.writeTokenCount >= invocation.writeTaskCount,
+      `fingerprint profile invocation ${index} has invalid write accounting`,
+    );
+    return invocation;
+  });
+  const totals = Object.fromEntries([...FINGERPRINT_PROFILE_METRICS, ...FINGERPRINT_PROFILE_COUNTERS].map((metric) => [
+    metric,
+    invocations.reduce((sum, invocation) => sum + invocation[metric], 0),
+  ]));
+  assert.ok(
+    Math.abs(totals.elapsedMs - totals.yieldWaitMs - totals.activeComputeMs) <= 1e-7,
+    'fingerprint profile totals have invalid wall-time accounting',
+  );
+  return { invocations, totals };
+}
+
 function sizesFrom(value) {
   const sizes = value.split(',').map(Number);
   if (!sizes.length || sizes.length > 4 || sizes.some((size) => !Number.isInteger(size) || size < 100 || size > 50_000 || size % 2)) {
@@ -102,14 +204,17 @@ async function writeFixture(root, dataRows, compression, shape = 'tool-dense') {
   return { repoRoot, sourceHome, file, plainBytes, artifactBytes, frameCount };
 }
 
-async function worker(dataRows, compression, shape = 'tool-dense') {
+async function worker(dataRows, compression, shape = 'tool-dense', options = { fingerprintProfile: false }) {
   if (compression === 'zstd' && typeof zstdCompressSync !== 'function') throw new Error('This profile needs built-in Zstd compression (Node 22.15+).');
   const { createServer } = require('../server');
   const { materializeSessionForIndex, buildEventDetailForSession } = require('../src/source-adapters');
+  const fingerprintProfile = options?.fingerprintProfile === true;
   const tempParent = path.resolve(os.tmpdir());
   const root = await fsp.mkdtemp(path.join(tempParent, 'session-analyzer-readback-profile-'));
   let server;
   const memory = [];
+  const fingerprintSummaries = fingerprintProfile ? [] : null;
+  let fingerprintAttribution;
   const checkpoint = (stage) => memory.push({ stage, ...process.memoryUsage(), maxRSSKiB: process.resourceUsage().maxRSS });
   let materializationCalls = 0;
   let collectingCold = false;
@@ -133,11 +238,16 @@ async function worker(dataRows, compression, shape = 'tool-dense') {
         if (!collectingCold) return materializeSessionForIndex(index, indexedSession, options);
         materializationStart = performance.now();
         let session;
+        const materializationOptions = { ...options, onMaterializationPhase: collector.onPhase };
+        if (fingerprintProfile) {
+          materializationOptions.onFingerprintProfile = (summary) => fingerprintSummaries.push(summary);
+        }
         try {
-          session = await materializeSessionForIndex(index, indexedSession, { ...options, onMaterializationPhase: collector.onPhase });
+          session = await materializeSessionForIndex(index, indexedSession, materializationOptions);
         } finally {
           materializationEnd = performance.now();
         }
+        if (fingerprintProfile) fingerprintAttribution = fingerprintAttributionFrom(fingerprintSummaries);
         rawEventCount = session.rawEvents.length;
         logicalEventCount = session.logicalEvents.length;
         return session;
@@ -221,7 +331,8 @@ async function worker(dataRows, compression, shape = 'tool-dense') {
     return {
       dataRows, physicalRows: dataRows + 1, logicalToolEvents: shape === 'tool-dense' ? dataRows / 2 : 0, compression,
       shape, physicalRecordCount: dataRows + 1, rawEventCount, logicalEventCount, uncompressedBytes: fixture.plainBytes,
-      coldAttribution: attribution, materializationCallsBeforeColdDetail: 0, materializationCallsAfterColdDetail: 1,
+      coldAttribution: attribution, ...(fingerprintProfile ? { fingerprintAttribution } : {}),
+      materializationCallsBeforeColdDetail: 0, materializationCallsAfterColdDetail: 1,
       plainBytes: fixture.plainBytes, artifactBytes: fixture.artifactBytes, frameCount: fixture.frameCount,
       indexMs: rounded(indexMs), coldDetailMs: rounded(coldDetailMs),
       distinctDetails: distribution(distinct), repeatedDetail: distribution(repeated), singleRawMs: rounded(singleRawMs),
@@ -241,11 +352,12 @@ async function main() {
   const sizes = sizesFrom(option('sizes', '10000,50000'));
   const compressions = compressionsFrom(option('compression', 'plain,zstd'));
   const shapes = shapesFrom(option('shape', 'tool-dense,message-dense'));
+  const fingerprintProfile = fingerprintProfileFrom(option('fingerprint-profile', 'off'));
   if (process.argv.includes('--worker')) {
     assert.equal(sizes.length, 1);
     assert.equal(compressions.length, 1);
     assert.equal(shapes.length, 1);
-    process.stdout.write(`${JSON.stringify(await worker(sizes[0], compressions[0], shapes[0]))}\n`);
+    process.stdout.write(`${JSON.stringify(await worker(sizes[0], compressions[0], shapes[0], { fingerprintProfile }))}\n`);
     return;
   }
   const repositorySha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path.join(__dirname, '..'), encoding: 'utf8', windowsHide: true }).trim();
@@ -258,7 +370,7 @@ async function main() {
     for (const shape of shapes) {
       for (const compression of compressions) {
         process.stderr.write(`Measuring ${size} rows / ${shape} / ${compression}\n`);
-        const output = execFileSync(process.execPath, [__filename, '--worker', `--sizes=${size}`, `--compression=${compression}`, `--shape=${shape}`], {
+        const output = execFileSync(process.execPath, [__filename, '--worker', `--sizes=${size}`, `--compression=${compression}`, `--shape=${shape}`, `--fingerprint-profile=${fingerprintProfile ? 'on' : 'off'}`], {
           encoding: 'utf8', timeout: 600_000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
         });
         results.push(JSON.parse(output));
@@ -275,6 +387,14 @@ async function main() {
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }
 
-module.exports = { writeFixture, eventTarget, worker, shapesFrom };
+module.exports = {
+  writeFixture,
+  eventTarget,
+  worker,
+  shapesFrom,
+  fingerprintProfileFrom,
+  fingerprintAttributionFrom,
+  FINGERPRINT_PROFILE_INVOCATIONS,
+};
 
 if (require.main === module) main().catch((error) => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });

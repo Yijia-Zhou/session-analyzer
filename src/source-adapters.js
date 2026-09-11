@@ -1,6 +1,7 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
+const { performance } = require('node:perf_hooks');
 const os = require('node:os');
 const path = require('node:path');
 const codex = require('./codex');
@@ -195,6 +196,15 @@ async function graphFingerprintAsync(value, identityState = {
   nextSymbolId: 0,
 }, options = {}) {
   const { signal, onChunk, phase = 'materialized_fingerprint' } = options;
+  // Internal diagnostics emit one content-free summary per completed invocation.
+  const profile = typeof options.onFingerprintProfile === 'function' ? {
+    role: options.profileRole,
+    yieldWaitMs: 0, visitTaskCount: 0, writeTaskCount: 0, byteTaskCount: 0,
+    firstObjectVisitCount: 0, repeatedReferenceCount: 0, ownPropertyCount: 0,
+    mapEntryCount: 0, setEntryCount: 0, writeTokenCount: 0,
+    textValueUtf8Bytes: 0, textPrefixBytes: 0, binaryHashBytes: 0,
+  } : null;
+  const started = profile ? performance.now() : 0;
   const hash = createHash('sha256');
   const seen = new WeakSet();
   const objectId = (current) => {
@@ -213,7 +223,14 @@ async function graphFingerprintAsync(value, identityState = {
   };
   const write = (text) => {
     const valueText = String(text);
-    hash.update(`${Buffer.byteLength(valueText, 'utf8')}:`);
+    const valueBytes = Buffer.byteLength(valueText, 'utf8');
+    const prefix = `${valueBytes}:`;
+    if (profile) {
+      profile.writeTokenCount += 1;
+      profile.textValueUtf8Bytes += valueBytes;
+      profile.textPrefixBytes += prefix.length;
+    }
+    hash.update(prefix);
     hash.update(valueText, 'utf8');
   };
   const appendWriteKey = (sequence, key) => {
@@ -237,14 +254,20 @@ async function graphFingerprintAsync(value, identityState = {
   while (stack.length > 0) {
     const task = stack.pop();
     if (task.type === 'write') {
+      if (profile) profile.writeTaskCount += 1;
       write(task.value);
     } else if (task.type === 'bytes') {
       const end = Math.min(task.buffer.length, task.offset + 256 * 1024);
+      if (profile) {
+        profile.byteTaskCount += 1;
+        profile.binaryHashBytes += end - task.offset;
+      }
       hash.update(task.buffer.subarray(task.offset, end));
       if (end < task.buffer.length) {
         stack.push({ ...task, offset: end });
       }
     } else {
+      if (profile) profile.visitTaskCount += 1;
       const current = task.value;
       if (current === null) {
         write('null');
@@ -265,10 +288,12 @@ async function graphFingerprintAsync(value, identityState = {
           if (type === 'function') write(Function.prototype.toString.call(current));
           const referenceId = objectId(current);
           if (seen.has(current)) {
+            if (profile) profile.repeatedReferenceCount += 1;
             write('reference');
             write(referenceId);
           } else {
             seen.add(current);
+            if (profile) profile.firstObjectVisitCount += 1;
             write('object');
             write(referenceId);
             const prototype = Object.getPrototypeOf(current);
@@ -290,13 +315,17 @@ async function graphFingerprintAsync(value, identityState = {
               sequence.push({ type: 'write', value: 'map' });
               sequence.push({ type: 'write', value: current.size });
               for (const [key, nested] of current) {
+                if (profile) profile.mapEntryCount += 1;
                 sequence.push({ type: 'visit', value: key });
                 sequence.push({ type: 'visit', value: nested });
               }
             } else if (current instanceof Set) {
               sequence.push({ type: 'write', value: 'set' });
               sequence.push({ type: 'write', value: current.size });
-              for (const nested of current) sequence.push({ type: 'visit', value: nested });
+              for (const nested of current) {
+                if (profile) profile.setEntryCount += 1;
+                sequence.push({ type: 'visit', value: nested });
+              }
             } else if (ArrayBuffer.isView(current)) {
               sequence.push({ type: 'write', value: 'array-buffer-view' });
               sequence.push({
@@ -309,6 +338,7 @@ async function graphFingerprintAsync(value, identityState = {
               sequence.push({ type: 'bytes', buffer: Buffer.from(current), offset: 0 });
             }
             const keys = Reflect.ownKeys(current);
+            if (profile) profile.ownPropertyCount += keys.length;
             sequence.push({ type: 'write', value: keys.length });
             for (const key of keys) {
               appendWriteKey(sequence, key);
@@ -336,14 +366,32 @@ async function graphFingerprintAsync(value, identityState = {
       onChunk?.({ phase, chunkIndex, operations });
       chunkIndex += 1;
       operations = 0;
+      const yieldStarted = profile ? performance.now() : 0;
       await new Promise((resolve) => setImmediate(resolve));
+      if (profile) profile.yieldWaitMs += performance.now() - yieldStarted;
       throwIfAborted(signal);
     }
   }
   onChunk?.({ phase, chunkIndex, operations });
+  const yieldStarted = profile ? performance.now() : 0;
   await new Promise((resolve) => setImmediate(resolve));
+  if (profile) profile.yieldWaitMs += performance.now() - yieldStarted;
   throwIfAborted(signal);
-  return hash.digest('hex');
+  const digest = hash.digest('hex');
+  if (profile) {
+    profile.elapsedMs = performance.now() - started;
+    profile.activeComputeMs = profile.elapsedMs - profile.yieldWaitMs;
+    profile.operationCount = chunkIndex * 4_096 + operations;
+    // Notifications include the final remainder, even when it is zero.
+    profile.chunkCount = chunkIndex + 1;
+    profile.yieldCount = chunkIndex + 1;
+    profile.hashInputBytes = profile.textPrefixBytes + profile.textValueUtf8Bytes + profile.binaryHashBytes;
+    profile.hashUpdateCallCount = 2 * profile.writeTokenCount + profile.byteTaskCount;
+    try { options.onFingerprintProfile(profile); } catch {
+      // Diagnostics must not affect mutation checks, admission or error precedence.
+    }
+  }
+  return digest;
 }
 
 async function captureGraphFingerprintAsync(value, options = {}) {
@@ -450,6 +498,7 @@ async function invokeReadOnlyMaterializationValidatorAsync({
   signal,
   onChunk,
   onPhase,
+  onFingerprintProfile,
   reusableGuardedValueIndex,
 }) {
   const notifyPhase = (phase, state) => {
@@ -462,11 +511,13 @@ async function invokeReadOnlyMaterializationValidatorAsync({
   const fingerprints = [];
   notifyPhase('materialized_private_fingerprint_capture', 'start');
   try {
-    for (const value of guardedValues) {
+    for (const [index, value] of guardedValues.entries()) {
       fingerprints.push(await captureGraphFingerprintAsync(value, {
         signal,
         onChunk,
         phase: 'materialized_private_validator_capture',
+        onFingerprintProfile,
+        profileRole: ['private_capture/materialization_context', 'private_capture/indexed_session', 'private_capture/materialized_session'][index],
       }));
     }
   } catch (error) {
@@ -509,6 +560,8 @@ async function invokeReadOnlyMaterializationValidatorAsync({
         signal,
         onChunk,
         phase: 'materialized_private_validator_recheck',
+        onFingerprintProfile,
+        profileRole: ['private_recheck/materialization_context', 'private_recheck/indexed_session', 'private_recheck/materialized_session'][index],
       })) {
         inputsUnchanged = false;
         break;
@@ -1158,6 +1211,7 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
         signal: options.signal,
         onChunk: options.onProjectionChunk,
         onPhase: options.onMaterializationPhase || options.onProjectionPhase,
+        onFingerprintProfile: options.onFingerprintProfile,
         reusableGuardedValueIndex: 2,
       });
     } finally {
@@ -1200,6 +1254,8 @@ async function materializeSessionWithAdapter(index, indexedSession, adapter, opt
           signal: options.signal,
           onChunk: options.onProjectionChunk,
           phase: 'materialized_fingerprint_recheck',
+          onFingerprintProfile: options.onFingerprintProfile,
+          profileRole: 'projection_recheck/materialized_session',
         },
       );
     } catch (fingerprintError) {
