@@ -1883,7 +1883,7 @@ const FINGERPRINT_COUNTERS = [
   'yieldCount', 'chunkCount', 'operationCount', 'visitTaskCount', 'writeTaskCount',
   'byteTaskCount', 'firstObjectVisitCount', 'repeatedReferenceCount', 'ownPropertyCount',
   'mapEntryCount', 'setEntryCount', 'writeTokenCount', 'textValueUtf8Bytes',
-  'textPrefixBytes', 'binaryHashBytes', 'hashInputBytes', 'hashUpdateCallCount',
+  'textPrefixBytes', 'binaryHashBytes', 'hashInputBytes', 'hashUpdateCallCount', 'textHashUpdateCallCount',
 ];
 
 test('fingerprint profiles preserve strict success and expose stable content-free accounting', async () => {
@@ -1918,7 +1918,7 @@ test('fingerprint profiles preserve strict success and expose stable content-fre
       assert.equal(summary.yieldCount, Math.floor(summary.operationCount / 4096) + 1);
       assert.equal(summary.chunkCount, summary.yieldCount);
       assert.equal(summary.hashInputBytes, summary.textPrefixBytes + summary.textValueUtf8Bytes + summary.binaryHashBytes);
-      assert.equal(summary.hashUpdateCallCount, 2 * summary.writeTokenCount + summary.byteTaskCount);
+      assert.equal(summary.hashUpdateCallCount, summary.textHashUpdateCallCount + summary.byteTaskCount);
       assert.ok(summary.writeTokenCount >= summary.writeTaskCount);
     }
     for (const [prefix, phase] of [

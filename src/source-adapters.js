@@ -203,6 +203,7 @@ async function graphFingerprintAsync(value, identityState = {
     firstObjectVisitCount: 0, repeatedReferenceCount: 0, ownPropertyCount: 0,
     mapEntryCount: 0, setEntryCount: 0, writeTokenCount: 0,
     textValueUtf8Bytes: 0, textPrefixBytes: 0, binaryHashBytes: 0,
+    textHashUpdateCallCount: 0,
   } : null;
   const started = profile ? performance.now() : 0;
   const hash = createHash('sha256');
@@ -221,6 +222,16 @@ async function graphFingerprintAsync(value, identityState = {
     }
     return identityState.symbolIds.get(current);
   };
+  const textBatchLimit = 64 * 1024;
+  let pendingText = '';
+  let pendingTextBytes = 0;
+  const flushText = () => {
+    if (pendingTextBytes === 0) return;
+    hash.update(pendingText, 'utf8');
+    if (profile) profile.textHashUpdateCallCount += 1;
+    pendingText = '';
+    pendingTextBytes = 0;
+  };
   const write = (text) => {
     const valueText = String(text);
     const valueBytes = Buffer.byteLength(valueText, 'utf8');
@@ -230,8 +241,19 @@ async function graphFingerprintAsync(value, identityState = {
       profile.textValueUtf8Bytes += valueBytes;
       profile.textPrefixBytes += prefix.length;
     }
-    hash.update(prefix);
-    hash.update(valueText, 'utf8');
+    const tokenBytes = prefix.length + valueBytes;
+    if (tokenBytes > textBatchLimit) {
+      flushText();
+      hash.update(prefix);
+      hash.update(valueText, 'utf8');
+      if (profile) profile.textHashUpdateCallCount += 2;
+      return;
+    }
+    if (pendingTextBytes + tokenBytes > textBatchLimit) flushText();
+    // Keep complete values separated by ASCII length prefixes: even lone
+    // surrogates cannot form a new pair across textual token boundaries.
+    pendingText += prefix + valueText;
+    pendingTextBytes += tokenBytes;
   };
   const appendWriteKey = (sequence, key) => {
     if (typeof key === 'symbol') {
@@ -262,6 +284,7 @@ async function graphFingerprintAsync(value, identityState = {
         profile.byteTaskCount += 1;
         profile.binaryHashBytes += end - task.offset;
       }
+      flushText();
       hash.update(task.buffer.subarray(task.offset, end));
       if (end < task.buffer.length) {
         stack.push({ ...task, offset: end });
@@ -362,6 +385,7 @@ async function graphFingerprintAsync(value, identityState = {
     }
     operations += 1;
     if (operations >= 4_096) {
+      flushText();
       throwIfAborted(signal);
       onChunk?.({ phase, chunkIndex, operations });
       chunkIndex += 1;
@@ -372,6 +396,7 @@ async function graphFingerprintAsync(value, identityState = {
       throwIfAborted(signal);
     }
   }
+  flushText();
   onChunk?.({ phase, chunkIndex, operations });
   const yieldStarted = profile ? performance.now() : 0;
   await new Promise((resolve) => setImmediate(resolve));
@@ -386,7 +411,7 @@ async function graphFingerprintAsync(value, identityState = {
     profile.chunkCount = chunkIndex + 1;
     profile.yieldCount = chunkIndex + 1;
     profile.hashInputBytes = profile.textPrefixBytes + profile.textValueUtf8Bytes + profile.binaryHashBytes;
-    profile.hashUpdateCallCount = 2 * profile.writeTokenCount + profile.byteTaskCount;
+    profile.hashUpdateCallCount = profile.textHashUpdateCallCount + profile.byteTaskCount;
     try {
       const result = options.onFingerprintProfile(profile);
       if (result instanceof Promise) result.catch(() => {});
