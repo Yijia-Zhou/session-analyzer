@@ -86,7 +86,7 @@ test('fingerprint profiling reports the seven ordered invocations and complete a
       invocation.visitTaskCount + invocation.writeTaskCount + invocation.byteTaskCount,
     );
     assert.equal(invocation.hashInputBytes, invocation.textPrefixBytes + invocation.textValueUtf8Bytes + invocation.binaryHashBytes);
-    assert.equal(invocation.hashUpdateCallCount, 2 * invocation.writeTokenCount + invocation.byteTaskCount);
+    assert.equal(invocation.hashUpdateCallCount, invocation.textHashUpdateCallCount + invocation.byteTaskCount);
   }
   for (const metric of ['elapsedMs', 'yieldWaitMs', 'activeComputeMs', 'textPrefixBytes', 'operationCount']) {
     assert.equal(totals[metric], invocations.reduce((sum, invocation) => sum + invocation[metric], 0));

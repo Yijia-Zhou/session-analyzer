@@ -37,7 +37,7 @@ const FINGERPRINT_PROFILE_COUNTERS = [
   'visitTaskCount', 'writeTaskCount', 'byteTaskCount', 'firstObjectVisitCount',
   'repeatedReferenceCount', 'ownPropertyCount', 'mapEntryCount', 'setEntryCount',
   'writeTokenCount', 'textValueUtf8Bytes', 'textPrefixBytes', 'binaryHashBytes',
-  'operationCount', 'chunkCount', 'yieldCount', 'hashInputBytes', 'hashUpdateCallCount',
+  'operationCount', 'chunkCount', 'yieldCount', 'hashInputBytes', 'hashUpdateCallCount', 'textHashUpdateCallCount',
 ];
 const FINGERPRINT_PROFILE_FIELDS = [
   'role', ...FINGERPRINT_PROFILE_METRICS, ...FINGERPRINT_PROFILE_COUNTERS,
@@ -98,7 +98,7 @@ function fingerprintAttributionFrom(summaries) {
     );
     assert.equal(
       invocation.hashUpdateCallCount,
-      2 * invocation.writeTokenCount + invocation.byteTaskCount,
+      invocation.textHashUpdateCallCount + invocation.byteTaskCount,
       `fingerprint profile invocation ${index} has invalid hash-update accounting`,
     );
     assert.ok(

@@ -443,3 +443,78 @@ Post-capture review identified returned rejected Promises as an additional obser
 A narrow bilingual lifecycle-design note documents the reusable internal summary seam; lifecycle/product behavior and public documentation do not change. No browser-facing code changed, so no local browser suite or running checkout-server restart was needed for this isolated diagnostic worktree. / 以一段双语生命周期设计说明记录可复用的内部摘要接口；生命周期／产品行为及公开文档不变。没有浏览器代码改动，因此此独立诊断 worktree 无需本地浏览器套件或重启用户运行中的 checkout server。
 
 Local evidence includes `smoke.json`, `overhead-{10k,50k}-{1,2,3}-{off,on}.json`, `formal-plain.json`, `formal-zstd.json`, `repeat-{1,2}.json`, `cpu-{tool,message}-dense.json`, CPU summaries, `.cpuprofile` files and validation logs under ignored `tmp/fingerprint-attribution/`. Temporary analysis scripts are local only. No raw CPU profile, giant JSON or generated transcript is committed; the durable evidence is these aggregate tables, definitions and method. / 本地证据包含上述 smoke、开销、正式／复测、CPU worker JSON、CPU 摘要、原始 CPU profile 及验证日志，均位于 ignored 临时目录。分析脚本也仅保留本地。不提交原始 CPU profile、大型 JSON 或生成 transcript；持久证据为这些聚合表、定义及方法。
+
+## Equivalent textual hash batching experiment / 等价文本 hash 批量写入实验
+
+This experiment implements the single optimization selected by the attribution above. Baseline is clean `main@9c3ad1eba4b2fc5384e6450c372886006af57397`; candidate is clean `0c64434241565e492ccd3d14639b343e90b8997c` on `perf/fingerprint-hash-batching`. Historical PR #54/#55 measurements and the `73a6191` anchor remain unchanged; the before/after results here come from fresh paired runs, not comparison against a historical timing. / 本实验实现上方归因选定的单一优化。Baseline 为上述 clean main，candidate 为上述 clean 新分支提交。历史 PR #54／#55 数据及 `73a6191` 锚点保持不变；这里的前后结果来自新跑的配对观测，不与历史时延直接比较。
+
+### Implementation and equivalence / 实现与等价性
+
+Only textual SHA-256 submission changes: complete `UTF8-byte-length:value` tokens accumulate up to 64 KiB UTF-8 input. ASCII length prefixes separate complete values, so lone UTF-16 surrogates cannot form new pairs across tokens; the encoded byte stream is unchanged. A token larger than the limit flushes pending text and uses its original two direct updates. Pending text is also flushed before every binary byte task and existing 4,096-task/final chunk boundary. No text value is split, no binary chunk changes, and no task, yield, abort checkpoint, invocation or mutation-detection window is added or removed. / 仅改变文本 SHA-256 提交：完整 `UTF8-byte-length:value` token 累积至最多 64 KiB UTF-8 输入。ASCII 长度 prefix 隔开完整 value，孤立 UTF-16 surrogate 不会跨 token 形成新 pair，因此编码字节流不变。超过容量的单个 token 先 flush 待提交文本，再沿用原有两次直接 update；每个二进制 byte task 及既有 4,096-task／末尾 chunk 边界前亦 flush。不切分文本 value、不改二进制块、不增减 task、yield、abort 检查点、调用或 mutation 检测窗口。
+
+`writeTokenCount` and all graph/task/input-byte counters retain their definitions. The new internal `textHashUpdateCallCount` records actual physical text submissions; `hashUpdateCallCount = textHashUpdateCallCount + byteTaskCount`. Earlier reports' `2 * writeTokenCount + byteTaskCount` was correct for their unbatched implementation and is not retroactively rewritten. There is no production toggle or public API/CLI change. / `writeTokenCount` 及所有图／task／输入字节计数的定义不变。新增内部 `textHashUpdateCallCount` 记录真实物理文本提交，总 update 数按文本提交加 byte task 计算。历史报告的每 token 两次公式在其未批量实现上正确，不追溯修改。不增加生产开关或公开 API／CLI 变更。
+
+### Method / 方法
+
+The same Windows 11 / Node v24.18.1 / npm 12.0.2 / Ryzen 5 5600U / 12-logical-CPU / 14,864,674,816-byte host ran cases sequentially, without concurrent tests. Main and candidate each ran the existing real-HTTP profiler from their own checkout. Primary latency runs disabled detailed fingerprint counters while retaining the existing phase collector. 10k plain covers both shapes once per arm; 50k plain covers both shapes three times per arm, in baseline→candidate, candidate→baseline, baseline→candidate round order. A 50k message Zstd sanity run and a separate detailed-counter 50k plain run for both shapes were added per arm: 22 worker cases total. / 在相同 Windows 11／Node／npm／CPU／内存环境顺序运行，不并发测试。Main 与 candidate 分别从各自 checkout 运行既有真实 HTTP profiler。主要时延观测关闭详细 fingerprint 计数，保留既有阶段 collector。两种 10k plain 形状每侧各一次；两种 50k plain 形状每侧各三次，轮次顺序为 baseline→candidate、candidate→baseline、baseline→candidate。每侧另跑 50k 消息 Zstd sanity，以及两形状 50k plain 详细计数观测，共 22 个 worker 场景。
+
+From each checkout, use these commands; run the 50k plain command in the round order above: / 在各 checkout 执行以下命令；50k plain 按上述顺序重复：
+
+```powershell
+node scripts/deepseek-readback-profile.js --sizes=10000 --shape=tool-dense,message-dense --compression=plain --fingerprint-profile=off
+node scripts/deepseek-readback-profile.js --sizes=50000 --shape=tool-dense,message-dense --compression=plain --fingerprint-profile=off
+node scripts/deepseek-readback-profile.js --sizes=50000 --shape=message-dense --compression=zstd --fingerprint-profile=off
+node scripts/deepseek-readback-profile.js --sizes=50000 --shape=tool-dense,message-dense --compression=plain --fingerprint-profile=on
+```
+
+Every worker preserves cold materialization count 0→1, deterministic nonempty first Detail and exact requested ID, expected Raw/Logical counts, warm-read reuse and unchanged source dev/ino/size/mtime/ctime. No pre-materialization, alternate admission, OS-cache reset, forced GC or heap-limit tuning is used. This experiment measures latency and update counts directly; it does not repeat the earlier CPU-attribution investigation. / 每个 worker 保留冷态物化 0→1、确定且非空的首次 Detail 和精确请求 ID、预期 Raw／Logical 数、热读复用及来源 dev／ino／size／mtime／ctime 不变。不预物化、不改准入、不重置 OS cache、不强制 GC 或调整 heap 上限。本实验直接测量时延与 update 数，不重复此前 CPU 归因调查。
+
+
+### Latency results / 时延结果
+
+Times are ms; 50k plain cells are medians of three observations, other cells are single observations. Fingerprint time sums the same three nonoverlapping parent spans in both implementations. / 单位为毫秒；50k plain 为三次观测中位数，其余为单次。Fingerprint 时长在两实现中均为同样三个不重叠父阶段之和。
+
+| Case / 场景 | Baseline cold Detail | Candidate cold Detail | Cold reduction / 冷读降幅 | Baseline fingerprint | Candidate fingerprint | Fingerprint reduction / 降幅 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 10k / tool-dense | 4,823.49 | 2,460.89 | 48.98% | 4,472.35 | 2,116.99 | 52.66% |
+| 10k / message-dense | 6,109.78 | 3,218.75 | 47.32% | 5,727.11 | 2,853.48 | 50.18% |
+| 50k-plain / tool-dense | 23,676.73 | 12,420.75 | 47.54% | 22,082.30 | 10,809.14 | 51.05% |
+| 50k-plain / message-dense | 29,810.05 | 17,180.49 | 42.37% | 28,135.26 | 15,520.03 | 44.84% |
+| 50k-zstd / message-dense | 30,375.04 | 16,292.86 | 46.36% | 28,619.48 | 14,534.64 | 49.21% |
+
+| 50k plain shape / 形状 | Baseline cold [min, max] ms | Candidate cold [min, max] ms | Baseline materialization median ms | Candidate materialization median ms |
+| --- | --- | --- | --- | --- |
+| tool-dense | [23,470.78, 24,288.69] | [12,316.55, 12,720.57] | 23,516.36 | 12,244.14 |
+| message-dense | [29,446.54, 29,848.67] | [16,469.57, 17,208.83] | 29,676.58 | 17,036.27 |
+
+All six paired 50k plain observations show lower candidate latency; the large Zstd case supports the same direction. The gain is substantial but not full first-read acceptance: 50k still takes roughly 12–17 seconds. This synthetic result is not generalized to all real Sessions or other sources. / 六组配对的 50k plain 观测均显示候选时延更低，大 Zstd 场景方向相同。收益明显，但不意味着首次阅读体验已全面验收：50k 仍约需 12–17 秒。不将合成结果推广到全部真实会话或其他来源。
+
+### Workload and update accounting / 工作量与 update 核算
+
+Across all seven invocation roles in both 50k plain counter captures, every common role/task/object/reference/property/Map/Set/token/input-byte/chunk/yield field matches baseline exactly, excluding only the intentionally changed physical update count. Each of the three full Materialized Session passes has the following identical per-shape workload: / 两种 50k plain 计数采集中，七个调用角色的全部共有 role／task／对象／引用／属性／Map／Set／token／输入字节／chunk／yield 字段均与基线精确相等，仅排除有意改变的物理 update 数。三个完整 Materialized Session pass 中每一次均具有下列相同形状工作量：
+
+| Shape / 形状 | Objects / 对象 | Descriptors | Tasks | Tokens | Hash input bytes | Yields | Baseline updates | Candidate updates |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| tool-dense | 500,029 | 3,325,145 | 23,776,051 | 28,601,278 | 293,577,892 | 5,805 | 57,202,556 | 5,805 |
+| message-dense | 700,028 | 4,150,142 | 29,751,029 | 36,051,250 | 341,259,441 | 7,264 | 72,102,500 | 7,264 |
+
+Physical updates fall by about 99.99% while input bytes and all three full passes remain. In these text-only fixtures, the batch limit is not exceeded between most existing task-yield boundaries, and each completed task chunk supplies one physical text update. Binary interleaving and oversized text are separately covered by exact-stream tests; the physical count is not assumed to equal yields for arbitrary graphs. / 输入字节及三个完整 pass 保留，物理 update 减少约 99.99%。这些纯文本 fixture 的既有 task-yield 边界间批次未超容量，每个已完成 task chunk 提交一次物理文本 update。二进制交错与超大文本由精确流测试单独覆盖；不假定任意图的物理 update 数都等于 yield 数。
+
+### Memory observations and limits / 内存观测与限制
+
+The table is median [min, max] MiB over the three 50k plain workers. Cold RSS is sampled immediately after first Detail; maxRSS covers fixture generation, indexing, materialization and all warm-read tails, not just hashing. No forced GC is used. / 下表为三次 50k plain worker 的中位 [最小, 最大] MiB。Cold RSS 在首次 Detail 后采样；maxRSS 包含 fixture 生成、索引、物化及全部热读尾部，并非仅 hashing；未强制 GC。
+
+| Shape / 形状 | Baseline cold RSS | Candidate cold RSS | Baseline lifetime maxRSS | Candidate lifetime maxRSS |
+| --- | --- | --- | --- | --- |
+| tool-dense | 737.04 [710.20, 943.44] | 734.00 [610.11, 1,062.29] | 1,129.24 [1,109.26, 1,217.51] | 1,123.74 [1,025.66, 1,470.87] |
+| message-dense | 927.65 [786.67, 1,141.58] | 857.38 [806.16, 1,238.20] | 1,147.75 [1,147.12, 1,377.45] | 1,023.26 [992.43, 1,502.87] |
+
+The data does not establish a memory improvement or a strict no-regression guarantee: candidate RSS medians are similar/lower, but individual candidate maxima reach ~1,471 / 1,503 MiB and exceed observed baseline maxima. Cold heapUsed also varies widely (tools: baseline 169–256 versus candidate 214–405 MiB; messages: baseline 345–744 versus candidate 331–513 MiB). GC timing, string/rope allocations and warm-read allocation lifetimes remain relevant. The 64-KiB limit bounds pending UTF-8 input, not total heap; this experiment changes no cache budget, retention/admission policy or heap setting. / 数据不能证明内存改善或严格无回退：候选 RSS 中位数相近／更低，但个别候选峰值达约 1,471／1,503 MiB，高于所观测基线峰值。Cold heapUsed 亦大幅波动（工具基线 169–256、候选 214–405 MiB；消息基线 345–744、候选 331–513 MiB）。GC 时机、字符串／rope 分配及热读分配存活期仍有影响。64 KiB 上限约束待提交 UTF-8 输入而非全部 heap；不修改缓存预算、保留／准入策略或 heap 设置。
+
+### Validation and decision / 验证与决策
+
+Keep this focused candidate for review: the exact-stream tests and unchanged workload counts support semantic equivalence, while controlled latency observations demonstrate the selected batching benefit in both shapes and Zstd. No further optimization is combined with it. Debt #22 remains open for large-Session first-read acceptance; no claim of responsive 50k first reading is made. / 保留此聚焦候选供评审：精确字节流测试及不变工作量支持语义等价，受控时延观测证明两种形状及 Zstd 中的 batching 收益。不混入其他优化。#22 保持开放以继续验收大会话首次阅读；不声称 50k 首次阅读已达到响应体验目标。
+
+Validation before formal measurement: 181 focused shared-path tests; six exact-byte-stream tests including 65,535/65,536/65,537-byte tokens, oversized ASCII/Unicode, lone surrogates, empty text, binary chunks and exact 4,096-task plus final-zero chunk; independent read-only review with no concrete findings; `npm run build:check`; full `npm test` **1,110/1,110**; `git diff --check`; clean two-shape 100-record HTTP smoke at candidate SHA (66.57 / 82.48 ms). All 22 formal workers passed cold 0→1, Raw/Logical counts, intended nonempty reading, warm reuse and unchanged source identity. No browser code changed and no local browser suite was required. / 正式测量之前通过 181 项共享路径聚焦测试、六项精确流测试（含上述字节阈值、超大 ASCII／Unicode、孤立 surrogate、空文本、二进制块、恰好 4,096 task 及末尾零余量 chunk）、无具体问题的独立只读复查、构建检查、完整 **1,110／1,110** Node 测试、diff 检查及 candidate clean-tree 两形状 100-record HTTP smoke（66.57／82.48 ms）。全部 22 个正式 worker 通过冷态 0→1、Raw／Logical 数、正确且非空阅读、热读复用及来源身份未变。不改浏览器代码，无需本地浏览器套件。
+
+New raw aggregate JSON and the local sequential runner are retained under main-checkout ignored `tmp/hash-batching-comparison/`; per-arm filenames include `10k`, `50k-{1,2,3}`, `50k-zstd`, and `50k-counters`. The earlier `tmp/cold-attribution/` and `tmp/fingerprint-attribution/` evidence was preserved with SHA-256 verification during old-worktree cleanup. Generated fixtures are still removed by each worker. Only this compact evidence is committed, not raw aggregates or temporary runners. / 新原始聚合 JSON 与本地顺序 runner 保留在主 checkout 的 ignored 目录，按侧保存上述文件；旧两组证据在清理 worktree 时以 SHA-256 核验后保留。生成 fixture 仍由各 worker 清理；仅提交紧凑证据，不提交原始聚合数据或临时 runner。
