@@ -1871,3 +1871,135 @@ test('canonical cache-link indexes reject missing, extra, custom, and non-invers
     );
   }
 });
+
+
+const FINGERPRINT_ROLES = [
+  'private_capture/materialization_context', 'private_capture/indexed_session',
+  'private_capture/materialized_session', 'private_recheck/materialization_context',
+  'private_recheck/indexed_session', 'private_recheck/materialized_session',
+  'projection_recheck/materialized_session',
+];
+const FINGERPRINT_COUNTERS = [
+  'yieldCount', 'chunkCount', 'operationCount', 'visitTaskCount', 'writeTaskCount',
+  'byteTaskCount', 'firstObjectVisitCount', 'repeatedReferenceCount', 'ownPropertyCount',
+  'mapEntryCount', 'setEntryCount', 'writeTokenCount', 'textValueUtf8Bytes',
+  'textPrefixBytes', 'binaryHashBytes', 'hashInputBytes', 'hashUpdateCallCount',
+];
+
+test('fingerprint profiles preserve strict success and expose stable content-free accounting', async () => {
+  const { index, indexedSession, materializedSession } = makeStrictMaterializationBoundaryFixture();
+  const adapter = makeLifecycleAdapter({
+    kind: indexedSession.sourceKind,
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    materializeSession: async () => structuredClone(materializedSession),
+  });
+  const baseline = await materializeSessionWithAdapter(index, indexedSession, adapter);
+  const runs = [];
+  for (let run = 0; run < 2; run += 1) {
+    const summaries = [];
+    const chunks = [];
+    const result = await materializeSessionWithAdapter(index, indexedSession, adapter, {
+      onFingerprintProfile: (summary) => summaries.push(summary),
+      onProjectionChunk: (chunk) => chunks.push(chunk),
+    });
+    assert.deepEqual(result, baseline);
+    assert.deepEqual(summaries.map((summary) => summary.role), FINGERPRINT_ROLES);
+    for (const summary of summaries) {
+      assert.deepEqual(Object.keys(summary).sort(), [
+        'role', 'elapsedMs', 'yieldWaitMs', 'activeComputeMs', ...FINGERPRINT_COUNTERS,
+      ].sort());
+      for (const [key, value] of Object.entries(summary)) {
+        if (key === 'role') continue;
+        assert.ok(Number.isFinite(value) && value >= 0, key);
+        if (FINGERPRINT_COUNTERS.includes(key)) assert.ok(Number.isSafeInteger(value), key);
+      }
+      assert.equal(summary.activeComputeMs, summary.elapsedMs - summary.yieldWaitMs);
+      assert.equal(summary.operationCount, summary.visitTaskCount + summary.writeTaskCount + summary.byteTaskCount);
+      assert.equal(summary.yieldCount, Math.floor(summary.operationCount / 4096) + 1);
+      assert.equal(summary.chunkCount, summary.yieldCount);
+      assert.equal(summary.hashInputBytes, summary.textPrefixBytes + summary.textValueUtf8Bytes + summary.binaryHashBytes);
+      assert.equal(summary.hashUpdateCallCount, 2 * summary.writeTokenCount + summary.byteTaskCount);
+      assert.ok(summary.writeTokenCount >= summary.writeTaskCount);
+    }
+    for (const [prefix, phase] of [
+      ['private_capture/', 'materialized_private_validator_capture'],
+      ['private_recheck/', 'materialized_private_validator_recheck'],
+      ['projection_recheck/', 'materialized_fingerprint_recheck'],
+    ]) {
+      const selected = summaries.filter((s) => s.role.startsWith(prefix));
+      const observed = chunks.filter((c) => c.phase === phase);
+      assert.equal(selected.reduce((n, s) => n + s.chunkCount, 0), observed.length);
+      assert.equal(selected.reduce((n, s) => n + s.operationCount, 0), observed.reduce((n, c) => n + c.operations, 0));
+    }
+    runs.push(summaries.map((s) => Object.fromEntries(FINGERPRINT_COUNTERS.map((key) => [key, s[key]]))));
+  }
+  assert.deepEqual(runs[0], runs[1]);
+  assert.deepEqual(await materializeSessionWithAdapter(index, indexedSession, adapter, {
+    onFingerprintProfile() { throw new Error('diagnostic callback failed'); },
+  }), baseline);
+});
+
+test('throwing fingerprint profiles cannot mask private or projection mutation and rejection', async () => {
+  for (const phase of ['private', 'projection', 'admission']) {
+    for (const mutate of [false, true]) {
+      const { index, indexedSession, materializedSession } = makeStrictMaterializationBoundaryFixture();
+      const rejection = new Error('original adapter failure');
+      const query = queryContract();
+      const strictOverrides = {};
+      const hook = (session) => {
+        if (mutate) session.title = 'mutation sentinel';
+        throw rejection;
+      };
+      if (phase === 'private') strictOverrides.validateMaterializedPrivateState = ({ session }) => hook(session);
+      if (phase === 'projection') {
+        query.projectQueryPresentation = (session) => hook(session);
+        strictOverrides.query = query;
+      }
+      const adapter = makeLifecycleAdapter({
+        kind: indexedSession.sourceKind,
+        sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+        materializeSession: async () => {
+          const returned = structuredClone(materializedSession);
+          if (phase === 'admission') returned.logicalEvents[0].kind = 'different_query_fact';
+          return returned;
+        },
+        strictOverrides,
+      });
+      const errors = [];
+      for (const enabled of [false, true]) {
+        let caught;
+        try {
+          await materializeSessionWithAdapter(index, indexedSession, adapter, enabled ? {
+            onFingerprintProfile() { throw new Error('diagnostic callback failed'); },
+          } : {});
+        } catch (error) { caught = error; }
+        assert.equal(caught?.code, 'MATERIALIZATION_CONTRACT_VIOLATION');
+        errors.push(caught);
+      }
+      assert.equal(errors[1].message, errors[0].message);
+      assert.equal(errors[1].cause, errors[0].cause);
+      if (phase !== 'admission') assert.equal(errors[1].cause, rejection);
+      if (mutate && phase !== 'admission') assert.match(errors[1].message, /must not mutate/);
+    }
+  }
+});
+
+test('fingerprint profiling preserves cancellation at existing capture and recheck yields', async () => {
+  for (const phase of ['materialized_private_validator_capture', 'materialized_private_validator_recheck', 'materialized_fingerprint_recheck']) {
+    for (const enabled of [false, true]) {
+      const { index, indexedSession, materializedSession } = makeStrictMaterializationBoundaryFixture();
+      const adapter = makeLifecycleAdapter({
+        kind: indexedSession.sourceKind,
+        sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+        materializeSession: async () => structuredClone(materializedSession),
+      });
+      const controller = new AbortController();
+      const reason = new DOMException('cancel sentinel', 'AbortError');
+      await assert.rejects(materializeSessionWithAdapter(index, indexedSession, adapter, {
+        signal: controller.signal,
+        onProjectionChunk(chunk) { if (chunk.phase === phase) controller.abort(reason); },
+        ...(enabled ? { onFingerprintProfile() { throw new Error('diagnostic callback failed'); } } : {}),
+      }), (error) => error === reason);
+    }
+  }
+});
