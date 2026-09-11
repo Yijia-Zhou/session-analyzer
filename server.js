@@ -747,6 +747,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     onProjectJobSettled: options.onProjectJobSettled || null,
     onIndexValidationChunk: options.onIndexValidationChunk || null,
     materializeSession: options.materializeSession || materializeSessionForIndex,
+    buildEventDetail: options.buildEventDetail || buildEventDetailForSession,
     sessionPrewarmPolicy: options.sessionPrewarm === false
       ? null
       : { ...(options.sessionPrewarm || {}) },
@@ -972,7 +973,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
             const indexedSession = index.sessionsById.get(sessionId);
             if (!indexedSession) return null;
             const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
-            return buildEventDetailForSession(
+            return state.buildEventDetail(
               index,
               session,
               decodePathSegment(detailMatch[2]),
