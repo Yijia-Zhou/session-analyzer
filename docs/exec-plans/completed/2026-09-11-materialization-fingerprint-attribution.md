@@ -18,7 +18,7 @@ Raw JSON and CPU samples stay under ignored `tmp/fingerprint-attribution/`; gene
 
 ## Progress / 进度
 
-Implementation and focused validation in progress; measurements pending. / 实现与聚焦验证进行中，测量待执行。
+Completed: implementation, measurements, documentation and local validation. The measured implementation and callback-isolation follow-up each passed build checks and the full 1,105-test Node suite; the final two-shape HTTP smoke also passed. Remote delivery is recorded below. / 已完成实现、测量、文档及本地验证。测量实现与 callback 隔离补强各自通过构建检查和完整 1,105 项 Node 测试；最终两形状 HTTP smoke 亦通过。远端交付记录见下文。
 
 
 ## Outcome / 结果
@@ -28,6 +28,6 @@ Three full Materialized Session passes account for at least 99.988% of 50k async
 The single next candidate is digest-byte-stream-equivalent textual hash batching, retaining every guard and yield boundary. No optimization shipped, and debt #22 remains open. The complete bilingual evidence and limitations are in [the measurement report](../../design-docs/deepseek-readback-measurement.md#fingerprint-internal-attribution--fingerprint-内部归因). The lifecycle design note only documents the internal summary seam; no product spec, README, CHANGELOG, browser or public CLI/API contract changes are needed. / 单一下一候选为 digest 字节流等价的文本 hash 批量写入，保留全部 guard 与 yield 边界；未交付优化，#22 保持开放。完整双语证据及限制见测量报告；生命周期设计仅记录内部摘要接口，不需产品 spec、README、CHANGELOG、浏览器或公开 CLI／API 契约变更。
 
 
-## Pending remote delivery / 待完成远端交付
+## Remote delivery / 远端交付
 
-Implementation, measurement, documentation and local validation are complete. The branch has been pushed, but PR creation returned GitHub API 403 `Resource not accessible by integration`; no existing local HTTPS API credential is available as a fallback. Repository permissions show the user has admin/push rights, so the remaining blocker is the integration/API authorization path. PR creation and PR-triggered CI remain pending; this plan stays active until remote delivery is finished. No merge is authorized. / 实现、测量、文档及本地验证已完成，分支已推送；创建 PR 时 GitHub API 返回 403，且本机没有可替代的现有 HTTPS API 凭据。仓库权限显示用户具有 admin／push 权限，剩余阻塞在 integration／API 授权路径。PR 创建和 PR 触发的 CI 待完成，因此计划保持 active 直至远端交付结束；未获授权合并。
+The branch has been pushed, and the user created [PR #55](https://github.com/Yijia-Zhou/session-analyzer/pull/55), resolving the previous PR-creation authorization blocker. The diagnostic work and PR delivery are complete, so this plan is archived under `completed/`. PR #55 remains open and unmerged; debt #22 remains open for the separate optimization implementation. / 分支已推送，用户已创建 [PR #55](https://github.com/Yijia-Zhou/session-analyzer/pull/55)，此前的 PR 创建授权阻塞已解除。诊断工作及 PR 交付完成，因此本计划归档至 `completed/`。PR #55 保持开放且未合并；债务 #22 继续开放，等待独立的优化实现。
