@@ -266,3 +266,180 @@ The first full-suite attempt passed 1,093/1,094 tests; its sole failure was the 
 Aggregate JSON is retained locally under ignored `tmp/cold-attribution/`: `smoke.json`, `formal.json`, `repeat-1.json`, `repeat-2.json`, plus final follow-up smoke and validation logs. Generated Session artifacts are removed by each worker, and no giant fixture or transient profile JSON is committed. Tables above preserve the compact durable evidence; rerunning emits the full machine-readable report. / 聚合 JSON 本地保留于 ignored `tmp/cold-attribution/`：`smoke.json`、`formal.json`、`repeat-1.json`、`repeat-2.json`，以及最终补强 smoke 与验收日志。每个 worker 删除所生成 Session 工件，不提交大型 fixture 或临时 profile JSON。上表保存紧凑持久证据；复跑输出完整机器可读报告。
 
 Final follow-up smoke at `bf7922332c239bfc503b8724c863d1d0dbd11710` passed all four cells (cold HTTP ms: tool-dense/plain 93.77; tool-dense/zstd 82.53; message-dense/plain 111.57; message-dense/zstd 110.25). The report correctly marks the pending documentation edits as `repositoryDirty: true`; tracked diff SHA-256 `3244a14d5fb7e7648eda8a1921e668e77666e46b86041376227a2bae12eec69c`. Final `npm run build:check` passed, `npm test` passed **1,098/1,098**, and `git diff --check` passed. The 77-test focused implementation pass and 11-test final profiler pass also passed. Local browser validation was not run because no browser behavior changed; normal PR CI remains responsible for its Browser job. / 最终补强 smoke 在 `bf7922332c239bfc503b8724c863d1d0dbd11710` 上四组全部通过（冷 HTTP ms：tool-dense/plain 93.77；tool-dense/zstd 82.53；message-dense/plain 111.57；message-dense/zstd 110.25）。报告正确将待提交文档编辑标记为 `repositoryDirty: true`；tracked diff SHA-256 为 `3244a14d5fb7e7648eda8a1921e668e77666e46b86041376227a2bae12eec69c`。最终 `npm run build:check` 通过，`npm test` **1,098／1,098** 通过，`git diff --check` 通过；77 项实现聚焦测试及最终 11 项 profiler 测试亦通过。因浏览器行为未改变，未运行本地浏览器验收；标准 PR CI 仍负责 Browser job。
+
+## Fingerprint internal attribution / Fingerprint 内部归因
+
+This is second-level attribution of the source-neutral hotspot identified by PR #54, not a replacement for its first-level timings above. DeepSeek synthetic large Sessions expose shared materialization validation; their absolute latency is not generalized to Codex or Claude. No optimization is implemented. / 这是 PR #54 所识别来源中立热点的第二层归因，不替换上方第一层时延数据。DeepSeek 合成大会话暴露的是共享物化校验；绝不将其绝对时延推广到 Codex 或 Claude。本次未实现优化。
+
+### Implementation and method / 实现与方法
+
+Formal implementation: `73a619146ac275da7ead3395f1e670c52364385e`, clean tree, based on fetched main `400aa81e7a74ed14e5f02ceb966d148e91627916`. All captures use the same committed source. The profile script accepts internal `--fingerprint-profile=on|off` (default off); this is not a product CLI/API option. It extends the existing aggregate JSON with full, unrounded per-invocation statistics and totals when enabled, and preserves the existing output shape when disabled. / 正式实现为上述 clean-tree SHA，基于已 fetch 的 main；全部采集使用同一已提交源码。Profile 脚本接收内部开关（默认 off），不是产品 CLI／API 选项。开启时在既有聚合 JSON 追加未舍入的逐调用统计及总量，关闭时保留原有输出结构。
+
+Every worker preserves PR #54's exact real-loopback HTTP cold request through completed first Detail, then executes the unchanged warm-read tail. No graph is pre-materialized. The script checks 0 materializations before first Detail, exactly 1 afterward and after all warm reads; deterministic nonempty Detail and exact requested ID; Raw/Logical fixture counts; Raw response identity/type; unchanged source file dev/ino/size/mtime/ctime. Fixtures are removed afterward. Cold still means materialization cold, not OS-cache cold. / 每个 worker 保留 PR #54 的真实 loopback HTTP 冷请求直至首次 Detail 完成，然后执行未变的热读尾部；不预先物化对象图。脚本检查首次 Detail 前物化为 0、之后及全部热读后恰好为 1；Detail 确定、非空且 ID 正确；Raw／Logical 数符合 fixture；Raw 响应身份／类型正确；来源文件 dev／ino／size／mtime／ctime 不变。之后清理 fixture。冷态仍指尚未物化，不是 OS cache 冷态。
+
+### Invocation taxonomy and metrics / 调用分类与指标
+
+The private validator captures and rechecks `materialization_context`, `indexed_session`, and `materialized_session` in that order; query projection is followed by `projection_recheck/materialized_session`. Thus there are seven invocations, not three. Roles are fixed strings; existing `onProjectionChunk` phase names and event shapes remain unchanged. The optional internal `onFingerprintProfile` receives one numeric/content-free summary after a completed digest and before its caller compares it. Failed/aborted invocations have no completion summary. Callback exceptions cannot replace validation/admission errors; formal script accounting is checked after materialization outside that callback. / Private validator 按顺序 capture 并 recheck context、Indexed Session、Materialized Session；查询投影后另有 Materialized Session recheck。因此是七次调用，不是三次。角色为固定字符串；既有 `onProjectionChunk` phase 名称及事件结构不变。可选内部回调在 digest 完成、调用方比较之前接收一次纯数值／无内容摘要；失败或取消的调用不发送完成摘要。回调异常不能替换校验／准入错误；正式脚本在物化之后、回调外校验核算。
+
+| Metric / 指标 | Definition / 定义 |
+| --- | --- |
+| `elapsedMs` | Monotonic `performance.now()` wall duration from immediately before hash setup through completed digest; summary emission excluded. / hash 初始化之前至 digest 完成的单调墙钟时长；不含摘要发送。 |
+| `yieldWaitMs`, `yieldCount` | Time immediately around each existing awaited `setImmediate`, including the final post-traversal yield, plus count. No yield is added, removed or moved. / 仅围绕每个既有 awaited `setImmediate` 计时并计数，包含遍历末尾 yield；不增加、删除或移动 yield。 |
+| `activeComputeMs` | `elapsedMs - yieldWaitMs`; non-yield wall remainder, including possible GC, preemption and existing chunk callback cost, not exact on-CPU time. / 扣除 yield 等待后的墙钟余量，仍可能包含 GC、抢占及既有 chunk callback 成本，不是精确 CPU 时间。 |
+| `operationCount` | Processed tasks, exactly the existing 4,096-operation chunk-policy unit; sum of visit/write/byte task counts. / 已处理 task 数，与既有 4,096-operation 分块单位完全一致，等于 visit／write／byte task 数之和。 |
+| `chunkCount` | Existing chunk notifications, including final remainder even when zero: `floor(operationCount / 4096) + 1`, equal to yield count. / 既有 chunk 通知数，包含即使为零的末尾余量，等于 yield 数。 |
+| `visitTaskCount`, `writeTaskCount`, `byteTaskCount` | Counts of popped tasks by kind; each byte task performs one binary hash update (up to 256 KiB). Visits may write multiple tokens directly. / 按类型计数弹出的 task；每个 byte task 做一次最多 256 KiB 的二进制 hash update；visit 可直接写多个 token。 |
+| `firstObjectVisitCount`, `repeatedReferenceCount` | First traversal of an object/function in that invocation versus the `seen.has` repeated-reference branch. Prototype IDs alone are not object visits. / 当前调用内对象／函数的首次遍历与 `seen.has` 重复引用分支计数；仅分配 prototype ID 不算对象访问。 |
+| `ownPropertyCount` | Sum of own keys whose descriptors are inspected on completed traversal; excludes the separate prototype-constructor descriptor lookup. / 完成遍历时被检查 descriptor 的 own key 总数；不含额外的 prototype-constructor descriptor 查询。 |
+| `mapEntryCount`, `setEntryCount` | Entries actually iterated, without additional property/getter reads. / 实际迭代 entry 数，不额外读取属性或 getter。 |
+| `writeTokenCount` | Logical textual `write()` calls, including direct writes inside visits. / 文本 `write()` 逻辑调用数，包含 visit 内直接写入。 |
+| `textValueUtf8Bytes`, `textPrefixBytes` | UTF-8 value bytes from the already-required byte-length calculation, and ASCII decimal-length-plus-colon prefix bytes. / 复用既有长度计算得到的 UTF-8 value 字节数，以及十进制长度加冒号的 ASCII prefix 字节数。 |
+| `binaryHashBytes`, `hashInputBytes` | Binary byte-task bytes; total SHA-256 input = text values + prefixes + binary bytes. / 二进制 byte-task 字节数；SHA-256 总输入为文本值、prefix 与二进制字节之和。 |
+| `hashUpdateCallCount` | Derived `2 * writeTokenCount + byteTaskCount`; no additional per-update counter. / 由公式推导，不另加逐 update 计数。 |
+
+Counters are conditional; no clock is read per token/property/hash update, no content or per-object records are retained, and no second broad profiling framework is added. Tests compare the actual concatenated SHA-256 input stream and identity IDs against unchanged synchronous fingerprinting with Unicode, cyclic references, symbols, descriptors/accessors, prototypes, Map/Set, Date/RegExp and binary chunks. Shared strict Codex admission also returns the identical observed/unobserved result. / 计数按需开启，不逐 token／属性／hash update 读时钟，不保留内容或逐对象记录，不增加第二套宽泛 profiler。测试以未变的同步 fingerprint 为参考，对含 Unicode、循环引用、symbol、descriptor／accessor、prototype、Map／Set、Date／RegExp 和二进制块的图比较实际 SHA-256 拼接输入流及 identity ID；共享 strict Codex 准入也保持有／无观测结果一致。
+
+
+### Environment and instrumentation overhead / 环境与计数开销
+
+Windows 11 (`10.0.22631`), x64, AMD Ryzen 5 5600U, 12 logical CPUs, 14,864,674,816 bytes RAM, Node `v24.18.1`, npm `12.0.2`. All workloads ran sequentially with no concurrent repository tests. PR #54 used the same reported runtime/hardware, but these are separate workstation observations, not an optimization before/after comparison; its historic latency table is retained unchanged. / 环境如上；所有场景顺序执行，不并发运行仓库测试。PR #54 所报告运行时／硬件相同，但这是独立工作站观测，不是优化前后对照；保留原有历史时延表。
+
+Three observations per mode/case; round order off→on, on→off, off→on. The common denominator is the sum of the original three nonoverlapping PR #54 fingerprint parent spans, with phase profiling enabled in both modes. Times below are median [min, max] ms, and Δ compares medians. / 每种模式／场景观测三次，轮次顺序为关→开、开→关、关→开；比较双方均开启阶段 profiling 的 PR #54 三个不重叠 fingerprint 父阶段之和。下表为中位 [最小, 最大] 毫秒，Δ 比较中位数。
+
+| Case / 场景 | Detailed off / 关闭 | Detailed on / 开启 | Δ |
+| --- | --- | --- | --- |
+| 10,000 / tool-dense | 4,489.11 [4,452.92, 4,527.83] | 4,523.88 [4,507.91, 4,662.47] | +0.77% |
+| 10,000 / message-dense | 5,547.30 [5,472.49, 5,726.38] | 5,701.77 [5,573.53, 5,741.58] | +2.78% |
+| 50,000 / message-dense | 28,846.16 [28,196.55, 30,150.39] | 29,809.30 [29,716.90, 30,903.46] | +3.34% |
+
+Observed median perturbation is 0.77–3.34%, with overlapping ranges in the larger cases. The three fingerprint spans remain overwhelmingly dominant; relative ordering among similarly sized full-graph passes can fluctuate and is not an optimization priority. This is not a product latency threshold or proof of zero overhead. The perturbation is small relative to the measured active/yield and CPU-category separation, so the conditional counters are retained. / 中位扰动为 0.77–3.34%，较大场景的范围重叠。三个 fingerprint 阶段仍占绝对主导；成本相近的完整 pass 之间次序会波动，不据此选择优化。此结果不是产品时延阈值，也不证明零开销；相较 active／yield 及 CPU 类别的差距，扰动较小，因此保留条件计数。
+
+### Formal matrix and repeats / 正式矩阵与复测
+
+| Records / 记录 | Shape / 形状 | Encoding / 编码 | Cold Detail ms | Materialization ms | Fingerprint wall ms | Yield wait ms | Active remainder ms | Wait % |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 10,000 | tool-dense | plain | 4,886.22 | 4,842.08 | 4,553.42 | 83.60 | 4,469.82 | 1.84 |
+| 10,000 | message-dense | plain | 6,069.20 | 6,020.28 | 5,681.07 | 115.64 | 5,565.43 | 2.04 |
+| 50,000 | tool-dense | plain | 25,943.61 | 25,757.64 | 24,302.18 | 522.95 | 23,779.23 | 2.15 |
+| 50,000 | message-dense | plain | 31,352.54 | 31,192.93 | 29,626.46 | 568.39 | 29,058.07 | 1.92 |
+| 50,000 | message-dense | zstd | 30,798.18 | 30,607.42 | 29,004.56 | 797.84 | 28,206.72 | 2.75 |
+
+For each 50k plain shape, the formal observation plus two additional observations give: / 每种 50k plain 形状均有正式观测及两次额外复测：
+
+| Shape / 形状 | Fingerprint wall median [min, max] ms | Wait % range / 等待占比范围 | Materialized passes share range / 完整会话 pass 占比范围 |
+| --- | --- | --- | --- |
+| tool-dense | 22,926.53 [22,509.12, 24,302.18] | 2.05–2.47 | 99.995–99.996% |
+| message-dense | 28,702.29 [28,012.60, 29,626.46] | 1.83–1.92 | 99.989–99.996% |
+
+Yield wait stays below 2.5% across the six 50k plain observations and is 2.75% in the large Zstd sanity case. It does not explain the multi-second delay. The three complete Materialized Session passes consume at least 99.988% of all async fingerprint wall time in these 50k observations. / 六次 50k plain 观测的 yield 等待均低于 2.5%，大 Zstd sanity 为 2.75%；它无法解释数十秒延迟。在这些 50k 观测中，三个完整 Materialized Session pass 占全部 async fingerprint 墙钟的至少 99.988%。
+
+### Per-invocation wall attribution / 逐调用墙钟归因
+
+**50k tool-dense / plain** (ms; share of all seven async fingerprints / 毫秒；占七次 async fingerprint 总量)
+
+| Role / 角色 | Elapsed | Yield wait | Active remainder | Share % |
+| --- | --- | --- | --- | --- |
+| private_capture/materialization_context | 0.32 | 0.06 | 0.26 | <0.01 |
+| private_capture/indexed_session | 0.45 | 0.06 | 0.39 | <0.01 |
+| private_capture/materialized_session | 7,813.65 | 161.19 | 7,652.46 | 32.15 |
+| private_recheck/materialization_context | 0.05 | 0.01 | 0.03 | <0.01 |
+| private_recheck/indexed_session | 0.22 | 0.01 | 0.22 | <0.01 |
+| private_recheck/materialized_session | 8,392.73 | 162.02 | 8,230.71 | 34.53 |
+| projection_recheck/materialized_session | 8,094.76 | 199.60 | 7,895.16 | 33.31 |
+
+**50k message-dense / plain** (ms; share of all seven async fingerprints / 毫秒；占七次 async fingerprint 总量)
+
+| Role / 角色 | Elapsed | Yield wait | Active remainder | Share % |
+| --- | --- | --- | --- | --- |
+| private_capture/materialization_context | 0.34 | 0.08 | 0.26 | <0.01 |
+| private_capture/indexed_session | 0.46 | 0.07 | 0.40 | <0.01 |
+| private_capture/materialized_session | 9,927.52 | 190.61 | 9,736.92 | 33.51 |
+| private_recheck/materialization_context | 0.08 | 0.02 | 0.07 | <0.01 |
+| private_recheck/indexed_session | 0.21 | 0.01 | 0.21 | <0.01 |
+| private_recheck/materialized_session | 9,801.70 | 185.93 | 9,615.76 | 33.08 |
+| projection_recheck/materialized_session | 9,896.14 | 191.68 | 9,704.46 | 33.40 |
+
+### Workload density / 工作量密度
+
+The following counts apply identically to each of private capture, private recheck and projection recheck of the Materialized Session. They are stable across all three 50k plain observations. / 下列计数对 Materialized Session 的 private capture、private recheck、projection recheck 每一次均相同，且在各形状三次 50k plain 观测中稳定。
+
+| Records / 记录 | Shape / 形状 | Objects / 对象 | Own descriptors / 属性描述符 | Write tokens | Hash input bytes | Tasks / 操作 | Yields |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 10,000 | tool-dense | 100,029 | 665,145 | 5,721,278 | 58,422,874 | 4,756,051 | 1,162 |
+| 10,000 | message-dense | 140,028 | 830,142 | 7,211,250 | 67,967,425 | 5,951,029 | 1,453 |
+| 50,000 | tool-dense | 500,029 | 3,325,145 | 28,601,278 | 293,577,892 | 23,776,051 | 5,805 |
+| 50,000 | message-dense | 700,028 | 4,150,142 | 36,051,250 | 341,259,441 | 29,751,029 | 7,264 |
+
+| Additional per-pass 50k metric / 额外逐 pass 指标 | Tool-dense | Message-dense |
+| --- | --- | --- |
+| visitTaskCount | 3,325,146 | 4,150,143 |
+| writeTaskCount | 20,450,905 | 25,600,886 |
+| repeatedReferenceCount | 50,000 | 100,000 |
+| textValueUtf8Bytes | 230,630,097 | 262,096,700 |
+| textPrefixBytes | 62,947,795 | 79,162,741 |
+| hashUpdateCallCount | 57,202,556 | 72,102,500 |
+
+Both shapes have zero binary-byte tasks/bytes and zero Map/Set entries in this fixture; binary chunks and Map/Set semantics are instead exercised by the exact-byte-stream test. The small context capture/recheck visits 1 object / 3 properties / 23 tasks / 30 tokens / 400 hash bytes per invocation. Indexed capture/recheck visits 9 / 71 / 507 / 603 / 5,235 for tools, and 8 / 68 / 485 / 575 / 5,074 for messages (same units). / 两形状在此 fixture 中二进制 task／字节、Map／Set entry 均为零；这些语义另由精确字节流测试覆盖。小 context 每次 capture／recheck 为 1 对象／3 属性／23 task／30 token／400 hash 字节。Indexed 每次工具为 9／71／507／603／5,235，消息为 8／68／485／575／5,074，单位相同。
+
+At 50k, message density raises objects by 40.0%, descriptors by 24.8%, tokens/update calls by 26.0% and hash input by 16.2%. The three passes perform 171,607,668 hash updates for tools and 216,307,500 for messages, averaging only 5.13 / 4.73 bytes per update. The Zstd message case keeps task/object/property/token/update counts identical; text/hash input rises by 1,000,014 bytes per pass (0.293%), reflecting storage-dependent evidence strings in the guarded graph, not a different traversal. Its materialized hash input is 342,259,455 bytes. / 50k 消息形状使对象增 40.0%、descriptor 增 24.8%、token／update 调用增 26.0%、hash 输入增 16.2%。工具／消息三个 pass 分别执行 171,607,668／216,307,500 次 hash update，平均每次仅 5.13／4.73 字节。Zstd 消息的 task／对象／属性／token／update 数完全相同；每次 pass 的文本／hash 输入多 1,000,014 字节（0.293%），反映被保护对象图中与存储相关的 evidence 字符串，而非不同遍历；其物化 hash 输入为 342,259,455 字节。
+
+### Independent CPU sampling / 独立 CPU 采样
+
+Both commands run the real HTTP worker directly, with detailed counters disabled and the default 1,000 μs sampling interval made explicit: / 两条命令直接运行真实 HTTP worker，关闭详细计数，并显式指定默认 1,000 μs 采样间隔：
+
+```powershell
+node --cpu-prof --cpu-prof-interval=1000 --cpu-prof-dir=tmp/fingerprint-attribution --cpu-prof-name=tool-dense.cpuprofile scripts/deepseek-readback-profile.js --worker --sizes=50000 --shape=tool-dense --compression=plain --fingerprint-profile=off
+node --cpu-prof --cpu-prof-interval=1000 --cpu-prof-dir=tmp/fingerprint-attribution --cpu-prof-name=message-dense.cpuprofile scripts/deepseek-readback-profile.js --worker --sizes=50000 --shape=message-dense --compression=plain --fingerprint-profile=off
+```
+
+The captures contain 32,286 / 38,825 samples (tool/message), and both pass all cold/count/identity/reading assertions. Reconstruct each sampled node's parent chain from `nodes[].children`; select samples with `graphFingerprintAsync` in the ancestry; weight them by their corresponding `timeDeltas`. Assign disjoint categories in order: crypto `update` subtree, encoding/`byteLength` subtree outside update, remaining textual `write` subtree, remaining fingerprint stack. This isolates the fingerprint from fixture generation, indexing and warm reads; selected samples represent about 70.8% / 74.9% of the whole process profile. No `--cold-only` mode was needed or added. / 工具／消息分别采到 32,286／38,825 个样本，两者均通过全部冷态／计数／身份／阅读断言。由 `nodes[].children` 重建父链，选择祖先包含 `graphFingerprintAsync` 的样本，以对应 `timeDeltas` 加权；按顺序分入互斥类别：crypto update 子树、update 外编码／byteLength 子树、剩余文本 write 子树、剩余 fingerprint 栈。这样将 fingerprint 与 fixture 生成、索引、热读隔离；选中样本约占整个进程 profile 的 70.8%／74.9%，无需也未加入 cold-only 模式。
+
+| Approximate share within sampled fingerprint stacks / fingerprint 栈内近似采样占比 | Tool-dense | Message-dense |
+| --- | --- | --- |
+| `Hash.update` subtree / 子树 | 65.0% | 64.2% |
+| `Buffer.byteLength` / UTF-8 subtree outside update / update 外 UTF-8 路径 | 6.4% | 6.4% |
+| Remaining textual `write` / 文本 write 余量 | 9.7% | 10.1% |
+| Remaining traversal/task/identity/descriptor work / 遍历、task、identity、descriptor 等余量 | 18.9% | 19.4% |
+
+The remaining category includes `graphFingerprintAsync` self (~15.3% in both shapes), `objectId` (~1.6% / 1.9%), `pushSequence` (~1.7% / 1.6%) and `appendWriteKey` (~0.3% / 0.5%). Graph self-position ticks locate `Reflect.ownKeys` at measured line 340 (575 / 783 ticks) and `Object.getOwnPropertyDescriptor` at line 345 (466 / 519 ticks), as well as stack pop/type dispatch, direct write calls, `seen` and task construction. These builtins do not have separate sampled function frames here; line ticks locate work but are not precise per-builtin CPU accounting. No `symbolId` frame is sampled in these symbol-free synthetic histories; symbol correctness is covered by the byte-stream fixture. Synchronous `graphFingerprint` ancestry is about 0.01% or less of whole-process samples, providing no reason to widen this task to synchronous ownership guarding. / 余量包含 graphFingerprintAsync self（两形状约 15.3%）、objectId（约 1.6%／1.9%）、pushSequence（约 1.7%／1.6%）、appendWriteKey（约 0.3%／0.5%）。Graph self 的行位置 tick 定位到测量源码第 340 行 ownKeys（575／783 tick）、第 345 行 descriptor 查询（466／519 tick），以及栈弹出／类型分派、直接 write、seen 和 task 构造。这里 builtin 没有独立采样函数帧；行 tick 只能定位工作，不能精确分摊各 builtin 的 CPU。无 symbol 的合成历史未采到 symbolId 帧，其正确性由字节流 fixture 覆盖。同步 graphFingerprint 祖先链约占全进程样本的 0.01% 或更少，不支持扩大任务至同步 ownership guard。
+
+This is sampling evidence, not exact CPU accounting. Node's `internal/crypto/hash` update frame includes validation, string conversion/native binding and native hashing; it cannot separate SHA-256 compression from tiny-call/encoding overhead. Some V8 builtins are inlined or anonymous (`byteLength` has an anonymous native child); attribution uses ancestors, not just leaf names. GC appears at the profile root (~4.0% / 3.5% of whole-process weighted samples) and cannot reliably be assigned to fingerprint invocations. Scheduling wait and preemption are not measured as precise CPU by these profiles; direct yield telemetry remains the wall-time authority. CPU-profiled cold HTTP times were 28.61 / 35.85 s, so those perturbed durations are not substituted for formal timings. / 这是采样证据，不是精确 CPU 核算。Node internal/crypto/hash 的 update 帧包含校验、字符串转换／native binding 与 native hashing，不能拆分 SHA-256 压缩核心和微小调用／编码开销。有些 V8 builtin 被 inline 或匿名化（byteLength 的 native child 为匿名），故依据祖先链而非只看叶帧。GC 位于 profile 根（约占全进程加权样本 4.0%／3.5%），无法可靠分派给某次 fingerprint。Profile 不能将调度等待／抢占当作精确 CPU；墙钟等待仍以直接 yield 遥测为准。CPU profiling 下冷 HTTP 为 28.61／35.85 秒，其扰动时长不替代正式时延。
+
+### Next optimization decision / 下一步优化决策
+
+**Choose one next direction: digest-byte-stream-equivalent batching of textual hash updates.** Active non-yield work dominates in both shapes; `Hash.update` is the largest sampled category, with text/UTF-8 handling accounting for another ~16%. Tens of millions of tiny updates per pass are a concrete per-pass inefficiency exposed by this evidence. The next PR should preserve exactly the concatenated bytes entering SHA-256, textual length prefixes, explicit binary chunks' byte order, object/symbol IDs, traversal domain and all descriptor/prototype/accessor checks. Keep all current guard passes, mutation-detection windows, error precedence and existing cooperative-yield/cancellation boundaries. / **仅选择一个下一方向：文本 hash update 的 digest 字节流等价批量写入。** 两形状均以非 yield 工作为主；Hash.update 是最大采样类别，文本／UTF-8 处理另约占 16%。每次 pass 数千万次微小 update 是本次证据揭示的具体逐 pass 低效。下一 PR 应证明进入 SHA-256 的拼接字节完全一致，保留文本长度 prefix、显式二进制字节顺序、object／symbol ID、遍历范围及全部 descriptor／prototype／accessor 检查，同时保留全部 guard pass、mutation 检测窗口、错误优先级及既有 yield／取消边界。
+
+The selected update category contains roughly 64–65% of sampled fingerprint work; if an equivalent implementation halved that category while leaving the rest unchanged, it would suggest roughly one-third less fingerprint active work. This is a conditional estimate, not a measured speedup: batching retains SHA-256 byte work and introduces buffer-copy/allocation costs. Do not convert sampled shares into exact saved milliseconds. Benchmark the next implementation before accepting it. / 目标 update 类别约占 fingerprint 采样工作的 64–65%；若等价实现把该类别减半、其他不变，则条件性地意味着 fingerprint active 工作约减少三分之一。这不是已测加速：批量写入仍保留 SHA-256 字节处理，并引入 buffer 复制／分配成本；不得将采样占比换算为精确节省毫秒，必须测量下一实现再验收。
+
+Yield-policy changes are not selected: only ~2% of 50k plain wall time is awaited yield. Weaker traversal is not selected: descriptor/prototype/identity safeguards remain required, and traversal is a smaller sampled category. Pass removal/reuse is not selected: those mutation windows remain distinct; no evidence here authorizes deleting one. The evidence selects an equivalent implementation boundary, not a weaker validation architecture. / 不选择改变 yield 策略，因为 50k plain 仅约 2% 墙钟为 yield 等待；不选择削弱遍历，因为 descriptor／prototype／identity 保护仍必须保留，且遍历占比较小；不选择删 pass 或额外复用，因为 mutation 窗口仍不同，本次证据不授权删除任何一次。证据选定的是等价实现边界，不是弱化校验架构。
+
+Debt #22 remains open: **fingerprint internals attributed; optimization implementation pending**. No hash batching, algorithm change, yield/chunk change, pass removal/reuse, narrowed graph domain, cache/admission/accepted-snapshot change, DeepSeek reconstruction change, #20 bounded reader or browser change is implemented. / 债务 #22 保持开放：**fingerprint 内部已归因；优化实现待完成**。本次没有实现 hash batching、算法替换、yield／chunk 修改、pass 删除／复用、缩小对象图范围、cache／准入／accepted snapshot 修改、DeepSeek 重建优化、#20 有界 reader 或浏览器变更。
+
+### Reproduction, validation and retained evidence / 复现、验证与保留证据
+
+From the repository root, store JSON under ignored `tmp/fingerprint-attribution/`: / 从仓库根目录运行，将 JSON 保存在 ignored 临时目录：
+
+```powershell
+node scripts/deepseek-readback-profile.js --sizes=100 --shape=tool-dense,message-dense --compression=plain --fingerprint-profile=on
+node scripts/deepseek-readback-profile.js --sizes=10000,50000 --shape=tool-dense,message-dense --compression=plain --fingerprint-profile=on
+node scripts/deepseek-readback-profile.js --sizes=50000 --shape=message-dense --compression=zstd --fingerprint-profile=on
+node scripts/deepseek-readback-profile.js --sizes=50000 --shape=tool-dense,message-dense --compression=plain --fingerprint-profile=on
+```
+
+Run the last command twice for the repeat evidence. For overhead, run 10k both shapes and 50k messages/plain separately with off and on, in the three round orders described above. Formal plain completed `2026-09-11T05:09:53.678Z`; the second repeat completed `2026-09-11T05:12:52.194Z`. All nine formal/repeat cases, 18 overhead cases and both CPU workers passed the count/identity/reading invariants. / 最后一条运行两次以获得复测。开销对照分别跑 10k 两形状和 50k 消息 plain，以前述三轮顺序切换 off／on。正式 plain 与第二轮复测完成时间如上。九个正式／复测场景、18 个开销场景、两个 CPU worker 全部通过计数／身份／阅读不变量。
+
+The measured implementation passed `npm run build:check`, `npm test` (**1,105/1,105**) and `git diff --check` before formal captures. Explicit focused commands included: / 测量实现于正式采集之前通过构建检查、完整 Node 测试（**1,105／1,105**）及 diff 检查；显式聚焦命令包括：
+
+```powershell
+node --test test/source-adapter-conformance.test.js test/materialization-observer.test.js test/canonical-contract.test.js test/codex-indexed-materialization.test.js test/deepseek-harness-materialization-observer.test.js test/materialized-session-owner.test.js
+node --test test/source-adapter-contract.test.js test/project-query-store.test.js test/index-revision-lease.test.js test/index-revision-server.test.js test/deepseek-harness.test.js test/deepseek-harness-stable-read.test.js
+node --test test/deepseek-readback-profile.test.js test/fingerprint-byte-stream.test.js
+```
+
+These passes reported 122, 59 and 14 passing tests respectively. The focused tests cover disabled/enabled result parity, content-free allowlisted fields, stable workload counts, exact hash-input accounting, ordered roles, observed chunk/task consistency, callback failure isolation, private and projection mutation detection, admission failure precedence, cancellation and strict Codex conformance. No performance-duration assertions were added. / 三组分别通过 122、59、14 项测试，覆盖开关结果一致、不含内容的字段白名单、稳定工作量、精确 hash 输入核算、角色顺序、chunk／task 一致性、回调失败隔离、private 与 projection mutation 检测、准入失败优先级、取消和 strict Codex conformance；未增加性能时长断言。
+
+Post-capture review identified returned rejected Promises as an additional observer-isolation case. Commit `58e88230b0e3ac9d95b1c51edf25cdeb3bfd7f13` suppresses those rejections without awaiting, after the invocation timer ends, and extends success/failure tests. It does not change traversal, writes, counters, yield placement or the synchronous collector used in formal captures. Formal results remain attributed to `73a6191`, not this later commit. The 66-test focused follow-up, build check, complete **1,105/1,105** Node suite and diff check passed again; clean-tree two-shape 100-record HTTP smoke at `58e8823` passed (89.61 / 108.88 ms cold Detail; seven roles each). / 采集后复查发现回调返回 rejected Promise 的额外隔离情形。后续提交在 invocation timer 结束后、不 await 地抑制该拒绝，并补充成功／失败测试；不改变遍历、写入、计数、yield 位置或正式采集使用的同步 collector。正式结果仍归属于 `73a6191`，不标为后续提交。补强后 66 项聚焦测试、构建检查、完整 **1,105／1,105** Node 套件和 diff 检查再次通过；`58e8823` clean tree 上两形状 100-record HTTP smoke 通过（冷 Detail 89.61／108.88 ms，各七角色）。
+
+A narrow bilingual lifecycle-design note documents the reusable internal summary seam; lifecycle/product behavior and public documentation do not change. No browser-facing code changed, so no local browser suite or running checkout-server restart was needed for this isolated diagnostic worktree. / 以一段双语生命周期设计说明记录可复用的内部摘要接口；生命周期／产品行为及公开文档不变。没有浏览器代码改动，因此此独立诊断 worktree 无需本地浏览器套件或重启用户运行中的 checkout server。
+
+Local evidence includes `smoke.json`, `overhead-{10k,50k}-{1,2,3}-{off,on}.json`, `formal-plain.json`, `formal-zstd.json`, `repeat-{1,2}.json`, `cpu-{tool,message}-dense.json`, CPU summaries, `.cpuprofile` files and validation logs under ignored `tmp/fingerprint-attribution/`. Temporary analysis scripts are local only. No raw CPU profile, giant JSON or generated transcript is committed; the durable evidence is these aggregate tables, definitions and method. / 本地证据包含上述 smoke、开销、正式／复测、CPU worker JSON、CPU 摘要、原始 CPU profile 及验证日志，均位于 ignored 临时目录。分析脚本也仅保留本地。不提交原始 CPU profile、大型 JSON 或生成 transcript；持久证据为这些聚合表、定义及方法。
