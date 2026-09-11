@@ -1,5 +1,7 @@
 # Session Transcript Analyzer / 会话转录分析器
 
+Codex durable `write_stdin` calls have dedicated Main and Detail presentation: omitted/empty string `chars` is a background terminal poll request; every nonempty string is an input request, without claiming successful delivery. Malformed arguments fall back to generic tool presentation. Each call retains its canonical identity/kind/status/count/search/folding/Raw References, and no originating command is inferred. / Codex durable `write_stdin` 在 Main 与 Detail 中有专门呈现：缺失／空字符串 `chars` 表示后台终端轮询请求，所有非空字符串表示输入请求，不声称成功写入。无效参数回退到通用工具呈现。每次调用保留 canonical identity／kind／status／count／search／folding／Raw References，不推断 originating command。
+
 Reading controls must remain visible and operable without document-level horizontal overflow at desktop widths, including manual fold overrides that expose Reset folds. Project drill-down offers one return action in the center session header (including while loading), plus one in the Inspector when open. Returning preserves the active query, filters, Layer and project cards, restores Project Scope and focuses the originating card. / 桌面宽度下阅读控件必须可见、可操作，且不产生文档级横向溢出，包括手动折叠后显示 Reset folds 的状态。项目下钻在中间 session header 提供一个返回入口（加载期间也可用），Inspector 打开时另有一个。返回保留当前 query、筛选、Layer 与项目卡片，恢复项目范围并聚焦来源卡片。
 
 ## Metadata / 元数据

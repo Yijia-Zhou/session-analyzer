@@ -22,6 +22,39 @@ const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 let wave1bM2SourceBundlePromise;
 
+test('background terminal requests render in Timeline, hydrated Detail and Trajectory without an origin', async (t) => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'terminal-browser-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const id = 'ab123456-1234-4234-8234-123456789abc';
+  const dir = path.join(home, 'sessions', '2026', '09', '11');
+  await fsp.mkdir(dir, { recursive: true });
+  const fixture = await fsp.readFile(path.join(__dirname, '../test/fixtures/background-terminal/requests.jsonl'), 'utf8');
+  await fsp.writeFile(path.join(dir, `rollout-${id}.jsonl`),
+    JSON.stringify({ type: 'session_meta', payload: { id, cwd: repoRoot } }) + '\n' + fixture);
+  const index = await buildIndex({ repoRoot, codexHome: home });
+  const session = await materializeIndexedSession(index, id);
+  const inputId = session.logicalEvents.find((event) => event.id.endsWith(':input')).id;
+  const pollId = session.logicalEvents.find((event) => event.id.endsWith(':omitted')).id;
+  const { page } = await openApp(t, index, { locale: 'en' });
+  const input = page.locator(`#timeline .event[data-event-id="${inputId}"]`);
+  const poll = page.locator(`#timeline .event[data-event-id="${pollId}"]`);
+  assert.equal(await input.locator('.eventKind').textContent(), 'Background terminal input request');
+  assert.equal(await poll.locator('.eventKind').textContent(), 'Background terminal poll request');
+  assert.equal(await input.locator('.eventPreview').count(), 0);
+  await input.locator('.eventHeader > .eventToggle').click();
+  await page.waitForFunction((eventId) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(eventId)}"]`)?.textContent.includes('Requested input (JSON string)'), inputId);
+  const detailText = await input.textContent();
+  assert.ok(detailText.includes('\\u0003\\u001b[31m'));
+  assert.ok(detailText.includes('synthetic rejection'));
+  assert.equal(detailText.includes('· npm test'), false);
+  await input.locator('.eventHeader > .eventKind').click();
+  await page.waitForFunction(() => document.querySelector('#detail')?.textContent.includes('synthetic rejection'));
+  await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
+  await page.waitForSelector('.trajectoryPresentation');
+  assert.ok((await page.locator('#timeline').textContent()).includes('Background terminal'));
+  assert.equal((await page.locator('#timeline').textContent()).includes('· npm test'), false);
+});
+
 function wave1bM2SourceBundle() {
   if (!wave1bM2SourceBundlePromise) {
     wave1bM2SourceBundlePromise = esbuild.build({

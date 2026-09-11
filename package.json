@@ -44,6 +44,7 @@
     "src/cache-observation.js",
     "src/cache-observation-presentation.js",
     "src/codex-cache-observation.js",
+    "src/codex-background-terminal.js",
     "src/codex-code-mode-declared.js",
     "src/codex-code-mode-facts.js",
     "src/codex-code-mode-presentation.js",

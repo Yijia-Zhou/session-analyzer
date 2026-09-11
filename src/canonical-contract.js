@@ -126,6 +126,7 @@ const MATERIALIZED_ANALYSIS_FIELDS = Object.freeze([
 const MATERIALIZED_PRESENTATION_INDEX_FIELDS = Object.freeze([
   'codeModeDeclaredRequests',
   'cacheDiscontinuityLinks',
+  'backgroundTerminalRequests',
 ]);
 const CACHE_OBSERVATION_FIELDS = Object.freeze([
   'schemaVersion',
@@ -289,6 +290,7 @@ function requirePlainMap(value, owner, field) {
 function createEmptyMaterializedPresentationIndexes() {
   return {
     codeModeDeclaredRequests: new Map(),
+    backgroundTerminalRequests: new Map(),
     cacheDiscontinuityLinks: createEmptyCacheDiscontinuityLinks(),
   };
 }
@@ -1029,6 +1031,21 @@ function validateMaterializedPresentationIndexes(
   );
   const logicalById = validationContext?.logicalById
     || new Map(logicalEvents.map((event) => [event.id, event]));
+  const terminalOwner = 'materialized session.presentationIndexes.backgroundTerminalRequests';
+  const terminalRequests = requirePlainMap(presentationIndexes.backgroundTerminalRequests, terminalOwner, 'requests');
+  for (const [eventId, fact] of terminalRequests) {
+    const event = logicalById.get(eventId);
+    if (event?.sourceKind !== 'codex' || event?.toolName !== 'write_stdin') {
+      throw contractError(terminalOwner, 'eventId', 'must identify an owned Codex write_stdin event');
+    }
+    requirePlainObject(fact, terminalOwner);
+    requireExactOwnKeys(fact, Object.hasOwn(fact, 'processId') ? ['action', 'processId'] : ['action'], terminalOwner);
+    if (!['poll', 'input'].includes(fact.action)) throw contractError(terminalOwner, 'action', 'must be poll or input');
+    if (Object.hasOwn(fact, 'processId') && (!Number.isInteger(fact.processId)
+        || fact.processId < -2147483648 || fact.processId > 2147483647)) {
+      throw contractError(terminalOwner, 'processId', 'must be an i32');
+    }
+  }
   for (const [eventId, fact] of Map.prototype.entries.call(declaredRequests)) {
     requireString(eventId, 'materialized session.presentationIndexes', 'eventId', { nonEmpty: true });
     if (!logicalById.has(eventId)) {

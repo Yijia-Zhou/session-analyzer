@@ -1,5 +1,7 @@
 'use strict';
 
+const { backgroundTerminalLabel } = require('../shared/background-terminal-presentation');
+
 const rendererApi = window.sessionRenderers;
 const escapeHtml = rendererApi.escapeHtml;
 const renderInspectorSections = rendererApi.renderInspectorSections;
@@ -1304,6 +1306,8 @@ function renderCodeModePresentationChips(presentation, isCodeMode = false) {
 }
 
 function presentedEventLabel(event, presentation = codeModeEventPresentation(event), compactWebLifecycle = false) {
+  const terminalLabel = backgroundTerminalLabel(event?.presentationFacts?.backgroundTerminal, state.locale);
+  if (terminalLabel) return terminalLabel;
   if (compactWebLifecycle) return t('webActivityObserved');
   if (event?.presentationFacts?.cacheUsage) return t('tokenUsage');
   return presentation ? presentation.label : event.label;
@@ -6297,6 +6301,7 @@ function renderMainCacheDiscontinuityAffordance(event) {
 
 function renderEventPreview(event, display, presentation = null) {
   if (display === 'expanded') return '';
+  if (backgroundTerminalLabel(event?.presentationFacts?.backgroundTerminal, state.locale)) return '';
   if (event.kind === 'usage_limit_warning' && event.usageLimits?.length) {
     return `<div class="eventPreview usageLimitPreview">${renderUsageLimitPreview(event.usageLimits)}</div>`;
   }
@@ -6603,6 +6608,7 @@ function renderTrajectoryProjection() {
   const model = trajectoryPresentationApi.renderTrajectoryPresentation({
     root: el.timeline,
     events: state.currentEvents,
+    locale: state.locale,
     selectedEventId: state.selectedEventId,
     loadedEventCount: state.offset,
     totalEventCount: state.timelineTotal,

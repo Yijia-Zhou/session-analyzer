@@ -1,5 +1,8 @@
 'use strict';
 
+const { backgroundTerminalRequest, backgroundTerminalCall, buildBackgroundTerminalRequests } = require('./codex-background-terminal');
+const { backgroundTerminalLabel } = require('./shared/background-terminal-presentation');
+
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
@@ -3249,6 +3252,22 @@ function extractToolOperationSections(raws, event) {
   const toolInspectorSections = extractToolSections(raws, event);
   const { requestValue, responseValue } = toolDetailValues(raws);
   const timelineSections = [];
+  const terminalCall = backgroundTerminalCall(raws, event);
+  const terminal = terminalCall && backgroundTerminalRequest(terminalCall.output);
+  if (terminal) {
+    maybePushKvSection(timelineSections,
+      terminal.action === 'poll' ? 'Background terminal poll request' : 'Background terminal input request', [
+        { key: 'Process ID', value: terminal.processId == null ? '' : String(terminal.processId) },
+        { key: 'Request type', value: terminal.action === 'poll' ? 'Poll' : 'Input' },
+      ], 'request');
+    if (terminal.action === 'input') {
+      // JSON string notation preserves whitespace and makes control characters visible.
+      // Full source arguments remain available through the existing hydrated Request.
+      const chars = JSON.parse(terminalCall.output).chars;
+      timelineSections.push({ purpose: 'request', type: 'code', title: 'Requested input (JSON string)',
+        language: 'json', code: truncatePreservingWhitespace(JSON.stringify(chars), 4000) });
+    }
+  }
   const userInput = event.toolName === 'request_user_input' ? requestUserInputSection(requestValue, responseValue) : null;
   if (userInput) timelineSections.push(userInput);
   const collaboration = collaborationToolSection(event.toolName, requestValue, responseValue);
@@ -3263,7 +3282,7 @@ function extractToolOperationSections(raws, event) {
   if (timelineSections.length
       && !collaboration
       && event.toolName !== 'update_plan'
-      && typeof responseValue !== 'object'
+      && (terminal || typeof responseValue !== 'object')
       && hasMeaningfulToolValue(responseValue)) {
     maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue, 'result');
   }
@@ -3834,6 +3853,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
     sanitizeLogicalEnvelopeValue,
   },
   cacheObservationPresentation,
+  backgroundTerminalLabel,
   sourceTrace: {
     classifyProtocolText,
     codexSourceLocator,
@@ -4306,6 +4326,7 @@ function finalizeSession(session, sessionIndexEntry) {
   session.presentationIndexes = {
     ...createEmptyMaterializedPresentationIndexes(),
     ...buildCodeModePresentationIndexes(session),
+    backgroundTerminalRequests: buildBackgroundTerminalRequests(session),
   };
   session.eventKinds = eventKindCatalog([session]);
 
