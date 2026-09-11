@@ -1,5 +1,7 @@
 # DeepSeek HTTP readback measurement / DeepSeek HTTP 回读量测
 
+For the current post-#57 attribution and supplied real-corpus acceptance decision, see [post-batching fingerprint attribution](post-batching-fingerprint-attribution.md). Historical measurements below retain their original implementation identities and definitions. / #57 后的当前归因及所提供真实语料验收决策见[批量写入后的 fingerprint 归因](post-batching-fingerprint-attribution.md)。下方历史测量保留其原始实现身份及定义。
+
 This records repeatable synthetic HTTP measurements: the original warm/full-artifact readback evidence for debt item 20, followed by a separate cold first-materialization attribution for item 22. Neither is an optimization or a universal latency acceptance threshold. / 本文记录可复现的合成 HTTP 量测：先保留债务第 20 项的热态／全工件回读证据，再单独记录第 22 项的冷态首次物化归因。二者均不包含优化，也不设定通用时延验收阈值。
 
 ## Reproduction / 复现
