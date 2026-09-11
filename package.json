@@ -39,6 +39,7 @@
     "src/claude-logical.js",
     "src/claude-source.js",
     "src/claude.js",
+    "src/cli.js",
     "src/canonical-contract.js",
     "src/cache-observation.js",
     "src/cache-observation-presentation.js",
