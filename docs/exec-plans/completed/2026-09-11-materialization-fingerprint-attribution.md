@@ -19,3 +19,10 @@ Raw JSON and CPU samples stay under ignored `tmp/fingerprint-attribution/`; gene
 ## Progress / 进度
 
 Implementation and focused validation in progress; measurements pending. / 实现与聚焦验证进行中，测量待执行。
+
+
+## Outcome / 结果
+
+Three full Materialized Session passes account for at least 99.988% of 50k async fingerprint wall time. Yield waits are 1.83–2.47% for plain. Hash.update accounts for about 64–65% of fingerprint-stack CPU samples in both shapes, with another ~16% in textual write/UTF-8 handling. Detailed counters perturb median parent-span wall time by +0.77–3.34%. / 三个完整 Materialized Session pass 占 50k async fingerprint 墙钟至少 99.988%；plain yield 等待为 1.83–2.47%。两形状 Hash.update 占 fingerprint 栈 CPU 采样约 64–65%，文本 write／UTF-8 另约 16%；详细计数使父阶段墙钟中位数扰动 +0.77–3.34%。
+
+The single next candidate is digest-byte-stream-equivalent textual hash batching, retaining every guard and yield boundary. No optimization shipped, and debt #22 remains open. The complete bilingual evidence and limitations are in [the measurement report](../../design-docs/deepseek-readback-measurement.md#fingerprint-internal-attribution--fingerprint-内部归因). The lifecycle design note only documents the internal summary seam; no product spec, README, CHANGELOG, browser or public CLI/API contract changes are needed. / 单一下一候选为 digest 字节流等价的文本 hash 批量写入，保留全部 guard 与 yield 边界；未交付优化，#22 保持开放。完整双语证据及限制见测量报告；生命周期设计仅记录内部摘要接口，不需产品 spec、README、CHANGELOG、浏览器或公开 CLI／API 契约变更。
