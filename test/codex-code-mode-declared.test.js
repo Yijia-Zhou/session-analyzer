@@ -108,6 +108,59 @@ test('recognizes a direct output-member result emission', () => {
   }]);
 });
 
+test('recognizes direct text emission around one awaited known tool and bounds its result', () => {
+  const poll = projectDeclaredCodeModeCalls(
+    'text(await tools.write_stdin({ session_id: 49497, chars: "" }));',
+    { outputFragments: ['{"output":"still working"}'] },
+  );
+  const input = projectDeclaredCodeModeCalls(
+    'text(await tools.write_stdin({ session_id: 49497, chars: "q\\n" }));',
+    { outputFragments: ['{"output":"accepted"}'] },
+  );
+
+  for (const [projection, chars] of [[poll, ''], [input, 'q\n']]) {
+    assert.equal(projection.supported, true);
+    assert.equal(projection.hasCompleteOutputAssociation, true);
+    assert.deepEqual(projection.calls.map((call) => ({
+      toolName: call.toolName,
+      sessionId: call.requestValue?.session_id,
+      chars: call.requestValue?.chars,
+      resultVariable: call.resultVariable,
+      resultAssociation: call.resultAssociation,
+      resultText: call.resultText,
+    })), [{
+      toolName: 'write_stdin',
+      sessionId: 49497,
+      chars,
+      resultVariable: '',
+      resultAssociation: 'bounded',
+      resultText: chars ? '{"output":"accepted"}' : '{"output":"still working"}',
+    }]);
+  }
+});
+
+test('mixed direct and variable emissions associate only once per call in call order', () => {
+  const direct = 'text(await tools.write_stdin({ session_id: 49497 }));';
+  const bound = 'const result = await tools.get_goal({});';
+  for (const source of [`${direct} ${bound} text(result);`, `${bound} text(result); ${direct}`]) {
+    const projection = projectDeclaredCodeModeCalls(source, { outputFragments: ['first', 'second'] });
+    assert.equal(projection.hasCompleteOutputAssociation, true);
+    assert.deepEqual(projection.calls.map((call) => call.resultText), ['first', 'second']);
+  }
+  for (const [source, outputFragments] of [
+    [`${bound} ${direct} text(result);`, ['first', 'second']],
+    [`${direct} ${bound} text(result); text(result);`, ['first', 'second', 'duplicate']],
+    [`${direct} ${bound}`, ['first', 'second']],
+    [`${direct} ${bound} text(result);`, ['first']],
+    [`${direct} ${bound} text(result);`, ['first', '']],
+  ]) {
+    const projection = projectDeclaredCodeModeCalls(source, { outputFragments });
+    assert.equal(projection.supported, true);
+    assert.equal(projection.hasCompleteOutputAssociation, false);
+    assert.ok(projection.calls.every((call) => call.resultAssociation === 'none' && !call.resultText));
+  }
+});
+
 test('rejects lookalike conditional and non-static member result emissions', () => {
   const sources = [
     'const result = await tools.shell_command({ command: "fixture" }); text(typeof other === "string" ? result : JSON.stringify(result));',
@@ -153,6 +206,11 @@ test('fails the whole program closed for unknown, dynamic, control-flow, and con
     'for (const item of items) await tools.update_plan({ plan: [] });',
     'const result = await Promise.all([tools.update_plan({ plan: [] })]); text(result);',
     'const result = await tools[toolName]({}); text(result);',
+    'text(await tools.unknown_tool({}));',
+    'text(await tools.write_stdin(dynamicArgs));',
+    'text(await someWrapper(tools.write_stdin({})));',
+    'text(foo + await tools.write_stdin({}));',
+    'if (ready) { text(await tools.write_stdin({})); }',
   ];
 
   for (const source of sources) {

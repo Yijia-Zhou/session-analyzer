@@ -138,6 +138,18 @@ function declaredCallFromAwait(awaitNode, resultVariable, sourceOrder, budget) {
   };
 }
 
+function emittedDirectAwait(statement) {
+  if (statement?.type !== 'ExpressionStatement') return null;
+  const expression = statement.expression;
+  if (!expression || expression.type !== 'CallExpression' || expression.optional
+      || expression.callee?.type !== 'Identifier' || expression.callee.name !== 'text'
+      || expression.arguments.length !== 1
+      || expression.arguments[0]?.type !== 'AwaitExpression') {
+    return null;
+  }
+  return expression.arguments[0];
+}
+
 function emittedVariable(statement) {
   if (statement?.type !== 'ExpressionStatement') return '';
   const expression = statement.expression;
@@ -189,16 +201,20 @@ function emittedVariable(statement) {
 function applyBoundedOutputAssociation(calls, emissions, outputFragments) {
   if (!Array.isArray(outputFragments) || outputFragments.length === 0) return false;
   if (outputFragments.some((fragment) => typeof fragment !== 'string' || fragment.length === 0)) return false;
-  const boundCalls = calls.filter((call) => call.resultVariable);
-  if (!boundCalls.length || boundCalls.length !== calls.length || emissions.length !== boundCalls.length
-      || outputFragments.length !== emissions.length) {
+  if (!calls.length || emissions.length !== calls.length || outputFragments.length !== emissions.length) {
     return false;
   }
-  if (boundCalls.some((call, index) => call.resultVariable !== emissions[index])) return false;
 
-  for (let index = 0; index < boundCalls.length; index += 1) {
-    boundCalls[index].resultAssociation = CODE_MODE_RESULT_ASSOCIATION.BOUNDED;
-    boundCalls[index].resultText = outputFragments[index];
+  const emittedCallIndexes = emissions.map((emission) => {
+    if (Number.isInteger(emission?.callIndex)) return emission.callIndex;
+    if (typeof emission?.variable !== 'string') return -1;
+    return calls.findIndex((call) => call.resultVariable === emission.variable);
+  });
+  if (emittedCallIndexes.some((callIndex, index) => callIndex !== index)) return false;
+
+  for (let index = 0; index < calls.length; index += 1) {
+    calls[index].resultAssociation = CODE_MODE_RESULT_ASSOCIATION.BOUNDED;
+    calls[index].resultText = outputFragments[index];
   }
   return true;
 }
@@ -240,14 +256,22 @@ function projectDeclaredCodeModeCalls(source, options = {}) {
       variables.add(declaration.id.name);
       calls.push(parsed.value);
     } else if (statement.type === 'ExpressionStatement') {
-      const variable = emittedVariable(statement);
-      if (variable) {
-        if (!variables.has(variable)) return unsupported('unknown_emission');
-        emissions.push(variable);
-      } else {
-        const parsed = declaredCallFromAwait(statement.expression, '', calls.length, budget);
+      const directAwait = emittedDirectAwait(statement);
+      if (directAwait) {
+        const parsed = declaredCallFromAwait(directAwait, '', calls.length, budget);
         if (!parsed.ok) return unsupported(parsed.reason);
         calls.push(parsed.value);
+        emissions.push({ callIndex: calls.length - 1 });
+      } else {
+        const variable = emittedVariable(statement);
+        if (variable) {
+          if (!variables.has(variable)) return unsupported('unknown_emission');
+          emissions.push({ variable });
+        } else {
+          const parsed = declaredCallFromAwait(statement.expression, '', calls.length, budget);
+          if (!parsed.ok) return unsupported(parsed.reason);
+          calls.push(parsed.value);
+        }
       }
     } else {
       return unsupported('unsupported_control_flow');

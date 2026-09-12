@@ -738,6 +738,7 @@ test('Code Mode single request summaries cover every safely projected tool type'
     { tool: 'view_image', request: { path: 'G:/fixture.png', detail: 'original' }, expected: 'G:/fixture.png · original' },
     { tool: 'wait_agent', request: { targets: ['agent-a', 'agent-b'], timeout_ms: 1000 }, expected: 'agent-a, agent-b · 1000' },
     { tool: 'web__run', request: { search_query: [{ q: 'fixture query' }] }, expected: 'fixture query' },
+    { tool: 'write_stdin', request: { session_id: 49497, chars: '' }, expected: '49497' },
   ];
   assert.deepEqual(
     cases.map((item) => item.tool).sort(),

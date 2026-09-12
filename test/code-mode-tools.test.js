@@ -26,6 +26,7 @@ const EXPECTED_DIRECT_TOOLS = {
   update_plan: { title: 'Plan update', ordinaryKind: 'other_tool_call', previewFields: ['explanation'] },
   view_image: { title: 'Image inspection', ordinaryKind: 'other_tool_call', previewFields: ['path', 'detail'] },
   web__run: { title: 'Web request', ordinaryKind: 'other_tool_call', previewFields: ['search_query', 'open', 'url'] },
+  write_stdin: { title: 'Write stdin', ordinaryKind: 'other_tool_call', previewFields: ['session_id', 'chars'] },
 };
 
 test('shared Code Mode registry is the source of direct-tool declaration, folding, and label metadata', () => {

@@ -1,10 +1,7 @@
 'use strict';
 
 // Request evidence only. No process lifecycle or originating command is inferred.
-function backgroundTerminalRequest(argumentsText) {
-  if (typeof argumentsText !== 'string') return null;
-  let args;
-  try { args = JSON.parse(argumentsText); } catch { return null; }
+function backgroundTerminalRequestValue(args) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
   if (Object.hasOwn(args, 'chars') && typeof args.chars !== 'string') return null;
   const fact = { action: (args.chars ?? '') === '' ? 'poll' : 'input' };
@@ -12,6 +9,13 @@ function backgroundTerminalRequest(argumentsText) {
     fact.processId = args.session_id;
   }
   return fact;
+}
+
+function backgroundTerminalRequest(argumentsText) {
+  if (typeof argumentsText !== 'string') return null;
+  let args;
+  try { args = JSON.parse(argumentsText); } catch { return null; }
+  return backgroundTerminalRequestValue(args);
 }
 
 function backgroundTerminalCall(raws, event) {
@@ -37,4 +41,9 @@ function buildBackgroundTerminalRequests(session) {
   return facts;
 }
 
-module.exports = { backgroundTerminalRequest, backgroundTerminalCall, buildBackgroundTerminalRequests };
+module.exports = {
+  backgroundTerminalRequest,
+  backgroundTerminalRequestValue,
+  backgroundTerminalCall,
+  buildBackgroundTerminalRequests,
+};
