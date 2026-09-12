@@ -1,7 +1,13 @@
 'use strict';
 
-const { backgroundTerminalRequest, backgroundTerminalCall, buildBackgroundTerminalRequests } = require('./codex-background-terminal');
-const { backgroundTerminalLabel } = require('./shared/background-terminal-presentation');
+const {
+  backgroundTerminalRequest,
+  backgroundTerminalRequestValue,
+  backgroundTerminalCall,
+  buildBackgroundTerminalRequests,
+} = require('./codex-background-terminal');
+const { backgroundTerminalLabel, compactBackgroundTerminalSections } = require('./shared/background-terminal-presentation');
+const { terminalSourceEvidence, parseTerminalReceipt, buildTerminalContinuations, backgroundTerminalFactsForEvent } = require('./codex-terminal-continuations');
 
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -3255,18 +3261,10 @@ function extractToolOperationSections(raws, event) {
   const terminalCall = backgroundTerminalCall(raws, event);
   const terminal = terminalCall && backgroundTerminalRequest(terminalCall.output);
   if (terminal) {
-    maybePushKvSection(timelineSections,
-      terminal.action === 'poll' ? 'Background terminal poll request' : 'Background terminal input request', [
-        { key: 'Process ID', value: terminal.processId == null ? '' : String(terminal.processId) },
-        { key: 'Request type', value: terminal.action === 'poll' ? 'Poll' : 'Input' },
-      ], 'request');
-    if (terminal.action === 'input') {
-      // JSON string notation preserves whitespace and makes control characters visible.
-      // Full source arguments remain available through the existing hydrated Request.
-      const chars = JSON.parse(terminalCall.output).chars;
-      timelineSections.push({ purpose: 'request', type: 'code', title: 'Requested input (JSON string)',
-        language: 'json', code: truncatePreservingWhitespace(JSON.stringify(chars), 4000) });
-    }
+    timelineSections.push(...compactBackgroundTerminalSections([
+      ...codeModeBackgroundTerminalRequestSections(JSON.parse(terminalCall.output), terminal),
+      ...sanitizeUnmodeledToolTimelineSections(backgroundTerminalResultSections(responseValue)),
+    ]));
   }
   const userInput = event.toolName === 'request_user_input' ? requestUserInputSection(requestValue, responseValue) : null;
   if (userInput) timelineSections.push(userInput);
@@ -3282,7 +3280,7 @@ function extractToolOperationSections(raws, event) {
   if (timelineSections.length
       && !collaboration
       && event.toolName !== 'update_plan'
-      && (terminal || typeof responseValue !== 'object')
+      && !terminal && typeof responseValue !== 'object'
       && hasMeaningfulToolValue(responseValue)) {
     maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue, 'result');
   }
@@ -3464,6 +3462,11 @@ function codeModeWebResultSection(resultText) {
 
 function codeModeToolProjectionTitle(toolName, requestValue) {
   if (toolName === 'web__run') return codeModeWebProjectionTitle(requestValue);
+  if (toolName === 'write_stdin') {
+    const terminal = backgroundTerminalRequestValue(requestValue);
+    if (terminal?.action === 'poll') return 'Background terminal poll request';
+    if (terminal?.action === 'input') return 'Background terminal input request';
+  }
   return codeModeTools.codeModeToolDefinition(toolName)?.title || humanizeProtocolSubtype(toolName);
 }
 
@@ -3530,16 +3533,79 @@ function codeModeShellResultSections(resultText) {
   return sections;
 }
 
+function codeModeBackgroundTerminalRequestSections(requestValue, terminal) {
+  const sections = [];
+  maybePushKvSection(sections, 'Request', [
+    { key: 'Process ID', value: terminal.processId == null ? '—' : String(terminal.processId) },
+  ], 'request');
+  hideSectionTitle(sections[0]);
+  if (terminal.action === 'input') {
+    // JSON string notation preserves whitespace and makes control characters visible.
+    sections.push({
+      purpose: 'request',
+      type: 'code',
+      title: 'Requested input (JSON string)',
+      language: 'json',
+      code: truncatePreservingWhitespace(JSON.stringify(requestValue.chars), 4000),
+    });
+  }
+  return sections;
+}
+
+// Display-only decoding. This never establishes a continuation or changes event status.
+function backgroundTerminalResultSections(value) {
+  const sections = [];
+  if (!hasMeaningfulToolValue(value)) return sections;
+  const metadata = [];
+  let output;
+  if (typeof value === 'string') {
+    const receipt = parseTerminalReceipt(value);
+    const formatted = parseFormattedCommandOutput(value);
+    if (receipt) {
+      const boundary = value.indexOf('Output:\n') + 'Output:\n'.length;
+      metadata.push({ key: 'Wall time', value: value.match(/^Wall time: (.+)$/m)[1] });
+      metadata.push(Object.hasOwn(receipt, 'exitCode')
+        ? { key: 'Exit code', value: String(receipt.exitCode) }
+        : { key: 'Process running with session ID', value: String(receipt.processId) });
+      output = value.slice(boundary);
+    } else if (formatted) {
+      metadata.push({ key: 'Exit code', value: String(formatted.exitCode) },
+        { key: 'Wall time', value: formatted.wallTime });
+      output = formatted.output;
+    } else output = value;
+  } else if (value && !Array.isArray(value) && typeof value === 'object'
+      && typeof value.output === 'string'
+      && Object.keys(value).every((key) => ['output', 'session_id', 'exit_code', 'wall_time_seconds', 'chunk_id', 'original_token_count'].includes(key))
+      && ['session_id', 'exit_code', 'original_token_count'].every((key) => value[key] == null || Number.isSafeInteger(value[key]))
+      && (value.wall_time_seconds == null || (typeof value.wall_time_seconds === 'number' && Number.isFinite(value.wall_time_seconds)))
+      && (value.chunk_id == null || typeof value.chunk_id === 'string')) {
+    for (const [key, label] of [['session_id', 'Process ID'], ['exit_code', 'Exit code'], ['wall_time_seconds', 'Wall time']]) {
+      if (value[key] != null) metadata.push({ key: label, value: String(value[key]) });
+    }
+    output = value.output;
+  } else {
+    maybePushToolSummaryCodeSection(sections, 'Response summary', value, 'result');
+    return sections;
+  }
+  maybePushKvSection(sections, 'Run result', metadata, 'result');
+  hideSectionTitle(sections[0]);
+  maybePushTerminalSection(sections, 'Output', output, 'stdout', '', 'result');
+  return sections;
+}
+
 function codeModeToolProjectionSection(call, session = {}) {
   const toolName = String(call?.toolName || '');
   const requestValue = call?.requestValue;
+  const terminal = toolName === 'write_stdin' ? backgroundTerminalRequestValue(requestValue) : null;
   const associated = call?.resultAssociation
     === codeModePresentationContract.CODE_MODE_RESULT_ASSOCIATION.BOUNDED;
   const responseValue = associated ? codeModeStructuredResponseValue(call.resultText) : null;
   const requestSections = [];
   const resultSections = [];
 
-  if (toolName === 'update_plan') {
+  if (terminal) {
+    requestSections.push(...codeModeBackgroundTerminalRequestSections(requestValue, terminal));
+  } else if (toolName === 'update_plan') {
     const planUpdate = updatePlanSection(requestValue);
     if (planUpdate) requestSections.push(planUpdate);
   } else if (toolName === 'request_user_input') {
@@ -3578,6 +3644,8 @@ function codeModeToolProjectionSection(call, session = {}) {
   } else if (associated && toolName === 'web__run') {
     const webResult = codeModeWebResultSection(call.resultText);
     if (webResult) resultSections.push(webResult);
+  } else if (associated && terminal) {
+    resultSections.push(...backgroundTerminalResultSections(responseValue == null ? call.resultText : responseValue));
   } else if (associated && toolName !== 'update_plan' && toolName !== 'request_user_input') {
     const collaboration = collaborationToolSection(toolName, requestValue, responseValue);
     if (!collaboration || !collaborationResponseCaptured(responseValue)) {
@@ -3854,6 +3922,8 @@ const codexDetailBuilder = createCodexDetailBuilder({
   },
   cacheObservationPresentation,
   backgroundTerminalLabel,
+  compactBackgroundTerminalSections,
+  backgroundTerminalFactsForEvent,
   sourceTrace: {
     classifyProtocolText,
     codexSourceLocator,
@@ -4327,6 +4397,7 @@ function finalizeSession(session, sessionIndexEntry) {
     ...createEmptyMaterializedPresentationIndexes(),
     ...buildCodeModePresentationIndexes(session),
     backgroundTerminalRequests: buildBackgroundTerminalRequests(session),
+    ...buildTerminalContinuations(session),
   };
   session.eventKinds = eventKindCatalog([session]);
 
@@ -4336,6 +4407,8 @@ function finalizeSession(session, sessionIndexEntry) {
 }
 
 function extractResidentRawFacts(raw, record) {
+  const terminalEvidence = terminalSourceEvidence(record);
+  if (terminalEvidence) raw.terminalSourceEvidence = terminalEvidence;
   const payload = record?.payload;
   if (!payload || typeof payload !== 'object') return;
   if (record.type === 'session_meta' && typeof payload.id === 'string' && payload.id) {
@@ -4420,6 +4493,7 @@ function compactCodexRawEvent(raw) {
     sourceClientVersion: compactString(raw.sourceClientVersion),
   };
   if (typeof raw.sessionMetaId === 'string' && raw.sessionMetaId) compact.sessionMetaId = raw.sessionMetaId;
+  if (typeof raw.terminalSourceEvidence === 'string') compact.terminalSourceEvidence = raw.terminalSourceEvidence;
   if (typeof raw.threadName === 'string' && raw.threadName) compact.threadName = raw.threadName;
   if (typeof raw.reviewLifecyclePhase === 'string' && raw.reviewLifecyclePhase) compact.reviewLifecyclePhase = raw.reviewLifecyclePhase;
   if (typeof raw.reviewThreadId === 'string' && raw.reviewThreadId) compact.reviewThreadId = raw.reviewThreadId;
@@ -4428,6 +4502,7 @@ function compactCodexRawEvent(raw) {
 }
 
 const COMPACT_RAW_KEYS = new Set([
+  'terminalSourceEvidence',
   'aggregatedOutput', 'callId', 'canonicalType', 'commandText', 'durationMs', 'embeddedImages',
   'exitCode', 'line', 'maxObservedTokens', 'messageText', 'output', 'payloadType', 'preview',
   'rawId', 'rawIndex', 'recordType', 'reviewLifecyclePhase', 'reviewThreadId', 'role',
@@ -4522,6 +4597,7 @@ function isReusableCompactRaw(raw) {
     && raw.embeddedImages.every(isCompactEmbeddedImageDescriptor)
     && (raw.maxObservedTokens === undefined || (Number.isFinite(raw.maxObservedTokens) && raw.maxObservedTokens > 0))
     && (raw.sessionMetaId === undefined || typeof raw.sessionMetaId === 'string')
+    && (raw.terminalSourceEvidence === undefined || ['native-local-direct-v1', 'barrier'].includes(raw.terminalSourceEvidence))
     && (raw.threadName === undefined || typeof raw.threadName === 'string')
     && (raw.reviewLifecyclePhase === undefined || typeof raw.reviewLifecyclePhase === 'string')
     && (raw.reviewThreadId === undefined || typeof raw.reviewThreadId === 'string')
@@ -4654,6 +4730,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   let lineNumber = 0;
+  let terminalSourceGap = false;
   const observeSourcePhases = hasMaterializationObserver();
   const sourceStreamStartedAt = observeSourcePhases ? performance.now() : 0;
   let sourceRecordParseMs = 0;
@@ -4666,7 +4743,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
     for await (const line of rl) {
       throwIfAborted(signal);
       lineNumber += 1;
-      if (!line.trim()) continue;
+      if (!line.trim()) { terminalSourceGap = true; continue; }
       const recordStartedAt = observeSourcePhases ? performance.now() : 0;
       session.lineCount += 1;
       const record = safeJsonParse(line);
@@ -4674,6 +4751,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
         observeCodexLeadingSessionRecord(relationshipPlanningFacts, record);
       }
       if (!record) {
+        terminalSourceGap = true;
         if (observeSourcePhases) sourceRecordParseMs += performance.now() - recordStartedAt;
         continue;
       }
@@ -4706,6 +4784,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       if (canonicalDigest) raw._canonicalRawDigest = canonicalDigest;
       raw.sourceClientVersion = typeof record.version === 'string' ? record.version : '';
       extractResidentRawFacts(raw, record);
+      if (terminalSourceGap) { raw.terminalSourceEvidence = 'barrier'; terminalSourceGap = false; }
       if (captureCacheObservationSeeds) {
         const seedCaptureStartedAt = observeSourcePhases ? performance.now() : 0;
         const seed = createCodexCacheObservationSeed(raw, payload);
@@ -6711,6 +6790,7 @@ function validateCodexMaterializedPrivateState({ indexedSession, session }) {
 }
 
 const codexSearch = createCodexSearch({
+  backgroundTerminalFactsForEvent,
   canonicalSchemaVersion: CANONICAL_SCHEMA_VERSION,
   codeModePresentationFactsForEvent,
   codeModePresentationContextMap,

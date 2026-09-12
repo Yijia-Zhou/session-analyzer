@@ -161,14 +161,15 @@ function projectTrajectoryEvents(events, options = {}) {
     if (!eventId) throw new TypeError(`Trajectory event at index ${index} must have an ID`);
     if (ids.has(eventId)) throw new TypeError(`Trajectory event ID must be unique: ${eventId}`);
     ids.add(eventId);
+    const terminalLabel = options.terminalLabelForEvent?.(event) || '';
     return Object.freeze({
       event,
       eventId,
       index,
       lane: trajectoryLaneForEvent(event),
       turnId: reliableTrajectoryTurnId(event.turnId),
-      preview: trajectoryEventPreview(event, options.locale),
-      type: trajectoryEventType(event, options.eventLabel || 'Event', options.locale),
+      preview: terminalLabel || trajectoryEventPreview(event, options.locale),
+      type: terminalLabel || trajectoryEventType(event, options.eventLabel || 'Event', options.locale),
       status: compactTrajectoryText(event.status || '', 28),
       displayState: projectedDisplayState(event, index, options),
     });
@@ -519,7 +520,7 @@ function renderTrajectoryEventButton(documentRef, projected, options = {}) {
   ].filter(Boolean).join(', '));
 
   appendTextElement(documentRef, button, 'trajectoryEventType', projected.type);
-  appendTextElement(documentRef, button, 'trajectoryEventPreview', projected.preview);
+  appendTextElement(documentRef, button, 'trajectoryEventPreview', projected.preview === projected.type ? '' : projected.preview);
   if (projected.status) {
     const status = appendTextElement(documentRef, button, 'trajectoryEventStatus', projected.status);
     status.dataset.status = statusSlug(projected.status);
@@ -1049,6 +1050,7 @@ function renderTrajectoryPresentation({
   loadedStatus = '',
   viewState = null,
   displayStateForEvent,
+  terminalLabelForEvent,
   labels: labelOverrides = {},
   expandedGroupIds = new Set(),
   onGroupToggle,
@@ -1062,6 +1064,7 @@ function renderTrajectoryPresentation({
   const model = buildTrajectoryPresentation(events, {
     locale,
     displayStateForEvent,
+    terminalLabelForEvent,
     eventLabel: labels.event,
   });
   const documentRef = root.ownerDocument || document;

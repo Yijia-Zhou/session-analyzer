@@ -1805,7 +1805,7 @@ test('canonical empty cache-link shape is uniform for every production source ki
     const fixture = makeStrictMaterializationBoundaryFixture(sourceKind);
     assert.deepEqual(
       Object.keys(fixture.materializedSession.presentationIndexes),
-      ['codeModeDeclaredRequests', 'backgroundTerminalRequests', 'cacheDiscontinuityLinks'],
+      ['codeModeDeclaredRequests', 'backgroundTerminalRequests', 'backgroundTerminalOrigins', 'backgroundTerminalContinuations', 'cacheDiscontinuityLinks'],
     );
     assert.equal(
       fixture.materializedSession.presentationIndexes.cacheDiscontinuityLinks

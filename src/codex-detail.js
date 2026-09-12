@@ -13,6 +13,8 @@ function createCodexDetailBuilder(deps) {
     agentCoordination,
     cacheObservationPresentation,
     backgroundTerminalLabel = () => '',
+    compactBackgroundTerminalSections = (sections) => sections,
+    backgroundTerminalFactsForEvent = () => null,
   } = deps;
   const {
     codeModeAssociableOutputFragments,
@@ -702,13 +704,11 @@ function createCodexDetailBuilder(deps) {
   function splitSingleCodeModeProjection(projection) {
     const requestSections = Array.isArray(projection.requestSections) ? projection.requestSections : [];
     const resultSections = Array.isArray(projection.resultSections) ? projection.resultSections : [];
-    if (projection.toolName === 'web__run') {
+    if (['web__run', 'write_stdin'].includes(projection.toolName)) {
       const associatedResultSections = resultSections.filter((section) => section.type === 'code_mode_source');
+      const sections = [...requestSections, ...resultSections.filter((section) => !associatedResultSections.includes(section))];
       return {
-        timelineSections: [
-          ...requestSections,
-          ...resultSections.filter((section) => !associatedResultSections.includes(section)),
-        ],
+        timelineSections: projection.toolName === 'write_stdin' ? compactBackgroundTerminalSections(sections) : sections,
         inspectorSections: associatedResultSections,
       };
     }
@@ -916,6 +916,13 @@ function createCodexDetailBuilder(deps) {
       ? codeModeEventRefsSection(logical, session, locale)
       : null;
     if (eventRefsSection) detailSections.inspectorSections.push(eventRefsSection);
+    const terminalFact = backgroundTerminalFactsForEvent(session, logical.id);
+    if (terminalFact?.originEventId) {
+      const origin = session.logicalEvents.find((candidate) => candidate.id === terminalFact.originEventId);
+      if (origin) detailSections.inspectorSections.push({ purpose: 'traceability', type: 'event_refs', title: 'Originating command',
+        items: [{ id: origin.id, label: terminalFact.commandPreview || localizedLogicalLabel(origin, locale),
+          kind: origin.kind, status: origin.status }] });
+    }
     if (!detailSections.timelineSections.length && !detailSections.inspectorSections.length) {
       detailSections.inspectorSections.push(makeRawJsonSection('Unmodeled fields', logicalFallbackPayload(raws), false, 'fallback'));
     }
@@ -930,7 +937,7 @@ function createCodexDetailBuilder(deps) {
       kind: sanitizeLogicalEnvelopeValue(logical.kind),
       subtype: sanitizeLogicalEnvelopeValue(logical.subtype),
       layer: sanitizeLogicalEnvelopeValue(logical.layer),
-      title: backgroundTerminalLabel(session.presentationIndexes?.backgroundTerminalRequests?.get(logical.id), locale)
+      title: backgroundTerminalLabel(terminalFact || session.presentationIndexes?.backgroundTerminalRequests?.get(logical.id), locale)
         || localizedLogicalLabel(logical, locale),
       sourceLocator: logical.sourceLocator,
       meta: logicalMeta(logical),

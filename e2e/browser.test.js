@@ -22,6 +22,62 @@ const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 let wave1bM2SourceBundlePromise;
 
+async function captureTerminalPresentation(page, name) {
+  if (!process.env.TERMINAL_SCREENSHOTS) return;
+  const dir = path.join(__dirname, '../output/playwright', process.env.TERMINAL_SCREENSHOTS);
+  await fsp.mkdir(dir, { recursive: true });
+  await page.screenshot({ path: path.join(dir, `${name}.png`), fullPage: true });
+}
+
+test('background terminal continuation suffix and origin navigation preserve separate events', async (t) => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'terminal-origin-browser-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const rows = (await fsp.readFile(path.join(__dirname, '../test/fixtures/background-terminal/continuation.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  rows[0].payload.cwd = repoRoot;
+  const id = rows[0].payload.id;
+  const dir = path.join(home, 'sessions', '2026', '09', '11');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.writeFile(path.join(dir, `rollout-${id}.jsonl`), rows.map(JSON.stringify).join('\n') + '\n');
+  const index = await buildIndex({ repoRoot, codexHome: home });
+  const session = await materializeIndexedSession(index, id);
+  const originId = session.logicalEvents.find((event) => event.id.endsWith(':e1')).id;
+  const waitId = session.logicalEvents.find((event) => event.id.endsWith(':w1')).id;
+  const { page } = await openApp(t, index, { locale: 'zh-CN' });
+  const wait = page.locator(`#timeline .event[data-event-id="${waitId}"]`);
+  assert.equal(await wait.locator('.eventKind').textContent(), '后台终端轮询请求 · npm test');
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 3);
+  await page.locator('#searchInput').fill('npm test');
+  await page.locator('#searchInput').dispatchEvent('input');
+  await page.waitForFunction(() => document.querySelectorAll('#timeline .event.searchHit').length === 1);
+  assert.equal(await page.locator('#timeline .event.searchHit').getAttribute('data-event-id'), originId);
+  assert.equal((await wait.getAttribute('class')).includes('searchHit'), false);
+  await page.locator('#searchInput').fill('');
+  await page.locator('#searchInput').dispatchEvent('input');
+  await page.waitForFunction(() => document.querySelectorAll('#timeline .event.searchHit').length === 0);
+  await wait.locator('.eventKind').click();
+  const originLink = page.locator(`#detail [data-event-ref-id="${originId}"]`);
+  await originLink.waitFor();
+  assert.equal(await originLink.textContent(), 'npm test');
+  if (!(await wait.locator('.eventBody').isVisible())) await wait.locator('.eventHeader > .eventToggle').click();
+  await wait.locator('.eventBody').waitFor();
+  assert.equal((await wait.textContent()).match(/后台终端轮询请求/g)?.length, 1);
+  assert.equal((await wait.textContent()).includes('请求类型'), false);
+  assert.ok((await wait.textContent()).includes('Still working'));
+  assert.equal(await wait.locator('.kvTable').count(), 1);
+  assert.equal((await wait.locator('.eventBody').textContent()).match(/1234/g)?.length, 1);
+  assert.equal((await wait.textContent()).includes('Wall time:'), false);
+  await captureTerminalPresentation(page, 'native-poll');
+  await originLink.click();
+  await page.waitForFunction((id) => document.querySelector('#timeline .event.selected')?.dataset.eventId === id, originId);
+  await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
+  await page.waitForSelector('.trajectoryPresentation');
+  const group = page.locator('.trajectoryToolGroup');
+  if (!(await group.evaluate((node) => node.open))) await group.locator('summary').click();
+  assert.ok((await page.locator('#timeline').textContent()).includes('后台终端轮询请求 · npm test'));
+  assert.equal((await page.locator('#timeline').textContent()).match(/后台终端轮询请求/g)?.length, 1);
+  await captureTerminalPresentation(page, 'native-trajectory');
+});
+
 test('background terminal requests render in Timeline, hydrated Detail and Trajectory without an origin', async (t) => {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'terminal-browser-'));
   t.after(() => fsp.rm(home, { recursive: true, force: true }));
@@ -46,9 +102,12 @@ test('background terminal requests render in Timeline, hydrated Detail and Traje
   const detailText = await input.textContent();
   assert.ok(detailText.includes('\\u0003\\u001b[31m'));
   assert.ok(detailText.includes('synthetic rejection'));
+  assert.equal(detailText.match(/Background terminal input request/g)?.length, 1);
+  assert.equal(detailText.includes('Request type'), false);
   assert.equal(detailText.includes('· npm test'), false);
   await input.locator('.eventHeader > .eventKind').click();
   await page.waitForFunction(() => document.querySelector('#detail')?.textContent.includes('synthetic rejection'));
+  await captureTerminalPresentation(page, 'native-input');
   await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
   await page.waitForSelector('.trajectoryPresentation');
   assert.ok((await page.locator('#timeline').textContent()).includes('Background terminal'));
@@ -1488,6 +1547,25 @@ async function makeCodeModeCodexHome(t) {
   await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
   t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
   return { codexHome, repoRoot: codeModeRepoRoot };
+}
+
+async function makeCodeModeDirectWriteStdinCodexHome(t, options = {}) {
+  const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-code-mode-write-stdin-'));
+  const repoRoot = path.join(codexHome, 'repo');
+  const sessionId = 'c8c8c8c8-1234-4234-8234-c8c8c8c8c8c8';
+  const dir = path.join(codexHome, 'sessions', '2026', '09', '11');
+  const file = path.join(dir, `rollout-2026-09-11T12-00-00-${sessionId}.jsonl`);
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
+  const fixture = await fsp.readFile(path.join(__dirname, '../test/fixtures/code-mode/direct-write-stdin.jsonl'), 'utf8');
+  const rows = [
+    { timestamp: '2026-09-11T12:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: repoRoot } },
+    ...fixture.trim().split(/\r?\n/).map((line) => JSON.parse(line)),
+  ];
+  if (options.pollResponse) rows[2].payload.output[1].text = JSON.stringify(options.pollResponse);
+  await fsp.writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+  t.after(() => fsp.rm(codexHome, { recursive: true, force: true }));
+  return { codexHome, repoRoot, sessionId };
 }
 
 async function makeContextCodeModeCodexHome(t, options = {}) {
@@ -4107,6 +4185,102 @@ test('browser single-tool Code Mode keeps native request and operation output pr
   assert.notEqual(await localizedInspectorTrace.getAttribute('open'), null);
   assert.match(await localizedInspectorTrace.textContent(), /执行阶段.*Initial output.*等待阶段 1.*Intermediate output.*等待阶段 2/s);
   assert.equal((await localizedInspectorTrace.textContent()).includes('Final browser output'), false);
+});
+
+test('browser Code Mode projects direct write_stdin emissions as terminal requests without native origin relation', async (t) => {
+  const fixture = await makeCodeModeDirectWriteStdinCodexHome(t);
+  const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+  const session = await materializeIndexedSession(index, fixture.sessionId);
+  const operations = session.logicalEvents.filter((event) => event.kind === 'code_mode_operation');
+  assert.equal(operations.length, 2);
+  assert.equal(session.presentationIndexes.backgroundTerminalRequests.size, 0);
+  assert.equal(session.presentationIndexes.backgroundTerminalContinuations.size, 0);
+
+  const { page } = await openApp(t, index, { locale: 'en' });
+  const poll = page.locator(`#timeline .event[data-event-id="${operations[0].id}"]`);
+  const input = page.locator(`#timeline .event[data-event-id="${operations[1].id}"]`);
+  await page.waitForFunction(({ pollId, inputId }) => (
+    document.querySelector(`#timeline .event[data-event-id="${CSS.escape(pollId)}"]`)?.classList.contains('code-mode-single-tool')
+      && document.querySelector(`#timeline .event[data-event-id="${CSS.escape(inputId)}"]`)?.classList.contains('code-mode-single-tool')
+  ), { pollId: operations[0].id, inputId: operations[1].id });
+  assert.equal(await poll.locator('.eventKind').textContent(), 'Background terminal poll request');
+  assert.equal(await input.locator('.eventKind').textContent(), 'Background terminal input request');
+  assert.match(await poll.locator('.eventHeader').textContent(), /Code Mode/);
+  assert.equal((await poll.locator('.eventHeader').textContent()).includes('npm test'), false);
+
+  await poll.locator('.eventHeader > .eventToggle').click();
+  await page.waitForSelector(`#timeline .event[data-event-id="${operations[0].id}"] .eventBody`);
+  assert.match(await poll.textContent(), /Background terminal poll request.*Process ID.*49497.*Output.*still working/s);
+  assert.equal((await poll.textContent()).match(/Background terminal poll request/g)?.length, 1);
+  assert.equal((await poll.textContent()).includes('Request type'), false);
+  assert.equal((await poll.textContent()).includes('"output"'), false);
+  assert.equal(await poll.locator('.kvTable').count(), 1);
+  assert.equal((await poll.locator('.eventBody').textContent()).match(/49497/g)?.length, 1);
+  assert.match(await poll.locator('.kvTable').textContent(), /Process ID.*49497.*Wall time.*5.0025895/s);
+  assert.equal(await poll.locator('.codeModeSource').count(), 0);
+
+  await input.locator('.eventHeader > .eventToggle').click();
+  await page.waitForSelector(`#timeline .event[data-event-id="${operations[1].id}"] .eventBody`);
+  assert.match(await input.textContent(), /Background terminal input request.*Requested input \(JSON string\).*q\\n/s);
+  assert.equal((await input.textContent()).includes('Originating command'), false);
+  assert.equal((await input.textContent()).match(/Background terminal input request/g)?.length, 1);
+
+  await input.locator('.eventKind').click();
+  await waitForDetailView(page, 'inspector');
+  assert.match(await page.locator('#detail .detailViewHeader').textContent(), /Background terminal input request/);
+  assert.equal((await page.locator('#detail').textContent()).includes('Originating command'), false);
+  const associatedResult = page.locator('#detail .codeModeSource').filter({ hasText: 'Associated result' });
+  await associatedResult.locator('summary').click();
+  assert.ok((await associatedResult.textContent()).includes('"output":"accepted"'));
+  await associatedResult.locator('summary').click();
+
+  await captureTerminalPresentation(page, 'code-mode-input-poll');
+
+  await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
+  await page.waitForSelector('.trajectoryPresentation');
+  assert.equal(await page.locator('[data-trajectory-event-id]').count(), 2);
+  assert.match(await page.locator('#timeline').textContent(), /Background terminal poll request/);
+  assert.match(await page.locator('#timeline').textContent(), /Background terminal input request/);
+  assert.equal((await page.locator('#timeline').textContent()).includes('text(await'), false);
+  await captureTerminalPresentation(page, 'code-mode-trajectory');
+});
+
+test('background terminal metadata keeps differing response IDs and raw evidence in both locales', async (t) => {
+  for (const locale of ['en', 'zh-CN']) await t.test(locale, async (t) => {
+    const fixture = await makeCodeModeDirectWriteStdinCodexHome(t, {
+      pollResponse: { session_id: 49498, wall_time_seconds: 0, output: '{"label":"actual stdout"}\nsecond line' },
+    });
+    const index = await buildIndex({ repoRoot: fixture.repoRoot, codexHome: fixture.codexHome });
+    const session = await materializeIndexedSession(index, fixture.sessionId);
+    const event = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
+    const { page } = await openApp(t, index, { locale });
+    const card = page.locator(`#timeline .event[data-event-id="${event.id}"]`);
+    await page.waitForFunction((id) => document.querySelector(`[data-event-id="${CSS.escape(id)}"]`)?.classList.contains('code-mode-single-tool'), event.id);
+    await card.locator('.eventHeader > .eventToggle').click();
+    await card.locator('.eventBody').waitFor();
+    assert.equal(await card.locator('.kvTable').count(), 1);
+    const metadata = await card.locator('.kvTable').textContent();
+    assert.match(metadata, /49497.*49498.*0/s);
+    assert.ok(metadata.includes(locale === 'en' ? 'Response Process ID' : '响应进程 ID'));
+    assert.ok((await card.textContent()).includes('{"label":"actual stdout"}'));
+    for (const width of [960, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    }
+    await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
+    await page.waitForSelector('.trajectoryPresentation');
+    await page.locator(`[data-trajectory-event-id="${event.id}"]`).click();
+    await waitForDetailView(page, 'inspector');
+    const result = page.locator('#detail .codeModeSource').filter({ hasText: locale === 'en' ? 'Associated result' : '关联结果' });
+    await result.locator('summary').click();
+    assert.ok((await result.textContent()).includes('"session_id":49498'));
+    await page.locator('[data-detail-action="raw"]').click();
+    await page.waitForSelector('#detail .rawRefsView');
+    await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('49498'));
+    assert.ok((await page.locator('#detail').textContent()).includes('49498'));
+    assert.ok((await page.locator('#detail').textContent()).includes('49497'));
+    await captureTerminalPresentation(page, `different-pid-${locale}`);
+  });
 });
 
 test('browser nested Code Mode context reveals a distinct parent row without changing search owners or fold overrides', async (t) => {

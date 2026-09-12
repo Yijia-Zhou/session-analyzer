@@ -39,6 +39,7 @@
     update_plan: definition('Plan update', DEFAULT_ORDINARY_KIND, ['explanation']),
     view_image: definition('Image inspection', DEFAULT_ORDINARY_KIND, ['path', 'detail']),
     web__run: definition('Web request', DEFAULT_ORDINARY_KIND, ['search_query', 'open', 'url']),
+    write_stdin: definition('Write stdin', DEFAULT_ORDINARY_KIND, ['session_id', 'chars']),
   });
 
   function normalizedToolName(toolName) {

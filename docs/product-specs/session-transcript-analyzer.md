@@ -1,13 +1,15 @@
 # Session Transcript Analyzer / 会话转录分析器
 
-Codex durable `write_stdin` calls have dedicated Main and Detail presentation: omitted/empty string `chars` is a background terminal poll request; every nonempty string is an input request, without claiming successful delivery. Malformed arguments fall back to generic tool presentation. Each call retains its canonical identity/kind/status/count/search/folding/Raw References, and no originating command is inferred. / Codex durable `write_stdin` 在 Main 与 Detail 中有专门呈现：缺失／空字符串 `chars` 表示后台终端轮询请求，所有非空字符串表示输入请求，不声称成功写入。无效参数回退到通用工具呈现。每次调用保留 canonical identity／kind／status／count／search／folding／Raw References，不推断 originating command。
+Background-terminal detail avoids repeating its header action, retains Process ID and input-only escaped input, and presents recognized terminal responses as metadata and readable output. Original response evidence remains in Inspector and Raw References; unknown response shapes retain generic fallback. Trajectory avoids duplicate row labels and uses already hydrated Code Mode terminal labels. / 后台终端详情不重复 header 动作，保留 Process ID，仅输入请求显示转义输入，将可识别 terminal response 展示为 metadata 与可读输出。原响应证据保留在 Inspector 与 Raw References；未知响应形态保留通用回退。Trajectory 避免重复行标签，并使用已 hydrated 的 Code Mode terminal label。
+
+Codex durable `write_stdin` calls have dedicated Main and Detail presentation: omitted/empty string `chars` is a background terminal poll request; every nonempty string is an input request, without claiming successful delivery. Malformed arguments fall back to generic tool presentation. Codex Code Mode also recognizes the closed-world direct-emission form `text(await tools.write_stdin(<literal>))` and applies the same poll/input request presentation inside the owning Code Mode operation, but it does not inherit the native direct-tool origin relation. A strictly admitted native local/direct origin relation adds a bounded command suffix and Detail navigation; unsupported, incomplete, mixed or ambiguous evidence keeps the original no-suffix presentation. Each call retains its canonical identity/kind/status/count/search/folding/Raw References; the suffix does not make W own command-text search hits. / Codex durable `write_stdin` 在 Main 与 Detail 中有专门呈现：缺失／空字符串 `chars` 表示后台终端轮询请求，所有非空字符串表示输入请求，不声称成功写入。无效参数回退到通用工具呈现。Codex Code Mode 也识别 closed-world direct-emission 形态 `text(await tools.write_stdin(<literal>))`，并在所属 Code Mode operation 内应用相同的 poll／input request 呈现，但不会继承 native direct-tool origin relation。严格准入的 native local／direct origin relation 增加有界命令后缀与 Detail 导航；不支持、不完整、混合或歧义证据保留无后缀呈现。每次调用保留 canonical identity／kind／status／count／search／folding／Raw References，后缀不让 W 获得命令文本搜索命中归属。
 
 Reading controls must remain visible and operable without document-level horizontal overflow at desktop widths, including manual fold overrides that expose Reset folds. Project drill-down offers one return action in the center session header (including while loading), plus one in the Inspector when open. Returning preserves the active query, filters, Layer and project cards, restores Project Scope and focuses the originating card. / 桌面宽度下阅读控件必须可见、可操作，且不产生文档级横向溢出，包括手动折叠后显示 Reset folds 的状态。项目下钻在中间 session header 提供一个返回入口（加载期间也可用），Inspector 打开时另有一个。返回保留当前 query、筛选、Layer 与项目卡片，恢复项目范围并聚焦来源卡片。
 
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-09-10 / 最近更新：2026-09-10
+- Last updated: 2026-09-11 / 最近更新：2026-09-11
 - Related docs: / 相关文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/trajectory-presentation.md`
