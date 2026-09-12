@@ -13,6 +13,7 @@ function createCodexDetailBuilder(deps) {
     agentCoordination,
     cacheObservationPresentation,
     backgroundTerminalLabel = () => '',
+    compactBackgroundTerminalSections = (sections) => sections,
     backgroundTerminalFactsForEvent = () => null,
   } = deps;
   const {
@@ -703,13 +704,11 @@ function createCodexDetailBuilder(deps) {
   function splitSingleCodeModeProjection(projection) {
     const requestSections = Array.isArray(projection.requestSections) ? projection.requestSections : [];
     const resultSections = Array.isArray(projection.resultSections) ? projection.resultSections : [];
-    if (projection.toolName === 'web__run') {
+    if (['web__run', 'write_stdin'].includes(projection.toolName)) {
       const associatedResultSections = resultSections.filter((section) => section.type === 'code_mode_source');
+      const sections = [...requestSections, ...resultSections.filter((section) => !associatedResultSections.includes(section))];
       return {
-        timelineSections: [
-          ...requestSections,
-          ...resultSections.filter((section) => !associatedResultSections.includes(section)),
-        ],
+        timelineSections: projection.toolName === 'write_stdin' ? compactBackgroundTerminalSections(sections) : sections,
         inspectorSections: associatedResultSections,
       };
     }

@@ -5171,6 +5171,11 @@ body[data-project-mode='selecting'] .searchAssist {
   width: 28%;
 }
 
+.kvWrap > .kvTable:first-child tr:first-child > th,
+.kvWrap > .kvTable:first-child tr:first-child > td {
+  border-top: 0;
+}
+
 .tokenUsageGrid {
   display: grid;
   gap: 0.55rem;

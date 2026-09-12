@@ -7,12 +7,11 @@ const path = require('node:path');
 const os = require('node:os');
 const codex = require('../src/codex');
 const { backgroundTerminalRequest, backgroundTerminalCall } = require('../src/codex-background-terminal');
-const { backgroundTerminalLabel } = require('../src/shared/background-terminal-presentation');
+const { backgroundTerminalLabel, compactBackgroundTerminalSections } = require('../src/shared/background-terminal-presentation');
 const { buildTrajectoryPresentation } = require('../src/browser/trajectory-presentation');
 const { getSourceAdapter, materializeSessionForIndex } = require('../src/source-adapters');
 const { validateCanonicalMaterializedSessionShape } = require('../src/canonical-contract');
 const { displayStateFromRules, normalizeRules } = require('../src/shared/folding');
-
 const { validateStructuredLogicalDetailDto } = require('../src/shared/logical-detail-contract');
 
 test('native continuation survives hydration, pagination and search without transferring ownership', async (t) => {
@@ -47,6 +46,8 @@ test('native continuation survives hydration, pagination and search without tran
   assert.doesNotThrow(() => validateStructuredLogicalDetailDto(detail));
   assert.equal(detail.title, '后台终端轮询请求 · npm test');
   assert.deepEqual(detail.rawRefs, w.rawRefs);
+  assert.equal(detail.timelineSections.find((section) => section.type === 'terminal').text, 'Still working');
+  assert.equal(detail.timelineSections.some((section) => section.entries?.some((entry) => entry.key === '请求类型')), false);
   const originSection = detail.inspectorSections.find((section) => section.type === 'event_refs');
   assert.deepEqual(originSection.items.map((item) => item.id), [e.id]);
   const exitDetail = await codex.buildHydratedEventDetail(index, session, eventFor('w2').id, 'main');
@@ -101,6 +102,110 @@ test('native continuation survives hydration, pagination and search without tran
     const changed = await materializeSessionForIndex(changedIndex, changedIndex.sessionsById.get(id));
     assert.equal(changed.presentationIndexes.backgroundTerminalContinuations.size, 0, `gap ${badLine}`);
     assert.ok(changed.presentationIndexes.backgroundTerminalRequests.size > 0);
+  }
+});
+
+test('Code Mode direct write_stdin emissions use terminal presentation without native origin relation', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'code-mode-write-stdin-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const repoRoot = path.join(root, 'repo');
+  const id = 'cc123456-1234-4234-8234-123456789abc';
+  const dir = path.join(root, 'sessions', '2026', '09', '11');
+  await fs.mkdir(dir, { recursive: true });
+  const fixture = await fs.readFile(path.join(__dirname, 'fixtures/code-mode/direct-write-stdin.jsonl'), 'utf8');
+  const rows = [
+    { type: 'session_meta', payload: { id, cwd: repoRoot } },
+    ...fixture.trim().split(/\r?\n/).map((line) => JSON.parse(line)),
+  ];
+  await fs.writeFile(path.join(dir, `rollout-${id}.jsonl`), `${rows.map(JSON.stringify).join('\n')}\n`);
+
+  const index = await getSourceAdapter('codex').buildIndex({ repoRoot, sourceHome: root });
+  const session = await materializeSessionForIndex(index, index.sessionsById.get(id));
+  const operations = session.logicalEvents.filter((event) => event.kind === 'code_mode_operation');
+  assert.deepEqual(operations.map((event) => event.codeModeOperation.outerCallId), [
+    'exec-write-stdin-poll',
+    'exec-write-stdin-input',
+  ]);
+  assert.equal(session.counts.toolCalls, 2);
+  assert.equal(session.presentationIndexes.backgroundTerminalRequests.size, 0);
+  assert.equal(session.presentationIndexes.backgroundTerminalContinuations.size, 0);
+
+  const pollDetail = await codex.buildHydratedEventDetail(index, session, operations[0].id, 'main', { locale: 'zh-CN' });
+  assert.equal(pollDetail.presentation.label, '后台终端轮询请求');
+  assert.equal(pollDetail.presentation.toolName, 'write_stdin');
+  assert.equal(pollDetail.presentation.resultAssociation, 'bounded');
+  assert.ok(pollDetail.timelineSections.some((section) => section.hideTitle && section.entries?.some((entry) => entry.value === '49497')));
+  assert.ok(pollDetail.timelineSections.some((section) => section.type === 'terminal' && section.text === 'still working'));
+  assert.equal(pollDetail.timelineSections.some((section) => section.type === 'code_mode_source'), false);
+  assert.ok(pollDetail.inspectorSections.some((section) => section.type === 'code_mode_source' && section.code.includes('still working')));
+  assert.equal(pollDetail.inspectorSections.some((section) => section.title === '起始命令'), false);
+
+  const inputDetail = await codex.buildHydratedEventDetail(index, session, operations[1].id, 'main', { locale: 'en' });
+  assert.equal(inputDetail.presentation.label, 'Background terminal input request');
+  const inputSection = inputDetail.timelineSections.find((section) => section.title === 'Requested input (JSON string)');
+  assert.equal(inputSection.code, JSON.stringify('q\n'));
+  assert.ok(inputDetail.timelineSections.some((section) => section.type === 'terminal' && section.text === 'accepted'));
+
+  await t.test('response display decodes only typed terminal envelopes and retains source evidence', async () => {
+    for (const [value, structured] of [
+      [{ output: 'line one\nline two', exit_code: 1, wall_time_seconds: 0.25, chunk_id: 'chunk', original_token_count: 8 }, true],
+      [{ output: '', session_id: 49497 }, true],
+      [{ output: 'running', session_id: 49497, wall_time_seconds: 5.0025895 }, true],
+      [{ output: 'different process', session_id: 49498, wall_time_seconds: 0 }, true],
+      [{ output: 'visible', extra: 'keep this field' }, false],
+      [{ output: 'visible', exit_code: 'bad' }, false],
+      [{ output: { nested: 'keep this object' } }, false],
+    ]) {
+      const text = JSON.stringify(value);
+      rows[2].payload.output[1].text = text;
+      await fs.writeFile(path.join(dir, `rollout-${id}.jsonl`), `${rows.map(JSON.stringify).join('\n')}\n`);
+      const nextIndex = await getSourceAdapter('codex').buildIndex({ repoRoot, sourceHome: root });
+      const nextSession = await materializeSessionForIndex(nextIndex, nextIndex.sessionsById.get(id));
+      const event = nextSession.logicalEvents.find((event) => event.kind === 'code_mode_operation');
+      const nextDetail = await codex.buildHydratedEventDetail(nextIndex, nextSession, event.id, 'main');
+      assert.doesNotThrow(() => validateStructuredLogicalDetailDto(nextDetail));
+      assert.equal(nextDetail.timelineSections.some((section) => section.title === 'Response summary'), !structured);
+      if (structured && value.output) assert.equal(nextDetail.timelineSections.find((section) => section.type === 'terminal').text, value.output);
+      if (structured) {
+        const metadata = nextDetail.timelineSections.filter((section) => section.type === 'kv');
+        assert.equal(metadata.length, 1);
+        assert.equal(metadata[0].entries.filter((entry) => entry.key === 'Process ID').length, 1);
+        assert.equal(metadata[0].entries.filter((entry) => entry.value === '49497').length, 1);
+        assert.equal(metadata[0].entries.some((entry) => entry.key === 'Response Process ID'), value.session_id === 49498);
+      }
+      assert.ok(nextDetail.inspectorSections.some((section) => section.type === 'code_mode_source' && section.code === text));
+      assert.deepEqual(nextDetail.rawRefs, event.rawRefs);
+      assert.equal(nextSession.presentationIndexes.backgroundTerminalContinuations.size, 0);
+    }
+  });
+});
+
+test('terminal metadata compaction preserves differing or missing IDs and never mutates evidence sections', () => {
+  for (const responseKey of ['Process ID', 'Process running with session ID']) {
+    for (const requestId of ['49497', '—', '0']) {
+      for (const responseId of ['49497', '49498', '0']) {
+        const sections = [
+          { type: 'kv', title: 'Request', purpose: 'request', hideTitle: true, entries: [{ key: 'Process ID', value: requestId }] },
+          { type: 'code', title: 'Requested input (JSON string)', code: '"q\\n"', purpose: 'request' },
+          { type: 'kv', title: 'Run result', purpose: 'result', hideTitle: true, entries: [{ key: responseKey, value: responseId }, { key: 'Wall time', value: '0' }] },
+          { type: 'terminal', text: '{"output":"actual stdout"}', purpose: 'result' },
+        ];
+        const before = structuredClone(sections);
+        const compact = compactBackgroundTerminalSections(sections);
+        assert.deepEqual(sections, before);
+        assert.equal(compact.filter((section) => section.type === 'kv').length, 1);
+        assert.deepEqual(compact[0].entries, [
+          { key: 'Process ID', value: requestId },
+          ...(requestId === responseId ? [] : [{ key: 'Response Process ID', value: responseId }]),
+          { key: 'Wall time', value: '0' },
+        ]);
+        assert.deepEqual(compact.slice(1), [sections[1], sections[3]]);
+        assert.deepEqual(compactBackgroundTerminalSections(compact), compact);
+      }
+    }
+  }
+  for (const sections of [[], [{ type: 'kv', title: 'Request', entries: [] }], [{ type: 'code', title: 'Response summary', code: '{}' }]]) {
+    assert.deepEqual(compactBackgroundTerminalSections(sections), sections);
   }
 });
 

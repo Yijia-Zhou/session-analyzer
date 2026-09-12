@@ -6617,6 +6617,11 @@ function renderTrajectoryProjection() {
       : t('trajectoryLoadedSequence', { loaded: state.offset }),
     viewState: trajectoryState,
     displayStateForEvent: (event) => displayState(event),
+    terminalLabelForEvent: (event) => {
+      const presentation = codeModeEventPresentation(event);
+      return presentation?.variant === 'single_tool' && presentation.toolName === 'write_stdin'
+        ? presentation.label : '';
+    },
     labels: trajectoryPresentationLabels(),
     expandedGroupIds: trajectoryState.expandedGroupIds,
     onGroupToggle: (groupId, open) => {
