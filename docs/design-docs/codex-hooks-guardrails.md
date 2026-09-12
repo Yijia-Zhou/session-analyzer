@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-06-20 / 最近更新：2026-06-20
+- Last updated: 2026-09-12 / 最近更新：2026-09-12
 - Related docs: / 相关文档：
   - `docs/product-specs/session-transcript-analyzer.md`
   - `docs/design-docs/logical-event-timeline.md`
@@ -42,6 +42,7 @@ The current example contains one `SessionStart` command hook:
 
 - It runs only for `startup|resume` when a developer locally enables `.codex/hooks.json`. / 只有开发者在本地启用 `.codex/hooks.json` 后，才会在 `startup|resume` 时运行。
 - It reads git branch and `git status --short`, then prints a short guardrail checklist. / 它只读取 git 分支和 `git status --short`，然后打印简短护栏清单。
+- Documentation reminders follow the conditional routes in `AGENTS.md`; they do not require every behavior change to preload the spec, timeline design, Codex coverage, and debt tracker. Codex parser/schema work still routes to coverage and schema evidence. Privacy, generated-asset, and machine-identifier reminders remain in both entrypoints so the optional hook reinforces repository policy. / 文档提醒遵循 `AGENTS.md` 的按需导航，不要求每次行为修改预读规格、时间线设计、Codex 覆盖与技术债。Codex 解析器／schema 工作仍导航至覆盖与 schema 依据。隐私、生成资产与机器标识提醒保留在两个入口，让可选 hook 强化仓库策略。
 - It does not inspect transcript files, write files, start servers, run tests, or block tools. / 它不检查 transcript 文件、不写文件、不启动服务、不运行测试，也不阻断工具。
 
 ## Future Candidates / 后续候选
