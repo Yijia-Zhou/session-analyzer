@@ -13,6 +13,7 @@ function createCodexDetailBuilder(deps) {
     agentCoordination,
     cacheObservationPresentation,
     backgroundTerminalLabel = () => '',
+    backgroundTerminalFactsForEvent = () => null,
   } = deps;
   const {
     codeModeAssociableOutputFragments,
@@ -916,6 +917,13 @@ function createCodexDetailBuilder(deps) {
       ? codeModeEventRefsSection(logical, session, locale)
       : null;
     if (eventRefsSection) detailSections.inspectorSections.push(eventRefsSection);
+    const terminalFact = backgroundTerminalFactsForEvent(session, logical.id);
+    if (terminalFact?.originEventId) {
+      const origin = session.logicalEvents.find((candidate) => candidate.id === terminalFact.originEventId);
+      if (origin) detailSections.inspectorSections.push({ purpose: 'traceability', type: 'event_refs', title: 'Originating command',
+        items: [{ id: origin.id, label: terminalFact.commandPreview || localizedLogicalLabel(origin, locale),
+          kind: origin.kind, status: origin.status }] });
+    }
     if (!detailSections.timelineSections.length && !detailSections.inspectorSections.length) {
       detailSections.inspectorSections.push(makeRawJsonSection('Unmodeled fields', logicalFallbackPayload(raws), false, 'fallback'));
     }
@@ -930,7 +938,7 @@ function createCodexDetailBuilder(deps) {
       kind: sanitizeLogicalEnvelopeValue(logical.kind),
       subtype: sanitizeLogicalEnvelopeValue(logical.subtype),
       layer: sanitizeLogicalEnvelopeValue(logical.layer),
-      title: backgroundTerminalLabel(session.presentationIndexes?.backgroundTerminalRequests?.get(logical.id), locale)
+      title: backgroundTerminalLabel(terminalFact || session.presentationIndexes?.backgroundTerminalRequests?.get(logical.id), locale)
         || localizedLogicalLabel(logical, locale),
       sourceLocator: logical.sourceLocator,
       meta: logicalMeta(logical),

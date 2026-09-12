@@ -127,6 +127,8 @@ const MATERIALIZED_PRESENTATION_INDEX_FIELDS = Object.freeze([
   'codeModeDeclaredRequests',
   'cacheDiscontinuityLinks',
   'backgroundTerminalRequests',
+  'backgroundTerminalOrigins',
+  'backgroundTerminalContinuations',
 ]);
 const CACHE_OBSERVATION_FIELDS = Object.freeze([
   'schemaVersion',
@@ -291,6 +293,8 @@ function createEmptyMaterializedPresentationIndexes() {
   return {
     codeModeDeclaredRequests: new Map(),
     backgroundTerminalRequests: new Map(),
+    backgroundTerminalOrigins: new Map(),
+    backgroundTerminalContinuations: new Map(),
     cacheDiscontinuityLinks: createEmptyCacheDiscontinuityLinks(),
   };
 }
@@ -1033,6 +1037,39 @@ function validateMaterializedPresentationIndexes(
     || new Map(logicalEvents.map((event) => [event.id, event]));
   const terminalOwner = 'materialized session.presentationIndexes.backgroundTerminalRequests';
   const terminalRequests = requirePlainMap(presentationIndexes.backgroundTerminalRequests, terminalOwner, 'requests');
+  const terminalOrigins = requirePlainMap(presentationIndexes.backgroundTerminalOrigins, terminalOwner, 'origins');
+  const terminalContinuations = requirePlainMap(presentationIndexes.backgroundTerminalContinuations, terminalOwner, 'continuations');
+  for (const [eventId, origin] of terminalOrigins) {
+    const event = logicalById.get(eventId);
+    if (event?.sourceKind !== 'codex' || event.layer !== 'main' || event.toolName !== 'exec_command') {
+      throw contractError(terminalOwner, 'origin', 'must identify an owned Main exec_command');
+    }
+    requirePlainObject(origin, terminalOwner);
+    requireExactOwnKeys(origin, ['processId', 'commandPreview'], terminalOwner);
+    if (!Number.isInteger(origin.processId) || origin.processId < -2147483648 || origin.processId > 2147483647
+        || typeof origin.commandPreview !== 'string' || Array.from(origin.commandPreview).length > 160
+        || /[\u0000-\u001f\u007f-\u009f]/.test(origin.commandPreview)) {
+      throw contractError(terminalOwner, 'origin', 'must contain only an i32 and bounded command preview');
+    }
+  }
+  const referencedTerminalOrigins = new Set();
+  for (const [eventId, relation] of terminalContinuations) {
+    requirePlainObject(relation, terminalOwner);
+    requireExactOwnKeys(relation, ['originEventId'], terminalOwner);
+    requireString(relation.originEventId, terminalOwner, 'originEventId', { nonEmpty: true });
+    const origin = terminalOrigins.get(relation.originEventId);
+    const event = logicalById.get(eventId);
+    if (event?.layer !== 'main' || !terminalRequests.has(eventId) || !origin
+        || origin.processId !== terminalRequests.get(eventId).processId) {
+      throw contractError(terminalOwner, 'continuation', 'must reference an owned matching terminal origin');
+    }
+    referencedTerminalOrigins.add(relation.originEventId);
+  }
+  for (const eventId of terminalOrigins.keys()) {
+    if (!referencedTerminalOrigins.has(eventId)) {
+      throw contractError(terminalOwner, 'origin', 'must be referenced by a terminal continuation');
+    }
+  }
   for (const [eventId, fact] of terminalRequests) {
     const event = logicalById.get(eventId);
     if (event?.sourceKind !== 'codex' || event?.toolName !== 'write_stdin') {

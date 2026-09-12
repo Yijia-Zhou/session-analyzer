@@ -13,6 +13,97 @@ const { getSourceAdapter, materializeSessionForIndex } = require('../src/source-
 const { validateCanonicalMaterializedSessionShape } = require('../src/canonical-contract');
 const { displayStateFromRules, normalizeRules } = require('../src/shared/folding');
 
+const { validateStructuredLogicalDetailDto } = require('../src/shared/logical-detail-contract');
+
+test('native continuation survives hydration, pagination and search without transferring ownership', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'terminal-continuation-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const repoRoot = path.join(root, 'repo');
+  const source = await fs.readFile(path.join(__dirname, 'fixtures/background-terminal/continuation.jsonl'), 'utf8');
+  const rows = source.trim().split('\n').map(JSON.parse);
+  rows[0].payload.cwd = repoRoot;
+  const id = rows[0].payload.id;
+  const dir = path.join(root, 'sessions', '2026', '09', '11');
+  await fs.mkdir(dir, { recursive: true });
+  const file = path.join(dir, `rollout-${id}.jsonl`);
+  await fs.writeFile(file, rows.map(JSON.stringify).join('\n') + '\n');
+  const options = { repoRoot, sourceHome: root };
+  const index = await getSourceAdapter('codex').buildIndex(options);
+  const indexed = index.sessionsById.get(id);
+  const session = await materializeSessionForIndex(index, indexed);
+  const eventsBefore = JSON.stringify(session.logicalEvents);
+  const eventFor = (call) => session.logicalEvents.find((event) => event.id.endsWith(`:${call}`));
+  const e = eventFor('e1'); const w = eventFor('w1');
+  assert.equal(e.kind, 'other_tool_call');
+  assert.equal(session.presentationIndexes.backgroundTerminalContinuations.get(w.id).originEventId, e.id);
+  assert.equal(session.rawEvents.some((raw) => Object.hasOwn(raw, 'parsed')), false);
+  const page = codex.getTimeline(index, session, { layer: 'main', offset: 1, limit: 1, q: 'npm test' });
+  assert.equal(page.events[0].id, w.id);
+  assert.equal(page.events[0].hasSearchHit, false);
+  assert.equal(page.searchEventCount, 1); // Only the originating exec owns the command text.
+  assert.equal(page.events[0].presentationFacts.backgroundTerminal.commandPreview, 'npm test');
+  assert.equal(backgroundTerminalLabel(page.events[0].presentationFacts.backgroundTerminal, 'en'), 'Background terminal poll request · npm test');
+  const detail = await codex.buildHydratedEventDetail(index, session, w.id, 'main', { locale: 'zh-CN' });
+  assert.doesNotThrow(() => validateStructuredLogicalDetailDto(detail));
+  assert.equal(detail.title, '后台终端轮询请求 · npm test');
+  assert.deepEqual(detail.rawRefs, w.rawRefs);
+  const originSection = detail.inspectorSections.find((section) => section.type === 'event_refs');
+  assert.deepEqual(originSection.items.map((item) => item.id), [e.id]);
+  const exitDetail = await codex.buildHydratedEventDetail(index, session, eventFor('w2').id, 'main');
+  assert.equal(exitDetail.title, 'Background terminal input request · npm test');
+  assert.deepEqual(exitDetail.rawRefs, eventFor('w2').rawRefs);
+  assert.equal(JSON.stringify(session.logicalEvents), eventsBefore);
+  const { _shell, ...canonicalSession } = session;
+  const links = session.presentationIndexes.backgroundTerminalContinuations;
+  links.set(w.id, { originEventId: 'foreign' });
+  assert.throws(() => validateCanonicalMaterializedSessionShape(indexed, canonicalSession, 'codex'), { code: 'MATERIALIZATION_CONTRACT_VIOLATION' });
+  links.set(w.id, { originEventId: e.id });
+  const origin = session.presentationIndexes.backgroundTerminalOrigins.get(e.id);
+  origin.chars = 'secret';
+  assert.throws(() => validateCanonicalMaterializedSessionShape(indexed, canonicalSession, 'codex'), { code: 'MATERIALIZATION_CONTRACT_VIOLATION' });
+  delete origin.chars;
+  assert.doesNotThrow(() => validateCanonicalMaterializedSessionShape(indexed, canonicalSession, 'codex'));
+
+  await t.test('contract rejects orphan origins and dangling continuations in both directions', () => {
+    const origins = session.presentationIndexes.backgroundTerminalOrigins;
+    const savedLinks = [...links];
+    links.clear();
+    assert.throws(() => validateCanonicalMaterializedSessionShape(indexed, canonicalSession, 'codex'), {
+      code: 'MATERIALIZATION_CONTRACT_VIOLATION',
+      message: /must be referenced by a terminal continuation/,
+    });
+    origins.clear();
+    assert.doesNotThrow(() => validateCanonicalMaterializedSessionShape(indexed, canonicalSession, 'codex'));
+    for (const [id, relation] of savedLinks) links.set(id, relation);
+    assert.throws(() => validateCanonicalMaterializedSessionShape(indexed, canonicalSession, 'codex'), {
+      code: 'MATERIALIZATION_CONTRACT_VIOLATION',
+      message: /must reference an owned matching terminal origin/,
+    });
+    origins.set(e.id, origin);
+    assert.doesNotThrow(() => validateCanonicalMaterializedSessionShape(indexed, canonicalSession, 'codex'));
+    links.delete(w.id);
+    assert.doesNotThrow(() => validateCanonicalMaterializedSessionShape(indexed, canonicalSession, 'codex'));
+    links.set(w.id, savedLinks.find(([id]) => id === w.id)[1]);
+    const requests = session.presentationIndexes.backgroundTerminalRequests;
+    const savedRequest = requests.get(w.id);
+    for (const invalid of [null, undefined]) {
+      requests.set(w.id, invalid);
+      assert.throws(() => validateCanonicalMaterializedSessionShape(indexed, canonicalSession, 'codex'), {
+        code: 'MATERIALIZATION_CONTRACT_VIOLATION',
+      });
+    }
+    requests.set(w.id, savedRequest);
+  });
+
+  for (const badLine of ['{broken', '', 'null']) {
+    await fs.writeFile(file, rows.slice(0, 3).map(JSON.stringify).join('\n') + '\n' + badLine + '\n' + rows.slice(3).map(JSON.stringify).join('\n') + '\n');
+    const changedIndex = await getSourceAdapter('codex').buildIndex(options);
+    const changed = await materializeSessionForIndex(changedIndex, changedIndex.sessionsById.get(id));
+    assert.equal(changed.presentationIndexes.backgroundTerminalContinuations.size, 0, `gap ${badLine}`);
+    assert.ok(changed.presentationIndexes.backgroundTerminalRequests.size > 0);
+  }
+});
+
 test('terminal request semantics preserve empty versus all nonempty strings and validate i32 IDs', () => {
   for (const args of [{}, { chars: '' }]) assert.deepEqual(backgroundTerminalRequest(JSON.stringify(args)), { action: 'poll' });
   for (const chars of [' ', '\n', '\r\n', '\t', '\x03', '\x1b[31m', '中文', 'q']) {

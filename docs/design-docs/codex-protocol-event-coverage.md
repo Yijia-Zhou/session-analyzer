@@ -1,6 +1,6 @@
 # Codex Protocol Event Coverage / Codex 协议事件覆盖
 
-Dedicated durable `write_stdin` request coverage: `test/fixtures/background-terminal/requests.jsonl` and `test/codex-background-terminal.test.js` cover poll/input presentation without lifecycle rows or origin inference. This does not change the existing durable-only `exec_command` canonical classification; see debt #25. / 专用 durable `write_stdin` 请求覆盖：上述 fixture／测试覆盖无 lifecycle rows、无 origin 推断的 poll／input 呈现。不改变既有 durable-only `exec_command` canonical 分类，见债务 #25。
+Dedicated durable `write_stdin` coverage: `test/fixtures/background-terminal/requests.jsonl` covers standalone poll/input presentation; `continuation.jsonl` and `test/codex-terminal-continuations.test.js` cover strictly admitted native direct origin relations and their counterexamples. Both preserve independent events without lifecycle-row dependency. This does not change durable-only `exec_command` canonical classification; see debt #25. / 专用 durable `write_stdin` 覆盖：`requests.jsonl` 覆盖独立 poll／input 呈现；`continuation.jsonl` 与 relation 测试覆盖严格准入的 native direct origin 关联及反例。两者保留独立事件，不依赖 lifecycle rows。不改变 durable-only `exec_command` canonical 分类，见债务 #25。
 
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者

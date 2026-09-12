@@ -3,6 +3,8 @@
 const { backgroundTerminalRequest, backgroundTerminalCall, buildBackgroundTerminalRequests } = require('./codex-background-terminal');
 const { backgroundTerminalLabel } = require('./shared/background-terminal-presentation');
 
+const { terminalSourceEvidence, buildTerminalContinuations, backgroundTerminalFactsForEvent } = require('./codex-terminal-continuations');
+
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
@@ -3854,6 +3856,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
   },
   cacheObservationPresentation,
   backgroundTerminalLabel,
+  backgroundTerminalFactsForEvent,
   sourceTrace: {
     classifyProtocolText,
     codexSourceLocator,
@@ -4327,6 +4330,7 @@ function finalizeSession(session, sessionIndexEntry) {
     ...createEmptyMaterializedPresentationIndexes(),
     ...buildCodeModePresentationIndexes(session),
     backgroundTerminalRequests: buildBackgroundTerminalRequests(session),
+    ...buildTerminalContinuations(session),
   };
   session.eventKinds = eventKindCatalog([session]);
 
@@ -4336,6 +4340,8 @@ function finalizeSession(session, sessionIndexEntry) {
 }
 
 function extractResidentRawFacts(raw, record) {
+  const terminalEvidence = terminalSourceEvidence(record);
+  if (terminalEvidence) raw.terminalSourceEvidence = terminalEvidence;
   const payload = record?.payload;
   if (!payload || typeof payload !== 'object') return;
   if (record.type === 'session_meta' && typeof payload.id === 'string' && payload.id) {
@@ -4420,6 +4426,7 @@ function compactCodexRawEvent(raw) {
     sourceClientVersion: compactString(raw.sourceClientVersion),
   };
   if (typeof raw.sessionMetaId === 'string' && raw.sessionMetaId) compact.sessionMetaId = raw.sessionMetaId;
+  if (typeof raw.terminalSourceEvidence === 'string') compact.terminalSourceEvidence = raw.terminalSourceEvidence;
   if (typeof raw.threadName === 'string' && raw.threadName) compact.threadName = raw.threadName;
   if (typeof raw.reviewLifecyclePhase === 'string' && raw.reviewLifecyclePhase) compact.reviewLifecyclePhase = raw.reviewLifecyclePhase;
   if (typeof raw.reviewThreadId === 'string' && raw.reviewThreadId) compact.reviewThreadId = raw.reviewThreadId;
@@ -4428,6 +4435,7 @@ function compactCodexRawEvent(raw) {
 }
 
 const COMPACT_RAW_KEYS = new Set([
+  'terminalSourceEvidence',
   'aggregatedOutput', 'callId', 'canonicalType', 'commandText', 'durationMs', 'embeddedImages',
   'exitCode', 'line', 'maxObservedTokens', 'messageText', 'output', 'payloadType', 'preview',
   'rawId', 'rawIndex', 'recordType', 'reviewLifecyclePhase', 'reviewThreadId', 'role',
@@ -4522,6 +4530,7 @@ function isReusableCompactRaw(raw) {
     && raw.embeddedImages.every(isCompactEmbeddedImageDescriptor)
     && (raw.maxObservedTokens === undefined || (Number.isFinite(raw.maxObservedTokens) && raw.maxObservedTokens > 0))
     && (raw.sessionMetaId === undefined || typeof raw.sessionMetaId === 'string')
+    && (raw.terminalSourceEvidence === undefined || ['native-local-direct-v1', 'barrier'].includes(raw.terminalSourceEvidence))
     && (raw.threadName === undefined || typeof raw.threadName === 'string')
     && (raw.reviewLifecyclePhase === undefined || typeof raw.reviewLifecyclePhase === 'string')
     && (raw.reviewThreadId === undefined || typeof raw.reviewThreadId === 'string')
@@ -4654,6 +4663,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   let lineNumber = 0;
+  let terminalSourceGap = false;
   const observeSourcePhases = hasMaterializationObserver();
   const sourceStreamStartedAt = observeSourcePhases ? performance.now() : 0;
   let sourceRecordParseMs = 0;
@@ -4666,7 +4676,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
     for await (const line of rl) {
       throwIfAborted(signal);
       lineNumber += 1;
-      if (!line.trim()) continue;
+      if (!line.trim()) { terminalSourceGap = true; continue; }
       const recordStartedAt = observeSourcePhases ? performance.now() : 0;
       session.lineCount += 1;
       const record = safeJsonParse(line);
@@ -4674,6 +4684,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
         observeCodexLeadingSessionRecord(relationshipPlanningFacts, record);
       }
       if (!record) {
+        terminalSourceGap = true;
         if (observeSourcePhases) sourceRecordParseMs += performance.now() - recordStartedAt;
         continue;
       }
@@ -4706,6 +4717,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       if (canonicalDigest) raw._canonicalRawDigest = canonicalDigest;
       raw.sourceClientVersion = typeof record.version === 'string' ? record.version : '';
       extractResidentRawFacts(raw, record);
+      if (terminalSourceGap) { raw.terminalSourceEvidence = 'barrier'; terminalSourceGap = false; }
       if (captureCacheObservationSeeds) {
         const seedCaptureStartedAt = observeSourcePhases ? performance.now() : 0;
         const seed = createCodexCacheObservationSeed(raw, payload);
@@ -6711,6 +6723,7 @@ function validateCodexMaterializedPrivateState({ indexedSession, session }) {
 }
 
 const codexSearch = createCodexSearch({
+  backgroundTerminalFactsForEvent,
   canonicalSchemaVersion: CANONICAL_SCHEMA_VERSION,
   codeModePresentationFactsForEvent,
   codeModePresentationContextMap,

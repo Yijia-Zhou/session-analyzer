@@ -62,7 +62,9 @@ function createCodexSearch(deps = {}) {
       contextMap: deps.codeModePresentationContextMap,
       factsForEvent(session, eventId) {
         const codeMode = deps.codeModePresentationFactsForEvent?.(session, eventId);
-        const backgroundTerminal = session?.presentationIndexes?.backgroundTerminalRequests?.get(eventId);
+        const backgroundTerminal = deps.backgroundTerminalFactsForEvent
+          ? deps.backgroundTerminalFactsForEvent(session, eventId)
+          : session?.presentationIndexes?.backgroundTerminalRequests?.get(eventId);
         return backgroundTerminal ? { ...codeMode, backgroundTerminal: { ...backgroundTerminal } } : codeMode;
       },
       projectRowFacts(session, event) {
