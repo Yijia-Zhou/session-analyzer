@@ -90,6 +90,7 @@
     "build:check": "node scripts/build-client.js --check",
     "build:client": "node scripts/build-client.js",
     "test": "node --test \"test/*.test.js\"",
+    "test:profile-coverage": "node scripts/deepseek-profile-coverage.js",
     "test:browser": "node --test e2e/browser.test.js",
     "test:package": "node scripts/package-smoke.js",
     "release:check": "npm run build:check && npm test && npm run test:package",
