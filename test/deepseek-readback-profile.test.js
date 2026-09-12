@@ -6,6 +6,8 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { createPhaseCollector, coldAttribution, TOP_LEVEL, DEEPSEEK, PRIVATE } = require('../scripts/deepseek-phase-accounting');
+const { assertMaterializationCoverage } = require('../scripts/deepseek-phase-accounting');
+const { assertRepeatedMaterializationCoverage } = require('../scripts/deepseek-profile-coverage');
 const {
   writeFixture,
   eventTarget,
@@ -65,8 +67,30 @@ test('cold accounting sums siblings and reports explicit residuals', () => {
   assert.equal(result.adapterMaterializationMs.residual, 1);
   assert.equal(result.materializationTopLevelMs.materialized_private_validation, 4);
   assert.throws(() => coldAttribution(collector, 0, time, 2, time), /negative accounting/);
-  assert.throws(() => coldAttribution(collector, 0, time + 100, 2, time + 105), /coverage gap/);
+  const delayed = coldAttribution(collector, 0, time + 100, 2, time + 105);
+  assert.equal(delayed.materializationResidualMs, 100);
+  assert.equal(delayed.materializationAccountedMs, time);
+  assert.equal(delayed.materializationCoverageLimitMs, 5);
+  assert.throws(() => assertMaterializationCoverage(delayed), /coverage gap: residual=100.00ms limit=5.00ms materialization=114.00ms accounted=14.00ms/);
   assert.throws(() => coldAttribution(createPhaseCollector(), 0, 1, 0, 1), /major phases/);
+});
+
+test('serial coverage minimum tolerates one-sided noise but rejects stable uncovered work at any total duration', () => {
+  const sample = (residual, materializationMs = 82.31) => ({
+    materializationMs, materializationAccountedMs: materializationMs - residual,
+    materializationResidualMs: residual,
+  });
+  assert.equal(assertRepeatedMaterializationCoverage([1, 17.4, 0.9].map((r) => sample(r))).materializationResidualMs, 0.9);
+  assert.doesNotThrow(() => assertMaterializationCoverage(sample(5)));
+  for (const total of [82.31, 16_000]) {
+    assert.throws(() => assertRepeatedMaterializationCoverage([12, 17.4, 12.1].map((r) => sample(r, total))),
+      /coverage gap: residual=12.00ms limit=5.00ms materialization=.* accounted=/);
+    assert.throws(() => assertMaterializationCoverage(sample(5.01, total)), /coverage gap/);
+  }
+  for (const invalid of [NaN, Infinity, -1]) {
+    assert.throws(() => assertRepeatedMaterializationCoverage([sample(1), sample(invalid), sample(0.9)]), /invalid/);
+  }
+  assert.throws(() => assertRepeatedMaterializationCoverage([sample(1)]), /exactly three/);
 });
 
 test('fingerprint profiling reports the seven ordered invocations and complete accounting after materialization', async () => {

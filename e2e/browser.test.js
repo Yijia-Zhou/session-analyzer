@@ -835,6 +835,17 @@ async function wave1cM2OperationRows(page, operationId) {
   ), operationId);
 }
 
+async function settledWave1cM2OperationRows(page, operationId) {
+  // A response (or one animation frame) can precede JSON processing and render.
+  // Keep the operation active until its canonical DOM commit reaches the ledger.
+  // Accept any canonical mutation here, including appendOnly: correctness is
+  // asserted by the caller, independently of synchronization.
+  await page.waitForFunction((id) => window.__wave1cM2.evidence.rows.some((row) => (
+    row.operationId === id && (row.addedCanonicalCount > 0 || row.removedCanonicalCount > 0)
+  )), operationId);
+  return wave1cM2OperationRows(page, operationId);
+}
+
 async function latestWave1cM1Lifecycle(page) {
   return page.evaluate(() => structuredClone(window.__wave1cM1.evidence.lifecycle.at(-1)));
 }
@@ -9929,7 +9940,8 @@ test('browser Wave 1C M2 temporary reveal makes Main append fall back without in
   assert.equal(latest.ownerCount, 300);
 });
 
-test('browser Wave 1C M2 replacements, Session switch, Protocol, and Raw remain full-render controls', async (t) => {
+for (const delayResponseProcessing of [false, true]) {
+test(`browser Wave 1C M2 replacements, Session switch, Protocol, and Raw remain full-render controls${delayResponseProcessing ? ' with gated response processing' : ''}`, async (t) => {
   const collapsedProfile = {
     id: 'custom:wave-1c-controls-collapsed',
     name: 'Wave 1C controls collapsed fixture',
@@ -9954,11 +9966,29 @@ test('browser Wave 1C M2 replacements, Session switch, Protocol, and Raw remain 
   });
   await fillSearch(page, 'common-term');
   await queryResponse;
-  let rows = await wave1cM2OperationRows(page, operationId);
+  let rows = await settledWave1cM2OperationRows(page, operationId);
   assert.ok(rows.some((row) => row.commitKind === 'replacement'));
   assert.equal(rows.some((row) => row.commitKind === 'appendOnly'), false);
   assert.equal(await oldArticle.evaluate((node) => node.isConnected), false);
 
+  if (delayResponseProcessing) {
+    await page.evaluate(() => {
+      const original = Response.prototype.json;
+      const gate = {};
+      gate.promise = new Promise((resolve) => { gate.release = resolve; });
+      window.__wave1cM2ResponseGate = gate;
+      Response.prototype.json = async function (...args) {
+        const url = new URL(this.url);
+        const body = await original.apply(this, args);
+        if (url.pathname.endsWith('/timeline') && url.searchParams.get('kind') === 'user_message') {
+          Response.prototype.json = original;
+          gate.paused = true;
+          await gate.promise;
+        }
+        return body;
+      };
+    });
+  }
   operationId = await beginWave1cM2Operation(page);
   const filterResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -9967,7 +9997,19 @@ test('browser Wave 1C M2 replacements, Session switch, Protocol, and Raw remain 
   });
   await addSearchFilter(page, 'kind', 'user_message');
   await filterResponse;
-  rows = await wave1cM2OperationRows(page, operationId);
+  const committedRows = settledWave1cM2OperationRows(page, operationId);
+  if (delayResponseProcessing) {
+    await page.waitForFunction(() => window.__wave1cM2ResponseGate.paused === true);
+    let settled = false;
+    committedRows.then(() => { settled = true; });
+    // Reproduce the old legal window deterministically, across its rAF boundary.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.evaluate((id) => window.__wave1cM2.evidence.rows
+      .filter((row) => row.operationId === id).length, operationId), 0);
+    assert.equal(settled, false, 'operation must remain active while response processing is paused');
+    await page.evaluate(() => window.__wave1cM2ResponseGate.release());
+  }
+  rows = await committedRows;
   assert.ok(rows.some((row) => ['replacement', 'clear', 'initialMount'].includes(row.commitKind)));
   assert.equal(rows.some((row) => row.commitKind === 'appendOnly'), false);
 
@@ -10005,6 +10047,7 @@ test('browser Wave 1C M2 replacements, Session switch, Protocol, and Raw remain 
     && window.__wave1cM1.evidence.lifecycle.at(-1)?.ownerCount === 0);
   assert.equal((await latestWave1cM1Lifecycle(page)).ownerCount, 0);
 });
+}
 
 test('browser Wave 1C M2 late-hit batch publication preserves 600 prefix cards and appends 1200', async (t) => {
   const collapsedProfile = {
@@ -11800,7 +11843,7 @@ test('browser Wave 1D-A M1 query, profile, and locale transitions remain full-re
   });
   await fillSearch(page, 'common-term');
   await queryResponse;
-  rows = await wave1cM2OperationRows(page, operationId);
+  rows = await settledWave1cM2OperationRows(page, operationId);
   assert.equal(rows.some((row) => row.commitKind === 'appendOnly'), false);
   assert.ok(rows.some((row) => row.commitKind === 'replacement'));
 
