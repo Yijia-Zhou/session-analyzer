@@ -4680,6 +4680,10 @@ body[data-project-mode='selecting'] .searchAssist {
   overflow: visible;
 }
 
+.commandRunSegment {
+  min-width: 0;
+}
+
 .commandRunSegment + .commandRunSegment {
   border-top: 0;
 }
