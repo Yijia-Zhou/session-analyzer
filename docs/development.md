@@ -58,6 +58,19 @@ Open `http://127.0.0.1:17890/`. Without `--repo`, select a project in the browse
 
 Package smoke packs the project, installs the tarball into a fresh temporary project, checks CLI help, and starts the packaged server. `release:check` checks generated assets, runs the full Node suite, and repeats package smoke; browser coverage remains a separate CI/local release requirement. Follow the release runbook for the remaining release gates. / Package smoke 打包项目，将 tarball 安装到全新临时项目，检查 CLI help 并启动包内服务。`release:check` 检查生成资产、运行全部 Node 测试并重复 package smoke；浏览器覆盖仍是独立的 CI／本地发布要求。其余发布门槛遵循发布运行手册。
 
+<a id="validation-scope"></a>
+
+## Validation scope / 验证范围
+
+Choose checks for the affected behavior and risk; the command table is not a checklist for every edit. / 按受影响行为与风险选择检查；命令表不是每次编辑都要执行的清单。
+
+- Documentation or agent-instruction changes: inspect the diff, check local references and bilingual consistency, and run `git diff --check`. If a hook or helper changes, check its syntax and exercise its relevant behavior. / 文档或 agent 指令变更：审查 diff，检查本地引用与双语一致性，运行 `git diff --check`。若修改 hook 或辅助脚本，检查语法并实际验证相关行为。
+- Code changes: run the affected `test/*.test.js` files with `node --test test/<affected>.test.js`. Parser/schema work retains the [schema runbook](design-docs/schema-update-runbook.md)'s evidence and focused-fixture requirements. Shared contracts or unresolved cross-source impact may require the full Node suite. / 代码变更：用 `node --test test/<affected>.test.js` 运行受影响测试。解析器／schema 工作保留 [schema 手册](design-docs/schema-update-runbook.md)的依据与聚焦 fixture 要求。共享契约或尚未排除的跨来源影响可能需要全部 Node 测试。
+- Browser code changes: rebuild with `npm run build`, run `npm run build:check`, and verify the affected interaction; use browser tests when rendering or navigation behavior changes. Package/CLI/distribution changes need the relevant package checks. / 浏览器代码变更：执行 `npm run build` 重新构建及 `npm run build:check`，核验受影响交互；渲染或导航行为变更时使用浏览器测试。包／CLI／分发变更需要相关包检查。
+- Release work follows the [release runbook](design-docs/npm-release-runbook.md)'s required gates and existing rules for reusing unchanged CI evidence. This scope guidance does not weaken release or CI requirements. / 发布工作遵循[发布手册](design-docs/npm-release-runbook.md)的强制门槛及已有的未变更 CI 证据复用规则。本范围指南不削弱发布或 CI 要求。
+
+Inspect failures and fix regressions introduced by the change. Once the relevant checks pass, broaden or repeat them only for new changes, failures, or unresolved risks. Report what passed and what remains unverified. / 检查失败并修复变更引入的回归。相关检查通过后，仅因新修改、失败或未解决风险扩大或重复验证。报告已通过内容与尚未验证项。
+
 ## Repository layout / 仓库布局
 
 | Path / 路径 | Role / 职责 |

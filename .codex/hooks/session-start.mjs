@@ -33,7 +33,7 @@ console.log([
   `- repo: ${relativeRoot}`,
   `- branch: ${branch}`,
   statusLines.length ? `- git status:\n  ${shownStatus.join('\n  ')}${moreStatus}` : '- git status: clean',
-  '- read docs/product-specs/session-transcript-analyzer.md, docs/design-docs/logical-event-timeline.md, docs/design-docs/codex-protocol-event-coverage.md, and docs/exec-plans/tech-debt-tracker.md before behavior changes.',
+  '- use AGENTS.md routes to read only task-relevant doc sections; for Codex parser/schema changes, include docs/design-docs/codex-protocol-event-coverage.md and docs/design-docs/schema-update-runbook.md.',
   '- do not commit real .codex/sessions data, exported transcripts, or unsanitized transcript fixtures.',
   '- public/assets/app.js is generated; edit src/browser/ or src/shared/ and run npm run build:check.',
   '- keep machine identifiers such as kind/status/layer/rawRefs/sourceLocator stable and untranslated.'
