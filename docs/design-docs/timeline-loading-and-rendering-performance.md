@@ -621,6 +621,10 @@ Direct sparse mounting also requires a product decision for `loaded`, reading co
 
 ## Validation strategy / 验证策略
 
+### Browser evidence settlement / 浏览器证据完成同步
+
+Wave 1C M2 operation evidence must be read after the corresponding canonical DOM commit reaches the mutation ledger. HTTP response arrival and a single animation frame do not establish response processing or render completion. The focused replacement/query controls use `settledWave1cM2OperationRows` to keep the exact operation ID active until a canonical addition/removal is recorded, then close and snapshot it. The wait accepts any canonical mutation; separate unchanged assertions require full-render kinds and reject `appendOnly`. A gated `Response.json()` regression case holds processing past response arrival and animation frames, proves no early settlement, then releases it and checks the full-render contract. DOM-settled and intentional zero-mutation tests retain their existing snapshot helper. Production lifecycle/render behavior is unchanged. / Wave 1C M2 operation 证据必须在对应 canonical DOM commit 进入 mutation ledger 后读取。HTTP 响应到达及单个动画帧不能证明响应处理或 render 已完成。聚焦的 replacement／query control 使用 `settledWave1cM2OperationRows`，保持精确 operation ID 活跃直至记录 canonical 节点添加／移除，再关闭并获取快照。等待接受任何 canonical mutation；独立且不变的断言要求 full-render 类型并拒绝 `appendOnly`。带 gate 的 `Response.json()` 回归场景使处理暂停跨过响应到达及动画帧，证明不会过早结束，再释放并检查 full-render 契约。已有 DOM 完成等待及有意零 mutation 的测试保留原快照 helper。生产生命周期／render 行为不变。
+
 ### Existing contract coverage to retain / 需要保留的既有 contract 覆盖
 
 - Current-session query preserves loaded depth; clearing query does not reset pagination. / 当前会话 query 保留已加载深度；清除 query 不重置分页。
