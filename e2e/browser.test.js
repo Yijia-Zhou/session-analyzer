@@ -29,6 +29,73 @@ async function captureTerminalPresentation(page, name) {
   await page.screenshot({ path: path.join(dir, `${name}.png`), fullPage: true });
 }
 
+test('command run long tokens stay inside event and projection boxes with scrollable output', async (t) => {
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.setContent('<body data-mobile-view="events"><main class="timelinePane" style="width:600px"><div id="timeline" class="timeline"></div></main></body>');
+  for (const file of ['public/vendor/highlightjs/github.min.css', 'public/styles.css']) {
+    await page.addStyleTag({ path: path.join(__dirname, '..', file) });
+  }
+  for (const file of [
+    'public/vendor/highlightjs/highlight.min.js',
+    'src/shared/command-highlighting.js', 'src/shared/i18n.js',
+    'src/shared/code-mode-presentation-contract.js', 'src/shared/detail-purpose.js',
+    'src/browser/renderers.js',
+  ]) await page.addScriptTag({ path: path.join(__dirname, '..', file) });
+
+  for (const scenario of ['long-command', 'long-stdout', 'nested-projection']) {
+    await t.test(scenario, async () => {
+      await page.evaluate((scenario) => {
+        const token = 'A'.repeat(4096);
+        const sections = [
+          { type: 'code', role: 'command', language: 'bash', code: scenario === 'long-stdout' ? 'echo hello' : `echo ${token}` },
+          { type: 'terminal', stream: 'stdout', text: token },
+        ];
+        const content = scenario === 'nested-projection'
+          ? [{ type: 'code_mode_tool_projection', toolName: 'exec_command', requestSections: sections }]
+          : sections;
+        document.querySelector('#timeline').innerHTML = `<article class="event expanded"><div class="eventBody">${window.sessionRenderers.renderSections(content)}</div></article>`;
+      }, scenario);
+      const geometry = await page.evaluate(() => {
+        const pane = document.querySelector('.timelinePane');
+        const card = document.querySelector('.event');
+        const bounds = (element) => {
+          const { left, right } = element.getBoundingClientRect();
+          return { left, right };
+        };
+        const segments = [...card.querySelectorAll('.commandRunSegment')].map((segment) => ({
+          container: bounds(segment.closest('.codeModeToolProjection') || card),
+          segment: bounds(segment),
+          pre: bounds(segment.querySelector('pre')),
+        }));
+        const output = card.querySelector('.commandRunOutput.stdout pre');
+        output.scrollLeft = 100;
+        return {
+          paneClientWidth: pane.clientWidth, paneScrollWidth: pane.scrollWidth,
+          segments, outputClientWidth: output.clientWidth,
+          outputScrollWidth: output.scrollWidth, outputScrollLeft: output.scrollLeft,
+          outputOverflowX: getComputedStyle(output).overflowX,
+          projectionCount: card.querySelectorAll('.codeModeToolProjection').length,
+        };
+      });
+      assert.equal(geometry.segments.length, 2);
+      assert.equal(geometry.projectionCount, scenario === 'nested-projection' ? 1 : 0);
+      for (const { container, segment, pre } of geometry.segments) {
+        for (const box of [segment, pre]) {
+          assert.ok(box.left >= container.left - 1 && box.right <= container.right + 1, JSON.stringify({ scenario, container, box }));
+        }
+      }
+      assert.ok(geometry.paneScrollWidth <= geometry.paneClientWidth + 1, JSON.stringify(geometry));
+      // Long output must remain accessible through internal scrolling, not clipping.
+      assert.ok(geometry.outputScrollWidth > geometry.outputClientWidth);
+      assert.ok(['auto', 'scroll'].includes(geometry.outputOverflowX));
+      assert.ok(geometry.outputScrollLeft > 0);
+      assert.equal(await page.locator('.commandRunOutput.stdout pre code').textContent(), 'A'.repeat(4096));
+    });
+  }
+});
+
 test('background terminal continuation suffix and origin navigation preserve separate events', async (t) => {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'terminal-origin-browser-'));
   t.after(() => fsp.rm(home, { recursive: true, force: true }));
