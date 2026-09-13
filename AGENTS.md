@@ -4,6 +4,8 @@ This repository keeps long-lived project intent in `docs/` rather than expanding
 
 ## Documentation map
 
+Use this map and the anchors below as conditional routes, not a preload checklist. Read the relevant sections for the task; follow additional references only when they resolve a concrete question. / 下列目录与锚点用于按需导航，不是预读清单。阅读与任务相关的章节；仅在解决具体问题时继续读取引用。
+
 - `CONTEXT.md`
   - Canonical bilingual domain terminology and words to avoid.
 - `docs/usage/` and `docs/development.md`
@@ -29,6 +31,18 @@ When changing product behavior or repository structure:
 4. Move finished plans from `active/` to `completed/` only when the work is actually done.
 5. For bilingual docs, update the English and Chinese text together so they keep the same meaning. / 对双语文档，英文和中文要在同一次变更中同步更新，保持含义一致。
 
+## Execution and completion / 执行与完成
+
+- Carry authorized work through implementation, relevant validation, inspection and repair of introduced regressions, and a concise result report. A plan or first implementation is not completion unless that is the requested deliverable. Ask only when missing information materially changes scope or correctness; continue independent work meanwhile. / 将已授权工作推进至实现、相关验证、检查并修复引入的回归，以及简短结果报告。除非用户所求就是计划或初版，否则不能以此视为完成。仅在缺失信息实质影响范围或正确性时提问，同时继续独立工作。
+- Proceed with safe local, reversible preparation within scope. Existing authorization carries forward; follow the release runbook's explicit human gates for publication. Destructive, external, credential-sensitive, or production actions require authorization covering that action. / 在范围内自主进行安全、可逆的本地准备。已有授权持续有效；发布遵循运行手册的明确人工门禁。破坏性、外部、凭据敏感或生产操作需要覆盖该操作的授权。
+- Scale validation to the change: documentation/instruction edits need reference and consistency checks; code changes need focused tests for affected behavior. See [development validation](docs/development.md#validation-scope) for commands and broader gates. Report blocked or unrun checks explicitly. / 按变更规模验证：文档／指令修改检查引用与一致性；代码修改针对受影响行为执行聚焦测试。命令与更广门槛见[开发验证](docs/development.md#validation-scope)。明确报告受阻或未运行的检查。
+
+## Repository invariants / 仓库不变量
+
+- Do not commit real transcript data or unsanitized exports/fixtures; use minimized synthetic or sanitized fixtures. / 不提交真实转录数据或未脱敏导出／fixture；使用最小化合成或脱敏 fixture。
+- `public/assets/app.js` is generated: edit `src/browser/` or `src/shared/`, rebuild, and check generated assets. / `public/assets/app.js` 是生成文件：修改 `src/browser/` 或 `src/shared/`，重新构建并检查生成资产。
+- Keep machine identifiers such as `kind`, `status`, `layer`, `rawRefs`, and `sourceLocator` stable and untranslated. / 保持 `kind`、`status`、`layer`、`rawRefs`、`sourceLocator` 等机器标识稳定，不翻译。
+
 ## Local server startup
 
 - Start: `$repo = (git rev-parse --show-toplevel); $node = (Get-Command 'node.exe' -ErrorAction Stop).Source; $process = Start-Process -FilePath $node -ArgumentList @('server.js', '--repo', $repo) -WorkingDirectory $repo -WindowStyle Hidden -PassThru; $process.Id`
@@ -43,6 +57,9 @@ When changing product behavior or repository structure:
 
 ## Current anchors
 
+Choose by the affected concern: behavior changes need the relevant product-spec sections; model/architecture changes need the matching design; parser/schema changes need the schema runbook and source-adapter evidence (Codex coverage for Codex changes). Read `CONTEXT.md` when changing domain terms, and the release runbook when preparing a release. For ongoing work, read its active plan; consult completed plans or the debt tracker when investigating prior decisions or known gaps. / 按受影响主题选择：行为变更读相关产品规格章节；模型／架构变更读对应设计；解析器／schema 变更读 schema 手册与来源 adapter 依据（Codex 变更读 Codex 覆盖文档）。修改领域术语时读 `CONTEXT.md`，准备发布时读发布手册。继续进行中工作时读其 active plan；调查历史决策或已知缺口时查 completed plan 或技术债。
+
+- Source setup and validation: `docs/development.md` (before dependency installation or npm commands / 安装依赖或执行 npm 命令前)
 - Domain language: `CONTEXT.md`
 - Product spec: `docs/product-specs/session-transcript-analyzer.md`
 - Design doc: `docs/design-docs/logical-event-timeline.md`
@@ -51,6 +68,7 @@ When changing product behavior or repository structure:
 - Code Mode operations design: `docs/design-docs/code-mode-operations.md`
 - Code Mode structured display catalog: `docs/design-docs/code-mode-structured-display-catalog.md`
 - Schema update runbook: `docs/design-docs/schema-update-runbook.md`
+- Codex protocol coverage: `docs/design-docs/codex-protocol-event-coverage.md`
 - npm release runbook: `docs/design-docs/npm-release-runbook.md`
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`
