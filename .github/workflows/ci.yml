@@ -47,6 +47,10 @@ jobs:
       - run: npm ci --strict-allow-scripts
       - run: npm run build:check
       - run: npm test
+      # Separate step on one runner: never overlap the concurrent Node suite.
+      - name: Serial materialization phase coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        run: npm run test:profile-coverage
 
   package:
     name: Package smoke on ${{ matrix.os }}
