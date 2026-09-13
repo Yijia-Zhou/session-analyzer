@@ -51,12 +51,15 @@ Open `http://127.0.0.1:17890/`. Without `--repo`, select a project in the browse
 | Task / 任务 | Command / 命令 |
 | --- | --- |
 | Node tests / Node 测试 | `npm test` |
+| Serial phase coverage measurement / 顺序阶段覆盖量测 | `npm run test:profile-coverage` |
 | Install Chromium / 安装 Chromium | `npm run browser:install` |
 | Browser coverage / 浏览器覆盖 | `npm run test:browser` |
 | Installed-package smoke / 安装包 smoke | `npm run test:package` |
 | Repeatable non-browser release gate / 可重复非浏览器发布门槛 | `npm run release:check` |
 
 Package smoke packs the project, installs the tarball into a fresh temporary project, checks CLI help, and starts the packaged server. `release:check` checks generated assets, runs the full Node suite, and repeats package smoke; browser coverage remains a separate CI/local release requirement. Follow the release runbook for the remaining release gates. / Package smoke 打包项目，将 tarball 安装到全新临时项目，检查 CLI help 并启动包内服务。`release:check` 检查生成资产、运行全部 Node 测试并重复 package smoke；浏览器覆盖仍是独立的 CI／本地发布要求。其余发布门槛遵循发布运行手册。
+
+Phase-accounting changes also require `npm run test:profile-coverage`, run with Node/browser suites paused. It measures three sequential 100-row real-HTTP samples and gates their minimum residual at an absolute 5 ms; ordinary concurrent Node tests enforce topology and semantic accounting without a one-shot residual gate. CI runs this separate step only on Node 24 / Ubuntu after `npm test`. See [measurement policy](design-docs/deepseek-readback-measurement.md#current-coverage-policy). / 阶段核算修改还需在暂停 Node／浏览器套件时执行 `npm run test:profile-coverage`。它顺序测量三次 100 行真实 HTTP 样本，以最小 residual 不超过绝对 5 ms 为门槛；普通并发 Node 测试严格检查拓扑与语义核算，不对单次 residual 设门槛。CI 仅在 Node 24／Ubuntu 的 `npm test` 之后执行该独立步骤。详见[量测策略](design-docs/deepseek-readback-measurement.md#current-coverage-policy)。
 
 ## Repository layout / 仓库布局
 
