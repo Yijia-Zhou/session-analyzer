@@ -3,7 +3,7 @@
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-09-08 / 最近更新：2026-09-08
+- Last updated: 2026-09-12 / 最近更新：2026-09-12
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related plans: / 相关计划：
@@ -37,6 +37,7 @@ This repository started as a small local tool, but it already has user-facing be
 ### `AGENTS.md` / 仓库导航文件
 
 - Repository navigation and concise local development startup/acceptance reminders / 仓库导航与简短本地开发启动／验收提醒
+- Conditional reading routes, repository invariants, and completion boundaries; linked documents are not an unconditional preload set. Detailed validation selection belongs in `docs/development.md`. / 按需阅读导航、仓库不变量与完成边界；链接文档不是无条件预读集合。详细验证选择由 `docs/development.md` 负责。
 - Update rules for documentation / 文档更新规则
 - Pointers to the current spec and design docs, plus the authoritative active and completed plan directories / 指向当前规格与设计文档，以及权威的活跃计划和已完成计划目录
 - A small set of genuinely current active-plan entrypoints may be grouped by subsystem; completed plans are discovered from their archive directory and are not itemized here / 可以按 subsystem 分组保留少量真正当前有效的 active-plan 入口；已完成计划从其归档目录发现，不在此逐条枚举
