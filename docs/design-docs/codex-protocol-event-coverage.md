@@ -5,7 +5,7 @@ Dedicated durable `write_stdin` coverage: `test/fixtures/background-terminal/req
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-09-03 / 最近更新：2026-09-03
+- Last updated: 2026-09-18 / 最近更新：2026-09-18
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related design: / 相关设计：
@@ -19,6 +19,29 @@ Dedicated durable `write_stdin` coverage: `test/fixtures/background-terminal/req
   - Pinned revision: `b545c94041017d000e2c8b2f6272705d21b85dfb`; local post-refactor baseline: `eee7663`. / 固定 revision：`b545c94041017d000e2c8b2f6272705d21b85dfb`；本地重构后基线：`eee7663`。
 
 ## Context / 背景
+
+### September 2026 persistence evidence / 2026 年 9 月持久化依据
+
+The 2026-09-17 source-review handoff pins Codex `e269f2164cbb9f499e4f22301c393500e2a831f3`. The following table records that snapshot's persistence policy, independently of historical Analyzer compatibility. It does not assert stable-release availability, default feature enablement or local corpus observations. New fixtures in this work are source-derived synthetic records, not captured user transcripts. / 2026-09-17 源码审查交接固定 Codex commit 如上。下表记录该快照的持久化策略，与 Analyzer 对历史形态的兼容分开；不代表稳定版可用、默认启用或本地语料命中。本轮新增 fixture 为源码派生合成记录，不是用户转录捕获。
+
+| Wire path / Wire 路径 | Legacy durable / Legacy 持久化 | Paginated durable / Paginated 持久化 | Analyzer boundary and next action / Analyzer 边界及后续 |
+| --- | --- | --- | --- |
+| `response_item.payload.type = function_call_output` | Yes / 是 | Yes / 是 | Paired outputs retain existing tool ownership; valid missing/null-call outputs with names are external inputs, never execution proof. / 配对输出维持工具所有权；具备名称的合法缺失／null-call 输出是外部输入，不是执行证明。 |
+| `event_msg.payload.type = agent_message` | Yes / 是 | Canonical item normally replaces it / 通常由 canonical item 替代 | Assistant content; asynchronous delivery does not close a turn. / 助手正文；异步 delivery 不关闭 turn。 |
+| `event_msg.payload.type = user_message`, `mcp_tool_call_end`, `patch_apply_end` | Yes / 是 | Canonical items normally replace them / 通常由 canonical item 替代 | Existing exact legacy compatibility remains; do not claim complete canonical equivalents. / 保留精确 legacy 兼容；不宣称 canonical 对应形态已完整支持。 |
+| `event_msg.payload.type = item_completed`, item `Plan`, `EnteredReviewMode`, `ExitedReviewMode` | Selected items including Plan; not an all-or-none switch / 选择性保存，含 Plan；并非全有或全无 | Yes, per item policy / 按 item policy 保存 | Existing Plan/Review normalization. / 已有 Plan／Review 归一化。 |
+| `item_completed.item.type = AgentMessage` | Mode-dependent; legacy mirrors may coexist / 依模式而定，可能与 legacy 镜像并存 | Yes / 是 | Explicit `delivery: async` AgentMessage support only; other canonical delivery shapes retain fallback. Legacy has no item ID, so text equality never joins it to canonical messages. / 仅支持显式 delivery: async 的 AgentMessage；其他 canonical delivery 形态保持 fallback。Legacy 没有 item ID，文字相同不会将其并入 canonical 消息。 |
+| Other completed TurnItems, including canonical user/tool items | Selected `FunctionCallOutput` items can persist / 选择性 FunctionCallOutput item 可持久化 | Per item policy / 按 item policy | Protocol/Raw fallback unless independently documented; exact-payload fixtures and ownership design remain TODO. JSON parsing is not full paginated-history support. / 除单独说明外保持 Protocol／Raw；精确 payload fixture 与所有权设计待办。能解析 JSON 不代表完整分页历史支持。 |
+| `terminal_interaction`, `exec_command_output_delta`, `exec_command_begin/end`, `hook_started/completed`, approval/dynamic runtime events | Transient in this snapshot / 此快照为 transient | Transient in this snapshot / 此快照为 transient | Keep existing historical/captured-stream support; response-item tool results may separately persist. / 保留历史／捕获流支持；工具结果仍可能由 response-item 独立持久化。 |
+| `retained_context`, `compacted`, `thread_settings_applied` | Durable paths exist / 存在持久化路径 | Durable paths exist / 存在持久化路径 | Existing compaction semantics plus Protocol/Raw provenance; no new child-local user authority. / 已有压缩语义及 Protocol／Raw 来源证据；不新增 child-local 用户授权。 |
+
+Policy authority: [rollout policy](https://github.com/openai/codex/blob/e269f2164cbb9f499e4f22301c393500e2a831f3/codex-rs/rollout/src/policy.rs). Runtime visibility alone is not persistence evidence. / 策略依据见链接；runtime 可见本身不是持久化证明。
+
+Root `metadata` is a sibling of `payload` on response-item records, per [rollout wire](https://github.com/openai/codex/blob/e269f2164cbb9f499e4f22301c393500e2a831f3/codex-rs/history/src/rollout_payload.rs). `fallback_token_limit_override` is a history budget, not proof of truncation. `replacement_history` and `replacement_history_metadata` are separate positional arrays; unequal lengths do not authorize guessing pairings. The metadata fixture preserves mismatched arrays through Raw without replaying retained user content. / response-item 的根级 `metadata` 与 `payload` 同级，见 wire 链接。`fallback_token_limit_override` 是历史预算，不证明输出截断。两个 replacement arrays 独立并按位置对应；长度不等不授权猜测配对。metadata fixture 验证不等长数组经 Raw 保留，且不重放保留的用户内容。
+
+Direct output `executed_tool_calls` can be attached before history persistence, whereas Code Mode observations attached to model/compaction requests do not prove complete local execution inventories. `cell_id`, `executed_tool_calls` and `tool_calls_complete` being `skip_deserializing` does not mean they cannot be serialized. `tool_calls_complete` describes inventory/argument completeness, not successful execution or turn completion. This work keeps these fields Raw-only and adds no tool events, metrics or execution reconstruction. / 直接输出的 executed_tool_calls 可在历史持久化前附加，而附加于模型／compaction 请求的 Code Mode 观察不证明本地清单完整。三个字段的 skip_deserializing 不等于不能序列化。tool_calls_complete 指清单／参数完整性，不指执行成功或 turn 完成。本轮保留这些字段在 Raw，不增加工具事件、统计或执行重建。
+
+The exact payload field is `internal_chat_message_metadata_passthrough`, separate from root harness `metadata`; a generic `payload.metadata` is not this upstream field. `test/codex-rollout-metadata.test.js` checks that separation, deliberately malformed positional metadata (upstream rejects unequal array lengths), optional/gapped ordinal, explicit turn ID, Raw readback and absence of invented calls/user messages. `ordinal` never replaces decompressed JSONL line locators. Workspace/URI roots, MCP turn ownership, opaque/encrypted inter-agent forms, exact retained-context events, inherited/sender context and further canonical items remain targeted observation/fixture TODOs. / 精确 payload 字段是 internal_chat_message_metadata_passthrough，与根级 harness metadata 分开；通用 payload.metadata 不是该上游字段。测试覆盖此区分、刻意畸形的位置 metadata（上游拒绝不等长数组）、可选／有缺口 ordinal、显式 turn ID、Raw 回读及不虚构调用／用户消息。ordinal 不替代解压 JSONL 行定位。Workspace／URI roots、MCP turn 所有权、不透明／加密 agent 形态、精确 retained-context 事件、继承／sender context 与更多 canonical item 仍是定向观察／fixture 待办。
 
 Codex rollout JSONL rows are protocol records, not a frozen public analytics schema. Local rollout rows flatten a top-level `RolloutItem` beside `timestamp`; paginated rollouts may also carry an optional top-level zero-based `ordinal`, while legacy rollout rows omit it. A protocol event therefore normally appears as `{"timestamp":"...","ordinal":42,"type":"event_msg","payload":{"type":"..."}}` (with `ordinal` omitted for legacy rows). `EventMsg` itself is a tagged Rust enum with `payload.type` encoded in `snake_case`.
 

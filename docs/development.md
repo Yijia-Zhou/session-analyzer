@@ -1,6 +1,6 @@
 # Develop from source / 源码开发
 
-The installed CLI supports Node.js 22 or newer on a supported LTS line (Node.js 24 recommended). Source development and release work deliberately require **Node.js `^22.22.2 || ^24.15.0` and exactly npm `12.0.2`**, because npm 12 enforces the reviewed dependency install-script policy. DeepSeek compressed artifacts need built-in `node:zlib` Zstandard support, available on these development releases; uncompressed artifacts remain readable without it. / 安装后 CLI 支持仍受支持的 LTS 系列中的 Node.js 22 或更新版本（推荐 Node.js 24）。源码开发与发布有意严格要求 **Node.js `^22.22.2 || ^24.15.0` 与精确 npm `12.0.2`**，因为 npm 12 执行经过审查的依赖安装脚本策略。DeepSeek 压缩工件需要内置 `node:zlib` Zstandard 支持，这些开发版本均提供；未压缩工件在缺少该能力时仍可读。
+The installed CLI supports Node.js 22 or newer on a supported LTS line (Node.js 24 recommended). Source development and release work deliberately require **Node.js `^22.22.2 || ^24.15.0` and exactly npm `12.0.2`**, because npm 12 enforces the reviewed dependency install-script policy. Codex and DeepSeek compressed artifacts need built-in `node:zlib` Zstandard support, available on these development releases; uncompressed artifacts remain readable without it. / 安装后 CLI 支持仍受支持的 LTS 系列中的 Node.js 22 或更新版本（推荐 Node.js 24）。源码开发与发布有意严格要求 **Node.js `^22.22.2 || ^24.15.0` 与精确 npm `12.0.2`**，因为 npm 12 执行经过审查的依赖安装脚本策略。Codex 与 DeepSeek 压缩工件需要内置 `node:zlib` Zstandard 支持，这些开发版本均提供；未压缩工件在缺少该能力时仍可读。
 
 ## Toolchain and dependencies / 工具链与依赖
 
@@ -62,6 +62,8 @@ Package smoke packs the project, installs the tarball into a fresh temporary pro
 <a id="validation-scope"></a>
 
 ## Validation scope / 验证范围
+
+For Codex compressed-reader characterization, run `node scripts/codex-rollout-profile.js` by itself. It generates synthetic 64 MiB streaming input and the same small session in plain/compressed forms, reporting sampled RSS, decode counts, cold indexing, first detail/materialization and warm detail; it is descriptive evidence, not a timing gate or a real-corpus claim. / 定性核验 Codex 压缩 reader 时，单独运行该脚本。它生成合成的 64 MiB 流式输入，以及同一小会话的普通／压缩表示，报告采样 RSS、解码次数、冷索引、首次详情／物化和暖详情；这是描述性证据，不是时延门槛或真实语料声明。
 
 Choose checks for the affected behavior and risk; the command table is not a checklist for every edit. / 按受影响行为与风险选择检查；命令表不是每次编辑都要执行的清单。
 
