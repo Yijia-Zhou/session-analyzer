@@ -773,7 +773,11 @@ const codexAdapter = {
       return codex.discoverConfiguredProjects({ codexHome: context.sourceHome });
     },
     async discoverProjects(context) {
-      return codex.discoverProjects({ codexHome: context.sourceHome });
+      return codex.discoverProjects({
+        codexHome: context.sourceHome,
+        signal: context.signal,
+        onDiagnostic: context.onDiagnostic,
+      });
     },
     async buildIndex(context) {
       return codex.buildSourceBackedIndex({

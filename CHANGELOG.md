@@ -4,7 +4,15 @@
 
 ### English
 
+- Read Codex `.jsonl.zst` rollouts with sibling deduplication, stable Raw line references, private decoded snapshots and isolated compression diagnostics.
+
+- Show valid named Codex external inputs independently of tool executions, preserve asynchronous question/option semantics, and display ordered file-image references with explicit offline preview placeholders. Keep unknown canonical items and execution metadata in their documented Protocol/Raw boundaries.
+
 ### 中文
+
+- 支持读取 Codex .jsonl.zst rollout，包括 sibling 去重、稳定 Raw 行引用、私有解压快照及隔离的压缩读取诊断。
+
+- 独立展示合法具名 Codex 外部输入，保留异步问题／选项语义，并为有序的文件图片引用显示明确离线预览占位。未知 canonical item 与执行 metadata 继续遵循已说明的 Protocol／Raw 边界。
 
 ## 0.2.0 - 2026-09-09
 

@@ -88,6 +88,7 @@ const KIND_LABELS = {
   js_repl: 'JS REPL',
   agent_coordination: 'Subagent coordination',
   other_tool_call: 'Other tool call',
+  external_tool_input: 'External tool input',
   code_mode_operation: 'Code Mode tool call',
   proposed_plan: 'Proposed plan',
   plan_update: 'Plan update',

@@ -23,6 +23,7 @@ const {
 test('trajectory lane classification is source-neutral and unknown Main events stay visible', () => {
   const cases = [
     [{ kind: 'user_message' }, TRAJECTORY_LANES.INPUT],
+    [{ kind: 'external_tool_input', role: 'tool' }, TRAJECTORY_LANES.INPUT],
     [{ kind: 'developer_message' }, TRAJECTORY_LANES.INPUT],
     [{ kind: 'user_shell_command', toolName: 'shell' }, TRAJECTORY_LANES.INPUT],
     [{ kind: 'assistant_message' }, TRAJECTORY_LANES.MODEL],

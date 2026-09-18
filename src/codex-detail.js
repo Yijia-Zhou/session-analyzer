@@ -1,6 +1,7 @@
 'use strict';
 
 function createCodexDetailBuilder(deps) {
+  const { externalToolInputFromRaw, asyncAgentMessageFromRaw, summarizeCodexAttachments } = deps.messages;
   const {
     envelope,
     sourceTrace,
@@ -195,10 +196,37 @@ function createCodexDetailBuilder(deps) {
 
   function extractLogicalDetailSections(event, raws, session = {}) {
     switch (event.kind) {
+      case 'external_tool_input': {
+        const timelineSections = [];
+        const inspectorSections = [];
+        for (const raw of raws) {
+          const input = externalToolInputFromRaw(raw);
+          if (!input) continue;
+          maybePushKvSection(timelineSections, 'External source', [
+            { key: 'Name', value: input.name },
+            ...(input.namespace ? [{ key: 'Namespace', value: input.namespace }] : []),
+          ], 'content');
+          maybePushMarkdownSection(timelineSections, 'Message', input.text, 'content');
+          if (input.opaqueContent?.length) {
+            timelineSections.push(makeNoticeSection('External source', 'Audio or encrypted content is retained in Raw refs; no text is inferred.', 'info', 'content'));
+          }
+        }
+        return { timelineSections, inspectorSections };
+      }
       case 'user_message':
       case 'assistant_message':
       case 'developer_message': {
         const sections = extractConversationSections(raws);
+        const asyncMessage = raws.map(asyncAgentMessageFromRaw).find(Boolean);
+        if (asyncMessage) {
+          sections.unshift(makeNoticeSection('Asynchronous message', 'This message does not end the turn. No answer is inferred.', 'info', 'content'));
+          for (const question of asyncMessage.questions || []) {
+            maybePushKvSection(sections, 'Question', [
+              { key: 'Title', value: question.title },
+              ...(question.options || []).map((option) => ({ key: 'Option', value: option })),
+            ], 'content');
+          }
+        }
         return {
           timelineSections: sections.filter((section) => section.purpose === 'content'),
           inspectorSections: sections.filter((section) => section.purpose === 'fallback'),
@@ -871,6 +899,43 @@ function createCodexDetailBuilder(deps) {
     return items.length ? { purpose: 'traceability', type: 'event_refs', title: 'Observed nested activity', items } : null;
   }
 
+  function appendAttachmentSections(sections, event, raws, locale) {
+    let summaries = raws.map((raw) => raw.attachmentSummary || summarizeCodexAttachments(raw.parsed?.payload))
+      .filter((summary) => summary.totalCount > 0);
+    // A conversation event already owns its proven mirrors; show their content once.
+    if (['user_message', 'assistant_message', 'developer_message'].includes(event.kind)) summaries = summaries.slice(0, 1);
+    const entries = [];
+    const references = [];
+    let position = 0;
+    const total = summaries.reduce((count, summary) => count + summary.totalCount, 0);
+    for (const summary of summaries) {
+      for (const attachment of summary.attachments) {
+        if (position >= 32) break;
+        position += 1;
+        const label = attachment.kind === 'file' ? 'File reference'
+          : attachment.kind === 'inline' ? 'Inline image' : 'Invalid image reference';
+        entries.push({ key: String(position), value: i18n.sectionTitle(label, locale) });
+        if (attachment.fileId) references.push({ key: String(position), value: attachment.fileId });
+        if (attachment.detail) references.push({ key: `${position} · detail`, value: attachment.detail });
+      }
+    }
+    if (!total) return;
+    maybePushKvSection(sections.timelineSections, 'Image attachments', entries, 'content');
+    if (summaries.some((summary) => summary.hasFileReferences)) {
+      sections.timelineSections.push(makeNoticeSection('File reference', 'The transcript contains only a file reference. Local preview is unavailable.', 'info', 'content'));
+    }
+    if (summaries.some((summary) => summary.order.mode === 'fallback_inline_then_file')) {
+      sections.timelineSections.push(makeNoticeSection('Attachment order', 'Attachment order is incomplete; all references are retained in fallback order.', 'warning', 'content'));
+    }
+    if (total > position) {
+      sections.timelineSections.push(makeNoticeSection('Image attachments', 'Additional attachments remain available through Raw refs.', 'info', 'content'));
+    }
+    if (summaries.some((summary) => summary.attachments.some((attachment) => attachment.fileIdTruncated || attachment.detailTruncated))) {
+      sections.inspectorSections.push(makeNoticeSection('Image references', 'Reference details are shortened; open Raw refs for the complete values.', 'info', 'context'));
+    }
+    maybePushKvSection(sections.inspectorSections, 'Image references', references, 'context');
+  }
+
   function buildEventDetail(session, eventId, layer = 'main', options = {}) {
     const locale = i18n.resolveLocale(options.locale);
     if (layer === 'raw') {
@@ -904,6 +969,7 @@ function createCodexDetailBuilder(deps) {
     if (!logical) return null;
     const raws = rawEventsForLogicalEvent(session, logical);
     const detailSections = extractLogicalDetailSections(logical, raws, session);
+    appendAttachmentSections(detailSections, logical, raws, locale);
     if (logical.cacheObservation) {
       const cacheSections = cacheObservationPresentation.cacheObservationDetailSections(
         logical.cacheObservation,

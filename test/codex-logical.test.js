@@ -57,6 +57,11 @@ function uniqueNonEmpty(values) {
 
 function makeLogicalBuilder(overrides = {}) {
   return createCodexLogicalBuilder({
+    messages: {
+      ...require('../src/codex-async-message'),
+      ...require('../src/codex-attachments'),
+      ...require('../src/codex-external-input'),
+    },
     agentCoordination,
     codeMode: { deriveCodeModeFacts, projectCodeModeOperations },
     reviewLifecycle: { reviewLifecycleFromRaw },
@@ -515,6 +520,91 @@ test('logical builder does not fold mirrored-looking messages with internal whit
 
   assert.equal(userMessages.length, 2);
   assert.deepEqual(userMessages.map((event) => event.rawRefs.map((ref) => ref.line)), [[1], [2]]);
+});
+
+test('logical builder keeps same-text message mirrors separate when file attachments differ', () => {
+  const text = 'Please inspect this image.';
+  const events = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      payloadType: 'agent_message',
+      messageText: text,
+      payload: { message: text, file_ids: ['file-a'], image_order: ['file'] },
+    }),
+    raw(2, {
+      recordType: 'response_item',
+      payloadType: 'message',
+      role: 'assistant',
+      messageText: text,
+      payload: {
+        role: 'assistant',
+        content: [{ type: 'input_text', text }, { type: 'input_image', file_id: 'file-b' }],
+      },
+    }),
+  ]);
+
+  const assistants = events.filter((event) => event.kind === 'assistant_message');
+  assert.equal(assistants.length, 2);
+  assert.deepEqual(assistants.map((event) => event.rawRefs.map((ref) => ref.line)), [[1], [2]]);
+  assert.ok(assistants.every((event) => /file-backed image/.test(event.preview)));
+  assert.ok(assistants.every((event) => !/\bfile-(?:a|b)\b/.test(event.searchText)));
+});
+
+test('logical builder folds file attachment mirrors when complete ordered identity matches', () => {
+  const text = 'Please inspect this image.';
+  const events = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      payloadType: 'agent_message',
+      messageText: text,
+      payload: {
+        message: text,
+        file_ids: ['file-same'],
+        file_id_details: ['low'],
+        image_order: ['file'],
+      },
+    }),
+    raw(2, {
+      recordType: 'response_item',
+      payloadType: 'message',
+      role: 'assistant',
+      messageText: text,
+      payload: {
+        role: 'assistant',
+        content: [{ type: 'input_text', text }, { type: 'input_image', file_id: 'file-same', detail: 'high' }],
+      },
+    }),
+  ]);
+
+  const assistants = events.filter((event) => event.kind === 'assistant_message');
+  assert.equal(assistants.length, 1);
+  assert.deepEqual(assistants[0].rawRefs.map((ref) => ref.line), [1, 2]);
+});
+
+test('external tool input keeps structured file image output readable without promoting a tool call', () => {
+  const events = logicalBuilder.buildLogicalEvents([
+    raw(1, {
+      recordType: 'response_item',
+      payloadType: 'function_call_output',
+      payload: {
+        type: 'function_call_output',
+        call_id: null,
+        name: 'notifications',
+        namespace: 'fixture_service',
+        output: [
+          { type: 'input_text', text: 'External image received.' },
+          { type: 'input_image', file_id: 'file-external-fixture', detail: 'high' },
+        ],
+      },
+      output: '[redacted structured output]',
+    }),
+  ]);
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'external_tool_input');
+  assert.match(events[0].preview, /External image received/);
+  assert.match(events[0].preview, /file-backed image/);
+  assert.match(events[0].searchText, /notifications/);
+  assert.match(events[0].searchText, /no local preview/);
+  assert.doesNotMatch(events[0].searchText, /file-external-fixture/);
 });
 
 test('logical builder treats response-item-only user shell command wrappers as main user shell command events', () => {

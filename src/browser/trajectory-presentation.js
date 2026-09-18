@@ -33,6 +33,7 @@ const DISPLAY_STATE_PRIORITY = Object.freeze({
 });
 
 const INPUT_KINDS = new Set([
+  'external_tool_input',
   'developer_message',
   'user_message',
   'user_shell_command',

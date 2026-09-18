@@ -14,6 +14,7 @@ const foldingProfiles = [
     rules: profileRules(
       {
         user_message: 'expanded',
+        external_tool_input: 'expanded',
         assistant_message: 'expanded',
         patch: 'expanded',
         error: 'expanded',
@@ -46,6 +47,7 @@ const foldingProfiles = [
     rules: profileRules(
       {
         user_message: 'expanded',
+        external_tool_input: 'expanded',
         assistant_message: 'expanded',
         proposed_plan: 'expanded',
         goal: 'expanded',
