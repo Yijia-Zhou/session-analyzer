@@ -5,7 +5,7 @@ Dedicated durable `write_stdin` coverage: `test/fixtures/background-terminal/req
 ## Metadata / 元数据
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: draft / 状态：草案
-- Last updated: 2026-09-18 / 最近更新：2026-09-18
+- Last updated: 2026-09-19 / 最近更新：2026-09-19
 - Related spec: / 相关规格：
   - `docs/product-specs/session-transcript-analyzer.md`
 - Related design: / 相关设计：
@@ -21,6 +21,8 @@ Dedicated durable `write_stdin` coverage: `test/fixtures/background-terminal/req
 ## Context / 背景
 
 ### September 2026 persistence evidence / 2026 年 9 月持久化依据
+
+Storage-boundary regression evidence: `test/codex-rollout-chunk-boundaries.test.js` exercises native-validated content-size/checksum frames at magic boundaries, default 64 KiB concatenation, small chunk sizes, unknown-size/skippable/empty-block transitions and malformed input. Adapter-level discovery/index/detail/Raw coverage lives in `test/codex-rollout-acceptance.test.js`. This synthetic coverage does not establish real-corpus prevalence or expand canonical item admission. / 存储边界回归依据：chunk-boundaries 测试覆盖原生验证的 content-size／checksum 帧在 magic 边界、默认 64 KiB 拼接、小 chunk 大小、unknown-size／skippable／empty-block 转换及损坏输入；acceptance 测试覆盖 adapter 发现／索引／详情／Raw。此合成覆盖不证明真实语料命中率，也不扩展 canonical item 准入。
 
 The 2026-09-17 source-review handoff pins Codex `e269f2164cbb9f499e4f22301c393500e2a831f3`. The following table records that snapshot's persistence policy, independently of historical Analyzer compatibility. It does not assert stable-release availability, default feature enablement or local corpus observations. New fixtures in this work are source-derived synthetic records, not captured user transcripts. / 2026-09-17 源码审查交接固定 Codex commit 如上。下表记录该快照的持久化策略，与 Analyzer 对历史形态的兼容分开；不代表稳定版可用、默认启用或本地语料命中。本轮新增 fixture 为源码派生合成记录，不是用户转录捕获。
 

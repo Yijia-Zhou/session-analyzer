@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { TextDecoder } = require('node:util');
 const vm = require('node:vm');
-const { zstdCompressSync } = require('node:zlib');
+const { zstdCompressSync, zstdDecompressSync } = require('node:zlib');
 
 const codex = require('../src/codex');
 const storage = require('../src/codex-rollout-storage');
@@ -63,6 +63,15 @@ function fixtureRecords(id, repoRoot) {
 
 function fixtureText(id, repoRoot) {
   return `${fixtureRecords(id, repoRoot).map((record) => JSON.stringify(record)).join('\n')}\n`;
+}
+
+function rawZstdFrame(payload) {
+  const body = Buffer.isBuffer(payload) ? payload : Buffer.from(payload, 'utf8');
+  assert.ok(body.length >= 256 && body.length <= 65_791);
+  const header = Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x60, 0, 0, 0, 0, 0]);
+  header.writeUInt16LE(body.length - 256, 5);
+  header.writeUIntLE((body.length << 3) | 1, 7, 3);
+  return Buffer.concat([header, body]);
 }
 
 async function makeHome(t, repoRoot) {
@@ -268,6 +277,84 @@ test('large Unicode rollout bytes survive plain and zstd chunked reads', async (
   ]);
   assert.equal(plainLine.line, expectedLine);
   assert.equal(compressedLine.line, expectedLine);
+});
+
+test('source-backed adapter survives concatenated raw frames at the default 64 KiB boundary', async (t) => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-codex-frame-boundary-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const repoRoot = path.join(root, 'project');
+  await fsp.mkdir(repoRoot, { recursive: true });
+  const home = await makeHome(t, repoRoot);
+  const id = 'efefefef-efef-4fef-8fef-efefefefefef';
+  const records = fixtureRecords(id, repoRoot);
+  const firstLogicalBytes = 65_522;
+  const firstRecordText = JSON.stringify(records[0]);
+  const firstPrefix = `${firstRecordText}\n`;
+  const paddingBytes = firstLogicalBytes - Buffer.byteLength(firstPrefix, 'utf8') - 1;
+  assert.ok(paddingBytes > 0);
+  const firstText = `${firstPrefix}${' '.repeat(paddingBytes)}\n`;
+  const secondText = `${records.slice(1).map((record) => JSON.stringify(record)).join('\n')}\n`;
+  const firstFrame = rawZstdFrame(firstText);
+  const secondFrame = rawZstdFrame(secondText);
+  const bytes = Buffer.concat([firstFrame, secondFrame]);
+  const magic = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+
+  assert.equal(Buffer.byteLength(firstText, 'utf8'), firstLogicalBytes);
+  assert.equal(firstFrame.length, 65_532);
+  assert.equal(firstFrame.length + magic.length, 65_536);
+  assert.deepEqual(zstdDecompressSync(firstFrame), Buffer.from(firstText, 'utf8'));
+  assert.deepEqual(zstdDecompressSync(secondFrame), Buffer.from(secondText, 'utf8'));
+  assert.deepEqual(bytes.subarray(firstFrame.length, firstFrame.length + magic.length), magic);
+
+  const logicalPath = path.join(
+    home.sessions,
+    `rollout-2026-09-18T12-00-00-${id}.jsonl`,
+  );
+  const physicalPath = `${logicalPath}.zst`;
+  await fsp.writeFile(physicalPath, bytes);
+  const diagnostics = [];
+  const index = await codex.buildSourceBackedIndex({
+    repoRoot,
+    codexHome: home.home,
+    onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+  });
+  assert.equal(index.sessions.length, 1);
+  assert.equal(index.sessionsById.get(id)?.id, id);
+  assert.equal(
+    diagnostics.some((diagnostic) => (
+      diagnostic.code === storage.CODEX_ROLLOUT_STORAGE_INVALID
+      || /corrupt Codex Zstandard rollout/i.test(diagnostic.message || '')
+    )),
+    false,
+  );
+
+  const session = await materialize(index, id);
+  const userRaw = session.rawEvents.find((raw) => raw.payloadType === 'user_message');
+  const toolRaw = session.rawEvents.find((raw) => raw.payloadType === 'function_call_output');
+  assert.ok(userRaw);
+  assert.ok(toolRaw);
+  const [userRecord, toolRecord] = await Promise.all([
+    codex.readIndexedCodexRawRecord(index, session, userRaw),
+    codex.readIndexedCodexRawRecord(index, session, toolRaw),
+  ]);
+  assert.equal(userRecord.raw, JSON.stringify(records[1]));
+  assert.deepEqual(userRecord.parsed, records[1]);
+  assert.equal(toolRecord.raw, JSON.stringify(records[3]));
+  assert.deepEqual(toolRecord.parsed, records[3]);
+
+  const userEvent = session.logicalEvents.find((event) => event.kind === 'user_message');
+  assert.ok(userEvent);
+  const [detail, rawDetail] = await Promise.all([
+    codex.buildHydratedEventDetail(index, session, userEvent.id, userEvent.layer, { locale: 'en' }),
+    codex.buildHydratedEventDetail(index, session, userRaw.rawId, 'raw', { locale: 'en' }),
+  ]);
+  assert.ok(detail);
+  assert.ok(rawDetail);
+  assert.match(JSON.stringify(detail), /parity request/);
+  const rawJson = [...rawDetail.timelineSections, ...rawDetail.inspectorSections]
+    .find((section) => section.title === 'Raw JSON');
+  assert.ok(rawJson);
+  assert.deepEqual(rawJson.value, userRecord.parsed);
 });
 
 test('compressed snapshot refreshes after same-size rewrite with the same normalized stat', async (t) => {

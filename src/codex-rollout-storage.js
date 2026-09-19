@@ -452,6 +452,9 @@ class ZstdFrameTransform extends Transform {
         this._resetFrameState();
       }
       if (this.state === 'descriptor') {
+        // A frame magic may end exactly at the input chunk boundary.
+        // Keep the descriptor state until a real byte is available.
+        if (offset >= chunk.length) break;
         await this._writeDecoder(chunk.subarray(offset, offset + 1));
         const descriptor = chunk[offset++];
         this.frameDescriptor = descriptor;
