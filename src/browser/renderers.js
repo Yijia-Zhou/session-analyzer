@@ -382,6 +382,9 @@
   function renderEventRefs(section) {
     const items = (section.items || []).map((item) => {
       const meta = [item.kind, item.status].filter(Boolean).join(' · ');
+      if (['main', 'protocol', 'raw'].includes(item.layer)) {
+        return `<li><button class="smallBtn" type="button" data-detail-action="navigate-linked-event" data-target-layer="${escapeHtml(item.layer)}" data-target-event-id="${escapeHtml(item.id || '')}">${escapeHtml(item.label || item.id || '')}</button>${meta ? `<span>${escapeHtml(meta)}</span>` : ''}</li>`;
+      }
       return `<li><button class="smallBtn" type="button" data-detail-action="jump-event-ref" data-event-ref-id="${escapeHtml(item.id || '')}">${escapeHtml(item.label || item.id || '')}</button>${meta ? `<span>${escapeHtml(meta)}</span>` : ''}</li>`;
     }).join('');
     return `<section class="eventSection"><div class="eventRefsBlock">${renderSectionTitle(section)}<ul>${items}</ul></div></section>`;

@@ -17,6 +17,8 @@ const {
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const repoRoot = 'G:\\vibe\\term-agent';
 const COMPACT_RAW_KEYS = new Set([
+  'historyFacts',
+  'historyTarget',
   'terminalSourceEvidence',
   'aggregatedOutput',
   'callId',

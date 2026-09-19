@@ -11,6 +11,7 @@ const {
 } = require('./codex-async-message');
 const { summarizeCodexAttachments } = require('./codex-attachments');
 const { externalToolInputFromRaw } = require('./codex-external-input');
+const { factsFromRecord, targetFromRecord, isTransientRealtimeRecord } = require('./codex-persisted-history');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 
 const CANONICAL_EVENT_TYPES = Object.freeze({
@@ -147,6 +148,12 @@ function createCodexRawParser(deps) {
     };
 
     const attachmentSummary = sourceAttachmentSummary || summarizeCodexAttachments(payload);
+    if (recordType === 'realtime_item' || (recordType === 'response_item' && payloadType === 'configuration_update')) {
+      raw.turnId = '';
+      raw.callId = '';
+      raw.toolName = '';
+      raw.status = '';
+    }
     const finishRaw = () => {
       if (attachmentSummary.totalCount > 0) {
         raw.attachmentSummary = attachmentSummary;
@@ -156,6 +163,38 @@ function createCodexRawParser(deps) {
       }
       return raw;
     };
+
+    const history = factsFromRecord(record);
+    if (isTransientRealtimeRecord(record)) {
+      raw.turnId = '';
+      raw.callId = '';
+      raw.toolName = '';
+      raw.preview = payloadType;
+      raw.searchText = '';
+      return raw;
+    }
+    const target = targetFromRecord(record);
+    if (target) raw.historyTarget = target;
+    if (history) {
+      raw.historyFacts = history;
+      // A promotion references a turn; it does not own that turn. Neither
+      // realtime history nor a positional backend control is a tool call.
+      raw.turnId = '';
+      raw.callId = '';
+      raw.toolName = '';
+      raw.status = '';
+      if (history.type === 'transcript_segment') {
+        raw.messageText = payload.text.slice(0, 16000);
+        raw.preview = truncate(raw.messageText);
+        raw.searchText = raw.messageText;
+      } else {
+        raw.preview = truncate(Object.entries(history.values || history)
+          .filter(([key]) => !['type', 'itemId', 'realtimeSessionId'].includes(key))
+          .map(([key, value]) => `${key}: ${value}`).join(' · ') || history.type);
+        raw.searchText = raw.preview;
+      }
+      return raw;
+    }
 
     const asyncMessage = asyncAgentMessageFromRecord(record);
     if (asyncMessage) {

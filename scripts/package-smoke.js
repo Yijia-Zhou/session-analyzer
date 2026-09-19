@@ -377,11 +377,13 @@ async function main() {
     const codexSessions = [{ id: codexSessionId, text: codexText, record: codexUser }];
     if (typeof zstdCompressSync === 'function') {
       const id = '33333333-3333-4333-8333-333333333333';
-      const user = { ...codexUser, payload: { type: 'user_message', message: 'Read the installed compressed Codex rollout.' } };
+      const realtimeText = 'Read the installed compressed Codex realtime history.';
+      const user = { type: 'realtime_item', timestamp: codexUser.timestamp,
+        payload: { type: 'transcript_segment', id: 'package-segment', realtime_session_id: 'package-realtime', role: 'user', text: realtimeText } };
       const records = [{ ...codexRecords[0], payload: { id, cwd: projectDir } }, user];
       await fsp.writeFile(path.join(codexHome, 'sessions', 'rollout-package-smoke-zstd.jsonl.zst'),
         Buffer.concat(records.map((record) => zstdCompressSync(Buffer.from(JSON.stringify(record) + '\n')))));
-      codexSessions.push({ id, text: user.payload.message, record: user });
+      codexSessions.push({ id, text: realtimeText, record: user });
     } else {
       console.log('SKIP Codex Zstd package reading: Node built-in Zstd is unavailable.');
     }

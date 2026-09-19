@@ -2,6 +2,8 @@
 
 function createCodexLogicalBuilder(deps) {
   const {
+    historyFacts = () => null,
+    realtimeIdentity = () => '',
     externalToolInputFromRaw,
     asyncAgentMessageFromRaw,
     asyncMessageMetadata,
@@ -1025,6 +1027,15 @@ function createCodexLogicalBuilder(deps) {
 
   function buildLogicalEvents(rawEvents) {
     const logicalEvents = [];
+    // Duplicate opaque identities are ambiguous, including equal text. Leave
+    // every occurrence inspectable rather than choosing an owner across a
+    // copied-history boundary before the fork ownership pass has run.
+    const realtimeIdentities = new Map();
+    for (const raw of rawEvents) {
+      const key = realtimeIdentity(raw);
+      if (!key) continue;
+      realtimeIdentities.set(key, (realtimeIdentities.get(key) || 0) + 1);
+    }
     const consumed = new Set();
     const asyncMessageOwnersByIdentity = new Map();
     const registerAsyncMessageOwner = (raw, message, event) => {
@@ -1117,6 +1128,20 @@ function createCodexLogicalBuilder(deps) {
       if (consumed.has(raw.rawId)) continue;
       const next = rawEvents[i + 1];
       const prev = rawEvents[i - 1];
+
+      const history = historyFacts(raw);
+      if (history) {
+        const identityCount = realtimeIdentities.get(realtimeIdentity(raw));
+        const event = history.type === 'transcript_segment' && identityCount === 1
+          ? buildConversationEvent(`${raw.sessionId}:logical:realtime:${raw.line}`, `${history.role}_message`, history.role, raw.messageText, [raw])
+          : buildProtocolEvent(raw, history.type === 'transcript_segment' ? 'realtime_identity_conflict' : history.type);
+        event.historyFacts = history;
+        event.turnId = '';
+        if (history.type === 'transcript_segment' && event.layer === 'main') event.tags.push('realtime');
+        logicalEvents.push(event);
+        consumed.add(raw.rawId);
+        continue;
+      }
 
       const externalToolInput = externalToolInputFromRaw(raw);
       if (externalToolInput) {
@@ -1470,7 +1495,9 @@ function createCodexLogicalBuilder(deps) {
       }
     }
 
-    const hasUntimestampedEvent = logicalEvents.some((event) => !event.timestamp);
+    // Persisted realtime and positional controls carry source-position meaning.
+    // Only these histories opt into line order; legacy timeline policy stays.
+    const hasUntimestampedEvent = logicalEvents.some((event) => !event.timestamp || event.historyFacts);
     logicalEvents.sort((a, b) => {
       const al = a.rawRefs[0]?.line || 0;
       const bl = b.rawRefs[0]?.line || 0;
