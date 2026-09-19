@@ -59,6 +59,10 @@ Session Transcript Analyzer 是一个本地 Web 工具，用于查看特定仓�
 
 ## Goals / 目标
 
+Codex persisted realtime transcript segments with supported roles appear as ordinary user/assistant messages in Timeline and Trajectory, with a neutral realtime provenance indicator. A segment is committed history, not necessarily a complete utterance or agent turn; repeated text with different IDs remains separate. Start/close and backing-agent promotions appear in Protocol, with exact target navigation only where same-owner evidence exists. Unknown or ambiguous records remain inspectable in Protocol/Raw. / Codex 支持角色的持久化实时转录片段在 Timeline 与 Trajectory 中作为普通用户／助手消息显示，并附中性的实时来源标识。片段是持久化历史，不一定是完整发言或代理轮次；不同 ID 的相同文本保持独立。开始／关闭与后台代理推广显示在 Protocol，仅在有同 owner 证据时提供精确目标导航。未知或歧义记录仍可在 Protocol/Raw 检查。
+
+Protocol distinguishes “Applied thread settings”, “Recorded turn context”, and “Positional configuration control”. Saved settings are not model-request evidence; captured context is not proof that all internal requests used the same settings; controls report recorded reasoning effort and exact root provenance without reconstructing backend state. Settings from another logical owner are labeled as foreign, and missing owner information stays unknown. Full permissions/paths remain Inspector/Raw data. No voice capture, audio playback, visualization execution, full Paginated history reconstruction or complete per-step settings reconstruction is promised. / Protocol 区分“已应用的线程设置”“已记录的轮次上下文”“位置配置控制”。已保存设置不证明模型请求；捕获上下文不证明所有内部请求都使用同样设置；控制仅报告已记录的推理强度与精确 root 来源，不重建后端状态。其他逻辑 owner 的设置标记为外部归属，缺少 owner 保持未知；完整权限／路径留在 Inspector/Raw。不承诺语音采集、播放、可视化执行、完整分页历史或逐步设置重建。
+
 - Make repository-scoped session history readable without opening raw JSONL files by hand. / 让仓库范围内的会话历史可读，而不需要手动打开原始 JSONL 文件。
 - Support fast search across messages, tool calls, files, and outputs. / 支持跨消息、工具调用、文件和输出的快速搜索。
 - Provide a main timeline that reflects logical work rather than raw duplicated transcript rows. / 提供反映逻辑工作的主时间线，而不是原始重复转录行。

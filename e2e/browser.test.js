@@ -23,6 +23,52 @@ const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 let wave1bM2SourceBundlePromise;
 
+for (const locale of ['en', 'zh-CN']) test(`persisted realtime history navigates Main, Protocol and Raw in both presentations (${locale})`, async (t) => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-persisted-browser-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const project = path.join(home, 'repo');
+  const id = 'dddddddd-0919-4919-8919-dddddddddddd';
+  const realtime = (item, type, fields = {}) => ({ type: 'realtime_item', payload: { id: item, realtime_session_id: 'realtime-browser', type, ...fields } });
+  await fsp.mkdir(path.join(home, 'sessions'), { recursive: true });
+  await writeJsonl(path.join(home, 'sessions', `rollout-${id}.jsonl`), [
+    { type: 'session_meta', payload: { id, cwd: project } },
+    realtime('spoken', 'transcript_segment', { role: 'user', text: 'Persisted realtime browser question' }),
+    realtime('promotion', 'bem_item_promoted', { turn_id: 'turn', item_id: 'target', presentation: { type: 'inline_visualization', index: 1 } }),
+    { type: 'event_msg', payload: { type: 'item_completed', thread_id: id, turn_id: 'turn', item: { type: 'AgentMessage', id: 'target', delivery: 'async', content: [{ type: 'Text', text: 'Backing browser answer' }] } } },
+    realtime('raw-promotion', 'bem_item_promoted', { turn_id: 'turn', item_id: 'raw-target', presentation: { type: 'whole_item' } }),
+    { type: 'event_msg', payload: { type: 'item_completed', thread_id: id, turn_id: 'turn', item: { type: 'FutureItem', id: 'raw-target', value: 'Raw target evidence' } } },
+    { type: 'event_msg', payload: { type: 'thread_settings_applied', thread_id: id, thread_settings: { model: 'saved-browser-model', reasoning_effort: 'high' } } },
+    { type: 'response_item', payload: { type: 'configuration_update', reasoning: { effort: 'low' } }, metadata: { harness_authored_configuration: true } },
+  ]);
+  const index = await buildIndex({ repoRoot: project, codexHome: home });
+  const { page } = await openApp(t, index, { locale });
+  for (const presentation of ['timeline', 'trajectory']) {
+    await page.locator('#layerSelect').selectOption('main');
+    await page.locator(`#mainPresentationControl [data-main-presentation="${presentation}"]`).click();
+    const message = presentation === 'timeline'
+      ? page.locator(`#timeline .event[data-event-id="${id}:logical:realtime:2"]`)
+      : page.locator(`[data-trajectory-event-id="${id}:logical:realtime:2"]`);
+    await message.waitFor();
+    await message.click();
+    await page.waitForFunction(() => /Realtime|实时/.test(document.querySelector('#detail')?.textContent || ''));
+    assert.match(await page.locator('#timeline').innerText(), /Persisted realtime browser question/);
+    await page.locator('#layerSelect').selectOption('protocol');
+    await page.locator(`#timeline .event[data-event-id="${id}:logical:protocol:3"]`).click();
+    const link = page.locator(`#detail [data-target-event-id="${id}:logical:assistant:4"]`);
+    await link.waitFor();
+    await link.click();
+    await page.waitForFunction(() => document.querySelector('#layerSelect')?.value === 'main');
+    await page.waitForFunction((eventId) => Boolean(document.querySelector(`[data-event-id="${CSS.escape(eventId)}"].selected, [data-trajectory-event-id="${CSS.escape(eventId)}"].selected`)), `${id}:logical:assistant:4`);
+    await page.locator('#layerSelect').selectOption('protocol');
+    await page.locator(`#timeline .event[data-event-id="${id}:logical:protocol:5"]`).click();
+    const rawLink = page.locator(`#detail [data-target-event-id="${id}:raw:6"]`);
+    await rawLink.waitFor();
+    await rawLink.click();
+    await page.waitForFunction(() => document.querySelector('#layerSelect')?.value === 'raw');
+    await page.waitForFunction(() => document.querySelector('#detail')?.textContent.includes('Raw target evidence'));
+  }
+});
+
 test('Codex external inputs, asynchronous questions and file images render read-only in both locales', async (t) => {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-reading-browser-'));
   t.after(() => fsp.rm(home, { recursive: true, force: true }));

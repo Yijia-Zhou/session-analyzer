@@ -7701,7 +7701,7 @@ async function inspectAndRevealEvent(target, options = {}) {
 }
 
 async function navigateToLayerEvent(targetLayerId, targetEventId) {
-  if (!['main', 'protocol'].includes(targetLayerId)
+  if (!['main', 'protocol', 'raw'].includes(targetLayerId)
       || !targetEventId
       || !state.selectedSessionId
       || state.searchScope !== 'session') return false;

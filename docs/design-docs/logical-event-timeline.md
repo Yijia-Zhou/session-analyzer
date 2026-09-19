@@ -8,6 +8,10 @@ The drill-down and ordinary `selectSession()` header render paths share the cont
 
 ## Metadata / 元数据
 
+Persisted Codex realtime history uses existing Main message kinds and concise Protocol lifecycle/reference subtypes. `codex-persisted-history.js` is the shared admission boundary; opaque IDs are retained exactly in bounded `historyFacts`, while event IDs remain source-location-derived. Duplicate source identities stay Protocol evidence rather than choosing an owner. Histories containing admitted realtime/configuration facts use source-line order to preserve positional meaning; other histories keep their previous timestamp policy. Ordinals remain Raw evidence, never line locators. / Codex 持久化实时历史复用 Main 消息 kind 与简洁 Protocol 生命周期／引用 subtype。共享准入边界为上述 helper；opaque ID 精确保存在有界 historyFacts 中，事件 ID 继续来自源位置。重复身份保持 Protocol 证据，不任意选 owner。包含准入实时／配置事实的历史按源行排序以保留位置语义，其他历史沿用既有时间戳策略。ordinal 只作为 Raw 证据，不替代行定位。
+
+Applied thread settings, recorded turn context and positional configuration controls remain separate Protocol observations. They do not feed a new effective-settings model, cache accounting, cwd attribution or execution metrics. Promotion resolution is a bounded scan over the accepted Materialized history after fork ownership; a unique same-thread `item_completed` with exact turn/item IDs links to an existing semantic event or Raw record, including later completion. The detail reference may carry an explicit destination layer; navigation reuses existing cross-layer controls. No Raw ownership is transferred, visualization directive executed or target content duplicated. / 已应用线程设置、已记录轮次上下文及位置控制保持独立 Protocol 观测，不进入新的有效设置模型、缓存核算、cwd 归属或执行指标。推广引用在 fork ownership 后对已接受物化历史进行有界扫描；唯一同线程、精确轮次／item ID 的 item_completed 可链接既有语义事件或 Raw（包括后续完成目标）。详情引用可带目标层，复用既有跨层导航；不转移 Raw ownership、不执行可视化指令、不复制目标内容。
+
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted baseline; conditional fixture coverage and shared KV-residual semantics implemented / 状态：既有基线已接受；条件式 fixture coverage 与共享 KV residual 语义均已实现
 - Last updated: 2026-09-10 / 最近更新：2026-09-10

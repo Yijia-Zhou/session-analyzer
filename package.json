@@ -65,6 +65,7 @@
     "src/codex-attachments.js",
     "src/codex-async-message.js",
     "src/codex-external-input.js",
+    "src/codex-persisted-history.js",
     "src/codex-rollout-storage.js",
     "src/codex-rollout-snapshots.js",
     "src/codex-detail.js",

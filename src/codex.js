@@ -32,7 +32,9 @@ const planFacet = require('./shared/plan-facet');
 const toolLifecycleContract = require('./codex-tool-lifecycle-contract');
 const i18n = require('./shared/i18n');
 const { asyncMessageMetadata } = require('./codex-async-message');
+const { historyFacts, validHistoryFacts, validHistoryTarget, resolveHistoryReference, historyOwner } = require('./codex-persisted-history');
 const codexMessageEvidence = {
+  ...require('./codex-persisted-history'),
   ...require('./codex-async-message'),
   ...require('./codex-attachments'),
   ...require('./codex-external-input'),
@@ -382,7 +384,13 @@ const PROTOCOL_LABELS = Object.freeze({
   skill_injection: 'Skill instructions',
   token_count: 'Token count',
   turn_aborted_marker: 'Turn aborted marker',
-  turn_context: 'Turn context',
+  turn_context: 'Recorded turn context',
+  thread_settings_applied: 'Applied thread settings',
+  configuration_update: 'Positional configuration control',
+  realtime_session_started: 'Realtime session started',
+  realtime_session_closed: 'Realtime session closed',
+  bem_item_promoted: 'Realtime backing-agent reference',
+  realtime_identity_conflict: 'Ambiguous realtime identity',
   user_shell_command: 'User shell command',
 });
 
@@ -2344,7 +2352,7 @@ function protocolPreviewFor(raw, subtype) {
     return truncate(readXmlTag(source, 'objective') || firstProtocolBodyLine(source) || 'Goal context');
   }
   if (subtype === 'turn_context') {
-    return payloadPreview(raw.parsed?.payload, ['turn_id', 'cwd', 'model']) || raw.preview;
+    return payloadPreview(raw.parsed?.payload, ['turn_id', 'cwd', 'model', 'effort']) || raw.preview;
   }
   if (subtype === 'token_count') {
     return formatTokenUsagePreview(raw.parsed?.payload) || raw.preview;
@@ -3780,6 +3788,12 @@ function extractProtocolDetailSections(event, raws) {
     return { timelineSections, inspectorSections };
   }
   if (event.subtype === 'environment_context' || event.subtype === 'session_meta' || event.subtype === 'session_configured' || event.subtype === 'thread_goal_updated' || event.subtype === 'turn_context') {
+    if (event.subtype === 'turn_context') {
+      timelineSections.push(makeNoticeSection('Recorded turn context', 'Captured turn configuration; not proof that every internal request used identical settings or completed successfully.', 'info', 'context'));
+      // Preserve summary as recorded scalar evidence. Without an established
+      // schema version it must not be relabeled as an effective setting.
+      inspectorSections.push(makeNoticeSection('Recorded fields', 'summary is legacy evidence; in Codex 0.155 it is compatibility-only. realtime_active does not identify an audio session.', 'info', 'context'));
+    }
     const entries = event.subtype === 'environment_context'
       ? taggedBlockEntries(primary.messageText)
       : toKvEntries(primary.parsed?.payload, ['cwd', 'turn_id', 'model', 'id', 'originator', 'thread_id', 'thread_name', 'thread_goal', 'goal']);
@@ -3863,6 +3877,8 @@ function extractLifecycleSections(event, raws) {
 }
 
 function rawConversationRole(raw) {
+  const history = historyFacts(raw);
+  if (history?.type === 'transcript_segment') return history.role;
   if (raw.recordType === 'event_msg' && raw.payloadType === 'user_message') return 'user';
   if (raw.recordType === 'event_msg' && raw.payloadType === 'agent_message') return 'assistant';
   if (raw.recordType === 'response_item' && raw.payloadType === 'message' && ['user', 'assistant'].includes(raw.role)) {
@@ -4544,6 +4560,8 @@ function compactCodexRawEvent(raw) {
   if (typeof raw.sessionMetaId === 'string' && raw.sessionMetaId) compact.sessionMetaId = raw.sessionMetaId;
   const asyncMessage = asyncMessageMetadata(raw.asyncMessage);
   if (asyncMessage) compact.asyncMessage = asyncMessage;
+  if (raw.historyFacts) compact.historyFacts = structuredClone(raw.historyFacts);
+  if (raw.historyTarget) compact.historyTarget = { ...raw.historyTarget };
   if (typeof raw.terminalSourceEvidence === 'string') compact.terminalSourceEvidence = raw.terminalSourceEvidence;
   if (typeof raw.threadName === 'string' && raw.threadName) compact.threadName = raw.threadName;
   if (typeof raw.reviewLifecyclePhase === 'string' && raw.reviewLifecyclePhase) compact.reviewLifecyclePhase = raw.reviewLifecyclePhase;
@@ -4553,6 +4571,7 @@ function compactCodexRawEvent(raw) {
 }
 
 const COMPACT_RAW_KEYS = new Set([
+  'historyFacts', 'historyTarget',
   'asyncMessage',
   'terminalSourceEvidence',
   'aggregatedOutput', 'callId', 'canonicalType', 'commandText', 'durationMs', 'embeddedImages',
@@ -4577,6 +4596,7 @@ const COMPACT_SESSION_STRING_FIELDS = [
   'transcriptUpdatedAt', 'updatedAt',
 ];
 const COMPACT_LOGICAL_KEYS = new Set([
+  'historyFacts',
   'asyncMessage',
   'cacheObservation', 'channels', 'codeModeOperation', 'hasLongOutput', 'hasReadableReasoning', 'id', 'kind', 'label', 'layer',
   'outputStats', 'preview', 'rawRefs', 'role', 'schemaVersion', 'searchText', 'severity',
@@ -4634,6 +4654,8 @@ function isReusableCompactRaw(raw) {
     && COMPACT_RAW_STRING_FIELDS.every((key) => typeof raw[key] === 'string')
     && raw.sourceKind === CODEX_SOURCE_KIND
     && (raw.asyncMessage === undefined || isReusableAsyncMessage(raw.asyncMessage))
+    && (raw.historyFacts === undefined || validHistoryFacts(raw.historyFacts))
+    && (raw.historyTarget === undefined || validHistoryTarget(raw.historyTarget))
     && Number.isSafeInteger(raw.line)
     && Number.isSafeInteger(raw.rawIndex)
     && (raw.exitCode === null || typeof raw.exitCode === 'string' || typeof raw.exitCode === 'number')
@@ -4679,6 +4701,7 @@ function isReusableCompactLogicalEvent(event) {
     && Object.keys(event).every((key) => COMPACT_LOGICAL_KEYS.has(key))
     && COMPACT_LOGICAL_STRING_FIELDS.every((key) => typeof event[key] === 'string')
     && (event.asyncMessage === undefined || isReusableAsyncMessage(event.asyncMessage))
+    && (event.historyFacts === undefined || validHistoryFacts(event.historyFacts))
     && Array.isArray(event.rawRefs)
     && event.rawRefs.every(isReusableCompactRawRef)
     && (event.source == null || event.rawRefs.includes(event.source))
@@ -4871,6 +4894,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       }
       updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
       if (!sessionShellCaptured
+          && raw.recordType !== 'realtime_item'
           && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
         const shellContext = readXmlTag(raw.messageText, 'shell');
         if (shellContext) {
@@ -7181,7 +7205,8 @@ async function buildHydratedEventDetail(index, session, eventId, layer = 'main',
       [CODEX_HYDRATION_SLOT_OWNED]: true,
     });
     throwIfAborted(options.signal);
-    return buildEventDetail({ ...session, rawEvents: hydratedRaws }, eventId, layer, options);
+    const historyReference = resolveHistoryReference(session, session.logicalEvents.find((event) => event.id === eventId));
+    return buildEventDetail({ ...session, rawEvents: hydratedRaws }, eventId, layer, { ...options, historyReference, historyOwnerId: historyOwner(session) });
   });
 }
 
