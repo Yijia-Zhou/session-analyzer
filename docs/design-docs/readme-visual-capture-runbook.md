@@ -3,13 +3,85 @@
 ## Status and scope
 
 - Status: accepted documentation baseline for the synthetic README showcase.
-- Last updated: 2026-09-09.
+- Last updated: 2026-09-19.
 - Canonical source: showcase/ and scripts/materialize-showcase.js.
 - Tracked storyboards: showcase/captures/readme/search.json and
   showcase/captures/readme/branching.json, plus reading.json and project-search.json
   in the same directory.
 - Candidate capture output: output/readme-capture/.
 - Final public media: docs/assets/readme/, published only after manual approval.
+
+### Current scenario refresh / 当前场景更新
+
+The 2026-09-19 scenario selectively incorporates the video's two code reads and
+failure-format improvements, retaining English and the compact source helpers.
+The parent now has ten Main events / seven tool calls; its materialized child has
+26 inherited Raw Records supporting ten Main events and one Protocol event.
+The child is now the ordinary subagent `Docs`, titled `Write search navigation
+usage examples`: a delegated documentation task that intentionally reuses parent
+context, not an independent review. Its recorded provenance is `subagent`.
+Current indexing reports six Sessions, 30 Logical Events, and 89 Raw Records.
+The tracked storyboards describe this updated source. Historical capture counts
+and dimensions below describe the previously approved assets, not this refresh.
+
+2026-09-19 场景选择性吸收视频中的两次代码读取和失败格式改进，保留英文及紧凑的
+源文件辅助函数。父会话现有十个 Main 事件／七次工具调用；物化子会话的 26 条
+继承 Raw Records 支持十个 Main 事件及一个 Protocol 事件。子会话现为普通
+subagent `Docs`，标题为 `Write search navigation usage examples`：它是有意复用
+父会话上下文的委派文档任务，不是独立 review；记录的来源类型为 `subagent`。
+当前索引结果为六个
+会话、30 个逻辑事件、89 条原始记录。受版本管理的分镜对应新场景；下文历史取景
+中的计数与尺寸描述此前获批素材，不代表本次更新。
+
+Both failed and passing commands use synthetic Node spec-reporter output. The
+initial source, patch, failure read, assertion location, and repair agree; the
+count function continues to return a number. The focused scenario check applies
+the two patches and executes this small module in a temporary directory, observing
+11 pass / 1 fail and then 12 pass. This is new, bounded module evidence, not evidence
+that the full task-board story or the video's original successful transcript ran.
+The video probe supplied only a failure-format reference. Transcript timings and
+stack excerpts remain authored and paths are portable.
+
+失败和成功命令统一采用合成 Node spec reporter 输出。初始源码、补丁、失败后的
+读取、断言位置和修复相互一致；计数函数仍返回数字。聚焦场景检查在临时目录中
+应用两次补丁并执行该小型模块，观察到十一项通过／一项失败，随后十二项通过。
+这是本次新增且范围有限的模块证据，不证明完整 task-board 故事或视频原有成功
+转录实际运行过。视频 probe 仅提供失败格式参考；转录时长与堆栈节选仍为编写
+内容，路径保持可移植。
+
+Candidate media and evidence are in `output/readme-capture/refresh-2026-09-19/`;
+see the [completed record](../exec-plans/completed/2026-09-19-readme-showcase-refresh.md).
+Four PNGs and the two currently referenced GIFs are regenerated. Preserve their
+original jobs: the overview uses Timeline with the successful command expanded,
+the reading pair compares Timeline and Trajectory, and operation detail shows the
+expanded patch. Only the dedicated Trajectory image uses that presentation.
+The two GIFs use 900px-high viewports and one-second real timeline scrolls to keep
+patch details readable; do not replace concrete work with an overview to fit it
+on one screen. The overview is a scrolled work segment, not all ten events at once.
+File search now shows 1 / 4 then 2 / 4 targets and five full-text
+occurrences; the next target is still the first patch. The unreferenced historical
+`search-and-jump.gif` has not been regenerated.
+
+候选素材与证据位于 `output/readme-capture/refresh-2026-09-19/`，见上述执行交接记录。
+已重新生成四张 PNG 和 README 当前引用的两份 GIF。保留原来的呈现分工：主图为
+Timeline 并展开成功命令，阅读对照图比较 Timeline 与 Trajectory，操作图展示
+展开补丁；只有专门的 Trajectory 图片使用该呈现。两份 GIF 使用 900px 高视口，
+通过一秒的真实时间线滚动保留补丁可读性，不为塞入一屏而把具体工作改为概览。
+主图是滚动后的工作片段，不声称同时显示全部十个事件。
+文件搜索现为 1 / 4 → 2 / 4 跳转目标、五次
+全文出现，下一目标仍是首个补丁；未重拍当前未引用的历史 `search-and-jump.gif`。
+
+The maintainer approved all six current candidates on 2026-09-19. They were copied
+byte-for-byte into `docs/assets/readme/`, and both READMEs now describe the subagent
+example. Development README media uses relative `docs/assets/readme/` links so
+the images follow the current ref. The release runbook still requires matching
+immutable raw-content URLs before packing a release. No tag, public repository
+or npm artifact was changed by this local promotion.
+
+维护者于 2026-09-19 批准全部六份当前候选，已逐字节复制到 `docs/assets/readme/`，
+双语 README 也已改用 subagent 示例文案。开发 README 的媒体使用相对
+`docs/assets/readme/` 链接，使图片跟随当前 ref；发布手册仍要求打包前转换为
+匹配的不可变 raw 内容 URL。本次本地替换未修改 tag、公开仓库或 npm 制品。
 
 This is a durable design/runbook document, not an implementation plan and not a
 product specification. It records how to resume README visual work without

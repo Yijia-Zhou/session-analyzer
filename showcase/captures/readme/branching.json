@@ -3,7 +3,7 @@
   "kind": "readme-capture-storyboard",
   "source": "showcase/scenarios/readme/scenario.js",
   "story": "Understand branching work",
-  "relationship": "review-derived Codex child with materialized fork storage",
+  "relationship": "ordinary Codex subagent child with materialized fork storage",
   "captureOutput": "output/readme-capture/branching/",
   "viewport": {
     "width": 1440,
@@ -12,43 +12,52 @@
   "captureClip": {
     "x": 0,
     "y": 0,
-    "width": 1416,
-    "height": 884
+    "width": 1440,
+    "height": 900
   },
   "fps": 10,
-  "recommendedDurationSeconds": 8,
+  "recommendedDurationSeconds": 9,
+  "scrollTransitions": [
+    { "after": "04-parent-returned.png", "before": "05-parent-patch.png", "pane": ".timelinePane", "fromScrollTop": 0, "toScrollTop": 300, "durationMs": 1000, "frameCount": 10, "filePattern": "scroll-%02d.png", "easing": "smoothstep" }
+  ],
   "frames": [
     {
       "file": "01-parent-collapsed.png",
       "durationMs": 1000,
-      "state": "Parent session selected; one child relationship is collapsed."
+      "state": "Parent selected in Timeline; first patch expanded and selected, pane scrolled to its readable changes; one child relationship is collapsed."
     },
     {
       "file": "02-child-expanded.png",
       "durationMs": 1300,
-      "state": "Relationship expanded; Review search navigation implementation appears under parent with Review provenance."
+      "state": "Relationship expanded; Write search navigation usage examples appears under parent with Subagent provenance."
     },
     {
       "file": "03-child-inherited-context.png",
       "durationMs": 3300,
-      "state": "Child selected; Materialized fork and Inherited session context are visible; Latest inherited Main events (8) stays collapsed so the count and Open parent session action remain in view."
+      "state": "Child selected; Materialized fork and Inherited session context are visible; Latest inherited Main events (10) stays collapsed so the count and Open parent session action remain in view."
     },
     {
       "file": "04-parent-returned.png",
-      "durationMs": 2400,
-      "state": "Open parent session returns to the parent timeline while the relationship remains expanded."
+      "durationMs": 700,
+      "state": "Open parent session returns to the parent Timeline at its top, with the first patch expanded and selected and the relationship still expanded."
+    },
+    {
+      "file": "05-parent-patch.png",
+      "durationMs": 1700,
+      "state": "A short real scroll brings the complete first patch into view, with its result and files in the inspector."
     }
   ],
   "interactionSequence": [
-    "Start on the parent session with its child relationship collapsed.",
+    "Start on the parent Timeline with its first patch expanded and selected, its changes visible at scrollTop 300, and its child relationship collapsed.",
     "Click Show 1 child session.",
-    "Open Review search navigation implementation.",
-    "Keep Latest inherited Main events (8) collapsed so the inherited count and Open parent session action remain visible.",
-    "Click Open parent session."
+    "Open Write search navigation usage examples.",
+    "Keep Latest inherited Main events (10) collapsed so the inherited count and Open parent session action remain visible.",
+    "Click Open parent session, retain the expanded patch, select it and return the pane to its top.",
+    "Scroll the parent timeline to the patch over one second; retain readable operation detail instead of switching presentation."
   ],
   "keep": [
     "Single child only",
-    "Review · from parent label",
+    "Subagent · from parent label",
     "Materialized fork and inherited-count explanation",
     "Collapsed inherited-event evidence and the Open parent session action"
   ],

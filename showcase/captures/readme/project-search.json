@@ -12,8 +12,13 @@
   "captureClip": { "x": 0, "y": 0, "width": 1240, "height": 900 },
   "locale": "en",
   "fps": 10,
+  "recommendedDurationSeconds": 13.4,
+  "scrollTransitions": [
+    { "after": "01-session-a.png", "before": "01b-patch-context.png", "pane": ".timelinePane", "fromScrollTop": 0, "toScrollTop": 350, "durationMs": 1000, "frameCount": 10, "filePattern": "scroll-%02d.png", "easing": "smoothstep" }
+  ],
   "frames": [
-    { "file": "01-session-a.png", "durationMs": 1200, "state": "Parent session A; Main Timeline; current-session scope; empty query; routine tool events collapsed, messages readable." },
+    { "file": "01-session-a.png", "durationMs": 1200, "state": "Parent session A; Main Timeline; current-session scope; empty query; first patch expanded and selected, other routine tools collapsed; user request visible at the pane top." },
+    { "file": "01b-patch-context.png", "durationMs": 1400, "state": "After a short real timeline scroll, both files in the first patch are readable, with the preceding read and following failure context retained." },
     { "file": "02-current-no-match.png", "durationMs": 1800, "state": "Enter the query in A; No matches and 0 / 0 targets confirm the remembered command is absent here." },
     { "file": "03-scope-options.png", "durationMs": 1600, "state": "Open the session scope pill; Current session and Entire project choices are visible." },
     { "file": "04-project-result.png", "durationMs": 2400, "state": "Choose Entire project and close the search popover; exactly one matching session and one matching event identify B." },
@@ -21,6 +26,7 @@
   ],
   "interactionSequence": [
     "Start in Add project-wide search navigation, distinct from the target session.",
+    "Keep the first patch expanded and scroll the timeline pane from the request to its complete changes; capture ten scroll frames over one second instead of switching to Trajectory or shrinking the content.",
     "Search npm test -- project-switch in current-session scope and confirm No matches.",
     "Click the session scope pill and choose Entire project.",
     "Close the search popover and confirm the sole result is Fix stale project rows after source switch.",
@@ -28,6 +34,7 @@
   ],
   "keep": [
     "Actual transition from A to B in one project and one source",
+    "Timeline presentation with readable operations and a short scroll when content exceeds the viewport",
     "Scope selection and unique result counts",
     "Command output and surrounding context after retrieval"
   ],

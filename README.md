@@ -10,7 +10,7 @@ Session Analyzer reads existing transcripts locally, without modifying or upload
 
 [Quick Start](#quick-start) · [Read a session](#review-what-happened-in-a-session) · [Inspect an operation](#inspect-how-a-concrete-operation-was-performed) · [Search history](#find-an-older-session-and-continue-reading)
 
-![Session Analyzer with project sessions on the left, readable work in the middle, and command details on the right](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/session-analyzer-overview.png)
+![Session Analyzer with project sessions on the left, readable work in the middle, and command details on the right](docs/assets/readme/session-analyzer-overview.png)
 
 Keep the surrounding work in view while checking a specific operation. All demonstrations below use synthetic Codex transcripts.
 
@@ -57,11 +57,11 @@ npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
 
 In the example below, the agent changes two files, encounters a failed test, applies a follow-up patch, and reruns the test. Read messages and tool activity in order in the default **Timeline**, folding output and opening details as needed.
 
-![Folded Timeline keeps messages and tool activity readable in a tool-heavy synthetic session](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/session-reading-timeline.png)
+![Folded Timeline keeps messages and tool activity readable in a tool-heavy synthetic session](docs/assets/readme/session-reading-timeline.png)
 
 When tool calls get noisy, switch to **Trajectory** to review the same conversation and tool activity in a compact view. Expand a tool group to inspect individual operations; use the sequence overview to navigate.
 
-![The same session segment in Trajectory, with readable messages and compact, expandable tool activity](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/session-reading-trajectory.png)
+![The same session segment in Trajectory, with readable messages and compact, expandable tool activity](docs/assets/readme/session-reading-trajectory.png)
 
 Both views show currently loaded events; load more to continue through a long session.
 
@@ -69,7 +69,7 @@ Both views show currently loaded events; load more to continue through a long se
 
 To check a particular change or failed command, expand its event in **Timeline**, or select the operation in **Trajectory**. Timeline shows command output and highlighted changes within the event, with supporting details on the right; Trajectory opens the selected operation's details on the right. Inspect what was requested and returned while keeping the surrounding work in view.
 
-![An expanded Timeline patch shows highlighted changes in the center, with its result, files, and source information on the right](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/operation-detail.png)
+![An expanded Timeline patch shows highlighted changes in the center, with its result, files, and source information on the right](docs/assets/readme/operation-detail.png)
 
 Read what was requested, what changed, and what the tool returned, then continue through the session. **Protocol layer** exposes supporting runtime records. **Raw records** and an event's Raw References let you check the original transcript entries when structured detail is insufficient.
 
@@ -77,7 +77,7 @@ Read what was requested, what changed, and what the tool returned, then continue
 
 Remember a filename, command, or phrase but not the session? Click the **session** scope pill beside search, choose **Entire project**, and search messages, commands, file paths, and outputs. Open a match to reach the other session and its matching event, then read the surrounding work.
 
-![Starting in one session, searching the entire project, and opening a match in another session to resume reading](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/project-search-and-read.gif)
+![Starting in one session, searching the entire project, and opening a match in another session to resume reading](docs/assets/readme/project-search-and-read.gif)
 
 The demonstration starts in session A, searches for `npm test -- project-switch`, and finds the command in session B. It ends at B's matching operation and context. For your own history, use a filename, command, or phrase you remember. Search is case-insensitive plain text; separate file, type, and status filters narrow results. Text such as `status:failed` is searched literally.
 
@@ -87,9 +87,9 @@ The demonstration starts in session A, searches for `npm test -- project-switch`
 - **Code Mode:** inspect supported operations inside tool orchestration through structured requests and results. Coverage depends on the source and recorded evidence.
 - **Codex token and cache observations:** inspect per-request token accounting and conservatively inferred drops in cache reuse, with supporting Protocol evidence. These do not establish cache expiry or server-side cache state.
 
-![A synthetic Codex review-derived session shows inherited context and navigation back to its parent](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/derived-session-provenance.gif)
+![A synthetic Codex subagent session shows inherited context and navigation back to its parent](docs/assets/readme/derived-session-provenance.gif)
 
-This Codex review example demonstrates inherited-context navigation. See [source support and boundaries](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/transcript-source-adapters.md) for differences between sources.
+This Codex subagent example demonstrates inherited-context navigation for a delegated documentation task. See [source support and boundaries](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/transcript-source-adapters.md) for differences between sources.
 
 ## Sources and requirements
 

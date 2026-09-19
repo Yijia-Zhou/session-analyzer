@@ -10,7 +10,7 @@ Session Analyzer 在本地读取已有转录，不修改或上传其内容。在
 
 [快速开始](#快速开始) · [回顾会话](#回顾一次会话做了什么) · [查看操作](#查看一次具体操作怎么做的) · [搜索历史](#找回旧会话继续阅读)
 
-![Session Analyzer 左侧显示项目会话，中间连贯呈现工作过程，右侧展示命令详情](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/session-analyzer-overview.png)
+![Session Analyzer 左侧显示项目会话，中间连贯呈现工作过程，右侧展示命令详情](docs/assets/readme/session-analyzer-overview.png)
 
 查看具体操作时，周围的工作上下文始终可见。下方演示均使用合成 Codex 转录。
 
@@ -57,11 +57,11 @@ npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
 
 下方示例中，agent 修改两个文件，遇到测试失败，补充修复后再次运行测试。在默认 **Timeline** 中按顺序阅读消息与工具活动，收起输出，并随时展开需要的细节。
 
-![工具密集的合成会话在折叠 Timeline 中仍能连贯阅读消息与工具活动](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/session-reading-timeline.png)
+![工具密集的合成会话在折叠 Timeline 中仍能连贯阅读消息与工具活动](docs/assets/readme/session-reading-timeline.png)
 
 工具调用太多时，切换到 **Trajectory**，用紧凑视图回看同一段对话与工具活动。展开工具组可查看具体操作，也可以通过序列概览导航。
 
-![同一会话片段的 Trajectory 呈现，保留可读消息并紧凑归组可展开的工具活动](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/session-reading-trajectory.png)
+![同一会话片段的 Trajectory 呈现，保留可读消息并紧凑归组可展开的工具活动](docs/assets/readme/session-reading-trajectory.png)
 
 两种视图都显示当前已加载的事件；长会话可继续加载更多。
 
@@ -69,7 +69,7 @@ npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
 
 需要核查某次修改或失败命令时，在 **Timeline** 中展开对应事件，或在 **Trajectory** 中选择该操作。Timeline 在事件内显示命令输出与高亮修改，并在右侧提供补充详情；Trajectory 则在右侧打开所选操作的详情。结合周围的工作上下文，看清请求了什么、返回了什么。
 
-![展开的 Timeline 补丁在中间显示高亮修改，右侧提供结果、文件与来源信息](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/operation-detail.png)
+![展开的 Timeline 补丁在中间显示高亮修改，右侧提供结果、文件与来源信息](docs/assets/readme/operation-detail.png)
 
 看清请求了什么、修改了什么、工具返回了什么，再继续阅读会话。**Protocol layer（协议层）** 提供支持这些活动的运行记录。结构化详情不足时，可通过 **Raw records（原始记录）** 或事件的原始引用核对最初的转录条目。
 
@@ -77,7 +77,7 @@ npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
 
 记得文件名、命令或一句话，却忘了在哪次会话中？点击搜索旁的 **session（会话）** 范围按钮，选择 **Entire project（整个项目）**，搜索消息、命令、文件路径与输出。打开命中即可进入另一个会话的对应事件，再接着阅读周围的工作。
 
-![从一个会话发起整个项目搜索，打开另一个会话中的命中并继续阅读](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/project-search-and-read.gif)
+![从一个会话发起整个项目搜索，打开另一个会话中的命中并继续阅读](docs/assets/readme/project-search-and-read.gif)
 
 演示从会话 A 开始，搜索 `npm test -- project-switch`，在会话 B 中找到该命令，最后停在 B 的对应操作与上下文。实际使用时，换成自己历史中记得的文件名、命令或短语。搜索按忽略大小写的普通文本匹配；通过独立的文件、类型和状态筛选缩小范围。`status:failed` 等文字仍按字面搜索。
 
@@ -87,9 +87,9 @@ npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
 - **Code Mode：**通过结构化请求与结果查看工具编排中受支持的操作。展示覆盖取决于来源与已记录的证据。
 - **Codex Token 与缓存观测：**查看单次请求的 Token 计量，以及保守推断的缓存复用下降，并跳转到对应的协议层证据。这些观测不证明缓存过期，也不代表服务端缓存状态。
 
-![合成 Codex review 派生会话展示继承上下文，并导航返回父会话](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/derived-session-provenance.gif)
+![合成 Codex subagent 会话展示继承上下文，并导航返回父会话](docs/assets/readme/derived-session-provenance.gif)
 
-这个 Codex review 示例展示继承上下文导航。不同来源之间的差异见[来源支持与边界](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/transcript-source-adapters.md)。
+这个 Codex subagent 示例展示委派文档任务中的继承上下文导航。不同来源之间的差异见[来源支持与边界](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/transcript-source-adapters.md)。
 
 ## 来源与环境要求
 

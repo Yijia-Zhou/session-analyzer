@@ -280,7 +280,7 @@ async function materialize() {
     project: scenario.project.displayName,
     sessionKeys: scenario.sessions.map((session) => session.key),
     parentSessionKey: 'parent',
-    derivedSessionKey: 'review-child',
+    derivedSessionKey: 'subagent-child',
     runtime: {
       codexHome: 'codex-home',
       workspace: 'workspace/acme/task-board',
