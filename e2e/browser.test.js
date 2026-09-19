@@ -11,6 +11,7 @@ const { analyzerSessionId, buildClaudeSourceBackedIndex } = require('../src/clau
 const {
   buildIndex: buildResidentCodexIndex,
   buildSourceBackedIndex: buildIndex,
+  buildHydratedEventDetail,
 } = require('../src/codex');
 const { materializeSessionForIndex } = require('../src/source-adapters');
 const { createServer } = require('../server');
@@ -21,6 +22,49 @@ const fixtureCodexHome = path.join(__dirname, '..', 'test', 'fixtures', 'codex-h
 const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 let wave1bM2SourceBundlePromise;
+
+test('Codex external inputs, asynchronous questions and file images render read-only in both locales', async (t) => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-reading-browser-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const project = path.join(home, 'repo');
+  const id = 'cccccccc-0917-4917-8917-cccccccccccc';
+  const records = [
+    { type: 'session_meta', payload: { id, cwd: project } },
+    { type: 'response_item', payload: { type: 'function_call_output', call_id: null, name: 'notifications', namespace: 'example_service', output: 'External result is available.' } },
+    { type: 'event_msg', payload: { type: 'agent_message', message: 'Choose a format', phase: 'final_answer', delivery: 'async', questions: [{ title: 'Output format?', options: ['Markdown', 'JSON'] }, { title: 'Any notes?' }] } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_image', file_id: 'file_browser_example', detail: 'high' }] } },
+  ].map((record) => ({ timestamp: '2026-09-17T10:00:00.000Z', ...record }));
+  await fsp.mkdir(path.join(home, 'sessions'), { recursive: true });
+  await fsp.writeFile(path.join(home, 'sessions', `rollout-${id}.jsonl`), records.map(JSON.stringify).join('\n') + '\n');
+  const index = await buildIndex({ repoRoot: project, codexHome: home });
+  const session = await materializeSessionForIndex(index, index.sessionsById.get(id));
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.setContent('<main id="content"></main>');
+  for (const file of ['src/shared/command-highlighting.js', 'src/shared/i18n.js', 'src/shared/code-mode-presentation-contract.js', 'src/shared/detail-purpose.js', 'src/browser/renderers.js']) {
+    await page.addScriptTag({ path: path.join(__dirname, '..', file) });
+  }
+  for (const locale of ['en', 'zh-CN']) {
+    const details = await Promise.all(session.logicalEvents.filter((event) => event.layer === 'main')
+      .map((event) => buildHydratedEventDetail(index, session, event.id, 'main', { locale })));
+    await page.evaluate((details) => {
+      document.querySelector('#content').innerHTML = details.map((detail) => window.sessionRenderers.renderSections(detail.timelineSections)).join('');
+    }, details);
+    const text = await page.locator('#content').innerText();
+    assert.match(text, /External result is available/);
+    assert.match(text, /example_service/);
+    assert.match(text, /Output format\?/);
+    assert.match(text, /Markdown/);
+    assert.match(text, /JSON/);
+    assert.match(text, /Any notes\?/);
+    assert.match(text, locale === 'en' ? /Asynchronous message/ : /异步消息/);
+    assert.match(text, locale === 'en' ? /Local preview is unavailable/ : /无法从本地预览/);
+    assert.equal(await page.locator('#content input, #content select, #content textarea, #content button[type="submit"]').count(), 0);
+    assert.equal(await page.locator('#content img').count(), 0);
+    assert.equal(text.includes('file_browser_example'), false, 'opaque IDs belong in Inspector');
+  }
+});
 
 async function captureTerminalPresentation(page, name) {
   if (!process.env.TERMINAL_SCREENSHOTS) return;

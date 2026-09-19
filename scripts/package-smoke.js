@@ -374,6 +374,17 @@ async function main() {
     ];
     await fsp.writeFile(path.join(codexHome, 'sessions', 'rollout-package-smoke.jsonl'),
       codexRecords.map((record) => JSON.stringify(record)).join('\n') + '\n', 'utf8');
+    const codexSessions = [{ id: codexSessionId, text: codexText, record: codexUser }];
+    if (typeof zstdCompressSync === 'function') {
+      const id = '33333333-3333-4333-8333-333333333333';
+      const user = { ...codexUser, payload: { type: 'user_message', message: 'Read the installed compressed Codex rollout.' } };
+      const records = [{ ...codexRecords[0], payload: { id, cwd: projectDir } }, user];
+      await fsp.writeFile(path.join(codexHome, 'sessions', 'rollout-package-smoke-zstd.jsonl.zst'),
+        Buffer.concat(records.map((record) => zstdCompressSync(Buffer.from(JSON.stringify(record) + '\n')))));
+      codexSessions.push({ id, text: user.payload.message, record: user });
+    } else {
+      console.log('SKIP Codex Zstd package reading: Node built-in Zstd is unavailable.');
+    }
     const claudeBase = {
       isSidechain: false,
       userType: 'external',
@@ -498,7 +509,7 @@ async function main() {
     const codexState = await waitForPackageState(baseUrl);
     await verifyPackageReading(baseUrl, codexState.json, {
       sourceKind: 'codex', repoRoot: projectDir, sourceHome: codexHome,
-      sessions: [{ id: codexSessionId, text: codexText, record: codexUser }],
+      sessions: codexSessions,
     });
     if (codexState.json.sourceKind !== 'codex') {
       throw new Error(`Installed Codex package smoke reported unexpected sourceKind: ${codexState.json.sourceKind}`);
