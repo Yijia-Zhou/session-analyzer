@@ -138,7 +138,7 @@ required by the existing release runbook; public rendering is not claimed here.
 
 The local preview now serves approved files from `docs/assets/readme/` through
 the actual relative links in both READMEs. The previous approved files remain in
-ignored `previous-approved/` for comparison. Public GitHub/npm state is unchanged.
+ignored `previous-approved/` for comparison.
 
 本地预览现通过双语 README 中的实际相对链接读取 `docs/assets/readme/` 正式素材；
-此前正式素材保留在忽略目录 `previous-approved/` 供对照。公开 GitHub／npm 状态未变。
+此前正式素材保留在忽略目录 `previous-approved/` 供对照。

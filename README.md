@@ -16,42 +16,17 @@ Keep the surrounding work in view while checking a specific operation. All demon
 
 ## Quick Start
 
-Use **Node.js 24** (recommended) and npm.
+With **Node.js 24** (recommended) and npm installed, run the command below, replacing `<…>` with one of the listed sources:
 
-**Choose your version:** npm **0.2.0** is publicly available and supports Codex, Claude Code, and DeepSeek Harness, including Timeline and Trajectory. Use the matching package commands below.
-
-Choose one command for your transcript source:
-
-```sh
-# Codex
-npx session-analyzer@0.2.0
+```text
+npx session-analyzer@0.2.0 --source <codex|claude-code|deepseek-harness>
 ```
 
-```sh
-# Claude Code
-npx session-analyzer@0.2.0 --source claude-code
-```
+Open [localhost:17890](http://127.0.0.1:17890/), choose a project, and wait for indexing. Then open a session from the left panel to start reading.
 
-```sh
-# DeepSeek Harness
-npx session-analyzer@0.2.0 --source deepseek-harness
-```
+Optional: add `--repo "/path/to/project"` to select the project whose history you want to read (Windows: `--repo "C:\path\to\project"`).
 
-For local checkout development or validation, run from the Analyzer checkout:
-
-```sh
-node server.js --source deepseek-harness
-```
-
-Open **<http://127.0.0.1:17890/>**, choose your project, wait for indexing, and open a session from the left panel. Start reading in **Main timeline**. To search older sessions, click the **session** scope pill beside search, then choose **Entire project**.
-
-To select a project at startup, add `--repo /path/to/project`. On Windows:
-
-```powershell
-npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
-```
-
-`--repo` is the project whose history you want to read. The Analyzer checkout or installation and the transcript root are separate locations. An agent can follow the [startup and verification guide](https://github.com/Yijia-Zhou/session-analyzer/blob/51a9ec530b1a9c03f3d96761632baa05590ccefe/docs/usage/agent-quickstart.md) to configure them for you.
+Prefer help with setup? [Let an agent start it for you](#let-an-agent-start-it-for-you).
 
 ## Review what happened in a session
 

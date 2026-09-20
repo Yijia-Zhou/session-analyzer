@@ -16,42 +16,17 @@ Session Analyzer 在本地读取已有转录，不修改或上传其内容。在
 
 ## 快速开始
 
-准备 **Node.js 24**（推荐）和 npm。
+准备 **Node.js 24**（推荐）和 npm，运行以下命令，将 `<…>` 替换为其中一个来源：
 
-**选择运行版本：**npm **0.2.0** 已公开，支持 Codex、Claude Code 与 DeepSeek Harness，包括 Timeline 与 Trajectory。请使用下方匹配的 package 命令。
-
-按转录来源选择一个启动命令：
-
-```sh
-# Codex
-npx session-analyzer@0.2.0
+```text
+npx session-analyzer@0.2.0 --source <codex|claude-code|deepseek-harness>
 ```
 
-```sh
-# Claude Code
-npx session-analyzer@0.2.0 --source claude-code
-```
+打开 [localhost:17890](http://127.0.0.1:17890/)，选择项目并等待索引完成，再从左侧打开会话，即可开始阅读。
 
-```sh
-# DeepSeek Harness
-npx session-analyzer@0.2.0 --source deepseek-harness
-```
+可选：添加 `--repo "/path/to/project"`，指定要查看历史的项目（Windows：`--repo "C:\path\to\project"`）。
 
-如需从 Analyzer checkout 进行本地开发或验证，请运行：
-
-```sh
-node server.js --source deepseek-harness
-```
-
-打开 **<http://127.0.0.1:17890/>**，选择项目，等待索引完成，再从左侧打开一个会话。从 **Main timeline（主时间线）** 开始阅读。查找旧会话时，点击搜索旁的 **session（会话）** 范围按钮，再选择 **Entire project（整个项目）**。
-
-启动时指定项目可添加 `--repo /path/to/project`。Windows 示例：
-
-```powershell
-npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
-```
-
-`--repo` 是你想查看历史的项目。Analyzer checkout 或安装目录、目标项目和转录根目录是不同的位置。也可以让 agent 按[启动与验收指南](https://github.com/Yijia-Zhou/session-analyzer/blob/51a9ec530b1a9c03f3d96761632baa05590ccefe/docs/usage/agent-quickstart.md)替你配置。
+想省去配置？[让 agent 替你启动](#让-agent-替你启动)。
 
 ## 回顾一次会话做了什么
 
