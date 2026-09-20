@@ -10,58 +10,33 @@ Session Analyzer 在本地读取已有转录，不修改或上传其内容。在
 
 [快速开始](#快速开始) · [回顾会话](#回顾一次会话做了什么) · [查看操作](#查看一次具体操作怎么做的) · [搜索历史](#找回旧会话继续阅读)
 
-![Session Analyzer 左侧显示项目会话，中间连贯呈现工作过程，右侧展示命令详情](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/session-analyzer-overview.png)
+![Session Analyzer 左侧显示项目会话，中间连贯呈现工作过程，右侧展示命令详情](docs/assets/readme/session-analyzer-overview.png)
 
 查看具体操作时，周围的工作上下文始终可见。下方演示均使用合成 Codex 转录。
 
 ## 快速开始
 
-准备 **Node.js 24**（推荐）和 npm。
+准备 **Node.js 24**（推荐）和 npm，运行以下命令，将 `<…>` 替换为其中一个来源：
 
-**选择运行版本：**npm **0.2.0** 已公开，支持 Codex、Claude Code 与 DeepSeek Harness，包括 Timeline 与 Trajectory。请使用下方匹配的 package 命令。
-
-按转录来源选择一个启动命令：
-
-```sh
-# Codex
-npx session-analyzer@0.2.0
+```text
+npx session-analyzer@0.2.0 --source <codex|claude-code|deepseek-harness>
 ```
 
-```sh
-# Claude Code
-npx session-analyzer@0.2.0 --source claude-code
-```
+打开 [localhost:17890](http://127.0.0.1:17890/)，选择项目并等待索引完成，再从左侧打开会话，即可开始阅读。
 
-```sh
-# DeepSeek Harness
-npx session-analyzer@0.2.0 --source deepseek-harness
-```
+可选：添加 `--repo "<path-to-project>"`，指定要查看历史的项目。
 
-如需从 Analyzer checkout 进行本地开发或验证，请运行：
-
-```sh
-node server.js --source deepseek-harness
-```
-
-打开 **<http://127.0.0.1:17890/>**，选择项目，等待索引完成，再从左侧打开一个会话。从 **Main timeline（主时间线）** 开始阅读。查找旧会话时，点击搜索旁的 **session（会话）** 范围按钮，再选择 **Entire project（整个项目）**。
-
-启动时指定项目可添加 `--repo /path/to/project`。Windows 示例：
-
-```powershell
-npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
-```
-
-`--repo` 是你想查看历史的项目。Analyzer checkout 或安装目录、目标项目和转录根目录是不同的位置。也可以让 agent 按[启动与验收指南](https://github.com/Yijia-Zhou/session-analyzer/blob/51a9ec530b1a9c03f3d96761632baa05590ccefe/docs/usage/agent-quickstart.md)替你配置。
+想省去配置？[让 agent 替你启动](#让-agent-替你启动)。
 
 ## 回顾一次会话做了什么
 
 下方示例中，agent 修改两个文件，遇到测试失败，补充修复后再次运行测试。在默认 **Timeline** 中按顺序阅读消息与工具活动，收起输出，并随时展开需要的细节。
 
-![工具密集的合成会话在折叠 Timeline 中仍能连贯阅读消息与工具活动](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/session-reading-timeline.png)
+![工具密集的合成会话在折叠 Timeline 中仍能连贯阅读消息与工具活动](docs/assets/readme/session-reading-timeline.png)
 
 工具调用太多时，切换到 **Trajectory**，用紧凑视图回看同一段对话与工具活动。展开工具组可查看具体操作，也可以通过序列概览导航。
 
-![同一会话片段的 Trajectory 呈现，保留可读消息并紧凑归组可展开的工具活动](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/session-reading-trajectory.png)
+![同一会话片段的 Trajectory 呈现，保留可读消息并紧凑归组可展开的工具活动](docs/assets/readme/session-reading-trajectory.png)
 
 两种视图都显示当前已加载的事件；长会话可继续加载更多。
 
@@ -69,7 +44,7 @@ npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
 
 需要核查某次修改或失败命令时，在 **Timeline** 中展开对应事件，或在 **Trajectory** 中选择该操作。Timeline 在事件内显示命令输出与高亮修改，并在右侧提供补充详情；Trajectory 则在右侧打开所选操作的详情。结合周围的工作上下文，看清请求了什么、返回了什么。
 
-![展开的 Timeline 补丁在中间显示高亮修改，右侧提供结果、文件与来源信息](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/operation-detail.png)
+![展开的 Timeline 补丁在中间显示高亮修改，右侧提供结果、文件与来源信息](docs/assets/readme/operation-detail.png)
 
 看清请求了什么、修改了什么、工具返回了什么，再继续阅读会话。**Protocol layer（协议层）** 提供支持这些活动的运行记录。结构化详情不足时，可通过 **Raw records（原始记录）** 或事件的原始引用核对最初的转录条目。
 
@@ -77,7 +52,7 @@ npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
 
 记得文件名、命令或一句话，却忘了在哪次会话中？点击搜索旁的 **session（会话）** 范围按钮，选择 **Entire project（整个项目）**，搜索消息、命令、文件路径与输出。打开命中即可进入另一个会话的对应事件，再接着阅读周围的工作。
 
-![从一个会话发起整个项目搜索，打开另一个会话中的命中并继续阅读](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/project-search-and-read.gif)
+![从一个会话发起整个项目搜索，打开另一个会话中的命中并继续阅读](docs/assets/readme/project-search-and-read.gif)
 
 演示从会话 A 开始，搜索 `npm test -- project-switch`，在会话 B 中找到该命令，最后停在 B 的对应操作与上下文。实际使用时，换成自己历史中记得的文件名、命令或短语。搜索按忽略大小写的普通文本匹配；通过独立的文件、类型和状态筛选缩小范围。`status:failed` 等文字仍按字面搜索。
 
@@ -87,9 +62,9 @@ npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
 - **Code Mode：**通过结构化请求与结果查看工具编排中受支持的操作。展示覆盖取决于来源与已记录的证据。
 - **Codex Token 与缓存观测：**查看单次请求的 Token 计量，以及保守推断的缓存复用下降，并跳转到对应的协议层证据。这些观测不证明缓存过期，也不代表服务端缓存状态。
 
-![合成 Codex review 派生会话展示继承上下文，并导航返回父会话](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.0/docs/assets/readme/derived-session-provenance.gif)
+![合成 Codex subagent 会话展示继承上下文，并导航返回父会话](docs/assets/readme/derived-session-provenance.gif)
 
-这个 Codex review 示例展示继承上下文导航。不同来源之间的差异见[来源支持与边界](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/transcript-source-adapters.md)。
+这个 Codex subagent 示例展示委派文档任务中的继承上下文导航。不同来源之间的差异见[来源支持与边界](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/transcript-source-adapters.md)。
 
 ## 来源与环境要求
 
@@ -100,6 +75,8 @@ npx session-analyzer@0.2.0 --repo 'C:\path\to\project'
 | DeepSeek Harness | `~/.dsh/sessions` | `--dsh-home` |
 
 在对应参数后填写转录根目录。DeepSeek Harness 使用会话持久化目录作为根。也可以在项目选择界面切换来源或编辑根目录，无需重启。任一时刻只扫描活跃来源，不构建混合来源索引。
+
+Claude Code 与 DeepSeek Harness 仍在快速演进；v0.2.0 反映发布时已验证的转录格式，上游后续新增的事件可能暂时还没有专门支持。
 
 已安装 CLI 支持 **Node.js 22 起的 LTS 版本**，推荐 **24**，并使用 npm 安装。DeepSeek `session.jsonl.zstd` 需要 Node 内置 Zstandard API；Node 22 从 **22.15.0** 起提供，最终以实际能力检查为准。没有该能力时，未压缩的 `session.jsonl` 仍可读取。[源码开发](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/development.md)另有更严格的 Node/npm 策略。
 

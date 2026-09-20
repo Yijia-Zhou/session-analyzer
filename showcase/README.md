@@ -9,9 +9,14 @@ readability and a believable coding-agent workflow.
 
 The canonical story is the synthetic repository `acme/task-board`. Its parent
 session is `Add project-wide search navigation`; neighboring sessions make the
-repository history feel real, and `Review search navigation implementation` is
-a single review-derived child used to show inherited context and navigation back
-to the parent. Keep README visuals in this story world whenever possible.
+repository history feel real, and `Write search navigation usage examples` is
+a single ordinary subagent child used to show inherited context and navigation back
+to the parent. This delegated documentation task intentionally reuses implementation
+context; it is not an independent review. Keep README visuals in this story world
+whenever possible.
+
+派生会话使用普通 subagent 撰写搜索导航使用示例，复用实现上下文并展示返回父会话；
+此示例是委派的文档任务，不是独立 review。
 
 ## Source and runtime data
 
@@ -41,13 +46,29 @@ inspection, and `project-search.json` for a true transition from the parent
 session to `Fix stale project rows after source switch`. Its query,
 `npm test -- project-switch`, occurs only in that neighbor. The older
 `search.json` remains a within-session navigation demonstration. The passing
-parent command now has a longer synthetic TAP output while retaining the same
-eight Main events and `12 tests passed` conclusion.
+parent command uses synthetic Node spec-reporter output. The parent contains ten
+Main events and seven tool calls, including a read before the first patch and a
+read between failure and repair. The assistant conclusion remains `12 tests passed`.
+Both README languages share the English scenario and English UI captures.
 
 用户入口重排使用 `reading.json` 展示 Timeline／Trajectory 与补丁检查，使用
-`project-search.json` 展示从父会话真正跳转到另一个会话。查询只存在于该相邻会话；
-既有 `search.json` 仍负责会话内导航。父会话成功命令改为较长的合成 TAP 输出，
-仍保留八个 Main 事件及 `12 tests passed` 结论。
+`project-search.json` 从父会话跳转到 `Fix stale project rows after source switch`；
+`npm test -- project-switch` 只存在于该相邻会话，`search.json` 仍展示会话内导航。
+父会话使用合成 Node spec reporter 输出，包含十个 Main 事件和
+七次工具调用：首次补丁前读取代码，失败与修复之间再次读取。最终 assistant 结论
+仍为 `12 tests passed`。双语 README 共用英文场景与英文界面素材。
+
+The initial files and both patches are checked in a disposable module: the first
+patch produces eleven passing tests and one assertion failure; the repair passes
+all twelve. This validates the small synthetic module only, not a full task-board
+application, real agent session, or every neighboring session. Recorded timings
+and reporter stack excerpts remain authored. The video's isolated probe verified
+failure formatting only; its original passing story was not execution evidence.
+
+初始文件和两次补丁在临时模块中核验：首次补丁后十一项通过、一项断言失败，修复
+后十二项通过。此证据只覆盖小型合成模块，不代表完整 task-board 应用、真实 agent
+会话或全部相邻会话。转录中的时长与报错堆栈节选仍为编写内容。视频阶段的隔离
+probe 只验证失败格式，原有成功故事不是实际执行证据。
 
 Materialize a disposable Codex home and workspace with:
 

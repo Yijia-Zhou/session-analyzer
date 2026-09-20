@@ -6,8 +6,8 @@
   "sourceKind": "codex",
   "sessionKey": "parent",
   "captureOutput": "output/readme-capture/entry/",
-  "viewport": { "width": 1440, "height": 1000 },
-  "captureClip": { "x": 360, "y": 90, "width": 1080, "height": 910 },
+  "viewport": { "width": 1440, "height": 1100 },
+  "captureClip": { "x": 360, "y": 115, "width": 1080, "height": 985 },
   "locale": "en",
   "frames": [
     {
@@ -16,7 +16,7 @@
     },
     {
       "file": "session-reading-trajectory.png",
-      "state": "Same eight loaded Main events and final assistant selection in Trajectory; the five-call Tool Activity Group is expanded; right-side Primary Detail shows the complete assistant message."
+      "state": "Same ten loaded Main events and final assistant selection in Trajectory; the seven-call Tool Activity Group is expanded; right-side Primary Detail shows the complete assistant message."
     },
     {
       "file": "operation-detail.png",
@@ -28,14 +28,14 @@
     "Choose English through the existing sessionAnalyzer.locale preference and reload; keep UI content and CSS unchanged.",
     "Open Add project-wide search navigation in Main Timeline.",
     "Use event collapse controls to fold the plan, commands, and patches while retaining both messages.",
-    "Select the assistant summary, scroll the timeline pane to its top, and capture Timeline.",
+    "Select the assistant summary, scroll both the timeline pane and document to their tops, and capture Timeline.",
     "Switch to Trajectory, expand the Tool Activity Group if needed, retain the assistant selection, and capture the same loaded coverage.",
     "Switch back to Timeline, expand and select the first patch, scroll to the pane top, and capture readable changes and result."
   ],
   "keep": [
     "Session title and Timeline/Trajectory controls",
-    "Both messages and the five tools as recorded work",
-    "Same eight loaded events in both presentations",
+    "Both messages and the seven tools as recorded work",
+    "Same ten loaded events in both presentations",
     "Readable highlighted changes and patch result for operation inspection"
   ],
   "remove": [
