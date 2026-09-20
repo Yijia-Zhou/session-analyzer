@@ -76,6 +76,8 @@ This Codex subagent example demonstrates inherited-context navigation for a dele
 
 Pass the relevant option followed by your transcript root. For DeepSeek Harness, this is the sessions persistence directory. You can also switch source or edit roots in the project chooser without restarting. Only the active source is scanned; there is no mixed-source index.
 
+Claude Code and DeepSeek Harness evolve rapidly; v0.2.0 reflects transcript formats verified at release time, and newer upstream events may not yet have dedicated support.
+
 The installed CLI supports Node.js LTS releases starting at **22**, with **24 recommended**, and npm for installation. DeepSeek `session.jsonl.zstd` needs Node's built-in Zstandard API, available in Node 22 from **22.15.0**, subject to the actual capability check. Uncompressed `session.jsonl` remains readable without it. [Source development](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/development.md) has a separate, stricter Node/npm policy.
 
 Current-session reading uses persisted history; it does not promise live monitoring or automatic refresh. The views present recorded operations and results without inferring hidden reasoning or causal relationships.
