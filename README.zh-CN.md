@@ -24,7 +24,7 @@ npx session-analyzer@0.2.0 --source <codex|claude-code|deepseek-harness>
 
 打开 [localhost:17890](http://127.0.0.1:17890/)，选择项目并等待索引完成，再从左侧打开会话，即可开始阅读。
 
-可选：添加 `--repo "/path/to/project"`，指定要查看历史的项目（Windows：`--repo "C:\path\to\project"`）。
+可选：添加 `--repo "<path-to-project>"`，指定要查看历史的项目。
 
 想省去配置？[让 agent 替你启动](#让-agent-替你启动)。
 

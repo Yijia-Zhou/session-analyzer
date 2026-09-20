@@ -24,7 +24,7 @@ npx session-analyzer@0.2.0 --source <codex|claude-code|deepseek-harness>
 
 Open [localhost:17890](http://127.0.0.1:17890/), choose a project, and wait for indexing. Then open a session from the left panel to start reading.
 
-Optional: add `--repo "/path/to/project"` to select the project whose history you want to read (Windows: `--repo "C:\path\to\project"`).
+Optional: add `--repo "<path-to-project>"` to select the project whose history you want to read.
 
 Prefer help with setup? [Let an agent start it for you](#let-an-agent-start-it-for-you).
 
