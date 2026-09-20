@@ -76,6 +76,8 @@ npx session-analyzer@0.2.0 --source <codex|claude-code|deepseek-harness>
 
 在对应参数后填写转录根目录。DeepSeek Harness 使用会话持久化目录作为根。也可以在项目选择界面切换来源或编辑根目录，无需重启。任一时刻只扫描活跃来源，不构建混合来源索引。
 
+Claude Code 与 DeepSeek Harness 仍在快速演进；v0.2.0 反映发布时已验证的转录格式，上游后续新增的事件可能暂时还没有专门支持。
+
 已安装 CLI 支持 **Node.js 22 起的 LTS 版本**，推荐 **24**，并使用 npm 安装。DeepSeek `session.jsonl.zstd` 需要 Node 内置 Zstandard API；Node 22 从 **22.15.0** 起提供，最终以实际能力检查为准。没有该能力时，未压缩的 `session.jsonl` 仍可读取。[源码开发](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/development.md)另有更严格的 Node/npm 策略。
 
 当前会话阅读基于已持久化的历史，不承诺实时监控或自动刷新。视图呈现记录中的操作与结果，不推断隐藏思维或因果关系。
