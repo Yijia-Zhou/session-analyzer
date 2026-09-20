@@ -3,11 +3,11 @@
 ## Status and scope
 
 - Status: accepted documentation baseline for the synthetic README showcase.
-- Last updated: 2026-09-19.
+- Last updated: 2026-09-20.
 - Canonical source: showcase/ and scripts/materialize-showcase.js.
-- Tracked storyboards: showcase/captures/readme/search.json and
-  showcase/captures/readme/branching.json, plus reading.json and project-search.json
-  in the same directory.
+- Current storyboards: showcase/captures/readme/reading.json, project-search.json,
+  and branching.json. The same directory retains search.json as an unreferenced
+  legacy storyboard; search-and-jump.gif is not in either current README.
 - Candidate capture output: output/readme-capture/.
 - Final public media: docs/assets/readme/, published only after manual approval.
 
@@ -88,9 +88,9 @@ product specification. It records how to resume README visual work without
 repeating the earlier discovery pass or treating a capture-tool limitation as a
 product bug.
 
-The current Search and Branching captures were accepted for publication. The
-Hero story and composition were also accepted at a deliberate stopping point
-despite the documented capture-boundary imperfection.
+All six current assets were accepted on 2026-09-19. Earlier capture-boundary
+experiments below are historical evidence. Future captures must still pass the
+current gates in section 10.
 Do not use this runbook as permission to change parser semantics,
 source-switching semantics, fork ownership, logical-event normalization, or
 browser layout. A capture problem belongs here first; a product change requires
@@ -153,15 +153,15 @@ showcase/, scripts/materialize-showcase.js, or output/.
 
 ## 2. Canonical story world
 
-All three README visuals should preferably come from one small, coherent
+All six current README assets should come from one small, coherent
 development history. The current world is:
 
 | Role | Synthetic identity | Purpose |
 | --- | --- | --- |
 | Repository | acme/task-board | Repository-scoped history and readable paths. |
-| Parent | Add project-wide search navigation | Hero timeline and Search GIF. |
-| Derived child | Review search navigation implementation | One review-derived/materialized child for the Branching GIF. |
-| Neighbor | Fix stale project rows after source switch | Natural repository history. |
+| Parent | Add project-wide search navigation | Overview, reading/operation PNGs, and starting session for both GIFs. |
+| Derived child | Write search navigation usage examples | One ordinary subagent, nickname Docs, with materialized context for the Branching GIF. |
+| Neighbor / search target | Fix stale project rows after source switch | Destination for npm test -- project-switch. |
 | Neighbor | Review search count navigation | Search-related history without duplicating the parent. |
 | Neighbor | Improve fork relationship display | Relationship-related history. |
 | Neighbor | Update browser regression coverage | Browser/test history. |
@@ -173,13 +173,11 @@ not hand-written final JSONL. The parent workflow is intentionally short:
 1. One user request for project-wide search navigation.
 2. A short plan covering the search flow, stable match targets, a regression
    test, and focused checks.
-3. A small read/search operation.
-4. One or two patches touching the search implementation and regression test.
-5. A natural failed focused test with the message
-   Expected next search target to be materialized.
-6. A follow-up patch.
-7. A successful npm test -- search-navigation result containing
-   12 tests passed.
+3. A code read before the first patch.
+4. A patch touching the search implementation and regression test.
+5. A failed focused test with synthetic Node spec-reporter output (11 pass / 1 fail).
+6. A failure-context read followed by the repair patch.
+7. A successful npm test -- search-navigation result (12 pass).
 8. A short assistant summary.
 
 The stable visual anchors are:
@@ -200,11 +198,11 @@ communicate only “fixture” and make the UI harder to understand at a glance.
 This is why the showcase uses realistic-but-fictional names rather than toy
 placeholders.
 
-The review child is intentionally narrow. It is one child, derived from the
-parent, with review provenance and inherited context. Do not add subagents,
-multiple relationship kinds, Earlier Branch, and materialized fork variants to
-the same GIF just to increase feature coverage. One clear relationship is more
-valuable than a taxonomy tour.
+The documentation child is intentionally narrow: one ordinary subagent named
+Docs, titled Write search navigation usage examples, with subagent provenance
+and ten inherited Main events. Do not add more children, multiple relationship
+kinds, Earlier Branch, or materialized fork variants just to increase coverage.
+One clear relationship is more valuable than a taxonomy tour.
 
 All showcase content is synthetic. Do not paste real prompts, usernames, local
 paths, private repository names, file contents, environment values, credentials,
@@ -317,15 +315,91 @@ network-facing host. Before opening the capture page, confirm:
 
 1. Transcript Source is Codex.
 2. The project is acme/task-board.
-3. The history list contains the parent, the four neighbors, and the one review
-   child relationship.
-4. The parent title and child title match the canonical scenario.
-5. A reload still discovers the same project and sessions.
+3. The history list contains six sessions: the parent, four neighbors, and one
+   ordinary subagent child relationship.
+4. The child is Subagent Docs, titled Write search navigation usage examples;
+   its provenance is Subagent · from ... and it has ten inherited Main events
+   (26 inherited Raw Records and one inherited Protocol event).
+5. Indexing completes with 30 Logical Events, 89 Raw Records, and zero diagnostics;
+   a reload still discovers the same project and sessions.
+6. Search npm test -- project-switch: no match in the parent, then exactly one
+   matching session / one event under Entire project. Open Fix stale project rows
+   after source switch and verify Project switch suite / 8 tests passed.
 
 Do not use the real default ~/.codex home for a public-material capture. The
 explicit generated home is the privacy and reproducibility boundary.
 
 ## 5. Selected README narrative and current state
+
+### Current six-asset contract / 当前六份素材契约
+
+Both READMEs reference these four PNGs and two GIFs under docs/assets/readme/.
+Use the current source and storyboards when reshooting; the 2026-09-19 approved
+assets and completed refresh record are the comparison baseline.
+
+双语 README 引用下列四张 PNG 和两份 GIF。重拍遵循当前源码与分镜，以 2026-09-19
+获批素材及已完成的更新记录为对照基线。
+
+| Asset | Current job / 当前用途 | Contract |
+| --- | --- | --- |
+| session-analyzer-overview.png | Timeline overview with successful command / 展开成功命令的 Timeline 总览 | Hero gates; approved 1600×1000 baseline |
+| session-reading-timeline.png | Folded Timeline reading / 折叠 Timeline 阅读 | reading.json |
+| session-reading-trajectory.png | Same ten Main events in Trajectory / 同十个 Main 事件的 Trajectory | reading.json |
+| operation-detail.png | Expanded first patch and result / 展开的首个补丁及结果 | reading.json |
+| project-search-and-read.gif | Find another session and read it / 找回另一会话并阅读 | project-search.json; 1240×900, 13.4s |
+| derived-session-provenance.gif | Subagent Docs, inherited context, return / Subagent Docs、继承上下文与返回 | branching.json; 1440×900, 9s |
+
+search.json and docs/assets/readme/search-and-jump.gif are an **unreferenced
+legacy storyboard/asset** for within-session navigation. The storyboard follows
+the updated source, but the old GIF was not regenerated. Neither defines current
+README Search gates.
+
+search.json 与 docs/assets/readme/search-and-jump.gif 是当前 README **未引用的
+历史分镜／素材**，用于会话内导航。分镜已随源码更新，旧 GIF 未重拍；两者均不
+定义当前 README 搜索验收要求。
+
+### Current project-search GIF
+
+Follow showcase/captures/readme/project-search.json. Begin in Add project-wide
+search navigation with the first patch expanded; preserve the one-second real
+Timeline scroll. Search npm test -- project-switch: Current session shows
+No matches / 0 / 0. Choose Entire project through the scope pill; the sole
+matching session/event is Fix stale project rows after source switch. Open it,
+expand/select its Command, and hold on Project switch suite, 8 tests passed,
+and surrounding messages. The six held states plus ten scroll frames at 10 fps
+total 13.4s. This is a same-project, same-source A-to-B story.
+
+### Current Branching GIF
+
+Follow showcase/captures/readme/branching.json. The child is Subagent Docs,
+titled Write search navigation usage examples, with subagent provenance and
+materialized fork storage. The five held states plus a one-second real scroll
+total 9s at 10 fps:
+
+| State | Hold | Meaning |
+| --- | ---: | --- |
+| 01-parent-collapsed.png | 1000 ms | Parent Timeline; first patch expanded/selected and readable; one child relationship collapsed. |
+| 02-child-expanded.png | 1300 ms | Write search navigation usage examples appears with Subagent Docs provenance. |
+| 03-child-inherited-context.png | 3300 ms | Subagent · from ..., Materialized fork, and inherited summary visible; Latest inherited Main events (10) collapsed; Open parent visible. |
+| 04-parent-returned.png | 700 ms | Open parent returns to the parent Timeline at its top; patch and relationship remain expanded. |
+| 05-parent-patch.png | 1700 ms | After a 1000 ms real scroll, the complete first patch is visible with result/files in the Inspector. |
+
+Keep the inherited list collapsed and show only this one child relationship.
+Current approved evidence, when locally available, lives under
+output/readme-capture/refresh-2026-09-19/; the final Branching keyframes/concat
+are branching-subagent/ and branching-subagent.txt.
+
+### Historical three-asset package / 历史三素材组合
+
+The following 2026-09-08/09 notes, Hero experiments, within-session Search, and
+review-child Branching sequence record the previous package. Paths, counts,
+timings, and recommendations in this subsection are historical evidence only;
+they do not govern current materialization, capture, acceptance, or reshoots.
+Use the current contracts above and gates in section 10 instead.
+
+下列 2026-09-08/09 记录、Hero 实验、会话内搜索及 review 子会话分镜属于此前组合。
+本小节路径、计数、时长及建议仅保留为历史经验，不指导当前物化、取景、验收或
+重拍；当前操作遵循上文契约及第 10 节验收要求。
 
 The 2026-09-08 user-entry refresh leads with reviewing session work, inspecting
 one operation, and finding an older session to continue reading. Its tracked
@@ -365,7 +439,7 @@ Timeline 将展开的补丁修改放在中间，将结果／文件放在右侧�
 
 The previously selected package had three non-duplicative jobs.
 
-### Hero: what is Session Analyzer?
+#### Historical Hero: what is Session Analyzer?
 
 Start with the parent session, repository history visible at left, a readable
 Main/Narrative timeline in the middle, and structured Inspector/detail at right.
@@ -381,15 +455,15 @@ carry every metadata field in one frame.
 
 When still available locally, capture files include:
 
-- output/readme-capture/hero-a-polished-1536.png — the best current comparison
-  baseline for a future Hero reshoot.
+- output/readme-capture/hero-a-polished-1536.png — the historical comparison
+  baseline for the earlier Hero experiments.
 - output/readme-capture/hero-a-polished-1600.png — the neighboring wide-viewport
   comparison candidate.
 - output/readme-capture/hero-a-polished-final.png — the earlier named H-A
   baseline, useful for comparison but not a reason to reopen discovery.
 
 The last file inspection recorded these dimensions; treat them as observations
-of the current candidates, not as guarantees for a future browser backend:
+of the historical candidates, not as guarantees for a future browser backend:
 
 | Candidate family | Observed dimensions |
 | --- | ---: |
@@ -399,12 +473,12 @@ of the current candidates, not as guarantees for a future browser backend:
 | Search keyframes | 1416×884 PNG |
 | Branching keyframes | 1416×884 PNG |
 
-The 1536 candidate is the recommended baseline because it represents the latest
+The 1536 candidate was the recommended baseline for that earlier
 capture-boundary comparison. It is not described as perfect: the wider viewport
 experiments did not prove that the entire Inspector/top-right boundary was
 reliably captured. The Hero story and composition are accepted, and further
-boundary optimization is intentionally paused. A future agent should compare
-against this baseline rather than start by inventing a new Hero concept.
+boundary optimization is intentionally paused. For current reshoots, use the approved overview listed above; these old files
+remain optional capture-boundary comparisons.
 
 Earlier H-A frames also showed why selection and scroll position matter: the
 Inspector’s visible area could be dominated by Metadata, Source, Raw refs, Run
@@ -413,9 +487,9 @@ near the bottom of the timeline. Do not force every result field into the right
 column. Keep the successful Command selected, let the timeline carry the result
 when necessary, and use the Inspector to prove structured drill-down.
 
-### Search GIF: how do I quickly find what happened?
+#### Historical Search GIF: how do I quickly find what happened?
 
-When still available locally, the current candidate is
+When still available locally, the historical candidate is
 output/readme-capture/search/search.gif, with keyframes and timings in
 the tracked storyboard showcase/captures/readme/search.json. When available
 locally, output/readme-capture/search/manifest.json adds capture-specific
@@ -437,17 +511,17 @@ clean Main timeline
   -> hold with highlighted filename, result card, and structured detail
 ~~~
 
-The candidate is approximately six seconds and uses the current 10 fps,
-keyframe-hold approach. It is about 0.85 MB in the current capture directory.
+The candidate is approximately six seconds and uses the then-used 10 fps,
+keyframe-hold approach. It is about 0.85 MB in the historical capture directory.
 The semantic target is the Patch result, not the earlier rg -n command.
 
-### Branching GIF: can I understand derived work and return to its source?
+#### Historical Branching GIF: can I understand derived work and return to its source?
 
-When still available locally, the current candidate is
+When still available locally, the historical candidate is
 output/readme-capture/branching/branching.gif, with keyframes and timings in
 the tracked storyboard showcase/captures/readme/branching.json. When available
 locally, output/readme-capture/branching/manifest.json adds capture-specific
-metadata. It is approximately eight seconds and 1.53 MB at the current 10 fps
+metadata. It is approximately eight seconds and 1.53 MB at the then-used 10 fps
 encoding:
 
 | State | Hold | Meaning |
@@ -472,7 +546,7 @@ The relationship is a review-derived Codex child with materialized fork storage.
 Do not add several child types to this story. The GIF is about provenance and
 return navigation, not about exhaustively demonstrating fork taxonomy.
 
-In the current UI, keeping `Latest inherited Main events (8)` collapsed is what
+In that earlier UI capture, keeping `Latest inherited Main events (8)` collapsed is what
 leaves the inherited summary/counts and `Open parent session` action visible.
 
 ### Deliberately deprioritized opening scenes
@@ -499,15 +573,20 @@ it is not a new discovery exercise.
    unrelated WIP and never clean another worktree.
 3. Materialize only when the generated runtime is intentionally being rebuilt.
 4. Launch the analyzer against the generated Codex home and workspace.
-5. Verify the project, parent session, child title, and neighboring history.
+5. Apply section 4 startup checks: six sessions, Subagent Docs with ten inherited
+   Main events, and the unique project-search destination.
+6. Identify affected assets from the current six-asset table. Use reading.json,
+   project-search.json, and branching.json; search.json is legacy.
 
 ### Reproduce the state
 
 Use the normal browser controls and real APIs. For the Hero, set the parent
 session, Main/Narrative layer, timeline position, selected successful command,
-and Inspector position before taking a screenshot. For Search and Branching,
-follow the tracked storyboard sequence and timing. Use local manifests only when
-available for capture-specific clip or encoder details. Wait for stable content, then remove
+and Inspector position before taking a screenshot. For reading/operation PNGs,
+follow reading.json; for project-search and Branching, follow project-search.json
+and branching.json, including their one-second real scrolls. Use local manifests
+only when available for capture-specific clip or encoder details. Wait for stable
+content, then remove
 loading spinners, tooltips, transient popovers, and mouse travel from the final
 sequence.
 
@@ -517,7 +596,8 @@ or layout change belongs in a separate product task.
 
 ### Measure before committing to a viewport
 
-For the Hero, compare 1536×900 and 1600×900 only as measured experiments. At
+For the Hero, start from the approved 1600×1000 overview. Change dimensions
+only as measured experiments; the older 1536×900/1600×900 trials are historical. At
 minimum record:
 
 - requested browser viewport;
@@ -544,10 +624,11 @@ content or be committed.
 
 Keep the current conventions:
 
-- If still available locally, Hero candidates live directly under
-  output/readme-capture/.
-- If still available locally, GIF keyframes and generated manifests live under
-  output/readme-capture/search/ or output/readme-capture/branching/.
+- Current approved refresh evidence, when locally available, lives under
+  output/readme-capture/refresh-2026-09-19/. Use a distinct directory under
+  output/readme-capture/ for new candidates and record it in the manifest.
+- Older search/ and branching/ directories retain historical evidence; do not
+  assume their media matches current source or approved assets.
 - The tracked storyboard records viewport intent, timing, interaction sequence,
   semantic keep list, and removed interactions. A local manifest may additionally
   record the actual clip, encoder, and generated frame filenames.
@@ -656,13 +737,14 @@ Look specifically for:
 
 - readable session titles and event cards;
 - a recognizable three-column Hero at a glance;
-- a query, target count, and highlighted file in Search;
+- the project-search query, scope transition, unique result, and expanded
+  matching Command in the destination session;
 - a visible provenance label, inherited-context summary, and Open parent action
   in Branching.
 
 ## 8. Lessons from the final story refinement
 
-### Search: stop at the semantic payoff
+### Historical within-session Search lesson (unreferenced legacy asset)
 
 The first Search storyboard reached a strong state after Next landed on the Patch
 for test/browser/search-navigation.test.js, with highlighted filename,
@@ -671,7 +753,7 @@ selected the earlier rg -n Command so that more technical detail would be
 visible. That detour made the motion feel like it had jumped away from the
 answer it had just found.
 
-The current sequence ends on the Patch result itself:
+The legacy sequence ended on the Patch result itself:
 
 ~~~
 clean -> query established -> Next once -> jump/highlight + Patch detail -> hold
@@ -679,8 +761,9 @@ clean -> query established -> Next once -> jump/highlight + Patch detail -> hold
 
 General rule: do not add an interaction merely because it exposes another
 technical field. Once the visual story has reached its semantic payoff, hold that
-state and end. The tracked `showcase/captures/readme/search.json` is the
-known-good timing and interaction contract. A local
+state and end. The tracked `showcase/captures/readme/search.json` retains the
+legacy demo contract. Current README Search uses `project-search.json` and ends
+on the other session’s matching Command and surrounding context. A local
 `output/readme-capture/search/manifest.json` may mirror or refine capture details,
 but do not reintroduce the old fourth detail transition.
 
@@ -690,16 +773,16 @@ long enough to compete with the final target.
 
 ### Branching: provenance beats feature coverage
 
-The first Branching frame expanded all eight inherited Main events. It proved
-that inheritance existed, but the event dump consumed the frame and hid the
+The historical review-child frame expanded all eight inherited Main events.
+It proved that inheritance existed, but the event dump consumed the frame and hid the
 important Open parent session affordance. It asked the viewer to read evidence
 instead of understanding the relationship.
 
 The current child frame keeps the inherited event list collapsed while showing:
 
-1. parent provenance (Review · from ...);
+1. Subagent Docs identity and parent provenance (Subagent · from ...);
 2. Materialized fork;
-3. inherited session context and counts;
+3. inherited context with Latest inherited Main events (10) collapsed;
 4. Open parent session.
 
 The priority is therefore:
@@ -710,7 +793,7 @@ relationship -> inherited-context existence -> return affordance -> detailed eve
 
 This is a general capture rule: provenance comprehension matters more than
 maximizing the number of product features visible in one GIF. Keep the tracked
-`showcase/captures/readme/branching.json` four-state sequence and one-child
+`showcase/captures/readme/branching.json` five-state sequence, real scroll, and one-child
 constraint; use the local manifest only when available.
 
 ## 9. What not to repeat
@@ -733,9 +816,12 @@ product follow-up rather than changing the product during a reshoot.
 
 ## 10. Capture blockers and acceptance gates
 
-### Current README capture blocker
+### Historical Hero capture limitation
 
-- Current behavior: the Hero’s wide-viewport experiments can leave the
+These observations describe earlier experiments. The approved 2026-09-19
+overview is the current baseline; reassess the risks on each new candidate.
+
+- Previously observed behavior: the Hero’s wide-viewport experiments can leave the
   effective image boundary different from the requested viewport; the right
   Inspector boundary and top-right controls are not proven to be fully inside
   every candidate. A visible horizontal scrollbar has also appeared in earlier
@@ -745,7 +831,7 @@ product follow-up rather than changing the product during a reshoot.
 - Scope: capture-only. The underlying product story, parser, and UI semantics are
   not being changed.
 - Follow-up: if publication later requires a cleaner Hero, perform one measured
-  capture-only comparison against the 1536 baseline. Do not reopen discovery or
+  capture-only comparison against the approved 1600×1000 overview. Do not reopen discovery or
   broaden the storyboard unless the product narrative changes.
 
 ### Hero gates
@@ -761,29 +847,48 @@ product follow-up rather than changing the product during a reshoot.
 - The image is readable around 900–1000 px rendered README width.
 - No private data, loading spinner, tooltip, transient popover, or layout flash.
 
-### Search GIF gates
+### Reading and operation PNG gates
 
-- The query search-navigation.test.js is understandable.
-- Search count and Next/jump feedback are visible during the transition.
-- The exact test file is visibly highlighted at the target.
-- The structured detail supports the same semantic target as the highlighted
-  event.
-- There is no old Command detour, extra Next click, long scroll, or slow typing.
-- The final state has a useful hold and can loop without a jarring transition.
+- The reading pair uses the same ten loaded Main events and final assistant
+  selection. Timeline folds the plan/tools while retaining messages; Trajectory
+  expands the seven-call Tool Activity Group.
+- The operation PNG shows the first two-file patch expanded and selected in
+  Timeline: readable highlighted changes in the center, result/files/Raw entry
+  in Supplemental Detail at right.
+- Captions match actual presentation and detail placement; partial coverage is
+  not described as a full-session overview.
+
+### Current project-search GIF gates
+
+- Asset: project-search-and-read.gif; contract: project-search.json.
+- npm test -- project-switch is readable, with No matches / 0 / 0 in the parent
+  under Current session before choosing Entire project.
+- Scope choices and exactly one matching session / one event are visible;
+  the destination is Fix stale project rows after source switch.
+- Opening the result visibly changes sessions; the expanded/selected Command
+  shows Project switch suite, 8 tests passed, and surrounding messages.
+- Preserve the one-second real Timeline scroll and readable patch context;
+  no slow typing, loading waits, or unrelated detail detours.
+- Capture the complete search/list/reading region; Inspector is not required.
+- The final reading state has a useful hold and loops without a jarring transition.
+- Legacy search.json / search-and-jump.gif do not satisfy these gates.
 
 ### Branching GIF gates
 
 - The parent identity is clear.
-- Exactly one derived child is shown.
-- Review · from ... or an equivalent provenance label is legible.
-- Materialized fork and inherited-context existence/counts are clear.
+- Exactly one ordinary subagent child is shown: Subagent Docs, titled
+  Write search navigation usage examples.
+- Subagent · from ... is legible.
+- Materialized fork and Latest inherited Main events (10) are clear; inherited
+  context corresponds to 26 Raw Records and one Protocol event.
 - The inherited-event list does not hide Open parent session.
-- The return action visibly lands back on the parent.
+- The return action visibly lands back on the parent Timeline, followed by the
+  storyboard’s one-second real scroll to the expanded patch.
 - There is no large inherited-event dump, extra relationship taxonomy, loading
   state, or tooltip artifact.
 
-All three assets must pass the privacy gate and the actual-file format/dimension
-gate before promotion. “Looks good at native resolution” is not an acceptance
+All six current README assets (four PNGs and two GIFs) must pass the privacy
+gate and actual-file format/dimension gate before promotion. “Looks good at native resolution” is not an acceptance
 gate by itself.
 
 ## 11. Validation commands
@@ -870,36 +975,27 @@ The durable state to resume from is:
 
 - Canonical source and materializer are established and should be extended rather
   than replaced.
-- The tracked Search and Branching storyboards under
-  showcase/captures/readme/ are the recoverable interaction contract; local
-  output/readme-capture manifests are optional generated evidence.
-- The parent/neighbor/child story is natural enough for long-lived documentation
-  use.
-- The tracked `showcase/captures/readme/search.json` storyboard expresses Search
-  → Jump → Detail without the old Command detour. Its approved publication copy
-  is `docs/assets/readme/search-and-jump.gif`; when still available locally,
-  `output/readme-capture/search/search.gif` is the source candidate.
-- The tracked `showcase/captures/readme/branching.json` storyboard expresses
-  Parent → Derived Child → Inherited Context → Parent with one child and a
-  visible return action. Its approved publication copy is
-  `docs/assets/readme/derived-session-provenance.gif`; when still available
-  locally, `output/readme-capture/branching/branching.gif` is the source
-  candidate.
-- The Hero composition is the accepted first-impression concept, published as
-  `docs/assets/readme/session-analyzer-overview.png`.
-- If still available locally, `hero-a-polished-1536.png` is the baseline for any
-  future Hero reshoot; `hero-a-polished-1600.png` is its width comparison and
-  `hero-a-polished-final.png` is the earlier reference.
+- Current recoverable contracts are reading.json, project-search.json, and
+  branching.json under showcase/captures/readme/. Local manifests are optional
+  generated evidence; the current six-asset table defines public scope.
+- The parent/neighbor/Subagent Docs story is the canonical world, with ten
+  inherited Main events in the child.
+- project-search-and-read.gif uses npm test -- project-switch and moves from the
+  parent to Fix stale project rows after source switch to resume reading.
+- derived-session-provenance.gif uses Subagent provenance and a visible return
+  action, then scrolls to the parent patch.
+- search.json and search-and-jump.gif are an unreferenced legacy storyboard/asset,
+  not the current Search publication contract.
+- The approved overview is docs/assets/readme/session-analyzer-overview.png
+  (1600×1000); use it as the Hero reshoot baseline. Older hero-a-polished PNGs,
+  when available, are historical comparisons only.
 - Publication was a deliberate manual step; ignored candidates under
   output/readme-capture/ remain disposable and are never promoted automatically.
 
-The unresolved imperfection is specifically capture-boundary reliability around
-the Hero’s right side and top-right controls. The published Hero was accepted at
-a deliberate stopping point, but it is not claimed to be perfectly solved.
-Do not hide this fact by calling a crop “complete” or by assuming that a removed
-scrollbar proves that the Inspector is fully visible. The appropriate future
-action is a small, measured capture-only reshoot if publication requires it—not
-another open-ended visual discovery cycle.
+Earlier Hero experiments exposed capture-boundary uncertainty around the right
+side and top-right controls. Preserve that lesson: a removed scrollbar alone
+does not prove a complete Inspector. Future reshoots must measure actual output
+and pass section 10 against the current approved baseline.
 
 No product behavior was changed to obtain the current package. Search and
 Branching story decisions, manifests, keyframes, and product code are considered
@@ -909,28 +1005,33 @@ stable for now.
 
 When a future maintainer resumes this work:
 
-1. Read this runbook, showcase/README.md, and the tracked storyboard files under
-   showcase/captures/readme/; do not restart visual discovery
-   unless the README product narrative has changed.
+1. Read this runbook, showcase/README.md, and current reading.json,
+   project-search.json, and branching.json storyboards. search.json is legacy;
+   do not restart visual discovery unless the README product narrative has changed.
 2. Inspect git status --short, branch, and worktrees. Preserve unrelated WIP.
 3. Materialize the canonical showcase only if the runtime needs rebuilding.
 4. Launch Session Analyzer with the generated Codex home and workspace.
-5. Confirm acme/task-board, Add project-wide search navigation, the four
-   neighboring sessions, and the review child.
-6. Reproduce the known Hero baseline: repository history, Main/Narrative timeline,
+5. Apply section 4 checks: acme/task-board, the parent, four neighbors, and
+   Subagent Docs (Write search navigation usage examples), with ten inherited
+   Main events and `Subagent · from ...`. Verify npm test -- project-switch
+   finds only the intended neighbor under Entire project.
+6. Reproduce the approved 1600×1000 Hero baseline: repository history, Main/Narrative timeline,
    selected successful npm test -- search-navigation, visible 12 tests passed,
-   and structured Inspector.
+   and structured Inspector. Preserve the scrolled work segment; do not claim
+   all ten events are visible at once.
 7. Change only capture state: viewport, browser zoom if it genuinely works,
    timeline/Inspector scroll position, and selected event. Do not modify scenario
    semantics or product code.
 8. Measure requested viewport, layout viewport, scroll width, panel bounds,
-   overflow, and actual output dimensions. Compare 1536×900 and 1600×900 only
-   when the measurements justify it.
+   overflow, and actual output dimensions. Compare alternative dimensions with
+   the current baseline only when measurements justify it.
 9. Reject any candidate with a clipped panel/control, scrollbar artifact, tooltip,
    loading state, private data, invalid image bytes, or unreadable README-scale
    text.
-10. Review at approximately 900–1000 px rendered width, then leave the candidate
-    in output/readme-capture/ for human review.
+10. Review at approximately 900–1000 px rendered width in both READMEs; confirm
+    all six current assets still resolve and apply relevant section 10 gates.
+    Keep project-search-and-read.gif as current Search, not search-and-jump.gif.
+    Leave candidates in output/readme-capture/ for human review.
 11. Promote manually approved media to docs/assets/readme/ only in a separate,
     explicit publication step.
 
