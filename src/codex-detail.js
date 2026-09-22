@@ -92,6 +92,7 @@ function createCodexDetailBuilder(deps) {
   const CODE_MODE_COLLAPSED_PREVIEW_ITEM_LIMIT = 2;
   const CODE_MODE_COLLAPSED_PREVIEW_TEXT_LIMIT = 160;
   const CODE_MODE_SOURCE_EXCERPT_SUMMARY_LINE_LIMIT = 2;
+  const BACKGROUND_TERMINAL_NAVIGATION_DIRECTORY_LIMIT = 128;
 
   function rawPrimarySections(raw, relatedEvent, session = {}) {
     if (relatedEvent?.kind === 'protocol') {
@@ -945,6 +946,151 @@ function createCodexDetailBuilder(deps) {
     return items.length ? { purpose: 'traceability', type: 'event_refs', title: 'Observed nested activity', items } : null;
   }
 
+  function backgroundTerminalRelationIndexes(session) {
+    const indexes = session?.presentationIndexes;
+    const origins = indexes?.backgroundTerminalOrigins;
+    const continuations = indexes?.backgroundTerminalContinuations;
+    if (!origins || typeof origins.get !== 'function' || typeof origins.has !== 'function'
+      || !continuations || typeof continuations.get !== 'function' || typeof continuations.entries !== 'function') {
+      return null;
+    }
+    return { origins, continuations };
+  }
+
+  function backgroundTerminalLogicalEventIndex(session) {
+    const events = Array.isArray(session?.logicalEvents) ? session.logicalEvents : [];
+    const byId = new Map();
+    for (const event of events) {
+      if (event?.layer !== 'main' || typeof event.id !== 'string' || !event.id || byId.has(event.id)) continue;
+      byId.set(event.id, event);
+    }
+    return { events, byId };
+  }
+
+  function backgroundTerminalRequestLabel(event, session, locale) {
+    if (!event) return '';
+    const fact = backgroundTerminalFactsForEvent(session, event.id)
+      || session?.presentationIndexes?.backgroundTerminalRequests?.get?.(event.id);
+    const label = backgroundTerminalLabel(fact, locale) || localizedLogicalLabel(event, locale);
+    // Timestamp disambiguates repeated requests in the display only; relation
+    // membership and ordering remain owned by the confirmed presentation maps.
+    const timestamp = typeof event.timestamp === 'string' ? event.timestamp.trim() : '';
+    return timestamp && label ? `${timestamp} · ${label}` : label;
+  }
+
+  function backgroundTerminalEventRef(event, session, locale, label = '') {
+    if (!event || event.layer !== 'main' || typeof event.id !== 'string' || !event.id) return null;
+    return {
+      id: event.id,
+      label: label || backgroundTerminalRequestLabel(event, session, locale),
+      kind: event.kind,
+      status: event.status,
+      layer: 'main',
+    };
+  }
+
+  function confirmedBackgroundTerminalContinuations(session, originEventId, eventIndex = backgroundTerminalLogicalEventIndex(session)) {
+    const relations = backgroundTerminalRelationIndexes(session);
+    if (!relations || !relations.origins.has(originEventId)) return [];
+    const origin = eventIndex.byId.get(originEventId);
+    if (!origin) return [];
+    const events = [];
+    // Logical event order is the materialized source order exposed to Detail.
+    // The relation maps only decide membership; no process-id or timestamp
+    // inference is performed here.
+    for (const event of eventIndex.events) {
+      if (!event || event.layer !== 'main' || typeof event.id !== 'string') continue;
+      const relation = relations.continuations.get(event.id);
+      if (!relation || relation.originEventId !== originEventId) continue;
+      if (!eventIndex.byId.has(event.id)) continue;
+      events.push(event);
+    }
+    return events;
+  }
+
+  function backgroundTerminalNavigationSections(logical, session, locale) {
+    const relations = backgroundTerminalRelationIndexes(session);
+    if (!relations) return { originSection: null, associatedSection: null, previousSection: null, nextSection: null };
+
+    const continuation = relations.continuations.get(logical.id);
+    const isOrigin = relations.origins.has(logical.id);
+    if (!continuation && !isOrigin) return { originSection: null, associatedSection: null, previousSection: null, nextSection: null };
+
+    const eventIndex = backgroundTerminalLogicalEventIndex(session);
+    const originEventId = continuation?.originEventId;
+    const origin = typeof originEventId === 'string' && relations.origins.has(originEventId)
+      ? eventIndex.byId.get(originEventId)
+      : null;
+    if (origin) {
+      const originRef = backgroundTerminalEventRef(
+        origin,
+        session,
+        locale,
+        typeof relations.origins.get(originEventId)?.commandPreview === 'string'
+          ? relations.origins.get(originEventId).commandPreview
+          : '',
+      );
+      const associated = confirmedBackgroundTerminalContinuations(session, originEventId, eventIndex);
+      const currentIndex = associated.findIndex((event) => event.id === logical.id);
+      const previous = currentIndex > 0 ? associated[currentIndex - 1] : null;
+      const next = currentIndex >= 0 && currentIndex + 1 < associated.length
+        ? associated[currentIndex + 1]
+        : null;
+      const directory = associated.length <= BACKGROUND_TERMINAL_NAVIGATION_DIRECTORY_LIMIT
+        ? associated.filter((event) => event.id !== logical.id)
+        : [];
+      return {
+        originSection: originRef ? {
+          purpose: 'traceability',
+          type: 'event_refs',
+          title: 'Originating command',
+          items: [originRef],
+        } : null,
+        previousSection: previous ? {
+          purpose: 'traceability',
+          type: 'event_refs',
+          title: 'Previous terminal request',
+          items: [backgroundTerminalEventRef(previous, session, locale)].filter(Boolean),
+        } : null,
+        nextSection: next ? {
+          purpose: 'traceability',
+          type: 'event_refs',
+          title: 'Next terminal request',
+          items: [backgroundTerminalEventRef(next, session, locale)].filter(Boolean),
+        } : null,
+        associatedSection: directory.length ? {
+          purpose: 'traceability',
+          type: 'event_refs',
+          title: 'Associated terminal requests',
+          items: directory.map((event) => backgroundTerminalEventRef(event, session, locale)).filter(Boolean),
+        } : null,
+      };
+    }
+
+    if (!isOrigin) return { originSection: null, associatedSection: null, previousSection: null, nextSection: null };
+    const associated = confirmedBackgroundTerminalContinuations(session, logical.id, eventIndex);
+    // Bound the directory before projecting references; sequential links still use all relations.
+    const directory = associated.slice(0, BACKGROUND_TERMINAL_NAVIGATION_DIRECTORY_LIMIT);
+    return {
+      originSection: null,
+      directoryNotice: directory.length < associated.length ? {
+        purpose: 'traceability',
+        type: 'notice',
+        level: 'info',
+        title: 'Follow-up terminal requests',
+        text: i18n.t(locale, 'ui', 'terminalDirectoryLimited', { shown: directory.length, total: associated.length }),
+      } : null,
+      associatedSection: directory.length ? {
+        purpose: 'traceability',
+        type: 'event_refs',
+        title: 'Follow-up terminal requests',
+        items: directory.map((event) => backgroundTerminalEventRef(event, session, locale)).filter(Boolean),
+      } : null,
+      previousSection: null,
+      nextSection: null,
+    };
+  }
+
   function appendAttachmentSections(sections, event, raws, locale) {
     let summaries = raws.map((raw) => raw.attachmentSummary || summarizeCodexAttachments(raw.parsed?.payload))
       .filter((summary) => summary.totalCount > 0);
@@ -1034,12 +1180,12 @@ function createCodexDetailBuilder(deps) {
       : null;
     if (eventRefsSection) detailSections.inspectorSections.push(eventRefsSection);
     const terminalFact = backgroundTerminalFactsForEvent(session, logical.id);
-    if (terminalFact?.originEventId) {
-      const origin = session.logicalEvents.find((candidate) => candidate.id === terminalFact.originEventId);
-      if (origin) detailSections.inspectorSections.push({ purpose: 'traceability', type: 'event_refs', title: 'Originating command',
-        items: [{ id: origin.id, label: terminalFact.commandPreview || localizedLogicalLabel(origin, locale),
-          kind: origin.kind, status: origin.status }] });
-    }
+    const terminalNavigation = backgroundTerminalNavigationSections(logical, session, locale);
+    if (terminalNavigation.originSection) detailSections.inspectorSections.push(terminalNavigation.originSection);
+    if (terminalNavigation.previousSection) detailSections.inspectorSections.push(terminalNavigation.previousSection);
+    if (terminalNavigation.nextSection) detailSections.inspectorSections.push(terminalNavigation.nextSection);
+    if (terminalNavigation.directoryNotice) detailSections.inspectorSections.push(terminalNavigation.directoryNotice);
+    if (terminalNavigation.associatedSection) detailSections.inspectorSections.push(terminalNavigation.associatedSection);
     if (!detailSections.timelineSections.length && !detailSections.inspectorSections.length) {
       detailSections.inspectorSections.push(makeRawJsonSection('Unmodeled fields', logicalFallbackPayload(raws), false, 'fallback'));
     }

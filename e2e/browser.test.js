@@ -212,7 +212,7 @@ test('background terminal continuation suffix and origin navigation preserve sep
   await page.locator('#searchInput').dispatchEvent('input');
   await page.waitForFunction(() => document.querySelectorAll('#timeline .event.searchHit').length === 0);
   await wait.locator('.eventKind').click();
-  const originLink = page.locator(`#detail [data-event-ref-id="${originId}"]`);
+  const originLink = page.locator(`#detail [data-target-event-id="${originId}"]`);
   await originLink.waitFor();
   assert.equal(await originLink.textContent(), 'npm test');
   if (!(await wait.locator('.eventBody').isVisible())) await wait.locator('.eventHeader > .eventToggle').click();
@@ -226,6 +226,15 @@ test('background terminal continuation suffix and origin navigation preserve sep
   await captureTerminalPresentation(page, 'native-poll');
   await originLink.click();
   await page.waitForFunction((id) => document.querySelector('#timeline .event.selected')?.dataset.eventId === id, originId);
+  await page.locator(`#detail [data-target-event-id="${waitId}"]`).click();
+  await page.waitForFunction((id) => document.querySelector('#timeline .event.selected')?.dataset.eventId === id, waitId);
+  const nextId = session.logicalEvents.find((event) => event.id.endsWith(':w2')).id;
+  await page.locator(`#detail .eventRefsBlock`).filter({ hasText: '下一个终端请求' }).locator(`[data-target-event-id="${nextId}"]`).click();
+  await page.waitForFunction((id) => document.querySelector('#timeline .event.selected')?.dataset.eventId === id, nextId);
+  await page.locator('#sessionHeader [data-reading-back]').click();
+  await page.waitForFunction((id) => document.activeElement?.dataset.targetEventId === id, nextId);
+  await page.locator('#sessionHeader [data-reading-back]').click();
+  await page.waitForFunction((id) => document.activeElement?.dataset.targetEventId === id, waitId);
   await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
   await page.waitForSelector('.trajectoryPresentation');
   const group = page.locator('.trajectoryToolGroup');
@@ -233,6 +242,41 @@ test('background terminal continuation suffix and origin navigation preserve sep
   assert.ok((await page.locator('#timeline').textContent()).includes('后台终端轮询请求 · npm test'));
   assert.equal((await page.locator('#timeline').textContent()).match(/后台终端轮询请求/g)?.length, 1);
   await captureTerminalPresentation(page, 'native-trajectory');
+});
+
+test('bounded terminal directory explains its limit and links beyond it in both presentations', async (t) => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'terminal-directory-browser-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const template = (await fsp.readFile(path.join(__dirname, '../test/fixtures/background-terminal/continuation.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  const rows = template.slice(0, 3);
+  rows[0].payload.cwd = repoRoot;
+  for (let i = 0; i < 129; i += 1) {
+    for (const row of template.slice(3, 5)) {
+      const poll = structuredClone(row);
+      poll.payload.call_id = `directory-${i}`;
+      rows.push(poll);
+    }
+  }
+  await writeJsonl(path.join(home, 'sessions', 'directory.jsonl'), rows);
+  const index = await buildIndex({ repoRoot, codexHome: home });
+  const session = await materializeIndexedSession(index, rows[0].payload.id);
+  const originId = [...session.presentationIndexes.backgroundTerminalOrigins.keys()][0];
+  const requests = session.logicalEvents.filter((event) => session.presentationIndexes.backgroundTerminalContinuations.has(event.id));
+  for (const presentation of ['timeline', 'trajectory']) {
+    const locale = presentation === 'timeline' ? 'en' : 'zh-CN';
+    const { page } = await openApp(t, index, { locale });
+    await page.locator(`#timeline .event[data-event-id="${originId}"] .eventKind`).click();
+    if (presentation === 'trajectory') await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
+    await page.locator(`#detail [data-target-event-id="${requests[127].id}"]`).waitFor();
+    assert.match(await page.locator('#detail').innerText(), /128.*129/);
+    assert.equal(await page.locator('#detail .eventRefsBlock [data-target-event-id]').count(), 128);
+    await page.locator(`#detail [data-target-event-id="${requests[127].id}"]`).click();
+    await page.locator(`#detail [data-target-event-id="${requests[128].id}"]`).click();
+    await page.locator(`#detail [data-target-event-id="${requests[127].id}"]`).waitFor();
+    assert.equal(await page.locator('#detail .eventRefsBlock').filter({ hasText: locale === 'en' ? 'Next terminal request' : '下一个终端请求' }).count(), 0);
+    await page.locator('#sessionHeader [data-reading-back]').click();
+    await page.waitForFunction((id) => document.activeElement?.dataset.targetEventId === id, requests[128].id);
+  }
 });
 
 test('background terminal requests render in Timeline, hydrated Detail and Trajectory without an origin', async (t) => {
@@ -1099,6 +1143,309 @@ async function makeCollaborationNavigationFixture(t, { precedingCount = 12, stat
     sourceEventId: parent.logicalEvents.find((event) => event.layer === 'main').id };
 }
 
+async function makeFileNavigationFixture(t) {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'file-reading-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const project = path.join(home, 'repo');
+  const sessionId = 'dddddddd-0922-4922-8922-dddddddddddd';
+  const timestamp = '2026-09-22T12:00:00.000Z';
+  const patch = (id, extra = '') => [
+    { timestamp, type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', call_id: id,
+      input: `*** Begin Patch\n*** Update File: src/a.js\n@@\n-before\n+after\n${extra}*** End Patch` } },
+    { timestamp, type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: id, output: 'Success' } },
+  ];
+  await writeJsonl(path.join(home, 'sessions', `rollout-${sessionId}.jsonl`), [
+    { timestamp, type: 'session_meta', payload: { id: sessionId, cwd: project } },
+    ...patch('patch-origin', '*** Add File: src/b.js\n+another file\n'),
+    ...Array.from({ length: 170 }, (_, i) => ({ timestamp, type: 'event_msg', payload: { type: 'user_message', message: `Context ${i}` } })),
+    ...Array.from({ length: 55 }, (_, i) => patch(`patch-followup-${i}`)).flat(),
+  ]);
+  const otherId = 'eeeeeeee-0922-4922-8922-eeeeeeeeeeee';
+  await writeJsonl(path.join(home, 'sessions', `rollout-${otherId}.jsonl`), [
+    { timestamp, type: 'session_meta', payload: { id: otherId, cwd: project } },
+    { timestamp, type: 'event_msg', payload: { type: 'user_message', message: 'Other file work' } },
+    ...patch('patch-other-session'),
+  ]);
+  const index = await buildIndex({ repoRoot: project, codexHome: home });
+  const session = await materializeSessionForIndex(index, index.sessionsById.get(sessionId));
+  return { index, sessionId, otherId, eventId: session.logicalEvents.find((event) => event.kind === 'patch').id,
+    lastEventId: session.logicalEvents.filter((event) => event.kind === 'patch').at(-1).id };
+}
+
+test('DeepSeek workflow member evidence and raw owners navigate across layers with exact reading return', async (t) => {
+  const { buildDeepSeekIndex } = require('../src/deepseek-harness');
+  const index = await buildDeepSeekIndex({ sourceHome: path.join(__dirname, '../test/fixtures/deepseek-harness-phase2b/sessions'),
+    repoRoot: '/synthetic/deepseek-phase2b-workflow' });
+  const session = await materializeSessionForIndex(index, index.sessions[0]);
+  const workflow = session.logicalEvents.find((event) => event.subtype === 'tool-workflow/run');
+  const { page } = await openApp(t, index, { locale: 'zh-CN' });
+  await page.locator('#layerSelect').selectOption('protocol');
+  await page.locator(`.event[data-event-id="${workflow.id}"]`).click();
+  const member = page.locator('#detail .eventRefsBlock').filter({ hasText: '工作流成员证据' }).locator('[data-target-layer="raw"]').first();
+  const rawId = await member.getAttribute('data-target-event-id');
+  await member.click();
+  await page.waitForFunction(() => document.querySelector('#layerSelect').value === 'raw');
+  const owner = page.locator(`#detail [data-target-event-id="${workflow.id}"]`).first();
+  await owner.click();
+  await page.waitForFunction(() => document.querySelector('#layerSelect').value === 'protocol');
+  await page.locator('#sessionHeader [data-reading-back]').click();
+  await page.waitForFunction((id) => document.querySelector('#layerSelect').value === 'raw' && document.activeElement?.dataset.targetEventId === id, workflow.id);
+  await page.locator('#sessionHeader [data-reading-back]').click();
+  await page.waitForFunction((id) => document.querySelector('#layerSelect').value === 'protocol' && document.activeElement?.dataset.targetEventId === id, rawId);
+});
+
+test('DeepSeek Code Mode member directory and owner links preserve the reading source', async (t) => {
+  const { buildDeepSeekIndex } = require('../src/deepseek-harness');
+  const index = await buildDeepSeekIndex({ sourceHome: path.join(__dirname, '../test/fixtures/deepseek-harness-phase2b/sessions'),
+    repoRoot: '/synthetic/deepseek-phase2b-code' });
+  const session = await materializeSessionForIndex(index, index.sessions[0]);
+  const outer = session.logicalEvents.find((event) => event.codeModeOperation?.outerCallId === 'outer-nested');
+  const targetId = outer.codeModeOperation.eventRefs[0];
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await page.locator(`.event[data-event-id="${outer.id}"]`).click();
+  await page.locator(`#detail [data-target-event-id="${targetId}"]`).click();
+  await page.waitForSelector(`#detail [data-target-event-id="${outer.id}"]`);
+  await page.locator('#sessionHeader [data-reading-back]').click();
+  await page.waitForFunction((id) => document.activeElement?.dataset.targetEventId === id, targetId);
+});
+
+for (const locale of ['en', 'zh-CN']) for (const presentation of ['timeline', 'trajectory']) {
+  test(`file activity actions preserve recorded identity (${locale}, ${presentation})`, async (t) => {
+    const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'recorded-file-actions-'));
+    t.after(() => fsp.rm(home, { recursive: true, force: true }));
+    const project = '/repo';
+    const sessionId = 'cccccccc-0923-4923-8923-cccccccccccc';
+    const paths = ['src/a.js ', 'src/a.js', '/repo/src/link/../a.js', 'src/link/../a.js', 'Status'];
+    await writeJsonl(path.join(home, 'sessions', `rollout-${sessionId}.jsonl`), [
+      { type: 'session_meta', payload: { id: sessionId, cwd: project } },
+      ...paths.map((file, i) => ({ type: 'event_msg', payload: { type: 'patch_apply_end', call_id: `identity-${i}`,
+        success: true, changes: { [file]: { type: 'update', unified_diff: '@@ -1 +1 @@\n-before\n+after' } } } })),
+    ]);
+    const index = await buildIndex({ repoRoot: project, codexHome: home });
+    const session = await materializeSessionForIndex(index, index.sessionsById.get(sessionId));
+    const patches = session.logicalEvents.filter((event) => event.kind === 'patch');
+    assert.equal(patches.length, paths.length);
+    const { page } = await openApp(t, index, { locale });
+    await page.locator(`[data-session-id="${sessionId}"]`).click();
+    if (presentation === 'trajectory') await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
+    for (const i of [0, 2, 4]) {
+      const eventId = patches[i].id;
+      await page.locator(presentation === 'timeline' ? `.event[data-event-id="${eventId}"]` : `[data-trajectory-event-id="${eventId}"]`).first().click();
+      const surface = presentation === 'timeline' ? `#timeline .event[data-event-id="${eventId}"]` : '#detail';
+      for (const selector of [`${surface} .patchFile [data-file-activity]`, '#detail .kvTable [data-file-activity]']) {
+        const button = page.locator(selector).first();
+        await button.waitFor();
+        if (i === 4) assert.equal(await button.innerText(), 'Status');
+        const responsePromise = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/file-activity'));
+        await button.click();
+        const response = await responsePromise;
+        const data = await response.json();
+        assert.equal(new URL(response.url()).searchParams.get('file'), paths[i]);
+        assert.deepEqual(data.events.map((event) => event.id), (i === 2 ? [patches[2], patches[3]] : [patches[i]]).map((event) => event.id));
+        assert.equal(data.total, i === 2 ? 2 : 1);
+        await page.locator('[data-file-activity-entry]').first().waitFor();
+        await page.locator('[data-file-activity-close]').click();
+      }
+    }
+  });
+}
+
+test('file navigation exposes a local patch directory and paginated recorded activities with reading return', async (t) => {
+  const { index, sessionId, eventId, lastEventId } = await makeFileNavigationFixture(t);
+  for (const presentation of ['timeline', 'trajectory']) {
+    const { page, baseUrl } = await openApp(t, index, { locale: 'en' });
+    await page.locator(`[data-session-id="${sessionId}"]`).click();
+    await page.locator(`.event[data-event-id="${eventId}"]`).click();
+    if (presentation === 'trajectory') await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
+    const surface = presentation === 'timeline' ? `#timeline .event[data-event-id="${eventId}"]` : '#detail';
+    await page.locator(`${surface} [data-patch-file-index="1"]`).click();
+    assert.equal(await page.locator(`${surface} .patchFile[data-patch-index="1"]`).evaluate((node) => node === document.activeElement), true);
+    const file = page.locator(`${surface} .patchFile [data-file-activity="src/a.js"]`).first();
+    await file.click();
+    await page.waitForSelector('[data-file-activity-entry]');
+    assert.equal(await page.locator('[data-file-activity-entry]').count(), 50);
+    assert.match(await page.locator('.fileActivityDialog').innerText(), /56 related records/);
+    await page.locator('[data-file-activity-page="50"]').click();
+    await page.waitForFunction(() => document.querySelectorAll('[data-file-activity-entry]').length === 6);
+    await page.locator('[data-file-activity-entry]').last().click();
+    await page.waitForFunction((id) => document.querySelector('body')?.dataset.detailEventId === id
+      || document.querySelector(`[data-event-id="${CSS.escape(id)}"].selected, [data-trajectory-event-id="${CSS.escape(id)}"].selected`), lastEventId);
+    await page.locator('#sessionHeader [data-reading-back]').click();
+    await page.waitForFunction(() => document.activeElement?.dataset.fileActivity === 'src/a.js');
+    assert.equal(await file.evaluate((node) => node === document.activeElement), true);
+    const response = await page.request.get(`${baseUrl}/api/sessions/${sessionId}/file-activity?file=src%2Fa.js.map`);
+    assert.equal((await response.json()).total, 0);
+  }
+});
+
+test('file navigation recovers failed lists, cancels stale requests and searches the project without losing source context', async (t) => {
+  const { index, sessionId, otherId, eventId } = await makeFileNavigationFixture(t);
+  const { page } = await openApp(t, index, { locale: 'en', viewport: { width: 390, height: 900 } });
+  await page.locator(`[data-session-id="${sessionId}"]`).click();
+  const file = page.locator(`#timeline .event[data-event-id="${eventId}"] [data-file-activity="src/a.js"]`).first();
+  let requests = 0;
+  await page.route('**/file-activity?*', async (route) => {
+    requests += 1;
+    if (requests === 1) await route.fulfill({ status: 503, json: { error: 'Synthetic file list failure' } });
+    else await route.continue();
+  });
+  await file.click();
+  await page.locator('[data-file-activity-page="0"]').click();
+  await page.waitForSelector('[data-file-activity-entry]');
+  await page.locator('[data-file-activity-project]').click();
+  await page.waitForFunction(() => document.querySelector('.fileActivityDialog')?.textContent.includes('Project path-filter match'));
+  await page.locator('[data-file-activity-entry]').filter({ hasText: 'Other file work' }).click();
+  await page.waitForFunction((id) => document.querySelector('.sessionItem.active')?.dataset.sessionId === id, otherId);
+  assert.equal(await page.locator('body').getAttribute('data-mobile-view'), 'events');
+  await page.locator('#sessionHeader [data-reading-back]').click();
+  await page.waitForFunction(() => document.activeElement?.dataset.fileActivity === 'src/a.js');
+  const gate = deferred();
+  t.after(() => gate.resolve());
+  await page.route('**/file-activity?*', async (route) => { await gate.promise; await route.continue().catch(() => {}); });
+  await file.click();
+  await page.keyboard.press('Escape');
+  gate.resolve();
+  await page.waitForLoadState('networkidle');
+  assert.equal(await page.locator('.fileActivityDialog').count(), 0);
+});
+
+test('session reading paths open siblings and resume a previously visited event with return', async (t) => {
+  const { index, parentId, childId, otherId, eventId } = await makeCollaborationNavigationFixture(t);
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await page.locator(`[data-session-id="${parentId}"]`).click();
+  await page.locator(`.event[data-event-id="${eventId}"]`).click();
+  await page.locator(`#timeline [data-open-collaboration-session="${childId}"]`).first().click();
+  await page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('Child own work'));
+  const second = page.locator('#timeline .event').nth(1);
+  const secondId = await second.getAttribute('data-event-id');
+  await second.click();
+  await page.locator('.sessionReadingRelations summary').click();
+  await page.locator(`[data-reading-session="${otherId}"]`).click();
+  await page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('Other own work'));
+  await page.locator('.sessionReadingRelations summary').click();
+  await page.locator(`[data-reading-session="${childId}"]`).click();
+  await page.waitForFunction((id) => document.querySelector(`.event[data-event-id="${CSS.escape(id)}"].selected`), secondId);
+  await page.locator('#sessionHeader [data-reading-back]').click();
+  await page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('Other own work'));
+  await page.waitForFunction((id) => document.activeElement?.dataset.readingSession === id, childId);
+});
+
+for (const mode of ['project', 'session']) for (const intent of ['unchanged', 'query', 'filter', 'presentation', 'mobile', 'stale-error', 'current-error']) {
+  test(`file target envelope respects reading context: ${mode} / ${intent}`, async (t) => {
+    const { index, sessionId, otherId, lastEventId } = await makeFileNavigationFixture(t);
+    const { page } = await openApp(t, index, { locale: 'en', viewport: { width: 390, height: 900 } });
+    await page.locator(`[data-session-id="${mode === 'project' ? otherId : sessionId}"]`).click();
+    await page.locator('#timeline [data-file-activity="src/a.js"]').first().click();
+    if (mode === 'project') await page.locator('[data-file-activity-project]').click();
+    else {
+      await page.locator('[data-file-activity-page="50"]').click();
+      await page.waitForFunction(() => document.querySelectorAll('[data-file-activity-entry]').length === 6);
+    }
+    const entry = mode === 'project'
+      ? page.locator('[data-file-activity-entry]').filter({ hasNotText: 'Other file work' })
+      : page.locator('[data-file-activity-entry]').last();
+    await entry.waitFor();
+    const started = deferred();
+    const release = deferred();
+    const finished = deferred();
+    t.after(() => release.resolve());
+    await page.route(`**/api/sessions/${sessionId}/events/${encodeURIComponent(lastEventId)}?*`, async (route) => {
+      started.resolve();
+      await release.promise;
+      if (intent.endsWith('error')) await route.fulfill({ status: 503, json: { error: 'Synthetic target fetch failure' } }).catch(() => {});
+      else await route.continue().catch(() => {});
+      finished.resolve();
+    });
+    await entry.click();
+    await started.promise;
+    if (intent === 'query' || intent === 'stale-error') await fillSearch(page, 'newer search');
+    if (intent === 'filter') await addSearchFilter(page, 'kind', 'user_message');
+    if (intent === 'presentation') await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
+    if (intent === 'mobile') await page.locator('button[data-mobile-view="detail"]').click();
+    const before = await page.evaluate(() => ({ surface: document.body.dataset.mobileView, y: window.scrollY,
+      selected: document.querySelector('#timeline .event.selected, #timeline [data-trajectory-event-id].selected')?.dataset.eventId || '' }));
+    release.resolve();
+    await finished.promise;
+    await page.waitForLoadState('networkidle');
+    if (intent === 'unchanged') {
+      await page.waitForFunction((id) => document.querySelector(`#timeline .event[data-event-id="${CSS.escape(id)}"].selected`), lastEventId);
+      await page.locator('#sessionHeader [data-reading-back]').click();
+      await page.waitForFunction(() => document.activeElement?.dataset.fileActivity === 'src/a.js');
+    } else {
+      assert.equal(await page.locator(`#timeline [data-event-id="${lastEventId}"].selected, #timeline [data-trajectory-event-id="${lastEventId}"].selected`).count(), 0);
+      if (intent === 'current-error') assert.match(await page.locator('#stateLine').innerText(), /Synthetic target fetch failure/);
+      else {
+        assert.equal(await page.locator('#timeline .temporaryReferenceReveal').count(), 0);
+        assert.equal(await page.locator('body').getAttribute('data-mobile-view'), before.surface);
+        assert.ok(Math.abs(await page.evaluate(() => window.scrollY) - before.y) < 3);
+        assert.doesNotMatch(await page.locator('#stateLine').innerText(), /Synthetic target fetch failure|Unknown event/);
+      }
+    }
+  });
+}
+
+for (const entry of ['related', 'file', 'collaboration']) {
+  test(`reading-session entry ${entry} yields to context changes during delayed analysis`, async (t) => {
+    const fixture = entry === 'file' ? await makeFileNavigationFixture(t) : await makeCollaborationNavigationFixture(t);
+    for (const intent of ['raw', 'query', 'filter', 'presentation', 'failed-raw']) {
+      const { page } = await openApp(t, fixture.index, { locale: 'en',
+        viewport: entry === 'file' ? { width: 390, height: 900 } : undefined });
+      const sourceId = fixture.sessionId || fixture.parentId;
+      await page.locator(`[data-session-id="${sourceId}"]`).click();
+      let targetId;
+      let trigger;
+      if (entry === 'file') {
+        await page.locator(`#timeline [data-file-activity="src/a.js"]`).first().click();
+        await page.locator('[data-file-activity-project]').click();
+        trigger = page.locator('[data-file-activity-entry]').filter({ hasText: 'Other file work' });
+        await trigger.waitFor();
+        targetId = fixture.otherId;
+      } else {
+        await page.locator(`.event[data-event-id="${fixture.eventId}"]`).click();
+        trigger = page.locator(`#timeline [data-open-collaboration-session="${fixture.childId}"]`).first();
+        targetId = fixture.childId;
+        if (entry === 'related') {
+          await trigger.click();
+          await page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('Child own work'));
+          await page.waitForLoadState('networkidle');
+          await page.locator('.sessionReadingRelations summary').click();
+          targetId = fixture.otherId;
+          trigger = page.locator(`[data-reading-session="${targetId}"]`);
+        }
+      }
+      const target = await materializeSessionForIndex(fixture.index, fixture.index.sessionsById.get(targetId));
+      const gate = deferred();
+      const started = deferred();
+      t.after(() => gate.resolve());
+      await page.route(`**/api/sessions/${targetId}/analysis*`, async (route) => {
+        started.resolve(); await gate.promise;
+        if (intent === 'failed-raw') await route.fulfill({ status: 503, json: { error: 'Synthetic stale analysis' } }).catch(() => {});
+        else await route.continue().catch(() => {});
+      });
+      await trigger.click();
+      await started.promise;
+      await page.locator(`.event[data-event-id="${target.logicalEvents.find((event) => event.layer === 'main').id}"]`).waitFor();
+      if (intent.endsWith('raw')) {
+        await page.locator('#layerSelect').selectOption('raw');
+        await page.locator(`.event[data-event-id="${target.rawEvents[0].rawId}"]`).waitFor();
+        if (entry === 'file') await page.locator('button[data-mobile-view="detail"]').click();
+      } else if (intent === 'query') await fillSearch(page, 'keep this newer query');
+      else if (intent === 'filter') await addSearchFilter(page, 'kind', 'user_message');
+      else await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
+      const selection = page.locator('#timeline .event.selected, #timeline [data-trajectory-event-id].selected');
+      const before = await selection.count();
+      gate.resolve();
+      await page.waitForLoadState('networkidle');
+      assert.equal(await page.locator('#layerSelect').inputValue(), intent.endsWith('raw') ? 'raw' : 'main');
+      assert.equal(await selection.count(), before);
+      if (intent === 'query') assert.equal(await page.locator('#searchInput').inputValue(), 'keep this newer query');
+      if (intent === 'presentation') assert.equal(await page.locator('body').getAttribute('data-main-presentation'), 'trajectory');
+      if (intent.endsWith('raw') && entry === 'file') assert.equal(await page.locator('body').getAttribute('data-mobile-view'), 'detail');
+      assert.doesNotMatch(await page.locator('#stateLine').innerText(), /Unknown event|Synthetic stale analysis/);
+    }
+  });
+}
+
 test('collaboration return rebases hidden search expansion after sorting', async (t) => {
   const { index, parentId, childId, eventId } = await makeCollaborationNavigationFixture(t);
   const profile = { id: 'custom:hidden-collaboration', name: 'Hidden collaboration',
@@ -1163,6 +1510,7 @@ test('collaboration combines hidden search, pagination, sorting and failed retur
     await page.locator(`[data-session-id="${parentId}"]`).click();
     await fillSearch(page, 'Child recorded result');
     await page.locator('.searchInlineMatches [data-search-match-nav="next"]').click();
+    await page.waitForFunction((id) => document.querySelector(`.event[data-event-id="${CSS.escape(id)}"].selected`), eventId);
     const origin = page.locator(`#timeline .event[data-event-id="${eventId}"] .collaborationTargets [data-open-collaboration-session="${childId}"]`);
     if (mobile) await page.locator('button[data-mobile-view="events"]').click();
     await origin.waitFor();
@@ -8341,7 +8689,7 @@ test('Wave 1A M3 browser keeps true temporary-event enclosing affordances on the
   const before = await page.evaluate(() => structuredClone(window.__wave1aM3.evidence.snapshots.at(-1)));
   assert.equal(before.parityPassed, true);
   await page.locator(`#timeline .event[data-event-id="${operation.id}"]`).click();
-  const eventRef = page.locator(`#detail [data-event-ref-id="${temporaryEventId}"]`);
+  const eventRef = page.locator(`#detail [data-event-ref-id="${temporaryEventId}"], #detail [data-target-event-id="${temporaryEventId}"]`);
   await eventRef.waitFor();
   await page.evaluate(() => window.__wave1cM1.reset());
   await eventRef.click();
@@ -8371,9 +8719,12 @@ test('Wave 1A M3 browser keeps true temporary-event enclosing affordances on the
     purpose: 'canonical',
     backend: 'map',
     lookupRequests: 1,
-    mapGets: 0,
+    mapGets: 1,
     arrayComparisons: 0,
-  }, 'the first post-envelope lookup is the specific renderTimeline temporary-membership Map has');
+  }, 'a layer-aware reference first checks canonical membership through the indexed get');
+  assert.ok(afterTemporaryRender.lookups.some((lookup) => lookup.purpose === 'canonical'
+    && lookup.backend === 'map' && lookup.lookupRequests === 1 && lookup.mapGets === 0 && lookup.arrayComparisons === 0),
+  'renderTimeline still checks temporary membership through Map has without scanning the canonical array');
 
   await affordance.click();
   await parentStarted.promise;
@@ -10745,7 +11096,7 @@ test('browser Wave 1C M2 temporary reveal makes Main append fall back without in
     },
   });
   await page.locator(`#timeline .event[data-event-id="${operation.id}"]`).click();
-  const ref = page.locator(`#detail [data-event-ref-id="${temporaryEventId}"]`);
+  const ref = page.locator(`#detail [data-event-ref-id="${temporaryEventId}"], #detail [data-target-event-id="${temporaryEventId}"]`);
   await ref.waitFor();
   await ref.click();
   await page.waitForSelector(`#timeline .event[data-event-id="${temporaryEventId}"].temporaryReferenceReveal`);

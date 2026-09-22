@@ -273,7 +273,9 @@
   }
 
   function renderPatch(section) {
-    const files = (section.files || []).map((file) => {
+    const directory = (section.files || []).length > 1
+      ? `<nav class="patchFileDirectory" aria-label="${escapeHtml(tr('patchFiles'))}">${section.files.map((file, index) => `<button type="button" class="smallBtn" data-patch-file-index="${index}">${escapeHtml(file.path)}</button>`).join('')}</nav>` : '';
+    const files = (section.files || []).map((file, index) => {
       const language = languageForPath(file.path);
       const hunks = (file.hunks || []).map((hunk) => {
         const header = hunk.header ? `<div class="patchHunkHeader">${escapeHtml(hunk.header)}</div>` : '';
@@ -288,13 +290,15 @@
         }).join('');
         return `<div class="patchHunk">${header}${lines}</div>`;
       }).join('');
-      return `<article class="patchFile"><header><strong>${escapeHtml(file.path || '')}</strong><span>${escapeHtml(file.changeType || 'update')}</span><em>+${escapeHtml(file.additions || 0)} / -${escapeHtml(file.deletions || 0)}</em></header>${hunks}</article>`;
+      return `<article class="patchFile" data-patch-index="${index}" tabindex="-1"><header><button type="button" class="smallBtn" data-file-activity="${escapeHtml(file.recordedPath ?? file.path ?? '')}" title="${escapeHtml(tr('fileActivity'))}">${escapeHtml(file.path || '')}</button><span>${escapeHtml(file.changeType || 'update')}</span><em>+${escapeHtml(file.additions || 0)} / -${escapeHtml(file.deletions || 0)}</em></header>${hunks}</article>`;
     }).join('');
-    return `<section class="eventSection patchBlock">${files}</section>`;
+    return `<section class="eventSection patchBlock">${directory}${files}</section>`;
   }
 
   function renderKv(section) {
-    const rows = (section.entries || []).map((entry) => `<tr><th>${escapeHtml(entry.key || '')}</th><td>${escapeHtml(entry.value || '')}</td></tr>`).join('');
+    const rows = (section.entries || []).map((entry) => `<tr><th>${entry.fact === 'touchedFile'
+      ? `<button type="button" class="smallBtn" data-file-activity="${escapeHtml(entry.recordedPath ?? entry.key ?? '')}">${escapeHtml(entry.key || '')}</button>`
+      : escapeHtml(entry.key || '')}</th><td>${escapeHtml(entry.value || '')}</td></tr>`).join('');
     return `<section class="eventSection"><div class="kvWrap">${renderSectionTitle(section)}<table class="kvTable"><tbody>${rows}</tbody></table></div></section>`;
   }
 

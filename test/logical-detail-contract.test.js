@@ -59,6 +59,24 @@ function detailDto(overrides = {}) {
   };
 }
 
+test('recorded file identity survives detail sanitization and remains a string', () => {
+  const recordedPath = '/repo/src/link/../a.js ';
+  const dto = detailDto({
+    timelineSections: [{ purpose: 'result', type: 'patch', files: [{ path: 'src/a.js', recordedPath, hunks: [] }] }],
+    inspectorSections: [{ purpose: 'context', type: 'kv', entries: [{ key: 'src/a.js', recordedPath, value: 'updated', fact: 'touchedFile' }] }],
+  });
+  assert.equal(validateStructuredLogicalDetailDto(dto), dto);
+  const sanitized = sanitizeStructuredLogicalDetailDto(dto);
+  assert.equal(sanitized.timelineSections[0].files[0].recordedPath, recordedPath);
+  assert.equal(sanitized.inspectorSections[0].entries[0].recordedPath, recordedPath);
+  for (const target of ['patch', 'entry']) {
+    const invalid = structuredClone(dto);
+    const item = target === 'patch' ? invalid.timelineSections[0].files[0] : invalid.inspectorSections[0].entries[0];
+    item.recordedPath = { path: recordedPath };
+    assert.throws(() => validateStructuredLogicalDetailDto(invalid), /recordedPath/);
+  }
+});
+
 test('logical detail contract exposes a closed source-neutral vocabulary', () => {
   assert.deepEqual(DETAIL_PURPOSES, [
     'content',

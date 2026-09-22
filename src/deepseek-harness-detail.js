@@ -5,6 +5,12 @@ const storage = require('./deepseek-harness-storage');
 
 const SOURCE_KIND = storage.DEEPSEEK_SOURCE_KIND;
 const SEARCH_TEXT_LIMIT = 16_000;
+const WORKFLOW_EVENT_TYPES = new Set([
+  'tool-workflow/run-start',
+  'tool-workflow/run-end',
+  'tool-workflow/agent-start',
+  'tool-workflow/agent-end',
+]);
 
 function sectionMarkdown(text, purpose, title = '', options = {}) {
   if (!text) return null;
@@ -155,6 +161,10 @@ function rawEventFor(session, rawId) {
 }
 
 function parsedEventsForRawIds(session, parsedByOrdinal, rawIds) {
+  return parsedEventsWithRawIds(session, parsedByOrdinal, rawIds).map((entry) => entry.event);
+}
+
+function parsedEventsWithRawIds(session, parsedByOrdinal, rawIds) {
   const out = [];
   const seen = new Set();
   for (const rawId of rawIds) {
@@ -166,16 +176,16 @@ function parsedEventsForRawIds(session, parsedByOrdinal, rawIds) {
     const record = parsedByOrdinal.get(ordinal);
     if (!record) continue;
     const decoded = storage.decodeStorageRecord(record);
-    for (const event of decoded) out.push(event);
+    for (const event of decoded) out.push({ event, raw });
   }
   return out;
 }
 
-function detailForUserMessage(event) {
+function detailForUserMessage(event, session) {
   const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
   const content = sectionMarkdown(event.searchText || event.preview || '', 'content', '');
   if (content) detail.timelineSections.push(content);
-  return appendInboxProvenanceDetail(detail, event);
+  return appendInboxProvenanceDetail(detail, event, session);
 }
 
 function detailForAssistantMessage(event, session, parsedByOrdinal) {
@@ -261,6 +271,19 @@ function pruneEventRefItem(session, id, fallbackLabel, fallbackStatus) {
     label: logicalTitle(target, i18n.DEFAULT_LOCALE) || fallbackLabel,
     kind: target.kind || 'protocol',
     status: target.status || fallbackStatus,
+    layer: target.layer,
+  };
+}
+
+function logicalEventRefItem(session, id, fallbackLabel = '', fallbackStatus = '') {
+  const target = (session.logicalEvents || []).find(candidate => candidate.id === id);
+  if (!target) return null;
+  return {
+    id: target.id,
+    label: logicalTitle(target, i18n.DEFAULT_LOCALE) || fallbackLabel || target.id,
+    kind: target.kind || 'protocol',
+    status: target.status || fallbackStatus || '',
+    layer: target.layer,
   };
 }
 
@@ -373,33 +396,66 @@ function detailForToolOperation(event, session, parsedByOrdinal) {
 }
 
 function dispatchTopologyForEvent(session, eventId) {
+  const matches = [];
   for (const outer of session.logicalEvents || []) {
     if (outer?.kind !== 'code_mode_operation') continue;
+    const eventRefs = outer.codeModeOperation?.eventRefs;
+    if (!Array.isArray(eventRefs) || !eventRefs.includes(eventId)) continue;
     const dispatches = outer.codeModeOperation?.dispatches;
     if (!Array.isArray(dispatches)) continue;
     const dispatch = dispatches.find((candidate) => candidate?.eventId === eventId);
-    if (dispatch) return { outer, dispatch };
+    if (!dispatch || typeof dispatch.parentEventId !== 'string' || !dispatch.parentEventId) continue;
+    const parent = session.logicalEvents.find((candidate) => candidate.id === dispatch.parentEventId);
+    if (!parent || parent.layer !== 'main' || parent.id === eventId) continue;
+    matches.push({ outer, dispatch, parent });
   }
-  return null;
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function codeModeEventRefsSection(event, session) {
+  const eventRefs = Array.isArray(event.codeModeOperation?.eventRefs)
+    ? event.codeModeOperation.eventRefs
+    : [];
   const dispatches = Array.isArray(event.codeModeOperation?.dispatches)
     ? event.codeModeOperation.dispatches
     : [];
-  const items = dispatches.map((dispatch) => {
-    const target = session.logicalEvents.find((candidate) => candidate.id === dispatch.eventId);
+  const dispatchByEventId = new Map(dispatches
+    .filter((dispatch) => typeof dispatch?.eventId === 'string')
+    .map((dispatch) => [dispatch.eventId, dispatch]));
+  const seen = new Set();
+  const items = eventRefs.map((eventId) => {
+    if (typeof eventId !== 'string' || !eventId || seen.has(eventId)) return null;
+    seen.add(eventId);
+    const target = session.logicalEvents.find((candidate) => (
+      candidate.id === eventId && candidate.layer === 'main'
+    ));
     if (!target) return null;
-    const depthPrefix = dispatch.depth > 1 ? `${'↳ '.repeat(dispatch.depth - 1)}` : '';
+    const dispatch = dispatchByEventId.get(eventId);
+    const depthPrefix = dispatch?.depth > 1 ? `${'↳ '.repeat(dispatch.depth - 1)}` : '';
     return {
       id: target.id,
       label: `${depthPrefix}${logicalTitle(target, i18n.DEFAULT_LOCALE)}`,
       kind: target.kind,
       status: target.status,
+      layer: target.layer,
     };
   }).filter(Boolean);
   return items.length
     ? { purpose: 'traceability', type: 'event_refs', title: 'Observed nested activity', items }
+    : null;
+}
+
+function codeModeOwnerRefsSection(event, session, topology) {
+  const parent = topology?.parent;
+  if (!parent || parent.id === event.id || parent.layer !== 'main') return null;
+  const item = logicalEventRefItem(
+    session,
+    parent.id,
+    'Owning Code Mode activity',
+    parent.status || '',
+  );
+  return item
+    ? { purpose: 'traceability', type: 'event_refs', title: 'Owning Code Mode activity', items: [item] }
     : null;
 }
 
@@ -489,44 +545,135 @@ function detailForCodeDispatch(event, session, parsedByOrdinal, topology) {
     { key: 'Parent Logical Event', value: dispatch.parentEventId },
   ], 'traceability', 'Durable dispatch topology');
   if (metadata) detail.inspectorSections.push(metadata);
+  const owner = codeModeOwnerRefsSection(event, session, topology);
+  if (owner) detail.inspectorSections.push(owner);
   return detail;
 }
 
-function detailForWorkflowRun(event, session, parsedByOrdinal) {
-  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
-  const records = parsedEventsForRawIds(
+function workflowMemberKey(record) {
+  const data = record?.event?.data;
+  if (typeof data?.runId !== 'string' || !data.runId
+      || !Number.isSafeInteger(data.seq) || data.seq < 1) return '';
+  return `${data.runId}\u0000${data.seq}`;
+}
+
+function rawEventRefItem(raw, label, kind, status = '') {
+  if (!raw?.rawId) return null;
+  return {
+    id: raw.rawId,
+    label: label || i18n.rawRecordLabel(raw.payloadType || raw.recordType || '', i18n.DEFAULT_LOCALE) || raw.rawId,
+    kind: kind || raw.payloadType || raw.recordType || '',
+    status: String(status ?? ''),
+    layer: 'raw',
+  };
+}
+
+function workflowRawRecordsForEvent(event, session, parsedByOrdinal) {
+  return parsedEventsWithRawIds(
     session,
     parsedByOrdinal,
     (event.rawRefs || []).map((ref) => ref.rawId),
-  );
-  const start = records.find((candidate) => candidate.type === 'tool-workflow/run-start');
-  const end = records.find((candidate) => candidate.type === 'tool-workflow/run-end');
-  const memberStarts = records.filter((candidate) => candidate.type === 'tool-workflow/agent-start');
-  const memberEnds = new Map(records
-    .filter((candidate) => candidate.type === 'tool-workflow/agent-end')
-    .map((candidate) => [candidate.data?.seq, candidate]));
+  ).filter((entry) => WORKFLOW_EVENT_TYPES.has(entry.event?.type));
+}
+
+function workflowMemberRefsSection(event, session, parsedByOrdinal, runId, locale) {
+  const rows = workflowRawRecordsForEvent(event, session, parsedByOrdinal)
+    .filter((entry) => entry.event?.data?.runId === runId);
+  const starts = rows
+    .filter((entry) => entry.event.type === 'tool-workflow/agent-start' && workflowMemberKey(entry))
+    .sort((left, right) => left.event.seq - right.event.seq);
+  const ends = new Map(rows
+    .filter((entry) => entry.event.type === 'tool-workflow/agent-end' && workflowMemberKey(entry))
+    .map((entry) => [workflowMemberKey(entry), entry]));
+  const items = [];
+  for (const start of starts) {
+    const key = workflowMemberKey(start);
+    const seq = start.event.data.seq;
+    const label = start.event.data.label || `Workflow agent ${seq}`;
+    const startItem = rawEventRefItem(
+      start.raw,
+      i18n.t(locale, 'ui', 'workflowMemberStart', { seq, label }),
+      start.event.type,
+      'started',
+    );
+    if (startItem) items.push(startItem);
+    const end = ends.get(key);
+    const endItem = rawEventRefItem(
+      end?.raw,
+      i18n.t(locale, 'ui', 'workflowMemberEnd', { seq, label }),
+      end?.event?.type,
+      end?.event?.data?.outcome || 'incomplete',
+    );
+    if (endItem) items.push(endItem);
+  }
+  return items.length
+    ? { purpose: 'traceability', type: 'event_refs', title: 'Workflow member evidence', items }
+    : null;
+}
+
+function workflowOwnerRefsSection(raw, session, parsedByOrdinal) {
+  const memberRows = parsedEventsWithRawIds(session, parsedByOrdinal, [raw.rawId])
+    .filter((entry) => WORKFLOW_EVENT_TYPES.has(entry.event?.type));
+  if (!memberRows.length) return null;
+  const owners = [];
+  for (const candidate of session.logicalEvents || []) {
+    if (candidate.layer !== 'protocol' || candidate.subtype !== 'tool-workflow/run') continue;
+    const candidateRows = workflowRawRecordsForEvent(candidate, session, parsedByOrdinal);
+    const matches = memberRows.some((member) => {
+      const memberRunId = member.event.data?.runId;
+      if (typeof memberRunId !== 'string' || !memberRunId) return false;
+      return candidateRows.some((ownerRow) => (
+        ownerRow.raw.rawId === raw.rawId
+        && ownerRow.event.type === member.event.type
+        && ownerRow.event.data?.runId === memberRunId
+        && (workflowMemberKey(member) === ''
+          || workflowMemberKey(ownerRow) === workflowMemberKey(member))
+      ));
+    });
+    if (matches) owners.push(candidate);
+  }
+  if (owners.length !== 1) return null;
+  const item = logicalEventRefItem(session, owners[0].id, 'Owning workflow run', owners[0].status || '');
+  return item
+    ? { purpose: 'traceability', type: 'event_refs', title: 'Owning workflow run', items: [item] }
+    : null;
+}
+
+function detailForWorkflowRun(event, session, parsedByOrdinal, locale) {
+  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
+  const recordEntries = workflowRawRecordsForEvent(event, session, parsedByOrdinal);
+  const records = recordEntries.map((entry) => entry.event);
+  const start = recordEntries.find((candidate) => candidate.event.type === 'tool-workflow/run-start');
+  const end = recordEntries.find((candidate) => candidate.event.type === 'tool-workflow/run-end');
+  const runId = start?.event?.data?.runId;
+  const memberStarts = recordEntries.filter((candidate) => candidate.event.type === 'tool-workflow/agent-start');
+  const memberEnds = new Map(recordEntries
+    .filter((candidate) => candidate.event.type === 'tool-workflow/agent-end')
+    .map((candidate) => [workflowMemberKey(candidate), candidate]));
   const primary = sectionKv([
-    { key: 'Name', value: start?.data?.name },
+    { key: 'Name', value: start?.event?.data?.name },
     { key: 'Status', value: event.status },
     { key: 'Started agents', value: memberStarts.length },
   ], 'context', 'Workflow run');
   if (primary) detail.timelineSections.push(primary);
   for (const member of memberStarts) {
-    const settled = memberEnds.get(member.data?.seq);
+    const settled = memberEnds.get(workflowMemberKey(member));
     const section = sectionKv([
-      { key: 'Label', value: member.data?.label },
-      { key: 'Phase', value: member.data?.phase },
-      { key: 'Child Session ID', value: member.data?.childId },
-      { key: 'Outcome', value: settled?.data?.outcome || 'incomplete' },
-    ], 'context', `Workflow agent ${member.data?.seq}`);
+      { key: 'Label', value: member.event.data?.label },
+      { key: 'Phase', value: member.event.data?.phase },
+      { key: 'Child Session ID', value: member.event.data?.childId },
+      { key: 'Outcome', value: settled?.event?.data?.outcome || 'incomplete' },
+    ], 'context', `Workflow agent ${member.event.data?.seq}`);
     if (section) detail.timelineSections.push(section);
   }
   const trace = sectionKv([
-    { key: 'Run ID', value: start?.data?.runId },
-    { key: 'Stop reason', value: end?.data?.stopReason || 'not recorded' },
+    { key: 'Run ID', value: runId },
+    { key: 'Stop reason', value: end?.event?.data?.stopReason || 'not recorded' },
     { key: 'Lifecycle rows', value: records.length },
   ], 'traceability', 'Workflow provenance');
   if (trace) detail.inspectorSections.push(trace);
+  const members = workflowMemberRefsSection(event, session, parsedByOrdinal, runId, locale);
+  if (members) detail.inspectorSections.push(members);
   if (!end) {
     detail.inspectorSections.push(sectionNotice(
       'The committed Session prefix does not contain tool-workflow/run-end. No completion is manufactured.',
@@ -610,7 +757,7 @@ function detailForApprovalLifecycle(event, locale) {
   return detail;
 }
 
-function appendInboxProvenanceDetail(detail, event) {
+function appendInboxProvenanceDetail(detail, event, session) {
   const provenance = event.inboxProvenance;
   if (!provenance) return detail;
   const facts = sectionKv([
@@ -620,14 +767,25 @@ function appendInboxProvenanceDetail(detail, event) {
     { key: 'Claimed at seq', value: provenance.claimedAtSeq },
   ], 'traceability', 'Pending-message provenance');
   if (facts) detail.inspectorSections.push(facts);
-  detail.inspectorSections.push({
+  const refs = [
+    logicalEventRefItem(
+      session,
+      provenance.insertionEventId,
+      `Queued for ${provenance.target}`,
+      'queued',
+    ),
+    logicalEventRefItem(
+      session,
+      provenance.claimEventId,
+      `Claimed from ${provenance.target}`,
+      'claimed',
+    ),
+  ].filter(Boolean);
+  if (refs.length) detail.inspectorSections.push({
     purpose: 'traceability',
     type: 'event_refs',
     title: 'Inbox lifecycle events',
-    items: [
-      { id: provenance.insertionEventId, label: `Queued for ${provenance.target}`, kind: 'protocol', status: 'queued' },
-      { id: provenance.claimEventId, label: `Claimed from ${provenance.target}`, kind: 'protocol', status: 'claimed' },
-    ],
+    items: refs,
   });
   detail.inspectorSections.push(sectionNotice(
     'These links use the exact durable MessageId and queue replay. Inbox rows keep their own Raw ownership; this message keeps only its user/message Raw row.',
@@ -641,6 +799,7 @@ function detailForInboxMessage(event, session, parsedByOrdinal) {
   return appendInboxProvenanceDetail(
     detailForProtocolEvent(event, session, parsedByOrdinal),
     event,
+    session,
   );
 }
 
@@ -1156,7 +1315,7 @@ function detailForProtocolEvent(event, session, parsedByOrdinal) {
 }
 
 function buildLogicalDetail(event, session, parsedByOrdinal, locale = i18n.DEFAULT_LOCALE) {
-  if (event.kind === 'user_message') return detailForUserMessage(event);
+  if (event.kind === 'user_message') return detailForUserMessage(event, session);
   if (event.kind === 'assistant_message') return detailForAssistantMessage(event, session, parsedByOrdinal);
   if (event.kind === 'reasoning') return detailForReasoning(event, session, parsedByOrdinal);
   if (event.kind === 'compaction') return detailForCompaction(event, session, parsedByOrdinal);
@@ -1174,7 +1333,7 @@ function buildLogicalDetail(event, session, parsedByOrdinal, locale = i18n.DEFAU
     return detailForInboxSplice(event);
   }
   if (event.layer === 'protocol' && event.subtype === 'tool-workflow/run') {
-    return detailForWorkflowRun(event, session, parsedByOrdinal);
+    return detailForWorkflowRun(event, session, parsedByOrdinal, locale);
   }
   if (event.layer === 'protocol' && event.permissionState && event.permissionChange) {
     return detailForPermissionState(event);
@@ -1212,9 +1371,9 @@ function buildLogicalDetail(event, session, parsedByOrdinal, locale = i18n.DEFAU
   return detailForProtocolEvent(event, session, parsedByOrdinal);
 }
 
-function rawDetailFor(raw, parsed, session, locale) {
+function rawDetailFor(raw, parsed, session, parsedByOrdinal, locale) {
   const ref = rawRefFor(raw);
-  return {
+  const detail = {
     id: raw.rawId,
     schemaVersion: raw.schemaVersion || 1,
     sourceKind: SOURCE_KIND,
@@ -1243,6 +1402,9 @@ function rawDetailFor(raw, parsed, session, locale) {
       }],
     inspectorSections: [],
   };
+  const owner = workflowOwnerRefsSection(raw, session, parsedByOrdinal);
+  if (owner) detail.inspectorSections.push(owner);
+  return detail;
 }
 
 function rawRefFor(raw) {
@@ -1287,7 +1449,7 @@ async function buildDeepSeekEventDetail(index, session, eventId, layer, options 
     const parsedByOrdinal = await parsedRecordsForSession(index, session, options.signal);
     const ordinal = raw.sourceLocator?.recordOrdinal ?? raw.rawIndex;
     const parsed = Number.isSafeInteger(ordinal) ? parsedByOrdinal.get(ordinal) : undefined;
-    return rawDetailFor(raw, parsed, session, locale);
+    return rawDetailFor(raw, parsed, session, parsedByOrdinal, locale);
   }
   const event = session.logicalEvents.find((candidate) => (
     candidate.id === eventId && candidate.layer === layer

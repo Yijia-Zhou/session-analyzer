@@ -224,10 +224,11 @@ function validateEntries(entries, path) {
   entries.forEach((entry, index) => {
     const entryPath = `${path}[${index}]`;
     assertRecord(entry, entryPath);
-    assertAllowedKeys(entry, ['key', 'value', 'fact'], entryPath);
+    assertAllowedKeys(entry, ['key', 'value', 'fact', 'recordedPath'], entryPath);
     assertString(entry.key, `${entryPath}.key`);
     assertString(entry.value, `${entryPath}.value`);
     assertString(entry.fact, `${entryPath}.fact`, { optional: true });
+    assertString(entry.recordedPath, `${entryPath}.recordedPath`, { optional: true });
     if (entry.fact !== undefined && !METADATA_FACT_SET.has(entry.fact)) {
       throw detailContractError(`unknown metadata fact ${entry.fact}`, `${entryPath}.fact`);
     }
@@ -368,7 +369,8 @@ function validatePatchFiles(files, path) {
   files.forEach((file, fileIndex) => {
     const filePath = `${path}[${fileIndex}]`;
     assertRecord(file, filePath);
-    assertAllowedKeys(file, ['path', 'changeType', 'additions', 'deletions', 'lineNumbers', 'hunks'], filePath);
+    assertAllowedKeys(file, ['path', 'recordedPath', 'changeType', 'additions', 'deletions', 'lineNumbers', 'hunks'], filePath);
+    assertString(file.recordedPath, `${filePath}.recordedPath`, { optional: true });
     assertString(file.path, `${filePath}.path`);
     assertString(file.changeType, `${filePath}.changeType`, { optional: true });
     assertFiniteNumber(file.additions, `${filePath}.additions`, { optional: true });

@@ -1226,6 +1226,7 @@ function diffStatsEntries(changes, repoRoot = '') {
     const lineStats = lineStatsFromPatchChange(stats);
     return {
       key: displayProjectFile(file, repoRoot),
+      recordedPath: file,
       value: lineStats ? lineStatsLabel(lineStats) : String(stats?.type || 'updated'),
     };
   });
@@ -1237,7 +1238,7 @@ function diffStatsEntriesFromPatchInput(input) {
 
   const flush = () => {
     if (!current) return;
-    entries.push({ key: current.file, value: patchInputStatsLabel(current) });
+    entries.push({ key: current.file, recordedPath: current.file, value: patchInputStatsLabel(current) });
     current = null;
   };
 
@@ -1306,9 +1307,10 @@ function inferCommandLanguage(commandText, args = {}, context = {}) {
   return 'shell';
 }
 
-function makePatchFile(pathname, changeType) {
+function makePatchFile(pathname, changeType, recordedPath = pathname) {
   return {
     path: String(pathname || ''),
+    recordedPath: String(recordedPath || ''),
     changeType: String(changeType || 'update').toLowerCase(),
     additions: 0,
     deletions: 0,
@@ -1331,7 +1333,7 @@ function parseUnifiedDiffPatchSection(changes, repoRoot = '') {
   if (!changes || typeof changes !== 'object') return null;
   const files = [];
   for (const [pathname, stats] of Object.entries(changes)) {
-    const file = makePatchFile(displayProjectFile(pathname, repoRoot), stats?.type || 'update');
+    const file = makePatchFile(displayProjectFile(pathname, repoRoot), stats?.type || 'update', pathname);
     const diff = typeof stats?.unified_diff === 'string' ? stats.unified_diff.trim() : '';
     let hunk = null;
     let oldLine = 1;
@@ -2561,7 +2563,7 @@ function extractPatchSections(raws, event, session = {}) {
     'context',
   );
   if (!patchFileEntries.length && !fallbackPatchFileEntries.length) {
-    maybePushKvSection(inspectorSections, 'Touched files', event.touchedFiles.map((file) => ({ key: file, value: 'updated', fact: 'touchedFile' })), 'context');
+    maybePushKvSection(inspectorSections, 'Touched files', event.touchedFiles.map((file) => ({ key: file, recordedPath: file, value: 'updated', fact: 'touchedFile' })), 'context');
   }
 
   const noticeText = firstNonEmpty(

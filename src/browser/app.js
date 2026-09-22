@@ -189,6 +189,7 @@ const state = {
   readingHistory: [],
   readingNavigationId: 0,
   readingRestoration: null,
+  readingPositions: new Map(),
   eventSelectionIntentId: 0,
   inspectorNavigationSettlement: null,
   analysisRequestId: 0,
@@ -4282,6 +4283,8 @@ function setProjectMode(selecting) {
 }
 
 function resetProjectViewState() {
+  closeFileActivity();
+  state.readingPositions.clear();
   state.readingHistory = [];
   state.readingNavigationId += 1;
   Object.values(requestOwners).forEach((owner) => owner.abort());
@@ -5091,7 +5094,7 @@ async function drillDownProjectResult(sessionId) {
       <span class="sessionMetaChip">${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</span>
       <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
     </div>
-    ${renderHeaderProjectReturnAction()}`;
+    ${renderHeaderProjectReturnAction()}${renderSessionReadingRelations(session)}`;
   const loaded = await Promise.all([
     loadAnalysis(sessionId),
     loadTimelineThroughIndex(latest.timelineIndex),
@@ -5335,6 +5338,7 @@ async function openInheritedSourceSession(button) {
 }
 
 async function selectSession(sessionId, options = {}) {
+  closeFileActivity();
   const readingNavigationId = ++state.readingNavigationId;
   if (!options.preserveReadingHistory) state.readingHistory = [];
   clearContextReveal({ render: false });
@@ -5372,7 +5376,7 @@ async function selectSession(sessionId, options = {}) {
         ${session.forkContinuationState === 'waiting_for_prompt' ? `<span class="sessionMetaChip">${escapeHtml(t('forkWaitingForPrompt'))}</span>` : ''}
         <span class="sessionMetaChip">${escapeHtml(fmtDate(session.startedAt))} - ${escapeHtml(fmtDate(session.updatedAt))}</span>
         <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
-      </div>${renderHeaderProjectReturnAction()}`;
+      </div>${renderHeaderProjectReturnAction()}${renderSessionReadingRelations(session)}`;
   }
   renderSearchAssistChips();
   renderTimeline();
@@ -5398,9 +5402,79 @@ function readingScopeKey() {
   return JSON.stringify([state.sourceKind, state.sourceHome, state.repoRoot, state.indexRevision]);
 }
 
+function renderSessionReadingRelations(session) {
+  const parentId = session.parentSessionInferred ? '' : session.parentSessionId || session.forkedFromSessionId;
+  const parent = parentId && state.sessions.find((item) => item.id === parentId && item.sourceKind === session.sourceKind);
+  const siblings = parent ? state.sessions.filter((item) => item.id !== session.id && !item.parentSessionInferred
+    && item.sourceKind === session.sourceKind && (item.parentSessionId || item.forkedFromSessionId) === parentId) : [];
+  if (!parent) return '';
+  const button = (item) => `<button class="smallBtn" type="button" data-reading-session="${escapeHtml(item.id)}" data-reading-scope="${escapeHtml(readingScopeKey())}">${escapeHtml(shortSessionTitle(item.title) || shortId(item.id))}</button>`;
+  return `<nav class="sessionReadingRelations" aria-label="${escapeHtml(t('sessionReadingRelations'))}">${button(parent)}<span aria-current="page"> / ${escapeHtml(shortSessionTitle(session.title) || shortId(session.id))}</span>${siblings.length ? `<details><summary>${escapeHtml(t('sessionSiblings'))}</summary>${siblings.map(button).join('')}</details>` : ''}</nav>`;
+}
+
+function rememberReadingPosition(position) {
+  const key = `${position.scope}\n${position.sessionId}`;
+  state.readingPositions.delete(key);
+  state.readingPositions.set(key, position);
+  if (state.readingPositions.size > 20) state.readingPositions.delete(state.readingPositions.keys().next().value);
+}
+
+async function selectReadingSession(sessionId, targetEventId = '') {
+  // Every reading entrance must respect edits made while the Session's parallel requests settle.
+  // Capture after selectSession synchronously establishes the destination context.
+  const loading = selectSession(sessionId, { preserveReadingHistory: true });
+  const navigationId = state.readingNavigationId;
+  const intent = state.eventSelectionIntentId;
+  const scope = readingScopeKey();
+  const context = timelineSearchSurfaceContextKey();
+  const mobileView = state.mobileView;
+  const current = () => navigationId === state.readingNavigationId && intent === state.eventSelectionIntentId
+    && scope === readingScopeKey() && context === timelineSearchSurfaceContextKey()
+    && state.selectedSessionId === sessionId && state.searchScope === 'session' && mobileView === state.mobileView;
+  try {
+    await loading;
+  } catch (error) {
+    if (!current()) return false;
+    throw error;
+  }
+  if (!current()) return false;
+  // navigateToLayerEvent takes over context ownership, including its own selection intent.
+  const eventId = targetEventId || state.currentEvents[0]?.id;
+  if (!eventId) { setMobileView('events'); return true; }
+  return navigateToLayerEvent(activeLayerId(), eventId, {
+    mobileView: activeLayerId() === 'main' && !trajectoryPresentationActive() ? 'events' : 'detail',
+    scrollBehavior: 'auto', sourceEventId: '',
+  });
+}
+
+async function openRelatedReadingSession(button) {
+  if (button.dataset.readingScope !== readingScopeKey()) throw new Error(t('readingTargetUnavailable'));
+  const sessionId = button.dataset.readingSession;
+  const position = captureReadingPosition(button);
+  pushReadingPosition(position);
+  const visited = state.readingPositions.get(`${readingScopeKey()}\n${sessionId}`);
+  if (visited) return startReadingRestoration(visited, { historyPosition: position, consumeHistory: false });
+  state.searchQuery = '';
+  state.searchFilters = { file: '', kind: '', status: '', codeModeRequest: '' };
+  state.layerId = 'main';
+  el.layerSelect.value = 'main';
+  state.projectReturnContext = null;
+  syncSearchInputValue();
+  updateProfileApplicabilityUi();
+  return selectReadingSession(sessionId);
+}
+
 function captureCollaborationAction(button) {
   const detail = el.detail.contains(button);
-  const owner = detail ? el.detail : button.closest('.event[data-event-id]');
+  const header = el.sessionHeader.contains(button);
+  const owner = header ? el.sessionHeader : detail ? el.detail : button.closest('.event[data-event-id]');
+  if (!button.dataset.openCollaborationSession) {
+    const attributes = ['data-file-activity', 'data-target-event-id', 'data-target-layer', 'data-event-ref-id', 'data-reading-session'];
+    const selector = attributes.filter((name) => button.hasAttribute(name))
+      .map((name) => `[${name}="${CSS.escape(button.getAttribute(name))}"]`).join('');
+    return { detail, header, eventId: detail ? state.detailView?.eventId || '' : owner?.dataset.eventId || '',
+      selector, index: selector && owner ? [...owner.querySelectorAll(selector)].indexOf(button) : -1 };
+  }
   return {
     detail,
     eventId: detail ? state.detailView?.eventId || '' : owner?.dataset.eventId || '',
@@ -5411,6 +5485,13 @@ function captureCollaborationAction(button) {
 }
 
 function restoreCollaborationActionFocus(action) {
+  if (action.selector) {
+    const owner = action.header ? el.sessionHeader : action.detail
+      ? (state.detailView?.eventId === action.eventId ? el.detail : null)
+      : el.timeline.querySelector(`.event[data-event-id="${CSS.escape(action.eventId)}"]`);
+    owner?.querySelectorAll(action.selector)[action.index]?.focus({ preventScroll: true });
+    return;
+  }
   if (!action.eventId || !action.actionId || action.blockIndex < 0) return;
   const owner = action.detail
     ? (state.detailView?.eventId === action.eventId ? el.detail : null)
@@ -5419,6 +5500,130 @@ function restoreCollaborationActionFocus(action) {
   const matches = block?.querySelectorAll(`[data-collaboration-action="${CSS.escape(action.actionId)}"][data-open-collaboration-session="${CSS.escape(action.sessionId)}"]`);
   // Do not substitute another link to the same child if the original action disappeared.
   if (matches?.length === 1) matches[0].focus({ preventScroll: true });
+}
+
+function pushReadingPosition(position) {
+  rememberReadingPosition(position);
+  state.readingHistory.push(position);
+  if (state.readingHistory.length > 20) state.readingHistory.shift();
+  if (!el.sessionHeader.querySelector('[data-reading-back]')) {
+    el.sessionHeader.insertAdjacentHTML('beforeend', renderReadingReturnAction());
+  }
+}
+
+async function openReadingEvent(target, button, savedPosition = null) {
+  if (state.searchScope !== 'session' || !target.id || !['main', 'protocol', 'raw'].includes(target.layer)) return false;
+  const position = savedPosition || captureReadingPosition(button);
+  if (position.scope !== readingScopeKey()) throw new Error(t('readingTargetUnavailable'));
+  pushReadingPosition(position);
+  const sessionId = target.sessionId || state.selectedSessionId;
+  const mobileView = target.layer === 'main' && state.mainPresentationId === 'timeline' ? 'events' : 'detail';
+  if (sessionId !== state.selectedSessionId) {
+    state.searchQuery = '';
+    state.searchFilters = { file: '', kind: '', status: '', codeModeRequest: '' };
+    state.projectReturnContext = null;
+    state.layerId = target.layer;
+    el.layerSelect.value = target.layer;
+    syncSearchInputValue();
+    updateProfileApplicabilityUi();
+    return selectReadingSession(sessionId, target.id);
+  } else state.readingNavigationId += 1;
+  return navigateToLayerEvent(target.layer, target.id, { mobileView, scrollBehavior: 'auto',
+    sourceEventId: sessionId === position.sessionId ? position.returnFocus.eventId || position.selectedEventId : '',
+  });
+}
+
+let fileActivityView = null;
+
+function closeFileActivity() {
+  const view = fileActivityView;
+  if (!view) return;
+  fileActivityView = null;
+  view.controller?.abort();
+  view.dialog.close();
+  view.dialog.remove();
+}
+
+async function loadFileActivity(view, offset = 0) {
+  view.controller?.abort();
+  const controller = new AbortController();
+  view.controller = controller;
+  const current = () => fileActivityView === view && view.controller === controller
+    && view.scope === readingScopeKey() && view.sessionId === state.selectedSessionId
+    && view.locale === state.locale;
+  const body = view.dialog.querySelector('[data-file-activity-body]');
+  body.innerHTML = `<p role="status">${escapeHtml(t('loading'))}</p>`;
+  try {
+    const params = new URLSearchParams({ file: view.file, layer: 'main', locale: view.locale, offset: String(offset), limit: '50' });
+    const data = await api(view.project ? `/api/sessions?${params}`
+      : `/api/sessions/${encodeURIComponent(view.sessionId)}/file-activity?${params}`, { signal: controller.signal });
+    if (!current()) return;
+    if (data.indexRevision !== state.indexRevision) throw new Error(t('readingTargetUnavailable'));
+    const entries = view.project ? (data.sessions || []).map((session) => ({
+      ...session.searchMatch?.latestEvent, sessionId: session.id, layer: 'main',
+      label: `${session.title} · ${session.searchMatch?.latestEvent?.label || ''}`, association: 'project_search',
+    })).filter((entry) => entry.id).slice(offset, offset + 50) : data.events;
+    view.entries = entries;
+    view.offset = offset;
+    view.total = data.total;
+    body.innerHTML = `<p>${escapeHtml(t(view.project ? 'fileProjectCount' : 'fileActivityCount', { count: data.total }))}</p><ul class="fileActivityList">${entries.map((entry, index) =>
+      `<li><button type="button" class="smallBtn" data-file-activity-entry="${index}">${escapeHtml(entry.label || entry.id)}</button><span>${escapeHtml(entry.timestamp || '')} · ${escapeHtml(t(entry.association === 'patch_record' ? 'filePatchRecord' : entry.association === 'project_search' ? 'fileProjectMatch' : 'fileRecordedPath'))}</span></li>`).join('')}</ul>
+      ${offset ? `<button type="button" class="smallBtn" data-file-activity-page="${Math.max(0, offset - 50)}">${escapeHtml(t('previous'))}</button>` : ''}
+      ${offset + entries.length < data.total ? `<button type="button" class="smallBtn" data-file-activity-page="${offset + 50}">${escapeHtml(t('next'))}</button>` : ''}`;
+  } catch (error) {
+    if (!current() || isIntentionalAbort(error)) return;
+    body.innerHTML = `<p role="alert">${escapeHtml(error.message)}</p><button type="button" class="smallBtn" data-file-activity-page="${offset}">${escapeHtml(t('retryDetail'))}</button>`;
+  }
+}
+
+function openFileActivity(button) {
+  const file = button.dataset.fileActivity;
+  if (!file || state.searchScope !== 'session') return;
+  closeFileActivity();
+  const dialog = document.createElement('dialog');
+  dialog.className = 'fileActivityDialog';
+  dialog.setAttribute('aria-label', t('fileActivity'));
+  dialog.innerHTML = `<header><h2>${escapeHtml(t('fileActivity'))}</h2><button type="button" class="smallBtn" data-file-activity-close>${escapeHtml(t('close'))}</button></header><p><strong>${escapeHtml(file)}</strong></p><p>${escapeHtml(t('fileActivityNote'))}</p><button type="button" class="smallBtn" data-file-activity-project>${escapeHtml(t('fileSearchProject'))}</button><div data-file-activity-body></div>`;
+  const view = { dialog, file, sessionId: state.selectedSessionId, scope: readingScopeKey(), locale: state.locale,
+    position: captureReadingPosition(button), project: false, entries: [] };
+  fileActivityView = view;
+  document.body.append(dialog);
+  dialog.addEventListener('cancel', () => closeFileActivity());
+  dialog.addEventListener('click', (event) => {
+    if (event.target.closest('[data-file-activity-close]')) { closeFileActivity(); return; }
+    if (view.scope !== readingScopeKey() || view.sessionId !== state.selectedSessionId) { closeFileActivity(); return; }
+    if (event.target.closest('[data-file-activity-project]')) {
+      view.project = !view.project;
+      event.target.closest('button').textContent = t(view.project ? 'fileSearchSession' : 'fileSearchProject');
+      loadFileActivity(view);
+    }
+    const page = event.target.closest('[data-file-activity-page]');
+    if (page) loadFileActivity(view, Number(page.dataset.fileActivityPage));
+    const entry = event.target.closest('[data-file-activity-entry]');
+    if (entry) {
+      const target = view.entries[Number(entry.dataset.fileActivityEntry)];
+      closeFileActivity();
+      if (target) openReadingEvent(target, button, view.position).catch(showError);
+    }
+  });
+  dialog.showModal();
+  loadFileActivity(view);
+}
+
+function handleReadingAction(event) {
+  const directory = event.target.closest('[data-patch-file-index]');
+  const file = event.target.closest('[data-file-activity]');
+  const ref = event.target.closest('[data-target-event-id], [data-event-ref-id]');
+  if (!directory && !file && !ref) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  if (directory) {
+    const target = directory.closest('.patchBlock')?.querySelector(`[data-patch-index="${CSS.escape(directory.dataset.patchFileIndex)}"]`);
+    target?.scrollIntoView({ block: 'start', behavior: 'auto' });
+    target?.focus({ preventScroll: true });
+  } else if (file) openFileActivity(file);
+  else openReadingEvent({ layer: ref.dataset.targetLayer || activeLayerId(), id: ref.dataset.targetEventId || ref.dataset.eventRefId }, ref).catch(showError);
+  return true;
 }
 
 function captureReadingPosition(button) {
@@ -5454,6 +5659,7 @@ function captureReadingPosition(button) {
       open: [...node.querySelectorAll('details')].map((detail) => detail.open),
     })).filter((item) => item.open.length),
     inspectorOpenDetails: [...el.detail.querySelectorAll('details')].map((detail) => detail.open),
+    headerOpenDetails: [...el.sessionHeader.querySelectorAll('details')].map((detail) => detail.open),
     navigationCategoryId: state.navigationCategoryId, navigationCategoryManualId: state.navigationCategoryManualId,
   };
 }
@@ -5466,8 +5672,7 @@ async function openCollaborationSession(button) {
   }
   const sessionId = button.dataset.openCollaborationSession;
   if (!sessionId || state.searchScope !== 'session') return false;
-  state.readingHistory.push(captureReadingPosition(button));
-  if (state.readingHistory.length > 20) state.readingHistory.shift();
+  pushReadingPosition(captureReadingPosition(button));
   state.projectReturnContext = null;
   state.searchQuery = '';
   state.searchFilters = { file: '', kind: '', status: '', codeModeRequest: '' };
@@ -5475,21 +5680,8 @@ async function openCollaborationSession(button) {
   el.layerSelect.value = 'main';
   syncSearchInputValue();
   updateProfileApplicabilityUi();
-  const navigationId = state.readingNavigationId + 1;
-  const scope = readingScopeKey();
-  const loading = selectSession(sessionId, { mobileView: 'events', preserveReadingHistory: true });
-  const context = timelineDataContextKey();
-  const selectionIntentId = state.eventSelectionIntentId;
-  await loading;
-  if (navigationId !== state.readingNavigationId || selectionIntentId !== state.eventSelectionIntentId
-      || scope !== readingScopeKey() || context !== timelineDataContextKey() || state.selectedSessionId !== sessionId) return false;
   // Main contains the child's own events; inherited context stays in its separate card.
-  const first = state.currentEvents[0];
-  if (first) await navigateToLayerEvent('main', first.id, {
-    mobileView: trajectoryPresentationActive() ? 'detail' : 'events',
-    scrollBehavior: 'auto',
-  });
-  return true;
+  return selectReadingSession(sessionId);
 }
 
 function backToReadingPosition() {
@@ -5497,21 +5689,27 @@ function backToReadingPosition() {
   if (pending?.current()) return pending.promise;
   const position = state.readingHistory.at(-1);
   if (!position) return Promise.resolve(false);
+  if (state.searchScope === 'session') rememberReadingPosition(captureReadingPosition(el.sessionHeader));
+  return startReadingRestoration(position);
+}
+
+function startReadingRestoration(position, { historyPosition = position, consumeHistory = true } = {}) {
   if (position.scope !== readingScopeKey()) return Promise.reject(new Error(t('readingTargetUnavailable')));
   const navigationId = state.readingNavigationId;
   const operation = {
-    current: () => state.readingRestoration === operation && state.readingHistory.at(-1) === position
+    current: () => state.readingRestoration === operation && state.readingHistory.at(-1) === historyPosition
       && navigationId === state.readingNavigationId && position.scope === readingScopeKey(),
   };
   state.readingRestoration = operation;
   operation.promise = Promise.resolve().then(() => {
     if (!operation.current()) return false;
-    return restoreReadingPosition(position, operation);
+    return restoreReadingPosition(position, operation, { historyPosition, consumeHistory });
   }).catch((error) => {
     if (!operation.current()) return false;
     // Keep the immutable snapshot and let either return control or timeline Retry restart all phases.
     const retryCurrent = operation.current;
-    setTimelineReplacementRetry(timelineDataContextKey(), position.sessionId, backToReadingPosition, retryCurrent);
+    setTimelineReplacementRetry(timelineDataContextKey(), position.sessionId,
+      () => startReadingRestoration(position, { historyPosition, consumeHistory }), retryCurrent);
     updateLoadMoreButton();
     throw error;
   }).finally(() => {
@@ -5523,7 +5721,7 @@ function backToReadingPosition() {
   return operation.promise;
 }
 
-async function restoreReadingPosition(position, operation) {
+async function restoreReadingPosition(position, operation, { historyPosition = position, consumeHistory = true } = {}) {
   state.searchQuery = position.searchQuery;
   state.searchFilters = { ...position.searchFilters };
   state.layerId = position.layerId;
@@ -5541,7 +5739,7 @@ async function restoreReadingPosition(position, operation) {
   let selectionIntentId = state.eventSelectionIntentId;
   let searchKey;
   const current = () => navigationId === state.readingNavigationId && position.scope === readingScopeKey()
-    && state.readingHistory.at(-1) === position
+    && state.readingHistory.at(-1) === historyPosition
     && selectionIntentId === state.eventSelectionIntentId
     && searchKey === searchTargetKey() && position.mainPresentationId === state.mainPresentationId
     && state.selectedSessionId === position.sessionId && activeLayerId() === position.layerId
@@ -5597,7 +5795,7 @@ async function restoreReadingPosition(position, operation) {
   await new Promise((resolve) => requestAnimationFrame(resolve));
   if (!current()) return false;
   // Commit only after all required data and DOM work settles. No await after consuming the snapshot.
-  state.readingHistory.pop();
+  if (consumeHistory) state.readingHistory.pop();
   if (state.readingRestoration === operation) state.readingRestoration = null;
   updateLoadMoreButton();
   if (!state.readingHistory.length) {
@@ -5608,6 +5806,7 @@ async function restoreReadingPosition(position, operation) {
     node?.querySelectorAll('details').forEach((detail, index) => { detail.open = item.open[index] ?? detail.open; });
   }
   el.detail.querySelectorAll('details').forEach((detail, index) => { detail.open = position.inspectorOpenDetails[index] ?? detail.open; });
+  el.sessionHeader.querySelectorAll('details').forEach((detail, index) => { detail.open = position.headerOpenDetails[index] ?? detail.open; });
   const pane = el.timeline.closest('.timelinePane');
   const viewportIsMobile = window.matchMedia('(max-width: 760px)').matches;
   const anchor = position.anchorId ? el.timeline.querySelector(`.event[data-event-id="${CSS.escape(position.anchorId)}"]`) : null;
@@ -7987,14 +8186,24 @@ async function navigateToLayerEvent(targetLayerId, targetEventId, options = {}) 
   const selectionIntentId = ++state.eventSelectionIntentId;
   const readingNavigationId = state.readingNavigationId;
   const sourceEventId = options.sourceEventId ?? state.selectedEventId;
-  if (activeLayerId() !== targetLayerId) {
-    await changeLayer(targetLayerId, {
-      restoreFocus: false,
-    });
+  // changeLayer establishes its own destination context synchronously. Capture after that
+  // transition but before awaiting its requests, so our own layer change does not invalidate us.
+  const layerLoading = activeLayerId() !== targetLayerId
+    ? changeLayer(targetLayerId, { restoreFocus: false }) : null;
+  const scope = readingScopeKey();
+  const context = timelineSearchSurfaceContextKey();
+  const mobileView = state.mobileView;
+  const current = () => selectionIntentId === state.eventSelectionIntentId
+    && state.readingNavigationId === readingNavigationId && state.selectedSessionId === sessionId
+    && state.searchScope === 'session' && activeLayerId() === targetLayerId
+    && scope === readingScopeKey() && context === timelineSearchSurfaceContextKey() && mobileView === state.mobileView;
+  if (layerLoading) {
+    try { await layerLoading; } catch (error) {
+      if (!current() || isIntentionalAbort(error)) return false;
+      throw error;
+    }
   }
-  if (selectionIntentId !== state.eventSelectionIntentId || state.readingNavigationId !== readingNavigationId || state.selectedSessionId !== sessionId
-      || state.searchScope !== 'session'
-      || activeLayerId() !== targetLayerId) return false;
+  if (!current()) return false;
 
   let target = canonicalTimelineEvent(targetEventId);
   if (!target) {
@@ -8010,21 +8219,16 @@ async function navigateToLayerEvent(targetLayerId, targetEventId, options = {}) 
       target = await api(`/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(targetEventId)}?layer=${encodeURIComponent(targetLayerId)}&locale=${encodeURIComponent(requestLocale)}`, {
         signal: owner.controller.signal,
       });
-      if (!requestOwners.eventEnvelope.isCurrent(owner)
-          || selectionIntentId !== state.eventSelectionIntentId
-          || state.readingNavigationId !== readingNavigationId
-          || state.selectedSessionId !== sessionId
-          || state.searchScope !== 'session'
-          || activeLayerId() !== targetLayerId
-          || state.locale !== requestLocale) return false;
+      if (!requestOwners.eventEnvelope.isCurrent(owner) || !current()) return false;
     } catch (error) {
-      if (isIntentionalAbort(error)) return false;
+      if (isIntentionalAbort(error) || !requestOwners.eventEnvelope.isCurrent(owner) || !current()) return false;
       throw error;
     } finally {
       requestOwners.eventEnvelope.finish(owner);
     }
   }
-  if (!target || target.id !== targetEventId || target.layer !== targetLayerId) return false;
+  // No selection, reveal, viewport or surface mutation may precede this final check.
+  if (!current() || !target || target.id !== targetEventId || target.layer !== targetLayerId) return false;
 
   const canonical = canonicalTimelineEvent(targetEventId);
   setTemporaryEventReveal(canonical ? null : { sourceEventId, event: target });
@@ -8973,6 +9177,8 @@ el.sessionList.addEventListener('keydown', (event) => {
 });
 
 el.sessionHeader?.addEventListener('click', (event) => {
+  const related = event.target.closest('[data-reading-session]');
+  if (related) { openRelatedReadingSession(related).catch(showError); return; }
   if (event.target.closest('[data-reading-back]')) {
     backToReadingPosition().catch(showError);
     return;
@@ -8986,6 +9192,7 @@ for (const button of el.mobileViewButtons) {
 }
 
 el.timeline.addEventListener('click', (event) => {
+  if (handleReadingAction(event)) return;
   const collaborationTarget = event.target.closest('[data-open-collaboration-session]');
   if (collaborationTarget) {
     event.preventDefault();
@@ -9067,6 +9274,7 @@ el.timeline.addEventListener('error', showImagePreviewError, true);
 el.detail.addEventListener('error', showImagePreviewError, true);
 
 el.detail.addEventListener('click', (event) => {
+  if (handleReadingAction(event)) return;
   if (event.target.closest('[data-reading-back]')) {
     backToReadingPosition().catch(showError);
     return;

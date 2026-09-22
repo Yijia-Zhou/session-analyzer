@@ -2033,7 +2033,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(parserTimeline.events[0].status, 'success');
   const parserDetail = buildEventDetail(session, parserTimeline.events[0].id, 'main');
   assert.deepEqual(allSections(parserDetail).find((section) => section.title === 'Files').entries, [
-    { key: 'G:/vibe/term-agent/src/parser.js', value: '+1 / -1', fact: 'touchedFile' },
+    { key: 'G:/vibe/term-agent/src/parser.js', recordedPath: 'G:\\vibe\\term-agent\\src\\parser.js', value: '+1 / -1', fact: 'touchedFile' },
   ]);
   const parserPreviewSearch = getTimeline(index, primaryFixtureSessionId, {
     offset: 0,
@@ -2064,7 +2064,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(legacyTimeline.events[0].status, 'success');
   const legacyDetail = buildEventDetail(session, legacyTimeline.events[0].id, 'main');
   assert.deepEqual(allSections(legacyDetail).find((section) => section.title === 'Files').entries, [
-    { key: 'src/legacy.js', value: '+1 / -1', fact: 'touchedFile' },
+    { key: 'src/legacy.js', recordedPath: 'src/legacy.js', value: '+1 / -1', fact: 'touchedFile' },
   ]);
 
   const statsTimeline = getTimeline(index, primaryFixtureSessionId, {
@@ -2082,7 +2082,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(statsTimeline.events[0].status, 'success');
   const statsDetail = buildEventDetail(session, statsTimeline.events[0].id, 'main');
   assert.deepEqual(allSections(statsDetail).find((section) => section.title === 'Files').entries, [
-    { key: 'G:/vibe/term-agent/src/stats.js', value: '+2 / -1', fact: 'touchedFile' },
+    { key: 'G:/vibe/term-agent/src/stats.js', recordedPath: 'G:\\vibe\\term-agent\\src\\stats.js', value: '+2 / -1', fact: 'touchedFile' },
   ]);
 
   const failedTimeline = getTimeline(index, primaryFixtureSessionId, {
@@ -2101,7 +2101,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(failedTimeline.events[0].status, 'failed');
   const failedDetail = buildEventDetail(session, failedTimeline.events[0].id, 'main');
   assert.deepEqual(allSections(failedDetail).find((section) => section.title === 'Files').entries, [
-    { key: 'src/failed.js', value: '+1 / -1', fact: 'touchedFile' },
+    { key: 'src/failed.js', recordedPath: 'src/failed.js', value: '+1 / -1', fact: 'touchedFile' },
   ]);
 
   const outputOnlyCommandTimeline = getTimeline(index, primaryFixtureSessionId, {
@@ -2589,7 +2589,7 @@ test('patch detail preserves changed lines that begin with diff marker character
     ['context', 'omega', 3, 3],
   ]);
   assert.deepEqual(detail.inspectorSections.find((section) => section.title === 'Files').entries, [
-    { key: 'sample.md', value: '+1 / -1', fact: 'touchedFile' },
+    { key: 'sample.md', recordedPath: 'sample.md', value: '+1 / -1', fact: 'touchedFile' },
   ]);
 });
 
@@ -2690,7 +2690,7 @@ test('patch detail preserves applied unified diff lines that look like file head
     ['context', 'context', 2, 2],
   ]);
   assert.deepEqual(detail.inspectorSections.find((section) => section.title === 'Files').entries, [
-    { key: 'src/markers.txt', value: '+1 / -1', fact: 'touchedFile' },
+    { key: 'src/markers.txt', recordedPath: 'src/markers.txt', value: '+1 / -1', fact: 'touchedFile' },
   ]);
 });
 
@@ -2743,8 +2743,8 @@ test('patch detail keeps mixed applied diff and content changes with display pat
     ['added', 'export default created;', false],
   ]);
   assert.deepEqual(detail.inspectorSections.find((section) => section.title === 'Files').entries, [
-    { key: 'src/app.js', value: '+1 / -1', fact: 'touchedFile' },
-    { key: 'src/created.js', value: '+2 / -0', fact: 'touchedFile' },
+    { key: 'src/app.js', recordedPath: 'G:\\vibe\\session-analyzer\\src\\app.js', value: '+1 / -1', fact: 'touchedFile' },
+    { key: 'src/created.js', recordedPath: 'G:\\vibe\\session-analyzer\\src\\created.js', value: '+2 / -0', fact: 'touchedFile' },
   ]);
 });
 

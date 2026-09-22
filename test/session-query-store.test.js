@@ -209,6 +209,30 @@ function fullIndex(sessions) {
   };
 }
 
+test('file activity uses exact recorded project paths, separates patch evidence and paginates without source-file matches', () => {
+  const events = [
+    logicalEvent('patch', { kind: 'patch', touchedFiles: ['G:\\repo\\src\\a.js'] }),
+    logicalEvent('mention', { touchedFiles: ['src/a.js'] }),
+    logicalEvent('substring', { touchedFiles: ['src/a.js.map'] }),
+    logicalEvent('source-only', { sourceFile: 'G:\\repo\\src\\a.js', rawRefFile: 'G:\\repo\\src\\a.js' }),
+    logicalEvent('protocol', { layer: 'protocol', touchedFiles: ['src/a.js'] }),
+  ];
+  const session = completeSession('file-activity', events);
+  const index = fullIndex([session]);
+  const query = getSourceAdapter('codex').query;
+  assert.throws(() => query.getFileActivity(index, { ...session, sourceKind: 'claude-code' }, 'src/a.js'),
+    (error) => error.code === 'SOURCE_OWNERSHIP_MISMATCH');
+  const first = query.getFileActivity(index, session, './SRC/a.js', { locale: 'en', limit: 1 });
+  assert.equal(first.total, 2);
+  assert.deepEqual(first.events.map((item) => [item.id, item.association]), [['patch', 'patch_record']]);
+  const second = query.getFileActivity(index, session, 'src/a.js', { offset: 1, limit: 1 });
+  assert.deepEqual(second.events.map((item) => [item.id, item.association]), [['mention', 'recorded_path']]);
+  assert.equal(query.getFileActivity(index, session, 'src/missing.js').total, 0);
+  index.repoRoot = '/repo';
+  session.logicalEvents = [logicalEvent('upper', { touchedFiles: ['src/A.js'] }), logicalEvent('lower', { touchedFiles: ['/repo/src/a.js'] })];
+  assert.deepEqual(query.getFileActivity(index, session, 'src/a.js').events.map((item) => item.id), ['lower']);
+});
+
 function packedIndex(oracle, query) {
   const sessions = oracle.sessions.map((session) => ({
     ...session,
@@ -223,6 +247,66 @@ function packedIndex(oracle, query) {
     }),
   };
 }
+
+test('file activity coalesces redundant relative separators and dot segments without merging distinct paths', () => {
+  const query = getSourceAdapter('codex').query;
+  for (const repoRoot of ['G:\\repo', '/repo']) {
+    const paths = ['src/a.js', 'src/./a.js', 'src//a.js', '././src/./a.js', 'src/A.js', 'src/a.js.map', 'src/link/../a.js'];
+    const session = completeSession('path-variants', paths.map((file, i) => logicalEvent(`path-${i}`, { touchedFiles: [file] })));
+    const index = { ...fullIndex([session]), repoRoot };
+    const expected = repoRoot.startsWith('/') ? 4 : 5;
+    for (const file of paths.slice(0, 4)) {
+      const result = query.getFileActivity(index, session, file, { limit: 2 });
+      assert.equal(result.total, expected, `${repoRoot}: ${file}`);
+      assert.deepEqual(result.events.map((event) => event.id), ['path-0', 'path-1']);
+      assert.equal(query.getFileActivity(index, session, file, { offset: 2 }).events.length, expected - 2);
+    }
+    assert.equal(query.getFileActivity(index, session, 'src/a.js.map').total, 1);
+    assert.equal(query.getFileActivity(index, session, '').total, 0);
+    assert.deepEqual(session.logicalEvents.map((event) => event.touchedFiles[0]), paths);
+  }
+});
+
+test('file activity retains external path roots and counts each event once across equivalent spellings', () => {
+  const session = completeSession('path-roots', [
+    logicalEvent('unc', { touchedFiles: ['\\\\server\\share\\src\\.\\a.js', '//server/share/src//a.js'] }),
+    logicalEvent('other-share', { touchedFiles: ['//other/share/src/a.js'] }),
+    logicalEvent('relative', { touchedFiles: ['src/./a.js', './src//a.js'] }),
+  ]);
+  const index = fullIndex([session]);
+  const query = getSourceAdapter('codex').query;
+  assert.deepEqual(query.getFileActivity(index, session, '//server/share/src/a.js').events.map((event) => event.id), ['unc']);
+  assert.deepEqual(query.getFileActivity(index, session, 'src/a.js').events.map((event) => event.id), ['relative']);
+  assert.equal(query.getFileActivity(index, session, '//missing/share/src/a.js').total, 0);
+});
+
+test('file activity preserves parent segments before making absolute paths project-relative', () => {
+  const query = getSourceAdapter('codex').query;
+  for (const repoRoot of ['/repo', 'G:\\repo', '\\\\server\\share\\repo']) {
+    const root = repoRoot.replace(/\\/g, '/');
+    const paths = [`${root}/src/link/../a.js`, 'src/link/../a.js', `${root}/src/a.js`, 'src/a.js',
+      `${root}-other/src/link/../a.js`, `${root}/../outside/a.js`, '../outside/a.js'];
+    const session = completeSession('parent-paths', paths.map((file, i) => logicalEvent(`parent-${i}`, { touchedFiles: [file] })));
+    const index = { ...fullIndex([session]), repoRoot };
+    for (const input of [paths[0], paths[1], `${root}/src//./link/../a.js`]) {
+      assert.deepEqual(query.getFileActivity(index, session, input).events.map((event) => event.id), ['parent-0', 'parent-1'], input);
+    }
+    assert.deepEqual(query.getFileActivity(index, session, 'src/a.js').events.map((event) => event.id), ['parent-2', 'parent-3']);
+    assert.deepEqual(query.getFileActivity(index, session, paths[4]).events.map((event) => event.id), ['parent-4']);
+    assert.deepEqual(query.getFileActivity(index, session, paths[5]).events.map((event) => event.id), ['parent-5', 'parent-6']);
+    assert.deepEqual(session.logicalEvents.map((event) => event.touchedFiles[0]), paths);
+  }
+});
+
+test('file activity identity does not trim literal filename whitespace or use display formatting', () => {
+  const paths = ['/repo/src/a.js ', 'src/a.js ', 'src/a.js', ' src/a.js'];
+  const session = completeSession('literal-paths', paths.map((file, i) => logicalEvent(`literal-${i}`, { touchedFiles: [file] })));
+  const index = { ...fullIndex([session]), repoRoot: '/repo' };
+  const query = getSourceAdapter('codex').query;
+  assert.deepEqual(query.getFileActivity(index, session, 'src/a.js ').events.map((event) => event.id), ['literal-0', 'literal-1']);
+  assert.deepEqual(query.getFileActivity(index, session, 'src/a.js').events.map((event) => event.id), ['literal-2']);
+  assert.deepEqual(query.getFileActivity(index, session, ' src/a.js').events.map((event) => event.id), ['literal-3']);
+});
 
 test('packed project query path has exact full-event oracle parity', async () => {
   const query = getSourceAdapter('codex').query;
