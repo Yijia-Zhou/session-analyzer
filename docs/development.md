@@ -1,6 +1,6 @@
 # Develop from source / 源码开发
 
-The installed CLI supports Node.js 22 or newer on a supported LTS line (Node.js 24 recommended). Source development and release work deliberately require **Node.js `^22.22.2 || ^24.15.0` and exactly npm `12.0.2`**, because npm 12 enforces the reviewed dependency install-script policy. DeepSeek compressed artifacts need built-in `node:zlib` Zstandard support, available on these development releases; uncompressed artifacts remain readable without it. / 安装后 CLI 支持仍受支持的 LTS 系列中的 Node.js 22 或更新版本（推荐 Node.js 24）。源码开发与发布有意严格要求 **Node.js `^22.22.2 || ^24.15.0` 与精确 npm `12.0.2`**，因为 npm 12 执行经过审查的依赖安装脚本策略。DeepSeek 压缩工件需要内置 `node:zlib` Zstandard 支持，这些开发版本均提供；未压缩工件在缺少该能力时仍可读。
+The installed CLI supports Node.js 22 or newer on a supported LTS line (Node.js 24 recommended). Source development and release work deliberately require **Node.js `^22.22.2 || ^24.15.0` and exactly npm `12.0.2`**, because npm 12 enforces the reviewed dependency install-script policy. Codex and DeepSeek compressed artifacts need built-in `node:zlib` Zstandard support, available on these development releases; uncompressed artifacts remain readable without it. / 安装后 CLI 支持仍受支持的 LTS 系列中的 Node.js 22 或更新版本（推荐 Node.js 24）。源码开发与发布有意严格要求 **Node.js `^22.22.2 || ^24.15.0` 与精确 npm `12.0.2`**，因为 npm 12 执行经过审查的依赖安装脚本策略。Codex 与 DeepSeek 压缩工件需要内置 `node:zlib` Zstandard 支持，这些开发版本均提供；未压缩工件在缺少该能力时仍可读。
 
 ## Toolchain and dependencies / 工具链与依赖
 
@@ -51,12 +51,30 @@ Open `http://127.0.0.1:17890/`. Without `--repo`, select a project in the browse
 | Task / 任务 | Command / 命令 |
 | --- | --- |
 | Node tests / Node 测试 | `npm test` |
+| Serial phase coverage measurement / 顺序阶段覆盖量测 | `npm run test:profile-coverage` |
 | Install Chromium / 安装 Chromium | `npm run browser:install` |
 | Browser coverage / 浏览器覆盖 | `npm run test:browser` |
 | Installed-package smoke / 安装包 smoke | `npm run test:package` |
 | Repeatable non-browser release gate / 可重复非浏览器发布门槛 | `npm run release:check` |
 
 Package smoke packs the project, installs the tarball into a fresh temporary project, checks CLI help, and starts the packaged server. `release:check` checks generated assets, runs the full Node suite, and repeats package smoke; browser coverage remains a separate CI/local release requirement. Follow the release runbook for the remaining release gates. / Package smoke 打包项目，将 tarball 安装到全新临时项目，检查 CLI help 并启动包内服务。`release:check` 检查生成资产、运行全部 Node 测试并重复 package smoke；浏览器覆盖仍是独立的 CI／本地发布要求。其余发布门槛遵循发布运行手册。
+
+<a id="validation-scope"></a>
+
+## Validation scope / 验证范围
+
+For Codex compressed-reader characterization, run `node scripts/codex-rollout-profile.js` by itself. It generates synthetic 64 MiB streaming input and the same small session in plain/compressed forms, reporting sampled RSS, decode counts, cold indexing, first detail/materialization and warm detail; it is descriptive evidence, not a timing gate or a real-corpus claim. / 定性核验 Codex 压缩 reader 时，单独运行该脚本。它生成合成的 64 MiB 流式输入，以及同一小会话的普通／压缩表示，报告采样 RSS、解码次数、冷索引、首次详情／物化和暖详情；这是描述性证据，不是时延门槛或真实语料声明。
+
+Choose checks for the affected behavior and risk; the command table is not a checklist for every edit. / 按受影响行为与风险选择检查；命令表不是每次编辑都要执行的清单。
+
+Phase-accounting changes also require `npm run test:profile-coverage`, run with Node/browser suites paused. It measures three sequential 100-row real-HTTP samples and gates their minimum residual at an absolute 5 ms; ordinary concurrent Node tests enforce topology and semantic accounting without a one-shot residual gate. CI runs this separate step only on Node 24 / Ubuntu after `npm test`. See [measurement policy](design-docs/deepseek-readback-measurement.md#current-coverage-policy). / 阶段核算修改还需在暂停 Node／浏览器套件时执行 `npm run test:profile-coverage`。它顺序测量三次 100 行真实 HTTP 样本，以最小 residual 不超过绝对 5 ms 为门槛；普通并发 Node 测试严格检查拓扑与语义核算，不对单次 residual 设门槛。CI 仅在 Node 24／Ubuntu 的 `npm test` 之后执行该独立步骤。详见[量测策略](design-docs/deepseek-readback-measurement.md#current-coverage-policy)。
+
+- Documentation or agent-instruction changes: inspect the diff, check local references and bilingual consistency, and run `git diff --check`. If a hook or helper changes, check its syntax and exercise its relevant behavior. / 文档或 agent 指令变更：审查 diff，检查本地引用与双语一致性，运行 `git diff --check`。若修改 hook 或辅助脚本，检查语法并实际验证相关行为。
+- Code changes: run the affected `test/*.test.js` files with `node --test test/<affected>.test.js`. Parser/schema work retains the [schema runbook](design-docs/schema-update-runbook.md)'s evidence and focused-fixture requirements. Shared contracts or unresolved cross-source impact may require the full Node suite. / 代码变更：用 `node --test test/<affected>.test.js` 运行受影响测试。解析器／schema 工作保留 [schema 手册](design-docs/schema-update-runbook.md)的依据与聚焦 fixture 要求。共享契约或尚未排除的跨来源影响可能需要全部 Node 测试。
+- Browser code changes: rebuild with `npm run build`, run `npm run build:check`, and verify the affected interaction; use browser tests when rendering or navigation behavior changes. Package/CLI/distribution changes need the relevant package checks. / 浏览器代码变更：执行 `npm run build` 重新构建及 `npm run build:check`，核验受影响交互；渲染或导航行为变更时使用浏览器测试。包／CLI／分发变更需要相关包检查。
+- Release work follows the [release runbook](design-docs/npm-release-runbook.md)'s required gates and existing rules for reusing unchanged CI evidence. This scope guidance does not weaken release or CI requirements. / 发布工作遵循[发布手册](design-docs/npm-release-runbook.md)的强制门槛及已有的未变更 CI 证据复用规则。本范围指南不削弱发布或 CI 要求。
+
+Inspect failures and fix regressions introduced by the change. Once the relevant checks pass, broaden or repeat them only for new changes, failures, or unresolved risks. Report what passed and what remains unverified. / 检查失败并修复变更引入的回归。相关检查通过后，仅因新修改、失败或未解决风险扩大或重复验证。报告已通过内容与尚未验证项。
 
 ## Repository layout / 仓库布局
 

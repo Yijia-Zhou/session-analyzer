@@ -11,6 +11,7 @@ const { analyzerSessionId, buildClaudeSourceBackedIndex } = require('../src/clau
 const {
   buildIndex: buildResidentCodexIndex,
   buildSourceBackedIndex: buildIndex,
+  buildHydratedEventDetail,
 } = require('../src/codex');
 const { materializeSessionForIndex } = require('../src/source-adapters');
 const { createServer } = require('../server');
@@ -21,6 +22,95 @@ const fixtureCodexHome = path.join(__dirname, '..', 'test', 'fixtures', 'codex-h
 const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 let wave1bM2SourceBundlePromise;
+
+for (const locale of ['en', 'zh-CN']) test(`persisted realtime history navigates Main, Protocol and Raw in both presentations (${locale})`, async (t) => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-persisted-browser-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const project = path.join(home, 'repo');
+  const id = 'dddddddd-0919-4919-8919-dddddddddddd';
+  const realtime = (item, type, fields = {}) => ({ type: 'realtime_item', payload: { id: item, realtime_session_id: 'realtime-browser', type, ...fields } });
+  await fsp.mkdir(path.join(home, 'sessions'), { recursive: true });
+  await writeJsonl(path.join(home, 'sessions', `rollout-${id}.jsonl`), [
+    { type: 'session_meta', payload: { id, cwd: project } },
+    realtime('spoken', 'transcript_segment', { role: 'user', text: 'Persisted realtime browser question' }),
+    realtime('promotion', 'bem_item_promoted', { turn_id: 'turn', item_id: 'target', presentation: { type: 'inline_visualization', index: 1 } }),
+    { type: 'event_msg', payload: { type: 'item_completed', thread_id: id, turn_id: 'turn', item: { type: 'AgentMessage', id: 'target', delivery: 'async', content: [{ type: 'Text', text: 'Backing browser answer' }] } } },
+    realtime('raw-promotion', 'bem_item_promoted', { turn_id: 'turn', item_id: 'raw-target', presentation: { type: 'whole_item' } }),
+    { type: 'event_msg', payload: { type: 'item_completed', thread_id: id, turn_id: 'turn', item: { type: 'FutureItem', id: 'raw-target', value: 'Raw target evidence' } } },
+    { type: 'event_msg', payload: { type: 'thread_settings_applied', thread_id: id, thread_settings: { model: 'saved-browser-model', reasoning_effort: 'high' } } },
+    { type: 'response_item', payload: { type: 'configuration_update', reasoning: { effort: 'low' } }, metadata: { harness_authored_configuration: true } },
+  ]);
+  const index = await buildIndex({ repoRoot: project, codexHome: home });
+  const { page } = await openApp(t, index, { locale });
+  for (const presentation of ['timeline', 'trajectory']) {
+    await page.locator('#layerSelect').selectOption('main');
+    await page.locator(`#mainPresentationControl [data-main-presentation="${presentation}"]`).click();
+    const message = presentation === 'timeline'
+      ? page.locator(`#timeline .event[data-event-id="${id}:logical:realtime:2"]`)
+      : page.locator(`[data-trajectory-event-id="${id}:logical:realtime:2"]`);
+    await message.waitFor();
+    await message.click();
+    await page.waitForFunction(() => /Realtime|实时/.test(document.querySelector('#detail')?.textContent || ''));
+    assert.match(await page.locator('#timeline').innerText(), /Persisted realtime browser question/);
+    await page.locator('#layerSelect').selectOption('protocol');
+    await page.locator(`#timeline .event[data-event-id="${id}:logical:protocol:3"]`).click();
+    const link = page.locator(`#detail [data-target-event-id="${id}:logical:assistant:4"]`);
+    await link.waitFor();
+    await link.click();
+    await page.waitForFunction(() => document.querySelector('#layerSelect')?.value === 'main');
+    await page.waitForFunction((eventId) => Boolean(document.querySelector(`[data-event-id="${CSS.escape(eventId)}"].selected, [data-trajectory-event-id="${CSS.escape(eventId)}"].selected`)), `${id}:logical:assistant:4`);
+    await page.locator('#layerSelect').selectOption('protocol');
+    await page.locator(`#timeline .event[data-event-id="${id}:logical:protocol:5"]`).click();
+    const rawLink = page.locator(`#detail [data-target-event-id="${id}:raw:6"]`);
+    await rawLink.waitFor();
+    await rawLink.click();
+    await page.waitForFunction(() => document.querySelector('#layerSelect')?.value === 'raw');
+    await page.waitForFunction(() => document.querySelector('#detail')?.textContent.includes('Raw target evidence'));
+  }
+});
+
+test('Codex external inputs, asynchronous questions and file images render read-only in both locales', async (t) => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-reading-browser-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const project = path.join(home, 'repo');
+  const id = 'cccccccc-0917-4917-8917-cccccccccccc';
+  const records = [
+    { type: 'session_meta', payload: { id, cwd: project } },
+    { type: 'response_item', payload: { type: 'function_call_output', call_id: null, name: 'notifications', namespace: 'example_service', output: 'External result is available.' } },
+    { type: 'event_msg', payload: { type: 'agent_message', message: 'Choose a format', phase: 'final_answer', delivery: 'async', questions: [{ title: 'Output format?', options: ['Markdown', 'JSON'] }, { title: 'Any notes?' }] } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_image', file_id: 'file_browser_example', detail: 'high' }] } },
+  ].map((record) => ({ timestamp: '2026-09-17T10:00:00.000Z', ...record }));
+  await fsp.mkdir(path.join(home, 'sessions'), { recursive: true });
+  await fsp.writeFile(path.join(home, 'sessions', `rollout-${id}.jsonl`), records.map(JSON.stringify).join('\n') + '\n');
+  const index = await buildIndex({ repoRoot: project, codexHome: home });
+  const session = await materializeSessionForIndex(index, index.sessionsById.get(id));
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.setContent('<main id="content"></main>');
+  for (const file of ['src/shared/command-highlighting.js', 'src/shared/i18n.js', 'src/shared/code-mode-presentation-contract.js', 'src/shared/detail-purpose.js', 'src/browser/renderers.js']) {
+    await page.addScriptTag({ path: path.join(__dirname, '..', file) });
+  }
+  for (const locale of ['en', 'zh-CN']) {
+    const details = await Promise.all(session.logicalEvents.filter((event) => event.layer === 'main')
+      .map((event) => buildHydratedEventDetail(index, session, event.id, 'main', { locale })));
+    await page.evaluate((details) => {
+      document.querySelector('#content').innerHTML = details.map((detail) => window.sessionRenderers.renderSections(detail.timelineSections)).join('');
+    }, details);
+    const text = await page.locator('#content').innerText();
+    assert.match(text, /External result is available/);
+    assert.match(text, /example_service/);
+    assert.match(text, /Output format\?/);
+    assert.match(text, /Markdown/);
+    assert.match(text, /JSON/);
+    assert.match(text, /Any notes\?/);
+    assert.match(text, locale === 'en' ? /Asynchronous message/ : /异步消息/);
+    assert.match(text, locale === 'en' ? /Local preview is unavailable/ : /无法从本地预览/);
+    assert.equal(await page.locator('#content input, #content select, #content textarea, #content button[type="submit"]').count(), 0);
+    assert.equal(await page.locator('#content img').count(), 0);
+    assert.equal(text.includes('file_browser_example'), false, 'opaque IDs belong in Inspector');
+  }
+});
 
 async function captureTerminalPresentation(page, name) {
   if (!process.env.TERMINAL_SCREENSHOTS) return;
@@ -833,6 +923,17 @@ async function wave1cM2OperationRows(page, operationId) {
   return page.evaluate((id) => (
     window.__wave1cM2.evidence.rows.filter((row) => row.operationId === id)
   ), operationId);
+}
+
+async function settledWave1cM2OperationRows(page, operationId) {
+  // A response (or one animation frame) can precede JSON processing and render.
+  // Keep the operation active until its canonical DOM commit reaches the ledger.
+  // Accept any canonical mutation here, including appendOnly: correctness is
+  // asserted by the caller, independently of synchronization.
+  await page.waitForFunction((id) => window.__wave1cM2.evidence.rows.some((row) => (
+    row.operationId === id && (row.addedCanonicalCount > 0 || row.removedCanonicalCount > 0)
+  )), operationId);
+  return wave1cM2OperationRows(page, operationId);
 }
 
 async function latestWave1cM1Lifecycle(page) {
@@ -9929,7 +10030,8 @@ test('browser Wave 1C M2 temporary reveal makes Main append fall back without in
   assert.equal(latest.ownerCount, 300);
 });
 
-test('browser Wave 1C M2 replacements, Session switch, Protocol, and Raw remain full-render controls', async (t) => {
+for (const delayResponseProcessing of [false, true]) {
+test(`browser Wave 1C M2 replacements, Session switch, Protocol, and Raw remain full-render controls${delayResponseProcessing ? ' with gated response processing' : ''}`, async (t) => {
   const collapsedProfile = {
     id: 'custom:wave-1c-controls-collapsed',
     name: 'Wave 1C controls collapsed fixture',
@@ -9954,11 +10056,29 @@ test('browser Wave 1C M2 replacements, Session switch, Protocol, and Raw remain 
   });
   await fillSearch(page, 'common-term');
   await queryResponse;
-  let rows = await wave1cM2OperationRows(page, operationId);
+  let rows = await settledWave1cM2OperationRows(page, operationId);
   assert.ok(rows.some((row) => row.commitKind === 'replacement'));
   assert.equal(rows.some((row) => row.commitKind === 'appendOnly'), false);
   assert.equal(await oldArticle.evaluate((node) => node.isConnected), false);
 
+  if (delayResponseProcessing) {
+    await page.evaluate(() => {
+      const original = Response.prototype.json;
+      const gate = {};
+      gate.promise = new Promise((resolve) => { gate.release = resolve; });
+      window.__wave1cM2ResponseGate = gate;
+      Response.prototype.json = async function (...args) {
+        const url = new URL(this.url);
+        const body = await original.apply(this, args);
+        if (url.pathname.endsWith('/timeline') && url.searchParams.get('kind') === 'user_message') {
+          Response.prototype.json = original;
+          gate.paused = true;
+          await gate.promise;
+        }
+        return body;
+      };
+    });
+  }
   operationId = await beginWave1cM2Operation(page);
   const filterResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -9967,7 +10087,19 @@ test('browser Wave 1C M2 replacements, Session switch, Protocol, and Raw remain 
   });
   await addSearchFilter(page, 'kind', 'user_message');
   await filterResponse;
-  rows = await wave1cM2OperationRows(page, operationId);
+  const committedRows = settledWave1cM2OperationRows(page, operationId);
+  if (delayResponseProcessing) {
+    await page.waitForFunction(() => window.__wave1cM2ResponseGate.paused === true);
+    let settled = false;
+    committedRows.then(() => { settled = true; });
+    // Reproduce the old legal window deterministically, across its rAF boundary.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.evaluate((id) => window.__wave1cM2.evidence.rows
+      .filter((row) => row.operationId === id).length, operationId), 0);
+    assert.equal(settled, false, 'operation must remain active while response processing is paused');
+    await page.evaluate(() => window.__wave1cM2ResponseGate.release());
+  }
+  rows = await committedRows;
   assert.ok(rows.some((row) => ['replacement', 'clear', 'initialMount'].includes(row.commitKind)));
   assert.equal(rows.some((row) => row.commitKind === 'appendOnly'), false);
 
@@ -10005,6 +10137,7 @@ test('browser Wave 1C M2 replacements, Session switch, Protocol, and Raw remain 
     && window.__wave1cM1.evidence.lifecycle.at(-1)?.ownerCount === 0);
   assert.equal((await latestWave1cM1Lifecycle(page)).ownerCount, 0);
 });
+}
 
 test('browser Wave 1C M2 late-hit batch publication preserves 600 prefix cards and appends 1200', async (t) => {
   const collapsedProfile = {
@@ -11800,7 +11933,7 @@ test('browser Wave 1D-A M1 query, profile, and locale transitions remain full-re
   });
   await fillSearch(page, 'common-term');
   await queryResponse;
-  rows = await wave1cM2OperationRows(page, operationId);
+  rows = await settledWave1cM2OperationRows(page, operationId);
   assert.equal(rows.some((row) => row.commitKind === 'appendOnly'), false);
   assert.ok(rows.some((row) => row.commitKind === 'replacement'));
 

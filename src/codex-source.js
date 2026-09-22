@@ -4,6 +4,14 @@ const {
   TOOL_LIFECYCLE_FAMILY,
   toolLifecycleDescriptorFor,
 } = require('./codex-tool-lifecycle-contract');
+const {
+  asyncAgentMessageFromRecord,
+  asyncMessageMetadata,
+  asyncMessageSearchText,
+} = require('./codex-async-message');
+const { summarizeCodexAttachments } = require('./codex-attachments');
+const { externalToolInputFromRaw } = require('./codex-external-input');
+const { factsFromRecord, targetFromRecord, isTransientRealtimeRecord } = require('./codex-persisted-history');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 
 const CANONICAL_EVENT_TYPES = Object.freeze({
@@ -98,7 +106,7 @@ function createCodexRawParser(deps) {
     truncate,
   } = deps;
 
-  function makeRawEvent(record, lineNumber, relFile, sessionId, embeddedImages = []) {
+  function makeRawEvent(record, lineNumber, relFile, sessionId, embeddedImages = [], sourceAttachmentSummary = null) {
     const {
       payload,
       recordType,
@@ -139,12 +147,70 @@ function createCodexRawParser(deps) {
       rawIndex: lineNumber,
     };
 
+    const attachmentSummary = sourceAttachmentSummary || summarizeCodexAttachments(payload);
+    if (recordType === 'realtime_item' || (recordType === 'response_item' && payloadType === 'configuration_update')) {
+      raw.turnId = '';
+      raw.callId = '';
+      raw.toolName = '';
+      raw.status = '';
+    }
+    const finishRaw = () => {
+      if (attachmentSummary.totalCount > 0) {
+        raw.attachmentSummary = attachmentSummary;
+        const attachmentPreview = attachmentSummary.previewText;
+        raw.preview = truncate([raw.preview, attachmentPreview].filter(Boolean).join(' · '));
+        raw.searchText = [raw.searchText, attachmentPreview].filter(Boolean).join('\n');
+      }
+      return raw;
+    };
+
+    const history = factsFromRecord(record);
+    if (isTransientRealtimeRecord(record)) {
+      raw.turnId = '';
+      raw.callId = '';
+      raw.toolName = '';
+      raw.preview = payloadType;
+      raw.searchText = '';
+      return raw;
+    }
+    const target = targetFromRecord(record);
+    if (target) raw.historyTarget = target;
+    if (history) {
+      raw.historyFacts = history;
+      // A promotion references a turn; it does not own that turn. Neither
+      // realtime history nor a positional backend control is a tool call.
+      raw.turnId = '';
+      raw.callId = '';
+      raw.toolName = '';
+      raw.status = '';
+      if (history.type === 'transcript_segment') {
+        raw.messageText = payload.text.slice(0, 16000);
+        raw.preview = truncate(raw.messageText);
+        raw.searchText = raw.messageText;
+      } else {
+        raw.preview = truncate(Object.entries(history.values || history)
+          .filter(([key]) => !['type', 'itemId', 'realtimeSessionId'].includes(key))
+          .map(([key, value]) => `${key}: ${value}`).join(' · ') || history.type);
+        raw.searchText = raw.preview;
+      }
+      return raw;
+    }
+
+    const asyncMessage = asyncAgentMessageFromRecord(record);
+    if (asyncMessage) {
+      raw.asyncMessage = asyncMessageMetadata(asyncMessage);
+      raw.messageText = asyncMessage.text;
+      raw.preview = truncate(raw.messageText || 'Async assistant message');
+      raw.searchText = asyncMessageSearchText(asyncMessage);
+      return raw;
+    }
+
     if (recordType === 'response_item') {
       if (payloadType === 'message') {
         raw.messageText = extractContentText(payload.content);
         raw.preview = truncate(raw.messageText || payload.role || 'message');
         raw.searchText = raw.messageText;
-        return raw;
+        return finishRaw();
       }
       if (payloadType === 'reasoning') {
         raw.messageText = extractReasoningText(payload);
@@ -159,10 +225,18 @@ function createCodexRawParser(deps) {
         return raw;
       }
       if (payloadType === 'function_call_output') {
-        raw.output = stringifyValue(payload.output);
-        raw.preview = truncate(raw.output || payload.call_id || 'function_call_output');
-        raw.searchText = raw.output;
-        return raw;
+        const externalInput = externalToolInputFromRaw(raw);
+        if (externalInput) {
+          raw.output = externalInput.text;
+          raw.preview = truncate(externalInput.text || externalInput.name || 'function_call_output');
+          raw.searchText = [externalInput.name, externalInput.namespace, externalInput.text]
+            .filter(Boolean).join('\n');
+        } else {
+          raw.output = stringifyValue(payload.output);
+          raw.preview = truncate(raw.output || payload.call_id || 'function_call_output');
+          raw.searchText = raw.output;
+        }
+        return finishRaw();
       }
       if (payloadType === 'custom_tool_call') {
         raw.output = stringifyValue(payload.input);
@@ -174,7 +248,7 @@ function createCodexRawParser(deps) {
         raw.output = stringifyValue(payload.output);
         raw.preview = truncate(raw.output || payload.call_id || 'custom_tool_call_output');
         raw.searchText = raw.output;
-        return raw;
+        return finishRaw();
       }
       if (payloadType === 'web_search_call') {
         raw.preview = truncate(flattenText(payload.action || payload, 8000) || payload.status || 'web_search_call');
@@ -208,7 +282,7 @@ function createCodexRawParser(deps) {
           raw.messageText = displayValue(firstNonEmpty(payload.message, payload.text), 16000);
           raw.preview = truncate(raw.messageText || payload.type);
           raw.searchText = raw.messageText;
-          return raw;
+          return finishRaw();
         case 'agent_reasoning':
           raw.messageText = extractEventReasoningText(payload);
           raw.preview = truncate(raw.messageText || payload.type);

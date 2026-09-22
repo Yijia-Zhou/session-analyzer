@@ -2,6 +2,14 @@
 
 ## Tracked items / 跟踪条目
 
+### 26. Remaining Codex paginated and metadata evidence / 剩余 Codex 分页与 metadata 依据
+
+- Status: open, bounded compatibility follow-up to the September 2026 handoff. / 状态：开放，2026 年 9 月交接的有界兼容后续。
+- Canonical completed items other than the explicitly supported Plan/Review/AgentMessage shapes need producer, serde wire, persistence and ownership evidence before Main admission. In particular, canonical `FunctionCallOutput` mirrors of external inputs are not deduplicated from guessed names/text. / 除明确支持的 Plan／Review／AgentMessage 外，canonical completed item 需 producer、serde wire、持久化和所有权依据后才能准入 Main；特别是外部输入的 canonical FunctionCallOutput 镜像不会根据猜测的名称／文字去重。
+- Observe workspace/URI permission roots, MCP end turn ownership, opaque/encrypted inter-agent forms, reviewer sender/inherited user context and additional item identity fields. Do not normalize URIs as local paths or regenerate retained history as child-local user authority. / 定向观察 workspace／URI 权限根、MCP end turn 所有权、不透明／加密 agent 形态、reviewer sender／继承用户上下文与额外 item identity；不把 URI 规范化成本机路径，不把保留历史重新生成为 child-local 用户授权。
+- Code Mode request metadata is not a complete execution inventory. Keep existing declared/observed evidence separation; a future interpretation requires directly observed durable records with explicit ownership and completeness rules. / Code Mode 请求 metadata 不是完整执行清单；保留已有声明／观察证据分离。未来解释需直接观察到的 durable 记录及明确所有权、完整性规则。
+- Evidence and fixture boundaries: [protocol coverage](../design-docs/codex-protocol-event-coverage.md#september-2026-persistence-evidence--2026-年-9-月持久化依据); this round uses synthetic fixtures and does not claim local real-log observations. / 依据与 fixture 边界见链接；本轮使用合成 fixture，不声称本地真实日志观察。
+
 ### 1. Protocol label quality / 协议标签质量
 - Status: open / 状态：开放
 - Problem: some future protocol event labels can still be generic or mechanically derived / 问题：一些未来协议事件标签仍可能很泛化，或是机械派生出来的

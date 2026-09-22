@@ -22,6 +22,7 @@
 
   const EDITABLE_EVENT_KINDS = [
     'user_message',
+    'external_tool_input',
     'assistant_message',
     'proposed_plan',
     'reasoning',
@@ -54,6 +55,7 @@
       priority: 10,
       kindOrder: [
         'user_message',
+        'external_tool_input',
         'assistant_message',
         'proposed_plan',
         'plan_update',

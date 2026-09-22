@@ -8,6 +8,10 @@ The drill-down and ordinary `selectSession()` header render paths share the cont
 
 ## Metadata / 元数据
 
+Persisted Codex realtime history uses existing Main message kinds and concise Protocol lifecycle/reference subtypes. `codex-persisted-history.js` is the shared admission boundary; opaque IDs are retained exactly in bounded `historyFacts`, while event IDs remain source-location-derived. Duplicate source identities stay Protocol evidence rather than choosing an owner. Histories containing admitted realtime/configuration facts use source-line order to preserve positional meaning; other histories keep their previous timestamp policy. Ordinals remain Raw evidence, never line locators. / Codex 持久化实时历史复用 Main 消息 kind 与简洁 Protocol 生命周期／引用 subtype。共享准入边界为上述 helper；opaque ID 精确保存在有界 historyFacts 中，事件 ID 继续来自源位置。重复身份保持 Protocol 证据，不任意选 owner。包含准入实时／配置事实的历史按源行排序以保留位置语义，其他历史沿用既有时间戳策略。ordinal 只作为 Raw 证据，不替代行定位。
+
+Applied thread settings, recorded turn context and positional configuration controls remain separate Protocol observations. They do not feed a new effective-settings model, cache accounting, cwd attribution or execution metrics. Promotion resolution is a bounded scan over the accepted Materialized history after fork ownership; a unique same-thread `item_completed` with exact turn/item IDs links to an existing semantic event or Raw record, including later completion. The detail reference may carry an explicit destination layer; navigation reuses existing cross-layer controls. No Raw ownership is transferred, visualization directive executed or target content duplicated. / 已应用线程设置、已记录轮次上下文及位置控制保持独立 Protocol 观测，不进入新的有效设置模型、缓存核算、cwd 归属或执行指标。推广引用在 fork ownership 后对已接受物化历史进行有界扫描；唯一同线程、精确轮次／item ID 的 item_completed 可链接既有语义事件或 Raw（包括后续完成目标）。详情引用可带目标层，复用既有跨层导航；不转移 Raw ownership、不执行可视化指令、不复制目标内容。
+
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted baseline; conditional fixture coverage and shared KV-residual semantics implemented / 状态：既有基线已接受；条件式 fixture coverage 与共享 KV residual 语义均已实现
 - Last updated: 2026-09-10 / 最近更新：2026-09-10
@@ -75,6 +79,14 @@ The first version of this repository rendered raw records directly, which caused
 - Layer-aware UI rendering in `public/app.js` / `public/app.js` 中的层感知 UI 渲染
 
 ### Data flow / 数据流
+
+Codex rollout storage uses `codex-rollout-storage.js` for discovery and logical JSONL reads across plain `.jsonl` and `.jsonl.zst`. Exact sibling paths identify one rollout, with plain preferred. Stable logical `.jsonl` locators and decompressed line numbers do not expose the physical representation; compressed byte size is never used as a logical prefix bound. Accepted dependencies include physical identity/compression and logical prefix evidence, so representation replacement or changed content fails closed with rebuild-required source errors. Ordinary plain inspection retains its early-exit path. / Codex rollout 存储通过该模块统一普通与压缩来源的发现和逻辑 JSONL 读取。精确 sibling 路径表示同一 rollout，并优先普通文件。稳定的逻辑 .jsonl locator 和解压行号不暴露物理表示；压缩字节数不会用作逻辑前缀上界。已接受依赖包含物理 identity／compression 与逻辑前缀证据，因此表示替换或内容变化会保守返回需重建索引的来源错误。普通文件 inspection 保留提前退出路径。
+
+`codex-rollout-snapshots.js` streams a compressed source into a private OS-temporary directory (0700 directory, 0600 file), never into Codex home. Warm reads hash physical compressed bytes and check exact identity/stat before reusing decoded bytes, detecting same-stat rewrites. Concurrent cold readers share construction; an aborted creator does not cancel independent waiters. Failed/cancelled construction removes its private artifacts. Idle snapshots expire after 60 seconds and evict least-recently-used entries above four entries or a 512 MiB soft disk budget; one most-recent oversized snapshot may remain until expiry, and active readers are protected. Normal process exit cleans registered private paths; abrupt process termination can leave OS-temporary artifacts. No decoded transcript is retained in the Index object graph. / 快照模块将压缩来源流式解码到私有 OS 临时目录（目录 0700、文件 0600），绝不写入 Codex home。暖读取先哈希物理压缩字节并核对精确 identity／stat，再复用解压字节，能检测同 stat 改写。并发冷读取共享构建；创建者取消不会取消独立等待者。失败／取消构建会删除私有工件。闲置快照 60 秒到期，超过四项或 512 MiB 软磁盘预算时淘汰最久未使用项；最近使用的一份超预算快照可保留至到期，活跃读取受到保护。正常进程退出会清理登记路径；突然终止进程可能留下 OS 临时工件。Index 对象图不保留解压转录。
+
+The streaming decoder validates frame boundaries, concatenated/no-content-size frames, skippable frames and truncation, with a 128 MiB maximum Zstandard decoder window. Larger windows are diagnosed rather than allocated without a bound. Node 24.18.1's native stream alone was observed to stop at the first frame and accept truncated input, so a small incremental frame state machine controls native per-frame decoders without buffering entire frames. Missing built-in Zstandard support and corrupt artifacts are diagnosed independently; the installed Node minimum remains unchanged and plain sources remain available. / 流式 decoder 校验 frame 边界、拼接／无内容大小 frame、skippable frame 与截断，并将 Zstandard decoder window 上限设为 128 MiB。更大的 window 会得到诊断而非无界分配。本次实测 Node 24.18.1 原生流单独使用时会停在首个 frame 并接受截断输入，因此使用小型增量 frame 状态机控制逐 frame 原生 decoder，不缓存整个 frame。缺少内置 Zstandard 或工件损坏时独立诊断；安装后 Node 最低版本不变，普通来源继续可用。
+
+Frame parsing is independent of input chunk boundaries: if magic ends a chunk, descriptor state waits for the next byte. Counted header/block/checksum reads may consume zero bytes while retaining their remaining count; zero-length payloads and completed frames still finish their state transitions at the end of a chunk. Synthetic regressions cover the default 64 KiB file boundary and bytewise fragmentation without relaxing corruption checks or changing the read buffer size. / 帧解析不依赖输入 chunk 边界：magic 恰好结束 chunk 时，descriptor 状态等待下一字节。按计数读取 header／block／checksum 时可以消费零字节并保留剩余计数；零长度 payload 和已完成帧仍在 chunk 末尾完成状态转换。合成回归覆盖默认 64 KiB 文件边界与逐字节切分，不放宽损坏检查或改变读取缓冲大小。
 
 1. Load session metadata and raw JSONL rows. / 加载会话元数据和原始 JSONL 行。
 2. Before full parsing, pre-scan transcript `cwd` metadata to select candidate files for the target repository. Files whose `cwd` matches the target repository enter the candidate set, files known to belong only to other repositories are skipped, and files with no `cwd` metadata are counted as unknown without full parsing or display. / 在完整解析前，先预扫描转录中的 `cwd` metadata，为目标仓库选择候选文件。`cwd` 匹配目标仓库的文件会进入候选集合，已知只属于其他仓库的文件会被跳过，而没有 `cwd` metadata 的文件会计入 unknown，不会再做完整解析，也不会显示。
@@ -147,6 +159,8 @@ Implementation boundary: detail DTO assembly plus timeline/inspector section sel
 
 ### Raw event / 原始事件
 
+Image attachments remain evidence on their message or tool owner, never extra calls. Bounded metadata preserves array order and repeated references; complete legacy `image_order` reconstructs inline/file interleaving. Missing order uses inline-then-file compatibility order; malformed order keeps all references in that fallback and shows uncertainty. File IDs are opaque Inspector references, never paths or URLs; their Main detail explicitly states that local preview is unavailable. Existing embedded-image previews retain their lazy source-backed path. Attachment-aware mirror checks use complete identity/order evidence and fail closed when externalization or malformed order prevents comparison. / 图片附件继续作为消息或工具 owner 的证据，不形成额外调用。有界 metadata 保留数组顺序和重复引用；完整 legacy image_order 恢复 inline／file 交错。缺失顺序采用 inline-then-file 兼容顺序；畸形顺序在此回退下保留全部引用并显示不确定性。File ID 是 Inspector 中的不透明引用，不是路径或 URL；Main 详情明确说明无法本地预览。已有内嵌图片预览继续沿用延迟来源回读。镜像检查使用完整附件身份／顺序证据；外部化或畸形顺序妨碍比较时保守不合并。
+
 Important fields:
 
 重要字段：
@@ -173,6 +187,10 @@ Important fields:
 - `sourceLocator`
 
 ### Logical event / 逻辑事件
+
+`external_tool_input` is a non-execution Main kind for valid named Codex `function_call_output` records whose `call_id` is absent/null. Each admitted source record owns one event and its Raw Reference; source name, optional namespace and readable supported output own search text. Empty/wrong-type IDs, conflicting aliases, missing names and unsupported outputs fail closed to the existing fallback. No synthetic call ID, request, success/failure status, user role or tool-call metric is assigned. Trajectory places it in Input and folding can independently control it. Canonical external-output mirror normalization is deferred until exact identity/schema evidence is established. / external_tool_input 是非执行的 Main kind，接纳 call_id 缺失／null 的合法具名 Codex function_call_output。每条准入记录拥有独立事件和 Raw Reference；来源名称、可选 namespace 与受支持的可读输出拥有搜索文本。空／错误类型 ID、冲突别名、缺失名称及不支持的输出保守回退。不生成调用 ID、请求、成功／失败状态、用户角色或工具统计。Trajectory 将其置于 Input，折叠可独立控制。Canonical 外部输出镜像归一化暂缓，直到精确身份／schema 依据确立。
+
+Asynchronous message metadata is bounded presentation evidence owned by an assistant message, independent of the request tool's execution. Questions/options remain read-only content. Explicit item identity, Session and compatible turn ownership govern mirror association; delivery/phase is never turn-completion or answer evidence. Source-backed re-materialization and hydrated detail must reproduce this meaning without retaining the entire parsed source in the Index. / 异步消息 metadata 是助手消息拥有的有界呈现证据，与提问工具执行独立。问题／选项保持只读正文。镜像关联受明确 item identity、Session 及兼容 turn 所有权约束；delivery／phase 绝不是 turn 完成或回答证据。来源支持的重新物化及 hydrated detail 必须复现此语义，而不在 Index 保留完整 parsed 来源。
 
 Important fields:
 

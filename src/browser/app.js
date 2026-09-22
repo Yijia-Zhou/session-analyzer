@@ -88,6 +88,7 @@ const KIND_LABELS = {
   js_repl: 'JS REPL',
   agent_coordination: 'Subagent coordination',
   other_tool_call: 'Other tool call',
+  external_tool_input: 'External tool input',
   code_mode_operation: 'Code Mode tool call',
   proposed_plan: 'Proposed plan',
   plan_update: 'Plan update',
@@ -7700,7 +7701,7 @@ async function inspectAndRevealEvent(target, options = {}) {
 }
 
 async function navigateToLayerEvent(targetLayerId, targetEventId) {
-  if (!['main', 'protocol'].includes(targetLayerId)
+  if (!['main', 'protocol', 'raw'].includes(targetLayerId)
       || !targetEventId
       || !state.selectedSessionId
       || state.searchScope !== 'session') return false;

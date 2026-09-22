@@ -172,6 +172,71 @@ test('raw parser preserves unknown records through generic fallback fields', () 
   assert.equal(raw.parsed.payload.nested.message, 'new protocol payload at C:\\Users\\Yijia\\repo');
 });
 
+test('raw parser projects bounded attachment preview/search evidence without retaining media URLs', () => {
+  const { makeRawEvent } = makeParser();
+  const message = makeRawEvent({
+    timestamp: '2026-09-18T10:00:00.000Z',
+    type: 'response_item',
+    payload: {
+      type: 'message',
+      role: 'user',
+      content: [
+        { type: 'input_text', text: 'Please inspect this.' },
+        { type: 'input_image', file_id: 'file_source_fixture', detail: 'high' },
+      ],
+    },
+  }, 8, '2026\\09\\18\\rollout.jsonl', 'session-source');
+
+  assert.equal(message.messageText, 'Please inspect this.');
+  assert.equal(message.attachmentSummary.totalCount, 1);
+  assert.equal(message.attachmentSummary.attachments[0].fileId, 'file_source_fixture');
+  assert.match(message.preview, /file-backed image/);
+  assert.match(message.searchText, /no local preview/);
+  assert.doesNotMatch(JSON.stringify(message.attachmentSummary), /data:image|base64/);
+
+  const legacy = makeRawEvent({
+    timestamp: '2026-09-18T10:00:01.000Z',
+    type: 'event_msg',
+    payload: {
+      type: 'user_message',
+      message: 'Legacy mixed input',
+      images: ['data:image/png;base64,SOURCE_SECRET'],
+      file_ids: ['file_legacy_source'],
+      file_id_details: ['low'],
+      image_order: ['file', 'inline'],
+    },
+  }, 9, '2026\\09\\18\\rollout.jsonl', 'session-source');
+
+  assert.equal(legacy.attachmentSummary.order.mode, 'image_order');
+  assert.equal(legacy.attachmentSummary.attachments[0].kind, 'file');
+  assert.equal(legacy.attachmentSummary.attachments[1].kind, 'inline');
+  assert.match(legacy.searchText, /file-backed image/);
+  assert.doesNotMatch(JSON.stringify(legacy.attachmentSummary), /SOURCE_SECRET|data:image/);
+
+  const external = makeRawEvent({
+    timestamp: '2026-09-18T10:00:02.000Z',
+    type: 'response_item',
+    payload: {
+      type: 'function_call_output',
+      call_id: null,
+      name: 'notifications',
+      namespace: 'fixture_service',
+      output: [
+        { type: 'input_text', text: 'External image received.' },
+        { type: 'input_image', file_id: 'file_external_source' },
+        { type: 'input_audio', audio_url: 'data:audio/wav;base64,AUDIO_SECRET' },
+        { type: 'encrypted_content', encrypted_content: 'ENCRYPTED_SECRET' },
+      ],
+    },
+  }, 10, '2026\\09\\18\\rollout.jsonl', 'session-source');
+
+  assert.equal(external.output, 'External image received.');
+  assert.match(external.preview, /External image received/);
+  assert.match(external.preview, /file-backed image/);
+  assert.match(external.searchText, /notifications/);
+  assert.doesNotMatch(external.searchText, /file_external_source|AUDIO_SECRET|ENCRYPTED_SECRET/);
+});
+
 test('raw parser exposes exact subagent activity identity without generic call-id admission', () => {
   const { makeRawEvent } = makeParser();
   const raw = makeRawEvent({

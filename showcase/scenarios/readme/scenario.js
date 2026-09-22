@@ -19,16 +19,89 @@ const command = (commandText, output, options = {}) => ({
   exitCode: options.exitCode == null ? (options.status === 'failed' ? 1 : 0) : options.exitCode,
 });
 
+// Readable synthetic snapshots, not a replay of a real task-board session.
+const navigationSource = `export function materializeSearchTarget(match) {
+  return {
+    sessionId: match.sessionId,
+    eventId: match.eventId,
+  };
+}
+
+export function searchMatchCount(matches) {
+  return matches.length;
+}
+`;
+const testSource = `import test from 'node:test';
+import assert from 'node:assert/strict';
+import { materializeSearchTarget, searchMatchCount } from '../../src/browser/search-navigation.js';
+
+const match = { sessionId: 'session-b', eventId: 'event-7', event: { id: 'event-7' } };
+test('search-navigation counts no matches', () => assert.equal(searchMatchCount([]), 0));
+test('search-navigation counts one match', () => assert.equal(searchMatchCount([match]), 1));
+test('search-navigation counts repeated occurrences', () => assert.equal(searchMatchCount([match, match]), 2));
+test('search-navigation keeps the session ID', () => assert.equal(materializeSearchTarget(match).sessionId, 'session-b'));
+test('search-navigation keeps the event ID', () => assert.equal(materializeSearchTarget(match).eventId, 'event-7'));
+test('search-navigation creates a separate target', () => assert.notEqual(materializeSearchTarget(match), match));
+test('search-navigation leaves the match unchanged', () => {
+  const before = structuredClone(match);
+  materializeSearchTarget(match);
+  assert.deepEqual(match, before);
+});
+test('search-navigation leaves the match list unchanged', () => {
+  const matches = [match];
+  searchMatchCount(matches);
+  assert.deepEqual(matches, [match]);
+});
+test('search-navigation accepts another session', () => assert.equal(materializeSearchTarget({ ...match, sessionId: 'session-c' }).sessionId, 'session-c'));
+test('search-navigation accepts another event', () => assert.equal(materializeSearchTarget({ ...match, eventId: 'event-8' }).eventId, 'event-8'));
+test('search-navigation returns a numeric count', () => {
+  assert.equal(typeof searchMatchCount([match]), 'number');
+});
+`;
+const regressionTest = `test('search-navigation materializes the next search target', () => {
+  const target = materializeSearchTarget(match);
+  assert.ok(target.event, 'Expected next search target to be materialized');
+  assert.equal(target.event.id, target.eventId);
+  assert.equal(target.selected, true);
+});
+`;
+const firstNavigationSource = navigationSource.replace(
+  '    eventId: match.eventId,', '    eventId: match.eventId,\n    selected: true,',
+);
+const testNames = [
+  'counts no matches', 'counts one match', 'counts repeated occurrences',
+  'keeps the session ID', 'keeps the event ID', 'creates a separate target',
+  'leaves the match unchanged', 'leaves the match list unchanged',
+  'accepts another session', 'accepts another event', 'returns a numeric count',
+  'materializes the next search target',
+];
+// Node spec-reporter layout adapted from the isolated video probe. Timings and
+// suite totals remain authored; this is not evidence of an executed full story.
+const suiteOutput = (failed) => [
+  ...testNames.map((name, index) => `${failed && index === 11 ? '✖' : '✔'} search-navigation ${name} (1.0ms)`),
+  'ℹ tests 12', 'ℹ suites 0', `ℹ pass ${failed ? 11 : 12}`, `ℹ fail ${failed ? 1 : 0}`,
+  'ℹ cancelled 0', 'ℹ skipped 0', 'ℹ todo 0', 'ℹ duration_ms 100.0',
+  ...(failed ? [
+    '', '✖ failing tests:', '',
+    'test at test/browser/search-navigation.test.js:27:1',
+    '✖ search-navigation materializes the next search target (1.0ms)',
+    '  AssertionError [ERR_ASSERTION]: Expected next search target to be materialized',
+    '      at TestContext.<anonymous> (test/browser/search-navigation.test.js:29:10) {',
+    '    generatedMessage: false,', "    code: 'ERR_ASSERTION',", '    actual: undefined,',
+    '    expected: true,', "    operator: '==',", "    diff: 'simple'", '  }',
+  ] : []),
+].join('\n');
+
 const canonical = {
   version: 1,
   project: {
     displayName: 'acme/task-board',
     relativePath: ['workspace', 'acme', 'task-board'],
     files: {
-      'package.json': '{\n  "name": "@acme/task-board",\n  "private": true,\n  "scripts": {\n    "test": "node --test",\n    "build:check": "node scripts/check-build.js"\n  }\n}\n',
-      'src/browser/app.js': '// Synthetic showcase source for the repository-scoped history.\n',
-      'src/browser/search-navigation.js': 'export function materializeSearchTarget() {}\nexport function searchMatchCount() {}\n',
-      'test/browser/search-navigation.test.js': 'test(\'search navigation preserves the selected match\', () => {});\n',
+      'package.json': '{\n  "name": "@acme/task-board",\n  "private": true,\n  "type": "module",\n  "scripts": {\n    "test": "node --test --test-reporter=spec --test-name-pattern",\n    "build:check": "node scripts/check-build.js"\n  }\n}\n',
+      'src/browser/app.js': '// Synthetic search entry; callers open target.event in the selected session.\nexport { materializeSearchTarget, searchMatchCount } from "./search-navigation.js";\n',
+      'src/browser/search-navigation.js': navigationSource,
+      'test/browser/search-navigation.test.js': testSource,
     },
   },
   sessions: [
@@ -49,77 +122,53 @@ const canonical = {
           turn: 'turn-1',
           explanation: 'Trace the existing search flow, make match targets stable, add a regression test, then rerun the focused checks.',
           steps: [
-            ['Trace the existing search flow', 'completed'],
-            ['Make match targets stable', 'completed'],
-            ['Add a regression test', 'completed'],
-            ['Run focused checks', 'in_progress'],
+            ['Trace the existing search flow', 'in_progress'],
+            ['Make match targets stable', 'pending'],
+            ['Add a regression test', 'pending'],
+            ['Run focused checks', 'pending'],
           ],
         },
         command(
-          'rg -n "searchMatchCount|materializeSearchTarget" src/browser/search-navigation.js test/browser/search-navigation.test.js',
-          'src/browser/search-navigation.js:18: export function materializeSearchTarget\ntest/browser/search-navigation.test.js:7: preserves the selected match',
+          'rg -n "export function" src/browser/search-navigation.js',
+          '1:export function materializeSearchTarget(match) {\n8:export function searchMatchCount(matches) {',
+        ),
+        command(
+          "sed -n '1,80p' src/browser/app.js src/browser/search-navigation.js test/browser/search-navigation.test.js",
+          '// Synthetic search entry; callers open target.event in the selected session.\nexport { materializeSearchTarget, searchMatchCount } from "./search-navigation.js";\n' + navigationSource + testSource,
         ),
         patch({
           'src/browser/search-navigation.js': {
             type: 'update',
-            unified_diff: '@@ -18,3 +18,8 @@\n export function materializeSearchTarget() {\n+  return registerSearchMatch(target);\n }\n+\n+export function searchMatchCount(matches) {\n+  return matches.length;\n+}',
+            unified_diff: '@@ -1,6 +1,7 @@\n export function materializeSearchTarget(match) {\n   return {\n     sessionId: match.sessionId,\n     eventId: match.eventId,\n+    selected: true,\n   };\n }',
           },
           'test/browser/search-navigation.test.js': {
             type: 'update',
-            unified_diff: '@@ -1,1 +1,7 @@\n+test(\'search navigation preserves the selected match\', () => {\n+  assert.equal(searchMatchCount([\'file\']), 1);\n+  assert.equal(materializeSearchTarget(\'file\').selected, true);\n+});',
+            unified_diff: '@@ -26,1 +26,7 @@\n ' + testSource.trimEnd().split('\n').at(-1) + '\n' + regressionTest.trimEnd().split('\n').map((line) => '+' + line).join('\n'),
           },
-        }, 'Patch applied; search targets now keep their selected event.'),
+        }, 'Patch applied; targets retain their IDs and selection state; regression test added.'),
         command(
           'npm test -- search-navigation',
-          'Focused search navigation suite\nExpected next search target to be materialized',
-          { status: 'failed', stderr: 'Expected next search target to be materialized', exitCode: 1 },
+          suiteOutput(true),
+          { status: 'failed', exitCode: 1 },
+        ),
+        command(
+          "sed -n '1,11p' src/browser/search-navigation.js; sed -n '27,32p' test/browser/search-navigation.test.js",
+          firstNavigationSource + regressionTest,
         ),
         patch({
           'src/browser/search-navigation.js': {
             type: 'update',
-            unified_diff: '@@ -22,2 +22,4 @@\n export function searchMatchCount(matches) {\n-  return matches.length;\n+  const target = materializeSearchTarget(matches[0]);\n+  return { count: matches.length, target };\n }',
+            unified_diff: '@@ -3,5 +3,6 @@\n     sessionId: match.sessionId,\n     eventId: match.eventId,\n     selected: true,\n+    event: match.event,\n   };\n }',
           },
         }, 'Patch applied; the jump target is materialized before navigation advances.'),
         command(
           'npm test -- search-navigation',
-          [
-            'Focused search navigation suite',
-            'TAP version 13',
-            '# Subtest: project search finds a match in another session',
-            'ok 1 - project search finds a match in another session',
-            '# Subtest: opening a result selects its session',
-            'ok 2 - opening a result selects its session',
-            '# Subtest: opening a result materializes its event',
-            'ok 3 - opening a result materializes its event',
-            '# Subtest: selected match remains highlighted',
-            'ok 4 - selected match remains highlighted',
-            '# Subtest: next match advances to the following event',
-            'ok 5 - next match advances to the following event',
-            '# Subtest: previous match returns to the earlier event',
-            'ok 6 - previous match returns to the earlier event',
-            '# Subtest: repeated text preserves occurrence counts',
-            'ok 7 - repeated text preserves occurrence counts',
-            '# Subtest: touched file filter keeps matching patches',
-            'ok 8 - touched file filter keeps matching patches',
-            '# Subtest: clearing search restores surrounding work',
-            'ok 9 - clearing search restores surrounding work',
-            '# Subtest: session scope excludes other sessions',
-            'ok 10 - session scope excludes other sessions',
-            '# Subtest: project scope includes older sessions',
-            'ok 11 - project scope includes older sessions',
-            '# Subtest: raw references remain attached to the source event',
-            'ok 12 - raw references remain attached to the source event',
-            '1..12',
-            '# tests 12',
-            '# pass 12',
-            '# fail 0',
-            '12 tests passed',
-          ].join('\n'),
+          suiteOutput(false),
         ),
         {
           type: 'assistant',
           turn: 'turn-1',
-          text: 'Search navigation is now repository-scoped and traceable. The regression covered the failed jump, the follow-up fix, and the passing focused suite.',
+          text: 'Search navigation is now repository-scoped and traceable. The missing event was fixed after inspecting the failed assertion. 12 tests passed.',
         },
       ],
     },
@@ -172,18 +221,18 @@ const canonical = {
       ],
     },
     {
-      key: 'review-child',
-      title: 'Review search navigation implementation',
+      key: 'subagent-child',
+      title: 'Write search navigation usage examples',
       date: '2026-08-12',
       time: '2026-08-12T09-05-00',
       id: '66666666-6666-4666-8666-666666666666',
       derivedFrom: 'parent',
       materializedFrom: 'parent',
-      derivedKind: 'review',
-      agentNickname: 'Review',
+      derivedKind: 'subagent',
+      agentNickname: 'Docs',
       events: [
-        { type: 'user', turn: 'review-turn-1', text: 'Review the search navigation implementation and report any release-blocking findings.' },
-        { type: 'assistant', turn: 'review-turn-1', text: 'The inherited search-navigation context is available here; I will check the jump target and focused test result.' },
+        { type: 'user', turn: 'docs-turn-1', text: 'Write usage examples for project-wide search navigation. Use the inherited implementation context to explain finding a match and opening its event.' },
+        { type: 'assistant', turn: 'docs-turn-1', text: 'I will use the inherited search flow and test context to draft examples for finding a match, opening its event, and moving to the next result.' },
       ],
     },
   ],

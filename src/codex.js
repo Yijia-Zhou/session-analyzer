@@ -14,7 +14,6 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
 const { performance } = require('node:perf_hooks');
-const { Readable } = require('node:stream');
 const { isDeepStrictEqual } = require('node:util');
 const crypto = require('node:crypto');
 const MarkdownIt = require('markdown-it');
@@ -32,6 +31,14 @@ const codeModePresentationContract = require('./shared/code-mode-presentation-co
 const planFacet = require('./shared/plan-facet');
 const toolLifecycleContract = require('./codex-tool-lifecycle-contract');
 const i18n = require('./shared/i18n');
+const { asyncMessageMetadata } = require('./codex-async-message');
+const { historyFacts, validHistoryFacts, validHistoryTarget, resolveHistoryReference, historyOwner } = require('./codex-persisted-history');
+const codexMessageEvidence = {
+  ...require('./codex-persisted-history'),
+  ...require('./codex-async-message'),
+  ...require('./codex-attachments'),
+  ...require('./codex-external-input'),
+};
 const fsPath = require('./shared/fs-path');
 const {
   codeModeAssociableOutputFragments,
@@ -62,12 +69,11 @@ const { codeModePresentationContextMap } = require('./shared/code-mode-presentat
 const { createCodexDetailBuilder } = require('./codex-detail');
 const cacheObservationPresentation = require('./cache-observation-presentation');
 const {
-  acquireCodexSourceStat,
-  sameCodexSourceIdentity,
   sourceSizeCoversAcceptedBytes,
   sourceSizeEqualsAcceptedBytes,
   sourceSizeToSafeNumber,
 } = require('./shared/codex-source-stat');
+const codexRolloutStorage = require('./codex-rollout-storage');
 const {
   createCodexCacheObservationSeed,
   finalizeCodexCacheObservation,
@@ -197,6 +203,18 @@ function resolveFsPath(input) {
 
 function normalizeFsPath(input) {
   return fsPath.normalizeFsPath(input);
+}
+
+function codexRolloutDescriptor(filePath, options = {}) {
+  return codexRolloutStorage.normalizeArtifactDescriptor(filePath, options);
+}
+
+function codexRolloutRelativePath(sessionsRoot, filePath) {
+  return codexRolloutStorage.logicalRelativePath(sessionsRoot, filePath);
+}
+
+function codexRolloutIdentityMatches(left, right) {
+  return codexRolloutStorage.sameRolloutIdentity(left, right);
 }
 
 function createCodexLegacyRawOwnerIndexBuilder() {
@@ -366,7 +384,13 @@ const PROTOCOL_LABELS = Object.freeze({
   skill_injection: 'Skill instructions',
   token_count: 'Token count',
   turn_aborted_marker: 'Turn aborted marker',
-  turn_context: 'Turn context',
+  turn_context: 'Recorded turn context',
+  thread_settings_applied: 'Applied thread settings',
+  configuration_update: 'Positional configuration control',
+  realtime_session_started: 'Realtime session started',
+  realtime_session_closed: 'Realtime session closed',
+  bem_item_promoted: 'Realtime backing-agent reference',
+  realtime_identity_conflict: 'Ambiguous realtime identity',
   user_shell_command: 'User shell command',
 });
 
@@ -841,12 +865,24 @@ function sourceSnapshotChangedError() {
 async function hashFilePrefix(filePath, byteLength, signal) {
   const expectedBytes = Number(byteLength);
   if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0) throw sourceSnapshotChangedError();
+  const descriptor = typeof filePath === 'string'
+    ? codexRolloutDescriptor(filePath)
+    : codexRolloutDescriptor(filePath?.physicalPath, filePath);
+  if (descriptor.compression === 'zstd') {
+    try {
+      return await codexRolloutStorage.hashLogicalPrefix(descriptor, expectedBytes, signal);
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') throw sourceSnapshotChangedError();
+      throw error;
+    }
+  }
   const hash = crypto.createHash('sha256');
   let bytesRead = 0;
   if (expectedBytes === 0) {
     return { bytesRead, fingerprint: hash.digest('base64url') };
   }
-  const stream = fs.createReadStream(filePath, { start: 0, end: expectedBytes - 1 });
+  const stream = fs.createReadStream(descriptor.physicalPath, { start: 0, end: expectedBytes - 1 });
   try {
     for await (const chunk of stream) {
       throwIfAborted(signal);
@@ -1748,28 +1784,9 @@ function inferReviewParentSessions(sessions) {
   }
 }
 
-async function collectJsonlFiles(root) {
-  const out = [];
-  async function walk(dir) {
-    let entries;
-    try {
-      entries = await fsp.readdir(dir, { withFileTypes: true });
-    } catch (error) {
-      if (error.code === 'ENOENT') return;
-      throw error;
-    }
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(full);
-      } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-        out.push(full);
-      }
-    }
-  }
-  await walk(root);
-  return out;
+async function collectJsonlFiles(root, options = {}) {
+  const descriptors = await codexRolloutStorage.collectCodexRolloutFiles(root, options);
+  return descriptors.map((descriptor) => descriptor.physicalPath);
 }
 
 function stripExtendedPathPrefix(value) {
@@ -1915,12 +1932,21 @@ async function inspectSessionFile(filePath, options = {}) {
   const signal = options.signal;
   const repoRoot = options.repoRoot ? resolveFsPath(options.repoRoot) : '';
   throwIfAborted(signal);
-  const stat = await fsp.stat(filePath);
-  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+  const descriptor = codexRolloutDescriptor(filePath);
+  const stat = await codexRolloutStorage.acquireRolloutStat(descriptor);
+  const stream = descriptor.compression === 'none'
+    ? fs.createReadStream(descriptor.physicalPath, { encoding: 'utf8' })
+    : codexRolloutStorage.createLogicalReadStream(descriptor, { signal });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   const cwdSet = new Set();
   const leadingSessionFacts = createCodexLeadingSessionFacts();
-
+  let logicalBytes = 0;
+  let matchedRepo = false;
+  if (descriptor.compression === 'zstd') {
+    stream.on('data', (chunk) => {
+      logicalBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk), 'utf8');
+    });
+  }
   try {
     for await (const line of rl) {
       throwIfAborted(signal);
@@ -1939,9 +1965,12 @@ async function inspectSessionFile(filePath, options = {}) {
         const resolvedCwd = resolveFsPath(cwd);
         cwdSet.add(resolvedCwd);
         if (repoRoot && isPathInsideOrSame(resolvedCwd, repoRoot)) {
-          rl.close();
-          stream.destroy();
-          break;
+          matchedRepo = true;
+          if (descriptor.compression === 'none') {
+            rl.close();
+            stream.destroy();
+            break;
+          }
         }
       }
     }
@@ -1950,9 +1979,24 @@ async function inspectSessionFile(filePath, options = {}) {
     stream.destroy();
   }
 
+  if (descriptor.compression === 'zstd') {
+    const verified = await codexRolloutStorage.acquireRolloutStat(descriptor);
+    if (!codexRolloutIdentityMatches(stat.fileIdentity, verified.fileIdentity)
+        || stat.sizeBigInt !== verified.sizeBigInt
+        || stat.mtimeMs !== verified.mtimeMs) {
+      throw sourceSnapshotChangedError();
+    }
+  }
+
   return {
-    bytes: stat.size,
+    bytes: descriptor.compression === 'none' ? stat.physicalBytes : logicalBytes,
+    physicalBytes: stat.physicalBytes,
     updatedAt: safeIso(stat.mtime),
+    sourceIdentity: structuredClone(stat.fileIdentity),
+    compression: descriptor.compression,
+    logicalFile: descriptor.logicalPath,
+    physicalFile: descriptor.physicalPath,
+    matchesRepo: matchedRepo,
     cwdSet,
     ...codexLeadingSessionProjection(leadingSessionFacts),
   };
@@ -1982,14 +2026,24 @@ function materializedForkDigestFilePaths(candidateFiles, inspectionsByFile) {
   return digestFilePaths;
 }
 
-async function discoverProjects({ codexHome }) {
+async function discoverProjects({ codexHome, signal, onDiagnostic } = {}) {
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
-  const files = await collectJsonlFiles(sessionsRoot);
+  const files = await collectJsonlFiles(sessionsRoot, { signal, onDiagnostic });
   const projects = new Map();
 
   for (const filePath of files) {
-    const { bytes, cwdSet, updatedAt } = await inspectSessionFile(filePath);
+    throwIfAborted(signal);
+    let inspected;
+    try {
+      inspected = await inspectSessionFile(filePath, { signal });
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      if (!codexRolloutStorage.isStorageFailure(error)) throw error;
+      onDiagnostic?.({ code: error.code || 'SOURCE_ARTIFACT_UNREADABLE', path: filePath, message: error.message });
+      continue;
+    }
+    const { bytes, cwdSet, updatedAt } = inspected;
 
     for (const repoRoot of cwdSet) {
       const key = normalizeFsPath(repoRoot);
@@ -2040,7 +2094,8 @@ async function readSessionIndex(codexHome) {
 }
 
 function codexSessionIdFromFilePath(filePath) {
-  return path.basename(filePath).match(UUID_RE)?.[1] || path.basename(filePath, '.jsonl');
+  const logicalPath = codexRolloutStorage.logicalRolloutPath(filePath);
+  return path.basename(logicalPath).match(UUID_RE)?.[1] || path.basename(logicalPath, '.jsonl');
 }
 
 function makeEmptySession(filePath, relFile, acceptedBytes, sourceUpdatedAt) {
@@ -2297,7 +2352,7 @@ function protocolPreviewFor(raw, subtype) {
     return truncate(readXmlTag(source, 'objective') || firstProtocolBodyLine(source) || 'Goal context');
   }
   if (subtype === 'turn_context') {
-    return payloadPreview(raw.parsed?.payload, ['turn_id', 'cwd', 'model']) || raw.preview;
+    return payloadPreview(raw.parsed?.payload, ['turn_id', 'cwd', 'model', 'effort']) || raw.preview;
   }
   if (subtype === 'token_count') {
     return formatTokenUsagePreview(raw.parsed?.payload) || raw.preview;
@@ -3733,6 +3788,12 @@ function extractProtocolDetailSections(event, raws) {
     return { timelineSections, inspectorSections };
   }
   if (event.subtype === 'environment_context' || event.subtype === 'session_meta' || event.subtype === 'session_configured' || event.subtype === 'thread_goal_updated' || event.subtype === 'turn_context') {
+    if (event.subtype === 'turn_context') {
+      timelineSections.push(makeNoticeSection('Recorded turn context', 'Captured turn configuration; not proof that every internal request used identical settings or completed successfully.', 'info', 'context'));
+      // Preserve summary as recorded scalar evidence. Without an established
+      // schema version it must not be relabeled as an effective setting.
+      inspectorSections.push(makeNoticeSection('Recorded fields', 'summary is legacy evidence; in Codex 0.155 it is compatibility-only. realtime_active does not identify an audio session.', 'info', 'context'));
+    }
     const entries = event.subtype === 'environment_context'
       ? taggedBlockEntries(primary.messageText)
       : toKvEntries(primary.parsed?.payload, ['cwd', 'turn_id', 'model', 'id', 'originator', 'thread_id', 'thread_name', 'thread_goal', 'goal']);
@@ -3816,6 +3877,8 @@ function extractLifecycleSections(event, raws) {
 }
 
 function rawConversationRole(raw) {
+  const history = historyFacts(raw);
+  if (history?.type === 'transcript_segment') return history.role;
   if (raw.recordType === 'event_msg' && raw.payloadType === 'user_message') return 'user';
   if (raw.recordType === 'event_msg' && raw.payloadType === 'agent_message') return 'assistant';
   if (raw.recordType === 'response_item' && raw.payloadType === 'message' && ['user', 'assistant'].includes(raw.role)) {
@@ -3921,6 +3984,7 @@ const codexDetailBuilder = createCodexDetailBuilder({
     sanitizeLogicalEnvelopeValue,
   },
   cacheObservationPresentation,
+  messages: codexMessageEvidence,
   backgroundTerminalLabel,
   compactBackgroundTerminalSections,
   backgroundTerminalFactsForEvent,
@@ -4096,6 +4160,7 @@ function planUpdateText(raw) {
 }
 
 const codexLogicalBuilder = createCodexLogicalBuilder({
+  messages: codexMessageEvidence,
   agentCoordination,
   codeMode: {
     deriveCodeModeFacts,
@@ -4493,6 +4558,10 @@ function compactCodexRawEvent(raw) {
     sourceClientVersion: compactString(raw.sourceClientVersion),
   };
   if (typeof raw.sessionMetaId === 'string' && raw.sessionMetaId) compact.sessionMetaId = raw.sessionMetaId;
+  const asyncMessage = asyncMessageMetadata(raw.asyncMessage);
+  if (asyncMessage) compact.asyncMessage = asyncMessage;
+  if (raw.historyFacts) compact.historyFacts = structuredClone(raw.historyFacts);
+  if (raw.historyTarget) compact.historyTarget = { ...raw.historyTarget };
   if (typeof raw.terminalSourceEvidence === 'string') compact.terminalSourceEvidence = raw.terminalSourceEvidence;
   if (typeof raw.threadName === 'string' && raw.threadName) compact.threadName = raw.threadName;
   if (typeof raw.reviewLifecyclePhase === 'string' && raw.reviewLifecyclePhase) compact.reviewLifecyclePhase = raw.reviewLifecyclePhase;
@@ -4502,6 +4571,8 @@ function compactCodexRawEvent(raw) {
 }
 
 const COMPACT_RAW_KEYS = new Set([
+  'historyFacts', 'historyTarget',
+  'asyncMessage',
   'terminalSourceEvidence',
   'aggregatedOutput', 'callId', 'canonicalType', 'commandText', 'durationMs', 'embeddedImages',
   'exitCode', 'line', 'maxObservedTokens', 'messageText', 'output', 'payloadType', 'preview',
@@ -4525,6 +4596,8 @@ const COMPACT_SESSION_STRING_FIELDS = [
   'transcriptUpdatedAt', 'updatedAt',
 ];
 const COMPACT_LOGICAL_KEYS = new Set([
+  'historyFacts',
+  'asyncMessage',
   'cacheObservation', 'channels', 'codeModeOperation', 'hasLongOutput', 'hasReadableReasoning', 'id', 'kind', 'label', 'layer',
   'outputStats', 'preview', 'rawRefs', 'role', 'schemaVersion', 'searchText', 'severity',
   'source', 'sourceKind', 'sourceLocator', 'status', 'subtype', 'tags', 'timestamp',
@@ -4580,6 +4653,9 @@ function isReusableCompactRaw(raw) {
     && Object.keys(raw).every((key) => COMPACT_RAW_KEYS.has(key))
     && COMPACT_RAW_STRING_FIELDS.every((key) => typeof raw[key] === 'string')
     && raw.sourceKind === CODEX_SOURCE_KIND
+    && (raw.asyncMessage === undefined || isReusableAsyncMessage(raw.asyncMessage))
+    && (raw.historyFacts === undefined || validHistoryFacts(raw.historyFacts))
+    && (raw.historyTarget === undefined || validHistoryTarget(raw.historyTarget))
     && Number.isSafeInteger(raw.line)
     && Number.isSafeInteger(raw.rawIndex)
     && (raw.exitCode === null || typeof raw.exitCode === 'string' || typeof raw.exitCode === 'number')
@@ -4624,6 +4700,8 @@ function isReusableCompactLogicalEvent(event) {
     && !Array.isArray(event)
     && Object.keys(event).every((key) => COMPACT_LOGICAL_KEYS.has(key))
     && COMPACT_LOGICAL_STRING_FIELDS.every((key) => typeof event[key] === 'string')
+    && (event.asyncMessage === undefined || isReusableAsyncMessage(event.asyncMessage))
+    && (event.historyFacts === undefined || validHistoryFacts(event.historyFacts))
     && Array.isArray(event.rawRefs)
     && event.rawRefs.every(isReusableCompactRawRef)
     && (event.source == null || event.rawRefs.includes(event.source))
@@ -4635,6 +4713,10 @@ function isReusableCompactLogicalEvent(event) {
         && !retainsForbiddenSourceContainer(event.codeModeOperation)))
     && !Object.hasOwn(event, 'parsed')
     && !Object.hasOwn(event, 'payload');
+}
+
+function isReusableAsyncMessage(value) {
+  return Boolean(value && isDeepStrictEqual(value, asyncMessageMetadata(value)));
 }
 
 function retainsForbiddenSourceContainer(root) {
@@ -4675,9 +4757,10 @@ function isReusableCompactSession(session) {
 function hasExpectedSourceIdentityShape(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const keys = Object.keys(value);
-  return keys.length === 2
+  return (keys.length === 2 || keys.length === 3)
     && keys.includes('device')
     && keys.includes('inode')
+    && (keys.length === 2 || value.compression === 'zstd')
     && typeof value.device === 'string'
     && typeof value.inode === 'string';
 }
@@ -4685,9 +4768,14 @@ function hasExpectedSourceIdentityShape(value) {
 async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {}) {
   throwIfAborted(signal);
   const acceptedSnapshot = options.acceptedSourceSnapshot || null;
+  const descriptor = options.sourceDescriptor
+    ? codexRolloutDescriptor(options.sourceDescriptor.physicalPath, options.sourceDescriptor)
+    : codexRolloutDescriptor(filePath, acceptedSnapshot?.compression
+      ? { compression: acceptedSnapshot.compression }
+      : {});
   let initial;
   try {
-    initial = await acquireCodexSourceStat(filePath);
+    initial = await codexRolloutStorage.acquireRolloutStat(descriptor);
   } catch (error) {
     if (acceptedSnapshot && (error?.code === 'ENOENT' || error?.code === 'ENOTDIR')) {
       throw indexedSourceStaleError();
@@ -4697,21 +4785,27 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   const snapshotFailure = acceptedSnapshot ? indexedSourceStaleError : sourceSnapshotChangedError;
   const acceptedBytes = acceptedSnapshot
     ? acceptedSnapshot.acceptedBytes
-    : sourceSizeToSafeNumber(initial.sizeBigInt);
+    : (Number.isSafeInteger(options.acceptedLogicalBytes)
+      ? options.acceptedLogicalBytes
+      : sourceSizeToSafeNumber(initial.sizeBigInt));
   if (!Number.isSafeInteger(acceptedBytes)
       || acceptedBytes < 0
-      || !sourceSizeCoversAcceptedBytes(initial.sizeBigInt, acceptedBytes)
       || (acceptedSnapshot
-        && !sameCodexSourceIdentity(initial.fileIdentity, acceptedSnapshot.fileIdentity))) {
+        && (!codexRolloutIdentityMatches(initial.fileIdentity, acceptedSnapshot.fileIdentity)
+          || (acceptedSnapshot.compression && descriptor.compression !== acceptedSnapshot.compression)))) {
+    throw snapshotFailure();
+  }
+  if (descriptor.compression === 'none'
+      && !sourceSizeCoversAcceptedBytes(initial.sizeBigInt, acceptedBytes)) {
     throw snapshotFailure();
   }
   const session = makeEmptySession(filePath, relFile, acceptedBytes, safeIso(initial.mtime));
   const captureCacheObservationSeeds = options.captureCacheObservationSeeds === true;
   if (captureCacheObservationSeeds) session._cacheObservationSeeds = [];
   session._sourceIdentity = {
-    device: initial.fileIdentity.device,
-    inode: initial.fileIdentity.inode,
+    ...initial.fileIdentity,
   };
+  session._sourceCompression = descriptor.compression;
   let primarySessionMetaSeen = false;
   const relationshipPlanningFacts = typeof options.onAcceptedRelationshipPlanningProjection === 'function'
     ? createCodexLeadingSessionFacts()
@@ -4721,9 +4815,10 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   const sourceHash = crypto.createHash('sha256');
   let sourceBytesRead = 0;
 
-  const stream = acceptedBytes > 0
-    ? fs.createReadStream(filePath, { start: 0, end: acceptedBytes - 1 })
-    : Readable.from([]);
+  const stream = codexRolloutStorage.createLogicalReadStream(descriptor, {
+    signal,
+    maxBytes: acceptedBytes,
+  });
   stream.on('data', (chunk) => {
     sourceBytesRead += chunk.length;
     sourceHash.update(chunk);
@@ -4777,9 +4872,10 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       }
       const embeddedImages = [];
       const canonicalDigest = includeCanonicalRawDigests ? canonicalRawRecordDigest(record) : '';
+      const attachmentSummary = codexMessageEvidence.summarizeCodexAttachments(record.payload);
       externalizeKnownImageGenerationResult(record, { file: relFile, line: lineNumber }, embeddedImages);
       externalizeEmbeddedImages(record, { file: relFile, line: lineNumber }, embeddedImages);
-      const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages);
+      const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages, attachmentSummary);
       raw.sourceLineDigest = sourceLineDigest(line);
       if (canonicalDigest) raw._canonicalRawDigest = canonicalDigest;
       raw.sourceClientVersion = typeof record.version === 'string' ? record.version : '';
@@ -4798,6 +4894,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       }
       updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
       if (!sessionShellCaptured
+          && raw.recordType !== 'realtime_item'
           && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
         const shellContext = readXmlTag(raw.messageText, 'shell');
         if (shellContext) {
@@ -4834,14 +4931,15 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   let verified;
   let verifiedStat;
   await observeMaterializationPhase('adapter_source_verification_read', async () => {
-    verified = await hashFilePrefix(filePath, acceptedBytes, signal);
-    verifiedStat = await acquireCodexSourceStat(filePath);
+    verified = await hashFilePrefix(descriptor, acceptedBytes, signal);
+    verifiedStat = await codexRolloutStorage.acquireRolloutStat(descriptor);
   });
   if (sourceBytesRead !== acceptedBytes
       || verified.bytesRead !== acceptedBytes
       || verified.fingerprint !== sourceFingerprint
-      || !sourceSizeCoversAcceptedBytes(verifiedStat.sizeBigInt, acceptedBytes)
-      || !sameCodexSourceIdentity(verifiedStat.fileIdentity, initial.fileIdentity)
+      || (descriptor.compression === 'none'
+        && !sourceSizeCoversAcceptedBytes(verifiedStat.sizeBigInt, acceptedBytes))
+      || !codexRolloutIdentityMatches(verifiedStat.fileIdentity, initial.fileIdentity)
       || (acceptedSnapshot && sourceFingerprint !== acceptedSnapshot.digest)) {
     throw snapshotFailure();
   }
@@ -4977,11 +5075,17 @@ async function scanCodexRelationshipEvidence(
   options = {},
 ) {
   throwIfAborted(signal);
-  const stat = await acquireCodexSourceStat(filePath);
-  const acceptedBytes = sourceSizeToSafeNumber(stat.sizeBigInt);
+  const descriptor = codexRolloutDescriptor(filePath);
+  const stat = await codexRolloutStorage.acquireRolloutStat(descriptor);
+  const acceptedBytes = Number.isSafeInteger(options.acceptedLogicalBytes)
+    ? options.acceptedLogicalBytes
+    : (descriptor.compression === 'zstd'
+      ? null
+      : sourceSizeToSafeNumber(stat.sizeBigInt));
   if (!Number.isSafeInteger(acceptedBytes)
       || acceptedBytes < 0
-      || !sourceSizeCoversAcceptedBytes(stat.sizeBigInt, acceptedBytes)) {
+      || (descriptor.compression === 'none'
+        && !sourceSizeCoversAcceptedBytes(stat.sizeBigInt, acceptedBytes))) {
     throw sourceSnapshotChangedError();
   }
   const idFromName = codexSessionIdFromFilePath(filePath);
@@ -5011,9 +5115,10 @@ async function scanCodexRelationshipEvidence(
   let latestRawTimestampMs = null;
   let requiresFullParse = false;
 
-  const stream = acceptedBytes > 0
-    ? fs.createReadStream(filePath, { start: 0, end: acceptedBytes - 1 })
-    : Readable.from([]);
+  const stream = codexRolloutStorage.createLogicalReadStream(descriptor, {
+    signal,
+    maxBytes: acceptedBytes,
+  });
   stream.on('data', (chunk) => {
     sourceBytesRead += chunk.length;
     sourceHash.update(chunk);
@@ -5102,14 +5207,15 @@ async function scanCodexRelationshipEvidence(
     });
   }
   throwIfAborted(signal);
-  const verified = await hashFilePrefix(filePath, acceptedBytes, signal);
-  const verifiedStat = await acquireCodexSourceStat(filePath);
+  const verified = await hashFilePrefix(descriptor, acceptedBytes, signal);
+  const verifiedStat = await codexRolloutStorage.acquireRolloutStat(descriptor);
   throwIfAborted(signal);
   if (sourceBytesRead !== acceptedBytes
       || verified.bytesRead !== acceptedBytes
       || verified.fingerprint !== sourceFingerprint
-      || !sourceSizeCoversAcceptedBytes(verifiedStat.sizeBigInt, acceptedBytes)
-      || !sameCodexSourceIdentity(verifiedStat.fileIdentity, stat.fileIdentity)) {
+      || (descriptor.compression === 'none'
+        && !sourceSizeCoversAcceptedBytes(verifiedStat.sizeBigInt, acceptedBytes))
+      || !codexRolloutIdentityMatches(verifiedStat.fileIdentity, stat.fileIdentity)) {
     throw sourceSnapshotChangedError();
   }
 
@@ -5682,7 +5788,7 @@ async function canReuseWholeSourceBackedIndex({
 
   for (const filePath of candidates) {
     throwIfAborted(signal);
-    const sourceFile = path.relative(sessionsRoot, filePath);
+    const sourceFile = codexRolloutRelativePath(sessionsRoot, filePath);
     const indexedSession = previousBySourceFile.get(sourceFile);
     if (!indexedSession || candidateInspections.get(filePath)?.bytes !== indexedSession.bytes) {
       return false;
@@ -5704,21 +5810,26 @@ async function canReuseWholeSourceBackedIndex({
     }
     let before;
     try {
-      before = await acquireCodexSourceStat(filePath);
+      before = await codexRolloutStorage.acquireRolloutStat(filePath);
     } catch {
       return false;
     }
     const acceptedBytes = transcriptEntry.acceptedBytes;
-    if (!sourceSizeEqualsAcceptedBytes(before.sizeBigInt, acceptedBytes)
-        || !sameCodexSourceIdentity(before.fileIdentity, transcriptEntry.evidence?.fileIdentity)) {
+    const expectedCompression = transcriptEntry.evidence?.fileIdentity?.compression;
+    if ((expectedCompression && before.descriptor.compression !== expectedCompression)
+        || (!expectedCompression && before.descriptor.compression !== 'none')
+        || (before.descriptor.compression === 'none'
+          && !sourceSizeEqualsAcceptedBytes(before.sizeBigInt, acceptedBytes))
+        || !codexRolloutIdentityMatches(before.fileIdentity, transcriptEntry.evidence?.fileIdentity)) {
       return false;
     }
     const fingerprint = await hashFilePrefix(filePath, acceptedBytes, signal);
-    const after = await acquireCodexSourceStat(filePath);
+    const after = await codexRolloutStorage.acquireRolloutStat(filePath);
     if (fingerprint.bytesRead !== acceptedBytes
         || fingerprint.fingerprint !== transcriptEntry.digest
-        || !sourceSizeEqualsAcceptedBytes(after.sizeBigInt, acceptedBytes)
-        || !sameCodexSourceIdentity(after.fileIdentity, before.fileIdentity)) {
+        || (after.descriptor.compression === 'none'
+          && !sourceSizeEqualsAcceptedBytes(after.sizeBigInt, acceptedBytes))
+        || !codexRolloutIdentityMatches(after.fileIdentity, before.fileIdentity)) {
       return false;
     }
   }
@@ -5730,6 +5841,7 @@ async function buildIndex({
   codexHome,
   onProgress,
   signal,
+  onDiagnostic,
   previousIndex = null,
   retainFullSourceRecordsForTests = false,
   beforeSourceSnapshotVerificationForTests = null,
@@ -5753,7 +5865,7 @@ async function buildIndex({
     elapsedMs: 0,
   });
   const sessionIndex = await readSessionIndex(resolvedCodex);
-  const files = await collectJsonlFiles(sessionsRoot);
+  const files = await collectJsonlFiles(sessionsRoot, { signal, onDiagnostic });
   const candidates = [];
   const candidateInspections = new Map();
   let skippedFileCount = 0;
@@ -5776,7 +5888,16 @@ async function buildIndex({
 
   for (const filePath of files) {
     throwIfAborted(signal);
-    const inspected = await inspectSessionFile(filePath, { repoRoot: resolvedRepo, signal });
+    let inspected;
+    try {
+      inspected = await inspectSessionFile(filePath, { repoRoot: resolvedRepo, signal });
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      if (!codexRolloutStorage.isStorageFailure(error)) throw error;
+      unknownFileCount += 1;
+      onDiagnostic?.({ code: error.code || 'SOURCE_ARTIFACT_UNREADABLE', path: filePath, message: error.message });
+      continue;
+    }
     const hasCwd = inspected.cwdSet.size > 0;
     const matchesRepo = [...inspected.cwdSet].some((cwd) => isPathInsideOrSame(cwd, resolvedRepo));
     if (matchesRepo) {
@@ -5836,15 +5957,18 @@ async function buildIndex({
 
   for (const filePath of candidates) {
     throwIfAborted(signal);
-    const relFile = path.relative(sessionsRoot, filePath);
+    const relFile = codexRolloutRelativePath(sessionsRoot, filePath);
     const previousSession = previousSessionsBySource.get(relFile);
-    const currentStat = previousSession ? await acquireCodexSourceStat(filePath) : null;
+    const currentStat = previousSession
+      ? await codexRolloutStorage.acquireRolloutStat(filePath)
+      : null;
     const requiresCanonicalRawDigests = canonicalDigestFilePaths.has(filePath);
     const statReusable = previousSession
       && !cacheObservationForTests
       && hasExpectedSourceIdentityShape(previousSession._sourceIdentity)
-      && sameCodexSourceIdentity(currentStat.fileIdentity, previousSession._sourceIdentity)
-      && sourceSizeEqualsAcceptedBytes(currentStat.sizeBigInt, previousSession.bytes)
+      && codexRolloutIdentityMatches(currentStat.fileIdentity, previousSession._sourceIdentity)
+      && (currentStat.descriptor.compression === 'zstd'
+        || sourceSizeEqualsAcceptedBytes(currentStat.sizeBigInt, previousSession.bytes))
       && previousSession.sourceUpdatedAt === safeIso(currentStat.mtime)
       && typeof previousSession.sourceFingerprint === 'string'
       && previousSession.sourceFingerprint.length > 0
@@ -5854,11 +5978,11 @@ async function buildIndex({
     if (statReusable) {
       const acceptedBytes = previousSession.bytes;
       const currentSource = await hashFilePrefix(filePath, acceptedBytes, signal);
-      const verifiedStat = await acquireCodexSourceStat(filePath);
+      const verifiedStat = await codexRolloutStorage.acquireRolloutStat(filePath);
       reusable = currentSource.bytesRead === acceptedBytes
         && currentSource.fingerprint === previousSession.sourceFingerprint
         && sameSourceStat(currentStat, verifiedStat)
-        && sameCodexSourceIdentity(currentStat.fileIdentity, verifiedStat.fileIdentity);
+        && codexRolloutIdentityMatches(currentStat.fileIdentity, verifiedStat.fileIdentity);
     }
     let session;
     if (reusable) {
@@ -5873,6 +5997,9 @@ async function buildIndex({
       session = await parseSessionFile(filePath, relFile, resolvedRepo, signal, {
         canonicalRawDigests: requiresCanonicalRawDigests,
         retainFullSourceRecordsForTests,
+        acceptedLogicalBytes: codexRolloutStorage.compressionForArtifact(filePath) === 'zstd'
+          ? candidateInspections.get(filePath)?.bytes
+          : undefined,
         beforeSourceSnapshotVerificationForTests,
         captureCacheObservationSeeds: cacheObservationForTests,
       });
@@ -5969,6 +6096,7 @@ async function buildSourceBackedIndex({
   codexHome,
   onProgress,
   signal,
+  onDiagnostic,
   previousIndex = null,
   beforeSourceSnapshotVerificationForTests = null,
   beforeRelationshipInferenceForTests = null,
@@ -5994,7 +6122,7 @@ async function buildSourceBackedIndex({
     elapsedMs: 0,
   });
   const sessionIndex = await readSessionIndex(resolvedCodex);
-  const files = await collectJsonlFiles(sessionsRoot);
+  const files = await collectJsonlFiles(sessionsRoot, { signal, onDiagnostic });
   const candidates = [];
   const candidateInspections = new Map();
   let skippedFileCount = 0;
@@ -6016,7 +6144,16 @@ async function buildSourceBackedIndex({
   });
   for (const filePath of files) {
     throwIfAborted(signal);
-    const inspected = await inspectSessionFile(filePath, { repoRoot: resolvedRepo, signal });
+    let inspected;
+    try {
+      inspected = await inspectSessionFile(filePath, { repoRoot: resolvedRepo, signal });
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      if (!codexRolloutStorage.isStorageFailure(error)) throw error;
+      unknownFileCount += 1;
+      onDiagnostic?.({ code: error.code || 'SOURCE_ARTIFACT_UNREADABLE', path: filePath, message: error.message });
+      continue;
+    }
     const hasCwd = inspected.cwdSet.size > 0;
     const matchesRepo = [...inspected.cwdSet].some((cwd) => isPathInsideOrSame(cwd, resolvedRepo));
     if (matchesRepo) {
@@ -6142,6 +6279,11 @@ async function buildSourceBackedIndex({
     let planningProjection = null;
     const parseOptions = {
       canonicalRawDigests: retainForkEvidence,
+      acceptedLogicalBytes: acceptedEvidence
+        ? undefined
+        : (codexRolloutStorage.compressionForArtifact(filePath) === 'zstd'
+          ? candidateInspections.get(filePath)?.bytes
+          : undefined),
       beforeSourceSnapshotVerificationForTests,
       onTransientMemorySample,
       onAcceptedRelationshipPlanningProjection: (projection) => {
@@ -6175,7 +6317,7 @@ async function buildSourceBackedIndex({
 
   for (const filePath of candidates) {
     throwIfAborted(signal);
-    const relFile = path.relative(sessionsRoot, filePath);
+    const relFile = codexRolloutRelativePath(sessionsRoot, filePath);
     const initiallyDeep = initialDeepFilePaths.has(filePath);
     let result;
     if (forceFullRelationshipPassForTests === true || initiallyDeep) {
@@ -6190,7 +6332,12 @@ async function buildSourceBackedIndex({
         relFile,
         resolvedRepo,
         signal,
-        { beforeSourceSnapshotVerificationForTests },
+        {
+          beforeSourceSnapshotVerificationForTests,
+          acceptedLogicalBytes: codexRolloutStorage.compressionForArtifact(filePath) === 'zstd'
+            ? candidateInspections.get(filePath)?.bytes
+            : undefined,
+        },
       );
       if (scanned.requiresFullParse) {
         result = await parseFullRelationshipCandidate(
@@ -6310,15 +6457,26 @@ async function buildSourceBackedIndex({
   }
 
   const parseAcceptedRelationshipEvidence = async (evidence) => {
-    const filePath = path.resolve(sessionsRoot, evidence.sourceFile);
+    let descriptor;
+    try {
+      descriptor = await codexRolloutStorage.resolveRolloutArtifact(sessionsRoot, evidence.sourceFile, {
+        compression: evidence.sourceIdentity?.compression,
+      });
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') throw sourceSnapshotChangedError();
+      throw error;
+    }
+    const filePath = descriptor.physicalPath;
     if (!isPathInsideOrSame(filePath, sessionsRoot)) throw sourceSnapshotChangedError();
     let session;
     try {
       session = await parseSessionFile(filePath, evidence.sourceFile, resolvedRepo, signal, {
+        sourceDescriptor: descriptor,
         acceptedSourceSnapshot: {
           acceptedBytes: evidence.bytes,
           digest: evidence.sourceFingerprint,
           fileIdentity: evidence.sourceIdentity,
+          compression: descriptor.compression,
         },
         beforeSourceSnapshotVerificationForTests,
         onTransientMemorySample,
@@ -6531,7 +6689,20 @@ async function materializeCodexSessionInternal(
   const index = materializationContext;
   const descriptor = indexedSession.materializationDescriptor;
   const entry = dependencySet.entries[0];
-  const target = path.resolve(index.sessionsRoot, descriptor.payload.sourceFile);
+  let sourceDescriptor;
+  try {
+    sourceDescriptor = await codexRolloutStorage.resolveRolloutArtifact(
+      index.sessionsRoot,
+      descriptor.payload.sourceFile,
+      {
+        compression: entry.evidence?.fileIdentity?.compression,
+      },
+    );
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') throw indexedSourceStaleError();
+    throw error;
+  }
+  const target = sourceDescriptor.physicalPath;
   if (!isPathInsideOrSame(target, index.sessionsRoot)) throw indexedSourceStaleError();
   const session = await parseSessionFile(
     target,
@@ -6543,7 +6714,9 @@ async function materializeCodexSessionInternal(
         acceptedBytes: entry.acceptedBytes,
         digest: entry.digest,
         fileIdentity: entry.evidence.fileIdentity,
+        compression: sourceDescriptor.compression,
       },
+      sourceDescriptor,
       canonicalRawDigests: indexedSession.forkStorageMode === 'materialized',
       captureCacheObservationSeeds: cacheObservation,
     },
@@ -6651,9 +6824,19 @@ function validateCodexMaterializationDescriptor({
     throw new Error('Codex transcript dependency is invalid');
   }
   requireExactCodexKeys(entry.evidence, ['fileIdentity'], 'Codex transcript dependency evidence');
-  requireExactCodexKeys(entry.evidence.fileIdentity, ['device', 'inode'], 'Codex file identity');
+  const identityKeys = entry.evidence.fileIdentity && typeof entry.evidence.fileIdentity === 'object'
+    ? Object.keys(entry.evidence.fileIdentity)
+    : [];
+  if (!(identityKeys.length === 2 || identityKeys.length === 3)
+      || !identityKeys.includes('device')
+      || !identityKeys.includes('inode')
+      || (identityKeys.length === 3 && !identityKeys.includes('compression'))) {
+    throw new Error('Codex file identity is invalid');
+  }
   if (typeof entry.evidence.fileIdentity.device !== 'string'
-      || typeof entry.evidence.fileIdentity.inode !== 'string') {
+      || typeof entry.evidence.fileIdentity.inode !== 'string'
+      || (entry.evidence.fileIdentity.compression !== undefined
+        && entry.evidence.fileIdentity.compression !== 'zstd')) {
     throw new Error('Codex file identity is invalid');
   }
   requireExactCodexKeys(
@@ -6822,22 +7005,18 @@ const {
   matchTerms,
 } = codexSearch;
 
-async function readRawLine(index, relFile, lineNumber) {
-  const target = path.resolve(index.sessionsRoot, relFile);
-  if (!isPathInsideOrSame(target, index.sessionsRoot)) return null;
-  const stream = fs.createReadStream(target, { encoding: 'utf8' });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  let current = 0;
-  for await (const line of rl) {
-    current += 1;
-    if (current === lineNumber) {
-      const parsed = safeJsonParse(line);
-      rl.close();
-      stream.destroy();
-      return { file: relFile, line: lineNumber, raw: line, parsed };
-    }
+async function readRawLine(index, relFile, lineNumber, options = {}) {
+  let descriptor;
+  try {
+    descriptor = await codexRolloutStorage.resolveRolloutArtifact(index.sessionsRoot, relFile);
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
+    throw error;
   }
-  return null;
+  if (!isPathInsideOrSame(descriptor.logicalPath, index.sessionsRoot)) return null;
+  const row = await codexRolloutStorage.readLogicalLine(descriptor, lineNumber, options);
+  if (!row) return null;
+  return { file: relFile, line: lineNumber, raw: row.line, parsed: safeJsonParse(row.line) };
 }
 
 function indexedSourceStaleError() {
@@ -6881,15 +7060,40 @@ async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, opt
   }
 
   const rowsByRawId = new Map();
+  const indexedOwner = session.materializationDescriptor
+    ? session
+    : index.sessionsById?.get(session.id);
+  const dependencySet = index.materializationDependencies?.get(
+    indexedOwner?.materializationDescriptor?.dependencySetId,
+  );
+  const transcriptEntry = dependencySet?.entries?.[0];
   for (const [relFile, expectedLines] of groups) {
     throwIfAborted(signal);
-    const target = path.resolve(index.sessionsRoot, relFile);
-    if (!isPathInsideOrSame(target, index.sessionsRoot)) throw indexedSourceStaleError();
+    let descriptor;
+    try {
+      descriptor = await codexRolloutStorage.resolveRolloutArtifact(index.sessionsRoot, relFile, {
+        compression: transcriptEntry?.evidence?.fileIdentity?.compression,
+      });
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') throw indexedSourceStaleError();
+      throw error;
+    }
+    if (!isPathInsideOrSame(descriptor.logicalPath, index.sessionsRoot)) throw indexedSourceStaleError();
     await options.onFileOpen?.(relFile);
     throwIfAborted(signal);
     let maxLine = 0;
     for (const line of expectedLines.keys()) maxLine = Math.max(maxLine, line);
-    const stream = fs.createReadStream(target, { encoding: 'utf8' });
+    const acceptedBytes = transcriptEntry?.acceptedBytes;
+    const stream = codexRolloutStorage.createLogicalReadStream(descriptor, {
+      signal,
+      maxBytes: Number.isSafeInteger(acceptedBytes) ? acceptedBytes : Number.POSITIVE_INFINITY,
+    });
+    const sourceHash = crypto.createHash('sha256');
+    let sourceBytesRead = 0;
+    stream.on('data', (chunk) => {
+      sourceBytesRead += chunk.length;
+      sourceHash.update(chunk);
+    });
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
     const abortScan = () => {
       rl.close();
@@ -6916,9 +7120,23 @@ async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, opt
             });
           }
         }
-        if (current >= maxLine) break;
+        if (current >= maxLine && descriptor.compression === 'none') break;
       }
       throwIfAborted(signal);
+      if (transcriptEntry) {
+        const verifiedStat = await codexRolloutStorage.acquireRolloutStat(descriptor);
+        const digest = sourceHash.digest('base64url');
+        if ((descriptor.compression === 'zstd'
+              && (sourceBytesRead !== transcriptEntry.acceptedBytes || digest !== transcriptEntry.digest))
+            || !codexRolloutIdentityMatches(
+              verifiedStat.fileIdentity,
+              transcriptEntry.evidence?.fileIdentity,
+            )
+            || (descriptor.compression === 'none'
+              && !sourceSizeCoversAcceptedBytes(verifiedStat.sizeBigInt, transcriptEntry.acceptedBytes))) {
+          throw indexedSourceStaleError();
+        }
+      }
     } catch (error) {
       throwIfAborted(signal);
       if (error.code === 'ENOENT') throw indexedSourceStaleError();
@@ -6951,6 +7169,7 @@ async function hydrateCodexRawEvents(index, session, raws, options = {}) {
     const record = sourceRow?.parsed;
     if (!record) throw indexedSourceStaleError();
     const embeddedImages = [];
+    const attachmentSummary = codexMessageEvidence.summarizeCodexAttachments(record.payload);
     externalizeKnownImageGenerationResult(record, residentRaw.source, embeddedImages);
     externalizeEmbeddedImages(record, residentRaw.source, embeddedImages);
     const hydratedRaw = makeRawEvent(
@@ -6959,6 +7178,7 @@ async function hydrateCodexRawEvents(index, session, raws, options = {}) {
       residentRaw.source.file,
       residentRaw.sessionId,
       embeddedImages,
+      attachmentSummary,
     );
     return {
       ...residentRaw,
@@ -6985,7 +7205,8 @@ async function buildHydratedEventDetail(index, session, eventId, layer = 'main',
       [CODEX_HYDRATION_SLOT_OWNED]: true,
     });
     throwIfAborted(options.signal);
-    return buildEventDetail({ ...session, rawEvents: hydratedRaws }, eventId, layer, options);
+    const historyReference = resolveHistoryReference(session, session.logicalEvents.find((event) => event.id === eventId));
+    return buildEventDetail({ ...session, rawEvents: hydratedRaws }, eventId, layer, { ...options, historyReference, historyOwnerId: historyOwner(session) });
   });
 }
 

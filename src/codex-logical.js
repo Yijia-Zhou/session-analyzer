@@ -2,6 +2,16 @@
 
 function createCodexLogicalBuilder(deps) {
   const {
+    historyFacts = () => null,
+    realtimeIdentity = () => '',
+    externalToolInputFromRaw,
+    asyncAgentMessageFromRaw,
+    asyncMessageMetadata,
+    asyncMessageIdentityMatches,
+    asyncMessageSearchText,
+    summarizeCodexAttachments,
+  } = deps.messages;
+  const {
     envelope,
     goal,
     protocol,
@@ -514,6 +524,10 @@ function createCodexLogicalBuilder(deps) {
     const toolName = customCall?.toolName || functionCall?.toolName || protocolToolName || '';
     const functionOutputInfo = parseFormattedCommandOutput(functionOutput?.output);
     const customOutputObj = parseOutputEnvelope(customOutput?.output);
+    const attachmentSummaries = attachmentSummaryForRawList(group);
+    const attachmentPreview = attachmentSummaries.map((summary) => summary.previewText)
+      .filter(Boolean)
+      .join(' · ');
 
     if (GOAL_TOOL_NAMES.has(toolName)) {
       return buildGoalLogicalEvent(callId, group, toolName, functionCall, functionOutput);
@@ -553,6 +567,7 @@ function createCodexLogicalBuilder(deps) {
     if (approvalRows.length) parts.push(approvalRows.map((raw) => raw.searchText).join('\n'));
     if (hookRows.length) parts.push(hookRows.map((raw) => raw.searchText).join('\n'));
     if (collabRows.length) parts.push(collabRows.map((raw) => raw.searchText).join('\n'));
+    if (attachmentPreview) parts.push(attachmentPreview);
 
     if (isCommandTool) {
       kind = 'command';
@@ -635,7 +650,7 @@ function createCodexLogicalBuilder(deps) {
       preview = truncate(first.preview || toolName || 'Other tool call');
     }
 
-    return createLogicalEvent({
+    const event = createLogicalEvent({
       id: `${first.sessionId}:logical:call:${callId}`,
       timestamp: first.timestamp,
       turnId: first.turnId || '',
@@ -644,7 +659,7 @@ function createCodexLogicalBuilder(deps) {
       layer: 'main',
       role: 'assistant',
       label,
-      preview,
+      preview: truncate([preview, attachmentPreview].filter(Boolean).join(' · ')),
       searchText: parts.filter(Boolean).join('\n'),
       severity,
       status,
@@ -654,6 +669,7 @@ function createCodexLogicalBuilder(deps) {
       rawRefs,
       channels,
     });
+    return event;
   }
 
   function buildCodeModeLogicalEvent(operation, facts, rawById) {
@@ -826,7 +842,10 @@ function createCodexLogicalBuilder(deps) {
   }
 
   function buildConversationEvent(id, kind, role, text, raws) {
-    return createLogicalEvent({
+    const asyncMessage = raws.map(asyncAgentMessageFromRaw).find(Boolean) || null;
+    const attachmentSummary = attachmentSummaryForRawList(raws)[0] || null;
+    const attachmentPreview = attachmentSummary?.previewText || '';
+    const event = createLogicalEvent({
       id,
       timestamp: raws[0].timestamp,
       turnId: raws.find((raw) => raw.turnId)?.turnId || '',
@@ -834,18 +853,70 @@ function createCodexLogicalBuilder(deps) {
       subtype: kind,
       layer: 'main',
       role,
-      label: role === 'user' ? 'User message' : 'Assistant message',
-      preview: truncate(text),
-      searchText: text,
+      label: asyncMessage ? 'Asynchronous message' : role === 'user' ? 'User message' : 'Assistant message',
+      preview: truncate([text, attachmentPreview].filter(Boolean).join(' · ')),
+      searchText: [
+        asyncMessage ? asyncMessageSearchText(asyncMessage) : '',
+        text,
+        attachmentPreview,
+      ].filter(Boolean).join('\n'),
       severity: 'normal',
       status: '',
       rawRefs: raws.map(rawRef),
       channels: [...new Set(raws.map((raw) => raw.recordType))],
     });
+    if (asyncMessage) event.asyncMessage = asyncMessageMetadata(asyncMessage);
+    return event;
   }
 
   function mirroredMessageTextMatches(left, right) {
     return String(left || '').trim() === String(right || '').trim();
+  }
+
+  function attachmentSummaryForRaw(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    if (raw.attachmentSummary?.totalCount > 0) return raw.attachmentSummary;
+    const payload = raw.parsed?.payload;
+    const summary = summarizeCodexAttachments(payload);
+    return summary.totalCount > 0 ? summary : null;
+  }
+
+  function attachmentSummaryForRawList(raws) {
+    const summaries = [];
+    const completeDigests = new Set();
+    for (const raw of raws || []) {
+      const summary = attachmentSummaryForRaw(raw);
+      if (!summary) continue;
+      const digest = summary.identity?.complete === true ? summary.identity.digest : '';
+      if (digest && completeDigests.has(digest)) continue;
+      if (digest) completeDigests.add(digest);
+      summaries.push(summary);
+    }
+    return summaries;
+  }
+
+  function mirroredAttachmentIdentityMatches(leftRaw, rightRaw) {
+    const left = attachmentSummaryForRaw(leftRaw);
+    const right = attachmentSummaryForRaw(rightRaw);
+    if (!left && !right) return true;
+    if (!left || !right) return false;
+    if (left.identity?.complete !== true || right.identity?.complete !== true) return false;
+    return left.identity.digest === right.identity.digest;
+  }
+
+  function canonicalAsyncMessageOwnerMatches(raw) {
+    const payload = raw?.parsed?.payload;
+    if (!payload || typeof payload !== 'object' || !Object.hasOwn(payload, 'thread_id')) return true;
+    return typeof payload.thread_id === 'string'
+      && payload.thread_id.length > 0
+      && payload.thread_id === raw.sessionId;
+  }
+
+  function asyncMessageRawIdentityMatches(leftRaw, leftMessage, rightRaw, rightMessage) {
+    if (!leftRaw || !rightRaw || leftRaw.sessionId !== rightRaw.sessionId) return false;
+    if (leftRaw.turnId && rightRaw.turnId && leftRaw.turnId !== rightRaw.turnId) return false;
+    return asyncMessageIdentityMatches(leftMessage, rightMessage)
+      && mirroredAttachmentIdentityMatches(leftRaw, rightRaw);
   }
 
   function buildDeveloperMessageEvent(raw) {
@@ -956,7 +1027,32 @@ function createCodexLogicalBuilder(deps) {
 
   function buildLogicalEvents(rawEvents) {
     const logicalEvents = [];
+    // Duplicate opaque identities are ambiguous, including equal text. Leave
+    // every occurrence inspectable rather than choosing an owner across a
+    // copied-history boundary before the fork ownership pass has run.
+    const realtimeIdentities = new Map();
+    for (const raw of rawEvents) {
+      const key = realtimeIdentity(raw);
+      if (!key) continue;
+      realtimeIdentities.set(key, (realtimeIdentities.get(key) || 0) + 1);
+    }
     const consumed = new Set();
+    const asyncMessageOwnersByIdentity = new Map();
+    const registerAsyncMessageOwner = (raw, message, event) => {
+      if (!message?.itemId) return;
+      const key = JSON.stringify([raw.sessionId, message.itemId]);
+      if (!asyncMessageOwnersByIdentity.has(key)) asyncMessageOwnersByIdentity.set(key, []);
+      asyncMessageOwnersByIdentity.get(key).push({ event, raw, message });
+    };
+    const findAsyncMessageOwner = (raw, message) => {
+      if (!message?.itemId) return null;
+      const key = JSON.stringify([raw.sessionId, message.itemId]);
+      const owners = asyncMessageOwnersByIdentity.get(key) || [];
+      if (owners.length !== 1) return null;
+      return asyncMessageRawIdentityMatches(owners[0].raw, owners[0].message, raw, message)
+        ? owners[0]
+        : null;
+    };
     const byCallId = new Map();
     const subAgentActivityByEventId = new Map();
     const goalToolEventsBySignature = new Map();
@@ -1033,6 +1129,44 @@ function createCodexLogicalBuilder(deps) {
       const next = rawEvents[i + 1];
       const prev = rawEvents[i - 1];
 
+      const history = historyFacts(raw);
+      if (history) {
+        const identityCount = realtimeIdentities.get(realtimeIdentity(raw));
+        const event = history.type === 'transcript_segment' && identityCount === 1
+          ? buildConversationEvent(`${raw.sessionId}:logical:realtime:${raw.line}`, `${history.role}_message`, history.role, raw.messageText, [raw])
+          : buildProtocolEvent(raw, history.type === 'transcript_segment' ? 'realtime_identity_conflict' : history.type);
+        event.historyFacts = history;
+        event.turnId = '';
+        if (history.type === 'transcript_segment' && event.layer === 'main') event.tags.push('realtime');
+        logicalEvents.push(event);
+        consumed.add(raw.rawId);
+        continue;
+      }
+
+      const externalToolInput = externalToolInputFromRaw(raw);
+      if (externalToolInput) {
+        const attachmentSummary = attachmentSummaryForRaw(raw);
+        const attachmentPreview = attachmentSummary?.previewText || '';
+        logicalEvents.push(createLogicalEvent({
+          id: `${raw.sessionId}:logical:external:${raw.line}`,
+          timestamp: raw.timestamp,
+          turnId: raw.turnId,
+          kind: 'external_tool_input',
+          subtype: 'external_tool_input',
+          layer: 'main',
+          role: 'tool',
+          label: 'External tool input',
+          preview: truncate([externalToolInput.text || externalToolInput.name, attachmentPreview]
+            .filter(Boolean).join(' · ')),
+          searchText: [externalToolInput.name, externalToolInput.namespace, externalToolInput.text, attachmentPreview]
+            .filter(Boolean).join('\n'),
+          rawRefs: [rawRef(raw)],
+          channels: [raw.recordType],
+        }));
+        consumed.add(raw.rawId);
+        continue;
+      }
+
       const goalSnapshot = goalSnapshotFromRaw(raw);
       if (goalSnapshot) {
         const previousSnapshot = previousGoalSnapshots.get(goalSnapshot.identityKey);
@@ -1056,7 +1190,9 @@ function createCodexLogicalBuilder(deps) {
       if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'user') {
         const protocolSubtype = classifyProtocolText(raw.messageText, raw.role);
         if (protocolSubtype === 'user_shell_command') {
-          if (next && next.recordType === 'event_msg' && next.payloadType === 'user_message' && mirroredMessageTextMatches(raw.messageText, next.messageText)) {
+          if (next && next.recordType === 'event_msg' && next.payloadType === 'user_message'
+              && mirroredMessageTextMatches(raw.messageText, next.messageText)
+              && mirroredAttachmentIdentityMatches(raw, next)) {
             logicalEvents.push(buildUserShellCommandEvent([raw, next]));
             consumed.add(raw.rawId);
             consumed.add(next.rawId);
@@ -1071,7 +1207,9 @@ function createCodexLogicalBuilder(deps) {
           consumed.add(raw.rawId);
           continue;
         }
-        if (next && next.recordType === 'event_msg' && next.payloadType === 'user_message' && mirroredMessageTextMatches(raw.messageText, next.messageText)) {
+        if (next && next.recordType === 'event_msg' && next.payloadType === 'user_message'
+            && mirroredMessageTextMatches(raw.messageText, next.messageText)
+            && mirroredAttachmentIdentityMatches(raw, next)) {
           logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:user:${raw.line}`, 'user_message', 'user', raw.messageText, [raw, next]));
           consumed.add(raw.rawId);
           consumed.add(next.rawId);
@@ -1083,7 +1221,9 @@ function createCodexLogicalBuilder(deps) {
       }
 
       if (raw.recordType === 'event_msg' && raw.payloadType === 'user_message') {
-        if (prev && prev.recordType === 'response_item' && prev.payloadType === 'message' && prev.role === 'user' && mirroredMessageTextMatches(prev.messageText, raw.messageText)) {
+        if (prev && prev.recordType === 'response_item' && prev.payloadType === 'message' && prev.role === 'user'
+            && mirroredMessageTextMatches(prev.messageText, raw.messageText)
+            && mirroredAttachmentIdentityMatches(prev, raw)) {
           consumed.add(raw.rawId);
           continue;
         }
@@ -1111,10 +1251,26 @@ function createCodexLogicalBuilder(deps) {
       }
 
       if (raw.recordType === 'event_msg' && raw.payloadType === 'agent_message') {
-        if (next && next.recordType === 'response_item' && next.payloadType === 'message' && next.role === 'assistant' && mirroredMessageTextMatches(next.messageText, raw.messageText)) {
-          logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:assistant:${raw.line}`, 'assistant_message', 'assistant', next.messageText, [raw, next]));
+        const asyncMessage = asyncAgentMessageFromRaw(raw);
+        if (next && next.recordType === 'response_item' && next.payloadType === 'message' && next.role === 'assistant'
+            && mirroredMessageTextMatches(next.messageText, raw.messageText)
+            && mirroredAttachmentIdentityMatches(raw, next)) {
+          const nextAsyncMessage = asyncAgentMessageFromRaw(next);
+          const canMergeMirror = asyncMessage
+            ? Boolean(nextAsyncMessage && asyncMessageRawIdentityMatches(raw, asyncMessage, next, nextAsyncMessage))
+            : !nextAsyncMessage && mirroredAttachmentIdentityMatches(raw, next);
+          if (canMergeMirror) {
+            logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:assistant:${raw.line}`, 'assistant_message', 'assistant', next.messageText, [raw, next]));
+            consumed.add(raw.rawId);
+            consumed.add(next.rawId);
+            continue;
+          }
+        }
+        if (asyncMessage) {
+          const event = buildConversationEvent(`${raw.sessionId}:logical:assistant:${raw.line}`, 'assistant_message', 'assistant', raw.messageText, [raw]);
+          logicalEvents.push(event);
+          registerAsyncMessageOwner(raw, asyncMessage, event);
           consumed.add(raw.rawId);
-          consumed.add(next.rawId);
           continue;
         }
         logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:assistant:${raw.line}`, 'assistant_message', 'assistant', raw.messageText, [raw]));
@@ -1123,7 +1279,17 @@ function createCodexLogicalBuilder(deps) {
       }
 
       if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'assistant') {
-        if (prev && prev.recordType === 'event_msg' && prev.payloadType === 'agent_message' && mirroredMessageTextMatches(prev.messageText, raw.messageText)) {
+        const previousAsyncMessage = prev ? asyncAgentMessageFromRaw(prev) : null;
+        const currentAsyncMessage = asyncAgentMessageFromRaw(raw);
+        const canMergeMirror = prev
+          && prev.recordType === 'event_msg'
+          && prev.payloadType === 'agent_message'
+          && mirroredMessageTextMatches(prev.messageText, raw.messageText)
+          && mirroredAttachmentIdentityMatches(prev, raw)
+          && (previousAsyncMessage
+            ? Boolean(currentAsyncMessage && asyncMessageRawIdentityMatches(prev, previousAsyncMessage, raw, currentAsyncMessage))
+            : !currentAsyncMessage);
+        if (canMergeMirror) {
           consumed.add(raw.rawId);
           continue;
         }
@@ -1167,6 +1333,29 @@ function createCodexLogicalBuilder(deps) {
           continue;
         }
         logicalEvents.push(buildPlanArtifact(raw, null, raw.parsed.payload.item.text || raw.searchText));
+        consumed.add(raw.rawId);
+        continue;
+      }
+
+      const asyncMessage = asyncAgentMessageFromRaw(raw);
+      if (raw.recordType === 'event_msg'
+          && raw.payloadType === 'item_completed'
+          && asyncMessage
+          && asyncMessage.source === 'canonical') {
+        if (!canonicalAsyncMessageOwnerMatches(raw)) {
+          logicalEvents.push(buildProtocolEvent(raw, 'item_completed'));
+          consumed.add(raw.rawId);
+          continue;
+        }
+        const owner = findAsyncMessageOwner(raw, asyncMessage);
+        if (owner) {
+          owner.event.rawRefs.push(rawRef(raw));
+          owner.event.channels = [...new Set([...owner.event.channels, raw.recordType])];
+        } else {
+          const event = buildConversationEvent(`${raw.sessionId}:logical:assistant:${raw.line}`, 'assistant_message', 'assistant', asyncMessage.text, [raw]);
+          logicalEvents.push(event);
+          registerAsyncMessageOwner(raw, asyncMessage, event);
+        }
         consumed.add(raw.rawId);
         continue;
       }
@@ -1306,7 +1495,9 @@ function createCodexLogicalBuilder(deps) {
       }
     }
 
-    const hasUntimestampedEvent = logicalEvents.some((event) => !event.timestamp);
+    // Persisted realtime and positional controls carry source-position meaning.
+    // Only these histories opt into line order; legacy timeline policy stays.
+    const hasUntimestampedEvent = logicalEvents.some((event) => !event.timestamp || event.historyFacts);
     logicalEvents.sort((a, b) => {
       const al = a.rawRefs[0]?.line || 0;
       const bl = b.rawRefs[0]?.line || 0;

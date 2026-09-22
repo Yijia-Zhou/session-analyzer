@@ -275,7 +275,8 @@ function validateEventRefItems(items, path) {
   items.forEach((item, index) => {
     const itemPath = `${path}[${index}]`;
     assertRecord(item, itemPath);
-    assertAllowedKeys(item, ['id', 'label', 'kind', 'status'], itemPath);
+    assertAllowedKeys(item, ['id', 'label', 'kind', 'status', 'layer'], itemPath);
+    if (item.layer !== undefined && !['main', 'protocol', 'raw'].includes(item.layer)) throw new TypeError(`${itemPath}.layer is invalid`);
     assertString(item.id, `${itemPath}.id`, { nonEmpty: true });
     assertString(item.label, `${itemPath}.label`);
     assertString(item.kind, `${itemPath}.kind`);

@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const { performance } = require('node:perf_hooks');
+const MATERIALIZATION_COVERAGE_LIMIT_MS = 5;
 
 const TOP_LEVEL = [
   'materialized_pre_adapter_validation', 'adapter_materialization',
@@ -84,20 +85,39 @@ function coldAttribution(collector, materializationStart, materializationEnd, de
   const adapterMaterializationMs = exact(adapter.children, DEEPSEEK);
   const privatePhase = phases.find((span) => span.phase === 'materialized_private_validation');
   const nestedValidationMs = exact(privatePhase.children, PRIVATE);
+  for (const span of phases) {
+    const leaves = span === adapter || span === privatePhase ? span.children : [span];
+    assert.ok(leaves.every((leaf) => leaf.children.length === 0), 'unexpected nested phase topology');
+  }
   const sum = (values) => Object.values(values).reduce((total, value) => total + value, 0);
-  const materializationResidualMs = materializationMs - sum(materializationTopLevelMs);
+  const materializationAccountedMs = sum(materializationTopLevelMs);
+  const materializationResidualMs = materializationMs - materializationAccountedMs;
   adapterMaterializationMs.residual = adapter.durationMs - sum(adapterMaterializationMs);
   const httpOuterResidualMs = coldDetailMs - materializationMs - detailConstructionMs;
   // Same monotonic process clock; only floating-point subtraction tolerance.
   for (const value of [materializationResidualMs, adapterMaterializationMs.residual, httpOuterResidualMs]) assert.ok(value >= -1e-7, 'negative accounting residual');
-  // Uninstrumented setup/returns should remain small; this checks coverage,
-  // not speed or which phase dominates. Raw residual remains in the report.
-  assert.ok(materializationResidualMs <= Math.max(5, materializationMs * 0.05), 'materialization phase coverage gap');
+  // Coverage policy belongs to the serial measurement gate. A pause between
+  // observer callbacks contributes to the outer clock but neither phase.
   return {
     materializationMs, detailConstructionMs, httpOuterResidualMs: Math.max(0, httpOuterResidualMs),
+    materializationAccountedMs, materializationCoverageLimitMs: MATERIALIZATION_COVERAGE_LIMIT_MS,
     materializationTopLevelMs, materializationResidualMs: Math.max(0, materializationResidualMs),
     adapterMaterializationMs, nestedValidationMs, durationEvents,
   };
 }
 
-module.exports = { createPhaseCollector, coldAttribution, TOP_LEVEL, DEEPSEEK, PRIVATE };
+function assertMaterializationCoverage(attribution, limitMs = MATERIALIZATION_COVERAGE_LIMIT_MS) {
+  const { materializationMs, materializationAccountedMs, materializationResidualMs } = attribution;
+  for (const value of [materializationMs, materializationAccountedMs, materializationResidualMs, limitMs]) {
+    assert.ok(Number.isFinite(value) && value >= 0, 'invalid materialization coverage measurement');
+  }
+  assert.ok(materializationResidualMs <= limitMs,
+    `materialization phase coverage gap: residual=${materializationResidualMs.toFixed(2)}ms `
+    + `limit=${limitMs.toFixed(2)}ms materialization=${materializationMs.toFixed(2)}ms `
+    + `accounted=${materializationAccountedMs.toFixed(2)}ms`);
+}
+
+module.exports = {
+  createPhaseCollector, coldAttribution, assertMaterializationCoverage,
+  MATERIALIZATION_COVERAGE_LIMIT_MS, TOP_LEVEL, DEEPSEEK, PRIVATE,
+};
