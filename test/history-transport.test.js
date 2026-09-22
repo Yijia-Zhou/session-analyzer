@@ -28,6 +28,10 @@ test('history CLI parses repeatable queries and structured input without silent 
   assert.deepEqual(parseHistoryArgs(['read', '--context', 'ctx', '--ref', 'a', '--ref', 'b', '--parts', 'message, request', '--offset', '0']).input,
     { contextRef: 'ctx', refs: ['a', 'b'], parts: ['message', 'request'], offset: 0 });
   assert.equal(parseHistoryArgs(['serve', '--repo', '/project', '--source', 'codex']).port, 17891);
+  assert.deepEqual(parseHistoryArgs(['search', '--order', 'session', '--session', 'codex:canonical-id']).input,
+    { order: 'session', session: 'codex:canonical-id' });
+  assert.deepEqual(parseHistoryArgs(['search', '--input', '{"order":"diverse","session":"codex:canonical-id"}']).input,
+    { order: 'diverse', session: 'codex:canonical-id' });
   for (const args of [
     ['serve', '--repo', '/project'], ['serve', '--repo', '/project', '--source', 'unknown'],
     ['serve', '--repo', '/project', '--source', 'codex', '--port', '0'],
@@ -35,6 +39,9 @@ test('history CLI parses repeatable queries and structured input without silent 
     ['search', '--limit', '1.5'], ['search', '--limit', '1e3'], ['search', '--limit', '1', '--limit', '2'],
     ['search', '--input', '[]'], ['search', '--input', '{"repo":"other"}'],
     ['search', '--input', '{"limit":4}', '--limit', '2'], ['search', '--query'],
+    ['search', '--order', 'diverse', '--order', 'session'],
+    ['search', '--session', 'one', '--input', '{"session":"two"}'],
+    ['search', '--input', '{"order":1}'], ['search', '--input', '{"session":[]}'],
     ['search', '--endpoint', 'http://localhost:17891'], ['search', '--endpoint', 'http://127.0.0.1:17891/api'],
     ['search', '--endpoint', 'http://user@127.0.0.1:17891'], ['read', '--format', 'text'],
   ]) assert.throws(() => parseHistoryArgs(args), { code: /INVALID_/ });
@@ -48,8 +55,8 @@ test('real HTTP round trip preserves explicit context and batch input', async (t
   const failed = await requestHistory(endpoint, 'read', { cursor: 'stale' });
   assert.equal(failed.error.code, 'STALE_REFERENCE');
   let stdout = '';
-  assert.equal(await runHistoryCli(['search', '--endpoint', endpoint, '--query', 'decisions'], { stdout: { write(text) { stdout += text; } } }), 0);
-  assert.deepEqual(JSON.parse(stdout).received, { queries: ['decisions'] });
+  assert.equal(await runHistoryCli(['search', '--endpoint', endpoint, '--query', 'decisions', '--order', 'diverse', '--session', 'codex:canonical-id'], { stdout: { write(text) { stdout += text; } } }), 0);
+  assert.deepEqual(JSON.parse(stdout).received, { queries: ['decisions'], order: 'diverse', session: 'codex:canonical-id' });
 });
 
 test('transport rejects mutation routes, browser origins, malformed and oversized input before execution', async (t) => {
@@ -62,6 +69,9 @@ test('transport rejects mutation routes, browser origins, malformed and oversize
     ['/api/history/search', 'POST', {}, 'oops', 400],
     ['/api/history/search', 'POST', {}, '{"repo":"different-project"}', 400],
     ['/api/history/search', 'POST', {}, '{"limit":"8"}', 400],
+    ['/api/history/search', 'POST', {}, '{"order":false}', 400],
+    ['/api/history/search', 'POST', {}, '{"session":[]}', 400],
+    ['/api/history/search', 'POST', {}, '{"session":" "}', 400],
     ['/api/history/search', 'POST', {}, ' '.repeat(MAX_BODY_BYTES + 1), 413],
   ];
   for (const [route, method, headers, body, expected] of cases) {

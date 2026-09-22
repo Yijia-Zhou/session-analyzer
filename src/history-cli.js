@@ -3,7 +3,7 @@
 const { OPERATIONS, MAX_BODY_BYTES, MAX_RESPONSE_BYTES, historyError, errorEnvelope, validateHistoryInput, startHistoryServer } = require('./history-server');
 
 const SERVE_OPTIONS = { '--repo': 'repo', '--source': 'source', '--codex-home': 'codexHome', '--claude-home': 'claudeHome', '--dsh-home': 'dshHome', '--port': 'port' };
-const INPUT_OPTIONS = { '--context': 'contextRef', '--cursor': 'cursor', '--layer': 'layer', '--kind': 'kind', '--status': 'status', '--tool': 'tool', '--file': 'file', '--retrieval-artifacts': 'retrievalArtifacts', '--view': 'view', '--from': 'from', '--to': 'to', '--limit': 'limit', '--max-bytes': 'maxBytes', '--offset': 'offset', '--length': 'length', '--parts': 'parts', '--query': 'queries', '--exclude': 'exclude', '--ref': 'refs' };
+const INPUT_OPTIONS = { '--context': 'contextRef', '--cursor': 'cursor', '--order': 'order', '--session': 'session', '--layer': 'layer', '--kind': 'kind', '--status': 'status', '--tool': 'tool', '--file': 'file', '--retrieval-artifacts': 'retrievalArtifacts', '--view': 'view', '--from': 'from', '--to': 'to', '--limit': 'limit', '--max-bytes': 'maxBytes', '--offset': 'offset', '--length': 'length', '--parts': 'parts', '--query': 'queries', '--exclude': 'exclude', '--ref': 'refs' };
 const REPEATED = new Set(['queries', 'exclude', 'refs']);
 const NUMERIC = new Set(['port', 'limit', 'maxBytes', 'offset', 'length']);
 
@@ -20,6 +20,8 @@ function formatHistoryHelp() {
     '  --ref <reference>      Repeat to batch context/read references.',
     '  --context <reference>  Search snapshot contextRef.',
     '  --cursor <cursor>      Continue search/context navigation.',
+    '  --order <diverse|session> Search order; diverse is the default.',
+    '  --session <sessionId>  Restrict search to a returned canonical sessionId.',
     '  --limit <count> --max-bytes <bytes>',
     '  --parts <part,...> --offset <number> --length <number>',
     '  --layer <layer> --kind <kind> --status <status> --tool <tool> --file <file>',

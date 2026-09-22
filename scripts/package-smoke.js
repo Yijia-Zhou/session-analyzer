@@ -598,6 +598,11 @@ async function main() {
       assert.equal(status.coverage.sessionCount, fixture.count);
       const search = history('search', { queries: [fixture.text], kind: 'user_message', limit: 1 });
       assert.equal(search.items.length, 1);
+      assert.equal(search.scan.order, 'diverse');
+      const scoped = history('search', { queries: [fixture.text], session: search.items[0].sessionId, order: 'session' });
+      assert.equal(scoped.scan.scopedSessions, 1);
+      assert.equal(scoped.scan.matchedSessions, 1);
+      assert.ok(scoped.items.every((item) => item.sessionId === search.items[0].sessionId));
       const refs = [search.items[0].ref];
       assert.equal(history('context', { refs, contextRef: search.contextRef }).items.length, 1);
       const read = history('read', { refs, parts: ['message', 'raw'], contextRef: search.contextRef });

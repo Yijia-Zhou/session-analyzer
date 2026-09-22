@@ -17,6 +17,12 @@ JSON responses identify `producer`, `operation`, `schemaVersion` and `contextRef
 
 An evidence reference identifies the source, session and event against verified source-version information. It must not silently retarget after source changes or resolve outside the instance's admitted project/source. Source verification allows reads after a restart when the source is unchanged; ephemeral context and navigation cursors may expire. References are locators, not authentication credentials or permanent archives. / 证据引用根据经核验的来源版本标识来源、会话和事件。来源变化后不能悄悄重定位，也不能解析到实例准入项目／来源以外。来源不变时允许重启后核验读取；临时上下文和导航游标可以过期。引用是定位符，不是认证凭据或永久归档。
 
+## Candidate diversity and scope / 候选会话覆盖与范围
+
+Search defaults to `order=diverse`: return each matching session's first eligible event before their second events, then continue by the same rule. Sessions are ordered by latest update (ID breaks ties); eligible events keep their session order. Artifact exclusion precedes the ordering. `order=session` retains the earlier grouped session order. These are deterministic discovery orders, not claims about decision importance or semantic relevance. / 搜索默认 `order=diverse`：先返回每个匹配会话首个合格事件，再返回各会话第二个，依此类推。会话按最近更新排序（ID 打破平局）；合格事件保留会话内顺序。工件排除先于排序。`order=session` 保留此前按会话分组的顺序。这些是确定性发现顺序，不表示决定重要性或语义相关性。
+
+`session=<sessionId>` restricts candidates to a known indexed Session without narrowing subsequent context to search matches; an unknown Session returns `UNKNOWN_SESSION`. Coverage still describes the instance's fixed project/source, while `scan.scopedSessions`, `scan.matchedSessions` and `scan.order` describe this query. All eligible events remain reachable: pagination binds the order and scope, and changing page size or byte budget continues after the last returned rank without repeats or omissions. / `session=<sessionId>` 将候选限定到已索引会话，但后续上下文仍不受命中条件过滤；未知会话返回 `UNKNOWN_SESSION`。Coverage 仍描述实例固定项目／来源，`scan.scopedSessions`、`scan.matchedSessions`、`scan.order` 则描述本次查询。全部合格事件仍可读取：分页绑定排序及范围，改变页大小或字节预算后从最后返回的排序位置继续，不重复、不遗漏。
+
 ## Hit context window / 命中上下文窗口
 
 The message-anchor template applies to Main. Protocol and Raw return a local window of at most two neighboring events on each side with `boundaries.mode=layer_local`; message anchors are unavailable on those layers. / 消息锚点模板适用于 Main。Protocol 和 Raw 返回前后各最多两个邻近事件的局部窗口，标明 `boundaries.mode=layer_local`；这些层没有消息锚点。
