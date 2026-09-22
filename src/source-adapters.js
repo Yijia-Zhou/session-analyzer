@@ -8,6 +8,7 @@ const codex = require('./codex');
 const claude = require('./claude');
 const deepseekHarness = require('./deepseek-harness');
 const { buildClaudeEventDetail } = require('./claude-detail');
+const { collaborationNavigation } = require('./shared/collaboration-navigation');
 const {
   inspectDataProperty,
   validateCanonicalDependencySet,
@@ -1444,9 +1445,14 @@ async function buildEventDetailForSession(index, session, eventId, layer, option
   const detail = await adapter.buildEventDetail(index, session, eventId, layer, options);
   if (requestedLayer === 'raw') return detail;
 
-  return conformStructuredLogicalDetail(detail, selectedLogicalEvent, {
+  const conformed = conformStructuredLogicalDetail(detail, selectedLogicalEvent, {
     layer: requestedLayer,
   });
+  const navigable = collaborationNavigation(
+    index, session, conformed, options.indexRevision,
+  );
+  if (navigable !== conformed) validateStructuredLogicalDetailDto(navigable);
+  return navigable;
 }
 
 function conformStructuredLogicalDetail(detail, selectedLogicalEvent, options = {}) {

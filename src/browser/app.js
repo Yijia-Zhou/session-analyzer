@@ -186,6 +186,11 @@ const state = {
   projectSearchLoading: false,
   projectSearchPendingContext: '',
   projectReturnContext: null,
+  readingHistory: [],
+  readingNavigationId: 0,
+  readingRestoration: null,
+  eventSelectionIntentId: 0,
+  inspectorNavigationSettlement: null,
   analysisRequestId: 0,
   selectedSessionId: '',
   selectedEventId: '',
@@ -3551,9 +3556,15 @@ function renderBackToProjectResultsAction() {
   return `<button class="smallBtn" type="button" data-detail-action="back-to-project-results">${escapeHtml(t('backToProjectResults'))}</button>`;
 }
 
+function renderReadingReturnAction() {
+  return state.searchScope === 'session' && state.readingHistory.length
+    ? `<button class="smallBtn" type="button" data-reading-back>${escapeHtml(t('backToReadingPosition'))}</button>` : '';
+}
+
 function renderHeaderProjectReturnAction() {
-  if (!state.projectReturnContext || state.searchScope !== 'session') return '';
-  return `<button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>`;
+  if (state.searchScope !== 'session') return '';
+  return renderReadingReturnAction() + (state.projectReturnContext
+    ? `<button class="smallBtn" type="button" data-search-back-to-project>${escapeHtml(t('backToProjectResults'))}</button>` : '');
 }
 
 function renderSearchAssistChips() {
@@ -4271,6 +4282,8 @@ function setProjectMode(selecting) {
 }
 
 function resetProjectViewState() {
+  state.readingHistory = [];
+  state.readingNavigationId += 1;
   Object.values(requestOwners).forEach((owner) => owner.abort());
   clearContextReveal({ render: false });
   clearNavigationEventReveal();
@@ -4758,6 +4771,7 @@ async function init() {
 }
 
 async function loadSessions() {
+  const requestReadingScope = readingScopeKey();
   updateProfileApplicabilityUi();
   state.searchStructureKey = structuredSearchKey();
   const requestId = state.sessionsRequestId + 1;
@@ -4782,9 +4796,14 @@ async function loadSessions() {
   state.sessionsDataContext = requestContext;
   state.sessions = data.sessions;
   state.sessionTotal = data.total;
+  const previousSessionId = state.selectedSessionId;
+  const sameReadingScope = requestReadingScope === readingScopeKey()
+    && state.readingHistory.every((position) => position.scope === requestReadingScope);
   let delegatedSessionId = '';
   let suggestionResult = null;
   if (!data.sessions.length) {
+    state.readingHistory = [];
+    state.readingNavigationId += 1;
     state.selectedSessionId = '';
     state.searchScope = 'project';
     state.timelineRequestId += 1;
@@ -4808,7 +4827,9 @@ async function loadSessions() {
       if (!(await loadProjectResults())) return false;
     } else {
       delegatedSessionId = state.selectedSessionId;
-      suggestionResult = await selectSession(delegatedSessionId);
+      suggestionResult = await selectSession(delegatedSessionId, {
+        preserveReadingHistory: sameReadingScope && delegatedSessionId === previousSessionId,
+      });
       recordAutomaticSelectionSettled();
     }
   }
@@ -4979,6 +5000,8 @@ async function setSearchScope(scope, options = {}) {
     syncSearchScopeUi();
     return true;
   }
+  state.readingNavigationId += 1;
+  state.readingHistory = [];
   clearContextReveal({ render: false });
   state.searchScope = scope;
   syncMainPresentationUi();
@@ -5031,6 +5054,8 @@ async function drillDownProjectResult(sessionId) {
   const result = state.projectResults.find((item) => item.id === sessionId);
   const latest = result?.searchMatch?.latestEvent;
   if (!result || !latest) return false;
+  state.readingNavigationId += 1;
+  state.readingHistory = [];
   const returnContext = {
     sessionId,
     eventId: latest.id,
@@ -5310,6 +5335,8 @@ async function openInheritedSourceSession(button) {
 }
 
 async function selectSession(sessionId, options = {}) {
+  const readingNavigationId = ++state.readingNavigationId;
+  if (!options.preserveReadingHistory) state.readingHistory = [];
   clearContextReveal({ render: false });
   clearNavigationEventReveal();
   expandSessionAncestors(sessionId);
@@ -5332,7 +5359,8 @@ async function selectSession(sessionId, options = {}) {
   updateResetFoldsButton();
   renderSessions();
   resetDetailPane();
-  const session = state.sessions.find((item) => item.id === sessionId);
+  const session = state.sessions.find((item) => item.id === sessionId)
+    || { id: sessionId, title: sessionId };
   if (session) {
     const relationship = sessionRelationshipLabel(session);
     el.sessionHeader.innerHTML = `<h2>${escapeHtml(session.title)}</h2>
@@ -5348,13 +5376,258 @@ async function selectSession(sessionId, options = {}) {
   }
   renderSearchAssistChips();
   renderTimeline();
-  const loaded = await Promise.all([
+  const selectionIntentId = state.eventSelectionIntentId;
+  const requests = [
     loadAnalysis(sessionId),
     loadTimeline(false),
     refreshFileSuggestions({ returnOutcome: true }),
-  ]);
-  if (options.mobileView) setMobileView(options.mobileView);
+  ];
+  // A reading-return retry must not race unfinished sibling requests from its failed attempt.
+  const loaded = options.settleRequests
+    ? (await Promise.allSettled(requests)).map((result) => {
+      if (result.status === 'rejected') throw result.reason;
+      return result.value;
+    })
+    : await Promise.all(requests);
+  if (readingNavigationId === state.readingNavigationId
+      && selectionIntentId === state.eventSelectionIntentId && options.mobileView) setMobileView(options.mobileView);
   return loaded[2];
+}
+
+function readingScopeKey() {
+  return JSON.stringify([state.sourceKind, state.sourceHome, state.repoRoot, state.indexRevision]);
+}
+
+function captureCollaborationAction(button) {
+  const detail = el.detail.contains(button);
+  const owner = detail ? el.detail : button.closest('.event[data-event-id]');
+  return {
+    detail,
+    eventId: detail ? state.detailView?.eventId || '' : owner?.dataset.eventId || '',
+    sessionId: button.dataset.openCollaborationSession,
+    blockIndex: owner ? [...owner.querySelectorAll('.collaborationBlock')].indexOf(button.closest('.collaborationBlock')) : -1,
+    actionId: button.dataset.collaborationAction || '',
+  };
+}
+
+function restoreCollaborationActionFocus(action) {
+  if (!action.eventId || !action.actionId || action.blockIndex < 0) return;
+  const owner = action.detail
+    ? (state.detailView?.eventId === action.eventId ? el.detail : null)
+    : el.timeline.querySelector(`.event[data-event-id="${CSS.escape(action.eventId)}"]`);
+  const block = owner?.querySelectorAll('.collaborationBlock')[action.blockIndex];
+  const matches = block?.querySelectorAll(`[data-collaboration-action="${CSS.escape(action.actionId)}"][data-open-collaboration-session="${CSS.escape(action.sessionId)}"]`);
+  // Do not substitute another link to the same child if the original action disappeared.
+  if (matches?.length === 1) matches[0].focus({ preventScroll: true });
+}
+
+function captureReadingPosition(button) {
+  const pane = el.timeline.closest('.timelinePane');
+  const viewportIsMobile = window.matchMedia('(max-width: 760px)').matches;
+  const top = viewportIsMobile ? 0 : pane.getBoundingClientRect().top;
+  const anchor = [...el.timeline.querySelectorAll('.event[data-event-id]')]
+    .find((node) => node.getClientRects().length && node.getBoundingClientRect().bottom > top);
+  return {
+    scope: readingScopeKey(), sessionId: state.selectedSessionId,
+    layerId: activeLayerId(), searchQuery: state.searchQuery, searchFilters: { ...state.searchFilters },
+    mainPresentationId: state.mainPresentationId, profileId: state.profileId,
+    profileDraft: cloneProfile(state.profileDraft || activeProfile()),
+    projectReturnContext: state.projectReturnContext,
+    selectedEventId: state.selectedEventId, detailView: { ...state.detailView },
+    offset: state.offset, scrollTop: pane.scrollTop,
+    anchorId: anchor?.dataset.eventId || '', anchorOffset: anchor ? anchor.getBoundingClientRect().top - top : 0,
+    viewportIsMobile, documentScrollTop: window.scrollY, documentScrollLeft: window.scrollX,
+    detailScrollTop: el.detail.closest('.detailPane').scrollTop,
+    mobileView: state.mobileView,
+    returnFocus: captureCollaborationAction(button),
+    detailEventIds: renderedTimelineEvents().filter((item) => state.detailCache[detailKey(state.selectedSessionId, activeLayerId(), item.id)]).map((item) => item.id),
+    navigationEventReveal: structuredClone(state.navigationEventReveal),
+    temporaryEventReveal: state.temporaryEventReveal ? {
+      eventId: state.temporaryEventReveal.event.id,
+      sourceEventId: state.temporaryEventReveal.sourceEventId,
+    } : null,
+    // Save user-visible intent, not the derived key (which includes session-list sorting).
+    searchTransientEventIds: [...currentSearchTransientExpansionIds()],
+    trajectory: structuredClone(state.trajectoryPresentationState),
+    openDetails: [...el.timeline.querySelectorAll('.event[data-event-id]')].map((node) => ({
+      eventId: node.dataset.eventId,
+      open: [...node.querySelectorAll('details')].map((detail) => detail.open),
+    })).filter((item) => item.open.length),
+    inspectorOpenDetails: [...el.detail.querySelectorAll('details')].map((detail) => detail.open),
+    navigationCategoryId: state.navigationCategoryId, navigationCategoryManualId: state.navigationCategoryManualId,
+  };
+}
+
+async function openCollaborationSession(button) {
+  if (button.dataset.navigationSource !== state.sourceKind
+      || !sameProjectRoot(button.dataset.navigationProject, state.repoRoot)
+      || Number(button.dataset.navigationRevision) !== state.indexRevision) {
+    throw new Error(t('readingTargetUnavailable'));
+  }
+  const sessionId = button.dataset.openCollaborationSession;
+  if (!sessionId || state.searchScope !== 'session') return false;
+  state.readingHistory.push(captureReadingPosition(button));
+  if (state.readingHistory.length > 20) state.readingHistory.shift();
+  state.projectReturnContext = null;
+  state.searchQuery = '';
+  state.searchFilters = { file: '', kind: '', status: '', codeModeRequest: '' };
+  state.layerId = 'main';
+  el.layerSelect.value = 'main';
+  syncSearchInputValue();
+  updateProfileApplicabilityUi();
+  const navigationId = state.readingNavigationId + 1;
+  const scope = readingScopeKey();
+  const loading = selectSession(sessionId, { mobileView: 'events', preserveReadingHistory: true });
+  const context = timelineDataContextKey();
+  const selectionIntentId = state.eventSelectionIntentId;
+  await loading;
+  if (navigationId !== state.readingNavigationId || selectionIntentId !== state.eventSelectionIntentId
+      || scope !== readingScopeKey() || context !== timelineDataContextKey() || state.selectedSessionId !== sessionId) return false;
+  // Main contains the child's own events; inherited context stays in its separate card.
+  const first = state.currentEvents[0];
+  if (first) await navigateToLayerEvent('main', first.id, {
+    mobileView: trajectoryPresentationActive() ? 'detail' : 'events',
+    scrollBehavior: 'auto',
+  });
+  return true;
+}
+
+function backToReadingPosition() {
+  const pending = state.readingRestoration;
+  if (pending?.current()) return pending.promise;
+  const position = state.readingHistory.at(-1);
+  if (!position) return Promise.resolve(false);
+  if (position.scope !== readingScopeKey()) return Promise.reject(new Error(t('readingTargetUnavailable')));
+  const navigationId = state.readingNavigationId;
+  const operation = {
+    current: () => state.readingRestoration === operation && state.readingHistory.at(-1) === position
+      && navigationId === state.readingNavigationId && position.scope === readingScopeKey(),
+  };
+  state.readingRestoration = operation;
+  operation.promise = Promise.resolve().then(() => {
+    if (!operation.current()) return false;
+    return restoreReadingPosition(position, operation);
+  }).catch((error) => {
+    if (!operation.current()) return false;
+    // Keep the immutable snapshot and let either return control or timeline Retry restart all phases.
+    const retryCurrent = operation.current;
+    setTimelineReplacementRetry(timelineDataContextKey(), position.sessionId, backToReadingPosition, retryCurrent);
+    updateLoadMoreButton();
+    throw error;
+  }).finally(() => {
+    if (state.readingRestoration === operation) {
+      state.readingRestoration = null;
+      updateLoadMoreButton();
+    }
+  });
+  return operation.promise;
+}
+
+async function restoreReadingPosition(position, operation) {
+  state.searchQuery = position.searchQuery;
+  state.searchFilters = { ...position.searchFilters };
+  state.layerId = position.layerId;
+  state.profileId = position.profileId;
+  state.profileDraft = cloneProfile(position.profileDraft);
+  advancePresentationRevision('foldingPresentationRevision');
+  localStorage.setItem('sessionAnalyzer.profile', state.profileId);
+  state.mainPresentationId = position.mainPresentationId;
+  state.projectReturnContext = position.projectReturnContext;
+  el.layerSelect.value = position.layerId;
+  el.profileSelect.value = position.profileId;
+  syncSearchInputValue();
+  updateProfileApplicabilityUi();
+  const navigationId = state.readingNavigationId + 1;
+  let selectionIntentId = state.eventSelectionIntentId;
+  let searchKey;
+  const current = () => navigationId === state.readingNavigationId && position.scope === readingScopeKey()
+    && state.readingHistory.at(-1) === position
+    && selectionIntentId === state.eventSelectionIntentId
+    && searchKey === searchTargetKey() && position.mainPresentationId === state.mainPresentationId
+    && state.selectedSessionId === position.sessionId && activeLayerId() === position.layerId
+    && state.searchScope === 'session' && state.searchQuery === position.searchQuery
+    && JSON.stringify(state.searchFilters) === JSON.stringify(position.searchFilters);
+  operation.current = current;
+  // A previous attempt may have cached a detail failure for this same session.
+  for (const id of position.detailEventIds) delete state.detailErrors[detailKey(position.sessionId, position.layerId, id)];
+  const loading = selectSession(position.sessionId, { mobileView: 'events', preserveReadingHistory: true, settleRequests: true });
+  searchKey = searchTargetKey();
+  await loading;
+  if (!current()) return false;
+  if (position.offset > state.offset && !await loadTimelineThroughIndex(position.offset - 1)) return false;
+  if (!current()) return false;
+  resetSearchTransientExpansions();
+  position.searchTransientEventIds.forEach(addSearchTransientExpansion);
+  state.trajectoryPresentationState = structuredClone(position.trajectory);
+  state.navigationCategoryId = position.navigationCategoryId;
+  state.navigationCategoryManualId = position.navigationCategoryManualId;
+  renderTimeline();
+  if (position.selectedEventId) {
+    const selection = navigateToLayerEvent(position.layerId, position.selectedEventId, {
+      scroll: false,
+      settleInspector: true,
+      ...(position.temporaryEventReveal?.eventId === position.selectedEventId
+        ? { sourceEventId: position.temporaryEventReveal.sourceEventId } : {}),
+    });
+    selectionIntentId = state.eventSelectionIntentId;
+    const selected = await selection;
+    if (!current()) return false;
+    if (!selected) throw new Error(t('readingTargetUnavailable'));
+    if (position.detailView.type === 'rawRefs') {
+      const raw = showRaw(currentSelectedEvent(), { replace: true });
+      selectionIntentId = state.eventSelectionIntentId;
+      await raw;
+      if (!current()) return false;
+    } else if (position.detailView.type !== 'inspector') {
+      closeDetailView();
+      selectionIntentId = state.eventSelectionIntentId;
+    }
+  }
+  setNavigationEventReveal(position.navigationEventReveal);
+  await Promise.all(position.detailEventIds.map((id) => currentTimelineEvent(id)).filter(Boolean).map((event) =>
+    state.detailPending[detailKey(position.sessionId, position.layerId, event.id)] || ensureEventDetail(event)));
+  if (!current()) return false;
+  const detailFailure = position.detailEventIds.map((id) => state.detailErrors[detailKey(position.sessionId, position.layerId, id)]).find(Boolean);
+  if (detailFailure) throw Object.assign(new Error(detailFailure.message), detailFailure);
+  // Detail arrival can change card heights. Restore the viewport after those details settle.
+  state.trajectoryPresentationState = structuredClone(position.trajectory);
+  renderTimeline();
+  // Hidden mobile panes have no useful geometry; expose the saved surface first.
+  setMobileView(position.mobileView, { scroll: false });
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  if (!current()) return false;
+  // Commit only after all required data and DOM work settles. No await after consuming the snapshot.
+  state.readingHistory.pop();
+  if (state.readingRestoration === operation) state.readingRestoration = null;
+  updateLoadMoreButton();
+  if (!state.readingHistory.length) {
+    document.querySelectorAll('[data-reading-back]').forEach((button) => button.remove());
+  }
+  for (const item of position.openDetails) {
+    const node = el.timeline.querySelector(`.event[data-event-id="${CSS.escape(item.eventId)}"]`);
+    node?.querySelectorAll('details').forEach((detail, index) => { detail.open = item.open[index] ?? detail.open; });
+  }
+  el.detail.querySelectorAll('details').forEach((detail, index) => { detail.open = position.inspectorOpenDetails[index] ?? detail.open; });
+  const pane = el.timeline.closest('.timelinePane');
+  const viewportIsMobile = window.matchMedia('(max-width: 760px)').matches;
+  const anchor = position.anchorId ? el.timeline.querySelector(`.event[data-event-id="${CSS.escape(position.anchorId)}"]`) : null;
+  const usableAnchor = anchor?.getClientRects().length && viewportIsMobile === position.viewportIsMobile;
+  pane.scrollTop = usableAnchor && !viewportIsMobile
+    ? pane.scrollTop + anchor.getBoundingClientRect().top - pane.getBoundingClientRect().top - position.anchorOffset
+    : position.scrollTop;
+  state.timelineLastScrollTop = pane.scrollTop;
+  el.detail.closest('.detailPane').scrollTop = position.detailScrollTop;
+  if (viewportIsMobile) {
+    window.scrollTo({
+      top: usableAnchor && position.mobileView === 'events'
+        ? window.scrollY + anchor.getBoundingClientRect().top - position.anchorOffset
+        : position.documentScrollTop,
+      left: position.documentScrollLeft,
+      behavior: 'instant',
+    });
+  }
+  restoreCollaborationActionFocus(position.returnFocus);
+  return true;
 }
 
 async function loadAnalysis(sessionId) {
@@ -5538,10 +5811,11 @@ async function changeLayer(layerId, options = {}) {
 
 function updateLoadMoreButton() {
   if (!el.loadMoreBtn) return;
+  const readingPending = state.readingRestoration?.current();
   const replacementRetry = currentTimelineReplacementRetry();
   const hasMore = Boolean(replacementRetry) || state.offset < state.timelineTotal;
-  el.loadMoreBtn.disabled = !state.selectedSessionId || state.timelineLoading || !hasMore;
-  if (state.timelineLoading) {
+  el.loadMoreBtn.disabled = !state.selectedSessionId || state.timelineLoading || readingPending || !hasMore;
+  if (state.timelineLoading || readingPending) {
     el.loadMoreBtn.textContent = t('loading');
   } else if (replacementRetry) {
     el.loadMoreBtn.textContent = t('retryTimeline');
@@ -5559,16 +5833,17 @@ function paginationIntent(kind) {
 function currentTimelineReplacementRetry() {
   const retry = state.timelineReplacementRetry;
   if (!retry) return null;
-  if (retry.sessionId === state.selectedSessionId && retry.requestContext === timelineDataContextKey()) {
+  if (retry.sessionId === state.selectedSessionId && retry.requestContext === timelineDataContextKey()
+      && (!retry.isCurrent || retry.isCurrent())) {
     return retry;
   }
   state.timelineReplacementRetry = null;
   return null;
 }
 
-function setTimelineReplacementRetry(requestContext, sessionId, retry) {
+function setTimelineReplacementRetry(requestContext, sessionId, retry, isCurrent = null) {
   if (sessionId !== state.selectedSessionId || requestContext !== timelineDataContextKey()) return;
-  state.timelineReplacementRetry = { requestContext, sessionId, retry };
+  state.timelineReplacementRetry = { requestContext, sessionId, retry, isCurrent };
 }
 
 function retryTimelineReplacement() {
@@ -7428,6 +7703,7 @@ function navigationCacheKey() {
 
 function invalidateNavigationCache() {
   requestOwners.navigation.abort();
+  state.inspectorNavigationSettlement = null;
   state.navigationCache = { key: '', events: [], total: 0, pending: null };
   state.navigationLoadErrorKey = '';
 }
@@ -7435,6 +7711,7 @@ function invalidateNavigationCache() {
 function abortPendingNavigationLoad() {
   if (!state.navigationCache.pending) return false;
   requestOwners.navigation.abort();
+  state.inspectorNavigationSettlement = null;
   state.navigationCache = { key: '', events: [], total: 0, pending: null };
   return true;
 }
@@ -7691,6 +7968,7 @@ async function inspectAndRevealEvent(target, options = {}) {
   } else {
     await ensureEventLoaded(target.id);
   }
+  if (options.selectionIntentId !== undefined && options.selectionIntentId !== state.eventSelectionIntentId) return false;
   const loaded = currentTimelineEvent(target.id) || target;
   if (displayState(loaded) === 'hidden') {
     setOverride(loaded.id, 'summary');
@@ -7700,19 +7978,21 @@ async function inspectAndRevealEvent(target, options = {}) {
   scrollToTimelineEvent(loaded.id);
 }
 
-async function navigateToLayerEvent(targetLayerId, targetEventId) {
+async function navigateToLayerEvent(targetLayerId, targetEventId, options = {}) {
   if (!['main', 'protocol', 'raw'].includes(targetLayerId)
       || !targetEventId
       || !state.selectedSessionId
       || state.searchScope !== 'session') return false;
   const sessionId = state.selectedSessionId;
-  const sourceEventId = state.selectedEventId;
+  const selectionIntentId = ++state.eventSelectionIntentId;
+  const readingNavigationId = state.readingNavigationId;
+  const sourceEventId = options.sourceEventId ?? state.selectedEventId;
   if (activeLayerId() !== targetLayerId) {
     await changeLayer(targetLayerId, {
       restoreFocus: false,
     });
   }
-  if (state.selectedSessionId !== sessionId
+  if (selectionIntentId !== state.eventSelectionIntentId || state.readingNavigationId !== readingNavigationId || state.selectedSessionId !== sessionId
       || state.searchScope !== 'session'
       || activeLayerId() !== targetLayerId) return false;
 
@@ -7731,6 +8011,8 @@ async function navigateToLayerEvent(targetLayerId, targetEventId) {
         signal: owner.controller.signal,
       });
       if (!requestOwners.eventEnvelope.isCurrent(owner)
+          || selectionIntentId !== state.eventSelectionIntentId
+          || state.readingNavigationId !== readingNavigationId
           || state.selectedSessionId !== sessionId
           || state.searchScope !== 'session'
           || activeLayerId() !== targetLayerId
@@ -7753,13 +8035,17 @@ async function navigateToLayerEvent(targetLayerId, targetEventId) {
   });
   renderTimeline();
   const selected = currentTimelineEvent(targetEventId) || target;
-  showInspector(selected, { replace: true, origin: DETAIL_VIEW_ORIGIN_USER });
-  scrollToTimelineEvent(targetEventId);
+  const settlement = showInspector(selected, {
+    replace: true, origin: DETAIL_VIEW_ORIGIN_USER, mobileView: options.mobileView, passive: true,
+  });
+  if (options.scroll !== false) scrollToTimelineEvent(targetEventId, { behavior: options.scrollBehavior });
+  if (options.settleInspector) await settlement;
   return true;
 }
 
 async function inspectEventRef(eventId) {
   if (!eventId) return;
+  const selectionIntentId = ++state.eventSelectionIntentId;
   const sourceEventId = state.selectedEventId;
   const current = currentTimelineEvent(eventId);
   const requestContext = JSON.stringify([state.selectedSessionId, activeLayerId(), eventId, state.locale]);
@@ -7769,7 +8055,7 @@ async function inspectEventRef(eventId) {
     target = target || await api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/events/${encodeURIComponent(eventId)}?layer=${encodeURIComponent(activeLayerId())}&locale=${encodeURIComponent(state.locale)}`, {
       signal: owner.controller.signal,
     });
-    if (!requestOwners.eventEnvelope.isCurrent(owner)) return false;
+    if (!requestOwners.eventEnvelope.isCurrent(owner) || selectionIntentId !== state.eventSelectionIntentId) return false;
   } catch (error) {
     if (isIntentionalAbort(error)) return false;
     throw error;
@@ -7780,6 +8066,7 @@ async function inspectEventRef(eventId) {
     temporary: !current,
     sourceEventId,
     replace: false,
+    selectionIntentId,
   });
   return true;
 }
@@ -7787,8 +8074,9 @@ async function inspectEventRef(eventId) {
 async function navigateSelectedEvent(direction) {
   const current = currentSelectedEvent();
   if (!current) return;
+  const selectionIntentId = ++state.eventSelectionIntentId;
   const cache = await ensureNavigationEvents();
-  if (!cache) return;
+  if (!cache || selectionIntentId !== state.eventSelectionIntentId) return;
   const categories = navigationCategoriesForEvent(current, cache.events);
   if (!categories.length) return;
   const categoryId = selectedNavigationCategoryId(current, categories);
@@ -7797,7 +8085,7 @@ async function navigateSelectedEvent(direction) {
   const index = matches.findIndex((event) => event.id === current.id);
   const nextIndex = direction === 'next' ? index + 1 : index - 1;
   if (index < 0 || nextIndex < 0 || nextIndex >= matches.length) return;
-  await inspectAndRevealEvent(matches[nextIndex]);
+  await inspectAndRevealEvent(matches[nextIndex], { selectionIntentId });
 }
 
 function isSelectedEventDetailView(view = state.detailView) {
@@ -7898,6 +8186,7 @@ function closeDetailView() {
 }
 
 function backDetailView() {
+  state.eventSelectionIntentId += 1;
   clearContextReveal({ render: false });
   const previous = state.detailHistory.pop() || { type: 'profileRules' };
   state.detailView = previous;
@@ -7909,13 +8198,13 @@ function backDetailView() {
 function renderCurrentDetailView() {
   if (state.detailView.type === 'inspector') {
     const item = eventForDetailView();
-    if (item) showInspector(item, { replace: true });
+    if (item) showInspector(item, { replace: true, passive: true });
     else closeDetailView();
     return;
   }
   if (state.detailView.type === 'rawRefs') {
     const item = eventForDetailView();
-    if (item) showRaw(item, { replace: true }).catch(showError);
+    if (item) showRaw(item, { replace: true, passive: true }).catch(showError);
     else closeDetailView();
     return;
   }
@@ -7964,6 +8253,7 @@ function renderDetailShell({
   refreshSearch = true,
 }) {
   updateDetailViewChrome();
+  actions = renderReadingReturnAction() + actions;
   const hasChromeControls = backable || closeable;
   const resolvedHeaderClass = [headerClass, hasChromeControls ? 'detailChromeHeader' : ''].filter(Boolean).join(' ');
   const backButton = backable
@@ -8252,7 +8542,7 @@ function renderProfileRulesPane(options = {}) {
 function rerenderCurrentInspectorNavigation() {
   if (state.detailView.type !== 'inspector') return;
   const item = selectedEventInCurrentTimeline();
-  if (item) showInspector(item, { replace: true });
+  if (item) showInspector(item, { replace: true, mobileView: state.mobileView, passive: true });
 }
 
 function renderInspectorPresentation(event, options = {}) {
@@ -8291,6 +8581,7 @@ function renderInspectorPresentation(event, options = {}) {
 }
 
 function showInspector(event, options = {}) {
+  if (!options.passive) state.eventSelectionIntentId += 1;
   if (state.contextReveal || state.contextRevealPending) clearContextReveal({ render: false });
   const layer = activeLayerId();
   const key = detailKey(state.selectedSessionId, layer, event.id);
@@ -8301,7 +8592,7 @@ function showInspector(event, options = {}) {
     ? replaceDetailView(eventDetailView('inspector', event.id, options))
     : pushDetailView(eventDetailView('inspector', event.id, options));
   if (clearedTemporaryReveal) renderTimeline();
-  setMobileView('detail');
+  setMobileView(options.mobileView || 'detail');
   updateSelectedTimelineEvent();
   const selectionContext = detailSelectionContextKey();
   const navigationKey = navigationCacheKey();
@@ -8317,7 +8608,7 @@ function showInspector(event, options = {}) {
     && state.navigationLoadErrorKey !== navigationKey;
   if (shouldLoadNavigation) {
     navigationPending = ensureNavigationEvents();
-    navigationPending.then(() => {
+    const settlement = navigationPending.then(() => {
       if (navigationCacheKey() !== navigationKey
           || !isCurrentDetailSelection('inspector', key, event.id, selectionContext)) return;
       if (state.navigationLoadErrorKey === navigationKey) state.navigationLoadErrorKey = '';
@@ -8332,12 +8623,15 @@ function showInspector(event, options = {}) {
       showError(error);
       rerenderCurrentInspectorNavigation();
     });
+    state.inspectorNavigationSettlement = { key: navigationKey, pending: settlement };
   }
   renderInspectorPresentation(event, { navigationPending });
 
   if (!state.detailCache[key] && !state.detailErrors[key]) {
     loadEventDetail(event);
   }
+  return state.inspectorNavigationSettlement?.key === navigationKey
+    ? state.inspectorNavigationSettlement.pending : Promise.resolve();
 }
 
 function rawPayloadText(raw) {
@@ -8346,6 +8640,7 @@ function rawPayloadText(raw) {
 }
 
 async function showRaw(event, options = {}) {
+  if (!options.passive) state.eventSelectionIntentId += 1;
   if (state.contextReveal || state.contextRevealPending) clearContextReveal({ render: false });
   const refs = sourceRefs(event);
   const layer = activeLayerId();
@@ -8678,6 +8973,10 @@ el.sessionList.addEventListener('keydown', (event) => {
 });
 
 el.sessionHeader?.addEventListener('click', (event) => {
+  if (event.target.closest('[data-reading-back]')) {
+    backToReadingPosition().catch(showError);
+    return;
+  }
   if (!event.target.closest('[data-search-back-to-project]')) return;
   backToProjectResults().catch(showError);
 });
@@ -8687,6 +8986,13 @@ for (const button of el.mobileViewButtons) {
 }
 
 el.timeline.addEventListener('click', (event) => {
+  const collaborationTarget = event.target.closest('[data-open-collaboration-session]');
+  if (collaborationTarget) {
+    event.preventDefault();
+    event.stopPropagation();
+    openCollaborationSession(collaborationTarget).catch(showError);
+    return;
+  }
   if (event.target.closest('[data-search-back-to-project]')) {
     backToProjectResults().catch(showError);
     return;
@@ -8761,6 +9067,17 @@ el.timeline.addEventListener('error', showImagePreviewError, true);
 el.detail.addEventListener('error', showImagePreviewError, true);
 
 el.detail.addEventListener('click', (event) => {
+  if (event.target.closest('[data-reading-back]')) {
+    backToReadingPosition().catch(showError);
+    return;
+  }
+  const collaborationTarget = event.target.closest('[data-open-collaboration-session]');
+  if (collaborationTarget) {
+    event.preventDefault();
+    event.stopPropagation();
+    openCollaborationSession(collaborationTarget).catch(showError);
+    return;
+  }
   const action = event.target.closest('[data-detail-action]')?.dataset.detailAction;
   if (!action) return;
   if (action === 'back') {
@@ -8768,6 +9085,7 @@ el.detail.addEventListener('click', (event) => {
     return;
   }
   if (action === 'close') {
+    state.eventSelectionIntentId += 1;
     closeDetailView();
     return;
   }

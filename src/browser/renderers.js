@@ -349,9 +349,16 @@
   }
 
   function renderCollaboration(section) {
-    const targets = (section.targets || []).map((target) => `<span>${escapeHtml(target)}</span>`).join('');
+    function targetLabel(label, actionId) {
+      const link = section.targetLinks?.find((item) => item.label === label);
+      if (!link) return escapeHtml(label);
+      if (link.status !== 'resolved') return `${escapeHtml(label)} <small>${escapeHtml(tr(`agentTarget_${link.status}`))}</small>`;
+      const target = link.target;
+      return `${escapeHtml(label)} <button class="smallBtn" type="button" data-open-collaboration-session="${escapeHtml(target.sessionId)}" data-collaboration-action="${escapeHtml(actionId)}" data-navigation-source="${escapeHtml(target.sourceKind)}" data-navigation-project="${escapeHtml(target.repoRoot)}" data-navigation-revision="${escapeHtml(target.indexRevision)}">${escapeHtml(tr('openAgentSession'))}</button>`;
+    }
+    const targets = (section.targets || []).map((target, index) => `<span>${targetLabel(target, `target:${index}`)}</span>`).join('');
     const fields = (section.fields || []).map((entry) => `<div><dt>${escapeHtml(entry.key || '')}</dt><dd>${escapeHtml(entry.value || '')}</dd></div>`).join('');
-    const statuses = (section.statuses || []).map((item) => `<li><span>${escapeHtml(item.label || '')}</span><strong class="collaborationStatus${collaborationStatusClass(item.status)}">${escapeHtml(item.status || tr('unknown'))}</strong></li>`).join('');
+    const statuses = (section.statuses || []).map((item, index) => `<li><span>${item.labelKind === 'agent' ? targetLabel(item.label || '', `status:${index}`) : escapeHtml(item.label || '')}</span><strong class="collaborationStatus${collaborationStatusClass(item.status)}">${escapeHtml(item.status || tr('unknown'))}</strong></li>`).join('');
     const timedOut = section.timedOut ? `<span class="collaborationStatus failed">${escapeHtml(tr('timedOut'))}</span>` : '';
     const message = section.messageHtml ? `<article class="collaborationBody"><h4>${escapeHtml(tr('message'))}</h4><div>${section.messageHtml}</div></article>` : '';
     const result = section.resultHtml ? `<article class="collaborationBody"><h4>${escapeHtml(tr('result'))}</h4><div>${section.resultHtml}</div></article>` : '';

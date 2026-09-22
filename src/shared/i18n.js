@@ -387,6 +387,8 @@
         inheritedContextNoMainEvents: 'No inherited Main events were reconstructed at this fork point.',
         inheritedContextForkPoint: 'Fork point {id}',
         openParentSession: 'Open parent session',
+        backToReadingPosition: 'Back to reading position',
+        readingTargetUnavailable: 'This reading target is no longer available in the current project index. Reopen it from the current session.',
         childSessionCountOne: '1 child session',
         childSessionCount: '{count} child sessions',
         expandChildSessionsOne: 'Show 1 child session',
@@ -843,6 +845,10 @@
         answer: 'Answer',
         unknown: 'unknown',
         timedOut: 'timed out',
+        openAgentSession: 'Open session ↗',
+        agentTarget_missing: 'Session unavailable in this project',
+        agentTarget_ambiguous: 'Ambiguous session identity',
+        agentTarget_unconfirmed: 'Session relationship unconfirmed',
         message: 'Message',
         result: 'Result',
         request: 'Request',
@@ -1229,6 +1235,8 @@
         inheritedContextNoMainEvents: '未能在此分叉点重建继承的主时间线事件。',
         inheritedContextForkPoint: '分叉点 {id}',
         openParentSession: '打开父会话',
+        backToReadingPosition: '返回刚才的位置',
+        readingTargetUnavailable: '当前项目索引中的阅读目标已失效，请从当前会话重新打开。',
         childSessionCountOne: '1 个子 Session',
         childSessionCount: '{count} 个子 Session',
         expandChildSessionsOne: '显示 1 个子 Session',
@@ -1770,6 +1778,10 @@
         answer: '回答',
         unknown: '未知',
         timedOut: '超时',
+        openAgentSession: '打开会话 ↗',
+        agentTarget_missing: '当前项目中无可用会话',
+        agentTarget_ambiguous: '会话身份存在歧义',
+        agentTarget_unconfirmed: '会话关系未确认',
         message: '消息',
         result: '结果',
         request: '请求',
@@ -1930,7 +1942,7 @@
         key: sectionTitle(field.key, locale),
       }));
       next.statuses = (next.statuses || []).map((status) => ({
-        ...Object.fromEntries(Object.entries(status).filter(([key]) => key !== 'labelKind')),
+        ...status,
         label: status.labelKind === 'generic' ? sectionTitle(status.label, locale) : status.label,
       }));
     }

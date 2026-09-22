@@ -978,7 +978,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
               session,
               decodePathSegment(detailMatch[2]),
               layer,
-              { locale, signal },
+              { locale, signal, indexRevision: capture.indexRevision },
             );
           },
         );

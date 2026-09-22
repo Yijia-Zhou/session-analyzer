@@ -73,7 +73,7 @@ const SECTION_KEYS_BY_TYPE = Object.freeze({
   user_input: ['questions'],
   plan_update: ['explanationHtml', 'steps'],
   web_request: ['groups', 'options'],
-  collaboration: ['action', 'targets', 'fields', 'statuses', 'timedOut', 'messageHtml', 'resultHtml'],
+  collaboration: ['action', 'targets', 'fields', 'statuses', 'timedOut', 'messageHtml', 'resultHtml', 'targetLinks'],
   image_preview: ['images', 'notice'],
   notice: ['text', 'level'],
   raw_json: ['value', 'expanded'],
@@ -470,6 +470,25 @@ function validateLogicalDetailSectionShape(section, path) {
       validateEntries(section.options, `${path}.options`);
       break;
     case 'collaboration':
+      if (section.targetLinks !== undefined) {
+        assertArray(section.targetLinks, `${path}.targetLinks`);
+        section.targetLinks.forEach((link) => {
+          assertRecord(link, `${path}.targetLinks[]`);
+          assertAllowedKeys(link, ['label', 'status', 'target'], `${path}.targetLinks[]`);
+          assertString(link.label, `${path}.targetLinks[].label`);
+          if (!['resolved', 'missing', 'ambiguous', 'unconfirmed'].includes(link.status)) {
+            throw detailContractError('invalid navigation status', path);
+          }
+          if (link.status === 'resolved') {
+            assertRecord(link.target, `${path}.targetLinks[].target`);
+            assertAllowedKeys(link.target, ['sourceKind', 'repoRoot', 'sessionId', 'layer', 'indexRevision'], `${path}.targetLinks[].target`);
+            for (const key of ['sourceKind', 'repoRoot', 'sessionId']) assertString(link.target[key], `${path}.targetLinks[].target.${key}`, { nonEmpty: true });
+            if (link.target.layer !== 'main' || !Number.isSafeInteger(link.target.indexRevision) || link.target.indexRevision < 0) {
+              throw detailContractError('invalid session navigation target', path);
+            }
+          } else if (link.target !== undefined) throw detailContractError('unresolved navigation target', path);
+        });
+      }
       assertString(section.action, `${path}.action`, { optional: true });
       validateStringArray(section.targets, `${path}.targets`);
       validateEntries(section.fields, `${path}.fields`);

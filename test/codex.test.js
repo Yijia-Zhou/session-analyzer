@@ -3829,7 +3829,7 @@ test('other tool call detail renders readable summaries and omits large data URL
   assert.equal(wait.label, 'Collab Waiting End');
   assert.equal(waitDetail.timelineSections[0].type, 'collaboration');
   assert.deepEqual(waitDetail.timelineSections[0].targets, ['agent-1']);
-  assert.deepEqual(waitDetail.timelineSections[0].statuses, [{ label: 'Builder', status: 'completed' }]);
+  assert.deepEqual(waitDetail.timelineSections[0].statuses, [{ label: 'Builder', labelKind: 'agent', status: 'completed' }]);
   assert.equal(waitDetail.timelineSections[0].timedOut, true);
   assert.match(waitDetail.timelineSections[0].resultHtml, /Builder · completed/);
   assert.match(waitDetail.timelineSections[0].resultHtml, /End result/);
@@ -3837,24 +3837,24 @@ test('other tool call detail renders readable summaries and omits large data URL
   assert.match(spawnDetail.timelineSections[0].messageHtml, /End prompt/);
   assert.deepEqual(spawnDetail.timelineSections[0].targets, ['agent-2']);
   assert.deepEqual(spawnDetail.timelineSections[0].fields.find((field) => field.key === 'Nickname'), { key: 'Nickname', value: 'Builder' });
-  assert.deepEqual(spawnDetail.timelineSections[0].statuses, [{ label: 'Status', status: 'pending_init' }]);
+  assert.deepEqual(spawnDetail.timelineSections[0].statuses, [{ label: 'Status', labelKind: 'generic', status: 'pending_init' }]);
   assert.equal(sendDetail.timelineSections[0].type, 'collaboration');
   assert.match(sendDetail.timelineSections[0].messageHtml, /End prompt/);
-  assert.deepEqual(sendDetail.timelineSections[0].statuses, [{ label: 'Status', status: 'running' }]);
+  assert.deepEqual(sendDetail.timelineSections[0].statuses, [{ label: 'Status', labelKind: 'generic', status: 'running' }]);
   assert.equal(closeDetail.timelineSections[0].type, 'collaboration');
   assert.match(closeDetail.timelineSections[0].resultHtml, /End result/);
-  assert.deepEqual(closeDetail.timelineSections[0].statuses, [{ label: 'Status', status: 'completed' }]);
+  assert.deepEqual(closeDetail.timelineSections[0].statuses, [{ label: 'Status', labelKind: 'generic', status: 'completed' }]);
   assert.deepEqual(spawnOutputDetail.timelineSections[0].targets, ['agent-3']);
   assert.deepEqual(spawnOutputDetail.timelineSections[0].fields.find((field) => field.key === 'Nickname'), { key: 'Nickname', value: 'Reviewer' });
-  assert.deepEqual(waitOutputDetail.timelineSections[0].statuses, [{ label: 'agent-3', status: 'completed' }]);
+  assert.deepEqual(waitOutputDetail.timelineSections[0].statuses, [{ label: 'agent-3', labelKind: 'agent', status: 'completed' }]);
   assert.match(waitOutputDetail.timelineSections[0].resultHtml, /agent-3 · completed/);
   assert.match(waitOutputDetail.timelineSections[0].resultHtml, /Function result/);
-  assert.deepEqual(closeOutputDetail.timelineSections[0].statuses, [{ label: 'Previous status', status: 'completed' }]);
+  assert.deepEqual(closeOutputDetail.timelineSections[0].statuses, [{ label: 'Previous status', labelKind: 'generic', status: 'completed' }]);
   assert.match(closeOutputDetail.timelineSections[0].resultHtml, /Previous result/);
   assert.deepEqual(listOutputDetail.timelineSections[0].fields.find((field) => field.key === 'Agent count'), { key: 'Agent count', value: '2' });
   assert.deepEqual(listOutputDetail.timelineSections[0].statuses, [
-    { label: 'Builder', status: 'running' },
-    { label: 'Reviewer', status: 'completed' },
+    { label: 'Builder', labelKind: 'agent', status: 'running' },
+    { label: 'Reviewer', labelKind: 'agent', status: 'completed' },
   ]);
   assert.match(listOutputDetail.timelineSections[0].resultHtml, /Implement the fix/);
   assert.match(listOutputDetail.timelineSections[0].resultHtml, /Review complete/);
