@@ -14,12 +14,69 @@ const { validateCanonicalMaterializedSessionShape } = require('../src/canonical-
 const { displayStateFromRules, normalizeRules } = require('../src/shared/folding');
 const { validateStructuredLogicalDetailDto } = require('../src/shared/logical-detail-contract');
 
+for (const count of [128, 129, 5001]) test(`terminal origin directory stays bounded with ${count} confirmed requests`, async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'terminal-directory-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const repoRoot = path.join(root, 'repo');
+  const source = await fs.readFile(path.join(__dirname, 'fixtures/background-terminal/continuation.jsonl'), 'utf8');
+  const template = source.trim().split('\n').map(JSON.parse);
+  const rows = template.slice(0, 3);
+  rows[0].payload.cwd = repoRoot;
+  for (let i = 0; i < count; i += 1) {
+    for (const row of template.slice(3, 5)) {
+      const poll = structuredClone(row);
+      poll.payload.call_id = `poll-${i}`;
+      rows.push(poll);
+    }
+  }
+  await fs.mkdir(path.join(root, 'sessions'), { recursive: true });
+  await fs.writeFile(path.join(root, 'sessions', 'directory.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n'), 'utf8');
+  const index = await codex.buildSourceBackedIndex({ repoRoot, codexHome: root });
+  const session = await materializeSessionForIndex(index, index.sessions[0]);
+  const originId = [...session.presentationIndexes.backgroundTerminalOrigins.keys()][0];
+  const requests = session.logicalEvents.filter((event) => session.presentationIndexes.backgroundTerminalContinuations.get(event.id)?.originEventId === originId);
+  assert.equal(requests.length, count);
+  for (const locale of ['en', 'zh-CN']) {
+    const detail = await codex.buildHydratedEventDetail(index, session, originId, 'main', { locale });
+    assert.doesNotThrow(() => validateStructuredLogicalDetailDto(detail));
+    assert.ok(detail.timelineSections.length, 'the command body remains readable');
+    const directory = detail.inspectorSections.find((section) => section.type === 'event_refs');
+    assert.deepEqual(directory.items.map((item) => item.id), requests.slice(0, 128).map((event) => event.id));
+    const notice = detail.inspectorSections.find((section) => section.type === 'notice' && section.purpose === 'traceability');
+    if (count > 128) {
+      assert.ok(notice);
+      assert.match(notice.text, new RegExp(`128.*${count}`));
+      assert.match(notice.text, locale === 'en' ? /Next terminal request/ : /下一个终端请求/);
+    } else assert.equal(notice, undefined);
+  }
+  for (const position of new Set([0, 127, Math.min(128, count - 1), count - 1])) {
+    const detail = await codex.buildHydratedEventDetail(index, session, requests[position].id, 'main');
+    assert.doesNotThrow(() => validateStructuredLogicalDetailDto(detail));
+    const refs = (title) => detail.inspectorSections.find((section) => section.title === title)?.items.map((item) => item.id) || [];
+    assert.deepEqual(refs('Originating command'), [originId]);
+    assert.deepEqual(refs('Previous terminal request'), position ? [requests[position - 1].id] : []);
+    assert.deepEqual(refs('Next terminal request'), position + 1 < count ? [requests[position + 1].id] : []);
+  }
+});
+
 test('native continuation survives hydration, pagination and search without transferring ownership', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'terminal-continuation-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const repoRoot = path.join(root, 'repo');
   const source = await fs.readFile(path.join(__dirname, 'fixtures/background-terminal/continuation.jsonl'), 'utf8');
   const rows = source.trim().split('\n').map(JSON.parse);
+  rows.splice(5, 0,
+    {
+      timestamp: '2026-09-11T10:00:04.500Z',
+      type: 'response_item',
+      payload: { type: 'function_call', name: 'write_stdin', call_id: 'w3', arguments: JSON.stringify({ session_id: 1234 }) },
+    },
+    {
+      timestamp: '2026-09-11T10:00:04.600Z',
+      type: 'response_item',
+      payload: { type: 'function_call_output', call_id: 'w3', output: 'Wall time: 0.0100 seconds\nProcess running with session ID 1234\nOutput:\nStill working' },
+    },
+  );
   rows[0].payload.cwd = repoRoot;
   const id = rows[0].payload.id;
   const dir = path.join(root, 'sessions', '2026', '09', '11');
@@ -50,9 +107,32 @@ test('native continuation survives hydration, pagination and search without tran
   assert.equal(detail.timelineSections.some((section) => section.entries?.some((entry) => entry.key === '请求类型')), false);
   const originSection = detail.inspectorSections.find((section) => section.type === 'event_refs');
   assert.deepEqual(originSection.items.map((item) => item.id), [e.id]);
+  assert.equal(originSection.items[0].layer, 'main');
+  assert.equal(originSection.items[0].label, 'npm test');
+  const associatedSection = detail.inspectorSections.find((section) => section.title === '关联终端请求');
+  assert.deepEqual(associatedSection.items.map((item) => item.id), [eventFor('w3').id, eventFor('w2').id]);
+  assert.ok(associatedSection.items.every((item) => item.layer === 'main'));
+  assert.equal(detail.inspectorSections.some((section) => section.title === '上一个终端请求'), false);
+  assert.deepEqual(detail.inspectorSections.find((section) => section.title === '下一个终端请求').items.map((item) => item.id), [eventFor('w3').id]);
+  const originDetail = await codex.buildHydratedEventDetail(index, session, e.id, 'main');
+  const followUpSection = originDetail.inspectorSections.find((section) => section.title === 'Follow-up terminal requests');
+  assert.deepEqual(followUpSection.items.map((item) => item.id), [w.id, eventFor('w3').id, eventFor('w2').id]);
+  assert.ok(followUpSection.items.every((item) => item.layer === 'main'));
+  assert.deepEqual(followUpSection.items.map((item) => item.label), [
+    '2026-09-11T10:00:03.000Z · Background terminal poll request · npm test',
+    '2026-09-11T10:00:04.500Z · Background terminal poll request · npm test',
+    '2026-09-11T10:00:05.000Z · Background terminal input request · npm test',
+  ]);
+  const middleDetail = await codex.buildHydratedEventDetail(index, session, eventFor('w3').id, 'main');
+  assert.deepEqual(middleDetail.inspectorSections.find((section) => section.title === 'Previous terminal request').items.map((item) => item.id), [w.id]);
+  assert.deepEqual(middleDetail.inspectorSections.find((section) => section.title === 'Next terminal request').items.map((item) => item.id), [eventFor('w2').id]);
+  assert.deepEqual(middleDetail.inspectorSections.find((section) => section.title === 'Associated terminal requests').items.map((item) => item.id), [w.id, eventFor('w2').id]);
   const exitDetail = await codex.buildHydratedEventDetail(index, session, eventFor('w2').id, 'main');
   assert.equal(exitDetail.title, 'Background terminal input request · npm test');
   assert.deepEqual(exitDetail.rawRefs, eventFor('w2').rawRefs);
+  assert.deepEqual(exitDetail.inspectorSections.find((section) => section.title === 'Previous terminal request').items.map((item) => item.id), [eventFor('w3').id]);
+  assert.equal(exitDetail.inspectorSections.some((section) => section.title === 'Next terminal request'), false);
+  assert.deepEqual(exitDetail.inspectorSections.find((section) => section.title === 'Associated terminal requests').items.map((item) => item.id), [w.id, eventFor('w3').id]);
   assert.equal(JSON.stringify(session.logicalEvents), eventsBefore);
   const { _shell, ...canonicalSession } = session;
   const links = session.presentationIndexes.backgroundTerminalContinuations;

@@ -73,7 +73,7 @@ const SECTION_KEYS_BY_TYPE = Object.freeze({
   user_input: ['questions'],
   plan_update: ['explanationHtml', 'steps'],
   web_request: ['groups', 'options'],
-  collaboration: ['action', 'targets', 'fields', 'statuses', 'timedOut', 'messageHtml', 'resultHtml'],
+  collaboration: ['action', 'targets', 'fields', 'statuses', 'timedOut', 'messageHtml', 'resultHtml', 'targetLinks'],
   image_preview: ['images', 'notice'],
   notice: ['text', 'level'],
   raw_json: ['value', 'expanded'],
@@ -224,10 +224,11 @@ function validateEntries(entries, path) {
   entries.forEach((entry, index) => {
     const entryPath = `${path}[${index}]`;
     assertRecord(entry, entryPath);
-    assertAllowedKeys(entry, ['key', 'value', 'fact'], entryPath);
+    assertAllowedKeys(entry, ['key', 'value', 'fact', 'recordedPath'], entryPath);
     assertString(entry.key, `${entryPath}.key`);
     assertString(entry.value, `${entryPath}.value`);
     assertString(entry.fact, `${entryPath}.fact`, { optional: true });
+    assertString(entry.recordedPath, `${entryPath}.recordedPath`, { optional: true });
     if (entry.fact !== undefined && !METADATA_FACT_SET.has(entry.fact)) {
       throw detailContractError(`unknown metadata fact ${entry.fact}`, `${entryPath}.fact`);
     }
@@ -368,7 +369,8 @@ function validatePatchFiles(files, path) {
   files.forEach((file, fileIndex) => {
     const filePath = `${path}[${fileIndex}]`;
     assertRecord(file, filePath);
-    assertAllowedKeys(file, ['path', 'changeType', 'additions', 'deletions', 'lineNumbers', 'hunks'], filePath);
+    assertAllowedKeys(file, ['path', 'recordedPath', 'changeType', 'additions', 'deletions', 'lineNumbers', 'hunks'], filePath);
+    assertString(file.recordedPath, `${filePath}.recordedPath`, { optional: true });
     assertString(file.path, `${filePath}.path`);
     assertString(file.changeType, `${filePath}.changeType`, { optional: true });
     assertFiniteNumber(file.additions, `${filePath}.additions`, { optional: true });
@@ -470,6 +472,25 @@ function validateLogicalDetailSectionShape(section, path) {
       validateEntries(section.options, `${path}.options`);
       break;
     case 'collaboration':
+      if (section.targetLinks !== undefined) {
+        assertArray(section.targetLinks, `${path}.targetLinks`);
+        section.targetLinks.forEach((link) => {
+          assertRecord(link, `${path}.targetLinks[]`);
+          assertAllowedKeys(link, ['label', 'status', 'target'], `${path}.targetLinks[]`);
+          assertString(link.label, `${path}.targetLinks[].label`);
+          if (!['resolved', 'missing', 'ambiguous', 'unconfirmed'].includes(link.status)) {
+            throw detailContractError('invalid navigation status', path);
+          }
+          if (link.status === 'resolved') {
+            assertRecord(link.target, `${path}.targetLinks[].target`);
+            assertAllowedKeys(link.target, ['sourceKind', 'repoRoot', 'sessionId', 'layer', 'indexRevision'], `${path}.targetLinks[].target`);
+            for (const key of ['sourceKind', 'repoRoot', 'sessionId']) assertString(link.target[key], `${path}.targetLinks[].target.${key}`, { nonEmpty: true });
+            if (link.target.layer !== 'main' || !Number.isSafeInteger(link.target.indexRevision) || link.target.indexRevision < 0) {
+              throw detailContractError('invalid session navigation target', path);
+            }
+          } else if (link.target !== undefined) throw detailContractError('unresolved navigation target', path);
+        });
+      }
       assertString(section.action, `${path}.action`, { optional: true });
       validateStringArray(section.targets, `${path}.targets`);
       validateEntries(section.fields, `${path}.fields`);

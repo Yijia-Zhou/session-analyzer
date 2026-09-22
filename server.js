@@ -905,6 +905,26 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         return;
       }
 
+      const fileActivityMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/file-activity$/);
+      if (fileActivityMatch) {
+        if (!requireIndex(state, res)) return;
+        const sessionId = decodePathSegment(fileActivityMatch[1]);
+        const file = searchParams.get('file') || '';
+        if (!file || file.length > 8192) { sendError(res, 400, 'Invalid file path'); return; }
+        const { value: result, lease } = await withIndexRevisionLease(state, requestAbort.signal, async (capture) => {
+          const indexedSession = capture.index.sessionsById.get(sessionId);
+          if (!indexedSession) return null;
+          const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
+          return queryForIndex(capture.index).getFileActivity(capture.index, session, file, {
+            offset: asNumber(searchParams.get('offset'), 0, 0, 1_000_000),
+            limit: asNumber(searchParams.get('limit'), 50, 1, 100), locale,
+          });
+        });
+        if (!result) { sendError(res, 404, 'Unknown session'); return; }
+        sendJson(res, 200, { ...result, indexRevision: lease.indexRevision });
+        return;
+      }
+
       const timelineMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/timeline$/);
       if (timelineMatch) {
         if (!requireIndex(state, res)) return;
@@ -978,7 +998,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
               session,
               decodePathSegment(detailMatch[2]),
               layer,
-              { locale, signal },
+              { locale, signal, indexRevision: capture.indexRevision },
             );
           },
         );

@@ -62,6 +62,25 @@ function defaultDisplayProjectFile(file, repoRoot) {
   return text.replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
+function recordedFileActivityPathKey(file, repoRoot) {
+  // Display paths may resolve '..'. Identity comparison must preserve the recorded traversal,
+  // including parent segments after a symlink, on both absolute and relative inputs.
+  const windows = fsPathFlavor(repoRoot) === 'win32';
+  const spelling = (value) => {
+    const text = String(value || '').replace(/\\/g, '/');
+    const prefix = text.startsWith('//') ? '//' : text.startsWith('/') ? '/'
+      : text.match(/^[A-Za-z]:\//)?.[0] || '';
+    const normalized = prefix + text.slice(prefix.length).split('/').filter((part) => part && part !== '.').join('/');
+    return windows ? normalized.toLowerCase() : normalized;
+  };
+  const key = spelling(file);
+  const root = spelling(repoRoot);
+  if (!root || !(root.startsWith('/') || /^[a-zA-Z]:\//.test(root))) return key;
+  if (key === root) return '';
+  const boundary = root.endsWith('/') ? root : `${root}/`;
+  return key.startsWith(boundary) ? key.slice(boundary.length) : key;
+}
+
 function defaultDerivedSessionKind(session) {
   if (session?.primarySessionMetaKind) return session.primarySessionMetaKind;
   if (/\breview\b/i.test(session?.agentNickname || '')) return 'review';
@@ -916,11 +935,34 @@ function createSessionQuery(options = {}) {
     );
   }
 
+  function getFileActivity(index, materializedSession, file, options = {}) {
+    const session = materializedSessionInput(index, materializedSession);
+    if (!session) return null;
+    // These are recorded path associations, not reconstructed file contents or inferred reads.
+    // Preserve case on POSIX: src/A.js and src/a.js need not name the same file.
+    const pathKey = (value) => recordedFileActivityPathKey(value, index.repoRoot);
+    const key = pathKey(file);
+    const events = sourceEventsForLayer(index, session, 'main', resolveLocale(options.locale));
+    const matched = events.filter((event) => key
+      && (event.touchedFiles || []).some((candidate) => pathKey(candidate) === key));
+    const offset = options.offset || 0;
+    const limit = options.limit || 50;
+    return {
+      file, total: matched.length, offset, limit,
+      events: matched.slice(offset, offset + limit).map((event) => ({
+        id: event.id, layer: event.layer, kind: event.kind, status: event.status,
+        timestamp: event.timestamp, label: sanitizeLogicalEnvelopeValue(localizedLogicalLabel(event, resolveLocale(options.locale))),
+        association: event.kind === 'patch' ? 'patch_record' : 'recorded_path',
+      })),
+    };
+  }
+
   return {
     filtersFromSearchParams,
     fileSuggestions,
     filterSessions,
     getEvent,
+    getFileActivity,
     getTimeline,
     indexPresentation,
     matchTerms,

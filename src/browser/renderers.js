@@ -273,7 +273,9 @@
   }
 
   function renderPatch(section) {
-    const files = (section.files || []).map((file) => {
+    const directory = (section.files || []).length > 1
+      ? `<nav class="patchFileDirectory" aria-label="${escapeHtml(tr('patchFiles'))}">${section.files.map((file, index) => `<button type="button" class="smallBtn" data-patch-file-index="${index}">${escapeHtml(file.path)}</button>`).join('')}</nav>` : '';
+    const files = (section.files || []).map((file, index) => {
       const language = languageForPath(file.path);
       const hunks = (file.hunks || []).map((hunk) => {
         const header = hunk.header ? `<div class="patchHunkHeader">${escapeHtml(hunk.header)}</div>` : '';
@@ -288,13 +290,15 @@
         }).join('');
         return `<div class="patchHunk">${header}${lines}</div>`;
       }).join('');
-      return `<article class="patchFile"><header><strong>${escapeHtml(file.path || '')}</strong><span>${escapeHtml(file.changeType || 'update')}</span><em>+${escapeHtml(file.additions || 0)} / -${escapeHtml(file.deletions || 0)}</em></header>${hunks}</article>`;
+      return `<article class="patchFile" data-patch-index="${index}" tabindex="-1"><header><button type="button" class="smallBtn" data-file-activity="${escapeHtml(file.recordedPath ?? file.path ?? '')}" title="${escapeHtml(tr('fileActivity'))}">${escapeHtml(file.path || '')}</button><span>${escapeHtml(file.changeType || 'update')}</span><em>+${escapeHtml(file.additions || 0)} / -${escapeHtml(file.deletions || 0)}</em></header>${hunks}</article>`;
     }).join('');
-    return `<section class="eventSection patchBlock">${files}</section>`;
+    return `<section class="eventSection patchBlock">${directory}${files}</section>`;
   }
 
   function renderKv(section) {
-    const rows = (section.entries || []).map((entry) => `<tr><th>${escapeHtml(entry.key || '')}</th><td>${escapeHtml(entry.value || '')}</td></tr>`).join('');
+    const rows = (section.entries || []).map((entry) => `<tr><th>${entry.fact === 'touchedFile'
+      ? `<button type="button" class="smallBtn" data-file-activity="${escapeHtml(entry.recordedPath ?? entry.key ?? '')}">${escapeHtml(entry.key || '')}</button>`
+      : escapeHtml(entry.key || '')}</th><td>${escapeHtml(entry.value || '')}</td></tr>`).join('');
     return `<section class="eventSection"><div class="kvWrap">${renderSectionTitle(section)}<table class="kvTable"><tbody>${rows}</tbody></table></div></section>`;
   }
 
@@ -349,9 +353,16 @@
   }
 
   function renderCollaboration(section) {
-    const targets = (section.targets || []).map((target) => `<span>${escapeHtml(target)}</span>`).join('');
+    function targetLabel(label, actionId) {
+      const link = section.targetLinks?.find((item) => item.label === label);
+      if (!link) return escapeHtml(label);
+      if (link.status !== 'resolved') return `${escapeHtml(label)} <small>${escapeHtml(tr(`agentTarget_${link.status}`))}</small>`;
+      const target = link.target;
+      return `${escapeHtml(label)} <button class="smallBtn" type="button" data-open-collaboration-session="${escapeHtml(target.sessionId)}" data-collaboration-action="${escapeHtml(actionId)}" data-navigation-source="${escapeHtml(target.sourceKind)}" data-navigation-project="${escapeHtml(target.repoRoot)}" data-navigation-revision="${escapeHtml(target.indexRevision)}">${escapeHtml(tr('openAgentSession'))}</button>`;
+    }
+    const targets = (section.targets || []).map((target, index) => `<span>${targetLabel(target, `target:${index}`)}</span>`).join('');
     const fields = (section.fields || []).map((entry) => `<div><dt>${escapeHtml(entry.key || '')}</dt><dd>${escapeHtml(entry.value || '')}</dd></div>`).join('');
-    const statuses = (section.statuses || []).map((item) => `<li><span>${escapeHtml(item.label || '')}</span><strong class="collaborationStatus${collaborationStatusClass(item.status)}">${escapeHtml(item.status || tr('unknown'))}</strong></li>`).join('');
+    const statuses = (section.statuses || []).map((item, index) => `<li><span>${item.labelKind === 'agent' ? targetLabel(item.label || '', `status:${index}`) : escapeHtml(item.label || '')}</span><strong class="collaborationStatus${collaborationStatusClass(item.status)}">${escapeHtml(item.status || tr('unknown'))}</strong></li>`).join('');
     const timedOut = section.timedOut ? `<span class="collaborationStatus failed">${escapeHtml(tr('timedOut'))}</span>` : '';
     const message = section.messageHtml ? `<article class="collaborationBody"><h4>${escapeHtml(tr('message'))}</h4><div>${section.messageHtml}</div></article>` : '';
     const result = section.resultHtml ? `<article class="collaborationBody"><h4>${escapeHtml(tr('result'))}</h4><div>${section.resultHtml}</div></article>` : '';

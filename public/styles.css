@@ -5984,3 +5984,12 @@ pre {
     padding-left: 0.95rem;
   }
 }
+/* Recorded-object navigation keeps the transcript as the reading surface. */
+.patchFileDirectory { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.75rem; }
+.patchFile > header > button { overflow-wrap: anywhere; text-align: left; max-width: 100%; }
+.fileActivityDialog { color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; width: min(48rem, calc(100vw - 2rem)); max-height: 80vh; padding: 1rem; overflow: auto; }
+.fileActivityDialog::backdrop { background: rgb(0 0 0 / 45%); }
+.fileActivityDialog header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.fileActivityDialog p, .fileActivityList { overflow-wrap: anywhere; }
+.fileActivityList { display: grid; gap: 0.8rem; padding-left: 1.25rem; }
+.fileActivityList li > span { display: block; font-size: 0.8rem; opacity: 0.75; margin-top: 0.25rem; }

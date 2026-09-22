@@ -1561,7 +1561,8 @@ test('Code Mode collaboration projections do not translate agent names that coll
 
   assert.deepEqual(statuses.map((item) => item.label), ['Status', 'Model', 'agent-1', 'Status']);
   assert.deepEqual(chineseStatuses.map((item) => item.label), ['Status', 'Model', 'agent-1', '状态']);
-  assert.ok(chineseStatuses.every((item) => !Object.hasOwn(item, 'labelKind')));
+  assert.deepEqual(statuses.map((item) => item.labelKind), ['agent', 'agent', 'agent', 'generic']);
+  assert.deepEqual(chineseStatuses.map((item) => item.labelKind), ['agent', 'agent', 'agent', 'generic']);
   assert.deepEqual(chineseStatuses.map((item) => item.status), ['completed', 'running', 'pending', 'failed']);
 });
 
@@ -1601,8 +1602,8 @@ test('Code Mode list_agents projections retain agent statuses and task messages'
   assert.equal(projection.type, 'collaboration');
   assert.deepEqual(projection.fields.find((field) => field.key === 'Agent count'), { key: 'Agent count', value: '2' });
   assert.deepEqual(projection.statuses, [
-    { label: 'worker-a', status: 'running' },
-    { label: 'worker-b', status: 'completed' },
+    { label: 'worker-a', labelKind: 'agent', status: 'running' },
+    { label: 'worker-b', labelKind: 'agent', status: 'completed' },
   ]);
   assert.match(projection.resultHtml, /Inspect the parser/);
   assert.match(projection.resultHtml, /Tests complete/);

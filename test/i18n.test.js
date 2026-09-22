@@ -350,7 +350,7 @@ test('nested collaboration fields and generic status labels localize without cha
   assert.equal(localized.title, '启动子代理');
   assert.deepEqual(localized.fields.map((field) => field.key), ['代理类型', '推理强度']);
   assert.deepEqual(localized.statuses.map((status) => status.label), ['状态', 'Status', 'Model', 'agent-1']);
-  assert.ok(localized.statuses.every((status) => !Object.hasOwn(status, 'labelKind')));
+  assert.deepEqual(localized.statuses.map((status) => status.labelKind), ['generic', 'agent', 'agent', 'agent']);
 });
 
 test('zh-CN raw record labels keep selected wire terms while smoothing lifecycle copy', () => {

@@ -5,7 +5,8 @@
 }(typeof globalThis !== 'undefined' ? globalThis : this, () => {
   'use strict';
 
-  const SKIP_SELECTOR = 'script, style, textarea, input, select, option, button, mark, a, .hiddenByProfile';
+  // File-path actions retain transcript content; other controls are navigation chrome.
+  const SKIP_SELECTOR = 'script, style, textarea, input, select, option, button:not([data-file-activity]), mark, a, .hiddenByProfile';
 
   function searchTerms(query) {
     const phrase = String(query || '').trim();
