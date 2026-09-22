@@ -1,0 +1,42 @@
+# History retrieval / 历史检索
+
+Status: implementation contract, 2026-09-23. / 状态：实现契约，2026-09-23。
+
+Agents retrieve recorded project evidence through a read-only interface, then inspect only the context needed for the task. This improves access to requirements, rejected alternatives, attempts and validation without asserting that a historical completion statement proves a merge or remains valid today. / Agent 通过只读接口检索已记录项目证据，再按需查看上下文，以更容易找回要求、被拒方案、尝试及验证；历史完成声明不证明已经合并或至今仍有效。
+
+## Scope / 范围
+
+- Four operations: `history status`, `history search`, `history context`, `history read`. An explicitly started `history serve` instance fixes one project and one source, independently of browser state. / 四种操作：`history status`、`history search`、`history context`、`history read`。明确启动的 `history serve` 实例固定单个项目和来源，与浏览器状态独立。
+- Event candidates use existing case-insensitive, whitespace-tolerant literal search and structured filters. They are not natural-language answers or automatically identified decisions. Main is the default Event Layer; disclosure depth is independent of Event Layer. / 事件候选复用忽略大小写、容忍空白变化的字面搜索及结构化筛选，不是自然语言答案或自动识别的决定。默认事件层为 Main；披露深度独立于事件层。
+- Selected sessions are materialized for context and evidence reads; suspected retrieval-artifact sessions may also be materialized to classify real calls. Repeated CLI calls reuse the explicit service rather than rebuilding an index each time. / 为选定会话物化上下文和证据详情；疑似含检索工件的会话也可能被物化，以核验真实调用。连续 CLI 调用复用明确启动的服务，不逐次重建索引。
+- Semantic search, automatic decision cards, mixed-source indexing, permanent archives and system service installation are outside this increment. / 本轮不包括语义搜索、自动决策卡、混合来源索引、永久归档或系统服务安装。
+
+## Result contract / 结果契约
+
+JSON responses identify `producer`, `operation`, `schemaVersion` and `contextRef`, and report coverage, warnings and truncation separately from returned items. Coverage describes the fixed repository/source and indexed snapshot, diagnostics and known omissions. Source coverage gaps, unfinished scanning, pagination and byte-budget omission must remain distinguishable. Zero matches never establish that no history exists. / JSON 响应包含 `producer`、`operation`、`schemaVersion`、`contextRef`，在结果之外分别报告覆盖、警告和截断。覆盖描述固定仓库／来源及索引快照、诊断和已知缺口。来源覆盖缺口、扫描未完成、分页和字节预算省略必须可区分。零命中永不证明不存在历史。
+
+An evidence reference identifies the source, session and event against verified source-version information. It must not silently retarget after source changes or resolve outside the instance's admitted project/source. Source verification allows reads after a restart when the source is unchanged; ephemeral context and navigation cursors may expire. References are locators, not authentication credentials or permanent archives. / 证据引用根据经核验的来源版本标识来源、会话和事件。来源变化后不能悄悄重定位，也不能解析到实例准入项目／来源以外。来源不变时允许重启后核验读取；临时上下文和导航游标可以过期。引用是定位符，不是认证凭据或永久归档。
+
+## Hit context window / 命中上下文窗口
+
+The message-anchor template applies to Main. Protocol and Raw return a local window of at most two neighboring events on each side with `boundaries.mode=layer_local`; message anchors are unavailable on those layers. / 消息锚点模板适用于 Main。Protocol 和 Raw 返回前后各最多两个邻近事件的局部窗口，标明 `boundaries.mode=layer_local`；这些层没有消息锚点。
+
+Use the session's unfiltered event order: nearest preceding user message (`U−`), nearest assistant message after that user and before the hit (`A−`, if any), hit (`H`), nearest following assistant message before the next user (`A+`, if any), and next user (`U+`, if any). Deduplicate anchors when the hit is itself a message. Assistant anchors are nearby statements; the next user is a boundary, not an acceptance signal. / 使用会话未受搜索条件过滤的事件顺序：最近前置用户消息（`U−`）、其后且命中之前最近助手消息（`A−`，如有）、命中（`H`）、下一用户之前最近后置助手消息（`A+`，如有）、下一用户（`U+`，如有）。命中本身是消息时去重。助手锚点只是邻近发言；下一用户是边界，不是验收信号。
+
+Expose internal omitted intervals and outward navigation with readable references/cursors. Missing anchors and budget-omitted anchors are different states. A window stays within one Session and preserves recorded relationships rather than inventing causality. A readable projection's line number is never labeled a transcript physical line. / 通过可读取引用／游标暴露内部省略区间及向外导航。不存在的锚点与预算省略的锚点状态不同。窗口不跨会话，保留已记录关系而不编造因果。可读投影行号不能标为转录物理行号。
+
+## Evidence, budgets and retrieval artifacts / 证据、预算与检索工件
+
+Batch `read` supports explicit parts such as messages, requests, results and Raw evidence. Byte limits bound serialized responses; omitted content remains reachable by references and continuation. Budgets do not silently turn an incomplete excerpt into full evidence. No exact tokenizer budget is promised. / 批量 `read` 支持明确选择消息、请求、结果和 Raw 证据等部分。字节限制约束序列化响应；省略内容仍可经引用及续读访问。预算不能将不完整摘录悄悄呈现为完整证据。不承诺精确 tokenizer 预算。
+
+`--retrieval-artifacts exclude|include|only` controls reliably identified pure retrieval calls/results, defaulting to `exclude`. Filtering happens before top-K selection and reports excluded counts. Plain documentation, copied JSON, ambiguous shell wrappers and mixed tool operations are not excluded by text resemblance alone. Indirect assistant paraphrases remain searchable. / `--retrieval-artifacts exclude|include|only` 控制可可靠识别的纯检索调用／结果，默认 `exclude`。过滤先于 top-K 选择并报告排除数量。普通文档、复制 JSON、歧义 shell 包装和混合工具操作不因文本相似被排除。助手的间接转述仍可搜索。
+
+Historical content is data, not authorization for current actions. Read access is confined to admitted source evidence; a reference cannot request arbitrary files. The service does not upload history, but passing its output to a hosted agent can transmit that output. This increment does not add a general redaction engine: choose source roots and disclosure scope accordingly. / 历史内容是数据，不是当前操作授权。读取限于准入来源证据；引用不能请求任意文件。服务不上传历史，但将输出交给托管 agent 可能传输该输出。本轮不增加通用脱敏引擎，应据此选择来源根及披露范围。
+
+The running snapshot verifies its accepted source prefix: later append-only records may leave old evidence readable but are outside that snapshot. Changing indexed bytes or removing an admitted source fails verification. A restart indexes the new snapshot and may invalidate previous refs. DeepSeek compact Raw storage currently lacks reliable retrieval-artifact classification and reports that gap. / 运行中快照核验已接受来源前缀：后续仅追加记录可能不影响旧证据读取，但不属于该快照。修改已索引字节或删除准入来源会导致核验失败。重启索引新快照，可能使旧引用失效。DeepSeek 紧凑 Raw 存储当前缺少可靠检索工件分类，会报告该缺口。
+
+## Acceptance / 验收
+
+Deterministic checks cover project isolation, reference invalidation, budgets and continuation, anchor/gap navigation, literal search, echo counterexamples and legacy CLI/package compatibility. Independent agent tasks assess evidence quality and uncertainty, separately from adapter tests. Do not claim multi-model acceptance until the recorded workers actually use distinct models. / 确定性检查覆盖项目隔离、引用失效、预算与续读、锚点／间隙导航、字面搜索、回声反例和旧 CLI／安装包兼容性。独立 agent 任务评估证据质量及不确定性，与 adapter 测试分开。不在实际记录 worker 使用不同模型之前声称通过多模型验收。
+
+See [design](../design-docs/history-retrieval.md), [usage](../usage/history-retrieval.md), [evaluation protocol](../evals/history-retrieval/README.md) and the [completed implementation plan](../exec-plans/completed/history-retrieval.md). / 参见[设计](../design-docs/history-retrieval.md)、[使用](../usage/history-retrieval.md)、[评估协议](../evals/history-retrieval/README.md)及[已完成实施计划](../exec-plans/completed/history-retrieval.md)。

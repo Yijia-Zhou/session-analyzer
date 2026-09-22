@@ -502,6 +502,13 @@ async function main() {
     }
 
     const packagedServer = path.join(smokeRoot, 'node_modules', 'session-analyzer', 'server.js');
+    const packageRoot = path.dirname(packagedServer);
+    for (const relative of ['src/history-cli.js', 'src/history-server.js', 'src/history-service.js', 'src/history-artifacts.js', 'skills/history-retrieval/SKILL.md']) {
+      assert.ok((await fsp.stat(path.join(packageRoot, relative))).isFile(), 'Missing packaged history file: ' + relative);
+    }
+    const historyHelpCommand = binCommand(bin, ['history', '--help']);
+    const historyHelp = run(historyHelpCommand.command, historyHelpCommand.args, { cwd: smokeRoot, ...historyHelpCommand.options });
+    assert.ok(historyHelp.stdout.includes('history serve'), 'Installed CLI must expose history help');
     let launched = await launchPackagedServer(packagedServer, smokeRoot, [
       '--repo', projectDir,
       '--codex-home', codexHome,
@@ -564,7 +571,45 @@ async function main() {
     if (html.statusCode !== 200 || !html.body.includes('src="/assets/app.js"')) {
       throw new Error('Installed DeepSeek Harness root HTML did not reference the generated browser bundle');
     }
-    console.log('Codex, Claude Code, and DeepSeek Harness package smoke passed.');
+    await stopChild(child);
+    child = null;
+    for (const fixture of [
+      { source: 'codex', rootOption: '--codex-home', home: codexHome, text: codexText, count: codexSessions.length },
+      { source: 'claude-code', rootOption: '--claude-home', home: claudeHome, text: claudeRecords[1].message.content, count: 1 },
+      { source: 'deepseek-harness', rootOption: '--dsh-home', home: dshHome, text: dshSessions[0].text, count: dshSessions.length },
+    ]) {
+      launched = await launchPackagedServer(packagedServer, smokeRoot, [
+        'history', 'serve', '--source', fixture.source, '--repo', projectDir, fixture.rootOption, fixture.home,
+      ]);
+      child = launched.child;
+      const endpoint = `http://127.0.0.1:${launched.port}`;
+      const history = (operation, input = {}) => {
+        const result = run(process.execPath, [packagedServer, 'history', operation, '--endpoint', endpoint, '--input', JSON.stringify(input)], { cwd: smokeRoot });
+        const response = JSON.parse(result.stdout);
+        assert.equal(response.producer, 'session-analyzer');
+        assert.equal(response.operation, `history.${operation}`);
+        assert.equal(response.schemaVersion, 1);
+        assert.equal(response.error, undefined);
+        return response;
+      };
+      const status = history('status');
+      assert.equal(status.coverage.repo, projectDir);
+      assert.equal(status.coverage.source, fixture.source);
+      assert.equal(status.coverage.sessionCount, fixture.count);
+      const search = history('search', { queries: [fixture.text], kind: 'user_message', limit: 1 });
+      assert.equal(search.items.length, 1);
+      const refs = [search.items[0].ref];
+      assert.equal(history('context', { refs, contextRef: search.contextRef }).items.length, 1);
+      const read = history('read', { refs, parts: ['message', 'raw'], contextRef: search.contextRef });
+      assert.ok(read.items[0].parts.some((part) => part.part === 'message' && part.text.includes(fixture.text)));
+      assert.ok(read.items[0].rawRefs.length);
+      const raw = history('read', { refs: [read.items[0].rawRefs[0]], parts: ['raw'], length: 10000 });
+      assert.ok(JSON.parse(raw.items[0].parts[0].text).rawId);
+      await stopChild(child);
+      child = null;
+      console.log(fixture.source + ': packaged history status -> search -> context -> read -> raw passed.');
+    }
+    console.log('Codex, Claude Code, and DeepSeek Harness UI and history package smoke passed.');
   } finally {
     await stopChild(child);
     if (tarballPath) {

@@ -111,6 +111,8 @@ The [online startup and verification guide](https://github.com/Yijia-Zhou/sessio
 
 ## Development and contribution
 
+The source checkout also provides a read-only `history` interface for agents: bounded event search, context windows and verifiable evidence reads in a dedicated project/source instance. This is new development functionality, not a claim about the published `0.2.0` command. See the [history guide](docs/usage/history-retrieval.md) and [packaged retrieval skill](skills/history-retrieval/SKILL.md).
+
 See [development setup, checks, and repository layout](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/development.md), the [documentation index](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/README.md), [architecture](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/logical-event-timeline.md), and [performance](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/timeline-loading-and-rendering-performance.md). For issues, include the version, source, and reproduction steps; use synthetic or redacted transcripts in public reports.
 
 BSD 3-Clause. See [LICENSE](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/LICENSE).

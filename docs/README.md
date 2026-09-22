@@ -13,6 +13,8 @@ This repository uses three formal intent-document classes plus one idea parking 
 
 ## How to use this tree / 如何使用这棵文档树
 
+- For agent-facing historical evidence retrieval, use the [history guide](usage/history-retrieval.md), [contract](product-specs/history-retrieval.md), [design](design-docs/history-retrieval.md), and [synthetic evaluation protocol](evals/history-retrieval/README.md). / 面向 agent 的历史证据检索，参见[历史指南](usage/history-retrieval.md)、[契约](product-specs/history-retrieval.md)、[设计](design-docs/history-retrieval.md)及[合成评估协议](evals/history-retrieval/README.md)。
+
 - To run the app for a user, start with [agent quickstart](usage/agent-quickstart.md) and [troubleshooting](usage/troubleshooting.md); for source work, use [development](development.md). These are online guides, not promised npm package contents. / 替用户运行应用先看 [agent 快速开始](usage/agent-quickstart.md)与[故障排查](usage/troubleshooting.md)；源码工作看[开发指南](development.md)。这些指南在线提供，不承诺随 npm 包分发。
 - Start with a product spec when adding or changing user-facing behavior. / 添加或修改面向用户的行为时，先从产品规格开始。
 - Add or update a design doc when changing the transcript model, APIs, storage, or UI architecture. / 修改转录模型、API、存储或 UI 架构时，新增或更新设计文档。

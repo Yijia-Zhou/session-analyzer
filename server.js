@@ -1152,6 +1152,10 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
 }
 
 async function main() {
+  if (process.argv[2] === 'history') {
+    process.exitCode = await require('./src/history-cli').runHistoryCli(process.argv.slice(3));
+    return;
+  }
   const opts = parseArgs(process.argv);
   if (opts.help) {
     console.log(formatHelp());

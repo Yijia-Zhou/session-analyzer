@@ -1,0 +1,6 @@
+{"timestamp":"2026-02-01T00:00:00.000Z","type":"session_meta","payload":{"id":"history-eval-followup","timestamp":"2026-02-01T00:00:00.000Z","cwd":"/synthetic/history-eval/workspace","originator":"synthetic-evaluation","cli_version":"0.0.0"}}
+{"timestamp":"2026-02-01T00:00:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"For eventHasSearchHit, snapshot identity is now available. Allow an experimental cache keyed by snapshot, but do not deploy it."}}
+{"timestamp":"2026-02-01T00:00:01.000Z","type":"event_msg","payload":{"type":"agent_message","message":"The earlier ban had no snapshot key; this changes that condition for an experiment only."}}
+{"timestamp":"2026-02-01T00:00:02.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"node bench/cache-experiment.js\"}","call_id":"experiment"}}
+{"timestamp":"2026-02-01T00:00:03.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"experiment","output":"cache experiment: 18 ms vs 29 ms; no production acceptance run"}}
+{"timestamp":"2026-02-01T00:00:04.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Positive local performance signal. Production acceptance and merge are unconfirmed."}}
