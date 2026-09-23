@@ -283,6 +283,26 @@ test('batch precise read, raw evidence and content continuation retain verifiabl
   await assert.rejects(service.execute('read', { refs, parts: ['raw'], cursor: paged.nextCursor }), { code: 'INVALID_CURSOR' });
 });
 
+test('duplicate part selectors preserve raw-link continuation and equivalent batch cursors', async (t) => {
+  const { service } = await corpus(t);
+  const hits = await service.execute('search', { queries: ['node hidden-test.js', 'node retry.js'] });
+  const refs = hits.items.map((item) => item.ref);
+  assert.equal(refs.length, 2);
+  const first = await service.execute('read', { refs: [refs[0]], parts: ['raw', 'raw'], limit: 1 });
+  assert.equal(first.items[0].parts.length, 1);
+  assert.equal(first.items[0].rawRefsNextOffset, 1);
+  const next = await service.execute('read', { refs: [refs[0]], parts: ['raw', 'raw'], limit: 1,
+    offset: first.items[0].rawRefsNextOffset });
+  assert.equal(next.items[0].rawRefsOffset, 1);
+  assert.notEqual(next.items[0].rawRefs[0], first.items[0].rawRefs[0]);
+  assert.equal(next.items[0].rawRefsNextOffset, null);
+  const batch = await service.execute('read', { refs, parts: ['projection', 'projection'], limit: 1 });
+  assert.equal(batch.items[0].parts.length, 1);
+  const remainder = await service.execute('read', { refs, parts: ['projection'], limit: 1, cursor: batch.nextCursor });
+  assert.equal(remainder.items[0].ref, refs[1]);
+  assert.equal(remainder.hasMore, false);
+});
+
 test('persistent refs survive restart while contexts and cursors expire; source/scope changes reject', async (t) => {
   const { service, options, sourceFile, home } = await corpus(t);
   const found = await service.execute('search', { queries: ['queryNeedle'], limit: 1 });

@@ -5,6 +5,7 @@ const { OPERATIONS, MAX_BODY_BYTES, MAX_RESPONSE_BYTES, historyError, errorEnvel
 const SERVE_OPTIONS = { '--repo': 'repo', '--source': 'source', '--codex-home': 'codexHome', '--claude-home': 'claudeHome', '--dsh-home': 'dshHome', '--port': 'port' };
 const INPUT_OPTIONS = { '--context': 'contextRef', '--cursor': 'cursor', '--order': 'order', '--session': 'session', '--layer': 'layer', '--kind': 'kind', '--status': 'status', '--tool': 'tool', '--file': 'file', '--retrieval-artifacts': 'retrievalArtifacts', '--view': 'view', '--from': 'from', '--to': 'to', '--limit': 'limit', '--max-bytes': 'maxBytes', '--offset': 'offset', '--length': 'length', '--parts': 'parts', '--query': 'queries', '--exclude': 'exclude', '--ref': 'refs' };
 const REPEATED = new Set(['queries', 'exclude', 'refs']);
+const LITERAL_VALUES = new Set(['queries', 'exclude', 'file', 'tool', 'kind', 'status', 'session']);
 const NUMERIC = new Set(['port', 'limit', 'maxBytes', 'offset', 'length']);
 
 function formatHistoryHelp() {
@@ -41,7 +42,7 @@ function parseEndpoint(value) {
 }
 
 function parseHistoryArgs(args) {
-  if (!args.length || args.includes('--help') || args.includes('-h')) return { help: true };
+  if (!args.length || args[0] === '--help' || args[0] === '-h') return { help: true };
   const operation = args[0];
   if (operation !== 'serve' && !OPERATIONS.has(operation)) throw historyError('INVALID_OPERATION', 'Expected serve, status, search, context, or read.');
   const options = { operation, endpoint: 'http://127.0.0.1:17891', input: {} };
@@ -49,11 +50,13 @@ function parseHistoryArgs(args) {
   let jsonInput = {};
   for (let i = 1; i < args.length; i += 2) {
     const flag = args[i];
-    const key = (operation === 'serve' ? SERVE_OPTIONS : INPUT_OPTIONS)[flag];
+    if (flag === '--help' || flag === '-h') return { help: true };
+    const optionNames = operation === 'serve' ? SERVE_OPTIONS : INPUT_OPTIONS;
+    const key = Object.hasOwn(optionNames, flag) ? optionNames[flag] : undefined;
     if (!key && !['--input', '--endpoint', '--format'].includes(flag)) throw historyError('INVALID_OPTION', `Unknown option: ${flag}.`);
     if (operation === 'serve' && !key) throw historyError('INVALID_OPTION', `${flag} is not a serve option.`);
     const value = args[i + 1];
-    if (typeof value !== 'string' || !value.trim() || value.startsWith('--')) throw historyError('INVALID_OPTION', `Missing value for ${flag}.`);
+    if (typeof value !== 'string' || !value.trim() || (value.startsWith('--') && !LITERAL_VALUES.has(key))) throw historyError('INVALID_OPTION', `Missing value for ${flag}.`);
     if (seen.has(flag) && !REPEATED.has(key)) throw historyError('INVALID_OPTION', `Repeated option: ${flag}.`);
     seen.add(flag);
     if (flag === '--input') {

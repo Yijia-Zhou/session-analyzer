@@ -421,7 +421,7 @@ async function createHistoryService(options = {}) {
       return budgetPage(response, candidates, limit, maxBytes, operation, key, offset, refs.length);
     }
 
-    const parts = input.parts === undefined ? ['message', 'request', 'result'] : strings(input.parts, 'parts', 5);
+    const parts = [...new Set(input.parts === undefined ? ['message', 'request', 'result'] : strings(input.parts, 'parts', 5))];
     if (!parts.length || parts.some((p) => !PARTS.includes(p))) fail('INVALID_ARGUMENT', 'Unsupported read part');
     const start = integer(input.offset, 0, 0, Number.MAX_SAFE_INTEGER, 'offset');
     const length = integer(input.length, 2000, 1, 100000, 'length');

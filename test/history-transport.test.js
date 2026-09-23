@@ -59,6 +59,35 @@ test('real HTTP round trip preserves explicit context and batch input', async (t
   assert.deepEqual(JSON.parse(stdout).received, { queries: ['decisions'], order: 'diverse', session: 'codex:canonical-id' });
 });
 
+test('flag-like literal clues reach the search endpoint instead of activating CLI help', async (t) => {
+  const { endpoint, calls } = await fixture(t);
+  for (const clue of ['--help', '-h', '--repo', '--status=failed', '--']) {
+    let stdout = '';
+    const status = await runHistoryCli(['search', '--endpoint', endpoint, '--query', clue], {
+      stdout: { write(text) { stdout += text; } },
+    });
+    assert.equal(status, 0);
+    assert.equal(JSON.parse(stdout).operation, 'history.search');
+    assert.deepEqual(calls.at(-1).input.queries, [clue]);
+  }
+  assert.equal(calls.length, 5);
+  assert.deepEqual(parseHistoryArgs(['search', '--file', '--help', '--exclude', '-h']).input,
+    { file: '--help', exclude: ['-h'] });
+  assert.deepEqual(parseHistoryArgs(['search', '--help']), { help: true });
+  assert.deepEqual(parseHistoryArgs(['search', '--query', '--help', '-h']), { help: true });
+  assert.deepEqual(parseHistoryArgs(['--help']), { help: true });
+});
+
+test('CLI rejects unknown positional names instead of silently accepting them as serve options', () => {
+  for (const name of ['constructor', 'toString', '__proto__', 'valueOf']) {
+    for (const args of [
+      ['serve', '--repo', '/project', '--source', 'codex', name, 'ignored'],
+      ['search', name, 'ignored'],
+    ]) assert.throws(() => parseHistoryArgs(args), { code: 'INVALID_OPTION' });
+    assert.deepEqual(parseHistoryArgs(['search', '--query', name]).input.queries, [name]);
+  }
+});
+
 test('transport rejects mutation routes, browser origins, malformed and oversized input before execution', async (t) => {
   const { endpoint, calls } = await fixture(t);
   const cases = [

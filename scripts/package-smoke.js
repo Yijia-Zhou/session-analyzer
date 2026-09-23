@@ -603,9 +603,16 @@ async function main() {
       assert.equal(scoped.scan.scopedSessions, 1);
       assert.equal(scoped.scan.matchedSessions, 1);
       assert.ok(scoped.items.every((item) => item.sessionId === search.items[0].sessionId));
+      for (const clue of ['--help', '-h']) {
+        const literal = run(process.execPath, [packagedServer, 'history', 'search', '--endpoint', endpoint, '--query', clue, '--limit', '1'], { cwd: smokeRoot });
+        const literalResult = JSON.parse(literal.stdout);
+        assert.equal(literalResult.operation, 'history.search');
+        assert.equal(literalResult.error, undefined);
+      }
       const refs = [search.items[0].ref];
       assert.equal(history('context', { refs, contextRef: search.contextRef }).items.length, 1);
-      const read = history('read', { refs, parts: ['message', 'raw'], contextRef: search.contextRef });
+      const read = history('read', { refs, parts: ['message', 'raw', 'raw'], contextRef: search.contextRef });
+      assert.equal(read.items[0].parts.length, 2);
       assert.ok(read.items[0].parts.some((part) => part.part === 'message' && part.text.includes(fixture.text)));
       assert.ok(read.items[0].rawRefs.length);
       const raw = history('read', { refs: [read.items[0].rawRefs[0]], parts: ['raw'], length: 10000 });
