@@ -7,6 +7,7 @@ const {
   INDEXED_SESSION_COUNT_FIELDS,
   createEmptyMaterializedPresentationIndexes,
   validateCanonicalIndexedSessionShape,
+  validateCanonicalLegacyRawOwnerIndex,
   validateCanonicalLogicalEventShape,
   validateCanonicalMaterializedSessionShape,
   validateCanonicalRawEventShape,
@@ -324,6 +325,51 @@ function validateStrictFixture(fixture) {
     { index: fixture.index },
   );
 }
+
+test('legacy Raw owner validation accepts more than 500,000 bounded owners', () => {
+  const lines = {};
+  for (let line = 1; line <= 500_001; line += 1) {
+    lines[line] = `0:fixture:raw:${line}`;
+  }
+  const payload = { sessionIds: ['fixture'], files: { '/synthetic/rollout.jsonl': lines } };
+  const index = {
+    schemaVersion: 1,
+    sourceKind: 'codex',
+    entryCount: 500_001,
+    accountedBytes: Buffer.byteLength(JSON.stringify(payload), 'utf8'),
+    payload,
+  };
+  assert.equal(validateCanonicalLegacyRawOwnerIndex(index, 'codex'), index);
+  assert.throws(
+    () => validateCanonicalLegacyRawOwnerIndex({ ...index, entryCount: 1_000_001 }, 'codex'),
+    { code: 'CANONICAL_CONTRACT_VIOLATION' },
+  );
+});
+
+test('legacy Raw owner validation includes file and Session dictionary overhead', () => {
+  const sessionIds = [];
+  const files = {};
+  for (let fileIndex = 0; fileIndex < 50_000; fileIndex += 1) {
+    const sessionId = String(fileIndex);
+    sessionIds.push(sessionId);
+    const lines = {};
+    for (let line = 1; line <= 20; line += 1) {
+      lines[line] = `${fileIndex}:${sessionId}:raw:${line}`;
+    }
+    files[`/synthetic/${fileIndex}.jsonl`] = lines;
+  }
+  const payload = { sessionIds, files };
+  const accountedBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  assert.ok(accountedBytes < 64 * 1024 * 1024);
+  const index = {
+    schemaVersion: 1,
+    sourceKind: 'codex',
+    entryCount: 1_000_000,
+    accountedBytes,
+    payload,
+  };
+  assert.equal(validateCanonicalLegacyRawOwnerIndex(index, 'codex'), index);
+});
 
 test('Codex and Claude complete synthetic Sessions satisfy the same shared contract', () => {
   assert.deepEqual(CANONICAL_CONTRACT.index, ['sourceKind', 'repoRoot', 'sessions', 'sessionsById']);
