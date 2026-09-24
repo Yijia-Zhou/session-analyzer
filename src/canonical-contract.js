@@ -657,7 +657,10 @@ function validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, expectedSourceKin
     throw contractError('legacy Raw owner index', 'accountedBytes', 'exceeds maximum bytes');
   }
   validateBoundedPlainValue(legacyRawOwners.payload, 'legacy Raw owner index.payload', {
-    maxEntries: 1_000_000,
+    // Every counted structural entry needs at least one serialized JSON byte.
+    // Tie this safety budget to the bounded payload size so file and Session
+    // dictionary overhead cannot reject an otherwise valid owner index.
+    maxEntries: legacyRawOwners.accountedBytes,
   });
   const actualAccountedBytes = Buffer.byteLength(JSON.stringify(legacyRawOwners.payload), 'utf8');
   if (legacyRawOwners.accountedBytes !== actualAccountedBytes) {
