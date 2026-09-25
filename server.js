@@ -11,6 +11,8 @@ const url = require('node:url');
 const {
   SOURCE_KIND,
   buildEventDetailForSession,
+  legacyRawLookupCapabilityForIndex,
+  legacyRawLookupDiagnosticForIndex,
   materializeSessionForIndex,
   normalizeSourceKind,
   queryForIndex,
@@ -163,6 +165,8 @@ function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
     indexRevision: state.indexRevision,
     buildMs: state.buildMs,
     totals: state.index.totals,
+    capabilities: { legacyRawLookup: legacyRawLookupCapabilityForIndex(state.index) },
+    indexDiagnostics: { legacyRawLookup: legacyRawLookupDiagnosticForIndex(state.index) },
     sourceDiagnostics: state.index.sourceDiagnostics || createSourceDiagnostics().summary,
     eventKinds: state.index.eventKinds
       ? {
@@ -647,6 +651,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     await validateIndexOwnershipForCommit(index, {
       signal: controller.signal,
       onChunk: state.onIndexValidationChunk,
+      legacyRawOwnerPolicyForTests: state.legacyRawOwnerPolicyForTests,
     });
     if (controller.signal.aborted) {
       job.status = 'cancelled';
@@ -657,7 +662,12 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       return;
     }
     job.status = 'succeeded';
-    job.resultSummary = { totals: index.totals, sourceDiagnostics: index.sourceDiagnostics || createSourceDiagnostics().summary };
+    job.resultSummary = {
+      totals: index.totals,
+      sourceDiagnostics: index.sourceDiagnostics || createSourceDiagnostics().summary,
+      capabilities: { legacyRawLookup: legacyRawLookupCapabilityForIndex(index) },
+      indexDiagnostics: { legacyRawLookup: legacyRawLookupDiagnosticForIndex(index) },
+    };
     job.completedAt = new Date().toISOString();
     job.buildMs = Date.now() - startedAtMs;
     const lease = installIndexRevision(state, index);
@@ -731,6 +741,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
   const sourceKind = initialIndex?.repoRoot
     ? validateIndexOwnership(initialIndex, {
       allowUninspectableSessions: options.allowUninspectableSessions === true,
+      legacyRawOwnerPolicyForTests: options.legacyRawOwnerPolicyForTests,
     })
     : normalizeSourceKind(options.sourceKind || options.source);
   const adapter = requireSourceAdapter(sourceKind);
@@ -746,6 +757,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     buildIndexOverride: options.buildIndex || null,
     onProjectJobSettled: options.onProjectJobSettled || null,
     onIndexValidationChunk: options.onIndexValidationChunk || null,
+    legacyRawOwnerPolicyForTests: options.legacyRawOwnerPolicyForTests,
     materializeSession: options.materializeSession || materializeSessionForIndex,
     buildEventDetail: options.buildEventDetail || buildEventDetailForSession,
     sessionPrewarmPolicy: options.sessionPrewarm === false
@@ -1096,24 +1108,40 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       if (pathname === '/api/raw') {
         if (!requireIndex(state, res)) return;
         const file = searchParams.get('file') || '';
-        const line = asNumber(searchParams.get('line'), 0, 1, 1_000_000_000);
-        if (!file || !line) {
+        const lineText = searchParams.get('line') || '';
+        const line = /^[1-9]\d*$/.test(lineText) ? Number(lineText) : Number.NaN;
+        if (!file || !Number.isSafeInteger(line)) {
           sendError(res, 400, 'file and line are required');
           return;
         }
-        const { value: raw } = await withIndexRevisionLease(
+        const { value: result } = await withIndexRevisionLease(
           state,
           requestAbort.signal,
           async (capture) => {
             const { index, signal } = capture;
+            if (legacyRawLookupCapabilityForIndex(index).status === 'unavailable') {
+              return { unavailable: true, indexRevision: capture.indexRevision };
+            }
             const owner = resolveLegacyRawOwnerForIndex(index, file, line);
-            if (!owner) return null;
+            if (!owner) return { raw: null };
             const indexedSession = index.sessionsById.get(owner.sessionId);
-            if (!indexedSession) return null;
+            if (!indexedSession) return { raw: null };
             const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
-            return readLegacyRawLineForSession(index, session, owner, owner.adapter, { signal });
+            return { raw: await readLegacyRawLineForSession(index, session, owner, owner.adapter,
+              { signal, requestedFile: file }) };
           },
         );
+        if (result.unavailable) {
+          sendJson(res, 409, {
+            error: 'Legacy file/line lookup is unavailable for this index',
+            code: 'LEGACY_RAW_LOOKUP_UNAVAILABLE',
+            indexRevision: result.indexRevision,
+            reason: 'capacity_exceeded',
+            retryable: false,
+          });
+          return;
+        }
+        const raw = result.raw;
         if (!raw) {
           sendError(res, 404, 'Raw line not found');
           return;
@@ -1178,6 +1206,10 @@ async function main() {
         const count = job.totals?.sessionCount || 0;
         const warnings = job.sourceDiagnostics?.totalCount || 0;
         console.log('Repo: indexing succeeded for ' + job.repoRoot + ' (' + count + ' sessions, ' + warnings + ' source diagnostics)');
+        if (job.capabilities?.legacyRawLookup?.status === 'unavailable') {
+          const diagnostic = job.indexDiagnostics?.legacyRawLookup;
+          console.warn(`LEGACY_RAW_LOOKUP_CAPACITY_EXCEEDED: legacy file/line lookup is unavailable for this index (${diagnostic?.limitName || 'capacity'}).`);
+        }
         if (!count) console.log(warnings ? 'No readable matching sessions; inspect source diagnostics in the browser.' : 'No matching sessions found; check the selected source and target repository.');
         for (const diagnostic of job.sourceDiagnostics?.samples || []) {
           console.warn(diagnostic.code + ': ' + diagnostic.path + ': ' + diagnostic.message);

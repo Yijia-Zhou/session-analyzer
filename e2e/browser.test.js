@@ -15,6 +15,7 @@ const {
 } = require('../src/codex');
 const { materializeSessionForIndex } = require('../src/source-adapters');
 const { createServer } = require('../server');
+const { trustedPolicy } = require('../src/legacy-raw-owner-budget');
 const { createTimelineProfileFixture } = require('../scripts/timeline-profile-fixture');
 const { suggestionRequestEvidence } = require('../scripts/timeline-profile');
 
@@ -22,6 +23,62 @@ const fixtureCodexHome = path.join(__dirname, '..', 'test', 'fixtures', 'codex-h
 const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 let wave1bM2SourceBundlePromise;
+
+test('Codex capacity notice leaves identity-based Raw References usable in both locales', async (t) => {
+  const policy = trustedPolicy({ buildWorkUnits: 3 });
+  const index = await buildIndex({
+    repoRoot, codexHome: fixtureCodexHome, legacyRawOwnerPolicyForTests: policy,
+  });
+  assert.equal(index.legacyRawOwners.status, 'unavailable');
+  for (const locale of ['en', 'zh-CN']) {
+    const { page, requestedPaths } = await openApp(t, index, {
+      locale,
+      skipProjectReindex: true,
+      serverOptions: { legacyRawOwnerPolicyForTests: policy },
+    });
+    const notice = page.locator('#legacyRawNotice');
+    await notice.waitFor({ state: 'visible' });
+    assert.match(await notice.innerText(), locale === 'en' ? /Legacy file\/line lookup is unavailable/ : /旧式文件／行号定位因容量限制不可用/);
+    await selectPrimarySession(page);
+    await page.locator('#timeline .event[data-event-id]').first().click();
+    await waitForDetailView(page, 'inspector');
+    await page.locator('#detail [data-detail-action="raw"]').click();
+    await waitForDetailView(page, 'rawRefs');
+    await page.waitForSelector('#detail .rawRefsView .inspectorSection');
+    assert.ok(requestedPaths.some((value) => value.startsWith(`/api/sessions/${primaryFixtureSessionId}/raw/`)));
+    assert.equal(requestedPaths.includes('/api/raw'), false);
+    await notice.locator('[data-dismiss-legacy-raw]').click();
+    assert.equal(await notice.isHidden(), true);
+  }
+});
+
+test('Codex identity-free Raw Reference fallback shows capacity without requesting legacy Raw', async (t) => {
+  const policy = trustedPolicy({ buildWorkUnits: 3 });
+  const index = await buildIndex({
+    repoRoot, codexHome: fixtureCodexHome, legacyRawOwnerPolicyForTests: policy,
+  });
+  const file = index.sessionsById.get(primaryFixtureSessionId).sourceFile;
+  const { page, requestedPaths } = await openApp(t, index, {
+    locale: 'en', skipProjectReindex: true,
+    serverOptions: { legacyRawOwnerPolicyForTests: policy },
+    beforeGoto: async (target) => {
+      await target.route(`**/api/sessions/${primaryFixtureSessionId}/timeline*`, async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        if (body.events?.length) body.events[0].rawRefs = [{ file, line: 1 }];
+        await route.fulfill({ response, json: body });
+      });
+    },
+  });
+  await selectPrimarySession(page);
+  await page.locator('#timeline .event[data-event-id]').first().click();
+  await waitForDetailView(page, 'inspector');
+  await page.locator('#detail [data-detail-action="raw"]').click();
+  await waitForDetailView(page, 'rawRefs');
+  await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('Legacy file/line lookup is unavailable'));
+  assert.equal(requestedPaths.includes('/api/raw'), false);
+  assert.equal(await page.locator('#detail .rawRefsView .inspectorSection').count(), 0);
+});
 
 for (const locale of ['en', 'zh-CN']) test(`persisted realtime history navigates Main, Protocol and Raw in both presentations (${locale})`, async (t) => {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-persisted-browser-'));

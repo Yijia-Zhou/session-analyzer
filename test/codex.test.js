@@ -4296,9 +4296,8 @@ test('image preview endpoint rehydrates only indexed server-owned image locators
 
 test('legacy Raw ownership uses the bounded Index projection before materialization', async () => {
   const index = await buildStrictFixtureIndex();
-  const [file] = Object.keys(index.legacyRawOwners.payload.files);
-  const [lineText] = Object.keys(index.legacyRawOwners.payload.files[file]);
-  const line = Number(lineText);
+  const [file, ranges] = index.legacyRawOwners.payload.files[0];
+  const line = ranges[0][0];
   const owner = resolveLegacyRawOwnerForIndex(index, file, line);
   assert.ok(owner);
   const session = index.sessionsById.get(owner.sessionId);
@@ -4326,9 +4325,7 @@ test('legacy Raw ownership uses the bounded Index projection before materializat
 
 test('runtime rejects a tampered strict Codex legacy Raw owner projection', async () => {
   const index = await buildStrictFixtureIndex();
-  const [file] = Object.keys(index.legacyRawOwners.payload.files);
-  const [line] = Object.keys(index.legacyRawOwners.payload.files[file]);
-  index.legacyRawOwners.payload.files[file][line] = '0:claude-code:raw:1';
+  index.legacyRawOwners.payload.files[0][1][0][2] = 999;
 
   assert.throws(
     () => createServer(index, 0, { codexHome: fixtureCodexHome }),
