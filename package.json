@@ -55,6 +55,7 @@
     "src/runtime-capacity.js",
     "src/runtime-diagnostics.js",
     "src/index-revision-lease.js",
+    "src/legacy-raw-owner-budget.js",
     "src/materialization-observer.js",
     "src/materialized-session-owner.js",
     "src/session-prewarm.js",
@@ -62,6 +63,7 @@
     "src/session-query.js",
     "src/source-adapter-contract.js",
     "src/codex.js",
+    "src/codex-legacy-raw-owners.js",
     "src/codex-attachments.js",
     "src/codex-async-message.js",
     "src/codex-external-input.js",
@@ -107,6 +109,7 @@
     "profile:project-query": "node scripts/project-query-store-profile.js",
     "profile:materialized-cache": "node scripts/materialized-session-cache-profile.js",
     "profile:timeline": "node scripts/timeline-profile.js",
+    "profile:legacy-raw": "node --expose-gc scripts/legacy-raw-owner-profile.js",
     "browser:install": "playwright install chromium",
     "vendor:highlight": "node scripts/build-client.js --vendor-highlight-only"
   },

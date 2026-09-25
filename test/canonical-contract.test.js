@@ -1927,7 +1927,7 @@ const FINGERPRINT_ROLES = [
 ];
 const FINGERPRINT_COUNTERS = [
   'yieldCount', 'chunkCount', 'operationCount', 'visitTaskCount', 'writeTaskCount',
-  'byteTaskCount', 'firstObjectVisitCount', 'repeatedReferenceCount', 'ownPropertyCount',
+  'byteTaskCount', 'iteratorTaskCount', 'firstObjectVisitCount', 'repeatedReferenceCount', 'ownPropertyCount',
   'mapEntryCount', 'setEntryCount', 'writeTokenCount', 'textValueUtf8Bytes',
   'textPrefixBytes', 'binaryHashBytes', 'hashInputBytes', 'hashUpdateCallCount', 'textHashUpdateCallCount',
 ];
@@ -1960,7 +1960,8 @@ test('fingerprint profiles preserve strict success and expose stable content-fre
         if (FINGERPRINT_COUNTERS.includes(key)) assert.ok(Number.isSafeInteger(value), key);
       }
       assert.equal(summary.activeComputeMs, summary.elapsedMs - summary.yieldWaitMs);
-      assert.equal(summary.operationCount, summary.visitTaskCount + summary.writeTaskCount + summary.byteTaskCount);
+      assert.equal(summary.operationCount, summary.visitTaskCount + summary.writeTaskCount
+        + summary.byteTaskCount + summary.iteratorTaskCount);
       assert.equal(summary.yieldCount, Math.floor(summary.operationCount / 4096) + 1);
       assert.equal(summary.chunkCount, summary.yieldCount);
       assert.equal(summary.hashInputBytes, summary.textPrefixBytes + summary.textValueUtf8Bytes + summary.binaryHashBytes);

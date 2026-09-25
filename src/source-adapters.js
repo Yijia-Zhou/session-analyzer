@@ -2,8 +2,11 @@
 
 const { createHash } = require('node:crypto');
 const { performance } = require('node:perf_hooks');
+const { setImmediate: yieldImmediate } = require('node:timers/promises');
 const os = require('node:os');
 const path = require('node:path');
+const fsPath = require('./shared/fs-path');
+const { PROFILE: LEGACY_RAW_PROFILE, createBudget: createLegacyRawBudget } = require('./legacy-raw-owner-budget');
 const codex = require('./codex');
 const claude = require('./claude');
 const deepseekHarness = require('./deepseek-harness');
@@ -16,6 +19,7 @@ const {
   validateCanonicalIndexFields,
   validateCanonicalIndexedSessionShape,
   validateCanonicalLegacyRawOwnerIndex,
+  validateCanonicalLegacyRawOwnerIndexForCommit,
   validateCanonicalLogicalEventShape,
   validateCanonicalMaterializedSessionShape,
   validateCanonicalRawEventShape,
@@ -202,6 +206,7 @@ async function graphFingerprintAsync(value, identityState = {
   const profile = typeof options.onFingerprintProfile === 'function' ? {
     role: options.profileRole,
     yieldWaitMs: 0, visitTaskCount: 0, writeTaskCount: 0, byteTaskCount: 0,
+    iteratorTaskCount: 0,
     firstObjectVisitCount: 0, repeatedReferenceCount: 0, ownPropertyCount: 0,
     mapEntryCount: 0, setEntryCount: 0, writeTokenCount: 0,
     textValueUtf8Bytes: 0, textPrefixBytes: 0, binaryHashBytes: 0,
@@ -291,6 +296,41 @@ async function graphFingerprintAsync(value, identityState = {
       if (end < task.buffer.length) {
         stack.push({ ...task, offset: end });
       }
+    } else if (task.type === 'mapEntries' || task.type === 'setEntries') {
+      if (profile) profile.iteratorTaskCount += 1;
+      const next = task.iterator.next();
+      if (!next.done) {
+        stack.push(task);
+        if (task.type === 'mapEntries') {
+          if (profile) profile.mapEntryCount += 1;
+          stack.push({ type: 'visit', value: next.value[1] });
+          stack.push({ type: 'visit', value: next.value[0] });
+        } else {
+          if (profile) profile.setEntryCount += 1;
+          stack.push({ type: 'visit', value: next.value });
+        }
+      }
+    } else if (task.type === 'ownKeys') {
+      if (profile) profile.iteratorTaskCount += 1;
+      if (task.index < task.keys.length) {
+        const key = task.keys[task.index];
+        const descriptor = Object.getOwnPropertyDescriptor(task.value, key);
+        stack.push({ ...task, index: task.index + 1 });
+        const sequence = [];
+        appendWriteKey(sequence, key);
+        sequence.push({ type: 'write', value: descriptor.enumerable });
+        sequence.push({ type: 'write', value: descriptor.configurable });
+        if (Object.hasOwn(descriptor, 'value')) {
+          sequence.push({ type: 'write', value: 'data' });
+          sequence.push({ type: 'write', value: descriptor.writable });
+          sequence.push({ type: 'visit', value: descriptor.value });
+        } else {
+          sequence.push({ type: 'write', value: 'accessor' });
+          sequence.push({ type: 'visit', value: descriptor.get });
+          sequence.push({ type: 'visit', value: descriptor.set });
+        }
+        pushSequence(stack, sequence);
+      }
     } else {
       if (profile) profile.visitTaskCount += 1;
       const current = task.value;
@@ -339,18 +379,11 @@ async function graphFingerprintAsync(value, identityState = {
             if (current instanceof Map) {
               sequence.push({ type: 'write', value: 'map' });
               sequence.push({ type: 'write', value: current.size });
-              for (const [key, nested] of current) {
-                if (profile) profile.mapEntryCount += 1;
-                sequence.push({ type: 'visit', value: key });
-                sequence.push({ type: 'visit', value: nested });
-              }
+              sequence.push({ type: 'mapEntries', iterator: current.entries() });
             } else if (current instanceof Set) {
               sequence.push({ type: 'write', value: 'set' });
               sequence.push({ type: 'write', value: current.size });
-              for (const nested of current) {
-                if (profile) profile.setEntryCount += 1;
-                sequence.push({ type: 'visit', value: nested });
-              }
+              sequence.push({ type: 'setEntries', iterator: current.values() });
             } else if (ArrayBuffer.isView(current)) {
               sequence.push({ type: 'write', value: 'array-buffer-view' });
               sequence.push({
@@ -365,21 +398,7 @@ async function graphFingerprintAsync(value, identityState = {
             const keys = Reflect.ownKeys(current);
             if (profile) profile.ownPropertyCount += keys.length;
             sequence.push({ type: 'write', value: keys.length });
-            for (const key of keys) {
-              appendWriteKey(sequence, key);
-              const descriptor = Object.getOwnPropertyDescriptor(current, key);
-              sequence.push({ type: 'write', value: descriptor.enumerable });
-              sequence.push({ type: 'write', value: descriptor.configurable });
-              if (Object.hasOwn(descriptor, 'value')) {
-                sequence.push({ type: 'write', value: 'data' });
-                sequence.push({ type: 'write', value: descriptor.writable });
-                sequence.push({ type: 'visit', value: descriptor.value });
-              } else {
-                sequence.push({ type: 'write', value: 'accessor' });
-                sequence.push({ type: 'visit', value: descriptor.get });
-                sequence.push({ type: 'visit', value: descriptor.set });
-              }
-            }
+            sequence.push({ type: 'ownKeys', value: current, keys, index: 0 });
             pushSequence(stack, sequence);
           }
         }
@@ -769,6 +788,7 @@ const codexAdapter = {
     homeOption: 'codexHome',
     homeLabel: 'Codex home',
     sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    legacyRawLookup: 'indexed',
     defaultHome: () => path.join(os.homedir(), '.codex'),
     query: codex.query,
     async discoverConfiguredProjects(context) {
@@ -790,6 +810,7 @@ const codexAdapter = {
     materializeSession: codex.materializeCodexSession,
     validateMaterializationDescriptor: codex.validateCodexMaterializationDescriptor,
     validateLegacyRawOwnerIndex: codex.validateCodexLegacyRawOwnerIndex,
+    validateLegacyRawOwnerIndexForCommit: codex.validateCodexLegacyRawOwnerIndexForCommit,
     validateMaterializedPrivateState: codex.validateCodexMaterializedPrivateState,
     materializationContextFields: ['sessionsRoot'],
     materializedPrivateFields: codex.materializedPrivateFields,
@@ -897,11 +918,174 @@ function requireExplicitSourceKind(value, owner = 'source') {
   throw error;
 }
 
-function validateIndexOwnership(index, {
+function createLegacySessionFacts(index, policy = LEGACY_RAW_PROFILE) {
+  const facts = new Map();
+  if (index?.legacyRawOwners?.schemaVersion !== 2
+      || index.legacyRawOwners.status !== 'available') return facts;
+  const budget = createLegacyRawBudget(policy);
+  for (const id of index.legacyRawOwners.payload.sessionIds) {
+    const session = index.sessionsById.get(id);
+    if (!session) continue;
+    const receipt = budget.reserve('dictionaryEntry', 1,
+      Buffer.byteLength(id, 'utf8') + Buffer.byteLength(session.sourceFile, 'utf8'),
+      'finalizing');
+    if (receipt) {
+      const error = new Error('Codex legacy Raw owner validation sessionFacts exceed trusted workspace budget');
+      error.code = 'CANONICAL_CONTRACT_VIOLATION';
+      throw error;
+    }
+    facts.set(id, {
+      id: session.id,
+      sourceFile: session.sourceFile,
+      lineCount: session.lineCount,
+      rawEventCount: session.rawEventCount,
+      acceptedBytes: session.bytes,
+    });
+  }
+  return facts;
+}
+
+async function legacyRawCommitCheckpoint(signal, onChunk, phase) {
+  throwIfAborted(signal);
+  try { onChunk?.({ phase }); } catch { /* Diagnostics cannot change admission. */ }
+  await yieldImmediate(undefined, { signal });
+  throwIfAborted(signal);
+}
+
+async function createLegacySessionIdsForCommit(index, { signal, onChunk, policy }) {
+  const ids = new Set();
+  let work = 0;
+  for (const id of index.sessionsById.keys()) {
+    ids.add(id);
+    if (++work >= policy.chunkSize) {
+      work = 0;
+      await legacyRawCommitCheckpoint(signal, onChunk, 'legacy_raw_session_ids');
+    }
+  }
+  throwIfAborted(signal);
+  return ids;
+}
+
+async function createLegacySessionFactsForCommit(index, { signal, onChunk, policy }) {
+  const facts = new Map();
+  if (index.legacyRawOwners.status !== 'available') return facts;
+  const budget = createLegacyRawBudget(policy);
+  let work = 0;
+  for (const id of index.legacyRawOwners.payload.sessionIds) {
+    const session = index.sessionsById.get(id);
+    if (session) {
+      const receipt = budget.reserve('dictionaryEntry', 1,
+        Buffer.byteLength(id, 'utf8') + Buffer.byteLength(session.sourceFile, 'utf8'),
+        'finalizing');
+      if (receipt) {
+        const error = new Error('Codex legacy Raw owner validation sessionFacts exceed trusted workspace budget');
+        error.code = 'CANONICAL_CONTRACT_VIOLATION';
+        throw error;
+      }
+      facts.set(id, {
+        id: session.id,
+        sourceFile: session.sourceFile,
+        lineCount: session.lineCount,
+        rawEventCount: session.rawEventCount,
+        acceptedBytes: session.bytes,
+      });
+    }
+    if (++work >= policy.chunkSize) {
+      work = 0;
+      await legacyRawCommitCheckpoint(signal, onChunk, 'legacy_raw_session_facts');
+    }
+  }
+  throwIfAborted(signal);
+  return facts;
+}
+
+async function invokeReadOnlyLegacyRawValidatorForCommit({
+  callback, args, guardedValues, signal, onChunk,
+}) {
+  const label = 'Adapter legacy Raw owner commit validation';
+  const fingerprints = [];
+  try {
+    for (const [index, value] of guardedValues.entries()) {
+      fingerprints.push(await captureGraphFingerprintAsync(value, {
+        signal, onChunk,
+        phase: 'legacy_raw_fingerprint_capture',
+        profileRole: `legacy_raw_capture/${index}`,
+      }));
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error;
+    throw materializationContractViolation(`${label} inputs could not be fingerprinted`, error, true);
+  }
+  let callbackRejected = false;
+  let callbackError;
+  let callbackResult;
+  try {
+    callbackResult = await callback(args);
+  } catch (error) {
+    callbackRejected = true;
+    callbackError = error;
+  }
+  if (!callbackRejected && callbackResult !== undefined) {
+    callbackRejected = true;
+    callbackError = new Error(`${label} must resolve to undefined`);
+  }
+  try {
+    for (let index = 0; index < guardedValues.length; index += 1) {
+      if (!await graphFingerprintMatchesAsync(guardedValues[index], fingerprints[index], {
+        signal, onChunk,
+        phase: 'legacy_raw_fingerprint_recheck',
+        profileRole: `legacy_raw_recheck/${index}`,
+      })) {
+        throw materializationContractViolation(`${label} must not mutate inputs`, callbackError, callbackRejected);
+      }
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError' || error?.code === 'MATERIALIZATION_CONTRACT_VIOLATION') throw error;
+    throw materializationContractViolation(`${label} left inputs unverifiable`, error, true);
+  }
+  if (callbackRejected) {
+    if (callbackError?.name === 'AbortError') throw callbackError;
+    throw materializationContractViolation(`${label} rejected: ${callbackErrorText(callbackError)}`, callbackError, true);
+  }
+}
+
+function legacyRawLookupCapabilityForIndex(index) {
+  const adapter = requireSourceAdapter(requireExplicitSourceKind(index?.sourceKind, 'index'));
+  if (adapter.legacyRawLookup === 'unsupported') return { status: 'unsupported' };
+  if (index.legacyRawOwners?.schemaVersion === 2
+      && index.legacyRawOwners.status === 'unavailable') {
+    return { status: 'unavailable', reason: 'capacity_exceeded' };
+  }
+  return { status: 'available' };
+}
+
+function legacyRawLookupDiagnosticForIndex(index) {
+  const ownerIndex = index?.legacyRawOwners;
+  if (index?.sourceKind !== SOURCE_KIND.CODEX || ownerIndex?.schemaVersion !== 2) return null;
+  if (ownerIndex.status === 'unavailable') {
+    return {
+      code: 'LEGACY_RAW_LOOKUP_CAPACITY_EXCEEDED',
+      sourceKind: SOURCE_KIND.CODEX,
+      budgetProfile: ownerIndex.budgetProfile,
+      ...ownerIndex.capacity,
+    };
+  }
+  return {
+    sourceKind: SOURCE_KIND.CODEX,
+    budgetProfile: ownerIndex.budgetProfile,
+    entryCount: ownerIndex.entryCount,
+    ambiguousLineCount: ownerIndex.ambiguousLineCount,
+    rangeCount: ownerIndex.rangeCount,
+    accountedBytes: ownerIndex.accountedBytes,
+  };
+}
+
+function validateIndexOwnershipCore(index, {
   allowUninspectableSessions = false,
   adapter: adapterOverride = null,
   verifyProjectQueryProjectionDigest = true,
-} = {}) {
+  legacyRawOwnerPolicyForTests = undefined,
+} = {}, deferCodexV2Legacy = false) {
   const indexKind = adapterOverride
     ? index?.sourceKind
     : requireExplicitSourceKind(index?.sourceKind, 'index');
@@ -974,8 +1158,10 @@ function validateIndexOwnership(index, {
     error.code = 'CANONICAL_CONTRACT_VIOLATION';
     throw error;
   }
-  if (!allowResidentComplete || index.legacyRawOwners !== undefined) {
-    validateCanonicalLegacyRawOwnerIndex(index.legacyRawOwners, indexKind);
+  if ((!allowResidentComplete || index.legacyRawOwners !== undefined)
+      && !(deferCodexV2Legacy && index.legacyRawOwners?.schemaVersion === 2)) {
+    validateCanonicalLegacyRawOwnerIndex(index.legacyRawOwners, indexKind,
+      { policy: legacyRawOwnerPolicyForTests });
   }
   if (!allowResidentComplete) {
     if (!(index.materializationDependencies instanceof Map)) {
@@ -1031,29 +1217,62 @@ function validateIndexOwnership(index, {
         throw error;
       }
     }
-    const sessionIds = new Set(index.sessionsById.keys());
-    invokeReadOnlyMaterializationValidator({
-      callback: adapter.validateLegacyRawOwnerIndex,
-      args: {
-        materializationContext,
-        sessionIds,
-        legacyRawOwners: index.legacyRawOwners,
-      },
-      guardedValues: [materializationContext, sessionIds, index.legacyRawOwners],
-      label: 'Adapter legacy Raw owner validation',
-    });
+    if (!(deferCodexV2Legacy && index.legacyRawOwners?.schemaVersion === 2)) {
+      const sessionIds = new Set(index.sessionsById.keys());
+      const sessionFacts = createLegacySessionFacts(index,
+        legacyRawOwnerPolicyForTests || LEGACY_RAW_PROFILE);
+      invokeReadOnlyMaterializationValidator({
+        callback: adapter.validateLegacyRawOwnerIndex,
+        args: {
+          materializationContext,
+          sessionIds,
+          sessionFacts,
+          policy: legacyRawOwnerPolicyForTests,
+          legacyRawOwners: index.legacyRawOwners,
+        },
+        guardedValues: [materializationContext, sessionIds, sessionFacts, index.legacyRawOwners],
+        label: 'Adapter legacy Raw owner validation',
+      });
+    }
   }
   return indexKind;
+}
+
+function validateIndexOwnership(index, options = {}) {
+  return validateIndexOwnershipCore(index, options, false);
 }
 
 async function validateIndexOwnershipForCommit(index, options = {}) {
   const { signal, onChunk } = options;
   throwIfAborted(signal);
-  const indexKind = validateIndexOwnership(index, {
+  const indexKind = validateIndexOwnershipCore(index, {
     allowUninspectableSessions: options.allowUninspectableSessions === true,
     adapter: options.adapter || null,
     verifyProjectQueryProjectionDigest: false,
-  });
+    legacyRawOwnerPolicyForTests: options.legacyRawOwnerPolicyForTests,
+  }, true);
+  throwIfAborted(signal);
+  if (index.legacyRawOwners?.schemaVersion === 2) {
+    await validateCanonicalLegacyRawOwnerIndexForCommit(index.legacyRawOwners, indexKind,
+      { signal, onChunk, policy: options.legacyRawOwnerPolicyForTests });
+    const adapter = options.adapter || requireSourceAdapter(indexKind);
+    const materializationContext = createStrictMaterializationContext(index, adapter);
+    const policy = options.legacyRawOwnerPolicyForTests || LEGACY_RAW_PROFILE;
+    const sessionIds = await createLegacySessionIdsForCommit(index,
+      { signal, onChunk, policy });
+    const sessionFacts = await createLegacySessionFactsForCommit(index,
+      { signal, onChunk, policy });
+    await invokeReadOnlyLegacyRawValidatorForCommit({
+      callback: adapter.validateLegacyRawOwnerIndexForCommit || adapter.validateLegacyRawOwnerIndex,
+      args: {
+        materializationContext, sessionIds, sessionFacts,
+        legacyRawOwners: index.legacyRawOwners, signal, onChunk,
+        policy: options.legacyRawOwnerPolicyForTests,
+      },
+      guardedValues: [materializationContext, sessionIds, sessionFacts, index.legacyRawOwners],
+      signal, onChunk,
+    });
+  }
   throwIfAborted(signal);
   if (index.projectQueryStore) {
     await validateProjectQueryStoreForCommit(
@@ -1568,6 +1787,13 @@ async function readLegacyRawLineForSession(index, materializedSession, owner, ad
   ));
   if (!materializedRaw) return null;
   validateCanonicalRawEventShape(materializedRaw, sessionSourceKind);
+  if (indexKind === SOURCE_KIND.CODEX
+      && (fsPath.normalizeFsPath(materializedRaw.source?.file) !== fsPath.normalizeFsPath(options.requestedFile)
+        || materializedRaw.source?.line !== owner.line)) {
+    const error = new Error('Legacy Raw locator does not match the Materialized Session');
+    error.code = 'CANONICAL_CONTRACT_VIOLATION';
+    throw error;
+  }
   return adapter.readLegacyRaw(index, {
     session: materializedSession,
     raw: materializedRaw,
@@ -1590,6 +1816,8 @@ module.exports = {
   readImagePreviewForSession,
   readIndexedRawRecord,
   readLegacyRawLineForSession,
+  legacyRawLookupCapabilityForIndex,
+  legacyRawLookupDiagnosticForIndex,
   resolveLegacyRawOwnerForIndex,
   requireSourceAdapter,
   requireExplicitSourceKind,

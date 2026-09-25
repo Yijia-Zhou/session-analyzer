@@ -150,6 +150,9 @@ const state = {
   pendingSourceAction: null,
   pendingSourceTarget: '',
   sourceDiagnostics: null,
+  legacyRawLookup: null,
+  legacyRawNoticeKey: '',
+  legacyRawNoticeDismissedKey: '',
   failedProjectJob: null,
   sourceSwitchBusy: false,
   homeEditorDirty: false,
@@ -345,6 +348,7 @@ const el = {
   projectSourceAction: document.getElementById('projectSourceAction'),
   projectSourceChoices: document.getElementById('projectSourceChoices'),
   sourceDiagnostics: document.getElementById('sourceDiagnostics'),
+  legacyRawNotice: document.getElementById('legacyRawNotice'),
   projectFailure: document.getElementById('projectFailure'),
   projectSourceCancel: document.getElementById('projectSourceCancel'),
   projectSourceConfirm: document.getElementById('projectSourceConfirm'),
@@ -893,6 +897,16 @@ function renderSourceDiagnostics() {
     `<li><code>${escapeHtml(sample.path || '')}</code><p>${escapeHtml(sample.message || sample.code || '')}</p></li>`
   )).join('');
   el.sourceDiagnostics.innerHTML = `<strong>${escapeHtml(t('sourceDiagnosticsTitle', { count: diagnostics.totalCount }))}</strong><p>${escapeHtml(t('sourceDiagnosticsPartial'))}</p><ul>${counts}</ul><details><summary>${escapeHtml(t('sourceDiagnosticsDetails'))}</summary><ul>${samples}</ul>${diagnostics.truncatedCount ? `<p>${escapeHtml(t('sourceDiagnosticsTruncated', { count: diagnostics.truncatedCount }))}</p>` : ''}</details>`;
+}
+
+function renderLegacyRawNotice() {
+  if (!el.legacyRawNotice) return;
+  const visible = state.legacyRawLookup?.status === 'unavailable'
+    && state.legacyRawNoticeDismissedKey !== state.legacyRawNoticeKey;
+  el.legacyRawNotice.hidden = !visible;
+  el.legacyRawNotice.innerHTML = visible
+    ? `<p>${escapeHtml(t('legacyRawLookupUnavailable'))}</p><button type="button" class="smallBtn" data-dismiss-legacy-raw>${escapeHtml(t('dismiss'))}</button>`
+    : '';
 }
 
 function renderProjectFailure() {
@@ -3045,8 +3059,9 @@ function sourceLabel(ref) {
 }
 
 function rawReferenceUrl(ref) {
-  if (ref?.rawId && state.selectedSessionId) {
-    return `/api/sessions/${encodeURIComponent(state.selectedSessionId)}/raw/${encodeURIComponent(ref.rawId)}`;
+  const sessionId = ref?.sessionId || state.selectedSessionId;
+  if (ref?.rawId && sessionId) {
+    return `/api/sessions/${encodeURIComponent(sessionId)}/raw/${encodeURIComponent(ref.rawId)}`;
   }
   if (ref?.file && ref?.line != null) {
     return `/api/raw?file=${encodeURIComponent(ref.file)}&line=${encodeURIComponent(ref.line)}`;
@@ -4293,6 +4308,12 @@ function resetProjectViewState() {
   state.sessions = [];
   state.expandedSessionGroups.clear();
   state.projectResults = [];
+  state.legacyRawLookup = null;
+  state.legacyRawNoticeKey = '';
+  if (el.legacyRawNotice) {
+    el.legacyRawNotice.hidden = true;
+    el.legacyRawNotice.replaceChildren();
+  }
   state.projectResultsRevision = 0;
   state.sessionsRequestId += 1;
   state.projectSearchRequestId += 1;
@@ -4481,6 +4502,11 @@ async function applyAppState(appState) {
   applySourceConfig(appState);
   state.repoRoot = appState.repoRoot || '';
   state.indexRevision = Number.isSafeInteger(appState.indexRevision) ? appState.indexRevision : 0;
+  state.legacyRawLookup = appState.capabilities?.legacyRawLookup || null;
+  state.legacyRawNoticeKey = JSON.stringify([
+    state.sourceKind, state.repoRoot, state.indexRevision, appState.generatedAt || '',
+  ]);
+  renderLegacyRawNotice();
   state.builtinProfiles = normalizeProfiles(appState.foldingProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
   advancePresentationRevision('foldingPresentationRevision');
@@ -8880,9 +8906,16 @@ async function showRaw(event, options = {}) {
     </div>`,
   });
   try {
-    const payloads = await Promise.all(refs.map((ref) => api(rawReferenceUrl(ref), {
-      signal: owner.controller.signal,
-    })));
+    const payloads = await Promise.all(refs.map(async (ref) => {
+      const fallback = !(ref?.rawId && (ref?.sessionId || state.selectedSessionId));
+      if (fallback && state.legacyRawLookup?.status === 'unavailable') return { unavailable: true };
+      try {
+        return { raw: await api(rawReferenceUrl(ref), { signal: owner.controller.signal }) };
+      } catch (error) {
+        if (fallback && error?.code === 'LEGACY_RAW_LOOKUP_UNAVAILABLE') return { unavailable: true };
+        throw error;
+      }
+    }));
     if (!requestOwners.rawReferences.isCurrent(owner)
         || !isCurrentDetailSelection('rawRefs', rawKey, event.id, selectionContext)) return false;
     renderDetailShell({
@@ -8891,7 +8924,9 @@ async function showRaw(event, options = {}) {
       actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
       body: `<div class="rawRefsView">
       <p class="rawMeta">${escapeHtml(t('rawRowsForEvent', { count: refs.length, plural: refs.length === 1 ? '' : 's', eventId: event.id }))}</p>
-      ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(sourceLabel(raw))}</p><pre>${escapeHtml(rawPayloadText(raw))}</pre></section>`).join('')}
+      ${payloads.map((item) => item.unavailable
+    ? `<div class="notice warning"><p>${escapeHtml(t('legacyRawLookupUnavailable'))}</p></div>`
+    : `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(sourceLabel(item.raw))}</p><pre>${escapeHtml(rawPayloadText(item.raw))}</pre></section>`).join('')}
     </div>`,
     });
     return true;
@@ -9437,6 +9472,11 @@ el.resetFoldsBtn.addEventListener('click', () => {
   saveOverrides();
   updateResetFoldsButton();
   renderTimeline();
+});
+el.legacyRawNotice?.addEventListener('click', (event) => {
+  if (!event.target.closest('[data-dismiss-legacy-raw]')) return;
+  state.legacyRawNoticeDismissedKey = state.legacyRawNoticeKey;
+  renderLegacyRawNotice();
 });
 
 el.loadMoreBtn.addEventListener('click', () => {

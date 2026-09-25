@@ -6,6 +6,7 @@ const SOURCE_ADAPTER_DESCRIPTOR_KEYS = Object.freeze([
   'homeOption',
   'homeLabel',
   'sessionLifecycle',
+  'legacyRawLookup',
   'defaultHome',
   'query',
   'discoverConfiguredProjects',
@@ -19,6 +20,7 @@ const SOURCE_ADAPTER_DESCRIPTOR_KEYS = Object.freeze([
   'readLegacyRaw',
   'validateMaterializationDescriptor',
   'validateLegacyRawOwnerIndex',
+  'validateLegacyRawOwnerIndexForCommit',
   'validateMaterializedPrivateState',
   'materializationContextFields',
   'materializedPrivateFields',
@@ -213,6 +215,10 @@ function defineSourceAdapter(descriptor) {
   const homeOption = requireNonEmptyString(descriptor.homeOption, `adapter ${kind}.homeOption`);
   const homeLabel = requireNonEmptyString(descriptor.homeLabel, `adapter ${kind}.homeLabel`);
   const sessionLifecycle = validateSessionLifecycle(descriptor.sessionLifecycle, kind);
+  const legacyRawLookup = descriptor.legacyRawLookup === undefined ? 'unsupported' : descriptor.legacyRawLookup;
+  if (!['indexed', 'unsupported'].includes(legacyRawLookup)) {
+    throw adapterContractError(`adapter ${kind}.legacyRawLookup must be indexed or unsupported`);
+  }
   if (!/^[a-z][A-Za-z0-9]*$/.test(homeOption)) {
     throw adapterContractError(`adapter ${kind}.homeOption must be a lower camel-case identifier`);
   }
@@ -231,6 +237,9 @@ function defineSourceAdapter(descriptor) {
   const hasLegacyReader = descriptor.readLegacyRaw !== undefined;
   if (hasLegacyResolver !== hasLegacyReader) {
     throw adapterContractError(`adapter ${kind} must provide resolveLegacyRaw and readLegacyRaw together`);
+  }
+  if (legacyRawLookup === 'indexed' && !hasLegacyResolver) {
+    throw adapterContractError(`adapter ${kind}.legacyRawLookup requires legacy resolver and reader`);
   }
 
   let materializedPrivateFields = Object.freeze([]);
@@ -254,6 +263,10 @@ function defineSourceAdapter(descriptor) {
       descriptor.materializationContextFields,
       kind,
     );
+    if (descriptor.validateLegacyRawOwnerIndexForCommit !== undefined
+        && typeof descriptor.validateLegacyRawOwnerIndexForCommit !== 'function') {
+      throw adapterContractError(`adapter ${kind}.validateLegacyRawOwnerIndexForCommit must be a function`);
+    }
   } else {
     for (const operation of [
       'validateMaterializationDescriptor',
@@ -270,6 +283,9 @@ function defineSourceAdapter(descriptor) {
     if (descriptor.materializationContextFields !== undefined) {
       throw adapterContractError(`adapter ${kind}.materializationContextFields is only valid in indexed-materialized-v1`);
     }
+    if (descriptor.validateLegacyRawOwnerIndexForCommit !== undefined) {
+      throw adapterContractError(`adapter ${kind}.validateLegacyRawOwnerIndexForCommit is only valid in indexed-materialized-v1`);
+    }
   }
 
   return Object.freeze({
@@ -278,6 +294,7 @@ function defineSourceAdapter(descriptor) {
     homeOption,
     homeLabel,
     sessionLifecycle,
+    legacyRawLookup,
     defaultHome: descriptor.defaultHome,
     query: descriptor.query,
     discoverConfiguredProjects: descriptor.discoverConfiguredProjects,
@@ -291,6 +308,7 @@ function defineSourceAdapter(descriptor) {
     readLegacyRaw: descriptor.readLegacyRaw || unsupportedLegacyRawRead,
     validateMaterializationDescriptor: descriptor.validateMaterializationDescriptor,
     validateLegacyRawOwnerIndex: descriptor.validateLegacyRawOwnerIndex,
+    validateLegacyRawOwnerIndexForCommit: descriptor.validateLegacyRawOwnerIndexForCommit,
     validateMaterializedPrivateState: descriptor.validateMaterializedPrivateState,
     materializationContextFields,
     materializedPrivateFields,

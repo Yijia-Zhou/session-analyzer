@@ -14,6 +14,13 @@ const {
   isPublicComparisonState,
   reuseBasisPoints,
 } = require('./cache-observation');
+const { PROFILE: LEGACY_RAW_V2_PROFILE } = require('./legacy-raw-owner-budget');
+const {
+  ENCODING: CODEX_LEGACY_RAW_V2_ENCODING,
+  exactPayloadByteCount,
+  exactPayloadByteCountForCommit,
+} = require('./codex-legacy-raw-owners');
+const LEGACY_RAW_V2_DEFER_BYTE_COUNT = Symbol('legacyRawV2DeferByteCount');
 
 // Small adapter -> shared-runtime contract. This is deliberately structural:
 // source adapters keep ownership of source-specific interpretation, locators,
@@ -627,8 +634,77 @@ function validateCanonicalDependencySet(dependencySet, expectedSourceKind, expec
   return accountedBytes;
 }
 
-function validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, expectedSourceKind) {
+function validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, expectedSourceKind, options = {}) {
   requirePlainObject(legacyRawOwners, 'legacy Raw owner index');
+  if (legacyRawOwners.schemaVersion === 2) {
+    const policy = options.policy || LEGACY_RAW_V2_PROFILE;
+    const owner = 'legacy Raw owner index';
+    const sourceKind = requireCanonicalSourceKind(legacyRawOwners.sourceKind, owner);
+    if (sourceKind !== 'codex' || (expectedSourceKind && sourceKind !== expectedSourceKind)) {
+      throw ownershipMismatch(owner, expectedSourceKind || 'codex', sourceKind);
+    }
+    if (legacyRawOwners.budgetProfile !== policy.name) {
+      throw contractError(owner, 'budgetProfile', 'does not match the trusted policy');
+    }
+    if (legacyRawOwners.status === 'unavailable') {
+      requireExactOwnKeys(legacyRawOwners,
+        ['schemaVersion', 'sourceKind', 'status', 'reason', 'budgetProfile', 'capacity'], owner);
+      if (legacyRawOwners.reason !== 'capacity_exceeded') {
+        throw contractError(owner, 'reason', 'must be capacity_exceeded');
+      }
+      requirePlainObject(legacyRawOwners.capacity, `${owner}.capacity`);
+      requireExactOwnKeys(legacyRawOwners.capacity,
+        ['limitName', 'limit', 'observedLowerBound', 'phase'], `${owner}.capacity`);
+      const limits = {
+        payload_bytes: policy.payloadBytes,
+        build_work_units: policy.buildWorkUnits,
+        build_accounted_bytes: policy.buildAccountedBytes,
+      };
+      const { limitName, limit, observedLowerBound, phase } = legacyRawOwners.capacity;
+      // Reject non-primitive values before object-key lookup or JSON serialization:
+      // coercion and toJSON on an invalid receipt must never execute.
+      if (typeof limitName !== 'string' || typeof limit !== 'number'
+          || typeof observedLowerBound !== 'number' || typeof phase !== 'string'
+          || !Object.hasOwn(limits, limitName) || limit !== limits[limitName]
+          || !Number.isSafeInteger(limit) || !Number.isSafeInteger(observedLowerBound)
+          || observedLowerBound <= limit || !['building', 'finalizing'].includes(phase)
+          || (limitName === 'payload_bytes' && phase !== 'finalizing')) {
+        throw contractError(owner, 'capacity', 'does not match the trusted capacity policy');
+      }
+      if (Buffer.byteLength(JSON.stringify(legacyRawOwners), 'utf8') > policy.unavailableBytes) {
+        throw contractError(owner, '<value>', 'exceeds unavailable envelope budget');
+      }
+      return legacyRawOwners;
+    }
+    if (legacyRawOwners.status !== 'available') {
+      throw contractError(owner, 'status', 'must be available or unavailable');
+    }
+    requireExactOwnKeys(legacyRawOwners, [
+      'schemaVersion', 'sourceKind', 'status', 'encoding', 'budgetProfile', 'entryCount',
+      'ambiguousLineCount', 'rangeCount', 'accountedBytes', 'payload',
+    ], owner);
+    if (legacyRawOwners.encoding !== CODEX_LEGACY_RAW_V2_ENCODING) {
+      throw contractError(owner, 'encoding', 'is invalid');
+    }
+    for (const key of ['entryCount', 'ambiguousLineCount', 'rangeCount', 'accountedBytes']) {
+      requireNonNegativeSafeInteger(legacyRawOwners[key], owner, key);
+    }
+    if (legacyRawOwners.accountedBytes > policy.payloadBytes) {
+      throw contractError(owner, 'accountedBytes', 'exceeds maximum payload bytes');
+    }
+    if (legacyRawOwners.rangeCount > Math.floor(legacyRawOwners.accountedBytes / 7)) {
+      throw contractError(owner, 'rangeCount', 'cannot fit within declared payload bytes');
+    }
+    if (options.deferByteCount !== LEGACY_RAW_V2_DEFER_BYTE_COUNT) {
+      const actualBytes = exactPayloadByteCount(legacyRawOwners.payload, policy,
+        Math.min(legacyRawOwners.accountedBytes, policy.buildWorkUnits),
+        legacyRawOwners.accountedBytes);
+      if (legacyRawOwners.accountedBytes !== actualBytes) {
+        throw contractError(owner, 'accountedBytes', `must equal the payload byte count ${actualBytes}`);
+      }
+    }
+    return legacyRawOwners;
+  }
   requireExactOwnKeys(
     legacyRawOwners,
     ['schemaVersion', 'sourceKind', 'entryCount', 'accountedBytes', 'payload'],
@@ -669,6 +745,23 @@ function validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, expectedSourceKin
       'accountedBytes',
       `must equal the payload byte count ${actualAccountedBytes}`,
     );
+  }
+  return legacyRawOwners;
+}
+
+async function validateCanonicalLegacyRawOwnerIndexForCommit(legacyRawOwners, expectedSourceKind, options = {}) {
+  const policy = options.policy || LEGACY_RAW_V2_PROFILE;
+  validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, expectedSourceKind,
+    { policy, deferByteCount: LEGACY_RAW_V2_DEFER_BYTE_COUNT });
+  if (legacyRawOwners.schemaVersion === 2 && legacyRawOwners.status === 'available') {
+    const actualBytes = await exactPayloadByteCountForCommit(legacyRawOwners.payload,
+      { policy, signal: options.signal, onChunk: options.onChunk,
+        maxElements: Math.min(legacyRawOwners.accountedBytes, policy.buildWorkUnits),
+        maxBytes: legacyRawOwners.accountedBytes });
+    if (legacyRawOwners.accountedBytes !== actualBytes) {
+      throw contractError('legacy Raw owner index', 'accountedBytes',
+        `must equal the payload byte count ${actualBytes}`);
+    }
   }
   return legacyRawOwners;
 }
@@ -1390,6 +1483,7 @@ module.exports = {
   validateCanonicalDependencySet,
   validateCanonicalIndexedSessionShape,
   validateCanonicalLegacyRawOwnerIndex,
+  validateCanonicalLegacyRawOwnerIndexForCommit,
   validateCanonicalMaterializedSessionShape,
   validateCanonicalSessionsProperty,
   validateCanonicalLogicalEventShape,

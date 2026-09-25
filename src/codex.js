@@ -74,6 +74,7 @@ const {
   sourceSizeToSafeNumber,
 } = require('./shared/codex-source-stat');
 const codexRolloutStorage = require('./codex-rollout-storage');
+const codexLegacyRawOwners = require('./codex-legacy-raw-owners');
 const {
   createCodexCacheObservationSeed,
   finalizeCodexCacheObservation,
@@ -6105,6 +6106,8 @@ async function buildSourceBackedIndex({
   forceFullRelationshipPassForTests = false,
   onRelationshipCandidateModeForTests = null,
   onTransientMemorySample = null,
+  legacyRawOwnerPolicyForTests = undefined,
+  onLegacyRawCapacity = null,
 }) {
   const resolvedRepo = resolveFsPath(repoRoot);
   const resolvedCodex = path.resolve(codexHome);
@@ -6438,7 +6441,10 @@ async function buildSourceBackedIndex({
   let queryStoreBuilder = createProjectQueryStoreBuilder({
     presentationForEvent: codexSearch.projectQueryPresentation,
   });
-  const legacyRawOwnerBuilder = createCodexLegacyRawOwnerIndexBuilder();
+  const legacyRawOwnerBuilder = codexLegacyRawOwners.createCodexLegacyRawOwnerBuilder({
+    policy: legacyRawOwnerPolicyForTests,
+    onCapacity: onLegacyRawCapacity,
+  });
   const catalogAccumulator = createCodexCatalogAccumulator();
   const materializationDependencies = new Map();
   const indexedSessions = [];
@@ -6449,6 +6455,7 @@ async function buildSourceBackedIndex({
   let indexedBytes = 0;
   let reusedFileCount = 0;
 
+  try {
   const orderedRelationshipEvidence = orderCodexEvidenceParentsFirst(relationshipEvidence);
   const materializedChildrenByParentId = new Map();
   for (const evidence of relationshipEvidence) {
@@ -6530,7 +6537,7 @@ async function buildSourceBackedIndex({
       });
     }
     const queryProjectionDigest = queryStoreBuilder.addSession(session);
-    legacyRawOwnerBuilder.addSession(session);
+    await legacyRawOwnerBuilder.observeSession(session, { signal });
     catalogAccumulator.addSession(session);
     const summary = codexSearch.projectSessionMetadata(session).summary;
     const materializationState = buildCodexMaterializationState(
@@ -6599,7 +6606,7 @@ async function buildSourceBackedIndex({
 
   let projectQueryStore = queryStoreBuilder.finish();
   queryStoreBuilder = null;
-  let legacyRawOwners = legacyRawOwnerBuilder.finish();
+  let legacyRawOwners = await legacyRawOwnerBuilder.finish({ signal });
   let catalogs = catalogAccumulator.finish();
   if (canReusePrevious
       && reusedFileCount === indexedSessions.length
@@ -6670,6 +6677,9 @@ async function buildSourceBackedIndex({
       candidateBytes,
     },
   };
+  } finally {
+    legacyRawOwnerBuilder.dispose();
+  }
 }
 
 function finalizeCapturedCodexCacheObservation(session) {
@@ -6909,7 +6919,11 @@ function validateCodexMaterializationDescriptor({
   }
 }
 
-function validateCodexLegacyRawOwnerIndex({ sessionIds: ownedSessionIds, legacyRawOwners }) {
+function validateCodexLegacyRawOwnerIndex({ sessionIds: ownedSessionIds, sessionFacts, legacyRawOwners, policy }) {
+  if (legacyRawOwners.schemaVersion === 2) {
+    codexLegacyRawOwners.validateCodexV2(legacyRawOwners, ownedSessionIds, sessionFacts, policy);
+    return;
+  }
   requireExactCodexKeys(legacyRawOwners.payload, ['sessionIds', 'files'], 'Codex legacy Raw owner payload');
   const { sessionIds, files } = legacyRawOwners.payload;
   if (!Array.isArray(sessionIds) || !files || typeof files !== 'object' || Array.isArray(files)) {
@@ -6948,6 +6962,17 @@ function validateCodexLegacyRawOwnerIndex({ sessionIds: ownedSessionIds, legacyR
   }
   if (entryCount !== legacyRawOwners.entryCount) {
     throw new Error('Codex legacy Raw owner entry count is invalid');
+  }
+}
+
+async function validateCodexLegacyRawOwnerIndexForCommit(args) {
+  if (args.legacyRawOwners.schemaVersion === 2) {
+    await codexLegacyRawOwners.validateCodexV2ForCommit(
+      args.legacyRawOwners, args.sessionIds, args.sessionFacts,
+      { signal: args.signal, onChunk: args.onChunk, policy: args.policy },
+    );
+  } else {
+    validateCodexLegacyRawOwnerIndex(args);
   }
 }
 
@@ -7226,6 +7251,9 @@ async function readIndexedCodexRawRecord(index, session, raw, options = {}) {
 
 function resolveIndexedCodexLegacyRaw(index, file, line) {
   if (typeof file !== 'string' || !file || !Number.isSafeInteger(line) || line < 1) return null;
+  if (index?.legacyRawOwners?.schemaVersion === 2) {
+    return codexLegacyRawOwners.resolveCodexV2(index, file, line);
+  }
   const normalizedFile = normalizeFsPath(file);
   const payload = index?.legacyRawOwners?.payload;
   const encodedOwner = payload?.files?.[normalizedFile]?.[String(line)];
@@ -7397,6 +7425,7 @@ module.exports = {
   materializedPrivateFields: CODEX_MATERIALIZATION_PRIVATE_FIELDS,
   query: codexSearch,
   validateCodexLegacyRawOwnerIndex,
+  validateCodexLegacyRawOwnerIndexForCommit,
   validateCodexMaterializationDescriptor,
   validateCodexMaterializedPrivateState,
 };

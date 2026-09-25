@@ -107,7 +107,8 @@ test('fingerprint profiling reports the seven ordered invocations and complete a
     assert.ok(invocation.textPrefixBytes > 0);
     assert.equal(
       invocation.operationCount,
-      invocation.visitTaskCount + invocation.writeTaskCount + invocation.byteTaskCount,
+      invocation.visitTaskCount + invocation.writeTaskCount + invocation.byteTaskCount
+        + invocation.iteratorTaskCount,
     );
     assert.equal(invocation.hashInputBytes, invocation.textPrefixBytes + invocation.textValueUtf8Bytes + invocation.binaryHashBytes);
     assert.equal(invocation.hashUpdateCallCount, invocation.textHashUpdateCallCount + invocation.byteTaskCount);

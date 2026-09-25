@@ -2,6 +2,20 @@
 
 ## Tracked items / 跟踪条目
 
+### 28. Codex legacy Raw v2 performance follow-up / Codex 旧式 Raw v2 性能后续
+
+- Status: open; specialized performance work deferred from the v2 PR, separate from its required cross-platform correctness CI. / 状态：开放；专项性能工作从 v2 PR 延期，与必需的跨平台正确性 CI 分开。
+- Evidence and gap: Windows/Node 24 component profiles cover dense, sparse, many-file, conflict, Unicode, and capacity cases; one 50,001-range synthetic full `validateIndexOwnershipForCommit()` run covers total commit time, sampled RSS, event-loop observation, and cancellation. Current PR CI runs Node 22/24 on Ubuntu and Node 24 on Windows, package smoke and browser checks, but neither legacy-owner component profile nor this full-commit profile. Node 22/Linux specialized performance remains unmeasured. / 依据与缺口：Windows／Node 24 组件 profile 覆盖连续、稀疏、多文件、冲突、Unicode 与容量场景；一次 50,001 区间合成完整 `validateIndexOwnershipForCommit()` 运行覆盖提交总耗时、RSS 采样、事件循环观察与取消。当前 PR CI 在 Ubuntu 上运行 Node 22／24、在 Windows 上运行 Node 24，并运行 package smoke 与浏览器检查，但不运行旧式 owner 组件或本完整提交 profile。Node 22／Linux 的专项性能尚未量测。
+- Residual risk: one bounded `Reflect.ownKeys` call and other synchronous work before the first async checkpoint can delay cancellation even when subsequent batches yield. The Windows full-commit cancellation timer fired 147 ms after start in one run; this is an observation, not an upper bound or a claim about other platforms. / 剩余风险：单次有界 `Reflect.ownKeys` 调用及首个异步 checkpoint 前的其他同步工作仍可能延迟取消，即使后续批次会让出。Windows 完整提交的一次取消 timer 在开始后 147 ms 触发；这是观察值，不是上界，也不代表其他平台。
+- Follow-up: collect representative Node 22/Linux component and full-commit profiles separately, attribute any material delay or memory growth, and optimize reflection or synchronous preparation only when evidence shows unacceptable behavior. Preserve strict Index admission and the distinction between component and full-commit measurements. / 后续：分别收集代表性的 Node 22／Linux 组件与完整提交 profile，对具有实际影响的延迟或内存增长做归因；仅在证据显示不可接受行为时优化反射或同步准备。保留严格 Index 准入，并区分组件与完整提交量测。
+
+### 27. Capacity beyond Codex legacy Raw lookup / Codex 旧式 Raw 定位以外的容量
+
+- Status: open; separate from the v2 legacy Raw owner projection. / 状态：开放；与 v2 旧式 Raw owner projection 分开处理。
+- Boundary: the compressed legacy lookup can become unavailable without admitting a partial Index, but unusually large individual Sessions, ProjectQueryStore, dependency sets, source parsing, and Materialized Session construction retain their own budgets and failure modes. The v2 work-unit and byte weights are admission proxies, not RSS limits. / 边界：压缩后的旧式定位可以不可用，而不接纳部分 Index；但异常大的单会话、ProjectQueryStore、依赖集合、来源解析和 Materialized Session 构建仍有各自预算与失败模式。v2 工作单位与字节权重是准入代理值，不是 RSS 上限。
+- Follow-up: investigate any observed core capacity failure with its own aggregate profile and source-specific fixture; do not convert core integrity errors into legacy lookup capacity receipts. / 后续：对实际观察到的核心容量失败另做聚合 profile 与来源专属 fixture；不得把核心完整性错误转换成旧式定位容量记录。
+
+
 ### 26. Remaining Codex paginated and metadata evidence / 剩余 Codex 分页与 metadata 依据
 
 - Status: open, bounded compatibility follow-up to the September 2026 handoff. / 状态：开放，2026 年 9 月交接的有界兼容后续。

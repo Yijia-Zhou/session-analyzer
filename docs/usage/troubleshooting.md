@@ -25,6 +25,10 @@ For DeepSeek, valid sessions can remain readable while problematic artifacts pro
 | `DEEPSEEK_STORAGE_INVALID` | Inspect the message and obtain a valid original/export; report corruption without modifying the transcript. / 查看消息并获取有效原件／导出；报告损坏，不修改转录。 |
 | `DEEPSEEK_SOURCE_BUSY` | Let the writer finish or use a consistent copied snapshot, then retry. / 等待写入完成或使用一致的复制快照，再重试。 |
 
+## Codex legacy Raw lookup capacity / Codex 旧式 Raw 定位容量
+
+If Codex reports `LEGACY_RAW_LOOKUP_CAPACITY_EXCEEDED`, indexing succeeded but the old `/api/raw?file=...&line=...` locator is unavailable for that Index. The browser keeps Session lists and ordinary reading available; Raw References with Session and Raw IDs still use the explicit route. The old route returns 409 `LEGACY_RAW_LOOKUP_UNAVAILABLE` with `retryable: false`, so repeating the same request against the same revision will not help. This is a component budget, separate from V8 heap exhaustion; increasing `NODE_OPTIONS` does not change it. A later reindex may restore the capability if the accepted history changes. / 如果 Codex 报告 `LEGACY_RAW_LOOKUP_CAPACITY_EXCEEDED`，表示索引已成功，但该 Index 的旧式 `/api/raw?file=...&line=...` 定位不可用。浏览器仍可显示会话列表并正常阅读；带会话和 Raw ID 的原始引用继续使用显式路由。旧路由返回 409 `LEGACY_RAW_LOOKUP_UNAVAILABLE` 和 `retryable: false`，对同一 revision 重复请求无益。这是组件预算，与 V8 heap 耗尽分开；增大 `NODE_OPTIONS` 不会改变它。已接受历史变化后重新索引，能力可能恢复。
+
 ## DeepSeek compressed history / DeepSeek 压缩历史
 
 `session.jsonl.zstd` requires Node's built-in `node:zlib` Zstandard API. It is available in Node 22 from 22.15.0, but actual capability is checked; use Node.js 24 as the recommended installed runtime. Uncompressed `session.jsonl` remains readable when that API is unavailable. Check the actual server's Node executable/version, then restart after changing runtimes. / `session.jsonl.zstd` 需要 Node 内置 `node:zlib` Zstandard API。Node 22 从 22.15.0 起提供该能力，但以实际能力检测为准；安装后运行推荐 Node.js 24。缺少该 API 时仍可读取未压缩的 `session.jsonl`。检查实际服务使用的 Node 可执行文件／版本，更换运行时后重启。
