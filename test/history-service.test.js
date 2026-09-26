@@ -94,6 +94,22 @@ test('grouped response budgets distinguish omitted, unexecuted and zero-hit grou
   }
 });
 
+test('omitted grouped continuation retries the same page with its original group id', async (t) => {
+  const { service } = await corpus(t);
+  const query = { id: 'resume', query: 'e', limit: 1 };
+  const first = (await service.execute('search', { groups: [query] })).groups[0];
+  assert.ok(first.nextCursor);
+  const next = { ...query, limit: 100, maxBytes: 24000, cursor: first.nextCursor };
+  const groups = [next, ...Array.from({ length: 7 }, (_, n) => ({ ...query, id: `other${n}` }))];
+  const omitted = (await service.execute('search', { groups, maxBytes: 4096 })).groups[0];
+  assert.equal(omitted.state, 'results_omitted');
+  assert.equal(omitted.resumeCursor, first.nextCursor);
+  const retry = (await service.execute('search', { groups: [{ ...next, cursor: omitted.resumeCursor }] })).groups[0];
+  const all = await service.execute('search', { query: query.query, limit: 100 });
+  assert.deepEqual(retry.items.map((item) => item.ref), all.items.slice(1).map((item) => item.ref));
+  await assert.rejects(service.execute('search', { query: query.query, cursor: omitted.resumeCursor }), { code: 'INVALID_CURSOR' });
+});
+
 test('literal OR warning survives compact coverage reuse without rewriting queries', async (t) => {
   const { service } = await corpus(t);
   const { contextRef } = await service.execute('status');
