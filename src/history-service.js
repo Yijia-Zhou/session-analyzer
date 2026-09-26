@@ -9,6 +9,8 @@ const { scanProjectQueryShard } = require('./project-query-store');
 const { createSourceDiagnostics } = require('./source-diagnostics');
 const { classifyRetrievalArtifact, mayContainRetrievalArtifact } = require('./history-artifacts');
 const { createHistoryPresentation, detailText } = require('./history-presentation');
+const { groupedSearch, validateGroups } = require('./history-search-groups');
+const { createHistorySourceLocator } = require('./history-source-locator');
 
 const VERSION = 1;
 const LAYERS = ['main', 'protocol', 'raw'];
@@ -228,15 +230,38 @@ async function createHistoryService(options = {}) {
     return output;
   }
 
-  async function execute(operation, input = {}) {
+  function prepareSearch(input, groupId) {
+    for (const k of ['query', 'layer', 'kind', 'status', 'tool', 'file', 'from', 'to', 'retrievalArtifacts', 'order', 'session']) {
+      if (input[k] !== undefined && (typeof input[k] !== 'string' || input[k].length > 4096)) fail('INVALID_ARGUMENT', k + ' must be a string of at most 4096 characters');
+    }
+      if (input.query !== undefined && input.queries !== undefined) fail('INVALID_ARGUMENT', 'Use query or queries, not both');
+      const queries = strings(input.queries ?? (input.query ? [input.query] : []), 'queries');
+      const excluded = strings(input.exclude, 'exclude');
+      const layer = input.layer || 'main';
+      const policy = input.retrievalArtifacts || 'exclude';
+      const order = input.order ?? 'diverse';
+      if (!LAYERS.includes(layer) || !['exclude', 'include', 'only'].includes(policy)) fail('INVALID_ARGUMENT', 'Invalid layer or retrievalArtifacts');
+      if (!['diverse', 'session'].includes(order)) fail('INVALID_ARGUMENT', 'order must be diverse or session');
+      if (input.session !== undefined && !input.session.trim()) fail('INVALID_ARGUMENT', 'session must be a nonempty indexed sessionId');
+      if (input.session !== undefined && !index.sessionsById.has(input.session)) fail('UNKNOWN_SESSION', 'Session is not in this indexed project/source snapshot');
+      const scopedSessions = input.session === undefined ? sessions : sessions.filter((session) => session.id === input.session);
+      for (const k of ['from', 'to']) if (input[k] && !Number.isFinite(Date.parse(input[k]))) fail('INVALID_ARGUMENT', `${k} must be an ISO date`);
+      if (input.from && input.to && Date.parse(input.from) > Date.parse(input.to)) fail('INVALID_ARGUMENT', 'from must precede to');
+      const key = { queries, excluded, layer, policy, kind: input.kind, status: input.status,
+        tool: input.tool, file: input.file, from: input.from, to: input.to, order, session: input.session, ...(groupId ? { groupId } : {}) };
+      const after = cursorPosition(input.cursor, 'search', key);
+    return { queries, excluded, layer, policy, order, scopedSessions, key, after };
+  }
+
+  async function execute(operation, input = {}, groupId) {
     if (closed) fail('CONTEXT_EXPIRED', 'The retrieval service is closed');
     if (!['status', 'search', 'context', 'read'].includes(operation)) fail('INVALID_OPERATION', 'Unknown history operation');
     if (!input || typeof input !== 'object' || Array.isArray(input)) fail('INVALID_ARGUMENT', 'Input must be an object');
     const allowed = new Set(['contextRef', 'maxBytes', 'presentation', ...({
       status: [],
-      search: ['queries', 'query', 'exclude', 'layer', 'kind', 'status', 'tool', 'file', 'from', 'to', 'retrievalArtifacts', 'limit', 'cursor', 'order', 'session'],
+      search: ['groups', 'queries', 'query', 'exclude', 'layer', 'kind', 'status', 'tool', 'file', 'from', 'to', 'retrievalArtifacts', 'limit', 'cursor', 'order', 'session'],
       context: ['refs', 'view', 'limit', 'length', 'cursor'],
-      read: ['refs', 'parts', 'offset', 'length', 'limit', 'cursor', 'textFormat'],
+      read: ['source', 'refs', 'parts', 'offset', 'length', 'limit', 'cursor', 'textFormat'],
     }[operation])]);
     for (const k of Object.keys(input)) if (!allowed.has(k)) fail('INVALID_ARGUMENT', `Unknown field: ${k}`);
     if (input.contextRef !== undefined && input.contextRef !== contextRef) fail('CONTEXT_EXPIRED', 'Context expired; omit it to revalidate persistent evidence references');
@@ -248,7 +273,17 @@ async function createHistoryService(options = {}) {
     }
     const limit = integer(input.limit, 8, 1, 100, 'limit');
     const maxBytes = integer(input.maxBytes, 24000, 4096, 1048576, 'maxBytes');
+    const readParts = operation === 'read' ? [...new Set(input.parts === undefined ? (input.source ? ['raw'] : ['message', 'request', 'result']) : strings(input.parts, 'parts', 5))] : null;
+    if (readParts && (!readParts.length || readParts.some((part) => !PARTS.includes(part)))) fail('INVALID_ARGUMENT', 'Unsupported read part');
+    const readOffset = operation === 'read' ? integer(input.offset, 0, 0, Number.MAX_SAFE_INTEGER, 'offset') : null;
+    const readLength = operation === 'read' ? integer(input.length, 2000, 1, 100000, 'length') : null;
     const response = envelope(operation);
+    if (operation === 'search' && input.groups !== undefined) {
+      for (const key of Object.keys(input)) if (!['groups', 'contextRef', 'presentation', 'maxBytes'].includes(key)) fail('INVALID_ARGUMENT', `Grouped search does not accept top-level ${key}; place query options inside each group`);
+      for (const group of validateGroups(input.groups)) prepareSearch(group, group.id);
+      return groupedSearch({ input, response: project(response), maxBytes,
+        search: (query, id) => execute('search', { ...query, presentation: input.presentation, contextRef: input.contextRef }, id) });
+    }
     const requestSessions = new Map();
     async function materialize(session) {
       if (!requestSessions.has(session.id)) {
@@ -272,26 +307,14 @@ async function createHistoryService(options = {}) {
       response.capabilities.contextViews = ['outline', 'full'];
       response.capabilities.textFormats = ['structured', 'text'];
       response.capabilities.shortHandles = 'context-bound; read returns durable evidenceRef; compact context uses shared events and eventIndexes';
+      response.capabilities.queryGroups = { maxGroups: 8, independentQueries: true, independentCursors: true, batchByteBudget: true };
+      response.capabilities.sourceLocators = { sources: ['codex'], storage: 'uncompressed JSONL', locator: 'jsonl-line', lineBase: 1, legacyVerification: 'unverified_legacy_locator' };
       if (size(project(response)) > maxBytes) fail('OUTPUT_BUDGET_TOO_SMALL', 'Increase maxBytes');
       return project(response);
     }
     if (operation === 'search') {
-      if (input.query !== undefined && input.queries !== undefined) fail('INVALID_ARGUMENT', 'Use query or queries, not both');
-      const queries = strings(input.queries ?? (input.query ? [input.query] : []), 'queries');
-      const excluded = strings(input.exclude, 'exclude');
-      const layer = input.layer || 'main';
-      const policy = input.retrievalArtifacts || 'exclude';
-      const order = input.order ?? 'diverse';
-      if (!LAYERS.includes(layer) || !['exclude', 'include', 'only'].includes(policy)) fail('INVALID_ARGUMENT', 'Invalid layer or retrievalArtifacts');
-      if (!['diverse', 'session'].includes(order)) fail('INVALID_ARGUMENT', 'order must be diverse or session');
-      if (input.session !== undefined && !input.session.trim()) fail('INVALID_ARGUMENT', 'session must be a nonempty indexed sessionId');
-      if (input.session !== undefined && !index.sessionsById.has(input.session)) fail('UNKNOWN_SESSION', 'Session is not in this indexed project/source snapshot');
-      const scopedSessions = input.session === undefined ? sessions : sessions.filter((session) => session.id === input.session);
-      for (const k of ['from', 'to']) if (input[k] && !Number.isFinite(Date.parse(input[k]))) fail('INVALID_ARGUMENT', `${k} must be an ISO date`);
-      if (input.from && input.to && Date.parse(input.from) > Date.parse(input.to)) fail('INVALID_ARGUMENT', 'from must precede to');
-      const key = { queries, excluded, layer, policy, kind: input.kind, status: input.status,
-        tool: input.tool, file: input.file, from: input.from, to: input.to, order, session: input.session };
-      const after = cursorPosition(input.cursor, operation, key);
+      const { queries, excluded, layer, policy, order, scopedSessions, key, after } = prepareSearch(input, groupId);
+      if (queries.some((query) => /\sOR\s/u.test(query))) response.queryWarnings = ['Search is literal; OR is not an operator. The original query is unchanged.'];
       const candidates = [];
       let total = 0;
       let remaining = 0;
@@ -368,7 +391,23 @@ async function createHistoryService(options = {}) {
         (count) => cursor(operation, key, candidates[count - 1].position), project);
     }
 
-    const refs = strings(input.refs, 'refs').map((value) => presentation.resolve(value, input.contextRef));
+    let sourceResolution;
+    if (input.source !== undefined) {
+      if (input.refs !== undefined) fail('INVALID_ARGUMENT', 'Use source or refs, not both');
+      if (!input.source || typeof input.source !== 'object' || Array.isArray(input.source)) fail('INVALID_ARGUMENT', 'source must be an object');
+      for (const key of Object.keys(input.source)) if (!['sourceRef', 'sourcePath', 'locator', 'logicalOffset'].includes(key)) fail('INVALID_ARGUMENT', `Unknown source field: ${key}`);
+      integer(input.source.logicalOffset, 0, 0, Number.MAX_SAFE_INTEGER, 'source.logicalOffset');
+      sourceResolution = await createHistorySourceLocator({ index, scope, materialize, makeEvidenceRef: ref }).resolveLocator(input.source);
+      const { matches, ...sourceInfo } = sourceResolution;
+      response.source = { ...sourceInfo, matchedRawRecords: matches.length };
+    }
+    const refs = sourceResolution ? sourceResolution.matches.map((match) => match.rawRef)
+      : strings(input.refs, 'refs').map((value) => presentation.resolve(value, input.contextRef));
+    if (sourceResolution && !refs.length) {
+      if (input.cursor) fail('INVALID_CURSOR', 'No matching Raw Records for locator');
+      if (size(project(response)) > maxBytes) fail('OUTPUT_BUDGET_TOO_SMALL', 'Source metadata exceeds maxBytes');
+      return project(response);
+    }
     if (!refs.length) fail('INVALID_ARGUMENT', 'At least one ref is required');
     if (operation === 'context') {
       if (input.view && !['outline', 'full'].includes(input.view)) fail('INVALID_ARGUMENT', 'view must be outline or full');
@@ -448,11 +487,10 @@ async function createHistoryService(options = {}) {
       return budgetPage(response, candidates, limit, maxBytes, operation, key, offset, refs.length, undefined, project);
     }
 
-    const parts = [...new Set(input.parts === undefined ? ['message', 'request', 'result'] : strings(input.parts, 'parts', 5))];
-    if (!parts.length || parts.some((p) => !PARTS.includes(p))) fail('INVALID_ARGUMENT', 'Unsupported read part');
-    const start = integer(input.offset, 0, 0, Number.MAX_SAFE_INTEGER, 'offset');
-    const length = integer(input.length, 2000, 1, 100000, 'length');
-    const key = { refs, parts, start, length, ...(input.textFormat === 'text' ? { textFormat: 'text' } : {}) };
+    const parts = readParts;
+    const start = readOffset;
+    const length = readLength;
+    const key = { refs, parts, start, length, ...(sourceResolution ? { source: input.source } : {}), ...(input.textFormat === 'text' ? { textFormat: 'text' } : {}) };
     const offset = cursorPosition(input.cursor, operation, key);
     const candidates = [];
     for (const value of refs.slice(offset, offset + limit)) {
@@ -494,11 +532,15 @@ async function createHistoryService(options = {}) {
           nextOffset: start + length < text.length ? start + length : null,
           truncated: start > 0 || start + length < text.length });
       }
-      candidates.push({ ref: value, parts: values, rawRefs, rawRefsOffset: rawStart, rawRefsNextOffset });
+      const logical = sourceResolution?.matches.find((match) => match.rawRef === value).logicalRefs;
+      const logicalOffset = input.source?.logicalOffset ?? 0;
+      candidates.push({ ref: value, parts: values, rawRefs, rawRefsOffset: rawStart, rawRefsNextOffset,
+        ...(logical ? { logicalRefs: logical.slice(logicalOffset, logicalOffset + limit), logicalRefsOffset: logicalOffset,
+          logicalRefsNextOffset: logicalOffset + limit < logical.length ? logicalOffset + limit : null } : {}) });
     }
     response.contentTruncated = false;
     const output = budgetPage(response, candidates, limit, maxBytes, operation, key, offset, refs.length, undefined, project);
-    output.contentTruncated = output.items.some((item) => item.parts.some((part) => part.truncated) || item.rawRefsNextOffset !== null);
+    output.contentTruncated = output.items.some((item) => item.parts.some((part) => part.truncated) || item.rawRefsNextOffset !== null || item.logicalRefsNextOffset != null);
     return output;
   }
   return { execute, close() { closed = true; presentation.clear(); } };

@@ -1,0 +1,5 @@
+{"timestamp":"2026-02-02T10:00:00.000Z","type":"session_meta","payload":{"id":"state-mica-open","timestamp":"2026-02-02T10:00:00.000Z","cwd":"/synthetic/history-state-resolution","originator":"synthetic-evaluation","cli_version":"0.0.0"}}
+{"timestamp":"2026-02-02T10:01:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"Check MICA-73 release branch."}}
+{"timestamp":"2026-02-02T10:02:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"git branch --merged main\"}","call_id":"mica-open-branches"}}
+{"timestamp":"2026-02-02T10:03:00.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"mica-open-branches","output":"* main\nfeature/other-topic\n"}}
+{"timestamp":"2026-02-02T10:04:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"MICA-73 was unmerged at 10:04; branch feature/mica-73 is absent from merged branches."}}

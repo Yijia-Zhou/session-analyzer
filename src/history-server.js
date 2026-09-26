@@ -1,6 +1,7 @@
 'use strict';
 
 const http = require('node:http');
+const { validateGroups } = require('./history-search-groups');
 
 const OPERATIONS = new Set(['status', 'search', 'context', 'read']);
 const MAX_BODY_BYTES = 256 * 1024;
@@ -16,7 +17,21 @@ function historyError(code, message, statusCode = 400) {
 function validateHistoryInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw historyError('INVALID_INPUT', 'Input must be a JSON object.');
   for (const [key, value] of Object.entries(input)) {
-    if (STRING_FIELDS.has(key)) {
+    if (key === 'groups') {
+      validateGroups(value);
+      for (const { id, ...query } of value) validateHistoryInput(query);
+    } else if (key === 'source') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)
+          || Object.keys(value).some((field) => !['sourceRef', 'sourcePath', 'locator', 'logicalOffset'].includes(field))
+          || (value.logicalOffset !== undefined && (!Number.isSafeInteger(value.logicalOffset) || value.logicalOffset < 0))
+          || (value.sourceRef === undefined) === (value.sourcePath === undefined)
+          || [value.sourceRef, value.sourcePath].some((s) => s !== undefined && (typeof s !== 'string' || !s.trim() || s.length > 8192))
+          || !value.locator || typeof value.locator !== 'object' || Array.isArray(value.locator)
+          || Object.keys(value.locator).some((field) => !['type', 'line'].includes(field))
+          || value.locator.type !== 'jsonl-line' || !Number.isSafeInteger(value.locator.line) || value.locator.line < 1) {
+        throw historyError('INVALID_INPUT', 'source requires sourceRef or sourcePath and a positive 1-based jsonl-line locator.');
+      }
+    } else if (STRING_FIELDS.has(key)) {
       if (typeof value !== 'string' || !value.trim() || value.length > 65536) throw historyError('INVALID_INPUT', `${key} must be a non-empty string of at most 65536 characters.`);
     } else if (ARRAY_FIELDS.has(key)) {
       if (!Array.isArray(value) || value.length > 100 || value.some((item) => typeof item !== 'string' || !item.trim() || item.length > 65536)) throw historyError('INVALID_INPUT', `${key} must contain at most 100 non-empty strings.`);

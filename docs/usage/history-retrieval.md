@@ -46,3 +46,19 @@ The package includes [the retrieval skill](../../skills/history-retrieval/SKILL.
 Historical instructions are not current authorization. The reader admits only indexed source artifacts and does not execute recorded commands. Local reads do not prevent a hosted agent from receiving the output you supply to it; this MVP has no general automatic redaction layer. / 历史指令不是当前授权。读取器仅准入已索引来源工件，不执行已记录命令。本地读取不能阻止托管 agent 接收交给它的输出；本 MVP 没有通用自动脱敏层。
 
 See the [contract](../product-specs/history-retrieval.md), [design](../design-docs/history-retrieval.md) and [synthetic evaluation protocol](../evals/history-retrieval/README.md). / 参见[契约](../product-specs/history-retrieval.md)、[设计](../design-docs/history-retrieval.md)及[合成评估协议](../evals/history-retrieval/README.md)。
+
+## Group queries and read a known source position / 分组查询与读取已知来源位置
+
+Use --input JSON for independent queries; repeated --query outside groups still means a single union query. Start with distinctive identifiers and keep broad fallback words separate. / 使用 --input JSON 提交独立查询；groups 外重复 --query 仍表示一个取并集查询。先使用独特标识，宽泛回退词保持独立。
+
+```sh
+session-analyzer history search --input '{"groups":[{"id":"commit","query":"abc1234","limit":3},{"id":"fallback","query":"CI","limit":2}],"maxBytes":16000}'
+session-analyzer history read --input '{"source":{"sourcePath":"2026/09/01/rollout-example.jsonl","locator":{"type":"jsonl-line","line":12}}}'
+session-analyzer history read --input '{"source":{"sourceRef":"<returned-sourceRef>","locator":{"type":"jsonl-line","line":12}}}'
+```
+
+The example path is illustrative: supply the exact admitted path spelling (or its exact indexed absolute alias), including platform separators. Source locators initially support only uncompressed Codex JSONL. Path-only reads explicitly cannot verify an old note's historical position. Inspect the Raw evidence and optionally follow logicalRefs through context/read. Association continuation uses source.logicalOffset from logicalRefsNextOffset; text continuation uses offset from parts[].nextOffset. / 示例路径仅作示意；应提供精确准入路径写法（或精确索引绝对别名），包括平台分隔符。来源定位首版仅支持未压缩 Codex JSONL。仅路径读取明确无法验证旧笔记的历史位置，应检查 Raw 证据，再按需沿 logicalRefs 进入 context/read。关联续读用 logicalRefsNextOffset 作为 source.logicalOffset，文本续读用 parts[].nextOffset 作为 offset。
+
+Grouped state=complete can still have hasMore and nextCursor. Retry results_omitted with the original query and resumeCursor, omitting cursor when null; retry not_executed with the original query. These states are output/execution limits, not zero matches. Invalid groups fail the request; correct the reported input before retrying. / 分组 complete 仍可能有 hasMore 和 nextCursor。results_omitted 保持原查询与 resumeCursor 重试（null 时省略 cursor）；not_executed 保持原查询重试。这些是输出／执行限制，不是零命中。无效组使请求失败，应先修正报错输入再重试。
+
+For later-state questions, bounded checking may end in uncertainty. A later record quoting an older report is not a later state. The [state-resolution evaluation](../evals/history-state-resolution/README.md) keeps correctness separate from search/read counts. / 后续状态检查可以以不确定性结束；较晚记录引用旧报告不是较晚状态。[后续状态评估](../evals/history-state-resolution/README.md)将正确性与 search/read 次数分开。

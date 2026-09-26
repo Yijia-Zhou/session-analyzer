@@ -46,6 +46,155 @@ async function corpus(t) {
   return { service, options, sourceFile, home, repo };
 }
 
+test('grouped queries retain independent counts, pagination and query identities', async (t) => {
+  const { service } = await corpus(t);
+  const groups = [{ id: 'specific', query: 'queryNeedle', limit: 1 }, { id: 'broad', query: 'the', limit: 2 }, { id: 'empty', query: 'no_such_token' }];
+  const result = await service.execute('search', { groups });
+  assert.equal(result.items.length, 0);
+  assert.deepEqual(result.groups.map((g) => g.id), ['specific', 'broad', 'empty']);
+  for (let i = 0; i < groups.length; i += 1) {
+    const { id, ...query } = groups[i];
+    const single = await service.execute('search', query);
+    assert.equal(result.groups[i].scan.matchedEvents, single.scan.matchedEvents);
+    assert.deepEqual(result.groups[i].items, single.items);
+  }
+  assert.equal(result.groups[2].state, 'complete');
+  assert.equal(result.groups[2].scan.matchedEvents, 0);
+  const first = result.groups[0];
+  const second = await service.execute('search', { groups: [{ ...groups[0], cursor: first.nextCursor, limit: 2 }] });
+  assert.equal(second.groups[0].queryIdentity, first.queryIdentity);
+  assert.ok(second.groups[0].items.every((item) => item.ref !== first.items[0].ref));
+  await assert.rejects(service.execute('search', { groups: [{ ...groups[0], id: 'changed', cursor: first.nextCursor }] }), { code: 'INVALID_CURSOR' });
+  await assert.rejects(service.execute('search', { query: 'x', groups }), { code: 'INVALID_ARGUMENT' });
+  await assert.rejects(service.execute('search', { groups: [groups[0], groups[0]] }), { code: 'INVALID_ARGUMENT' });
+});
+
+test('grouped response budgets distinguish omitted, unexecuted and zero-hit groups', async (t) => {
+  const { service } = await corpus(t);
+  const groups = Array.from({ length: 8 }, (_, n) => ({ id: `g${n}`, query: 'queryNeedle', limit: 100, maxBytes: 24000 }));
+  const result = await service.execute('search', { groups, maxBytes: 4096 });
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 4096);
+  assert.ok(result.groups.some((g) => g.state === 'results_omitted'));
+  assert.ok(result.groups.some((g) => g.state === 'not_executed'));
+  for (const invalid of [{ order: 'invalid' }, { from: 'not-a-date' }, { session: 'not-indexed' }, { kind: 42 }, { cursor: 'invalid' }]) {
+    const badGroups = groups.map((g, i) => i === 7 ? { ...g, ...invalid } : g);
+    await assert.rejects(service.execute('search', { groups: badGroups, maxBytes: 4096 }), { code: /INVALID_ARGUMENT|UNKNOWN_SESSION|INVALID_CURSOR/ });
+  }
+  for (const group of result.groups) {
+    if (group.state === 'results_omitted') {
+      assert.ok(group.scan.matchedEvents > 0);
+      assert.equal(group.resumeCursor, null);
+      assert.equal(group.items.length, 0);
+      const retry = await service.execute('search', { groups: [groups.find((g) => g.id === group.id)] });
+      assert.ok(retry.groups[0].items.length > 0);
+    } else if (group.state === 'not_executed') {
+      assert.equal(group.scan.complete, false);
+      assert.equal(group.scan.matchedEvents, undefined);
+    }
+  }
+});
+
+test('literal OR warning survives compact coverage reuse without rewriting queries', async (t) => {
+  const { service } = await corpus(t);
+  const { contextRef } = await service.execute('status');
+  const result = await service.execute('search', { query: 'queryNeedle OR count', presentation: 'compact', contextRef });
+  assert.equal(result.scan.matchedEvents, 0);
+  assert.match(result.queryWarnings[0], /OR is not an operator/u);
+  const grouped = await service.execute('search', { groups: [{ id: 'literal', query: 'queryNeedle OR count' }], presentation: 'compact', contextRef });
+  assert.equal(grouped.groups[0].scan.matchedEvents, 0);
+  assert.match(grouped.groups[0].queryWarnings[0], /literal/u);
+});
+
+test('locator read returns raw evidence, explicit links and persistent source identity', async (t) => {
+  const { service, sourceFile, options } = await corpus(t);
+  const source = { sourcePath: sourceFile, locator: { type: 'jsonl-line', line: 4 } };
+  const result = await service.execute('read', { source });
+  assert.equal(result.source.verification, 'unverified_legacy_locator');
+  assert.match(result.source.sourceRef, /^sr1\./u);
+  assert.match(result.items[0].parts[0].text, /Preserve exact counts/u);
+  assert.equal(result.items[0].parts[0].representation, 'raw_record_json');
+  assert.ok(result.items[0].logicalRefs.length > 0);
+  const restarted = await createHistoryService(options);
+  t.after(() => restarted.close());
+  const reread = await restarted.execute('read', { source: { sourceRef: result.source.sourceRef, locator: source.locator }, presentation: 'compact' });
+  assert.equal(reread.source.verification, 'source_snapshot_verified');
+  assert.equal(reread.items[0].evidenceRef, result.items[0].ref);
+  assert.equal(reread.source.sourceRef, result.source.sourceRef);
+  const next = await restarted.execute('read', { refs: [reread.items[0].logicalRefs[0].ref], contextRef: reread.contextRef, parts: ['projection'] });
+  assert.ok(next.items[0].parts[0].text);
+  await assert.rejects(service.execute('read', { source, refs: [result.items[0].ref] }), { code: 'INVALID_ARGUMENT' });
+  await assert.rejects(service.execute('read', { source: { ...source, sourcePath: path.join(options.repo, 'arbitrary.jsonl') } }), { code: 'UNKNOWN_SOURCE' });
+});
+
+test('blank source locations still validate read options and return honest empty matches', async (t) => {
+  const { sourceFile, options } = await corpus(t);
+  const lines = (await fs.readFile(sourceFile, 'utf8')).split('\n');
+  lines.splice(3, 0, '');
+  await fs.writeFile(sourceFile, lines.join('\n'));
+  const service = await createHistoryService(options);
+  t.after(() => service.close());
+  const source = { sourcePath: sourceFile, locator: { type: 'jsonl-line', line: 4 } };
+  const empty = await service.execute('read', { source });
+  assert.equal(empty.source.matchedRawRecords, 0);
+  assert.deepEqual(empty.items, []);
+  for (const invalid of [{ parts: ['unsupported'] }, { offset: -1 }, { length: 0 }]) {
+    await assert.rejects(service.execute('read', { source, ...invalid }), { code: 'INVALID_ARGUMENT' });
+  }
+  await assert.rejects(service.execute('read', { source: { ...source, logicalOffset: -1 } }), { code: 'INVALID_ARGUMENT' });
+});
+
+test('source read pages multiple explicit logical owners without losing compact links', async (t) => {
+  const { sourceFile, options } = await corpus(t);
+  const vm = require('node:vm');
+  const { createRequire } = require('node:module');
+  const serviceFile = require.resolve('../src/history-service');
+  const serviceRequire = createRequire(serviceFile);
+  const realLocator = serviceRequire('./history-source-locator');
+  const sourceCode = await fs.readFile(serviceFile, 'utf8');
+  const serviceModule = { exports: {} };
+  // Supply a second valid canonical event reference at the locator boundary.
+  // Association correctness is tested by the locator unit tests; this test
+  // exercises service pagination and handle expansion with two links.
+  const locatorModule = { ...realLocator, createHistorySourceLocator(config) {
+    const base = realLocator.createHistorySourceLocator(config);
+    return { async resolveLocator(input) {
+      const resolved = await base.resolveLocator(input);
+      if (input.locator.line !== 2 || !resolved.matches.length) return resolved;
+      const owner = config.index.sessions.find((session) => session.id === resolved.matches[0].sessionId);
+      const hydrated = await config.materialize(owner);
+      const existing = new Set(resolved.matches[0].logicalRefs.map((link) => link.eventId));
+      const second = hydrated.logicalEvents.find((event) => event.layer === 'main' && !existing.has(event.id));
+      assert.ok(second, 'fixture needs a second canonical event');
+      resolved.matches[0].logicalRefs.push({ layer: second.layer, eventId: second.id,
+        ref: config.makeEvidenceRef(owner, second.layer, second) });
+      return resolved;
+    } };
+  } };
+  vm.runInNewContext(sourceCode, { module: serviceModule, exports: serviceModule.exports,
+    require: (id) => id === './history-source-locator' ? locatorModule : serviceRequire(id), Buffer },
+  { filename: serviceFile });
+  const service = await serviceModule.exports.createHistoryService(options);
+  t.after(() => service.close());
+  const source = { sourcePath: sourceFile, locator: { type: 'jsonl-line', line: 2 } };
+  const all = await service.execute('read', { source, limit: 100, maxBytes: 100000 });
+  const expected = all.items[0].logicalRefs.map((link) => link.eventId);
+  assert.ok(expected.length > 1, 'fixture must expose multiple canonical owners of the same Raw Record');
+  const actual = [];
+  let logicalOffset = 0;
+  do {
+    const page = await service.execute('read', { source: { ...source, logicalOffset }, limit: 1, presentation: 'compact' });
+    const item = page.items[0];
+    assert.equal(item.logicalRefs.length, 1);
+    actual.push(item.logicalRefs[0].eventId);
+    const detail = await service.execute('read', { refs: [item.logicalRefs[0].ref], contextRef: page.contextRef, parts: ['projection'] });
+    assert.equal(detail.items.length, 1);
+    logicalOffset = item.logicalRefsNextOffset;
+    if (logicalOffset !== null) assert.equal(page.contentTruncated, true);
+  } while (logicalOffset !== null);
+  assert.deepEqual(actual, expected);
+  assert.equal(new Set(actual).size, actual.length);
+});
+
 test('compact handles bind to their service, export durable evidence and retain source checks', async (t) => {
   const { service, options, sourceFile } = await corpus(t);
   const first = await service.execute('search', { query: 'NEEDLE MATCH', presentation: 'compact' });

@@ -59,6 +59,24 @@ test('real HTTP round trip preserves explicit context and batch input', async (t
   assert.deepEqual(JSON.parse(stdout).received, { queries: ['decisions'], order: 'diverse', session: 'codex:canonical-id' });
 });
 
+test('CLI JSON and HTTP preserve independent query groups and indexed source locators', async (t) => {
+  const { endpoint, calls } = await fixture(t);
+  const grouped = { groups: [{ id: 'sha', query: 'abc123', limit: 2, maxBytes: 6000 }, { id: 'fallback', queries: ['CI', 'test'], cursor: 'group-cursor' }], maxBytes: 12000 };
+  const source = { source: { sourcePath: '2026/session.jsonl', locator: { type: 'jsonl-line', line: 3 } }, length: 500 };
+  for (const [operation, input] of [['search', grouped], ['read', source]]) {
+    const parsed = parseHistoryArgs([operation, '--input', JSON.stringify(input)]);
+    assert.deepEqual(parsed.input, input);
+    assert.deepEqual((await requestHistory(endpoint, operation, input)).received, input);
+  }
+  assert.equal(calls.length, 2);
+  for (const input of [{ groups: [] }, { groups: [{ id: 'x', query: 'one' }, { id: 'x', query: 'two' }] },
+    { groups: [{ id: 'x', query: 'one', groups: [] }] }, { source: { sourcePath: 'x', locator: { type: 'jsonl-line', line: 0 } } },
+    { source: { sourcePath: 'x', sourceRef: 'sr1.x', locator: { type: 'jsonl-line', line: 1 } } },
+    { source: { sourcePath: 'x', locator: { type: 'jsonl-line', line: 1, path: 'arbitrary' } } }]) {
+    assert.throws(() => parseHistoryArgs(['read', '--input', JSON.stringify(input)]), { code: /INVALID_/ });
+  }
+});
+
 test('history payload options preserve strings and reject duplicate or malformed input', () => {
   for (const operation of ['status', 'search', 'context', 'read']) {
     assert.deepEqual(parseHistoryArgs([operation, '--presentation', 'compact']).input, { presentation: 'compact' });

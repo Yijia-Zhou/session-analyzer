@@ -503,7 +503,7 @@ async function main() {
 
     const packagedServer = path.join(smokeRoot, 'node_modules', 'session-analyzer', 'server.js');
     const packageRoot = path.dirname(packagedServer);
-    for (const relative of ['src/history-cli.js', 'src/history-server.js', 'src/history-service.js', 'src/history-presentation.js', 'src/history-artifacts.js', 'skills/history-retrieval/SKILL.md']) {
+    for (const relative of ['src/history-cli.js', 'src/history-server.js', 'src/history-service.js', 'src/history-presentation.js', 'src/history-search-groups.js', 'src/history-source-locator.js', 'src/history-artifacts.js', 'skills/history-retrieval/SKILL.md']) {
       assert.ok((await fsp.stat(path.join(packageRoot, relative))).isFile(), 'Missing packaged history file: ' + relative);
     }
     const historyHelpCommand = binCommand(bin, ['history', '--help']);
@@ -598,6 +598,9 @@ async function main() {
       assert.equal(status.coverage.sessionCount, fixture.count);
       const search = history('search', { queries: [fixture.text], kind: 'user_message', limit: 1 });
       assert.equal(search.items.length, 1);
+      const grouped = history('search', { groups: [{ id: 'specific', query: fixture.text, kind: 'user_message', limit: 1 }, { id: 'absent', query: '__missing_history_smoke_token__' }] });
+      assert.equal(grouped.groups[0].items.length, 1);
+      assert.equal(grouped.groups[1].scan.matchedEvents, 0);
       assert.equal(search.scan.order, 'diverse');
       const scoped = history('search', { queries: [fixture.text], session: search.items[0].sessionId, order: 'session' });
       assert.equal(scoped.scan.scopedSessions, 1);
@@ -617,6 +620,17 @@ async function main() {
       assert.ok(read.items[0].rawRefs.length);
       const raw = history('read', { refs: [read.items[0].rawRefs[0]], parts: ['raw'], length: 10000 });
       assert.ok(JSON.parse(raw.items[0].parts[0].text).rawId);
+      if (fixture.source === 'codex') {
+        const plainHit = history('search', { query: fixture.text, session: codexSessions[0].id, limit: 1 });
+        const links = history('read', { refs: [plainHit.items[0].ref], parts: ['raw'] });
+        const record = JSON.parse(history('read', { refs: [links.items[0].rawRefs[0]], parts: ['raw'], length: 10000 }).items[0].parts[0].text);
+        const source = { sourcePath: record.sourceLocator.file, locator: { type: 'jsonl-line', line: record.sourceLocator.line } };
+        const direct = history('read', { source, length: 10000 });
+        assert.equal(direct.source.verification, 'unverified_legacy_locator');
+        assert.ok(direct.items[0].parts[0].text.includes(fixture.text));
+        const verified = history('read', { source: { sourceRef: direct.source.sourceRef, locator: source.locator } });
+        assert.equal(verified.source.verification, 'source_snapshot_verified');
+      }
       const compact = history('search', { queries: [fixture.text], kind: 'user_message', limit: 1,
         presentation: 'compact', contextRef: status.contextRef });
       assert.equal(compact.coverageRef, status.contextRef);

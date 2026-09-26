@@ -31,9 +31,9 @@ Run small clean-agent smoke trials after retrieval/guide changes. For MVP and ma
 
 An actual multi-model run requires explicitly recorded distinct model configurations. Same-model workers are independent repetitions only. Keep models/harness and the core task set fixed when comparing product versions; report model changes as separate variables. This small corpus exercises evidence discipline, not exhaustive cross-source adapter compatibility or realistic project-scale retrieval quality. / 实际多模型运行必须记录明确不同的模型配置；同模型 worker 仅算独立重复。比较产品版本时固定模型／harness 和核心任务集；模型变化作为独立变量报告。小语料检验的是证据使用规范，不是穷尽跨来源 adapter 兼容性或真实项目规模检索质量。
 
-## Planned final-status regression group / 计划中的最终状态回归组
+## Later-state resolution regression group / 后续状态核验回归组
 
-Keep these three cases fixed for the next independent cross-model guide evaluation. They are planned scenarios, not executed tests or demonstrated failures of the current implementation; they do not expand the completion claim of this increment or replace full-worktree merge acceptance. / 下一轮独立跨模型指南评估固定保留以下三个场景。它们是计划场景，不是已执行测试或当前实现已证实的失败；不扩大本轮增量的完成声明，也不替代完整 worktree 合并验收。
+These three cases now have separate [synthetic materials and a bounded pilot](../history-state-resolution/README.md). They remain fixed regression scenarios, not evidence of general accuracy improvement, and do not replace full-worktree merge acceptance. The earlier efficiency increment did not execute them. / 三个场景现有独立的[合成材料及有界试跑](../history-state-resolution/README.md)。它们作为固定回归场景，不证明普遍正确率提升，也不替代完整 worktree 合并验收；此前效率增量没有执行这些场景。
 
 | Case / 场景 | Required behavior / 预期行为 |
 | --- | --- |
