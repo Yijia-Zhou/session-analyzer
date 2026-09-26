@@ -9,7 +9,8 @@ const { zstdDecompressSync } = require('node:zlib');
 const { isPathInsideOrSame } = require('./shared/fs-path');
 
 const DEEPSEEK_SOURCE_KIND = 'deepseek-harness';
-const DEEPSEEK_FORMAT_VERSION = 0;
+const DEEPSEEK_FORMAT_VERSION = 4;
+const DEEPSEEK_SUPPORTED_FORMAT_VERSIONS = Object.freeze([0, 4]);
 const DEEPSEEK_STORAGE_LOCATOR_TYPE = 'dsh-storage-record';
 const ZSTD_MAGIC = 0xFD2FB528;
 const FIRST_FRAME_READ_CHUNK = 64 * 1024;
@@ -109,10 +110,19 @@ function flattenBounded(value, budget = 12_000) {
   return parts.join('\n').slice(0, budget);
 }
 
+// Match only durable canonical generation names, including future versions so
+// discovery cannot silently fall back to an obsolete predecessor.
+function parseSessionArtifactName(filePath) {
+  const match = /^session(?:\.v([1-9][0-9]*))?\.jsonl(\.zstd)?$/.exec(path.basename(filePath));
+  if (!match) return null;
+  const version = match[1] === undefined ? 0 : Number(match[1]);
+  if (!Number.isSafeInteger(version)) return null;
+  return { version, compression: match[2] ? 'zstd' : 'none' };
+}
+
 function compressionForArtifact(filePath) {
-  const base = path.basename(filePath);
-  if (base === 'session.jsonl.zstd') return 'zstd';
-  if (base === 'session.jsonl') return 'none';
+  const artifact = parseSessionArtifactName(filePath);
+  if (artifact) return artifact.compression;
   throw storageError(`unsupported DeepSeek session artifact name: ${path.basename(filePath)}`);
 }
 
@@ -254,7 +264,7 @@ function decompressFrame(buffer, start, end) {
 
 // Parse the immutable header record. Future versions fail explicitly before
 // any event interpretation is attempted.
-function parseHeaderLine(text) {
+function parseHeaderLine(text, expectedVersion) {
   let parsed;
   try {
     parsed = JSON.parse(text);
@@ -267,11 +277,28 @@ function parseHeaderLine(text) {
   if (typeof parsed.version !== 'number' || !Number.isSafeInteger(parsed.version)) {
     throw storageError('corrupt session log: header version is invalid');
   }
-  if (parsed.version !== DEEPSEEK_FORMAT_VERSION) {
+  if (!DEEPSEEK_SUPPORTED_FORMAT_VERSIONS.includes(parsed.version)) {
     throw storageError(
-      `DeepSeek session format version ${parsed.version} is newer than the supported version ${DEEPSEEK_FORMAT_VERSION}`,
+      `DeepSeek session format version ${parsed.version} is unsupported; supported versions are ${DEEPSEEK_SUPPORTED_FORMAT_VERSIONS.join(', ')}`,
       'DEEPSEEK_FORMAT_VERSION_UNSUPPORTED',
     );
+  }
+  if (expectedVersion !== undefined && parsed.version !== expectedVersion) {
+    throw storageError(`corrupt session log: header version ${parsed.version} does not match artifact version ${expectedVersion}`);
+  }
+  if (parsed.version === 4) {
+    const keys = new Set(['type', 'version', 'id', 'createdAt', 'isSeeded', 'delegationDepth',
+      'cwd', 'parentSession', 'origin', 'agentPreset']);
+    if (Object.keys(parsed).some((key) => !keys.has(key))) {
+      throw storageError('corrupt session log: format 4 header contains unexpected fields');
+    }
+    if (typeof parsed.isSeeded !== 'boolean') {
+      throw storageError('corrupt session log: header isSeeded must be boolean');
+    }
+    if (Object.hasOwn(parsed, 'cwd') && (typeof parsed.cwd !== 'string'
+        || (!path.posix.isAbsolute(parsed.cwd) && !path.win32.isAbsolute(parsed.cwd)))) {
+      throw storageError('corrupt session log: format 4 header cwd must be absolute');
+    }
   }
   if (typeof parsed.id !== 'string' || !parsed.id.trim()) {
     throw storageError('corrupt session log: header id is invalid');
@@ -309,15 +336,16 @@ function parseHeaderLine(text) {
     ...(typeof parsed.cwd === 'string' ? { cwd: parsed.cwd } : {}),
     ...(typeof parsed.parentSession === 'string' ? { parentSession: parsed.parentSession } : {}),
     ...(Number.isSafeInteger(parsed.seedLength) ? { seedLength: parsed.seedLength } : {}),
+    ...(parsed.version === 4 ? { isSeeded: parsed.isSeeded } : {}),
     ...(parsed.origin === 'subagent' ? { origin: parsed.origin } : {}),
     delegationDepth: parsed.delegationDepth,
     ...(typeof parsed.agentPreset === 'string' ? { agentPreset: parsed.agentPreset } : {}),
   };
 }
 
-function parseHeaderText(text) {
+function parseHeaderText(text, expectedVersion) {
   const line = String(text || '').replace(/\r?\n$/, '');
-  return parseHeaderLine(line);
+  return parseHeaderLine(line, expectedVersion);
 }
 
 // Split decoded physical records. Every complete record is newline-terminated,
@@ -410,6 +438,7 @@ async function readFirstLineBytes(filePath, signal) {
 // first independently-decodable frame and decompresses exactly that frame.
 async function readSessionHeader(filePath, compression = compressionForArtifact(filePath), signal) {
   throwIfAborted(signal);
+  const expectedVersion = parseSessionArtifactName(filePath)?.version;
   if (compression === 'zstd') {
     requireBuiltInZstd(filePath);
     const handle = await fsp.open(filePath, 'r');
@@ -441,7 +470,7 @@ async function readSessionHeader(filePath, compression = compressionForArtifact(
       if (!text.endsWith('\n') || text.indexOf('\n') !== text.length - 1) {
         throw storageError('corrupt Zstandard session log: first frame is not exactly one header line');
       }
-      return parseHeaderText(text);
+      return parseHeaderText(text, expectedVersion);
     } finally {
       await handle.close();
     }
@@ -449,7 +478,7 @@ async function readSessionHeader(filePath, compression = compressionForArtifact(
   if (compression === 'none') {
     const firstLine = await readFirstLineBytes(filePath, signal);
     if (firstLine.length === 0) throw storageError('empty or header-less session log');
-    return parseHeaderText(firstLine.toString('utf8'));
+    return parseHeaderText(firstLine.toString('utf8'), expectedVersion);
   }
   throw storageError(`unsupported DeepSeek compression: ${compression}`);
 }
@@ -484,6 +513,25 @@ async function readCommittedArtifactPrefix(filePath, compression, signal, accept
       throw indexedSourceStaleError();
     }
     buffer = stable.buffer.subarray(0, acceptedBytes);
+    // A successor can be published without changing a predecessor's bytes or
+    // identity. Revalidate generation selection at every accepted-source read.
+    let siblings;
+    try {
+      siblings = await fsp.readdir(path.dirname(filePath), { withFileTypes: true });
+    } catch (error) {
+      throwIfAborted(signal);
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') throw indexedSourceStaleError();
+      throw error;
+    }
+    throwIfAborted(signal);
+    const candidates = siblings.filter((entry) => entry.isFile())
+      .map((entry) => ({ name: entry.name, artifact: parseSessionArtifactName(entry.name) }))
+      .filter((entry) => entry.artifact);
+    const highestVersion = candidates.reduce((highest, entry) => Math.max(highest, entry.artifact.version), -1);
+    const selected = candidates.filter((entry) => entry.artifact.version === highestVersion);
+    if (selected.length !== 1 || selected[0].name !== path.basename(filePath)) {
+      throw indexedSourceStaleError();
+    }
   }
   const prefix = committedArtifactPrefix(buffer, compression);
   return {
@@ -588,7 +636,8 @@ function decodePackedStorageRecordFacts(value) {
 // Lossless per-member decoder for targeted inspection paths only. Ordinary
 // indexing/materialization must use decodePackedStorageRecordFacts instead so
 // a packed row is never expanded into per-member SessionEvent objects.
-function decodeStorageRecord(value) {
+function decodeStorageRecord(value, formatVersion = 0) {
+  if (formatVersion !== 0) return [decodeSessionEventRecord(value, formatVersion)];
   const packed = decodePackedStorageRecordFacts(value);
   if (!packed) return [value];
   const { members, tool } = packed;
@@ -618,6 +667,124 @@ function decodeStorageRecord(value) {
     });
   }
   return events;
+}
+
+// The v4 codec retains one event per physical row. Decode only the compact
+// source references; keep the physical object untouched for Raw traceability.
+function assertNativeFormat4Syntax(event) {
+  const invalid = (message) => storageError(`malformed format 4 event: ${message}`);
+  const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
+  const assertContent = (content) => {
+    if (Array.isArray(content) && content.some((block) => object(block) && block.type === 'tool-result')) {
+      throw invalid('content contains a retired tool-result wrapper');
+    }
+  };
+  if (['tool/code-dispatch-start', 'tool/code-dispatch'].includes(event.type) && event.ignorable !== true) {
+    throw invalid(`retired event type ${event.type}`);
+  }
+  const data = event.data;
+  if (event.type === 'request/header') {
+    if (!object(data) || !object(data.header) || Object.hasOwn(data.header, 'system')) {
+      throw invalid('request/header requires a native header without retired header.system');
+    }
+  }
+  if (!object(data)) {
+    if (event.type === 'tool/result') throw invalid('tool/result requires message data');
+    return;
+  }
+  // Visit declared message slots only. Tool arguments, metadata and arbitrary
+  // extension payloads may legitimately contain historical-looking JSON.
+  const messages = event.type === 'user/message' ? [data]
+    : ['system/message', 'developer/message', 'assistant/message', 'tool/result'].includes(event.type) ? [data.message]
+      : event.type === 'agent/inbox/spliced' ? data.inserted
+        : event.type === 'session/title-llm-request' ? data.messages : [];
+  if (Array.isArray(messages)) {
+    for (const message of messages) {
+      if (!object(message)) continue;
+      if (message.source?.kind === 'plugin') throw invalid('message uses a retired plugin source wrapper');
+      assertContent(message.content);
+    }
+  }
+  if (event.type === 'team/message/queued') assertContent(data.message?.content);
+  if (event.type === 'compaction/summary') {
+    assertContent(data.summary);
+    assertContent(data.rawOutput);
+  }
+  if (event.type === 'tool/ptc-dispatch') assertContent(data.content);
+  if (['assistant/message', 'assistant/attempt'].includes(event.type) && Array.isArray(data.stream)) {
+    for (const entry of data.stream) {
+      if (entry?.type !== 'chunk') continue;
+      if (entry.chunk?.type === 'block-end') assertContent([entry.chunk.block]);
+      if (entry.chunk?.type === 'block-start' && entry.chunk.blockType === 'tool-result') {
+        throw invalid('assistant stream uses a retired tool-result block');
+      }
+    }
+  }
+  if (event.type === 'tool/result') {
+    const message = data.message;
+    if (!object(message) || message.role !== 'tool'
+        || typeof message.id !== 'string' || !message.id
+        || typeof message.toolCallId !== 'string' || !message.toolCallId
+        || message.source?.kind !== 'tool' || message.source.callId !== message.toolCallId
+        || !Array.isArray(message.content)
+        || (Object.hasOwn(message, 'isError') && typeof message.isError !== 'boolean')
+        || (Object.hasOwn(data, 'error') && message.isError !== true)) {
+      throw invalid('tool/result requires a native tool-role message with matching call identity and error state');
+    }
+  }
+}
+
+function decodeSessionEventRecord(value, formatVersion = 0) {
+  if (formatVersion === 0) return value;
+  if (formatVersion !== 4) {
+    throw storageError(`DeepSeek session format version ${formatVersion} is unsupported`,
+      'DEEPSEEK_FORMAT_VERSION_UNSUPPORTED');
+  }
+  const invalid = (message) => storageError(`malformed format 4 event: ${message}`);
+  const count = (number) => Number.isSafeInteger(number) && number >= 0 && !Object.is(number, -0);
+  const required = ['type', 'seq', 'time', 'data'];
+  const keys = new Set([...required, 'ignorable', 'sourceEventSeqs', 'surfaceOp']);
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || required.some((key) => !Object.hasOwn(value, key))
+      || Object.keys(value).some((key) => !keys.has(key))
+      || typeof value.type !== 'string' || !count(value.seq) || !Number.isSafeInteger(value.time)
+      || (Object.hasOwn(value, 'ignorable') && value.ignorable !== true)) {
+    throw invalid('invalid physical envelope');
+  }
+  if (value.type === 'assistant/chunk') throw invalid('retired assistant/chunk row');
+  if (Object.hasOwn(value, 'surfaceOp') && value.surfaceOp !== 'append') {
+    const op = value.surfaceOp;
+    if (!op || typeof op !== 'object' || Array.isArray(op)
+        || Object.keys(op).length !== 3 || op.op !== 'replace'
+        || !count(op.startSeq) || !count(op.endSeq)
+        || op.startSeq >= value.seq || op.endSeq >= value.seq) {
+      throw invalid('surface replacement requires earlier startSeq/endSeq bounds');
+    }
+  }
+  assertNativeFormat4Syntax(value);
+  if (!Object.hasOwn(value, 'sourceEventSeqs')) return value;
+  if (!Array.isArray(value.sourceEventSeqs)) throw invalid('sourceEventSeqs must be an array');
+  const decoded = [];
+  let hasRange = false;
+  for (const entry of value.sourceEventSeqs) {
+    if (!Array.isArray(entry)) {
+      if (!count(entry) || entry >= value.seq) throw invalid('sourceEventSeqs must refer to earlier events');
+      decoded.push(entry);
+      continue;
+    }
+    if (entry.length !== 2 || !entry.every(count)) throw invalid('sourceEventSeqs range must be a [start, end] pair');
+    const [start, end] = entry;
+    if (start > end || end >= value.seq || end - start + 1 > value.seq - decoded.length) {
+      throw invalid('sourceEventSeqs range exceeds its event seq');
+    }
+    for (let seq = start; seq <= end; seq += 1) decoded.push(seq);
+    hasRange = true;
+  }
+  if (new Set(decoded).size !== decoded.length) throw invalid('sourceEventSeqs must contain unique earlier seqs');
+  if (hasRange && decoded.some((seq, index) => index > 0 && seq <= decoded[index - 1])) {
+    throw invalid('sourceEventSeqs ranges must be strictly increasing');
+  }
+  return { ...value, sourceEventSeqs: decoded };
 }
 
 function inferDescriptorPayload(session) {
@@ -695,12 +862,14 @@ function materializationEvidenceForSession(index, session) {
 
 module.exports = {
   DEEPSEEK_FORMAT_VERSION,
+  DEEPSEEK_SUPPORTED_FORMAT_VERSIONS,
   DEEPSEEK_SOURCE_KIND,
   DEEPSEEK_STORAGE_LOCATOR_TYPE,
   MAX_FIRST_RECORD_BYTES,
   committedArtifactPrefix,
   compressionForArtifact,
   decodePackedStorageRecordFacts,
+  decodeSessionEventRecord,
   decodeStorageRecord,
   dependencySetId,
   fileIdentity,
@@ -713,6 +882,7 @@ module.exports = {
   materializationSnapshotId,
   parseHeaderLine,
   parseHeaderText,
+  parseSessionArtifactName,
   readCommittedArtifactPrefix,
   readPhysicalRecordText,
   readSessionHeader,

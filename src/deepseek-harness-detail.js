@@ -2,9 +2,9 @@
 
 const i18n = require('./shared/i18n');
 const storage = require('./deepseek-harness-storage');
+const { embeddedStreamFacts } = require('./deepseek-harness-stream');
 
 const SOURCE_KIND = storage.DEEPSEEK_SOURCE_KIND;
-const SEARCH_TEXT_LIMIT = 16_000;
 const WORKFLOW_EVENT_TYPES = new Set([
   'tool-workflow/run-start',
   'tool-workflow/run-end',
@@ -146,11 +146,13 @@ function parseToolArguments(value) {
 }
 
 function toolResultTextFromEvent(event) {
-  const blocks = event?.data?.message?.content;
+  const message = event?.data?.message;
+  const blocks = message?.content;
   if (!Array.isArray(blocks)) return '';
-  return blocks
+  const content = message.role === 'tool' ? blocks : blocks
     .filter((block) => block && block.type === 'tool-result' && Array.isArray(block.content))
-    .flatMap((block) => block.content)
+    .flatMap((block) => block.content);
+  return content
     .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
     .map((block) => block.text)
     .join('\n');
@@ -172,10 +174,12 @@ function parsedEventsWithRawIds(session, parsedByOrdinal, rawIds) {
     if (!raw) continue;
     const ordinal = raw.sourceLocator?.recordOrdinal ?? raw.rawIndex;
     if (!Number.isSafeInteger(ordinal) || seen.has(ordinal)) continue;
+    // Ordinal zero is the session header, not an event or workflow member.
+    if (ordinal === 0) continue;
     seen.add(ordinal);
     const record = parsedByOrdinal.get(ordinal);
     if (!record) continue;
-    const decoded = storage.decodeStorageRecord(record);
+    const decoded = storage.decodeStorageRecord(record, parsedByOrdinal.get(0)?.version ?? 0);
     for (const event of decoded) out.push({ event, raw });
   }
   return out;
@@ -207,6 +211,15 @@ function detailForAssistantMessage(event, session, parsedByOrdinal) {
   if (sourceEvent?.data?.message?.source?.model) {
     entries.push({ key: 'Model', value: sourceEvent.data.message.source.model, fact: 'model' });
   }
+  if (sourceEvent?.data?.interrupted === true) {
+    detail.inspectorSections.push(sectionNotice(
+      'The source marks this committed assistant message as interrupted. Its delivered prefix remains part of the model-visible history.',
+      'traceability',
+      'Interrupted assistant message',
+      'warning',
+    ));
+  }
+  appendEmbeddedStreamEvidence(detail, sourceEvent?.data?.stream);
   const usage = sourceEvent?.data?.usage;
   if (usage) {
     detail.inspectorSections.push({
@@ -249,6 +262,18 @@ function detailForAssistantMessage(event, session, parsedByOrdinal) {
   const kv = sectionKv(entries, 'context', 'Message evidence');
   if (kv) detail.inspectorSections.push(kv);
   return detail;
+}
+
+function appendEmbeddedStreamEvidence(detail, stream) {
+  const facts = embeddedStreamFacts(stream);
+  if (!facts) return null;
+  detail.inspectorSections.push(sectionKv([
+    { key: 'Compact records', value: stream.length },
+    { key: 'Stream chunks', value: facts.chunks },
+    { key: 'Tool argument fragments', value: facts.toolFragments },
+    ...(facts.finishReason ? [{ key: 'Finish reason', value: facts.finishReason }] : []),
+  ], 'traceability', 'Embedded stream evidence'));
+  return facts;
 }
 
 function detailForReasoning(event, session, parsedByOrdinal) {
@@ -344,10 +369,11 @@ function detailForToolOperation(event, session, parsedByOrdinal) {
   const call = records.find((candidate) => candidate.type === 'tool/call');
   const result = records.find((candidate) => candidate.type === 'tool/result');
   if (call) {
-    if (String(call.data?.name || '').toLowerCase() === 'bash') {
+    const toolName = String(call.data?.name || '').toLowerCase();
+    if (toolName === 'bash' || toolName === 'pwsh') {
       const parsed = parseToolArguments(call.data.arguments);
       const command = typeof parsed?.command === 'string' ? parsed.command : call.data.arguments;
-      const request = sectionCode(command, 'shell', 'request', 'Command', '');
+      const request = sectionCode(command, toolName === 'pwsh' ? 'powershell' : 'shell', 'request', 'Command', '');
       if (request) detail.timelineSections.push(request);
     } else {
       const parsed = parseToolArguments(call.data.arguments);
@@ -470,7 +496,10 @@ function detailForCodeModeOperation(event, session, parsedByOrdinal) {
   const result = records.find((candidate) => candidate.type === 'tool/result');
   const args = parseToolArguments(call?.data?.arguments);
   const code = typeof args?.code === 'string' ? args.code : '';
-  const request = sectionCode(code || call?.data?.arguments, code ? 'javascript' : 'json', 'request', 'Code', 'command');
+  // Current PTC supports multiple runtime languages, but the call records only
+  // code and description. Do not infer a language from source text.
+  const codeLanguage = parsedByOrdinal.get(0)?.version === 4 ? '' : 'javascript';
+  const request = sectionCode(code || call?.data?.arguments, code ? codeLanguage : 'json', 'request', 'Code', 'command');
   if (request) detail.timelineSections.push(request);
   const resultText = result ? toolResultTextFromEvent(result) : '';
   const resultSection = sectionTerminal(
@@ -510,8 +539,10 @@ function detailForCodeDispatch(event, session, parsedByOrdinal, topology) {
     parsedByOrdinal,
     (event.rawRefs || []).map((ref) => ref.rawId),
   );
-  const start = records.find((candidate) => candidate.type === 'tool/code-dispatch-start');
-  const settled = records.find((candidate) => candidate.type === 'tool/code-dispatch');
+  const start = records.find((candidate) => candidate.type === 'tool/code-dispatch-start'
+    || candidate.type === 'tool/ptc-dispatch-start');
+  const settled = records.find((candidate) => candidate.type === 'tool/code-dispatch'
+    || candidate.type === 'tool/ptc-dispatch');
   const source = start || settled;
   const request = sectionCode(
     source ? JSON.stringify(source.data?.arguments, null, 2) : '',
@@ -1233,11 +1264,47 @@ function detailForProtocolEvent(event, session, parsedByOrdinal) {
       { key: 'Reasoning effort', value: config.reasoningEffort, fact: 'effort' },
       { key: 'Max tokens', value: config.maxTokens },
       { key: 'Reason', value: data.reason },
+      ...(data.startsSeries === true ? [{ key: 'Starts series', value: true }] : []),
     ], 'context', 'Request header') || sectionNotice('Request header', 'content'));
     detail.inspectorSections.push(sectionKv([
-      { key: 'System prompt bytes', value: Buffer.byteLength(data.header?.system || '', 'utf8') },
+      ...(parsedByOrdinal.get(0)?.version === 4 ? []
+        : [{ key: 'System prompt bytes', value: Buffer.byteLength(data.header?.system || '', 'utf8') }]),
       { key: 'Tool schemas', value: Array.isArray(data.header?.tools) ? data.header.tools.length : 0 },
+      ...(data.header?.adapterDefaults ? [{ key: 'Adapter defaults', value: JSON.stringify(data.header.adapterDefaults) }] : []),
     ], 'context', 'Request envelope'));
+  } else if (event.subtype === 'assistant/attempt') {
+    const facts = appendEmbeddedStreamEvidence(detail, data.stream);
+    const text = sectionMarkdown(facts?.text, 'content', 'Attempt text');
+    const reasoning = sectionMarkdown(facts?.reasoning, 'content', 'Attempt reasoning');
+    if (reasoning) detail.timelineSections.push(reasoning);
+    if (text) detail.timelineSections.push(text);
+    if (!text && !reasoning) detail.timelineSections.push(sectionNotice('This attempt recorded no visible text or reasoning.', 'content'));
+    detail.inspectorSections.push(sectionNotice(
+      'This source attempt committed no surface message. Streamed tool argument fragments do not establish a dispatched tool call; exact chunks and timing remain in its Raw record.',
+      'traceability',
+      'Uncommitted assistant attempt',
+    ));
+  } else if (event.subtype === 'system/message' || event.subtype === 'developer/message'
+      || event.subtype === 'user/message') {
+    const message = event.subtype === 'user/message' ? data : data.message;
+    const text = sectionMarkdown(visibleTextFromContent(message?.content), 'content', '');
+    detail.timelineSections.push(text || sectionNotice('This context message contains no visible text.', 'content'));
+    detail.inspectorSections.push(sectionKv([
+      { key: 'Message ID', value: message?.id },
+      { key: 'Role', value: message?.role },
+      { key: 'Source kind', value: message?.source?.kind },
+      ...(message?.source?.form ? [{ key: 'Context form', value: message.source.form }] : []),
+      ...(message?.source?.summary ? [{ key: 'Source summary', value: message.source.summary }] : []),
+      ...(sourceEvent?.surfaceOp ? [{ key: 'Surface operation', value: typeof sourceEvent.surfaceOp === 'string' ? sourceEvent.surfaceOp : JSON.stringify(sourceEvent.surfaceOp) }] : []),
+      ...(Number.isSafeInteger(data.headerSeq) ? [{ key: 'Tool header seq', value: data.headerSeq }] : []),
+    ], 'traceability', 'Context message evidence'));
+  } else if (event.subtype === 'tool/result') {
+    detail.timelineSections.push(sectionMarkdown(toolResultTextFromEvent(sourceEvent), 'result', 'Tool result')
+      || sectionNotice(event.preview, 'result'));
+    const error = sectionKv([
+      { key: 'Error code', value: data.error?.code },
+    ], 'traceability');
+    if (error) detail.inspectorSections.push(error);
   } else if (event.subtype === 'request/context') {
     detail.timelineSections.push(sectionKv([
       { key: 'Provider', value: data.provider, fact: 'provider' },
@@ -1250,6 +1317,15 @@ function detailForProtocolEvent(event, session, parsedByOrdinal) {
       'result',
       'Turn ended',
     ));
+    if (data.reason?.kind === 'error' && data.reason.error) {
+      const error = data.reason.error;
+      const message = sectionNotice(error.message, 'result', 'Error', 'error');
+      if (message) detail.timelineSections.push(message);
+      detail.inspectorSections.push(sectionKv([
+        { key: 'Error code', value: error.code },
+        ...(error.status !== undefined ? [{ key: 'Status', value: error.status }] : []),
+      ], 'traceability'));
+    }
   } else if (event.subtype === 'agent-preset/selected') {
     const selected = typeof data.agentPreset === 'string' ? data.agentPreset : '';
     detail.timelineSections.push(sectionKv([
@@ -1263,11 +1339,18 @@ function detailForProtocolEvent(event, session, parsedByOrdinal) {
     ));
   } else if (event.subtype === 'session/end-seed') {
     detail.timelineSections.push(sectionNotice(
-      `This durable marker records the end of one Session constructor seed at seq ${sourceEvent?.seq ?? ''}. `
-      + 'The seed may come from resume, fork, or replay; this marker alone does not establish inherited ownership.',
+      data.inherited === true
+        ? "This tagged marker records an inherited-prefix cut. The last inherited marker identifies this session's current fork boundary."
+        : `This durable marker records the end of one Session constructor seed at seq ${sourceEvent?.seq ?? ''}. `
+          + 'The seed may come from resume, fork, or replay; this marker alone does not establish inherited ownership.',
       'content',
       'Session constructor seed ended',
     ));
+    if (data.inherited === true) {
+      detail.inspectorSections.push(sectionKv([
+        { key: 'Source seq', value: sourceEvent?.seq },
+      ], 'traceability', 'Inherited boundary evidence'));
+    }
   } else if (event.subtype === 'subagent/descriptor') {
     const entries = [
       { key: 'Mode', value: data.mode },
@@ -1285,6 +1368,7 @@ function detailForProtocolEvent(event, session, parsedByOrdinal) {
       { key: 'Descriptor version', value: data.version },
       { key: 'Agent provider', value: data.agentProvider },
       { key: 'Agent model', value: data.agentModel },
+      ...(data.agentReasoningEffort ? [{ key: 'Agent reasoning effort', value: data.agentReasoningEffort }] : []),
       { key: 'Persona', value: data.persona },
       { key: 'Tool filter', value: data.toolFilter ? JSON.stringify(data.toolFilter) : '' },
     ], 'traceability', 'Descriptor provenance');

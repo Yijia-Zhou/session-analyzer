@@ -78,6 +78,7 @@
     "src/deepseek-harness.js",
     "src/deepseek-harness-detail.js",
     "src/deepseek-harness-storage.js",
+    "src/deepseek-harness-stream.js",
     "src/codex-source.js",
     "src/codex-tool-lifecycle-contract.js",
     "src/folding.js",
