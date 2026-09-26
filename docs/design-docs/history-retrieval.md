@@ -26,6 +26,14 @@ Context uses the U−/A−/H/A+/U+ rule from the [product contract](../product-s
 
 Readable excerpts preserve line structure when available and declare whether their basis is a message, request, result or search projection. Raw reads retain source traceability. Byte accounting must include the serialized envelope and UTF-8 content, preserve valid JSON, and expose continuation rather than silently losing omitted items. Tiny budgets may be rejected when even the envelope cannot fit. / 可读摘录在可用时保留行结构，说明依据为消息、请求、结果或搜索投影。Raw 读取保留来源追溯。字节核算需包含序列化外层及 UTF-8 内容，保持有效 JSON，并通过续读暴露省略项。预算小到外层都无法容纳时可以拒绝。
 
+## Compact transport projection / 紧凑传输投影
+
+`history-presentation.js` owns a per-service bounded handle map (50,000 entries). Handles contain a random instance namespace and must be resolved with the current `contextRef`; durable evidence still passes the original scope, snapshot and source checks. Capacity exhaustion is explicit and full presentation remains usable. No canonical identity is replaced. / `history-presentation.js` 管理每服务有界句柄映射（50,000 项）。句柄包含随机实例命名空间，必须带当前 `contextRef` 解析；持久证据仍通过原有范围、快照和来源核验。容量耗尽明确报错，完整呈现仍可使用；不替换规范身份。
+
+Budget admission projects each candidate prefix before counting bytes. This accounts for shorter references, shared event bodies and coverage reuse rather than rejecting a compact response according to its larger full representation. Final serialized size is checked again with cursor/flags included. Handle allocation is synchronous and service-local; independent readers never mutate active UI state. / 预算准入先投影各候选前缀，再计字节，因而考虑短引用、共享事件正文及覆盖复用，不按较大的完整表示误拒紧凑响应。最后再次检查包含游标／标记的序列化大小。句柄分配同步且服务内局部，独立读取不修改 UI 活动状态。
+
+Context batches share identical event bodies using indexes into one response-local table. Equality includes event identity and excerpt representation; repeated real attempts and different excerpts are not deduplicated. This preserves window ownership and adjacency while reducing overlap. Full-session view and detail text are separate opt-ins; their pagination keys include view/text format to prevent interpreting an offset in another representation. / 批量上下文通过响应内共享表索引复用相同事件正文。相等比较包含事件身份及摘录表示，不去重真实重复尝试和不同摘录；在减少重叠时保留窗口归属与邻近关系。完整会话视图及详情文本分别显式选择，分页键包含视图／文本格式，避免将偏移用在其他表示中。
+
 ## Direct retrieval echoes / 直接检索回声
 
 Search first applies the requested layer and predicates to compact projections. Only sessions with potentially classifiable matching calls/results receive the Raw retrieval-hint scan and, when indicated, source materialization. Unrelated stale sources therefore cannot block matching evidence in another session. Classification can still add cost when a matching session also mentions this tool in documentation. DeepSeek compact Raw records currently cannot support this classification and expose a coverage gap. / 搜索先对紧凑投影应用所选层及筛选条件。只有存在可分类候选调用／结果的会话才扫描 Raw 检索线索，并在需要时物化来源。因此无关失效来源不会阻断另一个会话的匹配证据。匹配会话同时在文档中提及本工具时，分类仍可能增加成本。DeepSeek 紧凑 Raw 记录当前不能支持该分类，需暴露覆盖缺口。

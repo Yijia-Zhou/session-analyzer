@@ -43,6 +43,7 @@
     "src/history-cli.js",
     "src/history-server.js",
     "src/history-service.js",
+    "src/history-presentation.js",
     "src/history-artifacts.js",
     "skills/history-retrieval/",
     "src/canonical-contract.js",

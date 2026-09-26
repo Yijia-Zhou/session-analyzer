@@ -5,7 +5,7 @@ const http = require('node:http');
 const OPERATIONS = new Set(['status', 'search', 'context', 'read']);
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-const STRING_FIELDS = new Set(['contextRef', 'cursor', 'query', 'order', 'session', 'layer', 'kind', 'status', 'tool', 'file', 'retrievalArtifacts', 'view', 'from', 'to']);
+const STRING_FIELDS = new Set(['contextRef', 'cursor', 'query', 'order', 'session', 'layer', 'kind', 'status', 'tool', 'file', 'retrievalArtifacts', 'presentation', 'view', 'textFormat', 'from', 'to']);
 const ARRAY_FIELDS = new Set(['queries', 'exclude', 'refs', 'parts']);
 const NUMBER_FIELDS = new Set(['limit', 'maxBytes', 'offset', 'length']);
 

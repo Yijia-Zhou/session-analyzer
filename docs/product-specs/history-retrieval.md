@@ -45,6 +45,14 @@ The running snapshot verifies its accepted source prefix: later append-only reco
 
 ## Acceptance / 验收
 
+### Efficient disclosure / 高效披露
+
+Default `presentation=full` retains the existing envelope. Opt-in `compact` returns service-context-bound short handles; reading one exports a durable `evidenceRef`. Handles cannot be rebound after restart or used without their context. A compact response with an explicitly supplied current context may replace unchanged coverage/warnings with `coverageRef`; status always supplies the full declaration. / 默认 `presentation=full` 保留原外层契约。可选 `compact` 返回绑定服务上下文的短句柄；精读时导出持久 `evidenceRef`。句柄不能在重启后重新绑定，也不能脱离所属 context 使用。显式传入当前 context 的紧凑响应可用 `coverageRef` 代替未变化的覆盖／警告；status 始终提供完整声明。
+
+Compact context uses a shared top-level `events` table, with per-window `eventIndexes` and `anchorIndexes`. Identical displayed event bodies are shared, while different events, excerpts, boundaries and navigable gaps remain distinct. `view=full` begins at the referenced session's first event and pages within `limit`; range refs continue their admitted range. Its event projection text is bounded by `length`, with explicit `nextOffset`. This view is not a promise that the whole session or every event body fits in one response. / 紧凑上下文采用顶层共享 `events` 表，各窗口以 `eventIndexes`、`anchorIndexes` 定位。相同展示正文共享，不同事件、摘录、边界和可导航间隙保持区分。`view=full` 从引用会话的首事件开始，按 `limit` 分页；范围引用继续其准入范围。事件投影文本受 `length` 约束，并明确提供 `nextOffset`；此视图不承诺完整会话或全部正文都能放进单次响应。
+
+`read textFormat=text` exposes a readable detail projection without repeated identical renderer payloads within one event. Unsupported renderers remain structured JSON. Neither this mode nor projection text is claimed to be original source text; Raw remains available. Byte budgets measure the selected serialized presentation, including shared tables and durable exports. / `read textFormat=text` 提供可读详情投影，去除同一事件内相同 renderer 载荷重复；未支持 renderer 保留结构化 JSON。不将此模式或搜索投影称为来源原文，仍可读取 Raw。字节预算测量所选序列化呈现，包含共享表和持久引用导出。
+
 Deterministic checks cover project isolation, reference invalidation, budgets and continuation, anchor/gap navigation, literal search, echo counterexamples and legacy CLI/package compatibility. Independent agent tasks assess evidence quality and uncertainty, separately from adapter tests. Do not claim multi-model acceptance until the recorded workers actually use distinct models. / 确定性检查覆盖项目隔离、引用失效、预算与续读、锚点／间隙导航、字面搜索、回声反例和旧 CLI／安装包兼容性。独立 agent 任务评估证据质量及不确定性，与 adapter 测试分开。不在实际记录 worker 使用不同模型之前声称通过多模型验收。
 
 See [design](../design-docs/history-retrieval.md), [usage](../usage/history-retrieval.md), [evaluation protocol](../evals/history-retrieval/README.md) and the [completed implementation plan](../exec-plans/completed/history-retrieval.md). / 参见[设计](../design-docs/history-retrieval.md)、[使用](../usage/history-retrieval.md)、[评估协议](../evals/history-retrieval/README.md)及[已完成实施计划](../exec-plans/completed/history-retrieval.md)。

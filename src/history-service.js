@@ -8,6 +8,7 @@ const { requireSourceAdapter, materializeSessionForIndex, buildEventDetailForSes
 const { scanProjectQueryShard } = require('./project-query-store');
 const { createSourceDiagnostics } = require('./source-diagnostics');
 const { classifyRetrievalArtifact, mayContainRetrievalArtifact } = require('./history-artifacts');
+const { createHistoryPresentation, detailText } = require('./history-presentation');
 
 const VERSION = 1;
 const LAYERS = ['main', 'protocol', 'raw'];
@@ -109,6 +110,7 @@ async function createHistoryService(options = {}) {
   const sourceRootAccessible = await fs.stat(sourceRoot).then((stat) => stat.isDirectory(), () => false);
   const scope = digest([index.repoRoot, adapter.kind, sourceHome]);
   const contextRef = `hc1.${randomBytes(18).toString('base64url')}`;
+  const presentation = createHistoryPresentation(contextRef);
   const secret = randomBytes(32);
   let closed = false;
   const sessions = [...index.sessions].sort((a, b) =>
@@ -211,32 +213,36 @@ async function createHistoryService(options = {}) {
       timestamp: event.timestamp, status: event.status || '', tool: event.toolName || '',
       excerpt: excerpt(text, terms, position) };
   }
-  function budgetPage(response, candidates, limit, maxBytes, operation, key, offset, total, continuation) {
+  function budgetPage(response, candidates, limit, maxBytes, operation, key, offset, total, continuation, project = (value) => value) {
     for (const candidate of candidates.slice(0, limit)) {
       response.items.push(candidate);
       // Reserve enough for the cursor and flags before accepting an item.
-      if (size(response) + 512 > maxBytes) { response.items.pop(); response.truncated = true; break; }
+      if (size(project(response)) + 512 > maxBytes) { response.items.pop(); response.truncated = true; break; }
     }
     if (!response.items.length && candidates.length) fail('OUTPUT_BUDGET_TOO_SMALL', 'Increase maxBytes or reduce length; no item fits');
     response.hasMore = offset + response.items.length < total;
     if (response.hasMore) response.nextCursor = continuation
       ? continuation(response.items.length) : cursor(operation, key, offset + response.items.length);
-    if (size(response) > maxBytes) fail('OUTPUT_BUDGET_TOO_SMALL', 'Response metadata exceeds maxBytes');
-    return response;
+    const output = project(response);
+    if (size(output) > maxBytes) fail('OUTPUT_BUDGET_TOO_SMALL', 'Response metadata exceeds maxBytes');
+    return output;
   }
 
   async function execute(operation, input = {}) {
     if (closed) fail('CONTEXT_EXPIRED', 'The retrieval service is closed');
     if (!['status', 'search', 'context', 'read'].includes(operation)) fail('INVALID_OPERATION', 'Unknown history operation');
     if (!input || typeof input !== 'object' || Array.isArray(input)) fail('INVALID_ARGUMENT', 'Input must be an object');
-    const allowed = new Set(['contextRef', 'maxBytes', ...({
+    const allowed = new Set(['contextRef', 'maxBytes', 'presentation', ...({
       status: [],
       search: ['queries', 'query', 'exclude', 'layer', 'kind', 'status', 'tool', 'file', 'from', 'to', 'retrievalArtifacts', 'limit', 'cursor', 'order', 'session'],
-      context: ['refs', 'view', 'limit', 'cursor'],
-      read: ['refs', 'parts', 'offset', 'length', 'limit', 'cursor'],
+      context: ['refs', 'view', 'limit', 'length', 'cursor'],
+      read: ['refs', 'parts', 'offset', 'length', 'limit', 'cursor', 'textFormat'],
     }[operation])]);
     for (const k of Object.keys(input)) if (!allowed.has(k)) fail('INVALID_ARGUMENT', `Unknown field: ${k}`);
     if (input.contextRef !== undefined && input.contextRef !== contextRef) fail('CONTEXT_EXPIRED', 'Context expired; omit it to revalidate persistent evidence references');
+    if (input.presentation !== undefined && !['full', 'compact'].includes(input.presentation)) fail('INVALID_ARGUMENT', 'presentation must be full or compact');
+    if (input.textFormat !== undefined && !['structured', 'text'].includes(input.textFormat)) fail('INVALID_ARGUMENT', 'textFormat must be structured or text');
+    const project = (value) => presentation.project(value, input);
     for (const k of ['query', 'layer', 'kind', 'status', 'tool', 'file', 'from', 'to', 'retrievalArtifacts', 'view', 'order', 'session']) {
       if (input[k] !== undefined && (typeof input[k] !== 'string' || input[k].length > 4096)) fail('INVALID_ARGUMENT', `${k} must be a string of at most 4096 characters`);
     }
@@ -262,8 +268,12 @@ async function createHistoryService(options = {}) {
         reference: 'persistent scope/session/source-snapshot/event identity; cursors expire on restart',
         budget: 'UTF-8 JSON bytes; read offsets are UTF-16 code units',
         retrievalArtifacts: ['exclude', 'include', 'only'], multiSource: false, semanticSearch: false };
-      if (size(response) > maxBytes) fail('OUTPUT_BUDGET_TOO_SMALL', 'Increase maxBytes');
-      return response;
+      response.capabilities.presentations = ['full', 'compact'];
+      response.capabilities.contextViews = ['outline', 'full'];
+      response.capabilities.textFormats = ['structured', 'text'];
+      response.capabilities.shortHandles = 'context-bound; read returns durable evidenceRef; compact context uses shared events and eventIndexes';
+      if (size(project(response)) > maxBytes) fail('OUTPUT_BUDGET_TOO_SMALL', 'Increase maxBytes');
+      return project(response);
     }
     if (operation === 'search') {
       if (input.query !== undefined && input.queries !== undefined) fail('INVALID_ARGUMENT', 'Use query or queries, not both');
@@ -355,14 +365,17 @@ async function createHistoryService(options = {}) {
       response.scan = { complete: true, scannedEvents, matchedEvents: total, matchedSessions, scopedSessions: scopedSessions.length, order,
         retrievalArtifacts: { policy, recognized: artifacts, excluded: policy === 'exclude' ? artifacts : 0 } };
       return budgetPage(response, candidates.map((candidate) => candidate.item), limit, maxBytes, operation, key, 0, remaining,
-        (count) => cursor(operation, key, candidates[count - 1].position));
+        (count) => cursor(operation, key, candidates[count - 1].position), project);
     }
 
-    const refs = strings(input.refs, 'refs');
+    const refs = strings(input.refs, 'refs').map((value) => presentation.resolve(value, input.contextRef));
     if (!refs.length) fail('INVALID_ARGUMENT', 'At least one ref is required');
     if (operation === 'context') {
-      if (input.view && input.view !== 'outline') fail('INVALID_ARGUMENT', 'Only view=outline is supported');
-      const key = { refs };
+      if (input.view && !['outline', 'full'].includes(input.view)) fail('INVALID_ARGUMENT', 'view must be outline or full');
+      const full = input.view === 'full';
+      if (!full && input.length !== undefined) fail('INVALID_ARGUMENT', 'context length requires view=full');
+      const textLength = integer(input.length, 2000, 1, 100000, 'length');
+      const key = { refs, ...(full ? { view: 'full', textLength } : {}) };
       const offset = cursorPosition(input.cursor, operation, key);
       const candidates = [];
       for (const value of refs.slice(offset, offset + limit)) {
@@ -377,6 +390,9 @@ async function createHistoryService(options = {}) {
           const count = Math.min(limit, r.b - r.a + 1);
           const start = r.d === 'backward' ? r.b - count + 1 : r.a;
           indexes = Array.from({ length: count }, (_, n) => start + n);
+        } else if (full) {
+          boundary.mode = 'session_start';
+          indexes = Array.from({ length: Math.min(limit, sequence.length) }, (_, n) => n);
         } else if (r.l !== 'main') {
           boundary.mode = 'layer_local';
           boundary.messageAnchors = 'not_available_on_this_layer';
@@ -398,6 +414,7 @@ async function createHistoryService(options = {}) {
           indexes = [...new Set([before, assistantBefore, anchor, assistantAfter, after].filter((n) => n >= 0))].sort((a, b) => a - b);
         }
         const omitted = [];
+        if (full) boundary.anchor = indexes.includes(anchor) ? 'present' : 'outside_page';
         for (let n = 1; n < indexes.length; n += 1) {
           const start = indexes[n - 1] + 1;
           const end = indexes[n] - 1;
@@ -412,20 +429,30 @@ async function createHistoryService(options = {}) {
           return [{ relation: field, sessionId: target.id, ref: rangeRef(target, 'main', 0, 0) }];
         });
         candidates.push({ ref: value, relation: 'adjacent_in_session', boundaries: boundary,
-          events: indexes.map((n) => ({ ...compact(session, r.l, sequence[n], [], n === anchor ? r.h : undefined), anchor: n === anchor })),
+          events: indexes.map((n) => {
+            const item = { ...compact(session, r.l, sequence[n], [], n === anchor ? r.h : undefined), anchor: n === anchor };
+            if (full) {
+              const text = String(sequence[n].searchText || sequence[n].preview || '');
+              const rendered = text.slice(0, textLength);
+              item.excerpt = { representation: 'search_projection', startLine: 1, endLine: rendered.split(/\r?\n/u).length,
+                text: rendered, offset: 0, totalLength: text.length, nextOffset: textLength < text.length ? textLength : null,
+                truncated: textLength < text.length };
+            }
+            return item;
+          }),
           gaps: omitted, previous: first > 0 ? rangeRef(session, r.l,
             !r.e && r.d === 'backward' && first > r.a ? r.a : Math.max(0, first - limit), first - 1, 'backward') : null,
           next: last + 1 < sequence.length ? rangeRef(session, r.l, last + 1, r.e ? Math.min(sequence.length - 1, last + limit) : r.b > last ? r.b : Math.min(sequence.length - 1, last + limit)) : null,
           relatedSessions });
       }
-      return budgetPage(response, candidates, limit, maxBytes, operation, key, offset, refs.length);
+      return budgetPage(response, candidates, limit, maxBytes, operation, key, offset, refs.length, undefined, project);
     }
 
     const parts = [...new Set(input.parts === undefined ? ['message', 'request', 'result'] : strings(input.parts, 'parts', 5))];
     if (!parts.length || parts.some((p) => !PARTS.includes(p))) fail('INVALID_ARGUMENT', 'Unsupported read part');
     const start = integer(input.offset, 0, 0, Number.MAX_SAFE_INTEGER, 'offset');
     const length = integer(input.length, 2000, 1, 100000, 'length');
-    const key = { refs, parts, start, length };
+    const key = { refs, parts, start, length, ...(input.textFormat === 'text' ? { textFormat: 'text' } : {}) };
     const offset = cursorPosition(input.cursor, operation, key);
     const candidates = [];
     for (const value of refs.slice(offset, offset + limit)) {
@@ -459,8 +486,8 @@ async function createHistoryService(options = {}) {
           const purpose = part === 'message' ? 'content' : part;
           const sections = [...(detail?.timelineSections || []), ...(detail?.inspectorSections || [])].filter((section) => section.purpose === purpose);
           if (!sections.length) { values.push({ part, available: false }); continue; }
-          text = JSON.stringify(sections);
-          representation = 'structured_detail_json';
+          text = input.textFormat === 'text' ? detailText(sections) : JSON.stringify(sections);
+          representation = input.textFormat === 'text' ? 'detail_text' : 'structured_detail_json';
         }
         values.push({ part, representation, available: true, offset: start,
           text: text.slice(start, start + length), totalLength: text.length,
@@ -470,11 +497,11 @@ async function createHistoryService(options = {}) {
       candidates.push({ ref: value, parts: values, rawRefs, rawRefsOffset: rawStart, rawRefsNextOffset });
     }
     response.contentTruncated = false;
-    budgetPage(response, candidates, limit, maxBytes, operation, key, offset, refs.length);
-    response.contentTruncated = response.items.some((item) => item.parts.some((part) => part.truncated) || item.rawRefsNextOffset !== null);
-    return response;
+    const output = budgetPage(response, candidates, limit, maxBytes, operation, key, offset, refs.length, undefined, project);
+    output.contentTruncated = output.items.some((item) => item.parts.some((part) => part.truncated) || item.rawRefsNextOffset !== null);
+    return output;
   }
-  return { execute, close() { closed = true; } };
+  return { execute, close() { closed = true; presentation.clear(); } };
 }
 
 module.exports = { createHistoryService };

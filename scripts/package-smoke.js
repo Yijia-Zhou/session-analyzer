@@ -503,7 +503,7 @@ async function main() {
 
     const packagedServer = path.join(smokeRoot, 'node_modules', 'session-analyzer', 'server.js');
     const packageRoot = path.dirname(packagedServer);
-    for (const relative of ['src/history-cli.js', 'src/history-server.js', 'src/history-service.js', 'src/history-artifacts.js', 'skills/history-retrieval/SKILL.md']) {
+    for (const relative of ['src/history-cli.js', 'src/history-server.js', 'src/history-service.js', 'src/history-presentation.js', 'src/history-artifacts.js', 'skills/history-retrieval/SKILL.md']) {
       assert.ok((await fsp.stat(path.join(packageRoot, relative))).isFile(), 'Missing packaged history file: ' + relative);
     }
     const historyHelpCommand = binCommand(bin, ['history', '--help']);
@@ -617,6 +617,19 @@ async function main() {
       assert.ok(read.items[0].rawRefs.length);
       const raw = history('read', { refs: [read.items[0].rawRefs[0]], parts: ['raw'], length: 10000 });
       assert.ok(JSON.parse(raw.items[0].parts[0].text).rawId);
+      const compact = history('search', { queries: [fixture.text], kind: 'user_message', limit: 1,
+        presentation: 'compact', contextRef: status.contextRef });
+      assert.equal(compact.coverageRef, status.contextRef);
+      assert.match(compact.items[0].ref, /^hr1\./u);
+      const compactRefs = [compact.items[0].ref];
+      const fullWindow = history('context', { refs: compactRefs, contextRef: status.contextRef,
+        presentation: 'compact', view: 'full', limit: 2, length: 50 });
+      assert.ok(fullWindow.items[0].eventIndexes.length);
+      assert.ok(fullWindow.events.length);
+      const compactRead = history('read', { refs: compactRefs, contextRef: status.contextRef,
+        presentation: 'compact', parts: ['message'], textFormat: 'text' });
+      assert.match(compactRead.items[0].evidenceRef, /^er2\./u);
+      assert.ok(history('read', { refs: [compactRead.items[0].evidenceRef], parts: ['projection'] }).items[0].parts[0].text.includes(fixture.text));
       await stopChild(child);
       child = null;
       console.log(fixture.source + ': packaged history status -> search -> context -> read -> raw passed.');

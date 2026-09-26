@@ -2,6 +2,10 @@
 
 This guide describes the new source-checkout interface, not the already published `0.2.0` CLI. Check `node server.js history --help` (or the installed binary's equivalent) before using it. The ordinary browser startup remains unchanged. / 本指南描述源码 checkout 的新接口，不代表已发布 `0.2.0` CLI 已具备这些命令。使用前检查 `node server.js history --help`（或安装后二进制的对应命令）。普通浏览器启动方式不变。
 
+For lower payloads, opt into `--presentation compact`. Read `status` once and reuse its `--context`: subsequent compact replies may return `coverageRef` instead of repeating coverage/warnings. `hr1` handles need that same context; `read` returns durable `evidenceRef` for saved citations. Compact context keeps event bodies in top-level `events`, referenced by each window's `eventIndexes` and `anchorIndexes`. / 为减少载荷，可选择 `--presentation compact`。先读一次 `status`，后续复用其 `--context`：紧凑响应可返回 `coverageRef`，不重复覆盖／警告。`hr1` 句柄必须带相同 context；`read` 返回用于保存引用的持久 `evidenceRef`。紧凑上下文的正文位于顶层 `events`，各窗口以 `eventIndexes`、`anchorIndexes` 引用。
+
+For small sessions, use `context --view full --limit 20 --length 2000` to read from the session start in bounded event pages. Follow `next` using `view=full`; long event projections have `nextOffset` for `read --parts projection`. `read --text-format text` avoids identical repeated code/terminal/JSON sections; unsupported section types remain JSON. These representations remain projections, not verbatim source. / 小会话可用 `context --view full --limit 20 --length 2000` 从会话开头有界分页读取。保持 `view=full` 沿 `next` 续页；长事件投影的 `nextOffset` 用于 `read --parts projection`。`read --text-format text` 避免代码／终端／JSON 区段完全相同的重复；未支持区段类型保留 JSON。这些仍是投影，不是来源原文。
+
 Start a dedicated service with the intended repository and source. It binds to localhost and defaults to port `17891`; custom source roots use the existing `--codex-home`, `--claude-home` or `--dsh-home` option. The example service stays in the foreground; manage its lifetime explicitly. / 用预期仓库及来源启动独立服务。它绑定 localhost，默认端口 `17891`；自定义来源根沿用 `--codex-home`、`--claude-home` 或 `--dsh-home`。示例服务前台运行，需明确管理生命周期。
 
 ```powershell

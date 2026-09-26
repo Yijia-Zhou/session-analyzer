@@ -46,6 +46,115 @@ async function corpus(t) {
   return { service, options, sourceFile, home, repo };
 }
 
+test('compact handles bind to their service, export durable evidence and retain source checks', async (t) => {
+  const { service, options, sourceFile } = await corpus(t);
+  const first = await service.execute('search', { query: 'NEEDLE MATCH', presentation: 'compact' });
+  assert.ok(first.coverage);
+  assert.ok(first.warnings.length);
+  assert.match(first.items[0].ref, /^hr1\./u);
+  const input = { refs: [first.items[0].ref], contextRef: first.contextRef, presentation: 'compact', parts: ['projection'] };
+  await assert.rejects(service.execute('read', { ...input, contextRef: undefined }), { code: 'CONTEXT_REQUIRED' });
+  const read = await service.execute('read', input);
+  assert.equal(read.coverage, undefined);
+  assert.equal(read.warnings, undefined);
+  assert.equal(read.coverageRef, first.contextRef);
+  assert.match(read.items[0].evidenceRef, /^er2\./u);
+  assert.match(read.items[0].parts[0].text, /NEEDLE   MATCH/u);
+  const restarted = await createHistoryService(options);
+  t.after(() => restarted.close());
+  const status = await restarted.execute('status', { presentation: 'compact' });
+  assert.ok(status.coverage);
+  await assert.rejects(restarted.execute('read', { ...input, contextRef: status.contextRef }), { code: 'INVALID_REFERENCE' });
+  await assert.rejects(restarted.execute('read', input), { code: 'CONTEXT_EXPIRED' });
+  assert.ok((await restarted.execute('read', { refs: [read.items[0].evidenceRef], parts: ['projection'] })).items.length);
+  const original = await fs.readFile(sourceFile, 'utf8');
+  await fs.writeFile(sourceFile, original.replace('NEEDLE', 'BROKEN'));
+  await assert.rejects(service.execute('read', input), { code: 'STALE_REFERENCE' });
+});
+
+test('compact batch context shares repeated events without erasing anchors or different excerpts', async (t) => {
+  const { service } = await corpus(t);
+  const search = await service.execute('search', { query: 'NEEDLE MATCH' });
+  const refs = [search.items[0].ref, search.items[0].ref];
+  const original = await service.execute('context', { refs });
+  const compact = await service.execute('context', { refs, presentation: 'compact', contextRef: search.contextRef });
+  assert.equal(compact.items.length, 2);
+  assert.equal(compact.events.length, original.items[0].events.length);
+  assert.deepEqual(compact.items[0].eventIndexes, compact.items[1].eventIndexes);
+  assert.deepEqual(compact.items[0].anchorIndexes, compact.items[1].anchorIndexes);
+  assert.equal(compact.items[0].events, undefined);
+  for (const item of compact.items) {
+    const evidence = item.eventIndexes.map((n) => compact.events[n]);
+    assert.deepEqual(evidence.map((e) => e.eventId), original.items[0].events.map((e) => e.eventId));
+    assert.equal(item.anchorIndexes.length, 1);
+    const gaps = await service.execute('context', { refs: item.gaps.map((g) => g.ref), contextRef: search.contextRef, presentation: 'compact' });
+    assert.ok(gaps.events.some((e) => e.excerpt.text.includes('INTERNAL_GAP_EVIDENCE')));
+  }
+  assert.ok(Buffer.byteLength(JSON.stringify(compact)) < Buffer.byteLength(JSON.stringify(original)));
+});
+
+test('full context pages a session from its beginning and exposes projection continuation', async (t) => {
+  const { service } = await corpus(t);
+  const search = await service.execute('search', { query: 'NEEDLE MATCH' });
+  let pending = search.items[0].ref;
+  const ids = [];
+  let pages = 0;
+  do {
+    const result = await service.execute('context', { refs: [pending], view: 'full', limit: 3, length: 30,
+      presentation: 'compact', contextRef: search.contextRef });
+    const window = result.items[0];
+    const events = window.eventIndexes.map((n) => result.events[n]);
+    if (!pages) {
+      assert.equal(window.boundaries.mode, 'session_start');
+      assert.equal(window.boundaries.anchor, 'outside_page');
+      assert.match(events[0].excerpt.text, /Earlier independent topic/u);
+    }
+    for (const e of events) {
+      ids.push(e.eventId);
+      if (e.excerpt.nextOffset !== null) {
+        const more = await service.execute('read', { refs: [e.ref], contextRef: search.contextRef, parts: ['projection'], offset: e.excerpt.nextOffset, length: 30 });
+        assert.equal(more.items[0].parts[0].offset, 30);
+      }
+    }
+    pending = window.next;
+    assert.ok(++pages < 20);
+  } while (pending);
+  const all = await service.execute('search', { limit: 100, retrievalArtifacts: 'include' });
+  assert.deepEqual(ids, all.items.map((item) => item.eventId));
+  assert.equal(new Set(ids).size, ids.length);
+  await assert.rejects(service.execute('context', { refs: [search.items[0].ref], length: 30 }), { code: 'INVALID_ARGUMENT' });
+});
+
+test('text reads remove duplicate detail renderings, preserve continuation and bind its cursor', async (t) => {
+  const { service } = await corpus(t);
+  const search = await service.execute('search', { query: 'node hidden-test.js' });
+  const ref = search.items[0].ref;
+  const structured = await service.execute('read', { refs: [ref], parts: ['result'] });
+  const text = await service.execute('read', { refs: [ref], parts: ['result'], textFormat: 'text' });
+  assert.equal(text.items[0].parts[0].representation, 'detail_text');
+  assert.match(text.items[0].parts[0].text, /\[Response\]\nINTERNAL_GAP_EVIDENCE: validation failed\./u);
+  assert.equal(text.items[0].parts[0].text.match(/INTERNAL_GAP_EVIDENCE/gu).length, 1);
+  assert.ok(text.items[0].parts[0].text.length < structured.items[0].parts[0].text.length);
+  const paged = await service.execute('read', { refs: [ref, ref], parts: ['result'], textFormat: 'text', limit: 1, length: 5 });
+  assert.ok(paged.nextCursor);
+  await assert.rejects(service.execute('read', { refs: [ref, ref], parts: ['result'], limit: 1, length: 5, cursor: paged.nextCursor }), { code: 'INVALID_CURSOR' });
+  const rest = await service.execute('read', { refs: [ref], parts: ['result'], textFormat: 'text', offset: 5 });
+  assert.equal(paged.items[0].parts[0].text + rest.items[0].parts[0].text, text.items[0].parts[0].text);
+});
+
+test('compact budgets account for actual serialized projection and fail unsupported modes', async (t) => {
+  const { service } = await corpus(t);
+  const status = await service.execute('status');
+  const result = await service.execute('search', { presentation: 'compact', contextRef: status.contextRef, limit: 100, maxBytes: 4096 });
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 4096);
+  assert.ok(result.hasMore);
+  const next = await service.execute('search', { presentation: 'compact', contextRef: status.contextRef, limit: 100, maxBytes: 4096, cursor: result.nextCursor });
+  assert.notEqual(next.items[0].ref, result.items[0].ref);
+  for (const presentation of ['unknown', null, {}]) await assert.rejects(service.execute('status', { presentation }), { code: 'INVALID_ARGUMENT' });
+  await assert.rejects(service.execute('search', { textFormat: 'text' }), { code: 'INVALID_ARGUMENT' });
+  await assert.rejects(service.execute('read', { refs: [result.items[0].ref], contextRef: status.contextRef, textFormat: 'html' }), { code: 'INVALID_ARGUMENT' });
+});
+
 test('history search uses literal OR, exclusions, stable filters, complete coverage and query-bound cursors', async (t) => {
   const { service } = await corpus(t);
   const status = await service.execute('status');

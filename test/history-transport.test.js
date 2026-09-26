@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
-const { parseHistoryArgs, requestHistory, runHistoryCli } = require('../src/history-cli');
+const { formatHistoryHelp, parseHistoryArgs, requestHistory, runHistoryCli } = require('../src/history-cli');
 const { MAX_BODY_BYTES, createHistoryServer, startHistoryServer } = require('../src/history-server');
 
 const envelope = (operation, extra = {}) => ({ producer: 'session-analyzer', operation: `history.${operation}`, schemaVersion: 1, ...extra });
@@ -59,6 +59,56 @@ test('real HTTP round trip preserves explicit context and batch input', async (t
   assert.deepEqual(JSON.parse(stdout).received, { queries: ['decisions'], order: 'diverse', session: 'codex:canonical-id' });
 });
 
+test('history payload options preserve strings and reject duplicate or malformed input', () => {
+  for (const operation of ['status', 'search', 'context', 'read']) {
+    assert.deepEqual(parseHistoryArgs([operation, '--presentation', 'compact']).input, { presentation: 'compact' });
+    assert.deepEqual(parseHistoryArgs([operation, '--input', '{"presentation":"full"}']).input, { presentation: 'full' });
+  }
+  assert.deepEqual(parseHistoryArgs(['context', '--view', 'full', '--presentation', 'compact']).input,
+    { view: 'full', presentation: 'compact' });
+  assert.deepEqual(parseHistoryArgs(['read', '--text-format', 'text', '--context', 'snapshot', '--ref', 'e1']).input,
+    { textFormat: 'text', contextRef: 'snapshot', refs: ['e1'] });
+  assert.deepEqual(parseHistoryArgs(['read', '--input', '{"textFormat":"structured"}']).input, { textFormat: 'structured' });
+  for (const [flag, key] of [['--presentation', 'presentation'], ['--view', 'view'], ['--text-format', 'textFormat']]) {
+    for (const args of [
+      ['read', flag], ['read', flag, ' '], ['read', flag, '--help'],
+      ['read', flag, 'full', flag, 'compact'],
+      ['read', flag, 'full', '--input', JSON.stringify({ [key]: 'compact' })],
+      ['read', '--input', JSON.stringify({ [key]: 'compact' }), flag, 'full'],
+      ...[false, 1, [], {}, null, ' '].map((value) => ['read', '--input', JSON.stringify({ [key]: value })]),
+    ]) assert.throws(() => parseHistoryArgs(args), { code: /INVALID_/ });
+  }
+  assert.throws(() => parseHistoryArgs(['read', '--input', '{"text_format":"text"}']), { code: 'INVALID_INPUT' });
+  assert.throws(() => parseHistoryArgs(['search', '--compact', 'true']), { code: 'INVALID_OPTION' });
+  assert.deepEqual(parseHistoryArgs(['read']).input, {});
+  const help = formatHistoryHelp();
+  assert.match(help, /--presentation <full\|compact>/);
+  assert.match(help, /--view <outline\|full>/);
+  assert.match(help, /--text-format <structured\|text>/);
+  assert.match(help, /required when using compact handles/);
+  assert.match(help, /evidenceRef/);
+});
+
+test('HTTP and CLI forward presentation options to the service without selecting content defaults', async (t) => {
+  const { endpoint, calls } = await fixture(t);
+  for (const [operation, input] of [
+    ['status', { presentation: 'compact' }],
+    ['search', { presentation: 'compact', queries: ['decision'] }],
+    ['context', { presentation: 'compact', view: 'full', contextRef: 'snapshot', refs: ['e1'] }],
+    ['read', { presentation: 'compact', textFormat: 'text', contextRef: 'snapshot', refs: ['e1'] }],
+    // Enum and operation validation belongs to the service, after transport shape validation.
+    ['search', { presentation: 'unsupported', textFormat: 'unsupported', view: 'unsupported' }],
+  ]) {
+    assert.deepEqual((await requestHistory(endpoint, operation, input)).received, input);
+    assert.deepEqual(calls.at(-1), { operation, input });
+  }
+  let stdout = '';
+  assert.equal(await runHistoryCli(['read', '--endpoint', endpoint, '--presentation', 'compact', '--text-format', 'text', '--context', 'snapshot', '--ref', 'e1'], {
+    stdout: { write(text) { stdout += text; } },
+  }), 0);
+  assert.deepEqual(JSON.parse(stdout).received, { presentation: 'compact', textFormat: 'text', contextRef: 'snapshot', refs: ['e1'] });
+});
+
 test('flag-like literal clues reach the search endpoint instead of activating CLI help', async (t) => {
   const { endpoint, calls } = await fixture(t);
   for (const clue of ['--help', '-h', '--repo', '--status=failed', '--']) {
@@ -101,6 +151,12 @@ test('transport rejects mutation routes, browser origins, malformed and oversize
     ['/api/history/search', 'POST', {}, '{"order":false}', 400],
     ['/api/history/search', 'POST', {}, '{"session":[]}', 400],
     ['/api/history/search', 'POST', {}, '{"session":" "}', 400],
+    ['/api/history/search', 'POST', {}, '{"presentation":false}', 400],
+    ['/api/history/context', 'POST', {}, '{"view":[]}', 400],
+    ['/api/history/read', 'POST', {}, '{"textFormat":1}', 400],
+    ['/api/history/read', 'POST', {}, '{"textFormat":" "}', 400],
+    ['/api/history/read', 'POST', {}, '{"text_format":"text"}', 400],
+    ['/api/history/search', 'POST', {}, '{"compact":true}', 400],
     ['/api/history/search', 'POST', {}, ' '.repeat(MAX_BODY_BYTES + 1), 413],
   ];
   for (const [route, method, headers, body, expected] of cases) {
