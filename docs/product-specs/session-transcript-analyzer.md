@@ -1,5 +1,7 @@
 # Session Transcript Analyzer / 会话转录分析器
 
+Agent-facing read-only history retrieval has its own [product contract](history-retrieval.md); it shares Logical Events and Raw evidence while keeping its fixed project/source scope independent of the browser. / 面向 agent 的只读历史检索有独立[产品契约](history-retrieval.md)；共享逻辑事件及 Raw 证据，同时让固定项目／来源范围独立于浏览器。
+
 An originating background command's directory shows at most its first 128 confirmed follow-up requests. When more are recorded, it explicitly shows the displayed and total counts; opening a request and following its next-request link reaches records beyond the directory. Large histories must not make the original command detail unavailable. / 后台命令起点的目录最多显示前 128 条已确认后续请求。记录更多时明确展示当前数量及总数；打开请求后，可通过下一请求链接访问目录以外的记录。较长历史不能使原命令详情不可用。
 
 Exact file activity compares recorded path spellings, normalizing redundant separators and `.` but preserving `..` in absolute and relative paths. It does not infer equivalence through symlinks or current filesystem contents. / 精确文件活动比较已记录路径写法，规范化冗余分隔符与 `.`，但保留绝对及相对路径中的 `..`；不通过符号链接或当前文件系统内容推断等价关系。

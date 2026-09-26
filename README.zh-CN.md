@@ -111,6 +111,8 @@ Claude Code 外置的 `tool-results/*` payload 暂不加载或搜索。受支持
 
 ## 开发与贡献
 
+源码 checkout 新增面向 agent 的只读 `history` 接口：在独立固定项目／来源实例中进行有界事件搜索、上下文窗口及可核验证据读取。这是开发中新增能力，不表示已发布 `0.2.0` 命令已支持。参见[历史检索指南](docs/usage/history-retrieval.md)和[随包检索 skill](skills/history-retrieval/SKILL.md)。
+
 参阅[开发环境、检查命令与仓库结构](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/development.md)、[文档索引](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/README.md)、[架构](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/logical-event-timeline.md)及[性能设计](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/timeline-loading-and-rendering-performance.md)。反馈问题时请附版本、来源和复现步骤；公开报告中使用合成或脱敏转录。
 
 BSD 3-Clause。见 [LICENSE](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/LICENSE)。

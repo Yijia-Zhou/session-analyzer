@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "corpus": "history-state-resolution",
+  "visibility": "coordinator-only; never include in worker prompt or inherited context",
+  "answers": [
+    {
+      "id": "S1",
+      "expectedState": "merged_into_main_verified_as_of_2026-02-03T11:05:00.000Z",
+      "reason": "The February 1 unmerged status was valid at its time. A later successful merge command and ancestry check supersede it.",
+      "requiredEvidence": [
+        { "sessionId": "state-lantern-open", "records": [4, 5], "role": "earlier state" },
+        { "sessionId": "state-lantern-merge", "records": [3, 4, 5, 6], "role": "operation and independent verification" }
+      ],
+      "unsupportedClaims": ["The February 1 report is the final state", "The merge is proven solely by a conversational claim"]
+    },
+    {
+      "id": "S2",
+      "expectedState": "uncertain_after_2026-02-04T12:04:00.000Z",
+      "reason": "February 2 evidence showed unmerged then. A later user recollection claims a merge, but the attempted fetch failed and no later repository evidence verified it. Neither final unmerged nor confirmed merged follows.",
+      "requiredEvidence": [
+        { "sessionId": "state-mica-open", "records": [3, 4, 5], "role": "earlier observed state" },
+        { "sessionId": "state-mica-claim", "records": [2, 3, 4, 5], "role": "later claim, failed verification, stated uncertainty" }
+      ],
+      "unsupportedClaims": ["MICA-73 is definitely still unmerged", "MICA-73 is confirmed merged"]
+    },
+    {
+      "id": "S3",
+      "expectedState": "merged_into_main_verified_as_of_2026-02-03T11:05:00.000Z",
+      "reason": "The February 5 record quotes a February 1 state report. Its record time is later but its asserted state time is earlier than the verified February 3 merge.",
+      "requiredEvidence": [
+        { "sessionId": "state-lantern-open", "records": [5], "role": "original report and state time" },
+        { "sessionId": "state-lantern-merge", "records": [3, 4, 5, 6], "role": "intervening verified merge" },
+        { "sessionId": "state-lantern-quote", "records": [2, 3], "role": "late quotation and no fresh check" }
+      ],
+      "unsupportedClaims": ["The February 5 quote reverses the merge", "The quote is a fresh February 5 status check"]
+    }
+  ]
+}
