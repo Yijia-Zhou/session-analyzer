@@ -26,7 +26,7 @@ Upgrade the local Claude Code client, configure OpenRouter through the existing 
 - [x] Upgrade and configure client; prove inference. / 升级配置客户端并验证推理。
 - [x] Generate evidence and document gaps. / 生成依据并记录缺口。
 - [x] Implement and validate adaptations. / 实现并验证适配。
-- [ ] Independent review and GitHub push. / 独立审查与 GitHub 推送。
+- [x] Independent review and GitHub push. / 独立审查与 GitHub 推送。
 
 ## Selected implementation / 选定实现
 
@@ -44,4 +44,4 @@ Development uses temporary Node `24.21.0` and npm `12.0.2`; locked dependencies 
 - Live acceptance: source `claude-code`, intended disposable project and configured Claude home verified; job succeeded with 8 Sessions (7 primary, 1 derived), 235 Raw Records, 215 Logical Events, 0 observed source diagnostics. Main command diff and Raw evidence were read, project search for `MESSAGE_SAMPLE_OK` opened the resumed-agent parent Session, and its SendMessage terminal was read. Browser reported no page errors. / 实际验收核对了来源、临时目标项目与配置根；任务成功，索引 8 个会话（7 个主要、1 个派生）、235 条原始记录、215 个逻辑事件，已实现诊断覆盖内为 0。实际阅读命令 diff 和原始依据，通过项目搜索打开续接 agent 的父会话并阅读 SendMessage 终态；浏览器无页面错误。
 - Fresh independent agent reviewed the implementation. Its P2 finding in the follow-up summary change was fixed: mixed Read/Bash records must not lend sibling paths to a command or changed-file totals. Added per-call ownership and explicit `bashEditFiles` summary evidence with positive/negative regressions. The fresh reviewer rechecked the repair and reported no remaining blocking findings. / 独立 fresh agent 完成审查；其对汇总后续修改发现的 P2 已修复：混合 Read/Bash 记录不能向命令或修改汇总借用同级路径。补充每调用归属、明确 bashEditFiles 汇总依据及正负回归；fresh reviewer 复核后无剩余阻断问题。
 - Full cross-source Node suite, full browser suite and release/package publication gates were not run: this is a scoped adapter change on a separate branch, not a package release. / 未运行全部跨来源 Node／浏览器套件和包发布门禁；本次是独立分支的聚焦适配修改，不是发包。
-- GitHub push and plan archival are the remaining closeout steps. / GitHub 推送与计划归档为剩余收尾步骤。
+- Implementation commit `f9c0c51` was pushed successfully to `origin/claude/latest-compatibility-20260927`; this completed plan is archived in a documentation-only closeout commit on the same branch. No main-branch merge or npm publication was performed. / 实现提交 `f9c0c51` 已成功推送至独立远端分支；本完成计划通过同分支的纯文档收尾提交归档，未合并主线或发布 npm 包。
