@@ -148,6 +148,60 @@ function commandTextFromToolUse(block) {
   return typeof command === 'string' ? command : '';
 }
 
+// Claude Code 2.1.283 Bash result evidence. Keep this separate from generic
+// tool metadata: the caller must first prove the result's unique ownership.
+function claudeBashEditDiff(structuredResult) {
+  const diff = structuredResult?.bashEditDiff;
+  if (!isPlainObject(diff)
+      || !Array.isArray(diff.files) || diff.files.length > 64
+      || !Array.isArray(diff.changedFiles) || diff.changedFiles.length > 256
+      || !Number.isSafeInteger(diff.moreFiles) || diff.moreFiles < 0) return null;
+  const validPath = (value) => typeof value === 'string' && value.trim()
+    && value.length <= 4096 && !/[\r\n\0]/u.test(value);
+  if (!diff.changedFiles.every(validPath)) return null;
+  const changedFiles = new Set(diff.changedFiles);
+  const seenFiles = new Set();
+  const pieces = [];
+  let lineCount = 0;
+  let textLength = 0;
+  let hunkCount = 0;
+  for (const file of diff.files) {
+    if (!isPlainObject(file) || !validPath(file.filePath)
+        || seenFiles.has(file.filePath) || !changedFiles.has(file.filePath)
+        || !Array.isArray(file.hunks) || !file.hunks.length) return null;
+    seenFiles.add(file.filePath);
+    pieces.push(`--- ${file.filePath}\n+++ ${file.filePath}`);
+    for (const hunk of file.hunks) {
+      hunkCount += 1;
+      if (hunkCount > 256 || !isPlainObject(hunk)
+          || !['oldStart', 'oldLines', 'newStart', 'newLines'].every((key) => (
+            Number.isSafeInteger(hunk[key]) && hunk[key] >= 0
+          ))
+          || (hunk.oldLines > 0 && hunk.oldStart === 0)
+          || (hunk.newLines > 0 && hunk.newStart === 0)
+          || !Number.isSafeInteger(hunk.oldStart + hunk.oldLines)
+          || !Number.isSafeInteger(hunk.newStart + hunk.newLines)
+          || !Array.isArray(hunk.lines) || !hunk.lines.length) return null;
+      let oldLines = 0;
+      let newLines = 0;
+      for (const line of hunk.lines) {
+        lineCount += 1;
+        if (lineCount > 4096 || typeof line !== 'string'
+            || !/^[ +\-]/u.test(line) || /[\r\n\0]/u.test(line)) return null;
+        textLength += line.length;
+        if (textLength > 128_000) return null;
+        if (line[0] !== '+') oldLines += 1;
+        if (line[0] !== '-') newLines += 1;
+      }
+      if (oldLines !== hunk.oldLines || newLines !== hunk.newLines) return null;
+      pieces.push(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@\n${hunk.lines.join('\n')}`);
+    }
+  }
+  // A partial payload can still name omitted files explicitly; never invent
+  // paths from moreFiles or interpret malformed/truncated hunks as a patch.
+  return { touchedFiles: [...changedFiles], text: pieces.join('\n') };
+}
+
 function toolResultStatus(record, block, ownsRecordResultMetadata) {
   if (ownsRecordResultMetadata && record?.toolDenialKind) return 'declined';
   if (block?.is_error === true) return 'failed';
@@ -365,6 +419,7 @@ module.exports = {
   JSONL_LINE_LOCATOR_TYPE,
   blockText,
   claudeRawRef,
+  claudeBashEditDiff,
   claudeSourceLocator,
   collectText,
   isPlainObject,
@@ -373,5 +428,6 @@ module.exports = {
   rawEventsForLogicalEvent,
   safeIso,
   stringifyValue,
+  toolInputFiles,
   truncate,
 };

@@ -1,5 +1,9 @@
 # Tech Debt Tracker / 技术债跟踪器
 
+## Claude 2.1.283 evidence follow-ups / Claude 2.1.283 依据后续
+
+The [compatibility review](../design-docs/claude-2.1.283-compatibility.md) records three remaining adapter evidence gaps: MCP background lifecycle, auto-mode hand-back/Monitor notifications, and CLI forks whose copied rows rewrite their session IDs. Collect the listed exact receipt/terminal/provenance fixtures before extending interpretation. Current direct tool and Protocol/Raw paths remain readable; rewritten-ID forks currently include copied history as independent sessions, without a proven parent relationship. Bash edit diffs and SendMessage resume are handled by the current increment. / [兼容性审查](../design-docs/claude-2.1.283-compatibility.md)记录三项剩余适配依据缺口：MCP 后台生命周期、自动模式回传／Monitor 通知，以及复制行改写会话 ID 的 CLI 分叉。扩展解释前应采集所列精确回执／终态／来源 fixture。现有直接工具与协议／原始层路径保持可读；改写 ID 的分叉目前作为包含复制历史的独立会话呈现，没有已证明的父级关系。Bash 修改 diff 与 SendMessage 续接由本次增量处理。
+
 ## Tracked items / 跟踪条目
 
 ### 28. Codex legacy Raw v2 performance follow-up / Codex 旧式 Raw v2 性能后续

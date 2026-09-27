@@ -22,7 +22,11 @@ For current v0.1 parser behavior, Codex upstream protocol and observed Codex tra
 
 对于当前 v0.1 parser 行为，Codex upstream protocol 和已观察到的 Codex transcript fixture 对 Codex adapter 具有权威性。明确接受的 adapter target 具有自己的证据边界：对于本兼容线，Claude Code `2.1.220` 的来源事实只作为只读结构证据，只有在精确 source shape、脱敏合成 fixture 与 Protocol/Raw fallback 行为一致时才接纳行为。单独的本地语料观察永远不足以构成权威。
 
+The [2.1.283 compatibility review](claude-2.1.283-compatibility.md) adds an accepted target for the exact observed Bash edit-diff shape, backed by the official 2.1.269 release notes, fresh 2.1.283 sessions, and minimized synthetic regressions. This supplements rather than replaces the earlier 2.1.220 fixtures; unobserved lifecycle shapes remain fixture TODOs. / [2.1.283 兼容性审查](claude-2.1.283-compatibility.md) 为精确观测到的 Bash 修改 diff 形态增加接纳目标，依据是官方 2.1.269 发布说明、新生成的 2.1.283 会话及最小化合成回归；它补充而不替代既有 2.1.220 fixture，未观测生命周期形态仍为 fixture TODO。
+
 ## Source authority / 来源权威性
+
+The same 2.1.283 review accepts exact SendMessage resume receipts and trusted terminal notifications observed in fresh sessions. They extend existing async-agent correlation using both task and call identity; they do not generalize to unobserved auto-mode hand-back tools. / 同一 2.1.283 审查接纳新会话中精确观测到的 SendMessage 续接回执与可信终态通知，通过 task 与 call 双重标识扩展已有异步 agent 关联，不泛化至未观测的自动模式回传工具。
 
 - Primary Codex sources: upstream `codex-rs/protocol/src/protocol.rs`, upstream protocol docs, and repo-local Codex fixtures. / Codex 主要来源：上游 `codex-rs/protocol/src/protocol.rs`、上游协议文档，以及仓库内 Codex fixture。
   - Protocol source: `https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs`

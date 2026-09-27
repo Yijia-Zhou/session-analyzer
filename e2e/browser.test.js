@@ -24,6 +24,53 @@ const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 let wave1bM2SourceBundlePromise;
 
+for (const locale of ['en', 'zh-CN']) test(`Claude 2.1.283 Bash diffs remain readable with file filters and Raw evidence (${locale})`, async (t) => {
+  const claudeHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'claude-bash-diff-browser-'));
+  t.after(() => fsp.rm(claudeHome, { recursive: true, force: true }));
+  const project = path.join(claudeHome, 'repo');
+  await fsp.mkdir(project);
+  const sourceId = 'synthetic-bash-diff-browser';
+  const file = '/synthetic/example.txt';
+  const rows = [
+    { type: 'user', message: { content: 'Change beta to gamma' } },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'edit-call', name: 'Bash', input: { command: 'synthetic-edit example.txt' } }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'edit-call', content: 'done' }] }, toolUseResult: {
+      stdout: 'done', stderr: '', interrupted: false,
+      bashEditDiff: { files: [{ filePath: file, hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, lines: [' alpha', '-beta', '+gamma'] }] }], changedFiles: [file], moreFiles: 0 },
+    } },
+    { type: 'assistant', message: { content: 'Synthetic edit completed.' } },
+  ];
+  await writeJsonl(path.join(claudeHome, 'projects', 'custom-container', `${sourceId}.jsonl`), rows.map((record, i) => ({
+    ...record, cwd: project, sessionId: sourceId, version: '2.1.283',
+    uuid: `synthetic-${i}`, parentUuid: i ? `synthetic-${i - 1}` : null,
+    timestamp: `2026-09-27T10:00:0${i}.000Z`,
+  })));
+  const index = await buildClaudeSourceBackedIndex({ repoRoot: project, claudeHome });
+  const sessionId = analyzerSessionId(sourceId);
+  const session = await materializeIndexedSession(index, sessionId);
+  const event = session.logicalEvents.find((item) => item.callId === 'edit-call');
+  assert.equal(event.kind, 'command');
+  assert.deepEqual(session.analysis.patchedFiles, [{ file, count: 1 }]);
+  assert.equal(session.counts.patches, 0, 'a Bash edit is still one command, not a synthetic patch event');
+  const { page } = await openApp(t, index, { locale, skipProjectReindex: true });
+  await page.locator(`[data-session-id="${sessionId}"]`).click();
+  const card = page.locator(`#timeline .event[data-event-id="${event.id}"]`);
+  await card.click();
+  await waitForDetailView(page, 'inspector');
+  await page.waitForFunction((id) => document.querySelector(`[data-event-id="${id}"]`)?.textContent.includes('+gamma'), event.id);
+  assert.match(await card.innerText(), /-beta/);
+  assert.match(await page.locator('#detail').innerText(), /\/synthetic\/example\.txt/);
+  await page.locator('#detail [data-detail-action="raw"]').click();
+  await waitForDetailView(page, 'rawRefs');
+  await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('bashEditDiff'));
+  assert.match(await page.locator('#detail .rawRefsView').innerText(), /changedFiles/);
+  await addSearchFilter(page, 'file', file);
+  await page.waitForFunction((id) => {
+    const events = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    return events.length === 1 && events[0].dataset.eventId === id;
+  }, event.id);
+});
+
 test('Codex capacity notice leaves identity-based Raw References usable in both locales', async (t) => {
   const policy = trustedPolicy({ buildWorkUnits: 3 });
   const index = await buildIndex({

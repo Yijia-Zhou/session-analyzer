@@ -11,6 +11,7 @@ const {
   CANONICAL_SCHEMA_VERSION,
   CLAUDE_SOURCE_KIND,
   blockText,
+  claudeBashEditDiff,
   claudeRawRef,
   rawEventsForLogicalEvent,
   stringifyValue,
@@ -309,7 +310,8 @@ function lifecycleDetailSections(event, locale) {
       { duration: lifecycle.timedOutAfterMs, taskId: lifecycle.taskId },
     )
     : claudeDetailText(
-      isWorkflow ? 'asyncWorkflowLifecycleLaunch' : 'asyncAgentLifecycleLaunch',
+      isWorkflow ? 'asyncWorkflowLifecycleLaunch'
+        : event.toolName === 'SendMessage' ? 'asyncAgentLifecycleResume' : 'asyncAgentLifecycleLaunch',
       locale,
       { taskId: lifecycle.taskId },
     );
@@ -397,6 +399,18 @@ function toolDetailSections(raws, event, locale) {
     timelineSections.push(terminalSection('stdout', structuredResult?.stdout || (event.lifecycle ? '' : resultText), 'stdout', 'result'));
     timelineSections.push(terminalSection('stderr', structuredResult?.stderr, 'stderr', 'result'));
     inspectorSections.push(jsonSection('Arguments', request, 'request'));
+    if (call?.name === 'Bash' && structuredResult?.bashEditDiff != null) {
+      const diff = event.status !== 'declined' ? claudeBashEditDiff(structuredResult) : null;
+      if (diff?.text) {
+        timelineSections.push({
+          purpose: 'result', type: 'diff', title: 'Patch',
+          text: sanitizeClaudeDetailText(diff.text),
+        });
+      }
+      inspectorSections.push(jsonSection('Structured result', {
+        bashEditDiff: structuredResult.bashEditDiff,
+      }, 'result'));
+    }
   } else if (event.kind === 'patch') {
     const file = request.file_path || request.filePath || request.path || request.notebook_path || '';
     const content = request.content || request.new_string || request.newString || '';

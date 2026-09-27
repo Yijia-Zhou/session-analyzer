@@ -812,8 +812,10 @@ function finalizeSession(session) {
   const toolEvents = session.logicalEvents.filter((event) => event.toolName);
   const commandEvents = session.logicalEvents.filter((event) => event.kind === 'command');
   const patchCounts = new Map();
-  for (const event of session.logicalEvents.filter((candidate) => candidate.kind === 'patch')) {
-    for (const file of event.touchedFiles) patchCounts.set(file, (patchCounts.get(file) || 0) + 1);
+  for (const event of session.logicalEvents) {
+    const editedFiles = event.kind === 'patch' ? event.touchedFiles
+      : event.kind === 'command' && event.toolName === 'Bash' ? event.bashEditFiles || [] : [];
+    for (const file of editedFiles) patchCounts.set(file, (patchCounts.get(file) || 0) + 1);
   }
   session.analysis = {
     sessionId: session.id,

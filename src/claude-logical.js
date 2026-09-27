@@ -1,5 +1,7 @@
 'use strict';
 
+const { claudeBashEditDiff, toolInputFiles } = require('./claude-source');
+
 function createClaudeLogicalBuilder(deps) {
   const {
     CANONICAL_SCHEMA_VERSION,
@@ -61,6 +63,7 @@ function createClaudeLogicalBuilder(deps) {
       hasLongOutput: preview.length > 800 || searchText.length > 1600,
       hasReadableReasoning: Boolean(fields.hasReadableReasoning),
       touchedFiles: unique(fields.touchedFiles || []),
+      ...(fields.bashEditFiles?.length ? { bashEditFiles: unique(fields.bashEditFiles) } : {}),
       outputStats: fields.outputStats || {},
       tokenUsage: fields.tokenUsage || [],
       usageLimits: fields.usageLimits || [],
@@ -149,7 +152,7 @@ function createClaudeLogicalBuilder(deps) {
     if (normalized === 'read') return 'read';
     if (['write', 'edit', 'multiedit', 'notebookedit'].includes(normalized)) return 'patch';
     if (['websearch', 'webfetch'].includes(normalized)) return 'web_search';
-    if (normalized === 'agent') return 'agent_coordination';
+    if (['agent', 'sendmessage'].includes(normalized)) return 'agent_coordination';
     if (/^(mcp__|mcp:)/.test(normalized)) return 'mcp_call';
     return 'other_tool_call';
   }
@@ -194,6 +197,7 @@ function createClaudeLogicalBuilder(deps) {
       return truncate(input.status ? `${task} → ${input.status}` : task);
     }
     if (call.name === 'ExitPlanMode') return truncate(input.plan || call.name);
+    if (call.name === 'SendMessage') return truncate(input.summary || input.message || input.content || call.name);
     if (kind === 'command') return truncate(input.command || input.description || call.name);
     if (kind === 'read') return truncate(input.file_path || input.filePath || input.path || call.name);
     if (kind === 'patch') return truncate(input.file_path || input.filePath || input.path || input.notebook_path || call.name);
@@ -540,10 +544,33 @@ function createClaudeLogicalBuilder(deps) {
     };
   }
 
+  function resumedAgentId(call, resultMatch) {
+    if (call.name !== 'SendMessage' || resultStatus(resultMatch) !== 'success') return '';
+    const structured = uniquelyOwnedStructuredResult(resultMatch);
+    const target = taskIdentifier(call.input?.to);
+    if (!target || target !== call.input.to || structured?.success !== true
+        || structured.resumedAgentId !== target
+        || (call.input.recipient != null && call.input.recipient !== target)
+        || (structured.pin?.id != null && structured.pin.id !== target)) return '';
+    return target;
+  }
+
   function launchCandidate(callKey, callMatch, resultMatch) {
     if (!resultMatch || !callMatch.call.id) return null;
     const structured = uniquelyOwnedStructuredResult(resultMatch);
     if (!structured) return null;
+    const resumedId = resumedAgentId(callMatch.call, resultMatch);
+    if (resumedId) {
+      return {
+        callKey,
+        call: callMatch.call,
+        kind: 'async_agent',
+        taskId: resumedId,
+        isResume: true,
+        timedOutAfterMs: null,
+        resultRawIndex: resultMatch.raw.rawIndex,
+      };
+    }
     if (
       callMatch.call.name === 'Bash'
       && typeof structured.backgroundTaskId === 'string'
@@ -617,7 +644,8 @@ function createClaudeLogicalBuilder(deps) {
   }
 
   function buildAsyncLifecycleCorrelation(raws, toolCorrelation) {
-    const launchesByTaskId = new Map();
+    const initialLaunchesByTaskId = new Map();
+    const launchByToolUseId = new Map();
     const launches = [];
     for (const [callKey, callMatch] of toolCorrelation.callByBlock) {
       if (!toolCorrelation.uniqueCallIds.has(callMatch.call.id)) continue;
@@ -628,7 +656,8 @@ function createClaudeLogicalBuilder(deps) {
       );
       if (candidate) {
         launches.push(candidate);
-        appendIndexedValue(launchesByTaskId, candidate.taskId, candidate);
+        launchByToolUseId.set(candidate.call.id, candidate);
+        if (!candidate.isResume) appendIndexedValue(initialLaunchesByTaskId, candidate.taskId, candidate);
       }
     }
 
@@ -637,15 +666,21 @@ function createClaudeLogicalBuilder(deps) {
       const notification = parseTaskNotification(raw);
       const identity = notification || taskNotificationIdentity(raw);
       if (!identity) continue;
-      const owners = launchesByTaskId.get(identity.taskId) || [];
+      const initialOwners = initialLaunchesByTaskId.get(identity.taskId) || [];
+      // A resumed Agent keeps its task ID, but each completion names the exact
+      // SendMessage call. Multiple ordinary launches still make the task ID
+      // ambiguous; admitting resumes must not relax that older safety gate.
+      if (initialOwners.length > 1) continue;
+      const owner = launchByToolUseId.get(identity.toolUseId);
       if (
-        owners.length !== 1
-        || owners[0].call.id !== identity.toolUseId
-        || raw.rawIndex <= owners[0].resultRawIndex
+        !owner || owner.taskId !== identity.taskId
+        || (owner.isResume && initialOwners.some((initial) => initial.kind !== 'async_agent'
+          || initial.resultRawIndex >= owner.resultRawIndex))
+        || raw.rawIndex <= owner.resultRawIndex
       ) continue;
       if (!notification) {
-        if (owners[0].kind !== 'async_workflow') continue;
-        appendIndexedValue(notificationsByCall, owners[0].callKey, {
+        if (owner.kind !== 'async_workflow') continue;
+        appendIndexedValue(notificationsByCall, owner.callKey, {
           raw,
           valid: false,
           sourceText: identity.sourceText,
@@ -655,15 +690,15 @@ function createClaudeLogicalBuilder(deps) {
         });
         continue;
       }
-      if (owners[0].kind === 'async_workflow' && !strictWorkflowTerminal(notification)) {
-        appendIndexedValue(notificationsByCall, owners[0].callKey, {
+      if (owner.kind === 'async_workflow' && !strictWorkflowTerminal(notification)) {
+        appendIndexedValue(notificationsByCall, owner.callKey, {
           ...notification,
           valid: false,
           fingerprint: `invalid:${raw.rawId}`,
         });
         continue;
       }
-      appendIndexedValue(notificationsByCall, owners[0].callKey, notification);
+      appendIndexedValue(notificationsByCall, owner.callKey, notification);
     }
 
     const lifecycleByCallBlock = new Map();
@@ -787,14 +822,18 @@ function createClaudeLogicalBuilder(deps) {
     const subtype = approvedPlan ? 'proposed_plan' : call.name;
     const severity = status === 'failed' ? 'error' : ['declined', 'incomplete'].includes(status) ? 'warning' : 'normal';
     const resultText = toolResultText(resultMatch);
-    const agentId = String(
+    const agentId = call.name === 'SendMessage' ? resumedAgentId(call, resultMatch) : String(
       structuredResult?.agentId
       || (hasUniqueStructuredResultOwner(resultMatch) ? result?.agentId : '')
       || '',
     );
+    const bashEditFiles = call.name === 'Bash' && status !== 'declined'
+      ? claudeBashEditDiff(structuredResult)?.touchedFiles || []
+      : [];
     const touchedFiles = [
-      ...(callRaw.touchedFiles || []),
+      ...toolInputFiles(call.name, call.input),
       ...deltaTouchedFiles(supplements),
+      ...bashEditFiles,
     ];
     const raws = [callRaw, result, ...supplements, ...(lifecycle?.notificationRaws || [])];
     const publicLifecycle = lifecycle ? {
@@ -829,6 +868,7 @@ function createClaudeLogicalBuilder(deps) {
       toolName: approvedPlan ? '' : call.name,
       sourceToolName: approvedPlan ? call.name : '',
       touchedFiles,
+      bashEditFiles,
       outputStats: {
         exitCode: lifecycle?.terminal?.exitCode
           ?? (ownsResultMetadata ? result?.exitCode : null)
