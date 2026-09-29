@@ -24,6 +24,56 @@ const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 let wave1bM2SourceBundlePromise;
 
+for (const locale of ['en', 'zh-CN']) test(`Claude background terminal evidence stays on the owning MCP and Monitor operation (${locale})`, async (t) => {
+  const claudeHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'claude-background-browser-'));
+  t.after(() => fsp.rm(claudeHome, { recursive: true, force: true }));
+  const project = path.join(claudeHome, 'repo');
+  await fsp.mkdir(project);
+  const sourceId = 'synthetic-background-browser';
+  const receipt = 'MCP tool "synthetic/delay" is still running after 1s. It was moved to the background as task synthetic-mcp and keeps running; you\'ll receive a notification with the result when it completes. You can keep working in the meantime. To stop it, use TaskStop with task_id "synthetic-mcp". Note: it does not survive exiting this session.';
+  const rows = [{ type: 'user', message: { content: 'Synthetic background work' } }];
+  for (const [id, name, taskId, status, result] of [
+    ['mcp', 'mcp__synthetic__delay', 'synthetic-mcp', 'failed', 'SYNTHETIC_MCP_FAILURE'],
+    ['watch', 'Monitor', 'synthetic-monitor', 'completed', 'SYNTHETIC_MONITOR_LAST'],
+  ]) {
+    rows.push({ type: 'assistant', uuid: `${id}-assistant`, message: { content: [{ type: 'tool_use', id, name,
+      input: name === 'Monitor' ? { command: 'synthetic-watch', timeout_ms: 3000 } : {} }] } });
+    rows.push({ type: 'user', sourceToolAssistantUUID: `${id}-assistant`,
+      message: { content: [{ type: 'tool_result', tool_use_id: id,
+        content: name === 'Monitor' ? 'Monitor started' : [{ type: 'text', text: receipt }] }] },
+      toolUseResult: name === 'Monitor' ? { taskId, timeoutMs: 3000, persistent: false } : [{ type: 'text', text: receipt }] });
+    const tag = name === 'Monitor' ? 'event' : 'result';
+    if (name === 'Monitor') rows.push({ type: 'user', origin: { kind: 'task-notification' }, promptSource: 'system',
+      message: { content: `<task-notification><task-id>${taskId}</task-id><summary>Monitor event</summary><event>XML log: <status>working</status> <tool-use-id>log-value</tool-use-id></event></task-notification>` } });
+    rows.push({ type: 'user', origin: { kind: 'task-notification' }, promptSource: 'system',
+      message: { content: `<task-notification><task-id>${taskId}</task-id>${name === 'Monitor' ? `<tool-use-id>${id}</tool-use-id>` : ''}<status>${status}</status><summary>Synthetic ${status}</summary><${tag}>${result}</${tag}></task-notification>` } });
+  }
+  await writeJsonl(path.join(claudeHome, 'projects', 'synthetic', `${sourceId}.jsonl`), rows.map((record, i) => ({
+    uuid: `synthetic-${i}`, ...record, cwd: project, sessionId: sourceId, version: '2.1.283',
+    timestamp: `2026-09-29T10:00:0${i}.000Z`,
+  })));
+  const index = await buildClaudeSourceBackedIndex({ repoRoot: project, claudeHome });
+  const sessionId = analyzerSessionId(sourceId);
+  const session = await materializeIndexedSession(index, sessionId);
+  assert.equal(session.counts.userMessages, 1);
+  const { page } = await openApp(t, index, { locale, skipProjectReindex: true });
+  await page.locator(`[data-session-id="${sessionId}"]`).click();
+  for (const [id, status, output] of [['mcp', 'failed', 'SYNTHETIC_MCP_FAILURE'], ['watch', 'success', 'SYNTHETIC_MONITOR_LAST']]) {
+    const event = session.logicalEvents.find(item => item.callId === id);
+    assert.equal(event.status, status);
+    const card = page.locator(`#timeline .event[data-event-id="${event.id}"]`);
+    await card.click();
+    await waitForDetailView(page, 'inspector');
+    await page.waitForFunction(({ eventId, text }) => document.querySelector(`[data-event-id="${eventId}"]`)?.textContent.includes(text), { eventId: event.id, text: output });
+    assert.match(await page.locator('#detail').innerText(), locale === 'en'
+      ? id === 'mcp' ? /MCP call moved to background/ : /Monitor started/
+      : id === 'mcp' ? /MCP 调用已转入后台/ : /Monitor 已启动/);
+    await page.locator('#detail [data-detail-action="raw"]').click();
+    await waitForDetailView(page, 'rawRefs');
+    await page.waitForFunction(text => document.querySelector('#detail .rawRefsView')?.textContent.includes(text), output);
+  }
+});
+
 for (const locale of ['en', 'zh-CN']) test(`Claude 2.1.283 Bash diffs remain readable with file filters and Raw evidence (${locale})`, async (t) => {
   const claudeHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'claude-bash-diff-browser-'));
   t.after(() => fsp.rm(claudeHome, { recursive: true, force: true }));

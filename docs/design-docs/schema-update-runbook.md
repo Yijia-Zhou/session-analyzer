@@ -26,6 +26,8 @@ The [2.1.283 compatibility review](claude-2.1.283-compatibility.md) adds an acce
 
 ## Source authority / 来源权威性
 
+The 2026-09-29 follow-up in that review adds exact MCP background and Monitor receipt/terminal shapes, with official feature documentation, real-client probes and synthetic ownership/reindex/browser regressions. SDK-only progress is not treated as persisted project JSONL. Text-only Monitor deadline alerts and rewritten-ID fork parent relationships remain unproven semantics. / 同一审查的 2026-09-29 后续增加精确 MCP 后台与 Monitor 回执／终态形态，以官方功能文档、真实客户端探针及合成归属／重建索引／浏览器回归为依据。仅存在于 SDK 的进度不视为持久化项目 JSONL；纯文本 Monitor 截止提示与改写 ID 分叉父级关系仍不赋予未证明的语义。
+
 The same 2.1.283 review accepts exact SendMessage resume receipts and trusted terminal notifications observed in fresh sessions. They extend existing async-agent correlation using both task and call identity; they do not generalize to unobserved auto-mode hand-back tools. / 同一 2.1.283 审查接纳新会话中精确观测到的 SendMessage 续接回执与可信终态通知，通过 task 与 call 双重标识扩展已有异步 agent 关联，不泛化至未观测的自动模式回传工具。
 
 - Primary Codex sources: upstream `codex-rs/protocol/src/protocol.rs`, upstream protocol docs, and repo-local Codex fixtures. / Codex 主要来源：上游 `codex-rs/protocol/src/protocol.rs`、上游协议文档，以及仓库内 Codex fixture。

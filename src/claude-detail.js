@@ -311,6 +311,8 @@ function lifecycleDetailSections(event, locale) {
     )
     : claudeDetailText(
       isWorkflow ? 'asyncWorkflowLifecycleLaunch'
+        : lifecycle.kind === 'background_mcp' ? 'mcpLifecycleLaunch'
+        : lifecycle.kind === 'monitor' ? 'monitorLifecycleLaunch'
         : event.toolName === 'SendMessage' ? 'asyncAgentLifecycleResume' : 'asyncAgentLifecycleLaunch',
       locale,
       { taskId: lifecycle.taskId },
