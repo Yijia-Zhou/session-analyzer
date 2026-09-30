@@ -108,6 +108,37 @@ test('Monitor receipt is not completion; exact terminal includes final event out
   assert.equal(project([...pair('Monitor'), ...notification({ id: 'call', monitor: true, status: 'failed' })]).event.status, 'failed');
 });
 
+test('large background terminals retain outcomes with bounded presentation and exact full-text mirrors', () => {
+  for (const name of ['mcp__synthetic__delay', 'Monitor']) {
+    for (const status of ['completed', 'failed']) {
+      for (const [summaryLength, resultLength] of [[4000, 16000], [4001, 16001], [6000, 20000]]) {
+        const rows = notification({ status, monitor: name === 'Monitor', id: name === 'Monitor' ? 'call' : '', result: 'x'.repeat(resultLength) })
+          .map(r => JSON.parse(JSON.stringify(r).replace('Synthetic terminal', 's'.repeat(summaryLength))));
+        const fixture = project([...pair(name), ...rows]);
+        assert.equal(fixture.event.status, status === 'completed' ? 'success' : 'failed');
+        assert.equal(fixture.event.rawRefs.length, 4);
+        assert.ok(fixture.event.lifecycle.terminal.summary.length <= 4000);
+        assert.ok(fixture.event.lifecycle.terminal.result.length <= 16000);
+        if (resultLength > 16000) assert.match(fixture.event.lifecycle.terminal.result, /omitted; see raw refs/);
+        for (const locale of ['en', 'zh-CN']) {
+          const detail = buildClaudeEventDetail(fixture.session, fixture.event.id, 'main', { locale });
+          const { validateLogicalDetailSection } = require('../src/shared/logical-detail-contract');
+          detail.timelineSections.forEach(validateLogicalDetailSection);
+        }
+        const conflict = structuredClone(rows);
+        conflict[1].message.content = conflict[1].message.content.replace('</task-notification>', '<status>failed</status></task-notification>');
+        assert.equal(project([...pair(name), ...conflict]).event.status, 'in_progress');
+        const differentTail = structuredClone(rows);
+        differentTail[1].message.content = differentTail[1].message.content.replace(name === 'Monitor' ? '</event>' : '</result>', name === 'Monitor' ? 'tail</event>' : 'tail</result>');
+        assert.equal(project([...pair(name), ...differentTail]).event.status, 'in_progress');
+        assert.equal(project([...pair(name), ...rows, structuredClone(rows[1])]).event.status, 'in_progress');
+      }
+    }
+    const excessive = notification({ monitor: name === 'Monitor', id: name === 'Monitor' ? 'call' : '', result: 'x'.repeat(2_048_001) });
+    assert.equal(project([...pair(name), ...excessive]).event.status, 'in_progress');
+  }
+});
+
 test('Monitor progress and textual deadline alerts do not fabricate a terminal or human message', () => {
   const event = '<task-notification><task-id>ksynthetic</task-id><summary>Monitor event: "Synthetic watch"</summary><event>[Monitor timed out — re-arm if needed.]</event></task-notification>';
   const f = project([...pair('Monitor'), { type: 'user', origin: { kind: 'task-notification' }, promptSource: 'system', message: { content: event } }]);
@@ -199,7 +230,8 @@ test('MCP and Monitor terminal append invalidates reindex and survives source-ba
     const before = await buildClaudeIndex({ claudeHome: home, repoRoot });
     const sessionId = `claude-code:${name}`;
     assert.equal(before.sessionsById.get(sessionId).logicalEvents.find(e => e.callId).status, 'in_progress');
-    records.push(...notification({ id: name === 'Monitor' ? 'call' : '', monitor: name === 'Monitor', status: 'failed' }));
+    records.push(...notification({ id: name === 'Monitor' ? 'call' : '', monitor: name === 'Monitor', status: 'failed', result: 'x'.repeat(20_000) })
+      .map(r => JSON.parse(JSON.stringify(r).replace('Synthetic terminal', 's'.repeat(6000)))));
     await write();
     const after = await buildClaudeIndex({ claudeHome: home, repoRoot, previousIndex: before });
     const cold = await buildClaudeSourceBackedIndex({ claudeHome: home, repoRoot });

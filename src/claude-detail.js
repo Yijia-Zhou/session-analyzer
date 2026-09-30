@@ -409,6 +409,12 @@ function toolDetailSections(raws, event, locale) {
           text: sanitizeClaudeDetailText(diff.text),
         });
       }
+      if (diff?.textOmitted) {
+        timelineSections.push(noticeSection('Patch', locale === 'zh-CN'
+          ? 'Diff 正文超过展示上限，已省略；修改路径已保留，完整内容见原始引用。'
+          : 'Diff text omitted because it exceeds display limits; changed paths are retained. See raw refs for the full content.',
+        'info', 'result'));
+      }
       inspectorSections.push(jsonSection('Structured result', {
         bashEditDiff: structuredResult.bashEditDiff,
       }, 'result'));

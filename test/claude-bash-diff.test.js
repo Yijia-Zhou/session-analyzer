@@ -159,6 +159,14 @@ test('session edited-file summary counts only accepted Bash diff evidence, not R
   const edited = await build();
   assert.deepEqual(edited.analysis.patchedFiles, [{ file: '/synthetic/example.txt', count: 1 }]);
   assert.equal(edited.counts.patches, 0);
+  records[1].toolUseResult.bashEditDiff.files[0].hunks[0].lines[0] = ` ${'x'.repeat(128_001)}`;
+  assert.deepEqual((await build()).analysis.patchedFiles, edited.analysis.patchedFiles);
+  const { buildClaudeSourceBackedIndex } = require('../src/claude');
+  const { materializeSessionForIndex, queryForIndex } = require('../src/source-adapters');
+  const indexed = await buildClaudeSourceBackedIndex({ claudeHome: home, repoRoot: '/synthetic/repo' });
+  const materialized = await materializeSessionForIndex(indexed, indexed.sessions[0]);
+  assert.deepEqual(materialized.analysis.patchedFiles, edited.analysis.patchedFiles);
+  assert.equal((await queryForIndex(indexed).filterSessions(indexed, { layer: 'main', file: '/synthetic/example.txt' })).total, 1);
   delete records[1].toolUseResult.bashEditDiff;
   assert.deepEqual((await build()).analysis.patchedFiles, []);
 });
@@ -185,7 +193,7 @@ test('non-Bash tools cannot acquire file facts from Bash-specific result metadat
   assert.ok(!fixture.detail().timelineSections.some((item) => item.type === 'diff'));
 });
 
-test('malformed, contradictory, truncated and oversized diff evidence remains JSON/Raw only', () => {
+test('malformed, contradictory and truncated diff evidence remains JSON/Raw only', () => {
   const mutations = [
     (value) => { value.files[0].hunks[0].lines.pop(); },
     (value) => { value.files[0].hunks[0].oldLines = '2'; },
@@ -193,13 +201,11 @@ test('malformed, contradictory, truncated and oversized diff evidence remains JS
     (value) => { value.files[0].hunks[0].lines[0] = ' alpha\n+fabricated'; },
     (value) => { value.files[0].hunks[0].oldStart = 0; },
     (value) => { value.files[0].hunks[0].oldStart = Number.MAX_SAFE_INTEGER; },
-    (value) => { value.files[0].hunks[0].lines[0] = ` ${'x'.repeat(128_001)}`; },
     (value) => { value.changedFiles = ['/synthetic/contradiction.txt']; },
     (value) => { value.moreFiles = -1; },
     (value) => { value.files.push(structuredClone(value.files[0])); },
     (value) => { value.files[0].filePath = '/synthetic/injected\npath'; },
     (value) => { value.files = Array(65).fill(value.files[0]); },
-    (value) => { value.changedFiles = Array(257).fill('/synthetic/example.txt'); },
   ];
   for (const mutate of mutations) {
     const evidence = diffEvidence();
@@ -210,6 +216,101 @@ test('malformed, contradictory, truncated and oversized diff evidence remains JS
     assert.ok(!detail.timelineSections.some((item) => item.type === 'diff'));
     assert.ok(detail.inspectorSections.some((item) => item.value?.bashEditDiff));
     assert.ok(fixture.session.rawEvents[1].parsed.toolUseResult.bashEditDiff);
+  }
+});
+
+test('diff display limits preserve fully validated file facts, but never hide invalid tails', () => {
+  const variants = [
+    (d) => { d.files[0].hunks[0].lines[0] = ` ${'x'.repeat(128_001)}`; },
+    (d) => { d.changedFiles.push(...Array.from({ length: 256 }, (_, i) => `/synthetic/extra-${i}`)); },
+    (d) => { d.files = Array.from({ length: 65 }, (_, i) => ({ ...structuredClone(d.files[0]), filePath: `/synthetic/file-${i}` })); d.changedFiles = d.files.map(f => f.filePath); },
+    (d) => { d.files[0].hunks = Array.from({ length: 257 }, () => structuredClone(d.files[0].hunks[0])); },
+    (d) => { d.files[0].hunks = [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 4097, lines: Array(4097).fill('+x') }]; },
+  ];
+  for (const mutate of variants) {
+    const evidence = diffEvidence(); mutate(evidence);
+    const fixture = project(pair(evidence));
+    assert.deepEqual(fixture.commands[0].touchedFiles, evidence.changedFiles);
+    assert.equal(fixture.commands[0].status, 'success');
+    assert.ok(!fixture.detail().timelineSections.some(s => s.type === 'diff'));
+    assert.ok(fixture.detail().timelineSections.some(s => s.type === 'notice' && /omitted/.test(s.text)));
+    evidence.files.at(-1).hunks.at(-1).lines.push('invalid tail');
+    assert.deepEqual(project(pair(evidence)).commands[0].touchedFiles, []);
+  }
+  const excessive = diffEvidence();
+  excessive.files[0].hunks[0].lines[0] = ` ${'x'.repeat(2_048_001)}`;
+  assert.deepEqual(project(pair(excessive)).commands[0].touchedFiles, []);
+  for (const mutate of [
+    d => { d.changedFiles = Array(4097).fill('/synthetic/example.txt'); },
+    d => { d.files = Array.from({ length: 1025 }, (_, i) => ({ ...structuredClone(d.files[0]), filePath: `/synthetic/file-${i}` })); d.changedFiles = d.files.map(f => f.filePath); },
+    d => { d.files[0].hunks = Array.from({ length: 4097 }, () => structuredClone(d.files[0].hunks[0])); },
+    d => { d.files[0].hunks = [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 65537, lines: Array(65537).fill('+x') }]; },
+  ]) {
+    const evidence = diffEvidence(); mutate(evidence);
+    assert.deepEqual(project(pair(evidence)).commands[0].touchedFiles, []);
+  }
+  for (const units of [128_000, 128_001]) {
+    const evidence = diffEvidence();
+    evidence.files[0].hunks = [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['+' + 'x'.repeat(units - 1)] }];
+    const fixture = project(pair(evidence));
+    assert.deepEqual(fixture.commands[0].touchedFiles, evidence.changedFiles);
+    assert.equal(fixture.detail().timelineSections.some(s => s.type === 'diff'), units === 128_000);
+    const denied = pair(evidence); denied[1].toolDenialKind = 'permission_denied';
+    assert.deepEqual(project(denied).commands[0].touchedFiles, []);
+    const failed = pair(evidence); failed[1].toolUseResult.exitCode = 3;
+    assert.equal(project(failed).commands[0].status, 'failed');
+    assert.deepEqual(project(failed).commands[0].touchedFiles, evidence.changedFiles);
+  }
+});
+
+test('accepted diff search survives stdout budgets across project, session and materialization', async (t) => {
+  const fs = require('node:fs/promises');
+  const path = require('node:path');
+  const os = require('node:os');
+  const { buildClaudeIndex, buildClaudeSourceBackedIndex } = require('../src/claude');
+  const { queryForIndex, materializeSessionForIndex } = require('../src/source-adapters');
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-diff-search-'));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const container = path.join(home, 'projects', 'synthetic');
+  await fs.mkdir(container, { recursive: true });
+  for (const { stdoutLength, omitDiff } of [4, 20_000].flatMap(stdoutLength => (
+    [false, true].map(omitDiff => ({ stdoutLength, omitDiff }))
+  ))) {
+    const evidence = diffEvidence(); evidence.files[0].hunks[0].lines[2] = '+DIFF_ONLY_NEEDLE';
+    if (omitDiff) {
+      evidence.files[0].hunks[0].lines.push(`+${'x'.repeat(128_001)}`);
+      evidence.files[0].hunks[0].newLines += 1;
+    }
+    const records = pair(evidence); records[1].toolUseResult.stdout = 'o'.repeat(stdoutLength);
+    await fs.writeFile(path.join(container, 'search.jsonl'), records.map((r, i) => JSON.stringify({
+      ...r, sessionId: 'search', cwd: '/synthetic/repo', uuid: `search-${i}`, version: '2.1.283',
+    })).join('\n') + '\n');
+    const options = { claudeHome: home, repoRoot: '/synthetic/repo' };
+    const resident = await buildClaudeIndex(options);
+    const indexed = await buildClaudeSourceBackedIndex(options);
+    const filters = { q: 'DIFF_ONLY_NEEDLE', layer: 'main', offset: 0, limit: 100 };
+    const expected = await queryForIndex(resident).filterSessions(resident, filters);
+    assert.equal(expected.matchingEventTotal, 1);
+    assert.deepEqual(await queryForIndex(indexed).filterSessions(indexed, filters), expected);
+    const materialized = await materializeSessionForIndex(indexed, indexed.sessions[0]);
+    assert.deepEqual(materialized.logicalEvents, resident.sessions[0].logicalEvents);
+    const view = { ...resident, sessions: [materialized], sessionsById: new Map([[materialized.id, materialized]]) };
+    for (const index of [resident, view]) {
+      const timeline = await queryForIndex(index).getTimeline(index, materialized.id, filters);
+      assert.equal(timeline.searchEventCount, 1);
+      assert.equal(timeline.searchMatchCount, 1);
+      const hit = timeline.events.find(e => e.hasSearchHit);
+      assert.equal(hit.kind, 'command');
+      assert.equal(hit.status, 'success');
+      const detail = buildClaudeEventDetail(materialized, hit.id, 'main');
+      const diffSection = detail.timelineSections.find(s => s.type === 'diff');
+      if (omitDiff) {
+        assert.equal(diffSection, undefined);
+        assert.ok(detail.timelineSections.some(s => s.type === 'notice' && /omitted/.test(s.text)));
+      } else {
+        assert.match(diffSection.text, /DIFF_ONLY_NEEDLE/);
+      }
+    }
   }
 });
 

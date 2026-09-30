@@ -598,21 +598,27 @@ function createClaudeLogicalBuilder(deps) {
   // (Monitor). Keep admission separate from the older Agent/Bash grammar.
   function backgroundNotification(raw, owner) {
     const sourceText = trustedTaskNotificationText(raw);
+    const invalid = { raw, sourceText, valid: false, fingerprint: `invalid:${raw.rawId}` };
+    // Independent validation ceiling, not the summary/result display budget.
+    if (sourceText.length > 2_048_000) return invalid;
     const text = sourceText.trim();
     const values = parseStrictFlatTags(text.slice('<task-notification>'.length, -'</task-notification>'.length),
       new Set(owner.kind === 'background_mcp'
         ? ['task-id', 'status', 'summary', 'result']
         : ['task-id', 'tool-use-id', 'output-file', 'status', 'summary', 'event']), '');
-    const invalid = { raw, sourceText, valid: false, fingerprint: `invalid:${raw.rawId}` };
     if (!values || !text.startsWith('<task-notification>') || !text.endsWith('</task-notification>')) return invalid;
     const status = values.get('status')?.trim();
     const summary = values.get('summary')?.trim();
     const result = values.get(owner.kind === 'monitor' ? 'event' : 'result')?.trim() || '';
     if (values.get('task-id')?.trim() !== owner.taskId || !['completed', 'failed'].includes(status)
-        || !summary || summary.length > 4000 || result.length > 16000
+        || !summary
         || (owner.kind === 'monitor' && values.get('tool-use-id')?.trim() !== owner.call.id)
         || (owner.kind === 'background_mcp' && !result)) return invalid;
-    return { raw, sourceText, valid: true, status, summary, result,
+    const omission = '\n[omitted; see raw refs]';
+    const bounded = (value, limit) => value.length <= limit ? value
+      : `${value.slice(0, limit - omission.length)}${omission}`;
+    return { raw, sourceText, valid: true, status,
+      summary: bounded(summary, 4000), result: bounded(result, 16000),
       outputFile: (values.get('output-file') || '').trim().slice(0, 4000),
       recovery: '', usage: null, exitCode: null, fingerprint: sourceText };
   }
@@ -925,9 +931,19 @@ function createClaudeLogicalBuilder(deps) {
       || (hasUniqueStructuredResultOwner(resultMatch) ? result?.agentId : '')
       || '',
     );
-    const bashEditFiles = call.name === 'Bash' && status !== 'declined'
-      ? claudeBashEditDiff(structuredResult)?.touchedFiles || []
-      : [];
+    const bashEditDiff = call.name === 'Bash' && status !== 'declined'
+      ? claudeBashEditDiff(structuredResult) : null;
+    const bashEditFiles = bashEditDiff?.touchedFiles || [];
+    // Display omission must not erase searchable evidence. Give an accepted
+    // omitted diff its own bounded JSON prefix, independent of stdout.
+    const bashEditSearchText = bashEditDiff
+      ? bashEditDiff.text || stringifyValue(structuredResult.bashEditDiff)
+      : '';
+    // Accepted diff content owns an independent search projection. Do not
+    // duplicate it in the generic JSON prefix (which also inflates hit counts).
+    const searchableResult = bashEditDiff
+      ? Object.fromEntries(Object.entries(structuredResult).filter(([key]) => key !== 'bashEditDiff'))
+      : structuredResult;
     const touchedFiles = [
       ...toolInputFiles(call.name, call.input),
       ...deltaTouchedFiles(supplements),
@@ -957,7 +973,9 @@ function createClaudeLogicalBuilder(deps) {
         call.name,
         stringifyValue(call.input),
         resultText,
-        stringifyValue(structuredResult),
+        stringifyValue(searchableResult),
+        bashEditSearchText,
+        bashEditFiles.join('\n'),
         ownsResultMetadata ? result?.toolDenialKind : '',
         lifecycleSearchText(lifecycle),
       ].filter(Boolean).join('\n'),
