@@ -425,6 +425,60 @@ test('v4 compaction uses native replacement bounds and exact source references w
   }
 });
 
+for (const compressed of [false, true]) {
+  test(`v4 compaction source sets preserve gaps, scalar order and exact Raw (compressed=${compressed})`, async t => {
+    for (const { refs, matching, duplicateShadow = false } of [
+      { refs: [[0, 1], [4, 7]], matching: true },
+      { refs: [0, 1, 4, 5, [6, 7]], matching: true },
+      { refs: [7, 0, 6, 4, 1, 5], matching: true },
+      { refs: [[0, 5]], matching: false }, // Same cardinality, different members.
+      { refs: [[0, 1], [4, 7]], matching: false, duplicateShadow: true },
+    ]) {
+      const rows = [
+        ...Array.from({ length: 6 }, (_, i) => user(i, `history ${i}`)),
+        row('compaction/start', 6, { compactionId: 'ranges' }),
+        row('compaction/summary', 7, { compactionId: 'ranges', summary: text('range summary'),
+          shadowedRange: { start: 0, end: 5 }, shadowedSeqs: duplicateShadow ? [0, 1, 4, 4] : [0, 1, 4, 5], shadowedTokenCount: 10 }),
+        row('user/message', 8, { role: 'user', source: { kind: 'compact-checkpoint', compactionId: 'ranges' }, content: text('checkpoint') },
+          { surfaceOp: { op: 'replace', startSeq: 0, endSeq: 5 }, sourceEventSeqs: refs }),
+        row('compaction/end', 9, { compactionId: 'ranges' }),
+      ];
+      const f = await fixture(t, rows);
+      if (compressed) {
+        await fsp.writeFile(f.file + '.zstd', Buffer.concat([f.head, ...rows].map(value => zstdCompressSync(Buffer.from(JSON.stringify(value) + '\n')))));
+        await fsp.rm(f.file);
+      }
+      const { index, session } = await read(f);
+      assert.equal(session.counts.userMessages, 6);
+      const compaction = session.logicalEvents.find(e => e.kind === 'compaction');
+      assert.equal(compaction.status, matching ? 'success' : 'incomplete');
+      assert.deepEqual(compaction.rawRefs.map(r => r.sourceLocator.seq), matching ? [6, 7, 8, 9] : [6, 7, 9]);
+      const first = await buildEventDetailForSession(index, session, compaction.id, 'main');
+      assert.deepEqual(await buildEventDetailForSession(index, session, compaction.id, 'main'), first);
+      const raw = session.rawEvents.find(r => r.seq0 === 8);
+      assert.deepEqual(JSON.parse((await readDeepSeekRawRecord(index, session, raw)).raw), rows[8]);
+      const detail = await buildEventDetailForSession(index, session, raw.rawId, 'raw');
+      assert.deepEqual(detail.timelineSections[0].value, rows[8]);
+    }
+  });
+}
+
+test('v4 prune requires exactly the original result singleton, not a containing range', async t => {
+  for (const refs of [[[3, 3]], [3], [[2, 3]], [[2, 2]]]) {
+    const rows = [row('turn/start', 0, { turn: 1 }), row('step/start', 1, { turn: 1, step: 1 }),
+      call(2, 'pruned'), result(3, 'pruned', 'original'),
+      row('compaction/prune', 4, { shadowedSeqs: [3], shadowedRange: { start: 3, end: 3 }, shadowedTokenCount: 1 }),
+      result(5, 'pruned', 'short', false, { sourceEventSeqs: refs, surfaceOp: { op: 'replace', startSeq: 3, endSeq: 3 } })];
+    const f = await fixture(t, rows);
+    const { index, session } = await read(f);
+    const operation = session.logicalEvents.find(e => e.toolName === 'read');
+    assert.equal(Boolean(operation.toolResultPrune), JSON.stringify(refs) === '[[3,3]]' || JSON.stringify(refs) === '[3]');
+    assert.deepEqual(operation.rawRefs.map(r => r.sourceLocator.seq), [2, 3]);
+    const raw = session.rawEvents.find(r => r.seq0 === 5);
+    assert.deepEqual(JSON.parse((await readDeepSeekRawRecord(index, session, raw)).raw), rows[5]);
+  }
+});
+
 for (const version of [0, 4]) {
   test(`format ${version} repeated compaction follows surface order even when seq endpoints descend`, async t => {
     const summary = (seq, id, start, end, shadowedSeqs) => row('compaction/summary', seq, {

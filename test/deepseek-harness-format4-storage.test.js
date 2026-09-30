@@ -65,18 +65,89 @@ test('v4 rejects missing or mistyped seed ownership and stale physical header fi
   assert.equal(storage.parseHeaderText(line(header({ cwd: 'C:\\synthetic\\project' }))).cwd, 'C:\\synthetic\\project');
 });
 
-test('v4 source references decode inclusive ranges without altering physical Raw data', () => {
+test('v4 source references retain inclusive ranges without altering physical Raw data', () => {
   const physical = event({ sourceEventSeqs: [0, [2, 4], 6], surfaceOp: { op: 'replace', startSeq: 2, endSeq: 5 } });
   const before = JSON.stringify(physical);
   const decoded = storage.decodeStorageRecord(physical, 4);
   assert.equal(decoded.length, 1);
-  assert.deepEqual(decoded[0].sourceEventSeqs, [0, 2, 3, 4, 6]);
+  assert.deepEqual(decoded[0].sourceEventSeqs, [0, [2, 4], 6]);
+  assert.equal(storage.sourceEventSeqsMatch(decoded[0].sourceEventSeqs, [6, 2, 0, 4, 3]), true);
   assert.equal(decoded[0].seq, physical.seq);
   assert.equal(decoded[0].data, physical.data);
   assert.equal(JSON.stringify(physical), before);
   assert.deepEqual(storage.decodeSessionEventRecord(event({ sourceEventSeqs: [5, 0, 3] }), 4).sourceEventSeqs,
     [5, 0, 3]);
   assert.equal(storage.decodeSessionEventRecord(physical, 0), physical);
+});
+
+test('source-reference matching is exact without expanding ranges or sorting scalar history', () => {
+  for (const refs of [[0, [2, 4], 6], [6, 4, 0, 3, 2]]) {
+    const decoded = storage.decodeSessionEventRecord(event({ sourceEventSeqs: refs }), 4);
+    for (const [expected, matches] of [[[6, 2, 0, 4, 3], true], [[0, 2, 3, 4], false],
+      [[0, 2, 3, 4, 5], false], [[0, 2, 3, 4, 4], false], [[0, 2, 3, 4, '6'], false]]) {
+      assert.equal(storage.sourceEventSeqsMatch(decoded.sourceEventSeqs, expected), matches);
+    }
+    assert.deepEqual(decoded.sourceEventSeqs, refs);
+  }
+  assert.equal(storage.sourceEventSeqsMatch(undefined, []), false);
+  assert.equal(storage.sourceEventSeqsMatch([], []), true);
+  assert.equal(storage.sourceEventSeqsMatch([[3, 3]], [3]), true);
+  assert.equal(storage.sourceEventSeqsMatch([[3, 4]], [3]), false);
+  assert.equal(storage.sourceEventSeqsMatch([3], [3]), true); // Legacy singleton.
+});
+
+test('one large source range retains only its encoded endpoints', () => {
+  const physical = event({ seq: 1000000, sourceEventSeqs: [[0, 999999]] });
+  const decoded = storage.decodeSessionEventRecord(physical, 4);
+  assert.equal(decoded.sourceEventSeqs.length, 1);
+  assert.deepEqual(decoded.sourceEventSeqs, [[0, 999999]]);
+  assert.equal(storage.sourceEventSeqsMatch(decoded.sourceEventSeqs, [0, 999999]), false);
+  const max = Number.MAX_SAFE_INTEGER;
+  const safeBoundary = storage.decodeSessionEventRecord(event({ seq: max, sourceEventSeqs: [[0, max - 1]] }), 4);
+  assert.deepEqual(safeBoundary.sourceEventSeqs, [[0, max - 1]]);
+  assert.equal(storage.sourceEventSeqsMatch(safeBoundary.sourceEventSeqs, [0]), false);
+  assert.throws(() => storage.decodeSessionEventRecord(event({ seq: max, sourceEventSeqs: [[0, max]] }), 4), invalid);
+});
+
+test('compact source-reference validation agrees with the prior expanded contract on small inputs', () => {
+  // Independent small-domain oracle: expansion is intentional only in this
+  // test, to protect acceptance equivalence including unordered scalar lists.
+  function oracle(refs, seq) {
+    const count = n => Number.isSafeInteger(n) && n >= 0 && !Object.is(n, -0);
+    if (!Array.isArray(refs)) return null;
+    const values = [];
+    let hasRange = false;
+    for (const entry of refs) {
+      if (!Array.isArray(entry)) {
+        if (!count(entry) || entry >= seq) return null;
+        values.push(entry);
+      } else {
+        if (entry.length !== 2 || !entry.every(count)) return null;
+        const [start, end] = entry;
+        if (start > end || end >= seq || end - start + 1 > seq - values.length) return null;
+        for (let i = start; i <= end; i += 1) values.push(i);
+        hasRange = true;
+      }
+    }
+    if (new Set(values).size !== values.length) return null;
+    if (hasRange && values.some((n, i) => i && n <= values[i - 1])) return null;
+    return values;
+  }
+  const entries = [-0, -1, 0, 1, 3, 5, 1.5, null, '1', [], [0], [0, 0], [0, 2], [2, 4], [4, 3], [0, 5]];
+  const cases = [[], ...entries.map(a => [a])];
+  for (const a of entries) for (const b of entries) cases.push([a, b]);
+  for (const a of entries) for (const b of entries) for (const c of entries) cases.push([a, b, c]);
+  for (const refs of cases) {
+    const expected = oracle(refs, 5);
+    const physical = event({ seq: 5, sourceEventSeqs: refs });
+    if (expected === null) assert.throws(() => storage.decodeSessionEventRecord(physical, 4), invalid);
+    else {
+      const decoded = storage.decodeSessionEventRecord(physical, 4);
+      assert.deepEqual(decoded.sourceEventSeqs, refs);
+      assert.equal(storage.sourceEventSeqsMatch(decoded.sourceEventSeqs, expected), true);
+      assert.equal(storage.sourceEventSeqsMatch(decoded.sourceEventSeqs, [...expected].reverse()), true);
+    }
+  }
 });
 
 test('v4 rejects malformed source references and retired or malformed physical envelopes', () => {

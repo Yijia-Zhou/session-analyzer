@@ -764,27 +764,67 @@ function decodeSessionEventRecord(value, formatVersion = 0) {
   assertNativeFormat4Syntax(value);
   if (!Object.hasOwn(value, 'sourceEventSeqs')) return value;
   if (!Array.isArray(value.sourceEventSeqs)) throw invalid('sourceEventSeqs must be an array');
-  const decoded = [];
-  let hasRange = false;
+  const hasRange = value.sourceEventSeqs.some(Array.isArray);
+  const seen = hasRange ? null : new Set();
+  let cardinality = 0;
+  let previousEnd = -1;
   for (const entry of value.sourceEventSeqs) {
+    let start;
+    let end;
     if (!Array.isArray(entry)) {
       if (!count(entry) || entry >= value.seq) throw invalid('sourceEventSeqs must refer to earlier events');
-      decoded.push(entry);
-      continue;
+      start = end = entry;
+    } else {
+      if (entry.length !== 2 || !entry.every(count)) throw invalid('sourceEventSeqs range must be a [start, end] pair');
+      [start, end] = entry;
+      if (start > end || end >= value.seq || end - start + 1 > value.seq - cardinality) {
+        throw invalid('sourceEventSeqs range exceeds its event seq');
+      }
     }
-    if (entry.length !== 2 || !entry.every(count)) throw invalid('sourceEventSeqs range must be a [start, end] pair');
-    const [start, end] = entry;
-    if (start > end || end >= value.seq || end - start + 1 > value.seq - decoded.length) {
-      throw invalid('sourceEventSeqs range exceeds its event seq');
+    if (hasRange && start <= previousEnd) throw invalid('sourceEventSeqs ranges must be strictly increasing');
+    if (seen?.has(start)) throw invalid('sourceEventSeqs must contain unique earlier seqs');
+    seen?.add(start);
+    previousEnd = end;
+    cardinality += end - start + 1;
+  }
+  // Keep the physical scalar/range representation. Admission and consumers
+  // must scale with encoded entries, never allocate by range cardinality.
+  return value;
+}
+
+// Exact set equality for already validated references. Scalar-only lists keep
+// their original order (including v0); lists containing ranges are increasing.
+// Cost is O(m + k log m) for m encoded entries and k expected references.
+function sourceEventSeqsMatch(sourceEventSeqs, expected) {
+  if (!Array.isArray(sourceEventSeqs) || !Array.isArray(expected)) return false;
+  let size = 0;
+  let hasRange = false;
+  for (const entry of sourceEventSeqs) {
+    if (Array.isArray(entry)) {
+      size += entry[1] - entry[0] + 1;
+      hasRange = true;
+    } else size += 1;
+  }
+  if (size !== expected.length || new Set(expected).size !== expected.length) return false;
+  if (!hasRange) {
+    const sources = new Set(sourceEventSeqs);
+    return expected.every(seq => sources.has(seq));
+  }
+  return expected.every(seq => {
+    if (!Number.isSafeInteger(seq) || seq < 0 || Object.is(seq, -0)) return false;
+    let low = 0;
+    let high = sourceEventSeqs.length - 1;
+    while (low <= high) {
+      const middle = low + Math.floor((high - low) / 2);
+      const entry = sourceEventSeqs[middle];
+      const start = Array.isArray(entry) ? entry[0] : entry;
+      const end = Array.isArray(entry) ? entry[1] : entry;
+      if (seq < start) high = middle - 1;
+      else if (seq > end) low = middle + 1;
+      else return true;
     }
-    for (let seq = start; seq <= end; seq += 1) decoded.push(seq);
-    hasRange = true;
-  }
-  if (new Set(decoded).size !== decoded.length) throw invalid('sourceEventSeqs must contain unique earlier seqs');
-  if (hasRange && decoded.some((seq, index) => index > 0 && seq <= decoded[index - 1])) {
-    throw invalid('sourceEventSeqs ranges must be strictly increasing');
-  }
-  return { ...value, sourceEventSeqs: decoded };
+    return false;
+  });
 }
 
 function inferDescriptorPayload(session) {
@@ -890,6 +930,7 @@ module.exports = {
   safeIso,
   sameFileIdentity,
   scanZstdFrames,
+  sourceEventSeqsMatch,
   storageError,
   throwIfAborted,
   truncate,

@@ -1615,13 +1615,14 @@ function decodeToolResultPrune(event) {
   };
 }
 
-function decodePrunedToolResultReplacement(event) {
+function decodePrunedToolResultReplacement(event, formatVersion) {
   if (event?.type !== 'tool/result' || !isReplaceSurfaceOp(event.surfaceOp)) return null;
   const range = replaceSurfaceRange(event.surfaceOp);
   if (!range || range.start !== range.end) return null;
-  if (!Array.isArray(event.sourceEventSeqs)
-      || event.sourceEventSeqs.length !== 1
-      || event.sourceEventSeqs[0] !== range.start) return null;
+  const sourcesMatch = formatVersion === 4
+    ? storage.sourceEventSeqsMatch(event.sourceEventSeqs, [range.start])
+    : Array.isArray(event.sourceEventSeqs) && event.sourceEventSeqs.length === 1 && event.sourceEventSeqs[0] === range.start;
+  if (!sourcesMatch) return null;
   const originalResultSeq = range.start;
   if (!Number.isSafeInteger(originalResultSeq) || originalResultSeq < 0) return null;
   return {
@@ -1684,6 +1685,7 @@ function projectToolResultPrunes(
   originalResultsBySeq,
   toolCallsById,
   seedBoundary,
+  formatVersion,
 ) {
   const childStart = Number.isSafeInteger(seedBoundary) ? seedBoundary : 0;
   const ownedLogicalIds = new Set(session.logicalEvents.map(event => event.id));
@@ -1698,7 +1700,7 @@ function projectToolResultPrunes(
   }
   for (const row of replacementRows) {
     if (row.event.seq < childStart || !ownedLogicalIds.has(row.logical.id)) continue;
-    const facts = decodePrunedToolResultReplacement(row.event);
+    const facts = decodePrunedToolResultReplacement(row.event, formatVersion);
     if (!facts) continue;
     appendGroupedRow(replacementsByOriginalSeq, facts.originalResultSeq, { ...row, facts });
   }
@@ -3196,9 +3198,7 @@ async function reconstructSessionArtifact(
           ? [compaction.startEvent.seq, compaction.summaryEvent.seq, ...shadowedSeqs] : [];
         const nativeMatch = header.version !== 4 || (range && sourceRange && Array.isArray(shadowedSeqs)
           && range.start === sourceRange.start && range.end === sourceRange.end
-          && Array.isArray(event.sourceEventSeqs) && sourceSeqs.length === event.sourceEventSeqs.length
-          && new Set(sourceSeqs).size === sourceSeqs.length
-          && sourceSeqs.every(seq => event.sourceEventSeqs.includes(seq)));
+          && storage.sourceEventSeqsMatch(event.sourceEventSeqs, sourceSeqs));
         if (compaction && !compaction.replacementRaw && range && nativeMatch) {
           compaction.replacementRaw = raw;
           compaction.replacementEvent = event;
@@ -3525,6 +3525,7 @@ async function reconstructSessionArtifact(
     originalToolResultsBySeq,
     toolCallsById,
     seedBoundary,
+    header.version,
   );
   session.title = chooseDeepSeekTitle(session, seedBoundary);
   session.updatedAt = safeIso(lastTime) || session.startedAt;
