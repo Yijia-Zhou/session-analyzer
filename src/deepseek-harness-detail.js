@@ -185,10 +185,19 @@ function parsedEventsWithRawIds(session, parsedByOrdinal, rawIds) {
   return out;
 }
 
-function detailForUserMessage(event, session) {
-  const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
+function detailForUserMessage(event, session, parsedByOrdinal, locale) {
+  const detail = commonDetail(event, locale);
   const content = sectionMarkdown(event.searchText || event.preview || '', 'content', '');
   if (content) detail.timelineSections.push(content);
+  const sourceEvent = parsedEventsForRawIds(session, parsedByOrdinal, [event.rawRefs?.[0]?.rawId])[0];
+  const source = sourceEvent?.data?.source;
+  if (source?.kind === 'user-question-reply') {
+    detail.inspectorSections.push(i18n.localizeSection(sectionKv([
+      { key: 'Source kind', value: source.kind },
+      { key: 'Call ID', value: source.callId },
+      { key: 'Outcome', value: source.outcome },
+    ], 'traceability'), locale));
+  }
   return appendInboxProvenanceDetail(detail, event, session);
 }
 
@@ -1399,7 +1408,7 @@ function detailForProtocolEvent(event, session, parsedByOrdinal) {
 }
 
 function buildLogicalDetail(event, session, parsedByOrdinal, locale = i18n.DEFAULT_LOCALE) {
-  if (event.kind === 'user_message') return detailForUserMessage(event, session);
+  if (event.kind === 'user_message') return detailForUserMessage(event, session, parsedByOrdinal, locale);
   if (event.kind === 'assistant_message') return detailForAssistantMessage(event, session, parsedByOrdinal);
   if (event.kind === 'reasoning') return detailForReasoning(event, session, parsedByOrdinal);
   if (event.kind === 'compaction') return detailForCompaction(event, session, parsedByOrdinal);

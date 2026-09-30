@@ -181,6 +181,12 @@ function isAppendSurfaceOp(value) {
   return value === 'append';
 }
 
+function isDeepSeekHumanUserMessageSource(source) {
+  // MessageSourceMap is merge-extensible. Admit source-backed human input,
+  // not every user-role producer (schedule, goal and runtime/plugin context).
+  return source?.kind === 'user' || source?.kind === 'user-question-reply';
+}
+
 function isReplaceSurfaceOp(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value) && value.op === 'replace');
 }
@@ -544,7 +550,7 @@ function makeRawEvent(record, recordOrdinal, sourceFile, sessionId) {
     searchText = protocolSearchText(recordType, data);
   }
   const payloadType = recordType;
-  const role = data?.source?.kind === 'user'
+  const role = recordType === 'user/message' && isDeepSeekHumanUserMessageSource(data.source)
     ? 'user'
     : (recordType === 'assistant/message' || recordType === 'assistant/chunk' || recordType === 'assistant/attempt' || packed ? 'assistant'
       : (recordType === 'system/message' || recordType === 'developer/message' ? 'system' : ''));
@@ -3200,14 +3206,14 @@ async function reconstructSessionArtifact(
             preview: truncatePreview(visibleText(data.content) || 'Surface replacement user message'),
           }));
         }
-      } else if (data.source?.kind === 'user' && isAppendSurfaceOp(event.surfaceOp)) {
+      } else if (isDeepSeekHumanUserMessageSource(data.source) && isAppendSurfaceOp(event.surfaceOp)) {
         // Human transcript follows append-origin evidence. A compaction
         // replacement user/message is model-only surface material and must
         // not become a Main human message.
         const logical = makeUserEvent(session.id, event, raw, 'user_message', 'user_message');
         attachInboxProvenance(logical, event, inboxReplay);
         session.logicalEvents.push(logical);
-      } else if (data.source?.kind === 'user') {
+      } else if (isDeepSeekHumanUserMessageSource(data.source)) {
         session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, 'user/message', {
           label: 'Surface replacement user message',
           role: 'system',

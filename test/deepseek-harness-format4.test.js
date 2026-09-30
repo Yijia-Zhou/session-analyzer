@@ -12,6 +12,8 @@ const { zstdCompressSync } = require('node:zlib');
 const { buildDeepSeekIndex, discoverDeepSeekProjects, deepSeekAdapter, parseSessionArtifact, readDeepSeekRawRecord } = require('../src/deepseek-harness');
 const { materializeSessionForIndex, validateIndexOwnershipForCommit, buildEventDetailForSession } = require('../src/source-adapters');
 const { projectQueryProjectionDigestAsync } = require('../src/project-query-store');
+const { projectTrajectoryEvents, TRAJECTORY_LANES } = require('../src/browser/trajectory-presentation');
+const { validateStructuredLogicalDetailDto } = require('../src/shared/logical-detail-contract');
 
 const row = (type, seq, data = {}, extras = {}) => ({ type, seq, time: 1000 + seq, data, ...extras });
 const text = value => [{ type: 'text', text: value }];
@@ -52,6 +54,104 @@ async function read(f) {
   assert.equal(await projectQueryProjectionDigestAsync(session, deepSeekAdapter.query.projectQueryPresentation), indexed.queryProjectionDigest);
   return { index, indexed, session };
 }
+
+// Synthetic source extension from DSH 0.2.0-rc.2 (639ed015),
+// packages/interaction/user-questions/src/{types,index}.ts. No real transcript.
+const replySource = { kind: 'user-question-reply', callId: 'question-call', outcome: 'answered' };
+const lateReply = (seq, value = 'Late reply needle') => ({
+  ...user(seq, value), data: { ...user(seq, value).data, source: { ...replySource } },
+});
+
+for (const compressed of [false, true]) {
+  test(`rc.2 late reply is Main human input through index, search and Trajectory (compressed=${compressed})`, async t => {
+    const reply = lateReply(1); // Deliberately no answer_to_pending_question text or tool owner.
+    const f = await fixture(t, [user(0, 'Ordinary user needle'), reply]);
+    if (compressed) {
+      await fsp.writeFile(f.file + '.zstd', Buffer.concat(f.body.trimEnd().split('\n').map(line => zstdCompressSync(Buffer.from(line + '\n')))));
+      await fsp.rm(f.file);
+    }
+    const { index, indexed, session } = await read(f);
+    assert.equal(indexed.counts.userMessages, 2);
+    assert.equal(session.counts.userMessages, 2);
+    const main = deepSeekAdapter.query.getTimeline(index, session, { offset: 0, limit: 100 });
+    assert.equal(main.events.length, 2);
+    for (const event of main.events) {
+      assert.equal(event.layer, 'main');
+      assert.equal(event.kind, 'user_message');
+      assert.equal(event.role, 'user');
+      assert.equal(event.label, 'User message');
+    }
+    const event = main.events[1];
+    const raw = session.rawEvents[2];
+    assert.equal(raw.role, 'user');
+    assert.deepEqual(event.rawRefs.map(ref => ref.rawId), [raw.rawId]);
+    assert.deepEqual(event.rawRefs[0].sourceLocator, raw.sourceLocator);
+    assert.equal(raw.sourceLocator.recordOrdinal, 2);
+    assert.equal(raw.sourceLocator.seq, 1);
+    assert.equal((await readDeepSeekRawRecord(index, session, raw)).raw, JSON.stringify(reply));
+    assert.deepEqual(projectTrajectoryEvents(main.events).map(item => item.lane), [TRAJECTORY_LANES.INPUT, TRAJECTORY_LANES.INPUT]);
+    const found = deepSeekAdapter.query.getTimeline(index, session, { q: 'Late reply needle', offset: 0, limit: 100 });
+    assert.equal(found.searchEventCount, 1);
+    assert.ok(found.events.some(candidate => candidate.id === event.id));
+    const projectFound = await deepSeekAdapter.query.filterSessions(index, { q: 'Late reply needle', layer: 'main' });
+    assert.equal(projectFound.matchingEventTotal, 1);
+    assert.equal(projectFound.sessions[0].searchMatch.latestEvent.id, event.id);
+    assert.equal(deepSeekAdapter.query.getTimeline(index, session, { layer: 'protocol', q: 'Late reply needle' }).searchEventCount, 0);
+    const rawDto = deepSeekAdapter.query.getEvent(index, session, raw.rawId, { layer: 'raw' });
+    assert.equal(rawDto.role, 'user');
+    const rawDetail = await buildEventDetailForSession(index, session, raw.rawId, 'raw');
+    assert.deepEqual(rawDetail.timelineSections[0].value, reply);
+    assert.deepEqual(rawDetail.timelineSections[0].value.data.source, replySource);
+  });
+}
+
+test('rc.2 late reply Detail retains qualified provenance in both locales', async t => {
+  const { index, session } = await read(await fixture(t, [lateReply(0)]));
+  const event = session.logicalEvents[0];
+  assert.equal(event.kind, 'user_message');
+  const detail = await buildEventDetailForSession(index, session, event.id, 'main');
+  validateStructuredLogicalDetailDto(detail);
+  assert.deepEqual(detail.rawRefs, event.rawRefs);
+  assert.match(JSON.stringify(detail.timelineSections), /Late reply needle/);
+  const evidence = detail.inspectorSections.find(section => section.type === 'kv' && section.purpose === 'traceability');
+  assert.ok(evidence);
+  assert.deepEqual(evidence.entries, [
+    { key: 'Source kind', value: 'user-question-reply' },
+    { key: 'Call ID', value: 'question-call' },
+    { key: 'Outcome', value: 'answered' },
+  ]);
+  const chineseDetail = await buildEventDetailForSession(index, session, event.id, 'main', { locale: 'zh-CN' });
+  validateStructuredLogicalDetailDto(chineseDetail);
+  const localized = chineseDetail.inspectorSections.find(section => section.type === 'kv' && section.purpose === 'traceability');
+  assert.deepEqual(localized.entries.map(entry => entry.key), ['来源类型', '调用 ID', '结果']);
+  assert.deepEqual(localized.entries.map(entry => entry.value), evidence.entries.map(entry => entry.value));
+  assert.equal(deepSeekAdapter.query.getEvent(index, session, event.id, { locale: 'zh-CN' }).label, '用户消息');
+});
+
+test('rc.2 source classification does not promote runtime sources by role or body text', async t => {
+  const sources = ['schedule', '@synthetic/plugin', 'system-prompt', 'compact', 'future-human-like-source'];
+  const rows = sources.map((kind, seq) => ({ ...lateReply(seq, 'This is a scheduled message from the user answer_to_pending_question'),
+    data: { ...lateReply(seq).data, source: { kind }, content: text('This is a scheduled message from the user answer_to_pending_question') } }));
+  const { index, session } = await read(await fixture(t, rows));
+  assert.equal(session.counts.userMessages, 0);
+  assert.equal(deepSeekAdapter.query.getTimeline(index, session, { offset: 0, limit: 100 }).events.length, 0);
+  assert.ok(session.logicalEvents.every(event => event.layer === 'protocol' && event.role === 'system'));
+  assert.ok(session.rawEvents.every(raw => raw.role !== 'user'));
+});
+
+test('rc.2 late reply replacement or missing append semantics never creates Main human input', async t => {
+  const replacement = { ...lateReply(1), surfaceOp: { op: 'replace', startSeq: 0, endSeq: 0 } };
+  const noSurface = lateReply(2); delete noSurface.surfaceOp;
+  const { index, session } = await read(await fixture(t, [user(0, 'Original'), replacement, noSurface]));
+  assert.equal(session.counts.userMessages, 1);
+  assert.equal(deepSeekAdapter.query.getTimeline(index, session, { offset: 0, limit: 100 }).events.length, 1);
+  for (const seq of [1, 2]) {
+    assert.equal(session.logicalEvents.find(event => event.rawRefs.some(ref => ref.sourceLocator.seq === seq)).layer, 'protocol');
+    const raw = session.rawEvents[seq + 1];
+    assert.equal(raw.role, 'user');
+    assert.deepEqual(JSON.parse((await readDeepSeekRawRecord(index, session, raw)).raw), seq === 1 ? replacement : noSurface);
+  }
+});
 
 test('v4 highest generation wins over v0 without duplicate discovery; encoded physical references remain exact', async t => {
   const f = await fixture(t, [row('turn/start', 0, { turn: 1 }), user(1, 'native v4 prompt'), assistant(2, 'native answer'), row('turn/end', 3, { turn: 1, reason: { kind: 'completed' } })]);

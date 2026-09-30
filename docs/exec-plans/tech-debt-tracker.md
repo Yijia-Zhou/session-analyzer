@@ -2,6 +2,13 @@
 
 ## Tracked items / 跟踪条目
 
+### 29. DeepSeek shell exit-marker interpretation / DeepSeek shell 退出标记解释
+
+- Status: open; discovered during the rc.2 compatibility smoke, separate from the human-message source correction. / 状态：开放；rc.2 兼容 smoke 发现，与人类消息来源修复分开处理。
+- Evidence: installed DSH `0.2.0-rc.2` production `dsh-tool-pwsh` + `dsh-pwsh-local`, driven by a controlled provider, executed harmless print commands with exits 0 and 7. The latter persisted `[exit code: 7]` at the end of tool content with `isError:false`. Analyzer preserves command/output/Raw but presents both calls as `success`, leaves `outputStats.exitCode` unset, and undercounts failed commands. The stronger success/failure smoke assertion failed; this is not accepted status coverage. Local evidence: ignored `tmp/dsh-rc2-pwsh.{mjs,log,json}`. / 证据：已安装 rc.2 生产 PowerShell 工具与本地执行器由可控 provider 驱动，实际执行了退出码 0／7 的无害打印。后者持久化尾部退出标记但 isError 为 false；Analyzer 保留命令／输出／Raw，却都显示 success，缺失结构化退出码并漏计失败命令。成功／失败状态断言未通过，不能视为状态验收通过；本地证据位于所列忽略文件。
+- Source authority: [PowerShell result renderer](https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/packages/shell/tool-pwsh/src/render.ts) reserves `isError` for infrastructure errors; [shell status parser](https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/packages/shell/shell/src/render.ts) interprets terminal markers. Both files are unchanged from `477b4f42…` to `639ed015…`; this predates the rc.2 source extension. / 来源依据：所链接 renderer 将 isError 保留给基础设施错误，shell parser 解释末尾标记。两个文件在原始 format-4 pin 与 rc.2 之间均未改变，该缺口早于 rc.2 来源扩展。
+- Follow-up: establish bounded source-specific shell result interpretation for exact durable tool owners, with synthetic negative cases for ordinary output resembling markers, direct/PTC parity, background/timeout/signal boundaries, counts/Detail/search parity, and unchanged Raw. Persistent PowerShell completion-padding behavior was inspected in source but was not executed by this direct-tool smoke. / 后续：为精确持久化工具 owner 建立有界的来源专属 shell 结果解释；覆盖普通输出伪似标记、direct／PTC 一致性、后台／超时／信号边界、计数／详情／搜索一致性及 Raw 不变。持久 PowerShell 完成行空格行为仅检查源码，本次直接工具 smoke 未实际执行该场景。
+
 ### 28. Codex legacy Raw v2 performance follow-up / Codex 旧式 Raw v2 性能后续
 
 - Status: open; specialized performance work deferred from the v2 PR, separate from its required cross-platform correctness CI. / 状态：开放；专项性能工作从 v2 PR 延期，与必需的跨平台正确性 CI 分开。
