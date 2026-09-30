@@ -71,15 +71,16 @@ function embeddedStreamFacts(stream, limit = 16_000) {
   };
   let text = '';
   let reasoning = '';
-  let searchText = '';
   for (const block of blocks.values()) {
     if (block.kind !== 'text' && block.kind !== 'reasoning') continue;
-    if (searchText.length >= limit && (block.kind === 'text' ? text : reasoning).length >= limit) continue;
+    if ((block.kind === 'text' ? text : reasoning).length >= limit) continue;
     const value = blockText(block);
     if (block.kind === 'text') text = join(text, value);
     else reasoning = join(reasoning, value);
-    searchText = join(searchText, value);
   }
+  // Search the same bounded projections as Detail. Original blocks must not
+  // compete for a shared budget or reintroduce content beyond either limit.
+  const searchText = [text, reasoning].filter(Boolean).join('\n');
   return { text, reasoning, searchText, chunks, toolFragments, finishReason };
 }
 

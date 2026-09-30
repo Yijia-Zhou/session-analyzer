@@ -2,6 +2,19 @@
 
 ## Tracked items / 跟踪条目
 
+### 30. DeepSeek format-4 source-reference expansion capacity / DeepSeek format 4 来源引用展开容量
+
+- Status: open; capacity characterization and representation design, separate from the bounded attempt-search fix. / 状态：开放；需要容量量测与表示设计，与有界 attempt 搜索修复分开。
+- Confirmed source behavior at `5cb42d0`: `decodeSessionEventRecord` expands inclusive `sourceEventSeqs` ranges into an array, then builds a `Set` for uniqueness and checks increasing order when ranges are present. Work and temporary memory scale with expanded cardinality. Repeated references to growing prefixes across a Session can accumulate O(N²) expansion work. / 在所列基线确认：解码器将闭区间展开为数组，再建 Set 检查唯一性，并在含区间时校验递增；处理量与临时内存随展开项数增加，同会话多条记录反复引用增长前缀时可累积 O(N²) 展开工作。
+- Admission boundary: normal reconstruction checks actual contiguous sequence order before decoding, and each range must fit the remaining current-seq allowance. A tiny file with a fabricated huge seq was rejected as `DEEPSEEK_STORAGE_INVALID` at the gap check; this is not evidence that such a file reaches unbounded expansion. Direct decoder characterization is a different measurement from accepted-log reconstruction. / 准入边界：正常重建在解码前检查实际序号连续性，每个区间还必须符合当前 seq 的剩余数量约束。伪造巨大 seq 的微小文件在 gap 检查处被拒绝，不能声称此输入可到达无限展开；直接 decoder 量测与已接纳日志重建属于不同证据。
+- Bounded local evidence (Windows, Node `v24.18.1`, sequential fresh processes, 256 MiB JS heap ceiling): direct expansion of 10,000 / 100,000 / 1,000,000 entries took 1.25 / 7.20 / 100.86 ms, with observed post-call heap deltas 0.88 / 5.34 / 49.97 MiB. Continuous synthetic logs of 1,000 / 2,000 / 4,000 events, each referencing its prior prefix, reconstructed in 56.47 / 112.42 / 334.06 ms; the last encoded file was 352,832 bytes and implied 7,998,000 expanded references across events. These one-shot samples are not peak-allocation measurements, capacity limits, cross-platform results, or current-writer observations. Ignored evidence: `tmp/dsh-review-boundaries.cjs`, `tmp/dsh-review-{range,normal-range}-probes.jsonl`. / 有界本机证据：上述 Windows／Node 环境中以新进程顺序量测，设置 256 MiB JS 堆上限，结果如前；堆增量是在调用后观察，并非峰值分配。正常连续合成日志的规模、耗时及累计展开项数如前。单次样本不代表容量上限、跨平台结论或真实 writer；证据保存在所列忽略目录。
+- Required matrix / 所需矩阵：
+  - Vary one large range, many small ranges, sparse scalar references, mixed scalar/range entries, and many events referencing long prior prefixes; keep encoded size and expanded cardinality as separate axes. / 覆盖单大区间、多小区间、稀疏标量、混合表示及多事件重复长前缀，区分编码大小与展开项数。
+  - Measure cold indexing, one Session's materialization, first/repeated Detail, plain/Zstd input, and compaction/prune consumers separately; include current consumers' membership checks. / 分别量测冷索引、单会话物化、首次／重复详情、普通／Zstd 输入及 compaction／prune 消费端，包含既有成员查询成本。
+  - Record wall time, peak/sample RSS and heap, GC, event-loop delay and cancellation latency on supported Node/OS combinations, with repetitions and isolated measurements. / 在受支持 Node／OS 组合上隔离、重复量测耗时、峰值／采样 RSS 与堆、GC、事件循环延迟及取消响应。
+  - Preserve malformed/overlap/duplicate/order rejection, scalar-only source ordering, source chronology, Index/Materialized parity, exact Raw, and fail-closed generation/ownership rules. / 保持畸形／重叠／重复／顺序拒绝规则、纯标量来源顺序、来源时序、索引／物化一致性、精确 Raw 及代际／归属保守校验。
+- Preferred follow-up: assess validated range representations, interval membership or bounded iteration before eager allocation; retain cancellation checkpoints where needed. Do not impose an arbitrary fixed expansion count such as one million, silently drop references, or relax source validity to pass capacity tests. / 后续优先评估经过校验的范围表示、区间成员查询或有界迭代，按需保留取消检查点；不设置任意固定项数上限、不静默丢弃引用，也不为通过容量测试放松来源有效性。
+
 ### 29. DeepSeek shell exit-marker interpretation / DeepSeek shell 退出标记解释
 
 - Status: open; discovered during the rc.2 compatibility smoke, separate from the human-message source correction. / 状态：开放；rc.2 兼容 smoke 发现，与人类消息来源修复分开处理。

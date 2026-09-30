@@ -25,6 +25,7 @@ const { observeMaterializationPhase } = require('./materialization-observer');
 const SOURCE_KIND = storage.DEEPSEEK_SOURCE_KIND;
 const PREVIEW_LIMIT = 240;
 const SEARCH_TEXT_LIMIT = 16_000;
+const ATTEMPT_SEARCH_TEXT_LIMIT = 'assistant/attempt\n'.length + SEARCH_TEXT_LIMIT * 2 + 1;
 const PARTIAL_BLOCK_TEXT_LIMIT = SEARCH_TEXT_LIMIT;
 const TITLE_LIMIT = 120;
 const REASONING_LIMIT = SEARCH_TEXT_LIMIT;
@@ -350,15 +351,16 @@ function toolResultCallId(event) {
   return typeof callId === 'string' && callId ? callId : '';
 }
 
-function assistantAttemptText(stream) {
-  return embeddedStreamFacts(stream, SEARCH_TEXT_LIMIT)?.searchText || '';
+function assistantAttemptPreview(stream) {
+  const facts = embeddedStreamFacts(stream, SEARCH_TEXT_LIMIT);
+  return facts?.text.trim() || facts?.reasoning || '';
 }
 
 function protocolPreview(type, data) {
   const value = data && typeof data === 'object' ? data : {};
   switch (type) {
     case 'assistant/attempt':
-      return truncatePreview(assistantAttemptText(value.stream) || 'Uncommitted assistant attempt');
+      return truncatePreview(assistantAttemptPreview(value.stream) || 'Uncommitted assistant attempt');
     case 'system/message':
     case 'developer/message':
       return truncatePreview(visibleText(value.message?.content) || type);
@@ -425,7 +427,7 @@ function protocolSearchText(type, data) {
   const value = data && typeof data === 'object' ? data : {};
   switch (type) {
     case 'assistant/attempt':
-      return `${type}\n${assistantAttemptText(value.stream)}`.slice(0, SEARCH_TEXT_LIMIT);
+      return `${type}\n${embeddedStreamFacts(value.stream, SEARCH_TEXT_LIMIT)?.searchText || ''}`;
     case 'system/message':
     case 'developer/message':
       return `${type}\n${visibleText(value.message?.content)}\n${storage.flattenBounded(value.message?.source, 1000)}`.slice(0, SEARCH_TEXT_LIMIT);
@@ -696,6 +698,7 @@ function attachCodeModeOperation(event, sessionId, call, resultRaw = null) {
 
 function makeProtocolEvent(sessionId, event, raw, subtype, options = {}) {
   const preview = options.preview || protocolPreview(event.type, event.data);
+  const searchLimit = event.type === 'assistant/attempt' ? ATTEMPT_SEARCH_TEXT_LIMIT : SEARCH_TEXT_LIMIT;
   return makeLogicalEvent({
     id: `${sessionId}:logical:protocol:${event.seq}`,
     timestamp: safeIso(event.time),
@@ -706,7 +709,7 @@ function makeProtocolEvent(sessionId, event, raw, subtype, options = {}) {
     role: options.role || '',
     label: options.label || i18n.humanize(event.type),
     preview: truncatePreview(preview),
-    searchText: (options.searchText || protocolSearchText(event.type, event.data)).slice(0, SEARCH_TEXT_LIMIT),
+    searchText: (options.searchText || protocolSearchText(event.type, event.data)).slice(0, searchLimit),
     severity: options.severity || 'normal',
     status: options.status || '',
     rawRefs: [dshRawRef(raw)],

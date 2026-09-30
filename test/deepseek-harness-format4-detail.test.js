@@ -102,12 +102,72 @@ for (const deltas of [false, true]) {
   });
 }
 
-test('completed attempt blocks keep bounded projections without truncating Raw', async t => {
+async function assertAttemptSearchCoverage(data, markers) {
+  const { event, result } = await data.detail(e => e.subtype === 'assistant/attempt');
+  assert.equal(event.layer, 'protocol');
+  assert.equal(data.session.counts.assistantMessages, 0);
+  assert.equal(data.session.counts.toolCalls, 0);
+  assert.equal(data.session.logicalEvents.filter(e => e.layer === 'main').length, 0);
+  assert.deepEqual(data.index.sessions[0].counts, data.session.counts);
+  assert.equal(await projectQueryProjectionDigestAsync(data.session, deepSeekAdapter.query.projectQueryPresentation), data.index.sessions[0].queryProjectionDigest);
+  const raw = data.session.rawEvents.find(r => r.payloadType === 'assistant/attempt');
+  assert.deepEqual(event.rawRefs.map(ref => ref.rawId), [raw.rawId]);
+  assert.equal(raw.sourceLocator.recordOrdinal, 1);
+  assert.equal(raw.sourceLocator.seq, 0);
+  for (const marker of markers) {
+    assert.ok(JSON.stringify(result.timelineSections).includes(marker), `Detail retains ${marker}`);
+    assert.ok(event.searchText.includes(marker), `Logical search retains ${marker}`);
+    assert.ok(raw.searchText.includes(marker), `Raw search retains ${marker}`);
+    for (const layer of ['protocol', 'raw']) {
+      assert.equal(deepSeekAdapter.query.getTimeline(data.index, data.session, { layer, q: marker }).searchEventCount, 1);
+      const found = await deepSeekAdapter.query.filterSessions(data.index, { layer, q: marker });
+      assert.equal(found.total, 1);
+      assert.equal(found.matchingEventTotal, 1);
+      assert.equal(found.sessions[0].searchMatch.latestEvent.id, layer === 'raw' ? raw.rawId : event.id);
+    }
+  }
+  const rawDetail = await buildEventDetailForSession(data.index, data.session, raw.rawId, 'raw');
+  assert.deepEqual(rawDetail.timelineSections[0].value, data.rows[0]);
+  assert.deepEqual(rawDetail.sourceLocator, raw.sourceLocator);
+  assert.ok(event.searchText.length <= 'assistant/attempt\n'.length + 16000 * 2 + 1);
+  return { event, result, raw };
+}
+
+for (const closed of [true, false]) for (const longKind of ['text', 'reasoning']) {
+  test(`attempt retained projections do not compete in search (${longKind} first, closed=${closed})`, async t => {
+    const shortKind = longKind === 'text' ? 'reasoning' : 'text';
+    const longMarker = `LONG_${longKind.toUpperCase()}_TAIL`;
+    const shortMarker = `SHORT_${shortKind.toUpperCase()}_NEEDLE`;
+    const blocks = [{ type: longKind, text: 'x'.repeat(16000 - longMarker.length) + longMarker },
+      { type: longKind, text: 'OVER_BUDGET_SAME_KIND' },
+      { type: shortKind, text: shortMarker }];
+    const stream = blocks.map((block, index) => closed
+      ? { type: 'chunk', time: index + 10, chunk: { type: 'block-end', index, block } }
+      : { type: `${block.type}-chunks`, time0: index + 10, index, dt: [], texts: [block.text] });
+    const data = await fixture(t, [{ type: 'assistant/attempt', data: { turn: 1, step: 1, stream } }]);
+    const { event } = await assertAttemptSearchCoverage(data, [longMarker, shortMarker]);
+    assert.ok(!event.searchText.includes('OVER_BUDGET_SAME_KIND'));
+    assert.ok(event.preview.startsWith(longKind === 'reasoning' ? shortMarker : 'x'));
+  });
+}
+
+for (const kind of ['text', 'reasoning']) {
+  test(`attempt event prefix cannot displace retained ${kind} tail from search`, async t => {
+    const marker = 'RETAINED_TAIL_NEEDLE';
+    const stream = [{ type: 'chunk', time: 10, chunk: { type: 'block-end', index: 0,
+      block: { type: kind, text: 'x'.repeat(16000 - marker.length) + marker } } }];
+    const data = await fixture(t, [{ type: 'assistant/attempt', data: { turn: 1, step: 1, stream } }]);
+    const { event } = await assertAttemptSearchCoverage(data, [marker]);
+    assert.ok(event.preview.startsWith('x'));
+  });
+}
+
+test('completed attempt blocks keep both bounded projections searchable without truncating Raw', async t => {
   const stream = ['text', 'reasoning'].map((type, index) => ({ type: 'chunk', time: 20 + index,
     chunk: { type: 'block-end', index, block: { type, text: type[0].repeat(16000) + 'RAW_ONLY_TAIL' } } }));
   const data = await fixture(t, [{ type: 'assistant/attempt', data: { turn: 1, step: 1, stream } }]);
-  const { event, result } = await data.detail(e => e.subtype === 'assistant/attempt');
-  assert.ok(event.searchText.length <= 16000);
+  const { event, result } = await assertAttemptSearchCoverage(data, ['t'.repeat(16000), 'r'.repeat(16000)]);
+  assert.doesNotMatch(event.searchText, /RAW_ONLY_TAIL/);
   assert.doesNotMatch(JSON.stringify(result.timelineSections), /RAW_ONLY_TAIL/);
   assert.ok(result.timelineSections.some(s => s.html?.includes('t'.repeat(16000))));
   assert.ok(result.timelineSections.some(s => s.html?.includes('r'.repeat(16000))));
