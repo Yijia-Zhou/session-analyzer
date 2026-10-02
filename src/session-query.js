@@ -30,7 +30,7 @@ const {
 } = require('./cache-observation-presentation');
 
 const PROJECT_QUERY_SCAN_CONCURRENCY = 8;
-const { searchTextParts } = require('./search-text-stream');
+const { createSearchWorkBudget, searchTextParts } = require('./search-text-stream');
 
 async function mapProjectQuerySessions(sessions, signal, visit) {
   const results = new Array(sessions.length);
@@ -606,6 +606,7 @@ function createSessionQuery(options = {}) {
   }
 
   async function packedProjectSearchResult(index, filters, locale, queryOptions = {}) {
+    const searchBudget = createSearchWorkBudget();
     const store = requireValidatedProjectQueryStore(
       index.projectQueryStore,
       (index.sessions || []).map((session) => session.id),
@@ -619,7 +620,7 @@ function createSessionQuery(options = {}) {
       let latest = null;
       await scanProjectQueryShard(store, session.id, layer, {
         includeText: hasTextQuery,
-        searchTextParts: (preview, text, signal) => searchTextParts(preview, text, filters.q, signal),
+        searchTextParts: (preview, text, signal) => searchTextParts(preview, text, filters.q, signal, searchBudget),
         signal: queryOptions.signal,
         onChunk: queryOptions.onChunk,
         onTextChunk: queryOptions.onTextChunk,
@@ -964,6 +965,7 @@ function createSessionQuery(options = {}) {
 
   async function getTimelineAsync(index, materializedSession, filters, { signal } = {}) {
     signal?.throwIfAborted?.();
+    const searchBudget = createSearchWorkBudget();
     const steps = timelineSteps(index, materializedSession, filters);
     let step = steps.next();
     let rows = 0;
@@ -971,7 +973,7 @@ function createSessionQuery(options = {}) {
       signal?.throwIfAborted?.();
       const work = step.value;
       const match = work
-        ? await searchTextParts([String(work.event.preview || '')], [String(work.event.searchText || '')], work.q, signal)
+        ? await searchTextParts([String(work.event.preview || '')], [String(work.event.searchText || '')], work.q, signal, searchBudget)
         : null;
       // Text yields alone cannot cover many small or structurally excluded rows.
       if (++rows % 256 === 0) await yieldToLoop();

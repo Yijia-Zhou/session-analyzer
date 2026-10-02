@@ -137,6 +137,34 @@ test('disk build, commit and query cancellation clean temporary ownership while 
   assert.equal(fs.readdirSync(directory).length, 1, 'failed build scope only cleans its own store');
 });
 
+test('production disk project search accumulates cancellation work across sub-budget rows', async (t) => {
+  const directory = tempRoot(t);
+  const session = capacitySession('medium-rows', 16, `${'z'.repeat(256 * 1024)} tailNeedle`, ['main']);
+  const store = buildProjectQueryStore([session], { memoryRows: 0, tempRoot: directory });
+  t.after(() => disposeProjectQueryStore(store));
+  assert.equal(store.schemaVersion, 3);
+  assert.equal(store.shardsBySessionId.get(session.id).main.pages.length, 1);
+  await validateProjectQueryStoreForCommit(store, [session.id]);
+  const query = createSessionQuery();
+  const index = capacityIndex(query, [session], store);
+  const controller = new AbortController();
+  const reason = new Error('cancel medium rows before metadata page completes');
+  let completedPages = 0;
+  setImmediate(() => controller.abort(reason));
+  await assert.rejects(query.filterSessions(index, { q: 'tailNeedle', layer: 'main' }, {
+    signal: controller.signal,
+    onChunk() { completedPages += 1; },
+  }), error => error === reason);
+  // A per-row budget reaches the scanner's own page-end yield first. Requiring
+  // cancellation before that boundary proves the production callback shares it.
+  assert.equal(completedPages, 0);
+  assert.equal(fs.readdirSync(directory).length, 1, 'cancellation retains the committed store');
+  const result = await query.filterSessions(index, { q: 'tailNeedle', layer: 'main' });
+  assert.equal(result.total, 1);
+  assert.equal(result.matchingEventTotal, 16);
+  assert.equal(result.sessions[0].searchMatch.eventCount, 16);
+});
+
 test('disk resource exhaustion removes failed replacement storage and preserves committed search', async (t) => {
   const directory = tempRoot(t);
   const oldSession = capacitySession('committed');

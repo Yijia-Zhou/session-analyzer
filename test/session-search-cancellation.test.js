@@ -38,14 +38,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-test('warm 64 MiB session HTTP search counts exactly, yields to state, cancels and retires', { timeout: 60000 }, async (t) => {
-  const complete = completeIndex('dense-session', true);
-  const initial = strictClaudeIndexFromComplete(complete);
-  const replacementComplete = completeIndex('replacement-session');
-  const replacement = strictClaudeIndexFromComplete(replacementComplete);
-  t.after(() => { disposeProjectQueryStore(initial.projectQueryStore); disposeProjectQueryStore(replacement.projectQueryStore); });
-  let materializeCalls = 0;
-  const query = getSourceAdapter('claude-code').query;
+function observeTimelineRequests(t, query) {
   const originalTimeline = query.getTimelineAsync;
   assert.equal(typeof originalTimeline, 'function');
   let nextObservation = null;
@@ -61,12 +54,22 @@ test('warm 64 MiB session HTTP search counts exactly, yields to state, cancels a
     finally { observation.finished = true; observation.done.resolve(); }
   };
   t.after(() => { query.getTimelineAsync = originalTimeline; });
-  function observeNext() {
+  return function observeNext() {
     assert.equal(nextObservation, null);
     const observation = { started: deferred(), done: deferred(), finished: false, error: null };
     nextObservation = observation;
     return observation;
-  }
+  };
+}
+
+test('warm 64 MiB session HTTP search counts exactly, yields to state, cancels and retires', { timeout: 60000 }, async (t) => {
+  const complete = completeIndex('dense-session', true);
+  const initial = strictClaudeIndexFromComplete(complete);
+  const replacementComplete = completeIndex('replacement-session');
+  const replacement = strictClaudeIndexFromComplete(replacementComplete);
+  t.after(() => { disposeProjectQueryStore(initial.projectQueryStore); disposeProjectQueryStore(replacement.projectQueryStore); });
+  let materializeCalls = 0;
+  const observeNext = observeTimelineRequests(t, getSourceAdapter('claude-code').query);
 
   const server = createServer(initial, 0, { sessionPrewarm: false, debugErrors: true,
     buildIndex: async () => replacement,
@@ -155,6 +158,114 @@ test('warm 64 MiB session HTTP search counts exactly, yields to state, cancels a
     assert.equal(current.repoRoot, replacement.repoRoot);
   });
 });
+
+const MEDIUM_EVENT_BYTES = 900 * 1024;
+const MEDIUM_EVENT_COUNT = 24;
+
+function mediumEventIndex() {
+  const index = completeIndex('medium-events');
+  const session = index.sessions[0];
+  const text = 'x'.repeat(MEDIUM_EVENT_BYTES);
+  session.logicalEvents = [
+    ...Array.from({ length: MEDIUM_EVENT_COUNT }, (_, ordinal) => ({
+      ...session.logicalEvents[0], id: `medium:${ordinal}`, preview: '', searchText: text,
+    })),
+    { ...session.logicalEvents[1], id: 'medium:quiet', preview: '', searchText: 'quiet body' },
+  ];
+  session.bytes = MEDIUM_EVENT_BYTES * MEDIUM_EVENT_COUNT;
+  session.lineCount = session.logicalEvents.length;
+  session.counts.messages = session.logicalEvents.length;
+  index.totals.eventCount = session.logicalEvents.length;
+  Object.assign(session, getSourceAdapter('claude-code').query.projectSessionMetadata(session));
+  return index;
+}
+
+test('warm 24 by 900 KiB HTTP searches share scheduling across events for dense hits and misses', { timeout: 60000 }, async (t) => {
+  const complete = mediumEventIndex();
+  const session = complete.sessions[0];
+  const initial = strictClaudeIndexFromComplete(complete);
+  t.after(() => disposeProjectQueryStore(initial.projectQueryStore));
+  const observeNext = observeTimelineRequests(t, getSourceAdapter('claude-code').query);
+  let materializeCalls = 0;
+  const server = createServer(initial, 0, { sessionPrewarm: false, debugErrors: true,
+    materializeSession: async () => { materializeCalls += 1; return session; },
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const warm = await fetch(`${base}/api/sessions/medium-events/analysis`);
+  assert.equal(warm.status, 200);
+  await warm.json();
+  // Warm independent HTTP connections as well; these do not run the scanner.
+  await Promise.all([0, 1].map(async () => {
+    const response = await fetch(`${base}/api/state`);
+    assert.equal(response.status, 200);
+    await response.json();
+  }));
+  assert.equal(materializeCalls, 1);
+
+  for (const q of ['x', 'z']) {
+    const url = `${base}/api/sessions/medium-events/timeline?q=${q}&offset=${MEDIUM_EVENT_COUNT}&limit=1&indexRevision=1`;
+    await t.test(`${q}: state completes during real scanning and exact count preserves quiet page`, async () => {
+      const observation = observeNext();
+      const pending = fetch(url);
+      await observation.started.promise;
+      const state = await fetch(`${base}/api/state`);
+      assert.equal(state.status, 200);
+      await state.json();
+      const stateCompletedDuringScan = !observation.finished;
+      const response = await pending;
+      const body = await response.json();
+      assert.equal(response.status, 200, JSON.stringify(body));
+      assert.equal(body.total, MEDIUM_EVENT_COUNT + 1);
+      assert.equal(body.searchMatchCount, q === 'x' ? MEDIUM_EVENT_BYTES * MEDIUM_EVENT_COUNT : 0);
+      assert.equal(body.searchEventCount, q === 'x' ? MEDIUM_EVENT_COUNT : 0);
+      assert.deepEqual(body.events.map(event => event.id), ['medium:quiet']);
+      assert.equal(body.events[0].hasSearchHit, false);
+      assert.equal(materializeCalls, 1);
+      assert.equal(stateCompletedDuringScan, true, 'state must finish before all individually sub-budget records are scanned');
+    });
+
+    await t.test(`${q}: client abort interrupts the warm batch instead of waiting for all records`, async () => {
+      const observation = observeNext();
+      const controller = new AbortController();
+      const pending = fetch(url, { signal: controller.signal }).then(response => ({ response }), error => ({ error }));
+      await observation.started.promise;
+      // Queue the disconnect in the event loop: a chain of resolved promises alone
+      // must not postpone this action until every medium event has been scanned.
+      const abortTurn = deferred();
+      setImmediate(() => {
+        abortTurn.resolve(!observation.finished);
+        controller.abort();
+      });
+      const abortedDuringScan = await abortTurn.promise;
+      const result = await pending;
+      await observation.done.promise;
+      assert.equal(abortedDuringScan, true);
+      assert.equal(result.error?.name, 'AbortError');
+      assert.equal(observation.signal.aborted, true);
+      assert.equal(observation.error?.name, 'AbortError');
+      assert.equal(materializeCalls, 1);
+    });
+  }
+});
+
+for (const q of ['x', 'z']) {
+  test(`medium-event ${q} query cancellation bounds cumulative scanned work across events`, async () => {
+    const index = mediumEventIndex();
+    const session = index.sessions[0];
+    let visited = 0;
+    const query = createSessionQuery({ presentation: { matchesEvent() { visited += 1; return true; } } });
+    const controller = new AbortController();
+    const reason = new Error('queued cumulative-work cancellation');
+    setImmediate(() => controller.abort(reason));
+    await assert.rejects(query.getTimelineAsync(index, session, { layer: 'main', q, offset: 0, limit: 1 },
+      { signal: controller.signal }), error => error === reason);
+    assert.ok(visited > 0 && visited <= 2,
+      `one shared 1 MiB budget must interrupt within the first two 900 KiB events; visited ${visited}`);
+    assert.ok(session.logicalEvents.every(event => !Object.hasOwn(event, 'searchMatch')));
+  });
+}
 
 for (const excluded of [false, true]) {
   test(`many small ${excluded ? 'structurally excluded' : 'matching'} events yield to cancellation without a large text field`, async () => {

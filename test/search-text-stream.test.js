@@ -69,3 +69,11 @@ test('long queries keep bounded snippets and cancellation yields during hot sync
   await assert.rejects(searchTextParts([], manyParts(), 'needle', controller.signal), error => error === reason);
   assert.ok(visited <= 4, `cancellation consumed ${visited} parts`);
 });
+
+test('preview and body share the scan budget even when each field is below one work unit', async () => {
+  const controller = new AbortController();
+  const reason = new Error('cancel between medium fields');
+  setImmediate(() => controller.abort(reason));
+  await assert.rejects(searchTextParts(['x'.repeat(700 * 1024)], ['x'.repeat(700 * 1024)],
+    'z', controller.signal), error => error === reason);
+});

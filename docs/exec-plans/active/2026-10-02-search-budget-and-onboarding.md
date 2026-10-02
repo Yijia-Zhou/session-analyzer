@@ -1,0 +1,15 @@
+# Search scheduling and onboarding CI / 搜索调度与 onboarding CI
+
+Baseline / 基线: clean `f9abeef`, branch `capacity/seven-groups`, PR #73. Earlier implementation CI 214 passed; documentation-head CI 215 failed the onboarding diagnostics browser assertion. / 工作区干净；此前实现 CI 214 通过，文档提交 CI 215 在诊断 onboarding 浏览器断言失败。
+
+- **Confirmed / 已确认**: `searchOne` reset its 1 MiB counter for each preview/body/event. Sub-budget fields could accumulate until the 256-row fallback. A valid 300 × 900 KiB miss probe processed 256 events (225 MiB) before queued cancellation; local observation was 176 ms, not the reviewer's 9.5 seconds. Both identify the same missing scheduling boundary; neither is a test latency threshold. / 每个字段重置计数使中等事件连续扫描；本地复现到第 256 个事件才取消，耗时与外部探针不同，但根因相同，不设毫秒门槛。
+- **Implemented / 已实现**: one request-owned byte budget shared across preview/body/events; disk project-search workers share their query's budget too. Pattern/count/snippet state stays per event, and the row fallback remains for tiny/empty/excluded rows. The same 300-event probe now cancels during the second event (observed 3 ms). / 每请求共享字节预算，覆盖字段、事件及磁盘项目查询 worker；匹配状态仍逐事件隔离，小／空／排除行保留行调度。相同探针在第二条扫描期间取消。
+- **Confirmed test race / 已确认测试竞态**: project discovery has a summary phase then a full phase. Diagnostics become visible while the project list is intentionally empty/loading. The test waited only for diagnostics, so CI could observe empty text. A deferred full-response fixture reproduced exactly that failure. The repair waits for the completed list as well as actual diagnostics existence, preserving all count/escaping/localization checks without sleeps or retries. / 摘要阶段已显示诊断，完整发现尚未完成，列表按设计仍空；可控阻断完整响应稳定复现 CI。测试等待完整列表状态并严格判断诊断存在，不引入 sleep 或重试，也不修改产品行为。
+
+Regression evidence / 回归证据: preview/body each 700 KiB used to finish before queued cancellation; new test first failed. 24 × 900 KiB real warm HTTP cases first failed progress/cancel assertions for both dense `x` hits and absent `z`; counts and pagination already passed. After repair, streaming + session tests pass 19/19, including exact 22,118,400 occurrences and the non-hit page. Browser delayed-discovery test passes 1/1. / 700 KiB 双字段及 24×900 KiB HTTP 回归先红后绿；密集命中、零命中都验证扫描中调度与取消，计数和分页不变。流式／会话聚焦 19/19、浏览器延迟发现 1/1 通过。
+
+Integration / 集成: parent-run full Node 1,443/1,443 passed; the final added disk regression passed in its 7/7 file. Related onboarding browser tests 4/4, build:check and three-source package smoke passed. Disk regression proves cancellation before the metadata-page boundary and exact 16-hit reuse afterward. Source review found no shared matcher/count state; concurrent disk workers still have a bounded concurrency multiplier on work before the event loop runs. / 负责人完整 Node 1,443/1,443 通过，最后新增磁盘回归所在文件 7/7 通过；相关浏览器 4/4、生成资产与三来源安装包 smoke 通过。磁盘用例证明页结束前取消且旧索引可再次准确返回 16 个命中。匹配状态不共享；并发磁盘 worker 的总调度窗口仍有有界并发倍数。
+
+Local service / 本地服务: restarted original DeepSeek lab project/root; 23 sessions, 0 diagnostics, actual Timeline → Detail → Raw and current-session search passed. / 保留原项目与来源根重启，23 会话、0 诊断，实际阅读链与会话搜索通过。
+
+Remaining work / 剩余工作: push and exact-commit CI, then archive the record. / 推送与当前提交 CI，随后归档记录。

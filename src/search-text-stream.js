@@ -5,6 +5,20 @@ const { setImmediate: yieldToLoop } = require('node:timers/promises');
 const YIELD_BYTES = 1024 * 1024;
 const PART_CODE_UNITS = 128 * 1024;
 
+// One owner per query, shared by every field/event it scans. A fresh matcher
+// must not erase work accumulated by earlier sub-budget fields.
+function createSearchWorkBudget() {
+  let bytesSinceYield = 0;
+  return {
+    consume(bytes, signal) {
+      bytesSinceYield += bytes;
+      if (bytesSinceYield < YIELD_BYTES) return null;
+      bytesSinceYield = 0;
+      return yieldToLoop().then(() => signal?.throwIfAborted?.());
+    },
+  };
+}
+
 // Collapse only JS RegExp whitespace, so the literal phrase has a fixed UTF-16
 // width. This avoids an unbounded overlap for a phrase spanning a long \s+ run.
 function phrasePattern(query) {
@@ -13,14 +27,13 @@ function phrasePattern(query) {
   return { width: phrase.length, regex: new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi') };
 }
 
-async function searchOne(parts, pattern, signal) {
+async function searchOne(parts, pattern, signal, budget) {
   const { width, regex } = pattern;
   let buffer = '';
   let base = 0;
   let nextStart = 0;
   let count = 0;
   let endedInWhitespace = false;
-  let bytesSinceYield = 0;
   let first = -1;
   let snippet = '';
   let snippetComplete = false;
@@ -57,12 +70,8 @@ async function searchOne(parts, pattern, signal) {
       endedInWhitespace = /\s$/.test(source);
       buffer += normalized;
       scan();
-      bytesSinceYield += Buffer.byteLength(source, 'utf8');
-      if (bytesSinceYield >= YIELD_BYTES) {
-        bytesSinceYield = 0;
-        await yieldToLoop();
-        signal?.throwIfAborted?.();
-      }
+      const handoff = budget.consume(Buffer.byteLength(source, 'utf8'), signal);
+      if (handoff) await handoff;
     }
   }
   signal?.throwIfAborted?.();
@@ -70,12 +79,12 @@ async function searchOne(parts, pattern, signal) {
   return { count, hit: count > 0, snippet };
 }
 
-async function searchTextParts(previewParts, searchParts, query, signal) {
+async function searchTextParts(previewParts, searchParts, query, signal, budget = createSearchWorkBudget()) {
   signal?.throwIfAborted?.();
   const pattern = phrasePattern(query);
   if (!pattern) return { count: 0, hit: false, snippet: '' };
-  const preview = await searchOne(previewParts, pattern, signal);
-  const search = await searchOne(searchParts, pattern, signal);
+  const preview = await searchOne(previewParts, pattern, signal, budget);
+  const search = await searchOne(searchParts, pattern, signal, budget);
   return {
     count: Math.max(preview.count, search.count),
     hit: preview.hit || search.hit,
@@ -83,4 +92,4 @@ async function searchTextParts(previewParts, searchParts, query, signal) {
   };
 }
 
-module.exports = { searchTextParts };
+module.exports = { createSearchWorkBudget, searchTextParts };

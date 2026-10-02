@@ -15358,6 +15358,9 @@ test('browser onboarding source confirmation cancel preserves project and direct
 });
 
 test('browser onboarding distinguishes source diagnostics from an empty source and bounds escaped details', async (t) => {
+  const fullDiscoveryStarted = deferred();
+  const releaseFullDiscovery = deferred();
+  t.after(() => releaseFullDiscovery.resolve());
   const diagnostics = {
     totalCount: 23, counts: { DEEPSEEK_ZSTD_UNAVAILABLE: 23 }, truncatedCount: 3,
     samples: Array.from({ length: 20 }, (_, i) => ({ code: 'DEEPSEEK_ZSTD_UNAVAILABLE', path: `/session-${i}/<img src=x>.zstd`, message: 'Node v22.0.0 lacks zstdDecompressSync <script>alert(1)</script>' })),
@@ -15366,10 +15369,23 @@ test('browser onboarding distinguishes source diagnostics from an empty source a
     beforeGoto: async (p) => p.route('**/api/projects*', async (route) => {
       const response = await route.fetch();
       const payload = await response.json();
+      if (!new URL(route.request().url()).searchParams.has('summary')) {
+        fullDiscoveryStarted.resolve();
+        await releaseFullDiscovery.promise;
+      }
       await route.fulfill({ json: { ...payload, projects: [], sourceDiagnostics: diagnostics } });
     }),
   });
-  await page.waitForFunction(() => !document.querySelector('#sourceDiagnostics')?.hidden);
+  await fullDiscoveryStarted.promise;
+  // Summary diagnostics render before full discovery finishes. Hold the latter
+  // response so this intermediate state is deterministic, not scheduler luck.
+  await page.waitForFunction(() => document.querySelector('#sourceDiagnostics')?.hidden === false);
+  assert.equal(await page.locator('#projectList').textContent(), '');
+  releaseFullDiscovery.resolve();
+  await page.waitForFunction(() => (
+    document.querySelector('#sourceDiagnostics')?.hidden === false
+      && document.querySelector('#projectList')?.textContent.includes('No readable project')
+  ));
   assert.match(await page.locator('#projectList').textContent(), /No readable project/);
   assert.doesNotMatch(await page.locator('#projectList').textContent(), /No transcript projects/);
   assert.match(await page.locator('#sourceDiagnostics').textContent(), /22.15.0/);
