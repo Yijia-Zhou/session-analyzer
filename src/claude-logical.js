@@ -1,14 +1,14 @@
 'use strict';
 
-const { claudeBashEditDiff, toolInputFiles } = require('./claude-source');
-
 function createClaudeLogicalBuilder(deps) {
   const {
     CANONICAL_SCHEMA_VERSION,
     CLAUDE_SOURCE_KIND,
     blockText,
+    claudeBashEditDiff,
     rawRef,
     stringifyValue,
+    toolInputFiles,
     truncate,
   } = deps;
 

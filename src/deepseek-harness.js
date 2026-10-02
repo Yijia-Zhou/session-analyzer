@@ -17,6 +17,7 @@ const {
 const { createSessionQuery } = require('./session-query');
 const { codeModePresentationContextMap } = require('./shared/code-mode-presentation-context');
 const storage = require('./deepseek-harness-storage');
+const { embeddedStreamFacts } = require('./deepseek-harness-stream');
 const { buildDeepSeekEventDetail } = require('./deepseek-harness-detail');
 const { createEmptyMaterializedPresentationIndexes } = require('./canonical-contract');
 const { observeMaterializationPhase } = require('./materialization-observer');
@@ -24,6 +25,7 @@ const { observeMaterializationPhase } = require('./materialization-observer');
 const SOURCE_KIND = storage.DEEPSEEK_SOURCE_KIND;
 const PREVIEW_LIMIT = 240;
 const SEARCH_TEXT_LIMIT = 16_000;
+const ATTEMPT_SEARCH_TEXT_LIMIT = 'assistant/attempt\n'.length + SEARCH_TEXT_LIMIT * 2 + 1;
 const PARTIAL_BLOCK_TEXT_LIMIT = SEARCH_TEXT_LIMIT;
 const TITLE_LIMIT = 120;
 const REASONING_LIMIT = SEARCH_TEXT_LIMIT;
@@ -32,6 +34,8 @@ const MAX_CODE_DISPATCH_DEPTH = 256;
 const MAX_RETRY_DELAY_MS = 2_147_483_647;
 const CODE_MODE_SCRIPT_OPERATION_KIND = 'code_mode_script_operation';
 const LLM_RETRY_EVENT_TYPES = new Set(['llm/retry', 'llm/retry-started']);
+const CODE_DISPATCH_START_TYPES = new Set(['tool/code-dispatch-start', 'tool/ptc-dispatch-start']);
+const CODE_DISPATCH_END_TYPES = new Set(['tool/code-dispatch', 'tool/ptc-dispatch']);
 const PERMISSION_EVENT_TYPES = new Set(['permission/preset', 'sandbox/mode', 'approval/policy']);
 const SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
 const APPROVAL_POLICIES = new Set(['ask', 'never']);
@@ -50,9 +54,9 @@ const DSH_FORK_SEGMENTS = Object.freeze([
 ]);
 
 
-// Current generated upstream vocabulary at tmp/deepseek-harness-current HEAD
-// b150a551… (0.1.1-rc.2), refreshed from the original 47f9438… baseline:
-// packages/core/session/src/known-event-types.ts. Known-but-unmodeled types
+// Union of the accepted v0 (b150a551…, 0.1.1-rc.2) and v4
+// (477b4f42…, 0.1.7-rc.2) packages/core/session/src/known-event-types.ts.
+// Known-but-unmodeled types
 // stay explicit Protocol fallback; anything outside this set is an unknown
 // plugin/third-party event and must never be silently dropped.
 const KNOWN_DS_EVENT_TYPES = new Set([
@@ -62,6 +66,7 @@ const KNOWN_DS_EVENT_TYPES = new Set([
   'approval/decided',
   'approval/policy',
   'assistant/chunk',
+  'assistant/attempt',
   'assistant/message',
   'command/done',
   'command/run',
@@ -70,6 +75,13 @@ const KNOWN_DS_EVENT_TYPES = new Set([
   'compaction/start',
   'compaction/summary',
   'feedback/record',
+  'feedback/message-delete',
+  'feedback/message-put',
+  'deliverables/presented',
+  'developer/message',
+  'system/message',
+  'image/offload',
+  'model/selection',
   'goal/change',
   'hook/invoked',
   'hook/result',
@@ -82,11 +94,14 @@ const KNOWN_DS_EVENT_TYPES = new Set([
   'sandbox/mode',
   'schedule/change',
   'session/end-seed',
+  'session-log-deepseek/delivery-accepted',
   'session/title',
   'session/title-llm-request',
   'step/end',
   'step/start',
   'subagent/descriptor',
+  'subagent/catalog',
+  'subagent/model-selection-policy',
   'team/member',
   'team/message/delivered',
   'team/message/queued',
@@ -99,11 +114,14 @@ const KNOWN_DS_EVENT_TYPES = new Set([
   'tool/call',
   'tool/code-dispatch',
   'tool/code-dispatch-start',
+  'tool/ptc-dispatch',
+  'tool/ptc-dispatch-start',
   'tool/result',
   'turn/end',
   'turn/start',
   'user/message',
   'web/deepseek-search-llm-request',
+  'workspace/changes',
 ]);
 
 function emptyCounts() {
@@ -164,26 +182,34 @@ function isAppendSurfaceOp(value) {
   return value === 'append';
 }
 
+function isDeepSeekHumanUserMessageSource(source) {
+  // MessageSourceMap is merge-extensible. Admit source-backed human input,
+  // not every user-role producer (schedule, goal and runtime/plugin context).
+  return source?.kind === 'user' || source?.kind === 'user-question-reply';
+}
+
 function isReplaceSurfaceOp(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value) && value.op === 'replace');
 }
 
 function replaceSurfaceRange(value) {
   if (!isReplaceSurfaceOp(value)) return null;
-  if (!Number.isSafeInteger(value.start) || value.start < 0
-      || !Number.isSafeInteger(value.end) || value.end < 0) {
+  const start = value.startSeq ?? value.start;
+  const end = value.endSeq ?? value.end;
+  if (!Number.isSafeInteger(start) || start < 0
+      || !Number.isSafeInteger(end) || end < 0) {
     return null;
   }
-  return { start: value.start, end: value.end };
+  return { start, end };
 }
 
 function parseSubagentDescriptorData(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  if (value.version !== 2) return null;
+  if (value.version !== 2 && value.version !== 3) return null;
   if (value.mode !== 'one-shot' && value.mode !== 'continuable') return null;
   if (typeof value.provider !== 'string' || !value.provider.trim()) return null;
   const base = {
-    version: 2,
+    version: value.version,
     mode: value.mode,
     provider: value.provider,
     ...(typeof value.label === 'string' && value.label.trim() ? { label: value.label } : {}),
@@ -197,6 +223,8 @@ function parseSubagentDescriptorData(value) {
     ...(typeof value.agentModel === 'string' && value.agentModel.trim()
       ? { agentModel: value.agentModel }
       : {}),
+    ...(value.version === 3 && typeof value.agentReasoningEffort === 'string'
+      ? { agentReasoningEffort: value.agentReasoningEffort } : {}),
     ...(typeof value.persona === 'string' && value.persona.trim() ? { persona: value.persona } : {}),
     ...(value.toolFilter && typeof value.toolFilter === 'object' && !Array.isArray(value.toolFilter)
       ? { toolFilter: value.toolFilter }
@@ -225,6 +253,7 @@ function descriptorSearchText(descriptor) {
     descriptor.label ? `label=${descriptor.label}` : '',
     descriptor.agentProvider ? `agentProvider=${descriptor.agentProvider}` : '',
     descriptor.agentModel ? `agentModel=${descriptor.agentModel}` : '',
+    descriptor.agentReasoningEffort ? `agentReasoningEffort=${descriptor.agentReasoningEffort}` : '',
     descriptor.persona ? `persona=${descriptor.persona}` : '',
   ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
 }
@@ -283,8 +312,12 @@ function boundedJsonText(value, limit = SEARCH_TEXT_LIMIT) {
   }
 }
 
+function isShellTool(name) {
+  return ['bash', 'pwsh'].includes(String(name || '').toLowerCase());
+}
+
 function commandTextForTool(name, argumentsText) {
-  if (String(name || '').toLowerCase() !== 'bash') return '';
+  if (!isShellTool(name)) return '';
   const args = parseToolArguments(argumentsText);
   return typeof args?.command === 'string' ? args.command : '';
 }
@@ -292,6 +325,7 @@ function commandTextForTool(name, argumentsText) {
 function toolResultText(event) {
   const blocks = event?.data?.message?.content;
   if (!Array.isArray(blocks)) return '';
+  if (event.data.message.role === 'tool') return visibleText(blocks);
   return blocks
     .filter((block) => block && block.type === 'tool-result' && Array.isArray(block.content))
     .flatMap((block) => block.content)
@@ -302,6 +336,7 @@ function toolResultText(event) {
 
 function toolResultIsError(event) {
   if (event?.data?.error) return true;
+  if (event?.data?.message?.role === 'tool') return event.data.message.isError === true;
   const blocks = event?.data?.message?.content;
   return Array.isArray(blocks) && blocks.some((block) => (
     block && block.type === 'tool-result' && block.isError === true
@@ -309,15 +344,26 @@ function toolResultIsError(event) {
 }
 
 function toolResultCallId(event) {
-  const callId = event?.data?.message?.source?.callId
+  const callId = event?.data?.message?.toolCallId
+    || event?.data?.message?.source?.callId
     || event?.data?.message?.content?.[0]?.toolCallId
     || '';
   return typeof callId === 'string' && callId ? callId : '';
 }
 
+function assistantAttemptPreview(stream) {
+  const facts = embeddedStreamFacts(stream, SEARCH_TEXT_LIMIT);
+  return facts?.text.trim() || facts?.reasoning || '';
+}
+
 function protocolPreview(type, data) {
   const value = data && typeof data === 'object' ? data : {};
   switch (type) {
+    case 'assistant/attempt':
+      return truncatePreview(assistantAttemptPreview(value.stream) || 'Uncommitted assistant attempt');
+    case 'system/message':
+    case 'developer/message':
+      return truncatePreview(visibleText(value.message?.content) || type);
     case 'turn/start':
       return `Turn ${value.turn} started`;
     case 'turn/end':
@@ -380,6 +426,11 @@ function protocolPreview(type, data) {
 function protocolSearchText(type, data) {
   const value = data && typeof data === 'object' ? data : {};
   switch (type) {
+    case 'assistant/attempt':
+      return `${type}\n${embeddedStreamFacts(value.stream, SEARCH_TEXT_LIMIT)?.searchText || ''}`;
+    case 'system/message':
+    case 'developer/message':
+      return `${type}\n${visibleText(value.message?.content)}\n${storage.flattenBounded(value.message?.source, 1000)}`.slice(0, SEARCH_TEXT_LIMIT);
     case 'request/header': {
       const config = value.header?.config || {};
       return [
@@ -389,7 +440,7 @@ function protocolSearchText(type, data) {
         config.model || '',
         config.reasoningEffort || '',
         Number.isFinite(config.maxTokens) ? `maxTokens=${config.maxTokens}` : '',
-        `systemPromptBytes=${Buffer.byteLength(value.header?.system || '', 'utf8')}`,
+        typeof value.header?.system === 'string' ? `systemPromptBytes=${Buffer.byteLength(value.header.system, 'utf8')}` : '',
         `toolCount=${Array.isArray(value.header?.tools) ? value.header.tools.length : 0}`,
       ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
     }
@@ -501,9 +552,10 @@ function makeRawEvent(record, recordOrdinal, sourceFile, sessionId) {
     searchText = protocolSearchText(recordType, data);
   }
   const payloadType = recordType;
-  const role = data?.source?.kind === 'user'
+  const role = recordType === 'user/message' && isDeepSeekHumanUserMessageSource(data.source)
     ? 'user'
-    : (recordType === 'assistant/message' || recordType === 'assistant/chunk' || packed ? 'assistant' : '');
+    : (recordType === 'assistant/message' || recordType === 'assistant/chunk' || recordType === 'assistant/attempt' || packed ? 'assistant'
+      : (recordType === 'system/message' || recordType === 'developer/message' ? 'system' : ''));
   const raw = {
     rawId: `${sessionId}:raw:${recordOrdinal}`,
     sessionId,
@@ -528,8 +580,8 @@ function makeRawEvent(record, recordOrdinal, sourceFile, sessionId) {
     role,
     status: '',
     toolName: recordType === 'tool/call' || recordType === 'tool/result'
-      || recordType === 'tool/code-dispatch-start' || recordType === 'tool/code-dispatch'
-      ? safeString(data.name || data.message?.source?.callId || data.callId)
+      || CODE_DISPATCH_START_TYPES.has(recordType) || CODE_DISPATCH_END_TYPES.has(recordType)
+      ? safeString(data.name || data.message?.toolCallId || data.message?.source?.callId || data.callId)
       : '',
     messageText: '',
     preview,
@@ -646,6 +698,7 @@ function attachCodeModeOperation(event, sessionId, call, resultRaw = null) {
 
 function makeProtocolEvent(sessionId, event, raw, subtype, options = {}) {
   const preview = options.preview || protocolPreview(event.type, event.data);
+  const searchLimit = event.type === 'assistant/attempt' ? ATTEMPT_SEARCH_TEXT_LIMIT : SEARCH_TEXT_LIMIT;
   return makeLogicalEvent({
     id: `${sessionId}:logical:protocol:${event.seq}`,
     timestamp: safeIso(event.time),
@@ -656,7 +709,7 @@ function makeProtocolEvent(sessionId, event, raw, subtype, options = {}) {
     role: options.role || '',
     label: options.label || i18n.humanize(event.type),
     preview: truncatePreview(preview),
-    searchText: (options.searchText || protocolSearchText(event.type, event.data)).slice(0, SEARCH_TEXT_LIMIT),
+    searchText: (options.searchText || protocolSearchText(event.type, event.data)).slice(0, searchLimit),
     severity: options.severity || 'normal',
     status: options.status || '',
     rawRefs: [dshRawRef(raw)],
@@ -675,7 +728,7 @@ function makeUserEvent(sessionId, event, raw, kind, subtype, label = '') {
     subtype,
     layer: kind === 'user_message' ? 'main' : 'protocol',
     role: 'user',
-    label,
+    label: label || i18n.eventKindLabel(kind),
     preview,
     searchText: text.slice(0, SEARCH_TEXT_LIMIT),
     rawRefs: [dshRawRef(raw)],
@@ -700,13 +753,14 @@ function makeAssistantMessageEvent(sessionId, event, raw) {
     subtype: 'assistant_message',
     layer: 'main',
     role: 'assistant',
-    label: '',
+    label: 'Assistant message',
     preview,
     searchText: [visible, reasoning]
       .filter(Boolean)
       .join('\n')
       .slice(0, SEARCH_TEXT_LIMIT),
     hasReadableReasoning: Boolean(reasoning.trim()),
+    ...(event.data?.interrupted === true ? { status: 'interrupted', severity: 'warning' } : {}),
     rawRefs: [dshRawRef(raw)],
     channels: ['assistant/message'],
   });
@@ -1380,7 +1434,7 @@ function attachInboxProvenance(logical, event, replay) {
   };
 }
 
-function finalizeSession(session, repoRoot) {
+function finalizeSession(session, repoRoot, repairOnlyTurnIds = new Set()) {
   session.matchesRepo = session.cwdSet.some((cwd) => isPathInsideOrSame(cwd, repoRoot));
   if (!session.title) {
     const firstUser = session.logicalEvents.find((event) => (
@@ -1396,7 +1450,7 @@ function finalizeSession(session, repoRoot) {
   const protocolSubtypes = new Map();
   const turnIds = new Set();
   for (const event of session.logicalEvents) {
-    if (event.turnId) turnIds.add(event.turnId);
+    if (event.turnId && !repairOnlyTurnIds.has(event.turnId)) turnIds.add(event.turnId);
     if (event.layer === 'protocol') {
       session.counts.protocol += 1;
       protocolSubtypes.set(event.subtype, (protocolSubtypes.get(event.subtype) || 0) + 1);
@@ -1463,12 +1517,14 @@ function finalizeSession(session, repoRoot) {
 function addPendingToolResult(session, call, resultRaw, resultEvent) {
   const resultText = toolResultText(resultEvent);
   const failed = toolResultIsError(resultEvent);
-  const status = failed ? 'failed' : 'success';
+  const outcomeUnknown = resultEvent.data?.message?.role === 'tool'
+    && resultEvent.data?.error?.code === 'TOOL_OUTCOME_UNKNOWN';
+  const status = outcomeUnknown ? 'incomplete' : (failed ? 'failed' : 'success');
   const normalizedName = String(call.name || '').toLowerCase();
-  const kind = normalizedName === 'bash'
+  const kind = isShellTool(normalizedName)
     ? 'command'
     : (normalizedName === 'run_code' ? 'code_mode_operation' : 'other_tool_call');
-  const command = call.name === 'bash' ? commandTextForTool(call.name, call.arguments) : '';
+  const command = commandTextForTool(call.name, call.arguments);
   const args = parseToolArguments(call.arguments);
   const codeDescription = normalizedName === 'run_code' && typeof args?.description === 'string'
     ? args.description
@@ -1493,7 +1549,7 @@ function addPendingToolResult(session, call, resultRaw, resultEvent) {
       resultText,
       resultEvent.data?.error ? `error=${resultEvent.data.error.name || ''}:${resultEvent.data.error.code || ''}` : '',
     ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
-    severity: failed ? 'error' : 'normal',
+    severity: outcomeUnknown ? 'warning' : (failed ? 'error' : 'normal'),
     status,
     toolName: call.name || '',
     outputStats: {},
@@ -1509,10 +1565,10 @@ function addPendingToolResult(session, call, resultRaw, resultEvent) {
 
 function makeIncompleteToolEvent(session, call) {
   const normalizedName = String(call.name || '').toLowerCase();
-  const kind = normalizedName === 'bash'
+  const kind = isShellTool(normalizedName)
     ? 'command'
     : (normalizedName === 'run_code' ? 'code_mode_operation' : 'other_tool_call');
-  const command = call.name === 'bash' ? commandTextForTool(call.name, call.arguments) : '';
+  const command = commandTextForTool(call.name, call.arguments);
   const args = parseToolArguments(call.arguments);
   const codeDescription = normalizedName === 'run_code' && typeof args?.description === 'string'
     ? args.description
@@ -1559,13 +1615,14 @@ function decodeToolResultPrune(event) {
   };
 }
 
-function decodePrunedToolResultReplacement(event) {
+function decodePrunedToolResultReplacement(event, formatVersion) {
   if (event?.type !== 'tool/result' || !isReplaceSurfaceOp(event.surfaceOp)) return null;
   const range = replaceSurfaceRange(event.surfaceOp);
   if (!range || range.start !== range.end) return null;
-  if (!Array.isArray(event.sourceEventSeqs)
-      || event.sourceEventSeqs.length !== 1
-      || event.sourceEventSeqs[0] !== range.start) return null;
+  const sourcesMatch = formatVersion === 4
+    ? storage.sourceEventSeqsMatch(event.sourceEventSeqs, [range.start])
+    : Array.isArray(event.sourceEventSeqs) && event.sourceEventSeqs.length === 1 && event.sourceEventSeqs[0] === range.start;
+  if (!sourcesMatch) return null;
   const originalResultSeq = range.start;
   if (!Number.isSafeInteger(originalResultSeq) || originalResultSeq < 0) return null;
   return {
@@ -1578,6 +1635,12 @@ function normalizedPruneToolResultEnvelope(event) {
   const data = event?.data;
   if (!isPlainRecord(data) || !isPlainRecord(data.message)) return null;
   const message = data.message;
+  if (message.role === 'tool') {
+    if (typeof message.toolCallId !== 'string' || !message.toolCallId
+        || !Array.isArray(message.content) || !isPlainRecord(message.source)
+        || message.source.callId !== message.toolCallId) return null;
+    return { ...data, message: { ...message, content: null } };
+  }
   if (!isPlainRecord(message.source)
       || typeof message.source.callId !== 'string'
       || !message.source.callId
@@ -1622,6 +1685,7 @@ function projectToolResultPrunes(
   originalResultsBySeq,
   toolCallsById,
   seedBoundary,
+  formatVersion,
 ) {
   const childStart = Number.isSafeInteger(seedBoundary) ? seedBoundary : 0;
   const ownedLogicalIds = new Set(session.logicalEvents.map(event => event.id));
@@ -1636,7 +1700,7 @@ function projectToolResultPrunes(
   }
   for (const row of replacementRows) {
     if (row.event.seq < childStart || !ownedLogicalIds.has(row.logical.id)) continue;
-    const facts = decodePrunedToolResultReplacement(row.event);
+    const facts = decodePrunedToolResultReplacement(row.event, formatVersion);
     if (!facts) continue;
     appendGroupedRow(replacementsByOriginalSeq, facts.originalResultSeq, { ...row, facts });
   }
@@ -1726,7 +1790,7 @@ function makeCodeDispatchEvent(session, node, outerCall) {
   const resultText = settled ? dispatchResultText(settled.event.data) : '';
   const failed = settled?.event?.data?.isError === true;
   const status = settled ? (failed ? 'failed' : 'success') : 'incomplete';
-  const kind = facts.name.toLowerCase() === 'bash' ? 'command' : 'other_tool_call';
+  const kind = isShellTool(facts.name) ? 'command' : 'other_tool_call';
   const rawRows = [start, settled]
     .filter(Boolean)
     .sort((left, right) => left.event.seq - right.event.seq);
@@ -1776,8 +1840,8 @@ function projectCodeDispatches(session, rows, toolCallsById) {
 
   const nodes = new Map();
   for (const [subCallId, group] of rowsBySubCall) {
-    const starts = group.filter((row) => row.event.type === 'tool/code-dispatch-start');
-    const settlements = group.filter((row) => row.event.type === 'tool/code-dispatch');
+    const starts = group.filter((row) => CODE_DISPATCH_START_TYPES.has(row.event.type));
+    const settlements = group.filter((row) => CODE_DISPATCH_END_TYPES.has(row.event.type));
     const firstFacts = group[0].facts;
     const consistent = group.every((row) => (
       row.facts.rootCallId === firstFacts.rootCallId
@@ -2606,13 +2670,14 @@ function sortProjectedLogicalEventsByRawOrder(session) {
     if (event.kind === 'code_mode_operation') return true;
     const channels = Array.isArray(event.channels) ? event.channels : [];
     return channels.some((channel) => (
-      channel === 'tool/code-dispatch-start'
-      || channel === 'tool/code-dispatch'
+      CODE_DISPATCH_START_TYPES.has(channel)
+      || CODE_DISPATCH_END_TYPES.has(channel)
       || TOOL_WORKFLOW_EVENT_TYPES.has(channel)
       || LLM_RETRY_EVENT_TYPES.has(channel)
       || channel === 'goal/change'
       || channel === 'todo/write'
       || event.subtype === 'command/lifecycle'
+      || event.subtype === 'approval/lifecycle'
       || event.subtype === 'goal/continuation'
       || event.subtype === 'goal/continuation-invalid'
     ));
@@ -2904,7 +2969,7 @@ async function reconstructSessionArtifact(
   const compression = options.compression || storage.compressionForArtifact(filePath);
   const prefix = committedRead.prefix;
   if (prefix.recordTexts.length === 0) throw storage.storageError('empty or header-less session log');
-  const header = storage.parseHeaderText(prefix.recordTexts[0]);
+  const header = storage.parseHeaderText(prefix.recordTexts[0], storage.parseSessionArtifactName(filePath)?.version);
   if (header.cwd) {
     try {
       resolveFsPath(header.cwd);
@@ -2913,6 +2978,26 @@ async function reconstructSessionArtifact(
     }
   }
   const session = makeEmptySession(filePath, relFile, header, prefix.committedBytes);
+  if (header.version === 4) {
+    let inheritedBoundary = null;
+    for (let ordinal = 1; ordinal < prefix.recordTexts.length; ordinal += 1) {
+      throwIfAborted(signal);
+      let record;
+      try { record = JSON.parse(prefix.recordTexts[ordinal]); } catch (error) {
+        throw storage.storageError(`corrupt session log: unparsable committed event at record ${ordinal}`, 'DEEPSEEK_STORAGE_INVALID', error);
+      }
+      if (record?.type !== 'session/end-seed') continue;
+      if (Object.hasOwn(record.data || {}, 'inherited') && record.data.inherited !== true) {
+        throw storage.storageError('corrupt session log: invalid inherited seed marker');
+      }
+      if (record.data?.inherited === true) inheritedBoundary = record.seq;
+    }
+    if (header.isSeeded !== (inheritedBoundary !== null)
+        || (inheritedBoundary !== null && (!Number.isSafeInteger(inheritedBoundary) || inheritedBoundary < 0))) {
+      throw storage.storageError('corrupt session log: isSeeded disagrees with the inherited seed marker');
+    }
+    session._seedLength = inheritedBoundary;
+  }
   session.lineCount = prefix.recordTexts.length;
   session._sourceIdentity = committedRead.fileIdentity;
   session._committedPrefixDigest = storage.hashBuffer(
@@ -2943,6 +3028,8 @@ async function reconstructSessionArtifact(
   let pendingPartialEvent = null;
   let effectiveRequestProvider = '';
   const childOwnedStartSeq = session._seedLength ?? 0;
+  const childStartedTurnIds = new Set();
+  const forkRepairTurnIds = new Set();
   const observedPermissionState = { preset: null, sandboxMode: null, approvalPolicy: null };
   const inboxReplay = createInboxReplay();
 
@@ -2984,7 +3071,7 @@ async function reconstructSessionArtifact(
     // Indexing/materialization keeps packed rows packed: it reads seq/member
     // facts directly from the physical row and never calls the lossless
     // per-member decoder.
-    const packed = storage.decodePackedStorageRecordFacts(record);
+    const packed = header.version === 0 ? storage.decodePackedStorageRecordFacts(record) : null;
     const raw = makeRawEvent(record, index, relFile, session.id);
     raw.sourceLocator.sessionId = session.id;
     session.rawEvents.push(raw);
@@ -3004,16 +3091,17 @@ async function reconstructSessionArtifact(
       continue;
     }
 
-    const event = record;
-    if (!Number.isSafeInteger(event.seq) || event.seq !== expectedSeq) {
+    if (!Number.isSafeInteger(record.seq) || record.seq !== expectedSeq) {
       throw storage.storageError(
-        `corrupt session log: seq gap at record ${index} (expected ${expectedSeq}, got ${event.seq})`,
+        `corrupt session log: seq gap at record ${index} (expected ${expectedSeq}, got ${record.seq})`,
       );
     }
+    const event = storage.decodeSessionEventRecord(record, header.version);
     expectedSeq += 1;
     lastTime = eventTime(event) || lastTime;
     const data = event?.data && typeof event.data === 'object' ? event.data : {};
     if (event.type === 'turn/start') {
+      if (event.seq >= childOwnedStartSeq) childStartedTurnIds.add(turnIdFor(event));
       currentTurn = Object.hasOwn(data, 'turn') ? data.turn : null;
       session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
         label: 'Turn started',
@@ -3033,6 +3121,10 @@ async function reconstructSessionArtifact(
         label: 'Step ended',
       }));
     } else if (event.type === 'turn/end') {
+      if (header.version === 4 && session._seedLength !== null
+          && event.seq >= childOwnedStartSeq && data.reason?.kind === 'forked') {
+        forkRepairTurnIds.add(turnIdFor(event));
+      }
       const endStatus = data.reason?.kind === 'aborted'
         ? 'aborted'
         : (data.reason?.kind === 'interrupted' ? 'interrupted' : (data.reason?.kind === 'error' ? 'failed' : ''));
@@ -3049,6 +3141,10 @@ async function reconstructSessionArtifact(
       pendingPartialEvent = null;
       session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
         label: 'Turn ended',
+        ...(header.version === 4 && endStatus ? {
+          status: endStatus,
+          severity: endStatus === 'failed' ? 'error' : (endStatus === 'interrupted' ? 'warning' : 'normal'),
+        } : {}),
       }));
     } else if (event.type === 'assistant/chunk') {
       const step = stepStateFor(data.turn, data.step);
@@ -3056,6 +3152,11 @@ async function reconstructSessionArtifact(
         step.chunkRows.push(raw);
         appendChunkToStep(step, data.chunk);
       }
+    } else if (header.version === 4 && event.type === 'assistant/attempt') {
+      session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
+        label: 'Uncommitted assistant attempt', role: 'assistant',
+        preview: protocolPreview(event.type, data), searchText: protocolSearchText(event.type, data),
+      }));
     } else if (event.type === 'assistant/message') {
       const step = stepStateFor(data.turn, data.step);
       if (step && isAppendSurfaceOp(event.surfaceOp)) {
@@ -3070,7 +3171,15 @@ async function reconstructSessionArtifact(
         const reasoning = reasoningText(event.data?.message?.content || []).trim();
         if (reasoning) session.logicalEvents.push(makeReasoningEvent(session.id, event, raw));
         session.logicalEvents.push(makeAssistantMessageEvent(session.id, event, raw));
+      } else {
+        session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
+          role: 'assistant', preview: truncatePreview(visibleText(data.message?.content) || 'Surface replacement assistant message'),
+        }));
       }
+    } else if (header.version === 4 && (event.type === 'system/message' || event.type === 'developer/message')) {
+      session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, event.type, {
+        role: 'system', preview: protocolPreview(event.type, data), searchText: protocolSearchText(event.type, data),
+      }));
     } else if (event.type === 'user/message') {
       if (data.source?.kind === 'goal') {
         goalRows.push({ event, raw });
@@ -3083,7 +3192,14 @@ async function reconstructSessionArtifact(
         const compaction = [...pendingCompactions.values()].reverse().find((candidate) => (
           candidate.summaryRaw && !candidate.replacementRaw
         )) || null;
-        if (compaction && !compaction.replacementRaw && range) {
+        const sourceRange = compaction?.summaryEvent?.data?.shadowedRange;
+        const shadowedSeqs = compaction?.summaryEvent?.data?.shadowedSeqs;
+        const sourceSeqs = Array.isArray(shadowedSeqs)
+          ? [compaction.startEvent.seq, compaction.summaryEvent.seq, ...shadowedSeqs] : [];
+        const nativeMatch = header.version !== 4 || (range && sourceRange && Array.isArray(shadowedSeqs)
+          && range.start === sourceRange.start && range.end === sourceRange.end
+          && storage.sourceEventSeqsMatch(event.sourceEventSeqs, sourceSeqs));
+        if (compaction && !compaction.replacementRaw && range && nativeMatch) {
           compaction.replacementRaw = raw;
           compaction.replacementEvent = event;
         } else {
@@ -3093,21 +3209,22 @@ async function reconstructSessionArtifact(
             preview: truncatePreview(visibleText(data.content) || 'Surface replacement user message'),
           }));
         }
-      } else if (data.source?.kind === 'user' && isAppendSurfaceOp(event.surfaceOp)) {
+      } else if (isDeepSeekHumanUserMessageSource(data.source) && isAppendSurfaceOp(event.surfaceOp)) {
         // Human transcript follows append-origin evidence. A compaction
         // replacement user/message is model-only surface material and must
         // not become a Main human message.
         const logical = makeUserEvent(session.id, event, raw, 'user_message', 'user_message');
         attachInboxProvenance(logical, event, inboxReplay);
         session.logicalEvents.push(logical);
-      } else if (data.source?.kind === 'user') {
+      } else if (isDeepSeekHumanUserMessageSource(data.source)) {
         session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, 'user/message', {
           label: 'Surface replacement user message',
           role: 'system',
           preview: truncatePreview(visibleText(data.content) || 'Surface replacement user message'),
         }));
       } else {
-        const plugin = typeof data.source?.plugin === 'string' ? data.source.plugin : '';
+        const plugin = typeof data.source?.plugin === 'string' ? data.source.plugin
+          : (header.version === 4 ? safeString(data.source?.kind) : '');
         const logical = makeProtocolEvent(session.id, event, raw, 'user/message', {
           label: plugin || 'Runtime context',
           role: 'system',
@@ -3147,6 +3264,23 @@ async function reconstructSessionArtifact(
       }
       const callId = toolResultCallId(event);
       const pending = pendingToolCalls.get(callId);
+      // Fork repair writes child-owned closers for inherited open calls. Keep
+      // that result as its own evidence instead of joining across ownership.
+      // A requested call that never started is not an executed operation.
+      if (header.version === 4 && (
+        (pending && pending.eventSeq < childOwnedStartSeq && event.seq >= childOwnedStartSeq)
+        || data.error?.code === 'TOOL_NOT_STARTED'
+      )) {
+        pendingToolCalls.delete(callId);
+        session.logicalEvents.push(makeProtocolEvent(session.id, event, raw, 'tool/result', {
+          role: 'system',
+          preview: truncatePreview(toolResultText(event) || 'Tool result'),
+          searchText: [callId, toolResultText(event), data.error?.code].filter(Boolean).join('\n'),
+          severity: 'warning',
+          status: 'incomplete',
+        }));
+        continue;
+      }
       if (pending) {
         pendingToolCalls.delete(callId);
         const logical = addPendingToolResult(session, pending, raw, event);
@@ -3225,7 +3359,8 @@ async function reconstructSessionArtifact(
         openStep: currentStep?.step ?? null,
         providerAtEvent: effectiveRequestProvider,
       });
-    } else if (event.type === 'tool/code-dispatch-start' || event.type === 'tool/code-dispatch') {
+    } else if ((header.version === 0 && (event.type === 'tool/code-dispatch-start' || event.type === 'tool/code-dispatch'))
+        || (header.version === 4 && (event.type === 'tool/ptc-dispatch-start' || event.type === 'tool/ptc-dispatch'))) {
       codeDispatchRows.push({ event, raw });
     } else if (TOOL_WORKFLOW_EVENT_TYPES.has(event.type)) {
       workflowRows.push({ event, raw });
@@ -3390,11 +3525,13 @@ async function reconstructSessionArtifact(
     originalToolResultsBySeq,
     toolCallsById,
     seedBoundary,
+    header.version,
   );
   session.title = chooseDeepSeekTitle(session, seedBoundary);
   session.updatedAt = safeIso(lastTime) || session.startedAt;
   session._lastEventTime = lastTime;
-  return finalizeSession(session, repoRoot);
+  return finalizeSession(session, repoRoot,
+    new Set([...forkRepairTurnIds].filter(id => !childStartedTurnIds.has(id))));
 }
 
 function indexedSourceStaleError() {
@@ -3486,14 +3623,18 @@ async function collectArtifactFiles(root, signal, onDiagnostic) {
       return;
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
-    const artifacts = entries.filter((entry) => entry.isFile()
-      && ['session.jsonl', 'session.jsonl.zstd'].includes(entry.name));
+    const artifacts = entries.filter((entry) => entry.isFile())
+      .map((entry) => ({ entry, artifact: storage.parseSessionArtifactName(entry.name) }))
+      .filter((candidate) => candidate.artifact);
     fileCount += artifacts.length;
-    if (artifacts.length > 1) {
-      excludedFileCount += artifacts.length;
+    const highestVersion = artifacts.reduce((highest, candidate) => Math.max(highest, candidate.artifact.version), -1);
+    const selected = artifacts.filter((candidate) => candidate.artifact.version === highestVersion);
+    excludedFileCount += artifacts.length - selected.length;
+    if (selected.length > 1) {
+      excludedFileCount += selected.length;
       onDiagnostic?.({ code: 'DEEPSEEK_STORAGE_INVALID', path: dir,
-        message: 'DeepSeek session directory contains both session.jsonl and session.jsonl.zstd; keep only one artifact in the source directory.' });
-    } else if (artifacts.length) out.push(path.join(dir, artifacts[0].name));
+        message: `DeepSeek session directory contains both encodings for format ${highestVersion}; keep only one encoding of the selected generation.` });
+    } else if (selected.length) out.push(path.join(dir, selected[0].entry.name));
     for (const entry of entries) {
       if (entry.isDirectory()) await walk(path.join(dir, entry.name));
     }

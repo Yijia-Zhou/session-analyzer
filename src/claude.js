@@ -16,10 +16,12 @@ const {
 const {
   CANONICAL_SCHEMA_VERSION,
   CLAUDE_SOURCE_KIND,
+  claudeBashEditDiff,
   claudeRawRef,
   isPlainObject,
   makeClaudeRawEvent,
   safeIso,
+  toolInputFiles,
   truncate,
 } = require('./claude-source');
 const { createClaudeLogicalBuilder } = require('./claude-logical');
@@ -865,8 +867,10 @@ const logicalBuilder = createClaudeLogicalBuilder({
   CANONICAL_SCHEMA_VERSION,
   CLAUDE_SOURCE_KIND,
   blockText: require('./claude-source').blockText,
+  claudeBashEditDiff,
   rawRef: claudeRawRef,
   stringifyValue: require('./claude-source').stringifyValue,
+  toolInputFiles,
   truncate,
 });
 

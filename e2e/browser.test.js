@@ -67,7 +67,7 @@ for (const locale of ['en', 'zh-CN']) test(`Claude background terminal evidence 
     await page.waitForFunction(({ eventId, text }) => document.querySelector(`[data-event-id="${eventId}"]`)?.textContent.includes(text), { eventId: event.id, text: output });
     assert.match(await page.locator('#detail').innerText(), locale === 'en'
       ? id === 'mcp' ? /MCP call moved to background/ : /Monitor started/
-      : id === 'mcp' ? /MCP 调用已转入后台/ : /Monitor 已启动/);
+      : id === 'mcp' ? /MCP 调用已转入后台/ : /监控任务已启动/);
     await page.locator('#detail [data-detail-action="raw"]').click();
     await waitForDetailView(page, 'rawRefs');
     await page.waitForFunction(text => document.querySelector('#detail .rawRefsView')?.textContent.includes(text), output);

@@ -269,6 +269,33 @@ test('Cache Observation copy avoids causal or expiry claims outside the fixed ne
   );
 });
 
+test('DeepSeek format 4 display copy localizes while native source fields stay unchanged', () => {
+  assert.equal(i18n.eventKindLabel('assistant/attempt', 'zh-CN'), '未提交消息的助手尝试');
+  assert.equal(i18n.eventKindLabel('system/message', 'zh-CN'), '系统消息');
+  assert.equal(i18n.eventKindLabel('developer/message', 'zh-CN'), '开发者消息');
+  assert.equal(i18n.rawRecordLabel('tool/ptc-dispatch', 'en'), 'tool/ptc-dispatch');
+  assert.equal(i18n.rawRecordLabel('tool/ptc-dispatch', 'zh-CN'), '程序化工具调用已结算');
+  assert.equal(i18n.lookupKnownLabel('Uncommitted assistant attempt', 'zh-CN'), '未提交消息的助手尝试');
+  const evidence = i18n.localizeSection({
+    type: 'kv', title: 'Embedded stream evidence',
+    entries: [
+      { key: 'Stream chunks', value: '12' },
+      { key: 'Finish reason', value: 'aborted' },
+      { key: 'Source kind', value: 'system-prompt' },
+      { key: 'Agent reasoning effort', value: 'high' },
+    ],
+  }, 'zh-CN');
+  assert.equal(evidence.title, '嵌入式流证据');
+  assert.deepEqual(evidence.entries.map(entry => entry.key), ['流片段数', '响应结束原因', '来源类型', '代理推理强度']);
+  assert.deepEqual(evidence.entries.map(entry => entry.value), ['12', 'aborted', 'system-prompt', 'high']);
+  const notice = 'This source attempt committed no surface message. Streamed tool argument fragments do not establish a dispatched tool call; exact chunks and timing remain in its Raw record.';
+  const localized = i18n.localizeSection({ type: 'notice', title: 'Uncommitted assistant attempt', text: notice }, 'zh-CN');
+  assert.equal(localized.title, '未提交消息的助手尝试');
+  assert.equal(localized.text, '此来源尝试未提交模型可见消息。流中的工具参数片段不能证明工具调用已派发；精确片段和时间仍保留在其原始记录中。');
+  assert.equal(i18n.sectionTitle(notice, 'en'), notice);
+  assert.equal(i18n.sectionTitle('This context message contains no visible text.', 'zh-CN'), '此上下文消息不含可见文本。');
+});
+
 test('strict known label lookup does not treat default-locale fallback as a zh-CN hit', () => {
   const zhLogicalLabels = i18n.catalogs['zh-CN'].logicalLabel;
   const original = zhLogicalLabels['Failed command'];
