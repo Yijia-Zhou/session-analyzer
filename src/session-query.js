@@ -1,6 +1,7 @@
 'use strict';
 
 const i18n = require('./shared/i18n');
+const { setImmediate: yieldToLoop } = require('node:timers/promises');
 const { queryPagination } = require('./shared/query-pagination');
 const {
   DATA_URL_MARKER,
@@ -879,29 +880,50 @@ function createSessionQuery(options = {}) {
     );
   }
 
-  function getTimeline(index, materializedSession, filters) {
+  // Both drivers share structural pagination. Search annotates the timeline;
+  // it does not remove non-hit rows or limit the count to the requested page.
+  function* timelineSteps(index, materializedSession, filters) {
     filters = normalizeFilters(filters);
     filters = { ...filters, ...queryPagination(filters) };
     const locale = resolveLocale(filters.locale);
     const session = materializedSessionInput(index, materializedSession);
     if (!session) return null;
     const layer = filters.layer || 'main';
-    const sourceEvents = sourceEventsForLayer(index, session, layer, locale, layer === 'raw' ? filters.q : '');
+    const sourceKind = validateCanonicalSessionShape(session, index?.sourceKind);
+    const sourceEvents = layer === 'raw' ? session.rawEvents : session.logicalEvents;
     const structuralFilters = { ...filters, q: '', layer };
-    const matched = sourceEvents.filter((event) => eventMatches(event, structuralFilters, session));
-    const searchMatchCount = filters.q
-      ? matched.reduce((sum, event) => sum + eventSearchMatchCount(event, filters.q), 0)
-      : 0;
-    const searchEventCount = filters.q
-      ? matched.reduce((sum, event) => sum + (eventHasSearchHit(event, filters.q) ? 1 : 0), 0)
-      : 0;
-    const page = matched.slice(filters.offset, filters.offset + filters.limit);
+    let total = 0;
+    let searchMatchCount = 0;
+    let searchEventCount = 0;
+    const page = [];
+    for (const sourceEvent of sourceEvents) {
+      const event = layer === 'raw'
+        ? rawEventDto(sourceEvent, '', locale, session, sourceKind)
+        : sourceEvent;
+      if (layer !== 'raw') validateCanonicalLogicalEventShape(event, sourceKind);
+      if (!eventMatches(event, structuralFilters, session)) {
+        yield null;
+        continue;
+      }
+      const onPage = total >= filters.offset && total - filters.offset < filters.limit;
+      total += 1;
+      const searchMatch = yield filters.q ? { event, q: filters.q, onPage } : null;
+      if (searchMatch) {
+        searchMatchCount += searchMatch.count;
+        searchEventCount += Number(searchMatch.hit);
+      }
+      if (onPage) {
+        // Request-local annotations: concurrent searches must not mutate the
+        // revision-owned Materialized Session or reuse another query's match.
+        page.push(searchMatch ? { ...event, searchMatch } : event);
+      }
+    }
     const presentationContexts = layer === 'main' && page.length
       ? presentationContextMap(session.logicalEvents)
       : null;
     return {
       session: sessionSummary(session, index),
-      total: matched.length,
+      total,
       searchMatchCount,
       searchEventCount,
       offset: filters.offset,
@@ -909,7 +931,11 @@ function createSessionQuery(options = {}) {
       layer,
       eventKinds: eventKindCatalog([session], { locale }),
       facets: layer === 'main' ? presentationFacets([session], { locale, filters }) : [],
-      events: layer === 'raw' ? page.map(({ searchText, ...dto }) => dto) : page.map((event) => logicalEventDto(
+      events: layer === 'raw' ? page.map(({ searchText, searchMatch, ...dto }) => ({
+        ...dto,
+        hasSearchHit: searchMatch?.hit || false,
+        snippet: searchMatch?.snippet || '',
+      })) : page.map((event) => logicalEventDto(
         event,
         filters.q,
         locale,
@@ -918,6 +944,42 @@ function createSessionQuery(options = {}) {
         session.sourceKind,
       )),
     };
+  }
+
+  // Retain the synchronous internal API for existing non-HTTP consumers.
+  function getTimeline(index, materializedSession, filters) {
+    const steps = timelineSteps(index, materializedSession, filters);
+    let step = steps.next();
+    while (!step.done) {
+      const work = step.value;
+      const match = work ? {
+        count: eventSearchMatchCount(work.event, work.q),
+        hit: eventHasSearchHit(work.event, work.q),
+        snippet: work.onPage ? eventSearchSnippet(work.event, work.q) : '',
+      } : null;
+      step = steps.next(match);
+    }
+    return step.value;
+  }
+
+  async function getTimelineAsync(index, materializedSession, filters, { signal } = {}) {
+    signal?.throwIfAborted?.();
+    const steps = timelineSteps(index, materializedSession, filters);
+    let step = steps.next();
+    let rows = 0;
+    while (!step.done) {
+      signal?.throwIfAborted?.();
+      const work = step.value;
+      const match = work
+        ? await searchTextParts([String(work.event.preview || '')], [String(work.event.searchText || '')], work.q, signal)
+        : null;
+      // Text yields alone cannot cover many small or structurally excluded rows.
+      if (++rows % 256 === 0) await yieldToLoop();
+      signal?.throwIfAborted?.();
+      step = steps.next(match);
+    }
+    signal?.throwIfAborted?.();
+    return step.value;
   }
 
   function getEvent(index, materializedSession, eventId, options = {}) {
@@ -973,6 +1035,7 @@ function createSessionQuery(options = {}) {
     getEvent,
     getFileActivity,
     getTimeline,
+    getTimelineAsync,
     indexPresentation,
     matchTerms,
     projectFileSuggestions,

@@ -118,6 +118,51 @@ test('DeepSeek nested opaque payloads stay out of Main/Protocol/Raw searches bey
   }
 });
 
+for (const version of [0, 4]) for (const compressed of [false, true]) {
+  test(`DeepSeek PTC Main search retains safe argument field names (v${version}, compressed=${compressed})`, async t => {
+    const prefix = version === 4 ? 'tool/ptc-dispatch' : 'tool/code-dispatch';
+    const argumentsValue = {
+      text: `${'界'.repeat(17_000)} ARGUMENT_VALUE_TAIL`,
+      allowedPtcParameterName: 'visible parameter value',
+      nested: { nestedPtcParameterName: 'visible nested value', signature: 'PTC_HIDDEN_SIGNATURE' },
+      media: { type: 'image', data: 'PTC_HIDDEN_MEDIA' },
+      encrypted_content: 'PTC_HIDDEN_ENCRYPTED',
+    };
+    const dispatch = { rootCallId: 'outer', parentCallId: 'outer', subCallId: 'nested',
+      name: 'read', arguments: argumentsValue };
+    const message = version === 4
+      ? { id: 'outer-result', role: 'tool', source: { kind: 'tool', callId: 'outer' },
+        toolCallId: 'outer', content: text('outer complete') }
+      : { role: 'user', source: { kind: 'tool', callId: 'outer' }, content: [{ type: 'tool-result',
+        toolCallId: 'outer', content: text('outer complete') }] };
+    const f = await fixture(t, [
+      row('tool/call', 0, { turn: 1, step: 1, callId: 'outer', name: 'run_code', arguments: '{"code":"read()"}' }),
+      row(`${prefix}-start`, 1, dispatch),
+      row(prefix, 2, { ...dispatch, isError: false, content: text('nested complete') }),
+      row('tool/result', 3, { turn: 1, step: 1, message }, { surfaceOp: 'append' }),
+    ], version, compressed);
+    const event = f.session.logicalEvents.find(candidate => candidate.id.endsWith(':logical:code-dispatch:nested'));
+    assert.ok(event);
+    assert.equal(event.status, 'success');
+    assert.equal(event.preview, 'nested complete', 'field names cannot match through the display preview');
+    assert.deepEqual(event.rawRefs.map(ref => ref.sourceEventType), [`${prefix}-start`, prefix]);
+    assert.equal(new Set(event.rawRefs.map(ref => ref.rawId)).size, 2);
+    const outer = f.session.logicalEvents.find(candidate => candidate.kind === 'code_mode_operation');
+    assert.equal(outer.codeModeOperation.dispatches.length, 1);
+    assert.equal(outer.codeModeOperation.dispatches[0].subCallId, 'nested');
+    for (const needle of ['allowedPtcParameterName', 'nestedPtcParameterName', 'ARGUMENT_VALUE_TAIL']) {
+      await matchBoth(f, needle, 'main');
+      await matchBoth(f, needle, 'raw', 2);
+      const timeline = deepSeekAdapter.query.getTimeline(f.index, f.session, { q: needle, layer: 'main' });
+      assert.deepEqual(timeline.events.filter(candidate => candidate.hasSearchHit).map(candidate => candidate.id), [event.id]);
+      assert.equal(timeline.searchMatchCount, 1, 'start/result evidence does not duplicate the Main occurrence');
+    }
+    for (const needle of ['PTC_HIDDEN_SIGNATURE', 'PTC_HIDDEN_MEDIA', 'PTC_HIDDEN_ENCRYPTED']) {
+      for (const layer of ['main', 'protocol', 'raw']) await matchBoth(f, needle, layer, 0);
+    }
+  });
+}
+
 test('DeepSeek JSON string arguments and early previews share opaque exclusions without changing plain arguments', async t => {
   const hidden = ['EARLY_SIGNATURE', 'EARLY_IMAGE', 'EARLY_AUDIO', 'EARLY_BLOB', 'EARLY_ENCRYPTED'];
   const payload = { signature: hidden[0],

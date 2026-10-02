@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createServer } = require('../server');
 const { createEmptyMaterializedPresentationIndexes } = require('../src/canonical-contract');
-const { fileSuggestions, filterSessions, getEvent, getTimeline } = require('../src/codex');
+const { fileSuggestions, filterSessions, getEvent, getTimeline, query: codexQuery } = require('../src/codex');
 const { strictClaudeIndexFromComplete } = require('./strict-claude-fixture');
 
 function logicalEvent(id, options = {}) {
@@ -222,7 +222,7 @@ test('project search supports filter-only results, layer isolation, and localize
   assert.equal(Object.hasOwn(ordinary.sessions[0], 'searchMatch'), false);
 });
 
-test('Code Mode request filters are exact Main-layer presentation facts with same-event AND semantics', () => {
+test('Code Mode request filters are exact Main-layer presentation facts with same-event AND semantics', async () => {
   const matchingOperation = logicalEvent('declared-shell', {
     kind: 'code_mode_operation',
     preview: 'alpha parent operation',
@@ -331,6 +331,28 @@ test('Code Mode request filters are exact Main-layer presentation facts with sam
   assert.equal(timeline.events[0].kind, 'code_mode_operation');
   assert.equal(timeline.events[0].toolName, '');
   assert.equal(timeline.events.some((event) => event.id === nestedCommand.id), false);
+
+  const before = structuredClone(item);
+  for (const filters of [
+    { layer: 'main', q: 'alpha', offset: 0, limit: 2 },
+    { layer: 'main', codeModeRequest: 'shell_command', status: 'failed', file: 'src/a.js', offset: 0, limit: 1 },
+    { layer: 'main', codeModeRequest: 'update_plan', q: 'alpha', offset: 1, limit: 1, locale: 'zh-CN' },
+    { layer: 'protocol', codeModeRequest: 'shell_command', offset: 0, limit: 2 },
+    { layer: 'raw', offset: 1, limit: 2, locale: 'zh-CN' },
+    { layer: 'raw', q: 'alpha', offset: 0, limit: 2 },
+  ]) {
+    const synchronous = codexQuery.getTimeline(index, item, filters);
+    const asynchronous = await codexQuery.getTimelineAsync(index, item, filters);
+    assert.deepEqual(asynchronous, synchronous, `adapter timeline parity: ${JSON.stringify(filters)}`);
+    assert.equal(Object.hasOwn(asynchronous, 'facets'), false);
+    assert.ok(Array.isArray(asynchronous.codeModeRequests));
+  }
+  assert.deepEqual(item, before, 'request-local search annotations do not mutate the Materialized Session');
+  const controller = new AbortController();
+  const reason = new Error('cancelled Codex timeline');
+  controller.abort(reason);
+  await assert.rejects(codexQuery.getTimelineAsync(index, item, { layer: 'main' }, { signal: controller.signal }),
+    error => error === reason);
 });
 
 test('timeline reports matching events separately from phrase occurrences without filtering membership', () => {

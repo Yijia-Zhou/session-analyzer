@@ -905,15 +905,11 @@ function createClaudeLogicalBuilder(deps) {
     return [
       lifecycle.taskId,
       lifecycle.phase,
+      // Each admitted semantic notification has one complete representation.
+      // Its public summary/result/recovery fields are display projections of
+      // that same text; adding them again inflates occurrence counts. Mirror
+      // admission/deduplication remains in the source correlation step above.
       lifecycle.notificationSearchText,
-      ...(lifecycle.notifications || []).flatMap((notification) => [
-        notification.status,
-        notification.summary,
-        notification.outputFile,
-        notification.result,
-        notification.recovery,
-        stringifyValue(notification.usage),
-      ]),
     ].filter(Boolean).join('\n');
   }
 

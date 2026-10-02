@@ -951,10 +951,10 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
             if (!indexedSession) return null;
             const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
             const query = queryForIndex(index);
-            return query.getTimeline(index, session, query.filtersFromSearchParams(searchParams, {
+            return query.getTimelineAsync(index, session, query.filtersFromSearchParams(searchParams, {
               ...pagination,
               locale,
-            }));
+            }), { signal: capture.signal });
           },
         );
         if (!result) {

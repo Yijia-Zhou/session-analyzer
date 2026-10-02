@@ -177,6 +177,7 @@ function queryContract() {
     filtersFromSearchParams() {},
     getEvent() {},
     getTimeline() {},
+    async getTimelineAsync() {},
     indexPresentation() {},
     matchTerms() {},
     projectFileSuggestions() {},

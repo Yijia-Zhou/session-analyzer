@@ -1,5 +1,7 @@
 # Seven capacity groups / 七组容量改进
 
+Follow-up correction / 后续修正: external review of `3a0cdde` found three gaps in group 2: warm current-session HTTP search still scanned synchronously, Claude notification display projections inflated occurrence counts, and DeepSeek PTC lost JSON argument field names. The prior project-disk cancellation evidence did not prove current-session query cancellation. See the [follow-up execution record](../active/2026-10-02-capacity-external-findings.md) for confirmed reproductions, repairs and integration evidence. / 对 `3a0cdde` 的外部复核确认第 2 组仍有三项缺口：已物化会话 HTTP 搜索仍同步扫描，Claude 通知展示投影重复增加命中次数，DeepSeek PTC 丢失 JSON 参数字段名。此前项目磁盘取消证据不能证明会话查询可取消。复现、修复与集成证据见后续执行记录。
+
 ## Baseline and authorization / 基线与授权
 
 - Task: `G:\vibe\session-analyzer-capacity-task.md`; implementation, local validation, commits, task branch push and PR authorized. No merge, release, tags or real transcript upload. / 任务书授权实现、本地验证、提交、任务分支推送与 PR；不合并、发布、打标签或上传真实转录。

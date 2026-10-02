@@ -1850,7 +1850,7 @@ function makeCodeDispatchEvent(session, node, outerCall) {
     preview: truncatePreview(resultText || facts.argumentsKey || facts.name),
     searchText: [
       facts.name,
-      fullSearchText(facts.arguments),
+      toolArgumentsSearchText(facts.arguments),
       resultText,
       `rootCallId=${facts.rootCallId}`,
       `parentCallId=${facts.parentCallId}`,
