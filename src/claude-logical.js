@@ -5,8 +5,10 @@ function createClaudeLogicalBuilder(deps) {
     CANONICAL_SCHEMA_VERSION,
     CLAUDE_SOURCE_KIND,
     blockText,
+    claudeBashEditDiff,
     rawRef,
     stringifyValue,
+    toolInputFiles,
     truncate,
   } = deps;
 
@@ -61,6 +63,7 @@ function createClaudeLogicalBuilder(deps) {
       hasLongOutput: preview.length > 800 || searchText.length > 1600,
       hasReadableReasoning: Boolean(fields.hasReadableReasoning),
       touchedFiles: unique(fields.touchedFiles || []),
+      ...(fields.bashEditFiles?.length ? { bashEditFiles: unique(fields.bashEditFiles) } : {}),
       outputStats: fields.outputStats || {},
       tokenUsage: fields.tokenUsage || [],
       usageLimits: fields.usageLimits || [],
@@ -149,7 +152,7 @@ function createClaudeLogicalBuilder(deps) {
     if (normalized === 'read') return 'read';
     if (['write', 'edit', 'multiedit', 'notebookedit'].includes(normalized)) return 'patch';
     if (['websearch', 'webfetch'].includes(normalized)) return 'web_search';
-    if (normalized === 'agent') return 'agent_coordination';
+    if (['agent', 'sendmessage'].includes(normalized)) return 'agent_coordination';
     if (/^(mcp__|mcp:)/.test(normalized)) return 'mcp_call';
     return 'other_tool_call';
   }
@@ -194,6 +197,7 @@ function createClaudeLogicalBuilder(deps) {
       return truncate(input.status ? `${task} → ${input.status}` : task);
     }
     if (call.name === 'ExitPlanMode') return truncate(input.plan || call.name);
+    if (call.name === 'SendMessage') return truncate(input.summary || input.message || input.content || call.name);
     if (kind === 'command') return truncate(input.command || input.description || call.name);
     if (kind === 'read') return truncate(input.file_path || input.filePath || input.path || call.name);
     if (kind === 'patch') return truncate(input.file_path || input.filePath || input.path || input.notebook_path || call.name);
@@ -540,10 +544,113 @@ function createClaudeLogicalBuilder(deps) {
     };
   }
 
+  function resumedAgentId(call, resultMatch) {
+    if (call.name !== 'SendMessage' || resultStatus(resultMatch) !== 'success') return '';
+    const structured = uniquelyOwnedStructuredResult(resultMatch);
+    const target = taskIdentifier(call.input?.to);
+    if (!target || target !== call.input.to || structured?.success !== true
+        || structured.resumedAgentId !== target
+        || (call.input.recipient != null && call.input.recipient !== target)
+        || (structured.pin?.id != null && structured.pin.id !== target)) return '';
+    return target;
+  }
+
+  function mcpBackgroundReceipt(callMatch, resultMatch) {
+    if (!hasUniqueStructuredResultOwner(resultMatch) || resultStatus(resultMatch) !== 'success') return null;
+    if (!callMatch.call.name.startsWith('mcp__') || !callMatch.raw.uuid
+        || resultMatch.raw.parsed?.sourceToolAssistantUUID !== callMatch.raw.uuid) return null;
+    const receipt = resultMatch.raw.toolUseResult;
+    const content = resultMatch.raw.contentBlocks[resultMatch.result.blockIndex]?.content;
+    if (!Array.isArray(receipt) || receipt.length !== 1 || receipt[0]?.type !== 'text'
+        || typeof receipt[0].text !== 'string' || !Array.isArray(content)
+        || content.length !== 1 || content[0]?.type !== 'text' || content[0].text !== receipt[0].text) return null;
+    const match = receipt[0].text.match(/^MCP tool "([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)" is still running after (\d+(?:\.\d+)?)s\. It was moved to the background as task ([A-Za-z0-9][A-Za-z0-9._:-]{0,255}) and keeps running; you'll receive a notification with the result when it completes\. You can keep working in the meantime\. To stop it, use TaskStop with task_id "\4"\. Note: it does not survive exiting this session\.$/u);
+    if (!match || `mcp__${match[1]}__${match[2]}` !== callMatch.call.name) return null;
+    const duration = Number(match[3]) * 1000;
+    if (!Number.isSafeInteger(duration) || duration <= 0) return null;
+    return { taskId: match[4], timedOutAfterMs: duration };
+  }
+
+  function monitorHasTerminalFields(text) {
+    const opening = '<task-notification>';
+    const closing = '</task-notification>';
+    // Unparseable envelopes still go through the strict rejection path.
+    if (!text.startsWith(opening) || !text.endsWith(closing)) return true;
+    const body = text.slice(opening.length, -closing.length);
+    let offset = 0;
+    while (offset < body.length) {
+      while (/\s/u.test(body[offset] || '')) offset += 1;
+      if (offset === body.length) break;
+      const field = body.slice(offset).match(/^<([A-Za-z][A-Za-z0-9_-]*)>/u);
+      if (!field) return true;
+      if (['status', 'tool-use-id'].includes(field[1])) return true;
+      const endTag = `</${field[1]}>`;
+      const end = body.indexOf(endTag, offset + field[0].length);
+      if (end < 0) return true;
+      // Field contents (especially script output in <event>) are opaque
+      // here. Their literal tags are not notification-level identity/status.
+      offset = end + endTag.length;
+    }
+    return false;
+  }
+
+  // These observed shapes omit call identity (MCP) or add final <event> output
+  // (Monitor). Keep admission separate from the older Agent/Bash grammar.
+  function backgroundNotification(raw, owner) {
+    const sourceText = trustedTaskNotificationText(raw);
+    const invalid = { raw, sourceText, valid: false, fingerprint: `invalid:${raw.rawId}` };
+    // Independent validation ceiling, not the summary/result display budget.
+    if (sourceText.length > 2_048_000) return invalid;
+    const text = sourceText.trim();
+    const values = parseStrictFlatTags(text.slice('<task-notification>'.length, -'</task-notification>'.length),
+      new Set(owner.kind === 'background_mcp'
+        ? ['task-id', 'status', 'summary', 'result']
+        : ['task-id', 'tool-use-id', 'output-file', 'status', 'summary', 'event']), '');
+    if (!values || !text.startsWith('<task-notification>') || !text.endsWith('</task-notification>')) return invalid;
+    const status = values.get('status')?.trim();
+    const summary = values.get('summary')?.trim();
+    const result = values.get(owner.kind === 'monitor' ? 'event' : 'result')?.trim() || '';
+    if (values.get('task-id')?.trim() !== owner.taskId || !['completed', 'failed'].includes(status)
+        || !summary
+        || (owner.kind === 'monitor' && values.get('tool-use-id')?.trim() !== owner.call.id)
+        || (owner.kind === 'background_mcp' && !result)) return invalid;
+    const omission = '\n[omitted; see raw refs]';
+    const bounded = (value, limit) => value.length <= limit ? value
+      : `${value.slice(0, limit - omission.length)}${omission}`;
+    return { raw, sourceText, valid: true, status,
+      summary: bounded(summary, 4000), result: bounded(result, 16000),
+      outputFile: (values.get('output-file') || '').trim().slice(0, 4000),
+      recovery: '', usage: null, exitCode: null, fingerprint: sourceText };
+  }
+
   function launchCandidate(callKey, callMatch, resultMatch) {
     if (!resultMatch || !callMatch.call.id) return null;
+    const mcpReceipt = mcpBackgroundReceipt(callMatch, resultMatch);
+    if (mcpReceipt) return { callKey, call: callMatch.call, kind: 'background_mcp',
+      ...mcpReceipt, resultRawIndex: resultMatch.raw.rawIndex };
     const structured = uniquelyOwnedStructuredResult(resultMatch);
     if (!structured) return null;
+    if (callMatch.call.name === 'Monitor' && resultStatus(resultMatch) === 'success'
+        && taskIdentifier(structured.taskId) === structured.taskId && structured.taskId
+        && Number.isSafeInteger(structured.timeoutMs) && structured.timeoutMs > 0
+        && structured.persistent === false && callMatch.call.input?.persistent !== true
+        && typeof callMatch.call.input?.command === 'string' && callMatch.call.input.command.trim()
+        && (callMatch.call.input.timeout_ms == null || callMatch.call.input.timeout_ms === structured.timeoutMs)) {
+      return { callKey, call: callMatch.call, kind: 'monitor', taskId: structured.taskId,
+        timedOutAfterMs: null, resultRawIndex: resultMatch.raw.rawIndex };
+    }
+    const resumedId = resumedAgentId(callMatch.call, resultMatch);
+    if (resumedId) {
+      return {
+        callKey,
+        call: callMatch.call,
+        kind: 'async_agent',
+        taskId: resumedId,
+        isResume: true,
+        timedOutAfterMs: null,
+        resultRawIndex: resultMatch.raw.rawIndex,
+      };
+    }
     if (
       callMatch.call.name === 'Bash'
       && typeof structured.backgroundTaskId === 'string'
@@ -617,7 +724,8 @@ function createClaudeLogicalBuilder(deps) {
   }
 
   function buildAsyncLifecycleCorrelation(raws, toolCorrelation) {
-    const launchesByTaskId = new Map();
+    const initialLaunchesByTaskId = new Map();
+    const launchByToolUseId = new Map();
     const launches = [];
     for (const [callKey, callMatch] of toolCorrelation.callByBlock) {
       if (!toolCorrelation.uniqueCallIds.has(callMatch.call.id)) continue;
@@ -628,24 +736,44 @@ function createClaudeLogicalBuilder(deps) {
       );
       if (candidate) {
         launches.push(candidate);
-        appendIndexedValue(launchesByTaskId, candidate.taskId, candidate);
+        launchByToolUseId.set(candidate.call.id, candidate);
+        if (!candidate.isResume) appendIndexedValue(initialLaunchesByTaskId, candidate.taskId, candidate);
       }
     }
 
     const notificationsByCall = new Map();
     for (const raw of raws) {
+      const sourceText = trustedTaskNotificationText(raw).trim();
+      const taskOnlyId = taskIdentifier(singleTagValue(sourceText, 'task-id'));
+      const taskOnlyOwners = initialLaunchesByTaskId.get(taskOnlyId) || [];
+      const backgroundOwner = taskOnlyOwners.length === 1 ? taskOnlyOwners[0] : null;
+      if (backgroundOwner && ['background_mcp', 'monitor'].includes(backgroundOwner.kind)) {
+        if (raw.rawIndex <= backgroundOwner.resultRawIndex) continue;
+        // A Monitor event without status/call identity may be plain script
+        // output, including the timeout-looking text. It remains Protocol.
+        if (backgroundOwner.kind === 'monitor' && !monitorHasTerminalFields(sourceText)) continue;
+        appendIndexedValue(notificationsByCall, backgroundOwner.callKey,
+          backgroundNotification(raw, backgroundOwner));
+        continue;
+      }
       const notification = parseTaskNotification(raw);
       const identity = notification || taskNotificationIdentity(raw);
       if (!identity) continue;
-      const owners = launchesByTaskId.get(identity.taskId) || [];
+      const initialOwners = initialLaunchesByTaskId.get(identity.taskId) || [];
+      // A resumed Agent keeps its task ID, but each completion names the exact
+      // SendMessage call. Multiple ordinary launches still make the task ID
+      // ambiguous; admitting resumes must not relax that older safety gate.
+      if (initialOwners.length > 1) continue;
+      const owner = launchByToolUseId.get(identity.toolUseId);
       if (
-        owners.length !== 1
-        || owners[0].call.id !== identity.toolUseId
-        || raw.rawIndex <= owners[0].resultRawIndex
+        !owner || owner.taskId !== identity.taskId
+        || (owner.isResume && initialOwners.some((initial) => initial.kind !== 'async_agent'
+          || initial.resultRawIndex >= owner.resultRawIndex))
+        || raw.rawIndex <= owner.resultRawIndex
       ) continue;
       if (!notification) {
-        if (owners[0].kind !== 'async_workflow') continue;
-        appendIndexedValue(notificationsByCall, owners[0].callKey, {
+        if (owner.kind !== 'async_workflow') continue;
+        appendIndexedValue(notificationsByCall, owner.callKey, {
           raw,
           valid: false,
           sourceText: identity.sourceText,
@@ -655,15 +783,15 @@ function createClaudeLogicalBuilder(deps) {
         });
         continue;
       }
-      if (owners[0].kind === 'async_workflow' && !strictWorkflowTerminal(notification)) {
-        appendIndexedValue(notificationsByCall, owners[0].callKey, {
+      if (owner.kind === 'async_workflow' && !strictWorkflowTerminal(notification)) {
+        appendIndexedValue(notificationsByCall, owner.callKey, {
           ...notification,
           valid: false,
           fingerprint: `invalid:${raw.rawId}`,
         });
         continue;
       }
-      appendIndexedValue(notificationsByCall, owners[0].callKey, notification);
+      appendIndexedValue(notificationsByCall, owner.callKey, notification);
     }
 
     const lifecycleByCallBlock = new Map();
@@ -693,11 +821,22 @@ function createClaudeLogicalBuilder(deps) {
       ));
       const workflowAmbiguous = launch.kind === 'async_workflow'
         && (semanticNotifications.length > 1 || !workflowNotificationSetIsExact);
-      const acceptedNotifications = workflowAmbiguous ? [] : semanticNotifications;
-      const acceptedNotificationRaws = workflowAmbiguous
+      const isBackground = ['background_mcp', 'monitor'].includes(launch.kind);
+      // Task-only identity needs a trusted system-delivered user row; an
+      // enqueue alone can also originate from arbitrary user input. Accept
+      // one such row or its exact queue mirror, never duplicate/conflict sets.
+      const backgroundExact = notifications.length === 1
+        ? notifications[0].raw.recordType === 'user'
+        : notifications.length === 2 && workflowMirrors[0] === 'queue-operation'
+          && workflowMirrors[1] === 'user' && notifications[0].sourceText === notifications[1].sourceText;
+      const backgroundAmbiguous = isBackground && (!backgroundExact
+        || notifications.some(notification => notification.valid === false));
+      const ambiguous = workflowAmbiguous || backgroundAmbiguous;
+      const acceptedNotifications = ambiguous ? [] : semanticNotifications;
+      const acceptedNotificationRaws = ambiguous
         ? []
         : notifications.map((notification) => notification.raw);
-      if (!workflowAmbiguous) {
+      if (!ambiguous) {
         for (const notification of notifications) {
           matchedNotificationRawIds.add(notification.raw.rawId);
         }
@@ -706,7 +845,7 @@ function createClaudeLogicalBuilder(deps) {
       lifecycleByCallBlock.set(launch.callKey, {
         kind: launch.kind,
         taskId: launch.taskId,
-        phase: terminal ? 'terminal' : launch.kind === 'background_command' ? 'backgrounded' : 'async_launched',
+        phase: terminal ? 'terminal' : ['background_command', 'background_mcp', 'monitor'].includes(launch.kind) ? 'backgrounded' : 'async_launched',
         timedOutAfterMs: launch.timedOutAfterMs,
         workflow: launch.workflow || null,
         notifications: acceptedNotifications.map((notification) => ({
@@ -787,14 +926,28 @@ function createClaudeLogicalBuilder(deps) {
     const subtype = approvedPlan ? 'proposed_plan' : call.name;
     const severity = status === 'failed' ? 'error' : ['declined', 'incomplete'].includes(status) ? 'warning' : 'normal';
     const resultText = toolResultText(resultMatch);
-    const agentId = String(
+    const agentId = call.name === 'SendMessage' ? resumedAgentId(call, resultMatch) : String(
       structuredResult?.agentId
       || (hasUniqueStructuredResultOwner(resultMatch) ? result?.agentId : '')
       || '',
     );
+    const bashEditDiff = call.name === 'Bash' && status !== 'declined'
+      ? claudeBashEditDiff(structuredResult) : null;
+    const bashEditFiles = bashEditDiff?.touchedFiles || [];
+    // Display omission must not erase searchable evidence. Give an accepted
+    // omitted diff its own bounded JSON prefix, independent of stdout.
+    const bashEditSearchText = bashEditDiff
+      ? bashEditDiff.text || stringifyValue(structuredResult.bashEditDiff)
+      : '';
+    // Accepted diff content owns an independent search projection. Do not
+    // duplicate it in the generic JSON prefix (which also inflates hit counts).
+    const searchableResult = bashEditDiff
+      ? Object.fromEntries(Object.entries(structuredResult).filter(([key]) => key !== 'bashEditDiff'))
+      : structuredResult;
     const touchedFiles = [
-      ...(callRaw.touchedFiles || []),
+      ...toolInputFiles(call.name, call.input),
       ...deltaTouchedFiles(supplements),
+      ...bashEditFiles,
     ];
     const raws = [callRaw, result, ...supplements, ...(lifecycle?.notificationRaws || [])];
     const publicLifecycle = lifecycle ? {
@@ -820,7 +973,9 @@ function createClaudeLogicalBuilder(deps) {
         call.name,
         stringifyValue(call.input),
         resultText,
-        stringifyValue(structuredResult),
+        stringifyValue(searchableResult),
+        bashEditSearchText,
+        bashEditFiles.join('\n'),
         ownsResultMetadata ? result?.toolDenialKind : '',
         lifecycleSearchText(lifecycle),
       ].filter(Boolean).join('\n'),
@@ -829,6 +984,7 @@ function createClaudeLogicalBuilder(deps) {
       toolName: approvedPlan ? '' : call.name,
       sourceToolName: approvedPlan ? call.name : '',
       touchedFiles,
+      bashEditFiles,
       outputStats: {
         exitCode: lifecycle?.terminal?.exitCode
           ?? (ownsResultMetadata ? result?.exitCode : null)

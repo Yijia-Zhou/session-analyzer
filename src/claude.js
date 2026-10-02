@@ -16,10 +16,12 @@ const {
 const {
   CANONICAL_SCHEMA_VERSION,
   CLAUDE_SOURCE_KIND,
+  claudeBashEditDiff,
   claudeRawRef,
   isPlainObject,
   makeClaudeRawEvent,
   safeIso,
+  toolInputFiles,
   truncate,
 } = require('./claude-source');
 const { createClaudeLogicalBuilder } = require('./claude-logical');
@@ -812,8 +814,10 @@ function finalizeSession(session) {
   const toolEvents = session.logicalEvents.filter((event) => event.toolName);
   const commandEvents = session.logicalEvents.filter((event) => event.kind === 'command');
   const patchCounts = new Map();
-  for (const event of session.logicalEvents.filter((candidate) => candidate.kind === 'patch')) {
-    for (const file of event.touchedFiles) patchCounts.set(file, (patchCounts.get(file) || 0) + 1);
+  for (const event of session.logicalEvents) {
+    const editedFiles = event.kind === 'patch' ? event.touchedFiles
+      : event.kind === 'command' && event.toolName === 'Bash' ? event.bashEditFiles || [] : [];
+    for (const file of editedFiles) patchCounts.set(file, (patchCounts.get(file) || 0) + 1);
   }
   session.analysis = {
     sessionId: session.id,
@@ -863,8 +867,10 @@ const logicalBuilder = createClaudeLogicalBuilder({
   CANONICAL_SCHEMA_VERSION,
   CLAUDE_SOURCE_KIND,
   blockText: require('./claude-source').blockText,
+  claudeBashEditDiff,
   rawRef: claudeRawRef,
   stringifyValue: require('./claude-source').stringifyValue,
+  toolInputFiles,
   truncate,
 });
 
