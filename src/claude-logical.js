@@ -5,9 +5,11 @@ function createClaudeLogicalBuilder(deps) {
     CANONICAL_SCHEMA_VERSION,
     CLAUDE_SOURCE_KIND,
     blockText,
+    blockSearchText,
     claudeBashEditDiff,
     rawRef,
     stringifyValue,
+    stringifySearchValue,
     toolInputFiles,
     truncate,
   } = deps;
@@ -843,6 +845,10 @@ function createClaudeLogicalBuilder(deps) {
       }
       const terminal = acceptedNotifications.at(-1) || null;
       lifecycleByCallBlock.set(launch.callKey, {
+        // Internal search-only projection of already admitted notification
+        // text; public lifecycle summaries keep their independent budgets.
+        notificationSearchText: acceptedNotifications
+          .map(notification => stringifySearchValue(notification.sourceText)).join('\n'),
         kind: launch.kind,
         taskId: launch.taskId,
         phase: terminal ? 'terminal' : ['background_command', 'background_mcp', 'monitor'].includes(launch.kind) ? 'backgrounded' : 'async_launched',
@@ -888,10 +894,10 @@ function createClaudeLogicalBuilder(deps) {
     if (!match) return '';
     const { raw, result } = match;
     const block = raw.contentBlocks[result.blockIndex];
-    const text = blockText(block);
+    const text = blockSearchText(block);
     if (text) return text;
     if (!hasUniqueStructuredResultOwner(match)) return '';
-    return raw.output || stringifyValue(raw.toolUseResult);
+    return raw.output || stringifySearchValue(raw.toolUseResult);
   }
 
   function lifecycleSearchText(lifecycle) {
@@ -899,14 +905,11 @@ function createClaudeLogicalBuilder(deps) {
     return [
       lifecycle.taskId,
       lifecycle.phase,
-      ...(lifecycle.notifications || []).flatMap((notification) => [
-        notification.status,
-        notification.summary,
-        notification.outputFile,
-        notification.result,
-        notification.recovery,
-        stringifyValue(notification.usage),
-      ]),
+      // Each admitted semantic notification has one complete representation.
+      // Its public summary/result/recovery fields are display projections of
+      // that same text; adding them again inflates occurrence counts. Mirror
+      // admission/deduplication remains in the source correlation step above.
+      lifecycle.notificationSearchText,
     ].filter(Boolean).join('\n');
   }
 
@@ -935,9 +938,9 @@ function createClaudeLogicalBuilder(deps) {
       ? claudeBashEditDiff(structuredResult) : null;
     const bashEditFiles = bashEditDiff?.touchedFiles || [];
     // Display omission must not erase searchable evidence. Give an accepted
-    // omitted diff its own bounded JSON prefix, independent of stdout.
+    // omitted diff its own complete text projection, independent of stdout.
     const bashEditSearchText = bashEditDiff
-      ? bashEditDiff.text || stringifyValue(structuredResult.bashEditDiff)
+      ? bashEditDiff.text || stringifySearchValue(structuredResult.bashEditDiff)
       : '';
     // Accepted diff content owns an independent search projection. Do not
     // duplicate it in the generic JSON prefix (which also inflates hit counts).
@@ -971,9 +974,9 @@ function createClaudeLogicalBuilder(deps) {
       preview: approvedPlan ? truncate(call.input.plan) : toolPreview(call, ordinaryKind),
       searchText: [
         call.name,
-        stringifyValue(call.input),
+        stringifySearchValue(call.input),
         resultText,
-        stringifyValue(searchableResult),
+        stringifySearchValue(searchableResult),
         bashEditSearchText,
         bashEditFiles.join('\n'),
         ownsResultMetadata ? result?.toolDenialKind : '',
@@ -1167,7 +1170,7 @@ function createClaudeLogicalBuilder(deps) {
       role: 'system',
       label: isNovel ? 'Plan update' : 'Task reminder',
       preview: taskReminderPreview(items),
-      searchText: stringifyValue(items),
+      searchText: stringifySearchValue(items),
       raws,
       sourceOrder: raws[0].rawIndex * 100,
       planSnapshot: items,
@@ -1250,7 +1253,7 @@ function createClaudeLogicalBuilder(deps) {
     if (raw.recordType !== 'user' || raw.contentBlocks.length !== 1) return false;
     const [block] = raw.contentBlocks;
     if (block.type !== 'text') return false;
-    const text = blockText(block).trim();
+    const text = blockSearchText(block).trim();
     if (/^<local-command-([a-z][a-z-]*)>[\s\S]*<\/local-command-\1>$/u.test(text)) return true;
     return isSlashCommandEnvelopeText(text);
   }
@@ -1260,11 +1263,11 @@ function createClaudeLogicalBuilder(deps) {
     if (raw.isMeta || raw.isCompactSummary || raw.originKind === 'task-notification') return false;
     if (raw.contentBlocks.some((block) => block.type === 'tool_result')) return false;
     if (isLocalCommandEnvelope(raw)) return false;
-    return raw.contentBlocks.some((block) => block.type === 'text' && blockText(block).trim());
+    return raw.contentBlocks.some((block) => block.type === 'text' && blockSearchText(block).trim());
   }
 
   function messageEvent(raw, block, blockIndex, role) {
-    const text = blockText(block);
+    const text = blockSearchText(block);
     return createEvent({
       id: `${raw.sessionId}:logical:${role}:${raw.line}:${blockIndex}`,
       timestamp: raw.timestamp,
@@ -1284,7 +1287,7 @@ function createClaudeLogicalBuilder(deps) {
   }
 
   function reasoningEvent(raw, block, blockIndex) {
-    const text = blockText(block);
+    const text = blockSearchText(block);
     return createEvent({
       id: `${raw.sessionId}:logical:reasoning:${raw.line}:${blockIndex}`,
       timestamp: raw.timestamp,
@@ -1305,7 +1308,7 @@ function createClaudeLogicalBuilder(deps) {
   }
 
   function apiErrorEvent(raw) {
-    const text = raw.contentBlocks.map((block) => blockText(block)).filter(Boolean).join('\n');
+    const text = raw.contentBlocks.map(blockSearchText).filter(Boolean).join('\n');
     return createEvent({
       id: `${raw.sessionId}:logical:error:${raw.line}`,
       timestamp: raw.timestamp,
@@ -1388,8 +1391,8 @@ function createClaudeLogicalBuilder(deps) {
   function protocolBlockEvent(raw, block, blockIndex, requestedSubtype = '') {
     const blockType = String(block?.type || 'unknown_block');
     const subtype = requestedSubtype || `${raw.recordType || 'record'}_${blockType}`;
-    const text = blockText(block);
-    const structured = stringifyValue(block);
+    const text = blockSearchText(block);
+    const structured = stringifySearchValue(block);
     const failed = block?.is_error === true;
     return createEvent({
       id: `${raw.sessionId}:logical:protocol:${raw.line}:${blockIndex}`,
@@ -1448,7 +1451,7 @@ function createClaudeLogicalBuilder(deps) {
       label: 'Compaction',
       preview,
       searchText: [
-        stringifyValue(metadata),
+        stringifySearchValue(metadata),
         summary?.messageText,
         ...group.map((raw) => raw.searchText),
       ].filter(Boolean).join('\n'),
@@ -1638,7 +1641,7 @@ function createClaudeLogicalBuilder(deps) {
       searchText: [
         initial.condition,
         terminal?.reason,
-        ...validations.map((validation) => stringifyValue(validation)),
+        ...validations.map((validation) => stringifySearchValue(validation)),
       ].filter(Boolean).join('\n'),
       status: terminal ? 'success' : 'in_progress',
       raws,
@@ -1759,7 +1762,7 @@ function createClaudeLogicalBuilder(deps) {
           if (block.type === 'thinking') {
             events.push(reasoningEvent(raw, block, blockIndex));
             projectedBlockCount += 1;
-          } else if (block.type === 'text' && blockText(block).trim()) {
+          } else if (block.type === 'text' && blockSearchText(block).trim()) {
             events.push(messageEvent(raw, block, blockIndex, 'assistant'));
             projectedBlockCount += 1;
           } else if (block.type === 'text') {
@@ -1823,7 +1826,7 @@ function createClaudeLogicalBuilder(deps) {
         }
         if (isHumanUserRaw(raw)) {
           raw.contentBlocks.forEach((block, blockIndex) => {
-            if (block.type === 'text' && blockText(block).trim()) {
+            if (block.type === 'text' && blockSearchText(block).trim()) {
               events.push(messageEvent(raw, block, blockIndex, 'user'));
             } else if (block.type !== 'text') {
               events.push(protocolBlockEvent(raw, block, blockIndex));

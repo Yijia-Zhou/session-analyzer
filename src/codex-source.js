@@ -7,12 +7,100 @@ const {
 const {
   asyncAgentMessageFromRecord,
   asyncMessageMetadata,
-  asyncMessageSearchText,
 } = require('./codex-async-message');
 const { summarizeCodexAttachments } = require('./codex-attachments');
 const { externalToolInputFromRaw } = require('./codex-external-input');
 const { factsFromRecord, targetFromRecord, isTransientRealtimeRecord } = require('./codex-persisted-history');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
+const { projectSearchJson } = require('./search-json');
+const { redactEmbeddedDataUrls } = require('./shared/logical-detail-sanitizer');
+
+const OPAQUE_SEARCH_KEYS = new Set([
+  'signature', 'thought_signature', 'thoughtSignature', 'encrypted_content', 'encryptedContent',
+  'blob', 'base64', 'bytes', 'image_url', 'audio_url', 'images',
+]);
+const OPAQUE_CONTENT_TYPES = new Set([
+  'image', 'input_image', 'output_image', 'audio', 'input_audio', 'output_audio',
+  'encrypted_content', 'base64', 'redacted_thinking', 'encrypted_reasoning', 'document', 'video',
+]);
+
+// Search walks the supported textual payload independently of display budgets.
+// Media bytes, encrypted content and signatures are never search text. This
+// does not read references or files outside the accepted transcript.
+function codexFullSearchText(value) {
+  const parts = [];
+  const stack = [value];
+  while (stack.length) {
+    const current = stack.pop();
+    if (current == null) continue;
+    if (typeof current === 'string') {
+      const text = redactEmbeddedDataUrls(current);
+      if (text) parts.push(text);
+    } else if (typeof current === 'number' || typeof current === 'boolean') {
+      parts.push(String(current));
+    } else if (Array.isArray(current)) {
+      for (let i = current.length - 1; i >= 0; i -= 1) stack.push(current[i]);
+    } else if (typeof current === 'object' && !OPAQUE_CONTENT_TYPES.has(current.type)) {
+      const entries = Object.entries(current);
+      for (let i = entries.length - 1; i >= 0; i -= 1) {
+        const [key, nested] = entries[i];
+        if (OPAQUE_SEARCH_KEYS.has(key)) continue;
+        if (key === 'result' && String(current.type || '').startsWith('image_generation')) continue;
+        stack.push(nested);
+      }
+    }
+  }
+  return parts.join('\n').trim();
+}
+
+// Tool arguments/results often carry a serialized JSON object. Preserve its
+// spelling (and occurrence counts) when safe; redact structured opaque fields
+// before indexing instead of treating their encoded bytes as ordinary text.
+function codexSearchValue(value) {
+  return projectSearchJson(value, {
+    excludedKeys: OPAQUE_SEARCH_KEYS,
+    opaqueTypes: OPAQUE_CONTENT_TYPES,
+    redactString: redactEmbeddedDataUrls,
+    omitEntry: (key, parent) => key === 'result' && String(parent?.type || '').startsWith('image_generation'),
+  });
+}
+
+function fullTypedText(content, type) {
+  return Array.isArray(content)
+    ? content.filter((part) => part?.type === type && typeof part.text === 'string')
+      .map((part) => redactEmbeddedDataUrls(part.text)).join('\n').trim()
+    : '';
+}
+
+function fullReasoningText(payload) {
+  return [...new Set([
+    fullTypedText(payload.summary, 'summary_text'),
+    fullTypedText(payload.content, 'reasoning_text'),
+  ].filter(Boolean))].join('\n');
+}
+
+function codexAsyncMessageText(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  if (payload.type !== 'item_completed') {
+    return typeof payload.message === 'string' ? redactEmbeddedDataUrls(payload.message) : '';
+  }
+  return Array.isArray(payload.item?.content) ? payload.item.content
+    .filter((part) => part?.type === 'Text' && typeof part.text === 'string')
+    .map((part) => redactEmbeddedDataUrls(part.text)).join('') : '';
+}
+
+function codexAsyncSearchText(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  const item = payload.type === 'item_completed' ? payload.item : payload;
+  if (!item || typeof item !== 'object') return '';
+  const text = codexAsyncMessageText(payload);
+  const questions = Array.isArray(item.questions) ? item.questions.flatMap((question) => (
+    typeof question?.title === 'string' && question.title.trim()
+      ? [question.title, ...(Array.isArray(question.options)
+        ? question.options.filter((option) => typeof option === 'string') : [])] : []
+  )) : [];
+  return codexFullSearchText([text, ...questions]);
+}
 
 const CANONICAL_EVENT_TYPES = Object.freeze({
   turn_started: 'task_started',
@@ -186,7 +274,7 @@ function createCodexRawParser(deps) {
       if (history.type === 'transcript_segment') {
         raw.messageText = payload.text.slice(0, 16000);
         raw.preview = truncate(raw.messageText);
-        raw.searchText = raw.messageText;
+        raw.searchText = codexFullSearchText(payload.text);
       } else {
         raw.preview = truncate(Object.entries(history.values || history)
           .filter(([key]) => !['type', 'itemId', 'realtimeSessionId'].includes(key))
@@ -201,7 +289,7 @@ function createCodexRawParser(deps) {
       raw.asyncMessage = asyncMessageMetadata(asyncMessage);
       raw.messageText = asyncMessage.text;
       raw.preview = truncate(raw.messageText || 'Async assistant message');
-      raw.searchText = asyncMessageSearchText(asyncMessage);
+      raw.searchText = codexAsyncSearchText(payload);
       return raw;
     }
 
@@ -215,13 +303,13 @@ function createCodexRawParser(deps) {
       if (payloadType === 'reasoning') {
         raw.messageText = extractReasoningText(payload);
         raw.preview = truncate(raw.messageText || 'reasoning');
-        raw.searchText = raw.messageText;
+        raw.searchText = fullReasoningText(payload);
         return raw;
       }
       if (payloadType === 'function_call') {
         raw.output = stringifyValue(payload.arguments);
-        raw.preview = truncate(`${payload.name || 'function_call'} ${raw.output}`);
-        raw.searchText = `${payload.name || ''}\n${raw.output}`;
+        raw.preview = truncate(`${payload.name || 'function_call'} ${codexSearchValue(payload.arguments)}`);
+        raw.searchText = `${payload.name || ''}\n${codexSearchValue(payload.arguments)}`;
         return raw;
       }
       if (payloadType === 'function_call_output') {
@@ -229,30 +317,30 @@ function createCodexRawParser(deps) {
         if (externalInput) {
           raw.output = externalInput.text;
           raw.preview = truncate(externalInput.text || externalInput.name || 'function_call_output');
-          raw.searchText = [externalInput.name, externalInput.namespace, externalInput.text]
+          raw.searchText = [externalInput.name, externalInput.namespace, codexFullSearchText(payload.output)]
             .filter(Boolean).join('\n');
         } else {
           raw.output = stringifyValue(payload.output);
-          raw.preview = truncate(raw.output || payload.call_id || 'function_call_output');
-          raw.searchText = raw.output;
+          raw.preview = truncate(codexSearchValue(payload.output) || payload.call_id || 'function_call_output');
+          raw.searchText = codexSearchValue(payload.output);
         }
         return finishRaw();
       }
       if (payloadType === 'custom_tool_call') {
         raw.output = stringifyValue(payload.input);
-        raw.preview = truncate(`${payload.name || 'custom_tool_call'} ${raw.output}`);
-        raw.searchText = `${payload.name || ''}\n${raw.output}`;
+        raw.preview = truncate(`${payload.name || 'custom_tool_call'} ${codexSearchValue(payload.input)}`);
+        raw.searchText = `${payload.name || ''}\n${codexSearchValue(payload.input)}`;
         return raw;
       }
       if (payloadType === 'custom_tool_call_output') {
         raw.output = stringifyValue(payload.output);
-        raw.preview = truncate(raw.output || payload.call_id || 'custom_tool_call_output');
-        raw.searchText = raw.output;
+        raw.preview = truncate(codexSearchValue(payload.output) || payload.call_id || 'custom_tool_call_output');
+        raw.searchText = codexSearchValue(payload.output);
         return finishRaw();
       }
       if (payloadType === 'web_search_call') {
-        raw.preview = truncate(flattenText(payload.action || payload, 8000) || payload.status || 'web_search_call');
-        raw.searchText = flattenText(payload, 12000);
+        raw.searchText = codexFullSearchText(payload);
+        raw.preview = truncate(codexFullSearchText(payload.action || payload) || payload.status || 'web_search_call');
         return raw;
       }
       if (payloadType === 'image_generation_call') {
@@ -260,7 +348,7 @@ function createCodexRawParser(deps) {
         raw.toolName = 'image_generation';
         raw.output = stringifyValue(payload);
         raw.preview = truncate(firstNonEmpty(payload.saved_path, payload.status, payload.type));
-        raw.searchText = flattenText(payload, 16000);
+        raw.searchText = codexFullSearchText(payload);
         return raw;
       }
     }
@@ -271,8 +359,8 @@ function createCodexRawParser(deps) {
           && lifecycleDescriptor.family !== TOOL_LIFECYCLE_FAMILY.COMMAND
           && lifecycleDescriptor.family !== TOOL_LIFECYCLE_FAMILY.PATCH) {
         if (payloadType === 'image_generation_end') raw.toolName = 'image_generation';
-        raw.preview = truncate(flattenText(payload, 12000) || payload.type);
-        raw.searchText = flattenText(payload, 16000);
+        raw.searchText = codexFullSearchText(payload);
+        raw.preview = truncate(raw.searchText || payload.type);
         return raw;
       }
 
@@ -281,12 +369,12 @@ function createCodexRawParser(deps) {
         case 'agent_message':
           raw.messageText = displayValue(firstNonEmpty(payload.message, payload.text), 16000);
           raw.preview = truncate(raw.messageText || payload.type);
-          raw.searchText = raw.messageText;
+          raw.searchText = codexFullSearchText(firstNonEmpty(payload.message, payload.text));
           return finishRaw();
         case 'agent_reasoning':
           raw.messageText = extractEventReasoningText(payload);
           raw.preview = truncate(raw.messageText || payload.type);
-          raw.searchText = raw.messageText;
+          raw.searchText = codexFullSearchText([payload.message, payload.text].find((value) => typeof value === 'string' && value.trim()) || '');
           return raw;
         case 'exec_command_end':
         case 'exec_command_begin':
@@ -300,7 +388,7 @@ function createCodexRawParser(deps) {
           raw.exitCode = Number.isFinite(Number(payload.exit_code)) ? Number(payload.exit_code) : null;
           raw.durationMs = durationMs(payload.duration);
           raw.preview = truncate(raw.commandText || displayValue(payload.reason, 1000) || payload.type);
-          raw.searchText = [raw.commandText, raw.stdout, raw.stderr, raw.aggregatedOutput, stringifyValue(payload.formatted_output)].join('\n');
+          raw.searchText = [codexFullSearchText(payload.command), codexSearchValue(payload.stdout), codexSearchValue(payload.stderr), codexSearchValue(payload.aggregated_output), codexSearchValue(payload.formatted_output), codexFullSearchText(payload.reason)].join('\n');
           return raw;
         case 'patch_apply_end':
         case 'patch_apply_begin':
@@ -310,11 +398,11 @@ function createCodexRawParser(deps) {
           raw.touchedFiles = payload.changes && typeof payload.changes === 'object' ? Object.keys(payload.changes) : [];
           raw.output = stringifyValue(firstNonEmpty(payload.patch, payload.input, payload.diff));
           raw.preview = truncate(raw.touchedFiles.join(', ') || raw.output || displayValue(firstNonEmpty(payload.stdout, payload.stderr, payload.reason, payload.type), 1000));
-          raw.searchText = [raw.touchedFiles.join('\n'), raw.output, stringifyValue(payload.stdout), stringifyValue(payload.stderr), displayValue(payload.reason, 4000)].join('\n');
+          raw.searchText = [raw.touchedFiles.join('\n'), codexSearchValue(raw.output), codexSearchValue(payload.stdout), codexSearchValue(payload.stderr), codexFullSearchText(payload.reason)].join('\n');
           return raw;
         case 'token_count':
-          raw.preview = truncate(formatTokenUsagePreview(payload) || flattenText(payload, 12000) || payload.type);
-          raw.searchText = [tokenUsageSearchText(payload), flattenText(payload, 16000)].filter(Boolean).join('\n');
+          raw.preview = truncate(formatTokenUsagePreview(payload) || codexFullSearchText(payload) || payload.type);
+          raw.searchText = [tokenUsageSearchText(payload), codexFullSearchText(payload)].filter(Boolean).join('\n');
           return raw;
         case 'web_search_end':
         case 'context_compacted':
@@ -334,24 +422,24 @@ function createCodexRawParser(deps) {
         case 'stream_error':
         case 'plan_update':
         case 'plan_delta':
-          raw.preview = truncate(flattenText(payload, 12000) || payload.type);
-          raw.searchText = flattenText(payload, 16000);
+          raw.searchText = codexFullSearchText(payload);
+          raw.preview = truncate(raw.searchText || payload.type);
           return raw;
         default:
-          raw.preview = truncate(flattenText(payload, 12000) || payload.type || 'event');
-          raw.searchText = flattenText(payload, 16000);
+          raw.searchText = codexFullSearchText(payload);
+          raw.preview = truncate(raw.searchText || payload.type || 'event');
           return raw;
       }
     }
 
     if (recordType === 'turn_context' || recordType === 'session_meta') {
-      raw.preview = truncate(flattenText(payload, 12000) || recordType);
-      raw.searchText = flattenText(payload, 16000);
+      raw.searchText = codexFullSearchText(payload);
+      raw.preview = truncate(raw.searchText || recordType);
       return raw;
     }
 
-    raw.preview = truncate(flattenText(record, 12000) || raw.typeKey);
-    raw.searchText = flattenText(record, 16000);
+    raw.searchText = codexFullSearchText(record);
+    raw.preview = truncate(raw.searchText || raw.typeKey);
     return raw;
   }
 
@@ -363,6 +451,10 @@ module.exports = {
   CODEX_SOURCE_KIND,
   CODEX_JSONL_LINE_LOCATOR_TYPE,
   SUB_AGENT_ACTIVITY_EVENT_TYPE,
+  codexFullSearchText,
+  codexSearchValue,
+  codexAsyncMessageText,
+  codexAsyncSearchText,
   canonicalEventType,
   codexSourceLocator,
   codexSourceEnvelope,

@@ -31,14 +31,15 @@ function stringifyValue(value, budget = TEXT_LIMIT) {
   if (value == null) return '';
   if (typeof value === 'string') return value.slice(0, budget);
   try {
-    return JSON.stringify(value, null, 2).slice(0, budget);
+    return JSON.stringify(value, (key, item) => OPAQUE_SEARCH_KEYS.has(key) ? undefined
+      : isOpaqueSearchNode(item) ? opaqueSearchMarker(item) : item, 2).slice(0, budget);
   } catch {
     return String(value).slice(0, budget);
   }
 }
 
 function collectText(value, budget = TEXT_LIMIT, key = '') {
-  if (budget <= 0 || value == null || key === 'signature') return '';
+  if (budget <= 0 || value == null || OPAQUE_SEARCH_KEYS.has(key) || isOpaqueSearchNode(value)) return '';
   if (typeof value === 'string') return value.slice(0, budget);
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   if (Array.isArray(value)) {
@@ -85,6 +86,55 @@ function blockText(block, budget = TEXT_LIMIT) {
   if (block.type === 'text') return String(block.text || '').slice(0, budget);
   if (block.type === 'tool_result') return collectText(block.content, budget);
   return collectText(block, budget);
+}
+
+// Search has its own content projection. Display helpers above keep their
+// budgets; source text, arguments and results must not consume one another's.
+const OPAQUE_SEARCH_KEYS = new Set([
+  'signature', 'thought_signature', 'thoughtSignature', 'encrypted_content', 'encryptedContent',
+  'blob', 'base64', 'bytes', 'imageBytes', 'audioBytes', 'image_url', 'audio_url', 'images',
+]);
+const OPAQUE_SEARCH_TYPES = new Set([
+  'image', 'image_url', 'input_image', 'output_image', 'audio', 'input_audio', 'output_audio',
+  'video', 'document', 'base64', 'redacted_thinking', 'encrypted_reasoning', 'encrypted_content',
+]);
+const isOpaqueSearchNode = value => value && typeof value === 'object'
+  && OPAQUE_SEARCH_TYPES.has(value.type);
+const opaqueSearchMarker = value => value.type === 'base64' || value.source?.type === 'base64'
+  ? '[embedded base64 payload omitted; see raw refs]' : '[opaque content omitted]';
+
+function stringifySearchValue(value) {
+  if (value == null) return '';
+  const safe = sanitizeLogicalDetailValue(value, {
+    omitObjectKeys: OPAQUE_SEARCH_KEYS,
+  });
+  return typeof safe === 'string' ? safe : JSON.stringify(safe, (_key, item) => (
+    isOpaqueSearchNode(item) ? opaqueSearchMarker(item) : item
+  ), 2);
+}
+
+function blockSearchText(block) {
+  if (!block || typeof block !== 'object') return '';
+  if (block.type === 'thinking') return stringifySearchValue(block.thinking || '');
+  if (block.type === 'text') return stringifySearchValue(block.text || '');
+  const parts = [];
+  const pending = [block.type === 'tool_result' ? block.content : block];
+  while (pending.length) {
+    const value = pending.pop();
+    if (value == null) continue;
+    if (typeof value !== 'object') { parts.push(stringifySearchValue(value)); continue; }
+    if (Array.isArray(value)) {
+      for (let index = value.length - 1; index >= 0; index -= 1) pending.push(value[index]);
+      continue;
+    }
+    if (isOpaqueSearchNode(value)) continue;
+    const preferred = ['text', 'thinking', 'content', 'message', 'stdout', 'stderr', 'error', 'reason', 'description', 'query', 'url'];
+    const keys = [...preferred.filter((key) => Object.hasOwn(value, key)),
+      ...Object.keys(value).filter((key) => !preferred.includes(key)
+        && !OPAQUE_SEARCH_KEYS.has(key))];
+    for (let index = keys.length - 1; index >= 0; index -= 1) pending.push(value[keys[index]]);
+  }
+  return parts.filter(Boolean).join('\n');
 }
 
 function primaryPayloadType(record, blocks) {
@@ -312,25 +362,25 @@ function makeClaudeRawEvent(record, lineNumber, relFile, analyzerSessionId, sour
   const searchText = [
     parseError,
     rawText,
-    messageText,
+    ...blocks.filter((block) => ['text', 'thinking', 'tool_result'].includes(block.type)).map(blockSearchText),
     commandText,
-    ...toolCalls.map((call) => `${call.name}\n${stringifyValue(call.input)}`),
-    toolResultText,
-    stringifyValue(structuredResult),
-    record.type === 'system' ? stringifyValue({
+    ...toolCalls.map((call) => `${call.name}\n${stringifySearchValue(call.input)}`),
+    firstToolResult ? blockSearchText(blocks[firstToolResult.blockIndex]) : '',
+    stringifySearchValue(structuredResult),
+    record.type === 'system' ? stringifySearchValue({
       subtype: record.subtype,
       content: record.content,
       level: record.level,
       compactMetadata: record.compactMetadata,
     }) : '',
-    record.type === 'attachment' ? stringifyValue(record.attachment) : '',
+    record.type === 'attachment' ? stringifySearchValue(record.attachment) : '',
     record.type === 'queue-operation' ? String(record.content || '') : '',
     record.type === 'last-prompt' ? String(record.lastPrompt || '') : '',
     record.type === 'custom-title' ? String(record.customTitle || '') : '',
     record.type === 'ai-title' ? String(record.aiTitle || '') : '',
     record.type === 'agent-name' ? String(record.agentName || '') : '',
     attributionSkill,
-  ].filter(Boolean).join('\n').slice(0, TEXT_LIMIT);
+  ].filter(Boolean).join('\n');
 
   const raw = {
     rawId: `${analyzerSessionId}:raw:${lineNumber}`,
@@ -422,6 +472,7 @@ module.exports = {
   CLAUDE_SOURCE_KIND,
   JSONL_LINE_LOCATOR_TYPE,
   blockText,
+  blockSearchText,
   claudeRawRef,
   claudeBashEditDiff,
   claudeSourceLocator,
@@ -432,6 +483,7 @@ module.exports = {
   rawEventsForLogicalEvent,
   safeIso,
   stringifyValue,
+  stringifySearchValue,
   toolInputFiles,
   truncate,
 };

@@ -106,13 +106,18 @@ function createCodexSearch(deps = {}) {
     },
   });
 
+  const presentTimeline = (result) => {
+    if (!result) return result;
+    const { facets = [], ...rest } = result;
+    return { ...rest, codeModeRequests: facets };
+  };
   return {
     ...query,
     getTimeline(...args) {
-      const result = query.getTimeline(...args);
-      if (!result) return result;
-      const { facets = [], ...rest } = result;
-      return { ...rest, codeModeRequests: facets };
+      return presentTimeline(query.getTimeline(...args));
+    },
+    async getTimelineAsync(...args) {
+      return presentTimeline(await query.getTimelineAsync(...args));
     },
   };
 }

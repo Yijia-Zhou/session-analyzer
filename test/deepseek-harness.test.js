@@ -156,7 +156,7 @@ test('packed chunk rows stay one Raw Record per physical row and partial output 
   const packedRows = materialized.rawEvents.filter((raw) => raw.payloadType.endsWith('-chunks'));
   assert.equal(packedRows.length, 16);
   assert.ok(packedRows.every((raw) => raw.memberCount > 1));
-  assert.ok(packedRows.every((raw) => !raw.searchText.includes('Ochre')));
+  assert.ok(packedRows.some((raw) => raw.searchText.includes('Ochre')));
   assert.ok(materialized.rawEvents.every((raw) => raw.payloadType !== 'assistant/chunk:expanded'));
   assert.equal(materialized.rawEvents.filter((raw) => raw.payloadType === 'assistant/message').length, 0);
 

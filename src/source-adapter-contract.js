@@ -42,6 +42,7 @@ const REQUIRED_QUERY_OPERATIONS = Object.freeze([
   'filtersFromSearchParams',
   'getEvent',
   'getTimeline',
+  'getTimelineAsync',
   'indexPresentation',
   'matchTerms',
   'projectFileSuggestions',

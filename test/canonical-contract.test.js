@@ -7,6 +7,7 @@ const {
   INDEXED_SESSION_COUNT_FIELDS,
   createEmptyMaterializedPresentationIndexes,
   validateCanonicalIndexedSessionShape,
+  validateCanonicalDependencySet,
   validateCanonicalLegacyRawOwnerIndex,
   validateCanonicalLogicalEventShape,
   validateCanonicalMaterializedSessionShape,
@@ -176,6 +177,7 @@ function queryContract() {
     filtersFromSearchParams() {},
     getEvent() {},
     getTimeline() {},
+    async getTimelineAsync() {},
     indexPresentation() {},
     matchTerms() {},
     projectFileSuggestions() {},
@@ -2057,4 +2059,46 @@ test('fingerprint profiling preserves cancellation at existing capture and reche
       }), (error) => error === reason);
     }
   }
+});
+
+
+test('natural analysis collections cross the old aggregate budget without losing their tail', () => {
+  const indexed = makeStrictIndexedSession();
+  const materialized = makeStrictMaterializedSession(indexed);
+  materialized.analysis.patchedFiles = Array.from({ length: 200_001 }, (_, index) => ({
+    file: 'src/file-' + index + '.js', count: 1,
+  }));
+  assert.equal(validateCanonicalMaterializedSessionShape(indexed, materialized), materialized);
+  assert.equal(materialized.analysis.patchedFiles.at(-1).file, 'src/file-200000.js');
+  materialized.analysis.patchedFiles.at(-1).count = NaN;
+  assert.throws(() => validateCanonicalMaterializedSessionShape(indexed, materialized), /must be finite/);
+});
+
+test('large dependency evidence retains structural, absence and ownership checks', () => {
+  const dependency = {
+    schemaVersion: 1, id: 'large', sourceKind: 'fixture-source',
+    entries: [{ role: 'copied_metadata', pathIdentity: 'metadata', existence: 'present',
+      kind: 'file', policy: 'copied_value', acceptedBytes: 0, lineCount: 0,
+      digest: '', directoryEntries: [], evidence: { title: '界'.repeat(1_400_000) } }],
+  };
+  assert.equal(validateCanonicalDependencySet(dependency, 'fixture-source'),
+    Buffer.byteLength(JSON.stringify(dependency)));
+  assert.throws(() => validateCanonicalDependencySet(dependency, 'wrong-source'), /ownership mismatch/);
+  dependency.entries[0].existence = 'absent';
+  dependency.entries[0].acceptedBytes = 1;
+  assert.throws(() => validateCanonicalDependencySet(dependency, 'fixture-source'), /zero\/empty/);
+  dependency.entries[0].acceptedBytes = 0;
+  dependency.entries[0].evidence.loop = dependency.entries[0].evidence;
+  assert.throws(() => validateCanonicalDependencySet(dependency, 'fixture-source'), /acyclic/);
+});
+
+test('large descriptor collections remain dense and reject accessors without invoking them', () => {
+  const indexed = makeStrictIndexedSession();
+  indexed.materializationDescriptor.payload.context = Array.from({ length: 16_385 }, (_, index) => 'cwd-' + index);
+  assert.doesNotThrow(() => validateCanonicalIndexedSessionShape(indexed));
+  const context = indexed.materializationDescriptor.payload.context;
+  delete context[100];
+  assert.throws(() => validateCanonicalIndexedSessionShape(indexed), /sparse/);
+  Object.defineProperty(context, '100', { enumerable: true, get() { throw Error('must not invoke'); } });
+  assert.throws(() => validateCanonicalIndexedSessionShape(indexed), /enumerable data property/);
 });

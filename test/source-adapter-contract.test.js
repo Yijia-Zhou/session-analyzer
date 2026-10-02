@@ -18,6 +18,7 @@ function queryContract() {
     filtersFromSearchParams() {},
     getEvent() {},
     getTimeline() {},
+    async getTimelineAsync() {},
     indexPresentation() {},
     matchTerms() {},
     projectFileSuggestions() {},
@@ -118,6 +119,14 @@ test('source adapter descriptor rejects unknown fields and missing operations', 
     () => defineSourceAdapter(descriptor({ query: { ...queryContract(), getTimeline: null } })),
     (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
       && /query.getTimeline must be a function/.test(error.message),
+  );
+  const synchronousOnlyQuery = queryContract();
+  delete synchronousOnlyQuery.getTimelineAsync;
+  assert.throws(
+    () => defineSourceAdapter(descriptor({ query: synchronousOnlyQuery })),
+    (error) => error.code === 'SOURCE_ADAPTER_CONTRACT_VIOLATION'
+      && /query.getTimelineAsync must be a function/.test(error.message),
+    'HTTP adapters must provide the asynchronous scanner instead of falling back to blocking search',
   );
   const hidden = descriptor();
   Object.defineProperty(hidden, 'hiddenCapability', { value: () => {} });

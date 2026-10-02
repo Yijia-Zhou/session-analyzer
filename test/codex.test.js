@@ -1540,13 +1540,14 @@ test('reasoning row extraction accepts readable fields without exposing encrypte
   const mirroredDetail = buildEventDetail(session, mirroredReasoning.id);
   const mirroredSection = allSections(mirroredDetail).find((section) => section.title === 'Reasoning');
 
-  assert.deepEqual(mainReasoning.slice(0, 2).map((event) => event.searchText), ['Readable summary', 'Readable content fallback']);
+  assert.deepEqual(mainReasoning.slice(0, 2).map((event) => event.searchText),
+    ['Readable summary\nContent should not replace summary', 'Readable content fallback']);
   assert.ok(mainReasoning.some((event) => event.searchText === 'Readable event message reasoning'));
   assert.ok(mainReasoning.some((event) => event.searchText === 'Readable event text fallback'));
-  assert.equal(longReasoning.searchText, longReasoningText.slice(0, 16000));
-  assert.equal(longReasoning.searchText.length, 16000);
-  assert.equal(longEventReasoning.searchText, longEventReasoningText.slice(0, 16000));
-  assert.equal(longEventReasoning.searchText.length, 16000);
+  assert.equal(longReasoning.searchText, longReasoningText);
+  assert.equal(longReasoning.searchText.length, 16050);
+  assert.equal(longEventReasoning.searchText, longEventReasoningText);
+  assert.equal(longEventReasoning.searchText.length, 16050);
   assert.equal(mirroredReasoning.rawRefs.length, 2);
   assert.doesNotMatch(mirroredSection.html, /TAIL/);
   assert.ok(mainReasoning.every((event) => event.hasReadableReasoning));

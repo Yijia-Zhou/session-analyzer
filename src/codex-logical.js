@@ -73,6 +73,10 @@ function createCodexLogicalBuilder(deps) {
   ]);
   const {
     displayValue,
+    codexFullSearchText = displayValue,
+    codexSearchValue = displayValue,
+    codexAsyncMessageText = () => '',
+    codexAsyncSearchText = () => '',
     firstNonEmpty,
     planUpdateText,
     relatedReasoning,
@@ -355,8 +359,8 @@ function createCodexLogicalBuilder(deps) {
       displayValue(snapshot?.goal, 8000),
       displayValue(response.completionBudgetReport, 4000),
       displayValue(response.remainingTokens, 1000),
-      functionCall?.output,
-      functionOutput?.output,
+      codexSearchValue(functionCall?.output),
+      codexSearchValue(functionOutput?.output),
     ].filter(Boolean).join('\n');
 
     return createLogicalEvent({
@@ -403,7 +407,7 @@ function createCodexLogicalBuilder(deps) {
       searchText: uniqueNonEmpty([
         'thread_goal_updated',
         snapshot.status,
-        displayValue(snapshot.goal, 8000),
+        codexFullSearchText(snapshot.goal),
       ]).join('\n'),
       severity: goalSeverity(snapshot.status),
       status: snapshot.status,
@@ -417,7 +421,7 @@ function createCodexLogicalBuilder(deps) {
     event.rawRefs.sort((a, b) => a.line - b.line);
     if (!event.channels.includes(raw.recordType)) event.channels.push(raw.recordType);
     const preview = truncate(goalPreviewParts({ ...snapshot, status: event.status || snapshot.status }, { includeBudget: true }).join(' - '));
-    const searchText = uniqueNonEmpty([event.searchText, displayValue(snapshot.goal, 8000)]).join('\n');
+    const searchText = uniqueNonEmpty([event.searchText, raw.searchText || codexFullSearchText(snapshot.goal)]).join('\n');
     event.preview = sanitizeLogicalEnvelopeValue(preview || event.preview);
     event.searchText = sanitizeLogicalEnvelopeValue(searchText).trim();
     event.hasLongOutput = event.preview.length > 800 || event.searchText.length > 1600;
@@ -489,7 +493,7 @@ function createCodexLogicalBuilder(deps) {
     }
     let searchParts = addUncoveredTextPart([], commandText);
     for (const outputPart of outputParts) {
-      searchParts = addUncoveredTextPart(searchParts, outputPart);
+      searchParts = addUncoveredTextPart(searchParts, codexSearchValue(outputPart));
     }
     for (const touchedFile of touchedFiles || []) {
       searchParts = addUncoveredTextPart(searchParts, touchedFile);
@@ -557,10 +561,10 @@ function createCodexLogicalBuilder(deps) {
       if (execEnd?.exitCode != null) outputStats.exitCode = execEnd.exitCode;
       if (execEnd?.durationMs) outputStats.durationMs = execEnd.durationMs;
     }
-    if (functionCall && !isCommandTool) parts.push(functionCall.output);
-    if (functionOutput && !isCommandTool) parts.push(functionOutput.output);
-    if (customCall && !isCommandTool) parts.push(customCall.output);
-    if (customOutput && !isCommandTool) parts.push(customOutput.output);
+    if (functionCall && !isCommandTool) parts.push(codexSearchValue(functionCall.output));
+    if (functionOutput && !isCommandTool) parts.push(codexSearchValue(functionOutput.output));
+    if (customCall && !isCommandTool) parts.push(codexSearchValue(customCall.output));
+    if (customOutput && !isCommandTool) parts.push(codexSearchValue(customOutput.output));
     if (mcpRows.length) parts.push(mcpRows.map((raw) => raw.searchText).join('\n'));
     if (imageRows.length) parts.push(imageRows.map((raw) => raw.searchText).join('\n'));
     if (dynamicRows.length) parts.push(dynamicRows.map((raw) => raw.searchText).join('\n'));
@@ -574,6 +578,7 @@ function createCodexLogicalBuilder(deps) {
       const args = commandArgsFromRaw(functionCall);
       const exitCode = numericExitCode(execEnd?.exitCode, functionOutputInfo?.exitCode, customOutputObj?.metadata?.exit_code);
       const commandText = execRows.find((raw) => raw.commandText)?.commandText || commandToText(args?.command);
+      const commandSearchSource = execRows.find((raw) => raw.parsed?.payload?.command)?.parsed.payload.command ?? args?.command;
       status = declined ? 'declined' : failed || (exitCode != null && exitCode !== 0) ? 'failed' : exitCode === 0 ? 'success' : explicitIncomplete ? 'incomplete' : protocolStatus || 'completed';
       severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
       label = status === 'failed' ? 'Failed command' : status === 'declined' ? 'Declined command' : status === 'incomplete' ? 'Incomplete command' : 'Command';
@@ -584,7 +589,7 @@ function createCodexLogicalBuilder(deps) {
       }
       touchedFiles = touchFilesFromOutputText(firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, functionOutputInfo?.output));
       parts.push(commandSearchText({
-        commandText,
+        commandText: commandSearchSource == null ? commandText : codexFullSearchText(commandSearchSource),
         execEnd,
         execRows,
         functionOutputInfo,
@@ -615,7 +620,7 @@ function createCodexLogicalBuilder(deps) {
       status = exitCode === 0 ? 'success' : 'failed';
       severity = exitCode === 0 ? 'normal' : 'error';
       label = exitCode === 0 ? 'JS REPL' : 'JS REPL error';
-      preview = truncate(customCall?.output || customOutputObj?.output || 'js_repl');
+      preview = truncate(codexSearchValue(customCall?.output) || codexSearchValue(customOutputObj?.output) || 'js_repl');
       outputStats.exitCode = exitCode;
       outputStats.durationMs = execEnd?.durationMs || Math.round(Number(customOutputObj?.metadata?.duration_seconds || 0) * 1000);
     } else if (mcpRows.length || toolName.startsWith('mcp__')) {
@@ -631,7 +636,7 @@ function createCodexLogicalBuilder(deps) {
       kind = AGENT_COORDINATION_KIND;
       const representativeRow = representativeToolLifecycleRow(collabRows);
       label = representativeRow ? groupedToolLifecycleLabel(representativeRow, toolName) : toolName;
-      preview = truncate(representativeRow?.preview || functionCall?.output || functionOutput?.output || toolName || label);
+      preview = truncate(representativeRow?.preview || codexSearchValue(functionCall?.output) || codexSearchValue(functionOutput?.output) || toolName || label);
       status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
       severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
     } else if (imageRows.length || dynamicRows.length || approvalRows.length) {
@@ -644,7 +649,7 @@ function createCodexLogicalBuilder(deps) {
     } else if (toolName === 'request_user_input' || toolName === 'update_plan' || toolName === 'view_image' || toolName === 'js_repl_reset') {
       kind = 'other_tool_call';
       label = toolName;
-      preview = truncate(functionCall?.output || functionOutput?.output || toolName);
+      preview = truncate(codexSearchValue(functionCall?.output) || codexSearchValue(functionOutput?.output) || toolName);
       status = 'success';
     } else {
       preview = truncate(first.preview || toolName || 'Other tool call');
@@ -843,6 +848,8 @@ function createCodexLogicalBuilder(deps) {
 
   function buildConversationEvent(id, kind, role, text, raws) {
     const asyncMessage = raws.map(asyncAgentMessageFromRaw).find(Boolean) || null;
+    const asyncPayload = asyncMessage
+      ? raws.find((raw) => asyncAgentMessageFromRaw(raw))?.parsed?.payload : null;
     const attachmentSummary = attachmentSummaryForRawList(raws)[0] || null;
     const attachmentPreview = attachmentSummary?.previewText || '';
     const event = createLogicalEvent({
@@ -855,11 +862,13 @@ function createCodexLogicalBuilder(deps) {
       role,
       label: asyncMessage ? 'Asynchronous message' : role === 'user' ? 'User message' : 'Assistant message',
       preview: truncate([text, attachmentPreview].filter(Boolean).join(' · ')),
-      searchText: [
-        asyncMessage ? asyncMessageSearchText(asyncMessage) : '',
-        text,
-        attachmentPreview,
-      ].filter(Boolean).join('\n'),
+      // Preserve the established async occurrence domain (question projection
+      // plus message body) while both projections now carry complete text.
+      searchText: asyncMessage
+        ? [codexAsyncSearchText(asyncPayload) || asyncMessageSearchText(asyncMessage),
+          codexAsyncMessageText(asyncPayload) || text, attachmentPreview].filter(Boolean).join('\n')
+        : raws.reduce((parts, raw) => addUncoveredTextPart(parts, raw.searchText || raw.messageText), []).join('\n')
+          || [text, attachmentPreview].filter(Boolean).join('\n'),
       severity: 'normal',
       status: '',
       rawRefs: raws.map(rawRef),
@@ -950,7 +959,7 @@ function createCodexLogicalBuilder(deps) {
       role: 'assistant',
       label: text ? 'Reasoning' : 'Empty reasoning',
       preview: truncate(text || raws[0].preview || 'reasoning'),
-      searchText: text,
+      searchText: raws.reduce((parts, raw) => addUncoveredTextPart(parts, raw.searchText || raw.messageText), []).join('\n') || text,
       hasReadableReasoning: Boolean(text),
       severity: 'normal',
       status: '',
@@ -991,7 +1000,7 @@ function createCodexLogicalBuilder(deps) {
       role: 'assistant',
       label: raw.payloadType === 'plan_delta' ? 'Plan delta' : 'Plan update',
       preview: truncate(text || raw.preview || raw.payloadType),
-      searchText: text || raw.searchText,
+      searchText: raw.searchText || text,
       severity: 'normal',
       status: raw.status || '',
       rawRefs: [rawRef(raw)],
@@ -1158,7 +1167,8 @@ function createCodexLogicalBuilder(deps) {
           label: 'External tool input',
           preview: truncate([externalToolInput.text || externalToolInput.name, attachmentPreview]
             .filter(Boolean).join(' · ')),
-          searchText: [externalToolInput.name, externalToolInput.namespace, externalToolInput.text, attachmentPreview]
+          searchText: [externalToolInput.name, externalToolInput.namespace,
+            codexFullSearchText(raw.parsed?.payload?.output) || externalToolInput.text, attachmentPreview]
             .filter(Boolean).join('\n'),
           rawRefs: [rawRef(raw)],
           channels: [raw.recordType],

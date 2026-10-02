@@ -61,16 +61,19 @@ test('DeepSeek preserves UTF-8 characters split across header read chunks', asyn
   assert.equal(index.sourceDiagnostics.totalCount, 0);
 });
 
-test('DeepSeek header budget is inclusive and missing newline remains invalid', async (t) => {
+test('DeepSeek headers cross the old 4 MiB boundary and distinguish uncommitted from empty', async (t) => {
   const f = await fixture(t);
-  const limit = storage.MAX_FIRST_RECORD_BYTES;
+  const limit = 4 * 1024 * 1024;
   const line = sizedLine(f.header, limit);
-  await fsp.writeFile(f.file, line);
-  assert.deepEqual(await storage.readSessionHeader(f.file), storage.parseHeaderText(line));
-  for (const invalid of [sizedLine(f.header, limit + 1), sizedLine(f.header, 70000).trimEnd(), '']) {
-    await fsp.writeFile(f.file, invalid);
-    await assert.rejects(storage.readSessionHeader(f.file), { code: 'DEEPSEEK_STORAGE_INVALID' });
+  for (const bytes of [limit - 1, limit, limit + 1]) {
+    const complete = sizedLine(f.header, bytes);
+    await fsp.writeFile(f.file, complete);
+    assert.deepEqual(await storage.readSessionHeader(f.file), storage.parseHeaderText(complete));
   }
+  await fsp.writeFile(f.file, sizedLine(f.header, 70000).trimEnd());
+  await assert.rejects(storage.readSessionHeader(f.file), { code: 'DEEPSEEK_HEADER_UNCOMMITTED' });
+  await fsp.writeFile(f.file, '');
+  await assert.rejects(storage.readSessionHeader(f.file), { code: 'DEEPSEEK_STORAGE_EMPTY' });
   await fsp.writeFile(f.file, line);
   const controller = new AbortController();
   controller.abort();
