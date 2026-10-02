@@ -6,7 +6,7 @@
 - Clean workspace; local and remote main verified at `6e84bb09876561ced0b060e68f3ee5da173614a5`, including #71/#72. Task branch `capacity/seven-groups`. / 工作区干净，本地与远端 main 已核实，包含 #71/#72。
 - Toolchain already selected: Node 24.18.1, npm 12.0.2. / 已选工具链符合开发策略。
 
-## Work and recovery map / 工作与恢复索引
+## Initial work and recovery map (historical) / 初始工作与恢复索引（历史）
 
 | Group / 组 | Current evidence and work / 当前证据与工作 | Owner / 负责人 |
 | --- | --- | --- |
@@ -27,7 +27,7 @@ Separate evidence notes from each agent will be integrated and reviewed here. Su
 3. Full Node suite, generated build check, browser, installed-package smoke, serial profile coverage and applicable cross-platform CI. / 完整 Node、生成资产、浏览器、安装包、串行 profile 与适用跨平台 CI。
 4. Review actual failures, preserve prior valid Index on failed rebuild, cleanup/cancellation and compatibility; update bilingual product/design docs, commit and PR. / 复审失败、旧索引保全、清理取消与兼容；同步双语文档、提交与 PR。
 
-## Integration checkpoint / 集成检查点
+## Earlier integration checkpoint / 早期集成检查点
 
 - Groups 1/3: adaptive schema-2 memory / schema-3 private disk store implemented. Metadata pages and streamed UTF-8 text preserve one event/ordinal; digest, text scan and build paths yield and cancel. Resource/cleanup fault injection passes. / 组 1/3 已实现内存／私有磁盘自适应存储、分段文本、事件身份、摘要及取消；资源／清理故障注入通过。
 - Group 2: Claude and DeepSeek full text regressions pass through project queries and materialization; Codex follow-up found additional bounded producer/logical paths and is being fixed. Raw timeline DTOs no longer send internal full search text. / 组 2 Claude、DeepSeek 项目查询与物化全文回归通过；Codex 复查发现额外截断路径，正在修复。Raw 时间线 DTO 不再发送内部全文搜索副本。
@@ -39,7 +39,7 @@ Separate evidence notes from each agent will be integrated and reviewed here. Su
 
 Next: finish Codex/opaque-content search review, repeat isolated capacity evidence, run full integrated gates, inspect final diff and publish the authorized task PR. No final completion claim yet. / 下一步：完成 Codex／不透明内容搜索复核，重跑隔离容量实验，执行完整集成门槛，检查 diff 并创建已授权任务 PR；尚未宣称最终完成。
 
-## Validation checkpoint / 验证检查点
+## Earlier validation checkpoint / 早期验证检查点
 
 - Real query-store boundaries now pass: 5,000,001 rows, 2,786,493,028 encoded bytes, exact cold/warm scan hits, sampled RSS 381 MB, cancellation 12.2 ms, no remaining temporary entries; separately 8,595,127,698 encoded bytes (>8 GiB), 8,193 exact hits, sampled RSS 209 MB, cancellation 4.78 ms, no remaining temporary entries. See `capacity-query-storage-evidence.md` for commands, timings, units and failed attempts. / 真实查询存储边界已通过：分别超过旧行数及 8 GiB 编码字节上限，冷暖命中精确，取消和回收通过；命令、单位、时延及失败尝试见证据记录。
 - Default temporary volume actually exhausted during the first >8 GiB run: accurate `PROJECT_QUERY_STORAGE_RESOURCE_EXHAUSTED`, failed candidate cleaned. Repeated on G: with sufficient space and completed. / 首次超过 8 GiB 实验确实耗尽默认临时盘，准确报告并回收候选；在 G: 足够空间下重跑成功。
@@ -63,4 +63,8 @@ The existing development server was restarted with its original project and sour
 | 6 | Resolved reachable breadth/text budgets with streaming encoding; dependency-count hypothesis disproved for current producers. / 已解决可达宽度／文本预算并流式编码；当前生产者依赖项数量假设已证伪。 | Identity/plainness/depth/path/ownership checks retained; complete canonical objects remain resident. / 保留身份、普通数据、深度、路径及归属检查；完整规范对象仍常驻。 |
 | 7 | Resolved: progressive plain/frame reads, distinct empty/uncommitted/corrupt/unsupported/resource outcomes. / 已解决：普通／压缩帧递进读取，准确区分空、未提交、损坏、不支持及资源耗尽。 | JSON.parse needs one complete header string; actual runtime exhaustion is explicit and artifact-local. / JSON.parse 仍需完整头部字符串；真实运行时耗尽明确报告并隔离工件。 |
 
-Next: commit/push task branch, open PR and verify its exact-head CI before archiving this record. / 下一步：提交／推送任务分支、创建 PR，核验该提交 CI 后归档。
+## Delivery / 交付
+
+Implementation commit: 9e738503af684df8c95236f3d449ca24b3c6d16c, [PR #73](https://github.com/Yijia-Zhou/session-analyzer/pull/73). Its [CI run 212](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/37010479730) passed every job: Ubuntu Node 22/24, Windows Node 24, both package platforms, Ubuntu browser, serial profile coverage and aggregate gate. This archival follow-up changes documentation only; the verified source tree is 3b580f9c16ae08822de2210ce8a9717cc40f564b. No implementation work remains. No merge, tag or package publication was performed. / 实现提交、PR 与完整 CI 如上；所有平台和汇总门禁通过。本次归档后续提交只改文档，已验证 src 树哈希如上。实现工作已完成；未合并、打标签或发布包.
+
+The seven conclusions above are authoritative. Evidence notes: [query storage](capacity-query-storage-evidence.md), [source/header/search](capacity-source-evidence.md), [contracts and Codex search](capacity-contract-evidence.md), [pagination](capacity-pagination-evidence.md). Historical pending statements describe earlier checkpoints, not remaining work. The PR records the archive commit CI status separately. / 上述七组结论为最终结论；各证据记录链接如上。历史等待说明仅描述先前检查点，不代表剩余任务；归档提交自身 CI 状态单独记录在 PR 中。
