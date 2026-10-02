@@ -91,7 +91,11 @@
     "docs/assets/readme/",
     "CHANGELOG.md",
     "THIRD_PARTY_NOTICES.md",
-    "LICENSE"
+    "LICENSE",
+    "src/project-query-disk.js",
+    "src/search-text-stream.js",
+    "src/plain-value-stream.js",
+    "src/search-json.js"
   ],
   "scripts": {
     "start": "node server.js",

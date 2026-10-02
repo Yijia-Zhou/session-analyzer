@@ -1,5 +1,7 @@
 'use strict';
 
+const { hashPlainValue } = require('./plain-value-stream');
+
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -867,9 +869,11 @@ const logicalBuilder = createClaudeLogicalBuilder({
   CANONICAL_SCHEMA_VERSION,
   CLAUDE_SOURCE_KIND,
   blockText: require('./claude-source').blockText,
+  blockSearchText: require('./claude-source').blockSearchText,
   claudeBashEditDiff,
   rawRef: claudeRawRef,
   stringifyValue: require('./claude-source').stringifyValue,
+  stringifySearchValue: require('./claude-source').stringifySearchValue,
   toolInputFiles,
   truncate,
 });
@@ -1846,7 +1850,7 @@ function createClaudeCatalogAccumulator() {
 }
 
 function hashClaudeMaterializationValue(value) {
-  return crypto.createHash('sha256').update(JSON.stringify(value), 'utf8').digest('base64url');
+  return hashPlainValue(value);
 }
 
 function claudeTranscriptDependency(role, candidate) {
@@ -1870,7 +1874,15 @@ async function captureClaudeReuseTreeSnapshot(sourceRoot, containers, signal, kn
     normalizeFsPath(candidate.relFile),
     candidate,
   ]));
-  const snapshot = [];
+  // Reuse evidence grows with the tree, but its retained representation need
+  // not. Hash the same ordered records incrementally, retaining only one
+  // directory listing at each traversal level, never a second full-tree copy.
+  const snapshot = crypto.createHash('sha256');
+  let entryCount = 0;
+  const append = (entry) => {
+    snapshot.update(JSON.stringify(entry), 'utf8').update('\n');
+    entryCount += 1;
+  };
   const visit = async (directory) => {
     throwIfAborted(signal);
     const safeDirectory = await containedRealPath(sourceRoot, directory);
@@ -1879,7 +1891,7 @@ async function captureClaudeReuseTreeSnapshot(sourceRoot, containers, signal, kn
     if (!stat.isDirectory()) return;
     const entries = (await fsp.readdir(safeDirectory, { withFileTypes: true }))
       .sort((left, right) => left.name.localeCompare(right.name));
-    snapshot.push({
+    append({
       pathIdentity: relativeSourceFile(sourceRoot, safeDirectory) || '.',
       kind: 'directory',
       fileIdentity: sourceFileIdentity(stat),
@@ -1888,8 +1900,8 @@ async function captureClaudeReuseTreeSnapshot(sourceRoot, containers, signal, kn
         kind: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other',
       })),
     });
-    if (snapshot.length > 65_536) throw sourceSnapshotChangedError();
     for (const entry of entries) {
+      throwIfAborted(signal);
       const target = path.join(safeDirectory, entry.name);
       if (entry.isDirectory()) {
         await visit(target);
@@ -1899,14 +1911,13 @@ async function captureClaudeReuseTreeSnapshot(sourceRoot, containers, signal, kn
       const pathIdentity = relativeSourceFile(sourceRoot, target);
       const known = knownFiles.get(normalizeFsPath(pathIdentity));
       if (known) {
-        snapshot.push({
+        append({
           pathIdentity,
           kind: 'file',
           fileIdentity: structuredClone(known.sourceIdentity),
           bytes: known.bytes,
           digest: known.transcriptFingerprint,
         });
-        if (snapshot.length > 65_536) throw sourceSnapshotChangedError();
         continue;
       }
       const before = await fsp.stat(target);
@@ -1917,18 +1928,17 @@ async function captureClaudeReuseTreeSnapshot(sourceRoot, containers, signal, kn
           || !sameSourceIdentity(sourceFileIdentity(before), sourceFileIdentity(after))) {
         throw sourceSnapshotChangedError();
       }
-      snapshot.push({
+      append({
         pathIdentity,
         kind: 'file',
         fileIdentity: sourceFileIdentity(before),
         bytes: before.size,
         digest: value.digest,
       });
-      if (snapshot.length > 65_536) throw sourceSnapshotChangedError();
     }
   };
   for (const root of roots.sort((left, right) => left.localeCompare(right))) await visit(root);
-  return snapshot;
+  return { schemaVersion: 2, entryCount, digest: snapshot.digest('base64url') };
 }
 
 async function canReuseStrictClaudeIndex(previousIndex, currentEvidence, signal) {
@@ -2198,6 +2208,7 @@ async function buildClaudeSourceBackedIndex({
     .filter((session) => session.matchesRepo)
     .map((session) => evidenceByStub.get(session));
   const queryStoreBuilder = createProjectQueryStoreBuilder({
+    signal,
     presentationForEvent: claudeSearch.projectQueryPresentation,
   });
   const catalogAccumulator = createClaudeCatalogAccumulator();
@@ -2222,7 +2233,7 @@ async function buildClaudeSourceBackedIndex({
     }
     applyClaudeCommittedProjection(session, claudeCommittedProjection(evidence.stub));
     applyClaudeMaterializedForkOwnership(session, sourceSnapshotChangedError);
-    const queryProjectionDigest = queryStoreBuilder.addSession(session);
+    const queryProjectionDigest = await queryStoreBuilder.addSessionAsync(session);
     catalogAccumulator.addSession(session);
     const summary = claudeSearch.projectSessionMetadata(session).summary;
     const materializationState = await createClaudeMaterializationState(evidence);

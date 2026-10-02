@@ -1,5 +1,7 @@
 # DeepSeek attempt search completeness / DeepSeek attempt 搜索完整性
 
+Historical result: the bounded-search contract below was superseded by the October capacity work; Detail remains bounded, while admitted settled attempt text/reasoning are fully searchable. See [current design](../../design-docs/deepseek-format4-compatibility.md#replacement-bounds-and-completed-stream-blocks--替换边界与完整流块). / 历史结果：下述有界搜索契约已被十月容量工作替代；Detail 仍有界，允许的 settled attempt 正文／推理已可全文搜索。现行设计见链接。
+
 - Status: completed / 状态：已完成
 - Baseline: `feat/deepseek-latest-compatibility` at `5cb42d0d31ae8b35b213a0eb76337f763cc1e87d`. / 基线：上述分支及 commit。
 - Scope: retain both already bounded attempt content projections in search; register range-expansion capacity work separately. / 范围：让已经有界的 attempt 两类内容投影均可搜索；另行登记区间展开容量工作。

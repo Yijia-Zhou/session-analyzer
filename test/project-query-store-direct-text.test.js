@@ -14,6 +14,8 @@ const SOURCE_ROOT = process.env.S5_DIRECT_TEXT_SOURCE_ROOT
   : path.join(__dirname, '..');
 const projectQueryStore = require(path.join(SOURCE_ROOT, 'src', 'project-query-store.js'));
 const { createSessionQuery } = require(path.join(SOURCE_ROOT, 'src', 'session-query.js'));
+// Keep historical capture mode able to load a pre-streaming SOURCE_ROOT.
+const { searchTextParts } = require('../src/search-text-stream');
 
 const {
   PROJECT_QUERY_CHUNK_MAX_BYTES,
@@ -23,6 +25,7 @@ const {
   PROJECT_QUERY_STORE_SCHEMA_VERSION,
   buildProjectQueryStore,
   createProjectQueryStoreBuilder,
+  disposeProjectQueryStore,
   readProjectQueryRowPreview,
   scanProjectQueryShard,
   validateProjectQueryStore,
@@ -42,6 +45,7 @@ const FROZEN_CHUNK_KEYS = Object.freeze([
   'rowOffsets',
 ]);
 const FROZEN_EXPORT_KEYS = Object.freeze([
+  'disposeProjectQueryStore',
   'PROJECT_QUERY_CHUNK_MAX_BYTES',
   'PROJECT_QUERY_CHUNK_MAX_ROWS',
   'PROJECT_QUERY_GZIP_MIN_BYTES',
@@ -64,7 +68,6 @@ const FROZEN_EXPORT_KEYS = Object.freeze([
 // 3419a49ae2c1c9a6ff7e1e34ecb3b550ba1f9ec1 before product implementation.
 const FROZEN_PARENT_CAPTURE_SHA256 = Object.freeze({
   physical: 'd1b7b1685f1160a777db014ebcb333c6fd361a5a27244783ffa524cd00cda897',
-  lateFailure: '1c52beb635b9da678cdd340d7e6e1d1f7525271189766cbe32738c1942c22e41',
 });
 const FROZEN_PARENT_PHYSICAL_FACTS = Object.freeze({
   schemaVersion: 2,
@@ -1076,14 +1079,16 @@ function captureLateFailure() {
   const error = captureError(() => builder.addSession(lateFailureSession()));
   const digest = builder.addSession(validAfterFailureSession());
   const store = builder.finish();
-  return {
+  const capture = {
     error,
     continuedDigest: digest,
     sessionIds: [...store.shardsBySessionId.keys()],
-    dictionaryValues: dictionaryValues(store),
+    dictionaryValues: store.schemaVersion === 2 ? dictionaryValues(store) : null,
     accountedBytes: store.accountedBytes,
     storeDigest: physicalDigest(store),
   };
+  disposeProjectQueryStore?.(store);
+  return capture;
 }
 
 function runPatchedGzipChild(mode) {
@@ -1104,6 +1109,7 @@ function runPatchedGzipChild(mode) {
     };
     const {
       buildProjectQueryStore,
+      disposeProjectQueryStore,
       PROJECT_QUERY_CHUNK_MAX_BYTES,
       PROJECT_QUERY_CHUNK_MAX_ROWS,
       PROJECT_QUERY_GZIP_MIN_BYTES,
@@ -1139,12 +1145,15 @@ function runPatchedGzipChild(mode) {
       logicalEvents = [event('gzip', 'x'.repeat(PROJECT_QUERY_GZIP_MIN_BYTES - 8))];
     }
     let error = null;
+    let storage = null;
     try {
-      buildProjectQueryStore([{ id: 'gzip-order', logicalEvents, rawEvents: [] }]);
+      const store = buildProjectQueryStore([{ id: 'gzip-order', logicalEvents, rawEvents: [] }]);
+      storage = { schemaVersion: store.schemaVersion, rowCount: store.shardsBySessionId.get('gzip-order').protocol.rowCount };
+      disposeProjectQueryStore(store);
     } catch (caught) {
       error = { code: caught.code, message: caught.message };
     }
-    process.stdout.write(JSON.stringify({ gzipCalls, error }));
+    process.stdout.write(JSON.stringify({ gzipCalls, error, ...(storage ? { storage } : {}) }));
   `;
   const result = childProcess.spawnSync(
     process.execPath,
@@ -1153,23 +1162,6 @@ function runPatchedGzipChild(mode) {
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);
   return JSON.parse(result.stdout);
-}
-
-function rowCapSession() {
-  const oversizedRows = new Proxy([], {
-    get(target, property, receiver) {
-      if (property === 'length') return 5_000_001;
-      if (property === Symbol.iterator) return function* emptyRows() {};
-      return Reflect.get(target, property, receiver);
-    },
-  });
-  const rawEvents = new Proxy([], {
-    get(target, property, receiver) {
-      if (property === 'map') return () => oversizedRows;
-      return Reflect.get(target, property, receiver);
-    },
-  });
-  return { id: 'row-cap', logicalEvents: [], rawEvents };
 }
 
 function cancellationFixtureSession() {
@@ -1211,7 +1203,7 @@ async function captureM0() {
 }
 
 function registerTests() {
-  test('direct text parent constants, layer order, schema, and production API are frozen', () => {
+  test('direct text preserves schema-2 constants and layer order while exposing adaptive disposal', () => {
     assert.equal(PROJECT_QUERY_CHUNK_MAX_ROWS, FROZEN_CHUNK_MAX_ROWS);
     assert.equal(PROJECT_QUERY_CHUNK_MAX_BYTES, FROZEN_CHUNK_MAX_BYTES);
     assert.equal(PROJECT_QUERY_GZIP_MIN_BYTES, FROZEN_GZIP_MIN_BYTES);
@@ -1346,38 +1338,50 @@ function registerTests() {
     }
   });
 
-  test('direct text oversized rows preserve exact layer error code and message', async (t) => {
-    const rows = rowsWithFrameBytes([FROZEN_CHUNK_MAX_BYTES + 1]);
+  test('direct text oversized rows replace the historical rejection with exact streaming search identity', async (t) => {
+    const text = `${'x'.repeat(256 * 1024 - 1)}中文😀cross${'x'.repeat(FROZEN_CHUNK_MAX_BYTES)} tailNeedle`;
+    const rows = [{ preview: '', searchText: text }];
     for (const layer of PROJECT_QUERY_LAYERS) {
-      await t.test(layer, () => {
+      await t.test(layer, async () => {
         const expected = captureError(() => currentTextChunks(rows, layer));
-        const actual = captureError(() => candidateTextChunks(rows, layer));
-        assert.deepEqual(actual, expected);
-        assert.deepEqual(actual, {
+        assert.deepEqual(expected, {
           code: FROZEN_CONTRACT_CODE,
           message: `ProjectQueryStore contract violation: single ${layer} text row exceeds 4 MiB`,
         });
+        const session = textSession(rows, layer);
+        const store = buildProjectQueryStore([session]);
+        try {
+          assert.equal(store.schemaVersion, 3);
+          await validateProjectQueryStoreForCommit(store, [session.id]);
+          for (const phrase of ['中文😀cross', 'tailNeedle']) {
+            const matched = [];
+            await scanProjectQueryShard(store, session.id, layer, { includeText: true,
+              searchTextParts: (preview, search, signal) => searchTextParts(preview, search, phrase, signal),
+            }, row => matched.push(row));
+            assert.equal(matched.length, 1);
+            assert.equal(matched[0].eventId, `${layer}-text-0`);
+            assert.equal(matched[0].physicalLayerOrdinal, 0);
+            assert.equal(matched[0].searchMatch.count, 1);
+            assert.equal(matched[0].searchMatch.hit, true);
+          }
+        } finally { disposeProjectQueryStore(store); }
       });
     }
   });
 
-  test('direct text row-limit oversized error precedes pending gzip', () => {
+  test('direct text oversized row chooses disk before pending row-boundary gzip', () => {
     assert.deepEqual(runPatchedGzipChild('row-limit'), {
       gzipCalls: 0,
-      error: {
-        code: FROZEN_CONTRACT_CODE,
-        message: 'ProjectQueryStore contract violation: single protocol text row exceeds 4 MiB',
-      },
+      error: null,
+      storage: { schemaVersion: 3, rowCount: FROZEN_CHUNK_MAX_ROWS + 1 },
     });
   });
 
-  test('direct text byte-limit oversized error precedes pending gzip', () => {
+  test('direct text oversized row chooses disk before pending byte-boundary gzip', () => {
     assert.deepEqual(runPatchedGzipChild('byte-limit'), {
       gzipCalls: 0,
-      error: {
-        code: FROZEN_CONTRACT_CODE,
-        message: 'ProjectQueryStore contract violation: single protocol text row exceeds 4 MiB',
-      },
+      error: null,
+      storage: { schemaVersion: 3, rowCount: 2 },
     });
   });
 
@@ -1471,7 +1475,7 @@ function registerTests() {
     });
   });
 
-  test('direct text builder errors and post-failure visible mutation match parent', () => {
+  test('direct text builder preserves malformed-input, completed-builder and gzip errors', () => {
     assert.deepEqual(
       captureError(() => buildProjectQueryStore([{ id: '', logicalEvents: [], rawEvents: [] }])),
       {
@@ -1495,14 +1499,6 @@ function registerTests() {
       {
         code: FROZEN_CONTRACT_CODE,
         message: 'ProjectQueryStore contract violation: session missing-arrays must expose complete event arrays while building',
-      },
-    );
-
-    assert.deepEqual(
-      captureError(() => buildProjectQueryStore([rowCapSession()])),
-      {
-        code: FROZEN_CONTRACT_CODE,
-        message: 'ProjectQueryStore contract violation: row count exceeds 5,000,000',
       },
     );
 
@@ -1536,20 +1532,37 @@ function registerTests() {
       gzipCalls: 1,
       error: { code: 'FROZEN_GZIP_FAILURE', message: 'frozen gzip failure' },
     });
-    const lateFailure = captureLateFailure();
-    assert.equal(
-      sha256(Buffer.from(JSON.stringify(lateFailure), 'utf8')),
-      FROZEN_PARENT_CAPTURE_SHA256.lateFailure,
-    );
-    assert.deepEqual(lateFailure.error, {
-      code: FROZEN_CONTRACT_CODE,
-      message: 'ProjectQueryStore contract violation: single protocol text row exceeds 4 MiB',
-    });
-    assert.deepEqual(lateFailure.sessionIds, ['valid-after-failure']);
-    assert.equal(
-      lateFailure.storeDigest,
-      '544bb9b4b6a96f811b94e055d3736ca891d44ce5178645f71182983b6f105643',
-    );
+  });
+
+  test('direct text async builder spills real arrays and keeps prior, oversized and subsequent sessions', async () => {
+    const builder = createProjectQueryStoreBuilder({ memoryRows: 1 });
+    assert.deepEqual(Object.keys(builder).sort(), ['addSession', 'addSessionAsync', 'dispose', 'finish']);
+    const prior = textSession([{ preview: 'prior', searchText: 'prior needle' }], 'main', 'prior');
+    await builder.addSessionAsync(prior);
+    await builder.addSessionAsync(lateFailureSession());
+    await builder.addSessionAsync(validAfterFailureSession());
+    const store = builder.finish();
+    try {
+      assert.equal(store.schemaVersion, 3);
+      assert.deepEqual([...store.shardsBySessionId.keys()], ['prior', 'late-failure', 'valid-after-failure']);
+      await validateProjectQueryStoreForCommit(store, ['prior', 'late-failure', 'valid-after-failure']);
+      const identities = [];
+      for (const id of store.shardsBySessionId.keys()) for (const layer of PROJECT_QUERY_LAYERS) {
+        await scanProjectQueryShard(store, id, layer, {}, row => identities.push(row.eventId));
+      }
+      assert.deepEqual(identities, ['main-text-0', 'failed-main', 'failed-protocol', 'valid-main']);
+      await assert.rejects(builder.addSessionAsync(prior), { code: FROZEN_CONTRACT_CODE });
+      assert.throws(() => builder.finish(), { code: FROZEN_CONTRACT_CODE });
+    } finally { builder.dispose(); disposeProjectQueryStore(store); }
+  });
+
+  test('direct text convenience builder cleans disk when a later session fails admission', async (t) => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'query-admission-cleanup-'));
+    t.after(() => fsp.rm(root, { recursive: true, force: true }));
+    const session = textSession([{ preview: 'valid', searchText: 'valid needle' }], 'main', 'duplicate');
+    assert.throws(() => buildProjectQueryStore([session, session], { memoryRows: 0, tempRoot: root }),
+      { code: FROZEN_CONTRACT_CODE });
+    assert.deepEqual(await fsp.readdir(root), []);
   });
 
   test('direct text commit validation callback and cancellation lifecycle remains exact', async () => {

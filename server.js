@@ -41,6 +41,8 @@ const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
 const { createIndexDiagnostics } = require('./src/runtime-diagnostics');
 const { createLargeTranscriptHistoryWarning } = require('./src/runtime-capacity');
+const { queryPagination, requireQueryRevision } = require('./src/shared/query-pagination');
+const { withQueryStoreBuildScope } = require('./src/project-query-disk');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -122,12 +124,6 @@ function decodePathSegment(value) {
     error.statusCode = 400;
     throw error;
   }
-}
-
-function asNumber(value, fallback, min, max) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(min, Math.min(max, Math.trunc(n)));
 }
 
 async function readJsonBody(req, limit = 64 * 1024) {
@@ -621,7 +617,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   job.sourceHome = jobSourceHome;
   job.activeSourceRevision = state.activeSourceRevision || 0;
   const buildIndex = state.buildIndexOverride || ((context) => state.adapter.buildIndex(context));
-  job.promise = Promise.resolve().then(() => buildIndex({
+  job.promise = withQueryStoreBuildScope(() => Promise.resolve().then(() => buildIndex({
     repoRoot,
     sourceKind: jobSourceKind,
     sourceHome: jobSourceHome,
@@ -674,6 +670,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     state.buildMs = job.buildMs;
     job.diagnostics?.finish('succeeded', { buildMs: job.buildMs });
     scheduleRevisionPrewarm(state, lease);
+    return index;
   }).catch((error) => {
     const safeError = normalizeCaughtError(error);
     job.completedAt ||= new Date().toISOString();
@@ -692,7 +689,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       errorName: safeError.name || 'Error',
       errorCode: safeError.code || '',
     });
-  }).then(async () => {
+  }).then(async (committedIndex) => {
     // Observability cannot change a settled job or invalidate its committed index.
     try {
       await state.onProjectJobSettled?.({
@@ -702,7 +699,8 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     } catch {
       // The consumer owns reporting failures in its optional callback.
     }
-  });
+    return committedIndex;
+  }));
 
   return job;
 }
@@ -923,13 +921,14 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         const sessionId = decodePathSegment(fileActivityMatch[1]);
         const file = searchParams.get('file') || '';
         if (!file || file.length > 8192) { sendError(res, 400, 'Invalid file path'); return; }
+        const pagination = queryPagination({ offset: searchParams.get('offset'), limit: searchParams.get('limit') }, 50, 100);
         const { value: result, lease } = await withIndexRevisionLease(state, requestAbort.signal, async (capture) => {
+          requireQueryRevision(searchParams.get('indexRevision'), capture.indexRevision);
           const indexedSession = capture.index.sessionsById.get(sessionId);
           if (!indexedSession) return null;
           const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
           return queryForIndex(capture.index).getFileActivity(capture.index, session, file, {
-            offset: asNumber(searchParams.get('offset'), 0, 0, 1_000_000),
-            limit: asNumber(searchParams.get('limit'), 50, 1, 100), locale,
+            ...pagination, locale,
           });
         });
         if (!result) { sendError(res, 404, 'Unknown session'); return; }
@@ -941,18 +940,19 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       if (timelineMatch) {
         if (!requireIndex(state, res)) return;
         const sessionId = decodePathSegment(timelineMatch[1]);
-        const { value: result } = await withIndexRevisionLease(
+        const pagination = queryPagination({ offset: searchParams.get('offset'), limit: searchParams.get('limit') });
+        const { value: result, lease } = await withIndexRevisionLease(
           state,
           requestAbort.signal,
           async (capture) => {
+            requireQueryRevision(searchParams.get('indexRevision'), capture.indexRevision);
             const { index } = capture;
             const indexedSession = index.sessionsById.get(sessionId);
             if (!indexedSession) return null;
             const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
             const query = queryForIndex(index);
             return query.getTimeline(index, session, query.filtersFromSearchParams(searchParams, {
-              offset: asNumber(searchParams.get('offset'), 0, 0, 1_000_000),
-              limit: asNumber(searchParams.get('limit'), 150, 1, 500),
+              ...pagination,
               locale,
             }));
           },
@@ -961,7 +961,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sendError(res, 404, 'Unknown session');
           return;
         }
-        sendJson(res, 200, result);
+        sendJson(res, 200, { ...result, indexRevision: lease.indexRevision });
         return;
       }
 
@@ -1175,7 +1175,10 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       requestAbort.cleanup();
     }
   });
-  server.on('close', () => clearIndexRevision(state));
+  server.on('close', () => {
+    cancelProjectJob(state.activeProjectJob);
+    clearIndexRevision(state);
+  });
   return server;
 }
 

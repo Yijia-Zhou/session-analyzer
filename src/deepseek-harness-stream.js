@@ -78,9 +78,17 @@ function embeddedStreamFacts(stream, limit = 16_000) {
     if (block.kind === 'text') text = join(text, value);
     else reasoning = join(reasoning, value);
   }
-  // Search the same bounded projections as Detail. Original blocks must not
-  // compete for a shared budget or reintroduce content beyond either limit.
-  const searchText = [text, reasoning].filter(Boolean).join('\n');
+  // Search follows settlement too, but never inherits Detail's display budget.
+  // Keep text and reasoning independent; completed blocks replace their stale
+  // deltas before either projection is collected.
+  const full = { text: [], reasoning: [] };
+  for (const block of blocks.values()) {
+    if (block.kind !== 'text' && block.kind !== 'reasoning') continue;
+    const value = block.closed ? (typeof block.text === 'string' ? block.text : '')
+      : block.runs.flatMap(run => run.filter(part => typeof part === 'string')).join('');
+    if (value) full[block.kind].push(value);
+  }
+  const searchText = [...full.text, ...full.reasoning].join('\n');
   return { text, reasoning, searchText, chunks, toolFragments, finishReason };
 }
 

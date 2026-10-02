@@ -1404,6 +1404,34 @@ for (const locale of ['en', 'zh-CN']) for (const presentation of ['timeline', 't
   });
 }
 
+test('file activity navigation preserves large offsets and rejects a response from a different page', async (t) => {
+  const { index, sessionId, eventId } = await makeFileNavigationFixture(t);
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await page.locator(`[data-session-id="${sessionId}"]`).click();
+  await page.locator(`.event[data-event-id="${eventId}"]`).click();
+  await page.locator(`#timeline .event[data-event-id="${eventId}"] [data-file-activity="src/a.js"]`).first().click();
+  await page.waitForSelector('[data-file-activity-page="50"]');
+  await page.locator('[data-file-activity-page="50"]').evaluate(button => { button.dataset.fileActivityPage = '1000500'; });
+  const responsePromise = page.waitForResponse(response => response.url().includes('/file-activity?')
+    && new URL(response.url()).searchParams.get('offset') === '1000500');
+  await page.locator('[data-file-activity-page="1000500"]').click();
+  const response = await responsePromise;
+  const body = await response.json();
+  assert.equal(body.offset, 1000500);
+  assert.equal(Number(new URL(response.url()).searchParams.get('indexRevision')), body.indexRevision);
+  await page.waitForSelector('[data-file-activity-page="1000450"]');
+  assert.equal(await page.locator('[data-file-activity-entry]').count(), 0);
+  await page.route('**/file-activity?*', async route => {
+    const result = await route.fetch();
+    const value = await result.json();
+    await route.fulfill({ response: result, json: { ...value, offset: 1000000 } });
+  });
+  await page.locator('[data-file-activity-page="1000450"]').click();
+  await page.locator('.fileActivityDialog [role="alert"]').waitFor();
+  assert.match(await page.locator('.fileActivityDialog [role="alert"]').innerText(), /page changed/);
+  assert.equal(await page.locator('[data-file-activity-entry]').count(), 0);
+});
+
 test('file navigation exposes a local patch directory and paginated recorded activities with reading return', async (t) => {
   const { index, sessionId, eventId, lastEventId } = await makeFileNavigationFixture(t);
   for (const presentation of ['timeline', 'trajectory']) {

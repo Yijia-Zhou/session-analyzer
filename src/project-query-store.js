@@ -3,12 +3,11 @@
 const { createHash } = require('node:crypto');
 const { promisify } = require('node:util');
 const { gzipSync, gunzip, gunzipSync } = require('node:zlib');
+const disk = require('./project-query-disk');
 
 const gunzipAsync = promisify(gunzip);
 
 const PROJECT_QUERY_STORE_SCHEMA_VERSION = 2;
-const PROJECT_QUERY_STORE_MAX_ROWS = 5_000_000;
-const PROJECT_QUERY_STORE_MAX_BYTES = 8 * 1024 * 1024 * 1024;
 const PROJECT_QUERY_CHUNK_MAX_ROWS = 4_096;
 const PROJECT_QUERY_CHUNK_MAX_BYTES = 4 * 1024 * 1024;
 const PROJECT_QUERY_GZIP_MIN_BYTES = 7 * 512 * 1024;
@@ -124,44 +123,48 @@ function rowsForSession(session, layer, presentationForEvent) {
 
 function createProjectionDigestWriter() {
   const hash = createHash('sha256');
-  const write = (value) => {
+  function* parts(value) {
+    if (value && typeof value.parts === 'function') { yield* value.parts(); return; }
     const text = typeof value === 'string' ? value : String(value);
-    hash.update(`${Buffer.byteLength(text, 'utf8')}:`, 'utf8');
-    hash.update(text, 'utf8');
-  };
-  const writeList = (values) => {
-    write(values.length);
-    for (const value of values) write(value);
-  };
-  const writeRow = (row) => {
-    write(row.eventId);
-    write(row.timestamp);
-    write(row.physicalLayerOrdinal);
-    write(row.kind);
-    write(row.subtype);
-    write(row.status);
-    write(row.toolName);
-    write(row.sourceLabel);
-    write(row.recordType);
-    write(row.payloadType);
-    write(row.preview);
-    write(row.searchText);
-    writeList(row.filterFiles);
-    writeList(row.suggestionFiles);
-    write(row.scriptOperation ? '1' : '0');
-    writeList(row.declaredRequestNames);
-    write(row.requestEvidence);
-  };
+    for (let start = 0; start < text.length;) {
+      let end = Math.min(start + 65536, text.length);
+      if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end -= 1;
+      yield text.slice(start, end);
+      start = end;
+    }
+  }
+  function* writeSteps(value) {
+    const bytes = value && typeof value.parts === 'function'
+      ? value.byteLength : Buffer.byteLength(typeof value === 'string' ? value : String(value), 'utf8');
+    hash.update(String(bytes) + ':', 'utf8');
+    let processed = 0;
+    for (const part of parts(value)) {
+      hash.update(part, 'utf8');
+      processed += part.length;
+      if (processed >= 262144) { processed = 0; yield; }
+    }
+  }
+  const write = (value) => { for (const unused of writeSteps(value)) { /* synchronous oracle */ } };
+  function* rowValues(row) {
+    for (const key of ['eventId', 'timestamp', 'physicalLayerOrdinal', 'kind', 'subtype',
+      'status', 'toolName', 'sourceLabel', 'recordType', 'payloadType', 'preview', 'searchText']) yield row[key];
+    yield row.filterFiles.length; yield* row.filterFiles;
+    yield row.suggestionFiles.length; yield* row.suggestionFiles;
+    yield row.scriptOperation ? '1' : '0';
+    yield row.declaredRequestNames.length; yield* row.declaredRequestNames;
+    yield row.requestEvidence;
+  }
+  function* writeRowSteps(row) { for (const value of rowValues(row)) yield* writeSteps(value); }
   write('project-query-projection-v1');
   return {
-    writeLayer(layer, rowCount) {
-      write(layer);
-      write(rowCount);
+    writeLayer(layer, rowCount) { write(layer); write(rowCount); },
+    writeRow(row) { for (const unused of writeRowSteps(row)) { /* synchronous oracle */ } },
+    writeRowSteps,
+    async writeRowAsync(row, signal) {
+      signal?.throwIfAborted();
+      for (const unused of writeRowSteps(row)) { await yieldToEventLoop(); signal?.throwIfAborted(); }
     },
-    writeRow,
-    finish() {
-      return hash.digest('base64url');
-    },
+    finish() { return hash.digest('base64url'); },
   };
 }
 
@@ -198,13 +201,13 @@ async function projectQueryProjectionDigestAsync(
     let physicalLayerOrdinal = 0;
     for (const event of events) {
       if (layer !== 'raw' && event.layer !== layer) continue;
-      writer.writeRow(rowForEvent(
+      await writer.writeRowAsync(rowForEvent(
         session,
         layer,
         event,
         physicalLayerOrdinal,
         presentationForEvent,
-      ));
+      ), signal);
       physicalLayerOrdinal += 1;
       rowsSinceYield += 1;
       if (rowsSinceYield >= PROJECT_QUERY_VERIFICATION_ROWS_PER_YIELD) {
@@ -404,7 +407,7 @@ function storeAccountedBytes(store) {
   return total;
 }
 
-function createProjectQueryStoreBuilder(options = {}) {
+function createMemoryProjectQueryStoreBuilder(options = {}) {
   const presentationForEvent = typeof options.presentationForEvent === 'function'
     ? options.presentationForEvent
     : () => null;
@@ -430,7 +433,6 @@ function createProjectQueryStoreBuilder(options = {}) {
       projectionWriter.writeLayer(layer, rows.length);
       for (const row of rows) projectionWriter.writeRow(row);
       totalRows += rows.length;
-      if (totalRows > PROJECT_QUERY_STORE_MAX_ROWS) throw contractError('row count exceeds 5,000,000');
       shards[layer] = buildLayerShard(rows, layer, interner);
     }
     shards.projectionDigest = projectionWriter.finish();
@@ -449,7 +451,6 @@ function createProjectQueryStoreBuilder(options = {}) {
       accountedBytes: 0,
     };
     store.accountedBytes = storeAccountedBytes(store);
-    if (store.accountedBytes > PROJECT_QUERY_STORE_MAX_BYTES) throw contractError('encoded bytes exceed 8 GiB');
     validateProjectQueryStore(store, sessionIds, { verifyProjectionDigest: false });
     // The shared builder derives encoded rows and their digest from the same
     // closed row projection. Mark that construction result as query-ready;
@@ -467,11 +468,103 @@ function createProjectQueryStoreBuilder(options = {}) {
   return Object.freeze({ addSession, finish });
 }
 
+const diskHelpers = { contractError, requireExactDataKeys, createProjectionDigestWriter, layers: PROJECT_QUERY_LAYERS };
+
+function createProjectQueryStoreBuilder(options = {}) {
+  let memory = createMemoryProjectQueryStoreBuilder(options);
+  let spilled = null;
+  let estimatedBytes = 0;
+  let estimatedRows = 0;
+  let finished = false;
+  const presentation = options.presentationForEvent || (() => null);
+  const admittedIds = new Set();
+  function layersForSession(session) {
+    return (layer) => ({
+      count: eventCountForSessionLayer(session, layer),
+      rows: (function* () {
+        let ordinal = 0;
+        for (const event of layer === 'raw' ? session.rawEvents : session.logicalEvents) {
+          if (layer !== 'raw' && event.layer !== layer) continue;
+          yield rowForEvent(session, layer, event, ordinal++, presentation);
+        }
+      }()),
+    });
+  }
+  function* storedRows(store, shard) {
+    for (const chunk of shard.textChunks) {
+      const bytes = chunk.codec === 'identity' ? chunk.data : gunzipSync(chunk.data);
+      for (let local = 0; local < chunk.rowCount; local += 1) {
+        const row = metadataRow(store, shard, chunk.rowStart + local);
+        yield { ...row, ...row.labelFact, ...row.presentation,
+          ...decodeTextFrame(bytes, chunk.rowOffsets[local], chunk.rowOffsets[local + 1]) };
+      }
+    }
+  }
+  function prepare(session) {
+    if (finished) throw contractError('builder is already finished');
+    options.signal?.throwIfAborted();
+    const sessionId = asString(session?.id);
+    if (!sessionId || admittedIds.has(sessionId)) throw contractError(`invalid or duplicate session ID ${JSON.stringify(sessionId)}`);
+    if (!Array.isArray(session.rawEvents) || !Array.isArray(session.logicalEvents)) {
+      throw contractError(`session ${sessionId} must expose complete event arrays while building`);
+    }
+    if (spilled) return null;
+    let oversized = false;
+    const memoryBytes = options.memoryBytes ?? 32 * 1024 * 1024;
+    const memoryRows = options.memoryRows ?? 100_000;
+    scan: for (const events of [session.logicalEvents, session.rawEvents]) for (const event of events) {
+      const bytes = 8 + Buffer.byteLength(asString(event.preview), 'utf8') + Buffer.byteLength(asString(event.searchText), 'utf8');
+      estimatedBytes += bytes + 256;
+      estimatedRows += 1;
+      oversized ||= bytes > PROJECT_QUERY_CHUNK_MAX_BYTES;
+      if (oversized || estimatedBytes > memoryBytes || estimatedRows > memoryRows) break scan;
+    }
+    if (oversized || estimatedBytes > memoryBytes || estimatedRows > memoryRows) {
+      spilled = disk.createDiskBuilder(diskHelpers, options);
+      let prior;
+      try { prior = memory.finish(); } catch (error) { spilled.dispose(); throw error; }
+      memory = null;
+      return prior;
+    }
+    return null;
+  }
+  return {
+    addSession(session) {
+      const prior = prepare(session);
+      for (const [id, shards] of prior?.shardsBySessionId || []) {
+        spilled.addRows(id, (layer) => ({ count: shards[layer].rowCount, rows: storedRows(prior, shards[layer]) }));
+      }
+      const result = spilled ? spilled.addRows(session.id, layersForSession(session)) : memory.addSession(session);
+      admittedIds.add(session.id);
+      return result;
+    },
+    async addSessionAsync(session) {
+      const prior = prepare(session);
+      for (const [id, shards] of prior?.shardsBySessionId || []) {
+        await spilled.addRowsAsync(id, (layer) => ({ count: shards[layer].rowCount, rows: storedRows(prior, shards[layer]) }));
+      }
+      const result = spilled ? await spilled.addRowsAsync(session.id, layersForSession(session)) : memory.addSession(session);
+      admittedIds.add(session.id);
+      await yieldToEventLoop();
+      options.signal?.throwIfAborted();
+      return result;
+    },
+    finish() {
+      if (finished) throw contractError('builder is already finished');
+      finished = true;
+      return spilled ? spilled.finish() : memory.finish();
+    },
+    dispose() { spilled?.dispose(); },
+  };
+}
+
 function buildProjectQueryStore(sessions, options = {}) {
   if (!Array.isArray(sessions)) throw contractError('sessions must be an array');
   const builder = createProjectQueryStoreBuilder(options);
-  for (const session of sessions) builder.addSession(session);
-  return builder.finish();
+  try {
+    for (const session of sessions) builder.addSession(session);
+    return builder.finish();
+  } catch (error) { builder.dispose(); throw error; }
 }
 
 function requireUintColumn(value, length, owner) {
@@ -725,6 +818,7 @@ function validateExpectedSessionIds(store, expectedSessionIds) {
 }
 
 function validateProjectQueryStore(store, expectedSessionIds = null, options = {}) {
+  if (disk.isDiskStore(store)) return disk.validateDiskStore(store, expectedSessionIds, diskHelpers, options.verifyProjectionDigest !== false);
   const verifyProjectionDigest = options.verifyProjectionDigest !== false;
   if (!store || typeof store !== 'object' || Array.isArray(store)) throw contractError('store must be an object');
   requireExactDataKeys(store, [
@@ -779,12 +873,10 @@ function validateProjectQueryStore(store, expectedSessionIds = null, options = {
       throw contractError(`session ${sessionId} projection digest does not match encoded rows`);
     }
   }
-  if (totalRows > PROJECT_QUERY_STORE_MAX_ROWS) throw contractError('row count exceeds 5,000,000');
   validateExpectedSessionIds(store, expectedSessionIds);
   const accountedBytes = storeAccountedBytes(store);
   if (!Number.isSafeInteger(store.accountedBytes)
-      || store.accountedBytes !== accountedBytes
-      || accountedBytes > PROJECT_QUERY_STORE_MAX_BYTES) {
+      || store.accountedBytes !== accountedBytes) {
     throw contractError('accountedBytes does not equal encoded storage');
   }
   validatedStores.set(store, {
@@ -797,6 +889,7 @@ function validateProjectQueryStore(store, expectedSessionIds = null, options = {
 }
 
 async function validateProjectQueryStoreForCommit(store, expectedSessionIds = null, options = {}) {
+  if (disk.isDiskStore(store)) return disk.validateDiskStoreForCommit(store, expectedSessionIds, diskHelpers, options);
   const { signal, onChunk, structurallyValidated = false } = options;
   throwIfAborted(signal);
   if (!structurallyValidated || !currentValidationForStore(store)) {
@@ -829,6 +922,7 @@ async function validateProjectQueryStoreForCommit(store, expectedSessionIds = nu
 }
 
 function requireValidatedProjectQueryStore(store, expectedSessionIds = null) {
+  if (disk.isDiskStore(store)) return disk.requireDiskStore(store, expectedSessionIds, diskHelpers);
   const prior = currentValidationForStore(store);
   if (!prior || prior.projectionDigestVerified !== true) {
     return validateProjectQueryStore(store, expectedSessionIds);
@@ -908,6 +1002,7 @@ function decodePreviewFrame(buffer, start, end) {
 async function scanProjectQueryShard(store, sessionId, layer, options, visit) {
   requireValidatedProjectQueryStore(store);
   if (!PROJECT_QUERY_LAYERS.includes(layer)) throw contractError(`unsupported layer ${layer}`);
+  if (disk.isDiskStore(store)) return disk.scanDiskShard(store, sessionId, layer, options, visit);
   const shard = store.shardsBySessionId.get(sessionId)?.[layer];
   if (!shard) return false;
   const includeText = options?.includeText === true;
@@ -949,6 +1044,12 @@ async function scanProjectQueryShard(store, sessionId, layer, options, visit) {
 }
 
 function projectQueryProjectionDigestForSession(store, sessionId, options = {}) {
+  if (disk.isDiskStore(store)) {
+    disk.requireDiskStore(store, null, diskHelpers);
+    const digest = store.shardsBySessionId.get(sessionId)?.projectionDigest;
+    if (!digest) throw contractError(`missing projection digest for session ${sessionId}`);
+    return digest;
+  }
   if (options.requireVerified === false) {
     if (!currentValidationForStore(store)) {
       validateProjectQueryStore(store, null, { verifyProjectionDigest: false });
@@ -964,6 +1065,7 @@ function projectQueryProjectionDigestForSession(store, sessionId, options = {}) 
 async function readProjectQueryRowPreview(store, sessionId, layer, rowIndex, options = {}) {
   requireValidatedProjectQueryStore(store);
   if (!PROJECT_QUERY_LAYERS.includes(layer)) throw contractError(`unsupported layer ${layer}`);
+  if (disk.isDiskStore(store)) return disk.readDiskPreview(store, sessionId, layer, rowIndex, options);
   const shard = store.shardsBySessionId.get(sessionId)?.[layer];
   if (!shard || !Number.isSafeInteger(rowIndex) || rowIndex < 0 || rowIndex >= shard.rowCount) {
     throw contractError(`row ${rowIndex} is outside ${sessionId}/${layer}`);
@@ -992,6 +1094,7 @@ async function readProjectQueryRowPreview(store, sessionId, layer, rowIndex, opt
 }
 
 module.exports = {
+  disposeProjectQueryStore: disk.disposeDiskStore,
   PROJECT_QUERY_CHUNK_MAX_BYTES,
   PROJECT_QUERY_CHUNK_MAX_ROWS,
   PROJECT_QUERY_GZIP_MIN_BYTES,

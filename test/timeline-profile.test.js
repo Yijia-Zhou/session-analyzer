@@ -596,8 +596,8 @@ test('Code Mode context fixture preserves the 1,800-event Main corpus and late-h
   assert.ok(nested);
   assert.ok(parent);
   const timeline = adapter.query.getTimeline(index, session, {
-    offset: 0,
-    limit: 1800,
+    offset: 1500,
+    limit: 300,
     layer: 'main',
     q: 'far-needle',
     kind: '',
@@ -607,7 +607,7 @@ test('Code Mode context fixture preserves the 1,800-event Main corpus and late-h
     locale: 'en',
   });
   assert.equal(timeline.total, 1800);
-  assert.equal(timeline.events.findIndex((event) => event.hasSearchHit), 1650);
+  assert.equal(timeline.offset + timeline.events.findIndex((event) => event.hasSearchHit), 1650);
 });
 
 test('semantic fixture proof is root-independent and changes with semantic parameters', async (t) => {

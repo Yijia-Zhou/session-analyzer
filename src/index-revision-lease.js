@@ -5,6 +5,7 @@ const {
   createMaterializedSessionOwner,
 } = require('./materialized-session-owner');
 const { cancelBoundedSessionPrewarm } = require('./session-prewarm');
+const { disposeProjectQueryStore } = require('./project-query-store');
 
 function abortError(signal) {
   if (signal?.reason instanceof Error) return signal.reason;
@@ -61,11 +62,12 @@ function installIndexRevision(state, index) {
   if (!index) throw new TypeError('installIndexRevision requires an Index');
   const previous = state.revisionLease;
   const nextRevision = (state.indexRevision || 0) + 1;
-  retireLease(previous);
   const lease = createIndexRevisionLease(index, nextRevision, state.materializationScheduler);
   state.index = index;
   state.indexRevision = nextRevision;
   state.revisionLease = lease;
+  retireLease(previous);
+  if (previous?.index.projectQueryStore !== index.projectQueryStore) disposeProjectQueryStore(previous?.index.projectQueryStore);
   return lease;
 }
 
@@ -74,6 +76,7 @@ function clearIndexRevision(state) {
   const previous = state.revisionLease;
   const nextRevision = (state.indexRevision || 0) + 1;
   retireLease(previous);
+  disposeProjectQueryStore(previous?.index.projectQueryStore);
   state.index = null;
   state.indexRevision = nextRevision;
   state.revisionLease = null;

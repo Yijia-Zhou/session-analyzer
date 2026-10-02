@@ -129,7 +129,6 @@ async function assertAttemptSearchCoverage(data, markers) {
   const rawDetail = await buildEventDetailForSession(data.index, data.session, raw.rawId, 'raw');
   assert.deepEqual(rawDetail.timelineSections[0].value, data.rows[0]);
   assert.deepEqual(rawDetail.sourceLocator, raw.sourceLocator);
-  assert.ok(event.searchText.length <= 'assistant/attempt\n'.length + 16000 * 2 + 1);
   return { event, result, raw };
 }
 
@@ -146,7 +145,7 @@ for (const closed of [true, false]) for (const longKind of ['text', 'reasoning']
       : { type: `${block.type}-chunks`, time0: index + 10, index, dt: [], texts: [block.text] });
     const data = await fixture(t, [{ type: 'assistant/attempt', data: { turn: 1, step: 1, stream } }]);
     const { event } = await assertAttemptSearchCoverage(data, [longMarker, shortMarker]);
-    assert.ok(!event.searchText.includes('OVER_BUDGET_SAME_KIND'));
+    assert.ok(event.searchText.includes('OVER_BUDGET_SAME_KIND'));
     assert.ok(event.preview.startsWith(longKind === 'reasoning' ? shortMarker : 'x'));
   });
 }
@@ -162,12 +161,12 @@ for (const kind of ['text', 'reasoning']) {
   });
 }
 
-test('completed attempt blocks keep both bounded projections searchable without truncating Raw', async t => {
+test('completed attempt blocks search beyond Detail projections without truncating Raw', async t => {
   const stream = ['text', 'reasoning'].map((type, index) => ({ type: 'chunk', time: 20 + index,
     chunk: { type: 'block-end', index, block: { type, text: type[0].repeat(16000) + 'RAW_ONLY_TAIL' } } }));
   const data = await fixture(t, [{ type: 'assistant/attempt', data: { turn: 1, step: 1, stream } }]);
   const { event, result } = await assertAttemptSearchCoverage(data, ['t'.repeat(16000), 'r'.repeat(16000)]);
-  assert.doesNotMatch(event.searchText, /RAW_ONLY_TAIL/);
+  assert.match(event.searchText, /RAW_ONLY_TAIL/);
   assert.doesNotMatch(JSON.stringify(result.timelineSections), /RAW_ONLY_TAIL/);
   assert.ok(result.timelineSections.some(s => s.html?.includes('t'.repeat(16000))));
   assert.ok(result.timelineSections.some(s => s.html?.includes('r'.repeat(16000))));

@@ -17,6 +17,7 @@ const {
 const { createSessionQuery } = require('./session-query');
 const { codeModePresentationContextMap } = require('./shared/code-mode-presentation-context');
 const storage = require('./deepseek-harness-storage');
+const { projectSearchJson } = require('./search-json');
 const { embeddedStreamFacts } = require('./deepseek-harness-stream');
 const { buildDeepSeekEventDetail } = require('./deepseek-harness-detail');
 const { createEmptyMaterializedPresentationIndexes } = require('./canonical-contract');
@@ -24,11 +25,9 @@ const { observeMaterializationPhase } = require('./materialization-observer');
 
 const SOURCE_KIND = storage.DEEPSEEK_SOURCE_KIND;
 const PREVIEW_LIMIT = 240;
-const SEARCH_TEXT_LIMIT = 16_000;
-const ATTEMPT_SEARCH_TEXT_LIMIT = 'assistant/attempt\n'.length + SEARCH_TEXT_LIMIT * 2 + 1;
-const PARTIAL_BLOCK_TEXT_LIMIT = SEARCH_TEXT_LIMIT;
+const DISPLAY_TEXT_LIMIT = 16_000;
+const PARTIAL_BLOCK_TEXT_LIMIT = DISPLAY_TEXT_LIMIT;
 const TITLE_LIMIT = 120;
-const REASONING_LIMIT = SEARCH_TEXT_LIMIT;
 const INHERITED_PREVIEW_LIMIT = 12;
 const MAX_CODE_DISPATCH_DEPTH = 256;
 const MAX_RETRY_DELAY_MS = 2_147_483_647;
@@ -255,7 +254,7 @@ function descriptorSearchText(descriptor) {
     descriptor.agentModel ? `agentModel=${descriptor.agentModel}` : '',
     descriptor.agentReasoningEffort ? `agentReasoningEffort=${descriptor.agentReasoningEffort}` : '',
     descriptor.persona ? `persona=${descriptor.persona}` : '',
-  ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
+  ].filter(Boolean).join('\n');
 }
 
 
@@ -304,12 +303,50 @@ function parseToolArguments(value) {
   }
 }
 
-function boundedJsonText(value, limit = SEARCH_TEXT_LIMIT) {
-  try {
-    return JSON.stringify(value, null, 2).slice(0, limit);
-  } catch {
-    return '';
+const OPAQUE_SEARCH_KEYS = new Set(['signature', 'thought_signature', 'thoughtSignature',
+  'encrypted_content', 'encryptedContent', 'blob', 'base64', 'bytes', 'imageBytes',
+  'audioBytes', 'image_url', 'audio_url', 'images']);
+const OPAQUE_SEARCH_TYPES = new Set(['image', 'image_url', 'input_image', 'output_image', 'audio', 'input_audio',
+  'output_audio', 'video', 'file', 'document', 'base64', 'redacted_thinking', 'encrypted_reasoning', 'encrypted_content']);
+
+// Durable direct-tool arguments are JSON encoded strings. Decode valid JSON
+// only for its safe text projection, preserving allowed field names/syntax;
+// incomplete or ordinary strings retain their existing textual meaning.
+function toolArgumentsSearchText(value) {
+  if (value == null) return '';
+  return projectSearchJson(value, {
+    excludedKeys: OPAQUE_SEARCH_KEYS,
+    opaqueTypes: OPAQUE_SEARCH_TYPES,
+    redactString: text => sanitizeLogicalDetailValue(text, { marker: '[data URL omitted]' }),
+  });
+}
+
+// Full search domain: textual scalar fields and readable content, excluding
+// signatures and media payloads. This is independent of previews, Detail
+// budgets, and evidence-validation limits. Iterative traversal avoids a
+// recursion/depth cap on valid nested tool arguments and protocol metadata.
+function fullSearchText(value) {
+  const parts = [];
+  const pending = [value];
+  while (pending.length) {
+    const item = pending.pop();
+    if (item == null) continue;
+    if (typeof item === 'string') {
+      parts.push(sanitizeLogicalDetailValue(item, { marker: '[data URL omitted]' }));
+    } else if (typeof item === 'number' || typeof item === 'boolean') {
+      parts.push(String(item));
+    } else if (Array.isArray(item)) {
+      for (let i = item.length - 1; i >= 0; i -= 1) pending.push(item[i]);
+    } else if (typeof item === 'object' && !OPAQUE_SEARCH_TYPES.has(item.type)) {
+      const keys = Object.keys(item);
+      for (let i = keys.length - 1; i >= 0; i -= 1) {
+        const key = keys[i];
+        if (OPAQUE_SEARCH_KEYS.has(key)) continue;
+        pending.push(key === 'arguments' ? toolArgumentsSearchText(item[key]) : item[key]);
+      }
+    }
   }
+  return parts.filter(Boolean).join('\n');
 }
 
 function isShellTool(name) {
@@ -352,7 +389,7 @@ function toolResultCallId(event) {
 }
 
 function assistantAttemptPreview(stream) {
-  const facts = embeddedStreamFacts(stream, SEARCH_TEXT_LIMIT);
+  const facts = embeddedStreamFacts(stream, DISPLAY_TEXT_LIMIT);
   return facts?.text.trim() || facts?.reasoning || '';
 }
 
@@ -419,7 +456,7 @@ function protocolPreview(type, data) {
         : chunk.type || type);
     }
     default:
-      return truncatePreview(storage.flattenBounded(value, 4000) || type);
+      return truncatePreview(fullSearchText(value) || type);
   }
 }
 
@@ -427,10 +464,10 @@ function protocolSearchText(type, data) {
   const value = data && typeof data === 'object' ? data : {};
   switch (type) {
     case 'assistant/attempt':
-      return `${type}\n${embeddedStreamFacts(value.stream, SEARCH_TEXT_LIMIT)?.searchText || ''}`;
+      return `${type}\n${embeddedStreamFacts(value.stream, DISPLAY_TEXT_LIMIT)?.searchText || ''}`;
     case 'system/message':
     case 'developer/message':
-      return `${type}\n${visibleText(value.message?.content)}\n${storage.flattenBounded(value.message?.source, 1000)}`.slice(0, SEARCH_TEXT_LIMIT);
+      return `${type}\n${visibleText(value.message?.content)}\n${fullSearchText(value.message?.source)}`;
     case 'request/header': {
       const config = value.header?.config || {};
       return [
@@ -442,21 +479,21 @@ function protocolSearchText(type, data) {
         Number.isFinite(config.maxTokens) ? `maxTokens=${config.maxTokens}` : '',
         typeof value.header?.system === 'string' ? `systemPromptBytes=${Buffer.byteLength(value.header.system, 'utf8')}` : '',
         `toolCount=${Array.isArray(value.header?.tools) ? value.header.tools.length : 0}`,
-      ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
+      ].filter(Boolean).join('\n');
     }
     case 'request/context':
       return [
         'request/context', value.provider || '', value.model || '',
         Number.isFinite(value.contextWindow) ? `contextWindow=${value.contextWindow}` : '',
-      ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
+      ].filter(Boolean).join('\n');
     case 'agent-preset/selected':
-      return `agent-preset/selected\nagentPreset=${value.agentPreset || ''}`.slice(0, SEARCH_TEXT_LIMIT);
+      return `agent-preset/selected\nagentPreset=${value.agentPreset || ''}`;
     case 'session/end-seed':
-      return 'session/end-seed\nSession constructor seed lifecycle boundary'.slice(0, SEARCH_TEXT_LIMIT);
+      return 'session/end-seed\nSession constructor seed lifecycle boundary';
     case 'subagent/descriptor':
       return descriptorSearchText(parseSubagentDescriptorData(value));
     case 'compaction/start':
-      return `compaction/start\ncompactionId=${value.compactionId || ''}\nturn=${value.turn ?? ''}`.slice(0, SEARCH_TEXT_LIMIT);
+      return `compaction/start\ncompactionId=${value.compactionId || ''}\nturn=${value.turn ?? ''}`;
     case 'compaction/summary':
       return [
         'compaction/summary',
@@ -467,22 +504,22 @@ function protocolSearchText(type, data) {
         `provider=${value.provider || ''}`,
         `model=${value.model || ''}`,
         visibleText(value.summary),
-      ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
+      ].filter(Boolean).join('\n');
     case 'compaction/end':
       return [
         'compaction/end',
         `compactionId=${value.compactionId || ''}`,
         `error=${value.error || ''}`,
-      ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
+      ].filter(Boolean).join('\n');
     case 'compaction/prune':
       return [
         'compaction/prune',
         `shadowedRange=${value.shadowedRange?.start ?? ''}..${value.shadowedRange?.end ?? ''}`,
         `shadowedSeqs=${Array.isArray(value.shadowedSeqs) ? value.shadowedSeqs.join(',') : ''}`,
         `shadowedTokenCount=${value.shadowedTokenCount ?? ''}`,
-      ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
+      ].filter(Boolean).join('\n');
     default:
-      return storage.flattenBounded(value, SEARCH_TEXT_LIMIT).slice(0, SEARCH_TEXT_LIMIT);
+      return fullSearchText(value);
   }
 }
 
@@ -542,11 +579,14 @@ function makeRawEvent(record, recordOrdinal, sourceFile, sessionId) {
       `format-v${record.version}`,
       `cwd=${record.cwd || ''}`,
       lineage,
-    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
+    ].filter(Boolean).join('\n');
   } else if (packed) {
     preview = `${recordType} seqs ${record.seq0}..${packedSummary.end} (${packedSummary.count} members)`;
     searchText = `${recordType}\nturn=${packedSummary.turn}\nstep=${packedSummary.step}\n`
-      + `seqs=${record.seq0}..${packedSummary.end}\nmemberCount=${packedSummary.count}`;
+      + `seqs=${record.seq0}..${packedSummary.end}\nmemberCount=${packedSummary.count}\n`
+      + (recordType === 'tool-call-chunks'
+        ? toolArgumentsSearchText((record.data.args || []).join(''))
+        : (record.data.texts || []).join(''));
   } else {
     preview = protocolPreview(recordType, data);
     searchText = protocolSearchText(recordType, data);
@@ -585,7 +625,7 @@ function makeRawEvent(record, recordOrdinal, sourceFile, sessionId) {
       : '',
     messageText: '',
     preview,
-    searchText,
+    searchText: sanitizeLogicalDetailValue(searchText, { marker: '[data URL omitted]' }),
     commandText: recordType === 'tool/call' ? commandTextForTool(data.name, data.arguments) : '',
     stdout: '',
     stderr: '',
@@ -698,7 +738,6 @@ function attachCodeModeOperation(event, sessionId, call, resultRaw = null) {
 
 function makeProtocolEvent(sessionId, event, raw, subtype, options = {}) {
   const preview = options.preview || protocolPreview(event.type, event.data);
-  const searchLimit = event.type === 'assistant/attempt' ? ATTEMPT_SEARCH_TEXT_LIMIT : SEARCH_TEXT_LIMIT;
   return makeLogicalEvent({
     id: `${sessionId}:logical:protocol:${event.seq}`,
     timestamp: safeIso(event.time),
@@ -709,7 +748,7 @@ function makeProtocolEvent(sessionId, event, raw, subtype, options = {}) {
     role: options.role || '',
     label: options.label || i18n.humanize(event.type),
     preview: truncatePreview(preview),
-    searchText: (options.searchText || protocolSearchText(event.type, event.data)).slice(0, searchLimit),
+    searchText: (options.searchText || protocolSearchText(event.type, event.data)),
     severity: options.severity || 'normal',
     status: options.status || '',
     rawRefs: [dshRawRef(raw)],
@@ -730,7 +769,7 @@ function makeUserEvent(sessionId, event, raw, kind, subtype, label = '') {
     role: 'user',
     label: label || i18n.eventKindLabel(kind),
     preview,
-    searchText: text.slice(0, SEARCH_TEXT_LIMIT),
+    searchText: text,
     rawRefs: [dshRawRef(raw)],
     channels: ['user/message'],
   });
@@ -755,10 +794,7 @@ function makeAssistantMessageEvent(sessionId, event, raw) {
     role: 'assistant',
     label: 'Assistant message',
     preview,
-    searchText: [visible, reasoning]
-      .filter(Boolean)
-      .join('\n')
-      .slice(0, SEARCH_TEXT_LIMIT),
+    searchText: [visible, reasoning].filter(Boolean).join('\n'),
     hasReadableReasoning: Boolean(reasoning.trim()),
     ...(event.data?.interrupted === true ? { status: 'interrupted', severity: 'warning' } : {}),
     rawRefs: [dshRawRef(raw)],
@@ -767,7 +803,7 @@ function makeAssistantMessageEvent(sessionId, event, raw) {
 }
 
 function makeReasoningEvent(sessionId, event, raw) {
-  const reasoning = reasoningText(event.data?.message?.content || []).slice(0, REASONING_LIMIT);
+  const reasoning = reasoningText(event.data?.message?.content || []);
   return makeLogicalEvent({
     id: `${sessionId}:logical:reasoning:${event.seq}`,
     timestamp: safeIso(event.time),
@@ -802,7 +838,8 @@ function makePartialAssistantEvent(sessionId, stepState, status = 'incomplete') 
     role: 'assistant',
     label: 'Partial assistant output',
     preview: truncatePreview(text || 'Partial assistant stream'),
-    searchText: text.slice(0, SEARCH_TEXT_LIMIT),
+    searchText: ['text-delta', 'reasoning-delta'].map(kind =>
+      (stepState.blockSearchRuns.get(kind) || []).join('')).filter(Boolean).join('\n'),
     severity: status === 'failed' ? 'error' : 'warning',
     status,
     hasReadableReasoning: Boolean(reasoning.trim()),
@@ -818,6 +855,7 @@ function createStepState(turn, step) {
     step,
     chunkRows: [],
     blockText: new Map(),
+    blockSearchRuns: new Map(),
     sawAssistantMessage: false,
     partialEvent: null,
   };
@@ -826,6 +864,8 @@ function createStepState(turn, step) {
 function appendChunkToStep(stepState, chunk) {
   if (!stepState || !chunk || typeof chunk !== 'object') return;
   if (chunk.type !== 'text-delta' && chunk.type !== 'reasoning-delta') return;
+  if (!stepState.blockSearchRuns.has(chunk.type)) stepState.blockSearchRuns.set(chunk.type, []);
+  if (typeof chunk.text === 'string') stepState.blockSearchRuns.get(chunk.type).push(chunk.text);
   const current = stepState.blockText.get(chunk.type) || '';
   stepState.blockText.set(chunk.type, appendBounded(
     current,
@@ -841,6 +881,10 @@ function appendPackedRowToStep(stepState, record) {
     : (record?.type === 'reasoning-chunks' ? 'reasoning-delta' : 'tool-call-delta');
   const members = record?.data?.texts || record?.data?.args;
   if (!Array.isArray(members)) return;
+  if (!stepState.blockSearchRuns.has(kind)) stepState.blockSearchRuns.set(kind, []);
+  for (const member of members) {
+    if (typeof member === 'string') stepState.blockSearchRuns.get(kind).push(member);
+  }
   const current = stepState.blockText.get(kind) || '';
   let text = current;
   for (const member of members) {
@@ -1074,7 +1118,7 @@ function makeApprovalLifecycleEvent(session, asked, decided, askedFacts, decided
       Object.hasOwn(askedFacts, 'callId') ? `callId=${askedFacts.callId}` : '',
       Object.hasOwn(askedFacts, 'reason') ? askedFacts.reason : '',
       outcome ? `outcome=${outcome}` : 'no durable decision recorded',
-    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    ].filter(Boolean).join('\n'),
     severity: unavailable ? 'warning' : 'normal',
     status: complete ? 'recorded' : 'incomplete',
     toolName: askedFacts.toolName,
@@ -1226,7 +1270,7 @@ function makeCommandLifecycleEvent(session, run, done, runFacts, doneFacts) {
       `runSeq=${run.event.seq}`,
       `doneSeq=${done.event.seq}`,
       Object.hasOwn(doneFacts, 'sourceEventSeq') ? `sourceEventSeq=${doneFacts.sourceEventSeq}` : '',
-    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    ].filter(Boolean).join('\n'),
     severity: failed ? 'error' : 'normal',
     status: failed ? 'failed' : 'success',
     rawRefs: [dshRawRef(run.raw), dshRawRef(done.raw)],
@@ -1544,11 +1588,11 @@ function addPendingToolResult(session, call, resultRaw, resultEvent) {
     preview,
     searchText: [
       call.name || '',
-      call.arguments || '',
+      toolArgumentsSearchText(call.arguments),
       command,
       resultText,
       resultEvent.data?.error ? `error=${resultEvent.data.error.name || ''}:${resultEvent.data.error.code || ''}` : '',
-    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    ].filter(Boolean).join('\n'),
     severity: outcomeUnknown ? 'warning' : (failed ? 'error' : 'normal'),
     status,
     toolName: call.name || '',
@@ -1582,8 +1626,8 @@ function makeIncompleteToolEvent(session, call) {
     layer: 'main',
     role: 'assistant',
     label: call.name ? i18n.humanize(call.name) : kind,
-    preview: truncatePreview(command || codeDescription || call.arguments || call.name),
-    searchText: [call.name || '', call.arguments || '', command].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    preview: truncatePreview(command || codeDescription || toolArgumentsSearchText(call.arguments) || call.name),
+    searchText: [call.name || '', toolArgumentsSearchText(call.arguments), command].filter(Boolean).join('\n'),
     severity: 'warning',
     status: 'incomplete',
     toolName: call.name || '',
@@ -1756,7 +1800,7 @@ function dispatchFacts(row) {
     subCallId,
     name,
     arguments: data.arguments,
-    argumentsKey: boundedJsonText(data.arguments, SEARCH_TEXT_LIMIT),
+    argumentsKey: toolArgumentsSearchText(data.arguments).slice(0, DISPLAY_TEXT_LIMIT),
   };
 }
 
@@ -1780,7 +1824,7 @@ function makeDispatchFallback(session, row, reason) {
 function dispatchResultText(data) {
   const text = visibleText(data?.content);
   if (text) return text;
-  return storage.flattenBounded(data?.content || [], SEARCH_TEXT_LIMIT);
+  return fullSearchText(data?.content || []);
 }
 
 function makeCodeDispatchEvent(session, node, outerCall) {
@@ -1806,12 +1850,12 @@ function makeCodeDispatchEvent(session, node, outerCall) {
     preview: truncatePreview(resultText || facts.argumentsKey || facts.name),
     searchText: [
       facts.name,
-      facts.argumentsKey,
+      fullSearchText(facts.arguments),
       resultText,
       `rootCallId=${facts.rootCallId}`,
       `parentCallId=${facts.parentCallId}`,
       `subCallId=${facts.subCallId}`,
-    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    ].filter(Boolean).join('\n'),
     severity: failed ? 'error' : (settled ? 'normal' : 'warning'),
     status,
     toolName: facts.name,
@@ -2045,7 +2089,7 @@ function makeWorkflowRunEvent(session, runId, projection) {
         `childId=${member.childId}`,
         `outcome=${member.outcome}`,
       ]),
-    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    ].filter(Boolean).join('\n'),
     severity: status === 'failed' ? 'error' : (status === 'success' ? 'normal' : 'warning'),
     status,
     rawRefs: ordered.map((row) => dshRawRef(row.raw)),
@@ -2098,7 +2142,7 @@ function retryFailureFacts(value) {
   if (value.requestId !== undefined
       && (typeof value.requestId !== 'string' || !value.requestId)) return null;
   return {
-    message: sanitizeLogicalDetailValue(value.message, { marker: '[data URL omitted]' }).slice(0, SEARCH_TEXT_LIMIT),
+    message: sanitizeLogicalDetailValue(value.message, { marker: '[data URL omitted]' }).slice(0, DISPLAY_TEXT_LIMIT),
     code: sanitizeLogicalDetailValue(value.code, { marker: '[data URL omitted]' }).slice(0, 1000),
     ...(value.status === undefined ? {} : { status: value.status }),
     ...(value.providerRetryAfterMs === undefined ? {} : { providerRetryAfterMs: value.providerRetryAfterMs }),
@@ -2238,10 +2282,10 @@ function makeRetryLifecycleEvent(session, projection) {
         facts.mode === 'normal' ? `maxRetries=${facts.maxRetries}` : 'maxRetries=∞',
         `delayMs=${facts.delayMs}`,
         `failure.code=${facts.failure.code}`,
-        facts.failure.message,
+        fullSearchText(schedule.row.event.data.failure),
         started ? 'llm/retry-started' : 'retry-started=not observed',
       ];
-    }).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    }).join('\n'),
     severity: 'warning',
     status,
     rawRefs: ordered.map((row) => dshRawRef(row.raw)),
@@ -2491,8 +2535,8 @@ function makeGoalStateEvent(session, row, change) {
       clear ? '' : change.goal.objective,
       clear ? '' : change.goal.blockedReason?.code,
       clear ? '' : change.goal.blockedReason?.message,
-      boundedJsonText(change, SEARCH_TEXT_LIMIT),
-    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+      fullSearchText(change),
+    ].filter(Boolean).join('\n'),
     severity: phase === 'blocked' ? 'warning' : 'normal',
     status: phase,
     rawRefs: [dshRawRef(row.raw)],
@@ -2537,7 +2581,7 @@ function goalContinuationFallback(session, row, reason) {
 function makeGoalContinuationEvent(session, row, source) {
   const text = sanitizeLogicalDetailValue(visibleText(row.event.data?.content), {
     marker: '[data URL omitted]',
-  }).slice(0, SEARCH_TEXT_LIMIT);
+  });
   const event = makeProtocolEvent(session.id, row.event, row.raw, 'goal/continuation', {
     label: 'Goal continuation context',
     role: 'system',
@@ -2548,9 +2592,9 @@ function makeGoalContinuationEvent(session, row, source) {
       `revision=${source.revision}`,
       `round=${source.round}`,
       text,
-    ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    ].filter(Boolean).join('\n'),
   });
-  event.goalContinuation = { ...source, text: text.slice(0, SEARCH_TEXT_LIMIT) };
+  event.goalContinuation = { ...source, text: text.slice(0, DISPLAY_TEXT_LIMIT) };
   return event;
 }
 
@@ -2644,7 +2688,7 @@ function makeTodoSnapshotEvent(session, row, todos) {
         `status=${todo.status}`,
         todo.content,
       ]),
-    ].join('\n').slice(0, SEARCH_TEXT_LIMIT),
+    ].join('\n'),
     severity: 'normal',
     status: '',
     rawRefs: [dshRawRef(row.raw)],
@@ -2757,7 +2801,7 @@ function makeCompactionEvent(sessionId, compaction) {
     summary?.data?.provider ? `provider=${summary.data.provider}` : '',
     summary?.data?.model ? `model=${summary.data.model}` : '',
     error ? `error=${error}` : '',
-  ].filter(Boolean).join('\n').slice(0, SEARCH_TEXT_LIMIT);
+  ].filter(Boolean).join('\n');
   return makeLogicalEvent({
     id: `${sessionId}:logical:compaction:${start.seq}`,
     timestamp: safeIso(start.time),
@@ -3165,6 +3209,7 @@ async function reconstructSessionArtifact(
           step.partialEvent = null;
           step.chunkRows = [];
           step.blockText.clear();
+          step.blockSearchRuns.clear();
         }
       }
       if (isAppendSurfaceOp(event.surfaceOp)) {
@@ -3302,7 +3347,7 @@ async function reconstructSessionArtifact(
           role: 'assistant',
           label: 'Tool result',
           preview: truncatePreview(toolResultText(event) || 'Tool result'),
-          searchText: toolResultText(event).slice(0, SEARCH_TEXT_LIMIT),
+          searchText: toolResultText(event),
           severity: failed ? 'error' : 'normal',
           status: failed ? 'failed' : 'success',
           toolName: callId || '',
@@ -3550,6 +3595,7 @@ function reportArtifactFailure(error, filePath, onDiagnostic, signal) {
   throwIfAborted(signal);
   if (error?.name === 'AbortError') throw error;
   const expected = new Set(['DEEPSEEK_STORAGE_INVALID', 'DEEPSEEK_FORMAT_VERSION_UNSUPPORTED',
+    'DEEPSEEK_STORAGE_EMPTY', 'DEEPSEEK_HEADER_UNCOMMITTED', 'DEEPSEEK_HEADER_RESOURCE_EXHAUSTED',
     'DEEPSEEK_ZSTD_UNAVAILABLE', 'DEEPSEEK_SOURCE_BUSY', 'ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EIO']);
   if (!expected.has(error?.code)) throw error;
   onDiagnostic?.({ code: error.code.startsWith('DEEPSEEK_') ? error.code : 'SOURCE_ARTIFACT_UNREADABLE',
@@ -3822,6 +3868,7 @@ async function buildDeepSeekIndex({ sourceHome, repoRoot, signal, onProgress }) 
   }
 
   const queryStoreBuilder = createProjectQueryStoreBuilder({
+    signal,
     presentationForEvent: deepSeekProjectQueryPresentation,
   });
   const catalog = createCatalogAccumulator();
@@ -3853,7 +3900,7 @@ async function buildDeepSeekIndex({ sourceHome, repoRoot, signal, onProgress }) 
       patchedFiles: session.analysis.patchedFiles.slice(0, 5).map((item) => ({ ...item })),
       protocolCount: session.analysis.protocolStats.reduce((sum, item) => sum + item.count, 0),
     };
-    const queryProjectionDigest = queryStoreBuilder.addSession(session);
+    const queryProjectionDigest = await queryStoreBuilder.addSessionAsync(session);
     catalog.addSession(session);
     const sourceFile = candidate.relFile;
     const compression = session._compression || storage.compressionForArtifact(candidate.filePath);

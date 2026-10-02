@@ -19,6 +19,10 @@ const { deriveCodeModeFacts } = require('../src/codex-code-mode-facts');
 const {
   CANONICAL_SCHEMA_VERSION,
   CODEX_SOURCE_KIND,
+  codexFullSearchText,
+  codexSearchValue,
+  codexAsyncMessageText,
+  codexAsyncSearchText,
   rawRef,
   subAgentActivityEventId,
 } = require('../src/codex-source');
@@ -114,6 +118,10 @@ function makeLogicalBuilder(overrides = {}) {
     },
     text: {
       displayValue,
+      codexFullSearchText,
+      codexSearchValue,
+      codexAsyncMessageText,
+      codexAsyncSearchText,
       firstNonEmpty,
       planUpdateText: (raw) => raw.searchText,
       relatedReasoning: (left, right) => Boolean(left && right && (left.includes(right) || right.includes(left))),

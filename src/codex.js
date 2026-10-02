@@ -1,5 +1,7 @@
 'use strict';
 
+const { hashPlainValue } = require('./plain-value-stream');
+
 const {
   backgroundTerminalRequest,
   backgroundTerminalRequestValue,
@@ -108,6 +110,10 @@ const {
   CANONICAL_SCHEMA_VERSION,
   CODEX_SOURCE_KIND,
   codexSourceLocator,
+  codexFullSearchText,
+  codexSearchValue,
+  codexAsyncMessageText,
+  codexAsyncSearchText,
   codexSourceEnvelope,
   createCodexRawParser,
   rawEventsForLogicalEvent,
@@ -4204,6 +4210,10 @@ const codexLogicalBuilder = createCodexLogicalBuilder({
     touchFilesFromOutputText,
   },
   text: {
+    codexFullSearchText,
+    codexSearchValue,
+    codexAsyncMessageText,
+    codexAsyncSearchText,
     displayValue,
     firstNonEmpty,
     planUpdateText,
@@ -5593,7 +5603,7 @@ function codexForkSegmentRanges(session) {
 }
 
 function hashCodexMaterializationValue(value) {
-  return crypto.createHash('sha256').update(JSON.stringify(value), 'utf8').digest('base64url');
+  return hashPlainValue(value);
 }
 
 function buildCodexMaterializationState(session, relationshipEvidence, sessionIndexEntry) {
@@ -6439,6 +6449,7 @@ async function buildSourceBackedIndex({
     && previousIndex.materializationDependencies instanceof Map;
 
   let queryStoreBuilder = createProjectQueryStoreBuilder({
+    signal,
     presentationForEvent: codexSearch.projectQueryPresentation,
   });
   const legacyRawOwnerBuilder = codexLegacyRawOwners.createCodexLegacyRawOwnerBuilder({
@@ -6536,7 +6547,7 @@ async function buildSourceBackedIndex({
         logicalEventCount: session.logicalEvents.length,
       });
     }
-    const queryProjectionDigest = queryStoreBuilder.addSession(session);
+    const queryProjectionDigest = await queryStoreBuilder.addSessionAsync(session);
     await legacyRawOwnerBuilder.observeSession(session, { signal });
     catalogAccumulator.addSession(session);
     const summary = codexSearch.projectSessionMetadata(session).summary;

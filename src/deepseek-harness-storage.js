@@ -1,11 +1,16 @@
 'use strict';
 
+const { hashPlainValue } = require('./plain-value-stream');
+
 const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
-const { zstdDecompressSync } = require('node:zlib');
+const { zstdDecompressSync, createZstdDecompress } = require('node:zlib');
+const { Readable } = require('node:stream');
+const { StringDecoder } = require('node:string_decoder');
+const { constants: bufferConstants } = require('node:buffer');
 const { isPathInsideOrSame } = require('./shared/fs-path');
 
 const DEEPSEEK_SOURCE_KIND = 'deepseek-harness';
@@ -15,7 +20,6 @@ const DEEPSEEK_STORAGE_LOCATOR_TYPE = 'dsh-storage-record';
 const ZSTD_MAGIC = 0xFD2FB528;
 const FIRST_FRAME_READ_CHUNK = 64 * 1024;
 const FIRST_LINE_READ_CHUNK = 64 * 1024;
-const MAX_FIRST_RECORD_BYTES = 4 * 1024 * 1024;
 const STABLE_READ_MAX_ATTEMPTS = 4;
 const STABLE_READ_BUDGET_MS = 2000;
 
@@ -128,10 +132,6 @@ function compressionForArtifact(filePath) {
 
 function hashBuffer(buffer) {
   return createHash('sha256').update(buffer).digest('base64url');
-}
-
-function hashPlainValue(value) {
-  return createHash('sha256').update(JSON.stringify(value)).digest('base64url');
 }
 
 function dependencySetId(entries) {
@@ -407,80 +407,157 @@ function committedArtifactPrefix(buffer, compression) {
   throw storageError(`unsupported DeepSeek compression: ${compression}`);
 }
 
-async function readFirstLineBytes(filePath, signal) {
-  const handle = await fsp.open(filePath, 'r');
-  try {
-    let offset = 0;
-    const chunks = [];
-    for (;;) {
-      throwIfAborted(signal);
-      const length = Math.min(FIRST_LINE_READ_CHUNK, MAX_FIRST_RECORD_BYTES - offset);
-      if (length <= 0) break;
-      const buffer = Buffer.alloc(length);
-      const { bytesRead } = await handle.read(buffer, 0, length, offset);
-      throwIfAborted(signal);
-      if (bytesRead === 0) break;
-      const newline = buffer.indexOf(0x0A, 0, bytesRead);
-      if (newline >= 0) {
-        chunks.push(buffer.subarray(0, newline + 1));
-        return Buffer.concat(chunks, offset + newline + 1);
-      }
-      chunks.push(buffer.subarray(0, bytesRead));
-      offset += bytesRead;
-    }
-    return Buffer.alloc(0);
-  } finally {
-    await handle.close();
+function incompleteHeaderError(bytes, compression) {
+  return storageError(bytes === 0
+    ? `empty ${compression} session log`
+    : `session header has not been committed: incomplete first ${compression === 'zstd' ? 'Zstandard frame' : 'JSONL line'}`,
+  bytes === 0 ? 'DEEPSEEK_STORAGE_EMPTY' : 'DEEPSEEK_HEADER_UNCOMMITTED');
+}
+
+function headerResourceError(cause) {
+  return storageError(
+    'DeepSeek header exceeds available JSON string memory; this artifact was not read. Retry with sufficient resources or a smaller header.',
+    'DEEPSEEK_HEADER_RESOURCE_EXHAUSTED', cause,
+  );
+}
+
+// JSON.parse requires one complete string. Bound that representation by the
+// runtime string capacity, not an arbitrary encoded/compressed byte budget.
+// Compressed input is never accumulated and decoding honors backpressure.
+async function collectHeaderText(chunks, signal, maxChars) {
+  const decoder = new StringDecoder('utf8');
+  const parts = [];
+  let chars = 0;
+  const append = (text) => {
+    chars += text.length;
+    if (chars > maxChars) throw headerResourceError();
+    if (text) parts.push(text);
+  };
+  for await (const chunk of chunks) {
+    throwIfAborted(signal);
+    append(decoder.write(chunk));
+  }
+  throwIfAborted(signal);
+  append(decoder.end());
+  return parts.join('');
+}
+
+async function* firstLineChunks(handle, signal) {
+  let offset = 0;
+  for (;;) {
+    throwIfAborted(signal);
+    const buffer = Buffer.alloc(FIRST_LINE_READ_CHUNK);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+    throwIfAborted(signal);
+    if (bytesRead === 0) throw incompleteHeaderError(offset, 'plain');
+    const chunk = buffer.subarray(0, bytesRead);
+    const newline = chunk.indexOf(0x0A);
+    yield newline < 0 ? chunk : chunk.subarray(0, newline + 1);
+    if (newline >= 0) return;
+    offset += bytesRead;
   }
 }
 
-// Header-only discovery: for Zstd this reads only enough bytes to complete the
-// first independently-decodable frame and decompresses exactly that frame.
-async function readSessionHeader(filePath, compression = compressionForArtifact(filePath), signal) {
+// Scan exactly the first frame progressively. Fixed-size headers and at most
+// 64 KiB payload pieces replace repeated concatenation/rescanning of the prefix.
+async function* firstFrameChunks(handle, signal) {
+  let offset = 0;
+  const read = async (length) => {
+    const buffer = Buffer.alloc(length);
+    let filled = 0;
+    while (filled < length) {
+      throwIfAborted(signal);
+      const { bytesRead } = await handle.read(buffer, filled, length - filled, offset);
+      throwIfAborted(signal);
+      if (!bytesRead) throw incompleteHeaderError(offset, 'zstd');
+      offset += bytesRead;
+      filled += bytesRead;
+    }
+    return buffer;
+  };
+  const magic = await read(4);
+  if (magic.readUInt32LE() !== ZSTD_MAGIC) {
+    throw storageError('corrupt Zstandard session log: invalid frame magic at byte 0');
+  }
+  yield magic;
+  const descriptorBytes = await read(1);
+  const descriptor = descriptorBytes[0];
+  if ((descriptor & 0x18) !== 0) throw storageError('corrupt Zstandard session log: reserved frame-header bit');
+  yield descriptorBytes;
+  const sizeFlag = descriptor >>> 6;
+  const singleSegment = (descriptor & 0x20) !== 0;
+  const dictionaryFlag = descriptor & 0x03;
+  const headerBytes = (singleSegment ? 0 : 1) + (dictionaryFlag === 3 ? 4 : dictionaryFlag)
+    + (sizeFlag === 0 ? (singleSegment ? 1 : 0) : 1 << sizeFlag);
+  if (headerBytes) yield await read(headerBytes);
+  for (;;) {
+    const block = await read(3);
+    const blockHeader = block.readUIntLE(0, 3);
+    const type = (blockHeader >>> 1) & 3;
+    if (type === 3) throw storageError('corrupt Zstandard session log: reserved block type');
+    yield block;
+    let remaining = type === 1 ? 1 : blockHeader >>> 3;
+    while (remaining) {
+      const length = Math.min(remaining, FIRST_FRAME_READ_CHUNK);
+      yield await read(length);
+      remaining -= length;
+    }
+    if (blockHeader & 1) break;
+  }
+  if (descriptor & 4) yield await read(4);
+}
+
+// Header-only discovery reads through the committed newline/first frame, with
+// separate plain/compressed/decoded processing and cancellable I/O. maxChars is
+// a test seam for the runtime JSON-string capacity, never a byte budget.
+async function readSessionHeader(filePath, compression = compressionForArtifact(filePath), signal,
+  { maxChars = bufferConstants.MAX_STRING_LENGTH } = {}) {
   throwIfAborted(signal);
   const expectedVersion = parseSessionArtifactName(filePath)?.version;
-  if (compression === 'zstd') {
-    requireBuiltInZstd(filePath);
-    const handle = await fsp.open(filePath, 'r');
-    try {
-      let chunks = [];
-      let totalBytes = 0;
-      let frameBytes = null;
-      while (totalBytes < MAX_FIRST_RECORD_BYTES) {
-        throwIfAborted(signal);
-        const buffer = Buffer.alloc(FIRST_FRAME_READ_CHUNK);
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, totalBytes);
-        throwIfAborted(signal);
-        if (bytesRead === 0) break;
-        const chunk = bytesRead === buffer.length ? buffer : buffer.subarray(0, bytesRead);
-        chunks.push(chunk);
-        totalBytes += bytesRead;
-        const current = Buffer.concat(chunks, totalBytes);
-        const scanned = scanZstdFrames(current, 1);
-        if (scanned.frames.length === 1) {
-          frameBytes = current.subarray(0, scanned.frames[0].end);
-          break;
-        }
-      }
-      if (!frameBytes) {
-        throw storageError('empty or header-less Zstandard session log');
-      }
-      const plaintext = decompressFrame(frameBytes, 0, frameBytes.length);
-      const text = plaintext.toString('utf8');
+  if (!['none', 'zstd'].includes(compression)) {
+    throw storageError(`unsupported DeepSeek compression: ${compression}`);
+  }
+  if (compression === 'zstd') requireBuiltInZstd(filePath);
+  const handle = await fsp.open(filePath, 'r');
+  let input;
+  let decoded;
+  let decoding;
+  try {
+    let text;
+    if (compression === 'zstd') {
+      input = Readable.from(firstFrameChunks(handle, signal));
+      decoded = createZstdDecompress();
+      // Forward source errors without relabeling an uncommitted frame as
+      // decoder corruption; close both ends on cancellation or failure.
+      const { pipeline } = require('node:stream/promises');
+      decoding = pipeline(input, decoded, { signal });
+      decoding.catch(() => {});
+      text = await collectHeaderText(decoded, signal, maxChars);
+      await decoding;
       if (!text.endsWith('\n') || text.indexOf('\n') !== text.length - 1) {
         throw storageError('corrupt Zstandard session log: first frame is not exactly one header line');
       }
-      return parseHeaderText(text, expectedVersion);
-    } finally {
-      await handle.close();
+    } else {
+      text = await collectHeaderText(firstLineChunks(handle, signal), signal, maxChars);
     }
+    throwIfAborted(signal);
+    return parseHeaderText(text, expectedVersion);
+  } catch (error) {
+    throwIfAborted(signal);
+    if (['ERR_STRING_TOO_LONG', 'ERR_BUFFER_TOO_LARGE', 'ENOMEM', 'ZSTD_error_memory_allocation'].includes(error?.code)
+        || (error instanceof RangeError && error.message === 'Invalid string length')) {
+      throw headerResourceError(error);
+    }
+    if (error?.code?.startsWith('ZSTD_') || error?.code?.startsWith('Z_')) {
+      throw storageError('corrupt Zstandard session log: first frame failed validation', 'DEEPSEEK_STORAGE_INVALID', error);
+    }
+    throw error;
+  } finally {
+    input?.destroy();
+    decoded?.destroy();
+    if (decoding) await decoding.catch(() => {});
+    await handle.close();
   }
-  if (compression === 'none') {
-    const firstLine = await readFirstLineBytes(filePath, signal);
-    if (firstLine.length === 0) throw storageError('empty or header-less session log');
-    return parseHeaderText(firstLine.toString('utf8'), expectedVersion);
-  }
-  throw storageError(`unsupported DeepSeek compression: ${compression}`);
 }
 
 // DeepSeek-owned accepted-snapshot read boundary. Indexing reads the current
@@ -905,7 +982,6 @@ module.exports = {
   DEEPSEEK_SUPPORTED_FORMAT_VERSIONS,
   DEEPSEEK_SOURCE_KIND,
   DEEPSEEK_STORAGE_LOCATOR_TYPE,
-  MAX_FIRST_RECORD_BYTES,
   committedArtifactPrefix,
   compressionForArtifact,
   decodePackedStorageRecordFacts,

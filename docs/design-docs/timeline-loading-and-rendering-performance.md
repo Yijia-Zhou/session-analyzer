@@ -149,7 +149,7 @@ On 2026-07-25, a read-only paired measurement selected cold indexing for the bou
 
 1. Apply Layer and structured filters to the full selected event sequence. / 对完整的所选事件序列应用事件层与结构化筛选。
 2. Calculate full-corpus phrase occurrence and matching-event counts when `q` is active. / 当 `q` 生效时，计算完整语料范围的短语 occurrence 与命中事件数。
-3. Slice the filtered sequence by `offset` and `limit`. / 按 `offset` 与 `limit` 切分筛选后的序列。
+3. Slice the filtered sequence by `offset` and `limit`. Offsets are exact non-negative safe integers, including values above 1,000,000; a position beyond the sequence returns an empty page with the requested offset. Missing offsets default to zero; malformed, fractional, negative, or unsafe values return HTTP 400 `INVALID_PAGINATION`. Timeline limits default to 150 and cap at 500; file activity defaults to 50 and caps at 100; explicit limits must be positive safe integers. Both routes accept an optional `indexRevision`, reject a different revision with HTTP 409 `INDEX_REVISION_RETIRED`, and echo the captured revision. The browser sends its revision and checks returned revision, offset, and limit before publishing any page. / 按 `offset` 与 `limit` 切分筛选后的序列。Offset 精确保留非负安全整数，包括超过 1,000,000 的值；超出序列的位置返回空页并保留请求 offset。省略时默认为零；畸形、小数、负数或非安全整数返回 HTTP 400 `INVALID_PAGINATION`。时间线 limit 默认 150、上限 500；文件活动默认 50、上限 100；显式 limit 必须为正安全整数。两个端点均接受可选 `indexRevision`，修订不同时返回 HTTP 409 `INDEX_REVISION_RETIRED`，响应携带捕获的修订。浏览器发送自身修订，并在发布页面前检查响应的修订、offset 和 limit。
 4. Map the page to timeline DTOs. / 把该页映射为时间线 DTO。
 5. Recalculate the selected Session's complete event-kind catalog and, on Main, the operation-count Code Mode request catalog for the response. / 为响应重新计算所选会话的完整事件类型 catalog，以及在 Main 上按 operation 计的 Code Mode request 目录。
 

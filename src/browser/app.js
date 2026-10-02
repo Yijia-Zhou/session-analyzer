@@ -36,6 +36,7 @@ const {
   timelineSearchBatchSnapshot,
 } = timelineSearchBatchApi;
 const { sameProjectRoot } = require('../shared/project-root');
+const { queryPagination } = require('../shared/query-pagination');
 
 const requestOwners = {
   timeline: transitionSafety.createRequestOwner(),
@@ -690,10 +691,20 @@ function abortableDelay(ms, signal) {
 function api(path, options = {}) {
   const init = { ...options };
   let requestPath = path;
+  let paginationRequest = null;
   const method = String(init.method || 'GET').toUpperCase();
   if (method === 'GET') {
     const url = new URL(path, window.location.origin);
     url.searchParams.set('locale', state.locale);
+    if (/^\/api\/sessions\/[^/]+\/(timeline|file-activity)$/.test(url.pathname)) {
+      paginationRequest = {
+        ...queryPagination({ offset: url.searchParams.get('offset'), limit: url.searchParams.get('limit') },
+          url.pathname.endsWith('/file-activity') ? 50 : 150,
+          url.pathname.endsWith('/file-activity') ? 100 : 500),
+        indexRevision: state.indexRevision,
+      };
+      url.searchParams.set('indexRevision', paginationRequest.indexRevision);
+    }
     requestPath = `${url.pathname}${url.search}${url.hash}`;
   }
   if (options.body && typeof options.body !== 'string') {
@@ -727,6 +738,14 @@ function api(path, options = {}) {
       error.status = res.status;
       error.code = body?.code;
       error.details = body?.details;
+      throw error;
+    }
+    if (paginationRequest && (body.indexRevision !== paginationRequest.indexRevision
+        || body.offset !== paginationRequest.offset || body.limit !== paginationRequest.limit)) {
+      const error = new Error('Timeline or file activity page changed; reload and retry');
+      error.status = 409;
+      error.code = body.indexRevision !== paginationRequest.indexRevision
+        ? 'INDEX_REVISION_RETIRED' : 'INVALID_PAGINATION_RESPONSE';
       throw error;
     }
     return body;

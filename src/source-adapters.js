@@ -1169,23 +1169,17 @@ function validateIndexOwnershipCore(index, {
       error.code = 'CANONICAL_CONTRACT_VIOLATION';
       throw error;
     }
-    let dependencyBytes = 0;
     for (const [dependencyId, dependencySet] of index.materializationDependencies) {
       if (typeof dependencyId !== 'string' || dependencyId.trim() === '') {
         const error = new Error('Canonical materialization dependency Map keys must be non-empty strings');
         error.code = 'CANONICAL_CONTRACT_VIOLATION';
         throw error;
       }
-      dependencyBytes += validateCanonicalDependencySet(
+      validateCanonicalDependencySet(
         dependencySet,
         indexKind,
         dependencyId,
       );
-    }
-    if (dependencyBytes > 128 * 1024 * 1024) {
-      const error = new Error('Canonical Index materialization dependency store exceeds 128 MiB');
-      error.code = 'CANONICAL_CONTRACT_VIOLATION';
-      throw error;
     }
     const materializationContext = createStrictMaterializationContext(index, adapter);
     for (const session of validatedSessions) {
