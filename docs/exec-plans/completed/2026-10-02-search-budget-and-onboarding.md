@@ -12,4 +12,4 @@ Integration / 集成: parent-run full Node 1,443/1,443 passed; the final added d
 
 Local service / 本地服务: restarted original DeepSeek lab project/root; 23 sessions, 0 diagnostics, actual Timeline → Detail → Raw and current-session search passed. / 保留原项目与来源根重启，23 会话、0 诊断，实际阅读链与会话搜索通过。
 
-Remaining work / 剩余工作: push and exact-commit CI, then archive the record. / 推送与当前提交 CI，随后归档记录。
+Completed / 已完成: implementation commit `f9e8c71bfece85814128603e07dbf1c2f6444da0` passed full local browser **303/303** and [CI run 216](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/37023731613) in full. CI includes **1,444/1,444** Node tests (including the last disk regression), Linux/Windows package smoke, full browser and serial profile (Ubuntu minimum residual 0.73 ms / 5 ms). Local full Node before that last test was 1,443/1,443; its completed file was then rerun 7/7. Final archival commits change only documentation; no merge, release or tag. / 实现提交完整本地浏览器 303/303 与 CI 216 全绿；CI 包含最终 1,444 项 Node、Linux／Windows 安装包、完整浏览器与串行 profile。明确区分此前本地全量 Node 和新增用例后的文件复跑，不将两者混为同一轮。最终归档提交仅改文档，不合并／发布／打标签。
