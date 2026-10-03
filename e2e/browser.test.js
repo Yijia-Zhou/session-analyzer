@@ -8415,6 +8415,7 @@ test('Wave 1A M2 browser keeps the newer same-context suggestion pending without
   const oldStarted = deferred();
   const newerStarted = deferred();
   const failed = [];
+  let oldRequest;
   let requestCount = 0;
   page.on('requestfailed', (request) => {
     if (new URL(request.url()).pathname === '/api/file-suggestions') failed.push(request.url());
@@ -8423,6 +8424,7 @@ test('Wave 1A M2 browser keeps the newer same-context suggestion pending without
     requestCount += 1;
     const ordinal = requestCount;
     if (ordinal === 1) {
+      oldRequest = route.request();
       oldStarted.resolve();
       await oldRelease.promise;
     } else if (ordinal === 2) {
@@ -8452,6 +8454,10 @@ test('Wave 1A M2 browser keeps the newer same-context suggestion pending without
   await page.evaluate(() => window.__wave1aM2.armHandoffPause());
   await page.locator('#sortSelect').selectOption(nextSort);
   await oldStarted.promise;
+  const oldAborted = page.waitForEvent('requestfailed', {
+    predicate: (request) => request === oldRequest,
+    timeout: 10000,
+  });
   const selectedSessionId = await page.locator('.sessionItem.active').getAttribute('data-session-id');
   await page.locator(`[data-session-id="${selectedSessionId}"]`).click();
   await newerStarted.promise;
@@ -8459,6 +8465,8 @@ test('Wave 1A M2 browser keeps the newer same-context suggestion pending without
 
   await page.evaluate(() => window.__wave1aM2.releaseHandoff());
   await page.waitForFunction(() => window.__wave1aM2.evidence.handoffs.length >= 2);
+  // The app handoff and Playwright's network failure notification settle separately.
+  await oldAborted;
   assert.equal(requestCount, 2, 'the superseded outer load must not start a third fallback');
   assert.deepEqual((await page.evaluate(() => window.__wave1aM2.evidence.handoffs.at(-1))), {
     sessionsRequest: true,
@@ -8510,6 +8518,7 @@ test('Wave 1A M2 browser keeps a newer committed same-context suggestion authori
   const oldStarted = deferred();
   let requestCount = 0;
   const failed = [];
+  let oldRequest;
   page.on('requestfailed', (request) => {
     if (new URL(request.url()).pathname === '/api/file-suggestions') failed.push(request.url());
   });
@@ -8517,6 +8526,7 @@ test('Wave 1A M2 browser keeps a newer committed same-context suggestion authori
     requestCount += 1;
     const ordinal = requestCount;
     if (ordinal === 1) {
+      oldRequest = route.request();
       oldStarted.resolve();
       await oldRelease.promise;
     }
@@ -8540,6 +8550,10 @@ test('Wave 1A M2 browser keeps a newer committed same-context suggestion authori
   await page.evaluate(() => window.__wave1aM2.armHandoffPause());
   await page.locator('#sortSelect').selectOption(nextSort);
   await oldStarted.promise;
+  const oldAborted = page.waitForEvent('requestfailed', {
+    predicate: (request) => request === oldRequest,
+    timeout: 10000,
+  });
   const selectedSessionId = await page.locator('.sessionItem.active').getAttribute('data-session-id');
   await page.locator(`[data-session-id="${selectedSessionId}"]`).click();
   await page.locator('#searchFileInput').focus();
@@ -8551,6 +8565,7 @@ test('Wave 1A M2 browser keeps a newer committed same-context suggestion authori
   await page.evaluate(() => window.__wave1aM2.releaseHandoff());
   await page.waitForFunction(() => window.__wave1aM2.evidence.handoffs.length >= 2);
   oldRelease.resolve();
+  await oldAborted;
   assert.equal(requestCount, 2, 'the superseded outer load must not start a third fallback');
   assert.equal(failed.length, 1, 'the committed newer request must not be aborted');
   assert.equal(await page.locator('[data-search-file-suggestion]').first().getAttribute('data-search-file-suggestion'), 'wave-1a-committed-2');
