@@ -100,7 +100,7 @@ test('default Codex index retains only the explicit compact Raw projection', asy
   const index = await buildIndex({ repoRoot, codexHome: fixtureCodexHome });
   assertNoReachableParsedGraph(index);
   for (const session of index.sessions) {
-    assert.equal(session.residentRepresentation, 'codex-compact-v1');
+    assert.equal(session.residentRepresentation, 'codex-compact-v3');
     for (const raw of session.rawEvents) {
       assert.equal(Object.hasOwn(raw, 'parsed'), false, raw.rawId);
       assert.equal(Object.hasOwn(raw, 'payload'), false, raw.rawId);
@@ -313,5 +313,5 @@ test('default reindex refuses to reuse a previous parse-resident Session graph',
   const compact = await buildIndex({ ...options, previousIndex: resident });
   assert.equal(compact.totals.reusedFileCount, 0);
   assertNoReachableParsedGraph(compact);
-  assert.ok(compact.sessions.every((session) => session.residentRepresentation === 'codex-compact-v1'));
+  assert.ok(compact.sessions.every((session) => session.residentRepresentation === 'codex-compact-v3'));
 });

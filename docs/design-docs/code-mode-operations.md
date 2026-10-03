@@ -196,6 +196,8 @@ For `web__run`, the detail projector groups literal top-level arrays such as `se
 4. An outer exec call without a matching output at the current transcript tail is `incomplete_tail`; it is not failed. / 当前转录尾部缺少匹配输出的外层 exec 调用属于 `incomplete_tail`，而不是失败。
 5. Never merge Direct Tool Calls into a Code Mode Operation. / 绝不把直接工具调用合并进 Code Mode 操作。
 
+A persisted turn start, completion, or `turn_aborted`, or a change between explicit nonempty `turnId` values, closes the pending wait-association scope for that session. Same-turn user steering alone does not close it. A late pending exec output retains its exact call/output evidence but cannot reopen a scope already closed by a boundary; subsequent waits remain unassociated. These observation boundaries do not infer command failure. / 持久化的回合开始、完成或 `turn_aborted`，以及明确非空 `turnId` 值之间的变化，会关闭该会话中 pending wait 的关联范围。同一回合内的用户 steering 本身不会关闭范围。迟到的 pending exec 输出保留精确调用／输出证据，但不能重新打开已被边界关闭的范围；后续 wait 保持未关联。这些观测边界不推断命令失败。
+
 ## Unique physical-interval association / 唯一物理区间关联
 
 An Observed Nested Activity event may be associated with an operation only when all of its owning lifecycle Raw Records fall inside one uniquely determined, closed physical interval from an exec or wait call row through that call's matching output row. The interval must already belong to exactly one grouped operation. Association uses physical JSONL line containment only after exact call/output pairing; timestamps, tool names, nested `call_id` resemblance, JavaScript text, and adjacency outside a closed interval are not parent evidence.
@@ -205,6 +207,12 @@ An Observed Nested Activity event may be associated with an operation only when 
 If an event crosses interval boundaries, lies between polls, falls in an interval without a matching output, or could belong to more than one operation, it remains unassociated. Each nested Logical Event can appear in at most one operation's `eventRefs`. This intentionally favors no link over a false link.
 
 如果事件跨越区间边界、位于两次 poll 之间、落在没有匹配输出的区间内，或可能属于多个操作，它就保持未关联。每个嵌套逻辑事件最多只能出现在一个操作的 `eventRefs` 中。本设计有意宁可不建立关联，也不建立错误关联。
+
+An exec or wait call/output pair cannot establish a physical interval across one of the session's turn boundaries described above. A uniquely paired late output still retains its Raw reference and searchable content; removing the interval only prevents it from assigning later independent lifecycle events to the earlier operation. Boundary tracking is session-scoped. / exec 或 wait 调用／输出配对不能跨越上述会话回合边界建立物理区间。唯一配对的迟到输出仍保留 Raw 引用和可搜索内容；移除区间只是防止把后续独立生命周期事件归给更早的操作。边界跟踪以会话为范围。
+
+Accepted typed tool items use their source adapter's lifecycle semantic view for this admission check. Their Raw refs retain the actual `item_completed` carrier; the view does not change identity, physical lines, the unique-interval requirement or tool counts. / 对已接纳的 typed tool item，此准入检查使用来源 adapter 的生命周期语义视图。它们的 Raw 引用保留真实的 `item_completed` 载体；视图不改变身份、物理行、唯一区间要求或工具计数。
+
+The 0.155–0.160 compatibility regression uses explicitly synthetic sequences for early yield, same-turn steering, queued termination output and late output across boundaries. It covers cold parsing, compact/source-backed representations, append/reuse, hydration, search and counts; it does not certify real TUI/daemon sequencing or either setting of `instant_interrupt`. / 0.155–0.160 兼容性回归使用明确标注的合成序列，覆盖提前 yield、同回合 steering、终止时排队输出和跨边界迟到输出。验证包含冷解析、compact／source-backed 表示、追加／复用、水合、搜索及计数；不构成真实 TUI／daemon 时序或 `instant_interrupt` 两种设置的兼容认证。
 
 ## Two status axes / 状态双轴
 

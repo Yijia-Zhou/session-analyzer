@@ -79,6 +79,40 @@ function parsedForkSourceId(session) {
   return typeof previous === 'string' ? previous.trim() : '';
 }
 
+// rust-v0.160.0 SessionMeta defines this ordinal as the first child-owned
+// projected record. Unlike an exact copied prefix, it also covers filtered and
+// rewritten model context; its physical length is not a parent fork point.
+function codexSubagentHistoryBoundary(rawEvents) {
+  if (!Array.isArray(rawEvents) || rawEvents.length < 3) return null;
+  const first = rawEvents[0];
+  const meta = first?.parsed?.payload;
+  if (first?.recordType !== 'session_meta' || !meta || meta.history_mode !== 'paginated'
+      || typeof meta.id !== 'string' || !meta.id || first.sessionId !== meta.id
+      || typeof meta.parent_thread_id !== 'string' || !meta.parent_thread_id
+      || meta.parent_thread_id === meta.id || meta.forked_from_id !== meta.parent_thread_id
+      || !isSessionMeta(rawEvents[1], meta.parent_thread_id)) return null;
+  const startOrdinal = meta.subagent_history_start_ordinal;
+  if (!Number.isSafeInteger(startOrdinal) || startOrdinal < 2 || first.parsed.ordinal !== 0) return null;
+  let previous = -1;
+  let firstOwnedIndex = -1;
+  for (let index = 0; index < rawEvents.length; index += 1) {
+    const ordinal = rawEvents[index]?.parsed?.ordinal;
+    if (!Number.isSafeInteger(ordinal) || ordinal !== previous + 1) return null;
+    if (ordinal === startOrdinal) firstOwnedIndex = index;
+    previous = ordinal;
+  }
+  if (firstOwnedIndex < 2) return null;
+  return { sourceSessionId: meta.parent_thread_id, startOrdinal, inheritedRawCount: firstOwnedIndex - 1 };
+}
+
+function restoreCodexSubagentRawSegments(session) {
+  const raws = session?.rawEvents || [];
+  if (!raws.some((raw) => raw.subagentInherited === true)) return false;
+  session._forkSegmentsByRawId = new Map(raws.map((raw, index) => [raw.rawId,
+    index === 0 ? 'fork_metadata' : raw.subagentInherited === true ? 'inherited_context' : 'continuation']));
+  return true;
+}
+
 function resetForkInference(session) {
   session._logicalEvents ||= session.logicalEvents || [];
   session.logicalEvents = session._logicalEvents;
@@ -91,6 +125,7 @@ function resetForkInference(session) {
   session.forkEvidence = null;
   session.inheritedContext = null;
   session._forkSegmentsByRawId = new Map();
+  restoreCodexSubagentRawSegments(session);
   session.supersededBySessionId = '';
   session.supersededAt = '';
   session.supersededReason = '';
@@ -129,6 +164,7 @@ function prefixCanEndAt(parent, child, matchedParentRawCount, forkedAt) {
 }
 
 function materializedForkCandidate(child, sessionsById) {
+  if ((child.rawEvents || []).some((raw) => raw.subagentInherited === true)) return null;
   const sourceId = declaredForkSourceId(child);
   if (!sourceId) return null;
   const matches = sessionsById.get(sourceId) || [];
@@ -349,10 +385,12 @@ module.exports = {
   SUPERSEDED_REASON_INACTIVE_AFTER_FORK,
   canonicalRawRecord,
   canonicalRawRecordDigest,
+  codexSubagentHistoryBoundary,
   ensureCanonicalRawDigests,
   hasCanonicalRawDigests,
   inferCodexMaterializedForks,
   inferEarlierBranches,
   materializedForkInheritedContext,
   rawForkSegment,
+  restoreCodexSubagentRawSegments,
 };

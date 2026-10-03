@@ -1,6 +1,7 @@
 'use strict';
 
 function createCodexDetailBuilder(deps) {
+  const { semanticRaw = (raw) => raw } = deps.messages;
   const { historyFacts = () => null, resolveHistoryReference = () => null, historyOwner = () => '' } = deps.messages;
   const { externalToolInputFromRaw, asyncAgentMessageFromRaw, summarizeCodexAttachments } = deps.messages;
   const {
@@ -197,15 +198,17 @@ function createCodexDetailBuilder(deps) {
   }
 
   function extractLogicalDetailSections(event, raws, session = {}, options = {}) {
+    if (event.kind !== 'protocol') raws = raws.map(semanticRaw);
     const facts = historyFacts(raws[0]);
     if (facts && event.kind === 'protocol') return historyDetailSections(event, facts, raws[0], session, options);
     switch (event.kind) {
       case 'external_tool_input': {
         const timelineSections = [];
         const inspectorSections = [];
-        for (const raw of raws) {
-          const input = externalToolInputFromRaw(raw);
-          if (!input) continue;
+        // Logical grouping already validated any mirror refs as one input.
+        // Keep their provenance, but present the semantic input only once.
+        const input = raws.map(externalToolInputFromRaw).find(Boolean);
+        if (input) {
           maybePushKvSection(timelineSections, 'External source', [
             { key: 'Name', value: input.name },
             ...(input.namespace ? [{ key: 'Namespace', value: input.namespace }] : []),

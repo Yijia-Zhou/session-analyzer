@@ -69,9 +69,14 @@ function canonicalPhaseRefs(operation, rawById) {
 }
 
 function sourceEventTypeForRef(ref, rawById) {
+  const raw = rawById.get(String(ref?.rawId || ''));
+  // Typed persisted items retain item_completed in their public Raw refs.
+  // Association consumes the already accepted semantic view, while those
+  // references continue identifying the original source carrier.
+  if (raw?.typedItemType && raw.originalRaw) return String(raw.payloadType || '');
   const explicit = String(ref?.sourceEventType || '');
   if (explicit) return explicit;
-  return String(rawById.get(String(ref?.rawId || ''))?.payloadType || '');
+  return String(raw?.payloadType || '');
 }
 
 function eventIsLifecycleBacked(event, lifecycleTypes, rawById) {

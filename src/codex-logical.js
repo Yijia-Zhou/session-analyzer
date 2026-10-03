@@ -2,9 +2,12 @@
 
 function createCodexLogicalBuilder(deps) {
   const {
+    semanticRawEvents = (raws) => raws,
+    turnBoundaryEpochs = () => new Map(),
     historyFacts = () => null,
     realtimeIdentity = () => '',
     externalToolInputFromRaw,
+    externalToolInputMirrorsMatch,
     asyncAgentMessageFromRaw,
     asyncMessageMetadata,
     asyncMessageIdentityMatches,
@@ -566,6 +569,7 @@ function createCodexLogicalBuilder(deps) {
     if (customCall && !isCommandTool) parts.push(codexSearchValue(customCall.output));
     if (customOutput && !isCommandTool) parts.push(codexSearchValue(customOutput.output));
     if (mcpRows.length) parts.push(mcpRows.map((raw) => raw.searchText).join('\n'));
+    if (patchRows.length) parts.push(patchRows.map((raw) => raw.searchText).join('\n'));
     if (imageRows.length) parts.push(imageRows.map((raw) => raw.searchText).join('\n'));
     if (dynamicRows.length) parts.push(dynamicRows.map((raw) => raw.searchText).join('\n'));
     if (approvalRows.length) parts.push(approvalRows.map((raw) => raw.searchText).join('\n'));
@@ -653,6 +657,17 @@ function createCodexLogicalBuilder(deps) {
       status = 'success';
     } else {
       preview = truncate(first.preview || toolName || 'Other tool call');
+    }
+
+    const typedExtension = group.find((raw) => raw.typedItemType === 'Extension')?.originalRaw?.parsed?.payload?.item;
+    if (typedExtension && ['clock.sleep', 'web.search'].includes(typedExtension.kind) && status === 'success') status = 'completed';
+    // A typed dynamic end records completion, not necessarily success. Keep
+    // explicit failure precedence, and require a boolean true for success.
+    const typedDynamic = group.find((raw) => raw.typedItemType === 'DynamicToolCall')?.parsed?.payload;
+    if (typedDynamic && typedDynamic.success !== true && status === 'success') status = 'completed';
+    if (collabRows.some((raw) => raw.status === 'interrupted')) {
+      status = 'interrupted';
+      severity = 'warning';
     }
 
     const event = createLogicalEvent({
@@ -1035,6 +1050,47 @@ function createCodexLogicalBuilder(deps) {
   }
 
   function buildLogicalEvents(rawEvents) {
+    rawEvents = semanticRawEvents(rawEvents);
+    const typedMirrors = new Map();
+    const omittedTyped = new Set();
+    const responseById = new Map();
+    const epochs = turnBoundaryEpochs(rawEvents);
+    for (const raw of rawEvents) {
+      const id = raw.parsed?.payload?.id;
+      if (!raw.typedItemType && raw.recordType === 'response_item' && typeof id === 'string' && id) {
+        if (!responseById.has(id)) responseById.set(id, []);
+        responseById.get(id).push(raw);
+      }
+    }
+    for (let position = 0; position < rawEvents.length; position += 1) {
+      const raw = rawEvents[position];
+      if (!['UserMessage', 'AgentMessage', 'Reasoning', 'FunctionCallOutput'].includes(raw.typedItemType)) continue;
+      // AgentMessage and Reasoning preserve an existing ResponseItem ID.
+      // UserMessage gets a fresh UUID: only the immediate preceding prepared
+      // response is a supported fanout, never a text/time-window search.
+      const candidates = raw.typedItemType === 'UserMessage'
+        ? [rawEvents[position - 1]].filter(Boolean)
+        : responseById.get(raw.parsed.payload.id) || [];
+      if (candidates.length !== 1) continue;
+      const owner = candidates[0];
+      const fullBody = (value) => {
+        const payload = value.parsed?.payload || {};
+        if (payload.content != null && !Array.isArray(payload.content)) return null;
+        return JSON.stringify([payload.summary || [], (payload.content || []).map((part) => part?.text).filter((text) => typeof text === 'string')]);
+      };
+      if (owner.typedItemType || owner.recordType !== raw.recordType || owner.payloadType !== raw.payloadType
+          || owner.role !== raw.role || owner.sessionId !== raw.sessionId
+          || epochs.get(owner.rawId) !== epochs.get(raw.rawId)
+          || (owner.turnId && raw.turnId && owner.turnId !== raw.turnId)
+          || owner.messageText !== raw.messageText
+          || fullBody(owner) !== fullBody(raw)
+          || !mirroredAttachmentIdentityMatches(owner, raw)
+          || typedMirrors.has(owner.rawId)) continue;
+      if (raw.typedItemType === 'FunctionCallOutput' && !externalToolInputMirrorsMatch(owner, raw)) continue;
+      typedMirrors.set(owner.rawId, raw);
+      omittedTyped.add(raw.rawId);
+    }
+    rawEvents = rawEvents.filter((raw) => !omittedTyped.has(raw.rawId));
     const logicalEvents = [];
     // Duplicate opaque identities are ambiguous, including equal text. Leave
     // every occurrence inspectable rather than choosing an owner across a
@@ -1428,7 +1484,17 @@ function createCodexLogicalBuilder(deps) {
         continue;
       }
       if (raw.recordType === 'event_msg' && raw.payloadType === 'context_compacted') {
-        logicalEvents.push(buildLifecycleEvent(raw, 'compaction', 'Context compacted', 'warning'));
+        const event = buildLifecycleEvent(raw, 'compaction', 'Context compacted', 'warning');
+        // Legacy fanout carries no item ID. Accept only an adjacent, opposite
+        // carrier in the same owner/turn; repeated typed IDs stay Protocol.
+        if (next?.payloadType === 'context_compacted'
+            && Boolean(raw.typedItemType) !== Boolean(next.typedItemType)
+            && raw.sessionId === next.sessionId
+            && (!raw.turnId || !next.turnId || raw.turnId === next.turnId)) {
+          event.rawRefs.push(rawRef(next));
+          consumed.add(next.rawId);
+        }
+        logicalEvents.push(event);
         consumed.add(raw.rawId);
         continue;
       }
@@ -1488,6 +1554,16 @@ function createCodexLogicalBuilder(deps) {
       consumed.add(raw.rawId);
     }
 
+    for (const event of logicalEvents) {
+      for (const ref of event.rawRefs.slice()) {
+        const mirror = typedMirrors.get(ref.rawId);
+        if (!mirror) continue;
+        event.rawRefs.push(rawRef(mirror));
+      }
+      // rawRef resolves originalRaw: channels describe persisted provenance,
+      // never the temporary record type used for semantic projection.
+      event.channels = sanitizeLogicalEnvelopeValue([...new Set(event.rawRefs.map((ref) => ref.sourceRecordType))]);
+    }
     const finalCodeModeFacts = deriveCodeModeFacts({
       projection: codeModeProjection,
       rawEvents,

@@ -559,7 +559,11 @@ function eventRawOrder(event, rawOrder) {
 
 function ownedRawEventsForSession(session) {
   const rawEvents = Array.isArray(session?.rawEvents) ? session.rawEvents : [];
-  if (session?.forkStorageMode !== 'materialized') return rawEvents;
+  if (session?.forkStorageMode !== 'materialized') {
+    return rawEvents.some((raw) => raw.subagentInherited === true)
+      ? rawEvents.filter((raw) => raw.subagentInherited !== true)
+      : rawEvents;
+  }
   const segments = session._forkSegmentsByRawId;
   if (!(segments instanceof Map) || segments.size !== rawEvents.length) {
     throw new Error('Materialized Codex fork cache input requires exact Raw segment ownership');
@@ -729,6 +733,9 @@ function finalizeCodexCacheObservation(session, seeds = []) {
     const logicalEvents = session.logicalEvents;
     const rawEvents = session.rawEvents;
     const logicalIndex = indexCacheRelevantLogicalEvents(logicalEvents);
+    const compactionRawIds = new Set(logicalEvents
+      .filter((event) => event.kind === 'compaction')
+      .flatMap((event) => (event.rawRefs || []).map((ref) => ref.rawId)));
 
     const seedByRawId = new Map();
     for (const seed of seeds) {
@@ -752,7 +759,12 @@ function finalizeCodexCacheObservation(session, seeds = []) {
     for (const raw of ownedRawEvents) {
       const seed = seedByRawId.get(raw.rawId) || null;
       if (seed?.model) activeModel = seed.model;
-      if (raw.recordType === 'event_msg' && raw.payloadType === 'context_compacted') {
+      // A durable checkpoint marks changed model context, not another request.
+      // Typed completion comes from the validated semantic projection; this
+      // also works after Raw compaction, without reparsing checkpoint history.
+      if (raw.recordType === 'compacted'
+          || compactionRawIds.has(raw.rawId)
+          || (raw.recordType === 'event_msg' && raw.payloadType === 'context_compacted')) {
         compactionGeneration += 1;
       }
       if (!isTokenCountRaw(raw)) continue;
