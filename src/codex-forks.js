@@ -83,7 +83,7 @@ function parsedForkSourceId(session) {
 // projected record. Unlike an exact copied prefix, it also covers filtered and
 // rewritten model context; its physical length is not a parent fork point.
 function codexSubagentHistoryBoundary(rawEvents) {
-  if (!Array.isArray(rawEvents) || rawEvents.length < 3) return null;
+  if (!Array.isArray(rawEvents) || rawEvents.length < 2) return null;
   const first = rawEvents[0];
   const meta = first?.parsed?.payload;
   if (first?.recordType !== 'session_meta' || !meta || meta.history_mode !== 'paginated'
@@ -94,15 +94,17 @@ function codexSubagentHistoryBoundary(rawEvents) {
   const startOrdinal = meta.subagent_history_start_ordinal;
   if (!Number.isSafeInteger(startOrdinal) || startOrdinal < 2 || first.parsed.ordinal !== 0) return null;
   let previous = -1;
-  let firstOwnedIndex = -1;
   for (let index = 0; index < rawEvents.length; index += 1) {
     const ordinal = rawEvents[index]?.parsed?.ordinal;
     if (!Number.isSafeInteger(ordinal) || ordinal !== previous + 1) return null;
-    if (ordinal === startOrdinal) firstOwnedIndex = index;
     previous = ordinal;
   }
-  if (firstOwnedIndex < 2) return null;
-  return { sourceSessionId: meta.parent_thread_id, startOrdinal, inheritedRawCount: firstOwnedIndex - 1 };
+  // A fully persisted prefix is valid even before the first child-owned row.
+  // The producer's resume check accepts a tail at startOrdinal - 1; requiring
+  // the row at startOrdinal would count inherited work during this window.
+  // A tail before that still lacks proof that the inherited prefix is complete.
+  if (startOrdinal > rawEvents.length) return null;
+  return { sourceSessionId: meta.parent_thread_id, startOrdinal, inheritedRawCount: startOrdinal - 1 };
 }
 
 function restoreCodexSubagentRawSegments(session) {
