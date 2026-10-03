@@ -1,5 +1,7 @@
 'use strict';
 
+const { typedItemRecord } = require('./codex-turn-items');
+
 const {
   TOOL_LIFECYCLE_FAMILY,
   toolLifecycleDescriptorFor,
@@ -24,6 +26,12 @@ const OPAQUE_CONTENT_TYPES = new Set([
   'encrypted_content', 'base64', 'redacted_thinking', 'encrypted_reasoning', 'document', 'video',
 ]);
 
+function hasOpaqueImageResult(value) {
+  return String(value?.type || '').startsWith('image_generation')
+    || value?.type === 'ImageGeneration'
+    || (value?.type === 'Extension' && value.kind === 'image_gen.generation');
+}
+
 // Search walks the supported textual payload independently of display budgets.
 // Media bytes, encrypted content and signatures are never search text. This
 // does not read references or files outside the accepted transcript.
@@ -45,7 +53,7 @@ function codexFullSearchText(value) {
       for (let i = entries.length - 1; i >= 0; i -= 1) {
         const [key, nested] = entries[i];
         if (OPAQUE_SEARCH_KEYS.has(key)) continue;
-        if (key === 'result' && String(current.type || '').startsWith('image_generation')) continue;
+        if (key === 'result' && hasOpaqueImageResult(current)) continue;
         stack.push(nested);
       }
     }
@@ -61,7 +69,7 @@ function codexSearchValue(value) {
     excludedKeys: OPAQUE_SEARCH_KEYS,
     opaqueTypes: OPAQUE_CONTENT_TYPES,
     redactString: redactEmbeddedDataUrls,
-    omitEntry: (key, parent) => key === 'result' && String(parent?.type || '').startsWith('image_generation'),
+    omitEntry: (key, parent) => key === 'result' && hasOpaqueImageResult(parent),
   });
 }
 
@@ -135,6 +143,7 @@ function sourceLocatorForRaw(raw) {
 }
 
 function rawRef(raw) {
+  raw = raw.originalRaw || raw;
   const sourceLocator = sourceLocatorForRaw(raw);
   return {
     file: typeof raw.source?.file === 'string' ? raw.source.file : sourceLocator?.file || '',
@@ -236,7 +245,9 @@ function createCodexRawParser(deps) {
     };
 
     const attachmentSummary = sourceAttachmentSummary || summarizeCodexAttachments(payload);
-    if (recordType === 'realtime_item' || (recordType === 'response_item' && payloadType === 'configuration_update')) {
+    const foreignCompletedItem = recordType === 'event_msg' && payloadType === 'item_completed'
+      && payload.thread_id != null && payload.thread_id !== sessionId;
+    if (foreignCompletedItem || recordType === 'realtime_item' || (recordType === 'response_item' && payloadType === 'configuration_update')) {
       raw.turnId = '';
       raw.callId = '';
       raw.toolName = '';
@@ -290,6 +301,16 @@ function createCodexRawParser(deps) {
       raw.messageText = asyncMessage.text;
       raw.preview = truncate(raw.messageText || 'Async assistant message');
       raw.searchText = codexAsyncSearchText(payload);
+      return raw;
+    }
+
+    const typedRecord = typedItemRecord(record, sessionId);
+    if (typedRecord) {
+      const semantic = makeRawEvent(typedRecord, lineNumber, relFile, sessionId, embeddedImages, sourceAttachmentSummary);
+      for (const key of ['role', 'callId', 'toolName', 'status', 'messageText', 'searchText', 'preview', 'commandText', 'stdout', 'stderr', 'aggregatedOutput', 'exitCode', 'durationMs', 'touchedFiles', 'output', 'attachmentSummary']) {
+        if (Object.hasOwn(semantic, key)) raw[key] = semantic[key];
+      }
+      raw.durationMs = durationMs(record.payload.item.duration);
       return raw;
     }
 
@@ -385,7 +406,7 @@ function createCodexRawParser(deps) {
           raw.stdout = stringifyValue(payload.stdout);
           raw.stderr = stringifyValue(payload.stderr);
           raw.aggregatedOutput = stringifyValue(payload.aggregated_output);
-          raw.exitCode = Number.isFinite(Number(payload.exit_code)) ? Number(payload.exit_code) : null;
+          raw.exitCode = payload.exit_code != null && payload.exit_code !== '' && Number.isFinite(Number(payload.exit_code)) ? Number(payload.exit_code) : null;
           raw.durationMs = durationMs(payload.duration);
           raw.preview = truncate(raw.commandText || displayValue(payload.reason, 1000) || payload.type);
           raw.searchText = [codexFullSearchText(payload.command), codexSearchValue(payload.stdout), codexSearchValue(payload.stderr), codexSearchValue(payload.aggregated_output), codexSearchValue(payload.formatted_output), codexFullSearchText(payload.reason)].join('\n');
@@ -398,7 +419,7 @@ function createCodexRawParser(deps) {
           raw.touchedFiles = payload.changes && typeof payload.changes === 'object' ? Object.keys(payload.changes) : [];
           raw.output = stringifyValue(firstNonEmpty(payload.patch, payload.input, payload.diff));
           raw.preview = truncate(raw.touchedFiles.join(', ') || raw.output || displayValue(firstNonEmpty(payload.stdout, payload.stderr, payload.reason, payload.type), 1000));
-          raw.searchText = [raw.touchedFiles.join('\n'), codexSearchValue(raw.output), codexSearchValue(payload.stdout), codexSearchValue(payload.stderr), codexFullSearchText(payload.reason)].join('\n');
+          raw.searchText = [raw.touchedFiles.join('\n'), codexSearchValue(payload.changes), codexSearchValue(raw.output), codexSearchValue(payload.stdout), codexSearchValue(payload.stderr), codexFullSearchText(payload.reason)].join('\n');
           return raw;
         case 'token_count':
           raw.preview = truncate(formatTokenUsagePreview(payload) || codexFullSearchText(payload) || payload.type);

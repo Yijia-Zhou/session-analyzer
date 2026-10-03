@@ -1,5 +1,7 @@
 'use strict';
 
+const { isDeepStrictEqual } = require('node:util');
+
 // Producer: app-server request_processors/turn_processor.rs, Codex e269f216.
 // A source name is attribution, never execution or authorization evidence.
 function externalToolInputFromRaw(raw) {
@@ -42,4 +44,16 @@ function validOutputPart(part) {
   return false;
 }
 
-module.exports = { externalToolInputFromRaw };
+function externalToolInputMirrorsMatch(left, right) {
+  if (!externalToolInputFromRaw(left) || !externalToolInputFromRaw(right)) return false;
+  const a = left.parsed.payload;
+  const b = right.parsed.payload;
+  if (a.name !== b.name || (a.namespace ?? null) !== (b.namespace ?? null)) return false;
+  // Display text is bounded and omits opaque parts. Compare the entire source
+  // output instead; a media placeholder cannot prove the original bytes equal.
+  const marker = '[embedded image payload externalized; open raw refs for source]';
+  if ([a.output, b.output].some((output) => JSON.stringify(output).includes(marker))) return false;
+  return isDeepStrictEqual(a.output, b.output);
+}
+
+module.exports = { externalToolInputFromRaw, externalToolInputMirrorsMatch };

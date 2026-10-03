@@ -24,6 +24,76 @@ const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 let wave1bM2SourceBundlePromise;
 
+for (const locale of ['en', 'zh-CN']) test(`Codex 0.160 Paginated typed tools and answer remain readable through Main and Raw (${locale})`, async (t) => {
+  // Synthetic rust-v0.160.0 TurnItem fixtures; no real writer, transcript, or
+  // command execution. Exercises the same HTTP/rendering path as imported logs.
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-paginated-browser-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const project = path.join(home, 'repo');
+  await fsp.mkdir(project);
+  const id = 'dddddddd-0160-4160-8160-dddddddddddd';
+  const turn = 'synthetic-paginated-browser';
+  const completed = (item) => ({ type: 'event_msg', payload: {
+    type: 'item_completed', thread_id: id, turn_id: turn, completed_at_ms: 1790935205000, item,
+  } });
+  const command = (callId, status, extra = {}) => completed({ type: 'CommandExecution', id: callId,
+    command: ['synthetic-command', callId], cwd: project, parsed_cmd: [], source: 'agent', status,
+    stdout: `${callId}_OUTPUT`, stderr: '', duration: { secs: 1, nanos: 0 }, ...extra });
+  await writeJsonl(path.join(home, 'sessions', `rollout-${id}.jsonl`), [
+    { type: 'session_meta', payload: { id, cwd: project, cli_version: '0.160.0', history_mode: 'paginated' } },
+    { type: 'event_msg', payload: { type: 'task_started', turn_id: turn } },
+    command('UNKNOWN_EXIT', 'completed'),
+    command('FAILED_COMMAND', 'failed', { exit_code: 3, stderr: 'FAILED_COMMAND_ERROR' }),
+    completed({ type: 'FileChange', id: 'typed-edit', status: 'completed', stdout: 'PATCH_OUTPUT', stderr: '',
+      changes: { 'synthetic-paginated.txt': { type: 'update', unified_diff: '@@ -1 +1 @@\n-OLD_TYPED_VALUE\n+NEW_TYPED_VALUE', move_path: null } } }),
+    completed({ type: 'AgentMessage', id: 'typed-answer', phase: 'final_answer',
+      content: [{ type: 'Text', text: 'TYPED_FINAL_ANSWER: synthetic review complete.' }] }),
+  ].map((row, i) => ({ timestamp: new Date(Date.parse('2026-10-02T10:00:00Z') + i * 1000).toISOString(), ...row })));
+  const index = await buildIndex({ repoRoot: project, codexHome: home });
+  const session = await materializeIndexedSession(index, id);
+  assert.equal(session.counts.toolCalls, 3);
+  assert.equal(session.counts.failedCommands, 1);
+  assert.equal(session.counts.assistantMessages, 1);
+  const unknown = session.logicalEvents.find((e) => e.kind === 'command' && e.preview.includes('UNKNOWN_EXIT'));
+  assert.equal(unknown.status, 'completed');
+  assert.equal(unknown.outputStats.exitCode, undefined);
+  const expected = [
+    [unknown, 'UNKNOWN_EXIT_OUTPUT', 'CommandExecution'],
+    [session.logicalEvents.find((e) => e.kind === 'command' && e.preview.includes('FAILED_COMMAND')), 'FAILED_COMMAND_ERROR', 'CommandExecution'],
+    [session.logicalEvents.find((e) => e.kind === 'patch'), 'NEW_TYPED_VALUE', 'FileChange'],
+    [session.logicalEvents.find((e) => e.kind === 'assistant_message'), 'TYPED_FINAL_ANSWER', 'AgentMessage'],
+  ];
+  for (const [event, text] of expected) {
+    const detail = await buildHydratedEventDetail(index, session, event.id, 'main', { locale });
+    assert.ok(JSON.stringify(detail.timelineSections).includes(text));
+    assert.equal(event.rawRefs.length, 1);
+    assert.equal(event.rawRefs[0].sourceEventType, 'item_completed');
+  }
+  const { page, requestedPaths } = await openApp(t, index, { locale, skipProjectReindex: true });
+  for (const [event, text, itemType] of expected) {
+    await page.locator('#layerSelect').selectOption('main');
+    const card = page.locator(`#timeline .event[data-event-id="${event.id}"]`);
+    await card.click();
+    await waitForDetailView(page, 'inspector');
+    await page.waitForFunction(({ eventId, text }) => document.querySelector(`[data-event-id="${eventId}"]`)?.textContent.includes(text), { eventId: event.id, text });
+    assert.ok((await card.innerText()).includes(text));
+    if (event.kind === 'patch') {
+      assert.match(await card.innerText(), /OLD_TYPED_VALUE/);
+      assert.match(await card.innerText(), /synthetic-paginated\.txt/);
+    }
+    await page.locator('#detail [data-detail-action="raw"]').click();
+    await waitForDetailView(page, 'rawRefs');
+    await page.waitForFunction((itemType) => {
+      const text = document.querySelector('#detail .rawRefsView')?.textContent || '';
+      return text.includes('item_completed') && text.includes(itemType);
+    }, itemType);
+    await page.locator('#layerSelect').selectOption('raw');
+    await page.locator(`#timeline .event[data-event-id="${event.rawRefs[0].rawId}"]`).click();
+    await page.waitForFunction((itemType) => document.querySelector('#detail')?.textContent.includes(itemType), itemType);
+  }
+  assert.ok(requestedPaths.some((value) => value.startsWith(`/api/sessions/${id}/raw/`)));
+});
+
 for (const locale of ['en', 'zh-CN']) test(`Claude background terminal evidence stays on the owning MCP and Monitor operation (${locale})`, async (t) => {
   const claudeHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'claude-background-browser-'));
   t.after(() => fsp.rm(claudeHome, { recursive: true, force: true }));
@@ -7347,6 +7417,8 @@ test('browser ignores successful stale full-scan discovery after manual project 
   await selectPrimarySession(page);
   const message = page.locator('#timeline .kind-user-message').first();
   await message.waitFor();
+  // Card visibility precedes async detail hydration; snapshot the rendered body.
+  await message.locator('.eventBody .mdBlock').waitFor();
   const messageText = await message.innerText();
   assert.ok(messageText.trim(), 'selected project must expose readable history');
   const eventIds = await page.locator('#timeline .event[data-event-id]').evaluateAll(
@@ -8343,6 +8415,7 @@ test('Wave 1A M2 browser keeps the newer same-context suggestion pending without
   const oldStarted = deferred();
   const newerStarted = deferred();
   const failed = [];
+  let oldRequest;
   let requestCount = 0;
   page.on('requestfailed', (request) => {
     if (new URL(request.url()).pathname === '/api/file-suggestions') failed.push(request.url());
@@ -8351,6 +8424,7 @@ test('Wave 1A M2 browser keeps the newer same-context suggestion pending without
     requestCount += 1;
     const ordinal = requestCount;
     if (ordinal === 1) {
+      oldRequest = route.request();
       oldStarted.resolve();
       await oldRelease.promise;
     } else if (ordinal === 2) {
@@ -8380,6 +8454,10 @@ test('Wave 1A M2 browser keeps the newer same-context suggestion pending without
   await page.evaluate(() => window.__wave1aM2.armHandoffPause());
   await page.locator('#sortSelect').selectOption(nextSort);
   await oldStarted.promise;
+  const oldAborted = page.waitForEvent('requestfailed', {
+    predicate: (request) => request === oldRequest,
+    timeout: 10000,
+  });
   const selectedSessionId = await page.locator('.sessionItem.active').getAttribute('data-session-id');
   await page.locator(`[data-session-id="${selectedSessionId}"]`).click();
   await newerStarted.promise;
@@ -8387,6 +8465,8 @@ test('Wave 1A M2 browser keeps the newer same-context suggestion pending without
 
   await page.evaluate(() => window.__wave1aM2.releaseHandoff());
   await page.waitForFunction(() => window.__wave1aM2.evidence.handoffs.length >= 2);
+  // The app handoff and Playwright's network failure notification settle separately.
+  await oldAborted;
   assert.equal(requestCount, 2, 'the superseded outer load must not start a third fallback');
   assert.deepEqual((await page.evaluate(() => window.__wave1aM2.evidence.handoffs.at(-1))), {
     sessionsRequest: true,
@@ -8438,6 +8518,7 @@ test('Wave 1A M2 browser keeps a newer committed same-context suggestion authori
   const oldStarted = deferred();
   let requestCount = 0;
   const failed = [];
+  let oldRequest;
   page.on('requestfailed', (request) => {
     if (new URL(request.url()).pathname === '/api/file-suggestions') failed.push(request.url());
   });
@@ -8445,6 +8526,7 @@ test('Wave 1A M2 browser keeps a newer committed same-context suggestion authori
     requestCount += 1;
     const ordinal = requestCount;
     if (ordinal === 1) {
+      oldRequest = route.request();
       oldStarted.resolve();
       await oldRelease.promise;
     }
@@ -8468,6 +8550,10 @@ test('Wave 1A M2 browser keeps a newer committed same-context suggestion authori
   await page.evaluate(() => window.__wave1aM2.armHandoffPause());
   await page.locator('#sortSelect').selectOption(nextSort);
   await oldStarted.promise;
+  const oldAborted = page.waitForEvent('requestfailed', {
+    predicate: (request) => request === oldRequest,
+    timeout: 10000,
+  });
   const selectedSessionId = await page.locator('.sessionItem.active').getAttribute('data-session-id');
   await page.locator(`[data-session-id="${selectedSessionId}"]`).click();
   await page.locator('#searchFileInput').focus();
@@ -8479,6 +8565,7 @@ test('Wave 1A M2 browser keeps a newer committed same-context suggestion authori
   await page.evaluate(() => window.__wave1aM2.releaseHandoff());
   await page.waitForFunction(() => window.__wave1aM2.evidence.handoffs.length >= 2);
   oldRelease.resolve();
+  await oldAborted;
   assert.equal(requestCount, 2, 'the superseded outer load must not start a third fallback');
   assert.equal(failed.length, 1, 'the committed newer request must not be aborted');
   assert.equal(await page.locator('[data-search-file-suggestion]').first().getAttribute('data-search-file-suggestion'), 'wave-1a-committed-2');

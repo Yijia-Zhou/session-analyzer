@@ -183,7 +183,7 @@ function eventType(raw) {
 }
 
 function isTurnBoundary(raw) {
-  return ['task_started', 'turn_started', 'task_complete', 'turn_complete'].includes(eventType(raw));
+  return ['task_started', 'turn_started', 'task_complete', 'turn_complete', 'turn_aborted'].includes(eventType(raw));
 }
 
 function sessionKey(raw) {
@@ -205,6 +205,9 @@ function physicalRef(entry) {
 
 function physicalSpan(callEntry, outputEntry) {
   if (!outputEntry || outputEntry.position < callEntry.position) return null;
+  // A uniquely paired late output is still observed output, but a physical
+  // interval across a turn boundary cannot establish nested-tool ownership.
+  if (callEntry.turnBoundaryEpoch !== outputEntry.turnBoundaryEpoch) return null;
   const callRef = physicalRef(callEntry);
   const outputRef = physicalRef(outputEntry);
   if (!callRef.file || callRef.file !== outputRef.file) return null;
@@ -284,8 +287,16 @@ function projectCodeModeOperations(rawEvents) {
   const execOutputsByKey = new Map();
   const waitCallsByKey = new Map();
   const waitOutputsByKey = new Map();
+  const turnScopes = new Map();
 
   for (const entry of entries) {
+    const key = sessionKey(entry.raw);
+    const scope = turnScopes.get(key) || { epoch: 0, turnId: '' };
+    const turnId = String(entry.raw?.turnId || '');
+    if (isTurnBoundary(entry.raw) || (turnId && scope.turnId && turnId !== scope.turnId)) scope.epoch += 1;
+    if (turnId) scope.turnId = turnId;
+    entry.turnBoundaryEpoch = scope.epoch;
+    turnScopes.set(key, scope);
     if (isExecCall(entry.raw)) addToBucket(execCallsByKey, callKey(entry.raw), entry);
     if (isExecOutput(entry.raw)) addToBucket(execOutputsByKey, callKey(entry.raw), entry);
     if (isWaitCall(entry.raw)) addToBucket(waitCallsByKey, callKey(entry.raw), entry);
@@ -295,6 +306,7 @@ function projectCodeModeOperations(rawEvents) {
   const operations = [];
   const operationByExecOutputPosition = new Map();
   const operationByWaitOutputPosition = new Map();
+  const operationTurnScopes = new Map();
   const unassociatedWaits = [];
 
   for (const entry of entries.filter((candidate) => isExecCall(candidate.raw))) {
@@ -315,7 +327,11 @@ function projectCodeModeOperations(rawEvents) {
       activeWaitPhase: null,
     };
     operations.push(operation);
-    if (pairing.output) operationByExecOutputPosition.set(pairing.output.position, operation);
+    operationTurnScopes.set(operation.id, entry.turnBoundaryEpoch);
+    if (pairing.output) operationByExecOutputPosition.set(pairing.output.position, {
+      operation,
+      turnBoundaryEpoch: entry.turnBoundaryEpoch,
+    });
   }
 
   function pendingOperationsFor(sessionId, cellId) {
@@ -330,7 +346,8 @@ function projectCodeModeOperations(rawEvents) {
     for (const operation of operations) {
       if (operation.sessionId !== currentSession || operation.observationState !== OBSERVATION_STATES.PENDING) continue;
       const changedTurn = Boolean(raw?.turnId && operation.turnId && raw.turnId !== operation.turnId);
-      if (isTurnBoundary(raw) || changedTurn) {
+      if (isTurnBoundary(raw) || changedTurn
+          || operationTurnScopes.get(operation.id) !== entry.turnBoundaryEpoch) {
         operation.observationState = OBSERVATION_STATES.UNOBSERVED_TERMINAL;
         operation.activeWaitPhase = null;
       }
@@ -338,17 +355,23 @@ function projectCodeModeOperations(rawEvents) {
   }
 
   for (const entry of entries) {
-    const execOperation = operationByExecOutputPosition.get(entry.position);
-    if (execOperation) {
+    // Scope transitions precede output observation, including a result whose
+    // own explicit turn ID is the first available evidence of the transition.
+    markPendingOperationsUnobserved(entry);
+    const execResult = operationByExecOutputPosition.get(entry.position);
+    if (execResult) {
+      const { operation: execOperation, turnBoundaryEpoch } = execResult;
       const execPhase = execOperation.phases[0];
       execOperation.observationState = execPhase.observationState;
       if (execPhase.observationState === OBSERVATION_STATES.PENDING) {
         execOperation.cellId = execPhase.observedCellId;
+        if (turnBoundaryEpoch !== entry.turnBoundaryEpoch) {
+          execOperation.observationState = OBSERVATION_STATES.UNOBSERVED_TERMINAL;
+        }
       }
     }
 
     if (isWaitCall(entry.raw)) {
-      markPendingOperationsUnobserved(entry);
       const pairing = pairingFor(entry, waitCallsByKey, waitOutputsByKey);
       const targetCellId = waitCellId(entry.raw);
       const phase = makePhase('wait', entry, pairing.output, targetCellId);
@@ -385,7 +408,6 @@ function projectCodeModeOperations(rawEvents) {
       }
     }
 
-    if (!isWaitCall(entry.raw)) markPendingOperationsUnobserved(entry);
   }
 
   return {
