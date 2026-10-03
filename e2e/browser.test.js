@@ -7417,6 +7417,8 @@ test('browser ignores successful stale full-scan discovery after manual project 
   await selectPrimarySession(page);
   const message = page.locator('#timeline .kind-user-message').first();
   await message.waitFor();
+  // Card visibility precedes async detail hydration; snapshot the rendered body.
+  await message.locator('.eventBody .mdBlock').waitFor();
   const messageText = await message.innerText();
   assert.ok(messageText.trim(), 'selected project must expose readable history');
   const eventIds = await page.locator('#timeline .event[data-event-id]').evaluateAll(
