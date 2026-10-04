@@ -90,7 +90,7 @@ test('package metadata exposes the session-analyzer CLI', () => {
   assert.equal(pkg.scripts.prepublishOnly, 'npm run release:check');
   assert.deepEqual(pkg.dependencies, {
     acorn: '8.15.0',
-    'markdown-it': '14.3.0',
+    'markdown-it': '14.3.2',
   });
   assert.deepEqual(pkg.allowScripts, {
     'esbuild@0.28.1': true,
