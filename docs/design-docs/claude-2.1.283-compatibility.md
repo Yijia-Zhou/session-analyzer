@@ -26,6 +26,8 @@ Direct provider probes returned `cost: 0`. Claude's own result estimates a nonze
 
 ## Accepted Bash result shape / 接纳的 Bash 结果形态
 
+The card now states the validated recorded-path count separately from the displayed diff count. An explicit folded “Recorded paths” table identifies paths with a supplied diff versus paths with no supplied diff, and explains that file filters use these recorded paths. Display limits remain visible; no missing diff or filesystem snapshot is synthesized. / 卡片分别说明已验证的记录路径数量与已展示 diff 数量。显式折叠的“已记录路径”表区分有提供 diff 与未提供 diff 的路径，并说明文件筛选使用这些记录路径；展示上限保持可见，不合成缺失 diff 或文件系统快照。
+
 Synthetic illustration of the observed result-owned object: / 对实测结果所属结构的合成示例：
 
 ```json

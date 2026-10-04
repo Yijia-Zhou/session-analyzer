@@ -4,6 +4,8 @@
 
 ## Metadata / 元数据
 
+Search navigation waits for an expanded target's full detail and currently visible/already-requested detail work before acquiring its live mark. A loading preview match and an unhydrated preceding patch do not establish the final full-body scroll position; this does not eagerly load the whole preceding transcript. Project drill-down also rechecks the search context and selection intent after settlement. / 搜索导航在获取实时命中标记前等待展开目标的完整详情，以及当前可见／已发起的详情工作；加载预览命中与尚未加载的前置补丁都不代表全文最终滚动位置，不因此提前加载全部前置转录。项目下钻在完成后还会复核搜索上下文与选择意图。
+
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
 - Last updated: 2026-08-31 / 最近更新：2026-08-31

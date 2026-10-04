@@ -16,6 +16,7 @@ function collaborationNavigation(index, owner, detail, indexRevision = 0) {
     }
     return {
       label, status: 'resolved',
+      ...(typeof target.title === 'string' && target.title.trim() ? { displayName: Array.from(target.title.trim()).slice(0, 160).join('') } : {}),
       target: { sourceKind: owner.sourceKind, repoRoot: index.repoRoot, indexRevision,
         sessionId: target.id, layer: 'main' },
     };
@@ -35,6 +36,19 @@ function collaborationNavigation(index, owner, detail, indexRevision = 0) {
   }
   const timelineSections = detail.timelineSections.map(visit);
   const inspectorSections = detail.inspectorSections.map(visit);
+  // A compact directory is visible on first selection, even while the card is folded.
+  const relationships = [];
+  function collect(section) {
+    if (section.type === 'collaboration' && section.targetLinks?.length) relationships.push(section);
+    if (section.type === 'code_mode_tool_projection') {
+      [...(section.requestSections || []), ...(section.resultSections || [])].forEach(collect);
+    }
+  }
+  timelineSections.forEach(collect);
+  if (relationships.length && !inspectorSections.some((section) => section.type === 'collaboration')) {
+    inspectorSections.unshift(...relationships.map((section) => ({ type: 'collaboration', purpose: 'traceability',
+      targets: section.targetLinks.map((link) => link.label), targetLinks: section.targetLinks, fields: [], statuses: [] })));
+  }
   return changed ? { ...detail, timelineSections, inspectorSections } : detail;
 }
 

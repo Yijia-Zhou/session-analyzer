@@ -78,6 +78,11 @@ test('partial file lists retain explicit omitted-file names and omission metadat
   const fixture = project(pair(evidence));
   assert.deepEqual(fixture.commands[0].touchedFiles, evidence.changedFiles);
   const detail = fixture.detail();
+  assert.match(detail.timelineSections.find((item) => item.type === 'notice').text, /Recorded files: 3.*Displayed diffs: 1/);
+  const paths = detail.timelineSections.find((item) => item.title === 'Recorded paths');
+  assert.deepEqual(paths.entries.map((item) => item.key), evidence.changedFiles);
+  assert.equal(paths.entries[2].value, 'Diff not supplied');
+  validateLogicalDetailSection(paths);
   assert.equal(detail.inspectorSections.find((item) => item.value?.bashEditDiff).value.bashEditDiff.moreFiles, 2);
   assert.doesNotMatch(detail.timelineSections.find((item) => item.type === 'diff').text, /binary|omitted/);
 });

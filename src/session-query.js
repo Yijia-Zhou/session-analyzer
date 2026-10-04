@@ -1026,6 +1026,8 @@ function createSessionQuery(options = {}) {
       events: matched.slice(offset, offset + limit).map((event) => ({
         id: event.id, layer: event.layer, kind: event.kind, status: event.status,
         timestamp: event.timestamp, label: sanitizeLogicalEnvelopeValue(localizedLogicalLabel(event, resolveLocale(options.locale))),
+        toolName: sanitizeLogicalEnvelopeValue(event.toolName || ''),
+        summary: sanitizeLogicalEnvelopeValue(Array.from(String(event.preview || '').replace(/\s+/g, ' ').trim()).slice(0, 120).join('')),
         association: event.kind === 'patch' ? 'patch_record' : 'recorded_path',
       })),
     };

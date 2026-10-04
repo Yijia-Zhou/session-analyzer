@@ -476,8 +476,9 @@ function validateLogicalDetailSectionShape(section, path) {
         assertArray(section.targetLinks, `${path}.targetLinks`);
         section.targetLinks.forEach((link) => {
           assertRecord(link, `${path}.targetLinks[]`);
-          assertAllowedKeys(link, ['label', 'status', 'target'], `${path}.targetLinks[]`);
+          assertAllowedKeys(link, ['label', 'status', 'target', 'displayName'], `${path}.targetLinks[]`);
           assertString(link.label, `${path}.targetLinks[].label`);
+          assertString(link.displayName, `${path}.targetLinks[].displayName`, { optional: true });
           if (!['resolved', 'missing', 'ambiguous', 'unconfirmed'].includes(link.status)) {
             throw detailContractError('invalid navigation status', path);
           }

@@ -119,15 +119,18 @@ test('native continuation survives hydration, pagination and search without tran
   assert.deepEqual(followUpSection.items.map((item) => item.id), [w.id, eventFor('w3').id, eventFor('w2').id]);
   assert.ok(followUpSection.items.every((item) => item.layer === 'main'));
   assert.deepEqual(followUpSection.items.map((item) => item.label), [
-    '2026-09-11T10:00:03.000Z · Background terminal poll request · npm test',
-    '2026-09-11T10:00:04.500Z · Background terminal poll request · npm test',
-    '2026-09-11T10:00:05.000Z · Background terminal input request · npm test',
+    '2026-09-11T10:00:03.000Z · Background terminal poll request',
+    '2026-09-11T10:00:04.500Z · Background terminal poll request',
+    '2026-09-11T10:00:05.000Z · Background terminal input request',
   ]);
   const middleDetail = await codex.buildHydratedEventDetail(index, session, eventFor('w3').id, 'main');
+  assert.match(middleDetail.timelineSections[0].text, /receipt records a running process/);
   assert.deepEqual(middleDetail.inspectorSections.find((section) => section.title === 'Previous terminal request').items.map((item) => item.id), [w.id]);
   assert.deepEqual(middleDetail.inspectorSections.find((section) => section.title === 'Next terminal request').items.map((item) => item.id), [eventFor('w2').id]);
   assert.deepEqual(middleDetail.inspectorSections.find((section) => section.title === 'Associated terminal requests').items.map((item) => item.id), [w.id, eventFor('w2').id]);
   const exitDetail = await codex.buildHydratedEventDetail(index, session, eventFor('w2').id, 'main');
+  assert.match(exitDetail.timelineSections[0].text, /Request completed.*process exit code/);
+  assert.equal(exitDetail.inspectorSections[0].text, exitDetail.timelineSections[0].text);
   assert.equal(exitDetail.title, 'Background terminal input request · npm test');
   assert.deepEqual(exitDetail.rawRefs, eventFor('w2').rawRefs);
   assert.deepEqual(exitDetail.inspectorSections.find((section) => section.title === 'Previous terminal request').items.map((item) => item.id), [eventFor('w3').id]);

@@ -257,6 +257,19 @@ test('renderer outputs patch sections with file summaries, line numbers, and esc
   assert.match(patch, /patchLine added/);
   assert.match(patch, /patchLineNo muted/);
   assert.match(patch, /&lt;new&gt;/);
+  assert.doesNotMatch(patch, /patchHunkHeader/);
+});
+
+test('patch renderer retains ranges and context while suppressing bare hunk markers', () => {
+  const patch = renderSection({ type: 'patch', files: [{ path: 'src/hunks.js', hunks:
+    ['@@', '  @@  ', '@@ -20,1 +20,1 @@', '@@ function <context>()'].map((header) => ({
+      header, lineNumbers: false, lines: [{ kind: 'added', content: 'kept();' }],
+    })) }] });
+  assert.equal((patch.match(/class="patchHunk"/g) || []).length, 4);
+  assert.equal((patch.match(/class="patchHunkHeader"/g) || []).length, 2);
+  assert.equal((patch.match(/kept\(\);/g) || []).length, 4);
+  assert.match(patch, /@@ -20,1 \+20,1 @@/);
+  assert.match(patch, /@@ function &lt;context&gt;\(\)/);
 });
 
 test('renderer shows reliable patch line numbers when available', () => {
