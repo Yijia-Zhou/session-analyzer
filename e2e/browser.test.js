@@ -637,6 +637,7 @@ async function installWave1dAM1BrowserSeam(page) {
       lifecycle: [],
       revisions: [],
       detailRequestTransactionAssociations: 0,
+      detailTransactions: [],
       observerFailuresArmed: false,
       failNextTimelineInnerHtml: false,
     };
@@ -649,6 +650,7 @@ async function installWave1dAM1BrowserSeam(page) {
         evidence.lifecycle.length = 0;
         evidence.revisions.length = 0;
         evidence.detailRequestTransactionAssociations = 0;
+        evidence.detailTransactions.length = 0;
       },
       armObserverFailures() { evidence.observerFailuresArmed = true; },
       disarmObserverFailures() { evidence.observerFailuresArmed = false; },
@@ -672,6 +674,10 @@ async function installWave1dAM1BrowserSeam(page) {
           && typeof property === 'symbol'
           && property.description === 'detailRequestTransaction') {
         evidence.detailRequestTransactionAssociations += 1;
+        evidence.detailTransactions.push({
+          eventId: descriptor.value.event.id,
+          requestSerial: descriptor.value.observerSerial,
+        });
       }
       return defineProperty(target, property, descriptor);
     };
@@ -13030,6 +13036,8 @@ test('browser Wave 1D-A M1 stale context-slot ownership fails closed to one full
   ));
   assert.ok(nested);
   assert.notEqual(nested.kind, 'code_mode_operation');
+  const codeMode = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
+  assert.ok(codeMode);
   const gate = deferred();
   const started = deferred();
   const { page } = await openWave1dAM1App(t, index, {
@@ -13040,6 +13048,11 @@ test('browser Wave 1D-A M1 stale context-slot ownership fails closed to one full
     },
     beforeGoto: async (targetPage) => {
       await targetPage.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+        const pathname = new URL(route.request().url()).pathname;
+        if (pathname !== `/api/sessions/${encodeURIComponent(session.id)}/events/${encodeURIComponent(nested.id)}/detail`) {
+          await route.continue();
+          return;
+        }
         started.resolve();
         await gate.promise;
         await route.continue();
@@ -13048,9 +13061,23 @@ test('browser Wave 1D-A M1 stale context-slot ownership fails closed to one full
   });
   const owner = page.locator(`#timeline .event[data-event-id="${nested.id}"]`);
   await owner.waitFor();
+  // The visible context slot hydrates its Code Mode owner during startup even
+  // though that owner's card is hidden. Its fallback must settle before the
+  // target request's corruption/measurement window starts.
+  await page.waitForFunction((eventId) => {
+    const { detailTransactions, detailRequests } = window.__wave1dAM1.evidence;
+    const transaction = detailTransactions.find((row) => row.eventId === eventId);
+    return transaction && detailRequests.some((row) => (
+      row.requestSerial === transaction.requestSerial && row.presentationSettlement
+    ));
+  }, codeMode.id);
   await page.evaluate(() => window.__wave1dAM1.reset());
   await owner.locator(':scope > .eventHeader > .eventToggle').click();
   await started.promise;
+  const transaction = await page.evaluate((eventId) => (
+    window.__wave1dAM1.evidence.detailTransactions.find((row) => row.eventId === eventId)
+  ), nested.id);
+  assert.ok(transaction);
   await page.evaluate((ownerId) => {
     const article = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"]`);
     const slot = article.previousElementSibling;
@@ -13060,16 +13087,20 @@ test('browser Wave 1D-A M1 stale context-slot ownership fails closed to one full
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
   const operationId = await beginWave1cM2Operation(page);
   gate.resolve();
-  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
-    (row) => row.presentationSettlement,
-  ));
+  await page.waitForFunction((serial) => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.requestSerial === serial && row.presentationSettlement,
+  ), transaction.requestSerial);
   await endWave1cM2Operation(page);
   const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
-  const settlement = causal.detailRequests.find((row) => row.presentationSettlement);
+  const settlements = causal.detailRequests.filter((row) => row.presentationSettlement);
+  assert.equal(settlements.length, 1, JSON.stringify(causal));
+  const [settlement] = settlements;
+  assert.equal(settlement.requestSerial, transaction.requestSerial);
+  assert.deepEqual(causal.detailTransactions, [transaction]);
   assert.equal(settlement.settlementOutcome, 'fullRenderFallback');
   assert.equal(settlement.presentationFailed, false);
   assert.equal((await wave1cM2OperationRows(page, operationId))
-    .filter((row) => row.commitKind === 'replacement').length, 1);
+    .filter((row) => row.commitKind === 'replacement').length, 1, JSON.stringify({ target: nested.id, causal }));
 });
 
 test('browser Wave 1D-A M1 another presentation revision between detail tokens forces full fallback', async (t) => {

@@ -267,6 +267,24 @@ test('file activity coalesces redundant relative separators and dot segments wit
   }
 });
 
+test('file activity distinguishes POSIX literal backslashes while accepting Windows separators', () => {
+  const query = getSourceAdapter('codex').query;
+  for (const repoRoot of ['/repo', '/repo\\literal', 'G:\\repo', '\\\\server\\share\\repo']) {
+    const windows = !repoRoot.startsWith('/');
+    const paths = ['a\\b.txt', `${repoRoot}/a\\b.txt`, 'a/b.txt', `${repoRoot}/a/b.txt`];
+    const session = completeSession('backslash-paths', paths.map((file, i) => (
+      logicalEvent(`backslash-${i}`, { touchedFiles: [file] })
+    )));
+    const index = { ...fullIndex([session]), repoRoot };
+    for (const [i, file] of paths.entries()) {
+      const expected = windows ? [0, 1, 2, 3] : i < 2 ? [0, 1] : [2, 3];
+      assert.deepEqual(query.getFileActivity(index, session, file).events.map((event) => event.id),
+        expected.map((n) => `backslash-${n}`), `${repoRoot}: ${file}`);
+    }
+    assert.deepEqual(session.logicalEvents.map((event) => event.touchedFiles[0]), paths);
+  }
+});
+
 test('file activity retains external path roots and counts each event once across equivalent spellings', () => {
   const session = completeSession('path-roots', [
     logicalEvent('unc', { touchedFiles: ['\\\\server\\share\\src\\.\\a.js', '//server/share/src//a.js'] }),
