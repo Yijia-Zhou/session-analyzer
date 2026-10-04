@@ -385,7 +385,7 @@ test('strict Codex materialization carries bounded shell context into command de
   const command = materialized.logicalEvents.find((event) => event.kind === 'command');
   const detail = await codex.buildHydratedEventDetail(fixture.index, materialized, command.id, 'main');
   assert.equal(materialized._shell, 'powershell');
-  assert.equal(detail.timelineSections[0].language, 'powershell');
+  assert.equal(detail.timelineSections.find((section) => section.type === 'code').language, 'powershell');
   assert.doesNotThrow(() => codex.validateCodexMaterializedPrivateState({ indexedSession, session: materialized }));
   assert.throws(
     () => codex.validateCodexMaterializedPrivateState({

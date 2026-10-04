@@ -285,8 +285,8 @@ test('Codex fixture replay keeps stable representative detail DTO sections', asy
       status: 'failed',
       severity: 'error',
       metaKeys: ['channels', 'outputStats', 'severity', 'source', 'status', 'timestamp', 'toolName', 'touchedFiles', 'turnId'],
-      timelineTypes: ['code', 'terminal', 'terminal'],
-      inspectorTypes: ['kv', 'json'],
+      timelineTypes: ['notice', 'code', 'terminal', 'terminal'],
+      inspectorTypes: ['notice', 'kv', 'json'],
       rawRefLines: [19, 20, 21],
     },
     {

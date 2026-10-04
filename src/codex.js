@@ -8,7 +8,7 @@ const {
   backgroundTerminalCall,
   buildBackgroundTerminalRequests,
 } = require('./codex-background-terminal');
-const { backgroundTerminalLabel, compactBackgroundTerminalSections } = require('./shared/background-terminal-presentation');
+const { backgroundTerminalLabel, compactBackgroundTerminalSections, terminalOutcomeSummary } = require('./shared/background-terminal-presentation');
 const { terminalSourceEvidence, parseTerminalReceipt, parseNativeCommandOutput, nativeExecCommandArguments, buildTerminalContinuations, backgroundTerminalFactsForEvent } = require('./codex-terminal-continuations');
 
 const fs = require('node:fs');
@@ -4024,6 +4024,8 @@ const codexDetailBuilder = createCodexDetailBuilder({
   backgroundTerminalLabel,
   compactBackgroundTerminalSections,
   backgroundTerminalFactsForEvent,
+  terminalOutcomeSummary,
+  parseTerminalReceipt,
   sourceTrace: {
     classifyProtocolText,
     codexSourceLocator,

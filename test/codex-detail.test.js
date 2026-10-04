@@ -207,8 +207,8 @@ test('command, patch, and tool details keep stable section type boundaries', asy
   const tool = session.logicalEvents.find((candidate) => candidate.kind === 'other_tool_call' && candidate.toolName === 'update_plan');
 
   assert.deepEqual(sectionTypes(buildEventDetail(session, command.id, command.layer)), {
-    timeline: ['code', 'terminal', 'terminal'],
-    inspector: ['kv', 'json'],
+    timeline: ['notice', 'code', 'terminal', 'terminal'],
+    inspector: ['notice', 'kv', 'json'],
   });
   assert.deepEqual(sectionTypes(buildEventDetail(session, patch.id, patch.layer)), {
     timeline: ['patch'],

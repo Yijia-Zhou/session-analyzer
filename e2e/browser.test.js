@@ -73,7 +73,7 @@ for (const locale of ['en', 'zh-CN']) test(`Codex 0.160 Paginated typed tools an
   for (const [event, text, itemType] of expected) {
     await page.locator('#layerSelect').selectOption('main');
     const card = page.locator(`#timeline .event[data-event-id="${event.id}"]`);
-    await card.click();
+    await card.locator('.eventHeader').click();
     await waitForDetailView(page, 'inspector');
     await page.waitForFunction(({ eventId, text }) => document.querySelector(`[data-event-id="${eventId}"]`)?.textContent.includes(text), { eventId: event.id, text });
     assert.ok((await card.innerText()).includes(text));
@@ -1505,7 +1505,7 @@ for (const locale of ['en', 'zh-CN']) for (const presentation of ['timeline', 't
     if (presentation === 'trajectory') await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
     for (const i of [0, 2, 4]) {
       const eventId = patches[i].id;
-      await page.locator(presentation === 'timeline' ? `.event[data-event-id="${eventId}"]` : `[data-trajectory-event-id="${eventId}"]`).first().click();
+      await page.locator(presentation === 'timeline' ? `.event[data-event-id="${eventId}"] .eventHeader` : `[data-trajectory-event-id="${eventId}"]`).first().click();
       const surface = presentation === 'timeline' ? `#timeline .event[data-event-id="${eventId}"]` : '#detail';
       for (const selector of [`${surface} .patchFile [data-file-activity]`, '#detail .kvTable [data-file-activity]']) {
         const button = page.locator(selector).first();
@@ -2297,8 +2297,8 @@ test('collaboration navigation opens each confirmed target and restores reading 
       throw new Error(`${error.message}\n${await event.getAttribute('class')}\n${await event.innerText()}\n${await page.locator('#detail').innerText()}`);
     });
     assert.match(await page.locator(surface).innerText(), /Session unavailable in this project/);
-    await link.scrollIntoViewIfNeeded();
     await page.waitForLoadState('networkidle');
+    await link.scrollIntoViewIfNeeded();
     await link.focus();
     const before = await page.locator('.timelinePane').evaluate((pane) => pane.scrollTop);
     await page.keyboard.press('Enter');
@@ -7917,6 +7917,15 @@ for (const supersede of [false, 'selection', 'query']) test(`project search firs
     assert.match(await page.locator('#timeline .event.selected').innerText(), /Earlier independent message/);
     return;
   }
+  // HTTP/detail settlement does not finish Chromium's smooth scroll animation.
+  // Wait for the actual arrival, retaining the same viewport geometry contract.
+  await page.waitForFunction(() => {
+    const mark = document.querySelector('#timeline mark.activeSearchMark');
+    if (!mark) return false;
+    const rect = mark.getBoundingClientRect();
+    const pane = mark.closest('.timelinePane').getBoundingClientRect();
+    return rect.top >= Math.max(0, pane.top) && rect.bottom <= Math.min(innerHeight, pane.bottom);
+  });
   const geometry = await page.locator('#timeline mark.activeSearchMark').evaluate((mark) => {
     const rect = mark.getBoundingClientRect();
     const pane = mark.closest('.timelinePane').getBoundingClientRect();

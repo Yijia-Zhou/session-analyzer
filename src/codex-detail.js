@@ -1,8 +1,5 @@
 'use strict';
 
-const { terminalOutcomeSummary } = require('./shared/background-terminal-presentation');
-const { parseTerminalReceipt } = require('./codex-terminal-continuations');
-
 function createCodexDetailBuilder(deps) {
   const { semanticRaw = (raw) => raw } = deps.messages;
   const { historyFacts = () => null, resolveHistoryReference = () => null, historyOwner = () => '' } = deps.messages;
@@ -21,6 +18,8 @@ function createCodexDetailBuilder(deps) {
     backgroundTerminalLabel = () => '',
     compactBackgroundTerminalSections = (sections) => sections,
     backgroundTerminalFactsForEvent = () => null,
+    terminalOutcomeSummary,
+    parseTerminalReceipt,
   } = deps;
   const {
     codeModeAssociableOutputFragments,

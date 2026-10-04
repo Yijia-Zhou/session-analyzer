@@ -12,6 +12,10 @@ Follow-up patch presentation improvements also received independent Astra accept
 
 Follow-up validation passed the renderer suite 13/13, the existing file-navigation browser case (Timeline/Trajectory, activity pagination and reading-return focus), build and generated-asset checks. / 后续验证通过渲染器套件 13/13、既有文件导航浏览器用例（时间线／轨迹、活动分页及阅读返回焦点）、构建与生成资产检查。
 
+PR CI exposed seven Node failures missed by the initial focused selection: the detail builder imported dependencies directly instead of receiving them from its composition root, and older command-section assertions did not account for the newly accepted notice. Dependencies now use the existing injection boundary; section/golden assertions explicitly include the notice while retaining language, canonical metadata and Raw-reference checks. / PR CI 暴露初次定向选择遗漏的七个 Node 失败：详情构建器直接导入依赖而未从组装入口接收，旧命令段落断言未计入已认可的新说明。依赖现沿用既有注入边界；段落／黄金断言明确包含说明，同时保留语言、规范元数据及 Raw 引用检查。
+
+Six browser CI failures required precise test actions and readiness: click card headers rather than file-activity buttons under card-center coordinates, settle pending presentation before scrolling the collaboration link, and wait for a smooth-scroll match to enter the viewport before applying the unchanged geometry assertion. The ten corresponding browser cases pass. Full Node verification passes 1571/1571 and serial phase coverage passes in a separate worktree with the committed runbook, excluding the user's ongoing runbook edits. / 六个浏览器 CI 失败需要精确操作与就绪条件：点击卡片标题而非卡片中心坐标下的文件活动按钮，在协作链接滚动前完成待处理呈现，并等待平滑滚动的命中进入视口后执行未改变的几何断言。对应十个浏览器用例通过。独立 worktree 使用已提交 runbook、排除用户正在进行的 runbook 修改，全量 Node 验证 1571/1571 及顺序阶段覆盖均通过。
+
 Original evidence / 原证据: ignored `output/ui-walkthrough/1baefe6/`; new evidence / 新证据: ignored `output/ui-optimization/astra-20261004/`. Original data, images and baseline worktree remain immutable / 原始数据、图片和基线 worktree 保持不变。
 
 | ID | Deliverable / 交付 | Status / 状态 | Independent review / 独立评审 |
