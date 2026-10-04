@@ -4,6 +4,8 @@
 
 ### English
 
+- Interpret native DeepSeek bash/pwsh foreground outcomes for direct and Code Mode calls, including nonzero exits, signals, timeouts and stops. Classify unambiguous durable Codex `exec_command` requests as commands and read their native exit, duration and output receipts. Running results remain incomplete, missing exits remain unknown, and Raw stays exact.
+
 - Preserve Codex skipped-artifact diagnostics in committed indexes and startup reports, including reused indexes. Search complete admitted configuration facts independently of preview truncation.
 
 - Read Codex `.jsonl.zst` rollouts with sibling deduplication, stable Raw line references, private decoded snapshots and isolated compression diagnostics.
@@ -20,6 +22,8 @@
 - Keep large Codex histories readable when optional legacy Raw file/line lookup exceeds its capacity; exact recorded Raw ranges remain available. Batch transcript fingerprint hashing while preserving byte-level identity checks.
 
 ### 中文
+
+- 解释 DeepSeek 原生 bash／pwsh 直接调用和 Code Mode 调用的前台结果，包括非零退出、信号、超时与停止。将归属明确的 Codex 持久化 exec_command 请求分类为命令，读取原生回执中的退出码、耗时与输出。运行中结果保持未完成，缺失退出码保持未知，Raw 保持精确原文。
 
 - 在已提交索引与启动报告中保留 Codex 跳过工件的诊断，包括复用索引的情况。配置搜索使用完整已接纳事实，不再受预览截断影响。
 

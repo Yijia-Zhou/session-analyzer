@@ -9,7 +9,7 @@ const {
   buildBackgroundTerminalRequests,
 } = require('./codex-background-terminal');
 const { backgroundTerminalLabel, compactBackgroundTerminalSections } = require('./shared/background-terminal-presentation');
-const { terminalSourceEvidence, parseTerminalReceipt, buildTerminalContinuations, backgroundTerminalFactsForEvent } = require('./codex-terminal-continuations');
+const { terminalSourceEvidence, parseTerminalReceipt, parseNativeCommandOutput, nativeExecCommandArguments, buildTerminalContinuations, backgroundTerminalFactsForEvent } = require('./codex-terminal-continuations');
 
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -2228,6 +2228,8 @@ function relatedReasoning(eventText, responseText) {
 
 function parseFormattedCommandOutput(text) {
   const source = String(text || '');
+  const native = parseNativeCommandOutput(source);
+  if (native) return native;
   const match = source.match(/^Exit code:\s*(-?\d+)\r?\nWall time:\s*([^\n]+)\r?\nOutput:\r?\n([\s\S]*)$/);
   if (!match) return null;
   return {
@@ -2520,15 +2522,15 @@ function extractCommandSections(raws, event, session = {}) {
   const functionOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
   const execEnd = raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'exec_command_end');
   const execAny = execEnd || raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('exec_command_'));
-  const args = commandArgsFromRaw(functionCall);
+  const args = nativeExecCommandArguments(functionCall) || commandArgsFromRaw(functionCall);
   const formatted = parseFormattedCommandOutput(functionOutput?.output);
-  const commandText = execAny?.commandText || commandToText(args?.command);
+  const commandText = execAny?.commandText || commandToText(args?.cmd ?? args?.command);
   maybePushCodeSection(timelineSections, 'Command', commandText, inferCommandLanguage(commandText, args, commandLanguageContext(session)), 'request');
   if (timelineSections.at(-1)?.type === 'code') timelineSections.at(-1).role = 'command';
 
   maybePushKvSection(inspectorSections, 'Run context', [
     { key: 'cwd', value: String(execAny?.parsed?.payload?.cwd || args?.workdir || '') },
-    { key: 'process_id', value: String(execAny?.parsed?.payload?.process_id || '') },
+    { key: 'process_id', value: String(execAny?.parsed?.payload?.process_id ?? formatted?.processId ?? '') },
     { key: 'source', value: String(execAny?.parsed?.payload?.source || '') },
     { key: 'interaction_input', value: String(execAny?.parsed?.payload?.interaction_input || '') },
   ], 'context');
@@ -2537,7 +2539,7 @@ function extractCommandSections(raws, event, session = {}) {
     inspectorSections.push({ purpose: 'request', type: 'json', title: 'Arguments', value: args });
   }
 
-  const stdout = firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, execEnd?.parsed?.payload?.formatted_output, formatted?.output, execAny?.stdout, execAny?.aggregatedOutput);
+  const stdout = firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, execEnd?.parsed?.payload?.formatted_output, formatted?.output, execAny?.stdout, execAny?.aggregatedOutput, formatted ? '' : functionOutput?.output);
   const stderr = execEnd?.stderr || execAny?.stderr || '';
   maybePushTerminalSection(timelineSections, 'stdout', stdout, 'stdout', '', 'result');
   maybePushTerminalSection(timelineSections, 'stderr', stderr, 'stderr', '', 'result');
@@ -3611,7 +3613,8 @@ function codeModeShellResultSections(resultText) {
   const formatted = parseFormattedCommandOutput(resultText);
   if (formatted) {
     maybePushKvSection(sections, 'Run result', [
-      { key: 'Exit code', value: String(formatted.exitCode) },
+      { key: 'Exit code', value: formatted.exitCode == null ? '' : String(formatted.exitCode) },
+      { key: 'process_id', value: formatted.processId == null ? '' : String(formatted.processId) },
       { key: 'Wall time', value: formatted.wallTime },
     ], 'result');
     maybePushTerminalSection(sections, 'Output', formatted.output, 'stdout', '', 'result');
@@ -4224,6 +4227,7 @@ const codexLogicalBuilder = createCodexLogicalBuilder({
   tool: {
     ...toolLifecycleContract,
     commandArgsFromRaw,
+    nativeExecCommandArguments,
     commandToText,
     inferPatchSuccess,
     isFiniteNumberValue,
