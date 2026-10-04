@@ -368,6 +368,17 @@ function appendOriginalToolResultPruneDetail(detail, event, session) {
   return detail;
 }
 
+function appendShellResultDetail(detail, event) {
+  if (event.kind !== 'command') return detail;
+  detail.meta = { ...detail.meta, status: event.status, outputStats: event.outputStats };
+  if (event.outputStats.exitCode !== undefined) {
+    detail.inspectorSections.push(sectionKv([
+      { key: 'Exit code', value: event.outputStats.exitCode, fact: 'exitCode' },
+    ], 'result', 'Result'));
+  }
+  return detail;
+}
+
 function detailForToolOperation(event, session, parsedByOrdinal) {
   const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
   const records = parsedEventsForRawIds(
@@ -427,7 +438,7 @@ function detailForToolOperation(event, session, parsedByOrdinal) {
       'Incomplete operation',
     ));
   }
-  return appendOriginalToolResultPruneDetail(detail, event, session);
+  return appendOriginalToolResultPruneDetail(appendShellResultDetail(detail, event), event, session);
 }
 
 function dispatchTopologyForEvent(session, eventId) {
@@ -587,7 +598,7 @@ function detailForCodeDispatch(event, session, parsedByOrdinal, topology) {
   if (metadata) detail.inspectorSections.push(metadata);
   const owner = codeModeOwnerRefsSection(event, session, topology);
   if (owner) detail.inspectorSections.push(owner);
-  return detail;
+  return appendShellResultDetail(detail, event);
 }
 
 function workflowMemberKey(record) {

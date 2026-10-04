@@ -287,10 +287,11 @@ function createCodexRawParser(deps) {
         raw.preview = truncate(raw.messageText);
         raw.searchText = codexFullSearchText(payload.text);
       } else {
-        raw.preview = truncate(Object.entries(history.values || history)
+        const text = Object.entries(history.values || history)
           .filter(([key]) => !['type', 'itemId', 'realtimeSessionId'].includes(key))
-          .map(([key, value]) => `${key}: ${value}`).join(' · ') || history.type);
-        raw.searchText = raw.preview;
+          .map(([key, value]) => `${key}: ${value}`).join(' · ') || history.type;
+        raw.preview = truncate(text);
+        raw.searchText = codexFullSearchText(text);
       }
       return raw;
     }

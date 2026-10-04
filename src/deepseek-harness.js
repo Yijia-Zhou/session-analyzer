@@ -1,5 +1,7 @@
 'use strict';
 
+const { deepSeekShellResult } = require('./deepseek-shell-result');
+
 const { createSourceDiagnostics } = require('./source-diagnostics');
 
 const path = require('node:path');
@@ -1563,13 +1565,15 @@ function addPendingToolResult(session, call, resultRaw, resultEvent) {
   const failed = toolResultIsError(resultEvent);
   const outcomeUnknown = resultEvent.data?.message?.role === 'tool'
     && resultEvent.data?.error?.code === 'TOOL_OUTCOME_UNKNOWN';
-  const status = outcomeUnknown ? 'incomplete' : (failed ? 'failed' : 'success');
   const normalizedName = String(call.name || '').toLowerCase();
   const kind = isShellTool(normalizedName)
     ? 'command'
     : (normalizedName === 'run_code' ? 'code_mode_operation' : 'other_tool_call');
   const command = commandTextForTool(call.name, call.arguments);
   const args = parseToolArguments(call.arguments);
+  const shellResult = resultEvent.data?.message?.role === 'tool'
+    ? deepSeekShellResult(call.name, args, resultEvent.data.message.content, failed) : null;
+  const status = outcomeUnknown ? 'incomplete' : (failed ? 'failed' : shellResult?.status || 'success');
   const codeDescription = normalizedName === 'run_code' && typeof args?.description === 'string'
     ? args.description
     : '';
@@ -1593,10 +1597,10 @@ function addPendingToolResult(session, call, resultRaw, resultEvent) {
       resultText,
       resultEvent.data?.error ? `error=${resultEvent.data.error.name || ''}:${resultEvent.data.error.code || ''}` : '',
     ].filter(Boolean).join('\n'),
-    severity: outcomeUnknown ? 'warning' : (failed ? 'error' : 'normal'),
+    severity: status === 'failed' ? 'error' : ['incomplete', 'interrupted'].includes(status) ? 'warning' : 'normal',
     status,
     toolName: call.name || '',
-    outputStats: {},
+    outputStats: shellResult?.exitCode !== undefined ? { exitCode: shellResult.exitCode } : {},
     rawRefs: [dshRawRef(call.raw), dshRawRef(resultRaw)],
     channels: ['tool/call', 'tool/result'],
   });
@@ -1833,7 +1837,8 @@ function makeCodeDispatchEvent(session, node, outerCall) {
   const facts = node.facts;
   const resultText = settled ? dispatchResultText(settled.event.data) : '';
   const failed = settled?.event?.data?.isError === true;
-  const status = settled ? (failed ? 'failed' : 'success') : 'incomplete';
+  const shellResult = settled ? deepSeekShellResult(facts.name, typeof facts.arguments === 'string' ? parseToolArguments(facts.arguments) : facts.arguments, settled.event.data.content, failed) : null;
+  const status = settled ? (failed ? 'failed' : shellResult?.status || 'success') : 'incomplete';
   const kind = isShellTool(facts.name) ? 'command' : 'other_tool_call';
   const rawRows = [start, settled]
     .filter(Boolean)
@@ -1856,10 +1861,10 @@ function makeCodeDispatchEvent(session, node, outerCall) {
       `parentCallId=${facts.parentCallId}`,
       `subCallId=${facts.subCallId}`,
     ].filter(Boolean).join('\n'),
-    severity: failed ? 'error' : (settled ? 'normal' : 'warning'),
+    severity: status === 'failed' ? 'error' : ['incomplete', 'interrupted'].includes(status) ? 'warning' : 'normal',
     status,
     toolName: facts.name,
-    outputStats: {},
+    outputStats: shellResult?.exitCode !== undefined ? { exitCode: shellResult.exitCode } : {},
     rawRefs: rawRows.map((row) => dshRawRef(row.raw)),
     channels: rawRows.map((row) => row.event.type),
   });

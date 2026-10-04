@@ -90,7 +90,7 @@ test('native continuation survives hydration, pagination and search without tran
   const eventsBefore = JSON.stringify(session.logicalEvents);
   const eventFor = (call) => session.logicalEvents.find((event) => event.id.endsWith(`:${call}`));
   const e = eventFor('e1'); const w = eventFor('w1');
-  assert.equal(e.kind, 'other_tool_call');
+  assert.equal(e.kind, 'command');
   assert.equal(session.presentationIndexes.backgroundTerminalContinuations.get(w.id).originEventId, e.id);
   assert.equal(session.rawEvents.some((raw) => Object.hasOwn(raw, 'parsed')), false);
   const page = codex.getTimeline(index, session, { layer: 'main', offset: 1, limit: 1, q: 'npm test' });
@@ -331,8 +331,8 @@ test('compact materialization and hydration add presentation only, without origi
   const eventFor = (callId) => session.logicalEvents.find((event) => event.id.endsWith(`:${callId}`));
   assert.equal(session.logicalEvents.filter((event) => event.toolName === 'write_stdin').length, 6);
   assert.equal(facts.size, 5);
-  assert.equal(eventFor('origin').kind, 'other_tool_call');
-  for (const event of session.logicalEvents.filter((event) => event.layer === 'main')) assert.equal(event.kind, 'other_tool_call');
+  assert.equal(eventFor('origin').kind, 'command');
+  for (const event of session.logicalEvents.filter((event) => event.layer === 'main' && event.toolName === 'write_stdin')) assert.equal(event.kind, 'other_tool_call');
   assert.deepEqual(facts.get(eventFor('omitted').id), { action: 'poll', processId: 123 });
   assert.deepEqual(facts.get(eventFor('bad-id').id), { action: 'poll' });
   assert.equal(facts.has(eventFor('invalid').id), false);

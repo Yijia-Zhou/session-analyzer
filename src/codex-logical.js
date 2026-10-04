@@ -57,6 +57,7 @@ function createCodexLogicalBuilder(deps) {
     TOOL_LIFECYCLE_EVENT_TYPES,
     TOOL_LIFECYCLE_FAMILY,
     commandArgsFromRaw,
+    nativeExecCommandArguments = () => null,
     commandToText,
     inferPatchSuccess,
     isFiniteNumberValue,
@@ -504,7 +505,7 @@ function createCodexLogicalBuilder(deps) {
     return searchParts.join('\n');
   }
 
-  function buildToolLogicalEvent(callId, group, traceabilityRows = []) {
+  function buildToolLogicalEvent(callId, group, traceabilityRows = [], sourceEpochs = null) {
     const rawRefs = [...group.map(rawRef), ...traceabilityRows.map(rawRef)];
     const channels = [...new Set([...group, ...traceabilityRows].map((raw) => raw.recordType))];
     const first = group[0];
@@ -558,7 +559,14 @@ function createCodexLogicalBuilder(deps) {
     const completed = outcomeRows.some((raw) => /_end$/.test(raw.payloadType)) || imageCallCompleted || Boolean(functionOutput || customOutput);
     const explicitIncomplete = !completed && !failed && !declined;
 
-    const isCommandTool = toolName === 'shell_command' || execRows.length;
+    const nativeArgs = !customCall && !customOutput
+      && group.filter(raw => raw.recordType === 'response_item' && raw.payloadType === 'function_call').length === 1
+      && group.filter(raw => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output').length <= 1
+      && (!functionOutput || (functionOutput.line > functionCall.line
+        && (!sourceEpochs || sourceEpochs.get(functionOutput.rawId) === sourceEpochs.get(functionCall.rawId))
+        && (functionOutput.parsed?.payload?.namespace == null || functionOutput.parsed.payload.namespace === 'functions')))
+      ? nativeExecCommandArguments(functionCall) : null;
+    const isCommandTool = toolName === 'shell_command' || execRows.length || nativeArgs;
 
     if (execRows.length) {
       if (execEnd?.exitCode != null) outputStats.exitCode = execEnd.exitCode;
@@ -579,15 +587,16 @@ function createCodexLogicalBuilder(deps) {
 
     if (isCommandTool) {
       kind = 'command';
-      const args = commandArgsFromRaw(functionCall);
+      const args = nativeArgs || commandArgsFromRaw(functionCall);
       const exitCode = numericExitCode(execEnd?.exitCode, functionOutputInfo?.exitCode, customOutputObj?.metadata?.exit_code);
-      const commandText = execRows.find((raw) => raw.commandText)?.commandText || commandToText(args?.command);
-      const commandSearchSource = execRows.find((raw) => raw.parsed?.payload?.command)?.parsed.payload.command ?? args?.command;
-      status = declined ? 'declined' : failed || (exitCode != null && exitCode !== 0) ? 'failed' : exitCode === 0 ? 'success' : explicitIncomplete ? 'incomplete' : protocolStatus || 'completed';
+      const commandText = execRows.find((raw) => raw.commandText)?.commandText || commandToText(args?.cmd ?? args?.command);
+      const commandSearchSource = execRows.find((raw) => raw.parsed?.payload?.command)?.parsed.payload.command ?? args?.cmd ?? args?.command;
+      status = declined ? 'declined' : failed || (exitCode != null && exitCode !== 0) ? 'failed' : exitCode === 0 ? 'success' : (explicitIncomplete || (!execRows.length && functionOutputInfo?.processId !== undefined)) ? 'incomplete' : protocolStatus || 'completed';
       severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
       label = status === 'failed' ? 'Failed command' : status === 'declined' ? 'Declined command' : status === 'incomplete' ? 'Incomplete command' : 'Command';
       preview = truncate(commandText || functionCall?.output || group.find((raw) => raw.preview)?.preview || 'shell command');
       if (exitCode != null) outputStats.exitCode = exitCode;
+      if (!execEnd && functionOutputInfo?.durationMs !== undefined) outputStats.durationMs = functionOutputInfo.durationMs;
       if (!outputStats.durationMs && customOutputObj?.metadata?.duration_seconds) {
         outputStats.durationMs = Math.round(Number(customOutputObj.metadata.duration_seconds) * 1000);
       }
@@ -1165,7 +1174,7 @@ function createCodexLogicalBuilder(deps) {
           .filter((raw) => !consumed.has(raw.rawId) && !groupRawIds.has(raw.rawId))
           .sort((a, b) => a.line - b.line)
         : [];
-      const logicalEvent = buildToolLogicalEvent(callId, group, traceabilityRows);
+      const logicalEvent = buildToolLogicalEvent(callId, group, traceabilityRows, epochs);
       logicalEvents.push(logicalEvent);
       if (logicalEvent.kind === 'goal' && ['create_goal', 'update_goal'].includes(logicalEvent.toolName)) {
         const functionCall = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');

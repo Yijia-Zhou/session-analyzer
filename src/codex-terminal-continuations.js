@@ -76,12 +76,30 @@ function terminalSourceEvidence(record) {
   return 'barrier';
 }
 
-function parseTerminalReceipt(text) {
+function parseNativeCommandOutput(text) {
   if (typeof text !== 'string') return null;
   // Only the native formatter prefix is evidence. Never scan the output body.
   const match = text.match(/^(?:Chunk ID: [A-Za-z0-9_-]{1,128}\n)?Wall time: (?:0|[1-9]\d*)\.\d{4} seconds\nProcess (running with session ID|exited with code) (-?(?:0|[1-9]\d*))\n(?:Original token count: (?:0|[1-9]\d*)\n)?Output:\n/);
   if (!match || !i32(Number(match[2])) || String(Number(match[2])) !== match[2]) return null;
-  return match[1] === 'running with session ID' ? { processId: Number(match[2]) } : { exitCode: Number(match[2]) };
+  const wallTime = text.match(/(?:^|\n)Wall time: ((?:0|[1-9]\d*)\.\d{4}) seconds\n/)[1];
+  const durationMs = Math.round(Number(wallTime) * 1000);
+  return { ...(match[1] === 'running with session ID' ? { processId: Number(match[2]) } : { exitCode: Number(match[2]) }),
+    ...(Number.isSafeInteger(durationMs) ? { durationMs } : {}), wallTime: `${wallTime} seconds`, output: text.slice(match[0].length) };
+}
+
+function parseTerminalReceipt(text) {
+  const result = parseNativeCommandOutput(text);
+  if (!result) return null;
+  return result.processId !== undefined ? { processId: result.processId } : { exitCode: result.exitCode };
+}
+
+function nativeExecCommandArguments(raw) {
+  const payload = raw?.parsed?.payload;
+  if (raw?.recordType !== 'response_item' || raw.payloadType !== 'function_call'
+      || !['exec_command', 'functions.exec_command'].includes(raw.toolName)
+      || (payload?.namespace != null && payload.namespace !== 'functions')) return null;
+  const args = uniqueArguments(payload?.arguments ?? raw.output);
+  return args && typeof args.cmd === 'string' ? args : null;
 }
 
 function commandPreview(text) {
@@ -200,4 +218,4 @@ function backgroundTerminalFactsForEvent(session, eventId) {
   return origin ? { ...fact, originEventId: relation.originEventId, commandPreview: origin.commandPreview } : { ...fact };
 }
 
-module.exports = { terminalSourceEvidence, parseTerminalReceipt, buildTerminalContinuations, backgroundTerminalFactsForEvent };
+module.exports = { terminalSourceEvidence, parseTerminalReceipt, parseNativeCommandOutput, nativeExecCommandArguments, buildTerminalContinuations, backgroundTerminalFactsForEvent };

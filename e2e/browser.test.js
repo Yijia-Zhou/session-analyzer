@@ -247,6 +247,49 @@ test('Codex identity-free Raw Reference fallback shows capacity without requesti
   assert.equal(await page.locator('#detail .rawRefsView .inspectorSection').count(), 0);
 });
 
+for (const source of ['codex', 'deepseek-harness']) for (const locale of ['en', 'zh-CN']) {
+  test(`native shell exit 7 is failed and readable through browser Detail and Raw (${source}, ${locale})`, async t => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'sa-shell-browser-'));
+    t.after(() => fsp.rm(root, { recursive: true, force: true }));
+    const project = path.join(root, 'repo');
+    await fsp.mkdir(project);
+    let index;
+    if (source === 'codex') {
+      await writeJsonl(path.join(root, 'sessions', 'synthetic.jsonl'), [
+        { type: 'session_meta', payload: { id: 'aaaaaaaa-1004-4004-8004-aaaaaaaaaaaa', cwd: project } },
+        { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'exit-seven', arguments: '{"cmd":"SYNTHETIC_EXIT_COMMAND"}' } },
+        { type: 'response_item', payload: { type: 'function_call_output', call_id: 'exit-seven', output: 'Wall time: 1.0000 seconds\nProcess exited with code 7\nOutput:\nSYNTHETIC_EXIT_OUTPUT' } },
+      ]);
+      index = await buildIndex({ repoRoot: project, codexHome: root });
+    } else {
+      const { buildDeepSeekIndex } = require('../src/deepseek-harness');
+      const sourceHome = path.join(root, 'sessions');
+      await writeJsonl(path.join(sourceHome, 'project', 'synthetic', 'session.v4.jsonl'), [
+        { type: 'session', version: 4, id: 'synthetic', cwd: project, createdAt: 1, isSeeded: false, delegationDepth: 0 },
+        { type: 'tool/call', seq: 0, time: 1000, data: { turn: 1, step: 1, callId: 'exit-seven', name: 'pwsh', arguments: '{"command":"SYNTHETIC_EXIT_COMMAND"}' } },
+        { type: 'tool/result', seq: 1, time: 1001, surfaceOp: 'append', data: { turn: 1, step: 1, message: { id: 'result', role: 'tool', source: { kind: 'tool', callId: 'exit-seven' }, toolCallId: 'exit-seven', isError: false, content: [{ type: 'text', text: 'SYNTHETIC_EXIT_OUTPUT\n[exit code: 7]' }] } } },
+      ]);
+      index = await buildDeepSeekIndex({ repoRoot: project, sourceHome });
+    }
+    const session = await materializeIndexedSession(index);
+    const command = session.logicalEvents.find(event => event.kind === 'command');
+    assert.equal(command.status, 'failed');
+    const { page } = await openApp(t, index, { locale, skipProjectReindex: true });
+    const card = page.locator(`#timeline .event[data-event-id="${command.id}"]`);
+    await card.click();
+    await waitForDetailView(page, 'inspector');
+    await page.waitForFunction(id => document.querySelector(`[data-event-id="${id}"]`)?.textContent.includes('SYNTHETIC_EXIT_OUTPUT'), command.id);
+    assert.match(await card.innerText(), /SYNTHETIC_EXIT_COMMAND/);
+    assert.equal(command.outputStats.exitCode, 7);
+    await page.locator('#detail [data-detail-action="raw"]').click();
+    await waitForDetailView(page, 'rawRefs');
+    await page.locator('#layerSelect').selectOption('raw');
+    await page.locator(`#timeline .event[data-event-id="${command.rawRefs.at(-1).rawId}"]`).click();
+    await page.waitForFunction(() => document.querySelector('#detail')?.textContent.includes('SYNTHETIC_EXIT_OUTPUT'));
+    assert.match(await page.locator('#detail').innerText(), source === 'codex' ? /Process exited with code 7/ : /exit code: 7/);
+  });
+}
+
 for (const locale of ['en', 'zh-CN']) test(`persisted realtime history navigates Main, Protocol and Raw in both presentations (${locale})`, async (t) => {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-persisted-browser-'));
   t.after(() => fsp.rm(home, { recursive: true, force: true }));

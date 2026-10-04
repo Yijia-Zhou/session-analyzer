@@ -79,6 +79,7 @@
     "src/deepseek-harness-detail.js",
     "src/deepseek-harness-storage.js",
     "src/deepseek-harness-stream.js",
+    "src/deepseek-shell-result.js",
     "src/codex-source.js",
     "src/codex-turn-items.js",
     "src/codex-tool-lifecycle-contract.js",
