@@ -4,6 +4,8 @@
 
 ### English
 
+- Preserve Codex skipped-artifact diagnostics in committed indexes and startup reports, including reused indexes. Search complete admitted configuration facts independently of preview truncation.
+
 - Read Codex `.jsonl.zst` rollouts with sibling deduplication, stable Raw line references, private decoded snapshots and isolated compression diagnostics.
 
 - Show valid named Codex external inputs independently of tool executions, preserve asynchronous question/option semantics, and display ordered file-image references with explicit offline preview placeholders. Keep unknown canonical items and execution metadata in their documented Protocol/Raw boundaries.
@@ -18,6 +20,8 @@
 - Keep large Codex histories readable when optional legacy Raw file/line lookup exceeds its capacity; exact recorded Raw ranges remain available. Batch transcript fingerprint hashing while preserving byte-level identity checks.
 
 ### 中文
+
+- 在已提交索引与启动报告中保留 Codex 跳过工件的诊断，包括复用索引的情况。配置搜索使用完整已接纳事实，不再受预览截断影响。
 
 - 支持读取 Codex .jsonl.zst rollout，包括 sibling 去重、稳定 Raw 行引用、私有解压快照及隔离的压缩读取诊断。
 

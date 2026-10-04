@@ -78,6 +78,7 @@ const {
 } = require('./shared/codex-source-stat');
 const codexRolloutStorage = require('./codex-rollout-storage');
 const codexLegacyRawOwners = require('./codex-legacy-raw-owners');
+const { createSourceDiagnostics } = require('./source-diagnostics');
 const {
   createCodexCacheObservationSeed,
   finalizeCodexCacheObservation,
@@ -5899,12 +5900,17 @@ async function buildIndex({
   codexHome,
   onProgress,
   signal,
-  onDiagnostic,
+  onDiagnostic: observeDiagnostic,
   previousIndex = null,
   retainFullSourceRecordsForTests = false,
   beforeSourceSnapshotVerificationForTests = null,
   cacheObservationForTests = false,
 }) {
+  const sourceDiagnostics = createSourceDiagnostics();
+  const onDiagnostic = (diagnostic) => {
+    sourceDiagnostics.add(diagnostic);
+    observeDiagnostic?.(diagnostic);
+  };
   const resolvedRepo = resolveFsPath(repoRoot);
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
@@ -6131,6 +6137,7 @@ async function buildIndex({
     sessions,
     sessionsById,
     legacyRawOwners: buildCodexLegacyRawOwnerIndex(sessions),
+    sourceDiagnostics: sourceDiagnostics.summary,
     eventKinds: eventKindCatalog(sessions),
     codeModeRequests: codeModeRequestCatalog(sessions),
     totals: {
@@ -6154,7 +6161,7 @@ async function buildSourceBackedIndex({
   codexHome,
   onProgress,
   signal,
-  onDiagnostic,
+  onDiagnostic: observeDiagnostic,
   previousIndex = null,
   beforeSourceSnapshotVerificationForTests = null,
   beforeRelationshipInferenceForTests = null,
@@ -6164,6 +6171,11 @@ async function buildSourceBackedIndex({
   legacyRawOwnerPolicyForTests = undefined,
   onLegacyRawCapacity = null,
 }) {
+  const sourceDiagnostics = createSourceDiagnostics();
+  const onDiagnostic = (diagnostic) => {
+    sourceDiagnostics.add(diagnostic);
+    observeDiagnostic?.(diagnostic);
+  };
   const resolvedRepo = resolveFsPath(repoRoot);
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
@@ -6291,6 +6303,7 @@ async function buildSourceBackedIndex({
       projectQueryStore: previousIndex.projectQueryStore,
       materializationDependencies: previousIndex.materializationDependencies,
       legacyRawOwners: previousIndex.legacyRawOwners,
+      sourceDiagnostics: sourceDiagnostics.summary,
       eventKinds: previousIndex.eventKinds,
       codeModeRequests: previousIndex.codeModeRequests,
       totals: {
@@ -6717,6 +6730,7 @@ async function buildSourceBackedIndex({
     projectQueryStore,
     materializationDependencies,
     legacyRawOwners,
+    sourceDiagnostics: sourceDiagnostics.summary,
     eventKinds: catalogs.eventKinds,
     codeModeRequests: catalogs.codeModeRequests,
     totals: {
