@@ -1,6 +1,6 @@
 {
   "name": "session-analyzer",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Local session history viewer for Codex, Claude Code, and DeepSeek Harness. Review agent work, inspect tool calls and results, and search sessions by project.",
   "keywords": [
     "codex",
@@ -122,7 +122,7 @@
   },
   "dependencies": {
     "acorn": "8.15.0",
-    "markdown-it": "14.3.0"
+    "markdown-it": "14.3.2"
   },
   "allowScripts": {
     "esbuild@0.28.1": true,

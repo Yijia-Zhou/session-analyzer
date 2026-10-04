@@ -4,10 +4,10 @@ The installed CLI supports Node.js 22 or newer on a supported LTS line (Node.js 
 
 ## Toolchain and dependencies / 工具链与依赖
 
-For a fresh 0.2.0 release-candidate checkout, install Git and clone the public branch into a new directory. These commands leave the terminal outside the checkout so the toolchain bootstrap below runs in the correct place. The accepted feature-freeze baseline is `e9b7a1923c12f18d2f283dacb998bc51a11cfa66`; record the actual commit after cloning because the branch can advance. / 首次试用 0.2.0 release candidate 时，准备 Git 并将公开分支克隆到新目录。以下命令不会进入 checkout，使后续工具链 bootstrap 在正确位置运行。已接受的功能冻结基线为 `e9b7a1923c12f18d2f283dacb998bc51a11cfa66`；分支可能推进，克隆后应记录实际 commit。
+After publication, reproduce the 0.2.1 release source from its immutable `v0.2.1` tag. Until that tag exists, use the exact source branch and SHA recorded for release review; a staged package is not publicly installable. These commands leave the terminal outside the checkout so the toolchain bootstrap below runs in the correct place. / 发布后，从不可变的 `v0.2.1` tag 复现 0.2.1 release source。在该 tag 建立前，按发布评审记录使用精确来源分支与 SHA；staged 包不能公开安装。以下命令不会进入 checkout，使后续工具链 bootstrap 在正确位置运行。
 
 ```sh
-git clone --branch towards-0.2.0 https://github.com/Yijia-Zhou/session-analyzer.git
+git clone --branch v0.2.1 https://github.com/Yijia-Zhou/session-analyzer.git
 git -C session-analyzer rev-parse HEAD
 ```
 
@@ -71,7 +71,7 @@ For bounded DeepSeek source-reference characterization, run `node scripts/deepse
 
 Phase-accounting changes also require `npm run test:profile-coverage`, run with Node/browser suites paused. It measures three sequential 100-row real-HTTP samples and gates their minimum residual at an absolute 5 ms; ordinary concurrent Node tests enforce topology and semantic accounting without a one-shot residual gate. CI runs this separate step only on Node 24 / Ubuntu after `npm test`. See [measurement policy](design-docs/deepseek-readback-measurement.md#current-coverage-policy). / 阶段核算修改还需在暂停 Node／浏览器套件时执行 `npm run test:profile-coverage`。它顺序测量三次 100 行真实 HTTP 样本，以最小 residual 不超过绝对 5 ms 为门槛；普通并发 Node 测试严格检查拓扑与语义核算，不对单次 residual 设门槛。CI 仅在 Node 24／Ubuntu 的 `npm test` 之后执行该独立步骤。详见[量测策略](design-docs/deepseek-readback-measurement.md#current-coverage-policy)。
 
-- Documentation or agent-instruction changes: inspect the diff, check local references and bilingual consistency, and run `git diff --check`. If a hook or helper changes, check its syntax and exercise its relevant behavior. / 文档或 agent 指令变更：审查 diff，检查本地引用与双语一致性，运行 `git diff --check`。若修改 hook 或辅助脚本，检查语法并实际验证相关行为。
+- Documentation or agent-instruction changes: inspect the diff, check local references and bilingual consistency, and run `git diff --check`. When tests or scripts read document headings or section text, search for those consumers with `rg` and run the affected contract tests; link and syntax checks alone may miss structural dependencies. If a hook or helper changes, check its syntax and exercise its relevant behavior. / 文档或 agent 指令变更：审查 diff，检查本地引用与双语一致性，并运行 `git diff --check`。当测试或脚本会读取文档标题或章节文本时，用 `rg` 搜索这些消费方并运行受影响的契约测试；仅检查链接与语法可能遗漏结构依赖。若修改 hook 或辅助脚本，检查其语法并实际验证相关行为。
 - Code changes: run the affected `test/*.test.js` files with `node --test test/<affected>.test.js`. Parser/schema work retains the [schema runbook](design-docs/schema-update-runbook.md)'s evidence and focused-fixture requirements. Shared contracts or unresolved cross-source impact may require the full Node suite. / 代码变更：用 `node --test test/<affected>.test.js` 运行受影响测试。解析器／schema 工作保留 [schema 手册](design-docs/schema-update-runbook.md)的依据与聚焦 fixture 要求。共享契约或尚未排除的跨来源影响可能需要全部 Node 测试。
 - Browser code changes: rebuild with `npm run build`, run `npm run build:check`, and verify the affected interaction; use browser tests when rendering or navigation behavior changes. Package/CLI/distribution changes need the relevant package checks. / 浏览器代码变更：执行 `npm run build` 重新构建及 `npm run build:check`，核验受影响交互；渲染或导航行为变更时使用浏览器测试。包／CLI／分发变更需要相关包检查。
 - Release work follows the [release runbook](design-docs/npm-release-runbook.md)'s required gates and existing rules for reusing unchanged CI evidence. This scope guidance does not weaken release or CI requirements. / 发布工作遵循[发布手册](design-docs/npm-release-runbook.md)的强制门槛及已有的未变更 CI 证据复用规则。本范围指南不削弱发布或 CI 要求。
