@@ -16,6 +16,8 @@ PR CI exposed seven Node failures missed by the initial focused selection: the d
 
 Six browser CI failures required precise test actions and readiness: click card headers rather than file-activity buttons under card-center coordinates, settle pending presentation before scrolling the collaboration link, and wait for a smooth-scroll match to enter the viewport before applying the unchanged geometry assertion. The ten corresponding browser cases pass. Full Node verification passes 1571/1571 and serial phase coverage passes in a separate worktree with the committed runbook, excluding the user's ongoing runbook edits. / 六个浏览器 CI 失败需要精确操作与就绪条件：点击卡片标题而非卡片中心坐标下的文件活动按钮，在协作链接滚动前完成待处理呈现，并等待平滑滚动的命中进入视口后执行未改变的几何断言。对应十个浏览器用例通过。独立 worktree 使用已提交 runbook、排除用户正在进行的 runbook 修改，全量 Node 验证 1571/1571 及顺序阶段覆盖均通过。
 
+The first repaired CI passed all Node/package jobs and 312/313 browser cases; the remaining collaboration setup still raced viewport-driven DOM replacement during an explicit scroll action. The test now reveals the source with native focus, settles newly visible requests, reacquires focus and observes the exact target in the panel's vertical visible bounds before departure. The original strict return-offset assertion remains, and three consecutive local repetitions pass. / 首次修复后的 CI 通过全部 Node／package 作业及 312/313 浏览器用例；剩余协作准备步骤的显式滚动仍与视口详情引发的 DOM 替换竞态冲突。测试现以原生焦点揭示来源，完成新可见请求，重新取得焦点并确认精确目标位于面板垂直可视范围后出发。原严格返回偏移断言保持不变，本地连续三次复验通过。
+
 Original evidence / 原证据: ignored `output/ui-walkthrough/1baefe6/`; new evidence / 新证据: ignored `output/ui-optimization/astra-20261004/`. Original data, images and baseline worktree remain immutable / 原始数据、图片和基线 worktree 保持不变。
 
 | ID | Deliverable / 交付 | Status / 状态 | Independent review / 独立评审 |

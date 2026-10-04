@@ -2297,9 +2297,18 @@ test('collaboration navigation opens each confirmed target and restores reading 
       throw new Error(`${error.message}\n${await event.getAttribute('class')}\n${await event.innerText()}\n${await page.locator('#detail').innerText()}`);
     });
     assert.match(await page.locator(surface).innerText(), /Session unavailable in this project/);
-    await page.waitForLoadState('networkidle');
-    await link.scrollIntoViewIfNeeded();
+    // Native focus reveals the link without a separate scroll action holding
+    // a DOM node that viewport-driven detail hydration can replace.
     await link.focus();
+    await page.waitForLoadState('networkidle');
+    await link.focus();
+    await page.waitForFunction((id) => {
+      const active = document.activeElement;
+      if (active?.dataset.openCollaborationSession !== id) return false;
+      const rect = active.getBoundingClientRect();
+      const pane = active.closest('.timelinePane, .detailPane')?.getBoundingClientRect();
+      return pane && rect.top >= pane.top && rect.bottom <= pane.bottom;
+    }, childId);
     const before = await page.locator('.timelinePane').evaluate((pane) => pane.scrollTop);
     await page.keyboard.press('Enter');
     await page.waitForFunction((id) => document.querySelector('.sessionItem.active')?.dataset.sessionId === id, childId);
