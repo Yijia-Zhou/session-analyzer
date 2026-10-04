@@ -73,7 +73,7 @@ for (const locale of ['en', 'zh-CN']) test(`Codex 0.160 Paginated typed tools an
   for (const [event, text, itemType] of expected) {
     await page.locator('#layerSelect').selectOption('main');
     const card = page.locator(`#timeline .event[data-event-id="${event.id}"]`);
-    await card.click();
+    await card.locator('.eventHeader').click();
     await waitForDetailView(page, 'inspector');
     await page.waitForFunction(({ eventId, text }) => document.querySelector(`[data-event-id="${eventId}"]`)?.textContent.includes(text), { eventId: event.id, text });
     assert.ok((await card.innerText()).includes(text));
@@ -493,6 +493,7 @@ test('background terminal continuation suffix and origin navigation preserve sep
   await captureTerminalPresentation(page, 'native-poll');
   await originLink.click();
   await page.waitForFunction((id) => document.querySelector('#timeline .event.selected')?.dataset.eventId === id, originId);
+  await page.locator('#detail .terminalRequestDirectory > summary').click();
   await page.locator(`#detail [data-target-event-id="${waitId}"]`).click();
   await page.waitForFunction((id) => document.querySelector('#timeline .event.selected')?.dataset.eventId === id, waitId);
   const nextId = session.logicalEvents.find((event) => event.id.endsWith(':w2')).id;
@@ -534,6 +535,7 @@ test('bounded terminal directory explains its limit and links beyond it in both 
     const { page } = await openApp(t, index, { locale });
     await page.locator(`#timeline .event[data-event-id="${originId}"] .eventKind`).click();
     if (presentation === 'trajectory') await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
+    await page.locator('#detail .terminalRequestDirectory > summary').click();
     await page.locator(`#detail [data-target-event-id="${requests[127].id}"]`).waitFor();
     assert.match(await page.locator('#detail').innerText(), /128.*129/);
     assert.equal(await page.locator('#detail .eventRefsBlock [data-target-event-id]').count(), 128);
@@ -1503,7 +1505,7 @@ for (const locale of ['en', 'zh-CN']) for (const presentation of ['timeline', 't
     if (presentation === 'trajectory') await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
     for (const i of [0, 2, 4]) {
       const eventId = patches[i].id;
-      await page.locator(presentation === 'timeline' ? `.event[data-event-id="${eventId}"]` : `[data-trajectory-event-id="${eventId}"]`).first().click();
+      await page.locator(presentation === 'timeline' ? `.event[data-event-id="${eventId}"] .eventHeader` : `[data-trajectory-event-id="${eventId}"]`).first().click();
       const surface = presentation === 'timeline' ? `#timeline .event[data-event-id="${eventId}"]` : '#detail';
       for (const selector of [`${surface} .patchFile [data-file-activity]`, '#detail .kvTable [data-file-activity]']) {
         const button = page.locator(selector).first();
@@ -1556,7 +1558,7 @@ test('file navigation exposes a local patch directory and paginated recorded act
   for (const presentation of ['timeline', 'trajectory']) {
     const { page, baseUrl } = await openApp(t, index, { locale: 'en' });
     await page.locator(`[data-session-id="${sessionId}"]`).click();
-    await page.locator(`.event[data-event-id="${eventId}"]`).click();
+    await page.locator(`.event[data-event-id="${eventId}"] .eventHeader`).click();
     if (presentation === 'trajectory') await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
     const surface = presentation === 'timeline' ? `#timeline .event[data-event-id="${eventId}"]` : '#detail';
     await page.locator(`${surface} [data-patch-file-index="1"]`).click();
@@ -2291,10 +2293,23 @@ test('collaboration navigation opens each confirmed target and restores reading 
     await event.click();
     const surface = presentation === 'timeline' ? '#timeline' : '#detail';
     const link = page.locator(`${surface} [data-open-collaboration-session="${childId}"]`).first();
-    await link.waitFor();
+    await link.waitFor().catch(async (error) => {
+      throw new Error(`${error.message}\n${await event.getAttribute('class')}\n${await event.innerText()}\n${await page.locator('#detail').innerText()}`);
+    });
     assert.match(await page.locator(surface).innerText(), /Session unavailable in this project/);
-    const before = await page.locator('.timelinePane').evaluate((pane) => pane.scrollTop);
+    // Native focus reveals the link without a separate scroll action holding
+    // a DOM node that viewport-driven detail hydration can replace.
     await link.focus();
+    await page.waitForLoadState('networkidle');
+    await link.focus();
+    await page.waitForFunction((id) => {
+      const active = document.activeElement;
+      if (active?.dataset.openCollaborationSession !== id) return false;
+      const rect = active.getBoundingClientRect();
+      const pane = active.closest('.timelinePane, .detailPane')?.getBoundingClientRect();
+      return pane && rect.top >= pane.top && rect.bottom <= pane.bottom;
+    }, childId);
+    const before = await page.locator('.timelinePane').evaluate((pane) => pane.scrollTop);
     await page.keyboard.press('Enter');
     await page.waitForFunction((id) => document.querySelector('.sessionItem.active')?.dataset.sessionId === id, childId);
     await page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('Child own work'));
@@ -7845,6 +7860,87 @@ test('browser project scope renders cards, aggregate summary, and filter-only re
       && url.searchParams.get('sort') === 'latest-match-desc'
       && !url.searchParams.has('q');
   }), true);
+});
+
+for (const supersede of [false, 'selection', 'query']) test(`project search first arrival ${supersede ? `yields to a newer ${supersede} during detail loading` : 'keeps a long-body tail match visible after detail settlement'}`, async (t) => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'project-tail-match-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const project = path.join(home, 'repo');
+  const id = 'aaaaaaaa-1004-4004-8004-aaaaaaaaaaaa';
+  const text = `${'Synthetic long paragraph for search navigation.\n\n'.repeat(700)}TAIL_MATCH_742`;
+  await writeJsonl(path.join(home, 'sessions', 'long.jsonl'), [
+    { timestamp: '2026-10-04T10:00:00Z', type: 'session_meta', payload: { id, cwd: project } },
+    { timestamp: '2026-10-04T10:00:00.500Z', type: 'event_msg', payload: { type: 'user_message', message: 'Earlier independent message' } },
+    { timestamp: '2026-10-04T10:00:00.600Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', call_id: 'patch-origin',
+      input: `*** Begin Patch\n${Array.from({ length: 21 }, (_, i) => `*** Update File: src/feature-${i}/a.js\n@@\n-before\n+after\n`).join('')}*** End Patch` } },
+    { timestamp: '2026-10-04T10:00:00.700Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'patch-origin', output: 'Success' } },
+    { timestamp: '2026-10-04T10:00:01Z', type: 'event_msg', payload: { type: 'user_message', message: text } },
+  ]);
+  await writeJsonl(path.join(home, 'sessions', 'other.jsonl'), [
+    { timestamp: '2026-10-04T11:00:00Z', type: 'session_meta', payload: { id: 'bbbbbbbb-1004-4004-8004-bbbbbbbbbbbb', cwd: project } },
+    { timestamp: '2026-10-04T11:00:01Z', type: 'event_msg', payload: { type: 'user_message', message: 'Unrelated later session' } },
+  ]);
+  const index = await buildIndex({ repoRoot: project, codexHome: home });
+  const detailStarted = deferred();
+  const releaseDetail = deferred();
+  const releasePatch = deferred();
+  t.after(() => releaseDetail.resolve());
+  t.after(() => releasePatch.resolve());
+  const { page } = await openApp(t, index, { locale: 'en', beforeGoto: async (p) => {
+    await p.route(`**/api/sessions/${id}/events/*/detail*`, async (route) => {
+      const url = decodeURIComponent(route.request().url());
+      if (url.includes(':logical:call:patch-origin/')) {
+        await releasePatch.promise;
+        return route.continue();
+      }
+      if (!url.includes(':logical:user:5/')) return route.continue();
+      detailStarted.resolve();
+      await releaseDetail.promise;
+      await route.continue();
+    });
+  } });
+  assert.notEqual(await page.locator('.sessionItem.active').getAttribute('data-session-id'), id);
+  await switchToProjectScope(page);
+  await fillSearch(page, 'TAIL_MATCH_742');
+  await waitForProjectCards(page);
+  await page.locator('[data-project-result-session-id]').first().focus();
+  await page.keyboard.press('Enter');
+  await detailStarted.promise;
+  await page.waitForFunction(() => document.querySelector('.eventLoadingSnippet')?.textContent.includes('TAIL_MATCH_742'));
+  if (supersede === 'selection') await page.locator('#timeline .event').filter({ hasText: 'Earlier independent message' }).locator('.eventKind').click();
+  if (supersede === 'query') await Promise.all([
+    page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/timeline') && new URL(response.url()).searchParams.get('q') === 'NEW_QUERY_WITHOUT_MATCH'),
+    fillSearch(page, 'NEW_QUERY_WITHOUT_MATCH'),
+  ]);
+  releaseDetail.resolve();
+  if (!supersede) await page.waitForFunction(() => document.querySelector('.event.selected')?.innerText.length > 30000);
+  releasePatch.resolve();
+  await page.waitForLoadState('networkidle');
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  if (supersede === 'query') {
+    assert.equal(await page.locator('#searchInput').inputValue(), 'NEW_QUERY_WITHOUT_MATCH');
+    assert.equal(await page.locator('#timeline mark.activeSearchMark').count(), 0);
+    return;
+  }
+  if (supersede === 'selection') {
+    assert.match(await page.locator('#timeline .event.selected').innerText(), /Earlier independent message/);
+    return;
+  }
+  // HTTP/detail settlement does not finish Chromium's smooth scroll animation.
+  // Wait for the actual arrival, retaining the same viewport geometry contract.
+  await page.waitForFunction(() => {
+    const mark = document.querySelector('#timeline mark.activeSearchMark');
+    if (!mark) return false;
+    const rect = mark.getBoundingClientRect();
+    const pane = mark.closest('.timelinePane').getBoundingClientRect();
+    return rect.top >= Math.max(0, pane.top) && rect.bottom <= Math.min(innerHeight, pane.bottom);
+  });
+  const geometry = await page.locator('#timeline mark.activeSearchMark').evaluate((mark) => {
+    const rect = mark.getBoundingClientRect();
+    const pane = mark.closest('.timelinePane').getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, paneTop: Math.max(0, pane.top), paneBottom: Math.min(innerHeight, pane.bottom) };
+  });
+  assert.ok(geometry.top >= geometry.paneTop && geometry.bottom <= geometry.paneBottom, JSON.stringify(geometry));
 });
 
 test('browser project return surfaces preserve query, filters, cards, scope and focus', { timeout: 45000 }, async (t) => {
@@ -14923,6 +15019,23 @@ test('browser read from here clears structured filters and preserves free text',
   await page.waitForFunction((id) => document.querySelector('#timeline .event.selected')?.dataset.eventId === id, selectedId);
 });
 
+test('browser folding rule keyboard changes retain the same select and adjacent Inspector focus', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en', viewport: { width: 1280, height: 800 } });
+  await selectPrimarySession(page);
+  const rule = page.locator('#detail [data-profile-kind="command"]');
+  await rule.focus();
+  const before = await rule.inputValue();
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  assert.notEqual(await rule.inputValue(), before);
+  assert.equal(await rule.evaluate((select) => select === document.activeElement), true);
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await page.evaluate(() => document.querySelector('#detail').contains(document.activeElement)), true);
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.querySelector('#detail').contains(document.activeElement)), true);
+});
+
 test('browser folding profile edits save, cancel, and repair invalid localStorage state', async (t) => {
   const index = await buildFixtureIndex();
   const { page, baseUrl } = await openApp(t, index);
@@ -15552,7 +15665,8 @@ test('browser onboarding distinguishes source diagnostics from an empty source a
   assert.match(await page.locator('#sourceDiagnostics').textContent(), /22.15.0/);
   assert.equal(await page.locator('#sourceDiagnostics details').getAttribute('open'), null);
   await page.locator('#sourceDiagnostics summary').click();
-  assert.equal(await page.locator('#sourceDiagnostics details li').count(), 20);
+  assert.equal(await page.locator('#sourceDiagnostics details li code').count(), 20);
+  assert.match(await page.locator('#sourceDiagnostics summary').innerText(), /23.*Results may be incomplete/);
   assert.equal(await page.locator('#sourceDiagnostics img, #sourceDiagnostics script').count(), 0);
   assert.match(await page.locator('#sourceDiagnostics').textContent(), /Node v22.0.0/);
   await page.locator('#localeSelect').selectOption('zh-CN', { force: true });

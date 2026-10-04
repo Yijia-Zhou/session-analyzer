@@ -24,6 +24,8 @@ Reading controls must remain visible and operable without document-level horizon
 
 ## Collaboration reading round trips / 协作阅读往返
 
+Confirmed targets show the indexed child title as their primary display name and retain the exact identifier as secondary identity. First selection also exposes a compact target directory in Inspector while the timeline card stays folded; unavailable targets keep their reason. Display names never establish a relation. / 已确认目标以索引中的子会话标题为主要显示名，保留精确标识作次级身份。首次选中时，即使时间线卡片折叠，Inspector 也提供精简目标目录；不可用目标保留原因。显示名从不建立关系。
+
 Session-list sorting/refresh preserves reading history and its saved project-search return when the selected session and source/project/index scope remain unchanged. Explicit session selection or refresh fallback to another session clears it. Keyboard focus returns to the originating collaboration action, distinguishing its source event, section and target/status row; another button pointing to the same child is not a substitute if that action is missing. / 会话列表排序／刷新在所选会话及来源／项目／索引范围不变时保留阅读历史及其保存的项目搜索返回。明确选择会话或刷新后回退到其他会话时清空。键盘焦点返回原协作入口，区分来源事件、section 和目标／状态行；原入口缺失时，不使用指向同一子会话的其他按钮代替。
 
 Returning restores the source folding rules, including any unsaved preview, even if the child was read under a different profile or edited draft; source manual fold overrides remain intact. Confirmed agent-status rows provide navigation independently of the targets list in English and Chinese, while generic status labels never become agent links. / 即使阅读子会话时切换了策略或修改了草稿，返回仍恢复出发时的折叠规则（包括未保存预览），并保留来源会话的手动折叠覆盖。中英文的已确认代理状态行均独立于 targets 列表提供导航，通用状态标签不变为代理链接。
@@ -136,6 +138,12 @@ While opening a project, temporary failures to query indexing status are retried
 - As a Codex user, I want to inspect per-request Token usage, understand conservatively inferred cache-reuse discontinuities, and move between Main context and the supporting Protocol evidence without treating the inference as explicit cache expiry. / 作为 Codex 用户，我希望检查单次请求的 Token 使用情况，理解保守推断的缓存复用中断，并能在主时间线上下文与对应的协议层证据之间跳转，同时不把该推断当作显式缓存过期。
 
 ## User-facing behavior / 面向用户的行为
+
+Keyboard rule editing keeps focus on the rule just changed so users can continue through adjacent controls after preview updates. / 键盘编辑规则在预览更新后保留刚修改规则的焦点，便于继续操作相邻控件。
+
+Outcome summaries distinguish request completion from recorded process exit, unknown exit and missing completion evidence. Terminal continuation titles and directories reduce repeated command text while preserving full origin evidence and early previous/next navigation. Claude Bash cards distinguish recorded file paths from supplied diffs and expose filter basis through a folded path list, explicitly reporting display limits. File activity adds bounded event/tool context and local time with timezone, retaining UTC identity. / 结果摘要区分请求完成与记录的进程退出、退出未知及缺少结束证据。终端续接标题与目录减少重复命令文本，同时保留完整起点证据与前置前后导航。Claude Bash 卡片区分已记录文件路径与已提供 diff，通过折叠路径表说明筛选依据，并明确展示上限。文件活动增加有界事件／工具上下文及带时区的本地时间，保留 UTC 身份。
+
+Project search presents one instruction directing readers to the session list. Selection, hover and keyboard focus use distinct visual treatments, and folding-rule selectors use a full row to keep values readable. Source diagnostics may collapse details, but the issue count and incomplete-results warning remain visible. / 项目搜索保留一处指向会话列表的引导。选中、悬停及键盘焦点使用不同视觉样式，折叠规则选择器占完整一行以保持值可读。来源诊断可收起详情，但问题数量及结果不完整警告持续可见。
 
 Codex Paginated completed items expose command, file-change, MCP and dynamic-tool outcomes through the existing Main timeline, search, counts and hydrated Detail. Typed ordinary messages, reasoning, external tool input and compaction markers use the same semantic model as their legacy carriers. Missing command exit codes remain unknown; explicit failure, refusal and partial output remain distinct. Proven mirrors contribute all Raw references but only one semantic event. Foreign-thread or ambiguous repeated identities remain inspectable Protocol evidence. / Codex 分页完成项通过既有主时间线、搜索、计数及水合详情展示命令、文件修改、MCP 和动态工具结果；typed 普通消息、推理、外部工具输入及压缩标记与旧载体使用相同语义模型。缺失命令退出码保持未知，显式失败、拒绝及部分输出保持区分。已证明的镜像保留全部 Raw 引用但只计一次语义事件；外部线程或歧义重复身份保持为可检查的 Protocol 证据。
 

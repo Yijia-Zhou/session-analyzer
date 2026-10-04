@@ -7,7 +7,7 @@ function backgroundTerminalLabel(fact, locale) {
     : fact?.action === 'input' ? 'Background terminal input request' : '';
   if (!label) return '';
   const suffix = fact.originEventId && typeof fact.commandPreview === 'string' && fact.commandPreview
-    ? ` · ${fact.commandPreview}` : '';
+    ? ` · ${Array.from(fact.commandPreview).slice(0, 48).join('')}${Array.from(fact.commandPreview).length > 48 ? '…' : ''}` : '';
   return i18n.sectionTitle(label, locale) + suffix;
 }
 
@@ -26,4 +26,21 @@ function compactBackgroundTerminalSections(sections) {
     : section);
 }
 
-module.exports = { backgroundTerminalLabel, compactBackgroundTerminalSections };
+function terminalOutcomeSummary(event, sections, locale, { request = false, receipt = null } = {}) {
+  const isRequest = request || event?.toolName === 'write_stdin';
+  if (!isRequest && event?.kind !== 'command') return '';
+  if (event.status === 'declined') return '';
+  const entries = sections.flatMap((section) => section.type === 'kv' ? section.entries || [] : []);
+  const recordedExit = entries.find((entry) => entry.key === 'Exit code')?.value;
+  const exit = receipt?.exitCode ?? event.outputStats?.exitCode ?? recordedExit;
+  const completed = ['completed', 'success', 'failed'].includes(event.status);
+  if (exit != null && /^-?\d+$/.test(String(exit))) {
+    return i18n.t(locale, 'ui', isRequest ? 'terminalRequestExit' : 'terminalCommandExit', { code: exit });
+  }
+  if (receipt?.processId != null || entries.some((entry) => entry.key === 'Process running with session ID') || event.status === 'in_progress') {
+    return i18n.t(locale, 'ui', 'terminalRecordedRunning');
+  }
+  return i18n.t(locale, 'ui', completed ? 'terminalExitUnrecorded' : 'terminalCompletionMissing');
+}
+
+module.exports = { backgroundTerminalLabel, compactBackgroundTerminalSections, terminalOutcomeSummary };

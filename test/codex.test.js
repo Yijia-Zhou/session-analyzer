@@ -2121,7 +2121,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(outputOnlyCommandTimeline.events[0].outputStats.exitCode, 0);
   assert.match(outputOnlyCommandTimeline.events[0].preview, /rg -n -F 'alpha' 'src'/);
   const outputOnlyCommandDetail = buildEventDetail(session, outputOnlyCommandTimeline.events[0].id, 'main');
-  assert.equal(outputOnlyCommandDetail.timelineSections[0].language, 'powershell');
+  assert.equal(outputOnlyCommandDetail.timelineSections.find((section) => section.type === 'code').language, 'powershell');
 
   const failedCommandOutputSearch = getTimeline(index, primaryFixtureSessionId, {
     offset: 0,
@@ -2414,9 +2414,9 @@ test('command language inference uses session shell context for bare external co
   const powershellEvent = powershellSession.logicalEvents.find((event) => event.kind === 'command');
   const wrappedBashEvent = wrappedBashSession.logicalEvents.find((event) => event.kind === 'command');
 
-  assert.equal(buildEventDetail(bashSession, bashEvent.id, 'main').timelineSections[0].language, 'shell');
-  assert.equal(buildEventDetail(powershellSession, powershellEvent.id, 'main').timelineSections[0].language, 'powershell');
-  assert.equal(buildEventDetail(wrappedBashSession, wrappedBashEvent.id, 'main').timelineSections[0].language, 'bash');
+  assert.equal(buildEventDetail(bashSession, bashEvent.id, 'main').timelineSections.find((section) => section.type === 'code').language, 'shell');
+  assert.equal(buildEventDetail(powershellSession, powershellEvent.id, 'main').timelineSections.find((section) => section.type === 'code').language, 'powershell');
+  assert.equal(buildEventDetail(wrappedBashSession, wrappedBashEvent.id, 'main').timelineSections.find((section) => section.type === 'code').language, 'bash');
 });
 
 test('filterSessions uses contiguous phrase semantics for project event search', async () => {
@@ -2893,9 +2893,11 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   const commandEvent = session.logicalEvents.find((event) => event.kind === 'command');
   const commandDetail = buildEventDetail(session, commandEvent.id, 'main');
   assert.equal(commandDetail.sections, undefined);
-  assert.deepEqual(commandDetail.timelineSections.map((section) => section.title), ['Command', 'stdout', 'stderr']);
-  assert.equal(commandDetail.timelineSections[0].type, 'code');
-  assert.equal(commandDetail.timelineSections[0].language, 'powershell');
+  assert.deepEqual(commandDetail.timelineSections.map((section) => section.title), ['', 'Command', 'stdout', 'stderr']);
+  assert.equal(commandDetail.timelineSections[0].type, 'notice');
+  assert.equal(commandDetail.timelineSections[0].hideTitle, true);
+  assert.match(commandDetail.timelineSections[0].text, /Recorded process exit code 1/);
+  assert.equal(commandDetail.timelineSections.find((section) => section.type === 'code').language, 'powershell');
   assert.ok(commandDetail.timelineSections.some((section) => section.type === 'terminal' && section.stream === 'stderr'));
   assert.ok(commandDetail.inspectorSections.some((section) => section.type === 'json' && section.title === 'Arguments'));
   assert.ok(commandDetail.inspectorSections.some((section) => section.type === 'kv' && section.title === 'Run context'));

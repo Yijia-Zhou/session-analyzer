@@ -15,6 +15,11 @@
     en: {
       ui: {
         localeLabel: 'Language',
+        terminalRequestExit: 'Request completed · this receipt records process exit code {code}.',
+        terminalCommandExit: 'Recorded process exit code {code}.',
+        terminalRecordedRunning: 'This receipt records a running process; its later outcome is not established here.',
+        terminalExitUnrecorded: 'Completion recorded · process exit code not recorded.',
+        terminalCompletionMissing: 'Incomplete record · process completion is not established here.',
         terminalDirectoryLimited: 'Showing the first {shown} of {total} recorded requests. Open a request and use Next terminal request to continue beyond this directory.',
         selectProject: 'Select project',
         select: 'Select',
@@ -277,7 +282,8 @@
         backToProjectResults: 'Back to project results',
         projectSearchTitle: 'Project search',
         projectSearchPrompt: 'Enter text or add a file, kind, or status filter to search the entire project.',
-        projectResultsGuidance: 'Choose a session result to open its latest matching event.',
+        sourceDiagnosticsCompact: 'Results may be incomplete · Details',
+        projectResultsGuidance: 'Choose a session result on the left to open its latest matching event.',
         projectNoResults: 'No project events match this expression.',
         projectResultCount: '{count} matching events',
         projectResultSummary: '{sessions} matching sessions · {events} matching events',
@@ -938,6 +944,11 @@
     'zh-CN': {
       ui: {
         localeLabel: '语言',
+        terminalRequestExit: '请求已完成 · 此回执记录进程退出码 {code}。',
+        terminalCommandExit: '记录的进程退出码为 {code}。',
+        terminalRecordedRunning: '此回执记录进程仍在运行；不能据此确定后续结果。',
+        terminalExitUnrecorded: '已完成记录 · 进程退出码未记录。',
+        terminalCompletionMissing: '记录未完成 · 此处尚无进程结束证据。',
         terminalDirectoryLimited: '展示前 {shown} 条，共 {total} 条已记录请求。打开请求后，可使用“下一个终端请求”继续查看目录以外的记录。',
         selectProject: '选择项目',
         select: '选择',
@@ -1200,7 +1211,8 @@
         backToProjectResults: '返回项目结果',
         projectSearchTitle: '项目搜索',
         projectSearchPrompt: '输入文本，或添加文件、类型或状态筛选，以搜索整个项目。',
-        projectResultsGuidance: '选择一个 session 结果，打开其最新命中事件。',
+        sourceDiagnosticsCompact: '结果可能不完整 · 详情',
+        projectResultsGuidance: '在左侧选择一个 session 结果，打开其最新命中事件。',
         projectNoResults: '项目中没有事件匹配当前表达式。',
         projectResultCount: '{count} 个匹配事件',
         projectResultSummary: '{sessions} 个匹配 session · {events} 个匹配事件',
