@@ -70,7 +70,8 @@ function recordedFileActivityPathKey(file, repoRoot) {
   // including parent segments after a symlink, on both absolute and relative inputs.
   const windows = fsPathFlavor(repoRoot) === 'win32';
   const spelling = (value) => {
-    const text = String(value || '').replace(/\\/g, '/');
+    const original = String(value || '');
+    const text = windows ? original.replace(/\\/g, '/') : original;
     const prefix = text.startsWith('//') ? '//' : text.startsWith('/') ? '/'
       : text.match(/^[A-Za-z]:\//)?.[0] || '';
     const normalized = prefix + text.slice(prefix.length).split('/').filter((part) => part && part !== '.').join('/');
