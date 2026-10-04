@@ -9,7 +9,7 @@ Repair debts #29 and #25 on `fix/post-020-review`, continuing PR #76. Interpret 
 
 Completed execution / 已完成执行：
 
-1. Added failing synthetic regressions and implemented source-owned interpretation for plain/Zstd, direct/PTC, malformed/lookalike results, background/timeout/signal/stop and command classification. Added duplicate/cross-turn/namespace/argument negatives and lifecycle precedence for Codex. / 已添加失败合成回归并实现来源自有解释，覆盖普通／Zstd、direct／PTC、畸形／伪似结果、后台／超时／信号／停止及命令分类；Codex 补充重复／跨回合／namespace／参数反例及 lifecycle 优先级。
+1. Added failing synthetic regressions and implemented source-owned interpretation for plain/Zstd, direct/PTC, malformed/lookalike results, background/timeout/signal/stop and command classification. Added duplicate, mixed function/custom, cross-turn, namespace and argument negatives and lifecycle precedence for Codex. / 已添加失败合成回归并实现来源自有解释，覆盖普通／Zstd、direct／PTC、畸形／伪似结果、后台／超时／信号／停止及命令分类；Codex 补充重复／function 与 custom 混合／跨回合／namespace／参数反例及 lifecycle 优先级。
 2. Synchronized bilingual spec/design/debt/changelog; closed debts #25 and #29. Corrected an existing capacity-evidence link after its plan had been archived. / 已同步双语规格、设计、债务与 changelog，关闭债务 25、29，并修正证据计划归档后遗留的容量文档链接。
 3. Reviewed the final code and completed local acceptance below. Restarted the selected DeepSeek development service while preserving its project/source/root. / 已审查最终代码并完成下述本地验收；重启当前 DeepSeek 开发服务，保留项目／来源／根配置。
 

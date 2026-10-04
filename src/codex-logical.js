@@ -559,7 +559,8 @@ function createCodexLogicalBuilder(deps) {
     const completed = outcomeRows.some((raw) => /_end$/.test(raw.payloadType)) || imageCallCompleted || Boolean(functionOutput || customOutput);
     const explicitIncomplete = !completed && !failed && !declined;
 
-    const nativeArgs = group.filter(raw => raw.recordType === 'response_item' && raw.payloadType === 'function_call').length === 1
+    const nativeArgs = !customCall && !customOutput
+      && group.filter(raw => raw.recordType === 'response_item' && raw.payloadType === 'function_call').length === 1
       && group.filter(raw => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output').length <= 1
       && (!functionOutput || (functionOutput.line > functionCall.line
         && (!sourceEpochs || sourceEpochs.get(functionOutput.rawId) === sourceEpochs.get(functionCall.rawId))

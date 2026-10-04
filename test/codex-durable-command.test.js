@@ -26,6 +26,8 @@ const cases = [
   { id: 'invalid-command', arguments: '{"cmd":7}', output: receipt('exited with code 7'), status: 'completed', fallback: true },
   { id: 'duplicate-key', arguments: '{"cmd":"first","cmd":"second"}', output: receipt('exited with code 7'), status: 'completed', fallback: true },
   { id: 'duplicate-output', output: receipt('exited with code 7'), status: 'completed', fallback: true, repeatOutput: true },
+  { id: 'conflicting-request', output: receipt('exited with code 7'), status: 'completed', fallback: true, conflictCall: true },
+  { id: 'conflicting-output', output: receipt('exited with code 7'), status: 'completed', fallback: true, conflictOutput: true },
   { id: 'cross-turn', output: receipt('exited with code 7'), status: 'completed', fallback: true, crossTurn: true },
   { id: 'old-format', output: 'Exit code: 7\nWall time: 1s\nOutput:\nsynthetic old output', status: 'failed', exitCode: 7, old: true },
   { id: 'lifecycle-success', output: receipt('exited with code 7'), status: 'success', exitCode: 0, lifecycleExit: 0 },
@@ -43,6 +45,7 @@ for (const compressed of [false, true]) test(`durable exec_command has command s
   for (const c of cases) {
     rows.push({ type: 'response_item', payload: { type: 'function_call', name: c.name || 'exec_command', call_id: c.id,
       ...(c.namespace ? { namespace: c.namespace } : {}), arguments: c.arguments || JSON.stringify({ cmd: `synthetic ${c.id}`, workdir: repoRoot }) } });
+    if (c.conflictCall) rows.push({ type: 'response_item', payload: { type: 'custom_tool_call', name: 'foreign_tool', call_id: c.id, input: 'synthetic conflicting request' } });
     if (c.lifecycleExit !== undefined) rows.push({ type: 'event_msg', payload: { type: 'exec_command_end', call_id: c.id,
       command: `synthetic ${c.id}`, cwd: repoRoot, exit_code: c.lifecycleExit, duration: { secs: 2, nanos: 0 }, status: 'completed' } });
     if (c.output !== undefined) {
@@ -50,6 +53,7 @@ for (const compressed of [false, true]) test(`durable exec_command has command s
       const output = { type: 'response_item', payload: { type: 'function_call_output', call_id: c.id, output: c.output } };
       rows.push(output);
       if (c.repeatOutput) rows.push(structuredClone(output));
+      if (c.conflictOutput) rows.push({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: c.id, output: '{"output":"synthetic conflicting result"}' } });
     }
   }
   const body = Buffer.from(`${rows.map(JSON.stringify).join('\n')}\n`);
