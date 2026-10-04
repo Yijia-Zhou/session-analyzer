@@ -60,7 +60,7 @@ test('package metadata exposes the session-analyzer CLI', () => {
   const server = fs.readFileSync(path.join(repoRoot, 'server.js'), 'utf8');
 
   assert.equal(pkg.name, 'session-analyzer');
-  assert.equal(pkg.version, '0.2.0');
+  assert.equal(pkg.version, '0.2.1');
   assert.equal(typeof pkg.description, 'string');
   assert.ok(pkg.description.trim().length > 0);
   assert.ok(Array.isArray(pkg.keywords));
@@ -214,7 +214,7 @@ test('packaged third-party notice preserves the Highlight.js license', () => {
 test('source setup docs bootstrap exact npm before strict installation', () => {
   const bootstrap = 'npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/';
   const strictInstall = 'npm ci --strict-allow-scripts --registry=https://registry.npmjs.org/';
-  const developmentGuide = 'https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/development.md';
+  const developmentGuide = 'https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/development.md';
   for (const readme of ['README.md', 'README.zh-CN.md']) {
     const content = fs.readFileSync(path.join(repoRoot, readme), 'utf8');
     assert.ok(content.includes(`](${developmentGuide})`));
@@ -234,19 +234,22 @@ test('source setup docs bootstrap exact npm before strict installation', () => {
 
 test('final dist-tag evidence uses a separately proven anonymous userconfig', () => {
   const runbook = fs.readFileSync(path.join(repoRoot, 'docs', 'design-docs', 'npm-release-runbook.md'), 'utf8');
-  const stepStart = runbook.indexOf('### 10. Promote a verified direct `next` publication');
-  const stepEnd = runbook.indexOf('### 11. Create the release tag', stepStart);
-  const step = runbook.slice(stepStart, stepEnd);
+  const step = runbook.split(/^#{1,3} /mu)
+    .find((section) => /^\d+\. Promote a verified direct `next` publication/u.test(section));
   const whoami = 'npm whoami --registry=$finalTagRegistry';
   const distTags = "npm dist-tag ls 'session-analyzer' --registry=$finalTagRegistry";
 
-  assert.ok(stepStart > -1 && stepEnd > stepStart);
-  assert.match(step, /session-analyzer-npm-tags-/u);
-  assert.match(step, /NPM_CONFIG_USERCONFIG/u);
-  assert.match(step, /ENEEDAUTH/u);
-  assert.ok(step.indexOf(whoami) > -1);
-  assert.ok(step.indexOf(distTags) > step.indexOf(whoami));
-  assert.match(step, /Remove-Item 'Env:NPM_CONFIG_USERCONFIG'/u);
+  assert.ok(step, 'runbook should document direct next promotion regardless of section order');
+  const anonymousCheck = [...step.matchAll(/```powershell\r?\n([\s\S]*?)```/gu)]
+    .map((match) => match[1])
+    .find((commands) => commands.includes(whoami));
+  assert.ok(anonymousCheck, 'promotion should include an anonymous final tag verification block');
+  assert.match(anonymousCheck, /session-analyzer-npm-tags-/u);
+  assert.match(anonymousCheck, /NPM_CONFIG_USERCONFIG/u);
+  assert.ok(anonymousCheck.indexOf('ENEEDAUTH') > anonymousCheck.indexOf(whoami));
+  assert.ok(anonymousCheck.indexOf(distTags) > anonymousCheck.indexOf('ENEEDAUTH'));
+  assert.match(anonymousCheck, /finally\s*\{/u);
+  assert.match(anonymousCheck, /Remove-Item 'Env:NPM_CONFIG_USERCONFIG'/u);
 });
 
 test('CLI help documents the npm command, diagnostics, and host privacy option', () => {

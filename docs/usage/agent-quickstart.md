@@ -2,7 +2,7 @@
 
 Use this guide to start the user's selected project and verify that its recorded work can actually be read. It documents the accompanying checkout; the CLI is the supported v0.2 interface, and the HTTP checks below are version-specific internal implementation checks, not a stable public API. / 本指南用于启动用户所选项目并核验记录中的工作确实可读。本文对应所在 checkout；v0.2 支持的接口是 CLI，下列 HTTP 检查属于版本相关内部实现核验，不是稳定公共 API。
 
-This is an online guide, not a promised npm package file. npm `session-analyzer@0.2.0` is publicly available; see the [release record](https://github.com/Yijia-Zhou/session-analyzer/releases/tag/v0.2.0). Follow documentation at the installed release's tag or a matching immutable documentation revision. The original `v0.2.0` documentation snapshot retains pre-publication wording from release preparation; this paragraph corrects that publication status without changing the release tag, package, CLI, or verification contract. Still verify the actual installed executable and version rather than relying on a checkout's package version string. / 本文是在线指南，不承诺随 npm 包分发。npm `session-analyzer@0.2.0` 已公开，见[发布记录](https://github.com/Yijia-Zhou/session-analyzer/releases/tag/v0.2.0)。应阅读安装版本对应 tag 或匹配的不可变文档修订。原始 `v0.2.0` 文档快照保留了准备发布时的候选版本措辞；本段修正发布状态，不改变 release tag、安装包、CLI 或验收契约。仍需核验实际安装的可执行文件与版本，不能仅依赖 checkout 的包版本字符串。
+This is an online guide, not a promised npm package file. Its exact-version command targets `session-analyzer@0.2.1`; if that version is not yet publicly installable, use the current public version or a matching source revision. See the [release record](https://github.com/Yijia-Zhou/session-analyzer/releases/tag/v0.2.1) for publication status. Follow documentation at the installed release's tag or a matching immutable documentation revision. Verify the actual installed executable and version rather than relying on a checkout's package version string. / 本文是在线指南，不承诺随 npm 包分发。文中的精确版本命令面向 `session-analyzer@0.2.1`；若该版本尚不能从 npm 公开安装，请使用当前公开版本或匹配的源码修订版。公开状态见[发布记录](https://github.com/Yijia-Zhou/session-analyzer/releases/tag/v0.2.1)。应阅读安装版本对应 tag 或匹配的不可变文档修订。仍需核验实际安装的可执行文件与版本，不能仅依赖 checkout 的包版本字符串。
 
 ## 1. Identify and start the intended program / 确定并启动目标程序
 
@@ -19,7 +19,7 @@ Record the actual installed package version and executable location, or checkout
 For the public release, start an explicitly selected version after checking its supported features, for example: / 对公开发布包，检查其支持能力后启动明确选定的版本，例如：
 
 ```sh
-npx session-analyzer@0.2.0 --repo /path/to/target-project
+npx session-analyzer@0.2.1 --repo /path/to/target-project
 ```
 
 For this checkout's features, complete the [source setup](../development.md), including the build, then run from that checkout. Replace the example paths with the user's target project and DeepSeek sessions persistence root: / 要使用此 checkout 的功能，先完成[源码配置](../development.md)及构建，再从该 checkout 运行。将示例路径替换为用户目标项目及 DeepSeek sessions 持久化根：

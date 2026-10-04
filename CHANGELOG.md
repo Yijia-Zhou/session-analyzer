@@ -4,6 +4,12 @@
 
 ### English
 
+### 中文
+
+## 0.2.1 - 2026-10-05
+
+### English
+
 - Interpret native DeepSeek bash/pwsh foreground outcomes for direct and Code Mode calls, including nonzero exits, signals, timeouts and stops. Classify unambiguous durable Codex `exec_command` requests as commands and read their native exit, duration and output receipts. Running results remain incomplete, missing exits remain unknown, and Raw stays exact.
 
 - Preserve Codex skipped-artifact diagnostics in committed indexes and startup reports, including reused indexes. Search complete admitted configuration facts independently of preview truncation.
@@ -15,6 +21,7 @@
 - Add recorded file activity and cross-session reading navigation, including related sessions, reading return, patch-file directories, Code Mode ownership and Raw-to-Logical links. Exact file activity preserves POSIX literal backslashes while accepting Windows separator variants.
 - Show background terminal poll/input requests with links to their confirmed origin and previous/next requests. Long continuation directories remain bounded and expose further records through navigation.
 - Keep reading controls visible, preserve the return position when leaving a project, retain Trajectory overview keyboard focus after detail loading, and contain long command segments within their event cards.
+- Improve patch reading with complete parent paths, emphasized filenames and compact headers; show exact mapped collaboration session names and distinguish selection, hover and keyboard focus.
 - Read supported Codex realtime history, configuration evidence and 0.155–0.160 typed/Paginated items. Commands, file changes, messages and tool results retain their recorded outcomes and Raw references without double-counting proven mirrors or restored history; missing exit codes remain unknown.
 - Support DeepSeek Harness native format 4, including plain/Zstd source references, tool results, approval ordering and explicit terminal errors, while keeping uncommitted attempts and inherited fork evidence distinct.
 - Update Claude Code compatibility for recorded Bash diffs and changed-file filters, SendMessage agent resumes, and MCP/Monitor background results. Display truncation no longer discards validated file or completion evidence.
@@ -34,6 +41,7 @@
 - 新增已记录文件活动与跨会话阅读导航，包括相关会话、阅读返回、补丁文件目录、Code Mode 归属及 Raw 到逻辑事件的链接。精确文件活动保留 POSIX 字面反斜杠，同时兼容 Windows 分隔符写法。
 - 展示后台终端轮询／输入请求，并链接到已确认起点及前后请求。较长的续接目录保持有界，可通过导航访问后续记录。
 - 保持阅读控件可见，保留离开项目时的返回位置，在详情加载后保留 Trajectory 概览键盘焦点，并将较长命令片段限制在事件卡片内。
+- 改进补丁阅读，保留完整父路径、突出文件名并精简标题；展示精确映射的协作会话名，并区分选中、悬停与键盘焦点。
 - 读取受支持的 Codex realtime 历史、配置依据及 0.155–0.160 typed／Paginated 项。命令、文件修改、消息与工具结果保留已记录结果及原始引用，不重复统计已证明的镜像或恢复历史；缺失退出码保持未知。
 - 支持 DeepSeek Harness 原生 format 4，包括普通／Zstd 来源引用、工具结果、审批顺序及明确终止错误，同时区分未提交 attempt 与继承的 fork 依据。
 - 更新 Claude Code 兼容性，支持已记录 Bash diff 与修改文件筛选、SendMessage agent 续接及 MCP／Monitor 后台结果。展示截断不再丢弃已验证的文件或完成依据。

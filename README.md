@@ -1,6 +1,6 @@
 # Session Analyzer
 
-[中文说明](README.zh-CN.md)
+[中文说明](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/README.zh-CN.md)
 
 **Local session history viewer for Codex, Claude Code, and DeepSeek Harness.**
 
@@ -10,7 +10,7 @@ Session Analyzer reads existing transcripts locally, without modifying or upload
 
 [Quick Start](#quick-start) · [Read a session](#review-what-happened-in-a-session) · [Inspect an operation](#inspect-how-a-concrete-operation-was-performed) · [Search history](#find-an-older-session-and-continue-reading)
 
-![Session Analyzer with project sessions on the left, readable work in the middle, and command details on the right](docs/assets/readme/session-analyzer-overview.png)
+![Session Analyzer with project sessions on the left, readable work in the middle, and command details on the right](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.1/docs/assets/readme/session-analyzer-overview.png)
 
 Keep the surrounding work in view while checking a specific operation. All demonstrations below use synthetic Codex transcripts.
 
@@ -19,8 +19,10 @@ Keep the surrounding work in view while checking a specific operation. All demon
 With **Node.js 24** (recommended) and npm installed, run the command below, replacing `<…>` with one of the listed sources:
 
 ```text
-npx session-analyzer@0.2.0 --source <codex|claude-code|deepseek-harness>
+npx session-analyzer@0.2.1 --source <codex|claude-code|deepseek-harness>
 ```
+
+Before the target release is public, this command may not be installable from npm; staged packages are private. Until then, use the current public version or the matching source revision. The [release record](https://github.com/Yijia-Zhou/session-analyzer/releases/tag/v0.2.1) tracks publication status.
 
 Open [localhost:17890](http://127.0.0.1:17890/), choose a project, and wait for indexing. Then open a session from the left panel to start reading.
 
@@ -32,11 +34,11 @@ Prefer help with setup? [Let an agent start it for you](#let-an-agent-start-it-f
 
 In the example below, the agent changes two files, encounters a failed test, applies a follow-up patch, and reruns the test. Read messages and tool activity in order in the default **Timeline**, folding output and opening details as needed.
 
-![Folded Timeline keeps messages and tool activity readable in a tool-heavy synthetic session](docs/assets/readme/session-reading-timeline.png)
+![Folded Timeline keeps messages and tool activity readable in a tool-heavy synthetic session](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.1/docs/assets/readme/session-reading-timeline.png)
 
 When tool calls get noisy, switch to **Trajectory** to review the same conversation and tool activity in a compact view. Expand a tool group to inspect individual operations; use the sequence overview to navigate.
 
-![The same session segment in Trajectory, with readable messages and compact, expandable tool activity](docs/assets/readme/session-reading-trajectory.png)
+![The same session segment in Trajectory, with readable messages and compact, expandable tool activity](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.1/docs/assets/readme/session-reading-trajectory.png)
 
 Both views show currently loaded events; load more to continue through a long session.
 
@@ -44,7 +46,7 @@ Both views show currently loaded events; load more to continue through a long se
 
 To check a particular change or failed command, expand its event in **Timeline**, or select the operation in **Trajectory**. Timeline shows command output and highlighted changes within the event, with supporting details on the right; Trajectory opens the selected operation's details on the right. Inspect what was requested and returned while keeping the surrounding work in view.
 
-![An expanded Timeline patch shows highlighted changes in the center, with its result, files, and source information on the right](docs/assets/readme/operation-detail.png)
+![An expanded Timeline patch shows highlighted changes in the center, with its result, files, and source information on the right](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.1/docs/assets/readme/operation-detail.png)
 
 Read what was requested, what changed, and what the tool returned, then continue through the session. **Protocol layer** exposes supporting runtime records. **Raw records** and an event's Raw References let you check the original transcript entries when structured detail is insufficient.
 
@@ -52,7 +54,7 @@ Read what was requested, what changed, and what the tool returned, then continue
 
 Remember a filename, command, or phrase but not the session? Click the **session** scope pill beside search, choose **Entire project**, and search messages, commands, file paths, and outputs. Open a match to reach the other session and its matching event, then read the surrounding work.
 
-![Starting in one session, searching the entire project, and opening a match in another session to resume reading](docs/assets/readme/project-search-and-read.gif)
+![Starting in one session, searching the entire project, and opening a match in another session to resume reading](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.1/docs/assets/readme/project-search-and-read.gif)
 
 The demonstration starts in session A, searches for `npm test -- project-switch`, and finds the command in session B. It ends at B's matching operation and context. For your own history, use a filename, command, or phrase you remember. Search is case-insensitive plain text; separate file, type, and status filters narrow results. Text such as `status:failed` is searched literally.
 
@@ -62,9 +64,9 @@ The demonstration starts in session A, searches for `npm test -- project-switch`
 - **Code Mode:** inspect supported operations inside tool orchestration through structured requests and results. Coverage depends on the source and recorded evidence.
 - **Codex token and cache observations:** inspect per-request token accounting and conservatively inferred drops in cache reuse, with supporting Protocol evidence. These do not establish cache expiry or server-side cache state.
 
-![A synthetic Codex subagent session shows inherited context and navigation back to its parent](docs/assets/readme/derived-session-provenance.gif)
+![A synthetic Codex subagent session shows inherited context and navigation back to its parent](https://raw.githubusercontent.com/Yijia-Zhou/session-analyzer/v0.2.1/docs/assets/readme/derived-session-provenance.gif)
 
-This Codex subagent example demonstrates inherited-context navigation for a delegated documentation task. See [source support and boundaries](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/transcript-source-adapters.md) for differences between sources.
+This Codex subagent example demonstrates inherited-context navigation for a delegated documentation task. See [source support and boundaries](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/design-docs/transcript-source-adapters.md) for differences between sources.
 
 ## Sources and requirements
 
@@ -76,9 +78,9 @@ This Codex subagent example demonstrates inherited-context navigation for a dele
 
 Pass the relevant option followed by your transcript root. For DeepSeek Harness, this is the sessions persistence directory. You can also switch source or edit roots in the project chooser without restarting. Only the active source is scanned; there is no mixed-source index.
 
-Claude Code and DeepSeek Harness evolve rapidly; v0.2.0 reflects transcript formats verified at release time, and newer upstream events may not yet have dedicated support.
+Claude Code and DeepSeek Harness evolve rapidly; v0.2.1 reflects transcript formats verified at release time, and newer upstream events may not yet have dedicated support.
 
-The installed CLI supports Node.js LTS releases starting at **22**, with **24 recommended**, and npm for installation. DeepSeek `session.jsonl.zstd` needs Node's built-in Zstandard API, available in Node 22 from **22.15.0**, subject to the actual capability check. Uncompressed `session.jsonl` remains readable without it. [Source development](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/development.md) has a separate, stricter Node/npm policy.
+The installed CLI supports Node.js LTS releases starting at **22**, with **24 recommended**, and npm for installation. Codex `.jsonl.zst` and DeepSeek `session.jsonl.zstd` need Node's built-in Zstandard API, available in Node 22 from **22.15.0**, subject to the actual capability check. Uncompressed Codex `.jsonl` and DeepSeek `session.jsonl` remain readable without it. [Source development](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/development.md) has a separate, stricter Node/npm policy.
 
 Current-session reading uses persisted history; it does not promise live monitoring or automatic refresh. The views present recorded operations and results without inferring hidden reasoning or causal relationships.
 
@@ -88,11 +90,11 @@ The server binds to `127.0.0.1` by default. Exposing it beyond localhost with `-
 
 ## Questions and troubleshooting
 
-**No projects or sessions?** Check the selected source, transcript root, and project path, then clear filters. Zero matches do not establish that no history exists. See [troubleshooting](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/troubleshooting.md).
+**No projects or sessions?** Check the selected source, transcript root, and project path, then clear filters. Zero matches do not establish that no history exists. See [troubleshooting](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/usage/troubleshooting.md).
 
-**The page opens, but is my history ready?** Wait for indexing and check the session count and diagnostics. A reachable page only proves HTTP readiness; readable sessions may coexist with skipped artifacts. The [agent guide](https://github.com/Yijia-Zhou/session-analyzer/blob/51a9ec530b1a9c03f3d96761632baa05590ccefe/docs/usage/agent-quickstart.md) distinguishes these outcomes.
+**The page opens, but is my history ready?** Wait for indexing and check the session count and diagnostics. A reachable page only proves HTTP readiness; readable sessions may coexist with skipped artifacts. The [agent guide](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/usage/agent-quickstart.md) distinguishes these outcomes.
 
-**Large history or indexing failure?** Try normal indexing first. See [diagnostics and memory recovery](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/usage/troubleshooting.md) for aggregate logging and temporary heap changes only after a relevant failure.
+**Large history or indexing failure?** Try normal indexing first. See [diagnostics and memory recovery](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/usage/troubleshooting.md) for aggregate logging and temporary heap changes only after a relevant failure.
 
 ## Let an agent start it for you
 
@@ -107,10 +109,10 @@ startup guide. Verify indexing and open a session to check that it is readable.
 Report the local URL, actual version, session count, and any diagnostics.
 ```
 
-The [online startup and verification guide](https://github.com/Yijia-Zhou/session-analyzer/blob/51a9ec530b1a9c03f3d96761632baa05590ccefe/docs/usage/agent-quickstart.md) covers version selection, configuration, and actual reading checks. Usage guides are online documentation and are not promised inside the npm package.
+The [online startup and verification guide](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/usage/agent-quickstart.md) covers version selection, configuration, and actual reading checks. Usage guides are online documentation and are not promised inside the npm package.
 
 ## Development and contribution
 
-See [development setup, checks, and repository layout](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/development.md), the [documentation index](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/README.md), [architecture](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/logical-event-timeline.md), and [performance](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/design-docs/timeline-loading-and-rendering-performance.md). For issues, include the version, source, and reproduction steps; use synthetic or redacted transcripts in public reports.
+See [development setup, checks, and repository layout](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/development.md), the [documentation index](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/README.md), [architecture](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/design-docs/logical-event-timeline.md), and [performance](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/design-docs/timeline-loading-and-rendering-performance.md). For issues, include the version, source, and reproduction steps; use synthetic or redacted transcripts in public reports.
 
-BSD 3-Clause. See [LICENSE](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/LICENSE).
+BSD 3-Clause. See [LICENSE](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/LICENSE).
