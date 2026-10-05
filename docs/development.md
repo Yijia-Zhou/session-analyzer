@@ -4,7 +4,7 @@ The installed CLI supports Node.js 22 or newer on a supported LTS line (Node.js 
 
 ## Toolchain and dependencies / 工具链与依赖
 
-After publication, reproduce the 0.2.1 release source from its immutable `v0.2.1` tag. Until that tag exists, use the exact source branch and SHA recorded for release review; a staged package is not publicly installable. These commands leave the terminal outside the checkout so the toolchain bootstrap below runs in the correct place. / 发布后，从不可变的 `v0.2.1` tag 复现 0.2.1 release source。在该 tag 建立前，按发布评审记录使用精确来源分支与 SHA；staged 包不能公开安装。以下命令不会进入 checkout，使后续工具链 bootstrap 在正确位置运行。
+Reproduce the 0.2.1 release source from its immutable `v0.2.1` tag. These commands leave the terminal outside the checkout so the toolchain bootstrap below runs in the correct place. / 从不可变的 `v0.2.1` tag 复现 0.2.1 release source。以下命令不会进入 checkout，使后续工具链 bootstrap 在正确位置运行。
 
 ```sh
 git clone --branch v0.2.1 https://github.com/Yijia-Zhou/session-analyzer.git
