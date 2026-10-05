@@ -149,13 +149,20 @@ test('CI pins npm before every strict dependency installation', () => {
   const isolatedBootstrapDirectory = 'working-directory: ${{ runner.temp }}';
   const disabledSetupNodeCache = 'package-manager-cache: false';
 
-  assert.equal(workflow.split(checkoutAction).length - 1, 3);
-  assert.equal(workflow.split(setupNodeAction).length - 1, 3);
   assert.doesNotMatch(workflow, /uses:\s+actions\/(?:checkout|setup-node)@v\d+/u);
-  assert.equal(workflow.split(bootstrap).length - 1, 3);
-  assert.equal(workflow.split(strictInstall).length - 1, 3);
-  assert.equal(workflow.split(isolatedBootstrapDirectory).length - 1, 3);
-  assert.equal(workflow.split(disabledSetupNodeCache).length - 1, 3);
+  const jobs = [...workflow.replace(/\r\n/gu, '\n').matchAll(/^  ([\w-]+):\n([\s\S]*?)(?=^  [\w-]+:\n|$(?![\s\S]))/gmu)];
+  const installJobs = jobs.filter(([, , body]) => /run: npm ci\b/u.test(body));
+  assert.deepEqual(installJobs.map(([, name]) => name), ['node', 'package', 'browser']);
+  for (const [, name, body] of installJobs) {
+    for (const required of [checkoutAction, setupNodeAction, bootstrap, strictInstall, isolatedBootstrapDirectory, disabledSetupNodeCache]) {
+      assert.equal(body.split(required).length - 1, 1, `${name}: ${required}`);
+    }
+    assert.ok(body.indexOf(setupNodeAction) < body.indexOf(bootstrap), name);
+    assert.ok(body.indexOf(bootstrap) < body.indexOf(strictInstall), name);
+  }
+  const scope = jobs.find(([, name]) => name === 'scope')?.[2];
+  assert.ok(scope, 'scope classification job exists');
+  assert.doesNotMatch(scope, /npm ci|npm run|npx /u, 'scope requires no package installation or lifecycle');
   assert.doesNotMatch(workflow, /^\s+cache:\s*npm\s*$/mu);
 });
 
@@ -184,7 +191,16 @@ test('trusted publishing stages only verified bytes behind a human approval boun
 
   assert.match(verify, /test "\$GITHUB_REF" = 'refs\/heads\/main'/u);
   assert.match(verify, /npm ci --strict-allow-scripts/u);
-  assert.match(verify, /npm run release:check/u);
+  const guard = 'npm publish --dry-run --foreground-scripts --tag=latest --access=public --registry=https://registry.npmjs.org/';
+  assert.equal(verify.split(guard).length - 1, 1, 'one directory lifecycle guard');
+  assert.doesNotMatch(verify, /run: npm run release:check/u, 'prepublishOnly owns the sole release:check invocation');
+  assert.equal(require('../package.json').scripts.prepublishOnly, 'npm run release:check');
+  const releaseSteps = ['npm ci --strict-allow-scripts', guard, 'npm run test:browser', 'npm audit --omit=dev', 'npm audit --registry=', 'name: Record the verified candidate hash'];
+  for (let index = 1; index < releaseSteps.length; index += 1) {
+    assert.ok(verify.indexOf(releaseSteps[index - 1]) >= 0 && verify.indexOf(releaseSteps[index]) > verify.indexOf(releaseSteps[index - 1]), `${releaseSteps[index - 1]} precedes ${releaseSteps[index]}`);
+  }
+  assert.doesNotMatch(verify, /continue-on-error:|if:\s*\$\{\{\s*always\(\)/u);
+  assert.doesNotMatch(stage, /continue-on-error:|if:\s*\$\{\{\s*always\(\)/u);
   assert.match(verify, /npm run test:browser/u);
   assert.match(verify, /npm audit --omit=dev/u);
   assert.match(verify, /npm publish --dry-run --foreground-scripts/u);

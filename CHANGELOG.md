@@ -4,7 +4,11 @@
 
 ### English
 
+- Skip browser CI for narrowly classified documentation-only pull requests while retaining Node and package checks; execute publish-workflow release checks once through the guarded directory dry-run.
+
 ### 中文
+
+- 严格分类的纯文档 PR 可跳过 browser CI，保留 Node 与 package 检查；发布 workflow 通过目录 guarded dry-run 执行一次发布检查，消除重复运行。
 
 ## 0.2.1 - 2026-10-05
 

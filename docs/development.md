@@ -78,6 +78,16 @@ Phase-accounting changes also require `npm run test:profile-coverage`, run with 
 
 Inspect failures and fix regressions introduced by the change. Once the relevant checks pass, broaden or repeat them only for new changes, failures, or unresolved risks. Report what passed and what remains unverified. / 检查失败并修复变更引入的回归。相关检查通过后，仅因新修改、失败或未解决风险扩大或重复验证。报告已通过内容与尚未验证项。
 
+<a id="ci-execution-scope"></a>
+
+### CI execution scope / CI 执行范围
+
+Every CI run keeps the three Node jobs, both installed-package smoke jobs and the final `ci` result. A separate, dependency-free `scope` job reads the complete Git merge-base diff for pull requests. Only changes to ordinary Markdown files at `README.md`, `README.zh-CN.md`, `docs/development.md` and `docs/exec-plans/**/*.md` qualify to skip the browser job. Documentation contract tests still run in the Node suites; packaged README changes still receive package smoke. / 每次 CI 保留三项 Node job、双平台安装包 smoke 与最终 `ci` 结果。独立且无需安装依赖的 `scope` job 读取 PR 完整 Git merge-base diff。仅上述路径的普通 Markdown 文件变更可跳过 browser job；文档契约测试仍由 Node 套件执行，打包 README 变更仍接受 package smoke。
+
+The classifier checks both paths of moves and rejects binary documents, executable files, symlinks, submodules and other file-type changes from this exception. Mixed or unknown paths, empty/incomplete diffs and unavailable history require full coverage. Main/development pushes and manual dispatches always require browser coverage. The final `ci` gate accepts `skipped` only for an explicitly classified documentation PR; failed, cancelled or missing classification/required checks cannot grant success. No workflow-level path filter suppresses the required check. / 分类器检查移动前后路径，例外不适用于二进制文档、可执行文件、软链接、submodule 或其他文件类型变化。混合／未知路径、空／不完整 diff 或历史不可用时要求全量覆盖。Main／开发分支 push 和手动 dispatch 始终要求 browser 覆盖。最终 `ci` 仅对明确分类的文档 PR 接受 `skipped`；分类或必需检查失败、取消、缺失时不能放行。不会用 workflow 级路径过滤抑制必需检查。
+
+The implementation is `scripts/ci-scope.js`; its tests exercise real Git history and the actual aggregate shell, including failed and cancelled dependencies. The scope job uses Node directly without npm installation; all dependency-installing jobs retain the pinned npm bootstrap and strict policy above. / 实现位于 `scripts/ci-scope.js`；测试覆盖真实 Git 历史和实际聚合 shell，包括依赖失败／取消。Scope job 直接使用 Node，不执行 npm 安装；所有安装依赖的 job 保留上文固定 npm bootstrap 与 strict 策略。
+
 ## Repository layout / 仓库布局
 
 | Path / 路径 | Role / 职责 |
