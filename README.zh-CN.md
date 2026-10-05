@@ -1,6 +1,6 @@
 # Session Analyzer
 
-[English README](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/README.md)
+[English README](README.md)
 
 **Codex、Claude Code 与 DeepSeek Harness 的本地会话历史查看器。**
 
@@ -22,7 +22,7 @@ Session Analyzer 在本地读取已有转录，不修改或上传其内容。在
 npx session-analyzer@0.2.1 --source <codex|claude-code|deepseek-harness>
 ```
 
-目标版本正式公开前，该命令可能无法从 npm 安装；staged 包保持私有。在此之前，请使用当前公开版本或匹配的源码修订版。[发布记录](https://github.com/Yijia-Zhou/session-analyzer/releases/tag/v0.2.1)会跟踪公开状态。
+该版本的变更见[发布记录](https://github.com/Yijia-Zhou/session-analyzer/releases/tag/v0.2.1)。
 
 打开 [localhost:17890](http://127.0.0.1:17890/)，选择项目并等待索引完成，再从左侧打开会话，即可开始阅读。
 

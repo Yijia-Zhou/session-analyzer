@@ -1,6 +1,6 @@
 # Session Analyzer
 
-[中文说明](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/README.zh-CN.md)
+[中文说明](README.zh-CN.md)
 
 **Local session history viewer for Codex, Claude Code, and DeepSeek Harness.**
 
@@ -22,7 +22,7 @@ With **Node.js 24** (recommended) and npm installed, run the command below, repl
 npx session-analyzer@0.2.1 --source <codex|claude-code|deepseek-harness>
 ```
 
-Before the target release is public, this command may not be installable from npm; staged packages are private. Until then, use the current public version or the matching source revision. The [release record](https://github.com/Yijia-Zhou/session-analyzer/releases/tag/v0.2.1) tracks publication status.
+See the [release record](https://github.com/Yijia-Zhou/session-analyzer/releases/tag/v0.2.1) for this version's changes.
 
 Open [localhost:17890](http://127.0.0.1:17890/), choose a project, and wait for indexing. Then open a session from the left panel to start reading.
 
