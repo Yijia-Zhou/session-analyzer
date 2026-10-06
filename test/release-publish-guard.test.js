@@ -8,14 +8,35 @@ const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const { isCredentialEnvironmentName } = require('../scripts/release-automation');
 
-function npm(args, cwd, env) {
+function resolveNpmCli() {
+  // Resolve before entering the fixture's empty configuration and directory.
+  // Lifecycle identity wins over PATH (Windows can have multiple npm shims).
+  if (process.env.npm_execpath) {
+    assert.ok(path.isAbsolute(process.env.npm_execpath), 'npm_execpath must be absolute');
+    return process.env.npm_execpath;
+  }
+  // Direct node --test has no lifecycle identity. Ask the configured npm for
+  // its global installation, then validate that exact CLI below; never fall
+  // back to a different npm after stripping configuration.
   const windows = process.platform === 'win32';
-  return spawnSync(windows ? (process.env.ComSpec || 'cmd.exe') : 'npm', windows ? ['/d', '/s', '/c', 'npm', ...args] : args, {
+  const result = spawnSync(windows ? (process.env.ComSpec || 'cmd.exe') : 'npm',
+    windows ? ['/d', '/s', '/c', 'npm', 'root', '--global'] : ['root', '--global'],
+    { cwd: path.resolve(__dirname, '..'), env: process.env, encoding: 'utf8', timeout: 30000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const root = result.stdout.trim();
+  assert.ok(path.isAbsolute(root), 'npm root --global must return an absolute directory');
+  return path.join(root, 'npm', 'bin', 'npm-cli.js');
+}
+
+function npm(cli, args, cwd, env) {
+  return spawnSync(process.execPath, [cli, ...args], {
     cwd, env, encoding: 'utf8', timeout: 30000,
   });
 }
 
 test('pinned npm directory dry-run executes prepublishOnly exactly once and propagates its failure', async (t) => {
+  const cli = resolveNpmCli();
   const directory = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-guard-test-'));
   t.after(async () => {
     assert.equal(path.dirname(directory), path.resolve(os.tmpdir()));
@@ -34,7 +55,8 @@ test('pinned npm directory dry-run executes prepublishOnly exactly once and prop
     NPM_CONFIG_LOGLEVEL: 'error',
   });
   await Promise.all(['user.npmrc', 'global.npmrc'].map(filename => fsp.writeFile(path.join(directory, filename), '')));
-  const version = npm(['--version'], directory, env);
+  const version = npm(cli, ['--version'], directory, env);
+  assert.ifError(version.error);
   assert.equal(version.status, 0, version.stderr);
   assert.equal(version.stdout.trim(), require('../package.json').devEngines.packageManager.version);
   await fsp.writeFile(path.join(directory, 'package.json'), JSON.stringify({
@@ -49,7 +71,7 @@ test('pinned npm directory dry-run executes prepublishOnly exactly once and prop
   const args = ['publish', '--dry-run', '--foreground-scripts', '--tag=latest', '--access=public', '--registry=https://registry.npmjs.org/'];
   for (const fails of [false, true]) {
     await fsp.rm(path.join(directory, 'guard-calls.txt'), { force: true });
-    const result = npm(args, directory, { ...env, SYNTHETIC_GUARD_FAILURE: fails ? '1' : '0' });
+    const result = npm(cli, args, directory, { ...env, SYNTHETIC_GUARD_FAILURE: fails ? '1' : '0' });
     assert.ifError(result.error);
     assert.equal(result.status, fails ? 42 : 0, `${result.stdout}\n${result.stderr}`);
     assert.equal(await fsp.readFile(path.join(directory, 'guard-calls.txt'), 'utf8'), 'called\n');
