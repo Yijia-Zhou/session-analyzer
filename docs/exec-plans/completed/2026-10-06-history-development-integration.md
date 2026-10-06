@@ -1,6 +1,6 @@
 # History integration into 0.3.0 development / History 整合进 0.3.0 开发线
 
-Status: local implementation, review and validation complete; remote push, CI and merge pending. / 状态：本地实现、审阅与验证完成；远端推送、CI 与合并待完成。
+Status: completed and merged into `v0.3.0-development` through PR #70 on 2026-10-06 UTC (2026-10-07 Asia/Shanghai). / 状态：已于 2026-10-06 UTC（上海时区 2026-10-07）通过 PR #70 完成并合入 `v0.3.0-development`。
 
 ## Scope / 范围
 
@@ -18,8 +18,10 @@ Status: local implementation, review and validation complete; remote push, CI an
 - Generated assets are current; 21 changed-document local link targets and `git diff --check` passed. Installed-package smoke passed for Codex, Claude Code and DeepSeek viewer/history paths. Its first attempt encountered sandbox registry `EACCES`; the network-enabled retry passed without publication. / 生成资产一致；21 个变更文档本地链接目标及 `git diff --check` 通过。安装包 smoke 的 Codex、Claude Code、DeepSeek viewer／history 路径通过。首次尝试受沙箱 registry `EACCES` 阻塞；网络可用环境重跑通过，未发布 package。
 - Final Windows browser suite: 313/313 passed. Package smoke was also rerun after the final CRLF repair and passed. No generated-asset, dependency, real-transcript, binary or archive additions. / 最终 Windows browser 套件：313/313 通过。最终 CRLF 修复后也重跑安装包 smoke，全部通过。未新增生成资产变更、依赖、真实转录、二进制或归档。
 
-## Remaining gates / 剩余门槛
+## Hosted acceptance and completion / Hosted 验收与完成
 
-1. Obtain explicit approval for pushing the concrete commits to `git@github.com:Yijia-Zhou/session-analyzer.git`; automatic approval review rejected the first development push because it lacked explicit payload/destination authorization. / 获取向所列远端推送具体提交的明确授权；自动审批因缺少具体载荷／目标授权而拒绝首次 development 推送。
-2. Push development and obtain hosted Windows baseline CI; push history, retarget PR #70 to `v0.3.0-development`, and obtain CI for the actual integrated head including browser/package jobs. / 推送 development 并取得 hosted Windows 基线 CI；推送 history，将 PR #70 改目标为 `v0.3.0-development`，取得实际整合 head 的 CI，含 browser／package job。
-3. Merge only after the required checks succeed, sync the development checkout, restart the user's local server if active, and archive this plan when complete. / 必需检查通过后才合并，同步开发 checkout，如用户本地服务正在运行则重启，实际完成后归档本计划。
+- The user explicitly approved uploading the reviewed commits to `Yijia-Zhou/session-analyzer`. Both branches were pushed; PR #70 was retargeted to development and marked ready. / 用户明确确认将已审阅提交上传至所列仓库。两个分支均已推送；PR #70 改目标为 development 并退出草稿。
+- [Development CI 37490110958](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/37490110958) passed all required jobs on `f577cf4`, including Windows 1586/1586 Node tests and the pinned npm lifecycle guard. / Development CI 在 `f577cf4` 上全部必需 job 通过，含 Windows 1586/1586 Node 测试与固定 npm 生命周期 guard。
+- [PR CI 37490597280, attempt 2](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/37490597280/attempts/2) passed all Node, package, Browser and aggregate gates. Checkout `a777c34d005dfb2c091b2ba8b14d109f77ca3139` combines base `f577cf4` and head `5d673a4`; its tree matches the locally verified tree. Windows reports 1673/1673. / PR CI 第二次尝试全部 Node、package、Browser 与聚合门槛通过。所列测试 checkout 的父提交为上述 base／head，文件树与本地验证树一致；Windows 报告 1673/1673。
+- The first PR browser attempt passed 312/313, timing out after keyboard activation in the unchanged collaboration-navigation test. The same commit passed the remote rerun; that focused test also passed six local runs. No code or assertion was changed for the retry. / PR browser 首轮 312/313，通过键盘激活后在未变更的协作导航测试中等待超时。同一提交远端重跑通过；该聚焦测试本地也连续共六次通过。未为重跑修改代码或断言。
+- [PR #70](https://github.com/Yijia-Zhou/session-analyzer/pull/70) merged as `77103bd5809b5844fefb98c7002070f97189ca03` after CI passed. The local development checkout was fast-forwarded; the merge tree still equals the reviewed tree. The existing local viewer was restarted from this checkout, retaining the active project and source. / CI 通过后，PR #70 以所列提交合并。本地开发 checkout 已快进同步，合并文件树仍与审阅树相同。已有本地 viewer 已从该 checkout 重启，并保留当前项目及来源。
