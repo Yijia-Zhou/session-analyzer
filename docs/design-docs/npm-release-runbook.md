@@ -4,7 +4,7 @@
 
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-09-08 / 最近更新：2026-09-08
+- Last updated: 2026-10-05 / 最近更新：2026-10-05
 - Applies to: the public `session-analyzer` npm package / 适用范围：公共 `session-analyzer` npm package
 - Related product spec: / 相关产品规格：
   - `docs/product-specs/session-transcript-analyzer.md`
@@ -21,6 +21,24 @@
 This is the durable release procedure for `session-analyzer`. The preferred path for an existing package uses GitHub Actions Trusted Publishing to create a private npm staged package, followed by maintainer review and npm 2FA approval. Isolated interactive publication remains a documented fallback. Release evidence uses two layers: the version-specific execution plan is the durable public record for release identity, verifiable gate results, artifact hash continuity, and public verification; optional raw command output, account-side readback, machine-specific details, and transient diagnostics belong only in a Git-ignored maintainer-local appendix. The version plan must reference this runbook instead of redefining the publication path. / 本文档是 `session-analyzer` 的长期发布运行手册。Package 已存在时，首选路径使用 GitHub Actions Trusted Publishing 创建私有 npm staged package，随后由维护者审查并通过 npm 2FA approve。隔离的交互式发布继续作为有文档记录的 fallback。发布证据采用两层结构：版本专属执行计划是长期公开记录，负责保存 release identity、可复核 gate 结果、制品哈希连续性与公共验证；可选的原始命令输出、账户侧 readback、本机特有细节与临时诊断只进入 Git 忽略的维护者本地附录。版本计划必须引用本运行手册，而不是重新定义发布路径。
 
 Trusted Publishing replaces reusable publication credentials, not release governance. Version closure, CI, package inspection, source identity, public verification, evidence recording, and recovery rules remain mandatory. The OIDC trust is intentionally stage-only: automation cannot make a version public, and approval still requires maintainer 2FA. / Trusted Publishing 替代的是可复用发布凭据，而不是 release governance。版本收口、CI、package 检查、来源身份、公共验证、证据记录与恢复规则继续为强制要求。OIDC trust 有意限制为 stage-only：自动化不能让版本公开，approve 仍要求维护者 2FA。
+
+<a id="staged-release-route"></a>
+
+## Default staged release route / 默认 staged 发布路径
+
+For an established package, follow this route and read the linked details at each boundary. Steps retain their original numbers for existing references; 8B and 10 are fallback-only appendix sections. / 对已有 package，按本路径执行，并在各边界阅读链接中的细节。步骤保留原编号以兼容既有引用；8B 与 10 仅属于 fallback 附录。
+
+| Phase / 阶段 | Action and evidence / 操作与证据 |
+| --- | --- |
+| Freeze / 冻结 | Open one version record and close metadata; check README/guide links. / 建立一份版本记录并收口 metadata，核对 README／指南链接。[Steps 1–2 / 第 1–2 步](#release-plan) |
+| Validate candidate / 验证候选 | Prepare the toolchain from step 4, then run local gates and inspect the candidate once on frozen content; preflight waits until main is ready. / 按第 4 步准备工具链，再对冻结内容运行一次本地 gate 并检查候选制品；preflight 等 main 就绪后运行。[Toolchain / 工具链](#release-preflight)、[steps 5–7 / 第 5–7 步](#local-release-gates) |
+| Establish main / 确定 main | Complete normal PR review and required CI for the exact release SHA; record reuse or rerun reasons. / 完成正常 PR 审查与精确发布 SHA 的必要 CI，记录复用或重跑原因。[Step 3 / 第 3 步](#release-source-ci)、[reuse rules / 复用规则](#evidence-reuse) |
+| Preflight / 预检 | Require preflight GO and separately verify exact-SHA CI before authorized dispatch. / 获得 preflight GO，并另行确认精确 SHA 的 CI 后进入获授权 dispatch。[Step 4 / 第 4 步](#release-preflight) |
+| Stage and approve / Staging 与审批 | Review workflow verify, Environment, stage identity and downloaded hash; maintainer completes WebAuthn approval and credential cleanup. / 审查 workflow verify、Environment、stage 身份与下载哈希，由维护者完成 WebAuthn 审批及凭据清理。[Step 8A / 第 8A 步](#stage-and-approve) |
+| Verify public package / 验证公开包 | Require anonymous Windows and Ubuntu results, hash continuity, signatures and provenance. / 要求匿名 Windows 与 Ubuntu 结果、哈希连续性、signature 与 provenance。[Step 9 / 第 9 步](#public-verification) |
+| Finish / 完成 | Create the authorized tag/Release at the release SHA, finish public documentation checks, complete the evidence record and archive it. / 在发布 SHA 创建获授权的 tag／Release，完成公共文档检查、证据记录并归档。[Steps 11–12 / 第 11–12 步](#release-closeout) |
+
+Use the [single version record template](#version-record-template) for outcomes. Read [manual fallback and diagnostics](#release-appendices) only when their conditions apply; consult [recovery](#failure-and-recovery--失败与恢复) when a gate fails or a write result is ambiguous. This route preserves all required gates and maintainer authorization boundaries. / 结论使用[单一版本记录模板](#version-record-template)。仅在适用条件成立时阅读[手动 fallback 与诊断](#release-appendices)；gate 失败或写入结果含糊时查阅[恢复规则](#failure-and-recovery--失败与恢复)。本路径保留全部必需 gate 与维护者授权边界。
 
 ## Release model / 发布模型
 
@@ -115,15 +133,7 @@ The direct manual fallback continues to publish an established-package candidate
 
 The repository uses `prepublishOnly` to run `release:check`. npm runs `prepublishOnly` before preparing and packing a package during a directory-based `npm publish` or directory-based `npm stage publish`. Publishing or staging a prebuilt tarball does **not** execute the tarball's `prepublishOnly`. / 仓库使用 `prepublishOnly` 运行 `release:check`。通过工作树执行 `npm publish` 或 `npm stage publish` 时，npm 会在准备和打包 package 前运行 `prepublishOnly`。发布或 staging 预构建 tarball **不会**执行 tarball 中的 `prepublishOnly`。
 
-Consequently, direct `npm publish` must be run from the package root with **no positional package or tarball argument** and without `--ignore-scripts`. The automated staged path has one narrow exception: its unprivileged job must first pass `release:check`, package smoke, browser, audits, and a directory-based `npm publish --dry-run` that proves `prepublishOnly`; it then records the candidate SHA-256. The OIDC job runs no project dependency or script, regenerates the tarball with scripts disabled from the exact verified commit, requires byte identity, and may pass only that tarball to `npm stage publish`. / 因此，直接 `npm publish` 必须在 package root 中执行，且**不得带 package 或 tarball 位置参数**，也不得使用 `--ignore-scripts`。自动 staged 路径只有一个严格限定的例外：无特权 job 必须先通过 `release:check`、package smoke、browser、audit，以及能够证明 `prepublishOnly` 的目录式 `npm publish --dry-run`，随后记录候选 SHA-256。OIDC job 不运行项目依赖或脚本，从精确的已验证 commit 以禁用脚本方式重新生成 tarball，要求字节一致，并且只能把该 tarball 传给 `npm stage publish`。
-
-```powershell
-# Correct: publishes from the current clean package root and runs prepublishOnly.
-npm publish --foreground-scripts --tag='next' --access='public'
-
-# Forbidden for this repository: bypasses the intended prepublishOnly guard.
-npm publish '.\session-analyzer-<version>.tgz' --tag='next' --access='public'
-```
+Consequently, direct `npm publish` must be run from the package root with **no positional package or tarball argument** and without `--ignore-scripts`. The automated staged path has one narrow exception: after strict installation, its unprivileged job performs a directory-based `npm publish --dry-run`, which invokes `prepublishOnly` → `release:check` exactly once (including generated assets, Node tests and package smoke). It then passes browser tests and both audits before recording the candidate SHA-256. The OIDC job runs no project dependency or script, regenerates the tarball with scripts disabled from the exact verified commit, requires byte identity, and may pass only that tarball to `npm stage publish`. / 因此，直接 `npm publish` 必须在 package root 中执行，且**不得带 package 或 tarball 位置参数**，也不得使用 `--ignore-scripts`。自动 staged 路径只有一个严格限定的例外：无特权 job 在 strict 安装后执行目录式 `npm publish --dry-run`，通过 `prepublishOnly` → `release:check` 恰好执行一次检查（含生成资产、Node 测试与 package smoke），随后通过 browser 与双 audit，才记录候选 SHA-256。OIDC job 不运行项目依赖或脚本，从精确的已验证 commit 以禁用脚本方式重新生成 tarball，要求字节一致，并且只能把该 tarball 传给 `npm stage publish`。
 
 The tarball exception is implemented only by `.github/workflows/publish.yml`; it is not permission to stage or publish an arbitrary local tarball. / Tarball 例外只由 `.github/workflows/publish.yml` 实现；它不授权 staging 或发布任意本地 tarball。
 
@@ -176,7 +186,7 @@ Use this table as the default handoff contract for a release agent such as Luna.
 | --- | --- | --- |
 | Freeze identity / 冻结身份 | Package, lock, changelog, intended tag, and plan contain the same stable version. / package、lock、changelog、预期 tag 与计划是同一稳定版本。 | Any disagreement: return to metadata freeze. / 任一不一致：回到 metadata freeze。 |
 | Exact source / 精确来源 | Clean local SHA equals pushed `origin/main`; required CI for that SHA is green. / 干净本地 SHA 等于已 push 的 `origin/main`，且该 SHA 的必要 CI 全绿。 | Dirty tree, different SHA, missing/failed CI: stop before dispatch. / 工作树脏、SHA 不同或 CI 缺失／失败：dispatch 前停止。 |
-| Local repetition / 本地重复运行 | Full local gates already passed on the frozen content and no risk trigger below applies; run only `release:preflight` before dispatch. / 完整本地 gate 已在冻结内容上通过，且下述风险触发器均不存在；dispatch 前只运行 `release:preflight`。 | Source/metadata/dependency/generated asset changed, release workflow changed, CI is incomplete, or a platform-specific regression is suspected: rerun the affected full local gates. / source、metadata、依赖、生成资产或 release workflow 有变化，CI 不完整，或怀疑平台回归：重跑受影响的完整本地 gate。 |
+| Local repetition / 本地重复运行 | Full local gates already passed on the frozen content and no risk trigger below applies; run only `release:preflight` before dispatch. / 完整本地 gate 已在冻结内容上通过，且下述风险触发器均不存在；dispatch 前只运行 `release:preflight`。 | An applicable risk trigger or uncertain change impact requires affected local gates; evidence-only updates use the rules below. / 适用的风险触发器或不确定的变更影响要求重跑受影响本地 gate；纯证据更新适用下方规则。 |
 | Registry slot / Registry 版本槽位 | `release:preflight` receives explicit official-registry `E404` for the target version immediately before dispatch. / `release:preflight` 在 dispatch 前从官方 registry 得到目标版本的明确 `E404`。 | Existing version or any ambiguous/network response: do not dispatch or retry blindly. / 版本已存在或响应含糊／网络异常：不得 dispatch 或盲目重试。 |
 | Workflow verify / Workflow 验证 | `publish.yml` verify passes every heavy gate and records exact source plus candidate SHA-256. / `publish.yml` verify 通过全部重型 gate，并记录精确 source 与候选 SHA-256。 | Any failed/missing gate or mismatched source: do not approve the Environment. / 任一 gate 失败／缺失或 source 不一致：不得 approve Environment。 |
 | Stage review / Stage 审查 | `release:review-stage` reports trusted automation, exact identity/tag, manifest parity, and downloaded SHA-256 equality. / `release:review-stage` 报告 trusted automation、精确 identity/tag、manifest 一致与下载 SHA-256 相等。 | Any mismatch: reject and investigate; an ambiguous stage state blocks retries. / 任一不一致：reject 并调查；stage 状态含糊时禁止重试。 |
@@ -186,6 +196,8 @@ Use this table as the default handoff contract for a release agent such as Luna.
 | Final identity / 最终身份 | Public version/tag, public SHA-256, provenance source, annotated Git tag target, and GitHub Release all agree. / 公共 version/tag、公共 SHA-256、provenance source、annotated Git tag target 与 GitHub Release 全部一致。 | Any disagreement: stop closeout and correct only through an explicitly authorized recovery path. / 任一不一致：停止收尾，只能通过明确授权的恢复路径修正。 |
 
 ## Standard release workflow / 标准发布流程
+
+<a id="release-plan"></a>
 
 ### 1. Open the version-specific plan / 建立版本专属计划
 
@@ -198,6 +210,8 @@ Create an active plan that references this runbook and records: / 创建引用�
 - supported runtime matrix / 支持的运行时矩阵
 - first-release-only name availability and account prerequisites / 仅首发需要的名称可用性与账户前置条件
 - version-specific risks, compatibility decisions, and validation exceptions / 版本特有风险、兼容性决策与验证例外
+
+Use the single record template below; keep phase progress as references to its rows and log only material changes, failures, recovery actions, and decisions. Do not repeat final identity, gate results, or hashes in several sections. Existing completed release records remain historical evidence. / 使用下方单一记录模板；阶段进度引用对应行，日志只记录实质变更、失败、恢复操作与决定。不要在多个章节重复最终身份、gate 结果或哈希。既有 completed 发布记录继续保留为历史证据。
 
 Do not copy the generic publication commands into a conflicting version-specific workflow. If a version requires a different publication mechanism, update or explicitly supersede this runbook before publication. / 不得把通用发布命令复制成与本运行手册冲突的版本专属流程。如果某个版本需要不同的发布机制，必须在发布前更新或明确取代本运行手册。
 
@@ -212,9 +226,13 @@ Do not copy the generic publication commands into a conflicting version-specific
 - Review every lockfile `hasInstallScript` entry, record an exact approval or explicit denial in `allowScripts`, keep `strict-allow-scripts=true`, and pin the supported development npm through `devEngines`. / 审查 lockfile 中每个 `hasInstallScript` 条目，在 `allowScripts` 中记录精确允许或明确拒绝，保持 `strict-allow-scripts=true`，并通过 `devEngines` 固定受支持的开发 npm。
 - Verify `publishConfig.registry` and public access. / 验证 `publishConfig.registry` 与 public access。
 
+<a id="release-source-ci"></a>
+
 ### 3. Commit, push, and obtain CI evidence / Commit、push 并取得 CI 证据
 
-The release commit must contain every packed source change and generated asset. Push it through the normal review path and wait for all required Linux and Windows jobs. Each job must let `setup-node` select Node without invoking its package-manager cache, then install the exact approved npm version from `runner.temp` before any repository-local npm command, print that version, and only then run `npm ci --strict-allow-scripts`. This ordering matters because `setup-node` otherwise calls the npm bundled with Node to resolve its cache before the approved npm has been bootstrapped, and the repository's strict `devEngines` correctly rejects that npm. Record the commit SHA and CI run URL in the active plan. / Release commit 必须包含所有会被打包的源文件变更与生成资产。通过正常 review 路径推送，并等待所有要求的 Linux 与 Windows job。每个 job 必须先让 `setup-node` 在不调用 package-manager cache 的情况下选择 Node，再从 `runner.temp` 安装精确的获批 npm 版本；在此之前不得执行任何仓库内 npm 命令。随后打印版本，最后才运行 `npm ci --strict-allow-scripts`。这个顺序很重要：否则 `setup-node` 会在获批 npm 完成 bootstrap 前调用 Node 附带的 npm 来解析缓存，而仓库严格的 `devEngines` 会正确拒绝该 npm。把 commit SHA 与 CI run URL 记录到 active plan。
+The release commit must contain every packed source change and generated asset. Push it through the normal review path and wait for all required Linux and Windows jobs. Every dependency-installing job must let `setup-node` select Node without invoking its package-manager cache, then install the exact approved npm version from `runner.temp` before any repository-local npm command, print that version, and only then run `npm ci --strict-allow-scripts`. This ordering matters because `setup-node` otherwise calls the npm bundled with Node to resolve its cache before the approved npm has been bootstrapped, and the repository's strict `devEngines` correctly rejects that npm. Record the commit SHA and CI run URL in the active plan. / Release commit 必须包含所有会被打包的源文件变更与生成资产。通过正常 review 路径推送，并等待所有要求的 Linux 与 Windows job。每个安装依赖的 job 必须先让 `setup-node` 在不调用 package-manager cache 的情况下选择 Node，再从 `runner.temp` 安装精确的获批 npm 版本；在此之前不得执行任何仓库内 npm 命令。随后打印版本，最后才运行 `npm ci --strict-allow-scripts`。这个顺序很重要：否则 `setup-node` 会在获批 npm 完成 bootstrap 前调用 Node 附带的 npm 来解析缓存，而仓库严格的 `devEngines` 会正确拒绝该 npm。把 commit SHA 与 CI run URL 记录到 active plan。
+
+The [documentation-only PR exception](../development.md#ci-execution-scope) omits only browser execution for a narrow path allowlist and keeps Node/package checks. It never replaces exact-main release CI: main/development pushes and manual CI run the full matrix, including browser. The additional scope-classification job installs no dependencies. / [纯文档 PR 例外](../development.md#ci-execution-scope)仅对严格路径白名单省略 browser 执行，保留 Node／package 检查；它不替代精确 main 的发布 CI：main／开发分支 push 与手动 CI 仍运行含 browser 的完整矩阵。新增 scope 分类 job 不安装依赖。
 
 For release pull requests, push the branch and open a prefilled GitHub compare page containing the intended base, head branch, title, and body so the maintainer can review it and click **Create pull request**. Do not create a release pull request through a connector or API unless the maintainer explicitly requests another method. / 对 release pull request，先推送分支，再打开已预填目标 base、head branch、标题与正文的 GitHub compare 页面，由维护者复核并点击 **Create pull request**。除非维护者明确要求其他方式，否则不得通过 connector 或 API 创建 release pull request。
 
@@ -229,6 +247,8 @@ git log -1 --oneline
 ```
 
 `git status --short` must be empty. An inspection tarball must not remain as an untracked file inside the worktree during the final dry run or actual publish. / `git status --short` 必须为空。最终 dry run 或实际 publish 期间，检查用 tarball 不得作为 untracked file 留在工作树中。
+
+<a id="release-preflight"></a>
 
 ### 4. Verify the release environment / 验证发布环境
 
@@ -254,33 +274,6 @@ npm ping --registry='https://registry.npmjs.org/'
 
 The registry must be exactly `https://registry.npmjs.org/`, npm must exactly match `devEngines.packageManager.version`, and strict allow-scripts must be `true`. Do not continue with an old Node.js/npm installation, a mirror registry, or a toolchain different from the one approved in the active plan. / Registry 必须精确为 `https://registry.npmjs.org/`，npm 必须与 `devEngines.packageManager.version` 完全一致，strict allow-scripts 必须为 `true`。如果 Node.js/npm 版本过旧、registry 指向镜像，或工具链与 active plan 获批版本不同，不得继续。
 
-Verify the version contract:
-
-验证版本契约：
-
-```powershell
-node -p 'require("./package.json").name'
-node -p 'require("./package.json").version'
-node -p 'JSON.stringify(require("./package.json").engines)'
-node -p 'JSON.stringify(require("./package.json").devEngines)'
-node -p 'JSON.stringify(require("./package.json").allowScripts)'
-node -p 'JSON.stringify(require("./package.json").publishConfig)'
-```
-
-For the first public release, recheck package-name availability immediately before authentication. Treat `E404` as availability evidence only at that moment; it is not a reservation. / 对首次公开发布，在认证前立即复查 package 名可用性。`E404` 只表示当时可用，并不构成保留。
-
-```powershell
-npm view 'session-analyzer' version --registry='https://registry.npmjs.org/'
-```
-
-For later versions, prove that the target version is unused:
-
-对于后续版本，证明目标版本尚未使用：
-
-```powershell
-npm view 'session-analyzer' versions --json --registry='https://registry.npmjs.org/'
-```
-
 For the preferred staged path, replace the hand-assembled identity, exact-main, tag-absence, anonymous registry, and dry-run manifest reads with the committed preflight after the frozen release commit is on `origin/main`: / 对首选 staged 路径，在冻结 release commit 已位于 `origin/main` 后，使用已提交的 preflight 取代手工拼装的身份、exact-main、tag 不存在、匿名 registry 与 dry-run manifest 读取：
 
 ```powershell
@@ -288,6 +281,10 @@ npm run release:preflight -- '<version>'
 ```
 
 The only GO result is `ready-for-authorized-main-workflow-dispatch`. The command intentionally fails if credentials are inherited, the local source is not exact remote `main`, the tag already exists, the target version is public, the response is not an explicit official-registry `E404`, or the release toolchain/metadata/changelog/manifest contract differs. It does not dispatch the workflow. / 唯一 GO 结果是 `ready-for-authorized-main-workflow-dispatch`。如果继承了凭据、本地来源不是精确远端 `main`、tag 已存在、目标版本已公开、响应不是官方 registry 的明确 `E404`，或 release toolchain／metadata／changelog／manifest 契约不同，命令都会失败。它不会 dispatch workflow。
+
+Preflight does not query GitHub CI status. Its GO is only the script's scope: separately verify required CI for the exact source SHA before dispatch. The supported gate reuse rules are in [step 5](#evidence-reuse); additional manual metadata reads are [diagnostics](#manual-environment-diagnostics), not a second staged-path checklist. / Preflight 不查询 GitHub CI 状态，其 GO 只覆盖脚本范围；dispatch 前须另行确认精确来源 SHA 的必要 CI。[第 5 步](#evidence-reuse)规定允许的 gate 复用；额外手动 metadata 读取属于[诊断](#manual-environment-diagnostics)，不构成 staged 路径的第二份检查清单。
+
+<a id="local-release-gates"></a>
 
 ### 5. Run local release gates / 运行本地 release gate
 
@@ -306,7 +303,21 @@ git status --short
 
 `npm install-scripts ls --json` must report no pending entries. `release:check` must include generated-asset verification, the full Node test suite, installed-package smoke, and package metadata coverage of every lockfile `hasInstallScript` entry, including platform-inert optional dependencies. The final `git status --short` must still be empty. / `npm install-scripts ls --json` 必须不报告 pending 条目。`release:check` 必须包含生成资产验证、完整 Node 测试、安装后 package smoke，以及对 lockfile 中每个 `hasInstallScript` 条目的 package metadata 覆盖，包括当前平台不生效的可选依赖。最后的 `git status --short` 仍必须为空。
 
+When editing release-document headings or section order, use `rg` to find tests or scripts that read those documents and run the affected contract tests. A link check alone may miss a structural reader dependency. / 修改发布文档标题或章节顺序时，用 `rg` 搜索会读取这些文档的 tests 或 scripts，并运行受影响的契约测试。仅检查链接可能遗漏对文档结构的读取依赖。
+
 Repeat the affected local gates after merge only when at least one risk trigger applies: packed source, metadata, dependency, lockfile, generated asset, or workflow changed after the recorded run; required CI is absent or incomplete; a platform-specific failure needs reproduction; the toolchain changed; or the maintainer explicitly requests repetition. A documentation-only evidence closeout after publication does not invalidate the already published artifact. / 仅在至少一个风险触发器成立时，才在合入后重复受影响的本地 gate：已记录运行后 packed source、metadata、依赖、lockfile、生成资产或 workflow 发生变化；必要 CI 缺失或不完整；需要复现平台特有失败；toolchain 变化；或维护者明确要求重复。发布后的纯证据文档收尾不会使已经发布的制品失效。
+
+<a id="evidence-reuse"></a>
+
+#### Reuse and rerun rules / 复用与重跑规则
+
+Record each gate's tested SHA, command or CI job, outcome, and evidence location once in the version record. Before reusing a local result, compare the tested commit with the intended source and record changed paths and why they cannot affect that gate. If the impact is uncertain, rerun the affected gates. / 每项 gate 的已测 SHA、命令或 CI job、结论与证据位置只在版本记录中保存一次。复用本地结果前，对比已测 commit 与预期来源，记录变更路径及其不影响该 gate 的依据。影响不确定时，重跑受影响 gate。
+
+- Unchanged frozen content with green exact-main CI: reuse the completed local gates and candidate inspection; run preflight before dispatch. Do not add a full local repetition merely because the branch merged. / 冻结内容未变且精确 main CI 全绿：复用已完成的本地 gate 与候选检查，dispatch 前运行 preflight。不要仅因分支合入而增加一次完整本地重跑。
+- Before dispatch, an update that only appends or corrects release evidence in an unpacked version plan or ignored local appendix does not require another local full suite or guarded dry run. Confirm that packed files, metadata, dependency/lockfile, tests, build/release scripts, workflows, toolchain and gate policy are unchanged. Check documentation references, bilingual consistency and `git diff --check`. / Dispatch 前，仅在未打包的版本计划或被忽略的本地附录中追加／修正发布证据，无需再运行一次本地全套测试或 guarded dry-run。须确认打包文件、metadata、依赖／lockfile、测试、构建／发布脚本、workflow、工具链及 gate 策略均未改变，并检查文档引用、双语一致性与 `git diff --check`。
+- This exception does not cover arbitrary documentation edits: README, changelog, licenses and other packed documentation affect the artifact; runbook policy edits can affect gate validity. Apply the risk triggers above. / 本例外不覆盖任意文档修改：README、changelog、许可证等打包文档影响制品，runbook 策略修改可能影响 gate 有效性，须适用上述风险触发规则。
+- A new release SHA still requires its own required main CI and unprivileged `publish.yml` verification, including the guarded dry run and authoritative candidate hash. Reuse never relabels an older result as a run on the new SHA, carries a staged approval to a new source, or waives a failed/missing gate. After dispatch, any source change requires returning to the relevant source/verification phase before staging or approval. / 新发布 SHA 仍须具备自身的必要 main CI 与无特权 `publish.yml` 验证，包括 guarded dry-run 与权威候选哈希。复用不得把旧结果改标为新 SHA 的运行、把 staged 审批沿用到新来源，或豁免失败／缺失 gate。Dispatch 后任何来源变化都须在 staging 或审批前回到相应的来源／验证阶段。
+- Registry availability is time-sensitive and must still be checked immediately before dispatch and by the workflow before staging; public verification remains post-approval evidence. / Registry 可用性具有时效性，仍须在 dispatch 前立即检查，并由 workflow 在 staging 前复查；公共验证仍须使用审批后的证据。
 
 ### 6. Generate and inspect the candidate / 生成并检查候选制品
 
@@ -355,22 +366,19 @@ git status --short
 git rev-parse HEAD
 ```
 
-The worktree and commit must still match the approved release evidence. Make no source, metadata, dependency, generated-asset, or documentation changes after this point. Any change invalidates the dry run and requires returning to the appropriate earlier phase. / 工作树与 commit 必须继续匹配获批发布证据。此后不得修改源代码、metadata、依赖、生成资产或文档。任何变更都会使 dry run 失效，并要求回到相应的早期阶段。
+The worktree and commit must match the recorded evidence. For pre-dispatch evidence-only updates on the staged path, apply the narrow [reuse rules](#evidence-reuse); record the original tested SHA instead of repeating the local dry run to update its own record. Any other relevant change invalidates the affected evidence and returns to the appropriate earlier phase. The final workflow candidate, staged artifact and approval must refer to the exact verified release SHA. Direct manual fallback still requires a fresh guarded dry run from its exact clean publication source. / 工作树与 commit 必须匹配所记录证据。Staged 路径在 dispatch 前的纯证据更新适用严格限定的[复用规则](#evidence-reuse)；记录原已测 SHA，不为更新 dry-run 自身记录而重复本地 dry-run。其他相关变更使受影响证据失效，须回到相应早期阶段。最终 workflow 候选、staged 制品及审批必须对应精确已验证发布 SHA。直接手动 fallback 仍须在精确、干净的发布来源上执行全新的 guarded dry-run。
+
+<a id="stage-and-approve"></a>
 
 ### 8A. Stage through Trusted Publishing and approve with phishing-resistant 2FA / 通过 Trusted Publishing staging 并使用抗钓鱼 2FA approve
 
-This is the preferred path after the external trust relationship has been activated and successfully reviewed. Before the first dispatch, all of the following must already exist and agree exactly: / 外部 trust relationship 已启用并完成审查后，这是首选路径。首次 dispatch 前，以下配置必须已经存在且精确一致：
-
-- GitHub Environment: `npm-release`, restricted to `main`, with administrator bypass disabled where available and an independent required reviewer when the maintainer model supports one. / GitHub Environment：`npm-release`，限制为 `main`，在可用时禁用管理员绕过，并在维护者模型支持时配置独立 required reviewer。
-- npm Trusted Publisher: GitHub Actions, organization/user `Yijia-Zhou`, repository `session-analyzer`, workflow filename `publish.yml`, environment `npm-release`. / npm Trusted Publisher：GitHub Actions，organization/user `Yijia-Zhou`，repository `session-analyzer`，workflow filename `publish.yml`，environment `npm-release`。
-- Allowed action: `npm stage publish` only; direct `npm publish` is disabled for the trust relationship. / Allowed action：只允许 `npm stage publish`；trust relationship 禁用直接 `npm publish`。
-- No `NPM_TOKEN`, `NODE_AUTH_TOKEN`, or npm publication secret exists in the repository, workflow, environment, or organization. / Repository、workflow、environment 与 organization 中不存在 `NPM_TOKEN`、`NODE_AUTH_TOKEN` 或 npm publication secret。
+Use the activated, reviewed stage-only trust relationship and protected `npm-release` Environment. Initial setup or a changed binding requires the [setup checklist](#trusted-publisher-setup); record the review outcome in the version record. / 使用已启用且经审查的 stage-only trust relationship 与受保护的 `npm-release` Environment。首次配置或 binding 变化时须执行[配置清单](#trusted-publisher-setup)，并在版本记录中保存审查结论。
 
 From the GitHub Actions page, select **Stage npm release**, choose the `main` ref, enter the exact stable version already recorded in `package.json`, and dispatch it. Do not choose a tag, development branch, already published version, or disposable test version. The staged version consumes npm's version-uniqueness slot until it is approved or rejected. / 在 GitHub Actions 页面选择 **Stage npm release**，选择 `main` ref，输入已经记录在 `package.json` 中的精确稳定版本并 dispatch。不得选择 tag、development branch、已发布版本或一次性测试版本。Staged version 在 approve 或 reject 前会占用 npm 的版本唯一性位置。
 
 The workflow must prove all of the following: / Workflow 必须证明以下全部条件：
 
-1. `verify` runs with `contents: read` and no OIDC permission, validates `main`, source identity, package/repository/version metadata, and registry `E404`, then passes strict install, `release:check`, browser, production/full audits, and the guarded directory publication dry run. / `verify` 使用 `contents: read` 且没有 OIDC permission，验证 `main`、来源身份、package/repository/version metadata 与 registry `E404`，随后通过 strict install、`release:check`、browser、production/full audit 与受 guard 保护的目录 publication dry run。
+1. `verify` runs with `contents: read` and no OIDC permission, validates `main`, source identity, package/repository/version metadata and registry `E404`, then passes strict install and the guarded directory publication dry-run (`prepublishOnly` → `release:check`, once), followed by browser and production/full audits. A guard failure fails `verify` and prevents `stage`; do not add `continue-on-error`, bypass scripts, or replace the directory with a positional tarball. / `verify` 使用 `contents: read` 且没有 OIDC permission，验证 `main`、来源身份、package/repository/version metadata 与 registry `E404`，随后通过 strict 安装和受 guard 保护的目录 publication dry-run（`prepublishOnly` → `release:check`，一次），再执行 browser 与 production／full audit。Guard 失败必须使 `verify` 失败并阻止 `stage`；不得添加 `continue-on-error`、绕过脚本或把目录替换为位置 tarball 参数。
 2. `verify` creates the inspection candidate outside the worktree with scripts disabled and records its SHA-256 and exact source commit. / `verify` 在工作树之外以禁用脚本方式创建检查候选制品，并记录其 SHA-256 与精确来源 commit。
 3. `stage` starts only after `verify`, uses the protected `npm-release` Environment, and alone receives `id-token: write`. / `stage` 只在 `verify` 后启动，使用受保护的 `npm-release` Environment，并且只有它获得 `id-token: write`。
 4. `stage` checks out the exact verified SHA, runs no project dependency or script, regenerates the candidate with `npm pack --ignore-scripts`, and requires byte identity with the recorded SHA-256. / `stage` checkout 精确的已验证 SHA，不运行项目依赖或脚本，通过 `npm pack --ignore-scripts` 重新生成候选制品，并要求与已记录 SHA-256 字节一致。
@@ -390,13 +398,190 @@ npm's staged UI and `npm stage view --json` may not expose provenance, workflow 
 
 Approval is the irreversible human-controlled publication boundary. Approve only through npmjs.com or `npm stage approve <stage-id>` in a maintainer-controlled interactive session, and complete the required npm 2FA challenge with a registered WebAuthn authenticator or hardware security key. Do not approve a release with a phishable TOTP code when the phishing-resistant factor is unavailable; stop and restore WebAuthn access first. Never send an OTP, recovery code, or authenticator output through chat, a workflow input, an environment variable, or a command-line argument. / Approve 是不可逆且由人工控制的公开发布边界。只能通过 npmjs.com，或在维护者控制的交互式 session 中执行 `npm stage approve <stage-id>`，并使用已注册的 WebAuthn authenticator 或硬件安全密钥完成 npm 2FA challenge。抗钓鱼认证因素不可用时，不得改用可能被钓鱼的 TOTP code 批准发布；必须停止并先恢复 WebAuthn 访问。不得通过聊天、workflow input、环境变量或命令行参数发送 OTP、恢复码或 authenticator 输出。
 
+After 2FA approval, continue to step 9. The staged `latest` takes effect on approval, so skip appendix step 10. / 2FA approve 后继续第 9 步。Staged `latest` 会在 approve 时生效，因此跳过附录第 10 步。
+
+<a id="public-verification"></a>
+
+### 9. Verify the public exact version / 验证公共精确版本
+
+Perform this phase without the publication credential. Use another empty temporary user configuration, prove that `npm whoami` returns `ENEEDAUTH`, run the public checks, and remove the temporary directory afterward. This both tests the real public path and prevents an ordinary user-level `.npmrc` from silently authenticating the verification. / 本阶段不得携带发布凭据。使用另一个空的临时 user configuration，证明 `npm whoami` 返回 `ENEEDAUTH`，执行公共检查，然后删除临时目录。这样既能测试真实公共路径，也能防止日常 user-level `.npmrc` 静默地为验证过程提供认证。
+
+The preferred path is the read-only **Verify published npm release** workflow from `main`. After npm approval is visibly public, dispatch `.github/workflows/verify-published.yml` with the exact stable version, release source SHA, and candidate SHA-256 recorded by `publish.yml`. This dispatch creates only CI evidence: the workflow has `contents: read`, no OIDC or secret, checks out the exact release source, pins Node.js 24/npm 12.0.2, and runs the same committed verifier on `ubuntu-latest` and `windows-latest`. / 首选路径是从 `main` 运行只读的 **Verify published npm release** workflow。npm approve 已明确公开后，以 `publish.yml` 记录的精确稳定版本、release source SHA 与候选 SHA-256 dispatch `.github/workflows/verify-published.yml`。该 dispatch 只创建 CI 证据：workflow 只有 `contents: read`，没有 OIDC 或 secret，checkout 精确 release source，固定 Node.js 24/npm 12.0.2，并在 `ubuntu-latest` 与 `windows-latest` 上运行同一个已提交 verifier。
+
+The verifier: / Verifier 会：
+
+- rejects inherited npm credential variables, creates an empty temporary userconfig, and requires `npm whoami` to return `ENEEDAUTH`; / 拒绝继承的 npm credential 环境变量，创建空白临时 userconfig，并要求 `npm whoami` 返回 `ENEEDAUTH`；
+- validates exact public version, `latest`, repository metadata, file manifest, registry SHA-1, and candidate SHA-256; / 验证精确公共版本、`latest`、repository metadata、文件 manifest、registry SHA-1 与候选 SHA-256；
+- verifies `npm audit signatures`, decodes the public SLSA statement, and requires exact repository, `publish.yml`, `refs/heads/main`, GitHub-hosted builder, workflow invocation, source commit, and tarball SHA-512; / 验证 `npm audit signatures`，解析公共 SLSA statement，并要求精确 repository、`publish.yml`、`refs/heads/main`、GitHub-hosted builder、workflow invocation、source commit 与 tarball SHA-512；
+- performs exact-version npx, isolated local/global installation, CLI help, and packaged root plus `/api/state` smoke against generated synthetic data; / 使用生成的合成数据执行精确版本 npx、隔离 local/global 安装、CLI help、打包后根页面与 `/api/state` smoke；
+- removes every generated directory and emits a compact evidence summary. / 删除全部生成目录并输出紧凑证据摘要。
+
+Both matrix jobs must report `public-release-verified; tag-and-github-release-may-proceed`. The workflow does not create the tag or GitHub Release. If Actions is unavailable, run the same command from a clean checkout of the exact release source on each required OS: / 两个 matrix job 都必须报告 `public-release-verified; tag-and-github-release-may-proceed`。该 workflow 不创建 tag 或 GitHub Release。如果 Actions 不可用，应在每个必需 OS 的精确 release source 干净 checkout 中运行同一命令：
+
+```powershell
+npm run release:verify-public -- '<version>' '<candidate-sha256>' '<release-source-sha>'
+```
+
+Skipping an OS requires an explicit maintainer decision recorded as a public-smoke exception with concrete substitute evidence; never mark a skipped platform as passed. / 跳过某个 OS 必须由维护者明确决定，并记录 public-smoke exception 与具体替代证据；绝不能把跳过的平台标记为通过。
+
+<a id="release-closeout"></a>
+
+### 11. Create the release tag and GitHub Release / 创建 release tag 与 GitHub Release
+
+Tag the exact commit used as the clean publication source. Do not tag a rebuilt, amended, or later commit. / 对作为干净发布来源的精确 commit 打 tag。不得对重新构建、amend 后或更晚的 commit 打 tag。
+
+```powershell
+git tag -a 'v<version>' -m 'Release v<version>' '<release-commit>'
+git push origin 'v<version>'
+```
+
+Create the GitHub Release from that tag and use the bilingual changelog entry as release notes. Verify that npm version, Git tag, GitHub Release, and release commit all agree. / 从该 tag 创建 GitHub Release，并使用双语 changelog 条目作为 release notes。验证 npm version、Git tag、GitHub Release 与 release commit 全部一致。
+
+### 12. Close the version plan / 收尾版本计划
+
+- Record all public verification outcomes, artifact hash continuity, and URLs in the version-specific plan. / 在版本专属计划中记录全部公共验证结论、制品哈希连续性与 URL。
+- Record a sanitized public summary of any material warning, retry, exception, deprecation, or dist-tag correction. Put raw output and machine- or account-specific diagnostics only in the maintainer-local appendix. / 对任何实质性 warning、retry、exception、deprecation 或 dist-tag 修正记录脱敏后的公开摘要；原始输出及机器／账户特有诊断只进入维护者本地附录。
+- Update the trusted-publishing debt status if automation changed. / 如果自动化发生变化，更新 trusted-publishing 技术债状态。
+- Move the active plan to `completed/` only after staged review and 2FA approval (or a documented manual fallback), public verification, any required manual promotion, tag, and GitHub Release are all complete. / 只有 staged 审查与 2FA approve（或已记录的手动 fallback）、公共验证、任何必要的手动 promotion、tag 与 GitHub Release 全部完成后，才把 active plan 移到 `completed/`。
+
+<a id="version-record-template"></a>
+
+## Release evidence template / 发布证据模板
+
+Maintain one public record per version using the template below. Each gate row must identify its tested SHA and command/job, outcome (passed, failed, pending, skipped, or reused), and evidence reference. For reuse, also record the compared SHAs, changed paths, scope assessment and any rerun trigger. Keep durable outcomes in the plan even when CI logs expire; a URL alone is insufficient. / 每个版本按下方模板维护一份公开记录。每项 gate 须标明已测 SHA 与命令／job、结论（passed、failed、pending、skipped 或 reused）及证据引用。复用时另记所比较的 SHA、变更路径、影响范围判断及重跑触发原因。即使 CI 日志过期，计划也须保有长期结论；只有 URL 不足以构成证据。
+
+Record identity and hashes only here; phase checklists and progress notes refer to these entries. Use the progress log for material changes, failures, recovery and decisions. Public evidence excludes local absolute paths, account details, internal stage identifiers, ordinary npm configuration and raw failure logs; use the optional local appendix for permitted supporting material. / 身份与哈希只在此记录，阶段清单与进度说明引用相应条目。进度日志用于实质变更、失败、恢复与决定。公开证据不含本地绝对路径、账户细节、内部 stage identifier、日常 npm 配置或原始失败日志；允许保留的支撑材料放入可选本地附录。
+
+```text
+Identity and scope / 身份与范围:
+- Package/version; source branch and freeze baseline / package／版本、来源分支与冻结基线:
+- Final release SHA; clean-source confirmation / 最终发布 SHA、干净来源确认:
+- Annotated tag and target; GitHub Release URL / annotated tag 及目标、GitHub Release URL:
+- Status/owner; version-specific scope, risks and exceptions / 状态／负责人、版本范围、风险与例外:
+- Toolchain by environment: OS, Node, npm, official registry, strict policy / 各环境工具链：OS、Node、npm、官方 registry、strict 策略:
+- Publication path; fallback reason if used / 发布路径、使用 fallback 时的原因:
+
+Gate evidence / Gate 证据:
+Each row: tested SHA | command/job | outcome | evidence reference.
+每行：已测 SHA | 命令／job | 结论 | 证据引用。
+- Metadata: package/lock/changelog/tag agreement, publishConfig, devEngines / metadata 一致性与配置:
+- Strict install; allowScripts coverage; no pending scripts / strict 安装、allowScripts 覆盖、无 pending script:
+- Local release:check: assets, Node suite, installed-package smoke / 本地 release:check：资产、Node 测试、安装包 smoke:
+- Local browser; production/full audits; diff check / 本地 browser、production／full audit、diff 检查:
+- Local guarded dry run and observed prepublishOnly / 本地 guarded dry-run 与已观察的 prepublishOnly:
+- Local evidence reuse: compared SHAs, changed paths, impact, rerun reason / 本地证据复用：对比 SHA、变更路径、影响、重跑原因:
+- Exact-main CI: Linux Node 22, Linux Node 24, Windows Node 24 / 精确 main CI：三项 Node 矩阵:
+- Exact-main CI: Linux/Windows package smoke and Ubuntu browser / 精确 main CI：双平台 package smoke 与 Ubuntu browser:
+- Preflight GO; separate exact-SHA CI confirmation / preflight GO、独立的精确 SHA CI 确认:
+- publish.yml run/source: strict install, release:check, browser, both audits, guarded dry run / publish.yml run／来源及全部 gate:
+
+Artifact review and continuity / 制品审查与连续性:
+- Inspection: entry count, allowlist, notices, sensitive-path scan, source-byte parity, CLI/server / 检查：文件数、白名单、notice、敏感路径、来源字节一致性、CLI／server:
+- Local inspection SHA-256 and tested SHA; not the authoritative workflow hash / 本地检查 SHA-256 与已测 SHA，非权威 workflow 哈希:
+- Verify-job candidate SHA-256 / verify job 候选 SHA-256:
+- Stage-job reproduced SHA-256 and equality result / stage job 复现 SHA-256 与相等结论:
+- Downloaded stage SHA-256; identity/tag/manifest/trusted-actor/source review / 下载 stage SHA-256、身份／tag／manifest／可信 actor／来源审查:
+- Pre-approval provenance result or visibility limitation / 审批前 provenance 结论或可见性限制:
+- Public tarball SHA-256 and equality result / 公共 tarball SHA-256 与相等结论:
+
+Approval and public verification / 审批与公共验证:
+- Trusted Publisher/Environment review; maintainer WebAuthn approval outcome / trust／Environment 审查、维护者 WebAuthn 审批结论:
+- Credential cleanup and anonymous ENEEDAUTH proof / 凭据清理与匿名 ENEEDAUTH 证明:
+- Exact public metadata and final dist-tags; promotion if applicable / 精确公共 metadata、最终 dist-tag、适用时的 promotion:
+- Public workflow/run and per-OS outcomes: Windows; Ubuntu / 公共 workflow／run 与逐 OS 结论：Windows、Ubuntu:
+- Hash/manifest/repository; exact provenance and npm signatures / hash／manifest／repository、精确 provenance 与 npm signature:
+- Per-OS npx/global install, CLI, root and /api/state / 各 OS 的 npx／全局安装、CLI、根页面与 /api/state:
+- Public README/metadata/guide/media links and first-use checks / 公共 README／metadata／指南／素材链接及首次使用检查:
+
+Exceptions, recovery and closeout / 例外、恢复与收尾:
+- None, or failed/skipped gate, substitute evidence and maintainer decision / 无，或失败／跳过 gate、替代证据与维护者决定:
+- Material warnings, retries and recovery actions / 实质 warning、重试与恢复操作:
+- Final npm/tag/Release/source agreement; archive status / 最终 npm／tag／Release／来源一致性、归档状态:
+- Optional ignored appendix: relative path and completion status / 可选忽略附录：相对路径与完成状态:
+```
+
+A reused local gate retains its original tested SHA. Never mark a failed or skipped platform as passed. Keep the independent verify → stage → downloaded stage → public hash results even when the hashes are identical; a Windows-local inspection hash may differ and is not substituted for the workflow hash. Secrets are prohibited in both evidence layers. / 复用的本地 gate 保留原已测 SHA。不得把失败或跳过的平台标为通过。即使哈希相同，也须保留 verify → stage → 下载 stage → public 各环节的独立结果；Windows 本地检查哈希可能不同，不得替代 workflow 哈希。两层证据均禁止秘密。
+
+### Maintainer-local evidence appendix / 维护者本地证据附录
+
+When raw or account-side evidence is useful, store it under `tmp/release-evidence/<version>.md`; `tmp/` is Git ignored. The appendix is optional supporting material, is not available to repository reviewers, and may not be the sole record of any fact required to approve or close a release. The public plan records only the relative path and completion status. / 当原始或账户侧证据有用时，将其保存在 `tmp/release-evidence/<version>.md`；`tmp/` 已被 Git 忽略。该附录只是可选支撑材料，仓库 reviewer 无法访问，也不得成为批准或完成发布所需事实的唯一记录。公开计划只记录其相对路径与完成状态。
+
+The local appendix may retain raw command-output pointers, account-side configuration readback or screenshot locations, the internal staged-package identifier, exact authentication-session cleanup timestamps, machine-specific environment notes, integration-only candidate filename/size/SHA-1/integrity values, and unsanitized transient diagnostics. It must not contain any token, OTP, recovery code, authenticator output, credential-bearing URL, `.npmrc` contents, or other reusable secret. Maintainer identity and authenticator details are not release evidence and must not be recorded. / 本地附录可以保留原始命令输出指针、账户侧配置 readback 或截图位置、内部 staged-package identifier、认证 session 清理的精确时间、本机环境说明、仅属于 integration 的候选 filename／size／SHA-1／integrity 值，以及未脱敏的临时诊断。它不得包含 token、OTP、恢复码、authenticator 输出、携带凭据的 URL、`.npmrc` 内容或其他可复用秘密。维护者身份与 authenticator 细节不属于发布证据，不得记录。
+
+If the appendix and public record disagree, stop and regenerate or re-review the evidence; never resolve the mismatch by weakening or deleting the public gate. / 如果本地附录与公开记录不一致，必须停止并重新生成或审查证据；不得通过削弱或删除公开 gate 来消除不一致。
+
+<a id="release-appendices"></a>
+
+## Appendices: conditional procedures / 附录：按条件使用的流程
+
+These sections support the default staged route. Manual publication and promotion apply only to a recorded, explicitly authorized fallback; diagnostics do not replace the full gates. Existing step numbers and section titles are retained for historical references. / 以下章节支撑默认 staged 路径。手动发布与 promotion 仅适用于已记录且明确获授权的 fallback；诊断不能替代完整 gate。保留原步骤编号与章节标题，以兼容历史引用。
+
+- [Initial or changed trust setup / 首次或变更后的 trust 配置](#trusted-publisher-setup)
+- [Manual environment reads / 手动环境读取](#manual-environment-diagnostics)
+- [Direct publication and promotion / 直接发布与 promotion](#manual-publication-fallback)
+- [Public diagnostic reads / 公共诊断读取](#public-diagnostic-fallback)
+- [Failure and recovery / 失败与恢复](#failure-and-recovery--失败与恢复)
+- [Known traps / 已知陷阱](#known-traps--已知陷阱)
+
+<a id="trusted-publisher-setup"></a>
+
+### Trusted Publisher setup / Trusted Publisher 配置
+
+This is the preferred path after the external trust relationship has been activated and successfully reviewed. Before the first dispatch, all of the following must already exist and agree exactly: / 外部 trust relationship 已启用并完成审查后，这是首选路径。首次 dispatch 前，以下配置必须已经存在且精确一致：
+
+- GitHub Environment: `npm-release`, restricted to `main`, with administrator bypass disabled where available and an independent required reviewer when the maintainer model supports one. / GitHub Environment：`npm-release`，限制为 `main`，在可用时禁用管理员绕过，并在维护者模型支持时配置独立 required reviewer。
+- npm Trusted Publisher: GitHub Actions, organization/user `Yijia-Zhou`, repository `session-analyzer`, workflow filename `publish.yml`, environment `npm-release`. / npm Trusted Publisher：GitHub Actions，organization/user `Yijia-Zhou`，repository `session-analyzer`，workflow filename `publish.yml`，environment `npm-release`。
+- Allowed action: `npm stage publish` only; direct `npm publish` is disabled for the trust relationship. / Allowed action：只允许 `npm stage publish`；trust relationship 禁用直接 `npm publish`。
+- No `NPM_TOKEN`, `NODE_AUTH_TOKEN`, or npm publication secret exists in the repository, workflow, environment, or organization. / Repository、workflow、environment 与 organization 中不存在 `NPM_TOKEN`、`NODE_AUTH_TOKEN` 或 npm publication secret。
+
 After the first real staged submission proves the trust relationship works, set npm Publishing access to **Require two-factor authentication and disallow tokens** and revoke obsolete automation tokens. Do not tighten this setting before the first successful stage, because npm does not validate a Trusted Publisher binding when it is saved. / 第一次真实 staged submission 证明 trust relationship 可用后，将 npm Publishing access 设置为 **Require two-factor authentication and disallow tokens**，并撤销不再使用的 automation token。在第一次 staging 成功前不得收紧该设置，因为 npm 保存 Trusted Publisher binding 时不会验证它。
 
-After 2FA approval, continue to step 9. The staged `latest` takes effect on approval, so skip step 10. / 2FA approve 后继续第 9 步。Staged `latest` 会在 approve 时生效，因此跳过第 10 步。
+<a id="manual-environment-diagnostics"></a>
+
+### Manual environment diagnostics / 手动环境诊断
+
+Use these reads for the direct fallback or when diagnosing preflight. On the staged route, preflight already performs the identity, registry-slot and manifest reads within its documented scope; required CI is checked separately. / 直接 fallback 或诊断 preflight 时使用这些读取。在 staged 路径上，preflight 已在其记录的范围内完成身份、registry 版本槽位与 manifest 读取；必要 CI 另行检查。
+
+Verify the version contract:
+
+验证版本契约：
+
+```powershell
+node -p 'require("./package.json").name'
+node -p 'require("./package.json").version'
+node -p 'JSON.stringify(require("./package.json").engines)'
+node -p 'JSON.stringify(require("./package.json").devEngines)'
+node -p 'JSON.stringify(require("./package.json").allowScripts)'
+node -p 'JSON.stringify(require("./package.json").publishConfig)'
+```
+
+For the first public release, recheck package-name availability immediately before authentication. Treat `E404` as availability evidence only at that moment; it is not a reservation. / 对首次公开发布，在认证前立即复查 package 名可用性。`E404` 只表示当时可用，并不构成保留。
+
+```powershell
+npm view 'session-analyzer' version --registry='https://registry.npmjs.org/'
+```
+
+For later versions, prove that the target version is unused:
+
+对于后续版本，证明目标版本尚未使用：
+
+```powershell
+npm view 'session-analyzer' versions --json --registry='https://registry.npmjs.org/'
+```
+
+<a id="manual-publication-fallback"></a>
 
 ### 8B. Authenticate and perform the direct manual fallback / 认证并执行直接手动 fallback
 
 Use this fallback only when Trusted Publishing or staged publishing is unavailable and the version-specific plan explicitly records the reason. This is the first mandatory human-controlled boundary on the fallback path. / 只有 Trusted Publishing 或 staged publishing 不可用，且版本专属计划明确记录原因时，才使用此 fallback。这是 fallback 路径上的第一个强制人工边界。
+
+```powershell
+# Correct: publishes from the current clean package root and runs prepublishOnly.
+npm publish --foreground-scripts --tag='next' --access='public'
+
+# Forbidden for this repository: bypasses the intended prepublishOnly guard.
+npm publish '.\session-analyzer-<version>.tgz' --tag='next' --access='public'
+```
 
 Use a fresh, isolated npm user configuration for this single registry mutation. Do not reuse the maintainer's normal `~/.npmrc`, do not accept an inherited token, and do not display the temporary `.npmrc` or any credential value. The pre-login `npm whoami` must fail specifically with `ENEEDAUTH`; any other result means the session is not proven clean. / 为这一次 registry mutation 使用全新、隔离的 npm user configuration。不得复用维护者日常的 `~/.npmrc`，不得接受继承的 token，也不得显示临时 `.npmrc` 或任何凭据值。登录前的 `npm whoami` 必须明确以 `ENEEDAUTH` 失败；任何其他结果都表示该会话尚未证明为干净状态。
 
@@ -476,79 +661,13 @@ The `finally` cleanup is mandatory even if login, publication, 2FA, the terminal
 
 If the CLI exits ambiguously because of a timeout, disconnect, or terminal failure, complete credential cleanup first and do not immediately retry. Query the exact version from the registry without authentication; the registry write may have succeeded even though the local command did not report success. / 如果 CLI 因 timeout、断线或 terminal failure 含糊退出，先完成凭据清理且不得立即重试。随后在无认证状态下从 registry 查询精确版本；即使本地命令没有报告成功，registry 写入也可能已经成功。
 
-### 9. Verify the public exact version / 验证公共精确版本
-
-Perform this phase without the publication credential. Use another empty temporary user configuration, prove that `npm whoami` returns `ENEEDAUTH`, run the public checks, and remove the temporary directory afterward. This both tests the real public path and prevents an ordinary user-level `.npmrc` from silently authenticating the verification. / 本阶段不得携带发布凭据。使用另一个空的临时 user configuration，证明 `npm whoami` 返回 `ENEEDAUTH`，执行公共检查，然后删除临时目录。这样既能测试真实公共路径，也能防止日常 user-level `.npmrc` 静默地为验证过程提供认证。
-
-The preferred path is the read-only **Verify published npm release** workflow from `main`. After npm approval is visibly public, dispatch `.github/workflows/verify-published.yml` with the exact stable version, release source SHA, and candidate SHA-256 recorded by `publish.yml`. This dispatch creates only CI evidence: the workflow has `contents: read`, no OIDC or secret, checks out the exact release source, pins Node.js 24/npm 12.0.2, and runs the same committed verifier on `ubuntu-latest` and `windows-latest`. / 首选路径是从 `main` 运行只读的 **Verify published npm release** workflow。npm approve 已明确公开后，以 `publish.yml` 记录的精确稳定版本、release source SHA 与候选 SHA-256 dispatch `.github/workflows/verify-published.yml`。该 dispatch 只创建 CI 证据：workflow 只有 `contents: read`，没有 OIDC 或 secret，checkout 精确 release source，固定 Node.js 24/npm 12.0.2，并在 `ubuntu-latest` 与 `windows-latest` 上运行同一个已提交 verifier。
-
-The verifier: / Verifier 会：
-
-- rejects inherited npm credential variables, creates an empty temporary userconfig, and requires `npm whoami` to return `ENEEDAUTH`; / 拒绝继承的 npm credential 环境变量，创建空白临时 userconfig，并要求 `npm whoami` 返回 `ENEEDAUTH`；
-- validates exact public version, `latest`, repository metadata, file manifest, registry SHA-1, and candidate SHA-256; / 验证精确公共版本、`latest`、repository metadata、文件 manifest、registry SHA-1 与候选 SHA-256；
-- verifies `npm audit signatures`, decodes the public SLSA statement, and requires exact repository, `publish.yml`, `refs/heads/main`, GitHub-hosted builder, workflow invocation, source commit, and tarball SHA-512; / 验证 `npm audit signatures`，解析公共 SLSA statement，并要求精确 repository、`publish.yml`、`refs/heads/main`、GitHub-hosted builder、workflow invocation、source commit 与 tarball SHA-512；
-- performs exact-version npx, isolated local/global installation, CLI help, and packaged root plus `/api/state` smoke against generated synthetic data; / 使用生成的合成数据执行精确版本 npx、隔离 local/global 安装、CLI help、打包后根页面与 `/api/state` smoke；
-- removes every generated directory and emits a compact evidence summary. / 删除全部生成目录并输出紧凑证据摘要。
-
-Both matrix jobs must report `public-release-verified; tag-and-github-release-may-proceed`. The workflow does not create the tag or GitHub Release. If Actions is unavailable, run the same command from a clean checkout of the exact release source on each required OS: / 两个 matrix job 都必须报告 `public-release-verified; tag-and-github-release-may-proceed`。该 workflow 不创建 tag 或 GitHub Release。如果 Actions 不可用，应在每个必需 OS 的精确 release source 干净 checkout 中运行同一命令：
-
-```powershell
-npm run release:verify-public -- '<version>' '<candidate-sha256>' '<release-source-sha>'
-```
-
-Skipping an OS requires an explicit maintainer decision recorded as a public-smoke exception with concrete substitute evidence; never mark a skipped platform as passed. / 跳过某个 OS 必须由维护者明确决定，并记录 public-smoke exception 与具体替代证据；绝不能把跳过的平台标记为通过。
-
-The following manual read block is retained only as a diagnostic fallback when the committed verifier cannot start; it does not replace the full cross-platform verifier: / 仅当已提交 verifier 无法启动时，才保留下述手动读取 block 作为诊断 fallback；它不能替代完整跨平台 verifier：
-
-诊断 fallback：
-
-```powershell
-if (Test-Path 'Env:NPM_CONFIG_USERCONFIG') {
-  throw 'Start public verification without an inherited NPM_CONFIG_USERCONFIG.'
-}
-$publicVerifyDir = Join-Path ([IO.Path]::GetTempPath()) ('session-analyzer-npm-public-' + [guid]::NewGuid().ToString('N'))
-$null = New-Item -ItemType Directory -Path $publicVerifyDir
-$env:NPM_CONFIG_USERCONFIG = Join-Path $publicVerifyDir '.npmrc'
-try {
-  $publicWhoamiOutput = (& npm whoami --registry='https://registry.npmjs.org/' 2>&1 | Out-String)
-  if ($LASTEXITCODE -eq 0 -or $publicWhoamiOutput -notmatch '(?i)\bENEEDAUTH\b') {
-    throw 'Public verification is not demonstrably unauthenticated.'
-  }
-  npm view 'session-analyzer@<version>' --registry='https://registry.npmjs.org/'
-  if ($LASTEXITCODE -ne 0) { throw 'Exact-version metadata verification failed.' }
-  npm view 'session-analyzer' dist-tags --json --registry='https://registry.npmjs.org/'
-  if ($LASTEXITCODE -ne 0) { throw 'Dist-tag verification failed.' }
-  npm view 'session-analyzer' repository --json --registry='https://registry.npmjs.org/'
-  if ($LASTEXITCODE -ne 0) { throw 'Repository metadata verification failed.' }
-  npx --yes 'session-analyzer@<version>' --help
-  if ($LASTEXITCODE -ne 0) { throw 'Exact-version npx verification failed.' }
-}
-finally {
-  if ((Split-Path -Leaf $publicVerifyDir) -notlike 'session-analyzer-npm-public-*') {
-    throw 'Refusing to remove an unexpected public-verification directory.'
-  }
-  Remove-Item -LiteralPath $publicVerifyDir -Recurse -Force
-  Remove-Item 'Env:NPM_CONFIG_USERCONFIG' -ErrorAction SilentlyContinue
-}
-```
-
-From clean Windows and Linux environments, verify: / 在干净 Windows 与 Linux 环境中验证：
-
-- exact-version `npx` / 精确版本 `npx`
-- global installation and CLI help / 全局安装与 CLI help
-- packaged server startup against a test project and synthetic Codex home / 针对测试项目与合成 Codex home 启动 packaged server
-- root HTML and `/api/state` / 根 HTML 与 `/api/state`
-- registry metadata and expected dist-tags: the approved staged version at `latest`, unchanged prior `latest` while a manual `next` candidate is under verification, or the recorded automatic `latest` for an inaugural direct publication / registry metadata 与预期 dist-tag：approve 后 staged version 位于 `latest`；手动 `next` 候选验证期间既有 `latest` 保持不变；或首次直接发布已记录的自动 `latest`
-
-Do not use real transcripts for public release verification. / 公共发布验证不得使用真实 transcript。
-
 ### 10. Promote a verified direct `next` publication / 提升已验证的直接 `next` 发布
 
 This step applies only to the direct manual fallback. For an established package, continue only after Windows and Linux exact-version verification succeeds:
 
 本步骤只适用于直接手动 fallback。对于已有 package，只有 Windows 与 Linux 精确版本验证成功后才能继续：
 
-Start a second fresh isolated authentication session using step 8's setup, pre-login `ENEEDAUTH` proof, login, and `finally` cleanup control flow. Do **not** execute step 8's publish command again; replace its publish lines with the following single authenticated mutation before running the block: / 使用第 8 步的 setup、登录前 `ENEEDAUTH` 证明、登录与 `finally` 清理控制流，建立第二个全新的隔离认证会话。**不得**再次执行第 8 步的 publish 命令；运行该 block 前，必须把其中的 publish 行替换为以下唯一的认证 mutation：
+Start a second fresh isolated authentication session using step 8B's setup, pre-login `ENEEDAUTH` proof, login, and `finally` cleanup control flow. Do **not** execute step 8B's publish command again; replace its publish lines with the following single authenticated mutation before running the block: / 使用第 8B 步的 setup、登录前 `ENEEDAUTH` 证明、登录与 `finally` 清理控制流，建立第二个全新的隔离认证会话。**不得**再次执行第 8B 步的 publish 命令；运行该 block 前，必须把其中的 publish 行替换为以下唯一的认证 mutation：
 
 ```powershell
 npm dist-tag add 'session-analyzer@<version>' 'latest' --registry=$releaseRegistry
@@ -594,114 +713,53 @@ finally {
 
 The promotion is another human-controlled registry mutation and may require 2FA; the final `dist-tag ls` is read-only and must be demonstrably unauthenticated. If the anonymous post-publication read already shows an inaugural package's automatic `latest` at the intended version, do **not** perform a redundant authenticated promotion: skip directly to the final anonymous tag evidence and record the first-publication exception. Otherwise confirm that promotion moved `latest` as intended. In either case, retain, remove, or update `next` according to the version-specific plan. / 提升是另一个由人工控制的 registry mutation，可能要求 2FA；最终 `dist-tag ls` 是只读操作，且必须可证明未认证。如果发布后的匿名读取已经显示首发 package 的自动 `latest` 指向预期版本，**不得**执行多余的认证提升：应直接进入最终匿名 tag 证据，并记录首发例外。否则应确认提升按预期移动了 `latest`。无论哪种情况，都应按版本专属计划保留、移除或更新 `next`。
 
-### 11. Create the release tag and GitHub Release / 创建 release tag 与 GitHub Release
+<a id="public-diagnostic-fallback"></a>
 
-Tag the exact commit used as the clean publication source. Do not tag a rebuilt, amended, or later commit. / 对作为干净发布来源的精确 commit 打 tag。不得对重新构建、amend 后或更晚的 commit 打 tag。
+### Public diagnostic fallback / 公共诊断 fallback
+
+The following manual read block is retained only as a diagnostic fallback when the committed verifier cannot start; it does not replace the full cross-platform verifier: / 仅当已提交 verifier 无法启动时，才保留下述手动读取 block 作为诊断 fallback；它不能替代完整跨平台 verifier：
+
+诊断 fallback：
 
 ```powershell
-git tag -a 'v<version>' -m 'Release v<version>' '<release-commit>'
-git push origin 'v<version>'
+if (Test-Path 'Env:NPM_CONFIG_USERCONFIG') {
+  throw 'Start public verification without an inherited NPM_CONFIG_USERCONFIG.'
+}
+$publicVerifyDir = Join-Path ([IO.Path]::GetTempPath()) ('session-analyzer-npm-public-' + [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $publicVerifyDir
+$env:NPM_CONFIG_USERCONFIG = Join-Path $publicVerifyDir '.npmrc'
+try {
+  $publicWhoamiOutput = (& npm whoami --registry='https://registry.npmjs.org/' 2>&1 | Out-String)
+  if ($LASTEXITCODE -eq 0 -or $publicWhoamiOutput -notmatch '(?i)\bENEEDAUTH\b') {
+    throw 'Public verification is not demonstrably unauthenticated.'
+  }
+  npm view 'session-analyzer@<version>' --registry='https://registry.npmjs.org/'
+  if ($LASTEXITCODE -ne 0) { throw 'Exact-version metadata verification failed.' }
+  npm view 'session-analyzer' dist-tags --json --registry='https://registry.npmjs.org/'
+  if ($LASTEXITCODE -ne 0) { throw 'Dist-tag verification failed.' }
+  npm view 'session-analyzer' repository --json --registry='https://registry.npmjs.org/'
+  if ($LASTEXITCODE -ne 0) { throw 'Repository metadata verification failed.' }
+  npx --yes 'session-analyzer@<version>' --help
+  if ($LASTEXITCODE -ne 0) { throw 'Exact-version npx verification failed.' }
+}
+finally {
+  if ((Split-Path -Leaf $publicVerifyDir) -notlike 'session-analyzer-npm-public-*') {
+    throw 'Refusing to remove an unexpected public-verification directory.'
+  }
+  Remove-Item -LiteralPath $publicVerifyDir -Recurse -Force
+  Remove-Item 'Env:NPM_CONFIG_USERCONFIG' -ErrorAction SilentlyContinue
+}
 ```
 
-Create the GitHub Release from that tag and use the bilingual changelog entry as release notes. Verify that npm version, Git tag, GitHub Release, and release commit all agree. / 从该 tag 创建 GitHub Release，并使用双语 changelog 条目作为 release notes。验证 npm version、Git tag、GitHub Release 与 release commit 全部一致。
+From clean Windows and Linux environments, verify: / 在干净 Windows 与 Linux 环境中验证：
 
-### 12. Close the version plan / 收尾版本计划
+- exact-version `npx` / 精确版本 `npx`
+- global installation and CLI help / 全局安装与 CLI help
+- packaged server startup against a test project and synthetic Codex home / 针对测试项目与合成 Codex home 启动 packaged server
+- root HTML and `/api/state` / 根 HTML 与 `/api/state`
+- registry metadata and expected dist-tags: the approved staged version at `latest`, unchanged prior `latest` while a manual `next` candidate is under verification, or the recorded automatic `latest` for an inaugural direct publication / registry metadata 与预期 dist-tag：approve 后 staged version 位于 `latest`；手动 `next` 候选验证期间既有 `latest` 保持不变；或首次直接发布已记录的自动 `latest`
 
-- Record all public verification outcomes, artifact hash continuity, and URLs in the version-specific plan. / 在版本专属计划中记录全部公共验证结论、制品哈希连续性与 URL。
-- Record a sanitized public summary of any material warning, retry, exception, deprecation, or dist-tag correction. Put raw output and machine- or account-specific diagnostics only in the maintainer-local appendix. / 对任何实质性 warning、retry、exception、deprecation 或 dist-tag 修正记录脱敏后的公开摘要；原始输出及机器／账户特有诊断只进入维护者本地附录。
-- Update the trusted-publishing debt status if automation changed. / 如果自动化发生变化，更新 trusted-publishing 技术债状态。
-- Move the active plan to `completed/` only after staged review and 2FA approval (or a documented manual fallback), public verification, any required manual promotion, tag, and GitHub Release are all complete. / 只有 staged 审查与 2FA approve（或已记录的手动 fallback）、公共验证、任何必要的手动 promotion、tag 与 GitHub Release 全部完成后，才把 active plan 移到 `completed/`。
-
-## Release evidence template / 发布证据模板
-
-Copy the public record below into the version-specific plan. It must remain sufficient for a reviewer to establish what was released, from which commit, which gates passed, whether the staged and public artifacts preserved the approved bytes, and whether public verification completed. Do not include local absolute paths, maintainer identity, account screenshots, internal stage identifiers, ordinary npm configuration, or raw failure logs. / 把下面的公开记录复制到版本专属计划。它必须足以让 reviewer 判断发布了什么、来源 commit 是什么、哪些 gate 已通过、staged 与公开制品是否保持获批字节，以及公共验证是否完成。不得包含本地绝对路径、维护者身份、账户截图、内部 stage identifier、日常 npm 配置或原始失败日志。
-
-```text
-Release identity:
-- Package:
-- Version:
-- Release commit:
-- Source branch:
-- Git tag:
-- GitHub Release:
-
-Toolchain:
-- OS:
-- Node.js:
-- npm:
-- Registry:
-- strict-allow-scripts:
-- Publication path (staged OIDC / manual fallback):
-
-Repository state:
-- git status:
-- package.json version:
-- package-lock.json version:
-- changelog entry:
-- publishConfig:
-- devEngines:
-- allowScripts:
-
-CI:
-- Commit:
-- Run URL:
-- Linux Node 22:
-- Linux Node 24:
-- Windows Node 24:
-- Browser:
-- Package smoke:
-
-Local gates:
-- npm ci --strict-allow-scripts:
-- pending install scripts:
-- release:check:
-- browser tests:
-- production audit:
-- full audit:
-- git diff --check:
-- final guarded publish dry-run:
-- prepublishOnly observed:
-
-Inspection candidate:
-- Entry count:
-- SHA-256:
-- Allowlist result:
-- Third-party notices result:
-- Sensitive-path result:
-- Installed CLI/server result:
-
-Publication and public verification:
-- Trusted Publisher and GitHub Environment review result:
-- publish.yml run URL and source SHA:
-- Verify-job candidate SHA-256:
-- Stage-job reproduced SHA-256:
-- Staged identity/manifest/provenance/source review result:
-- Downloaded staged tarball SHA-256:
-- Maintainer 2FA approval result; identity and factor details not recorded:
-- Manual-fallback isolation and credential-cleanup result, if used:
-- Exact-version registry metadata:
-- Windows public smoke:
-- Linux public smoke:
-- Public-smoke exception and substitute evidence:
-- Public tarball SHA-256:
-- Promotion result, if used:
-- Final dist-tags:
-
-Exceptions and recovery actions:
-- None / sanitized summary:
-
-Maintainer-local appendix:
-- Relative path:
-- Completion status:
-```
-
-### Maintainer-local evidence appendix / 维护者本地证据附录
-
-When raw or account-side evidence is useful, store it under `tmp/release-evidence/<version>.md`; `tmp/` is Git ignored. The appendix is optional supporting material, is not available to repository reviewers, and may not be the sole record of any fact required to approve or close a release. The public plan records only the relative path and completion status. / 当原始或账户侧证据有用时，将其保存在 `tmp/release-evidence/<version>.md`；`tmp/` 已被 Git 忽略。该附录只是可选支撑材料，仓库 reviewer 无法访问，也不得成为批准或完成发布所需事实的唯一记录。公开计划只记录其相对路径与完成状态。
-
-The local appendix may retain raw command-output pointers, account-side configuration readback or screenshot locations, the internal staged-package identifier, exact authentication-session cleanup timestamps, machine-specific environment notes, integration-only candidate filename/size/SHA-1/integrity values, and unsanitized transient diagnostics. It must not contain any token, OTP, recovery code, authenticator output, credential-bearing URL, `.npmrc` contents, or other reusable secret. Maintainer identity and authenticator details are not release evidence and must not be recorded. / 本地附录可以保留原始命令输出指针、账户侧配置 readback 或截图位置、内部 staged-package identifier、认证 session 清理的精确时间、本机环境说明、仅属于 integration 的候选 filename／size／SHA-1／integrity 值，以及未脱敏的临时诊断。它不得包含 token、OTP、恢复码、authenticator 输出、携带凭据的 URL、`.npmrc` 内容或其他可复用秘密。维护者身份与 authenticator 细节不属于发布证据，不得记录。
-
-If the appendix and public record disagree, stop and regenerate or re-review the evidence; never resolve the mismatch by weakening or deleting the public gate. / 如果本地附录与公开记录不一致，必须停止并重新生成或审查证据；不得通过削弱或删除公开 gate 来消除不一致。
+Do not use real transcripts for public release verification. / 公共发布验证不得使用真实 transcript。
 
 ## Failure and recovery / 失败与恢复
 
@@ -843,3 +901,5 @@ Unpublish is not the normal rollback mechanism. npm registry versions are immuta
 - 2026-08-02: Accepted stage-only GitHub Actions Trusted Publishing as the preferred path for future established-package releases. The trust binding names `publish.yml` and protected environment `npm-release`, allows `npm stage publish` but not `npm publish`, stores no npm token, and leaves public release behind maintainer 2FA approval. The workflow separates unprivileged gates from the OIDC job; the OIDC job executes no project dependency or script and may stage only a tarball whose SHA-256 exactly reproduces the verified candidate from the same commit. / 2026-08-02：接受只允许 staging 的 GitHub Actions Trusted Publishing，作为未来已有 package 发布的首选路径。Trust binding 指定 `publish.yml` 与受保护 environment `npm-release`，允许 `npm stage publish` 但不允许 `npm publish`，不保存 npm token，并将公开发布保留在维护者 2FA approve 之后。Workflow 将无特权 gate 与 OIDC job 分离；OIDC job 不执行项目依赖或脚本，只能 staging 与同一 commit 已验证候选 SHA-256 精确一致的 tarball。
 - 2026-08-03: Split release evidence into a durable public version record and an optional Git-ignored maintainer-local appendix. Public evidence retains release identity, gate outcomes, artifact hash continuity, review conclusions, URLs, and public verification; raw output, account-side readback, machine-specific details, internal stage identifiers, and transient diagnostics remain local. Secrets are prohibited in both layers. / 2026-08-03：将发布证据拆分为长期公开的版本记录与可选的 Git 忽略维护者本地附录。公开证据保留 release identity、gate 结论、制品哈希连续性、审查结论、URL 与公共验证；原始输出、账户侧 readback、本机特有信息、内部 stage identifier 与临时诊断保留在本地。两层均禁止记录秘密。
 - 2026-08-03: After the first live staged release, consolidated repeated release reads and public smoke into non-publishing `release:preflight`, `release:review-stage`, and `release:verify-public` commands, plus a read-only Windows/Ubuntu post-publication workflow. Required main CI and the unprivileged publish verify job are the authoritative heavy gates; unchanged exact-main content no longer requires a third mechanical local repetition unless a documented risk trigger applies. Human authorization remains mandatory for dispatch, Environment approval, WebAuthn stage approval, remote tag, and GitHub Release. / 2026-08-03：首次真实 staged release 后，将重复的 release 读取与公共 smoke 收敛为不具备发布能力的 `release:preflight`、`release:review-stage`、`release:verify-public` 命令，以及只读 Windows/Ubuntu 发布后 workflow。必要 main CI 与无特权 publish verify job 是权威重型 gate；如果 exact-main 内容未变，除非记录的风险触发器成立，否则不再要求第三次机械式本地重复。Dispatch、Environment approval、WebAuthn stage approval、远端 tag 与 GitHub Release 仍必须由人工授权。
+- 2026-10-04: Made the staged route the default reading path and moved manual publication, promotion, setup and diagnostic commands into conditional appendices while preserving section references. Version plans now keep one evidence record, record local gate reuse explicitly, and narrowly exempt pre-dispatch unpacked evidence-only updates from another local full run. Exact-source main CI, workflow verification, hash continuity, public verification and maintainer approval remain required. Workflow gate deduplication requires a separate validated change. / 2026-10-04：将 staged 路径设为默认阅读入口，把手动发布、promotion、配置与诊断命令移入按条件使用的附录，并保留章节引用。版本计划维护单一证据记录，明确记录本地 gate 复用，并严格限定 dispatch 前未打包纯证据更新可免于再次本地全套运行。精确来源 main CI、workflow 验证、哈希连续性、公共验证与维护者审批继续为必需项。Workflow gate 去重须作为独立变更验证。
+- 2026-10-05: On the next development branch, consolidate the unprivileged verify job's duplicate `release:check` into its early guarded directory dry-run. The pinned npm lifecycle is covered by anonymous synthetic success/failure injection; no cross-workflow evidence reuse or approval change is introduced. Narrow documentation PRs may omit browser CI, while exact-main and publish verification retain full coverage. Hosted Actions acceptance is tracked in [the implementation plan](../exec-plans/active/2026-10-05-ci-release-gate-efficiency.md). / 2026-10-05：在下个开发分支，把无特权 verify job 重复的 `release:check` 合并为前置目录 guarded dry-run；固定 npm 生命周期由匿名合成成功／失败注入覆盖，不引入跨 workflow 证据复用或审批变更。严格限定的文档 PR 可省略 browser CI，精确 main 与 publish 验证仍保留完整覆盖。实际 Actions 验收见上述实现计划。

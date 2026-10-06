@@ -111,6 +111,14 @@ test('normal current-writer zstd fixture indexes strictly and materializes with 
   assert.equal(projectionDigest, indexed.queryProjectionDigest);
 
   const main = materialized.logicalEvents.filter((event) => event.layer === 'main');
+  for (const [kind, english, chinese] of [
+    ['user_message', 'User message', '用户消息'],
+    ['assistant_message', 'Assistant message', '助手消息'],
+  ]) {
+    const message = main.find(event => event.kind === kind);
+    assert.equal(deepSeekAdapter.query.getEvent(index, materialized, message.id, { locale: 'en' }).label, english);
+    assert.equal(deepSeekAdapter.query.getEvent(index, materialized, message.id, { locale: 'zh-CN' }).label, chinese);
+  }
   assert.deepEqual(main.map((event) => event.kind), [
     'user_message',
     'reasoning',
@@ -148,7 +156,7 @@ test('packed chunk rows stay one Raw Record per physical row and partial output 
   const packedRows = materialized.rawEvents.filter((raw) => raw.payloadType.endsWith('-chunks'));
   assert.equal(packedRows.length, 16);
   assert.ok(packedRows.every((raw) => raw.memberCount > 1));
-  assert.ok(packedRows.every((raw) => !raw.searchText.includes('Ochre')));
+  assert.ok(packedRows.some((raw) => raw.searchText.includes('Ochre')));
   assert.ok(materialized.rawEvents.every((raw) => raw.payloadType !== 'assistant/chunk:expanded'));
   assert.equal(materialized.rawEvents.filter((raw) => raw.payloadType === 'assistant/message').length, 0);
 

@@ -582,13 +582,15 @@ test('onChunk observes sync byte-stream prefixes on every 4096-task and final yi
 
   assert.equal(syncDigest, asyncDigest);
   assert.ok(syncBytes.equals(concatenatedUpdates(asyncRecord)));
-  assert.deepEqual(events.map((event) => event.operations), [4_096, 0]);
+  // Streaming Map entries adds one resumable iterator task per entry; the
+  // first checkpoint now occurs before the full Map has been fingerprinted.
+  assert.deepEqual(events.map((event) => event.operations), [4_096, 2_048]);
   assert.deepEqual(events.map((event) => event.chunkIndex), [0, 1]);
   assertStreamedPrefixesMatch(syncBytes, prefixes);
-  assert.equal(prefixes[0].length, syncBytes.length);
+  assert.ok(prefixes[0].length < syncBytes.length);
   assert.equal(prefixes[1].length, syncBytes.length);
   assert.equal(profiles.length, 1);
-  assert.equal(profiles[0].operationCount, 4_096);
+  assert.equal(profiles[0].operationCount, 6_144);
   assert.equal(profiles[0].chunkCount, 2);
   assert.equal(profiles[0].yieldCount, 2);
   assert.equal(profiles[0].hashUpdateCallCount, asyncRecord.updates.length);

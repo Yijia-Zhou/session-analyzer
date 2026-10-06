@@ -7,6 +7,8 @@ const {
   INDEXED_SESSION_COUNT_FIELDS,
   createEmptyMaterializedPresentationIndexes,
   validateCanonicalIndexedSessionShape,
+  validateCanonicalDependencySet,
+  validateCanonicalLegacyRawOwnerIndex,
   validateCanonicalLogicalEventShape,
   validateCanonicalMaterializedSessionShape,
   validateCanonicalRawEventShape,
@@ -175,6 +177,7 @@ function queryContract() {
     filtersFromSearchParams() {},
     getEvent() {},
     getTimeline() {},
+    async getTimelineAsync() {},
     indexPresentation() {},
     matchTerms() {},
     projectFileSuggestions() {},
@@ -324,6 +327,51 @@ function validateStrictFixture(fixture) {
     { index: fixture.index },
   );
 }
+
+test('legacy Raw owner validation accepts more than 500,000 bounded owners', () => {
+  const lines = {};
+  for (let line = 1; line <= 500_001; line += 1) {
+    lines[line] = `0:fixture:raw:${line}`;
+  }
+  const payload = { sessionIds: ['fixture'], files: { '/synthetic/rollout.jsonl': lines } };
+  const index = {
+    schemaVersion: 1,
+    sourceKind: 'codex',
+    entryCount: 500_001,
+    accountedBytes: Buffer.byteLength(JSON.stringify(payload), 'utf8'),
+    payload,
+  };
+  assert.equal(validateCanonicalLegacyRawOwnerIndex(index, 'codex'), index);
+  assert.throws(
+    () => validateCanonicalLegacyRawOwnerIndex({ ...index, entryCount: 1_000_001 }, 'codex'),
+    { code: 'CANONICAL_CONTRACT_VIOLATION' },
+  );
+});
+
+test('legacy Raw owner validation includes file and Session dictionary overhead', () => {
+  const sessionIds = [];
+  const files = {};
+  for (let fileIndex = 0; fileIndex < 50_000; fileIndex += 1) {
+    const sessionId = String(fileIndex);
+    sessionIds.push(sessionId);
+    const lines = {};
+    for (let line = 1; line <= 20; line += 1) {
+      lines[line] = `${fileIndex}:${sessionId}:raw:${line}`;
+    }
+    files[`/synthetic/${fileIndex}.jsonl`] = lines;
+  }
+  const payload = { sessionIds, files };
+  const accountedBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  assert.ok(accountedBytes < 64 * 1024 * 1024);
+  const index = {
+    schemaVersion: 1,
+    sourceKind: 'codex',
+    entryCount: 1_000_000,
+    accountedBytes,
+    payload,
+  };
+  assert.equal(validateCanonicalLegacyRawOwnerIndex(index, 'codex'), index);
+});
 
 test('Codex and Claude complete synthetic Sessions satisfy the same shared contract', () => {
   assert.deepEqual(CANONICAL_CONTRACT.index, ['sourceKind', 'repoRoot', 'sessions', 'sessionsById']);
@@ -1881,7 +1929,7 @@ const FINGERPRINT_ROLES = [
 ];
 const FINGERPRINT_COUNTERS = [
   'yieldCount', 'chunkCount', 'operationCount', 'visitTaskCount', 'writeTaskCount',
-  'byteTaskCount', 'firstObjectVisitCount', 'repeatedReferenceCount', 'ownPropertyCount',
+  'byteTaskCount', 'iteratorTaskCount', 'firstObjectVisitCount', 'repeatedReferenceCount', 'ownPropertyCount',
   'mapEntryCount', 'setEntryCount', 'writeTokenCount', 'textValueUtf8Bytes',
   'textPrefixBytes', 'binaryHashBytes', 'hashInputBytes', 'hashUpdateCallCount', 'textHashUpdateCallCount',
 ];
@@ -1914,7 +1962,8 @@ test('fingerprint profiles preserve strict success and expose stable content-fre
         if (FINGERPRINT_COUNTERS.includes(key)) assert.ok(Number.isSafeInteger(value), key);
       }
       assert.equal(summary.activeComputeMs, summary.elapsedMs - summary.yieldWaitMs);
-      assert.equal(summary.operationCount, summary.visitTaskCount + summary.writeTaskCount + summary.byteTaskCount);
+      assert.equal(summary.operationCount, summary.visitTaskCount + summary.writeTaskCount
+        + summary.byteTaskCount + summary.iteratorTaskCount);
       assert.equal(summary.yieldCount, Math.floor(summary.operationCount / 4096) + 1);
       assert.equal(summary.chunkCount, summary.yieldCount);
       assert.equal(summary.hashInputBytes, summary.textPrefixBytes + summary.textValueUtf8Bytes + summary.binaryHashBytes);
@@ -2010,4 +2059,46 @@ test('fingerprint profiling preserves cancellation at existing capture and reche
       }), (error) => error === reason);
     }
   }
+});
+
+
+test('natural analysis collections cross the old aggregate budget without losing their tail', () => {
+  const indexed = makeStrictIndexedSession();
+  const materialized = makeStrictMaterializedSession(indexed);
+  materialized.analysis.patchedFiles = Array.from({ length: 200_001 }, (_, index) => ({
+    file: 'src/file-' + index + '.js', count: 1,
+  }));
+  assert.equal(validateCanonicalMaterializedSessionShape(indexed, materialized), materialized);
+  assert.equal(materialized.analysis.patchedFiles.at(-1).file, 'src/file-200000.js');
+  materialized.analysis.patchedFiles.at(-1).count = NaN;
+  assert.throws(() => validateCanonicalMaterializedSessionShape(indexed, materialized), /must be finite/);
+});
+
+test('large dependency evidence retains structural, absence and ownership checks', () => {
+  const dependency = {
+    schemaVersion: 1, id: 'large', sourceKind: 'fixture-source',
+    entries: [{ role: 'copied_metadata', pathIdentity: 'metadata', existence: 'present',
+      kind: 'file', policy: 'copied_value', acceptedBytes: 0, lineCount: 0,
+      digest: '', directoryEntries: [], evidence: { title: '界'.repeat(1_400_000) } }],
+  };
+  assert.equal(validateCanonicalDependencySet(dependency, 'fixture-source'),
+    Buffer.byteLength(JSON.stringify(dependency)));
+  assert.throws(() => validateCanonicalDependencySet(dependency, 'wrong-source'), /ownership mismatch/);
+  dependency.entries[0].existence = 'absent';
+  dependency.entries[0].acceptedBytes = 1;
+  assert.throws(() => validateCanonicalDependencySet(dependency, 'fixture-source'), /zero\/empty/);
+  dependency.entries[0].acceptedBytes = 0;
+  dependency.entries[0].evidence.loop = dependency.entries[0].evidence;
+  assert.throws(() => validateCanonicalDependencySet(dependency, 'fixture-source'), /acyclic/);
+});
+
+test('large descriptor collections remain dense and reject accessors without invoking them', () => {
+  const indexed = makeStrictIndexedSession();
+  indexed.materializationDescriptor.payload.context = Array.from({ length: 16_385 }, (_, index) => 'cwd-' + index);
+  assert.doesNotThrow(() => validateCanonicalIndexedSessionShape(indexed));
+  const context = indexed.materializationDescriptor.payload.context;
+  delete context[100];
+  assert.throws(() => validateCanonicalIndexedSessionShape(indexed), /sparse/);
+  Object.defineProperty(context, '100', { enumerable: true, get() { throw Error('must not invoke'); } });
+  assert.throws(() => validateCanonicalIndexedSessionShape(indexed), /enumerable data property/);
 });

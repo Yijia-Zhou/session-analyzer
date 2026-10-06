@@ -8,6 +8,8 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { createHistoryService } = require('../src/history-service');
 const { requireSourceAdapter } = require('../src/source-adapters');
+const { scanProjectQueryShard, disposeProjectQueryStore } = require('../src/project-query-store');
+const { isDiskStore } = require('../src/project-query-disk');
 
 async function corpus(t) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'history-service-test-'));
@@ -45,6 +47,93 @@ async function corpus(t) {
   t.after(() => service.close());
   return { service, options, sourceFile, home, repo };
 }
+
+test('real spilled index preserves search, coordinates, grouped pages and retrieval-artifact policies', async (t) => {
+  const { options, sourceFile, repo } = await corpus(t);
+  const giant = 'x'.repeat(262140) + 'CROSS_BLOCK' + ' \t\n'.repeat(120000) + 'PHRASE\n'
+    + 'y'.repeat(4 * 1024 * 1024) + '\n😀 İSTANBUL ΟΣ TAIL_SPILL';
+  const rows = [
+    { type: 'event_msg', payload: { type: 'user_message', message: 'REAL_SPILL_NEEDLE: preserve exact counts.' } },
+    { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: giant }] } },
+    { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'spill-echo', arguments: JSON.stringify({ cmd: 'session-analyzer history search --query SPILL_ECHO' }) } },
+    { type: 'response_item', payload: { type: 'function_call_output', call_id: 'spill-echo', output: 'SPILL_ECHO returned evidence.' } },
+    { type: 'event_msg', payload: { type: 'user_message', message: 'SPILL_ECHO documentation remains independent.' } },
+  ];
+  await fs.appendFile(sourceFile, rows.map((row) => JSON.stringify({ timestamp: '2026-09-03T00:00:00Z', ...row })).join('\n') + '\n');
+  for (const n of [2, 3]) {
+    await fs.writeFile(path.join(path.dirname(sourceFile), `rollout-2026-09-0${n}T00-00-00-spill-${n}.jsonl`), [
+      { type: 'session_meta', payload: { id: `spill-session-${n}`, cwd: repo } },
+      ...[1, 2].map((i) => ({ type: 'event_msg', payload: { type: 'user_message', message: `REAL_SPILL_NEEDLE session ${n} message ${i}` } })),
+    ].map((row) => JSON.stringify({ timestamp: `2026-09-0${n}T00:00:00Z`, ...row })).join('\n') + '\n');
+  }
+  // Prove the ordinary adapter/index path actually spills and that the phrase
+  // cannot be found inside any single decoded storage part. No mock store.
+  const index = await requireSourceAdapter('codex').buildIndex({ repoRoot: repo, sourceHome: options.codexHome });
+  try {
+    assert.equal(isDiskStore(index.projectQueryStore), true);
+    let checked = false;
+    for (const session of index.sessions) {
+      await scanProjectQueryShard(index.projectQueryStore, session.id, 'main', { includeText: true }, (row) => {
+        if (row.searchText.byteLength < 4 * 1024 * 1024) return;
+        checked = true;
+        const parts = [...row.searchText.parts()];
+        assert.equal(parts.some((part) => part.includes('CROSS_BLOCK')), false);
+        assert.equal(parts.join(''), giant);
+      });
+    }
+    assert.equal(checked, true);
+  } finally { disposeProjectQueryStore(index.projectQueryStore); }
+  const service = await createHistoryService(options);
+  t.after(() => service.close());
+  assert.equal((await service.execute('status')).coverage.sessionCount, 3);
+  const query = { query: 'REAL_SPILL_NEEDLE', kind: 'user_message', limit: 2 };
+  const first = await service.execute('search', query);
+  assert.equal(first.scan.matchedEvents, 5);
+  assert.equal(first.scan.matchedSessions, 3);
+  assert.equal(new Set(first.items.map((item) => item.sessionId)).size, 2);
+  const all = [...first.items];
+  let page = first;
+  while (page.hasMore) {
+    page = await service.execute('search', { ...query, cursor: page.nextCursor, limit: 1 });
+    all.push(...page.items);
+  }
+  assert.equal(all.length, 5);
+  assert.equal(new Set(all.map((item) => item.ref)).size, 5);
+  assert.ok(all.every((item) => item.excerpt.text.includes('REAL_SPILL_NEEDLE') && !item.excerpt.truncated));
+  assert.equal((await service.execute('search', { query: '[object Object]', kind: 'user_message' })).scan.matchedEvents, 0);
+  assert.ok((await service.execute('search', { limit: 2 })).items.length > 0);
+  const crossed = await service.execute('search', { queries: ['cross_block phrase', 'TAIL_SPILL', 'absent'], kind: 'assistant_message' });
+  assert.equal(crossed.items.length, 1);
+  const hit = crossed.items[0];
+  assert.deepEqual(hit.match.terms, ['cross_block phrase', 'TAIL_SPILL']);
+  assert.equal(hit.excerpt.hitOffset, giant.indexOf('CROSS_BLOCK'));
+  assert.equal(hit.excerpt.startLine, 1);
+  assert.equal(hit.excerpt.endLine, 4);
+  assert.equal(hit.excerpt.truncated, true);
+  assert.match(hit.excerpt.text, /CROSS_BLOCK/);
+  assert.ok(hit.excerpt.text.length < 2600);
+  assert.equal((await service.execute('search', { query: 'cross_block phrase', exclude: ['tail_spill'] })).items.length, 0);
+  const unicode = (await service.execute('search', { query: 'i\u0307stanbul ος' })).items[0];
+  assert.equal(unicode.excerpt.hitOffset, giant.indexOf('İSTANBUL'));
+  assert.equal(unicode.excerpt.endLine, giant.split('\n').length);
+  assert.ok(unicode.excerpt.text.includes('İSTANBUL ΟΣ'));
+  const read = await service.execute('read', { refs: [unicode.ref], parts: ['projection'], offset: unicode.excerpt.hitOffset, length: 11 });
+  assert.equal(read.items[0].parts[0].text, 'İSTANBUL ΟΣ');
+  const context = await service.execute('context', { refs: [unicode.ref] });
+  assert.equal(context.items[0].events.find((event) => event.anchor).excerpt.hitOffset, unicode.excerpt.hitOffset);
+  const groups = [{ id: 'short', ...query, limit: 1 }, { id: 'tail', query: 'TAIL_SPILL', limit: 1 }, { id: 'missing', query: '[object Object]' }];
+  const grouped = await service.execute('search', { groups });
+  assert.deepEqual(grouped.groups.map((group) => group.scan.matchedEvents), [5, 1, 0]);
+  const next = await service.execute('search', { groups: [{ ...groups[0], cursor: grouped.groups[0].nextCursor }] });
+  assert.notEqual(next.groups[0].items[0].ref, grouped.groups[0].items[0].ref);
+  assert.equal(next.groups[0].queryIdentity, grouped.groups[0].queryIdentity);
+  for (const [retrievalArtifacts, count] of [['exclude', 1], ['include', 2], ['only', 1]]) {
+    const result = await service.execute('search', { query: 'SPILL_ECHO', retrievalArtifacts });
+    assert.equal(result.scan.matchedEvents, count);
+    assert.equal(result.scan.retrievalArtifacts.recognized, 1);
+    if (retrievalArtifacts === 'exclude') assert.match(result.items[0].excerpt.text, /documentation/);
+  }
+});
 
 test('grouped queries retain independent counts, pagination and query identities', async (t) => {
   const { service } = await corpus(t);
@@ -297,7 +386,7 @@ test('text reads remove duplicate detail renderings, preserve continuation and b
   const structured = await service.execute('read', { refs: [ref], parts: ['result'] });
   const text = await service.execute('read', { refs: [ref], parts: ['result'], textFormat: 'text' });
   assert.equal(text.items[0].parts[0].representation, 'detail_text');
-  assert.match(text.items[0].parts[0].text, /\[Response\]\nINTERNAL_GAP_EVIDENCE: validation failed\./u);
+  assert.match(text.items[0].parts[0].text, /\[stdout; stream=stdout\]\nINTERNAL_GAP_EVIDENCE: validation failed\./u);
   assert.equal(text.items[0].parts[0].text.match(/INTERNAL_GAP_EVIDENCE/gu).length, 1);
   assert.ok(text.items[0].parts[0].text.length < structured.items[0].parts[0].text.length);
   const paged = await service.execute('read', { refs: [ref, ref], parts: ['result'], textFormat: 'text', limit: 1, length: 5 });
@@ -496,7 +585,7 @@ test('context expands unfiltered message boundaries, exposes internal gaps and s
   assert.equal(found.items.length, 1);
   const result = await service.execute('context', { refs: [found.items[0].ref], maxBytes: 20000 });
   const window = result.items[0];
-  assert.deepEqual(window.events.map((event) => event.kind), ['user_message', 'assistant_message', 'other_tool_call', 'assistant_message', 'user_message']);
+  assert.deepEqual(window.events.map((event) => event.kind), ['user_message', 'assistant_message', 'command', 'assistant_message', 'user_message']);
   assert.match(window.events[0].excerpt.text, /Preserve exact/);
   assert.match(window.events.at(-1).excerpt.text, /Reject that optimization/);
   assert.equal(window.relation, 'adjacent_in_session');

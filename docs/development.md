@@ -4,10 +4,10 @@ The installed CLI supports Node.js 22 or newer on a supported LTS line (Node.js 
 
 ## Toolchain and dependencies / 工具链与依赖
 
-For a fresh 0.2.0 release-candidate checkout, install Git and clone the public branch into a new directory. These commands leave the terminal outside the checkout so the toolchain bootstrap below runs in the correct place. The accepted feature-freeze baseline is `e9b7a1923c12f18d2f283dacb998bc51a11cfa66`; record the actual commit after cloning because the branch can advance. / 首次试用 0.2.0 release candidate 时，准备 Git 并将公开分支克隆到新目录。以下命令不会进入 checkout，使后续工具链 bootstrap 在正确位置运行。已接受的功能冻结基线为 `e9b7a1923c12f18d2f283dacb998bc51a11cfa66`；分支可能推进，克隆后应记录实际 commit。
+Reproduce the 0.2.1 release source from its immutable `v0.2.1` tag. These commands leave the terminal outside the checkout so the toolchain bootstrap below runs in the correct place. / 从不可变的 `v0.2.1` tag 复现 0.2.1 release source。以下命令不会进入 checkout，使后续工具链 bootstrap 在正确位置运行。
 
 ```sh
-git clone --branch towards-0.2.0 https://github.com/Yijia-Zhou/session-analyzer.git
+git clone --branch v0.2.1 https://github.com/Yijia-Zhou/session-analyzer.git
 git -C session-analyzer rev-parse HEAD
 ```
 
@@ -67,14 +67,26 @@ For Codex compressed-reader characterization, run `node scripts/codex-rollout-pr
 
 Choose checks for the affected behavior and risk; the command table is not a checklist for every edit. / 按受影响行为与风险选择检查；命令表不是每次编辑都要执行的清单。
 
+For bounded DeepSeek source-reference characterization, run `node scripts/deepseek-reference-profile.js` alone. It runs three fresh-process samples per case under a 256 MiB JS heap ceiling, covering single ranges, scalar/mixed references, and continuous plain/Zstd logs with repeated prefix references and compaction. It reports decode, cold index, materialization, first/warm Detail, post-call heap deltas and process RSS high-water marks. `--reader-root=<checkout>` selects another checkout's reader for comparisons (its dependencies must resolve). These synthetic observations are not timing gates, phase allocation peaks, real-writer evidence or a complete cross-platform capacity study. / 有界量测 DeepSeek 来源引用时，单独运行所列脚本；每种情况在 256 MiB JS 堆上限下执行三次新进程样本，覆盖单区间、标量／混合引用、含重复前缀与 compaction 的连续普通／Zstd 日志。报告解码、冷索引、物化、首次／暖详情、调用后堆增量及进程 RSS 高水位。参数可选择其他 checkout 的 reader 进行比较（依赖须可解析）。合成观察不作为时延门槛、阶段分配峰值、真实 writer 证据或完整跨平台容量研究。
+
 Phase-accounting changes also require `npm run test:profile-coverage`, run with Node/browser suites paused. It measures three sequential 100-row real-HTTP samples and gates their minimum residual at an absolute 5 ms; ordinary concurrent Node tests enforce topology and semantic accounting without a one-shot residual gate. CI runs this separate step only on Node 24 / Ubuntu after `npm test`. See [measurement policy](design-docs/deepseek-readback-measurement.md#current-coverage-policy). / 阶段核算修改还需在暂停 Node／浏览器套件时执行 `npm run test:profile-coverage`。它顺序测量三次 100 行真实 HTTP 样本，以最小 residual 不超过绝对 5 ms 为门槛；普通并发 Node 测试严格检查拓扑与语义核算，不对单次 residual 设门槛。CI 仅在 Node 24／Ubuntu 的 `npm test` 之后执行该独立步骤。详见[量测策略](design-docs/deepseek-readback-measurement.md#current-coverage-policy)。
 
-- Documentation or agent-instruction changes: inspect the diff, check local references and bilingual consistency, and run `git diff --check`. If a hook or helper changes, check its syntax and exercise its relevant behavior. / 文档或 agent 指令变更：审查 diff，检查本地引用与双语一致性，运行 `git diff --check`。若修改 hook 或辅助脚本，检查语法并实际验证相关行为。
+- Documentation or agent-instruction changes: inspect the diff, check local references and bilingual consistency, and run `git diff --check`. When tests or scripts read document headings or section text, search for those consumers with `rg` and run the affected contract tests; link and syntax checks alone may miss structural dependencies. If a hook or helper changes, check its syntax and exercise its relevant behavior. / 文档或 agent 指令变更：审查 diff，检查本地引用与双语一致性，并运行 `git diff --check`。当测试或脚本会读取文档标题或章节文本时，用 `rg` 搜索这些消费方并运行受影响的契约测试；仅检查链接与语法可能遗漏结构依赖。若修改 hook 或辅助脚本，检查其语法并实际验证相关行为。
 - Code changes: run the affected `test/*.test.js` files with `node --test test/<affected>.test.js`. Parser/schema work retains the [schema runbook](design-docs/schema-update-runbook.md)'s evidence and focused-fixture requirements. Shared contracts or unresolved cross-source impact may require the full Node suite. / 代码变更：用 `node --test test/<affected>.test.js` 运行受影响测试。解析器／schema 工作保留 [schema 手册](design-docs/schema-update-runbook.md)的依据与聚焦 fixture 要求。共享契约或尚未排除的跨来源影响可能需要全部 Node 测试。
 - Browser code changes: rebuild with `npm run build`, run `npm run build:check`, and verify the affected interaction; use browser tests when rendering or navigation behavior changes. Package/CLI/distribution changes need the relevant package checks. / 浏览器代码变更：执行 `npm run build` 重新构建及 `npm run build:check`，核验受影响交互；渲染或导航行为变更时使用浏览器测试。包／CLI／分发变更需要相关包检查。
 - Release work follows the [release runbook](design-docs/npm-release-runbook.md)'s required gates and existing rules for reusing unchanged CI evidence. This scope guidance does not weaken release or CI requirements. / 发布工作遵循[发布手册](design-docs/npm-release-runbook.md)的强制门槛及已有的未变更 CI 证据复用规则。本范围指南不削弱发布或 CI 要求。
 
 Inspect failures and fix regressions introduced by the change. Once the relevant checks pass, broaden or repeat them only for new changes, failures, or unresolved risks. Report what passed and what remains unverified. / 检查失败并修复变更引入的回归。相关检查通过后，仅因新修改、失败或未解决风险扩大或重复验证。报告已通过内容与尚未验证项。
+
+<a id="ci-execution-scope"></a>
+
+### CI execution scope / CI 执行范围
+
+Every CI run keeps the three Node jobs, both installed-package smoke jobs and the final `ci` result. A separate, dependency-free `scope` job reads the complete Git merge-base diff for pull requests. Only changes to ordinary Markdown files at `README.md`, `README.zh-CN.md`, `docs/development.md` and `docs/exec-plans/**/*.md` qualify to skip the browser job. Documentation contract tests still run in the Node suites; packaged README changes still receive package smoke. / 每次 CI 保留三项 Node job、双平台安装包 smoke 与最终 `ci` 结果。独立且无需安装依赖的 `scope` job 读取 PR 完整 Git merge-base diff。仅上述路径的普通 Markdown 文件变更可跳过 browser job；文档契约测试仍由 Node 套件执行，打包 README 变更仍接受 package smoke。
+
+The classifier checks both paths of moves and rejects binary documents, executable files, symlinks, submodules and other file-type changes from this exception. Mixed or unknown paths, empty/incomplete diffs and unavailable history require full coverage. Main/development pushes and manual dispatches always require browser coverage. The final `ci` gate accepts `skipped` only for an explicitly classified documentation PR; failed, cancelled or missing classification/required checks cannot grant success. No workflow-level path filter suppresses the required check. / 分类器检查移动前后路径，例外不适用于二进制文档、可执行文件、软链接、submodule 或其他文件类型变化。混合／未知路径、空／不完整 diff 或历史不可用时要求全量覆盖。Main／开发分支 push 和手动 dispatch 始终要求 browser 覆盖。最终 `ci` 仅对明确分类的文档 PR 接受 `skipped`；分类或必需检查失败、取消、缺失时不能放行。不会用 workflow 级路径过滤抑制必需检查。
+
+The implementation is `scripts/ci-scope.js`; its tests exercise real Git history and the actual aggregate shell, including failed and cancelled dependencies. The scope job uses Node directly without npm installation; all dependency-installing jobs retain the pinned npm bootstrap and strict policy above. / 实现位于 `scripts/ci-scope.js`；测试覆盖真实 Git 历史和实际聚合 shell，包括依赖失败／取消。Scope job 直接使用 Node，不执行 npm 安装；所有安装依赖的 job 保留上文固定 npm bootstrap 与 strict 策略。
 
 ## Repository layout / 仓库布局
 

@@ -8,7 +8,7 @@ const { validateLogicalDetailSection } = require('../src/shared/logical-detail-c
 
 test('collaboration navigation requires exact identity and a confirmed owner in the current source index', () => {
   const owner = { id: 'parent', sourceKind: 'codex' };
-  const child = { id: 'child', sourceSessionId: 'child', sourceKind: 'codex', parentSessionId: 'parent' };
+  const child = { id: 'child', sourceSessionId: 'child', sourceKind: 'codex', parentSessionId: 'parent', title: 'Documentation <result>' };
   const index = { sourceKind: 'codex', repoRoot: '/synthetic/repo', sessions: [owner, child,
     { ...child, id: 'inferred', sourceSessionId: 'inferred', parentSessionInferred: true },
     { ...child, id: 'foreign', sourceSessionId: 'foreign', sourceKind: 'claude' },
@@ -24,8 +24,12 @@ test('collaboration navigation requires exact identity and a confirmed owner in 
   assert.deepEqual(links.map((item) => item.status), ['resolved', 'missing', 'unconfirmed', 'missing', 'unconfirmed', 'ambiguous', 'missing']);
   assert.deepEqual(links[0].target, { sourceKind: 'codex', repoRoot: '/synthetic/repo', indexRevision: 3, sessionId: 'child', layer: 'main' });
   assert.equal(section.targetLinks, undefined, 'do not mutate cached adapter details');
+  assert.equal(links[0].displayName, 'Documentation <result>');
+  assert.deepEqual(result.inspectorSections[0].targetLinks, links, 'first selection has the same confirmed directory');
   validateLogicalDetailSection(result.timelineSections[0]);
+  validateLogicalDetailSection(result.inspectorSections[0]);
   const html = renderSection(result.timelineSections[0]);
+  assert.match(html, /Documentation &lt;result&gt;/);
   assert.equal((html.match(/data-open-collaboration-session=/g) || []).length, 2, 'target and agent status have separate buttons');
   assert.match(html, /data-collaboration-action="target:0"/);
   assert.match(html, /data-collaboration-action="status:0"/);

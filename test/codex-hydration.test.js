@@ -221,7 +221,7 @@ test('all Codex hydration entry points share one index coordinator without seria
     firstSession,
     legacyOwner,
     legacyOwner.adapter,
-    { onFileOpen: () => { sameIndexOrder.push('legacy'); } },
+    { requestedFile: imageRaw.source.file, onFileOpen: () => { sameIndexOrder.push('legacy'); } },
   );
   assert.deepEqual(sameIndexOrder, ['detail', 'raw']);
 

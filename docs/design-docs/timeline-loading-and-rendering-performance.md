@@ -4,6 +4,8 @@
 
 ## Metadata / 元数据
 
+Search navigation waits for an expanded target's full detail and currently visible/already-requested detail work before acquiring its live mark. A loading preview match and an unhydrated preceding patch do not establish the final full-body scroll position; this does not eagerly load the whole preceding transcript. Project drill-down also rechecks the search context and selection intent after settlement. / 搜索导航在获取实时命中标记前等待展开目标的完整详情，以及当前可见／已发起的详情工作；加载预览命中与尚未加载的前置补丁都不代表全文最终滚动位置，不因此提前加载全部前置转录。项目下钻在完成后还会复核搜索上下文与选择意图。
+
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
 - Last updated: 2026-08-31 / 最近更新：2026-08-31
@@ -27,6 +29,8 @@
   - `docs/exec-plans/completed/2026-08-30-performance-wave-1d-a-ordinary-detail-body-patch.md`
 
 ## Context / 背景
+
+Current-session HTTP Timeline queries run through a cooperative driver after materialization. They scan full preview/search text with the same exact, non-overlapping phrase matcher as disk project queries, carry a query-owned 1 MiB scanned-byte budget across preview/body/event boundaries, yield when that budget is consumed and after 256 traversed events (including structural exclusions), and receive the joined request/revision signal. Counts cover every structurally selected event; pagination retains non-hit events and only retains page-sized search annotations, never mutating the cached Session. DTO generation reuses these annotations instead of rescanning text synchronously. The synchronous internal query API remains for compatibility; HTTP uses the asynchronous API. This addresses query scanning independently of source parsing/materialization memory and does not establish a fixed latency SLA for all metadata/presentation work. / 当前会话 HTTP Timeline 查询在物化后使用协作式执行：与磁盘项目查询复用精确、非重叠的短语匹配器，扫描完整 preview/search 文本，以查询级 1 MiB 扫描字节预算跨 preview／正文／事件累计，达到预算或每遍历 256 个事件后让出事件循环（含结构筛选排除项），并接收合并的请求／revision 取消信号。计数覆盖所有满足结构筛选的事件；分页保留未命中事件，只保留当页搜索标注且不修改缓存 Session。DTO 复用标注，避免再次同步扫描全文。同步内部查询 API 保留兼容，HTTP 使用异步 API。此修复针对查询扫描，独立于来源解析／物化内存边界，也不为所有元数据／展示计算承诺固定时延。
 
 Long Session Transcripts expose an interactive-performance problem after the browser has materialized a deep prefix of the selected Session. Jumping to a late search target, editing free text, changing structured filters, changing Event Layer, or switching Session can keep the main thread continuously busy for several seconds. The application has not shown a reproducible permanent deadlock; the user-visible “freeze” is main-thread starvation that delays input handling and paint. / 较长的会话转录会在浏览器已物化所选会话的较深前缀后暴露交互性能问题。跳到靠后的搜索目标、修改自由文本、改变结构化筛选、切换事件层或切换会话，都可能让主线程连续忙碌数秒。当前没有稳定复现永久死锁；用户看到的“卡死”是主线程饥饿，它会延迟输入处理与绘制。
 
@@ -149,7 +153,7 @@ On 2026-07-25, a read-only paired measurement selected cold indexing for the bou
 
 1. Apply Layer and structured filters to the full selected event sequence. / 对完整的所选事件序列应用事件层与结构化筛选。
 2. Calculate full-corpus phrase occurrence and matching-event counts when `q` is active. / 当 `q` 生效时，计算完整语料范围的短语 occurrence 与命中事件数。
-3. Slice the filtered sequence by `offset` and `limit`. / 按 `offset` 与 `limit` 切分筛选后的序列。
+3. Slice the filtered sequence by `offset` and `limit`. Offsets are exact non-negative safe integers, including values above 1,000,000; a position beyond the sequence returns an empty page with the requested offset. Missing offsets default to zero; malformed, fractional, negative, or unsafe values return HTTP 400 `INVALID_PAGINATION`. Timeline limits default to 150 and cap at 500; file activity defaults to 50 and caps at 100; explicit limits must be positive safe integers. Both routes accept an optional `indexRevision`, reject a different revision with HTTP 409 `INDEX_REVISION_RETIRED`, and echo the captured revision. The browser sends its revision and checks returned revision, offset, and limit before publishing any page. / 按 `offset` 与 `limit` 切分筛选后的序列。Offset 精确保留非负安全整数，包括超过 1,000,000 的值；超出序列的位置返回空页并保留请求 offset。省略时默认为零；畸形、小数、负数或非安全整数返回 HTTP 400 `INVALID_PAGINATION`。时间线 limit 默认 150、上限 500；文件活动默认 50、上限 100；显式 limit 必须为正安全整数。两个端点均接受可选 `indexRevision`，修订不同时返回 HTTP 409 `INDEX_REVISION_RETIRED`，响应携带捕获的修订。浏览器发送自身修订，并在发布页面前检查响应的修订、offset 和 limit。
 4. Map the page to timeline DTOs. / 把该页映射为时间线 DTO。
 5. Recalculate the selected Session's complete event-kind catalog and, on Main, the operation-count Code Mode request catalog for the response. / 为响应重新计算所选会话的完整事件类型 catalog，以及在 Main 上按 operation 计的 Code Mode request 目录。
 

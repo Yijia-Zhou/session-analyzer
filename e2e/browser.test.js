@@ -15,6 +15,7 @@ const {
 } = require('../src/codex');
 const { materializeSessionForIndex } = require('../src/source-adapters');
 const { createServer } = require('../server');
+const { trustedPolicy } = require('../src/legacy-raw-owner-budget');
 const { createTimelineProfileFixture } = require('../scripts/timeline-profile-fixture');
 const { suggestionRequestEvidence } = require('../scripts/timeline-profile');
 
@@ -22,6 +23,272 @@ const fixtureCodexHome = path.join(__dirname, '..', 'test', 'fixtures', 'codex-h
 const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 let wave1bM2SourceBundlePromise;
+
+for (const locale of ['en', 'zh-CN']) test(`Codex 0.160 Paginated typed tools and answer remain readable through Main and Raw (${locale})`, async (t) => {
+  // Synthetic rust-v0.160.0 TurnItem fixtures; no real writer, transcript, or
+  // command execution. Exercises the same HTTP/rendering path as imported logs.
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-paginated-browser-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const project = path.join(home, 'repo');
+  await fsp.mkdir(project);
+  const id = 'dddddddd-0160-4160-8160-dddddddddddd';
+  const turn = 'synthetic-paginated-browser';
+  const completed = (item) => ({ type: 'event_msg', payload: {
+    type: 'item_completed', thread_id: id, turn_id: turn, completed_at_ms: 1790935205000, item,
+  } });
+  const command = (callId, status, extra = {}) => completed({ type: 'CommandExecution', id: callId,
+    command: ['synthetic-command', callId], cwd: project, parsed_cmd: [], source: 'agent', status,
+    stdout: `${callId}_OUTPUT`, stderr: '', duration: { secs: 1, nanos: 0 }, ...extra });
+  await writeJsonl(path.join(home, 'sessions', `rollout-${id}.jsonl`), [
+    { type: 'session_meta', payload: { id, cwd: project, cli_version: '0.160.0', history_mode: 'paginated' } },
+    { type: 'event_msg', payload: { type: 'task_started', turn_id: turn } },
+    command('UNKNOWN_EXIT', 'completed'),
+    command('FAILED_COMMAND', 'failed', { exit_code: 3, stderr: 'FAILED_COMMAND_ERROR' }),
+    completed({ type: 'FileChange', id: 'typed-edit', status: 'completed', stdout: 'PATCH_OUTPUT', stderr: '',
+      changes: { 'synthetic-paginated.txt': { type: 'update', unified_diff: '@@ -1 +1 @@\n-OLD_TYPED_VALUE\n+NEW_TYPED_VALUE', move_path: null } } }),
+    completed({ type: 'AgentMessage', id: 'typed-answer', phase: 'final_answer',
+      content: [{ type: 'Text', text: 'TYPED_FINAL_ANSWER: synthetic review complete.' }] }),
+  ].map((row, i) => ({ timestamp: new Date(Date.parse('2026-10-02T10:00:00Z') + i * 1000).toISOString(), ...row })));
+  const index = await buildIndex({ repoRoot: project, codexHome: home });
+  const session = await materializeIndexedSession(index, id);
+  assert.equal(session.counts.toolCalls, 3);
+  assert.equal(session.counts.failedCommands, 1);
+  assert.equal(session.counts.assistantMessages, 1);
+  const unknown = session.logicalEvents.find((e) => e.kind === 'command' && e.preview.includes('UNKNOWN_EXIT'));
+  assert.equal(unknown.status, 'completed');
+  assert.equal(unknown.outputStats.exitCode, undefined);
+  const expected = [
+    [unknown, 'UNKNOWN_EXIT_OUTPUT', 'CommandExecution'],
+    [session.logicalEvents.find((e) => e.kind === 'command' && e.preview.includes('FAILED_COMMAND')), 'FAILED_COMMAND_ERROR', 'CommandExecution'],
+    [session.logicalEvents.find((e) => e.kind === 'patch'), 'NEW_TYPED_VALUE', 'FileChange'],
+    [session.logicalEvents.find((e) => e.kind === 'assistant_message'), 'TYPED_FINAL_ANSWER', 'AgentMessage'],
+  ];
+  for (const [event, text] of expected) {
+    const detail = await buildHydratedEventDetail(index, session, event.id, 'main', { locale });
+    assert.ok(JSON.stringify(detail.timelineSections).includes(text));
+    assert.equal(event.rawRefs.length, 1);
+    assert.equal(event.rawRefs[0].sourceEventType, 'item_completed');
+  }
+  const { page, requestedPaths } = await openApp(t, index, { locale, skipProjectReindex: true });
+  for (const [event, text, itemType] of expected) {
+    await page.locator('#layerSelect').selectOption('main');
+    const card = page.locator(`#timeline .event[data-event-id="${event.id}"]`);
+    await card.locator('.eventHeader').click();
+    await waitForDetailView(page, 'inspector');
+    await page.waitForFunction(({ eventId, text }) => document.querySelector(`[data-event-id="${eventId}"]`)?.textContent.includes(text), { eventId: event.id, text });
+    assert.ok((await card.innerText()).includes(text));
+    if (event.kind === 'patch') {
+      assert.match(await card.innerText(), /OLD_TYPED_VALUE/);
+      assert.match(await card.innerText(), /synthetic-paginated\.txt/);
+    }
+    await page.locator('#detail [data-detail-action="raw"]').click();
+    await waitForDetailView(page, 'rawRefs');
+    await page.waitForFunction((itemType) => {
+      const text = document.querySelector('#detail .rawRefsView')?.textContent || '';
+      return text.includes('item_completed') && text.includes(itemType);
+    }, itemType);
+    await page.locator('#layerSelect').selectOption('raw');
+    await page.locator(`#timeline .event[data-event-id="${event.rawRefs[0].rawId}"]`).click();
+    await page.waitForFunction((itemType) => document.querySelector('#detail')?.textContent.includes(itemType), itemType);
+  }
+  assert.ok(requestedPaths.some((value) => value.startsWith(`/api/sessions/${id}/raw/`)));
+});
+
+for (const locale of ['en', 'zh-CN']) test(`Claude background terminal evidence stays on the owning MCP and Monitor operation (${locale})`, async (t) => {
+  const claudeHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'claude-background-browser-'));
+  t.after(() => fsp.rm(claudeHome, { recursive: true, force: true }));
+  const project = path.join(claudeHome, 'repo');
+  await fsp.mkdir(project);
+  const sourceId = 'synthetic-background-browser';
+  const receipt = 'MCP tool "synthetic/delay" is still running after 1s. It was moved to the background as task synthetic-mcp and keeps running; you\'ll receive a notification with the result when it completes. You can keep working in the meantime. To stop it, use TaskStop with task_id "synthetic-mcp". Note: it does not survive exiting this session.';
+  const rows = [{ type: 'user', message: { content: 'Synthetic background work' } }];
+  for (const [id, name, taskId, status, result] of [
+    ['mcp', 'mcp__synthetic__delay', 'synthetic-mcp', 'failed', 'SYNTHETIC_MCP_FAILURE'],
+    ['watch', 'Monitor', 'synthetic-monitor', 'completed', 'SYNTHETIC_MONITOR_LAST'],
+  ]) {
+    rows.push({ type: 'assistant', uuid: `${id}-assistant`, message: { content: [{ type: 'tool_use', id, name,
+      input: name === 'Monitor' ? { command: 'synthetic-watch', timeout_ms: 3000 } : {} }] } });
+    rows.push({ type: 'user', sourceToolAssistantUUID: `${id}-assistant`,
+      message: { content: [{ type: 'tool_result', tool_use_id: id,
+        content: name === 'Monitor' ? 'Monitor started' : [{ type: 'text', text: receipt }] }] },
+      toolUseResult: name === 'Monitor' ? { taskId, timeoutMs: 3000, persistent: false } : [{ type: 'text', text: receipt }] });
+    const tag = name === 'Monitor' ? 'event' : 'result';
+    if (name === 'Monitor') rows.push({ type: 'user', origin: { kind: 'task-notification' }, promptSource: 'system',
+      message: { content: `<task-notification><task-id>${taskId}</task-id><summary>Monitor event</summary><event>XML log: <status>working</status> <tool-use-id>log-value</tool-use-id></event></task-notification>` } });
+    rows.push({ type: 'user', origin: { kind: 'task-notification' }, promptSource: 'system',
+      message: { content: `<task-notification><task-id>${taskId}</task-id>${name === 'Monitor' ? `<tool-use-id>${id}</tool-use-id>` : ''}<status>${status}</status><summary>Synthetic ${status}</summary><${tag}>${result}</${tag}></task-notification>` } });
+  }
+  await writeJsonl(path.join(claudeHome, 'projects', 'synthetic', `${sourceId}.jsonl`), rows.map((record, i) => ({
+    uuid: `synthetic-${i}`, ...record, cwd: project, sessionId: sourceId, version: '2.1.283',
+    timestamp: `2026-09-29T10:00:0${i}.000Z`,
+  })));
+  const index = await buildClaudeSourceBackedIndex({ repoRoot: project, claudeHome });
+  const sessionId = analyzerSessionId(sourceId);
+  const session = await materializeIndexedSession(index, sessionId);
+  assert.equal(session.counts.userMessages, 1);
+  const { page } = await openApp(t, index, { locale, skipProjectReindex: true });
+  await page.locator(`[data-session-id="${sessionId}"]`).click();
+  for (const [id, status, output] of [['mcp', 'failed', 'SYNTHETIC_MCP_FAILURE'], ['watch', 'success', 'SYNTHETIC_MONITOR_LAST']]) {
+    const event = session.logicalEvents.find(item => item.callId === id);
+    assert.equal(event.status, status);
+    const card = page.locator(`#timeline .event[data-event-id="${event.id}"]`);
+    await card.click();
+    await waitForDetailView(page, 'inspector');
+    await page.waitForFunction(({ eventId, text }) => document.querySelector(`[data-event-id="${eventId}"]`)?.textContent.includes(text), { eventId: event.id, text: output });
+    assert.match(await page.locator('#detail').innerText(), locale === 'en'
+      ? id === 'mcp' ? /MCP call moved to background/ : /Monitor started/
+      : id === 'mcp' ? /MCP 调用已转入后台/ : /监控任务已启动/);
+    await page.locator('#detail [data-detail-action="raw"]').click();
+    await waitForDetailView(page, 'rawRefs');
+    await page.waitForFunction(text => document.querySelector('#detail .rawRefsView')?.textContent.includes(text), output);
+  }
+});
+
+for (const locale of ['en', 'zh-CN']) test(`Claude 2.1.283 Bash diffs remain readable with file filters and Raw evidence (${locale})`, async (t) => {
+  const claudeHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'claude-bash-diff-browser-'));
+  t.after(() => fsp.rm(claudeHome, { recursive: true, force: true }));
+  const project = path.join(claudeHome, 'repo');
+  await fsp.mkdir(project);
+  const sourceId = 'synthetic-bash-diff-browser';
+  const file = '/synthetic/example.txt';
+  const rows = [
+    { type: 'user', message: { content: 'Change beta to gamma' } },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'edit-call', name: 'Bash', input: { command: 'synthetic-edit example.txt' } }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'edit-call', content: 'done' }] }, toolUseResult: {
+      stdout: 'done', stderr: '', interrupted: false,
+      bashEditDiff: { files: [{ filePath: file, hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, lines: [' alpha', '-beta', '+gamma'] }] }], changedFiles: [file], moreFiles: 0 },
+    } },
+    { type: 'assistant', message: { content: 'Synthetic edit completed.' } },
+  ];
+  await writeJsonl(path.join(claudeHome, 'projects', 'custom-container', `${sourceId}.jsonl`), rows.map((record, i) => ({
+    ...record, cwd: project, sessionId: sourceId, version: '2.1.283',
+    uuid: `synthetic-${i}`, parentUuid: i ? `synthetic-${i - 1}` : null,
+    timestamp: `2026-09-27T10:00:0${i}.000Z`,
+  })));
+  const index = await buildClaudeSourceBackedIndex({ repoRoot: project, claudeHome });
+  const sessionId = analyzerSessionId(sourceId);
+  const session = await materializeIndexedSession(index, sessionId);
+  const event = session.logicalEvents.find((item) => item.callId === 'edit-call');
+  assert.equal(event.kind, 'command');
+  assert.deepEqual(session.analysis.patchedFiles, [{ file, count: 1 }]);
+  assert.equal(session.counts.patches, 0, 'a Bash edit is still one command, not a synthetic patch event');
+  const { page } = await openApp(t, index, { locale, skipProjectReindex: true });
+  await page.locator(`[data-session-id="${sessionId}"]`).click();
+  const card = page.locator(`#timeline .event[data-event-id="${event.id}"]`);
+  await card.click();
+  await waitForDetailView(page, 'inspector');
+  await page.waitForFunction((id) => document.querySelector(`[data-event-id="${id}"]`)?.textContent.includes('+gamma'), event.id);
+  assert.match(await card.innerText(), /-beta/);
+  assert.match(await page.locator('#detail').innerText(), /\/synthetic\/example\.txt/);
+  await page.locator('#detail [data-detail-action="raw"]').click();
+  await waitForDetailView(page, 'rawRefs');
+  await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('bashEditDiff'));
+  assert.match(await page.locator('#detail .rawRefsView').innerText(), /changedFiles/);
+  await addSearchFilter(page, 'file', file);
+  await page.waitForFunction((id) => {
+    const events = [...document.querySelectorAll('#timeline .event[data-event-id]')];
+    return events.length === 1 && events[0].dataset.eventId === id;
+  }, event.id);
+});
+
+test('Codex capacity notice leaves identity-based Raw References usable in both locales', async (t) => {
+  const policy = trustedPolicy({ buildWorkUnits: 3 });
+  const index = await buildIndex({
+    repoRoot, codexHome: fixtureCodexHome, legacyRawOwnerPolicyForTests: policy,
+  });
+  assert.equal(index.legacyRawOwners.status, 'unavailable');
+  for (const locale of ['en', 'zh-CN']) {
+    const { page, requestedPaths } = await openApp(t, index, {
+      locale,
+      skipProjectReindex: true,
+      serverOptions: { legacyRawOwnerPolicyForTests: policy },
+    });
+    const notice = page.locator('#legacyRawNotice');
+    await notice.waitFor({ state: 'visible' });
+    assert.match(await notice.innerText(), locale === 'en' ? /Legacy file\/line lookup is unavailable/ : /旧式文件／行号定位因容量限制不可用/);
+    await selectPrimarySession(page);
+    await page.locator('#timeline .event[data-event-id]').first().click();
+    await waitForDetailView(page, 'inspector');
+    await page.locator('#detail [data-detail-action="raw"]').click();
+    await waitForDetailView(page, 'rawRefs');
+    await page.waitForSelector('#detail .rawRefsView .inspectorSection');
+    assert.ok(requestedPaths.some((value) => value.startsWith(`/api/sessions/${primaryFixtureSessionId}/raw/`)));
+    assert.equal(requestedPaths.includes('/api/raw'), false);
+    await notice.locator('[data-dismiss-legacy-raw]').click();
+    assert.equal(await notice.isHidden(), true);
+  }
+});
+
+test('Codex identity-free Raw Reference fallback shows capacity without requesting legacy Raw', async (t) => {
+  const policy = trustedPolicy({ buildWorkUnits: 3 });
+  const index = await buildIndex({
+    repoRoot, codexHome: fixtureCodexHome, legacyRawOwnerPolicyForTests: policy,
+  });
+  const file = index.sessionsById.get(primaryFixtureSessionId).sourceFile;
+  const { page, requestedPaths } = await openApp(t, index, {
+    locale: 'en', skipProjectReindex: true,
+    serverOptions: { legacyRawOwnerPolicyForTests: policy },
+    beforeGoto: async (target) => {
+      await target.route(`**/api/sessions/${primaryFixtureSessionId}/timeline*`, async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        if (body.events?.length) body.events[0].rawRefs = [{ file, line: 1 }];
+        await route.fulfill({ response, json: body });
+      });
+    },
+  });
+  await selectPrimarySession(page);
+  await page.locator('#timeline .event[data-event-id]').first().click();
+  await waitForDetailView(page, 'inspector');
+  await page.locator('#detail [data-detail-action="raw"]').click();
+  await waitForDetailView(page, 'rawRefs');
+  await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('Legacy file/line lookup is unavailable'));
+  assert.equal(requestedPaths.includes('/api/raw'), false);
+  assert.equal(await page.locator('#detail .rawRefsView .inspectorSection').count(), 0);
+});
+
+for (const source of ['codex', 'deepseek-harness']) for (const locale of ['en', 'zh-CN']) {
+  test(`native shell exit 7 is failed and readable through browser Detail and Raw (${source}, ${locale})`, async t => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'sa-shell-browser-'));
+    t.after(() => fsp.rm(root, { recursive: true, force: true }));
+    const project = path.join(root, 'repo');
+    await fsp.mkdir(project);
+    let index;
+    if (source === 'codex') {
+      await writeJsonl(path.join(root, 'sessions', 'synthetic.jsonl'), [
+        { type: 'session_meta', payload: { id: 'aaaaaaaa-1004-4004-8004-aaaaaaaaaaaa', cwd: project } },
+        { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'exit-seven', arguments: '{"cmd":"SYNTHETIC_EXIT_COMMAND"}' } },
+        { type: 'response_item', payload: { type: 'function_call_output', call_id: 'exit-seven', output: 'Wall time: 1.0000 seconds\nProcess exited with code 7\nOutput:\nSYNTHETIC_EXIT_OUTPUT' } },
+      ]);
+      index = await buildIndex({ repoRoot: project, codexHome: root });
+    } else {
+      const { buildDeepSeekIndex } = require('../src/deepseek-harness');
+      const sourceHome = path.join(root, 'sessions');
+      await writeJsonl(path.join(sourceHome, 'project', 'synthetic', 'session.v4.jsonl'), [
+        { type: 'session', version: 4, id: 'synthetic', cwd: project, createdAt: 1, isSeeded: false, delegationDepth: 0 },
+        { type: 'tool/call', seq: 0, time: 1000, data: { turn: 1, step: 1, callId: 'exit-seven', name: 'pwsh', arguments: '{"command":"SYNTHETIC_EXIT_COMMAND"}' } },
+        { type: 'tool/result', seq: 1, time: 1001, surfaceOp: 'append', data: { turn: 1, step: 1, message: { id: 'result', role: 'tool', source: { kind: 'tool', callId: 'exit-seven' }, toolCallId: 'exit-seven', isError: false, content: [{ type: 'text', text: 'SYNTHETIC_EXIT_OUTPUT\n[exit code: 7]' }] } } },
+      ]);
+      index = await buildDeepSeekIndex({ repoRoot: project, sourceHome });
+    }
+    const session = await materializeIndexedSession(index);
+    const command = session.logicalEvents.find(event => event.kind === 'command');
+    assert.equal(command.status, 'failed');
+    const { page } = await openApp(t, index, { locale, skipProjectReindex: true });
+    const card = page.locator(`#timeline .event[data-event-id="${command.id}"]`);
+    await card.click();
+    await waitForDetailView(page, 'inspector');
+    await page.waitForFunction(id => document.querySelector(`[data-event-id="${id}"]`)?.textContent.includes('SYNTHETIC_EXIT_OUTPUT'), command.id);
+    assert.match(await card.innerText(), /SYNTHETIC_EXIT_COMMAND/);
+    assert.equal(command.outputStats.exitCode, 7);
+    await page.locator('#detail [data-detail-action="raw"]').click();
+    await waitForDetailView(page, 'rawRefs');
+    await page.locator('#layerSelect').selectOption('raw');
+    await page.locator(`#timeline .event[data-event-id="${command.rawRefs.at(-1).rawId}"]`).click();
+    await page.waitForFunction(() => document.querySelector('#detail')?.textContent.includes('SYNTHETIC_EXIT_OUTPUT'));
+    assert.match(await page.locator('#detail').innerText(), source === 'codex' ? /Process exited with code 7/ : /exit code: 7/);
+  });
+}
 
 for (const locale of ['en', 'zh-CN']) test(`persisted realtime history navigates Main, Protocol and Raw in both presentations (${locale})`, async (t) => {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-persisted-browser-'));
@@ -226,6 +493,7 @@ test('background terminal continuation suffix and origin navigation preserve sep
   await captureTerminalPresentation(page, 'native-poll');
   await originLink.click();
   await page.waitForFunction((id) => document.querySelector('#timeline .event.selected')?.dataset.eventId === id, originId);
+  await page.locator('#detail .terminalRequestDirectory > summary').click();
   await page.locator(`#detail [data-target-event-id="${waitId}"]`).click();
   await page.waitForFunction((id) => document.querySelector('#timeline .event.selected')?.dataset.eventId === id, waitId);
   const nextId = session.logicalEvents.find((event) => event.id.endsWith(':w2')).id;
@@ -267,6 +535,7 @@ test('bounded terminal directory explains its limit and links beyond it in both 
     const { page } = await openApp(t, index, { locale });
     await page.locator(`#timeline .event[data-event-id="${originId}"] .eventKind`).click();
     if (presentation === 'trajectory') await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
+    await page.locator('#detail .terminalRequestDirectory > summary').click();
     await page.locator(`#detail [data-target-event-id="${requests[127].id}"]`).waitFor();
     assert.match(await page.locator('#detail').innerText(), /128.*129/);
     assert.equal(await page.locator('#detail .eventRefsBlock [data-target-event-id]').count(), 128);
@@ -413,6 +682,7 @@ async function installWave1dAM1BrowserSeam(page) {
       lifecycle: [],
       revisions: [],
       detailRequestTransactionAssociations: 0,
+      detailTransactions: [],
       observerFailuresArmed: false,
       failNextTimelineInnerHtml: false,
     };
@@ -425,6 +695,7 @@ async function installWave1dAM1BrowserSeam(page) {
         evidence.lifecycle.length = 0;
         evidence.revisions.length = 0;
         evidence.detailRequestTransactionAssociations = 0;
+        evidence.detailTransactions.length = 0;
       },
       armObserverFailures() { evidence.observerFailuresArmed = true; },
       disarmObserverFailures() { evidence.observerFailuresArmed = false; },
@@ -448,6 +719,10 @@ async function installWave1dAM1BrowserSeam(page) {
           && typeof property === 'symbol'
           && property.description === 'detailRequestTransaction') {
         evidence.detailRequestTransactionAssociations += 1;
+        evidence.detailTransactions.push({
+          eventId: descriptor.value.event.id,
+          requestSerial: descriptor.value.observerSerial,
+        });
       }
       return defineProperty(target, property, descriptor);
     };
@@ -1230,7 +1505,7 @@ for (const locale of ['en', 'zh-CN']) for (const presentation of ['timeline', 't
     if (presentation === 'trajectory') await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
     for (const i of [0, 2, 4]) {
       const eventId = patches[i].id;
-      await page.locator(presentation === 'timeline' ? `.event[data-event-id="${eventId}"]` : `[data-trajectory-event-id="${eventId}"]`).first().click();
+      await page.locator(presentation === 'timeline' ? `.event[data-event-id="${eventId}"] .eventHeader` : `[data-trajectory-event-id="${eventId}"]`).first().click();
       const surface = presentation === 'timeline' ? `#timeline .event[data-event-id="${eventId}"]` : '#detail';
       for (const selector of [`${surface} .patchFile [data-file-activity]`, '#detail .kvTable [data-file-activity]']) {
         const button = page.locator(selector).first();
@@ -1250,12 +1525,40 @@ for (const locale of ['en', 'zh-CN']) for (const presentation of ['timeline', 't
   });
 }
 
+test('file activity navigation preserves large offsets and rejects a response from a different page', async (t) => {
+  const { index, sessionId, eventId } = await makeFileNavigationFixture(t);
+  const { page } = await openApp(t, index, { locale: 'en' });
+  await page.locator(`[data-session-id="${sessionId}"]`).click();
+  await page.locator(`.event[data-event-id="${eventId}"]`).click();
+  await page.locator(`#timeline .event[data-event-id="${eventId}"] [data-file-activity="src/a.js"]`).first().click();
+  await page.waitForSelector('[data-file-activity-page="50"]');
+  await page.locator('[data-file-activity-page="50"]').evaluate(button => { button.dataset.fileActivityPage = '1000500'; });
+  const responsePromise = page.waitForResponse(response => response.url().includes('/file-activity?')
+    && new URL(response.url()).searchParams.get('offset') === '1000500');
+  await page.locator('[data-file-activity-page="1000500"]').click();
+  const response = await responsePromise;
+  const body = await response.json();
+  assert.equal(body.offset, 1000500);
+  assert.equal(Number(new URL(response.url()).searchParams.get('indexRevision')), body.indexRevision);
+  await page.waitForSelector('[data-file-activity-page="1000450"]');
+  assert.equal(await page.locator('[data-file-activity-entry]').count(), 0);
+  await page.route('**/file-activity?*', async route => {
+    const result = await route.fetch();
+    const value = await result.json();
+    await route.fulfill({ response: result, json: { ...value, offset: 1000000 } });
+  });
+  await page.locator('[data-file-activity-page="1000450"]').click();
+  await page.locator('.fileActivityDialog [role="alert"]').waitFor();
+  assert.match(await page.locator('.fileActivityDialog [role="alert"]').innerText(), /page changed/);
+  assert.equal(await page.locator('[data-file-activity-entry]').count(), 0);
+});
+
 test('file navigation exposes a local patch directory and paginated recorded activities with reading return', async (t) => {
   const { index, sessionId, eventId, lastEventId } = await makeFileNavigationFixture(t);
   for (const presentation of ['timeline', 'trajectory']) {
     const { page, baseUrl } = await openApp(t, index, { locale: 'en' });
     await page.locator(`[data-session-id="${sessionId}"]`).click();
-    await page.locator(`.event[data-event-id="${eventId}"]`).click();
+    await page.locator(`.event[data-event-id="${eventId}"] .eventHeader`).click();
     if (presentation === 'trajectory') await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
     const surface = presentation === 'timeline' ? `#timeline .event[data-event-id="${eventId}"]` : '#detail';
     await page.locator(`${surface} [data-patch-file-index="1"]`).click();
@@ -1990,10 +2293,23 @@ test('collaboration navigation opens each confirmed target and restores reading 
     await event.click();
     const surface = presentation === 'timeline' ? '#timeline' : '#detail';
     const link = page.locator(`${surface} [data-open-collaboration-session="${childId}"]`).first();
-    await link.waitFor();
+    await link.waitFor().catch(async (error) => {
+      throw new Error(`${error.message}\n${await event.getAttribute('class')}\n${await event.innerText()}\n${await page.locator('#detail').innerText()}`);
+    });
     assert.match(await page.locator(surface).innerText(), /Session unavailable in this project/);
-    const before = await page.locator('.timelinePane').evaluate((pane) => pane.scrollTop);
+    // Native focus reveals the link without a separate scroll action holding
+    // a DOM node that viewport-driven detail hydration can replace.
     await link.focus();
+    await page.waitForLoadState('networkidle');
+    await link.focus();
+    await page.waitForFunction((id) => {
+      const active = document.activeElement;
+      if (active?.dataset.openCollaborationSession !== id) return false;
+      const rect = active.getBoundingClientRect();
+      const pane = active.closest('.timelinePane, .detailPane')?.getBoundingClientRect();
+      return pane && rect.top >= pane.top && rect.bottom <= pane.bottom;
+    }, childId);
+    const before = await page.locator('.timelinePane').evaluate((pane) => pane.scrollTop);
     await page.keyboard.press('Enter');
     await page.waitForFunction((id) => document.querySelector('.sessionItem.active')?.dataset.sessionId === id, childId);
     await page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('Child own work'));
@@ -7165,6 +7481,8 @@ test('browser ignores successful stale full-scan discovery after manual project 
   await selectPrimarySession(page);
   const message = page.locator('#timeline .kind-user-message').first();
   await message.waitFor();
+  // Card visibility precedes async detail hydration; snapshot the rendered body.
+  await message.locator('.eventBody .mdBlock').waitFor();
   const messageText = await message.innerText();
   assert.ok(messageText.trim(), 'selected project must expose readable history');
   const eventIds = await page.locator('#timeline .event[data-event-id]').evaluateAll(
@@ -7542,6 +7860,87 @@ test('browser project scope renders cards, aggregate summary, and filter-only re
       && url.searchParams.get('sort') === 'latest-match-desc'
       && !url.searchParams.has('q');
   }), true);
+});
+
+for (const supersede of [false, 'selection', 'query']) test(`project search first arrival ${supersede ? `yields to a newer ${supersede} during detail loading` : 'keeps a long-body tail match visible after detail settlement'}`, async (t) => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'project-tail-match-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const project = path.join(home, 'repo');
+  const id = 'aaaaaaaa-1004-4004-8004-aaaaaaaaaaaa';
+  const text = `${'Synthetic long paragraph for search navigation.\n\n'.repeat(700)}TAIL_MATCH_742`;
+  await writeJsonl(path.join(home, 'sessions', 'long.jsonl'), [
+    { timestamp: '2026-10-04T10:00:00Z', type: 'session_meta', payload: { id, cwd: project } },
+    { timestamp: '2026-10-04T10:00:00.500Z', type: 'event_msg', payload: { type: 'user_message', message: 'Earlier independent message' } },
+    { timestamp: '2026-10-04T10:00:00.600Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', call_id: 'patch-origin',
+      input: `*** Begin Patch\n${Array.from({ length: 21 }, (_, i) => `*** Update File: src/feature-${i}/a.js\n@@\n-before\n+after\n`).join('')}*** End Patch` } },
+    { timestamp: '2026-10-04T10:00:00.700Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'patch-origin', output: 'Success' } },
+    { timestamp: '2026-10-04T10:00:01Z', type: 'event_msg', payload: { type: 'user_message', message: text } },
+  ]);
+  await writeJsonl(path.join(home, 'sessions', 'other.jsonl'), [
+    { timestamp: '2026-10-04T11:00:00Z', type: 'session_meta', payload: { id: 'bbbbbbbb-1004-4004-8004-bbbbbbbbbbbb', cwd: project } },
+    { timestamp: '2026-10-04T11:00:01Z', type: 'event_msg', payload: { type: 'user_message', message: 'Unrelated later session' } },
+  ]);
+  const index = await buildIndex({ repoRoot: project, codexHome: home });
+  const detailStarted = deferred();
+  const releaseDetail = deferred();
+  const releasePatch = deferred();
+  t.after(() => releaseDetail.resolve());
+  t.after(() => releasePatch.resolve());
+  const { page } = await openApp(t, index, { locale: 'en', beforeGoto: async (p) => {
+    await p.route(`**/api/sessions/${id}/events/*/detail*`, async (route) => {
+      const url = decodeURIComponent(route.request().url());
+      if (url.includes(':logical:call:patch-origin/')) {
+        await releasePatch.promise;
+        return route.continue();
+      }
+      if (!url.includes(':logical:user:5/')) return route.continue();
+      detailStarted.resolve();
+      await releaseDetail.promise;
+      await route.continue();
+    });
+  } });
+  assert.notEqual(await page.locator('.sessionItem.active').getAttribute('data-session-id'), id);
+  await switchToProjectScope(page);
+  await fillSearch(page, 'TAIL_MATCH_742');
+  await waitForProjectCards(page);
+  await page.locator('[data-project-result-session-id]').first().focus();
+  await page.keyboard.press('Enter');
+  await detailStarted.promise;
+  await page.waitForFunction(() => document.querySelector('.eventLoadingSnippet')?.textContent.includes('TAIL_MATCH_742'));
+  if (supersede === 'selection') await page.locator('#timeline .event').filter({ hasText: 'Earlier independent message' }).locator('.eventKind').click();
+  if (supersede === 'query') await Promise.all([
+    page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/timeline') && new URL(response.url()).searchParams.get('q') === 'NEW_QUERY_WITHOUT_MATCH'),
+    fillSearch(page, 'NEW_QUERY_WITHOUT_MATCH'),
+  ]);
+  releaseDetail.resolve();
+  if (!supersede) await page.waitForFunction(() => document.querySelector('.event.selected')?.innerText.length > 30000);
+  releasePatch.resolve();
+  await page.waitForLoadState('networkidle');
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  if (supersede === 'query') {
+    assert.equal(await page.locator('#searchInput').inputValue(), 'NEW_QUERY_WITHOUT_MATCH');
+    assert.equal(await page.locator('#timeline mark.activeSearchMark').count(), 0);
+    return;
+  }
+  if (supersede === 'selection') {
+    assert.match(await page.locator('#timeline .event.selected').innerText(), /Earlier independent message/);
+    return;
+  }
+  // HTTP/detail settlement does not finish Chromium's smooth scroll animation.
+  // Wait for the actual arrival, retaining the same viewport geometry contract.
+  await page.waitForFunction(() => {
+    const mark = document.querySelector('#timeline mark.activeSearchMark');
+    if (!mark) return false;
+    const rect = mark.getBoundingClientRect();
+    const pane = mark.closest('.timelinePane').getBoundingClientRect();
+    return rect.top >= Math.max(0, pane.top) && rect.bottom <= Math.min(innerHeight, pane.bottom);
+  });
+  const geometry = await page.locator('#timeline mark.activeSearchMark').evaluate((mark) => {
+    const rect = mark.getBoundingClientRect();
+    const pane = mark.closest('.timelinePane').getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, paneTop: Math.max(0, pane.top), paneBottom: Math.min(innerHeight, pane.bottom) };
+  });
+  assert.ok(geometry.top >= geometry.paneTop && geometry.bottom <= geometry.paneBottom, JSON.stringify(geometry));
 });
 
 test('browser project return surfaces preserve query, filters, cards, scope and focus', { timeout: 45000 }, async (t) => {
@@ -8161,6 +8560,7 @@ test('Wave 1A M2 browser keeps the newer same-context suggestion pending without
   const oldStarted = deferred();
   const newerStarted = deferred();
   const failed = [];
+  let oldRequest;
   let requestCount = 0;
   page.on('requestfailed', (request) => {
     if (new URL(request.url()).pathname === '/api/file-suggestions') failed.push(request.url());
@@ -8169,6 +8569,7 @@ test('Wave 1A M2 browser keeps the newer same-context suggestion pending without
     requestCount += 1;
     const ordinal = requestCount;
     if (ordinal === 1) {
+      oldRequest = route.request();
       oldStarted.resolve();
       await oldRelease.promise;
     } else if (ordinal === 2) {
@@ -8198,6 +8599,10 @@ test('Wave 1A M2 browser keeps the newer same-context suggestion pending without
   await page.evaluate(() => window.__wave1aM2.armHandoffPause());
   await page.locator('#sortSelect').selectOption(nextSort);
   await oldStarted.promise;
+  const oldAborted = page.waitForEvent('requestfailed', {
+    predicate: (request) => request === oldRequest,
+    timeout: 10000,
+  });
   const selectedSessionId = await page.locator('.sessionItem.active').getAttribute('data-session-id');
   await page.locator(`[data-session-id="${selectedSessionId}"]`).click();
   await newerStarted.promise;
@@ -8205,6 +8610,8 @@ test('Wave 1A M2 browser keeps the newer same-context suggestion pending without
 
   await page.evaluate(() => window.__wave1aM2.releaseHandoff());
   await page.waitForFunction(() => window.__wave1aM2.evidence.handoffs.length >= 2);
+  // The app handoff and Playwright's network failure notification settle separately.
+  await oldAborted;
   assert.equal(requestCount, 2, 'the superseded outer load must not start a third fallback');
   assert.deepEqual((await page.evaluate(() => window.__wave1aM2.evidence.handoffs.at(-1))), {
     sessionsRequest: true,
@@ -8256,6 +8663,7 @@ test('Wave 1A M2 browser keeps a newer committed same-context suggestion authori
   const oldStarted = deferred();
   let requestCount = 0;
   const failed = [];
+  let oldRequest;
   page.on('requestfailed', (request) => {
     if (new URL(request.url()).pathname === '/api/file-suggestions') failed.push(request.url());
   });
@@ -8263,6 +8671,7 @@ test('Wave 1A M2 browser keeps a newer committed same-context suggestion authori
     requestCount += 1;
     const ordinal = requestCount;
     if (ordinal === 1) {
+      oldRequest = route.request();
       oldStarted.resolve();
       await oldRelease.promise;
     }
@@ -8286,6 +8695,10 @@ test('Wave 1A M2 browser keeps a newer committed same-context suggestion authori
   await page.evaluate(() => window.__wave1aM2.armHandoffPause());
   await page.locator('#sortSelect').selectOption(nextSort);
   await oldStarted.promise;
+  const oldAborted = page.waitForEvent('requestfailed', {
+    predicate: (request) => request === oldRequest,
+    timeout: 10000,
+  });
   const selectedSessionId = await page.locator('.sessionItem.active').getAttribute('data-session-id');
   await page.locator(`[data-session-id="${selectedSessionId}"]`).click();
   await page.locator('#searchFileInput').focus();
@@ -8297,6 +8710,7 @@ test('Wave 1A M2 browser keeps a newer committed same-context suggestion authori
   await page.evaluate(() => window.__wave1aM2.releaseHandoff());
   await page.waitForFunction(() => window.__wave1aM2.evidence.handoffs.length >= 2);
   oldRelease.resolve();
+  await oldAborted;
   assert.equal(requestCount, 2, 'the superseded outer load must not start a third fallback');
   assert.equal(failed.length, 1, 'the committed newer request must not be aborted');
   assert.equal(await page.locator('[data-search-file-suggestion]').first().getAttribute('data-search-file-suggestion'), 'wave-1a-committed-2');
@@ -12761,6 +13175,8 @@ test('browser Wave 1D-A M1 stale context-slot ownership fails closed to one full
   ));
   assert.ok(nested);
   assert.notEqual(nested.kind, 'code_mode_operation');
+  const codeMode = session.logicalEvents.find((event) => event.kind === 'code_mode_operation');
+  assert.ok(codeMode);
   const gate = deferred();
   const started = deferred();
   const { page } = await openWave1dAM1App(t, index, {
@@ -12771,6 +13187,11 @@ test('browser Wave 1D-A M1 stale context-slot ownership fails closed to one full
     },
     beforeGoto: async (targetPage) => {
       await targetPage.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+        const pathname = new URL(route.request().url()).pathname;
+        if (pathname !== `/api/sessions/${encodeURIComponent(session.id)}/events/${encodeURIComponent(nested.id)}/detail`) {
+          await route.continue();
+          return;
+        }
         started.resolve();
         await gate.promise;
         await route.continue();
@@ -12779,9 +13200,23 @@ test('browser Wave 1D-A M1 stale context-slot ownership fails closed to one full
   });
   const owner = page.locator(`#timeline .event[data-event-id="${nested.id}"]`);
   await owner.waitFor();
+  // The visible context slot hydrates its Code Mode owner during startup even
+  // though that owner's card is hidden. Its fallback must settle before the
+  // target request's corruption/measurement window starts.
+  await page.waitForFunction((eventId) => {
+    const { detailTransactions, detailRequests } = window.__wave1dAM1.evidence;
+    const transaction = detailTransactions.find((row) => row.eventId === eventId);
+    return transaction && detailRequests.some((row) => (
+      row.requestSerial === transaction.requestSerial && row.presentationSettlement
+    ));
+  }, codeMode.id);
   await page.evaluate(() => window.__wave1dAM1.reset());
   await owner.locator(':scope > .eventHeader > .eventToggle').click();
   await started.promise;
+  const transaction = await page.evaluate((eventId) => (
+    window.__wave1dAM1.evidence.detailTransactions.find((row) => row.eventId === eventId)
+  ), nested.id);
+  assert.ok(transaction);
   await page.evaluate((ownerId) => {
     const article = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"]`);
     const slot = article.previousElementSibling;
@@ -12791,16 +13226,20 @@ test('browser Wave 1D-A M1 stale context-slot ownership fails closed to one full
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
   const operationId = await beginWave1cM2Operation(page);
   gate.resolve();
-  await page.waitForFunction(() => window.__wave1dAM1.evidence.detailRequests.some(
-    (row) => row.presentationSettlement,
-  ));
+  await page.waitForFunction((serial) => window.__wave1dAM1.evidence.detailRequests.some(
+    (row) => row.requestSerial === serial && row.presentationSettlement,
+  ), transaction.requestSerial);
   await endWave1cM2Operation(page);
   const causal = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
-  const settlement = causal.detailRequests.find((row) => row.presentationSettlement);
+  const settlements = causal.detailRequests.filter((row) => row.presentationSettlement);
+  assert.equal(settlements.length, 1, JSON.stringify(causal));
+  const [settlement] = settlements;
+  assert.equal(settlement.requestSerial, transaction.requestSerial);
+  assert.deepEqual(causal.detailTransactions, [transaction]);
   assert.equal(settlement.settlementOutcome, 'fullRenderFallback');
   assert.equal(settlement.presentationFailed, false);
   assert.equal((await wave1cM2OperationRows(page, operationId))
-    .filter((row) => row.commitKind === 'replacement').length, 1);
+    .filter((row) => row.commitKind === 'replacement').length, 1, JSON.stringify({ target: nested.id, causal }));
 });
 
 test('browser Wave 1D-A M1 another presentation revision between detail tokens forces full fallback', async (t) => {
@@ -14580,6 +15019,23 @@ test('browser read from here clears structured filters and preserves free text',
   await page.waitForFunction((id) => document.querySelector('#timeline .event.selected')?.dataset.eventId === id, selectedId);
 });
 
+test('browser folding rule keyboard changes retain the same select and adjacent Inspector focus', async (t) => {
+  const index = await buildFixtureIndex();
+  const { page } = await openApp(t, index, { locale: 'en', viewport: { width: 1280, height: 800 } });
+  await selectPrimarySession(page);
+  const rule = page.locator('#detail [data-profile-kind="command"]');
+  await rule.focus();
+  const before = await rule.inputValue();
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  assert.notEqual(await rule.inputValue(), before);
+  assert.equal(await rule.evaluate((select) => select === document.activeElement), true);
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await page.evaluate(() => document.querySelector('#detail').contains(document.activeElement)), true);
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.querySelector('#detail').contains(document.activeElement)), true);
+});
+
 test('browser folding profile edits save, cancel, and repair invalid localStorage state', async (t) => {
   const index = await buildFixtureIndex();
   const { page, baseUrl } = await openApp(t, index);
@@ -15176,6 +15632,9 @@ test('browser onboarding source confirmation cancel preserves project and direct
 });
 
 test('browser onboarding distinguishes source diagnostics from an empty source and bounds escaped details', async (t) => {
+  const fullDiscoveryStarted = deferred();
+  const releaseFullDiscovery = deferred();
+  t.after(() => releaseFullDiscovery.resolve());
   const diagnostics = {
     totalCount: 23, counts: { DEEPSEEK_ZSTD_UNAVAILABLE: 23 }, truncatedCount: 3,
     samples: Array.from({ length: 20 }, (_, i) => ({ code: 'DEEPSEEK_ZSTD_UNAVAILABLE', path: `/session-${i}/<img src=x>.zstd`, message: 'Node v22.0.0 lacks zstdDecompressSync <script>alert(1)</script>' })),
@@ -15184,16 +15643,30 @@ test('browser onboarding distinguishes source diagnostics from an empty source a
     beforeGoto: async (p) => p.route('**/api/projects*', async (route) => {
       const response = await route.fetch();
       const payload = await response.json();
+      if (!new URL(route.request().url()).searchParams.has('summary')) {
+        fullDiscoveryStarted.resolve();
+        await releaseFullDiscovery.promise;
+      }
       await route.fulfill({ json: { ...payload, projects: [], sourceDiagnostics: diagnostics } });
     }),
   });
-  await page.waitForFunction(() => !document.querySelector('#sourceDiagnostics')?.hidden);
+  await fullDiscoveryStarted.promise;
+  // Summary diagnostics render before full discovery finishes. Hold the latter
+  // response so this intermediate state is deterministic, not scheduler luck.
+  await page.waitForFunction(() => document.querySelector('#sourceDiagnostics')?.hidden === false);
+  assert.equal(await page.locator('#projectList').textContent(), '');
+  releaseFullDiscovery.resolve();
+  await page.waitForFunction(() => (
+    document.querySelector('#sourceDiagnostics')?.hidden === false
+      && document.querySelector('#projectList')?.textContent.includes('No readable project')
+  ));
   assert.match(await page.locator('#projectList').textContent(), /No readable project/);
   assert.doesNotMatch(await page.locator('#projectList').textContent(), /No transcript projects/);
   assert.match(await page.locator('#sourceDiagnostics').textContent(), /22.15.0/);
   assert.equal(await page.locator('#sourceDiagnostics details').getAttribute('open'), null);
   await page.locator('#sourceDiagnostics summary').click();
-  assert.equal(await page.locator('#sourceDiagnostics details li').count(), 20);
+  assert.equal(await page.locator('#sourceDiagnostics details li code').count(), 20);
+  assert.match(await page.locator('#sourceDiagnostics summary').innerText(), /23.*Results may be incomplete/);
   assert.equal(await page.locator('#sourceDiagnostics img, #sourceDiagnostics script').count(), 0);
   assert.match(await page.locator('#sourceDiagnostics').textContent(), /Node v22.0.0/);
   await page.locator('#localeSelect').selectOption('zh-CN', { force: true });

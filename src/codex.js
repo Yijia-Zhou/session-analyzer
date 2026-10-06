@@ -1,13 +1,15 @@
 'use strict';
 
+const { hashPlainValue } = require('./plain-value-stream');
+
 const {
   backgroundTerminalRequest,
   backgroundTerminalRequestValue,
   backgroundTerminalCall,
   buildBackgroundTerminalRequests,
 } = require('./codex-background-terminal');
-const { backgroundTerminalLabel, compactBackgroundTerminalSections } = require('./shared/background-terminal-presentation');
-const { terminalSourceEvidence, parseTerminalReceipt, buildTerminalContinuations, backgroundTerminalFactsForEvent } = require('./codex-terminal-continuations');
+const { backgroundTerminalLabel, compactBackgroundTerminalSections, terminalOutcomeSummary } = require('./shared/background-terminal-presentation');
+const { terminalSourceEvidence, parseTerminalReceipt, parseNativeCommandOutput, nativeExecCommandArguments, buildTerminalContinuations, backgroundTerminalFactsForEvent } = require('./codex-terminal-continuations');
 
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -34,6 +36,7 @@ const i18n = require('./shared/i18n');
 const { asyncMessageMetadata } = require('./codex-async-message');
 const { historyFacts, validHistoryFacts, validHistoryTarget, resolveHistoryReference, historyOwner } = require('./codex-persisted-history');
 const codexMessageEvidence = {
+  ...require('./codex-turn-items'),
   ...require('./codex-persisted-history'),
   ...require('./codex-async-message'),
   ...require('./codex-attachments'),
@@ -74,6 +77,8 @@ const {
   sourceSizeToSafeNumber,
 } = require('./shared/codex-source-stat');
 const codexRolloutStorage = require('./codex-rollout-storage');
+const codexLegacyRawOwners = require('./codex-legacy-raw-owners');
+const { createSourceDiagnostics } = require('./source-diagnostics');
 const {
   createCodexCacheObservationSeed,
   finalizeCodexCacheObservation,
@@ -96,17 +101,23 @@ const { createCodexSearch } = require('./codex-search');
 const { createProjectQueryStoreBuilder } = require('./project-query-store');
 const {
   canonicalRawRecordDigest,
+  codexSubagentHistoryBoundary,
   hasCanonicalRawDigests,
   inferCodexMaterializedForks,
   inferEarlierBranches,
   materializedForkInheritedContext,
   rawForkSegment,
+  restoreCodexSubagentRawSegments,
 } = require('./codex-forks');
 const { appendReviewLifecycleMarker, reviewLifecycleFromRaw } = require('./review-lifecycle');
 const {
   CANONICAL_SCHEMA_VERSION,
   CODEX_SOURCE_KIND,
   codexSourceLocator,
+  codexFullSearchText,
+  codexSearchValue,
+  codexAsyncMessageText,
+  codexAsyncSearchText,
   codexSourceEnvelope,
   createCodexRawParser,
   rawEventsForLogicalEvent,
@@ -131,7 +142,7 @@ const RESET_TIME_CACHE_LIMIT = 512;
 const CODE_MODE_STRUCTURED_RESULT_MAX_CHARS = 32_000;
 const CODE_MODE_STRUCTURED_RESULT_MAX_DEPTH = 32;
 const CODE_MODE_STRUCTURED_RESULT_MAX_NODES = 1_000;
-const CODEX_COMPACT_SESSION_REPRESENTATION = 'codex-compact-v1';
+const CODEX_COMPACT_SESSION_REPRESENTATION = 'codex-compact-v3';
 const CODEX_MATERIALIZATION_SCHEMA_VERSION = 1;
 const CODEX_MATERIALIZED_SHELL_MAX_BYTES = 4 * 1024;
 const CODEX_MATERIALIZATION_PRIVATE_FIELDS = Object.freeze(['_forkSegmentsByRawId', '_shell']);
@@ -2217,6 +2228,8 @@ function relatedReasoning(eventText, responseText) {
 
 function parseFormattedCommandOutput(text) {
   const source = String(text || '');
+  const native = parseNativeCommandOutput(source);
+  if (native) return native;
   const match = source.match(/^Exit code:\s*(-?\d+)\r?\nWall time:\s*([^\n]+)\r?\nOutput:\r?\n([\s\S]*)$/);
   if (!match) return null;
   return {
@@ -2234,7 +2247,7 @@ function parseOutputEnvelope(text) {
 
 function numericExitCode(...values) {
   for (const value of values) {
-    if (isFiniteNumberValue(value)) return Number(value);
+    if (value != null && isFiniteNumberValue(value)) return Number(value);
   }
   return null;
 }
@@ -2509,21 +2522,24 @@ function extractCommandSections(raws, event, session = {}) {
   const functionOutput = raws.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output');
   const execEnd = raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'exec_command_end');
   const execAny = execEnd || raws.find((raw) => raw.recordType === 'event_msg' && raw.payloadType.startsWith('exec_command_'));
-  const args = commandArgsFromRaw(functionCall);
+  const args = nativeExecCommandArguments(functionCall) || commandArgsFromRaw(functionCall);
   const formatted = parseFormattedCommandOutput(functionOutput?.output);
-  const commandText = execAny?.commandText || commandToText(args?.command);
+  const commandText = execAny?.commandText || commandToText(args?.cmd ?? args?.command);
   maybePushCodeSection(timelineSections, 'Command', commandText, inferCommandLanguage(commandText, args, commandLanguageContext(session)), 'request');
   if (timelineSections.at(-1)?.type === 'code') timelineSections.at(-1).role = 'command';
 
   maybePushKvSection(inspectorSections, 'Run context', [
     { key: 'cwd', value: String(execAny?.parsed?.payload?.cwd || args?.workdir || '') },
+    { key: 'process_id', value: String(execAny?.parsed?.payload?.process_id ?? formatted?.processId ?? '') },
+    { key: 'source', value: String(execAny?.parsed?.payload?.source || '') },
+    { key: 'interaction_input', value: String(execAny?.parsed?.payload?.interaction_input || '') },
   ], 'context');
 
   if (args) {
     inspectorSections.push({ purpose: 'request', type: 'json', title: 'Arguments', value: args });
   }
 
-  const stdout = firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, execEnd?.parsed?.payload?.formatted_output, formatted?.output);
+  const stdout = firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, execEnd?.parsed?.payload?.formatted_output, formatted?.output, execAny?.stdout, execAny?.aggregatedOutput, formatted ? '' : functionOutput?.output);
   const stderr = execEnd?.stderr || execAny?.stderr || '';
   maybePushTerminalSection(timelineSections, 'stdout', stdout, 'stdout', '', 'result');
   maybePushTerminalSection(timelineSections, 'stderr', stderr, 'stderr', '', 'result');
@@ -2620,7 +2636,10 @@ function toolDetailValues(raws) {
     raws.find((raw) => raw.recordType === 'event_msg' && /_begin$/.test(raw.payloadType || ''))?.parsed?.payload,
   );
   const responseEnvelope = toolOutputEnvelope(customOutput);
+  const typedSleep = raws.some((raw) => raw.typedItemType === 'Extension' && raw.parsed?.payload?.kind === 'clock.sleep');
   const responseValue = firstNonEmpty(
+    typedSleep ? responseEnvelope?.output : '',
+    typedSleep ? parseOutputEnvelope(functionOutput?.output) || functionOutput?.output : '',
     raws.find((raw) => raw.recordType === 'event_msg' && /_end$/.test(raw.payloadType || ''))?.parsed?.payload,
     imageCall?.parsed?.payload,
     responseEnvelope?.output,
@@ -2654,6 +2673,17 @@ function extractToolSections(raws, event) {
       sections.push({ purpose: 'result', type: 'json', title: 'Response', value: responseValue });
     } else {
       maybePushStructuredSection(sections, 'Response', responseValue, { purpose: 'result' });
+    }
+  }
+
+  // Typed completions can contain only display metadata (notably clock.sleep),
+  // while the response mirror carries the actual wake-up/interruption result.
+  // Keep that independently observed result available in hydrated Inspector.
+  if (raws.some((raw) => raw.typedItemType)) {
+    for (const raw of raws) {
+      if (raw.recordType !== 'response_item' || !['function_call_output', 'custom_tool_call_output'].includes(raw.payloadType)
+          || !raw.output || raw.output === responseValue) continue;
+      maybePushStructuredSection(sections, 'Tool output', structuredOutputValue(raw.output), { purpose: 'result' });
     }
   }
 
@@ -2912,8 +2942,11 @@ function externalizeEmbeddedImages(value, source, images = [], jsonPath = [], se
 }
 
 function externalizeKnownImageGenerationResult(record, source, images = []) {
-  const payload = record?.payload || {};
-  if (!['image_generation_end', 'image_generation_call'].includes(payload.type)) return;
+  const originalPayload = record?.payload || {};
+  const typedImage = record?.type === 'event_msg' && originalPayload.type === 'item_completed'
+    && originalPayload.item?.type === 'Extension' && originalPayload.item.kind === 'image_gen.generation';
+  const payload = typedImage ? originalPayload.item : originalPayload;
+  if (!typedImage && !['image_generation_end', 'image_generation_call'].includes(payload.type)) return;
   if (typeof payload.result !== 'string') return;
   const inspected = inspectSupportedBareImageBase64(payload.result);
   if (!inspected) return;
@@ -2922,7 +2955,7 @@ function externalizeKnownImageGenerationResult(record, source, images = []) {
     source: {
       file: source.file,
       line: source.line,
-      jsonPath: ['payload', 'result'],
+      jsonPath: typedImage ? ['payload', 'item', 'result'] : ['payload', 'result'],
     },
     mimeType: inspected.mimeType,
     estimatedBytes: inspected.estimatedBytes,
@@ -3580,7 +3613,8 @@ function codeModeShellResultSections(resultText) {
   const formatted = parseFormattedCommandOutput(resultText);
   if (formatted) {
     maybePushKvSection(sections, 'Run result', [
-      { key: 'Exit code', value: String(formatted.exitCode) },
+      { key: 'Exit code', value: formatted.exitCode == null ? '' : String(formatted.exitCode) },
+      { key: 'process_id', value: formatted.processId == null ? '' : String(formatted.processId) },
       { key: 'Wall time', value: formatted.wallTime },
     ], 'result');
     maybePushTerminalSection(sections, 'Output', formatted.output, 'stdout', '', 'result');
@@ -3990,6 +4024,8 @@ const codexDetailBuilder = createCodexDetailBuilder({
   backgroundTerminalLabel,
   compactBackgroundTerminalSections,
   backgroundTerminalFactsForEvent,
+  terminalOutcomeSummary,
+  parseTerminalReceipt,
   sourceTrace: {
     classifyProtocolText,
     codexSourceLocator,
@@ -4193,6 +4229,7 @@ const codexLogicalBuilder = createCodexLogicalBuilder({
   tool: {
     ...toolLifecycleContract,
     commandArgsFromRaw,
+    nativeExecCommandArguments,
     commandToText,
     inferPatchSuccess,
     isFiniteNumberValue,
@@ -4203,6 +4240,10 @@ const codexLogicalBuilder = createCodexLogicalBuilder({
     touchFilesFromOutputText,
   },
   text: {
+    codexFullSearchText,
+    codexSearchValue,
+    codexAsyncMessageText,
+    codexAsyncSearchText,
     displayValue,
     firstNonEmpty,
     planUpdateText,
@@ -4564,6 +4605,7 @@ function compactCodexRawEvent(raw) {
   if (asyncMessage) compact.asyncMessage = asyncMessage;
   if (raw.historyFacts) compact.historyFacts = structuredClone(raw.historyFacts);
   if (raw.historyTarget) compact.historyTarget = { ...raw.historyTarget };
+  if (raw.subagentInherited === true) compact.subagentInherited = true;
   if (typeof raw.terminalSourceEvidence === 'string') compact.terminalSourceEvidence = raw.terminalSourceEvidence;
   if (typeof raw.threadName === 'string' && raw.threadName) compact.threadName = raw.threadName;
   if (typeof raw.reviewLifecyclePhase === 'string' && raw.reviewLifecyclePhase) compact.reviewLifecyclePhase = raw.reviewLifecyclePhase;
@@ -4573,6 +4615,7 @@ function compactCodexRawEvent(raw) {
 }
 
 const COMPACT_RAW_KEYS = new Set([
+  'subagentInherited',
   'historyFacts', 'historyTarget',
   'asyncMessage',
   'terminalSourceEvidence',
@@ -4658,6 +4701,7 @@ function isReusableCompactRaw(raw) {
     && (raw.asyncMessage === undefined || isReusableAsyncMessage(raw.asyncMessage))
     && (raw.historyFacts === undefined || validHistoryFacts(raw.historyFacts))
     && (raw.historyTarget === undefined || validHistoryTarget(raw.historyTarget))
+    && (raw.subagentInherited === undefined || raw.subagentInherited === true)
     && Number.isSafeInteger(raw.line)
     && Number.isSafeInteger(raw.rawIndex)
     && (raw.exitCode === null || typeof raw.exitCode === 'string' || typeof raw.exitCode === 'number')
@@ -4874,7 +4918,9 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       }
       const embeddedImages = [];
       const canonicalDigest = includeCanonicalRawDigests ? canonicalRawRecordDigest(record) : '';
-      const attachmentSummary = codexMessageEvidence.summarizeCodexAttachments(record.payload);
+      const attachmentSummary = codexMessageEvidence.summarizeCodexAttachments(
+        codexMessageEvidence.typedItemRecord(record, session.id)?.payload || record.payload,
+      );
       externalizeKnownImageGenerationResult(record, { file: relFile, line: lineNumber }, embeddedImages);
       externalizeEmbeddedImages(record, { file: relFile, line: lineNumber }, embeddedImages);
       const raw = makeRawEvent(record, lineNumber, relFile, session.id, embeddedImages, attachmentSummary);
@@ -4955,7 +5001,19 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
     session._parsedAncestry = {
       forkedFromSessionId: String(session.forkedFromSessionId || '').trim(),
     };
-    session._logicalEvents = codexLogicalBuilder.buildLogicalEvents(session.rawEvents);
+    const subagentBoundary = codexSubagentHistoryBoundary(session.rawEvents);
+    if (subagentBoundary) {
+      for (let index = 1; index <= subagentBoundary.inheritedRawCount; index += 1) {
+        session.rawEvents[index].subagentInherited = true;
+      }
+      restoreCodexSubagentRawSegments(session);
+      // Inherited context cannot select the child's recorded shell context.
+      const ownedEnvironment = session.rawEvents.find((raw) => !raw.subagentInherited
+        && raw.recordType !== 'realtime_item'
+        && classifyProtocolText(raw.messageText, raw.role) === 'environment_context');
+      session.shell = ownedEnvironment ? boundedSessionShellContext(readXmlTag(ownedEnvironment.messageText, 'shell')) : '';
+    }
+    session._logicalEvents = codexLogicalBuilder.buildLogicalEvents(session.rawEvents.filter((raw) => raw.subagentInherited !== true));
     session.logicalEvents = session._logicalEvents;
     if (includeCanonicalRawDigests) {
       session._canonicalRawDigests = session.rawEvents.map((raw) => raw._canonicalRawDigest);
@@ -5066,6 +5124,7 @@ function buildCodexRelationshipEvidence(session, retainForkEvidence) {
     _allRawTimestampsValid: allRawTimestampsValid,
     _latestRawTimestampMs: latestRawTimestampMs,
     _continuationMainPresent: false,
+    ...(session.rawEvents.some((raw) => raw.subagentInherited === true) ? { _hasSubagentHistoryBoundary: true } : {}),
   };
 }
 
@@ -5145,6 +5204,8 @@ async function scanCodexRelationshipEvidence(
         payloadType,
         role,
       } = codexSourceEnvelope(record);
+      if (recordType === 'session_meta' && !primarySessionMetaSeen
+          && Object.hasOwn(payload, 'subagent_history_start_ordinal')) requiresFullParse = true;
       primarySessionMetaSeen = applyCodexSessionRelationshipMetadata(
         relationshipState,
         recordType,
@@ -5356,6 +5417,7 @@ function inferCodexIndexedMaterializedForks(evidenceList) {
 
   let inferred = 0;
   for (const child of evidenceList) {
+    if (child._hasSubagentHistoryBoundary) continue;
     const parentId = child.forkedFromSessionId;
     const parentMatches = byId.get(parentId) || [];
     if (!parentId || parentMatches.length !== 1) continue;
@@ -5541,6 +5603,7 @@ function applyCodexRelationshipEvidence(session, evidence, errorFactory = source
       : structuredClone(evidence[field]);
   }
   session._forkSegmentsByRawId = new Map();
+  restoreCodexSubagentRawSegments(session);
   session.logicalEvents = session._logicalEvents || session.logicalEvents;
   if (evidence.forkStorageMode !== 'materialized') return session;
 
@@ -5592,7 +5655,7 @@ function codexForkSegmentRanges(session) {
 }
 
 function hashCodexMaterializationValue(value) {
-  return crypto.createHash('sha256').update(JSON.stringify(value), 'utf8').digest('base64url');
+  return hashPlainValue(value);
 }
 
 function buildCodexMaterializationState(session, relationshipEvidence, sessionIndexEntry) {
@@ -5843,12 +5906,17 @@ async function buildIndex({
   codexHome,
   onProgress,
   signal,
-  onDiagnostic,
+  onDiagnostic: observeDiagnostic,
   previousIndex = null,
   retainFullSourceRecordsForTests = false,
   beforeSourceSnapshotVerificationForTests = null,
   cacheObservationForTests = false,
 }) {
+  const sourceDiagnostics = createSourceDiagnostics();
+  const onDiagnostic = (diagnostic) => {
+    sourceDiagnostics.add(diagnostic);
+    observeDiagnostic?.(diagnostic);
+  };
   const resolvedRepo = resolveFsPath(repoRoot);
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
@@ -6075,6 +6143,7 @@ async function buildIndex({
     sessions,
     sessionsById,
     legacyRawOwners: buildCodexLegacyRawOwnerIndex(sessions),
+    sourceDiagnostics: sourceDiagnostics.summary,
     eventKinds: eventKindCatalog(sessions),
     codeModeRequests: codeModeRequestCatalog(sessions),
     totals: {
@@ -6098,14 +6167,21 @@ async function buildSourceBackedIndex({
   codexHome,
   onProgress,
   signal,
-  onDiagnostic,
+  onDiagnostic: observeDiagnostic,
   previousIndex = null,
   beforeSourceSnapshotVerificationForTests = null,
   beforeRelationshipInferenceForTests = null,
   forceFullRelationshipPassForTests = false,
   onRelationshipCandidateModeForTests = null,
   onTransientMemorySample = null,
+  legacyRawOwnerPolicyForTests = undefined,
+  onLegacyRawCapacity = null,
 }) {
+  const sourceDiagnostics = createSourceDiagnostics();
+  const onDiagnostic = (diagnostic) => {
+    sourceDiagnostics.add(diagnostic);
+    observeDiagnostic?.(diagnostic);
+  };
   const resolvedRepo = resolveFsPath(repoRoot);
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
@@ -6233,6 +6309,7 @@ async function buildSourceBackedIndex({
       projectQueryStore: previousIndex.projectQueryStore,
       materializationDependencies: previousIndex.materializationDependencies,
       legacyRawOwners: previousIndex.legacyRawOwners,
+      sourceDiagnostics: sourceDiagnostics.summary,
       eventKinds: previousIndex.eventKinds,
       codeModeRequests: previousIndex.codeModeRequests,
       totals: {
@@ -6436,9 +6513,13 @@ async function buildSourceBackedIndex({
     && previousIndex.materializationDependencies instanceof Map;
 
   let queryStoreBuilder = createProjectQueryStoreBuilder({
+    signal,
     presentationForEvent: codexSearch.projectQueryPresentation,
   });
-  const legacyRawOwnerBuilder = createCodexLegacyRawOwnerIndexBuilder();
+  const legacyRawOwnerBuilder = codexLegacyRawOwners.createCodexLegacyRawOwnerBuilder({
+    policy: legacyRawOwnerPolicyForTests,
+    onCapacity: onLegacyRawCapacity,
+  });
   const catalogAccumulator = createCodexCatalogAccumulator();
   const materializationDependencies = new Map();
   const indexedSessions = [];
@@ -6449,6 +6530,7 @@ async function buildSourceBackedIndex({
   let indexedBytes = 0;
   let reusedFileCount = 0;
 
+  try {
   const orderedRelationshipEvidence = orderCodexEvidenceParentsFirst(relationshipEvidence);
   const materializedChildrenByParentId = new Map();
   for (const evidence of relationshipEvidence) {
@@ -6529,8 +6611,8 @@ async function buildSourceBackedIndex({
         logicalEventCount: session.logicalEvents.length,
       });
     }
-    const queryProjectionDigest = queryStoreBuilder.addSession(session);
-    legacyRawOwnerBuilder.addSession(session);
+    const queryProjectionDigest = await queryStoreBuilder.addSessionAsync(session);
+    await legacyRawOwnerBuilder.observeSession(session, { signal });
     catalogAccumulator.addSession(session);
     const summary = codexSearch.projectSessionMetadata(session).summary;
     const materializationState = buildCodexMaterializationState(
@@ -6599,7 +6681,7 @@ async function buildSourceBackedIndex({
 
   let projectQueryStore = queryStoreBuilder.finish();
   queryStoreBuilder = null;
-  let legacyRawOwners = legacyRawOwnerBuilder.finish();
+  let legacyRawOwners = await legacyRawOwnerBuilder.finish({ signal });
   let catalogs = catalogAccumulator.finish();
   if (canReusePrevious
       && reusedFileCount === indexedSessions.length
@@ -6654,6 +6736,7 @@ async function buildSourceBackedIndex({
     projectQueryStore,
     materializationDependencies,
     legacyRawOwners,
+    sourceDiagnostics: sourceDiagnostics.summary,
     eventKinds: catalogs.eventKinds,
     codeModeRequests: catalogs.codeModeRequests,
     totals: {
@@ -6670,6 +6753,9 @@ async function buildSourceBackedIndex({
       candidateBytes,
     },
   };
+  } finally {
+    legacyRawOwnerBuilder.dispose();
+  }
 }
 
 function finalizeCapturedCodexCacheObservation(session) {
@@ -6762,7 +6848,7 @@ async function materializeCodexSessionInternal(
       presentationIndexes: session.presentationIndexes,
       _shell: String(session.shell || ''),
     };
-    if (indexedSession.forkStorageMode === 'materialized') {
+    if (indexedSession.forkStorageMode === 'materialized' || session.rawEvents.some((raw) => raw.subagentInherited === true)) {
       materialized._forkSegmentsByRawId = session._forkSegmentsByRawId;
     }
     return materialized;
@@ -6909,7 +6995,11 @@ function validateCodexMaterializationDescriptor({
   }
 }
 
-function validateCodexLegacyRawOwnerIndex({ sessionIds: ownedSessionIds, legacyRawOwners }) {
+function validateCodexLegacyRawOwnerIndex({ sessionIds: ownedSessionIds, sessionFacts, legacyRawOwners, policy }) {
+  if (legacyRawOwners.schemaVersion === 2) {
+    codexLegacyRawOwners.validateCodexV2(legacyRawOwners, ownedSessionIds, sessionFacts, policy);
+    return;
+  }
   requireExactCodexKeys(legacyRawOwners.payload, ['sessionIds', 'files'], 'Codex legacy Raw owner payload');
   const { sessionIds, files } = legacyRawOwners.payload;
   if (!Array.isArray(sessionIds) || !files || typeof files !== 'object' || Array.isArray(files)) {
@@ -6951,6 +7041,17 @@ function validateCodexLegacyRawOwnerIndex({ sessionIds: ownedSessionIds, legacyR
   }
 }
 
+async function validateCodexLegacyRawOwnerIndexForCommit(args) {
+  if (args.legacyRawOwners.schemaVersion === 2) {
+    await codexLegacyRawOwners.validateCodexV2ForCommit(
+      args.legacyRawOwners, args.sessionIds, args.sessionFacts,
+      { signal: args.signal, onChunk: args.onChunk, policy: args.policy },
+    );
+  } else {
+    validateCodexLegacyRawOwnerIndex(args);
+  }
+}
+
 function validateCodexMaterializedPrivateState({ indexedSession, session }) {
   if (typeof session._shell !== 'string'
       || Buffer.byteLength(session._shell, 'utf8') > CODEX_MATERIALIZED_SHELL_MAX_BYTES) {
@@ -6958,6 +7059,20 @@ function validateCodexMaterializedPrivateState({ indexedSession, session }) {
   }
   const rawSegments = session._forkSegmentsByRawId;
   if (indexedSession.forkStorageMode !== 'materialized') {
+    if (session.rawEvents.some((raw) => raw.subagentInherited === true)) {
+      if (!(rawSegments instanceof Map) || rawSegments.size !== session.rawEvents.length) {
+        throw new Error('Explicit Codex subagent ownership must cover every Raw Record');
+      }
+      let continuationSeen = false;
+      for (const [index, raw] of session.rawEvents.entries()) {
+        if (index === 0 && raw.subagentInherited === true) throw new Error('Subagent metadata cannot be inherited');
+        if (index > 0 && raw.subagentInherited !== true) continuationSeen = true;
+        if (continuationSeen && raw.subagentInherited === true) throw new Error('Inherited subagent context must be a prefix');
+        const expected = index === 0 ? 'fork_metadata' : raw.subagentInherited === true ? 'inherited_context' : 'continuation';
+        if (rawSegments.get(raw.rawId) !== expected) throw new Error('Invalid explicit subagent Raw ownership');
+      }
+      return;
+    }
     if (rawSegments !== undefined) throw new Error('Ordinary Codex Session must not retain fork segments');
     return;
   }
@@ -7171,7 +7286,9 @@ async function hydrateCodexRawEvents(index, session, raws, options = {}) {
     const record = sourceRow?.parsed;
     if (!record) throw indexedSourceStaleError();
     const embeddedImages = [];
-    const attachmentSummary = codexMessageEvidence.summarizeCodexAttachments(record.payload);
+    const attachmentSummary = codexMessageEvidence.summarizeCodexAttachments(
+      codexMessageEvidence.typedItemRecord(record, residentRaw.sessionId)?.payload || record.payload,
+    );
     externalizeKnownImageGenerationResult(record, residentRaw.source, embeddedImages);
     externalizeEmbeddedImages(record, residentRaw.source, embeddedImages);
     const hydratedRaw = makeRawEvent(
@@ -7226,6 +7343,9 @@ async function readIndexedCodexRawRecord(index, session, raw, options = {}) {
 
 function resolveIndexedCodexLegacyRaw(index, file, line) {
   if (typeof file !== 'string' || !file || !Number.isSafeInteger(line) || line < 1) return null;
+  if (index?.legacyRawOwners?.schemaVersion === 2) {
+    return codexLegacyRawOwners.resolveCodexV2(index, file, line);
+  }
   const normalizedFile = normalizeFsPath(file);
   const payload = index?.legacyRawOwners?.payload;
   const encodedOwner = payload?.files?.[normalizedFile]?.[String(line)];
@@ -7397,6 +7517,7 @@ module.exports = {
   materializedPrivateFields: CODEX_MATERIALIZATION_PRIVATE_FIELDS,
   query: codexSearch,
   validateCodexLegacyRawOwnerIndex,
+  validateCodexLegacyRawOwnerIndexForCommit,
   validateCodexMaterializationDescriptor,
   validateCodexMaterializedPrivateState,
 };

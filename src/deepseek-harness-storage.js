@@ -1,20 +1,25 @@
 'use strict';
 
+const { hashPlainValue } = require('./plain-value-stream');
+
 const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
-const { zstdDecompressSync } = require('node:zlib');
+const { zstdDecompressSync, createZstdDecompress } = require('node:zlib');
+const { Readable } = require('node:stream');
+const { StringDecoder } = require('node:string_decoder');
+const { constants: bufferConstants } = require('node:buffer');
 const { isPathInsideOrSame } = require('./shared/fs-path');
 
 const DEEPSEEK_SOURCE_KIND = 'deepseek-harness';
-const DEEPSEEK_FORMAT_VERSION = 0;
+const DEEPSEEK_FORMAT_VERSION = 4;
+const DEEPSEEK_SUPPORTED_FORMAT_VERSIONS = Object.freeze([0, 4]);
 const DEEPSEEK_STORAGE_LOCATOR_TYPE = 'dsh-storage-record';
 const ZSTD_MAGIC = 0xFD2FB528;
 const FIRST_FRAME_READ_CHUNK = 64 * 1024;
 const FIRST_LINE_READ_CHUNK = 64 * 1024;
-const MAX_FIRST_RECORD_BYTES = 4 * 1024 * 1024;
 const STABLE_READ_MAX_ATTEMPTS = 4;
 const STABLE_READ_BUDGET_MS = 2000;
 
@@ -109,19 +114,24 @@ function flattenBounded(value, budget = 12_000) {
   return parts.join('\n').slice(0, budget);
 }
 
+// Match only durable canonical generation names, including future versions so
+// discovery cannot silently fall back to an obsolete predecessor.
+function parseSessionArtifactName(filePath) {
+  const match = /^session(?:\.v([1-9][0-9]*))?\.jsonl(\.zstd)?$/.exec(path.basename(filePath));
+  if (!match) return null;
+  const version = match[1] === undefined ? 0 : Number(match[1]);
+  if (!Number.isSafeInteger(version)) return null;
+  return { version, compression: match[2] ? 'zstd' : 'none' };
+}
+
 function compressionForArtifact(filePath) {
-  const base = path.basename(filePath);
-  if (base === 'session.jsonl.zstd') return 'zstd';
-  if (base === 'session.jsonl') return 'none';
+  const artifact = parseSessionArtifactName(filePath);
+  if (artifact) return artifact.compression;
   throw storageError(`unsupported DeepSeek session artifact name: ${path.basename(filePath)}`);
 }
 
 function hashBuffer(buffer) {
   return createHash('sha256').update(buffer).digest('base64url');
-}
-
-function hashPlainValue(value) {
-  return createHash('sha256').update(JSON.stringify(value)).digest('base64url');
 }
 
 function dependencySetId(entries) {
@@ -254,7 +264,7 @@ function decompressFrame(buffer, start, end) {
 
 // Parse the immutable header record. Future versions fail explicitly before
 // any event interpretation is attempted.
-function parseHeaderLine(text) {
+function parseHeaderLine(text, expectedVersion) {
   let parsed;
   try {
     parsed = JSON.parse(text);
@@ -267,11 +277,28 @@ function parseHeaderLine(text) {
   if (typeof parsed.version !== 'number' || !Number.isSafeInteger(parsed.version)) {
     throw storageError('corrupt session log: header version is invalid');
   }
-  if (parsed.version !== DEEPSEEK_FORMAT_VERSION) {
+  if (!DEEPSEEK_SUPPORTED_FORMAT_VERSIONS.includes(parsed.version)) {
     throw storageError(
-      `DeepSeek session format version ${parsed.version} is newer than the supported version ${DEEPSEEK_FORMAT_VERSION}`,
+      `DeepSeek session format version ${parsed.version} is unsupported; supported versions are ${DEEPSEEK_SUPPORTED_FORMAT_VERSIONS.join(', ')}`,
       'DEEPSEEK_FORMAT_VERSION_UNSUPPORTED',
     );
+  }
+  if (expectedVersion !== undefined && parsed.version !== expectedVersion) {
+    throw storageError(`corrupt session log: header version ${parsed.version} does not match artifact version ${expectedVersion}`);
+  }
+  if (parsed.version === 4) {
+    const keys = new Set(['type', 'version', 'id', 'createdAt', 'isSeeded', 'delegationDepth',
+      'cwd', 'parentSession', 'origin', 'agentPreset']);
+    if (Object.keys(parsed).some((key) => !keys.has(key))) {
+      throw storageError('corrupt session log: format 4 header contains unexpected fields');
+    }
+    if (typeof parsed.isSeeded !== 'boolean') {
+      throw storageError('corrupt session log: header isSeeded must be boolean');
+    }
+    if (Object.hasOwn(parsed, 'cwd') && (typeof parsed.cwd !== 'string'
+        || (!path.posix.isAbsolute(parsed.cwd) && !path.win32.isAbsolute(parsed.cwd)))) {
+      throw storageError('corrupt session log: format 4 header cwd must be absolute');
+    }
   }
   if (typeof parsed.id !== 'string' || !parsed.id.trim()) {
     throw storageError('corrupt session log: header id is invalid');
@@ -309,15 +336,16 @@ function parseHeaderLine(text) {
     ...(typeof parsed.cwd === 'string' ? { cwd: parsed.cwd } : {}),
     ...(typeof parsed.parentSession === 'string' ? { parentSession: parsed.parentSession } : {}),
     ...(Number.isSafeInteger(parsed.seedLength) ? { seedLength: parsed.seedLength } : {}),
+    ...(parsed.version === 4 ? { isSeeded: parsed.isSeeded } : {}),
     ...(parsed.origin === 'subagent' ? { origin: parsed.origin } : {}),
     delegationDepth: parsed.delegationDepth,
     ...(typeof parsed.agentPreset === 'string' ? { agentPreset: parsed.agentPreset } : {}),
   };
 }
 
-function parseHeaderText(text) {
+function parseHeaderText(text, expectedVersion) {
   const line = String(text || '').replace(/\r?\n$/, '');
-  return parseHeaderLine(line);
+  return parseHeaderLine(line, expectedVersion);
 }
 
 // Split decoded physical records. Every complete record is newline-terminated,
@@ -379,79 +407,157 @@ function committedArtifactPrefix(buffer, compression) {
   throw storageError(`unsupported DeepSeek compression: ${compression}`);
 }
 
-async function readFirstLineBytes(filePath, signal) {
-  const handle = await fsp.open(filePath, 'r');
-  try {
-    let offset = 0;
-    const chunks = [];
-    for (;;) {
-      throwIfAborted(signal);
-      const length = Math.min(FIRST_LINE_READ_CHUNK, MAX_FIRST_RECORD_BYTES - offset);
-      if (length <= 0) break;
-      const buffer = Buffer.alloc(length);
-      const { bytesRead } = await handle.read(buffer, 0, length, offset);
-      throwIfAborted(signal);
-      if (bytesRead === 0) break;
-      const newline = buffer.indexOf(0x0A, 0, bytesRead);
-      if (newline >= 0) {
-        chunks.push(buffer.subarray(0, newline + 1));
-        return Buffer.concat(chunks, offset + newline + 1);
-      }
-      chunks.push(buffer.subarray(0, bytesRead));
-      offset += bytesRead;
-    }
-    return Buffer.alloc(0);
-  } finally {
-    await handle.close();
+function incompleteHeaderError(bytes, compression) {
+  return storageError(bytes === 0
+    ? `empty ${compression} session log`
+    : `session header has not been committed: incomplete first ${compression === 'zstd' ? 'Zstandard frame' : 'JSONL line'}`,
+  bytes === 0 ? 'DEEPSEEK_STORAGE_EMPTY' : 'DEEPSEEK_HEADER_UNCOMMITTED');
+}
+
+function headerResourceError(cause) {
+  return storageError(
+    'DeepSeek header exceeds available JSON string memory; this artifact was not read. Retry with sufficient resources or a smaller header.',
+    'DEEPSEEK_HEADER_RESOURCE_EXHAUSTED', cause,
+  );
+}
+
+// JSON.parse requires one complete string. Bound that representation by the
+// runtime string capacity, not an arbitrary encoded/compressed byte budget.
+// Compressed input is never accumulated and decoding honors backpressure.
+async function collectHeaderText(chunks, signal, maxChars) {
+  const decoder = new StringDecoder('utf8');
+  const parts = [];
+  let chars = 0;
+  const append = (text) => {
+    chars += text.length;
+    if (chars > maxChars) throw headerResourceError();
+    if (text) parts.push(text);
+  };
+  for await (const chunk of chunks) {
+    throwIfAborted(signal);
+    append(decoder.write(chunk));
+  }
+  throwIfAborted(signal);
+  append(decoder.end());
+  return parts.join('');
+}
+
+async function* firstLineChunks(handle, signal) {
+  let offset = 0;
+  for (;;) {
+    throwIfAborted(signal);
+    const buffer = Buffer.alloc(FIRST_LINE_READ_CHUNK);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+    throwIfAborted(signal);
+    if (bytesRead === 0) throw incompleteHeaderError(offset, 'plain');
+    const chunk = buffer.subarray(0, bytesRead);
+    const newline = chunk.indexOf(0x0A);
+    yield newline < 0 ? chunk : chunk.subarray(0, newline + 1);
+    if (newline >= 0) return;
+    offset += bytesRead;
   }
 }
 
-// Header-only discovery: for Zstd this reads only enough bytes to complete the
-// first independently-decodable frame and decompresses exactly that frame.
-async function readSessionHeader(filePath, compression = compressionForArtifact(filePath), signal) {
+// Scan exactly the first frame progressively. Fixed-size headers and at most
+// 64 KiB payload pieces replace repeated concatenation/rescanning of the prefix.
+async function* firstFrameChunks(handle, signal) {
+  let offset = 0;
+  const read = async (length) => {
+    const buffer = Buffer.alloc(length);
+    let filled = 0;
+    while (filled < length) {
+      throwIfAborted(signal);
+      const { bytesRead } = await handle.read(buffer, filled, length - filled, offset);
+      throwIfAborted(signal);
+      if (!bytesRead) throw incompleteHeaderError(offset, 'zstd');
+      offset += bytesRead;
+      filled += bytesRead;
+    }
+    return buffer;
+  };
+  const magic = await read(4);
+  if (magic.readUInt32LE() !== ZSTD_MAGIC) {
+    throw storageError('corrupt Zstandard session log: invalid frame magic at byte 0');
+  }
+  yield magic;
+  const descriptorBytes = await read(1);
+  const descriptor = descriptorBytes[0];
+  if ((descriptor & 0x18) !== 0) throw storageError('corrupt Zstandard session log: reserved frame-header bit');
+  yield descriptorBytes;
+  const sizeFlag = descriptor >>> 6;
+  const singleSegment = (descriptor & 0x20) !== 0;
+  const dictionaryFlag = descriptor & 0x03;
+  const headerBytes = (singleSegment ? 0 : 1) + (dictionaryFlag === 3 ? 4 : dictionaryFlag)
+    + (sizeFlag === 0 ? (singleSegment ? 1 : 0) : 1 << sizeFlag);
+  if (headerBytes) yield await read(headerBytes);
+  for (;;) {
+    const block = await read(3);
+    const blockHeader = block.readUIntLE(0, 3);
+    const type = (blockHeader >>> 1) & 3;
+    if (type === 3) throw storageError('corrupt Zstandard session log: reserved block type');
+    yield block;
+    let remaining = type === 1 ? 1 : blockHeader >>> 3;
+    while (remaining) {
+      const length = Math.min(remaining, FIRST_FRAME_READ_CHUNK);
+      yield await read(length);
+      remaining -= length;
+    }
+    if (blockHeader & 1) break;
+  }
+  if (descriptor & 4) yield await read(4);
+}
+
+// Header-only discovery reads through the committed newline/first frame, with
+// separate plain/compressed/decoded processing and cancellable I/O. maxChars is
+// a test seam for the runtime JSON-string capacity, never a byte budget.
+async function readSessionHeader(filePath, compression = compressionForArtifact(filePath), signal,
+  { maxChars = bufferConstants.MAX_STRING_LENGTH } = {}) {
   throwIfAborted(signal);
-  if (compression === 'zstd') {
-    requireBuiltInZstd(filePath);
-    const handle = await fsp.open(filePath, 'r');
-    try {
-      let chunks = [];
-      let totalBytes = 0;
-      let frameBytes = null;
-      while (totalBytes < MAX_FIRST_RECORD_BYTES) {
-        throwIfAborted(signal);
-        const buffer = Buffer.alloc(FIRST_FRAME_READ_CHUNK);
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, totalBytes);
-        throwIfAborted(signal);
-        if (bytesRead === 0) break;
-        const chunk = bytesRead === buffer.length ? buffer : buffer.subarray(0, bytesRead);
-        chunks.push(chunk);
-        totalBytes += bytesRead;
-        const current = Buffer.concat(chunks, totalBytes);
-        const scanned = scanZstdFrames(current, 1);
-        if (scanned.frames.length === 1) {
-          frameBytes = current.subarray(0, scanned.frames[0].end);
-          break;
-        }
-      }
-      if (!frameBytes) {
-        throw storageError('empty or header-less Zstandard session log');
-      }
-      const plaintext = decompressFrame(frameBytes, 0, frameBytes.length);
-      const text = plaintext.toString('utf8');
+  const expectedVersion = parseSessionArtifactName(filePath)?.version;
+  if (!['none', 'zstd'].includes(compression)) {
+    throw storageError(`unsupported DeepSeek compression: ${compression}`);
+  }
+  if (compression === 'zstd') requireBuiltInZstd(filePath);
+  const handle = await fsp.open(filePath, 'r');
+  let input;
+  let decoded;
+  let decoding;
+  try {
+    let text;
+    if (compression === 'zstd') {
+      input = Readable.from(firstFrameChunks(handle, signal));
+      decoded = createZstdDecompress();
+      // Forward source errors without relabeling an uncommitted frame as
+      // decoder corruption; close both ends on cancellation or failure.
+      const { pipeline } = require('node:stream/promises');
+      decoding = pipeline(input, decoded, { signal });
+      decoding.catch(() => {});
+      text = await collectHeaderText(decoded, signal, maxChars);
+      await decoding;
       if (!text.endsWith('\n') || text.indexOf('\n') !== text.length - 1) {
         throw storageError('corrupt Zstandard session log: first frame is not exactly one header line');
       }
-      return parseHeaderText(text);
-    } finally {
-      await handle.close();
+    } else {
+      text = await collectHeaderText(firstLineChunks(handle, signal), signal, maxChars);
     }
+    throwIfAborted(signal);
+    return parseHeaderText(text, expectedVersion);
+  } catch (error) {
+    throwIfAborted(signal);
+    if (['ERR_STRING_TOO_LONG', 'ERR_BUFFER_TOO_LARGE', 'ENOMEM', 'ZSTD_error_memory_allocation'].includes(error?.code)
+        || (error instanceof RangeError && error.message === 'Invalid string length')) {
+      throw headerResourceError(error);
+    }
+    if (error?.code?.startsWith('ZSTD_') || error?.code?.startsWith('Z_')) {
+      throw storageError('corrupt Zstandard session log: first frame failed validation', 'DEEPSEEK_STORAGE_INVALID', error);
+    }
+    throw error;
+  } finally {
+    input?.destroy();
+    decoded?.destroy();
+    if (decoding) await decoding.catch(() => {});
+    await handle.close();
   }
-  if (compression === 'none') {
-    const firstLine = await readFirstLineBytes(filePath, signal);
-    if (firstLine.length === 0) throw storageError('empty or header-less session log');
-    return parseHeaderText(firstLine.toString('utf8'));
-  }
-  throw storageError(`unsupported DeepSeek compression: ${compression}`);
 }
 
 // DeepSeek-owned accepted-snapshot read boundary. Indexing reads the current
@@ -484,6 +590,25 @@ async function readCommittedArtifactPrefix(filePath, compression, signal, accept
       throw indexedSourceStaleError();
     }
     buffer = stable.buffer.subarray(0, acceptedBytes);
+    // A successor can be published without changing a predecessor's bytes or
+    // identity. Revalidate generation selection at every accepted-source read.
+    let siblings;
+    try {
+      siblings = await fsp.readdir(path.dirname(filePath), { withFileTypes: true });
+    } catch (error) {
+      throwIfAborted(signal);
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') throw indexedSourceStaleError();
+      throw error;
+    }
+    throwIfAborted(signal);
+    const candidates = siblings.filter((entry) => entry.isFile())
+      .map((entry) => ({ name: entry.name, artifact: parseSessionArtifactName(entry.name) }))
+      .filter((entry) => entry.artifact);
+    const highestVersion = candidates.reduce((highest, entry) => Math.max(highest, entry.artifact.version), -1);
+    const selected = candidates.filter((entry) => entry.artifact.version === highestVersion);
+    if (selected.length !== 1 || selected[0].name !== path.basename(filePath)) {
+      throw indexedSourceStaleError();
+    }
   }
   const prefix = committedArtifactPrefix(buffer, compression);
   return {
@@ -588,7 +713,8 @@ function decodePackedStorageRecordFacts(value) {
 // Lossless per-member decoder for targeted inspection paths only. Ordinary
 // indexing/materialization must use decodePackedStorageRecordFacts instead so
 // a packed row is never expanded into per-member SessionEvent objects.
-function decodeStorageRecord(value) {
+function decodeStorageRecord(value, formatVersion = 0) {
+  if (formatVersion !== 0) return [decodeSessionEventRecord(value, formatVersion)];
   const packed = decodePackedStorageRecordFacts(value);
   if (!packed) return [value];
   const { members, tool } = packed;
@@ -618,6 +744,164 @@ function decodeStorageRecord(value) {
     });
   }
   return events;
+}
+
+// The v4 codec retains one event per physical row. Decode only the compact
+// source references; keep the physical object untouched for Raw traceability.
+function assertNativeFormat4Syntax(event) {
+  const invalid = (message) => storageError(`malformed format 4 event: ${message}`);
+  const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
+  const assertContent = (content) => {
+    if (Array.isArray(content) && content.some((block) => object(block) && block.type === 'tool-result')) {
+      throw invalid('content contains a retired tool-result wrapper');
+    }
+  };
+  if (['tool/code-dispatch-start', 'tool/code-dispatch'].includes(event.type) && event.ignorable !== true) {
+    throw invalid(`retired event type ${event.type}`);
+  }
+  const data = event.data;
+  if (event.type === 'request/header') {
+    if (!object(data) || !object(data.header) || Object.hasOwn(data.header, 'system')) {
+      throw invalid('request/header requires a native header without retired header.system');
+    }
+  }
+  if (!object(data)) {
+    if (event.type === 'tool/result') throw invalid('tool/result requires message data');
+    return;
+  }
+  // Visit declared message slots only. Tool arguments, metadata and arbitrary
+  // extension payloads may legitimately contain historical-looking JSON.
+  const messages = event.type === 'user/message' ? [data]
+    : ['system/message', 'developer/message', 'assistant/message', 'tool/result'].includes(event.type) ? [data.message]
+      : event.type === 'agent/inbox/spliced' ? data.inserted
+        : event.type === 'session/title-llm-request' ? data.messages : [];
+  if (Array.isArray(messages)) {
+    for (const message of messages) {
+      if (!object(message)) continue;
+      if (message.source?.kind === 'plugin') throw invalid('message uses a retired plugin source wrapper');
+      assertContent(message.content);
+    }
+  }
+  if (event.type === 'team/message/queued') assertContent(data.message?.content);
+  if (event.type === 'compaction/summary') {
+    assertContent(data.summary);
+    assertContent(data.rawOutput);
+  }
+  if (event.type === 'tool/ptc-dispatch') assertContent(data.content);
+  if (['assistant/message', 'assistant/attempt'].includes(event.type) && Array.isArray(data.stream)) {
+    for (const entry of data.stream) {
+      if (entry?.type !== 'chunk') continue;
+      if (entry.chunk?.type === 'block-end') assertContent([entry.chunk.block]);
+      if (entry.chunk?.type === 'block-start' && entry.chunk.blockType === 'tool-result') {
+        throw invalid('assistant stream uses a retired tool-result block');
+      }
+    }
+  }
+  if (event.type === 'tool/result') {
+    const message = data.message;
+    if (!object(message) || message.role !== 'tool'
+        || typeof message.id !== 'string' || !message.id
+        || typeof message.toolCallId !== 'string' || !message.toolCallId
+        || message.source?.kind !== 'tool' || message.source.callId !== message.toolCallId
+        || !Array.isArray(message.content)
+        || (Object.hasOwn(message, 'isError') && typeof message.isError !== 'boolean')
+        || (Object.hasOwn(data, 'error') && message.isError !== true)) {
+      throw invalid('tool/result requires a native tool-role message with matching call identity and error state');
+    }
+  }
+}
+
+function decodeSessionEventRecord(value, formatVersion = 0) {
+  if (formatVersion === 0) return value;
+  if (formatVersion !== 4) {
+    throw storageError(`DeepSeek session format version ${formatVersion} is unsupported`,
+      'DEEPSEEK_FORMAT_VERSION_UNSUPPORTED');
+  }
+  const invalid = (message) => storageError(`malformed format 4 event: ${message}`);
+  const count = (number) => Number.isSafeInteger(number) && number >= 0 && !Object.is(number, -0);
+  const required = ['type', 'seq', 'time', 'data'];
+  const keys = new Set([...required, 'ignorable', 'sourceEventSeqs', 'surfaceOp']);
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || required.some((key) => !Object.hasOwn(value, key))
+      || Object.keys(value).some((key) => !keys.has(key))
+      || typeof value.type !== 'string' || !count(value.seq) || !Number.isSafeInteger(value.time)
+      || (Object.hasOwn(value, 'ignorable') && value.ignorable !== true)) {
+    throw invalid('invalid physical envelope');
+  }
+  if (value.type === 'assistant/chunk') throw invalid('retired assistant/chunk row');
+  if (Object.hasOwn(value, 'surfaceOp') && value.surfaceOp !== 'append') {
+    const op = value.surfaceOp;
+    if (!op || typeof op !== 'object' || Array.isArray(op)
+        || Object.keys(op).length !== 3 || op.op !== 'replace'
+        || !count(op.startSeq) || !count(op.endSeq)
+        || op.startSeq >= value.seq || op.endSeq >= value.seq) {
+      throw invalid('surface replacement requires earlier startSeq/endSeq bounds');
+    }
+  }
+  assertNativeFormat4Syntax(value);
+  if (!Object.hasOwn(value, 'sourceEventSeqs')) return value;
+  if (!Array.isArray(value.sourceEventSeqs)) throw invalid('sourceEventSeqs must be an array');
+  const hasRange = value.sourceEventSeqs.some(Array.isArray);
+  const seen = hasRange ? null : new Set();
+  let cardinality = 0;
+  let previousEnd = -1;
+  for (const entry of value.sourceEventSeqs) {
+    let start;
+    let end;
+    if (!Array.isArray(entry)) {
+      if (!count(entry) || entry >= value.seq) throw invalid('sourceEventSeqs must refer to earlier events');
+      start = end = entry;
+    } else {
+      if (entry.length !== 2 || !entry.every(count)) throw invalid('sourceEventSeqs range must be a [start, end] pair');
+      [start, end] = entry;
+      if (start > end || end >= value.seq || end - start + 1 > value.seq - cardinality) {
+        throw invalid('sourceEventSeqs range exceeds its event seq');
+      }
+    }
+    if (hasRange && start <= previousEnd) throw invalid('sourceEventSeqs ranges must be strictly increasing');
+    if (seen?.has(start)) throw invalid('sourceEventSeqs must contain unique earlier seqs');
+    seen?.add(start);
+    previousEnd = end;
+    cardinality += end - start + 1;
+  }
+  // Keep the physical scalar/range representation. Admission and consumers
+  // must scale with encoded entries, never allocate by range cardinality.
+  return value;
+}
+
+// Exact set equality for already validated references. Scalar-only lists keep
+// their original order (including v0); lists containing ranges are increasing.
+// Cost is O(m + k log m) for m encoded entries and k expected references.
+function sourceEventSeqsMatch(sourceEventSeqs, expected) {
+  if (!Array.isArray(sourceEventSeqs) || !Array.isArray(expected)) return false;
+  let size = 0;
+  let hasRange = false;
+  for (const entry of sourceEventSeqs) {
+    if (Array.isArray(entry)) {
+      size += entry[1] - entry[0] + 1;
+      hasRange = true;
+    } else size += 1;
+  }
+  if (size !== expected.length || new Set(expected).size !== expected.length) return false;
+  if (!hasRange) {
+    const sources = new Set(sourceEventSeqs);
+    return expected.every(seq => sources.has(seq));
+  }
+  return expected.every(seq => {
+    if (!Number.isSafeInteger(seq) || seq < 0 || Object.is(seq, -0)) return false;
+    let low = 0;
+    let high = sourceEventSeqs.length - 1;
+    while (low <= high) {
+      const middle = low + Math.floor((high - low) / 2);
+      const entry = sourceEventSeqs[middle];
+      const start = Array.isArray(entry) ? entry[0] : entry;
+      const end = Array.isArray(entry) ? entry[1] : entry;
+      if (seq < start) high = middle - 1;
+      else if (seq > end) low = middle + 1;
+      else return true;
+    }
+    return false;
+  });
 }
 
 function inferDescriptorPayload(session) {
@@ -695,12 +979,13 @@ function materializationEvidenceForSession(index, session) {
 
 module.exports = {
   DEEPSEEK_FORMAT_VERSION,
+  DEEPSEEK_SUPPORTED_FORMAT_VERSIONS,
   DEEPSEEK_SOURCE_KIND,
   DEEPSEEK_STORAGE_LOCATOR_TYPE,
-  MAX_FIRST_RECORD_BYTES,
   committedArtifactPrefix,
   compressionForArtifact,
   decodePackedStorageRecordFacts,
+  decodeSessionEventRecord,
   decodeStorageRecord,
   dependencySetId,
   fileIdentity,
@@ -713,6 +998,7 @@ module.exports = {
   materializationSnapshotId,
   parseHeaderLine,
   parseHeaderText,
+  parseSessionArtifactName,
   readCommittedArtifactPrefix,
   readPhysicalRecordText,
   readSessionHeader,
@@ -720,6 +1006,7 @@ module.exports = {
   safeIso,
   sameFileIdentity,
   scanZstdFrames,
+  sourceEventSeqsMatch,
   storageError,
   throwIfAborted,
   truncate,

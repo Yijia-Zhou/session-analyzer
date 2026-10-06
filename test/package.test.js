@@ -60,7 +60,7 @@ test('package metadata exposes the session-analyzer CLI', () => {
   const server = fs.readFileSync(path.join(repoRoot, 'server.js'), 'utf8');
 
   assert.equal(pkg.name, 'session-analyzer');
-  assert.equal(pkg.version, '0.2.0');
+  assert.equal(pkg.version, '0.2.1');
   assert.equal(typeof pkg.description, 'string');
   assert.ok(pkg.description.trim().length > 0);
   assert.ok(Array.isArray(pkg.keywords));
@@ -90,7 +90,7 @@ test('package metadata exposes the session-analyzer CLI', () => {
   assert.equal(pkg.scripts.prepublishOnly, 'npm run release:check');
   assert.deepEqual(pkg.dependencies, {
     acorn: '8.15.0',
-    'markdown-it': '14.3.0',
+    'markdown-it': '14.3.2',
   });
   assert.deepEqual(pkg.allowScripts, {
     'esbuild@0.28.1': true,
@@ -149,13 +149,20 @@ test('CI pins npm before every strict dependency installation', () => {
   const isolatedBootstrapDirectory = 'working-directory: ${{ runner.temp }}';
   const disabledSetupNodeCache = 'package-manager-cache: false';
 
-  assert.equal(workflow.split(checkoutAction).length - 1, 3);
-  assert.equal(workflow.split(setupNodeAction).length - 1, 3);
   assert.doesNotMatch(workflow, /uses:\s+actions\/(?:checkout|setup-node)@v\d+/u);
-  assert.equal(workflow.split(bootstrap).length - 1, 3);
-  assert.equal(workflow.split(strictInstall).length - 1, 3);
-  assert.equal(workflow.split(isolatedBootstrapDirectory).length - 1, 3);
-  assert.equal(workflow.split(disabledSetupNodeCache).length - 1, 3);
+  const jobs = [...workflow.replace(/\r\n/gu, '\n').matchAll(/^  ([\w-]+):\n([\s\S]*?)(?=^  [\w-]+:\n|$(?![\s\S]))/gmu)];
+  const installJobs = jobs.filter(([, , body]) => /run: npm ci\b/u.test(body));
+  assert.deepEqual(installJobs.map(([, name]) => name), ['node', 'package', 'browser']);
+  for (const [, name, body] of installJobs) {
+    for (const required of [checkoutAction, setupNodeAction, bootstrap, strictInstall, isolatedBootstrapDirectory, disabledSetupNodeCache]) {
+      assert.equal(body.split(required).length - 1, 1, `${name}: ${required}`);
+    }
+    assert.ok(body.indexOf(setupNodeAction) < body.indexOf(bootstrap), name);
+    assert.ok(body.indexOf(bootstrap) < body.indexOf(strictInstall), name);
+  }
+  const scope = jobs.find(([, name]) => name === 'scope')?.[2];
+  assert.ok(scope, 'scope classification job exists');
+  assert.doesNotMatch(scope, /npm ci|npm run|npx /u, 'scope requires no package installation or lifecycle');
   assert.doesNotMatch(workflow, /^\s+cache:\s*npm\s*$/mu);
 });
 
@@ -184,7 +191,16 @@ test('trusted publishing stages only verified bytes behind a human approval boun
 
   assert.match(verify, /test "\$GITHUB_REF" = 'refs\/heads\/main'/u);
   assert.match(verify, /npm ci --strict-allow-scripts/u);
-  assert.match(verify, /npm run release:check/u);
+  const guard = 'npm publish --dry-run --foreground-scripts --tag=latest --access=public --registry=https://registry.npmjs.org/';
+  assert.equal(verify.split(guard).length - 1, 1, 'one directory lifecycle guard');
+  assert.doesNotMatch(verify, /run: npm run release:check/u, 'prepublishOnly owns the sole release:check invocation');
+  assert.equal(require('../package.json').scripts.prepublishOnly, 'npm run release:check');
+  const releaseSteps = ['npm ci --strict-allow-scripts', guard, 'npm run test:browser', 'npm audit --omit=dev', 'npm audit --registry=', 'name: Record the verified candidate hash'];
+  for (let index = 1; index < releaseSteps.length; index += 1) {
+    assert.ok(verify.indexOf(releaseSteps[index - 1]) >= 0 && verify.indexOf(releaseSteps[index]) > verify.indexOf(releaseSteps[index - 1]), `${releaseSteps[index - 1]} precedes ${releaseSteps[index]}`);
+  }
+  assert.doesNotMatch(verify, /continue-on-error:|if:\s*\$\{\{\s*always\(\)/u);
+  assert.doesNotMatch(stage, /continue-on-error:|if:\s*\$\{\{\s*always\(\)/u);
   assert.match(verify, /npm run test:browser/u);
   assert.match(verify, /npm audit --omit=dev/u);
   assert.match(verify, /npm publish --dry-run --foreground-scripts/u);
@@ -214,7 +230,7 @@ test('packaged third-party notice preserves the Highlight.js license', () => {
 test('source setup docs bootstrap exact npm before strict installation', () => {
   const bootstrap = 'npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/';
   const strictInstall = 'npm ci --strict-allow-scripts --registry=https://registry.npmjs.org/';
-  const developmentGuide = 'https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.0/docs/development.md';
+  const developmentGuide = 'https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/development.md';
   for (const readme of ['README.md', 'README.zh-CN.md']) {
     const content = fs.readFileSync(path.join(repoRoot, readme), 'utf8');
     assert.ok(content.includes(`](${developmentGuide})`));
@@ -234,19 +250,22 @@ test('source setup docs bootstrap exact npm before strict installation', () => {
 
 test('final dist-tag evidence uses a separately proven anonymous userconfig', () => {
   const runbook = fs.readFileSync(path.join(repoRoot, 'docs', 'design-docs', 'npm-release-runbook.md'), 'utf8');
-  const stepStart = runbook.indexOf('### 10. Promote a verified direct `next` publication');
-  const stepEnd = runbook.indexOf('### 11. Create the release tag', stepStart);
-  const step = runbook.slice(stepStart, stepEnd);
+  const step = runbook.split(/^#{1,3} /mu)
+    .find((section) => /^\d+\. Promote a verified direct `next` publication/u.test(section));
   const whoami = 'npm whoami --registry=$finalTagRegistry';
   const distTags = "npm dist-tag ls 'session-analyzer' --registry=$finalTagRegistry";
 
-  assert.ok(stepStart > -1 && stepEnd > stepStart);
-  assert.match(step, /session-analyzer-npm-tags-/u);
-  assert.match(step, /NPM_CONFIG_USERCONFIG/u);
-  assert.match(step, /ENEEDAUTH/u);
-  assert.ok(step.indexOf(whoami) > -1);
-  assert.ok(step.indexOf(distTags) > step.indexOf(whoami));
-  assert.match(step, /Remove-Item 'Env:NPM_CONFIG_USERCONFIG'/u);
+  assert.ok(step, 'runbook should document direct next promotion regardless of section order');
+  const anonymousCheck = [...step.matchAll(/```powershell\r?\n([\s\S]*?)```/gu)]
+    .map((match) => match[1])
+    .find((commands) => commands.includes(whoami));
+  assert.ok(anonymousCheck, 'promotion should include an anonymous final tag verification block');
+  assert.match(anonymousCheck, /session-analyzer-npm-tags-/u);
+  assert.match(anonymousCheck, /NPM_CONFIG_USERCONFIG/u);
+  assert.ok(anonymousCheck.indexOf('ENEEDAUTH') > anonymousCheck.indexOf(whoami));
+  assert.ok(anonymousCheck.indexOf(distTags) > anonymousCheck.indexOf('ENEEDAUTH'));
+  assert.match(anonymousCheck, /finally\s*\{/u);
+  assert.match(anonymousCheck, /Remove-Item 'Env:NPM_CONFIG_USERCONFIG'/u);
 });
 
 test('CLI help documents the npm command, diagnostics, and host privacy option', () => {
@@ -332,6 +351,7 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'src/history-cli.js',
     'src/history-server.js',
     'src/history-service.js',
+    'src/history-search-text.js',
     'src/history-presentation.js', 'src/history-search-groups.js', 'src/history-source-locator.js',
     'src/history-artifacts.js',
     'src/cache-observation.js',
@@ -357,11 +377,15 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'src/codex-presentation-context.js',
     'src/codex-search.js',
     'src/codex-source.js',
+    'src/codex-turn-items.js',
     'src/deepseek-harness.js',
     'src/deepseek-harness-detail.js',
     'src/deepseek-harness-storage.js',
+    'src/deepseek-harness-stream.js',
+    'src/deepseek-shell-result.js',
     'src/codex-tool-lifecycle-contract.js',
     'src/codex.js',
+    'src/codex-legacy-raw-owners.js',
     'src/codex-async-message.js',
     'src/codex-attachments.js',
     'src/codex-external-input.js',
@@ -373,10 +397,15 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'src/runtime-capacity.js',
     'src/runtime-diagnostics.js',
     'src/index-revision-lease.js',
+    'src/legacy-raw-owner-budget.js',
     'src/materialization-observer.js',
     'src/materialized-session-owner.js',
     'src/session-prewarm.js',
     'src/project-query-store.js',
+    'src/project-query-disk.js',
+    'src/plain-value-stream.js',
+    'src/search-text-stream.js',
+    'src/search-json.js',
     'src/session-query.js',
     'src/source-adapters.js',
     'src/source-diagnostics.js',
@@ -399,6 +428,7 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'src/shared/logical-detail-sanitizer.js',
     'src/shared/plan-facet.js',
     'src/shared/project-root.js',
+    'src/shared/query-pagination.js',
     'src/shared/terminal-text.js',
     'src/source-adapter-contract.js',
   ].sort();

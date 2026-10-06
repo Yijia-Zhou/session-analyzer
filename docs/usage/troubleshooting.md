@@ -1,6 +1,6 @@
 # Troubleshooting / 故障排查
 
-This online guide describes the accompanying checkout. Use the matching release documentation for an installed package; the intended npm `0.2.0` and a checkout declaring `0.2.0` must still be matched by exact release source. See [agent startup and verification](agent-quickstart.md) for version identification and bounded internal-API checks. / 本在线指南描述所在 checkout。安装包应使用对应发布版文档；预期 npm `0.2.0` 与声明 `0.2.0` 的 checkout 仍必须通过精确 release source 匹配。版本识别与有界内部 API 核验见[启动与验收指南](agent-quickstart.md)。
+This online guide describes the accompanying checkout. Use the matching release documentation for an installed package; the intended npm `0.2.1` and a checkout declaring `0.2.1` must still be matched by exact release source. See [agent startup and verification](agent-quickstart.md) for version identification and bounded internal-API checks. / 本在线指南描述所在 checkout。安装包应使用对应发布版文档；预期 npm `0.2.1` 与声明 `0.2.1` 的 checkout 仍必须通过精确 release source 匹配。版本识别与有界内部 API 核验见[启动与验收指南](agent-quickstart.md)。
 
 ## No projects, zero sessions, or missing history / 无项目、零会话或历史缺失
 
@@ -24,6 +24,10 @@ For DeepSeek, valid sessions can remain readable while problematic artifacts pro
 | `DEEPSEEK_FORMAT_VERSION_UNSUPPORTED` | Preserve the artifact and check whether a newer Analyzer supports its format; do not rewrite its version header. / 保留工件，检查新版 Analyzer 是否支持其格式，不要改写版本头。 |
 | `DEEPSEEK_STORAGE_INVALID` | Inspect the message and obtain a valid original/export; report corruption without modifying the transcript. / 查看消息并获取有效原件／导出；报告损坏，不修改转录。 |
 | `DEEPSEEK_SOURCE_BUSY` | Let the writer finish or use a consistent copied snapshot, then retry. / 等待写入完成或使用一致的复制快照，再重试。 |
+
+## Codex legacy Raw lookup capacity / Codex 旧式 Raw 定位容量
+
+If Codex reports `LEGACY_RAW_LOOKUP_CAPACITY_EXCEEDED`, indexing succeeded but the old `/api/raw?file=...&line=...` locator is unavailable for that Index. The browser keeps Session lists and ordinary reading available; Raw References with Session and Raw IDs still use the explicit route. The old route returns 409 `LEGACY_RAW_LOOKUP_UNAVAILABLE` with `retryable: false`, so repeating the same request against the same revision will not help. This is a component budget, separate from V8 heap exhaustion; increasing `NODE_OPTIONS` does not change it. A later reindex may restore the capability if the accepted history changes. / 如果 Codex 报告 `LEGACY_RAW_LOOKUP_CAPACITY_EXCEEDED`，表示索引已成功，但该 Index 的旧式 `/api/raw?file=...&line=...` 定位不可用。浏览器仍可显示会话列表并正常阅读；带会话和 Raw ID 的原始引用继续使用显式路由。旧路由返回 409 `LEGACY_RAW_LOOKUP_UNAVAILABLE` 和 `retryable: false`，对同一 revision 重复请求无益。这是组件预算，与 V8 heap 耗尽分开；增大 `NODE_OPTIONS` 不会改变它。已接受历史变化后重新索引，能力可能恢复。
 
 ## DeepSeek compressed history / DeepSeek 压缩历史
 

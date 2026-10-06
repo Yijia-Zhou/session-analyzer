@@ -2,7 +2,7 @@
 
 const { codeModeOutputText } = require('./codex-code-mode');
 const { codeModeOperationExecSource } = require('./codex-code-mode-presentation');
-const { rawRef } = require('./codex-source');
+const { rawRef, codexSearchValue } = require('./codex-source');
 
 const PRESENTATION_CLAIMED_RAW_POLICY = 'operation_phase_refs_plus_matching_outer_exec_outputs';
 
@@ -69,9 +69,14 @@ function canonicalPhaseRefs(operation, rawById) {
 }
 
 function sourceEventTypeForRef(ref, rawById) {
+  const raw = rawById.get(String(ref?.rawId || ''));
+  // Typed persisted items retain item_completed in their public Raw refs.
+  // Association consumes the already accepted semantic view, while those
+  // references continue identifying the original source carrier.
+  if (raw?.typedItemType && raw.originalRaw) return String(raw.payloadType || '');
   const explicit = String(ref?.sourceEventType || '');
   if (explicit) return explicit;
-  return String(rawById.get(String(ref?.rawId || ''))?.payloadType || '');
+  return String(raw?.payloadType || '');
 }
 
 function eventIsLifecycleBacked(event, lifecycleTypes, rawById) {
@@ -127,7 +132,18 @@ function operationSearchableText(operation, rawById) {
   const observedOutputs = (operation?.phases || [])
     .map((phase) => rawById.get(String(phase?.outputRef?.rawId || '')))
     .filter(Boolean)
-    .map(codeModeOutputText);
+    .map((raw) => {
+      const payload = parsedPayload(raw);
+      if (!Object.hasOwn(payload, 'output')) {
+        return codeModeOutputText({ ...raw, output: codexSearchValue(raw.output) });
+      }
+      const safe = codexSearchValue(payload.output);
+      const output = payload.output && typeof payload.output === 'object'
+        ? JSON.parse(safe || 'null') : safe;
+      // Search-only projection: observed completion/cell identity and phase
+      // ownership were derived from the untouched accepted source earlier.
+      return codeModeOutputText({ ...raw, parsed: { payload: { output } } });
+    });
   return uniqueSearchableText([outerJavaScript, ...observedOutputs]);
 }
 

@@ -11,6 +11,7 @@ const {
   CANONICAL_SCHEMA_VERSION,
   CLAUDE_SOURCE_KIND,
   blockText,
+  claudeBashEditDiff,
   claudeRawRef,
   rawEventsForLogicalEvent,
   stringifyValue,
@@ -309,12 +310,18 @@ function lifecycleDetailSections(event, locale) {
       { duration: lifecycle.timedOutAfterMs, taskId: lifecycle.taskId },
     )
     : claudeDetailText(
-      isWorkflow ? 'asyncWorkflowLifecycleLaunch' : 'asyncAgentLifecycleLaunch',
+      isWorkflow ? 'asyncWorkflowLifecycleLaunch'
+        : lifecycle.kind === 'background_mcp' ? 'mcpLifecycleLaunch'
+        : lifecycle.kind === 'monitor' ? 'monitorLifecycleLaunch'
+        : event.toolName === 'SendMessage' ? 'asyncAgentLifecycleResume' : 'asyncAgentLifecycleLaunch',
       locale,
       { taskId: lifecycle.taskId },
     );
   const timelineSections = [];
   const inspectorSections = [noticeSection('Lifecycle', launchText, terminal ? 'info' : 'warning', 'context')];
+  if (terminal) inspectorSections.unshift(noticeSection('Completion',
+    [terminal.summary || terminal.status, terminal.exitCode != null ? (locale === 'zh-CN' ? `进程退出码 ${terminal.exitCode}` : `Process exit code ${terminal.exitCode}`) : ''].filter(Boolean).join(' · '),
+    ['failed', 'error'].includes(terminal.status) ? 'error' : 'info', 'content'));
   for (const notification of notifications) {
     timelineSections.push(noticeSection(
       'Completion',
@@ -397,6 +404,34 @@ function toolDetailSections(raws, event, locale) {
     timelineSections.push(terminalSection('stdout', structuredResult?.stdout || (event.lifecycle ? '' : resultText), 'stdout', 'result'));
     timelineSections.push(terminalSection('stderr', structuredResult?.stderr, 'stderr', 'result'));
     inspectorSections.push(jsonSection('Arguments', request, 'request'));
+    if (call?.name === 'Bash' && structuredResult?.bashEditDiff != null) {
+      const diff = event.status !== 'declined' ? claudeBashEditDiff(structuredResult) : null;
+      if (diff) {
+        const shown = diff.textOmitted ? 0 : structuredResult.bashEditDiff.files.length;
+        timelineSections.push(noticeSection('Patch', locale === 'zh-CN'
+          ? `记录 ${diff.touchedFiles.length} 个文件 · 展示 ${shown} 份 diff。筛选依据：已记录路径。${diff.touchedFiles.length > 256 ? `仅列前 256 条／共 ${diff.touchedFiles.length} 条路径，完整证据见 Raw。` : ''}`
+          : `Recorded files: ${diff.touchedFiles.length} · Displayed diffs: ${shown}. Filter basis: recorded paths.${diff.touchedFiles.length > 256 ? ` Showing the first 256 of ${diff.touchedFiles.length} paths; see Raw for complete evidence.` : ''}`, 'info', 'result'));
+        timelineSections.push({ type: 'kv', purpose: 'result', title: locale === 'zh-CN' ? '已记录路径' : 'Recorded paths',
+          entries: diff.touchedFiles.slice(0, 256).map((file) => ({ key: file, value: structuredResult.bashEditDiff.files.some((item) => item.filePath === file)
+            ? (locale === 'zh-CN' ? (diff.textOmitted ? 'Diff 超出展示上限' : 'Diff 已展示') : (diff.textOmitted ? 'Diff exceeds display limits' : 'Diff displayed'))
+            : (locale === 'zh-CN' ? '未提供 diff' : 'Diff not supplied'), fact: 'touchedFile' })) });
+      }
+      if (diff?.text) {
+        timelineSections.push({
+          purpose: 'result', type: 'diff', title: 'Patch',
+          text: sanitizeClaudeDetailText(diff.text),
+        });
+      }
+      if (diff?.textOmitted) {
+        timelineSections.push(noticeSection('Patch', locale === 'zh-CN'
+          ? 'Diff 正文超过展示上限，已省略；修改路径已保留，完整内容见原始引用。'
+          : 'Diff text omitted because it exceeds display limits; changed paths are retained. See raw refs for the full content.',
+        'info', 'result'));
+      }
+      inspectorSections.push(jsonSection('Structured result', {
+        bashEditDiff: structuredResult.bashEditDiff,
+      }, 'result'));
+    }
   } else if (event.kind === 'patch') {
     const file = request.file_path || request.filePath || request.path || request.notebook_path || '';
     const content = request.content || request.new_string || request.newString || '';

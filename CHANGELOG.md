@@ -4,15 +4,57 @@
 
 ### English
 
+- Skip browser CI for narrowly classified documentation-only pull requests while retaining Node and package checks; execute publish-workflow release checks once through the guarded directory dry-run.
+
+### 中文
+
+- 严格分类的纯文档 PR 可跳过 browser CI，保留 Node 与 package 检查；发布 workflow 通过目录 guarded dry-run 执行一次发布检查，消除重复运行。
+
+## 0.2.1 - 2026-10-05
+
+### English
+
+- Upgrade the pinned Markdown renderer to `markdown-it` 14.3.2, including the security fix for excessive CPU use when linkifying repeated emails or unregistered URL schemes (GHSA-253c-mchw-3w2r).
+
+- Interpret native DeepSeek bash/pwsh foreground outcomes for direct and Code Mode calls, including nonzero exits, signals, timeouts and stops. Classify unambiguous durable Codex `exec_command` requests as commands and read their native exit, duration and output receipts. Running results remain incomplete, missing exits remain unknown, and Raw stays exact.
+
+- Preserve Codex skipped-artifact diagnostics in committed indexes and startup reports, including reused indexes. Search complete admitted configuration facts independently of preview truncation.
+
 - Read Codex `.jsonl.zst` rollouts with sibling deduplication, stable Raw line references, private decoded snapshots and isolated compression diagnostics.
 
 - Show valid named Codex external inputs independently of tool executions, preserve asynchronous question/option semantics, and display ordered file-image references with explicit offline preview placeholders. Keep unknown canonical items and execution metadata in their documented Protocol/Raw boundaries.
 
+- Add recorded file activity and cross-session reading navigation, including related sessions, reading return, patch-file directories, Code Mode ownership and Raw-to-Logical links. Exact file activity preserves POSIX literal backslashes while accepting Windows separator variants.
+- Show background terminal poll/input requests with links to their confirmed origin and previous/next requests. Long continuation directories remain bounded and expose further records through navigation.
+- Keep reading controls visible, preserve the return position when leaving a project, retain Trajectory overview keyboard focus after detail loading, and contain long command segments within their event cards.
+- Improve patch reading with complete parent paths, emphasized filenames and compact headers; show exact mapped collaboration session names and distinguish selection, hover and keyboard focus.
+- Read supported Codex realtime history, configuration evidence and 0.155–0.160 typed/Paginated items. Commands, file changes, messages and tool results retain their recorded outcomes and Raw references without double-counting proven mirrors or restored history; missing exit codes remain unknown.
+- Support DeepSeek Harness native format 4, including plain/Zstd source references, tool results, approval ordering and explicit terminal errors, while keeping uncommitted attempts and inherited fork evidence distinct.
+- Update Claude Code compatibility for recorded Bash diffs and changed-file filters, SendMessage agent resumes, and MCP/Monitor background results. Display truncation no longer discards validated file or completion evidence.
+- Search complete admitted text beyond display summaries and across storage blocks. Large project query stores can spill to private temporary files; failed or cancelled index replacements preserve the current project. Remove former query-store size/row limits and preserve pagination beyond 1,000,000 events without promising unlimited session materialization capacity.
+- Keep large Codex histories readable when optional legacy Raw file/line lookup exceeds its capacity; exact recorded Raw ranges remain available. Batch transcript fingerprint hashing while preserving byte-level identity checks.
+
 ### 中文
+
+- 将 Markdown 渲染器精确升级至 `markdown-it` 14.3.2，包含自动链接重复邮件地址或未注册 URL scheme 时 CPU 消耗过高的安全修复（GHSA-253c-mchw-3w2r）。
+
+- 解释 DeepSeek 原生 bash／pwsh 直接调用和 Code Mode 调用的前台结果，包括非零退出、信号、超时与停止。将归属明确的 Codex 持久化 exec_command 请求分类为命令，读取原生回执中的退出码、耗时与输出。运行中结果保持未完成，缺失退出码保持未知，Raw 保持精确原文。
+
+- 在已提交索引与启动报告中保留 Codex 跳过工件的诊断，包括复用索引的情况。配置搜索使用完整已接纳事实，不再受预览截断影响。
 
 - 支持读取 Codex .jsonl.zst rollout，包括 sibling 去重、稳定 Raw 行引用、私有解压快照及隔离的压缩读取诊断。
 
 - 独立展示合法具名 Codex 外部输入，保留异步问题／选项语义，并为有序的文件图片引用显示明确离线预览占位。未知 canonical item 与执行 metadata 继续遵循已说明的 Protocol／Raw 边界。
+
+- 新增已记录文件活动与跨会话阅读导航，包括相关会话、阅读返回、补丁文件目录、Code Mode 归属及 Raw 到逻辑事件的链接。精确文件活动保留 POSIX 字面反斜杠，同时兼容 Windows 分隔符写法。
+- 展示后台终端轮询／输入请求，并链接到已确认起点及前后请求。较长的续接目录保持有界，可通过导航访问后续记录。
+- 保持阅读控件可见，保留离开项目时的返回位置，在详情加载后保留 Trajectory 概览键盘焦点，并将较长命令片段限制在事件卡片内。
+- 改进补丁阅读，保留完整父路径、突出文件名并精简标题；展示精确映射的协作会话名，并区分选中、悬停与键盘焦点。
+- 读取受支持的 Codex realtime 历史、配置依据及 0.155–0.160 typed／Paginated 项。命令、文件修改、消息与工具结果保留已记录结果及原始引用，不重复统计已证明的镜像或恢复历史；缺失退出码保持未知。
+- 支持 DeepSeek Harness 原生 format 4，包括普通／Zstd 来源引用、工具结果、审批顺序及明确终止错误，同时区分未提交 attempt 与继承的 fork 依据。
+- 更新 Claude Code 兼容性，支持已记录 Bash diff 与修改文件筛选、SendMessage agent 续接及 MCP／Monitor 后台结果。展示截断不再丢弃已验证的文件或完成依据。
+- 搜索超出展示摘要、跨存储块的完整已接纳文本。大型项目查询存储可溢写至私有临时文件；索引替换失败或取消时保留当前项目。移除原查询存储大小／行数上限，并保留超过 1,000,000 个事件的位置分页，不承诺单会话物化具有无限容量。
+- 可选的旧式 Raw 文件／行号查找超过容量时，大型 Codex 历史仍可阅读，精确已记录 Raw 区间仍可访问。批量计算转录指纹 hash，同时保留字节级身份校验。
 
 ## 0.2.0 - 2026-09-09
 

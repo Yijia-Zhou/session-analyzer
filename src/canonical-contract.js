@@ -14,6 +14,14 @@ const {
   isPublicComparisonState,
   reuseBasisPoints,
 } = require('./cache-observation');
+const { PROFILE: LEGACY_RAW_V2_PROFILE } = require('./legacy-raw-owner-budget');
+const {
+  ENCODING: CODEX_LEGACY_RAW_V2_ENCODING,
+  exactPayloadByteCount,
+  exactPayloadByteCountForCommit,
+} = require('./codex-legacy-raw-owners');
+const { plainValueByteLength } = require('./plain-value-stream');
+const LEGACY_RAW_V2_DEFER_BYTE_COUNT = Symbol('legacyRawV2DeferByteCount');
 
 // Small adapter -> shared-runtime contract. This is deliberately structural:
 // source adapters keep ownership of source-specific interpretation, locators,
@@ -304,6 +312,7 @@ function validateBoundedPlainValue(value, owner, limits = {}) {
     entries: 0,
     seen: new Set(),
     maxDepth: limits.maxDepth ?? 8,
+    scalable: limits.scalable === true,
     maxEntries: limits.maxEntries ?? 16_384,
     maxStringBytes: limits.maxStringBytes ?? 64 * 1024,
     allowUndefined: limits.allowUndefined === true,
@@ -315,7 +324,7 @@ function validateBoundedPlainValue(value, owner, limits = {}) {
     } else if (current === null || typeof current === 'boolean') {
       return;
     } else if (typeof current === 'string') {
-      if (Buffer.byteLength(current, 'utf8') > state.maxStringBytes) {
+      if (!state.scalable && Buffer.byteLength(current, 'utf8') > state.maxStringBytes) {
         throw contractError(owner, path, 'exceeds maximum string bytes');
       }
       state.entries += 1;
@@ -326,7 +335,6 @@ function validateBoundedPlainValue(value, owner, limits = {}) {
       if (state.seen.has(current)) throw contractError(owner, path, 'must be acyclic');
       state.seen.add(current);
       const keys = Reflect.ownKeys(current);
-      const indexedDescriptors = new Map();
       for (const key of keys) {
         if (typeof key === 'symbol') throw contractError(owner, path, 'must not contain symbol properties');
         if (key === 'length') continue;
@@ -337,10 +345,9 @@ function validateBoundedPlainValue(value, owner, limits = {}) {
         if (!Object.hasOwn(descriptor, 'value') || !descriptor.enumerable) {
           throw contractError(owner, `${path}[${key}]`, 'must be an enumerable data property');
         }
-        indexedDescriptors.set(Number(key), descriptor);
       }
       for (let index = 0; index < current.length; index += 1) {
-        const descriptor = indexedDescriptors.get(index);
+        const descriptor = Object.getOwnPropertyDescriptor(current, String(index));
         if (!descriptor) throw contractError(owner, `${path}[${index}]`, 'must not be sparse');
         visit(descriptor.value, depth + 1, `${path}[${index}]`);
       }
@@ -351,7 +358,7 @@ function validateBoundedPlainValue(value, owner, limits = {}) {
       if (state.seen.has(current)) throw contractError(owner, path, 'must be acyclic');
       state.seen.add(current);
       for (const [key, nested] of Object.entries(current)) {
-        if (Buffer.byteLength(key, 'utf8') > state.maxStringBytes) {
+        if (!state.scalable && Buffer.byteLength(key, 'utf8') > state.maxStringBytes) {
           throw contractError(owner, `${path}.${key}`, 'has an overlong key');
         }
         visit(nested, depth + 1, `${path}.${key}`);
@@ -361,7 +368,7 @@ function validateBoundedPlainValue(value, owner, limits = {}) {
     } else {
       throw contractError(owner, path, 'must be a JSON-compatible plain value');
     }
-    if (state.entries > state.maxEntries) throw contractError(owner, path, 'exceeds maximum entries');
+    if (!state.scalable && state.entries > state.maxEntries) throw contractError(owner, path, 'exceeds maximum entries');
   };
   visit(value, 0, '<value>');
   return value;
@@ -444,16 +451,12 @@ function validateCanonicalIndexedSessionShape(
   requireNonNegativeSafeInteger(session.bytes, owner, 'bytes');
   requireNonNegativeSafeInteger(session.lineCount, owner, 'lineCount');
   const cwdSet = requireArray(session.cwdSet, owner, 'cwdSet');
-  if (cwdSet.length > 16_384) throw contractError(owner, 'cwdSet', 'exceeds maximum entries');
   const cwdSeen = new Set();
-  let cwdBytes = 0;
   for (const cwd of cwdSet) {
     requireString(cwd, owner, 'cwdSet entry');
-    cwdBytes += Buffer.byteLength(cwd, 'utf8');
     if (cwdSeen.has(cwd)) throw contractError(owner, 'cwdSet', 'must be deduplicated');
     cwdSeen.add(cwd);
   }
-  if (cwdBytes > 4 * 1024 * 1024) throw contractError(owner, 'cwdSet', 'exceeds maximum bytes');
 
   requirePlainObject(session.counts, `${owner}.counts`);
   requireExactOwnKeys(session.counts, INDEXED_SESSION_COUNT_FIELDS, `${owner}.counts`);
@@ -517,10 +520,10 @@ function validateCanonicalIndexedSessionShape(
     'materializationDescriptor.sourceSnapshotId',
     { nonEmpty: true },
   );
-  validateBoundedPlainValue(session.materializationDescriptor.payload, `${owner}.materializationDescriptor.payload`);
-  if (Buffer.byteLength(JSON.stringify(session.materializationDescriptor), 'utf8') > 512 * 1024) {
-    throw contractError(owner, 'materializationDescriptor', 'exceeds maximum accounted bytes');
-  }
+  // Source adapters retain exact payload schemas and snapshot identity.
+  // Encoded size is not evidence that a structurally valid descriptor is corrupt.
+  validateBoundedPlainValue(session.materializationDescriptor.payload,
+    `${owner}.materializationDescriptor.payload`, { scalable: true });
   requireString(session.queryShardId, owner, 'queryShardId', { nonEmpty: true });
   if (session.queryShardId !== session.id) throw contractError(owner, 'queryShardId', 'must equal id');
   requireString(session.queryProjectionDigest, owner, 'queryProjectionDigest', { nonEmpty: true });
@@ -574,9 +577,6 @@ function validateCanonicalDependencySet(dependencySet, expectedSourceKind, expec
     `materialization dependency set ${dependencySet.id}`,
     'entries',
   );
-  if (entries.length > 65_536) {
-    throw contractError('materialization dependency set', 'entries', 'exceeds maximum entries');
-  }
   const existenceValues = new Set(['present', 'absent']);
   const kindValues = new Set(['file', 'directory']);
   const policyValues = new Set(['accepted_prefix', 'exact', 'copied_value', 'directory_snapshot']);
@@ -609,7 +609,7 @@ function validateCanonicalDependencySet(dependencySet, expectedSourceKind, expec
     directoryEntries.forEach((value) => requireString(value, owner, 'directoryEntries entry'));
     if (entry.evidence !== null) {
       validateBoundedPlainValue(entry.evidence, `${owner}.evidence`, {
-        maxEntries: 65_536,
+        scalable: true,
       });
     }
     if (entry.existence === 'absent'
@@ -620,15 +620,80 @@ function validateCanonicalDependencySet(dependencySet, expectedSourceKind, expec
       throw contractError(owner, '<absence>', 'must use zero/empty accepted values');
     }
   });
-  const accountedBytes = Buffer.byteLength(JSON.stringify(dependencySet), 'utf8');
-  if (accountedBytes > 4 * 1024 * 1024) {
-    throw contractError('materialization dependency set', '<value>', 'exceeds maximum accounted bytes');
-  }
-  return accountedBytes;
+  return plainValueByteLength(dependencySet);
 }
 
-function validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, expectedSourceKind) {
+function validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, expectedSourceKind, options = {}) {
   requirePlainObject(legacyRawOwners, 'legacy Raw owner index');
+  if (legacyRawOwners.schemaVersion === 2) {
+    const policy = options.policy || LEGACY_RAW_V2_PROFILE;
+    const owner = 'legacy Raw owner index';
+    const sourceKind = requireCanonicalSourceKind(legacyRawOwners.sourceKind, owner);
+    if (sourceKind !== 'codex' || (expectedSourceKind && sourceKind !== expectedSourceKind)) {
+      throw ownershipMismatch(owner, expectedSourceKind || 'codex', sourceKind);
+    }
+    if (legacyRawOwners.budgetProfile !== policy.name) {
+      throw contractError(owner, 'budgetProfile', 'does not match the trusted policy');
+    }
+    if (legacyRawOwners.status === 'unavailable') {
+      requireExactOwnKeys(legacyRawOwners,
+        ['schemaVersion', 'sourceKind', 'status', 'reason', 'budgetProfile', 'capacity'], owner);
+      if (legacyRawOwners.reason !== 'capacity_exceeded') {
+        throw contractError(owner, 'reason', 'must be capacity_exceeded');
+      }
+      requirePlainObject(legacyRawOwners.capacity, `${owner}.capacity`);
+      requireExactOwnKeys(legacyRawOwners.capacity,
+        ['limitName', 'limit', 'observedLowerBound', 'phase'], `${owner}.capacity`);
+      const limits = {
+        payload_bytes: policy.payloadBytes,
+        build_work_units: policy.buildWorkUnits,
+        build_accounted_bytes: policy.buildAccountedBytes,
+      };
+      const { limitName, limit, observedLowerBound, phase } = legacyRawOwners.capacity;
+      // Reject non-primitive values before object-key lookup or JSON serialization:
+      // coercion and toJSON on an invalid receipt must never execute.
+      if (typeof limitName !== 'string' || typeof limit !== 'number'
+          || typeof observedLowerBound !== 'number' || typeof phase !== 'string'
+          || !Object.hasOwn(limits, limitName) || limit !== limits[limitName]
+          || !Number.isSafeInteger(limit) || !Number.isSafeInteger(observedLowerBound)
+          || observedLowerBound <= limit || !['building', 'finalizing'].includes(phase)
+          || (limitName === 'payload_bytes' && phase !== 'finalizing')) {
+        throw contractError(owner, 'capacity', 'does not match the trusted capacity policy');
+      }
+      if (Buffer.byteLength(JSON.stringify(legacyRawOwners), 'utf8') > policy.unavailableBytes) {
+        throw contractError(owner, '<value>', 'exceeds unavailable envelope budget');
+      }
+      return legacyRawOwners;
+    }
+    if (legacyRawOwners.status !== 'available') {
+      throw contractError(owner, 'status', 'must be available or unavailable');
+    }
+    requireExactOwnKeys(legacyRawOwners, [
+      'schemaVersion', 'sourceKind', 'status', 'encoding', 'budgetProfile', 'entryCount',
+      'ambiguousLineCount', 'rangeCount', 'accountedBytes', 'payload',
+    ], owner);
+    if (legacyRawOwners.encoding !== CODEX_LEGACY_RAW_V2_ENCODING) {
+      throw contractError(owner, 'encoding', 'is invalid');
+    }
+    for (const key of ['entryCount', 'ambiguousLineCount', 'rangeCount', 'accountedBytes']) {
+      requireNonNegativeSafeInteger(legacyRawOwners[key], owner, key);
+    }
+    if (legacyRawOwners.accountedBytes > policy.payloadBytes) {
+      throw contractError(owner, 'accountedBytes', 'exceeds maximum payload bytes');
+    }
+    if (legacyRawOwners.rangeCount > Math.floor(legacyRawOwners.accountedBytes / 7)) {
+      throw contractError(owner, 'rangeCount', 'cannot fit within declared payload bytes');
+    }
+    if (options.deferByteCount !== LEGACY_RAW_V2_DEFER_BYTE_COUNT) {
+      const actualBytes = exactPayloadByteCount(legacyRawOwners.payload, policy,
+        Math.min(legacyRawOwners.accountedBytes, policy.buildWorkUnits),
+        legacyRawOwners.accountedBytes);
+      if (legacyRawOwners.accountedBytes !== actualBytes) {
+        throw contractError(owner, 'accountedBytes', `must equal the payload byte count ${actualBytes}`);
+      }
+    }
+    return legacyRawOwners;
+  }
   requireExactOwnKeys(
     legacyRawOwners,
     ['schemaVersion', 'sourceKind', 'entryCount', 'accountedBytes', 'payload'],
@@ -657,7 +722,10 @@ function validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, expectedSourceKin
     throw contractError('legacy Raw owner index', 'accountedBytes', 'exceeds maximum bytes');
   }
   validateBoundedPlainValue(legacyRawOwners.payload, 'legacy Raw owner index.payload', {
-    maxEntries: 1_000_000,
+    // Every counted structural entry needs at least one serialized JSON byte.
+    // Tie this safety budget to the bounded payload size so file and Session
+    // dictionary overhead cannot reject an otherwise valid owner index.
+    maxEntries: legacyRawOwners.accountedBytes,
   });
   const actualAccountedBytes = Buffer.byteLength(JSON.stringify(legacyRawOwners.payload), 'utf8');
   if (legacyRawOwners.accountedBytes !== actualAccountedBytes) {
@@ -666,6 +734,23 @@ function validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, expectedSourceKin
       'accountedBytes',
       `must equal the payload byte count ${actualAccountedBytes}`,
     );
+  }
+  return legacyRawOwners;
+}
+
+async function validateCanonicalLegacyRawOwnerIndexForCommit(legacyRawOwners, expectedSourceKind, options = {}) {
+  const policy = options.policy || LEGACY_RAW_V2_PROFILE;
+  validateCanonicalLegacyRawOwnerIndex(legacyRawOwners, expectedSourceKind,
+    { policy, deferByteCount: LEGACY_RAW_V2_DEFER_BYTE_COUNT });
+  if (legacyRawOwners.schemaVersion === 2 && legacyRawOwners.status === 'available') {
+    const actualBytes = await exactPayloadByteCountForCommit(legacyRawOwners.payload,
+      { policy, signal: options.signal, onChunk: options.onChunk,
+        maxElements: Math.min(legacyRawOwners.accountedBytes, policy.buildWorkUnits),
+        maxBytes: legacyRawOwners.accountedBytes });
+    if (legacyRawOwners.accountedBytes !== actualBytes) {
+      throw contractError('legacy Raw owner index', 'accountedBytes',
+        `must equal the payload byte count ${actualBytes}`);
+    }
   }
   return legacyRawOwners;
 }
@@ -953,8 +1038,7 @@ function validateMaterializedAnalysis(analysis) {
   );
   validateBoundedPlainValue(analysis, 'materialized session.analysis', {
     maxDepth: 32,
-    maxEntries: 1_000_000,
-    maxStringBytes: 16 * 1024 * 1024,
+    scalable: true,
     allowUndefined: true,
   });
 }
@@ -1387,6 +1471,7 @@ module.exports = {
   validateCanonicalDependencySet,
   validateCanonicalIndexedSessionShape,
   validateCanonicalLegacyRawOwnerIndex,
+  validateCanonicalLegacyRawOwnerIndexForCommit,
   validateCanonicalMaterializedSessionShape,
   validateCanonicalSessionsProperty,
   validateCanonicalLogicalEventShape,

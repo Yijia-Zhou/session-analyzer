@@ -36,6 +36,7 @@ const {
   timelineSearchBatchSnapshot,
 } = timelineSearchBatchApi;
 const { sameProjectRoot } = require('../shared/project-root');
+const { queryPagination } = require('../shared/query-pagination');
 
 const requestOwners = {
   timeline: transitionSafety.createRequestOwner(),
@@ -150,6 +151,9 @@ const state = {
   pendingSourceAction: null,
   pendingSourceTarget: '',
   sourceDiagnostics: null,
+  legacyRawLookup: null,
+  legacyRawNoticeKey: '',
+  legacyRawNoticeDismissedKey: '',
   failedProjectJob: null,
   sourceSwitchBusy: false,
   homeEditorDirty: false,
@@ -345,6 +349,7 @@ const el = {
   projectSourceAction: document.getElementById('projectSourceAction'),
   projectSourceChoices: document.getElementById('projectSourceChoices'),
   sourceDiagnostics: document.getElementById('sourceDiagnostics'),
+  legacyRawNotice: document.getElementById('legacyRawNotice'),
   projectFailure: document.getElementById('projectFailure'),
   projectSourceCancel: document.getElementById('projectSourceCancel'),
   projectSourceConfirm: document.getElementById('projectSourceConfirm'),
@@ -686,10 +691,20 @@ function abortableDelay(ms, signal) {
 function api(path, options = {}) {
   const init = { ...options };
   let requestPath = path;
+  let paginationRequest = null;
   const method = String(init.method || 'GET').toUpperCase();
   if (method === 'GET') {
     const url = new URL(path, window.location.origin);
     url.searchParams.set('locale', state.locale);
+    if (/^\/api\/sessions\/[^/]+\/(timeline|file-activity)$/.test(url.pathname)) {
+      paginationRequest = {
+        ...queryPagination({ offset: url.searchParams.get('offset'), limit: url.searchParams.get('limit') },
+          url.pathname.endsWith('/file-activity') ? 50 : 150,
+          url.pathname.endsWith('/file-activity') ? 100 : 500),
+        indexRevision: state.indexRevision,
+      };
+      url.searchParams.set('indexRevision', paginationRequest.indexRevision);
+    }
     requestPath = `${url.pathname}${url.search}${url.hash}`;
   }
   if (options.body && typeof options.body !== 'string') {
@@ -723,6 +738,14 @@ function api(path, options = {}) {
       error.status = res.status;
       error.code = body?.code;
       error.details = body?.details;
+      throw error;
+    }
+    if (paginationRequest && (body.indexRevision !== paginationRequest.indexRevision
+        || body.offset !== paginationRequest.offset || body.limit !== paginationRequest.limit)) {
+      const error = new Error('Timeline or file activity page changed; reload and retry');
+      error.status = 409;
+      error.code = body.indexRevision !== paginationRequest.indexRevision
+        ? 'INDEX_REVISION_RETIRED' : 'INVALID_PAGINATION_RESPONSE';
       throw error;
     }
     return body;
@@ -892,7 +915,17 @@ function renderSourceDiagnostics() {
   const samples = (diagnostics.samples || []).slice(0, 20).map((sample) => (
     `<li><code>${escapeHtml(sample.path || '')}</code><p>${escapeHtml(sample.message || sample.code || '')}</p></li>`
   )).join('');
-  el.sourceDiagnostics.innerHTML = `<strong>${escapeHtml(t('sourceDiagnosticsTitle', { count: diagnostics.totalCount }))}</strong><p>${escapeHtml(t('sourceDiagnosticsPartial'))}</p><ul>${counts}</ul><details><summary>${escapeHtml(t('sourceDiagnosticsDetails'))}</summary><ul>${samples}</ul>${diagnostics.truncatedCount ? `<p>${escapeHtml(t('sourceDiagnosticsTruncated', { count: diagnostics.truncatedCount }))}</p>` : ''}</details>`;
+  el.sourceDiagnostics.innerHTML = `<details><summary><strong>${escapeHtml(t('sourceDiagnosticsTitle', { count: diagnostics.totalCount }))}</strong> · ${escapeHtml(t('sourceDiagnosticsCompact'))}</summary><p>${escapeHtml(t('sourceDiagnosticsPartial'))}</p><ul>${counts}</ul><h4>${escapeHtml(t('sourceDiagnosticsDetails'))}</h4><ul>${samples}</ul>${diagnostics.truncatedCount ? `<p>${escapeHtml(t('sourceDiagnosticsTruncated', { count: diagnostics.truncatedCount }))}</p>` : ''}</details>`;
+}
+
+function renderLegacyRawNotice() {
+  if (!el.legacyRawNotice) return;
+  const visible = state.legacyRawLookup?.status === 'unavailable'
+    && state.legacyRawNoticeDismissedKey !== state.legacyRawNoticeKey;
+  el.legacyRawNotice.hidden = !visible;
+  el.legacyRawNotice.innerHTML = visible
+    ? `<p>${escapeHtml(t('legacyRawLookupUnavailable'))}</p><button type="button" class="smallBtn" data-dismiss-legacy-raw>${escapeHtml(t('dismiss'))}</button>`
+    : '';
 }
 
 function renderProjectFailure() {
@@ -2418,11 +2451,23 @@ function searchOperationIsCurrent(searchKey, invocation) {
     && (!invocation || timelineSearchBatchInvocationIsCurrent(invocation));
 }
 
+async function settleSearchTargetDetails(event, searchKey, invocation) {
+  if (displayState(event) === 'expanded') await loadEventDetail(event);
+  if (!searchOperationIsCurrent(searchKey, invocation)) return false;
+  // The target is not the only owner of its position: a visible patch above
+  // it can still be loading. Settle already-requested/visible detail work,
+  // without expanding or fetching the entire preceding transcript.
+  loadVisibleExpandedDetails();
+  await Promise.all(Object.values(state.detailPending));
+  return searchOperationIsCurrent(searchKey, invocation);
+}
+
 async function materializeSearchEvent(event, direction, options = {}) {
   if (!searchOperationIsCurrent(options.searchKey, options.invocation)) return false;
   await ensureEventLoaded(event.id, { allowSearchTargetPreload: false });
   if (!searchOperationIsCurrent(options.searchKey, options.invocation)) return false;
   const loaded = canonicalTimelineEvent(event.id) || event;
+  if (!await settleSearchTargetDetails(loaded, options.searchKey, options.invocation)) return false;
   let targets = timelineSearchTargets(loaded.id);
   if (targets.length) return direction < 0 ? targets[targets.length - 1] : targets[0];
 
@@ -2440,6 +2485,8 @@ async function materializeSearchEvent(event, direction, options = {}) {
 
 async function resolveSearchTargetNode(target, searchKey, invocation) {
   if (!searchOperationIsCurrent(searchKey, invocation)) return null;
+  const loaded = target && canonicalTimelineEvent(target.ownerId);
+  if (loaded && !await settleSearchTargetDetails(loaded, searchKey, invocation)) return null;
   let node = liveSearchTargetNode(target);
   if (node || !target || !searchOperationIsCurrent(searchKey, invocation)) return node;
 
@@ -3045,8 +3092,9 @@ function sourceLabel(ref) {
 }
 
 function rawReferenceUrl(ref) {
-  if (ref?.rawId && state.selectedSessionId) {
-    return `/api/sessions/${encodeURIComponent(state.selectedSessionId)}/raw/${encodeURIComponent(ref.rawId)}`;
+  const sessionId = ref?.sessionId || state.selectedSessionId;
+  if (ref?.rawId && sessionId) {
+    return `/api/sessions/${encodeURIComponent(sessionId)}/raw/${encodeURIComponent(ref.rawId)}`;
   }
   if (ref?.file && ref?.line != null) {
     return `/api/raw?file=${encodeURIComponent(ref.file)}&line=${encodeURIComponent(ref.line)}`;
@@ -3470,13 +3518,25 @@ function renderInspectorDetail(event) {
   if (detail) {
     const includePrimary = trajectoryPresentationActive();
     const primary = includePrimary
-      ? renderTimelineSections(detail.timelineSections || [])
+      ? renderTimelineSections((detail.timelineSections || []).filter((section) => !(section.type === 'notice'
+        && section.hideTitle === true && (detail.inspectorSections || []).some((other) => other.type === 'notice' && other.text === section.text))))
       : '';
-    const supplementalSections = !includePrimary && cacheUsageFact(event)
+    const supplementalSections = (!includePrimary && cacheUsageFact(event)
       ? [...(detail.timelineSections || []), ...(detail.inspectorSections || [])]
-      : (detail.inspectorSections || []);
-    const supplemental = renderInspectorSections(supplementalSections);
-    const body = `${primary}${supplemental}`;
+      : (detail.inspectorSections || [])).filter((section) => !(includePrimary
+        && section.type === 'collaboration' && section.purpose === 'traceability'));
+    const terminal = event.presentationFacts?.backgroundTerminal;
+    const terminalDirectoryTitles = ['Follow-up terminal requests', 'Associated terminal requests']
+      .map((title) => i18n.sectionTitle(title, state.locale));
+    const leading = supplementalSections.filter((section) => (
+      (section.type === 'collaboration' && section.purpose === 'traceability')
+      || (section.type === 'notice' && section.purpose === 'content' && section.hideTitle === true)
+      || (terminalDirectoryTitles.includes(section.title) && ['event_refs', 'notice'].includes(section.type))
+      || (terminal && ((section.type === 'notice' && section.purpose === 'content')
+        || (section.type === 'event_refs' && section.items?.length === 1)))
+    ));
+    const supplemental = renderInspectorSections(supplementalSections.filter((section) => !leading.includes(section)));
+    const body = `${renderSections(leading)}${primary}${supplemental}`;
     if (!body) return '';
     return `<section class="inspectorSection">
       <h3>${escapeHtml(t('details'))}</h3>
@@ -4293,6 +4353,12 @@ function resetProjectViewState() {
   state.sessions = [];
   state.expandedSessionGroups.clear();
   state.projectResults = [];
+  state.legacyRawLookup = null;
+  state.legacyRawNoticeKey = '';
+  if (el.legacyRawNotice) {
+    el.legacyRawNotice.hidden = true;
+    el.legacyRawNotice.replaceChildren();
+  }
   state.projectResultsRevision = 0;
   state.sessionsRequestId += 1;
   state.projectSearchRequestId += 1;
@@ -4481,6 +4547,11 @@ async function applyAppState(appState) {
   applySourceConfig(appState);
   state.repoRoot = appState.repoRoot || '';
   state.indexRevision = Number.isSafeInteger(appState.indexRevision) ? appState.indexRevision : 0;
+  state.legacyRawLookup = appState.capabilities?.legacyRawLookup || null;
+  state.legacyRawNoticeKey = JSON.stringify([
+    state.sourceKind, state.repoRoot, state.indexRevision, appState.generatedAt || '',
+  ]);
+  renderLegacyRawNotice();
   state.builtinProfiles = normalizeProfiles(appState.foldingProfiles);
   state.profiles = normalizeProfiles([...state.builtinProfiles, ...state.customProfiles]);
   advancePresentationRevision('foldingPresentationRevision');
@@ -5111,7 +5182,9 @@ async function drillDownProjectResult(sessionId) {
   updateSelectedTimelineEvent();
   if (state.searchQuery) {
     const searchKey = searchTargetPreloadKey();
+    const selectionIntent = state.eventSelectionIntentId;
     const target = await materializeSearchEvent(event, 1, { searchKey });
+    if (!searchOperationIsCurrent(searchKey) || selectionIntent !== state.eventSelectionIntentId) return false;
     if (target) await activateSearchTarget(target, { scroll: true, syncDetail: false });
   } else {
     scrollToTimelineEvent(event.id);
@@ -5235,9 +5308,9 @@ function renderProjectSearchView() {
   const message = !active
     ? t('projectSearchPrompt')
     : (state.projectSearchLoading ? t('searching') : (noResults ? t('projectNoResults') : t('projectResultsGuidance')));
-  el.sessionHeader.innerHTML = `<h2>${escapeHtml(t('projectSearchTitle'))}</h2><p>${escapeHtml(message)}</p>`;
+  el.sessionHeader.innerHTML = `<h2>${escapeHtml(t('projectSearchTitle'))}</h2>`;
   el.analysisPanel.innerHTML = '';
-  replaceTimelineRoot(`<div class="projectSearchState"><h3>${escapeHtml(t('projectSearchTitle'))}</h3><p>${escapeHtml(message)}</p></div>`, 'non-main');
+  replaceTimelineRoot(`<div class="projectSearchState"><p>${escapeHtml(message)}</p></div>`, 'non-main');
   el.detail.innerHTML = '';
   state.searchSurfaceContexts.timeline = '';
   state.searchSurfaceContexts.detail = '';
@@ -5499,7 +5572,10 @@ function restoreCollaborationActionFocus(action) {
   const block = owner?.querySelectorAll('.collaborationBlock')[action.blockIndex];
   const matches = block?.querySelectorAll(`[data-collaboration-action="${CSS.escape(action.actionId)}"][data-open-collaboration-session="${CSS.escape(action.sessionId)}"]`);
   // Do not substitute another link to the same child if the original action disappeared.
-  if (matches?.length === 1) matches[0].focus({ preventScroll: true });
+  if (matches?.length === 1) {
+    matches[0].focus({ preventScroll: true });
+    return matches[0];
+  }
 }
 
 function pushReadingPosition(position) {
@@ -5531,6 +5607,13 @@ async function openReadingEvent(target, button, savedPosition = null) {
   return navigateToLayerEvent(target.layer, target.id, { mobileView, scrollBehavior: 'auto',
     sourceEventId: sessionId === position.sessionId ? position.returnFocus.eventId || position.selectedEventId : '',
   });
+}
+
+function fileActivityTime(timestamp) {
+  const date = new Date(timestamp);
+  return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(state.locale, {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'shortOffset',
+  }).format(date) : (timestamp || '');
 }
 
 let fileActivityView = null;
@@ -5567,7 +5650,7 @@ async function loadFileActivity(view, offset = 0) {
     view.offset = offset;
     view.total = data.total;
     body.innerHTML = `<p>${escapeHtml(t(view.project ? 'fileProjectCount' : 'fileActivityCount', { count: data.total }))}</p><ul class="fileActivityList">${entries.map((entry, index) =>
-      `<li><button type="button" class="smallBtn" data-file-activity-entry="${index}">${escapeHtml(entry.label || entry.id)}</button><span>${escapeHtml(entry.timestamp || '')} · ${escapeHtml(t(entry.association === 'patch_record' ? 'filePatchRecord' : entry.association === 'project_search' ? 'fileProjectMatch' : 'fileRecordedPath'))}</span></li>`).join('')}</ul>
+      `<li><button type="button" class="smallBtn" data-file-activity-entry="${index}">${escapeHtml(entry.label || entry.id)}${entry.toolName ? ` · ${escapeHtml(entry.toolName)}` : ''}</button><time title="${escapeHtml(entry.timestamp || '')}" datetime="${escapeHtml(entry.timestamp || '')}">${escapeHtml(fileActivityTime(entry.timestamp))}</time>${entry.summary ? `<span>${escapeHtml(entry.summary)}</span>` : ''}<span>${escapeHtml(t(entry.association === 'patch_record' ? 'filePatchRecord' : entry.association === 'project_search' ? 'fileProjectMatch' : 'fileRecordedPath'))}</span></li>`).join('')}</ul>
       ${offset ? `<button type="button" class="smallBtn" data-file-activity-page="${Math.max(0, offset - 50)}">${escapeHtml(t('previous'))}</button>` : ''}
       ${offset + entries.length < data.total ? `<button type="button" class="smallBtn" data-file-activity-page="${offset + 50}">${escapeHtml(t('next'))}</button>` : ''}`;
   } catch (error) {
@@ -5632,6 +5715,10 @@ function captureReadingPosition(button) {
   const top = viewportIsMobile ? 0 : pane.getBoundingClientRect().top;
   const anchor = [...el.timeline.querySelectorAll('.event[data-event-id]')]
     .find((node) => node.getClientRects().length && node.getBoundingClientRect().bottom > top);
+  const bounds = pane.getBoundingClientRect();
+  const visibleExpandedIds = new Set([...el.timeline.querySelectorAll('.event.expanded[data-event-id]')]
+    .filter((node) => rectIntersectsScrollport(node.getBoundingClientRect(), bounds, true))
+    .map((node) => node.dataset.eventId));
   return {
     scope: readingScopeKey(), sessionId: state.selectedSessionId,
     layerId: activeLayerId(), searchQuery: state.searchQuery, searchFilters: { ...state.searchFilters },
@@ -5641,11 +5728,16 @@ function captureReadingPosition(button) {
     selectedEventId: state.selectedEventId, detailView: { ...state.detailView },
     offset: state.offset, scrollTop: pane.scrollTop,
     anchorId: anchor?.dataset.eventId || '', anchorOffset: anchor ? anchor.getBoundingClientRect().top - top : 0,
+    collaborationOffset: button.dataset.openCollaborationSession && el.timeline.contains(button)
+      ? button.getBoundingClientRect().top - top : null,
     viewportIsMobile, documentScrollTop: window.scrollY, documentScrollLeft: window.scrollX,
     detailScrollTop: el.detail.closest('.detailPane').scrollTop,
     mobileView: state.mobileView,
     returnFocus: captureCollaborationAction(button),
-    detailEventIds: renderedTimelineEvents().filter((item) => state.detailCache[detailKey(state.selectedSessionId, activeLayerId(), item.id)]).map((item) => item.id),
+    detailEventIds: renderedTimelineEvents().filter((item) => {
+      const key = detailKey(state.selectedSessionId, activeLayerId(), item.id);
+      return state.detailCache[key] || state.detailPending[key] || visibleExpandedIds.has(item.id);
+    }).map((item) => item.id),
     navigationEventReveal: structuredClone(state.navigationEventReveal),
     temporaryEventReveal: state.temporaryEventReveal ? {
       eventId: state.temporaryEventReveal.event.id,
@@ -5825,7 +5917,17 @@ async function restoreReadingPosition(position, operation, { historyPosition = p
       behavior: 'instant',
     });
   }
-  restoreCollaborationActionFocus(position.returnFocus);
+  const restoredAction = restoreCollaborationActionFocus(position.returnFocus);
+  // Rich names can change the height of preceding cards as they settle. Keep
+  // the actual originating action at its saved offset when it still exists.
+  if (restoredAction?.getClientRects().length && position.collaborationOffset != null
+      && viewportIsMobile === position.viewportIsMobile) {
+    const delta = restoredAction.getBoundingClientRect().top
+      - (viewportIsMobile ? 0 : pane.getBoundingClientRect().top) - position.collaborationOffset;
+    if (viewportIsMobile) window.scrollBy({ top: delta, behavior: 'instant' });
+    else pane.scrollTop += delta;
+    state.timelineLastScrollTop = pane.scrollTop;
+  }
   return true;
 }
 
@@ -8880,9 +8982,16 @@ async function showRaw(event, options = {}) {
     </div>`,
   });
   try {
-    const payloads = await Promise.all(refs.map((ref) => api(rawReferenceUrl(ref), {
-      signal: owner.controller.signal,
-    })));
+    const payloads = await Promise.all(refs.map(async (ref) => {
+      const fallback = !(ref?.rawId && (ref?.sessionId || state.selectedSessionId));
+      if (fallback && state.legacyRawLookup?.status === 'unavailable') return { unavailable: true };
+      try {
+        return { raw: await api(rawReferenceUrl(ref), { signal: owner.controller.signal }) };
+      } catch (error) {
+        if (fallback && error?.code === 'LEGACY_RAW_LOOKUP_UNAVAILABLE') return { unavailable: true };
+        throw error;
+      }
+    }));
     if (!requestOwners.rawReferences.isCurrent(owner)
         || !isCurrentDetailSelection('rawRefs', rawKey, event.id, selectionContext)) return false;
     renderDetailShell({
@@ -8891,7 +9000,9 @@ async function showRaw(event, options = {}) {
       actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
       body: `<div class="rawRefsView">
       <p class="rawMeta">${escapeHtml(t('rawRowsForEvent', { count: refs.length, plural: refs.length === 1 ? '' : 's', eventId: event.id }))}</p>
-      ${payloads.map((raw) => `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(sourceLabel(raw))}</p><pre>${escapeHtml(rawPayloadText(raw))}</pre></section>`).join('')}
+      ${payloads.map((item) => item.unavailable
+    ? `<div class="notice warning"><p>${escapeHtml(t('legacyRawLookupUnavailable'))}</p></div>`
+    : `<section class="inspectorSection"><p class="rawMeta">${escapeHtml(sourceLabel(item.raw))}</p><pre>${escapeHtml(rawPayloadText(item.raw))}</pre></section>`).join('')}
     </div>`,
     });
     return true;
@@ -9352,6 +9463,21 @@ el.detail.addEventListener('click', (event) => {
   }
 });
 
+function refreshProfileRulePreview(control) {
+  const focused = document.activeElement === control;
+  const attribute = ['data-profile-fallback', 'data-profile-kind', 'data-profile-code-mode-request', 'data-profile-condition']
+    .find((name) => control.hasAttribute(name));
+  const selector = attribute ? `[${attribute}="${CSS.escape(control.getAttribute(attribute))}"]` : '';
+  const sessionId = state.selectedSessionId;
+  const profileId = state.profileId;
+  renderTimeline();
+  renderProfileRulesPane();
+  if (focused && selector && state.detailView.type === 'profileRules'
+      && sessionId === state.selectedSessionId && profileId === state.profileId) {
+    el.detail.querySelector(selector)?.focus({ preventScroll: true });
+  }
+}
+
 el.detail.addEventListener('change', (event) => {
   const profilePicker = event.target.closest('[data-profile-picker]');
   if (profilePicker) {
@@ -9365,8 +9491,7 @@ el.detail.addEventListener('change', (event) => {
     state.profileDraft.rules.fallback = fallback.value;
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
     advancePresentationRevision('foldingPresentationRevision');
-    renderTimeline();
-    renderProfileRulesPane();
+    refreshProfileRulePreview(fallback);
     return;
   }
   const kindSelect = event.target.closest('[data-profile-kind]');
@@ -9378,8 +9503,7 @@ el.detail.addEventListener('change', (event) => {
     else delete state.profileDraft.rules.kindStates[kind];
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
     advancePresentationRevision('foldingPresentationRevision');
-    renderTimeline();
-    renderProfileRulesPane();
+    refreshProfileRulePreview(kindSelect);
     return;
   }
   const codeModeRequestSelect = event.target.closest('[data-profile-code-mode-request]');
@@ -9391,8 +9515,7 @@ el.detail.addEventListener('change', (event) => {
     else delete state.profileDraft.rules.codeModeRequestStates[request];
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
     advancePresentationRevision('foldingPresentationRevision');
-    renderTimeline();
-    renderProfileRulesPane();
+    refreshProfileRulePreview(codeModeRequestSelect);
     return;
   }
   const conditionSelect = event.target.closest('[data-profile-condition]');
@@ -9404,8 +9527,7 @@ el.detail.addEventListener('change', (event) => {
     if (conditionSelect.value) state.profileDraft.rules.conditions.push({ id: conditionId, state: conditionSelect.value });
     state.profileDraft.rules = normalizeRules(state.profileDraft.rules);
     advancePresentationRevision('foldingPresentationRevision');
-    renderTimeline();
-    renderProfileRulesPane();
+    refreshProfileRulePreview(conditionSelect);
     return;
   }
   const select = event.target.closest('[data-navigation-category]');
@@ -9437,6 +9559,11 @@ el.resetFoldsBtn.addEventListener('click', () => {
   saveOverrides();
   updateResetFoldsButton();
   renderTimeline();
+});
+el.legacyRawNotice?.addEventListener('click', (event) => {
+  if (!event.target.closest('[data-dismiss-legacy-raw]')) return;
+  state.legacyRawNoticeDismissedKey = state.legacyRawNoticeKey;
+  renderLegacyRawNotice();
 });
 
 el.loadMoreBtn.addEventListener('click', () => {

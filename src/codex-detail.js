@@ -1,6 +1,7 @@
 'use strict';
 
 function createCodexDetailBuilder(deps) {
+  const { semanticRaw = (raw) => raw } = deps.messages;
   const { historyFacts = () => null, resolveHistoryReference = () => null, historyOwner = () => '' } = deps.messages;
   const { externalToolInputFromRaw, asyncAgentMessageFromRaw, summarizeCodexAttachments } = deps.messages;
   const {
@@ -17,6 +18,8 @@ function createCodexDetailBuilder(deps) {
     backgroundTerminalLabel = () => '',
     compactBackgroundTerminalSections = (sections) => sections,
     backgroundTerminalFactsForEvent = () => null,
+    terminalOutcomeSummary,
+    parseTerminalReceipt,
   } = deps;
   const {
     codeModeAssociableOutputFragments,
@@ -197,15 +200,17 @@ function createCodexDetailBuilder(deps) {
   }
 
   function extractLogicalDetailSections(event, raws, session = {}, options = {}) {
+    if (event.kind !== 'protocol') raws = raws.map(semanticRaw);
     const facts = historyFacts(raws[0]);
     if (facts && event.kind === 'protocol') return historyDetailSections(event, facts, raws[0], session, options);
     switch (event.kind) {
       case 'external_tool_input': {
         const timelineSections = [];
         const inspectorSections = [];
-        for (const raw of raws) {
-          const input = externalToolInputFromRaw(raw);
-          if (!input) continue;
+        // Logical grouping already validated any mirror refs as one input.
+        // Keep their provenance, but present the semantic input only once.
+        const input = raws.map(externalToolInputFromRaw).find(Boolean);
+        if (input) {
           maybePushKvSection(timelineSections, 'External source', [
             { key: 'Name', value: input.name },
             ...(input.namespace ? [{ key: 'Namespace', value: input.namespace }] : []),
@@ -971,7 +976,7 @@ function createCodexDetailBuilder(deps) {
     if (!event) return '';
     const fact = backgroundTerminalFactsForEvent(session, event.id)
       || session?.presentationIndexes?.backgroundTerminalRequests?.get?.(event.id);
-    const label = backgroundTerminalLabel(fact, locale) || localizedLogicalLabel(event, locale);
+    const label = backgroundTerminalLabel(fact ? { ...fact, commandPreview: '' } : fact, locale) || localizedLogicalLabel(event, locale);
     // Timestamp disambiguates repeated requests in the display only; relation
     // membership and ordering remain owned by the confirmed presentation maps.
     const timestamp = typeof event.timestamp === 'string' ? event.timestamp.trim() : '';
@@ -1027,7 +1032,7 @@ function createCodexDetailBuilder(deps) {
         session,
         locale,
         typeof relations.origins.get(originEventId)?.commandPreview === 'string'
-          ? relations.origins.get(originEventId).commandPreview
+          ? Array.from(relations.origins.get(originEventId).commandPreview).slice(0, 48).join('') + (Array.from(relations.origins.get(originEventId).commandPreview).length > 48 ? '…' : '')
           : '',
       );
       const associated = confirmedBackgroundTerminalContinuations(session, originEventId, eventIndex);
@@ -1181,9 +1186,17 @@ function createCodexDetailBuilder(deps) {
     if (eventRefsSection) detailSections.inspectorSections.push(eventRefsSection);
     const terminalFact = backgroundTerminalFactsForEvent(session, logical.id);
     const terminalNavigation = backgroundTerminalNavigationSections(logical, session, locale);
-    if (terminalNavigation.originSection) detailSections.inspectorSections.push(terminalNavigation.originSection);
-    if (terminalNavigation.previousSection) detailSections.inspectorSections.push(terminalNavigation.previousSection);
-    if (terminalNavigation.nextSection) detailSections.inspectorSections.push(terminalNavigation.nextSection);
+    detailSections.inspectorSections.unshift(...[
+      terminalNavigation.originSection, terminalNavigation.previousSection, terminalNavigation.nextSection,
+    ].filter(Boolean));
+    const terminalOutputs = terminalFact ? raws.filter((raw) => raw.payloadType === 'function_call_output') : [];
+    const receipt = terminalOutputs.length === 1 ? parseTerminalReceipt(terminalOutputs[0].output) : null;
+    const outcome = terminalOutcomeSummary(logical, detailSections.timelineSections, locale, { request: Boolean(terminalFact), receipt });
+    if (outcome) {
+      const summary = { type: 'notice', purpose: 'content', title: '', hideTitle: true, level: 'info', text: outcome };
+      detailSections.timelineSections.unshift(summary);
+      detailSections.inspectorSections.unshift(summary);
+    }
     if (terminalNavigation.directoryNotice) detailSections.inspectorSections.push(terminalNavigation.directoryNotice);
     if (terminalNavigation.associatedSection) detailSections.inspectorSections.push(terminalNavigation.associatedSection);
     if (!detailSections.timelineSections.length && !detailSections.inspectorSections.length) {

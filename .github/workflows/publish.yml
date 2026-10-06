@@ -77,14 +77,14 @@ jobs:
           fi
 
       - run: npm ci --strict-allow-scripts
-      - run: npm run release:check
+      # prepublishOnly runs release:check once, before the slower browser gate.
+      - name: Exercise the guarded directory publication path
+        run: npm publish --dry-run --foreground-scripts --tag=latest --access=public --registry=https://registry.npmjs.org/
+
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
       - run: npm audit --omit=dev --registry=https://registry.npmjs.org/
       - run: npm audit --registry=https://registry.npmjs.org/
-
-      - name: Exercise the guarded directory publication path
-        run: npm publish --dry-run --foreground-scripts --tag=latest --access=public --registry=https://registry.npmjs.org/
 
       - name: Record the verified candidate hash
         id: candidate

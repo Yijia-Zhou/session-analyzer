@@ -11,6 +11,8 @@ const url = require('node:url');
 const {
   SOURCE_KIND,
   buildEventDetailForSession,
+  legacyRawLookupCapabilityForIndex,
+  legacyRawLookupDiagnosticForIndex,
   materializeSessionForIndex,
   normalizeSourceKind,
   queryForIndex,
@@ -39,6 +41,8 @@ const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
 const { createIndexDiagnostics } = require('./src/runtime-diagnostics');
 const { createLargeTranscriptHistoryWarning } = require('./src/runtime-capacity');
+const { queryPagination, requireQueryRevision } = require('./src/shared/query-pagination');
+const { withQueryStoreBuildScope } = require('./src/project-query-disk');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -122,12 +126,6 @@ function decodePathSegment(value) {
   }
 }
 
-function asNumber(value, fallback, min, max) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(min, Math.min(max, Math.trunc(n)));
-}
-
 async function readJsonBody(req, limit = 64 * 1024) {
   const chunks = [];
   let size = 0;
@@ -163,6 +161,8 @@ function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
     indexRevision: state.indexRevision,
     buildMs: state.buildMs,
     totals: state.index.totals,
+    capabilities: { legacyRawLookup: legacyRawLookupCapabilityForIndex(state.index) },
+    indexDiagnostics: { legacyRawLookup: legacyRawLookupDiagnosticForIndex(state.index) },
     sourceDiagnostics: state.index.sourceDiagnostics || createSourceDiagnostics().summary,
     eventKinds: state.index.eventKinds
       ? {
@@ -617,7 +617,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   job.sourceHome = jobSourceHome;
   job.activeSourceRevision = state.activeSourceRevision || 0;
   const buildIndex = state.buildIndexOverride || ((context) => state.adapter.buildIndex(context));
-  job.promise = Promise.resolve().then(() => buildIndex({
+  job.promise = withQueryStoreBuildScope(() => Promise.resolve().then(() => buildIndex({
     repoRoot,
     sourceKind: jobSourceKind,
     sourceHome: jobSourceHome,
@@ -647,6 +647,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     await validateIndexOwnershipForCommit(index, {
       signal: controller.signal,
       onChunk: state.onIndexValidationChunk,
+      legacyRawOwnerPolicyForTests: state.legacyRawOwnerPolicyForTests,
     });
     if (controller.signal.aborted) {
       job.status = 'cancelled';
@@ -657,13 +658,19 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       return;
     }
     job.status = 'succeeded';
-    job.resultSummary = { totals: index.totals, sourceDiagnostics: index.sourceDiagnostics || createSourceDiagnostics().summary };
+    job.resultSummary = {
+      totals: index.totals,
+      sourceDiagnostics: index.sourceDiagnostics || createSourceDiagnostics().summary,
+      capabilities: { legacyRawLookup: legacyRawLookupCapabilityForIndex(index) },
+      indexDiagnostics: { legacyRawLookup: legacyRawLookupDiagnosticForIndex(index) },
+    };
     job.completedAt = new Date().toISOString();
     job.buildMs = Date.now() - startedAtMs;
     const lease = installIndexRevision(state, index);
     state.buildMs = job.buildMs;
     job.diagnostics?.finish('succeeded', { buildMs: job.buildMs });
     scheduleRevisionPrewarm(state, lease);
+    return index;
   }).catch((error) => {
     const safeError = normalizeCaughtError(error);
     job.completedAt ||= new Date().toISOString();
@@ -682,7 +689,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       errorName: safeError.name || 'Error',
       errorCode: safeError.code || '',
     });
-  }).then(async () => {
+  }).then(async (committedIndex) => {
     // Observability cannot change a settled job or invalidate its committed index.
     try {
       await state.onProjectJobSettled?.({
@@ -692,7 +699,8 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
     } catch {
       // The consumer owns reporting failures in its optional callback.
     }
-  });
+    return committedIndex;
+  }));
 
   return job;
 }
@@ -731,6 +739,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
   const sourceKind = initialIndex?.repoRoot
     ? validateIndexOwnership(initialIndex, {
       allowUninspectableSessions: options.allowUninspectableSessions === true,
+      legacyRawOwnerPolicyForTests: options.legacyRawOwnerPolicyForTests,
     })
     : normalizeSourceKind(options.sourceKind || options.source);
   const adapter = requireSourceAdapter(sourceKind);
@@ -746,6 +755,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     buildIndexOverride: options.buildIndex || null,
     onProjectJobSettled: options.onProjectJobSettled || null,
     onIndexValidationChunk: options.onIndexValidationChunk || null,
+    legacyRawOwnerPolicyForTests: options.legacyRawOwnerPolicyForTests,
     materializeSession: options.materializeSession || materializeSessionForIndex,
     buildEventDetail: options.buildEventDetail || buildEventDetailForSession,
     sessionPrewarmPolicy: options.sessionPrewarm === false
@@ -911,13 +921,14 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         const sessionId = decodePathSegment(fileActivityMatch[1]);
         const file = searchParams.get('file') || '';
         if (!file || file.length > 8192) { sendError(res, 400, 'Invalid file path'); return; }
+        const pagination = queryPagination({ offset: searchParams.get('offset'), limit: searchParams.get('limit') }, 50, 100);
         const { value: result, lease } = await withIndexRevisionLease(state, requestAbort.signal, async (capture) => {
+          requireQueryRevision(searchParams.get('indexRevision'), capture.indexRevision);
           const indexedSession = capture.index.sessionsById.get(sessionId);
           if (!indexedSession) return null;
           const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
           return queryForIndex(capture.index).getFileActivity(capture.index, session, file, {
-            offset: asNumber(searchParams.get('offset'), 0, 0, 1_000_000),
-            limit: asNumber(searchParams.get('limit'), 50, 1, 100), locale,
+            ...pagination, locale,
           });
         });
         if (!result) { sendError(res, 404, 'Unknown session'); return; }
@@ -929,27 +940,28 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       if (timelineMatch) {
         if (!requireIndex(state, res)) return;
         const sessionId = decodePathSegment(timelineMatch[1]);
-        const { value: result } = await withIndexRevisionLease(
+        const pagination = queryPagination({ offset: searchParams.get('offset'), limit: searchParams.get('limit') });
+        const { value: result, lease } = await withIndexRevisionLease(
           state,
           requestAbort.signal,
           async (capture) => {
+            requireQueryRevision(searchParams.get('indexRevision'), capture.indexRevision);
             const { index } = capture;
             const indexedSession = index.sessionsById.get(sessionId);
             if (!indexedSession) return null;
             const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
             const query = queryForIndex(index);
-            return query.getTimeline(index, session, query.filtersFromSearchParams(searchParams, {
-              offset: asNumber(searchParams.get('offset'), 0, 0, 1_000_000),
-              limit: asNumber(searchParams.get('limit'), 150, 1, 500),
+            return query.getTimelineAsync(index, session, query.filtersFromSearchParams(searchParams, {
+              ...pagination,
               locale,
-            }));
+            }), { signal: capture.signal });
           },
         );
         if (!result) {
           sendError(res, 404, 'Unknown session');
           return;
         }
-        sendJson(res, 200, result);
+        sendJson(res, 200, { ...result, indexRevision: lease.indexRevision });
         return;
       }
 
@@ -1096,24 +1108,40 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       if (pathname === '/api/raw') {
         if (!requireIndex(state, res)) return;
         const file = searchParams.get('file') || '';
-        const line = asNumber(searchParams.get('line'), 0, 1, 1_000_000_000);
-        if (!file || !line) {
+        const lineText = searchParams.get('line') || '';
+        const line = /^[1-9]\d*$/.test(lineText) ? Number(lineText) : Number.NaN;
+        if (!file || !Number.isSafeInteger(line)) {
           sendError(res, 400, 'file and line are required');
           return;
         }
-        const { value: raw } = await withIndexRevisionLease(
+        const { value: result } = await withIndexRevisionLease(
           state,
           requestAbort.signal,
           async (capture) => {
             const { index, signal } = capture;
+            if (legacyRawLookupCapabilityForIndex(index).status === 'unavailable') {
+              return { unavailable: true, indexRevision: capture.indexRevision };
+            }
             const owner = resolveLegacyRawOwnerForIndex(index, file, line);
-            if (!owner) return null;
+            if (!owner) return { raw: null };
             const indexedSession = index.sessionsById.get(owner.sessionId);
-            if (!indexedSession) return null;
+            if (!indexedSession) return { raw: null };
             const session = await materializeLeasedSession(capture, indexedSession, state.materializeSession);
-            return readLegacyRawLineForSession(index, session, owner, owner.adapter, { signal });
+            return { raw: await readLegacyRawLineForSession(index, session, owner, owner.adapter,
+              { signal, requestedFile: file }) };
           },
         );
+        if (result.unavailable) {
+          sendJson(res, 409, {
+            error: 'Legacy file/line lookup is unavailable for this index',
+            code: 'LEGACY_RAW_LOOKUP_UNAVAILABLE',
+            indexRevision: result.indexRevision,
+            reason: 'capacity_exceeded',
+            retryable: false,
+          });
+          return;
+        }
+        const raw = result.raw;
         if (!raw) {
           sendError(res, 404, 'Raw line not found');
           return;
@@ -1147,7 +1175,10 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       requestAbort.cleanup();
     }
   });
-  server.on('close', () => clearIndexRevision(state));
+  server.on('close', () => {
+    cancelProjectJob(state.activeProjectJob);
+    clearIndexRevision(state);
+  });
   return server;
 }
 
@@ -1182,6 +1213,10 @@ async function main() {
         const count = job.totals?.sessionCount || 0;
         const warnings = job.sourceDiagnostics?.totalCount || 0;
         console.log('Repo: indexing succeeded for ' + job.repoRoot + ' (' + count + ' sessions, ' + warnings + ' source diagnostics)');
+        if (job.capabilities?.legacyRawLookup?.status === 'unavailable') {
+          const diagnostic = job.indexDiagnostics?.legacyRawLookup;
+          console.warn(`LEGACY_RAW_LOOKUP_CAPACITY_EXCEEDED: legacy file/line lookup is unavailable for this index (${diagnostic?.limitName || 'capacity'}).`);
+        }
         if (!count) console.log(warnings ? 'No readable matching sessions; inspect source diagnostics in the browser.' : 'No matching sessions found; check the selected source and target repository.');
         for (const diagnostic of job.sourceDiagnostics?.samples || []) {
           console.warn(diagnostic.code + ': ' + diagnostic.path + ': ' + diagnostic.message);

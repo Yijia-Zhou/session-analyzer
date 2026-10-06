@@ -16,6 +16,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  scope:
+    name: Classify CI scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.classify.outputs.mode }}
+      browser_required: ${{ steps.classify.outputs.browser_required }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Classify the complete PR diff
+        id: classify
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci-scope.js
+
   node:
     name: Node ${{ matrix.node }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -81,6 +104,8 @@ jobs:
 
   browser:
     name: Browser on Ubuntu
+    needs: scope
+    if: ${{ needs.scope.outputs.browser_required != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -105,21 +130,40 @@ jobs:
     name: ci
     if: ${{ always() }}
     needs:
+      - scope
       - node
       - package
       - browser
     runs-on: ubuntu-latest
 
     steps:
-      - name: Require all CI jobs to succeed
+      - name: Require expected CI jobs to succeed
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          SCOPE_MODE: ${{ needs.scope.outputs.mode }}
+          BROWSER_REQUIRED: ${{ needs.scope.outputs.browser_required }}
           NODE_RESULT: ${{ needs.node.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
           BROWSER_RESULT: ${{ needs.browser.result }}
         run: |
+          set -euo pipefail
+          echo "scope=$SCOPE_RESULT mode=$SCOPE_MODE browser_required=$BROWSER_REQUIRED"
           echo "node=$NODE_RESULT"
           echo "package=$PACKAGE_RESULT"
           echo "browser=$BROWSER_RESULT"
+          test "$SCOPE_RESULT" = 'success'
           test "$NODE_RESULT" = 'success'
           test "$PACKAGE_RESULT" = 'success'
-          test "$BROWSER_RESULT" = 'success'
+          case "$BROWSER_REQUIRED" in
+            true)
+              test "$SCOPE_MODE" = 'full'
+              test "$BROWSER_RESULT" = 'success'
+              ;;
+            false)
+              test "$EVENT_NAME" = 'pull_request'
+              test "$SCOPE_MODE" = 'docs-only'
+              test "$BROWSER_RESULT" = 'skipped'
+              ;;
+            *) exit 1 ;;
+          esac

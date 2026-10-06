@@ -285,6 +285,10 @@ test('malformed or ambiguous prune evidence stays generic Protocol/Raw without p
   ];
   const cases = [
     {
+      name: 'format-zero-does-not-admit-format-four-range',
+      rows: baseRows({ replacementSourceEventSeqs: [[3, 3]] }),
+    },
+    {
       name: 'malformed-shadowed-seqs',
       rows: baseRows({
         pruneData: {

@@ -34,7 +34,7 @@ const FINGERPRINT_PROFILE_INVOCATIONS = Object.freeze([
 
 const FINGERPRINT_PROFILE_METRICS = ['elapsedMs', 'yieldWaitMs', 'activeComputeMs'];
 const FINGERPRINT_PROFILE_COUNTERS = [
-  'visitTaskCount', 'writeTaskCount', 'byteTaskCount', 'firstObjectVisitCount',
+  'visitTaskCount', 'writeTaskCount', 'byteTaskCount', 'iteratorTaskCount', 'firstObjectVisitCount',
   'repeatedReferenceCount', 'ownPropertyCount', 'mapEntryCount', 'setEntryCount',
   'writeTokenCount', 'textValueUtf8Bytes', 'textPrefixBytes', 'binaryHashBytes',
   'operationCount', 'chunkCount', 'yieldCount', 'hashInputBytes', 'hashUpdateCallCount', 'textHashUpdateCallCount',
@@ -78,7 +78,8 @@ function fingerprintAttributionFrom(summaries) {
     );
     assert.equal(
       invocation.operationCount,
-      invocation.visitTaskCount + invocation.writeTaskCount + invocation.byteTaskCount,
+      invocation.visitTaskCount + invocation.writeTaskCount + invocation.byteTaskCount
+        + invocation.iteratorTaskCount,
       `fingerprint profile invocation ${index} has invalid operation accounting`,
     );
     assert.equal(

@@ -5,12 +5,13 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const { requireSourceAdapter, materializeSessionForIndex, buildEventDetailForSession,
   readIndexedRawRecord } = require('./source-adapters');
-const { scanProjectQueryShard } = require('./project-query-store');
+const { scanProjectQueryShard, disposeProjectQueryStore } = require('./project-query-store');
 const { createSourceDiagnostics } = require('./source-diagnostics');
 const { classifyRetrievalArtifact, mayContainRetrievalArtifact } = require('./history-artifacts');
 const { createHistoryPresentation, detailText } = require('./history-presentation');
 const { groupedSearch, validateGroups } = require('./history-search-groups');
 const { createHistorySourceLocator } = require('./history-source-locator');
+const { matchText, containsText, excerptText } = require('./history-search-text');
 
 const VERSION = 1;
 const LAYERS = ['main', 'protocol', 'raw'];
@@ -45,61 +46,6 @@ function events(session, layer) {
   return layer === 'raw' ? session.rawEvents : session.logicalEvents.filter((e) => e.layer === layer);
 }
 function eventId(event) { return event.id || event.rawId; }
-
-// Lines are coordinates in the readable search projection, never JSONL lines.
-function matchOffset(text, terms) {
-  text = String(text || '');
-  const normalized = normalize(text);
-  let best = -1;
-  for (const term of terms) {
-    const at = normalized.indexOf(normalize(term));
-    if (at >= 0 && (best < 0 || at < best)) best = at;
-  }
-  if (best < 0) return -1;
-  // Match the normalized whole string, then map its UTF-16 offset back to
-  // source text. Lowercase may expand a code point (İ -> i + combining dot).
-  // Context-sensitive lowercase changes such as final sigma preserve width.
-  // Delay spaces until the next non-space to match normalize()'s trim/collapse,
-  // without retaining a character-sized offset table for large tool outputs.
-  let originalOffset = 0;
-  let normalizedOffset = 0;
-  let whitespaceStart = null;
-  let hasContent = false;
-  for (const character of text) {
-    if (/\s/u.test(character)) {
-      if (hasContent && whitespaceStart === null) whitespaceStart = originalOffset;
-    } else {
-      if (whitespaceStart !== null) {
-        if (normalizedOffset === best) return whitespaceStart;
-        normalizedOffset += 1;
-        whitespaceStart = null;
-      }
-      const width = character.toLowerCase().length;
-      if (best < normalizedOffset + width) return originalOffset;
-      normalizedOffset += width;
-      hasContent = true;
-    }
-    originalOffset += character.length;
-  }
-  return -1;
-}
-function excerpt(text, terms = [], hitOffset) {
-  text = String(text || '');
-  const lines = String(text || '').split(/\r?\n/u);
-  const position = hitOffset ?? Math.max(0, matchOffset(text, terms));
-  const at = text.slice(0, position).split(/\r?\n/u).length - 1;
-  const start = Math.max(0, at - 3);
-  const end = Math.min(lines.length, at + 4);
-  const selected = lines.slice(start, end);
-  const rendered = selected.map((line, i) => {
-    if (line.length <= 360) return line;
-    const match = start + i === at ? position - (text.lastIndexOf('\n', Math.max(0, position - 1)) + 1) : 0;
-    const offset = Math.max(0, match - 80);
-    return `${offset ? '…' : ''}${line.slice(offset, offset + 360)}…`;
-  }).join('\n');
-  return { representation: 'search_projection', startLine: start + 1, endLine: end, hitOffset: position,
-    text: rendered, truncated: start > 0 || end < lines.length || selected.some((line) => line.length > 360) };
-}
 
 async function createHistoryService(options = {}) {
   if (typeof options.repo !== 'string' || !options.repo.trim()) fail('INVALID_ARGUMENT', 'A fixed --repo is required');
@@ -209,11 +155,11 @@ async function createHistoryService(options = {}) {
   }
   function compact(session, layer, event, terms = [], hitOffset) {
     const text = event.searchText || event.preview;
-    const position = hitOffset ?? (terms.length ? Math.max(0, matchOffset(text, terms)) : undefined);
+    const position = hitOffset ?? (terms.length ? matchText(text, terms).hitOffset : undefined);
     return { ref: ref(session, layer, event, position), sessionId: session.id, eventId: eventId(event),
       source: adapter.kind, layer, kind: event.kind || event.payloadType || event.recordType,
       timestamp: event.timestamp, status: event.status || '', tool: event.toolName || '',
-      excerpt: excerpt(text, terms, position) };
+      excerpt: excerptText(text, position) };
   }
   function budgetPage(response, candidates, limit, maxBytes, operation, key, offset, total, continuation, project = (value) => value) {
     for (const candidate of candidates.slice(0, limit)) {
@@ -329,8 +275,8 @@ async function createHistoryService(options = {}) {
         if ((input.from || input.to) && !Number.isFinite(timestamp)) return false;
         if (input.from && timestamp < Date.parse(input.from)) return false;
         if (input.to && timestamp > Date.parse(input.to)) return false;
-        const text = normalize(row.searchText);
-        return (!queries.length || queries.some((q) => text.includes(normalize(q)))) && !excluded.some((q) => text.includes(normalize(q)));
+        const match = matchText(row.searchText, queries, excluded);
+        return match.matched ? match : false;
       };
       for (let sessionRank = 0; sessionRank < scopedSessions.length; sessionRank += 1) {
         const session = scopedSessions[sessionRank];
@@ -349,13 +295,14 @@ async function createHistoryService(options = {}) {
           let suspect = false;
           await scanProjectQueryShard(index.projectQueryStore, session.id, 'raw', { includeText: true }, (row) => {
             // Only a hint: classification requires real associated request records.
-            if (row.searchText.includes('session-analyzer')) suspect = true;
+            if (!suspect && containsText(row.searchText, 'session-analyzer')) suspect = true;
           });
           if (suspect) hydrated = await materialize(session);
         }
         const byId = hydrated ? new Map(events(hydrated, layer).map((event) => [eventId(event), event])) : null;
         await scanProjectQueryShard(index.projectQueryStore, session.id, layer, { includeText: true }, (row) => {
-          if (!matches(row)) return;
+          const match = matches(row);
+          if (!match) return;
           const artifact = byId ? classifyRetrievalArtifact(hydrated, byId.get(row.eventId), layer).recognized : false;
           if (artifact) artifacts += 1;
           if ((policy === 'exclude' && artifact) || (policy === 'only' && !artifact)) return;
@@ -367,8 +314,9 @@ async function createHistoryService(options = {}) {
           // Keep only the best bounded page after the cursor. Even a session
           // with millions of hits cannot grow the retained candidate array.
           if (candidates.length < limit + 1 || comparePosition(position, candidates.at(-1).position) < 0) {
-            const item = compact(session, layer, { ...row, id: row.eventId }, queries);
-            item.match = { representation: 'search_projection', terms: queries.filter((q) => normalize(row.searchText).includes(normalize(q))) };
+            const positionOffset = queries.length ? match.hitOffset : undefined;
+            const item = compact(session, layer, { ...row, id: row.eventId }, [], positionOffset);
+            item.match = { representation: 'search_projection', terms: match.terms };
             item.retrievalArtifact = artifact;
             let low = 0;
             let high = candidates.length;
@@ -543,7 +491,7 @@ async function createHistoryService(options = {}) {
     output.contentTruncated = output.items.some((item) => item.parts.some((part) => part.truncated) || item.rawRefsNextOffset !== null || item.logicalRefsNextOffset != null);
     return output;
   }
-  return { execute, close() { closed = true; presentation.clear(); } };
+  return { execute, close() { closed = true; presentation.clear(); disposeProjectQueryStore(index.projectQueryStore); } };
 }
 
 module.exports = { createHistoryService };

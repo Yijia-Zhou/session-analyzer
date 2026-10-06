@@ -1540,13 +1540,14 @@ test('reasoning row extraction accepts readable fields without exposing encrypte
   const mirroredDetail = buildEventDetail(session, mirroredReasoning.id);
   const mirroredSection = allSections(mirroredDetail).find((section) => section.title === 'Reasoning');
 
-  assert.deepEqual(mainReasoning.slice(0, 2).map((event) => event.searchText), ['Readable summary', 'Readable content fallback']);
+  assert.deepEqual(mainReasoning.slice(0, 2).map((event) => event.searchText),
+    ['Readable summary\nContent should not replace summary', 'Readable content fallback']);
   assert.ok(mainReasoning.some((event) => event.searchText === 'Readable event message reasoning'));
   assert.ok(mainReasoning.some((event) => event.searchText === 'Readable event text fallback'));
-  assert.equal(longReasoning.searchText, longReasoningText.slice(0, 16000));
-  assert.equal(longReasoning.searchText.length, 16000);
-  assert.equal(longEventReasoning.searchText, longEventReasoningText.slice(0, 16000));
-  assert.equal(longEventReasoning.searchText.length, 16000);
+  assert.equal(longReasoning.searchText, longReasoningText);
+  assert.equal(longReasoning.searchText.length, 16050);
+  assert.equal(longEventReasoning.searchText, longEventReasoningText);
+  assert.equal(longEventReasoning.searchText.length, 16050);
   assert.equal(mirroredReasoning.rawRefs.length, 2);
   assert.doesNotMatch(mirroredSection.html, /TAIL/);
   assert.ok(mainReasoning.every((event) => event.hasReadableReasoning));
@@ -2120,7 +2121,7 @@ test('tool logical events merge new and old format patch records and search stil
   assert.equal(outputOnlyCommandTimeline.events[0].outputStats.exitCode, 0);
   assert.match(outputOnlyCommandTimeline.events[0].preview, /rg -n -F 'alpha' 'src'/);
   const outputOnlyCommandDetail = buildEventDetail(session, outputOnlyCommandTimeline.events[0].id, 'main');
-  assert.equal(outputOnlyCommandDetail.timelineSections[0].language, 'powershell');
+  assert.equal(outputOnlyCommandDetail.timelineSections.find((section) => section.type === 'code').language, 'powershell');
 
   const failedCommandOutputSearch = getTimeline(index, primaryFixtureSessionId, {
     offset: 0,
@@ -2413,9 +2414,9 @@ test('command language inference uses session shell context for bare external co
   const powershellEvent = powershellSession.logicalEvents.find((event) => event.kind === 'command');
   const wrappedBashEvent = wrappedBashSession.logicalEvents.find((event) => event.kind === 'command');
 
-  assert.equal(buildEventDetail(bashSession, bashEvent.id, 'main').timelineSections[0].language, 'shell');
-  assert.equal(buildEventDetail(powershellSession, powershellEvent.id, 'main').timelineSections[0].language, 'powershell');
-  assert.equal(buildEventDetail(wrappedBashSession, wrappedBashEvent.id, 'main').timelineSections[0].language, 'bash');
+  assert.equal(buildEventDetail(bashSession, bashEvent.id, 'main').timelineSections.find((section) => section.type === 'code').language, 'shell');
+  assert.equal(buildEventDetail(powershellSession, powershellEvent.id, 'main').timelineSections.find((section) => section.type === 'code').language, 'powershell');
+  assert.equal(buildEventDetail(wrappedBashSession, wrappedBashEvent.id, 'main').timelineSections.find((section) => section.type === 'code').language, 'bash');
 });
 
 test('filterSessions uses contiguous phrase semantics for project event search', async () => {
@@ -2892,9 +2893,11 @@ test('buildEventDetail extracts structured sections for messages, tools, protoco
   const commandEvent = session.logicalEvents.find((event) => event.kind === 'command');
   const commandDetail = buildEventDetail(session, commandEvent.id, 'main');
   assert.equal(commandDetail.sections, undefined);
-  assert.deepEqual(commandDetail.timelineSections.map((section) => section.title), ['Command', 'stdout', 'stderr']);
-  assert.equal(commandDetail.timelineSections[0].type, 'code');
-  assert.equal(commandDetail.timelineSections[0].language, 'powershell');
+  assert.deepEqual(commandDetail.timelineSections.map((section) => section.title), ['', 'Command', 'stdout', 'stderr']);
+  assert.equal(commandDetail.timelineSections[0].type, 'notice');
+  assert.equal(commandDetail.timelineSections[0].hideTitle, true);
+  assert.match(commandDetail.timelineSections[0].text, /Recorded process exit code 1/);
+  assert.equal(commandDetail.timelineSections.find((section) => section.type === 'code').language, 'powershell');
   assert.ok(commandDetail.timelineSections.some((section) => section.type === 'terminal' && section.stream === 'stderr'));
   assert.ok(commandDetail.inspectorSections.some((section) => section.type === 'json' && section.title === 'Arguments'));
   assert.ok(commandDetail.inspectorSections.some((section) => section.type === 'kv' && section.title === 'Run context'));
@@ -4296,9 +4299,8 @@ test('image preview endpoint rehydrates only indexed server-owned image locators
 
 test('legacy Raw ownership uses the bounded Index projection before materialization', async () => {
   const index = await buildStrictFixtureIndex();
-  const [file] = Object.keys(index.legacyRawOwners.payload.files);
-  const [lineText] = Object.keys(index.legacyRawOwners.payload.files[file]);
-  const line = Number(lineText);
+  const [file, ranges] = index.legacyRawOwners.payload.files[0];
+  const line = ranges[0][0];
   const owner = resolveLegacyRawOwnerForIndex(index, file, line);
   assert.ok(owner);
   const session = index.sessionsById.get(owner.sessionId);
@@ -4326,9 +4328,7 @@ test('legacy Raw ownership uses the bounded Index projection before materializat
 
 test('runtime rejects a tampered strict Codex legacy Raw owner projection', async () => {
   const index = await buildStrictFixtureIndex();
-  const [file] = Object.keys(index.legacyRawOwners.payload.files);
-  const [line] = Object.keys(index.legacyRawOwners.payload.files[file]);
-  index.legacyRawOwners.payload.files[file][line] = '0:claude-code:raw:1';
+  index.legacyRawOwners.payload.files[0][1][0][2] = 999;
 
   assert.throws(
     () => createServer(index, 0, { codexHome: fixtureCodexHome }),

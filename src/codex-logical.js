@@ -2,9 +2,12 @@
 
 function createCodexLogicalBuilder(deps) {
   const {
+    semanticRawEvents = (raws) => raws,
+    turnBoundaryEpochs = () => new Map(),
     historyFacts = () => null,
     realtimeIdentity = () => '',
     externalToolInputFromRaw,
+    externalToolInputMirrorsMatch,
     asyncAgentMessageFromRaw,
     asyncMessageMetadata,
     asyncMessageIdentityMatches,
@@ -54,6 +57,7 @@ function createCodexLogicalBuilder(deps) {
     TOOL_LIFECYCLE_EVENT_TYPES,
     TOOL_LIFECYCLE_FAMILY,
     commandArgsFromRaw,
+    nativeExecCommandArguments = () => null,
     commandToText,
     inferPatchSuccess,
     isFiniteNumberValue,
@@ -73,6 +77,10 @@ function createCodexLogicalBuilder(deps) {
   ]);
   const {
     displayValue,
+    codexFullSearchText = displayValue,
+    codexSearchValue = displayValue,
+    codexAsyncMessageText = () => '',
+    codexAsyncSearchText = () => '',
     firstNonEmpty,
     planUpdateText,
     relatedReasoning,
@@ -355,8 +363,8 @@ function createCodexLogicalBuilder(deps) {
       displayValue(snapshot?.goal, 8000),
       displayValue(response.completionBudgetReport, 4000),
       displayValue(response.remainingTokens, 1000),
-      functionCall?.output,
-      functionOutput?.output,
+      codexSearchValue(functionCall?.output),
+      codexSearchValue(functionOutput?.output),
     ].filter(Boolean).join('\n');
 
     return createLogicalEvent({
@@ -403,7 +411,7 @@ function createCodexLogicalBuilder(deps) {
       searchText: uniqueNonEmpty([
         'thread_goal_updated',
         snapshot.status,
-        displayValue(snapshot.goal, 8000),
+        codexFullSearchText(snapshot.goal),
       ]).join('\n'),
       severity: goalSeverity(snapshot.status),
       status: snapshot.status,
@@ -417,7 +425,7 @@ function createCodexLogicalBuilder(deps) {
     event.rawRefs.sort((a, b) => a.line - b.line);
     if (!event.channels.includes(raw.recordType)) event.channels.push(raw.recordType);
     const preview = truncate(goalPreviewParts({ ...snapshot, status: event.status || snapshot.status }, { includeBudget: true }).join(' - '));
-    const searchText = uniqueNonEmpty([event.searchText, displayValue(snapshot.goal, 8000)]).join('\n');
+    const searchText = uniqueNonEmpty([event.searchText, raw.searchText || codexFullSearchText(snapshot.goal)]).join('\n');
     event.preview = sanitizeLogicalEnvelopeValue(preview || event.preview);
     event.searchText = sanitizeLogicalEnvelopeValue(searchText).trim();
     event.hasLongOutput = event.preview.length > 800 || event.searchText.length > 1600;
@@ -489,7 +497,7 @@ function createCodexLogicalBuilder(deps) {
     }
     let searchParts = addUncoveredTextPart([], commandText);
     for (const outputPart of outputParts) {
-      searchParts = addUncoveredTextPart(searchParts, outputPart);
+      searchParts = addUncoveredTextPart(searchParts, codexSearchValue(outputPart));
     }
     for (const touchedFile of touchedFiles || []) {
       searchParts = addUncoveredTextPart(searchParts, touchedFile);
@@ -497,7 +505,7 @@ function createCodexLogicalBuilder(deps) {
     return searchParts.join('\n');
   }
 
-  function buildToolLogicalEvent(callId, group, traceabilityRows = []) {
+  function buildToolLogicalEvent(callId, group, traceabilityRows = [], sourceEpochs = null) {
     const rawRefs = [...group.map(rawRef), ...traceabilityRows.map(rawRef)];
     const channels = [...new Set([...group, ...traceabilityRows].map((raw) => raw.recordType))];
     const first = group[0];
@@ -551,17 +559,25 @@ function createCodexLogicalBuilder(deps) {
     const completed = outcomeRows.some((raw) => /_end$/.test(raw.payloadType)) || imageCallCompleted || Boolean(functionOutput || customOutput);
     const explicitIncomplete = !completed && !failed && !declined;
 
-    const isCommandTool = toolName === 'shell_command' || execRows.length;
+    const nativeArgs = !customCall && !customOutput
+      && group.filter(raw => raw.recordType === 'response_item' && raw.payloadType === 'function_call').length === 1
+      && group.filter(raw => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output').length <= 1
+      && (!functionOutput || (functionOutput.line > functionCall.line
+        && (!sourceEpochs || sourceEpochs.get(functionOutput.rawId) === sourceEpochs.get(functionCall.rawId))
+        && (functionOutput.parsed?.payload?.namespace == null || functionOutput.parsed.payload.namespace === 'functions')))
+      ? nativeExecCommandArguments(functionCall) : null;
+    const isCommandTool = toolName === 'shell_command' || execRows.length || nativeArgs;
 
     if (execRows.length) {
       if (execEnd?.exitCode != null) outputStats.exitCode = execEnd.exitCode;
       if (execEnd?.durationMs) outputStats.durationMs = execEnd.durationMs;
     }
-    if (functionCall && !isCommandTool) parts.push(functionCall.output);
-    if (functionOutput && !isCommandTool) parts.push(functionOutput.output);
-    if (customCall && !isCommandTool) parts.push(customCall.output);
-    if (customOutput && !isCommandTool) parts.push(customOutput.output);
+    if (functionCall && !isCommandTool) parts.push(codexSearchValue(functionCall.output));
+    if (functionOutput && !isCommandTool) parts.push(codexSearchValue(functionOutput.output));
+    if (customCall && !isCommandTool) parts.push(codexSearchValue(customCall.output));
+    if (customOutput && !isCommandTool) parts.push(codexSearchValue(customOutput.output));
     if (mcpRows.length) parts.push(mcpRows.map((raw) => raw.searchText).join('\n'));
+    if (patchRows.length) parts.push(patchRows.map((raw) => raw.searchText).join('\n'));
     if (imageRows.length) parts.push(imageRows.map((raw) => raw.searchText).join('\n'));
     if (dynamicRows.length) parts.push(dynamicRows.map((raw) => raw.searchText).join('\n'));
     if (approvalRows.length) parts.push(approvalRows.map((raw) => raw.searchText).join('\n'));
@@ -571,20 +587,22 @@ function createCodexLogicalBuilder(deps) {
 
     if (isCommandTool) {
       kind = 'command';
-      const args = commandArgsFromRaw(functionCall);
+      const args = nativeArgs || commandArgsFromRaw(functionCall);
       const exitCode = numericExitCode(execEnd?.exitCode, functionOutputInfo?.exitCode, customOutputObj?.metadata?.exit_code);
-      const commandText = execRows.find((raw) => raw.commandText)?.commandText || commandToText(args?.command);
-      status = declined ? 'declined' : failed || (exitCode != null && exitCode !== 0) ? 'failed' : exitCode === 0 ? 'success' : explicitIncomplete ? 'incomplete' : protocolStatus || 'completed';
+      const commandText = execRows.find((raw) => raw.commandText)?.commandText || commandToText(args?.cmd ?? args?.command);
+      const commandSearchSource = execRows.find((raw) => raw.parsed?.payload?.command)?.parsed.payload.command ?? args?.cmd ?? args?.command;
+      status = declined ? 'declined' : failed || (exitCode != null && exitCode !== 0) ? 'failed' : exitCode === 0 ? 'success' : (explicitIncomplete || (!execRows.length && functionOutputInfo?.processId !== undefined)) ? 'incomplete' : protocolStatus || 'completed';
       severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
       label = status === 'failed' ? 'Failed command' : status === 'declined' ? 'Declined command' : status === 'incomplete' ? 'Incomplete command' : 'Command';
       preview = truncate(commandText || functionCall?.output || group.find((raw) => raw.preview)?.preview || 'shell command');
       if (exitCode != null) outputStats.exitCode = exitCode;
+      if (!execEnd && functionOutputInfo?.durationMs !== undefined) outputStats.durationMs = functionOutputInfo.durationMs;
       if (!outputStats.durationMs && customOutputObj?.metadata?.duration_seconds) {
         outputStats.durationMs = Math.round(Number(customOutputObj.metadata.duration_seconds) * 1000);
       }
       touchedFiles = touchFilesFromOutputText(firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, functionOutputInfo?.output));
       parts.push(commandSearchText({
-        commandText,
+        commandText: commandSearchSource == null ? commandText : codexFullSearchText(commandSearchSource),
         execEnd,
         execRows,
         functionOutputInfo,
@@ -615,7 +633,7 @@ function createCodexLogicalBuilder(deps) {
       status = exitCode === 0 ? 'success' : 'failed';
       severity = exitCode === 0 ? 'normal' : 'error';
       label = exitCode === 0 ? 'JS REPL' : 'JS REPL error';
-      preview = truncate(customCall?.output || customOutputObj?.output || 'js_repl');
+      preview = truncate(codexSearchValue(customCall?.output) || codexSearchValue(customOutputObj?.output) || 'js_repl');
       outputStats.exitCode = exitCode;
       outputStats.durationMs = execEnd?.durationMs || Math.round(Number(customOutputObj?.metadata?.duration_seconds || 0) * 1000);
     } else if (mcpRows.length || toolName.startsWith('mcp__')) {
@@ -631,7 +649,7 @@ function createCodexLogicalBuilder(deps) {
       kind = AGENT_COORDINATION_KIND;
       const representativeRow = representativeToolLifecycleRow(collabRows);
       label = representativeRow ? groupedToolLifecycleLabel(representativeRow, toolName) : toolName;
-      preview = truncate(representativeRow?.preview || functionCall?.output || functionOutput?.output || toolName || label);
+      preview = truncate(representativeRow?.preview || codexSearchValue(functionCall?.output) || codexSearchValue(functionOutput?.output) || toolName || label);
       status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
       severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
     } else if (imageRows.length || dynamicRows.length || approvalRows.length) {
@@ -644,10 +662,21 @@ function createCodexLogicalBuilder(deps) {
     } else if (toolName === 'request_user_input' || toolName === 'update_plan' || toolName === 'view_image' || toolName === 'js_repl_reset') {
       kind = 'other_tool_call';
       label = toolName;
-      preview = truncate(functionCall?.output || functionOutput?.output || toolName);
+      preview = truncate(codexSearchValue(functionCall?.output) || codexSearchValue(functionOutput?.output) || toolName);
       status = 'success';
     } else {
       preview = truncate(first.preview || toolName || 'Other tool call');
+    }
+
+    const typedExtension = group.find((raw) => raw.typedItemType === 'Extension')?.originalRaw?.parsed?.payload?.item;
+    if (typedExtension && ['clock.sleep', 'web.search'].includes(typedExtension.kind) && status === 'success') status = 'completed';
+    // A typed dynamic end records completion, not necessarily success. Keep
+    // explicit failure precedence, and require a boolean true for success.
+    const typedDynamic = group.find((raw) => raw.typedItemType === 'DynamicToolCall')?.parsed?.payload;
+    if (typedDynamic && typedDynamic.success !== true && status === 'success') status = 'completed';
+    if (collabRows.some((raw) => raw.status === 'interrupted')) {
+      status = 'interrupted';
+      severity = 'warning';
     }
 
     const event = createLogicalEvent({
@@ -843,6 +872,8 @@ function createCodexLogicalBuilder(deps) {
 
   function buildConversationEvent(id, kind, role, text, raws) {
     const asyncMessage = raws.map(asyncAgentMessageFromRaw).find(Boolean) || null;
+    const asyncPayload = asyncMessage
+      ? raws.find((raw) => asyncAgentMessageFromRaw(raw))?.parsed?.payload : null;
     const attachmentSummary = attachmentSummaryForRawList(raws)[0] || null;
     const attachmentPreview = attachmentSummary?.previewText || '';
     const event = createLogicalEvent({
@@ -855,11 +886,13 @@ function createCodexLogicalBuilder(deps) {
       role,
       label: asyncMessage ? 'Asynchronous message' : role === 'user' ? 'User message' : 'Assistant message',
       preview: truncate([text, attachmentPreview].filter(Boolean).join(' · ')),
-      searchText: [
-        asyncMessage ? asyncMessageSearchText(asyncMessage) : '',
-        text,
-        attachmentPreview,
-      ].filter(Boolean).join('\n'),
+      // Preserve the established async occurrence domain (question projection
+      // plus message body) while both projections now carry complete text.
+      searchText: asyncMessage
+        ? [codexAsyncSearchText(asyncPayload) || asyncMessageSearchText(asyncMessage),
+          codexAsyncMessageText(asyncPayload) || text, attachmentPreview].filter(Boolean).join('\n')
+        : raws.reduce((parts, raw) => addUncoveredTextPart(parts, raw.searchText || raw.messageText), []).join('\n')
+          || [text, attachmentPreview].filter(Boolean).join('\n'),
       severity: 'normal',
       status: '',
       rawRefs: raws.map(rawRef),
@@ -950,7 +983,7 @@ function createCodexLogicalBuilder(deps) {
       role: 'assistant',
       label: text ? 'Reasoning' : 'Empty reasoning',
       preview: truncate(text || raws[0].preview || 'reasoning'),
-      searchText: text,
+      searchText: raws.reduce((parts, raw) => addUncoveredTextPart(parts, raw.searchText || raw.messageText), []).join('\n') || text,
       hasReadableReasoning: Boolean(text),
       severity: 'normal',
       status: '',
@@ -991,7 +1024,7 @@ function createCodexLogicalBuilder(deps) {
       role: 'assistant',
       label: raw.payloadType === 'plan_delta' ? 'Plan delta' : 'Plan update',
       preview: truncate(text || raw.preview || raw.payloadType),
-      searchText: text || raw.searchText,
+      searchText: raw.searchText || text,
       severity: 'normal',
       status: raw.status || '',
       rawRefs: [rawRef(raw)],
@@ -1026,6 +1059,47 @@ function createCodexLogicalBuilder(deps) {
   }
 
   function buildLogicalEvents(rawEvents) {
+    rawEvents = semanticRawEvents(rawEvents);
+    const typedMirrors = new Map();
+    const omittedTyped = new Set();
+    const responseById = new Map();
+    const epochs = turnBoundaryEpochs(rawEvents);
+    for (const raw of rawEvents) {
+      const id = raw.parsed?.payload?.id;
+      if (!raw.typedItemType && raw.recordType === 'response_item' && typeof id === 'string' && id) {
+        if (!responseById.has(id)) responseById.set(id, []);
+        responseById.get(id).push(raw);
+      }
+    }
+    for (let position = 0; position < rawEvents.length; position += 1) {
+      const raw = rawEvents[position];
+      if (!['UserMessage', 'AgentMessage', 'Reasoning', 'FunctionCallOutput'].includes(raw.typedItemType)) continue;
+      // AgentMessage and Reasoning preserve an existing ResponseItem ID.
+      // UserMessage gets a fresh UUID: only the immediate preceding prepared
+      // response is a supported fanout, never a text/time-window search.
+      const candidates = raw.typedItemType === 'UserMessage'
+        ? [rawEvents[position - 1]].filter(Boolean)
+        : responseById.get(raw.parsed.payload.id) || [];
+      if (candidates.length !== 1) continue;
+      const owner = candidates[0];
+      const fullBody = (value) => {
+        const payload = value.parsed?.payload || {};
+        if (payload.content != null && !Array.isArray(payload.content)) return null;
+        return JSON.stringify([payload.summary || [], (payload.content || []).map((part) => part?.text).filter((text) => typeof text === 'string')]);
+      };
+      if (owner.typedItemType || owner.recordType !== raw.recordType || owner.payloadType !== raw.payloadType
+          || owner.role !== raw.role || owner.sessionId !== raw.sessionId
+          || epochs.get(owner.rawId) !== epochs.get(raw.rawId)
+          || (owner.turnId && raw.turnId && owner.turnId !== raw.turnId)
+          || owner.messageText !== raw.messageText
+          || fullBody(owner) !== fullBody(raw)
+          || !mirroredAttachmentIdentityMatches(owner, raw)
+          || typedMirrors.has(owner.rawId)) continue;
+      if (raw.typedItemType === 'FunctionCallOutput' && !externalToolInputMirrorsMatch(owner, raw)) continue;
+      typedMirrors.set(owner.rawId, raw);
+      omittedTyped.add(raw.rawId);
+    }
+    rawEvents = rawEvents.filter((raw) => !omittedTyped.has(raw.rawId));
     const logicalEvents = [];
     // Duplicate opaque identities are ambiguous, including equal text. Leave
     // every occurrence inspectable rather than choosing an owner across a
@@ -1100,7 +1174,7 @@ function createCodexLogicalBuilder(deps) {
           .filter((raw) => !consumed.has(raw.rawId) && !groupRawIds.has(raw.rawId))
           .sort((a, b) => a.line - b.line)
         : [];
-      const logicalEvent = buildToolLogicalEvent(callId, group, traceabilityRows);
+      const logicalEvent = buildToolLogicalEvent(callId, group, traceabilityRows, epochs);
       logicalEvents.push(logicalEvent);
       if (logicalEvent.kind === 'goal' && ['create_goal', 'update_goal'].includes(logicalEvent.toolName)) {
         const functionCall = group.find((raw) => raw.recordType === 'response_item' && raw.payloadType === 'function_call');
@@ -1158,7 +1232,8 @@ function createCodexLogicalBuilder(deps) {
           label: 'External tool input',
           preview: truncate([externalToolInput.text || externalToolInput.name, attachmentPreview]
             .filter(Boolean).join(' · ')),
-          searchText: [externalToolInput.name, externalToolInput.namespace, externalToolInput.text, attachmentPreview]
+          searchText: [externalToolInput.name, externalToolInput.namespace,
+            codexFullSearchText(raw.parsed?.payload?.output) || externalToolInput.text, attachmentPreview]
             .filter(Boolean).join('\n'),
           rawRefs: [rawRef(raw)],
           channels: [raw.recordType],
@@ -1418,7 +1493,17 @@ function createCodexLogicalBuilder(deps) {
         continue;
       }
       if (raw.recordType === 'event_msg' && raw.payloadType === 'context_compacted') {
-        logicalEvents.push(buildLifecycleEvent(raw, 'compaction', 'Context compacted', 'warning'));
+        const event = buildLifecycleEvent(raw, 'compaction', 'Context compacted', 'warning');
+        // Legacy fanout carries no item ID. Accept only an adjacent, opposite
+        // carrier in the same owner/turn; repeated typed IDs stay Protocol.
+        if (next?.payloadType === 'context_compacted'
+            && Boolean(raw.typedItemType) !== Boolean(next.typedItemType)
+            && raw.sessionId === next.sessionId
+            && (!raw.turnId || !next.turnId || raw.turnId === next.turnId)) {
+          event.rawRefs.push(rawRef(next));
+          consumed.add(next.rawId);
+        }
+        logicalEvents.push(event);
         consumed.add(raw.rawId);
         continue;
       }
@@ -1478,6 +1563,16 @@ function createCodexLogicalBuilder(deps) {
       consumed.add(raw.rawId);
     }
 
+    for (const event of logicalEvents) {
+      for (const ref of event.rawRefs.slice()) {
+        const mirror = typedMirrors.get(ref.rawId);
+        if (!mirror) continue;
+        event.rawRefs.push(rawRef(mirror));
+      }
+      // rawRef resolves originalRaw: channels describe persisted provenance,
+      // never the temporary record type used for semantic projection.
+      event.channels = sanitizeLogicalEnvelopeValue([...new Set(event.rawRefs.map((ref) => ref.sourceRecordType))]);
+    }
     const finalCodeModeFacts = deriveCodeModeFacts({
       projection: codeModeProjection,
       rawEvents,

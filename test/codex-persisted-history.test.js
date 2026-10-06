@@ -72,6 +72,33 @@ test('settings, recorded context and positional controls stay separate Protocol 
   assert.match(JSON.stringify(detail), /Applied thread settings/);
 });
 
+for (const compressed of [false, true]) {
+  test(`persisted configuration searches complete admitted facts beyond previews (compressed=${compressed})`, async t => {
+    const { index, session } = await fixture(t, [
+      settings({ model: `${'model-'.repeat(50)}MODEL_TAIL`, model_provider_id: 'PROVIDER_TAIL',
+        reasoning_effort: 'xhigh', unmodeled: 'UNADMITTED_SEARCH_SECRET' }),
+      { type: 'response_item', payload: { type: 'configuration_update',
+        reasoning: { effort: `${'future-'.repeat(50)}CONTROL_TAIL` } } },
+    ], compressed);
+    const snapshot = session.logicalEvents.find(event => event.subtype === 'thread_settings_applied');
+    assert.ok(snapshot.preview.length <= 240);
+    assert.doesNotMatch(snapshot.preview, /MODEL_TAIL|PROVIDER_TAIL|xhigh/);
+    for (const layer of ['protocol', 'raw']) {
+      for (const q of ['MODEL_TAIL', 'PROVIDER_TAIL', 'xhigh', 'CONTROL_TAIL']) {
+        const project = await codex.query.filterSessions(index, { q, layer });
+        const timeline = await codex.query.getTimelineAsync(index, session, { q, layer });
+        assert.equal(project.matchingEventTotal, 1, `${layer}/${q} project`);
+        assert.equal(timeline.searchEventCount, 1, `${layer}/${q} session`);
+        assert.equal(timeline.searchMatchCount, 1, `${layer}/${q} occurrences`);
+      }
+      assert.equal((await codex.query.filterSessions(index, { q: 'UNADMITTED_SEARCH_SECRET', layer })).total, 0);
+    }
+    const raw = session.rawEvents.find(event => event.payloadType === 'thread_settings_applied');
+    const source = await codex.readIndexedCodexRawRecord(index, session, raw);
+    assert.equal(source.parsed.payload.thread_settings.unmodeled, 'UNADMITTED_SEARCH_SECRET');
+  });
+}
+
 test('configuration provenance uses only the exact root boolean; context snapshots retain distinct evidence', async (t) => {
   const records = [control(true), control(false), control('true'), control(null),
     { type: 'response_item', payload: { type: 'configuration_update', reasoning: { effort: 'future-effort' }, metadata: { harness_authored_configuration: true } } },

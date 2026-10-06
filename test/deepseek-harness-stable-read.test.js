@@ -19,6 +19,7 @@ const stat = (revision) => ({ dev: 1n, ino: 2n, size: BigInt(content.length), mt
 function mockReads(t, { stableAttempt = Infinity, afterStat, readFile } = {}) {
   let stats = 0;
   let reads = 0;
+  t.mock.method(fsp, 'readdir', async () => [{ name: 'session.jsonl', isFile: () => true }]);
   t.mock.method(fsp, 'stat', async () => {
     stats += 1;
     const attempt = Math.ceil(stats / 2);
