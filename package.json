@@ -40,6 +40,14 @@
     "src/claude-source.js",
     "src/claude.js",
     "src/cli.js",
+    "src/history-cli.js",
+    "src/history-server.js",
+    "src/history-service.js",
+    "src/history-presentation.js",
+    "src/history-search-groups.js",
+    "src/history-source-locator.js",
+    "src/history-artifacts.js",
+    "skills/history-retrieval/",
     "src/canonical-contract.js",
     "src/cache-observation.js",
     "src/cache-observation-presentation.js",
@@ -97,7 +105,8 @@
     "src/project-query-disk.js",
     "src/search-text-stream.js",
     "src/plain-value-stream.js",
-    "src/search-json.js"
+    "src/search-json.js",
+    "src/history-search-text.js"
   ],
   "scripts": {
     "start": "node server.js",

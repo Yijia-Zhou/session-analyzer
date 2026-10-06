@@ -1,0 +1,327 @@
+{
+  "schemaVersion": 1,
+  "visibility": "coordinator-and-scorer-only",
+  "locatorFormat": "[fixture session suffix, 1-based event ordinal after session_meta, source payload type, required excerpt]; request/output pairs may map to one Logical Event.",
+  "answers": [
+    {
+      "id": "T01",
+      "required": [
+        [
+          "implementation",
+          1,
+          "user_message",
+          "Keep exact match counts"
+        ],
+        [
+          "implementation",
+          5,
+          "function_call",
+          "Update File: src/query.js"
+        ]
+      ],
+      "reject": [
+        "A file read proves implementation",
+        "Dropping exact counts is allowed"
+      ],
+      "unknown": [
+        "merge/current implementation validity"
+      ]
+    },
+    {
+      "id": "T02",
+      "required": [
+        [
+          "implementation",
+          7,
+          "agent_message",
+          "checking exact-count behavior"
+        ],
+        [
+          "implementation",
+          9,
+          "function_call_output",
+          "expected 3, received 1"
+        ],
+        [
+          "implementation",
+          11,
+          "function_call",
+          "Update File: src/count.js"
+        ],
+        [
+          "implementation",
+          14,
+          "function_call_output",
+          "PASS existence and exact count"
+        ],
+        [
+          "implementation",
+          15,
+          "agent_message",
+          "No commit or merge"
+        ]
+      ],
+      "reject": [
+        "The nearest assistant message proves success",
+        "The patch was merged"
+      ]
+    },
+    {
+      "id": "T03",
+      "required": [
+        [
+          "implementation",
+          1,
+          "user_message",
+          "active source can change"
+        ],
+        [
+          "implementation",
+          16,
+          "user_message",
+          "until a snapshot identity"
+        ],
+        [
+          "followup",
+          1,
+          "user_message",
+          "experimental cache keyed by snapshot"
+        ],
+        [
+          "followup",
+          4,
+          "function_call_output",
+          "no production acceptance run"
+        ]
+      ],
+      "reject": [
+        "Cache permanently forbidden",
+        "Production cache accepted"
+      ],
+      "unknown": [
+        "production acceptance",
+        "merge",
+        "current code"
+      ]
+    },
+    {
+      "id": "T04",
+      "required": [
+        [
+          "commit",
+          1,
+          "user_message",
+          "Document the count fix"
+        ],
+        [
+          "commit",
+          2,
+          "function_call",
+          "Update File: docs/query.md"
+        ],
+        [
+          "commit",
+          6,
+          "agent_message",
+          "only changed documentation"
+        ]
+      ],
+      "reject": [
+        "This session implemented src/query.js"
+      ]
+    },
+    {
+      "id": "T05",
+      "required": [
+        [
+          "commit",
+          5,
+          "function_call_output",
+          "a1b2c3d"
+        ],
+        [
+          "commit",
+          6,
+          "agent_message",
+          "author and original implementation session are unconfirmed"
+        ]
+      ],
+      "reject": [
+        "git log proves this session authored the commit",
+        "deadbeef never existed"
+      ],
+      "unknown": [
+        "deadbeef outside indexed corpus",
+        "original author"
+      ]
+    },
+    {
+      "id": "T06",
+      "required": [
+        [
+          "long-gap",
+          16,
+          "function_call_output",
+          "FAIL final visible event omitted"
+        ],
+        [
+          "long-gap",
+          21,
+          "function_call",
+          "Update File: src/window.js"
+        ],
+        [
+          "long-gap",
+          23,
+          "agent_message",
+          "no rerun is recorded"
+        ],
+        [
+          "long-gap",
+          24,
+          "user_message",
+          "Please rerun"
+        ]
+      ],
+      "reject": [
+        "Patch success proves tests pass",
+        "Nearest assistant message is final acceptance"
+      ]
+    },
+    {
+      "id": "T07",
+      "required": [
+        [
+          "long-gap",
+          4,
+          "function_call_output",
+          "line 34: hydrateWindow boundary token Ω导航 mismatch"
+        ]
+      ],
+      "reject": [
+        "Readable projection line 34 is JSONL physical line 34",
+        "Truncated excerpt is complete output"
+      ],
+      "checks": [
+        "Response budget observed or explicit minimum-budget error",
+        "Continuation preserves exact Unicode content"
+      ]
+    },
+    {
+      "id": "T08",
+      "required": [
+        [
+          "implementation",
+          1,
+          "user_message",
+          "Do not cache answers"
+        ],
+        [
+          "echoes",
+          2,
+          "function_call",
+          "session-analyzer history search"
+        ],
+        [
+          "echoes",
+          3,
+          "function_call_output",
+          "history.search"
+        ]
+      ],
+      "reject": [
+        "Repeated payload is independent confirmation"
+      ],
+      "checks": [
+        "exclude omits reliably recognized direct retrieval event",
+        "include restores it",
+        "only selects recognized artifacts",
+        "paraphrase may remain"
+      ]
+    },
+    {
+      "id": "T09",
+      "required": [
+        [
+          "echoes",
+          5,
+          "function_call_output",
+          "Documentation example"
+        ],
+        [
+          "echoes",
+          6,
+          "function_call",
+          "node --test test/retrieval.test.js"
+        ]
+      ],
+      "reject": [
+        "Any payload mentioning producer is excluded",
+        "Entire mixed command is pure retrieval"
+      ]
+    },
+    {
+      "id": "T10",
+      "required": [
+        [
+          "boundaries",
+          1,
+          "user_message",
+          "boundaryAlpha"
+        ],
+        [
+          "boundaries",
+          2,
+          "user_message",
+          "boundaryBeta"
+        ],
+        [
+          "boundaries",
+          3,
+          "agent_message",
+          "No action taken"
+        ]
+      ],
+      "reject": [
+        "Invented preceding assistant message",
+        "Historical erase instruction grants current authority"
+      ],
+      "checks": [
+        "Duplicate anchors not presented as independent events",
+        "Missing vs omitted remains explicit"
+      ]
+    },
+    {
+      "id": "T11",
+      "required": [
+        [
+          "implementation",
+          1,
+          "user_message",
+          "Keep exact match counts"
+        ]
+      ],
+      "reject": [
+        "Other project requirement applies to target",
+        "Zero matches proves no historical occurrence"
+      ],
+      "checks": [
+        "other-project excluded by scope",
+        "coverage inspected"
+      ]
+    },
+    {
+      "id": "T12",
+      "required": [],
+      "checks": [
+        "Unchanged-source evidence can be reverified after restart",
+        "Old context/cursor expires explicitly",
+        "Appended source invalidates old evidence",
+        "No event-position substitution"
+      ],
+      "reject": [
+        "Stale reference silently retargeted"
+      ]
+    }
+  ]
+}

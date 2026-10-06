@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "corpus": "history-state-resolution",
+  "project": "/synthetic/history-state-resolution",
+  "tasks": [
+    {
+      "id": "S1",
+      "prompt": "For LANTERN-42, determine the latest supported merge state in the available history. Explain how the earlier branch report relates to later operational evidence, and cite the decisive records."
+    },
+    {
+      "id": "S2",
+      "prompt": "For MICA-73, determine what can be concluded about its merge state after the later conversation. Distinguish recorded facts from claims and say what remains uncertain."
+    },
+    {
+      "id": "S3",
+      "prompt": "A late LANTERN-42 message says it remains unmerged. Is that a fresh state report? Resolve the latest supported state using record time and the time of the state being quoted."
+    }
+  ]
+}
