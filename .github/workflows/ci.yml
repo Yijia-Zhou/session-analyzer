@@ -125,6 +125,15 @@ jobs:
       - run: npm ci --strict-allow-scripts
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
+        id: browser-tests
+      - name: Upload navigation failure diagnostics
+        if: ${{ failure() && steps.browser-tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: browser-navigation-failures-${{ github.run_attempt }}
+          path: output/playwright/browser-failures/
+          if-no-files-found: warn
+          retention-days: 7
 
   ci:
     name: ci

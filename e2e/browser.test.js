@@ -18,11 +18,64 @@ const { createServer } = require('../server');
 const { trustedPolicy } = require('../src/legacy-raw-owner-budget');
 const { createTimelineProfileFixture } = require('../scripts/timeline-profile-fixture');
 const { suggestionRequestEvidence } = require('../scripts/timeline-profile');
+const { withNavigationDiagnostics } = require('./browser-diagnostics');
 
 const fixtureCodexHome = path.join(__dirname, '..', 'test', 'fixtures', 'codex-home');
 const repoRoot = 'G:\\vibe\\term-agent';
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
 let wave1bM2SourceBundlePromise;
+
+test('browser navigation diagnostics retain failure evidence and discard passing traces', async (t) => {
+  const outputRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'navigation-diagnostics-'));
+  t.after(() => {
+    assert.equal(path.dirname(outputRoot), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(outputRoot).startsWith('navigation-diagnostics-'));
+    return fsp.rm(outputRoot, { recursive: true, force: true });
+  });
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const messages = [];
+  const failure = new Error('Synthetic navigation diagnostic failure');
+  const run = withNavigationDiagnostics(async (_t, diagnostics) => {
+    await diagnostics.attach(page);
+    await page.goto('data:text/html,<button data-open-collaboration-session="synthetic-child" data-collaboration-action="target:0" onclick="this.remove()">Open synthetic child</button>');
+    await page.locator('button').focus();
+    await diagnostics.checkpoint('before-enter', { sessionId: 'synthetic-child' });
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => !document.querySelector('button'));
+    throw failure;
+  }, { outputRoot });
+  await assert.rejects(run({ name: 'synthetic-failure', diagnostic: (message) => messages.push(message) }), (error) => error === failure);
+  const directory = path.join(outputRoot, `synthetic-failure-${process.pid}`);
+  const data = JSON.parse(await fsp.readFile(path.join(directory, 'diagnostics.json'), 'utf8'));
+  assert.equal(data.error.message, failure.message);
+  assert.equal(data.checkpoints[0].expected.sessionId, 'synthetic-child');
+  assert.ok(data.state.events.some((event) => event.type === 'keydown' && event.key === 'Enter'
+    && event.target.sessionId === 'synthetic-child'));
+  assert.ok(data.state.events.some((event) => event.type === 'action-subtree-removed' && event.removedFocusedAction));
+  assert.deepEqual(data.captureErrors, []);
+  assert.deepEqual((await fsp.readFile(path.join(directory, 'trace.zip'))).subarray(0, 2), Buffer.from([0x50, 0x4b]));
+  assert.deepEqual((await fsp.readFile(path.join(directory, 'screenshot.png'))).subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  assert.ok(messages.some((message) => message.includes('Navigation failure artifacts:')));
+
+  await withNavigationDiagnostics(async (_t, diagnostics) => {
+    await diagnostics.attach(page);
+    await page.goto('data:text/html,<p>Synthetic passing navigation</p>');
+  }, { outputRoot })({ name: 'synthetic-success', diagnostic: (message) => messages.push(message) });
+  assert.deepEqual(await fsp.readdir(outputRoot), [path.basename(directory)]);
+
+  await assert.rejects(withNavigationDiagnostics(async (_t, diagnostics) => {
+    await diagnostics.attach(page);
+    await page.close();
+    throw failure;
+  }, { outputRoot })({ name: 'synthetic-closed-page', diagnostic: (message) => messages.push(message) }), (error) => error === failure);
+  const closed = JSON.parse(await fsp.readFile(path.join(outputRoot, `synthetic-closed-page-${process.pid}`, 'diagnostics.json'), 'utf8'));
+  assert.ok(closed.captureErrors.some((item) => item.label === 'state'));
+  assert.ok(closed.captureErrors.some((item) => item.label === 'screenshot'));
+});
 
 for (const locale of ['en', 'zh-CN']) test(`Codex 0.160 Paginated typed tools and answer remain readable through Main and Raw (${locale})`, async (t) => {
   // Synthetic rust-v0.160.0 TurnItem fixtures; no real writer, transcript, or
@@ -2279,9 +2332,9 @@ test('collaboration return settles delayed Inspector navigation before restoring
   }
 });
 
-test('collaboration navigation opens each confirmed target and restores reading context in both presentations', async (t) => {
+test('collaboration navigation opens each confirmed target and restores reading context in both presentations', withNavigationDiagnostics(async (t, diagnostics) => {
   const { index, parentId, childId, eventId } = await makeCollaborationNavigationFixture(t);
-  const { page } = await openApp(t, index, { locale: 'en' });
+  const { page } = await openApp(t, index, { locale: 'en', beforeGoto: diagnostics.attach });
   for (const presentation of ['timeline', 'trajectory']) {
     await page.locator(`[data-session-id="${parentId}"]`).click();
     await page.locator('#searchInput').fill('recorded result');
@@ -2310,11 +2363,14 @@ test('collaboration navigation opens each confirmed target and restores reading 
       return pane && rect.top >= pane.top && rect.bottom <= pane.bottom;
     }, childId);
     const before = await page.locator('.timelinePane').evaluate((pane) => pane.scrollTop);
+    await diagnostics.checkpoint(`${presentation}:before-enter`, { childId, eventId, timelineScrollTop: before });
     await page.keyboard.press('Enter');
+    await diagnostics.checkpoint(`${presentation}:after-enter`, { childId });
     await page.waitForFunction((id) => document.querySelector('.sessionItem.active')?.dataset.sessionId === id, childId);
     await page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('Child own work'));
     assert.equal(await page.locator('#searchInput').inputValue(), '');
     await page.locator('#sessionHeader [data-reading-back]').click();
+    await diagnostics.checkpoint(`${presentation}:after-return-click`, { parentId, timelineScrollTop: before });
     await page.waitForFunction((id) => document.querySelector('.sessionItem.active')?.dataset.sessionId === id, parentId);
     await page.waitForFunction((id) => document.querySelector('[data-open-collaboration-session]') && document.querySelector(`[data-event-id="${CSS.escape(id)}"].selected, [data-trajectory-event-id="${CSS.escape(id)}"].selected`), eventId, { timeout: 5000 }).catch(async (error) => {
       throw new Error(`${presentation}: ${error.message}\n${await page.locator('#detail').innerText()}\n${await page.locator('#timeline').innerText()}`);
@@ -2326,7 +2382,7 @@ test('collaboration navigation opens each confirmed target and restores reading 
     await page.locator('#searchInput').fill('');
     await page.locator('#searchInput').dispatchEvent('input');
   }
-});
+}));
 
 test('a late child load cannot replace a newer session selection', async (t) => {
   const { index, parentId, childId, otherId, eventId } = await makeCollaborationNavigationFixture(t);
@@ -2397,9 +2453,9 @@ test('collaboration return restores a paginated source and works from mobile Tra
   assert.equal(await page.locator('#detail [data-open-collaboration-session]').first().evaluate((node) => node === document.activeElement), true);
 });
 
-test('collaboration mobile Timeline opens visible child content and restores document scroll', async (t) => {
+test('collaboration mobile Timeline opens visible child content and restores document scroll', withNavigationDiagnostics(async (t, diagnostics) => {
   const { index, parentId, childId, eventId } = await makeCollaborationNavigationFixture(t, { precedingCount: 35 });
-  const { page } = await openApp(t, index, { locale: 'en' });
+  const { page } = await openApp(t, index, { locale: 'en', beforeGoto: diagnostics.attach });
   await page.locator(`[data-session-id="${parentId}"]`).click();
   await page.locator(`.event[data-event-id="${eventId}"]`).click();
   const link = page.locator(`#timeline [data-open-collaboration-session="${childId}"]`).first();
@@ -2410,7 +2466,9 @@ test('collaboration mobile Timeline opens visible child content and restores doc
   await page.waitForLoadState('networkidle');
   const before = await page.evaluate(() => window.scrollY);
   assert.ok(before > 1000, `expected nonzero document scroll, got ${before}`);
+  await diagnostics.checkpoint('mobile:before-child-click', { childId, eventId, documentScrollY: before });
   await link.click();
+  await diagnostics.checkpoint('mobile:after-child-click', { childId });
   await page.waitForFunction((id) => document.querySelector('.sessionItem.active')?.dataset.sessionId === id
     && document.querySelector('#timeline')?.textContent.includes('Child own work'), childId);
   await page.waitForLoadState('networkidle');
@@ -2421,11 +2479,12 @@ test('collaboration mobile Timeline opens visible child content and restores doc
   const bounds = await child.boundingBox();
   assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= 900, JSON.stringify(bounds));
   await page.locator('#sessionHeader [data-reading-back]').click();
+  await diagnostics.checkpoint('mobile:after-return-click', { parentId, documentScrollY: before });
   await link.waitFor();
   await page.waitForLoadState('networkidle');
   await page.waitForFunction((top) => Math.abs(window.scrollY - top) < 3, before, { timeout: 5000 });
   assert.equal(await link.evaluate((node) => node === document.activeElement), true);
-});
+}));
 
 test('collaboration Trajectory return restores desktop Inspector and mobile document scroll', async (t) => {
   const { index, parentId, childId, eventId } = await makeCollaborationNavigationFixture(t);

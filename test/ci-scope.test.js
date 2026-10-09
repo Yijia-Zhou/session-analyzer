@@ -160,6 +160,9 @@ test('workflow wires full-history classification without filtering the required 
   assert.match(scope, /run: node scripts\/ci-scope\.js/u);
   assert.match(browser, /needs: scope/u);
   assert.match(browser, /if: \$\{\{ needs\.scope\.outputs\.browser_required != 'false' \}\}/u);
+  assert.ok(browser.includes("if: ${{ failure() && steps.browser-tests.outcome == 'failure' }}"));
+  assert.ok(browser.includes('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'));
+  assert.match(browser, /path: output\/playwright\/browser-failures\/\n\s+if-no-files-found: warn\n\s+retention-days: 7/u);
   assert.match(aggregate, /if: \$\{\{ always\(\) \}\}/u);
   for (const dependency of ['scope', 'node', 'package', 'browser']) assert.ok(aggregate.includes(`      - ${dependency}\n`));
   for (const [name, value] of Object.entries({ EVENT_NAME: 'github.event_name', SCOPE_RESULT: 'needs.scope.result', SCOPE_MODE: 'needs.scope.outputs.mode', BROWSER_REQUIRED: 'needs.scope.outputs.browser_required', NODE_RESULT: 'needs.node.result', PACKAGE_RESULT: 'needs.package.result', BROWSER_RESULT: 'needs.browser.result' })) {
