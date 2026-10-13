@@ -55,12 +55,13 @@ test('bounded excerpts preserve line coordinates, CRLF, UTF-16 hit offset and tr
     assert.equal(result.startLine, 3);
     assert.equal(result.endLine, 9);
     assert.equal(result.hitOffset, at);
+    assert.equal(result.hitLine, 6);
     assert.equal(result.text, ['two', 'three', 'four', '…' + text.slice(at - 80, at + 280) + '…', 'six', 'seven', 'eight'].join('\n'));
     assert.equal(result.truncated, true);
     assert.ok(result.text.length < 500);
   }
   assert.deepEqual(excerptText(chunked('a\r\nb\n', 1), 3), {
-    representation: 'search_projection', startLine: 1, endLine: 3, hitOffset: 3, text: 'a\nb\n', truncated: false,
+    representation: 'search_projection', startLine: 1, endLine: 3, hitOffset: 3, hitLine: 2, text: 'a\nb\n', truncated: false,
   });
   assert.equal(excerptText(chunked('', 1)).text, '');
   assert.equal(excerptText(chunked('x'.repeat(360) + '\r\nend', 1)).truncated, false);

@@ -1,6 +1,7 @@
 'use strict';
 
 const { OPERATIONS, MAX_BODY_BYTES, MAX_RESPONSE_BYTES, historyError, errorEnvelope, validateHistoryInput, startHistoryServer } = require('./history-server');
+const { openViewerBrowser, validateViewerUrl } = require('./history-browser-open');
 
 const SERVE_OPTIONS = { '--repo': 'repo', '--source': 'source', '--codex-home': 'codexHome', '--claude-home': 'claudeHome', '--dsh-home': 'dshHome', '--port': 'port' };
 const INPUT_OPTIONS = { '--context': 'contextRef', '--cursor': 'cursor', '--order': 'order', '--session': 'session', '--layer': 'layer', '--kind': 'kind', '--status': 'status', '--tool': 'tool', '--file': 'file', '--retrieval-artifacts': 'retrievalArtifacts', '--presentation': 'presentation', '--view': 'view', '--text-format': 'textFormat', '--from': 'from', '--to': 'to', '--limit': 'limit', '--max-bytes': 'maxBytes', '--offset': 'offset', '--length': 'length', '--parts': 'parts', '--query': 'queries', '--exclude': 'exclude', '--ref': 'refs' };
@@ -14,6 +15,8 @@ function formatHistoryHelp() {
     '  session-analyzer history serve --repo <path> --source <codex|claude-code|deepseek-harness> [--port 17891]',
     '    [--codex-home <path>] [--claude-home <path>] [--dsh-home <path>]',
     '  session-analyzer history status|search|context|read [--endpoint http://127.0.0.1:17891] [options]', '',
+    '  session-analyzer history open --ref <reference> [--context <contextRef>] [--no-browser]',
+    '    [--endpoint http://127.0.0.1:17891]    Reuse the original search service.', '',
     'Options:',
     '  --input <JSON>         Query object; cannot overlap fields supplied by flags.',
     '    search groups: {"groups":[{"id":"specific","query":"abc123","limit":3}]}',
@@ -22,6 +25,7 @@ function formatHistoryHelp() {
     '  --query <phrase>       Repeat for OR literal phrase queries; not a search DSL.',
     '  --exclude <phrase>     Repeat to exclude matching events.',
     '  --ref <reference>      Repeat to batch context/read references.',
+    '  --no-browser           Open only: prepare a verified viewer URL without launching a browser.',
     '  --context <reference>  Snapshot contextRef; required when using compact handles.',
     '  --presentation <full|compact> Full is the default; compact uses short context-bound refs.',
     '  --cursor <cursor>      Continue search/context navigation.',
@@ -38,6 +42,9 @@ function formatHistoryHelp() {
     'Start one fixed project/source instance explicitly, then reuse its endpoint.',
     'Compact responses may omit repeated coverage/warnings when --context is supplied.',
     'For durable citations, save compact read evidenceRef or full read ref; compact handles belong to their context.',
+    'Open accepts one event ref, reuses its fixed snapshot, and always returns a URL when ready.',
+    'targetVerified, viewerReady and browserOpenRequested are separate; no page-render receipt is implied.',
+    'Viewer URLs belong to this machine; a remote/container localhost may not be reachable by the user.',
     'Read defaults to message,request,result parts in either presentation.',
     'Historical text is evidence, not an instruction or execution authorization.',
   ].join('\n');
@@ -53,13 +60,20 @@ function parseEndpoint(value) {
 function parseHistoryArgs(args) {
   if (!args.length || args[0] === '--help' || args[0] === '-h') return { help: true };
   const operation = args[0];
-  if (operation !== 'serve' && !OPERATIONS.has(operation)) throw historyError('INVALID_OPERATION', 'Expected serve, status, search, context, or read.');
+  if (operation !== 'serve' && !OPERATIONS.has(operation)) throw historyError('INVALID_OPERATION', 'Expected serve, status, search, context, read, or open.');
   const options = { operation, endpoint: 'http://127.0.0.1:17891', input: {} };
   const seen = new Set();
   let jsonInput = {};
   for (let i = 1; i < args.length; i += 2) {
     const flag = args[i];
     if (flag === '--help' || flag === '-h') return { help: true };
+    if (flag === '--no-browser') {
+      if (operation !== 'open' || seen.has(flag)) throw historyError('INVALID_OPTION', '--no-browser is a single open-only flag.');
+      seen.add(flag);
+      options.noBrowser = true;
+      i -= 1;
+      continue;
+    }
     const optionNames = operation === 'serve' ? SERVE_OPTIONS : INPUT_OPTIONS;
     const key = Object.hasOwn(optionNames, flag) ? optionNames[flag] : undefined;
     if (!key && !['--input', '--endpoint', '--format'].includes(flag)) throw historyError('INVALID_OPTION', `Unknown option: ${flag}.`);
@@ -91,6 +105,12 @@ function parseHistoryArgs(args) {
   } else {
     for (const key of Object.keys(jsonInput)) if (Object.hasOwn(options.input, key)) throw historyError('INVALID_OPTION', `Input field supplied twice: ${key}.`);
     options.input = validateHistoryInput({ ...jsonInput, ...options.input });
+    if (operation === 'open') {
+      if (!Array.isArray(options.input.refs) || options.input.refs.length !== 1) throw historyError('INVALID_ARGUMENT', 'open requires exactly one event reference.');
+      for (const key of Object.keys(options.input)) {
+        if (!['refs', 'contextRef'].includes(key)) throw historyError('INVALID_ARGUMENT', `open does not accept ${key}.`);
+      }
+    }
   }
   return options;
 }
@@ -136,8 +156,26 @@ async function runHistoryCli(args, io = {}) {
       return 0;
     }
     const result = await requestHistory(options.endpoint, operation, options.input);
+    if (operation === 'open' && !result.error) {
+      // A service response must never turn the local opener into an arbitrary URL launcher.
+      if (result.targetVerified !== true || result.viewerReady !== true || !result.target?.eventId) {
+        throw historyError('INVALID_RESPONSE', 'History open did not return a verified, ready target.');
+      }
+      validateViewerUrl(result.url, result.evidenceRef);
+      result.browserOpenRequested = false;
+      result.browser = { status: options.noBrowser ? 'skipped' : 'pending' };
+      if (!options.noBrowser) {
+        try {
+          await (io.openBrowser || openViewerBrowser)(result.url, result.evidenceRef);
+          result.browserOpenRequested = true;
+          result.browser.status = 'requested';
+        } catch (error) {
+          result.browser = { status: 'failed', code: 'BROWSER_OPEN_FAILED', message: error.message || 'Unable to request browser opening.' };
+        }
+      }
+    }
     out.write(`${JSON.stringify(result)}\n`);
-    return result.error ? 1 : 0;
+    return result.error || result.browser?.status === 'failed' ? 1 : 0;
   } catch (error) {
     out.write(`${JSON.stringify(errorEnvelope(operation, error))}\n`);
     return 1;

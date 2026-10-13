@@ -615,6 +615,65 @@ test('context expands unfiltered message boundaries, exposes internal gaps and s
   assert.equal(new Set(first.events.map((event) => event.ref)).size, first.events.length);
 });
 
+test('context exposes canonical layer positions and exact returned-event gap endpoints in full and compact output', async (t) => {
+  const { service } = await corpus(t);
+  const hit = (await service.execute('search', { queries: ['needle match'], tool: 'exec_command' })).items[0];
+  const window = (await service.execute('context', { refs: [hit.ref] })).items[0];
+  assert.deepEqual(window.events.map((event) => event.timelineIndex), [2, 3, 6, 9, 10]);
+  assert.deepEqual(window.gaps.map(({ beforeEventId, afterEventId, count }) => ({ beforeEventId, afterEventId, count })), [
+    { beforeEventId: window.events[1].eventId, afterEventId: window.events[2].eventId, count: 2 },
+    { beforeEventId: window.events[2].eventId, afterEventId: window.events[3].eventId, count: 2 },
+  ]);
+  for (const gap of window.gaps) {
+    const before = window.events.find((event) => event.eventId === gap.beforeEventId);
+    const after = window.events.find((event) => event.eventId === gap.afterEventId);
+    const expanded = (await service.execute('context', { refs: [gap.ref] })).items[0];
+    assert.deepEqual(expanded.events.map((event) => event.timelineIndex),
+      Array.from({ length: gap.count }, (_, n) => before.timelineIndex + n + 1));
+    assert.equal(after.timelineIndex - before.timelineIndex - 1, gap.count);
+    assert.deepEqual(expanded.gaps, []);
+  }
+  const compact = await service.execute('context', { refs: [hit.ref], presentation: 'compact' });
+  const compactWindow = compact.items[0];
+  const compactEvents = compactWindow.eventIndexes.map((index) => compact.events[index]);
+  assert.deepEqual(compactEvents.map(({ eventId, timelineIndex }) => ({ eventId, timelineIndex })),
+    window.events.map(({ eventId, timelineIndex }) => ({ eventId, timelineIndex })));
+  assert.deepEqual(compactWindow.gaps.map(({ beforeEventId, afterEventId, count }) => ({ beforeEventId, afterEventId, count })),
+    window.gaps.map(({ beforeEventId, afterEventId, count }) => ({ beforeEventId, afterEventId, count })));
+  // Compact response-local eventIndexes are distinct from canonical timelineIndex;
+  // their gap handles still expand to the same admitted records.
+  assert.equal(compactEvents[0].timelineIndex, 2);
+  assert.equal(compactWindow.eventIndexes[0], 0);
+  const compactGap = (await service.execute('context', {
+    refs: [compactWindow.gaps[0].ref], contextRef: compact.contextRef,
+  })).items[0];
+  assert.deepEqual(compactGap.events.map((event) => event.timelineIndex), [4, 5]);
+  const adjacent = (await service.execute('context', { refs: [window.events[0].ref], view: 'full', limit: 4, length: 50 })).items[0];
+  assert.deepEqual(adjacent.events.map((event) => event.timelineIndex), [0, 1, 2, 3]);
+  assert.deepEqual(adjacent.gaps, []);
+  assert.deepEqual((await service.execute('open', { refs: [hit.ref] })).context, window);
+  assert.deepEqual((await service.resolveEvidence({ refs: [hit.ref] })).context, window);
+});
+
+test('Protocol and Raw context positions are zero-based within their own unfiltered layer', async (t) => {
+  const { service } = await corpus(t);
+  for (const layer of ['protocol', 'raw']) {
+    const all = (await service.execute('search', { layer, retrievalArtifacts: 'include', limit: 100, maxBytes: 100000 })).items;
+    assert.ok(all.length > 0, layer);
+    const anchorIndex = Math.floor(all.length / 2);
+    const window = (await service.execute('context', { refs: [all[anchorIndex].ref] })).items[0];
+    const start = Math.max(0, anchorIndex - 2);
+    const expected = all.slice(start, anchorIndex + 3);
+    assert.deepEqual(window.events.map((event) => event.eventId), expected.map((event) => event.eventId));
+    assert.deepEqual(window.events.map((event) => event.timelineIndex), expected.map((event, n) => start + n));
+    assert.equal(window.events.find((event) => event.anchor).timelineIndex, anchorIndex);
+    assert.ok(window.events.every((event) => event.layer === layer));
+    assert.deepEqual(window.gaps, []);
+    const full = (await service.execute('context', { refs: [all[0].ref], view: 'full', limit: 2, length: 50 })).items[0];
+    assert.equal(full.events[0].timelineIndex, 0);
+  }
+});
+
 test('batch precise read, raw evidence and content continuation retain verifiable content', async (t) => {
   const { service } = await corpus(t);
   const messages = await service.execute('search', { queries: ['queryNeedle', 'needle match'], limit: 8 });

@@ -2,6 +2,10 @@
 
 const { backgroundTerminalLabel } = require('../shared/background-terminal-presentation');
 
+const { referenceFromHash, createEvidenceNavigation } = require('./history-evidence');
+const searchExcerpt = require('./search-excerpt');
+const evidenceNavigation = createEvidenceNavigation();
+
 const rendererApi = window.sessionRenderers;
 const escapeHtml = rendererApi.escapeHtml;
 const renderInspectorSections = rendererApi.renderInspectorSections;
@@ -141,6 +145,11 @@ function searchStatusLabel(value) {
 }
 
 const state = {
+  historyViewer: false,
+  historyReferenceReady: false,
+  historyEvidence: null,
+  historyEvidencePending: false,
+  historyBusyAction: null,
   locale: browserLocale(),
   sourceKind: 'codex',
   sourceHome: '',
@@ -197,6 +206,8 @@ const state = {
   eventSelectionIntentId: 0,
   inspectorNavigationSettlement: null,
   analysisRequestId: 0,
+  deferredAnalysis: false,
+  deferredAnalysisRequest: null,
   selectedSessionId: '',
   selectedEventId: '',
   offset: initialTimelineEventState.offset,
@@ -738,6 +749,7 @@ function api(path, options = {}) {
       error.status = res.status;
       error.code = body?.code;
       error.details = body?.details;
+      error.sessionFallback = body?.sessionFallback;
       throw error;
     }
     if (paginationRequest && (body.indexRevision !== paginationRequest.indexRevision
@@ -1234,7 +1246,7 @@ function updateProjectSwitchControl(options = {}) {
       : (canReturn ? t('return') : (displayRoot ? t('changeProject') : t('selectProjectAction')));
   }
   if (!el.projectSwitchControl) return;
-  el.projectSwitchControl.disabled = sourceConfigBusy();
+  el.projectSwitchControl.disabled = state.historyViewer || sourceConfigBusy();
   el.projectSwitchControl.setAttribute('aria-controls', 'projectChooser');
   el.projectSwitchControl.setAttribute('aria-expanded', state.selectingProject ? 'true' : 'false');
   if (state.projectReturning && returnRoot) {
@@ -1472,7 +1484,7 @@ function setProjectRefreshStatus(message = '', kind = '') {
 function updateProjectRefreshControl() {
   if (!el.projectRefreshBtn) return;
   const refreshing = Boolean(state.projectRefreshing || state.projectRefreshJobId);
-  const disabled = !state.repoRoot
+  const disabled = state.historyViewer || !state.repoRoot
     || refreshing
     || state.selectingProject
     || state.projectReturning
@@ -1662,6 +1674,7 @@ function syncSearchInputValue() {
 function commitSearchInput() {
   const nextQuery = el.searchInput.value.trim();
   const changed = nextQuery !== state.searchQuery;
+  if (changed && state.historyEvidence?.active) leaveHistoryEvidence();
   state.searchQuery = nextQuery;
   return changed;
 }
@@ -1671,6 +1684,7 @@ function activeLayerId() {
 }
 
 function rememberedMainPresentationId() {
+  if (state.historyEvidence?.active) return 'timeline';
   return state.mainPresentationId === 'trajectory' ? 'trajectory' : 'timeline';
 }
 
@@ -2113,6 +2127,7 @@ function updateSearchMatchControls() {
 }
 
 function maybePreloadSearchTargets() {
+  if (historyExcerptActive()) return;
   const search = currentSearchState();
   if (search.scope !== 'session' || !search.q || !state.selectedSessionId) return;
   if (!searchDiscoveryContextReady()) return;
@@ -2157,12 +2172,21 @@ function maybePreloadSearchTargets() {
 
 function liveSearchTargetBinding(target, surface) {
   return searchTargets.liveBinding(target, surface, (node, candidate) => (
-    node?.isConnected && node.dataset.searchTargetId === candidate.id
+    node?.isConnected && !node.closest('.searchSupplement[hidden]') && node.dataset.searchTargetId === candidate.id
   ));
 }
 
 function liveSearchTargetNode(target) {
-  return liveSearchTargetBinding(target, 'timeline') || liveSearchTargetBinding(target, 'inspector');
+  const mark = liveSearchTargetBinding(target, 'timeline') || liveSearchTargetBinding(target, 'inspector');
+  if (mark || !target) return mark;
+  // Readable phrases can cross Markdown nodes or live in link text excluded by
+  // the highlighter. The canonical event remains a valid event-level landing.
+  const card = timelineCardLifecycle.lookup(target.ownerId)?.articleNode
+    || el.timeline.querySelector(`[data-event-id="${CSS.escape(target.ownerId)}"]`);
+  if (card?.dataset.searchAnchorKey === state.searchTargetRegistry.key) return card;
+  const inspector = el.detail.querySelector('.inspector');
+  return inspector?.dataset.searchAnchorEvent === target.ownerId
+    && inspector.dataset.searchAnchorKey === state.searchTargetRegistry.key ? inspector : null;
 }
 
 function endProgrammaticSearchScrollGuard() {
@@ -2199,7 +2223,7 @@ function setActiveSearchTarget(target, options = {}) {
 
   state.searchTargetRegistry.activeTargetId = target.id;
   let mark = liveSearchTargetNode(target);
-  if (mark) mark.classList.add('activeSearchMark');
+  if (mark?.classList.contains('searchMark')) mark.classList.add('activeSearchMark');
 
   if (options.scroll || options.syncDetail) {
     const confirmedEventDetail = isSelectedEventDetailView()
@@ -2228,6 +2252,7 @@ function setActiveSearchTarget(target, options = {}) {
 
 function refreshSearchHighlights(options = {}) {
   const roots = highlightRoots();
+  roots.forEach(syncSearchSupplements);
   const searchKey = syncSearchTargetRegistryKey();
   const previousActiveTargetId = state.searchTargetRegistry.activeTargetId;
   searchTargets.resetBindings(state.searchTargetRegistry.targets);
@@ -2343,6 +2368,7 @@ function detachScopedSearchOwner(prepared) {
 
 function applyScopedSearchOwner(prepared, root = prepared.root) {
   if (!root?.isConnected) throw new Error('Scoped search replacement root is not mounted');
+  syncSearchSupplements(root);
   const marks = prepared.terms.length ? searchHighlighter.apply(root, prepared.terms) : [];
   if (prepared.target) {
     const owner = { surface: prepared.surface, ownerId: prepared.ownerId, root };
@@ -2368,7 +2394,7 @@ function restoreScopedActiveSearchPresentation(ownerId, refreshedSurfaces) {
       }
     }
     const liveMark = liveSearchTargetNode(target);
-    if (liveMark && !liveMark.classList.contains('activeSearchMark')) {
+    if (liveMark?.classList.contains('searchMark') && !liveMark.classList.contains('activeSearchMark')) {
       liveMark.classList.add('activeSearchMark');
     }
   }
@@ -2398,6 +2424,7 @@ function refreshAppendedSearchHighlights(suffixEvents, owners, baseTimelineIndex
         ownerId: owner.eventId,
         root: owner.articleNode,
       };
+      syncSearchSupplements(owner.articleNode);
       const ownerMarks = searchHighlighter.apply(owner.articleNode, terms);
       ownerMarks.forEach((mark, occurrence) => (
         bindSearchTarget(searchableOwner, occurrence, mark, targetsById)
@@ -2418,7 +2445,7 @@ function refreshAppendedSearchHighlights(suffixEvents, owners, baseTimelineIndex
     || null;
   state.searchTargetRegistry.activeTargetId = active?.id || '';
   const activeMark = active ? liveSearchTargetNode(active) : null;
-  if (activeMark) activeMark.classList.add('activeSearchMark');
+  if (activeMark?.classList.contains('searchMark')) activeMark.classList.add('activeSearchMark');
   updateSearchMatchControls();
   convergeSelectedEventDetailView();
   maybePreloadSearchTargets();
@@ -2503,6 +2530,11 @@ async function resolveSearchTargetNode(target, searchKey, invocation) {
     if (!searchOperationIsCurrent(searchKey, invocation)) return null;
     if (needsTransientExpansion) addSearchTransientExpansion(event.id);
     renderTimeline();
+  }
+  if (!liveSearchTargetNode(target) && trajectoryPresentationActive()) {
+    showInspector(event, { replace: true, passive: true, origin: DETAIL_VIEW_ORIGIN_SEARCH });
+    await loadEventDetail(event);
+    if (!searchOperationIsCurrent(searchKey, invocation)) return null;
   }
   return liveSearchTargetNode(target);
 }
@@ -3536,7 +3568,8 @@ function renderInspectorDetail(event) {
         || (section.type === 'event_refs' && section.items?.length === 1)))
     ));
     const supplemental = renderInspectorSections(supplementalSections.filter((section) => !leading.includes(section)));
-    const body = `${renderSections(leading)}${primary}${supplemental}`;
+    const supplement = includePrimary ? renderEventSearchSupplement(event) : '';
+    const body = `${renderSections(leading)}${primary}${supplement}${supplemental}`;
     if (!body) return '';
     return `<section class="inspectorSection">
       <h3>${escapeHtml(t('details'))}</h3>
@@ -3546,7 +3579,7 @@ function renderInspectorDetail(event) {
   if (error) {
     return `<section class="inspectorSection">
       <h3>${escapeHtml(t('details'))}</h3>
-      ${renderDetailFailure(error, 'data-detail-action')}
+      <div class="inspectorDetailBody">${renderDetailFailure(error, 'data-detail-action')}${trajectoryPresentationActive() ? renderEventSearchSupplement(event) : ''}</div>
     </section>`;
   }
   return `<section class="inspectorSection">
@@ -4535,6 +4568,7 @@ async function exitProjectChooser() {
 }
 
 async function applyAppState(appState) {
+  state.historyViewer = Boolean(appState.historyViewer?.fixedScope);
   const totals = appState.totals || {};
   if (appState.locale) {
     const nextLocale = i18n.resolveLocale(appState.locale);
@@ -4616,9 +4650,14 @@ async function changeLocale(locale) {
   resetSessionDetailCache();
   applyStaticLocale();
   if (state.projectSelected) {
+    const linkedRecord = state.historyEvidence?.active && !hasCanonicalTimelineEvent(state.historyEvidence.target?.eventId)
+      ? state.historyEvidence : null;
     const appState = await api('/api/state');
     await applyAppState(appState.currentState || appState);
-    await loadSessions();
+    await loadSessions({ skipSelection: Boolean(linkedRecord) });
+    if (linkedRecord && state.historyEvidence === linkedRecord && linkedRecord.active) {
+      await openHistoryEvidence(linkedRecord.ref, { originalRef: linkedRecord.originalRef });
+    }
     if (dirtyDraft && state.profileId === dirtyDraft.profileId && state.profiles.some((profile) => profile.id === dirtyDraft.profileId)) {
       state.profileDraft = cloneProfile(activeProfile());
       state.profileDraft.rules = normalizeRules(dirtyDraft.rules);
@@ -4630,6 +4669,7 @@ async function changeLocale(locale) {
   } else {
     renderProjects();
   }
+  renderHistoryEvidence();
 }
 
 function resetProjectObservation() {
@@ -4797,6 +4837,454 @@ async function selectProject(repoRoot, options = {}) {
   }
 }
 
+function historyEvidencePanel() {
+  let panel = document.getElementById('historyEvidence');
+  if (!panel) {
+    panel = document.createElement('section');
+    panel.id = 'historyEvidence';
+    panel.className = 'historyReadingActions';
+    el.timeline.after(panel);
+  }
+  return panel;
+}
+
+function historyContextCurrent() {
+  const evidence = state.historyEvidence;
+  return Boolean(evidence?.active && evidence.target?.sessionId === state.selectedSessionId
+    && evidence.target.layer === activeLayerId() && state.searchScope === 'session');
+}
+
+function historyExcerptActive() {
+  return historyContextCurrent() && state.historyEvidence.mode === 'excerpts';
+}
+
+function historyContextEvent(eventId) {
+  return historyContextCurrent() ? state.historyEvidence.events?.get(eventId) : null;
+}
+
+function historyContextViewport() {
+  const mobile = window.matchMedia('(max-width: 760px)').matches;
+  const pane = el.timeline.closest('.timelinePane');
+  const top = mobile ? 0 : pane.getBoundingClientRect().top;
+  const cards = [...el.timeline.querySelectorAll('.event[data-event-id]')];
+  const anchor = cards.find((node) => node.getClientRects().length && node.getBoundingClientRect().bottom > top);
+  return { mobile, anchorId: anchor?.dataset.eventId, anchorTop: anchor?.getBoundingClientRect().top,
+    cards: cards.map((node) => ({ id: node.dataset.eventId,
+      open: [...node.querySelectorAll('details')].map((item) => item.open),
+      scroll: [...node.querySelectorAll('pre')].map((item) => [item.scrollTop, item.scrollLeft]),
+    })) };
+}
+
+function restoreHistoryContextViewport(saved) {
+  if (!saved) return;
+  for (const item of saved.cards) {
+    const card = el.timeline.querySelector(`[data-event-id="${CSS.escape(item.id)}"]`);
+    card?.querySelectorAll('details').forEach((node, index) => { if (index < item.open.length) node.open = item.open[index]; });
+    card?.querySelectorAll('pre').forEach((node, index) => {
+      if (item.scroll[index]) { node.scrollTop = item.scroll[index][0]; node.scrollLeft = item.scroll[index][1]; }
+    });
+  }
+  if (saved.mobile !== window.matchMedia('(max-width: 760px)').matches || !saved.anchorId) return;
+  const anchor = el.timeline.querySelector(`[data-event-id="${CSS.escape(saved.anchorId)}"]`);
+  if (!anchor?.getClientRects().length) return;
+  const delta = anchor.getBoundingClientRect().top - saved.anchorTop;
+  beginProgrammaticSearchScroll();
+  if (saved.mobile) window.scrollBy({ top: delta, behavior: 'instant' });
+  else {
+    const pane = el.timeline.closest('.timelinePane');
+    pane.scrollTop += delta;
+    state.timelineLastScrollTop = pane.scrollTop;
+  }
+}
+
+function focusHistoryEvent(eventId) {
+  const header = el.timeline.querySelector(`[data-event-id="${CSS.escape(eventId)}"] .eventHeader`);
+  if (!header?.getClientRects().length) return;
+  clearTimelineUserPaginationIntent();
+  beginProgrammaticSearchScroll();
+  header.scrollIntoView({ block: 'start', behavior: 'instant' });
+}
+
+function renderHistoryContextCards(events, compactWebLifecycleIds) {
+  const context = state.historyEvidence.context;
+  const gap = (label) => `<div class="historyContextGap">⋯ <span>${escapeHtml(label)}</span></div>`;
+  return `${context.previous ? gap(t('historyEarlierRecords')) : ''}${events.map((event, index) => {
+    const before = events[index - 1];
+    const omitted = before && context.gaps?.find((item) => item.beforeEventId === before.id && item.afterEventId === event.id);
+    return `${omitted?.count > 0 ? gap(t('historySkippedRecords', { count: omitted.count })) : ''}${renderTimelineCardMarkup(event, compactWebLifecycleIds)}`;
+  }).join('')}${context.next ? gap(t('historyLaterRecords')) : ''}`;
+}
+
+function renderHistoryEvidence() {
+  const evidence = state.historyEvidence;
+  const panel = historyEvidencePanel();
+  panel.hidden = !evidence;
+  if (!evidence) {
+    delete document.body.dataset.historyReading;
+    return;
+  }
+  const target = evidence.target;
+  const atTarget = historyContextCurrent();
+  const inTimeline = atTarget && evidence.mode === 'timeline';
+  const busy = state.historyBusyAction;
+  const returning = busy?.action === 'return';
+  const continuing = busy?.action === 'continue';
+  panel.classList.toggle('historyReadingDock', inTimeline || Boolean(busy?.dock));
+  document.body.dataset.historyReading = historyExcerptActive() || (!target && state.historyEvidencePending) ? 'isolated' : 'timeline';
+  const showReturn = returning || (target ? !atTarget || inTimeline || state.selectedEventId !== target.eventId || evidence.error : !state.historyEvidencePending);
+  const focusedAction = panel.contains(document.activeElement) ? document.activeElement.dataset.historyAction : '';
+  const messageKey = busy && evidence.messageKey === 'historyResolving' ? '' : evidence.messageKey;
+  panel.innerHTML = `${messageKey ? `<p role="status">${escapeHtml(t(messageKey, evidence.messageParams))}</p>` : ''}
+    ${evidence.error ? `<p role="alert">${escapeHtml(evidence.error)}</p>` : ''}
+    <div class="historyEvidenceActions">
+      ${!returning && ((target && !inTimeline) || continuing) ? renderHistoryActionButton('continue', continuing ? busy.labelKey : historyActionLabel('continue'), continuing, state.historyEvidencePending) : ''}
+      ${showReturn ? renderHistoryActionButton('return', returning ? busy.labelKey : historyActionLabel('return'), returning) : ''}
+      ${evidence.sessionFallback ? `<button type="button" class="smallBtn" data-history-action="session">${escapeHtml(t('historyViewSession'))}</button>` : ''}
+      ${state.historyEvidencePending ? `<button type="button" class="smallBtn" data-history-action="cancel">${escapeHtml(t('cancel'))}</button>` : ''}
+    </div>${busy ? `<span class="srOnly" role="status">${escapeHtml(t('loading'))}</span>` : ''}`;
+  if (focusedAction) panel.querySelector(`[data-history-action="${focusedAction}"]`)?.focus({ preventScroll: true });
+  syncSearchSupplements(el.timeline);
+}
+
+function historyActionLabel(action) {
+  const evidence = state.historyEvidence;
+  if (action === 'return') return evidence?.target ? 'historyReturn' : 'historyOpenRetry';
+  return evidence?.target?.layer !== 'main' ? 'historyViewMain' : evidence.error ? 'historyContinueRetry' : 'historyContinue';
+}
+
+function renderHistoryActionButton(action, labelKey, busy, disabled = false) {
+  // aria-disabled preserves keyboard focus while the handler ignores activation.
+  return `<button type="button" class="smallBtn busyButton${action === 'continue' ? ' primaryBtn' : ''}" data-history-action="${action}" aria-busy="${Boolean(busy)}" aria-disabled="${Boolean(busy)}"${disabled && !busy ? ' disabled' : ''}><span>${escapeHtml(t(labelKey))}</span><span class="busyButtonIndicator" aria-hidden="true"></span></button>`;
+}
+
+async function runHistoryAction(action, task) {
+  if (state.historyBusyAction?.action === action) return state.historyBusyAction.promise;
+  const owner = { action, labelKey: historyActionLabel(action), dock: historyEvidencePanel().classList.contains('historyReadingDock') };
+  const restoreActionFocus = document.activeElement?.dataset.historyAction === action;
+  // Let the task retire its previous navigation synchronously before attaching
+  // this feedback owner. Its first await yields with pending work already set.
+  const promise = task();
+  owner.promise = promise;
+  if (state.historyEvidencePending) {
+    state.historyBusyAction = owner;
+    renderHistoryEvidence();
+    if (restoreActionFocus) historyEvidencePanel().querySelector(`[data-history-action="${action}"]`)?.focus({ preventScroll: true });
+  }
+  try { return await promise; }
+  finally {
+    if (state.historyBusyAction === owner) {
+      state.historyBusyAction = null;
+      renderHistoryEvidence();
+    }
+  }
+}
+
+function eventSearchSupplement(event) {
+  if (!event || state.searchScope !== 'session') return null;
+  const evidence = state.historyEvidence;
+  const target = evidence?.target;
+  let data;
+  if (evidence?.active && target?.eventId === event.id && target.sessionId === state.selectedSessionId
+      && target.layer === activeLayerId() && evidence.excerpt) {
+    data = { mode: 'history', excerpt: evidence.excerpt, identity: evidence.ref };
+  } else {
+    const query = currentSearchState().q;
+    if (!query || !event.hasSearchHit || !event.snippet || state.timelineDataContext !== timelineDataContextKey()) return null;
+    data = { mode: 'search', query, text: event.snippet, identity: query };
+  }
+  return { ...data, eventId: event.id, key: JSON.stringify([
+    state.sourceKind, state.sourceHome, state.repoRoot, state.indexRevision, state.selectedSessionId,
+    activeLayerId(), state.locale, effectiveMainPresentationId(), event.id, data.mode, data.identity,
+  ]) };
+}
+
+function renderEventSearchSupplement(event) {
+  return searchExcerpt.renderSupplement(eventSearchSupplement(event), { escapeHtml, t });
+}
+
+function syncSearchSupplements(root) {
+  let changed = false;
+  for (const wrapper of root?.querySelectorAll('.searchSupplement') || []) {
+    const eventId = wrapper.dataset.supplementEvent;
+    const event = currentTimelineEvent(eventId)
+      || (state.temporaryEventReveal?.event.id === eventId ? state.temporaryEventReveal.event : null);
+    const data = eventSearchSupplement(event);
+    const body = wrapper.closest('.eventBody, .inspectorDetailBody');
+    const owner = wrapper.closest('article[data-event-id], .inspector');
+    const key = detailKey(state.selectedSessionId, activeLayerId(), eventId);
+    const ready = Boolean(state.detailCache[key] || state.detailErrors[key]);
+    const current = data?.key === wrapper.dataset.supplementKey;
+    const covered = current && ready && (data.mode === 'search'
+      ? searchExcerpt.queryCoveredByBody(data.query, body)
+      : searchExcerpt.excerptCoveredByBody(data.excerpt, body));
+    const show = current && ready && !covered;
+    if (wrapper.hidden === show) { wrapper.hidden = !show; changed = true; }
+    if (owner) {
+      if (current && ready && data.mode === 'search') {
+        owner.dataset.searchAnchorKey = searchTargetKey();
+        owner.dataset.searchAnchorEvent = eventId;
+      } else {
+        delete owner.dataset.searchAnchorKey;
+        delete owner.dataset.searchAnchorEvent;
+      }
+    }
+    searchExcerpt.restoreSupplementScroll(wrapper);
+  }
+  return changed;
+}
+
+// Disclosure changes affect only their event owner. Full render, suffix append
+// and local detail settlement call the same synchronization before highlighting.
+document.addEventListener('toggle', (event) => {
+  const supplement = event.target.closest?.('.searchSupplement');
+  if (supplement) {
+    if (event.target.open) searchExcerpt.restoreSupplementScroll(supplement);
+    searchExcerpt.saveSupplementState(supplement);
+    return;
+  }
+  const owner = event.target.closest?.('article[data-event-id], .inspector');
+  if (!owner || !syncSearchSupplements(owner) || !currentSearchState().q) return;
+  const surface = owner.classList.contains('inspector') ? 'inspector' : 'timeline';
+  const eventId = surface === 'inspector' ? state.detailView.eventId : owner.dataset.eventId;
+  if (!searchDiscoveryContextReady()) return;
+  try {
+    const prepared = prepareScopedSearchOwnerRefresh(surface, eventId, owner);
+    detachScopedSearchOwner(prepared);
+    applyScopedSearchOwner(prepared);
+    restoreScopedActiveSearchPresentation(eventId, [surface]);
+    updateSearchMatchControls();
+  } catch {
+    refreshSearchHighlights({ preserveActive: true });
+  }
+}, true);
+document.addEventListener('scroll', (event) => {
+  const wrapper = event.target.closest?.('.searchSupplement');
+  if (wrapper) searchExcerpt.saveSupplementState(wrapper);
+}, { capture: true, passive: true });
+
+function cancelHistoryNavigation() {
+  evidenceNavigation.cancel();
+  if (!state.historyEvidencePending) return;
+  state.historyBusyAction = null;
+  requestOwners.timeline.abort();
+  state.timelineRequestId += 1;
+  state.timelineLoading = false;
+  state.historyEvidencePending = false;
+  if (state.historyEvidence) state.historyEvidence.messageKey = 'historyCancelled';
+  renderHistoryEvidence();
+  updateLoadMoreButton();
+}
+
+function leaveHistoryEvidence() {
+  const wasExcerpt = historyExcerptActive();
+  cancelHistoryNavigation();
+  if (state.historyEvidence) {
+    state.historyEvidence.active = false;
+    if (!state.historyEvidence.error) state.historyEvidence.messageKey = '';
+    renderHistoryEvidence();
+    if (wasExcerpt) renderTimeline();
+  }
+}
+
+async function openHistoryEvidence(reference, options = {}) {
+  cancelHistoryNavigation();
+  const operation = evidenceNavigation.start();
+  const originalRef = options.originalRef || reference;
+  state.historyEvidence = { ref: reference, originalRef, active: true, messageKey: 'historyResolving' };
+  state.historyEvidencePending = true;
+  renderHistoryEvidence();
+  try {
+    const resolved = await api(`/api/history/resolve?ref=${encodeURIComponent(reference)}`, { signal: operation.signal });
+    if (!operation.current()) return;
+    const target = resolved.target;
+    if (!target?.eventId || !target.sessionId || !['main', 'protocol', 'raw'].includes(target.layer)) {
+      throw new Error(t('historyMissing'));
+    }
+    state.historyEvidence = { ...resolved, ref: resolved.evidenceRef, originalRef, active: true,
+      mode: 'excerpts', events: new Map(), displayOverrides: { [target.eventId]: 'expanded', ...options.displayOverrides } };
+    state.layerId = target.layer;
+    state.searchQuery = '';
+    state.searchFilters = { file: '', kind: '', status: '', codeModeRequest: '' };
+    el.layerSelect.value = target.layer;
+    syncSearchInputValue();
+    await selectSession(target.sessionId, { historyEvidence: true, preserveReadingHistory: options.preserveReadingHistory });
+    if (!operation.current()) return;
+    // Older listeners can still show the exact target. Ordered context requires
+    // explicit positions, never frontend decoding of an evidence reference.
+    const items = resolved.context.events.every((item) => Number.isSafeInteger(item.timelineIndex))
+      ? resolved.context.events : resolved.context.events.filter((item) => item.anchor);
+    const entries = await Promise.all(items.map(async (item) => {
+      const event = await api(`/api/sessions/${encodeURIComponent(target.sessionId)}/events/${encodeURIComponent(item.eventId)}?layer=${target.layer}&locale=${state.locale}`, { signal: operation.signal });
+      if (event.id !== item.eventId || event.layer !== target.layer) throw new Error(t('historyMissing'));
+      return [event.id, event];
+    }));
+    if (!operation.current()) return;
+    state.historyEvidence.events = new Map(entries);
+    state.historyEvidence.messageKey = '';
+    const event = state.historyEvidence.events.get(target.eventId);
+    if (!event) throw new Error(t('historyMissing'));
+    setTemporaryEventReveal(null);
+    clearTimelineUserPaginationIntent();
+    renderTimeline();
+    showInspector(event, { replace: true, passive: true, mobileView: 'events' });
+    renderHistoryEvidence();
+    // Preview height can fit without scrolling even when the hydrated body
+    // cannot. Locate once at readable height, unless newer input supersedes it.
+    await ensureEventDetail(event);
+    if (!operation.current()) return;
+    focusHistoryEvent(event.id);
+    return operation;
+  } catch (error) {
+    if (!operation.current() || isIntentionalAbort(error)) return;
+    state.historyEvidence.error = `${error.code || 'EVIDENCE_UNAVAILABLE'}: ${error.message}`;
+    state.historyEvidence.sessionFallback = error.sessionFallback;
+    state.historyEvidence.messageKey = 'historyFailed';
+  } finally {
+    if (operation.current()) {
+      state.historyEvidencePending = false;
+      renderHistoryEvidence();
+    }
+  }
+}
+
+async function continueHistoryReading() {
+  const evidence = state.historyEvidence;
+  if (!evidence?.target) return;
+  if (!evidence.active || state.selectedSessionId !== evidence.target.sessionId || activeLayerId() !== evidence.target.layer
+      || !evidence.events?.has(evidence.target.eventId)) {
+    const reopened = await openHistoryEvidence(evidence.ref, { originalRef: evidence.originalRef });
+    if (!reopened?.current()) return;
+  }
+  if (evidence.target.layer !== 'main') {
+    await changeLayer('main', { restoreFocus: false });
+    return;
+  }
+  const operation = evidenceNavigation.start();
+  state.historyEvidencePending = true;
+  const currentEvidence = state.historyEvidence;
+  const target = currentEvidence.target;
+  const groupIds = [...new Set([target.eventId, ...(currentEvidence.events?.keys() || [])])];
+  const selectedId = state.selectedEventId || target.eventId;
+  try {
+    do {
+      state.historyEvidence.messageKey = 'historyProgress';
+      state.historyEvidence.messageParams = { count: state.offset, total: state.timelineTotal || '…' };
+      renderHistoryEvidence();
+      const previousOffset = state.offset;
+      const loaded = await loadTimeline(state.offset > 0, {
+        preserveEvidence: true, keepScroll: true, allowSearchTargetPreload: false,
+        paginationIntent: paginationIntent('selected-event-navigation'),
+      });
+      if (!operation.current()) return;
+      if (!loaded) throw new Error(t('historyRetry'));
+      if (groupIds.every(hasCanonicalTimelineEvent)) break;
+      if (state.offset <= previousOffset) throw new Error(t('historyMissing'));
+    } while (state.offset < state.timelineTotal);
+    if (!operation.current()) return;
+    const event = canonicalTimelineEvent(selectedId);
+    if (!event || !groupIds.every(hasCanonicalTimelineEvent) || state.historyEvidence !== currentEvidence) throw new Error(t('historyMissing'));
+    const viewport = historyContextViewport();
+    currentEvidence.mode = 'timeline';
+    state.historyEvidence.error = '';
+    state.historyEvidence.messageKey = '';
+    renderTimeline();
+    updateLoadMoreButton();
+    restoreDeferredAnalysis();
+    // The same records now belong to the loaded prefix. Keep the reader's
+    // existing Inspector (including Raw or a closed pane) and mobile surface.
+    // Restoring the first visible excerpt is unsafe: newly inserted events
+    // between it and the selected record can push that record off screen.
+    restoreHistoryContextViewport({ ...viewport, anchorId: '' });
+    focusHistoryEvent(event.id);
+    return operation;
+  } catch (error) {
+    if (!operation.current() || isIntentionalAbort(error)) return;
+    state.historyEvidence.error = `${error.code || 'READING_FAILED'}: ${error.message}`;
+    state.historyEvidence.messageKey = 'historyRetry';
+  } finally {
+    if (operation.current()) {
+      state.historyEvidencePending = false;
+      renderHistoryEvidence();
+    }
+  }
+}
+
+async function returnToHistoryReference() {
+  cancelHistoryNavigation();
+  if (historyExcerptActive() && state.historyEvidence.events?.has(state.historyEvidence.target.eventId)) {
+    const operation = evidenceNavigation.start();
+    const target = state.historyEvidence.events.get(state.historyEvidence.target.eventId);
+    state.historyEvidencePending = true;
+    try {
+      state.historyEvidence.messageKey = '';
+      state.historyEvidence.error = '';
+      state.historyEvidence.displayOverrides[target.id] = 'expanded';
+      renderTimeline();
+      showInspector(target, { replace: true, passive: true, mobileView: 'events' });
+      renderHistoryEvidence();
+      await ensureEventDetail(target);
+      if (operation.current()) focusHistoryEvent(target.id);
+    } finally {
+      if (operation.current()) {
+        state.historyEvidencePending = false;
+        renderHistoryEvidence();
+      }
+    }
+    return;
+  }
+  const original = state.historyEvidence.originalRef;
+  if (referenceFromHash(location.hash) !== original) window.history.pushState(null, '', `#ref=${encodeURIComponent(original)}`);
+  await openHistoryEvidence(original);
+}
+
+let historyReferenceExcursion = null;
+window.addEventListener('hashchange', () => {
+  if (!state.historyReferenceReady) return;
+  const reference = referenceFromHash(location.hash);
+  const originalRef = historyReferenceExcursion?.ref === reference ? historyReferenceExcursion.originalRef : '';
+  historyReferenceExcursion = null;
+  if (reference) openHistoryEvidence(reference, { originalRef }).catch(showError);
+  else leaveHistoryEvidence();
+});
+document.addEventListener('click', (event) => {
+  const reference = event.target.closest('[data-history-ref]')?.dataset.historyRef;
+  if (reference) {
+    const originalRef = state.historyEvidence.originalRef;
+    if (referenceFromHash(location.hash) === reference) openHistoryEvidence(reference, { originalRef }).catch(showError);
+    else {
+      historyReferenceExcursion = { ref: reference, originalRef };
+      location.hash = `ref=${encodeURIComponent(reference)}`;
+    }
+    return;
+  }
+  const button = event.target.closest('[data-history-action]');
+  if (button?.disabled || button?.getAttribute('aria-disabled') === 'true') { event.preventDefault(); return; }
+  const action = button?.dataset.historyAction;
+  if (action === 'return') {
+    runHistoryAction('return', returnToHistoryReference).catch(showError);
+  }
+  if (action === 'continue') runHistoryAction('continue', continueHistoryReading).catch(showError);
+  if (action === 'cancel') cancelHistoryNavigation();
+  if (action === 'session') {
+    const target = state.historyEvidence.sessionFallback;
+    if (!target) return;
+    leaveHistoryEvidence();
+    state.layerId = target.layer;
+    el.layerSelect.value = target.layer;
+    state.historyEvidence.messageKey = 'historySessionFallback';
+    renderHistoryEvidence();
+    selectSession(target.sessionId).catch(showError);
+  }
+});
+for (const input of ['pointerdown', 'wheel', 'touchstart', 'touchmove', 'keydown', 'change']) {
+  document.addEventListener(input, (event) => {
+    const busyButton = event.target.closest?.('[data-history-action][aria-busy="true"]');
+    if (busyButton && (input === 'pointerdown' || input === 'touchstart'
+        || (input === 'keydown' && ['Enter', ' '].includes(event.key)))) return;
+    if (state.historyEvidencePending) cancelHistoryNavigation();
+  }, { capture: true, passive: true });
+}
+
 async function init() {
   setMobileView(state.mobileView, { scroll: false });
   try {
@@ -4841,10 +5329,14 @@ async function init() {
     if (state.projectSelected) return;
     return;
   }
-  await loadSessions();
+  const reference = referenceFromHash(location.hash);
+  await loadSessions({ skipSelection: Boolean(reference) });
+  state.historyReferenceReady = true;
+  const latestReference = referenceFromHash(location.hash);
+  if (latestReference) await openHistoryEvidence(latestReference);
 }
 
-async function loadSessions() {
+async function loadSessions(options = {}) {
   const requestReadingScope = readingScopeKey();
   updateProfileApplicabilityUi();
   state.searchStructureKey = structuredSearchKey();
@@ -4870,6 +5362,7 @@ async function loadSessions() {
   state.sessionsDataContext = requestContext;
   state.sessions = data.sessions;
   state.sessionTotal = data.total;
+  if (options.skipSelection) { renderSessions(); return true; }
   const previousSessionId = state.selectedSessionId;
   const sameReadingScope = requestReadingScope === readingScopeKey()
     && state.readingHistory.every((position) => position.scope === requestReadingScope);
@@ -5074,6 +5567,7 @@ async function setSearchScope(scope, options = {}) {
     syncSearchScopeUi();
     return true;
   }
+  leaveHistoryEvidence();
   state.readingNavigationId += 1;
   state.readingHistory = [];
   clearContextReveal({ render: false });
@@ -5128,6 +5622,7 @@ async function drillDownProjectResult(sessionId) {
   const result = state.projectResults.find((item) => item.id === sessionId);
   const latest = result?.searchMatch?.latestEvent;
   if (!result || !latest) return false;
+  leaveHistoryEvidence();
   state.readingNavigationId += 1;
   state.readingHistory = [];
   const returnContext = {
@@ -5411,6 +5906,8 @@ async function openInheritedSourceSession(button) {
 }
 
 async function selectSession(sessionId, options = {}) {
+  if (!options.historyEvidence) leaveHistoryEvidence();
+  else resetDetailPane();
   closeFileActivity();
   const readingNavigationId = ++state.readingNavigationId;
   if (!options.preserveReadingHistory) state.readingHistory = [];
@@ -5454,6 +5951,16 @@ async function selectSession(sessionId, options = {}) {
   renderSearchAssistChips();
   renderTimeline();
   const selectionIntentId = state.eventSelectionIntentId;
+  if (options.historyEvidence) {
+    requestOwners.analysis.abort();
+    state.analysisRequestId += 1;
+    el.analysisPanel.replaceChildren();
+    state.deferredAnalysis = true;
+    state.timelineTotal = 0;
+    commitTimelineEventReplacement(timelineDataContextKey(), []);
+    updateLoadMoreButton();
+    return true;
+  }
   const requests = [
     loadAnalysis(sessionId),
     loadTimeline(false),
@@ -5715,12 +6222,15 @@ function captureReadingPosition(button) {
   const top = viewportIsMobile ? 0 : pane.getBoundingClientRect().top;
   const anchor = [...el.timeline.querySelectorAll('.event[data-event-id]')]
     .find((node) => node.getClientRects().length && node.getBoundingClientRect().bottom > top);
-  const bounds = pane.getBoundingClientRect();
+  const bounds = visibleTimelineBounds();
   const visibleExpandedIds = new Set([...el.timeline.querySelectorAll('.event.expanded[data-event-id]')]
     .filter((node) => rectIntersectsScrollport(node.getBoundingClientRect(), bounds, true))
     .map((node) => node.dataset.eventId));
   return {
     scope: readingScopeKey(), sessionId: state.selectedSessionId,
+    historyContext: historyExcerptActive() ? { ref: state.historyEvidence.ref,
+      originalRef: state.historyEvidence.originalRef, displayOverrides: { ...state.historyEvidence.displayOverrides },
+      viewport: historyContextViewport() } : null,
     layerId: activeLayerId(), searchQuery: state.searchQuery, searchFilters: { ...state.searchFilters },
     mainPresentationId: state.mainPresentationId, profileId: state.profileId,
     profileDraft: cloneProfile(state.profileDraft || activeProfile()),
@@ -5827,6 +6337,37 @@ async function restoreReadingPosition(position, operation, { historyPosition = p
   el.profileSelect.value = position.profileId;
   syncSearchInputValue();
   updateProfileApplicabilityUi();
+  if (position.historyContext) {
+    const current = () => state.readingRestoration === operation && state.readingHistory.at(-1) === historyPosition
+      && position.scope === readingScopeKey();
+    operation.current = current;
+    for (const id of position.detailEventIds) delete state.detailErrors[detailKey(position.sessionId, position.layerId, id)];
+    const opened = await openHistoryEvidence(position.historyContext.ref, {
+      originalRef: position.historyContext.originalRef, preserveReadingHistory: true,
+      displayOverrides: position.historyContext.displayOverrides,
+    });
+    if (current() && !opened && state.historyEvidence?.error) throw new Error(state.historyEvidence.error);
+    operation.current = () => current() && opened?.current();
+    if (!operation.current()) return false;
+    const selected = currentTimelineEvent(position.selectedEventId);
+    if (selected && ['inspector', 'rawRefs'].includes(position.detailView.type)) {
+      if (position.detailView.type === 'rawRefs') await showRaw(selected, { replace: true, passive: true });
+      else showInspector(selected, { replace: true, passive: true, mobileView: 'events' });
+    } else resetDetailPane();
+    await Promise.all(position.detailEventIds.map((id) => currentTimelineEvent(id)).filter(Boolean).map((event) => loadEventDetail(event)));
+    if (!operation.current()) return false;
+    const detailFailure = position.detailEventIds.map((id) => state.detailErrors[detailKey(position.sessionId, position.layerId, id)]).find(Boolean);
+    if (detailFailure) throw Object.assign(new Error(detailFailure.message), detailFailure);
+    setMobileView(position.mobileView, { scroll: false });
+    restoreHistoryContextViewport(position.historyContext.viewport);
+    el.detail.querySelectorAll('details').forEach((node, index) => { node.open = position.inspectorOpenDetails[index] ?? node.open; });
+    el.detail.closest('.detailPane').scrollTop = position.detailScrollTop;
+    restoreCollaborationActionFocus(position.returnFocus);
+    if (consumeHistory) state.readingHistory.pop();
+    if (!state.readingHistory.length) document.querySelectorAll('[data-reading-back]').forEach((button) => button.remove());
+    renderHistoryEvidence();
+    return true;
+  }
   const navigationId = state.readingNavigationId + 1;
   let selectionIntentId = state.eventSelectionIntentId;
   let searchKey;
@@ -5931,6 +6472,23 @@ async function restoreReadingPosition(position, operation, { historyPosition = p
   return true;
 }
 
+function restoreDeferredAnalysis() {
+  if (!state.deferredAnalysis || historyExcerptActive() || state.searchScope !== 'session' || !state.selectedSessionId) return;
+  const context = JSON.stringify([readingScopeKey(), state.selectedSessionId, state.locale]);
+  if (state.deferredAnalysisRequest?.context === context) return;
+  const request = { context };
+  state.deferredAnalysisRequest = request;
+  const promise = loadAnalysis(state.selectedSessionId);
+  const requestId = state.analysisRequestId;
+  promise.catch((error) => {
+    if (isIntentionalAbort(error) || requestId !== state.analysisRequestId || state.searchScope !== 'session'
+        || context !== JSON.stringify([readingScopeKey(), state.selectedSessionId, state.locale])) return;
+    el.analysisPanel.innerHTML = `<p role="status">${escapeHtml(t('historyAnalysisFailed'))} <button type="button" class="smallBtn" data-analysis-retry>${escapeHtml(t('retryAnalysis'))}</button></p>`;
+  }).finally(() => {
+    if (state.deferredAnalysisRequest === request) state.deferredAnalysisRequest = null;
+  });
+}
+
 async function loadAnalysis(sessionId) {
   const requestId = state.analysisRequestId + 1;
   const requestLocale = state.locale;
@@ -5952,6 +6510,7 @@ async function loadAnalysis(sessionId) {
       || requestScope !== state.searchScope
       || state.searchScope !== 'session'
       || requestLocale !== state.locale) return;
+  state.deferredAnalysis = false;
   const planCount = analysis.counts.planEvents ?? analysis.counts.planArtifacts;
   const issueCount = analysis.counts.issueEvents ?? analysis.counts.failedCommands;
   el.analysisPanel.innerHTML = [
@@ -6057,12 +6616,21 @@ function trajectoryStateForCurrentContext() {
   return state.trajectoryPresentationState;
 }
 
-function changeMainPresentation(presentationId) {
+async function changeMainPresentation(presentationId) {
   if (!['timeline', 'trajectory'].includes(presentationId)
       || activeLayerId() !== 'main'
       || state.searchScope !== 'session'
       || !state.selectedSessionId
       || rememberedMainPresentationId() === presentationId) return false;
+  if (historyExcerptActive()) {
+    const operation = await runHistoryAction('continue', continueHistoryReading);
+    if (!operation?.current()) return false;
+  }
+  const evidenceSelection = historyContextCurrent() && state.selectedEventId;
+  leaveHistoryEvidence();
+  if (evidenceSelection) {
+    setNavigationEventReveal({ sessionId: state.selectedSessionId, layerId: 'main', eventId: evidenceSelection });
+  }
   clearContextReveal({ render: false });
   state.mainPresentationId = presentationId;
   syncMainPresentationUi();
@@ -6079,6 +6647,7 @@ function changeMainPresentation(presentationId) {
 }
 
 async function changeLayer(layerId, options = {}) {
+  leaveHistoryEvidence();
   if (!['main', 'protocol', 'raw'].includes(layerId)) return;
   const restoreFocusAfterChange = options.restoreFocus !== false;
   const focusAnchor = restoreFocusAfterChange && state.searchScope === 'session'
@@ -6114,7 +6683,7 @@ function updateLoadMoreButton() {
   if (!el.loadMoreBtn) return;
   const readingPending = state.readingRestoration?.current();
   const replacementRetry = currentTimelineReplacementRetry();
-  const hasMore = Boolean(replacementRetry) || state.offset < state.timelineTotal;
+  const hasMore = !historyExcerptActive() && (Boolean(replacementRetry) || state.offset < state.timelineTotal);
   el.loadMoreBtn.disabled = !state.selectedSessionId || state.timelineLoading || readingPending || !hasMore;
   if (state.timelineLoading || readingPending) {
     el.loadMoreBtn.textContent = t('loading');
@@ -6401,10 +6970,11 @@ async function loadTimelineSearchBatch(options) {
 }
 
 async function loadTimeline(append, options = {}) {
+  if (historyExcerptActive() && !options.preserveEvidence) leaveHistoryEvidence();
   if (!state.selectedSessionId) return false;
   if (append && state.timelineLoading) return false;
   if (append && !paginationIntents.claim(options.paginationIntent)) return false;
-  if (!append) setTemporaryEventReveal(null);
+  if (!append && !options.preserveEvidence) setTemporaryEventReveal(null);
   const sessionId = state.selectedSessionId;
   const requestContext = timelineDataContextKey();
   if (append && state.timelineDataContext !== requestContext) return false;
@@ -6428,7 +6998,7 @@ async function loadTimeline(append, options = {}) {
         || requestContext !== timelineDataContextKey()) return false;
     if (append) {
       if (appendOffset !== state.offset || appendOffset !== state.currentEvents.length) return false;
-      appendBoundary = captureTimelineAppendBoundary(appendOffset);
+      appendBoundary = historyExcerptActive() ? null : captureTimelineAppendBoundary(appendOffset);
       commitTimelineEventAppend(data.events);
     } else {
       commitTimelineEventReplacement(requestContext, data.events);
@@ -6448,9 +7018,12 @@ async function loadTimeline(append, options = {}) {
         ? { preserveTimelinePresentation: true, refreshSearch: false }
         : {});
     }
-    if (append) presentCommittedTimelineAppend(appendBoundary, data.events);
-    else renderTimeline();
-    convergeSelectedEventDetailView({ refreshedHitState: true });
+    if (!historyExcerptActive()) {
+      restoreDeferredAnalysis();
+      if (append) presentCommittedTimelineAppend(appendBoundary, data.events);
+      else renderTimeline();
+      convergeSelectedEventDetailView({ refreshedHitState: true });
+    }
     if (!append && options.viewportPolicy === 'structured-filter') {
       const selected = selectedBeforeReplacement
         ? canonicalTimelineEvent(selectedBeforeReplacement)
@@ -6473,6 +7046,7 @@ async function loadTimeline(append, options = {}) {
         && sessionId === state.selectedSessionId
         && requestContext === timelineDataContextKey()) {
       const retryOptions = {
+        preserveEvidence: options.preserveEvidence,
         keepScroll: options.keepScroll,
         viewportPolicy: options.viewportPolicy,
         allowSearchTargetPreload: options.allowSearchTargetPreload,
@@ -6557,6 +7131,7 @@ async function loadTimelineThroughIndex(timelineIndex) {
 }
 
 async function refreshTimelineFindState(options = {}) {
+  if (historyExcerptActive()) leaveHistoryEvidence();
   if (!state.selectedSessionId) return;
   const sessionId = state.selectedSessionId;
   const requestContext = timelineDataContextKey();
@@ -6606,6 +7181,7 @@ async function refreshTimelineFindState(options = {}) {
     if (state.detailView.type === 'profileRules') renderProfileRulesPane();
     renderTimeline();
     if (!convergeSelectedEventDetailView({ refreshedHitState: true })) refreshSearchSensitiveDetailView();
+    restoreDeferredAnalysis();
     renderResultSummary();
     paginationIntents.commitReplacement(replacementEpoch);
     maybePreloadSearchTargets();
@@ -6676,6 +7252,7 @@ function hasActiveStructuredEventFilter() {
 }
 
 function displayState(event) {
+  if (historyContextEvent(event.id)) return state.historyEvidence.displayOverrides[event.id] || 'summary';
   if (isNavigationEventRevealed(event)) return 'summary';
   const sessionOverrides = state.overrides[state.selectedSessionId] || {};
   if (sessionOverrides[event.id]) return sessionOverrides[event.id];
@@ -6699,10 +7276,10 @@ function renderEventBody(event, display) {
   const error = state.detailErrors[key];
   if (detail) {
     const preview = event.snippet || event.preview || event.label;
-    return `<div class="eventBody">${renderTimelineSections(detail.timelineSections, preview)}</div>`;
+    return `<div class="eventBody">${renderTimelineSections(detail.timelineSections, preview)}${renderEventSearchSupplement(event)}</div>`;
   }
   if (error) {
-    return `<div class="eventBody">${renderDetailFailure(error, 'data-action')}</div>`;
+    return `<div class="eventBody">${renderDetailFailure(error, 'data-action')}${renderEventSearchSupplement(event)}</div>`;
   }
   const snippet = event.hasSearchHit && event.snippet
     ? `<div class="eventPreview eventLoadingSnippet">${escapeHtml(event.snippet)}</div>`
@@ -6878,6 +7455,10 @@ function renderMainCacheDiscontinuityAffordance(event) {
 
 function renderEventPreview(event, display, presentation = null) {
   if (display === 'expanded') return '';
+  if (historyExcerptActive()) {
+    const item = state.historyEvidence.context.events.find((item) => item.eventId === event.id);
+    if (item?.excerpt?.text) return `<div class="eventPreview historyContextPreview">${escapeHtml(item.excerpt.text)}</div>`;
+  }
   if (backgroundTerminalLabel(event?.presentationFacts?.backgroundTerminal, state.locale)) return '';
   if (event.kind === 'usage_limit_warning' && event.usageLimits?.length) {
     return `<div class="eventPreview usageLimitPreview">${renderUsageLimitPreview(event.usageLimits)}</div>`;
@@ -6933,6 +7514,7 @@ function renderTimelineCardMarkup(event, compactWebLifecycleIds) {
   const compactWebLifecycle = event.kind === 'web_search' && compactWebLifecycleIds.has(event.id);
   const temporaryReveal = state.temporaryEventReveal?.event.id === event.id
     && !hasCanonicalTimelineEvent(event.id);
+  const historyLinked = historyContextCurrent() && state.historyEvidence.target.eventId === event.id;
   const cacheUsage = cacheUsageFact(event);
   const classes = [
     'event',
@@ -6945,6 +7527,7 @@ function renderTimelineCardMarkup(event, compactWebLifecycleIds) {
     event.hasSearchHit ? 'searchHit' : '',
     ds === 'hidden' ? 'hiddenByProfile' : '',
     temporaryReveal ? 'temporaryReferenceReveal' : '',
+    historyExcerptActive() ? 'historyContextRecord' : '',
     presentation ? `code-mode-${cssToken(presentation.variant)}` : '',
     compactWebLifecycle ? 'code-mode-web-lifecycle' : '',
     cacheUsage ? 'cacheUsageEvent' : '',
@@ -6960,7 +7543,8 @@ function renderTimelineCardMarkup(event, compactWebLifecycleIds) {
       : '',
     displayToolName ? `<span class="chip toolChip">${escapeHtml(displayToolName)}</span>` : '',
     event.touchedFiles?.length ? `<span class="chip countChip">${event.touchedFiles.length} ${escapeHtml(t('files'))}</span>` : '',
-    temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
+    historyLinked ? `<span class="chip historyLinkedRecord">${escapeHtml(t('historyLinkedRecord'))}</span>`
+      : temporaryReveal ? `<span class="chip temporaryReferenceChip">${escapeHtml(t('temporaryReferencedEvent'))}</span>` : '',
   ].join('');
   const toggleLabel = ds === 'expanded' ? t('collapseEvent') : t('expandEvent');
   return `${renderContextRevealSlot(event)}<article class="${classes}" data-event-id="${escapeHtml(event.id)}">
@@ -6981,6 +7565,7 @@ function renderTimelineCardMarkup(event, compactWebLifecycleIds) {
 }
 
 function validateIncrementalMainAppend(boundary, suffixEvents) {
+  if (historyExcerptActive()) throw new Error('Excerpt groups are not canonical prefix owners');
   if (!boundary || state.searchScope !== 'session' || activeLayerId() !== 'main') {
     throw new Error('Timeline append presentation context is not Main Session Scope');
   }
@@ -7254,10 +7839,14 @@ function renderTimeline() {
   }
   const compactWebLifecycleIds = compactCodeModeWebLifecycleIds();
   const timelineEvents = renderedTimelineEvents();
-  const markup = `${renderInheritedContextCard()}${timelineEvents.map((event, index) => (
-    `${renderRawForkSegmentHeading(event, timelineEvents[index - 1])}${renderTimelineCardMarkup(event, compactWebLifecycleIds)}`
-  )).join('')}`;
+  const excerpt = historyExcerptActive();
+  const viewport = excerpt && el.timeline.dataset.historyContextRef === state.historyEvidence.ref ? historyContextViewport() : null;
+  const markup = excerpt ? renderHistoryContextCards(timelineEvents, compactWebLifecycleIds)
+    : `${renderInheritedContextCard()}${timelineEvents.map((event, index) => (
+      `${renderRawForkSegmentHeading(event, timelineEvents[index - 1])}${renderTimelineCardMarkup(event, compactWebLifecycleIds)}`
+    )).join('')}`;
   const ownsMountedMainCards = activeLayerId() === 'main'
+    && !excerpt
     && state.currentEvents.length > 0
     && Boolean(state.timelineDataContext);
   replaceTimelineRoot(markup, ownsMountedMainCards ? 'main' : 'non-main');
@@ -7268,9 +7857,17 @@ function renderTimeline() {
   syncEnclosingOperationAffordances();
   queueVisibleDetailLoad();
   refreshSearchHighlights({ preserveActive: true });
+  el.timeline.dataset.historyContextRef = excerpt ? state.historyEvidence.ref : '';
+  restoreHistoryContextViewport(viewport);
 }
 
 function setOverride(eventId, value) {
+  if (historyContextEvent(eventId)) {
+    cancelHistoryNavigation();
+    state.historyEvidence.displayOverrides[eventId] = value;
+    advancePresentationRevision('overridesRevision');
+    return;
+  }
   clearContextReveal({ render: false });
   clearNavigationEventReveal(eventId);
   clearSearchTransientExpansion(eventId);
@@ -7438,6 +8035,7 @@ function applySelectedInspectorDetailSettlement(transaction, event, prepared) {
 }
 
 function ordinaryDetailSettlementEligibility(transaction, accepted) {
+  if (historyExcerptActive()) return null;
   if (state.searchScope !== 'session' || activeLayerId() !== 'main'
       || state.selectedSessionId !== transaction.sessionId
       || state.detailCacheGeneration !== transaction.generation
@@ -7786,6 +8384,16 @@ function rectIntersectsScrollport(rect, bounds, hasScroller) {
   return rect.bottom >= bounds.top && rect.top <= bounds.bottom;
 }
 
+function visibleTimelineBounds(scroller = el.timeline.closest('.timelinePane')) {
+  const scrollport = scroller
+    ? scroller.getBoundingClientRect()
+    : { top: 0, bottom: window.innerHeight, width: window.innerWidth };
+  // A mobile pane follows the document, so its rectangle alone includes offscreen cards.
+  const top = Math.max(0, scrollport.top);
+  const bottom = Math.min(window.innerHeight, scrollport.bottom);
+  return { top, bottom, width: scrollport.width, height: Math.max(0, bottom - top) };
+}
+
 function loadVisibleExpandedDetails() {
   state.detailViewportTimer = 0;
   if (!searchDiscoveryContextReady()) return;
@@ -7804,9 +8412,7 @@ function loadVisibleExpandedDetails() {
     }
   }
   const scroller = el.timeline.closest('.timelinePane');
-  const bounds = scroller
-    ? scroller.getBoundingClientRect()
-    : { top: 0, bottom: window.innerHeight, width: window.innerWidth, height: window.innerHeight };
+  const bounds = visibleTimelineBounds(scroller);
   let articleGeometryReadCount = 0;
   let ensuredDetailCount = 0;
   for (const { article, item } of candidates) {
@@ -7884,6 +8490,7 @@ function recordTimelineUserPaginationScroll(scroller) {
 }
 
 function maybeLoadMoreTimeline(scroller, hasDownwardScroll = false) {
+  if (historyExcerptActive()) { clearTimelineUserPaginationIntent(); return; }
   const intent = state.timelineUserPaginationIntent;
   if (!intent) return;
   if (!hasDownwardScroll || !state.timelineUserPaginationHasDownwardScroll) return;
@@ -8144,11 +8751,12 @@ function currentSelectedEvent() {
 }
 
 function renderedTimelineEvents() {
+  if (historyExcerptActive()) return [...(state.historyEvidence.events?.values() || [])];
   return navigationApi.withTemporaryEventReveal(state.currentEvents, state.temporaryEventReveal);
 }
 
 function currentTimelineEvent(eventId, purpose = 'canonical') {
-  return canonicalTimelineEvent(eventId, purpose)
+  return (historyExcerptActive() && historyContextEvent(eventId)) || canonicalTimelineEvent(eventId, purpose)
     || (state.temporaryEventReveal?.event.id === eventId ? state.temporaryEventReveal.event : null);
 }
 
@@ -8477,6 +9085,8 @@ function reconcileDetailViewState() {
 }
 
 function closeDetailView() {
+  if (historyExcerptActive()) cancelHistoryNavigation();
+  else leaveHistoryEvidence();
   clearContextReveal({ render: false });
   invalidateDetailSelection();
   state.detailHistory = [];
@@ -8489,6 +9099,7 @@ function closeDetailView() {
   renderProfileRulesPane();
   if (hadTemporaryReveal) renderTimeline();
   updateSelectedTimelineEvent();
+  renderHistoryEvidence();
 }
 
 function backDetailView() {
@@ -8887,6 +9498,8 @@ function renderInspectorPresentation(event, options = {}) {
 }
 
 function showInspector(event, options = {}) {
+  if (!options.passive) cancelHistoryNavigation();
+  if (!options.passive && !historyContextEvent(event.id)) leaveHistoryEvidence();
   if (!options.passive) state.eventSelectionIntentId += 1;
   if (state.contextReveal || state.contextRevealPending) clearContextReveal({ render: false });
   const layer = activeLayerId();
@@ -8908,7 +9521,7 @@ function showInspector(event, options = {}) {
     state.navigationLoadErrorKey = '';
   }
   let navigationPending = currentNavigationPending();
-  const shouldLoadNavigation = state.detailView.origin !== DETAIL_VIEW_ORIGIN_SEARCH
+  const shouldLoadNavigation = !historyExcerptActive() && state.detailView.origin !== DETAIL_VIEW_ORIGIN_SEARCH
     && !currentNavigationCache()
     && !navigationPending
     && state.navigationLoadErrorKey !== navigationKey;
@@ -8946,6 +9559,7 @@ function rawPayloadText(raw) {
 }
 
 async function showRaw(event, options = {}) {
+  if (!options.passive) cancelHistoryNavigation();
   if (!options.passive) state.eventSelectionIntentId += 1;
   if (state.contextReveal || state.contextRevealPending) clearContextReveal({ render: false });
   const refs = sourceRefs(event);
@@ -9303,6 +9917,7 @@ for (const button of el.mobileViewButtons) {
 }
 
 el.timeline.addEventListener('click', (event) => {
+  if (event.target.closest('.searchSupplement')) return;
   if (handleReadingAction(event)) return;
   const collaborationTarget = event.target.closest('[data-open-collaboration-session]');
   if (collaborationTarget) {
@@ -9371,8 +9986,9 @@ el.timeline.addEventListener('click', (event) => {
       renderTimeline();
       ensureEventDetail(item);
     }
-    showInspector(item);
+    showInspector(item, historyExcerptActive() ? { mobileView: 'events' } : {});
   }
+  if (historyContextCurrent()) renderHistoryEvidence();
 });
 
 function showImagePreviewError(event) {
@@ -9549,7 +10165,7 @@ el.layerSelect.addEventListener('change', () => {
 for (const button of el.mainPresentationButtons) {
   button.addEventListener('click', () => {
     if (button.disabled) return;
-    changeMainPresentation(button.dataset.mainPresentation || '');
+    changeMainPresentation(button.dataset.mainPresentation || '').catch(showError);
   });
 }
 
@@ -9567,6 +10183,7 @@ el.legacyRawNotice?.addEventListener('click', (event) => {
 });
 
 el.loadMoreBtn.addEventListener('click', () => {
+  if (historyExcerptActive()) return;
   hideSearchAssist();
   if (currentTimelineReplacementRetry()) {
     retryTimelineReplacement().catch(showError);
@@ -9575,6 +10192,10 @@ el.loadMoreBtn.addEventListener('click', () => {
   loadTimeline(true, { paginationIntent: paginationIntent('explicit-load-more') }).catch(showError);
 });
 el.analysisPanel?.addEventListener('click', (event) => {
+  if (event.target.closest('[data-analysis-retry]')) {
+    restoreDeferredAnalysis();
+    return;
+  }
   const metricEl = event.target.closest('[data-metric-action]');
   if (!metricEl) return;
   applyMetricAction(metricEl).catch(showError);

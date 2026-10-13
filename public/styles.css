@@ -71,6 +71,16 @@ button:hover,
   border-color: #115648;
 }
 
+/* Reusable async action feedback: retain the label and reserve indicator space. */
+.busyButton { display: inline-flex; align-items: center; justify-content: center; gap: 0.5em; }
+.busyButtonIndicator { flex: 0 0 auto; width: 0.8em; height: 0.8em; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; visibility: hidden; }
+.busyButton[aria-busy='true'] { cursor: wait; }
+.busyButton[aria-busy='true'] .busyButtonIndicator { visibility: visible; animation: busyButtonSpin 900ms linear infinite; }
+@keyframes busyButtonSpin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) {
+  .busyButton[aria-busy='true'] .busyButtonIndicator { animation: none; }
+}
+
 .secondaryBtn {
   background: #fff7df;
   border-color: #d7b650;
@@ -314,10 +324,14 @@ button:hover,
   grid-template-columns: minmax(120px, 1fr) auto;
 }
 
-@container topbar-detail (max-width: 440px) {
+@container topbar-detail (max-width: 520px) {
   .foldControls[data-has-reset-folds] {
     grid-column: 1 / -1;
   }
+}
+
+.foldControls[data-has-reset-folds] .profilePickerTopbar.hasProfileInfo {
+  grid-template-columns: minmax(0, 1fr) max-content;
 }
 
 .foldControls button {
@@ -5752,6 +5766,37 @@ pre {
   }
 }
 
+@media (min-width: 1101px) {
+  /* A visible reset action needs more room than the Inspector column. Borrow
+     from the search track only while it is present; ordinary alignment stays. */
+  .searchbar:has(.foldControls[data-has-reset-folds]) {
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+
+  .searchbar:has(.foldControls[data-has-reset-folds]) .topbarDetailControls {
+    container-type: normal;
+    grid-template-columns: minmax(130px, 170px) max-content;
+  }
+
+  .searchbar:has(.foldControls[data-has-reset-folds]) .foldControls {
+    grid-template-columns: max-content auto;
+  }
+
+  .searchbar:has(.foldControls[data-has-reset-folds]) .profilePickerTopbar {
+    width: auto;
+  }
+
+  .searchbar:has(.foldControls[data-has-reset-folds]) .profilePickerTopbar.hasProfileInfo {
+    grid-template-columns: max-content max-content;
+  }
+
+  .searchbar:has(.foldControls[data-has-reset-folds]) .profilePickerTopbar select {
+    /* Native selects size against every option, including unselected custom
+       names. Keep built-in labels readable without granting unlimited width. */
+    max-width: 13rem;
+  }
+}
+
 @media (max-width: 1100px) {
   .topbar {
     align-items: stretch;
@@ -6037,4 +6082,42 @@ pre {
   border-top-color: var(--line);
   border-right-color: var(--line);
   border-bottom-color: var(--line);
+}
+/* A history reference is independent of the contiguous loaded timeline. */
+.historyReadingActions { margin: 12px 0; padding: 10px 0; border-top: 1px solid var(--line); font-size: 0.8rem; }
+.historyReadingActions[hidden] { display: none; }
+.historyReadingActions p { margin: 0 0 8px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
+.historyReadingActions [role='alert'] { color: var(--accent-2); }
+.historyReadingDock { position: sticky; bottom: 0; z-index: 3; margin-bottom: 0; background: var(--bg); }
+.historyContextGap { display: flex; align-items: center; gap: 8px; padding: 8px 12px; color: var(--muted); font-size: 0.76rem; }
+.historyContextGap::after { content: ''; height: 1px; flex: 1; background: var(--line); }
+.historyContextRecord.summary .historyContextPreview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; white-space: pre-wrap; max-height: none; }
+body[data-history-reading] .eventHeader { scroll-margin-top: 8px; }
+@media (max-width: 760px) { body[data-history-reading] .eventHeader { scroll-margin-top: 56px; } }
+.historyLinkedRecord { color: var(--accent); }
+.historyEvidenceActions { display: flex; flex-wrap: wrap; gap: 8px; }
+.historyEvidenceActions .smallBtn { min-height: 34px; }
+.searchSupplement { border: 1px solid var(--line); border-radius: 5px; padding: 8px 10px; background: var(--panel); font-size: 0.8rem; min-width: 0; }
+.searchSupplement[hidden] { display: none; }
+.eventBody > .searchSupplement { margin-bottom: 1.25rem; }
+.searchSupplement summary { color: var(--accent); cursor: pointer; padding-block: 3px; }
+.searchSupplement summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.searchSupplement p { color: var(--muted); margin: 6px 0; line-height: 1.45; }
+.searchSupplement .searchSupplementLocation { margin: 8px 0 0; font-size: 0.75rem; overflow-wrap: anywhere; }
+.searchSupplement .historyMatchPreview { margin-top: 0; margin-bottom: 4px; }
+.searchSupplementText { position: relative; max-height: 180px; margin: 8px 0 0; padding: 10px; overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; background: var(--code-bg); font: 0.78rem/1.55 var(--mono); }
+.searchSupplementText .searchMark { scroll-margin-block: 24px; }
+@media (max-width: 700px) { .searchSupplementText { max-height: 120px; } }
+.historyExcerpt { position: relative; margin: 8px 0; padding: 10px; background: var(--code-bg); border-radius: 4px; font: 0.78rem/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; }
+.historyHitLine { background: #fff1ad; color: #25210c; }
+.historyMatchPreview { display: flex; gap: 8px; margin-top: 10px; min-width: 0; }
+.historyMatchPreview[hidden] { display: none; }
+.historyMatchPreview > span { color: var(--muted); flex-shrink: 0; }
+.historyMatchPreview mark { background: #fff1ad; color: #25210c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body[data-history-reading='isolated'] .timelineFooter,
+body[data-history-reading='isolated'] #analysisPanel,
+body[data-history-reading='isolated'] #resultSummary { display: none; }
+@media (max-width: 700px) {
+  .historyEvidenceActions .smallBtn { min-height: 40px; }
+  .historyExcerpt { max-height: 120px; }
 }

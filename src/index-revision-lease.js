@@ -71,12 +71,12 @@ function installIndexRevision(state, index) {
   return lease;
 }
 
-function clearIndexRevision(state) {
+function clearIndexRevision(state, { dispose = true } = {}) {
   if (!state.index && !state.revisionLease) return state.indexRevision || 0;
   const previous = state.revisionLease;
   const nextRevision = (state.indexRevision || 0) + 1;
   retireLease(previous);
-  disposeProjectQueryStore(previous?.index.projectQueryStore);
+  if (dispose) disposeProjectQueryStore(previous?.index.projectQueryStore);
   state.index = null;
   state.indexRevision = nextRevision;
   state.revisionLease = null;

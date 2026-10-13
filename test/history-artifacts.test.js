@@ -30,7 +30,7 @@ function codexSession(command, toolName = 'exec_command') {
 }
 
 test('direct retrieval invocation and explicitly paired raw output are artifacts', () => {
-  for (const operation of ['status', 'search', 'context', 'read']) {
+  for (const operation of ['status', 'search', 'context', 'read', 'open']) {
     for (const prefix of ['session-analyzer', 'session-analyzer.cmd', 'npx --yes session-analyzer', 'npx -y session-analyzer@0.2.0']) {
       const session = codexSession(`${prefix} history ${operation} --query "old decision"`);
       assert.equal(classifyRetrievalArtifact(session, session.logicalEvents[0]).recognized, true);

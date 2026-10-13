@@ -503,7 +503,7 @@ async function main() {
 
     const packagedServer = path.join(smokeRoot, 'node_modules', 'session-analyzer', 'server.js');
     const packageRoot = path.dirname(packagedServer);
-    for (const relative of ['src/history-cli.js', 'src/history-server.js', 'src/history-service.js', 'src/history-presentation.js', 'src/history-search-groups.js', 'src/history-source-locator.js', 'src/history-artifacts.js', 'skills/history-retrieval/SKILL.md']) {
+    for (const relative of ['src/history-cli.js', 'src/history-browser-open.js', 'src/history-server.js', 'src/history-service.js', 'src/history-presentation.js', 'src/history-search-groups.js', 'src/history-source-locator.js', 'src/history-artifacts.js', 'skills/history-retrieval/SKILL.md']) {
       assert.ok((await fsp.stat(path.join(packageRoot, relative))).isFile(), 'Missing packaged history file: ' + relative);
     }
     const historyHelpCommand = binCommand(bin, ['history', '--help']);
@@ -584,7 +584,7 @@ async function main() {
       child = launched.child;
       const endpoint = `http://127.0.0.1:${launched.port}`;
       const history = (operation, input = {}) => {
-        const result = run(process.execPath, [packagedServer, 'history', operation, '--endpoint', endpoint, '--input', JSON.stringify(input)], { cwd: smokeRoot });
+        const result = run(process.execPath, [packagedServer, 'history', operation, '--endpoint', endpoint, '--input', JSON.stringify(input), ...(operation === 'open' ? ['--no-browser'] : [])], { cwd: smokeRoot });
         const response = JSON.parse(result.stdout);
         assert.equal(response.producer, 'session-analyzer');
         assert.equal(response.operation, `history.${operation}`);
@@ -644,9 +644,29 @@ async function main() {
         presentation: 'compact', parts: ['message'], textFormat: 'text' });
       assert.match(compactRead.items[0].evidenceRef, /^er2\./u);
       assert.ok(history('read', { refs: [compactRead.items[0].evidenceRef], parts: ['projection'] }).items[0].parts[0].text.includes(fixture.text));
+      const opened = history('open', { refs: compactRefs, contextRef: status.contextRef });
+      assert.equal(opened.targetVerified, true);
+      assert.equal(opened.viewerReady, true);
+      assert.equal(opened.browserOpenRequested, false);
+      assert.equal(opened.browser.status, 'skipped');
+      assert.equal(opened.target.sessionId, search.items[0].sessionId);
+      assert.equal(opened.target.eventId, search.items[0].eventId);
+      const viewer = new URL(opened.url);
+      assert.equal(new URLSearchParams(viewer.hash.slice(1)).get('ref'), opened.evidenceRef);
+      const viewerHtml = await requestText(viewer.origin + '/');
+      assert.equal(viewerHtml.statusCode, 200);
+      assert.ok(viewerHtml.body.includes('src="/assets/app.js"'));
+      const resolved = await requestText(viewer.origin + '/api/history/resolve?ref=' + encodeURIComponent(opened.evidenceRef));
+      assert.equal(resolved.statusCode, 200);
+      const resolvedBody = JSON.parse(resolved.body);
+      assert.equal(resolvedBody.target.eventId, opened.target.eventId);
+      assert.ok(resolvedBody.excerpt.text.includes(fixture.text));
+      const viewerState = await requestText(viewer.origin + '/api/state');
+      assert.equal(JSON.parse(viewerState.body).historyViewer.fixedScope, true);
+      assert.equal(new URL(history('open', { refs: [opened.evidenceRef] }).url).origin, viewer.origin);
       await stopChild(child);
       child = null;
-      console.log(fixture.source + ': packaged history status -> search -> context -> read -> raw passed.');
+      console.log(fixture.source + ': packaged history status -> search -> context -> read -> raw -> open passed.');
     }
     console.log('Codex, Claude Code, and DeepSeek Harness UI and history package smoke passed.');
   } finally {

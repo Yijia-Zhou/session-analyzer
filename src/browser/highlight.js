@@ -6,7 +6,7 @@
   'use strict';
 
   // File-path actions retain transcript content; other controls are navigation chrome.
-  const SKIP_SELECTOR = 'script, style, textarea, input, select, option, button:not([data-file-activity]), mark, a, .hiddenByProfile';
+  const SKIP_SELECTOR = 'script, style, textarea, input, select, option, button:not([data-file-activity]), mark, a, .hiddenByProfile, .searchSupplement[hidden], .searchSupplementLocation';
 
   function searchTerms(query) {
     const phrase = String(query || '').trim();

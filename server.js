@@ -174,6 +174,7 @@ function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
     ...query.indexPresentation(state.index, { locale: resolvedLocale }),
     foldingProfiles: foldingProfiles.map((profile) => i18n.localizeProfile(profile, resolvedLocale)),
     projectSelected: true,
+    ...(state.historyViewer ? { historyViewer: { fixedScope: true } } : {}),
   };
 }
 
@@ -758,7 +759,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     legacyRawOwnerPolicyForTests: options.legacyRawOwnerPolicyForTests,
     materializeSession: options.materializeSession || materializeSessionForIndex,
     buildEventDetail: options.buildEventDetail || buildEventDetailForSession,
-    sessionPrewarmPolicy: options.sessionPrewarm === false
+    sessionPrewarmPolicy: options.sessionPrewarm === false || options.historyViewer
       ? null
       : { ...(options.sessionPrewarm || {}) },
     nextProjectJobId: 1,
@@ -766,14 +767,51 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     projectCache: null,
     logDir: options.logDir ? path.resolve(options.logDir) : '',
     warn: options.warn || console.warn,
+    historyViewer: options.historyViewer || null,
   };
   initializeIndexRevisionState(state, state.index);
-  if (options.repo) startProjectJob(state, options.repo, options.locale);
+  if (options.repo && !state.historyViewer) startProjectJob(state, options.repo, options.locale);
 
   const server = http.createServer(async (req, res) => {
     const requestAbort = requestAbortContext(req, res);
     try {
       const { pathname, searchParams } = parseQuery(req.url);
+      if (state.historyViewer) {
+        const origin = `http://127.0.0.1:${server.address().port}`;
+        res.setHeader('referrer-policy', 'no-referrer');
+        res.setHeader('x-content-type-options', 'nosniff');
+        res.setHeader('cross-origin-resource-policy', 'same-origin');
+        res.setHeader('cache-control', 'no-store');
+        // A user may follow a citation from a hosted chat. Only the top-level
+        // document may arrive cross-site; its subsequent data reads are same-origin.
+        const entryNavigation = pathname === '/' && req.method === 'GET'
+          && req.headers['sec-fetch-mode'] === 'navigate'
+          && req.headers['sec-fetch-dest'] === 'document';
+        if (req.headers.host !== new URL(origin).host
+            || (req.headers.origin && req.headers.origin !== origin)
+            || (req.headers['sec-fetch-site'] === 'cross-site' && !entryNavigation)) {
+          sendError(res, 403, 'Use this viewer from its local origin.', undefined, 'LOCAL_VIEWER_REQUIRED');
+          return;
+        }
+        if (req.method !== 'GET' || ['/api/projects', '/api/source', '/api/project', '/api/project/status'].includes(pathname)) {
+          sendError(res, 403, 'The history viewer has a fixed read-only scope.', undefined, 'HISTORY_VIEWER_READ_ONLY');
+          return;
+        }
+        if (pathname === '/api/history/resolve') {
+          try {
+            const result = await state.historyViewer.resolve(searchParams.get('ref'));
+            sendJson(res, 200, result);
+          } catch (error) {
+            if (error.code === 'INVALID_REFERENCE' && error.sessionFallback) {
+              sendJson(res, 400, { error: error.message, code: error.code,
+                targetVerified: false, sessionFallback: error.sessionFallback });
+            } else {
+              sendError(res, error.code ? 400 : 500, error.code ? error.message : 'Evidence resolution failed.', undefined, error.code);
+            }
+          }
+          return;
+        }
+      }
       const locale = i18n.resolveLocale(searchParams.get('locale') || req.headers['accept-language']);
       if (pathname === '/api/projects') {
         const mode = searchParams.get('summary') === '1' ? 'summary' : 'full';
@@ -1177,7 +1215,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
   });
   server.on('close', () => {
     cancelProjectJob(state.activeProjectJob);
-    clearIndexRevision(state);
+    clearIndexRevision(state, { dispose: !state.historyViewer });
   });
   return server;
 }

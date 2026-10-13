@@ -149,7 +149,7 @@ function excerptText(text, hitOffset = 0) {
   finishLine(false);
   if (!selected.length) throw new RangeError(`Excerpt offset ${hitOffset} exceeds text length ${absolute}`);
   return { representation: 'search_projection', startLine: selected[0].number, endLine: selected.at(-1).number,
-    hitOffset, text: selected.map((row) => row.text).join('\n'),
+    hitOffset, hitLine, text: selected.map((row) => row.text).join('\n'),
     truncated: selected[0].number > 1 || selected.at(-1).number < lineNumber - 1 || selected.some((row) => row.clipped) };
 }
 

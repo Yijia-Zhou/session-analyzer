@@ -201,6 +201,7 @@ async function createHistoryService(options = {}) {
 
   async function execute(operation, input = {}, groupId) {
     if (closed) fail('CONTEXT_EXPIRED', 'The retrieval service is closed');
+    if (operation === 'open') return resolveEvidence(input, 'open');
     if (!['status', 'search', 'context', 'read'].includes(operation)) fail('INVALID_OPERATION', 'Unknown history operation');
     if (!input || typeof input !== 'object' || Array.isArray(input)) fail('INVALID_ARGUMENT', 'Input must be an object');
     const allowed = new Set(['contextRef', 'maxBytes', 'presentation', ...({
@@ -242,7 +243,7 @@ async function createHistoryService(options = {}) {
       return requestSessions.get(session.id);
     }
     if (operation === 'status') {
-      response.capabilities = { operations: ['status', 'search', 'context', 'read'], layers: LAYERS, parts: PARTS,
+      response.capabilities = { operations: ['status', 'search', 'context', 'read', 'open'], layers: LAYERS, parts: PARTS,
         query: 'literal case-insensitive whitespace-normalized; queries OR, exclude NOT, filters AND on one event',
         order: 'diverse: interleave matching sessions (default); session: newest sessions first; preserve event order within each session',
         searchOrders: ['diverse', 'session'], sessionScope: 'known indexed sessionId',
@@ -370,6 +371,13 @@ async function createHistoryService(options = {}) {
         const hydrated = await materialize(session);
         const sequence = events(hydrated, r.l);
         const anchor = r.e ? locate(sequence, r) : r.a;
+        if (r.e && anchor < 0) {
+          // Scope, snapshot and source bytes have already verified. The session
+          // may be offered separately, without claiming the event was found.
+          throw Object.assign(new Error('Event is not present in the referenced snapshot'), {
+            code: 'INVALID_REFERENCE', sessionFallback: { sessionId: session.id, layer: r.l },
+          });
+        }
         if (anchor < 0 || anchor >= sequence.length || (r.b !== undefined && r.b >= sequence.length)) fail('INVALID_REFERENCE', 'Event/range is outside the snapshot');
         let indexes;
         const boundary = {};
@@ -405,7 +413,9 @@ async function createHistoryService(options = {}) {
         for (let n = 1; n < indexes.length; n += 1) {
           const start = indexes[n - 1] + 1;
           const end = indexes[n] - 1;
-          if (end >= start) omitted.push({ ref: rangeRef(session, r.l, start, end), count: end - start + 1, relation: 'adjacent_in_session' });
+          if (end >= start) omitted.push({ ref: rangeRef(session, r.l, start, end), count: end - start + 1,
+            beforeEventId: eventId(sequence[indexes[n - 1]]), afterEventId: eventId(sequence[indexes[n]]),
+            relation: 'adjacent_in_session' });
         }
         const first = indexes[0];
         const last = indexes.at(-1);
@@ -417,7 +427,8 @@ async function createHistoryService(options = {}) {
         });
         candidates.push({ ref: value, relation: 'adjacent_in_session', boundaries: boundary,
           events: indexes.map((n) => {
-            const item = { ...compact(session, r.l, sequence[n], [], n === anchor ? r.h : undefined), anchor: n === anchor };
+            const item = { ...compact(session, r.l, sequence[n], [], n === anchor ? r.h : undefined),
+              timelineIndex: n, anchor: n === anchor };
             if (full) {
               const text = String(sequence[n].searchText || sequence[n].preview || '');
               const rendered = text.slice(0, textLength);
@@ -491,7 +502,37 @@ async function createHistoryService(options = {}) {
     output.contentTruncated = output.items.some((item) => item.parts.some((part) => part.truncated) || item.rawRefsNextOffset !== null || item.logicalRefsNextOffset != null);
     return output;
   }
-  return { execute, close() { closed = true; presentation.clear(); disposeProjectQueryStore(index.projectQueryStore); } };
+  async function resolveEvidence(input, operation = 'resolve') {
+    if (closed) fail('CONTEXT_EXPIRED', 'The retrieval service is closed');
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+        || Object.keys(input).some((key) => !['refs', 'contextRef'].includes(key))) {
+      fail('INVALID_ARGUMENT', 'Evidence opening accepts only refs and contextRef');
+    }
+    if (input.contextRef !== undefined && input.contextRef !== contextRef) fail('CONTEXT_EXPIRED', 'Context expired; search again');
+    const values = strings(input.refs, 'refs', 1);
+    if (values.length !== 1) fail('INVALID_REFERENCE', 'Opening requires exactly one event reference');
+    const value = presentation.resolve(values[0], input.contextRef);
+    const { r } = resolve(value);
+    if (!r.e) fail('INVALID_REFERENCE', 'Opening requires a single event, not a range');
+    // Context performs the ordinary selected-source verification, exact identity
+    // resolution and bounded hit excerpt construction. Never rebind by ordinal.
+    const context = await execute('context', { refs: [value], maxBytes: 65536 });
+    const window = context.items[0];
+    const anchor = window?.events.find((event) => event.anchor);
+    if (!anchor) fail('INVALID_REFERENCE', 'The referenced event is unavailable');
+    return { ...envelope(operation), evidenceRef: anchor.ref,
+      target: { sessionId: anchor.sessionId, layer: anchor.layer, eventId: anchor.eventId },
+      excerpt: anchor.excerpt, context: window, targetVerified: true };
+  }
+  return { execute, resolveEvidence,
+    createViewerServer() {
+      if (closed) fail('CONTEXT_EXPIRED', 'The retrieval service is closed');
+      return require('../server').createServer(index, 0, {
+        [adapter.homeOption]: sourceHome, sessionPrewarm: false,
+        historyViewer: { resolve: (value) => resolveEvidence({ refs: [value] }) },
+      });
+    },
+    close() { closed = true; presentation.clear(); disposeProjectQueryStore(index.projectQueryStore); } };
 }
 
 module.exports = { createHistoryService };
