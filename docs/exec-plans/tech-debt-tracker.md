@@ -14,6 +14,10 @@ The [2026-09-29 follow-up](../design-docs/claude-2.1.283-compatibility.md) captu
 
 ## Tracked items / 跟踪条目
 
+### 31. Duplicate Codex Session IDs across rollout files / 多个 rollout 文件共用 Codex 会话 ID
+
+Observed during the 2026-10-13 history-context UI acceptance: the configured source root contained three rollout files with one Session ID, including suffixed filenames. A fresh index failed with PROJECT_QUERY_STORE_CONTRACT_VIOLATION; an already-running snapshot stayed usable. Resolve source identity/lineage deliberately rather than silently choosing a file or merging events. This needs a minimized synthetic fixture and separate source-adapter investigation; the context UI increment does not change indexing policy. Its live acceptance used an unmodified historical-session copy in an ignored, isolated source root. / 2026-10-13 历史上下文界面验收时，配置的来源根内三份 rollout 文件使用同一会话 ID，其中有带后缀的文件名；新建索引报 PROJECT_QUERY_STORE_CONTRACT_VIOLATION，既有运行快照仍可用。需明确处理来源身份／谱系，不可悄悄选择一份文件或合并事件。后续以最小合成 fixture 单独调查来源 adapter；上下文界面增量不改变索引策略，其实页验收使用忽略目录中独立来源根内未改写的历史会话副本。
+
 ### 30. DeepSeek format-4 source-reference expansion capacity / DeepSeek format 4 来源引用展开容量
 
 - Status: eager expansion resolved; broader capacity characterization remains open. The [separate follow-up](completed/2026-09-30-deepseek-source-reference-capacity.md) retains validated encoded references and uses exact cardinality/membership matching for prune and compaction. / 状态：急切展开已解决，更广容量量测仍开放。独立后续工作保留已校验的编码引用，通过精确项数／成员匹配处理 prune 与 compaction。

@@ -6446,7 +6446,7 @@ test('browser Code Mode presents web requests structurally, renders safe Markdow
   assert.match(await operationEvent.locator('.webResultMarkdown').textContent(), /网页结果.*Example browser result/s);
 });
 
-test('browser reading controls stay inside desktop viewport with manual fold overrides', async (t) => {
+test('browser reading controls borrow search width for visible reset folds and fit narrow screens in both locales', async (t) => {
   const index = await buildFixtureIndex();
   const session = await materializeIndexedSession(index, primaryFixtureSessionId);
   const commandId = session.logicalEvents.find((event) => event.kind === 'command').id;
@@ -6456,26 +6456,94 @@ test('browser reading controls stay inside desktop viewport with manual fold ove
   await command.locator('.eventToggle').click();
   await command.click();
   await page.locator('#resetFoldsBtn').waitFor({ state: 'visible' });
-  for (const width of [1600, 1440, 1280, 1101, 1024, 820]) {
-    await page.setViewportSize({ width, height: 900 });
-    const geometry = await page.evaluate(() => ({
-      width: document.documentElement.clientWidth,
-      scrollWidth: document.documentElement.scrollWidth,
-      controls: ['#layerSelect', '.profilePickerTopbar select', '#resetFoldsBtn'].map((selector) => {
-        const rect = document.querySelector(selector).getBoundingClientRect();
-        return { selector, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width };
-      }),
-    }));
-    assert.ok(geometry.scrollWidth <= geometry.width, JSON.stringify({ width, ...geometry }));
-    for (const control of geometry.controls) {
-      assert.ok(control.width > 0 && control.left >= 0 && control.right <= geometry.width
-        && control.top >= 0 && control.bottom <= 900, JSON.stringify({ width, control }));
+  for (const locale of ['en', 'zh-CN']) {
+    await page.setViewportSize({ width: 1536, height: 900 });
+    await switchHiddenLocale(page, locale);
+    await command.locator('.eventKind').click();
+    await page.locator('#detail .inspector').waitFor();
+    await page.locator('#resetFoldsBtn').waitFor({ state: 'visible' });
+    for (const width of [1536, 1280, 1101, 820, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      const geometry = await page.evaluate(() => ({
+        width: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        searchFits: document.querySelector('.searchInputRow').scrollWidth <= document.querySelector('.searchInputRow').clientWidth,
+        controls: ['#layerSelect', '.profilePickerTopbar select', '.profilePickerTopbar .profileInfoBtn', '#resetFoldsBtn', '.searchField'].map((selector) => {
+          const node = document.querySelector(selector);
+          if (!node) throw new Error(`Missing ${selector} at ${innerWidth}`);
+          const rect = node.getBoundingClientRect();
+          const style = getComputedStyle(node);
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+          const label = node.tagName === 'SELECT' ? node.selectedOptions[0].textContent : node.textContent;
+          const textWidth = context.measureText(label.trim()).width;
+          return { selector, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width,
+            textFits: node.tagName !== 'SELECT' || textWidth + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + 2 <= rect.width };
+        }),
+      }));
+      assert.ok(geometry.scrollWidth <= geometry.width && geometry.searchFits, JSON.stringify({ locale, width, ...geometry }));
+      for (const control of geometry.controls) {
+        assert.ok(control.width > 0 && control.left >= 0 && control.right <= geometry.width
+          && control.top >= 0 && control.bottom <= 900 && control.textFits, JSON.stringify({ locale, width, control }));
+      }
+      if (width > 1100) {
+        const [layer, profile, info, reset, search] = geometry.controls;
+        assert.ok([profile, info, reset].every((item) => Math.abs(item.top - layer.top) < 4),
+          JSON.stringify({ locale, width, controls: geometry.controls }));
+        assert.ok(search.right <= layer.left, 'desktop search must leave room for the complete control row');
+        assert.ok(layer.right <= profile.left && profile.right <= info.left && info.right <= reset.left,
+          JSON.stringify({ locale, width, controls: geometry.controls }));
+      }
     }
   }
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator('#resetFoldsBtn').click();
   assert.equal(await page.locator('#resetFoldsBtn').isHidden(), true);
   await page.locator('#layerSelect').selectOption('raw');
   assert.equal(await page.locator('#layerSelect').inputValue(), 'raw');
+});
+
+test('browser topbar bounds persisted long profile names with visible reset folds on narrow desktops', async (t) => {
+  const index = await buildFixtureIndex();
+  const session = await materializeIndexedSession(index, primaryFixtureSessionId);
+  const commandId = session.logicalEvents.find((event) => event.kind === 'command').id;
+  const profile = { id: 'custom:long-topbar-name', name: 'A long custom folding strategy name '.repeat(20),
+    description: 'Synthetic long-name layout fixture.', rules: { fallback: 'summary', kindStates: {}, conditions: [] } };
+  const { page } = await openApp(t, index, { viewport: { width: 1101, height: 900 }, locale: 'en',
+    localStorage: { 'sessionAnalyzer.customProfiles': JSON.stringify([profile]) } });
+  await selectPrimarySession(page);
+  const command = page.locator(`#timeline .event[data-event-id="${commandId}"]`);
+  for (const selectedProfile of ['narrative', profile.id]) {
+    // An unselected long option must be bounded too: native selects measure all options.
+    await command.locator('.eventKind').click();
+    await page.locator('#profileSelect').selectOption(selectedProfile);
+    await command.locator('.eventToggle').click();
+    await command.locator('.eventKind').click();
+    await page.locator('#resetFoldsBtn').waitFor({ state: 'visible' });
+    for (const width of [1101, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      const layout = await page.evaluate(() => {
+        const selectors = ['#layerSelect', '#profileSelect', '#resetFoldsBtn', '.searchField'];
+        const controls = selectors.map((selector) => {
+          const rect = document.querySelector(selector).getBoundingClientRect();
+          return { selector, left: rect.left, right: rect.right, top: rect.top, width: rect.width };
+        });
+        const row = document.querySelector('.searchInputRow');
+        return { viewport: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth,
+          searchFits: row.scrollWidth <= row.clientWidth, controls };
+      });
+      assert.ok(layout.scrollWidth <= layout.viewport && layout.searchFits, JSON.stringify({ selectedProfile, width, layout }));
+      assert.ok(layout.controls.every((control) => control.width > 0 && control.left >= 0 && control.right <= layout.viewport),
+        JSON.stringify({ selectedProfile, width, layout }));
+      assert.ok(layout.controls.slice(0, 3).every((control) => Math.abs(control.top - layout.controls[0].top) < 4),
+        JSON.stringify({ selectedProfile, width, layout }));
+    }
+  }
+  assert.equal(await page.locator('#profileSelect').inputValue(), profile.id);
+  assert.equal(await page.locator('#profileSelect option:checked').textContent(), profile.name);
+  await page.locator('#resetFoldsBtn').click();
+  assert.equal(await page.locator('#resetFoldsBtn').isHidden(), true);
 });
 
 test('browser topbar width priorities keep search, Layer, and folding controls responsive', async (t) => {
@@ -12971,7 +13039,7 @@ test('browser Wave 1D-A M1 detail-only phrase marks do not invent a canonical na
   assert.equal(settlement.acceptedStateReclassified, false);
 });
 
-test('browser Wave 1D-A M1 ordinary body phrase removal recreates only affected-owner marks', async (t) => {
+test('browser Wave 1D-A M1 ordinary body phrase removal binds a local excerpt without touching other owners', async (t) => {
   const collapsedProfile = {
     id: 'custom:wave-1d-a-remove-body-phrase',
     name: 'Wave 1D-A phrase removal fixture',
@@ -13041,7 +13109,9 @@ test('browser Wave 1D-A M1 ordinary body phrase removal recreates only affected-
     const article = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(ownerId)}"]`);
     return {
       oldBodyMarkDisconnected: !window.__wave1dAM1RemovedBodyMark.isConnected,
-      bodyMarkCount: article.querySelectorAll(':scope > .eventBody mark.searchMark').length,
+      bodyMarkCount: [...article.querySelectorAll(':scope > .eventBody mark.searchMark')]
+        .filter((mark) => !mark.closest('.searchSupplement')).length,
+      excerptMarkCount: article.querySelectorAll('.searchSupplement:not([hidden]) mark.searchMark').length,
       ownerMarkCount: article.querySelectorAll('mark.searchMark').length,
       targetPreserved: window.__wave1dAM1Search.evidence.latestTargets.includes(
         window.__wave1dAM1RemovedBodyTarget,
@@ -13056,9 +13126,10 @@ test('browser Wave 1D-A M1 ordinary body phrase removal recreates only affected-
   }, eventId);
   assert.equal(marks.oldBodyMarkDisconnected, true);
   assert.equal(marks.bodyMarkCount, 0);
-  assert.equal(marks.ownerMarkCount, 0);
+  assert.equal(marks.excerptMarkCount, 1);
+  assert.equal(marks.ownerMarkCount, 1);
   assert.equal(marks.targetPreserved, true);
-  assert.equal(marks.targetTimelineBindingCount, 0);
+  assert.equal(marks.targetTimelineBindingCount, 1);
   assert.equal(marks.unrelatedMarkPreserved, true);
   assert.equal(marks.resetBindingsCount, 0);
   assert.deepEqual(marks.resetSurfaces, ['timeline']);

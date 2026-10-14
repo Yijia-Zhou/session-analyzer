@@ -3,7 +3,7 @@
 const http = require('node:http');
 const { validateGroups } = require('./history-search-groups');
 
-const OPERATIONS = new Set(['status', 'search', 'context', 'read']);
+const OPERATIONS = new Set(['status', 'search', 'context', 'read', 'open']);
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const STRING_FIELDS = new Set(['contextRef', 'cursor', 'query', 'order', 'session', 'layer', 'kind', 'status', 'tool', 'file', 'retrievalArtifacts', 'presentation', 'view', 'textFormat', 'from', 'to']);
@@ -47,6 +47,9 @@ function validateHistoryInput(input) {
 function errorEnvelope(operation, error) {
   return {
     producer: 'session-analyzer', operation: `history.${operation || 'unknown'}`, schemaVersion: 1,
+    ...(operation === 'open' ? { targetVerified: false, viewerReady: false, browserOpenRequested: false } : {}),
+    ...(operation === 'open' && error?.code === 'INVALID_REFERENCE' && error.sessionFallback
+      ? { sessionFallback: error.sessionFallback } : {}),
     error: { code: error?.code || 'INTERNAL_ERROR', message: error?.code ? error.message : 'History request failed.' },
   };
 }
@@ -84,8 +87,30 @@ async function readBody(req) {
 }
 
 function createHistoryServer(service) {
+  let viewerPending;
+  let shuttingDown = false;
+  async function ensureViewer() {
+    if (shuttingDown) throw historyError('CONTEXT_EXPIRED', 'The retrieval service is closing.');
+    if (!viewerPending) {
+      viewerPending = (async () => {
+        const viewer = service.createViewerServer();
+        try {
+          await new Promise((resolve, reject) => {
+            viewer.once('error', reject);
+            viewer.listen(0, '127.0.0.1', () => { viewer.removeListener('error', reject); resolve(); });
+          });
+          return viewer;
+        } catch (error) {
+          viewer.close();
+          throw historyError('VIEWER_START_FAILED', 'The evidence viewer could not start.', 503);
+        }
+      })();
+      viewerPending.catch(() => { viewerPending = undefined; });
+    }
+    return viewerPending;
+  }
   const server = http.createServer(async (req, res) => {
-    const match = /^\/api\/history\/(status|search|context|read)$/.exec(req.url);
+    const match = /^\/api\/history\/(status|search|context|read|open)$/.exec(req.url);
     const operation = match?.[1];
     try {
       if (req.headers.origin || req.headers.host !== `127.0.0.1:${server.address().port}`) throw historyError('LOCAL_CLIENT_REQUIRED', 'Use a local non-browser client at 127.0.0.1.', 403);
@@ -95,6 +120,19 @@ function createHistoryServer(service) {
       if (Number(req.headers['content-length']) > MAX_BODY_BYTES) throw historyError('BODY_TOO_LARGE', `Request exceeds ${MAX_BODY_BYTES} bytes.`, 413);
       const input = validateHistoryInput(await readBody(req));
       const result = await service.execute(operation, input);
+      if (operation === 'open') {
+        let viewer;
+        try { viewer = await ensureViewer(); } catch (error) {
+          result.viewerReady = false;
+          result.browserOpenRequested = false;
+          result.error = { code: error.code || 'VIEWER_START_FAILED', message: 'The target is verified, but the evidence viewer could not start.' };
+          sendJson(res, 503, result);
+          return;
+        }
+        result.url = `http://127.0.0.1:${viewer.address().port}/#ref=${encodeURIComponent(result.evidenceRef)}`;
+        result.viewerReady = true;
+        result.browserOpenRequested = false;
+      }
       if (Buffer.byteLength(JSON.stringify(result)) > MAX_RESPONSE_BYTES) throw historyError('RESPONSE_TOO_LARGE', 'Reduce maxBytes or the number of references.', 413);
       sendJson(res, 200, result);
     } catch (error) {
@@ -105,6 +143,17 @@ function createHistoryServer(service) {
   server.headersTimeout = 10000;
   server.keepAliveTimeout = 1000;
   server.setTimeout(120000, (socket) => socket.destroy());
+  let viewerClose;
+  server.closeViewer = () => {
+    shuttingDown = true;
+    viewerClose ||= (async () => {
+      const viewer = await viewerPending?.catch(() => null);
+      if (!viewer) return;
+      await new Promise((resolve) => { viewer.close(resolve); viewer.closeAllConnections(); });
+    })();
+    return viewerClose;
+  };
+  server.once('close', () => { server.closeViewer().catch(() => {}); });
   return server;
 }
 
@@ -113,7 +162,7 @@ async function startHistoryServer(options, createService) {
   const service = await factory(options);
   const server = createHistoryServer(service);
   let closePromise;
-  const closeService = () => { closePromise ||= Promise.resolve().then(() => service.close()); return closePromise; };
+  const closeService = () => { closePromise ||= server.closeViewer().then(() => service.close()); return closePromise; };
   server.once('close', () => { closeService().catch(() => {}); });
   try {
     await new Promise((resolve, reject) => {

@@ -1,6 +1,6 @@
 ---
 name: history-retrieval
-description: Retrieve verifiable project history with Session Analyzer when investigating prior design constraints, rejected approaches, repeated failures, or the origin of an implementation. Use recorded evidence to inform current work; routine edits without historical questions do not need retrieval.
+description: Retrieve verifiable project history with Session Analyzer when investigating prior design constraints, rejected approaches, repeated failures, or implementation origins, and open a selected record for user inspection. Routine edits without historical questions do not need retrieval.
 ---
 
 # Retrieve project evidence / 检索项目证据
@@ -16,6 +16,10 @@ session-analyzer history read --endpoint http://127.0.0.1:17891 --ref "<evidence
 ```
 
 Commands return JSON. Use repeated `--ref` for batches and `--max-bytes` to control response size. Pass returned cursors and context exactly; use operation help for supported continuation flags. Evidence refs and ephemeral context refs have different lifetimes. If a source changed, search again; never substitute an old event position. / 命令返回 JSON。重复 `--ref` 可批量处理；`--max-bytes` 控制响应大小。原样传递返回游标与 context；续读参数见各操作 help。证据引用与临时上下文引用生命周期不同。来源变化后重新搜索，不替换为旧事件位置。
+
+When capabilities include `open`, hand a selected result to the user with `history open --endpoint <original endpoint> --ref <returned ref> --no-browser`; cite its returned `url` without constructing one. If the user explicitly asks to open the record, omit `--no-browser`. Internal search does not require opening a page. Pass `--context <original contextRef>` for an `hr1` handle. Open accepts one event; read a range first to select one. It prepares a fixed-snapshot viewer independent of ordinary Web state. / 能力包含 open 时，用所列命令把选中结果交给用户核对，引用返回 url，不自行构造。用户明确要求打开记录时省略 no-browser，内部搜索无需打开页面。hr1 句柄带原 context；open 仅接受单事件，范围先读取再选择。查看页绑定固定快照，独立于普通 Web 状态。
+
+Report `targetVerified`, `viewerReady` and `browserOpenRequested` accurately: browser invocation is not a page-location receipt. If the opener fails, preserve the returned URL and mention the failure. Explain the service environment when its localhost may be remote to the user. Keep the original service running; on stale/scope/context errors, correct the scope or search again rather than guessing an event. The page shows the exact record and hit excerpt; continuous timeline reading is a separate user action. / 准确报告三个状态，浏览器调用不是页面定位回执。启动失败保留返回 URL 并说明失败；localhost 对用户可能位于远端时说明服务环境。保持原服务运行；过期／范围／context 错误时修正范围或重新搜索，不猜事件。页面显示准确记录与命中片段，连续时间线阅读由用户另行进入。
 
 When capabilities list `presentations`, prefer `--presentation compact` for retrieval. Keep the full `status` coverage and its `contextRef`, then pass `--context <contextRef>` on later calls: `coverageRef` refers to that already-read coverage and warnings. Short `hr1` handles require that context and expire with the service. A compact `read` returns `items[].evidenceRef` for durable citations; save that reference rather than a short handle. Full presentation remains available. / 能力声明包含 `presentations` 时，检索优先用 `--presentation compact`。保留完整 `status` 覆盖信息及其 `contextRef`，后续调用传 `--context <contextRef>`；`coverageRef` 指向此前已读的覆盖信息和警告。短 `hr1` 句柄必须带该 context，随服务失效。紧凑 `read` 的 `items[].evidenceRef` 用于持久引用，应保存它而不是短句柄；仍可选择完整呈现。
 

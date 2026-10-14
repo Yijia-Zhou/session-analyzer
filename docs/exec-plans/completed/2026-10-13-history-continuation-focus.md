@@ -1,0 +1,20 @@
+# Keep the referenced record visible when continuing / 续读保持定位记录可见
+
+Status: completed locally on `feat/history-evidence-open`, 2026-10-13; uncommitted. / 状态：2026-10-13 在现有功能分支本地完成，未提交。
+
+Continuing currently restores the first visible excerpt card. Events inserted between that card and the selected record can displace the record below the viewport even though its ID remains selected. Anchor continuation to the selected record (the linked record by default), retain its local expansion and Inspector state, and verify return visibility rather than selection alone. Desktop topbar controls must use available search-region space before wrapping when Reset folds appears; narrow layouts retain deliberate responsive rows. / 当前续读恢复首张可见节选卡片，补入它与选中记录之间的事件后，即使 ID 仍选中也可能把目标推到视口下方。改为以选中记录（默认为定位记录）作为续读锚点，保持临时展开及 Inspector 状态，并核验返回后的可见性，而不只检查选中。桌面顶栏 Reset folds 出现时先使用搜索区可用宽度再考虑换行；窄屏保留明确的响应式分行。
+
+- [x] Reproduce with intervening expanded tool content, existing saved folds, and the real acceptance Session. / 用中间展开工具内容、已有折叠偏好及真实验收会话复现。
+- [x] Fix continuation/return focus while retaining cancellation, nearby selection and closed/Raw Inspector behavior. / 修复续读／返回定位，保留取消、附近选中及关闭／Raw Inspector 行为。
+- [x] Fix desktop control allocation and validate English/Chinese desktop, zoom-equivalent and mobile widths. / 修复桌面控件宽度分配，核验中英桌面、等效缩放及手机宽度。
+- [x] Run focused browser regressions, update contracts, rebuild/check assets, and refresh the existing trial URL. / 执行针对性浏览器回归、同步契约、构建／检查资源并更新既有试用入口。
+
+The regression fixture places twelve expanded tools between a nearby message and the target. Reintroducing the old first-visible anchor makes its visibility assertion fail; the new path keeps the selected event's header and primary content in view on desktop/mobile. Return waits for target detail and rechecks ownership, while newer selection cancels its pending focus. / 回归 fixture 在附近消息与目标之间放置十二张展开工具卡片；重新注入旧首张可见锚点逻辑会使可见性断言失败。新路径在桌面／手机均保持选中事件标题与主体可见。返回等待目标详情并复核所有权，后续选择取消未完成的定位。
+
+Mobile testing also exposed a separate visibility calculation: the document-flow timeline pane's full height authorized hydration of all expanded prefix cards. Visible-detail scheduling now intersects its one measured rectangle with the window viewport and recomputes height. Candidate-first geometry and ordinary detail-settlement guarantees remain unchanged. / 手机测试另发现可见性计算问题：随文档流布局的时间线面板整段高度使所有展开前缀都被加载。可见详情调度现将一次测量矩形与窗口视口取交集并重算高度；保持先筛候选的几何读取顺序及普通详情提交保证。
+
+Desktop controls borrow search width only when Reset folds is present. A 13rem cap keeps long custom strategy options from expanding the entire page while retaining their original text. Built-in English/Chinese labels fit, and medium/mobile controls remain responsive. / 桌面仅在 Reset folds 出现时借用搜索宽度；13rem 上限避免超长自定义策略选项撑大整个页面，同时保留其原文。内置中英标签完整可见，中屏／手机控件保持响应式布局。
+
+Validation: 26 history browser scenarios, five visible-detail/reading-return regressions and three topbar scenarios passed. The topbar matrix covers English/Chinese at 1536, 1280, 1101, 820 and 390px plus selected/unselected long custom names. Build/check and whitespace checks passed; no server/CLI/package changes, so full Node/release suites were not repeated. Astra implemented/reviewed the topbar fix and reviewed the viewport correction. / 验证：26 项历史阅读浏览器场景、5 项可见详情／阅读返回回归及 3 项顶栏场景通过。顶栏矩阵覆盖中英 1536／1280／1101／820／390px，以及选中／未选中的超长自定义名称。构建／一致性及空白检查通过；无服务端／CLI／包修改，未重复全量 Node／发布测试。Astra 实施／复查顶栏修复，并审查视口修正。
+
+The existing isolated trial viewer on port 63207 serves the rebuilt assets. The real English example with saved folds stays in one control row; after Continue its exact target header sits at about 92px in a pane starting at 84px. On 390px mobile, Continue and Return both leave the same target header at 56px below the fixed tabs, with no horizontal overflow; Return restores the four-record excerpt group. Ignored screenshots: `output/history-open-validation/continue-focused-en-desktop.png` and `continue-focused-en-mobile.png`. / 既有 63207 独立试用查看页已提供重建资源。带持久折叠偏好的真实英文示例保持控件单行，续读后准确目标标题约为 92px，阅读区顶部约为 84px。390px 手机续读与返回后，同一目标标题均在固定页签下方 56px，无横向溢出；返回恢复四条记录的节选组。截图保存于忽略的 output/history-open-validation 目录。

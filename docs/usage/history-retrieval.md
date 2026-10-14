@@ -21,7 +21,7 @@ node server.js history context --endpoint 'http://127.0.0.1:17891' --context '<c
 node server.js history read --endpoint 'http://127.0.0.1:17891' --ref '<evidenceRef>' --parts message,request,result --max-bytes 12000
 ```
 
-The dedicated HTTP interface accepts `POST /api/history/status`, `/search`, `/context` and `/read` with a JSON request object. CLI `--input '<JSON>'` accepts that same object; it cannot duplicate fields supplied through flags. Repeated `--query` terms are OR alternatives, repeated `--exclude` terms are NOT, and structural filters are AND on the same event. / 独立 HTTP 接口接受 `POST /api/history/status`、`/search`、`/context`、`/read`，请求体为 JSON 对象。CLI `--input '<JSON>'` 接受相同对象，不能与 flag 重复提供同一字段。重复 `--query` 为 OR 候选词，重复 `--exclude` 为 NOT，结构筛选在同一事件上 AND。
+The dedicated HTTP interface accepts `POST /api/history/status`, `/search`, `/context`, `/read` and `/open` with a JSON request object. CLI `--input '<JSON>'` accepts that same object; it cannot duplicate fields supplied through flags. Repeated `--query` terms are OR alternatives, repeated `--exclude` terms are NOT, and structural filters are AND on the same event. `/open` accepts only `refs:[one event reference]` and optional `contextRef`; browser invocation is a CLI action. / 独立 HTTP 接口接受 `POST /api/history/status`、`/search`、`/context`、`/read`、`/open`，请求体为 JSON 对象。CLI `--input '<JSON>'` 接受相同对象，不能与 flag 重复提供同一字段。重复 `--query` 为 OR 候选词，重复 `--exclude` 为 NOT，结构筛选在同一事件上 AND。open 仅接受单事件 refs 数组和可选 contextRef，浏览器启动由 CLI 执行。
 
 Literal clue values may themselves be option names: `history search --query '--help'` searches for that text, while `history search --help` prints help. Text filters and exclusions follow the same value-position rule. Repeated `parts` selectors are folded into their first occurrence before reading or interpreting offsets, so `raw,raw` continues identically to `raw`. / 字面线索本身可以是选项名：`history search --query '--help'` 搜索该文本，`history search --help` 则显示帮助。文本筛选与排除项遵循同样的值位置规则。重复 `parts` 在读取及解释偏移前按首次出现去重，因此 `raw,raw` 的续读与 `raw` 一致。
 
@@ -46,6 +46,23 @@ The package includes [the retrieval skill](../../skills/history-retrieval/SKILL.
 Historical instructions are not current authorization. The reader admits only indexed source artifacts and does not execute recorded commands. Local reads do not prevent a hosted agent from receiving the output you supply to it; this MVP has no general automatic redaction layer. / 历史指令不是当前授权。读取器仅准入已索引来源工件，不执行已记录命令。本地读取不能阻止托管 agent 接收交给它的输出；本 MVP 没有通用自动脱敏层。
 
 See the [contract](../product-specs/history-retrieval.md), [design](../design-docs/history-retrieval.md) and [synthetic evaluation protocol](../evals/history-retrieval/README.md). / 参见[契约](../product-specs/history-retrieval.md)、[设计](../design-docs/history-retrieval.md)及[合成评估协议](../evals/history-retrieval/README.md)。
+
+## Open a result for inspection / 打开结果供核对
+
+Use the original history endpoint and pass a returned event reference unchanged. Choose `--no-browser` to prepare a citation link; omit it when the user asks to open the record. / 使用原检索 endpoint，原样传递返回的事件引用。准备引用链接时选择 no-browser；用户要求打开记录时省略该选项。
+
+```sh
+session-analyzer history open --endpoint http://127.0.0.1:17891 --ref "<evidenceRef>" --no-browser
+session-analyzer history open --endpoint http://127.0.0.1:17891 --context "<contextRef>" --ref "<hr1-handle>"
+```
+
+`open` accepts one event. For a range, read context first and choose a returned event. It starts/reuses a viewer bound to that service's original snapshot without changing an ordinary Web instance. Copy the returned `url`; do not construct a port or decode a reference yourself. `targetVerified` confirms evidence validation, `viewerReady` confirms the URL is ready, and `browserOpenRequested` confirms a successful opener invocation. None confirms page-render completion. Browser failure returns exit code 1 with `browser.status=failed`, while preserving the ready URL; `--no-browser` returns `skipped`. / open 接受单事件，范围先读取 context 并选择返回事件。它启动／复用绑定原服务快照的查看页，不改变普通 Web 实例。复制返回 url，不自行猜端口或拆引用。三个布尔状态分别确认核验、URL 就绪和 opener 调用成功，均不等于页面完成渲染。浏览器失败返回退出码 1 及 failed 状态，仍保留就绪 URL；no-browser 返回 skipped。
+
+Linux browser opening requires `gio` from GLib (Debian/Ubuntu package `libglib2.0-bin`) and a registered default HTTP browser. It returns after the launch request completes, even if the browser keeps running. If `gio` or a default handler is unavailable, use the preserved URL or `--no-browser`; preparing the link needs no desktop launcher. / Linux 打开浏览器要求 GLib 提供的 `gio`（Debian／Ubuntu 软件包 `libglib2.0-bin`）及已注册的默认 HTTP 浏览器。启动请求完成后即返回，即使浏览器仍在运行。若缺少 `gio` 或默认处理程序，可使用保留的 URL 或 `--no-browser`；准备链接不需要桌面启动器。
+
+The page displays the exact record, actual hit excerpt and nearby excerpts. These excerpts are bounded search projections with explicit omissions, not Raw coordinates or a contiguous timeline segment. Continue reading in Main loads the prefix with progress/cancel/retry; Return to reference restores the target. Protocol/Raw offer View Main timeline as a separate layer change. / 页面显示准确记录、实际命中及附近摘录。摘录为有界搜索投影并标明省略，不是 Raw 坐标或连续时间线片段。Main 续读加载前缀并提供进度／取消／重试，“回到定位记录”恢复目标；Protocol／Raw 的“查看主时间线”明确表示切层。
+
+Keep the history service running while using its links. Refresh revalidates source bytes; accepted-prefix appends can remain readable, but rewrite/deletion or a newly indexed snapshot can invalidate the reference. Restarting may choose another viewer port: call open again with the durable reference. Loopback URLs belong to the service environment; remote/container use needs a reachable local service or deliberate port forwarding. / 使用链接时保持检索服务运行。刷新重新核验来源字节；已接受前缀的追加可继续读，改写／删除或重新索引快照可能使引用过期。重启可能使用另一查看端口，应以持久引用再次调用 open。回环 URL 属于服务环境，远端／容器使用需服务可达或明确端口转发。
 
 ## Group queries and read a known source position / 分组查询与读取已知来源位置
 
