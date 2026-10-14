@@ -34,6 +34,7 @@ const planFacet = require('./shared/plan-facet');
 const toolLifecycleContract = require('./codex-tool-lifecycle-contract');
 const i18n = require('./shared/i18n');
 const { asyncMessageMetadata } = require('./codex-async-message');
+const { resolvedSubAgentStartup, additionalToolsSummary } = require('./codex-turn-items');
 const { historyFacts, validHistoryFacts, validHistoryTarget, resolveHistoryReference, historyOwner } = require('./codex-persisted-history');
 const codexMessageEvidence = {
   ...require('./codex-turn-items'),
@@ -2311,6 +2312,7 @@ function humanizeProtocolSubtype(subtype) {
 }
 
 function protocolLabelFor(subtype, fallback = '') {
+  if (subtype === 'additional_tools') return 'Additional tools';
   return PROTOCOL_LABELS[subtype] || humanizeProtocolSubtype(fallback || subtype);
 }
 
@@ -2352,6 +2354,11 @@ function payloadPreview(payload, keys) {
 }
 
 function protocolPreviewFor(raw, subtype) {
+  if (subtype === 'additional_tools' && raw.recordType === 'response_item') {
+    const summary = additionalToolsSummary(raw.parsed?.payload);
+    if (!summary.valid) return 'Unmodeled additional tools fields';
+    return truncate(`${summary.entries} recorded definitions; ${summary.names.join(', ')}`);
+  }
   const source = String(raw.messageText || raw.searchText || raw.preview || '').trim();
 
   if (subtype === 'session_meta') {
@@ -2515,6 +2522,26 @@ function extractPlanSections(raws) {
   return sections;
 }
 
+function recordedTruncationSections(raws) {
+  let command = false;
+  let mcp = false;
+  for (const raw of raws) {
+    const record = raw.originalRaw?.parsed || raw.parsed;
+    const p = record?.payload;
+    const item = record?.type === 'event_msg' && p?.type === 'item_completed' ? p.item : null;
+    if (item?.type === 'CommandExecution' && typeof item.aggregated_output === 'string'
+        && item.aggregated_output.includes('\n... command output truncated for persistence ...\n')) command = true;
+    const result = item?.type === 'McpToolCall' ? item.result
+      : record?.type === 'event_msg' && p?.type === 'mcp_tool_call_end' ? p.result : null;
+    if (Array.isArray(result?.content) && result.content.some((part) => part?.type === 'text'
+        && typeof part.text === 'string' && /…\d+ chars truncated…/.test(part.text))) mcp = true;
+  }
+  const sections = [];
+  if (command) sections.push(makeNoticeSection('Recorded output truncation', 'Recorded aggregated output contains the Codex persistence truncation marker. Original output length is unknown; Analyzer display shortening is separate.', 'warning', 'result'));
+  if (mcp) sections.push(makeNoticeSection('Recorded output truncation', 'Recorded MCP result text contains a truncation marker or preview. The truncation stage and original result length are unknown; Analyzer display shortening is separate.', 'warning', 'result'));
+  return sections;
+}
+
 function extractCommandSections(raws, event, session = {}) {
   const timelineSections = [];
   const inspectorSections = [];
@@ -2539,13 +2566,19 @@ function extractCommandSections(raws, event, session = {}) {
     inspectorSections.push({ purpose: 'request', type: 'json', title: 'Arguments', value: args });
   }
 
-  const stdout = firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, execEnd?.parsed?.payload?.formatted_output, formatted?.output, execAny?.stdout, execAny?.aggregatedOutput, formatted ? '' : functionOutput?.output);
+  const stdout = firstNonEmpty(execEnd?.stdout, execAny?.stdout);
   const stderr = execEnd?.stderr || execAny?.stderr || '';
+  const combined = !stdout && !stderr ? firstNonEmpty(execEnd?.aggregatedOutput, execAny?.aggregatedOutput) : '';
+  const output = !stdout && !stderr && !combined ? firstNonEmpty(execEnd?.parsed?.payload?.formatted_output, formatted?.output, formatted ? '' : functionOutput?.output) : '';
   maybePushTerminalSection(timelineSections, 'stdout', stdout, 'stdout', '', 'result');
   maybePushTerminalSection(timelineSections, 'stderr', stderr, 'stderr', '', 'result');
+  maybePushTerminalSection(timelineSections, 'Combined output', combined, 'output', '', 'result');
+  maybePushTerminalSection(timelineSections, 'Output', output, 'output', '', 'result');
+  timelineSections.push(...recordedTruncationSections(raws));
 
   if (stdout) maybePushParsedOutputSection(inspectorSections, 'stdout structure', stdout, 'result');
   if (stderr) maybePushParsedOutputSection(inspectorSections, 'stderr structure', stderr, 'result');
+  if (combined || output) maybePushParsedOutputSection(inspectorSections, 'Output structure', combined || output, 'result');
   if (functionOutput?.output) maybePushParsedOutputSection(inspectorSections, 'Tool output', structuredOutputValue(functionOutput.output), 'result');
 
   if (!timelineSections.length && !inspectorSections.length) inspectorSections.push(makeRawJsonSection('Unmodeled fields', logicalFallbackPayload(raws), false, 'fallback'));
@@ -2652,6 +2685,7 @@ function toolDetailValues(raws) {
 
 function extractToolSections(raws, event) {
   const sections = [];
+  sections.push(...recordedTruncationSections(raws));
   const { requestValue, responseValue } = toolDetailValues(raws);
 
   maybePushKvSection(sections, 'Tool context', [
@@ -3152,7 +3186,7 @@ function hasMeaningfulToolValue(value) {
   return true;
 }
 
-function collaborationToolSection(toolName, requestValue, responseValue) {
+function collaborationToolSection(toolName, requestValue, responseValue, raws = []) {
   const definition = agentCoordination.agentCoordinationDefinition(toolName);
   if (!definition) return null;
   const spawnedAgentId = firstNonEmpty(responseValue?.agent_id, responseValue?.new_thread_id);
@@ -3163,8 +3197,8 @@ function collaborationToolSection(toolName, requestValue, responseValue) {
   const fields = [
     { key: 'Timeout ms', value: requestValue?.timeout_ms },
     { key: 'Agent type', value: requestValue?.agent_type },
-    { key: 'Model', value: requestValue?.model },
-    { key: 'Reasoning effort', value: requestValue?.reasoning_effort },
+    { key: 'Requested model', value: requestValue?.model },
+    { key: 'Requested reasoning effort', value: requestValue?.reasoning_effort },
     { key: 'Fork context', value: firstNonEmpty(requestValue?.fork_context, requestValue?.fork_turns) },
     { key: 'Task', value: requestValue?.task_name },
     { key: 'Path prefix', value: requestValue?.path_prefix },
@@ -3175,6 +3209,12 @@ function collaborationToolSection(toolName, requestValue, responseValue) {
     key: entry.key,
     value: conciseToolValue(entry.value, 1000),
   }));
+  const startup = resolvedSubAgentStartup(raws);
+  if (startup) {
+    for (const [key, label] of [['model', 'Resolved startup model'], ['reasoning_effort', 'Resolved startup reasoning effort'], ['agent_thread_id', 'Startup agent thread'], ['agent_path', 'Startup agent path']]) {
+      if (startup[key]) fields.push({ key: label, value: conciseToolValue(startup[key], 1000) });
+    }
+  }
   const message = redactEmbeddedDataUrls(stringifyValue(firstNonEmpty(requestValue?.message, responseValue?.prompt)));
   const result = redactEmbeddedDataUrls(collaborationResultMarkdown(responseValue));
   return {
@@ -3317,6 +3357,7 @@ function extractMcpSections(raws, event) {
   const timelineSections = [];
   pushMcpRequestSummary(timelineSections, event, requestValue);
   pushMcpResponseSummary(timelineSections, responseValue);
+  timelineSections.push(...recordedTruncationSections(raws));
   if (!timelineSections.length) {
     timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info', 'result')));
   }
@@ -3358,8 +3399,9 @@ function extractToolOperationSections(raws, event) {
   }
   const userInput = event.toolName === 'request_user_input' ? requestUserInputSection(requestValue, responseValue) : null;
   if (userInput) timelineSections.push(userInput);
-  const collaboration = collaborationToolSection(event.toolName, requestValue, responseValue);
+  const collaboration = collaborationToolSection(event.toolName, requestValue, responseValue, raws);
   if (collaboration) timelineSections.push(collaboration);
+  if (collaboration && resolvedSubAgentStartup(raws)) timelineSections.push(makeNoticeSection('Startup settings evidence', 'Recorded started activity supplies startup settings only; later settings and token attribution are not inferred.', 'info', 'context'));
   if (collaboration && hasMeaningfulToolValue(responseValue) && !collaborationResponseCaptured(responseValue)) {
     maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue, 'result');
   }
@@ -3383,6 +3425,8 @@ function extractToolOperationSections(raws, event) {
   }
   const imagePreview = ['view_image', 'image_generation'].includes(event.toolName) ? imagePreviewSection(raws, event, requestValue) : null;
   const inspectorSections = sanitizeToolInspectorSections(toolInspectorSections, imagePreview);
+  const activityRows = raws.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'sub_agent_activity');
+  for (const raw of activityRows) inspectorSections.push({ purpose: 'context', type: 'json', title: 'Recorded subagent activity', value: raw.parsed.payload });
   return {
     timelineSections,
     inspectorSections: imagePreview ? [imagePreview, ...inspectorSections] : inspectorSections,
@@ -3617,9 +3661,9 @@ function codeModeShellResultSections(resultText) {
       { key: 'process_id', value: formatted.processId == null ? '' : String(formatted.processId) },
       { key: 'Wall time', value: formatted.wallTime },
     ], 'result');
-    maybePushTerminalSection(sections, 'Output', formatted.output, 'stdout', '', 'result');
+    maybePushTerminalSection(sections, 'Output', formatted.output, 'output', '', 'result');
   } else {
-    maybePushTerminalSection(sections, 'Result', resultText, 'stdout', '', 'result');
+    maybePushTerminalSection(sections, 'Result', resultText, 'output', '', 'result');
   }
   return sections;
 }
@@ -3680,7 +3724,7 @@ function backgroundTerminalResultSections(value) {
   }
   maybePushKvSection(sections, 'Run result', metadata, 'result');
   hideSectionTitle(sections[0]);
-  maybePushTerminalSection(sections, 'Output', output, 'stdout', '', 'result');
+  maybePushTerminalSection(sections, 'Output', output, 'output', '', 'result');
   return sections;
 }
 
@@ -3802,6 +3846,21 @@ function extractProtocolDetailSections(event, raws) {
   const timelineSections = [];
   const inspectorSections = [];
   const primary = raws[0];
+  if (event.subtype === 'additional_tools' && primary.recordType === 'response_item') {
+    const summary = additionalToolsSummary(primary.parsed?.payload);
+    if (!summary.valid) {
+      inspectorSections.push(makeRawJsonSection('Unmodeled protocol fields', primary.parsed?.payload, false, 'fallback'));
+      return { timelineSections, inspectorSections };
+    }
+    maybePushKvSection(timelineSections, 'Additional tools', [
+      { key: 'Top-level definition entries', value: String(summary.entries) },
+      { key: 'Recognized function definitions (bounded scan)', value: `${summary.count}${summary.incomplete ? '+' : ''}` },
+      { key: 'Unsupported definitions (bounded scan)', value: `${summary.unsupported}${summary.incomplete ? '+' : ''}` },
+      { key: 'Tool names and namespaces', value: summary.names.join('\n') },
+    ], 'context');
+    timelineSections.push(makeNoticeSection('Definition summary', 'Bounded summary of recorded tool definitions; complete definitions remain in Raw refs. Definitions do not establish tool execution.', 'info', 'context'));
+    return { timelineSections, inspectorSections };
+  }
   if (['agents_instructions', 'developer_instruction', 'developer_permissions', 'developer_collaboration_mode', 'skill_injection'].includes(event.subtype)) {
     maybePushMarkdownSection(timelineSections, 'Protocol text', primary.messageText, 'content');
     hideSectionTitle(timelineSections[0]);
@@ -3828,7 +3887,7 @@ function extractProtocolDetailSections(event, raws) {
       timelineSections.push(makeNoticeSection('Recorded turn context', 'Captured turn configuration; not proof that every internal request used identical settings or completed successfully.', 'info', 'context'));
       // Preserve summary as recorded scalar evidence. Without an established
       // schema version it must not be relabeled as an effective setting.
-      inspectorSections.push(makeNoticeSection('Recorded fields', 'summary is legacy evidence; in Codex 0.155 it is compatibility-only. realtime_active does not identify an audio session.', 'info', 'context'));
+      inspectorSections.push(makeNoticeSection('Recorded fields', 'summary is compatibility-only evidence. realtime_active does not identify an audio session.', 'info', 'context'));
     }
     const entries = event.subtype === 'environment_context'
       ? taggedBlockEntries(primary.messageText)
@@ -3927,6 +3986,12 @@ function rawConversationRole(raw) {
 function rawToolSections(raw, relatedEvent, session = {}) {
   const sections = [];
   const omitPayloadKeys = [];
+  const typed = codexMessageEvidence.semanticRaw(raw);
+  if (typed !== raw && typed.typedItemType === 'CommandExecution') {
+    const detail = extractCommandSections([typed], relatedEvent || {}, session);
+    return { sections: [...detail.timelineSections, ...detail.inspectorSections], omitPayloadKeys };
+  }
+  sections.push(...recordedTruncationSections([raw]));
   const toolName = raw.toolName || relatedEvent?.toolName || relatedEvent?.subtype || '';
 
   if (raw.recordType === 'response_item' && raw.payloadType === 'function_call' && toolName === 'shell_command') {
@@ -3946,7 +4011,7 @@ function rawToolSections(raw, relatedEvent, session = {}) {
         { key: 'exitCode', value: String(formatted.exitCode) },
         { key: 'wallTime', value: formatted.wallTime },
       ]);
-      maybePushTerminalSection(sections, 'stdout', formatted.output, formatted.exitCode === 0 ? 'stdout' : 'stderr');
+      maybePushTerminalSection(sections, 'Output', formatted.output, 'output');
     } else {
       maybePushStructuredSection(sections, 'Command output', structuredOutputValue(raw.output));
     }
@@ -3959,9 +4024,12 @@ function rawToolSections(raw, relatedEvent, session = {}) {
       { key: 'exitCode', value: raw.exitCode == null ? '' : String(raw.exitCode) },
       { key: 'durationMs', value: raw.durationMs == null ? '' : String(raw.durationMs) },
     ]);
-    const stdout = firstNonEmpty(raw.stdout, raw.aggregatedOutput, raw.parsed?.payload?.formatted_output);
+    const stdout = raw.stdout;
     maybePushTerminalSection(sections, 'stdout', stdout, 'stdout');
     maybePushTerminalSection(sections, 'stderr', raw.stderr, 'stderr');
+    if (!stdout && !raw.stderr) {
+      maybePushTerminalSection(sections, raw.aggregatedOutput ? 'Combined output' : 'Output', firstNonEmpty(raw.aggregatedOutput, raw.parsed?.payload?.formatted_output), 'output');
+    }
     if (stdout) maybePushParsedOutputSection(sections, 'stdout (structured)', stdout);
     if (raw.stderr) maybePushParsedOutputSection(sections, 'stderr (structured)', raw.stderr);
     omitPayloadKeys.push('command', 'cwd', 'stdout', 'stderr', 'aggregated_output', 'formatted_output', 'exit_code', 'duration', 'status');

@@ -386,7 +386,7 @@ test('text reads remove duplicate detail renderings, preserve continuation and b
   const structured = await service.execute('read', { refs: [ref], parts: ['result'] });
   const text = await service.execute('read', { refs: [ref], parts: ['result'], textFormat: 'text' });
   assert.equal(text.items[0].parts[0].representation, 'detail_text');
-  assert.match(text.items[0].parts[0].text, /\[stdout; stream=stdout\]\nINTERNAL_GAP_EVIDENCE: validation failed\./u);
+  assert.match(text.items[0].parts[0].text, /\[Output; stream=output\]\nINTERNAL_GAP_EVIDENCE: validation failed\./u);
   assert.equal(text.items[0].parts[0].text.match(/INTERNAL_GAP_EVIDENCE/gu).length, 1);
   assert.ok(text.items[0].parts[0].text.length < structured.items[0].parts[0].text.length);
   const paged = await service.execute('read', { refs: [ref, ref], parts: ['result'], textFormat: 'text', limit: 1, length: 5 });

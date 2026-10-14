@@ -320,6 +320,18 @@ test('renderer groups command and terminal sections as one command run', () => {
   assert.match(titleLookalike, /class="codeFence"/);
 });
 
+test('renderer keeps combined output neutral and grouped while legacy stream fallback stays stable', () => {
+  const html = renderSections([
+    { purpose: 'request', type: 'code', title: 'Command', code: 'echo synthetic', language: 'shell', role: 'command' },
+    { purpose: 'result', type: 'terminal', title: 'Combined output', text: '<merged>', stream: 'output' },
+  ]);
+  assert.match(html, /commandRunOutput output/);
+  assert.match(html, /Combined output/);
+  assert.match(html, /&lt;merged&gt;/);
+  assert.doesNotMatch(html, /commandRunOutput stdout/);
+  assert.match(renderSection({ type: 'terminal', text: 'legacy', stream: 'unknown' }), /terminalBlock stdout/);
+});
+
 test('Inspector ordering follows purpose while preserving producer order and atomic composites', () => {
   const composite = {
     purpose: 'content',

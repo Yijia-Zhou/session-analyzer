@@ -4394,7 +4394,7 @@ test('command terminal sections repair UTF-8 text decoded as GB18030', () => {
   };
 
   const detail = buildEventDetail(session, event.id, 'main');
-  const stdout = allSections(detail).find((section) => section.type === 'terminal' && section.title === 'stdout');
+  const stdout = allSections(detail).find((section) => section.type === 'terminal' && section.title === 'Output' && section.stream === 'output');
   assert.ok(stdout);
   assert.match(stdout.text, /功能测试视频事件定位工作/);
   assert.match(stdout.text, /ANSI heading/);

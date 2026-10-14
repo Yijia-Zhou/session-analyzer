@@ -4,9 +4,13 @@
 
 ### English
 
+- Clarify Codex 0.162 combined output and recorded truncation evidence, distinguish requested sub-agent settings from recorded startup settings, and summarize additional tool declarations without counting them as executions.
+
 - Skip browser CI for narrowly classified documentation-only pull requests while retaining Node and package checks; execute publish-workflow release checks once through the guarded directory dry-run.
 
 ### 中文
+
+- 明确 Codex 0.162 的合并输出与已记录截断证据，区分子 agent 请求设置和已记录启动设置，并摘要新增工具声明而不计为执行。
 
 - 严格分类的纯文档 PR 可跳过 browser CI，保留 Node 与 package 检查；发布 workflow 通过目录 guarded dry-run 执行一次发布检查，消除重复运行。
 

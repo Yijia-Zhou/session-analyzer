@@ -147,6 +147,91 @@ for (const locale of ['en', 'zh-CN']) test(`Codex 0.160 Paginated typed tools an
   assert.ok(requestedPaths.some((value) => value.startsWith(`/api/sessions/${id}/raw/`)));
 });
 
+for (const locale of ['en', 'zh-CN']) test(`Codex 0.162 recorded output, startup settings and tool declarations render in both presentations (${locale})`, async (t) => {
+  // Synthetic pinned rollout shapes; no commands or sub-agents are executed.
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-0162-browser-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const project = path.join(home, 'repo');
+  await fsp.mkdir(project);
+  const id = 'dddddddd-0162-4162-8162-dddddddddddd';
+  const child = 'eeeeeeee-0162-4162-8162-eeeeeeeeeeee';
+  const typed = (item) => ({ type: 'event_msg', payload: {
+    type: 'item_completed', thread_id: id, turn_id: 'turn-0162', item,
+  } });
+  const response = (payload) => ({ type: 'response_item', payload });
+  const output = `COMMAND_HEAD\n${'x'.repeat(32000)}\n... command output truncated for persistence ...\n${'y'.repeat(32000)}\nCOMMAND_TAIL`;
+  await writeJsonl(path.join(home, 'sessions', `rollout-${id}.jsonl`), [
+    { type: 'session_meta', payload: { id, cwd: project, cli_version: '0.161.0', history_mode: 'paginated' } },
+    { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-0162' } },
+    { type: 'turn_context', payload: { turn_id: 'turn-0162', model: 'synthetic-parent', effort: 'high', summary: 'none' } },
+    typed({ type: 'CommandExecution', id: 'merged-command', command: ['synthetic-command'], cwd: project,
+      parsed_cmd: [], source: 'agent', status: 'completed', aggregated_output: output, exit_code: 0, duration: { secs: 1, nanos: 0 } }),
+    typed({ type: 'McpToolCall', id: 'preview-mcp', server: 'synthetic', tool: 'lookup', arguments: {}, status: 'completed',
+      result: { content: [{ type: 'text', text: '{"content":["MCP_HEAD…100000 chars truncated…MCP_TAIL"]}' }], isError: true },
+      error: null, duration: { secs: 1, nanos: 0 } }),
+    response({ type: 'function_call', call_id: 'spawn-0162', name: 'spawn_agent', arguments: JSON.stringify({
+      task_name: 'child', message: 'Synthetic child task', model: 'REQUESTED_MODEL_0162', reasoning_effort: 'low',
+    }) }),
+    typed({ type: 'SubAgentActivity', id: 'spawn-0162', kind: 'started', agent_thread_id: child,
+      agent_path: '/root/child', model: 'RESOLVED_MODEL_0162', reasoning_effort: 'high' }),
+    response({ type: 'function_call_output', call_id: 'spawn-0162', output: JSON.stringify({ agent_id: child }) }),
+    response({ type: 'additional_tools', role: 'developer', tools: [{ type: 'namespace', name: 'synthetic_namespace',
+      tools: [{ type: 'function', name: 'declared_lookup', description: 'DECLARATION_SEARCH_TAIL', parameters: { type: 'object' } }] }] }),
+  ].map((row, i) => ({ timestamp: new Date(Date.parse('2026-10-14T00:00:00Z') + i * 1000).toISOString(), ...row })));
+  const index = await buildIndex({ repoRoot: project, codexHome: home });
+  const session = await materializeIndexedSession(index, id);
+  assert.equal(session.counts.toolCalls, 3);
+  const command = session.logicalEvents.find((event) => event.kind === 'command');
+  const mcp = session.logicalEvents.find((event) => event.kind === 'mcp_call');
+  const spawn = session.logicalEvents.find((event) => event.kind === 'agent_coordination');
+  const declarations = session.logicalEvents.find((event) => event.subtype === 'additional_tools');
+  assert.equal(mcp.status, 'failed');
+  assert.equal(spawn.rawRefs.length, 3);
+  assert.equal(declarations.layer, 'protocol');
+  const { page } = await openApp(t, index, { locale, skipProjectReindex: true });
+  const combined = locale === 'en' ? 'Combined output' : '合并输出';
+  for (const presentation of ['timeline', 'trajectory']) {
+    await page.locator(`#mainPresentationControl [data-main-presentation="${presentation}"]`).click();
+    for (const [event, marker] of [[command, 'COMMAND_HEAD'], [mcp, 'MCP_HEAD'], [spawn, 'RESOLVED_MODEL_0162']]) {
+      const target = presentation === 'timeline'
+        ? `.event[data-event-id="${event.id}"] .eventHeader`
+        : `[data-trajectory-event-id="${event.id}"]`;
+      await page.locator(target).first().click();
+      const root = presentation === 'timeline' ? `#timeline .event[data-event-id="${event.id}"]` : '#detail';
+      await page.waitForFunction(({ root, marker }) => document.querySelector(root)?.textContent.includes(marker), { root, marker });
+      const text = await page.locator(root).textContent();
+      if (event === command) {
+        assert.ok(text.includes(combined));
+        assert.equal(await page.locator(`${root} .commandRunOutput`).count(), 1, 'combined output retains the command-run layout');
+        assert.ok((await page.locator(`${root} .notice`).allTextContents()).some((notice) =>
+          notice.includes(locale === 'en' ? 'persistence truncation marker' : '持久化截断标记')), 'source truncation evidence has a separate notice');
+      } else if (event === spawn) {
+        assert.ok(text.includes('REQUESTED_MODEL_0162'));
+        assert.ok(text.includes('low'));
+        assert.ok(text.includes('high'));
+        assert.ok(text.includes(locale === 'en' ? 'Requested model' : '请求模型'));
+        assert.ok(text.includes(locale === 'en' ? 'Resolved startup model' : '实际启动模型'));
+      } else {
+        assert.ok((await page.locator(`${root} .notice`).allTextContents()).some((notice) =>
+          notice.includes(locale === 'en' ? 'truncation stage' : '截断阶段')), 'MCP source marker is explained separately');
+      }
+    }
+  }
+  await page.locator('#mainPresentationControl [data-main-presentation="timeline"]').click();
+  await fillSearch(page, 'RESOLVED_MODEL_0162');
+  await page.waitForFunction(() => document.querySelectorAll('#timeline .event.searchHit').length === 1);
+  assert.equal(await page.locator('#timeline .event.searchHit').getAttribute('data-event-id'), spawn.id);
+  await fillSearch(page, '');
+  await page.waitForFunction(() => document.querySelectorAll('#timeline .event.searchHit').length === 0);
+  await page.locator('#layerSelect').selectOption('protocol');
+  await page.locator(`.event[data-event-id="${declarations.id}"]`).click();
+  await page.waitForFunction(() => document.querySelector('#detail')?.textContent.includes('declared_lookup'));
+  assert.ok((await page.locator('#detail').innerText()).includes('synthetic_namespace'));
+  await page.locator('#detail [data-detail-action="raw"]').click();
+  await waitForDetailView(page, 'rawRefs');
+  await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('DECLARATION_SEARCH_TAIL'));
+});
+
 for (const locale of ['en', 'zh-CN']) test(`Claude background terminal evidence stays on the owning MCP and Monitor operation (${locale})`, async (t) => {
   const claudeHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'claude-background-browser-'));
   t.after(() => fsp.rm(claudeHome, { recursive: true, force: true }));
