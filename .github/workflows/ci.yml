@@ -69,6 +69,14 @@ jobs:
       - run: npm --version
       - run: npm ci --strict-allow-scripts
       - run: npm run build:check
+      - name: Ensure Linux browser launcher
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v gio >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends --yes libglib2.0-bin
+          fi
+          gio version
       - run: npm test
       # Separate step on one runner: never overlap the concurrent Node suite.
       - name: Serial materialization phase coverage

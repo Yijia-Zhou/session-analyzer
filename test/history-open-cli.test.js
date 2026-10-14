@@ -105,10 +105,10 @@ test('viewer URL validation and platform commands keep reference data out of she
   assert.equal(windows.env.SESSION_ANALYZER_VIEWER_URL, url);
   assert.ok(!windows.args.some((arg) => arg.includes(evidenceRef)));
   assert.deepEqual(browserCommand(url, 'darwin'), { command: 'open', args: [url] });
-  assert.deepEqual(browserCommand(url, 'linux'), { command: 'xdg-open', args: [url] });
+  assert.deepEqual(browserCommand(url, 'linux'), { command: 'gio', args: ['open', url] });
   await openViewerBrowser(url, evidenceRef, { platform: 'linux', spawn(command, args, options) {
-    assert.equal(command, 'xdg-open');
-    assert.deepEqual(args, [url]);
+    assert.equal(command, 'gio');
+    assert.deepEqual(args, ['open', url]);
     assert.equal(options.shell, false);
     assert.equal(options.windowsHide, true);
     const child = new EventEmitter();
@@ -127,4 +127,20 @@ test('viewer URL validation and platform commands keep reference data out of she
     return child;
   } }), /timed out/);
   assert.equal(killed, true);
+});
+
+test('a spawned launcher must still report successful delivery, and explicit failures are retained', async () => {
+  for (const [code, signal, expected] of [[2, null, /exited with 2/], [null, 'SIGTERM', /exited with SIGTERM/]]) {
+    await assert.rejects(openViewerBrowser(url, evidenceRef, { platform: 'linux', spawn() {
+      const child = new EventEmitter();
+      queueMicrotask(() => {
+        child.emit('spawn');
+        setImmediate(() => child.emit('exit', code, signal));
+      });
+      return child;
+    } }), expected);
+  }
+  await assert.rejects(openViewerBrowser(url, evidenceRef, { platform: 'linux', spawn() {
+    throw new Error('Unable to spawn gio.');
+  } }), /Unable to spawn gio/);
 });

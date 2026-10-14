@@ -26,6 +26,9 @@ function browserCommand(url, platform = process.platform) {
     env: { ...process.env, SESSION_ANALYZER_VIEWER_URL: url },
   };
   if (platform === 'darwin') return { command: 'open', args: [url] };
+  // gio acknowledges the launch request without waiting for the application
+  // to exit. xdg-open may stay attached to a successfully launched browser.
+  if (platform === 'linux') return { command: 'gio', args: ['open', url] };
   return { command: 'xdg-open', args: [url] };
 }
 
