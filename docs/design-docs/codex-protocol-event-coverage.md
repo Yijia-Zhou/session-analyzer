@@ -1,5 +1,7 @@
 # Codex Protocol Event Coverage / Codex 协议事件覆盖
 
+The `rust-v0.162.1` revert follow-up accepts canonical physical RolloutIds, explicit `history_base` prefixes and per-record paginated ordinals under the [history-chain design](codex-rollout-history-chains.md). Read-only current-path evidence is separate from JSONL content. Synthetic coverage includes branch/pre-cutover selection, three-artifact chains, Unicode/CRLF/Zstd byte offsets, invalid/missing/gapped boundaries, source tampering, search/hydration, cross-file command/Code Mode correlation and snapshot-bound history references. / rust-v0.162.1 回退后续按[历史链设计](codex-rollout-history-chains.md)接纳规范物理 RolloutId、显式 history_base 前缀及逐记录分页序号。只读当前路径依据与 JSONL 内容分离。合成覆盖包含分支／切换前选择、三工件链、Unicode／CRLF／Zstd 字节位置、无效／缺失／间断边界、来源篡改、搜索／hydration、跨文件命令／Code Mode 关联及绑定快照的历史引用。
+
 <a id="codex-0162-compatibility"></a>
 
 ## Codex 0.162 compatibility / Codex 0.162 兼容

@@ -1603,9 +1603,10 @@ function createCodexLogicalBuilder(deps) {
     // Persisted realtime and positional controls carry source-position meaning.
     // Only these histories opt into line order; legacy timeline policy stays.
     const hasUntimestampedEvent = logicalEvents.some((event) => !event.timestamp || event.historyFacts);
+    const rawOrder = new Map(rawEvents.map((raw, position) => [raw.rawId, position]));
     logicalEvents.sort((a, b) => {
-      const al = a.rawRefs[0]?.line || 0;
-      const bl = b.rawRefs[0]?.line || 0;
+      const al = rawOrder.get(a.rawRefs[0]?.rawId) ?? a.rawRefs[0]?.line ?? 0;
+      const bl = rawOrder.get(b.rawRefs[0]?.rawId) ?? b.rawRefs[0]?.line ?? 0;
       if (!hasUntimestampedEvent) {
         const at = a.timestamp || '';
         const bt = b.timestamp || '';

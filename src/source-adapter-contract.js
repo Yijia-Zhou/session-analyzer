@@ -21,6 +21,7 @@ const SOURCE_ADAPTER_DESCRIPTOR_KEYS = Object.freeze([
   'validateMaterializationDescriptor',
   'validateLegacyRawOwnerIndex',
   'validateLegacyRawOwnerIndexForCommit',
+  'legacyRawSessionFacts',
   'validateMaterializedPrivateState',
   'materializationContextFields',
   'materializedPrivateFields',
@@ -268,6 +269,9 @@ function defineSourceAdapter(descriptor) {
         && typeof descriptor.validateLegacyRawOwnerIndexForCommit !== 'function') {
       throw adapterContractError(`adapter ${kind}.validateLegacyRawOwnerIndexForCommit must be a function`);
     }
+    if (descriptor.legacyRawSessionFacts !== undefined) {
+      validateSynchronousValidator(descriptor.legacyRawSessionFacts, `adapter ${kind}.legacyRawSessionFacts`);
+    }
   } else {
     for (const operation of [
       'validateMaterializationDescriptor',
@@ -286,6 +290,9 @@ function defineSourceAdapter(descriptor) {
     }
     if (descriptor.validateLegacyRawOwnerIndexForCommit !== undefined) {
       throw adapterContractError(`adapter ${kind}.validateLegacyRawOwnerIndexForCommit is only valid in indexed-materialized-v1`);
+    }
+    if (descriptor.legacyRawSessionFacts !== undefined) {
+      throw adapterContractError(`adapter ${kind}.legacyRawSessionFacts is only valid in indexed-materialized-v1`);
     }
   }
 
@@ -308,6 +315,7 @@ function defineSourceAdapter(descriptor) {
     resolveLegacyRaw: descriptor.resolveLegacyRaw || unsupportedLegacyRawResolver,
     readLegacyRaw: descriptor.readLegacyRaw || unsupportedLegacyRawRead,
     validateMaterializationDescriptor: descriptor.validateMaterializationDescriptor,
+    legacyRawSessionFacts: descriptor.legacyRawSessionFacts,
     validateLegacyRawOwnerIndex: descriptor.validateLegacyRawOwnerIndex,
     validateLegacyRawOwnerIndexForCommit: descriptor.validateLegacyRawOwnerIndexForCommit,
     validateMaterializedPrivateState: descriptor.validateMaterializedPrivateState,

@@ -232,6 +232,63 @@ for (const locale of ['en', 'zh-CN']) test(`Codex 0.162 recorded output, startup
   await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('DECLARATION_SEARCH_TAIL'));
 });
 
+for (const locale of ['en', 'zh-CN']) test(`Codex reverted rollout chain reads one session with physical Raw references (${locale})`, async (t) => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-chain-browser-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const project = path.join(home, 'repo');
+  await fsp.mkdir(project);
+  const id = 'aaaaaaaa-0162-4162-9162-aaaaaaaaaaaa';
+  const rollout = 'bbbbbbbb-0162-4162-9162-bbbbbbbbbbbb';
+  const rootFile = `rollout-2026-10-14T10-00-00-${id}.jsonl`;
+  const headFile = `rollout-2026-10-14T11-00-00-${id}_${rollout}.jsonl`;
+  const rootSourceFile = locale === 'zh-CN' ? `../archived_sessions/${rootFile}` : rootFile;
+  const meta = (extra = {}) => ({ type: 'session_meta', payload: { id, cwd: project, history_mode: 'paginated', cli_version: '0.162.1', ...extra } });
+  const response = (payload) => ({ type: 'response_item', payload });
+  const message = (text) => response({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] });
+  const stamp = (row, ordinal) => ({ timestamp: new Date(Date.parse('2026-10-14T10:00:00Z') + ordinal * 1000).toISOString(), ordinal, ...row });
+  const rootRows = [meta(), message('RETAINED_CHAIN_INPUT'), response({ type: 'function_call', name: 'shell_command',
+    call_id: 'chain-command', arguments: JSON.stringify({ command: 'echo CHAIN_COMMAND' }) }), message('SUPERSEDED_CHAIN_INPUT')].map(stamp);
+  const prefix = rootRows.slice(0, 3).map(JSON.stringify).join('\n') + '\n';
+  const headRows = [meta({ history_base: { thread_id: id, end_ordinal_exclusive: 3, end_byte_offset: Buffer.byteLength(prefix) } }),
+    response({ type: 'function_call_output', call_id: 'chain-command', output: 'Exit code: 0\nWall time: 1 second\nOutput:\nCHAIN_COMMAND_RESULT' }),
+    message('CURRENT_CHAIN_INPUT')].map((row, position) => stamp(row, position + 3));
+  await writeJsonl(path.join(home, 'sessions', rootSourceFile), rootRows);
+  await writeJsonl(path.join(home, 'sessions', headFile), headRows);
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(path.join(home, 'state_5.sqlite'));
+  db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT)');
+  db.prepare('INSERT INTO threads VALUES (?, ?)').run(id, path.join(home, 'sessions', headFile));
+  db.close();
+  const index = await buildIndex({ repoRoot: project, codexHome: home });
+  assert.equal(index.sessions.length, 1);
+  assert.equal(index.sourceDiagnostics.totalCount, 0);
+  const session = await materializeIndexedSession(index, id);
+  const command = session.logicalEvents.find((event) => event.kind === 'command');
+  assert.deepEqual(new Set(command.rawRefs.map((ref) => ref.file.replace(/\\/g, '/'))), new Set([rootSourceFile, headFile]));
+  const { page } = await openApp(t, index, { locale, skipProjectReindex: true });
+  for (const presentation of ['timeline', 'trajectory']) {
+    await page.locator(`#mainPresentationControl [data-main-presentation="${presentation}"]`).click();
+    const selector = presentation === 'timeline' ? `.event[data-event-id="${command.id}"] .eventHeader`
+      : `[data-trajectory-event-id="${command.id}"]`;
+    await page.locator(selector).first().click();
+    const detail = presentation === 'timeline' ? `#timeline .event[data-event-id="${command.id}"]` : '#detail';
+    await page.waitForFunction((selector) => document.querySelector(selector)?.textContent.includes('CHAIN_COMMAND_RESULT'), detail);
+  }
+  await page.locator('#detail [data-detail-action="raw"]').click();
+  await waitForDetailView(page, 'rawRefs');
+  await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('CHAIN_COMMAND_RESULT'));
+  for (const ref of command.rawRefs) {
+    await page.locator('#layerSelect').selectOption('raw');
+    await page.locator(`#timeline .event[data-event-id="${ref.rawId}"]`).click();
+    await page.waitForFunction((ordinal) => document.querySelector('#detail')?.textContent.includes(`"ordinal": ${ordinal}`), ref.file.replace(/\\/g, '/') === rootSourceFile ? 2 : 4);
+  }
+  await page.locator('#layerSelect').selectOption('main');
+  await page.locator('#mainPresentationControl [data-main-presentation="timeline"]').click();
+  await fillSearch(page, 'CURRENT_CHAIN_INPUT');
+  await page.waitForFunction(() => document.querySelectorAll('#timeline .event.searchHit').length === 1);
+  assert.ok((await page.locator('#timeline .event.searchHit').textContent()).includes('CURRENT_CHAIN_INPUT'));
+});
+
 for (const locale of ['en', 'zh-CN']) test(`Claude background terminal evidence stays on the owning MCP and Monitor operation (${locale})`, async (t) => {
   const claudeHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'claude-background-browser-'));
   t.after(() => fsp.rm(claudeHome, { recursive: true, force: true }));

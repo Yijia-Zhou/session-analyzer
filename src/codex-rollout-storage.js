@@ -180,6 +180,27 @@ function descriptorForRelativePath(sessionsRoot, relativePath, options = {}) {
   });
 }
 
+// Only explicit history dependencies may address the known archived_sessions sibling.
+function isHistoryRelativePath(sessionsRoot, relativePath) {
+  const value = String(relativePath || '');
+  if (!value || path.isAbsolute(value)) return false;
+  const target = path.resolve(sessionsRoot, value);
+  if (isPathWithinRoot(target, sessionsRoot)) return true;
+  const portable = value.replace(/\\/g, '/');
+  return portable.startsWith('../archived_sessions/')
+    && portable.split('/').slice(2).every((part) => part && part !== '.' && part !== '..')
+    && isPathWithinRoot(target, path.join(sessionsRoot, '..', 'archived_sessions'));
+}
+
+async function validateArchivedHistoryTarget(sessionsRoot, target) {
+  const archive = path.resolve(sessionsRoot, '..', 'archived_sessions');
+  const [homeReal, archiveReal, targetReal] = await Promise.all([
+    fsp.realpath(path.dirname(path.resolve(sessionsRoot))), fsp.realpath(archive), fsp.realpath(target),
+  ]);
+  if (!isPathWithinRoot(archiveReal, homeReal) || !isPathWithinRoot(targetReal, archiveReal))
+    throw storageError('Codex archived history path escapes its known root');
+}
+
 async function resolveRolloutArtifact(sessionsRoot, relativePath, options = {}) {
   const root = path.resolve(String(sessionsRoot || ''));
   const requested = String(relativePath || '');
@@ -187,7 +208,10 @@ async function resolveRolloutArtifact(sessionsRoot, relativePath, options = {}) 
     throw storageError('Codex rollout relative path is invalid', CODEX_ROLLOUT_STORAGE_INVALID);
   }
   const logicalPath = path.resolve(root, logicalRolloutPath(requested));
-  if (!isPathWithinRoot(logicalPath, root)) {
+  const archived = !isPathWithinRoot(logicalPath, root);
+  const allowedRoot = archived && options.allowArchivedHistory && isHistoryRelativePath(root, requested)
+    ? path.resolve(root, '..', 'archived_sessions') : root;
+  if (!isPathWithinRoot(logicalPath, allowedRoot)) {
     throw storageError('Codex rollout path escapes the sessions root', CODEX_ROLLOUT_STORAGE_INVALID);
   }
   const expectedCompression = options.compression || options.expectedCompression || '';
@@ -195,9 +219,10 @@ async function resolveRolloutArtifact(sessionsRoot, relativePath, options = {}) 
     ? path.resolve(options.physicalPath)
     : '';
   if (expectedPhysicalPath) {
-    if (!isPathWithinRoot(expectedPhysicalPath, root)) {
+    if (!isPathWithinRoot(expectedPhysicalPath, allowedRoot)) {
       throw storageError('Codex rollout path escapes the sessions root', CODEX_ROLLOUT_STORAGE_INVALID);
     }
+    if (archived) await validateArchivedHistoryTarget(root, expectedPhysicalPath);
     return normalizeArtifactDescriptor(expectedPhysicalPath, {
       compression: expectedCompression || undefined,
       logicalPath,
@@ -212,6 +237,7 @@ async function resolveRolloutArtifact(sessionsRoot, relativePath, options = {}) 
     try {
       const stat = await fsp.stat(candidate);
       if (stat.isFile()) {
+        if (archived) await validateArchivedHistoryTarget(root, candidate);
         return normalizeArtifactDescriptor(candidate, {
           compression: expectedCompression || undefined,
           logicalPath,
@@ -693,6 +719,7 @@ module.exports = {
   hashLogicalPrefix,
   isCodexRolloutArtifactName,
   isStorageFailure,
+  isHistoryRelativePath,
   logicalRelativePath,
   logicalRolloutPath,
   normalizeArtifactDescriptor,

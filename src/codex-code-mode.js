@@ -199,7 +199,9 @@ function physicalRef(entry) {
   return {
     rawId: String(raw?.rawId || ''),
     file: String(raw?.source?.file || ''),
-    line: raw?.line != null && Number.isFinite(Number(raw.line)) ? Number(raw.line) : null,
+    line: raw?._historyChainId
+      ? raw.source?.line != null && Number.isFinite(Number(raw.source.line)) ? Number(raw.source.line) : null
+      : raw?.line != null && Number.isFinite(Number(raw.line)) ? Number(raw.line) : null,
   };
 }
 
@@ -210,6 +212,17 @@ function physicalSpan(callEntry, outputEntry) {
   if (callEntry.turnBoundaryEpoch !== outputEntry.turnBoundaryEpoch) return null;
   const callRef = physicalRef(callEntry);
   const outputRef = physicalRef(outputEntry);
+  // Only the source reader can admit this marker after verifying every physical
+  // segment and cutoff. File/line locators stay physical; span order is logical.
+  const historySessionId = callEntry.raw?._historyChainId;
+  if (historySessionId && outputEntry.raw?._historyChainId === historySessionId
+      && callEntry.raw.sessionId === outputEntry.raw.sessionId) {
+    const startLine = Number(callEntry.raw.line);
+    const endLine = Number(outputEntry.raw.line);
+    if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine) || endLine <= startLine) return null;
+    return { file: '', historySessionId, startLine, endLine,
+      startRawId: callRef.rawId, endRawId: outputRef.rawId };
+  }
   if (!callRef.file || callRef.file !== outputRef.file) return null;
   if (!Number.isFinite(callRef.line) || !Number.isFinite(outputRef.line)) return null;
   if (outputRef.line <= callRef.line) return null;

@@ -1,5 +1,7 @@
 # Logical Event Timeline / 逻辑事件时间线
 
+Codex revert histories now separate stable logical Session identity from physical rollout identity and compose verified prefix chains. Current-path selection, per-file snapshots, Raw ownership and incomplete-history diagnostics are specified in [rollout history chains](codex-rollout-history-chains.md). / Codex 回退历史现区分稳定逻辑会话身份与物理 rollout 身份，并组合已验证前缀链。当前路径选择、逐文件快照、Raw 归属及不完整历史诊断见[rollout 历史链](codex-rollout-history-chains.md)。
+
 ## Codex persisted output and startup evidence / Codex 持久化输出与启动证据
 
 The 0.162 compatibility boundary is source-specific. Detail derives output provenance and truncation notices from the owning records after hydration, using existing terminal/notice/kv/collaboration sections. It does not introduce a new canonical event kind, infer removed output, or change execution/count semantics. The command persistence marker is meaningful only in the admitted output shape; MCP's generic text marker supports an uncertainty-qualified truncation notice, not a persistence-stage assertion. Analyzer preview limits remain independent of the source marker and of searchable recorded tails. / 0.162 兼容边界属于来源适配器。详情在 hydration 后根据所属记录派生输出来源与截断提示，复用既有 terminal／notice／kv／collaboration section；不引入新的 canonical event kind、不推断被删除输出、不改变执行及计数语义。命令持久化标记仅在准入输出形态中有意义；MCP 通用文本标记只支持带不确定性说明的截断提示，不支持持久化阶段断言。Analyzer 预览限制与来源标记、已记录尾部的搜索相互独立。

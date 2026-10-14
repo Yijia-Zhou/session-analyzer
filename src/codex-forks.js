@@ -107,11 +107,18 @@ function codexSubagentHistoryBoundary(rawEvents) {
   return { sourceSessionId: meta.parent_thread_id, startOrdinal, inheritedRawCount: startOrdinal - 1 };
 }
 
+function isOwnedCodexHistoryMetadata(session, raw, snapshots = session?._historySnapshots) {
+  return raw?.recordType === 'session_meta' && raw.sessionMetaId === session?.id
+    && raw.source?.line === 1 && raw.subagentInherited !== true
+    && Array.isArray(snapshots) && snapshots.some((snapshot) => snapshot.sessionId === session.id
+      && snapshot.sourceFile === raw.source.file);
+}
+
 function restoreCodexSubagentRawSegments(session) {
   const raws = session?.rawEvents || [];
   if (!raws.some((raw) => raw.subagentInherited === true)) return false;
   session._forkSegmentsByRawId = new Map(raws.map((raw, index) => [raw.rawId,
-    index === 0 ? 'fork_metadata' : raw.subagentInherited === true ? 'inherited_context' : 'continuation']));
+    index === 0 || isOwnedCodexHistoryMetadata(session, raw) ? 'fork_metadata' : raw.subagentInherited === true ? 'inherited_context' : 'continuation']));
   return true;
 }
 
@@ -392,6 +399,7 @@ module.exports = {
   hasCanonicalRawDigests,
   inferCodexMaterializedForks,
   inferEarlierBranches,
+  isOwnedCodexHistoryMetadata,
   materializedForkInheritedContext,
   rawForkSegment,
   restoreCodexSubagentRawSegments,

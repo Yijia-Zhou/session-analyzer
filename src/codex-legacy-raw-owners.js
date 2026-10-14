@@ -3,6 +3,13 @@
 const { setImmediate: yieldImmediate } = require('node:timers/promises');
 const { normalizeFsPath } = require('./shared/fs-path');
 const { PROFILE, trustedPolicy, createBudget, unavailable } = require('./legacy-raw-owner-budget');
+const { parseRolloutArtifactIdentity } = require('./codex-rollout-history');
+
+function historyRawId(sessionId, file, line) {
+  const rolloutId = parseRolloutArtifactIdentity(file)?.rolloutId;
+  return rolloutId && rolloutId !== sessionId
+    ? `${sessionId}:raw:${line}:rollout:${rolloutId}` : `${sessionId}:raw:${line}`;
+}
 
 const ENCODING = 'codex-line-ranges-v1';
 const MAX_LINE = Number.MAX_SAFE_INTEGER;
@@ -193,12 +200,26 @@ function* validationSteps(ownerIndex, sessionIds, sessionFacts, policy = PROFILE
       const file = normalizeFsPath(fact.sourceFile);
       const receipt = factCacheBudget.reserve('dictionaryEntry', 1, 0, 'finalizing');
       if (receipt) throw contract('normalized Session facts exceed trusted validation workspace budget');
-      counts.set(id, { count: 0, file });
+      const sourceBounds = new Map();
+      if (fact.sourceFileBounds) {
+        if (!Array.isArray(fact.sourceFileBounds) || fact.sourceFileBounds.length > 4096) throw contract('per-file source facts are unbounded');
+        for (const entry of fact.sourceFileBounds) {
+          if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string') throw contract('per-file source fact is invalid');
+          const sourceFile = normalizeFsPath(entry[0]);
+          if (!sourceFile || sourceBounds.has(sourceFile)) throw contract('per-file source facts have duplicate or empty files');
+          const capacity = factCacheBudget.reserve('dictionaryEntry', 1, Buffer.byteLength(sourceFile, 'utf8'), 'finalizing');
+          if (capacity) throw contract('per-file source facts exceed trusted validation workspace budget');
+          sourceBounds.set(sourceFile, entry[1]);
+        }
+      } else sourceBounds.set(file, fact.acceptedBytes ?? fact.lineCount);
+      counts.set(id, { count: 0, file, sourceBounds });
       // Codex lineCount counts nonblank records, while Raw locators use physical
       // line numbers. Accepted UTF-8 bytes are a conservative physical-line
       // ceiling even when blank lines occur between accepted records.
-      const bound = fact.acceptedBytes ?? fact.lineCount;
-      maxLineByFile.set(file, Math.max(maxLineByFile.get(file) || 0, bound));
+      for (const [sourceFile, bound] of sourceBounds) {
+        if (!Number.isSafeInteger(bound) || bound < 0) throw contract('invalid per-file accepted source bound');
+        maxLineByFile.set(sourceFile, Math.max(maxLineByFile.get(sourceFile) || 0, bound));
+      }
       yield;
     }
   }
@@ -240,8 +261,8 @@ function* validationSteps(ownerIndex, sessionIds, sessionFacts, policy = PROFILE
         if (sessionFacts) {
           const fact = sessionFacts.get(id);
           const counted = counts.get(id);
-          if (!fact || !counted || counted.file !== file
-              || end > (fact.acceptedBytes ?? fact.lineCount)) {
+          if (!fact || !counted || !counted.sourceBounds.has(file)
+              || end > counted.sourceBounds.get(file)) {
             throw contract('range belongs to the wrong Session or file');
           }
           const next = checkedSum(counted.count, length, 'per-Session owner count');
@@ -364,6 +385,8 @@ function createCodexLegacyRawOwnerBuilder(options = {}) {
       throw contract('Session identity or source is invalid');
     }
     const expectedFile = normalizeFsPath(session.sourceFile);
+    const historySources = session._historyPlan && Array.isArray(session._historySnapshots)
+      ? new Map(session._historySnapshots.map((snapshot) => [normalizeFsPath(snapshot.sourceFile), snapshot.acceptedBytes])) : null;
     if (!expectedFile) throw contract('Session source file is invalid');
     const provisionalSessionId = provisionalSessionIdFromFile(session.sourceFile);
     const finalRawPrefix = `${session.id}:raw:`;
@@ -389,14 +412,15 @@ function createCodexLegacyRawOwnerBuilder(options = {}) {
       const line = raw?.source?.line;
       if (!file || !Number.isSafeInteger(line) || line < 1) continue;
       // This check remains active after capacity is exhausted.
-      if (file !== expectedFile) throw contract('eligible claim has inconsistent file');
-      if (line > physicalLineBound) throw contract('eligible claim exceeds accepted physical-line bound');
+      if (historySources ? !historySources.has(file) : file !== expectedFile) throw contract('eligible claim has inconsistent file');
+      if (line > (historySources?.get(file) ?? physicalLineBound)) throw contract('eligible claim exceeds accepted physical-line bound');
       const claimSessionId = typeof raw.sessionId === 'string' && raw.sessionId
         ? raw.sessionId : session.id;
       const prefix = claimSessionId === session.id ? finalRawPrefix
         : claimSessionId === provisionalSessionId ? provisionalRawPrefix
           : `${claimSessionId}:raw:`;
-      if (typeof raw.rawId !== 'string' || !raw.rawId.startsWith(prefix)
+      if (historySources ? raw.rawId !== historyRawId(session.id, file, line)
+        : typeof raw.rawId !== 'string' || !raw.rawId.startsWith(prefix)
           || raw.rawId.slice(prefix.length) !== String(line)) {
         throw contract('eligible claim has inconsistent Raw ID');
       }
@@ -412,7 +436,7 @@ function createCodexLegacyRawOwnerBuilder(options = {}) {
       finalIdentitySeen = true;
       if (!dictionaryStringsChecked) {
         sessionIdBytes = Buffer.byteLength(session.id, 'utf8');
-        fileBytes = Buffer.byteLength(expectedFile, 'utf8');
+        fileBytes = Buffer.byteLength(file, 'utf8');
         if (sessionIdBytes > policy.dictionaryStringBytes) {
           throw contract('Session ID exceeds dictionary string budget');
         }
@@ -421,6 +445,8 @@ function createCodexLegacyRawOwnerBuilder(options = {}) {
         }
         dictionaryStringsChecked = true;
       }
+      fileBytes = Buffer.byteLength(file, 'utf8');
+      if (fileBytes > policy.dictionaryStringBytes) throw contract('file exceeds dictionary string budget');
       if (!capacity) {
         let owner = sessions.get(session.id);
         if (owner === undefined) {
@@ -672,10 +698,12 @@ function resolveCodexV2(index, file, line) {
   if (low >= ranges.length || ranges[low][0] > line || ranges[low][2] === -1) return null;
   const sessionId = payload.sessionIds[ranges[low][2]];
   const indexedSession = index.sessionsById.get(sessionId);
-  if (!indexedSession || normalizeFsPath(indexedSession.sourceFile) !== normalized) {
+  const history = indexedSession?.materializationDescriptor?.payload?.kind === 'rollout-history-v1';
+  const historySnapshot = history && indexedSession.materializationDescriptor.payload.historySnapshots.find((snapshot) => normalizeFsPath(snapshot.sourceFile) === normalized);
+  if (!indexedSession || (history ? !historySnapshot : normalizeFsPath(indexedSession.sourceFile) !== normalized)) {
     throw contract('lookup file does not match indexed Session');
   }
-  return { sessionId, rawIdHint: `${sessionId}:raw:${line}`, line };
+  return { sessionId, rawIdHint: history ? historyRawId(sessionId, normalized, line) : `${sessionId}:raw:${line}`, line };
 }
 
 module.exports = {
