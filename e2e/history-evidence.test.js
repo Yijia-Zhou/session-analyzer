@@ -16,9 +16,14 @@ async function fixture(t, options = {}) {
   await fs.mkdir(repo);
   await fs.mkdir(path.join(home, 'sessions'));
   const rows = [{ type: 'session_meta', payload: { id: 'history-browser-session', cwd: repo,
+    ...(options.backgroundTerminalRefs ? { session_id: 'history-browser-session', originator: 'codex_cli_rs', cli_version: '0.160.0', source: 'cli', history_mode: 'legacy' } : {}),
     ...(options.parentSession ? { forked_from_id: 'other-browser-session' } : {}) } }];
   const message = (role, text) => rows.push({ type: 'response_item', payload: { type: 'message', role,
     content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] } });
+  if (options.backgroundTerminalRefs) {
+    rows.push({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'origin-command', arguments: '{"cmd":"npm test"}' } });
+    rows.push({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'origin-command', output: 'Wall time: 1.0000 seconds\nProcess running with session ID 1234\nOutput:\n' } });
+  }
   for (let n = 0; n < (options.prefixCount ?? 480); n++) message(n % 2 ? 'assistant' : 'user', `Synthetic prefix ${n}`);
   message('user', 'NEARBY_REQUEST: investigate the long synthetic output.');
   if (options.contextGaps) {
@@ -29,8 +34,12 @@ async function fixture(t, options = {}) {
       rows.push({ type: 'response_item', payload: { type: 'function_call_output', call_id: id, output: 'BEFORE_GAP_OUTPUT' } });
     }
   }
-  rows.push({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'late-output', arguments: '{"cmd":"synthetic-check"}' } });
-  rows.push({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'late-output', output: options.output || 'preface '.repeat(25000) + '\nDEEP_OUTPUT_HIT: synthetic failure\n' + 'tail '.repeat(4000) } });
+  rows.push({ type: 'response_item', payload: { type: 'function_call',
+    name: options.backgroundTerminalRefs ? 'write_stdin' : 'exec_command', call_id: 'late-output',
+    arguments: options.backgroundTerminalRefs ? '{"session_id":1234}' : '{"cmd":"synthetic-check"}' } });
+  const output = options.output || 'preface '.repeat(25000) + '\nDEEP_OUTPUT_HIT: synthetic failure\n' + 'tail '.repeat(4000);
+  rows.push({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'late-output',
+    output: options.backgroundTerminalRefs ? `Wall time: 1.0000 seconds\nProcess running with session ID 1234\nOutput:\n${output}` : output } });
   if (options.contextGaps) {
     rows.push({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'after-gap', arguments: '{"cmd":"after-check"}' } });
     rows.push({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'after-gap', output: 'AFTER_GAP_OUTPUT' } });
@@ -71,6 +80,104 @@ async function fixture(t, options = {}) {
 
 async function selected(page, eventId) {
   await page.locator(`#timeline article.selected[data-event-id="${eventId}"]`).waitFor();
+}
+
+async function readableSelectedCard(page, eventId) {
+  await selected(page, eventId);
+  await page.waitForFunction((id) => {
+    const card = document.querySelector(`#timeline article[data-event-id="${CSS.escape(id)}"]`);
+    const header = card?.querySelector('.eventHeader').getBoundingClientRect();
+    const pane = document.querySelector('.timelinePane').getBoundingClientRect();
+    const mobile = innerWidth <= 760;
+    const top = mobile ? document.querySelector('.mobileViewTabs').getBoundingClientRect().bottom : pane.top;
+    const bottom = mobile ? innerHeight : pane.bottom;
+    return card?.getClientRects().length && header.top >= top && header.bottom < bottom
+      && (!mobile || document.body.dataset.mobileView === 'events');
+  }, eventId);
+}
+
+for (const width of [1440, 390]) {
+  test(`same-layer event reference outside excerpts shows its exact card and restores the excerpt (${width}px)`, { timeout: 30000 }, async (t) => {
+    const { page, url, hit, search, context } = await fixture(t, {
+      backgroundTerminalRefs: true, prefixCount: 220, withContext: true,
+      output: 'DEEP_OUTPUT_HIT: synthetic running poll.', viewport: { width, height: width <= 760 ? 844 : 1000 },
+    });
+    const origin = await search('npm test');
+    assert.ok(origin?.eventId);
+    assert.equal(context.events.some((event) => event.eventId === origin.eventId), false);
+    await page.goto(`${url}/#ref=${encodeURIComponent(hit.ref)}`);
+    await readableSelectedCard(page, hit.eventId);
+    if (width <= 760) await page.getByRole('button', { name: 'Detail', exact: true }).click();
+    const originRef = page.locator(`#detail [data-target-event-id="${origin.eventId}"]`);
+    await originRef.click();
+    await readableSelectedCard(page, origin.eventId);
+    assert.equal(await page.locator('body').getAttribute('data-history-reading'), 'timeline');
+    assert.equal(await page.locator(`#timeline article[data-event-id="${origin.eventId}"]`).count(), 1);
+    assert.equal(await page.locator('#timeline article.historyContextRecord').count(), 0);
+    assert.equal(await page.locator('#timeline article.temporaryReferenceReveal').count(), 1);
+    await page.locator('#sessionHeader [data-reading-back]').click();
+    await page.waitForFunction((id) => document.body.dataset.historyReading === 'isolated'
+      && document.querySelector('#timeline article.selected')?.dataset.eventId === id, hit.eventId);
+    await page.waitForFunction((id) => document.activeElement?.dataset.targetEventId === id, origin.eventId);
+    assert.deepEqual(await page.locator('#timeline article').evaluateAll((nodes) => nodes.map((node) => node.dataset.eventId)), context.events.map((event) => event.eventId));
+    assert.equal(await page.locator(`#timeline article[data-event-id="${hit.eventId}"]`).evaluate((node) => node.classList.contains('expanded')), true);
+    assert.equal(new URLSearchParams(new URL(page.url()).hash.slice(1)).get('ref'), hit.ref);
+    if (width <= 760) {
+      assert.equal(await page.locator('body').getAttribute('data-mobile-view'), 'detail');
+      assert.equal(await originRef.isVisible(), true);
+      await page.getByRole('button', { name: 'Events', exact: true }).click();
+    }
+    await readableSelectedCard(page, hit.eventId);
+  });
+
+  test(`delayed outside-excerpt event reference yields to a newer selection after returning (${width}px)`, { timeout: 30000 }, async (t) => {
+    const { page, url, hit, search, context } = await fixture(t, {
+      backgroundTerminalRefs: true, prefixCount: 220, withContext: true,
+      output: 'DEEP_OUTPUT_HIT: synthetic running poll.', viewport: { width, height: width <= 760 ? 844 : 1000 },
+    });
+    const origin = await search('npm test');
+    const next = context.events.find((event) => !event.anchor);
+    assert.ok(origin?.eventId && next?.eventId);
+    await page.goto(`${url}/#ref=${encodeURIComponent(hit.ref)}`);
+    await readableSelectedCard(page, hit.eventId);
+    if (width <= 760) await page.getByRole('button', { name: 'Detail', exact: true }).click();
+    let release;
+    let reached;
+    let finished;
+    let response;
+    const held = new Promise((resolve) => { release = resolve; });
+    const arrived = new Promise((resolve) => { reached = resolve; });
+    const completed = new Promise((resolve) => { finished = resolve; });
+    t.after(() => release());
+    const pattern = `**/events/${encodeURIComponent(origin.eventId)}?**`;
+    await page.route(pattern, async (route) => {
+      try {
+        response = await route.fetch();
+        reached();
+        await held;
+        await route.fulfill({ response }).catch(() => {});
+      } finally { reached(); finished(); }
+    });
+    await page.locator(`#detail [data-target-event-id="${origin.eventId}"]`).click();
+    await arrived;
+    assert.equal(response.status(), 200);
+    assert.equal((await response.json()).id, origin.eventId);
+    if (width <= 760) await page.getByRole('button', { name: 'Events', exact: true }).click();
+    await page.locator('#sessionHeader [data-reading-back]').click();
+    await page.waitForFunction((id) => document.body.dataset.historyReading === 'isolated'
+      && document.querySelector('#timeline article.selected')?.dataset.eventId === id, hit.eventId);
+    await page.waitForFunction((id) => document.activeElement?.dataset.targetEventId === id, origin.eventId);
+    if (width <= 760) await page.getByRole('button', { name: 'Events', exact: true }).click();
+    await page.locator(`#timeline article[data-event-id="${next.eventId}"] .eventKind`).click();
+    await readableSelectedCard(page, next.eventId);
+    release();
+    await completed;
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await readableSelectedCard(page, next.eventId);
+    assert.equal(await page.locator(`#timeline article[data-event-id="${origin.eventId}"]`).count(), 0);
+    assert.deepEqual(await page.locator('#timeline article.historyContextRecord').evaluateAll((nodes) => nodes.map((node) => node.dataset.eventId)), context.events.map((event) => event.eventId));
+    assert.equal(await page.locator('#historyEvidence [role="alert"]').count(), 0);
+  });
 }
 
 test('history reference cold landing is bounded, expanded, repeatable, and continues to the exact late event', async (t) => {

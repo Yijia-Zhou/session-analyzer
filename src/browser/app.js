@@ -6110,7 +6110,14 @@ async function openReadingEvent(target, button, savedPosition = null) {
     syncSearchInputValue();
     updateProfileApplicabilityUi();
     return selectReadingSession(sessionId, target.id);
-  } else state.readingNavigationId += 1;
+  } else {
+    state.readingNavigationId += 1;
+    if (historyExcerptActive() && target.layer === activeLayerId() && !historyContextEvent(target.id)) {
+      // Keep the excerpt in the saved return position, then establish the normal
+      // reading context before navigateToLayerEvent captures its request guards.
+      leaveHistoryEvidence();
+    }
+  }
   return navigateToLayerEvent(target.layer, target.id, { mobileView, scrollBehavior: 'auto',
     sourceEventId: sessionId === position.sessionId ? position.returnFocus.eventId || position.selectedEventId : '',
   });
