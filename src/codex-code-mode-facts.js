@@ -84,8 +84,13 @@ function eventIsLifecycleBacked(event, lifecycleTypes, rawById) {
   return refs.some((ref) => lifecycleTypes.has(sourceEventTypeForRef(ref, rawById)));
 }
 
-function spanContainsAllRefs(span, refs) {
+function spanContainsAllRefs(span, refs, rawById) {
   if (!span || !refs.length) return false;
+  if (span.historySessionId) return refs.every((ref) => {
+    const raw = rawById.get(String(ref?.rawId || ''));
+    return raw?._historyChainId === span.historySessionId && Number.isSafeInteger(raw.line)
+      && raw.line >= span.startLine && raw.line <= span.endLine;
+  });
   return refs.every((ref) => (
     String(ref?.file || '') === String(span.file || '')
     && Number.isFinite(Number(ref?.line))
@@ -105,7 +110,7 @@ function nestedEventRefsByOperation(operations, logicalEvents, lifecycleTypes, r
     const refs = Array.isArray(event?.rawRefs) ? event.rawRefs : [];
     if (!event?.id || phaseEventIds.has(String(event.id)) || !refs.length
       || !eventIsLifecycleBacked(event, lifecycleTypes, rawById)) continue;
-    const containing = spans.filter(({ span }) => spanContainsAllRefs(span, refs));
+    const containing = spans.filter(({ span }) => spanContainsAllRefs(span, refs, rawById));
     if (containing.length !== 1) continue;
     const ownedRefs = eventRefs.get(containing[0].operationId);
     if (ownedRefs && !ownedRefs.includes(event.id)) ownedRefs.push(event.id);

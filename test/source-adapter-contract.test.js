@@ -189,6 +189,7 @@ test('indexed materialization mode requires its closed validation hooks', () => 
     'validateMaterializationDescriptor',
     'validateLegacyRawOwnerIndex',
     'validateMaterializedPrivateState',
+    'legacyRawSessionFacts',
   ]) {
     const strict = {
       sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
@@ -205,6 +206,18 @@ test('indexed materialization mode requires its closed validation hooks', () => 
         && new RegExp(`${operation} must be a synchronous non-generator function`).test(error.message),
     );
   }
+});
+
+test('per-file legacy facts are optional and only valid for indexed adapters', () => {
+  assert.throws(() => defineSourceAdapter(descriptor({ legacyRawSessionFacts() { return {}; } })),
+    { code: 'SOURCE_ADAPTER_CONTRACT_VIOLATION' });
+  const hook = () => ({});
+  const adapter = defineSourceAdapter(descriptor({
+    sessionLifecycle: SESSION_LIFECYCLE.INDEXED_MATERIALIZED,
+    validateMaterializationDescriptor() {}, validateLegacyRawOwnerIndex() {}, validateMaterializedPrivateState() {},
+    materializationContextFields: [], materializedPrivateFields: [], legacyRawSessionFacts: hook,
+  }));
+  assert.equal(adapter.legacyRawSessionFacts, hook);
 });
 
 test('source adapter descriptor requires canonical identity and paired legacy operations', () => {

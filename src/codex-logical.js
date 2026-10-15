@@ -3,6 +3,7 @@
 function createCodexLogicalBuilder(deps) {
   const {
     semanticRawEvents = (raws) => raws,
+    resolvedSubAgentStartup = () => null,
     turnBoundaryEpochs = () => new Map(),
     historyFacts = () => null,
     realtimeIdentity = () => '',
@@ -583,6 +584,9 @@ function createCodexLogicalBuilder(deps) {
     if (approvalRows.length) parts.push(approvalRows.map((raw) => raw.searchText).join('\n'));
     if (hookRows.length) parts.push(hookRows.map((raw) => raw.searchText).join('\n'));
     if (collabRows.length) parts.push(collabRows.map((raw) => raw.searchText).join('\n'));
+    const startup = resolvedSubAgentStartup([...group, ...traceabilityRows]);
+    if (startup) parts.push(codexFullSearchText(Object.fromEntries(['model', 'reasoning_effort']
+      .filter((key) => startup[key]).map((key) => [key, startup[key]]))));
     if (attachmentPreview) parts.push(attachmentPreview);
 
     if (isCommandTool) {
@@ -1168,10 +1172,16 @@ function createCodexLogicalBuilder(deps) {
       const hasAgentCoordinationOwner = group.some((raw) => raw.recordType === 'response_item'
         && ['function_call', 'custom_tool_call'].includes(raw.payloadType)
         && isAgentCoordinationTool(raw.toolName));
+      const ownerCalls = group.filter((raw) => raw.recordType === 'response_item'
+        && ['function_call', 'custom_tool_call'].includes(raw.payloadType));
       const groupRawIds = new Set(group.map((raw) => raw.rawId));
-      const traceabilityRows = hasAgentCoordinationOwner
+      const traceabilityRows = hasAgentCoordinationOwner && ownerCalls.length === 1
         ? (subAgentActivityByEventId.get(callId) || [])
-          .filter((raw) => !consumed.has(raw.rawId) && !groupRawIds.has(raw.rawId))
+          .filter((raw) => !consumed.has(raw.rawId) && !groupRawIds.has(raw.rawId)
+            && raw.sessionId === ownerCalls[0].sessionId
+            && (raw.parsed?.payload?.thread_id == null || raw.parsed.payload.thread_id === raw.sessionId)
+            && epochs.get(raw.rawId) === epochs.get(ownerCalls[0].rawId)
+            && (!raw.turnId || !ownerCalls[0].turnId || raw.turnId === ownerCalls[0].turnId))
           .sort((a, b) => a.line - b.line)
         : [];
       const logicalEvent = buildToolLogicalEvent(callId, group, traceabilityRows, epochs);
@@ -1593,9 +1603,10 @@ function createCodexLogicalBuilder(deps) {
     // Persisted realtime and positional controls carry source-position meaning.
     // Only these histories opt into line order; legacy timeline policy stays.
     const hasUntimestampedEvent = logicalEvents.some((event) => !event.timestamp || event.historyFacts);
+    const rawOrder = new Map(rawEvents.map((raw, position) => [raw.rawId, position]));
     logicalEvents.sort((a, b) => {
-      const al = a.rawRefs[0]?.line || 0;
-      const bl = b.rawRefs[0]?.line || 0;
+      const al = rawOrder.get(a.rawRefs[0]?.rawId) ?? a.rawRefs[0]?.line ?? 0;
+      const bl = rawOrder.get(b.rawRefs[0]?.rawId) ?? b.rawRefs[0]?.line ?? 0;
       if (!hasUntimestampedEvent) {
         const at = a.timestamp || '';
         const bt = b.timestamp || '';

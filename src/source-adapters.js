@@ -811,6 +811,7 @@ const codexAdapter = {
     validateMaterializationDescriptor: codex.validateCodexMaterializationDescriptor,
     validateLegacyRawOwnerIndex: codex.validateCodexLegacyRawOwnerIndex,
     validateLegacyRawOwnerIndexForCommit: codex.validateCodexLegacyRawOwnerIndexForCommit,
+    legacyRawSessionFacts: codex.legacyRawSessionFacts,
     validateMaterializedPrivateState: codex.validateCodexMaterializedPrivateState,
     materializationContextFields: ['sessionsRoot'],
     materializedPrivateFields: codex.materializedPrivateFields,
@@ -918,7 +919,42 @@ function requireExplicitSourceKind(value, owner = 'source') {
   throw error;
 }
 
-function createLegacySessionFacts(index, policy = LEGACY_RAW_PROFILE) {
+function appendLegacySourceBounds(fact, session, adapter, budget, policy) {
+  if (!adapter.legacyRawSessionFacts) return;
+  invokeReadOnlyMaterializationValidator({
+    callback: () => {
+      const extra = adapter.legacyRawSessionFacts(session);
+      if (!extra || typeof extra !== 'object' || Array.isArray(extra)
+          || Object.keys(extra).some((key) => key !== 'sourceFileBounds')) {
+        throw new Error('Legacy Raw Session facts must contain only sourceFileBounds');
+      }
+      if (extra.sourceFileBounds === undefined) return;
+      const entries = extra.sourceFileBounds;
+      if (!Array.isArray(entries) || !entries.length || entries.length > 4096) {
+        throw new Error('Legacy Raw sourceFileBounds must be a bounded nonempty array');
+      }
+      const bounds = [];
+      for (const entry of entries) {
+        if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string'
+            || !entry[0] || !Number.isSafeInteger(entry[1]) || entry[1] < 0) {
+          throw new Error('Legacy Raw sourceFileBounds entry is invalid');
+        }
+        const bytes = Buffer.byteLength(entry[0], 'utf8');
+        if (bytes > policy.dictionaryStringBytes
+            || budget.reserve('dictionaryEntry', 1, bytes, 'finalizing')) {
+          throw new Error('Legacy Raw per-file Session facts exceed trusted workspace budget');
+        }
+        bounds.push([entry[0], entry[1]]);
+      }
+      fact.sourceFileBounds = bounds;
+    },
+    args: undefined,
+    guardedValues: [session],
+    label: 'Adapter legacy Raw Session facts',
+  });
+}
+
+function createLegacySessionFacts(index, policy = LEGACY_RAW_PROFILE, adapter = requireSourceAdapter(index.sourceKind)) {
   const facts = new Map();
   if (index?.legacyRawOwners?.schemaVersion !== 2
       || index.legacyRawOwners.status !== 'available') return facts;
@@ -934,13 +970,15 @@ function createLegacySessionFacts(index, policy = LEGACY_RAW_PROFILE) {
       error.code = 'CANONICAL_CONTRACT_VIOLATION';
       throw error;
     }
-    facts.set(id, {
+    const fact = {
       id: session.id,
       sourceFile: session.sourceFile,
       lineCount: session.lineCount,
       rawEventCount: session.rawEventCount,
       acceptedBytes: session.bytes,
-    });
+    };
+    appendLegacySourceBounds(fact, session, adapter, budget, policy);
+    facts.set(id, fact);
   }
   return facts;
 }
@@ -966,7 +1004,7 @@ async function createLegacySessionIdsForCommit(index, { signal, onChunk, policy 
   return ids;
 }
 
-async function createLegacySessionFactsForCommit(index, { signal, onChunk, policy }) {
+async function createLegacySessionFactsForCommit(index, { signal, onChunk, policy, adapter }) {
   const facts = new Map();
   if (index.legacyRawOwners.status !== 'available') return facts;
   const budget = createLegacyRawBudget(policy);
@@ -982,13 +1020,15 @@ async function createLegacySessionFactsForCommit(index, { signal, onChunk, polic
         error.code = 'CANONICAL_CONTRACT_VIOLATION';
         throw error;
       }
-      facts.set(id, {
+      const fact = {
         id: session.id,
         sourceFile: session.sourceFile,
         lineCount: session.lineCount,
         rawEventCount: session.rawEventCount,
         acceptedBytes: session.bytes,
-      });
+      };
+      appendLegacySourceBounds(fact, session, adapter, budget, policy);
+      facts.set(id, fact);
     }
     if (++work >= policy.chunkSize) {
       work = 0;
@@ -1214,7 +1254,7 @@ function validateIndexOwnershipCore(index, {
     if (!(deferCodexV2Legacy && index.legacyRawOwners?.schemaVersion === 2)) {
       const sessionIds = new Set(index.sessionsById.keys());
       const sessionFacts = createLegacySessionFacts(index,
-        legacyRawOwnerPolicyForTests || LEGACY_RAW_PROFILE);
+        legacyRawOwnerPolicyForTests || LEGACY_RAW_PROFILE, adapter);
       invokeReadOnlyMaterializationValidator({
         callback: adapter.validateLegacyRawOwnerIndex,
         args: {
@@ -1255,7 +1295,7 @@ async function validateIndexOwnershipForCommit(index, options = {}) {
     const sessionIds = await createLegacySessionIdsForCommit(index,
       { signal, onChunk, policy });
     const sessionFacts = await createLegacySessionFactsForCommit(index,
-      { signal, onChunk, policy });
+      { signal, onChunk, policy, adapter });
     await invokeReadOnlyLegacyRawValidatorForCommit({
       callback: adapter.validateLegacyRawOwnerIndexForCommit || adapter.validateLegacyRawOwnerIndex,
       args: {

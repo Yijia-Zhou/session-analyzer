@@ -161,13 +161,21 @@ test('Paginated ordinary fork history_base does not turn parent ordinals into lo
   const repoRoot = path.join(home, 'repo');
   await fs.mkdir(repoRoot);
   await fs.mkdir(path.join(home, 'sessions'));
+  const parentRows = Array.from({ length: 88 }, (_, ordinal) => ({
+    timestamp: '2026-10-03T09:00:00Z', ordinal,
+    ...(ordinal === 0 ? { type: 'session_meta', payload: { id: PARENT, cwd: repoRoot, history_mode: 'paginated' } }
+      : ordinal === 1 ? msg('user', 'ordinary-fork-parent-input')
+        : event('parent-prefix-evidence', { sequence: ordinal })),
+  }));
+  const parentText = parentRows.map(JSON.stringify).join('\n') + '\n';
+  await fs.writeFile(path.join(home, 'sessions', `rollout-2026-10-03T09-00-00-${PARENT}.jsonl`), parentText);
   const rows = [
     { type: 'session_meta', payload: { id: CHILD, cwd: repoRoot, history_mode: 'paginated', forked_from_id: PARENT,
-      forked_from_ordinal_exclusive: 88, history_base: { thread_id: PARENT, end_ordinal_exclusive: 88, end_byte_offset: 9000 } } },
+      forked_from_ordinal_exclusive: 88, history_base: { thread_id: PARENT, end_ordinal_exclusive: 88, end_byte_offset: Buffer.byteLength(parentText) } } },
     event('task_started', { turn_id: 'own-fork-turn' }), msg('user', 'ordinary-fork-own-input'),
     msg('assistant', 'ordinary-fork-own-answer'), event('task_complete', { turn_id: 'own-fork-turn' }),
   ].map((row, index) => ({ timestamp: `2026-10-03T10:00:0${index}Z`, ordinal: 88 + index, ...row }));
-  await fs.writeFile(path.join(home, 'sessions', `rollout-${CHILD}.jsonl`), rows.map(JSON.stringify).join('\n') + '\n');
+  await fs.writeFile(path.join(home, 'sessions', `rollout-2026-10-03T10-00-00-${CHILD}.jsonl`), rows.map(JSON.stringify).join('\n') + '\n');
   for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
     const index = await build({ repoRoot, codexHome: home });
     const session = build === codex.buildSourceBackedIndex
@@ -177,7 +185,10 @@ test('Paginated ordinary fork history_base does not turn parent ordinals into lo
     assert.equal(session.counts.userMessages, 1);
     assert.equal(session.counts.assistantMessages, 1);
     assert.equal(session.counts.turns, 1);
-    assert.equal(session.rawEvents.some((raw) => raw.subagentInherited === true), false);
+    assert.equal(session.rawEvents.filter((raw) => raw.subagentInherited === true).length, 88);
+    assert.equal(session.rawEvents[0].subagentInherited === true, false);
+    assert.equal(codex.query.getTimeline(index, session, { layer: 'main', q: 'ordinary-fork-parent-input' }).searchEventCount, 0);
+    assert.equal(codex.query.getTimeline(index, session, { layer: 'raw', q: 'ordinary-fork-parent-input' }).searchEventCount, 1);
     assert.equal(session.rawEvents[0].source.line, 1);
     const hydrated = await codex.readRawLine(index, session.rawEvents[0].source.file, 1);
     assert.equal(hydrated.parsed.ordinal, 88);

@@ -151,4 +151,61 @@ function semanticRawEvents(rawEvents) {
   });
 }
 
-module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs };
+// Startup evidence is deliberately separate from requested tool arguments.
+// Only a unique attached, source-shaped started activity supplies settings.
+// Pinned producer: rust-v0.162.0 protocol/src/protocol.rs and protocol/src/items.rs.
+function resolvedSubAgentStartup(raws) {
+  const calls = raws.filter((raw) => raw.recordType === 'response_item'
+    && raw.payloadType === 'function_call' && raw.toolName === 'spawn_agent');
+  if (calls.length !== 1) return null;
+  const activities = raws.filter((raw) => raw.recordType === 'event_msg'
+    && raw.payloadType === 'sub_agent_activity');
+  if (activities.length !== 1) return null;
+  const p = activities[0].parsed?.payload;
+  if (p?.kind !== 'started' || p.event_id !== calls[0].callId
+      || typeof p.agent_thread_id !== 'string' || !p.agent_thread_id) return null;
+  const fields = ['agent_thread_id', 'agent_path', 'model', 'reasoning_effort'];
+  if (!p.model && !p.reasoning_effort) return null;
+  if (fields.some((key) => p[key] != null && (typeof p[key] !== 'string' || p[key].length > 512))) return null;
+  for (const raw of raws) {
+    if (raw.recordType !== 'response_item' || raw.payloadType !== 'function_call_output') continue;
+    let output;
+    try { output = typeof raw.output === 'string' ? JSON.parse(raw.output) : raw.output; } catch { continue; }
+    for (const child of [output?.agent_id, output?.new_thread_id]) {
+      if (child != null && child !== p.agent_thread_id) return null;
+    }
+  }
+  return Object.fromEntries(fields.filter((key) => typeof p[key] === 'string' && p[key])
+    .map((key) => [key, p[key]]));
+}
+
+function additionalToolsSummary(payload) {
+  // rust-v0.162.0 ResponseItem::AdditionalTools preserves arbitrary JSON.
+  // Recognize only function/namespace shapes, leaving other entries in Raw.
+  const tools = Array.isArray(payload?.tools) ? payload.tools : [];
+  const names = [];
+  let count = 0;
+  let visited = 0;
+  let unsupported = 0;
+  let incomplete = false;
+  const visit = (items, prefix = '', depth = 0) => {
+    for (const item of items) {
+      if (++visited > 256) { incomplete = true; return; }
+      if (!item || typeof item !== 'object' || Array.isArray(item)) { unsupported += 1; continue; }
+      const name = typeof item.name === 'string' ? item.name.length > 160 ? `${item.name.slice(0, 159)}…` : item.name : '';
+      const qualified = prefix && name ? `${prefix}.${name}` : name || prefix;
+      if (item.type === 'namespace' && name && Array.isArray(item.tools)) {
+        if (names.length < 24 && qualified) names.push(`${qualified} (namespace)`);
+        if (depth < 4) visit(item.tools, qualified, depth + 1);
+        else if (item.tools.length) incomplete = true;
+      } else if (item.type === 'function' && name) {
+        count += 1;
+        if (names.length < 24 && qualified) names.push(qualified);
+      } else unsupported += 1;
+    }
+  };
+  visit(tools);
+  return { valid: payload?.type === 'additional_tools' && payload.role === 'developer' && Array.isArray(payload.tools), entries: tools.length, count, names, unsupported, incomplete, shortened: incomplete || names.length >= 24 };
+}
+
+module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary };

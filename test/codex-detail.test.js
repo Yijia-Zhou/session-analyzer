@@ -1419,8 +1419,8 @@ test('Code Mode detail bounds structured result interpretation before collaborat
   assert.deepEqual(chineseDetail.timelineSections[0].fields.map((field) => field.key), [
     '超时毫秒数',
     '代理类型',
-    '模型',
-    '推理强度',
+    '请求模型',
+    '请求推理强度',
     '分支上下文',
   ]);
 });

@@ -34,6 +34,9 @@ const planFacet = require('./shared/plan-facet');
 const toolLifecycleContract = require('./codex-tool-lifecycle-contract');
 const i18n = require('./shared/i18n');
 const { asyncMessageMetadata } = require('./codex-async-message');
+const { resolvedSubAgentStartup, additionalToolsSummary } = require('./codex-turn-items');
+const rolloutHistory = require('./codex-rollout-history');
+const { readCurrentRolloutPaths } = require('./codex-current-rollout');
 const { historyFacts, validHistoryFacts, validHistoryTarget, resolveHistoryReference, historyOwner } = require('./codex-persisted-history');
 const codexMessageEvidence = {
   ...require('./codex-turn-items'),
@@ -105,6 +108,7 @@ const {
   hasCanonicalRawDigests,
   inferCodexMaterializedForks,
   inferEarlierBranches,
+  isOwnedCodexHistoryMetadata,
   materializedForkInheritedContext,
   rawForkSegment,
   restoreCodexSubagentRawSegments,
@@ -1953,6 +1957,7 @@ async function inspectSessionFile(filePath, options = {}) {
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   const cwdSet = new Set();
   const leadingSessionFacts = createCodexLeadingSessionFacts();
+  let historyBase = null;
   let logicalBytes = 0;
   let matchedRepo = false;
   if (descriptor.compression === 'zstd') {
@@ -1967,6 +1972,12 @@ async function inspectSessionFile(filePath, options = {}) {
       let record = null;
       if (!leadingSessionFacts.firstRecordSeen) {
         record = safeJsonParse(line);
+        if (record?.type === 'session_meta' && record.payload?.history_base != null) {
+          const parsedBase = rolloutHistory.parseHistoryBase(record.payload.history_base);
+          historyBase = parsedBase.error ? {} : record.payload.history_base;
+          if (!parsedBase.error) historyBase = { thread_id: parsedBase.base.rolloutId,
+            end_ordinal_exclusive: parsedBase.base.endOrdinalExclusive, end_byte_offset: parsedBase.base.endByteOffset };
+        }
         observeCodexLeadingSessionRecord(leadingSessionFacts, record);
       }
       if (!line.includes('"cwd"')) continue;
@@ -2002,6 +2013,7 @@ async function inspectSessionFile(filePath, options = {}) {
   }
 
   return {
+    historyBase,
     bytes: descriptor.compression === 'none' ? stat.physicalBytes : logicalBytes,
     physicalBytes: stat.physicalBytes,
     updatedAt: safeIso(stat.mtime),
@@ -2311,6 +2323,7 @@ function humanizeProtocolSubtype(subtype) {
 }
 
 function protocolLabelFor(subtype, fallback = '') {
+  if (subtype === 'additional_tools') return 'Additional tools';
   return PROTOCOL_LABELS[subtype] || humanizeProtocolSubtype(fallback || subtype);
 }
 
@@ -2352,6 +2365,11 @@ function payloadPreview(payload, keys) {
 }
 
 function protocolPreviewFor(raw, subtype) {
+  if (subtype === 'additional_tools' && raw.recordType === 'response_item') {
+    const summary = additionalToolsSummary(raw.parsed?.payload);
+    if (!summary.valid) return 'Unmodeled additional tools fields';
+    return truncate(`${summary.entries} recorded definitions; ${summary.names.join(', ')}`);
+  }
   const source = String(raw.messageText || raw.searchText || raw.preview || '').trim();
 
   if (subtype === 'session_meta') {
@@ -2515,6 +2533,26 @@ function extractPlanSections(raws) {
   return sections;
 }
 
+function recordedTruncationSections(raws) {
+  let command = false;
+  let mcp = false;
+  for (const raw of raws) {
+    const record = raw.originalRaw?.parsed || raw.parsed;
+    const p = record?.payload;
+    const item = record?.type === 'event_msg' && p?.type === 'item_completed' ? p.item : null;
+    if (item?.type === 'CommandExecution' && typeof item.aggregated_output === 'string'
+        && item.aggregated_output.includes('\n... command output truncated for persistence ...\n')) command = true;
+    const result = item?.type === 'McpToolCall' ? item.result
+      : record?.type === 'event_msg' && p?.type === 'mcp_tool_call_end' ? p.result : null;
+    if (Array.isArray(result?.content) && result.content.some((part) => part?.type === 'text'
+        && typeof part.text === 'string' && /…\d+ chars truncated…/.test(part.text))) mcp = true;
+  }
+  const sections = [];
+  if (command) sections.push(makeNoticeSection('Recorded output truncation', 'Recorded aggregated output contains the Codex persistence truncation marker. Original output length is unknown; Analyzer display shortening is separate.', 'warning', 'result'));
+  if (mcp) sections.push(makeNoticeSection('Recorded output truncation', 'Recorded MCP result text contains a truncation marker or preview. The truncation stage and original result length are unknown; Analyzer display shortening is separate.', 'warning', 'result'));
+  return sections;
+}
+
 function extractCommandSections(raws, event, session = {}) {
   const timelineSections = [];
   const inspectorSections = [];
@@ -2539,13 +2577,19 @@ function extractCommandSections(raws, event, session = {}) {
     inspectorSections.push({ purpose: 'request', type: 'json', title: 'Arguments', value: args });
   }
 
-  const stdout = firstNonEmpty(execEnd?.stdout, execEnd?.aggregatedOutput, execEnd?.parsed?.payload?.formatted_output, formatted?.output, execAny?.stdout, execAny?.aggregatedOutput, formatted ? '' : functionOutput?.output);
+  const stdout = firstNonEmpty(execEnd?.stdout, execAny?.stdout);
   const stderr = execEnd?.stderr || execAny?.stderr || '';
+  const combined = !stdout && !stderr ? firstNonEmpty(execEnd?.aggregatedOutput, execAny?.aggregatedOutput) : '';
+  const output = !stdout && !stderr && !combined ? firstNonEmpty(execEnd?.parsed?.payload?.formatted_output, formatted?.output, formatted ? '' : functionOutput?.output) : '';
   maybePushTerminalSection(timelineSections, 'stdout', stdout, 'stdout', '', 'result');
   maybePushTerminalSection(timelineSections, 'stderr', stderr, 'stderr', '', 'result');
+  maybePushTerminalSection(timelineSections, 'Combined output', combined, 'output', '', 'result');
+  maybePushTerminalSection(timelineSections, 'Output', output, 'output', '', 'result');
+  timelineSections.push(...recordedTruncationSections(raws));
 
   if (stdout) maybePushParsedOutputSection(inspectorSections, 'stdout structure', stdout, 'result');
   if (stderr) maybePushParsedOutputSection(inspectorSections, 'stderr structure', stderr, 'result');
+  if (combined || output) maybePushParsedOutputSection(inspectorSections, 'Output structure', combined || output, 'result');
   if (functionOutput?.output) maybePushParsedOutputSection(inspectorSections, 'Tool output', structuredOutputValue(functionOutput.output), 'result');
 
   if (!timelineSections.length && !inspectorSections.length) inspectorSections.push(makeRawJsonSection('Unmodeled fields', logicalFallbackPayload(raws), false, 'fallback'));
@@ -2652,6 +2696,7 @@ function toolDetailValues(raws) {
 
 function extractToolSections(raws, event) {
   const sections = [];
+  sections.push(...recordedTruncationSections(raws));
   const { requestValue, responseValue } = toolDetailValues(raws);
 
   maybePushKvSection(sections, 'Tool context', [
@@ -3152,7 +3197,7 @@ function hasMeaningfulToolValue(value) {
   return true;
 }
 
-function collaborationToolSection(toolName, requestValue, responseValue) {
+function collaborationToolSection(toolName, requestValue, responseValue, raws = []) {
   const definition = agentCoordination.agentCoordinationDefinition(toolName);
   if (!definition) return null;
   const spawnedAgentId = firstNonEmpty(responseValue?.agent_id, responseValue?.new_thread_id);
@@ -3163,8 +3208,8 @@ function collaborationToolSection(toolName, requestValue, responseValue) {
   const fields = [
     { key: 'Timeout ms', value: requestValue?.timeout_ms },
     { key: 'Agent type', value: requestValue?.agent_type },
-    { key: 'Model', value: requestValue?.model },
-    { key: 'Reasoning effort', value: requestValue?.reasoning_effort },
+    { key: 'Requested model', value: requestValue?.model },
+    { key: 'Requested reasoning effort', value: requestValue?.reasoning_effort },
     { key: 'Fork context', value: firstNonEmpty(requestValue?.fork_context, requestValue?.fork_turns) },
     { key: 'Task', value: requestValue?.task_name },
     { key: 'Path prefix', value: requestValue?.path_prefix },
@@ -3175,6 +3220,12 @@ function collaborationToolSection(toolName, requestValue, responseValue) {
     key: entry.key,
     value: conciseToolValue(entry.value, 1000),
   }));
+  const startup = resolvedSubAgentStartup(raws);
+  if (startup) {
+    for (const [key, label] of [['model', 'Resolved startup model'], ['reasoning_effort', 'Resolved startup reasoning effort'], ['agent_thread_id', 'Startup agent thread'], ['agent_path', 'Startup agent path']]) {
+      if (startup[key]) fields.push({ key: label, value: conciseToolValue(startup[key], 1000) });
+    }
+  }
   const message = redactEmbeddedDataUrls(stringifyValue(firstNonEmpty(requestValue?.message, responseValue?.prompt)));
   const result = redactEmbeddedDataUrls(collaborationResultMarkdown(responseValue));
   return {
@@ -3317,6 +3368,7 @@ function extractMcpSections(raws, event) {
   const timelineSections = [];
   pushMcpRequestSummary(timelineSections, event, requestValue);
   pushMcpResponseSummary(timelineSections, responseValue);
+  timelineSections.push(...recordedTruncationSections(raws));
   if (!timelineSections.length) {
     timelineSections.push(hideSectionTitle(makeNoticeSection(event.label, event.preview || event.label, event.severity === 'error' ? 'error' : event.severity === 'warning' ? 'warning' : 'info', 'result')));
   }
@@ -3358,8 +3410,9 @@ function extractToolOperationSections(raws, event) {
   }
   const userInput = event.toolName === 'request_user_input' ? requestUserInputSection(requestValue, responseValue) : null;
   if (userInput) timelineSections.push(userInput);
-  const collaboration = collaborationToolSection(event.toolName, requestValue, responseValue);
+  const collaboration = collaborationToolSection(event.toolName, requestValue, responseValue, raws);
   if (collaboration) timelineSections.push(collaboration);
+  if (collaboration && resolvedSubAgentStartup(raws)) timelineSections.push(makeNoticeSection('Startup settings evidence', 'Recorded started activity supplies startup settings only; later settings and token attribution are not inferred.', 'info', 'context'));
   if (collaboration && hasMeaningfulToolValue(responseValue) && !collaborationResponseCaptured(responseValue)) {
     maybePushToolSummaryCodeSection(timelineSections, 'Response summary', responseValue, 'result');
   }
@@ -3383,6 +3436,8 @@ function extractToolOperationSections(raws, event) {
   }
   const imagePreview = ['view_image', 'image_generation'].includes(event.toolName) ? imagePreviewSection(raws, event, requestValue) : null;
   const inspectorSections = sanitizeToolInspectorSections(toolInspectorSections, imagePreview);
+  const activityRows = raws.filter((raw) => raw.recordType === 'event_msg' && raw.payloadType === 'sub_agent_activity');
+  for (const raw of activityRows) inspectorSections.push({ purpose: 'context', type: 'json', title: 'Recorded subagent activity', value: raw.parsed.payload });
   return {
     timelineSections,
     inspectorSections: imagePreview ? [imagePreview, ...inspectorSections] : inspectorSections,
@@ -3617,9 +3672,9 @@ function codeModeShellResultSections(resultText) {
       { key: 'process_id', value: formatted.processId == null ? '' : String(formatted.processId) },
       { key: 'Wall time', value: formatted.wallTime },
     ], 'result');
-    maybePushTerminalSection(sections, 'Output', formatted.output, 'stdout', '', 'result');
+    maybePushTerminalSection(sections, 'Output', formatted.output, 'output', '', 'result');
   } else {
-    maybePushTerminalSection(sections, 'Result', resultText, 'stdout', '', 'result');
+    maybePushTerminalSection(sections, 'Result', resultText, 'output', '', 'result');
   }
   return sections;
 }
@@ -3680,7 +3735,7 @@ function backgroundTerminalResultSections(value) {
   }
   maybePushKvSection(sections, 'Run result', metadata, 'result');
   hideSectionTitle(sections[0]);
-  maybePushTerminalSection(sections, 'Output', output, 'stdout', '', 'result');
+  maybePushTerminalSection(sections, 'Output', output, 'output', '', 'result');
   return sections;
 }
 
@@ -3802,6 +3857,21 @@ function extractProtocolDetailSections(event, raws) {
   const timelineSections = [];
   const inspectorSections = [];
   const primary = raws[0];
+  if (event.subtype === 'additional_tools' && primary.recordType === 'response_item') {
+    const summary = additionalToolsSummary(primary.parsed?.payload);
+    if (!summary.valid) {
+      inspectorSections.push(makeRawJsonSection('Unmodeled protocol fields', primary.parsed?.payload, false, 'fallback'));
+      return { timelineSections, inspectorSections };
+    }
+    maybePushKvSection(timelineSections, 'Additional tools', [
+      { key: 'Top-level definition entries', value: String(summary.entries) },
+      { key: 'Recognized function definitions (bounded scan)', value: `${summary.count}${summary.incomplete ? '+' : ''}` },
+      { key: 'Unsupported definitions (bounded scan)', value: `${summary.unsupported}${summary.incomplete ? '+' : ''}` },
+      { key: 'Tool names and namespaces', value: summary.names.join('\n') },
+    ], 'context');
+    timelineSections.push(makeNoticeSection('Definition summary', 'Bounded summary of recorded tool definitions; complete definitions remain in Raw refs. Definitions do not establish tool execution.', 'info', 'context'));
+    return { timelineSections, inspectorSections };
+  }
   if (['agents_instructions', 'developer_instruction', 'developer_permissions', 'developer_collaboration_mode', 'skill_injection'].includes(event.subtype)) {
     maybePushMarkdownSection(timelineSections, 'Protocol text', primary.messageText, 'content');
     hideSectionTitle(timelineSections[0]);
@@ -3828,7 +3898,7 @@ function extractProtocolDetailSections(event, raws) {
       timelineSections.push(makeNoticeSection('Recorded turn context', 'Captured turn configuration; not proof that every internal request used identical settings or completed successfully.', 'info', 'context'));
       // Preserve summary as recorded scalar evidence. Without an established
       // schema version it must not be relabeled as an effective setting.
-      inspectorSections.push(makeNoticeSection('Recorded fields', 'summary is legacy evidence; in Codex 0.155 it is compatibility-only. realtime_active does not identify an audio session.', 'info', 'context'));
+      inspectorSections.push(makeNoticeSection('Recorded fields', 'summary is compatibility-only evidence. realtime_active does not identify an audio session.', 'info', 'context'));
     }
     const entries = event.subtype === 'environment_context'
       ? taggedBlockEntries(primary.messageText)
@@ -3927,6 +3997,12 @@ function rawConversationRole(raw) {
 function rawToolSections(raw, relatedEvent, session = {}) {
   const sections = [];
   const omitPayloadKeys = [];
+  const typed = codexMessageEvidence.semanticRaw(raw);
+  if (typed !== raw && typed.typedItemType === 'CommandExecution') {
+    const detail = extractCommandSections([typed], relatedEvent || {}, session);
+    return { sections: [...detail.timelineSections, ...detail.inspectorSections], omitPayloadKeys };
+  }
+  sections.push(...recordedTruncationSections([raw]));
   const toolName = raw.toolName || relatedEvent?.toolName || relatedEvent?.subtype || '';
 
   if (raw.recordType === 'response_item' && raw.payloadType === 'function_call' && toolName === 'shell_command') {
@@ -3946,7 +4022,7 @@ function rawToolSections(raw, relatedEvent, session = {}) {
         { key: 'exitCode', value: String(formatted.exitCode) },
         { key: 'wallTime', value: formatted.wallTime },
       ]);
-      maybePushTerminalSection(sections, 'stdout', formatted.output, formatted.exitCode === 0 ? 'stdout' : 'stderr');
+      maybePushTerminalSection(sections, 'Output', formatted.output, 'output');
     } else {
       maybePushStructuredSection(sections, 'Command output', structuredOutputValue(raw.output));
     }
@@ -3959,9 +4035,12 @@ function rawToolSections(raw, relatedEvent, session = {}) {
       { key: 'exitCode', value: raw.exitCode == null ? '' : String(raw.exitCode) },
       { key: 'durationMs', value: raw.durationMs == null ? '' : String(raw.durationMs) },
     ]);
-    const stdout = firstNonEmpty(raw.stdout, raw.aggregatedOutput, raw.parsed?.payload?.formatted_output);
+    const stdout = raw.stdout;
     maybePushTerminalSection(sections, 'stdout', stdout, 'stdout');
     maybePushTerminalSection(sections, 'stderr', raw.stderr, 'stderr');
+    if (!stdout && !raw.stderr) {
+      maybePushTerminalSection(sections, raw.aggregatedOutput ? 'Combined output' : 'Output', firstNonEmpty(raw.aggregatedOutput, raw.parsed?.payload?.formatted_output), 'output');
+    }
     if (stdout) maybePushParsedOutputSection(sections, 'stdout (structured)', stdout);
     if (raw.stderr) maybePushParsedOutputSection(sections, 'stderr (structured)', raw.stderr);
     omitPayloadKeys.push('command', 'cwd', 'stdout', 'stderr', 'aggregated_output', 'formatted_output', 'exit_code', 'duration', 'status');
@@ -4860,6 +4939,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   const includeCanonicalRawDigests = options.canonicalRawDigests === true;
   const sourceHash = crypto.createHash('sha256');
   let sourceBytesRead = 0;
+  let lastHistoryByte = -1;
 
   const stream = codexRolloutStorage.createLogicalReadStream(descriptor, {
     signal,
@@ -4868,6 +4948,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   stream.on('data', (chunk) => {
     sourceBytesRead += chunk.length;
     sourceHash.update(chunk);
+    if (options.requireCompleteHistoryRows && chunk.length) lastHistoryByte = chunk[chunk.length - 1];
   });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   let lineNumber = 0;
@@ -4884,7 +4965,10 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
     for await (const line of rl) {
       throwIfAborted(signal);
       lineNumber += 1;
-      if (!line.trim()) { terminalSourceGap = true; continue; }
+      if (!line.trim()) {
+        if (options.requireCompleteHistoryRows) throw Object.assign(new Error('Codex history contains a blank row'), { code: 'CODEX_HISTORY_BOUNDARY_INVALID' });
+        terminalSourceGap = true; continue;
+      }
       const recordStartedAt = observeSourcePhases ? performance.now() : 0;
       session.lineCount += 1;
       const record = safeJsonParse(line);
@@ -4892,6 +4976,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
         observeCodexLeadingSessionRecord(relationshipPlanningFacts, record);
       }
       if (!record) {
+        if (options.requireCompleteHistoryRows) throw Object.assign(new Error('Codex history contains an invalid JSONL row'), { code: 'CODEX_HISTORY_BOUNDARY_INVALID' });
         terminalSourceGap = true;
         if (observeSourcePhases) sourceRecordParseMs += performance.now() - recordStartedAt;
         continue;
@@ -4972,6 +5057,9 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   }
 
   throwIfAborted(signal);
+  if (options.requireCompleteHistoryRows && sourceBytesRead > 0 && lastHistoryByte !== 10) {
+    throw Object.assign(new Error('Codex history byte boundary does not end after a JSONL row'), { code: 'CODEX_HISTORY_BOUNDARY_INVALID' });
+  }
   const sourceFingerprint = sourceHash.digest('base64url');
   if (typeof options.beforeSourceSnapshotVerificationForTests === 'function') {
     await options.beforeSourceSnapshotVerificationForTests({ filePath, snapshotBytes: acceptedBytes });
@@ -5034,6 +5122,131 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   return session;
 }
 
+async function parseSessionHistory(plan, sessionsRoot, repoRoot, signal, options = {}) {
+  const parts = [];
+  const snapshots = [];
+  for (const segment of plan.segments) {
+    throwIfAborted(signal);
+    const expected = options.historySnapshots?.find((entry) => entry.sourceFile === segment.sourceFile);
+    let descriptor;
+    try {
+      descriptor = await codexRolloutStorage.resolveRolloutArtifact(sessionsRoot, segment.sourceFile, {
+        compression: expected?.compression,
+        allowArchivedHistory: true,
+      });
+    } catch (error) {
+      if (expected && (error?.code === 'ENOENT' || error?.code === 'ENOTDIR')) throw indexedSourceStaleError();
+      throw error;
+    }
+    if (!codexRolloutStorage.isHistoryRelativePath(sessionsRoot, segment.sourceFile)) throw indexedSourceStaleError();
+    const part = await parseSessionFile(descriptor.physicalPath, segment.sourceFile, repoRoot, signal, {
+      ...options,
+      onAcceptedRelationshipPlanningProjection: undefined,
+      acceptedSourceSnapshot: expected ? { acceptedBytes: expected.acceptedBytes, digest: expected.digest,
+        fileIdentity: expected.fileIdentity, compression: expected.compression } : null,
+      acceptedLogicalBytes: segment.acceptedBytes,
+      sourceDescriptor: descriptor,
+      requireCompleteHistoryRows: true,
+      retainFullSourceRecordsForTests: true,
+      canonicalRawDigests: true,
+    });
+    rolloutHistory.validateHistorySegmentBoundary(segment, part.rawEvents.length, part.bytes);
+    if (part.rawEvents[0]?.recordType !== 'session_meta' || part.rawEvents[0].sessionMetaId !== segment.sessionId) {
+      throw Object.assign(new Error('Codex rollout header does not match history plan'), { code: 'CODEX_HISTORY_OWNER_CONFLICT' });
+    }
+    if (part.rawEvents[0].parsed?.payload?.history_mode !== 'paginated') {
+      throw Object.assign(new Error('Explicit Codex history chains require recorded paginated history mode'), { code: 'CODEX_HISTORY_MODE_UNSUPPORTED' });
+    }
+    if (part.rawEvents.some((raw, position) => !Number.isSafeInteger(raw.parsed?.ordinal)
+        || raw.parsed.ordinal !== segment.startOrdinal + position)) {
+      throw Object.assign(new Error('Codex history recorded ordinals are missing or discontinuous'), { code: 'CODEX_HISTORY_ORDINAL_INVALID' });
+    }
+    const actualBase = rolloutHistory.parseHistoryBase(part.rawEvents[0].parsed?.payload?.history_base);
+    if (actualBase.error || (actualBase.base?.endOrdinalExclusive || 0) !== segment.startOrdinal) throw indexedSourceStaleError();
+    const previous = snapshots.at(-1);
+    if (!previous && actualBase.base) throw Object.assign(new Error('Codex root history artifact unexpectedly declares a base'), { code: 'CODEX_HISTORY_BASE_INVALID' });
+    if (previous && (!actualBase.base || actualBase.base.rolloutId !== previous.rolloutId
+        || actualBase.base.endByteOffset !== previous.acceptedBytes
+        || actualBase.base.endOrdinalExclusive !== previous.endOrdinalExclusive)) throw indexedSourceStaleError();
+    snapshots.push({ ...segment, acceptedBytes: part.bytes, recordCount: part.rawEvents.length,
+      digest: part.sourceFingerprint, fileIdentity: structuredClone(part._sourceIdentity), compression: descriptor.compression });
+    parts.push(part);
+  }
+  const head = parts.at(-1);
+  const session = { ...head, id: plan.sessionId, sourceSessionId: plan.sessionId, rawEvents: [],
+    cwdSet: new Set(), startedAt: '', updatedAt: '', bytes: 0, lineCount: 0,
+    _historyPlan: structuredClone(plan), _historySnapshots: snapshots };
+  for (const [index, part] of parts.entries()) {
+    const segment = snapshots[index];
+    session.bytes += part.bytes;
+    session.lineCount += part.lineCount;
+    for (const cwd of part.cwdSet) session.cwdSet.add(cwd);
+    for (const original of part.rawEvents) {
+      const physicalLine = original.source.line;
+      const raw = makeRawEvent(original.parsed, segment.startOrdinal + physicalLine,
+        segment.sourceFile, plan.sessionId, original.embeddedImages || [], original.attachmentSummary);
+      raw.source = { ...original.source };
+      raw.sourceLocator = codexSourceLocator(raw.source);
+      raw.sourceLineDigest = original.sourceLineDigest;
+      raw.rawId = segment.rolloutId && segment.rolloutId !== plan.sessionId
+        ? `${plan.sessionId}:raw:${physicalLine}:rollout:${segment.rolloutId}` : `${plan.sessionId}:raw:${physicalLine}`;
+      raw.sourceClientVersion = original.sourceClientVersion;
+      extractResidentRawFacts(raw, original.parsed);
+      raw._canonicalRawDigest = original._canonicalRawDigest;
+      raw._historyChainId = plan.sessionId;
+      if (original.subagentInherited === true || segment.sessionId !== plan.sessionId) raw.subagentInherited = true;
+      updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
+      session.rawEvents.push(raw);
+    }
+  }
+  const canonicalMetadata = session.rawEvents.find((raw) => raw.source.file === plan.headSourceFile
+    && raw.source.line === 1);
+  session.rawEvents = [canonicalMetadata, ...session.rawEvents.filter((raw) => raw !== canonicalMetadata)].filter(Boolean);
+  if (session.rawEvents.some((raw) => raw.subagentInherited === true)) restoreCodexSubagentRawSegments(session);
+  // Shell evidence follows the accepted, owned replay in source order, including
+  // retained ancestors. An environment without a shell cannot shadow a later one.
+  session.shell = '';
+  for (const raw of session.rawEvents) {
+    if (raw.subagentInherited === true || raw.recordType === 'realtime_item'
+        || classifyProtocolText(raw.messageText, raw.role) !== 'environment_context') continue;
+    const shell = readXmlTag(raw.messageText, 'shell');
+    if (shell) { session.shell = boundedSessionShellContext(shell); break; }
+  }
+  // Head metadata is authoritative for replay, while Raw retains all headers.
+  const replay = [canonicalMetadata, ...session.rawEvents.filter((raw) => raw.recordType !== 'session_meta'
+    && raw.subagentInherited !== true)].filter(Boolean);
+  session._logicalEvents = codexLogicalBuilder.buildLogicalEvents(replay);
+  const historyEventIds = new Map(session._logicalEvents.map((event) => {
+    const suffix = event.rawRefs[0]?.rawId?.split(':rollout:')[1];
+    return [event.id, suffix ? `${event.id}:rollout:${suffix}` : event.id];
+  }));
+  for (const event of session._logicalEvents) {
+    event.id = historyEventIds.get(event.id);
+    if (event.codeModeOperation) {
+      event.codeModeOperation.id = historyEventIds.get(event.codeModeOperation.id) || event.codeModeOperation.id;
+      event.codeModeOperation.eventRefs = (event.codeModeOperation.eventRefs || []).map((id) => historyEventIds.get(id) || id);
+      event.codeModeOperation.phaseEventRefs = (event.codeModeOperation.phaseEventRefs || []).map((reference) => ({
+        ...reference, eventId: historyEventIds.get(reference.eventId) || reference.eventId }));
+    }
+  }
+  session.logicalEvents = session._logicalEvents;
+  session.sourceFingerprint = hashCodexMaterializationValue(snapshots);
+  session._canonicalRawDigests = session.rawEvents.map((raw) => raw._canonicalRawDigest);
+  session.matchesRepo = [...session.cwdSet].some((cwd) => isPathInsideOrSame(cwd, repoRoot));
+  session._parsedAncestry = { forkedFromSessionId: String(session.forkedFromSessionId || '') };
+  if (options.captureCacheObservationSeeds) {
+    session._cacheObservationSeeds = session.rawEvents.filter((raw) => !raw.subagentInherited)
+      .map((raw) => createCodexCacheObservationSeed(raw, raw.parsed?.payload)).filter(Boolean);
+  }
+  options.onAcceptedRelationshipPlanningProjection?.({ leadingSessionId: session.id,
+    leadingForkedFromSessionId: session.forkedFromSessionId || '' });
+  if (!options.retainFullSourceRecordsForTests) {
+    session.rawEvents = session.rawEvents.map(compactCodexRawEvent);
+    session.residentRepresentation = CODEX_COMPACT_SESSION_REPRESENTATION;
+  }
+  return session;
+}
+
 function compactCodexForkRawFact(raw) {
   return [
     String(raw?.rawId || ''),
@@ -5086,6 +5299,8 @@ function buildCodexRelationshipEvidence(session, retainForkEvidence) {
   return {
     id: session.id,
     sourceKind: session.sourceKind,
+    ...(session._historyPlan ? { _historyPlan: structuredClone(session._historyPlan),
+      _historySnapshots: structuredClone(session._historySnapshots) } : {}),
     sourceFile: session.sourceFile,
     sourceClientVersion: session.sourceClientVersion,
     sourceFingerprint: session.sourceFingerprint,
@@ -5676,6 +5891,11 @@ function buildCodexMaterializationState(session, relationshipEvidence, sessionIn
     copiedPrefixDigest,
     relationship: codexRelationshipSnapshot(session),
   };
+  if (session._historyPlan) {
+    payload.kind = 'rollout-history-v1';
+    payload.historyPlan = structuredClone(session._historyPlan);
+    payload.historySnapshots = structuredClone(session._historySnapshots);
+  }
   const dependencyEntry = {
     role: 'primary_transcript',
     pathIdentity: session.sourceFile,
@@ -5714,7 +5934,12 @@ function buildCodexMaterializationState(session, relationshipEvidence, sessionIn
         : null,
     },
   };
-  const dependencyEntries = [dependencyEntry, copiedMetadataEntry];
+  const dependencyEntries = session._historySnapshots
+    ? [...session._historySnapshots.map((snapshot) => ({ role: snapshot.sourceFile === session.sourceFile ? 'primary_transcript' : 'history_transcript',
+      pathIdentity: snapshot.sourceFile, existence: 'present', kind: 'file', policy: 'accepted_prefix',
+      acceptedBytes: snapshot.acceptedBytes, lineCount: snapshot.recordCount, digest: snapshot.digest,
+      directoryEntries: [], evidence: { fileIdentity: structuredClone(snapshot.fileIdentity) } })), copiedMetadataEntry]
+    : [dependencyEntry, copiedMetadataEntry];
   const dependencySetId = `codex-dependency:${hashCodexMaterializationValue(dependencyEntries)}`;
   const dependencySet = {
     schemaVersion: CODEX_MATERIALIZATION_SCHEMA_VERSION,
@@ -5901,6 +6126,128 @@ async function canReuseWholeSourceBackedIndex({
   return true;
 }
 
+function codexPhysicalFileKey(sessionsRoot, file) {
+  return normalizeFsPath(path.resolve(sessionsRoot, codexRolloutStorage.logicalRolloutPath(file)));
+}
+
+function codexSelectedPhysicalFiles(candidates, historyPlans, sessionsRoot) {
+  const files = new Set();
+  for (const file of candidates) {
+    const plan = historyPlans.get(file);
+    if (plan) for (const segment of plan.segments) files.add(codexPhysicalFileKey(sessionsRoot, segment.sourceFile));
+    else files.add(codexPhysicalFileKey(sessionsRoot, file));
+  }
+  return files;
+}
+
+async function admitArchivedHistoryDependencies(candidateIds, inspections, sessionsRoot, signal, onDiagnostic) {
+  const known = new Map([...inspections].map(([file, inspection]) => [rolloutHistory.parseRolloutArtifactIdentity(file)?.rolloutId, inspection]).filter(([id]) => id));
+  // Selection is by logical owner, so every discovered artifact of a candidate
+  // thread may supply its current head even when its cwd differs from the repo.
+  const pending = [];
+  for (const [file, inspection] of inspections) {
+    if (!candidateIds.has(inspection.leadingSessionId || codexSessionIdFromFilePath(file))) continue;
+    const parent = rolloutHistory.parseHistoryBase(inspection.historyBase).base?.rolloutId;
+    if (parent) pending.push(parent);
+  }
+  const expanded = new Set();
+  for (let cursor = 0; cursor < pending.length && expanded.size < rolloutHistory.MAX_ARTIFACTS_PER_HISTORY; cursor += 1) {
+    const id = pending[cursor];
+    if (!known.has(id) || expanded.has(id)) continue;
+    expanded.add(id);
+    const parent = rolloutHistory.parseHistoryBase(known.get(id).historyBase).base?.rolloutId;
+    if (parent) pending.push(parent);
+  }
+  if (!pending.some((id) => !known.has(id))) return;
+  const archivedRoot = path.resolve(sessionsRoot, '..', 'archived_sessions');
+  const archivedFiles = await collectJsonlFiles(archivedRoot, { signal, onDiagnostic });
+  const byId = new Map();
+  for (const file of archivedFiles) {
+    const id = rolloutHistory.parseRolloutArtifactIdentity(file)?.rolloutId;
+    if (!id) continue;
+    const matches = byId.get(id) || []; matches.push(file); byId.set(id, matches);
+  }
+  const attempted = new Set();
+  for (let cursor = 0; cursor < pending.length && attempted.size < rolloutHistory.MAX_ARTIFACTS_PER_HISTORY; cursor += 1) {
+    const id = pending[cursor];
+    if (attempted.has(id)) continue;
+    attempted.add(id);
+    if (known.has(id)) {
+      const parent = rolloutHistory.parseHistoryBase(known.get(id).historyBase).base?.rolloutId;
+      if (parent) pending.push(parent);
+      continue;
+    }
+    const matches = byId.get(id);
+    if (matches?.length !== 1) continue;
+    const file = matches[0];
+    try {
+      const relative = codexRolloutRelativePath(sessionsRoot, file);
+      const descriptor = await codexRolloutStorage.resolveRolloutArtifact(sessionsRoot, relative, { allowArchivedHistory: true });
+      const inspected = await inspectSessionFile(descriptor.physicalPath, { signal });
+      inspections.set(descriptor.physicalPath, inspected); known.set(id, inspected);
+      const parent = rolloutHistory.parseHistoryBase(inspected.historyBase).base?.rolloutId;
+      if (parent) pending.push(parent);
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      if (!codexRolloutStorage.isStorageFailure(error)) throw error;
+      onDiagnostic({ code: error.code || 'SOURCE_ARTIFACT_UNREADABLE', path: file, message: error.message });
+    }
+  }
+}
+
+async function prepareCodexHistoryCandidates(candidates, inspections, sessionsRoot, codexHome, signal, onDiagnostic, currentPathsOverride) {
+  const initialInspectionCount = inspections.size;
+  const candidateIds = new Set(candidates.map((file) => inspections.get(file)?.leadingSessionId || codexSessionIdFromFilePath(file)));
+  await admitArchivedHistoryDependencies(candidateIds, inspections, sessionsRoot, signal, onDiagnostic);
+  const nodes = [...inspections].map(([file, inspection]) => ({ sourceFile: codexRolloutRelativePath(sessionsRoot, file),
+    sessionId: inspection.leadingSessionId || codexSessionIdFromFilePath(file), historyBase: inspection.historyBase,
+    bytes: inspection.bytes }));
+  const physicalFiles = new Map([...inspections.keys()].map((file) => [codexRolloutRelativePath(sessionsRoot, file), file]));
+  const groups = new Map();
+  for (const node of nodes) {
+    const group = groups.get(node.sessionId) || [];
+    group.push(node); groups.set(node.sessionId, group);
+  }
+  const affectedIds = [...candidateIds].filter((id) => {
+    const group = groups.get(id) || [];
+    return group.length > 1 || group.some((node) => node.historyBase != null
+      || rolloutHistory.parseRolloutArtifactIdentity(node.sourceFile)?.rolloutId !== id
+        && rolloutHistory.parseRolloutArtifactIdentity(node.sourceFile));
+  });
+  if (!affectedIds.length) return new Map();
+  const pointer = currentPathsOverride ? { currentPaths: currentPathsOverride, diagnostics: [], evidence: {
+    kind: 'codex-current-rollout-v1', status: 'test-override', entries: affectedIds.map((sessionId) => ({ sessionId,
+      rolloutPath: currentPathsOverride.get(sessionId) || null, status: currentPathsOverride.has(sessionId) ? 'valid' : 'absent' })) } }
+    : await readCurrentRolloutPaths({ codexHome, sessionsRoot, signal, sessionIds: affectedIds });
+  for (const diagnostic of pointer.diagnostics) onDiagnostic(diagnostic);
+  const resolved = rolloutHistory.resolveRolloutHistoryPlans(nodes, { currentPaths: pointer.currentPaths, sessionsRoot });
+  const plans = new Map();
+  plans.archivedDependencyFileCount = inspections.size - initialInspectionCount;
+  const invalidHints = new Set(pointer.evidence.entries.filter((entry) => entry.status === 'invalid').map((entry) => entry.sessionId));
+  for (const diagnostic of resolved.diagnostics) if (affectedIds.includes(diagnostic.sessionId)) onDiagnostic({
+    code: diagnostic.code, path: diagnostic.sourceFile, message: 'The explicit Codex rollout history could not be resolved completely.' });
+  for (const plan of resolved.plans) {
+    if (!affectedIds.includes(plan.sessionId) || invalidHints.has(plan.sessionId)) continue;
+    // Archives are source dependencies, never standalone current-session heads.
+    // Keep the same artifact available to another valid child's prefix chain.
+    const headFile = physicalFiles.get(plan.headSourceFile);
+    if (!headFile || !isPathInsideOrSame(headFile, sessionsRoot)) {
+      onDiagnostic({ code: 'CODEX_HISTORY_STANDALONE_HEAD_UNAVAILABLE', path: plan.headSourceFile,
+        message: 'The inferred current history head is archived; its logical session is excluded while explicit dependent histories remain available.' });
+      continue;
+    }
+    plan.currentPointer = { kind: pointer.evidence.kind, status: pointer.evidence.status,
+      sourceFile: pointer.evidence.sourceFile || '',
+      entry: structuredClone(pointer.evidence.entries.find((entry) => entry.sessionId === plan.sessionId) || null) };
+    plans.set(headFile, plan);
+    if (plan.headSelection === 'filesystem-inferred') onDiagnostic({ code: 'CODEX_HISTORY_HEAD_INFERRED', path: plan.headSourceFile,
+      message: 'A unique filesystem history head was inferred; the current rollout database pointer is unavailable.' });
+  }
+  const affectedSet = new Set(affectedIds);
+  candidates.splice(0, candidates.length, ...candidates.filter((file) => !affectedSet.has(inspections.get(file)?.leadingSessionId || codexSessionIdFromFilePath(file))), ...plans.keys());
+  return plans;
+}
+
 async function buildIndex({
   repoRoot,
   codexHome,
@@ -5911,6 +6258,7 @@ async function buildIndex({
   retainFullSourceRecordsForTests = false,
   beforeSourceSnapshotVerificationForTests = null,
   cacheObservationForTests = false,
+  currentRolloutPathsForTests = null,
 }) {
   const sourceDiagnostics = createSourceDiagnostics();
   const onDiagnostic = (diagnostic) => {
@@ -5968,11 +6316,11 @@ async function buildIndex({
       onDiagnostic?.({ code: error.code || 'SOURCE_ARTIFACT_UNREADABLE', path: filePath, message: error.message });
       continue;
     }
+    candidateInspections.set(filePath, inspected);
     const hasCwd = inspected.cwdSet.size > 0;
     const matchesRepo = [...inspected.cwdSet].some((cwd) => isPathInsideOrSame(cwd, resolvedRepo));
     if (matchesRepo) {
       candidates.push(filePath);
-      candidateInspections.set(filePath, inspected);
       candidateBytes += inspected.bytes;
     } else if (!hasCwd) {
       unknownFileCount += 1;
@@ -5996,10 +6344,15 @@ async function buildIndex({
   }
 
   const sessions = [];
+  const historyPlans = await prepareCodexHistoryCandidates(candidates, candidateInspections, sessionsRoot,
+    resolvedCodex, signal, onDiagnostic, currentRolloutPathsForTests);
+  const selectedPhysicalFileCount = codexSelectedPhysicalFiles(candidates, historyPlans, sessionsRoot).size;
+  const discoveredPhysicalFileCount = files.length + (historyPlans.archivedDependencyFileCount || 0);
   const sessionsById = new Map();
   let logicalEventCount = 0;
   let rawEventCount = 0;
   let indexedFileCount = 0;
+  const indexedPhysicalFiles = new Set();
   let reusedFileCount = 0;
   let parsedBytes = 0;
   const canReusePrevious = previousIndex
@@ -6014,9 +6367,9 @@ async function buildIndex({
   emitProgress(onProgress, {
     phase: 'parsing',
     repoRoot: resolvedRepo,
-    filesTotal: files.length,
-    filesScanned: files.length,
-    candidateFileCount: candidates.length,
+    filesTotal: discoveredPhysicalFileCount,
+    filesScanned: discoveredPhysicalFileCount,
+    candidateFileCount: selectedPhysicalFileCount,
     skippedFileCount,
     unknownFileCount,
     indexedFileCount,
@@ -6028,7 +6381,7 @@ async function buildIndex({
   for (const filePath of candidates) {
     throwIfAborted(signal);
     const relFile = codexRolloutRelativePath(sessionsRoot, filePath);
-    const previousSession = previousSessionsBySource.get(relFile);
+    const previousSession = historyPlans.has(filePath) ? null : previousSessionsBySource.get(relFile);
     const currentStat = previousSession
       ? await codexRolloutStorage.acquireRolloutStat(filePath)
       : null;
@@ -6064,7 +6417,11 @@ async function buildIndex({
       };
       reusedFileCount += 1;
     } else {
-      session = await parseSessionFile(filePath, relFile, resolvedRepo, signal, {
+      const parse = historyPlans.has(filePath)
+        ? (file, relative, repo, abort, opts) => parseSessionHistory(historyPlans.get(file), sessionsRoot, repo, abort, opts)
+        : parseSessionFile;
+      try {
+      session = await parse(filePath, relFile, resolvedRepo, signal, {
         canonicalRawDigests: requiresCanonicalRawDigests,
         retainFullSourceRecordsForTests,
         acceptedLogicalBytes: codexRolloutStorage.compressionForArtifact(filePath) === 'zstd'
@@ -6073,8 +6430,17 @@ async function buildIndex({
         beforeSourceSnapshotVerificationForTests,
         captureCacheObservationSeeds: cacheObservationForTests,
       });
+      } catch (error) {
+        if (!historyPlans.has(filePath) || !String(error.code || '').startsWith('CODEX_HISTORY_')) throw error;
+        onDiagnostic({ code: error.code, path: relFile, message: error.message });
+        unknownFileCount += 1;
+        continue;
+      }
     }
-    indexedFileCount += 1;
+    const selectedPlan = historyPlans.get(filePath);
+    if (selectedPlan) for (const segment of selectedPlan.segments) indexedPhysicalFiles.add(codexPhysicalFileKey(sessionsRoot, segment.sourceFile));
+    else indexedPhysicalFiles.add(codexPhysicalFileKey(sessionsRoot, filePath));
+    indexedFileCount = indexedPhysicalFiles.size;
     parsedBytes += session.bytes;
     if (session.matchesRepo) {
       sessions.push(session);
@@ -6085,9 +6451,9 @@ async function buildIndex({
     emitProgress(onProgress, {
       phase: 'parsing',
       repoRoot: resolvedRepo,
-      filesTotal: files.length,
-      filesScanned: files.length,
-      candidateFileCount: candidates.length,
+      filesTotal: discoveredPhysicalFileCount,
+      filesScanned: discoveredPhysicalFileCount,
+      candidateFileCount: selectedPhysicalFileCount,
       skippedFileCount,
       unknownFileCount,
       indexedFileCount,
@@ -6118,9 +6484,9 @@ async function buildIndex({
   emitProgress(onProgress, {
     phase: 'complete',
     repoRoot: resolvedRepo,
-    filesTotal: files.length,
-    filesScanned: files.length,
-    candidateFileCount: candidates.length,
+    filesTotal: discoveredPhysicalFileCount,
+    filesScanned: discoveredPhysicalFileCount,
+    candidateFileCount: selectedPhysicalFileCount,
     skippedFileCount,
     unknownFileCount,
     indexedFileCount,
@@ -6148,7 +6514,7 @@ async function buildIndex({
     codeModeRequests: codeModeRequestCatalog(sessions),
     totals: {
       fileCount: files.length,
-      candidateFileCount: candidates.length,
+      candidateFileCount: selectedPhysicalFileCount,
       indexedFileCount,
       reusedFileCount,
       skippedFileCount,
@@ -6176,6 +6542,7 @@ async function buildSourceBackedIndex({
   onTransientMemorySample = null,
   legacyRawOwnerPolicyForTests = undefined,
   onLegacyRawCapacity = null,
+  currentRolloutPathsForTests = null,
 }) {
   const sourceDiagnostics = createSourceDiagnostics();
   const onDiagnostic = (diagnostic) => {
@@ -6232,11 +6599,11 @@ async function buildSourceBackedIndex({
       onDiagnostic?.({ code: error.code || 'SOURCE_ARTIFACT_UNREADABLE', path: filePath, message: error.message });
       continue;
     }
+    candidateInspections.set(filePath, inspected);
     const hasCwd = inspected.cwdSet.size > 0;
     const matchesRepo = [...inspected.cwdSet].some((cwd) => isPathInsideOrSame(cwd, resolvedRepo));
     if (matchesRepo) {
       candidates.push(filePath);
-      candidateInspections.set(filePath, inspected);
       candidateBytes += inspected.bytes;
     } else if (!hasCwd) {
       unknownFileCount += 1;
@@ -6259,7 +6626,11 @@ async function buildSourceBackedIndex({
     });
   }
 
-  if (await canReuseWholeSourceBackedIndex({
+  const historyPlans = await prepareCodexHistoryCandidates(candidates, candidateInspections, sessionsRoot,
+    resolvedCodex, signal, onDiagnostic, currentRolloutPathsForTests);
+  let selectedPhysicalFileCount = codexSelectedPhysicalFiles(candidates, historyPlans, sessionsRoot).size;
+  const discoveredPhysicalFileCount = files.length + (historyPlans.archivedDependencyFileCount || 0);
+  if (!historyPlans.size && await canReuseWholeSourceBackedIndex({
     previousIndex,
     candidates,
     candidateInspections,
@@ -6281,9 +6652,9 @@ async function buildSourceBackedIndex({
     emitProgress(onProgress, {
       phase: 'complete',
       repoRoot: resolvedRepo,
-      filesTotal: files.length,
-      filesScanned: files.length,
-      candidateFileCount: candidates.length,
+      filesTotal: discoveredPhysicalFileCount,
+      filesScanned: discoveredPhysicalFileCount,
+      candidateFileCount: selectedPhysicalFileCount,
       skippedFileCount,
       unknownFileCount,
       indexedFileCount: previousIndex.sessions.length,
@@ -6314,7 +6685,7 @@ async function buildSourceBackedIndex({
       codeModeRequests: previousIndex.codeModeRequests,
       totals: {
         fileCount: files.length,
-        candidateFileCount: candidates.length,
+        candidateFileCount: selectedPhysicalFileCount,
         indexedFileCount: previousIndex.sessions.length,
         reusedFileCount: previousIndex.sessions.length,
         skippedFileCount,
@@ -6337,9 +6708,9 @@ async function buildSourceBackedIndex({
   emitProgress(onProgress, {
     phase: 'parsing',
     repoRoot: resolvedRepo,
-    filesTotal: files.length,
-    filesScanned: files.length,
-    candidateFileCount: candidates.length,
+    filesTotal: discoveredPhysicalFileCount,
+    filesScanned: discoveredPhysicalFileCount,
+    candidateFileCount: selectedPhysicalFileCount,
     skippedFileCount,
     unknownFileCount,
     indexedFileCount: 0,
@@ -6378,7 +6749,9 @@ async function buildSourceBackedIndex({
     }
     let session;
     try {
-      session = await parseSessionFile(filePath, relFile, resolvedRepo, signal, parseOptions);
+      session = historyPlans.has(filePath)
+        ? await parseSessionHistory(historyPlans.get(filePath), sessionsRoot, resolvedRepo, signal, parseOptions)
+        : await parseSessionFile(filePath, relFile, resolvedRepo, signal, parseOptions);
     } catch (error) {
       if (acceptedEvidence && error?.code === 'INDEXED_SOURCE_STALE') {
         throw sourceSnapshotChangedError();
@@ -6399,12 +6772,19 @@ async function buildSourceBackedIndex({
     const relFile = codexRolloutRelativePath(sessionsRoot, filePath);
     const initiallyDeep = initialDeepFilePaths.has(filePath);
     let result;
-    if (forceFullRelationshipPassForTests === true || initiallyDeep) {
+    if (forceFullRelationshipPassForTests === true || initiallyDeep || historyPlans.has(filePath)) {
+      try {
       result = await parseFullRelationshipCandidate(
         filePath,
         relFile,
         initiallyDeep,
       );
+      } catch (error) {
+        if (!historyPlans.has(filePath) || !String(error.code || '').startsWith('CODEX_HISTORY_')) throw error;
+        onDiagnostic({ code: error.code, path: relFile, message: error.message });
+        unknownFileCount += 1;
+        continue;
+      }
     } else {
       const scanned = await scanCodexRelationshipEvidence(
         filePath,
@@ -6442,9 +6822,9 @@ async function buildSourceBackedIndex({
     emitProgress(onProgress, {
       phase: 'parsing',
       repoRoot: resolvedRepo,
-      filesTotal: files.length,
-      filesScanned: files.length,
-      candidateFileCount: candidates.length,
+      filesTotal: discoveredPhysicalFileCount,
+      filesScanned: discoveredPhysicalFileCount,
+      candidateFileCount: selectedPhysicalFileCount,
       skippedFileCount,
       unknownFileCount,
       indexedFileCount: 0,
@@ -6458,6 +6838,10 @@ async function buildSourceBackedIndex({
   }
 
   throwIfAborted(signal);
+  const previousCandidateCount = candidates.length;
+  candidates.splice(0, candidates.length, ...candidates.filter((filePath) => relationshipResultsByFile.has(filePath)));
+  if (candidates.length !== previousCandidateCount)
+    selectedPhysicalFileCount = codexSelectedPhysicalFiles(candidates, historyPlans, sessionsRoot).size;
   const effectiveDeepFilePaths = new Set(initialDeepFilePaths);
   for (const filePath of materializedForkDigestFilePaths(candidates, acceptedPrefixInspections)) {
     effectiveDeepFilePaths.add(filePath);
@@ -6527,6 +6911,7 @@ async function buildSourceBackedIndex({
   let logicalEventCount = 0;
   let rawEventCount = 0;
   let indexedFileCount = 0;
+  const indexedPhysicalFiles = new Set();
   let indexedBytes = 0;
   let reusedFileCount = 0;
 
@@ -6554,7 +6939,11 @@ async function buildSourceBackedIndex({
     if (!isPathInsideOrSame(filePath, sessionsRoot)) throw sourceSnapshotChangedError();
     let session;
     try {
-      session = await parseSessionFile(filePath, evidence.sourceFile, resolvedRepo, signal, {
+      const parse = evidence._historyPlan
+        ? (file, relative, repo, abort, opts) => parseSessionHistory(evidence._historyPlan, sessionsRoot, repo, abort,
+          { ...opts, acceptedSourceSnapshot: null, historySnapshots: evidence._historySnapshots })
+        : parseSessionFile;
+      session = await parse(filePath, evidence.sourceFile, resolvedRepo, signal, {
         sourceDescriptor: descriptor,
         acceptedSourceSnapshot: {
           acceptedBytes: evidence.bytes,
@@ -6654,7 +7043,10 @@ async function buildSourceBackedIndex({
     sessionsById.set(indexedSession.id, indexedSession);
     logicalEventCount += indexedSession.logicalEventCount;
     rawEventCount += indexedSession.rawEventCount;
-    indexedFileCount += 1;
+    const selectedPlan = evidence._historyPlan;
+    if (selectedPlan) for (const segment of selectedPlan.segments) indexedPhysicalFiles.add(codexPhysicalFileKey(sessionsRoot, segment.sourceFile));
+    else indexedPhysicalFiles.add(codexPhysicalFileKey(sessionsRoot, evidence.sourceFile));
+    indexedFileCount = indexedPhysicalFiles.size;
     indexedBytes += indexedSession.bytes;
     evidence._forkRawFacts = [];
     evidence._forkLogicalRanges = [];
@@ -6662,9 +7054,9 @@ async function buildSourceBackedIndex({
     emitProgress(onProgress, {
       phase: 'parsing',
       repoRoot: resolvedRepo,
-      filesTotal: files.length,
-      filesScanned: files.length,
-      candidateFileCount: candidates.length,
+      filesTotal: discoveredPhysicalFileCount,
+      filesScanned: discoveredPhysicalFileCount,
+      candidateFileCount: selectedPhysicalFileCount,
       skippedFileCount,
       unknownFileCount,
       indexedFileCount,
@@ -6708,9 +7100,9 @@ async function buildSourceBackedIndex({
   emitProgress(onProgress, {
     phase: 'complete',
     repoRoot: resolvedRepo,
-    filesTotal: files.length,
-    filesScanned: files.length,
-    candidateFileCount: candidates.length,
+    filesTotal: discoveredPhysicalFileCount,
+    filesScanned: discoveredPhysicalFileCount,
+    candidateFileCount: selectedPhysicalFileCount,
     skippedFileCount,
     unknownFileCount,
     indexedFileCount,
@@ -6741,7 +7133,7 @@ async function buildSourceBackedIndex({
     codeModeRequests: catalogs.codeModeRequests,
     totals: {
       fileCount: files.length,
-      candidateFileCount: candidates.length,
+      candidateFileCount: selectedPhysicalFileCount,
       indexedFileCount,
       reusedFileCount,
       skippedFileCount,
@@ -6776,7 +7168,7 @@ async function materializeCodexSessionInternal(
   throwIfAborted(signal);
   const index = materializationContext;
   const descriptor = indexedSession.materializationDescriptor;
-  const entry = dependencySet.entries[0];
+  const entry = dependencySet.entries.find((candidate) => candidate.role === 'primary_transcript');
   let sourceDescriptor;
   try {
     sourceDescriptor = await codexRolloutStorage.resolveRolloutArtifact(
@@ -6792,7 +7184,12 @@ async function materializeCodexSessionInternal(
   }
   const target = sourceDescriptor.physicalPath;
   if (!isPathInsideOrSame(target, index.sessionsRoot)) throw indexedSourceStaleError();
-  const session = await parseSessionFile(
+  const session = descriptor.payload.kind === 'rollout-history-v1'
+    ? await parseSessionHistory(descriptor.payload.historyPlan, index.sessionsRoot, index.repoRoot, signal, {
+      historySnapshots: descriptor.payload.historySnapshots,
+      canonicalRawDigests: indexedSession.forkStorageMode === 'materialized',
+      captureCacheObservationSeeds: cacheObservation,
+    }) : await parseSessionFile(
     target,
     descriptor.payload.sourceFile,
     index.repoRoot,
@@ -6870,6 +7267,93 @@ function requireExactCodexKeys(value, keys, owner) {
   }
 }
 
+function validateCodexHistoryMaterializationDescriptor(index, indexedSession, descriptor, dependencySet) {
+  const payload = descriptor.payload;
+  requireExactCodexKeys(payload, ['kind', 'sourceFile', 'rawSegments', 'copiedPrefixCount', 'copiedPrefixDigest',
+    'relationship', 'historyPlan', 'historySnapshots'], 'Codex history materialization payload');
+  const plan = payload.historyPlan;
+  requireExactCodexKeys(plan, ['sessionId', 'headSourceFile', 'headRolloutId', 'headSelection',
+    'unselectedSourceFiles', 'segments', 'currentPointer'], 'Codex history plan');
+  const snapshots = payload.historySnapshots;
+  if (plan.sessionId !== indexedSession.id || plan.headSourceFile !== indexedSession.sourceFile
+      || payload.sourceFile !== indexedSession.sourceFile || !['state-pointer', 'filesystem-inferred'].includes(plan.headSelection)
+      || !Array.isArray(snapshots) || snapshots.length < 1 || snapshots.length > rolloutHistory.MAX_ARTIFACTS_PER_HISTORY
+      || !Array.isArray(plan.segments) || plan.segments.length !== snapshots.length
+      || dependencySet.entries.length !== snapshots.length + 1) throw new Error('Codex history snapshot shape is invalid');
+  requireExactCodexKeys(plan.currentPointer, ['kind', 'status', 'sourceFile', 'entry'], 'Codex copied current-rollout pointer');
+  if (plan.currentPointer.kind !== 'codex-current-rollout-v1'
+      || !['available', 'missing', 'unavailable', 'not-needed', 'test-override'].includes(plan.currentPointer.status)
+      || typeof plan.currentPointer.sourceFile !== 'string' || plan.currentPointer.sourceFile.length > 32768
+      || !Array.isArray(plan.unselectedSourceFiles) || plan.unselectedSourceFiles.length > rolloutHistory.MAX_ARTIFACTS_PER_HISTORY
+      || plan.unselectedSourceFiles.some((file) => typeof file !== 'string' || file.length > 32768
+        || !codexRolloutStorage.isHistoryRelativePath(index.sessionsRoot, file))) throw new Error('Codex head-selection evidence is invalid');
+  if (plan.currentPointer.entry) {
+    requireExactCodexKeys(plan.currentPointer.entry, ['sessionId', 'rolloutPath', 'status'], 'Codex copied pointer entry');
+    if (plan.currentPointer.entry.sessionId !== indexedSession.id || !['valid', 'absent'].includes(plan.currentPointer.entry.status)
+        || (plan.currentPointer.entry.status === 'valid' && (typeof plan.currentPointer.entry.rolloutPath !== 'string'
+          || !isPathInsideOrSame(plan.currentPointer.entry.rolloutPath, index.sessionsRoot)))
+        || plan.currentPointer.entry.status === 'absent' && plan.currentPointer.entry.rolloutPath !== null) throw new Error('Codex head pointer ownership is invalid');
+    if (plan.currentPointer.entry.status === 'valid'
+        && normalizeFsPath(codexRolloutStorage.logicalRolloutPath(plan.currentPointer.entry.rolloutPath))
+          !== normalizeFsPath(path.resolve(index.sessionsRoot, plan.headSourceFile))) throw new Error('Codex copied current pointer does not match selected head');
+  }
+  if (plan.headSelection === 'state-pointer' && plan.currentPointer.entry?.status !== 'valid') throw new Error('Codex state-backed head lacks a copied valid pointer');
+  let bytes = 0;
+  let rows = 0;
+  const files = new Set();
+  for (const [position, snapshot] of snapshots.entries()) {
+    requireExactCodexKeys(snapshot, ['sourceFile', 'sessionId', 'rolloutId', 'startOrdinal', 'contentStartOrdinal',
+      'endOrdinalExclusive', 'acceptedBytes', 'recordCount', 'digest', 'fileIdentity', 'compression'], 'Codex history source snapshot');
+    const identity = rolloutHistory.parseRolloutArtifactIdentity(snapshot.sourceFile);
+    requireExactCodexKeys(snapshot.fileIdentity, snapshot.compression === 'zstd' ? ['device', 'inode', 'compression'] : ['device', 'inode'], 'Codex history physical file identity');
+    if (!identity || identity.rolloutId !== snapshot.rolloutId || identity.threadId !== snapshot.sessionId
+        || files.has(snapshot.sourceFile) || path.isAbsolute(snapshot.sourceFile)
+        || !codexRolloutStorage.isHistoryRelativePath(index.sessionsRoot, snapshot.sourceFile)
+        || !Number.isSafeInteger(snapshot.recordCount) || snapshot.recordCount < 1
+        || !Number.isSafeInteger(snapshot.acceptedBytes) || snapshot.acceptedBytes < 1
+        || snapshot.contentStartOrdinal !== snapshot.startOrdinal + 1
+        || !/^[A-Za-z0-9_-]{43}$/.test(snapshot.digest)
+        || !['none', 'zstd'].includes(snapshot.compression)
+        || !hasExpectedSourceIdentityShape(snapshot.fileIdentity)) throw new Error('Codex history segment is invalid');
+    rolloutHistory.validateHistorySegmentBoundary(snapshot, snapshot.recordCount, snapshot.acceptedBytes);
+    if (position === 0 && snapshot.startOrdinal !== 0
+        || position > 0 && snapshot.startOrdinal !== snapshots[position - 1].endOrdinalExclusive
+        || position < snapshots.length - 1 && snapshot.endOrdinalExclusive == null
+        || position === snapshots.length - 1 && snapshot.endOrdinalExclusive != null) throw new Error('Codex history ordinals are invalid');
+    const planned = plan.segments[position];
+    requireExactCodexKeys(planned, ['sourceFile', 'sessionId', 'rolloutId', 'startOrdinal', 'contentStartOrdinal',
+      'endOrdinalExclusive', 'acceptedBytes'], 'Codex history planned segment');
+    if (!Object.entries(planned).every(([key, value]) => isDeepStrictEqual(value, snapshot[key]))) throw new Error('Codex history plan and snapshots differ');
+    const entry = dependencySet.entries[position];
+    if (entry.role !== (position === snapshots.length - 1 ? 'primary_transcript' : 'history_transcript')
+        || entry.pathIdentity !== snapshot.sourceFile || entry.existence !== 'present' || entry.kind !== 'file'
+        || entry.policy !== 'accepted_prefix' || entry.acceptedBytes !== snapshot.acceptedBytes
+        || entry.lineCount !== snapshot.recordCount || entry.digest !== snapshot.digest
+        || entry.directoryEntries.length !== 0 || !isDeepStrictEqual(entry.evidence, { fileIdentity: snapshot.fileIdentity })) throw new Error('Codex history dependency is invalid');
+    files.add(snapshot.sourceFile);
+    bytes += snapshot.acceptedBytes; rows += snapshot.recordCount;
+  }
+  const head = snapshots.at(-1);
+  if (!Number.isSafeInteger(bytes) || !Number.isSafeInteger(rows) || bytes !== indexedSession.bytes
+      || rows !== indexedSession.lineCount || rows !== indexedSession.rawEventCount
+      || head.sourceFile !== indexedSession.sourceFile || head.sessionId !== indexedSession.id
+      || head.rolloutId !== plan.headRolloutId) throw new Error('Codex history totals or head identity are invalid');
+  const expectedDependencyId = `codex-dependency:${hashCodexMaterializationValue(dependencySet.entries)}`;
+  const expectedSnapshotId = `codex-snapshot:${hashCodexMaterializationValue({ dependencySet, payload })}`;
+  if (dependencySet.id !== expectedDependencyId || descriptor.dependencySetId !== expectedDependencyId
+      || descriptor.sourceSnapshotId !== expectedSnapshotId) throw new Error('Codex history snapshot identity is invalid');
+  // Retain the existing closed metadata/relationship/file-identity checks by
+  // applying the ordinary validator to the head's single-file projection.
+  const ordinaryPayload = Object.fromEntries(['sourceFile', 'rawSegments', 'copiedPrefixCount', 'copiedPrefixDigest', 'relationship'].map((key) => [key, payload[key]]));
+  const ordinaryEntries = [dependencySet.entries[snapshots.length - 1], dependencySet.entries.at(-1)];
+  const ordinarySet = { ...dependencySet, entries: ordinaryEntries, id: `codex-dependency:${hashCodexMaterializationValue(ordinaryEntries)}` };
+  const ordinaryDescriptor = { ...descriptor, payload: ordinaryPayload, dependencySetId: ordinarySet.id,
+    sourceSnapshotId: `codex-snapshot:${hashCodexMaterializationValue({ dependencySet: ordinarySet, payload: ordinaryPayload })}` };
+  validateCodexMaterializationDescriptor({ materializationContext: index,
+    indexedSession: { ...indexedSession, bytes: head.acceptedBytes, lineCount: head.recordCount },
+    descriptor: ordinaryDescriptor, dependencySet: ordinarySet });
+}
+
 function validateCodexMaterializationDescriptor({
   materializationContext,
   indexedSession,
@@ -6877,6 +7361,10 @@ function validateCodexMaterializationDescriptor({
   dependencySet,
 }) {
   const index = materializationContext;
+  if (descriptor.payload?.kind === 'rollout-history-v1') {
+    validateCodexHistoryMaterializationDescriptor(index, indexedSession, descriptor, dependencySet);
+    return;
+  }
   requireExactCodexKeys(
     descriptor.payload,
     ['sourceFile', 'rawSegments', 'copiedPrefixCount', 'copiedPrefixDigest', 'relationship'],
@@ -7041,6 +7529,12 @@ function validateCodexLegacyRawOwnerIndex({ sessionIds: ownedSessionIds, session
   }
 }
 
+function legacyRawSessionFacts(indexedSession) {
+  if (indexedSession.materializationDescriptor?.payload?.kind !== 'rollout-history-v1') return {};
+  return { sourceFileBounds: indexedSession.materializationDescriptor.payload.historySnapshots
+    .map((snapshot) => [snapshot.sourceFile, snapshot.acceptedBytes]) };
+}
+
 async function validateCodexLegacyRawOwnerIndexForCommit(args) {
   if (args.legacyRawOwners.schemaVersion === 2) {
     await codexLegacyRawOwners.validateCodexV2ForCommit(
@@ -7066,9 +7560,11 @@ function validateCodexMaterializedPrivateState({ indexedSession, session }) {
       let continuationSeen = false;
       for (const [index, raw] of session.rawEvents.entries()) {
         if (index === 0 && raw.subagentInherited === true) throw new Error('Subagent metadata cannot be inherited');
-        if (index > 0 && raw.subagentInherited !== true) continuationSeen = true;
+        const historyMetadata = indexedSession.materializationDescriptor?.payload?.kind === 'rollout-history-v1'
+          && isOwnedCodexHistoryMetadata(session, raw, indexedSession.materializationDescriptor.payload.historySnapshots);
+        if (index > 0 && raw.subagentInherited !== true && !historyMetadata) continuationSeen = true;
         if (continuationSeen && raw.subagentInherited === true) throw new Error('Inherited subagent context must be a prefix');
-        const expected = index === 0 ? 'fork_metadata' : raw.subagentInherited === true ? 'inherited_context' : 'continuation';
+        const expected = index === 0 || historyMetadata ? 'fork_metadata' : raw.subagentInherited === true ? 'inherited_context' : 'continuation';
         if (rawSegments.get(raw.rawId) !== expected) throw new Error('Invalid explicit subagent Raw ownership');
       }
       return;
@@ -7125,12 +7621,15 @@ const {
 async function readRawLine(index, relFile, lineNumber, options = {}) {
   let descriptor;
   try {
-    descriptor = await codexRolloutStorage.resolveRolloutArtifact(index.sessionsRoot, relFile);
+    descriptor = await codexRolloutStorage.resolveRolloutArtifact(index.sessionsRoot, relFile, {
+      allowArchivedHistory: index.sessions.some((session) => (session._historySnapshots
+        || session.materializationDescriptor?.payload?.historySnapshots || []).some((entry) => entry.sourceFile === relFile)),
+    });
   } catch (error) {
     if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
     throw error;
   }
-  if (!isPathInsideOrSame(descriptor.logicalPath, index.sessionsRoot)) return null;
+  if (!codexRolloutStorage.isHistoryRelativePath(index.sessionsRoot, relFile)) return null;
   const row = await codexRolloutStorage.readLogicalLine(descriptor, lineNumber, options);
   if (!row) return null;
   return { file: relFile, line: lineNumber, raw: row.line, parsed: safeJsonParse(row.line) };
@@ -7144,7 +7643,7 @@ function indexedSourceStaleError() {
   return error;
 }
 
-function validateIndexedCodexRaw(session, raw, sessionRawIds) {
+function validateIndexedCodexRaw(session, raw, sessionRawIds, historySources = null) {
   const expectedLocator = codexSourceLocator(raw?.source);
   const locator = raw?.sourceLocator;
   if (!raw
@@ -7156,7 +7655,8 @@ function validateIndexedCodexRaw(session, raw, sessionRawIds) {
       || !Number.isInteger(raw.source?.line)
       || raw.source.line < 1
       || !raw.sourceLineDigest
-      || (session.sourceFile && normalizeFsPath(raw.source.file) !== normalizeFsPath(session.sourceFile))) {
+      || (historySources ? !historySources.has(normalizeFsPath(raw.source.file))
+        : session.sourceFile && normalizeFsPath(raw.source.file) !== normalizeFsPath(session.sourceFile))) {
     throw indexedSourceStaleError();
   }
 }
@@ -7166,9 +7666,13 @@ async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, opt
   throwIfAborted(signal);
   const groups = new Map();
   const sessionRawIds = new Set((session.rawEvents || []).map((raw) => raw.rawId));
+  const owner = index.sessionsById?.get(session.id);
+  const historySnapshots = owner?.materializationDescriptor?.payload?.kind === 'rollout-history-v1'
+    ? owner.materializationDescriptor.payload.historySnapshots : session._historySnapshots;
+  const historySources = historySnapshots ? new Map(historySnapshots.map((snapshot) => [normalizeFsPath(snapshot.sourceFile), snapshot])) : null;
   for (const raw of raws || []) {
     throwIfAborted(signal);
-    validateIndexedCodexRaw(session, raw, sessionRawIds);
+    validateIndexedCodexRaw(session, raw, sessionRawIds, historySources);
     const relFile = raw.source.file;
     if (!groups.has(relFile)) groups.set(relFile, new Map());
     const lines = groups.get(relFile);
@@ -7183,19 +7687,21 @@ async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, opt
   const dependencySet = index.materializationDependencies?.get(
     indexedOwner?.materializationDescriptor?.dependencySetId,
   );
-  const transcriptEntry = dependencySet?.entries?.[0];
   for (const [relFile, expectedLines] of groups) {
+    const transcriptEntry = dependencySet?.entries?.find((entry) => ['primary_transcript', 'history_transcript'].includes(entry.role)
+      && normalizeFsPath(entry.pathIdentity) === normalizeFsPath(relFile));
     throwIfAborted(signal);
     let descriptor;
     try {
       descriptor = await codexRolloutStorage.resolveRolloutArtifact(index.sessionsRoot, relFile, {
         compression: transcriptEntry?.evidence?.fileIdentity?.compression,
+        allowArchivedHistory: Boolean(historySources?.has(normalizeFsPath(relFile))),
       });
     } catch (error) {
       if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') throw indexedSourceStaleError();
       throw error;
     }
-    if (!isPathInsideOrSame(descriptor.logicalPath, index.sessionsRoot)) throw indexedSourceStaleError();
+    if (!codexRolloutStorage.isHistoryRelativePath(index.sessionsRoot, relFile)) throw indexedSourceStaleError();
     await options.onFileOpen?.(relFile);
     throwIfAborted(signal);
     let maxLine = 0;
@@ -7302,6 +7808,8 @@ async function hydrateCodexRawEvents(index, session, raws, options = {}) {
     return {
       ...residentRaw,
       ...hydratedRaw,
+      rawId: residentRaw.rawId,
+      line: residentRaw.line,
       sourceLineDigest: residentRaw.sourceLineDigest,
     };
   });
@@ -7515,6 +8023,7 @@ module.exports = {
   normalizeCodeModeRequest,
   materializeCodexSession,
   materializedPrivateFields: CODEX_MATERIALIZATION_PRIVATE_FIELDS,
+  legacyRawSessionFacts,
   query: codexSearch,
   validateCodexLegacyRawOwnerIndex,
   validateCodexLegacyRawOwnerIndexForCommit,

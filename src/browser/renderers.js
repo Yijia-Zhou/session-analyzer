@@ -223,7 +223,7 @@
   }
 
   function renderTerminal(section) {
-    const stream = section.stream === 'stderr' ? 'stderr' : 'stdout';
+    const stream = ['stderr', 'output'].includes(section.stream) ? section.stream : 'stdout';
     const language = section.language || 'text';
     const title = section.title || stream;
     return `<section class="eventSection"><div class="codeFence terminalBlock ${stream}"><div class="codeFenceHead"><span>${escapeHtml(title)}</span><code>${escapeHtml(language)}</code></div><pre><code class="language-${escapeHtml(language)}">${escapeHtml(section.text || '')}</code></pre></div></section>`;
@@ -237,12 +237,12 @@
 
   function isTerminalOutputSection(section) {
     return section?.type === 'terminal'
-      && ['stdout', 'stderr'].includes(section.stream)
+      && ['stdout', 'stderr', 'output'].includes(section.stream)
       && (section.purpose === 'result' || section.purpose === undefined);
   }
 
   function renderCommandRunSegment(section, role) {
-    const stream = section.stream === 'stderr' ? 'stderr' : 'stdout';
+    const stream = ['stderr', 'output'].includes(section.stream) ? section.stream : 'stdout';
     const language = section.language || 'text';
     const title = section.title || (role === 'command' ? 'Command' : stream);
     const source = role === 'command' ? section.code : section.text;

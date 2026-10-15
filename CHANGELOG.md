@@ -4,9 +4,17 @@
 
 ### English
 
+- Read Codex revert histories across physical rollout files as one logical session, using explicit prefix boundaries and read-only current-path evidence; preserve physical Raw references and report unresolved histories.
+
+- Clarify Codex 0.162 combined output and recorded truncation evidence, distinguish requested sub-agent settings from recorded startup settings, and summarize additional tool declarations without counting them as executions.
+
 - Skip browser CI for narrowly classified documentation-only pull requests while retaining Node and package checks; execute publish-workflow release checks once through the guarded directory dry-run.
 
 ### 中文
+
+- 将跨物理 rollout 文件的 Codex 回退历史按一个逻辑会话读取，使用显式前缀边界与只读当前路径依据，保留物理 Raw 引用并报告无法解析的历史。
+
+- 明确 Codex 0.162 的合并输出与已记录截断证据，区分子 agent 请求设置和已记录启动设置，并摘要新增工具声明而不计为执行。
 
 - 严格分类的纯文档 PR 可跳过 browser CI，保留 Node 与 package 检查；发布 workflow 通过目录 guarded dry-run 执行一次发布检查，消除重复运行。
 
