@@ -60,6 +60,8 @@ const allowedZhPhrases = [
   'JS REPL',
 ];
 const allowedZhTermsByPath = new Map([
+  ['ui.turnLineage', new Set(['turn'])],
+  ['ui.lineageCurrent', new Set(['turn'])],
   ['section.summary is compatibility-only evidence. realtime_active does not identify an audio session.', new Set(['summary', 'realtime_active'])],
   ['ui.sourceZstdUnavailable', new Set(['node', 'zstd'])],
   ['foldingCondition.codeModeScriptOperation.1', new Set(['code', 'mode'])],

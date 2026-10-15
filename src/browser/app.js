@@ -3561,6 +3561,8 @@ function renderInspectorDetail(event) {
     const terminalDirectoryTitles = ['Follow-up terminal requests', 'Associated terminal requests']
       .map((title) => i18n.sectionTitle(title, state.locale));
     const leading = supplementalSections.filter((section) => (
+      section.type === 'turn_lineage'
+      ||
       (section.type === 'collaboration' && section.purpose === 'traceability')
       || (section.type === 'notice' && section.purpose === 'content' && section.hideTitle === true)
       || (terminalDirectoryTitles.includes(section.title) && ['event_refs', 'notice'].includes(section.type))
@@ -6049,7 +6051,7 @@ function captureCollaborationAction(button) {
   const header = el.sessionHeader.contains(button);
   const owner = header ? el.sessionHeader : detail ? el.detail : button.closest('.event[data-event-id]');
   if (!button.dataset.openCollaborationSession) {
-    const attributes = ['data-file-activity', 'data-target-event-id', 'data-target-layer', 'data-event-ref-id', 'data-reading-session'];
+    const attributes = ['data-turn-lineage', 'data-lineage-session', 'data-lineage-event', 'data-file-activity', 'data-target-event-id', 'data-target-layer', 'data-event-ref-id', 'data-reading-session'];
     const selector = attributes.filter((name) => button.hasAttribute(name))
       .map((name) => `[${name}="${CSS.escape(button.getAttribute(name))}"]`).join('');
     return { detail, header, eventId: detail ? state.detailView?.eventId || '' : owner?.dataset.eventId || '',
@@ -6208,6 +6210,13 @@ function openFileActivity(button) {
 }
 
 function handleReadingAction(event) {
+  const lineage = event.target.closest('[data-turn-lineage]');
+  if (lineage) {
+    event.preventDefault();
+    event.stopPropagation();
+    openTurnLineage(lineage).catch(showError);
+    return true;
+  }
   const directory = event.target.closest('[data-patch-file-index]');
   const file = event.target.closest('[data-file-activity]');
   const ref = event.target.closest('[data-target-event-id], [data-event-ref-id]');
@@ -6271,6 +6280,37 @@ function captureReadingPosition(button) {
     headerOpenDetails: [...el.sessionHeader.querySelectorAll('details')].map((detail) => detail.open),
     navigationCategoryId: state.navigationCategoryId, navigationCategoryManualId: state.navigationCategoryManualId,
   };
+}
+
+async function openTurnLineage(button) {
+  if (state.searchScope !== 'session') return false;
+  if (button.dataset.navigationSource !== state.sourceKind
+      || !sameProjectRoot(button.dataset.navigationProject, state.repoRoot)
+      || Number(button.dataset.navigationRevision) !== state.indexRevision) throw new Error(t('readingTargetUnavailable'));
+  const position = captureReadingPosition(button);
+  const ownerEventId = el.detail.contains(button) ? state.detailView.eventId : button.closest('.event[data-event-id]')?.dataset.eventId;
+  const navigationId = ++state.readingNavigationId;
+  const intent = state.eventSelectionIntentId;
+  const context = timelineSearchSurfaceContextKey();
+  const presentation = state.mainPresentationId;
+  const mobileView = state.mobileView;
+  const current = () => navigationId === state.readingNavigationId && intent === state.eventSelectionIntentId
+    && context === timelineSearchSurfaceContextKey() && presentation === state.mainPresentationId && mobileView === state.mobileView
+    && position.scope === readingScopeKey() && position.sessionId === state.selectedSessionId
+    && position.searchQuery === state.searchQuery && position.layerId === activeLayerId()
+    && JSON.stringify(position.searchFilters) === JSON.stringify(state.searchFilters);
+  const params = new URLSearchParams({ relation: button.dataset.turnLineage,
+    indexRevision: button.dataset.navigationRevision, source: state.sourceKind, repoRoot: state.repoRoot });
+  try {
+    const target = await api(`/api/sessions/${encodeURIComponent(position.sessionId)}/events/${encodeURIComponent(ownerEventId)}/turn-lineage?${params}`);
+    if (!current()) return false;
+    if (target.sessionId !== button.dataset.lineageSession || target.eventId !== button.dataset.lineageEvent
+        || target.indexRevision !== state.indexRevision) throw new Error(t('readingTargetUnavailable'));
+    return openReadingEvent({ ...target, id: target.eventId }, button, position);
+  } catch (error) {
+    if (!current()) return false;
+    throw new Error(t('readingTargetUnavailable'), { cause: error });
+  }
 }
 
 async function openCollaborationSession(button) {

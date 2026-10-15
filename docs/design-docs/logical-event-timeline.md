@@ -1,5 +1,7 @@
 # Logical Event Timeline / 逻辑事件时间线
 
+Codex event details expose independently evidenced direct-parent and root-turn relationships through a frozen adapter index and snapshot-bound reading navigation. Field admission, the pinned source/writer matrix, ambiguity and ownership rules are specified in [Codex turn relationships](codex-turn-lineage.md). This adds no Main events or accounting semantics. / Codex 事件详情通过冻结的 adapter 索引及绑定快照的阅读导航，展示有独立依据的直接父 turn 与根归属。字段准入、固定源码／writer 矩阵、歧义及归属规则见所列设计；不新增 Main 事件或核算语义。
+
 Codex revert histories now separate stable logical Session identity from physical rollout identity and compose verified prefix chains. Current-path selection, per-file snapshots, Raw ownership and incomplete-history diagnostics are specified in [rollout history chains](codex-rollout-history-chains.md). / Codex 回退历史现区分稳定逻辑会话身份与物理 rollout 身份，并组合已验证前缀链。当前路径选择、逐文件快照、Raw 归属及不完整历史诊断见[rollout 历史链](codex-rollout-history-chains.md)。
 
 ## Codex persisted output and startup evidence / Codex 持久化输出与启动证据

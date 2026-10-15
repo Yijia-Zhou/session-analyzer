@@ -6110,6 +6110,13 @@ body[data-history-reading] .eventHeader { scroll-margin-top: 8px; }
 @media (max-width: 700px) { .searchSupplementText { max-height: 120px; } }
 .historyExcerpt { position: relative; margin: 8px 0; padding: 10px; background: var(--code-bg); border-radius: 4px; font: 0.78rem/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; }
 .historyHitLine { background: #fff1ad; color: #25210c; }
+.turnLineage { overflow-wrap: anywhere; }
+.turnLineage dl { margin: 0; }
+.turnLineageRelation { padding: 6px 0; }
+.turnLineageRelation dt { font-weight: 600; }
+.turnLineageRelation dd { margin: 4px 0 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.turnLineageRelation details { flex-basis: 100%; }
+.turnLineageRelation details button { display: block; max-width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; margin-top: 4px; }
 .historyMatchPreview { display: flex; gap: 8px; margin-top: 10px; min-width: 0; }
 .historyMatchPreview[hidden] { display: none; }
 .historyMatchPreview > span { color: var(--muted); flex-shrink: 0; }

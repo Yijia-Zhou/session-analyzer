@@ -11,6 +11,8 @@ const url = require('node:url');
 const {
   SOURCE_KIND,
   buildEventDetailForSession,
+  turnLineageForIndex,
+  verifyTurnLineageSnapshotForSession,
   legacyRawLookupCapabilityForIndex,
   legacyRawLookupDiagnosticForIndex,
   materializeSessionForIndex,
@@ -1027,6 +1029,39 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           return;
         }
         sendJson(res, 200, event);
+        return;
+      }
+
+      const lineageMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/events\/([^/]+)\/turn-lineage$/);
+      if (lineageMatch) {
+        if (!requireIndex(state, res)) return;
+        const relation = searchParams.get('relation');
+        if (!['parent', 'root'].includes(relation) || !searchParams.has('indexRevision')) {
+          sendError(res, 400, 'Invalid turn relationship request'); return;
+        }
+        const { value: target } = await withIndexRevisionLease(state, requestAbort.signal, async (capture) => {
+          requireQueryRevision(searchParams.get('indexRevision'), capture.indexRevision);
+          const { index, signal } = capture;
+          if (index.sourceKind !== searchParams.get('source') || index.repoRoot !== searchParams.get('repoRoot')) return null;
+          const ownerId = decodePathSegment(lineageMatch[1]);
+          const eventId = decodePathSegment(lineageMatch[2]);
+          const section = turnLineageForIndex(index, ownerId, eventId, capture.indexRevision);
+          const destination = section?.[relation]?.target;
+          if (!destination) return null;
+          // Revalidate only the two participating Sessions and their physical evidence.
+          const owner = await materializeLeasedSession(capture, index.sessionsById.get(ownerId), state.materializeSession);
+          await verifyTurnLineageSnapshotForSession(index, owner, section[relation].rawRefs, { signal });
+          const ownerEvent = owner.logicalEvents.find((event) => event.id === eventId);
+          if (!ownerEvent || !await state.buildEventDetail(index, owner, eventId, ownerEvent.layer,
+            { locale, signal, indexRevision: capture.indexRevision })) return null;
+          const session = await materializeLeasedSession(capture, index.sessionsById.get(destination.sessionId), state.materializeSession);
+          if (session.id !== owner.id) await verifyTurnLineageSnapshotForSession(index, session, [], { signal });
+          if (!await state.buildEventDetail(index, session, destination.eventId, destination.layer,
+            { locale, signal, indexRevision: capture.indexRevision })) return null;
+          return destination;
+        });
+        if (!target) { sendError(res, 404, 'Turn relationship target unavailable'); return; }
+        sendJson(res, 200, target);
         return;
       }
 
