@@ -49,6 +49,7 @@ const DETAIL_RENDERER_TYPES = Object.freeze([
   'plan_update',
   'web_request',
   'collaboration',
+  'turn_lineage',
   'image_preview',
   'notice',
   'raw_json',
@@ -74,6 +75,7 @@ const SECTION_KEYS_BY_TYPE = Object.freeze({
   plan_update: ['explanationHtml', 'steps'],
   web_request: ['groups', 'options'],
   collaboration: ['action', 'targets', 'fields', 'statuses', 'timedOut', 'messageHtml', 'resultHtml', 'targetLinks'],
+  turn_lineage: ['turnId', 'parent', 'root'],
   image_preview: ['images', 'notice'],
   notice: ['text', 'level'],
   raw_json: ['value', 'expanded'],
@@ -470,6 +472,46 @@ function validateLogicalDetailSectionShape(section, path) {
     case 'web_request':
       validateWebGroups(section.groups, `${path}.groups`);
       validateEntries(section.options, `${path}.options`);
+      break;
+    case 'turn_lineage':
+      assertString(section.turnId, `${path}.turnId`, { nonEmpty: true });
+      if (section.purpose !== 'traceability') throw detailContractError('turn lineage must be traceability', path);
+      for (const name of ['parent', 'root']) {
+        const relation = section[name];
+        assertRecord(relation, `${path}.${name}`);
+        assertAllowedKeys(relation, ['values', 'rawRefs', 'status', 'evidenceTruncated', 'displayName', 'target'], path);
+        assertArray(relation.values, path);
+        if (relation.values.length > 16) throw detailContractError('too many lineage values', path);
+        relation.values.forEach((value) => assertString(value, path, { nonEmpty: true }));
+        assertArray(relation.rawRefs, path);
+        if (relation.rawRefs.length > 32) throw detailContractError('too many lineage references', path);
+        for (const ref of relation.rawRefs) {
+          assertRecord(ref, path);
+          assertAllowedKeys(ref, ['rawId', 'file', 'line', 'sourceLocator', 'sourceRecordType', 'sourceEventType'], path);
+          for (const key of ['rawId', 'file', 'sourceRecordType']) assertString(ref[key], path, { nonEmpty: true });
+          assertString(ref.sourceEventType, path);
+          if (!Number.isSafeInteger(ref.line) || ref.line < 1) throw detailContractError('invalid Raw Reference', path);
+          assertRecord(ref.sourceLocator, path);
+          assertAllowedKeys(ref.sourceLocator, ['type', 'file', 'line'], path);
+          if (ref.sourceLocator.type !== 'jsonl_line' || ref.sourceLocator.file !== ref.file.replace(/\\/g, '/')
+              || ref.sourceLocator.line !== ref.line) throw detailContractError('invalid Raw locator', path);
+        }
+        assertBoolean(relation.evidenceTruncated, path);
+        assertString(relation.displayName, path, { optional: true });
+        if (!['unrecorded', 'conflict', 'invalid', 'self', 'missing', 'ambiguous', 'no_anchor', 'resolved'].includes(relation.status)) throw detailContractError('invalid lineage status', path);
+        if ((relation.status === 'unrecorded') !== (relation.values.length === 0)
+            || (relation.status === 'conflict') !== (relation.values.length > 1)
+            || (relation.status === 'self' && (name !== 'root' || relation.values[0] !== section.turnId))) throw detailContractError('inconsistent lineage status', path);
+        if (relation.status === 'resolved') {
+          const target = relation.target;
+          assertRecord(target, path);
+          assertAllowedKeys(target, ['sourceKind', 'repoRoot', 'indexRevision', 'sessionId', 'turnId', 'eventId', 'layer'], path);
+          for (const key of ['repoRoot', 'sessionId', 'turnId', 'eventId']) assertString(target[key], path, { nonEmpty: true });
+          if (target.sourceKind !== 'codex' || !['main', 'protocol'].includes(target.layer)
+              || !Number.isSafeInteger(target.indexRevision) || target.indexRevision < 0
+              || target.turnId !== relation.values[0]) throw detailContractError('invalid turn target', path);
+        } else if (relation.target !== undefined) throw detailContractError('unresolved navigation target', path);
+      }
       break;
     case 'collaboration':
       if (section.targetLinks !== undefined) {

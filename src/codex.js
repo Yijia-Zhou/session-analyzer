@@ -1,6 +1,7 @@
 'use strict';
 
 const { hashPlainValue } = require('./plain-value-stream');
+const { createTurnLineageBuilder, extractTurnLineageFact, validTurnLineageFact } = require('./codex-turn-lineage');
 
 const {
   backgroundTerminalRequest,
@@ -4594,6 +4595,8 @@ function finalizeSession(session, sessionIndexEntry) {
 }
 
 function extractResidentRawFacts(raw, record) {
+  const lineage = extractTurnLineageFact(record);
+  if (lineage) raw.turnLineageFact = lineage;
   const terminalEvidence = terminalSourceEvidence(record);
   if (terminalEvidence) raw.terminalSourceEvidence = terminalEvidence;
   const payload = record?.payload;
@@ -4683,6 +4686,7 @@ function compactCodexRawEvent(raw) {
   const asyncMessage = asyncMessageMetadata(raw.asyncMessage);
   if (asyncMessage) compact.asyncMessage = asyncMessage;
   if (raw.historyFacts) compact.historyFacts = structuredClone(raw.historyFacts);
+  if (raw.turnLineageFact) compact.turnLineageFact = structuredClone(raw.turnLineageFact);
   if (raw.historyTarget) compact.historyTarget = { ...raw.historyTarget };
   if (raw.subagentInherited === true) compact.subagentInherited = true;
   if (typeof raw.terminalSourceEvidence === 'string') compact.terminalSourceEvidence = raw.terminalSourceEvidence;
@@ -4694,6 +4698,7 @@ function compactCodexRawEvent(raw) {
 }
 
 const COMPACT_RAW_KEYS = new Set([
+  'turnLineageFact',
   'subagentInherited',
   'historyFacts', 'historyTarget',
   'asyncMessage',
@@ -4779,6 +4784,7 @@ function isReusableCompactRaw(raw) {
     && raw.sourceKind === CODEX_SOURCE_KIND
     && (raw.asyncMessage === undefined || isReusableAsyncMessage(raw.asyncMessage))
     && (raw.historyFacts === undefined || validHistoryFacts(raw.historyFacts))
+    && (raw.turnLineageFact === undefined || validTurnLineageFact(raw.turnLineageFact))
     && (raw.historyTarget === undefined || validHistoryTarget(raw.historyTarget))
     && (raw.subagentInherited === undefined || raw.subagentInherited === true)
     && Number.isSafeInteger(raw.line)
@@ -6469,9 +6475,11 @@ async function buildIndex({
 
   throwIfAborted(signal);
   inferCodexMaterializedForks(sessions);
+  const lineageBuilder = createTurnLineageBuilder();
   for (const session of sessions) {
     throwIfAborted(signal);
     finalizeSession(session, sessionIndex.get(session.id));
+    lineageBuilder.addSession(session);
     if (cacheObservationForTests) finalizeCapturedCodexCacheObservation(session);
   }
   throwIfAborted(signal);
@@ -6509,6 +6517,7 @@ async function buildIndex({
     sessions,
     sessionsById,
     legacyRawOwners: buildCodexLegacyRawOwnerIndex(sessions),
+    codexTurnLineage: lineageBuilder.finish(),
     sourceDiagnostics: sourceDiagnostics.summary,
     eventKinds: eventKindCatalog(sessions),
     codeModeRequests: codeModeRequestCatalog(sessions),
@@ -6630,7 +6639,7 @@ async function buildSourceBackedIndex({
     resolvedCodex, signal, onDiagnostic, currentRolloutPathsForTests);
   let selectedPhysicalFileCount = codexSelectedPhysicalFiles(candidates, historyPlans, sessionsRoot).size;
   const discoveredPhysicalFileCount = files.length + (historyPlans.archivedDependencyFileCount || 0);
-  if (!historyPlans.size && await canReuseWholeSourceBackedIndex({
+  if (!historyPlans.size && previousIndex?.codexTurnLineage?.schemaVersion === 1 && await canReuseWholeSourceBackedIndex({
     previousIndex,
     candidates,
     candidateInspections,
@@ -6680,6 +6689,7 @@ async function buildSourceBackedIndex({
       projectQueryStore: previousIndex.projectQueryStore,
       materializationDependencies: previousIndex.materializationDependencies,
       legacyRawOwners: previousIndex.legacyRawOwners,
+      codexTurnLineage: previousIndex.codexTurnLineage,
       sourceDiagnostics: sourceDiagnostics.summary,
       eventKinds: previousIndex.eventKinds,
       codeModeRequests: previousIndex.codeModeRequests,
@@ -6907,6 +6917,7 @@ async function buildSourceBackedIndex({
   const catalogAccumulator = createCodexCatalogAccumulator();
   const materializationDependencies = new Map();
   const indexedSessions = [];
+  const lineageBuilder = createTurnLineageBuilder();
   const sessionsById = new Map();
   let logicalEventCount = 0;
   let rawEventCount = 0;
@@ -7001,6 +7012,7 @@ async function buildSourceBackedIndex({
       });
     }
     const queryProjectionDigest = await queryStoreBuilder.addSessionAsync(session);
+    lineageBuilder.addSession(session);
     await legacyRawOwnerBuilder.observeSession(session, { signal });
     catalogAccumulator.addSession(session);
     const summary = codexSearch.projectSessionMetadata(session).summary;
@@ -7124,6 +7136,7 @@ async function buildSourceBackedIndex({
     sessionsRoot,
     generatedAt: new Date().toISOString(),
     sessions: indexedSessions,
+    codexTurnLineage: lineageBuilder.finish(),
     sessionsById,
     projectQueryStore,
     materializationDependencies,
@@ -7687,9 +7700,27 @@ async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, opt
   const dependencySet = index.materializationDependencies?.get(
     indexedOwner?.materializationDescriptor?.dependencySetId,
   );
+  const transcriptEntries = dependencySet?.entries?.filter((entry) =>
+    ['primary_transcript', 'history_transcript'].includes(entry.role))
+    || (options.verifyAcceptedPrefix ? (historySnapshots || [{
+      sourceFile: session.sourceFile, acceptedBytes: session.bytes,
+      digest: session.sourceFingerprint, fileIdentity: session._sourceIdentity,
+    }]).map((snapshot) => ({
+      pathIdentity: snapshot.sourceFile, acceptedBytes: snapshot.acceptedBytes,
+      digest: snapshot.digest, evidence: { fileIdentity: snapshot.fileIdentity },
+    })) : []);
+  if (options.verifyAcceptedPrefix) {
+    if (!transcriptEntries.length) throw indexedSourceStaleError();
+    // Include every accepted history dependency, even one with no retained Raw rows.
+    for (const entry of transcriptEntries) {
+      if (!Number.isSafeInteger(entry.acceptedBytes) || entry.acceptedBytes < 0
+          || !entry.digest || !entry.evidence?.fileIdentity) throw indexedSourceStaleError();
+      if (!groups.has(entry.pathIdentity)) groups.set(entry.pathIdentity, new Map());
+    }
+  }
   for (const [relFile, expectedLines] of groups) {
-    const transcriptEntry = dependencySet?.entries?.find((entry) => ['primary_transcript', 'history_transcript'].includes(entry.role)
-      && normalizeFsPath(entry.pathIdentity) === normalizeFsPath(relFile));
+    const transcriptEntry = transcriptEntries.find((entry) => normalizeFsPath(entry.pathIdentity) === normalizeFsPath(relFile));
+    if (options.verifyAcceptedPrefix && !transcriptEntry) throw indexedSourceStaleError();
     throwIfAborted(signal);
     let descriptor;
     try {
@@ -7743,13 +7774,13 @@ async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, opt
             });
           }
         }
-        if (current >= maxLine && descriptor.compression === 'none') break;
+        if (current >= maxLine && descriptor.compression === 'none' && !options.verifyAcceptedPrefix) break;
       }
       throwIfAborted(signal);
       if (transcriptEntry) {
         const verifiedStat = await codexRolloutStorage.acquireRolloutStat(descriptor);
         const digest = sourceHash.digest('base64url');
-        if ((descriptor.compression === 'zstd'
+        if (((descriptor.compression === 'zstd' || options.verifyAcceptedPrefix)
               && (sourceBytesRead !== transcriptEntry.acceptedBytes || digest !== transcriptEntry.digest))
             || !codexRolloutIdentityMatches(
               verifiedStat.fileIdentity,
@@ -7813,6 +7844,18 @@ async function hydrateCodexRawEvents(index, session, raws, options = {}) {
       sourceLineDigest: residentRaw.sourceLineDigest,
     };
   });
+}
+
+async function verifyCodexTurnLineageSnapshot(index, session, references = [], options = {}) {
+  const evidence = new Set(references.map((ref) => ref.rawId));
+  const files = new Set();
+  const raws = session.rawEvents.filter((raw) => {
+    const first = !files.has(raw.source.file);
+    files.add(raw.source.file);
+    return first || evidence.has(raw.rawId);
+  });
+  if (references.some((ref) => !raws.some((raw) => raw.rawId === ref.rawId))) throw indexedSourceStaleError();
+  await readIndexedCodexSourceRows(index, session, raws, { ...options, verifyAcceptedPrefix: true });
 }
 
 async function buildHydratedEventDetail(index, session, eventId, layer = 'main', options = {}) {
@@ -7997,6 +8040,7 @@ const __testOnly = Object.freeze({
 });
 
 module.exports = {
+  verifyCodexTurnLineageSnapshot,
   __testOnly,
   buildCodexLegacyRawOwnerIndex,
   buildHydratedEventDetail,

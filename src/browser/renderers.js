@@ -390,6 +390,19 @@
     return `<section class="eventSection"><div class="imagePreviewBlock">${renderSectionTitle(section)}${images ? `<div class="imagePreviewGrid">${images}</div>` : ''}${noticeHtml}</div></section>`;
   }
 
+  function renderTurnLineage(section) {
+    const tr = (key) => i18n.t(locale(), 'ui', key);
+    const rows = ['parent', 'root'].map((name) => {
+      const relation = section[name];
+      const target = relation.target;
+      const identity = relation.values.map((value) => `<code title="${escapeHtml(value)}">${escapeHtml(value.length > 24 ? value.slice(0, 12) + '…' + value.slice(-8) : value)}</code>`).join(', ');
+      const action = target ? `<button type="button" class="smallBtn" data-turn-lineage="${name}" data-navigation-source="${escapeHtml(target.sourceKind)}" data-navigation-project="${escapeHtml(target.repoRoot)}" data-navigation-revision="${target.indexRevision}" data-lineage-session="${escapeHtml(target.sessionId)}" data-lineage-event="${escapeHtml(target.eventId)}">${escapeHtml(tr('lineageGo'))}${target.layer === 'protocol' ? ' · Protocol' : ''}</button>` : '';
+      const evidence = relation.rawRefs.length ? `<details><summary>${escapeHtml(tr('lineageEvidence'))}</summary>${relation.rawRefs.map((ref) => `<button type="button" class="smallBtn" data-target-layer="raw" data-target-event-id="${escapeHtml(ref.rawId)}">${escapeHtml(ref.file)}:${ref.line}</button>`).join('')}${relation.evidenceTruncated ? `<p>${escapeHtml(tr('lineageEvidenceTruncated'))}</p>` : ''}</details>` : '';
+      return `<div class="turnLineageRelation"><dt>${escapeHtml(tr(name === 'parent' ? 'lineageParent' : 'lineageRoot'))}</dt><dd>${relation.displayName ? `<strong>${escapeHtml(relation.displayName)}</strong> ` : ''}${identity} <span>${escapeHtml(tr('lineage_' + relation.status))}</span> ${action}${evidence}</dd></div>`;
+    }).join('');
+    return `<section class="eventSection turnLineage"><h4>${escapeHtml(tr('turnLineage'))}</h4><p>${escapeHtml(tr('lineageCurrent'))}: <code>${escapeHtml(section.turnId)}</code></p><dl>${rows}</dl></section>`;
+  }
+
   function renderNotice(section) {
     const level = section.level || 'info';
     return `<section class="eventSection"><div class="notice ${escapeHtml(level)}">${renderSectionTitle(section)}<p>${escapeHtml(section.text || '')}</p></div></section>`;
@@ -492,6 +505,8 @@
         return renderWebRequest(section);
       case 'collaboration':
         return renderCollaboration(section);
+      case 'turn_lineage':
+        return renderTurnLineage(section);
       case 'image_preview':
         return renderImagePreview(section);
       case 'notice':

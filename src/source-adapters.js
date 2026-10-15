@@ -13,6 +13,7 @@ const deepseekHarness = require('./deepseek-harness');
 const { buildClaudeEventDetail } = require('./claude-detail');
 const { collaborationNavigation } = require('./shared/collaboration-navigation');
 const { detailNavigation } = require('./shared/detail-navigation');
+const { withTurnLineage, turnLineageSection } = require('./codex-turn-lineage');
 const {
   inspectDataProperty,
   validateCanonicalDependencySet,
@@ -1706,7 +1707,7 @@ async function buildEventDetailForSession(index, session, eventId, layer, option
     index, session, conformed, options.indexRevision,
   );
   if (navigable !== conformed) validateStructuredLogicalDetailDto(navigable);
-  const linked = detailNavigation(session, navigable, options.locale);
+  const linked = detailNavigation(session, withTurnLineage(index, session, navigable, options.indexRevision), options.locale);
   validateStructuredLogicalDetailDto(linked);
   return linked;
 }
@@ -1835,7 +1836,19 @@ async function readLegacyRawLineForSession(index, materializedSession, owner, ad
   }, options);
 }
 
+function turnLineageForIndex(index, sessionId, eventId, indexRevision) {
+  return index.sourceKind === SOURCE_KIND.CODEX ? turnLineageSection(index, sessionId, eventId, indexRevision) : null;
+}
+
+async function verifyTurnLineageSnapshotForSession(index, session, references, options) {
+  if (index.sourceKind === SOURCE_KIND.CODEX && session.sourceKind === SOURCE_KIND.CODEX) {
+    await codex.verifyCodexTurnLineageSnapshot(index, session, references, options);
+  }
+}
+
 module.exports = {
+  turnLineageForIndex,
+  verifyTurnLineageSnapshotForSession,
   SOURCE_KIND,
   adapterForSession,
   buildEventDetailForSession,

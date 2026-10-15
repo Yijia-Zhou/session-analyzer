@@ -439,7 +439,7 @@ test('all registered adapters satisfy one source-neutral detail and Raw readback
     await t.test(fixture.kind, () => assertAdapterIndexConforms(
       fixture.index,
       fixture.kind === 'codex'
-        ? ['content', 'request', 'result', 'context', 'fallback']
+        ? ['content', 'request', 'result', 'context', 'traceability', 'fallback']
         : (fixture.kind === 'deepseek-harness'
           ? ['content', 'request', 'result', 'context', 'traceability']
           : ['content', 'request', 'result', 'context']),
