@@ -78,8 +78,22 @@ async function openDetail({ page, url, search }, query, width, presentation, loc
   const hit = await search(query);
   assert.ok(hit, `synthetic search hit for ${query}`);
   await page.goto(`${url}/#ref=${encodeURIComponent(hit.ref)}`);
-  await page.locator('#detail .recordedConfiguration').waitFor({ state: 'attached' });
-  if (locale !== 'en') await page.locator('#localeSelect').selectOption(locale, { force: true });
+  // Hash navigation can leave the previous session's detail attached while resolving.
+  const waitForTarget = (title = null) => page.waitForFunction(({ sessionId, eventId, title }) => {
+    const session = document.querySelector('#sessionList .sessionItem.active');
+    const selected = document.querySelector('#timeline article.selected');
+    const configuration = document.querySelector('#detail .recordedConfiguration');
+    return session?.dataset.sessionId === sessionId
+      && selected?.dataset.eventId === eventId
+      && Boolean(configuration)
+      && (title === null || configuration.querySelector('.configurationTitle')?.textContent === title);
+  }, { sessionId: hit.sessionId, eventId: hit.eventId, title });
+  await waitForTarget();
+  if (locale !== 'en') {
+    await page.locator('#localeSelect').selectOption(locale, { force: true });
+    // Locale changes asynchronously reopen the evidence before subsequent input is safe.
+    await waitForTarget('已记录配置');
+  }
   if (width < 760) await page.locator('button[data-mobile-view="events"]').click();
   if (presentation === 'trajectory') await page.locator('button[data-main-presentation="trajectory"]').click();
   if (width < 760) await page.getByRole('button', { name: locale === 'en' ? 'Detail' : '详情', exact: true }).click();
