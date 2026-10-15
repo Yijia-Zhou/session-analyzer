@@ -21,6 +21,23 @@ Status: implementation, local validation and hosted full-scope Actions acceptanc
 - PASS: `npm run build:check`, YAML parsing of both changed workflows using the existing Playwright-bundled parser, local documentation references and `git diff --check`. No dependency or generated-asset change. / PASS：生成资产检查、使用现有 Playwright 内置 parser 解析两份 workflow YAML、本地文档引用与 diff 检查；未变更依赖或生成资产。
 - Hosted full-scope acceptance is recorded above; document-only PR skip acceptance remains open. No timing reduction is claimed from local simulation. / Hosted 全量验收已记录于上；纯文档 PR 跳过验收仍待完成。不将本地模拟宣称为实测耗时改善。
 
+## Hosted acceptance audit, 2026-10-15 / 托管验收核查，2026-10-15
+
+Read-only GitHub API inspection of `ci.yml` runs with `event=pull_request` and `created>=2026-10-05` returned six runs (total 6, returned 6; no further page). The latest attempt's jobs were inspected for every run. Each had a successful Browser job with an actually executed, successful `npm run test:browser` step, plus successful Node/package jobs and aggregate `ci`. None supplies the missing documents-only browser-skip acceptance. / 只读查询 GitHub API 中所列 workflow、事件与日期范围，返回六次运行（总数 6、返回 6，无后续页），逐一检查最新 attempt 的 jobs。每次 Browser job 均成功，且实际执行的 npm run test:browser step 成功；Node／package jobs 和聚合 ci 也均成功。没有一次能补齐纯文档 browser 跳过验收。
+
+| Run / 运行 | Head | Latest attempt / 最新轮次 | Browser job / 浏览器任务 | Aggregate / 聚合 |
+| --- | --- | --- | --- | --- |
+| [37258997276](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/37258997276), docs PR #80 | `4ff2d594efe9ef82cae985ee86de619a80d25bde` | 2 | Executed, success / 已执行且成功 | success |
+| [37490597280](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/37490597280), history retrieval | `5d673a45d0b9484c2e2d25b1fd9a7311dbea7459` | 2 | Executed, success / 已执行且成功 | success |
+| [38495160753](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/38495160753), history evidence | `f6dbeab5b78f9d3e98e83a687250ea4350942af1` | 1 | Executed, success / 已执行且成功 | success |
+| [38500257202](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/38500257202), history evidence | `84a309b3c113023fab01f720e1b78147533fea0c` | 1 | Executed, success / 已执行且成功 | success |
+| [38506917881](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/38506917881), history evidence | `e9d49bc9d7bcc567673da2848d919775a6e9b2e4` | 1 | Executed, success / 已执行且成功 | success |
+| [38553789360](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/38553789360), history evidence | `619fc38a52e264f110bf41e7ab53086a0adf595d` | 1 | Executed, success / 已执行且成功 | success |
+
+PR #80 is a documentation change, but its head predates implementation `8a67e52`: local ancestry inspection confirms `4ff2d594...` is an ancestor of that implementation, not the reverse; its hosted run has no scope-classification job. Its passing browser retry therefore cannot validate the new skip path. / PR #80 虽是文档变更，但其 head 早于实现 8a67e52：本地祖先检查确认上述 4ff2d594 为实现提交的祖先，反向不成立；该 hosted run 没有范围分类 job。因此它通过的 browser 重试不能验证新的跳过路径。
+
+Disposition: retain this plan in active. Completion still requires a real PR against a base containing the optimization, whose entire merge-base diff qualifies as allowed ordinary Markdown; record the classifier's `mode=docs-only` / `browser_required=false`, Browser job `skipped`, all three Node and both package jobs successful, and aggregate `ci=success`, with exact head/base/run identities. A documentation commit on a PR that also contains implementation changes does not qualify, and a manual dispatch intentionally remains full scope. This audit created no PR, push, CI dispatch or rerun and did not repeat local tests for unchanged implementation. / 处理结论：计划继续保留 active。完成仍需一个以已包含该优化的分支为 base 的真实 PR，完整 merge-base diff 均符合普通 Markdown 白名单；记录分类结果 mode=docs-only／browser_required=false、Browser job skipped、三项 Node 与两项 package jobs 成功，以及聚合 ci=success，并固定 head／base／run 身份。含实现变更的 PR 上追加一个文档提交并不符合条件，手动 dispatch 按设计仍为全量。本次核查未创建 PR、推送、触发或重跑 CI，也未对未变实现重复本地测试。
+
 ## References / 引用
 
 - [Development validation](../../development.md#validation-scope)
