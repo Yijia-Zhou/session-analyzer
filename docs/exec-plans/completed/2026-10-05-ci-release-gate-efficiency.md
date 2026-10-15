@@ -1,6 +1,6 @@
 # CI and release gate efficiency / CI 与发布 gate 效率
 
-Status: implementation, local validation and hosted full-scope Actions acceptance complete on `v0.3.0-development`; hosted docs-only PR skip acceptance remains pending. Version 0.3.0 is provisional; package version remains 0.2.1. / 状态：已在 `v0.3.0-development` 完成实现、本地验证及 hosted 全量 Actions 验收；纯文档 PR 跳过路径的 hosted 验收仍待完成。0.3.0 为暂定目标；package 版本保持 0.2.1。
+Status: complete; archived on 2026-10-15 after real docs-only PR skip acceptance passed in PR #83 / CI 38694241334. Implementation, local validation and hosted full-scope acceptance were already complete on `v0.3.0-development`. Version 0.3.0 remains provisional; package version remains 0.2.1. / 状态：已完成；PR #83／CI 38694241334 的真实纯文档跳过验收通过后，于 2026-10-15 归档。此前已在 v0.3.0-development 完成实现、本地验证与 hosted 全量验收。0.3.0 仍为暂定目标，package 版本保持 0.2.1。
 
 ## Scope and decisions / 范围与决策
 
@@ -37,6 +37,16 @@ Read-only GitHub API inspection of `ci.yml` runs with `event=pull_request` and `
 PR #80 is a documentation change, but its head predates implementation `8a67e52`: local ancestry inspection confirms `4ff2d594...` is an ancestor of that implementation, not the reverse; its hosted run has no scope-classification job. Its passing browser retry therefore cannot validate the new skip path. / PR #80 虽是文档变更，但其 head 早于实现 8a67e52：本地祖先检查确认上述 4ff2d594 为实现提交的祖先，反向不成立；该 hosted run 没有范围分类 job。因此它通过的 browser 重试不能验证新的跳过路径。
 
 Disposition: retain this plan in active. Completion still requires a real PR against a base containing the optimization, whose entire merge-base diff qualifies as allowed ordinary Markdown; record the classifier's `mode=docs-only` / `browser_required=false`, Browser job `skipped`, all three Node and both package jobs successful, and aggregate `ci=success`, with exact head/base/run identities. A documentation commit on a PR that also contains implementation changes does not qualify, and a manual dispatch intentionally remains full scope. This audit created no PR, push, CI dispatch or rerun and did not repeat local tests for unchanged implementation. / 处理结论：计划继续保留 active。完成仍需一个以已包含该优化的分支为 base 的真实 PR，完整 merge-base diff 均符合普通 Markdown 白名单；记录分类结果 mode=docs-only／browser_required=false、Browser job skipped、三项 Node 与两项 package jobs 成功，以及聚合 ci=success，并固定 head／base／run 身份。含实现变更的 PR 上追加一个文档提交并不符合条件，手动 dispatch 按设计仍为全量。本次核查未创建 PR、推送、触发或重跑 CI，也未对未变实现重复本地测试。
+
+## Completion evidence, 2026-10-15 / 完成依据，2026-10-15
+
+[PR #83](https://github.com/Yijia-Zhou/session-analyzer/pull/83) supplied the missing real PR acceptance. [CI 38694241334, attempt 1](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/38694241334) completed successfully for head `8eb5aba2a187d34f995d02c3f486899a0f7c4a07`, base/merge-base `bc5e80af1f3789e3bb062ecd91517688f69ee377`, and GitHub's tested merge `ed8a7f529842e51d65f1ae822b10355c964add58`. The complete diff contained seven ordinary Markdown paths under `docs/exec-plans/`, counting both sides of moves. / 所列 PR 补齐真实 PR 验收；CI 第 1 轮在上述 head、base／merge-base 及 GitHub 实际测试 merge 上成功完成。完整 diff 包含 docs/exec-plans 下七个普通 Markdown 路径，移动前后两侧分别计数。
+
+- [Scope job 116286975666](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/38694241334/job/116286975666) logged `mode=docs-only`, `browserRequired=false`, `reason=allowlisted-documents`, `changedFiles=7`, and the exact base/head/merge-base above. / 范围分类 job 的日志记录所列分类、原因、路径数及精确身份。
+- [Browser job 116287030656](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/38694241334/job/116287030656) concluded `skipped`. Node 22/Ubuntu, Node 24/Ubuntu, Node 24/Windows and both Ubuntu/Windows package-smoke jobs all concluded `success`. / Browser job 结果为 skipped；三项 Node 和 Ubuntu／Windows 两项 package smoke 均为 success。
+- [Aggregate job 116287654456](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/38694241334/job/116287654456) concluded `success`; its executed log confirms `scope=success mode=docs-only browser_required=false`, `node=success`, `package=success`, and `browser=skipped`. / 聚合 job 为 success，实际执行日志确认所列完整状态组合。
+
+This closes the final acceptance item. Earlier pending statements and the six-run audit preserve their historical state. The plan is archived with reference updates in the debt tracker and release runbook. The runbook is outside the narrow skip allowlist, so the subsequent archive commit requires full CI; the successful skip evidence is explicitly tied to the earlier head above, not claimed for every later PR revision. No measured timing reduction, publication, or release approval change is claimed. / 至此关闭最后验收项，前文待办及六次运行核查保留当时状态。归档同时更新债务跟踪及发布运行手册引用；运行手册不属于狭窄的跳过白名单，因此后续归档提交需要全量 CI。成功跳过的依据明确绑定上述先前 head，不推广为之后每个 PR 修订均跳过；不声称实测耗时改善，也未发布或改变发布审批。
 
 ## References / 引用
 
