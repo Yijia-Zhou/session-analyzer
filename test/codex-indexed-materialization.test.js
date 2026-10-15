@@ -44,11 +44,14 @@ function assertNoReachableCompleteEventGraph(index) {
         `strict Index retained forbidden field ${field}`,
       );
     }
-    assert.equal(
-      Object.hasOwn(value, 'rawId'),
-      false,
-      'strict Index retained a reachable Raw Event',
-    );
+    if (Object.hasOwn(value, 'rawId')) {
+      // Adapter evidence indexes may retain closed Raw References, never Raw Events.
+      assert.deepEqual(Object.keys(value).sort(), ['file', 'line', 'rawId', 'sourceEventType', 'sourceLocator', 'sourceRecordType']);
+      for (const key of ['rawId', 'file', 'sourceRecordType']) assert.equal(typeof value[key], 'string');
+      assert.equal(typeof value.sourceEventType, 'string');
+      assert.ok(Number.isSafeInteger(value.line) && value.line > 0);
+      assert.deepEqual(value.sourceLocator, { type: 'jsonl_line', file: value.file.replace(/\\/g, '/'), line: value.line });
+    }
     assert.equal(
       Object.hasOwn(value, 'rawRefs') && Object.hasOwn(value, 'layer'),
       false,
@@ -66,6 +69,16 @@ function assertNoReachableCompleteEventGraph(index) {
     }
   }
 }
+
+test('strict index graph guard permits closed evidence references but rejects retained event payloads', () => {
+  const ref = { rawId: 's:raw:1', file: 'rollout.jsonl', line: 1, sourceRecordType: 'turn_context', sourceEventType: '',
+    sourceLocator: { type: 'jsonl_line', file: 'rollout.jsonl', line: 1 } };
+  assert.doesNotThrow(() => assertNoReachableCompleteEventGraph({ evidence: [ref] }));
+  for (const leaked of [{ ...ref, parsed: {} }, { ...ref, payload: {} }, { ...ref, output: 'body' },
+    { rawRefs: [ref], layer: 'main' }]) {
+    assert.throws(() => assertNoReachableCompleteEventGraph({ leaked }));
+  }
+});
 
 async function makeSingleSessionFixture(t, options = {}) {
   const codexHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-strict-codex-'));

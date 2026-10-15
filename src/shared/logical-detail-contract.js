@@ -50,6 +50,7 @@ const DETAIL_RENDERER_TYPES = Object.freeze([
   'web_request',
   'collaboration',
   'turn_lineage',
+  'recorded_configuration',
   'image_preview',
   'notice',
   'raw_json',
@@ -76,6 +77,7 @@ const SECTION_KEYS_BY_TYPE = Object.freeze({
   web_request: ['groups', 'options'],
   collaboration: ['action', 'targets', 'fields', 'statuses', 'timedOut', 'messageHtml', 'resultHtml', 'targetLinks'],
   turn_lineage: ['turnId', 'parent', 'root'],
+  recorded_configuration: ['status', 'observations', 'truncated'],
   image_preview: ['images', 'notice'],
   notice: ['text', 'level'],
   raw_json: ['value', 'expanded'],
@@ -473,6 +475,65 @@ function validateLogicalDetailSectionShape(section, path) {
       validateWebGroups(section.groups, `${path}.groups`);
       validateEntries(section.options, `${path}.options`);
       break;
+    case 'recorded_configuration': {
+      if (section.purpose !== 'traceability' || !['recorded', 'mixed'].includes(section.status)) {
+        throw detailContractError('invalid recorded configuration status or purpose', path);
+      }
+      assertBoolean(section.truncated, path);
+      assertArray(section.observations, path);
+      if (!section.observations.length || section.observations.length > 8) throw detailContractError('invalid configuration observation count', path);
+      const field = (value) => {
+        assertRecord(value, path);
+        assertAllowedKeys(value, ['state', 'value'], path);
+        if (!['value', 'missing', 'null', 'invalid'].includes(value.state)) throw detailContractError('invalid configuration field state', path);
+        if (value.state === 'value') {
+          assertString(value.value, path, { nonEmpty: true });
+          if (value.value.length > 512 || value.value.trim() !== value.value) throw detailContractError('invalid configuration value', path);
+        } else if (Object.hasOwn(value, 'value')) throw detailContractError('unknown configuration field has a value', path);
+      };
+      const reference = (ref) => {
+        assertRecord(ref, path);
+        assertAllowedKeys(ref, ['rawId', 'file', 'line', 'sourceLocator', 'sourceRecordType', 'sourceEventType'], path);
+        for (const key of ['rawId', 'file', 'sourceRecordType']) assertString(ref[key], path, { nonEmpty: true });
+        assertString(ref.sourceEventType, path);
+        if (!Number.isSafeInteger(ref.line) || ref.line < 1) throw detailContractError('invalid configuration Raw Reference', path);
+        assertRecord(ref.sourceLocator, path);
+        assertAllowedKeys(ref.sourceLocator, ['type', 'file', 'line'], path);
+        if (ref.sourceLocator.type !== 'jsonl_line' || ref.sourceLocator.file !== ref.file.replace(/\\/g, '/')
+            || ref.sourceLocator.line !== ref.line) throw detailContractError('invalid configuration Raw locator', path);
+      };
+      const sameRef = (a, b) => ['rawId', 'file', 'line', 'sourceRecordType', 'sourceEventType'].every((key) => a[key] === b[key]);
+      const kinds = new Set();
+      for (const observation of section.observations) {
+        assertRecord(observation, path);
+        assertAllowedKeys(observation, ['kind', 'model', 'effort', 'collaboration', 'rawRefs', 'start', 'end', 'endReason'], path);
+        if (!['turn_context', 'thread_settings', 'effort_update'].includes(observation.kind)) throw detailContractError('invalid configuration observation kind', path);
+        if (section.status === 'recorded' && kinds.has(observation.kind)) throw detailContractError('multiple configuration spans must be mixed', path);
+        kinds.add(observation.kind);
+        if (observation.kind === 'effort_update') {
+          if (Object.hasOwn(observation, 'model') || Object.hasOwn(observation, 'collaboration')) throw detailContractError('effort instruction cannot set model configuration', path);
+        } else field(observation.model);
+        field(observation.effort);
+        if (observation.collaboration !== undefined) {
+          assertRecord(observation.collaboration, path);
+          assertAllowedKeys(observation.collaboration, ['model', 'effort'], path);
+          field(observation.collaboration.model); field(observation.collaboration.effort);
+        }
+        reference(observation.start);
+        if (!['next_snapshot', 'next_update', 'compaction', 'turn_boundary', 'ownership_gap', 'snapshot_end'].includes(observation.endReason)) throw detailContractError('invalid configuration boundary', path);
+        if (observation.endReason === 'snapshot_end') {
+          if (Object.hasOwn(observation, 'end')) throw detailContractError('snapshot end cannot invent a closing record', path);
+        } else reference(observation.end);
+        assertArray(observation.rawRefs, path);
+        const expectedRefs = observation.end ? [observation.start, observation.end] : [observation.start];
+        if (observation.rawRefs.length !== expectedRefs.length) throw detailContractError('configuration evidence must match its boundaries', path);
+        observation.rawRefs.forEach((ref, index) => {
+          reference(ref);
+          if (!sameRef(ref, expectedRefs[index])) throw detailContractError('configuration evidence differs from its boundary', path);
+        });
+      }
+      break;
+    }
     case 'turn_lineage':
       assertString(section.turnId, `${path}.turnId`, { nonEmpty: true });
       if (section.purpose !== 'traceability') throw detailContractError('turn lineage must be traceability', path);

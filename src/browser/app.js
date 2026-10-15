@@ -3561,7 +3561,7 @@ function renderInspectorDetail(event) {
     const terminalDirectoryTitles = ['Follow-up terminal requests', 'Associated terminal requests']
       .map((title) => i18n.sectionTitle(title, state.locale));
     const leading = supplementalSections.filter((section) => (
-      section.type === 'turn_lineage'
+      section.type === 'turn_lineage' || section.type === 'recorded_configuration'
       ||
       (section.type === 'collaboration' && section.purpose === 'traceability')
       || (section.type === 'notice' && section.purpose === 'content' && section.hideTitle === true)

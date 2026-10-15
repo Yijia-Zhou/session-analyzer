@@ -403,6 +403,42 @@
     return `<section class="eventSection turnLineage"><h4>${escapeHtml(tr('turnLineage'))}</h4><p>${escapeHtml(tr('lineageCurrent'))}: <code>${escapeHtml(section.turnId)}</code></p><dl>${rows}</dl></section>`;
   }
 
+  function renderRecordedConfiguration(section) {
+    const observations = section.observations || [];
+    function field(value, compact = false) {
+      if (value?.state !== 'value') return `<span class="configurationUnknown">${escapeHtml(tr(`configuration_${value?.state || 'missing'}`))}</span>`;
+      const text = value.value;
+      const preview = compact && text.length > 56 ? `${text.slice(0, 40)}…${text.slice(-12)}` : text;
+      return `<code${compact ? ` title="${escapeHtml(text)}"` : ''}>${escapeHtml(preview)}</code>`;
+    }
+    function values(item, compact = false) {
+      const effortLabel = item.kind === 'turn_context' ? 'configurationContextEffort' : 'configurationEffort';
+      return `${item.model ? `${field(item.model, compact)} <span aria-hidden="true">·</span> ` : ''}<span>${escapeHtml(tr(effortLabel))}: ${field(item.effort, compact)}</span>`;
+    }
+    function evidence(ref, label) {
+      return `<button type="button" class="smallBtn" data-target-layer="raw" data-target-event-id="${escapeHtml(ref.rawId)}" title="${escapeHtml(ref.file)}:${ref.line}">${escapeHtml(tr(label))}</button>`;
+    }
+    let preview;
+    if (section.status === 'mixed') {
+      preview = `<span>${escapeHtml(tr('configurationMixed'))}</span>`;
+    } else {
+      const context = observations.find((item) => item.kind === 'turn_context');
+      const thread = observations.find((item) => item.kind === 'thread_settings');
+      const instruction = observations.find((item) => item.kind === 'effort_update');
+      preview = context ? `<span>${values(context, true)}</span>`
+        : thread ? `<span>${escapeHtml(tr('configuration_thread_settings'))}: ${values(thread, true)}</span>` : '';
+      if (instruction) preview += `<span class="configurationInstruction">${escapeHtml(tr('configuration_effort_update'))}: ${field(instruction.effort, true)}</span>`;
+    }
+    const rows = observations.map((item) => {
+      const collaboration = item.collaboration ? `<div class="configurationCollaboration"><span>${escapeHtml(tr('configurationCollaboration'))}:</span> ${values(item.collaboration)}</div>` : '';
+      const boundary = `<span>${escapeHtml(tr(`configurationEnd_${item.endReason}`))}</span>`;
+      const buttons = evidence(item.start, item.kind === 'effort_update' ? 'configurationInstructionEvidence' : 'configurationSnapshotEvidence')
+        + (item.end ? evidence(item.end, 'configurationBoundaryEvidence') : '');
+      return `<article class="configurationObservation" data-configuration-kind="${escapeHtml(item.kind)}"><h5>${escapeHtml(tr(`configuration_${item.kind}`))}</h5><div class="configurationValues">${values(item)}</div>${collaboration}<div class="configurationEvidence">${boundary}${buttons}</div></article>`;
+    }).join('');
+    return `<section class="eventSection"><details class="recordedConfiguration"><summary><span class="configurationTitle">${escapeHtml(tr('recordedConfiguration'))}</span><span class="configurationPreview">${preview}</span></summary><div class="configurationBody">${rows}<p class="configurationNote">${escapeHtml(tr('configurationNote'))}</p>${section.truncated ? `<p class="configurationNote">${escapeHtml(tr('configurationTruncated'))}</p>` : ''}</div></details></section>`;
+  }
+
   function renderNotice(section) {
     const level = section.level || 'info';
     return `<section class="eventSection"><div class="notice ${escapeHtml(level)}">${renderSectionTitle(section)}<p>${escapeHtml(section.text || '')}</p></div></section>`;
@@ -507,6 +543,8 @@
         return renderCollaboration(section);
       case 'turn_lineage':
         return renderTurnLineage(section);
+      case 'recorded_configuration':
+        return renderRecordedConfiguration(section);
       case 'image_preview':
         return renderImagePreview(section);
       case 'notice':

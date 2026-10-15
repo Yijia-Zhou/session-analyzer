@@ -6117,6 +6117,26 @@ body[data-history-reading] .eventHeader { scroll-margin-top: 8px; }
 .turnLineageRelation dd { margin: 4px 0 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
 .turnLineageRelation details { flex-basis: 100%; }
 .turnLineageRelation details button { display: block; max-width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; margin-top: 4px; }
+.recordedConfiguration { min-width: 0; overflow-wrap: anywhere; font-size: 0.8rem; }
+.recordedConfiguration > summary { cursor: pointer; padding-block: 6px; line-height: 1.6; }
+.recordedConfiguration > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.configurationTitle { font-weight: 600; margin-right: 10px; }
+.configurationPreview { color: var(--muted); }
+.configurationPreview > span { display: inline; }
+.configurationPreview .configurationInstruction { display: block; padding-left: 16px; }
+.recordedConfiguration code { white-space: normal; overflow-wrap: anywhere; font-size: inherit; }
+.configurationBody { margin-top: 4px; padding: 0 0 0 12px; border-left: 2px solid var(--line); }
+.configurationObservation { padding: 8px 0; }
+.configurationObservation + .configurationObservation { border-top: 1px solid var(--line); }
+.configurationObservation h5 { font-size: inherit; margin: 0 0 5px; font-weight: 600; }
+.configurationValues { line-height: 1.6; }
+.configurationUnknown, .configurationCollaboration, .configurationNote { color: var(--muted); }
+.configurationCollaboration { margin-top: 5px; line-height: 1.6; }
+.configurationEvidence { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.configurationEvidence > span { color: var(--muted); margin-right: 4px; }
+.configurationEvidence .smallBtn { min-height: 32px; max-width: 100%; white-space: normal; }
+.configurationNote { margin: 6px 0; font-size: 0.75rem; line-height: 1.5; }
+@media (max-width: 760px) { .configurationEvidence .smallBtn { min-height: 40px; } }
 .historyMatchPreview { display: flex; gap: 8px; margin-top: 10px; min-width: 0; }
 .historyMatchPreview[hidden] { display: none; }
 .historyMatchPreview > span { color: var(--muted); flex-shrink: 0; }

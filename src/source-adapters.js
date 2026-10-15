@@ -14,6 +14,7 @@ const { buildClaudeEventDetail } = require('./claude-detail');
 const { collaborationNavigation } = require('./shared/collaboration-navigation');
 const { detailNavigation } = require('./shared/detail-navigation');
 const { withTurnLineage, turnLineageSection } = require('./codex-turn-lineage');
+const { recordedConfigurationSection, configurationEvidenceReferences } = require('./codex-configuration');
 const {
   inspectDataProperty,
   validateCanonicalDependencySet,
@@ -1707,7 +1708,16 @@ async function buildEventDetailForSession(index, session, eventId, layer, option
     index, session, conformed, options.indexRevision,
   );
   if (navigable !== conformed) validateStructuredLogicalDetailDto(navigable);
-  const linked = detailNavigation(session, withTurnLineage(index, session, navigable, options.indexRevision), options.locale);
+  let inspected = withTurnLineage(index, session, navigable, options.indexRevision);
+  const configuration = recordedConfigurationSection(index, session.id, eventId);
+  if (configuration && inspected) {
+    // Validate only this event's configuration/ownership evidence through the same
+    // bounded source reader as ordinary details, including materialized cache hits.
+    await codex.verifyCodexConfigurationEvidence(index, session,
+      configurationEvidenceReferences(index, session.id, eventId), options);
+    inspected = { ...inspected, inspectorSections: [configuration, ...inspected.inspectorSections] };
+  }
+  const linked = detailNavigation(session, inspected, options.locale);
   validateStructuredLogicalDetailDto(linked);
   return linked;
 }

@@ -1,5 +1,9 @@
 # Session Transcript Analyzer / 会话转录分析器
 
+### Codex recorded configuration inspection / Codex 已记录配置检查
+
+Codex Main/Protocol details include compact recorded-configuration inspection in both locales and Main Presentations. The disclosure is collapsed by default, with a short model/effort summary; expansion reveals separately labeled turn-context snapshots, thread defaults and trusted effort instructions, observation boundaries and Raw evidence. Mixed observations never choose one model arbitrarily. Missing, null and invalid values remain distinct. Evidence links use existing reading return. This inspection does not establish actual per-request consumption, infer missing defaults or aggregate tokens; see [evidence, interval rules and validation](../design-docs/codex-configuration-intervals.md). / Codex Main／Protocol 详情包含紧凑已记录配置检查，覆盖双语与双呈现；默认折叠，仅显示简短模型／effort 摘要，展开后分别标注 turn 上下文快照、线程默认值及可信 effort 指令，并显示观测边界及 Raw 依据。混合观测不任取一个模型；缺失、null、无效值保持区别，依据链接复用阅读返回。本检查不证明实际逐请求消费，不补缺失默认值，不汇总 token；依据、区间规则及验证见所列设计。
+
 ### Turn relationships in event detail / 事件详情中的 Turn 关系
 
 Codex Main/Protocol details show the current turn, recorded direct parent and root attribution when the event has one unambiguous owned turn. Parent/root evidence is independent of Session parentage. Both locales and Timeline/Trajectory provide exact-target navigation and physical Raw evidence; reading return restores the original controls, selection, viewport and action focus. / Codex Main／Protocol 详情在事件具有唯一明确自有 turn 时，显示当前 turn、已记录直接父级及根归属。父根依据独立于 Session 父子关系；双语及 Timeline／Trajectory 均提供精确目标导航、物理 Raw 依据及恢复原控件、选择、视口和操作焦点的阅读返回。

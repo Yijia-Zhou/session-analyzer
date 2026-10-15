@@ -2,6 +2,7 @@
 
 const { hashPlainValue } = require('./plain-value-stream');
 const { createTurnLineageBuilder, extractTurnLineageFact, validTurnLineageFact } = require('./codex-turn-lineage');
+const { createConfigurationBuilder, extractConfigurationFact, validConfigurationFact } = require('./codex-configuration');
 
 const {
   backgroundTerminalRequest,
@@ -4595,6 +4596,8 @@ function finalizeSession(session, sessionIndexEntry) {
 }
 
 function extractResidentRawFacts(raw, record) {
+  const configuration = extractConfigurationFact(record);
+  if (configuration) raw.configurationFact = configuration;
   const lineage = extractTurnLineageFact(record);
   if (lineage) raw.turnLineageFact = lineage;
   const terminalEvidence = terminalSourceEvidence(record);
@@ -4687,6 +4690,7 @@ function compactCodexRawEvent(raw) {
   if (asyncMessage) compact.asyncMessage = asyncMessage;
   if (raw.historyFacts) compact.historyFacts = structuredClone(raw.historyFacts);
   if (raw.turnLineageFact) compact.turnLineageFact = structuredClone(raw.turnLineageFact);
+  if (raw.configurationFact) compact.configurationFact = structuredClone(raw.configurationFact);
   if (raw.historyTarget) compact.historyTarget = { ...raw.historyTarget };
   if (raw.subagentInherited === true) compact.subagentInherited = true;
   if (typeof raw.terminalSourceEvidence === 'string') compact.terminalSourceEvidence = raw.terminalSourceEvidence;
@@ -4698,7 +4702,7 @@ function compactCodexRawEvent(raw) {
 }
 
 const COMPACT_RAW_KEYS = new Set([
-  'turnLineageFact',
+  'turnLineageFact', 'configurationFact',
   'subagentInherited',
   'historyFacts', 'historyTarget',
   'asyncMessage',
@@ -4785,6 +4789,7 @@ function isReusableCompactRaw(raw) {
     && (raw.asyncMessage === undefined || isReusableAsyncMessage(raw.asyncMessage))
     && (raw.historyFacts === undefined || validHistoryFacts(raw.historyFacts))
     && (raw.turnLineageFact === undefined || validTurnLineageFact(raw.turnLineageFact))
+    && (raw.configurationFact === undefined || validConfigurationFact(raw.configurationFact))
     && (raw.historyTarget === undefined || validHistoryTarget(raw.historyTarget))
     && (raw.subagentInherited === undefined || raw.subagentInherited === true)
     && Number.isSafeInteger(raw.line)
@@ -6476,10 +6481,12 @@ async function buildIndex({
   throwIfAborted(signal);
   inferCodexMaterializedForks(sessions);
   const lineageBuilder = createTurnLineageBuilder();
+  const configurationBuilder = createConfigurationBuilder();
   for (const session of sessions) {
     throwIfAborted(signal);
     finalizeSession(session, sessionIndex.get(session.id));
     lineageBuilder.addSession(session);
+    configurationBuilder.addSession(session);
     if (cacheObservationForTests) finalizeCapturedCodexCacheObservation(session);
   }
   throwIfAborted(signal);
@@ -6518,6 +6525,7 @@ async function buildIndex({
     sessionsById,
     legacyRawOwners: buildCodexLegacyRawOwnerIndex(sessions),
     codexTurnLineage: lineageBuilder.finish(),
+    codexConfiguration: configurationBuilder.finish(),
     sourceDiagnostics: sourceDiagnostics.summary,
     eventKinds: eventKindCatalog(sessions),
     codeModeRequests: codeModeRequestCatalog(sessions),
@@ -6639,7 +6647,8 @@ async function buildSourceBackedIndex({
     resolvedCodex, signal, onDiagnostic, currentRolloutPathsForTests);
   let selectedPhysicalFileCount = codexSelectedPhysicalFiles(candidates, historyPlans, sessionsRoot).size;
   const discoveredPhysicalFileCount = files.length + (historyPlans.archivedDependencyFileCount || 0);
-  if (!historyPlans.size && previousIndex?.codexTurnLineage?.schemaVersion === 1 && await canReuseWholeSourceBackedIndex({
+  if (!historyPlans.size && previousIndex?.codexTurnLineage?.schemaVersion === 1
+      && previousIndex?.codexConfiguration?.schemaVersion === 1 && await canReuseWholeSourceBackedIndex({
     previousIndex,
     candidates,
     candidateInspections,
@@ -6690,6 +6699,7 @@ async function buildSourceBackedIndex({
       materializationDependencies: previousIndex.materializationDependencies,
       legacyRawOwners: previousIndex.legacyRawOwners,
       codexTurnLineage: previousIndex.codexTurnLineage,
+      codexConfiguration: previousIndex.codexConfiguration,
       sourceDiagnostics: sourceDiagnostics.summary,
       eventKinds: previousIndex.eventKinds,
       codeModeRequests: previousIndex.codeModeRequests,
@@ -6918,6 +6928,7 @@ async function buildSourceBackedIndex({
   const materializationDependencies = new Map();
   const indexedSessions = [];
   const lineageBuilder = createTurnLineageBuilder();
+  const configurationBuilder = createConfigurationBuilder();
   const sessionsById = new Map();
   let logicalEventCount = 0;
   let rawEventCount = 0;
@@ -7013,6 +7024,7 @@ async function buildSourceBackedIndex({
     }
     const queryProjectionDigest = await queryStoreBuilder.addSessionAsync(session);
     lineageBuilder.addSession(session);
+    configurationBuilder.addSession(session);
     await legacyRawOwnerBuilder.observeSession(session, { signal });
     catalogAccumulator.addSession(session);
     const summary = codexSearch.projectSessionMetadata(session).summary;
@@ -7137,6 +7149,7 @@ async function buildSourceBackedIndex({
     generatedAt: new Date().toISOString(),
     sessions: indexedSessions,
     codexTurnLineage: lineageBuilder.finish(),
+    codexConfiguration: configurationBuilder.finish(),
     sessionsById,
     projectQueryStore,
     materializationDependencies,
@@ -7693,7 +7706,11 @@ async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, opt
     lines.get(raw.source.line).push(raw);
   }
 
-  const rowsByRawId = new Map();
+  // Verification callers need identity/digest coverage only. In particular, a
+  // configuration span can reference many large tool outputs; do not parse or
+  // retain their payloads when the caller will discard them.
+  const checkedRawIds = options.verifyOnly ? new Set() : null;
+  const rowsByRawId = checkedRawIds ? null : new Map();
   const indexedOwner = session.materializationDescriptor
     ? session
     : index.sessionsById?.get(session.id);
@@ -7766,12 +7783,16 @@ async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, opt
           const digest = sourceLineDigest(line);
           for (const raw of expectedRaws) {
             if (digest !== raw.sourceLineDigest) throw indexedSourceStaleError();
-            rowsByRawId.set(raw.rawId, {
-              file: relFile,
-              line: current,
-              raw: line,
-              parsed: safeJsonParse(line),
-            });
+            if (checkedRawIds) {
+              checkedRawIds.add(raw.rawId);
+            } else {
+              rowsByRawId.set(raw.rawId, {
+                file: relFile,
+                line: current,
+                raw: line,
+                parsed: safeJsonParse(line),
+              });
+            }
           }
         }
         if (current >= maxLine && descriptor.compression === 'none' && !options.verifyAcceptedPrefix) break;
@@ -7802,8 +7823,9 @@ async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, opt
     }
   }
 
-  if (rowsByRawId.size !== (raws || []).length) throw indexedSourceStaleError();
-  return rowsByRawId;
+  const result = checkedRawIds || rowsByRawId;
+  if (result.size !== (raws || []).length) throw indexedSourceStaleError();
+  return result;
 }
 
 async function readIndexedCodexSourceRows(index, session, raws, options = {}) {
@@ -7846,6 +7868,14 @@ async function hydrateCodexRawEvents(index, session, raws, options = {}) {
   });
 }
 
+async function verifyCodexConfigurationEvidence(index, session, references = [], options = {}) {
+  const evidence = new Set(references.map((ref) => ref.rawId));
+  const raws = session.rawEvents.filter((raw) => evidence.has(raw.rawId));
+  if (raws.length !== evidence.size) throw indexedSourceStaleError();
+  // Normal detail verifies requested evidence, not the complete accepted prefix.
+  await readIndexedCodexSourceRows(index, session, raws, { ...options, verifyOnly: true });
+}
+
 async function verifyCodexTurnLineageSnapshot(index, session, references = [], options = {}) {
   const evidence = new Set(references.map((ref) => ref.rawId));
   const files = new Set();
@@ -7855,7 +7885,7 @@ async function verifyCodexTurnLineageSnapshot(index, session, references = [], o
     return first || evidence.has(raw.rawId);
   });
   if (references.some((ref) => !raws.some((raw) => raw.rawId === ref.rawId))) throw indexedSourceStaleError();
-  await readIndexedCodexSourceRows(index, session, raws, { ...options, verifyAcceptedPrefix: true });
+  await readIndexedCodexSourceRows(index, session, raws, { ...options, verifyAcceptedPrefix: true, verifyOnly: true });
 }
 
 async function buildHydratedEventDetail(index, session, eventId, layer = 'main', options = {}) {
@@ -8040,6 +8070,7 @@ const __testOnly = Object.freeze({
 });
 
 module.exports = {
+  verifyCodexConfigurationEvidence,
   verifyCodexTurnLineageSnapshot,
   __testOnly,
   buildCodexLegacyRawOwnerIndex,
