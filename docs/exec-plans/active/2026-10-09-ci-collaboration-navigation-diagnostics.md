@@ -18,6 +18,12 @@ Status: instrumentation implemented and locally validated; hosted failure captur
 
 ## Hosted follow-up / Hosted 后续
 
+### Local evidence captured on 2026-10-13 / 2026-10-13 本地捕获依据
+
+During history-open regression validation, the keyboard test failed once: the Trajectory Inspector target was focused, then a late `timeline?q=recorded+result&limit=150` response replaced its article; focus moved to BODY and Enter targeted BODY. The captured `networkidle` wait had returned before that debounced request started. Synthetic JSON/PNG/trace remain in ignored `output/playwright/browser-failures/`. / history-open 回归期间键盘测试失败一次：Trajectory Inspector 入口已获得焦点，随后迟到的所列时间线响应替换文章节点，焦点移到 BODY，Enter 也落在 BODY。捕获显示 networkidle 等待早于该防抖请求启动便已返回；合成 JSON／PNG／trace 位于忽略的失败工件目录。
+
+The current targeted test passed on rerun. Three isolated runs serving the original `9adc4956` generated bundle in memory also passed; a natural baseline failure was not reproduced. History navigation was inactive in the captured path and the relevant ordinary search-render behavior was unchanged. This supports an existing timing-sensitive focus race, without proving a unique cause or claiming it fixed. The original input, timeout and assertion remain unchanged. / 当前聚焦复测通过；以内存提供原 9adc4956 bundle 的三轮隔离测试也通过，未自然复现基线失败。捕获路径未激活历史引用导航，相关普通搜索渲染行为未变。这支持既有时序敏感焦点竞态的判断，但不证明唯一根因，也不声称已修复。原输入、超时与断言保持不变。
+
 - After the instrumented change reaches CI, inspect a failing artifact's actual key/click target, removed focused action, departure checkpoints and return geometry. Distinguish lost input, late layout changes and capture-before-click differences using evidence. A passing run alone does not confirm the root cause. / 诊断变更进入 CI 后，核对失败工件中的实际按键／点击目标、被移除的焦点入口、离开检查点与返回几何位置。根据证据区分输入丢失、延迟布局变化及点击前采样差异；仅有通过运行不能确认根因。
 
 ## References / 引用
