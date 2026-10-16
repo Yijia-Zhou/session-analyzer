@@ -169,7 +169,10 @@ test('per-index Codex hydration is FIFO-bounded and a queued abort never opens t
   assert.equal(secondRows.get(raw.rawId).line, raw.source.line);
   assert.equal(fourthRows.get(raw.rawId).line, raw.source.line);
   assert.equal(maxActive, 2);
-  assert.deepEqual(openOrder, ['first', 'second', 'fourth']);
+  // The first two slots are admitted together; their asynchronous source stat
+  // operations may complete in either order before onFileOpen is invoked.
+  assert.deepEqual(openOrder.slice(0, 2).sort(), ['first', 'second']);
+  assert.deepEqual(openOrder.slice(2), ['fourth']);
 });
 
 test('all Codex hydration entry points share one index coordinator without serializing another index', async (t) => {
