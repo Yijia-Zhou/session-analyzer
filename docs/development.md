@@ -91,6 +91,8 @@ The implementation is `scripts/ci-scope.js`; its tests exercise real Git history
 
 The collaboration keyboard-navigation and mobile Timeline return tests record bounded focus/input events, collaboration DOM removal, scroll positions, API request completion and named checkpoints. On failure, `e2e/browser-diagnostics.js` writes `diagnostics.json`, a viewport screenshot and a Playwright `trace.zip` under `output/playwright/browser-failures/`; CI uploads this directory as `browser-navigation-failures-<attempt>` with seven-day retention. Successful tests discard their traces. All captured pages and API payloads come from synthetic fixtures; do not use this capture helper against real transcripts. Inspect the actual input target and departure/return geometry before changing a timeout or assertion. / 协作键盘导航与移动端 Timeline 返回测试记录有界的焦点／输入事件、协作 DOM 移除、滚动位置、API 请求完成情况与具名检查点。失败时，所列 helper 在上述目录保存 JSON、视口截图与 Playwright trace；CI 按上述名称上传，保留七天。成功测试丢弃 trace。捕获页面与 API 载荷均来自合成 fixture；不要对真实转录使用此 helper。调整超时或断言前，先核对实际输入目标及离开／返回时的几何位置。
 
+`e2e/turn-lineage.test.js` uses the same failure recorder for its keyboard/evidence-return matrix and same-session/Protocol/stale-source test, so their failures use the same CI artifact path. / `e2e/turn-lineage.test.js` 的键盘／依据返回矩阵及同会话／Protocol／来源失效测试复用同一失败记录器，失败时保存到同一 CI 工件路径。
+
 ## Repository layout / 仓库布局
 
 | Path / 路径 | Role / 职责 |

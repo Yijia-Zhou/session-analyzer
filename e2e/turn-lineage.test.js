@@ -6,8 +6,9 @@ const path = require('node:path');
 const os = require('node:os');
 const { chromium } = require('playwright');
 const { createHistoryService } = require('../src/history-service');
+const { withNavigationDiagnostics } = require('./browser-diagnostics');
 
-async function fixture(t, width) {
+async function fixture(t, width, diagnostics) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'lineage-browser-'));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const repo = path.join(home, 'repo');
@@ -39,18 +40,37 @@ async function fixture(t, width) {
   const browser = await chromium.launch(); t.after(() => browser.close());
   const page = await browser.newPage({ locale: 'en-US', viewport: { width, height: 900 } });
   page.setDefaultTimeout(10000);
+  await diagnostics?.attach(page);
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, []));
   return { page, url, files, search: async (query) => (await service.execute('search', { query })).items[0] };
 }
 
+async function waitForTurnDetail(page, hit, turnId, locale = 'en') {
+  // Reference navigation and locale reload can leave another turn's detail attached.
+  await page.waitForFunction(({ sessionId, eventId, turnId, title }) => {
+    const session = document.querySelector('#sessionList .sessionItem.active');
+    const selected = document.querySelector(`[data-event-id="${CSS.escape(eventId)}"].selected, [data-trajectory-event-id="${CSS.escape(eventId)}"].selected`);
+    const lineage = document.querySelector('#detail .turnLineage');
+    return session?.dataset.sessionId === sessionId
+      && Boolean(selected)
+      && lineage?.querySelector('p code')?.textContent === turnId
+      && lineage.querySelector('h4')?.textContent === title
+      && !document.querySelector('[data-history-action="cancel"]');
+  }, { sessionId: hit.sessionId, eventId: hit.eventId, turnId,
+    title: locale === 'en' ? 'Turn relationships' : 'Turn 关系' });
+}
+
 for (const width of [1440, 390]) for (const presentation of ['timeline', 'trajectory']) for (const locale of ['en', 'zh-CN']) {
-  test(`turn lineage keyboard, evidence and reading return: ${width} ${presentation} ${locale}`, { timeout: 45000 }, async (t) => {
-    const { page, url, search } = await fixture(t, width);
+  test(`turn lineage keyboard, evidence and reading return: ${width} ${presentation} ${locale}`, { timeout: 45000 }, withNavigationDiagnostics(async (t, diagnostics) => {
+    const { page, url, search } = await fixture(t, width, diagnostics);
     const hit = await search('CHILD_REQUEST');
     await page.goto(`${url}/#ref=${encodeURIComponent(hit.ref)}`);
-    await page.locator('#detail .turnLineage').waitFor({ state: 'attached' });
-    if (locale !== 'en') await page.locator('#localeSelect').selectOption(locale, { force: true });
+    await waitForTurnDetail(page, hit, 'child-turn');
+    if (locale !== 'en') {
+      await page.locator('#localeSelect').selectOption(locale, { force: true });
+      await waitForTurnDetail(page, hit, 'child-turn', locale);
+    }
     if (presentation === 'trajectory') await page.locator('[data-main-presentation="trajectory"]').click();
     if (width < 760) await page.getByRole('button', { name: locale === 'en' ? 'Detail' : '详情', exact: true }).click();
     const button = page.locator('#detail [data-turn-lineage="parent"]');
@@ -74,15 +94,15 @@ for (const width of [1440, 390]) for (const presentation of ['timeline', 'trajec
     assert.equal(await page.locator('#detail .turnLineage details').first().getAttribute('open'), '');
     const dir = path.join(__dirname, '../output/turn-lineage-browser'); await fs.mkdir(dir, { recursive: true });
     await page.screenshot({ path: path.join(dir, `${width}-${presentation}-${locale}.png`) });
-  });
+  }));
 }
 
-test('turn lineage same-session and Protocol targets; stale revisions and deleted sources fail closed', { timeout: 45000 }, async (t) => {
-  const { page, url, files, search } = await fixture(t, 1440);
-  for (const [query, prefix, layer] of [['SAME_CHILD', 'same:', 'main'], ['FALLBACK_REQUEST', 'protocol:', 'protocol']]) {
+test('turn lineage same-session and Protocol targets; stale revisions and deleted sources fail closed', { timeout: 45000 }, withNavigationDiagnostics(async (t, diagnostics) => {
+  const { page, url, files, search } = await fixture(t, 1440, diagnostics);
+  for (const [query, prefix, layer, turnId] of [['SAME_CHILD', 'same:', 'main', 'same-child'], ['FALLBACK_REQUEST', 'protocol:', 'protocol', 'fallback-turn']]) {
     const hit = await search(query);
     await page.goto(`${url}/#ref=${encodeURIComponent(hit.ref)}`);
-    await page.waitForFunction((id) => document.querySelector('#timeline article.selected')?.dataset.eventId === id, hit.eventId);
+    await waitForTurnDetail(page, hit, turnId);
     const button = page.locator('#detail [data-turn-lineage="parent"]'); await button.waitFor();
     await page.waitForFunction((prefix) => document.querySelector('#detail [data-turn-lineage="parent"]')?.dataset.lineageEvent.startsWith(prefix), prefix);
     const targetEvent = await button.getAttribute('data-lineage-event');
@@ -93,10 +113,12 @@ test('turn lineage same-session and Protocol targets; stale revisions and delete
           selected: document.querySelector('#timeline article.selected')?.dataset.eventId, detail: document.querySelector('#detail')?.innerText })) })); throw error;
       });
     assert.ok(targetEvent.startsWith(prefix));
-    await page.locator('#sessionHeader [data-reading-back]').click(); await button.waitFor();
+    await page.locator('#sessionHeader [data-reading-back]').click();
+    await waitForTurnDetail(page, hit, turnId);
+    await page.waitForFunction(() => document.activeElement?.dataset.turnLineage === 'parent');
   }
   const hit = await search('CHILD_REQUEST'); await page.goto(`${url}/#ref=${encodeURIComponent(hit.ref)}`);
-  await page.waitForFunction((id) => document.querySelector('#timeline article.selected')?.dataset.eventId === id, hit.eventId);
+  await waitForTurnDetail(page, hit, 'child-turn');
   const button = page.locator('#detail [data-turn-lineage="parent"]'); await button.waitFor();
   await page.waitForFunction(() => document.querySelector('#detail [data-turn-lineage="parent"]')?.dataset.lineageSession === 'parent');
   const revision = Number(await button.getAttribute('data-navigation-revision'));
@@ -111,12 +133,13 @@ test('turn lineage same-session and Protocol targets; stale revisions and delete
   await button.click();
   await page.waitForFunction(() => document.body.textContent.includes('This reading target is no longer available'));
   assert.equal(await page.locator('#timeline article.selected').getAttribute('data-event-id'), hit.eventId);
-});
+}));
 
 test('newer presentation intent cancels a pending turn jump', { timeout: 30000 }, async (t) => {
   const { page, url, search } = await fixture(t, 1440);
   const hit = await search('CHILD_REQUEST');
   await page.goto(`${url}/#ref=${encodeURIComponent(hit.ref)}`);
+  await waitForTurnDetail(page, hit, 'child-turn');
   const button = page.locator('#detail [data-turn-lineage="parent"]'); await button.waitFor();
   let release, arrived;
   const held = new Promise((resolve) => { release = resolve; });
