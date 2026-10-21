@@ -3,6 +3,7 @@
 const i18n = require('./shared/i18n');
 const storage = require('./deepseek-harness-storage');
 const { embeddedStreamFacts } = require('./deepseek-harness-stream');
+const { sanitizeLogicalDetailValue } = require('./shared/logical-detail-sanitizer');
 
 const SOURCE_KIND = storage.DEEPSEEK_SOURCE_KIND;
 const WORKFLOW_EVENT_TYPES = new Set([
@@ -379,7 +380,64 @@ function appendShellResultDetail(detail, event) {
   return detail;
 }
 
-function detailForToolOperation(event, session, parsedByOrdinal) {
+function appendOperationMetadata(detail, name, args, result, locale) {
+  if (!result?.data || !Object.hasOwn(result.data, 'meta')) return detail;
+  const meta = result.data.meta;
+  const object = value => value && typeof value === 'object' && !Array.isArray(value);
+  const text = value => typeof value === 'string' && value.trim().length > 0;
+  let field;
+  let key;
+  // Tool-owned fields from 687f282e. The result records the execution-time
+  // value; request paths and the Session header must never supply a fallback.
+  if (object(meta) && object(args)) {
+    if (['bash', 'pwsh'].includes(name) && typeof args.command === 'string' && text(meta.cwd)) {
+      field = 'cwd';
+      key = 'Working directory';
+    } else if (['read', 'write', 'edit', 'read_image'].includes(name)
+        && text(args.file_path) && text(meta.path)) {
+      field = 'path';
+      key = 'File target';
+    }
+  }
+  let residual = meta;
+  if (field) {
+    detail.inspectorSections.push(i18n.localizeSection(sectionKv([
+      { key, value: sanitizeLogicalDetailValue(meta[field], { maxStringChars: 4000 }) },
+    ], 'traceability', 'Recorded operation metadata'), locale));
+    residual = { ...meta };
+    delete residual[field];
+  }
+  if (!field || Object.keys(residual).length) {
+    const bounded = sanitizeLogicalDetailValue(residual, {
+      maxStringChars: 8000, maxTotalStringChars: 12000, maxDepth: 8,
+      maxNodes: 200, maxArrayItems: 40, maxObjectEntries: 40,
+    });
+    detail.inspectorSections.push(i18n.localizeSection(sectionRawJson(bounded, 'Other operation metadata'), locale));
+  }
+  return detail;
+}
+
+function uniqueDirectMetadataOwner(records, parsedByOrdinal, session, call, result) {
+  if (parsedByOrdinal.get(0)?.version !== 4 || !call || !result?.data
+      || !Object.hasOwn(result.data, 'meta')
+      || records.filter(record => record.type === 'tool/call').length !== 1
+      || records.filter(record => record.type === 'tool/result').length !== 1) return false;
+  const callId = call.data?.callId;
+  if (typeof callId !== 'string' || !callId || result.surfaceOp !== 'append'
+      || result.data?.message?.toolCallId !== callId) return false;
+  const boundary = session.forkEvidence?.seedBoundarySeq ?? -1;
+  let calls = 0;
+  let results = 0;
+  for (const record of parsedByOrdinal.values()) {
+    if (record.seq < boundary) continue;
+    if (record.type === 'tool/call' && record.data?.callId === callId) calls += 1;
+    if (record.type === 'tool/result' && record.surfaceOp === 'append'
+        && record.data?.message?.toolCallId === callId) results += 1;
+  }
+  return calls === 1 && results === 1;
+}
+
+function detailForToolOperation(event, session, parsedByOrdinal, locale) {
   const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
   const records = parsedEventsForRawIds(
     session,
@@ -437,6 +495,9 @@ function detailForToolOperation(event, session, parsedByOrdinal) {
       'traceability',
       'Incomplete operation',
     ));
+  }
+  if (uniqueDirectMetadataOwner(records, parsedByOrdinal, session, call, result)) {
+    appendOperationMetadata(detail, call.data.name, parseToolArguments(call.data.arguments), result, locale);
   }
   return appendOriginalToolResultPruneDetail(appendShellResultDetail(detail, event), event, session);
 }
@@ -552,7 +613,7 @@ function detailForCodeModeOperation(event, session, parsedByOrdinal) {
   return appendOriginalToolResultPruneDetail(detail, event, session);
 }
 
-function detailForCodeDispatch(event, session, parsedByOrdinal, topology) {
+function detailForCodeDispatch(event, session, parsedByOrdinal, topology, locale) {
   const detail = commonDetail(event, i18n.DEFAULT_LOCALE);
   const records = parsedEventsForRawIds(
     session,
@@ -598,6 +659,17 @@ function detailForCodeDispatch(event, session, parsedByOrdinal, topology) {
   if (metadata) detail.inspectorSections.push(metadata);
   const owner = codeModeOwnerRefsSection(event, session, topology);
   if (owner) detail.inspectorSections.push(owner);
+  // The topology projector has already rejected duplicate and contradictory
+  // dispatch identities. Read metadata only from this operation's settlement.
+  if (parsedByOrdinal.get(0)?.version === 4 && settled?.type === 'tool/ptc-dispatch'
+      && records.filter(record => record.type === 'tool/ptc-dispatch').length === 1
+      && settled.data?.subCallId === dispatch.subCallId
+      && settled.data?.rootCallId === dispatch.rootCallId
+      && settled.data?.parentCallId === dispatch.parentCallId) {
+    const args = typeof settled.data.arguments === 'string'
+      ? parseToolArguments(settled.data.arguments) : settled.data.arguments;
+    appendOperationMetadata(detail, settled.data.name, args, settled, locale);
+  }
   return appendShellResultDetail(detail, event);
 }
 
@@ -1428,7 +1500,7 @@ function buildLogicalDetail(event, session, parsedByOrdinal, locale = i18n.DEFAU
   }
   const dispatchTopology = dispatchTopologyForEvent(session, event.id);
   if (dispatchTopology) {
-    return detailForCodeDispatch(event, session, parsedByOrdinal, dispatchTopology);
+    return detailForCodeDispatch(event, session, parsedByOrdinal, dispatchTopology, locale);
   }
   if (event.inboxProvenance) {
     return detailForInboxMessage(event, session, parsedByOrdinal);
@@ -1470,7 +1542,7 @@ function buildLogicalDetail(event, session, parsedByOrdinal, locale = i18n.DEFAU
     return detailForPrunedToolResult(event, session, parsedByOrdinal);
   }
   if (event.kind === 'command' || event.kind === 'other_tool_call') {
-    return detailForToolOperation(event, session, parsedByOrdinal);
+    return detailForToolOperation(event, session, parsedByOrdinal, locale);
   }
   return detailForProtocolEvent(event, session, parsedByOrdinal);
 }

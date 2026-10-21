@@ -86,6 +86,8 @@ const KNOWN_DS_EVENT_TYPES = new Set([
   'goal/change',
   'hook/invoked',
   'hook/result',
+  'job/registered',
+  'job/settled',
   'llm/retry',
   'llm/retry-started',
   'permission/preset',
@@ -122,6 +124,7 @@ const KNOWN_DS_EVENT_TYPES = new Set([
   'turn/start',
   'user/message',
   'web/deepseek-search-llm-request',
+  'working-directory/change',
   'workspace/changes',
 ]);
 
