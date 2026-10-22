@@ -3,9 +3,8 @@
 const MarkdownIt = require('markdown-it');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 const { sanitizeLogicalDetailValue } = require('./shared/logical-detail-sanitizer');
-const { piRawRef } = require('./pi-logical');
+const { piRawRef, sanitizePiValue: safe } = require('./pi-logical');
 const markdown = new MarkdownIt({ html: false, linkify: true });
-const safe = (value) => sanitizeLogicalDetailValue(value);
 // Budget each presentation section before the shared contract validates it.
 // Leave identity/Raw references intact; the physical record is never clipped.
 const DETAIL_STRUCTURE_LIMITS = Object.freeze({

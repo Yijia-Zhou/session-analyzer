@@ -12,7 +12,9 @@ const searchPolicy = {
   redactString: redactEmbeddedDataUrls,
 };
 const string = (value) => typeof value === 'string' ? value : '';
-const safe = (value) => sanitizeLogicalDetailValue(value);
+// Search projects the original JSON iteratively. Cached display evidence has a
+// depth limit so extension data cannot exhaust the recursive sanitizer's stack.
+const safe = (value) => sanitizeLogicalDetailValue(value, { maxDepth: 32 });
 const search = (value) => projectSearchJson(value, searchPolicy);
 const preview = (value) => string(value).trim().slice(0, 240);
 // Encode UTF-16 code units so separators and even malformed surrogate strings
@@ -27,7 +29,9 @@ function makeRaw(row, session) {
   const record = row.parsed || {};
   const message = record.message || {};
   const source = { file: session.sourceFile, line: row.line };
-  const text = row.parseError ? redactEmbeddedDataUrls(row.text) : search(record);
+  // Broken JSON cannot reliably separate readable text from signatures/media.
+  // Keep its bytes exclusively in explicit Raw readback, never in search/snippets.
+  const text = row.parseError ? 'Malformed JSON record (content available in Raw)' : search(record);
   return {
     rawId: `${session.id}:raw:${row.line}`, sessionId: session.id, sourceKind: SOURCE_KIND,
     sourceSessionId: session.sourceSessionId, source, sourceLocator: { type: 'jsonl_line', ...source },
@@ -243,4 +247,4 @@ function sessionsFromPiDocument(document, sourceFile, requestedLeafId) {
   });
 }
 
-module.exports = { SOURCE_KIND, contentText, emptyCounts, iso, piRawRef, search, sessionsFromPiDocument };
+module.exports = { SOURCE_KIND, contentText, emptyCounts, iso, piRawRef, search, sessionsFromPiDocument, sanitizePiValue: safe };

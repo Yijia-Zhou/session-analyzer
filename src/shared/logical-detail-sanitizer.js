@@ -269,7 +269,7 @@ function sanitizeLogicalDetailValue(value, options = {}, seen = new WeakMap(), s
   }
   const sanitized = {};
   const usedKeys = new Set();
-  const hasEmbeddedBase64Payload = String(value.type || '').toLowerCase() === 'base64'
+  const hasEmbeddedBase64Payload = typeof value.type === 'string' && value.type.toLowerCase() === 'base64'
     && typeof value.data === 'string';
   seen.set(value, sanitized);
   if (activeState?.maxObjectEntries != null) {

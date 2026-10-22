@@ -50,6 +50,8 @@ Every valid root-to-leaf branch is independently selectable and searchable throu
 
 Environment-derived pi agent roots accept native tilde and file-URL forms. Large or deeply nested structured evidence remains readable through bounded Detail previews with explicit omission markers and original Raw References; physical Raw readback remains complete. / 环境变量中的 pi agent 根支持原生波浪号及 file-URL 形式。大型或深层结构化依据通过有界 Detail 预览保持可读，提供明确省略提示及原始 Raw References；物理 Raw 回读保持完整。
 
+Malformed pi JSON records remain available through explicit Raw access, but only their generic error description is searchable; unparsed signatures or media cannot enter search snippets. Deep valid extension/tool data uses depth-bounded display copies during indexing while preserving searchable text and the exact physical Raw string. The readback's parsed JSON companion is a bounded preview. / 无效 pi JSON 记录仍可通过显式 Raw 访问，但只有通用错误说明参与搜索，未解析的签名或媒体不得进入搜索摘要。合法的深层扩展／工具数据在索引时使用有深度上限的展示副本，同时保留可搜索文本和物理 Raw 原文。回读中的解析后 JSON 字段是有界预览。
+
 Native user/assistant text, persisted thinking and same-branch tool calls/results retain original Raw References. Custom records, usage, configuration, compaction, branch summaries, labels and context edits remain inspectable source history. Context edits and compaction do not erase earlier history or turn the viewer into a reconstruction of current model context. Cross-file parentSession provenance does not establish an inferred fork hierarchy. See [design and limitations](../design-docs/pi-native-sessions.md). / 原生用户／助手文本、已保存 thinking 与同分支工具调用／结果保留原始引用。自定义记录、usage、配置、压缩、分支摘要、标签与 context edit 保持可检查。Context edit 和压缩不会删除较早历史，查看器不重建当前模型上下文。跨文件 parentSession 来源信息不建立推断的分叉层级。详见[设计与限制](../design-docs/pi-native-sessions.md)。
 
 ## Collaboration reading round trips / 协作阅读往返

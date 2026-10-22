@@ -224,7 +224,9 @@ async function readPiRawRecord(index, session, raw, options = {}) {
   const text = snapshot.lines[raw.source.line - 1];
   if (text === undefined) throw storage.stale();
   let parsed = null; try { parsed = JSON.parse(text); } catch { /* Preserve malformed bytes verbatim. */ }
-  return { raw: text, parsed, rawId: raw.rawId, sourceKind: SOURCE_KIND, sourceLocator: raw.sourceLocator };
+  // The raw string is exact evidence. Bound its parsed companion as well so
+  // HTTP JSON encoding cannot overflow on a record deeper than the JS stack.
+  return { raw: text, parsed: logical.sanitizePiValue(parsed), rawId: raw.rawId, sourceKind: SOURCE_KIND, sourceLocator: raw.sourceLocator };
 }
 
 const piAdapter = {
