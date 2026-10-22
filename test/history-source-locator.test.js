@@ -5,11 +5,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
+const { zstdCompressSync } = require('node:zlib');
 const { buildSourceBackedIndex } = require('../src/codex');
 const { materializeSessionForIndex } = require('../src/source-adapters');
 const { createHistorySourceLocator } = require('../src/history-source-locator');
+const { createHistoryService } = require('../src/history-service');
 
-async function fixture(t) {
+async function fixture(t, { compressed = false } = {}) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'source-locator-'));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const repoRoot = path.join(home, 'project');
@@ -20,8 +23,11 @@ async function fixture(t) {
     { type: 'event_msg', timestamp: '2026-01-01T00:00:01Z', payload: { type: 'user_message', message: 'hello' } },
     { type: 'response_item', timestamp: '2026-01-01T00:00:02Z', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'world' }] } },
   ];
+  await fs.mkdir(repoRoot);
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, `${rows.map(JSON.stringify).join('\n')}\n\n`, 'utf8');
+  const text = `${rows.map(JSON.stringify).join('\n')}\n\n`;
+  await fs.writeFile(compressed ? `${file}.zst` : file,
+    compressed ? zstdCompressSync(Buffer.from(text)) : text);
   const build = () => buildSourceBackedIndex({ repoRoot, codexHome: home });
   const index = await build();
   assert.equal(index.sessions.length, 1);
@@ -32,6 +38,64 @@ async function fixture(t) {
     makeEvidenceRef: (owner, layer, event) => `${owner.id}:${layer}:${event.id || event.rawId}` });
   return { home, repoRoot, file, rows, index, session, sourcePath, locator, build };
 }
+
+test('history service keeps canonical reads while source locators admit only plain primary files', async (t) => {
+  for (const compressed of [false, true]) await t.test(compressed ? 'Zstd' : 'plain', async (t) => {
+    const f = await fixture(t, { compressed });
+    const entry = f.index.materializationDependencies.get(f.session.materializationDescriptor.dependencySetId)
+      .entries.find((candidate) => candidate.role === 'primary_transcript');
+    assert.ok(f.sourcePath.endsWith('.jsonl'));
+    assert.equal(entry.evidence.fileIdentity.compression, compressed ? 'zstd' : undefined);
+    if (compressed) await assert.rejects(fs.stat(f.file), { code: 'ENOENT' });
+    const service = await createHistoryService({ repo: f.repoRoot, source: 'codex', codexHome: f.home });
+    t.after(() => service.close());
+    const status = await service.execute('status');
+    assert.equal(status.coverage.sessionCount, 1);
+    assert.equal(status.capabilities.sourceLocators.storage, 'uncompressed JSONL');
+    const search = await service.execute('search', { query: 'hello' });
+    assert.equal(search.items.length, 1);
+    const hit = search.items[0];
+    const read = await service.execute('read', { refs: [hit.ref], parts: ['message'] });
+    assert.match(read.items[0].parts[0].text, /hello/u);
+    const raw = await service.execute('read', { refs: read.items[0].rawRefs, parts: ['raw'] });
+    assert.match(raw.items[0].parts[0].text, /hello/u);
+    const locator = { type: 'jsonl-line', line: 2 };
+    if (compressed) {
+      // Recreate an sr1 issued by the old admission code for this exact Zstd snapshot.
+      const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('base64url');
+      const scope = digest([f.index.repoRoot, 'codex', path.resolve(f.home)]);
+      const sourceRef = 'sr1.' + Buffer.from(JSON.stringify({ p: digest(scope), f: f.sourcePath,
+        v: digest([entry.pathIdentity, entry.acceptedBytes, entry.lineCount, entry.digest, entry.evidence.fileIdentity]),
+      })).toString('base64url');
+      for (const [name, source] of [
+        ['indexed path', { sourcePath: f.sourcePath }],
+        ['absolute alias', { sourcePath: f.file }],
+        ['previously issued SourceRef', { sourceRef }],
+      ]) await t.test(name, async () => {
+        await assert.rejects(service.execute('read', { source: { ...source, locator } }),
+          { code: 'UNSUPPORTED_SOURCE', message: /Search the current snapshot.*read the returned event refs/u });
+      });
+      await assert.rejects(service.execute('read', { source: { sourcePath: `${f.file}.zst`, locator } }),
+        { code: 'UNKNOWN_SOURCE' });
+      const recovered = (await service.execute('search', { query: 'hello' })).items[0];
+      const links = await service.execute('read', { refs: [recovered.ref], parts: ['raw'] });
+      const recoveredRaw = await service.execute('read', { refs: links.items[0].rawRefs, parts: ['raw'] });
+      assert.match(recoveredRaw.items[0].parts[0].text, /hello/u);
+    } else {
+      const located = await service.execute('read', { source: { sourcePath: f.sourcePath, locator } });
+      const absolute = await service.execute('read', { source: { sourcePath: f.file, locator } });
+      assert.equal(absolute.source.sourceRef, located.source.sourceRef);
+      assert.equal(located.source.verification, 'unverified_legacy_locator');
+      assert.equal(located.items[0].ref, raw.items[0].ref);
+      assert.match(located.items[0].parts[0].text, /hello/u);
+      const owner = located.items[0].logicalRefs.find((link) => link.layer === 'main' && link.eventId === hit.eventId);
+      assert.ok(owner);
+      assert.match((await service.execute('read', { refs: [owner.ref], parts: ['message'] })).items[0].parts[0].text, /hello/u);
+      const verified = await service.execute('read', { source: { sourceRef: located.source.sourceRef, locator } });
+      assert.equal(verified.source.verification, 'source_snapshot_verified');
+    }
+  });
+});
 
 test('bootstrap resolves exact admitted JSONL line and returns explicit raw/logical links', async (t) => {
   const f = await fixture(t);

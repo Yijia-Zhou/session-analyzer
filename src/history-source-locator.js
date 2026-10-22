@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const SOURCE_REF_PREFIX = 'sr1.';
 const LOCATOR_TYPE = 'jsonl-line';
+const SOURCE_LOCATOR_RECOVERY = 'Search the current snapshot for content clues, then read the returned event refs.';
 
 function fail(code, message) {
   throw Object.assign(new Error(message), { code });
@@ -34,6 +35,10 @@ function sourceRecord(session, index) {
       || !Number.isSafeInteger(entry.lineCount) || entry.lineCount < 0
       || !Number.isSafeInteger(entry.acceptedBytes) || entry.acceptedBytes < 0
       || typeof entry.digest !== 'string' || !entry.digest) return null;
+  // Compressed rollouts keep a canonical .jsonl path. Admission follows the
+  // accepted storage identity; plain identities normally omit compression.
+  const compression = entry.evidence?.fileIdentity?.compression;
+  if (compression !== undefined && compression !== 'none') return null;
   // The materialization descriptor includes session-specific relationships.
   // A source reference instead identifies the accepted primary file snapshot,
   // shared by every derived session that reads the same JSONL bytes.
@@ -120,8 +125,8 @@ function createHistorySourceLocator({ index, scope, materialize, makeEvidenceRef
     // normalized into an owner, or passed to an adapter as a filesystem path.
     const admitted = byPath.get(sourcePath);
     if (!admitted?.length) {
-      if (unsupportedPaths.has(sourcePath)) fail('UNSUPPORTED_SOURCE', 'Indexed source is not an uncompressed Codex JSONL file');
-      fail('UNKNOWN_SOURCE', 'Source path is not admitted by this index');
+      if (unsupportedPaths.has(sourcePath)) fail('UNSUPPORTED_SOURCE', `Indexed source is not an uncompressed Codex JSONL primary transcript. ${SOURCE_LOCATOR_RECOVERY}`);
+      fail('UNKNOWN_SOURCE', `Source path is not admitted for read.source. ${SOURCE_LOCATOR_RECOVERY}`);
     }
     const versions = new Set(admitted.map((record) => record.version));
     if (versions.size !== 1) fail('AMBIGUOUS_SOURCE', 'Indexed sessions disagree on the source snapshot');

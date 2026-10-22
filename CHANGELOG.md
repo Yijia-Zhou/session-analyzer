@@ -4,6 +4,8 @@
 
 ### English
 
+- Enforce the uncompressed Codex primary-source contract for history path/line locators using indexed source identity, including compressed artifacts with canonical `.jsonl` paths; preserve search and Raw evidence access to admitted compressed and historical records.
+
 - Clarify history filter, context-view and output-budget guidance, and include operation-specific recovery steps in related argument and budget errors.
 
 - Add opt-in history reads around each reference's recorded search hit, with exact projection ranges and forward/backward continuation; split the packaged retrieval skill into core strategy and operation-specific references.
@@ -15,6 +17,8 @@
 - Skip browser CI for narrowly classified documentation-only pull requests while retaining Node and package checks; execute publish-workflow release checks once through the guarded directory dry-run.
 
 ### 中文
+
+- 历史路径／行号定位按索引来源身份落实仅准入未压缩 Codex 主来源的契约，覆盖规范路径为 `.jsonl` 的压缩工件；保留已准入压缩及历史记录的搜索与 Raw 证据读取。
 
 - 明确历史检索筛选、上下文视图及输出预算指南，并在相关参数与预算错误中提供适用于当前操作的恢复步骤。
 

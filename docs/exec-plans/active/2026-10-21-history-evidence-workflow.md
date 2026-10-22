@@ -1,6 +1,6 @@
 # History evidence workflow / 历史依据工作流
 
-Status: A implementation, decision pilot and bounded guide/handoff comparison complete; general guide effectiveness and broader coverage remain follow-ups. B is contract preparation; C is evidence-gated. No release or general effectiveness claim. / 状态：A 实现、决策试跑及有界指南／交付对照已完成；指南普遍效果及更广覆盖仍待后续验证。B 准备契约；C 由实测依据决定。不包含发布或普遍效果声明。
+Status: A implementation, decision pilot and bounded guide/handoff comparison complete; general guide effectiveness and broader coverage remain follow-ups. B is a planned contract, not implemented. C's compressed source-locator admission repair and bounded capability regression are complete; other C work remains evidence-gated. No release or general effectiveness claim. / 状态：A 实现、决策试跑及有界指南／交付对照已完成；指南普遍效果及更广覆盖仍待后续验证。B 为规划契约，尚未实现。C 的压缩来源定位准入修正及有界能力回归已完成，其余 C 工作仍由实测依据决定。不包含发布或普遍效果声明。
 
 ## Goal and verified starting point / 目标与已核实起点
 
@@ -46,7 +46,11 @@ Run focused service/transport/presentation/source/evaluation/package tests. Chec
 
 ## B: evidence to current status, contract preparation / B：证据到当前状态，准备契约
 
-Prepare cases for new sources, append, deletion and possible rewrite relative to the indexed snapshot. An explicit on-demand check must state scope, observation time, check strength and unchecked portions. Metadata changes are clues; an unchanged metadata sample cannot certify complete/current history. Existing strict read verification stays intact. / 准备相对索引快照出现新来源、追加、删除及可能改写的场景。显式按需检查必须说明范围、观察时间、检查强度及未检查部分；metadata 变化只是线索，无变化样本不能证明历史完整／最新，既有严格读取核验不放松。
+Planned, not implemented: begin with an explicit, independent Codex source-observation report; keep `status` describing the fixed snapshot. Separate source-change observations from selected evidence verification, never reducing both to one fresh/stale label. State scope, observation interval, metadata-only check strength, unchecked portions and partial failures. Unchanged metadata cannot certify complete/current history; existing strict read verification stays intact. No command or request shape is defined yet. / 规划中，尚未实现：首版采用显式、独立的 Codex 来源观察报告，`status` 继续描述固定快照。来源变化观察与选中证据核验分别表达，不合成单个 fresh/stale 标签。说明范围、观察时段、仅 metadata 的检查强度、未检查部分及部分失败。metadata 未变不能证明历史完整／最新；既有严格读取核验不放松。目前不定义命令或请求形状。
+
+Reliable “since indexing” claims require an inventory frozen during snapshot construction over the same discovery scope, including candidates not admitted to the project, with each item's observation interval and enumeration gaps. Discovery and indexing are sampled over time, not atomically at `indexedAt`; concurrent changes retain uncertainty. The current index does not retain that inventory. Without it, report only currently observed candidates outside the snapshot, with prior existence unknown; stat cannot establish project membership. Prepare new/grown/missing/possibly rewritten/unchanged/unobserved cases without silently substituting candidate counts for newly added project history. / 可靠的“索引后变化”判断要求建快照时冻结同一发现范围的清单，包括未被项目准入的候选，记录各项观察时段与枚举缺口。发现与索引在一段时间内采样，不是在 `indexedAt` 原子完成；期间变化保留不确定性。当前索引未保留此清单。缺少基线时，只能报告当前观察到的快照外候选，原先是否存在保持未知；stat 不能证明项目归属。准备新候选／增长／缺失／可能改写／未变／未观察场景，不把候选数量静默换算为新增项目历史。
+
+Deduplicate physical dependencies before observation while retaining their session associations. `acceptedBytes` is not a universal physical-size baseline: compressed Codex counts decoded bytes, ancestors can have intentionally excluded suffixes, and other adapters can omit uncommitted tails. Keep live candidates, admitted archived ancestors, history head selection and copied/control metadata distinct; explicitly name unexamined controls and relationships. See the [planned observation design](../../design-docs/history-retrieval.md#planned-source-observation-not-implemented--来源观察规划尚未实现). / 观察前按物理依赖去重，保留其会话关联。`acceptedBytes` 不是通用物理大小基线：压缩 Codex 计解压字节，祖先可能有有意排除的后缀，其他 adapter 可能省略未提交尾部。分别处理活动候选、准入归档祖先、历史头选择及复制／控制 metadata，明确列出未检查的控制来源与关系。参见[来源观察规划](../../design-docs/history-retrieval.md#planned-source-observation-not-implemented--来源观察规划尚未实现)。
 
 The user/agent can answer as of the existing snapshot or explicitly build a new snapshot and repeat verification. No silent refresh, cursor reinterpretation or retargeting of old Web links. Measure rebuild cost before considering generations/incremental refresh; the prior 293,007 ms observation is one environment/sample, not a universal performance claim. This plan does not implement automatic refresh. / 用户／agent 可选择按现有快照作答，或显式建立新快照再核验；不得静默刷新、重解释游标或重定向旧 Web 链接。考虑代际／增量刷新前先量测重建成本；此前 293,007 ms 仅为特定环境单次观察。本计划不实现自动刷新。
 
@@ -57,6 +61,23 @@ The user/agent can answer as of the existing snapshot or explicitly build a new 
 - Characterize index/search/Raw read/old-source locator/logical mapping separately for plain/compressed Codex, history dependencies and archived ancestors. Compressed coordinates describe the decompressed record stream. / 分别核验普通／压缩 Codex、历史链依赖与归档祖先的索引／搜索／Raw／旧来源定位／逻辑映射能力；压缩来源坐标指解压记录流。
 
 Vector search, automatic decision cards/latest-state labels, implicit read memory, all-source indexing, daemons and multigeneration caches remain deferred. / 向量搜索、自动决策卡／最新状态标签、隐式已读记忆、全来源索引、daemon 与多代缓存继续后置。
+
+### Source-locator capability repair complete / 来源定位能力修正已完成
+
+A real indexed Zstd primary has a canonical `.jsonl` path, exposing suffix-only admission as inconsistent with the uncompressed-primary contract. Admission now rejects compression using indexed dependency identity; real fixtures through the history service verified the bounded matrix below. Logical mappings mean recorded `rawRefs` associations only; they do not promise an association for every Raw record. Non-primary dependency paths returning `UNKNOWN_SOURCE` are an intentional locator boundary. / 真实索引的 Zstd 主来源使用规范 `.jsonl` 路径，暴露出仅按后缀准入与“未压缩主来源”契约不一致。现按索引依赖身份拒绝压缩来源，并通过真实 fixture 与 history service 核验下列有界矩阵。逻辑映射仅指已记录的 `rawRefs` 关联，不承诺每条 Raw 都有关联。非主来源依赖路径返回 `UNKNOWN_SOURCE` 是有意的定位边界。
+
+| Fixture / Fixture 场景 | Index, search, Raw / 索引、搜索、Raw | `read.source` | Logical mapping / 逻辑映射 |
+| --- | --- | --- | --- |
+| Plain primary / 普通主来源 | Admitted records verified / 已核验准入记录 | Admitted / 已准入 | Explicit associations / 明确关联 |
+| Zstd primary / 压缩主来源 | Decoded records verified / 已核验解压记录 | `UNSUPPORTED_SOURCE` | Explicit associations via existing evidence / 经既有证据核验明确关联 |
+| Explicit history dependency, plain/Zstd / 普通／压缩历史依赖 | Accepted prefix verified / 已核验接纳前缀 | `UNKNOWN_SOURCE` unless separately admitted as primary / 除非另以主来源准入 | Explicit associations via existing evidence / 经既有证据核验明确关联 |
+| Archived ancestor, plain/Zstd / 普通／压缩归档祖先 | Dependency-only prefix verified / 已核验仅作依赖的前缀 | `UNKNOWN_SOURCE` | Explicit associations via existing evidence / 经既有证据核验明确关联 |
+
+- [x] Record the real-service regression failing before the admission repair and passing afterward, then the focused capability/source tests. / 记录真实服务回归在准入修正前失败、修正后通过，再完成聚焦能力／来源测试。
+
+The real-service regression showed that compressed relative paths, index-derived absolute aliases and SourceRefs in the existing format were not rejected before the repair; all three now return `UNSUPPORTED_SOURCE`. The suggested search → Raw links → Raw read recovery succeeds. Plain/Zstd live dependencies and archived ancestors passed the four-variant matrix. `node --test test/history-source-locator.test.js test/codex-rollout-history.test.js test/codex-rollout-storage.test.js` passed 77 tests; `node --test test/history-service.test.js test/history-transport.test.js` passed 50. All 127 tests passed with no failures or skips; these are deterministic tests, not independent agent tasks. Full-suite, browser and installed-package smoke were not rerun for this increment; PR #87 CI below applies to the base revision. / 真实服务回归表明：修正前未拒绝压缩来源的相对路径、索引推导绝对别名和既有形状 SourceRef；修正后三者均返回 `UNSUPPORTED_SOURCE`。按提示执行搜索 → Raw 关联 → Raw 读取成功。普通／压缩活动依赖及归档祖先通过四变体矩阵。上述来源定位／历史／存储命令通过 77 项测试，服务／传输命令通过 50 项；共 127 项全部通过，无失败或跳过。这些是确定性测试，不是独立 agent 任务。本增量未重跑全量测试、browser 或安装包 smoke；下文 PR #87 CI 对应基线修订。
+
+This repair does not implement B, expand locator admission to dependencies/compression, optimize grouped scans or close the independent focus race. / 此修正不实现 B、不扩展依赖／压缩来源定位准入、不优化分组扫描，也不关闭独立焦点竞态。
 
 ## Independent release-quality track / 独立发布质量线
 
@@ -143,5 +164,7 @@ This is deterministic operational validation, not a new agent trial or an effect
 The skill now routes from core strategy to four packaged references (search, reading, source locators and browser handoff). Package contract tests passed 16 tests; installed-package smoke passed Codex, Claude Code and DeepSeek UI/history flows and recursively checked references in the installed tarball. The initial sandbox install failed with registry `EACCES`; the identical escalated retry passed. Independent runtime/guide cross-review found no remaining actionable issue. Changed-document local links and bilingual consistency were checked. Full Node/browser release gates were not run for this bounded change; release readiness and the independent focus race remain open. / 技能现从核心策略按需导向四份随包参考（搜索、阅读、来源定位、浏览器交接）。打包契约测试通过 16 项；安装包 smoke 通过三来源 UI／history 流程，并在实际安装包内递归检查引用。首次沙箱安装因 registry `EACCES` 失败，同命令提权重试通过。运行时／指南交叉审查无剩余可执行问题；已核对变更文档本地链接与双语一致性。本次有界变更未运行全量 Node／browser 发布门槛，发布就绪及独立焦点竞态仍开放。
 
 The assessment/recorder suite passed 17 tests after independent review tightened actual harness/budget verification and rejected self-comparisons. Missing legacy configuration stays unverified; false verdicts and unassessed layers remain distinct. / 独立审查补强实际 harness／预算校验并拒绝自比较后，评分／记录器测试通过 17 项。旧日志缺失配置保持未核验；失败与未评估层保持区分。
+
+Subsequent [PR #87](https://github.com/Yijia-Zhou/session-analyzer/pull/87) [CI run](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/39740249198) passed all checks for A at `d7ab70f`. This does not establish broader guide effectiveness or close B, other C work or the independent focus race. / A 后续 [PR #87](https://github.com/Yijia-Zhou/session-analyzer/pull/87) 在 `d7ab70f` 的 [CI 运行](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/39740249198)全部检查通过；这不证明指南普遍效果，也不关闭 B、其他 C 工作或独立焦点竞态。
 
 The capability/regression distinction is consistent with [Anthropic's evaluation guidance](https://www.anthropic.com/research/demystifying-evals-for-ai-agents); local claims still require local evidence. / 能力评估与回归保护的区分与所链评估实践一致；本地效果主张仍须本地依据。
